@@ -149,6 +149,7 @@ std::tuple<Tensor,Tensor> fused_add_dropout_forward(const Tensor& self,const Ten
                     rng_engine_inputs);
             C10_CUDA_KERNEL_LAUNCH_CHECK();
           });
+      return std::tuple<Tensor,Tensor>(ret, mask);
    }
    else{
       return std::tuple<Tensor,Tensor>(self+other, Tensor());

@@ -2,7 +2,6 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
 from fuse.fuseadddropout import AddDropout
-from fuse.fuseadddropout import TestAdd
 
 x0=torch.rand([2, 10])
 y0=torch.rand([2, 10])
