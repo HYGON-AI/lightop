@@ -52,15 +52,16 @@ class _FuseBatchNormAddRelu(Function):
         save_invstd = forward_data[2]
         ctx.eps = eps
         ctx.bn_training = bn_training
-        ctx.save_for_backward(input, weight, save_mean, save_invstd, running_mean, running_var)
+        ctx.save_for_backward(input, grad_out, weight, save_mean, save_invstd, running_mean, running_var)
         return grad_out
     
     @staticmethod
     def backward(ctx, gradOutput) -> Tensor:
-        save_input, weight, save_mean, save_invstd, running_mean, running_var = ctx.saved_tensors
+        save_input, save_output, weight, save_mean, save_invstd, running_mean, running_var = ctx.saved_tensors
         grad_input, grad_weight, grad_bias = fuseop.bnaddrelu_backward(
             gradOutput, 
             save_input,
+            save_output,
             weight,
             running_mean,
             running_var,
