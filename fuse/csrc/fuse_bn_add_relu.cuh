@@ -76,16 +76,18 @@ struct VarOp {
 
 template <typename scalar_t, typename accscalar_t, typename PTA>
 struct GradOp {
-  __device__ GradOp(accscalar_t m, const PTA& i, const PTA& g)
-    : mean(m), input(i), grad_output(g) {}
+  __device__ GradOp(accscalar_t m, const PTA& i, const PTA& g, const PTA& o)
+    : mean(m), input(i), grad_output(g), output(o) {}
   __device__ __forceinline__ Float2<scalar_t, accscalar_t> operator()(int batch, int plane, int n) {
-    accscalar_t g = grad_output[batch][plane][n];
+    //accscalar_t g = grad_output[batch][plane][n];
+    accscalar_t g = (output[batch][plane][n] > static_cast<accscalar_t>(0.0) ? static_cast<accscalar_t>(grad_output[batch][plane][n]) : static_cast<accscalar_t>(0.0));
     accscalar_t c = static_cast<accscalar_t>(input[batch][plane][n]) - mean;
     return Float2<scalar_t, accscalar_t>(g, g * c);
   }
   const accscalar_t mean;
   const PTA& input;
   const PTA& grad_output;
+  const PTA& output;
 };
 
 // Sum across all threads within a warp
@@ -385,6 +387,7 @@ __global__ void bnaddrelu_collect_statistics_kernel(
 template <typename input_scalar_t, typename stat_scalar_t, typename stat_accscalar_t, typename index_t>
 __global__ void bnaddrelu_backward_kernel(
     const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> input,
+    const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> output,
     const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> grad_output,
     GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> grad_input,
     GenericPackedTensorAccessor<stat_scalar_t, 1, DefaultPtrTraits, index_t> grad_weight,
@@ -415,7 +418,7 @@ __global__ void bnaddrelu_backward_kernel(
   // Compute two values across (batch, x/y/z) in one pass:
   // 1. Sum(grad_output)
   // 2. DotProduct(input - mean, grad_output)
-  GradOp<input_scalar_t, stat_accscalar_t, GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t>> g(mean, input, grad_output);
+  GradOp<input_scalar_t, stat_accscalar_t, GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t>> g(mean, input, grad_output, output);
   auto res = reduce<Float2<input_scalar_t, stat_accscalar_t>>(g, grad_output, plane);
 
   stat_accscalar_t grad_output_sum = res.v1;
@@ -428,8 +431,8 @@ __global__ void bnaddrelu_backward_kernel(
   if (grad_input.data() != NULL) {
     for (int batch = threadIdx.y; batch < grad_output.size(0); batch += blockDim.y) {
       for (int x = threadIdx.x; x < grad_output.size(2); x += blockDim.x) {
-        input_scalar_t go = grad_output[batch][plane][x];
-        
+        //input_scalar_t go = grad_output[batch][plane][x];
+        input_scalar_t go = (output[batch][plane][x] > static_cast<input_scalar_t>(0.0) ? grad_output[batch][plane][x] : static_cast<input_scalar_t>(0.0));
         if (train) {
           stat_accscalar_t inp = input[batch][plane][x];
           stat_accscalar_t proj = (inp - mean) * proj_scale;
@@ -503,6 +506,7 @@ __global__ void bnaddrelu_reduce_statistics_kernel(
 template <typename input_scalar_t, typename stat_scalar_t, typename stat_accscalar_t, typename index_t>
 __global__ void bnaddrelu_backward_reduce_kernel(
     const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> input,
+    const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> output,
     const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> grad_output,
     GenericPackedTensorAccessor<stat_accscalar_t, 1, DefaultPtrTraits, index_t> mean,
     GenericPackedTensorAccessor<stat_accscalar_t, 1, DefaultPtrTraits, index_t> invstd,
@@ -516,7 +520,7 @@ __global__ void bnaddrelu_backward_reduce_kernel(
   stat_accscalar_t r_mean = mean[plane];
   stat_accscalar_t factor = invstd[plane];
 
-  GradOp<input_scalar_t, stat_accscalar_t, GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t>> g(r_mean, input, grad_output);
+  GradOp<input_scalar_t, stat_accscalar_t, GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t>> g(r_mean, input, grad_output, output);
   auto res = reduce<Float2<input_scalar_t, stat_accscalar_t>>(g, grad_output, plane);
 
   if (threadIdx.x == 0) {
@@ -538,6 +542,7 @@ __global__ void bnaddrelu_backward_reduce_kernel(
 template <typename input_scalar_t, typename stat_scalar_t, typename stat_accscalar_t, typename index_t>
 __device__ __forceinline__ void bnaddrelu_backward_elemt_kernel_impl(
     const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> input,
+    const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> output,
     const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> grad_output,
     const GenericPackedTensorAccessor<stat_accscalar_t, 1, DefaultPtrTraits, index_t> mean,
     const GenericPackedTensorAccessor<stat_accscalar_t, 1, DefaultPtrTraits, index_t> invstd,
@@ -568,7 +573,8 @@ __device__ __forceinline__ void bnaddrelu_backward_elemt_kernel_impl(
     auto g_o = grad_output[batch][plane];
     auto i = input[batch][plane];
     for (index_t feature = threadIdx.x; feature < fs; feature += blockDim.x) {
-      g_i[feature] = static_cast<input_scalar_t>((g_o[feature] - m_dy_c - (i[feature] - m_c) * factor_1_c) * factor_2_c);
+      input_scalar_t go_new = (output[batch][plane][feature] > static_cast<input_scalar_t>(0.0) ? g_o[feature] : static_cast<input_scalar_t>(0.0));
+      g_i[feature] = static_cast<input_scalar_t>((go_new - m_dy_c - (i[feature] - m_c) * factor_1_c) * factor_2_c);
     }
   }
 }
@@ -576,6 +582,7 @@ __device__ __forceinline__ void bnaddrelu_backward_elemt_kernel_impl(
 template <typename input_scalar_t, typename stat_scalar_t, typename stat_accscalar_t, typename index_t>
 __global__ void bnaddrelu_backward_elemt_kernel(
     const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> input,
+    const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> output,
     const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> grad_output,
     const GenericPackedTensorAccessor<stat_accscalar_t, 1, DefaultPtrTraits, index_t> mean,
     const GenericPackedTensorAccessor<stat_accscalar_t, 1, DefaultPtrTraits, index_t> invstd,
@@ -592,12 +599,13 @@ __global__ void bnaddrelu_backward_elemt_kernel(
   const stat_accscalar_t norm_fct =
       static_cast<stat_accscalar_t>(1) / static_cast<stat_accscalar_t>(total_numel);
   bnaddrelu_backward_elemt_kernel_impl(
-      input, grad_output, mean, invstd, weight, sum_dy, sum_dy_xmu, grad_input, norm_fct);
+      input, output, grad_output, mean, invstd, weight, sum_dy, sum_dy_xmu, grad_input, norm_fct);
 }
 
 template <typename input_scalar_t, typename stat_scalar_t, typename stat_accscalar_t, typename index_t>
 __global__ void bnaddrelu_backward_elemt_kernel(
     const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> input,
+    const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> output,
     const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> grad_output,
     const GenericPackedTensorAccessor<stat_accscalar_t, 1, DefaultPtrTraits, index_t> mean,
     const GenericPackedTensorAccessor<stat_accscalar_t, 1, DefaultPtrTraits, index_t> invstd,
@@ -607,7 +615,7 @@ __global__ void bnaddrelu_backward_elemt_kernel(
     GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> grad_input,
     const stat_accscalar_t norm_fct) {
   bnaddrelu_backward_elemt_kernel_impl(
-      input, grad_output, mean, invstd, weight, sum_dy, sum_dy_xmu, grad_input, norm_fct);
+      input, output, grad_output, mean, invstd, weight, sum_dy, sum_dy_xmu, grad_input, norm_fct);
 }
 
 template <typename scalar_t, int64_t dim, template <typename U> class PtrTraits = DefaultPtrTraits, typename index_t = int64_t>
@@ -631,7 +639,7 @@ static GenericPackedTensorAccessor<scalar_t, dim, PtrTraits, index_t> packed_acc
 }
 
 template<typename input_scalar_t, typename stat_scalar_t, typename index_t>
-std::tuple<Tensor, Tensor, Tensor> bnaddrelu_backward_cuda_template(const Tensor& grad_out_, const Tensor& input_, const Tensor& weight_,
+std::tuple<Tensor, Tensor, Tensor> bnaddrelu_backward_cuda_template(const Tensor& grad_out_, const Tensor& input_, const Tensor& output_, const Tensor& weight_,
                                                                      const Tensor& running_mean_, const Tensor& running_var_, const Tensor& save_mean_, const Tensor& save_invstd_,
                                                                      bool train, double epsilon, std::array<bool,3> grad_input_mask) {
 
@@ -641,6 +649,7 @@ std::tuple<Tensor, Tensor, Tensor> bnaddrelu_backward_cuda_template(const Tensor
   Tensor grad_weight_;
   Tensor grad_bias_;
   auto input_reshaped = input_.reshape({input_.size(0), input_.size(1), -1});
+  auto output_reshaped = output_.reshape({output_.size(0), output_.size(1), -1});
   auto grad_output_reshaped = grad_out_.reshape(input_reshaped.sizes());
 
   if (grad_input_mask[0]) {
@@ -656,6 +665,8 @@ std::tuple<Tensor, Tensor, Tensor> bnaddrelu_backward_cuda_template(const Tensor
 
   auto input = get_packed_accessor<
       input_scalar_t, 3, DefaultPtrTraits, index_t>(input_reshaped, "input");
+  auto output = get_packed_accessor<
+      input_scalar_t, 3, DefaultPtrTraits, index_t>(output_reshaped, "output");
   auto grad_output = get_packed_accessor<
       input_scalar_t, 3, DefaultPtrTraits, index_t>(grad_output_reshaped, "grad_output");
   auto grad_input = packed_accessor_or_dummy<
@@ -681,7 +692,7 @@ std::tuple<Tensor, Tensor, Tensor> bnaddrelu_backward_cuda_template(const Tensor
   dim3 threads(tf, std::max<int>(1, MAX_BLOCK_SIZE/tf));
 
   bnaddrelu_backward_kernel<input_scalar_t, stat_scalar_t, accscalar_t, index_t> <<<blocks, threads, 0, stream>>>
-    (input, grad_output, grad_input, grad_weight, grad_bias, weight, running_mean, running_var,
+    (input, output, grad_output, grad_input, grad_weight, grad_bias, weight, running_mean, running_var,
      save_mean, save_invstd, train, epsilon);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
@@ -812,7 +823,7 @@ std::tuple<Tensor, Tensor> bnaddrelu_gather_stats_cuda_template(const Tensor& me
 }
 
 template<typename input_scalar_t, typename stat_scalar_t, typename index_t>
-std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_backward_reduce_cuda_template(const Tensor& grad_out_, const Tensor& input_,
+std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_backward_reduce_cuda_template(const Tensor& grad_out_, const Tensor& input_, const Tensor& output_,
                                                                                     const Tensor& mean_, const Tensor& invstd_, const Tensor& weight_,
                                                                                     const bool input_g, const bool weight_g, const bool bias_g) {
 
@@ -823,6 +834,7 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_backward_reduce_cuda_templa
   Tensor grad_weight_;
   Tensor grad_bias_;
   auto input_reshaped = input_.reshape({input_.size(0), input_.size(1), -1}); // internally we merge the feature dimensions
+  auto output_reshaped = output_.reshape({output_.size(0), output_.size(1), -1});
   auto grad_output_reshaped = grad_out_.reshape(input_reshaped.sizes());
 
   if (input_g) {
@@ -838,6 +850,8 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_backward_reduce_cuda_templa
 
   auto input = get_packed_accessor<
       input_scalar_t, 3, DefaultPtrTraits, index_t>(input_reshaped, "input");
+  auto output = get_packed_accessor<
+      input_scalar_t, 3, DefaultPtrTraits, index_t>(output_reshaped, "output");
   auto grad_output = get_packed_accessor<
       input_scalar_t, 3, DefaultPtrTraits, index_t>(grad_output_reshaped, "grad_output");
   auto grad_weight = packed_accessor_or_dummy<
@@ -864,25 +878,28 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_backward_reduce_cuda_templa
   const dim3 grid(n_input);
 
   bnaddrelu_backward_reduce_kernel<input_scalar_t, stat_scalar_t, stat_accscalar_t, index_t> <<<grid, block, 0, stream>>>
-    (input, grad_output, mean, invstd, sum_dy, sum_dy_xmu, grad_weight, grad_bias);
+    (input, output, grad_output, mean, invstd, sum_dy, sum_dy_xmu, grad_weight, grad_bias);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
   return std::make_tuple(sum_dy_, sum_dy_xmu_, grad_weight_, grad_bias_);
 }
 
 template<typename input_scalar_t, typename stat_scalar_t, typename index_t>
-Tensor bnaddrelu_backward_elemt_cuda_template(const Tensor& grad_out_, const Tensor& input_,
+Tensor bnaddrelu_backward_elemt_cuda_template(const Tensor& grad_out_, const Tensor& input_, const Tensor& output_,
                                                const Tensor& mean_, const Tensor& invstd_,
                                                const Tensor& weight_, const Tensor& sum_dy_, const Tensor& sum_dy_xmu_) {
 
   using stat_accscalar_t = at::acc_type<stat_scalar_t, true>;
   int64_t n_input = input_.size(1);
   auto input_reshaped = input_.reshape({input_.size(0), input_.size(1), -1}); // internally we merge the feature dimensions
+  auto output_reshaped = output_.reshape({output_.size(0), output_.size(1), -1});
   auto grad_output_reshaped = grad_out_.reshape(input_reshaped.sizes());
   auto grad_input_reshaped = at::empty_like(input_reshaped, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
 
   auto input = get_packed_accessor<
       input_scalar_t, 3, DefaultPtrTraits, index_t>(input_reshaped, "input");
+  auto output = get_packed_accessor<
+      input_scalar_t, 3, DefaultPtrTraits, index_t>(output_reshaped, "output");
   auto grad_input = get_packed_accessor<
       input_scalar_t, 3, DefaultPtrTraits, index_t>(grad_input_reshaped, "grad_input");
   auto grad_output = get_packed_accessor<
@@ -915,25 +932,28 @@ Tensor bnaddrelu_backward_elemt_cuda_template(const Tensor& grad_out_, const Ten
   auto norm_fct = static_cast<stat_accscalar_t>(1.0 / reduction_size);
   bnaddrelu_backward_elemt_kernel<input_scalar_t, stat_scalar_t, stat_accscalar_t, index_t>
       <<<blocks_trans, threads_trans, 0, stream>>>
-      (input, grad_output, mean, invstd, weight, sum_dy, sum_dy_xmu, grad_input, norm_fct);
+      (input, output, grad_output, mean, invstd, weight, sum_dy, sum_dy_xmu, grad_input, norm_fct);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
   return grad_input_reshaped.view(input_.sizes());
 }
 
 template<typename input_scalar_t, typename stat_scalar_t, typename index_t>
-Tensor bnaddrelu_backward_elemt_cuda_template(const Tensor& grad_out_, const Tensor& input_,
+Tensor bnaddrelu_backward_elemt_cuda_template(const Tensor& grad_out_, const Tensor& input_, const Tensor& output_,
                                                const Tensor& mean_, const Tensor& invstd_,
                                                const Tensor& weight_, const Tensor& sum_dy_, const Tensor& sum_dy_xmu_, const Tensor& count) {
 
   using stat_accscalar_t = at::acc_type<stat_scalar_t, true>;
   int64_t n_input = input_.size(1);
   auto input_reshaped = input_.reshape({input_.size(0), input_.size(1), -1}); // internally we merge the feature dimensions
+  auto output_reshaped = output_.reshape({output_.size(0), output_.size(1), -1});
   auto grad_output_reshaped = grad_out_.reshape(input_reshaped.sizes());
   auto grad_input_reshaped = at::empty_like(input_reshaped, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
 
   auto input = get_packed_accessor<
       input_scalar_t, 3, DefaultPtrTraits, index_t>(input_reshaped, "input");
+  auto output = get_packed_accessor<
+      input_scalar_t, 3, DefaultPtrTraits, index_t>(output_reshaped, "output");
   auto grad_input = get_packed_accessor<
       input_scalar_t, 3, DefaultPtrTraits, index_t>(grad_input_reshaped, "grad_input");
   auto grad_output = get_packed_accessor<
@@ -963,7 +983,7 @@ Tensor bnaddrelu_backward_elemt_cuda_template(const Tensor& grad_out_, const Ten
   blocks_trans.y = std::min(blocks_trans.y, MAX_GRID_SIZE);
   dim3 threads_trans(tf, tb);
   bnaddrelu_backward_elemt_kernel<input_scalar_t, stat_scalar_t, stat_accscalar_t, index_t> <<<blocks_trans, threads_trans, 0, stream>>>
-    (input, grad_output, mean, invstd, weight, sum_dy, sum_dy_xmu, grad_input, count.data_ptr<int>(), count.numel());
+    (input, output, grad_output, mean, invstd, weight, sum_dy, sum_dy_xmu, grad_input, count.data_ptr<int>(), count.numel());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
   return grad_input_reshaped.view(input_.sizes());
@@ -1204,6 +1224,7 @@ template <
     typename layerscalar_t>
 __global__ void bnaddrelu_backward_reduce_channels_last_kernel(
       const scalar_t* __restrict__ input,
+      const scalar_t* __restrict__ output,
       const scalar_t* __restrict__ grad_output,
       const accscalar_t* __restrict__ mean,
       const accscalar_t* __restrict__ inv_std,
@@ -1254,7 +1275,8 @@ __global__ void bnaddrelu_backward_reduce_channels_last_kernel(
     for (int j = 0; j < PARALLEL_LOADS; j++) {
       if (c_offset < stride && m_offset < reduction_size) {
         x_input[j] = input[address_base];
-        x_grad_output[j] = grad_output[address_base];
+        //x_grad_output[j] = grad_output[address_base];
+        x_grad_output[j] = (output[address_base] > static_cast<scalar_t>(0.0)?grad_output[address_base]:static_cast<scalar_t>(0.0));
       } else {
         x_input[j] = accscalar_t(0);
         x_grad_output[j] = accscalar_t(0);
@@ -1362,6 +1384,7 @@ template <
 __device__ __forceinline__ void bnaddrelu_backward_elemt_channels_last_kernel_impl(
       const scalar_t* __restrict__ grad_output,
       const scalar_t* __restrict__ input,
+      const scalar_t* __restrict__ output,
       const accscalar_t* __restrict__ mean,
       const accscalar_t* __restrict__ inv_std,
       const layerscalar_t* __restrict__ weight,
@@ -1397,8 +1420,9 @@ __device__ __forceinline__ void bnaddrelu_backward_elemt_channels_last_kernel_im
 #pragma unroll
     for (int j = 0; j < PARALLEL_LOADS; j++) {
       if (c_offset < stride && m_offset < reduction_size) {
+        scalar_t go = (output[address_base] > static_cast<scalar_t>(0.0)?grad_output[address_base]:static_cast<scalar_t>(0.0));
         grad_input[address_base] = static_cast<scalar_t>(
-            (static_cast<accscalar_t>(grad_output[address_base]) - m_dy_c -
+            (static_cast<accscalar_t>(go) - m_dy_c -
             (static_cast<accscalar_t>(input[address_base]) - m_c) * factor_1_c)
             * factor_2_c);
       }
@@ -1416,6 +1440,7 @@ template <
 __global__ void bnaddrelu_backward_elemt_channels_last_kernel(
       const scalar_t* __restrict__ grad_output,
       const scalar_t* __restrict__ input,
+      const scalar_t* __restrict__ output,
       const accscalar_t* __restrict__ mean,
       const accscalar_t* __restrict__ inv_std,
       const layerscalar_t* __restrict__ weight,
@@ -1434,7 +1459,7 @@ __global__ void bnaddrelu_backward_elemt_channels_last_kernel(
 
   auto norm_fct = static_cast<accscalar_t>(1) / static_cast<accscalar_t>(total_numel);
   bnaddrelu_backward_elemt_channels_last_kernel_impl<PARALLEL_LOADS>(
-      grad_output, input, mean, inv_std, weight, sum_dy, sum_dy_xmu,
+      grad_output, input, output, mean, inv_std, weight, sum_dy, sum_dy_xmu,
       grad_input, norm_fct, reduction_size, stride);
 }
 
@@ -1446,6 +1471,7 @@ template <
 __global__ void bnaddrelu_backward_elemt_channels_last_kernel(
       const scalar_t* __restrict__ grad_output,
       const scalar_t* __restrict__ input,
+      const scalar_t* __restrict__ output,
       const accscalar_t* __restrict__ mean,
       const accscalar_t* __restrict__ inv_std,
       const layerscalar_t* __restrict__ weight,
@@ -1456,7 +1482,7 @@ __global__ void bnaddrelu_backward_elemt_channels_last_kernel(
       const int reduction_size,
       const int stride) {
   bnaddrelu_backward_elemt_channels_last_kernel_impl<PARALLEL_LOADS>(
-      grad_output, input, mean, inv_std, weight, sum_dy, sum_dy_xmu,
+      grad_output, input, output, mean, inv_std, weight, sum_dy, sum_dy_xmu,
       grad_input, norm_fct, reduction_size, stride);
 }
 
@@ -1570,6 +1596,7 @@ void bnaddrelu_elemt_channels_last_cuda_template(
 std::tuple<Tensor, Tensor, Tensor, Tensor>
 bnaddrelu_backward_reduce_cuda_channels_last_template(const at::Tensor& grad_output,
     const at::Tensor& input,
+    const at::Tensor& output,
     const at::Tensor& mean,
     const at::Tensor& inv_std,
     const at::Tensor& weight,
@@ -1611,6 +1638,7 @@ bnaddrelu_backward_reduce_cuda_channels_last_template(const at::Tensor& grad_out
       bnaddrelu_backward_reduce_channels_last_kernel<ELEMENTS_PER_ITER>
           <<<grid, block, 0, stream>>>(
           input.data_ptr<scalar_t>(),
+          output.data_ptr<scalar_t>(),
           grad_output.data_ptr<scalar_t>(),
           mean.data_ptr<accscalar_t>(),
           inv_std.data_ptr<accscalar_t>(),
@@ -1636,6 +1664,7 @@ bnaddrelu_backward_reduce_cuda_channels_last_template(const at::Tensor& grad_out
       bnaddrelu_backward_reduce_channels_last_kernel<ELEMENTS_PER_ITER>
           <<<grid, block, 0, stream>>>(
           input.data_ptr<scalar_t>(),
+          output.data_ptr<scalar_t>(),
           grad_output.data_ptr<scalar_t>(),
           mean.data_ptr<accscalar_t>(),
           inv_std.data_ptr<accscalar_t>(),
@@ -1657,6 +1686,7 @@ bnaddrelu_backward_reduce_cuda_channels_last_template(const at::Tensor& grad_out
 at::Tensor bnaddrelu_backward_elemt_channels_last_cuda_template(
     const at::Tensor& grad_output,
     const at::Tensor& input,
+    const at::Tensor& output,
     const at::Tensor& mean,
     const at::Tensor& inv_std,
     const at::Tensor& weight,
@@ -1682,6 +1712,7 @@ at::Tensor bnaddrelu_backward_elemt_channels_last_cuda_template(
           <<<grid, block, 0, stream>>>(
           grad_output.data_ptr<scalar_t>(),
           input.data_ptr<scalar_t>(),
+          output.data_ptr<scalar_t>(),
           mean.data_ptr<accscalar_t>(),
           inv_std.data_ptr<accscalar_t>(),
           weight.data_ptr<accscalar_t>(),
@@ -1705,6 +1736,7 @@ at::Tensor bnaddrelu_backward_elemt_channels_last_cuda_template(
           <<<grid, block, 0, stream>>>(
           grad_output.data_ptr<scalar_t>(),
           input.data_ptr<scalar_t>(),
+          output.data_ptr<scalar_t>(),
           mean.data_ptr<accscalar_t>(),
           inv_std.data_ptr<accscalar_t>(),
           weight.defined() ? weight.data_ptr<scalar_t>() : nullptr,
@@ -1725,6 +1757,7 @@ at::Tensor bnaddrelu_backward_elemt_channels_last_cuda_template(
 at::Tensor bnaddrelu_backward_elemt_channels_last_cuda_template(
     const at::Tensor& grad_output,
     const at::Tensor& input,
+    const at::Tensor& output,
     const at::Tensor& mean,
     const at::Tensor& inv_std,
     const at::Tensor& weight,
@@ -1751,6 +1784,7 @@ at::Tensor bnaddrelu_backward_elemt_channels_last_cuda_template(
           <<<grid, block, 0, stream>>>(
           grad_output.data_ptr<scalar_t>(),
           input.data_ptr<scalar_t>(),
+          output.data_ptr<scalar_t>(),
           mean.data_ptr<accscalar_t>(),
           inv_std.data_ptr<accscalar_t>(),
           weight.data_ptr<accscalar_t>(),
@@ -1766,6 +1800,7 @@ at::Tensor bnaddrelu_backward_elemt_channels_last_cuda_template(
           <<<grid, block, 0, stream>>>(
           grad_output.data_ptr<scalar_t>(),
           input.data_ptr<scalar_t>(),
+          output.data_ptr<scalar_t>(),
           mean.data_ptr<accscalar_t>(),
           inv_std.data_ptr<accscalar_t>(),
           weight.defined() ? weight.data_ptr<scalar_t>() : nullptr,
