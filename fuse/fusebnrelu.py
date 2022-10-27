@@ -145,7 +145,7 @@ class _FuseBatchNormRelu(Function):
         #save_invstd = forward_data[2]
         ctx.eps = eps
         ctx.bn_training = bn_training
-        ctx.save_for_backward(input, forward_data[0], weight, forward_data[1], forward_data[2], running_mean, running_var)
+        ctx.save_for_backward(input, forward_data[1], weight, forward_data[2], forward_data[3], running_mean, running_var)
         return forward_data[0]
     
     @staticmethod

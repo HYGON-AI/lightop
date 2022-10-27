@@ -8,7 +8,7 @@ def test_1d():
   torch.backends.cudnn.enabled=False
   x=torch.arange(48, dtype=torch.float32).reshape((2,24)).cuda().requires_grad_()
   y=torch.arange(48, dtype=torch.float32).reshape((2,24)).cuda().requires_grad_()
-  bn = torch.nn.BatchNorm1d(24).cuda()
+  bn = torch.nn.BatchNorm1d(x.size(1)).cuda()
   out = bn(x)
   out = torch.add(out, y)
   relu = torch.nn.ReLU().cuda()
@@ -23,7 +23,7 @@ def test_1d():
 
   fuse_x=torch.arange(48, dtype=torch.float32).reshape((2,24)).cuda().requires_grad_()
   fuse_y=torch.arange(48, dtype=torch.float32).reshape((2,24)).cuda().requires_grad_()
-  fuse_bn = FuseBatchNormAddRelu1d(24).cuda()
+  fuse_bn = FuseBatchNormAddRelu1d(fuse_x.size(1)).cuda()
   fuse_out=fuse_bn(fuse_x, fuse_y)
   fuse_out = torch.add(fuse_out, 10)
   fuse_out.backward(fuse_out)
@@ -43,7 +43,7 @@ def test_2d():
   torch.backends.cudnn.enabled=False
   x=torch.arange(384, dtype=torch.float32).reshape((2,3,8,8)).cuda().requires_grad_()
   y=torch.arange(384, dtype=torch.float32).reshape((2,3,8,8)).cuda().requires_grad_()
-  bn = torch.nn.BatchNorm2d(3).cuda()
+  bn = torch.nn.BatchNorm2d(x.size(1)).cuda()
   out = bn(x)
   out = torch.add(out, y)
   relu = torch.nn.ReLU().cuda()
@@ -58,7 +58,7 @@ def test_2d():
   
   fuse_x=torch.arange(384, dtype=torch.float32).reshape((2,3,8,8)).cuda().requires_grad_()
   fuse_y=torch.arange(384, dtype=torch.float32).reshape((2,3,8,8)).cuda().requires_grad_()
-  fuse_bn = FuseBatchNormAddRelu2d(3).cuda()
+  fuse_bn = FuseBatchNormAddRelu2d(fuse_x.size(1)).cuda()
   fuse_out=fuse_bn(fuse_x, fuse_y)
   fuse_out = torch.add(fuse_out, 10)
   fuse_out.backward(fuse_out) 
@@ -77,7 +77,7 @@ def test_3d():
   torch.backends.cudnn.enabled=False
   x=torch.arange(1152, dtype=torch.float32).reshape((2,3,3,8,8)).cuda().requires_grad_()
   y=torch.arange(1152, dtype=torch.float32).reshape((2,3,3,8,8)).cuda().requires_grad_()
-  bn = torch.nn.BatchNorm3d(3).cuda()
+  bn = torch.nn.BatchNorm3d(x.size(1)).cuda()
   out = bn(x)
   out = torch.add(out, y)
   relu = torch.nn.ReLU().cuda()
@@ -92,7 +92,7 @@ def test_3d():
 
   fuse_x=torch.arange(1152, dtype=torch.float32).reshape((2,3,3,8,8)).cuda().requires_grad_()
   fuse_y=torch.arange(1152, dtype=torch.float32).reshape((2,3,3,8,8)).cuda().requires_grad_()
-  fuse_bn = FuseBatchNormAddRelu3d(3).cuda()
+  fuse_bn = FuseBatchNormAddRelu3d(fuse_x.size(1)).cuda()
   fuse_out=fuse_bn(fuse_x, fuse_y)
   fuse_out = torch.add(fuse_out, 10)
   fuse_out.backward(fuse_out)
