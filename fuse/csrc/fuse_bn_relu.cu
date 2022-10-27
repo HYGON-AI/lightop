@@ -68,23 +68,24 @@ inline Impl bnrelu_choose_impl(const Tensor& in1, const Tensor& in2) {
 }
 
 void bnrelu_elementwise(
-    const Tensor& out, const Tensor& self, const c10::optional<Tensor>& weight_opt,
+    const Tensor& out, const Tensor& out_relu, const Tensor& self, const c10::optional<Tensor>& weight_opt,
     const c10::optional<Tensor>& bias_opt, const Tensor& mean_, const Tensor& invstd_) {
   switch (bnrelu_choose_impl(self)) {
   case Impl::Contiguous: {
     c10::MaybeOwned<Tensor> weight = at::borrow_from_optional_tensor(weight_opt);
     c10::MaybeOwned<Tensor> bias = at::borrow_from_optional_tensor(bias_opt);
     resize_output(out, self.sizes());
+    resize_output(out_relu, self.sizes());
     AT_DISPATCH_FLOATING_TYPES_AND2(kBFloat16, kHalf, self.scalar_type(),
                                     "bnrelu_elementwise_cuda", [&] {
       using accscalar_t = at::acc_type<scalar_t, true>;
       const bool mixed_type = is_mixed_type(self, *weight, *bias);
       if (mixed_type) {
         bnrelu_elemt_cuda_template<scalar_t, accscalar_t, int32_t>(
-            out, self, *weight, *bias, mean_, invstd_);
+            out, out_relu, self, *weight, *bias, mean_, invstd_);
       } else {
         bnrelu_elemt_cuda_template<scalar_t, scalar_t, int32_t>(
-            out, self, *weight, *bias, mean_, invstd_);
+            out, out_relu, self, *weight, *bias, mean_, invstd_);
       }
     });
     return;
@@ -102,7 +103,7 @@ void bnrelu_elementwise(
         (!mean_.defined() || mean_.is_contiguous()) &&
         (!invstd_.defined() || invstd_.is_contiguous())) {
       bnrelu_elemt_channels_last_cuda_template(
-          out, self, *weight, *bias, mean_, invstd_);
+          out, out_relu, self, *weight, *bias, mean_, invstd_);
       return;
     }
     C10_FALLTHROUGH;
@@ -405,7 +406,7 @@ void bnrelu_calc_invstd(const Tensor& out_invstd, const Tensor& running_var, dou
 }
 }
 
-std::tuple<Tensor&, Tensor&, Tensor&> bnrelu_cuda_out(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon, Tensor& output, Tensor& save_mean, Tensor& save_invstd) {
+std::tuple<Tensor&, Tensor&, Tensor&, Tensor&> bnrelu_cuda_out(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon, Tensor& output, Tensor& output_relu, Tensor& save_mean, Tensor& save_invstd) {
   const bool has_running_mean = (running_mean_opt.has_value() && running_mean_opt->defined());
   const bool has_running_var = (running_var_opt.has_value() && running_var_opt->defined());
   TORCH_CHECK(has_running_mean == has_running_var);
@@ -427,17 +428,19 @@ std::tuple<Tensor&, Tensor&, Tensor&> bnrelu_cuda_out(const Tensor& self, const 
     bnrelu_calc_invstd(save_invstd, running_var_opt.value(), epsilon);
   }
 
-  bnrelu_elementwise(output, self, weight_opt, bias_opt, save_mean, save_invstd);
-  return std::tuple<Tensor&, Tensor&, Tensor&>(output, save_mean, save_invstd);
+  bnrelu_elementwise(output, output_relu, self, weight_opt, bias_opt, save_mean, save_invstd);
+  return std::tuple<Tensor&, Tensor&, Tensor&, Tensor&>(output, output_relu, save_mean, save_invstd);
 }
 
-std::tuple<Tensor, Tensor, Tensor> bnrelu_cuda(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon) {
+std::tuple<Tensor, Tensor, Tensor, Tensor> bnrelu_cuda(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon) {
   auto output = at::empty_like(self);
   int64_t n_input = self.size(1);
   auto options = self.options().dtype(
       at::toAccumulateType(self.scalar_type(), /*is_cuda=*/true));
   auto save_mean = at::empty({n_input}, options);
   auto save_invstd = at::empty({n_input}, options);
+
+  auto output_relu = at::empty_like(self, self.options().dtype(kBool));
 
   at::native::bnrelu_cuda_out(
       self,
@@ -449,9 +452,10 @@ std::tuple<Tensor, Tensor, Tensor> bnrelu_cuda(const Tensor& self, const c10::op
       momentum,
       epsilon,
       output,
+      output_relu,
       save_mean,
       save_invstd);
-  return std::make_tuple(output, save_mean, save_invstd);
+  return std::make_tuple(output, output_relu, save_mean, save_invstd);
 }
 
 std::tuple<Tensor, Tensor, Tensor> bnrelu_backward_cuda(const Tensor& grad_out, const Tensor& input, const Tensor& output, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, const c10::optional<Tensor>& save_mean_opt, const c10::optional<Tensor>& save_invstd_opt, bool train, double epsilon, std::array<bool,3> grad_input_mask) {
@@ -558,7 +562,7 @@ std::tuple<Tensor, Tensor> bnrelu_stats_cuda(const Tensor& self, double epsilon)
   });
   return std::tuple<Tensor, Tensor>(save_mean, save_invstd);
 }
-
+#if 0
 Tensor bnrelu_elemt_cuda(
     const Tensor& self, const c10::optional<Tensor>& weight_opt,
     const c10::optional<Tensor>& bias_opt, const Tensor& mean,
@@ -575,7 +579,7 @@ Tensor& bnrelu_elemt_cuda_out(const Tensor& self, const c10::optional<Tensor>& w
   bnrelu_elementwise(output, self, weight_opt, bias_opt, mean, invstd);
   return output;
 }
-
+#endif
 // accepting input(self) here to determine template data types, since running_mean/running_var are optional
 std::tuple<Tensor, Tensor> bnrelu_gather_stats_cuda(const Tensor& self, const Tensor& mean, const Tensor& invstd, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, double momentum, double epsilon, int64_t count) {
   // See [Note: hacky wrapper removal for optional tensor]
