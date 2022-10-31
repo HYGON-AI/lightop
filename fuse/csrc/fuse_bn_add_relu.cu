@@ -8,7 +8,7 @@
 #include <torch/extension.h>
 namespace at { namespace native {
 
-std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_backward_reduce_cuda(const Tensor& grad_output, const Tensor& input, const Tensor& mean, const Tensor& invstd, const c10::optional<Tensor>& weight_opt, bool input_g, bool weight_g, bool bias_g);
+std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_backward_reduce_cuda(const Tensor& grad_output, const Tensor& input, const Tensor& output, const Tensor& mean, const Tensor& invstd, const c10::optional<Tensor>& weight_opt, bool input_g, bool weight_g, bool bias_g);
 std::tuple<Tensor, Tensor> bnaddrelu_gather_stats_with_counts_cuda(
     const Tensor& self, const Tensor& mean, const Tensor& invstd, const c10::optional<Tensor>& running_mean_opt /* optional */, const c10::optional<Tensor>& running_var_opt /* optional */, double momentum, double epsilon, const Tensor& counts);
 
@@ -68,23 +68,24 @@ inline Impl bnaddrelu_choose_impl(const Tensor& in1, const Tensor& in2) {
 }
 
 void bnaddrelu_elementwise(
-    const Tensor& out, const Tensor& self, const c10::optional<Tensor>& weight_opt,
+    const Tensor& out, const Tensor& out_relu, const Tensor& self, const c10::optional<Tensor>& weight_opt,
     const c10::optional<Tensor>& bias_opt, const Tensor& mean_, const Tensor& invstd_, const Tensor& add) {
   switch (bnaddrelu_choose_impl(self)) {
   case Impl::Contiguous: {
     c10::MaybeOwned<Tensor> weight = at::borrow_from_optional_tensor(weight_opt);
     c10::MaybeOwned<Tensor> bias = at::borrow_from_optional_tensor(bias_opt);
     resize_output(out, self.sizes());
+    resize_output(out_relu, self.sizes());
     AT_DISPATCH_FLOATING_TYPES_AND2(kBFloat16, kHalf, self.scalar_type(),
                                     "bnaddrelu_elementwise_cuda", [&] {
       using accscalar_t = at::acc_type<scalar_t, true>;
       const bool mixed_type = is_mixed_type(self, *weight, *bias);
       if (mixed_type) {
         bnaddrelu_elemt_cuda_template<scalar_t, accscalar_t, int32_t>(
-            out, self, *weight, *bias, mean_, invstd_, add);
+            out, out_relu, self, *weight, *bias, mean_, invstd_, add);
       } else {
         bnaddrelu_elemt_cuda_template<scalar_t, scalar_t, int32_t>(
-            out, self, *weight, *bias, mean_, invstd_, add);
+            out, out_relu, self, *weight, *bias, mean_, invstd_, add);
       }
     });
     return;
@@ -102,7 +103,7 @@ void bnaddrelu_elementwise(
         (!mean_.defined() || mean_.is_contiguous()) &&
         (!invstd_.defined() || invstd_.is_contiguous())) {
       bnaddrelu_elemt_channels_last_cuda_template(
-          out, self, *weight, *bias, mean_, invstd_, add);
+          out, out_relu, self, *weight, *bias, mean_, invstd_, add);
       return;
     }
     C10_FALLTHROUGH;
@@ -151,7 +152,7 @@ void bnaddrelu_elementwise(
 }
 
 Tensor bnaddrelu_elementwise_backward_train(
-    const Tensor& grad_out, const Tensor& input, const Tensor& mean, const Tensor& invstd,
+    const Tensor& grad_out, const Tensor& input, const Tensor& output, const Tensor& mean, const Tensor& invstd,
     const Tensor& weight, const Tensor& sum_dy, const Tensor& sum_dy_xmu) {
   switch (bnaddrelu_choose_impl(input, grad_out)) {
   case Impl::Contiguous: {
@@ -161,10 +162,10 @@ Tensor bnaddrelu_elementwise_backward_train(
       const bool mixed_type = is_mixed_type(input, weight);
       if (mixed_type) {
         return bnaddrelu_backward_elemt_cuda_template<scalar_t, accscalar_t, int32_t>(
-            grad_out, input, mean, invstd, weight, sum_dy, sum_dy_xmu);
+            grad_out, input, output, mean, invstd, weight, sum_dy, sum_dy_xmu);
       } else {
         return bnaddrelu_backward_elemt_cuda_template<scalar_t, scalar_t, int32_t>(
-            grad_out, input, mean, invstd, weight, sum_dy, sum_dy_xmu);
+            grad_out, input, output, mean, invstd, weight, sum_dy, sum_dy_xmu);
       }
     });
   }
@@ -172,7 +173,7 @@ Tensor bnaddrelu_elementwise_backward_train(
     if ((!weight.defined() || weight.is_contiguous()) &&
         mean.is_contiguous() && invstd.is_contiguous()) {
       return bnaddrelu_backward_elemt_channels_last_cuda_template(
-          grad_out, input, mean, invstd, weight, sum_dy, sum_dy_xmu);
+          grad_out, input, output, mean, invstd, weight, sum_dy, sum_dy_xmu);
     }
     C10_FALLTHROUGH;
   }
@@ -226,7 +227,7 @@ Tensor bnaddrelu_elementwise_backward_train(
 }
 
 Tensor bnaddrelu_elementwise_backward_eval(
-    const Tensor& grad_out, const Tensor& input,
+    const Tensor& grad_out, const Tensor& input, const Tensor& output,
     const Tensor& invstd, const Tensor& weight) {
   const auto ndim = input.dim();
   DimVector shape(ndim, 1), strides(ndim, 0);
@@ -405,7 +406,7 @@ void bnaddrelu_calc_invstd(const Tensor& out_invstd, const Tensor& running_var, 
 }
 }
 
-std::tuple<Tensor&, Tensor&, Tensor&> bnaddrelu_cuda_out(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon, Tensor& output, Tensor& save_mean, Tensor& save_invstd, const Tensor& add) {
+std::tuple<Tensor&, Tensor&, Tensor&, Tensor&> bnaddrelu_cuda_out(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon, Tensor& output, Tensor& output_relu, Tensor& save_mean, Tensor& save_invstd, const Tensor& add) {
   const bool has_running_mean = (running_mean_opt.has_value() && running_mean_opt->defined());
   const bool has_running_var = (running_var_opt.has_value() && running_var_opt->defined());
   TORCH_CHECK(has_running_mean == has_running_var);
@@ -427,17 +428,19 @@ std::tuple<Tensor&, Tensor&, Tensor&> bnaddrelu_cuda_out(const Tensor& self, con
     bnaddrelu_calc_invstd(save_invstd, running_var_opt.value(), epsilon);
   }
 
-  bnaddrelu_elementwise(output, self, weight_opt, bias_opt, save_mean, save_invstd, add);
-  return std::tuple<Tensor&, Tensor&, Tensor&>(output, save_mean, save_invstd);
+  bnaddrelu_elementwise(output, output_relu, self, weight_opt, bias_opt, save_mean, save_invstd, add);
+  return std::tuple<Tensor&, Tensor&, Tensor&, Tensor&>(output, output_relu, save_mean, save_invstd);
 }
 
-std::tuple<Tensor, Tensor, Tensor> bnaddrelu_cuda(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon, const Tensor& add) {
+std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_cuda(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon, const Tensor& add) {
   auto output = at::empty_like(self);
   int64_t n_input = self.size(1);
   auto options = self.options().dtype(
       at::toAccumulateType(self.scalar_type(), /*is_cuda=*/true));
   auto save_mean = at::empty({n_input}, options);
   auto save_invstd = at::empty({n_input}, options);
+
+  auto output_relu = at::empty_like(self, self.options().dtype(kBool));
 
   at::native::bnaddrelu_cuda_out(
       self,
@@ -449,13 +452,14 @@ std::tuple<Tensor, Tensor, Tensor> bnaddrelu_cuda(const Tensor& self, const c10:
       momentum,
       epsilon,
       output,
+      output_relu,
       save_mean,
       save_invstd,
       add);
-  return std::make_tuple(output, save_mean, save_invstd);
+  return std::make_tuple(output, output_relu, save_mean, save_invstd);
 }
 
-std::tuple<Tensor, Tensor, Tensor> bnaddrelu_backward_cuda(const Tensor& grad_out, const Tensor& input, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, const c10::optional<Tensor>& save_mean_opt, const c10::optional<Tensor>& save_invstd_opt, bool train, double epsilon, std::array<bool,3> grad_input_mask) {
+std::tuple<Tensor, Tensor, Tensor> bnaddrelu_backward_cuda(const Tensor& grad_out, const Tensor& input, const Tensor& output, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, const c10::optional<Tensor>& save_mean_opt, const c10::optional<Tensor>& save_invstd_opt, bool train, double epsilon, std::array<bool,3> grad_input_mask) {
   // See [Note: hacky wrapper removal for optional tensor]
   c10::MaybeOwned<Tensor> weight = at::borrow_from_optional_tensor(weight_opt);
   c10::MaybeOwned<Tensor> save_mean = at::borrow_from_optional_tensor(save_mean_opt);
@@ -476,11 +480,11 @@ std::tuple<Tensor, Tensor, Tensor> bnaddrelu_backward_cuda(const Tensor& grad_ou
       const bool mixed_type = is_mixed_type(input, *weight, *running_mean, *running_var);
       if (mixed_type) {
           return bnaddrelu_backward_cuda_template<scalar_t, accscalar_t, int32_t>(
-              grad_out, input, *weight, *running_mean, *running_var,
+              grad_out, input, output, *weight, *running_mean, *running_var,
               *save_mean, *save_invstd, train, epsilon, grad_input_mask);
       } else {
           return bnaddrelu_backward_cuda_template<scalar_t, scalar_t, int32_t>(
-              grad_out, input, *weight, *running_mean, *running_var,
+              grad_out, input, output, *weight, *running_mean, *running_var,
               *save_mean, *save_invstd, train, epsilon, grad_input_mask);
       }
     });
@@ -515,7 +519,7 @@ std::tuple<Tensor, Tensor, Tensor> bnaddrelu_backward_cuda(const Tensor& grad_ou
   if (needs_reduction) {
     std::tie(sum_dy, sum_dy_xmu, grad_weight, grad_bias) =
         bnaddrelu_backward_reduce_cuda(
-            grad_out, input, mean, invstd, *weight,
+            grad_out, input, output, mean, invstd, *weight,
             grad_input_mask[0], grad_input_mask[1], grad_input_mask[2]);
   }
 
@@ -524,10 +528,10 @@ std::tuple<Tensor, Tensor, Tensor> bnaddrelu_backward_cuda(const Tensor& grad_ou
     if (train) {
       // NOTE: sum_dy and sum_dy_xmy are defined, as train implies needs_reduction
       grad_input = bnaddrelu_elementwise_backward_train(
-          grad_out, input, mean, invstd, *weight, sum_dy, sum_dy_xmu);
+          grad_out, input, output, mean, invstd, *weight, sum_dy, sum_dy_xmu);
     } else {
       grad_input = bnaddrelu_elementwise_backward_eval(
-          grad_out, input, invstd, *weight);
+          grad_out, input, output, invstd, *weight);
     }
   }
 
@@ -610,7 +614,7 @@ std::tuple<Tensor, Tensor> bnaddrelu_gather_stats_with_counts_cuda(
   });
 }
 
-std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_backward_reduce_cuda(const Tensor& grad_output, const Tensor& input, const Tensor& mean, const Tensor& invstd, const c10::optional<Tensor>& weight_opt, bool input_g, bool weight_g, bool bias_g) {
+std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_backward_reduce_cuda(const Tensor& grad_output, const Tensor& input,const Tensor& output,  const Tensor& mean, const Tensor& invstd, const c10::optional<Tensor>& weight_opt, bool input_g, bool weight_g, bool bias_g) {
   // See [Note: hacky wrapper removal for optional tensor]
   c10::MaybeOwned<Tensor> weight_maybe_owned = at::borrow_from_optional_tensor(weight_opt);
   const Tensor& weight = *weight_maybe_owned;
@@ -621,7 +625,7 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_backward_reduce_cuda(const 
       (!weight.defined() || weight.is_contiguous()) &&
       mean.is_contiguous() && invstd.is_contiguous()){
     return bnaddrelu_backward_reduce_cuda_channels_last_template(
-        grad_output, input, mean, invstd, weight, input_g, weight_g, bias_g);
+        grad_output, input, output, mean, invstd, weight, input_g, weight_g, bias_g);
   }
 
   return AT_DISPATCH_FLOATING_TYPES_AND2(kHalf, kBFloat16, grad_output.scalar_type(), "bnaddrelu_backward_reduce", [&] {
@@ -633,21 +637,21 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_backward_reduce_cuda(const 
 
     if (cuda::detail::canUse32BitIndexMath(grad_output)) {
       if (mixed_type) {
-        return bnaddrelu_backward_reduce_cuda_template<scalar_t, accscalar_t, int32_t>(grad_output, input, mean, invstd, weight, input_g, weight_g, bias_g);
+        return bnaddrelu_backward_reduce_cuda_template<scalar_t, accscalar_t, int32_t>(grad_output, input, output, mean, invstd, weight, input_g, weight_g, bias_g);
       } else {
-        return bnaddrelu_backward_reduce_cuda_template<scalar_t, scalar_t, int32_t>(grad_output, input, mean, invstd, weight, input_g, weight_g, bias_g);
+        return bnaddrelu_backward_reduce_cuda_template<scalar_t, scalar_t, int32_t>(grad_output, input, output, mean, invstd, weight, input_g, weight_g, bias_g);
       }
     } else {
       if (mixed_type) {
-        return bnaddrelu_backward_reduce_cuda_template<scalar_t, accscalar_t, int64_t>(grad_output, input, mean, invstd, weight, input_g, weight_g, bias_g);
+        return bnaddrelu_backward_reduce_cuda_template<scalar_t, accscalar_t, int64_t>(grad_output, input, output, mean, invstd, weight, input_g, weight_g, bias_g);
       } else {
-        return bnaddrelu_backward_reduce_cuda_template<scalar_t, scalar_t, int64_t>(grad_output, input, mean, invstd, weight, input_g, weight_g, bias_g);
+        return bnaddrelu_backward_reduce_cuda_template<scalar_t, scalar_t, int64_t>(grad_output, input, output, mean, invstd, weight, input_g, weight_g, bias_g);
       }
     }
   });
 }
 
-Tensor bnaddrelu_backward_elemt_cuda(const Tensor& self, const Tensor& input, const Tensor& mean, const Tensor& invstd, const c10::optional<Tensor>& weight_opt, const Tensor& sum_dy, const Tensor& sum_dy_xmu, const Tensor& count) {
+Tensor bnaddrelu_backward_elemt_cuda(const Tensor& self, const Tensor& input, const Tensor& output, const Tensor& mean, const Tensor& invstd, const c10::optional<Tensor>& weight_opt, const Tensor& sum_dy, const Tensor& sum_dy_xmu, const Tensor& count) {
   // See [Note: hacky wrapper removal for optional tensor]
   c10::MaybeOwned<Tensor> weight_maybe_owned = at::borrow_from_optional_tensor(weight_opt);
   const Tensor& weight = *weight_maybe_owned;
@@ -655,7 +659,7 @@ Tensor bnaddrelu_backward_elemt_cuda(const Tensor& self, const Tensor& input, co
   if (at::cuda::detail::canUse32BitIndexMath(self) &&
       bnaddrelu_use_channels_last_kernels(self) &&
       bnaddrelu_use_channels_last_kernels(input))  {
-    return bnaddrelu_backward_elemt_channels_last_cuda_template(self, input, mean, invstd, weight, sum_dy, sum_dy_xmu, count);
+    return bnaddrelu_backward_elemt_channels_last_cuda_template(self, input, output, mean, invstd, weight, sum_dy, sum_dy_xmu, count);
   }
 
   return AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, self.scalar_type(), "bnaddrelu_backward_elemt", [&] {
@@ -667,15 +671,15 @@ Tensor bnaddrelu_backward_elemt_cuda(const Tensor& self, const Tensor& input, co
     using accscalar_t = at::acc_type<scalar_t, true>;
     if (cuda::detail::canUse32BitIndexMath(self)) {
       if (is_half_float || is_bfloat16_float) {
-        return bnaddrelu_backward_elemt_cuda_template<scalar_t, accscalar_t, int32_t>(self, input, mean, invstd, weight, sum_dy, sum_dy_xmu, count);
+        return bnaddrelu_backward_elemt_cuda_template<scalar_t, accscalar_t, int32_t>(self, input, output, mean, invstd, weight, sum_dy, sum_dy_xmu, count);
       } else {
-        return bnaddrelu_backward_elemt_cuda_template<scalar_t, scalar_t, int32_t>(self, input, mean, invstd, weight, sum_dy, sum_dy_xmu, count);
+        return bnaddrelu_backward_elemt_cuda_template<scalar_t, scalar_t, int32_t>(self, input, output, mean, invstd, weight, sum_dy, sum_dy_xmu, count);
       }
     } else {
       if (is_half_float || is_bfloat16_float) {
-        return bnaddrelu_backward_elemt_cuda_template<scalar_t, accscalar_t, int64_t>(self, input, mean, invstd, weight, sum_dy, sum_dy_xmu, count);
+        return bnaddrelu_backward_elemt_cuda_template<scalar_t, accscalar_t, int64_t>(self, input, output, mean, invstd, weight, sum_dy, sum_dy_xmu, count);
       } else {
-        return bnaddrelu_backward_elemt_cuda_template<scalar_t, scalar_t, int64_t>(self, input, mean, invstd, weight, sum_dy, sum_dy_xmu, count);
+        return bnaddrelu_backward_elemt_cuda_template<scalar_t, scalar_t, int64_t>(self, input, output, mean, invstd, weight, sum_dy, sum_dy_xmu, count);
       }
     }
   });
