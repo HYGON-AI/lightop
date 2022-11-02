@@ -256,7 +256,6 @@ class BuildReleaseExtension(BuildExtension):
             else:
                 extra_cc_cflags.remove('-g')
                 extra_cc_cflags.remove('-Wall')
-                extra_cc_cflags
                 print("release mode")
             with_cuda = any(map(_is_cuda_file, sources))
             if isinstance(extra_postargs, dict):
@@ -300,7 +299,7 @@ def get_extensions():
     extensions = []
     include_dirs = []
     define_macros = []
-    extra_compile_args = {'cxx': ['-O3'], 'nvcc': ['-O3']}
+    extra_compile_args = {'cxx': ['-O3']}
     op_files = glob.glob('./fuse/csrc/*.cu') + glob.glob('./fuse/csrc/*.cpp')
     extension = CUDAExtension
     include_dirs.append(os.path.abspath('./fuse/csrc/'))
