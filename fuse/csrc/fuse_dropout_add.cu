@@ -174,7 +174,8 @@ std::tuple<Tensor,Tensor> fused_add_dropout_backward(Tensor grad, Tensor mask, d
     Tensor ret=grad * (mask.type_as(grad) * (1. / p));
     return std::tuple<Tensor,Tensor>(ret,grad);
   } else {
-    Tensor ret=masked_scale_cuda(grad, mask, 1. / p);
+    auto pgrad = grad.expect_contiguous();
+    Tensor ret=masked_scale_cuda(*pgrad, mask, 1. / p);
     return std::tuple<Tensor,Tensor>(ret,grad);
   }
 }
