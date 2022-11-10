@@ -2,7 +2,7 @@ import torch
 import time
 import torch.nn.functional as F
 from torch.autograd import Variable
-from fuse.fuseadddropout import AddDropout
+from lightop.fuseadddropout import AddDropout
 
 device = torch.device('cuda')
 x0=torch.rand([128, 50, 768]).cuda()
