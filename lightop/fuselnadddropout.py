@@ -1,11 +1,11 @@
 from torch.autograd import Function
 import torch
-import fuseop
+import Lightop
 
 class LnAddDropoutFunction(Function):
     @staticmethod
     def forward(ctx, x, y, weight, bias, eps, rate, train):
-        ret,ret2,mean,rstd = fuseop.lnAddDropoutForward(x, y, weight,bias,eps,rate, train)
+        ret,ret2,mean,rstd = Lightop.lnAddDropoutForward(x, y, weight,bias,eps,rate, train)
         #rett,meant,rstdt =torch.native_layer_norm(ret2,tuple((768,)),weight,bias,eps)
         ctx.save_for_backward(ret2, mean,rstd,weight)
         return ret
@@ -13,7 +13,7 @@ class LnAddDropoutFunction(Function):
     @staticmethod
     def backward(ctx, gradOutput):
         X, mean, rstd, gamma = ctx.saved_tensors
-        dx1,dx2,dgamma,dbeta = fuseop.lnAddDropoutBackward(gradOutput,X,mean,rstd,gamma)
+        dx1,dx2,dgamma,dbeta = Lightop.lnAddDropoutBackward(gradOutput,X,mean,rstd,gamma)
         return  dx1, dx2, dgamma, dbeta, None, None, None
 
 class LnAddDropout(torch.nn.Module):

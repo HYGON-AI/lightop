@@ -1,7 +1,7 @@
 import torch
 import time
 import torch.nn.functional as F
-from fuse.fuselnadddropout import LnAddDropout
+from lightop.fuselnadddropout import LnAddDropout
 
 cols=768
 seqs=6

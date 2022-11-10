@@ -300,11 +300,11 @@ def get_extensions():
     include_dirs = []
     define_macros = []
     extra_compile_args = {'cxx': ['-O3']}
-    op_files = glob.glob('./fuse/csrc/*.cu') + glob.glob('./fuse/csrc/*.cpp')
+    op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp')
     extension = CUDAExtension
-    include_dirs.append(os.path.abspath('./fuse/csrc/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/'))
     ext_ops = extension(
-        name="fuseop",
+        name="Lightop",
         sources=op_files,
         include_dirs=include_dirs,
         define_macros=define_macros,
@@ -314,14 +314,14 @@ def get_extensions():
 
 
 setup(
-    name='fuse',
+    name='Lightop',
     version=get_version(),
-    description='Torch fuseop Computer Vision Foundation',
-    keywords='computer vision',
+    description='Torch Fast Operator Foundation',
+    keywords='CV, NLP',
     packages=find_packages(),
     include_package_data=False,
     package_data={
-        'fuse': [
+        'lightop': [
             "csrc/*.cuh",
             "csrc/*.cu",
             "csrc/*.hip",

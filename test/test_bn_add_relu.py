@@ -1,8 +1,8 @@
 import torch
 
-from fuse.fusebnaddrelu import FuseBatchNormAddRelu1d
-from fuse.fusebnaddrelu import FuseBatchNormAddRelu2d
-from fuse.fusebnaddrelu import FuseBatchNormAddRelu3d
+from lightop.fusebnaddrelu import FuseBatchNormAddRelu1d
+from lightop.fusebnaddrelu import FuseBatchNormAddRelu2d
+from lightop.fusebnaddrelu import FuseBatchNormAddRelu3d
 
 def test_1d():
   torch.backends.cudnn.enabled=False

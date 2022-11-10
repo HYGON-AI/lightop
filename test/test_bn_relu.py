@@ -1,8 +1,8 @@
 import torch
 
-from fuse.fusebnrelu import FuseBatchNormRelu1d
-from fuse.fusebnrelu import FuseBatchNormRelu2d
-from fuse.fusebnrelu import FuseBatchNormRelu3d
+from lightop.fusebnrelu import FuseBatchNormRelu1d
+from lightop.fusebnrelu import FuseBatchNormRelu2d
+from lightop.fusebnrelu import FuseBatchNormRelu3d
 def test_1d():
   torch.backends.cudnn.enabled=False
   x=torch.arange(48,dtype=torch.float32).reshape((2,24)).cuda().requires_grad_()
