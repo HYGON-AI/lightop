@@ -304,7 +304,7 @@ __global__ void bnrelu_collect_statistics_kernel(
     const stat_accscalar_t epsilon,
     const stat_accscalar_t momentum,
     GenericPackedTensorAccessor<stat_accscalar_t, 1, RestrictPtrTraits, index_t> save_mean,
-    GenericPackedTensorAccessor<stat_accscalar_t, 1, RestrictPtrTraits, index_t> save_transformed_var) {
+    GenericPackedTensorAccessor<stat_accscalar_t, 1, RestrictPtrTraits, index_t> save_transformed_var) __attribute__((amdgpu_flat_work_group_size(1,1024))){
 
   __shared__ int shared_n[2 * 2 * C10_WARP_SIZE + C10_WARP_SIZE];
 
@@ -386,6 +386,31 @@ __global__ void bnrelu_collect_statistics_kernel(
 }
 
 template <typename input_scalar_t, typename stat_scalar_t, typename stat_accscalar_t, typename index_t>
+__global__ void batch_norm_backward_res(
+    const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> input,
+    const GenericPackedTensorAccessor<bool, 3, DefaultPtrTraits, index_t> output,
+    const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> grad_output,
+    const GenericPackedTensorAccessor<stat_accscalar_t, 1, DefaultPtrTraits, index_t> save_mean,
+    const GenericPackedTensorAccessor<stat_scalar_t, 1, DefaultPtrTraits, index_t> running_mean,
+    bool train,
+    GenericPackedTensorAccessor<stat_scalar_t, 1, DefaultPtrTraits, index_t> grad_res_v1,
+    GenericPackedTensorAccessor<stat_scalar_t, 1, DefaultPtrTraits, index_t> grad_res_v2) __attribute__((amdgpu_flat_work_group_size(1,1024))) {
+
+  index_t plane = blockIdx.x;
+  stat_accscalar_t mean;
+  if (train) {
+    mean = save_mean[plane];
+  } else {
+    mean = static_cast<stat_accscalar_t>(running_mean[plane]);
+  }
+  GradOp<input_scalar_t, stat_accscalar_t, GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t>,GenericPackedTensorAccessor<bool, 3, DefaultPtrTraits, index_t>> g(mean, input, grad_output, output);
+  auto res = reduce<Float2<input_scalar_t, stat_accscalar_t>>(g, grad_output, plane);
+
+  grad_res_v1[plane] = static_cast<stat_accscalar_t>(res.v1);
+  grad_res_v2[plane] = static_cast<stat_accscalar_t>(res.v2);
+}
+
+template <typename input_scalar_t, typename stat_scalar_t, typename stat_accscalar_t, typename index_t>
 __global__ void bnrelu_backward_kernel(
     const GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t> input,
     const GenericPackedTensorAccessor<bool, 3, DefaultPtrTraits, index_t> output,
@@ -399,7 +424,9 @@ __global__ void bnrelu_backward_kernel(
     const GenericPackedTensorAccessor<stat_accscalar_t, 1, DefaultPtrTraits, index_t> save_mean,
     const GenericPackedTensorAccessor<stat_accscalar_t, 1, DefaultPtrTraits, index_t> save_invstd,
     bool train,
-    stat_accscalar_t epsilon) {
+    stat_accscalar_t epsilon,
+    const GenericPackedTensorAccessor<stat_scalar_t, 1, DefaultPtrTraits, index_t> grad_res_v1,
+    const GenericPackedTensorAccessor<stat_scalar_t, 1, DefaultPtrTraits, index_t> grad_res_v2) {
 
   index_t plane = blockIdx.x;
   index_t N = grad_output.size(0) * grad_output.size(2);
@@ -419,34 +446,31 @@ __global__ void bnrelu_backward_kernel(
   // Compute two values across (batch, x/y/z) in one pass:
   // 1. Sum(grad_output)
   // 2. DotProduct(input - mean, grad_output)
-  GradOp<input_scalar_t, stat_accscalar_t, GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t>, GenericPackedTensorAccessor<bool, 3, DefaultPtrTraits, index_t>> g(mean, input, grad_output, output);
-  auto res = reduce<Float2<input_scalar_t, stat_accscalar_t>>(g, grad_output, plane);
+  //GradOp<input_scalar_t, stat_accscalar_t, GenericPackedTensorAccessor<input_scalar_t, 3, DefaultPtrTraits, index_t>, GenericPackedTensorAccessor<bool, 3, DefaultPtrTraits, index_t>> g(mean, input, grad_output, output);
+  //auto res = reduce<Float2<input_scalar_t, stat_accscalar_t>>(g, grad_output, plane);
 
-  stat_accscalar_t grad_output_sum = res.v1;
-  stat_accscalar_t dot_p = res.v2;
+  stat_accscalar_t grad_output_sum = static_cast<stat_accscalar_t>(grad_res_v1[plane]);
+  stat_accscalar_t dot_p = static_cast<stat_accscalar_t>(grad_res_v2[plane]);
 
   stat_accscalar_t grad_mean = grad_output_sum * norm;
   stat_accscalar_t proj_scale = dot_p * norm * invstd * invstd;
   stat_accscalar_t grad_scale = invstd * weight_val;
 
   if (grad_input.data() != NULL) {
-    for (int batch = threadIdx.y; batch < grad_output.size(0); batch += blockDim.y) {
+    //for (int batch = threadIdx.y; batch < grad_output.size(0); batch += blockDim.y) {
+      index_t batch = blockIdx.y;
       for (int x = threadIdx.x; x < grad_output.size(2); x += blockDim.x) {
         bool o = output[batch][plane][x];
-        input_scalar_t go = grad_output[batch][plane][x];
+        input_scalar_t go = grad_output[batch][plane][x] * o;
         if (train) {
           stat_accscalar_t inp = input[batch][plane][x];
           stat_accscalar_t proj = (inp - mean) * proj_scale;
-          if (o) {
-            grad_input[batch][plane][x] = static_cast<input_scalar_t>((go - proj - grad_mean) * grad_scale);
-          } else {
-            grad_input[batch][plane][x] = static_cast<input_scalar_t>((go - proj - grad_mean - go) * grad_scale);
-          }
+          grad_input[batch][plane][x] = static_cast<input_scalar_t>((go - proj - grad_mean) * grad_scale);
         } else {
-          grad_input[batch][plane][x] = static_cast<input_scalar_t>(go * o * grad_scale);
+          grad_input[batch][plane][x] = static_cast<input_scalar_t>(go * grad_scale);
         }
       }
-    }
+    //}
   }
 
   if (grad_weight.size(0) > 0) {
@@ -691,14 +715,38 @@ std::tuple<Tensor, Tensor, Tensor> bnrelu_backward_cuda_template(const Tensor& g
   auto save_invstd = packed_accessor_or_dummy<
       accscalar_t, 1, DefaultPtrTraits, index_t>(save_invstd_, "save_invstd");
 
+  auto stream1 = at::cuda::getCurrentCUDAStream();
+  dim3 blocks_res(input.size(1));
+  dim3 threads1(1024, 1);
+  auto options = input_.options().dtype(
+      at::toAccumulateType(input_.scalar_type(), /*is_cuda=*/true));
+  int64_t n_channels = input_.size(1);
+  Tensor grad_res_v1_;
+  Tensor grad_res_v2_;
+  if (grad_input_mask[1]) {
+      grad_res_v1_ = at::empty_like(weight_, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+      grad_res_v2_ = at::empty_like(weight_, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+  } else {
+      grad_res_v1_ = at::empty_like(running_mean_, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+      grad_res_v2_ = at::empty_like(running_mean_, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+  }
+  auto grad_res_v1 = packed_accessor_or_dummy<
+      stat_scalar_t, 1, DefaultPtrTraits, index_t>(grad_res_v1_, "grad_res_v1");
+  auto grad_res_v2 = packed_accessor_or_dummy<
+      stat_scalar_t, 1, DefaultPtrTraits, index_t>(grad_res_v2_, "grad_res_v2");
+
+  batch_norm_backward_res<input_scalar_t,stat_scalar_t, accscalar_t, index_t> <<<blocks_res, threads1, 0, stream1>>>
+    (input,output,grad_output,save_mean,running_mean,train,grad_res_v1, grad_res_v2);
+
   auto stream = at::cuda::getCurrentCUDAStream();
-  dim3 blocks(input.size(1));
+  //dim3 blocks(input.size(1));
+  dim3 blocks(input.size(1), grad_output.size(0));
   int tf = getNumThreads(input.size(2));
   dim3 threads(tf, std::max<int>(1, MAX_BLOCK_SIZE/tf));
 
   bnrelu_backward_kernel<input_scalar_t, stat_scalar_t, accscalar_t, index_t> <<<blocks, threads, 0, stream>>>
     (input, output, grad_output, grad_input, grad_weight, grad_bias, weight, running_mean, running_var,
-     save_mean, save_invstd, train, epsilon);
+     save_mean, save_invstd, train, epsilon, grad_res_v1, grad_res_v2);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
   return std::make_tuple(grad_input_, grad_weight_, grad_bias_);
@@ -731,7 +779,8 @@ void bnrelu_stats_cuda_template(
 
   dim3 blocks(input.size(1));
   int tf = getNumThreads(input.size(2));
-  dim3 threads(tf, std::max<int>(1, MAX_BLOCK_SIZE/tf));
+  //dim3 threads(tf, std::max<int>(1, MAX_BLOCK_SIZE/tf));
+  dim3 threads(1024, 1);
   bnrelu_collect_statistics_kernel<VarTransform, scalar_t, scalar_t, accscalar_t, index_t> <<<blocks, threads, 0, stream>>>
     (input, epsilon, 0.0, mean, invstd);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
