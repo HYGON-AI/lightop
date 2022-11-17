@@ -304,7 +304,7 @@ def get_extensions():
     extension = CUDAExtension
     include_dirs.append(os.path.abspath('./lightop/csrc/'))
     ext_ops = extension(
-        name="Lightop",
+        name="lightop.op",
         sources=op_files,
         include_dirs=include_dirs,
         define_macros=define_macros,
@@ -314,7 +314,7 @@ def get_extensions():
 
 
 setup(
-    name='Lightop',
+    name='lightop',
     version=get_version(),
     description='Torch Fast Operator Foundation',
     keywords='CV, NLP',
@@ -322,10 +322,6 @@ setup(
     include_package_data=False,
     package_data={
         'lightop': [
-            "csrc/*.cuh",
-            "csrc/*.cu",
-            "csrc/*.hip",
-            "csrc/*.cpp"
         ]
     },
     ext_modules=get_extensions(),
