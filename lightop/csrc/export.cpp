@@ -14,6 +14,8 @@ std::tuple<Tensor,Tensor> fused_add_dropout_forward(const Tensor& self,const Ten
 std::tuple<Tensor,Tensor> fused_add_dropout_backward(Tensor grad, Tensor mask, double p);
 std::tuple<Tensor,Tensor,Tensor,Tensor>fused_ln_add_dropout_forward(const Tensor& self,const Tensor& other,const Tensor&weight,const Tensor& bias, double ln_epsilon, double p, bool training);
 std::tuple<Tensor,Tensor,Tensor,Tensor>fused_ln_add_dropout_backward(const Tensor& grad,const Tensor& X, const Tensor& mean,const Tensor& rstd, const Tensor& gamma);
+Tensor fused_linear_bias_forward(const at::Tensor& self, const at::Tensor& mat1, const at::Tensor& mat2);
+Tensor fused_linear_bias_backward(at::Tensor& self, at::Tensor& result, const at::Tensor& mat1, const at::Tensor& mat2);
 }
 }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -27,4 +29,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("add_dropout_backward", &at::native::fused_add_dropout_backward, "fused_dropout backward");
   m.def("ln_add_dropout_forward", &at::native::fused_ln_add_dropout_forward, "fused_ln_add_dropout forward");
   m.def("ln_add_dropout_backward", &at::native::fused_ln_add_dropout_backward, "fused_ln_add_dropout backward");
+  m.def("linearbias_forward", &at::native::fused_linear_bias_forward, "fused_linearbias forward");
+  m.def("linearbias_backward", &at::native::fused_linear_bias_backward, "fused_linearbias backward");
 }
