@@ -1,19 +1,19 @@
 from torch.autograd import Function
 import torch
-import Lightop
+from lightop import op
 
 
 class AddDropoutFunction(Function):
     @staticmethod
     def forward(ctx, x, y, rate, train):
-        ret,mask = Lightop.addDropoutForward(x, y, rate, train)
+        ret,mask = op.add_dropout_forward(x, y, rate, train)
         ctx.save_for_backward(mask, torch.Tensor([rate]))
         return ret
 
     @staticmethod
     def backward(ctx, gradOutput):
         mask, rate = ctx.saved_tensors
-        gradX, gradY = Lightop.addDropoutBackward(gradOutput, mask, rate.item())
+        gradX, gradY = op.add_dropout_backward(gradOutput, mask, rate.item())
         return gradX, gradY, None, None
 
 

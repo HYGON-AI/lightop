@@ -1,18 +1,18 @@
 from torch.autograd import Function
 import torch
-import Lightop
+from lightop import op
 
 class LayerNormFunction(Function):
     @staticmethod
     def forward(ctx, x, weight, bias, eps):
-        ret,mean,rstd = Lightop.layerNormForward(x, weight,bias,eps)
+        ret,mean,rstd = op.layernorm_forward(x, weight,bias,eps)
         ctx.save_for_backward(x, mean,rstd,weight)
         return ret
 
     @staticmethod
     def backward(ctx, gradOutput):
         X, mean, rstd, gamma = ctx.saved_tensors
-        dx,dgamma,dbeta = Lightop.layerNormBackward(gradOutput,X,mean,rstd,gamma)
+        dx,dgamma,dbeta = op.layernorm_backward(gradOutput,X,mean,rstd,gamma)
         return  dx, dgamma, dbeta, None
 
 class LayerNorm(torch.nn.Module):

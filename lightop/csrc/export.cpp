@@ -21,10 +21,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("bnrelu_backward", &at::native::bnrelu_backward_cuda, "fusebnrelu backward");
   m.def("bnaddrelu_forward", &at::native::bnaddrelu_cuda, "fusebnaddrelu forward");
   m.def("bnaddrelu_backward", &at::native::bnaddrelu_backward_cuda, "fusebnaddrelu backward");
-  m.def("layerNormForward", &at::native::layernorm_forward, "layernorm forward");
-  m.def("layerNormBackward", &at::native::layernorm_backward, "layernorm backward");
-  m.def("addDropoutForward", &at::native::fused_add_dropout_forward, "fused_dropout forward");
-  m.def("addDropoutBackward", &at::native::fused_add_dropout_backward, "fused_dropout backward");
-  m.def("lnAddDropoutForward", &at::native::fused_ln_add_dropout_forward, "fused_ln_add_dropout forward");
-  m.def("lnAddDropoutBackward", &at::native::fused_ln_add_dropout_backward, "fused_ln_add_dropout backward");
+  m.def("layernorm_forward", &at::native::layernorm_forward, "layernorm forward");
+  m.def("layernorm_backward", &at::native::layernorm_backward, "layernorm backward");
+  m.def("add_dropout_forward", &at::native::fused_add_dropout_forward, "fused_dropout forward");
+  m.def("add_dropout_backward", &at::native::fused_add_dropout_backward, "fused_dropout backward");
+  m.def("ln_add_dropout_forward", &at::native::fused_ln_add_dropout_forward, "fused_ln_add_dropout forward");
+  m.def("ln_add_dropout_backward", &at::native::fused_ln_add_dropout_backward, "fused_ln_add_dropout backward");
 }

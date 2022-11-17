@@ -6,7 +6,7 @@ from torch.nn.parameter import Parameter
 from torch.autograd import Function
 
 from torch.nn import init
-import Lightop
+from lightop import op
 
 class _FuseBaseModule(torch.nn.Module):
     def __init__(
@@ -127,7 +127,7 @@ class _FuseBatchNormRelu(Function):
         else:
             bn_training = (running_mean is None) and (running_var is None)
 
-        forward_data = Lightop.bnrelu_forward(
+        forward_data = op.bnrelu_forward(
             input,
             weight,
             bias,
@@ -151,7 +151,7 @@ class _FuseBatchNormRelu(Function):
     @staticmethod
     def backward(ctx, gradOutput) -> Tensor:
         save_input, save_output, weight, save_mean, save_invstd, running_mean, running_var = ctx.saved_tensors
-        grad_input, grad_weight, grad_bias = Lightop.bnrelu_backward(
+        grad_input, grad_weight, grad_bias = op.bnrelu_backward(
             gradOutput, 
             save_input,
             save_output,
