@@ -300,9 +300,10 @@ def get_extensions():
     include_dirs = []
     define_macros = []
     extra_compile_args = {'cxx': ['-O3']}
-    op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp')
+    op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + glob.glob('./lightop/csrc/miopen/*.cpp')
     extension = CUDAExtension
     include_dirs.append(os.path.abspath('./lightop/csrc/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/miopen/'))
     ext_ops = extension(
         name="lightop.op",
         sources=op_files,

@@ -5,6 +5,7 @@
 #include <ATen/native/cuda/Resize.cuh>
 #include <c10/cuda/CUDAMathCompat.h>
 #include <fuse_bn_relu.cuh>
+#include <fuse_bn_relu_miopen.cuh>
 #include <torch/extension.h>
 namespace at { namespace native {
 
@@ -703,6 +704,132 @@ std::tuple<Tensor, Tensor> bnrelu_update_stats_cuda(
     bnrelu_update_stats(save_mean, save_var, *running_mean, *running_var, momentum, N);
   }
   return std::tuple<Tensor, Tensor>(save_mean, save_var);
+}
+//up code is native
+//bnrelu check(miopen/native)
+//forward
+size_t get_env_miopen(const char* env_name, size_t def_value = 0) 
+{
+  if (auto* value = std::getenv(env_name)) {
+    int env_value = c10::stoi(value);
+    if (env_value != 1) return def_value;
+    return env_value;
+  }
+  return def_value;
+}
+std::tuple<Tensor, Tensor, Tensor, Tensor, int64_t> _bnrelu_impl_index(
+    const Tensor& input, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, 
+    const c10::optional<Tensor>& running_var_opt, bool training, double momentum, double epsilon) {
+
+  c10::MaybeOwned<Tensor> weight_maybe_owned = at::borrow_from_optional_tensor(weight_opt);
+  const Tensor& weight = *weight_maybe_owned;
+  const Tensor& bias = c10::value_or_else(bias_opt, [] {return Tensor();});
+  const Tensor& running_mean = c10::value_or_else(running_mean_opt, [] {return Tensor();});
+  const Tensor& running_var = c10::value_or_else(running_var_opt, [] {return Tensor();});
+
+  auto num_features = input.sizes()[1]; 
+  if (running_mean.defined()) {
+    check_dims_match_num_input_features("running_mean", num_features, running_mean.numel());
+  } else if (!training) {
+    AT_ERROR("running_mean must be defined in evaluation mode");
+  }
+  if (running_var.defined()) {
+    check_dims_match_num_input_features("running_var", num_features, running_var.numel());
+  } else if (!training) {
+    AT_ERROR("running_var must be defined in evaluation mode");
+  }
+  if (weight.defined()) {
+    check_dims_match_num_input_features("weight", num_features, weight.numel());
+  }
+  if (bias.defined()) {
+    check_dims_match_num_input_features("bias", num_features, bias.numel());
+  }
+
+  bool use_miopen = (input.is_cuda()
+               && input.dim() <= 4 //ncdhw  miopen fuse is not used
+               && input.scalar_type() != at::kDouble
+               && input.scalar_type() != at::kBFloat16
+               && (weight.scalar_type() != at::kHalf)
+               && weight.defined() && bias.defined()
+               && ((running_mean.defined() && running_var.defined())
+                 || (!running_mean.defined() && !running_var.defined() && training))
+               && detail::getCUDAHooks().compiledWithMIOpen()
+               );
+  uint32_t hw = 0;
+  if (input.dim() == 4) {
+    hw = input.size(2) * input.size(3);
+  }
+  if (get_env_miopen("HIP_NATIVE_FUSE") == 1) {
+    use_miopen = 0;
+  }
+
+  if ((use_miopen && hw <= 784) || get_env_miopen("HIP_MIOPEN_FUSE") == 1) {
+    return std::tuple_cat(
+               miopen_bnrelu_forward(
+               input.contiguous(), weight.contiguous(), bias.contiguous(),
+               running_mean.defined() ? running_mean.contiguous() : running_mean,
+               running_var.defined() ? running_var.contiguous() : running_var,
+               training, momentum, epsilon),
+               std::make_tuple(2));
+  }
+  return std::tuple_cat(
+            bnrelu_cuda(input, weight, bias, running_mean, 
+            running_var, training, momentum,  epsilon),
+            std::make_tuple(0));
+}
+
+//bnrelu input
+std::tuple<Tensor, Tensor, Tensor, Tensor, int64_t> bnrelu_forward(
+    const Tensor& input, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt,
+    const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt,
+    bool training, double momentum, double eps) {
+  const Tensor& weight = c10::value_or_else(weight_opt, [] {return Tensor();});
+  const Tensor& bias = c10::value_or_else(bias_opt, [] {return Tensor();});
+  const Tensor& running_mean = c10::value_or_else(running_mean_opt, [] {return Tensor();});
+  const Tensor& running_var = c10::value_or_else(running_var_opt, [] {return Tensor();});
+  return _bnrelu_impl_index(input, weight, bias, running_mean, running_var,
+                                                training, momentum, eps);
+}
+// backward
+std::tuple<Tensor, Tensor, Tensor> bnrelu_backward(
+    int64_t impl_index, const Tensor& grad_output, const Tensor& input, const Tensor& output_relu, const Tensor& output_relu_grad, 
+    const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, 
+    const c10::optional<Tensor>& running_var_opt, const c10::optional<Tensor>& save_mean_opt, const c10::optional<Tensor>& save_invstd_opt, 
+    bool train, double epsilon, std::array<bool,3> output_mask) {
+  c10::MaybeOwned<Tensor> weight_maybe_owned = at::borrow_from_optional_tensor(weight_opt);
+  const Tensor& weight = *weight_maybe_owned;
+  const Tensor& bias = c10::value_or_else(bias_opt, [] {return Tensor();});
+  const Tensor& running_mean = c10::value_or_else(running_mean_opt, [] {return Tensor();});
+  const Tensor& running_var = c10::value_or_else(running_var_opt, [] {return Tensor();});
+  const Tensor& save_mean = c10::value_or_else(save_mean_opt, [] {return Tensor();});
+  const Tensor& save_var_transform = c10::value_or_else(save_invstd_opt, [] {return Tensor();});
+  
+  if (input.numel() == 0) {
+    std::vector<int64_t> dims(input.dim() - 1);
+    dims[0] = 0;
+    std::iota(dims.begin() + 1, dims.end(), 2);
+
+    // don't return empty tensor because it will break gradient chain
+    Tensor grad_input;
+    Tensor grad_weight;
+    Tensor grad_bias;
+    if (output_mask[2]) {
+      grad_bias = grad_output.sum(dims);
+    }
+    if (output_mask[1]) {
+      grad_weight = (grad_output * input).sum(dims);
+    }
+    if (output_mask[0] && weight.defined()) {
+      grad_input = grad_output * weight[0];
+    }
+    return std::make_tuple(grad_input, grad_weight, grad_bias);
+  }
+
+  if (impl_index == 0 || (!train)) {
+    return bnrelu_backward_cuda(grad_output, input, output_relu_grad, weight, running_mean, running_var, save_mean, save_var_transform, train, epsilon, output_mask);
+  } else if (impl_index == 2) {
+    return miopen_bnrelu_backward(input, output_relu, grad_output, weight, bias, running_mean, running_var, save_mean, save_var_transform, epsilon);
+  }
 }
 
 } } // namespace at::native
