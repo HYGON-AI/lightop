@@ -298,10 +298,8 @@ def get_version():
 def get_extensions():
     extensions = []
     include_dirs = []
-    library_dirs = ['lightop/lib/']
-    libraries = ['gemmbias']
     define_macros = []
-    extra_compile_args = {'cxx': ['-O3']}
+    extra_compile_args = {'cxx': ['-O3','-ldl']}
     op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + glob.glob('./lightop/csrc/miopen/*.cpp')
     extension = CUDAExtension
     include_dirs.append(os.path.abspath('./lightop/csrc/'))
@@ -311,8 +309,6 @@ def get_extensions():
         sources=op_files,
         include_dirs=include_dirs,
         define_macros=define_macros,
-        library_dirs=library_dirs,
-        libraries=libraries,
         extra_compile_args=extra_compile_args)
     extensions.append(ext_ops)
     return extensions
