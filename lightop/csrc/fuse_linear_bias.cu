@@ -9,6 +9,7 @@
 #include <torch/extension.h>
 
 #include "gemm_bias.h"
+#include "cuda_meta.h"
 
 #include <iostream>
 
@@ -67,8 +68,7 @@ c10::MaybeOwned<Tensor> inline prepare_matrix_for_cublas(const Tensor& tensor, b
 } // namespace
 
 // HC Debug
-Tensor fused_linear_bias_forward(const Tensor& self, const Tensor& mat1, const Tensor& mat2) {
-  Tensor result = at::empty({mat1.sizes()[0], mat2.sizes()[1]},  self.options());
+void fused_linear_bias_forward_impl(const Tensor& self, const Tensor& mat1, const Tensor& mat2, Tensor& result) {
   TORCH_CHECK(mat1.dim() == 2 && mat2.dim() == 2, "tensors must be 2-D");
 
   TensorArg args[]{{result, "out", 0}, {self, "self", 1}, {mat1, "mat1", 2}, {mat2, "mat2", 3}};
@@ -79,7 +79,7 @@ Tensor fused_linear_bias_forward(const Tensor& self, const Tensor& mat1, const T
 
   IntArrayRef result_sizes = result.sizes();
   if ((result_sizes[0] == 0) || (result_sizes[1] == 0)) {
-    return result;
+    return;
   }
 
   bool transpose_result;
@@ -104,11 +104,6 @@ Tensor fused_linear_bias_forward(const Tensor& self, const Tensor& mat1, const T
   int64_t result_ld = result_->stride(transpose_result ? 0 : 1);
   at::ScalarType scalar_type = self.scalar_type();
 
-  // Just For Debug
-  //std::cout << "m " << m << " n " << n << " k "<< k << " mat1_ld " << mat1_ld << " mat2_ld " << mat2_ld  << " result_ld " << result_ld << "\n";
-  //std::cout << "transpose_mat1 " << transpose_mat1 << " transpose_mat2 "  << transpose_mat2 << " transpose_result " << transpose_result << "\n";
-
-
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(!result_->is_conj());
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(scalar_type, "fused_linear_bias_forward", [&] {
@@ -130,26 +125,6 @@ Tensor fused_linear_bias_forward(const Tensor& self, const Tensor& mat1, const T
   if (!result.is_same(*result_)) {
     result.copy_(*result_);
   }
- 
-//  at::ScalarType scalar_type = self.scalar_type();
-//  AT_DISPATCH_FLOATING_TYPES_AND_HALF(scalar_type, "fused_linear_bias_forward", [&] {
-//    scalar_t alpha_val = (scalar_t)1.0;
-//    scalar_t beta_val = (scalar_t)1.0;
-//    scalar_t* mat1_ptr = mat1.data_ptr<scalar_t>();
-//    scalar_t* mat2_ptr = mat2.data_ptr<scalar_t>();
-//    scalar_t* result_ptr = result.data_ptr<scalar_t>();
-//    scalar_t* self_ptr = self.data_ptr<scalar_t>();
-//    gemm_bias(
-//      int(0),
-//      int(0),
-//      mat2_ptr, mat1_ptr, self_ptr, result_ptr,
-//      (int)mat2.sizes()[1], (int)mat2.sizes()[0], (int)mat1.sizes()[0],
-//      &alpha_val,
-//      &beta_val
-//    );
-//  });
-  
-  return result;
 }
 
 // HC Debug
@@ -191,11 +166,6 @@ Tensor fused_linear_bias_backward(Tensor& self, Tensor & result, const Tensor& m
   at::ScalarType scalar_type = self.scalar_type();
 
 
-  // Just For Debug
-  //std::cout << "m " << m << " n " << n << " k "<< k << " mat1_ld " << mat1_ld << " mat2_ld " << mat2_ld  << " result_ld " << result_ld << "\n";
-  //std::cout << "transpose_mat1 " << transpose_mat1 << " transpose_mat2 "  << transpose_mat2 << " transpose_result " << transpose_result << "\n";
-
-
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(!result_->is_conj());
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(scalar_type, "fused_linear_bias_backward", [&] {
@@ -216,28 +186,71 @@ Tensor fused_linear_bias_backward(Tensor& self, Tensor & result, const Tensor& m
   if (!result.is_same(*result_)) {
     result.copy_(*result_);
   }
-
-//  Tensor result = at::empty({mat1.sizes()[1], mat2.sizes()[1]},  mat1.options());
-//  std::cout << " m = " << (int)mat2.sizes()[1] << " k = " << (int)mat2.sizes()[0] << " n = " << (int)mat1.sizes()[1];
-//  at::ScalarType scalar_type = self.scalar_type();
-//  AT_DISPATCH_FLOATING_TYPES_AND_HALF(scalar_type, "fused_linear_bias_backward", [&] {
-//    scalar_t alpha_val = (scalar_t)1.0;
-//    scalar_t* mat1_ptr = mat1.data_ptr<scalar_t>();
-//    scalar_t* mat2_ptr = mat2.data_ptr<scalar_t>();
-//    scalar_t* result_ptr = result.data_ptr<scalar_t>();
-//    scalar_t* self_ptr = self.data_ptr<scalar_t>();
-//    gemm_dbias(
-//      int(0),
-//      int(1),
-//      mat2_ptr, mat1_ptr, self_ptr, result_ptr,
-//      (int)mat2.sizes()[1], (int)mat2.sizes()[0], (int)mat1.sizes()[1],
-//      &alpha_val
-//    );
-//  });
-
   return result;
 }
 
+struct TORCH_API structured__fused_linear : public at::impl::MetaBase {  
+  void meta(const Tensor& self, const Tensor& mat1, const Tensor& mat2) {
+    TORCH_CHECK(mat1.dim() == 2, "mat1 must be a matrix, got ", mat1.dim(), "-D tensor");
+    TORCH_CHECK(mat2.dim() == 2, "mat2 must be a matrix, got ", mat2.dim(), "-D tensor");
+    TORCH_CHECK(
+        mat1.sizes()[1] == mat2.sizes()[0], "mat1 and mat2 shapes cannot be multiplied (",
+        mat1.sizes()[0], "x", mat1.sizes()[1], " and ", mat2.sizes()[0], "x", mat2.sizes()[1], ")");
+
+    auto names = at::namedinference::propagate_names_for_addmm(mat1, mat2, self);
+    set_output(0, {mat1.sizes()[0], mat2.sizes()[1]}, {}, self.options(), names);
+    const auto& result = maybe_get_output(0);
+    //this check can fire for inplace op only, for all other versions result is guaranteed to be correct size
+    TORCH_CHECK(((result.dim() == 2) && (result.sizes()[0] == mat1.sizes()[0]) && (result.sizes()[1] == mat2.sizes()[1])),
+    "The input tensor must be a matrix with size ", mat1.sizes()[0], "x", mat2.sizes()[1], ", but got a ", result.dim(),
+    "-D tensor with size ", result.sizes()[0], "x", result.sizes()[1]);
+  }
+  void impl(const Tensor& self, const Tensor& mat1, const Tensor& mat2, Tensor& result){
+    fused_linear_bias_forward_impl(self, mat1, mat2, result);
+  }
+    
+};
+struct structured__fused_linear_functional final : public at::native::structured__fused_linear {
+
+    void set_output(int64_t output_idx, IntArrayRef sizes, IntArrayRef strides,
+                    TensorOptions options, DimnameList names) override {
+
+        auto current_device = guard_.current_device();
+        if (C10_UNLIKELY(current_device.has_value())) {
+          TORCH_INTERNAL_ASSERT(*current_device == options.device(),
+            "structured kernels don't support multi-device outputs");
+        } else {
+          guard_.reset_device(options.device());
+        }
+
+
+        outputs_[output_idx] = create_out(sizes, strides, options);
+        if (!names.empty()) {
+          namedinference::propagate_names(*outputs_[output_idx], names);
+        }
+        // super must happen after, so that downstream can use maybe_get_output
+        // to retrieve the output
+
+    }
+
+    const Tensor& maybe_get_output(int64_t output_idx) override {
+        return *outputs_[output_idx];
+    }
+    std::array<c10::ExclusivelyOwned<Tensor>, 1> outputs_;
+    c10::hip::OptionalHIPGuardMasqueradingAsCUDA guard_;
+};
+at::Tensor fused_linear_bias_forward(const at::Tensor & self, const at::Tensor & mat1, const at::Tensor & mat2) {
+  c10::optional<Device> common_device = nullopt;
+  (void)common_device; // Suppress unused variable warning
+
+  c10::impl::check_and_update_common_device(common_device, self, "wrapper_addmm", "self");
+  c10::impl::check_and_update_common_device(common_device, mat1, "wrapper_addmm", "mat1");
+  c10::impl::check_and_update_common_device(common_device, mat2, "wrapper_addmm", "mat2");
+  structured__fused_linear_functional op;
+  op.meta(self, mat1, mat2);
+  op.impl(self, mat1, mat2, *op.outputs_[0]);
+  return std::move(op.outputs_[0]).take();
+}
 } // namespace native
 } //namespace at
 

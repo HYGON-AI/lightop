@@ -38,6 +38,7 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
     archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx900;gfx906')
     flags = ['--amdgpu-target=%s' % arch for arch in archs.split(';')]
     flags += ['-fno-gpu-rdc']
+    flags +=['--gpu-max-threads-per-block=1024']
     return flags
 
 
