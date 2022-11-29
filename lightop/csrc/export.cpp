@@ -18,6 +18,8 @@ Tensor fused_linear_bias_forward(const at::Tensor& self, const at::Tensor& mat1,
 Tensor fused_linear_bias_backward(at::Tensor& self, at::Tensor& result, const at::Tensor& mat1, const at::Tensor& mat2);
 std::tuple <Tensor, Tensor> fused_relu_dropout_forward(const Tensor &self, const double &p, const bool &use_relu, const bool &training);
 Tensor fused_relu_dropout_backward(Tensor &grad, Tensor &mask);
+Tensor fuse_softmax_forward(const Tensor &input, const int64_t dim, const bool half_to_float);
+Tensor fuse_softmax_backward(const Tensor& grad, const Tensor& output, int64_t dim, const Tensor& input);
 }
 }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -35,5 +37,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("linearbias_backward", &at::native::fused_linear_bias_backward, "fused_linearbias backward");
   m.def("relu_dropout_forward", &at::native::fused_relu_dropout_forward, "fused_relu_dropout forward");
   m.def("relu_dropout_backward", &at::native::fused_relu_dropout_backward, "fused_relu_dropout backward");
-
+  m.def("softmax_forward", &at::native::fuse_softmax_forward, "softmax of forward");
+  m.def("softmax_backward", &at::native::fuse_softmax_backward, "softmax of backward");
 }

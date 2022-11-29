@@ -89,14 +89,14 @@ for i in range(5):
 torch.cuda.synchronize()
 start_time = time.time()
 #with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=True) as prof:
-for i in range(500):
+for i in range(10000):
     out1 = fc1(x1)
     out1.backward(out_grad_cuda1)
 torch.cuda.synchronize()
 #print(prof.key_averages().table(sort_by="self_cuda_time_total"))
 #prof.export_chrome_trace("trace.json")
 end_time = time.time()
-#print("origin fc bias time is ", end_time - start_time)
+print("origin fc bias time is ", end_time - start_time)
 
 
 set_rand_seed(1234)
@@ -109,14 +109,14 @@ for i in range(5):
 torch.cuda.synchronize()
 start_time = time.time()
 #with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=True) as prof:
-for i in range(500):
+for i in range(10000):
     out2 = fc2(x2)
     out2.backward(out_grad_cuda2)
 torch.cuda.synchronize()
 #print(prof.key_averages().table(sort_by="self_cuda_time_total"))
 #prof.export_chrome_trace("trace.json")
 end_time = time.time()
-#print("fused fc bias time is ", end_time - start_time)
+print("fused fc bias time is ", end_time - start_time)
 
 #print(np.linalg.norm(out1.detach().cpu().numpy()-out2.detach().cpu().numpy()))
 #print(np.linalg.norm(fc1.weight.detach().cpu().numpy()-fc2.weight.detach().cpu().numpy()))
