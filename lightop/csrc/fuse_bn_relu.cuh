@@ -9,7 +9,7 @@
 #include <ATen/native/cuda/DeviceSqrt.cuh>
 #include <ATen/native/cuda/LaunchUtils.h>
 #include <c10/macros/Macros.h>
-
+#include <fuse_bn_act.cuh>
 namespace at { namespace native {
 
 // The maximum number of threads in a block
@@ -34,6 +34,19 @@ static int getNumThreads(int nElem) {
     }
   }
   return MAX_BLOCK_SIZE;
+}
+
+constexpr int MAX_BLOCK_SIZE_1024 = 1024;
+static int getNumThreads_1024(int nElem) {
+
+  int threadSizes[6] = { 16, 32, 64, 128, 256, MAX_BLOCK_SIZE_1024 };
+
+  for (int i = 0; i != 6; ++i) {
+    if (nElem <= threadSizes[i]) {
+      return threadSizes[i];
+    }
+  }
+  return MAX_BLOCK_SIZE_1024;
 }
 
 // Returns the index of the most significant 1 bit in `val`.
@@ -304,7 +317,7 @@ __global__ void bnrelu_collect_statistics_kernel(
     const stat_accscalar_t epsilon,
     const stat_accscalar_t momentum,
     GenericPackedTensorAccessor<stat_accscalar_t, 1, RestrictPtrTraits, index_t> save_mean,
-    GenericPackedTensorAccessor<stat_accscalar_t, 1, RestrictPtrTraits, index_t> save_transformed_var) __attribute__((amdgpu_flat_work_group_size(1,1024))){
+    GenericPackedTensorAccessor<stat_accscalar_t, 1, RestrictPtrTraits, index_t> save_transformed_var) {
 
   __shared__ int shared_n[2 * 2 * C10_WARP_SIZE + C10_WARP_SIZE];
 
@@ -394,7 +407,7 @@ __global__ void batch_norm_backward_res(
     const GenericPackedTensorAccessor<stat_scalar_t, 1, DefaultPtrTraits, index_t> running_mean,
     bool train,
     GenericPackedTensorAccessor<stat_scalar_t, 1, DefaultPtrTraits, index_t> grad_res_v1,
-    GenericPackedTensorAccessor<stat_scalar_t, 1, DefaultPtrTraits, index_t> grad_res_v2) __attribute__((amdgpu_flat_work_group_size(1,1024))) {
+    GenericPackedTensorAccessor<stat_scalar_t, 1, DefaultPtrTraits, index_t> grad_res_v2) {
 
   index_t plane = blockIdx.x;
   stat_accscalar_t mean;
@@ -668,9 +681,9 @@ static GenericPackedTensorAccessor<scalar_t, dim, PtrTraits, index_t> packed_acc
 }
 
 template<typename input_scalar_t, typename stat_scalar_t, typename index_t>
-std::tuple<Tensor, Tensor, Tensor> bnrelu_backward_cuda_template(const Tensor& grad_out_, const Tensor& input_, const Tensor& output_, const Tensor& weight_,
-                                                                     const Tensor& running_mean_, const Tensor& running_var_, const Tensor& save_mean_, const Tensor& save_invstd_,
-                                                                     bool train, double epsilon, std::array<bool,3> grad_input_mask) {
+std::tuple<Tensor, Tensor, Tensor> bnrelu_backward_cuda_template(const Tensor& grad_out_, const Tensor& input_, const Tensor& output_, 
+          const Tensor& weight_, const Tensor& running_mean_, const Tensor& running_var_, const Tensor& save_mean_, const Tensor& save_invstd_,
+          bool train, double epsilon, std::array<bool,3> grad_input_mask, int fuse_act_mode) {
 
   using accscalar_t = at::acc_type<stat_scalar_t, true>;
   Tensor grad_input_;
@@ -694,8 +707,6 @@ std::tuple<Tensor, Tensor, Tensor> bnrelu_backward_cuda_template(const Tensor& g
 
   auto input = get_packed_accessor<
       input_scalar_t, 3, DefaultPtrTraits, index_t>(input_reshaped, "input");
-  auto output = get_packed_accessor<
-      bool, 3, DefaultPtrTraits, index_t>(output_reshaped, "output");
   auto grad_output = get_packed_accessor<
       input_scalar_t, 3, DefaultPtrTraits, index_t>(grad_output_reshaped, "grad_output");
   auto grad_input = packed_accessor_or_dummy<
@@ -717,7 +728,10 @@ std::tuple<Tensor, Tensor, Tensor> bnrelu_backward_cuda_template(const Tensor& g
 
   auto stream1 = at::cuda::getCurrentCUDAStream();
   dim3 blocks_res(input.size(1));
-  dim3 threads1(1024, 1);
+  //dim3 threads1(1024, 1);
+  int tf1 = getNumThreads_1024(input.size(2));
+  dim3 threads1(tf1, std::max<int>(1, MAX_BLOCK_SIZE_1024/tf1));
+
   auto options = input_.options().dtype(
       at::toAccumulateType(input_.scalar_type(), /*is_cuda=*/true));
   int64_t n_channels = input_.size(1);
@@ -735,18 +749,31 @@ std::tuple<Tensor, Tensor, Tensor> bnrelu_backward_cuda_template(const Tensor& g
   auto grad_res_v2 = packed_accessor_or_dummy<
       stat_scalar_t, 1, DefaultPtrTraits, index_t>(grad_res_v2_, "grad_res_v2");
 
-  batch_norm_backward_res<input_scalar_t,stat_scalar_t, accscalar_t, index_t> <<<blocks_res, threads1, 0, stream1>>>
-    (input,output,grad_output,save_mean,running_mean,train,grad_res_v1, grad_res_v2);
-
   auto stream = at::cuda::getCurrentCUDAStream();
   //dim3 blocks(input.size(1));
   dim3 blocks(input.size(1), grad_output.size(0));
   int tf = getNumThreads(input.size(2));
-  dim3 threads(tf, std::max<int>(1, MAX_BLOCK_SIZE/tf));
+  dim3 threads(tf);
 
-  bnrelu_backward_kernel<input_scalar_t, stat_scalar_t, accscalar_t, index_t> <<<blocks, threads, 0, stream>>>
-    (input, output, grad_output, grad_input, grad_weight, grad_bias, weight, running_mean, running_var,
-     save_mean, save_invstd, train, epsilon, grad_res_v1, grad_res_v2);
+  if (fuse_act_mode == fuse_act_relu) {
+    auto output = get_packed_accessor<
+      bool, 3, DefaultPtrTraits, index_t>(output_reshaped, "output");
+    batch_norm_backward_res<input_scalar_t,stat_scalar_t, accscalar_t, index_t> <<<blocks_res, threads1, 0, stream1>>>
+      (input,output,grad_output,save_mean,running_mean,train,grad_res_v1, grad_res_v2);
+
+    bnrelu_backward_kernel<input_scalar_t, stat_scalar_t, accscalar_t, index_t> <<<blocks, threads, 0, stream>>>
+      (input, output, grad_output, grad_input, grad_weight, grad_bias, weight, running_mean, running_var,
+       save_mean, save_invstd, train, epsilon, grad_res_v1, grad_res_v2);
+  } else {
+    auto output = get_packed_accessor<
+      input_scalar_t, 3, DefaultPtrTraits, index_t>(output_reshaped, "output");
+    batch_act_backward_res<input_scalar_t,stat_scalar_t, accscalar_t, index_t> <<<blocks_res, threads1, 0, stream1>>>
+      (input,output,grad_output,save_mean,running_mean,train,grad_res_v1, grad_res_v2, fuse_act_mode);
+
+    bnact_backward_kernel<input_scalar_t, stat_scalar_t, accscalar_t, index_t> <<<blocks, threads, 0, stream>>>
+      (input, output, grad_output, grad_input, grad_weight, grad_bias, weight, running_mean, running_var,
+       save_mean, save_invstd, train, epsilon, grad_res_v1, grad_res_v2, fuse_act_mode);
+  }
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 
   return std::make_tuple(grad_input_, grad_weight_, grad_bias_);
@@ -778,9 +805,9 @@ void bnrelu_stats_cuda_template(
   auto stream = at::cuda::getCurrentCUDAStream();
 
   dim3 blocks(input.size(1));
-  int tf = getNumThreads(input.size(2));
-  //dim3 threads(tf, std::max<int>(1, MAX_BLOCK_SIZE/tf));
-  dim3 threads(1024, 1);
+  int tf = getNumThreads_1024(input.size(2));
+  dim3 threads(tf, std::max<int>(1, MAX_BLOCK_SIZE_1024/tf));
+  //dim3 threads(1024, 1);
   bnrelu_collect_statistics_kernel<VarTransform, scalar_t, scalar_t, accscalar_t, index_t> <<<blocks, threads, 0, stream>>>
     (input, epsilon, 0.0, mean, invstd);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -788,16 +815,12 @@ void bnrelu_stats_cuda_template(
 
 template<typename input_scalar_t, typename stat_scalar_t, typename index_t>
 void bnrelu_elemt_cuda_template(const Tensor& output_, const Tensor& output_relu_, const Tensor& input_, const Tensor& weight_,
-                                    const Tensor& bias_, const Tensor& mean_, const Tensor& invstd_) {
+                                    const Tensor& bias_, const Tensor& mean_, const Tensor& invstd_, int fuse_act_mode) {
 
   using stat_accscalar_t = at::acc_type<stat_scalar_t, true>;
   int64_t n_input = input_.size(1);
   auto input_reshaped = input_.reshape({input_.size(0), input_.size(1), -1}); // internally we merge the feature dimensions
   auto output_reshaped = output_.view({input_.size(0), input_.size(1), -1});
-
-  auto output_relu_reshaped = output_relu_.view({input_.size(0), input_.size(1), -1});
-  auto output_relu = get_packed_accessor<
-      bool, 3, RestrictPtrTraits, index_t>(output_relu_reshaped, "output_relu");
 
   auto input = get_packed_accessor<
       input_scalar_t, 3, RestrictPtrTraits, index_t>(input_reshaped, "input");
@@ -829,9 +852,19 @@ void bnrelu_elemt_cuda_template(const Tensor& output_, const Tensor& output_relu
   dim3 threads_trans(tf, tb);
 
   bool fuse_relu = true;
-
-  bnrelu_transform_input_kernel<input_scalar_t, stat_scalar_t, stat_accscalar_t, true, index_t> <<<blocks_trans, threads_trans, 0, stream>>>
-    (input, output, output_relu, mean, invstd, weight, bias, dummy_epsilon, fuse_relu);
+  if (fuse_act_mode == fuse_act_relu) {
+    auto output_relu_reshaped = output_relu_.view({input_.size(0), input_.size(1), -1});
+    auto output_relu = get_packed_accessor<
+        bool, 3, RestrictPtrTraits, index_t>(output_relu_reshaped, "output_relu");
+    bnrelu_transform_input_kernel<input_scalar_t, stat_scalar_t, stat_accscalar_t, true, index_t> <<<blocks_trans, threads_trans, 0, stream>>>
+      (input, output, output_relu, mean, invstd, weight, bias, dummy_epsilon, fuse_relu);
+  } else {
+    auto output_relu_reshaped = output_relu_.view({input_.size(0), input_.size(1), -1});
+    auto output_relu = get_packed_accessor<
+        input_scalar_t, 3, RestrictPtrTraits, index_t>(output_relu_reshaped, "output_relu");
+    bnact_transform_input_kernel<input_scalar_t, stat_scalar_t, stat_accscalar_t, true, index_t> <<<blocks_trans, threads_trans, 0, stream>>>
+      (input, output, output_relu,  mean, invstd, weight, bias, dummy_epsilon, fuse_act_mode);
+  }
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
