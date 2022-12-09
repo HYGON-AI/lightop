@@ -7,7 +7,7 @@ from torch.autograd import Function
 
 from torch.nn import init
 from lightop import op
-
+from .fuseactmode import fuseactmode
 class _FuseBaseModule(torch.nn.Module):
     def __init__(
         self,
@@ -17,7 +17,8 @@ class _FuseBaseModule(torch.nn.Module):
         affine: bool = True,
         track_running_stats: bool = True,
         device=None,
-        dtype=None
+        dtype=None,
+        actmode: int = fuseactmode.relu.value
     ) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         super(_FuseBaseModule, self).__init__()
@@ -26,6 +27,9 @@ class _FuseBaseModule(torch.nn.Module):
         self.momentum = momentum
         self.affine = affine
         self.track_running_stats = track_running_stats
+        if actmode not in fuseactmode._value2member_map_:
+          raise ValueError("expected actmode {} not {}".format(fuseactmode._value2member_map_, actmode))
+        self.actmode = actmode
         if self.affine:
             self.weight = Parameter(torch.empty(num_features, **factory_kwargs))
             self.bias = Parameter(torch.empty(num_features, **factory_kwargs))
@@ -104,7 +108,7 @@ class _FuseBaseModule(torch.nn.Module):
 
 class _FuseBatchNormRelu(Function):
     @staticmethod
-    def forward(ctx, input: Tensor, weight, bias, running_mean, running_var, training, momentum, eps, track_running_stats, num_batches_tracked) -> Tensor:
+    def forward(ctx, input: Tensor, weight, bias, running_mean, running_var, training, momentum, eps, track_running_stats, num_batches_tracked, actmode=fuseactmode.relu.value) -> Tensor:
         # exponential_average_factor is set to self.momentum
         # (when it is available) only so that it gets updated
         # in ONNX graph when this node is exported to ONNX.
@@ -138,7 +142,8 @@ class _FuseBatchNormRelu(Function):
             running_var if not training or track_running_stats else None,
             bn_training,
             exponential_average_factor,
-            eps
+            eps,
+            int(actmode)
         )
         #grad_out = forward_data[0]
         #save_mean = forward_data[1]
@@ -146,6 +151,7 @@ class _FuseBatchNormRelu(Function):
         ctx.eps = eps
         ctx.bn_training = bn_training
         ctx.impl_index = forward_data[4]
+        ctx.actmode = actmode
         ctx.save_for_backward(input, forward_data[0], forward_data[1], weight, bias, forward_data[2], forward_data[3], running_mean, running_var)
         return forward_data[0]
     
@@ -166,8 +172,10 @@ class _FuseBatchNormRelu(Function):
             save_invstd,
             ctx.bn_training,
             ctx.eps,
-            ctx.needs_input_grad[0:3])
-        return grad_input, grad_weight, grad_bias, None, None, None, None, None, None, None
+            ctx.needs_input_grad[0:3],
+            int(ctx.actmode)
+            )
+        return grad_input, grad_weight, grad_bias, None, None, None, None, None, None, None, None
 
 class FuseBatchNormRelu1d(_FuseBaseModule):
 
