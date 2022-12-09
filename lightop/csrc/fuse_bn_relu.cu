@@ -727,7 +727,8 @@ size_t get_env_miopen(const char* env_name, size_t def_value = 0)
 }
 std::tuple<Tensor, Tensor, Tensor, Tensor, int64_t> _bnrelu_impl_index(
     const Tensor& input, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, 
-    const c10::optional<Tensor>& running_var_opt, bool training, double momentum, double epsilon, int fuse_act_mode) {
+    const c10::optional<Tensor>& running_var_opt, bool training, double momentum, double epsilon, int fuse_act_mode, 
+    double act_alpha, double act_beta, double act_gamma) {
 
   c10::MaybeOwned<Tensor> weight_maybe_owned = at::borrow_from_optional_tensor(weight_opt);
   const Tensor& weight = *weight_maybe_owned;
@@ -770,16 +771,24 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, int64_t> _bnrelu_impl_index(
   if (get_env_miopen("HIP_NATIVE_FUSE") == 1) {
     goto use_native;
   }
-  if (fuse_act_mode == fuse_act_silu)
+  if (fuse_act_mode == fuse_act_silu) {
     goto use_native;
+  }
 
-  if ((use_miopen && hw <= 784) || (use_miopen && get_env_miopen("HIP_MIOPEN_FUSE")) == 1) {
+  if (fuse_act_mode != fuse_act_silu && fuse_act_mode != fuse_act_relu) {
+    TORCH_CHECK(use_miopen, "use miopen fuse: input data type is not support");
+    goto use_miopen;
+  }
+  
+  if ((use_miopen && hw <= 784) || (use_miopen && get_env_miopen("HIP_MIOPEN_FUSE")) == 1) 
+use_miopen:
+  {
     return std::tuple_cat(
                miopen_bnrelu_forward(
                input.contiguous(), weight.contiguous(), bias.contiguous(),
                running_mean.defined() ? running_mean.contiguous() : running_mean,
                running_var.defined() ? running_var.contiguous() : running_var,
-               training, momentum, epsilon),
+               training, momentum, epsilon, fuse_act_mode, act_alpha, act_beta, act_gamma),
                std::make_tuple(2));
   }
 use_native:
@@ -793,20 +802,20 @@ use_native:
 std::tuple<Tensor, Tensor, Tensor, Tensor, int64_t> bnrelu_forward(
     const Tensor& input, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt,
     const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt,
-    bool training, double momentum, double eps, int fuse_act_mode) {
+    bool training, double momentum, double eps, int fuse_act_mode, double act_alpha, double act_beta, double act_gamma) {
   const Tensor& weight = c10::value_or_else(weight_opt, [] {return Tensor();});
   const Tensor& bias = c10::value_or_else(bias_opt, [] {return Tensor();});
   const Tensor& running_mean = c10::value_or_else(running_mean_opt, [] {return Tensor();});
   const Tensor& running_var = c10::value_or_else(running_var_opt, [] {return Tensor();});
-  return _bnrelu_impl_index(input, weight, bias, running_mean, running_var,
-                                                training, momentum, eps, fuse_act_mode);
+  return _bnrelu_impl_index(input, weight, bias, running_mean, running_var, training, momentum, eps, fuse_act_mode,
+                             act_alpha, act_beta, act_gamma);
 }
 // backward
 std::tuple<Tensor, Tensor, Tensor> bnrelu_backward(
     int64_t impl_index, const Tensor& grad_output, const Tensor& input, const Tensor& output_relu, const Tensor& output_relu_grad, 
     const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, 
     const c10::optional<Tensor>& running_var_opt, const c10::optional<Tensor>& save_mean_opt, const c10::optional<Tensor>& save_invstd_opt, 
-    bool train, double epsilon, std::array<bool,3> output_mask, int fuse_act_mode) {
+    bool train, double epsilon, std::array<bool,3> output_mask, int fuse_act_mode, double act_alpha, double act_beta, double act_gamma) {
   c10::MaybeOwned<Tensor> weight_maybe_owned = at::borrow_from_optional_tensor(weight_opt);
   const Tensor& weight = *weight_maybe_owned;
   const Tensor& bias = c10::value_or_else(bias_opt, [] {return Tensor();});
@@ -839,7 +848,7 @@ std::tuple<Tensor, Tensor, Tensor> bnrelu_backward(
   if (impl_index == 0 || (!train)) {
     return bnrelu_backward_cuda(grad_output, input, output_relu_grad, weight, running_mean, running_var, save_mean, save_var_transform, train, epsilon, output_mask, fuse_act_mode);
   } else if (impl_index == 2) {
-    return miopen_bnrelu_backward(input, output_relu, grad_output, weight, bias, running_mean, running_var, save_mean, save_var_transform, epsilon);
+    return miopen_bnrelu_backward(input, output_relu, grad_output, weight, bias, running_mean, running_var, save_mean, save_var_transform, epsilon, fuse_act_mode, act_alpha, act_beta, act_gamma);
   }
 }
 
