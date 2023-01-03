@@ -9,7 +9,8 @@ from lightop import op
 
 class _FuseBatchNormAct(Function):
     @staticmethod
-    def forward(ctx, input: Tensor, weight, bias, running_mean, running_var, training, momentum, eps, track_running_stats, num_batches_tracked, actmode=fuseactmode.relu.value) -> Tensor:
+    def forward(ctx, input: Tensor, weight, bias, running_mean, running_var, training, momentum, eps, track_running_stats, num_batches_tracked, actmode=fuseactmode.relu.value,
+        act_alpha = float(0.0), act_beta = float(0.0), act_gamma = float(0.0)) -> Tensor:
         # exponential_average_factor is set to self.momentum
         # (when it is available) only so that it gets updated
         # in ONNX graph when this node is exported to ONNX.
@@ -44,7 +45,10 @@ class _FuseBatchNormAct(Function):
             bn_training,
             exponential_average_factor,
             eps,
-            int(actmode)
+            int(actmode),
+            act_alpha,
+            act_beta,
+            act_gamma
         )
         #grad_out = forward_data[0]
         #save_mean = forward_data[1]
@@ -53,6 +57,9 @@ class _FuseBatchNormAct(Function):
         ctx.bn_training = bn_training
         ctx.impl_index = forward_data[4]
         ctx.actmode = actmode
+        ctx.act_alpha = act_alpha
+        ctx.act_beta = act_beta
+        ctx.act_gamma = act_gamma
         ctx.save_for_backward(input, forward_data[0], forward_data[1], weight, bias, forward_data[2], forward_data[3], running_mean, running_var)
         return forward_data[0]
     
@@ -74,9 +81,12 @@ class _FuseBatchNormAct(Function):
             ctx.bn_training,
             ctx.eps,
             ctx.needs_input_grad[0:3],
-            int(ctx.actmode)
+            int(ctx.actmode),
+            ctx.act_alpha,
+            ctx.act_beta,
+            ctx.act_gamma
             )
-        return grad_input, grad_weight, grad_bias, None, None, None, None, None, None, None, None
+        return grad_input, grad_weight, grad_bias, None, None, None, None, None, None, None, None, None, None, None
 
 class FuseBatchNormAct2d(_FuseBaseModule):
 
@@ -88,4 +98,5 @@ class FuseBatchNormAct2d(_FuseBaseModule):
         self._check_input_dim(input)
         return _FuseBatchNormAct.apply(input, self.weight, self.bias, self.running_mean, self.running_var,
                                         self.training, self.momentum, self.eps,
-                                        self.track_running_stats, self.num_batches_tracked, self.actmode)
+                                        self.track_running_stats, self.num_batches_tracked, self.actmode,
+                                        self.act_alpha, self.act_beta, self.act_gamma)

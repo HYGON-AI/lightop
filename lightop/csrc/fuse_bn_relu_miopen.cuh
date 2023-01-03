@@ -71,7 +71,7 @@ ptr_ActivationDesc GetManagedActivDesc()
 
 std::tuple<Tensor, Tensor, Tensor, Tensor> miopen_bnrelu_forward(
     const Tensor& input_t, const Tensor& weight_t, const c10::optional<Tensor>& bias_t_opt, const c10::optional<Tensor>& running_mean_t_opt, const c10::optional<Tensor>& running_var_t_opt,
-    bool training, double exponential_average_factor, double epsilon)
+    bool training, double exponential_average_factor, double epsilon, int act_mode, double act_alpha, double act_beta, double act_gamma)
 {
   c10::MaybeOwned<Tensor> bias_t_maybe_owned = at::borrow_from_optional_tensor(bias_t_opt);
   const Tensor& bias_t = *bias_t_maybe_owned;
@@ -119,10 +119,13 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> miopen_bnrelu_forward(
   TensorDescriptor wdesc{ expandScale(*weight, input->dim()), 4 };  // descriptor for weight, bias, running_mean, etc.
 
   Tensor save_mean, save_var;
-
+  miopenActivationMode_t activ_mode = miopenActivationMode_t(act_mode);
   miopenFusionOpDescriptor_t bNormFwdOp = nullptr;
   miopenFusionOpDescriptor_t activFwdOp = nullptr;
   auto ptr_fwdfusionplan = GetManagedFusionPlanDesc(idesc.desc());
+  ptr_ActivationDesc ptr_activdesc = nullptr;
+  ptr_activdesc = GetManagedActivDesc();
+  miopenSetActivationDescriptor(ptr_activdesc.get(), activ_mode, act_alpha, act_beta, act_gamma);
 
   if (training) {
     int64_t num_features = input_t.size(1);
@@ -130,14 +133,13 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> miopen_bnrelu_forward(
     save_var = at::empty({ num_features }, weight_t.options());
 
     miopenCreateOpBatchNormForward(ptr_fwdfusionplan.get(), &bNormFwdOp, mode, true);
-    miopenCreateOpActivationForward(ptr_fwdfusionplan.get(), &activFwdOp, miopenActivationRELU);
+    miopenCreateOpActivationForward(ptr_fwdfusionplan.get(), &activFwdOp, activ_mode);
     auto status = miopenCompileFusionPlan(handle, ptr_fwdfusionplan.get());
     if (status != miopenStatusSuccess) {
       printf("Error: miopenCompileFusionPlan error");
       //return None, None, None;
     }
-    float activ_alpha = static_cast<float>(0), activ_beta = static_cast<float>(0),
-        activ_gamma = static_cast<float>(0);  
+
     float alpha = static_cast<float>(1), beta = static_cast<float>(0);
     //miopenOperatorArgs_t ptr_fusionargs;
     //miopenCreateOperatorArgs(&ptr_fusionargs);
@@ -159,9 +161,9 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> miopen_bnrelu_forward(
                                 activFwdOp, 
                                 &alpha, 
                                 &beta, 
-                                activ_alpha, 
-                                activ_beta, 
-                                activ_gamma);
+                                act_alpha, 
+                                act_beta, 
+                                act_gamma);
 
     miopenExecuteFusionPlan(handle, 
                             ptr_fwdfusionplan.get(), 
@@ -169,24 +171,18 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> miopen_bnrelu_forward(
                             idesc.desc(), output->data_ptr(), 
                             ptr_fusionargs.get());
   } else {
-    ptr_ActivationDesc ptr_activdesc = nullptr;
+    
     save_mean = at::empty({ num_features }, weight_t.options());
     save_var = at::empty({ num_features }, weight_t.options());
-    double alpha = 0., beta = 0., gamma = 0.;
-    ptr_activdesc = GetManagedActivDesc();
-    miopenSetActivationDescriptor(ptr_activdesc.get(), miopenActivationRELU, alpha, beta, gamma);
     //auto ptr_fusionplan = GetManagedFusionPlanDesc(&idesc.desc());
     miopenCreateOpBatchNormInference(ptr_fwdfusionplan.get(), &bNormFwdOp, mode, wdesc.desc());
-    miopenCreateOpActivationForward(ptr_fwdfusionplan.get(), &activFwdOp, miopenActivationRELU);
+    miopenCreateOpActivationForward(ptr_fwdfusionplan.get(), &activFwdOp, activ_mode);
     miopenStatus_t miopenError = miopenCompileFusionPlan(handle, ptr_fwdfusionplan.get());
     if (miopenError != miopenStatusSuccess) {
       printf("Error: miopenCompileFusionPlan error");
       //return None, None, None;
     }
-    double activ_alpha, activ_beta, activ_gamma;
-    miopenActivationMode_t activ_mode;
-    miopenGetActivationDescriptor(
-            ptr_activdesc.get(), &activ_mode, &activ_alpha, &activ_beta, &activ_gamma);
+
     double alpha_bn = 1., beta_bn = 0.;
     auto ptr_fusionargs = GetManageFusionPlanArgs();
     miopenSetOpArgsBatchNormInference(ptr_fusionargs.get(),
@@ -199,7 +195,7 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> miopen_bnrelu_forward(
                                       at::maybe_data_ptr(running_var), 
                                       epsilon);
     miopenSetOpArgsActivForward(
-            ptr_fusionargs.get(), activFwdOp, &alpha, &beta, activ_alpha, activ_beta, activ_gamma);
+            ptr_fusionargs.get(), activFwdOp, &alpha_bn, &beta_bn, act_alpha, act_beta, act_gamma);
     miopenExecuteFusionPlan(handle,
                             ptr_fwdfusionplan.get(),
                             idesc.desc(),input->data_ptr(),
@@ -221,7 +217,11 @@ std::tuple<Tensor, Tensor, Tensor> miopen_bnrelu_backward(
     const optional<Tensor>& running_var_opt,
     const optional<Tensor>& save_mean_t_opt,
     const optional<Tensor>& save_var_t_opt,
-    double epsilon) {
+    double epsilon,
+    int act_mode, 
+    double act_alpha, 
+    double act_beta, 
+    double act_gamma) {
 
   const Tensor& running_mean =
       c10::value_or_else(running_mean_opt, [] { return Tensor(); });
@@ -277,23 +277,29 @@ std::tuple<Tensor, Tensor, Tensor> miopen_bnrelu_backward(
 
   Constant one(dataType, 1);
   Constant zero(dataType, 0);
-  
+
+  miopenActivationMode_t activ_mode = miopenActivationMode_t(act_mode);
   miopenFusionOpDescriptor_t bNormBwdOp = nullptr;
   miopenFusionOpDescriptor_t activBwdOp = nullptr;
   auto ptr_bwdfusionplan = GetManagedFusionPlanDesc(idesc.desc());
   //miopenCreateFusionPlan(&ptr_bwdfusionplan, miopenVerticalFusion, idesc.desc());
 
   miopenCreateOpBatchNormBackward(ptr_bwdfusionplan.get(), &bNormBwdOp, mode);
-  miopenCreateOpActivationBackward(ptr_bwdfusionplan.get(), &activBwdOp, miopenActivationRELU);
+  miopenCreateOpActivationBackward(ptr_bwdfusionplan.get(), &activBwdOp, activ_mode);
   miopenStatus_t miopenBwdError =
                 miopenCompileFusionPlan(handle, ptr_bwdfusionplan.get());
   if(miopenBwdError != miopenStatusSuccess) {
     std::cerr << "Error: BatchNorm+Activation Spatial Backward Training plan not supported."
               << std::endl;
   }
-
-  float activ_alpha = static_cast<float>(0), activ_beta = static_cast<float>(0),
-        activ_gamma = static_cast<float>(0); 
+  
+  // double activ_alpha, activ_beta, activ_gamma;
+  // ptr_ActivationDesc ptr_activdesc = nullptr;
+  // ptr_activdesc = GetManagedActivDesc();
+  // miopenActivationMode_t activ_mode;
+  // miopenGetActivationDescriptor(
+  //           ptr_activdesc.get(), &activ_mode, &activ_alpha, &activ_beta, &activ_gamma);
+  // printf("===alpha:%lf beta:%lf gamma:%lf\n", activ_alpha, activ_beta, activ_gamma);
   auto ptr_fusionargs = GetManageFusionPlanArgs();      
   //miopenOperatorArgs_t ptr_fusionargs; 
   //miopenCreateOperatorArgs(&ptr_fusionargs);
@@ -316,52 +322,15 @@ std::tuple<Tensor, Tensor, Tensor> miopen_bnrelu_backward(
                                &zero,
                                output_relu_t.data_ptr(),
                                nullptr,
-                               activ_alpha,
-                               activ_beta,
-                               activ_gamma);
+                               act_alpha,
+                               act_beta,
+                               act_gamma);
   miopenExecuteFusionPlan(handle,
                           ptr_bwdfusionplan.get(),
                           idesc.desc(), grad_output->data_ptr(),
                           idesc.desc(), grad_input_t.data_ptr(), 
                           ptr_fusionargs.get());
   return std::tuple<Tensor,Tensor,Tensor>{grad_input_t, grad_weight_t, grad_bias_t};
-}
-
-std::tuple<Tensor, Tensor, Tensor> miopenbnrelu_backward(
-  const Tensor& grad_output, const Tensor& input, const Tensor& output_relu, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, 
-  const c10::optional<Tensor>& running_mean_opt , const c10::optional<Tensor>& running_var_opt,
-  const c10::optional<Tensor>& save_mean_opt, const c10::optional<Tensor>& save_var_transform_opt,
-  bool train, double epsilon, std::array<bool, 3> output_mask) {
-  c10::MaybeOwned<Tensor> weight_maybe_owned = at::borrow_from_optional_tensor(weight_opt);
-  const Tensor& weight = *weight_maybe_owned;
-  const Tensor& bias = c10::value_or_else(bias_opt, [] {return Tensor();});
-  const Tensor& running_mean = c10::value_or_else(running_mean_opt, [] {return Tensor();});
-  const Tensor& running_var = c10::value_or_else(running_var_opt, [] {return Tensor();});
-  const Tensor& save_mean = c10::value_or_else(save_mean_opt, [] {return Tensor();});
-  const Tensor& save_var_transform = c10::value_or_else(save_var_transform_opt, [] {return Tensor();});
-  
-  if (input.numel() == 0) {
-    std::vector<int64_t> dims(input.dim() - 1);
-    dims[0] = 0;
-    std::iota(dims.begin() + 1, dims.end(), 2);
-
-    // don't return empty tensor because it will break gradient chain
-    Tensor grad_input;
-    Tensor grad_weight;
-    Tensor grad_bias;
-    if (output_mask[2]) {
-      grad_bias = grad_output.sum(dims);
-    }
-    if (output_mask[1]) {
-      grad_weight = (grad_output * input).sum(dims);
-    }
-    if (output_mask[0] && weight.defined()) {
-      grad_input = grad_output * weight[0];
-    }
-    return std::make_tuple(grad_input, grad_weight, grad_bias);
-  }
-
-  return miopen_bnrelu_backward(input, output_relu, grad_output, weight, bias, running_mean, running_var, save_mean, save_var_transform, epsilon);
 }
 
 }//native
