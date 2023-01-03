@@ -13,8 +13,16 @@
 namespace at { namespace native {
 
 enum fuse_action_mode {
-  fuse_act_relu = 1,
-  fuse_act_silu = 2
+  fuse_act_sigmoid = 1,
+  fuse_act_tanh = 2,
+  fuse_act_relu = 3,
+  fuse_act_softrelu = 4,
+  fuse_act_abs = 5,
+  fuse_act_power = 6,
+  fuse_act_clipped_relu = 7,
+  fuse_act_leaky_relu = 8,
+  fuse_act_rlu = 9,
+  fuse_act_silu = 13
 };
 template <typename input_scalar_t>
 __device__ __forceinline__ input_scalar_t act_forward(input_scalar_t o_bn, int act_mode)
