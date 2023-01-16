@@ -1572,8 +1572,162 @@ struct structured__fused_softmax_backward_functional final : public at::native::
     c10::hip::OptionalHIPGuardMasqueradingAsCUDA guard_;
 };
 
+
+struct TORCH_API structured__fused_log_softmax_cuda_out : public at::impl::MetaBase {  
+    void meta(const Tensor& input, const int64_t dim, const bool half_to_float) {
+        int64_t dim_ = maybe_wrap_dim(dim, input.dim());
+
+        auto output_options =
+            input.options().memory_format(LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+
+        if (half_to_float) {
+        output_options = output_options.dtype(ScalarType::Float);
+        }
+
+        int64_t input_dim = input.dim() > 0 ? input.dim() : 1; 
+        TORCH_CHECK(
+            dim_ >= 0 && dim_ < input_dim,
+            "dim must be non-negative and less than input dimensions");
+
+        set_output(input.sizes(), output_options);
+    }
+    void impl(const at::Tensor & self, int64_t dim, bool half_to_float, const at::Tensor & out){
+        torch_softmax<LogSoftMaxForwardEpilogue,true>(self, dim, half_to_float, out);
+    }
+};
+
+struct structured__fused_log_softmax_cuda_out_functional final : public at::native::structured__fused_log_softmax_cuda_out {
+
+    void set_output(int64_t output_idx, IntArrayRef sizes, IntArrayRef strides,
+                    TensorOptions options, DimnameList names) override {
+
+        auto current_device = guard_.current_device();
+        if (C10_UNLIKELY(current_device.has_value())) {
+          TORCH_INTERNAL_ASSERT(*current_device == options.device(),
+            "structured kernels don't support multi-device outputs");
+        } else {
+          guard_.reset_device(options.device());
+        }
+
+
+        outputs_[output_idx] = create_out(sizes, strides, options);
+        if (!names.empty()) {
+          namedinference::propagate_names(*outputs_[output_idx], names);
+        }
+        // super must happen after, so that downstream can use maybe_get_output
+        // to retrieve the output
+
+    }
+
+    const Tensor& maybe_get_output(int64_t output_idx) override {
+        return *outputs_[output_idx];
+    }
+    std::array<c10::ExclusivelyOwned<Tensor>, 1> outputs_;
+    c10::hip::OptionalHIPGuardMasqueradingAsCUDA guard_;
+};
+
+
+struct TORCH_API structured__fused_log_softmax_backward_cuda_out : public at::impl::MetaBase {
+    void meta(const Tensor& grad,const Tensor& output,int64_t dim,const Tensor& input) {
+      TensorArg grad_arg{grad, "grad", 1}, output_arg{output, "output", 2};
+      checkSameSize("softmax_backward", grad_arg, output_arg);
+
+      int64_t dim_ = maybe_wrap_dim(dim, grad.dim());
+
+      auto grad_input_options =
+          grad.options().memory_format(LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+
+      bool half_to_float = grad.scalar_type() != input.scalar_type();
+      if (half_to_float) {
+        // The code below is only valid for the CUDA implementation. It's "okay"
+        // to put it here because half-to-float conversion is not supported by
+        // the CPU implementation of _softmax. There is a TORCH_CHECK in the CUDA
+        // implementation that should ideally go here as well, but there is at least
+        // one test in which the grad and input dtypes do not match for the CPU
+        // implementation of this kernel and it is not true that the grad type is
+        // float and the input dtype is half (see #63057).
+        if (grad.scalar_type() == ScalarType::Float &&
+             input.scalar_type() == ScalarType::Half) {
+          grad_input_options = grad_input_options.dtype(ScalarType::Half);
+        }
+      }
+
+      int64_t grad_dim = grad.dim() > 0 ? grad.dim() : 1;
+      TORCH_CHECK(
+          dim_ >= 0 && dim_ < grad_dim,
+          "dim must be non-negative and less than input dimensions");
+
+      set_output(grad.sizes(), grad_input_options);
+    }
+    void impl(const at::Tensor & grad_output, const at::Tensor & output, int64_t dim, bool half_to_float, const at::Tensor &grad_input){
+        torch_softmax_backward<LogSoftMaxBackwardEpilogue,true>(grad_output, output, dim, half_to_float, grad_input);          
+    }
+};
+
+struct structured__fused_log_softmax_backward_cuda_out_functional final : public at::native::structured__fused_log_softmax_backward_cuda_out {
+
+    void set_output(int64_t output_idx, IntArrayRef sizes, IntArrayRef strides,
+                    TensorOptions options, DimnameList names) override {
+
+        auto current_device = guard_.current_device();
+        if (C10_UNLIKELY(current_device.has_value())) {
+          TORCH_INTERNAL_ASSERT(*current_device == options.device(),
+            "structured kernels don't support multi-device outputs");
+        } else {
+          guard_.reset_device(options.device());
+        }
+
+
+        outputs_[output_idx] = create_out(sizes, strides, options);
+        if (!names.empty()) {
+          namedinference::propagate_names(*outputs_[output_idx], names);
+        }
+        // super must happen after, so that downstream can use maybe_get_output
+        // to retrieve the output
+
+    }
+
+    const Tensor& maybe_get_output(int64_t output_idx) override {
+        return *outputs_[output_idx];
+    }
+    std::array<c10::ExclusivelyOwned<Tensor>, 1> outputs_;
+    c10::hip::OptionalHIPGuardMasqueradingAsCUDA guard_;
+};
+
+
 }
 
+
+Tensor fuse_log_softmax_forward(const at::Tensor & self, int64_t dim, bool half_to_float) {
+    c10::optional<Device> common_device = nullopt;
+    (void)common_device; // Suppress unused variable warning
+
+    c10::impl::check_and_update_common_device(common_device, self, "wrapper__log_softmax", "self");
+    structured__fused_log_softmax_cuda_out_functional op;
+    op.meta(self, dim, half_to_float);
+    op.impl(self, dim, half_to_float, *op.outputs_[0]);
+    return std::move(op.outputs_[0]).take();
+}
+
+Tensor fuse_log_softmax_backward(const at::Tensor & grad_output, const at::Tensor & output, int64_t dim, const at::Tensor & self) {
+    bool half_to_float = grad_output.scalar_type() != self.scalar_type();
+    if (half_to_float) {
+    TORCH_CHECK(
+        (grad_output.scalar_type() == ScalarType::Float &&
+         self.scalar_type() == ScalarType::Half),
+        "expected input and grad types to match, or input to be at::Half and grad to be at::Float");
+    }
+    c10::optional<Device> common_device = nullopt;
+    (void)common_device; // Suppress unused variable warning
+
+    c10::impl::check_and_update_common_device(common_device, grad_output, "wrapper__log_softmax_backward_data", "grad_output");
+    c10::impl::check_and_update_common_device(common_device, output, "wrapper__log_softmax_backward_data", "output");
+    c10::impl::check_and_update_common_device(common_device, self, "wrapper__log_softmax_backward_data", "self");
+    structured__fused_log_softmax_backward_cuda_out_functional op;
+    op.meta(grad_output, output, dim, self);
+    op.impl(grad_output, output, dim, half_to_float, *op.outputs_[0]);
+    return std::move(op.outputs_[0]).take();
+}
 
 
 Tensor fuse_softmax_forward(const Tensor &input, const int64_t dim, const bool half_to_float) {
