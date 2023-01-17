@@ -23,6 +23,8 @@ Tensor fuse_softmax_forward(const Tensor &input, const int64_t dim, const bool h
 Tensor fuse_softmax_backward(const Tensor& grad, const Tensor& output, int64_t dim, const Tensor& input);
 Tensor fuse_log_softmax_forward(const at::Tensor & self, int64_t dim, bool half_to_float);
 Tensor fuse_log_softmax_backward(const at::Tensor & grad_output, const at::Tensor & output, int64_t dim, const at::Tensor & self);
+std::tuple <Tensor, Tensor> accelerate_rnnt_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool compute_sum, bool compute_mean, bool check_lengths);
+std::tuple <Tensor, Tensor> accelerate_ctc_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool logits_time_major, bool compute_sum, bool compute_mean, bool check_lengths);
 }
 }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -44,4 +46,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("softmax_backward", &at::native::fuse_softmax_backward, "softmax of backward");
   m.def("log_softmax_forward", &at::native::fuse_log_softmax_forward, "logsoftmax of forward");
   m.def("log_softmax_backward", &at::native::fuse_log_softmax_backward, "logsoftmax of backward");
+  m.def("accelerate_rnnt_loss", &at::native::accelerate_rnnt_loss, "accelerated rnntloss");
+  m.def("accelerate_ctc_loss", &at::native::accelerate_ctc_loss, "accelerated ctcloss");
 }
