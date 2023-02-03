@@ -8,6 +8,8 @@
 #include <ATen/native/cuda/LaunchUtils.h>
 #include <c10/macros/Macros.h>
 #include <c10/cuda/CUDAMathCompat.h>
+#include <type_traits>
+#include <numeric>
 
 #if defined(__HIP_PLATFORM_HCC__)
 #include <hip/hip_fp16.h>
@@ -213,12 +215,12 @@ namespace at {
 
       template<typename DTYPE, typename CAST_DTYPE>
       __global__ void ComputeAlphasBetasCosts(
-          int batchSize,
-          int maxSrcLen,
-          int maxTgtLen,
-          int maxTgtWithBlankLen,
-          int numTargets,
-          int blankIdx,
+          const int batchSize,
+          const int maxSrcLen,
+          const int maxTgtLen,
+          const int maxTgtWithBlankLen,
+          const int numTargets,
+          const int blankIdx,
           const DTYPE *logits, // Size: {batchSize, maxSrcLen, numTargets}
           const int *pTargetsWithBlank, // Size: {batchSize, maxTgtWithBlankLen}
           const int *srcLengths, // Size: {batchSize}
@@ -228,7 +230,8 @@ namespace at {
           CAST_DTYPE *alphas, // Size: {batchSize, maxSrcLen, maxTgtWithBlankLen}
           CAST_DTYPE *betas, // Size: {batchSize, maxSrcLen, maxTgtWithBlankLen}
           DTYPE *costs,
-          const bool compute_mean) {
+          const bool compute_mean,
+          const CAST_DTYPE neginf) {
 
         const int uid = threadIdx.x;  // target u
         const int batch = blockIdx.y;
@@ -273,20 +276,17 @@ namespace at {
               CAST_DTYPE alpha_t_i;
               if (u >= 1) {
                 if (u >= 2 and tgtWithBlankVec[u] != blankIdx and tgtWithBlankVec[u] != tgtWithBlankVec[u - 2]) {
-                  alpha_t_i = logSumExp3Input(batchAlpha[idxer2d_tgt(t - 1, u)], batchAlpha[idxer2d_tgt(t - 1, u - 1)], batchAlpha[idxer2d_tgt(t - 1, u - 2)]);
+                  alpha_t_i = logSumExp3Input(batchAlpha[idxer2d_tgt(t - 1, u)], batchAlpha[idxer2d_tgt(t - 1, u - 1)], batchAlpha[idxer2d_tgt(t - 1, u - 2)], neginf);
                 } else {
-                  alpha_t_i = logSumExp2Input(batchAlpha[idxer2d_tgt(t - 1, u)], batchAlpha[idxer2d_tgt(t - 1, u - 1)]);
+                  alpha_t_i = logSumExp2Input(batchAlpha[idxer2d_tgt(t - 1, u)], batchAlpha[idxer2d_tgt(t - 1, u - 1)], neginf);
                 }
               } else {
                 alpha_t_i = batchAlpha[idxer2d_tgt(t - 1, u)];
               }
 
-              if (alpha_t_i != 0) {
-                batchAlpha[idxer2d_tgt(t, u)] = alpha_t_i + CAST_DTYPE(logit[idxer2d_src(t, tgtWithBlankVec[u])]) + denomVec[t];
-              }
+              batchAlpha[idxer2d_tgt(t, u)] = alpha_t_i + CAST_DTYPE(logit[idxer2d_src(t, tgtWithBlankVec[u])]) + denomVec[t];
             }
           }
-
         } else if (blockIdx.x == 1) { // compute beta
 
           if (uid == 0) {
@@ -302,23 +302,21 @@ namespace at {
               CAST_DTYPE beta_t_i;
               if (u < (tgtWithBlankLen - 1)) {
                 if (u < (tgtWithBlankLen - 2) and tgtWithBlankVec[u] != blankIdx and tgtWithBlankVec[u] != tgtWithBlankVec[u + 2]) {
-                  beta_t_i = logSumExp3Input(batchBeta[idxer2d_tgt(t + 1, u)], batchBeta[idxer2d_tgt(t + 1, u + 1)], batchBeta[idxer2d_tgt(t + 1, u + 2)]);
+                  beta_t_i = logSumExp3Input(batchBeta[idxer2d_tgt(t + 1, u)], batchBeta[idxer2d_tgt(t + 1, u + 1)], batchBeta[idxer2d_tgt(t + 1, u + 2)], neginf);
                 } else {
-                  beta_t_i = logSumExp2Input(batchBeta[idxer2d_tgt(t + 1, u)], batchBeta[idxer2d_tgt(t + 1, u + 1)]);
+                  beta_t_i = logSumExp2Input(batchBeta[idxer2d_tgt(t + 1, u)], batchBeta[idxer2d_tgt(t + 1, u + 1)], neginf);
                 }
               } else {
                 beta_t_i = batchBeta[idxer2d_tgt(t + 1, u)];
               }
 
-              if (beta_t_i != 0) {
-                batchBeta[idxer2d_tgt(t, u)] = beta_t_i + CAST_DTYPE(logit[idxer2d_src(t, tgtWithBlankVec[u])]) + denomVec[t];
-              }
+              batchBeta[idxer2d_tgt(t, u)] = beta_t_i + CAST_DTYPE(logit[idxer2d_src(t, tgtWithBlankVec[u])]) + denomVec[t];
             }
           }
 
           if (uid == 0) {
             // loss = beta(0,0) + beta(0,1)
-            costs[batch] = -DTYPE(logSumExp2Input(batchBeta[idxer2d_tgt(0, 0)], batchBeta[idxer2d_tgt(0, 1)]));
+            costs[batch] = -DTYPE(logSumExp2Input(batchBeta[idxer2d_tgt(0, 0)], batchBeta[idxer2d_tgt(0, 1)], neginf));
           }
         }
       }
@@ -331,6 +329,8 @@ namespace at {
           const int maxTgtWithBlankLen,
           const int numTargets,
           const int *pTargetsWithBlank, // Size: {batchSize, maxTgtLen}
+          const DTYPE *logits, // Size: {batchSize, maxSrcLen, numTargets}
+          const CAST_DTYPE *denominators, // Size: {batchSize, maxSrcLen}
           const int *srcLengths, // Size: {batchSize}
           const int *tgtLengths, // Size: {batchSize}
           const DTYPE *costs, // Size: {batchSize}
@@ -356,12 +356,13 @@ namespace at {
         const CAST_DTYPE *batchAlpha = alphas + (batchOffset + t) * maxTgtWithBlankLen;
         const CAST_DTYPE *batchBeta = betas + (batchOffset + t) * maxTgtWithBlankLen;
         const int *tgtWithBlankVec = pTargetsWithBlank + batch * maxTgtWithBlankLen;
+        const DTYPE *logit = logits + (batchOffset + t) * numTargets;
+        const CAST_DTYPE denom_value = *(denominators + batchOffset + t);
 
         CAST_DTYPE *pAlphasBetasVec = pGradientAlphasBetas + (batchOffset + t) * numTargets; // already initialized to zeros
+        int label = tgtWithBlankVec[u];
 
-        if (batchAlpha[u] != 0 and batchBeta[u] != 0) {
-          gpuAtomicAddNoReturn(&pAlphasBetasVec[tgtWithBlankVec[u]], c10::cuda::compat::exp(batchAlpha[u] + batchBeta[u] + CAST_DTYPE(cost)));
-        }
+        gpuAtomicAddNoReturn(&pAlphasBetasVec[label], c10::cuda::compat::exp(batchAlpha[u] + batchBeta[u] + CAST_DTYPE(cost) - (CAST_DTYPE(logit[label]) + denom_value)));
       }
 
       template<typename DTYPE, typename CAST_DTYPE, typename VEC_DTYPE, int VF>
@@ -416,10 +417,9 @@ namespace at {
             if (d >= numTargets) { break; }
 
             // Do the update
-            CAST_DTYPE log_logit = CAST_DTYPE(logit[d]) + denom_value; // log_logits
-            CAST_DTYPE resGrad = c10::cuda::compat::exp(log_logit);
-            if (pAlphasBetasVec[d] != 0) {
-              resGrad -= pAlphasBetasVec[d] * c10::cuda::compat::exp(-log_logit);
+            CAST_DTYPE resGrad = c10::cuda::compat::exp(CAST_DTYPE(logit[d]) + denom_value); // exp(log_logits)
+            if (pAlphasBetasVec[d] != INFINITY and pAlphasBetasVec[d] != 0) {
+              resGrad -= pAlphasBetasVec[d];
             }
 
             // compute mean and clamp
@@ -476,11 +476,9 @@ namespace at {
 
         for (int d = tid; d < numTargets; d += blockDim.x) {
           // Do the update
-          CAST_DTYPE log_logit = CAST_DTYPE(logit[d]) + denom_value; // log_logits
-          CAST_DTYPE resGrad = c10::cuda::compat::exp(log_logit);
-
-          if (pAlphasBetasVec[d] != 0) {
-            resGrad -= pAlphasBetasVec[d] * c10::cuda::compat::exp(-log_logit);
+          CAST_DTYPE resGrad = c10::cuda::compat::exp(CAST_DTYPE(logit[d]) + denom_value); // exp(logits) - exp(alpha+beta-cost-logits)
+          if (pAlphasBetasVec[d] != INFINITY and pAlphasBetasVec[d] != 0) {
+            resGrad -= pAlphasBetasVec[d];
           }
 
           if (compute_mean) {
@@ -556,9 +554,13 @@ namespace at {
 
       template<typename DTYPE, typename CAST_DTYPE, typename VEC_DTYPE>
       void ComputeCtcLoss(const DTYPE *logits, const int *targets, const int *srcLengths, const int *tgtLengths,
-                          int *intWorkspace, CAST_DTYPE *floatWorkspace, DTYPE *costs, DTYPE *costs_sum, DTYPE *gradients,
+                          int *intWorkspace, CAST_DTYPE *alphaBetaWorkspace, CAST_DTYPE *floatWorkspace,
+                          DTYPE *costs, DTYPE *costs_sum, DTYPE *gradients,
                           CtcWorkspaceTools *wkts, const bool &inputMemAlign,
                           const bool &compute_sum, const bool &compute_mean, const bool &already_log_softmax) {
+
+        const CAST_DTYPE neginf = -CAST_DTYPE(INFINITY);
+
         const cudaStream_t &stream = wkts->GetCudaStream();
         const int &batchSize = wkts->GetBatchSize();
         const int &maxSrcLen = wkts->GetMaxSrcLen();
@@ -604,8 +606,8 @@ namespace at {
           }
         }
 
-        CAST_DTYPE *pAlphas = floatWorkspace + wkts->GetPointerToAlphasOffset();
-        CAST_DTYPE *pBetas = floatWorkspace + wkts->GetPointerToBetasOffset();
+        CAST_DTYPE *pAlphas = alphaBetaWorkspace + wkts->GetPointerToAlphasOffset();
+        CAST_DTYPE *pBetas = alphaBetaWorkspace + wkts->GetPointerToBetasOffset();
         { // compute alphas, betas and costs.
           const int workNumThread = 1;
           const int tgtPerThread = (maxTgtWithBlankLen + workNumThread - 1) / workNumThread;
@@ -629,7 +631,8 @@ namespace at {
               /*alphas=*/pAlphas,
               /*betas=*/pBetas,
               /*costs=*/costs,
-              /*compute_mean=*/compute_mean);
+              /*compute_mean=*/compute_mean,
+              /*neginf=*/neginf);
 
           if (cudaGetLastError() != cudaSuccess) {
             std::string msg("ComputeAlphasBetasCosts failed: ");
@@ -652,6 +655,8 @@ namespace at {
               /*maxTgtWithBlankLen=*/maxTgtWithBlankLen,
               /*num_targets=*/numTgt,
               /*pTargetsWithBlank=*/pTargetsWithBlank,
+              /*logits=*/logits,
+              /*denominators=*/pDenominators,
               /*srcLengths=*/srcLengths,
               /*tgtLengths=*/tgtLengths,
               /*costs=*/costs,
@@ -777,7 +782,7 @@ namespace at {
       TORCH_CHECK(target_lengths.dim() == 1, "target_lengths must be 1-D");
 
       if (logits_time_major) { // input logit size (T,N,C)
-        logits = logits.permute({1, 0, 2}).contiguous();
+        logits = logits.permute({1, 0, 2}).contiguous(); // (T,N,C) -> (N,T,C)
       }
 
       TORCH_CHECK(logit_lengths.size(0) == logits.size(0), "batch dimension mismatch between logits and logit_lengths");
@@ -803,12 +808,18 @@ namespace at {
       Tensor int_workspace = at::zeros(wkts.GetIntWorkspaceSize(),
                                        at::TensorOptions().device(logits.device()).dtype(ScalarType::Int));
       // create float workspace
+      Tensor alpha_beta_workspace = at::empty(wkts.GetAlphaBetaWorkspaceSize(),
+                                              at::TensorOptions().device(logits.device()).dtype(ScalarType::Float), LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+      alpha_beta_workspace.fill_(float(-INFINITY));
+      alpha_beta_workspace = alpha_beta_workspace.contiguous();
+
       Tensor float_workspace = at::zeros(wkts.GetFloatWorkspaceSize(),
                                          at::TensorOptions().device(logits.device()).dtype(ScalarType::Float));
 
+      Tensor gradients = at::zeros_like(logits, LEGACY_CONTIGUOUS_MEMORY_FORMAT);
+
       // set output
       Tensor costs = at::empty(wkts.GetBatchSize(), logits.options());
-      Tensor gradients = at::zeros_like(logits);
       Tensor costs_sum = at::zeros({1}, logits.options());
 
       // vector compute
@@ -822,14 +833,15 @@ namespace at {
                                and reinterpret_cast<VEC_DTYPE>(gradients.data_ptr<float>()) % vecAlignment == 0;
 
           if (wkts.GetDenominatorsSize() > 1 << (16 - sizeof(float))) { // 2^12 is the threshold
-            // Tensor fuse_log_softmax_forward(const at::Tensor & self, int64_t dim, bool half_to_float);
-            Tensor logits_logsoftmax = fuse_log_softmax_forward(logits, 2, false);
+            Tensor logits_logsoftmax = at::log_softmax(logits, 2, logits.scalar_type());
+
             ctcloss_tools::ComputeCtcLoss</*DTYPE=*/float, /*CAST_DTYPE=*/float, /*VEC_DTYPE=*/VEC_DTYPE>(
                 /*logits=*/logits_logsoftmax.data_ptr<float>(),
                 /*targets=*/targets.data_ptr<int>(),
                 /*logit_lengths=*/logit_lengths.data_ptr<int>(),
                 /*target_lengths=*/target_lengths.data_ptr<int>(),
                 /*int_workspace=*/int_workspace.data_ptr<int>(),
+                /*alpha_beta_workspace=*/alpha_beta_workspace.data_ptr<float>(),
                 /*float_workspace=*/float_workspace.data_ptr<float>(),
                 /*costs=*/costs.data_ptr<float>(),
                 /*costs_sum=*/costs_sum.data_ptr<float>(),
@@ -846,6 +858,7 @@ namespace at {
                 /*logit_lengths=*/logit_lengths.data_ptr<int>(),
                 /*target_lengths=*/target_lengths.data_ptr<int>(),
                 /*int_workspace=*/int_workspace.data_ptr<int>(),
+                /*alpha_beta_workspace=*/alpha_beta_workspace.data_ptr<float>(),
                 /*float_workspace=*/float_workspace.data_ptr<float>(),
                 /*costs=*/costs.data_ptr<float>(),
                 /*costs_sum=*/costs_sum.data_ptr<float>(),
@@ -856,30 +869,51 @@ namespace at {
                 /*compute_mean=*/compute_mean,
                 /*already_log_softmax=*/false);
           }
-
           break;
         }
         case ScalarType::Half: {
           bool inputMemAlign = reinterpret_cast<VEC_DTYPE>(logits.data_ptr<c10::Half>()) % vecAlignment == 0
                                and reinterpret_cast<VEC_DTYPE>(gradients.data_ptr<c10::Half>()) % vecAlignment == 0;
 
-          ctcloss_tools::ComputeCtcLoss</*DTYPE=*/c10::Half, /*CAST_DTYPE=*/float, /*VEC_DTYPE=*/VEC_DTYPE>(
-              /*logits=*/logits.data_ptr<c10::Half>(),
-              /*targets=*/targets.data_ptr<int>(),
-              /*logit_lengths=*/logit_lengths.data_ptr<int>(),
-              /*target_lengths=*/target_lengths.data_ptr<int>(),
-              /*int_workspace=*/int_workspace.data_ptr<int>(),
-              /*float_workspace=*/float_workspace.data_ptr<float>(),
-              /*costs=*/costs.data_ptr<c10::Half>(),
-              /*costs_sum=*/costs_sum.data_ptr<c10::Half>(),
-              /*gradients=*/gradients.data_ptr<c10::Half>(),
-              /*CtcWorkspaceTools=*/&wkts,
-              /*inputMemAlign=*/inputMemAlign,
-              /*compute_sum=*/compute_sum,
-              /*compute_mean=*/compute_mean,
-              /*already_log_softmax=*/false);
+          if (wkts.GetDenominatorsSize() > 1 << (16 - sizeof(float))) { // 2^12 is the threshold
+            Tensor logits_logsoftmax = at::log_softmax(logits, 2, logits.scalar_type());
+            ctcloss_tools::ComputeCtcLoss</*DTYPE=*/c10::Half, /*CAST_DTYPE=*/float, /*VEC_DTYPE=*/VEC_DTYPE>(
+                /*logits=*/logits.data_ptr<c10::Half>(),
+                /*targets=*/targets.data_ptr<int>(),
+                /*logit_lengths=*/logit_lengths.data_ptr<int>(),
+                /*target_lengths=*/target_lengths.data_ptr<int>(),
+                /*int_workspace=*/int_workspace.data_ptr<int>(),
+                /*alpha_beta_workspace=*/alpha_beta_workspace.data_ptr<float>(),
+                /*float_workspace=*/float_workspace.data_ptr<float>(),
+                /*costs=*/costs.data_ptr<c10::Half>(),
+                /*costs_sum=*/costs_sum.data_ptr<c10::Half>(),
+                /*gradients=*/gradients.data_ptr<c10::Half>(),
+                /*CtcWorkspaceTools=*/&wkts,
+                /*inputMemAlign=*/inputMemAlign,
+                /*compute_sum=*/compute_sum,
+                /*compute_mean=*/compute_mean,
+                /*already_log_softmax=*/true);
+          } else {
+            ctcloss_tools::ComputeCtcLoss</*DTYPE=*/c10::Half, /*CAST_DTYPE=*/float, /*VEC_DTYPE=*/VEC_DTYPE>(
+                /*logits=*/logits.data_ptr<c10::Half>(),
+                /*targets=*/targets.data_ptr<int>(),
+                /*logit_lengths=*/logit_lengths.data_ptr<int>(),
+                /*target_lengths=*/target_lengths.data_ptr<int>(),
+                /*int_workspace=*/int_workspace.data_ptr<int>(),
+                /*alpha_beta_workspace=*/alpha_beta_workspace.data_ptr<float>(),
+                /*float_workspace=*/float_workspace.data_ptr<float>(),
+                /*costs=*/costs.data_ptr<c10::Half>(),
+                /*costs_sum=*/costs_sum.data_ptr<c10::Half>(),
+                /*gradients=*/gradients.data_ptr<c10::Half>(),
+                /*CtcWorkspaceTools=*/&wkts,
+                /*inputMemAlign=*/inputMemAlign,
+                /*compute_sum=*/compute_sum,
+                /*compute_mean=*/compute_mean,
+                /*already_log_softmax=*/false);
+          }
           break;
         }
+
         default: {
           break;
         }
