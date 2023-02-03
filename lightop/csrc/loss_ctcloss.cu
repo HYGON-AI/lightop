@@ -417,9 +417,9 @@ namespace at {
             if (d >= numTargets) { break; }
 
             // Do the update
-            CAST_DTYPE resGrad = c10::cuda::compat::exp(CAST_DTYPE(logit[d]) + denom_value); // exp(log_logits)
+            CAST_DTYPE resGrad = 0; // exp(log_logits)
             if (pAlphasBetasVec[d] != INFINITY and pAlphasBetasVec[d] != 0) {
-              resGrad -= pAlphasBetasVec[d];
+              resGrad = c10::cuda::compat::exp(CAST_DTYPE(logit[d]) + denom_value) - pAlphasBetasVec[d];
             }
 
             // compute mean and clamp
@@ -476,9 +476,9 @@ namespace at {
 
         for (int d = tid; d < numTargets; d += blockDim.x) {
           // Do the update
-          CAST_DTYPE resGrad = c10::cuda::compat::exp(CAST_DTYPE(logit[d]) + denom_value); // exp(logits) - exp(alpha+beta-cost-logits)
+          CAST_DTYPE resGrad = 0; // exp(logits) - exp(alpha+beta-cost-logits)
           if (pAlphasBetasVec[d] != INFINITY and pAlphasBetasVec[d] != 0) {
-            resGrad -= pAlphasBetasVec[d];
+            resGrad = c10::cuda::compat::exp(CAST_DTYPE(logit[d]) + denom_value) - pAlphasBetasVec[d];
           }
 
           if (compute_mean) {
