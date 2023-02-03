@@ -7,9 +7,9 @@ class RNNTLoss(torch.nn.Module):
     Detail of this loss function can be found in: Sequence Transduction with Recurrent Neural Networks
     """
 
-    def __init__(self, blank: int = -1, clamp: float = -1.0, reduction: str = 'mean', check_lengths: bool = False):
+    def __init__(self, blank: int = 0, clamp: float = -1.0, reduction: str = 'mean', check_lengths: bool = False):
         """
-        :param blank:  (int, optional) – blank label (Default: -1)
+        :param blank:  (int, optional) – blank label (Default: 0)
         :param clamp: (float, optional) – clamp for gradients (Default: -1)
         :param reduction: (string, optional) – Specifies the reduction to apply to the output:
                         "none" | "mean" | "sum". (Default: "mean")
