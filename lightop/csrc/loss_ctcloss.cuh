@@ -58,20 +58,17 @@ namespace at {
 
       // math tool
       template<typename scalar_t>
-      __device__ __forceinline__ scalar_t logSumExp2Input(scalar_t a, scalar_t b) {
-        if (a == 0) { return b; }
-        if (b == 0) { return a; }
-        return (a >= b) ? a + c10::cuda::compat::log1p(c10::cuda::compat::exp(b - a)) : b + c10::cuda::compat::log1p(c10::cuda::compat::exp(a - b));
+      __device__ __forceinline__ scalar_t logSumExp2Input(scalar_t a, scalar_t b, scalar_t neginf) {
+        scalar_t lmax = a >= b ? a : b;
+        lmax = lmax == neginf ? 0 : lmax;
+        return c10::cuda::compat::log(c10::cuda::compat::exp(a - lmax) + c10::cuda::compat::exp(b - lmax)) + lmax;
       }
 
       template<typename scalar_t>
-      __device__ __forceinline__ scalar_t logSumExp3Input(scalar_t a, scalar_t b, scalar_t c) {
-        if (a == 0) { return logSumExp2Input(b, c); }
-        if (b == 0) { return logSumExp2Input(a, c); }
-        if (c == 0) { return logSumExp2Input(a, b); }
-
+      __device__ __forceinline__ scalar_t logSumExp3Input(scalar_t a, scalar_t b, scalar_t c, scalar_t neginf) {
         scalar_t lmax = a >= b ? a : b;
         lmax = lmax >= c ? lmax : c;
+        lmax = lmax == neginf ? 0 : lmax;
         return c10::cuda::compat::log(c10::cuda::compat::exp(a - lmax) + c10::cuda::compat::exp(b - lmax) + c10::cuda::compat::exp(c - lmax)) + lmax;
       }
 
@@ -119,8 +116,12 @@ namespace at {
 
           int GetGradientAlphasBetasSize() const { return sizeBTC_; }
 
+          int GetAlphaBetaWorkspaceSize() const {
+            return GetAlphasOrBetasSize() * 2;
+          }
+
           int GetFloatWorkspaceSize() const {
-            return GetDenominatorsSize() + GetAlphasOrBetasSize() * 2 + GetGradientAlphasBetasSize();
+            return GetDenominatorsSize() + GetGradientAlphasBetasSize();
           }
 
           int GetIntWorkspaceSize() const {
@@ -128,13 +129,13 @@ namespace at {
           }
 
           // get float offset
-          int GetPointerToDenominatorsOffset() const { return 0; }
-
-          int GetPointerToAlphasOffset() const { return GetPointerToDenominatorsOffset() + GetDenominatorsSize(); }
+          int GetPointerToAlphasOffset() const { return 0; }
 
           int GetPointerToBetasOffset() const { return GetPointerToAlphasOffset() + GetAlphasOrBetasSize(); }
 
-          int GetPointerToGradientAlphasBetasOffset() const { return GetPointerToBetasOffset() + GetAlphasOrBetasSize(); }
+          int GetPointerToDenominatorsOffset() const { return 0; }
+
+          int GetPointerToGradientAlphasBetasOffset() const { return GetPointerToDenominatorsOffset() + GetDenominatorsSize(); }
 
           // get int offset
           int GetPointerToTargetRepeatsOffset() const { return 0; }
