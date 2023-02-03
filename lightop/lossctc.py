@@ -7,10 +7,10 @@ class CTCLoss(torch.nn.Module):
     Detail of this loss function can be found in: Sequence Transduction with Recurrent Neural Networks
     """
 
-    def __init__(self, blank: int = -1, clamp: int = -1, reduction: str = 'mean',
-                 logits_time_major: bool = True, check_lengths: bool = False):
+    def __init__(self, blank: int = 0, clamp: int = -1, reduction: str = 'mean',
+                 logits_time_major: bool = True, check_lengths: bool = True):
         """
-        :param blank:  (int, optional) – blank label (Default: -1)
+        :param blank:  (int, optional) – blank label (Default: 0)
         :param clamp: (float, optional) – clamp for gradients (Default: -1)
         :param reduction: (string, optional) – Specifies the reduction to apply to the output:
                         "none" | "mean" | "sum". (Default: "mean")
