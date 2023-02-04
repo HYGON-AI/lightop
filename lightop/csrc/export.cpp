@@ -19,10 +19,8 @@ Tensor fused_linear_bias_forward(const at::Tensor& self, const at::Tensor& mat1,
 Tensor fused_linear_bias_backward(at::Tensor& self, at::Tensor& result, const at::Tensor& mat1, const at::Tensor& mat2);
 std::tuple <Tensor, Tensor> fused_relu_dropout_forward(const Tensor &self, const double &p, const bool &use_relu, const bool &training);
 Tensor fused_relu_dropout_backward(Tensor &grad, Tensor &mask);
-Tensor fuse_softmax_forward(const Tensor &input, const int64_t dim, const bool half_to_float);
-Tensor fuse_softmax_backward(const Tensor& grad, const Tensor& output, int64_t dim, const Tensor& input);
-Tensor fuse_log_softmax_forward(const at::Tensor & self, int64_t dim, bool half_to_float);
-Tensor fuse_log_softmax_backward(const at::Tensor & grad_output, const at::Tensor & output, int64_t dim, const at::Tensor & self);
+Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim, const bool half_to_float);
+Tensor fuse_logsoftmax_forward_autograd(const at::Tensor & self, int64_t dim, bool half_to_float);
 std::tuple <Tensor, Tensor> accelerate_rnnt_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool compute_sum, bool compute_mean, bool check_lengths);
 std::tuple <Tensor, Tensor> accelerate_ctc_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool logits_time_major, bool compute_sum, bool compute_mean, bool check_lengths);
 }
@@ -42,10 +40,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("linearbias_backward", &at::native::fused_linear_bias_backward, "fused_linearbias backward");
   m.def("relu_dropout_forward", &at::native::fused_relu_dropout_forward, "fused_relu_dropout forward");
   m.def("relu_dropout_backward", &at::native::fused_relu_dropout_backward, "fused_relu_dropout backward");
-  m.def("softmax_forward", &at::native::fuse_softmax_forward, "softmax of forward");
-  m.def("softmax_backward", &at::native::fuse_softmax_backward, "softmax of backward");
-  m.def("log_softmax_forward", &at::native::fuse_log_softmax_forward, "logsoftmax of forward");
-  m.def("log_softmax_backward", &at::native::fuse_log_softmax_backward, "logsoftmax of backward");
+  m.def("softmax_forward_autograd", &at::native::fuse_softmax_forward_autograd, "softmax autograd of forward");
+  m.def("logsoftmax_forward_autograd", &at::native::fuse_logsoftmax_forward_autograd, "logsoftmax autograd of forward");
   m.def("accelerate_rnnt_loss", &at::native::accelerate_rnnt_loss, "accelerated rnntloss");
   m.def("accelerate_ctc_loss", &at::native::accelerate_ctc_loss, "accelerated ctcloss");
 }
