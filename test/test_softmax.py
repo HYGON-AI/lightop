@@ -125,10 +125,11 @@ if __name__ == "__main__":
   print("softmax_cpu_result: ") 
   check_softmax_cpu_result('cuda')
   
+  print("softmax_torch_fuse_result: ") 
+  check_torch_fuse_Softmax()
+
   print("Logsoftmax_cpu_result: ") 
   check_log_softmax_cpu_result('cuda')
 
   print("Logsoftmax_torch_fuse_result: ") 
   check_torch_fuse_LogSoftmax()
-  print("softmax_torch_fuse_result: ") 
-  check_torch_fuse_Softmax()
