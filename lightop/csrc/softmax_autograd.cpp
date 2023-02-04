@@ -97,41 +97,6 @@ class fuseLogSoftmaxFunction : public torch::autograd::Function<fuseLogSoftmaxFu
   }
 };
 
-// TODO: There should be an easier way to do this
-class fuseSoftmaxBackwardFunction
-    : public torch::autograd::Function<fuseSoftmaxBackwardFunction> {
- public:
-  static torch::autograd::variable_list forward(
-  // static Tensor forward(
-      torch::autograd::AutogradContext* ctx,
-      const torch::autograd::Variable& grad,
-      const torch::autograd::Variable& output,
-      int64_t dim,
-      const torch::autograd::Variable& input) {
-    // at::AutoDispatchBelowADInplaceOrView g;
-    at::AutoNonVariableTypeMode g;
-
-    if (input.device().type() == DeviceType::CUDA) {
-      auto grad_in = fuse_softmax_backward(
-          grad,
-          output,
-          dim,
-          input);
-      return {grad_in};   
-    }
-    else {
-        TORCH_CHECK(0, "Unsupported device ", input.device().type());}
-  }
-
-  static torch::autograd::variable_list backward(
-  //static tensor_list backward(
-      torch::autograd::AutogradContext* ctx,
-      const torch::autograd::variable_list& grad_output) {
-    TORCH_CHECK(0, "double backwards on fuse_softmax not supported");
-  }
-};
-
-
 
 Tensor fuse_softmax_forward_autograd(
     const Tensor& input,
@@ -153,18 +118,6 @@ Tensor fuse_logsoftmax_forward_autograd(
    return result[0];
   }  
   
-Tensor fuse_softmax_backward_autograd(
-    const at::Tensor& grad,
-    const at::Tensor& output,
-    int64_t dim,
-    const at::Tensor& input) {
-  return fuseSoftmaxBackwardFunction::apply(
-      grad,
-      output,
-      dim,
-      input)[0];
-}
-
 //
 } // namespace native
 } // namespace at
