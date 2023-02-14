@@ -723,7 +723,7 @@ namespace at {
                                          at::TensorOptions().device(logits.device()).dtype(ScalarType::Float));
       // set output
       Tensor costs = at::empty(wkts.GetBatchSize(), logits.options());
-      Tensor gradients = at::empty_like(logits);
+      Tensor gradients = at::zeros_like(logits);
       Tensor costs_sum = at::zeros({1}, logits.options());
 
       // vector compute
