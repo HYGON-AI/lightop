@@ -305,6 +305,9 @@ def get_extensions():
     extension = CUDAExtension
     include_dirs.append(os.path.abspath('./lightop/csrc/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/miopen/'))
+    rocm_home=_find_rocm_home()
+    include_dirs.append(rocm_home+'/hiprand/include')
+    include_dirs.append(rocm_home+'/rocrand/include')
     ext_ops = extension(
         name="lightop.op",
         sources=op_files,

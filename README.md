@@ -4,10 +4,7 @@
 
 环境依赖：
 pytorch 1.10
-dtk22.04.2
-
-配置环境变量：
-export CPLUS_INCLUDE_PATH=$ROCM_PATH/include:$ROCM_PATH/hiprand/include:$ROCM_PATH/rocrand/include:$CPLUS_INCLUDE_PATH
+dtk22.04.2或dtk22.10
 
 运行安装脚本：
 python3 setup.py install
