@@ -27,7 +27,6 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t*
   WelfordOp welford_op;
   WelfordType val;
 
-  #pragma unroll
   for (IndexType j = threadIdx.x; j < cols; j += blockDim.x) {
     IndexType index = i * cols + j;
     val = welford_op.reduce(val, static_cast<T_ACC>(input[index]));
@@ -44,10 +43,12 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t*
   }
   __syncthreads();
   //layernorm  (x-mean)*rstd*gamma+beta
-  #pragma unroll
+  scalar_t tmean=s_mean;
+  scalar_t trstd=s_rstd;
   for (IndexType j = threadIdx.x; j < cols; j += blockDim.x) {
     IndexType index = i * cols + j;
-    ret[index] = (static_cast<T_ACC>(input[index]) - s_mean)*s_rstd * static_cast<T_ACC>(gamma[j]) + static_cast<T_ACC>(beta[j]);
+    ret[index] = (static_cast<T_ACC>(input[index]) - static_cast<T_ACC>(tmean))*static_cast<T_ACC>(trstd) 
+                 * static_cast<T_ACC>(gamma[j]) + static_cast<T_ACC>(beta[j]);
   }
 }
 
@@ -55,16 +56,14 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t*
 std::tuple<Tensor,Tensor,Tensor>
 layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,double ln_epsilon)
 {
-    AT_ASSERTM(self.dim()==3, "x size must be batchsize*seq_len*embedding_dim");
     AT_ASSERTM(self.is_cuda(), "x must on dcu");
     const IndexType cols=self.sizes().back();
-    AT_ASSERT(cols>=512&&cols<=4096&&cols%256==0,"cols must be between 512 and 4096,and cols%256=0");
+    AT_ASSERT(cols>=512,"cols must >= 512");
     const IndexType nelem = self.numel();
     const IndexType rows=nelem/cols;
     Tensor ret = at::empty_like(self);
     Tensor mean = at::empty({rows},self.options());
     Tensor rstd = at::empty({rows},self.options());
-    PhiloxCudaState rng_engine_inputs;
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
@@ -217,7 +216,7 @@ __global__ void LayerNormBackward_kernel(IndexType N,const scalar_t* dY,const sc
 std::tuple<Tensor,Tensor,Tensor>
 layernorm_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const Tensor& rstd,const Tensor& gamma)
 {
-  IndexType N=grad.sizes()[2];
+  IndexType N=grad.sizes().back();
   IndexType M=grad.numel()/N;
   auto pgrad = grad.expect_contiguous();
   Tensor dX = at::empty_like(*pgrad);
