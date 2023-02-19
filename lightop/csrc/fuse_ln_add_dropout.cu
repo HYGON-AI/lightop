@@ -27,7 +27,6 @@ __global__ void fused_ln_dropout_kernel_val(scalar_t* input,scalar_t* residual,s
   WelfordOp welford_op;
   WelfordType val;
 
-  #pragma unroll
   for (IndexType j = threadIdx.x; j < cols; j += blockDim.x) {
     IndexType index = i * cols + j;
     scalar_t temp= input[index]+residual[index];
@@ -46,10 +45,12 @@ __global__ void fused_ln_dropout_kernel_val(scalar_t* input,scalar_t* residual,s
   }
   __syncthreads();
   //layernorm  (x-mean)*rstd*gamma+beta
-  #pragma unroll
+  scalar_t tmean=s_mean;
+  scalar_t trstd=s_rstd;
   for (IndexType j = threadIdx.x; j < cols; j += blockDim.x) {
     IndexType index = i * cols + j;
-    ret[index] = (static_cast<T_ACC>(ret[index]) - s_mean)*s_rstd * static_cast<T_ACC>(gamma[j]) + static_cast<T_ACC>(beta[j]);
+    ret[index] = (static_cast<T_ACC>(ret[index]) - static_cast<T_ACC>(tmean))*static_cast<T_ACC>(trstd) 
+                 * static_cast<T_ACC>(gamma[j]) + static_cast<T_ACC>(beta[j]);
   }
 }
 
@@ -59,20 +60,19 @@ C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
 __global__ void fused_ln_dropout_kernel_train(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retdrop_data,scalar_t* mean,
                                             scalar_t* rstd,scalar_t* gamma,scalar_t* beta,scalar_t* mask,IndexType cols,
-                                            IndexType totalElements,float p,scalar_t eps,PhiloxCudaState philox_args,IndexType rand_offset)
+                                            IndexType totalElements,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,IndexType rand_offset)
 {
   //dropout+add
   IndexType i=blockIdx.x;
   IndexType tcol=cols/VEC;
   using LoadT = memory::aligned_vector<scalar_t, VEC>;
-  float pinv = 1.0f/p;
+  T_ACC pinv = T_ACC(1)/p;
   auto seeds = at::cuda::philox::unpack(philox_args);
   hiprandStatePhilox4_32_10_t state;
   float rand[VEC];
   scalar_t input4[VEC];
   scalar_t residual4[VEC];
   scalar_t mask4[VEC];
-  #pragma unroll
   for(int off=threadIdx.x;off<tcol;off+=blockDim.x){
     IndexType idx = i * tcol + off;
     hiprand_init(std::get<0>(seeds),idx%rand_offset,std::get<1>(seeds)+idx/rand_offset*VEC,&state);
@@ -90,14 +90,12 @@ __global__ void fused_ln_dropout_kernel_train(scalar_t* input,scalar_t* residual
   }
   __syncthreads();
   // layernorm get mean and rstd
-  using T_ACC = acc_type<scalar_t, true>;
   using WelfordType = WelfordData<T_ACC, IndexType, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, IndexType, T_ACC, thrust::pair<T_ACC, T_ACC>>;
   __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[kCUDABlockReduceNumThreads/C10_WARP_SIZE];
   WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
   WelfordOp welford_op;
   WelfordType val;
-  #pragma unroll
   for (IndexType j = threadIdx.x; j < cols; j += blockDim.x) {
     IndexType index = i * cols + j;
     val = welford_op.reduce(val, static_cast<T_ACC>(retdrop_data[index]));
@@ -114,10 +112,12 @@ __global__ void fused_ln_dropout_kernel_train(scalar_t* input,scalar_t* residual
   }
   __syncthreads();
   //layernorm  (x-mean)*rstd*gamma+beta
-  #pragma unroll
+  scalar_t tmean=s_mean;
+  scalar_t trstd=s_rstd;
   for (IndexType j = threadIdx.x; j < cols; j += blockDim.x) {
     IndexType index = i * cols + j;
-    ret[index] = (static_cast<T_ACC>(retdrop_data[index]) - s_mean)*s_rstd * static_cast<T_ACC>(gamma[j]) + static_cast<T_ACC>(beta[j]);
+    ret[index] = (static_cast<T_ACC>(retdrop_data[index]) - static_cast<T_ACC>(tmean))*static_cast<T_ACC>(trstd) 
+                 * static_cast<T_ACC>(gamma[j]) + static_cast<T_ACC>(beta[j]);
   }
 }
 
@@ -126,11 +126,10 @@ fused_ln_add_dropout_forward(const Tensor& self,const Tensor& other,const Tensor
                              double ln_epsilon, double p, bool training)
 {
     AT_ASSERTM(self.sizes() == other.sizes(), "x must be the same size as y");
-    AT_ASSERTM(self.dim()==3, "x size must be batchsize*seq_len*embedding_dim");
     AT_ASSERTM(p >=0.0f&&p<1.0f, "p mast be between 0 and 1");
     AT_ASSERTM(self.is_cuda()&&other.is_cuda(), "x and y must on dcu");
     const IndexType cols=self.sizes().back();
-    AT_ASSERT(cols>=512&&cols<=4096&&cols%256==0,"cols must be between 512 and 4096,and cols%256=0");
+    AT_ASSERT(cols>=512,"cols must >= 512");
     const IndexType nelem = self.numel();
     const IndexType rows=nelem/cols;
     Tensor ret = at::empty_like(self);
@@ -144,7 +143,9 @@ fused_ln_add_dropout_forward(const Tensor& self,const Tensor& other,const Tensor
       self.scalar_type(),
       "fused_ln_dropout_forward",
       [&] {
-        float pa=1-p;
+        p=1-p;
+        using T_ACC = acc_type<scalar_t, true>;
+        T_ACC pa = (T_ACC)(p);
         scalar_t eps = ln_epsilon;
         scalar_t* self_data = self.data_ptr<scalar_t>();
         scalar_t* other_data =other.data_ptr<scalar_t>();
@@ -158,12 +159,19 @@ fused_ln_add_dropout_forward(const Tensor& self,const Tensor& other,const Tensor
           retdrop = at::empty({nelem*2},self.options());
           scalar_t* retdrop_data=retdrop.data_ptr<scalar_t>();
           auto gen = get_generator_or_default<CUDAGeneratorImpl>(Generator(), cuda::detail::getDefaultCUDAGenerator());
-          IndexType rand_offset=at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor*at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
-          std::lock_guard<std::mutex> lock(gen->mutex_);
-          rng_engine_inputs = gen->philox_cuda_state(12);
-          fused_ln_dropout_kernel_train<scalar_t><<<rows, kCUDABlockReduceNumThreads, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                     self_data,other_data,ret_data,retdrop_data,mean_data,rstd_data,weight_data,
-                                     bias_data,retdrop_data+nelem,cols,nelem,pa,eps,rng_engine_inputs,rand_offset);
+          IndexType rand_offset=at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor*
+                                    at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
+          IndexType gridx=((nelem + 256 -1)/256);
+          gridx=std::min(rand_offset/256, gridx);
+          int64_t counter_offset = ((nelem - 1)/(1024*gridx)+1)*4;
+          PhiloxCudaState rng_engine_inputs;
+          {
+            std::lock_guard<std::mutex> lock(gen->mutex_);
+            rng_engine_inputs = gen->philox_cuda_state(counter_offset);
+          }
+          fused_ln_dropout_kernel_train<scalar_t,T_ACC><<<rows, kCUDABlockReduceNumThreads, 0, 
+               at::cuda::getCurrentCUDAStream()>>>(self_data,other_data,ret_data,retdrop_data,mean_data,rstd_data,weight_data,
+               bias_data,retdrop_data+nelem,cols,nelem,pa,eps,rng_engine_inputs,rand_offset);
           C10_CUDA_KERNEL_LAUNCH_CHECK();
         }
         else {
@@ -309,7 +317,7 @@ __global__ void LayerNormBackward_kernel(IndexType N,const scalar_t* dY,const sc
 std::tuple<Tensor,Tensor,Tensor,Tensor>
 fused_ln_add_dropout_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const Tensor& rstd,const Tensor& gamma)
 {
-  IndexType N=grad.sizes()[2];
+  IndexType N=grad.sizes().back();
   IndexType M=grad.numel()/N;
   auto pgrad = grad.expect_contiguous();
   Tensor dX1 = at::empty_like(*pgrad);
