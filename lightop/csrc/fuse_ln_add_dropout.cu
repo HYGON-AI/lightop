@@ -54,7 +54,7 @@ __global__ void fused_ln_dropout_kernel_val(scalar_t* input,scalar_t* residual,s
   }
 }
 
-template <typename scalar_t>
+template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
