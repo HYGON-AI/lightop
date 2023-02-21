@@ -3,6 +3,8 @@
 
 #include <string>
 #include <dlfcn.h>
+#include <mutex>
+// #include "rocblas.h"
 using namespace std;
 string GetModuleCurPath()
 {
@@ -14,6 +16,15 @@ string GetModuleCurPath()
 void * get_dll_handle()
 {
   string dll=GetModuleCurPath()+"/lib/libgemmbias.so";
+  void* handle = dlopen(dll.c_str(), RTLD_LAZY);
+  if(!handle){
+     printf("ERROR, Message(%s).", dlerror());
+  }
+  return handle;
+}
+
+void * get_gemmbias_forward_dll_handle() {
+  string dll=GetModuleCurPath()+"/lib/libhytsf.so";
   void* handle = dlopen(dll.c_str(), RTLD_LAZY);
   if(!handle){
      printf("ERROR, Message(%s).", dlerror());
@@ -52,6 +63,37 @@ _gemm_dbias gemm_dbias=(_gemm_dbias)dlsym(g_handle, "gemm_dbias");
 	
 typedef int (*_gemmdbias_nt_m1024_n1024)(void *A,void *B,void *C,void *D,void* alpha,int m,int k,int n);
 _gemmdbias_nt_m1024_n1024 gemmdbias_nt_m1024_n1024=(_gemmdbias_nt_m1024_n1024)dlsym(g_handle, "gemmdbias_nt_m1024_n1024");
+
+void * g_dll_handle=get_gemmbias_forward_dll_handle();
+
+void * rhandle = nullptr;
+
+int rhandle_num = 0;
+
+mutex mu;
+
+typedef int (*_gemmbias_forward_create_handle)(void **handle);
+_gemmbias_forward_create_handle gemmbias_forward_create_handle = (_gemmbias_forward_create_handle)dlsym(g_dll_handle, "gemmbias_forward_create_handle");
+
+typedef int (*_gemmbias_forward_destroy_handle)(void *handle);
+_gemmbias_forward_destroy_handle gemmbias_forward_destroy_handle = (_gemmbias_forward_destroy_handle)dlsym(g_dll_handle, "gemmbias_forward_destroy_handle");
+
+typedef int (*_gemmbias_forward_half)(void *handle,int trans_a,
+                                                  int trans_b,
+                                                  int       m,
+                                                  int       n,
+                                                  int       k,
+                                                  const void*       alpha,
+                                                  const void*       a,
+                                                  const void*       b,
+                                                  const void*       beta,
+                                                  const void*       c,
+                                                  void*             d);
+_gemmbias_forward_half gemmbias_forward_half = (_gemmbias_forward_half)dlsym(g_dll_handle, "gemmbias_forward_half");
+
+
+// rocblas_handle handle;
+
 #ifdef __cplusplus 
 }
 #endif

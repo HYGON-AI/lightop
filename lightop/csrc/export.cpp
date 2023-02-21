@@ -23,6 +23,9 @@ Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim, con
 Tensor fuse_logsoftmax_forward_autograd(const at::Tensor & self, int64_t dim, bool half_to_float);
 std::tuple <Tensor, Tensor> accelerate_rnnt_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool compute_sum, bool compute_mean, bool check_lengths);
 std::tuple <Tensor, Tensor> accelerate_ctc_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool logits_time_major, bool compute_sum, bool compute_mean, bool check_lengths);
+
+void create_gemmbias_handle();
+void destroy_gemmbias_handle();
 }
 }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -44,4 +47,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("logsoftmax_forward_autograd", &at::native::fuse_logsoftmax_forward_autograd, "logsoftmax autograd of forward");
   m.def("accelerate_rnnt_loss", &at::native::accelerate_rnnt_loss, "accelerated rnntloss");
   m.def("accelerate_ctc_loss", &at::native::accelerate_ctc_loss, "accelerated ctcloss");
+  m.def("create_gemmbias_handle", &at::native::create_gemmbias_handle, "create_gemmbias_handle");
+  m.def("destroy_gemmbias_handle", &at::native::destroy_gemmbias_handle, "destroy_gemmbias_handle");
 }
