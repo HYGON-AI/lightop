@@ -1,4 +1,5 @@
 import math
+import os
 
 from torch.autograd import Function
 import torch
@@ -6,20 +7,25 @@ from lightop import op
 from torch.nn.parameter import Parameter
 from torch import Tensor
 from torch.nn import init
+# import numpy as np
+
+os.environ['ROCBLAS_TENSILE_GBF_LIBPATH'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'librarygemmbiasf')
+
 
 class LinearBiasFunction(Function):
 
     @staticmethod
     def forward(ctx, input, weight, bias, grad_weight, grad_bias):
         ctx.save_for_backward(input, weight, bias, grad_weight, grad_bias)
-        if input.size()[0] == 107 and weight.size()[1] == 1024 and weight.size()[0] == 1024 and bias is not None:
-            output = op.linearbias_forward(bias, input, weight.t())
-            #print("fuse forward!!!!!!!!!!!!!!!!!!!!!1")
-        else:
-            output = input.mm(weight.t())
-            if bias is not None:
-                output += bias.unsqueeze(0).expand_as(output)
-            #print("nofuse forward!!!!!!!!!!!!!!!!!!!!!1")
+        # if input.size()[0] == 107 and weight.size()[1] == 1024 and weight.size()[0] == 1024 and bias is not None:
+        #     output = op.linearbias_forward(bias, input, weight.t())
+        #     #print("fuse forward!!!!!!!!!!!!!!!!!!!!!1")
+        # else:
+        #     output = input.mm(weight.t())
+        #     if bias is not None:
+        #         output += bias.unsqueeze(0).expand_as(output)
+        #     #print("nofuse forward!!!!!!!!!!!!!!!!!!!!!1")
+        output = op.linearbias_forward(bias, input, weight.t())
 
         return output
 
@@ -30,7 +36,10 @@ class LinearBiasFunction(Function):
         grad_input = None
 
         if ctx.needs_input_grad[0]:
-            grad_input = grad_output.mm(weight)
+            if grad_output.dim() == 2:
+                grad_input = grad_output.mm(weight)
+            else:
+                grad_input = grad_output.matmul(weight)
        
         #grad_input = grad_weight = grad_bias = None
         #
@@ -45,7 +54,10 @@ class LinearBiasFunction(Function):
             if ctx.needs_input_grad[1] and ctx.needs_input_grad[2]:
                 #grad_bias = torch.empty_like(bias, memory_format=torch.contiguous_format)
                 #grad_bias = torch.empty(bias.size(), dtype=bias.dtype, layout=bias.layout, device=bias.device)
-                op.linearbias_backward(grad_bias, grad_weight, grad_output.t(), input)
+                if grad_output.dim() == 2:
+                    op.linearbias_backward(grad_bias, grad_weight, grad_output.t(), input)
+                else:
+                    op.linearbias_backward(grad_bias, grad_weight, grad_output.view(-1, grad_output.shape[-1]).t(), input.view(-1, input.shape[-1]))
                 #grad_weight = op.linearbias_backward(grad_bias, input, grad_output)
                 #grad_weight = grad_output.t().mm(input)
                 #grad_weight = input.t().mm(grad_output)
@@ -54,7 +66,10 @@ class LinearBiasFunction(Function):
         else:
             grad_weight = grad_bias = None
             if ctx.needs_input_grad[1]:
-                grad_weight = grad_output.t().mm(input)
+                if grad_output.dim() == 2:
+                    grad_weight = grad_output.t().mm(input)
+                else:
+                    grad_weight = grad_output.view(-1, grad_output.shape[-1]).t().matmul(input.view(-1, input.shape[-1]))
             if bias is not None and ctx.needs_input_grad[2]:
                 grad_bias = grad_output.sum(0)
             #print("nofuse backward!!!!!!!!!!!!!!!!!!!!!1")
@@ -89,6 +104,7 @@ class LinearBias(torch.nn.Module):
         else:
             self.register_parameter('bias', None)
         self.reset_parameters()
+        op.create_gemmbias_handle()
 
     def reset_parameters(self) -> None:
         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
@@ -103,3 +119,6 @@ class LinearBias(torch.nn.Module):
         )
     def forward(self, input: Tensor) -> Tensor:
         return LinearBiasFunction.apply(input, self.weight, self.bias, self.grad_weight, self.grad_bias)
+
+    def __del__(self):
+        op.destroy_gemmbias_handle()

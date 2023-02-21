@@ -67,6 +67,37 @@ c10::MaybeOwned<Tensor> inline prepare_matrix_for_cublas(const Tensor& tensor, b
 
 } // namespace
 
+void create_gemmbias_handle() {
+  mu.lock();
+  rhandle_num++;
+  if (rhandle) {
+    mu.unlock();
+    return;
+  }
+  // printf("%s:%d before create_gemmbias_handle!!!!!!!!\n", __FILE__, __LINE__);
+  int ret = gemmbias_forward_create_handle(&rhandle);
+  // rocblas_create_handle(&handle);
+  // printf("%s:%d after  create_gemmbias_handle!!!!!!!!\n", __FILE__, __LINE__);
+  mu.unlock();
+  if (ret) {
+    printf("ERROR, gemmbias_forward_create_handle ret %d\n",ret);
+  }
+}
+void destroy_gemmbias_handle() {
+  mu.lock();
+  if (--rhandle_num == 0 && rhandle) {
+    // printf("%s:%d before destroy_gemmbias_handle!!!!!!!!\n", __FILE__, __LINE__);
+    int ret = gemmbias_forward_destroy_handle(rhandle);
+    // rocblas_destroy_handle(handle);
+    // printf("%s:%d after  destroy_gemmbias_handle!!!!!!!!\n", __FILE__, __LINE__);
+    if (ret) {
+      printf("ERROR, gemmbias_forward_destroy_handle ret %d\n",ret);
+    } else
+      rhandle = nullptr;
+  }
+  mu.unlock();
+}
+
 // HC Debug
 void fused_linear_bias_forward_impl(const Tensor& self, const Tensor& mat1, const Tensor& mat2, Tensor& result) {
   TORCH_CHECK(mat1.dim() == 2 && mat2.dim() == 2, "tensors must be 2-D");
@@ -113,13 +144,15 @@ void fused_linear_bias_forward_impl(const Tensor& self, const Tensor& mat1, cons
     scalar_t* mat2_ptr = mat2_->data_ptr<scalar_t>();
     scalar_t* result_ptr = result_->data_ptr<scalar_t>();
     scalar_t* self_ptr = self.data_ptr<scalar_t>();
-    gemm_bias(
+    gemmbias_forward_half(
+      rhandle,
       transpose_mat1 ? int(1) : int(0),
       transpose_mat2 ? int(1) : int(0),
-      mat1_ptr, mat2_ptr, self_ptr, result_ptr,
-      (int)m, (int)k, (int)n,
+      (int)m, (int)n, (int)k,
       &alpha_val,
-      &beta_val
+      mat1_ptr, mat2_ptr, 
+      &beta_val,
+      self_ptr, result_ptr
     );
   });
   if (!result.is_same(*result_)) {
@@ -246,10 +279,30 @@ at::Tensor fused_linear_bias_forward(const at::Tensor & self, const at::Tensor &
   c10::impl::check_and_update_common_device(common_device, self, "wrapper_addmm", "self");
   c10::impl::check_and_update_common_device(common_device, mat1, "wrapper_addmm", "mat1");
   c10::impl::check_and_update_common_device(common_device, mat2, "wrapper_addmm", "mat2");
-  structured__fused_linear_functional op;
-  op.meta(self, mat1, mat2);
-  op.impl(self, mat1, mat2, *op.outputs_[0]);
-  return std::move(op.outputs_[0]).take();
+
+  auto dim_mat1 = mat1.dim();
+  auto dim_mat2 = mat2.dim();
+  if (dim_mat1 >= 3 && (dim_mat2 == 1 || dim_mat2 == 2)) {
+    const at::Tensor t2 = dim_mat2 == 1 ? mat2.unsqueeze(-1) : mat2;
+    auto size1 = mat1.sizes();
+    auto size2 = t2.sizes();
+    std::vector<int64_t> output_size;
+    output_size.insert(output_size.end(), size1.begin(), size1.end() - 1);
+    if (dim_mat2 > 1) {
+      output_size.push_back(size2[dim_mat2 - 1]);
+    }
+    const auto dim1_size = c10::multiply_integers(size1.begin(), size1.end() - 1);
+    auto t1 = mat1.expect_contiguous()->view({dim1_size, size1[size1.size() - 1]});
+    structured__fused_linear_functional op;
+    op.meta(self, t1, t2);
+    op.impl(self, t1, t2, *op.outputs_[0]);
+    return std::move(at::_unsafe_view(*op.outputs_[0], output_size));
+  } else {
+    structured__fused_linear_functional op;
+    op.meta(self, mat1, mat2);
+    op.impl(self, mat1, mat2, *op.outputs_[0]);
+    return std::move(op.outputs_[0]).take();
+  }
 }
 } // namespace native
 } //namespace at
