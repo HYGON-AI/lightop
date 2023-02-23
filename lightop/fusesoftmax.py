@@ -54,7 +54,7 @@ class FuseSoftmax2d(torch.nn.Module):
         >>> output = m(input)
     """
     def __init__(self, half_to_float = False) -> None:
-        super(FuseSoftmax, self).__init__()
+        super(FuseSoftmax2d, self).__init__()
         self.half_to_float = half_to_float
 
     def forward(self, input, **kargs):
