@@ -1,6 +1,5 @@
 import torch
 from torch import Tensor
-from torch.autograd import Function
 from torch.nn import init
 from lightop import op
 import warnings

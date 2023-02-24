@@ -179,6 +179,34 @@ std::tuple<Tensor,Tensor> fused_add_dropout_backward(Tensor grad, Tensor mask, d
     return std::tuple<Tensor,Tensor>(ret,grad);
   }
 }
+
+class fuseAddDropoutFunction : public torch::autograd::Function<fuseAddDropoutFunction> {
+ public:
+  static torch::autograd::variable_list forward(
+    torch::autograd::AutogradContext* ctx,
+    const torch::autograd::Variable& x,
+    const torch::autograd::Variable& y,
+    double rate,bool training) {
+    auto ret = fused_add_dropout_forward(x,y,rate,training);
+    ctx->save_for_backward({std::get<1>(ret)});
+    ctx->saved_data["rate"] = rate;
+    return {std::get<0>(ret)};
+  }
+
+  static torch::autograd::variable_list backward(
+      torch::autograd::AutogradContext* ctx,
+      const torch::autograd::variable_list& gradOutput) {
+    auto mask = ctx->get_saved_variables()[0];
+    double rate = ctx->saved_data["rate"].toDouble();
+    auto ret = fused_add_dropout_backward(gradOutput[0],mask,rate);
+    return {std::get<0>(ret),std::get<1>(ret),torch::autograd::Variable(),torch::autograd::Variable(),};
+  }
+};
+Tensor fuse_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,double rate,bool training) {
+   auto result = fuseAddDropoutFunction::apply(x,y,rate,training);
+   return result[0];
+}
+
 }
 }
 

@@ -361,7 +361,38 @@ fused_ln_add_dropout_backward(const Tensor& grad, const Tensor& X,const Tensor& 
   });
   return std::tuple<Tensor,Tensor,Tensor,Tensor>(dX1,dX2,dgamma,dbeta);
 }
+class fuselnAddDropoutFunction : public torch::autograd::Function<fuselnAddDropoutFunction> {
+ public:
+  static torch::autograd::variable_list forward(
+    torch::autograd::AutogradContext* ctx,
+    const torch::autograd::Variable& x,
+    const torch::autograd::Variable& y,
+    const torch::autograd::Variable& weight,
+    const torch::autograd::Variable& bias,
+    double eps,double rate,bool training) {
+    auto ret = fused_ln_add_dropout_forward(x,y, weight,bias,eps,rate,training);
+    ctx->save_for_backward({std::get<1>(ret),std::get<2>(ret),std::get<3>(ret),weight});
+    return {std::get<0>(ret)};
+  }
 
+  static torch::autograd::variable_list backward(
+      torch::autograd::AutogradContext* ctx,
+      const torch::autograd::variable_list& gradOutput) {
+    auto saved = ctx->get_saved_variables();
+    auto X = saved[0];
+    auto mean = saved[1];
+    auto rstd = saved[2];
+    auto gamma = saved[3];
+    auto ret = fused_ln_add_dropout_backward(gradOutput[0],X,mean,rstd,gamma);
+    return {std::get<0>(ret),std::get<1>(ret),std::get<2>(ret),std::get<3>(ret),
+            torch::autograd::Variable(),torch::autograd::Variable(),torch::autograd::Variable()};
+  }
+};
+Tensor fuse_ln_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,
+                                            const Tensor& bias,double eps,double rate,bool training) {
+   auto result = fuselnAddDropoutFunction::apply(x,y, weight,bias,eps,rate,training);
+   return result[0];
+}
 }
 }
 
