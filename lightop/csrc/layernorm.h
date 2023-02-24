@@ -14,6 +14,7 @@
 #include <THC/THCGeneral.h>
 #include <torch/extension.h>
 #include <c10/cuda/CUDAMathCompat.h>
+#include <torch/autograd.h>
 
 //i#define editmode
 
