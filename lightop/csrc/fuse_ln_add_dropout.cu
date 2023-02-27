@@ -248,8 +248,8 @@ __global__ void GammaBetaBackward(IndexType M,IndexType N,const scalar_t* dY,con
   __syncthreads();
   T_ACC sum1 = g_shared[threadIdx.x][threadIdx.y];
   T_ACC sum2 = b_shared[threadIdx.x][threadIdx.y];
-  sum1 = WarpReduceSum(sum1,16);
-  sum2 = WarpReduceSum(sum2,16);
+  sum1 = WarpReduceSum<16>(sum1);
+  sum2 = WarpReduceSum<16>(sum2);
   if (threadIdx.x == 0) {
     const IndexType j = blockIdx.x * blockDim.x + threadIdx.y;
     if (j < N) {
@@ -263,8 +263,8 @@ __global__ void GammaBetaBackward(IndexType M,IndexType N,const scalar_t* dY,con
   }
   sum1 = g_shared[threadIdx.x][threadIdx.y + blockDim.y];
   sum2 = b_shared[threadIdx.x][threadIdx.y + blockDim.y];
-  sum1 = WarpReduceSum(sum1,16);
-  sum2 = WarpReduceSum(sum2,16);
+  sum1 = WarpReduceSum<16>(sum1);
+  sum2 = WarpReduceSum<16>(sum2);
   if (threadIdx.x == 0) {
     const IndexType j = blockIdx.x * blockDim.x + threadIdx.y + blockDim.y;
     if (j < N) {
