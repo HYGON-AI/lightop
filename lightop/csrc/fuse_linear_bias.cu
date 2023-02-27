@@ -99,7 +99,7 @@ void destroy_gemmbias_handle() {
 }
 
 // HC Debug
-void fused_linear_bias_forward_impl(const Tensor& self, const Tensor& mat1, const Tensor& mat2, Tensor& result) {
+void fused_linear_bias_forward_impl(const Tensor& self, const Tensor& mat1, const Tensor& mat2, Tensor& result, bool gemm_only = false) {
   TORCH_CHECK(mat1.dim() == 2 && mat2.dim() == 2, "tensors must be 2-D");
 
   TensorArg args[]{{result, "out", 0}, {self, "self", 1}, {mat1, "mat1", 2}, {mat2, "mat2", 3}};
@@ -139,7 +139,7 @@ void fused_linear_bias_forward_impl(const Tensor& self, const Tensor& mat1, cons
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(scalar_type, "fused_linear_bias_forward", [&] {
     scalar_t alpha_val = (scalar_t)1.0;
-    scalar_t beta_val = (scalar_t)1.0;
+    scalar_t beta_val = gemm_only ? (scalar_t)0.0 : (scalar_t)1.0;
     scalar_t* mat1_ptr = mat1_->data_ptr<scalar_t>();
     scalar_t* mat2_ptr = mat2_->data_ptr<scalar_t>();
     scalar_t* result_ptr = result_->data_ptr<scalar_t>();
@@ -238,8 +238,8 @@ struct TORCH_API structured__fused_linear : public at::impl::MetaBase {
     "The input tensor must be a matrix with size ", mat1.sizes()[0], "x", mat2.sizes()[1], ", but got a ", result.dim(),
     "-D tensor with size ", result.sizes()[0], "x", result.sizes()[1]);
   }
-  void impl(const Tensor& self, const Tensor& mat1, const Tensor& mat2, Tensor& result){
-    fused_linear_bias_forward_impl(self, mat1, mat2, result);
+  void impl(const Tensor& self, const Tensor& mat1, const Tensor& mat2, Tensor& result, bool gemm_only){
+    fused_linear_bias_forward_impl(self, mat1, mat2, result, gemm_only);
   }
     
 };
@@ -272,9 +272,12 @@ struct structured__fused_linear_functional final : public at::native::structured
     std::array<c10::ExclusivelyOwned<Tensor>, 1> outputs_;
     c10::hip::OptionalHIPGuardMasqueradingAsCUDA guard_;
 };
-at::Tensor fused_linear_bias_forward(const at::Tensor & self, const at::Tensor & mat1, const at::Tensor & mat2) {
+at::Tensor fused_linear_bias_forward(c10::optional<Tensor> & self_opt, const at::Tensor & mat1, const at::Tensor & mat2) {
   c10::optional<Device> common_device = nullopt;
   (void)common_device; // Suppress unused variable warning
+
+  auto has_self = self_opt.has_value();
+  const at::Tensor & self = has_self ? *c10::MaybeOwned<Tensor>::borrowed(*self_opt) : torch::empty({0}, mat1.options());
 
   c10::impl::check_and_update_common_device(common_device, self, "wrapper_addmm", "self");
   c10::impl::check_and_update_common_device(common_device, mat1, "wrapper_addmm", "mat1");
@@ -295,12 +298,12 @@ at::Tensor fused_linear_bias_forward(const at::Tensor & self, const at::Tensor &
     auto t1 = mat1.expect_contiguous()->view({dim1_size, size1[size1.size() - 1]});
     structured__fused_linear_functional op;
     op.meta(self, t1, t2);
-    op.impl(self, t1, t2, *op.outputs_[0]);
+    op.impl(self, t1, t2, *op.outputs_[0], !has_self);
     return std::move(at::_unsafe_view(*op.outputs_[0], output_size));
   } else {
     structured__fused_linear_functional op;
     op.meta(self, mat1, mat2);
-    op.impl(self, mat1, mat2, *op.outputs_[0]);
+    op.impl(self, mat1, mat2, *op.outputs_[0], !has_self);
     return std::move(op.outputs_[0]).take();
   }
 }
