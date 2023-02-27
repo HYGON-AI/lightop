@@ -209,6 +209,7 @@ __global__ void GammaBetaBackwardSimple(IndexType M,IndexType N,const scalar_t* 
 }
 
 template <typename scalar_t>
+C10_LAUNCH_BOUNDS_1(512)
 __global__ void GammaBetaBackward(IndexType M,IndexType N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
                                   const scalar_t* rstd,scalar_t* dg,scalar_t* db)
 {
@@ -247,8 +248,8 @@ __global__ void GammaBetaBackward(IndexType M,IndexType N,const scalar_t* dY,con
   __syncthreads();
   T_ACC sum1 = g_shared[threadIdx.x][threadIdx.y];
   T_ACC sum2 = b_shared[threadIdx.x][threadIdx.y];
-  sum1 = WarpReduceSum(sum1);
-  sum2 = WarpReduceSum(sum2);
+  sum1 = WarpReduceSum(sum1,16);
+  sum2 = WarpReduceSum(sum2,16);
   if (threadIdx.x == 0) {
     const IndexType j = blockIdx.x * blockDim.x + threadIdx.y;
     if (j < N) {
@@ -262,8 +263,8 @@ __global__ void GammaBetaBackward(IndexType M,IndexType N,const scalar_t* dY,con
   }
   sum1 = g_shared[threadIdx.x][threadIdx.y + blockDim.y];
   sum2 = b_shared[threadIdx.x][threadIdx.y + blockDim.y];
-  sum1 = WarpReduceSum(sum1);
-  sum2 = WarpReduceSum(sum2);
+  sum1 = WarpReduceSum(sum1,16);
+  sum2 = WarpReduceSum(sum2,16);
   if (threadIdx.x == 0) {
     const IndexType j = blockIdx.x * blockDim.x + threadIdx.y + blockDim.y;
     if (j < N) {
@@ -287,7 +288,6 @@ __global__ void LayerNormBackward_kernel(IndexType N,const scalar_t* dY,const sc
   const IndexType i = blockIdx.x;
   T_ACC sum1 = 0;
   T_ACC sum2 = 0;
-  #pragma unroll
   for (IndexType j = threadIdx.x; j < N; j += blockDim.x) {
     const IndexType index = i * N + j;
     const T_ACC gamma_v = gamma[j];
@@ -304,7 +304,6 @@ __global__ void LayerNormBackward_kernel(IndexType N,const scalar_t* dY,const sc
     c = -(b * static_cast<T_ACC>(mean[i]) + sum2 * static_cast<T_ACC>(rstd[i]) * s);
   }
   __syncthreads();
-  #pragma unroll
   for (IndexType j = threadIdx.x; j < N; j += blockDim.x) {
     const IndexType index = i * N + j;
     const T_ACC gamma_v = gamma[j];
