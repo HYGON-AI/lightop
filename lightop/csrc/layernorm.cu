@@ -189,7 +189,6 @@ __global__ void LayerNormBackward_kernel(IndexType N,const scalar_t* dY,const sc
   const IndexType i = blockIdx.x;
   T_ACC sum1 = 0;
   T_ACC sum2 = 0;
-  #pragma unroll
   for (IndexType j = threadIdx.x; j < N; j += blockDim.x) {
     const IndexType index = i * N + j;
     const T_ACC gamma_v = gamma[j];
@@ -206,7 +205,6 @@ __global__ void LayerNormBackward_kernel(IndexType N,const scalar_t* dY,const sc
     c = -(b * static_cast<T_ACC>(mean[i]) + sum2 * static_cast<T_ACC>(rstd[i]) * s);
   }
   __syncthreads();
-  #pragma unroll
   for (IndexType j = threadIdx.x; j < N; j += blockDim.x) {
     const IndexType index = i * N + j;
     const T_ACC gamma_v = gamma[j];
