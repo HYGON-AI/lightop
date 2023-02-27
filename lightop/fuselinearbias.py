@@ -103,6 +103,7 @@ class LinearBias(torch.nn.Module):
                 self.grad_bias = torch.empty(self.bias.size(), dtype=self.bias.dtype, layout=self.bias.layout, device=self.bias.device)
         else:
             self.register_parameter('bias', None)
+            self.register_parameter('grad_bias', None)
         self.reset_parameters()
         op.create_gemmbias_handle()
 
