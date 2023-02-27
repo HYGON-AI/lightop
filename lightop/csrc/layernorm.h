@@ -106,17 +106,8 @@ struct WelfordOps {
   }
 };
 
-template <typename T, class ReduceOp>
-__inline__ __device__ T WarpReduce(T val, const ReduceOp& op) {
-#pragma unroll
-  for (int offset = (C10_WARP_SIZE >> 1); offset > 0; offset >>= 1) {
-    val = op.combine(val, op.warp_shfl_down(val, offset));
-  }
-  return val;
-}
-
-template <typename T, class ReduceOp>
-__inline__ __device__ T WarpReduce(T val,int max,const ReduceOp& op) {
+template <int max=32,typename T, class ReduceOp>
+__inline__ __device__ T WarpReduce(T val,const ReduceOp& op) {
 #pragma unroll
   for (int offset = max; offset > 0; offset >>= 1) {
     val = op.combine(val, op.warp_shfl_down(val, offset));
@@ -137,22 +128,13 @@ BlockReduce(T val, const ReduceOp& op, T* shared) {
   __syncthreads();
   if (wid == 0) {
     val= shared[lid];
-    val = WarpReduce(val,blockDim.x / C10_WARP_SIZE / 2,op);
+    val = WarpReduce<4>(val,op);
   }
   return val;
 }
 
-template <typename T>
+template <int max=32,typename T>
 __inline__ __device__ T WarpReduceSum(T val) {
-#pragma unroll
-  for (int offset = (C10_WARP_SIZE >> 1); offset > 0; offset >>= 1) {
-    val += __shfl_down(val, offset);
-  }
-  return val;
-}
-
-template <typename T>
-__inline__ __device__ T WarpReduceSum(T val,int max) {
 #pragma unroll
   for (int offset = max; offset > 0; offset >>= 1) {
     val += __shfl_down(val, offset);
@@ -173,7 +155,7 @@ __inline__ __device__ T BlockReduceSum(T val, T* shared) {
   __syncthreads();
   if (wid == 0) {
     val= shared[lid];
-    val = WarpReduceSum(val,blockDim.x / C10_WARP_SIZE / 2);
+    val = WarpReduceSum<4>(val);
   }
   return val;
 }
