@@ -328,7 +328,8 @@ setup(
     package_data={
         'lightop': [
             "lib/*.so",
-            "librarygemmbiasf/*"
+            "librarygemmbiasf/*",
+            "librarygemmdbiasb/*"
         ]
     },
     ext_modules=get_extensions(),
