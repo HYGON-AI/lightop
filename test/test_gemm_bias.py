@@ -11,13 +11,16 @@ from lightop.fuselinearbias import LinearBias
 # k = 1024
 # n = 1024
 shapes = [
-    (2, 16, 1024), 
+    # (2, 3, 4),
+    # (2, 16, 1024), 
     (107, 1024, 1024), 
-    (1024, 2, 1024), 
-    (1024, 101, 1024), 
-    (4096, 1536, 1024), 
-    (30528, 104, 1024),
+    # (1024, 2, 1024), 
+    # (1024, 101, 1024), 
+    # (4096, 1536, 1024), 
+    # (30528, 104, 1024),
 ]
+dims = [2, 3]
+num_iters = 5000
 
 class Parameter:
     def __init__(self, w):
@@ -70,14 +73,16 @@ def set_rand_seed(seed=1):
     #torch.backends.cudnn.deterministic = True   # 保证每次返回得的卷积算法是确定的
 
 set_rand_seed(1234)
-forward_only = True
-for dim in (2, 3):
-    for is_bias in (False, True):
+forward_only = False
+for dim in dims:
+    for is_bias in (True,):
         for m, n, k in shapes:
             print('m:{m} n:{n} k:{k} input_dim:{dim} is_bias:{is_bias}'.format(m=m, n=n, k=k, dim=dim, is_bias=is_bias))
             if dim == 2:
                 x = np.random.randn(m, k)
-                out_grad = np.random.rand(m,n)
+                # out_grad = np.random.rand(m,n)
+                # x = np.ones((m,k))
+                out_grad = np.ones((m,n))
             elif dim == 3:
                 x = np.random.randn(m, 1, k)
                 out_grad = np.random.rand(m,1,n)
@@ -109,14 +114,16 @@ for dim in (2, 3):
             # warmup
             for i in range(5):
                 out = fc1(x1)
-                # out.backward(out_grad_cuda1)
+                if not forward_only:
+                    out.backward(out_grad_cuda1)
 
             torch.cuda.synchronize()
             start_time = time.time()
             #with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=True) as prof:
-            for i in range(10000):
+            for i in range(num_iters):
                 out1 = fc1(x1)
-                # out1.backward(out_grad_cuda1)
+                if not forward_only:
+                    out1.backward(out_grad_cuda1)
             torch.cuda.synchronize()
             #print(prof.key_averages().table(sort_by="self_cuda_time_total"))
             #prof.export_chrome_trace("trace.json")
@@ -129,14 +136,16 @@ for dim in (2, 3):
             # warmup
             for i in range(5):
                 out = fc2(x2)
-                # out.backward(out_grad_cuda2)
+                if not forward_only:
+                    out.backward(out_grad_cuda2)
 
             torch.cuda.synchronize()
             start_time = time.time()
             #with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=True) as prof:
-            for i in range(10000):
+            for i in range(num_iters):
                 out2 = fc2(x2)
-                # out2.backward(out_grad_cuda2)
+                if not forward_only:
+                    out2.backward(out_grad_cuda2)
             torch.cuda.synchronize()
             #print(prof.key_averages().table(sort_by="self_cuda_time_total"))
             #prof.export_chrome_trace("trace.json")
@@ -164,6 +173,13 @@ for dim in (2, 3):
                     print("test_linearbias:",out1.equal(out2) and fc1.weight.equal(fc2.weight) and fc1.bias.equal(fc2.bias))
                 else:
                     print("test_linearbias:", out1.equal(out2) and fc1.weight.equal(fc2.weight) and fc1.bias.equal(fc2.bias) and x1.grad.equal(x2.grad) and fc1.weight.grad.equal(fc2.weight.grad) and fc1.bias.grad.equal(fc2.bias.grad))
+                    # print('x.grad:', x1.grad.equal(x2.grad), 'weight.grad:', fc1.weight.grad.equal(fc2.weight.grad), 'bias.grad:', fc1.bias.grad.equal(fc2.bias.grad))
+                    # print(fc1.weight.grad)
+                    # print(fc2.weight.grad)
+                    # print(out_grad_cuda1)
+                    # print(out_grad_cuda2)
+                    # print(fc1.bias.grad)
+                    # print(fc2.bias.grad)
             else:
                 if forward_only:
                     print("test_linearbias:", out1.equal(out2) and fc1.weight.equal(fc2.weight))

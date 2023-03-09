@@ -68,34 +68,62 @@ c10::MaybeOwned<Tensor> inline prepare_matrix_for_cublas(const Tensor& tensor, b
 } // namespace
 
 void create_gemmbias_handle() {
-  mu.lock();
-  rhandle_num++;
-  if (rhandle) {
-    mu.unlock();
+  forwardHandler.mu.lock();
+  initGemmbias();
+  forwardHandler.num++;
+  if (forwardHandler.handler) {
+    forwardHandler.mu.unlock();
     return;
   }
-  // printf("%s:%d before create_gemmbias_handle!!!!!!!!\n", __FILE__, __LINE__);
-  int ret = gemmbias_forward_create_handle(&rhandle);
-  // rocblas_create_handle(&handle);
-  // printf("%s:%d after  create_gemmbias_handle!!!!!!!!\n", __FILE__, __LINE__);
-  mu.unlock();
+  int ret = gemmbias_forward_create_handle(&forwardHandler.handler);
+  forwardHandler.mu.unlock();
   if (ret) {
     printf("ERROR, gemmbias_forward_create_handle ret %d\n",ret);
   }
 }
 void destroy_gemmbias_handle() {
-  mu.lock();
-  if (--rhandle_num == 0 && rhandle) {
-    // printf("%s:%d before destroy_gemmbias_handle!!!!!!!!\n", __FILE__, __LINE__);
-    int ret = gemmbias_forward_destroy_handle(rhandle);
-    // rocblas_destroy_handle(handle);
-    // printf("%s:%d after  destroy_gemmbias_handle!!!!!!!!\n", __FILE__, __LINE__);
+  forwardHandler.mu.lock();
+  if (--forwardHandler.num == 0 && forwardHandler.handler) {
+    int ret = gemmbias_forward_destroy_handle(forwardHandler.handler);
     if (ret) {
       printf("ERROR, gemmbias_forward_destroy_handle ret %d\n",ret);
-    } else
-      rhandle = nullptr;
+    } else {
+      forwardHandler.handler = nullptr;
+    }
   }
-  mu.unlock();
+  forwardHandler.mu.unlock();
+}
+
+void create_gemmdbias_handle() {
+  backwardHandler.mu.lock();
+  initGemmbias();
+  backwardHandler.num++;
+  if (backwardHandler.handler) {
+    backwardHandler.mu.unlock();
+    return;
+  }
+  int ret = gemmdbias_backward_create_handle(&backwardHandler.handler);
+  backwardHandler.mu.unlock();
+  if (ret) {
+    printf("ERROR, gemmdbias_backward_create_handle ret %d\n",ret);
+  }
+}
+void destroy_gemmdbias_handle() {
+  if (!gemmdbias_backward_destroy_handle) {
+    printf("ERROR, get gemmdbias_backward_destroy_handle err\n");
+    return;
+  }
+  backwardHandler.mu.lock();
+  if (--backwardHandler.num == 0 && backwardHandler.handler) {
+    int ret = gemmdbias_backward_destroy_handle(backwardHandler.handler);
+    if (ret) {
+      printf("ERROR, gemmdbias_backward_destroy_handle ret %d\n",ret);
+    } else {
+      backwardHandler.handler = nullptr;
+      backwardHandler.num = 0;
+    }
+  }
+  backwardHandler.mu.unlock();
 }
 
 // HC Debug
@@ -145,7 +173,7 @@ void fused_linear_bias_forward_impl(const Tensor& self, const Tensor& mat1, cons
     scalar_t* result_ptr = result_->data_ptr<scalar_t>();
     scalar_t* self_ptr = self.data_ptr<scalar_t>();
     gemmbias_forward_half(
-      rhandle,
+      forwardHandler.handler,
       transpose_mat1 ? int(1) : int(0),
       transpose_mat2 ? int(1) : int(0),
       (int)m, (int)n, (int)k,
@@ -154,6 +182,14 @@ void fused_linear_bias_forward_impl(const Tensor& self, const Tensor& mat1, cons
       &beta_val,
       self_ptr, result_ptr
     );
+    // gemm_bias(
+    //   transpose_mat1 ? int(1) : int(0),
+    //   transpose_mat2 ? int(1) : int(0),
+    //   mat1_ptr, mat2_ptr, self_ptr, result_ptr,
+    //   (int)m, (int)k, (int)n,
+    //   &alpha_val,
+    //   &beta_val
+    // );
   });
   if (!result.is_same(*result_)) {
     result.copy_(*result_);
@@ -161,8 +197,8 @@ void fused_linear_bias_forward_impl(const Tensor& self, const Tensor& mat1, cons
 }
 
 // HC Debug
-Tensor fused_linear_bias_backward(Tensor& self, Tensor & result, const Tensor& mat1, const Tensor& mat2) {
-  //Tensor result = at::empty({mat1.sizes()[0], mat2.sizes()[1]},  mat1.options());
+void fused_linear_bias_backward_impl(const Tensor& self, Tensor & output, const Tensor& mat1, const Tensor& mat2, bool gemm_only = false) {
+  Tensor result = at::empty({mat1.sizes()[0], mat2.sizes()[1]},  mat1.options());
   TORCH_CHECK(mat1.dim() == 2 && mat2.dim() == 2, "tensors must be 2-D");
 
   TensorArg args[]{{result, "out", 0}, {self, "self", 1}, {mat1, "mat1", 2}, {mat2, "mat2", 3}};
@@ -173,7 +209,7 @@ Tensor fused_linear_bias_backward(Tensor& self, Tensor & result, const Tensor& m
 
   IntArrayRef result_sizes = result.sizes();
   if ((result_sizes[0] == 0) || (result_sizes[1] == 0)) {
-    return result;
+    return;
   }
 
   bool transpose_result;
@@ -203,23 +239,33 @@ Tensor fused_linear_bias_backward(Tensor& self, Tensor & result, const Tensor& m
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(scalar_type, "fused_linear_bias_backward", [&] {
     scalar_t alpha_val = (scalar_t)1.0;
+    scalar_t beta_val = gemm_only ? (scalar_t)0.0 : (scalar_t)1.0;
     scalar_t* mat1_ptr = mat1_->data_ptr<scalar_t>();
     scalar_t* mat2_ptr = mat2_->data_ptr<scalar_t>();
     scalar_t* result_ptr = result_->data_ptr<scalar_t>();
     scalar_t* self_ptr = self.data_ptr<scalar_t>();
-    gemm_dbias(
+    gemmdbias_backward_half(
+      backwardHandler.handler,
       transpose_mat1 ? int(1) : int(0),
       transpose_mat2 ? int(1) : int(0),
-      mat1_ptr, mat2_ptr, self_ptr, result_ptr,
-      (int)m, (int)k, (int)n,
-      &alpha_val
+      (int)m, (int)n, (int)k,
+      (const void*)&alpha_val,
+      (const void*)mat1_ptr, (const void*)mat2_ptr, 
+      (const void*)&beta_val,
+      (void*)self_ptr, (void*)result_ptr
     );
+    // gemm_dbias(
+    //   transpose_mat1 ? int(1) : int(0),
+    //   transpose_mat2 ? int(1) : int(0),
+    //   mat1_ptr, mat2_ptr, self_ptr, result_ptr,
+    //   (int)m, (int)k, (int)n,
+    //   &alpha_val
+    // );
   });
 
-  if (!result.is_same(*result_)) {
-    result.copy_(*result_);
+  if (!output.is_same(*result_)) {
+    output.copy_(*result_);
   }
-  return result;
 }
 
 struct TORCH_API structured__fused_linear : public at::impl::MetaBase {  
@@ -307,6 +353,39 @@ at::Tensor fused_linear_bias_forward(c10::optional<Tensor> & self_opt, const at:
     return std::move(op.outputs_[0]).take();
   }
 }
+
+Tensor fused_linear_bias_backward(c10::optional<Tensor> & self_opt, Tensor & result, const at::Tensor & mat1, const at::Tensor & mat2) {
+  c10::optional<Device> common_device = nullopt;
+  (void)common_device; // Suppress unused variable warning
+
+  auto has_self = self_opt.has_value();
+  const at::Tensor & self = has_self ? *c10::MaybeOwned<Tensor>::borrowed(*self_opt) : torch::empty({0}, mat1.options());
+
+  c10::impl::check_and_update_common_device(common_device, self, "wrapper_addmm", "self");
+  c10::impl::check_and_update_common_device(common_device, mat1, "wrapper_addmm", "mat1");
+  c10::impl::check_and_update_common_device(common_device, mat2, "wrapper_addmm", "mat2");
+
+  auto dim_mat1 = mat1.dim();
+  auto dim_mat2 = mat2.dim();
+  if (dim_mat1 >= 3 && (dim_mat2 == 1 || dim_mat2 == 2)) {
+    const at::Tensor t2 = dim_mat2 == 1 ? mat2.unsqueeze(-1) : mat2;
+    auto size1 = mat1.sizes();
+    auto size2 = t2.sizes();
+    std::vector<int64_t> output_size;
+    output_size.insert(output_size.end(), size1.begin(), size1.end() - 1);
+    if (dim_mat2 > 1) {
+      output_size.push_back(size2[dim_mat2 - 1]);
+    }
+    const auto dim1_size = c10::multiply_integers(size1.begin(), size1.end() - 1);
+    auto t1 = mat1.expect_contiguous()->view({dim1_size, size1[size1.size() - 1]});
+    fused_linear_bias_backward_impl(self, result, t1, t2, !has_self);
+    return std::move(result);
+  } else {
+    fused_linear_bias_backward_impl(self, result, mat1, mat2, !has_self);
+    return std::move(result);
+  }
+}
+
 } // namespace native
 } //namespace at
 

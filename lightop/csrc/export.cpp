@@ -16,7 +16,7 @@ std::tuple<Tensor,Tensor> fused_add_dropout_backward(Tensor grad, Tensor mask, d
 std::tuple<Tensor,Tensor,Tensor,Tensor>fused_ln_add_dropout_forward(const Tensor& self,const Tensor& other,const Tensor&weight,const Tensor& bias, double ln_epsilon, double p, bool training);
 std::tuple<Tensor,Tensor,Tensor,Tensor>fused_ln_add_dropout_backward(const Tensor& grad,const Tensor& X, const Tensor& mean,const Tensor& rstd, const Tensor& gamma);
 Tensor fused_linear_bias_forward(c10::optional<Tensor> & self_opt, const at::Tensor& mat1, const at::Tensor& mat2);
-Tensor fused_linear_bias_backward(at::Tensor& self, at::Tensor& result, const at::Tensor& mat1, const at::Tensor& mat2);
+Tensor fused_linear_bias_backward(c10::optional<Tensor> & self_opt, at::Tensor& result, const at::Tensor& mat1, const at::Tensor& mat2);
 std::tuple <Tensor, Tensor> fused_relu_dropout_forward(const Tensor &self, const double &p, const bool &use_relu, const bool &training);
 Tensor fused_relu_dropout_backward(Tensor &grad, Tensor &mask);
 Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim, const bool half_to_float);
@@ -26,6 +26,11 @@ std::tuple <Tensor, Tensor> accelerate_ctc_loss(Tensor &logits, const Tensor &ta
 
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
+void create_gemmdbias_handle();
+void destroy_gemmdbias_handle();
+
+at::Tensor merge_tensor(const at::Tensor & input1, const at::Tensor & input2);
+void split_tensor(const at::Tensor & buff, std::vector<long> meta, at::Tensor & input1, at::Tensor & input2);
 }
 }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -49,4 +54,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("accelerate_ctc_loss", &at::native::accelerate_ctc_loss, "accelerated ctcloss");
   m.def("create_gemmbias_handle", &at::native::create_gemmbias_handle, "create_gemmbias_handle");
   m.def("destroy_gemmbias_handle", &at::native::destroy_gemmbias_handle, "destroy_gemmbias_handle");
+  m.def("create_gemmdbias_handle", &at::native::create_gemmdbias_handle, "create_gemmdbias_handle");
+  m.def("destroy_gemmdbias_handle", &at::native::destroy_gemmdbias_handle, "destroy_gemmdbias_handle");
+  m.def("merge_tensor", &at::native::merge_tensor, "merge_tensor");
+  m.def("split_tensor", &at::native::split_tensor, "split_tensor");
 }
