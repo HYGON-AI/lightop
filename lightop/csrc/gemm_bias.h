@@ -47,7 +47,8 @@ using namespace std;
 //   return handle;
 // }
 
-
+std::mutex fmu;
+std::mutex bmu;
 #ifdef __cplusplus 
 extern "C" {
 #endif
@@ -81,11 +82,9 @@ extern "C" {
 // typedef int (*_gemmdbias_nt_m1024_n1024)(void *A,void *B,void *C,void *D,void* alpha,int m,int k,int n);
 // _gemmdbias_nt_m1024_n1024 gemmdbias_nt_m1024_n1024=(_gemmdbias_nt_m1024_n1024)dlsym(g_handle, "gemmdbias_nt_m1024_n1024");
 
-
 typedef struct  {
   void * handler;
   int num;
-  mutex mu;
 } gemm_hanndle;
 
 gemm_hanndle forwardHandler = {nullptr, 0};

@@ -68,21 +68,21 @@ c10::MaybeOwned<Tensor> inline prepare_matrix_for_cublas(const Tensor& tensor, b
 } // namespace
 
 void create_gemmbias_handle() {
-  forwardHandler.mu.lock();
+  fmu.lock();
   initGemmbias();
   forwardHandler.num++;
   if (forwardHandler.handler) {
-    forwardHandler.mu.unlock();
+    fmu.unlock();
     return;
   }
   int ret = gemmbias_forward_create_handle(&forwardHandler.handler);
-  forwardHandler.mu.unlock();
+  fmu.unlock();
   if (ret) {
     printf("ERROR, gemmbias_forward_create_handle ret %d\n",ret);
   }
 }
 void destroy_gemmbias_handle() {
-  forwardHandler.mu.lock();
+  fmu.lock();
   if (--forwardHandler.num == 0 && forwardHandler.handler) {
     int ret = gemmbias_forward_destroy_handle(forwardHandler.handler);
     if (ret) {
@@ -91,19 +91,19 @@ void destroy_gemmbias_handle() {
       forwardHandler.handler = nullptr;
     }
   }
-  forwardHandler.mu.unlock();
+  fmu.unlock();
 }
 
 void create_gemmdbias_handle() {
-  backwardHandler.mu.lock();
+  bmu.lock();
   initGemmbias();
   backwardHandler.num++;
   if (backwardHandler.handler) {
-    backwardHandler.mu.unlock();
+    bmu.unlock();
     return;
   }
   int ret = gemmdbias_backward_create_handle(&backwardHandler.handler);
-  backwardHandler.mu.unlock();
+  bmu.unlock();
   if (ret) {
     printf("ERROR, gemmdbias_backward_create_handle ret %d\n",ret);
   }
@@ -113,7 +113,7 @@ void destroy_gemmdbias_handle() {
     printf("ERROR, get gemmdbias_backward_destroy_handle err\n");
     return;
   }
-  backwardHandler.mu.lock();
+  bmu.lock();
   if (--backwardHandler.num == 0 && backwardHandler.handler) {
     int ret = gemmdbias_backward_destroy_handle(backwardHandler.handler);
     if (ret) {
@@ -123,7 +123,7 @@ void destroy_gemmdbias_handle() {
       backwardHandler.num = 0;
     }
   }
-  backwardHandler.mu.unlock();
+  bmu.unlock();
 }
 
 // HC Debug
