@@ -15,8 +15,9 @@ std::tuple<Tensor,Tensor> fused_add_dropout_forward(const Tensor& self,const Ten
 std::tuple<Tensor,Tensor> fused_add_dropout_backward(Tensor grad, Tensor mask, double p);
 std::tuple<Tensor,Tensor,Tensor,Tensor>fused_ln_add_dropout_forward(const Tensor& self,const Tensor& other,const Tensor&weight,const Tensor& bias, double ln_epsilon, double p, bool training);
 std::tuple<Tensor,Tensor,Tensor,Tensor>fused_ln_add_dropout_backward(const Tensor& grad,const Tensor& X, const Tensor& mean,const Tensor& rstd, const Tensor& gamma);
-Tensor fused_linear_bias_forward(c10::optional<Tensor> & self_opt, const at::Tensor& mat1, const at::Tensor& mat2);
-Tensor fused_linear_bias_backward(c10::optional<Tensor> & self_opt, at::Tensor& result, const at::Tensor& mat1, const at::Tensor& mat2);
+Tensor fused_linear_bias_forward(const at::Tensor& self, const at::Tensor& mat1, const at::Tensor& mat2);
+Tensor fused_linear_bias_backward(const at::Tensor& self, at::Tensor& result, const at::Tensor& mat1, const at::Tensor& mat2);
+Tensor fused_linear_bias_forward_autograd(const Tensor& input, const Tensor& weight, const Tensor& bias, const Tensor& grad_weight, const Tensor& grad_bias);
 std::tuple <Tensor, Tensor> fused_relu_dropout_forward(const Tensor &self, const double &p, const bool &use_relu, const bool &training);
 Tensor fused_relu_dropout_backward(Tensor &grad, Tensor &mask);
 Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim, const bool half_to_float);
@@ -46,6 +47,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("ln_add_dropout_backward", &at::native::fused_ln_add_dropout_backward, "fused_ln_add_dropout backward");
   m.def("linearbias_forward", &at::native::fused_linear_bias_forward, "fused_linearbias forward");
   m.def("linearbias_backward", &at::native::fused_linear_bias_backward, "fused_linearbias backward");
+  m.def("fused_linear_bias_forward_autograd", &at::native::fused_linear_bias_forward_autograd, "fused_linearbias forward autograd");
   m.def("relu_dropout_forward", &at::native::fused_relu_dropout_forward, "fused_relu_dropout forward");
   m.def("relu_dropout_backward", &at::native::fused_relu_dropout_backward, "fused_relu_dropout backward");
   m.def("softmax_forward_autograd", &at::native::fuse_softmax_forward_autograd, "softmax autograd of forward");
