@@ -46,7 +46,7 @@ class LinearBiasFunction(Function):
             if grad_output.dim() == 2:
                 op.linearbias_backward(grad_bias, grad_weight, grad_output.t(), input)
             else:
-                op.linearbias_backward(grad_bias, grad_weight, grad_output.view(-1, grad_output.shape[-1]).t(), input.view(-1, input.shape[-1]))
+                op.linearbias_backward(grad_bias, grad_weight, grad_output.flatten(0,-2).t(), input.flatten(0,-2))
  
         # if input.size()[0] == 107 and weight.size()[1] == 1024 and weight.size()[0] == 1024 and bias is not None:
         #     if ctx.needs_input_grad[1] and ctx.needs_input_grad[2]:
@@ -118,7 +118,8 @@ class LinearBias(torch.nn.Module):
             self.in_features, self.out_features, self.bias is not None
         )
     def forward(self, input: Tensor) -> Tensor:
-        return LinearBiasFunction.apply(input, self.weight, self.bias, self.grad_weight, self.grad_bias)
+        # return LinearBiasFunction.apply(input, self.weight, self.bias, self.grad_weight, self.grad_bias)
+        return op.fused_linear_bias_forward_autograd(input, self.weight, self.bias, self.grad_weight, self.grad_bias)
 
     def __del__(self):
         op.destroy_gemmbias_handle()
