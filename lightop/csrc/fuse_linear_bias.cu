@@ -7,6 +7,7 @@
 
 #include <THC/THCGeneral.h>
 #include <torch/extension.h>
+#include <torch/autograd.h>
 
 #include "gemm_bias.h"
 #include "cuda_meta.h"
@@ -67,6 +68,65 @@ c10::MaybeOwned<Tensor> inline prepare_matrix_for_cublas(const Tensor& tensor, b
 
 } // namespace
 
+void create_gemmbias_handle() {
+  fmu.lock();
+  initGemmbias();
+  forwardHandler.num++;
+  if (forwardHandler.handler) {
+    fmu.unlock();
+    return;
+  }
+  int ret = gemmbias_forward_create_handle(&forwardHandler.handler);
+  fmu.unlock();
+  if (ret) {
+    printf("ERROR, gemmbias_forward_create_handle ret %d\n",ret);
+  }
+}
+void destroy_gemmbias_handle() {
+  fmu.lock();
+  if (--forwardHandler.num == 0 && forwardHandler.handler) {
+    int ret = gemmbias_forward_destroy_handle(forwardHandler.handler);
+    if (ret) {
+      printf("ERROR, gemmbias_forward_destroy_handle ret %d\n",ret);
+    } else {
+      forwardHandler.handler = nullptr;
+    }
+  }
+  fmu.unlock();
+}
+
+void create_gemmdbias_handle() {
+  bmu.lock();
+  initGemmbias();
+  backwardHandler.num++;
+  if (backwardHandler.handler) {
+    bmu.unlock();
+    return;
+  }
+  int ret = gemmdbias_backward_create_handle(&backwardHandler.handler);
+  bmu.unlock();
+  if (ret) {
+    printf("ERROR, gemmdbias_backward_create_handle ret %d\n",ret);
+  }
+}
+void destroy_gemmdbias_handle() {
+  if (!gemmdbias_backward_destroy_handle) {
+    printf("ERROR, get gemmdbias_backward_destroy_handle err\n");
+    return;
+  }
+  bmu.lock();
+  if (--backwardHandler.num == 0 && backwardHandler.handler) {
+    int ret = gemmdbias_backward_destroy_handle(backwardHandler.handler);
+    if (ret) {
+      printf("ERROR, gemmdbias_backward_destroy_handle ret %d\n",ret);
+    } else {
+      backwardHandler.handler = nullptr;
+      backwardHandler.num = 0;
+    }
+  }
+  bmu.unlock();
+}
+
 // HC Debug
 void fused_linear_bias_forward_impl(const Tensor& self, const Tensor& mat1, const Tensor& mat2, Tensor& result) {
   TORCH_CHECK(mat1.dim() == 2 && mat2.dim() == 2, "tensors must be 2-D");
@@ -113,14 +173,24 @@ void fused_linear_bias_forward_impl(const Tensor& self, const Tensor& mat1, cons
     scalar_t* mat2_ptr = mat2_->data_ptr<scalar_t>();
     scalar_t* result_ptr = result_->data_ptr<scalar_t>();
     scalar_t* self_ptr = self.data_ptr<scalar_t>();
-    gemm_bias(
+    gemmbias_forward_half(
+      forwardHandler.handler,
       transpose_mat1 ? int(1) : int(0),
       transpose_mat2 ? int(1) : int(0),
-      mat1_ptr, mat2_ptr, self_ptr, result_ptr,
-      (int)m, (int)k, (int)n,
+      (int)m, (int)n, (int)k,
       &alpha_val,
-      &beta_val
+      mat1_ptr, mat2_ptr, 
+      &beta_val,
+      self_ptr, result_ptr
     );
+    // gemm_bias(
+    //   transpose_mat1 ? int(1) : int(0),
+    //   transpose_mat2 ? int(1) : int(0),
+    //   mat1_ptr, mat2_ptr, self_ptr, result_ptr,
+    //   (int)m, (int)k, (int)n,
+    //   &alpha_val,
+    //   &beta_val
+    // );
   });
   if (!result.is_same(*result_)) {
     result.copy_(*result_);
@@ -128,8 +198,8 @@ void fused_linear_bias_forward_impl(const Tensor& self, const Tensor& mat1, cons
 }
 
 // HC Debug
-Tensor fused_linear_bias_backward(Tensor& self, Tensor & result, const Tensor& mat1, const Tensor& mat2) {
-  //Tensor result = at::empty({mat1.sizes()[0], mat2.sizes()[1]},  mat1.options());
+Tensor fused_linear_bias_backward(const Tensor& self, Tensor & result, const Tensor& mat1, const Tensor& mat2) {
+  // Tensor result = at::empty({mat1.sizes()[0], mat2.sizes()[1]},  mat1.options());
   TORCH_CHECK(mat1.dim() == 2 && mat2.dim() == 2, "tensors must be 2-D");
 
   TensorArg args[]{{result, "out", 0}, {self, "self", 1}, {mat1, "mat1", 2}, {mat2, "mat2", 3}};
@@ -170,17 +240,28 @@ Tensor fused_linear_bias_backward(Tensor& self, Tensor & result, const Tensor& m
 
   AT_DISPATCH_FLOATING_TYPES_AND_HALF(scalar_type, "fused_linear_bias_backward", [&] {
     scalar_t alpha_val = (scalar_t)1.0;
+    scalar_t beta_val = (scalar_t)1.0;
     scalar_t* mat1_ptr = mat1_->data_ptr<scalar_t>();
     scalar_t* mat2_ptr = mat2_->data_ptr<scalar_t>();
     scalar_t* result_ptr = result_->data_ptr<scalar_t>();
     scalar_t* self_ptr = self.data_ptr<scalar_t>();
-    gemm_dbias(
+    gemmdbias_backward_half(
+      backwardHandler.handler,
       transpose_mat1 ? int(1) : int(0),
       transpose_mat2 ? int(1) : int(0),
-      mat1_ptr, mat2_ptr, self_ptr, result_ptr,
-      (int)m, (int)k, (int)n,
-      &alpha_val
+      (int)m, (int)n, (int)k,
+      (const void*)&alpha_val,
+      (const void*)mat1_ptr, (const void*)mat2_ptr, 
+      (const void*)&beta_val,
+      (void*)self_ptr, (void*)result_ptr
     );
+    // gemm_dbias(
+    //   transpose_mat1 ? int(1) : int(0),
+    //   transpose_mat2 ? int(1) : int(0),
+    //   mat1_ptr, mat2_ptr, self_ptr, result_ptr,
+    //   (int)m, (int)k, (int)n,
+    //   &alpha_val
+    // );
   });
 
   if (!result.is_same(*result_)) {
@@ -246,11 +327,123 @@ at::Tensor fused_linear_bias_forward(const at::Tensor & self, const at::Tensor &
   c10::impl::check_and_update_common_device(common_device, self, "wrapper_addmm", "self");
   c10::impl::check_and_update_common_device(common_device, mat1, "wrapper_addmm", "mat1");
   c10::impl::check_and_update_common_device(common_device, mat2, "wrapper_addmm", "mat2");
-  structured__fused_linear_functional op;
-  op.meta(self, mat1, mat2);
-  op.impl(self, mat1, mat2, *op.outputs_[0]);
-  return std::move(op.outputs_[0]).take();
+
+  auto dim_mat1 = mat1.dim();
+  auto dim_mat2 = mat2.dim();
+  if (dim_mat1 >= 3 && (dim_mat2 == 1 || dim_mat2 == 2)) {
+    const at::Tensor t2 = dim_mat2 == 1 ? mat2.unsqueeze(-1) : mat2;
+    auto size1 = mat1.sizes();
+    auto size2 = t2.sizes();
+    std::vector<int64_t> output_size;
+    output_size.insert(output_size.end(), size1.begin(), size1.end() - 1);
+    if (dim_mat2 > 1) {
+      output_size.push_back(size2[dim_mat2 - 1]);
+    }
+    const auto dim1_size = c10::multiply_integers(size1.begin(), size1.end() - 1);
+    auto t1 = mat1.expect_contiguous()->view({dim1_size, size1[size1.size() - 1]});
+    // structured__fused_linear_functional op;
+    // op.meta(self, t1, t2);
+    // op.impl(self, t1, t2, *op.outputs_[0]);
+    Tensor result = at::empty({t1.sizes()[0], t2.sizes()[1]},  self.options());
+    fused_linear_bias_forward_impl(self, t1, t2, result);
+    return std::move(at::_unsafe_view(result, output_size));
+  } else {
+    // structured__fused_linear_functional op;
+    // op.meta(self, mat1, mat2);
+    // op.impl(self, mat1, mat2, *op.outputs_[0]);
+    Tensor result = at::empty({mat1.sizes()[0], mat2.sizes()[1]},  self.options());
+    fused_linear_bias_forward_impl(self, mat1, mat2, result);
+    return std::move(result);
+  }
 }
+
+// Tensor fused_linear_bias_backward(c10::optional<Tensor> & self_opt, Tensor & result, const at::Tensor & mat1, const at::Tensor & mat2) {
+//   c10::optional<Device> common_device = nullopt;
+//   (void)common_device; // Suppress unused variable warning
+
+//   auto has_self = self_opt.has_value();
+//   const at::Tensor & self = has_self ? *c10::MaybeOwned<Tensor>::borrowed(*self_opt) : torch::empty({0}, mat1.options());
+
+//   c10::impl::check_and_update_common_device(common_device, self, "wrapper_baddmm", "self");
+//   c10::impl::check_and_update_common_device(common_device, mat1, "wrapper_baddmm", "mat1");
+//   c10::impl::check_and_update_common_device(common_device, mat2, "wrapper_baddmm", "mat2");
+  
+//   fused_linear_bias_backward_impl(self, result, mat1, mat2, !has_self);
+//   return std::move(result);
+// }
+
+class fusedLinearBiasFunction : public torch::autograd::Function<fusedLinearBiasFunction> {
+ public:
+  static torch::autograd::variable_list forward(
+      torch::autograd::AutogradContext* ctx,
+      const torch::autograd::Variable& input,
+      const torch::autograd::Variable& weight,
+      const torch::autograd::Variable& bias,
+      const torch::autograd::Variable& grad_weight,
+      const torch::autograd::Variable& grad_bias) {
+    ctx->save_for_backward({input, weight, bias, grad_weight, grad_bias});
+    
+    if (input.device().type() == DeviceType::CUDA) {
+      auto result = fused_linear_bias_forward(bias, input, weight.t());
+      return {result};
+    } 
+    else {
+        TORCH_CHECK(0, "Unsupported device ", input.device().type());}
+  }
+
+  static torch::autograd::variable_list backward(
+      torch::autograd::AutogradContext* ctx,
+      const torch::autograd::variable_list& grad_output) {
+    // Use data saved in forward
+    auto saved = ctx->get_saved_variables();
+    auto input = saved[0];
+    auto weight = saved[1];
+    auto bias = saved[2];
+    auto grad_weight = saved[3];
+    auto grad_bias = saved[4];
+
+    if (grad_output[0].device().type() == DeviceType::CUDA) {
+      // auto input_size = input.sizes();
+      // const auto input_dim_size = c10::multiply_integers(input_size.begin(), input_size.end());
+      // Tensor grad_input = torch::empty({input_dim_size}, input.options());
+      // if (ctx->needs_input_grad(0)) {
+      //   auto grad_input_ = at::matmul(grad_output[0], weight.t());
+      //   grad_input.set_(grad_input_);
+      // }
+
+      // if (ctx->needs_input_grad(1) && ctx->needs_input_grad(2)) {
+      //   fused_linear_bias_backward(grad_bias, grad_weight, grad_output[0].flatten(0, -2).t(), input.flatten(0, -2));
+      // }
+      auto grad_input = at::matmul(grad_output[0], weight);
+      if (grad_output[0].dim() == 2) {
+        fused_linear_bias_backward(grad_bias, grad_weight, grad_output[0].t(), input);
+      } else {
+        fused_linear_bias_backward(grad_bias, grad_weight, grad_output[0].flatten(0, -2).t(), input.flatten(0, -2));
+      }
+      return {
+        grad_input,
+        grad_weight,
+        grad_bias,
+        torch::autograd::Variable(),
+        torch::autograd::Variable()};
+    }
+    else  {
+      TORCH_CHECK(0, "Unsupported device ", grad_output[0].device().type());
+    }
+  }
+};
+
+Tensor fused_linear_bias_forward_autograd(
+  const Tensor& input,
+  const Tensor& weight,
+  const Tensor& bias,
+  const Tensor& grad_weight,
+  const Tensor& grad_bias) {
+  auto result = fusedLinearBiasFunction::apply(input, weight, bias, grad_weight, grad_bias);
+
+  return result[0];
+}
+
 } // namespace native
 } //namespace at
 
