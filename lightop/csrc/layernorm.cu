@@ -110,7 +110,6 @@ __global__ void GammaBetaBackwardSimple(IndexType M,IndexType N,const scalar_t* 
 }
 
 template <typename scalar_t>
-C10_LAUNCH_BOUNDS_1(512)
 __global__ void GammaBetaBackward(IndexType M,IndexType N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
                                   const scalar_t* rstd,scalar_t* dg,scalar_t* db)
 {
