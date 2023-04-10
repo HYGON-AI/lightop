@@ -183,14 +183,6 @@ void fused_linear_bias_forward_impl(const Tensor& self, const Tensor& mat1, cons
       &beta_val,
       self_ptr, result_ptr
     );
-    // gemm_bias(
-    //   transpose_mat1 ? int(1) : int(0),
-    //   transpose_mat2 ? int(1) : int(0),
-    //   mat1_ptr, mat2_ptr, self_ptr, result_ptr,
-    //   (int)m, (int)k, (int)n,
-    //   &alpha_val,
-    //   &beta_val
-    // );
   });
   if (!result.is_same(*result_)) {
     result.copy_(*result_);
@@ -255,13 +247,6 @@ Tensor fused_linear_bias_backward(const Tensor& self, Tensor & result, const Ten
       (const void*)&beta_val,
       (void*)self_ptr, (void*)result_ptr
     );
-    // gemm_dbias(
-    //   transpose_mat1 ? int(1) : int(0),
-    //   transpose_mat2 ? int(1) : int(0),
-    //   mat1_ptr, mat2_ptr, self_ptr, result_ptr,
-    //   (int)m, (int)k, (int)n,
-    //   &alpha_val
-    // );
   });
 
   if (!result.is_same(*result_)) {
@@ -291,35 +276,8 @@ struct TORCH_API structured__fused_linear : public at::impl::MetaBase {
   }
     
 };
-struct structured__fused_linear_functional final : public at::native::structured__fused_linear {
+TORCH_META_FUNC_FINAL(_fused_linear)
 
-    void set_output(int64_t output_idx, IntArrayRef sizes, IntArrayRef strides,
-                    TensorOptions options, DimnameList names) override {
-
-        auto current_device = guard_.current_device();
-        if (C10_UNLIKELY(current_device.has_value())) {
-          TORCH_INTERNAL_ASSERT(*current_device == options.device(),
-            "structured kernels don't support multi-device outputs");
-        } else {
-          guard_.reset_device(options.device());
-        }
-
-
-        outputs_[output_idx] = create_out(sizes, strides, options);
-        if (!names.empty()) {
-          namedinference::propagate_names(*outputs_[output_idx], names);
-        }
-        // super must happen after, so that downstream can use maybe_get_output
-        // to retrieve the output
-
-    }
-
-    const Tensor& maybe_get_output(int64_t output_idx) override {
-        return *outputs_[output_idx];
-    }
-    std::array<c10::ExclusivelyOwned<Tensor>, 1> outputs_;
-    c10::hip::OptionalHIPGuardMasqueradingAsCUDA guard_;
-};
 at::Tensor fused_linear_bias_forward(const at::Tensor & self, const at::Tensor & mat1, const at::Tensor & mat2) {
   c10::optional<Device> common_device = nullopt;
   (void)common_device; // Suppress unused variable warning
@@ -356,21 +314,6 @@ at::Tensor fused_linear_bias_forward(const at::Tensor & self, const at::Tensor &
     return std::move(result);
   }
 }
-
-// Tensor fused_linear_bias_backward(c10::optional<Tensor> & self_opt, Tensor & result, const at::Tensor & mat1, const at::Tensor & mat2) {
-//   c10::optional<Device> common_device = nullopt;
-//   (void)common_device; // Suppress unused variable warning
-
-//   auto has_self = self_opt.has_value();
-//   const at::Tensor & self = has_self ? *c10::MaybeOwned<Tensor>::borrowed(*self_opt) : torch::empty({0}, mat1.options());
-
-//   c10::impl::check_and_update_common_device(common_device, self, "wrapper_baddmm", "self");
-//   c10::impl::check_and_update_common_device(common_device, mat1, "wrapper_baddmm", "mat1");
-//   c10::impl::check_and_update_common_device(common_device, mat2, "wrapper_baddmm", "mat2");
-  
-//   fused_linear_bias_backward_impl(self, result, mat1, mat2, !has_self);
-//   return std::move(result);
-// }
 
 class fusedLinearBiasFunction : public torch::autograd::Function<fusedLinearBiasFunction> {
  public:
