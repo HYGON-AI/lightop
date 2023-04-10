@@ -55,7 +55,7 @@
 #include <ATen/hip/HIPContext.h>
 
 #include <ATen/CUDAFunctions.h>
-
+#include "cuda_meta.h"
 
 using namespace std;
 
@@ -1439,18 +1439,6 @@ void torch_softmax_backward(const Tensor &grad_, const Tensor &output_, int64_t 
 
 }
 
-Tensor create_out(IntArrayRef sizes, IntArrayRef strides, const TensorOptions &options) {
-
-  globalContext().lazyInitCUDA();
-  if (strides.empty()) {
-      return at::native::empty_cuda(sizes, optTypeMetaToScalarType(options.dtype_opt()), options.layout_opt(), options.device_opt(), options.pinned_memory_opt(), options.memory_format_opt());
-  } else {
-      // TODO: assert options.memory_format_opt() is nullopt (debug only?)
-      return at::native::empty_strided_cuda(sizes, strides, optTypeMetaToScalarType(options.dtype_opt()), options.layout_opt(), options.device_opt(), options.pinned_memory_opt());
-  }
-
-}
-
 struct TORCH_API structured__fused_softmax : public at::impl::MetaBase {  
     void meta(const Tensor& input, const int64_t dim, const bool half_to_float) {
         int64_t dim_ = maybe_wrap_dim(dim, input.dim());
@@ -1474,36 +1462,7 @@ struct TORCH_API structured__fused_softmax : public at::impl::MetaBase {
     }
     
 };
-
-struct structured__fused_softmax_functional final : public structured__fused_softmax {
-
-    void set_output(int64_t output_idx, IntArrayRef sizes, IntArrayRef strides,
-                    TensorOptions options, DimnameList names) override {
-
-        auto current_device = guard_.current_device();
-        if (C10_UNLIKELY(current_device.has_value())) {
-          TORCH_INTERNAL_ASSERT(*current_device == options.device(),
-            "structured kernels don't support multi-device outputs");
-        } else {
-          guard_.reset_device(options.device());
-        }
-
-
-        outputs_[output_idx] = create_out(sizes, strides, options);
-        if (!names.empty()) {
-          namedinference::propagate_names(*outputs_[output_idx], names);
-        }
-        // super must happen after, so that downstream can use maybe_get_output
-        // to retrieve the output
-
-    }
-
-    const Tensor& maybe_get_output(int64_t output_idx) override {
-        return *outputs_[output_idx];
-    }
-    std::array<c10::ExclusivelyOwned<Tensor>, 1> outputs_;
-    c10::hip::OptionalHIPGuardMasqueradingAsCUDA guard_;
-};
+TORCH_META_FUNC_FINAL(_fused_softmax)
 
 struct TORCH_API structured__fused_softmax_backward : public at::impl::MetaBase {  
     void meta(const Tensor& grad,const Tensor& output,int64_t dim,const Tensor& input) {
@@ -1541,37 +1500,7 @@ struct TORCH_API structured__fused_softmax_backward : public at::impl::MetaBase 
         torch_softmax_backward<SoftMaxBackwardEpilogue,false>(grad_output, output, dim, half_to_float, grad_input);          
     }
 };
-
-struct structured__fused_softmax_backward_functional final : public at::native::structured__fused_softmax_backward {
-
-    void set_output(int64_t output_idx, IntArrayRef sizes, IntArrayRef strides,
-                    TensorOptions options, DimnameList names) override {
-
-        auto current_device = guard_.current_device();
-        if (C10_UNLIKELY(current_device.has_value())) {
-          TORCH_INTERNAL_ASSERT(*current_device == options.device(),
-            "structured kernels don't support multi-device outputs");
-        } else {
-          guard_.reset_device(options.device());
-        }
-
-
-        outputs_[output_idx] = create_out(sizes, strides, options);
-        if (!names.empty()) {
-          namedinference::propagate_names(*outputs_[output_idx], names);
-        }
-        // super must happen after, so that downstream can use maybe_get_output
-        // to retrieve the output
-
-    }
-
-    const Tensor& maybe_get_output(int64_t output_idx) override {
-        return *outputs_[output_idx];
-    }
-    std::array<c10::ExclusivelyOwned<Tensor>, 1> outputs_;
-    c10::hip::OptionalHIPGuardMasqueradingAsCUDA guard_;
-};
-
+TORCH_META_FUNC_FINAL(_fused_softmax_backward)
 
 struct TORCH_API structured__fused_log_softmax_cuda_out : public at::impl::MetaBase {  
     void meta(const Tensor& input, const int64_t dim, const bool half_to_float) {
@@ -1595,37 +1524,7 @@ struct TORCH_API structured__fused_log_softmax_cuda_out : public at::impl::MetaB
         torch_softmax<LogSoftMaxForwardEpilogue,true>(self, dim, half_to_float, out);
     }
 };
-
-struct structured__fused_log_softmax_cuda_out_functional final : public at::native::structured__fused_log_softmax_cuda_out {
-
-    void set_output(int64_t output_idx, IntArrayRef sizes, IntArrayRef strides,
-                    TensorOptions options, DimnameList names) override {
-
-        auto current_device = guard_.current_device();
-        if (C10_UNLIKELY(current_device.has_value())) {
-          TORCH_INTERNAL_ASSERT(*current_device == options.device(),
-            "structured kernels don't support multi-device outputs");
-        } else {
-          guard_.reset_device(options.device());
-        }
-
-
-        outputs_[output_idx] = create_out(sizes, strides, options);
-        if (!names.empty()) {
-          namedinference::propagate_names(*outputs_[output_idx], names);
-        }
-        // super must happen after, so that downstream can use maybe_get_output
-        // to retrieve the output
-
-    }
-
-    const Tensor& maybe_get_output(int64_t output_idx) override {
-        return *outputs_[output_idx];
-    }
-    std::array<c10::ExclusivelyOwned<Tensor>, 1> outputs_;
-    c10::hip::OptionalHIPGuardMasqueradingAsCUDA guard_;
-};
-
+TORCH_META_FUNC_FINAL(_fused_log_softmax_cuda_out)
 
 struct TORCH_API structured__fused_log_softmax_backward_cuda_out : public at::impl::MetaBase {
     void meta(const Tensor& grad,const Tensor& output,int64_t dim,const Tensor& input) {
@@ -1663,38 +1562,7 @@ struct TORCH_API structured__fused_log_softmax_backward_cuda_out : public at::im
         torch_softmax_backward<LogSoftMaxBackwardEpilogue,true>(grad_output, output, dim, half_to_float, grad_input);          
     }
 };
-
-struct structured__fused_log_softmax_backward_cuda_out_functional final : public at::native::structured__fused_log_softmax_backward_cuda_out {
-
-    void set_output(int64_t output_idx, IntArrayRef sizes, IntArrayRef strides,
-                    TensorOptions options, DimnameList names) override {
-
-        auto current_device = guard_.current_device();
-        if (C10_UNLIKELY(current_device.has_value())) {
-          TORCH_INTERNAL_ASSERT(*current_device == options.device(),
-            "structured kernels don't support multi-device outputs");
-        } else {
-          guard_.reset_device(options.device());
-        }
-
-
-        outputs_[output_idx] = create_out(sizes, strides, options);
-        if (!names.empty()) {
-          namedinference::propagate_names(*outputs_[output_idx], names);
-        }
-        // super must happen after, so that downstream can use maybe_get_output
-        // to retrieve the output
-
-    }
-
-    const Tensor& maybe_get_output(int64_t output_idx) override {
-        return *outputs_[output_idx];
-    }
-    std::array<c10::ExclusivelyOwned<Tensor>, 1> outputs_;
-    c10::hip::OptionalHIPGuardMasqueradingAsCUDA guard_;
-};
-
-
+TORCH_META_FUNC_FINAL(_fused_log_softmax_backward_cuda_out)
 }
 
 

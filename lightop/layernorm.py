@@ -12,6 +12,6 @@ class LayerNorm(torch.nn.Module):
         torch.nn.init.ones_(self.weight)
         torch.nn.init.zeros_(self.bias)
 
-    def forward(self, input, ):
-        return op.layernorm_forward_autograd(input, self.weight,self.bias,self.eps)
+    def forward(self, x ):
+        return op.layernorm_forward_autograd(x, self.weight,self.bias,self.eps)
 
