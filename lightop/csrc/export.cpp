@@ -13,8 +13,6 @@ Tensor fuse_layernorm_forward_autograd(const Tensor& x,const Tensor& weight,cons
 Tensor drop_path_forward_autograd(const Tensor& x,double p, bool training,bool scale_by_keep) ;
 Tensor fuse_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,double rate,bool training);
 Tensor fuse_ln_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,const Tensor& bias,double eps,double rate,bool training);
-Tensor fused_linear_bias_forward(const at::Tensor& self, const at::Tensor& mat1, const at::Tensor& mat2);
-Tensor fused_linear_bias_backward(const at::Tensor& self, at::Tensor& result, const at::Tensor& mat1, const at::Tensor& mat2);
 Tensor fused_linear_bias_forward_autograd(const Tensor& input, const Tensor& weight, const Tensor& bias, const Tensor& grad_weight, const Tensor& grad_bias);
 std::tuple <Tensor, Tensor> fused_relu_dropout_forward(const Tensor &self, const double &p, const bool &use_relu, const bool &training);
 Tensor fused_relu_dropout_backward(Tensor &grad, Tensor &mask);
@@ -28,8 +26,6 @@ void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
 void destroy_gemmdbias_handle();
 
-at::Tensor merge_tensor(const at::Tensor & input1, const at::Tensor & input2);
-void split_tensor(const at::Tensor & buff, std::vector<long> meta, at::Tensor & input1, at::Tensor & input2);
 }
 }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -41,8 +37,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("droppath_forward_autograd",&at::native::drop_path_forward_autograd,"droppath forward") ;
   m.def("add_dropout_forward_autograd", &at::native::fuse_add_dropout_forward_autograd, "fused_dropout forward");
   m.def("ln_add_dropout_forward_autograd", &at::native::fuse_ln_add_dropout_forward_autograd, "fused_ln_add_dropout forward");
-  m.def("linearbias_forward", &at::native::fused_linear_bias_forward, "fused_linearbias forward");
-  m.def("linearbias_backward", &at::native::fused_linear_bias_backward, "fused_linearbias backward");
   m.def("fused_linear_bias_forward_autograd", &at::native::fused_linear_bias_forward_autograd, "fused_linearbias forward autograd");
   m.def("relu_dropout_forward", &at::native::fused_relu_dropout_forward, "fused_relu_dropout forward");
   m.def("relu_dropout_backward", &at::native::fused_relu_dropout_backward, "fused_relu_dropout backward");
@@ -54,6 +48,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("destroy_gemmbias_handle", &at::native::destroy_gemmbias_handle, "destroy_gemmbias_handle");
   m.def("create_gemmdbias_handle", &at::native::create_gemmdbias_handle, "create_gemmdbias_handle");
   m.def("destroy_gemmdbias_handle", &at::native::destroy_gemmdbias_handle, "destroy_gemmdbias_handle");
-  m.def("merge_tensor", &at::native::merge_tensor, "merge_tensor");
-  m.def("split_tensor", &at::native::split_tensor, "split_tensor");
 }
