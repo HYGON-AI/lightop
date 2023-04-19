@@ -85,9 +85,9 @@ def main(epoch):
             drop_prob = random.random()
             scale_by_keep = bool(random.randint(0,1))
             args = (cols, seqs, batch, drop_prob, scale_by_keep)
-            if batch * seqs < 512:
-                res, (out, fuseout) = test_lndrop(cols, seqs, batch, drop_prob, scale_by_keep)
-                s2 = "{!s:^5} | cols={:4d}; seqs={:<2d}; batch={:<3d}; drop_prob={:.17f}; scale_by_keep={:<1d}".format(str(res), *args)
-                print(s2)
+            # if batch * seqs < 512:
+            res, (out, fuseout) = test_lndrop(cols, seqs, batch, drop_prob, scale_by_keep)
+            s2 = "{!s:^5} | cols={:4d}; seqs={:<2d}; batch={:<3d}; drop_prob={:.17f}; scale_by_keep={:<1d}".format(str(res), *args)
+            print(s2)
 
 main(1)

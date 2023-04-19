@@ -16,23 +16,6 @@
 #include <c10/cuda/CUDAMathCompat.h>
 #include <torch/autograd.h>
 
-//i#define editmode
-
-#ifdef editmode
-struct A{
-  int x;
-  int y;
-  int z;
-};
-A threadIdx;
-A blockIdx;
-A blockDim;
-A gridDim;
-#define __syncthreads()
-namespace c10 {namespace cuda {namespace compat {float rsqrt(float a){return a;}}}}
-
-#endif
-
 using namespace std;
 
 namespace at{
@@ -162,3 +145,29 @@ __inline__ __device__ T BlockReduceSum(T val, T* shared) {
 }
 }
 
+#define LAYERNORMBACKWARD                                                                \
+  using T_ACC = acc_type<scalar_t, true>;                                                \
+  __shared__ T_ACC ds_shared[C10_WARP_SIZE];                                             \
+  __shared__ T_ACC db_shared[C10_WARP_SIZE];                                             \
+ const IndexType i = blockIdx.x;                                                         \
+  T_ACC sum1 = 0;                                                                        \
+  T_ACC sum2 = 0;                                                                        \
+  for (int j = threadIdx.x; j < N; j += blockDim.x) {                                    \
+    const int index = i * N + j;                                                         \
+    const T_ACC gamma_v = static_cast<T_ACC>(gamma[j]);                                  \
+    sum1 += static_cast<T_ACC>(dY[index]) * static_cast<T_ACC>(X[index]) * gamma_v;      \
+    sum2 += static_cast<T_ACC>(dY[index]) * gamma_v;                                     \
+  }                                                                                      \
+  sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);                                         \
+  sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);                                         \
+  __shared__ T_ACC b;                                                                    \
+  __shared__ T_ACC c;                                                                    \
+  if (threadIdx.x == 0) {                                                                \
+    const T_ACC s = T_ACC(1) / static_cast<T_ACC>(N);                                    \
+    T_ACC tmean = static_cast<T_ACC>(mean[i]);                                           \
+    T_ACC trstd = static_cast<T_ACC>(rstd[i]);                                           \
+    const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;                   \
+    b = a;                                                                               \
+    c = -a * tmean - sum2 * trstd * s;                                                   \
+  }                                                                                      \
+  __syncthreads();
