@@ -182,31 +182,10 @@ template <typename scalar_t>
 __global__ void LayerNormBackward_kernel(IndexType N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
                                          const scalar_t* rstd, scalar_t* dX)
 {
-  using T_ACC = acc_type<scalar_t, true>;
-  __shared__ T_ACC ds_shared[C10_WARP_SIZE];
-  __shared__ T_ACC db_shared[C10_WARP_SIZE];
-  const IndexType i = blockIdx.x;
-  T_ACC sum1 = 0;
-  T_ACC sum2 = 0;
+  LAYERNORMBACKWARD
   for (IndexType j = threadIdx.x; j < N; j += blockDim.x) {
     const IndexType index = i * N + j;
-    const T_ACC gamma_v = gamma[j];
-    sum1 += static_cast<T_ACC>(dY[index]) * static_cast<T_ACC>(X[index]) * gamma_v;
-    sum2 += static_cast<T_ACC>(dY[index]) * gamma_v;
-  }
-  sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);
-  sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);
-  const T_ACC s = T_ACC(1) / static_cast<T_ACC>(N);
-  __shared__ T_ACC b;
-  __shared__ T_ACC c;
-  if (threadIdx.x == 0) {
-    b = (sum2 * static_cast<T_ACC>(mean[i]) - sum1) * static_cast<T_ACC>(rstd[i]) * static_cast<T_ACC>(rstd[i]) *static_cast<T_ACC>(rstd[i]) * s;
-    c = -(b * static_cast<T_ACC>(mean[i]) + sum2 * static_cast<T_ACC>(rstd[i]) * s);
-  }
-  __syncthreads();
-  for (IndexType j = threadIdx.x; j < N; j += blockDim.x) {
-    const IndexType index = i * N + j;
-    const T_ACC gamma_v = gamma[j];
+    const T_ACC gamma_v = static_cast<T_ACC>(gamma[j]);
     dX[index] = static_cast<T_ACC>(rstd[i]) * static_cast<T_ACC>(dY[index]) * gamma_v + b * static_cast<T_ACC>(X[index]) + c;
   }
 }

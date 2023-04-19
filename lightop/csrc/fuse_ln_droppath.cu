@@ -41,7 +41,7 @@ __global__ void layernorm_droppath_forward_kernel(scalar_t* input,scalar_t* ret,
   __shared__ typename std::aligned_storage<sizeof(welford_t), alignof(welford_t)>::type val_shared[kCUDABlockReduceNumThreads/C10_WARP_SIZE];
 
   welford_t* val_shared_ptr = reinterpret_cast<welford_t*>(val_shared);
-  welfordop_t welford_op;  // 
+  welfordop_t welford_op;
   welford_t val;
 
   for (index_t j = threadIdx.x; j < cols; j += blockDim.x) {
@@ -135,7 +135,7 @@ layernorm_droppath_forward(const Tensor& self,const Tensor&weight,const Tensor& 
 
 template <typename scalar_t>
 __global__ void gb_with_drop_backward_simple_kernel(int batch,int rows,int cols,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
-                                                   const scalar_t* rstd, const scalar_t* mask, scalar_t* dg,scalar_t* db)
+                                                   const scalar_t* rstd, const float* mask, scalar_t* dg,scalar_t* db)
 {
   using T_ACC = acc_type<scalar_t, true>;
   const int j = blockIdx.x * blockDim.x + threadIdx.x;
@@ -163,7 +163,7 @@ __global__ void gb_with_drop_backward_simple_kernel(int batch,int rows,int cols,
 
 template <typename scalar_t>
 __global__ void gb_with_drop_backward_kernel(int batch,int rows,int cols,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
-                                  const scalar_t* rstd,const scalar_t* mask,scalar_t* dg,scalar_t* db)
+                                  const scalar_t* rstd,const float* mask,scalar_t* dg,scalar_t* db)
 {
   using T_ACC = acc_type<scalar_t, true>;
   __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize + 1];
@@ -174,26 +174,27 @@ __global__ void gb_with_drop_backward_kernel(int batch,int rows,int cols,const s
   T_ACC db_sum1 = 0;
   T_ACC db_sum2 = 0;
   if (j < cols) {
-    for (int bc = 0; bc < batch; ++bc) {
-      for (int i = threadIdx.y; i < rows; i += blockDim.y * 2) {
-        const int i1 = bc*rows + i;
-        const int i2 = bc*rows + i + blockDim.y;
-        const int index1 = i1 * cols + j;
-        const int index2 = i2 * cols + j;
-        scalar_t mask_dY1 = dY[index1]*mask[bc];
-        dg_sum1 += dg == nullptr ? T_ACC(0)
-                                : static_cast<T_ACC>(mask_dY1) *
-                (static_cast<T_ACC>(X[index1]) - static_cast<T_ACC>(mean[i1])) *
-                static_cast<T_ACC>(rstd[i1]);
-        db_sum1 += db == nullptr ? T_ACC(0) : static_cast<T_ACC>(mask_dY1);
-        if (i2 < rows) {
-          scalar_t mask_dY2 = dY[index2]*mask[bc];
-          dg_sum2 += dg == nullptr ? T_ACC(0)
-                                  : static_cast<T_ACC>(mask_dY2) *
-                  (static_cast<T_ACC>(X[index2]) - static_cast<T_ACC>(mean[i2])) *
-                  static_cast<T_ACC>(rstd[i2]);
-          db_sum2 += db == nullptr ? T_ACC(0) : static_cast<T_ACC>(mask_dY2);
-        }
+    const int M = batch*rows;
+    for (int i = threadIdx.y; i < M; i += blockDim.y * 2) {
+      const int i1 = i;
+      const int bc1 = i1 / rows;
+      const int i2 = i + blockDim.y;
+      const int bc2 = i2 / rows;
+      const int index1 = i1 * cols + j;
+      const int index2 = i2 * cols + j;
+      scalar_t mask_dY1 = dY[index1]*mask[bc1];
+      dg_sum1 += dg == nullptr ? T_ACC(0)
+                              : static_cast<T_ACC>(mask_dY1) *
+              (static_cast<T_ACC>(X[index1]) - static_cast<T_ACC>(mean[i1])) *
+              static_cast<T_ACC>(rstd[i1]);
+      db_sum1 += db == nullptr ? T_ACC(0) : static_cast<T_ACC>(mask_dY1);
+      if (i2 < M) {
+        scalar_t mask_dY2 = dY[index2]*mask[bc2];
+        dg_sum2 += dg == nullptr ? T_ACC(0)
+                                : static_cast<T_ACC>(mask_dY2) *
+                (static_cast<T_ACC>(X[index2]) - static_cast<T_ACC>(mean[i2])) *
+                static_cast<T_ACC>(rstd[i2]);
+        db_sum2 += db == nullptr ? T_ACC(0) : static_cast<T_ACC>(mask_dY2);
       }
     }
   }
@@ -236,7 +237,7 @@ __global__ void gb_with_drop_backward_kernel(int batch,int rows,int cols,const s
 
 template <typename scalar_t>
 __global__ void layernorm_droppath_backward_kernel(int cols,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
-                                         const scalar_t* rstd, const scalar_t* mask, scalar_t* dX)
+                                         const scalar_t* rstd, const float* mask, scalar_t* dX)
 {
   using T_ACC = acc_type<scalar_t, true>;
   __shared__ T_ACC ds_shared[C10_WARP_SIZE];
@@ -247,24 +248,28 @@ __global__ void layernorm_droppath_backward_kernel(int cols,const scalar_t* dY,c
   T_ACC sum2 = 0;
   for (int j = threadIdx.x; j < cols; j += blockDim.x) {
     const int index = i * cols + j;
-    const T_ACC gamma_v = gamma[j];
+    const T_ACC gamma_v = static_cast<T_ACC>(gamma[j]);
     scalar_t mask_dY = dY[index]*mask[bc];
     sum1 += static_cast<T_ACC>(mask_dY) * static_cast<T_ACC>(X[index]) * gamma_v;
     sum2 += static_cast<T_ACC>(mask_dY) * gamma_v;
   }
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);
   sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);
-  const T_ACC s = T_ACC(1) / static_cast<T_ACC>(cols);
+
   __shared__ T_ACC b;
   __shared__ T_ACC c;
   if (threadIdx.x == 0) {
-    b = (sum2 * static_cast<T_ACC>(mean[i]) - sum1) * static_cast<T_ACC>(rstd[i]) * static_cast<T_ACC>(rstd[i]) *static_cast<T_ACC>(rstd[i]) * s;
-    c = -(b * static_cast<T_ACC>(mean[i]) + sum2 * static_cast<T_ACC>(rstd[i]) * s);
+    const T_ACC s = T_ACC(1) / static_cast<T_ACC>(cols);
+    T_ACC tmean = static_cast<T_ACC>(mean[i]);
+    T_ACC trstd = static_cast<T_ACC>(rstd[i]);
+    const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;
+    b = a;
+    c = -a * tmean - sum2 * trstd * s;
   }
   __syncthreads();
   for (int j = threadIdx.x; j < cols; j += blockDim.x) {
     const int index = i * cols + j;
-    const T_ACC gamma_v = gamma[j];
+    const T_ACC gamma_v = static_cast<T_ACC>(gamma[j]);
     scalar_t mask_dY = dY[index]*mask[bc];
     dX[index] = static_cast<T_ACC>(rstd[i]) * static_cast<T_ACC>(mask_dY) * gamma_v + b * static_cast<T_ACC>(X[index]) + c;
   }
@@ -305,7 +310,7 @@ layernorm_droppath_backward(const Tensor& grad, const Tensor& X,const Tensor& me
         scalar_t* dgamma_data = dgamma.data_ptr<scalar_t>();
         scalar_t* dbeta_data = dbeta.data_ptr<scalar_t>();
         scalar_t* dX_data = dX.data_ptr<scalar_t>();
-        scalar_t* mask_data = mask.data_ptr<scalar_t>();
+        float* mask_data = mask.data_ptr<float>();
         if (rows < 512) {
           const int B = (cols + kCUDANumThreads - 1) / kCUDANumThreads;
           gb_with_drop_backward_simple_kernel<scalar_t><<<B, kCUDANumThreads, 0, cuda_stream>>>(

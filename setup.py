@@ -336,6 +336,9 @@ setup(
     cmdclass={
         'build_ext': BuildReleaseExtension
     },
+    install_requires=[
+        'ninja',
+    ],
     zip_safe=False
 )
 
