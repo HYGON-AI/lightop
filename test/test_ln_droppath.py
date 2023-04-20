@@ -34,15 +34,14 @@ def compare(name, origin, fuse):
     delta = torch.abs(origin - fuse)
     print("[{!s:^11}] min delta: {:.25f}, max delta: {:.25f}".format(name, torch.min(delta), torch.max(delta)))
 
-def test_lndrop(cols, seqs, batch, drop_prob, scale_by_keep):
+def test_lndrop(cols, seqs, batch, drop_prob, scale_by_keep, dtype):
     device = torch.device('cuda')
     torch.manual_seed(0)
-    dtype=torch.float32
     x0=torch.rand([batch, seqs, cols], dtype=dtype).cuda()
     grad=torch.rand([batch, seqs, cols]).cuda()
 
-    fuselndrop = FuseLnDropPath(cols, drop_prob=drop_prob, scale_by_keep=scale_by_keep, device=device)
-    lndrop = LnDropPath(cols, drop_prob=drop_prob, scale_by_keep=scale_by_keep, device=device)
+    fuselndrop = FuseLnDropPath(cols, drop_prob=drop_prob, scale_by_keep=scale_by_keep, device=device, dtype=dtype)
+    lndrop = LnDropPath(cols, drop_prob=drop_prob, scale_by_keep=scale_by_keep, device=device, dtype=dtype)
     x1=x0.requires_grad_()
     torch.manual_seed(0)
     fuseout = fuselndrop(x1)
@@ -77,17 +76,18 @@ def main(epoch):
     with open("test_lndrop.txt", "w+") as f:
         import sys
         # sys.stdout = f
-        for _ in range(epoch):
-            import random
-            cols = random.randint(1, 5)*512
-            seqs = random.randint(1, 10)
-            batch = random.randint(1, 128)
-            drop_prob = random.random()
-            scale_by_keep = bool(random.randint(0,1))
-            args = (cols, seqs, batch, drop_prob, scale_by_keep)
-            # if batch * seqs < 512:
-            res, (out, fuseout) = test_lndrop(cols, seqs, batch, drop_prob, scale_by_keep)
-            s2 = "{!s:^5} | cols={:4d}; seqs={:<2d}; batch={:<3d}; drop_prob={:.17f}; scale_by_keep={:<1d}".format(str(res), *args)
-            print(s2)
+        for dtype in [torch.float16, torch.float32]:
+            for _ in range(epoch):
+                import random
+                cols = random.randint(1, 5)*512
+                seqs = random.randint(1, 10)
+                batch = random.randint(1, 128)
+                drop_prob = random.random()
+                scale_by_keep = bool(random.randint(0,1))
+                args = (cols, seqs, batch, drop_prob, scale_by_keep, dtype)
+                # if batch * seqs < 512:
+                res, (out, fuseout) = test_lndrop(cols, seqs, batch, drop_prob, scale_by_keep, dtype)
+                s2 = "{!s:^5} | cols={:4d}; seqs={:<2d}; batch={:<3d}; drop_prob={:.17f}; scale_by_keep={:<1d}, dtype={}".format(str(res), *args)
+                print(s2)
 
 main(1)

@@ -32,7 +32,7 @@ template <typename index_t, typename scalar_t, typename acc_t>
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
 __global__ void layernorm_droppath_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd, float* mask,
-                                            scalar_t* gamma,scalar_t* beta,PhiloxCudaState philox_args,index_t cols,scalar_t keep_prob,scalar_t eps,bool scale_by_keep)
+                                            scalar_t* gamma,scalar_t* beta,PhiloxCudaState philox_args,index_t cols,acc_t keep_prob,scalar_t eps,bool scale_by_keep)
 {
   index_t block_id = blockIdx.y*gridDim.x + blockIdx.x;
   using scalar_cuda_t = acc_type<scalar_t, true>;
@@ -72,15 +72,18 @@ __global__ void layernorm_droppath_forward_kernel(scalar_t* input,scalar_t* ret,
   const int tail_idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (tail_idx==0) mask[mask_id]=tmask;
   
-  scalar_cuda_t tmean=s_mean;
-  scalar_cuda_t trstd=s_rstd;
+  scalar_t tmean=static_cast<scalar_t>(s_mean);
+  scalar_t trstd=static_cast<scalar_t>(s_rstd);
   scalar_cuda_t tinput, tgamma, tbeta;
   for (index_t j = threadIdx.x; j < cols; j += blockDim.x) {
     index_t thread_id = block_id * cols + j;
+    scalar_cuda_t cmean=static_cast<scalar_cuda_t>(tmean);
+    scalar_cuda_t crstd=static_cast<scalar_cuda_t>(trstd);
     tinput = static_cast<scalar_cuda_t>(input[thread_id]);
     tgamma = static_cast<scalar_cuda_t>(gamma[j]);
     tbeta = static_cast<scalar_cuda_t>(beta[j]);
-    ret[thread_id] = ((tinput - tmean)*trstd * tgamma + tbeta) * tmask;
+    scalar_t tres = static_cast<scalar_t>(((tinput - cmean)*crstd * tgamma + tbeta));
+    ret[thread_id] = tres * static_cast<scalar_t>(tmask); // drop output
   }
 }
 
@@ -124,9 +127,10 @@ layernorm_droppath_forward(const Tensor& self,const Tensor&weight,const Tensor& 
         scalar_t* weight_data = weight.data_ptr<scalar_t>();
         scalar_t* bias_data = bias.data_ptr<scalar_t>();
         float* mask_data = mask.data_ptr<float>();
+        acc_t kp = static_cast<acc_t>(keep_prob);
         layernorm_droppath_forward_kernel<int, scalar_t, acc_t><<<dim3(grid_rows, batchsize), kCUDABlockReduceNumThreads, 0, at::cuda::getCurrentCUDAStream()>>>(
                             self_data, ret_data, mean_data, rstd_data, mask_data,
-                            weight_data, bias_data, rng_engine_inputs, cols, keep_prob, ln_epsilon, scale_by_keep);
+                            weight_data, bias_data, rng_engine_inputs, cols, keep_prob, eps, scale_by_keep);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       });
   }
@@ -142,16 +146,16 @@ __global__ void gb_with_drop_backward_simple_kernel(int batch,int rows,int cols,
   if (j < cols) {
     T_ACC sum1 = 0;
     T_ACC sum2 = 0;
-    for (int bc = 0; bc < batch; ++bc) {
-      for (int i = 0; i < rows; ++i) {
-        int ni = (bc*rows + i);
-        int index = ni * cols + j;
-        scalar_t mask_dY = dY[index]*mask[bc];
-        sum1 += dg == nullptr ? T_ACC(0) : static_cast<T_ACC>(mask_dY) *
-                              (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[ni])) * static_cast<T_ACC>(rstd[ni]);
-        sum2 += mask_dY;
-      }
+    const int M = batch*rows;
+    for (int i = 0; i < M; ++i) {
+      int bc = i / rows;
+      int index = i * cols + j;
+      scalar_t mask_dY = dY[index]*static_cast<scalar_t>(mask[bc]);
+      sum1 += dg == nullptr ? T_ACC(0) : static_cast<T_ACC>(mask_dY) *
+                            (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
+      sum2 += mask_dY;
     }
+
     if (dg != nullptr) {
       dg[j] = sum1;
     }
@@ -182,14 +186,14 @@ __global__ void gb_with_drop_backward_kernel(int batch,int rows,int cols,const s
       const int bc2 = i2 / rows;
       const int index1 = i1 * cols + j;
       const int index2 = i2 * cols + j;
-      scalar_t mask_dY1 = dY[index1]*mask[bc1];
+      scalar_t mask_dY1 = dY[index1]*static_cast<scalar_t>(mask[bc1]);
       dg_sum1 += dg == nullptr ? T_ACC(0)
                               : static_cast<T_ACC>(mask_dY1) *
               (static_cast<T_ACC>(X[index1]) - static_cast<T_ACC>(mean[i1])) *
               static_cast<T_ACC>(rstd[i1]);
       db_sum1 += db == nullptr ? T_ACC(0) : static_cast<T_ACC>(mask_dY1);
       if (i2 < M) {
-        scalar_t mask_dY2 = dY[index2]*mask[bc2];
+        scalar_t mask_dY2 = dY[index2]*static_cast<scalar_t>(mask[bc2]);
         dg_sum2 += dg == nullptr ? T_ACC(0)
                                 : static_cast<T_ACC>(mask_dY2) *
                 (static_cast<T_ACC>(X[index2]) - static_cast<T_ACC>(mean[i2])) *
@@ -249,13 +253,13 @@ __global__ void layernorm_droppath_backward_kernel(int cols,const scalar_t* dY,c
   for (int j = threadIdx.x; j < cols; j += blockDim.x) {
     const int index = i * cols + j;
     const T_ACC gamma_v = static_cast<T_ACC>(gamma[j]);
-    scalar_t mask_dY = dY[index]*mask[bc];
+    scalar_t mask_dY = dY[index]*static_cast<scalar_t>(mask[bc]);
     sum1 += static_cast<T_ACC>(mask_dY) * static_cast<T_ACC>(X[index]) * gamma_v;
     sum2 += static_cast<T_ACC>(mask_dY) * gamma_v;
   }
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);
   sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);
-
+  
   __shared__ T_ACC b;
   __shared__ T_ACC c;
   if (threadIdx.x == 0) {
@@ -270,7 +274,7 @@ __global__ void layernorm_droppath_backward_kernel(int cols,const scalar_t* dY,c
   for (int j = threadIdx.x; j < cols; j += blockDim.x) {
     const int index = i * cols + j;
     const T_ACC gamma_v = static_cast<T_ACC>(gamma[j]);
-    scalar_t mask_dY = dY[index]*mask[bc];
+    scalar_t mask_dY = dY[index]*static_cast<scalar_t>(mask[bc]);
     dX[index] = static_cast<T_ACC>(rstd[i]) * static_cast<T_ACC>(mask_dY) * gamma_v + b * static_cast<T_ACC>(X[index]) + c;
   }
 }
@@ -342,7 +346,7 @@ class fuseLayerNormDropPathFunction : public torch::autograd::Function<fuseLayer
     ctx->saved_data["keep_prob"] = keep_prob;
     ctx->saved_data["training"] = training;
     auto ret = layernorm_droppath_forward(x, weight,bias,eps, keep_prob, scale_by_keep, training);
-    ctx->save_for_backward({x,std::get<1>(ret),std::get<2>(ret),weight,std::get<3>(ret)}); // 1 mean, 2 rstd, 3 mask
+    ctx->save_for_backward({x,std::get<1>(ret),std::get<2>(ret),weight,std::get<3>(ret)});
     return {std::get<0>(ret)};
   }
 
