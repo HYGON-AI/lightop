@@ -19,8 +19,6 @@
 using namespace std;
 
 namespace {
-    constexpr int kVec = 4;
-    constexpr int kColwiseReduceTileSize = 32;
     constexpr int kCUDANumThreads = 256;
     constexpr int kCUDABlockReduceNumThreads=512;
 }
@@ -209,8 +207,8 @@ __global__ void gb_with_drop_backward_kernel(int batch,int rows,int cols,const s
   __syncthreads();
   T_ACC sum1 = g_shared[threadIdx.x][threadIdx.y];
   T_ACC sum2 = b_shared[threadIdx.x][threadIdx.y];
-  sum1 = WarpReduceSum<16>(sum1);
-  sum2 = WarpReduceSum<16>(sum2);
+  sum1 = WarpReduceSum(sum1,16);
+  sum2 = WarpReduceSum(sum2,16);
   if (threadIdx.x == 0) {
     const int j = blockIdx.x * blockDim.x + threadIdx.y;
     if (j < cols) {
@@ -224,8 +222,8 @@ __global__ void gb_with_drop_backward_kernel(int batch,int rows,int cols,const s
   }
   sum1 = g_shared[threadIdx.x][threadIdx.y + blockDim.y];
   sum2 = b_shared[threadIdx.x][threadIdx.y + blockDim.y];
-  sum1 = WarpReduceSum<16>(sum1);
-  sum2 = WarpReduceSum<16>(sum2);
+  sum1 = WarpReduceSum(sum1,16);
+  sum2 = WarpReduceSum(sum2,16);
   if (threadIdx.x == 0) {
     const int j = blockIdx.x * blockDim.x + threadIdx.y + blockDim.y;
     if (j < cols) {

@@ -1,11 +1,19 @@
 #include "layernorm.h"
 
+int get_layernorm_blocksize(int cols)
+{
+  int blocksize;
+  if(cols>256)blocksize=512;
+  else if(cols>128)blocksize=256;
+  else blocksize=128;
+  return blocksize;
+}
+
 namespace at{
 namespace native{
 
 #define VEC 4
 typedef int IndexType ;
-constexpr int kColwiseReduceTileSize = 32;
 constexpr int kCUDANumThreads = 256;
 constexpr int kCUDABlockReduceNumThreads=512;
 
@@ -16,13 +24,12 @@ C10_LAUNCH_BOUNDS_2(512, 4)
 __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
                                             scalar_t* gamma,scalar_t* beta,IndexType cols,scalar_t eps)
 {
-  //dropout do nothing in val mode
   IndexType i=blockIdx.x;
-  // add + layernorm get mean and rstd
+  //layernorm get mean and rstd
   using T_ACC = acc_type<scalar_t, true>;
   using WelfordType = WelfordData<T_ACC, IndexType, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, IndexType, T_ACC, thrust::pair<T_ACC, T_ACC>>;
-  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[kCUDABlockReduceNumThreads/C10_WARP_SIZE];
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];//kCUDABlockReduceNumThreads/C10_WARP_SIZE
   WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
   WelfordOp welford_op;
   WelfordType val;
@@ -32,7 +39,6 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t*
     val = welford_op.reduce(val, static_cast<T_ACC>(input[index]));
   }
   val = BlockReduce(val,welford_op,val_shared_ptr);
-
   __shared__ T_ACC s_mean;
   __shared__ T_ACC s_rstd;
   if (threadIdx.x == 0) {
@@ -52,13 +58,12 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t*
   }
 }
 
-
 std::tuple<Tensor,Tensor,Tensor>
 layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,double ln_epsilon)
 {
     AT_ASSERTM(self.is_cuda(), "x must on dcu");
     const IndexType cols=self.sizes().back();
-    AT_ASSERT(cols>=512,"cols must >= 512");
+    AT_ASSERT(cols>64,"cols must > 64");//torch layernorm don't support cols<=64 on dcu, so we too .
     const IndexType nelem = self.numel();
     const IndexType rows=nelem/cols;
     Tensor ret = at::empty_like(self);
@@ -77,105 +82,12 @@ layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,doub
         scalar_t* rstd_data=rstd.data_ptr<scalar_t>();
         scalar_t* weight_data=weight.data_ptr<scalar_t>();
         scalar_t* bias_data=bias.data_ptr<scalar_t>();
-        layernorm_forward_kernel<scalar_t><<<rows, kCUDABlockReduceNumThreads, 0, at::cuda::getCurrentCUDAStream()>>>(
+        layernorm_forward_kernel<scalar_t><<<rows, get_layernorm_blocksize(cols), 0, at::cuda::getCurrentCUDAStream()>>>(
                                    self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
 
       });
      return std::tuple<Tensor,Tensor,Tensor>(ret,mean,rstd);
-}
-
-template <typename scalar_t>
-__global__ void GammaBetaBackwardSimple(IndexType M,IndexType N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
-                                                   const scalar_t* rstd,scalar_t* dg,scalar_t* db)
-{
-  using T_ACC = acc_type<scalar_t, true>;
-  const IndexType j = blockIdx.x * blockDim.x + threadIdx.x;
-  if (j < N) {
-    T_ACC sum1 = 0;
-    T_ACC sum2 = 0;
-    for (IndexType i = 0; i < M; ++i) {
-      IndexType index = i * N + j;
-      sum1 += dg == nullptr ? T_ACC(0) : static_cast<T_ACC>(dY[index]) *
-                            (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
-      sum2 += dY[index];
-    }
-    if (dg != nullptr) {
-      dg[j] = sum1;
-    }
-    if (db != nullptr) {
-      db[j] = sum2;
-    }
-  }
-}
-
-template <typename scalar_t>
-__global__ void GammaBetaBackward(IndexType M,IndexType N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
-                                  const scalar_t* rstd,scalar_t* dg,scalar_t* db)
-{
-  using T_ACC = acc_type<scalar_t, true>;
-  __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize + 1];
-  __shared__ T_ACC b_shared[kColwiseReduceTileSize][kColwiseReduceTileSize + 1];
-  const IndexType j = blockIdx.x * blockDim.x + threadIdx.x;
-  T_ACC dg_sum1 = 0;
-  T_ACC dg_sum2 = 0;
-  T_ACC db_sum1 = 0;
-  T_ACC db_sum2 = 0;
-  if (j < N) {
-    for (IndexType i = threadIdx.y; i < M; i += blockDim.y * 2) {
-      const IndexType i1 = i;
-      const IndexType i2 = i + blockDim.y;
-      const IndexType index1 = i1 * N + j;
-      const IndexType index2 = i2 * N + j;
-      dg_sum1 += dg == nullptr ? T_ACC(0)
-                               : static_cast<T_ACC>(dY[index1]) *
-              (static_cast<T_ACC>(X[index1]) - static_cast<T_ACC>(mean[i1])) *
-              static_cast<T_ACC>(rstd[i1]);
-      db_sum1 += db == nullptr ? T_ACC(0) : static_cast<T_ACC>(dY[index1]);
-      if (i2 < M) {
-        dg_sum2 += dg == nullptr ? T_ACC(0)
-                                 : static_cast<T_ACC>(dY[index2]) *
-                (static_cast<T_ACC>(X[index2]) - static_cast<T_ACC>(mean[i2])) *
-                static_cast<T_ACC>(rstd[i2]);
-        db_sum2 += db == nullptr ? T_ACC(0) : static_cast<T_ACC>(dY[index2]);
-      }
-    }
-  }
-  g_shared[threadIdx.y][threadIdx.x] = dg_sum1;
-  g_shared[threadIdx.y + blockDim.y][threadIdx.x] = dg_sum2;
-  b_shared[threadIdx.y][threadIdx.x] = db_sum1;
-  b_shared[threadIdx.y + blockDim.y][threadIdx.x] = db_sum2;
-  __syncthreads();
-  T_ACC sum1 = g_shared[threadIdx.x][threadIdx.y];
-  T_ACC sum2 = b_shared[threadIdx.x][threadIdx.y];
-  sum1 = WarpReduceSum<16>(sum1);
-  sum2 = WarpReduceSum<16>(sum2);
-  if (threadIdx.x == 0) {
-    const IndexType j = blockIdx.x * blockDim.x + threadIdx.y;
-    if (j < N) {
-      if (dg != nullptr) {
-        dg[j] = sum1;
-      }
-      if (db != nullptr) {
-        db[j] = sum2;
-      }
-    }
-  }
-  sum1 = g_shared[threadIdx.x][threadIdx.y + blockDim.y];
-  sum2 = b_shared[threadIdx.x][threadIdx.y + blockDim.y];
-  sum1 = WarpReduceSum<16>(sum1);
-  sum2 = WarpReduceSum<16>(sum2);
-  if (threadIdx.x == 0) {
-    const IndexType j = blockIdx.x * blockDim.x + threadIdx.y + blockDim.y;
-    if (j < N) {
-      if (dg != nullptr) {
-        dg[j] = sum1;
-      }
-      if (db != nullptr) {
-        db[j] = sum2;
-      }
-    }
-  }
 }
 
 template <typename scalar_t>
@@ -229,7 +141,7 @@ layernorm_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const 
                       M,N,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       }
-      LayerNormBackward_kernel<scalar_t><<<M, kCUDABlockReduceNumThreads, 0, cuda_stream>>>(
+      LayerNormBackward_kernel<scalar_t><<<M, get_layernorm_blocksize(N), 0, cuda_stream>>>(
                   N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
       C10_CUDA_KERNEL_LAUNCH_CHECK();
   });
