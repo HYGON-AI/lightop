@@ -89,8 +89,8 @@ struct WelfordOps {
   }
 };
 
-template <int max=32,typename T, class ReduceOp>
-__inline__ __device__ T WarpReduce(T val,const ReduceOp& op) {
+template <typename T, class ReduceOp>
+__inline__ __device__ T WarpReduce(T val,const ReduceOp& op,int max=32) {
 #pragma unroll
   for (int offset = max; offset > 0; offset >>= 1) {
     val = op.combine(val, op.warp_shfl_down(val, offset));
@@ -109,15 +109,15 @@ BlockReduce(T val, const ReduceOp& op, T* shared) {
     shared[wid] = val;
   }
   __syncthreads();
-  if (wid == 0) {
+  if (wid == 0&& threadIdx.x<blockDim.x/C10_WARP_SIZE) {
     val= shared[lid];
-    val = WarpReduce<4>(val,op);
+    val = WarpReduce(val,op,blockDim.x/C10_WARP_SIZE/2);
   }
   return val;
 }
 
-template <int max=32,typename T>
-__inline__ __device__ T WarpReduceSum(T val) {
+template <typename T>
+__inline__ __device__ T WarpReduceSum(T val,int max=32) {
 #pragma unroll
   for (int offset = max; offset > 0; offset >>= 1) {
     val += __shfl_down(val, offset);
@@ -136,12 +136,108 @@ __inline__ __device__ T BlockReduceSum(T val, T* shared) {
     shared[wid] = val;
   }
   __syncthreads();
-  if (wid == 0) {
+if (wid == 0&& threadIdx.x<blockDim.x/C10_WARP_SIZE) {
     val= shared[lid];
-    val = WarpReduceSum<4>(val);
+    val = WarpReduceSum(val,blockDim.x/C10_WARP_SIZE/2);
   }
   return val;
 }
+
+template <typename scalar_t>
+__global__ void GammaBetaBackwardSimple(int M,int N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
+                                                   const scalar_t* rstd,scalar_t* dg,scalar_t* db)
+{
+  using T_ACC = acc_type<scalar_t, true>;
+  const int j = blockIdx.x * blockDim.x + threadIdx.x;
+  if (j < N) {
+    T_ACC sum1 = 0;
+    T_ACC sum2 = 0;
+    for (int i = 0; i < M; ++i) {
+      int index = i * N + j;
+      sum1 += dg == nullptr ? T_ACC(0) : static_cast<T_ACC>(dY[index]) *
+                            (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
+      sum2 += dY[index];
+    }
+    if (dg != nullptr) {
+      dg[j] = sum1;
+    }
+    if (db != nullptr) {
+      db[j] = sum2;
+    }
+  }
+}
+
+#define kColwiseReduceTileSize 32
+
+template <typename scalar_t>
+__global__ void GammaBetaBackward(int M,int N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
+                                  const scalar_t* rstd,scalar_t* dg,scalar_t* db)
+{
+  using T_ACC = acc_type<scalar_t, true>;
+  __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize + 1];
+  __shared__ T_ACC b_shared[kColwiseReduceTileSize][kColwiseReduceTileSize + 1];
+  const int j = blockIdx.x * blockDim.x + threadIdx.x;
+  T_ACC dg_sum1 = 0;
+  T_ACC dg_sum2 = 0;
+  T_ACC db_sum1 = 0;
+  T_ACC db_sum2 = 0;
+  if (j < N) {
+    for (int i = threadIdx.y; i < M; i += blockDim.y * 2) {
+      const int i1 = i;
+      const int i2 = i + blockDim.y;
+      const int index1 = i1 * N + j;
+      const int index2 = i2 * N + j;
+      dg_sum1 += dg == nullptr ? T_ACC(0)
+                               : static_cast<T_ACC>(dY[index1]) *
+              (static_cast<T_ACC>(X[index1]) - static_cast<T_ACC>(mean[i1])) *
+              static_cast<T_ACC>(rstd[i1]);
+      db_sum1 += db == nullptr ? T_ACC(0) : static_cast<T_ACC>(dY[index1]);
+      if (i2 < M) {
+        dg_sum2 += dg == nullptr ? T_ACC(0)
+                                 : static_cast<T_ACC>(dY[index2]) *
+                (static_cast<T_ACC>(X[index2]) - static_cast<T_ACC>(mean[i2])) *
+                static_cast<T_ACC>(rstd[i2]);
+        db_sum2 += db == nullptr ? T_ACC(0) : static_cast<T_ACC>(dY[index2]);
+      }
+    }
+  }
+  g_shared[threadIdx.y][threadIdx.x] = dg_sum1;
+  g_shared[threadIdx.y + blockDim.y][threadIdx.x] = dg_sum2;
+  b_shared[threadIdx.y][threadIdx.x] = db_sum1;
+  b_shared[threadIdx.y + blockDim.y][threadIdx.x] = db_sum2;
+  __syncthreads();
+  T_ACC sum1 = g_shared[threadIdx.x][threadIdx.y];
+  T_ACC sum2 = b_shared[threadIdx.x][threadIdx.y];
+  sum1 = WarpReduceSum(sum1,16);
+  sum2 = WarpReduceSum(sum2,16);
+  if (threadIdx.x == 0) {
+    const int j = blockIdx.x * blockDim.x + threadIdx.y;
+    if (j < N) {
+      if (dg != nullptr) {
+        dg[j] = sum1;
+      }
+      if (db != nullptr) {
+        db[j] = sum2;
+      }
+    }
+  }
+  sum1 = g_shared[threadIdx.x][threadIdx.y + blockDim.y];
+  sum2 = b_shared[threadIdx.x][threadIdx.y + blockDim.y];
+  sum1 = WarpReduceSum(sum1,16);
+  sum2 = WarpReduceSum(sum2,16);
+  if (threadIdx.x == 0) {
+    const int j = blockIdx.x * blockDim.x + threadIdx.y + blockDim.y;
+    if (j < N) {
+      if (dg != nullptr) {
+        dg[j] = sum1;
+      }
+      if (db != nullptr) {
+        db[j] = sum2;
+      }
+    }
+  }
+}
+
 }
 }
 
@@ -149,7 +245,7 @@ __inline__ __device__ T BlockReduceSum(T val, T* shared) {
   using T_ACC = acc_type<scalar_t, true>;                                                \
   __shared__ T_ACC ds_shared[C10_WARP_SIZE];                                             \
   __shared__ T_ACC db_shared[C10_WARP_SIZE];                                             \
- const IndexType i = blockIdx.x;                                                         \
+ const int i = blockIdx.x;                                                               \
   T_ACC sum1 = 0;                                                                        \
   T_ACC sum2 = 0;                                                                        \
   for (int j = threadIdx.x; j < N; j += blockDim.x) {                                    \
@@ -171,3 +267,6 @@ __inline__ __device__ T BlockReduceSum(T val, T* shared) {
     c = -a * tmean - sum2 * trstd * s;                                                   \
   }                                                                                      \
   __syncthreads();
+
+
+int get_layernorm_blocksize(int cols);
