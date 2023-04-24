@@ -5,9 +5,10 @@ namespace native{
 
 #define VEC 4
 typedef int IndexType ;
-constexpr int kColwiseReduceTileSize = 32;
-constexpr int kCUDANumThreads = 256;
-constexpr int kCUDABlockReduceNumThreads=512;
+namespace {
+  constexpr int kCUDANumThreads = 256;
+  constexpr int kCUDABlockReduceNumThreads=512;
+}
 
 template <typename scalar_t>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
@@ -182,99 +183,6 @@ fused_ln_add_dropout_forward(const Tensor& self,const Tensor& other,const Tensor
 
       });
      return std::tuple<Tensor,Tensor,Tensor,Tensor>(ret,retdrop,mean,rstd);
-}
-
-template <typename scalar_t>
-__global__ void GammaBetaBackwardSimple(IndexType M,IndexType N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
-                                                   const scalar_t* rstd,scalar_t* dg,scalar_t* db)
-{
-  using T_ACC = acc_type<scalar_t, true>;
-  const IndexType j = blockIdx.x * blockDim.x + threadIdx.x;
-  if (j < N) {
-    T_ACC sum1 = 0;
-    T_ACC sum2 = 0;
-    for (IndexType i = 0; i < M; ++i) {
-      IndexType index = i * N + j;
-      sum1 += dg == nullptr ? T_ACC(0) : static_cast<T_ACC>(dY[index]) *
-                            (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
-      sum2 += dY[index];
-    }
-    if (dg != nullptr) {
-      dg[j] = sum1;
-    }
-    if (db != nullptr) {
-      db[j] = sum2;
-    }
-  }
-}
-
-template <typename scalar_t>
-__global__ void GammaBetaBackward(IndexType M,IndexType N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
-                                  const scalar_t* rstd,scalar_t* dg,scalar_t* db)
-{
-  using T_ACC = acc_type<scalar_t, true>;
-  __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize + 1];
-  __shared__ T_ACC b_shared[kColwiseReduceTileSize][kColwiseReduceTileSize + 1];
-  const IndexType j = blockIdx.x * blockDim.x + threadIdx.x;
-  T_ACC dg_sum1 = 0;
-  T_ACC dg_sum2 = 0;
-  T_ACC db_sum1 = 0;
-  T_ACC db_sum2 = 0;
-  if (j < N) {
-    for (IndexType i = threadIdx.y; i < M; i += blockDim.y * 2) {
-      const IndexType i1 = i;
-      const IndexType i2 = i + blockDim.y;
-      const IndexType index1 = i1 * N + j;
-      const IndexType index2 = i2 * N + j;
-      dg_sum1 += dg == nullptr ? T_ACC(0)
-                               : static_cast<T_ACC>(dY[index1]) *
-              (static_cast<T_ACC>(X[index1]) - static_cast<T_ACC>(mean[i1])) *
-              static_cast<T_ACC>(rstd[i1]);
-      db_sum1 += db == nullptr ? T_ACC(0) : static_cast<T_ACC>(dY[index1]);
-      if (i2 < M) {
-        dg_sum2 += dg == nullptr ? T_ACC(0)
-                                 : static_cast<T_ACC>(dY[index2]) *
-                (static_cast<T_ACC>(X[index2]) - static_cast<T_ACC>(mean[i2])) *
-                static_cast<T_ACC>(rstd[i2]);
-        db_sum2 += db == nullptr ? T_ACC(0) : static_cast<T_ACC>(dY[index2]);
-      }
-    }
-  }
-  g_shared[threadIdx.y][threadIdx.x] = dg_sum1;
-  g_shared[threadIdx.y + blockDim.y][threadIdx.x] = dg_sum2;
-  b_shared[threadIdx.y][threadIdx.x] = db_sum1;
-  b_shared[threadIdx.y + blockDim.y][threadIdx.x] = db_sum2;
-  __syncthreads();
-  T_ACC sum1 = g_shared[threadIdx.x][threadIdx.y];
-  T_ACC sum2 = b_shared[threadIdx.x][threadIdx.y];
-  sum1 = WarpReduceSum<16>(sum1);
-  sum2 = WarpReduceSum<16>(sum2);
-  if (threadIdx.x == 0) {
-    const IndexType j = blockIdx.x * blockDim.x + threadIdx.y;
-    if (j < N) {
-      if (dg != nullptr) {
-        dg[j] = sum1;
-      }
-      if (db != nullptr) {
-        db[j] = sum2;
-      }
-    }
-  }
-  sum1 = g_shared[threadIdx.x][threadIdx.y + blockDim.y];
-  sum2 = b_shared[threadIdx.x][threadIdx.y + blockDim.y];
-  sum1 = WarpReduceSum<16>(sum1);
-  sum2 = WarpReduceSum<16>(sum2);
-  if (threadIdx.x == 0) {
-    const IndexType j = blockIdx.x * blockDim.x + threadIdx.y + blockDim.y;
-    if (j < N) {
-      if (dg != nullptr) {
-        dg[j] = sum1;
-      }
-      if (db != nullptr) {
-        db[j] = sum2;
-      }
-    }
-  }
 }
 
 template <typename scalar_t>
