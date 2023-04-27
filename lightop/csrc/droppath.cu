@@ -22,7 +22,7 @@ namespace native{
 #define VEC 4
 
 template <typename scalar_t,typename T_ACC>
-__global__ void drop_path_kernel(scalar_t* input,scalar_t* output, float* mask,T_ACC keep_prob, bool scale_by_keep,PhiloxCudaState philox_args,int N)
+__global__ void drop_path_kernel(scalar_t* input,scalar_t* output, scalar_t* mask,T_ACC keep_prob, bool scale_by_keep,PhiloxCudaState philox_args,int N)
 {
     using LoadT = memory::aligned_vector<scalar_t, VEC>;
     int idx = (blockIdx.x * blockDim.x + threadIdx.x)*VEC;
@@ -32,19 +32,25 @@ __global__ void drop_path_kernel(scalar_t* input,scalar_t* output, float* mask,T
     auto seeds = at::cuda::philox::unpack(philox_args);
     curand_init(std::get<0>(seeds),maskID,std::get<1>(seeds),&state);
     float rand = curand_uniform(&state);
-    float tmask;
+    scalar_t tmask;
     if(scale_by_keep)tmask=(rand<keep_prob)/keep_prob;
     else tmask=rand<keep_prob;
     if(idx==0)mask[maskID]=tmask;
     idx+=N*maskID;
-    scalar_t input4[VEC];
-    scalar_t output4[VEC];
-    *(LoadT*)input4=*(LoadT*)(input+idx);
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-        output4[i]=input4[i]*tmask;
+    if(tmask==0){
+      const scalar_t zeros[]={0,0,0,0};
+      *(LoadT*)(output+idx)=*(LoadT*)zeros;
     }
-    *(LoadT*)(output+idx)=*(LoadT*)output4;
+    else{
+      scalar_t input4[VEC];
+      scalar_t output4[VEC];
+      *(LoadT*)input4=*(LoadT*)(input+idx);
+      #pragma unroll
+      for(int i=0;i<VEC;i++){
+          output4[i]=input4[i]*tmask;
+      }
+      *(LoadT*)(output+idx)=*(LoadT*)output4;
+    }
 }
 
 Tensor fused_drop_path_forward(const Tensor& self,const Tensor& ret, double p, bool training,bool scale_by_keep)
@@ -57,7 +63,7 @@ Tensor fused_drop_path_forward(const Tensor& self,const Tensor& ret, double p, b
     AT_ASSERT(batchsize<=600*256,"input's first dim size is too big");
     const int elem_per_batch=self.numel()/batchsize;
     AT_ASSERT(elem_per_batch%4==0,"element size per batch must be 4*interger");
-    Tensor mask = at::empty({batchsize},pself->options().dtype(at::kFloat));
+    Tensor mask = at::empty({batchsize},pself->options());
     auto gen = get_generator_or_default<CUDAGeneratorImpl>(Generator(), cuda::detail::getDefaultCUDAGenerator());
     PhiloxCudaState rng_engine_inputs;
     {
@@ -77,7 +83,7 @@ Tensor fused_drop_path_forward(const Tensor& self,const Tensor& ret, double p, b
         T_ACC keep_prob = (T_ACC)(p);
         scalar_t* self_data = pself->data_ptr<scalar_t>();
         scalar_t* ret_data=ret.data_ptr<scalar_t>();
-        float* mask_data=mask.data_ptr<float>();
+        scalar_t* mask_data=mask.data_ptr<scalar_t>();
         drop_path_kernel<scalar_t,T_ACC><<<dim3(gridx,batchsize), blocksize, 0, at::cuda::getCurrentCUDAStream()>>>(self_data,ret_data,mask_data,keep_prob,scale_by_keep,rng_engine_inputs,elem_per_batch);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
 
@@ -87,22 +93,27 @@ Tensor fused_drop_path_forward(const Tensor& self,const Tensor& ret, double p, b
 
 
 template <typename scalar_t>
-__global__ void drop_path_backward_kernel(scalar_t* ret,scalar_t* grad,float* mask,int N)
+__global__ void drop_path_backward_kernel(scalar_t* ret,scalar_t* grad,scalar_t* mask,int N)
 {
   using LoadT = memory::aligned_vector<scalar_t, VEC>;
   int idx = (blockIdx.x * blockDim.x + threadIdx.x)*VEC;
   if(idx>=N)return;
   int maskID=blockIdx.y;
   idx+=N*maskID;
-  float tmask=mask[maskID];
-  scalar_t grad4[VEC];
-  scalar_t output4[VEC];
-  *(LoadT*)grad4=*(LoadT*)(grad+idx);
-  #pragma unroll
-  for(int i=0;i<VEC;i++){
-      output4[i]=grad4[i]*tmask;
+  scalar_t tmask=mask[maskID];
+  if(tmask==0){
+    const scalar_t zeros[]={0,0,0,0};
+    *(LoadT*)(ret+idx)=*(LoadT*)zeros;
+  }else{
+    scalar_t grad4[VEC];
+    scalar_t output4[VEC];
+    *(LoadT*)grad4=*(LoadT*)(grad+idx);
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+        output4[i]=grad4[i]*tmask;
+    }
+    *(LoadT*)(ret+idx)=*(LoadT*)output4;
   }
-  *(LoadT*)(ret+idx)=*(LoadT*)output4;
 }
 
 Tensor fused_drop_path_backward(const Tensor& grad, const Tensor& mask)
@@ -121,7 +132,7 @@ Tensor fused_drop_path_backward(const Tensor& grad, const Tensor& mask)
     [&] {
       scalar_t* dY_data = pgrad->data_ptr<scalar_t>();
       scalar_t* ret_data = ret.data_ptr<scalar_t>();
-      float* mask_data = mask.data_ptr<float>();
+      scalar_t* mask_data = mask.data_ptr<scalar_t>();
       drop_path_backward_kernel<scalar_t><<<dim3(gridx,batchsize), blocksize, 0, at::cuda::getCurrentCUDAStream()>>>(ret_data,dY_data, mask_data,elem_per_batch);
       C10_CUDA_KERNEL_LAUNCH_CHECK();
   });

@@ -109,7 +109,7 @@ BlockReduce(T val, const ReduceOp& op, T* shared) {
     shared[wid] = val;
   }
   __syncthreads();
-  if (wid == 0&& threadIdx.x<blockDim.x/C10_WARP_SIZE) {
+  if (wid == 0) {
     val= shared[lid];
     val = WarpReduce(val,op,blockDim.x/C10_WARP_SIZE/2);
   }
@@ -136,7 +136,7 @@ __inline__ __device__ T BlockReduceSum(T val, T* shared) {
     shared[wid] = val;
   }
   __syncthreads();
-if (wid == 0&& threadIdx.x<blockDim.x/C10_WARP_SIZE) {
+if (wid == 0) {
     val= shared[lid];
     val = WarpReduceSum(val,blockDim.x/C10_WARP_SIZE/2);
   }
@@ -177,34 +177,18 @@ __global__ void GammaBetaBackward(int M,int N,const scalar_t* dY,const scalar_t*
   __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize + 1];
   __shared__ T_ACC b_shared[kColwiseReduceTileSize][kColwiseReduceTileSize + 1];
   const int j = blockIdx.x * blockDim.x + threadIdx.x;
-  T_ACC dg_sum1 = 0;
-  T_ACC dg_sum2 = 0;
-  T_ACC db_sum1 = 0;
-  T_ACC db_sum2 = 0;
+  T_ACC dg_sum = 0;
+  T_ACC db_sum = 0;
   if (j < N) {
-    for (int i = threadIdx.y; i < M; i += blockDim.y * 2) {
-      const int i1 = i;
-      const int i2 = i + blockDim.y;
-      const int index1 = i1 * N + j;
-      const int index2 = i2 * N + j;
-      dg_sum1 += dg == nullptr ? T_ACC(0)
-                               : static_cast<T_ACC>(dY[index1]) *
-              (static_cast<T_ACC>(X[index1]) - static_cast<T_ACC>(mean[i1])) *
-              static_cast<T_ACC>(rstd[i1]);
-      db_sum1 += db == nullptr ? T_ACC(0) : static_cast<T_ACC>(dY[index1]);
-      if (i2 < M) {
-        dg_sum2 += dg == nullptr ? T_ACC(0)
-                                 : static_cast<T_ACC>(dY[index2]) *
-                (static_cast<T_ACC>(X[index2]) - static_cast<T_ACC>(mean[i2])) *
-                static_cast<T_ACC>(rstd[i2]);
-        db_sum2 += db == nullptr ? T_ACC(0) : static_cast<T_ACC>(dY[index2]);
-      }
+    for (int i = threadIdx.y; i < M; i += blockDim.y) {
+      const int index = i * N + j;
+      const T_ACC cmask_dY = dY[index];
+      dg_sum += dg == nullptr?static_cast<T_ACC>(0):cmask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
+      db_sum += cmask_dY;
     }
   }
-  g_shared[threadIdx.y][threadIdx.x] = dg_sum1;
-  g_shared[threadIdx.y + blockDim.y][threadIdx.x] = dg_sum2;
-  b_shared[threadIdx.y][threadIdx.x] = db_sum1;
-  b_shared[threadIdx.y + blockDim.y][threadIdx.x] = db_sum2;
+  g_shared[threadIdx.y][threadIdx.x] = dg_sum;
+  b_shared[threadIdx.y][threadIdx.x] = db_sum;
   __syncthreads();
   T_ACC sum1 = g_shared[threadIdx.x][threadIdx.y];
   T_ACC sum2 = b_shared[threadIdx.x][threadIdx.y];
@@ -221,30 +205,13 @@ __global__ void GammaBetaBackward(int M,int N,const scalar_t* dY,const scalar_t*
       }
     }
   }
-  sum1 = g_shared[threadIdx.x][threadIdx.y + blockDim.y];
-  sum2 = b_shared[threadIdx.x][threadIdx.y + blockDim.y];
-  sum1 = WarpReduceSum(sum1,16);
-  sum2 = WarpReduceSum(sum2,16);
-  if (threadIdx.x == 0) {
-    const int j = blockIdx.x * blockDim.x + threadIdx.y + blockDim.y;
-    if (j < N) {
-      if (dg != nullptr) {
-        dg[j] = sum1;
-      }
-      if (db != nullptr) {
-        db[j] = sum2;
-      }
-    }
-  }
 }
-
-}
-}
-
+}//namespace native
+}//namesapace at
 #define LAYERNORMBACKWARD                                                                \
   using T_ACC = acc_type<scalar_t, true>;                                                \
-  __shared__ T_ACC ds_shared[C10_WARP_SIZE];                                             \
-  __shared__ T_ACC db_shared[C10_WARP_SIZE];                                             \
+  __shared__ T_ACC ds_shared[8];                                                         \
+  __shared__ T_ACC db_shared[8];                                                         \
  const int i = blockIdx.x;                                                               \
   T_ACC sum1 = 0;                                                                        \
   T_ACC sum2 = 0;                                                                        \

@@ -211,7 +211,7 @@ fused_ln_add_dropout_backward(const Tensor& grad, const Tensor& X,const Tensor& 
   Tensor dbeta = at::empty_like(gamma);
   auto cuda_stream=at::cuda::getCurrentCUDAStream();
   constexpr int kThreadX = kColwiseReduceTileSize;
-  constexpr int kThreadY = kColwiseReduceTileSize / 2;
+  constexpr int kThreadY = kColwiseReduceTileSize;
   AT_DISPATCH_FLOATING_TYPES_AND2(
     at::ScalarType::Half,
     at::ScalarType::BFloat16,
