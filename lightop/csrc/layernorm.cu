@@ -13,7 +13,6 @@ namespace at{
 namespace native{
 
 #define VEC 4
-typedef int IndexType ;
 constexpr int kCUDANumThreads = 256;
 constexpr int kCUDABlockReduceNumThreads=512;
 
@@ -22,39 +21,64 @@ template <typename scalar_t>
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
 __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
-                                            scalar_t* gamma,scalar_t* beta,IndexType cols,scalar_t eps)
+                                            scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
 {
-  IndexType i=blockIdx.x;
+  int blockidx=blockIdx.x;
+  int threadidx=threadIdx.x;
+  int block_cols=blockidx*cols;
   //layernorm get mean and rstd
   using T_ACC = acc_type<scalar_t, true>;
-  using WelfordType = WelfordData<T_ACC, IndexType, T_ACC>;
-  using WelfordOp = WelfordOps<T_ACC, T_ACC, IndexType, T_ACC, thrust::pair<T_ACC, T_ACC>>;
+  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
+  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
   __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];//kCUDABlockReduceNumThreads/C10_WARP_SIZE
   WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
   WelfordOp welford_op;
   WelfordType val;
-
-  for (IndexType j = threadIdx.x; j < cols; j += blockDim.x) {
-    IndexType index = i * cols + j;
-    val = welford_op.reduce(val, static_cast<T_ACC>(input[index]));
+  if(cols<=512){
+    int index=block_cols+threadidx;
+    T_ACC t_input;
+    if(threadidx<cols){
+      t_input=input[index];
+      val = welford_op.reduce(val, t_input);
+    }
+    val = BlockReduce(val,welford_op,val_shared_ptr);
+    if(threadidx<cols){
+      __shared__ T_ACC s_mean;
+      __shared__ T_ACC s_rstd;
+      if (threadidx == 0) {
+        thrust::tie(s_rstd, s_mean) = welford_op.project(val);
+        mean[blockidx] = s_mean;
+        s_rstd=c10::cuda::compat::rsqrt(s_rstd + static_cast<T_ACC>(eps));
+        rstd[blockidx] = s_rstd;
+      }
+      __syncthreads();
+      //layernorm  (x-mean)*rstd*gamma+beta
+      ret[index] = (t_input - static_cast<T_ACC>(s_mean))*static_cast<T_ACC>(s_rstd)  * static_cast<T_ACC>(gamma[threadidx]) + static_cast<T_ACC>(beta[threadidx]);
+    }
   }
-  val = BlockReduce(val,welford_op,val_shared_ptr);
-  __shared__ T_ACC s_mean;
-  __shared__ T_ACC s_rstd;
-  if (threadIdx.x == 0) {
-    thrust::tie(s_rstd, s_mean) = welford_op.project(val);
-    mean[i] = s_mean;
-    s_rstd=c10::cuda::compat::rsqrt(s_rstd + static_cast<T_ACC>(eps));
-    rstd[i] = s_rstd;
-  }
-  __syncthreads();
-  //layernorm  (x-mean)*rstd*gamma+beta
-  scalar_t tmean=s_mean;
-  scalar_t trstd=s_rstd;
-  for (IndexType j = threadIdx.x; j < cols; j += blockDim.x) {
-    IndexType index = i * cols + j;
-    ret[index] = (static_cast<T_ACC>(input[index]) - static_cast<T_ACC>(tmean))*static_cast<T_ACC>(trstd) 
-                 * static_cast<T_ACC>(gamma[j]) + static_cast<T_ACC>(beta[j]);
+  else{
+    for (int j = threadidx; j < cols; j += blockDim.x) {
+      int index = block_cols + j;
+      val = welford_op.reduce(val, static_cast<T_ACC>(input[index]));
+    }
+    val = BlockReduce(val,welford_op,val_shared_ptr);
+    __shared__ T_ACC s_mean;
+    __shared__ T_ACC s_rstd;
+    if (threadidx == 0) {
+      thrust::tie(s_rstd, s_mean) = welford_op.project(val);
+      mean[blockidx] = s_mean;
+      s_rstd=c10::cuda::compat::rsqrt(s_rstd + static_cast<T_ACC>(eps));
+      rstd[blockidx] = s_rstd;
+    }
+    __syncthreads();
+    //layernorm  (x-mean)*rstd*gamma+beta
+    scalar_t tmean=s_mean;
+    scalar_t trstd=s_rstd;
+    for (int j = threadidx; j < cols; j += blockDim.x) {
+      int index = block_cols + j;
+      ret[index] = (static_cast<T_ACC>(input[index]) - static_cast<T_ACC>(tmean))*static_cast<T_ACC>(trstd) 
+                  * static_cast<T_ACC>(gamma[j]) + static_cast<T_ACC>(beta[j]);
+    }
   }
 }
 
@@ -62,10 +86,10 @@ std::tuple<Tensor,Tensor,Tensor>
 layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,double ln_epsilon)
 {
     AT_ASSERTM(self.is_cuda(), "x must on dcu");
-    const IndexType cols=self.sizes().back();
+    const int cols=self.sizes().back();
     AT_ASSERT(cols>64,"cols must > 64");//torch layernorm don't support cols<=64 on dcu, so we too .
-    const IndexType nelem = self.numel();
-    const IndexType rows=nelem/cols;
+    const int nelem = self.numel();
+    const int rows=nelem/cols;
     Tensor ret = at::empty_like(self);
     Tensor mean = at::empty({rows},self.options());
     Tensor rstd = at::empty({rows},self.options());
@@ -91,12 +115,12 @@ layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,doub
 }
 
 template <typename scalar_t>
-__global__ void LayerNormBackward_kernel(IndexType N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
+__global__ void LayerNormBackward_kernel(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
                                          const scalar_t* rstd, scalar_t* dX)
 {
   LAYERNORMBACKWARD
-  for (IndexType j = threadIdx.x; j < N; j += blockDim.x) {
-    const IndexType index = i * N + j;
+  for (int j = threadIdx.x; j < N; j += blockDim.x) {
+    const int index = i * N + j;
     const T_ACC gamma_v = static_cast<T_ACC>(gamma[j]);
     dX[index] = static_cast<T_ACC>(rstd[i]) * static_cast<T_ACC>(dY[index]) * gamma_v + b * static_cast<T_ACC>(X[index]) + c;
   }
@@ -105,8 +129,8 @@ __global__ void LayerNormBackward_kernel(IndexType N,const scalar_t* dY,const sc
 std::tuple<Tensor,Tensor,Tensor>
 layernorm_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const Tensor& rstd,const Tensor& gamma)
 {
-  IndexType N=grad.sizes().back();
-  IndexType M=grad.numel()/N;
+  int N=grad.sizes().back();
+  int M=grad.numel()/N;
   auto pgrad = grad.expect_contiguous();
   Tensor dX = at::empty_like(*pgrad);
   Tensor dgamma = at::empty_like(gamma);
@@ -130,13 +154,13 @@ layernorm_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const 
       scalar_t* dX_data = dX.data_ptr<scalar_t>();
       if (M < 512) {
         // For small batch size, do colwise reduce directly.
-        const IndexType B = (N + kCUDANumThreads - 1) / kCUDANumThreads;
+        const int B = (N + kCUDANumThreads - 1) / kCUDANumThreads;
         GammaBetaBackwardSimple<scalar_t><<<B, kCUDANumThreads, 0, cuda_stream>>>(
                M,N,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       }
       else{
-        const IndexType B =(N + kColwiseReduceTileSize - 1) / kColwiseReduceTileSize;
+        const int B =(N + kColwiseReduceTileSize - 1) / kColwiseReduceTileSize;
         GammaBetaBackward<scalar_t><<<B, dim3(kThreadX, kThreadY), 0, cuda_stream>>>(
                       M,N,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
         C10_CUDA_KERNEL_LAUNCH_CHECK();

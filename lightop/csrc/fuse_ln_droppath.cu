@@ -33,62 +33,125 @@ C10_LAUNCH_BOUNDS_2(512, 4)
 __global__ void layernorm_droppath_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd, scalar_t* mask,
                                             scalar_t* gamma,scalar_t* beta,PhiloxCudaState philox_args,index_t cols,acc_t keep_prob,scalar_t eps,bool scale_by_keep)
 {
-  using T_ACC = acc_type<scalar_t, true>;
-  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
-  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
+  int threadidx=threadIdx.x;
   int maskID=blockIdx.y;
-  curandStatePhilox4_32_10_t state;
-  auto seeds = at::cuda::philox::unpack(philox_args);
-  curand_init(std::get<0>(seeds),maskID,std::get<1>(seeds),&state);
-  float rand = curand_uniform(&state);
-  scalar_t tmask;
-  bool bmask=rand<keep_prob;
-  if(scale_by_keep)tmask=bmask/keep_prob;
-  else tmask=bmask;
-  if(blockIdx.x==0&&threadIdx.x==0)mask[maskID]=tmask;
-  int i=blockIdx.x+maskID*gridDim.x;
-  //if(threadIdx.x==0)printf("%d,%d,%d,%d\n",blockIdx.x,maskID,gridDim.x,i);
+  int blockidx=blockIdx.x+maskID*gridDim.x;
+  int block_cols=blockidx*cols;
+  __shared__ scalar_t tmask;
+  if(threadidx==0){
+    curandStatePhilox4_32_10_t state;
+    auto seeds = at::cuda::philox::unpack(philox_args);
+    curand_init(std::get<0>(seeds),maskID,std::get<1>(seeds),&state);
+    float rand = curand_uniform(&state);
+    if(scale_by_keep)tmask=(rand<keep_prob)/keep_prob;
+    else tmask=rand<keep_prob;
+    if(blockIdx.x==0&&threadidx==0){
+      mask[maskID]=tmask;
+    }
+  }
+  __syncthreads();
+  
   //if mask=0,we needn't calculate mean and rstd. ret always is 0.
-  if(!bmask){
-    for (int j = threadIdx.x; j < cols; j += blockDim.x) {
-      int index = i * cols + j;
+  if(tmask==0){
+    for (int j = threadidx; j < cols; j += blockDim.x) {
+      int index = block_cols + j;
       ret[index] = static_cast<scalar_t>(0);
     }
     return;
   }
   //layernorm get mean and rstd
+  using T_ACC = acc_type<scalar_t, true>;
+  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
+  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
   __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];//kCUDABlockReduceNumThreads/C10_WARP_SIZE
   WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
   WelfordOp welford_op;
   WelfordType val;
 
-  for (int j = threadIdx.x; j < cols; j += blockDim.x) {
-    int index = i * cols + j;
+  for (int j = threadidx; j < cols; j += blockDim.x) {
+    int index = block_cols + j;
     val = welford_op.reduce(val, static_cast<T_ACC>(input[index]));
   }
   val = BlockReduce(val,welford_op,val_shared_ptr);
   __shared__ T_ACC s_mean;
   __shared__ T_ACC s_rstd;
-  if (threadIdx.x == 0) {
+  if (threadidx == 0) {
     thrust::tie(s_rstd, s_mean) = welford_op.project(val);
-    mean[i] = s_mean;
+    mean[blockidx] = s_mean;
     s_rstd=c10::cuda::compat::rsqrt(s_rstd + static_cast<T_ACC>(eps));
-    rstd[i] = s_rstd;
+    rstd[blockidx] = s_rstd;
   }
   __syncthreads();
   //layernorm  (x-mean)*rstd*gamma+beta
   scalar_t tmean=s_mean;
   scalar_t trstd=s_rstd;
-  for (int j = threadIdx.x; j < cols; j += blockDim.x) {
-    int index = i * cols + j;
+  for (int j = threadidx; j < cols; j += blockDim.x) {
+    int index = block_cols + j;
     scalar_t tret=((static_cast<T_ACC>(input[index]) - static_cast<T_ACC>(tmean))*static_cast<T_ACC>(trstd) 
                  * static_cast<T_ACC>(gamma[j]) + static_cast<T_ACC>(beta[j]));
     ret[index] = tret*tmask;
   }
 }
 
-extern std::tuple<Tensor,Tensor,Tensor>
-layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,double ln_epsilon);
+template <typename index_t, typename scalar_t, typename acc_t>
+#if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
+C10_LAUNCH_BOUNDS_2(512, 4)
+#endif
+__global__ void layernorm_droppath_forward_small_col_kernel(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd, scalar_t* mask,
+                                            scalar_t* gamma,scalar_t* beta,PhiloxCudaState philox_args,index_t cols,acc_t keep_prob,scalar_t eps,bool scale_by_keep)
+{
+  int threadidx=threadIdx.x;
+  int maskID=blockIdx.y;
+  int blockidx=blockIdx.x+maskID*gridDim.x;
+  int block_cols=blockidx*cols;
+  __shared__ scalar_t tmask;
+  if(threadidx==0){
+    curandStatePhilox4_32_10_t state;
+    auto seeds = at::cuda::philox::unpack(philox_args);
+    curand_init(std::get<0>(seeds),maskID,std::get<1>(seeds),&state);
+    float rand = curand_uniform(&state);
+    if(scale_by_keep)tmask=(rand<keep_prob)/keep_prob;
+    else tmask=rand<keep_prob;
+    if(threadidx==0&&blockIdx.x==0)mask[maskID]=tmask;
+  }
+  __syncthreads();
+  //if mask=0,we needn't calculate mean and rstd. ret always is 0.
+  if(tmask==0){
+    if(threadidx<cols)ret[block_cols+threadidx] = static_cast<scalar_t>(0);
+    return;
+  }
+  //layernorm get mean and rstd
+  using T_ACC = acc_type<scalar_t, true>;
+  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
+  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];//kCUDABlockReduceNumThreads/C10_WARP_SIZE
+  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
+  WelfordOp welford_op;
+  WelfordType val;
+  int index=block_cols+threadidx;
+  T_ACC t_input;
+  if(threadidx<cols){
+    t_input=input[index];
+    val = welford_op.reduce(val, t_input);
+  }
+  val = BlockReduce(val,welford_op,val_shared_ptr);
+  if(threadidx<cols){
+    __shared__ T_ACC s_mean;
+    __shared__ T_ACC s_rstd;
+    if (threadidx == 0) {
+      thrust::tie(s_rstd, s_mean) = welford_op.project(val);
+      mean[blockidx] = s_mean;
+      s_rstd=c10::cuda::compat::rsqrt(s_rstd + static_cast<T_ACC>(eps));
+      rstd[blockidx] = s_rstd;
+    }
+    __syncthreads();
+    //layernorm  (x-mean)*rstd*gamma+beta
+    scalar_t tret=((t_input - static_cast<T_ACC>(s_mean))*static_cast<T_ACC>(s_rstd) * static_cast<T_ACC>(gamma[threadidx]) + static_cast<T_ACC>(beta[threadidx]));
+    ret[index] = tret*tmask;
+  }
+}
+
+std::tuple<Tensor,Tensor,Tensor> layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,double ln_epsilon);
 
 std::tuple<Tensor,Tensor,Tensor,Tensor>
 layernorm_droppath_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,double ln_epsilon, double keep_prob, bool scale_by_keep,bool training)
@@ -116,7 +179,6 @@ layernorm_droppath_forward(const Tensor& self,const Tensor&weight,const Tensor& 
         std::lock_guard<std::mutex> lock(gen->mutex_);
         rng_engine_inputs = gen->philox_cuda_state(4);
     }
-    int blocksize=get_layernorm_blocksize(cols);
     const int grid_rows = rows / batchsize;
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
@@ -134,9 +196,16 @@ layernorm_droppath_forward(const Tensor& self,const Tensor&weight,const Tensor& 
         scalar_t* bias_data = bias.data_ptr<scalar_t>();
         scalar_t* mask_data = mask.data_ptr<scalar_t>();
         acc_t kp = static_cast<acc_t>(keep_prob);
-        layernorm_droppath_forward_kernel<int, scalar_t, acc_t><<<dim3(grid_rows,batchsize), blocksize, 0, at::cuda::getCurrentCUDAStream()>>>(
+        if(cols>512){
+           layernorm_droppath_forward_kernel<int, scalar_t, acc_t><<<dim3(grid_rows,batchsize), 512, 0, at::cuda::getCurrentCUDAStream()>>>(
                             self_data, ret_data, mean_data, rstd_data, mask_data,
                             weight_data, bias_data, rng_engine_inputs, cols, keep_prob, eps, scale_by_keep);
+        }
+        else{
+          layernorm_droppath_forward_small_col_kernel<int, scalar_t, acc_t><<<dim3(grid_rows,batchsize), get_layernorm_blocksize(cols), 0, at::cuda::getCurrentCUDAStream()>>>(
+                            self_data, ret_data, mean_data, rstd_data, mask_data,
+                            weight_data, bias_data, rng_engine_inputs, cols, keep_prob, eps, scale_by_keep);
+        }
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       });
   }
@@ -154,10 +223,11 @@ __global__ void gb_with_drop_backward_simple_kernel(int batch,int rows,int cols,
     T_ACC sum2 = 0;
     const int M = batch*rows;
     for (int i = 0; i < M; ++i) {
+      #pragma clang fp contract(off)
       int bc = i / rows;
       int index = i * cols + j;
       T_ACC mask_dY = dY[index]*mask[bc];
-      sum1 += dg == nullptr ? T_ACC(0) :mask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
+      sum1 += mask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
       sum2 += mask_dY;
     }
 
@@ -175,18 +245,64 @@ __global__ void gb_with_drop_backward_kernel(int batch,int rows,int cols,const s
                                   const scalar_t* rstd,const scalar_t* mask,scalar_t* dg,scalar_t* db)
 {
   using T_ACC = acc_type<scalar_t, true>;
-  __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize + 1];
-  __shared__ T_ACC b_shared[kColwiseReduceTileSize][kColwiseReduceTileSize + 1];
+  __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize];
+  __shared__ T_ACC b_shared[kColwiseReduceTileSize][kColwiseReduceTileSize];
   const int j = blockIdx.x * blockDim.x + threadIdx.x;
   T_ACC dg_sum = 0;
   T_ACC db_sum = 0;
   if (j < cols) {
     const int M = batch*rows;
     for (int i = threadIdx.y; i < M; i += blockDim.y) {
+      #pragma clang fp contract(off)
       const int bc = i / rows;
       const int index = i * cols + j;
       const T_ACC cmask_dY = dY[index] * mask[bc];
-      dg_sum += dg == nullptr?static_cast<T_ACC>(0):cmask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
+      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
+      db_sum += cmask_dY;
+    }
+  }
+  g_shared[threadIdx.y][threadIdx.x] = dg_sum;
+  b_shared[threadIdx.y][threadIdx.x] = db_sum;
+  __syncthreads();
+  T_ACC sum1 = g_shared[threadIdx.x][threadIdx.y];
+  T_ACC sum2 = b_shared[threadIdx.x][threadIdx.y];
+  sum1 = WarpReduceSum(sum1,16);
+  sum2 = WarpReduceSum(sum2,16);
+  if (threadIdx.x == 0) {
+    const int j = blockIdx.x * blockDim.x + threadIdx.y;
+    if (j < cols) {
+      if (dg != nullptr) {
+        dg[j] = sum1;
+      }
+      if (db != nullptr) {
+        db[j] = sum2;
+      }
+    }
+  }
+}
+
+template <typename scalar_t>
+__global__ void gb_with_drop_backward_small_batch_kernel(int batch,int rows,int cols,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
+                                  const scalar_t* rstd,const scalar_t* mask,scalar_t* dg,scalar_t* db)
+{
+  using T_ACC = acc_type<scalar_t, true>;
+  __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize];
+  __shared__ T_ACC b_shared[kColwiseReduceTileSize][kColwiseReduceTileSize];
+  __shared__ scalar_t s_mask[kColwiseReduceTileSize*kColwiseReduceTileSize];
+  const int threadid=threadIdx.y*blockDim.x+threadIdx.x;
+  if(threadid<batch)s_mask[threadid]=mask[threadid];
+  __syncthreads();
+  const int j = blockIdx.x * blockDim.x + threadIdx.x;
+  T_ACC dg_sum = 0;
+  T_ACC db_sum = 0;
+  if (j < cols) {
+    const int M = batch*rows;
+    for (int i = threadIdx.y; i < M; i += blockDim.y) {
+      #pragma clang fp contract(off)
+      const int bc = i / rows;
+      const int index = i * cols + j;
+      const T_ACC cmask_dY = dY[index] * s_mask[bc];
+      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
       db_sum += cmask_dY;
     }
   }
@@ -302,7 +418,11 @@ layernorm_droppath_backward(const Tensor& grad, const Tensor& X,const Tensor& me
         }
         else{
           const int B =(cols + kColwiseReduceTileSize - 1) / kColwiseReduceTileSize;
-          gb_with_drop_backward_kernel<scalar_t><<<B, dim3(kThreadX, kThreadY), 0, cuda_stream>>>(
+          if(batchsize<=1024)
+            gb_with_drop_backward_small_batch_kernel<scalar_t><<<B, dim3(kThreadX, kThreadY), 0, cuda_stream>>>(
+                batchsize,grid_rows,cols,dY_data,X_data,mean_data,rstd_data,mask_data,dgamma_data,dbeta_data);
+          else
+            gb_with_drop_backward_kernel<scalar_t><<<B, dim3(kThreadX, kThreadY), 0, cuda_stream>>>(
                 batchsize,grid_rows,cols,dY_data,X_data,mean_data,rstd_data,mask_data,dgamma_data,dbeta_data);
           C10_CUDA_KERNEL_LAUNCH_CHECK();
         }
