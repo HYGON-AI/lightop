@@ -153,17 +153,13 @@ __global__ void GammaBetaBackwardSimple(int M,int N,const scalar_t* dY,const sca
     T_ACC sum1 = 0;
     T_ACC sum2 = 0;
     for (int i = 0; i < M; ++i) {
+      #pragma clang fp contract(off)
       int index = i * N + j;
-      sum1 += dg == nullptr ? T_ACC(0) : static_cast<T_ACC>(dY[index]) *
-                            (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
+      sum1 += static_cast<T_ACC>(dY[index]) *(static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
       sum2 += dY[index];
     }
-    if (dg != nullptr) {
-      dg[j] = sum1;
-    }
-    if (db != nullptr) {
-      db[j] = sum2;
-    }
+    dg[j] = sum1;
+    db[j] = sum2;
   }
 }
 
@@ -174,16 +170,17 @@ __global__ void GammaBetaBackward(int M,int N,const scalar_t* dY,const scalar_t*
                                   const scalar_t* rstd,scalar_t* dg,scalar_t* db)
 {
   using T_ACC = acc_type<scalar_t, true>;
-  __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize + 1];
-  __shared__ T_ACC b_shared[kColwiseReduceTileSize][kColwiseReduceTileSize + 1];
+  __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize];
+  __shared__ T_ACC b_shared[kColwiseReduceTileSize][kColwiseReduceTileSize];
   const int j = blockIdx.x * blockDim.x + threadIdx.x;
   T_ACC dg_sum = 0;
   T_ACC db_sum = 0;
   if (j < N) {
     for (int i = threadIdx.y; i < M; i += blockDim.y) {
+      #pragma clang fp contract(off)
       const int index = i * N + j;
       const T_ACC cmask_dY = dY[index];
-      dg_sum += dg == nullptr?static_cast<T_ACC>(0):cmask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
+      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
       db_sum += cmask_dY;
     }
   }
@@ -197,12 +194,8 @@ __global__ void GammaBetaBackward(int M,int N,const scalar_t* dY,const scalar_t*
   if (threadIdx.x == 0) {
     const int j = blockIdx.x * blockDim.x + threadIdx.y;
     if (j < N) {
-      if (dg != nullptr) {
         dg[j] = sum1;
-      }
-      if (db != nullptr) {
         db[j] = sum2;
-      }
     }
   }
 }
