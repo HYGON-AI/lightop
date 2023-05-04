@@ -36,7 +36,7 @@ x1=x.clone().detach().requires_grad_()
 x2=x.clone().detach().requires_grad_()
 
 
-test1 = DropPath(0.5)
+test1 = DropPath(0.1)
 torch.manual_seed(0)
 for i in range(10):
     out1=test1(x1)
@@ -46,16 +46,15 @@ torch.cuda.synchronize()
 start_time = time.time()
 with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                      profile_memory=False) as prof2:
-    for i in range(100):
+    for i in range(1000):
         out1=test1(x1)
         out1.backward(grad)
-        time.sleep(0.01)
-    #torch.cuda.synchronize()
+    torch.cuda.synchronize()
     end_time = time.time()
     print("fused time is ", end_time - start_time)
 prof2.export_chrome_trace('./profile2.json')
 
-test2 = DropPath2(0.5)
+test2 = DropPath2(0.1)
 torch.manual_seed(0)
 for i in range(10):
     out2=test2(x2)
@@ -65,11 +64,10 @@ torch.cuda.synchronize()
 start_time = time.time()
 with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                      profile_memory=False) as prof1:
-    for i in range(100):
+    for i in range(1000):
         out2=test2(x2)
         out2.backward(grad)
-        time.sleep(0.01)
-    #torch.cuda.synchronize()
+    torch.cuda.synchronize()
     end_time = time.time()
     print("origin time is ", end_time - start_time)
 prof1.export_chrome_trace('./profile1.json')
