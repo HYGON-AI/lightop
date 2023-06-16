@@ -47,6 +47,7 @@ IS_HIP_EXTENSION = True if ((ROCM_HOME is not None) and (torch.version.hip is no
 COMMON_HIP_FLAGS = [
     '-fPIC',
     '-D__HIP_PLATFORM_HCC__=1',
+    '-DUSE_ROCM=1',
 ]
 
 COMMON_HIPCC_FLAGS = [
