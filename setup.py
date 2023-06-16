@@ -5,11 +5,11 @@ import os
 import shlex
 import subprocess
 import sys
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension,ROCM_HOME
 from setuptools import find_packages, setup
 from setuptools.command.build_ext import build_ext
 from pkg_resources import packaging  # type: ignore[attr-defined]
-
+from get_version import get_version
 
 def _find_rocm_home() -> Optional[str]:
     rocm_home = os.environ.get('ROCM_HOME') or os.environ.get('ROCM_PATH')
@@ -292,10 +292,6 @@ class BuildReleaseExtension(BuildExtension):
         build_ext.build_extensions(self)
 
 
-def get_version():
-    return "0.1"
-
-
 def get_extensions():
     extensions = []
     include_dirs = []
@@ -320,7 +316,7 @@ def get_extensions():
 
 setup(
     name='lightop',
-    version=get_version(),
+    version=get_version(ROCM_HOME),
     description='Torch Fast Operator Foundation',
     keywords='CV, NLP',
     packages=find_packages(),
@@ -336,9 +332,6 @@ setup(
     cmdclass={
         'build_ext': BuildReleaseExtension
     },
-    install_requires=[
-        'ninja',
-    ],
     zip_safe=False
 )
 

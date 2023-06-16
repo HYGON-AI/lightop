@@ -153,7 +153,7 @@ __global__ void GammaBetaBackwardSimple(int M,int N,const scalar_t* dY,const sca
     T_ACC sum1 = 0;
     T_ACC sum2 = 0;
     for (int i = 0; i < M; ++i) {
-      #pragma clang fp contract(off)
+      //#pragma clang fp contract(off) // if need same output with pytorch ,then enable this line.
       int index = i * N + j;
       sum1 += static_cast<T_ACC>(dY[index]) *(static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
       sum2 += dY[index];
@@ -177,7 +177,7 @@ __global__ void GammaBetaBackward(int M,int N,const scalar_t* dY,const scalar_t*
   T_ACC db_sum = 0;
   if (j < N) {
     for (int i = threadIdx.y; i < M; i += blockDim.y) {
-      #pragma clang fp contract(off)
+      //#pragma clang fp contract(off) // if need same output with pytorch ,then enable this line.
       const int index = i * N + j;
       const T_ACC cmask_dY = dY[index];
       dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
