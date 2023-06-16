@@ -253,7 +253,7 @@ __global__ void gb_with_drop_backward_kernel(int batch,int rows,int cols,const s
   if (j < cols) {
     const int M = batch*rows;
     for (int i = threadIdx.y; i < M; i += blockDim.y) {
-      #pragma clang fp contract(off)
+      //#pragma clang fp contract(off) // if need same output with pytorch ,then enable this line.
       const int bc = i / rows;
       const int index = i * cols + j;
       const T_ACC cmask_dY = dY[index] * mask[bc];
@@ -298,7 +298,7 @@ __global__ void gb_with_drop_backward_small_batch_kernel(int batch,int rows,int 
   if (j < cols) {
     const int M = batch*rows;
     for (int i = threadIdx.y; i < M; i += blockDim.y) {
-      #pragma clang fp contract(off)
+      //#pragma clang fp contract(off) // if need same output with pytorch ,then enable this line.
       const int bc = i / rows;
       const int index = i * cols + j;
       const T_ACC cmask_dY = dY[index] * s_mask[bc];

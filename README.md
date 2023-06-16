@@ -3,8 +3,8 @@
 ## 安装
 
 环境依赖：
-pytorch 1.10
-dtk22.04.2或dtk22.10
+pytorch 1.10, pytorch 1.13
+dtk22.04.2, dtk22.10, dtk23.04
 
 运行安装脚本：
 python3 setup.py install
