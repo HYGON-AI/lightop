@@ -48,7 +48,8 @@ def _get_pytorch_version():
 
 def get_version(ROCM_HOME):
     sha = _run_cmd(["git", "rev-parse", "HEAD"])
-    sha = sha[:7]
+    if sha is not None :
+        sha = sha[:7]
     branch = _run_cmd(["git", "rev-parse", "--abbrev-ref", "HEAD"])
     tag = _run_cmd(["git", "describe", "--tags", "--exact-match", "@"])
     print("-- Git branch:", branch)
