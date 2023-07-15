@@ -324,7 +324,7 @@ setup(
     include_package_data=False,
     package_data={
         'lightop': [
-            "lib/*.so",
+            "lib/*",
             "librarygemmbiasf/*",
             "librarygemmdbiasb/*"
         ]

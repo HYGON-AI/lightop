@@ -11,6 +11,9 @@ from torch.nn import init
 
 os.environ['ROCBLAS_TENSILE_GBF_LIBPATH'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'librarygemmbiasf')
 os.environ['ROCBLAS_TENSILE_GDBB_LIBPATH'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'librarygemmdbiasb')
+libpath=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib/')
+assert_line='wrong envirenment! please execute \"export LD_LIBRARY_PATH='+libpath +':$LD_LIBRARY_PATH\" and write this line to ~/.bashrc'
+assert libpath in os.environ['LD_LIBRARY_PATH'] , assert_line
 
 class LinearBiasFunction(Function):
 
