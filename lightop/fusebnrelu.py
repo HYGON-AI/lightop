@@ -21,7 +21,8 @@ class _FuseBaseModule(torch.nn.Module):
         actmode: int = fuseactmode.relu.value,
         act_alpha: float = 0.0,
         act_beta: float = 0.0,
-        act_gamma: float = 0.0
+        act_gamma: float = 0.0,
+        p: float = 0.5
     ) -> None:
         factory_kwargs = {'device': device, 'dtype': dtype}
         super(_FuseBaseModule, self).__init__()
@@ -36,6 +37,7 @@ class _FuseBaseModule(torch.nn.Module):
         self.act_alpha = act_alpha
         self.act_beta = act_beta
         self.act_gamma = act_gamma
+        self.p = p
         if self.affine:
             self.weight = Parameter(torch.empty(num_features, **factory_kwargs))
             self.bias = Parameter(torch.empty(num_features, **factory_kwargs))
