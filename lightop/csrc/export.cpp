@@ -8,9 +8,6 @@ std::tuple<Tensor, Tensor, Tensor> bnrelu_backward(int64_t impl_index, const Ten
                                                    const c10::optional<Tensor>& save_invstd_opt, bool train, double epsilon, std::array<bool,3> grad_input_mask, int fuse_act_mode, double act_alpha, double act_beta, double act_gamma);
 std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_cuda(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon, const Tensor& add);
 std::tuple<Tensor, Tensor, Tensor> bnaddrelu_backward_cuda(const Tensor& grad_out, const Tensor& input, const Tensor& output, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, const c10::optional<Tensor>& save_mean_opt, const c10::optional<Tensor>& save_invstd_opt, bool train, double epsilon, std::array<bool,3> grad_input_mask);
-std::tuple<Tensor, Tensor, Tensor, Tensor> bn_dropout_forward(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon, double p);
-std::tuple<Tensor, Tensor, Tensor> bn_dropout_backward(const Tensor& grad_out, const Tensor& input, const Tensor& output_dropout, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, const c10::optional<Tensor>& save_mean_opt, 
-                                                   const c10::optional<Tensor>& save_invstd_opt, bool train, double epsilon, std::array<bool,3> grad_input_mask, double p);
 
 Tensor fuse_layernorm_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,double eps);
 Tensor drop_path_forward_autograd(const Tensor& x,double p, bool training,bool scale_by_keep) ;
@@ -22,8 +19,8 @@ std::tuple <Tensor, Tensor> fused_relu_dropout_forward(const Tensor &self, const
 Tensor fused_relu_dropout_backward(Tensor &grad, Tensor &mask);
 Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim, const bool half_to_float);
 Tensor fuse_logsoftmax_forward_autograd(const at::Tensor & self, int64_t dim, bool half_to_float);
-std::tuple <Tensor, Tensor> accelerate_rnnt_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool compute_sum, bool compute_mean, bool check_lengths);
-std::tuple <Tensor, Tensor> accelerate_ctc_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool logits_time_major, bool compute_sum, bool compute_mean, bool check_lengths);
+Tensor accelerate_rnnt_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool compute_sum, bool compute_mean, bool check_lengths);
+Tensor accelerate_ctc_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool logits_time_major, bool compute_sum, bool compute_mean, bool check_lengths);
 
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
@@ -37,8 +34,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("bnrelu_backward", &at::native::bnrelu_backward, "fusebnrelu backward");
   m.def("bnaddrelu_forward", &at::native::bnaddrelu_cuda, "fusebnaddrelu forward");
   m.def("bnaddrelu_backward", &at::native::bnaddrelu_backward_cuda, "fusebnaddrelu backward");
-  m.def("bn_dropout_forward", &at::native::bn_dropout_forward, "bn_dropout forward");
-  m.def("bn_dropout_backward", &at::native::bn_dropout_backward, "bn_dropout backward");
   m.def("layernorm_forward_autograd", &at::native::fuse_layernorm_forward_autograd, "layernorm forward");
   m.def("droppath_forward_autograd",&at::native::drop_path_forward_autograd,"droppath forward") ;
   m.def("add_dropout_forward_autograd", &at::native::fuse_add_dropout_forward_autograd, "fused_dropout forward");
