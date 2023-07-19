@@ -38,23 +38,5 @@ class RNNTLoss(torch.nn.Module):
             target_lengths (tensor): lengths of the labels for each batch.
         """
 
-        return _RNNTLossFunc.apply(logits, targets, logit_lengths, target_lengths,
-                                   self.blank, self.clamp, self.compute_sum, self.compute_mean, self.check_lengths)
-
-
-class _RNNTLossFunc(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, logits, targets, logit_lengths, target_lengths,
-                blank_idx, clamp, compute_sum, compute_mean, check_lengths):
-        costs, grads = op.accelerate_rnnt_loss(logits, targets, logit_lengths, target_lengths,
-                                               blank_idx, clamp, compute_sum, compute_mean, check_lengths)
-        ctx.grads = grads
-        if compute_sum or compute_mean:
-            return costs[0]
-
-        return costs
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        # grad_output = grad_output.view(-1, 1, 1, 1).to(ctx.grads)
-        return ctx.grads, None, None, None, None, None, None, None, None
+        return op.accelerate_rnnt_loss(logits, targets, logit_lengths, target_lengths,
+                                       self.blank, self.clamp, self.compute_sum, self.compute_mean, self.check_lengths)

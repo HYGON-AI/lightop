@@ -66,24 +66,29 @@ def single_op_test(repeat_num, transform, p, gt, p_len, gt_len, name='torch'):
     return p1_grad
 
 
-def test_compare_gpu(repeat_num=50, use_half=False, **args):
+def test_compare_gpu(pre_repeat_num=10, repeat_num=50, use_half=False, **args):
     p, gt, p_len, gt_len = get_data_by_vesion(version=1, use_half=use_half, use_cuda=True, **args)
     print('p shape ', p.shape, p.dtype, ' gt shape ', gt.shape)
     print('p_len ', p_len.shape)
     print('gt_len ', gt_len.shape)
     print('#' * 20, '\n')
 
+    logits_time_major = False
+    reduction = 'mean'
+    p1_trans = p.clone().permute(1, 0, 2).contiguous()
+    print('p shape ', p.shape, ', p1_trans shape ', p1_trans.shape)
     #
-    transform_lightop = lightop_CTCLoss(blank=0, reduction='mean', logits_time_major=True)
-    for i in range(10):
-        p1 = p.clone().requires_grad_()
+    transform_lightop = lightop_CTCLoss(blank=0, reduction=reduction, logits_time_major=logits_time_major)
+    for i in range(pre_repeat_num):
+        p1 = p.clone().requires_grad_() if logits_time_major else p1_trans.clone().requires_grad_()
         loss_lightop = transform_lightop(p1, gt, p_len, gt_len)
         loss_lightop.backward()
 
     torch.cuda.synchronize()
+    time.sleep(0.01)
     time_st = time.perf_counter()
     for i in range(repeat_num):
-        p1 = p.clone().requires_grad_()
+        p1 = p.clone().requires_grad_() if logits_time_major else p1_trans.clone().requires_grad_()
         loss_lightop = transform_lightop(p1, gt, p_len, gt_len)
         loss_lightop.backward()
 
@@ -94,13 +99,14 @@ def test_compare_gpu(repeat_num=50, use_half=False, **args):
     #
     #
     if not use_half:
-        transform_torch = torch.nn.CTCLoss(blank=0, reduction='mean')
-        for i in range(10):
+        transform_torch = torch.nn.CTCLoss(blank=0, reduction=reduction)
+        for i in range(pre_repeat_num):
             p2 = p.clone().log_softmax(-1).requires_grad_()
             loss_torch = transform_torch(p2, gt, p_len, gt_len)
             loss_torch.backward()
 
         torch.cuda.synchronize()
+        time.sleep(0.01)
         time_st = time.perf_counter()
         for i in range(repeat_num):
             p2 = p.clone().log_softmax(-1).requires_grad_()
@@ -112,42 +118,85 @@ def test_compare_gpu(repeat_num=50, use_half=False, **args):
         print('\ngpu ctc torch using time:{:.4f}us'.format(time_used))
         print('#' * 20, '\n')
 
-        grad_lightop = p1.grad.detach().cpu()
+        grad_lightop = p1.grad.detach().cpu() if logits_time_major else p1.grad.detach().cpu().permute(1, 0, 2)
         grad_torch = p2.grad.detach().cpu()
-        print('torch torch loss_torch=', loss_torch, 'grad shape={}'.format(grad_torch.shape))
-        print('torch lightop loss_lightop=', loss_lightop, 'grad shape={}'.format(grad_lightop.shape))
+        print('torch torch loss_torch=', loss_torch, ', grad shape={}'.format(grad_torch.shape))
+        print('torch lightop loss_lightop=', loss_lightop, ', grad shape={}'.format(grad_lightop.shape))
         print('#' * 20, '\n')
         grad_diff = torch.nn.functional.l1_loss(grad_torch, grad_lightop, reduction='none')
         print('grad_diff max mean=', torch.max(grad_diff).data, torch.mean(grad_diff).data, grad_diff.shape)
         loss_diff = torch.nn.functional.l1_loss(loss_torch, loss_lightop, reduction='sum')
         print("loss_diff=", loss_diff)
 
-    print('#' * 20)
-    print('#' * 20)
     print('#' * 20, '\n')
 
 
-def run_test_gpu(repeat_num=50, use_half=False):
-    test_compare_gpu(repeat_num=repeat_num, use_half=use_half, N=1, T=6, S=3, C=4)
-    print('*' * 20, '\n' * 2)
-    test_compare_gpu(repeat_num=repeat_num, use_half=use_half, N=5, T=60, S=30, C=20)
-    print('*' * 20, '\n' * 2)
-    test_compare_gpu(repeat_num=repeat_num, use_half=use_half, N=10, T=20, S=10, C=400)
-    print('*' * 20, '\n' * 2)
-    test_compare_gpu(repeat_num=repeat_num, use_half=use_half, N=30, T=80, S=50, C=200)
-    print('*' * 20, '\n' * 2)
-    test_compare_gpu(repeat_num=repeat_num, use_half=use_half, N=60, T=120, S=80, C=240)
-    print('*' * 20, '\n' * 2)
-    test_compare_gpu(repeat_num=repeat_num, use_half=use_half, N=100, T=200, S=120, C=400)
-    print('*' * 20, '\n' * 2)
-    test_compare_gpu(repeat_num=repeat_num, use_half=use_half, N=100, T=400, S=320, C=600)
-    print('*' * 20, '\n' * 2)
+def make_dir_for_file(file_path):
+    file_dir = os.path.abspath(os.path.dirname(file_path))
+    if not os.path.exists(file_dir):
+        os.makedirs(file_dir)
+
+
+def test_record_by_profiler(use_half=False, **args):
+    p, gt, p_len, gt_len = get_data_by_vesion(version=1, use_half=use_half, use_cuda=True, **args)
+    print('p shape ', p.shape, p.dtype, ' gt shape ', gt.shape)
+    print('p_len ', p_len.shape)
+    print('gt_len ', gt_len.shape)
+    print('#' * 20, '\n')
+
+    logits_time_major = False
+    p1_trans = p.clone().permute(1, 0, 2).contiguous()
+    print('p shape ', p.shape, ', p1_trans shape ', p1_trans.shape)
+    #
+    transform_lightop = lightop_CTCLoss(blank=0, reduction='mean', logits_time_major=logits_time_major)
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False, profile_memory=False) as prof:
+        for i in range(20):
+            p1 = p.clone().requires_grad_() if logits_time_major else p1_trans.clone().requires_grad_()
+            loss_lightop = transform_lightop(p1, gt, p_len, gt_len)
+            loss_lightop.backward()
+            time.sleep(0.2)
+
+    dst_json_path = './test_result/profile_lightop_CTCLoss.json'
+    make_dir_for_file(dst_json_path)
+    prof.export_chrome_trace(dst_json_path)
+    print('saving to {} done'.format(dst_json_path))
+
+    if not use_half:
+        transform_torch = torch.nn.CTCLoss(blank=0, reduction='mean')
+        with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False, profile_memory=False) as prof:
+            for i in range(20):
+                p2 = p.clone().log_softmax(-1).requires_grad_()
+                loss_torch = transform_torch(p2, gt, p_len, gt_len)
+                loss_torch.backward()
+                time.sleep(0.2)
+
+        dst_json_path = './test_result/profile_torch_CTCLoss.json'
+        make_dir_for_file(dst_json_path)
+        prof.export_chrome_trace(dst_json_path)
+        print('saving to {} done'.format(dst_json_path))
+
+
+def run_test_gpu(pre_repeat_num, repeat_num=100, use_half=False):
+    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, use_half=use_half, N=2, T=6, S=3, C=4)
+    print('*' * 50, '\n' * 2)
+    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, use_half=use_half, N=5, T=60, S=30, C=20)
+    print('*' * 50, '\n' * 2)
+    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, use_half=use_half, N=10, T=20, S=10, C=400)
+    print('*' * 50, '\n' * 2)
+    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, use_half=use_half, N=30, T=80, S=50, C=200)
+    print('*' * 50, '\n' * 2)
+    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, use_half=use_half, N=60, T=120, S=80, C=240)
+    print('*' * 50, '\n' * 2)
+    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, use_half=use_half, N=100, T=200, S=120, C=400)
+    print('*' * 50, '\n' * 2)
 
 
 def main():
+    pre_repeat_num = 10
     repeat_num = 100
-    run_test_gpu(repeat_num, use_half=False)
-    # run_test_gpu(repeat_num, use_half=True)
+    # run_test_gpu(pre_repeat_num, repeat_num, use_half=True)
+    run_test_gpu(pre_repeat_num, repeat_num, use_half=False)
+    # test_record_by_profiler(use_half=False, N=100, T=400, S=320, C=600)
 
 
 if __name__ == "__main__":
