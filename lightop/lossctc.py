@@ -40,23 +40,5 @@ class CTCLoss(torch.nn.Module):
             logit_lengths (tensor): lengths of the inputs in the time dimension for each batch.
             target_lengths (tensor): lengths of the labels for each batch.
         """
-        return _CTCLossFunc.apply(logits, targets, logit_lengths, target_lengths,
-                                  self.blank, self.clamp, self.logits_time_major, self.compute_sum, self.compute_mean, self.check_lengths)
-
-
-class _CTCLossFunc(torch.autograd.Function):
-    @staticmethod
-    def forward(ctx, logits, targets, logit_lengths, target_lengths,
-                blank_idx, clamp, logits_time_major, compute_sum, compute_mean, check_lengths):
-        costs, grads = op.accelerate_ctc_loss(logits, targets, logit_lengths, target_lengths,
-                                              blank_idx, clamp, logits_time_major, compute_sum, compute_mean, check_lengths)
-        ctx.grads = grads
-        if compute_sum or compute_mean:
-            return costs[0]
-
-        return costs
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        # grad_output = grad_output.view(-1, 1, 1, 1).to(ctx.grads)
-        return ctx.grads, None, None, None, None, None, None, None, None, None
+        return op.accelerate_ctc_loss(logits, targets, logit_lengths, target_lengths,
+                                      self.blank, self.clamp, self.logits_time_major, self.compute_sum, self.compute_mean, self.check_lengths)
