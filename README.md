@@ -46,7 +46,6 @@ python3 test_ln_add_dropout.py
     <tr>
         <td>softmax</td><td>512,4096</td><td>0.23ms</td><td>0.16ms</td><td>43.8%</td><td>一般分类模型的结尾会有softmax层。推荐size:第一维度大于300，第二维度大于等于1024小于等于4096。</td>
     </tr>
-
     <tr>
         <td>loss_ctc</td><td>120,60,240</td><td>4.51ms</td><td>1.14ms</td><td>396%</td><td>语音文本等RNN网络的输出层</td>
     </tr>
