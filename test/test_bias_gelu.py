@@ -69,4 +69,4 @@ def test_speed(name, seq_len, bsz, dim, n, f1,f2):
 #     fuse_bias_gelu=FuseBiasGelu().cuda()
 #     test_speed('bias_gelu', seq_len, bsz, dim, 1000,lambda x, b:F.gelu(x + b) ,fuse_bias_gelu )
 fuse_bias_gelu=FuseBiasGelu().cuda()
-test_speed('bias_gelu', 64, 512, 2048, 1000,lambda x, b:F.gelu(x + b) ,fuse_bias_gelu )
+test_speed('bias_gelu', 2046, 16, 64, 1000,lambda x, b:F.gelu(x + b) ,fuse_bias_gelu )
