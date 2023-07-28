@@ -9,7 +9,8 @@ std::tuple<Tensor, Tensor, Tensor> bnrelu_backward(int64_t impl_index, const Ten
 std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_cuda(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon, const Tensor& add);
 std::tuple<Tensor, Tensor, Tensor> bnaddrelu_backward_cuda(const Tensor& grad_out, const Tensor& input, const Tensor& output, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, const c10::optional<Tensor>& save_mean_opt, const c10::optional<Tensor>& save_invstd_opt, bool train, double epsilon, std::array<bool,3> grad_input_mask);
 std::tuple<Tensor, Tensor, Tensor, Tensor> bn_dropout_forward(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon, double p);
-std::tuple<Tensor, Tensor, Tensor> bn_dropout_backward(const Tensor& grad_out, const Tensor& input, const Tensor& output_dropout, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, const c10::optional<Tensor>& save_mean_opt, const c10::optional<Tensor>& save_invstd_opt, bool train, double epsilon, std::array<bool,3> grad_input_mask, double p);
+std::tuple<Tensor, Tensor, Tensor> bn_dropout_backward(const Tensor& grad_out, const Tensor& input, const Tensor& output_dropout, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, const c10::optional<Tensor>& save_mean_opt, 
+                                                   const c10::optional<Tensor>& save_invstd_opt, bool train, double epsilon, std::array<bool,3> grad_input_mask, double p);
 
 Tensor fuse_layernorm_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,double eps);
 Tensor drop_path_forward_autograd(const Tensor& x,double p, bool training,bool scale_by_keep) ;
@@ -23,7 +24,11 @@ Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim, con
 Tensor fuse_logsoftmax_forward_autograd(const at::Tensor & self, int64_t dim, bool half_to_float);
 Tensor accelerate_rnnt_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool compute_sum, bool compute_mean, bool check_lengths);
 Tensor accelerate_ctc_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool logits_time_major, bool compute_sum, bool compute_mean, bool check_lengths);
+Tensor fused_bias_gelu_forward(const Tensor &x, const Tensor &bias);
+std::tuple <Tensor, Tensor> fused_bias_gelu_backward(const Tensor  &x, const Tensor &bias,const Tensor &grad);
 Tensor fuse_ln_dropout_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,double eps,double rate,bool training);
+Tensor fuse_scaled_upper_triang_masked_softmax_forward_autograd(torch::Tensor const& input, float scale_factor);
+int get_batch_per_block(int query_seq_len, int key_seq_len, int batches, int attn_heads);
 
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
@@ -60,4 +65,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("ln_dropout_forward_autograd", &at::native::fuse_ln_dropout_forward_autograd, "fused_ln_dropout forward");
   m.def("scaled_upper_triang_masked_softmax_forward_autograd", &at::native::fuse_scaled_upper_triang_masked_softmax_forward_autograd, "masked_softmax_forward then droppath forward");
   m.def("get_batch_per_block",&at::native::get_batch_per_block, "get_batch_per_block");
+  m.def("bias_gelu_forward", &at::native::fused_bias_gelu_forward, "fused_bias_gelu forward");
+  m.def("bias_gelu_backward", &at::native::fused_bias_gelu_backward, "fused_bias_gelu backward");
 }
