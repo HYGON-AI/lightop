@@ -35,8 +35,6 @@ void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
 void destroy_gemmdbias_handle();
 
-Tensor fuse_scaled_upper_triang_masked_softmax_forward_autograd(torch::Tensor const& input, float scale_factor);
-int get_batch_per_block(int query_seq_len, int key_seq_len, int batches, int attn_heads);
 }
 }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
