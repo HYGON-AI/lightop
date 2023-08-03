@@ -29,14 +29,13 @@ std::tuple <Tensor, Tensor> fused_bias_gelu_backward(const Tensor  &x, const Ten
 Tensor fuse_ln_dropout_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,double eps,double rate,bool training);
 Tensor fuse_scaled_upper_triang_masked_softmax_forward_autograd(torch::Tensor const& input, float scale_factor);
 int get_batch_per_block(int query_seq_len, int key_seq_len, int batches, int attn_heads);
+Tensor fuse_scaled_upper_triang_masked_softmax_dropout_forward_autograd(torch::Tensor const& input, float scale_factor, float p);
 
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
 void destroy_gemmdbias_handle();
 
-Tensor fuse_scaled_upper_triang_masked_softmax_forward_autograd(torch::Tensor const& input, float scale_factor);
-int get_batch_per_block(int query_seq_len, int key_seq_len, int batches, int attn_heads);
 }
 }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -64,6 +63,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("layernorm_droppath_forward_autograd", &at::native::fuse_layernorm_droppath_forward_autograd, "layernorm then droppath forward");
   m.def("ln_dropout_forward_autograd", &at::native::fuse_ln_dropout_forward_autograd, "fused_ln_dropout forward");
   m.def("scaled_upper_triang_masked_softmax_forward_autograd", &at::native::fuse_scaled_upper_triang_masked_softmax_forward_autograd, "masked_softmax_forward then droppath forward");
+  m.def("scaled_upper_triang_masked_softmax_dropout_forward_autograd", &at::native::fuse_scaled_upper_triang_masked_softmax_dropout_forward_autograd, "masked_softmax_dropout_forward");
   m.def("get_batch_per_block",&at::native::get_batch_per_block, "get_batch_per_block");
   m.def("bias_gelu_forward", &at::native::fused_bias_gelu_forward, "fused_bias_gelu forward");
   m.def("bias_gelu_backward", &at::native::fused_bias_gelu_backward, "fused_bias_gelu backward");
