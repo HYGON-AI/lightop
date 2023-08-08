@@ -80,10 +80,10 @@ class FusedScaleMaskSoftmax(nn.Module):
             raise ValueError("expected 4D input (got {}D input)".format(input.dim()))
         
         if self.is_kernel_available(mask, *input.size()):
-            print("use fuse kernel")
+            # print("use fuse kernel")
             return self.forward_fused_softmax(input, mask)
         else:
-            print("no use fuse kernel, use torch")
+            # print("no use fuse kernel, use torch")
             return self.forward_torch_softmax(input, mask)
 
     def is_kernel_available(self, mask, b, np, sq, sk):

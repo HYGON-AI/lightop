@@ -250,18 +250,7 @@ __global__ void scaled_upper_triang_masked_softmax_dropout_warp_forward(
                 }
                 copy_vector<output_t, ELEMENTS_PER_LDG_STG>(dst + i * element_count * stride + it * WARP_SIZE, out);
                 copy_vector<output_t, ELEMENTS_PER_LDG_STG>(softmax + i * element_count * stride + it * WARP_SIZE, out_softmax);
-            } else if (element_index < element_count) {              
-                for (int element = 0; element < ELEMENTS_PER_LDG_STG; ++element) {
-                    if (p != 1) {
-                        idx = offset + i * element_count * stride + it * WARP_SIZE + element;
-                        idx_mul = idx / 4;
-                        idx_remd = idx % 4;
-                        hiprand_init(std::get<0>(seeds),idx_mul%rand_offset,std::get<1>(seeds)+idx_mul/rand_offset*4,&state);
-                        *(float4*)rand_4 = hiprand_uniform4(&state);
-                        is_dropout = rand_4[idx_remd] < p;
-                        *(dropout + i * element_count * stride + it * WARP_SIZE + element) = is_dropout;
-                    } 
-                }
+            } else if (element_index < element_count) {
                 copy_zero_vector<output_t, ELEMENTS_PER_LDG_STG>(dst + i * element_count * stride + it * WARP_SIZE);
                 copy_zero_vector<output_t, ELEMENTS_PER_LDG_STG>(softmax + i * element_count * stride + it * WARP_SIZE);
             } else {
@@ -339,13 +328,17 @@ __global__ void scaled_upper_triang_masked_softmax_dropout_warp_backward(
                 #pragma unroll
                 for (int element = 0; element < ELEMENTS_PER_LDG_STG; ++element) {
                     if (element_index + element < batch_element_count) {
-                        if(pa != 1) {
-                            bool tmp_dropout = *(dropout + i * element_count * stride + it * WARP_SIZE + element);
-                            int idx = thread_offset + i * element_count * stride + it * WARP_SIZE + element;
-                            input_t tmp = temp_grad[element] * tmp_dropout * pinv;
-                            grad_reg[i][it + element] = (acc_t)tmp * output_reg[i][it + element];
+                        if (output_reg[i][it + element] == acc_t(0.0)) {
+                            grad_reg[i][it + element] = acc_t(0.0);
                         } else {
-                            grad_reg[i][it + element] = (acc_t)temp_grad[element] * output_reg[i][it + element];
+                            if(pa != 1) {
+                                bool tmp_dropout = *(dropout + i * element_count * stride + it * WARP_SIZE + element);
+                                int idx = thread_offset + i * element_count * stride + it * WARP_SIZE + element;
+                                input_t tmp = temp_grad[element] * tmp_dropout * pinv;
+                                grad_reg[i][it + element] = (acc_t)tmp * output_reg[i][it + element];
+                            } else {
+                                grad_reg[i][it + element] = (acc_t)temp_grad[element] * output_reg[i][it + element];
+                            }
                         }
                     }
                 }

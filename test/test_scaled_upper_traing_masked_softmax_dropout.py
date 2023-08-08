@@ -29,7 +29,6 @@ def test_time():
                 scale=None,
                 softmax_in_fp32=False,
                 attn_mask_type=FuseAttnMaskType.causal,
-                # attn_mask_type=AttnMaskType.causal,
                 scaled_masked_softmax_fusion=True,
                 p = 0.5
             )
@@ -151,13 +150,13 @@ def test_fused_upper_triangle_mask_softmax_dropout(pa):
         print(("P: {} backward Error! max mise data: {}").format(pa,test_result_backward.max()))
 
 if __name__ == "__main__":
-    # # p:0.5
-    # test_fused_upper_triangle_mask_softmax_dropout(0.5)
-    # # p:0.8
-    # test_fused_upper_triangle_mask_softmax_dropout(0.8)
-    # # p:0
-    # test_fused_upper_triangle_mask_softmax_dropout(0)
-    # # p:1
-    # test_fused_upper_triangle_mask_softmax_dropout(1)
+    # p:0.5
+    test_fused_upper_triangle_mask_softmax_dropout(0.5)
+    # p:0.8
+    test_fused_upper_triangle_mask_softmax_dropout(0.8)
+    # p:0
+    test_fused_upper_triangle_mask_softmax_dropout(0)
+    # p:1
+    test_fused_upper_triangle_mask_softmax_dropout(1)
     # time
     test_time()
