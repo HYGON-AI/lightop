@@ -105,13 +105,15 @@ __device__ __forceinline__ void warp_reduce(acc_t* sum) {
  */
 template <typename input_t, typename output_t, typename acc_t, int log2_elements>
 __global__ void scaled_upper_triang_masked_softmax_dropout_warp_forward(
-    output_t *dst, 
+    output_t *dst,
+    output_t *softmax,
+    bool * dropout,
     const input_t *src, 
     const acc_t scale, 
     int micro_batch_size, 
     int stride, 
     int element_count,
-    float p, PhiloxCudaState philox_args, int rand_offset) 
+    acc_t p, PhiloxCudaState philox_args, int rand_offset) 
 {
     // WARP_SIZE and WARP_BATCH must match the return values batches_per_warp and 
     // warp_size of method warp_softmax_forward_kernel.
@@ -136,6 +138,9 @@ __global__ void scaled_upper_triang_masked_softmax_dropout_warp_forward(
 
     src += first_batch * stride + ELEMENTS_PER_LDG_STG * local_idx;
     dst += first_batch * stride + ELEMENTS_PER_LDG_STG * local_idx;
+    softmax += first_batch * stride + ELEMENTS_PER_LDG_STG * local_idx;
+    dropout += first_batch * stride + ELEMENTS_PER_LDG_STG * local_idx;
+
     int offset = first_batch * stride + ELEMENTS_PER_LDG_STG * local_idx;
     // load data from global memory
     acc_t elements[WARP_BATCH][WARP_ITERATIONS];
@@ -194,10 +199,20 @@ __global__ void scaled_upper_triang_masked_softmax_dropout_warp_forward(
     warp_reduce<acc_t, WARP_BATCH, WARP_SIZE, Add>(sum);
 
     // dropout
-    float pinv = float(1)/p;
+    hiprandStatePhilox4_32_10_t state;
+    auto seeds = at::cuda::philox::unpack(philox_args);
+    output_t pinv = output_t(1)/p;
+    int idx;
+    int idx_mul;
+    int idx_remd;
+    bool is_dropout;
+    bool out_dropout[ELEMENTS_PER_LDG_STG];
 
     // store result
     output_t out[ELEMENTS_PER_LDG_STG];
+    output_t out_softmax[ELEMENTS_PER_LDG_STG];
+    float rand_4[4];
+
     #pragma unroll
     for (int i = 0;  i < WARP_BATCH;  ++i) {
         if (i >= local_batches)
@@ -210,34 +225,45 @@ __global__ void scaled_upper_triang_masked_softmax_dropout_warp_forward(
 
                 #pragma unroll  
                 for (int element = 0; element < ELEMENTS_PER_LDG_STG; ++element) {
+                    if(p != 1) {
+                        idx = offset + i * element_count * stride + it * WARP_SIZE + element;
+                        idx_mul = idx / 4;
+                        idx_remd = idx % 4;
+                        hiprand_init(std::get<0>(seeds),idx_mul%rand_offset,std::get<1>(seeds)+idx_mul/rand_offset*4,&state);
+                        *(float4*)rand_4 = hiprand_uniform4(&state);
+                        is_dropout = rand_4[idx_remd] < p;
+                        *(dropout + i * element_count * stride + it * WARP_SIZE + element) = is_dropout;
+                    } else {
+                        is_dropout = 1;
+                    }
                     if (element_index + element < local_seq) {
-                        // dropout
-                        hiprandStatePhilox4_32_10_t state;
-                        auto seeds = at::cuda::philox::unpack(philox_args);
-
-                        int idx = offset + i * element_count * stride + it * WARP_SIZE + element;
-                        hiprand_init(std::get<0>(seeds),idx%rand_offset,std::get<1>(seeds)+idx/rand_offset,&state);
-                        float rand = hiprand_uniform(&state);
-                        
-                        if (rand < p) {
-                            out[element] = (elements[i][it + element] / sum[i]) * pinv;
+                        out_softmax[element] = (elements[i][it + element] / sum[i]); 
+                        if (is_dropout) {
+                            out[element] = out_softmax[element] * pinv;
                         } else {
                             out[element] = 0;
                         }
-                        // printf("====threadIdx: %d %d block:%d %d jisusn :%d rand:%f rand_offset:%d out:%f\n",(int)threadIdx.x,(int)threadIdx.y,(int)blockIdx.x,(int)blockIdx.y,
-                        //     idx, rand, rand_offset, (float)out[element]);
                     } else {
-                        // printf("====threadIdx: %d %d block:%d %d jisusn0 :%d\n",(int)threadIdx.x,(int)threadIdx.y,(int)blockIdx.x,(int)blockIdx.y,
-                        //     (int)(i * element_count * stride + it * WARP_SIZE + element));
                         out[element] = 0;
+                        out_softmax[element] = 0;
                     }
                 }
                 copy_vector<output_t, ELEMENTS_PER_LDG_STG>(dst + i * element_count * stride + it * WARP_SIZE, out);
-            } else if (element_index < element_count) {
-                // printf("====threadIdx: %d %d block:%d %d copy0 :%d ELEMENTS_PER_LDG_STG:%d WARP_SIZE:%d local_seq:%d local_idx:%d WARP_ITERATIONS:%d\n",  
-                //             (int)threadIdx.x,(int)threadIdx.y,(int)blockIdx.x,(int)blockIdx.y,
-                //             (int)(offset + i * element_count * stride + it * WARP_SIZE), ELEMENTS_PER_LDG_STG, WARP_SIZE, local_seq, local_idx,WARP_ITERATIONS);
+                copy_vector<output_t, ELEMENTS_PER_LDG_STG>(softmax + i * element_count * stride + it * WARP_SIZE, out_softmax);
+            } else if (element_index < element_count) {              
+                for (int element = 0; element < ELEMENTS_PER_LDG_STG; ++element) {
+                    if (p != 1) {
+                        idx = offset + i * element_count * stride + it * WARP_SIZE + element;
+                        idx_mul = idx / 4;
+                        idx_remd = idx % 4;
+                        hiprand_init(std::get<0>(seeds),idx_mul%rand_offset,std::get<1>(seeds)+idx_mul/rand_offset*4,&state);
+                        *(float4*)rand_4 = hiprand_uniform4(&state);
+                        is_dropout = rand_4[idx_remd] < p;
+                        *(dropout + i * element_count * stride + it * WARP_SIZE + element) = is_dropout;
+                    } 
+                }
                 copy_zero_vector<output_t, ELEMENTS_PER_LDG_STG>(dst + i * element_count * stride + it * WARP_SIZE);
+                copy_zero_vector<output_t, ELEMENTS_PER_LDG_STG>(softmax + i * element_count * stride + it * WARP_SIZE);
             } else {
                 break;
             } 
@@ -249,12 +275,14 @@ __global__ void scaled_upper_triang_masked_softmax_dropout_warp_forward(
 template <typename input_t, typename output_t, typename acc_t, int log2_elements>
 __global__ void scaled_upper_triang_masked_softmax_dropout_warp_backward(
     output_t *gradInput, 
-    input_t *grad, 
+    input_t *grad,
     const input_t *output,
+    const bool *dropout,
     acc_t scale, 
     int micro_batch_size, 
     int stride, 
-    int element_count)
+    int element_count,
+    acc_t pa)
 {
     // WARP_SIZE and WARP_BATCH must match the return values batches_per_warp and 
     // warp_size of method warp_softmax_backward_kernel.
@@ -281,12 +309,16 @@ __global__ void scaled_upper_triang_masked_softmax_dropout_warp_backward(
     grad += thread_offset;
     output += thread_offset;
     gradInput += thread_offset;
-
+    dropout += thread_offset;
+    
     // load data from global memory
     acc_t grad_reg[WARP_BATCH][WARP_ITERATIONS] { 0.0f };
     acc_t output_reg[WARP_BATCH][WARP_ITERATIONS] { 0.0f };
     input_t temp_grad[ELEMENTS_PER_LDG_STG];
     input_t temp_output[ELEMENTS_PER_LDG_STG];
+    bool temp_dropout[ELEMENTS_PER_LDG_STG];
+
+    input_t pinv = input_t(1)/pa;
     #pragma unroll
     for (int i = 0;  i < WARP_BATCH;  ++i) {
         int batch_element_count = (i >= local_batches) ? 0 : local_seq;
@@ -307,7 +339,14 @@ __global__ void scaled_upper_triang_masked_softmax_dropout_warp_backward(
                 #pragma unroll
                 for (int element = 0; element < ELEMENTS_PER_LDG_STG; ++element) {
                     if (element_index + element < batch_element_count) {
-                        grad_reg[i][it + element] = (acc_t)temp_grad[element] * output_reg[i][it + element];
+                        if(pa != 1) {
+                            bool tmp_dropout = *(dropout + i * element_count * stride + it * WARP_SIZE + element);
+                            int idx = thread_offset + i * element_count * stride + it * WARP_SIZE + element;
+                            input_t tmp = temp_grad[element] * tmp_dropout * pinv;
+                            grad_reg[i][it + element] = (acc_t)tmp * output_reg[i][it + element];
+                        } else {
+                            grad_reg[i][it + element] = (acc_t)temp_grad[element] * output_reg[i][it + element];
+                        }
                     }
                 }
             }
@@ -349,13 +388,15 @@ __global__ void scaled_upper_triang_masked_softmax_dropout_warp_backward(
 
 template<typename input_t, typename output_t, typename acc_t>
 void dispatch_scaled_upper_triang_masked_softmax_dropout_forward(
-    output_t *dst, 
+    output_t *dst,
+    output_t *softmax, 
+    bool *dropout, 
     const input_t *src, 
     const input_t scale, 
     int softmax_elements, 
     int softmax_elements_stride, 
     int attn_batches,
-    float p)
+    acc_t p)
 {
     TORCH_INTERNAL_ASSERT(softmax_elements >= 0 && softmax_elements <= 2048 );
     if (softmax_elements == 0) {
@@ -383,17 +424,17 @@ void dispatch_scaled_upper_triang_masked_softmax_dropout_forward(
         dim3 blocks(seq_len, blocks_per_seq, 1);
         dim3 threads(warp_size, warps_per_block, 1);
 
+        // dropout 
         auto gen = get_generator_or_default<CUDAGeneratorImpl>(Generator(), cuda::detail::getDefaultCUDAGenerator());
         int rand_offset=at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor*
                                     at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
         int maxThread = at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor;
         int maxmulti = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
         int nelem =  attn_batches * seq_len * seq_len;
-        printf("======nelem:%d warp_size:%d warps_per_block:%d maxThread:%d maxmulti:%d\n", 
-            nelem, warp_size, warps_per_block, maxThread, maxmulti);
-        int gridx=((nelem + 256 -1)/256);
+        int gridx=((nelem + 256 -1)/256); 
         gridx=std::min(rand_offset/256, gridx);
-        int64_t counter_offset = ((nelem - 1)/(1024*gridx)+1)*4;
+        int64_t counter_offset = ((nelem - 1)/(256*gridx*4)+1)*4; 
+
         PhiloxCudaState rng_engine_inputs;
         {
             std::lock_guard<std::mutex> lock(gen->mutex_);
@@ -403,51 +444,51 @@ void dispatch_scaled_upper_triang_masked_softmax_dropout_forward(
         switch (log2_elements) {
             case 0: // 1
                 scaled_upper_triang_masked_softmax_dropout_warp_forward<input_t, output_t, acc_t, 0>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, softmax, dropout, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
                 break;
             case 1: // 2
                 scaled_upper_triang_masked_softmax_dropout_warp_forward<input_t, output_t, acc_t, 1>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, softmax, dropout, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
                 break;
             case 2: // 4
                 scaled_upper_triang_masked_softmax_dropout_warp_forward<input_t, output_t, acc_t, 2>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, softmax, dropout, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
                 break;
             case 3: // 8
                 scaled_upper_triang_masked_softmax_dropout_warp_forward<input_t, output_t, acc_t, 3>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, softmax, dropout, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
                 break;
             case 4: // 16
                 scaled_upper_triang_masked_softmax_dropout_warp_forward<input_t, output_t, acc_t, 4>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, softmax, dropout, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
                 break;
             case 5: // 32
                 scaled_upper_triang_masked_softmax_dropout_warp_forward<input_t, output_t, acc_t, 5>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, softmax, dropout, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
                 break;
             case 6: // 64
                 scaled_upper_triang_masked_softmax_dropout_warp_forward<input_t, output_t, acc_t, 6>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, softmax, dropout, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
                 break;
             case 7: // 128
                 scaled_upper_triang_masked_softmax_dropout_warp_forward<input_t, output_t, acc_t, 7>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, softmax, dropout, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
                 break;
             case 8: // 256
                 scaled_upper_triang_masked_softmax_dropout_warp_forward<input_t, output_t, acc_t, 8>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, softmax, dropout, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
                 break;
             case 9: // 512
                 scaled_upper_triang_masked_softmax_dropout_warp_forward<input_t, output_t, acc_t, 9>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, softmax, dropout, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
                 break;
             case 10: // 1024
                 scaled_upper_triang_masked_softmax_dropout_warp_forward<input_t, output_t, acc_t, 10>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, softmax, dropout, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
                 break;
             case 11: // 2048
                 scaled_upper_triang_masked_softmax_dropout_warp_forward<input_t, output_t, acc_t, 11>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(dst, softmax, dropout, src, scale, batch_count, softmax_elements_stride, softmax_elements, p, rng_engine_inputs,rand_offset);
                 break;
             default:
                 break;
@@ -460,11 +501,13 @@ template<typename input_t, typename output_t, typename acc_t>
 void dispatch_scaled_upper_triang_masked_softmax_dropout_backward(
     output_t *grad_input, 
     input_t *grad, 
-    const input_t *output, 
+    const input_t *output,
+    const bool *dropout, 
     const acc_t scale, 
     int softmax_elements, 
     int softmax_elements_stride, 
-    int attn_batches)
+    int attn_batches,
+    acc_t pa)
 {
     TORCH_INTERNAL_ASSERT( softmax_elements >= 0 && softmax_elements <= 2048 );
     if (softmax_elements == 0) {
@@ -487,7 +530,6 @@ void dispatch_scaled_upper_triang_masked_softmax_dropout_backward(
         int warps_per_block = (threads_per_block / warp_size);
         int batches_per_block = warps_per_block * batches_per_warp;
         TORCH_INTERNAL_ASSERT(attn_batches % batches_per_block == 0);
-
         int blocks_per_seq = attn_batches / batches_per_block;
         dim3 blocks(seq_len, blocks_per_seq, 1);
         dim3 threads(warp_size, warps_per_block, 1);
@@ -495,51 +537,51 @@ void dispatch_scaled_upper_triang_masked_softmax_dropout_backward(
         switch (log2_elements) {
             case 0: // 1
                 scaled_upper_triang_masked_softmax_dropout_warp_backward<input_t, output_t, acc_t, 0>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, scale, batch_count, softmax_elements_stride, softmax_elements);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, dropout, scale, batch_count, softmax_elements_stride, softmax_elements, pa);
                 break;
             case 1: // 2
                 scaled_upper_triang_masked_softmax_dropout_warp_backward<input_t, output_t, acc_t, 1>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, scale, batch_count, softmax_elements_stride, softmax_elements);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, dropout, scale, batch_count, softmax_elements_stride, softmax_elements, pa);
                 break;
             case 2: // 4
                 scaled_upper_triang_masked_softmax_dropout_warp_backward<input_t, output_t, acc_t, 2>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, scale, batch_count, softmax_elements_stride, softmax_elements);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, dropout, scale, batch_count, softmax_elements_stride, softmax_elements, pa);
                 break;
             case 3: // 8
                 scaled_upper_triang_masked_softmax_dropout_warp_backward<input_t, output_t, acc_t, 3>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, scale, batch_count, softmax_elements_stride, softmax_elements);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, dropout, scale, batch_count, softmax_elements_stride, softmax_elements, pa);
                 break;
             case 4: // 16
                 scaled_upper_triang_masked_softmax_dropout_warp_backward<input_t, output_t, acc_t, 4>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, scale, batch_count, softmax_elements_stride, softmax_elements);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, dropout, scale, batch_count, softmax_elements_stride, softmax_elements, pa);
                 break;
             case 5: // 32
                 scaled_upper_triang_masked_softmax_dropout_warp_backward<input_t, output_t, acc_t, 5>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, scale, batch_count, softmax_elements_stride, softmax_elements);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, dropout, scale, batch_count, softmax_elements_stride, softmax_elements, pa);
                 break;
             case 6: // 64
                 scaled_upper_triang_masked_softmax_dropout_warp_backward<input_t, output_t, acc_t, 6>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, scale, batch_count, softmax_elements_stride, softmax_elements);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, dropout, scale, batch_count, softmax_elements_stride, softmax_elements, pa);
                 break;
             case 7: // 128
                 scaled_upper_triang_masked_softmax_dropout_warp_backward<input_t, output_t, acc_t, 7>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, scale, batch_count, softmax_elements_stride, softmax_elements);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, dropout, scale, batch_count, softmax_elements_stride, softmax_elements, pa);
                 break;
             case 8: // 256
                 scaled_upper_triang_masked_softmax_dropout_warp_backward<input_t, output_t, acc_t, 8>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, scale, batch_count, softmax_elements_stride, softmax_elements);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, dropout, scale, batch_count, softmax_elements_stride, softmax_elements, pa);
                 break;
             case 9: // 512
                 scaled_upper_triang_masked_softmax_dropout_warp_backward<input_t, output_t, acc_t, 9>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, scale, batch_count, softmax_elements_stride, softmax_elements);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, dropout, scale, batch_count, softmax_elements_stride, softmax_elements, pa);
                 break;
             case 10: // 1024
                 scaled_upper_triang_masked_softmax_dropout_warp_backward<input_t, output_t, acc_t, 10>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, scale, batch_count, softmax_elements_stride, softmax_elements);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, dropout, scale, batch_count, softmax_elements_stride, softmax_elements, pa);
                 break;
             case 11: // 2048
                 scaled_upper_triang_masked_softmax_dropout_warp_backward<input_t, output_t, acc_t, 11>
-                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, scale, batch_count, softmax_elements_stride, softmax_elements);
+                    <<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(grad_input, grad, output, dropout, scale, batch_count, softmax_elements_stride, softmax_elements, pa);
                 break;
             default:
                 break;
