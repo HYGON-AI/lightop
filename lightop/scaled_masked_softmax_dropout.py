@@ -71,6 +71,7 @@ class FusedScaleMaskSoftmaxDropout(nn.Module):
         self.softmax_in_fp32 = softmax_in_fp32
         self.scale = scale
         self.p = p
+        assert (0 <= self.p <= 1), "dropout p is 0---1"
         assert (
             self.scale is None or softmax_in_fp32
         ), "softmax should be in fp32 when scaled"
@@ -81,15 +82,14 @@ class FusedScaleMaskSoftmaxDropout(nn.Module):
             raise ValueError("expected 4D input (got {}D input)".format(input.dim()))
         
         if self.is_kernel_available(mask, *input.size()):
-            print("use fuse kernel")
+            # print("use fuse kernel")
             return self.forward_fused_softmax_dropout(input, mask)
         else:
-            print("no use fuse kernel, use torch")
+            # print("no use fuse kernel, use torch")
             return self.forward_torch_softmax_dropout(input, mask)
 
     def is_kernel_available(self, mask, b, np, sq, sk):
         attn_batches = b * np
-        print("attn_batches",attn_batches)
         if (
             self.scaled_masked_softmax_fusion  # user want to fuse
             and self.input_in_float16  # input must be fp16
@@ -100,7 +100,6 @@ class FusedScaleMaskSoftmaxDropout(nn.Module):
         ):
             if 0 <= sk <= 4096:
                 batch_per_block = self.get_batch_per_block(sq, sk, b, np)
-                print(batch_per_block)
                 if self.attn_mask_type == FuseAttnMaskType.causal:
                     if attn_batches % batch_per_block == 0:
                         return True
