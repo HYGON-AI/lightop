@@ -46,6 +46,8 @@ std::tuple<Tensor,Tensor,Tensor> fuse_scaled_upper_triang_masked_softmax_dropout
   Tensor output_results = at::empty({attn_batches, seq_len, seq_len}, act_options);
   Tensor softmax_results = at::empty({attn_batches, seq_len, seq_len}, act_options);
   Tensor dropout_results = at::empty_like(input, input.options().dtype(kBool));
+  // Tensor softmax_results = at::zeros_like(input);
+  // Tensor dropout_results = at::zeros_like(input, input.options().dtype(kBool));
   float pa = 1 - p;
   // Softmax Intermediate Result Ptr
   void* input_ptr = static_cast<void*>(input.data_ptr());
