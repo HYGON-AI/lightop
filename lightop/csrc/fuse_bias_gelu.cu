@@ -162,6 +162,7 @@ std::tuple<Tensor,Tensor> fused_bias_gelu_backward(const Tensor &x, const Tensor
                 grad.data_ptr<scalar_t>(),
                 N,dim);
         }
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
         bias_reduce_sum(bias_grad.data_ptr<scalar_t>(),input_grad.data_ptr<scalar_t>(),N,dim);
     });
     return std::tuple<Tensor,Tensor>(input_grad,bias_grad);
