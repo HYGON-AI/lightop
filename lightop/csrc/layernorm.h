@@ -1,20 +1,4 @@
-#include <ATen/ATen.h>
-#include <ATen/AccumulateType.h>
-#include <ATen/cuda/CUDAApplyUtils.cuh>
-#include <ATen/CUDAGeneratorImpl.h>
-#include <ATen/cuda/detail/IndexUtils.cuh>
-#include <ATen/cuda/detail/TensorInfo.cuh>
-#include <ATen/cuda/CUDAGraphsUtils.cuh>
-#include <c10/macros/Macros.h>
-#include <hiprand_kernel.h>
-#include <ATen/native/TensorIterator.h>
-#include <ATen/native/cuda/Loops.cuh>
-#include <ATen/native/cuda/MemoryAccess.cuh>
-#include <thrust/pair.h>
-#include <THC/THCGeneral.h>
-#include <torch/extension.h>
-#include <c10/cuda/CUDAMathCompat.h>
-#include <torch/autograd.h>
+#include "reduce.h"
 
 using namespace std;
 
@@ -89,60 +73,6 @@ struct WelfordOps {
   }
 };
 
-template <typename T, class ReduceOp>
-__inline__ __device__ T WarpReduce(T val,const ReduceOp& op,int max=32) {
-#pragma unroll
-  for (int offset = max; offset > 0; offset >>= 1) {
-    val = op.combine(val, op.warp_shfl_down(val, offset));
-  }
-  return val;
-}
-
-template <typename T, class ReduceOp>
-__inline__ __device__ T
-BlockReduce(T val, const ReduceOp& op, T* shared) {
-  const int lid = threadIdx.x % C10_WARP_SIZE;
-  const int wid = threadIdx.x / C10_WARP_SIZE;
-  val = WarpReduce(val, op);
-  __syncthreads();
-  if (lid == 0) {
-    shared[wid] = val;
-  }
-  __syncthreads();
-  if (wid == 0) {
-    val= shared[lid];
-    val = WarpReduce(val,op,blockDim.x/C10_WARP_SIZE/2);
-  }
-  return val;
-}
-
-template <typename T>
-__inline__ __device__ T WarpReduceSum(T val,int max=32) {
-#pragma unroll
-  for (int offset = max; offset > 0; offset >>= 1) {
-    val += __shfl_down(val, offset);
-  }
-  return val;
-}
-
-
-template <typename T>
-__inline__ __device__ T BlockReduceSum(T val, T* shared) {
-  const int lid = threadIdx.x % C10_WARP_SIZE;
-  const int wid = threadIdx.x / C10_WARP_SIZE;
-  val = WarpReduceSum(val);
-  __syncthreads();
-  if (lid == 0) {
-    shared[wid] = val;
-  }
-  __syncthreads();
-if (wid == 0) {
-    val= shared[lid];
-    val = WarpReduceSum(val,blockDim.x/C10_WARP_SIZE/2);
-  }
-  return val;
-}
-
 template <typename scalar_t>
 __global__ void GammaBetaBackwardSimple(int M,int N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
                                                    const scalar_t* rstd,scalar_t* dg,scalar_t* db)
@@ -162,8 +92,6 @@ __global__ void GammaBetaBackwardSimple(int M,int N,const scalar_t* dY,const sca
     db[j] = sum2;
   }
 }
-
-#define kColwiseReduceTileSize 32
 
 template <typename scalar_t>
 __global__ void GammaBetaBackward(int M,int N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,

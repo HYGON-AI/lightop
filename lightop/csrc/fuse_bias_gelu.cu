@@ -10,13 +10,14 @@
 #include <ATen/native/cuda/Loops.cuh>
 #include <THC/THCGeneral.h>
 #include <torch/extension.h>
-#include "layernorm.h"
+
+#include "reduce.h"
 
 
 namespace at{
 namespace native{
+static constexpr int VEC=4;
 
-static constexpr int VEC = 4;
 template <typename acc_t>
 __device__ acc_t bias_gelu(acc_t y) {
  
@@ -92,41 +93,6 @@ __global__ void bias_gelu_backwardVEC(scalar_t *dst, const scalar_t *src, const 
     }
 }
 
-template <typename scalar_t>
-__global__ void bias_gelu_backward_bias_simple(scalar_t *dst, const scalar_t *src,int bsz,int dim){
-    using T_ACC = acc_type<scalar_t, true>;
-    T_ACC grad= 0;
-    for(int i=threadIdx.x;i<bsz;i+=blockDim.x){
-        grad+=src[i*dim+blockIdx.x];
-    }
-    grad = WarpReduceSum(grad);
-    if(threadIdx.x==0)dst[blockIdx.x] = grad;
-    
-}
-
-template <typename scalar_t>
-__global__ void bias_gelu_backward_bias(scalar_t *dst, const scalar_t *src,int M,int N){
-    using T_ACC = acc_type<scalar_t, true>;
-    __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize];
-    const int j = blockIdx.x * blockDim.x + threadIdx.x;
-    T_ACC grad_sum = 0;
-    if (j < N) {
-        for (int i = threadIdx.y; i < M; i += blockDim.y) {
-            grad_sum += src[i * N + j];
-        }
-    }
-    g_shared[threadIdx.y][threadIdx.x] = grad_sum;
-    __syncthreads();
-    T_ACC sum = g_shared[threadIdx.x][threadIdx.y];
-    sum = WarpReduceSum(sum,16);
-    if (threadIdx.x == 0) {
-        const int j = blockIdx.x * blockDim.x + threadIdx.y;
-        if (j < N) {
-            dst[j] = sum;
-        }
-   }
-}
-
 Tensor fused_bias_gelu_forward(const Tensor &x, const Tensor &bias) {
     cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
     int N = x.numel();
@@ -166,10 +132,9 @@ std::tuple<Tensor,Tensor> fused_bias_gelu_backward(const Tensor &x, const Tensor
     cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
     int N = x.numel();
     int dim=x.sizes().back();
-    int bsz=N/dim;
     auto dst_options = x.options().requires_grad(false);
     Tensor input_grad  = torch::empty(x.sizes(), dst_options);
-    Tensor bias_grad;
+    Tensor bias_grad  = torch::empty({dim}, dst_options);
     bool cal_bias=true;
     const int ThreadsPerBlock = 256;
     AT_DISPATCH_FLOATING_TYPES_AND2(
@@ -197,23 +162,8 @@ std::tuple<Tensor,Tensor> fused_bias_gelu_backward(const Tensor &x, const Tensor
                 grad.data_ptr<scalar_t>(),
                 N,dim);
         }
-        
-        if (bsz < 2048 && dim<2048 && N < 600000) {
-            // For small batch size, do colwise reduce directly.
-            bias_grad  = torch::empty({dim}, dst_options);
-            bias_gelu_backward_bias_simple<scalar_t><<<dim, 64, 0, stream>>>(bias_grad.data_ptr<scalar_t>(),input_grad.data_ptr<scalar_t>(),bsz,dim);
-            C10_CUDA_KERNEL_LAUNCH_CHECK();
-        }
-        else if(dim>=512 && bsz/dim<=32){
-            bias_grad  = torch::empty({dim}, dst_options);
-            const int B =(dim + kColwiseReduceTileSize - 1) / kColwiseReduceTileSize;
-            bias_gelu_backward_bias<scalar_t><<<B, dim3(kColwiseReduceTileSize, kColwiseReduceTileSize), 0, stream>>>(bias_grad.data_ptr<scalar_t>(),input_grad.data_ptr<scalar_t>(),bsz,dim);
-            C10_CUDA_KERNEL_LAUNCH_CHECK();
-        }
-        else {
-            bias_grad=input_grad.view({-1,dim}).sum(0);
-        }
-        
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+        bias_reduce_sum(bias_grad.data_ptr<scalar_t>(),input_grad.data_ptr<scalar_t>(),N,dim);
     });
     return std::tuple<Tensor,Tensor>(input_grad,bias_grad);
 }
