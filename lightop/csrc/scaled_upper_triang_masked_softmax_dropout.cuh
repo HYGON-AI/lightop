@@ -212,7 +212,6 @@ __global__ void scaled_upper_triang_masked_softmax_dropout_warp_forward(
     output_t out[ELEMENTS_PER_LDG_STG];
     output_t out_softmax[ELEMENTS_PER_LDG_STG];
     float rand_4[4];
-
     #pragma unroll
     for (int i = 0;  i < WARP_BATCH;  ++i) {
         if (i >= local_batches)
@@ -222,30 +221,56 @@ __global__ void scaled_upper_triang_masked_softmax_dropout_warp_forward(
             int element_index = ELEMENTS_PER_LDG_STG * local_idx + it * WARP_SIZE;
 
             if (element_index < local_seq) {
+                if (p != 1){
+                    if (ELEMENTS_PER_LDG_STG == 4) {
+                        idx_mul = (offset + i * element_count * stride + it * WARP_SIZE) / 4;
+                        hiprand_init(std::get<0>(seeds),idx_mul%rand_offset,std::get<1>(seeds)+idx_mul/rand_offset*4,&state);
+                        *(float4*)rand_4 = hiprand_uniform4(&state);
 
-                #pragma unroll  
-                for (int element = 0; element < ELEMENTS_PER_LDG_STG; ++element) {
-                    if(p != 1) {
-                        idx = offset + i * element_count * stride + it * WARP_SIZE + element;
+                        #pragma unroll  
+                        for (int element = 0; element < ELEMENTS_PER_LDG_STG; ++element) {
+                            is_dropout = (rand_4[element] < p); 
+                            if (element_index + element < local_seq) {
+                                out_softmax[element] = (elements[i][it + element] / sum[i]); 
+                                if (is_dropout) {
+                                    out[element] = out_softmax[element] * pinv;
+                                } else {
+                                    out[element] = 0;
+                                }
+                            } else {
+                                out[element] = 0;
+                                out_softmax[element] = 0;
+                            }
+                            *(dropout + i * element_count * stride + it * WARP_SIZE + element) = is_dropout;
+                        }  
+                    } else {
+                        idx = (offset + i * element_count * stride + it * WARP_SIZE);
                         idx_mul = idx / 4;
                         idx_remd = idx % 4;
                         hiprand_init(std::get<0>(seeds),idx_mul%rand_offset,std::get<1>(seeds)+idx_mul/rand_offset*4,&state);
                         *(float4*)rand_4 = hiprand_uniform4(&state);
-                        is_dropout = rand_4[idx_remd] < p;
-                        *(dropout + i * element_count * stride + it * WARP_SIZE + element) = is_dropout;
-                    } else {
-                        is_dropout = 1;
-                    }
-                    if (element_index + element < local_seq) {
-                        out_softmax[element] = (elements[i][it + element] / sum[i]); 
-                        if (is_dropout) {
-                            out[element] = out_softmax[element] * pinv;
+                        is_dropout = (rand_4[idx_remd] < p); 
+                        if (element_index < local_seq) {
+                            out_softmax[0] = (elements[i][it] / sum[i]); 
+                            if (is_dropout) {
+                                out[0] = out_softmax[0] * pinv;
+                            } else {
+                                out[0] = 0;
+                            }
+                        } else {
+                            out[0] = 0;
+                            out_softmax[0] = 0;
+                        }
+                        *(dropout + i * element_count * stride + it * WARP_SIZE) = is_dropout;
+                    }  
+                } else {
+                    for (int element = 0; element < ELEMENTS_PER_LDG_STG; ++element) {
+                        if (element_index + element < local_seq) {
+                            out[element] = (elements[i][it + element] / sum[i]); 
                         } else {
                             out[element] = 0;
                         }
-                    } else {
-                        out[element] = 0;
-                        out_softmax[element] = 0;
+                        out_softmax[element] = out[element];
                     }
                 }
                 copy_vector<output_t, ELEMENTS_PER_LDG_STG>(dst + i * element_count * stride + it * WARP_SIZE, out);
