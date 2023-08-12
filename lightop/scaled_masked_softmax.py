@@ -121,12 +121,17 @@ class FusedScaleMaskSoftmax(nn.Module):
             probs = op.scaled_upper_triang_masked_softmax_forward_autograd(input, scale)
             return probs.view(b, np, sq, sk)
         else:
-            raise ValueError("causal mask is only for self attention")
+            # raise ValueError("causal mask is only for self attention")
             # input is 4D tensor (b, np, sq, sk)
-            # if mask is not None:
-            #     return ScaledMaskedSoftmax.apply(input, mask, scale)
-            # else:
-            #     return ScaledSoftmax.apply(input, scale)
+            if input.dim() != 4:
+                raise ValueError("expected 4D input (got {}D input)".format(input.dim()))
+            if mask is not None:
+                if mask.dim() != 4:
+                    raise ValueError("expected 4D mask (got {}D input)".format(mask.dim()))
+                return op.scaled_masked_softmax_forward_autograd(input, mask, scale)
+            else:
+                raise ValueError("nead mask")
+                # return ScaledSoftmax.apply(input, scale)
 
     def forward_torch_softmax(self, input, mask):
         if self.input_in_float16 and self.softmax_in_fp32:
