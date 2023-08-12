@@ -31,6 +31,9 @@ Tensor fuse_scaled_upper_triang_masked_softmax_forward_autograd(torch::Tensor co
 int get_batch_per_block(int query_seq_len, int key_seq_len, int batches, int attn_heads);
 Tensor fuse_scaled_upper_triang_masked_softmax_dropout_forward_autograd(torch::Tensor const& input, float scale_factor, float p);
 
+Tensor RoPE_forward_gpu(int sq, int b, int np, int hn, Tensor tensor_q,Tensor tensor_cos, Tensor tensor_sin);
+Tensor RoPE_backward_gpu(int sq, int b, int np, int hn,Tensor tensor_grad_out, Tensor tensor_cos, Tensor tensor_sin);
+
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
@@ -67,4 +70,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("get_batch_per_block",&at::native::get_batch_per_block, "get_batch_per_block");
   m.def("bias_gelu_forward", &at::native::fused_bias_gelu_forward, "fused_bias_gelu forward");
   m.def("bias_gelu_backward", &at::native::fused_bias_gelu_backward, "fused_bias_gelu backward");
+  m.def("rotary_positional_embedding_forward", &at::native::RoPE_forward_gpu, "rotary positional embedding forward for gpu");
+  m.def("rotary_positional_embedding_backward", &at::native::RoPE_backward_gpu, "rotary positional embedding backward for gpu");
 }
