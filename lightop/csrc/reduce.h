@@ -15,7 +15,6 @@
 #include <torch/extension.h>
 #include <c10/cuda/CUDAMathCompat.h>
 #include <torch/autograd.h>
-#include <c10/cuda/CUDACachingAllocator.h>
 
 namespace at{
 namespace native{
@@ -168,24 +167,24 @@ __global__ void ReduceVEC(scalar_t* data_gpu,T_ACC* block_gpu,int *semaphores,sc
     }
 }
 
-
-#define REDUCE_VEC_KERNEL(VEC)                                                             \
-    if(block_num*stride/VEC>maxblocks)block_num=(maxblocks-1)/(stride/VEC)+1;              \
-    if(block_num>32){                                                                      \
-        auto& allocator = *c10::cuda::CUDACachingAllocator::get();                         \
-        at::DataPtr buffer = allocator.allocate(stride*block_num*sizeof(T_ACC));           \
-        at::DataPtr semaphores = allocator.allocate(stride/VEC*sizeof(int));               \
-        AT_CUDA_CHECK(cudaMemsetAsync(semaphores.get(), 0, stride*sizeof(int), stream));   \
-        ReduceVEC<scalar_t,T_ACC,VEC><<<dim3(block_num,stride/VEC),block_size,0,stream>>>  \
-         (data_gpu,(T_ACC*)buffer.get(),(int*)semaphores.get(),output_gpu,length,stride);  \
-    }                                                                                      \
-    else {                                                                                 \
-        ReduceVEC<scalar_t,T_ACC,VEC><<<dim3(1,stride/VEC),block_size,0,stream>>>          \
-        (data_gpu,(T_ACC *)NULL,(int*)NULL,output_gpu,length,stride);                      \
+#define REDUCE_VEC_KERNEL(VEC)                                                                     \
+    if(block_num*stride/VEC>maxblocks)block_num=(maxblocks-1)/(stride/VEC)+1;                      \
+    if(block_num>32){                                                                              \
+        c10::TensorOptions options(DeviceType::CUDA);                                              \
+        options.dtype(ScalarType::Int);                                                            \
+        Tensor buffer=torch::empty(stride*block_num, options);                                     \
+        Tensor semaphores=torch::empty(stride/VEC, options);                                       \
+        AT_CUDA_CHECK(cudaMemsetAsync(semaphores.data_ptr(), 0, stride/VEC*sizeof(int), stream));  \
+        ReduceVEC<scalar_t,T_ACC,VEC><<<dim3(block_num,stride/VEC),block_size,0,stream>>>          \
+         (data_gpu,(T_ACC*)buffer.data_ptr(),(int*)semaphores.data_ptr(),output_gpu,length,stride);\
+    }                                                                                              \
+    else {                                                                                         \
+        ReduceVEC<scalar_t,T_ACC,VEC><<<dim3(1,stride/VEC),block_size,0,stream>>>                  \
+        (data_gpu,(T_ACC *)NULL,(int*)NULL,output_gpu,length,stride);                              \
     }
 
 //for example input size is batchsize*sqlen*vlen,output size is vlen
-//stride is vlen, length is batchsize*sqlen
+//stride is vlen, length is batchsize*sqlen*vlen
 template <typename scalar_t>
 void bias_reduce_sum(scalar_t* output_gpu, scalar_t* data_gpu,int length,int stride)
 {
