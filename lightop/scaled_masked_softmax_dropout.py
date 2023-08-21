@@ -121,12 +121,17 @@ class FusedScaleMaskSoftmaxDropout(nn.Module):
             probs = op.scaled_upper_triang_masked_softmax_dropout_forward_autograd(input, scale, p)
             return probs.view(b, np, sq, sk)
         else:
-            raise ValueError("causal mask is only for self attention")
+            # raise ValueError("causal mask is only for self attention")
             # input is 4D tensor (b, np, sq, sk)
-            # if mask is not None:
-            #     return ScaledMaskedSoftmax.apply(input, mask, scale)
-            # else:
-            #     return ScaledSoftmax.apply(input, scale)
+            if input.dim() != 4:
+                raise ValueError("expected 4D input (got {}D input)".format(input.dim()))
+            if mask is not None:
+                if mask.dim() != 4:
+                    raise ValueError("expected 4D mask (got {}D input)".format(mask.dim()))
+                return op.scaled_masked_softmax_dropout_forward_autograd(input, mask, scale, p)
+            else:
+                raise ValueError("nead mask")
+                # return ScaledSoftmax.apply(input, scale)
 
     def forward_torch_softmax_dropout(self, input, mask, p):
         if self.input_in_float16 and self.softmax_in_fp32:
@@ -136,14 +141,15 @@ class FusedScaleMaskSoftmaxDropout(nn.Module):
             input = input * self.scale
         mask_output = self.mask_func(input, mask) if mask is not None else input
         probs = torch.nn.Softmax(dim=-1)(mask_output)
-        dropout = torch.nn.Dropout(p=p).cuda()
-        probs = dropout(probs)
+        
         if self.input_in_float16 and self.softmax_in_fp32:
             if self.input_in_fp16:
                 probs = probs.half()
             else:
                 probs = probs.bfloat16()
-
+                
+        dropout = torch.nn.Dropout(p=p).cuda()
+        probs = dropout(probs)
         return probs
 
     @staticmethod
