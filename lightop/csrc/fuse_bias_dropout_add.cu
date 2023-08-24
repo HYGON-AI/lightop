@@ -196,7 +196,7 @@ __global__ void fuse_bias_dropout_add_kernel_backwardVEC(
 }
 
 
-std::tuple<Tensor,Tensor> fuse_bias_dropout_add_forward(const Tensor& self,const Tensor& bias, const Tensor& other,float p, bool training){
+std::tuple<Tensor,Tensor> fuse_bias_dropout_add_forward(const Tensor& self,const Tensor& bias, const Tensor& other,double p, bool training){
     AT_ASSERTM(self.sizes() == other.sizes(), "x must be the same size as y");
     AT_ASSERTM(bias.dim() == 1, "expected 1D tensor");
     AT_ASSERTM(self.size(-1) == bias.size(-1) && other.size(-1) == bias.size(-1),
@@ -289,7 +289,7 @@ std::tuple<Tensor,Tensor> fuse_bias_dropout_add_forward(const Tensor& self,const
 }
 
 
-std::tuple<Tensor,Tensor> fuse_bias_dropout_add_backward(const Tensor &grad,const Tensor &mask, float p) {
+std::tuple<Tensor,Tensor> fuse_bias_dropout_add_backward(const Tensor &grad,const Tensor &mask, double p) {
     p=1-p;
     const IndexType nelem = grad.numel();
     const IndexType dim=grad.sizes().back();
@@ -320,7 +320,7 @@ std::tuple<Tensor,Tensor> fuse_bias_dropout_add_backward(const Tensor &grad,cons
                     input_grad_info, grad_info, mask_info, nelem,pa);
 
             C10_CUDA_KERNEL_LAUNCH_CHECK();
-            
+
             bias_reduce_sum(bias_grad.data_ptr<scalar_t>(),input_grad.data_ptr<scalar_t>(),nelem,dim);
       });
       return std::tuple<Tensor,Tensor>(input_grad,bias_grad);
