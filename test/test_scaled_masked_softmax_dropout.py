@@ -21,11 +21,11 @@ def forward_torch_softmax(input, mask, scale):
     probs = torch.nn.Softmax(dim=-1)(mask_output)
     return probs
 
-def test_time(seq_len, key_len):
+def test_time(batch, attn, seq_len, key_len):
     scale_t = torch.tensor([0.5])
     torch.manual_seed(1)
-    fuse_input = torch.randn(2,16,seq_len,key_len).cuda().half().requires_grad_()
-    masks = torch.randint(0, 2, (2, 1, seq_len, key_len), dtype=torch.bool, device='cuda:0')
+    fuse_input = torch.randn(batch, attn, seq_len,key_len).cuda().half().requires_grad_()
+    masks = torch.randint(0, 2, (batch, 1, seq_len, key_len), dtype=torch.bool, device='cuda:0')
     fuse_time_start = time_synchronized()
     for i in range(1):
         if (i == 10):
@@ -50,12 +50,12 @@ def test_time(seq_len, key_len):
             fuse_input,
             masks,
         )
-        #fused_softmax_output.backward(fused_softmax_output)
+        fused_softmax_output.backward(fused_softmax_output)
     fuse_time_end = time_synchronized()
     print("===fuse:",  fuse_time_end - fuse_time_start)
 
     torch.manual_seed(1)
-    torch_attn_weights = torch.randn(2,16,seq_len,key_len).cuda().half().requires_grad_()
+    torch_attn_weights = torch.randn(batch, attn,seq_len,key_len).cuda().half().requires_grad_()
     time_start = time_synchronized()
     for i in range(1):
         if (i == 10):
@@ -81,10 +81,10 @@ def test_time(seq_len, key_len):
 
         dropout = torch.nn.Dropout(p=0.5).cuda()
         src_softmax_output = dropout(src_softmax_output)
-        #src_softmax_output.backward(src_softmax_output)
+        src_softmax_output.backward(src_softmax_output)
     time_end = time_synchronized()
     print("===src:", time_end - time_start)
-    print((fused_softmax_output-src_softmax_output).abs().max())
+
 def test_masked_softmax_backward():
     batch = 2
     attn = 16
@@ -154,8 +154,9 @@ def test_masked_softmax_backward():
     print("Success")
 if __name__ == "__main__":
     test_masked_softmax_backward()
-    #test_time(128,128)
-    # test_time(256,256)
-    # test_time(1024,1024)
-    # test_time(2048,2048)
-    # test_time(4096,4096)
+    #test_time(2,16,128,128)
+    # test_time(2,16,256,256)
+    # test_time(2,16,1024,1024)
+    # test_time(2,16,2048,2048)
+    # test_time(2,16,4096,4096)
+    # test_time(1,8,2048,2048)

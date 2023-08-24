@@ -53,7 +53,7 @@ std::tuple<Tensor,Tensor,Tensor> fuse_scaled_masked_softmax_dropout_forward(
   auto act_options = input.options().requires_grad(false);
   Tensor softmax_results = at::empty({batches, attn_heads, query_seq_len, key_seq_len}, act_options);
   Tensor output_results = at::empty({batches, attn_heads, query_seq_len, key_seq_len}, act_options);
-  Tensor dropout_results = at::empty_like(input, input.options().dtype(kBool));
+  Tensor dropout_results = at::empty_like(input, mask.options());
 
   // Softmax Intermediate Result Ptr
   void* input_ptr = static_cast<void*>(input.data_ptr());
@@ -70,7 +70,7 @@ std::tuple<Tensor,Tensor,Tensor> fuse_scaled_masked_softmax_dropout_forward(
       dispatch_scaled_masked_softmax_dropout_forward<scalar_t, scalar_t, float>(
     reinterpret_cast<scalar_t*>(output_results_ptr),
     reinterpret_cast<scalar_t*>(softmax_results_ptr),
-    reinterpret_cast<bool*>(dropout_results_ptr),
+    reinterpret_cast<uint8_t*>(dropout_results_ptr),
 	  reinterpret_cast<const scalar_t*>(input_ptr),
 	  reinterpret_cast<const uint8_t*>(mask_ptr),
 	  scale_factor,
@@ -115,7 +115,7 @@ Tensor fuse_scaled_masked_softmax_dropout_backward(
       reinterpret_cast<scalar_t*>(input_grads_ptr), 
 	  reinterpret_cast<scalar_t*>(output_grads_ptr), 
 	  reinterpret_cast<scalar_t const*>(softmax_results.data_ptr()),
-    reinterpret_cast<bool const*>(dropout_mask.data_ptr()),
+    reinterpret_cast<uint8_t const*>(dropout_mask.data_ptr()),
 	  scale_factor,
 	  query_seq_len,
 	  key_seq_len,
@@ -168,16 +168,16 @@ class fuseMaskedSoftmaxDropout : public torch::autograd::Function<fuseMaskedSoft
     // Use data saved in forward
     auto saved = ctx->get_saved_variables();
     float save_scale = (float)ctx->saved_data["scale"].toDouble();
-    auto save_result = saved[0];
+    auto softmax_result = saved[0];
     auto dropout_result = saved[1];
 
-    AT_ASSERTM(save_result.dim() == 4, "save_result expected 4D tensor");
     AT_ASSERTM(dropout_result.dim() == 4, "dropout_result expected 4D tensor");
-    AT_ASSERTM((save_result.scalar_type() == at::ScalarType::Half) ||
-	            (save_result.scalar_type() == at::ScalarType::BFloat16), 
-                "Only fp16 and bf16 are supported");
+    AT_ASSERTM(softmax_result.dim() == 4, "softmax_result expected 4D tensor");
+    AT_ASSERTM((softmax_result.scalar_type() == at::ScalarType::Half) ||
+	            (softmax_result.scalar_type() == at::ScalarType::BFloat16), 
+                "softmax_result Only fp16 and bf16 are supported");
 
-    auto result = fuse_scaled_masked_softmax_dropout_backward(grad_output[0], save_result, save_scale, dropout_result, pa);
+    auto result = fuse_scaled_masked_softmax_dropout_backward(grad_output[0], /*out_result, */softmax_result, save_scale, dropout_result, pa);
     return {result, torch::autograd::Variable(), torch::autograd::Variable(),  torch::autograd::Variable()};
   }
 };
