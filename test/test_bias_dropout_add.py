@@ -71,11 +71,11 @@ def test_speed(name, seq_len, bsz, dim, n, f1,f2):
         fc2_espl = end_time - start_time
         print('fuse_bias_dropout_add', 'averange time is', fc2_espl *1000/ n, 'ms')
     prof2.export_chrome_trace('./profile_bias_dropout_add.json')  
-    print(y1.equal(y2))
-    print(x1.grad.equal(x2.grad))
     #相对误差
+    print( f"error max: bias.grad: {rerr(y1, y2)}")
+    print( f"error max: bias.grad: {rerr(x1.grad, x2.grad)}")
     print( f"error max: bias.grad: {rerr(bias1.grad, bias2.grad)}")
  
 
-fuse_bias_dropout_add=FuseBiasDropoutAdd(droprate=0.5).cuda()
-test_speed('bias_dropout_add', 2048, 16, 512, 1000,lambda x, b, r: F.dropout(x + b, 0.5) + r ,fuse_bias_dropout_add)
+fuse_bias_dropout_add=FuseBiasDropoutAdd(droprate=0.4).cuda()
+test_speed('bias_dropout_add', 2048, 16, 1024, 1000,lambda x, b, r: F.dropout(x + b, 0.4) + r ,fuse_bias_dropout_add)

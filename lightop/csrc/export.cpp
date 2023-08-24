@@ -37,8 +37,8 @@ Tensor RoPE_backward_gpu(int sq, int b, int np, int hn,Tensor tensor_grad_out, T
 Tensor FusedBiasSwiGLU_forward_gpu(Tensor in, Tensor bias);
 std::vector<Tensor> FusedBiasSwiGLU_backward_gpu(Tensor out_grad,Tensor in,Tensor bias);
 
-std::tuple <Tensor, Tensor> fuse_bias_dropout_add_forward(const Tensor &x,const Tensor &bias,const Tensor &residual,float droprate,bool training);
-std::tuple <Tensor, Tensor> fuse_bias_dropout_add_backward(const Tensor &grad,const Tensor &mask, float droprate);
+std::tuple <Tensor, Tensor> fuse_bias_dropout_add_forward(const Tensor &x,const Tensor &bias,const Tensor &residual,double droprate,bool training);
+std::tuple <Tensor, Tensor> fuse_bias_dropout_add_backward(const Tensor &grad,const Tensor &mask, double droprate);
 
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
