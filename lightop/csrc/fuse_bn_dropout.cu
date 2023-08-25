@@ -2,7 +2,11 @@
 #include <ATen/native/ReduceOps.h>
 #include <ATen/native/Resize.h>
 #include <ATen/native/cuda/Loops.cuh>
-#include <ATen/native/cuda/Resize.cuh>
+#ifdef TORCH_VERSION_OVER_110
+    #include <ATen/native/cuda/Resize.h>
+#else
+    #include <ATen/native/cuda/Resize.cuh>
+#endif
 #include <c10/cuda/CUDAMathCompat.h>
 #include <torch/extension.h>
 #include <fuse_bn_dropout.cuh>
