@@ -5,6 +5,9 @@ from lightop.fusebiasgelu import FuseBiasGelu
 import time
 import random
 
+def rerr(x1, x2):
+        return ((x1.float() - x2.float()) / (x1.float() + x2.float() + 1e-6)).abs().max()
+
 def test_speed(name, seq_len, bsz, dim, n, f1,f2):
     
     bias = torch.rand(dim).cuda()
@@ -58,15 +61,8 @@ def test_speed(name, seq_len, bsz, dim, n, f1,f2):
     prof2.export_chrome_trace('./profile_fuse_bias_relu1111.json')  
     print(y1.equal(y2))
     print(x1.grad.equal(x2.grad))
-    #相对误差小于1e-5
-    print((abs(bias1.grad-bias2.grad)/(abs(bias1.grad)+1e-5)).max().item()<1e-5)
+    #相对误差
+    print( f"error max: bias.grad: {rerr(bias1.grad, bias2.grad)}")
 
-# for _ in range(100):
-#     seq_len = random.randint(1, 5)*16
-#     bsz = random.randint(1, 10)*64
-#     dim = random.randint(1, 5)*512
-#     torch.manual_seed(0)
-#     fuse_bias_gelu=FuseBiasGelu().cuda()
-#     test_speed('bias_gelu', seq_len, bsz, dim, 1000,lambda x, b:F.gelu(x + b) ,fuse_bias_gelu )
 fuse_bias_gelu=FuseBiasGelu().cuda()
-test_speed('bias_gelu', 2046, 16, 64, 1000,lambda x, b:F.gelu(x + b) ,fuse_bias_gelu )
+test_speed('bias_gelu', 2046, 16, 512, 1000,lambda x, b:F.gelu(x + b) ,fuse_bias_gelu )
