@@ -103,11 +103,12 @@ __global__ void col_wise_reduce(scalar_t *dst, const scalar_t *src,int M,int N){
 }
 
 template <typename scalar_t,typename T_ACC,int VEC>
-__global__ void ReduceVEC(scalar_t* data_gpu,scalar_t* block_gpu,int *semaphores,scalar_t *sum_gpu,int length,int stride)
+__global__ void ReduceVEC(scalar_t* data_gpu,T_ACC* block_gpu,int *semaphores,scalar_t *sum_gpu,int length,int stride)
 {
     __shared__ int islast;
     __shared__ T_ACC smem[REDUCE_BLOCK_SIZE/C10_WARP_SIZE];
-    using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+    using VecTpyeS=memory::aligned_vector<scalar_t, VEC>;
+    using VecTpyeT=memory::aligned_vector<T_ACC, VEC>;
     const int tid=threadIdx.x;
     const int bidx=blockIdx.x;
     const int bidy=blockIdx.y;
@@ -115,38 +116,40 @@ __global__ void ReduceVEC(scalar_t* data_gpu,scalar_t* block_gpu,int *semaphores
     const int block_size=blockDim.x;
     int idx=(bidx*block_size+tid)*stride+bidy*VEC;
     int offset=block_size*gdimx*stride;
-    scalar_t block_sum[VEC]={0};
+    T_ACC block_sum[VEC]={0};
     scalar_t sum_temp[VEC];
     for(int i=idx;i<length;i+=offset){
-        *(VecTpye*)sum_temp=*(VecTpye*)(data_gpu+i);
+        *(VecTpyeS*)sum_temp=*(VecTpyeS*)(data_gpu+i);
         #pragma unroll
         for(int i=0;i<VEC;i++){
-           
             block_sum[i]+=sum_temp[i];
         }
     }
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-        block_sum[i]=(scalar_t)BlockReduceSum<T_ACC>((T_ACC)block_sum[i],smem);
-    }
     if(semaphores==NULL){
-        if(tid==0){
-            *(VecTpye*)(sum_gpu+bidy*VEC)=*(VecTpye*)block_sum;
+        #pragma unroll
+        for(int i=0;i<VEC;i++){
+            sum_temp[i]=BlockReduceSum(block_sum[i],smem);
         }
+        if(tid==0) *(VecTpyeS*)(sum_gpu+bidy*VEC)=*(VecTpyeS*)sum_temp;
         return;
     }
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+        block_sum[i]=BlockReduceSum(block_sum[i],smem);
+    }
     if(tid==0){
-        *(VecTpye*)(block_gpu+bidx*stride+bidy*VEC)=*(VecTpye*)block_sum;
+        *(VecTpyeT*)(block_gpu+bidx*stride+bidy*VEC)=*(VecTpyeT*)block_sum;
         __threadfence();
         int value=atomicAdd(semaphores+bidy,1);
         islast=(value==gdimx-1);
     }
     __syncthreads();
     if(islast){
-        scalar_t s[VEC]={0};
-        scalar_t t[VEC];
+        T_ACC s[VEC]={0};
+        T_ACC t[VEC];
+        scalar_t t_out[VEC];
         for(int i=tid;i<gdimx;i+=block_size){
-            *(VecTpye*)t=*(VecTpye*)(block_gpu+i*stride+bidy*VEC);
+            *(VecTpyeT*)t=*(VecTpyeT*)(block_gpu+i*stride+bidy*VEC);
             #pragma unroll
             for(int k=0;k<VEC;k++){
                 s[k]+=t[k];
@@ -155,16 +158,16 @@ __global__ void ReduceVEC(scalar_t* data_gpu,scalar_t* block_gpu,int *semaphores
         if(gdimx<=64){
             #pragma unroll
             for(int i=0;i<VEC;i++){
-                s[i]=(scalar_t)WarpReduceSum((T_ACC)s[i]);
+                t_out[i]=WarpReduceSum(s[i]);
             }
         }
         else{
             #pragma unroll
             for(int i=0;i<VEC;i++){
-                s[i]=(scalar_t)BlockReduceSum((T_ACC)s[i],smem);
+                t_out[i]=BlockReduceSum(s[i],smem);
             }
         }
-        if(tid==0)*(VecTpye*)(sum_gpu+bidy*VEC)=*(VecTpye*)s;
+        if(tid==0) *(VecTpyeS*)(sum_gpu+bidy*VEC)=*(VecTpyeS*)t_out;
     }
 }
 
@@ -177,12 +180,13 @@ __global__ void ReduceVEC(scalar_t* data_gpu,scalar_t* block_gpu,int *semaphores
         Tensor semaphores=torch::empty(stride/VEC, options);                                       \
         AT_CUDA_CHECK(cudaMemsetAsync(semaphores.data_ptr(), 0, stride/VEC*sizeof(int), stream));  \
         ReduceVEC<scalar_t,T_ACC,VEC><<<dim3(block_num,stride/VEC),block_size,0,stream>>>          \
-         (data_gpu,(scalar_t*)buffer.data_ptr(),(int*)semaphores.data_ptr(),output_gpu,length,stride);\
+         (data_gpu,(T_ACC*)buffer.data_ptr(),(int*)semaphores.data_ptr(),output_gpu,length,stride);\
     }                                                                                              \
     else {                                                                                         \
         ReduceVEC<scalar_t,T_ACC,VEC><<<dim3(1,stride/VEC),block_size,0,stream>>>                  \
-        (data_gpu,(scalar_t *)NULL,(int*)NULL,output_gpu,length,stride);                              \
+        (data_gpu,(T_ACC *)NULL,(int*)NULL,output_gpu,length,stride);                              \
     }
+
 
 //for example input size is batchsize*sqlen*vlen,output size is vlen
 //stride is vlen, length is batchsize*sqlen*vlen
