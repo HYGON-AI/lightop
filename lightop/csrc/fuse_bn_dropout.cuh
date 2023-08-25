@@ -1,7 +1,6 @@
 #pragma once
 
 #include <THC/THCDeviceUtils.cuh>
-// #include <THC/THCGeneral.h>
 #include <ATen/ATen.h>
 #include <ATen/AccumulateType.h>
 #include <ATen/cuda/CUDAContext.h>
@@ -10,7 +9,6 @@
 #include <ATen/native/cuda/LaunchUtils.h>
 #include <c10/macros/Macros.h>
 
-// #include <ATen/CUDAGeneratorImpl.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/CUDAGraphsUtils.cuh>

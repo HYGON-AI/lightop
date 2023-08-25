@@ -1,7 +1,6 @@
 #pragma once
 
 #include <THC/THCDeviceUtils.cuh>
-// #include <THC/THCGeneral.h>
 #include <ATen/ATen.h>
 #include <ATen/AccumulateType.h>
 #include <ATen/cuda/CUDAContext.h>

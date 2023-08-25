@@ -1,7 +1,6 @@
 #include <ATen/ATen.h>
 #include <ATen/AccumulateType.h>
 #include <ATen/cuda/CUDAApplyUtils.cuh>
-#include <ATen/CUDAGeneratorImpl.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/CUDAGraphsUtils.cuh>
@@ -11,7 +10,6 @@
 #include <ATen/native/cuda/Loops.cuh>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 #include <thrust/pair.h>
-#include <THC/THCGeneral.h>
 #include <torch/extension.h>
 #include <c10/cuda/CUDAMathCompat.h>
 #include <torch/autograd.h>
@@ -107,7 +105,8 @@ __global__ void ReduceVEC(scalar_t* data_gpu,T_ACC* block_gpu,int *semaphores,sc
 {
     __shared__ int islast;
     __shared__ T_ACC smem[REDUCE_BLOCK_SIZE/C10_WARP_SIZE];
-    using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+    using VecTpyeS=memory::aligned_vector<scalar_t, VEC>;
+    using VecTpyeT=memory::aligned_vector<T_ACC, VEC>;
     const int tid=threadIdx.x;
     const int bidx=blockIdx.x;
     const int bidy=blockIdx.y;
@@ -116,26 +115,28 @@ __global__ void ReduceVEC(scalar_t* data_gpu,T_ACC* block_gpu,int *semaphores,sc
     int idx=(bidx*block_size+tid)*stride+bidy*VEC;
     int offset=block_size*gdimx*stride;
     T_ACC block_sum[VEC]={0};
-    T_ACC sum_temp[VEC];
+    scalar_t sum_temp[VEC];
     for(int i=idx;i<length;i+=offset){
-        *(VecTpye*)sum_temp=*(VecTpye*)(data_gpu+i);
+        *(VecTpyeS*)sum_temp=*(VecTpyeS*)(data_gpu+i);
         #pragma unroll
         for(int i=0;i<VEC;i++){
             block_sum[i]+=sum_temp[i];
         }
     }
+    if(semaphores==NULL){
+        #pragma unroll
+        for(int i=0;i<VEC;i++){
+            sum_temp[i]=BlockReduceSum(block_sum[i],smem);
+        }
+        if(tid==0) *(VecTpyeS*)(sum_gpu+bidy*VEC)=*(VecTpyeS*)sum_temp;
+        return;
+    }
     #pragma unroll
     for(int i=0;i<VEC;i++){
         block_sum[i]=BlockReduceSum(block_sum[i],smem);
     }
-    if(semaphores==NULL){
-        if(tid==0){
-            *(VecTpye*)(sum_gpu+bidy*VEC)=*(VecTpye*)block_sum;
-        }
-        return;
-    }
     if(tid==0){
-        *(VecTpye*)(block_gpu+bidx*stride+bidy*VEC)=*(VecTpye*)block_sum;
+        *(VecTpyeT*)(block_gpu+bidx*stride+bidy*VEC)=*(VecTpyeT*)block_sum;
         __threadfence();
         int value=atomicAdd(semaphores+bidy,1);
         islast=(value==gdimx-1);
@@ -144,8 +145,9 @@ __global__ void ReduceVEC(scalar_t* data_gpu,T_ACC* block_gpu,int *semaphores,sc
     if(islast){
         T_ACC s[VEC]={0};
         T_ACC t[VEC];
+        scalar_t t_out[VEC];
         for(int i=tid;i<gdimx;i+=block_size){
-            *(VecTpye*)t=*(VecTpye*)(block_gpu+i*stride+bidy*VEC);
+            *(VecTpyeT*)t=*(VecTpyeT*)(block_gpu+i*stride+bidy*VEC);
             #pragma unroll
             for(int k=0;k<VEC;k++){
                 s[k]+=t[k];
@@ -154,16 +156,16 @@ __global__ void ReduceVEC(scalar_t* data_gpu,T_ACC* block_gpu,int *semaphores,sc
         if(gdimx<=64){
             #pragma unroll
             for(int i=0;i<VEC;i++){
-                s[i]=WarpReduceSum(s[i]);
+                t_out[i]=WarpReduceSum(s[i]);
             }
         }
         else{
             #pragma unroll
             for(int i=0;i<VEC;i++){
-                s[i]=BlockReduceSum(s[i],smem);
+                t_out[i]=BlockReduceSum(s[i],smem);
             }
         }
-        if(tid==0)*(VecTpye*)(sum_gpu+bidy*VEC)=*(VecTpye*)s;
+        if(tid==0) *(VecTpyeS*)(sum_gpu+bidy*VEC)=*(VecTpyeS*)t_out;
     }
 }
 

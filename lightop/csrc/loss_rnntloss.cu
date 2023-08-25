@@ -1,5 +1,4 @@
 #include <THC/THCDeviceUtils.cuh>
-#include <THC/THCGeneral.h>
 #include <ATen/ATen.h>
 #include <ATen/AccumulateType.h>
 #include <ATen/cuda/CUDAContext.h>
@@ -11,7 +10,6 @@
 #include <type_traits>
 #include <numeric>
 #include <ATen/ATen.h>
-#include <ATen/CUDAGeneratorImpl.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/CUDAGraphsUtils.cuh>
