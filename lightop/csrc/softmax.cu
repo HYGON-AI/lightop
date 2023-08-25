@@ -1453,7 +1453,11 @@ struct TORCH_API structured__fused_softmax : public at::impl::MetaBase {
           dim_ >= 0 && dim_ < input_dim,
           "dim must be non-negative and less than input dimensions");
 
-        set_output(input.sizes(), output_options);
+        #ifdef TORCH_VERSION_OVER_110
+	        set_output_raw_strided(0,input.sizes(),{}, output_options);
+	    #else
+	        set_output(input.sizes(), output_options);
+	    #endif
     }
     void impl(const at::Tensor & self, int64_t dim, bool half_to_float, const at::Tensor & out){
         torch_softmax<SoftMaxForwardEpilogue,false>(self, dim, half_to_float, out);
@@ -1492,7 +1496,11 @@ struct TORCH_API structured__fused_softmax_backward : public at::impl::MetaBase 
           dim_ >= 0 && dim_ < grad_dim,
           "dim must be non-negative and less than input dimensions");
 
-      set_output(grad.sizes(), grad_input_options);
+      #ifdef TORCH_VERSION_OVER_110
+	      set_output_raw_strided(0,grad.sizes(),{}, grad_input_options);
+	  #else
+	      set_output(grad.sizes(), grad_input_options);
+	  #endif
     }
     void impl(const at::Tensor & grad_output, const at::Tensor & output, int64_t dim, bool half_to_float, const at::Tensor &grad_input){
         torch_softmax_backward<SoftMaxBackwardEpilogue,false>(grad_output, output, dim, half_to_float, grad_input);          
@@ -1516,7 +1524,11 @@ struct TORCH_API structured__fused_log_softmax_cuda_out : public at::impl::MetaB
             dim_ >= 0 && dim_ < input_dim,
             "dim must be non-negative and less than input dimensions");
 
-        set_output(input.sizes(), output_options);
+        #ifdef TORCH_VERSION_OVER_110
+	        set_output_raw_strided(0,input.sizes(),{}, output_options);
+	    #else
+	        set_output(input.sizes(), output_options);
+	    #endif
     }
     void impl(const at::Tensor & self, int64_t dim, bool half_to_float, const at::Tensor & out){
         torch_softmax<LogSoftMaxForwardEpilogue,true>(self, dim, half_to_float, out);
@@ -1554,7 +1566,11 @@ struct TORCH_API structured__fused_log_softmax_backward_cuda_out : public at::im
           dim_ >= 0 && dim_ < grad_dim,
           "dim must be non-negative and less than input dimensions");
 
-      set_output(grad.sizes(), grad_input_options);
+      #ifdef TORCH_VERSION_OVER_110
+	      set_output_raw_strided(0,grad.sizes(),{}, grad_input_options);
+	  #else
+	      set_output(grad.sizes(), grad_input_options);
+	  #endif
     }
     void impl(const at::Tensor & grad_output, const at::Tensor & output, int64_t dim, bool half_to_float, const at::Tensor &grad_input){
         torch_softmax_backward<LogSoftMaxBackwardEpilogue,true>(grad_output, output, dim, half_to_float, grad_input);          

@@ -529,7 +529,11 @@ struct TORCH_API structured__fused_linear : public at::impl::MetaBase {
         mat1.sizes()[0], "x", mat1.sizes()[1], " and ", mat2.sizes()[0], "x", mat2.sizes()[1], ")");
 
     auto names = at::namedinference::propagate_names_for_addmm(mat1, mat2, self);
-    set_output(0, {mat1.sizes()[0], mat2.sizes()[1]}, {}, self.options(), names);
+    #ifdef TORCH_VERSION_OVER_110
+        set_output_raw_strided(0, {mat1.sizes()[0], mat2.sizes()[1]}, {}, mat1.options(), names);
+    #else
+        set_output(0, {mat1.sizes()[0], mat2.sizes()[1]}, {}, self.options(), names);
+    #endif
     const auto& result = maybe_get_output(0);
     //this check can fire for inplace op only, for all other versions result is guaranteed to be correct size
     TORCH_CHECK(((result.dim() == 2) && (result.sizes()[0] == mat1.sizes()[0]) && (result.sizes()[1] == mat2.sizes()[1])),

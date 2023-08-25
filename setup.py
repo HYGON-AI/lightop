@@ -292,12 +292,17 @@ class BuildReleaseExtension(BuildExtension):
         self.compiler.compile = unix_wrap_ninja_compile
         build_ext.build_extensions(self)
 
+def torch_version_over110():
+    version=torch.__version__.split('.')
+    return int(version[0])*100+int(version[1])>110
 
 def get_extensions():
     extensions = []
     include_dirs = []
     define_macros = []
     extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas']}
+    if torch_version_over110():
+        extra_compile_args.update({'nvcc':['-DTORCH_VERSION_OVER_110']})
     op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + glob.glob('./lightop/csrc/miopen/*.cpp')
     extension = CUDAExtension
     include_dirs.append(os.path.abspath('./lightop/csrc/'))
