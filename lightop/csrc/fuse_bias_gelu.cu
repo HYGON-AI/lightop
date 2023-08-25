@@ -1,6 +1,5 @@
 #include <ATen/ATen.h>
 #include <ATen/AccumulateType.h>
-#include <ATen/CUDAGeneratorImpl.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <c10/cuda/CUDAMathCompat.h>
@@ -8,7 +7,6 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <torch/extension.h>
 #include <ATen/native/cuda/Loops.cuh>
-#include <THC/THCGeneral.h>
 #include <torch/extension.h>
 
 #include "reduce.h"

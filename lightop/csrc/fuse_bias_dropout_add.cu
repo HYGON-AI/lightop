@@ -12,7 +12,6 @@
 #include <ATen/native/cuda/Loops.cuh>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 
-#include <THC/THCGeneral.h>
 #include <torch/extension.h>
 #include "reduce.h"
 using namespace std;

@@ -6,7 +6,6 @@
 #include <c10/util/MaybeOwned.h>
 #include <ATen/AccumulateType.h>
 
-#include <THC/THCGeneral.h>
 #include <torch/extension.h>
 #include <torch/autograd.h>
 
