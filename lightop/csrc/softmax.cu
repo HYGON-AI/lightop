@@ -10,8 +10,6 @@
 #include <ATen/TensorUtils.h>
 #include <ATen/NativeFunctions.h>
 #include <ATen/WrapDimUtils.h>
-#include <THC/THCTensorMathReduce.cuh>
-#include <THC/THCThrustAllocator.cuh>
 #include <c10/macros/Macros.h>
 
 #include <ATen/AccumulateType.h>

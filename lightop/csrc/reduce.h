@@ -1,7 +1,6 @@
 #include <ATen/ATen.h>
 #include <ATen/AccumulateType.h>
 #include <ATen/cuda/CUDAApplyUtils.cuh>
-#include <ATen/CUDAGeneratorImpl.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/CUDAGraphsUtils.cuh>
@@ -11,7 +10,6 @@
 #include <ATen/native/cuda/Loops.cuh>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 #include <thrust/pair.h>
-#include <THC/THCGeneral.h>
 #include <torch/extension.h>
 #include <c10/cuda/CUDAMathCompat.h>
 #include <torch/autograd.h>
@@ -187,7 +185,6 @@ __global__ void ReduceVEC(scalar_t* data_gpu,T_ACC* block_gpu,int *semaphores,sc
         (data_gpu,(T_ACC *)NULL,(int*)NULL,output_gpu,length,stride);                              \
     }
 
-
 //for example input size is batchsize*sqlen*vlen,output size is vlen
 //stride is vlen, length is batchsize*sqlen*vlen
 template <typename scalar_t>
@@ -212,7 +209,6 @@ void bias_reduce_sum(scalar_t* output_gpu, scalar_t* data_gpu,int length,int str
         }
     }
     else{
-      
         const int B =(stride - 1) / kColwiseReduceTileSize + 1;
         col_wise_reduce<<<B, dim3(kColwiseReduceTileSize, kColwiseReduceTileSize), 0, stream>>>(output_gpu,data_gpu,N,stride);
     }

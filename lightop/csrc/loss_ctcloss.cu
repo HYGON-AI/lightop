@@ -1,6 +1,5 @@
 #include <ATen/ATen.h>
 #include <ATen/AccumulateType.h>
-#include <ATen/CUDAGeneratorImpl.h>
 #include <ATen/cuda/CUDAApplyUtils.cuh>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAGraphsUtils.cuh>
@@ -12,7 +11,6 @@
 #include <ATen/native/cuda/Loops.cuh>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 #include <THC/THCDeviceUtils.cuh>
-#include <THC/THCGeneral.h>
 #include <c10/cuda/CUDAMathCompat.h>
 #include <c10/macros/Macros.h>
 #include <numeric>

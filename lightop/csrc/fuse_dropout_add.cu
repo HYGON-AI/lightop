@@ -1,7 +1,6 @@
 #include <ATen/ATen.h>
 #include <ATen/AccumulateType.h>
 #include <ATen/cuda/CUDAApplyUtils.cuh>
-#include <ATen/CUDAGeneratorImpl.h>
 #include <ATen/cuda/detail/IndexUtils.cuh>
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/cuda/CUDAGraphsUtils.cuh>
@@ -12,7 +11,6 @@
 #include <ATen/native/cuda/Loops.cuh>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 
-#include <THC/THCGeneral.h>
 #include <torch/extension.h>
 
 using namespace std;
