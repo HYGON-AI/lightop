@@ -31,6 +31,9 @@ class FuseSoftmax(torch.nn.Module):
             self.dim = _get_softmax_dim("softmax", input.dim(), 5)
         return op.softmax_forward_autograd(input, self.dim, self.half_to_float)
 
+    def extra_repr(self) :
+        return 'half_to_float={}, dim={}'.format(self.half_to_float, self.dim)
+
 class FuseSoftmax2d(torch.nn.Module):
     r"""Applies SoftMax over features to each spatial location.
 
@@ -59,6 +62,9 @@ class FuseSoftmax2d(torch.nn.Module):
     def forward(self, input, **kargs):
         assert input.dim() == 4 or input.dim() == 3, 'FuseSoftmax2d requires a 3D or 4D tensor as input'
         return op.softmax_forward_autograd(input, -3, self.half_to_float)
+    
+    def extra_repr(self) :
+        return 'half_to_float={}, dim={}'.format(self.half_to_float, self.dim)
 
 class FuseLogSoftmax(torch.nn.Module):
     dim: Optional[int]
@@ -67,8 +73,10 @@ class FuseLogSoftmax(torch.nn.Module):
         self.half_to_float = half_to_float
         self.dim = dim
     
-
     def forward(self, input, **kargs):
         if self.dim is None:
             self.dim = _get_softmax_dim("softmax", input.dim(), 5)
         return op.logsoftmax_forward_autograd(input, self.dim, self.half_to_float)
+
+    def extra_repr(self) :
+        return 'half_to_float={}, dim={}'.format(self.half_to_float, self.dim)

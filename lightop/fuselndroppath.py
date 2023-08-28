@@ -17,3 +17,5 @@ class LnDropPath(torch.nn.Module):
     def forward(self, x):
         return op.layernorm_droppath_forward_autograd(x, self.weight,self.bias,self.eps, self.keep_prob, self.scale_by_keep, self.training)
 
+    def extra_repr(self):
+        return f'keep_prob={round(self.keep_prob,3):0.3f},eps={round(self.eps,5):0.5f},scale_by_keep={self.scale_by_keep}'
