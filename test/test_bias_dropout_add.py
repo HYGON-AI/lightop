@@ -4,16 +4,24 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from lightop.fusebiasdropoutadd import FuseBiasDropoutAdd
 
-def rerr(x1, x2):
-        return ((x1.float() - x2.float()) / (x1.float() + x2.float() + 1e-6)).abs().max()
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
-def test_speed(name, seq_len, bsz, dim, n, f1,f2):
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+
+def get_data(batchsize=128, seqs=50, cols=128,use_half=False):
 
     torch.manual_seed(0)
-    bias = torch.rand(dim).cuda()
-    x = torch.rand((seq_len, bsz, dim)).cuda()
-    grad = torch.rand((seq_len, bsz, dim)).cuda()
-    residual = torch.rand((seq_len, bsz, dim)).cuda()
+    if use_half:
+        bias = torch.rand(cols).cuda().half()
+        x = torch.rand((batchsize, seqs, cols)).cuda().half()
+        grad = torch.rand((batchsize, seqs, cols)).cuda().half()
+        residual = torch.rand((batchsize, seqs, cols)).cuda().half()
+    else:
+        bias = torch.rand(cols).cuda()
+        x = torch.rand((batchsize, seqs, cols)).cuda()
+        grad = torch.rand((batchsize, seqs, cols)).cuda()
+        residual = torch.rand((batchsize, seqs, cols)).cuda()
+
     bias.requires_grad_(True)
     x.requires_grad_(True)
     residual.requires_grad_(True)
@@ -23,19 +31,28 @@ def test_speed(name, seq_len, bsz, dim, n, f1,f2):
     bias2=bias.clone().detach().requires_grad_()
     residual1=residual.clone().detach().requires_grad_()
     residual2=residual.clone().detach().requires_grad_()
-    for i in range(10):
-        torch.manual_seed(0)
-        bias1.grad = None
-        x1.grad = None
-        residual1.grad = None
-        y1 = f1(x1, bias1,residual1)
-        y1.backward(grad)
-        torch.cuda.synchronize()
+    return x1,x2,bias1,bias2,residual1,residual2,grad
+
+def get_model(dropout_p=0.5,use_half=False):
+
+    if use_half:
+        fuse_bias_dropout_add=FuseBiasDropoutAdd(droprate=dropout_p).cuda().half()
+        torch_bias_dropout_add=lambda x, b, r: (F.dropout(x + b, dropout_p) + r).half()
+    else:
+        fuse_bias_dropout_add=FuseBiasDropoutAdd(droprate=dropout_p).cuda()
+        torch_bias_dropout_add=lambda x, b, r: F.dropout(x + b, dropout_p) + r
+        
+    return torch_bias_dropout_add,fuse_bias_dropout_add
+
+
+def test_profile(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
+    
+    x1,x2,bias1,bias2,residual1,residual2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
+    f1,f2=get_model(dropout_p,use_half=use_half)
 
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                      profile_memory=False) as prof1:
-        start_time = time.time()
-        for i in range(n):
+        for i in range(repeat_num):
             torch.manual_seed(0)
             bias1.grad = None
             x1.grad = None
@@ -43,23 +60,11 @@ def test_speed(name, seq_len, bsz, dim, n, f1,f2):
             y1 = f1(x1, bias1,residual1)
             y1.backward(grad)
             torch.cuda.synchronize()
-        end_time = time.time()
-        fc1_espl = end_time - start_time
-        print('torch_bias_dropout_add', 'averange time is', fc1_espl *1000/ n, 'ms')
     prof1.export_chrome_trace('./profile_torch_bias_dropout_add.json')
     
-    for i in range(10):
-        torch.manual_seed(0)
-        bias2.grad = None
-        x2.grad = None
-        residual2.grad = None
-        y2 = f2(x2, bias2,residual2)
-        y2.backward(grad)
-        torch.cuda.synchronize()
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                      profile_memory=False) as prof2:
-        start_time = time.time()
-        for i in range(n):
+        for i in range(repeat_num):
             torch.manual_seed(0)
             bias2.grad = None
             x2.grad = None
@@ -67,15 +72,55 @@ def test_speed(name, seq_len, bsz, dim, n, f1,f2):
             y2 = f2(x2, bias2,residual2)
             y2.backward(grad)
             torch.cuda.synchronize()
-        end_time = time.time()    
-        fc2_espl = end_time - start_time
-        print('fuse_bias_dropout_add', 'averange time is', fc2_espl *1000/ n, 'ms')
     prof2.export_chrome_trace('./profile_bias_dropout_add.json')  
-    #相对误差
-    print( f"error max: bias.grad: {rerr(y1, y2)}")
-    print( f"error max: bias.grad: {rerr(x1.grad, x2.grad)}")
-    print( f"error max: bias.grad: {rerr(bias1.grad, bias2.grad)}")
- 
 
-fuse_bias_dropout_add=FuseBiasDropoutAdd(droprate=0.4).cuda()
-test_speed('bias_dropout_add', 2048, 16, 1024, 1000,lambda x, b, r: F.dropout(x + b, 0.4) + r ,fuse_bias_dropout_add)
+def test_speed(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
+
+    x1,x2,bias1,bias2,residual1,residual2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
+    f1,f2=get_model(dropout_p,use_half=use_half)
+
+    start_time = time.time()
+    for i in range(repeat_num):
+        torch.manual_seed(0)
+        bias1.grad = None
+        x1.grad = None
+        residual1.grad = None
+        y1 = f1(x1, bias1,residual1)
+        y1.backward(grad)
+        torch.cuda.synchronize()
+    end_time = time.time()
+    fc1_espl = end_time - start_time
+    print('torch_bias_dropout_add', 'averange time is', fc1_espl *1000/ repeat_num, 'ms')
+    
+    start_time = time.time()
+    for i in range(repeat_num):
+        torch.manual_seed(0)
+        bias2.grad = None
+        x2.grad = None
+        residual2.grad = None
+        y2 = f2(x2, bias2,residual2)
+        y2.backward(grad)
+        torch.cuda.synchronize()
+    end_time = time.time()    
+    fc2_espl = end_time - start_time
+    print('fuse_bias_dropout_add', 'averange time is', fc2_espl *1000/ repeat_num, 'ms')
+
+    #误差计算
+    if use_half:
+        print(allclose(y1,y2,rtol=2e-02, atol=2e-02))
+        print(allclose(x1.grad,x2.grad,rtol=2e-02, atol=2e-02))
+        print(allclose(bias1.grad,bias2.grad,rtol=2e-02, atol=2e-02))
+    else:
+        print(allclose(y1,y2,rtol=1e-05, atol=1e-05))
+        print(allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05))
+        print(allclose(bias1.grad,bias2.grad,rtol=1e-05, atol=1e-05))
+    
+if __name__ == "__main__":
+
+    #设置基础参数
+    batchsize, seqs, cols = 128, 200, 256
+    dropout_p=0.4
+    #耗时测试
+    test_speed(batchsize, seqs, cols,dropout_p,repeat_num=1000,use_half=False)
+    #性能分析
+    #test_profile(batchsize, seqs, cols,dropout_p,repeat_num=100,use_half=False)
