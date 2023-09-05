@@ -44,6 +44,8 @@ void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
 void destroy_gemmdbias_handle();
 
+std::tuple <Tensor, Tensor> fuse_lnrmsnorms_add_drop_forward_autograd(const Tensor &x,const Tensor &weight,const Tensor &bias, int normalized_shape,double normalized_eps, bool normalized_affine, const Tensor &residual, double drop_prob, int norm_type_enum, int bias_type_enum, int drop_type_enum, bool training);
+
 }
 }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -83,4 +85,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("FusedBiasSwiGLU_backward", &at::native::FusedBiasSwiGLU_backward_gpu, "fused bias SwiGLU backward for gpu");
   m.def("bias_dropout_add_forward", &at::native::fuse_bias_dropout_add_forward, "fuse_bias_dropout_add forward");
   m.def("bias_dropout_add_backward", &at::native::fuse_bias_dropout_add_backward, "fuse_bias_dropout_add backward");
+  m.def("lnrmsnorms_add_drop_forward_autograd", &at::native::fuse_lnrmsnorms_add_drop_forward_autograd, "lnRmsNorms_add_drops forward and backward for norms add drop");
 }
