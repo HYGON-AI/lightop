@@ -117,7 +117,7 @@ void cuda_ln_rms_norm_add_drops(int norm_type_enum, int bias_type_enum, int drop
     bool using_norm = norm_type_enum > 0;
     bool rms_only = norm_type_enum == 2;
     bool using_bias = bias_type_enum > 0;
-    bool using_drop = drop_type_enum > 0 and is_training;
+    bool using_drop = (drop_type_enum > 0) && is_training && (drop_prob>0);
     bool using_bias_drop = using_bias || using_drop;
 
     using namespace at;
@@ -263,7 +263,7 @@ void cuda_ln_rms_norm_add_drops_gradient(int norm_type_enum, int bias_type_enum,
     bool using_norm = norm_type_enum > 0;
     bool rms_only = norm_type_enum == 2;
     bool using_bias = bias_type_enum > 0;
-    bool using_drop = drop_type_enum > 0 and is_training;
+    bool using_drop = (drop_type_enum > 0) && is_training && (drop_prob>0);
     bool using_bias_drop = using_bias || using_drop;
 
     using namespace at;
@@ -324,7 +324,7 @@ std::vector <at::Tensor> lnRmsNorms_add_drops_forward(
      * */
     bool using_norm = norm_type_enum > 0;
     bool using_bias = bias_type_enum > 0;
-    bool using_drop = drop_type_enum > 0 and is_training;
+    bool using_drop = (drop_type_enum > 0) && is_training && (drop_prob>0);
     bool using_bias_drop = using_bias || using_drop;
 
     int runing_type_enum;
