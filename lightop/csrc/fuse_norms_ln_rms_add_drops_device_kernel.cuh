@@ -911,10 +911,10 @@ __device__ void cuApplyAddDrops_(   // dropmask !=nullptr
 
         float4 rand;
         rand = curand_uniform4(&state);
-        rand.x = rand.x < drop_keep_rate;
-        rand.y = rand.y < drop_keep_rate;
-        rand.z = rand.z < drop_keep_rate;
-        rand.w = rand.w < drop_keep_rate;
+        rand.x = rand.x <= drop_keep_rate;
+        rand.y = rand.y <= drop_keep_rate;
+        rand.z = rand.z <= drop_keep_rate;
+        rand.w = rand.w <= drop_keep_rate;
 
         for (int k = 0; k < 4; ++k) {
             data_drop_mask.val[k] = (uint8_t)(&rand.x)[k];
@@ -931,10 +931,10 @@ __device__ void cuApplyAddDrops_(   // dropmask !=nullptr
     for (int l_last = l * VEC; l_last < n2; ++l_last) {
         float4 rand;
         rand = curand_uniform4(&state);
-        rand.x = rand.x < drop_keep_rate;
-        rand.y = rand.y < drop_keep_rate;
-        rand.z = rand.z < drop_keep_rate;
-        rand.w = rand.w < drop_keep_rate;
+        rand.x = rand.x <= drop_keep_rate;
+        rand.y = rand.y <= drop_keep_rate;
+        rand.z = rand.z <= drop_keep_rate;
+        rand.w = rand.w <= drop_keep_rate;
 
         int simple_idx = l_last - l * VEC;  // assert simple_idx dur 0~3
         drop_mask_row[l_last] = (uint8_t)(&rand.x)[simple_idx];
