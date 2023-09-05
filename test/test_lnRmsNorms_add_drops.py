@@ -442,8 +442,8 @@ def test_speed_rms_add_drop(is_training=True):
     else:
         fuse_rms.eval()
 
-    op1, op1_name = apex_rms, 'apex_rms'
-    op2, op2_name = fuse_rms, 'fuse_rms'
+    op1, op1_name = apex_rms, 'apex_rms+add+dropout'
+    op2, op2_name = fuse_rms, 'fuse_rms_add_dropout'
     # #################################
     for i in range(10):
         out1 = op1(F.dropout(x1, p=droprate, training=is_training) + y1)
@@ -549,14 +549,14 @@ def test_speed_rms_add_drop_by_profiler(is_training=True):
             out1 = apex_rms(F.dropout(x1, p=droprate, training=is_training) + y1)
             out1.backward(grad)
             time.sleep(0.01)
-    prof.export_chrome_trace('{}/origin_rms_add_drop_profile.json'.format(dst_dir))
+    prof.export_chrome_trace('{}/rms_add_drop_profile_origin.json'.format(dst_dir))
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                          profile_memory=False) as prof2:
         for _ in range(10):
             out2 = fuse_rms(x2, y2)
             out2.backward(grad)
             time.sleep(0.01)
-    prof2.export_chrome_trace('{}/fuse_rms_add_drop_profile.json'.format(dst_dir))
+    prof2.export_chrome_trace('{}/rms_add_drop_profile_fuse.json'.format(dst_dir))
 
 
 def test_speed_ln_add_drop_by_profiler(is_training=True):
@@ -590,21 +590,21 @@ def test_speed_ln_add_drop_by_profiler(is_training=True):
             out1 = torch_ln(F.dropout(x1, p=droprate, training=is_training) + y1)
             out1.backward(grad)
             time.sleep(0.01)
-    prof.export_chrome_trace('{}/torch_ln_add_drop_profile.json'.format(dst_dir))
+    prof.export_chrome_trace('{}/ln_add_drop_profile_torch.json'.format(dst_dir))
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                          profile_memory=False) as prof2:
         for _ in range(10):
             out2 = fuselndropout(x2, y2)
             out2.backward(grad)
             time.sleep(0.01)
-    prof2.export_chrome_trace('{}/old_fuse_rms_add_drop_profile.json'.format(dst_dir))
+    prof2.export_chrome_trace('{}/ln_add_drop_profile_old_fuse.json'.format(dst_dir))
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                          profile_memory=False) as prof2:
         for _ in range(10):
             out2 = fuse_rms(x2, y2)
             out2.backward(grad)
             time.sleep(0.01)
-    prof2.export_chrome_trace('{}/new_fuse_rms_add_drop_profile.json'.format(dst_dir))
+    prof2.export_chrome_trace('{}/ln_add_drop_profile_new_fuse.json'.format(dst_dir))
 
 
 def main():
