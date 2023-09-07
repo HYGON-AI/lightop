@@ -5,57 +5,112 @@ import torch.nn.functional as F
 from lightop.layernorm import LayerNorm
 
 
-cols=132
-seqs=100
-batchsize=128
-device = torch.device('cuda')
-torch.manual_seed(0)
-x0=torch.rand([batchsize, seqs, cols]).cuda()
-grad=torch.rand([batchsize, seqs, cols]).cuda()
+class Torch_Layernorm(torch.nn.Module):
+
+    def __init__(self,cols):
+        super(Torch_Layernorm, self).__init__()
+        self.cols = cols
+        self.LayerNorm = torch.nn.LayerNorm(cols)
+   
+    def forward(self,x):
+        out=self.LayerNorm(x)
+        return out
 
 
-fuseln = LayerNorm(cols).to(device)
-ln=torch.nn.LayerNorm(cols).to(device)
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
-x1=x0.clone().detach().requires_grad_()
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+
+def get_data(batchsize=128, seqs=50, cols=128,use_half=False):
+
+    if use_half:
+        x = torch.rand((batchsize, seqs, cols)).cuda().half()
+        grad = torch.rand((batchsize, seqs, cols)).cuda().half()
+    else:
+        x = torch.rand((batchsize, seqs, cols)).cuda()
+        grad = torch.rand((batchsize, seqs, cols)).cuda()
+
+    x.requires_grad_(True)
+    x1=x.clone().detach().requires_grad_()
+    x2=x.clone().detach().requires_grad_()
+    return x1,x2,grad
+
+def get_model(cols=128,use_half=False):
+
+    if use_half:
+        fuse_layernorm=LayerNorm(cols).cuda().half()
+        torch_layernorm=Torch_Layernorm(cols).cuda().half()
+    else:
+        fuse_layernorm=LayerNorm(cols).cuda()
+        torch_layernorm=Torch_Layernorm(cols).cuda()
+        
+    return torch_layernorm,fuse_layernorm
 
 
-for i in range(10):
-    out1=ln(x1)
-    out1.backward(grad)
-    torch.cuda.synchronize()
-with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+def test_profile(batchsize, seqs, cols,repeat_num,use_half=False):
+    
+    x1,x2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
+    f1,f2=get_model(cols=cols,use_half=use_half)
+
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                      profile_memory=False) as prof1:
-    start_time = time.time()
-    for i in range(1000):
-        out1=ln(x1)
-        out1.backward(grad)
-        torch.cuda.synchronize()
-    end_time = time.time()
-    print("torch time is ", end_time - start_time)
-prof1.export_chrome_trace('./profile1.json')
-
-x2=x0.clone().detach().requires_grad_()
-
-for i in range(10):
-    out2=fuseln(x2)
-    out2.backward(grad)
-    torch.cuda.synchronize()
-
-with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+        for i in range(repeat_num):
+            x1.grad = None
+            y1 = f1(x1)
+            y1.backward(grad)
+            torch.cuda.synchronize()
+    prof1.export_chrome_trace('./profile_torch_layernorm.json')
+    
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                      profile_memory=False) as prof2:
+        for i in range(repeat_num):
+            x2.grad = None
+            y2 = f2(x2)
+            y2.backward(grad)
+            torch.cuda.synchronize()
+    prof2.export_chrome_trace('./profile_fuse_layernorm.json')  
+
+def test_speed(batchsize, seqs, cols,repeat_num,use_half=False):
+
+    x1,x2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
+    f1,f2=get_model(cols=cols,use_half=use_half)
     start_time = time.time()
-    for i in range(1000):
-        out2=fuseln(x2)
-        out2.backward(grad)
+    for i in range(repeat_num):
+        x1.grad = None
+        y1 = f1(x1)
+        y1.backward(grad)
         torch.cuda.synchronize()
     end_time = time.time()
-    print("fuse time is ", end_time - start_time)
-prof2.export_chrome_trace('./profile2.json')
+    fc1_espl = end_time - start_time
+    print('torch_layernorm', 'averange time is', fc1_espl *1000/ repeat_num, 'ms')
+    
+    start_time = time.time()
+    for i in range(repeat_num):
+        x2.grad = None
+        y2 = f2(x2)
+        y2.backward(grad)
+        torch.cuda.synchronize()
+    end_time = time.time()    
+    fc2_espl = end_time - start_time
+    print('fuse_layernorm', 'averange time is', fc2_espl *1000/ repeat_num, 'ms')
 
+    #误差计算
+    if use_half:
+        print(allclose(y1,y2,rtol=2e-02, atol=2e-02))
+        print(allclose(x1.grad,x2.grad,rtol=2e-02, atol=2e-02))
+        print(allclose(f1.LayerNorm.weight.grad,f2.weight.grad,rtol=2e-02, atol=2e-02))
+        print(allclose(f1.LayerNorm.bias.grad,f2.bias.grad,rtol=2e-02, atol=2e-02))
+    else:
+        print(allclose(y1,y2,rtol=1e-05, atol=1e-05))
+        print(allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05))
+        print(allclose(f1.LayerNorm.weight.grad,f2.weight.grad,rtol=1e-04, atol=1e-04))
+        print(allclose(f1.LayerNorm.bias.grad,f2.bias.grad,rtol=1e-04, atol=1e-04))
+    
+if __name__ == "__main__":
 
-print(out1.equal(out2))
-print(x1.grad.equal(x2.grad))
-print(ln.weight.grad.equal(fuseln.weight.grad))
-print(ln.bias.grad.equal(fuseln.bias.grad))
-
+    #设置基础参数
+    batchsize, seqs, cols = 128, 100, 512
+    #耗时测试
+    test_speed(batchsize, seqs, cols,repeat_num=1000,use_half=False)
+    #性能分析
+    test_profile(batchsize, seqs, cols,repeat_num=100,use_half=False)

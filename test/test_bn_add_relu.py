@@ -1,113 +1,195 @@
 import torch
-
+import time
+import os
 from lightop.fusebnaddrelu import FuseBatchNormAddRelu1d
 from lightop.fusebnaddrelu import FuseBatchNormAddRelu2d
 from lightop.fusebnaddrelu import FuseBatchNormAddRelu3d
 
-def test_1d():
-  torch.backends.cudnn.enabled=False
-  x=torch.arange(48, dtype=torch.float32).reshape((2,24)).cuda().requires_grad_()
-  y=torch.arange(48, dtype=torch.float32).reshape((2,24)).cuda().requires_grad_()
-  bn = torch.nn.BatchNorm1d(x.size(1)).cuda()
-  out = bn(x)
-  out = torch.add(out, y)
-  relu = torch.nn.ReLU().cuda()
-  out = relu(out)
-  out = torch.add(out, 10)
-  out.backward(out)
-  #print(out)
-  #print(x.grad)
-  #print(y.grad)
-  #print(bn.weight.grad)
-  #print(bn.bias.grad)
 
-  fuse_x=torch.arange(48, dtype=torch.float32).reshape((2,24)).cuda().requires_grad_()
-  fuse_y=torch.arange(48, dtype=torch.float32).reshape((2,24)).cuda().requires_grad_()
-  fuse_bn = FuseBatchNormAddRelu1d(fuse_x.size(1)).cuda()
-  fuse_out=fuse_bn(fuse_x, fuse_y)
-  fuse_out = torch.add(fuse_out, 10)
-  fuse_out.backward(fuse_out)
-  #print(fuse_out)
-  #print(fuse_x.grad)
-  #print(fuse_y.grad)
-  #print(fuse_bn.weight.grad)
-  #print(fuse_bn.bias.grad)
+class torch_bn1d_add_relu(torch.nn.Module):
 
-  if (out.equal(fuse_out) and x.grad.equal(fuse_x.grad) and bn.weight.grad.equal(fuse_bn.weight.grad) and bn.bias.grad.equal(fuse_bn.bias.grad)): # and y.grad.equal(fuse_y.grad):
-    print("test_1d:TRUE")
-  else:
-    print("test_1d:", out.equal(fuse_out), x.grad.equal(fuse_x.grad), bn.weight.grad.equal(fuse_bn.weight.grad),  bn.bias.grad.equal(fuse_bn.bias.grad))#, y.grad.equal(fuse_y.grad))
+    def __init__(self,channel):
+        super(torch_bn1d_add_relu, self).__init__()
+        self.channel = channel
+        self.BatchNorm = torch.nn.BatchNorm1d(channel)
+        self.Relu =  torch.nn.ReLU()
+
+    def forward(self,x,residual):
+        out=self.BatchNorm(x)
+        out=out+residual
+        out=self.Relu(out)
+        return out
+
+class torch_bn2d_add_relu(torch.nn.Module):
+
+    def __init__(self,channel):
+        super(torch_bn2d_add_relu, self).__init__()
+        self.channel = channel
+        self.BatchNorm = torch.nn.BatchNorm2d(channel)
+        self.Relu =  torch.nn.ReLU()
+
+    def forward(self,x,residual):
+        out=self.BatchNorm(x)
+        out=out+residual
+        out=self.Relu(out)
+        return out
+     
+
+class torch_bn3d_add_relu(torch.nn.Module):
+
+    def __init__(self,channel):
+        super(torch_bn3d_add_relu, self).__init__()
+        self.channel = channel
+        self.BatchNorm = torch.nn.BatchNorm3d(channel)
+        self.Relu =  torch.nn.ReLU()
+
+    def forward(self,x,residual):
+        out=self.BatchNorm(x)
+        out=out+residual
+        out=self.Relu(out)
+        return out
+
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+
+def get_data(batchsize=2, channel=3,depth=3, cols=8,rows=8,d_num=3,use_half=False):
+
+    if use_half:
+        if d_num==1 :
+            x = torch.rand((batchsize,channel)).cuda().half()
+            residual = torch.rand((batchsize,channel)).cuda().half()
+            grad = torch.rand((batchsize, channel)).cuda().half()
+        elif d_num==2 :
+            x = torch.rand((batchsize, channel, cols,rows)).cuda().half()
+            residual = torch.rand((batchsize, channel, cols,rows)).cuda().half()
+            grad = torch.rand((batchsize, channel, cols,rows)).cuda().half()
+        else:
+            x = torch.rand((batchsize, channel, depth,cols,rows)).cuda().half()
+            residual = torch.rand((batchsize, channel,depth, cols,rows)).cuda().half()
+            grad = torch.rand((batchsize, channel,depth, cols,rows)).cuda().half()
+    else:
+        if d_num==1 :
+            x = torch.rand((batchsize,channel)).cuda()
+            residual = torch.rand((batchsize,channel)).cuda()
+            grad = torch.rand((batchsize, channel)).cuda()
+        elif d_num==2 :
+            x = torch.rand((batchsize, channel, cols,rows)).cuda()
+            residual = torch.rand((batchsize, channel, cols,rows)).cuda()
+            grad = torch.rand((batchsize, channel, cols,rows)).cuda()
+        else:
+            x = torch.rand((batchsize, channel,depth, cols,rows)).cuda()
+            residual = torch.rand((batchsize, channel,depth, cols,rows)).cuda()
+            grad = torch.rand((batchsize, channel,depth, cols,rows)).cuda()
+ 
+    x.requires_grad_(True)
+    residual.requires_grad_(True)
+    x1=x.clone().detach().requires_grad_()
+    x2=x.clone().detach().requires_grad_()
+    residual1=residual.clone().detach().requires_grad_()
+    residual2=residual.clone().detach().requires_grad_()
+    return x1,x2,residual1,residual2,grad
+
+def get_model(channel=1,d_num=3,use_half=False):
+
+    if use_half:
+        if d_num==1 :
+            fuse_bn_add_relu=FuseBatchNormAddRelu1d(channel).cuda().half()
+            torch_bn_add_relu=torch_bn1d_add_relu(channel).cuda().half()
+     
+        elif d_num==2 :
+            fuse_bn_add_relu=FuseBatchNormAddRelu2d(channel).cuda().half()
+            torch_bn_add_relu=torch_bn2d_add_relu(channel).cuda().half()
+
+        else:
+            fuse_bn_add_relu=FuseBatchNormAddRelu3d(channel).cuda().half()
+            torch_bn_add_relu=torch_bn3d_add_relu(channel).cuda().half()
+    else:
+        if d_num==1 :
+            fuse_bn_add_relu=FuseBatchNormAddRelu1d(channel).cuda()
+            torch_bn_add_relu=torch_bn1d_add_relu(channel).cuda()
+        elif d_num==2 :
+            fuse_bn_add_relu=FuseBatchNormAddRelu2d(channel).cuda()
+            torch_bn_add_relu=torch_bn2d_add_relu(channel).cuda()
+        else:
+            fuse_bn_add_relu=FuseBatchNormAddRelu3d(channel).cuda()
+            torch_bn_add_relu=torch_bn3d_add_relu(channel).cuda()
+    return torch_bn_add_relu,fuse_bn_add_relu
 
 
-def test_2d():
-  torch.backends.cudnn.enabled=False
-  x=torch.arange(384, dtype=torch.float32).reshape((2,3,8,8)).cuda().requires_grad_()
-  y=torch.arange(384, dtype=torch.float32).reshape((2,3,8,8)).cuda().requires_grad_()
-  bn = torch.nn.BatchNorm2d(x.size(1)).cuda()
-  out = bn(x)
-  out = torch.add(out, y)
-  relu = torch.nn.ReLU().cuda()
-  out = relu(out)
-  out = torch.add(out, 10)
-  out.backward(out)
-  #print(out)
-  #print(x.grad)
-  #print(y.grad)
-  #print(bn.weight.grad)
-  #print(bn.bias.grad)
-  
-  fuse_x=torch.arange(384, dtype=torch.float32).reshape((2,3,8,8)).cuda().requires_grad_()
-  fuse_y=torch.arange(384, dtype=torch.float32).reshape((2,3,8,8)).cuda().requires_grad_()
-  fuse_bn = FuseBatchNormAddRelu2d(fuse_x.size(1)).cuda()
-  fuse_out=fuse_bn(fuse_x, fuse_y)
-  fuse_out = torch.add(fuse_out, 10)
-  fuse_out.backward(fuse_out) 
-  #print(fuse_out)
-  #print(fuse_x.grad)
-  #print(fuse_y.grad)
-  #print(fuse_bn.weight.grad)
-  #print(fuse_bn.bias.grad)
-  
-  if (out.equal(fuse_out) and x.grad.equal(fuse_x.grad) and bn.weight.grad.equal(fuse_bn.weight.grad) and bn.bias.grad.equal(fuse_bn.bias.grad)):# and y.grad.equal(fuse_y.grad):
-    print("test_2d:TRUE")
-  else:
-    print("test_2d:", out.equal(fuse_out), x.grad.equal(fuse_x.grad), bn.weight.grad.equal(fuse_bn.weight.grad),  bn.bias.grad.equal(fuse_bn.bias.grad))#, y.grad.equal(fuse_y.grad))
-  
-def test_3d():
-  torch.backends.cudnn.enabled=False
-  x=torch.arange(1152, dtype=torch.float32).reshape((2,3,3,8,8)).cuda().requires_grad_()
-  y=torch.arange(1152, dtype=torch.float32).reshape((2,3,3,8,8)).cuda().requires_grad_()
-  bn = torch.nn.BatchNorm3d(x.size(1)).cuda()
-  out = bn(x)
-  out = torch.add(out, y)
-  relu = torch.nn.ReLU().cuda()
-  out = relu(out)
-  out = torch.add(out, 10)
-  out.backward(out)
-  #print(out)
-  #print(x.grad)
-  #print(y.grad)
-  #print(bn.weight.grad)
-  #print(bn.bias.grad)
+def test_profile(batchsize,channel,depth, cols,rows,repeat_num,d_num,use_half=False):
+    
+    x1,x2,residual1,residual2,grad=get_data(batchsize, channel,depth, cols,rows,d_num=d_num,use_half=use_half)
+    f1,f2=get_model(channel=channel,d_num=d_num,use_half=use_half)
 
-  fuse_x=torch.arange(1152, dtype=torch.float32).reshape((2,3,3,8,8)).cuda().requires_grad_()
-  fuse_y=torch.arange(1152, dtype=torch.float32).reshape((2,3,3,8,8)).cuda().requires_grad_()
-  fuse_bn = FuseBatchNormAddRelu3d(fuse_x.size(1)).cuda()
-  fuse_out=fuse_bn(fuse_x, fuse_y)
-  fuse_out = torch.add(fuse_out, 10)
-  fuse_out.backward(fuse_out)
-  #print(fuse_out)
-  #print(fuse_x.grad)
-  #print(fuse_y.grad)
-  #print(fuse_bn.weight.grad)
-  #print(fuse_bn.bias.grad)
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+                                     profile_memory=False) as prof1:
+        for i in range(repeat_num):
+            x1.grad = None
+            residual1.grad = None
+            y1 = f1(x1, residual1)
+            y1.backward(grad)
+            torch.cuda.synchronize()
+    prof1.export_chrome_trace('./profile_torch_bn_add_relu.json')
+    
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+                                     profile_memory=False) as prof2:
+        for i in range(repeat_num):
+            x2.grad = None
+            residual2.grad = None
+            y2 = f2(x2, residual2)
+            y2.backward(grad)
+            torch.cuda.synchronize()
+    prof2.export_chrome_trace('./profile_fuse_bn_add_relu.json')  
 
-  if (out.equal(fuse_out) and x.grad.equal(fuse_x.grad) and bn.weight.grad.equal(fuse_bn.weight.grad) and bn.bias.grad.equal(fuse_bn.bias.grad)):# and y.grad.equal(fuse_y.grad):
-    print("test_3d:TRUE")
-  else:
-    print("test_3d:", out.equal(fuse_out), x.grad.equal(fuse_x.grad), bn.weight.grad.equal(fuse_bn.weight.grad),  bn.bias.grad.equal(fuse_bn.bias.grad))#, y.grad.equal(fuse_y.grad))
+def test_speed(batchsize,channel,depth, cols,rows,repeat_num,d_num,use_half=False):
 
+    x1,x2,residual1,residual2,grad=get_data(batchsize, channel,depth, cols,rows,d_num=d_num,use_half=use_half)
+    f1,f2=get_model(channel=channel,d_num=d_num,use_half=use_half)
+
+    start_time = time.time()
+    for i in range(repeat_num):
+        x1.grad = None
+        residual1.grad = None
+        y1 = f1(x1, residual1)
+        y1.backward(grad)
+        torch.cuda.synchronize()
+    end_time = time.time()
+    fc1_espl = end_time - start_time
+    print('torch_bn_add_relu', 'averange time is', fc1_espl *1000/ repeat_num, 'ms')
+    
+    start_time = time.time()
+    for i in range(repeat_num):
+        x2.grad = None
+        residual2.grad = None
+        y2 = f2(x2, residual2)
+        y2.backward(grad)
+        torch.cuda.synchronize()
+    end_time = time.time()    
+    fc2_espl = end_time - start_time
+    print('fuse_bn_add_relu', 'averange time is', fc2_espl *1000/ repeat_num, 'ms')
+    #误差计算
+    if use_half:
+        print(allclose(y1,y2,rtol=2e-02, atol=2e-02))
+        print(allclose(x1.grad,x2.grad,rtol=2e-02, atol=2e-02))
+        print(allclose(f1.BatchNorm.weight.grad,f2.weight.grad,rtol=2e-02, atol=2e-02))
+        print(allclose(f1.BatchNorm.bias.grad,f2.bias.grad,rtol=2e-02, atol=2e-02))
+        
+    else:
+        print(allclose(y1,y2,rtol=1e-05, atol=1e-05))
+        print(allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05))
+        print(allclose(f1.BatchNorm.weight.grad,f2.weight.grad,rtol=1e-05, atol=1e-05))
+        print(allclose(f1.BatchNorm.bias.grad,f2.bias.grad,rtol=1e-05, atol=1e-05))
+    
 if __name__ == "__main__":
-  test_1d()
-  test_2d()
-  test_3d()
+
+    #设置基础参数
+    batchsize, channel,depth, cols,rows = 2,3,0,8,8
+    #输入维度，batchnorm1d(batchsize, channel) 1;batchnorm2d(batchsize, channel,cols,rows)：2，
+    # batchnorm3d(batchsize, channel,depth, cols,rows)：3
+    d_num=2
+    #耗时测试
+    test_speed(batchsize, channel,depth, cols,rows,repeat_num=1000,d_num=d_num,use_half=False)
+    #性能分析
+    test_profile(batchsize, channel,depth, cols,rows,repeat_num=100,d_num=d_num,use_half=False)
+

@@ -3,63 +3,116 @@ import time
 from lightop.fuse_bias_swiglu import FuseBiasSwiGLU
 import torch.nn.functional as F
 
-if __name__ == '__main__':
 
-    RUNS = 1000
+class TorchBiasSwiGLU(torch.nn.Module):
 
-    batch_size = 2
-    seq_len = 2048
-    num_channels = 1024
-    x = torch.randn(batch_size, seq_len, num_channels).cuda().half()
-    bias = torch.randn(num_channels).cuda().half()
-    x.requires_grad_(True)
+    def forward(self,x,bias):
+        x_in=x+bias
+        input, mul = x_in.chunk(2, dim=-1)
+        return F.silu(input) * mul
+
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+
+def get_data(batchsize=128, seqs=50, cols=128,use_half=False):
+
+    if use_half:
+        bias = torch.rand(cols).cuda().half()
+        x = torch.rand((batchsize, seqs, cols)).cuda().half()
+        grad = torch.rand((batchsize, seqs, cols//2)).cuda().half()
+    else:
+        bias = torch.rand(cols).cuda()
+        x = torch.rand((batchsize, seqs, cols)).cuda()
+        grad = torch.rand((batchsize, seqs, cols//2)).cuda()
+
     bias.requires_grad_(True)
-    # glu should halve the last dimension
-    output_shape = (batch_size, seq_len, num_channels // 2)
-    grad = torch.randn(output_shape).cuda().half()
-    fuse_bias_swiglu = FuseBiasSwiGLU().cuda().half()
+    x.requires_grad_(True)
+    x1=x.clone().detach().requires_grad_()
+    x2=x.clone().detach().requires_grad_()
+    bias1=bias.clone().detach().requires_grad_()
+    bias2=bias.clone().detach().requires_grad_()
+    return x1,x2,bias1,bias2,grad
 
-    for _ in range(RUNS):
-        fused = fuse_bias_swiglu(x, bias)
-        x_in = x + bias
-        input, mul = x_in.chunk(2, dim=-1)
-        expected = mul * F.silu(input)
+def get_model(use_half=False):
 
-    torch.cuda.synchronize()
+    if use_half:
+        fuse_bias_swiglu=FuseBiasSwiGLU().cuda().half()
+        torch_bias_swiglu=TorchBiasSwiGLU().cuda().half()
+    else:
+        fuse_bias_swiglu=FuseBiasSwiGLU().cuda()
+        torch_bias_swiglu=TorchBiasSwiGLU().cuda()
+        
+    return torch_bias_swiglu,fuse_bias_swiglu
+
+
+def test_profile(batchsize, seqs, cols,repeat_num,use_half=False):
+    
+    x1,x2,bias1,bias2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
+    f1,f2=get_model(use_half=use_half)
+
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+                                     profile_memory=False) as prof1:
+        for i in range(repeat_num):
+            bias1.grad = None
+            x1.grad = None
+            y1 = f1(x1, bias1)
+            y1.backward(grad)
+            torch.cuda.synchronize()
+    prof1.export_chrome_trace('./profile_torch_bias_swiglu.json')
+    
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+                                     profile_memory=False) as prof2:
+        for i in range(repeat_num):
+            bias2.grad = None
+            x2.grad = None
+            y2 = f2(x2, bias2)
+            y2.backward(grad)
+            torch.cuda.synchronize()
+    prof2.export_chrome_trace('./profile_fuse_bias_swiglu.json')  
+
+def test_speed(batchsize, seqs, cols,repeat_num,use_half=False):
+
+    x1,x2,bias1,bias2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
+    f1,f2=get_model(use_half=use_half)
+
     start_time = time.time()
-    for _ in range(RUNS):
-        x.grad = None
-        bias.grad = None
-        fused = fuse_bias_swiglu(x, bias)
-        fused.backward(grad)
-    torch.cuda.synchronize()
+    for i in range(repeat_num):
+        bias1.grad = None
+        x1.grad = None
+        y1 = f1(x1, bias1)
+        y1.backward(grad)
+        torch.cuda.synchronize()
     end_time = time.time()
-    x_grad_fused, bias_grad_fused = x.grad, bias.grad
-    print(f"custom_kernel time {(end_time - start_time)*1000/RUNS} ms")
+    fc1_espl = end_time - start_time
+    print('torch_bias_swiglu', 'averange time is', fc1_espl *1000/ repeat_num, 'ms')
     
     start_time = time.time()
-    for _ in range(RUNS):
-        x.grad = None
-        bias.grad = None
-        x_in = x + bias
-        input, mul = x_in.chunk(2, dim=-1)
-        expected = mul * F.silu(input)
-        expected.backward(grad)
-    torch.cuda.synchronize()
-    end_time = time.time()
-    x_grad_expected, bias_grad_expected = x.grad, bias.grad
+    for i in range(repeat_num):
+        bias2.grad = None
+        x2.grad = None
+        y2 = f2(x2, bias2)
+        y2.backward(grad)
+        torch.cuda.synchronize()
+    end_time = time.time()    
+    fc2_espl = end_time - start_time
+    print('fuse_bias_swiglu', 'averange time is', fc2_espl *1000/ repeat_num, 'ms')
+
+    #误差计算
+    if use_half:
+        print(allclose(y1,y2,rtol=2e-02, atol=2e-02))
+        print(allclose(x1.grad,x2.grad,rtol=2e-02, atol=2e-02))
+        print(allclose(bias1.grad,bias2.grad,rtol=2e-02, atol=2e-02))
+    else:
+        print(allclose(y1,y2,rtol=1e-05, atol=1e-05))
+        print(allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05))
+        print(allclose(bias1.grad,bias2.grad,rtol=1e-05, atol=1e-05))
     
-    print(f"jit time {(end_time - start_time)*1000/RUNS} ms")
+if __name__ == "__main__":
 
-    def rerr(x1, x2):
-        return ((x1.float() - x2.float()) / (x1.float() + x2.float() + 1e-6)).abs().max()
-
-    print(((expected - fused).abs().max()))
-    print(((x_grad_expected - x_grad_fused).abs().max()))
-    print(((bias_grad_expected - bias_grad_fused).abs().max()))
-
-    print(
-        f"element-wise relative error max: output: {rerr(expected, fused)}")
-    print(
-        f"element-wise relative error max: x.grad: {rerr(x_grad_expected, x_grad_fused)}, bias.grad: {rerr(bias_grad_expected, bias_grad_fused)}")
- 
+    #设置基础参数
+    batchsize, seqs, cols = 2, 2048, 512
+    #耗时测试
+    test_speed(batchsize, seqs, cols,repeat_num=1000,use_half=False)
+    #性能分析
+    #test_profile(batchsize, seqs, cols,repeat_num=100,use_half=False)
