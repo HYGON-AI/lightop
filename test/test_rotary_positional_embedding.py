@@ -3,10 +3,13 @@ import torch.nn.functional as F
 import time
 from lightop.fuse_rotary_positional_embedding import RotaryEmbedding,apply_rotary_pos_emb_index_fused
 
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+
+
 def rotate_half(x):
     x1, x2 = x[..., :x.shape[-1] // 2], x[..., x.shape[-1] // 2:]
     return torch.cat((-x2, x1), dim=x1.ndim - 1)  # dim=-1 triggers a bug in earlier torch versions
-
 
 @torch.jit.script
 def apply_rotary_pos_emb_index(q, k, cos, sin, position_id):
@@ -69,21 +72,9 @@ if __name__ == '__main__':
     gradq1, gradk1 = q.grad, k.grad
     
     print(f"jit time {(end_time - start_time)*1000/RUNS} ms")
+    #use_half：rtol=1e-02, atol=1e-02,use_float32:rtol=1e-05, atol=1e-05
+    print(allclose(q1,q2,rtol=1e-05, atol=1e-05))
+    print(allclose(k1,k2,rtol=1e-05, atol=1e-05))
+    print(allclose(gradq1,gradq2,rtol=1e-05, atol=1e-05))
+    print(allclose(gradk1,gradk2,rtol=1e-05, atol=1e-05))
 
-    # q.grad = None
-    # k.grad = None
-    # q1, k1 = apply_rotary_pos_emb_index(q.double(), k.double(), cos.double(), sin.double(), position_id)
-    # loss = 12 * (q1.mean() + k1.mean()) ** 2
-    # loss.backward()
-    # gradq1, gradk1 = q.grad, k.grad
-
-    def rerr(x1, x2):
-        return ((x1 - x2) / (x1 + x2 + 1e-6)).abs().max()
-
-    print(((q1 - q2).abs().max()))
-    print(((k1 - k2).abs().max()))
-
-    print(
-        f"element-wise relative error max: q: {rerr(q1, q2)}, k: {rerr(k1, k2)}")
-    print(
-        f"element-wise relative error max: q.grad: {rerr(gradq1, gradq2)}, k.grad: {rerr(gradk1, gradk2)}")

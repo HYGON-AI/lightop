@@ -7,183 +7,103 @@ import torch.nn.functional as F
 
 from lightop.fusereludropout import ReluDropout
 
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
-def get_model(do_relu=1, do_eval=1, dropout_p=0.5):
-    if do_relu:
-        torch_reluDropout = torch.nn.Sequential(torch.nn.ReLU(), torch.nn.Dropout(dropout_p)).cuda()
-        fuse_reluDropout = ReluDropout(use_relu=True, droprate=dropout_p).cuda()
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+
+def get_data(batchsize=2, seqs=128, cols=64,hols=64,use_half=False):
+    if use_half:
+        x = torch.rand((batchsize, seqs, cols,hols)).cuda().half()
+        grad = torch.rand((batchsize, seqs, cols,hols)).cuda().half()
+
     else:
-        torch_reluDropout = torch.nn.Sequential(torch.nn.Dropout(dropout_p)).cuda()
-        fuse_reluDropout = ReluDropout(use_relu=False, droprate=dropout_p).cuda()
+        x = torch.rand((batchsize, seqs, cols,hols)).cuda()
+        grad = torch.rand((batchsize, seqs, cols,hols)).cuda()
 
-    # eval
-    if do_eval:
-        torch_reluDropout = torch_reluDropout.eval()
-        fuse_reluDropout = fuse_reluDropout.eval()
+    x.requires_grad_(True)
+    x1=x.clone().detach().requires_grad_()
+    x2=x.clone().detach().requires_grad_()
+    return x1,x2,grad
 
+def get_model(do_relu=1, dropout_p=0.5,use_half=False):
+
+    if use_half:
+        if do_relu:
+            torch_reluDropout = torch.nn.Sequential(torch.nn.ReLU(), torch.nn.Dropout(dropout_p)).cuda().half()
+            fuse_reluDropout = ReluDropout(use_relu=True, droprate=dropout_p).cuda().half()
+        else:
+            torch_reluDropout = torch.nn.Sequential(torch.nn.Dropout(dropout_p)).cuda().half()
+            fuse_reluDropout = ReluDropout(use_relu=False, droprate=dropout_p).cuda().half()
+    else:
+        if do_relu:
+            torch_reluDropout = torch.nn.Sequential(torch.nn.ReLU(), torch.nn.Dropout(dropout_p)).cuda()
+            fuse_reluDropout = ReluDropout(use_relu=True, droprate=dropout_p).cuda()
+        else:
+            torch_reluDropout = torch.nn.Sequential(torch.nn.Dropout(dropout_p)).cuda()
+            fuse_reluDropout = ReluDropout(use_relu=False, droprate=dropout_p).cuda()
     return torch_reluDropout, fuse_reluDropout
 
+def test_profile(batchsize,seqs,cols,hols,dropout_p,repeat_num,use_half=False,do_relu=1):
 
-def check_test():
-    # check_test_running(do_relu=1, do_eval=0, dropout_p=0.5, verbose=True)
-
-    # # ####
-    # for do_eval in [0, 1]:
-    #     check_test_running(do_relu=0, do_eval=do_eval, dropout_p=0.5, verbose=True)
-
-    # #####
-    for dropout_p in [0.3, 0.5]:
-        for do_relu in [0, 1]:
-            for do_eval in [0, 1]:
-                check_test_running(do_relu, do_eval, dropout_p, verbose=False)
-                print('--------------')
-
-
-def check_test_running(do_relu=1, do_eval=1, dropout_p=0.5, verbose=True):
-    torch_reluDropout, fuse_reluDropout = get_model(do_relu=do_relu, do_eval=do_eval, dropout_p=dropout_p)
-    print("check_test start ..., do_relu={}, do_eval={}, dropout_p={}".format(do_relu, do_eval, dropout_p))
-
-    seed = 1234
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-    x = Variable(x0, requires_grad=True)
-    out = torch_reluDropout(x)
-    out.backward(out.clone().detach())
-    if verbose:
-        print('torch_reluDropout out: ', out[:3, :3, :3])
-        print('x.grad: ', x.grad[:3, :3, :3])
-        print("check_test torch done ...\n\n")
-
-    seed = 1234
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-    fuse_x = Variable(fuse_x0, requires_grad=True)
-    fuse_out = fuse_reluDropout(fuse_x)
-    fuse_out.backward(fuse_out.clone().detach())
-    if verbose:
-        print('fuse_reluDropout fuse_out: ', fuse_out[:3, :3, :3])
-        print('fuse_x.grad: ', fuse_x.grad[:3, :3, :3])
-        print("check_test fuse_reluDropout done ...")
-
-    # check result
-    if out.equal(fuse_out):
-        print("result check_test:TRUE")
-    else:
-        print("result check_test:", out.equal(fuse_out))
-
-    if x.grad.equal(fuse_x.grad):
-        print("grad check_test:TRUE")
-    else:
-        print("grad check_test:", x.grad.equal(fuse_x.grad))
-
-
-def test_profile(repeat_num=30, do_relu=1, do_eval=0, dropout_p=0.3):
-    torch_reluDropout, fuse_reluDropout = get_model(do_relu=do_relu, do_eval=do_eval, dropout_p=dropout_p)
-
+    x1,x2,grad=get_data(batchsize, seqs, cols,hols,use_half=use_half)
+    torch_reluDropout, fuse_reluDropout = get_model(do_relu=do_relu, dropout_p=dropout_p,use_half=use_half)
+   
+    torch.manual_seed(0)
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True) as prof:
         for _ in range(repeat_num):
-            x1 = x0.requires_grad_()
             fuseout = fuse_reluDropout(x1)
-            fuseout.backward(fuseout.clone().detach())
+            fuseout.backward(grad)
             time.sleep(0.02)
-    prof.export_chrome_trace('./test_result/resnet_profile_fuse.json')
+    prof.export_chrome_trace('./profile_torch_relu_dropout.json')
 
+    torch.manual_seed(0)
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True) as prof2:
         for _ in range(repeat_num):
-            x2 = x0.requires_grad_()
             out = torch_reluDropout(x2)
-            out.backward(out.clone().detach())
+            out.backward(grad)
             time.sleep(0.02)
-    prof2.export_chrome_trace('./test_result/resnet_profile_torch.json')
+    prof2.export_chrome_trace('./profile_fuse_relu_dropout.json')
 
+def test_speed(batchsize,seqs,cols,hols,dropout_p,repeat_num,use_half=False,do_relu=1):
 
-def test_time_compare(repeat_num=30):
-    # print("test_time_compare ...")
-    # # #####
-    # for dropout_p in [0.3, 0.5]:
-    #     for do_relu in [0, 1]:
-    #         for do_eval in [0, 1]:
-    #             test_time_compare_runnint(repeat_num, do_relu, do_eval, dropout_p)
-    #             print('--------------')
-    # # #####
-    test_time_compare_runnint(repeat_num, 1, 0, 0.5)
-
-
-def test_time_compare_runnint(repeat_num=30, do_relu=1, do_eval=1, dropout_p=0.5):
-    torch_reluDropout, fuse_reluDropout = get_model(do_relu=do_relu, do_eval=do_eval, dropout_p=dropout_p)
-    print("test_time_compare_runnint..., do_relu={}, do_eval={}, dropout_p={}".format(do_relu, do_eval, dropout_p))
-
+    x1,x2,grad=get_data(batchsize, seqs, cols,hols,use_half=use_half)
+    torch_reluDropout, fuse_reluDropout = get_model(do_relu=do_relu, dropout_p=dropout_p,use_half=use_half)
+    torch.manual_seed(0)
     time_st = time.perf_counter()  # 单位为us
     for i in range(repeat_num):
-        x = Variable(x0, requires_grad=True)
-        torch.manual_seed(0)
-        out = torch_reluDropout(x)
-        out.backward(out.clone().detach())
+        y1 = torch_reluDropout(x1)
+        y1.backward(grad)
     time_using = (time.perf_counter() - time_st) * 1000 / repeat_num
     print("torch use time: {} ms".format(time_using))
+    print('========================================================\n')
     time.sleep(0.5)
-    print('================')
 
+    torch.manual_seed(0)
     time_st2 = time.perf_counter()
     for i in range(repeat_num):
-        fuse_x = Variable(fuse_x0, requires_grad=True)
-        torch.manual_seed(0)
-        fuse_out = fuse_reluDropout(fuse_x)
-        fuse_out.backward(fuse_out.clone().detach())
+        y2 = fuse_reluDropout(x2)
+        y2.backward(grad)
     time_using2 = (time.perf_counter() - time_st2) * 1000 / repeat_num
     print("ReluDropout use time: {} ms".format(time_using2))
     print('========================================================\n')
-
-
-def compare_cuda_detail(do_relu=1, do_eval=1, dropout_p=0.5):
-    # from torch.profiler import profile, record_function, ProfilerActivity
-    from torch.autograd.profiler import profile
-
-    torch_reluDropout, fuse_reluDropout = get_model(do_relu=do_relu, do_eval=do_eval, dropout_p=dropout_p)
-    seed = 1234
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-    x = Variable(x0, requires_grad=True)
-    with profile(enabled=True, use_cuda=True, record_shapes=True, profile_memory=False) as prof:
-        out = torch_reluDropout(x)
-        out.backward(grad)
-        time.sleep(0.5)
-    print(prof.key_averages().table(sort_by="cuda_time_total"))
-
-    fuse_x = Variable(fuse_x0, requires_grad=True)
-    with profile(enabled=True, use_cuda=True, record_shapes=True, profile_memory=False) as prof:
-        fuse_out = fuse_reluDropout(fuse_x)
-        fuse_out.backward(grad)
-        time.sleep(0.5)
-    print(prof.key_averages().table(sort_by="cuda_time_total"))
-
-
+    #误差计算
+    if use_half:
+        print(allclose(y1,y2,rtol=2e-02, atol=2e-02))
+        print(allclose(x1.grad,x2.grad,rtol=2e-02, atol=2e-02))
+    else:
+        print(allclose(y1,y2,rtol=1e-05, atol=1e-05))
+        print(allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05))
+       
 if __name__ == "__main__":
     torch.backends.cudnn.enabled = False
 
-    # 设置seed
-    seed = 1234
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
     # 设置基础参数
     batchsize, seqs, cols, hols = 128, 200, 256, 2
-    # x0 = torch.rand([128, 50, 768]).cuda()
-    x0 = torch.randn([batchsize, seqs, cols, hols]).cuda()
-    grad = torch.randn([batchsize, seqs, cols, hols]).cuda()
-    fuse_x0 = copy.deepcopy(x0).cuda()
-    print('x0: ', x0.shape)
-
-    # check_test()
-    test_profile()
-    # test_time_compare(repeat_num=100)
-    # compare_cuda_detail()
+    dropout_p=0.5
+    #耗时测试
+    test_speed(batchsize, seqs,cols,hols,dropout_p,repeat_num=1000,use_half=False,do_relu=1)
+    #性能分析
+    test_profile(batchsize, seqs,cols,hols,dropout_p,repeat_num=100,use_half=False,do_relu=1)
+  
 
 # HIP_VISIBLE_DEVICES=1 python3 test/test_relu_dropout.py

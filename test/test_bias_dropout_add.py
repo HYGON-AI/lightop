@@ -10,7 +10,6 @@ def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
 def get_data(batchsize=128, seqs=50, cols=128,use_half=False):
 
-    torch.manual_seed(0)
     if use_half:
         bias = torch.rand(cols).cuda().half()
         x = torch.rand((batchsize, seqs, cols)).cuda().half()
@@ -50,10 +49,10 @@ def test_profile(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
     x1,x2,bias1,bias2,residual1,residual2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
     f1,f2=get_model(dropout_p,use_half=use_half)
 
+    torch.manual_seed(0)
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                      profile_memory=False) as prof1:
         for i in range(repeat_num):
-            torch.manual_seed(0)
             bias1.grad = None
             x1.grad = None
             residual1.grad = None
@@ -61,11 +60,11 @@ def test_profile(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
             y1.backward(grad)
             torch.cuda.synchronize()
     prof1.export_chrome_trace('./profile_torch_bias_dropout_add.json')
-    
+
+    torch.manual_seed(0)
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                      profile_memory=False) as prof2:
         for i in range(repeat_num):
-            torch.manual_seed(0)
             bias2.grad = None
             x2.grad = None
             residual2.grad = None
@@ -79,9 +78,9 @@ def test_speed(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
     x1,x2,bias1,bias2,residual1,residual2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
     f1,f2=get_model(dropout_p,use_half=use_half)
 
+    torch.manual_seed(0)
     start_time = time.time()
     for i in range(repeat_num):
-        torch.manual_seed(0)
         bias1.grad = None
         x1.grad = None
         residual1.grad = None
@@ -91,10 +90,10 @@ def test_speed(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
     end_time = time.time()
     fc1_espl = end_time - start_time
     print('torch_bias_dropout_add', 'averange time is', fc1_espl *1000/ repeat_num, 'ms')
-    
+
+    torch.manual_seed(0)
     start_time = time.time()
     for i in range(repeat_num):
-        torch.manual_seed(0)
         bias2.grad = None
         x2.grad = None
         residual2.grad = None

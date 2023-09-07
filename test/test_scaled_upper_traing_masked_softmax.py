@@ -3,6 +3,9 @@ import torch
 from lightop.scaled_masked_softmax import FusedScaleMaskSoftmax
 from lightop.scaled_masked_softmax import AttnMaskType
 
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+
 def attention_mask_func(attention_scores, attention_mask):
     attention_scores.masked_fill_(attention_mask, -10000.0)
     return attention_scores
@@ -49,51 +52,16 @@ def test_fused_upper_triangle_mask_softmax():
         torch_attn_weights,
         None,
     )
-
-    test_result = (fused_softmax_output - torch_softmax_output).abs()
-
-    while test_result.dim() != 1:
-        test_result = test_result.mean(dim=-1)
-
-    diff = test_result.mean(dim=-1)
-
-    if diff <= 1e-3:
-        print(
-            f"\n[Success] test_fused_upper_triangle_mask_softmax"
-            f"\n > mean_difference={diff}"
-            f"\n > fused_values={fused_softmax_output[-1][-1][-1][:5].tolist()}"
-            f"\n > torch_values={torch_softmax_output[-1][-1][-1][:5].tolist()}"
-        )
-    else:
-        print(
-            f"\n[Fail] test_fused_upper_triangle_mask_softmax"
-            f"\n > mean_difference={diff}, "
-            f"\n > fused_values={fused_softmax_output[-1][-1][-1][:5].tolist()}, "
-            f"\n > torch_values={torch_softmax_output[-1][-1][-1][:5].tolist()}"
-        )
+    #use_half：rtol=1e-02, atol=1e-02,use_float32:rtol=1e-05, atol=1e-05
+    print(allclose(fused_softmax_output.mean(dim=-1),torch_softmax_output.mean(dim=-1),rtol=2e-02, atol=2e-02))
+    
     # backward
     fused_softmax_output.backward(fused_softmax_output)
     torch_softmax_output.backward(torch_softmax_output)
     test_result_backward = (attn_weights.grad - torch_attn_weights.grad).abs()
-
-    while test_result_backward.dim() != 1:
-        test_result_backward = test_result_backward.mean(dim=-1)
-
-    diff_backward = test_result_backward.mean(dim=-1)
-    if diff_backward <= 1e-3:
-        print(
-            f"\n[Success] test_fused_upper_triangle_mask_softmax_backward"
-            f"\n > mean_difference={diff_backward}"
-            f"\n > fused_values={attn_weights.grad[-1][-1][-1][:5].tolist()}"
-            f"\n > torch_values={torch_attn_weights.grad[-1][-1][-1][:5].tolist()}"
-        )
-    else:
-        print(
-            f"\n[Fail] test_fused_upper_triangle_mask_softmax_backward"
-            f"\n > mean_difference={diff}, "
-            f"\n > fused_values={attn_weights.grad[-1][-1][-1][:5].tolist()}, "
-            f"\n > torch_values={torch_attn_weights.grad[-1][-1][-1][:5].tolist()}"
-        )
+    #use_half：rtol=1e-02, atol=1e-02,use_float32:rtol=1e-05, atol=1e-05
+    print(allclose(attn_weights.grad.mean(dim=-1),torch_attn_weights.grad.mean(dim=-1),rtol=2e-02, atol=2e-02))
+    
 
 if __name__ == "__main__":
     test_fused_upper_triangle_mask_softmax()

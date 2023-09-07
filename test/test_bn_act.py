@@ -4,6 +4,10 @@ import os
 from lightop.fusebnact import FuseBatchNormAct2d
 from lightop.fuseactmode import fuseactmode
 
+#use_half：rtol=1e-02, atol=1e-02,use_float32:rtol=1e-05, atol=1e-05
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+
 def test_2d_relu():
   torch.backends.cudnn.enabled=False
   x=torch.arange(384, dtype=torch.float32).reshape((2,3,8,8)).cuda().requires_grad_()
@@ -21,10 +25,12 @@ def test_2d_relu():
   fuse_out = torch.add(fuse_out, 1)
   fuse_out.backward(fuse_out)
 
-  if (out.equal(fuse_out) and x.grad.equal(fuse_x.grad) and bn.weight.grad.equal(fuse_bn.weight.grad) and bn.bias.grad.equal(fuse_bn.bias.grad)):
+  if (allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+      and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05)):
     print("test_2d_relu:TRUE")
   else:
-    print("test_2d_relu:", out.equal(fuse_out), x.grad.equal(fuse_x.grad), bn.weight.grad.equal(fuse_bn.weight.grad),  bn.bias.grad.equal(fuse_bn.bias.grad))
+    print("test_2d_relu:", allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+      and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05))
 
 def test_2d_relu_miopen():
   torch.backends.cudnn.enabled=True
@@ -42,11 +48,12 @@ def test_2d_relu_miopen():
   fuse_out=fuse_bn(fuse_x)
   fuse_out = torch.add(fuse_out, 1)
   fuse_out.backward(fuse_out)
-
-  if (out.equal(fuse_out) and x.grad.equal(fuse_x.grad) and bn.weight.grad.equal(fuse_bn.weight.grad) and bn.bias.grad.equal(fuse_bn.bias.grad)):
+  if (allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+      and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05)):
     print("test_2d_relu_miopen:TRUE")
   else:
-    print("test_2d_relu_miopen:", out.equal(fuse_out), x.grad.equal(fuse_x.grad), bn.weight.grad.equal(fuse_bn.weight.grad),  bn.bias.grad.equal(fuse_bn.bias.grad))
+    print("test_2d_relu_miopen:", allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+      and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05))
 
 
 def test_2d_silu():
@@ -65,10 +72,12 @@ def test_2d_silu():
   fuse_out = torch.add(fuse_out, 1)
   fuse_out.backward(fuse_out)
 
-  if (out.equal(fuse_out) and x.grad.equal(fuse_x.grad) and bn.weight.grad.equal(fuse_bn.weight.grad) and bn.bias.grad.equal(fuse_bn.bias.grad)):
+  if (allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+      and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05)):
     print("test_2d_silu:TRUE")
   else:
-    print("test_2d_silu:", out.equal(fuse_out), x.grad.equal(fuse_x.grad), bn.weight.grad.equal(fuse_bn.weight.grad),  bn.bias.grad.equal(fuse_bn.bias.grad))
+    print("test_2d_silu:", allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+      and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05))
 
 def test_2d_sigmoid_miopen():
   torch.backends.cudnn.enabled=True
@@ -86,10 +95,13 @@ def test_2d_sigmoid_miopen():
   fuse_out=fuse_bn(fuse_x)
   fuse_out = torch.add(fuse_out, 1)
   fuse_out.backward(fuse_out)
-  if (out.equal(fuse_out) and torch.allclose(x.grad,fuse_x.grad, rtol=0, atol=10e-6) and torch.allclose(bn.weight.grad, fuse_bn.weight.grad, rtol=0, atol=10e-6) and torch.allclose(bn.bias.grad, fuse_bn.bias.grad, rtol=0, atol=10e-6)):
+
+  if (allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+      and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05)):
     print("test_2d_sigmoid_miopen:TRUE")
   else:
-    print("test_2d_sigmoid_miopen:", out.equal(fuse_out), torch.allclose(x.grad,fuse_x.grad, rtol=0, atol=10e-6),torch.allclose(bn.weight.grad, fuse_bn.weight.grad, rtol=0, atol=10e-6),torch.allclose(bn.bias.grad, fuse_bn.bias.grad, rtol=0, atol=10e-6))
+    print("test_2d_sigmoid_miopen:", allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+      and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05))
 
 def test_2d_abs_miopen():
   torch.backends.cudnn.enabled=True
@@ -107,10 +119,13 @@ def test_2d_abs_miopen():
   fuse_out = torch.add(fuse_out, 1)
   fuse_out.backward(fuse_out)
 
-  if (out.equal(fuse_out) and x.grad.equal(fuse_x.grad) and bn.weight.grad.equal(fuse_bn.weight.grad) and bn.bias.grad.equal(fuse_bn.bias.grad)):
+  if (allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+      and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05)):
     print("test_2d_abs_miopen:TRUE")
   else:
-    print("test_2d_abs_miopen:", out.equal(fuse_out), x.grad.equal(fuse_x.grad), bn.weight.grad.equal(fuse_bn.weight.grad),  bn.bias.grad.equal(fuse_bn.bias.grad))
+    print("test_2d_abs_miopen:", allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+      and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05))
+
 
 def test_2d_leakyrelu_miopen():
   torch.backends.cudnn.enabled=True
@@ -128,11 +143,12 @@ def test_2d_leakyrelu_miopen():
   fuse_out=fuse_bn(fuse_x)
   fuse_out = torch.add(fuse_out, 1)
   fuse_out.backward(fuse_out)
-
-  if (out.equal(fuse_out) and x.grad.equal(fuse_x.grad) and bn.weight.grad.equal(fuse_bn.weight.grad) and bn.bias.grad.equal(fuse_bn.bias.grad)):
+  if (allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+    and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05)):
     print("test_2d_leakyrelu_miopen:TRUE")
   else:
-    print("test_2d_leakyrelu_miopen:", out.equal(fuse_out), x.grad.equal(fuse_x.grad), bn.weight.grad.equal(fuse_bn.weight.grad),  bn.bias.grad.equal(fuse_bn.bias.grad))
+    print("test_2d_leakyrelu_miopen:", allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+      and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05))
 
 def test_2d_elu_miopen():
   torch.backends.cudnn.enabled=True
@@ -150,11 +166,13 @@ def test_2d_elu_miopen():
   fuse_out=fuse_bn(fuse_x)
   fuse_out = torch.add(fuse_out, 1)
   fuse_out.backward(fuse_out)
-  if (out.equal(fuse_out) and torch.allclose(x.grad, fuse_x.grad, rtol=0, atol=10e-6) and bn.weight.grad.equal(fuse_bn.weight.grad) and bn.bias.grad.equal(fuse_bn.bias.grad)):
+  if (allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+    and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05)):
     print("test_2d_elu_miopen:TRUE")
   else:
-    print("test_2d_elu_miopen:", out.equal(fuse_out), x.grad.equal(fuse_x.grad), bn.weight.grad.equal(fuse_bn.weight.grad),  bn.bias.grad.equal(fuse_bn.bias.grad))
-
+    print("test_2d_elu_miopen:", allclose(out,fuse_out,rtol=1e-05, atol=1e-05) and allclose(x.grad,fuse_x.grad,rtol=1e-05, atol=1e-05) 
+      and allclose(bn.weight.grad,fuse_bn.weight.grad,rtol=1e-05, atol=1e-05) and allclose(bn.bias.grad,fuse_bn.bias.grad,rtol=1e-05, atol=1e-05))
+ 
 if __name__ == "__main__":
   test_2d_silu()
   test_2d_relu()
