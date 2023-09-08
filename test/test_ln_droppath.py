@@ -1,9 +1,9 @@
+
 import torch
 import time
 import torch.nn.functional as F
 from torch.autograd import Variable
 from lightop.fuselndroppath import LnDropPath as FuseLnDropPath
-from lightop.droppath import DropPath
 from lightop.layernorm import LayerNorm
 from lightop import op
 
@@ -18,9 +18,9 @@ def drop_path(x, drop_prob, training, scale_by_keep):
         random_tensor.div_(keep_prob)
     return x * random_tensor
 
-class LnDropPath(torch.nn.Module):
+class TorchLnDropPath(torch.nn.Module):
     def __init__(self, cols:int, drop_prob: float = 0., scale_by_keep: bool = True, device=None, dtype=None):
-        super(LnDropPath, self).__init__()
+        super(TorchLnDropPath, self).__init__()
         self.norm = torch.nn.LayerNorm(cols, dtype=dtype).to(device)
         self.weight = self.norm.weight
         self.bias = self.norm.bias
@@ -33,161 +33,108 @@ class LnDropPath(torch.nn.Module):
             return res
         return drop_path(res, self.drop_prob, self.training, self.scale_by_keep)
     
-class LnDropPath2(torch.nn.Module):
-    def __init__(self, cols:int, drop_prob: float = 0., scale_by_keep: bool = True, device=None, dtype=None):
-        super(LnDropPath2, self).__init__()
-        self.norm = LayerNorm(cols, dtype=dtype).to(device)
-        self.weight = self.norm.weight
-        self.bias = self.norm.bias
-        self.drop_prob = drop_prob
-        self.scale_by_keep = scale_by_keep
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
-    def forward(self, x):
-        res = self.norm(x)
-        if (not self.training) or self.drop_prob==1.:
-            return res
-        return op.droppath_forward_autograd(res, self.drop_prob, self.training, self.scale_by_keep)
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
 
-def compare(name, origin, fuse):
-    delta = torch.abs(origin - fuse)
-    print("[{!s:^11}] min delta: {:.25f}, max delta: {:.25f}".format(name, torch.min(delta), torch.max(delta)))
+def get_data(batchsize=2, seqs=128, cols=128,use_half=False):
+    if use_half:
+        x = torch.rand((batchsize, seqs, cols)).cuda().half()
+        grad = torch.rand((batchsize, seqs, cols)).cuda().half()
 
-def test_lndrop(cols, seqs, batch, drop_prob, scale_by_keep):
-    device = torch.device('cuda')
+    else:
+        x = torch.rand((batchsize, seqs, cols)).cuda()
+        grad = torch.rand((batchsize, seqs, cols)).cuda()
+
+    x.requires_grad_(True)
+    x1=x.clone().detach().requires_grad_()
+    x2=x.clone().detach().requires_grad_()
+    return x1,x2,grad
+
+def get_model(cols=1,dropout_p=0.5,use_half=False):
+
+    if use_half:
+        fuse_ln_dropoath=FuseLnDropPath(cols,dropout_p).cuda().half()
+        torch_ln_dropoath=TorchLnDropPath(cols,dropout_p).cuda().half()
+
+    else:
+       
+        fuse_ln_dropoath=FuseLnDropPath(cols,dropout_p).cuda()
+        torch_ln_dropoath=TorchLnDropPath(cols,dropout_p).cuda()
+       
+    return torch_ln_dropoath,fuse_ln_dropoath
+
+
+def test_profile(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
+    
+    x1,x2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
+    f1,f2=get_model(cols=cols,dropout_p=dropout_p,use_half=use_half)
+
     torch.manual_seed(0)
-    dtype=torch.float32
-    x0=torch.rand([batch, seqs, cols], dtype=dtype).cuda()
-    grad=torch.rand([batch, seqs, cols],dtype=dtype).cuda()
-
-    fuselndrop = FuseLnDropPath(cols, drop_prob=drop_prob, scale_by_keep=scale_by_keep, device=device)
-    lndrop = LnDropPath(cols, drop_prob=drop_prob, scale_by_keep=scale_by_keep, device=device)
-    lndrop2 = LnDropPath2(cols, drop_prob=drop_prob, scale_by_keep=scale_by_keep, device=device)
-    x1=x0.clone().detach().requires_grad_()
-    x2=x0.clone().detach().requires_grad_()
-    x3=x0.clone().detach().requires_grad_()
-
-    for i in range(10):
-        torch.manual_seed(0)
-        fuseout = fuselndrop(x1)
-        fuseout.backward(grad)
-        torch.cuda.synchronize()
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                      profile_memory=False) as prof1:
-        start_time = time.time()
-        for i in range(100):
-            torch.manual_seed(0)
-            fuseout = fuselndrop(x1)
-            fuseout.backward(grad)
+        for i in range(repeat_num):
+            x1.grad = None
+            y1 = f1(x1)
+            y1.backward(grad)
             torch.cuda.synchronize()
-        end_time = time.time()
-        print("fuse ln_droppath "+str(end_time-start_time))
-    prof1.export_chrome_trace('./profile_fuse_ln_droppath.json')
+    prof1.export_chrome_trace('./profile_torch_ln_dropoath.json')
 
-    for i in range(10):
-        torch.manual_seed(0)
-        out = lndrop(x2)
-        out.backward(grad)
-        torch.cuda.synchronize()
-
+    torch.manual_seed(0)
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                      profile_memory=False) as prof2:
-        start_time = time.time()
-        for i in range(100):
-            torch.manual_seed(0)
-            out = lndrop(x2)
-            out.backward(grad)
+        for i in range(repeat_num):
+            x2.grad = None
+            y2 = f2(x2)
+            y2.backward(grad)
             torch.cuda.synchronize()
-        end_time = time.time()
-        print("torch ln_droppath "+str(end_time-start_time))
-    prof2.export_chrome_trace('./profile_torch_ln_droppath.json')
+    prof2.export_chrome_trace('./profile_fuse_ln_dropoath.json')  
 
-    for i in range(10):
-        torch.manual_seed(0)
-        out2 = lndrop2(x3)
-        out2.backward(grad)
+def test_speed(batchsize,seqs,cols,dropout_p,repeat_num,use_half=False):
+
+    x1,x2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
+    f1,f2=get_model(cols=cols,dropout_p=dropout_p,use_half=use_half)
+
+    torch.manual_seed(0)
+    start_time = time.time()
+    for i in range(repeat_num):
+        x1.grad = None
+        y1 = f1(x1)
+        y1.backward(grad)
         torch.cuda.synchronize()
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
-                                      profile_memory=False) as prof3:
-        start_time = time.time()
-        for i in range(100):
-            torch.manual_seed(0)
-            out2 = lndrop2(x3)
-            out2.backward(grad)
-            torch.cuda.synchronize()
-        end_time = time.time()
-        print("lightop ln_droppath "+str(end_time-start_time))
-    prof3.export_chrome_trace('./profile_lightop_ln_droppath.json')
+    end_time = time.time()
+    fc1_espl = end_time - start_time
+    print('torch_ln_dropoath', 'averange time is', fc1_espl *1000/ repeat_num, 'ms')
 
-    res_out = out.equal(fuseout)
-    res_grad = x2.grad.equal(x1.grad)
-    res_weight = lndrop.weight.grad.equal(fuselndrop.weight.grad)
-    # print(lndrop.weight.grad-fuselndrop.weight.grad)
-    res_bias = lndrop.bias.grad.equal(fuselndrop.bias.grad)
-    res = (res_out, res_grad, res_weight, res_bias)
-
-    tensors = {
-        "y" : (out, fuseout),
-        "grad" : (x1.grad, x2.grad),
-        "weight" : (lndrop.weight, fuselndrop.weight),
-        "bias" : (lndrop.bias, fuselndrop.bias),
-        "weight_grad" : (lndrop.weight.grad, fuselndrop.weight.grad),
-        "bias_grad" : (lndrop.bias.grad, fuselndrop.bias.grad),
-    }
-
-    # for k,v in tensors.items():
-    #     compare(k, *v)
+    torch.manual_seed(0)
+    start_time = time.time()
+    for i in range(repeat_num):
+        x2.grad = None
+        y2 = f2(x2)
+        y2.backward(grad)
+        torch.cuda.synchronize()
+    end_time = time.time()    
+    fc2_espl = end_time - start_time
+    print('fuse_ln_dropoath', 'averange time is', fc2_espl *1000/ repeat_num, 'ms')
+    #误差计算
+    if use_half:
+        print(allclose(y1,y2,rtol=2e-02, atol=2e-02))
+        print(allclose(x1.grad,x2.grad,rtol=2e-02, atol=2e-02))
+        print(allclose(f1.weight.grad,f2.weight.grad,rtol=2e-02, atol=2e-02))
+        print(allclose(f1.bias.grad,f2.bias.grad,rtol=2e-02, atol=2e-02))
+        
+    else:
+        print(allclose(y1,y2,rtol=1e-05, atol=1e-05))
+        print(allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05))
+        print(allclose(f1.weight.grad,f2.weight.grad,rtol=1e-04, atol=1e-04))
+        print(allclose(f1.bias.grad,f2.bias.grad,rtol=1e-05, atol=1e-05))
     
-    return res, tensors["y"]
+if __name__ == "__main__":
 
-def main(epoch):
-    with open("test_lndrop.txt", "w+") as f:
-        import sys
-        # sys.stdout = f
-        for _ in range(epoch):
-            import random
-            # cols = random.randint(1, 5)*512
-            # seqs = random.randint(1, 5)*16
-            # batch = random.randint(1, 10)*64
-            # drop_prob = random.random()
-            cols=192
-            seqs=784
-            batch=128
-            drop_prob = 0.5
-            scale_by_keep = bool(random.randint(1,1))
-            args = (cols, seqs, batch, drop_prob, scale_by_keep)
-            # if batch * seqs < 512:
-            res, (out, fuseout) = test_lndrop(cols, seqs, batch, drop_prob, scale_by_keep)
-            s2 = "{!s:^5} | cols={:4d}; seqs={:<2d}; batch={:<3d}; drop_prob={:.17f}; scale_by_keep={:<1d}".format(str(res), *args)
-            print(s2)
-
-main(1)
-
-# cols=192
-# seqs=300
-# batch=128
-# drop_prob = 0.5
-# scale_by_keep=True
-# device = torch.device('cuda')
-# torch.manual_seed(0)
-# dtype=torch.float32
-# x0=torch.rand([batch, seqs, cols], dtype=dtype).cuda()
-# grad=torch.rand([batch, seqs, cols],dtype=dtype).cuda()
-
-# fuselndrop = FuseLnDropPath(cols, drop_prob=drop_prob, scale_by_keep=scale_by_keep, device=device)
-# lndrop = LnDropPath(cols, drop_prob=drop_prob, scale_by_keep=scale_by_keep, device=device)
-# x1=x0.clone().detach().requires_grad_()
-# x2=x0.clone().detach().requires_grad_()
-
-# torch.manual_seed(0)
-# out=fuselndrop(x1)
-# out.backward(grad)
-# torch.manual_seed(0)
-# out2=lndrop(x2)
-# out2.backward(grad)
-
-# print(out-out2)
-
-# print(out.equal(out2))
-# print(x1.grad.equal(x2.grad))
-# print(fuselndrop.weight.grad.equal(lndrop.weight.grad))
-# print(fuselndrop.bias.grad.equal(lndrop.bias.grad))
+    #设置基础参数
+    batchsize,seqs, cols = 128,100,132
+    dropout_p=0.5
+    #耗时测试
+    test_speed(batchsize, seqs,cols,dropout_p,repeat_num=1000,use_half=False)
+    #性能分析
+    test_profile(batchsize, seqs,cols,dropout_p,repeat_num=100,use_half=False)

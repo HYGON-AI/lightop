@@ -15,3 +15,5 @@ class LayerNorm(torch.nn.Module):
     def forward(self, x ):
         return op.layernorm_forward_autograd(x, self.weight,self.bias,self.eps)
 
+    def extra_repr(self):
+        return f'eps={round(self.eps,5):0.5f}'

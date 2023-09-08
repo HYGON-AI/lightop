@@ -198,14 +198,13 @@ std::tuple<Tensor,Tensor,Tensor>
 fused_ln_dropout_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const Tensor& rstd,const Tensor& gamma)
 {
   IndexType N=grad.sizes().back();
+  IndexType nelem=grad.numel();
   IndexType M=grad.numel()/N;
   auto pgrad = grad.expect_contiguous();
   Tensor dX1 = at::empty_like(*pgrad);
   Tensor dgamma = at::empty_like(gamma);
   Tensor dbeta = at::empty_like(gamma);
   auto cuda_stream=at::cuda::getCurrentCUDAStream();
-  constexpr int kThreadX = kColwiseReduceTileSize;
-  constexpr int kThreadY = kColwiseReduceTileSize;
   AT_DISPATCH_FLOATING_TYPES_AND2(
     at::ScalarType::Half,
     at::ScalarType::BFloat16,
@@ -220,19 +219,8 @@ fused_ln_dropout_backward(const Tensor& grad, const Tensor& X,const Tensor& mean
       scalar_t* dgamma_data = dgamma.data_ptr<scalar_t>();
       scalar_t* dbeta_data = dbeta.data_ptr<scalar_t>();
       scalar_t* dX1_data = dX1.data_ptr<scalar_t>();
-      if (M < 512) {
-        // For small batch size, do colwise reduce directly.
-        const IndexType B = (N + kCUDANumThreads - 1) / kCUDANumThreads;
-        GammaBetaBackwardSimple<scalar_t><<<B, kCUDANumThreads, 0, cuda_stream>>>(
-               M,N,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-      }
-      else{
-        const IndexType B =(N + kColwiseReduceTileSize - 1) / kColwiseReduceTileSize;
-        GammaBetaBackward<scalar_t><<<B, dim3(kThreadX, kThreadY), 0, cuda_stream>>>(
-                      M,N,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-      }
+      
+      GammaBeta_Backward(nelem,N,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
       LayerNormBackward_kernel<scalar_t><<<M, kCUDABlockReduceNumThreads, 0, cuda_stream>>>(
                   N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX1_data,X_data+grad.numel());
       C10_CUDA_KERNEL_LAUNCH_CHECK();

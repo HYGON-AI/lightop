@@ -9,6 +9,8 @@ from lightop.lossrnnt import RNNTLoss as lightop_RNNTLoss
 
 torch.set_printoptions(precision=10)
 
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
 
 # ################################### test speed ###################################
 
@@ -84,12 +86,12 @@ def test_compare_gpu(repeat_num=100, use_half=False, **args):
     transform_lightop = lightop_RNNTLoss(blank=0, reduction='mean')
     grad_lightop, loss_lightop = single_op_test(repeat_num, transform_lightop, p, gt, p_len, gt_len, name='lightop')
     print('#' * 20)
-
-    grad_diff_14 = torch.nn.functional.l1_loss(grad_torch, grad_lightop, reduction='none')
-    loss_diff_14 = torch.nn.functional.l1_loss(loss_torch, loss_lightop, reduction='sum')
-    print('grad diff_torch_lightop=', torch.max(grad_diff_14))
-    print('loss diff_torch_lightop=', loss_diff_14)
-    print('#' * 20)
+    if use_half:
+        print(allclose(loss_torch,loss_lightop,rtol=2e-02, atol=2e-02))
+        print(allclose(grad_torch,grad_lightop,rtol=2e-02, atol=2e-02))
+    else:
+        print(allclose(loss_torch,loss_lightop,rtol=1e-05, atol=1e-05))
+        print(allclose(grad_torch,grad_lightop,rtol=1e-05, atol=1e-05))
     print('#' * 20)
 
 

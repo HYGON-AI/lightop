@@ -29,3 +29,6 @@ class FuseBiasDropoutAdd(torch.nn.Module):
         
     def forward(self, input,bias,residual):
         return FuseBiasDropoutAddFunction.apply(input, bias,residual,self.droprate,self.training)
+    
+    def extra_repr(self):
+        return f'droprate={round(self.droprate,3):0.3f}'

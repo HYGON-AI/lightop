@@ -1,114 +1,124 @@
 import torch
+import time
 import os
+import torch.nn.functional as F
 from lightop.fusebndropout import FuseBatchNormDropout2d
-torch.manual_seed(1)
-def test_2d_1():
-  torch.manual_seed(1)
-  torch.backends.cudnn.enabled=False
-  x = torch.rand(2,3,8,8).cuda().requires_grad_()
-  # x = torch.rand(128,64,100,112).cuda().requires_grad_()
-  bn = torch.nn.BatchNorm2d(x.size(1)).cuda()
-  out = bn(x)
-  torch.manual_seed(1)
-  dropout = torch.nn.Dropout(p=0.3).cuda()
-  out = dropout(out)
-  out += 1
-  out.backward(out)
 
-  torch.manual_seed(1)
-  fuse_x = torch.rand(2,3,8,8).cuda().requires_grad_()
-  # fuse_x = torch.rand(128,64,100,112).cuda().requires_grad_()
-  fuse_dropout = FuseBatchNormDropout2d(fuse_x.size(1), p = 0.3).cuda()
-  fuse_out = fuse_dropout(fuse_x)
-  fuse_out += 1
-  fuse_out.backward(fuse_out)
+class torch_bn2d_dropout(torch.nn.Module):
 
-  if (torch.allclose(out,fuse_out, rtol=0, atol=10e-6) and torch.allclose(x.grad,fuse_x.grad, rtol=0, atol=10e-6) and torch.allclose(bn.weight.grad, fuse_dropout.weight.grad, rtol=0, atol=10e-5) and torch.allclose(bn.bias.grad, fuse_dropout.bias.grad, rtol=0, atol=10e-5)):
-    print("test_2d_1:TRUE")
-  else:
-    print("test_2d_1:", torch.allclose(out,fuse_out, rtol=0, atol=10e-6), torch.allclose(x.grad,fuse_x.grad, rtol=0, atol=10e-5),torch.allclose(bn.weight.grad, fuse_dropout.weight.grad, rtol=0, atol=10e-5),torch.allclose(bn.bias.grad, fuse_dropout.bias.grad, rtol=0, atol=10e-5))
+    def __init__(self,channel,dropout_p):
+        super(torch_bn2d_dropout, self).__init__()
+        self.channel = channel
+        self.BatchNorm = torch.nn.BatchNorm2d(channel)
+        self.Dropout =  torch.nn.Dropout(p=dropout_p)
 
-def test_2d_2():
-  torch.manual_seed(1)
-  torch.backends.cudnn.enabled=False
-  x = torch.rand(2,3,8,8).cuda().requires_grad_()
-  # x = torch.rand(128,64,112,112).cuda().requires_grad_()
-  bn = torch.nn.BatchNorm2d(x.size(1)).cuda()
-  out = bn(x)
-  torch.manual_seed(1)
-  dropout = torch.nn.Dropout().cuda()
-  out = dropout(out)
-  out += 1
-  out.backward(out)
+    def forward(self,x):
+        out=self.BatchNorm(x)
+        out=self.Dropout(out)
+        return out
 
-  torch.manual_seed(1)
-  fuse_x = torch.rand(2,3,8,8).cuda().requires_grad_()
-  # fuse_x = torch.rand(128,64,112,112).cuda().requires_grad_()
-  fuse_dropout = FuseBatchNormDropout2d(fuse_x.size(1)).cuda()
-  fuse_out = fuse_dropout(fuse_x)
-  fuse_out += 1
-  fuse_out.backward(fuse_out)
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
-  if (out.equal(fuse_out) and torch.allclose(x.grad,fuse_x.grad, rtol=0, atol=10e-6) and torch.allclose(bn.weight.grad, fuse_dropout.weight.grad, rtol=0, atol=10e-4) and torch.allclose(bn.bias.grad, fuse_dropout.bias.grad, rtol=0, atol=10e-6)):
-    print("test_2d_2:TRUE")
-  else:
-    print("test_2d_2:", out.equal(fuse_out), torch.allclose(x.grad,fuse_x.grad, rtol=0, atol=10e-6),torch.allclose(bn.weight.grad, fuse_dropout.weight.grad, rtol=0, atol=10e-6),torch.allclose(bn.bias.grad, fuse_dropout.bias.grad, rtol=0, atol=10e-6))
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
 
-def test_2d_3():
-  torch.manual_seed(1)
-  torch.backends.cudnn.enabled=False
-  x = torch.rand(2,3,8,8).cuda().requires_grad_()
-  x = torch.rand(128,64,112,112).cuda().requires_grad_()
-  bn = torch.nn.BatchNorm2d(x.size(1)).cuda()
-  out = bn(x)
-  torch.manual_seed(1)
-  dropout = torch.nn.Dropout(p=1).cuda()
-  out = dropout(out)
-  out += 1
-  out.backward(out)
+def get_data(batchsize=2, channel=3,cols=8,rows=8,use_half=False):
+    if use_half:
+        x = torch.rand((batchsize, channel, cols,rows)).cuda().half()
+        grad = torch.rand((batchsize, channel, cols,rows)).cuda().half()
 
-  torch.manual_seed(1)
-  fuse_x = torch.rand(2,3,8,8).cuda().requires_grad_()
-  fuse_x = torch.rand(128,64,112,112).cuda().requires_grad_()
-  fuse_dropout = FuseBatchNormDropout2d(fuse_x.size(1), p = 1).cuda()
-  fuse_out = fuse_dropout(fuse_x)
-  fuse_out += 1
-  fuse_out.backward(fuse_out)
+    else:
+        x = torch.rand((batchsize, channel, cols,rows)).cuda()
+        grad = torch.rand((batchsize, channel, cols,rows)).cuda()
 
-  if (out.equal(fuse_out) and torch.allclose(x.grad,fuse_x.grad, rtol=0, atol=10e-6) and torch.allclose(bn.weight.grad, fuse_dropout.weight.grad, rtol=0, atol=10e-4) and torch.allclose(bn.bias.grad, fuse_dropout.bias.grad, rtol=0, atol=10e-6)):
-    print("test_2d_3:TRUE")
-  else:
-    print("test_2d_3:", out.equal(fuse_out), torch.allclose(x.grad,fuse_x.grad, rtol=0, atol=10e-6),torch.allclose(bn.weight.grad, fuse_dropout.weight.grad, rtol=0, atol=10e-6),torch.allclose(bn.bias.grad, fuse_dropout.bias.grad, rtol=0, atol=10e-6))
+    x.requires_grad_(True)
+    x1=x.clone().detach().requires_grad_()
+    x2=x.clone().detach().requires_grad_()
+    return x1,x2,grad
 
-def test_2d_4():
-  torch.manual_seed(1)
-  torch.backends.cudnn.enabled=False
-  x = torch.rand(2,3,8,8).cuda().requires_grad_()
-  # x = torch.rand(128,64,112,112).cuda().requires_grad_()
-  bn = torch.nn.BatchNorm2d(x.size(1)).cuda()
-  out = bn(x)
-  torch.manual_seed(1)
-  dropout = torch.nn.Dropout(p=0).cuda()
-  out = dropout(out)
-  out += 1
-  out.backward(out)
+def get_model(channel=1,dropout_p=0.5,use_half=False):
 
-  torch.manual_seed(1)
-  fuse_x = torch.rand(2,3,8,8).cuda().requires_grad_()
-  # fuse_x = torch.rand(128,64,112,112).cuda().requires_grad_()
-  fuse_dropout = FuseBatchNormDropout2d(fuse_x.size(1), p = 0).cuda()
-  fuse_out = fuse_dropout(fuse_x)
-  fuse_out += 1
-  fuse_out.backward(fuse_out)
+    if use_half:
+        fuse_bn_dropout=FuseBatchNormDropout2d(channel,p = dropout_p).cuda().half()
+        torch_bn_dropout=torch_bn2d_dropout(channel,dropout_p).cuda().half()
 
-  if (out.equal(fuse_out) and torch.allclose(x.grad,fuse_x.grad, rtol=0, atol=10e-6) and torch.allclose(bn.weight.grad, fuse_dropout.weight.grad, rtol=0, atol=10e-5) and torch.allclose(bn.bias.grad, fuse_dropout.bias.grad, rtol=0, atol=10e-5)):
-    print("test_2d_4:TRUE")
-  else:
-    print("test_2d_4:", out.equal(fuse_out), torch.allclose(x.grad,fuse_x.grad, rtol=0, atol=10e-6),torch.allclose(bn.weight.grad, fuse_dropout.weight.grad, rtol=0, atol=10e-5),torch.allclose(bn.bias.grad, fuse_dropout.bias.grad, rtol=0, atol=10e-5))
-  
+    else:
+       
+        fuse_bn_dropout=FuseBatchNormDropout2d(channel,p = dropout_p).cuda()
+        torch_bn_dropout=torch_bn2d_dropout(channel,dropout_p).cuda()
+       
+    return torch_bn_dropout,fuse_bn_dropout
 
+
+def test_profile(batchsize,channel,cols,rows,dropout_p,repeat_num,use_half=False):
+    
+    x1,x2,grad=get_data(batchsize, channel, cols,rows,use_half=use_half)
+    f1,f2=get_model(channel=channel,dropout_p=dropout_p,use_half=use_half)
+
+    torch.manual_seed(1)
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+                                     profile_memory=False) as prof1:
+        for i in range(repeat_num):
+            x1.grad = None
+            y1 = f1(x1)
+            y1.backward(grad)
+            torch.cuda.synchronize()
+    prof1.export_chrome_trace('./profile_torch_bn_dropout.json')
+
+    torch.manual_seed(1)
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+                                     profile_memory=False) as prof2:
+        for i in range(repeat_num):
+            x2.grad = None
+            y2 = f2(x2)
+            y2.backward(grad)
+            torch.cuda.synchronize()
+    prof2.export_chrome_trace('./profile_fuse_bn_dropout.json')  
+
+def test_speed(batchsize,channel,cols,rows,dropout_p,repeat_num,use_half=False):
+
+    x1,x2,grad=get_data(batchsize, channel, cols,rows,use_half=use_half)
+    f1,f2=get_model(channel=channel,dropout_p=dropout_p,use_half=use_half)
+
+    torch.manual_seed(1)
+    start_time = time.time()
+    for i in range(repeat_num):
+        x1.grad = None
+        y1 = f1(x1)
+        y1.backward(grad)
+        torch.cuda.synchronize()
+    end_time = time.time()
+    fc1_espl = end_time - start_time
+    print('torch_bn_dropout', 'averange time is', fc1_espl *1000/ repeat_num, 'ms')
+
+    torch.manual_seed(1)
+    start_time = time.time()
+    for i in range(repeat_num):
+        x2.grad = None
+        y2 = f2(x2)
+        y2.backward(grad)
+        torch.cuda.synchronize()
+    end_time = time.time()    
+    fc2_espl = end_time - start_time
+    print('fuse_bn_dropout', 'averange time is', fc2_espl *1000/ repeat_num, 'ms')
+    #误差计算
+    if use_half:
+        print(allclose(y1,y2,rtol=2e-02, atol=2e-02))
+        print(allclose(x1.grad,x2.grad,rtol=2e-02, atol=2e-02))
+        print(allclose(f1.BatchNorm.weight.grad,f2.weight.grad,rtol=2e-02, atol=2e-02))
+        print(allclose(f1.BatchNorm.bias.grad,f2.bias.grad,rtol=2e-02, atol=2e-02))
+        
+    else:
+        print(allclose(y1,y2,rtol=1e-05, atol=1e-05))
+        print(allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05))
+        print(allclose(f1.BatchNorm.weight.grad,f2.weight.grad,rtol=1e-05, atol=1e-05))
+        print(allclose(f1.BatchNorm.bias.grad,f2.bias.grad,rtol=1e-05, atol=1e-05))
+    
 if __name__ == "__main__":
-  test_2d_1()
-  test_2d_2()
-  test_2d_3()
-  test_2d_4()
+
+    #设置基础参数
+    batchsize, channel,cols,rows = 2,3,8,8
+    dropout_p=0.4
+    #耗时测试
+    test_speed(batchsize, channel,cols,rows,dropout_p,repeat_num=1000,use_half=False)
+    #性能分析
+    #test_profile(batchsize, channel,cols,rows,dropout_p,repeat_num=100,use_half=False)

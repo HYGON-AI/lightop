@@ -4,35 +4,113 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from lightop.fuseadddropout import AddDropout
 
-device = torch.device('cuda')
-x0=torch.rand([128, 50, 768]).cuda()
-y0=torch.rand([128, 50, 768]).cuda()
-torch.manual_seed(0)
 
-test = AddDropout().to(device)
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
-with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
-                                     profile_memory=False) as prof:
-    for _ in range(10):
-        x = Variable(x0, requires_grad=True)
-        y = Variable(y0, requires_grad=True)
-        torch.manual_seed(0)
-        z = test(x, y)
-        z.sum().backward()
-        time.sleep(0.1)
-prof.export_chrome_trace('./resnet_profile.json')
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
 
-with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+def get_data(batchsize=128, seqs=50, cols=128,use_half=False):
+
+    if use_half:
+        x = torch.rand((batchsize, seqs, cols)).cuda().half()
+        grad = torch.rand((batchsize, seqs, cols)).cuda().half()
+        residual = torch.rand((batchsize, seqs, cols)).cuda().half()
+    else:
+        x = torch.rand((batchsize, seqs, cols)).cuda()
+        grad = torch.rand((batchsize, seqs, cols)).cuda()
+        residual = torch.rand((batchsize, seqs, cols)).cuda()
+
+    x.requires_grad_(True)
+    residual.requires_grad_(True)
+    x1=x.clone().detach().requires_grad_()
+    x2=x.clone().detach().requires_grad_()
+    residual1=residual.clone().detach().requires_grad_()
+    residual2=residual.clone().detach().requires_grad_()
+    return x1,x2,residual1,residual2,grad
+
+def get_model(dropout_p=0.5,use_half=False):
+
+    if use_half:
+        fuse_dropout_add=AddDropout(rate=dropout_p).cuda().half()
+        torch_dropout_add=lambda x, r: (F.dropout(x, dropout_p) + r).half()
+    else:
+        fuse_dropout_add=AddDropout(rate=dropout_p).cuda()
+        torch_dropout_add=lambda x, r: F.dropout(x, dropout_p) + r
+        
+    return torch_dropout_add,fuse_dropout_add
+
+
+def test_profile(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
+    
+    x1,x2,residual1,residual2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
+    f1,f2=get_model(dropout_p,use_half=use_half)
+
+    torch.manual_seed(0)
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+                                     profile_memory=False) as prof1:
+        for i in range(repeat_num):
+            x1.grad = None
+            residual1.grad = None
+            y1 = f1(x1,residual1)
+            y1.backward(grad)
+            torch.cuda.synchronize()
+    prof1.export_chrome_trace('./profile_torch_dropout_add.json')
+
+    torch.manual_seed(0)
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                      profile_memory=False) as prof2:
-    for _ in range(10):
-        x2 = Variable(x0, requires_grad=True)
-        y2 = Variable(y0, requires_grad=True)
-        torch.manual_seed(0)
-        z2 = F.dropout(x2)+y2
-        z2.sum().backward()
-        time.sleep(0.1)
-prof2.export_chrome_trace('./resnet_profile2.json')
+        for i in range(repeat_num):
+            
+            x2.grad = None
+            residual2.grad = None
+            y2 = f2(x2,residual2)
+            y2.backward(grad)
+            torch.cuda.synchronize()
+    prof2.export_chrome_trace('./profile_fuse_dropout_add.json')  
 
+def test_speed(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
 
-print(x.grad)
-print(x2.grad)
+    x1,x2,residual1,residual2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
+    f1,f2=get_model(dropout_p,use_half=use_half)
+
+    torch.manual_seed(0)
+    start_time = time.time()
+    for i in range(repeat_num):
+        x1.grad = None
+        residual1.grad = None
+        y1 = f1(x1, residual1)
+        y1.backward(grad)
+        torch.cuda.synchronize()
+    end_time = time.time()
+    fc1_espl = end_time - start_time
+    print('torch_dropout_add', 'averange time is', fc1_espl *1000/ repeat_num, 'ms')
+
+    torch.manual_seed(0)
+    start_time = time.time()
+    for i in range(repeat_num):
+        x2.grad = None
+        residual2.grad = None
+        y2 = f2(x2,residual2)
+        y2.backward(grad)
+        torch.cuda.synchronize()
+    end_time = time.time()    
+    fc2_espl = end_time - start_time
+    print('fuse_dropout_add', 'averange time is', fc2_espl *1000/ repeat_num, 'ms')
+
+    #误差计算
+    if use_half:
+        print(allclose(y1,y2,rtol=2e-02, atol=2e-02))
+        print(allclose(x1.grad,x2.grad,rtol=2e-02, atol=2e-02))
+    else:
+        print(allclose(y1,y2,rtol=1e-05, atol=1e-05))
+        print(allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05))
+    
+if __name__ == "__main__":
+
+    #设置基础参数
+    batchsize, seqs, cols = 128, 50, 768
+    dropout_p=0.4
+    #耗时测试
+    test_speed(batchsize, seqs, cols,dropout_p,repeat_num=1000,use_half=False)
+    #性能分析
+    #test_profile(batchsize, seqs, cols,dropout_p,repeat_num=100,use_half=False)
