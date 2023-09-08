@@ -6,6 +6,9 @@ from lightop.lossctc import CTCLoss as lightop_CTCLoss
 
 torch.set_printoptions(precision=10)
 
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
 
 def get_data_by_vesion(version=1, use_half=False, use_cuda=True, **args):
     def get_data_v1(N=16, T=50, S=10, C=30):
@@ -120,13 +123,10 @@ def test_compare_gpu(pre_repeat_num=10, repeat_num=50, use_half=False, **args):
 
         grad_lightop = p1.grad.detach().cpu() if logits_time_major else p1.grad.detach().cpu().permute(1, 0, 2)
         grad_torch = p2.grad.detach().cpu()
-        print('torch torch loss_torch=', loss_torch, ', grad shape={}'.format(grad_torch.shape))
-        print('torch lightop loss_lightop=', loss_lightop, ', grad shape={}'.format(grad_lightop.shape))
+        print(allclose(loss_torch,loss_lightop,rtol=1e-05, atol=1e-05))
+        print(allclose(grad_torch,grad_lightop,rtol=1e-05, atol=1e-05))
         print('#' * 20, '\n')
-        grad_diff = torch.nn.functional.l1_loss(grad_torch, grad_lightop, reduction='none')
-        print('grad_diff max mean=', torch.max(grad_diff).data, torch.mean(grad_diff).data, grad_diff.shape)
-        loss_diff = torch.nn.functional.l1_loss(loss_torch, loss_lightop, reduction='sum')
-        print("loss_diff=", loss_diff)
+        
 
     print('#' * 20, '\n')
 
@@ -194,7 +194,6 @@ def run_test_gpu(pre_repeat_num, repeat_num=100, use_half=False):
 def main():
     pre_repeat_num = 10
     repeat_num = 100
-    # run_test_gpu(pre_repeat_num, repeat_num, use_half=True)
     run_test_gpu(pre_repeat_num, repeat_num, use_half=False)
     # test_record_by_profiler(use_half=False, N=100, T=400, S=320, C=600)
 

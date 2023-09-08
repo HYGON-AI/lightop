@@ -30,3 +30,6 @@ class ReluDropout(torch.nn.Module):
 
     def forward(self, input_x):
         return ReluDropoutFunction.apply(input_x, self.rate, self.use_relu, self.training)
+
+    def extra_repr(self):
+        return f'use_relu={self.use_relu},rate={round(self.rate,3):0.3f}'

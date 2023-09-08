@@ -88,6 +88,9 @@ class FusedScaleMaskSoftmaxDropout(nn.Module):
             # print("no use fuse kernel, use torch")
             return self.forward_torch_softmax_dropout(input, mask)
 
+    def extra_repr(self):
+        return f'p={round(self.p,3):0.3f}'
+
     def is_kernel_available(self, mask, b, np, sq, sk):
         attn_batches = b * np
         if (

@@ -9,6 +9,10 @@ import time
 from lightop import op
 from lightop.fuselinearbias import LinearBias
 
+#use_half：rtol=1e-02, atol=1e-02,use_float32:rtol=1e-05, atol=1e-05
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+
 # m = 107   batch_size*seq_len
 # k = 1024  hidden_size
 # n = 1024  hidden_size*3/4
@@ -196,9 +200,11 @@ for dim in dims:
         ##print(np.linalg.norm(fc_layer.weight.grad-fc1.weight.grad.detach().cpu().numpy()))
         #print(np.linalg.norm(fc_layer.bias.grad.data-fc1.bias.grad.detach().cpu().numpy()))
         if forward_only:
-            print("test_linearbias:",out1.equal(out2), fc1.weight.equal(fc2.weight), fc1.bias.equal(fc2.bias))
+            print("test_linearbias:",allclose(out1,out2,rtol=1e-05, atol=1e-05), allclose(fc1.weight,fc2.weight,rtol=1e-05, atol=1e-05), allclose(fc1.bias,fc2.bias,rtol=1e-05, atol=1e-05))
         else:
-            print("test_linearbias:", out1.equal(out2), fc1.weight.equal(fc2.weight), fc1.bias.equal(fc2.bias), x1.grad.equal(x2.grad), fc1.weight.grad.equal(fc2.weight.grad), fc1.bias.grad.equal(fc2.bias.grad))
+            print("test_linearbias:",allclose(out1,out2,rtol=1e-05, atol=1e-05), allclose(fc1.weight,fc2.weight,rtol=1e-05, atol=1e-05), allclose(fc1.bias,fc2.bias,rtol=1e-05, atol=1e-05), 
+                                     allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05), allclose(fc1.weight.grad,fc2.weight.grad,rtol=1e-05, atol=1e-05), allclose(fc1.bias.grad,fc2.bias.grad,rtol=1e-05, atol=1e-05))
+                                  
         # print(fc1.bias)
         # print(fc2.bias)
         # print(out1)

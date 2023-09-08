@@ -6,6 +6,10 @@ from lightop.scaled_masked_softmax_dropout import FusedScaleMaskSoftmaxDropout
 from lightop.scaled_masked_softmax import AttnMaskType
 from lightop.scaled_masked_softmax_dropout import FuseAttnMaskType
 
+
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+
 def time_synchronized():
     torch.cuda.synchronize() if torch.cuda.is_available() else None
     return time.time()
@@ -19,7 +23,7 @@ def test_time():
     attn_weights = torch.randn(4,16,seq,seq).cuda().half().requires_grad_()
 
     fuse_time_start = time_synchronized()
-    for i in range(20):
+    for i in range(1000):
         if (i == 10):
             fuse_time_start = time_synchronized()
         fused_softmax = (
@@ -48,7 +52,7 @@ def test_time():
     
     torch_attn_weights = torch.randn(4,16,seq,seq).cuda().half().requires_grad_()
     time_start = time_synchronized()
-    for i in range(20):
+    for i in range(1000):
         if (i == 10):
             time_start = time_synchronized()
         torch_softmax = (
@@ -131,21 +135,15 @@ def test_fused_upper_triangle_mask_softmax_dropout(seq, pa):
     if (pa != 0):
         torch_softmax_output += 1
 
-    test_result = (fused_softmax_output - torch_softmax_output).abs()
-    if (test_result.max() < 10e-2):
-        print(("sep_len:{} P: {} forward Success! max mise data: {}").format(seq, pa,test_result.max()))
-    else:
-        print(("sep_len:{} P: {} forward Error! max mise data: {}").format(seq, pa,test_result.max()))
-        
+    #use_half：rtol=1e-02, atol=1e-02,use_float32:rtol=1e-05, atol=1e-05
+    print(allclose(fused_softmax_output,torch_softmax_output,rtol=1e-05, atol=1e-05))
+
     torch.autograd.set_detect_anomaly(True)
     fused_softmax_output.backward(fused_softmax_output)
-    
     torch_softmax_output.backward(torch_softmax_output)
-    test_result_backward = (attn_weights.grad - torch_attn_weights.grad).abs()
-    if (test_result_backward.max() < 10e-2):
-        print(("sep_len:{} P: {} backward Success! max mise data: {}").format(seq, pa,test_result_backward.max()))
-    else:
-        print(("sep_len:{} P: {} backward Error! max mise data: {}").format(seq, pa,test_result_backward.max()))
+    #use_half：rtol=1e-02, atol=1e-02,use_float32:rtol=1e-05, atol=1e-05
+    print(allclose(attn_weights.grad,torch_attn_weights.grad,rtol=1e-05, atol=1e-05))
+   
 
 p = [0, 0.2, 0.5, 0.8, 1]
 seq_len = [64,128,256,512,1024,2048]
@@ -161,4 +159,4 @@ if __name__ == "__main__":
         test_fused_upper_triangle_mask_softmax_dropout(1024, tmp_p)
 
     # time 测试尽量单独在乌镇环境测试，保证环境的干净
-    # test_time()
+    test_time()

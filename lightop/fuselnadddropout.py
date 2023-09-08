@@ -17,3 +17,5 @@ class LnAddDropout(torch.nn.Module):
     def forward(self, inputA, inputB):
         return op.ln_add_dropout_forward_autograd(inputA, inputB, self.weight,self.bias,self.eps,self.rate, self.training)
 
+    def extra_repr(self):
+        return f'rate={round(self.rate,3):0.3f},eps={round(self.eps,5):0.5f}'

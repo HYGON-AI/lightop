@@ -11,3 +11,6 @@ class AddDropout(torch.nn.Module):
 
     def forward(self, inputA, inputB):
         return op.add_dropout_forward_autograd(inputA, inputB, self.rate, self.training)
+
+    def extra_repr(self):
+        return f'rate={round(self.rate,3):0.3f}'
