@@ -1,666 +1,381 @@
+import os
 import time
 import torch
 import torch.nn.functional as F
-from einops import rearrange, repeat
 
-from typing import Optional
-from apex.normalization import MixedFusedRMSNorm
 from lightop.fuse_norms_add_drops import FusedLnRmsNormsAddDropout
+from apex.normalization import FusedLayerNorm, MixedFusedRMSNorm
+
+torch.set_printoptions(precision=7, )
 
 
-def test_accuracy_ln(is_training=True):
-    print('\ntest_accuracy_ln: x shape ', x0.shape)
-    x1 = x0.clone().detach().requires_grad_()
-    x2 = x0.clone().detach().requires_grad_()
-
-    torch_ln = torch.nn.LayerNorm(cols).to(device)
-    fused_ln = FusedLnRmsNormsAddDropout(norm_type='ln', normalized_shape=cols, normalized_affine=True,
-                                         bias_type='none', drop_type='none').to(device)
-    out1 = torch_ln(x1)
-    if is_training:
-        out1.backward(grad)
-    torch.cuda.synchronize()
-    out2 = fused_ln(x2)
-    if is_training:
-        out2.backward(grad)
-    torch.cuda.synchronize()
-    out_diff = torch.nn.functional.l1_loss(out1, out2, reduction='none')
-    print("ln out_diff: max={}, mean={}".format(out_diff.max(), out_diff.mean()))
-    if is_training:
-        grad_diff = torch.nn.functional.l1_loss(x1.grad, x2.grad, reduction='none')
-        print("ln grad_diff: max={}, mean={}".format(grad_diff.max(), grad_diff.mean()))
+# ################################## 准确性检测和速度测试 ##################################
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+    """ 检测两个tensor之间的误差 """
+    return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
 
 
-def test_accuracy_rms(is_training=True):
-    print('\ntest_accuracy_rms: x shape ', x0.shape)
-    x1 = x0.clone().detach().requires_grad_()
-    x2 = x0.clone().detach().requires_grad_()
-
-    apex_rms = MixedFusedRMSNorm(cols).to(device)
-    fused_rms = FusedLnRmsNormsAddDropout(norm_type='rms', normalized_shape=cols, normalized_affine=True,
-                                          bias_type='none', drop_type='none').to(device)
-    out1 = apex_rms(x1)
-    if is_training:
-        out1.backward(grad)
-    torch.cuda.synchronize()
-    out2 = fused_rms(x2)
-    if is_training:
-        out2.backward(grad)
-    torch.cuda.synchronize()
-    out_diff = torch.nn.functional.l1_loss(out1, out2, reduction='none')
-    print("rms out_diff: max={}, mean={}".format(out_diff.max(), out_diff.mean()))
-    if is_training:
-        grad_diff = torch.nn.functional.l1_loss(x1.grad, x2.grad, reduction='none')
-        print("rms grad_diff: max={}, mean={}".format(grad_diff.max(), grad_diff.mean()))
-
-
-def test_accuracy_add(is_training=True):
-    print('\ntest_accuracy_rms: x shape ', x0.shape)
-    x1 = x0.clone().detach().requires_grad_()
-    x2 = x0.clone().detach().requires_grad_()
-    y1 = y0.clone().detach().requires_grad_()
-    y2 = y0.clone().detach().requires_grad_()
-
-    fused_ln = FusedLnRmsNormsAddDropout(norm_type='none', normalized_shape=cols, normalized_affine=True,
-                                         bias_type='bias', drop_type='none', drop_prob=0.5).to(device)
-    out1 = (x1 + y1)
-    if is_training:
-        out1.backward(grad)
-    torch.cuda.synchronize()
-    out2 = fused_ln(x2, y2)
-    if is_training:
-        out2.backward(grad)
-    torch.cuda.synchronize()
-
-    out_diff = torch.nn.functional.l1_loss(out1, out2, reduction='none')
-    print("add out_diff: max={}, mean={}".format(out_diff.max(), out_diff.mean()))
-    if is_training:
-        x1_grad_diff = torch.nn.functional.l1_loss(x1.grad, x2.grad, reduction='none')
-        print("add x grad_diff: max={}, mean={}".format(x1_grad_diff.max(), x1_grad_diff.mean()))
-        y1_grad_diff = torch.nn.functional.l1_loss(y1.grad, y2.grad, reduction='none')
-        print("add y grad_diff: max={}, mean={}".format(y1_grad_diff.max(), y1_grad_diff.mean()))
-
-
-def test_accuracy_ln_add(is_training=True):
-    print('\ntest_accuracy_ln_add: x shape ', x0.shape)
-    x1 = x0.clone().detach().requires_grad_()
-    x2 = x0.clone().detach().requires_grad_()
-    y1 = y0.clone().detach().requires_grad_()
-    y2 = y0.clone().detach().requires_grad_()
-
-    torch_ln = torch.nn.LayerNorm(cols).to(device)
-    fused_ln = FusedLnRmsNormsAddDropout(norm_type='ln', normalized_shape=cols, normalized_affine=True,
-                                         bias_type='bias', drop_type='none', drop_prob=0.5).to(device)
-
-    out1 = torch_ln(x1 + y1)
-    if is_training:
-        out1.backward(grad)
-    torch.cuda.synchronize()
-    out2 = fused_ln(x2, y2)
-    if is_training:
-        out2.backward(grad)
-    torch.cuda.synchronize()
-
-    out_diff = torch.nn.functional.l1_loss(out1, out2, reduction='none')
-    print("ln_add out_diff: max={}, mean={}".format(out_diff.max(), out_diff.mean()))
-    if is_training:
-        x1_grad_diff = torch.nn.functional.l1_loss(x1.grad, x2.grad, reduction='none')
-        print("ln_add x grad_diff: max={}, mean={}".format(x1_grad_diff.max(), x1_grad_diff.mean()))
-        y1_grad_diff = torch.nn.functional.l1_loss(y1.grad, y2.grad, reduction='none')
-        print("ln_add y grad_diff: max={}, mean={}".format(y1_grad_diff.max(), y1_grad_diff.mean()))
-
-
-def test_accuracy_rms_add(is_training=True):
-    print('\ntest_accuracy_rms_add: x shape ', x0.shape)
-    x1 = x0.clone().detach().requires_grad_()
-    x2 = x0.clone().detach().requires_grad_()
-    y1 = y0.clone().detach().requires_grad_()
-    y2 = y0.clone().detach().requires_grad_()
-
-    drop_prob = 0.0
-    apex_rms = MixedFusedRMSNorm(cols).to(device)
-    fused_rms = FusedLnRmsNormsAddDropout(norm_type='rms', normalized_shape=cols, normalized_affine=True,
-                                          bias_type='bias', drop_type='none', drop_prob=drop_prob).to(device)
-
-    out1 = apex_rms(x1 + y1)
-    if is_training:
-        out1.backward(grad)
-    torch.cuda.synchronize()
-    out2 = fused_rms(x2, y2)
-    if is_training:
-        out2.backward(grad)
-    torch.cuda.synchronize()
-    out_diff = torch.nn.functional.l1_loss(out1, out2, reduction='none')
-    print("Rms_add out_diff: max={}, mean={}".format(out_diff.max(), out_diff.mean()))
-    if is_training:
-        x1_grad_diff = torch.nn.functional.l1_loss(x1.grad, x2.grad, reduction='none')
-        print("Rms_add x grad_diff: max={}, mean={}".format(x1_grad_diff.max(), x1_grad_diff.mean()))
-        y1_grad_diff = torch.nn.functional.l1_loss(y1.grad, y2.grad, reduction='none')
-        print("Rms_add y grad_diff: max={}, mean={}".format(y1_grad_diff.max(), y1_grad_diff.mean()))
-
-
-# ##########################################################################################
-# dropout test accuracy
-# ##########################################################################################
-
-def get_dropout_fraction(dropout_mask, query_padding_mask=None, key_padding_mask=None, causal=False):
+def get_dropout_fraction(dropout_mask, dst_shape, drop_rate: float = 0.0):
     """
-    dropout_mask: (batch_size, nheads, seqlen_q, seqlen_k), bool. True means keep, False means drop.
-    query_padding_mask: (batch_size, seqlen_q)
-    key_padding_mask: (batch_size, seqlen_k)
+    用于检测dropout，使用大数定律检测其dropout的比例
+    dropout_mask: bool. True means keep, False means drop.
     """
-    batch_size, nheads, seqlen_q, seqlen_k = dropout_mask.shape
-    dropped = ~dropout_mask
-    if query_padding_mask is not None:
-        dropped.masked_fill_(rearrange(~query_padding_mask, 'b s -> b 1 s 1'), False)
-    if key_padding_mask is not None:
-        dropped.masked_fill_(rearrange(~key_padding_mask, 'b s -> b 1 1 s'), False)
-    if causal:
-        causal_mask = torch.triu(torch.ones(seqlen_q, seqlen_k, dtype=torch.bool,
-                                            device=dropout_mask.device), 1)
-        dropped.masked_fill_(causal_mask, False)
-    dropped_total = dropped.sum()
-    query_lengths = (query_padding_mask.sum(dim=-1) if query_padding_mask is not None
-                     else torch.full((batch_size,), seqlen_q, device=dropout_mask.device))
-    key_lengths = (key_padding_mask.sum(dim=-1) if key_padding_mask is not None
-                   else torch.full((batch_size,), seqlen_k, device=dropout_mask.device))
-    if not causal:
-        numel_per_batch = query_lengths * key_lengths
+    assert dropout_mask is not None
+    assert dropout_mask.shape == dst_shape
+
+    dropped_total = dropout_mask.sum()  # all keep number
+    tensor_total = dropout_mask.flatten().shape[0]
+    if tensor_total <= 1:  # 没有使用dropmask
+        return
+
+    drop_actual_rate = 1.0 - dropped_total / tensor_total
+    print(bool(torch.abs(drop_rate-drop_actual_rate) < 0.01), '-- drop_rate = {:.6f}, drop_actual_rate = {:.6f}'.format(drop_rate, drop_actual_rate))
+
+
+def test_op1in_speed(op, op_name, use_half=False):
+    if use_half:
+        x1 = x0.half().clone().detach().requires_grad_()
+        grad1 = grad.half().clone().detach().requires_grad_()
+        op.half()
     else:
-        numel_per_batch = torch.where(
-            query_lengths <= key_lengths,
-            query_lengths * (query_lengths + 1) / 2,
-            query_lengths * key_lengths - (key_lengths * (key_lengths - 1) / 2)
-        )
-    return dropped_total / (numel_per_batch.sum() * nheads)
+        x1 = x0.clone().detach().requires_grad_()
+        grad1 = grad.clone().detach().requires_grad_()
+        op.float()
 
-
-def test_accuracy_add_dropout(is_training=True):
-    print('\ntest_accuracy_add_dropout: x shape ', x0.shape)
-    x1 = x0.clone().detach().requires_grad_()
-    x2 = x0.clone().detach().requires_grad_()
-    y1 = y0.clone().detach().requires_grad_()
-    y2 = y0.clone().detach().requires_grad_()
-
-    drop_prob = 0.0
-    fused_ln = FusedLnRmsNormsAddDropout(norm_type='none', normalized_shape=cols, normalized_affine=True,
-                                         bias_type='bias', drop_type='dropout', drop_prob=drop_prob).to(device)
-    if is_training:
-        fused_ln.train()
-    else:
-        fused_ln.eval()
-
-    out1 = F.dropout(x1, p=drop_prob, training=is_training) + y1
-    if is_training:
-        out1.backward(grad)
-    torch.cuda.synchronize()
-    out2 = fused_ln(x2, y2)
-    if is_training:
-        out2.backward(grad)
-    torch.cuda.synchronize()
-    out_diff = torch.nn.functional.l1_loss(out1, out2, reduction='none')
-    print("add_dropout out_diff: max={}, mean={}".format(out_diff.max(), out_diff.mean()))
-
-    if is_training:
-        x1_grad_diff = torch.nn.functional.l1_loss(x1.grad, x2.grad, reduction='none')
-        print("add_dropout x grad_diff: max={}, mean={}".format(x1_grad_diff.max(), x1_grad_diff.mean()))
-        # print('x1.grad: ', x1.grad, '\nx2.grad: ', x2.grad, '\nx1_grad_diff: ', x1_grad_diff)
-        y1_grad_diff = torch.nn.functional.l1_loss(y1.grad, y2.grad, reduction='none')
-        print("add_dropout y grad_diff: max={}, mean={}".format(y1_grad_diff.max(), y1_grad_diff.mean()))
-    # print('fused_ln drop_mask: ', fused_ln.drop_mask, torch.max(fused_ln.drop_mask), torch.min(fused_ln.drop_mask))
-
-
-def test_accuracy_ln_add_dropout(is_training=True):
-    print('\ntest_accuracy_ln_add_dropout: x shape ', x0.shape)
-    x1 = x0.clone().detach().requires_grad_()
-    x2 = x0.clone().detach().requires_grad_()
-    y1 = y0.clone().detach().requires_grad_()
-    y2 = y0.clone().detach().requires_grad_()
-
-    drop_prob = 0.0
-
-    torch_ln = torch.nn.LayerNorm(cols).to(device)
-    fused_ln = FusedLnRmsNormsAddDropout(norm_type='ln', normalized_shape=cols, normalized_affine=True,
-                                         bias_type='bias', drop_type='dropout', drop_prob=drop_prob).to(device)
-    if is_training:
-        fused_ln.train()
-    else:
-        fused_ln.eval()
-
-    # out1 = torch_ln(F.dropout(x1, p=drop_prob, training=is_training) + y1)
-    out1 = torch_ln(x1 + y1)
-    # out1 = (F.dropout(x1, p=droprate, training=is_training) + y1)
-    out1.backward(grad)
-    torch.cuda.synchronize()
-    out2 = fused_ln(x2, y2)
-    out2.backward(grad)
-    torch.cuda.synchronize()
-
-    out_diff = torch.nn.functional.l1_loss(out1, out2, reduction='none')
-    # print('out1: ', out1[:3, :3, :3], '\nout2: ', out2[:3, :3, :3])
-    print("ln_add_dropout out_diff: max={}, mean={}".format(out_diff.max(), out_diff.mean()))
-    x1_grad_diff = torch.nn.functional.l1_loss(x1.grad, x2.grad, reduction='none')
-    # print('x1.grad: ', x1.grad[:3, :3, :3], '\nx2.grad: ', x2.grad[:3, :3, :3])
-    print("ln_add_dropout x grad_diff: max={}, mean={}".format(x1_grad_diff.max(), x1_grad_diff.mean()))
-    y1_grad_diff = torch.nn.functional.l1_loss(y1.grad, y2.grad, reduction='none')
-    # print('y1.grad: ', y1.grad[:3, :3, :3], '\ny2.grad: ', y2.grad[:3, :3, :3])
-    print("ln_add_dropout y grad_diff: max={}, mean={}".format(y1_grad_diff.max(), y1_grad_diff.mean()))
-
-
-# ##########################################################################################
-# test speed
-# ##########################################################################################
-def _test_op_speed(op, op_name: str, is_training=True):
-    x1 = x0.clone().detach().requires_grad_()
-
-    for i in range(10):
-        out1 = op(x1)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-
-    start_time = time.time()
-    for i in range(int(repeat_num)):
-        out1 = op(x1)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    end_time = time.time()
-    print("{} time is {:.6f}".format(op_name, (end_time - start_time) / repeat_num * 1000))
-
-
-def test_speed_ln(is_training=True):
-    print('\ntest_speed_ln: x shape ', x0.shape)
-
-    from apex.normalization import FusedLayerNorm
-    from lightop.layernorm import LayerNorm
-
-    torch_ln = torch.nn.LayerNorm(cols).to(device)
-    fuseln = LayerNorm(cols).to(device)
-    apex_ln = FusedLayerNorm(normalized_shape=cols).to(device="cuda", dtype=x0.dtype)
-    fused_new_ln = FusedLnRmsNormsAddDropout(norm_type='ln', normalized_shape=cols, normalized_affine=True,
-                                             bias_type='none', drop_type='none').to(device)
-    op1, op1_name = torch_ln, 'torch_ln'
-    op2, op2_name = fuseln, 'fuseln'
-    op3, op3_name = apex_ln, 'apex_ln'
-    op4, op4_name = fused_new_ln, 'fused_new_ln'
-    # #################################
-    _test_op_speed(op1, op1_name, is_training)
-    if cols > 64:
-        _test_op_speed(op2, op2_name, is_training)
-    _test_op_speed(op3, op3_name, is_training)
-    _test_op_speed(op4, op4_name, is_training)
-
-
-def test_speed_rms(is_training=True):
-    print('\ntest_speed_rms: x shape ', x0.shape)
-
-    apex_rms = MixedFusedRMSNorm(cols).to(device)
-    fuse_rms = FusedLnRmsNormsAddDropout(norm_type='rms', normalized_shape=cols, normalized_affine=True,
-                                         bias_type='none', drop_type='none', drop_prob=0.5).to(device)
-    op1, op1_name = apex_rms, 'apex_rms'
-    op2, op2_name = fuse_rms, 'fuse_rms'
-    # #################################
-    _test_op_speed(op1, op1_name, is_training)
-    _test_op_speed(op2, op2_name, is_training)
-
-
-def test_speed_ln_add_dropout(is_training=True):
-    print('\ntest_speed_ln_add_dropout: x shape ', x0.shape)
-    x1 = x0.clone().detach().requires_grad_()
-    x2 = x0.clone().detach().requires_grad_()
-    y1 = y0.clone().detach().requires_grad_()
-    y2 = y0.clone().detach().requires_grad_()
-
-    droprate = 0.2
-    from lightop.fuselnadddropout import LnAddDropout
-
-    torch_ln = torch.nn.LayerNorm(cols).to(device)
-    fuselndropout = LnAddDropout(cols, droprate=droprate).to(device)
-
-    fused_new_ln = FusedLnRmsNormsAddDropout(norm_type='ln', normalized_shape=cols, normalized_affine=True,
-                                             bias_type='bias', drop_type='none', drop_prob=droprate).to(device)
-    if is_training:
-        fuselndropout.train()
-        fused_new_ln.train()
-    else:
-        fuselndropout.eval()
-        fused_new_ln.eval()
-
-    op1, op1_name = torch_ln, 'torch_ln'
-    op2, op2_name = fuselndropout, 'fuselndropout'
-    op4, op4_name = fused_new_ln, 'fused_new_ln'
-    # #################################
-    for i in range(10):
-        out1 = torch_ln(F.dropout(x1, p=droprate, training=is_training) + y1)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    start_time = time.time()
-    for i in range(int(repeat_num)):
-        out1 = torch_ln(F.dropout(x1, p=droprate, training=is_training) + y1)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    end_time = time.time()
-    print("{} time is {:.6f}".format('torch_ln', (end_time - start_time) / repeat_num * 1000))
-    # #################################
-    if cols >= 512:
+    if do_test_speed:
+        # warmup
         for i in range(10):
-            out1 = fuselndropout(x1, y1)
-            if is_training:
-                out1.backward(grad)
+            out = op(x1)
+            out.backward(grad1)
             torch.cuda.synchronize()
-        start_time = time.time()
+
+        forward_time, backward_time = 0, 0
         for i in range(int(repeat_num)):
-            out1 = fuselndropout(x1, y1)
-            if is_training:
-                out1.backward(grad)
+            time_t1 = time.time()
+            out = op(x1)
             torch.cuda.synchronize()
-        end_time = time.time()
-        print("{} time is {:.6f}".format('fuselndropout', (end_time - start_time) / repeat_num * 1000))
-    # #################################
-    for i in range(10):
-        out1 = fused_new_ln(x2, y2)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    start_time = time.time()
-    for i in range(int(repeat_num)):
-        out1 = fused_new_ln(x2, y2)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    end_time = time.time()
-    print("{} time is {:.6f}".format('fused_new_ln', (end_time - start_time) / repeat_num * 1000))
-    # #################################
+            time_t2 = time.time()
+            forward_time += time_t2 - time_t1
+
+            out.backward(grad1)
+            torch.cuda.synchronize()
+            time_t3 = time.time()
+            backward_time += time_t3 - time_t2
+
+        coef = 1000.0 / repeat_num
+        print("test_op1in_speed {} forward avg time: {:.6f}ms, backward avg time: {:.6f}ms, total avg time: {:.6f}ms".
+              format(op_name, coef * forward_time, coef * backward_time, coef * (forward_time + backward_time)))
+
+    # #### test accuracy
+    x1.grad=None
+    out = op(x1)
+    out.backward(grad1)
+    torch.cuda.synchronize()
+
+    return out, x1, op
 
 
-def test_speed_rms_add(is_training=True):
-    print('\ntest_speed_rms_add: x shape ', x0.shape)
+def test_op2in_speed(op, op_name, use_half=False):
+    if use_half:
+        x1 = x0.half().clone().detach().requires_grad_()
+        y1 = y0.half().clone().detach().requires_grad_()
+        grad1 = grad.half().clone().detach().requires_grad_()
+        op.half()
+    else:
+        x1 = x0.clone().detach().requires_grad_()
+        y1 = y0.clone().detach().requires_grad_()
+        grad1 = grad.clone().detach().requires_grad_()
+        op.float()
+
+    # #### test speed
+    if do_test_speed:
+        # warmup
+        for i in range(10):
+            out = op(x1, y1)
+            out.backward(grad1)
+            torch.cuda.synchronize()
+
+        forward_time, backward_time = 0, 0
+        for i in range(int(repeat_num)):
+            # forward
+            time_t1 = time.time()
+            out = op(x1, y1)
+            torch.cuda.synchronize()
+            time_t2 = time.time()
+            forward_time += time_t2 - time_t1
+            # backward
+            out.backward(grad1)
+            torch.cuda.synchronize()
+            time_t3 = time.time()
+            backward_time += time_t3 - time_t2
+
+        coef = 1000.0 / repeat_num
+        print("test_op2in_speed {} forward avg time: {:.6f}ms, backward avg time: {:.6f}ms, total avg time: {:.6f}ms".
+              format(op_name, coef * forward_time, coef * backward_time, coef * (forward_time + backward_time)))
+
+    # #### test accuracy
+    x1.grad=None
+    y1.grad=None
+    out = op(x1, y1)
+    out.backward(grad1)
+    torch.cuda.synchronize()
+
+    return out, x1, y1, op
+
+
+class TorchLnAddDropout(torch.nn.Module):
+    """ torch的结构"""
+
+    def __init__(self, col_size, norm_type='ln', use_drop=True, dropout_p=0.2):
+        super(TorchLnAddDropout, self).__init__()
+        assert norm_type in ['ln', 'none']
+        self.norm_type = norm_type
+        self.weight = None
+        self.bias = None
+
+        if self.norm_type == 'ln':
+            self.torch_ln = torch.nn.LayerNorm(col_size)
+        else:
+            self.torch_ln = None
+
+        self.torch_dropout = torch.nn.Dropout(p=dropout_p)
+        self.use_drop = use_drop
+
+    def forward(self, x, residual=None):
+        if self.use_drop:
+            x = self.torch_dropout(x)
+
+        if residual is not None:
+            out = torch.add(x, residual)
+        else:
+            out = x
+
+        if self.norm_type == 'ln':
+            out = self.torch_ln(out)
+
+        return out
+
+
+class ApexLnRmsAddDropout(torch.nn.Module):
+    """ torch的结构"""
+
+    def __init__(self, col_size, norm_type='ln', use_drop=True, dropout_p=0.2):
+        super(ApexLnRmsAddDropout, self).__init__()
+        assert norm_type in ['ln', 'rms', 'none']
+        self.norm_type = norm_type
+        if self.norm_type == 'ln':
+            self.torch_norm = FusedLayerNorm(col_size)
+        elif self.norm_type == 'rms':
+            self.torch_norm = MixedFusedRMSNorm(col_size)
+        else:
+            self.torch_norm = None
+
+        self.torch_dropout = torch.nn.Dropout(p=dropout_p)
+        self.use_drop = use_drop
+
+    def forward(self, x, residual=None):
+        if self.use_drop:
+            x = self.torch_dropout(x)
+
+        if residual is not None:
+            out = torch.add(x, residual)
+        else:
+            out = x
+
+        if self.norm_type != 'none':
+            out = self.torch_norm(out)
+
+        return out
+
+
+def test_speed_accuracy_ln_rms_add(norm_type: str = 'rms', use_residual=True,  use_drop = True, use_half=True):
+    print('testing param: norm_type={}, use_residual={}, use_drop={}, use_half={} ...'.format(norm_type, use_residual,use_drop, use_half))
+
+    # #### 设置各种需要的函数 ####
+    drop_rate = 0.0  # 准确性测试不考虑dropout
+    fused_module = FusedLnRmsNormsAddDropout(norm_type=norm_type, normalized_shape=cols, normalized_affine=True,
+                                             use_residual=use_residual, use_dropout=use_drop, drop_prob=drop_rate).to(device)
+
+    # #### 运行并测试速度
+    if norm_type == 'ln':
+        apex_module = ApexLnRmsAddDropout(cols, norm_type=norm_type, use_drop=use_drop, dropout_p=drop_rate).to(device)
+        torch_module = TorchLnAddDropout(cols, norm_type=norm_type, use_drop=use_drop, dropout_p=drop_rate).to(device)
+        if use_residual:  # ln+add
+            apex_out, apex_x, apex_y, apex_op = test_op2in_speed(apex_module, op_name='apex {}+add'.format(norm_type), use_half=use_half)
+            torch_out, torch_x, torch_y, torch_op = test_op2in_speed(torch_module, op_name='torch {}+add'.format(norm_type), use_half=use_half)
+            fused_out, fused_x, fused_y, fused_op = test_op2in_speed(fused_module, op_name='fused {}+add'.format(norm_type), use_half=use_half)
+            # 误差计算
+            if use_half:
+                print(allclose(fused_out, torch_out, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_x.grad, torch_x.grad, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_y.grad, torch_y.grad, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_op.weight.grad, torch_op.torch_ln.weight.grad, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_op.bias.grad, torch_op.torch_ln.bias.grad, rtol=half_rtol, atol=half_atol))
+            else:
+                print(allclose(fused_out, torch_out, rtol=float_rtol, atol=float_atol))
+                print(allclose(fused_x.grad, torch_x.grad, rtol=float_rtol, atol=float_atol))
+                print(allclose(fused_y.grad, torch_y.grad, rtol=float_rtol, atol=float_atol))
+                print(allclose(fused_op.weight.grad, torch_op.torch_ln.weight.grad, rtol=float_rtol_wb_grad, atol=float_atol_wb_grad))
+                print(allclose(fused_op.bias.grad, torch_op.torch_ln.bias.grad, rtol=float_rtol_wb_grad, atol=float_atol_wb_grad))
+        else:  # ln
+            apex_out, apex_x, apex_op = test_op1in_speed(apex_module, op_name='apex {}'.format(norm_type), use_half=use_half)
+            torch_out, torch_x, torch_op = test_op1in_speed(torch_module, op_name='torch {}'.format(norm_type), use_half=use_half)
+            fused_out, fused_x, fused_op = test_op1in_speed(fused_module, op_name='fused {}'.format(norm_type), use_half=use_half)
+            # 误差计算
+            if use_half:
+                print(allclose(fused_out, torch_out, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_x.grad, torch_x.grad, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_op.weight.grad, torch_op.torch_ln.weight.grad, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_op.bias.grad, torch_op.torch_ln.bias.grad, rtol=half_rtol, atol=half_atol))
+            else:
+                print(allclose(fused_out, torch_out, rtol=float_rtol, atol=float_atol))
+                print(allclose(fused_x.grad, torch_x.grad, rtol=float_rtol, atol=float_atol))
+                print(allclose(fused_op.weight.grad, torch_op.torch_ln.weight.grad, rtol=float_rtol_wb_grad, atol=float_atol_wb_grad))
+                print(allclose(fused_op.bias.grad, torch_op.torch_ln.bias.grad, rtol=float_rtol_wb_grad, atol=float_atol_wb_grad))
+    elif norm_type == 'rms':
+        apex_module = ApexLnRmsAddDropout(cols, norm_type=norm_type, use_drop=use_drop, dropout_p=drop_rate).to(device)
+        if use_residual:  # rms+add
+            apex_out, apex_x, apex_y, apex_op = test_op2in_speed(apex_module, op_name='apex {}+add'.format(norm_type), use_half=use_half)
+            fused_out, fused_x, fused_y, fused_op = test_op2in_speed(fused_module, op_name='fused {}+add'.format(norm_type), use_half=use_half)
+            # 误差计算
+            if use_half:
+                print(allclose(fused_out, apex_out, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_x.grad, apex_x.grad, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_y.grad, apex_y.grad, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_op.weight.grad, apex_op.torch_norm.weight.grad, rtol=half_rtol, atol=half_atol))
+            else:
+                print(allclose(fused_out, apex_out, rtol=float_rtol, atol=float_atol))
+                print(allclose(fused_x.grad, apex_x.grad, rtol=float_rtol, atol=float_atol))
+                print(allclose(fused_y.grad, apex_y.grad, rtol=float_rtol, atol=float_atol))
+                print(allclose(fused_op.weight.grad, apex_op.torch_norm.weight.grad, rtol=float_rtol_wb_grad, atol=float_atol_wb_grad))
+        else:  # rms
+            apex_out, apex_x, apex_op = test_op1in_speed(apex_module, op_name='apex {}'.format(norm_type), use_half=use_half)
+            fused_out, fused_x, fused_op = test_op1in_speed(fused_module, op_name='fused {}'.format(norm_type), use_half=use_half)
+            # 误差计算
+            if use_half:
+                print(allclose(fused_out, apex_out, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_x.grad, apex_x.grad, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_op.weight.grad, apex_op.torch_norm.weight.grad, rtol=half_rtol, atol=half_atol))
+            else:
+                print(allclose(fused_out, apex_out, rtol=float_rtol, atol=float_atol))
+                print(allclose(fused_x.grad, apex_x.grad, rtol=float_rtol, atol=float_atol))
+                print(allclose(fused_op.weight.grad, apex_op.torch_norm.weight.grad, rtol=float_rtol_wb_grad, atol=float_atol_wb_grad))
+    else:
+        torch_module = TorchLnAddDropout(cols, norm_type=norm_type, use_drop=use_drop, dropout_p=drop_rate).to(device)
+        if use_residual:
+            fused_out, fused_x, fused_y, fused_op = test_op2in_speed(fused_module, op_name='fused add'.format(norm_type), use_half=use_half)
+            torch_out, torch_x, torch_y, torch_op = test_op2in_speed(torch_module, op_name='torch add'.format(norm_type), use_half=use_half)
+            # 误差计算
+            if use_half:
+                print(allclose(fused_out, torch_out, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_x.grad, torch_x.grad, rtol=half_rtol, atol=half_atol))
+                print(allclose(fused_y.grad, torch_y.grad, rtol=half_rtol, atol=half_atol))
+            else:
+                print(allclose(fused_out, torch_out, rtol=float_rtol, atol=float_atol))
+                print(allclose(fused_x.grad, torch_x.grad, rtol=float_rtol, atol=float_atol))
+                print(allclose(fused_y.grad, torch_y.grad, rtol=float_rtol, atol=float_atol))
+        else:
+            print('do nothing about norm add dropout')
+
+
+def test_dropout_accuracy_ln_rms_add_drops(norm_type: str = 'rms', use_residual=True, drop_rate=0.2, use_half=True):
+    print('testing param: norm_type={}, use_residual={}, use_half={}, use_drop={} ...'.format(norm_type, use_residual, True, use_half))
+
+    fused_module = FusedLnRmsNormsAddDropout(norm_type=norm_type, normalized_shape=cols, normalized_affine=True,
+                                             use_residual=use_residual, use_dropout=True, drop_prob=drop_rate).to(device)
+    if use_half:
+        x1 = x0.half().clone().detach().requires_grad_()
+        y1 = y0.half().clone().detach().requires_grad_()
+        fused_module = fused_module.half()
+    else:
+        x1 = x0.clone().detach().requires_grad_()
+        y1 = y0.clone().detach().requires_grad_()
+        fused_module = fused_module.float()
+
+    if use_residual:
+        out = fused_module(x1,y1)
+    else:
+        out = fused_module(x1)
+
+    drop_mask = fused_module.drop_mask
+    get_dropout_fraction(drop_mask, dst_shape=x1.shape , drop_rate=drop_rate)
+
+
+def test_speed_rms_add_drop_by_profiler(norm_type: str = 'rms'):
     x1 = x0.clone().detach().requires_grad_()
     x2 = x0.clone().detach().requires_grad_()
     y1 = y0.clone().detach().requires_grad_()
     y2 = y0.clone().detach().requires_grad_()
 
-    droprate = 0.0
-    apex_rms = MixedFusedRMSNorm(cols).to(device)
-    fuse_rms = FusedLnRmsNormsAddDropout(norm_type='rms', normalized_shape=cols, normalized_affine=True,
-                                         bias_type='bias', drop_type='none', drop_prob=droprate).to(device)
-    if is_training:
-        fuse_rms.train()
+    assert norm_type in ['ln', 'rms']
+    dropout_rate = 0.2
+    fuse_module = FusedLnRmsNormsAddDropout(norm_type=norm_type, normalized_shape=cols, normalized_affine=True,
+                                            use_residual=True, use_dropout=True, drop_prob=dropout_rate).to(device)
+    fuse_module_name = 'fused {}_add_dropout'.format(norm_type)
+    if norm_type == 'rms':
+        op, op_name = ApexLnRmsAddDropout(cols, norm_type=norm_type, use_drop=True, dropout_p=dropout_rate).to(device), 'apex rms_add_dropout'
+    elif norm_type == 'ln':
+        op, op_name = TorchLnAddDropout(cols, norm_type=norm_type, use_drop=True, dropout_p=dropout_rate).to(device), 'torch ln_add_dropout'
     else:
-        fuse_rms.eval()
+        raise ValueError
 
-    op1, op1_name = apex_rms, 'apex_rms'
-    op2, op2_name = fuse_rms, 'fuse_rms'
-    # #################################
-    for i in range(10):
-        out1 = op1(x1 + y1)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    start_time = time.time()
-    for i in range(int(repeat_num)):
-        out1 = op1(x1 + y1)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    end_time = time.time()
-    print("{} time is {:.6f}".format(op1_name, (end_time - start_time) / repeat_num * 1000))
-
-    # #################################
-    for i in range(10):
-        out1 = op2(x2, y2)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    start_time = time.time()
-    for i in range(int(repeat_num)):
-        out1 = op2(x2, y2)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    end_time = time.time()
-    print("{} time is {:.6f}".format(op2_name, (end_time - start_time) / repeat_num * 1000))
-    # #################################
-
-
-def test_speed_rms_add_drop(is_training=True):
-    print('\ntest_speed_rms_add_drop: x shape ', x0.shape)
-    x1 = x0.clone().detach().requires_grad_()
-    x2 = x0.clone().detach().requires_grad_()
-    y1 = y0.clone().detach().requires_grad_()
-    y2 = y0.clone().detach().requires_grad_()
-
-    droprate = 0.2
-    apex_rms = MixedFusedRMSNorm(cols).to(device)
-    fuse_rms = FusedLnRmsNormsAddDropout(norm_type='rms', normalized_shape=cols, normalized_affine=True,
-                                         bias_type='bias', drop_type='dropout', drop_prob=droprate).to(device)
-    if is_training:
-        fuse_rms.train()
-    else:
-        fuse_rms.eval()
-
-    op1, op1_name = apex_rms, 'apex_rms+add+dropout'
-    op2, op2_name = fuse_rms, 'fuse_rms_add_dropout'
-    # #################################
-    for i in range(10):
-        out1 = op1(F.dropout(x1, p=droprate, training=is_training) + y1)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    start_time = time.time()
-    for i in range(int(repeat_num)):
-        out1 = op1(F.dropout(x1, p=droprate, training=is_training) + y1)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    end_time = time.time()
-    print("{} time is {:.6f}".format(op1_name, (end_time - start_time) / repeat_num * 1000))
-
-    # #################################
-    for i in range(10):
-        out1 = op2(x2, y2)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    start_time = time.time()
-    for i in range(int(repeat_num)):
-        out1 = op2(x2, y2)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    end_time = time.time()
-    print("{} time is {:.6f}".format(op2_name, (end_time - start_time) / repeat_num * 1000))
-    # #################################
-
-
-def test_speed_add(is_training=False):
-    print('\ntest_speed_add: x shape ', x0.shape)
-    x1 = x0.clone().detach().requires_grad_()
-    x2 = x0.clone().detach().requires_grad_()
-    y1 = y0.clone().detach().requires_grad_()
-    y2 = y0.clone().detach().requires_grad_()
-
-    fuse_add = FusedLnRmsNormsAddDropout(norm_type='none', normalized_shape=cols, normalized_affine=True,
-                                         bias_type='bias', drop_type='none', drop_prob=0.5).to(device)
-    if is_training:
-        fuse_add.train()
-    else:
-        fuse_add.eval()
-
-    op2, op2_name = fuse_add, 'fuse_add'
-    # #################################
-    for i in range(10):
-        out1 = x1 + y1
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    start_time = time.time()
-    for i in range(int(repeat_num)):
-        out1 = x1 + y1
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    end_time = time.time()
-    print("{} time is {:.6f}".format('torch add', (end_time - start_time) / repeat_num * 1000))
-    # #################################
-    for i in range(10):
-        out1 = op2(x2, y2)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    start_time = time.time()
-    for i in range(int(repeat_num)):
-        out1 = op2(x2, y2)
-        if is_training:
-            out1.backward(grad)
-        torch.cuda.synchronize()
-    end_time = time.time()
-    print("{} time is {:.6f}".format(op2_name, (end_time - start_time) / repeat_num * 1000))
-    # #################################
-
-
-def test_speed_rms_add_drop_by_profiler(is_training=True):
-    print('\ntest_speed_rms_add_drop_by_profiler: x shape ', x0.shape)
-    x1 = x0.clone().detach().requires_grad_()
-    x2 = x0.clone().detach().requires_grad_()
-    y1 = y0.clone().detach().requires_grad_()
-    y2 = y0.clone().detach().requires_grad_()
-
-    droprate = 0.2
-    apex_rms = MixedFusedRMSNorm(cols).to(device)
-    fuse_rms = FusedLnRmsNormsAddDropout(norm_type='rms', normalized_shape=cols, normalized_affine=True,
-                                         bias_type='bias', drop_type='dropout', drop_prob=droprate).to(device)
-    if is_training:
-        fuse_rms.train()
-    else:
-        fuse_rms.eval()
-
-    import os
     dst_dir = './profiler_results'
     if not os.path.exists(dst_dir):
         os.makedirs(dst_dir)
 
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                          profile_memory=False) as prof:
-        for _ in range(10):
-            out1 = apex_rms(F.dropout(x1, p=droprate, training=is_training) + y1)
+        for _ in range(20):
+            out1 = op(x1, y1)
             out1.backward(grad)
-            time.sleep(0.01)
-    prof.export_chrome_trace('{}/rms_add_drop_profile_origin.json'.format(dst_dir))
+            time.sleep(0.1)
+    prof.export_chrome_trace('{}/{}_profile_origin.json'.format(dst_dir, op_name))
+
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
                                          profile_memory=False) as prof2:
-        for _ in range(10):
-            out2 = fuse_rms(x2, y2)
+        for _ in range(20):
+            out2 = fuse_module(x2, y2)
             out2.backward(grad)
-            time.sleep(0.01)
-    prof2.export_chrome_trace('{}/rms_add_drop_profile_fuse.json'.format(dst_dir))
-
-
-def test_speed_ln_add_drop_by_profiler(is_training=True):
-    print('\ntest_speed_ln_add_drop_by_profiler: x shape ', x0.shape)
-    x1 = x0.clone().detach().requires_grad_()
-    x2 = x0.clone().detach().requires_grad_()
-    y1 = y0.clone().detach().requires_grad_()
-    y2 = y0.clone().detach().requires_grad_()
-
-    droprate = 0.2
-    from lightop.fuselnadddropout import LnAddDropout
-
-    torch_ln = torch.nn.LayerNorm(cols).to(device)
-    fuselndropout = LnAddDropout(cols, droprate=droprate).to(device)
-
-    fuse_rms = FusedLnRmsNormsAddDropout(norm_type='ln', normalized_shape=cols, normalized_affine=True,
-                                         bias_type='bias', drop_type='dropout', drop_prob=droprate).to(device)
-    if is_training:
-        fuse_rms.train()
-    else:
-        fuse_rms.eval()
-
-    import os
-    dst_dir = './profiler_results'
-    if not os.path.exists(dst_dir):
-        os.makedirs(dst_dir)
-
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
-                                         profile_memory=False) as prof:
-        for _ in range(10):
-            out1 = torch_ln(F.dropout(x1, p=droprate, training=is_training) + y1)
-            out1.backward(grad)
-            time.sleep(0.01)
-    prof.export_chrome_trace('{}/ln_add_drop_profile_torch.json'.format(dst_dir))
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
-                                         profile_memory=False) as prof2:
-        for _ in range(10):
-            out2 = fuselndropout(x2, y2)
-            out2.backward(grad)
-            time.sleep(0.01)
-    prof2.export_chrome_trace('{}/ln_add_drop_profile_old_fuse.json'.format(dst_dir))
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
-                                         profile_memory=False) as prof2:
-        for _ in range(10):
-            out2 = fuse_rms(x2, y2)
-            out2.backward(grad)
-            time.sleep(0.01)
-    prof2.export_chrome_trace('{}/ln_add_drop_profile_new_fuse.json'.format(dst_dir))
+            time.sleep(0.1)
+    prof2.export_chrome_trace('{}/{}_profile_fuse.json'.format(dst_dir, fuse_module_name))
 
 
 def main():
-    # #################### test accuracy ####################
-    test_accuracy_training = True
-    print('=' * 30)
-    test_accuracy_ln(test_accuracy_training)
-    print('=' * 30)
-    test_accuracy_rms(test_accuracy_training)
-    print('=' * 30)
-    test_accuracy_ln_add(test_accuracy_training)
-    print('=' * 30)
-    test_accuracy_rms_add(test_accuracy_training)
-    print('=' * 30)
-    test_accuracy_add(test_accuracy_training)
-    print('=' * 30)
-    test_accuracy_add_dropout(test_accuracy_training)
-    print('=' * 30)
-    test_accuracy_ln_add_dropout(test_accuracy_training)
-    print('=' * 30)
+    # #################### test speed accuracy ####################
+    for norm_type in ['rms', 'ln', 'none']:
+        for use_residual in [True, False]:
+            for use_half in [True, False]:
+                test_speed_accuracy_ln_rms_add(norm_type=norm_type, use_residual=use_residual, use_half=use_half, use_drop=True)
+                print('=' * 30)
 
-    # #################### test speed ####################
-    test_speed_training = False
+    # #################### test dropout accuracy ####################
+    for norm_type in ['rms', 'ln', 'none']:
+        for use_residual in [True, False]:
+            for use_half in [True, False]:
+                test_dropout_accuracy_ln_rms_add_drops(norm_type=norm_type, use_residual=False, drop_rate=0.5, use_half=True)
+                print('=' * 30)
 
-    test_speed_ln(is_training=test_speed_training)
-    print('=' * 30)
-    test_speed_rms(is_training=test_speed_training)
-    print('=' * 30)
-    test_speed_rms_add(is_training=test_speed_training)
-    print('=' * 30)
-    test_speed_rms_add_drop(is_training=test_speed_training)
-    print('=' * 30)
-    test_speed_add(is_training=test_speed_training)
-    print('=' * 30)
-    test_speed_ln_add_dropout(is_training=test_speed_training)
-
-    # #################### test accuracy ####################
-    test_speed_rms_add_drop_by_profiler()
-    print('=' * 30)
-    test_speed_ln_add_drop_by_profiler()
-    print('=' * 30)
+    # #################### test by profiler ####################
+    for norm_type in ['rms', 'ln']:
+        test_speed_rms_add_drop_by_profiler(norm_type=norm_type)
 
 
 if __name__ == "__main__":
     repeat_num = 1e2
-
-    batchsize, seqs, cols = 64, 1000, 512
-    # batchsize, seqs, cols = 20, 30, 511
-    # batchsize, seqs, cols = 20, 30, 128
-    # batchsize, seqs, cols = 2, 3, 12
+    batchsize, seqs, cols = 64, 1000, 1024
+    # batchsize, seqs, cols = 32, 64, 512
+    # batchsize, seqs, cols = 128, 100, 132
 
     device = torch.device('cuda')
-    torch.manual_seed(0)
+    torch.manual_seed(1)
     x0 = torch.rand([batchsize, seqs, cols]).cuda()
     y0 = torch.rand([batchsize, seqs, cols]).cuda()
-    # y0 = torch.zeros([batchsize, seqs, cols]).cuda()
     grad = torch.rand([batchsize, seqs, cols]).cuda()
+
+    half_rtol, half_atol = 2e-02, 2e-02
+    float_rtol, float_atol = 1e-05, 1e-05
+    float_rtol_wb_grad, float_atol_wb_grad = 1e-04, 1e-04
+
+    do_test_speed = True
 
     main()
