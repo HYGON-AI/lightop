@@ -22,7 +22,7 @@
 #include <ATen/ATen.h>
 
 #if defined(__HIP_PLATFORM_HCC__)
-    #include <hip/hip_fp16.h>
+#include <hip/hip_fp16.h>
     #include <hip/hip_runtime.h>
     #include <hipcub/hipcub.hpp>
     #include <hiprand_kernel.h>
@@ -38,6 +38,7 @@ namespace at {
 namespace native {
 
 namespace {
+
 void compute_n1_n2(const Tensor &input,
                    int normalized_shape,
                    int &n1, int &n2) {
@@ -62,6 +63,12 @@ void compute_n1_n2(const Tensor &input,
 }
 
 namespace norms_device_kernel_tools {
+
+#if defined(__HIP_PLATFORM_HCC__)
+    #define BLOCK_WARP_SIZE (64)
+#else
+    #define BLOCK_WARP_SIZE (32)
+#endif
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //// welford modules ////
@@ -90,21 +97,20 @@ struct WelfordData_RMS {
 /** 传入值，更新均值和方差 */
 template<typename U>
 __device__ void Welford_LN_OnlineSum(const U &val, WelfordData_LN<U> &curr_sum) {
-    curr_sum.count = curr_sum.count + U(1);
+    curr_sum.count += U(1);
     U delta = val - curr_sum.mean;
     curr_sum.mean = curr_sum.mean + delta * (1.f / curr_sum.count); //proper division is slow, this is less accurate but noticeably faster
-//    curr_sum.mean = curr_sum.mean + delta / curr_sum.count; //proper division is slow, this is less accurate but noticeably faster
-    curr_sum.sigma2 = curr_sum.sigma2 + delta * (val - curr_sum.mean);
+    curr_sum.sigma2 += delta * (val - curr_sum.mean);
 }
 
 template<typename U>
 __device__ void Welford_RMS_OnlineSum(const U &val, WelfordData_RMS<U> &curr_sum) {
-    curr_sum.sigma2 = curr_sum.sigma2 + val * val;
+    curr_sum.sigma2 += val * val;
 }
 
 /** 合并两个welford的均值和方差 */
 template<typename U>
-__device__ void Welford_LN_Combine(WelfordData_LN<U> &dataA, const WelfordData_LN<U> dataB) {
+__device__ void Welford_LN_Combine(WelfordData_LN<U> &dataA, const WelfordData_LN<U> &dataB) {
     U delta = dataB.mean - dataA.mean;
     U count = dataA.count + dataB.count;
     if (count > U(0)) {
@@ -121,17 +127,15 @@ __device__ void Welford_LN_Combine(WelfordData_LN<U> &dataA, const WelfordData_L
 }
 
 template<typename U>
-__device__ void Welford_RMS_Combine(WelfordData_RMS<U> &dataA, const WelfordData_RMS<U> dataB) {
-    dataA.sigma2 = dataA.sigma2 + dataB.sigma2;
+__device__ void Welford_RMS_Combine(WelfordData_RMS<U> &dataA, const WelfordData_RMS<U> &dataB) {
+    dataA.sigma2 += dataB.sigma2;
 }
 
 /** 计算welford的结果 */
 template<typename T, typename U, int VEC = 4>
-__device__ void Welford_LN_MuSigma2(
+__device__ WelfordData_LN<U> Welford_LN_MuSigma2(
     const T *__restrict__ vals_row,
-    const int n2,
-    U &mu, U &sigma2, U *buf,
-    const int &GPU_WARP_SIZE,
+    const int n2, U *buf,
     const int &num_x,
     const int &thread_x) {
     // Assumptions:
@@ -152,22 +156,24 @@ __device__ void Welford_LN_MuSigma2(
             Welford_LN_OnlineSum<U>(static_cast<U>(data.val[k]), wd);
         }
     }
+    // deal tail data
     for (int l_last = l * VEC; l_last < n2; ++l_last) {
         Welford_LN_OnlineSum<U>(static_cast<U>(vals_row[l_last]), wd);
     }
 
     // intra-warp reductions
     #pragma unroll
-    for (int offset = (GPU_WARP_SIZE >> 1); offset > 0; (offset >>= 1)) {
-        WelfordData_LN<U> wdB{WARP_SHFL_DOWN(wd.mean, offset), WARP_SHFL_DOWN(wd.sigma2, offset), WARP_SHFL_DOWN(wd.count, offset)};
+    for (int offset = (BLOCK_WARP_SIZE >> 1); offset > 0; (offset >>= 1)) {
+        WelfordData_LN<U> wdB{WARP_SHFL_DOWN(wd.mean, offset, BLOCK_WARP_SIZE),
+                              WARP_SHFL_DOWN(wd.sigma2, offset, BLOCK_WARP_SIZE),
+                              WARP_SHFL_DOWN(wd.count, offset, BLOCK_WARP_SIZE)};
         Welford_LN_Combine<U>(wd, wdB);
     }
 
     // threadIdx.x == 0 has correct values for each warp
     // inter-warp reductions
-    // assert blockDim.y > 1, otherwise result is error
     U *mean_sigma_buf = buf;
-    U *count_buf = (U *) (mean_sigma_buf + blockDim.y);
+    U *count_buf = mean_sigma_buf + blockDim.y;
     for (int offset = blockDim.y / 2; offset > 0; offset /= 2) { // offset: 2,1,0
         // upper half of warps write to shared
         if (threadIdx.x == 0 && threadIdx.y >= offset && threadIdx.y < 2 * offset) {
@@ -187,20 +193,17 @@ __device__ void Welford_LN_MuSigma2(
     // threadIdx.x = 0 && threadIdx.y == 0 only thread that has correct values
     if (threadIdx.x == 0 && threadIdx.y == 0) {
         mean_sigma_buf[0] = wd.mean;
-        mean_sigma_buf[1] = wd.sigma2;
+        mean_sigma_buf[1] = wd.sigma2 / U(n2);
     }
     __syncthreads();
 
-    mu = mean_sigma_buf[0];
-    sigma2 = mean_sigma_buf[1] / U(n2);
+    return WelfordData_LN<U>{mean_sigma_buf[0], mean_sigma_buf[1], 0.f};
 }
 
 template<typename T, typename U, int VEC = 4>
-__device__ void Welford_RMS_Sigma2(
+__device__ WelfordData_RMS<U> Welford_RMS_Sigma2(
     const T *__restrict__ vals_row,
-    const int n2,
-    U &sigma2, U *buf,
-    const int &GPU_WARP_SIZE,
+    const int n2, U *buf,
     const int &num_x,
     const int &thread_x) {
     // Assumptions:
@@ -221,19 +224,21 @@ __device__ void Welford_RMS_Sigma2(
             Welford_RMS_OnlineSum<U>(static_cast<U>(data.val[k]), wd);
         }
     }
+    // deal tail data
     for (int l_last = l * VEC; l_last < n2; ++l_last) {
         Welford_RMS_OnlineSum<U>(static_cast<U>(vals_row[l_last]), wd);
     }
 
     // intra-warp reductions
     #pragma unroll
-    for (int offset = (GPU_WARP_SIZE >> 1); offset > 0; (offset >>= 1)) {
-        WelfordData_RMS<U> wdB{WARP_SHFL_DOWN(wd.sigma2, offset)};
+    for (int offset = (BLOCK_WARP_SIZE >> 1); offset > 0; (offset >>= 1)) {
+        WelfordData_RMS<U> wdB{WARP_SHFL_DOWN(wd.sigma2, offset, BLOCK_WARP_SIZE)};
         Welford_RMS_Combine<U>(wd, wdB);
     }
 
     // threadIdx.x == 0 has correct values for each warp
     // inter-warp reductions
+    //    if (blockDim.y > 1) {
     U *sigma_buf = buf;
     for (int offset = blockDim.y / 2; offset > 0; offset /= 2) {
         // upper half of warps write to shared
@@ -251,11 +256,11 @@ __device__ void Welford_RMS_Sigma2(
     }
     // threadIdx.x = 0 && threadIdx.y == 0 only thread that has correct values
     if (threadIdx.x == 0 && threadIdx.y == 0) {
-        sigma_buf[0] = wd.sigma2;
+        sigma_buf[0] = wd.sigma2 / U(n2);
     }
     __syncthreads();
 
-    sigma2 = sigma_buf[0] / U(n2);
+    return WelfordData_RMS<U>{sigma_buf[0]};
 }
 
 // https://github.com/NVIDIA/apex/issues/246
@@ -290,7 +295,7 @@ template<typename T, typename U=float, int VEC = 4>
 __device__ void cuApplyLnNorm_(
     T *__restrict__ output_vals,
     U *__restrict__ mean,
-    U *__restrict__ invvar,
+    U *__restrict__ rstd,
     const T *__restrict__ in_vals,
     const int &n1,
     const int &n2,
@@ -314,13 +319,11 @@ __device__ void cuApplyLnNorm_(
     const vec_t *input_row_vec = reinterpret_cast<const vec_t *>(input_row);
     vec_t *output_row_vec = reinterpret_cast<vec_t *>(output_row);
 
-    U mu, sigma2;
-    norms_device_kernel_tools::Welford_LN_MuSigma2<T, U, VEC>(input_row, n2, mu, sigma2, buf, blockDim.x, num_x, thread_x);
-
-    U rstd_val = c10::cuda::compat::rsqrt(sigma2 + epsilon);
+    norms_device_kernel_tools::WelfordData_LN<U> wd = norms_device_kernel_tools::Welford_LN_MuSigma2<T, U, VEC>(input_row, n2, buf, num_x, thread_x);
+    U rstd_val = c10::cuda::compat::rsqrt(wd.sigma2 + epsilon);
     if (thread_x == 0) {
-        mean[i1] = mu;
-        invvar[i1] = rstd_val;
+        mean[i1] = wd.mean;
+        rstd[i1] = rstd_val;
     }
 
     // vectorized operator
@@ -333,22 +336,24 @@ __device__ void cuApplyLnNorm_(
         if (gamma != nullptr && beta != nullptr) {
             #pragma unroll
             for (int ii = 0; ii < VEC; ii++) {  // ln norm, affine=True
-                out.val[ii] = gamma[l * VEC + ii] * static_cast<T>(rstd_val * (static_cast<U>(data.val[ii]) - mu)) + beta[l * VEC + ii];
+                out.val[ii] = gamma[l * VEC + ii] * static_cast<T>(rstd_val * (static_cast<U>(data.val[ii]) - wd.mean)) + beta[l * VEC + ii];
             }
         } else {
             #pragma unroll
             for (int ii = 0; ii < VEC; ii++) {
-                out.val[ii] = static_cast<T>(rstd_val * (static_cast<U>(data.val[ii]) - mu));
+                out.val[ii] = static_cast<T>(rstd_val * (static_cast<U>(data.val[ii]) - wd.mean));
             }
         }
         output_row_vec[l] = out;
     }
+
+    // deal tail data
     for (int l_last = l * VEC; l_last < n2; ++l_last) {
         // computation is performed in T, X is cast to T and result is implicitly cast to T
         if (gamma != nullptr && beta != nullptr) {
-            output_row[l_last] = gamma[l_last] * static_cast<T>(rstd_val * (input_row[l_last] - mu)) + beta[l_last];
+            output_row[l_last] = gamma[l_last] * static_cast<T>(rstd_val * (input_row[l_last] - wd.mean)) + beta[l_last];
         } else {
-            output_row[l_last] = static_cast<T>(rstd_val * (input_row[l_last] - mu));
+            output_row[l_last] = static_cast<T>(rstd_val * (input_row[l_last] - wd.mean));
         }
     }
 }
@@ -356,7 +361,7 @@ __device__ void cuApplyLnNorm_(
 template<typename T, typename U=float, int VEC = 4>
 __device__ void cuApplyRmsNorm_(
     T *__restrict__ output_vals,
-    U *__restrict__ invvar,
+    U *__restrict__ rstd,
     const T *__restrict__ in_vals,
     const int &n1,
     const int &n2,
@@ -379,11 +384,11 @@ __device__ void cuApplyRmsNorm_(
     const vec_t *input_row_vec = reinterpret_cast<const vec_t *>(input_row);
     vec_t *output_row_vec = reinterpret_cast<vec_t *>(output_row);
 
-    U sigma2;
-    norms_device_kernel_tools::Welford_RMS_Sigma2(input_row, n2, sigma2, buf, blockDim.x, num_x, thread_x);
-    U rstd_val = c10::cuda::compat::rsqrt(sigma2 + epsilon);
+    norms_device_kernel_tools::WelfordData_RMS<U> wd = norms_device_kernel_tools::Welford_RMS_Sigma2(input_row, n2, buf, num_x, thread_x);
+    U rstd_val = c10::cuda::compat::rsqrt(wd.sigma2 + epsilon);
+
     if (thread_x == 0) {
-        invvar[i1] = rstd_val;
+        rstd[i1] = rstd_val;
     }
     // vectorized operator
     int l = thread_x;
@@ -419,397 +424,392 @@ __device__ void cuApplyRmsNorm_(
 //// norms backward ////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-template<typename T, typename U>
-__device__ void cuLoadWriteStridedInputs(
-    const int i1_block,
-    const int thr_load_row_off,
-    const int thr_load_col_off,
-    const int i2_off,
-    const int row_stride,
-    U *warp_buf1,
-    U *warp_buf2,
-    const T *input,
-    const T *dout,
-    const int i1_end,
-    const int n2,
-    const U *__restrict__ mean,
-    const U *__restrict__ invvar,
-    bool rms_only
-) {
-    int i1 = i1_block + thr_load_row_off;
-    if (i1 < i1_end) {
-        U curr_mean;
-        if (!rms_only) {
-            curr_mean = mean[i1];
-        }
-        U curr_invvar = invvar[i1];
-        for (int k = 0; k < blockDim.y; ++k) {
-            int i2 = i2_off + k;
-            int load_idx = i1 * n2 + i2;
-            int write_idx = thr_load_row_off * row_stride + thr_load_col_off + k;
-            if (i2 < n2) {
-                U curr_input = static_cast<U>(input[load_idx]);
-                U curr_dout = static_cast<U>(dout[load_idx]);
-                if (!rms_only) {
-                    warp_buf1[write_idx] = curr_dout;
-                    warp_buf2[write_idx] = curr_dout * (curr_input - curr_mean) * curr_invvar;
-                } else {
-                    warp_buf2[write_idx] = curr_dout * (curr_input) * curr_invvar;
-                }
-            } else {
-                if (!rms_only) {
-                    warp_buf1[write_idx] = U(0);
-                }
-                warp_buf2[write_idx] = U(0);
-            }
-        }
-    } else {
-        for (int k = 0; k < blockDim.y; ++k) {
-            int write_idx = thr_load_row_off * row_stride + thr_load_col_off + k;
-            if (!rms_only) {
-                warp_buf1[write_idx] = U(0);
-            }
-            warp_buf2[write_idx] = U(0);
-        }
+template<typename T>
+__inline__ __device__ T WarpReduceSum(T val) {
+    for (int offset = (BLOCK_WARP_SIZE >> 1); offset > 0; offset >>= 1) {
+        val += WARP_SHFL_DOWN(val, offset, BLOCK_WARP_SIZE);
     }
+    return val;
+}
+
+struct Block1D {
+    static __forceinline__ __device__ int Tid() { return threadIdx.x; }
+
+    static __forceinline__ __device__ int Warps() {
+        return blockDim.x / BLOCK_WARP_SIZE;
+    }
+};
+
+struct Block2D {
+    static __forceinline__ __device__ int Tid() {
+        return threadIdx.x + threadIdx.y * blockDim.x;
+    }
+
+    static __forceinline__ __device__ int Warps() {
+        return blockDim.x * blockDim.y / BLOCK_WARP_SIZE;
+    }
+};
+
+// Sums `val` across all threads in a block.
+//
+// Warning: the return value is only valid for thread 0.
+// Assumptions:
+//   - The size of each block should be a multiple of `BLOCK_WARP_SIZE`
+//   - `shared` should be a pointer to shared memory with size of, at least,
+//     `sizeof(T) * number_of_warps`
+template<typename T, typename B = Block1D>
+__inline__ __device__ T BlockReduceSum(T val, T *shared) {
+    const int tid = B::Tid();
+    const int lid = tid % BLOCK_WARP_SIZE;
+    const int wid = tid / BLOCK_WARP_SIZE;
+    val = WarpReduceSum(val);
+    __syncthreads(); // prevent races when BlockReduces are called in a row.
+    if (lid == 0) {
+        shared[wid] = val;
+    }
+    __syncthreads();
+    val = (tid < B::Warps()) ? shared[lid] : T(0);
+    if (wid == 0) {
+        val = WarpReduceSum(val);
+    }
+    return val;
+}
+
+//// compute grad gamma and beta
+template<typename T, typename U>
+__global__ void cuApply_Ln_GammaBetaBackward_Simple(
+    int64_t n1, int64_t n2,
+    const T *dY, const T *X,
+    const U *mean, const U *rstd,
+    T *grad_gamma, T *grad_beta) {  // assert grad_gamma!=nullptr and grad_beta!=nullptr
+
+    const int64_t j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= n2) { return; }
+
+    U sum1 = 0;
+    U sum2 = 0;
+    for (int64_t i = 0; i < n1; ++i) {
+        const int64_t index = i * n2 + j;
+        sum1 += static_cast<U>(dY[index]) * (static_cast<U>(X[index]) - mean[i]) * rstd[i];
+        sum2 += static_cast<U>(dY[index]);
+    }
+    grad_gamma[j] = sum1;
+    grad_beta[j] = sum2;
 }
 
 template<typename T, typename U>
-__device__ void cuLoadAddStridedInputs(
-    const int i1_block,
-    const int thr_load_row_off,
-    const int thr_load_col_off,
-    const int i2_off,
-    const int row_stride,
-    U *warp_buf1,
-    U *warp_buf2,
-    const T *input,
-    const T *dout,
-    const int n1,
-    const int n2,
-    const U *__restrict__ mean,
-    const U *__restrict__ invvar,
-    bool rms_only
-) {
-    int i1 = i1_block + thr_load_row_off;
-    if (i1 < n1) {
-        U curr_mean;
-        if (!rms_only) { curr_mean = mean[i1]; }
-        U curr_invvar = invvar[i1];
+__global__ void cuApply_Rms_GammaBackward_Simple(
+    int64_t n1, int64_t n2,
+    const T *dY, const T *X,
+    const U *rstd, T *grad_gamma) {  // assert grad_gamma!=nullptr
 
-        for (int k = 0; k < blockDim.y; ++k) {
-            int i2 = i2_off + k;
-            int load_idx = i1 * n2 + i2;
-            int write_idx = thr_load_row_off * row_stride + thr_load_col_off + k;
-            if (i2 < n2) {
-                U curr_input = static_cast<U>(input[load_idx]);
-                U curr_dout = static_cast<U>(dout[load_idx]);
-                if (!rms_only) {
-                    warp_buf1[write_idx] += curr_dout;
-                    warp_buf2[write_idx] += curr_dout * (curr_input - curr_mean) * curr_invvar;
-                } else {
-                    warp_buf2[write_idx] += curr_dout * (curr_input) * curr_invvar;
-                }
-            }
-        }
+    const int64_t j = blockIdx.x * blockDim.x + threadIdx.x;
+    if (j >= n2) { return; }
+
+    U sum1 = 0;
+    for (int64_t i = 0; i < n1; ++i) {
+        const int64_t index = i * n2 + j;
+        sum1 += static_cast<U>(dY[index]) * static_cast<U>(X[index]) * rstd[i];
     }
+    grad_gamma[j] = sum1;
 }
 
-template<typename T, typename U>
-__device__ void cuApplyComputePartGradGammaBeta_(
-    const T *__restrict__ dout,
-    const T *__restrict__ input,
-    const int n1,
-    const int n2,
-    const U *__restrict__ mean,
-    const U *__restrict__ invvar,
-    U epsilon,
-    U *part_grad_gamma,
-    U *part_grad_beta,
-    bool rms_only) {
-    const int block_square = blockDim.y * blockDim.y;
-    const int row_stride = blockDim.x + 1;
-    const int thr_load_col_off = (threadIdx.x * blockDim.y) & (blockDim.x - 1);
-    const int thr_load_row_off = (threadIdx.x * blockDim.y) / blockDim.x + threadIdx.y * blockDim.y;
-    const int i2_off = blockIdx.x * blockDim.x + thr_load_col_off;
+template<typename T, typename U, int VEC = 8>
+__global__ void cuApply_Ln_GammaBetaBackward_Vec(
+    int64_t n1, int64_t n2,
+    const T *dY, const T *X,
+    const U *mean, const U *rstd,
+    T *grad_gamma, T *grad_beta) {
 
-    norms_device_kernel_tools::SharedMemory<U> shared;
-    U *buf = shared.getPointer(); // buf has at least blockDim.x * block_square + (blockDim.y - 1)*(blockDim.x/blockDim.y) elements
+    alignas(sizeof(double))
+    extern __shared__ char s_data1[];
+    U *s_data_typed = reinterpret_cast<U *>(&s_data1);
+    const int64_t j = blockIdx.x * blockDim.x + threadIdx.x;
+    const int64_t t1d_idx = threadIdx.y * blockDim.x + threadIdx.x;
+    const int64_t t2d_idx = blockDim.x * blockDim.y + t1d_idx;
 
-    U *warp_buf1 = (U *) buf;
-    U *warp_buf2 = warp_buf1 + block_square * row_stride;
-    // compute partial sums from strided input
-    // do this to increase number of loads in flight
-    int i1_block = blockIdx.x;
-    cuLoadAddStridedInputs(i1_block, thr_load_row_off, thr_load_col_off, i2_off, row_stride,
-                           warp_buf1, warp_buf2, input, dout, n1, n2, mean, invvar, rms_only);
-    __syncthreads();
+    T dYs[VEC];
+    T Xs[VEC];
+    U *means = s_data_typed;
+    U *rstds = s_data_typed + blockDim.x * blockDim.y;
+    U dg_sum = 0;
+    U db_sum = 0;
 
-    // inter-warp reductions
-    // sum within each warp
-    U acc1 = U(0);
-    U acc2 = U(0);
-    for (int k = 0; k < blockDim.y; ++k) {
-        int row1 = threadIdx.y + k * blockDim.y;
-        int idx1 = row1 * row_stride + threadIdx.x;
-        if (!rms_only) {
-            acc1 += warp_buf1[idx1];
-        }
-        acc2 += warp_buf2[idx1];
-    }
-    if (!rms_only) {
-        warp_buf1[threadIdx.y * row_stride + threadIdx.x] = acc1;
-    }
-    warp_buf2[threadIdx.y * row_stride + threadIdx.x] = acc2;
-    __syncthreads();
+    if (j >= n2) { return; }
 
-    // sum all warps
-    for (int offset = blockDim.y / 2; offset > 1; offset /= 2) {
-        if (threadIdx.y < offset) {
-            int row1 = threadIdx.y;
-            int row2 = threadIdx.y + offset;
-            int idx1 = row1 * row_stride + threadIdx.x;
-            int idx2 = row2 * row_stride + threadIdx.x;
-            if (!rms_only) {
-                warp_buf1[idx1] += warp_buf1[idx2];
+    int bcounter;
+    for (bcounter = 0; bcounter < n1 / (blockDim.y * VEC); bcounter++) {
+        int offset = (bcounter * blockDim.y + threadIdx.y) * VEC;
+#pragma unroll
+        for (int ii = 0; ii < VEC; ii++) {
+            int temp_offset = offset + ii;
+
+            if (threadIdx.x == 0) {
+                means[ii * blockDim.y + threadIdx.y] = mean[temp_offset];
+                rstds[ii * blockDim.y + threadIdx.y] = rstd[temp_offset];
             }
-            warp_buf2[idx1] += warp_buf2[idx2];
+            dYs[ii] = dY[temp_offset * n2 + j];
+            Xs[ii] = X[temp_offset * n2 + j];
+        }
+        __syncthreads();
+
+#pragma unroll
+        for (int ii = 0; ii < VEC; ii++) {
+            dg_sum += static_cast<U>(dYs[ii]) * (static_cast<U>(Xs[ii]) - means[ii * blockDim.y + threadIdx.y]) * rstds[ii * blockDim.y + threadIdx.y];
+            db_sum += static_cast<U>(dYs[ii]);
         }
         __syncthreads();
     }
-    int i2 = blockIdx.x * blockDim.x + threadIdx.x;
-    if (threadIdx.y == 0 && i2 < n2) {
-        int row1 = threadIdx.y;
-        int row2 = threadIdx.y + 1;
-        int idx1 = row1 * row_stride + threadIdx.x;
-        int idx2 = row2 * row_stride + threadIdx.x;
-        if (!rms_only) {
-            part_grad_beta[blockIdx.y * n2 + i2] = warp_buf1[idx1] + warp_buf1[idx2];
-        }
-        part_grad_gamma[blockIdx.y * n2 + i2] = warp_buf2[idx1] + warp_buf2[idx2];
-    }
-}
-
-
-template<typename T, typename U>
-__device__ void cuApplyComputeGradGammaBeta_(
-    const U *part_grad_gamma,
-    const U *part_grad_beta,
-    const int n1,
-    const int n2,
-    T *grad_gamma,
-    T *grad_beta,
-    bool rms_only) {
-    // sum partial gradients for gamma and beta
-    norms_device_kernel_tools::SharedMemory<U> shared;
-    U *buf = shared.getPointer();
-    int i2 = blockIdx.x * blockDim.x + threadIdx.x;
-    const int warp_size = blockDim.x;
-
-    if (i2 >= n2) { return; }
-    // each warp does sequential reductions until reduced part_size is num_warps
-    int num_warp_reductions = warp_size / blockDim.y;
-    U sum_gamma = U(0);
-    U sum_beta = U(0);
-    const U *part_grad_gamma_ptr = part_grad_gamma + threadIdx.y * num_warp_reductions * n2 + i2;
-    const U *part_grad_beta_ptr = nullptr;
-
-    if (!rms_only) {
-        part_grad_beta_ptr = part_grad_beta + threadIdx.y * num_warp_reductions * n2 + i2;
-    }
-    for (int warp_offset = 0; warp_offset < num_warp_reductions; ++warp_offset) {
-        sum_gamma += part_grad_gamma_ptr[warp_offset * n2];
-        if (!rms_only) {
-            sum_beta += part_grad_beta_ptr[warp_offset * n2];
+    int offset = (bcounter * blockDim.y + threadIdx.y) * VEC;
+    for (int ii = 0; ii < VEC; ii++) {
+        int temp_offset = offset + ii;
+        U mean_val, rstd_val; // we don't use smem in the tail to avoid awkward synchronizations, perf penalty is negligible
+        if (temp_offset < n1) {
+            mean_val = mean[temp_offset];
+            rstd_val = rstd[temp_offset];
+            dYs[0] = dY[temp_offset * n2 + j];
+            Xs[0] = X[temp_offset * n2 + j];
+            dg_sum += static_cast<U>(dYs[0]) * (static_cast<U>(Xs[0]) - mean_val) * rstd_val;
+            db_sum += static_cast<U>(dYs[0]);
         }
     }
-    // inter-warp reductions
-    const int nbsize3 = blockDim.x * blockDim.y / 2;
+    s_data_typed[t1d_idx] = dg_sum;
+    s_data_typed[t2d_idx] = db_sum;
+    __syncthreads();
+
     for (int offset = blockDim.y / 2; offset >= 1; offset /= 2) {
-        // top half write to shared memory
-        if (threadIdx.y >= offset && threadIdx.y < 2 * offset) {
-            const int write_idx = (threadIdx.y - offset) * blockDim.x + threadIdx.x;
-            buf[write_idx] = sum_gamma;
-            if (!rms_only) {
-                buf[write_idx + nbsize3] = sum_beta;
-            }
-        }
-        __syncthreads();
-        // bottom half sums
         if (threadIdx.y < offset) {
-            const int read_idx = threadIdx.y * blockDim.x + threadIdx.x;
-            sum_gamma += buf[read_idx];
-            if (!rms_only) {
-                sum_beta += buf[read_idx + nbsize3];
-            }
+            int temp_offset = offset * blockDim.x;
+            s_data_typed[t1d_idx] += s_data_typed[t1d_idx + temp_offset];
+            s_data_typed[t2d_idx] += s_data_typed[t2d_idx + temp_offset];
         }
         __syncthreads();
     }
-    // write out fully summed gradients
     if (threadIdx.y == 0) {
-        grad_gamma[i2] = sum_gamma;
-        if (!rms_only) {
-            grad_beta[i2] = sum_beta;
-        }
+        grad_gamma[j] = static_cast<T>(s_data_typed[threadIdx.x]);
+        grad_beta[j] = static_cast<T>(s_data_typed[threadIdx.x + blockDim.x * blockDim.y]);
     }
 }
 
+template<typename T, typename U, int VEC = 8>
+__global__ void cuApply_Rms_GammaBackward_Vec(
+    int64_t n1, int64_t n2,
+    const T *dY, const T *X,
+    const U *rstd,
+    T *grad_gamma) {
 
+    alignas(sizeof(double))
+    extern __shared__ char s_data1[];
+    U *s_data_typed = reinterpret_cast<U *>(&s_data1);
+    const int64_t j = blockIdx.x * blockDim.x + threadIdx.x;
+    const int64_t t1d_idx = threadIdx.y * blockDim.x + threadIdx.x;
+    if (j >= n2) { return; }
+
+    T dYs[VEC];
+    T Xs[VEC];
+    U *rstds = s_data_typed;
+    U dg_sum = 0;
+
+    int bcounter;
+    for (bcounter = 0; bcounter < n1 / (blockDim.y * VEC); bcounter++) {
+        int offset = (bcounter * blockDim.y + threadIdx.y) * VEC;
+#pragma unroll
+        for (int ii = 0; ii < VEC; ii++) {
+            int temp_offset = offset + ii;
+            if (threadIdx.x == 0) {
+                rstds[ii * blockDim.y + threadIdx.y] = rstd[temp_offset];
+            }
+            dYs[ii] = dY[temp_offset * n2 + j];
+            Xs[ii] = X[temp_offset * n2 + j];
+        }
+        __syncthreads();
+
+#pragma unroll
+        for (int ii = 0; ii < VEC; ii++) {
+            dg_sum += static_cast<U>(dYs[ii]) * static_cast<U>(Xs[ii]) * rstds[ii * blockDim.y + threadIdx.y];
+        }
+        __syncthreads();
+    }
+    int offset = (bcounter * blockDim.y + threadIdx.y) * VEC;
+    for (int ii = 0; ii < VEC; ii++) {
+        int temp_offset = offset + ii;
+        U rstd_val; // we don't use smem in the tail to avoid awkward synchronizations, perf penalty is negligible
+        if (temp_offset < n1) {
+            rstd_val = rstd[temp_offset];
+            dYs[0] = dY[temp_offset * n2 + j];
+            Xs[0] = X[temp_offset * n2 + j];
+            dg_sum += static_cast<U>(dYs[0]) * static_cast<U>(Xs[0]) * rstd_val;
+        }
+    }
+    s_data_typed[t1d_idx] = dg_sum;
+    __syncthreads();
+
+    for (int offset = blockDim.y / 2; offset >= 1; offset /= 2) {
+        if (threadIdx.y < offset) {
+            int temp_offset = offset * blockDim.x;
+            s_data_typed[t1d_idx] += s_data_typed[t1d_idx + temp_offset];
+        }
+        __syncthreads();
+    }
+    if (threadIdx.y == 0) {
+        grad_gamma[j] = static_cast<T>(s_data_typed[threadIdx.x]);
+    }
+}
+
+//// compute grad input
 template<typename T, typename U, int VEC = 4>
-__device__ void cuApplyComputeGradInput_(
-    T *grad_input,
-    const T *__restrict__ dout,
-    const T *__restrict__ input,
-    const int n1,
-    const int n2,
+__device__ __inline__ void cuApply_Ln_GradInput_(
+    const T *__restrict__ dY,
+    const T *__restrict__ X,
     const U *__restrict__ mean,
-    const U *__restrict__ invvar,
-    U epsilon,
-    const T *gamma,
-    bool rms_only) {
+    const U *__restrict__ rstd,
+    const T *__restrict__ gamma,
+    T *dX,
+    const int n1, const int n2,
+    U *buf) {
+
     const int num_x = blockDim.x * blockDim.y;
     const int thread_x = threadIdx.x + threadIdx.y * blockDim.x;
-    int i1 = blockIdx.x;
-    // prepare vectorized operator
-    using vec_t = memory::aligned_vector<T, VEC>;
-    const int n_vec_to_read = n2 / VEC;
-    const int row_size = i1 * n2;
+
+    const auto i1 = blockIdx.x;
+    const U mean_val = mean[i1];
+    const U rstd_val = rstd[i1];
     U sum_loss1 = U(0);
     U sum_loss2 = U(0);
-    U c_mean;
-    if (!rms_only) {
-        c_mean = mean[i1];
+
+    const int row_size = i1 * n2;
+    const T *X_row = X + row_size;
+    const T *dY_row = dY + row_size;
+    T *dX_row = dX + row_size;
+
+    using vec_t = memory::aligned_vector<T, VEC>;
+    const int n_vec_to_read = n2 / VEC;
+    const vec_t *X_row_vec = reinterpret_cast<const vec_t *>(X_row);
+    const vec_t *dY_row_vec = reinterpret_cast<const vec_t *>(dY_row);
+    vec_t *gamma_vec;
+    if(gamma != nullptr) {
+        gamma_vec= reinterpret_cast<vec_t *>(const_cast<T *>(gamma));    // const_cast<T *>
     }
-    const U c_invvar = invvar[i1];
-    const T *k_input = input + row_size;
-    const T *k_dout = dout + row_size;
-    const vec_t *input_row_vec = reinterpret_cast<const vec_t *>(k_input);
-    const vec_t *dout_row_vec = reinterpret_cast<const vec_t *>(k_dout);
 
     int l = thread_x;
     for (; l < n_vec_to_read; l += num_x) {
-        vec_t data_in = input_row_vec[l];
-        vec_t data_dout = dout_row_vec[l];
-        if (gamma != nullptr) {
-            const vec_t *gamma_vec = reinterpret_cast<const vec_t *>(gamma);
-            vec_t data_gamma = gamma_vec[l];
+        vec_t data_X = X_row_vec[l];
+        vec_t data_dY = dY_row_vec[l];
+        vec_t data_gamma;
+        if(gamma != nullptr){
+            data_gamma = gamma_vec[l];
+        }
 
-            #pragma unroll
-            for (int k = 0; k < VEC; ++k) {
-                const U c_h = static_cast<U>(data_in.val[k]);
-                const U c_loss = static_cast<U>(data_dout.val[k]);
-                if (!rms_only) {
-                    sum_loss1 += c_loss * data_gamma.val[k];
-                    sum_loss2 += c_loss * data_gamma.val[k] * (c_h - c_mean) * c_invvar;
-                } else {
-                    sum_loss2 += c_loss * data_gamma.val[k] * (c_h) * c_invvar;
-                }
-            }
-        } else {
-            #pragma unroll
-            for (int k = 0; k < VEC; ++k) {
-                const U c_h = static_cast<U>(data_in.val[k]);
-                const U c_loss = static_cast<U>(data_dout.val[k]);
-                if (!rms_only) {
-                    sum_loss1 += c_loss;
-                    sum_loss2 += c_loss * (c_h - c_mean) * c_invvar;
-                } else {
-                    sum_loss2 += c_loss * (c_h) * c_invvar;
-                }
-            }
+        for (int k = 0; k < VEC; k++) {
+            U gamma_val = (gamma != nullptr) ? static_cast<U>(data_gamma.val[k]) : U(1);
+            const U c_h = static_cast<U>(data_X.val[ k]);
+            const U c_loss = static_cast<U>(data_dY.val[ k]);
+            sum_loss1 += c_loss * gamma_val;
+            sum_loss2 += c_loss * gamma_val * (c_h - mean_val) * rstd_val;
         }
     }
-    // deal last data
     for (int l_last = l * VEC; l_last < n2; ++l_last) {
-        // computation is performed in T, X is cast to T and result is implicitly cast to T
-        if (gamma != nullptr) {
-            const U c_h = static_cast<U>(k_input[l_last]);
-            const U c_loss = static_cast<U>(k_dout[l_last]);
-            if (!rms_only) {
-                sum_loss1 += c_loss * gamma[l];
-                sum_loss2 += c_loss * gamma[l] * (c_h - c_mean) * c_invvar;
-            } else {
-                sum_loss2 += c_loss * gamma[l] * (c_h) * c_invvar;
-            }
-        } else {
-            const U c_h = static_cast<U>(k_input[l_last]);
-            const U c_loss = static_cast<U>(k_dout[l_last]);
-            if (!rms_only) {
-                sum_loss1 += c_loss;
-                sum_loss2 += c_loss * (c_h - c_mean) * c_invvar;
-            } else {
-                sum_loss2 += c_loss * (c_h) * c_invvar;
-            }
-        }
+        U gamma_val = (gamma != nullptr) ? static_cast<U>(gamma[l_last]) : U(1);
+        const U c_h = static_cast<U>(X_row[l_last]);
+        const U c_loss = static_cast<U>(dY_row[l_last]);
+        sum_loss1 += c_loss * gamma_val;
+        sum_loss2 += c_loss * gamma_val * (c_h - mean_val) * rstd_val;
     }
 
-    // intra-warp reductions
-    for (int offset = blockDim.x / 2; offset > 0; offset /= 2) {
-        if (!rms_only) {
-            sum_loss1 += WARP_SHFL_XOR(sum_loss1, offset);
-        }
-        sum_loss2 += WARP_SHFL_XOR(sum_loss2, offset);
-    }
-    // inter-warp reductions
-    // if (blockDim.y > 1) {
-    norms_device_kernel_tools::SharedMemory<U> shared;
-    U *buf = shared.getPointer();
-    for (int offset = blockDim.y / 2; offset > 0; offset /= 2) {
-        // upper half of warps write to shared
-        if (threadIdx.y >= offset && threadIdx.y < 2 * offset) {
-            const int wrt_i = (threadIdx.y - offset) * blockDim.x + threadIdx.x;
-            if (!rms_only) {
-                buf[2 * wrt_i] = sum_loss1;
-            }
-            buf[2 * wrt_i + 1] = sum_loss2;
-        }
-        __syncthreads();
-        // lower half merges
-        if (threadIdx.y < offset) {
-            const int read_i = threadIdx.y * blockDim.x + threadIdx.x;
-            if (!rms_only) {
-                sum_loss1 += buf[2 * read_i];
-            }
-            sum_loss2 += buf[2 * read_i + 1];
-        }
-        __syncthreads();
-    }
-    if (threadIdx.y == 0) {
-        if (!rms_only) {
-            buf[2 * threadIdx.x] = sum_loss1;
-        }
-        buf[2 * threadIdx.x + 1] = sum_loss2;
+    sum_loss1 = BlockReduceSum<U>(sum_loss1, buf);
+    sum_loss2 = BlockReduceSum<U>(sum_loss2, buf);
+    if (thread_x == 0) {
+        buf[0] = sum_loss1;
+        buf[1] = sum_loss2;
     }
     __syncthreads();
-    if (threadIdx.y != 0) {
-        if (!rms_only) {
-            sum_loss1 = buf[2 * threadIdx.x];
-        }
-        sum_loss2 = buf[2 * threadIdx.x + 1];
-    }
-    // }
 
-    // all threads now have the two sums over l
-    U fH = (U) n2;
-    U term1 = (U(1) / fH) * c_invvar;
-    T *k_grad_input = grad_input + row_size;
-    for (int l = thread_x; l < n2; l += num_x) {
-        const U c_h = static_cast<U>(k_input[l]);
-        const U c_loss = static_cast<U>(k_dout[l]);
-        U f_grad_input = fH * c_loss * ((gamma != nullptr) ? gamma[l] : T(1));
-        if (!rms_only) {
-            f_grad_input -= sum_loss1;
-            f_grad_input -= (c_h - c_mean) * c_invvar * sum_loss2;
-        } else {
-            f_grad_input -= (c_h) * c_invvar * sum_loss2;
-        }
+    sum_loss1 = buf[0];
+    sum_loss2 = buf[1];
+    U fH = U(n2);
+    U term1 = (U(1) / fH) * rstd_val;
+
+    for (int l = thread_x; l < n2; l += blockDim.x) {
+        const U x = X_row[l];
+        const U dy = dY_row[l];
+        U gamma_val = (gamma != nullptr) ? static_cast<U>(gamma[l]) : U(1);
+        U f_grad_input = fH * gamma_val * dy;
+        f_grad_input -= (x - mean_val) * rstd_val * sum_loss2;
+        f_grad_input -= sum_loss1;
         f_grad_input *= term1;
-        k_grad_input[l] = static_cast<T>(f_grad_input);
+        dX_row[l] = f_grad_input;
     }
-    // prevent race where buf is written again before reads are done
-    __syncthreads();
 }
 
+template<typename T, typename U, int VEC = 4>
+__device__ __inline__ void cuApply_Rms_GradInput_(
+    const T *__restrict__ dY,
+    const T *__restrict__ X,
+    const U *__restrict__ rstd,
+    const T *__restrict__ gamma,
+    T *dX,
+    const int n1, const int n2,
+    U *buf) {
+
+    const int num_x = blockDim.x * blockDim.y;
+    const int thread_x = threadIdx.x + threadIdx.y * blockDim.x;
+
+    const auto i1 = blockIdx.x;
+    const U rstd_val = rstd[i1];
+    U sum_loss2 = U(0);
+
+    const int row_size = i1 * n2;
+    const T *X_row = X + row_size;
+    const T *dY_row = dY + row_size;
+    T *dX_row = dX + row_size;
+
+    using vec_t = memory::aligned_vector<T, VEC>;
+    const int n_vec_to_read = n2 / VEC;
+    const vec_t *X_row_vec = reinterpret_cast<const vec_t *>(X_row);
+    const vec_t *dY_row_vec = reinterpret_cast<const vec_t *>(dY_row);
+    vec_t *gamma_vec;
+    if(gamma != nullptr) {
+        gamma_vec= reinterpret_cast<vec_t *>(const_cast<T *>(gamma));    // const_cast<T *>
+    }
+
+    int l = thread_x;
+    for (; l < n_vec_to_read; l += num_x) {
+        vec_t data_X = X_row_vec[l];
+        vec_t data_dY = dY_row_vec[l];
+        vec_t data_gamma;
+        if(gamma != nullptr){
+            data_gamma = gamma_vec[l];
+        }
+
+        for (int k = 0; k < VEC; k++) {
+            U gamma_val = (gamma != nullptr) ? static_cast<U>(data_gamma.val[k]) : U(1);
+            sum_loss2 += static_cast<U>(data_dY.val[ k]) * gamma_val * static_cast<U>(data_X.val[k]) * rstd_val;
+        }
+    }
+    for (int l_last = l * VEC; l_last < n2; ++l_last) {
+        U gamma_val = (gamma != nullptr) ? static_cast<U>(gamma[l_last]) : U(1);
+        sum_loss2 += static_cast<U>(dY_row[l_last]) * gamma_val * static_cast<U>(X_row[l_last]) * rstd_val;
+    }
+
+    sum_loss2 = BlockReduceSum(sum_loss2, buf);
+    if (thread_x == 0) {
+        buf[0] = sum_loss2;
+    }
+    __syncthreads();
+    sum_loss2 = buf[0];
+    U fH = n2;
+    U term1 = (U(1) / fH) * rstd_val;
+
+    for (int l = thread_x; l < n2; l += blockDim.x) {
+        const U x = X_row[l];
+        const U dy = dY_row[l];
+        U gamma_val = (gamma != nullptr) ? static_cast<U>(gamma[l]) : U(1);
+        U f_grad_input = fH * gamma_val * dy;
+        f_grad_input -= x * rstd_val * sum_loss2;
+        f_grad_input *= term1;
+        dX_row[l] = f_grad_input;
+    }
+}
 
 } // norms_device_kernel
 
@@ -817,7 +817,6 @@ namespace add_drops_device_kernel {
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //// add drop forward ////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
 template<typename T, typename U, int VEC = 4>
 __device__ void cuApplyAdd_(    // only add
     T *__restrict__ output_vals,
@@ -828,7 +827,6 @@ __device__ void cuApplyAdd_(    // only add
     const int num_x = blockDim.x * blockDim.y;
     const int thread_x = threadIdx.x + threadIdx.y * blockDim.x;
 
-    const int total_elements = n1 * n2;
     using vec_t = memory::aligned_vector<T, VEC>;
     const int n_vec_to_read = n2 / VEC;
     int i1 = blockIdx.x;
@@ -848,7 +846,7 @@ __device__ void cuApplyAdd_(    // only add
         vec_t data_residual = residual_row_vec[l];
         vec_t data_out;
 
-        for (int k = 0; k < 4; ++k) {
+        for (int k = 0; k < VEC; ++k) {
             data_out.val[k] = data_in.val[k] + data_residual.val[k];
         }
         output_row_vec[l] = data_out;
@@ -859,14 +857,14 @@ __device__ void cuApplyAdd_(    // only add
 }
 
 template<typename T, typename U, int VEC = 4>
-__device__ void cuApplyAddDrops_(   // dropmask !=nullptr
+__device__ void cuApplyAddDrops_(   // dropmask != nullptr and residual != nullptr
     T *__restrict__ output_vals,
     const T *__restrict__ input,
     const T *__restrict__ residual,
     const int n1, const int n2,
     uint8_t *__restrict__ drop_mask,
     U drop_keep_rate,
-    const PhiloxCudaState philox_args) {
+    const PhiloxCudaState &philox_args) {
 
     const int num_x = blockDim.x * blockDim.y;
     const int thread_x = threadIdx.x + threadIdx.y * blockDim.x;
@@ -878,8 +876,6 @@ __device__ void cuApplyAddDrops_(   // dropmask !=nullptr
     int rand_idx = i1 * num_x + thread_x;
     curand_init(std::get<0>(seeds), rand_idx, std::get<1>(seeds), &state);
     U pinv = U(1) / drop_keep_rate;
-
-    const int total_elements = n1 * n2;
 
     // prepare vectorized operator
     using vec_t = memory::aligned_vector<T, VEC>;
@@ -893,6 +889,7 @@ __device__ void cuApplyAddDrops_(   // dropmask !=nullptr
     const vec_t *input_row_vec = reinterpret_cast<const vec_t *>(input_row);
     vec_t_uint8 *drop_mask_row_vec = reinterpret_cast<vec_t_uint8 *>(drop_mask_row);
     vec_t *output_row_vec = reinterpret_cast<vec_t *>(output_row);
+
     // residual if not nullptr
     T *residual_row;
     vec_t *residual_row_vec;
@@ -902,23 +899,20 @@ __device__ void cuApplyAddDrops_(   // dropmask !=nullptr
     }
 
     int l = thread_x;
+    float4 rand;
     for (; l < n_vec_to_read; l += num_x) {
         vec_t data_in = input_row_vec[l];
         vec_t_uint8 data_drop_mask;
         vec_t data_residual;
-        if (residual != nullptr) { data_residual = residual_row_vec[l]; }
+        if (residual != nullptr) {
+            data_residual = residual_row_vec[l];
+        }
         vec_t data_out;
 
-        float4 rand;
         rand = curand_uniform4(&state);
-        rand.x = rand.x <= drop_keep_rate;
-        rand.y = rand.y <= drop_keep_rate;
-        rand.z = rand.z <= drop_keep_rate;
-        rand.w = rand.w <= drop_keep_rate;
-
-        for (int k = 0; k < 4; ++k) {
-            data_drop_mask.val[k] = (uint8_t)(&rand.x)[k];
-            U curr_val = static_cast<T>(static_cast<U>(data_in.val[k]) * U((&rand.x)[k]) * pinv);
+        for (int k = 0; k < VEC; ++k) {
+            data_drop_mask.val[k] = (uint8_t)((&rand.x)[k] <= drop_keep_rate);
+            U curr_val = static_cast<T>(static_cast<U>(data_in.val[k]) * U(data_drop_mask.val[k]) * pinv);
             if (residual != nullptr) {
                 curr_val += static_cast<U>(data_residual.val[k]);
             }
@@ -928,65 +922,28 @@ __device__ void cuApplyAddDrops_(   // dropmask !=nullptr
         output_row_vec[l] = data_out;
     }
 
-    for (int l_last = l * VEC; l_last < n2; ++l_last) {
-        float4 rand;
+    if (l * VEC < n2) {
         rand = curand_uniform4(&state);
         rand.x = rand.x <= drop_keep_rate;
         rand.y = rand.y <= drop_keep_rate;
         rand.z = rand.z <= drop_keep_rate;
         rand.w = rand.w <= drop_keep_rate;
-
+    }
+    for (int l_last = l * VEC; l_last < n2; ++l_last) {
         int simple_idx = l_last - l * VEC;  // assert simple_idx dur 0~3
-        drop_mask_row[l_last] = (uint8_t)(&rand.x)[simple_idx];
+        drop_mask_row[l_last] = (uint8_t)((&rand.x)[simple_idx] <= drop_keep_rate);
         U curr_val = static_cast<T>(static_cast<U>(input_row[l_last]) * U((&rand.x)[simple_idx]) * pinv);
-        if (residual != nullptr) { curr_val += static_cast<U>(residual_row[l_last]); }
+        if (residual != nullptr) {
+            curr_val += static_cast<U>(residual_row[l_last]);
+        }
         output_row[l_last] = curr_val;
     }
 }
 
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //// add drop backward ////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-template<typename T, typename U, int VEC = 4>
-__device__ void cuApplyAddGradient_(T *grad_in, T *residual_grads,
-                                    const T *grad_output, const int n1, const int n2) {
-    // dim3 block_dims(warp_size, 4, 1);  // MI100 wavefront/warp = 64
-    // const dim3 grid_dims(n1);
-    const int num_x = blockDim.x * blockDim.y;
-    const int thread_x = threadIdx.x + threadIdx.y * blockDim.x;
-
-    int i1 = blockIdx.x;
-    const int row_size = i1 * n2;
-    const T *grad_output_row = grad_output + row_size;
-    T *grad_in_row = grad_in + row_size;
-    T *residual_grads_row = residual_grads + row_size;
-
-    // prepare vectorized operator
-    using vec_t = memory::aligned_vector<T, VEC>;
-    const int n_vec_to_read = n2 / VEC;
-    const vec_t *grad_output_row_vec = reinterpret_cast<const vec_t *>(grad_output_row);
-    vec_t *grad_in_row_vec = reinterpret_cast<vec_t *>(grad_in_row);
-    vec_t *residual_grads_row_vec = reinterpret_cast<vec_t *>(residual_grads_row);
-
-    int l = thread_x;
-    for (; l < n_vec_to_read; l += num_x) {
-        vec_t data_grad_output = grad_output_row_vec[l];
-        vec_t data_residual_grads, data_grad_in;
-
-        for (int k = 0; k < 4; ++k) {
-            T grad_out_val = data_grad_output.val[k];
-            data_residual_grads.val[k] = grad_out_val;
-            data_grad_in.val[k] = grad_out_val;
-        }
-        residual_grads_row_vec[l] = data_residual_grads;
-        grad_in_row_vec[l] = data_grad_in;
-    }
-    for (int l_last = l * VEC; l_last < n2; ++l_last) {
-        T grad_out_val = grad_output_row[l_last];
-        residual_grads_row[l_last] = grad_out_val;
-        grad_in_row[l_last] = grad_out_val;
-    }
-}
 
 /** Dropout Add Backward ,  assert drop_mask != nullptr*/
 template<typename T, typename U, int VEC = 4>
@@ -1006,7 +963,9 @@ __device__ void cuApplyAddDropsGradient_(T *grad_in, T *residual_grads,
     T *grad_in_row = grad_in + row_size;
     // residual grad
     T *residual_grads_row;
-    if (residual_grads != nullptr) { residual_grads_row = residual_grads + row_size; }
+    if (residual_grads != nullptr) {
+        residual_grads_row = residual_grads + row_size;
+    }
 
     // prepare vectorized operator
     using vec_t = memory::aligned_vector<T, VEC>;
@@ -1017,7 +976,9 @@ __device__ void cuApplyAddDropsGradient_(T *grad_in, T *residual_grads,
     const vec_t_uint8 *drop_mask_row_vec = reinterpret_cast<const vec_t_uint8 *>(drop_mask_row);
     vec_t *grad_in_row_vec = reinterpret_cast<vec_t *>(grad_in_row);
     vec_t *residual_grads_row_vec;
-    if (residual_grads != nullptr) { residual_grads_row_vec = reinterpret_cast<vec_t *>(residual_grads_row); }
+    if (residual_grads != nullptr) {
+        residual_grads_row_vec = reinterpret_cast<vec_t *>(residual_grads_row);
+    }
 
     int l = thread_x;
     for (; l < n_vec_to_read; l += num_x) {
@@ -1025,19 +986,26 @@ __device__ void cuApplyAddDropsGradient_(T *grad_in, T *residual_grads,
         vec_t_uint8 data_drop_mask = drop_mask_row_vec[l];
         vec_t data_residual_grads, data_grad_in;
 
-        for (int k = 0; k < 4; ++k) {
+        for (int k = 0; k < VEC; ++k) {
             T grad_out_val = data_grad_output.val[k];
-            if (residual_grads != nullptr) { data_residual_grads.val[k] = grad_out_val; }
+            if (residual_grads != nullptr) {
+                data_residual_grads.val[k] = grad_out_val;
+            }
             grad_out_val *= static_cast<T>(static_cast<U>(data_drop_mask.val[k]) * pinv);
             data_grad_in.val[k] = grad_out_val;
         }
-        if (residual_grads != nullptr) { residual_grads_row_vec[l] = data_residual_grads; }
+
+        if (residual_grads != nullptr) {
+            residual_grads_row_vec[l] = data_residual_grads;
+        }
         grad_in_row_vec[l] = data_grad_in;
     }
 
     for (int l_last = l * VEC; l_last < n2; ++l_last) {
         T grad_out_val = grad_output_row[l_last];
-        if (residual_grads != nullptr) { residual_grads_row[l_last] = grad_out_val; }
+        if (residual_grads != nullptr) {
+            residual_grads_row[l_last] = grad_out_val;
+        }
         grad_out_val *= static_cast<T>(static_cast<U>(drop_mask_row[l_last]) * pinv);
         grad_in_row[l_last] = grad_out_val;
     }

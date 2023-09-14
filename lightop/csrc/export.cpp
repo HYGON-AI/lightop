@@ -44,7 +44,7 @@ void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
 void destroy_gemmdbias_handle();
 
-std::tuple <Tensor, Tensor> fuse_lnrmsnorms_add_drop_forward_autograd(const Tensor &x,const Tensor &weight,const Tensor &bias, int normalized_shape,double normalized_eps, bool normalized_affine, const Tensor &residual, double drop_prob, int norm_type_enum, int bias_type_enum, int drop_type_enum, bool training);
+std::tuple <Tensor, Tensor> fuse_lnrmsnorms_add_drop_forward_autograd(const Tensor &x, Tensor &weight, Tensor &bias, int normalized_shape,double normalized_eps, bool normalized_affine, const Tensor &residual, double drop_prob, int norm_type_enum, bool use_residual, bool use_dropout, bool training);
 
 }
 }
