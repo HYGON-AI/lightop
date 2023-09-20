@@ -38,18 +38,18 @@ namespace at {
     namespace rnntloss_tools {
 
       // kernel: get max, from torchaudio
-      template<int NUM_THREADS, typename DTYPE, typename CAST_DTYPE>
+      template<int nthreads, typename DTYPE, typename CAST_DTYPE>
       __global__ void ReduceMax2D(
         int dim,
         const DTYPE *inputs, // [N, dim]
         CAST_DTYPE *outputs) {
 
-          __shared__ CAST_DTYPE shared[NUM_THREADS];
+          __shared__ CAST_DTYPE shared[nthreads];
 
           // each thread reduces one matrix row
           int offset = blockIdx.x * dim; // [n, 0]
           CAST_DTYPE val = CAST_DTYPE(inputs[offset]); // default = inputs(n, 0)
-          for (int d = threadIdx.x; d < dim; d += NUM_THREADS) {
+          for (int d = threadIdx.x; d < dim; d += nthreads) {
               CAST_DTYPE next = CAST_DTYPE(inputs[offset + d]);
               if (next > val) {
                   val = next;
@@ -59,7 +59,7 @@ namespace at {
           shared[threadIdx.x] = val;
           __syncthreads();
 
-          for (int stride = (NUM_THREADS >> 1); stride >= WARP_SIZE; stride >>= 1) {
+          for (int stride = (nthreads >> 1); stride >= WARP_SIZE; stride >>= 1) {
               if (threadIdx.x < stride && threadIdx.x + stride < dim) {
                   if (shared[threadIdx.x + stride] > shared[threadIdx.x]) {
                       shared[threadIdx.x] = shared[threadIdx.x + stride];
@@ -84,26 +84,26 @@ namespace at {
           }
       }
 
-      template<int NUM_THREADS, typename DTYPE, typename CAST_DTYPE>
+      template<int nthreads, typename DTYPE, typename CAST_DTYPE>
       __global__ void ReduceLogSumExpGivenMax2D(
         int dim,
         const DTYPE *inputs, // [N, dim]
         CAST_DTYPE *outputs) { // in: max -> out: logsum
 
-          __shared__ CAST_DTYPE shared[NUM_THREADS];
+          __shared__ CAST_DTYPE shared[nthreads];
 
           CAST_DTYPE max = outputs[blockIdx.x];
           CAST_DTYPE val = 0;
 
           int offset = blockIdx.x * dim;
-          for (int d = threadIdx.x; d < dim; d += NUM_THREADS) {
+          for (int d = threadIdx.x; d < dim; d += nthreads) {
               val += c10::cuda::compat::exp(CAST_DTYPE(inputs[offset + d]) - max);
           }
 
           shared[threadIdx.x] = val;
           __syncthreads();
 
-          for (int stride = (NUM_THREADS >> 1); stride >= WARP_SIZE; stride >>= 1) {
+          for (int stride = (nthreads >> 1); stride >= WARP_SIZE; stride >>= 1) {
               if (threadIdx.x < stride && threadIdx.x + stride < dim) {
                   val = shared[threadIdx.x] + shared[threadIdx.x + stride];
                   shared[threadIdx.x] = val;
@@ -124,7 +124,7 @@ namespace at {
           }
       }
 
-      template<int NUM_THREADS_FOR_LOG, typename DTYPE, typename CAST_DTYPE>
+      template<int nthreads_for_log, typename DTYPE, typename CAST_DTYPE>
       void LogSumExp2D(
         const cudaStream_t &stream,
         const int &sizeBTU,
@@ -134,8 +134,8 @@ namespace at {
 
           { // compute max among numTgt.
               dim3 block_dims(sizeBTU);
-              dim3 thread_dims(NUM_THREADS_FOR_LOG);
-              ReduceMax2D<NUM_THREADS_FOR_LOG, DTYPE, CAST_DTYPE>
+              dim3 thread_dims(nthreads_for_log);
+              ReduceMax2D<nthreads_for_log, DTYPE, CAST_DTYPE>
               <<<block_dims, thread_dims, 0, stream>>>(
                 /*dim=*/numTgt,
                 /*inputs=*/logits,
@@ -149,8 +149,8 @@ namespace at {
 
           { // compute log(sum(exp(d_i - max)))
               dim3 block_dims(sizeBTU);
-              dim3 thread_dims(NUM_THREADS_FOR_LOG);
-              ReduceLogSumExpGivenMax2D<NUM_THREADS_FOR_LOG, DTYPE, CAST_DTYPE>
+              dim3 thread_dims(nthreads_for_log);
+              ReduceLogSumExpGivenMax2D<nthreads_for_log, DTYPE, CAST_DTYPE>
               <<<block_dims, thread_dims, 0, stream>>>(
                 /*dim=*/numTgt,
                 /*inputs=*/logits,
@@ -421,7 +421,7 @@ namespace at {
           }
       }
 
-      template<int NUM_THREADS, typename DTYPE, typename CAST_DTYPE>
+      template<int nthreads, typename DTYPE, typename CAST_DTYPE>
       __global__ void ComputeCostsFinal(
         int batchSize,
         const DTYPE *costs,
@@ -429,11 +429,11 @@ namespace at {
         const bool compute_sum,
         const bool compute_mean) {
 
-          __shared__ CAST_DTYPE shared[NUM_THREADS];
+          __shared__ CAST_DTYPE shared[nthreads];
 
           // each thread reduces one matrix row
           CAST_DTYPE val = CAST_DTYPE(0); // default = inputs(n, 0)
-          for (int d = threadIdx.x; d < batchSize; d += NUM_THREADS) {
+          for (int d = threadIdx.x; d < batchSize; d += nthreads) {
               CAST_DTYPE next = CAST_DTYPE(costs[d]);
               val += next;
           }
@@ -441,7 +441,7 @@ namespace at {
           shared[threadIdx.x] = val;
           __syncthreads();
 
-          for (int stride = (NUM_THREADS >> 1); stride >= WARP_SIZE; stride >>= 1) {
+          for (int stride = (nthreads >> 1); stride >= WARP_SIZE; stride >>= 1) {
               if (threadIdx.x < stride && threadIdx.x + stride < batchSize) {
                   shared[threadIdx.x] += shared[threadIdx.x + stride];
                   val = shared[threadIdx.x];
