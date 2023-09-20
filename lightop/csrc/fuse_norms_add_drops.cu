@@ -216,8 +216,8 @@ void HostApply_LnRmsNorm_GammaBeta_Gradient(T *grad_gamma, T *grad_beta,
 
     if (n1 < block_size_VEC8) {
         // For small batch size, do colwise reduce directly.
-        const dim3 block_dims(num_threads());
-        const dim3 grid_dims((n2 + FUSED_LNRMSNORMS_BLOCK_SIZE - 1) / num_threads());
+        const dim3 block_dims(FUSED_LNRMSNORMS_BLOCK_SIZE);
+        const dim3 grid_dims((n2 + FUSED_LNRMSNORMS_BLOCK_SIZE - 1) / FUSED_LNRMSNORMS_BLOCK_SIZE);
         if (!rms_only) {
             norms_device_kernel::cuApply_Ln_GammaBetaBackward_Simple<T, U> <<<grid_dims, block_dims, 0, stream>>>(
                 n1, n2, dY_data, X_data, mean, rstd, grad_gamma, grad_beta);
