@@ -9,11 +9,13 @@ namespace {
 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
 #define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
 #define CHECK_INPUT(x) CHECK_CUDA(x); CHECK_CONTIGUOUS(x)
+
 }
 
 namespace ln_rms_norms_add_drops {
 
 constexpr int block_size_VEC8 = 512;
+constexpr int FUSED_LNRMSNORMS_BLOCK_SIZE = 256;
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //// forward ////
@@ -73,7 +75,7 @@ void HostApply_LnRmsNorm_AddDrop(T *output, U *mean, U *rstd, const T *X, T *tem
                                  const T *residual, uint8_t *drop_mask, U drop_keep_rate, int runing_type_enum) {
     auto stream = at::cuda::getCurrentCUDAStream().stream();
     const int warp_size = at::cuda::warp_size();
-    const dim3 block_dims(warp_size, num_threads() / warp_size, 1);  // MI100 wavefront/warp = 64, num_threads()=256 on rocm
+    const dim3 block_dims(warp_size, FUSED_LNRMSNORMS_BLOCK_SIZE / warp_size, 1);  // MI100 wavefront/warp = 64, FUSED_LNRMSNORMS_BLOCK_SIZE=256 on rocm
     const dim3 grid_dims(n1);
     // int VEC = 128 / sizeof(T);
 
@@ -214,8 +216,8 @@ void HostApply_LnRmsNorm_GammaBeta_Gradient(T *grad_gamma, T *grad_beta,
 
     if (n1 < block_size_VEC8) {
         // For small batch size, do colwise reduce directly.
-        const dim3 block_dims(num_threads());
-        const dim3 grid_dims((n2 + num_threads() - 1) / num_threads());
+        const dim3 block_dims(FUSED_LNRMSNORMS_BLOCK_SIZE);
+        const dim3 grid_dims((n2 + FUSED_LNRMSNORMS_BLOCK_SIZE - 1) / FUSED_LNRMSNORMS_BLOCK_SIZE);
         if (!rms_only) {
             norms_device_kernel::cuApply_Ln_GammaBetaBackward_Simple<T, U> <<<grid_dims, block_dims, 0, stream>>>(
                 n1, n2, dY_data, X_data, mean, rstd, grad_gamma, grad_beta);
