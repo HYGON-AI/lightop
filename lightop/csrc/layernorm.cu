@@ -1,5 +1,4 @@
 #include "layernorm.h"
-
 int get_layernorm_blocksize(int cols)
 {
   int blocksize;
@@ -12,7 +11,6 @@ int get_layernorm_blocksize(int cols)
 namespace at{
 namespace native{
 
-#define VEC 4
 constexpr int kCUDANumThreads = 256;
 constexpr int kCUDABlockReduceNumThreads=512;
 
@@ -82,6 +80,20 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t*
   }
 }
 
+//to avoid windows SFINAE errors
+template <typename scalar_t, typename T_ACC>
+__global__ __inline__ void vectorized_layer_norm_kernel(
+  const int N,
+  scalar_t eps,
+  const  scalar_t* __restrict__ X,
+  const  scalar_t* gamma,
+  const  scalar_t* beta,
+  scalar_t* mean,
+  scalar_t* rstd,
+  scalar_t* Y){
+    vectorized_layer_norm_kernel_impl<scalar_t,T_ACC>(N, eps, X, gamma, beta, mean, rstd, Y);
+  }
+
 std::tuple<Tensor,Tensor,Tensor>
 layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,double ln_epsilon)
 {
@@ -95,21 +107,43 @@ layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,doub
     Tensor rstd = at::empty({rows},self.options());
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
-      at::ScalarType::BFloat16,
+      at::ScalarType::BFloat16, 
       self.scalar_type(),
       "layernorm_forward",
       [&] {
-        scalar_t eps = ln_epsilon;
+        using T_ACC = acc_type<scalar_t, true>;
         scalar_t* self_data = self.data_ptr<scalar_t>();
         scalar_t* ret_data=ret.data_ptr<scalar_t>();
-        scalar_t* mean_data=mean.data_ptr<scalar_t>();
-        scalar_t* rstd_data=rstd.data_ptr<scalar_t>();
         scalar_t* weight_data=weight.data_ptr<scalar_t>();
         scalar_t* bias_data=bias.data_ptr<scalar_t>();
-        layernorm_forward_kernel<scalar_t><<<rows, get_layernorm_blocksize(cols), 0, at::cuda::getCurrentCUDAStream()>>>(
-                                   self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-
+        scalar_t  eps = ln_epsilon;
+        scalar_t* mean_data=mean.data_ptr<scalar_t>();
+        scalar_t* rstd_data=rstd.data_ptr<scalar_t>();
+        // check if can take fast path- all tensors are properly aligned, N is less than 2^24 (to use float count),
+        // N is multiple of vec_size (so that all rows are aligned if tensor is aligned)
+        auto can_vectorize = [&](const scalar_t * ptr, int alignment){uint64_t addr = reinterpret_cast<uint64_t>(ptr); return addr % alignment == 0;};
+        constexpr int num_vec_elems = vec_size;
+        constexpr int alignment = num_vec_elems * sizeof(scalar_t);
+        if ((std::is_same<scalar_t, float>::value || std::is_same<scalar_t, at::Half>::value || std::is_same<scalar_t, at::BFloat16>::value) &&
+          cols <= 1ULL << std::numeric_limits<float>::digits && cols % num_vec_elems == 0 &&
+          can_vectorize(self_data, alignment) && can_vectorize(ret_data, alignment))
+        {
+            const int warp_size = at::cuda::warp_size();
+            const dim3 threads(warp_size, kCUDANumThreads / warp_size, 1);
+            const dim3 blocks(rows);
+            TORCH_INTERNAL_ASSERT_DEBUG_ONLY(threads.y % 2 == 0 || threads.y == 1);
+            int nshared = threads.y > 1 ? threads.y * 3/2 *sizeof(T_ACC) : 0;
+            vectorized_layer_norm_kernel<scalar_t,T_ACC><<<blocks, threads, nshared, at::cuda::getCurrentCUDAStream()>>>
+            (cols, eps, self_data,weight_data, bias_data,mean_data, rstd_data, ret_data);
+            C10_CUDA_KERNEL_LAUNCH_CHECK();
+        }
+        else
+        {
+            layernorm_forward_kernel<scalar_t><<<rows, get_layernorm_blocksize(cols), 0, at::cuda::getCurrentCUDAStream()>>>(
+                                    self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+            C10_CUDA_KERNEL_LAUNCH_CHECK();
+        }
+      
       });
      return std::tuple<Tensor,Tensor,Tensor>(ret,mean,rstd);
 }
@@ -119,6 +153,7 @@ __global__ void LayerNormBackward_kernel(int N,const scalar_t* dY,const scalar_t
                                          const scalar_t* rstd, scalar_t* dX)
 {
   LAYERNORMBACKWARD
+
   for (int j = threadIdx.x; j < N; j += blockDim.x) {
     const int index = i * N + j;
     const T_ACC gamma_v = static_cast<T_ACC>(gamma[j]);
@@ -153,8 +188,7 @@ layernorm_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const 
       scalar_t* dX_data = dX.data_ptr<scalar_t>();
 
       GammaBeta_Backward(nelem,N,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
-      LayerNormBackward_kernel<scalar_t><<<M, get_layernorm_blocksize(N), 0, cuda_stream>>>(
-                  N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+      LayerNormBackward_kernel<scalar_t><<<M, get_layernorm_blocksize(N), 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
       C10_CUDA_KERNEL_LAUNCH_CHECK();
   });
   return std::tuple<Tensor,Tensor,Tensor>(dX,dgamma,dbeta);
