@@ -4,7 +4,7 @@ using namespace std;
 
 namespace at{
 namespace native{
-
+constexpr int vec_size = 4;
 template <typename scalar_t, typename index_t, typename combine_t>
 struct WelfordData {
   scalar_t mean;
@@ -72,6 +72,183 @@ struct WelfordOps {
     };
   }
 };
+
+
+struct WelfordDataLN{
+  float mean;
+  float sigma2;
+  float count;
+  C10_HOST_DEVICE WelfordDataLN(): mean(0.f), sigma2(0.f), count(0.f){}
+  C10_HOST_DEVICE WelfordDataLN(float mean, float sigma2, float count): mean(mean), sigma2(sigma2), count(count) {}
+};
+
+template<typename U> __device__
+WelfordDataLN cuWelfordOnlineSum(
+  const U val,
+  const WelfordDataLN& curr_sum)
+{
+  U delta = val - curr_sum.mean;
+  U new_count = curr_sum.count + 1.f;
+  U new_mean = curr_sum.mean + delta * (1.f/new_count); //proper division is slow, this is less accurate but noticeably faster
+  return {new_mean, curr_sum.sigma2 + delta * (val - new_mean), new_count};
+}
+
+__device__
+WelfordDataLN cuWelfordCombine(
+  const WelfordDataLN dataB,
+  const WelfordDataLN dataA
+) {
+  using U = decltype(dataB.count);
+  U delta = dataB.mean - dataA.mean;
+  U count = dataA.count + dataB.count;
+  U mean, sigma2;
+  if (count > decltype(dataB.count){0}) {
+    auto coef = 1.f/count; //NB we don't use --use_fast_math, but this is emulation, 1./count goes to intrinsic, `* coef` is multiplication, instead of slow fp division
+    auto nA = dataA.count * coef;
+    auto nB = dataB.count * coef;
+    mean = nA*dataA.mean + nB*dataB.mean;
+    sigma2 = dataA.sigma2 + dataB.sigma2 + delta * delta * dataA.count * nB;
+  } else {
+    mean = U(0);
+    sigma2 = U(0);
+  }
+  return {mean, sigma2, count};
+}
+
+template<typename scalar_t>
+__device__ WelfordDataLN compute_stats(
+  const scalar_t*  __restrict__ X,
+  const int N,
+  float * buf
+  ) {
+    //X points to the row to read
+    using vec_t = memory::aligned_vector<scalar_t, vec_size>;
+    using acc_t = acc_type<scalar_t, true>;
+    const vec_t * X_vec = reinterpret_cast<const vec_t*>(X);
+    const int numx = blockDim.x * blockDim.y;
+    const int thrx = threadIdx.x + threadIdx.y * blockDim.x;
+    const int n_vec_to_read = N/vec_size;
+    WelfordDataLN wd(0.f, 0.f, 0.f);
+    //no tail, we check that N is multiple of vec_size
+    for (int i = thrx; i < n_vec_to_read; i += numx) {
+      vec_t data = X_vec[i];
+      #pragma unroll
+      for (int ii=0; ii < vec_size; ii++){
+        wd = cuWelfordOnlineSum(static_cast<acc_t>(data.val[ii]), wd);
+      }
+    }
+    // intra-warp reduction
+    for (int offset = (C10_WARP_SIZE >> 1); offset > 0; offset >>= 1) {
+        WelfordDataLN wdB{WARP_SHFL_DOWN(wd.mean, offset),
+        WARP_SHFL_DOWN(wd.sigma2, offset), WARP_SHFL_DOWN(wd.count, offset)};
+        wd = cuWelfordCombine(wd, wdB);
+    }
+    // threadIdx.x == 0 has correct values for each warp
+    // inter-warp reductions
+    if (blockDim.y > 1) {
+      float * meansigmabuf = buf;
+      float * countbuf = buf + blockDim.y;
+      for (int offset = blockDim.y/2;  offset > 0;  offset /= 2) {
+        // upper half of warps write to shared
+        if (threadIdx.x == 0 && threadIdx.y >= offset && threadIdx.y < 2*offset) {
+          const int wrt_y = threadIdx.y - offset;
+          meansigmabuf[2*wrt_y] = wd.mean;
+          meansigmabuf[2*wrt_y+1] = wd.sigma2;
+          countbuf[wrt_y] = wd.count;
+        }
+        __syncthreads();
+        // lower half merges
+        if (threadIdx.x == 0 && threadIdx.y < offset) {
+          WelfordDataLN wdB{meansigmabuf[2*threadIdx.y],
+                          meansigmabuf[2*threadIdx.y+1],
+                          countbuf[threadIdx.y]};
+          wd = cuWelfordCombine(wd, wdB);
+        }
+        __syncthreads();
+      }
+      if (threadIdx.x == 0 && threadIdx.y ==0) {
+        meansigmabuf[0] = wd.mean;
+        meansigmabuf[1] = wd.sigma2/float(N);
+      }
+      __syncthreads();
+      return WelfordDataLN{meansigmabuf[0], meansigmabuf[1],0.f};
+
+    } else {
+      return WelfordDataLN{WARP_SHFL(wd.mean,0), WARP_SHFL(wd.sigma2,0)/float(N), 0.f};
+    }
+}
+
+template <typename scalar_t, typename T_ACC,
+typename std::enable_if<!std::is_same<scalar_t, double>::value, int>::type = 0>
+__device__ __inline__ void vectorized_layer_norm_kernel_impl(
+  const int N,
+  scalar_t eps,
+  const  scalar_t* __restrict__ X,
+  const  scalar_t* gamma,
+  const  scalar_t* beta,
+  scalar_t* mean,
+  scalar_t* rstd,
+  scalar_t* Y){
+    extern __shared__ float s_data[]; //if we made smem WelfordDataLN type, there would be bank conflicts,
+    //as one thread would have to write 3 consecutive floats
+    auto i1 = blockIdx.x;
+    const scalar_t * block_row = X + i1 * N;
+    WelfordDataLN wd = compute_stats(block_row, N, s_data);
+    using vec_t = memory::aligned_vector<scalar_t, vec_size>;
+    const vec_t * X_vec = reinterpret_cast<const vec_t*>(block_row);
+    vec_t * Y_vec = reinterpret_cast<vec_t*>(Y + i1 * N);
+    const int numx = blockDim.x * blockDim.y;
+    const int thrx = threadIdx.x + threadIdx.y * blockDim.x;
+    const int n_vec_to_read = N/vec_size;
+    T_ACC rstd_val = c10::cuda::compat::rsqrt(wd.sigma2 + eps);
+    //no tail, N is guaranteed to be multiple of vec size
+    for (int i = thrx; i < n_vec_to_read; i += numx) {
+      vec_t data = X_vec[i];
+      vec_t out;
+      //computation is performed in T_ACC, X is cast to T_ACC and result is implicitly cast to T
+      if (gamma != nullptr && beta != nullptr) {
+        #pragma unroll
+        for (int ii=0; ii < vec_size; ii++){
+          out.val[ii] = static_cast<T_ACC>(gamma[i*vec_size + ii]) * (rstd_val * (static_cast<T_ACC>(data.val[ii]) - wd.mean))
+          + static_cast<T_ACC>(beta[i*vec_size + ii]);
+        }
+      } else if (gamma != nullptr) {
+        #pragma unroll
+        for (int ii=0; ii < vec_size; ii++){
+          out.val[ii] = static_cast<T_ACC>(gamma[i*vec_size + ii]) * (rstd_val * (static_cast<T_ACC>(data.val[ii]) - wd.mean));
+        }
+      } else if (beta != nullptr) {
+        #pragma unroll
+        for (int ii=0; ii < vec_size; ii++){
+          out.val[ii] = (rstd_val * (static_cast<T_ACC>(data.val[ii]) - wd.mean)) + static_cast<T_ACC>(beta[i*vec_size + ii]);
+        }
+      } else {
+        #pragma unroll
+        for (int ii=0; ii < vec_size; ii++){
+          out.val[ii] = rstd_val * (static_cast<T_ACC>(data.val[ii]) - wd.mean);
+        }
+      }
+      Y_vec[i] = out;
+    }
+    if (thrx == 0) {
+      mean[i1] = wd.mean;
+      rstd[i1] = rstd_val;
+    }
+}
+
+template <typename scalar_t, typename T_ACC,
+typename std::enable_if<std::is_same<scalar_t, double>::value, int>::type = 0>
+__device__ __inline__ void vectorized_layer_norm_kernel_impl(
+  const int /*N*/,
+  scalar_t /*eps*/,
+  const  scalar_t* __restrict__ /*X*/,
+  const  scalar_t* /*gamma*/,
+  const  scalar_t* /*beta*/,
+  scalar_t* /*mean*/,
+  scalar_t* /*rstd*/,
+  scalar_t* /*Y*/){
+    CUDA_KERNEL_ASSERT(false && "doesn't work with double");
+  }
 
 
 template <typename scalar_t,typename T_ACC,int VEC>
@@ -235,37 +412,33 @@ void GammaBeta_Backward(int length,int stride,scalar_t* dY_data,scalar_t* X_data
     using T_ACC = acc_type<scalar_t, true>;
     auto stream = at::cuda::getCurrentCUDAStream();
     int N=length/stride;
-    if(stride<=512||N<512){
-        constexpr int block_size=REDUCE_BLOCK_SIZE;
-        int block_num=((N-1)/block_size+1);
-        int blocks_per_sm = at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor/block_size;
-        int maxblocks=at::cuda::getCurrentDeviceProperties()->multiProcessorCount * blocks_per_sm;
-        if(stride%4!=0){
-            GammaBetaVEC_KERNEL(1)
-        }
-        else if(stride==512 && N>=2000){
-            GammaBetaVEC_KERNEL(8)
-        }
-        else{
-            GammaBetaVEC_KERNEL(4)
-        }
+    if(stride<512||N<512){
+    constexpr int block_size=REDUCE_BLOCK_SIZE;
+    int block_num=((N-1)/block_size+1);
+    int blocks_per_sm = at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor/block_size;
+    int maxblocks=at::cuda::getCurrentDeviceProperties()->multiProcessorCount * blocks_per_sm;
+    if(stride%4!=0){
+        GammaBetaVEC_KERNEL(1)
+    }
+    else if(N>=2000){
+        GammaBetaVEC_KERNEL(8)
     }
     else{
+        GammaBetaVEC_KERNEL(4)
+    }
+    }
+    else{
+    
         const int B =(stride - 1) / kColwiseReduceTileSize + 1;
         GammaBetaBackward<scalar_t><<<B, dim3(kColwiseReduceTileSize, kColwiseReduceTileSize), 0, stream>>>(
-                       N,stride,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
+                        N,stride,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
     }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 
-
-
-
 }//namespace native
 }//namesapace at
-
-
 
 
 #define LAYERNORMBACKWARD                                                                \

@@ -13,7 +13,7 @@
 #include <torch/extension.h>
 #include <c10/cuda/CUDAMathCompat.h>
 #include <torch/autograd.h>
-
+#include <THC/THCDeviceUtils.cuh>
 namespace at{
 namespace native{
 

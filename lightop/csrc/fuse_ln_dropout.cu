@@ -87,38 +87,22 @@ __global__ void fused_ln_dropout_kernel_train(scalar_t* input,scalar_t* ret,scal
     *(LoadT*)(retdrop_data+idx) = *(LoadT*)input4;
     *(LoadT*)(mask+idx) = *(LoadT*)mask4;
   }
-  __syncthreads();
-  // layernorm get mean and rstd
-  using WelfordType = WelfordData<T_ACC, IndexType, T_ACC>;
-  using WelfordOp = WelfordOps<T_ACC, T_ACC, IndexType, T_ACC, thrust::pair<T_ACC, T_ACC>>;
-  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[kCUDABlockReduceNumThreads/C10_WARP_SIZE];
-  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
-  WelfordOp welford_op;
-  WelfordType val;
-  for (IndexType j = threadIdx.x; j < cols; j += blockDim.x) {
-    IndexType index = i * cols + j;
-    val = welford_op.reduce(val, static_cast<T_ACC>(retdrop_data[index]));
-  }
-  val = BlockReduce(val,welford_op,val_shared_ptr);
 
-  __shared__ T_ACC s_mean;
-  __shared__ T_ACC s_rstd;
-  if (threadIdx.x == 0) {
-    thrust::tie(s_rstd, s_mean) = welford_op.project(val);
-    mean[i] = s_mean;
-    s_rstd=c10::cuda::compat::rsqrt(s_rstd + static_cast<T_ACC>(eps));
-    rstd[i] = s_rstd;
-  }
-  __syncthreads();
-  //layernorm  (x-mean)*rstd*gamma+beta
-  scalar_t tmean=s_mean;
-  scalar_t trstd=s_rstd;
-  for (IndexType j = threadIdx.x; j < cols; j += blockDim.x) {
-    IndexType index = i * cols + j;
-    ret[index] = (static_cast<T_ACC>(retdrop_data[index]) - static_cast<T_ACC>(tmean))*static_cast<T_ACC>(trstd) 
-                 * static_cast<T_ACC>(gamma[j]) + static_cast<T_ACC>(beta[j]);
-  }
 }
+
+//to avoid windows SFINAE errors
+template <typename scalar_t, typename T_ACC>
+__global__ __inline__ void vectorized_layer_norm_kernel(
+  const int N,
+  scalar_t eps,
+  const  scalar_t* __restrict__ X,
+  const  scalar_t* gamma,
+  const  scalar_t* beta,
+  scalar_t* mean,
+  scalar_t* rstd,
+  scalar_t* Y){
+    vectorized_layer_norm_kernel_impl<scalar_t,T_ACC>(N, eps, X, gamma, beta, mean, rstd, Y);
+  }
 
 std::tuple<Tensor,Tensor,Tensor,Tensor>
 fused_ln_dropout_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,
@@ -169,6 +153,13 @@ fused_ln_dropout_forward(const Tensor& self,const Tensor&weight,const Tensor& bi
           fused_ln_dropout_kernel_train<scalar_t,T_ACC><<<rows, kCUDABlockReduceNumThreads, 0, 
                at::cuda::getCurrentCUDAStream()>>>(self_data,ret_data,retdrop_data,mean_data,rstd_data,weight_data,
                bias_data,retdrop_data+nelem,cols,nelem,pa,eps,rng_engine_inputs,rand_offset);
+          const int warp_size = at::cuda::warp_size();
+          const dim3 threads(warp_size, kCUDANumThreads / warp_size, 1);
+          const dim3 blocks(rows);
+          TORCH_INTERNAL_ASSERT_DEBUG_ONLY(threads.y % 2 == 0 || threads.y == 1);
+          int nshared = threads.y > 1 ? threads.y * 3/2 *sizeof(T_ACC) : 0;
+          vectorized_layer_norm_kernel<scalar_t,T_ACC><<<blocks, threads, nshared, at::cuda::getCurrentCUDAStream()>>>
+          (cols, eps, retdrop_data,weight_data, bias_data,mean_data, rstd_data, ret_data);
           C10_CUDA_KERNEL_LAUNCH_CHECK();
         }
         else {
