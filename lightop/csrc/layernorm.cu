@@ -4,95 +4,204 @@ int get_layernorm_blocksize(int cols)
   int blocksize;
   if(cols>256)blocksize=512;
   else if(cols>128)blocksize=256;
-  else blocksize=128;
+  else if(cols>64)blocksize=128;
+  else blocksize=64;
   return blocksize;
 }
 
 namespace at{
 namespace native{
 
-constexpr int kCUDANumThreads = 256;
-constexpr int kCUDABlockReduceNumThreads=512;
+namespace {
+  constexpr int VEC = 4;
+}
 
-template <typename scalar_t>
-#if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
-C10_LAUNCH_BOUNDS_2(512, 4)
-#endif
+template <typename scalar_t, int VEC=4>
 __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
                                             scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
 {
   int blockidx=blockIdx.x;
   int threadidx=threadIdx.x;
   int block_cols=blockidx*cols;
-  //layernorm get mean and rstd
   using T_ACC = acc_type<scalar_t, true>;
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
-  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];//kCUDABlockReduceNumThreads/C10_WARP_SIZE
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
+  __shared__ T_ACC s_mean;
+  __shared__ T_ACC s_rstd;
   WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
   WelfordOp welford_op;
   WelfordType val;
-  if(cols<=512){
-    int index=block_cols+threadidx;
-    T_ACC t_input;
-    if(threadidx<cols){
-      t_input=input[index];
-      val = welford_op.reduce(val, t_input);
-    }
-    val = BlockReduce(val,welford_op,val_shared_ptr);
-    if(threadidx<cols){
-      __shared__ T_ACC s_mean;
-      __shared__ T_ACC s_rstd;
-      if (threadidx == 0) {
-        thrust::tie(s_rstd, s_mean) = welford_op.project(val);
-        mean[blockidx] = s_mean;
-        s_rstd=c10::cuda::compat::rsqrt(s_rstd + static_cast<T_ACC>(eps));
-        rstd[blockidx] = s_rstd;
-      }
-      __syncthreads();
-      //layernorm  (x-mean)*rstd*gamma+beta
-      ret[index] = (t_input - static_cast<T_ACC>(s_mean))*static_cast<T_ACC>(s_rstd)  * static_cast<T_ACC>(gamma[threadidx]) + static_cast<T_ACC>(beta[threadidx]);
+  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  VecTpye *X=(VecTpye*)(input+block_cols);
+  VecTpye *Y=(VecTpye*)(ret+block_cols);
+  int tcol=cols/VEC;
+  T_ACC tmean;
+  T_ACC trstd;
+  VecTpye tx;
+  VecTpye ty;
+  scalar_t* px=(scalar_t*)(&tx);
+  scalar_t* py=(scalar_t*)(&ty);
+  for (int j = threadidx; j < tcol; j += blockDim.x) {
+    tx = X[j];
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      val = welford_op.reduce(val, static_cast<T_ACC>(px[i]));
     }
   }
-  else{
-    for (int j = threadidx; j < cols; j += blockDim.x) {
-      int index = block_cols + j;
-      val = welford_op.reduce(val, static_cast<T_ACC>(input[index]));
+  val = BlockReduce(val,welford_op,val_shared_ptr);
+  if (threadidx == 0) {
+    //layernorm get mean and rstd 
+    thrust::tie(tmean, s_mean) = welford_op.project(val);
+    s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+  }
+  __syncthreads();
+  tmean=s_mean;
+  trstd=s_rstd;
+  for (int j = threadidx; j < tcol; j += blockDim.x) {
+    if(cols>2048)tx = X[j];
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      int jj=j*VEC+i;
+      py[i]=(static_cast<T_ACC>(px[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
     }
-    val = BlockReduce(val,welford_op,val_shared_ptr);
-    __shared__ T_ACC s_mean;
-    __shared__ T_ACC s_rstd;
-    if (threadidx == 0) {
-      thrust::tie(s_rstd, s_mean) = welford_op.project(val);
-      mean[blockidx] = s_mean;
-      s_rstd=c10::cuda::compat::rsqrt(s_rstd + static_cast<T_ACC>(eps));
-      rstd[blockidx] = s_rstd;
-    }
-    __syncthreads();
-    //layernorm  (x-mean)*rstd*gamma+beta
-    scalar_t tmean=s_mean;
-    scalar_t trstd=s_rstd;
-    for (int j = threadidx; j < cols; j += blockDim.x) {
-      int index = block_cols + j;
-      ret[index] = (static_cast<T_ACC>(input[index]) - static_cast<T_ACC>(tmean))*static_cast<T_ACC>(trstd) 
-                  * static_cast<T_ACC>(gamma[j]) + static_cast<T_ACC>(beta[j]);
-    }
+    Y[j]=ty;
+  }
+  if(threadIdx.x==0){
+      mean[blockidx] = tmean;
+      rstd[blockidx] = trstd;
   }
 }
 
-//to avoid windows SFINAE errors
-template <typename scalar_t, typename T_ACC>
-__global__ __inline__ void vectorized_layer_norm_kernel(
-  const int N,
-  scalar_t eps,
-  const  scalar_t* __restrict__ X,
-  const  scalar_t* gamma,
-  const  scalar_t* beta,
-  scalar_t* mean,
-  scalar_t* rstd,
-  scalar_t* Y){
-    vectorized_layer_norm_kernel_impl<scalar_t,T_ACC>(N, eps, X, gamma, beta, mean, rstd, Y);
+template <typename scalar_t, int VEC=4>
+__global__ void layernorm_forward_kernel_2048(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
+                                            scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
+{
+  int blockidx=blockIdx.x;
+  int threadidx=threadIdx.x;
+  int block_cols=blockidx*cols;
+  using T_ACC = acc_type<scalar_t, true>;
+  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
+  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
+  __shared__ T_ACC s_mean;
+  __shared__ T_ACC s_rstd;
+  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
+  WelfordOp welford_op;
+  WelfordType val;
+  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  VecTpye *X=(VecTpye*)(input+block_cols);
+  VecTpye *Y=(VecTpye*)(ret+block_cols);
+  int tcol=cols/VEC;
+  T_ACC tmean;
+  T_ACC trstd;
+  VecTpye tx;
+  VecTpye ty;
+  scalar_t* px=(scalar_t*)(&tx);
+  scalar_t* py=(scalar_t*)(&ty);
+  int j=threadidx;
+  if (j < tcol) {
+    tx = X[j];
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      val = welford_op.reduce(val, static_cast<T_ACC>(px[i]));
+    }
   }
+  val = BlockReduce(val,welford_op,val_shared_ptr);
+  if (threadidx == 0) {
+    //layernorm get mean and rstd
+    thrust::tie(tmean, s_mean) = welford_op.project(val);
+    s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+  }
+  __syncthreads();
+  tmean=s_mean;
+  trstd=s_rstd;
+  if (j < tcol) {
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      int jj=j*VEC+i;
+      py[i]=(static_cast<T_ACC>(px[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
+    }
+    Y[j]=ty;
+  }
+  if(threadIdx.x==0){
+      mean[blockidx] = tmean;
+      rstd[blockidx] = trstd;
+  }
+}
+
+template <typename scalar_t, int VEC=4>
+__global__ void layernorm_forward_kernel_4096(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
+                                            scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
+{
+  int blockidx=blockIdx.x;
+  int threadidx=threadIdx.x;
+  int block_cols=blockidx*cols;
+  using T_ACC = acc_type<scalar_t, true>;
+  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
+  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
+  __shared__ T_ACC s_mean;
+  __shared__ T_ACC s_rstd;
+  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
+  WelfordOp welford_op;
+  WelfordType val;
+  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  VecTpye *X=(VecTpye*)(input+block_cols);
+  VecTpye *Y=(VecTpye*)(ret+block_cols);
+  int tcol=cols/VEC;
+  T_ACC tmean;
+  T_ACC trstd;
+  VecTpye tx;
+  VecTpye ty;
+  scalar_t* px=(scalar_t*)(&tx);
+  scalar_t* py=(scalar_t*)(&ty);
+  VecTpye tx2;
+  VecTpye ty2;
+  scalar_t* px2=(scalar_t*)(&tx2);
+  scalar_t* py2=(scalar_t*)(&ty2);
+  int j=threadidx;
+  int j2=j+512;
+  tx = X[j];
+  #pragma unroll
+  for(int i=0;i<VEC;i++){
+    val = welford_op.reduce(val, static_cast<T_ACC>(px[i]));
+  }
+  if (j2 < tcol) {
+    tx2 = X[j2];
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      val = welford_op.reduce(val, static_cast<T_ACC>(px2[i]));
+    }
+  }
+  val = BlockReduce(val,welford_op,val_shared_ptr);
+  if (threadidx == 0) {
+    //layernorm get mean and rstd
+    thrust::tie(tmean, s_mean) = welford_op.project(val);
+    s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+  }
+  __syncthreads();
+  tmean=s_mean;
+  trstd=s_rstd;
+  #pragma unroll
+  for(int i=0;i<VEC;i++){
+    int jj=j*VEC+i;
+    py[i]=(static_cast<T_ACC>(px[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
+  }
+  Y[j]=ty;
+  if (j2 < tcol) {
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      int jj=j2*VEC+i;
+      py2[i]=(static_cast<T_ACC>(px2[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
+    }
+    Y[j2]=ty2;
+  }
+  if(threadIdx.x==0){
+      mean[blockidx] = tmean;
+      rstd[blockidx] = trstd;
+  }
+}
 
 std::tuple<Tensor,Tensor,Tensor>
 layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,double ln_epsilon)
@@ -119,45 +228,84 @@ layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,doub
         scalar_t  eps = ln_epsilon;
         scalar_t* mean_data=mean.data_ptr<scalar_t>();
         scalar_t* rstd_data=rstd.data_ptr<scalar_t>();
-        // check if can take fast path- all tensors are properly aligned, N is less than 2^24 (to use float count),
-        // N is multiple of vec_size (so that all rows are aligned if tensor is aligned)
-        auto can_vectorize = [&](const scalar_t * ptr, int alignment){uint64_t addr = reinterpret_cast<uint64_t>(ptr); return addr % alignment == 0;};
-        constexpr int num_vec_elems = vec_size;
-        constexpr int alignment = num_vec_elems * sizeof(scalar_t);
-        if ((std::is_same<scalar_t, float>::value || std::is_same<scalar_t, at::Half>::value || std::is_same<scalar_t, at::BFloat16>::value) &&
-          cols <= 1ULL << std::numeric_limits<float>::digits && cols % num_vec_elems == 0 &&
-          can_vectorize(self_data, alignment) && can_vectorize(ret_data, alignment))
-        {
-            const int warp_size = at::cuda::warp_size();
-            const dim3 threads(warp_size, kCUDANumThreads / warp_size, 1);
-            const dim3 blocks(rows);
-            TORCH_INTERNAL_ASSERT_DEBUG_ONLY(threads.y % 2 == 0 || threads.y == 1);
-            int nshared = threads.y > 1 ? threads.y * 3/2 *sizeof(T_ACC) : 0;
-            vectorized_layer_norm_kernel<scalar_t,T_ACC><<<blocks, threads, nshared, at::cuda::getCurrentCUDAStream()>>>
-            (cols, eps, self_data,weight_data, bias_data,mean_data, rstd_data, ret_data);
-            C10_CUDA_KERNEL_LAUNCH_CHECK();
-        }
-        else
-        {
-            layernorm_forward_kernel<scalar_t><<<rows, get_layernorm_blocksize(cols), 0, at::cuda::getCurrentCUDAStream()>>>(
+        if (cols % 4 == 0){
+          if(cols<=2048)
+            layernorm_forward_kernel_2048<scalar_t,4><<<rows, get_layernorm_blocksize(cols/4), 0, at::cuda::getCurrentCUDAStream()>>>(
                                     self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-            C10_CUDA_KERNEL_LAUNCH_CHECK();
+          else if(cols<=4096){
+            layernorm_forward_kernel_4096<scalar_t,4><<<rows, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                    self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+          }
+          else{
+            layernorm_forward_kernel<scalar_t,4><<<rows, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                    self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+          }
         }
-      
+        else{
+            layernorm_forward_kernel<scalar_t,1><<<rows, get_layernorm_blocksize(cols), 0, at::cuda::getCurrentCUDAStream()>>>(
+                                    self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+        }
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
       });
      return std::tuple<Tensor,Tensor,Tensor>(ret,mean,rstd);
 }
 
 template <typename scalar_t>
-__global__ void LayerNormBackward_kernel(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
-                                         const scalar_t* rstd, scalar_t* dX)
+__global__ void LayerNormBackward_kernel(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX)
 {
   LAYERNORMBACKWARD
-
   for (int j = threadIdx.x; j < N; j += blockDim.x) {
     const int index = i * N + j;
     const T_ACC gamma_v = static_cast<T_ACC>(gamma[j]);
     dX[index] = static_cast<T_ACC>(rstd[i]) * static_cast<T_ACC>(dY[index]) * gamma_v + b * static_cast<T_ACC>(X[index]) + c;
+  }
+}
+
+template <typename scalar_t>
+__global__ void LayerNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX)
+{
+  LAYERNORMBACKWARD_VEC_2048
+  if (j < tcol) {
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      pdx[i]=trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(pgamma[i])+b*static_cast<T_ACC>(px[i])+c;
+    }
+    *(VecTpye*)(dX+index) = tdx;
+  }
+}
+
+template <typename scalar_t>
+__global__ void LayerNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX)
+{
+  LAYERNORMBACKWARD_VEC_4096
+  #pragma unroll
+  for(int i=0;i<VEC;i++){
+    pdx[i]=trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(pgamma[i])+b*static_cast<T_ACC>(px[i])+c;
+  }
+  *(VecTpye*)(dX+index) = tdx;
+  if (j < tcol-512) {
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      pdx[i]=trstd*static_cast<T_ACC>(pdy_2[i])*static_cast<T_ACC>(pgamma_2[i])+b*static_cast<T_ACC>(px_2[i])+c;
+    }
+    *(VecTpye*)(dX+index_2) = tdx;
+  }
+}
+
+template <typename scalar_t>
+__global__ void LayerNormBackward_kernel_vec(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX)
+{
+  LAYERNORMBACKWARD_VEC
+  for(int off=j;off<tcol;off+=blockDim.x){
+    const int index = i * N + off*VEC;
+    tx = *(VecTpye*)(X+index);
+    tdy = *(VecTpye*)(dY+index);
+    tgamma = *(VecTpye*)(gamma+off*VEC);
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      pdx[i]=trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(pgamma[i])+b*static_cast<T_ACC>(px[i])+c;
+    }
+    *(VecTpye*)(dX+index) = tdx;
   }
 }
 
@@ -186,9 +334,22 @@ layernorm_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const 
       scalar_t* dgamma_data = dgamma.data_ptr<scalar_t>();
       scalar_t* dbeta_data = dbeta.data_ptr<scalar_t>();
       scalar_t* dX_data = dX.data_ptr<scalar_t>();
-
+      
       GammaBeta_Backward(nelem,N,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
-      LayerNormBackward_kernel<scalar_t><<<M, get_layernorm_blocksize(N), 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+      if(N%4!=0){
+        LayerNormBackward_kernel<scalar_t><<<M, get_layernorm_blocksize(N), 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+      }
+      else{
+        if(N<=2048){
+          LayerNormBackward_kernel_vec_2048<scalar_t><<<M, get_layernorm_blocksize(N/4), 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+        }
+        else if(N<=4096){
+          LayerNormBackward_kernel_vec_4096<scalar_t><<<M, 512, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+        }
+        else{
+          LayerNormBackward_kernel_vec<scalar_t><<<M, 512, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+        }
+      }
       C10_CUDA_KERNEL_LAUNCH_CHECK();
   });
   return std::tuple<Tensor,Tensor,Tensor>(dX,dgamma,dbeta);

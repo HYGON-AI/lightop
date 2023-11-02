@@ -22,7 +22,6 @@ constexpr int REDUCE_BLOCK_SIZE=256;
 
 template <typename T, class ReduceOp>
 __inline__ __device__ T WarpReduce(T val,const ReduceOp& op,int max=32) {
-#pragma unroll
   for (int offset = max; offset > 0; offset >>= 1) {
     val = op.combine(val, op.warp_shfl_down(val, offset));
   }
@@ -34,15 +33,18 @@ __inline__ __device__ T
 BlockReduce(T val, const ReduceOp& op, T* shared) {
   const int lid = threadIdx.x % C10_WARP_SIZE;
   const int wid = threadIdx.x / C10_WARP_SIZE;
+  const int block_size=blockDim.x;
+  const int share_size=block_size/C10_WARP_SIZE;
   val = WarpReduce(val, op);
+  if(block_size==64)return val;
   __syncthreads();
-  if (lid == 0) {
+  if (lid == 0&&wid<share_size) {
     shared[wid] = val;
   }
   __syncthreads();
-  if (wid == 0) {
+  if (wid == 0&&lid<share_size) {
     val= shared[lid];
-    val = WarpReduce(val,op,blockDim.x/C10_WARP_SIZE/2);
+    val = WarpReduce(val,op,share_size/2);
   }
   return val;
 }
@@ -70,7 +72,7 @@ __inline__ __device__ T BlockReduceSum(T val, T* shared) {
   __syncthreads();
   if (wid == 0&&lid<share_size) {
     val= shared[lid];
-    val = WarpReduceSum<T>(val,share_size/2);
+    val = WarpReduceSum(val,share_size/2);
   }
   return val;
 }

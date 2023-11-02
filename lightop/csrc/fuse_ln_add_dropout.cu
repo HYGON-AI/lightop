@@ -3,55 +3,60 @@
 namespace at{
 namespace native{
 
-#define VEC 4
-typedef int IndexType ;
 namespace {
-  constexpr int kCUDANumThreads = 256;
-  constexpr int kCUDABlockReduceNumThreads=512;
+  constexpr int VEC = 4;
 }
 
-template <typename scalar_t>
+template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_dropout_kernel_val(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
-                                            scalar_t* gamma,scalar_t* beta,IndexType cols,scalar_t eps)
+__global__ void fused_ln_add_dropout_kernel_val_2048(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
 {
-  //dropout do nothing in val mode
-  IndexType i=blockIdx.x;
-  // add + layernorm get mean and rstd
-  using T_ACC = acc_type<scalar_t, true>;
-  using WelfordType = WelfordData<T_ACC, IndexType, T_ACC>;
-  using WelfordOp = WelfordOps<T_ACC, T_ACC, IndexType, T_ACC, thrust::pair<T_ACC, T_ACC>>;
-  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[kCUDABlockReduceNumThreads/C10_WARP_SIZE];
+  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
+  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
+  __shared__ T_ACC s_mean;
+  __shared__ T_ACC s_rstd;
   WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
   WelfordOp welford_op;
   WelfordType val;
-
-  for (IndexType j = threadIdx.x; j < cols; j += blockDim.x) {
-    IndexType index = i * cols + j;
-    scalar_t temp= input[index]+residual[index];
-    ret[index]=temp;
-    val = welford_op.reduce(val, static_cast<T_ACC>(temp));
+  int i=blockIdx.x;
+  int j=threadIdx.x;
+  int tcol=cols/VEC;
+  using LoadT = memory::aligned_vector<scalar_t, VEC>;
+  scalar_t input4[VEC];
+  scalar_t output4[VEC];
+  scalar_t residual4[VEC];
+  T_ACC tmean;
+  T_ACC trstd;
+  int idx = i * tcol + j;
+  if(j<tcol){
+    idx*=VEC;
+    *(LoadT*)input4 = *(LoadT*)(input+idx);
+    *(LoadT*)residual4 = *(LoadT*)(residual+idx);
+    #pragma unroll
+    for (int ii = 0; ii < VEC; ii++) {
+      val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]+residual4[ii]));
+    }
   }
   val = BlockReduce(val,welford_op,val_shared_ptr);
-
-  __shared__ T_ACC s_mean;
-  __shared__ T_ACC s_rstd;
-  if (threadIdx.x == 0) {
-    thrust::tie(s_rstd, s_mean) = welford_op.project(val);
-    mean[i] = s_mean;
-    s_rstd=c10::cuda::compat::rsqrt(s_rstd + static_cast<T_ACC>(eps));
-    rstd[i] = s_rstd;
+  if (j == 0) {
+      //layernorm get mean and rstd
+      thrust::tie(tmean, s_mean) = welford_op.project(val);
+      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
   }
   __syncthreads();
-  //layernorm  (x-mean)*rstd*gamma+beta
-  scalar_t tmean=s_mean;
-  scalar_t trstd=s_rstd;
-  for (IndexType j = threadIdx.x; j < cols; j += blockDim.x) {
-    IndexType index = i * cols + j;
-    ret[index] = (static_cast<T_ACC>(ret[index]) - static_cast<T_ACC>(tmean))*static_cast<T_ACC>(trstd) 
-                 * static_cast<T_ACC>(gamma[j]) + static_cast<T_ACC>(beta[j]);
+  if(j<tcol){
+    tmean=s_mean;
+    trstd=s_rstd;
+    //layernorm  (x-mean)*rstd*gamma+beta
+    #pragma unroll
+    for(int ii=0;ii<VEC;ii++){
+      int jj=j*VEC+ii;
+      output4[ii] = (static_cast<T_ACC>(input4[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
+    }
+    *(LoadT*)(ret+idx)=*(LoadT*)output4;
   }
 }
 
@@ -59,23 +64,160 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_dropout_kernel_train(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retdrop_data,scalar_t* mean,
-                                            scalar_t* rstd,scalar_t* gamma,scalar_t* beta,scalar_t* mask,IndexType cols,
-                                            IndexType totalElements,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,IndexType rand_offset)
+__global__ void fused_ln_add_dropout_kernel_val_4096(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
 {
-  //dropout+add
-  IndexType i=blockIdx.x;
-  IndexType tcol=cols/VEC;
+  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
+  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
+  __shared__ T_ACC s_mean;
+  __shared__ T_ACC s_rstd;
+  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
+  WelfordOp welford_op;
+  WelfordType val;
+  int i=blockIdx.x;
+  int j=threadIdx.x;
+  int tcol=cols/VEC;
+  using LoadT = memory::aligned_vector<scalar_t, VEC>;
+  scalar_t input4[VEC];
+  scalar_t input8[VEC];
+  scalar_t output4[VEC];
+  scalar_t output8[VEC];
+  scalar_t residual4[VEC];
+  scalar_t residual8[VEC];
+  T_ACC tmean;
+  T_ACC trstd;
+  int idx1 = i * tcol + j;
+  int idx2 = i * tcol + j + 512;
+  idx1*=VEC;
+  *(LoadT*)input4 = *(LoadT*)(input+idx1);
+  *(LoadT*)residual4 = *(LoadT*)(residual+idx1);
+  #pragma unroll
+  for (int ii = 0; ii < VEC; ii++) {
+    val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]+residual4[ii]));
+  }
+  if(j<tcol-512){
+    idx2*=VEC;
+    *(LoadT*)input8 = *(LoadT*)(input+idx2);
+    *(LoadT*)residual8 = *(LoadT*)(residual+idx2);
+    #pragma unroll
+    for (int ii = 0; ii < VEC; ii++) {
+      val = welford_op.reduce(val, static_cast<T_ACC>(input8[ii]+residual8[ii]));
+    }
+  }
+  val = BlockReduce(val,welford_op,val_shared_ptr);
+  if (j == 0) {
+      //layernorm get mean and rstd
+      thrust::tie(tmean, s_mean) = welford_op.project(val);
+      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+  }
+  __syncthreads();
+  tmean=s_mean;
+  trstd=s_rstd;
+  #pragma unroll
+  for(int ii=0;ii<VEC;ii++){
+    int jj=j*VEC+ii;
+    output4[ii] = (static_cast<T_ACC>(input4[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
+  }
+  *(LoadT*)(ret+idx1)=*(LoadT*)output4;
+  if(j<tcol-512){
+    #pragma unroll
+    for(int ii=0;ii<VEC;ii++){
+      int jj=j*VEC+ii+2048;
+      output8[ii] = (static_cast<T_ACC>(input8[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
+    }
+    *(LoadT*)(ret+idx2)=*(LoadT*)output8;
+  }
+}
+
+template <typename scalar_t,typename T_ACC>
+#if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
+C10_LAUNCH_BOUNDS_2(512, 4)
+#endif
+__global__ void fused_ln_add_dropout_kernel_val(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
+{
+  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
+  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
+  __shared__ T_ACC s_mean;
+  __shared__ T_ACC s_rstd;
+  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
+  WelfordOp welford_op;
+  WelfordType val;
+  int i=blockIdx.x;
+  int j=threadIdx.x;
+  int tcol=cols/VEC;
+  using LoadT = memory::aligned_vector<scalar_t, VEC>;
+  float rand[VEC];
+  scalar_t input4[VEC];
+  scalar_t output4[VEC];
+  scalar_t mask4[VEC];
+  scalar_t residual4[VEC];
+  T_ACC tmean;
+  T_ACC trstd;
+  for(int off=j;off<tcol;off+=blockDim.x){
+    int idx = i * tcol + off;
+    idx*=VEC;
+    *(LoadT*)input4 = *(LoadT*)(input+idx);
+    *(LoadT*)residual4 = *(LoadT*)(residual+idx);
+    #pragma unroll
+    for (int ii = 0; ii < VEC; ii++) {
+      val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]+residual4[ii]));
+    }
+  }
+  val = BlockReduce(val,welford_op,val_shared_ptr);
+  if (j == 0) {
+      //layernorm get mean and rstd
+      thrust::tie(tmean, s_mean) = welford_op.project(val);
+      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+  }
+  __syncthreads();
+  tmean=s_mean;
+  trstd=s_rstd;
+  for(int off=j;off<tcol;off+=blockDim.x){
+    int idx = (i * tcol + off)*VEC;
+    *(LoadT*)input4 = *(LoadT*)(input+idx);
+    //layernorm  (x-mean)*rstd*gamma+beta
+    #pragma unroll
+    for(int ii=0;ii<VEC;ii++){
+      int jj=j*VEC+ii;
+      output4[ii] = (static_cast<T_ACC>(input4[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
+    }
+    *(LoadT*)(ret+idx)=*(LoadT*)output4;
+  }
+}
+
+
+template <typename scalar_t,typename T_ACC>
+#if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
+C10_LAUNCH_BOUNDS_2(512, 4)
+#endif
+__global__ void fused_ln_add_dropout_kernel_train_2048(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retdrop_data,scalar_t* mean,scalar_t* rstd,scalar_t* gamma,
+                                              scalar_t* beta,scalar_t* mask,int cols,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,int rand_offset)
+{
+  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
+  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
+  __shared__ T_ACC s_mean;
+  __shared__ T_ACC s_rstd;
+  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
+  WelfordOp welford_op;
+  WelfordType val;
+  int i=blockIdx.x;
+  int j=threadIdx.x;
+  int tcol=cols/VEC;
   using LoadT = memory::aligned_vector<scalar_t, VEC>;
   T_ACC pinv = T_ACC(1)/p;
   auto seeds = at::cuda::philox::unpack(philox_args);
   hiprandStatePhilox4_32_10_t state;
   float rand[VEC];
   scalar_t input4[VEC];
-  scalar_t residual4[VEC];
+  scalar_t output4[VEC];
   scalar_t mask4[VEC];
-  for(int off=threadIdx.x;off<tcol;off+=blockDim.x){
-    IndexType idx = i * tcol + off;
+  scalar_t residual4[VEC];
+  T_ACC tmean;
+  T_ACC trstd;
+  int idx = i * tcol + j;
+  if(j<tcol){
     hiprand_init(std::get<0>(seeds),idx%rand_offset,std::get<1>(seeds)+idx/rand_offset*VEC,&state);
     idx*=VEC;
     *(float4*)rand = hiprand_uniform4(&state);
@@ -85,27 +227,197 @@ __global__ void fused_ln_dropout_kernel_train(scalar_t* input,scalar_t* residual
     for (int ii = 0; ii < VEC; ii++) {
       mask4[ii] = (rand[ii]<p)*pinv;
       input4[ii] = input4[ii]*mask4[ii]+residual4[ii];
+      val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]));
+    }
+  }
+  val = BlockReduce(val,welford_op,val_shared_ptr);
+  if (j == 0) {
+      //layernorm get mean and rstd
+      thrust::tie(tmean, s_mean) = welford_op.project(val);
+      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+  }
+  __syncthreads();
+  if(j<tcol){
+    tmean=s_mean;
+    trstd=s_rstd;
+    //layernorm  (x-mean)*rstd*gamma+beta
+    #pragma unroll
+    for(int ii=0;ii<VEC;ii++){
+      int jj=j*VEC+ii;
+      output4[ii] = (static_cast<T_ACC>(input4[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
+    }
+    *(LoadT*)(retdrop_data+idx) = *(LoadT*)input4;
+    *(LoadT*)(mask+idx) = *(LoadT*)mask4;
+    *(LoadT*)(ret+idx)=*(LoadT*)output4;
+    if(threadIdx.x==0){
+      mean[i] = tmean;
+      rstd[i] = trstd;
+    }
+  }
+}
+
+template <typename scalar_t,typename T_ACC>
+#if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
+C10_LAUNCH_BOUNDS_2(512, 4)
+#endif
+__global__ void fused_ln_add_dropout_kernel_train_4096(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retdrop_data,scalar_t* mean,scalar_t* rstd,scalar_t* gamma,
+                                              scalar_t* beta,scalar_t* mask,int cols,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,int rand_offset)
+{
+  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
+  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
+  __shared__ T_ACC s_mean;
+  __shared__ T_ACC s_rstd;
+  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
+  WelfordOp welford_op;
+  WelfordType val;
+  int i=blockIdx.x;
+  int j=threadIdx.x;
+  int tcol=cols/VEC;
+  using LoadT = memory::aligned_vector<scalar_t, VEC>;
+  T_ACC pinv = T_ACC(1)/p;
+  auto seeds = at::cuda::philox::unpack(philox_args);
+  hiprandStatePhilox4_32_10_t state;
+  float rand[VEC];
+  scalar_t input4[VEC];
+  scalar_t input8[VEC];
+  scalar_t output4[VEC];
+  scalar_t output8[VEC];
+  scalar_t mask4[VEC];
+  scalar_t mask8[VEC];
+  scalar_t residual4[VEC];
+  scalar_t residual8[VEC];
+  T_ACC tmean;
+  T_ACC trstd;
+  int idx1 = i * tcol + j;
+  int idx2 = i * tcol + j + 512;
+  hiprand_init(std::get<0>(seeds),idx1%rand_offset,std::get<1>(seeds)+idx1/rand_offset*VEC,&state);
+  idx1*=VEC;
+  *(float4*)rand = hiprand_uniform4(&state);
+  *(LoadT*)input4 = *(LoadT*)(input+idx1);
+  *(LoadT*)residual4 = *(LoadT*)(residual+idx1);
+  #pragma unroll
+  for (int ii = 0; ii < VEC; ii++) {
+    mask4[ii] = (rand[ii]<p)*pinv;
+    input4[ii] = input4[ii]*mask4[ii]+residual4[ii];
+    val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]));
+  }
+  if(j<tcol-512){
+    hiprand_init(std::get<0>(seeds),idx2%rand_offset,std::get<1>(seeds)+idx2/rand_offset*VEC,&state);
+    idx2*=VEC;
+    *(float4*)rand = hiprand_uniform4(&state);
+    *(LoadT*)input8 = *(LoadT*)(input+idx2);
+    *(LoadT*)residual8 = *(LoadT*)(residual+idx2);
+    #pragma unroll
+    for (int ii = 0; ii < VEC; ii++) {
+      mask8[ii] = (rand[ii]<p)*pinv;
+      input8[ii] = input8[ii]*mask8[ii]+residual8[ii];
+      val = welford_op.reduce(val, static_cast<T_ACC>(input8[ii]));
+    }
+  }
+  val = BlockReduce(val,welford_op,val_shared_ptr);
+  if (j == 0) {
+      //layernorm get mean and rstd
+      thrust::tie(tmean, s_mean) = welford_op.project(val);
+      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+  }
+  __syncthreads();
+  tmean=s_mean;
+  trstd=s_rstd;
+  #pragma unroll
+  for(int ii=0;ii<VEC;ii++){
+    int jj=j*VEC+ii;
+    output4[ii] = (static_cast<T_ACC>(input4[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
+  }
+  *(LoadT*)(retdrop_data+idx1) = *(LoadT*)input4;
+  *(LoadT*)(mask+idx1) = *(LoadT*)mask4;
+  *(LoadT*)(ret+idx1)=*(LoadT*)output4;
+  if(j<tcol-512){
+    #pragma unroll
+    for(int ii=0;ii<VEC;ii++){
+      int jj=j*VEC+ii+2048;
+      output8[ii] = (static_cast<T_ACC>(input8[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
+    }
+    *(LoadT*)(retdrop_data+idx2) = *(LoadT*)input8;
+    *(LoadT*)(mask+idx2) = *(LoadT*)mask8;
+    *(LoadT*)(ret+idx2)=*(LoadT*)output8;
+  }
+  if(j==0){
+    mean[i] = tmean;
+    rstd[i] = trstd;
+  }
+}
+
+template <typename scalar_t,typename T_ACC>
+#if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
+C10_LAUNCH_BOUNDS_2(512, 4)
+#endif
+__global__ void fused_ln_add_dropout_kernel_train(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retdrop_data,scalar_t* mean,scalar_t* rstd,scalar_t* gamma,
+                                         scalar_t* beta,scalar_t* mask,int cols,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,int rand_offset)
+{
+  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
+  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
+  __shared__ T_ACC s_mean;
+  __shared__ T_ACC s_rstd;
+  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
+  WelfordOp welford_op;
+  WelfordType val;
+  int i=blockIdx.x;
+  int j=threadIdx.x;
+  int tcol=cols/VEC;
+  using LoadT = memory::aligned_vector<scalar_t, VEC>;
+  T_ACC pinv = T_ACC(1)/p;
+  auto seeds = at::cuda::philox::unpack(philox_args);
+  hiprandStatePhilox4_32_10_t state;
+  float rand[VEC];
+  scalar_t input4[VEC];
+  scalar_t residual4[VEC];
+  scalar_t output4[VEC];
+  scalar_t mask4[VEC];
+  T_ACC tmean;
+  T_ACC trstd;
+  for(int off=j;off<tcol;off+=blockDim.x){
+    int idx = i * tcol + off;
+    hiprand_init(std::get<0>(seeds),idx%rand_offset,std::get<1>(seeds)+idx/rand_offset*VEC,&state);
+    idx*=VEC;
+    *(float4*)rand = hiprand_uniform4(&state);
+    *(LoadT*)input4 = *(LoadT*)(input+idx);
+    *(LoadT*)residual4 = *(LoadT*)(residual+idx);
+    #pragma unroll
+    for (int ii = 0; ii < VEC; ii++) {
+      mask4[ii] = (rand[ii]<p)*pinv;
+      input4[ii] = input4[ii]*mask4[ii]+residual4[ii];
+      val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]));
     }
     *(LoadT*)(retdrop_data+idx) = *(LoadT*)input4;
     *(LoadT*)(mask+idx) = *(LoadT*)mask4;
   }
-  
-}
-
-//to avoid windows SFINAE errors
-template <typename scalar_t, typename T_ACC>
-__global__ __inline__ void vectorized_layer_norm_kernel(
-  const int N,
-  scalar_t eps,
-  const  scalar_t* __restrict__ X,
-  const  scalar_t* gamma,
-  const  scalar_t* beta,
-  scalar_t* mean,
-  scalar_t* rstd,
-  scalar_t* Y){
-    vectorized_layer_norm_kernel_impl<scalar_t,T_ACC>(N, eps, X, gamma, beta, mean, rstd, Y);
+  val = BlockReduce(val,welford_op,val_shared_ptr);
+  if (j == 0) {
+      //layernorm get mean and rstd
+      thrust::tie(tmean, s_mean) = welford_op.project(val);
+      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
   }
-
+  __syncthreads();
+  tmean=s_mean;
+  trstd=s_rstd;
+  for(int off=j;off<tcol;off+=blockDim.x){
+    int idx = (i * tcol + off)*VEC;
+    *(LoadT*)input4 = *(LoadT*)(retdrop_data+idx);
+    //layernorm  (x-mean)*rstd*gamma+beta
+    #pragma unroll
+    for(int ii=0;ii<VEC;ii++){
+      int jj=j*VEC+ii;
+      output4[ii] = (static_cast<T_ACC>(input4[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
+    }
+    *(LoadT*)(ret+idx)=*(LoadT*)output4;
+  }
+  if(threadIdx.x==0){
+    mean[i] = tmean;
+    rstd[i] = trstd;
+  }
+}
 
 std::tuple<Tensor,Tensor,Tensor,Tensor>
 fused_ln_add_dropout_forward(const Tensor& self,const Tensor& other,const Tensor&weight,const Tensor& bias,
@@ -114,20 +426,22 @@ fused_ln_add_dropout_forward(const Tensor& self,const Tensor& other,const Tensor
     AT_ASSERTM(self.sizes() == other.sizes(), "x must be the same size as y");
     AT_ASSERTM(p >=0.0f&&p<1.0f, "p mast be between 0 and 1");
     AT_ASSERTM(self.is_cuda()&&other.is_cuda(), "x and y must on dcu");
-    const IndexType cols=self.sizes().back();
-    AT_ASSERT(cols>=512,"cols must >= 512");
-    const IndexType nelem = self.numel();
-    const IndexType rows=nelem/cols;
+    const int cols=self.sizes().back();
+    AT_ASSERT(cols>=64,"cols must >= 64");
+    AT_ASSERT(cols%4==0,"cols%4 must be 0");
+    const int nelem = self.numel();
+    const int rows=nelem/cols;
     Tensor ret = at::empty_like(self);
     Tensor retdrop;
-    Tensor mean = at::empty({rows},self.options());
-    Tensor rstd = at::empty({rows},self.options());
+    Tensor mean;
+    Tensor rstd;
     PhiloxCudaState rng_engine_inputs;
+    auto stream = at::cuda::getCurrentCUDAStream();
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
       self.scalar_type(),
-      "fused_ln_dropout_forward",
+      "fused_ln_add_dropout_forward",
       [&] {
         p=1-p;
         using T_ACC = acc_type<scalar_t, true>;
@@ -136,18 +450,20 @@ fused_ln_add_dropout_forward(const Tensor& self,const Tensor& other,const Tensor
         scalar_t* self_data = self.data_ptr<scalar_t>();
         scalar_t* other_data =other.data_ptr<scalar_t>();
         scalar_t* ret_data=ret.data_ptr<scalar_t>();
-        scalar_t* mean_data=mean.data_ptr<scalar_t>();
-        scalar_t* rstd_data=rstd.data_ptr<scalar_t>();
         scalar_t* weight_data=weight.data_ptr<scalar_t>();
         scalar_t* bias_data=bias.data_ptr<scalar_t>();
         if(training)
         {
           retdrop = at::empty({nelem*2},self.options());
+          mean = at::empty({rows},self.options());
+          rstd = at::empty({rows},self.options());
           scalar_t* retdrop_data=retdrop.data_ptr<scalar_t>();
+          scalar_t* mean_data=mean.data_ptr<scalar_t>();
+          scalar_t* rstd_data=rstd.data_ptr<scalar_t>();
           auto gen = get_generator_or_default<CUDAGeneratorImpl>(Generator(), cuda::detail::getDefaultCUDAGenerator());
-          IndexType rand_offset=at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor*
+          int rand_offset=at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor*
                                     at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
-          IndexType gridx=((nelem + 256 -1)/256);
+          int gridx=((nelem + 256 -1)/256);
           gridx=std::min(rand_offset/256, gridx);
           int64_t counter_offset = ((nelem - 1)/(1024*gridx)+1)*4;
           PhiloxCudaState rng_engine_inputs;
@@ -155,48 +471,119 @@ fused_ln_add_dropout_forward(const Tensor& self,const Tensor& other,const Tensor
             std::lock_guard<std::mutex> lock(gen->mutex_);
             rng_engine_inputs = gen->philox_cuda_state(counter_offset);
           }
-          fused_ln_dropout_kernel_train<scalar_t,T_ACC><<<rows, kCUDABlockReduceNumThreads, 0, 
-               at::cuda::getCurrentCUDAStream()>>>(self_data,other_data,ret_data,retdrop_data,mean_data,rstd_data,weight_data,
-               bias_data,retdrop_data+nelem,cols,nelem,pa,eps,rng_engine_inputs,rand_offset);
-          const int warp_size = at::cuda::warp_size();
-          const dim3 threads(warp_size, kCUDANumThreads / warp_size, 1);
-          const dim3 blocks(rows);
-          TORCH_INTERNAL_ASSERT_DEBUG_ONLY(threads.y % 2 == 0 || threads.y == 1);
-          int nshared = threads.y > 1 ? threads.y * 3/2 *sizeof(T_ACC) : 0;
-          vectorized_layer_norm_kernel<scalar_t,T_ACC><<<blocks, threads, nshared, at::cuda::getCurrentCUDAStream()>>>
-          (cols, eps, retdrop_data,weight_data, bias_data,mean_data, rstd_data, ret_data);     
-          C10_CUDA_KERNEL_LAUNCH_CHECK();
+          if(cols<=2048){
+            fused_ln_add_dropout_kernel_train_2048<scalar_t,T_ACC><<<rows, get_layernorm_blocksize(cols/4), 0, stream>>>(self_data,other_data,ret_data,
+                retdrop_data,mean_data,rstd_data,weight_data,bias_data,retdrop_data+nelem,cols,pa,eps,rng_engine_inputs,rand_offset);
+          }
+          else if(cols<=4096){
+            fused_ln_add_dropout_kernel_train_4096<scalar_t,T_ACC><<<rows, 512, 0, stream>>>(self_data,other_data,ret_data,
+                retdrop_data,mean_data,rstd_data,weight_data,bias_data,retdrop_data+nelem,cols,pa,eps,rng_engine_inputs,rand_offset);
+          }
+          else{
+            fused_ln_add_dropout_kernel_train<scalar_t,T_ACC><<<rows,512, 0, stream>>>(self_data,other_data,ret_data,
+                retdrop_data,mean_data,rstd_data,weight_data,bias_data,retdrop_data+nelem,cols,pa,eps,rng_engine_inputs,rand_offset);
+          }
         }
         else {
-          fused_ln_dropout_kernel_val<scalar_t><<<rows, kCUDABlockReduceNumThreads, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                     self_data,other_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-          C10_CUDA_KERNEL_LAUNCH_CHECK();
+          if(cols<=2048){
+            fused_ln_add_dropout_kernel_val_2048<scalar_t,T_ACC><<<rows,  get_layernorm_blocksize(cols/4), 0, stream>>>(self_data,other_data,ret_data,weight_data,bias_data,cols,eps);
+          }
+          else if(cols<=4096){
+            fused_ln_add_dropout_kernel_val_4096<scalar_t,T_ACC><<<rows,  512, 0, stream>>>(self_data,other_data,ret_data,weight_data,bias_data,cols,eps);
+          }
+          else{
+            fused_ln_add_dropout_kernel_val<scalar_t,T_ACC><<<rows, 512, 0, stream>>>(self_data,other_data,ret_data,weight_data,bias_data,cols,eps);
+          }
         }
-
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
       });
      return std::tuple<Tensor,Tensor,Tensor,Tensor>(ret,retdrop,mean,rstd);
 }
 
 template <typename scalar_t>
-__global__ void LayerNormBackward_kernel(IndexType N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
+__global__ void LayerNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
                                          const scalar_t* rstd, scalar_t* dX1,scalar_t* dX2,scalar_t* mask)
 {
-  LAYERNORMBACKWARD
-  for (IndexType j = threadIdx.x; j < N; j += blockDim.x) {
-    const IndexType index = i * N + j;
-    const T_ACC gamma_v = static_cast<T_ACC>(gamma[j]);
-    scalar_t temp = static_cast<T_ACC>(rstd[i]) * static_cast<T_ACC>(dY[index]) * gamma_v + b * static_cast<T_ACC>(X[index]) + c;
-    dX2[index] = temp;
-    dX1[index] = temp*mask[index];
+  LAYERNORMBACKWARD_VEC_2048
+  VecTpye tmask;
+  scalar_t* pmask=(scalar_t*)(&tmask);
+  VecTpye tdx2;
+  scalar_t* pdx2=(scalar_t*)(&tdx2);
+  if (j < tcol) {
+    tmask = *(VecTpye*)(mask+index); 
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      pdx2[i]=trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(pgamma[i])+b*static_cast<T_ACC>(px[i])+c;
+      pdx[i]=pdx2[i]*pmask[i];
+    }
+    *(VecTpye*)(dX1+index) = tdx;
+    *(VecTpye*)(dX2+index) = tdx2;
   }
 }
+
+template <typename scalar_t>
+__global__ void LayerNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
+                                         const scalar_t* rstd, scalar_t* dX1,scalar_t* dX2,scalar_t* mask)
+{
+  LAYERNORMBACKWARD_VEC_4096
+  VecTpye tmask;
+  VecTpye tmask_2;
+  scalar_t* pmask=(scalar_t*)(&tmask);
+  scalar_t* pmask_2=(scalar_t*)(&tmask_2);
+  tmask = *(VecTpye*)(mask+index);
+  VecTpye tdx2;
+  scalar_t* pdx2=(scalar_t*)(&tdx2);
+  #pragma unroll
+  for(int i=0;i<VEC;i++){
+    pdx2[i]=trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(pgamma[i])+b*static_cast<T_ACC>(px[i])+c;
+    pdx[i]=pdx2[i]*pmask[i];
+  }
+  *(VecTpye*)(dX1+index) = tdx;
+  *(VecTpye*)(dX2+index) = tdx2;
+  if (j < tcol-512) {
+    tmask_2 = *(VecTpye*)(mask+index_2); 
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      pdx2[i]=trstd*static_cast<T_ACC>(pdy_2[i])*static_cast<T_ACC>(pgamma_2[i])+b*static_cast<T_ACC>(px_2[i])+c;
+      pdx[i]=pdx2[i]*pmask_2[i];
+    }
+    *(VecTpye*)(dX1+index_2) = tdx;
+    *(VecTpye*)(dX2+index_2) = tdx2;
+  }
+}
+
+template <typename scalar_t>
+__global__ void LayerNormBackward_kernel_vec(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
+                                         const scalar_t* rstd, scalar_t* dX1,scalar_t* dX2,scalar_t* mask)
+{
+  LAYERNORMBACKWARD_VEC
+  VecTpye tmask;
+  scalar_t* pmask=(scalar_t*)(&tmask);
+  VecTpye tdx2;
+  scalar_t* pdx2=(scalar_t*)(&tdx2);
+  for(int off=j;off<tcol;off+=blockDim.x){
+    const int index = i * N + off*VEC;
+    tx = *(VecTpye*)(X+index);
+    tdy = *(VecTpye*)(dY+index);
+    tgamma = *(VecTpye*)(gamma+off*VEC);
+    tmask = *(VecTpye*)(mask+index);
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      pdx2[i]=trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(pgamma[i])+b*static_cast<T_ACC>(px[i])+c;
+      pdx[i]=pdx2[i]*static_cast<T_ACC>(pmask[i]);
+    }
+    *(VecTpye*)(dX1+index) = tdx;
+    *(VecTpye*)(dX2+index) = tdx2;
+  }
+}
+
 
 std::tuple<Tensor,Tensor,Tensor,Tensor>
 fused_ln_add_dropout_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const Tensor& rstd,const Tensor& gamma)
 {
-  IndexType N=grad.sizes().back();
-  IndexType nelem=grad.numel();
-  IndexType M=grad.numel()/N;
+  int N=grad.sizes().back();
+  int nelem=grad.numel();
+  int M=grad.numel()/N;
   auto pgrad = grad.expect_contiguous();
   Tensor dX1 = at::empty_like(*pgrad);
   Tensor dX2 = at::empty_like(dX1);
@@ -207,7 +594,7 @@ fused_ln_add_dropout_backward(const Tensor& grad, const Tensor& X,const Tensor& 
     at::ScalarType::Half,
     at::ScalarType::BFloat16,
     grad.scalar_type(),
-    "fused_ln_dropout_backward",
+    "fused_ln_add_dropout_backward",
     [&] {
       scalar_t* dY_data = pgrad->data_ptr<scalar_t>();
       scalar_t* X_data = X.data_ptr<scalar_t>();
@@ -220,8 +607,18 @@ fused_ln_add_dropout_backward(const Tensor& grad, const Tensor& X,const Tensor& 
       scalar_t* dX2_data = dX2.data_ptr<scalar_t>();
       
       GammaBeta_Backward(nelem,N,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
-      LayerNormBackward_kernel<scalar_t><<<M, kCUDABlockReduceNumThreads, 0, cuda_stream>>>(
+      if(N<=2048){
+        LayerNormBackward_kernel_vec_2048<scalar_t><<<M, get_layernorm_blocksize(N/4), 0, cuda_stream>>>(
                   N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX1_data,dX2_data,X_data+grad.numel());
+      }
+      else if(N<=4096){
+        LayerNormBackward_kernel_vec_4096<scalar_t><<<M, 512, 0, cuda_stream>>>(
+                  N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX1_data,dX2_data,X_data+grad.numel());
+      }
+      else{
+        LayerNormBackward_kernel_vec<scalar_t><<<M, 512, 0, cuda_stream>>>(
+                  N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX1_data,dX2_data,X_data+grad.numel());
+      }
       C10_CUDA_KERNEL_LAUNCH_CHECK();
   });
   return std::tuple<Tensor,Tensor,Tensor,Tensor>(dX1,dX2,dgamma,dbeta);
@@ -260,5 +657,4 @@ Tensor fuse_ln_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,cons
 }
 }
 }
-
 
