@@ -232,10 +232,10 @@ class BuildReleaseExtension(BuildExtension):
             self._add_gnu_cpp_abi_flag(extension)
         self.compiler.src_extensions += ['.cu', '.cuh', '.hip']
 
-        def append_std14_if_no_std_present(cflags) -> None:
+        def append_std17_if_no_std_present(cflags) -> None:
             cpp_format_prefix = '/{}:' if self.compiler.compiler_type == 'msvc' else '-{}='
             cpp_flag_prefix = cpp_format_prefix.format('std')
-            cpp_flag = cpp_flag_prefix + 'c++14'
+            cpp_flag = cpp_flag_prefix + 'c++17'
             if not any(flag.startswith(cpp_flag_prefix) for flag in cflags):
                 cflags.append(cpp_flag)
 
@@ -266,7 +266,7 @@ class BuildReleaseExtension(BuildExtension):
                 post_cflags = list(extra_postargs)
             if IS_HIP_EXTENSION:
                 post_cflags = COMMON_HIP_FLAGS + post_cflags
-            append_std14_if_no_std_present(post_cflags)
+            append_std17_if_no_std_present(post_cflags)
             cuda_post_cflags = None
             cuda_cflags = None
             if with_cuda:
@@ -278,7 +278,7 @@ class BuildReleaseExtension(BuildExtension):
                 if IS_HIP_EXTENSION:
                     cuda_post_cflags = cuda_post_cflags + _get_rocm_arch_flags(cuda_post_cflags)
                     cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + cuda_post_cflags
-                append_std14_if_no_std_present(cuda_post_cflags)
+                append_std17_if_no_std_present(cuda_post_cflags)
                 cuda_cflags = [shlex.quote(f) for f in cuda_cflags]
                 cuda_post_cflags = [shlex.quote(f) for f in cuda_post_cflags]
             _write_ninja_file_and_compile_objects(sources=sources, objects=objects,

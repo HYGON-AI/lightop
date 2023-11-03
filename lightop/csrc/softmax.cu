@@ -1581,7 +1581,7 @@ TORCH_META_FUNC_FINAL(_fused_log_softmax_backward_cuda_out)
 
 
 Tensor fuse_log_softmax_forward(const at::Tensor & self, int64_t dim, bool half_to_float) {
-    c10::optional<Device> common_device = nullopt;
+    c10::optional<Device> common_device = c10::nullopt;
     (void)common_device; // Suppress unused variable warning
 
     c10::impl::check_and_update_common_device(common_device, self, "wrapper__log_softmax", "self");
@@ -1599,7 +1599,7 @@ Tensor fuse_log_softmax_backward(const at::Tensor & grad_output, const at::Tenso
          self.scalar_type() == ScalarType::Half),
         "expected input and grad types to match, or input to be at::Half and grad to be at::Float");
     }
-    c10::optional<Device> common_device = nullopt;
+    c10::optional<Device> common_device = c10::nullopt;
     (void)common_device; // Suppress unused variable warning
 
     c10::impl::check_and_update_common_device(common_device, grad_output, "wrapper__log_softmax_backward_data", "grad_output");
@@ -1613,7 +1613,7 @@ Tensor fuse_log_softmax_backward(const at::Tensor & grad_output, const at::Tenso
 
 
 Tensor fuse_softmax_forward(const Tensor &input, const int64_t dim, const bool half_to_float) {
-    c10::optional<Device> common_device = nullopt;
+    c10::optional<Device> common_device = c10::nullopt;
     (void)common_device; // Suppress unused variable warning
 
     c10::impl::check_and_update_common_device(common_device, input, "fuse_softmax_forward", "input");
@@ -1631,7 +1631,7 @@ Tensor fuse_softmax_backward(const Tensor& grad, const Tensor& output, int64_t d
          input.scalar_type() == ScalarType::Half),
         "expected input and grad types to match, or input to be at::Half and grad to be at::Float");
     }
-    c10::optional<Device> common_device = nullopt;
+    c10::optional<Device> common_device = c10::nullopt;
     (void)common_device; // Suppress unused variable warning
 
     c10::impl::check_and_update_common_device(common_device, grad, "wrapper__softmax_backward_data", "grad");

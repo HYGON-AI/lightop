@@ -318,7 +318,7 @@ Tensor fused_linear_bias_backward_impl(const Tensor& self, const Tensor & result
     }
     else {
       scalar_t beta_val = (scalar_t)0.0;
-      TORCH_CUDABLAS_CHECK(rocblas_gemm_ex(
+      rocblas_gemm_ex(
         handle,
         transpose_mat1 ? rocblas_operation_transpose : rocblas_operation_none,
         transpose_mat2 ? rocblas_operation_transpose : rocblas_operation_none,
@@ -340,7 +340,7 @@ Tensor fused_linear_bias_backward_impl(const Tensor& self, const Tensor & result
         rocblas_datatype_f16_r,
         rocblas_gemm_algo_standard,
         0, 0
-      ));
+      );
     }
     // rocblas_res= rocblas_gemm_strided_batched_ex(
     //   handle,
@@ -445,7 +445,7 @@ Tensor fused_linear_bias_backward_3d_impl(const Tensor& self, const Tensor & res
     //   (const void*)&beta_val,
     //   (void*)self_ptr, (void*)result_ptr
     // );
-    TORCH_CUDABLAS_CHECK(rocblas_gemm_ex(
+    rocblas_gemm_ex(
       handle,
       rocblas_operation_none,
       rocblas_operation_transpose,
@@ -467,7 +467,7 @@ Tensor fused_linear_bias_backward_3d_impl(const Tensor& self, const Tensor & res
       rocblas_datatype_f16_r,
       rocblas_gemm_algo_standard,
       0, 0
-    ));
+    );
     // rocblas_res= rocblas_gemm_strided_batched_ex(
     //   handle,
     //   transpose_mat1 ? rocblas_operation_transpose : rocblas_operation_none,
@@ -548,7 +548,7 @@ struct TORCH_API structured__fused_linear : public at::impl::MetaBase {
 TORCH_META_FUNC_FINAL(_fused_linear)
 
 at::Tensor fused_linear_bias_forward(const at::Tensor & self, const at::Tensor & mat1, const at::Tensor & mat2) {
-  c10::optional<Device> common_device = nullopt;
+  c10::optional<Device> common_device = c10::nullopt;
   (void)common_device; // Suppress unused variable warning
 
   c10::impl::check_and_update_common_device(common_device, self, "wrapper_addmm", "self");
