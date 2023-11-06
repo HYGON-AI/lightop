@@ -59,11 +59,10 @@ Tensor fused_drop_path_forward(const Tensor& self,const Tensor& ret, double p, b
     if(!training)return Tensor();
     AT_ASSERTM(p >=0.0f&&p<1.0f, "p mast be between 0 and 1");
     AT_ASSERTM(self.is_cuda(), "input must on dcu");
-    auto pself = self.expect_contiguous();
     const int batchsize=self.sizes().front();
     const int elem_per_batch=self.numel()/batchsize;
     AT_ASSERT(elem_per_batch%4==0,"element size per batch must be 4*interger");
-    Tensor mask = at::empty({batchsize},pself->options());
+    Tensor mask = at::empty({batchsize},self.options());
     auto gen = get_generator_or_default<CUDAGeneratorImpl>(Generator(), cuda::detail::getDefaultCUDAGenerator());
     int rand_offset=at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor*
                               at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
@@ -80,13 +79,13 @@ Tensor fused_drop_path_forward(const Tensor& self,const Tensor& ret, double p, b
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
-      pself->scalar_type(),
+      self.scalar_type(),
       "drop_path_forward",
       [&] {
         p=1-p;
         using T_ACC = acc_type<scalar_t, true>;
         T_ACC keep_prob = (T_ACC)(p);
-        scalar_t* self_data = pself->data_ptr<scalar_t>();
+        scalar_t* self_data = self.data_ptr<scalar_t>();
         scalar_t* ret_data=ret.data_ptr<scalar_t>();
         scalar_t* mask_data=mask.data_ptr<scalar_t>();
         drop_path_kernel<scalar_t,T_ACC><<<dim3(gridx,batchsize), blocksize, 0, at::cuda::getCurrentCUDAStream()>>>(self_data,ret_data,mask_data,keep_prob,scale_by_keep,rng_engine_inputs,elem_per_batch);
@@ -173,7 +172,8 @@ class drop_pathFunction : public torch::autograd::Function<drop_pathFunction> {
     torch::autograd::AutogradContext* ctx,
     const torch::autograd::Variable& x,
     double p, bool training,bool scale_by_keep) {
-    auto ret = wrapper_drop_path(x,p,training,scale_by_keep);
+    auto px=x.expect_contiguous();
+    auto ret = wrapper_drop_path(*px,p,training,scale_by_keep);
     ctx->save_for_backward({std::get<1>(ret)});
     return {std::get<0>(ret)};
   }

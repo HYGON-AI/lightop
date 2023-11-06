@@ -367,7 +367,7 @@ layernorm_droppath_backward(const Tensor& grad, const Tensor& X,const Tensor& me
         scalar_t* dX_data = dX.data_ptr<scalar_t>();
         scalar_t* mask_data = mask.data_ptr<scalar_t>();
         const int B =(cols + kColwiseReduceTileSize - 1) / kColwiseReduceTileSize;
-        if(cols>512||rows<=1024){
+        if(cols>512||rows<4096){
           gb_with_drop_backward_kernel<scalar_t><<<B, dim3(kThreadX, kThreadY), 0, cuda_stream>>>(
               batchsize,grid_rows,cols,dY_data,X_data,mean_data,rstd_data,mask_data,dgamma_data,dbeta_data);
           C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -404,8 +404,11 @@ class fuseLayerNormDropPathFunction : public torch::autograd::Function<fuseLayer
     double eps, double keep_prob, bool scale_by_keep, bool training) {
     ctx->saved_data["keep_prob"] = keep_prob;
     ctx->saved_data["training"] = training;
-    auto ret = layernorm_droppath_forward(x, weight,bias,eps, keep_prob, scale_by_keep, training);
-    ctx->save_for_backward({x,std::get<1>(ret),std::get<2>(ret),weight,std::get<3>(ret)});
+    auto px=x.expect_contiguous();
+    auto pweight=weight.expect_contiguous();
+    auto pbias=bias.expect_contiguous();
+    auto ret = layernorm_droppath_forward(*px, *pweight,*pbias,eps, keep_prob, scale_by_keep, training);
+    ctx->save_for_backward({*px,std::get<1>(ret),std::get<2>(ret),weight,std::get<3>(ret)});
     return {std::get<0>(ret)};
   }
 
