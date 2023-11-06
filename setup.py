@@ -300,7 +300,7 @@ def get_extensions():
     extensions = []
     include_dirs = []
     define_macros = []
-    extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas'], 'nvcc': ['-O3','-ldl', '-lrocblas']}
+    extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas','-w'], 'nvcc': ['-O3','-ldl', '-lrocblas','-w']}
     if torch_version_over110():
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_110')
     op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + glob.glob('./lightop/csrc/miopen/*.cpp')
