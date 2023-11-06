@@ -632,7 +632,11 @@ class fuselnAddDropoutFunction : public torch::autograd::Function<fuselnAddDropo
     const torch::autograd::Variable& weight,
     const torch::autograd::Variable& bias,
     double eps,double rate,bool training) {
-    auto ret = fused_ln_add_dropout_forward(x,y, weight,bias,eps,rate,training);
+    auto px=x.expect_contiguous();
+    auto py=y.expect_contiguous();
+    auto pweight=weight.expect_contiguous();
+    auto pbias=bias.expect_contiguous();
+    auto ret = fused_ln_add_dropout_forward(*px,*py, *pweight,*pbias,eps,rate,training);
     ctx->save_for_backward({std::get<1>(ret),std::get<2>(ret),std::get<3>(ret),weight});
     return {std::get<0>(ret)};
   }

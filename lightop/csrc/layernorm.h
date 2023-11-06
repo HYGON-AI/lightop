@@ -174,7 +174,7 @@ void GammaBeta_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,scal
     auto stream = at::cuda::getCurrentCUDAStream();
     int M=length/N;
     const int B =(N - 1) / kColwiseReduceTileSize + 1;
-    if(N<=512&&M>1024){
+    if(N<=512&&M>=4096){
       int part_size=64;
       c10::TensorOptions options(DeviceType::CUDA);
       options.dtype(ScalarType::Float);

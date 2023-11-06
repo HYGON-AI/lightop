@@ -204,7 +204,7 @@ __global__ void layernorm_forward_kernel_4096(scalar_t* input,scalar_t* ret,scal
 }
 
 std::tuple<Tensor,Tensor,Tensor>
-layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,double ln_epsilon)
+layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,double ln_epsilon)
 {
     AT_ASSERTM(self.is_cuda(), "x must on dcu");
     const int cols=self.sizes().back();
@@ -363,8 +363,11 @@ class fuseLayerNormFunction : public torch::autograd::Function<fuseLayerNormFunc
     const torch::autograd::Variable& weight,
     const torch::autograd::Variable& bias,
     double eps) {
-    auto ret = layernorm_forward(x, weight,bias,eps);
-    ctx->save_for_backward({x,std::get<1>(ret),std::get<2>(ret),weight});
+    auto px=x.expect_contiguous();
+    auto pweight=weight.expect_contiguous();
+    auto pbias=bias.expect_contiguous();
+    auto ret = layernorm_forward(*px, *pweight,*pbias,eps);
+    ctx->save_for_backward({*px,std::get<1>(ret),std::get<2>(ret),*pweight});
     return {std::get<0>(ret)};
   }
 
