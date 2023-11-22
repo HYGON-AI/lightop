@@ -65,7 +65,7 @@ python3 test_ln_add_dropout.py
         <td>bias_dropout_add</td><td>1, 2048, 3072</td><td>0.69ms</td><td>0.43ms</td><td>60.5%</td><td>NLP类.dropout(input+bias)+residual</td>
     </tr>
     <tr>
-        <td>bias_gelu</td><td>2, 2048, 1024</td><td>0.39ms</td><td>0.37ms</td><td>5.4%</td><td>NLP类,gelu(input+bias)</td>
+        <td>bias_gelu</td><td>1, 2048, 3072</td><td>0.473ms</td><td>0.388ms</td><td>21.9%</td><td>NLP类,gelu(input+bias)</td>
     </tr>
     <tr>
         <td>bias_swiglu</td><td>2, 2048, 512</td><td>0.50ms</td><td>0.28ms</td><td>78.5%</td><td>NLP类SwiGLU(input+bias)</td>
