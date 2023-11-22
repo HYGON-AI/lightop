@@ -32,43 +32,46 @@ python3 test_ln_add_dropout.py
         <td>droppath</td><td>128,3136,96</td><td>0.84ms</td><td>0.74ms</td><td>13.5%</td><td>Swin-Transformer</td>
     </tr>
     <tr>
-        <td>ln_droppath</td><td>128, 3136, 96</td><td>15.7ms</td><td>4.06ms</td><td>287%</td><td>Swin-Transformer</td>
+        <td>ln_droppath</td><td>128, 3136, 96</td><td>15.7ms</td><td>4.06ms</td><td>287%</td><td>Swin-Transformer. droppath(ln(input))</td>
     </tr>
     <tr>
-        <td>layernorm</td><td>1, 2048, 3072</td><td>0.58ms</td><td>0.32ms</td><td>81.3%</td><td>NLP类,如gpt,bert等</td>
+        <td>layernorm</td><td>1, 2048, 3072</td><td>0.58ms</td><td>0.32ms</td><td>81.3%</td><td>NLP类</td>
     </tr>
     <tr>
-        <td>ln_dropout</td><td>1, 2048, 3072</td><td>0.78ms</td><td>0.42ms</td><td>85.7%</td><td>NLP类,如gpt,bert等</td>
+        <td>ln_dropout</td><td>1, 2048, 3072</td><td>0.78ms</td><td>0.42ms</td><td>85.7%</td><td>NLP类.ln(dropout(input))</td>
     </tr>
     <tr>
-        <td>ln_add_dropout</td><td>1, 2048, 3072</td><td>0.97ms</td><td>0.47ms</td><td>106%</td><td>NLP类,如gpt,bert等</td>
+        <td>ln_add_dropout</td><td>1, 2048, 3072</td><td>0.97ms</td><td>0.47ms</td><td>106%</td><td>NLP类.ln(dropout(input)+residual)</td>
     </tr>
     <tr>
-        <td>ln_add_dropout_bias</td><td>1, 2048, 3072</td><td>1.16ms</td><td>0.53ms</td><td>119%</td><td>NLP类,如gpt,bert等</td>
+        <td>ln_add_dropout_bias</td><td>1, 2048, 3072</td><td>1.16ms</td><td>0.53ms</td><td>119%</td><td>NLP类.ln(dropout(input+bias)+residual)</td>
     </tr>
     <tr>
-        <td>rmsnorm</td><td>1, 2048, 3072</td><td>1.28ms</td><td>0.29ms</td><td>341%</td><td>NLP类,如gpt,bert等</td>
+        <td>rmsnorm</td><td>1, 2048, 3072</td><td>1.28ms</td><td>0.29ms</td><td>341%</td><td>NLP类.</td>
     </tr>
     <tr>
-        <td>rn_dropout</td><td>1, 2048, 3072</td><td>1.51ms</td><td>0.38ms</td><td>297%</td><td>NLP类,如gpt,bert等</td>
+        <td>rn_dropout</td><td>1, 2048, 3072</td><td>1.51ms</td><td>0.38ms</td><td>297%</td><td>NLP类.rn(dropout(input))</td>
     </tr>
     <tr>
-        <td>rn_add_dropout</td><td>1, 2048, 3072</td><td>1.68ms</td><td>0.45ms</td><td>273%</td><td>NLP类,如gpt,bert等</td>
+        <td>rn_add_dropout</td><td>1, 2048, 3072</td><td>1.68ms</td><td>0.45ms</td><td>273%</td><td>NLP类.rn(dropout(input)+residual)</td>
     </tr>
     <tr>
-        <td>rn_add_dropout_bias</td><td>1, 2048, 3072</td><td>1.88ms</td><td>0.51ms</td><td>268%</td><td>NLP类,如gpt,bert等</td>
+        <td>rn_add_dropout_bias</td><td>1, 2048, 3072</td><td>1.88ms</td><td>0.51ms</td><td>268%</td><td>NLP类.rn(dropout(input+bias)+residual)</td>
     </tr>
     <tr>
-        <td>add_dropout</td><td>128,50,768</td><td>0.32ms</td><td>0.42ms</td><td>31.2%</td><td>NLP类,如gpt,bert等</td>
+        <td>add_dropout</td><td>1, 2048, 3072</td><td>0.49ms</td><td>0.38ms</td><td>28.9%</td><td>NLP类.dropout(input)+residual</td>
     </tr>
     <tr>
-        <td>bias_gelu</td><td>2, 2048, 1024</td><td>0.39ms</td><td>0.37ms</td><td>5.4%</td><td>NLP类,如gpt,bert等，性能有待优化</td>
+        <td>bias_dropout_add</td><td>1, 2048, 3072</td><td>0.69ms</td><td>0.43ms</td><td>60.5%</td><td>NLP类.dropout(input+bias)+residual</td>
     </tr>
     <tr>
-        <td>bias_swiglu</td><td>2, 2048, 512</td><td>0.50ms</td><td>0.28ms</td><td>78.5%</td><td>NLP类,如gpt,bert等</td>
+        <td>bias_gelu</td><td>2, 2048, 1024</td><td>0.39ms</td><td>0.37ms</td><td>5.4%</td><td>NLP类,gelu(input+bias)</td>
     </tr>
     <tr>
-        <td>FusedScaleMaskSoftmaxDropout</td><td>2,16,128,128</td><td>0.26ms</td><td>0.34ms</td><td>30.7%</td><td>NLP类,如gpt,bert等</td>
+        <td>bias_swiglu</td><td>2, 2048, 512</td><td>0.50ms</td><td>0.28ms</td><td>78.5%</td><td>NLP类SwiGLU(input+bias)</td>
+    </tr>
+    <tr>
+        <td>FusedScaleMaskSoftmaxDropout</td><td>2,16,128,128</td><td>0.26ms</td><td>0.34ms</td><td>30.7%</td><td>NLP类.</td>
     </tr>
     <tr>
         <td>bn_act/bn_relu</td><td>4,10,128,128</td><td>0.56ms</td><td>0.33ms</td><td>69.7%</td><td>CNN，如resnet，都会使用BN。act支持relu,softrelu,abs,power,clipped_relu,leaky_relu,silu_sigmoid,tanh等激活函数。bn_relu是bn_act的特例，减少一个参数，调用更方便。对于bn 2d，推荐NCHW维度中N*H*W>20000，此算子对于小size性能较差。</td>
