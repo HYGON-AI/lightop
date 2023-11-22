@@ -2,7 +2,7 @@ import torch
 import time
 import os
 import torch.nn.functional as F
-from lightop.rmsnorm import RMSNormTorch,RMSNormAddDropout
+from lightop import RMSNormTorch,RMSNormAddDropout
 
 
 class Torch_RNAddDropout(torch.nn.Module):
