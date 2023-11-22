@@ -131,7 +131,7 @@ def test_speed(batchsize,seqs,cols,dropout_p,repeat_num,use_half=False):
 if __name__ == "__main__":
 
     #设置基础参数
-    batchsize,seqs, cols = 1,2048,1000
+    batchsize,seqs, cols = 1,2048,3072
     dropout_p=0.5
     #耗时测试
     test_speed(batchsize, seqs,cols,dropout_p,repeat_num=100,use_half=False)

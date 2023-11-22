@@ -108,8 +108,6 @@ def test_speed(batchsize,seqs,cols,dropout_p,repeat_num,use_half=False):
     end_time = time.time()    
     fc2_espl = end_time - start_time
     print('fuse_rn_dropout', 'averange time is', fc2_espl *1000/ repeat_num, 'ms')
-    print(y1)
-    print(y2)
     #误差计算
     if use_half:
         print(allclose(y1,y2,rtol=2e-02, atol=2e-02))
@@ -124,7 +122,7 @@ def test_speed(batchsize,seqs,cols,dropout_p,repeat_num,use_half=False):
 if __name__ == "__main__":
 
     #设置基础参数
-    batchsize,seqs, cols = 1,2048,5000
+    batchsize,seqs, cols = 1,2048,3072
     dropout_p=0.5
     #耗时测试
     test_speed(batchsize, seqs,cols,dropout_p,repeat_num=100,use_half=False)
