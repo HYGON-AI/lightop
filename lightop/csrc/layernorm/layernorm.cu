@@ -59,7 +59,7 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t*
   tmean=s_mean;
   trstd=s_rstd;
   for (int j = threadidx; j < tcol; j += blockDim.x) {
-    if(cols>2048)tx = X[j];
+    tx = X[j];
     #pragma unroll
     for(int i=0;i<VEC;i++){
       int jj=j*VEC+i;
@@ -67,7 +67,7 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t*
     }
     Y[j]=ty;
   }
-  if(threadIdx.x==0){
+  if(threadIdx.x==0&&rstd!=NULL){
       mean[blockidx] = tmean;
       rstd[blockidx] = trstd;
   }
@@ -124,7 +124,7 @@ __global__ void layernorm_forward_kernel_2048(scalar_t* input,scalar_t* ret,scal
     }
     Y[j]=ty;
   }
-  if(threadIdx.x==0){
+  if(threadIdx.x==0&&rstd!=NULL){
       mean[blockidx] = tmean;
       rstd[blockidx] = trstd;
   }
@@ -197,23 +197,26 @@ __global__ void layernorm_forward_kernel_4096(scalar_t* input,scalar_t* ret,scal
     }
     Y[j2]=ty2;
   }
-  if(threadIdx.x==0){
+  if(threadIdx.x==0&&rstd!=NULL){
       mean[blockidx] = tmean;
       rstd[blockidx] = trstd;
   }
 }
 
 std::tuple<Tensor,Tensor,Tensor>
-layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,double ln_epsilon)
+layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,double ln_epsilon,bool training)
 {
     AT_ASSERTM(self.is_cuda(), "x must on dcu");
     const int cols=self.sizes().back();
-    AT_ASSERT(cols>64,"cols must > 64");//torch layernorm don't support cols<=64 on dcu, so we too .
+    AT_ASSERT(cols>=64,"cols must >= 64");//torch layernorm don't support cols<=64 on dcu, so we too .
     const int nelem = self.numel();
     const int rows=nelem/cols;
-    Tensor ret = at::empty_like(self);
-    Tensor mean = at::empty({rows},self.options());
-    Tensor rstd = at::empty({rows},self.options());
+    Tensor ret = at::empty_like(self),mean,rstd;
+    if(training){
+      mean = at::empty({rows},self.options());
+      rstd = at::empty({rows},self.options());
+    }
+
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16, 
@@ -226,8 +229,11 @@ layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,dou
         scalar_t* weight_data=weight.data_ptr<scalar_t>();
         scalar_t* bias_data=bias.data_ptr<scalar_t>();
         scalar_t  eps = ln_epsilon;
-        scalar_t* mean_data=mean.data_ptr<scalar_t>();
-        scalar_t* rstd_data=rstd.data_ptr<scalar_t>();
+        scalar_t* mean_data=NULL,*rstd_data=NULL;
+        if(training){
+          mean_data=mean.data_ptr<scalar_t>();
+          rstd_data=rstd.data_ptr<scalar_t>();
+        }
         if (cols % 4 == 0){
           if(cols<=2048)
             layernorm_forward_kernel_2048<scalar_t,4><<<rows, get_layernorm_blocksize(cols/4), 0, at::cuda::getCurrentCUDAStream()>>>(
@@ -248,17 +254,6 @@ layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,dou
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       });
      return std::tuple<Tensor,Tensor,Tensor>(ret,mean,rstd);
-}
-
-template <typename scalar_t>
-__global__ void LayerNormBackward_kernel(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX)
-{
-  LAYERNORMBACKWARD
-  for (int j = threadIdx.x; j < N; j += blockDim.x) {
-    const int index = i * N + j;
-    const T_ACC gamma_v = static_cast<T_ACC>(gamma[j]);
-    dX[index] = static_cast<T_ACC>(rstd[i]) * static_cast<T_ACC>(dY[index]) * gamma_v + b * static_cast<T_ACC>(X[index]) + c;
-  }
 }
 
 template <typename scalar_t>
@@ -292,7 +287,7 @@ __global__ void LayerNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const
   }
 }
 
-template <typename scalar_t>
+template <typename scalar_t,int VEC=4>
 __global__ void LayerNormBackward_kernel_vec(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX)
 {
   LAYERNORMBACKWARD_VEC
@@ -337,7 +332,7 @@ layernorm_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const 
       
       GammaBeta_Backward(nelem,N,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
       if(N%4!=0){
-        LayerNormBackward_kernel<scalar_t><<<M, get_layernorm_blocksize(N), 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+        LayerNormBackward_kernel_vec<scalar_t,1><<<M, get_layernorm_blocksize(N), 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
       }
       else{
         if(N<=2048){
@@ -362,11 +357,11 @@ class fuseLayerNormFunction : public torch::autograd::Function<fuseLayerNormFunc
     const torch::autograd::Variable& x,
     const torch::autograd::Variable& weight,
     const torch::autograd::Variable& bias,
-    double eps) {
+    double eps,bool training) {
     auto px=x.expect_contiguous();
     auto pweight=weight.expect_contiguous();
     auto pbias=bias.expect_contiguous();
-    auto ret = layernorm_forward(*px, *pweight,*pbias,eps);
+    auto ret = layernorm_forward(*px, *pweight,*pbias,eps,training);
     ctx->save_for_backward({*px,std::get<1>(ret),std::get<2>(ret),*pweight});
     return {std::get<0>(ret)};
   }
@@ -380,11 +375,12 @@ class fuseLayerNormFunction : public torch::autograd::Function<fuseLayerNormFunc
     auto rstd = saved[2];
     auto gamma = saved[3];
     auto ret = layernorm_backward(gradOutput[0],X,mean,rstd,gamma);
-    return {std::get<0>(ret),std::get<1>(ret),std::get<2>(ret),torch::autograd::Variable()};
+    return {std::get<0>(ret),std::get<1>(ret),std::get<2>(ret),torch::autograd::Variable(),torch::autograd::Variable()};
   }
 };
-Tensor fuse_layernorm_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,double eps) {
-   auto result = fuseLayerNormFunction::apply(x, weight,bias,eps);
+
+Tensor fuse_layernorm_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,double eps,bool training) {
+   auto result = fuseLayerNormFunction::apply(x, weight,bias,eps,training);
    return result[0];
   }
 }

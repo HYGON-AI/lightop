@@ -105,15 +105,14 @@ __global__ void layernorm_droppath_forward_kernel(scalar_t* input,scalar_t* ret,
   }
 }
 
-std::tuple<Tensor,Tensor,Tensor> layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,double ln_epsilon);
+std::tuple<Tensor,Tensor,Tensor> layernorm_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,double ln_epsilon,bool training);
 
 std::tuple<Tensor,Tensor,Tensor,Tensor>
 layernorm_droppath_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,double ln_epsilon, double keep_prob, bool scale_by_keep,bool training)
 {
-  AT_ASSERTM(keep_prob >=0.0f&&keep_prob<=1.0f, "keep_prob mast be between 0 and 1");
+  AT_ASSERTM(keep_prob >0.0f&&keep_prob<=1.0f, "keep_prob mast be between 0 and 1");
   AT_ASSERTM(self.is_cuda(), "input must on dcu");
   const int batchsize = self.sizes().front();
-  AT_ASSERT(batchsize<=600*256,"input's first dim size is too big");
   const int elem_per_batch=self.numel()/batchsize;
   AT_ASSERT(elem_per_batch%4==0,"element size per batch must be 4*interger");
   const int cols = self.sizes().back();
@@ -123,7 +122,7 @@ layernorm_droppath_forward(const Tensor& self,const Tensor&weight,const Tensor& 
 
   Tensor ret, mean, rstd, mask;
   if (keep_prob == 1 || !training) {
-    std::tie(ret, mean, rstd) = layernorm_forward(self, weight, bias, ln_epsilon);
+    std::tie(ret, mean, rstd) = layernorm_forward(self, weight, bias, ln_epsilon,training);
   } else {
     ret = at::empty_like(self);
     mean = at::empty({rows},self.options());

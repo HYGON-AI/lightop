@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 import os
-from lightop.fusebiasgelu import FuseBiasGelu
+from lightop import FuseBiasGelu
 import time
 import random
 

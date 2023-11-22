@@ -2,7 +2,7 @@ import torch
 import time
 import os
 import torch.nn.functional as F
-from lightop.fuselnadddropout import LnAddDropout
+from lightop import LnAddDropout
 
 
 class Torch_LnAddDropout(torch.nn.Module):
@@ -135,7 +135,7 @@ def test_speed(batchsize,seqs,cols,dropout_p,repeat_num,use_half=False):
 if __name__ == "__main__":
 
     #设置基础参数
-    batchsize,seqs, cols = 1,2048,1536
+    batchsize,seqs, cols = 1,2048,3072
     dropout_p=0.5
     #耗时测试
     test_speed(batchsize, seqs,cols,dropout_p,repeat_num=100,use_half=False)

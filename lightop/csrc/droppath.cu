@@ -56,7 +56,7 @@ __global__ void drop_path_kernel(scalar_t* input,scalar_t* output, scalar_t* mas
 
 Tensor fused_drop_path_forward(const Tensor& self,const Tensor& ret, double p, bool training,bool scale_by_keep)
 {
-    if(!training)return Tensor();
+    if(p == 0||!training)return self;
     AT_ASSERTM(p >=0.0f&&p<1.0f, "p mast be between 0 and 1");
     AT_ASSERTM(self.is_cuda(), "input must on dcu");
     const int batchsize=self.sizes().front();

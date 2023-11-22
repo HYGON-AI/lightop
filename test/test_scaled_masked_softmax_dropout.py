@@ -1,10 +1,7 @@
 import math
 import torch
 import time
-from lightop.scaled_masked_softmax_dropout import FusedScaleMaskSoftmaxDropout
-from lightop.scaled_masked_softmax_dropout import FuseAttnMaskType
-from lightop.scaled_masked_softmax import FusedScaleMaskSoftmax
-from lightop.scaled_masked_softmax import AttnMaskType
+from lightop import FusedScaleMaskSoftmaxDropout,FusedScaleMaskSoftmax,AttnMaskType
 
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
@@ -42,7 +39,7 @@ def test_time(batch, attn, seq_len, key_len):
                 mask_func=attention_mask_func,
                 scale=scale_t[0].item(),
                 softmax_in_fp32=True,
-                attn_mask_type=FuseAttnMaskType.padding,
+                attn_mask_type=AttnMaskType.padding,
                 scaled_masked_softmax_fusion=True,
                 p = 0.5
             )
@@ -107,7 +104,7 @@ def test_masked_softmax_backward():
                         mask_func=attention_mask_func,
                         scale=scale_t[0].item(),
                         softmax_in_fp32=True,
-                        attn_mask_type=FuseAttnMaskType.padding,
+                        attn_mask_type=AttnMaskType.padding,
                         scaled_masked_softmax_fusion=True,
                         p = p
                     )

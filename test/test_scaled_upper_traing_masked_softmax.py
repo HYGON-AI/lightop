@@ -1,7 +1,6 @@
 import math
 import torch
-from lightop.scaled_masked_softmax import FusedScaleMaskSoftmax
-from lightop.scaled_masked_softmax import AttnMaskType
+from lightop import FusedScaleMaskSoftmax,AttnMaskType
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
     return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)

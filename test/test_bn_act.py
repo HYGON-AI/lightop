@@ -1,8 +1,7 @@
 import torch
 import numpy
 import os
-from lightop.fusebnact import FuseBatchNormAct2d
-from lightop.fuseactmode import fuseactmode
+from lightop import FuseBatchNormAct2d,fuseactmode
 
 #use_half：rtol=1e-02, atol=1e-02,use_float32:rtol=1e-05, atol=1e-05
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):

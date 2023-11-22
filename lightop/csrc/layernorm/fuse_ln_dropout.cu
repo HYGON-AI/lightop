@@ -171,7 +171,7 @@ __global__ void fused_ln_dropout_kernel_val(scalar_t* input,scalar_t* ret,scalar
     //layernorm  (x-mean)*rstd*gamma+beta
     #pragma unroll
     for(int ii=0;ii<VEC;ii++){
-      int jj=j*VEC+ii;
+      int jj=off*VEC+ii;
       output4[ii] = (static_cast<T_ACC>(input4[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
     }
     *(LoadT*)(ret+idx)=*(LoadT*)output4;
@@ -392,7 +392,7 @@ __global__ void fused_ln_dropout_kernel_train(scalar_t* input,scalar_t* ret,scal
     //layernorm  (x-mean)*rstd*gamma+beta
     #pragma unroll
     for(int ii=0;ii<VEC;ii++){
-      int jj=j*VEC+ii;
+      int jj=off*VEC+ii;
       output4[ii] = (static_cast<T_ACC>(input4[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
     }
     *(LoadT*)(ret+idx)=*(LoadT*)output4;
