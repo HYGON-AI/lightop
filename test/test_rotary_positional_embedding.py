@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 import time
-from lightop.fuse_rotary_positional_embedding import RotaryEmbedding,apply_rotary_pos_emb_index_fused
+from lightop import RotaryEmbedding,apply_rotary_pos_emb_index_fused
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
     return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)

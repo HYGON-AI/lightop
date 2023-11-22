@@ -2,7 +2,7 @@
 import torch
 import time
 import copy
-from lightop.fusesoftmax  import FuseSoftmax,FuseLogSoftmax
+from lightop  import FuseSoftmax,FuseLogSoftmax
 from torch.autograd import Variable
 import numpy as np
 device = torch.device('cuda')

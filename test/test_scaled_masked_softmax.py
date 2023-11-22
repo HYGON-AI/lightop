@@ -1,7 +1,6 @@
 import math
 import torch
-import lightop.scaled_masked_softmax as lightopsoftmax
-from lightop.scaled_masked_softmax import AttnMaskType
+from lightop import AttnMaskType,FusedScaleMaskSoftmax
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
     return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
@@ -28,7 +27,7 @@ def test_masked_softmax_backward():
             fuse_inputs = torch.normal(0, 2, (batch, attn, qlen, klen), dtype=torch.float16, device='cuda:0').requires_grad_()
             masks = torch.randint(0, 2, (batch, 1, qlen, klen), dtype=torch.bool, device='cuda:0')
             fused_softmax = (
-                lightopsoftmax.FusedScaleMaskSoftmax(
+                FusedScaleMaskSoftmax(
                     input_in_fp16=True,
                     input_in_bf16=False,
                     mask_func=attention_mask_func,

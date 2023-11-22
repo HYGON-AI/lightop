@@ -5,7 +5,7 @@ import numpy as np
 import torch
 import torchaudio
 
-from lightop.lossrnnt import RNNTLoss as lightop_RNNTLoss
+from lightop import RNNTLoss as lightop_RNNTLoss
 
 torch.set_printoptions(precision=10)
 

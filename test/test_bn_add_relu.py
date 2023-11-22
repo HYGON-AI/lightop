@@ -1,9 +1,7 @@
 import torch
 import time
 import os
-from lightop.fusebnaddrelu import FuseBatchNormAddRelu1d
-from lightop.fusebnaddrelu import FuseBatchNormAddRelu2d
-from lightop.fusebnaddrelu import FuseBatchNormAddRelu3d
+from lightop import FuseBatchNormAddRelu1d,FuseBatchNormAddRelu2d,FuseBatchNormAddRelu3d
 
 
 class torch_bn1d_add_relu(torch.nn.Module):

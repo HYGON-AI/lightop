@@ -82,7 +82,7 @@ __inline__ __device__ T BlockReduceSum(T val, T* shared) {
 template <typename scalar_t>
 __global__ void col_wise_reduce(scalar_t *dst, const scalar_t *src,int M,int N){
     using T_ACC = acc_type<scalar_t, true>;
-    __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize];
+    __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize+1];
     const int j = blockIdx.x * blockDim.x + threadIdx.x;
     T_ACC grad_sum = 0;
     if (j < N) {

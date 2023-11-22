@@ -186,7 +186,6 @@ void GammaBeta_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,scal
           M,N,dY_data,X_data,mean_data,rstd_data,pd_gamma,pd_beta);
       C10_CUDA_KERNEL_LAUNCH_CHECK();
       gb_backward_kernel_part_b<<<N,part_size>>>(pd_gamma,pd_beta,dgamma_data,dbeta_data);
-      C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
     else{
         GammaBetaBackward<scalar_t><<<B, dim3(kColwiseReduceTileSize, kColwiseReduceTileSize), 0, stream>>>(
@@ -212,7 +211,6 @@ void GammaBeta_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,scal
   using VecTpye=memory::aligned_vector<scalar_t, VEC>;\
   T_ACC sum1 = 0;\
   T_ACC sum2 = 0;\
-  T_ACC gamma_v;\
   int tcol=N/VEC;\
   VecTpye tx;\
   VecTpye tdy;\
@@ -256,7 +254,6 @@ void GammaBeta_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,scal
   using VecTpye=memory::aligned_vector<scalar_t, VEC>;\
   T_ACC sum1 = 0;\
   T_ACC sum2 = 0;\
-  T_ACC gamma_v;\
   int tcol=N/VEC;\
   VecTpye tx;\
   VecTpye tdy;\
@@ -312,7 +309,6 @@ void GammaBeta_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,scal
   using VecTpye=memory::aligned_vector<scalar_t, VEC>;\
   T_ACC sum1 = 0;\
   T_ACC sum2 = 0;\
-  T_ACC gamma_v;\
   int tcol=N/VEC;\
   VecTpye tx;\
   VecTpye tdy;\
@@ -343,35 +339,6 @@ void GammaBeta_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,scal
     c = -a * tmean - sum2 * trstd * s;\
   }\
   __syncthreads();
-
-
-#define LAYERNORMBACKWARD                                                                \
-  using T_ACC = acc_type<scalar_t, true>;                                                \
-  __shared__ T_ACC ds_shared[8];                                                         \
-  __shared__ T_ACC db_shared[8];                                                         \
- const int i = blockIdx.x;                                                               \
-  T_ACC sum1 = 0;                                                                        \
-  T_ACC sum2 = 0;                                                                        \
-  for (int j = threadIdx.x; j < N; j += blockDim.x) {                                    \
-    const int index = i * N + j;                                                         \
-    const T_ACC gamma_v = static_cast<T_ACC>(gamma[j]);                                  \
-    sum1 += static_cast<T_ACC>(dY[index]) * static_cast<T_ACC>(X[index]) * gamma_v;      \
-    sum2 += static_cast<T_ACC>(dY[index]) * gamma_v;                                     \
-  }                                                                                      \
-  sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);                                         \
-  sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);                                         \
-  __shared__ T_ACC b;                                                                    \
-  __shared__ T_ACC c;                                                                    \
-  if (threadIdx.x == 0) {                                                                \
-    const T_ACC s = T_ACC(1) / static_cast<T_ACC>(N);                                    \
-    T_ACC tmean = static_cast<T_ACC>(mean[i]);                                           \
-    T_ACC trstd = static_cast<T_ACC>(rstd[i]);                                           \
-    const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;                   \
-    b = a;                                                                               \
-    c = -a * tmean - sum2 * trstd * s;                                                   \
-  }                                                                                      \
-  __syncthreads();
-
 
 
 int get_layernorm_blocksize(int cols);

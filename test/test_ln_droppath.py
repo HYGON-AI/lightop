@@ -3,8 +3,7 @@ import torch
 import time
 import torch.nn.functional as F
 from torch.autograd import Variable
-from lightop.fuselndroppath import LnDropPath as FuseLnDropPath
-from lightop import op
+from lightop import LnDropPath
 
 
 def drop_path(x, drop_prob, training, scale_by_keep):
@@ -53,12 +52,12 @@ def get_data(batchsize=2, seqs=128, cols=128,use_half=False):
 def get_model(cols=1,dropout_p=0.5,use_half=False):
 
     if use_half:
-        fuse_ln_dropoath=FuseLnDropPath(cols,dropout_p).cuda().half()
+        fuse_ln_dropoath=LnDropPath(cols,dropout_p).cuda().half()
         torch_ln_dropoath=TorchLnDropPath(cols,dropout_p).cuda().half()
 
     else:
        
-        fuse_ln_dropoath=FuseLnDropPath(cols,dropout_p).cuda()
+        fuse_ln_dropoath=LnDropPath(cols,dropout_p).cuda()
         torch_ln_dropoath=TorchLnDropPath(cols,dropout_p).cuda()
        
     return torch_ln_dropoath,fuse_ln_dropoath

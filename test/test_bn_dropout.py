@@ -2,7 +2,7 @@ import torch
 import time
 import os
 import torch.nn.functional as F
-from lightop.fusebndropout import FuseBatchNormDropout2d
+from lightop import FuseBatchNormDropout2d
 
 class torch_bn2d_dropout(torch.nn.Module):
 

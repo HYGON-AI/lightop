@@ -37,7 +37,8 @@ __global__ void fused_ln_add_dropout_kernel_val_2048(scalar_t* input,scalar_t* r
     *(LoadT*)residual4 = *(LoadT*)(residual+idx);
     #pragma unroll
     for (int ii = 0; ii < VEC; ii++) {
-      val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]+residual4[ii]));
+      input4[ii]+=residual4[ii];
+      val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]));
     }
   }
   val = BlockReduce(val,welford_op,val_shared_ptr);
@@ -93,7 +94,8 @@ __global__ void fused_ln_add_dropout_kernel_val_4096(scalar_t* input,scalar_t* r
   *(LoadT*)residual4 = *(LoadT*)(residual+idx1);
   #pragma unroll
   for (int ii = 0; ii < VEC; ii++) {
-    val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]+residual4[ii]));
+    input4[ii]+=residual4[ii];
+    val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]));
   }
   if(j<tcol-512){
     idx2*=VEC;
@@ -101,7 +103,8 @@ __global__ void fused_ln_add_dropout_kernel_val_4096(scalar_t* input,scalar_t* r
     *(LoadT*)residual8 = *(LoadT*)(residual+idx2);
     #pragma unroll
     for (int ii = 0; ii < VEC; ii++) {
-      val = welford_op.reduce(val, static_cast<T_ACC>(input8[ii]+residual8[ii]));
+      input8[ii]+=residual8[ii];
+      val = welford_op.reduce(val, static_cast<T_ACC>(input8[ii]));
     }
   }
   val = BlockReduce(val,welford_op,val_shared_ptr);
@@ -176,11 +179,12 @@ __global__ void fused_ln_add_dropout_kernel_val(scalar_t* input,scalar_t* residu
   for(int off=j;off<tcol;off+=blockDim.x){
     int idx = (i * tcol + off)*VEC;
     *(LoadT*)input4 = *(LoadT*)(input+idx);
+    *(LoadT*)residual4 = *(LoadT*)(residual+idx);
     //layernorm  (x-mean)*rstd*gamma+beta
     #pragma unroll
     for(int ii=0;ii<VEC;ii++){
-      int jj=j*VEC+ii;
-      output4[ii] = (static_cast<T_ACC>(input4[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
+      int jj=off*VEC+ii;
+      output4[ii] = (static_cast<T_ACC>(input4[ii]+residual4[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
     }
     *(LoadT*)(ret+idx)=*(LoadT*)output4;
   }
@@ -408,7 +412,7 @@ __global__ void fused_ln_add_dropout_kernel_train(scalar_t* input,scalar_t* resi
     //layernorm  (x-mean)*rstd*gamma+beta
     #pragma unroll
     for(int ii=0;ii<VEC;ii++){
-      int jj=j*VEC+ii;
+      int jj=off*VEC+ii;
       output4[ii] = (static_cast<T_ACC>(input4[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
     }
     *(LoadT*)(ret+idx)=*(LoadT*)output4;
