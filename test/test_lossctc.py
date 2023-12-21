@@ -5,10 +5,12 @@ import torch
 from lightop import CTCLoss as lightop_CTCLoss
 
 torch.set_printoptions(precision=10)
+torch.manual_seed(1472)
+
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
-
     return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
+
 
 def get_data_by_vesion(version=1, use_half=False, use_cuda=True, **args):
     def get_data_v1(N=16, T=50, S=10, C=30):
@@ -25,7 +27,14 @@ def get_data_by_vesion(version=1, use_half=False, use_cuda=True, **args):
         target = torch.randint(low=1, high=C, size=(N, S), dtype=torch.int)
         return probs, target, probs_lengths, target_lengths
 
-    def get_data_v2():
+    def get_data_v2(N=16, T=50, S=0, C=20):
+        probs = torch.randn(T, N, C).log_softmax(2).detach()
+        probs_lengths = torch.full(size=(N,), fill_value=T, dtype=torch.int)
+        target_lengths = torch.randint(low=1, high=T, size=(N,), dtype=torch.int)
+        target = torch.randint(low=1, high=C, size=(sum(target_lengths),), dtype=torch.int)
+        return probs, target, probs_lengths, target_lengths
+
+    def get_data_v3():
         probs = torch.FloatTensor([[
             [0.3, 0.6, 0.1, 0.5, 0.9], [0.5, 1.2, 0.6, 0.1, 0.3]
         ]]).transpose(0, 1).contiguous()
@@ -34,7 +43,7 @@ def get_data_by_vesion(version=1, use_half=False, use_cuda=True, **args):
         probs_lengths = torch.IntTensor([2])
         return probs, target, probs_lengths, target_lengths
 
-    data_dict = {1: get_data_v1(**args), 2: get_data_v2()}
+    data_dict = {1: get_data_v1(**args), 2: get_data_v2(**args), 3: get_data_v3()}
     probs, target, probs_lengths, target_lengths = data_dict[version]
     if use_half:
         probs = probs.half()
@@ -69,18 +78,17 @@ def single_op_test(repeat_num, transform, p, gt, p_len, gt_len, name='torch'):
     return p1_grad
 
 
-def test_compare_gpu(pre_repeat_num=10, repeat_num=50, use_half=False, **args):
-    p, gt, p_len, gt_len = get_data_by_vesion(version=1, use_half=use_half, use_cuda=True, **args)
-    print('p shape ', p.shape, p.dtype, ' gt shape ', gt.shape)
-    print('p_len ', p_len.shape)
-    print('gt_len ', gt_len.shape)
-    print('#' * 20, '\n')
-
-    logits_time_major = False
-    reduction = 'mean'
+def test_compare_gpu(pre_repeat_num=10, repeat_num=50, data_version=1, use_half=False, **args):
+    p, gt, p_len, gt_len = get_data_by_vesion(version=data_version, use_half=use_half, use_cuda=True, **args)
     p1_trans = p.clone().permute(1, 0, 2).contiguous()
-    print('p shape ', p.shape, ', p1_trans shape ', p1_trans.shape)
-    #
+    print('p shape ', p.shape, p.dtype, ', gt shape ', gt.shape, ', p1_trans shape ', p1_trans.shape)
+    print('p_len ', p_len.shape, ', gt_len ', gt_len.shape)
+    print('#' * 20)
+    reduction = 'mean'
+
+    # #### 测试lightop的计算结果和速度 ####
+    logits_time_major = False
+
     transform_lightop = lightop_CTCLoss(blank=0, reduction=reduction, logits_time_major=logits_time_major)
     for i in range(pre_repeat_num):
         p1 = p.clone().requires_grad_() if logits_time_major else p1_trans.clone().requires_grad_()
@@ -97,10 +105,10 @@ def test_compare_gpu(pre_repeat_num=10, repeat_num=50, use_half=False, **args):
 
     torch.cuda.synchronize()
     time_used = (time.perf_counter() - time_st) * 1e6 / repeat_num
-    print('\ngpu ctc lightop using time:{:.4f}us'.format(time_used))
-    print('#' * 20, '\n')
-    #
-    #
+    print('gpu ctc lightop using time:{:.4f}us'.format(time_used))
+    print('#' * 20)
+
+    # #### 测试pytorch的计算结果和速度 ####
     if not use_half:
         transform_torch = torch.nn.CTCLoss(blank=0, reduction=reduction)
         for i in range(pre_repeat_num):
@@ -118,15 +126,14 @@ def test_compare_gpu(pre_repeat_num=10, repeat_num=50, use_half=False, **args):
 
         torch.cuda.synchronize()
         time_used = (time.perf_counter() - time_st) * 1e6 / repeat_num
-        print('\ngpu ctc torch using time:{:.4f}us'.format(time_used))
+        print('gpu ctc torch using time:{:.4f}us'.format(time_used))
+        print("loss_lightop={}, loss_torch={}".format(loss_lightop, loss_torch))
         print('#' * 20, '\n')
 
+        print(allclose(loss_torch, loss_lightop, rtol=1e-05, atol=1e-05))
         grad_lightop = p1.grad.detach().cpu() if logits_time_major else p1.grad.detach().cpu().permute(1, 0, 2)
         grad_torch = p2.grad.detach().cpu()
-        print(allclose(loss_torch,loss_lightop,rtol=1e-05, atol=1e-05))
-        print(allclose(grad_torch,grad_lightop,rtol=1e-05, atol=1e-05))
-        print('#' * 20, '\n')
-        
+        print(allclose(grad_torch, grad_lightop, rtol=1e-05, atol=1e-05))
 
     print('#' * 20, '\n')
 
@@ -139,15 +146,15 @@ def make_dir_for_file(file_path):
 
 def test_record_by_profiler(use_half=False, **args):
     p, gt, p_len, gt_len = get_data_by_vesion(version=1, use_half=use_half, use_cuda=True, **args)
+    p1_trans = p.clone().permute(1, 0, 2).contiguous()
     print('p shape ', p.shape, p.dtype, ' gt shape ', gt.shape)
     print('p_len ', p_len.shape)
     print('gt_len ', gt_len.shape)
-    print('#' * 20, '\n')
+    print('#' * 20)
 
     logits_time_major = False
-    p1_trans = p.clone().permute(1, 0, 2).contiguous()
-    print('p shape ', p.shape, ', p1_trans shape ', p1_trans.shape)
-    #
+    # print('p shape ', p.shape, ', p1_trans shape ', p1_trans.shape)
+
     transform_lightop = lightop_CTCLoss(blank=0, reduction='mean', logits_time_major=logits_time_major)
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False, profile_memory=False) as prof:
         for i in range(20):
@@ -176,25 +183,27 @@ def test_record_by_profiler(use_half=False, **args):
         print('saving to {} done'.format(dst_json_path))
 
 
-def run_test_gpu(pre_repeat_num, repeat_num=100, use_half=False):
-    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, use_half=use_half, N=2, T=6, S=3, C=4)
+def run_test_gpu(pre_repeat_num, repeat_num=100, data_version=1, use_half=False):
+    # test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, data_version=data_version, use_half=use_half, N=2, T=6, S=3, C=4)
+    # print('*' * 50, '\n' * 2)
+    # test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, data_version=data_version, use_half=use_half, N=5, T=60, S=30, C=20)
+    # print('*' * 50, '\n' * 2)
+    # test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, data_version=data_version, use_half=use_half, N=10, T=20, S=10, C=400)
+    # print('*' * 50, '\n' * 2)
+    # test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, data_version=data_version, use_half=use_half, N=30, T=80, S=50, C=200)
+    # print('*' * 50, '\n' * 2)
+    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, data_version=data_version, use_half=use_half, N=60, T=120, S=80, C=240)
     print('*' * 50, '\n' * 2)
-    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, use_half=use_half, N=5, T=60, S=30, C=20)
+    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, data_version=data_version, use_half=use_half, N=100, T=200, S=120, C=400)
     print('*' * 50, '\n' * 2)
-    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, use_half=use_half, N=10, T=20, S=10, C=400)
-    print('*' * 50, '\n' * 2)
-    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, use_half=use_half, N=30, T=80, S=50, C=200)
-    print('*' * 50, '\n' * 2)
-    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, use_half=use_half, N=60, T=120, S=80, C=240)
-    print('*' * 50, '\n' * 2)
-    test_compare_gpu(pre_repeat_num=pre_repeat_num, repeat_num=repeat_num, use_half=use_half, N=100, T=200, S=120, C=400)
     print('*' * 50, '\n' * 2)
 
 
 def main():
     pre_repeat_num = 10
     repeat_num = 100
-    run_test_gpu(pre_repeat_num, repeat_num, use_half=False)
+    run_test_gpu(pre_repeat_num, repeat_num, data_version=1, use_half=False)
+    run_test_gpu(pre_repeat_num, repeat_num, data_version=2, use_half=False)
     # test_record_by_profiler(use_half=False, N=100, T=400, S=320, C=600)
 
 
