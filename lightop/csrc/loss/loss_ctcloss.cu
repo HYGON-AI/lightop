@@ -24,10 +24,8 @@
 #include <hip/hip_runtime.h>
 #include <hipcub/hipcub.hpp>
 #else
-
 #include <cuda.h>
 #include <cuda_fp16.h>
-
 #endif
 
 #include "loss_ctcloss.cuh"
@@ -168,6 +166,7 @@ namespace at {
       template<typename CAST_DTYPE>
       __global__ void ComputeRepeatsAndLabelswithblank(int blankIdx, int maxTgtLen, int maxTgtWithBlankLen,
                                                        const int *__restrict__ targets,                        // Size: {batchSize, maxTgtLen}
+                                                       const int *__restrict__ TgtLenCumsum,                   // targets_lengths.cumsum()
                                                        const int *__restrict__ tgtLengths,                     // Size: {batchSize}
                                                        int *__restrict__ pTargetsWithBlank,                    // Size: {batchSize, maxTgtWithBlankLen }
                                                        int *__restrict__ pTargetRepeats) {                     // Size: {batchSize}
@@ -175,7 +174,13 @@ namespace at {
           int batch = blockIdx.x;
 
           const int tgtLen = tgtLengths[batch];
-          const int *tgtVec = targets + batch * maxTgtLen;
+
+
+          int tgt_step = 0;
+          if(batch > 0) tgt_step = TgtLenCumsum[batch - 1];
+
+          const int *tgtVec = targets + tgt_step;
+
           int *tgtWithBlankVec = pTargetsWithBlank + batch * maxTgtWithBlankLen;
           pTargetRepeats[batch] = 0;
 
@@ -184,12 +189,14 @@ namespace at {
           for (int u = uid; u <= maxTgtLen; u += blockDim.x) {
               // set value, u <= tgtLen
               tgtWithBlankVec[2 * u] = blankIdx;
-              if (u < tgtLen) {// u <= tgtLen-1
+              if (u < tgtLen) {     // u <= tgtLen-1
                   tgtWithBlankVec[2 * u + 1] = tgtVec[u];
 
                   if (u > 0 and tgtVec[u - 1] == tgtVec[u]) {// repeat label
                       pTargetRepeats[batch]++;
                   }
+              } else {
+                  tgtWithBlankVec[2 * u + 1] = blankIdx;
               }
           }
       }
@@ -370,7 +377,7 @@ namespace at {
       }
 
       template<typename DTYPE, typename CAST_DTYPE, typename VEC_DTYPE, int VF>
-      __global__ void ComputeGradientsVec(const int batchSize, const int maxSrcLen, const int maxTgtLen, const int maxTgtWithBlankLen, const int numTargets, const int blankIdx,
+      __global__ void ComputeGradientsVec(const int batchSize, const int maxSrcLen, const int numTargets,
                                           const CAST_DTYPE clamp, const DTYPE *__restrict__ logits,// Size: {batchSize, maxSrcLen, numTargets}
                                           const int *__restrict__ srcLengths,                      // Size: {batchSize}
                                           const int *__restrict__ tgtLengths,                      // Size: {batchSize}
@@ -418,7 +425,7 @@ namespace at {
 
                       // compute mean and clamp
                       resGrad /= CAST_DTYPE(batchSize);
-                      if (compute_mean) { resGrad /= CAST_DTYPE(maxTgtLen); }
+                      if (compute_mean) { resGrad /= CAST_DTYPE(tgtLen); }
 
                       if (clamp > 0) {
                           resGrad = resGrad < clamp ? resGrad : clamp;
@@ -437,7 +444,7 @@ namespace at {
 
                   // compute mean and clamp
                   resGrad /= CAST_DTYPE(batchSize);
-                  if (compute_mean) { resGrad /= CAST_DTYPE(maxTgtLen); }
+                  if (compute_mean) { resGrad /= CAST_DTYPE(tgtLen); }
 
                   if (clamp > 0) {
                       resGrad = resGrad < clamp ? resGrad : clamp;
@@ -450,7 +457,8 @@ namespace at {
       }
 
       template<int nthreads, typename DTYPE, typename CAST_DTYPE>
-      __global__ void ComputeCostsFinal(int batchSize, int maxTgtLen,
+      __global__ void ComputeCostsFinal(int batchSize,
+                                        const int *__restrict__ tgtLengths,
                                         const DTYPE *__restrict__ costs, DTYPE *__restrict__ costs_sum,
                                         const bool compute_sum, const bool compute_mean) {
 
@@ -460,6 +468,9 @@ namespace at {
           CAST_DTYPE val = CAST_DTYPE(0);// default = inputs(n, 0)
           for (int d = threadIdx.x; d < batchSize; d += nthreads) {
               CAST_DTYPE next = CAST_DTYPE(costs[d]);
+              if (compute_mean) {
+                  next /= tgtLengths[d];
+              }
               val += next;
           }
 
@@ -482,7 +493,7 @@ namespace at {
 
           if (threadIdx.x == 0) {
               if (compute_mean) {
-                  costs_sum[0] = DTYPE(val / (batchSize * maxTgtLen));
+                  costs_sum[0] = DTYPE(val / batchSize);
               } else {
                   costs_sum[0] = DTYPE(val);
               }
@@ -546,6 +557,7 @@ namespace at {
                 /*maxTgtLen=*/maxTgtLen,
                 /*maxTgtWithBlankLen=*/maxTgtWithBlankLen,
                 /*targets=*/targets,
+                /*TgtLenCumsum=*/wkts->GetTgtLenCumsum(),
                 /*tgtLengths=*/tgtLengths,
                 /*pTargetsWithBlank=*/pTargetsWithBlank,
                 /*pTargetRepeats=*/pTargetRepeats);
@@ -641,10 +653,7 @@ namespace at {
                   ComputeGradientsVec<DTYPE, CAST_DTYPE, VEC_DTYPE, vecFactor64><<<grid_dims, block_dims, 0, stream>>>(
                     /*batchSize=*/batchSize,
                     /*maxSrcLen=*/maxSrcLen,
-                    /*maxTgtLen=*/maxTgtLen,
-                    /*maxTgtWithBlankLen=*/maxTgtWithBlankLen,
                     /*num_targets=*/numTgt,
-                    /*blank=*/blank,
                     /*clamp=*/clamp,
                     /*logits=*/logits,
                     /*srcLengths=*/srcLengths,
@@ -658,10 +667,7 @@ namespace at {
                   ComputeGradientsVec<DTYPE, CAST_DTYPE, DTYPE, 1><<<grid_dims, block_dims, 0, stream>>>(
                     /*batchSize=*/batchSize,
                     /*maxSrcLen=*/maxSrcLen,
-                    /*maxTgtLen=*/maxTgtLen,
-                    /*maxTgtWithBlankLen=*/maxTgtWithBlankLen,
                     /*num_targets=*/numTgt,
-                    /*blank=*/blank,
                     /*clamp=*/clamp,
                     /*logits=*/logits,
                     /*srcLengths=*/srcLengths,
@@ -684,7 +690,7 @@ namespace at {
               const dim3 block_dims(REDUCE_THREADS);
               ComputeCostsFinal<REDUCE_THREADS, DTYPE, CAST_DTYPE><<<grid_dims, block_dims, 0, stream>>>(
                 /*batchSize=*/batchSize,
-                /*maxTgtLen=*/maxTgtLen,
+                /*tgtLengths=*/tgtLengths,
                 /*costs=*/costs,
                 /*costs_sum=*/costs_sum,
                 /*compute_sum=*/compute_sum,
@@ -713,11 +719,11 @@ namespace at {
         TORCH_CHECK(target_lengths.is_contiguous(), "target_lengths must be contiguous");
 
         TORCH_CHECK(logits.dtype() == at::kFloat || logits.dtype() == at::kHalf, "logits must be float32 or float16 (half) type");
-        TORCH_CHECK(targets.dtype() == at::kInt, "targets must be int32 type");
-        TORCH_CHECK(logit_lengths.dtype() == at::kInt, "logit_lengths must be int32 type");
-        TORCH_CHECK(target_lengths.dtype() == at::kInt, "target_lengths must be int32 type");
+        TORCH_CHECK(targets.dtype() == at::kInt || targets.dtype() == at::kLong, "targets must be int32 type");
+        TORCH_CHECK(logit_lengths.dtype() == at::kInt || logit_lengths.dtype() == at::kLong, "logit_lengths must be int32 type");
+        TORCH_CHECK(target_lengths.dtype() == at::kInt || target_lengths.dtype() == at::kLong, "target_lengths must be int32 type");
         TORCH_CHECK(logits.dim() == 3, "logits must be 3-D (time, batch, class)");        // Tensor of size (T, N, C) or (N,T,C)
-        TORCH_CHECK(targets.dim() == 2, "targets must be 2-D (batch, max target length)");// Tensor of size (T, S)
+        TORCH_CHECK(targets.dim() == 2 || targets.dim() == 1, "targets must be 2-D (batch, max(target_lengths)) or 1-D sum(target_lengths)");   // Tensor of size (T, S)
         // It represent the target sequences. Each element in the target sequence is a class index. And the target index cannot be blank (default=0).
         // In the (N, S) form, targets are padded to the length of the longest sequence, and stacked.
         TORCH_CHECK(logit_lengths.dim() == 1, "logit_lengths must be 1-D");
@@ -729,13 +735,18 @@ namespace at {
 
         TORCH_CHECK(logit_lengths.size(0) == logits.size(0), "batch dimension mismatch between logits and logit_lengths");
         TORCH_CHECK(target_lengths.size(0) == logits.size(0), "batch dimension mismatch between logits and target_lengths");
-        TORCH_CHECK(targets.size(0) == logits.size(0), "batch dimension mismatch between logits and targets");
+        TORCH_CHECK(targets.size(0) == logits.size(0) || targets.dim() == 1, "batch dimension mismatch between logits and targets if targets ndim=2");
         TORCH_CHECK(blank >= 0 && blank < logits.size(-1), "blank must be within [0, logits.shape[-1])");
+
+        if(targets.dtype() == at::kLong) { targets.to(at::kInt); }
+        if(logit_lengths.dtype() == at::kLong) {  logit_lengths.to(at::kInt); }
+        if(target_lengths.dtype() == at::kLong) { target_lengths.to(at::kInt); }
 
         // Set options
         ctcloss_tools::CtcWorkspaceTools wkts(
           /*logits=*/logits,
           /*targets=*/targets,
+          /*target_lengths=*/target_lengths,
           /*clamp=*/clamp,
           /*blank=*/blank);
 
@@ -752,7 +763,6 @@ namespace at {
         Tensor alpha_beta_workspace = at::empty(wkts.GetAlphaBetaWorkspaceSize(), at::TensorOptions().device(logits.device()).dtype(ScalarType::Float),
                                                 LEGACY_CONTIGUOUS_MEMORY_FORMAT);
         alpha_beta_workspace.fill_(float(-INFINITY));
-        alpha_beta_workspace = alpha_beta_workspace.contiguous();
 
         Tensor float_workspace = at::zeros(wkts.GetFloatWorkspaceSize(), at::TensorOptions().device(logits.device()).dtype(ScalarType::Float));
 
