@@ -36,7 +36,7 @@ class CTCLoss(torch.nn.Module):
 
         Arguments:
             logits (tensor): input tensor to the loss function, shape of (T, N, C) or (N, T, C).
-            targets (tensor): labels for the input data, shape of (N, S)
+            targets (tensor): labels for the input data, shape of (N, S) or sum(target_lengths)
             logit_lengths (tensor): lengths of the inputs in the time dimension for each batch.
             target_lengths (tensor): lengths of the labels for each batch.
         """
