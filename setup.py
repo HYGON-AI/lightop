@@ -304,11 +304,12 @@ def get_extensions():
     if torch_version_over110():
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_110')
     op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + glob.glob('./lightop/csrc/layernorm/*.cu') + \
-               glob.glob('./lightop/csrc/loss/*.cu') + glob.glob('./lightop/csrc/scaledmask/*.cu') + \
+               glob.glob('./lightop/csrc/loss/*.cu') + glob.glob('./lightop/csrc/scaledmask/*.cu') +glob.glob('./lightop/csrc/groupnorm/*.cu') +\
                glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + glob.glob('./lightop/csrc/miopen/*.cpp')
     extension = CUDAExtension
     include_dirs.append(os.path.abspath('./lightop/csrc/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/layernorm/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/groupnorm/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/rmsnorm/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/batchnorm/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/loss/'))
