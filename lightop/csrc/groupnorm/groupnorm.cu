@@ -19,66 +19,8 @@ namespace {
 }
 
 template <typename scalar_t, int VEC=4>
-__global__ void RowwiseMomentsCUDAKernel(scalar_t* input,scalar_t* mean,scalar_t* rstd,int cols,scalar_t eps)
-{
-  int blockidx=blockIdx.x;
-  int threadidx=threadIdx.x;
-  int block_cols=blockidx*cols;
-  using T_ACC = acc_type<scalar_t, true>;
-  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
-  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
-  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
-  __shared__ T_ACC s_mean;
-  __shared__ T_ACC s_rstd;
-  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
-  WelfordOp welford_op;
-  WelfordType val;
-  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
-  VecTpye *X=(VecTpye*)(input+block_cols);
-  int tcol=cols/VEC;
-  T_ACC tmean;
-  T_ACC trstd;
-  VecTpye tx;
-  scalar_t* px=(scalar_t*)(&tx);
-  for (int j = threadidx; j < tcol; j += blockDim.x) {
-    tx = X[j];
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      val = welford_op.reduce(val, static_cast<T_ACC>(px[i]));
-    }
-  }
-  val = BlockReduce(val,welford_op,val_shared_ptr);
-  if(threadIdx.x==0&&rstd!=NULL) {
-    //layernorm get mean and rstd 
-    thrust::tie(tmean, s_mean) = welford_op.project(val);
-    mean[blockidx] = s_mean;
-    rstd[blockidx] = c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
-  }
- 
-}
-
-
-template <typename scalar_t>
-__global__ void ComputeFusedParamsCUDAKernel(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
-                                            scalar_t* gamma,scalar_t* beta,scalar_t* a_data,scalar_t* b_data,int N,int num_channels,int group)
-{
-
-  using T_ACC = acc_type<scalar_t, true>;
-  const int64_t index = (blockIdx.x * blockDim.x + threadIdx.x);
-
-  if (index < N*num_channels) {
-      const int ng = index / (num_channels / group);
-      const int c = index % num_channels;
-      const T_ACC scale =static_cast<T_ACC>(rstd[ng]) * static_cast<T_ACC>(gamma[c]);
-      a_data[index]=scale;
-      b_data[index]=-scale * static_cast<T_ACC>(mean[ng]) + static_cast<T_ACC>(beta[c]);
-  }
-  
-}
-
-template <typename scalar_t, int VEC=4>
-__global__ void groupnorm_forward_kernel_1d(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
-                                            scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
+__global__ void groupnorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
+                                            scalar_t* gamma,scalar_t* beta,int cols,int spatial_size,int channel_size,scalar_t eps)
 {
   int blockidx=blockIdx.x;
   int threadidx=threadIdx.x;
@@ -122,7 +64,7 @@ __global__ void groupnorm_forward_kernel_1d(scalar_t* input,scalar_t* ret,scalar
     tx = X[j];
     #pragma unroll
     for(int i=0;i<VEC;i++){
-      int jj=j*VEC+i;
+      int jj=((block_cols+j*VEC+i) / spatial_size) % channel_size;
       py[i]=(static_cast<T_ACC>(px[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
     }
     Y[j]=ty;
@@ -134,8 +76,8 @@ __global__ void groupnorm_forward_kernel_1d(scalar_t* input,scalar_t* ret,scalar
 }
 
 template <typename scalar_t, int VEC=4>
-__global__ void groupnorm_forward_kernel_1d_2048(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
-                                            scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
+__global__ void groupnorm_forward_kernel_2048(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
+                                            scalar_t* gamma,scalar_t* beta,int cols,int spatial_size,int channel_size,scalar_t eps)
 {
   int blockidx=blockIdx.x;
   int threadidx=threadIdx.x;
@@ -179,7 +121,7 @@ __global__ void groupnorm_forward_kernel_1d_2048(scalar_t* input,scalar_t* ret,s
   if (j < tcol) {
     #pragma unroll
     for(int i=0;i<VEC;i++){
-      int jj=j*VEC+i;
+      int jj=((block_cols+j*VEC+i) / spatial_size) % channel_size;
       py[i]=(static_cast<T_ACC>(px[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
     }
     Y[j]=ty;
@@ -191,8 +133,8 @@ __global__ void groupnorm_forward_kernel_1d_2048(scalar_t* input,scalar_t* ret,s
 }
 
 template <typename scalar_t, int VEC=4>
-__global__ void groupnorm_forward_kernel_1d_4096(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
-                                            scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
+__global__ void groupnorm_forward_kernel_4096(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
+                                            scalar_t* gamma,scalar_t* beta,int cols,int spatial_size,int channel_size,scalar_t eps)
 {
   int blockidx=blockIdx.x;
   int threadidx=threadIdx.x;
@@ -245,14 +187,14 @@ __global__ void groupnorm_forward_kernel_1d_4096(scalar_t* input,scalar_t* ret,s
   trstd=s_rstd;
   #pragma unroll
   for(int i=0;i<VEC;i++){
-    int jj=j*VEC+i;
+    int jj=((block_cols+j*VEC+i) / spatial_size) % channel_size;
     py[i]=(static_cast<T_ACC>(px[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
   }
   Y[j]=ty;
   if (j2 < tcol) {
     #pragma unroll
     for(int i=0;i<VEC;i++){
-      int jj=j2*VEC+i;
+      int jj=((block_cols+j2*VEC+i) / spatial_size) % channel_size;
       py2[i]=(static_cast<T_ACC>(px2[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
     }
     Y[j2]=ty2;
@@ -296,60 +238,29 @@ groupnorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,int
           mean_data=mean.data_ptr<scalar_t>();
           rstd_data=rstd.data_ptr<scalar_t>();
         }
-        if (HxW == 1) {
-            int cols=D * HxW;
-            if (cols % 4 == 0){
-                if(cols<=2048)
-                groupnorm_forward_kernel_1d_2048<scalar_t,4><<<N * G, get_groupnorm_blocksize(cols/4), 0, at::cuda::getCurrentCUDAStream()>>>(
-                                        self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-                else if(cols<=4096){
-                groupnorm_forward_kernel_1d_4096<scalar_t,4><<<N * G, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                      self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-                }
-                else{
-                groupnorm_forward_kernel_1d<scalar_t,4><<<N * G, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                      self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-                }
-                
+        int cols=D * HxW;
+        int spatial_size=HxW;
+        int channel_size=num_channels;
+        if (cols % 4 == 0){
+            if(cols<=2048)
+            groupnorm_forward_kernel_2048<scalar_t,4><<<N * G, get_groupnorm_blocksize(cols/4), 0, at::cuda::getCurrentCUDAStream()>>>(
+                                    self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,spatial_size,channel_size,eps);
+            else if(cols<=4096){
+            groupnorm_forward_kernel_4096<scalar_t,4><<<N * G, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                  self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,spatial_size,channel_size,eps);
             }
             else{
-                groupnorm_forward_kernel_1d<scalar_t,1><<<N * G, get_groupnorm_blocksize(cols), 0, at::cuda::getCurrentCUDAStream()>>>(
-                                        self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-            
+            groupnorm_forward_kernel<scalar_t,4><<<N * G, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                  self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,spatial_size,channel_size,eps);
             }
+            
         }
         else{
-            int cols=D * HxW;
-            const int64_t B = (N*num_channels + kCUDANumThreads - 1) / kCUDANumThreads;
-            if (cols % 4 == 0){
-              RowwiseMomentsCUDAKernel<scalar_t,4><<<N * G, get_groupnorm_blocksize(cols/4), 0, at::cuda::getCurrentCUDAStream()>>>(
-                                    self_data,mean_data,rstd_data,cols,eps);
-    
-            }
-            else{
-                RowwiseMomentsCUDAKernel<scalar_t,1><<<N * G, get_groupnorm_blocksize(cols), 0, at::cuda::getCurrentCUDAStream()>>>(
-                                      self_data,mean_data,rstd_data,cols,eps);
-            }
-           
-            Tensor a = at::empty({N, num_channels}, self.options());
-            Tensor b = at::empty({N, num_channels}, self.options());
-            scalar_t* a_data = a.data_ptr<scalar_t>();
-            scalar_t* b_data = b.data_ptr<scalar_t>();
-            ComputeFusedParamsCUDAKernel<scalar_t><<<B, kCUDANumThreads, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,a_data,b_data,N,num_channels,G);
-            auto iter = TensorIteratorConfig()
-                .check_all_same_dtype(std::is_same<scalar_t, T_ACC>::value)
-                .resize_outputs(false)
-                .add_owned_output(ret.view({N * num_channels, HxW}))
-                .add_owned_input(self.view({N * num_channels, HxW}))
-                .add_owned_input(a.view({N * num_channels, 1}))
-                .add_owned_input(b.view({N * num_channels, 1}))
-                .build();
-            gpu_kernel(iter, [] GPU_LAMBDA(scalar_t x, scalar_t a, scalar_t b) -> scalar_t {
-              return static_cast<T_ACC>(a) * static_cast<T_ACC>(x) + static_cast<T_ACC>(b);
-            });
-
+            groupnorm_forward_kernel<scalar_t,1><<<N * G, get_groupnorm_blocksize(cols), 0, at::cuda::getCurrentCUDAStream()>>>(
+                                    self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,spatial_size,channel_size,eps);
+        
         }
+      
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       });
      return std::tuple<Tensor,Tensor,Tensor>(ret,mean,rstd);
@@ -406,22 +317,37 @@ __global__ void GroupNormBackward_1d_kernel_vec(int N,const scalar_t* dY,const s
 }
 
 template <typename scalar_t>
-__global__ void GroupNormBackward_kernel_vec_2048(int N,int HxW,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX,scalar_t* ds_data,scalar_t* db_data,scalar_t* c2_data,scalar_t* c3_data)
+__global__ void GroupNormBackward_kernel_vec_2048(int N,int HxW,int channel_size,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX,scalar_t* ds_data,scalar_t* db_data)
 {
   GROUPNORMBACKWARD_VEC_2048
-}
+   if (j < tcol) {
+    tx = *(VecTpye*)(X+index);
+    tdy = *(VecTpye*)(dY+index);
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      int jj=(index / HxW+i) % channel_size;
+      pdx[i]=trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(gamma[jj])+b*static_cast<T_ACC>(px[i])+c;
+    }
+    *(VecTpye*)(dX+index) = tdx;
+  }
 
-template <typename scalar_t>
-__global__ void GroupNormBackward_kernel_vec_4096(int N,int HxW,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX,scalar_t* ds_data,scalar_t* db_data,scalar_t* c2_data,scalar_t* c3_data)
-{
-  GROUPNORMBACKWARD_VEC_4096
 }
-
 
 template <typename scalar_t,int VEC=4>
-__global__ void GroupNormBackward_kernel_vec(int N,int HxW,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX,scalar_t* ds_data,scalar_t* db_data,scalar_t* c2_data,scalar_t* c3_data)
+__global__ void GroupNormBackward_kernel_vec(int N,int HxW,int channel_size,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX,scalar_t* ds_data,scalar_t* db_data)
 {
   GROUPNORMBACKWARD_VEC
+  for(int off=j;off<tcol;off+=blockDim.x){
+    const int index = i * N + off*VEC;
+    tx = *(VecTpye*)(X+index);
+    tdy = *(VecTpye*)(dY+index);
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      int jj=(index / HxW+i) % channel_size;
+      pdx[i]=trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(gamma[jj])+b*static_cast<T_ACC>(px[i])+c;
+    }
+    *(VecTpye*)(dX+index) = tdx;
+  }
 }
 
 std::tuple<Tensor,Tensor,Tensor>
@@ -475,66 +401,37 @@ groupnorm_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const 
               GroupNormBackward_1d_kernel_vec<scalar_t,1><<<N * G, get_groupnorm_blocksize(cols), 0, cuda_stream>>>(cols, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
           }
           
-
         }
         else{
-
             Tensor ds = at::empty({N, num_channels}, grad.options());
             Tensor db = at::empty({N, num_channels}, grad.options());
-            Tensor c1 = at::empty({0}, grad.options());
-            Tensor c2 = at::empty({N, G}, grad.options());
-            Tensor c3 = at::empty({N, G}, grad.options());
-            scalar_t* c2_data = c2.data_ptr<scalar_t>();
-            scalar_t* c3_data = c3.data_ptr<scalar_t>();
             scalar_t* ds_data = ds.data_ptr<scalar_t>();
             scalar_t* db_data = db.data_ptr<scalar_t>();
-            ComputeInternalGradientsCUDAKernel<scalar_t><<<N * num_channels, kCUDANumThreads, 0, cuda_stream>>>(
-              HxW, dY_data, X_data, ds_data, db_data);
-            int cols=D;  
+            if(HxW%4==0)
+            { 
+                ComputeInternalGradientsCUDAKernel<scalar_t,4><<<N * num_channels, get_groupnorm_blocksize(HxW/4), 0, cuda_stream>>>(
+                HxW, dY_data, X_data, ds_data, db_data);
+            }
+            else
+            {
+                ComputeInternalGradientsCUDAKernel<scalar_t,1><<<N * num_channels, get_groupnorm_blocksize(HxW), 0, cuda_stream>>>(
+                HxW, dY_data, X_data, ds_data, db_data);
+            }
             GN_GammaBeta_Backward(nelem,N,num_channels,D,G,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data,ds_data,db_data);
-
+            int cols=D*HxW;  
             if (cols % 4 == 0){
                 if(cols<=2048)
-                  GroupNormBackward_kernel_vec_2048<scalar_t><<<N * G, get_groupnorm_blocksize(cols/4), 0, cuda_stream>>>(cols,HxW, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data,ds_data,db_data,c2_data,c3_data);
-          
-                else if(cols<=4096){
-                  GroupNormBackward_kernel_vec_4096<scalar_t><<<N * G, 512, 0, cuda_stream>>>(cols,HxW, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data,ds_data,db_data,c2_data,c3_data);
-                }
+                  GroupNormBackward_kernel_vec_2048<scalar_t><<<N * G, get_groupnorm_blocksize(cols/4), 0, cuda_stream>>>(cols,HxW,num_channels,dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data,ds_data,db_data);
+      
                 else{
-                  GroupNormBackward_kernel_vec<scalar_t><<<N * G, 512, 0, cuda_stream>>>(cols,HxW, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data,ds_data,db_data,c2_data,c3_data);
+                  GroupNormBackward_kernel_vec<scalar_t><<<N * G, 512, 0, cuda_stream>>>(cols,HxW,num_channels, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data,ds_data,db_data);
                 }
                 
             }
             else{
-                GroupNormBackward_kernel_vec<scalar_t,1><<<N * G, get_groupnorm_blocksize(cols), 0, cuda_stream>>>(cols,HxW, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data,ds_data,db_data,c2_data,c3_data);
+                GroupNormBackward_kernel_vec<scalar_t,1><<<N * G, get_groupnorm_blocksize(cols), 0, cuda_stream>>>(cols,HxW,num_channels, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data,ds_data,db_data);
             }
 
-             auto iter1 = TensorIteratorConfig()
-                      .check_all_same_dtype(std::is_same<scalar_t, T_ACC>::value)
-                      .add_output(c1)
-                      .add_owned_input(rstd.view({N, G, 1}))
-                      .add_owned_input(gamma.view({1, G, D}))
-                      .build();
-            gpu_kernel(iter1, [] GPU_LAMBDA(scalar_t rstd, scalar_t gamma) -> T_ACC {
-              return static_cast<T_ACC>(rstd) * static_cast<T_ACC>(gamma);
-            });
-
-            auto iter = TensorIteratorConfig()
-                      .check_all_same_dtype(std::is_same<scalar_t, T_ACC>::value)
-                      .resize_outputs(false)
-                      .add_owned_output(dX.view({N * G, D, HxW}))
-                      .add_owned_input(grad.view({N * G, D, HxW}))
-                      .add_owned_input(X.view({N * G, D, HxW}))
-                      .add_owned_input(c1.view({N * G, D, 1}))
-                      .add_owned_input(c2.view({N * G, 1, 1}))
-                      .add_owned_input(c3.view({N * G, 1, 1}))
-                      .build();
-            gpu_kernel(
-                iter,
-                [] GPU_LAMBDA(scalar_t dy, scalar_t x, scalar_t c1, scalar_t c2, scalar_t c3) -> scalar_t {
-                  return static_cast<T_ACC>(c1) * static_cast<T_ACC>(dy) + static_cast<T_ACC>(c2) * static_cast<T_ACC>(x) +
-                      static_cast<T_ACC>(c3);
-                });
         }
       
      
