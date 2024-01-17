@@ -297,7 +297,7 @@ __global__ void gn_gb_backward_kernel_part_b(const T_ACC* part_grad_gamma,const 
 }
 
 
-template <typename scalar_t>
+template <typename scalar_t,int VEC=4>
 __global__ void ComputeInternalGradientsCUDAKernel(
     int HxW,
     const scalar_t* dY,
@@ -305,23 +305,37 @@ __global__ void ComputeInternalGradientsCUDAKernel(
     scalar_t* ds,
     scalar_t* db) {
   using T_ACC = acc_type<scalar_t, true>;
-  const int nc = blockIdx.x;
+  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  int blockidx=blockIdx.x;
+  int threadidx=threadIdx.x;
+  int block_cols=blockidx*HxW;
+  int tcol=HxW/VEC;
+  VecTpye *x=(VecTpye*)(X+block_cols);
+  VecTpye *dy=(VecTpye*)(dY+block_cols);
+  VecTpye tx;
+  VecTpye tdy;
+  scalar_t* px=(scalar_t*)(&tx);
+  scalar_t* pdy=(scalar_t*)(&tdy);
   T_ACC sum1 = 0;
   T_ACC sum2 = 0;
-  for (int hw = threadIdx.x; hw < HxW; hw += blockDim.x) {
-    const int index = nc * HxW + hw;
-    sum1 += static_cast<T_ACC>(dY[index]) * static_cast<T_ACC>(X[index]);
-    sum2 += static_cast<T_ACC>(dY[index]);
+
+  for (int hw = threadIdx.x; hw < tcol; hw += blockDim.x) {
+    const int index = blockidx * HxW + hw*VEC;
+    tx = *(VecTpye*)(X+index);
+    tdy = *(VecTpye*)(dY+index);
+    for(int i=0;i<VEC;i++){
+      sum1+=static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(px[i]);
+      sum2+=static_cast<T_ACC>(pdy[i]);
+    }
   }
- 
   __shared__ T_ACC ds_shared[C10_WARP_SIZE];
   __shared__ T_ACC db_shared[C10_WARP_SIZE];
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);
   sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);
   
   if (threadIdx.x == 0) {
-    ds[nc] = sum1;
-    db[nc] = sum2;
+    ds[blockidx] = sum1;
+    db[blockidx] = sum2;
   }
 }
 
@@ -506,113 +520,44 @@ void GN_GammaBeta_Backward(int length,int M,int N,int depth,int group,scalar_t* 
   __shared__ T_ACC c;\
   const int i = blockIdx.x;\
   const int j = threadIdx.x;\
+  const int D = N/HxW;\
   const int index = i * N + j*VEC;\
+  const int index_D = i * D + j*VEC;\
   using VecTpye=memory::aligned_vector<scalar_t, VEC>;\
   T_ACC sum1 = 0;\
   T_ACC sum2 = 0;\
   int tcol=N/VEC;\
+  int d_tcol=D/VEC;\
   VecTpye tx;\
   VecTpye tdy;\
+  VecTpye tdx;\
   VecTpye tds;\
   VecTpye tdb;\
-  VecTpye tdx;\
-  VecTpye tgamma;\
   scalar_t* px=(scalar_t*)(&tx);\
   scalar_t* pdy=(scalar_t*)(&tdy);\
+  scalar_t* pdx=(scalar_t*)(&tdx);\
   scalar_t* pds=(scalar_t*)(&tds);\
   scalar_t* pdb=(scalar_t*)(&tdb);\
-  scalar_t* pdx=(scalar_t*)(&tdx);\
-  scalar_t* pgamma=(scalar_t*)(&tgamma);\
-  if (j < tcol) {\
-    tx = *(VecTpye*)(X+index);\
-    tdy = *(VecTpye*)(dY+index);\
-    tds = *(VecTpye*)(ds_data+index);\
-    tdb = *(VecTpye*)(db_data+index);\
-    tgamma = *(VecTpye*)(gamma+j*VEC);\
+  if (j < d_tcol) {\
+    tds = *(VecTpye*)(ds_data+index_D);\
+    tdb = *(VecTpye*)(db_data+index_D);\
     for(int i=0;i<VEC;i++){\
-      sum1+=static_cast<T_ACC>(pds[i])*pgamma[i];\
-      sum2+=static_cast<T_ACC>(pdb[i])*pgamma[i];\
+      int jj=(index_D+i)%(channel_size);\
+      sum1+=static_cast<T_ACC>(pds[i])*gamma[jj];\
+      sum2+=static_cast<T_ACC>(pdb[i])*gamma[jj];\
     }\
   }\
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);\
   sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);\
-  const T_ACC s = T_ACC(1) / (static_cast<T_ACC>(N)*static_cast<T_ACC>(HxW));\
+  const T_ACC s = T_ACC(1) / (static_cast<T_ACC>(N));\
   T_ACC trstd = static_cast<T_ACC>(rstd[i]);\
   if (threadIdx.x == 0) {\
     T_ACC tmean = static_cast<T_ACC>(mean[i]);\
     const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;\
-    c2_data[i]= a;\
-    c3_data[i]= -a * tmean - sum2 * trstd * s;\
+    b = a;\
+    c = -a * tmean - sum2 * trstd * s;\
   }\
-
-
-#define GROUPNORMBACKWARD_VEC_4096  \
-   using T_ACC = acc_type<scalar_t, true>;\
-  __shared__ T_ACC ds_shared[8];\
-  __shared__ T_ACC db_shared[8];\
-  __shared__ T_ACC b;\
-  __shared__ T_ACC c;\
-  const int i = blockIdx.x;\
-  const int j = threadIdx.x;\
-  const int index = i * N + j*VEC;\
-  const int index_2 = i * N + j*VEC+2048;\
-  using VecTpye=memory::aligned_vector<scalar_t, VEC>;\
-  T_ACC sum1 = 0;\
-  T_ACC sum2 = 0;\
-  int tcol=N/VEC;\
-  VecTpye tx;\
-  VecTpye tdy;\
-  VecTpye tds;\
-  VecTpye tdb;\
-  VecTpye tdx;\
-  VecTpye tgamma;\
-  VecTpye tx_2;\
-  VecTpye tdy_2;\
-  VecTpye tds_2;\
-  VecTpye tdb_2;\
-  VecTpye tgamma_2;\
-  scalar_t* px=(scalar_t*)(&tx);\
-  scalar_t* pdy=(scalar_t*)(&tdy);\
-  scalar_t* pds=(scalar_t*)(&tds);\
-  scalar_t* pdb=(scalar_t*)(&tdb);\
-  scalar_t* pdx=(scalar_t*)(&tdx);\
-  scalar_t* pgamma=(scalar_t*)(&tgamma);\
-  scalar_t* px_2=(scalar_t*)(&tx_2);\
-  scalar_t* pdy_2=(scalar_t*)(&tdy_2);\
-  scalar_t* pds_2=(scalar_t*)(&tds_2);\
-  scalar_t* pdb_2=(scalar_t*)(&tdb_2);\
-  scalar_t* pgamma_2=(scalar_t*)(&tgamma_2);\
-  tx = *(VecTpye*)(X+index);\
-  tdy = *(VecTpye*)(dY+index);\
-  tds = *(VecTpye*)(ds_data+index);\
-  tdb = *(VecTpye*)(db_data+index);\
-  tgamma = *(VecTpye*)(gamma+j*VEC);\
-  for(int i=0;i<VEC;i++){\
-    sum1+=static_cast<T_ACC>(pds[i])*pgamma[i];\
-    sum2+=static_cast<T_ACC>(pdb[i])*pgamma[i];\
-  }\
-  if (j < tcol-512) {\
-    tx_2 = *(VecTpye*)(X+index_2);\
-    tdy_2 = *(VecTpye*)(dY+index_2);\
-    tds_2 = *(VecTpye*)(ds_data+index_2);\
-    tdb_2 = *(VecTpye*)(db_data+index_2);\
-    tgamma_2 = *(VecTpye*)(gamma+j*VEC+2048);\
-    for(int i=0;i<VEC;i++){\
-      sum1+=static_cast<T_ACC>(pds_2[i])*pgamma_2[i];\
-      sum2+=static_cast<T_ACC>(pdb_2[i])*pgamma_2[i];\
-    }\
-  }\
-  sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);\
-  sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);\
-  T_ACC trstd=static_cast<T_ACC>(rstd[i]);\
-  if (threadIdx.x == 0) {\
-    const T_ACC s = T_ACC(1) / (static_cast<T_ACC>(N)*static_cast<T_ACC>(HxW));\
-    T_ACC tmean = static_cast<T_ACC>(mean[i]);\
-    const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;\
-    c2_data[i] = a;\
-    c3_data[i]= -a * tmean - sum2 * trstd * s;\
-  }\
-
+  __syncthreads();
 
 
 #define GROUPNORMBACKWARD_VEC  \
@@ -626,40 +571,39 @@ void GN_GammaBeta_Backward(int length,int M,int N,int depth,int group,scalar_t* 
   using VecTpye=memory::aligned_vector<scalar_t, VEC>;\
   T_ACC sum1 = 0;\
   T_ACC sum2 = 0;\
+  const int D = N/HxW;\
   int tcol=N/VEC;\
+  int d_tcol=D/VEC;\
   VecTpye tx;\
   VecTpye tdy;\
+  VecTpye tdx;\
   VecTpye tds;\
   VecTpye tdb;\
-  VecTpye tdx;\
-  VecTpye tgamma;\
   scalar_t* px=(scalar_t*)(&tx);\
   scalar_t* pdy=(scalar_t*)(&tdy);\
+  scalar_t* pdx=(scalar_t*)(&tdx);\
   scalar_t* pds=(scalar_t*)(&tds);\
   scalar_t* pdb=(scalar_t*)(&tdb);\
-  scalar_t* pdx=(scalar_t*)(&tdx);\
-  scalar_t* pgamma=(scalar_t*)(&tgamma);\
-  for(int off=j;off<tcol;off+=blockDim.x){\
-    const int index = i * N + off*VEC;\
-    tx = *(VecTpye*)(X+index);\
-    tdy = *(VecTpye*)(dY+index);\
-    tds = *(VecTpye*)(ds_data+index);\
-    tdb = *(VecTpye*)(db_data+index);\
-    tgamma = *(VecTpye*)(gamma+off*VEC); \
+  for(int off=j;off<d_tcol;off+=blockDim.x){\
+    const int index_D = i * D + off*VEC;\
+    tds = *(VecTpye*)(ds_data+index_D);\
+    tdb = *(VecTpye*)(db_data+index_D);\
     for(int i=0;i<VEC;i++){\
-      sum1+=static_cast<T_ACC>(pds[i])*pgamma[i];\
-      sum2+=static_cast<T_ACC>(pdb[i])*pgamma[i];\
+      int jj=(index_D+i)%(channel_size);\
+      sum1+=static_cast<T_ACC>(pds[i])*gamma[jj];\
+      sum2+=static_cast<T_ACC>(pdb[i])*gamma[jj];\
     }\
   }\
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);\
   sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);\
   T_ACC trstd=static_cast<T_ACC>(rstd[i]);\
   if (threadIdx.x == 0) {\
-    const T_ACC s = T_ACC(1) / (static_cast<T_ACC>(N)*static_cast<T_ACC>(HxW));\
+    const T_ACC s = T_ACC(1) / (static_cast<T_ACC>(N));\
     T_ACC tmean = static_cast<T_ACC>(mean[i]);\
     const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;\
-    c2_data[i] = a;\
-    c3_data[i] = -a * tmean - sum2 * trstd * s;\
+    b = a;\
+    c = -a * tmean - sum2 * trstd * s;\
   }\
-
+  __syncthreads();
+  
 int get_groupnorm_blocksize(int cols);
