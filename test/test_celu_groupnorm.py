@@ -79,8 +79,8 @@ def test_speed(batchsize, seqs, cols,rows,num_groups,alpha,repeat_num,use_half=F
 
     x1,x2,grad=get_data(batchsize, seqs, cols,rows,use_half=use_half)
     f1,f2=get_model(seqs=seqs,num_groups=num_groups,alpha=alpha,use_half=use_half)
-    #y1 = f1(x1)
-    #y1.backward(grad)
+    y1 = f1(x1)
+    y1.backward(grad)
     torch.cuda.synchronize()
     start_time = time.time()
     for i in range(repeat_num):
@@ -93,8 +93,8 @@ def test_speed(batchsize, seqs, cols,rows,num_groups,alpha,repeat_num,use_half=F
     end_time = time.time()
     fc1_espl = end_time - start_time
     print('torch_celu_gn', 'averange time is', fc1_espl *1000/ repeat_num, 'ms')
-    #y2 = f2(x2)
-    #y2.backward(grad)
+    y2 = f2(x2)
+    y2.backward(grad)
     torch.cuda.synchronize()
     start_time = time.time()
     for i in range(repeat_num):
@@ -125,9 +125,9 @@ if __name__ == "__main__":
 
     #设置基础参数
     batchsize, seqs, cols,rows = 128,1024,1,1
-    num_groups=32
+    num_groups=8
     alpha=1
     #耗时测试
     test_speed(batchsize, seqs, cols,rows,num_groups,alpha,repeat_num=1000,use_half=False)
     #性能分析
-    #test_profile(batchsize, seqs, cols,rows,num_groups,repeat_num=10,use_half=False)
+    #test_profile(batchsize, seqs, cols,rows,num_groups,alpha,repeat_num=10,use_half=False)

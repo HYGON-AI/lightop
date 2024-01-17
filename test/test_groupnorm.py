@@ -122,8 +122,8 @@ def test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num,use_half=False):
 if __name__ == "__main__":
 
     #设置基础参数
-    batchsize, seqs, cols,rows = 256,1100,1,1
-    num_groups=2
+    batchsize, seqs, cols,rows = 128,1024,1,1
+    num_groups=8
     #耗时测试
     test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num=1000,use_half=False)
     #性能分析
