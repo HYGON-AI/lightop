@@ -11,6 +11,10 @@ dtk22.04.2 \ dtk22.10 \ dtk23.04 \ dtk23.10
 
 python3 setup.py install
 
+编译安装包：
+python3 setup.py install bdist_wheel
+编译好之后，安装包在dist目录
+
 ## 测试
 进入test文件夹
 
