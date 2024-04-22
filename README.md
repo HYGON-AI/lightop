@@ -5,11 +5,15 @@
 环境依赖：
 pytorch1.10 \ pytorch1.13 \ pytorch2.0 \ pytorch2.1
 
-dtk22.04.2 \ dtk22.10 \ dtk23.04 \ dtk23.10
+dtk22.04.2 \ dtk22.10 \ dtk23.04 \ dtk23.10 \ dtk24.04
 
 安装脚本：
 
 python3 setup.py install
+
+对于23.10之前的dtk由于不支持928，因此需要去掉928代码，使用下面的编译命令：
+
+PYTORCH_ROCM_ARCH='gfx906;gfx926' python3 setup.py install
 
 编译安装包：
 

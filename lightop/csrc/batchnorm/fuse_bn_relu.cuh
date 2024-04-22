@@ -106,7 +106,7 @@ struct GradOp {
 template <typename T>
 static __device__ __forceinline__ T warpSum(T val) {
   for (int i = 0; i < getMSB(C10_WARP_SIZE); ++i) {
-    val += WARP_SHFL_XOR(val, 1 << i, C10_WARP_SIZE);
+    val += __shfl_xor(val, 1 << i, C10_WARP_SIZE);
   }
   return val;
 }
@@ -349,10 +349,10 @@ __global__ void bnrelu_collect_statistics_kernel(
   // first warpSum to get one value per thread to
   // one value per warp
   for (int i = 0; i < getMSB(C10_WARP_SIZE); ++i) {
-    stat_accscalar_t o_avg = WARP_SHFL_XOR(avg, 1 << i, C10_WARP_SIZE);
-    int o_n = WARP_SHFL_XOR(n, 1 << i, C10_WARP_SIZE);
+    stat_accscalar_t o_avg = __shfl_xor(avg, 1 << i, C10_WARP_SIZE);
+    int o_n = __shfl_xor(n, 1 << i, C10_WARP_SIZE);
     stat_accscalar_t factor = 1.0 / fmaxf(1.0, n+o_n);
-    var_n += WARP_SHFL_XOR(var_n, 1 << i, C10_WARP_SIZE) + (avg - o_avg) * (avg - o_avg) * n * o_n * factor;
+    var_n += __shfl_xor(var_n, 1 << i, C10_WARP_SIZE) + (avg - o_avg) * (avg - o_avg) * n * o_n * factor;
     avg = (n * avg + o_n * o_avg) * factor;
     n += o_n;
   }
@@ -377,10 +377,10 @@ __global__ void bnrelu_collect_statistics_kernel(
     var_n = (tid < blockDim.x * blockDim.y  / C10_WARP_SIZE ? shared_avg_var[2 * tid + 1] : stat_accscalar_t(0));
   }
   for (int i = 0; i < getMSB(C10_WARP_SIZE); ++i) {
-    stat_accscalar_t o_avg = WARP_SHFL_XOR(avg, 1 << i, C10_WARP_SIZE);
-    int o_n = WARP_SHFL_XOR(n, 1 << i, C10_WARP_SIZE);
+    stat_accscalar_t o_avg = __shfl_xor(avg, 1 << i, C10_WARP_SIZE);
+    int o_n = __shfl_xor(n, 1 << i, C10_WARP_SIZE);
     stat_accscalar_t factor = 1.0 / fmaxf(1.0, n+o_n);
-    var_n += WARP_SHFL_XOR(var_n, 1 << i, C10_WARP_SIZE) + (avg - o_avg) * (avg - o_avg) * n * o_n * factor;
+    var_n += __shfl_xor(var_n, 1 << i, C10_WARP_SIZE) + (avg - o_avg) * (avg - o_avg) * n * o_n * factor;
     avg = (n * avg + o_n * o_avg) * factor;
     n += o_n;
   }

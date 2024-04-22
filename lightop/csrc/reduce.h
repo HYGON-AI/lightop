@@ -52,7 +52,7 @@ BlockReduce(T val, const ReduceOp& op, T* shared) {
 template <typename T>
 __inline__ __device__ T WarpReduceSum(T val,int max=32) {
   for (int offset = max; offset > 0; offset >>= 1) {
-    val += __shfl_down(val, offset);
+    val += WARP_SHFL_DOWN(val, offset);
   }
   return val;
 }
