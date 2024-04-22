@@ -256,8 +256,10 @@ class BuildReleaseExtension(BuildExtension):
             if (debug):
                 print("debug mode")
             else:
-                extra_cc_cflags.remove('-g')
-                extra_cc_cflags.remove('-Wall')
+                if('-g' in extra_cc_cflags):
+                    extra_cc_cflags.remove('-g')
+                if('-Wall' in extra_cc_cflags):
+                    extra_cc_cflags.remove('-Wall')
                 print("release mode")
             with_cuda = any(map(_is_cuda_file, sources))
             if isinstance(extra_postargs, dict):
