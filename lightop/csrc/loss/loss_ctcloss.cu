@@ -65,7 +65,7 @@ namespace at {
 
           CAST_DTYPE shf;
           for (int stride = (WARP_SIZE >> 1); stride > 0; stride >>= 1) {
-              shf = __shfl_down(val, stride);
+              shf = WARP_SHFL_DOWN(val, stride);
               if (threadIdx.x < stride && threadIdx.x + stride < dim) {
                   if (shf > val) { val = shf; }
               }
@@ -99,7 +99,7 @@ namespace at {
 
           CAST_DTYPE shf;
           for (int stride = (WARP_SIZE >> 1); stride > 0; stride >>= 1) {
-              shf = __shfl_down(val, stride);
+              shf = WARP_SHFL_DOWN(val, stride);
               if (threadIdx.x < stride && threadIdx.x + stride < dim) { val = val + shf; }
           }
 
@@ -487,7 +487,7 @@ namespace at {
 
           CAST_DTYPE shf;
           for (int stride = (WARP_SIZE >> 1); stride > 0; stride >>= 1) {
-              shf = __shfl_down(val, stride);
+              shf = WARP_SHFL_DOWN(val, stride);
               if (threadIdx.x < stride && threadIdx.x + stride < batchSize) { val += shf; }
           }
 

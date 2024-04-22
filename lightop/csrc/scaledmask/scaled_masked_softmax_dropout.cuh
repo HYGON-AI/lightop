@@ -58,15 +58,6 @@ struct Max {
   }
 };
 
-template <typename T>
-__device__ __forceinline__ T WARP_SHFL_XOR_NATIVE(T value, int laneMask, int width = warpSize, unsigned int mask = 0xffffffff)
-{
-#if CUDA_VERSION >= 9000
-    return __shfl_xor_sync(mask, value, laneMask, width);
-#else
-    return __shfl_xor(value, laneMask, width);
-#endif
-}
 
 template <typename acc_t, int WARP_BATCH, int WARP_SIZE, template<typename> class ReduceOp>
 __device__ __forceinline__ void warp_reduce(acc_t* sum) {
@@ -75,7 +66,7 @@ __device__ __forceinline__ void warp_reduce(acc_t* sum) {
     for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
         #pragma unroll
         for (int i = 0;  i < WARP_BATCH;  ++i) {
-            acc_t b = WARP_SHFL_XOR_NATIVE(sum[i], offset, WARP_SIZE);
+            acc_t b = __shfl_xor(sum[i], offset, WARP_SIZE);
             sum[i] = r(sum[i], b);
         }
     }

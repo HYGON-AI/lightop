@@ -51,7 +51,6 @@ struct MaxOp {
 template<template<typename> class ReductionOp, typename T, int thread_group_width = kWarpSize>
 __inline__ __device__ T WarpAllReduce(T val) {
   for (int mask = thread_group_width / 2; mask > 0; mask /= 2) {
-    // val = ReductionOp<T>()(val, __shfl_xor(0xffffffff, val, mask));
     val = ReductionOp<T>()(val, __shfl_xor(val, mask, kWarpSize));
   }
   return val;

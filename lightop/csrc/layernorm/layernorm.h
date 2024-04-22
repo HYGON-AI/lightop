@@ -65,10 +65,10 @@ struct WelfordOps {
 
   inline __device__ acc_t warp_shfl_down(acc_t acc, int offset) const {
     return {
-      __shfl_down(acc.mean, offset)
-      , __shfl_down(acc.m2, offset)
-      , __shfl_down(acc.n, offset)
-      , __shfl_down(acc.nf, offset)
+      WARP_SHFL_DOWN(acc.mean, offset)
+      , WARP_SHFL_DOWN(acc.m2, offset)
+      , WARP_SHFL_DOWN(acc.n, offset)
+      , WARP_SHFL_DOWN(acc.nf, offset)
     };
   }
 };

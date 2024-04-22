@@ -76,7 +76,7 @@ struct GradOp_act {
 template <typename T>
 static __device__ __forceinline__ T warpSum_act(T val) {
   for (int i = 0; i < getMSB_act(C10_WARP_SIZE); ++i) {
-    val += WARP_SHFL_XOR(val, 1 << i, C10_WARP_SIZE);
+    val += __shfl_xor(val, 1 << i, C10_WARP_SIZE);
   }
   return val;
 }
