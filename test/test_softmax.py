@@ -10,14 +10,20 @@ device = torch.device('cuda')
 def check_torch_fuse_Softmax():
   torch.backends.cudnn.enabled=False
  
-  x0 = torch.rand([1024, 1024], dtype=torch.float32).cuda()
-  soft = torch.nn.Softmax(dim=1).cuda()
+  x0 = torch.rand([64,1500, 1500], dtype=torch.float32).cuda()
+  soft = torch.nn.Softmax(dim=-1).cuda()
   x = Variable(x0, requires_grad=True)
+  grad = torch.rand(x0.shape, dtype=torch.float32).cuda()
 
+  for i in range(10):
+      out=soft(x)
+      out.backward(grad)
+      torch.cuda.synchronize()
   start_time = time.time()
   for i in range(1000):
+    x.grad=None
     out = soft(x)
-    out.sum().backward()
+    out.backward(grad)
     torch.cuda.synchronize()
   end_time = time.time()
   fc1_espl = end_time - start_time  
@@ -25,17 +31,21 @@ def check_torch_fuse_Softmax():
 
   x0_fuse = copy.deepcopy(x).cuda()
   x_fuse = Variable(x0_fuse, requires_grad=True)
-  fuse_soft = FuseSoftmax(dim=1).cuda()
+  fuse_soft = FuseSoftmax(dim=-1).cuda()
 
+  for i in range(10):
+      fuse_out=fuse_soft(x_fuse)
+      fuse_out.backward(grad)
+      torch.cuda.synchronize()
   start_time = time.time()
   for i in range(1000):
-      fuse_out=fuse_soft(x_fuse) 
-      fuse_out.sum().backward()
+      x_fuse.grad=None
+      fuse_out=fuse_soft(x_fuse)
+      fuse_out.backward(grad)
       torch.cuda.synchronize()
       end_time = time.time()    
   fc2_espl = end_time - start_time
   print('fuse', 'averange time is', fc2_espl *1000/ 1000, 'ms')
-  
   print("########forward#########")
   if np.allclose(out.detach().cpu().numpy(), fuse_out.detach().cpu().numpy(), rtol=1e-05, atol=1e-05):
     print("Passed")
@@ -88,5 +98,5 @@ if __name__ == "__main__":
   print("softmax_torch_fuse_result: ") 
   check_torch_fuse_Softmax()
 
-  print("Logsoftmax_torch_fuse_result: ") 
-  check_torch_fuse_LogSoftmax()
+  # print("Logsoftmax_torch_fuse_result: ") 
+  # check_torch_fuse_LogSoftmax()

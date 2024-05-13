@@ -1324,25 +1324,25 @@ void torch_softmax_backward(const Tensor &grad_, const Tensor &output_, int64_t 
                 output_ptr += chunk_size * dim_size;
                 remaining -= chunk_size;
                 }
-            } else if(1024 < dim_size <= 4096 && 4096 < dim_size*sizeof(float) <= 16384) {     //aiss add of kernel
-                using ComputeType = typename oneflow::cuda::softmax::DefaultComputeType<scalar_t>::type;
-                auto gI_ptr = gI.data_ptr<scalar_t>();
-                auto grad_ptr = grad.data_ptr<scalar_t>();
-                auto output_ptr = output.data_ptr<scalar_t>();
-                oneflow::cuda::softmax::DirectLoad<scalar_t, ComputeType> load_y(output_ptr, dim_size);
-                oneflow::cuda::softmax::DirectLoad<scalar_t, ComputeType> load_dy(grad_ptr, dim_size);
-                oneflow::cuda::softmax::DirectStore<ComputeType, scalar_t> store(gI_ptr, dim_size);
+            // } else if(1024 < dim_size <= 4096 && 4096 < dim_size*sizeof(float) <= 16384) {     //aiss add of kernel
+            //     using ComputeType = typename oneflow::cuda::softmax::DefaultComputeType<scalar_t>::type;
+            //     auto gI_ptr = gI.data_ptr<scalar_t>();
+            //     auto grad_ptr = grad.data_ptr<scalar_t>();
+            //     auto output_ptr = output.data_ptr<scalar_t>();
+            //     oneflow::cuda::softmax::DirectLoad<scalar_t, ComputeType> load_y(output_ptr, dim_size);
+            //     oneflow::cuda::softmax::DirectLoad<scalar_t, ComputeType> load_dy(grad_ptr, dim_size);
+            //     oneflow::cuda::softmax::DirectStore<ComputeType, scalar_t> store(gI_ptr, dim_size);
 
 
-                if (!is_log_softmax) {
-                    oneflow::cuda::softmax::DispatchSoftmaxGrad<decltype(load_y), decltype(load_dy),
-                                                                    decltype(store), ComputeType>(
-                        stream, load_y, load_dy, store, outer_size, dim_size);
-                } else {
-                    oneflow::cuda::softmax::DispatchLogSoftmaxGrad<decltype(load_y), decltype(load_dy),
-                                                                        decltype(store), ComputeType>(
-                        stream, load_y, load_dy, store, outer_size, dim_size);
-                } 
+            //     if (!is_log_softmax) {
+            //         oneflow::cuda::softmax::DispatchSoftmaxGrad<decltype(load_y), decltype(load_dy),
+            //                                                         decltype(store), ComputeType>(
+            //             stream, load_y, load_dy, store, outer_size, dim_size);
+            //     } else {
+            //         oneflow::cuda::softmax::DispatchLogSoftmaxGrad<decltype(load_y), decltype(load_dy),
+            //                                                             decltype(store), ComputeType>(
+            //             stream, load_y, load_dy, store, outer_size, dim_size);
+            //     } 
 
 
             } else {//aiss add pf kernel end
@@ -1370,24 +1370,24 @@ void torch_softmax_backward(const Tensor &grad_, const Tensor &output_, int64_t 
                 output_ptr += chunk_size * dim_size;
                 remaining -= chunk_size;
                 }
-            } else if(1024 < dim_size <= 4096) {     //aiss add of kernel
-                using ComputeType = typename oneflow::cuda::softmax::DefaultComputeType<scalar_t>::type;
-                auto gI_ptr = gI.data_ptr<scalar_t>();
-                auto grad_ptr = grad.data_ptr<scalar_t>();
-                auto output_ptr = output.data_ptr<scalar_t>();
-                oneflow::cuda::softmax::DirectLoad<scalar_t, ComputeType> load_y(output_ptr, dim_size);
-                oneflow::cuda::softmax::DirectLoad<scalar_t, ComputeType> load_dy(grad_ptr, dim_size);
-                oneflow::cuda::softmax::DirectStore<ComputeType, scalar_t> store(gI_ptr, dim_size);
+            // } else if(1024 < dim_size <= 4096) {     //aiss add of kernel
+            //     using ComputeType = typename oneflow::cuda::softmax::DefaultComputeType<scalar_t>::type;
+            //     auto gI_ptr = gI.data_ptr<scalar_t>();
+            //     auto grad_ptr = grad.data_ptr<scalar_t>();
+            //     auto output_ptr = output.data_ptr<scalar_t>();
+            //     oneflow::cuda::softmax::DirectLoad<scalar_t, ComputeType> load_y(output_ptr, dim_size);
+            //     oneflow::cuda::softmax::DirectLoad<scalar_t, ComputeType> load_dy(grad_ptr, dim_size);
+            //     oneflow::cuda::softmax::DirectStore<ComputeType, scalar_t> store(gI_ptr, dim_size);
 
-                if (!is_log_softmax) {
-                    oneflow::cuda::softmax::DispatchSoftmaxGrad<decltype(load_y), decltype(load_dy),
-                                                                    decltype(store), ComputeType>(
-                        stream, load_y, load_dy, store, outer_size, dim_size);
-                } else {
-                    oneflow::cuda::softmax::DispatchLogSoftmaxGrad<decltype(load_y), decltype(load_dy),
-                                                                        decltype(store), ComputeType>(
-                        stream, load_y, load_dy, store, outer_size, dim_size);
-                } 
+            //     if (!is_log_softmax) {
+            //         oneflow::cuda::softmax::DispatchSoftmaxGrad<decltype(load_y), decltype(load_dy),
+            //                                                         decltype(store), ComputeType>(
+            //             stream, load_y, load_dy, store, outer_size, dim_size);
+            //     } else {
+            //         oneflow::cuda::softmax::DispatchLogSoftmaxGrad<decltype(load_y), decltype(load_dy),
+            //                                                             decltype(store), ComputeType>(
+            //             stream, load_y, load_dy, store, outer_size, dim_size);
+            //     } 
 
 
             } else {//aiss add pf kernel end                
