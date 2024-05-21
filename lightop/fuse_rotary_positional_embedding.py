@@ -64,11 +64,12 @@ class RotaryPositionalEmbeddingFunction(torch.autograd.Function):
 def apply_rotary_pos_emb_index_fused(q, k, cos, sin, position_id):
     # position_id: [sq, b], q: [sq, b * np, hn] -> [sq, b, np, hn], cos: [sq, 1, hn] -> [sq, b, 1, hn]
     sq, b, np = position_id.size(0), position_id.size(1), q.size(1) // position_id.size(1)
-    q, k = q.view(sq, b, np, -1), k.view(sq, b, np, -1)
+    np_k = k.size(1)// position_id.size(1)
+    q, k = q.view(sq, b, np, -1), k.view(sq, b, np_k, -1)
     cos, sin = F.embedding(position_id, cos.squeeze(1)).unsqueeze(2), \
                F.embedding(position_id, sin.squeeze(1)).unsqueeze(2)
     q = RotaryPositionalEmbeddingFunction.apply(q, cos, sin)
     k = RotaryPositionalEmbeddingFunction.apply(k, cos, sin)
-    return q.view(sq, b * np, -1), k.view(sq, b * np, -1)
+    return q.view(sq, b * np, -1), k.view(sq, b * np_k, -1)
 
 
