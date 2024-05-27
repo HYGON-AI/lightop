@@ -3,480 +3,37 @@
 namespace at{
 namespace native{
 
-namespace {
-  constexpr int VEC = 4;
-  constexpr int kCUDANumThreads = 256;
-}
-
-template <typename T_ACC>
-__device__ T_ACC celu(T_ACC x, T_ACC alpha) {
-    
-    return x < 0 ? alpha * (expf(x/alpha) - 1.0f) : x;
-}
-
-template <typename T_ACC>
-__device__ T_ACC celu_back(T_ACC dY,T_ACC x, T_ACC alpha) {
-  
-    return x < 0 ? expf(x/alpha)*dY : dY;
-}
-
-
-template <typename scalar_t, int VEC=4>
-__global__ void celu_gn_forward_kernel(scalar_t* input,scalar_t* input_celu,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
-                                            scalar_t* gamma,scalar_t* beta,int cols,int spatial_size,int channel_size,scalar_t eps,scalar_t alpha)
-{
-  int blockidx=blockIdx.x;
-  int threadidx=threadIdx.x;
-  int block_cols=blockidx*cols;
-  using T_ACC = acc_type<scalar_t, true>;
-  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
-  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
-  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
-  __shared__ T_ACC s_mean;
-  __shared__ T_ACC s_rstd;
-  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
-  WelfordOp welford_op;
-  WelfordType val;
-  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
-  VecTpye *X=(VecTpye*)(input+block_cols);
-  VecTpye *X_CELU=(VecTpye*)(input_celu+block_cols);
-  VecTpye *Y=(VecTpye*)(ret+block_cols);
-  int tcol=cols/VEC;
-  T_ACC tmean;
-  T_ACC trstd;
-  VecTpye tx;
-  VecTpye ty;
-  scalar_t* px=(scalar_t*)(&tx);
-  scalar_t* py=(scalar_t*)(&ty);
-  for (int j = threadidx; j < tcol; j += blockDim.x) {
-    tx = X[j];
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      px[i]=celu<T_ACC>(static_cast<T_ACC>(px[i]),static_cast<T_ACC>(alpha));
-      val = welford_op.reduce(val, px[i]);
-    }
-  }
-  val = BlockReduce(val,welford_op,val_shared_ptr);
-  if (threadidx == 0) {
-    //layernorm get mean and rstd 
-    thrust::tie(tmean, s_mean) = welford_op.project(val);
-    s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
-  }
-  __syncthreads();
-  tmean=s_mean;
-  trstd=s_rstd;
-  for (int j = threadidx; j < tcol; j += blockDim.x) {
-    tx = X[j];
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      int jj=((block_cols+j*VEC+i) / spatial_size) % channel_size;
-      px[i]=celu<T_ACC>(static_cast<T_ACC>(px[i]),static_cast<T_ACC>(alpha));
-      py[i]=(static_cast<T_ACC>(px[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
-    }
-    Y[j]=ty;
-    X_CELU[j]=tx;
-
-  }
-  if(threadIdx.x==0&&rstd!=NULL){
-      mean[blockidx] = tmean;
-      rstd[blockidx] = trstd;
-  }
-}
-
-template <typename scalar_t, int VEC=4>
-__global__ void celu_gn_forward_kernel_2048(scalar_t* input,scalar_t* input_celu,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
-                                            scalar_t* gamma,scalar_t* beta,int cols,int spatial_size,int channel_size,scalar_t eps,scalar_t alpha)
-{
-  int blockidx=blockIdx.x;
-  int threadidx=threadIdx.x;
-  int block_cols=blockidx*cols;
-  using T_ACC = acc_type<scalar_t, true>;
-  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
-  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
-  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
-  __shared__ T_ACC s_mean;
-  __shared__ T_ACC s_rstd;
-  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
-  WelfordOp welford_op;
-  WelfordType val;
-  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
-  VecTpye *X=(VecTpye*)(input+block_cols);
-  VecTpye *X_CELU=(VecTpye*)(input_celu+block_cols);
-  VecTpye *Y=(VecTpye*)(ret+block_cols);
-  int tcol=cols/VEC;
-  T_ACC tmean;
-  T_ACC trstd;
-  VecTpye tx;
-  VecTpye ty;
-  scalar_t* px=(scalar_t*)(&tx);
-  scalar_t* py=(scalar_t*)(&ty);
-  int j=threadidx;
-  if (j < tcol) {
-    tx = X[j];
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      px[i]=celu<T_ACC>(static_cast<T_ACC>(px[i]),static_cast<T_ACC>(alpha));
-      val = welford_op.reduce(val, px[i]);
-    }
-  }
-  val = BlockReduce(val,welford_op,val_shared_ptr);
-  if (threadidx == 0) {
-    //groupnorm get mean and rstd
-    thrust::tie(tmean, s_mean) = welford_op.project(val);
-    s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
-  }
-  __syncthreads();
-  tmean=s_mean;
-  trstd=s_rstd;
-  if (j < tcol) {
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      int jj=((block_cols+j*VEC+i) / spatial_size) % channel_size;
-      py[i]=(static_cast<T_ACC>(px[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
-    }
-    Y[j]=ty;
-    X_CELU[j]=tx;
-  }
-  if(threadIdx.x==0&&rstd!=NULL){
-      mean[blockidx] = tmean;
-      rstd[blockidx] = trstd;
-  }
-}
-
-template <typename scalar_t, int VEC=4>
-__global__ void celu_gn_forward_kernel_4096(scalar_t* input,scalar_t* input_celu,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
-                                            scalar_t* gamma,scalar_t* beta,int cols,int spatial_size,int channel_size,scalar_t eps,scalar_t alpha)
-{
-  int blockidx=blockIdx.x;
-  int threadidx=threadIdx.x;
-  int block_cols=blockidx*cols;
-  using T_ACC = acc_type<scalar_t, true>;
-  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
-  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
-  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
-  __shared__ T_ACC s_mean;
-  __shared__ T_ACC s_rstd;
-  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
-  WelfordOp welford_op;
-  WelfordType val;
-  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
-  VecTpye *X=(VecTpye*)(input+block_cols);
-  VecTpye *X_CELU=(VecTpye*)(input_celu+block_cols);
-  VecTpye *Y=(VecTpye*)(ret+block_cols);
-  int tcol=cols/VEC;
-  T_ACC tmean;
-  T_ACC trstd;
-  VecTpye tx;
-  VecTpye ty;
-  scalar_t* px=(scalar_t*)(&tx);
-  scalar_t* py=(scalar_t*)(&ty);
-  VecTpye tx2;
-  VecTpye ty2;
-  scalar_t* px2=(scalar_t*)(&tx2);
-  scalar_t* py2=(scalar_t*)(&ty2);
-  int j=threadidx;
-  int j2=j+512;
-  tx = X[j];
-  #pragma unroll
-  for(int i=0;i<VEC;i++){
-    px[i]=celu<T_ACC>(static_cast<T_ACC>(px[i]),static_cast<T_ACC>(alpha));
-    val = welford_op.reduce(val, px[i]);
-  }
-  if (j2 < tcol) {
-    tx2 = X[j2];
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      px2[i]=celu<T_ACC>(static_cast<T_ACC>(px2[i]),static_cast<T_ACC>(alpha));
-      val = welford_op.reduce(val, px2[i]);
-    }
-  }
-  val = BlockReduce(val,welford_op,val_shared_ptr);
-  if (threadidx == 0) {
-    //layernorm get mean and rstd
-    thrust::tie(tmean, s_mean) = welford_op.project(val);
-    s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
-  }
-  __syncthreads();
-  tmean=s_mean;
-  trstd=s_rstd;
-  #pragma unroll
-  for(int i=0;i<VEC;i++){
-    int jj=((block_cols+j*VEC+i) / spatial_size) % channel_size;
-    py[i]=(static_cast<T_ACC>(px[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
-  }
-  Y[j]=ty;
-  X_CELU[j]=tx;
-  if (j2 < tcol) {
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      int jj=((block_cols+j2*VEC+i) / spatial_size) % channel_size;
-      py2[i]=(static_cast<T_ACC>(px2[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
-    }
-    Y[j2]=ty2;
-    X_CELU[j2]=tx2;
-    
-  }
-  if(threadIdx.x==0&&rstd!=NULL){
-      mean[blockidx] = tmean;
-      rstd[blockidx] = trstd;
-  }
-}
-
-std::tuple<Tensor,Tensor,Tensor,Tensor>
-celu_gn_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double gn_epsilon,double gn_alpha,bool training)
-{
-    AT_ASSERTM(self.is_cuda(), "x must on dcu");
-    AT_ASSERT(num_channels % num_groups == 0,"num_channels must be divisible by num_groups");
-    const int nelem = self.numel();
-    const int N=self.sizes().front();
-    const int HxW=nelem/(N*num_channels);
-    const int G = num_groups;
-    const int D = num_channels / G;
-    Tensor ret = at::empty_like(self),mean,rstd;
-    Tensor self_celu = at::empty_like(self);
-    if(training){
-      mean = at::empty({N, G},self.options());
-      rstd = at::empty({N, G},self.options());
-    }
-
-    AT_DISPATCH_FLOATING_TYPES_AND2(
-      at::ScalarType::Half,
-      at::ScalarType::BFloat16, 
-      self.scalar_type(),
-      "celu_gn_forward",
-      [&] {
-        using T_ACC = acc_type<scalar_t, true>;
-        scalar_t* self_data = self.data_ptr<scalar_t>();
-        scalar_t* self_celu_data = self_celu.data_ptr<scalar_t>();
-        scalar_t* ret_data=ret.data_ptr<scalar_t>();
-        scalar_t* weight_data=weight.data_ptr<scalar_t>();
-        scalar_t* bias_data=bias.data_ptr<scalar_t>();
-        scalar_t  eps = gn_epsilon;
-        scalar_t  alpha = gn_alpha;
-        scalar_t* mean_data=NULL,*rstd_data=NULL;
-        if(training){
-          mean_data=mean.data_ptr<scalar_t>();
-          rstd_data=rstd.data_ptr<scalar_t>();
-        }
-        int cols=D * HxW;
-        int spatial_size=HxW;
-        int channel_size=num_channels;
-        if (cols % 4 == 0){
-            if(cols<=2048)
-            celu_gn_forward_kernel_2048<scalar_t,4><<<N * G, get_groupnorm_blocksize(cols/4), 0, at::cuda::getCurrentCUDAStream()>>>(
-                                    self_data,self_celu_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,spatial_size,channel_size,eps,alpha);
-            else if(cols<=4096){
-            celu_gn_forward_kernel_4096<scalar_t,4><<<N * G, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                  self_data,self_celu_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,spatial_size,channel_size,eps,alpha);
-            }
-            else{
-            celu_gn_forward_kernel<scalar_t,4><<<N * G, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                  self_data,self_celu_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,spatial_size,channel_size,eps,alpha);
-            }
-            
-        }
-        else{
-            celu_gn_forward_kernel<scalar_t,1><<<N * G, get_groupnorm_blocksize(cols), 0, at::cuda::getCurrentCUDAStream()>>>(
-                                    self_data,self_celu_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,spatial_size,channel_size,eps,alpha);
-        
-        }
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-      });
-     return std::tuple<Tensor,Tensor,Tensor,Tensor>(ret,mean,rstd,self_celu);
-}
-
-template <typename scalar_t>
-__global__ void celu_gn_Backward_1d_kernel_vec_2048(int N,const scalar_t* dY,const scalar_t* X,scalar_t* X_ori,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX,scalar_t alpha)
-{
-  GROUPNORMBACKWARD_1D_VEC_2048
-  VecTpye tx_ori;
-  scalar_t* px_ori=(scalar_t*)(&tx_ori);
-  if (j < tcol) {
-    tx_ori = *(VecTpye*)(X_ori+index);
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      pdx[i]=celu_back<T_ACC>(static_cast<T_ACC>(trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(pgamma[i])+b*static_cast<T_ACC>(px[i])+c),static_cast<T_ACC>(px_ori[i]),static_cast<T_ACC>(alpha));
-    }
-    *(VecTpye*)(dX+index) = tdx;
-  }
-}
-
-template <typename scalar_t>
-__global__ void celu_gn_Backward_1d_kernel_vec_4096(int N,const scalar_t* dY,const scalar_t* X,scalar_t* X_ori,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX,scalar_t alpha)
-{
-  GROUPNORMBACKWARD_1D_VEC_4096
-  VecTpye tx_ori;
-  VecTpye tx2_ori;
-  scalar_t* px_ori=(scalar_t*)(&tx_ori);
-  scalar_t* px2_ori=(scalar_t*)(&tx2_ori);
-  tx_ori = *(VecTpye*)(X_ori+index);
-  #pragma unroll
-  for(int i=0;i<VEC;i++){
-  
-    pdx[i]=celu_back<T_ACC>(static_cast<T_ACC>(trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(pgamma[i])+b*static_cast<T_ACC>(px[i])+c),static_cast<T_ACC>(px_ori[i]),static_cast<T_ACC>(alpha));
-  }
-  *(VecTpye*)(dX+index) = tdx;
-  if (j < tcol-512) {
-    tx2_ori = *(VecTpye*)(X_ori+index_2);
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      pdx[i]=celu_back<T_ACC>(static_cast<T_ACC>(trstd*static_cast<T_ACC>(pdy_2[i])*static_cast<T_ACC>(pgamma_2[i])+b*static_cast<T_ACC>(px_2[i])+c),static_cast<T_ACC>(px2_ori[i]),static_cast<T_ACC>(alpha));
-    }
-    *(VecTpye*)(dX+index_2) = tdx;
-  }
-}
-
-
-template <typename scalar_t,int VEC=4>
-__global__ void celu_gn_Backward_1d_kernel_vec(int N,const scalar_t* dY,const scalar_t* X,scalar_t* X_ori,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX,scalar_t alpha)
-{
-  GROUPNORMBACKWARD_1D_VEC
-  VecTpye tx_ori;
-  scalar_t* px_ori=(scalar_t*)(&tx_ori);
-  for(int off=j;off<tcol;off+=blockDim.x){
-    const int index = i * N + off*VEC;
-    tx = *(VecTpye*)(X+index);
-    tx_ori = *(VecTpye*)(X_ori+index);
-    tdy = *(VecTpye*)(dY+index);
-    tgamma = *(VecTpye*)(gamma+off*VEC);
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      pdx[i]=celu_back<T_ACC>(static_cast<T_ACC>(trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(pgamma[i])+b*static_cast<T_ACC>(px[i])+c),static_cast<T_ACC>(px_ori[i]),static_cast<T_ACC>(alpha));
-    }
-    *(VecTpye*)(dX+index) = tdx;
-  }
-}
-
-template <typename scalar_t>
-__global__ void celu_gn_Backward_kernel_vec_2048(int N,int HxW,int channel_size,const scalar_t* dY,const scalar_t* X,scalar_t* X_ori,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX,scalar_t* ds_data,scalar_t* db_data,scalar_t alpha)
-{
-  GROUPNORMBACKWARD_VEC_2048
-  VecTpye tx_ori;
-  scalar_t* px_ori=(scalar_t*)(&tx_ori);
-  if (j < tcol) {
-    tx = *(VecTpye*)(X+index);
-    tx_ori = *(VecTpye*)(X_ori+index);
-    tdy = *(VecTpye*)(dY+index);
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      int jj=(index / HxW+i) % channel_size;
-      pdx[i]=celu_back<T_ACC>(static_cast<T_ACC>(trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(gamma[jj])+b*static_cast<T_ACC>(px[i])+c),static_cast<T_ACC>(px_ori[i]),static_cast<T_ACC>(alpha));
-    }
-    *(VecTpye*)(dX+index) = tdx;
-  }
-}
-
-
-template <typename scalar_t,int VEC=4>
-__global__ void celu_gn_Backward_kernel_vec(int N,int HxW,int channel_size,const scalar_t* dY,const scalar_t* X,scalar_t* X_ori,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX,scalar_t* ds_data,scalar_t* db_data,scalar_t alpha)
-{
-  GROUPNORMBACKWARD_VEC
-  VecTpye tx_ori;
-  scalar_t* px_ori=(scalar_t*)(&tx_ori);
-  for(int off=j;off<tcol;off+=blockDim.x){
-    const int index = i * N + off*VEC;
-    tx = *(VecTpye*)(X+index);
-    tx_ori = *(VecTpye*)(X_ori+index);
-    tdy = *(VecTpye*)(dY+index);
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      int jj=(index / HxW+i) % channel_size;
-      pdx[i]=celu_back<T_ACC>(static_cast<T_ACC>(trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(gamma[jj])+b*static_cast<T_ACC>(px[i])+c),static_cast<T_ACC>(px_ori[i]),static_cast<T_ACC>(alpha));
-    }
-    *(VecTpye*)(dX+index) = tdx;
-  }
-}
-
-
 std::tuple<Tensor,Tensor,Tensor>
-celu_gn_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const Tensor& rstd,const Tensor& gamma,const Tensor& X_CELU,double gn_alpha)
+celu_gn_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,double alpha,bool training)
 {
-  const int nelem = grad.numel();
-  const int N=grad.sizes().front();
-  const int num_channels=gamma.numel();
-  const int HxW=nelem/(N*num_channels);
-  const int G = mean.numel()/N;
-  const int D = num_channels / G;
-  auto pgrad = grad.expect_contiguous();
-  Tensor dX = at::empty_like(*pgrad);
-  Tensor dgamma = at::empty_like(gamma);
-  Tensor dbeta = at::empty_like(gamma);
-  auto cuda_stream=at::cuda::getCurrentCUDAStream();
-   AT_DISPATCH_FLOATING_TYPES_AND2(
+  Tensor ret = at::empty_like(self),mean,rstd;
+  AT_DISPATCH_FLOATING_TYPES_AND2(
+    at::ScalarType::Half,
+    at::ScalarType::BFloat16, 
+    self.scalar_type(),
+    "celu_gn_forward",
+    [&] {
+      CELU<scalar_t> celuop;
+      celuop.alpha=alpha;
+      act_groupnorm_forward_impl<scalar_t,CELU<scalar_t>>(self,weight,bias,num_groups,num_channels,eps,training,celuop,ret,mean,rstd);
+    });
+    return std::tuple<Tensor,Tensor,Tensor>(ret,mean,rstd);
+}
+ 
+std::tuple<Tensor,Tensor,Tensor>
+celu_gn_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const Tensor& rstd,const Tensor& gamma,double alpha)
+{
+  Tensor dX = at::empty_like(X),dgamma = at::empty_like(gamma),dbeta = at::empty_like(gamma);
+  AT_DISPATCH_FLOATING_TYPES_AND2(
     at::ScalarType::Half,
     at::ScalarType::BFloat16,
     grad.scalar_type(),
     "celu_gn_backward",
     [&] {
-      using T_ACC = acc_type<scalar_t, true>;
-      scalar_t* dY_data = pgrad->data_ptr<scalar_t>();
-      scalar_t* X_data = X.data_ptr<scalar_t>();
-      scalar_t* X_CELU_data = X_CELU.data_ptr<scalar_t>();
-      scalar_t* mean_data = mean.data_ptr<scalar_t>();
-      scalar_t* rstd_data = rstd.data_ptr<scalar_t>();
-      scalar_t* gamma_data = gamma.data_ptr<scalar_t>();
-      scalar_t* dgamma_data = dgamma.data_ptr<scalar_t>();
-      scalar_t* dbeta_data = dbeta.data_ptr<scalar_t>();
-      scalar_t* dX_data = dX.data_ptr<scalar_t>();
-      scalar_t  alpha = gn_alpha;
-      if (HxW == 1) {
-          int cols=D * HxW;
-          GN_GammaBeta_Backward_1d(nelem,num_channels,D,G,dY_data,X_CELU_data,mean_data,rstd_data,dgamma_data,dbeta_data);
-
-          if (cols % 4 == 0){
-              if(cols<=2048)
-                celu_gn_Backward_1d_kernel_vec_2048<scalar_t><<<N * G, get_groupnorm_blocksize(cols/4), 0, cuda_stream>>>(cols, dY_data,X_CELU_data,X_data,gamma_data,mean_data,rstd_data,dX_data,alpha);
-        
-              else if(cols<=4096){
-                celu_gn_Backward_1d_kernel_vec_4096<scalar_t><<<N * G, 512, 0, cuda_stream>>>(cols, dY_data, X_CELU_data,X_data,gamma_data,mean_data,rstd_data,dX_data,alpha);
-              }
-              else{
-                celu_gn_Backward_1d_kernel_vec<scalar_t><<<N * G, 512, 0, cuda_stream>>>(cols, dY_data, X_CELU_data,X_data,gamma_data,mean_data,rstd_data,dX_data,alpha);
-              }
-              
-          }
-          else{
-              celu_gn_Backward_1d_kernel_vec<scalar_t,1><<<N * G, get_groupnorm_blocksize(cols), 0, cuda_stream>>>(cols, dY_data,X_CELU_data, X_data,gamma_data,mean_data,rstd_data,dX_data,alpha);
-          }
-          
-
-        }
-        else{
-
-            Tensor ds = at::empty({N, num_channels}, grad.options());
-            Tensor db = at::empty({N, num_channels}, grad.options());
-            scalar_t* ds_data = ds.data_ptr<scalar_t>();
-            scalar_t* db_data = db.data_ptr<scalar_t>();
-             if(HxW%4==0)
-            { 
-                ComputeInternalGradientsCUDAKernel<scalar_t,4><<<N * num_channels, get_groupnorm_blocksize(HxW/4), 0, cuda_stream>>>(
-                HxW, dY_data, X_CELU_data, ds_data, db_data);
-            }
-            else
-            {
-                ComputeInternalGradientsCUDAKernel<scalar_t,1><<<N * num_channels, get_groupnorm_blocksize(HxW), 0, cuda_stream>>>(
-                HxW, dY_data, X_CELU_data, ds_data, db_data);
-            }
-            GN_GammaBeta_Backward(nelem,N,num_channels,D,G,dY_data,X_CELU_data,mean_data,rstd_data,dgamma_data,dbeta_data,ds_data,db_data);
-            int cols=D* HxW;  
-            if (cols % 4 == 0){
-                if(cols<=2048)
-                  celu_gn_Backward_kernel_vec_2048<scalar_t><<<N * G, get_groupnorm_blocksize(cols/4), 0, cuda_stream>>>(cols,HxW,num_channels, dY_data, X_CELU_data,X_data,gamma_data,mean_data,rstd_data,dX_data,ds_data,db_data,alpha);
-
-                else{
-                  celu_gn_Backward_kernel_vec<scalar_t><<<N * G, 512, 0, cuda_stream>>>(cols,HxW,num_channels, dY_data, X_CELU_data,X_data,gamma_data,mean_data,rstd_data,dX_data,ds_data,db_data,alpha);
-                }
-            }
-            else{
-                celu_gn_Backward_kernel_vec<scalar_t,1><<<N * G, get_groupnorm_blocksize(cols), 0, cuda_stream>>>(cols,HxW,num_channels, dY_data, X_CELU_data,X_data,gamma_data,mean_data,rstd_data,dX_data,ds_data,db_data,alpha);
-                
-            }
-        }
-      
-     
-      C10_CUDA_KERNEL_LAUNCH_CHECK();
+      CELU<scalar_t> celuop;
+      celuop.alpha=alpha;
+      act_groupnorm_backward_impl<scalar_t,CELU<scalar_t>>(grad,X,mean,rstd,gamma,celuop,dX,dgamma,dbeta);
   });
-
   return std::tuple<Tensor,Tensor,Tensor>(dX,dgamma,dbeta);
 }
 
@@ -493,7 +50,7 @@ class fuseCeluGnFunction : public torch::autograd::Function<fuseCeluGnFunction> 
       auto pweight=weight.expect_contiguous();
       auto pbias=bias.expect_contiguous();
       auto ret = celu_gn_forward(*px, *pweight,*pbias,num_groups,num_channels,eps,alpha,training);
-      ctx->save_for_backward({*px,std::get<1>(ret),std::get<2>(ret),*pweight,std::get<3>(ret)});
+      ctx->save_for_backward({*px,std::get<1>(ret),std::get<2>(ret),*pweight});
       ctx->saved_data["alpha"] = alpha;
       return {std::get<0>(ret)};
   }
@@ -505,9 +62,8 @@ class fuseCeluGnFunction : public torch::autograd::Function<fuseCeluGnFunction> 
       auto mean = saved[1];
       auto rstd = saved[2];
       auto gamma = saved[3];
-      auto X_CELU = saved[4];
       double alpha = ctx->saved_data["alpha"].toDouble();
-      auto ret = celu_gn_backward(gradOutput[0],X,mean,rstd,gamma,X_CELU,alpha);
+      auto ret = celu_gn_backward(gradOutput[0],X,mean,rstd,gamma,alpha);
       return {std::get<0>(ret),std::get<1>(ret),std::get<2>(ret),torch::autograd::Variable(),torch::autograd::Variable(),torch::autograd::Variable(),torch::autograd::Variable(),torch::autograd::Variable()};
   }
 };

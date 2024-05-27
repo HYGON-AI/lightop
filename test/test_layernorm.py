@@ -72,6 +72,9 @@ def test_speed(batchsize, seqs, cols,repeat_num,use_half=False):
 
     x1,x2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
     f1,f2=get_model(cols=cols,use_half=use_half)
+    weight=torch.rand(cols).cuda()
+    f1.LayerNorm.weight.data=weight.clone().detach()
+    f2.weight.data=weight.clone().detach()
     y1 = f1(x1)
     y1.backward(grad)
     torch.cuda.synchronize()

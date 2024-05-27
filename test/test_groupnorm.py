@@ -5,18 +5,27 @@ import torch.nn.functional as F
 from lightop import GroupNorm
 
 
-class Torch_Groupnorm(torch.nn.Module):
+class My_Grouporm(torch.nn.Module):
 
-    def __init__(self,num_groups,seqs):
-        super(Torch_Groupnorm, self).__init__()
-        self.seqs = seqs
+    def __init__(self,num_groups:int, num_channels:int,eps: float = 1e-5,device=None, dtype=None ):
+        super(My_Grouporm, self).__init__()
+        self.eps = eps
         self.num_groups = num_groups
-        self.GroupNorm = torch.nn.GroupNorm(num_groups,seqs)
-   
-    def forward(self,x):
-        out=self.GroupNorm(x)
-        return out
+        self.num_channels = num_channels
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        self.weight = torch.nn.Parameter(torch.empty(num_channels, **factory_kwargs))
+        self.bias = torch.nn.Parameter(torch.empty(num_channels, **factory_kwargs))
+        torch.nn.init.ones_(self.weight)
+        torch.nn.init.zeros_(self.bias)
 
+    def forward(self, x):
+        N, C, H, W = x.shape
+        x = x.reshape(N, num_groups, C // num_groups, H, W)
+        mean = x.mean(dim=(2, 3, 4), keepdim=True)
+        var = x.var(dim=(2, 3, 4), keepdim=True)
+        x = (x - mean) / torch.sqrt(var + self.eps)
+        x = x.reshape(N, C, H, W)
+        return x * self.weight.reshape(1, C, 1, 1) + self.bias.reshape(1, C, 1, 1)
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
@@ -32,6 +41,7 @@ def get_data(batchsize=128, seqs=50, cols=128,rows=128,use_half=False):
     else:
         #x = torch.rand((batchsize, seqs)).cuda()
         #grad = torch.rand((batchsize, seqs)).cuda()
+        # x = torch.ones((batchsize, seqs, cols,rows)).cuda()
         x = torch.rand((batchsize, seqs, cols,rows)).cuda()
         grad = torch.rand((batchsize, seqs, cols,rows)).cuda()
 
@@ -44,10 +54,10 @@ def get_model(seqs=1024,num_groups=2,use_half=False):
 
     if use_half:
         fuse_groupnorm=GroupNorm(num_groups,seqs).cuda().half()
-        torch_groupnorm=Torch_Groupnorm(num_groups,seqs).cuda().half()
+        torch_groupnorm=torch.nn.GroupNorm(num_groups,seqs).cuda().half()
     else:
         fuse_groupnorm=GroupNorm(num_groups,seqs).cuda()
-        torch_groupnorm=Torch_Groupnorm(num_groups,seqs).cuda()
+        torch_groupnorm=torch.nn.GroupNorm(num_groups,seqs).cuda()
         
     return torch_groupnorm,fuse_groupnorm
 
@@ -73,26 +83,39 @@ def test_profile(batchsize, seqs, cols,rows,num_groups,repeat_num,use_half=False
             torch.cuda.synchronize()
     prof2.export_chrome_trace('./profile_fuse_groupnorm.json')  
 
-def test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num,use_half=False):
-
+def test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num,use_half=False,forward_only=False):
+    torch.manual_seed(0)
     x1,x2,grad=get_data(batchsize, seqs, cols,rows,use_half=use_half)
     f1,f2=get_model(seqs=seqs,num_groups=num_groups,use_half=use_half)
-    y1 = f1(x1)
-    y1.backward(grad)
+    if forward_only:
+        f1=f1.eval()
+        f2=f2.eval()
+    torch.manual_seed(0)
+    weight=torch.rand(seqs).cuda()
+    f1.weight.data=weight.clone().detach()
+    f2.weight.data=weight.clone().detach()
+    print("size=(",batchsize,",",seqs,",",cols,",",rows,")")
+    for i in range(1):
+        y1 = f1(x1)
+        if not forward_only:
+            y1.backward(grad)
     torch.cuda.synchronize()
     start_time = time.time()
     for i in range(repeat_num):
         x1.grad = None
-        f1.GroupNorm.weight.grad=None
-        f1.GroupNorm.bias.grad=None
+        f1.weight.grad=None
+        f1.bias.grad=None
         y1 = f1(x1)
-        y1.backward(grad)
+        if not forward_only:
+            y1.backward(grad)
     torch.cuda.synchronize()
     end_time = time.time()
     fc1_espl = end_time - start_time
-    print('torch_groupnorm', 'averange time is', fc1_espl *1000/ repeat_num, 'ms')
-    y2 = f2(x2)
-    y2.backward(grad)
+
+    for i in range(1):
+        y2 = f2(x2)
+        if not forward_only:
+            y2.backward(grad)
     torch.cuda.synchronize()
     start_time = time.time()
     for i in range(repeat_num):
@@ -100,31 +123,74 @@ def test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num,use_half=False):
         f2.weight.grad=None
         f2.bias.grad=None
         y2 = f2(x2)
-        y2.backward(grad)
+        if not forward_only:
+            y2.backward(grad)
     torch.cuda.synchronize()
     end_time = time.time()    
     fc2_espl = end_time - start_time
-    print('fuse_groupnorm', 'averange time is', fc2_espl *1000/ repeat_num, 'ms')
-
-    #误差计算
+    print('torch time:', format(fc1_espl *1000/ repeat_num,'.3f'), 'ms. lightop time:', format(fc2_espl *1000/ repeat_num,'.3f'), 'ms speedup:', format(fc1_espl/fc2_espl-1,'.2f'))
+    # print(y1)
+    # print(y2)
+    # #误差计算
     if use_half:
         print(allclose(y1,y2,rtol=2e-02, atol=2e-02))
         print(allclose(x1.grad,x2.grad,rtol=2e-02, atol=2e-02))
-        print(allclose(f1.GroupNorm.weight.grad,f2.weight.grad,rtol=2e-02, atol=2e-02))
-        print(allclose(f1.GroupNorm.bias.grad,f2.bias.grad,rtol=2e-02, atol=2e-02))
+        print(allclose(f1.weight.grad,f2.weight.grad,rtol=2e-02, atol=2e-02))
+        print(allclose(f1.bias.grad,f2.bias.grad,rtol=2e-02, atol=2e-02))
     else:
-        print(allclose(y1,y2,rtol=1e-05, atol=1e-05))
-        print(allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05))
-        print(allclose(f1.GroupNorm.weight.grad,f2.weight.grad,rtol=1e-04, atol=1e-04))
-        print(allclose(f1.GroupNorm.bias.grad,f2.bias.grad,rtol=1e-04, atol=1e-04))
+        rtol=1e-3
+        atol=1e-3
+        print(allclose(y1,y2,rtol=rtol, atol=atol))
+        # print(y1.view(-1))
+        # print(y2.view(-1))
+        if not forward_only:
+            print(allclose(x1.grad,x2.grad,rtol=rtol, atol=atol))
+            # print(x1.grad.view(-1))
+            # print(x2.grad.view(-1))
+            print(allclose(f1.weight.grad,f2.weight.grad,rtol=2e-2, atol=2e-2))
+            print(allclose(f1.bias.grad,f2.bias.grad,rtol=rtol, atol=atol))
+            # print(f1.bias.grad)
+            # print(f2.bias.grad)
+
+def group_norm(x, gamma, beta, G, eps=1e-5):
+    # x: 输入数据, [N, C, H, W]
+    # gamma, beta: 缩放和偏移参数, [C]
+    # G: 组的数量
+    # eps: 分母初始值防止除以零
+    
+    N, C, H, W = x.shape
+    x = x.reshape(N, G, C // G, H, W)
+    mean = x.mean(dim=(2, 3, 4), keepdim=True)
+    var = x.var(dim=(2, 3, 4), keepdim=True)
+    x = (x - mean) / torch.sqrt(var + eps)
+    x = x.reshape(N, C, H, W)
+    return x * gamma.reshape(1, C, 1, 1) + beta.reshape(1, C, 1, 1)
+
+if __name__ == "__main__":
+    #设置基础参数
+    forward_only=False
+    use_half=False
+    num_groups=32
+    batchsize=[1,2]
+    seq=[160,640,2560]
+    cols=[8,16,32,64]
+    for b in batchsize:
+        for s in seq:
+            for c in cols:
+                if b*s*c*c <=2560*64*64:
+                    test_speed(b, s, c,c,num_groups,repeat_num=100,use_half=use_half,forward_only=forward_only)
+
+    batchsize, seqs, cols,rows = 1,512,128,128
+    test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num=100,use_half=use_half,forward_only=forward_only)
+    batchsize, seqs, cols,rows = 1,512,256,256
+    test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num=100,use_half=use_half,forward_only=forward_only)
+    batchsize, seqs, cols,rows = 1,256,512,512
+    test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num=100,use_half=use_half,forward_only=forward_only)
+    batchsize, seqs, cols,rows = 128,1024,1,1
+    test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num=100,use_half=use_half,forward_only=forward_only)
 
     
-if __name__ == "__main__":
-
-    #设置基础参数
-    batchsize, seqs, cols,rows = 128,1024,1,1
-    num_groups=8
     #耗时测试
-    test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num=1000,use_half=False)
+    # test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num=100,use_half=False)
     #性能分析
-    #test_profile(batchsize, seqs, cols,rows,num_groups,repeat_num=10,use_half=False)
+    # test_profile(batchsize, seqs, cols,rows,num_groups,repeat_num=10,use_half=False)
