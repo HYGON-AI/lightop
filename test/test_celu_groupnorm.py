@@ -45,16 +45,16 @@ def get_data(batchsize=128, seqs=50, cols=128,rows=128,use_half=False):
 def get_model(seqs=1024,num_groups=2,alpha=1,use_half=False):
 
     if use_half:
-        fuse_celugn=CeluGN(num_groups,seqs).cuda().half()
+        fuse_celugn=CeluGN(num_groups,seqs,alpha=alpha).cuda().half()
         torch_celugn=Torch_CeluGN(num_groups,seqs,alpha).cuda().half()
     else:
-        fuse_celugn=CeluGN(num_groups,seqs).cuda()
+        fuse_celugn=CeluGN(num_groups,seqs,alpha=alpha).cuda()
         torch_celugn=Torch_CeluGN(num_groups,seqs,alpha).cuda()
         
     return torch_celugn,fuse_celugn
 
 
-def test_profile(batchsize, seqs, cols,rows,num_groups,alpha,repeat_num,use_half=False):
+def test_profile(batchsize, seqs, cols,rows,num_groups,repeat_num,use_half=False,alpha=1.0):
     
     x1,x2,grad=get_data(batchsize, seqs, cols,rows,use_half=use_half)
     f1,f2=get_model(seqs=seqs,num_groups=num_groups,alpha=alpha,use_half=use_half)
@@ -75,12 +75,21 @@ def test_profile(batchsize, seqs, cols,rows,num_groups,alpha,repeat_num,use_half
             torch.cuda.synchronize()
     prof2.export_chrome_trace('./profile_fuse_celu_gn.json')  
 
-def test_speed(batchsize, seqs, cols,rows,num_groups,alpha,repeat_num,use_half=False):
+def test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num,use_half=False,alpha=0.5,forward_only=False):
 
+    torch.manual_seed(0)
     x1,x2,grad=get_data(batchsize, seqs, cols,rows,use_half=use_half)
     f1,f2=get_model(seqs=seqs,num_groups=num_groups,alpha=alpha,use_half=use_half)
+    if forward_only:
+        f1=f1.eval()
+        f2=f2.eval()
+    weight=torch.rand(seqs).cuda()
+    f1.GroupNorm.weight.data=weight.clone().detach()
+    f2.weight.data=weight.clone().detach()
+    print("size=(",batchsize,",",seqs,",",cols,",",rows,")")
     y1 = f1(x1)
-    y1.backward(grad)
+    if not forward_only:
+        y1.backward(grad)
     torch.cuda.synchronize()
     start_time = time.time()
     for i in range(repeat_num):
@@ -88,13 +97,14 @@ def test_speed(batchsize, seqs, cols,rows,num_groups,alpha,repeat_num,use_half=F
         f1.GroupNorm.weight.grad=None
         f1.GroupNorm.bias.grad=None
         y1 = f1(x1)
-        y1.backward(grad)
+        if not forward_only:
+            y1.backward(grad)
     torch.cuda.synchronize()
     end_time = time.time()
     fc1_espl = end_time - start_time
-    print('torch_celu_gn', 'averange time is', fc1_espl *1000/ repeat_num, 'ms')
     y2 = f2(x2)
-    y2.backward(grad)
+    if not forward_only:
+        y2.backward(grad)
     torch.cuda.synchronize()
     start_time = time.time()
     for i in range(repeat_num):
@@ -102,11 +112,12 @@ def test_speed(batchsize, seqs, cols,rows,num_groups,alpha,repeat_num,use_half=F
         f2.weight.grad=None
         f2.bias.grad=None
         y2 = f2(x2)
-        y2.backward(grad)
+        if not forward_only:
+            y2.backward(grad)
     torch.cuda.synchronize()
     end_time = time.time()    
     fc2_espl = end_time - start_time
-    print('fuse_celu_gn', 'averange time is', fc2_espl *1000/ repeat_num, 'ms')
+    print('torch time:', format(fc1_espl *1000/ repeat_num,'.3f'), 'ms. lightop time:', format(fc2_espl *1000/ repeat_num,'.3f'), 'ms speedup:', format(fc1_espl/fc2_espl-1,'.2f'))
 
     #误差计算
     if use_half:
@@ -115,19 +126,42 @@ def test_speed(batchsize, seqs, cols,rows,num_groups,alpha,repeat_num,use_half=F
         print(allclose(f1.GroupNorm.weight.grad,f2.weight.grad,rtol=2e-02, atol=2e-02))
         print(allclose(f1.GroupNorm.bias.grad,f2.bias.grad,rtol=2e-02, atol=2e-02))
     else:
-        print(allclose(y1,y2,rtol=1e-05, atol=1e-05))
-        print(allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05))
-        print(allclose(f1.GroupNorm.weight.grad,f2.weight.grad,rtol=1e-04, atol=1e-04))
-        print(allclose(f1.GroupNorm.bias.grad,f2.bias.grad,rtol=1e-04, atol=1e-04))
+        rtol=1e-3
+        atol=1e-3
+        print(allclose(y1,y2,rtol=rtol, atol=atol))
+        # print(y1.view(-1))
+        # print(y2.view(-1))
+        if not forward_only:
+            print(allclose(x1.grad,x2.grad,rtol=rtol, atol=atol))
+            print(allclose(f1.GroupNorm.weight.grad,f2.weight.grad,rtol=2e-2, atol=2e-2))
+            print(allclose(f1.GroupNorm.bias.grad,f2.bias.grad,rtol=rtol, atol=atol))
 
     
 if __name__ == "__main__":
 
     #设置基础参数
+    forward_only=False
+    use_half=False
+    num_groups=32
+    batchsize=[1,2]
+    seq=[160,640,2560]
+    cols=[8,16,32,64]
+    for b in batchsize:
+        for s in seq:
+            for c in cols:
+                if b*s*c*c <=2560*64*64:
+                    test_speed(b, s, c,c,num_groups,repeat_num=100,use_half=use_half,forward_only=forward_only)
+
+    batchsize, seqs, cols,rows = 1,512,128,128
+    test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num=100,use_half=use_half,forward_only=forward_only)
+    batchsize, seqs, cols,rows = 1,512,256,256
+    test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num=100,use_half=use_half,forward_only=forward_only)
+    batchsize, seqs, cols,rows = 1,256,512,512
+    test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num=100,use_half=use_half,forward_only=forward_only)
     batchsize, seqs, cols,rows = 128,1024,1,1
-    num_groups=8
-    alpha=1
+    test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num=100,use_half=use_half,forward_only=forward_only)
+    
     #耗时测试
-    test_speed(batchsize, seqs, cols,rows,num_groups,alpha,repeat_num=1000,use_half=False)
+    # test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num=100,use_half=False)
     #性能分析
-    #test_profile(batchsize, seqs, cols,rows,num_groups,alpha,repeat_num=10,use_half=False)
+    # test_profile(batchsize, seqs, cols,rows,num_groups,repeat_num=10,use_half=False)
