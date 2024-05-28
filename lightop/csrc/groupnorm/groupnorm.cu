@@ -1,4 +1,4 @@
-#include "groupnorm.h"
+#include "act_groupnorm.h"
 int get_groupnorm_blocksize(int cols)
 {
   int blocksize;
@@ -11,12 +11,6 @@ int get_groupnorm_blocksize(int cols)
 
 namespace at{
 namespace native{
-
-namespace {
-  constexpr int VEC = 4;
-  constexpr int kCUDANumThreads = 256;
-}
-
 
 std::tuple<Tensor,Tensor,Tensor>
 groupnorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,bool training)
@@ -84,7 +78,6 @@ Tensor fuse_groupnorm_forward_autograd(const Tensor& x,const Tensor& weight,cons
    auto result = fuseGroupNormFunction::apply(x, weight,bias,num_groups,num_channels,eps,training);
    return result[0];
   }
-  
 }
 }
 

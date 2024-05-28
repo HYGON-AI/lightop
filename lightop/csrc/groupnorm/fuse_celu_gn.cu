@@ -1,4 +1,4 @@
-#include "groupnorm.h"
+#include "act_groupnorm.h"
 
 namespace at{
 namespace native{
