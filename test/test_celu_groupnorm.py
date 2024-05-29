@@ -140,7 +140,7 @@ def test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num,use_half=False,a
 if __name__ == "__main__":
 
     #设置基础参数
-    forward_only=False
+    forward_only=True
     use_half=False
     num_groups=32
     batchsize=[1,2]

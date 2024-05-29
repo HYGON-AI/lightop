@@ -38,8 +38,8 @@ groupnorm_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const 
     grad.scalar_type(),
     "groupnorm_backward",
     [&] {
-      PassThrough<scalar_t> passop;
-      return act_groupnorm_backward_impl<scalar_t,PassThrough<scalar_t>>(grad,X,mean,rstd,gamma,passop,dX,dgamma,dbeta);
+      PassThrough<scalar_t> passop; 
+      act_groupnorm_backward_impl<scalar_t,PassThrough<scalar_t>>(grad,X,mean,rstd,gamma,passop,dX,dgamma,dbeta);
   });
   return std::tuple<Tensor,Tensor,Tensor>(dX,dgamma,dbeta);
 }

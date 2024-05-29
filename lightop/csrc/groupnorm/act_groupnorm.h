@@ -4,98 +4,6 @@ using namespace std;
 
 int get_groupnorm_blocksize(int cols);
 
-#define GROUPNORMBACKWARD_1D_VEC_FAST  \
-  using T_ACC = acc_type<scalar_t, true>;\
-  __shared__ T_ACC b;\
-  __shared__ T_ACC c;\
-  const int bid=blockIdx.x;\
-  const int j = threadIdx.x;\
-  int group=channel_size/N;\
-  const int index = bid * N + j*VEC;\
-  using VecTpye=memory::aligned_vector<scalar_t, VEC>;\
-  T_ACC sum1 = 0;\
-  T_ACC sum2 = 0;\
-  int tcol=N/VEC;\
-  VecTpye tx_ori;\
-  VecTpye tdy;\
-  VecTpye tdx;\
-  VecTpye tgamma;\
-  scalar_t px[VEC];\
-  scalar_t* px_ori=(scalar_t*)(&tx_ori);\
-  scalar_t* pdy=(scalar_t*)(&tdy);\
-  scalar_t* pdx=(scalar_t*)(&tdx);\
-  scalar_t* pgamma=(scalar_t*)(&tgamma);\
-  int gamma_index=index%channel_size;\
-  if(j<tcol){\
-    tx_ori=*(VecTpye*)(X+index);\
-    tdy=*(VecTpye*)(dY+index);\
-    tgamma=*(VecTpye*)(gamma+gamma_index);\
-    for(int i=0;i<VEC;i++){\
-      px[i]=op.forward(px_ori[i]);\
-      sum1 += static_cast<T_ACC>(pdy[i]) * static_cast<T_ACC>(px[i])* pgamma[i];\
-      sum2 += static_cast<T_ACC>(pdy[i]) * pgamma[i];\
-    }\
-  }\
-  if(blockDim.x>64){\
-    __shared__ T_ACC ds_shared[8];\
-    __shared__ T_ACC db_shared[8];\
-    sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);\
-    sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);\
-  }\
-  else{\
-    sum1 = WarpReduceSum<T_ACC>(sum1);\
-    sum2 = WarpReduceSum<T_ACC>(sum2);\
-  }\
-  const T_ACC s = T_ACC(1) / (static_cast<T_ACC>(N));\
-  T_ACC trstd = static_cast<T_ACC>(rstd[bid]);\
-  if (threadIdx.x == 0) {\
-    T_ACC tmean = static_cast<T_ACC>(mean[bid]);\
-    const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;\
-    b = a;\
-    c = -a * tmean - sum2 * trstd * s;\
-  }\
-  __syncthreads();
-
-
-#define GROUPNORMBACKWARD_VEC  \
-  using T_ACC = acc_type<scalar_t, true>;\
-  __shared__ T_ACC ds_shared[8];\
-  __shared__ T_ACC db_shared[8];\
-  __shared__ T_ACC b;\
-  __shared__ T_ACC c;\
-  const int bid=blockIdx.x;\
-  const int j = threadIdx.x;\
-  const int D = N/HxW;\
-  int group=channel_size/D;\
-  const int index = blockIdx.x * N + j*VEC;\
-  using VecTpye=memory::aligned_vector<scalar_t, VEC>;\
-  T_ACC sum1 = 0;\
-  T_ACC sum2 = 0;\
-  int tcol=N/VEC;\
-  VecTpye tx;\
-  VecTpye tdy;\
-  VecTpye tdx;\
-  scalar_t* px=(scalar_t*)(&tx);\
-  scalar_t* pdy=(scalar_t*)(&tdy);\
-  scalar_t* pdx=(scalar_t*)(&tdx);\
-  for (int ii = threadIdx.x; ii < D; ii += blockDim.x) {\
-    const int index = bid * D + ii;\
-    const int jj = (bid%group) * D + ii;\
-    const T_ACC gamma_v =gamma[jj];\
-    sum1 += ds_data[index] * gamma_v;\
-    sum2 += db_data[index] * gamma_v;\
-  }\
-  sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);\
-  sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);\
-  const T_ACC s = T_ACC(1) / (static_cast<T_ACC>(N));\
-  T_ACC trstd = static_cast<T_ACC>(rstd[bid]);\
-  if (threadIdx.x == 0) {\
-    T_ACC tmean = static_cast<T_ACC>(mean[bid]);\
-    const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;\
-    b = a;\
-    c = -a * tmean - sum2 * trstd * s;\
-  }\
-  __syncthreads();
 
 namespace at{
 namespace native{
@@ -169,7 +77,7 @@ struct WelfordOps {
 };
 
 template <typename scalar_t,class act_op, int VEC=4>
-__global__ void act_groupnorm_forward_mean_rstd(scalar_t* input,scalar_t* mean,scalar_t* rstd,int cols,scalar_t eps,act_op op)
+__global__ void act_groupnorm_forward_mean_rstd(scalar_t* input,scalar_t* mean,scalar_t* rstd,int cols,acc_type<scalar_t, true> eps,act_op op)
 {
   int blockidx=blockIdx.x;
   int threadidx=threadIdx.x;
@@ -207,7 +115,7 @@ __global__ void act_groupnorm_forward_mean_rstd(scalar_t* input,scalar_t* mean,s
 //VEC must be 4
 template <typename scalar_t,class act_op, int VEC=4>
 __global__ void act_groupnorm_forward_kernel_large_col_mean_rstd(scalar_t* input,scalar_t* mean,scalar_t* rstd,
-                                            int cols,int block_per_row,scalar_t eps,int *semaphores,void* wel_data_,act_op op)
+                                            int cols,int block_per_row,acc_type<scalar_t, true> eps,int *semaphores,void* wel_data_,act_op op)
 {
 
   int blockidx=blockIdx.x;
@@ -285,7 +193,7 @@ __global__ void act_groupnorm_forward_kernel_large_col_mean_rstd(scalar_t* input
 
 template <typename scalar_t,class act_op, int VEC=4>
 __global__ void act_groupnorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
-                                            scalar_t* gamma,scalar_t* beta,int cols,int spatial_size,int channel_size,scalar_t eps,act_op op)
+                                            scalar_t* gamma,scalar_t* beta,int cols,int spatial_size,int channel_size,acc_type<scalar_t, true> eps,act_op op)
 {
   int blockidx=blockIdx.x;
   int threadidx=threadIdx.x;
@@ -437,7 +345,7 @@ __global__ void GN_GammaBetaBackward(int M,int N,int depth,int group,const scala
 }
 
 template <typename scalar_t,class act_op,int VEC=4>
-__global__ void act_ComputeInternalGradientsCUDAKernel(int HxW,const scalar_t* dY,const scalar_t* X,acc_type<scalar_t, true>* ds,acc_type<scalar_t, true>* db,act_op op) {
+__global__ void act_GN_ComputeInternalGradientsCUDAKernel(int HxW,const scalar_t* dY,const scalar_t* X,acc_type<scalar_t, true>* ds,acc_type<scalar_t, true>* db,act_op op) {
   using T_ACC = acc_type<scalar_t, true>;
   using VecTpye=memory::aligned_vector<scalar_t, VEC>;
   int blockidx=blockIdx.x;
@@ -523,7 +431,56 @@ __global__ void ComputeBackwardFusedParamsCUDAKernel(
 template <typename scalar_t,class act_op,int VEC=4>
 __global__ void act_GroupNormBackward_1d_kernel_vec_fast(int N,int channel_size,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX,act_op op)
 {
-  GROUPNORMBACKWARD_1D_VEC_FAST
+  using T_ACC = acc_type<scalar_t, true>;
+  __shared__ T_ACC b;
+  __shared__ T_ACC c;
+  const int bid=blockIdx.x;
+  const int j = threadIdx.x;
+  int group=channel_size/N;
+  const int index = bid * N + j*VEC;
+  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  T_ACC sum1 = 0;
+  T_ACC sum2 = 0;
+  int tcol=N/VEC;
+  VecTpye tx_ori;
+  VecTpye tdy;
+  VecTpye tdx;
+  VecTpye tgamma;
+  scalar_t px[VEC];
+  scalar_t* px_ori=(scalar_t*)(&tx_ori);
+  scalar_t* pdy=(scalar_t*)(&tdy);
+  scalar_t* pdx=(scalar_t*)(&tdx);
+  scalar_t* pgamma=(scalar_t*)(&tgamma);
+  int gamma_index=index%channel_size;
+  if(j<tcol){
+    tx_ori=*(VecTpye*)(X+index);
+    tdy=*(VecTpye*)(dY+index);
+    tgamma=*(VecTpye*)(gamma+gamma_index);
+    for(int i=0;i<VEC;i++){
+      px[i]=op.forward(px_ori[i]);
+      sum1 += static_cast<T_ACC>(pdy[i]) * static_cast<T_ACC>(px[i])* pgamma[i];
+      sum2 += static_cast<T_ACC>(pdy[i]) * pgamma[i];
+    }
+  }
+  if(blockDim.x>64){
+    __shared__ T_ACC ds_shared[8];
+    __shared__ T_ACC db_shared[8];
+    sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);
+    sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);
+  }
+  else{
+    sum1 = WarpReduceSum<T_ACC>(sum1);
+    sum2 = WarpReduceSum<T_ACC>(sum2);
+  }
+  const T_ACC s = T_ACC(1) / (static_cast<T_ACC>(N));
+  T_ACC trstd = static_cast<T_ACC>(rstd[bid]);
+  if (threadIdx.x == 0) {
+    T_ACC tmean = static_cast<T_ACC>(mean[bid]);
+    const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;
+    b = a;
+    c = -a * tmean - sum2 * trstd * s;
+  }
+  __syncthreads();
   if(j<tcol){
     for(int i=0;i<VEC;i++){
        pdx[i]=op.backward(trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(pgamma[i])+b*static_cast<T_ACC>(px[i])+c,px_ori[i]);
@@ -537,20 +494,58 @@ template <typename scalar_t,class act_op,int VEC=4>
 __global__ void act_GroupNormBackward_kernel_small_cols(int N,int HxW,int channel_size,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
                                            const scalar_t* rstd, scalar_t* dX,acc_type<scalar_t, true>* ds_data,acc_type<scalar_t, true>* db_data,act_op op)
 {
-  GROUPNORMBACKWARD_VEC
+  using T_ACC = acc_type<scalar_t, true>;
+  __shared__ T_ACC ds_shared[8];
+  __shared__ T_ACC db_shared[8];
+  __shared__ T_ACC b;
+  __shared__ T_ACC c;
+  const int bid=blockIdx.x;
+  const int j = threadIdx.x;
+  const int D = N/HxW;
+  int group=channel_size/D;
+  const int index = blockIdx.x * N + j*VEC;
+  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  T_ACC sum1 = 0;
+  T_ACC sum2 = 0;
+  int tcol=N/VEC;
+  VecTpye tx;
+  VecTpye tdy;
+  VecTpye tdx;
+  scalar_t* px=(scalar_t*)(&tx);
+  scalar_t* pdy=(scalar_t*)(&tdy);
+  scalar_t* pdx=(scalar_t*)(&tdx);
+  for (int ii = threadIdx.x; ii < D; ii += blockDim.x) {
+    const int index = bid * D + ii;
+    const int jj = (bid%group) * D + ii;
+    const T_ACC gamma_v =gamma[jj];
+    sum1 += ds_data[index] * gamma_v;
+    sum2 += db_data[index] * gamma_v;
+  }
+  sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);
+  sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);
+  const T_ACC s = T_ACC(1) / (static_cast<T_ACC>(N));
+  T_ACC trstd = static_cast<T_ACC>(rstd[bid]);
+  if (threadIdx.x == 0) {
+    T_ACC tmean = static_cast<T_ACC>(mean[bid]);
+    const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;
+    b = a;
+    c = -a * tmean - sum2 * trstd * s;
+  }
+  __syncthreads();
   for(int off=j;off<tcol;off+=blockDim.x){
     const int index = bid * N + off*VEC;
     tx = *(VecTpye*)(X+index);
     tdy = *(VecTpye*)(dY+index);
     int jj=index%(HxW*channel_size)/HxW;
+    T_ACC tgamma = static_cast<T_ACC>(gamma[jj]);
     for(int i=0;i<VEC;i++){
-      pdx[i]=op.backward(trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(gamma[jj])+b*static_cast<T_ACC>(op.forward(px[i]))+c,px[i]);
+      pdx[i]=op.backward(trstd*static_cast<T_ACC>(pdy[i])*tgamma+b*static_cast<T_ACC>(op.forward(px[i]))+c,px[i]);
     }
     *(VecTpye*)(dX+index) = tdx;
   }
 }
 template <typename scalar_t,class act_op,int VEC=4>
-__global__ void act_groupnorm_backworward_kernel(scalar_t* dY_data,scalar_t* X_data,scalar_t* dX_data,scalar_t* gamma_data,scalar_t* rstd,int cols,int HxW,int N,
+__global__ void act_groupnorm_backworward_kernel(scalar_t* dY_data,scalar_t* X_data,scalar_t* dX_data,scalar_t* gamma,scalar_t* rstd,int cols,int HxW,int N,
                                                 int channel_size,acc_type<scalar_t, true>* c2_data,acc_type<scalar_t, true>* c3_data,act_op op)
 {
   using T_ACC = acc_type<scalar_t, true>;
@@ -570,9 +565,10 @@ __global__ void act_groupnorm_backworward_kernel(scalar_t* dY_data,scalar_t* X_d
   int jj=tid%(HxW*channel_size)/HxW;
   tx = *(VecTpye*)(X_data+tid);
   tdy = *(VecTpye*)(dY_data+tid);
+  T_ACC tgamma = static_cast<T_ACC>(gamma[jj]);
   #pragma unroll
   for(int i=0;i<VEC;i++){
-    pdx[i]=op.backward(trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(gamma_data[jj])+b*static_cast<T_ACC>(op.forward(px[i]))+c, px[i]);
+    pdx[i]=op.backward(trstd*static_cast<T_ACC>(pdy[i])*tgamma+b*static_cast<T_ACC>(op.forward(px[i]))+c, px[i]);
   }
   *(VecTpye*)(dX_data+tid)=tdx;
 }
@@ -609,7 +605,7 @@ void act_groupnorm_forward_impl(const Tensor& self,const Tensor& weight,const Te
     scalar_t* ret_data=ret.data_ptr<scalar_t>();
     scalar_t* weight_data=weight.data_ptr<scalar_t>();
     scalar_t* bias_data=bias.data_ptr<scalar_t>();
-    scalar_t  eps = ln_epsilon;
+    T_ACC  eps = ln_epsilon;
     scalar_t* mean_data=NULL,*rstd_data=NULL;
     if(!eval_fast){
       mean_data=mean.data_ptr<scalar_t>();
@@ -712,12 +708,12 @@ void act_groupnorm_backward_impl(const Tensor& grad, const Tensor& X,const Tenso
         T_ACC* db_data = db.data_ptr<T_ACC>();
         if(HxW%4==0)
         { 
-            act_ComputeInternalGradientsCUDAKernel<scalar_t,act_op,4><<<N * num_channels, get_groupnorm_blocksize(HxW/4), 0, stream>>>(
+            act_GN_ComputeInternalGradientsCUDAKernel<scalar_t,act_op,4><<<N * num_channels, get_groupnorm_blocksize(HxW/4), 0, stream>>>(
             HxW, dY_data, X_data, ds_data, db_data,op);
         }
         else
         {
-            act_ComputeInternalGradientsCUDAKernel<scalar_t,act_op,1><<<N * num_channels, get_groupnorm_blocksize(HxW), 0, stream>>>(
+            act_GN_ComputeInternalGradientsCUDAKernel<scalar_t,act_op,1><<<N * num_channels, get_groupnorm_blocksize(HxW), 0, stream>>>(
             HxW, dY_data, X_data, ds_data, db_data,op);
         }
         C10_CUDA_KERNEL_LAUNCH_CHECK();
