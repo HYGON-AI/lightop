@@ -20,18 +20,17 @@ groupnorm_silu_forward(const Tensor& self,const Tensor& weight,const Tensor& bia
 }  
 
 std::tuple<Tensor,Tensor,Tensor>
-groupnorm_silu_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const Tensor& rstd,const Tensor& gamma)
+groupnorm_silu_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const Tensor& rstd,const Tensor& gamma,const Tensor& beta)
 { 
-  AT_ASSERT(false, "Groupnorm_SILU backward has not been completed!");
   Tensor dX = at::empty_like(X),dgamma = at::empty_like(gamma),dbeta = at::empty_like(gamma);
   AT_DISPATCH_FLOATING_TYPES_AND2(
     at::ScalarType::Half,
     at::ScalarType::BFloat16,
     grad.scalar_type(),
     "gn_silu_backward",
-    [&] {
-      SILU<scalar_t> siluop;
-      return groupnorm_act_backward_impl<scalar_t,SILU<scalar_t>>(grad,X,mean,rstd,gamma,siluop,dX,dgamma,dbeta);
+    [&] {   
+      SILU<scalar_t> siluop; 
+      return groupnorm_act_backward_impl<scalar_t,SILU<scalar_t>>(grad,X,mean,rstd,gamma,beta,siluop,dX,dgamma,dbeta);
   });
   return std::tuple<Tensor,Tensor,Tensor>(dX,dgamma,dbeta);
 }
@@ -49,7 +48,7 @@ class fuseGroupNormSILUFunction : public torch::autograd::Function<fuseGroupNorm
       auto pweight=weight.expect_contiguous();
       auto pbias=bias.expect_contiguous();
       auto ret = groupnorm_silu_forward(*px, *pweight,*pbias,num_groups,num_channels,eps,training);
-      ctx->save_for_backward({*px,std::get<1>(ret),std::get<2>(ret),*pweight});
+      ctx->save_for_backward({*px,std::get<1>(ret),std::get<2>(ret),*pweight,*pbias});
       return {std::get<0>(ret)};
   }
     static torch::autograd::variable_list backward(
@@ -60,7 +59,8 @@ class fuseGroupNormSILUFunction : public torch::autograd::Function<fuseGroupNorm
       auto mean = saved[1];
       auto rstd = saved[2];
       auto gamma = saved[3];
-      auto ret = groupnorm_silu_backward(gradOutput[0],X,mean,rstd,gamma);
+      auto beta = saved[4];
+      auto ret = groupnorm_silu_backward(gradOutput[0],X,mean,rstd,gamma,beta);
       return {std::get<0>(ret),std::get<1>(ret),std::get<2>(ret),torch::autograd::Variable(),torch::autograd::Variable(),torch::autograd::Variable(),torch::autograd::Variable()};
   }
 };

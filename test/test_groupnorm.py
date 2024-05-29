@@ -95,7 +95,7 @@ def test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num,use_half=False,f
     f1.weight.data=weight.clone().detach()
     f2.weight.data=weight.clone().detach()
     print("size=(",batchsize,",",seqs,",",cols,",",rows,")")
-    for i in range(1):
+    for i in range(10):
         y1 = f1(x1)
         if not forward_only:
             y1.backward(grad)
@@ -112,7 +112,7 @@ def test_speed(batchsize, seqs, cols,rows,num_groups,repeat_num,use_half=False,f
     end_time = time.time()
     fc1_espl = end_time - start_time
 
-    for i in range(1):
+    for i in range(10):
         y2 = f2(x2)
         if not forward_only:
             y2.backward(grad)
@@ -168,7 +168,7 @@ def group_norm(x, gamma, beta, G, eps=1e-5):
 
 if __name__ == "__main__":
     #设置基础参数
-    forward_only=False
+    forward_only=True
     use_half=False
     num_groups=32
     batchsize=[1,2]
