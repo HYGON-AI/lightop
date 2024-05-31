@@ -69,6 +69,17 @@ python3 test_ln_add_dropout.py
         <td>rn_add_dropout_bias</td><td>1, 2048, 3072</td><td>1.88ms</td><td>0.51ms</td><td>268%</td><td>NLP类.rn(dropout(input+bias)+residual)</td>
     </tr>
     <tr>
+    <tr>
+        <td>groupnorm</td><td>2,640,8,8</td><td>0.037ms</td><td>0.017ms</td><td>116%</td><td>NLP类cv类</td>
+    </tr>
+    <tr>
+        <td>celu_gn</td><td>2,640,8,8</td><td>0.048ms</td><td>0.015ms</td><td>219%</td><td>NLP类cv类gn(celu(input))</td>
+    </tr>
+    <tr>
+        <td>gn_silu</td><td>2,640,8,8</td><td>0.080ms</td><td>0.015ms</td><td>420%</td><td>NLP类cv类silu(gn(input))</td>
+    </tr>
+
+    <tr>
         <td>add_dropout</td><td>1, 2048, 3072</td><td>0.49ms</td><td>0.38ms</td><td>28.9%</td><td>NLP类.dropout(input)+residual</td>
     </tr>
     <tr>
