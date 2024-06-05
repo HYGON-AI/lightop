@@ -72,7 +72,7 @@ python3 test_ln_add_dropout.py
         <td>groupnorm</td><td>2,640,8,8</td><td>0.037ms</td><td>0.017ms</td><td>116%</td><td>NLP类cv类</td>
     </tr>
     <tr>
-        <td>celu_gn</td><td>2,640,8,8</td><td>0.048ms</td><td>0.015ms</td><td>219%</td><td>NLP类cv类gn.例如x-linear。 (celu(input))</td>
+        <td>celu_gn</td><td>2,640,8,8</td><td>0.048ms</td><td>0.015ms</td><td>219%</td><td>NLP类cv类gn。例如x-linear。 gn(celu(input))</td>
     </tr>
     <tr>
         <td>gn_silu</td><td>2,640,8,8</td><td>0.080ms</td><td>0.015ms</td><td>420%</td><td>NLP类cv类。例如：SD。 silu(gn(input))</td>
