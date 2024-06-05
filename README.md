@@ -90,7 +90,7 @@ python3 test_ln_add_dropout.py
         <td>bias_swiglu</td><td>2, 2048, 512</td><td>0.50ms</td><td>0.28ms</td><td>78.5%</td><td>NLP类SwiGLU(input+bias)</td>
     </tr>
     <tr>
-        <td>FusedScaleMaskSoftmaxDropout</td><td>2,16,128,128</td><td>0.26ms</td><td>0.34ms</td><td>30.7%</td><td>NLP类.</td>
+        <td>FusedScaleMask SoftmaxDropout</td><td>2,16,128,128</td><td>0.26ms</td><td>0.34ms</td><td>30.7%</td><td>NLP类.</td>
     </tr>
     <tr>
         <td>bn_act/bn_relu</td><td>4,10,128,128</td><td>0.56ms</td><td>0.33ms</td><td>69.7%</td><td>CNN，如resnet，都会使用BN。act支持relu,softrelu,abs,power,clipped_relu,leaky_relu,silu_sigmoid,tanh等激活函数。bn_relu是bn_act的特例，减少一个参数，调用更方便。对于bn 2d，推荐NCHW维度中N*H*W>20000，此算子对于小size性能较差。</td>
