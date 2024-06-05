@@ -77,7 +77,6 @@ python3 test_ln_add_dropout.py
     <tr>
         <td>gn_silu</td><td>2,640,8,8</td><td>0.080ms</td><td>0.015ms</td><td>420%</td><td>NLP类cv类。例如：SD。 silu(gn(input))</td>
     </tr>
-
     <tr>
         <td>add_dropout</td><td>1, 2048, 3072</td><td>0.49ms</td><td>0.38ms</td><td>28.9%</td><td>NLP类.dropout(input)+residual</td>
     </tr>
