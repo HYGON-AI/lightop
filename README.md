@@ -48,35 +48,34 @@ python3 test_ln_add_dropout.py
         <td>layernorm</td><td>1, 2048, 3072</td><td>0.58ms</td><td>0.32ms</td><td>81.3%</td><td>NLP类</td>
     </tr>
     <tr>
-        <td>ln_dropout</td><td>1, 2048, 3072</td><td>0.78ms</td><td>0.42ms</td><td>85.7%</td><td>NLP类.ln(dropout(input))</td>
+        <td>ln_dropout</td><td>1, 2048, 3072</td><td>0.78ms</td><td>0.42ms</td><td>85.7%</td><td>NLP类。例如transformer,bert。 ln(dropout(input))</td>
     </tr>
     <tr>
-        <td>ln_add_dropout</td><td>1, 2048, 3072</td><td>0.97ms</td><td>0.47ms</td><td>106%</td><td>NLP类.ln(dropout(input)+residual)</td>
+        <td>ln_add_dropout</td><td>1, 2048, 3072</td><td>0.97ms</td><td>0.47ms</td><td>106%</td><td>NLP类。例如transformer,bert。 ln(dropout(input)+residual)</td>
     </tr>
     <tr>
-        <td>ln_add_dropout_bias</td><td>1, 2048, 3072</td><td>1.16ms</td><td>0.53ms</td><td>119%</td><td>NLP类.ln(dropout(input+bias)+residual)</td>
+        <td>ln_add_dropout_bias</td><td>1, 2048, 3072</td><td>1.16ms</td><td>0.53ms</td><td>119%</td><td>NLP类。例如transformer,bert。 ln(dropout(input+bias)+residual)</td>
     </tr>
     <tr>
-        <td>rmsnorm</td><td>1, 2048, 3072</td><td>1.28ms</td><td>0.29ms</td><td>341%</td><td>NLP类.</td>
+        <td>rmsnorm</td><td>1, 2048, 3072</td><td>1.28ms</td><td>0.29ms</td><td>341%</td><td>NLP类。例如lamma</td>
     </tr>
     <tr>
-        <td>rn_dropout</td><td>1, 2048, 3072</td><td>1.51ms</td><td>0.38ms</td><td>297%</td><td>NLP类.rn(dropout(input))</td>
+        <td>rn_dropout</td><td>1, 2048, 3072</td><td>1.51ms</td><td>0.38ms</td><td>297%</td><td>NLP类。例如lamma。 rn(dropout(input))</td>
     </tr>
     <tr>
-        <td>rn_add_dropout</td><td>1, 2048, 3072</td><td>1.68ms</td><td>0.45ms</td><td>273%</td><td>NLP类.rn(dropout(input)+residual)</td>
+        <td>rn_add_dropout</td><td>1, 2048, 3072</td><td>1.68ms</td><td>0.45ms</td><td>273%</td><td>NLP类。例如lamma。 rn(dropout(input)+residual)</td>
     </tr>
     <tr>
-        <td>rn_add_dropout_bias</td><td>1, 2048, 3072</td><td>1.88ms</td><td>0.51ms</td><td>268%</td><td>NLP类.rn(dropout(input+bias)+residual)</td>
+        <td>rn_add_dropout_bias</td><td>1, 2048, 3072</td><td>1.88ms</td><td>0.51ms</td><td>268%</td><td>NLP类。例如lamma。rn(dropout(input+bias)+residual)</td>
     </tr>
-    <tr>
     <tr>
         <td>groupnorm</td><td>2,640,8,8</td><td>0.037ms</td><td>0.017ms</td><td>116%</td><td>NLP类cv类</td>
     </tr>
     <tr>
-        <td>celu_gn</td><td>2,640,8,8</td><td>0.048ms</td><td>0.015ms</td><td>219%</td><td>NLP类cv类gn(celu(input))</td>
+        <td>celu_gn</td><td>2,640,8,8</td><td>0.048ms</td><td>0.015ms</td><td>219%</td><td>NLP类cv类gn.例如x-linear。 (celu(input))</td>
     </tr>
     <tr>
-        <td>gn_silu</td><td>2,640,8,8</td><td>0.080ms</td><td>0.015ms</td><td>420%</td><td>NLP类cv类silu(gn(input))</td>
+        <td>gn_silu</td><td>2,640,8,8</td><td>0.080ms</td><td>0.015ms</td><td>420%</td><td>NLP类cv类。例如：SD。 silu(gn(input))</td>
     </tr>
 
     <tr>
