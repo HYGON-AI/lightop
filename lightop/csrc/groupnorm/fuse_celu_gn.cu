@@ -50,8 +50,10 @@ class fuseCeluGnFunction : public torch::autograd::Function<fuseCeluGnFunction> 
       auto pweight=weight.expect_contiguous();
       auto pbias=bias.expect_contiguous();
       auto ret = celu_gn_forward(*px, *pweight,*pbias,num_groups,num_channels,eps,alpha,training);
-      ctx->save_for_backward({*px,std::get<1>(ret),std::get<2>(ret),*pweight});
-      ctx->saved_data["alpha"] = alpha;
+      if(training){
+        ctx->save_for_backward({*px,std::get<1>(ret),std::get<2>(ret),*pweight});
+        ctx->saved_data["alpha"] = alpha;
+      }
       return {std::get<0>(ret)};
   }
     static torch::autograd::variable_list backward(

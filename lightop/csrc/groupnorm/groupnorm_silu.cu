@@ -48,7 +48,9 @@ class fuseGroupNormSILUFunction : public torch::autograd::Function<fuseGroupNorm
       auto pweight=weight.expect_contiguous();
       auto pbias=bias.expect_contiguous();
       auto ret = groupnorm_silu_forward(*px, *pweight,*pbias,num_groups,num_channels,eps,training);
-      ctx->save_for_backward({*px,std::get<1>(ret),std::get<2>(ret),*pweight,*pbias});
+      if(training){
+        ctx->save_for_backward({*px,std::get<1>(ret),std::get<2>(ret),*pweight,*pbias});
+      }
       return {std::get<0>(ret)};
   }
     static torch::autograd::variable_list backward(

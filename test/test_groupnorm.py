@@ -5,28 +5,6 @@ import torch.nn.functional as F
 from lightop import GroupNorm
 
 
-class My_Grouporm(torch.nn.Module):
-
-    def __init__(self,num_groups:int, num_channels:int,eps: float = 1e-5,device=None, dtype=None ):
-        super(My_Grouporm, self).__init__()
-        self.eps = eps
-        self.num_groups = num_groups
-        self.num_channels = num_channels
-        factory_kwargs = {'device': device, 'dtype': dtype}
-        self.weight = torch.nn.Parameter(torch.empty(num_channels, **factory_kwargs))
-        self.bias = torch.nn.Parameter(torch.empty(num_channels, **factory_kwargs))
-        torch.nn.init.ones_(self.weight)
-        torch.nn.init.zeros_(self.bias)
-
-    def forward(self, x):
-        N, C, H, W = x.shape
-        x = x.reshape(N, num_groups, C // num_groups, H, W)
-        mean = x.mean(dim=(2, 3, 4), keepdim=True)
-        var = x.var(dim=(2, 3, 4), keepdim=True)
-        x = (x - mean) / torch.sqrt(var + self.eps)
-        x = x.reshape(N, C, H, W)
-        return x * self.weight.reshape(1, C, 1, 1) + self.bias.reshape(1, C, 1, 1)
-
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
     return torch.allclose(a, b, rtol=rtol, atol=atol, equal_nan=equal_nan)
