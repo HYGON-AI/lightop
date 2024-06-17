@@ -34,7 +34,7 @@ groupnorm_silu_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,c
   });
   return std::tuple<Tensor,Tensor,Tensor>(dX,dgamma,dbeta);
 }
-
+ 
 class fuseGroupNormSILUFunction : public torch::autograd::Function<fuseGroupNormSILUFunction> {
 
   public:
@@ -44,20 +44,28 @@ class fuseGroupNormSILUFunction : public torch::autograd::Function<fuseGroupNorm
       const torch::autograd::Variable& weight,
       const torch::autograd::Variable& bias,
       int num_groups,int num_channels,double eps,bool training) {
-      auto px=x.expect_contiguous();
-      auto pweight=weight.expect_contiguous();
-      auto pbias=bias.expect_contiguous();
-      auto ret = groupnorm_silu_forward(*px, *pweight,*pbias,num_groups,num_channels,eps,training);
-      if(training){
-        ctx->save_for_backward({*px,std::get<1>(ret),std::get<2>(ret),*pweight,*pbias});
+      if(x.suggest_memory_format()==at::MemoryFormat::ChannelsLast){
+        auto ret = groupnorm_silu_forward(x, weight,bias,num_groups,num_channels,eps,training);
+        if(training){
+          ctx->save_for_backward({x,std::get<1>(ret),std::get<2>(ret),weight});
+        }
+        return {std::get<0>(ret)};
       }
-      return {std::get<0>(ret)};
+      else{       
+        auto px=x.expect_contiguous();
+        auto ret = groupnorm_silu_forward(*px, weight,bias,num_groups,num_channels,eps,training);
+        if(training){
+          ctx->save_for_backward({*px,std::get<1>(ret),std::get<2>(ret),weight});
+        }
+        return {std::get<0>(ret)}; 
+      } 
   }
     static torch::autograd::variable_list backward(
       torch::autograd::AutogradContext* ctx,
       const torch::autograd::variable_list& gradOutput) {
       auto saved = ctx->get_saved_variables();
       auto X = saved[0];
+      AT_ASSERT(X.suggest_memory_format()!=at::MemoryFormat::ChannelsLast,"Lightop GroupNorm backward doesn't support ChannelsLast now.If you need the function,please contact us.");
       auto mean = saved[1];
       auto rstd = saved[2];
       auto gamma = saved[3];

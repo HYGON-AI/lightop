@@ -58,6 +58,68 @@ __global__ void groupnorm_act_forward_kernel_fast(scalar_t* input,scalar_t* ret,
   }
 }
 
+template <typename scalar_t,class act_op, int VEC=4>
+__global__ void groupnorm_act_forward_kernel_fast_NHWC(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
+                                            scalar_t* gamma,scalar_t* beta,int cols,int spatial_size,int channel_size,acc_type<scalar_t, true> eps,act_op op)
+{
+  int blockidx=blockIdx.x;
+  int blockidy=blockIdx.y;
+  int threadidx=threadIdx.x;
+  int D=cols/spatial_size;
+  int G=channel_size/D;
+  int block_cols=blockidx*cols*G + blockidy*D;
+  using T_ACC = acc_type<scalar_t, true>;
+  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
+  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
+  __shared__ T_ACC s_mean;
+  __shared__ T_ACC s_rstd;
+  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
+  WelfordOp welford_op;
+  WelfordType val;
+  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  VecTpye *X=(VecTpye*)(input+block_cols);
+  VecTpye *Y=(VecTpye*)(ret+block_cols);
+  int tcol=cols/VEC;
+  T_ACC tmean;
+  T_ACC trstd;
+  VecTpye tx;
+  VecTpye ty;
+  scalar_t* px=(scalar_t*)(&tx);
+  scalar_t* py=(scalar_t*)(&ty);
+  int D2=D/VEC;
+  int j=threadidx;
+  int j2=j%D2+j/D2*(channel_size/VEC);
+  if (j < tcol) {
+    tx = X[j2];
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      val = welford_op.reduce(val, static_cast<T_ACC>(px[i]));
+    }
+  }
+  val = BlockReduce(val,welford_op,val_shared_ptr);
+  if (threadidx == 0) {
+    //groupnorm get mean and rstd
+    thrust::tie(tmean, s_mean) = welford_op.project(val);
+    s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+  }
+  __syncthreads();
+  tmean=s_mean;
+  trstd=s_rstd;
+  if (j < tcol) {
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      int jj=j*VEC%D+blockidy*D+i;
+      py[i]=op.forward((static_cast<T_ACC>(px[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]));
+    }
+    Y[j2]=ty;
+  }
+  if(threadIdx.x==0&&rstd!=NULL){
+      int bid=blockidx*gridDim.y+blockidy;
+      mean[bid] = tmean;
+      rstd[bid] = trstd;
+  }
+}
 
 template <typename scalar_t,class act_op, int VEC=4>
 __global__ void groupnorm_act_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
@@ -84,13 +146,116 @@ __global__ void groupnorm_act_forward_kernel(scalar_t* input,scalar_t* ret,scala
   *(VecTpye*)(ret+tid)=ty;
 }
 
+template <typename scalar_t,class act_op, int VEC=4>
+__global__ void groupnorm_act_forward_kernel_NHWC(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
+                                            scalar_t* gamma,scalar_t* beta,int cols,int spatial_size,int N,int G,act_op op)
+{
+  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  using T_ACC = acc_type<scalar_t, true>;
+  const int datas_per_batch=cols*G;
+  const int channel_size = datas_per_batch/spatial_size;
+  const int D=channel_size/G;
+  VecTpye tx;
+  VecTpye ty;
+  scalar_t* px=(scalar_t*)(&tx);
+  scalar_t* py=(scalar_t*)(&ty);
+  int tid=(blockIdx.x*blockDim.x+threadIdx.x)*VEC;
+  if(tid>=N)return;
+  int meanid=tid/datas_per_batch*G+tid%channel_size/D;
+  int gammaid=tid%channel_size;
+  auto tmean = static_cast<T_ACC>(mean[meanid]);
+  auto trstd = static_cast<T_ACC>(rstd[meanid]);
+  tx = *(VecTpye*)(input+tid);
+  #pragma unroll
+  for(int i=0;i<VEC;i++){
+    py[i]=op.forward((static_cast<T_ACC>(px[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[gammaid+i]) + static_cast<T_ACC>(beta[gammaid+i]));
+  }
+  *(VecTpye*)(ret+tid)=ty;
+}
+
 template <typename scalar_t,class act_op> 
-void groupnorm_act_forward_impl(const Tensor& self,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double ln_epsilon,
+void groupnorm_act_forward_NHWC(const Tensor& self,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double gn_epsilon,
+                                    bool training,act_op& op,Tensor& ret,Tensor& mean,Tensor&rstd)
+{
+    const int nelem = self.numel();
+    const int N=self.sizes().front();
+    const int HxW=nelem/(N*num_channels);
+    const int G = num_groups;
+    const int D = num_channels / G;
+    const int cols=D * HxW;
+    scalar_t* mean_data=NULL,*rstd_data=NULL;
+    bool small=(D % 4 == 0&&cols<=2048)||(D % 2 == 0&&cols<=1024)||(cols<=512)||(D%8==0&&cols<=4096)||(D%16==0&&cols<=8192);
+    if(training||!small){
+      mean = at::empty({N, G},self.options());
+      rstd = at::empty({N, G},self.options());
+      mean_data=mean.data_ptr<scalar_t>();
+      rstd_data=rstd.data_ptr<scalar_t>();
+    }
+    using T_ACC = acc_type<scalar_t, true>;
+    scalar_t* self_data = self.data_ptr<scalar_t>();
+    scalar_t* ret_data=ret.data_ptr<scalar_t>();
+    scalar_t* weight_data=weight.data_ptr<scalar_t>();
+    scalar_t* bias_data=bias.data_ptr<scalar_t>();
+    T_ACC  eps = gn_epsilon;
+    auto stream = at::cuda::getCurrentCUDAStream();
+    PassThrough<scalar_t> passop;
+    if(D % 4 == 0&&cols<=2048){
+      groupnorm_act_forward_kernel_fast_NHWC<scalar_t,act_op,4><<<dim3(N , G), get_groupnorm_blocksize(cols/4), 0, stream>>>(
+                              self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+    }
+    else if(D % 2 == 0&&cols<=1024){
+      groupnorm_act_forward_kernel_fast_NHWC<scalar_t,act_op,2><<<dim3(N , G), get_groupnorm_blocksize(cols/2), 0, stream>>>(
+                              self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+    }
+    else if(cols<=512){
+      groupnorm_act_forward_kernel_fast_NHWC<scalar_t,act_op,1><<<dim3(N , G), get_groupnorm_blocksize(cols), 0, stream>>>(
+                              self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+    }
+    else if(D%8==0&&cols<=4096){
+      groupnorm_act_forward_kernel_fast_NHWC<scalar_t,act_op,8><<<dim3(N , G), 512, 0, stream>>>(
+                            self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+    }
+    else if(D%16==0&&cols<=8192){
+      groupnorm_act_forward_kernel_fast_NHWC<scalar_t,act_op,16><<<dim3(N , G), 512, 0, stream>>>(
+                            self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+    }
+    else{//very long last dim
+      if(D%4==0){
+        act_groupnorm_forward_mean_rstd_NHWC<scalar_t,PassThrough<scalar_t>,4><<<dim3(N , G), 512, 0, stream>>>(self_data,mean_data,rstd_data,cols,HxW,num_channels,eps,passop);
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+        int blocksize=(N * G *cols/4-1)/128+1;
+        groupnorm_act_forward_kernel_NHWC<scalar_t,act_op,4><<<blocksize,128,0,stream>>>(
+                                  self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,N * G * cols,G,op);
+      }
+      else if(D%2==0){
+        act_groupnorm_forward_mean_rstd_NHWC<scalar_t,PassThrough<scalar_t>,2><<<dim3(N , G), 512, 0, stream>>>(self_data,mean_data,rstd_data,cols,HxW,num_channels,eps,passop);
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+        int blocksize=(N * G *cols/2-1)/128+1;
+        groupnorm_act_forward_kernel_NHWC<scalar_t,act_op,2><<<blocksize,128,0,stream>>>(
+                                  self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,N * G * cols,G,op);
+      }
+      else{
+        act_groupnorm_forward_mean_rstd_NHWC<scalar_t,PassThrough<scalar_t>,1><<<dim3(N , G), 512, 0, stream>>>(self_data,mean_data,rstd_data,cols,HxW,num_channels,eps,passop);
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+        int blocksize=(N * G *cols-1)/128+1;
+        groupnorm_act_forward_kernel_NHWC<scalar_t,act_op,1><<<blocksize,128,0,stream>>>(
+                                  self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,N * G * cols,G,op);
+      }
+    }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+template <typename scalar_t,class act_op> 
+void groupnorm_act_forward_impl(const Tensor& self,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double gn_epsilon,
                                     bool training,act_op op,Tensor& ret,Tensor& mean,Tensor&rstd)
 {
     AT_ASSERT(self.is_cuda(), "x must on dcu");
     AT_ASSERT(num_channels % num_groups == 0,"num_channels must be divisible by num_groups");
     AT_ASSERT(self.scalar_type()!=at::kDouble,"Don't surpport FP64 tensor");
+    if(self.suggest_memory_format()==at::MemoryFormat::ChannelsLast){
+      groupnorm_act_forward_NHWC<scalar_t,act_op>(self,weight,bias,num_groups,num_channels,gn_epsilon,training,op,ret,mean,rstd);
+      return;
+    }
     const int nelem = self.numel();
     const int N=self.sizes().front();
     const int HxW=nelem/(N*num_channels);
@@ -116,7 +281,7 @@ void groupnorm_act_forward_impl(const Tensor& self,const Tensor& weight,const Te
     scalar_t* ret_data=ret.data_ptr<scalar_t>();
     scalar_t* weight_data=weight.data_ptr<scalar_t>();
     scalar_t* bias_data=bias.data_ptr<scalar_t>();
-    T_ACC  eps = ln_epsilon;
+    T_ACC  eps = gn_epsilon;
     scalar_t* mean_data=NULL,*rstd_data=NULL;
     if(!eval_fast){
       mean_data=mean.data_ptr<scalar_t>();
