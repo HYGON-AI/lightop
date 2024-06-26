@@ -186,8 +186,6 @@ namespace at {
 
     } // namespace ctcloss_tools
 
-    extern Tensor fuse_log_softmax_forward(const at::Tensor &self, int64_t dim, bool half_to_float);
-
   }
 } // namespace at::native
 
