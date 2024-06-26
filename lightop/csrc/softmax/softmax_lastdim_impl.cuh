@@ -244,15 +244,13 @@ __global__ void softmax_warp_backward(input_t *gradInput, const output_t *grad_o
         if (i >= local_batches)
             break;
 
-        auto logsum_ = softmax_math::log(sum[i]);
-
         #pragma unroll
         for (int it = 0;  it < WARP_ITERATIONS;  ++it) {
             int element_index = local_idx + it * WARP_SIZE;
             if (element_index < element_count) {
                 // compute gradients
                 if constexpr(is_log_softmax) {
-                    gradInput[i*element_count+it*WARP_SIZE] = static_cast<acc_t>(grad_reg[i][it] - softmax_math::exp(output_reg[i][it] + logsum_));
+                    gradInput[i*element_count+it*WARP_SIZE] = static_cast<acc_t>(grad_reg[i][it] - softmax_math::exp(output_reg[i][it]) * sum[i]);
                 } else {
                     gradInput[i*element_count+it*WARP_SIZE] = static_cast<acc_t>(grad_reg[i][it] - output_reg[i][it] * sum[i]);
                 }

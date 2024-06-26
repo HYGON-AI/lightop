@@ -220,15 +220,13 @@ struct SoftMaxBackwardEpilogue {
 
 template<typename input_t, typename acc_t, typename output_t>
 struct LogSoftMaxBackwardEpilogue {
-    __device__ __forceinline__ LogSoftMaxBackwardEpilogue(acc_t sum_v) : 
-    sum_v_(sum_v), logsum_(std::log(sum_v_)) {}
+    __device__ __forceinline__ LogSoftMaxBackwardEpilogue(acc_t sum_v) : sum_v_(sum_v) {}
 
     __device__ __forceinline__ input_t operator()(output_t gradOutput, output_t output) const {
-        return static_cast<input_t>(gradOutput - std::exp(static_cast<acc_t>(output) + logsum_));
+        return static_cast<input_t>(gradOutput - std::exp(static_cast<acc_t>(output)) * sum_v_);
     }
 
     const acc_t sum_v_;
-    const acc_t logsum_;
 };
 
 bool softmax_spatial_fwd_use_transpose(int64_t outer_size, int64_t dim_size, int64_t inner_size) {
