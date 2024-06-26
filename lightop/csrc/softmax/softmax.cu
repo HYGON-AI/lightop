@@ -189,8 +189,8 @@ void fuse_softmax_lastdim_bwd(const Tensor &grad_input, const Tensor &grad, cons
     AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, grad_input.scalar_type(), "fuse_softmax_lastdim_bwd", [&] {
         using accscalar_t = acc_type<scalar_t, true>;
         if (!half_to_float) {
-            int half_threshold = 2048;
-            int float_threshold = 4096;
+            int half_threshold = 1024;
+            int float_threshold = 1024;
 
             if ((grad_input.scalar_type() == ScalarType::Float && dim_size <= float_threshold) || 
                 (grad_input.scalar_type() == ScalarType::Half && dim_size <= half_threshold)) {
