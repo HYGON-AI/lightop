@@ -680,8 +680,7 @@ namespace at {
                                      and reinterpret_cast<VEC_DTYPE>(gradients.data_ptr<float>()) % vecAlignment == 0;
 
                 if (wkts.GetDenominatorsSize() > 1 << (4 + 16 - sizeof(float))) { // 2^16 is the threshold
-                    // Tensor fuse_log_softmax_forward(const at::Tensor & self, int64_t dim, bool half_to_float);
-                    Tensor logits_logsoftmax = fuse_log_softmax_forward(logits, 3, false);
+                    Tensor logits_logsoftmax = at::log_softmax(logits, 3, logits.scalar_type());
                     rnntloss_tools::ComputeRnntLoss</*DTYPE=*/float, /*CAST_DTYPE=*/float, /*VEC_DTYPE=*/VEC_DTYPE>(
                       /*logits=*/logits_logsoftmax.data_ptr<float>(),
                       /*targets=*/targets.data_ptr<int>(),
