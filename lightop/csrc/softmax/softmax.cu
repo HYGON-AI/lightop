@@ -82,9 +82,9 @@ void fuse_softmax_lastdim_fwd(const Tensor &input, const Tensor& output, const b
         using accscalar_t = acc_type<scalar_t, true>;
         if (!half_to_float) {
             int half_threshold = 2048;
-            int float_threshold = 4096;
+            int float_threshold = 2048;
 
-            if ((input.scalar_type() == ScalarType::Float && dim_size <= float_threshold) || 
+            if ((input.scalar_type() == ScalarType::Float && dim_size < float_threshold) || 
                 (input.scalar_type() == ScalarType::Half && dim_size <= half_threshold)) {
                 auto output_ptr = output.data_ptr<scalar_t>();
                 auto input_ptr = input.data_ptr<scalar_t>();
