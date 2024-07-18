@@ -202,7 +202,10 @@ class SoftmaxTester:
 def test_lastdim_softmax():
     # 设置输入的softmax的tensor size
     x_size_lists = [
+        (4, 256, 2048),
+        (4, 256, 3966),
         (4, 256, 4096),
+        (4, 256, 5015),
         (4, 256, 8192),
         (4, 16, 1025, 1025),
     ]
