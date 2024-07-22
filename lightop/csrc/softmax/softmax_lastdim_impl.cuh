@@ -86,7 +86,7 @@ __global__ void softmax_warp_forward(output_t *dst, const input_t *src, int oute
     constexpr int next_power_of_two = 1 << log2_elements;
     constexpr int WARP_SIZE = (next_power_of_two < C10_WARP_SIZE) ? next_power_of_two : C10_WARP_SIZE;
     constexpr int WARP_ITERATIONS = next_power_of_two / WARP_SIZE;
-    // use 512 threads per block to maximimize gpu utilization
+    // use 256 threads per block to maximimize gpu utilization
     constexpr int WARP_BATCH = (threads_per_block + next_power_of_two - 1) / next_power_of_two;
 
     int first_batch = (blockDim.y * blockIdx.x + threadIdx.y) * WARP_BATCH;
@@ -292,32 +292,35 @@ WriteFpropResultsVectorized(int size,
     using LoadT = at::native::memory::aligned_vector<input_t, ILP>;
     using StoreT = at::native::memory::aligned_vector<output_t, ILP>;
     
-    int offset = threadIdx.x;
-    
-    const int last = size % (ILP * blockDim.x);
-    
-    input_t in_v[ILP];
-    LoadT* in_value = reinterpret_cast<LoadT*>(&in_v);
-    
-    output_t out_v[ILP];
-    StoreT* out_value = reinterpret_cast<StoreT*>(&out_v);
-    
-    for (; offset * ILP < (size - last); offset += blockDim.x) {
-        *in_value = reinterpret_cast<const LoadT*>(input)[offset];
-    
+    int tid = threadIdx.x;
+    int block_size = blockDim.x;
+
+    int last = size % ILP; 
+    int trow = size / ILP;
+
+    LoadT in_v;
+    input_t* in_value = reinterpret_cast<input_t*>(&in_v);
+    StoreT out_v;
+    input_t* out_value = reinterpret_cast<input_t*>(&out_v);
+
+    for(; tid < trow; tid += block_size)
+    {
+        in_v = *reinterpret_cast<const LoadT*>(input + tid * ILP);
+
         #pragma unroll
-        for (int j = 0; j < ILP; ++j) {
-            out_v[j] = epilogue(in_v[j]);
-        }
-        reinterpret_cast<StoreT*>(output)[offset] = *out_value;
+        for(size_t j = 0; j < ILP; ++j)
+            out_value[j] = epilogue(in_value[j]);
+        *reinterpret_cast<StoreT*>(output + tid * ILP) = out_v;
     }
+
     
-    offset = size - last + threadIdx.x;
+    tid = size - last + threadIdx.x;
     // handle the tail
-    for (; offset < size; offset += blockDim.x) {
-        output[offset] = epilogue(input[offset]);
+    for (; tid < size; tid += block_size) {
+        output[tid] = epilogue(input[tid]);
     }
 }
+
 
 template <int ILP, typename input_t, typename acc_t, typename Reduction>
 __device__ __forceinline__ void softmax_warp_online_reduce(const input_t* data, int size,
@@ -328,21 +331,22 @@ __device__ __forceinline__ void softmax_warp_online_reduce(const input_t* data, 
     int tid = threadIdx.x;
     int block_size = blockDim.x;
 
-    int last = size % (ILP * block_size);
+    int last = size % ILP; 
+    int trow = size / ILP;
 
-    input_t v[ILP];
-    auto value = reinterpret_cast<LoadT*>(&v);
-    for (; tid * ILP < (size - last); tid += block_size) {
-        *value = reinterpret_cast<const LoadT*>(data)[tid];
+    LoadT v;
+    input_t* value = reinterpret_cast<input_t*>(&v);
+    for (; tid < trow; tid += block_size) {
+        v = *reinterpret_cast<const LoadT*>(data + tid * ILP);
 
         #pragma unroll
         for (int j = 0; j < ILP; ++j) {
-            r(v[j], thread_max, thread_sum);
+            r(value[j], thread_max, thread_sum);
         }
     }
 
     // 对于不够向量化读取的长度进行收尾
-    tid = size - last + tid;
+    tid = size - last + threadIdx.x; 
     // Epilogue
     for (; tid < size; tid += block_size) {
         r(data[tid], thread_max, thread_sum);
@@ -714,8 +718,8 @@ void softmax_lastdim_smallsize_forward(output_t *dst, const input_t *src,
     int log2_elements = softmax_warp_impl::log2_ceil(dim_size);
     const int next_power_of_two = 1 << log2_elements;
 
-    // use 512 threads per block to maximimize gpu utilization
-    constexpr int threads_per_block = 512;
+    // use 256 threads per block to maximimize gpu utilization
+    constexpr int threads_per_block = 256;
 
     int warp_size = at::cuda::warp_size();
     warp_size = (next_power_of_two < warp_size) ? next_power_of_two : warp_size;
@@ -781,8 +785,8 @@ void softmax_lastdim_smallsize_backward(input_t *grad_input, const output_t *gra
     int log2_elements = softmax_warp_impl::log2_ceil(dim_size);
     const int next_power_of_two = 1 << log2_elements;
 
-    // use 128 threads per block to maximimize gpu utilization
-    constexpr int threads_per_block = 512;
+    // use 256 threads per block to maximimize gpu utilization
+    constexpr int threads_per_block = 256;
 
     int warp_size = at::cuda::warp_size();
     warp_size = (next_power_of_two < warp_size) ? next_power_of_two : warp_size;
