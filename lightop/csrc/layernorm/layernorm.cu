@@ -73,8 +73,8 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t*
   }
 }
 
-template <typename scalar_t, int VEC=4>
-__global__ void layernorm_forward_kernel_2048(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
+template <typename scalar_t, int VEC=4,int blocksize=512>
+__global__ void layernorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
                                             scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
 {
   int blockidx=blockIdx.x;
@@ -83,7 +83,8 @@ __global__ void layernorm_forward_kernel_2048(scalar_t* input,scalar_t* ret,scal
   using T_ACC = acc_type<scalar_t, true>;
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
-  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
+  constexpr int share_size=blocksize/C10_WARP_SIZE;
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[share_size];
   __shared__ T_ACC s_mean;
   __shared__ T_ACC s_rstd;
   WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
@@ -130,79 +131,6 @@ __global__ void layernorm_forward_kernel_2048(scalar_t* input,scalar_t* ret,scal
   }
 }
 
-template <typename scalar_t, int VEC=4>
-__global__ void layernorm_forward_kernel_4096(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
-                                            scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
-{
-  int blockidx=blockIdx.x;
-  int threadidx=threadIdx.x;
-  int block_cols=blockidx*cols;
-  using T_ACC = acc_type<scalar_t, true>;
-  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
-  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
-  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[8];
-  __shared__ T_ACC s_mean;
-  __shared__ T_ACC s_rstd;
-  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
-  WelfordOp welford_op;
-  WelfordType val;
-  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
-  VecTpye *X=(VecTpye*)(input+block_cols);
-  VecTpye *Y=(VecTpye*)(ret+block_cols);
-  int tcol=cols/VEC;
-  T_ACC tmean;
-  T_ACC trstd;
-  VecTpye tx;
-  VecTpye ty;
-  scalar_t* px=(scalar_t*)(&tx);
-  scalar_t* py=(scalar_t*)(&ty);
-  VecTpye tx2;
-  VecTpye ty2;
-  scalar_t* px2=(scalar_t*)(&tx2);
-  scalar_t* py2=(scalar_t*)(&ty2);
-  int j=threadidx;
-  int j2=j+512;
-  tx = X[j];
-  #pragma unroll
-  for(int i=0;i<VEC;i++){
-    val = welford_op.reduce(val, static_cast<T_ACC>(px[i]));
-  }
-  if (j2 < tcol) {
-    tx2 = X[j2];
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      val = welford_op.reduce(val, static_cast<T_ACC>(px2[i]));
-    }
-  }
-  val = BlockReduce(val,welford_op,val_shared_ptr);
-  if (threadidx == 0) {
-    //layernorm get mean and rstd
-    thrust::tie(tmean, s_mean) = welford_op.project(val);
-    s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
-  }
-  __syncthreads();
-  tmean=s_mean;
-  trstd=s_rstd;
-  #pragma unroll
-  for(int i=0;i<VEC;i++){
-    int jj=j*VEC+i;
-    py[i]=(static_cast<T_ACC>(px[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
-  }
-  Y[j]=ty;
-  if (j2 < tcol) {
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      int jj=j2*VEC+i;
-      py2[i]=(static_cast<T_ACC>(px2[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
-    }
-    Y[j2]=ty2;
-  }
-  if(threadIdx.x==0&&rstd!=NULL){
-      mean[blockidx] = tmean;
-      rstd[blockidx] = trstd;
-  }
-}
-
 std::tuple<Tensor,Tensor,Tensor>
 layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,double ln_epsilon,bool training)
 {
@@ -234,16 +162,31 @@ layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,dou
           mean_data=mean.data_ptr<scalar_t>();
           rstd_data=rstd.data_ptr<scalar_t>();
         }
-        if (cols % 4 == 0){
-          if(cols<=2048)
-            layernorm_forward_kernel_2048<scalar_t,4><<<rows, get_layernorm_blocksize(cols/4), 0, at::cuda::getCurrentCUDAStream()>>>(
+        if (cols % 16 == 0&&cols<=16384){
+          if(cols<=1024){
+                layernorm_forward_kernel_fast<scalar_t,8,128><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
                                     self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-          else if(cols<=4096){
-            layernorm_forward_kernel_4096<scalar_t,4><<<rows, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
+         } 
+          else if(cols<=2048){
+            layernorm_forward_kernel_fast<scalar_t,8,256><<<rows, 256, 0, at::cuda::getCurrentCUDAStream()>>>(
                                     self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
           }
-          else{
-            layernorm_forward_kernel<scalar_t,4><<<rows, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
+          else if(cols<=4096){
+            if(rows>1200){
+                layernorm_forward_kernel_fast<scalar_t,8,512><<<rows, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
+                          self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+            }
+            else{
+              layernorm_forward_kernel_fast<scalar_t,4,1024><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                      self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+            }
+          }
+          else if(cols<=8192){
+            layernorm_forward_kernel_fast<scalar_t,8,1024><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                    self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+          }
+          else {
+            layernorm_forward_kernel_fast<scalar_t,16,1024><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
                                     self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
           }
         }
