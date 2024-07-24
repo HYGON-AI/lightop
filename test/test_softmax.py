@@ -13,7 +13,7 @@ torch.manual_seed(0)
 
 
 class SoftmaxTester:
-    def __init__(self, softmax_type='default', dim=-1, test_half=False, half_to_float=False, dropout_p=0.0):
+    def __init__(self, softmax_type='default', dim=-1, test_half=False, half_to_float=False):
         torch.backends.cudnn.enabled = False
         self.half_to_float = half_to_float
         self.test_half = test_half
@@ -21,11 +21,11 @@ class SoftmaxTester:
         self.input_dtype = torch.float16 if self.test_half else torch.float32
 
         if softmax_type == 'default' or softmax_type == 'softmax':
-            self.torch_softmax = nn.Sequential(nn.Softmax(dim=dim), nn.Dropout(p=dropout_p)).cuda() if dropout_p > 0 else nn.Softmax(dim=dim).cuda()
-            self.fuse_softmax = nn.Sequential(FuseSoftmax(dim=dim, half_to_float=half_to_float), nn.Dropout(p=dropout_p)).cuda()
+            self.torch_softmax = nn.Softmax(dim=dim).cuda()
+            self.fuse_softmax = FuseSoftmax(dim=dim, half_to_float=half_to_float).cuda()
         elif softmax_type == 'log_softmax':
-            self.torch_softmax = nn.Sequential(nn.LogSoftmax(dim=dim), nn.Dropout(p=dropout_p)).cuda() if dropout_p > 0 else nn.LogSoftmax(dim=dim).cuda()
-            self.fuse_softmax = nn.Sequential(FuseLogSoftmax(dim=dim, half_to_float=half_to_float), nn.Dropout(p=dropout_p)).cuda()
+            self.torch_softmax = nn.LogSoftmax(dim=dim).cuda()
+            self.fuse_softmax = FuseLogSoftmax(dim=dim, half_to_float=half_to_float).cuda()
         else:
             raise NotImplementedError('not support type {}'.format(softmax_type))
 
@@ -202,7 +202,9 @@ class SoftmaxTester:
 def test_lastdim_softmax():
     # 设置输入的softmax的tensor size
     x_size_lists = [
+        (4, 256, 1024),
         (4, 256, 2048),
+        (4, 256, 2049),
         (4, 256, 3966),
         (4, 256, 4096),
         (4, 256, 5015),
@@ -230,10 +232,14 @@ def test_lastdim_softmax():
 def test_spatial_softmax():
     # 设置输入的softmax的tensor size
     x_size_lists = [
+        (4, 256, 1024),
+        (4, 256, 2048),
+        (4, 256, 2049),
+        (4, 256, 3966),
         (4, 256, 4096),
-        (4, 4096, 256),
+        (4, 256, 5015),
         (4, 256, 8192),
-        (4, 8192, 256),
+        (4, 16, 1025, 1025),
     ]
 
     # 设置测试输入half类型时，输出是否为float
