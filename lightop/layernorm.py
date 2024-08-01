@@ -18,6 +18,19 @@ class LayerNorm(torch.nn.Module):
     def extra_repr(self):
         return f'eps={round(self.eps,5):0.5f}'
 
+class AddLn(torch.nn.Module):
+    def __init__(self,normalized_shape:int,eps: float = 1e-5,device=None, dtype=None ):
+        super(AddLn,self).__init__()
+        self.eps = eps
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        self.weight = torch.nn.Parameter(torch.empty(normalized_shape, **factory_kwargs))
+        self.bias = torch.nn.Parameter(torch.empty(normalized_shape, **factory_kwargs))
+        torch.nn.init.ones_(self.weight)
+        torch.nn.init.zeros_(self.bias)
+    def forward(self, X, residual):
+        return op.add_ln_forward_autograd(X, residual, self.weight,self.bias,self.eps,self.training)
+    def extra_repr(self):
+        return f'eps={round(self.eps,5):0.5f}'
 
 class LnDropout(torch.nn.Module):
     rate: float
