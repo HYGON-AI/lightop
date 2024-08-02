@@ -44,11 +44,7 @@ __global__ void rmsnorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* r
     #pragma unroll
     for(int i=0;i<VEC;i++){
       int jj=j*VEC+i;
-      py[i]=static_cast<T_ACC>(px[i]) * static_cast<T_ACC>(gamma[jj]);
-    }
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      py[i]=static_cast<T_ACC>(py[i])*trstd;
+      py[i]=static_cast<T_ACC>(px[i]*gamma[jj])*trstd;
     }
     Y[j]=ty;
   }
@@ -95,11 +91,7 @@ __global__ void rmsnorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,scalar
     #pragma unroll
     for(int i=0;i<VEC;i++){
       int jj=j*VEC+i;
-      py[i]=static_cast<T_ACC>(px[i]) * static_cast<T_ACC>(gamma[jj]);
-    }
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      py[i]=static_cast<T_ACC>(py[i])*trstd;
+      py[i]=static_cast<T_ACC>(px[i]*gamma[jj])*trstd;
     }
     Y[j]=ty;
   }
