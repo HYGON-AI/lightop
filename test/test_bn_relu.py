@@ -113,7 +113,7 @@ def test_profile(batchsize,channel,depth, cols,rows,repeat_num,d_num,use_miopen=
     else:
       os.environ['HIP_NATIVE_FUSE']="1"
       os.environ['HIP_MIOPEN_FUSE']="0"
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True,
                                      profile_memory=False) as prof1:
         for i in range(repeat_num):
             x1.grad = None
@@ -122,7 +122,7 @@ def test_profile(batchsize,channel,depth, cols,rows,repeat_num,d_num,use_miopen=
             torch.cuda.synchronize()
     prof1.export_chrome_trace('./profile_torch_bn_relu.json')
     
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True,
                                      profile_memory=False) as prof2:
         for i in range(repeat_num):
             x2.grad = None

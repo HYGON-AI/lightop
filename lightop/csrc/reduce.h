@@ -37,7 +37,6 @@ BlockReduce(T val, const ReduceOp& op, T* shared) {
   const int share_size=block_size/C10_WARP_SIZE;
   val = WarpReduce(val, op);
   if(block_size==64)return val;
-  __syncthreads();
   if (lid == 0&&wid<share_size) {
     shared[wid] = val;
   }
@@ -65,7 +64,6 @@ __inline__ __device__ T BlockReduceSum(T val, T* shared) {
   const int share_size=block_size/C10_WARP_SIZE;
   val = WarpReduceSum(val);
   if(block_size==C10_WARP_SIZE)return val;
-  __syncthreads();
   if (lid == 0&&wid<share_size) {
     shared[wid] = val;
   }
@@ -75,6 +73,36 @@ __inline__ __device__ T BlockReduceSum(T val, T* shared) {
     val = WarpReduceSum(val,share_size/2);
   }
   return val;
+}
+
+template <typename T,int max>
+__inline__ __device__ T WarpReduceSum(T val) {
+  #pragma unroll
+  for (int offset = max; offset > 0; offset >>= 1) {
+    val += WARP_SHFL_DOWN(val, offset);
+  }
+  return val;
+}
+
+template <typename T,int share_size>
+__inline__ __device__ T BlockReduceSum(T val, T* shared) {
+  const int lid = threadIdx.x % C10_WARP_SIZE;
+  const int wid = threadIdx.x / C10_WARP_SIZE;
+  val = WarpReduceSum<T,32>(val);
+  if constexpr (share_size==1){
+    return val;
+  }
+  else{
+    if (lid == 0&&wid<share_size) {
+        shared[wid] = val;
+    }
+    __syncthreads();
+    if (wid == 0&&lid<share_size) {
+        val= shared[lid];
+        val = WarpReduceSum<T,share_size/2>(val);
+    }
+    return val;
+  }
 }
 
 
