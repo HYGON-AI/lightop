@@ -65,7 +65,7 @@ def test_profile(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
     f1,f2=get_model(cols=cols,dropout_p=dropout_p,use_half=use_half)
 
     torch.manual_seed(0)
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True,
                                      profile_memory=False) as prof1:
         for i in range(repeat_num):
             y1 = f1(x1,residual1,bias1)
@@ -74,7 +74,7 @@ def test_profile(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
     prof1.export_chrome_trace('./profile_torch_ln_add_dropout_bias.json')
 
     torch.manual_seed(0)
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True,
                                      profile_memory=False) as prof2:
         for i in range(repeat_num):
             y2 = f2(x2,residual2,bias2)

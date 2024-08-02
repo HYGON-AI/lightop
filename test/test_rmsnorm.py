@@ -40,21 +40,21 @@ def test_profile(batchsize, seqs, cols,repeat_num,use_half=False):
     x1,x2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
     f1,f2=get_model(cols=cols,use_half=use_half)
 
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True,
                                      profile_memory=False) as prof1:
         for i in range(repeat_num):
             y1 = f1(x1)
             y1.backward(grad)
             torch.cuda.synchronize()
-    prof1.export_chrome_trace('./profile_torch_layernorm.json')
+    prof1.export_chrome_trace('./profile_torch_rmsnorm.json')
     
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True,
                                      profile_memory=False) as prof2:
         for i in range(repeat_num):
             y2 = f2(x2)
             y2.backward(grad)
             torch.cuda.synchronize()
-    prof2.export_chrome_trace('./profile_fuse_layernorm.json')  
+    prof2.export_chrome_trace('./profile_fuse_rmsnorm.json')  
 
 def test_speed(batchsize, seqs, cols,repeat_num,use_half=False):
 

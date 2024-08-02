@@ -45,7 +45,7 @@ def test_profile(batchsize, seqs, cols,repeat_num,use_half=False):
     x1,x2,bias1,bias2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
     f1,f2=get_model(use_half=use_half)
 
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True,
                                      profile_memory=False) as prof1:
         for i in range(repeat_num):
             bias1.grad = None
@@ -55,7 +55,7 @@ def test_profile(batchsize, seqs, cols,repeat_num,use_half=False):
             torch.cuda.synchronize()
     prof1.export_chrome_trace('./profile_torch_bias_gelu.json')
     
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True,
                                      profile_memory=False) as prof2:
         for i in range(repeat_num):
             bias2.grad = None

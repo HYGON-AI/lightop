@@ -156,7 +156,7 @@ def test_record_by_profiler(use_half=False, **args):
     # print('p shape ', p.shape, ', p1_trans shape ', p1_trans.shape)
 
     transform_lightop = lightop_CTCLoss(blank=0, reduction='mean', logits_time_major=logits_time_major)
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False, profile_memory=False) as prof:
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True, profile_memory=False) as prof:
         for i in range(20):
             p1 = p.clone().requires_grad_() if logits_time_major else p1_trans.clone().requires_grad_()
             loss_lightop = transform_lightop(p1, gt, p_len, gt_len)
@@ -170,7 +170,7 @@ def test_record_by_profiler(use_half=False, **args):
 
     if not use_half:
         transform_torch = torch.nn.CTCLoss(blank=0, reduction='mean')
-        with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False, profile_memory=False) as prof:
+        with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True, profile_memory=False) as prof:
             for i in range(20):
                 p2 = p.clone().log_softmax(-1).requires_grad_()
                 loss_torch = transform_torch(p2, gt, p_len, gt_len)

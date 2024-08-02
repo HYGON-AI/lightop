@@ -7,106 +7,74 @@ namespace {
   constexpr int VEC = 4;
 }
 
-template <typename scalar_t,typename T_ACC>
-#if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
-C10_LAUNCH_BOUNDS_2(512, 4)
-#endif
-__global__ void fused_rn_add_dropout_kernel_val_2048(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* gamma,int cols,scalar_t eps)
-{
-  __shared__ T_ACC val_shared[8];
-  __shared__ T_ACC s_rstd;
-  T_ACC val=0;
-  int i=blockIdx.x;
-  int j=threadIdx.x;
-  int tcol=cols/VEC;
-  using LoadT = memory::aligned_vector<scalar_t, VEC>;
-  scalar_t input4[VEC];
-  scalar_t output4[VEC];
-  scalar_t residual4[VEC];
-  T_ACC trstd;
-  int idx = i * tcol + j;
-  if(j<tcol){
-    idx*=VEC;
-    *(LoadT*)input4 = *(LoadT*)(input+idx);
-    *(LoadT*)residual4 = *(LoadT*)(residual+idx);
-    #pragma unroll
-    for (int ii = 0; ii < VEC; ii++) {
-      input4[ii]+=residual4[ii];
-      val += static_cast<T_ACC>(input4[ii])*static_cast<T_ACC>(input4[ii]);
-    }
+template <typename T,int reducesize=C10_WARP_SIZE>
+__inline__ __device__ T WarpReduceSum_NEW(T val) {
+#pragma unroll
+  for (int offset = reducesize/2; offset > 0; offset >>= 1) {
+    val += WARP_SHFL_DOWN(val, offset);
   }
-  val = BlockReduceSum(val,val_shared);
-  if (j == 0) s_rstd=c10::cuda::compat::rsqrt(val/cols + static_cast<T_ACC>(eps));
-  __syncthreads();
-  if(j<tcol){
-    trstd=s_rstd;
-    #pragma unroll
-    for(int ii=0;ii<VEC;ii++){
-      int jj=j*VEC+ii;
-      output4[ii] = static_cast<T_ACC>(input4[ii]) * trstd * static_cast<T_ACC>(gamma[jj]);
+  return val;
+}
+
+template <typename T,int block_size=512>
+__inline__ __device__ T BlockReduceSum_NEW(T val, T* shared) {
+  constexpr int share_size=block_size/C10_WARP_SIZE;
+  val = WarpReduceSum_NEW<T>(val);
+  if constexpr(block_size==C10_WARP_SIZE)
+  {
+    return val;
+  }
+  else{
+    const int lid = threadIdx.x % C10_WARP_SIZE;
+    const int wid = threadIdx.x / C10_WARP_SIZE;
+    __syncthreads();
+    if (lid == 0&&wid<share_size) {
+      shared[wid] = val;
     }
-    *(LoadT*)(ret+idx)=*(LoadT*)output4;
+    __syncthreads();
+    if (wid == 0&&lid<share_size) {
+      val = WarpReduceSum_NEW<T,share_size>(shared[lid]);
+    }
+    return val;
   }
 }
 
-template <typename scalar_t,typename T_ACC>
-#if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
-C10_LAUNCH_BOUNDS_2(512, 4)
-#endif
-__global__ void fused_rn_add_dropout_kernel_val_4096(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* gamma,int cols,scalar_t eps)
+template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512>
+__global__ void fused_rn_add_dropout_kernel_val_fast(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* gamma,int cols,scalar_t eps)
 {
-  __shared__ T_ACC val_shared[8];
+  constexpr int share_size=block_size/C10_WARP_SIZE;
+  __shared__ T_ACC val_shared[share_size];
   __shared__ T_ACC s_rstd;
   T_ACC val=0;
   int i=blockIdx.x;
   int j=threadIdx.x;
-  int tcol=cols/VEC;
-  using LoadT = memory::aligned_vector<scalar_t, VEC>;
-  scalar_t input4[VEC];
-  scalar_t input8[VEC];
-  scalar_t output4[VEC];
-  scalar_t output8[VEC];
-  scalar_t residual4[VEC];
-  scalar_t residual8[VEC];
+  int tcol=cols/Vec;
+  if(j>=tcol)return;
+  using LoadT = memory::aligned_vector<scalar_t, Vec>;
+  scalar_t input4[Vec];
+  scalar_t output4[Vec];
+  scalar_t residual4[Vec];
   T_ACC trstd;
-  int idx1 = i * tcol + j;
-  int idx2 = i * tcol + j + 512;
-  idx1*=VEC;
-  *(LoadT*)input4 = *(LoadT*)(input+idx1);
-  *(LoadT*)residual4 = *(LoadT*)(residual+idx1);
+  int idx = i * tcol + j;
+  idx*=Vec;
+  *(LoadT*)input4 = *(LoadT*)(input+idx);
+  *(LoadT*)residual4 = *(LoadT*)(residual+idx);
   #pragma unroll
-  for (int ii = 0; ii < VEC; ii++) {
+  for (int ii = 0; ii < Vec; ii++) {
     input4[ii]+=residual4[ii];
     val += static_cast<T_ACC>(input4[ii])*static_cast<T_ACC>(input4[ii]);
   }
-  if(j<tcol-512){
-    idx2*=VEC;
-    *(LoadT*)input8 = *(LoadT*)(input+idx2);
-    *(LoadT*)residual8 = *(LoadT*)(residual+idx2);
-    #pragma unroll
-    for (int ii = 0; ii < VEC; ii++) {
-      input8[ii]+=residual8[ii];
-      val += static_cast<T_ACC>(input8[ii])*static_cast<T_ACC>(input8[ii]);
-    }
-  }
-  val = BlockReduceSum(val,val_shared);
+  val = BlockReduceSum_NEW<T_ACC,block_size>(val,val_shared);
   if (j == 0) s_rstd=c10::cuda::compat::rsqrt(val/cols + static_cast<T_ACC>(eps));
   __syncthreads();
   trstd=s_rstd;
   #pragma unroll
-  for(int ii=0;ii<VEC;ii++){
-    int jj=j*VEC+ii;
+  for(int ii=0;ii<Vec;ii++){
+    int jj=j*Vec+ii;
     output4[ii] = static_cast<T_ACC>(input4[ii]) * trstd * static_cast<T_ACC>(gamma[jj]);
   }
-  *(LoadT*)(ret+idx1)=*(LoadT*)output4;
-  if(j<tcol-512){
-    #pragma unroll
-    for(int ii=0;ii<VEC;ii++){
-      int jj=j*VEC+ii+2048;
-      output8[ii] = static_cast<T_ACC>(input8[ii]) * trstd * static_cast<T_ACC>(gamma[jj]);
-    }
-    *(LoadT*)(ret+idx2)=*(LoadT*)output8;
-  }
+  *(LoadT*)(residual+idx)=*(LoadT*)input4;
+  *(LoadT*)(ret+idx)=*(LoadT*)output4;
 }
 
 template <typename scalar_t,typename T_ACC>
@@ -412,11 +380,19 @@ fused_rn_add_dropout_forward(const Tensor& self,const Tensor& other,const Tensor
           }
         }
         else {
-          if(cols<=2048){
-            fused_rn_add_dropout_kernel_val_2048<scalar_t,T_ACC><<<rows,  get_layernorm_blocksize(cols/4), 0, stream>>>(self_data,other_data,ret_data,weight_data,cols,eps);
-          }
-          else if(cols<=4096){
-            fused_rn_add_dropout_kernel_val_4096<scalar_t,T_ACC><<<rows,  512, 0, stream>>>(self_data,other_data,ret_data,weight_data,cols,eps);
+          if(cols>=1024&&cols<=8192&&cols%16==0){
+            if(cols<=1024){
+                fused_rn_add_dropout_kernel_val_fast<scalar_t,T_ACC,2,512><<<rows,  512, 0, stream>>>(self_data,other_data,ret_data,weight_data,cols,eps);
+            }
+            else if(cols<=2048){
+                fused_rn_add_dropout_kernel_val_fast<scalar_t,T_ACC,2,1024><<<rows,  1024, 0, stream>>>(self_data,other_data,ret_data,weight_data,cols,eps);
+            }
+            else if(cols<=4096){
+                fused_rn_add_dropout_kernel_val_fast<scalar_t,T_ACC,4,1024><<<rows,  1024, 0, stream>>>(self_data,other_data,ret_data,weight_data,cols,eps);
+            }
+            else{
+                fused_rn_add_dropout_kernel_val_fast<scalar_t,T_ACC,8,1024><<<rows,  1024, 0, stream>>>(self_data,other_data,ret_data,weight_data,cols,eps);
+            } 
           }
           else{
             fused_rn_add_dropout_kernel_val<scalar_t,T_ACC><<<rows, 512, 0, stream>>>(self_data,other_data,ret_data,weight_data,cols,eps);

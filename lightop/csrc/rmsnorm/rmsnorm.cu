@@ -44,7 +44,11 @@ __global__ void rmsnorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* r
     #pragma unroll
     for(int i=0;i<VEC;i++){
       int jj=j*VEC+i;
-      py[i]=(static_cast<T_ACC>(px[i])) * trstd * static_cast<T_ACC>(gamma[jj]);
+      py[i]=static_cast<T_ACC>(px[i]) * static_cast<T_ACC>(gamma[jj]);
+    }
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      py[i]*=trstd;
     }
     Y[j]=ty;
   }
@@ -53,14 +57,15 @@ __global__ void rmsnorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* r
   }
 }
 
-template <typename scalar_t, int VEC=4>
-__global__ void rmsnorm_forward_kernel_2048(scalar_t* input,scalar_t* ret,scalar_t* rstd, scalar_t* gamma,int cols,scalar_t eps)
+template <typename scalar_t, int VEC=4,int blocksize=512>
+__global__ void rmsnorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,scalar_t* rstd, scalar_t* gamma,int cols,scalar_t eps)
 {
   int blockidx=blockIdx.x;
   int threadidx=threadIdx.x;
   int block_cols=blockidx*cols;
   using T_ACC = acc_type<scalar_t, true>;
-  __shared__ T_ACC val_shared[8];
+  constexpr int sharesize=blocksize/C10_WARP_SIZE;
+  __shared__ T_ACC val_shared[sharesize];
   __shared__ T_ACC s_rstd;
   T_ACC val=0;
   using VecTpye=memory::aligned_vector<scalar_t, VEC>;
@@ -80,7 +85,7 @@ __global__ void rmsnorm_forward_kernel_2048(scalar_t* input,scalar_t* ret,scalar
       val += static_cast<T_ACC>(px[i])*static_cast<T_ACC>(px[i]);
     }
   }
-  val = BlockReduceSum(val,val_shared);
+  val = BlockReduceSum<T_ACC,sharesize>(val,val_shared);
   if (threadidx == 0) {
     s_rstd=c10::cuda::compat::rsqrt(val/cols + static_cast<T_ACC>(eps));
   }
@@ -90,71 +95,13 @@ __global__ void rmsnorm_forward_kernel_2048(scalar_t* input,scalar_t* ret,scalar
     #pragma unroll
     for(int i=0;i<VEC;i++){
       int jj=j*VEC+i;
-      py[i]=static_cast<T_ACC>(px[i]) * trstd * static_cast<T_ACC>(gamma[jj]);
+      py[i]=static_cast<T_ACC>(px[i]) * static_cast<T_ACC>(gamma[jj]);
+    }
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      py[i]*=trstd;
     }
     Y[j]=ty;
-  }
-  if(threadIdx.x==0&&rstd!=NULL){
-      rstd[blockidx] = trstd;
-  }
-}
-
-template <typename scalar_t, int VEC=4>
-__global__ void rmsnorm_forward_kernel_4096(scalar_t* input,scalar_t* ret,scalar_t* rstd, scalar_t* gamma,int cols,scalar_t eps)
-{
-   int blockidx=blockIdx.x;
-  int threadidx=threadIdx.x;
-  int block_cols=blockidx*cols;
-  using T_ACC = acc_type<scalar_t, true>;
-  __shared__ T_ACC val_shared[8];
-  __shared__ T_ACC s_rstd;
-  T_ACC val=0;
-  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
-  VecTpye *X=(VecTpye*)(input+block_cols);
-  VecTpye *Y=(VecTpye*)(ret+block_cols);
-  int tcol=cols/VEC;
-  T_ACC trstd;
-  VecTpye tx;
-  VecTpye ty;
-  scalar_t* px=(scalar_t*)(&tx);
-  scalar_t* py=(scalar_t*)(&ty);
-  VecTpye tx2;
-  VecTpye ty2;
-  scalar_t* px2=(scalar_t*)(&tx2);
-  scalar_t* py2=(scalar_t*)(&ty2);
-  int j=threadidx;
-  int j2=j+512;
-  tx = X[j];
-  #pragma unroll
-  for(int i=0;i<VEC;i++){
-    val += static_cast<T_ACC>(px[i])*static_cast<T_ACC>(px[i]);
-  }
-  if (j2 < tcol) {
-    tx2 = X[j2];
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      val += static_cast<T_ACC>(px2[i])*static_cast<T_ACC>(px2[i]);
-    }
-  }
-  val = BlockReduceSum(val,val_shared);
-  if (threadidx == 0) {
-    s_rstd=c10::cuda::compat::rsqrt(val/cols + static_cast<T_ACC>(eps));
-  }
-  __syncthreads();
-  trstd=s_rstd;
-  #pragma unroll
-  for(int i=0;i<VEC;i++){
-    int jj=j*VEC+i;
-    py[i]=static_cast<T_ACC>(px[i]) * trstd * static_cast<T_ACC>(gamma[jj]) ;
-  }
-  Y[j]=ty;
-  if (j2 < tcol) {
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      int jj=j2*VEC+i;
-      py2[i]=static_cast<T_ACC>(px2[i]) * trstd * static_cast<T_ACC>(gamma[jj]);
-    }
-    Y[j2]=ty2;
   }
   if(threadIdx.x==0&&rstd!=NULL){
       rstd[blockidx] = trstd;
@@ -170,6 +117,7 @@ rmsnorm_forward(const Tensor& self,const Tensor& weight,double ln_epsilon,bool t
     const int nelem = self.numel();
     const int rows=nelem/cols;
     Tensor ret = at::empty_like(self);
+    Tensor bias = at::empty_like(weight);
     Tensor rstd;
     if(training)rstd = at::empty({rows},self.options());
     AT_DISPATCH_FLOATING_TYPES_AND2(
@@ -182,19 +130,34 @@ rmsnorm_forward(const Tensor& self,const Tensor& weight,double ln_epsilon,bool t
         scalar_t* self_data = self.data_ptr<scalar_t>();
         scalar_t* ret_data=ret.data_ptr<scalar_t>();
         scalar_t* weight_data=weight.data_ptr<scalar_t>();
+        scalar_t* bias_data=bias.data_ptr<scalar_t>();
         scalar_t  eps = ln_epsilon;
         scalar_t* rstd_data=NULL;
         if(training)rstd_data=rstd.data_ptr<scalar_t>();
-        if (cols % 4 == 0){
-          if(cols<=2048)
-            rmsnorm_forward_kernel_2048<scalar_t,4><<<rows, get_layernorm_blocksize(cols/4), 0, at::cuda::getCurrentCUDAStream()>>>(
+        if (cols % 16 == 0){
+          if(cols<=1024)
+            rmsnorm_forward_kernel_fast<scalar_t,8,128><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
                                     self_data,ret_data,rstd_data,weight_data,cols,eps);
+          else if(cols<=2048){
+            rmsnorm_forward_kernel_fast<scalar_t,8,256><<<rows, 256, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                    self_data,ret_data,rstd_data,weight_data,cols,eps);
+          }
           else if(cols<=4096){
-            rmsnorm_forward_kernel_4096<scalar_t,4><<<rows, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
+            if(rows>1200){
+              rmsnorm_forward_kernel_fast<scalar_t,8,512><<<rows, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                      self_data,ret_data,rstd_data,weight_data,cols,eps);
+            }
+            else{
+              rmsnorm_forward_kernel_fast<scalar_t,4,1024><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
+                        self_data,ret_data,rstd_data,weight_data,cols,eps);
+            }
+          }
+          else if(cols<=8192){
+            rmsnorm_forward_kernel_fast<scalar_t,8,1024><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
                                     self_data,ret_data,rstd_data,weight_data,cols,eps);
           }
           else{
-            rmsnorm_forward_kernel<scalar_t,4><<<rows, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
+            rmsnorm_forward_kernel_fast<scalar_t,16,1024><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
                                     self_data,ret_data,rstd_data,weight_data,cols,eps);
           }
         }

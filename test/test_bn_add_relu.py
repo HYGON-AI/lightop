@@ -120,7 +120,7 @@ def test_profile(batchsize,channel,depth, cols,rows,repeat_num,d_num,use_half=Fa
     x1,x2,residual1,residual2,grad=get_data(batchsize, channel,depth, cols,rows,d_num=d_num,use_half=use_half)
     f1,f2=get_model(channel=channel,d_num=d_num,use_half=use_half)
 
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True,
                                      profile_memory=False) as prof1:
         for i in range(repeat_num):
             x1.grad = None
@@ -130,7 +130,7 @@ def test_profile(batchsize,channel,depth, cols,rows,repeat_num,d_num,use_half=Fa
             torch.cuda.synchronize()
     prof1.export_chrome_trace('./profile_torch_bn_add_relu.json')
     
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True,
                                      profile_memory=False) as prof2:
         for i in range(repeat_num):
             x2.grad = None
