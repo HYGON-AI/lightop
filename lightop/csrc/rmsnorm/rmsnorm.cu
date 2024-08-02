@@ -48,7 +48,7 @@ __global__ void rmsnorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* r
     }
     #pragma unroll
     for(int i=0;i<VEC;i++){
-      py[i]*=trstd;
+      py[i]=static_cast<T_ACC>(py[i])*trstd;
     }
     Y[j]=ty;
   }
@@ -99,7 +99,7 @@ __global__ void rmsnorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,scalar
     }
     #pragma unroll
     for(int i=0;i<VEC;i++){
-      py[i]*=trstd;
+      py[i]=static_cast<T_ACC>(py[i])*trstd;
     }
     Y[j]=ty;
   }
@@ -117,7 +117,6 @@ rmsnorm_forward(const Tensor& self,const Tensor& weight,double ln_epsilon,bool t
     const int nelem = self.numel();
     const int rows=nelem/cols;
     Tensor ret = at::empty_like(self);
-    Tensor bias = at::empty_like(weight);
     Tensor rstd;
     if(training)rstd = at::empty({rows},self.options());
     AT_DISPATCH_FLOATING_TYPES_AND2(
@@ -130,7 +129,6 @@ rmsnorm_forward(const Tensor& self,const Tensor& weight,double ln_epsilon,bool t
         scalar_t* self_data = self.data_ptr<scalar_t>();
         scalar_t* ret_data=ret.data_ptr<scalar_t>();
         scalar_t* weight_data=weight.data_ptr<scalar_t>();
-        scalar_t* bias_data=bias.data_ptr<scalar_t>();
         scalar_t  eps = ln_epsilon;
         scalar_t* rstd_data=NULL;
         if(training)rstd_data=rstd.data_ptr<scalar_t>();
