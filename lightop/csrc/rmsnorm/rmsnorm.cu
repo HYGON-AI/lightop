@@ -132,7 +132,7 @@ rmsnorm_forward(const Tensor& self,const Tensor& weight,double ln_epsilon,bool t
         scalar_t  eps = ln_epsilon;
         scalar_t* rstd_data=NULL;
         if(training)rstd_data=rstd.data_ptr<scalar_t>();
-        if (cols % 16 == 0){
+        if (cols % 16 == 0&&cols<=16384){
           if(cols<=1024)
             rmsnorm_forward_kernel_fast<scalar_t,8,128><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
                                     self_data,ret_data,rstd_data,weight_data,cols,eps);
