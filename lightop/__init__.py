@@ -1,5 +1,5 @@
 import os
-from .rmsnorm import RMSNorm, RMSNormTorch, RMSNormDropout, RMSNormAddDropout, RMSNormAddDropoutBias
+from .rmsnorm import RMSNorm, RMSNormTorch, RMSNormDropout, RMSNormAddDropout, RMSNormAddDropoutBias, RMSNormAdd
 from .layernorm import LayerNorm, LnDropout, LnAddDropout, LnAddDropoutBias, LnDropPath, AddLn
 from .droppath import DropPath
 from .fuse_bias_swiglu import FuseBiasSwiGLU
