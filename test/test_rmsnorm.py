@@ -57,7 +57,10 @@ def test_profile(batchsize, seqs, cols,repeat_num,use_half=False):
     prof2.export_chrome_trace('./profile_fuse_rmsnorm.json')  
 
 def test_speed(batchsize, seqs, cols,repeat_num,use_half=False):
-
+    if use_half:
+        print(f"---------------fp16, batchsize={batchsize},seqs={seqs}, cols={cols}---------------------")
+    else:
+        print(f"---------------fp32, batchsize={batchsize},seqs={seqs}, cols={cols}---------------------")
     x1,x2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
     f1,f2=get_model(cols=cols,use_half=use_half)
 
@@ -102,8 +105,11 @@ def test_speed(batchsize, seqs, cols,repeat_num,use_half=False):
 if __name__ == "__main__":
 
     #设置基础参数
-    batchsize, seqs, cols = 1, 2048, 5000
+    use_half = True
+    # batchsize, seqs, cols = 1, 2048, 5000
+    # batchsize, seqs, cols = 1, 2048, 8192
+    batchsize, seqs, cols = 1, 2048, 16384
     #耗时测试
-    test_speed(batchsize, seqs, cols,repeat_num=1000,use_half=False)
+    test_speed(batchsize, seqs, cols,repeat_num=1000,use_half=use_half)
     #性能分析
-    test_profile(batchsize, seqs, cols,repeat_num=10,use_half=False)
+    test_profile(batchsize, seqs, cols,repeat_num=10,use_half=use_half)
