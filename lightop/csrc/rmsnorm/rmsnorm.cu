@@ -7,6 +7,7 @@ namespace {
   constexpr int VEC = 4;
 }
 
+
 template <typename scalar_t, int VEC=4>
 __global__ void rmsnorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* rstd, scalar_t* gamma,int cols,scalar_t eps)
 {
@@ -44,7 +45,11 @@ __global__ void rmsnorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* r
     #pragma unroll
     for(int i=0;i<VEC;i++){
       int jj=j*VEC+i;
-      py[i]=static_cast<T_ACC>(px[i]*gamma[jj])*trstd;
+      py[i]=static_cast<T_ACC>(px[i]) * static_cast<T_ACC>(gamma[jj]);
+    }
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      py[i]*=trstd;
     }
     Y[j]=ty;
   }
@@ -91,7 +96,11 @@ __global__ void rmsnorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,scalar
     #pragma unroll
     for(int i=0;i<VEC;i++){
       int jj=j*VEC+i;
-      py[i]=static_cast<T_ACC>(px[i]*gamma[jj])*trstd;
+      py[i]=static_cast<T_ACC>(px[i]) * static_cast<T_ACC>(gamma[jj]);
+    }
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      py[i]*=trstd;
     }
     Y[j]=ty;
   }
@@ -109,6 +118,7 @@ rmsnorm_forward(const Tensor& self,const Tensor& weight,double ln_epsilon,bool t
     const int nelem = self.numel();
     const int rows=nelem/cols;
     Tensor ret = at::empty_like(self);
+    Tensor bias = at::empty_like(weight);
     Tensor rstd;
     if(training)rstd = at::empty({rows},self.options());
     AT_DISPATCH_FLOATING_TYPES_AND2(
@@ -121,10 +131,11 @@ rmsnorm_forward(const Tensor& self,const Tensor& weight,double ln_epsilon,bool t
         scalar_t* self_data = self.data_ptr<scalar_t>();
         scalar_t* ret_data=ret.data_ptr<scalar_t>();
         scalar_t* weight_data=weight.data_ptr<scalar_t>();
+        scalar_t* bias_data=bias.data_ptr<scalar_t>();
         scalar_t  eps = ln_epsilon;
         scalar_t* rstd_data=NULL;
         if(training)rstd_data=rstd.data_ptr<scalar_t>();
-        if (cols % 16 == 0&&cols<=16384){
+        if (cols % 16 == 0 && cols<=16384){
           if(cols<=1024)
             rmsnorm_forward_kernel_fast<scalar_t,8,128><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
                                     self_data,ret_data,rstd_data,weight_data,cols,eps);
@@ -160,8 +171,22 @@ rmsnorm_forward(const Tensor& self,const Tensor& weight,double ln_epsilon,bool t
      return std::tuple<Tensor,Tensor>(ret,rstd);
 }
 
+
 template <typename scalar_t,int VEC=4>
 __global__ void RMSNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* rstd, scalar_t* dX)
+{
+  RMSNORMBACKWARD_VEC_2048
+  if (j < tcol) {
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      pdx[i]=trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(pgamma[i])+b*static_cast<T_ACC>(px[i]);
+    }
+    *(VecTpye*)(dX+index) = tdx;
+  }
+}
+
+template <typename scalar_t,int VEC=4>
+__global__ void RMSNormBackward_kernel_vec_fast(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* rstd, scalar_t* dX)
 {
   RMSNORMBACKWARD_VEC_2048
   if (j < tcol) {
@@ -208,6 +233,8 @@ __global__ void RMSNormBackward_kernel_vec(int N,const scalar_t* dY,const scalar
   }
 }
 
+
+
 std::tuple<Tensor,Tensor>
 rmsnorm_backward(const Tensor& grad, const Tensor& X,const Tensor& rstd,const Tensor& gamma)
 {
@@ -232,20 +259,30 @@ rmsnorm_backward(const Tensor& grad, const Tensor& X,const Tensor& rstd,const Te
       scalar_t* dX_data = dX.data_ptr<scalar_t>();
       
       Gamma_Backward(nelem,N,dY_data,X_data,rstd_data,dgamma_data);
-      if(N%4!=0){
-        RMSNormBackward_kernel_vec<scalar_t,1><<<M, get_layernorm_blocksize(N), 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,rstd_data,dX_data);
-      }
-      else{
-        if(N<=2048){
-          RMSNormBackward_kernel_vec_2048<scalar_t><<<M, get_layernorm_blocksize(N/4), 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,rstd_data,dX_data);
+      if (N % 16 == 0 && N<=16384){
+        if(N<=1024)
+          RMSNormBackward_kernel_vec_fast<scalar_t,8><<<M, 128, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,rstd_data,dX_data);
+        else if(N<=2048){
+          RMSNormBackward_kernel_vec_fast<scalar_t,8><<<M, 256, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,rstd_data,dX_data);
         }
         else if(N<=4096){
-          RMSNormBackward_kernel_vec_4096<scalar_t><<<M, 512, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,rstd_data,dX_data);
+          if(M>1200){
+            RMSNormBackward_kernel_vec_fast<scalar_t,8><<<M, 512, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,rstd_data,dX_data);
+          }
+          else{
+            RMSNormBackward_kernel_vec_fast<scalar_t,4><<<M, 1024, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,rstd_data,dX_data);
+          }
+        }
+        else if(N<=8192){
+          RMSNormBackward_kernel_vec_fast<scalar_t,8><<<M, 1024, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,rstd_data,dX_data);
         }
         else{
-          RMSNormBackward_kernel_vec<scalar_t><<<M, 512, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,rstd_data,dX_data);
+          RMSNormBackward_kernel_vec_fast<scalar_t,16><<<M, 1024, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,rstd_data,dX_data);
         }
       }
+      else{
+          RMSNormBackward_kernel_vec<scalar_t><<<M, 512, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,rstd_data,dX_data);
+      }     
       C10_CUDA_KERNEL_LAUNCH_CHECK();
   });
   return std::tuple<Tensor,Tensor>(dX,dgamma);
