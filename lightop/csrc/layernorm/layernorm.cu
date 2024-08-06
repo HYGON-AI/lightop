@@ -212,6 +212,19 @@ __global__ void LayerNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const
   }
 }
 
+template <typename scalar_t, int VEC>
+__global__ void LayerNormBackward_kernel_vec_fast(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX)
+{
+  LAYERNORMBACKWARD_VEC_2048
+  if (j < tcol) {
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      pdx[i]=trstd*static_cast<T_ACC>(pdy[i])*static_cast<T_ACC>(pgamma[i])+b*static_cast<T_ACC>(px[i])+c;
+    }
+    *(VecTpye*)(dX+index) = tdx;
+  }
+}
+
 template <typename scalar_t>
 __global__ void LayerNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,const scalar_t* rstd, scalar_t* dX)
 {
@@ -274,20 +287,30 @@ layernorm_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const 
       scalar_t* dX_data = dX.data_ptr<scalar_t>();
       
       GammaBeta_Backward(nelem,N,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
-      if(N%4!=0){
-        LayerNormBackward_kernel_vec<scalar_t,1><<<M, get_layernorm_blocksize(N), 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
-      }
-      else{
-        if(N<=2048){
-          LayerNormBackward_kernel_vec_2048<scalar_t><<<M, get_layernorm_blocksize(N/4), 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
-        }
-        else if(N<=4096){
-          LayerNormBackward_kernel_vec_4096<scalar_t><<<M, 512, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+        if (N % 16 == 0 && N<=16384){
+          if(N<=1024)
+            LayerNormBackward_kernel_vec_fast<scalar_t,8><<<M, 128, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+          else if(N<=2048){
+            LayerNormBackward_kernel_vec_fast<scalar_t,8><<<M, 256, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+          }
+          else if(N<=4096){
+            if(M>1200){
+              LayerNormBackward_kernel_vec_fast<scalar_t,8><<<M, 512, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+            }
+            else{
+              LayerNormBackward_kernel_vec_fast<scalar_t,4><<<M, 1024, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+            }
+          }
+          else if(N<=8192){
+            LayerNormBackward_kernel_vec_fast<scalar_t,8><<<M, 1024, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+          }
+          else{
+            LayerNormBackward_kernel_vec_fast<scalar_t,16><<<M, 1024, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+          }
         }
         else{
-          LayerNormBackward_kernel_vec<scalar_t><<<M, 512, 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
+            LayerNormBackward_kernel_vec<scalar_t,1><<<M, get_layernorm_blocksize(N), 0, cuda_stream>>>(N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data);
         }
-      }
       C10_CUDA_KERNEL_LAUNCH_CHECK();
   });
   return std::tuple<Tensor,Tensor,Tensor>(dX,dgamma,dbeta);
