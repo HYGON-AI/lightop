@@ -331,6 +331,10 @@ def get_extensions():
     extensions.append(ext_ops)
     return extensions
 
+def _get_pytorch_version():
+    if "PYTORCH_VERSION" in os.environ:
+        return f"{os.environ['PYTORCH_VERSION']}"
+    return torch.__version__
 
 setup(
     name='lightop',
@@ -350,6 +354,9 @@ setup(
     cmdclass={
         'build_ext': BuildReleaseExtension
     },
-    zip_safe=False
+    zip_safe=False,
+    install_requires=[
+         f"torch=={_get_pytorch_version()}",
+     ],
 )
 
