@@ -1,11 +1,16 @@
 # Lightop
 
+## 简介
+Lightop是一个自研的融合算子库，提供了大量的自研算子，用来加速模型的推理和训练。
+
+这些算子通常从torch里面获取，然后进行性能优化，常见的norm类算子比torch native有2-5倍的性能提升。
+
 ## 安装
 
 环境依赖：
-pytorch1.10 \ pytorch1.13 \ pytorch2.0 \ pytorch2.1
+pytorch1.10 \ pytorch1.13 \ pytorch2.0 \ pytorch2.1 \ pytoch2.3
 
-dtk22.04.2 \ dtk22.10 \ dtk23.04 \ dtk23.10 \ dtk24.04
+dtk22.04 \ dtk22.10 \ dtk23.04 \ dtk23.10 \ dtk24.04
 
 安装脚本：
 
