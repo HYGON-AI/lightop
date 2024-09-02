@@ -65,7 +65,7 @@ def get_version(ROCM_HOME):
     abi = _run_cmd(["echo '#include <string>' | gcc -x c++ -E -dM - | fgrep _GLIBCXX_USE_CXX11_ABI | awk '{print $3}'"], shell=True)
     print("-- _GLIBCXX_USE_CXX11_ABI:", abi)
     dtk = _run_cmd(["cat", os.path.join(ROCM_HOME, '.info/rocm_version')])
-    dtk = ''.join(dtk.split('.')[:2])
+    dtk = ''.join(dtk.split('.'))
     print("-- DTK:", dtk)
 
     return _make_version_file(version, sha, abi, dtk, torch_version, branch)
