@@ -68,30 +68,46 @@ __global__ void rmsnorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,scalar
   constexpr int sharesize=blocksize/C10_WARP_SIZE;
   __shared__ T_ACC val_shared[sharesize];
   __shared__ T_ACC s_rstd;
-  T_ACC val=0;
+  
   using VecTpye=memory::aligned_vector<scalar_t, VEC>;
   VecTpye *X=(VecTpye*)(input+block_cols);
   VecTpye *Y=(VecTpye*)(ret+block_cols);
   int tcol=cols/VEC;
-  T_ACC trstd;
+  scalar_t trstd;
   VecTpye tx;
   VecTpye ty;
   scalar_t* px=(scalar_t*)(&tx);
   scalar_t* py=(scalar_t*)(&ty);
   int j=threadidx;
-  if (j < tcol) {
+  if constexpr (VEC==1){
     tx = X[j];
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      val += static_cast<T_ACC>(px[i])*static_cast<T_ACC>(px[i]);
+    scalar_t square=0;
+    if (j < tcol) {
+      square=px[0]*px[0];
+    }
+    square = BlockReduceSum<T_ACC,sharesize>(static_cast<T_ACC>(square),val_shared)/cols;
+    // if(threadIdx.x==0)printf("%d,%f\n",blockIdx.x,(float)square);
+    if (threadidx == 0) {
+      s_rstd=c10::cuda::compat::rsqrt(square + static_cast<T_ACC>(eps));
     }
   }
-  val = BlockReduceSum<T_ACC,sharesize>(val,val_shared);
-  if (threadidx == 0) {
-    s_rstd=c10::cuda::compat::rsqrt(val/cols + static_cast<T_ACC>(eps));
+  else{
+    T_ACC val=0;
+    if (j < tcol) {
+      tx = X[j];
+      #pragma unroll
+      for(int i=0;i<VEC;i++){
+        val += static_cast<T_ACC>(px[i])*static_cast<T_ACC>(px[i]);
+      }
+    }
+    val = BlockReduceSum<T_ACC,sharesize>(val,val_shared);
+    if (threadidx == 0) {
+      s_rstd=c10::cuda::compat::rsqrt(val/cols + static_cast<T_ACC>(eps));
+    }
   }
   __syncthreads();
   trstd=s_rstd;
+  // if(threadIdx.x==0)printf("%d,%f,%f\n",blockIdx.x,(float)trstd,s_rstd);
   if (j < tcol) {
     #pragma unroll
     for(int i=0;i<VEC;i++){
@@ -136,9 +152,14 @@ rmsnorm_forward(const Tensor& self,const Tensor& weight,double ln_epsilon,bool t
         scalar_t* rstd_data=NULL;
         if(training)rstd_data=rstd.data_ptr<scalar_t>();
         if (cols % 16 == 0 && cols<=16384){
-          if(cols<=1024)
+          if(cols<=128){
+            rmsnorm_forward_kernel_fast<scalar_t,1,128><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                    self_data,ret_data,rstd_data,weight_data,cols,eps);
+          }
+          else if(cols<=1024){
             rmsnorm_forward_kernel_fast<scalar_t,8,128><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
                                     self_data,ret_data,rstd_data,weight_data,cols,eps);
+          }
           else if(cols<=2048){
             rmsnorm_forward_kernel_fast<scalar_t,8,256><<<rows, 256, 0, at::cuda::getCurrentCUDAStream()>>>(
                                     self_data,ret_data,rstd_data,weight_data,cols,eps);
