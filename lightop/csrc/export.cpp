@@ -3,16 +3,6 @@
 #include <c10/macros/Macros.h>
 
 namespace at {  namespace native {
-std::tuple<Tensor, Tensor, Tensor, Tensor, int64_t> bnrelu_forward(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon, int fuse_act_mode, double act_alpha, double act_beta, double act_gamma);
-std::tuple<Tensor, Tensor, Tensor> bnrelu_backward(int64_t impl_index, const Tensor& grad_out, const Tensor& input, const Tensor& output_relu, const Tensor& output_relu_grad, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, const c10::optional<Tensor>& save_mean_opt,
-                                                   const c10::optional<Tensor>& save_invstd_opt, bool train, double epsilon, std::array<bool,3> grad_input_mask, int fuse_act_mode, double act_alpha, double act_beta, double act_gamma);
-std::tuple<Tensor, Tensor, Tensor, Tensor> bnaddrelu_cuda(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon, const Tensor& add);
-std::tuple<Tensor, Tensor, Tensor> bnaddrelu_backward_cuda(const Tensor& grad_out, const Tensor& input, const Tensor& output, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, const c10::optional<Tensor>& save_mean_opt, const c10::optional<Tensor>& save_invstd_opt, bool train, double epsilon, std::array<bool,3> grad_input_mask);
-std::tuple<Tensor, Tensor, Tensor, Tensor> bn_dropout_forward(const Tensor& self, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, bool train, double momentum, double epsilon, double p);
-std::tuple<Tensor, Tensor, Tensor> bn_dropout_backward(const Tensor& grad_out, const Tensor& input, const Tensor& output_dropout, const c10::optional<Tensor>& weight_opt, const c10::optional<Tensor>& bias_opt, const c10::optional<Tensor>& running_mean_opt, const c10::optional<Tensor>& running_var_opt, const c10::optional<Tensor>& save_mean_opt,
-                                                   const c10::optional<Tensor>& save_invstd_opt, bool train, double epsilon, std::array<bool,3> grad_input_mask, double p);
-
-
 Tensor rmsnorm_forward_autograd(const Tensor& x,const Tensor& weight,double eps,bool training);
 Tensor fuse_rn_dropout_forward_autograd(const Tensor& x,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,double eps,double rate,bool training);
@@ -57,12 +47,6 @@ void destroy_gemmdbias_handle();
 }
 }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("bnrelu_forward", &at::native::bnrelu_forward, "fusebnrelu forward");
-  m.def("bnrelu_backward", &at::native::bnrelu_backward, "fusebnrelu backward");
-  m.def("bnaddrelu_forward", &at::native::bnaddrelu_cuda, "fusebnaddrelu forward");
-  m.def("bnaddrelu_backward", &at::native::bnaddrelu_backward_cuda, "fusebnaddrelu backward");
-  m.def("bn_dropout_forward", &at::native::bn_dropout_forward, "bn_dropout forward");
-  m.def("bn_dropout_backward", &at::native::bn_dropout_backward, "bn_dropout backward");
   m.def("layernorm_forward_autograd", &at::native::fuse_layernorm_forward_autograd, "layernorm forward");
   m.def("add_ln_forward_autograd", &at::native::fuse_add_ln_forward_autograd, "layernorm forward");
   m.def("ln_dropout_forward_autograd", &at::native::fuse_ln_dropout_forward_autograd, "fused_ln_dropout forward");
