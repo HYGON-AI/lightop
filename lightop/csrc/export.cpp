@@ -39,6 +39,8 @@ std::tuple <Tensor, Tensor> fuse_bias_dropout_add_backward(const Tensor &grad,co
 Tensor fuse_groupnorm_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,bool training);
 Tensor fuse_celu_gn_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,double alpha,bool training);
 Tensor fuse_gn_silu_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,bool training);
+Tensor sum_opt(const Tensor& x,int dim);
+Tensor mean_opt(const Tensor& x,int dim);
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
@@ -87,4 +89,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("groupnorm_forward_autograd", &at::native::fuse_groupnorm_forward_autograd, "groupnorm forward");
   m.def("celu_gn_forward_autograd", &at::native::fuse_celu_gn_forward_autograd, "celu_gn forward");
   m.def("gn_silu_forward_autograd", &at::native::fuse_gn_silu_forward_autograd, "gn_silu forward");
+  m.def("sum_opt", &at::native::sum_opt, "sum_opt");
+  m.def("mean_opt", &at::native::mean_opt, "mean_opt");
 }

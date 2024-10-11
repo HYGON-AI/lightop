@@ -149,8 +149,8 @@ __global__ void ReduceVEC(scalar_t* data_gpu,T_ACC* block_gpu,int *semaphores,sc
     for(int i=idx;i<length;i+=offset){
         *(VecTpyeS*)sum_temp=*(VecTpyeS*)(data_gpu+i);
         #pragma unroll
-        for(int i=0;i<VEC;i++){
-            block_sum[i]+=sum_temp[i];
+        for(int ii=0;ii<VEC;ii++){
+            block_sum[ii]+=sum_temp[ii];
         }
     }
     if(semaphores==NULL){
