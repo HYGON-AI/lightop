@@ -203,7 +203,7 @@ __global__ void ReduceVEC(scalar_t* data_gpu,T_ACC* block_gpu,int *semaphores,sc
     if(block_num*stride/VEC>maxblocks)block_num=(maxblocks-1)/(stride/VEC)+1;                      \
     if(block_num>32){                                                                              \
         c10::TensorOptions options(DeviceType::CUDA);                                              \
-        options.dtype(ScalarType::Int);                                                            \
+        options=options.dtype(ScalarType::Int);                                                            \
         Tensor buffer=torch::empty(stride*block_num, options);                                     \
         Tensor semaphores=torch::empty(stride/VEC, options);                                       \
         AT_CUDA_CHECK(cudaMemsetAsync(semaphores.data_ptr(), 0, stride/VEC*sizeof(int), stream));  \

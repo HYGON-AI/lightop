@@ -41,6 +41,7 @@ Tensor fuse_celu_gn_forward_autograd(const Tensor& x,const Tensor& weight,const 
 Tensor fuse_gn_silu_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,bool training);
 Tensor sum_opt(const Tensor& x,int dim);
 Tensor mean_opt(const Tensor& x,int dim);
+std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k);
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
@@ -91,4 +92,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gn_silu_forward_autograd", &at::native::fuse_gn_silu_forward_autograd, "gn_silu forward");
   m.def("sum_opt", &at::native::sum_opt, "sum_opt");
   m.def("mean_opt", &at::native::mean_opt, "mean_opt");
+  m.def("topk_opt", &at::native::topk_opt, "topk_opt");
 }

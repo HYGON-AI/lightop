@@ -1,6 +1,5 @@
 #include "reduce.h"
 
-
 namespace at {
 namespace native {
 
@@ -14,19 +13,19 @@ __inline__ __device__ T WarpReduceSumMutiLine(T val,int start=32) {
 }
 
 template <typename scalar_t,int VEC>
-__global__ void ReduceSum(scalar_t* x, scalar_t* ret,int cols,int lines_per_warp,int warps,bool mean=false){
-  
+__global__ void ReduceSum(scalar_t* x, scalar_t* ret,int cols,
+                             int lines_per_warp,int warps,bool mean=false){
   int tid=threadIdx.x;
   int bid=blockIdx.x;
   x+=bid*cols*lines_per_warp*warps;
   int threads_per_line=64/lines_per_warp;
   int lineid=tid/threads_per_line;
   int line=tid%threads_per_line;
-  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  using VecType=memory::aligned_vector<scalar_t, VEC>;
   scalar_t invec[VEC];
   float sum=0;
   if(line<cols/VEC){
-    *(VecTpye*)invec=*((VecTpye*)(x+lineid*cols+line*VEC));
+    *(VecType*)invec=*((VecType*)(x+lineid*cols+line*VEC));
     #pragma unroll
     for(int i=0;i<VEC;i++){
       sum+=invec[i];
@@ -44,13 +43,13 @@ __global__ void col_wise_sum(scalar_t *dst, const scalar_t *src,int M,int N,bool
     __shared__ float g_shared[colwise_reduce_row][colwise_reduce_col*2];
     src+=blockIdx.y*M*N;
     dst+=blockIdx.y*N;
-    using VecTpye=memory::aligned_vector<scalar_t, 2>;
+    using VecType=memory::aligned_vector<scalar_t, 2>;
     scalar_t temp[2];
     const int j = blockIdx.x * blockDim.x*2 + threadIdx.x*2;
     float grad_sum[2] = {0};
     if (j < N) {
         for (int i = threadIdx.y; i < M; i += blockDim.y) {
-          *(VecTpye*)temp=*((VecTpye*)(src+i * N + j));
+          *(VecType*)temp=*((VecType*)(src+i * N + j));
           grad_sum[0] += temp[0];
           grad_sum[1] += temp[1];
         }
