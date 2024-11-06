@@ -41,7 +41,7 @@ Tensor fuse_celu_gn_forward_autograd(const Tensor& x,const Tensor& weight,const 
 Tensor fuse_gn_silu_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,bool training);
 Tensor sum_opt(const Tensor& x,int dim);
 Tensor mean_opt(const Tensor& x,int dim);
-std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k);
+std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k,int dim);
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
