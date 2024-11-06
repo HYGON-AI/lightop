@@ -21,8 +21,6 @@ namespace native {
  #define uint8_t unsigned char
 #endif
 
-constexpr int NUMBER_WARPS=8;
-
 template <typename scalar_t>
 struct TopKTypeConfig {};
 
@@ -198,7 +196,7 @@ __device__ void radix_sort(T * ps_vector, int vec_length,T * sort_tmp_0, T * sor
     constexpr int leap=64;
     int tid=threadIdx.x;
     using type = decltype(ps_vector->data);
-    for (type bit=0; bit<16; bit++) {
+    for (type bit=0; bit<sizeof(type)*8; bit++) {
         type bit_mask = (1<<bit);
         counter[0]=0;
         counter[1]=0;
@@ -225,11 +223,11 @@ __device__ void radix_sort(T * ps_vector, int vec_length,T * sort_tmp_0, T * sor
     }
 }
 
-template <typename scalar_t,int VEC>
-__global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int cols){
-  x+=blockIdx.x*cols;
-  ret+=blockIdx.x*k;
-  indice+=blockIdx.x*k;
+template <typename scalar_t,int VEC,int NUMBER_WARPS>
+__global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int cols,int stride){
+  x+=blockIdx.x*cols*stride+blockIdx.y;
+  ret+=blockIdx.x*k*stride+blockIdx.y;
+  indice+=blockIdx.x*k*stride+blockIdx.y;
   int tidy=threadIdx.y;
   int tidx=threadIdx.x;
   using Bitwise=typename TopKTypeConfig<scalar_t>::RadixType;
@@ -255,15 +253,15 @@ __global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int co
     int offset=NUMBER_WARPS*64*i+tid_in_block;
     if(offset>=cols)p_invec[i]=0;
     else {
-      invec[i]=x[offset];
+      invec[i]=x[offset*stride];
+      // printf("%d,%d,%d,%d,%.4f\n",threadIdx.x,threadIdx.y,blockIdx.x,blockIdx.y,(float)invec[i]);
       if(invec[i]<=0.0001)p_invec[i]=0;
     }
   }
   bool find_unique;
-  if(cols>2048){
+  if constexpr(NUMBER_WARPS==8){
     if(cols<=10000)RadixSelect<Bitwise,2>(p_invec,s_radix,k/2,kthvalue);
     else RadixSelect<Bitwise,4>(p_invec,s_radix,k/2,kthvalue);
-    // if(tidx==0&&tidy==0)printf("kthvalue1=%.4f\n",(float)*(_Float16*)&kthvalue);
     for(int i=0;i<VEC;i++){
       if(p_invec[i]>kthvalue){
         int index = atomicAdd(counter,1);
@@ -272,12 +270,6 @@ __global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int co
     }
     __syncthreads();
     int count1=counter[0];
-    // if(tidx==0&&tidy==0){
-    //   printf("count1=%d\n",count1);
-    //   for(int i=0;i<count1;i++){
-    //     printf("%.4f\n",(float)*(_Float16*)(s_input+i));
-    //   }
-    // }
     for(int i = 0;i < SMALL_VEC;i++) {
       int offset=NUMBER_WARPS*64*i+tid_in_block;
       if(offset>=count1)in_SMALL_VEC[i]=0;
@@ -285,11 +277,11 @@ __global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int co
     }
     find_unique=RadixSelect<Bitwise,SMALL_VEC>(in_SMALL_VEC,s_radix,k,kthvalue);
   }else{
-    find_unique=RadixSelect(p_invec,s_radix,k,kthvalue);
+    find_unique=RadixSelect<Bitwise,VEC>(p_invec,s_radix,k,kthvalue);
   }
   if(tidx==0&&tidy==0)counter[0]=0;
   __syncthreads();
-  // if(tidx==0&&tidy==0)printf("kthvalue2=%.4f\n",(float)*(_Float16*)&kthvalue);
+  // if(threadIdx.x==0&&threadIdx.y==0)printf("kthvalue=%.4f\n",(float)(*(scalar_t*)&kthvalue));
   if(find_unique==true){
    for(int i = 0;i < VEC;i++) {
       Bitwise t_topk=p_invec[i];
@@ -321,33 +313,82 @@ __global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int co
       }
     }
   }
+  // if(threadIdx.x==0&&threadIdx.y==0){
+  //   printf("topk=%.4f,%.4f,indice=%d,%d\n",(float)s_topk_out[0].o_data,(float)s_topk_out[1].o_data,s_topk_out[0].indice,s_topk_out[1].indice);
+  // }
   __syncthreads();
   if(tidy==0){
-    radix_sort(s_topk_out,k,tmp1,tmp2,counter);
+    if(k>1)radix_sort(s_topk_out,k,tmp1,tmp2,counter);
     for(int i=tidx;i<k;i++){
-      ret[i]=s_topk_out[i].o_data;
-      indice[i]=s_topk_out[i].indice;
+      ret[i*stride]=s_topk_out[i].o_data;
+      indice[i*stride]=s_topk_out[i].indice;
     }
   }
 }
 
 #define VEC_SWITCH(n, ...)              \
   [&] {                                         \
-    if (n <=4096 ) {                          \
+    if(n<=64){\
+      constexpr int NUMBER_WARPS=1;\
+      constexpr int VEC = 1;\
+      return __VA_ARGS__();\
+    }\
+    else if(n<=128){\
+      constexpr int NUMBER_WARPS=2;\
+      constexpr int VEC = 1;\
+      return __VA_ARGS__();\
+    }\
+    else if(n<=256){\
+      constexpr int NUMBER_WARPS=2;\
+      constexpr int VEC = 2;\
+      return __VA_ARGS__();\
+    }\
+    else if(n<=512){\
+      constexpr int NUMBER_WARPS=2;\
+      constexpr int VEC = 4;\
+      return __VA_ARGS__();\
+    }\
+    else if(n<=1024){\
+      constexpr int NUMBER_WARPS=2;\
+      constexpr int VEC = 8;\
+      return __VA_ARGS__();\
+    }\
+    else if(n<=2048){\
+      constexpr int NUMBER_WARPS=4;\
+      constexpr int VEC = 8;\
+      return __VA_ARGS__();\
+    }\
+    else if (n <=4096 ) {                          \
+      constexpr int NUMBER_WARPS=8;\
       constexpr int VEC = 8;             \
       return __VA_ARGS__();                     \
     }else if (n <=10000 ) {                          \
+      constexpr int NUMBER_WARPS=8;\
       constexpr int VEC = 20;             \
       return __VA_ARGS__();                     \
     }else if (n <=15000 ) {                          \
+      constexpr int NUMBER_WARPS=8;\
       constexpr int VEC = 30;             \
       return __VA_ARGS__();                     \
     } else {                                    \
+      constexpr int NUMBER_WARPS=8;\
       constexpr int VEC = 32;             \
       return __VA_ARGS__();                     \
     }                                           \
   }()
 
+#define TYPE_SWITCH(...)[&]{ \
+  if constexpr (std::is_same<scalar_t, at::BFloat16>::value||std::is_same<scalar_t, at::Half>::value){\
+    constexpr int lds_size=4096;\
+    using T = at::Half;\
+    return __VA_ARGS__();                     \
+  }\
+  else{\
+    constexpr int lds_size=8192;\
+    using T = float;\
+    return __VA_ARGS__();                     \
+  }\
+}()
 
 static inline int get_env_(const char *env_var,int default_value=0) {
   if (char *value = std::getenv(env_var)) {
@@ -356,18 +397,20 @@ static inline int get_env_(const char *env_var,int default_value=0) {
   return default_value;
 }
 
-static const int warps = get_env_("warps",8);
-static const int lines_per_warp = get_env_("lines_per_warp",4);
 
-std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k){
+std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k,int dim){
   std::vector<long> size(x.dim());
-  int cols=x.sizes().back();
+  int cols=x.sizes()[dim];
+  int stride=1;
   int batch=1;
-  for(int i=0;i<x.dim()-1;i++){
-    size[i] = x.sizes()[i];
-    batch*=size[i];
+  for(int i=0;i<x.dim();i++){
+    if(i==dim)size[i]=k;
+    else{
+      size[i] = x.sizes()[i];
+      if(i<dim)batch*=size[i];
+      else stride*=size[i];
+    }
   }
-  size[x.dim()-1]=k;
   auto stream = at::cuda::getCurrentCUDAStream();
   Tensor ret=at::empty(size,x.options());
   c10::TensorOptions options(DeviceType::CUDA);
@@ -381,15 +424,10 @@ std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k){
     scalar_t* x_data = x.data_ptr<scalar_t>();
     scalar_t* ret_data=ret.data_ptr<scalar_t>();
     int *indice_data=indice.data_ptr<int>();
-      // std::cout<<"batch="<<batch<<std::endl;
     VEC_SWITCH(cols,[&] {
-      if constexpr(sizeof(scalar_t)<=4){//no double support
-        // std::cout<<"topk_kernel. cols="<<cols<<std::endl;
-        using DI = DataIndice<scalar_t>;
-        int lds_size=4096;
-        topk_kernel<scalar_t,VEC><<<batch,dim3(64,NUMBER_WARPS),lds_size,stream>>>(x_data,ret_data,indice_data,k,cols);
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-      }
+      TYPE_SWITCH([&]{
+        topk_kernel<T,VEC,NUMBER_WARPS><<<dim3(batch,stride),dim3(64,NUMBER_WARPS),lds_size,stream>>>((T*)x_data,(T*)ret_data,indice_data,k,cols,stride);
+      });
     });
   });
   return std::tuple<Tensor,Tensor>(ret,indice);

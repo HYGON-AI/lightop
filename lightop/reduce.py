@@ -26,7 +26,7 @@ def topk(x,k, dim=-1,largest=True,sorted=True):
     x = x.contiguous()
     if dim == -1 :
         dim = x.dim()-1
-    if k <= 100 and dim == x.dim()-1 and x.size()[dim]<=16384 and largest == True and sorted == True:
-      return op.topk_opt(x,k)
+    if k <= 100 and x.size()[dim]<=16384 and largest and sorted and x.is_cuda:
+      return op.topk_opt(x,k,dim)
     else :
       return torch.topk(x, k, dim=dim, largest=largest, sorted=sorted)
