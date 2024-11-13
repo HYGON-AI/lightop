@@ -25,21 +25,6 @@ template <typename scalar_t>
 struct TopKTypeConfig {};
 
 template <>
-struct TopKTypeConfig<double> {
-  typedef uint64_t RadixType;
-
-  static inline __device__ RadixType convert(double v) {
-    RadixType x = __double_as_longlong(v);
-    RadixType mask = -((x >> 63)) | 0x8000000000000000;
-    return (v == v) ? (x ^ mask) : 0xffffffffffffffff;
-  }
-
-  static inline __device__ double deconvert(RadixType v) {
-    RadixType mask = ((v >> 63) - 1) | 0x8000000000000000;
-    return __longlong_as_double(v ^ mask);
-  }
-};
-template <>
 struct TopKTypeConfig<float> {
   typedef uint32_t RadixType;
   static inline __device__ RadixType convert(float v) {
@@ -71,31 +56,11 @@ struct TopKTypeConfig<at::Half> {
   }
 };
 
-template <>
-struct TopKTypeConfig<at::BFloat16> {
-  typedef uint32_t RadixType;
-
-  static inline __device__ RadixType convert(at::BFloat16 v) {
-    RadixType x = v.x;
-    RadixType mask = (x & 0x00008000) ? 0x0000ffff : 0x00008000;
-    return (v == v) ? (x ^ mask) : 0xffff;
-  }
-
-  static inline __device__  at::BFloat16 deconvert(RadixType v) {
-    RadixType mask = (v & 0x00008000) ? 0x00008000 : 0x0000ffff;
-    at::BFloat16 r;
-    r.x = (v ^ mask);
-    return r;
-  }
-};
 
 template <typename scalar_t >
 struct DataIndice{
   using Bitwise=typename TopKTypeConfig<scalar_t>::RadixType; 
-  union{
-    Bitwise data;
-    scalar_t o_data;
-  };
+  Bitwise data;
   uint16_t indice;
 };
 
@@ -243,9 +208,7 @@ __global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int co
   scalar_t invec[VEC];
   constexpr int SMALL_VEC=2;
   Bitwise in_SMALL_VEC[SMALL_VEC];
-  // Bitwise p_invec[VEC]; 
   if(tidx==0&&tidy==0)counter[0]=0;
-  // scalar_t* invec=(scalar_t *)&vec;
   Bitwise *p_invec=(Bitwise *)invec;
   //全部数据加载到vgpr
   int tid_in_block=threadIdx.x+threadIdx.y*64;
@@ -254,14 +217,15 @@ __global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int co
     if(offset>=cols)p_invec[i]=0;
     else {
       invec[i]=x[offset*stride];
-      // printf("%d,%d,%d,%d,%.4f\n",threadIdx.x,threadIdx.y,blockIdx.x,blockIdx.y,(float)invec[i]);
-      if(invec[i]<=0.0001)p_invec[i]=0;
+      p_invec[i]=TopKTypeConfig<scalar_t>::convert(invec[i]);
     }
   }
   bool find_unique;
-  if constexpr(NUMBER_WARPS==8){
-    if(cols<=10000)RadixSelect<Bitwise,2>(p_invec,s_radix,k/2,kthvalue);
-    else RadixSelect<Bitwise,4>(p_invec,s_radix,k/2,kthvalue);
+  if constexpr(NUMBER_WARPS>=8){
+    int k2=k/2;
+    if(k2<10)k2=k;
+    if(cols<=10000)RadixSelect<Bitwise,2>(p_invec,s_radix,k2,kthvalue);
+    else RadixSelect<Bitwise,4>(p_invec,s_radix,k2,kthvalue);
     for(int i=0;i<VEC;i++){
       if(p_invec[i]>kthvalue){
         int index = atomicAdd(counter,1);
@@ -281,7 +245,6 @@ __global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int co
   }
   if(tidx==0&&tidy==0)counter[0]=0;
   __syncthreads();
-  // if(threadIdx.x==0&&threadIdx.y==0)printf("kthvalue=%.4f\n",(float)(*(scalar_t*)&kthvalue));
   if(find_unique==true){
    for(int i = 0;i < VEC;i++) {
       Bitwise t_topk=p_invec[i];
@@ -313,14 +276,11 @@ __global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int co
       }
     }
   }
-  // if(threadIdx.x==0&&threadIdx.y==0){
-  //   printf("topk=%.4f,%.4f,indice=%d,%d\n",(float)s_topk_out[0].o_data,(float)s_topk_out[1].o_data,s_topk_out[0].indice,s_topk_out[1].indice);
-  // }
   __syncthreads();
   if(tidy==0){
     if(k>1)radix_sort(s_topk_out,k,tmp1,tmp2,counter);
     for(int i=tidx;i<k;i++){
-      ret[i*stride]=s_topk_out[i].o_data;
+      ret[i*stride]=TopKTypeConfig<scalar_t>::deconvert(s_topk_out[i].data);
       indice[i*stride]=s_topk_out[i].indice;
     }
   }
