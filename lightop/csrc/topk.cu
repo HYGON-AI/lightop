@@ -370,8 +370,12 @@ __global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int co
       constexpr int NUMBER_WARPS=8;\
       constexpr int VEC = 30;             \
       return __VA_ARGS__();                     \
-    } else {                                    \
+    } else if(n <= 16384){                                    \
       constexpr int NUMBER_WARPS=8;\
+      constexpr int VEC = 32;             \
+      return __VA_ARGS__();                     \
+    } else {                                    \
+      constexpr int NUMBER_WARPS=16;\
       constexpr int VEC = 32;             \
       return __VA_ARGS__();                     \
     }                                           \
