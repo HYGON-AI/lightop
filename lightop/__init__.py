@@ -16,6 +16,7 @@ from .lossrnnt import RNNTLoss
 from .scaled_masked_softmax import FusedScaleMaskSoftmax,FusedScaleMaskSoftmaxDropout,AttnMaskType
 from .groupnorm import GroupNorm ,CeluGN,GNSilu
 from .reduce import sum, mean,topk
+from .gemmopt import gemm, gemm_w4a16, w4tow16
 
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401
