@@ -42,6 +42,11 @@ Tensor fuse_gn_silu_forward_autograd(const Tensor& x,const Tensor& weight,const 
 Tensor sum_opt(const Tensor& x,int dim);
 Tensor mean_opt(const Tensor& x,int dim);
 std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k,int dim);
+Tensor gemm_opt(const Tensor& x,const Tensor& y);
+Tensor gemm_w4_a16(const Tensor& x,const Tensor& y,const Tensor& scale_m,const Tensor& zero_m);
+Tensor w4_to_w16(const Tensor& x,const Tensor& scale_m,const Tensor& zero_m);
+
+
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
@@ -93,4 +98,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("sum_opt", &at::native::sum_opt, "sum_opt");
   m.def("mean_opt", &at::native::mean_opt, "mean_opt");
   m.def("topk_opt", &at::native::topk_opt, "topk_opt");
+  m.def("gemm_opt", &at::native::gemm_opt, "gemm_opt");
+  m.def("gemm_w4_a16", &at::native::gemm_w4_a16, "gemm_w4_a16");
+  m.def("w4_to_w16", &at::native::w4_to_w16, "w4_to_w16");
 }
