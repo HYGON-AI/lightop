@@ -19,7 +19,7 @@ def _get_version():
         with open(ROOT_DIR / "version.txt", "r") as f:
             version = f.read().strip()
     else:
-        version = '0.4.0'
+        version = '0.5.0'
     if os.getenv("BUILD_VERSION"):
         version = os.getenv("BUILD_VERSION")
     return version
