@@ -3,7 +3,14 @@ from lightop import op
 import numbers
 import torch.nn as nn
 
-def rmsnorm_forward(hidden_states,weight,eps):
+
+def rmsnorm_forward(x,weight,eps:float = 1e-5,training:bool=True):
+    return op.rmsnorm_forward(x,weight,eps,training)
+
+def rmsnorm_backward(grad,x,rstd,gamma):
+    return op.rmsnorm_backward(grad,x,rstd,gamma)
+
+def rmsnorm_forward_torch(hidden_states,weight,eps):
     input_dtype = hidden_states.dtype
     variance = hidden_states.to(torch.float32).pow(2).mean(-1, keepdim=True)
     hidden_states = hidden_states * torch.rsqrt(variance + eps)
@@ -25,7 +32,7 @@ class RMSNorm(torch.nn.Module):
         factory_kwargs = {'device': device, 'dtype': dtype}
         self.weight = torch.nn.Parameter(torch.empty(normalized_shape, **factory_kwargs))
         torch.nn.init.ones_(self.weight)
-        self.rmsnorm_compile=torch.compile(rmsnorm_forward)
+        self.rmsnorm_compile=torch.compile(rmsnorm_forward_torch)
 
     def forward(self, x ):
         if x.dtype == torch.bfloat16 and self.weight.numel()==128 and self.training==False:
