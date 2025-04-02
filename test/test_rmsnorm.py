@@ -2,8 +2,41 @@ import torch
 import torch.nn as nn
 import time
 import torch.nn.functional as F
-from lightop import RMSNorm,RMSNormTorch
+from lightop import RMSNormTorch,RMSNorm
+from torch.autograd import Function
+from torch import Tensor
+'''
+from lightop import rmsnorm_forward,rmsnorm_backward
 
+class RMSNormFunction(Function):
+    @staticmethod
+    def forward(ctx, x, weight, eps, train) -> Tensor:
+        ret,rstd = rmsnorm_forward(x, weight, eps, train)
+        ctx.save_for_backward(x,rstd,weight)
+        return ret
+
+    @staticmethod
+    def backward(ctx, grad):
+        x,rstd,gamma = ctx.saved_tensors
+        dx,dgamma = rmsnorm_backward(grad, x,rstd,gamma)
+        return dx,dgamma, None, None
+
+
+class RMSNorm(torch.nn.Module):
+
+    def __init__(self, normalized_shape:int,eps: float = 1e-5,device=None, dtype=None ):
+        super(RMSNorm, self).__init__()
+        self.eps = eps
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        self.weight = torch.nn.Parameter(torch.empty(normalized_shape, **factory_kwargs))
+        torch.nn.init.ones_(self.weight)
+
+    def forward(self, x ):
+        return RMSNormFunction.apply(x, self.weight,self.eps, self.training)
+
+    def extra_repr(self):
+        return f'eps={round(self.eps,5):0.5f}'
+'''
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
@@ -40,7 +73,7 @@ def test_profile(batchsize, seqs, cols,repeat_num,use_half=False):
     x1,x2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
     f1,f2=get_model(cols=cols,use_half=use_half)
 
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True,
+    with torch.autograd.profiler.profile(enabled=True, use_device="cuda", record_shapes=False,use_kineto=True,
                                      profile_memory=False) as prof1:
         for i in range(repeat_num):
             y1 = f1(x1)
@@ -48,7 +81,7 @@ def test_profile(batchsize, seqs, cols,repeat_num,use_half=False):
             torch.cuda.synchronize()
     prof1.export_chrome_trace('./profile_torch_rmsnorm.json')
     
-    with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True,
+    with torch.autograd.profiler.profile(enabled=True, use_device="cuda", record_shapes=False,use_kineto=True,
                                      profile_memory=False) as prof2:
         for i in range(repeat_num):
             y2 = f2(x2)
@@ -112,4 +145,4 @@ if __name__ == "__main__":
     #耗时测试
     test_speed(batchsize, seqs, cols,repeat_num=1000,use_half=use_half)
     #性能分析
-    test_profile(batchsize, seqs, cols,repeat_num=10,use_half=use_half)
+    # test_profile(batchsize, seqs, cols,repeat_num=10,use_half=use_half)
