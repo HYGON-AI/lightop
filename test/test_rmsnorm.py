@@ -2,41 +2,43 @@ import torch
 import torch.nn as nn
 import time
 import torch.nn.functional as F
-from lightop import RMSNormTorch,RMSNorm
+from lightop import RMSNormTorch
 from torch.autograd import Function
 from torch import Tensor
-'''
-from lightop import rmsnorm_forward,rmsnorm_backward
 
-class RMSNormFunction(Function):
-    @staticmethod
-    def forward(ctx, x, weight, eps, train) -> Tensor:
-        ret,rstd = rmsnorm_forward(x, weight, eps, train)
-        ctx.save_for_backward(x,rstd,weight)
-        return ret
+from lightop import RMSNorm
 
-    @staticmethod
-    def backward(ctx, grad):
-        x,rstd,gamma = ctx.saved_tensors
-        dx,dgamma = rmsnorm_backward(grad, x,rstd,gamma)
-        return dx,dgamma, None, None
+# from lightop import rmsnorm_forward,rmsnorm_backward
+
+# class RMSNormFunction(Function):
+#     @staticmethod
+#     def forward(ctx, x, weight, out, eps, train) -> Tensor:
+#         ret,rstd = rmsnorm_forward(x,weight,out, eps, train)
+#         ctx.save_for_backward(x,rstd,weight)
+#         return ret
+
+#     @staticmethod
+#     def backward(ctx, grad):
+#         x,rstd,gamma = ctx.saved_tensors
+#         dx,dgamma = rmsnorm_backward(grad, x,rstd,gamma)
+#         return dx,dgamma,None ,None, None
 
 
-class RMSNorm(torch.nn.Module):
+# class RMSNorm(torch.nn.Module):
 
-    def __init__(self, normalized_shape:int,eps: float = 1e-5,device=None, dtype=None ):
-        super(RMSNorm, self).__init__()
-        self.eps = eps
-        factory_kwargs = {'device': device, 'dtype': dtype}
-        self.weight = torch.nn.Parameter(torch.empty(normalized_shape, **factory_kwargs))
-        torch.nn.init.ones_(self.weight)
+#     def __init__(self, normalized_shape:int,eps: float = 1e-5,device=None, dtype=None ):
+#         super(RMSNorm, self).__init__()
+#         self.eps = eps
+#         factory_kwargs = {'device': device, 'dtype': dtype}
+#         self.weight = torch.nn.Parameter(torch.empty(normalized_shape, **factory_kwargs))
+#         torch.nn.init.ones_(self.weight)
 
-    def forward(self, x ):
-        return RMSNormFunction.apply(x, self.weight,self.eps, self.training)
+#     def forward(self, x,out=None):
+#         return RMSNormFunction.apply(x, self.weight,out,self.eps, self.training)
 
-    def extra_repr(self):
-        return f'eps={round(self.eps,5):0.5f}'
-'''
+#     def extra_repr(self):
+#         return f'eps={round(self.eps,5):0.5f}'
+
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
@@ -110,6 +112,7 @@ def test_speed(batchsize, seqs, cols,repeat_num,use_half=False):
     end_time = time.time()
     fc1_espl = end_time - start_time
     print('torch_rmsnorm', 'averange time is', fc1_espl *1000/ repeat_num, 'ms')
+    # y2=torch.empty_like(x2)
     y2 = f2(x2)
     y2.backward(grad)
     torch.cuda.synchronize()

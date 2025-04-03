@@ -4,7 +4,7 @@
 
 namespace at {  namespace native {
 Tensor rmsnorm_forward_autograd(const Tensor& x,const Tensor& weight,double eps,bool training);
-std::tuple<Tensor,Tensor>rmsnorm_forward(const Tensor& self,const Tensor& weight,double eps,bool training);
+std::tuple<Tensor,Tensor>rmsnorm_forward(const Tensor& self,const Tensor& weight,c10::optional<Tensor>& output_inplace,double eps,bool training);
 std::tuple<Tensor,Tensor>rmsnorm_backward(const Tensor& grad, const Tensor& X,const Tensor& rstd,const Tensor& gamma);
 Tensor fuse_rn_dropout_forward_autograd(const Tensor& x,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,double eps,double rate,bool training);
