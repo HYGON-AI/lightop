@@ -4,8 +4,8 @@ import numbers
 import torch.nn as nn
 
 
-def rmsnorm_forward(x,weight,eps:float = 1e-5,training:bool=True):
-    return op.rmsnorm_forward(x,weight,eps,training)
+def rmsnorm_forward(x,weight,output=None,eps:float = 1e-5,training:bool=True):
+    return op.rmsnorm_forward(x,weight,output,eps,training)
 
 def rmsnorm_backward(grad,x,rstd,gamma):
     return op.rmsnorm_backward(grad,x,rstd,gamma)

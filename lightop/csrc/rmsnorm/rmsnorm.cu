@@ -125,16 +125,14 @@ __global__ void rmsnorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,scalar
   }
 }
 
-std::tuple<Tensor,Tensor>
-rmsnorm_forward(const Tensor& self,const Tensor& weight,double ln_epsilon,bool training)
+std::tuple<Tensor,Tensor>rmsnorm_forward(const Tensor& self,const Tensor& weight,c10::optional<Tensor>& output_inplace,double ln_epsilon,bool training)
 {
     AT_ASSERTM(self.is_cuda(), "x must on dcu");
     const int cols=self.sizes().back();
     AT_ASSERT(cols>=64,"cols must >= 64");//torch layernorm don't support cols<=64 on dcu, so we too .
     const int nelem = self.numel();
     const int rows=nelem/cols;
-    Tensor ret = at::empty_like(self);
-    Tensor bias = at::empty_like(weight);
+    Tensor ret = output_inplace? *(at::borrow_from_optional_tensor(output_inplace)):at::empty_like(self);
     Tensor rstd;
     if(training)rstd = at::empty({rows},self.options());
     AT_DISPATCH_FLOATING_TYPES_AND2(
@@ -147,7 +145,6 @@ rmsnorm_forward(const Tensor& self,const Tensor& weight,double ln_epsilon,bool t
         scalar_t* self_data = self.data_ptr<scalar_t>();
         scalar_t* ret_data=ret.data_ptr<scalar_t>();
         scalar_t* weight_data=weight.data_ptr<scalar_t>();
-        scalar_t* bias_data=bias.data_ptr<scalar_t>();
         scalar_t  eps = ln_epsilon;
         scalar_t* rstd_data=NULL;
         if(training)rstd_data=rstd.data_ptr<scalar_t>();
@@ -318,7 +315,8 @@ class RMSNormFunction : public torch::autograd::Function<RMSNormFunction> {
     double eps,bool training) {
     auto px=x.expect_contiguous();
     auto pweight=weight.expect_contiguous();
-    auto ret = rmsnorm_forward(*px, *pweight,eps,training);
+    c10::optional<Tensor> out;
+    auto ret = rmsnorm_forward(*px,*pweight,out,eps,training);
     ctx->save_for_backward({*px,std::get<1>(ret),*pweight});
     return {std::get<0>(ret)};
   }
