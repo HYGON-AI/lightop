@@ -189,7 +189,7 @@ __device__ void radix_sort(T * ps_vector, int vec_length,T * sort_tmp_0, T * sor
 }
 
 template <typename scalar_t,int VEC,int NUMBER_WARPS>
-__global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int cols,int stride){
+__global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int cols,int stride,bool sorted){
   x+=blockIdx.x*cols*stride+blockIdx.y;
   ret+=blockIdx.x*k*stride+blockIdx.y;
   indice+=blockIdx.x*k*stride+blockIdx.y;
@@ -278,7 +278,7 @@ __global__ void topk_kernel(scalar_t* x, scalar_t* ret,int* indice,int k, int co
   }
   __syncthreads();
   if(tidy==0){
-    if(k>1)radix_sort(s_topk_out,k,tmp1,tmp2,counter);
+    if(k>1&&sorted)radix_sort(s_topk_out,k,tmp1,tmp2,counter);
     for(int i=tidx;i<k;i++){
       ret[i*stride]=TopKTypeConfig<scalar_t>::deconvert(s_topk_out[i].data);
       indice[i*stride]=s_topk_out[i].indice;
@@ -362,7 +362,7 @@ static inline int get_env_(const char *env_var,int default_value=0) {
 }
 
 
-std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k,int dim){
+std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k,int dim,bool sorted){
   std::vector<long> size(x.dim());
   int cols=x.sizes()[dim];
   int stride=1;
@@ -390,7 +390,7 @@ std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k,int dim){
     int *indice_data=indice.data_ptr<int>();
     VEC_SWITCH(cols,[&] {
       TYPE_SWITCH([&]{
-        topk_kernel<T,VEC,NUMBER_WARPS><<<dim3(batch,stride),dim3(64,NUMBER_WARPS),lds_size,stream>>>((T*)x_data,(T*)ret_data,indice_data,k,cols,stride);
+        topk_kernel<T,VEC,NUMBER_WARPS><<<dim3(batch,stride),dim3(64,NUMBER_WARPS),lds_size,stream>>>((T*)x_data,(T*)ret_data,indice_data,k,cols,stride,sorted);
       });
     });
   });
