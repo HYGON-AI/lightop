@@ -4,6 +4,8 @@
 
 namespace at {  namespace native {
 Tensor rmsnorm_forward_autograd(const Tensor& x,const Tensor& weight,double eps,bool training);
+std::tuple<Tensor,Tensor>rmsnorm_forward(const Tensor& self,const Tensor& weight,c10::optional<Tensor>& output_inplace,double eps,bool training);
+std::tuple<Tensor,Tensor>rmsnorm_backward(const Tensor& grad, const Tensor& X,const Tensor& rstd,const Tensor& gamma);
 Tensor fuse_rn_dropout_forward_autograd(const Tensor& x,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_bias_forward_autograd(const Tensor& x,const Tensor& y,const Tensor &bias, const Tensor& weight,double eps,double rate,bool training);
@@ -42,7 +44,9 @@ Tensor fuse_gn_silu_forward_autograd(const Tensor& x,const Tensor& weight,const 
 Tensor sum_opt(const Tensor& x,int dim);
 Tensor mean_opt(const Tensor& x,int dim);
 std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k,int dim,bool sorted);
-Tensor gemm_w4_a16_colmajor(const Tensor& x,const Tensor& y,const Tensor& scale_m);
+Tensor gemm_opt(const Tensor& x,const Tensor& y);
+Tensor gemm_w4_a16(const Tensor& x,const Tensor& y,const Tensor& scale_m,const Tensor& zero_m);
+Tensor w4_to_w16(const Tensor& x,const Tensor& scale_m,const Tensor& zero_m);
 Tensor gemm_w8_a16_fp8_colmajor(const Tensor& x,const Tensor& y,const Tensor& scale,int warps,int n_per_block,int splitk);
 Tensor fp8to16(const Tensor&x,const Tensor& scale);
 
@@ -61,7 +65,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("ln_add_dropout_forward_autograd", &at::native::fuse_ln_add_dropout_forward_autograd, "fused_ln_add_dropout forward");
   m.def("ln_add_dropout_bias_forward_autograd", &at::native::fuse_ln_add_dropout_bias_forward_autograd, "fused_ln_add_dropout_bias forward");
   m.def("layernorm_droppath_forward_autograd", &at::native::fuse_layernorm_droppath_forward_autograd, "layernorm then droppath forward");
-  m.def("rmsnorm_forward_autograd", &at::native::rmsnorm_forward_autograd, "rmsnorm forward");
+  m.def("rmsnorm_forward_autograd", &at::native::rmsnorm_forward_autograd, "rmsnorm forward autograd");
+  m.def("rmsnorm_forward", &at::native::rmsnorm_forward, "rmsnorm forward");
+  m.def("rmsnorm_backward", &at::native::rmsnorm_backward, "rmsnorm backward");
   m.def("rn_dropout_forward_autograd", &at::native::fuse_rn_dropout_forward_autograd, "fused_rn_dropout forward");
   m.def("rn_add_forward_autograd", &at::native::fuse_rn_add_forward_autograd, "fused_rn_add forward");
   m.def("rn_add_dropout_forward_autograd", &at::native::fuse_rn_add_dropout_forward_autograd, "fused_rn_add_dropout forward");
@@ -98,8 +104,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("sum_opt", &at::native::sum_opt, "sum_opt");
   m.def("mean_opt", &at::native::mean_opt, "mean_opt");
   m.def("topk_opt", &at::native::topk_opt, "topk_opt");
-  m.def("gemm_w4_a16_colmajor", &at::native::gemm_w4_a16_colmajor, "gemm_w4_a16_colmajor");
+  m.def("gemm_opt", &at::native::gemm_opt, "gemm_opt");
+  m.def("gemm_w4_a16", &at::native::gemm_w4_a16, "gemm_w4_a16");
+  m.def("w4_to_w16", &at::native::w4_to_w16, "w4_to_w16");
   m.def("gemm_w8_a16_fp8_colmajor", &at::native::gemm_w8_a16_fp8_colmajor, "gemm_w8_a16_fp8_colmajor");
   m.def("fp8to16", &at::native::fp8to16, "fp8to16");
-  
 }
