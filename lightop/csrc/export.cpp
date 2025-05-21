@@ -48,7 +48,7 @@ Tensor gemm_opt(const Tensor& x,const Tensor& y);
 Tensor gemm_w4_a16(const Tensor& x,const Tensor& y,const Tensor& scale_m,const Tensor& zero_m);
 Tensor w4_to_w16(const Tensor& x,const Tensor& scale_m,const Tensor& zero_m);
 Tensor gemm_w8_a16_fp8_colmajor(const Tensor& x,const Tensor& y,const Tensor& scale,int warps,int n_per_block,int splitk);
-Tensor fp8to16(const Tensor&x,const Tensor& scale);
+void fp8to16(Tensor &ret, const Tensor &x,const Tensor& scale);
 
 
 void create_gemmbias_handle();

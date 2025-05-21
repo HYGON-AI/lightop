@@ -13,10 +13,10 @@ def test(m,n,k,warps,nperblock,splitk):
     type=torch.half
     a=torch.rand([m,k]).cuda().to(type)
     b=(torch.rand([n,k])-0.5).cuda().to(torch.float8_e4m3fn)
-    scale=torch.rand([(n-1)//128+1,(k-1)//128+1]).cuda().to(type)
-    # print(scale)
-    bh=lightop.fp8_to_16(b,scale)
+    scale=torch.rand([(n-1)//128+1,(k-1)//128+1]).cuda()
+    bh = torch.empty(b.size(),dtype=type,device="cuda")
     # bh = (b.to(torch.float32) * scale.repeat_interleave(128, dim=0).repeat_interleave(128, dim=1)[:n, :k]).to(type)
+    lightop.fp8_to_16(bh,b,scale)
     if not acc:
         for i in range(5):
             outref=torch.mm(a,bh.t())
@@ -70,4 +70,4 @@ if not acc:
                     for s in splitk:
                         test(M,N,K,w,nper,s)
 else:
-    test(1,576,7168,0,0,0)
+    test(1,3072,1536,0,0,0)

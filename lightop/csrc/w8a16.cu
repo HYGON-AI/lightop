@@ -18,6 +18,7 @@ constexpr int GroupSize=128;
 using half2_t = __attribute__( (__vector_size__(2 * sizeof(_Float16)) )) _Float16;
 using half4_t = __attribute__( (__vector_size__(4 * sizeof(_Float16)) )) _Float16;
 using half8_t = __attribute__( (__vector_size__(8 * sizeof(_Float16)) )) _Float16;
+using half16_t = __attribute__( (__vector_size__(16 * sizeof(_Float16)) )) _Float16;
 using v4bh = __attribute__( (__vector_size__(4 * sizeof(short)) )) short;
 using floatx4 = __attribute__( (__vector_size__(4 * sizeof(float)) )) float;
 using uintx4 = __attribute__( (__vector_size__(4 * sizeof(uint32_t)) )) uint32_t;
@@ -33,6 +34,20 @@ inline __device__ float fp8e4m3_to_fp32(const fp8& input) {
   renorm_shift = renorm_shift > 4 ? renorm_shift - 4 : 0;
   uint32_t result = sign | ((nonsign << renorm_shift >> 4) + ((0x78 - renorm_shift) << 23));
   return c10::detail::fp32_from_bits(result);
+}
+
+template<typename scalar_t> 
+static __device__ inline scalar_t f32_to_f16(float f){
+  if constexpr(std::is_same<scalar_t, _Float16>::value){
+    return f;
+  }
+  else{
+    uint32_t u = *(uint32_t*)(&f);
+    // if(~u&0x7f800000){
+        u += 0x7fff + ((u >> 16) & 1); 
+    // }
+    return u>>16;
+  }
 }
 
 struct half4x2{
@@ -72,6 +87,7 @@ inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& 
     }                                         \
   }()
 
+
 #define NPerBlock_SWITCH(n_per_block, ...)    \
   [&] {                                       \
     if (n_per_block == 16) {                  \
@@ -86,13 +102,14 @@ inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& 
     }                                         \
   }()
 
+
 #define Input_Type_SWITCH(SRC_DTYPE, ...)     \
   [&] {                                       \
     if (SRC_DTYPE == at::ScalarType::Half) {  \
       using scalar_t=_Float16;                \
       return __VA_ARGS__();                   \
     }else {                                   \
-      using scalar_t=hip_bfloat16;          \
+      using scalar_t=uint16_t;                \
       return __VA_ARGS__();                   \
     }                                         \
   }()
@@ -105,9 +122,8 @@ static const int W8A16_NPERBLOCK = get_env_("W8A16_NPERBLOCK");
 // static const int W8A16_MPERBLOCK = get_env_("W8A16_MPERBLOCK");
 static const int W8A16_PRINT_PARAM = get_env_("W8A16_PRINT_PARAM");
 
-
 template <typename scalar_t, int NUM_WARPS=4,int NPerBlock=16>
-__global__ void gemm_w8_a16_kernel_colmajor(scalar_t *a,fp8* b,scalar_t* d,scalar_t* scale_n,int m,int n,int k)
+__global__ void gemm_w8_a16_kernel_colmajor(scalar_t *a,fp8* b,scalar_t* d,float* scale_n,int m,int n,int k)
 {
     constexpr int NLoop=NPerBlock/16;
     constexpr bool is_half = std::is_same<scalar_t, _Float16>::value;
@@ -128,9 +144,9 @@ __global__ void gemm_w8_a16_kernel_colmajor(scalar_t *a,fp8* b,scalar_t* d,scala
     half4x4 a_vec;
     for(int i=0;i<4;i++)a_vec.data[i]={0,0,0,0};
     for(int i=warp_idx*GroupSize;i<k;i+=GroupSize*NUM_WARPS){
-        scalar_t t_scale;
+        float t_scale;
         if(lane==0)t_scale=scale_n[i/GroupSize];
-        t_scale=__shfl((float)t_scale,0);
+        t_scale=__shfl(t_scale,0);
         #pragma unroll
         for(int i2=0;i2<GroupSize;i2+=GroupSize/2){
             int line_offset = rowid*k + i + i2 + rows*16;
@@ -144,13 +160,9 @@ __global__ void gemm_w8_a16_kernel_colmajor(scalar_t *a,fp8* b,scalar_t* d,scala
                     scalar_t *bp= reinterpret_cast<scalar_t*>(&b_vec);
                     #pragma unroll
                     for(int kk=0;kk<4;kk++){
-                      bp[kk] = fp8e4m3_to_fp32(tb[ii*4+kk])*t_scale;
-                    }
+                        bp[kk] = f32_to_f16<scalar_t>(fp8e4m3_to_fp32(tb[ii*4+kk])*t_scale);
+                    }        
                     builtin_amdgcn_mmac<is_half>(a_vec.data[ii],b_vec,d_vec[nn]);
-                    // printf("tid=%d,a_vec=%.4f,%.4f,%.4f,%.4f,b_vec=%.4f,%.4f,%.4f,%.4f,dec=%.4f,%.4f,%.4f,%.4f\n",lane, (float)a_vec.data[ii][0]
-                    // , (float)a_vec.data[ii][1], (float)a_vec.data[ii][2], (float)a_vec.data[ii][3],
-                    // (float)b_vec[0], (float)b_vec[1], (float)b_vec[2], (float)b_vec[3],
-                    // d_vec[0],d_vec[1],d_vec[2],d_vec[3]);
                 }
             }
         }
@@ -184,14 +196,14 @@ __global__ void gemm_w8_a16_kernel_colmajor(scalar_t *a,fp8* b,scalar_t* d,scala
     if(rowid<m&&warp_idx==0){
         for(int nn=0;nn<NLoop;nn++){
             for(int i=0;i<4;i++){
-                d[nn*16+i*4+rowid*n+rows]=static_cast<scalar_t>(d_vec[nn][i]);
+                d[nn*16+i*4+rowid*n+rows]=f32_to_f16<scalar_t>(d_vec[nn][i]);
             }
         }
     }
 }
 
 template <typename scalar_t, int NUM_WARPS=4,int NPerBlock=16>
-__global__ void gemm_w8_a16_kernel_with_splitk_colmajor(scalar_t *a,fp8* b,scalar_t* d,scalar_t* scale_n, float* splitk_work_space,int *semaphores, int m,int n,int k,int splitk)
+__global__ void gemm_w8_a16_kernel_with_splitk_colmajor(scalar_t *a,fp8* b,scalar_t* d,float* scale_n, float* splitk_work_space,int *semaphores, int m,int n,int k,int splitk)
 {
     constexpr int NLoop=NPerBlock/16;
     constexpr bool is_half = std::is_same<scalar_t, _Float16>::value;
@@ -217,9 +229,9 @@ __global__ void gemm_w8_a16_kernel_with_splitk_colmajor(scalar_t *a,fp8* b,scala
     half4x4 a_vec;
     for(int i=0;i<4;i++)a_vec.data[i]={0,0,0,0};
     for(int i=warp_idx*GroupSize;i<length_per_block;i+=GroupSize*NUM_WARPS){
-        scalar_t t_scale;
+        float t_scale;
         if(lane==0)t_scale=scale_n[i/GroupSize];
-        t_scale=__shfl((float)t_scale,0);
+        t_scale=__shfl(t_scale,0);
         #pragma unroll
         for(int i2=0;i2<GroupSize;i2+=GroupSize/2){
             int line_offset = rowid*k + i + i2 + rows*16;
@@ -233,8 +245,8 @@ __global__ void gemm_w8_a16_kernel_with_splitk_colmajor(scalar_t *a,fp8* b,scala
                     scalar_t *bp= reinterpret_cast<scalar_t*>(&b_vec);
                     #pragma unroll
                     for(int kk=0;kk<4;kk++){
-                      bp[kk] = fp8e4m3_to_fp32(tb[ii*4+kk])*t_scale;
-                    }
+                        bp[kk] = f32_to_f16<scalar_t>(fp8e4m3_to_fp32(tb[ii*4+kk])*t_scale);
+                    }         
                     builtin_amdgcn_mmac<is_half>(a_vec.data[ii],b_vec,d_vec[nn]);
                 }
             }
@@ -287,7 +299,7 @@ __global__ void gemm_w8_a16_kernel_with_splitk_colmajor(scalar_t *a,fp8* b,scala
                 half4_t tempd2;
                 scalar_t *pd=reinterpret_cast<scalar_t*>(&tempd2);
                 for(int ii=0;ii<4;ii++){
-                    pd[ii]=static_cast<scalar_t>(tempd[ii]);
+                    pd[ii]=f32_to_f16<scalar_t>(tempd[ii]);
                 }
                 *(half4_t*)(d+offset)=tempd2;
             }
@@ -317,6 +329,7 @@ Tensor gemm_w8_a16_fp8_colmajor(const Tensor& x,const Tensor& weight,const Tenso
 {
     int m=x.sizes()[0];
     AT_ASSERTM(m <= 16, "m must be between 1 and 16");
+    AT_ASSERTM(scale_n.scalar_type() == at::ScalarType::Float, "scale must be a float tensor.");
     int k=x.sizes()[1];
     int n=weight.sizes()[1];
     std::vector<long> size(2);
@@ -341,17 +354,17 @@ Tensor gemm_w8_a16_fp8_colmajor(const Tensor& x,const Tensor& weight,const Tenso
     if(W8A16_WARPS!=0)warps=W8A16_WARPS;
     NPerBlock_SWITCH(n_per_block,[&] {
         NUM_WARPS_SWITCH(warps,[&] {
-            Input_Type_SWITCH(x.dtype(),[&] {
+            Input_Type_SWITCH(x.scalar_type(),[&] {
                 int blocks=(n-1)/NPerBlock+1;
                 int lds_size=NumWarps/2*NPerBlock*m*sizeof(float);
                 if(W8A16_PRINT_PARAM)std::cout<<"blocks="<<blocks<<" NumWarps="<<NumWarps<<" NPerBlock="<<NPerBlock<<" splitk="<<splitk<<std::endl;
                 if(splitk>1){
                     gemm_w8_a16_kernel_with_splitk_colmajor<scalar_t,NumWarps,NPerBlock><<<dim3(splitk,blocks),NumWarps*C10_WARP_SIZE,lds_size,stream>>>
-                            ((scalar_t*)x.data_ptr(),(fp8*)weight.data_ptr(),(scalar_t*)ret.data_ptr(),(scalar_t*)scale_n.data_ptr(),splitk_work_space,semaphores,m,n,k,splitk);
+                            ((scalar_t*)x.data_ptr(),(fp8*)weight.data_ptr(),(scalar_t*)ret.data_ptr(),(float*)scale_n.data_ptr(),splitk_work_space,semaphores,m,n,k,splitk);
                 }
                 else{
                     gemm_w8_a16_kernel_colmajor<scalar_t,NumWarps,NPerBlock><<<dim3(blocks),NumWarps*C10_WARP_SIZE,lds_size,stream>>>
-                        ((scalar_t*)x.data_ptr(),(fp8*)weight.data_ptr(),(scalar_t*)ret.data_ptr(),(scalar_t*)scale_n.data_ptr(),m,n,k); 
+                        ((scalar_t*)x.data_ptr(),(fp8*)weight.data_ptr(),(scalar_t*)ret.data_ptr(),(float*)scale_n.data_ptr(),m,n,k); 
                 }
             });
         });
@@ -359,9 +372,9 @@ Tensor gemm_w8_a16_fp8_colmajor(const Tensor& x,const Tensor& weight,const Tenso
  
     return ret;
 }
-
+ 
 template<typename scalar_t,int blocksize>
-__global__ void fp8to16_kernel(scalar_t*out, fp8* x,scalar_t* scale,int m,int n){
+__global__ void fp8to16_kernel(scalar_t*out, fp8* x,float* scale,int m,int n){
   int tid=threadIdx.x;
   int bid=blockIdx.x;
   __shared__ float s_scale;
@@ -377,24 +390,26 @@ __global__ void fp8to16_kernel(scalar_t*out, fp8* x,scalar_t* scale,int m,int n)
     int offset2=(i/GroupSize+tid/8)*n+tid%8*16;
     if(offset+offset2>m*n)return;
     fp8x16 tx = *reinterpret_cast<fp8x16*>(x+offset2);
+    half16_t tout;
+    scalar_t *p=reinterpret_cast<scalar_t*>(&tout);
     for(int k=0;k<16;k++){
-        out[offset2+k] = static_cast<scalar_t>(fp8e4m3_to_fp32(tx[k])*v_scale);
+      p[k]= f32_to_f16<scalar_t>(fp8e4m3_to_fp32(tx[k])*v_scale);
     }
+    *(half16_t*)(out+offset2)=tout;
   }
 }
 
-Tensor fp8to16(const Tensor&x,const Tensor& scale)
+void fp8to16(Tensor &ret, const Tensor &x,const Tensor& scale)
 {
+  AT_ASSERTM(scale.scalar_type() == at::ScalarType::Float, "scale must be a float tensor.");
   auto size = x.sizes();
-  Tensor ret = at::empty(size,scale.options());
   int m = size[0];
   int n = size[1];
   auto stream = at::cuda::getCurrentCUDAStream();
-  Input_Type_SWITCH(scale.dtype(),[&]{
+  Input_Type_SWITCH(ret.scalar_type(),[&]{
     constexpr int blocksize=512;
-    fp8to16_kernel<scalar_t,blocksize><<<((m-1)/GroupSize+1)*(n/GroupSize),blocksize,0,stream>>>((scalar_t*)ret.data_ptr(),(fp8*)x.data_ptr(),(scalar_t*)scale.data_ptr(),m,n);
+    fp8to16_kernel<scalar_t,blocksize><<<((m-1)/GroupSize+1)*(n/GroupSize),blocksize,0,stream>>>((scalar_t*)ret.data_ptr(),(fp8*)x.data_ptr(),(float*)scale.data_ptr(),m,n);
   });
-  return ret;
 }
 
 }
