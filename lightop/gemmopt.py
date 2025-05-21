@@ -15,5 +15,5 @@ def gemm_w8a16_fp8(a,b,scale,warps=0,n_per_block=0,splitk=0):
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()==False
     return op.gemm_w8_a16_fp8_colmajor(a,b,scale,warps,n_per_block,splitk)
 
-def fp8_to_16(a,scale):
-    return op.fp8to16(a,scale)
+def fp8_to_16(out,intput,scale):
+    return op.fp8to16(out,intput,scale)
