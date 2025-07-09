@@ -1,0 +1,15 @@
+lightop/csrc/*.hip
+lightop/csrc/topk.hip
+build/*
+lightop/__pycache__/*
+lightop/csrc/*/*.hip
+lightop/csrc/*/*.cuh
+lightop/version.py
+__pycache__/*
+lightop/csrc/hip_*.cpp
+lightop/csrc/hip_*.h
+lightop/csrc/*_hip.h
+lightop/csrc/groupnorm/*_hip.h
+*.egg-info/*
+lightop/csrc/*/*_hip.h
+test/moe_w8a8/__pycache__/*
