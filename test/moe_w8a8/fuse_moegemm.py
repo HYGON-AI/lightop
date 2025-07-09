@@ -24,6 +24,7 @@ from vllm.model_executor.layers.fused_moe.fused_moe import moe_kernel_prepare_in
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
 
+M_THRESHOLD = 128
 
 os.environ["TRITON_CACHE_DIR"] = f".triton/cache"
 
@@ -123,6 +124,41 @@ blockM_configs = {
     61: 32,
     62: 64,
     63: 64,
+}
+
+blockM_configs_decode = {
+    0: 16,   # 索引0对应M=16
+    1: 16,   # 索引1对应M=32
+    2: 16,   # 索引2对应M=64
+    3: 16,   # 索引3对应M=16
+    4: 16,   # 索引4对应M=32
+    5: 16,   # 索引5对应M=64
+    6: 16,   # 索引6对应M=16
+    7: 16,   # 索引7对应M=32
+    8: 16,   # 索引8对应M=64
+    9: 16,   # 索引9对应M=32
+    10: 16,  # 索引10对应M=64
+    11: 16,  # 索引11对应M=32
+    12: 16,  # 索引12对应M=64
+    13: 16,  # 索引13对应M=64
+    14: 16,  # 索引14对应M=32
+    15: 16,  # 索引15对应M=32
+    16: 16,  # 索引16对应M=64
+    17: 16,  # 索引17对应M=64
+    18: 16,  # 索引18对应M=32
+    19: 16,  # 索引19对应M=64
+    20: 16,
+    21: 16,
+    22: 16,
+    23: 16,
+    24: 16,
+    25: 16,
+    26: 16,
+    27: 16,
+    28: 16,
+    29: 16,
+    30: 16,
+    31: 16
 }
 
 
@@ -1560,10 +1596,17 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                                                       topk_ids.shape[1]]
             intermediate_cache3 = intermediate_cache3[:tokens_in_chunk]
 
+        M_pattern = "MODE_DECODE"
+        if M > M_THRESHOLD:
+            M_pattern = "MODE_PREFILL"
         if use_int8_w8a8:
             M=curr_hidden_states.shape[0]
             #print(f'+++++++-------_{M}_--------+++++++')
-            config['BLOCK_SIZE_M'] = blockM_configs[config['MODE']]
+            if M > M_THRESHOLD:
+                config['BLOCK_SIZE_M'] = blockM_configs[config[M_pattern]]
+            else:
+                config['BLOCK_SIZE_M'] = blockM_configs_decode[config[M_pattern]]
+            # config['BLOCK_SIZE_M'] = blockM_configs[config['MODE']]
             
         curr_topk_ids = topk_ids[begin_chunk_idx:end_chunk_idx]
         curr_topk_weights = topk_weights[begin_chunk_idx:end_chunk_idx]
@@ -1606,7 +1649,7 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe,
-                                mode=config['MODE'])
+                                mode=config[M_pattern])
         
         quantiles = [0.5, 0.2, 0.8]
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: invoke_fused_moe_kernel_int8(qcurr_hidden_states,
@@ -1738,10 +1781,17 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                                       topk_ids.shape[1]]
             intermediate_cache3 = intermediate_cache3[:tokens_in_chunk]
 
+        M_pattern = "MODE_DECODE"
+        if M > M_THRESHOLD:
+            M_pattern = "MODE_PREFILL"  
         if use_int8_w8a8:
             M=curr_hidden_states.shape[0]
             #print(f'+++++++-------_{M}_--------+++++++')
-            config['BLOCK_SIZE_M'] = blockM_configs[config['MODE']]
+            if M > M_THRESHOLD:
+                config['BLOCK_SIZE_M'] = blockM_configs[config[M_pattern]]
+            else:
+                config['BLOCK_SIZE_M'] = blockM_configs_decode[config[M_pattern]]
+            # config['BLOCK_SIZE_M'] = blockM_configs[config['MODE']]
             
         curr_topk_ids = topk_ids[begin_chunk_idx:end_chunk_idx]
         curr_topk_weights = topk_weights[begin_chunk_idx:end_chunk_idx]
@@ -1784,7 +1834,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe,
-                                mode=config['MODE'])
+                                mode=config[M_pattern])
         
         if activation == "silu":
             torch.ops._C.silu_and_mul(intermediate_cache2,
@@ -1829,7 +1879,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe,
-                                mode=config['MODE'])
+                                mode=config[M_pattern])
         quantiles = [0.5, 0.2, 0.8]
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: invoke_fused_moe_kernel_int8(qintermediate_cache2,
                                                                                             w2,
