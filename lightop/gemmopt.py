@@ -1,4 +1,5 @@
 import torch
+from typing import Optional
 from lightop import op
 def gemm(a,b):
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous()

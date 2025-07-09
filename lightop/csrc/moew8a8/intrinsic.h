@@ -18,6 +18,7 @@ using v4bh    = __attribute__((__vector_size__(4 * sizeof(short)))) short;
 using floatx4 = __attribute__((__vector_size__(4 * sizeof(float)))) float;
 using uintx4  = __attribute__((__vector_size__(4 * sizeof(uint32_t)))) uint32_t;
 using intx4 = __attribute__((__vector_size__(4 * sizeof(int)))) int;
+using int8x16 = __attribute__((__vector_size__(16 * sizeof(int8_t)))) char;
 
 //fp8_e4m3 definitions
 struct alignas(1) Float8_e4m3_t{
@@ -65,6 +66,7 @@ union union_vec{
   float float_array[len * sizeof(Element) / 4];
   int32_t uint_array[len * sizeof(Element) / 4];
   int64_t uint64_array[len * sizeof(Element) / 8];
+  vec<int8_t, 8>::type int8t_array[len * sizeof(Element) / 8];
   vec<int, 2>::type int2_array[len * sizeof(Element) / 8];
   vec<int, 4>::type int4_array[len * sizeof(Element) / 16];
   vec<float, 4>::type float4_array[len * sizeof(Element) / 16];
@@ -163,6 +165,18 @@ __forceinline__ __device__ void builtin_buffer_load_dword_lds(src_type *const sh
     // global_ptr[2] = rsrc[2];
     // global_ptr[3] = rsrc[3];
     // cp_async4(ptr, global_ptr, gvOffset_s * bytes_per_element, gvOffset_v * bytes_per_element);
+}
+
+// buferr_load_reg
+template<typename T>	
+__forceinline__ __device__ intx4 builtin_amdgcn_buffer_load_reg_dwordx4(const T* ptr, const int vindex, const int offset){
+  intx4 rsrc;
+  *(uint64_t*)&rsrc = reinterpret_cast<uint64_t>(ptr); //res[0]放首地址信息
+  rsrc[1] += 0x40800000;
+  rsrc[2] = 0x80000000;
+  rsrc[3] = 0x00020000;
+  rsrc = __builtin_amdgcn_buffer_load_dwordx4(rsrc, vindex, offset, false, false);
+  return rsrc;
 }
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //封装mmac

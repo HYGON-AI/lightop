@@ -367,5 +367,146 @@ __forceinline__ __device__ void  gemm_nt_first_stage(
 #endif
 }
 
+// MOE-DECODE-W8A8 针对小shape优化
+template<bool Is_store_A, 
+    int A_prefetch_level, 
+    int B_prefetch_level, 
+    int WARP_NUM,
+    int BLOCK_M, 
+    int BLOCK_N, 
+    int BLOCK_K, 
+    int WARP_M,  
+    int WARP_N,  
+    int WARP_K,  
+    int STAGES,  
+    int GROUP_N,
+    int GROUP_K,
+    typename Element, 
+    typename ElementAccum = int32_t>                                                                                                            
+__forceinline__ __device__ void  gemm_nt_first_stage_decode(
+    const Element* input_ptr, 
+    const Element* weight_ptr, 
+    Element* A_lds,
+    Element* B_lds,
+    float* input_scale_ptr,
+    float* weight_scale_ptr,
+    int max_n_len_offset, 
+    union_vec<Element,WARP_K/4> A_reg[], // 2 = warpk/mmak
+    union_vec<Element,WARP_K/4> B_reg[], // 2 = warpk/mmak
+    // union_vec<Element,8> A_reg[][2], // 2 = warpk/mmak
+    // union_vec<Element,8> B_reg[][2], // 2 = warpk/mmak
+    intx4 C_reg[][(WARP_M/16)*(WARP_N/16)],
+    int warp_id, 
+    int seqlen_A_stride, // size_k: 7168
+    int seqlen_B_stride, // size_k: 7168
+    int scale_A_stride_m,
+    int scale_A_stride_k,
+    int scale_B_stride_e,
+    int scale_B_stride_n,
+    int scale_B_stride_k,
+    int top_k, // 8
+    const int* sorted_token_ids_offset,
+    int sorted_token_lens,
+    const int32_t expert_id,
+    const int bidx) {
+
+    const int size_k = seqlen_A_stride;
+    int lane_id = threadIdx.x & 63; // thread_id
+    int row_id = lane_id % 16;
+    int col_id = lane_id / 16;
+    constexpr int MFMA_M = 16;
+    constexpr int MFMA_N = 16;
+    constexpr int MFMA_K = 32;
+    constexpr int warp_k_num = BLOCK_K / WARP_K;
+    int warp_k_id = warp_id % warp_k_num;
+    int warp_n_id = warp_id / warp_k_num;
+
+
+    for(int i = warp_k_id * WARP_K; i < size_k; i += warp_k_num * WARP_K){
+
+        // load A
+        #pragma unroll
+        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+            int sorted_token_idx = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
+            int g_row = (std::min(sorted_token_idx / top_k,  max_n_len_offset - 1));
+            #pragma unroll
+            for(int k_tile = 0; k_tile < WARP_K / 64; k_tile++){ // todo 一个线程连续拷贝16还是隔开拷贝  col_id * 16 * WARP_K/64 + k_tile * 16
+                A_reg[m_tile].int4_array[k_tile] = builtin_amdgcn_buffer_load_reg_dwordx4(input_ptr, 0, g_row * size_k + i + col_id * 16 + k_tile * 64);
+                //A_reg[m_tile].int4_array[k_tile] = builtin_amdgcn_buffer_load_reg_dwordx4(input_ptr, 0, g_row * size_k + i + col_id * 16 * WARP_K/64 + k_tile * 16);
+            }
+        }
+
+        // load B
+        #pragma unroll
+        for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+            int g_row = warp_n_id * WARP_N + n_tile * MFMA_N + row_id;
+            #pragma unroll
+            for(int k_tile = 0; k_tile < WARP_K / 64; k_tile++){
+                B_reg[n_tile].int4_array[k_tile] = builtin_amdgcn_buffer_load_reg_dwordx4(weight_ptr, 0, g_row * size_k + i + col_id * 16 + k_tile * 64);
+                //B_reg[n_tile].int4_array[k_tile] = builtin_amdgcn_buffer_load_reg_dwordx4(weight_ptr, 0, g_row * size_k + i + col_id * 16 * WARP_K/64 + k_tile * 16);
+            }
+        }
+
+        // mmac
+        #pragma unroll
+        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                    C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile] = mmac<Element>(
+                                *(typename vec<Element, 8>::type*)(&A_reg[m_tile].int8t_array[k_tile]), 
+                                *(typename vec<Element, 8>::type*)(&B_reg[n_tile].int8t_array[k_tile]), 
+                                C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile]);  
+                }
+            }
+        }
+    } // k_loop end
+    
+
+    // warp间的规约 
+    extern __shared__ int out_smem[]; // 声明lds信息
+    if constexpr (warp_k_num > 1){
+        constexpr int lds_n_offset = warp_k_num * BLOCK_N;
+        #pragma unroll
+        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){ // todo 连续拷贝还是隔开拷贝 -> 差别不大 n_tile*4 + col_id * 4 *  WARP_N / MFMA_N
+                *(intx4*)( &out_smem[(m_tile * MFMA_M + row_id) * lds_n_offset  + n_tile * 16 + col_id * 4 + warp_n_id * WARP_N + warp_k_id * BLOCK_N] ) = C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile];
+                //*(intx4*)( &out_smem[(m_tile * MFMA_M + row_id) * lds_n_offset  + n_tile*4 + col_id * 4 *  WARP_N / MFMA_N + warp_n_id * WARP_N + warp_k_id * BLOCK_N] ) = C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile];
+            }
+        }
+
+        __syncthreads();
+
+
+        if(warp_k_id == 0){
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile] = {0, 0, 0, 0};
+                }
+            }
+
+
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < warp_k_num; k_tile++){
+                        for(int i = 0; i < 4; ++i){
+                            C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile][i] += 
+                            out_smem[(m_tile * MFMA_M + row_id) * lds_n_offset  + n_tile * 16 + col_id * 4 + warp_n_id * WARP_N + k_tile * BLOCK_N + i];
+                            //out_smem[(m_tile * MFMA_M + row_id) * lds_n_offset  + n_tile*4 + col_id * 4 *  WARP_N / MFMA_N  + warp_n_id * WARP_N + k_tile * BLOCK_N + i];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 }
 }

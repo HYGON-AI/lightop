@@ -18,7 +18,7 @@ from transformers import AutoConfig
 from vllm.platforms import current_platform
 from vllm.utils import FlexibleArgumentParser
 from fuse_moegemm import fused_moe_impl, fused_moe_first_stage_tune, fused_moe_second_stage_tune, \
-                            grouped_topk, fused_topk, blockM_configs
+                            grouped_topk, fused_topk, blockM_configs, blockM_configs_decode
 # from test_ori_fuse_moe import fused_moe_impl
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
@@ -32,6 +32,8 @@ os.environ["TRITON_CACHE_DIR"] = f".triton/cache"
 
 triton_json_dir="./cache/moe"
 device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
+
+M_THRESHOLD = 128
 
 # 生成 [m, topk] 的整数张量，每行元素不重复
 def generate_unique_int_tensor(m, topk, low=0, high=256):
@@ -764,17 +766,22 @@ def benchmark_config_profile(
     return avg
 
 def get_rocm_tuning_space(use_fp16):
-    mode_range = [i for i in range(len(blockM_configs))]
-    param_ranges = {
-        "MODE": mode_range,
+    mode_range_prefill = [i for i in range(len(blockM_configs))]
+    mode_range_decode = [i for i in range(len(blockM_configs_decode))]
+    param_ranges_prefill = {
+        "MODE_PREFILL": mode_range_prefill,    
+    }
+
+    param_ranges_decode = {    
+        "MODE_DECODE": mode_range_decode, 
     }
     
-    return param_ranges
+    return [param_ranges_prefill, param_ranges_decode]
 
 
 def get_configs_compute_bound(use_fp16,
                               block_quant_shape) -> list[dict[str, int]]:
-    configs: list[BenchmarkConfig] = []
+    configs = []
 
     if current_platform.is_rocm():
         param_ranges = get_rocm_tuning_space(use_fp16)
@@ -798,25 +805,33 @@ def get_configs_compute_bound(use_fp16,
             "num_stages": num_stage_range,
         }
 
-    keys, values = zip(*param_ranges.items())
+    configs_prefill = []
+    configs_decode = []
+
+    keys, values = zip(*param_ranges[0].items())
     for config_values in product(*values):
         config = dict(zip(keys, config_values))
-        configs.append(config)
+        configs_prefill.append(config)
 
-    return configs
+    keys, values = zip(*param_ranges[1].items())
+    for config_values in product(*values):
+        config = dict(zip(keys, config_values))
+        configs_decode.append(config)
+
+    return [configs_prefill, configs_decode]
 
 
 def prune_rocm_search_space_kernel0(num_tokens, shard_intermediate_size, hidden_size,
                             search_space, is_fp16, topk):
     N1, K1 = shard_intermediate_size, hidden_size
-    pruned_space_0 = prune_rocm_configs(num_tokens * topk, N1, K1,
+    pruned_space_0 = prune_rocm_configs(num_tokens, N1, K1,
                                         search_space, is_fp16)
     return pruned_space_0
 
 def prune_rocm_search_space_kernel1(num_tokens, shard_intermediate_size, hidden_size,
                             search_space, is_fp16, topk):
     N2, K2 = hidden_size, shard_intermediate_size // 2
-    pruned_space_1 = prune_rocm_configs(num_tokens * topk, N2, K2,
+    pruned_space_1 = prune_rocm_configs(num_tokens, N2, K2,
                                         search_space, is_fp16)
     return pruned_space_1
 
@@ -825,17 +840,21 @@ def prune_rocm_search_space_kernel1(num_tokens, shard_intermediate_size, hidden_
 # https://github.com/ROCm/triton/blob/triton-mlir/scripts/amd/gemm/tune_gemm.py#L89
 def prune_rocm_configs(M, N, K, configs, is_fp16=True):
     pruned_configs = []
+    if(M > M_THRESHOLD):
+        for config in configs[0]:
+            mode = config.get("MODE_PREFILL")
+            compare_fail = [42,43,46,52,54,60]
+            ignored_modes = [5,7,8,12,34,37,38,44,55,56,57,58,61,63,62]
+            exclude_modes = compare_fail + ignored_modes
+            # #remove warps=2
+            if mode in exclude_modes:
+                continue
 
-    for config in configs:
-        mode = config.get("MODE")
-        compare_fail = [42,43,46,52,54,60]
-        ignored_modes = [5,7,8,12,34,37,38,44,55,56,57,58,61,63,62]
-        exclude_modes = compare_fail + ignored_modes
-        # #remove warps=2
-        if mode in exclude_modes:
-            continue
-
-        pruned_configs.append(config)
+            pruned_configs.append(config)
+    else:
+        for config in configs[1]:
+            mode = config.get("MODE_DECODE")
+            pruned_configs.append(config)
 
     return pruned_configs
 
@@ -922,7 +941,7 @@ class BenchmarkWorker:
         use_fp8_w8a8: bool,
         use_int8_w8a16: bool,
         use_int8_w8a8: bool,
-        search_space: list[dict[str, int]],
+        search_space,
         block_quant_shape: list[int],
         use_deep_gemm: bool,
     ) -> dict[str, int]:
@@ -942,6 +961,13 @@ class BenchmarkWorker:
                                                    shard_intermediate_size,
                                                    hidden_size, search_space,
                                                    is_fp16, topk)
+        mode_pattern = "MODE_DECODE"
+        block_configs = blockM_configs
+        if num_tokens > M_THRESHOLD:
+            mode_pattern = "MODE_PREFILL"
+            block_configs = blockM_configs_decode
+
+
         with torch.cuda.device(self.device_id):
             
             for block_m in tqdm([16,32,64,128], desc="Processing block_m......"):
@@ -951,7 +977,7 @@ class BenchmarkWorker:
                 time_kernel1 = float('inf')
                 config_kernel1 = None
                 for config in search_space_kernel0:
-                    if blockM_configs[config["MODE"]] != block_m:
+                    if block_configs[config[mode_pattern]] != block_m:
                         continue
                     try:
                         kernel_time = benchmark_config(
@@ -976,7 +1002,7 @@ class BenchmarkWorker:
                         time_kernel0 = kernel_time
                         config_kernel0 = config 
                 for config in search_space_kernel1:
-                    if blockM_configs[config["MODE"]] != block_m:
+                    if block_configs[config[mode_pattern]] != block_m:
                         continue
                     try:
                         kernel_time = benchmark_config(
@@ -1169,12 +1195,13 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
+            # 1, 2, 4, 8, 16, 32, 64, 128
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
             # 1, 2, 4, 8, 16, 32, 64, 8192, 16384, 32768
             # 4096, 6144, 8192, 16384, 32768
             # 8192
             # 65536,32768,
-            # 49152, 65536, 131072
+            # 32768, 49152, 65536, 131072
             # 6144, 8192, 16384, 32768, 40960
             # 4096,
             # 1024,

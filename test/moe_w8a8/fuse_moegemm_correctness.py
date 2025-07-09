@@ -88,6 +88,43 @@ blockM_configs = {
     63: 64,
 }
 
+M_THRESHOLD = 128
+
+blockM_configs_decode = {
+    0: 16,   # 索引0对应M=16
+    1: 16,   # 索引1对应M=32
+    2: 16,   # 索引2对应M=64
+    3: 16,   # 索引3对应M=16
+    4: 16,   # 索引4对应M=32
+    5: 16,   # 索引5对应M=64
+    6: 16,   # 索引6对应M=16
+    7: 16,   # 索引7对应M=32
+    8: 16,   # 索引8对应M=64
+    9: 16,   # 索引9对应M=32
+    10: 16,  # 索引10对应M=64
+    11: 16,  # 索引11对应M=32
+    12: 16,  # 索引12对应M=64
+    13: 16,  # 索引13对应M=64
+    14: 16,  # 索引14对应M=32
+    15: 16,  # 索引15对应M=32
+    16: 16,  # 索引16对应M=64
+    17: 16,  # 索引17对应M=64
+    18: 16,  # 索引18对应M=32
+    19: 16,  # 索引19对应M=64
+    20: 16,
+    21: 16,
+    22: 16,
+    23: 16,
+    24: 16,
+    25: 16,
+    26: 16,
+    27: 16,
+    28: 16,
+    29: 16,
+    30: 16,
+    31: 16
+}
+
 def to_int8(tensor: torch.Tensor):
     return torch.round(tensor.clamp(min=-128, max=127)).to(dtype=torch.int8)
 
@@ -624,7 +661,11 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape)
 
-        config['BLOCK_SIZE_M'] = blockM_configs[mode0]
+        # config['BLOCK_SIZE_M'] = blockM_configs[mode0]
+        if M > M_THRESHOLD:
+            config['BLOCK_SIZE_M'] = blockM_configs[mode]
+        else:
+            config['BLOCK_SIZE_M'] = blockM_configs_decode[mode]
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
@@ -651,7 +692,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe,
-                                mode=mode0)
+                                mode=mode)
 
         if activation == "silu":
             # d = intermediate_cache1.shape[-1] // 2
@@ -698,7 +739,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe,
-                                mode=mode1)
+                                mode=mode)
         
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
                     out_hidden_states[begin_chunk_idx:end_chunk_idx])
@@ -810,8 +851,9 @@ def torch_w8a8_per_column_moe(a, w1, w2, w1_s, w2_s, topk_weight, topk_ids,topk)
 
 
 def run_perchannel_vaild():
-    m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
-    # m_list=[32]
+    # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
+    # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
+    m_list = [259]
     n_list_1=[256,512]
     k_list_1=[7168,7168]
     # n_list_1=[512]
@@ -831,10 +873,15 @@ def run_perchannel_vaild():
     os.makedirs(triton_json_dir, exist_ok=True)
     
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
+
     mode_ranges = [i for i in range(len(blockM_configs))]
     compare_fail = [42,43,46,52,54,60]
     ignored_modes = [5,7,8,12,34,37,38,44,55,56,57,58,61,63,62]
     exclude_modes = compare_fail + ignored_modes
+
+    # decode corrtnese
+    # mode_ranges = [i for i in range(len(blockM_configs_decode))]
+    # exclude_modes = [13]
     
     for mode in mode_ranges:
         if mode in exclude_modes:
