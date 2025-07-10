@@ -13,3 +13,4 @@ lightop/csrc/groupnorm/*_hip.h
 *.egg-info/*
 lightop/csrc/*/*_hip.h
 test/moe_w8a8/__pycache__/*
+test/moe_w8a8/.triton/
