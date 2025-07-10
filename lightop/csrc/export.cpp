@@ -50,7 +50,7 @@ Tensor w4_to_w16(const Tensor& x,const Tensor& scale_m,const Tensor& zero_m);
 Tensor gemm_w8_a16_fp8_colmajor(const Tensor& x,const Tensor& y,const Tensor& scale,int warps,int n_per_block,int splitk);
 void fp8to16(Tensor &ret, const Tensor &x,const Tensor& scale);
 Tensor moe_gemm_w8a8(torch::Tensor input,Tensor b_qweight,Tensor output,Tensor a_scale,Tensor b_scale,std::optional<Tensor> topk_weights,Tensor sorted_token_ids,Tensor expert_ids,Tensor num_tokens_post_pad, int64_t top_k, int mode);
-
+Tensor gemm_w8_a8_smooth_colmajor(const Tensor& x,const Tensor& y,const Tensor& scale_a,const Tensor& scale_b,  const std::optional<Tensor> bias,at::ScalarType out_dtype,int warps,int n_per_block, int n_per_warp, int splitk, bool use_n_warps);
 
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
@@ -111,4 +111,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gemm_w8_a16_fp8_colmajor", &at::native::gemm_w8_a16_fp8_colmajor, "gemm_w8_a16_fp8_colmajor");
   m.def("fp8to16", &at::native::fp8to16, "fp8to16");
   m.def("moe_gemm_w8a8", &at::native::moe_gemm_w8a8, "moe_gemm_w8a8");
+  m.def("gemm_w8_a8_smooth_colmajor", &at::native::gemm_w8_a8_smooth_colmajor, "gemm_w8_a8_smooth_colmajor");
 }
