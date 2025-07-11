@@ -137,8 +137,8 @@ def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_qua
  
 if __name__ == "__main__":
     device = "cuda"
-    use_bias = True
-    m,n,k = (16,27684,5120)
+    use_bias = False
+    m,n,k = (8192,3584,5120)
     use_random = True
     # out_dtype = torch.bfloat16
     out_dtype = torch.float16
@@ -187,9 +187,9 @@ if __name__ == "__main__":
     print("w8a8 out:",out_w8a8[0:1,0:1])
     diff_max = (out - out_w8a8).abs().max()
     if not (torch.allclose(out, out_w8a8, rtol=1e-2, atol=5e-2)):
-        print("gemm_w8a8_smooth 精度检查不合格！！！")  
+        print("error gemm_w8a8_smooth 精度检查不合格！！！")  
     else:
-        print("gemm_w8a8_smooth 精度检查合格")    
+        print("success gemm_w8a8_smooth 精度检查合格")    
     print(f"diff_max={diff_max}")
     
     # 速度测试
