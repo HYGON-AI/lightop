@@ -5,8 +5,7 @@
 namespace at {
 namespace native {
 
-BackendDescriptor CreatVarpack(BackendDescriptor exec_plan,
-                               const std::vector<std::pair<size_t, size_t>> tensor_id_with_size);
+BackendDescriptor CreatVarpack(const std::vector<std::pair<size_t, void*>> tensor_id_with_addr, void* workspace);
 
 } // namespace native
 } // namespace at

@@ -4,25 +4,37 @@
 #include <string>
 #include <stdexcept>
 #include <sstream>
+#include <exception>
+#include <string>
 
 struct THCState;
 
 namespace at {
 namespace native {
-
-class miopen_exception : public std::runtime_error
+struct Exception : std::exception
 {
-public:
+    std::string message;
     miopenStatus_t status;
-    miopen_exception(miopenStatus_t status, const char* msg)
-        : std::runtime_error(msg), status(status)
+    Exception(const std::string& msg = "") : message(msg), status(miopenStatusUnknownError) {}
+
+    Exception(miopenStatus_t s, const std::string& msg = "") : message(msg), status(s) {}
+
+    Exception SetContext(const std::string& file, int line)
     {
+
+        message = file + ":" + std::to_string(line) + ": " + message;
+        return *this;
     }
-    miopen_exception(miopenStatus_t status, const std::string& msg)
-        : std::runtime_error(msg), status(status)
-    {
-    }
+
+    // Workaround for HIP, this must be inline
+    const char* what() const noexcept override { return message.c_str(); }
 };
+
+#define MIOPEN_THROW(...)                                            \
+    do                                                               \
+    {                                                                \
+        throw Exception(__VA_ARGS__).SetContext(__FILE__, __LINE__); \
+    } while(false)
 
 inline void MIOPEN_CHECK(miopenStatus_t status)
 {
@@ -30,12 +42,11 @@ inline void MIOPEN_CHECK(miopenStatus_t status)
     {
         if(status == miopenStatusNotImplemented)
         {
-            throw miopen_exception(
-                status,
-                std::string(miopenGetErrorString(status)) +
-                    ". This error may appear if you passed in a non-contiguous input.");
+            MIOPEN_THROW(status,
+                         std::string(miopenGetErrorString(status)) +
+                             ". This error may appear if you passed in a non-contiguous input.");
         }
-        throw miopen_exception(status, miopenGetErrorString(status));
+        MIOPEN_THROW(status, miopenGetErrorString(status));
     }
 }
 

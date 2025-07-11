@@ -6,42 +6,11 @@
 namespace at {
 namespace native {
 
-namespace {
-
-inline miopenDataType_t getDataType(const at::Tensor& t)
-{
-    auto scalar_type = t.scalar_type();
-    if(scalar_type == at::kFloat)
-    {
-        return miopenFloat;
-    }
-    else if(scalar_type == at::kHalf)
-    {
-        return miopenHalf;
-    }
-    else if(scalar_type == at::kBFloat16)
-    {
-        return miopenBFloat16;
-    }
-    else
-    {
-        throw std::runtime_error("TensorDescriptor only supports float, half and bfloat16 tensors");
-    }
-}
-
-} // anonymous namespace
-
-void TensorDescriptor::set(const at::Tensor& t, size_t pad)
-{
-    set(getDataType(t), t.sizes(), t.strides(), pad);
-}
+void TensorDescriptor::set(const at::Tensor& t, size_t pad) { set(getDataType(t), t.sizes(), t.strides(), pad); }
 
 static int MIOPEN_DIM_MAX = 5;
 
-void TensorDescriptor::set(miopenDataType_t datatype,
-                           IntArrayRef t_sizes,
-                           IntArrayRef t_strides,
-                           size_t pad)
+void TensorDescriptor::set(miopenDataType_t datatype, IntArrayRef t_sizes, IntArrayRef t_strides, size_t pad)
 {
     size_t dim = t_sizes.size();
     if(dim > MIOPEN_DIM_MAX || pad > MIOPEN_DIM_MAX)
@@ -116,8 +85,7 @@ void FilterDescriptor::set(const at::Tensor& t, const at::MemoryFormat memory_fo
         throw std::runtime_error("MIOpen supports only up to " STR(MIOPEN_DIM_MAX) " dimensions");
 #undef _STR
 #undef STR
-    TORCH_CHECK(t.is_contiguous(memory_format),
-                "MIOpen filters (a.k.a. weights) must be contiguous");
+    TORCH_CHECK(t.is_contiguous(memory_format), "MIOpen filters (a.k.a. weights) must be contiguous");
 
     int size[MIOPEN_DIM_MAX];
     int stride[MIOPEN_DIM_MAX];
