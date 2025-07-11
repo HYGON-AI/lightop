@@ -1,0 +1,2 @@
+1. 生成配置文件到generator/w8a8_smooth_quant_config_dict.py：python ./w8a8_smooth_config_search.py
+2. 用generator/w8a8_smooth_quant_config_dict.py中的w8a8_smooth_quant_config_dict替换w8a8_smooth.py里面的w8a8_smooth_quant_config_dict

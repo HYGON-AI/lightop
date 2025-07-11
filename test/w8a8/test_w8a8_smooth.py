@@ -11,7 +11,7 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 import functools
-
+from w8a8_smooth import gemm_w8a8_smooth
 
 @triton.jit
 def _per_token_quant_int8(
@@ -99,10 +99,10 @@ def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_qua
         if include_quant:
             # 包含量化的测试
             a_quant, scale_a_quant = per_token_quant_int8(a)
-            _ = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
+            _ = gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
         else:
             # 不包含量化的测试
-            _ = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
+            _ = gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
     
     # 同步GPU
     torch.cuda.synchronize()
@@ -115,11 +115,11 @@ def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_qua
         # 包含量化的测试
         for _ in range(test_iters):
             a_quant, scale_a_quant = per_token_quant_int8(a)
-            _ = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
+            _ = gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
     else:
         # 不包含量化的测试
         for _ in range(test_iters):
-            _ = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
+            _ = gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
     
     # 同步GPU并计算平均耗时
     torch.cuda.synchronize()
@@ -182,7 +182,7 @@ if __name__ == "__main__":
     scale_a_original = scale_a.clone()
     
     out = _rocblas_scaled_mm(a,b.contiguous().reshape(k,-1),scale_a,scale_b,out_dtype,bias)
-    out_w8a8 = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
+    out_w8a8 = gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
     print("rocblas out:",out[0:1,0:1])
     print("w8a8 out:",out_w8a8[0:1,0:1])
     diff_max = (out - out_w8a8).abs().max()
