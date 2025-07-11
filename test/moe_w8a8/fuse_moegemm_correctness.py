@@ -853,7 +853,8 @@ def torch_w8a8_per_column_moe(a, w1, w2, w1_s, w2_s, topk_weight, topk_ids,topk)
 def run_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
-    m_list = [259]
+    m_list=[256,512,1024,2048,4096,8192,16384,32768] #prefill
+    # m_list = [259]
     n_list_1=[256,512]
     k_list_1=[7168,7168]
     # n_list_1=[512]

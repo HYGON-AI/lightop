@@ -2,7 +2,6 @@ import torch
 from typing import Optional
 from lightop import op
 import functools
-import Optional
 
 w8a8_smooth_quant_config_dict = {
     "M1N3584K5120": (2, 16, 256, 1, False),
