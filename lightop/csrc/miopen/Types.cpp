@@ -25,10 +25,7 @@ miopenDataType_t getMiopenDataType(const at::Tensor& tensor)
     throw std::runtime_error(msg);
 }
 
-int64_t miopen_version()
-{
-    return (MIOPEN_VERSION_MAJOR << 8) + (MIOPEN_VERSION_MINOR << 4) + MIOPEN_VERSION_PATCH;
-}
+int64_t miopen_version() { return (MIOPEN_VERSION_MAJOR << 8) + (MIOPEN_VERSION_MINOR << 4) + MIOPEN_VERSION_PATCH; }
 
 } // namespace native
 } // namespace at

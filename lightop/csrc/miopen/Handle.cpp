@@ -28,8 +28,7 @@ void destroyMIOpenHandle(miopenHandle_t handle)
     // #endif
 }
 
-using MIOpenPoolType =
-    at::cuda::DeviceThreadHandlePool<miopenHandle_t, createMIOpenHandle, destroyMIOpenHandle>;
+using MIOpenPoolType = at::cuda::DeviceThreadHandlePool<miopenHandle_t, createMIOpenHandle, destroyMIOpenHandle>;
 
 } // namespace
 

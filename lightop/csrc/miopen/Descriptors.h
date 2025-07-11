@@ -9,6 +9,43 @@
 namespace at {
 namespace native {
 
+inline miopenDataType_t getDataType(const at::Tensor& t)
+{
+    auto scalar_type = t.scalar_type();
+    if(scalar_type == at::kFloat)
+    {
+        return miopenFloat;
+    }
+    else if(scalar_type == at::kHalf)
+    {
+        return miopenHalf;
+    }
+    else if(scalar_type == at::kBFloat16)
+    {
+        return miopenBFloat16;
+    }
+    else
+    {
+        throw std::runtime_error("TensorDescriptor only supports float, half and bfloat16 tensors");
+    }
+}
+
+inline miopenTensorLayout_t getLayout(const std::string& layout_str)
+{
+    if(layout_str == "NCHW")
+    {
+        return miopenTensorNCHW;
+    }
+    else if(layout_str == "NHWC")
+    {
+        return miopenTensorNHWC;
+    }
+    else
+    {
+        MIOPEN_THROW("Non-vectorized tensor only support layout NCHW and NHWC");
+    }
+}
+
 inline int dataSize(miopenDataType_t dataType)
 {
     switch(dataType)
@@ -74,47 +111,11 @@ protected:
     }
 
 private:
-    std::unique_ptr<T, DescriptorDeleter<T, dtor>> desc_;
-};
-template <typename T, miopenStatus_t (*ctor)(T**), miopenStatus_t (*dtor)(T*)>
-class Descriptor
-{
-public:
-    // Use desc() to access the underlying descriptor pointer in
-    // a read-only fashion.  Most client code should use this.
-    // If the descriptor was never initialized, this will return
-    // nullptr.
-    T* desc() const { return desc_.get(); }
-    T* desc() { return desc_.get(); }
-
-    // Use mut_desc() to access the underlying descriptor pointer
-    // if you intend to modify what it points to (e.g., using
-    // miopenSetFooDescriptor).  This will ensure that the descriptor
-    // is initialized.  Code in this file will use this function.
-    T* mut_desc()
-    {
-        init();
-        return desc_.get();
-    }
-
-protected:
-    void init()
-    {
-        if(desc_ == nullptr)
-        {
-            T* raw_desc;
-            MIOPEN_CHECK(ctor(&raw_desc));
-            desc_.reset(raw_desc);
-        }
-    }
-
-private:
-    std::unique_ptr<T, DescriptorDeleter<T, dtor>> desc_;
+    mutable std::unique_ptr<T, DescriptorDeleter<T, dtor>> desc_;
 };
 
-class TensorDescriptor : public Descriptor<miopenTensorDescriptor,
-                                           &miopenCreateTensorDescriptor,
-                                           &miopenDestroyTensorDescriptor>
+class TensorDescriptor
+    : public Descriptor<miopenTensorDescriptor, &miopenCreateTensorDescriptor, &miopenDestroyTensorDescriptor>
 {
 public:
     TensorDescriptor() {}
@@ -128,31 +129,34 @@ public:
     {
         MIOPEN_CHECK(miopenSetTensorDescriptor(mut_desc(), dataType, dim, size, stride));
     }
-    int size()
+    void set(miopenDataType_t dataType, miopenTensorLayout_t tensor_layout, int* lens, int num_lens)
+    {
+        MIOPEN_CHECK(miopenSetNdTensorDescriptorWithLayout(mut_desc(), dataType, tensor_layout, lens, num_lens));
+    }
+    int size() const
     {
         int size = 0;
-        MIOPEN_CHECK(miopenGetTensorDescriptorSize(mut_desc(), &size));
+        MIOPEN_CHECK(miopenGetTensorDescriptorSize(desc(), &size));
 
         return size;
     }
-    void get(miopenDataType_t dataType, int* dimsA, int* stridesA)
+    void get(miopenDataType_t dataType, int* dimsA, int* stridesA) const
     {
-        MIOPEN_CHECK(miopenGetTensorDescriptor(mut_desc(), &dataType, dimsA, stridesA));
+        MIOPEN_CHECK(miopenGetTensorDescriptor(desc(), &dataType, dimsA, stridesA));
     }
-    
-    size_t number_size()
+
+    size_t number_size() const
     {
         size_t number_size = 0;
-        MIOPEN_CHECK(miopenGetTensorNumBytes(mut_desc(), &number_size));
+        MIOPEN_CHECK(miopenGetTensorNumBytes(desc(), &number_size));
         return number_size;
     }
 };
 
 std::ostream& operator<<(std::ostream& out, const TensorDescriptor& d);
 
-class FilterDescriptor : public Descriptor<miopenTensorDescriptor,
-                                           &miopenCreateTensorDescriptor,
-                                           &miopenDestroyTensorDescriptor>
+class FilterDescriptor
+    : public Descriptor<miopenTensorDescriptor, &miopenCreateTensorDescriptor, &miopenDestroyTensorDescriptor>
 {
 public:
     void set(const at::Tensor& t, int64_t pad = 0) { set(t, at::MemoryFormat::Contiguous, pad); }
@@ -178,15 +182,12 @@ struct ConvolutionDescriptor : public Descriptor<miopenConvolutionDescriptor,
              int* upscale /* aka dilation */,
              int groups)
     {
-        MIOPEN_CHECK(
-            miopenInitConvolutionNdDescriptor(mut_desc(), dim, pad, stride, upscale, c_mode));
+        MIOPEN_CHECK(miopenInitConvolutionNdDescriptor(mut_desc(), dim, pad, stride, upscale, c_mode));
         MIOPEN_CHECK(miopenSetConvolutionGroupCount(mut_desc(), groups));
     }
 };
 
-struct RNNDescriptor : public Descriptor<miopenRNNDescriptor,
-                                         &miopenCreateRNNDescriptor,
-                                         &miopenDestroyRNNDescriptor>
+struct RNNDescriptor : public Descriptor<miopenRNNDescriptor, &miopenCreateRNNDescriptor, &miopenDestroyRNNDescriptor>
 {
     void set(int64_t hidden_size,
              int64_t num_layers,
@@ -197,40 +198,8 @@ struct RNNDescriptor : public Descriptor<miopenRNNDescriptor,
              miopenRNNAlgo_t algorithm,
              miopenDataType_t datatype)
     {
-        MIOPEN_CHECK(miopenSetRNNDescriptor(mut_desc(),
-                                            hidden_size,
-                                            num_layers,
-                                            input_mode,
-                                            direction,
-                                            rnn_mode,
-                                            bias_mode,
-                                            algorithm,
-                                            datatype));
-    }
-};
-
-struct RNNDescriptor : public Descriptor<miopenRNNDescriptor,
-                                         &miopenCreateRNNDescriptor,
-                                         &miopenDestroyRNNDescriptor>
-{
-    void set(int64_t hidden_size,
-             int64_t num_layers,
-             miopenRNNInputMode_t input_mode,
-             miopenRNNDirectionMode_t direction,
-             miopenRNNMode_t rnn_mode,
-             miopenRNNBiasMode_t bias_mode,
-             miopenRNNAlgo_t algorithm,
-             miopenDataType_t datatype)
-    {
-        MIOPEN_CHECK(miopenSetRNNDescriptor(mut_desc(),
-                                            hidden_size,
-                                            num_layers,
-                                            input_mode,
-                                            direction,
-                                            rnn_mode,
-                                            bias_mode,
-                                            algorithm,
-                                            datatype));
+        MIOPEN_CHECK(miopenSetRNNDescriptor(
+            mut_desc(), hidden_size, num_layers, input_mode, direction, rnn_mode, bias_mode, algorithm, datatype));
     }
 };
 
@@ -251,24 +220,19 @@ public:
              int64_t elementCount,
              const void* arrayOfElements)
     {
-        MIOPEN_CHECK(miopenBackendSetAttribute(
-            *desc_, attributeName, attributeType, elementCount, arrayOfElements));
+        MIOPEN_CHECK(miopenBackendSetAttribute(desc(), attributeName, attributeType, elementCount, arrayOfElements));
     }
 
     void get(miopenBackendAttributeName_t attributeName,
              miopenBackendAttributeType_t attributeType,
              int64_t requestedElementCount,
              int64_t* elementCount,
-             void* arrayOfElements)
+             void* arrayOfElements) const
     {
-        MIOPEN_CHECK(miopenBackendGetAttribute(*desc_,
-                                               attributeName,
-                                               attributeType,
-                                               requestedElementCount,
-                                               elementCountm,
-                                               arrayOfElements));
+        MIOPEN_CHECK(miopenBackendGetAttribute(
+            desc(), attributeName, attributeType, requestedElementCount, elementCount, arrayOfElements));
     }
-    void finalize() { MIOPEN_CHECK(miopenBackendFinalize(*desc_)); }
+    void finalize() { MIOPEN_CHECK(miopenBackendFinalize(desc())); }
 
 private:
     std::unique_ptr<miopenBackendDescriptor,
