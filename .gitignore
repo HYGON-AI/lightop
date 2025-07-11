@@ -14,5 +14,5 @@ lightop/csrc/groupnorm/*_hip.h
 lightop/csrc/*/*_hip.h
 test/moe_w8a8/__pycache__/*
 test/moe_w8a8/.triton/
-test/moe_w8a8/__pycache__/*
 test/w8a8/__pycache__/*
+*/.triton/
