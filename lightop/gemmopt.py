@@ -921,6 +921,8 @@ def gemm_w8a8_smooth(a, b, scale_a, scale_b, bias, out_dtype):
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()==False
     m, n, k = a.shape[0], b.shape[1], a.shape[1]
     warps, nperblock, kperwarp, splitk, use_n_warps = w8a8_smooth_quant_config(m, n, k)
+    if m>16:
+        return op.gemm_w8a8_smooth_asm(a, b, scale_a, scale_b, bias, out_dtype,m, n, k)
     return op.gemm_w8_a8_smooth_colmajor(a, b, scale_a, scale_b, bias, out_dtype, warps, nperblock, kperwarp, splitk, use_n_warps)
 
 
