@@ -2208,7 +2208,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
             M=curr_hidden_states.shape[0]
             #print(f'+++++++-------_{M}_--------+++++++')
             # config=get_moe_config(M,N,K)
-            config=get_moe_cuda_config(E,M,N,K,device_name,num_cus,compute_type)
+            config,status=get_moe_cuda_config(E,M,N,K,device_name,num_cus,compute_type)
             
         curr_topk_ids = topk_ids[begin_chunk_idx:end_chunk_idx]
         curr_topk_weights = topk_weights[begin_chunk_idx:end_chunk_idx]
@@ -2269,7 +2269,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                 _, _N, _K = w2.shape
             _M=curr_hidden_states.shape[0]
             # config=get_moe_config(_M,_N,_K)
-            config=get_moe_cuda_config(E,M,N,K,device_name,num_cus,compute_type)
+            config,status=get_moe_cuda_config(E,M,N,K,device_name,num_cus,compute_type)
 
         qintermediate_cache2, qa2_scale = moe_kernel_prepare_input(
             A=intermediate_cache2,
