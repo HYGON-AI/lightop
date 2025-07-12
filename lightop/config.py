@@ -66,12 +66,14 @@ def get_moe_cuda_config(
                 config={}
     except FileNotFoundError:
         config = {}
-        
+    
+    status = True    
     if not config: 
-        print("Config is not found! Use default config.")
+        # print("Config is not found! Use default config.")
+        status = False
         
     config = config if config else {
         "MODE": 0,
         "BLOCK_SIZE_M": 16,
     }
-    return config
+    return config, status
