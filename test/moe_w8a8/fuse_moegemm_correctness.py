@@ -864,20 +864,20 @@ def run_perchannel_vaild():
     # n_list_1=[512,] #E为256
     # k_list_1=[7168,]
 
-    # n_list_1=[1536, 768] #E为128
-    # k_list_1=[2048, 2048]
+    n_list_1=[1536, 768] #E为128
+    k_list_1=[2048, 2048]
 
-    n_list_1=[384] #E为128
-    k_list_1=[4096]
+    # n_list_1=[384] #E为128
+    # k_list_1=[4096]
     
     # n_list_2=[7168,] #E为256
     # k_list_2=[256,]
 
-    # n_list_2=[2048, 2048]
-    # k_list_2=[768, 384]
+    n_list_2=[2048, 2048]
+    k_list_2=[768, 384]
 
-    n_list_2=[4096]
-    k_list_2=[192]
+    # n_list_2=[4096]
+    # k_list_2=[192]
 
     out_dtype=torch.bfloat16
     # out_dtype = torch.float16
@@ -899,8 +899,9 @@ def run_perchannel_vaild():
 
     # decode corrtnese
     mode_ranges = [i for i in range(len(blockM_configs_decode))]
-    #exclude_modes = [13, 32, 33, 34, 35]
-    exclude_modes = [13] # nk 4096 192 gemm2<16
+    exclude_modes = [13, 32, 33, 34, 35]
+    #mode_ranges = [3,4,6,8,10,12,14]
+    #exclude_modes = [13] # nk 4096 192 gemm2<16
     
     for mode in mode_ranges:
         if mode in exclude_modes:
