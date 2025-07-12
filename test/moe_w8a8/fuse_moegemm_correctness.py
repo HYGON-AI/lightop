@@ -86,6 +86,37 @@ blockM_configs = {
     61: 32,
     62: 64,
     63: 64,
+    
+    64: 16,
+    65: 32,
+    66: 64,
+    67: 16,
+    68: 32,
+    69: 16,
+    70: 32,
+    71: 64,
+    74: 32,
+    75: 32,
+    76: 64,
+    77: 64,
+    78: 32,
+    79: 64,
+    80: 32,
+    81: 64,
+    82: 64,
+    83: 64,
+    84: 128,
+    85: 128,
+    86: 16,
+    87: 32,
+    88: 16,
+    89: 16,
+    90: 16,
+    91: 32,
+    92: 32,
+    93: 32,
+    94: 64,
+    95: 64,
 }
 
 M_THRESHOLD = 128
@@ -673,7 +704,6 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
@@ -858,33 +888,50 @@ def torch_w8a8_per_column_moe(a, w1, w2, w1_s, w2_s, topk_weight, topk_ids,topk)
 def run_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
-    # m_list=[256,512,1024,2048,4096,8192,16384,32768] #prefill
-    m_list=[32]
+    m_list=[256,512,1024,2048,4096,8192,16384,32768] #prefill
+    # m_list=[512,]
     # m_list = [259]
-    # n_list_1=[512,] #E为256
+    # n_list_1=[512,]
     # k_list_1=[7168,]
-
-    n_list_1=[1536, 768] #E为128
-    k_list_1=[2048, 2048]
-
-    # n_list_1=[384] #E为128
-    # k_list_1=[4096]
+    # n_list_1=[512]
+    # k_list_1=[7168]
     
-    # n_list_2=[7168,] #E为256
+    ##qwen3-30b-A3B-tp1
+    # n_list_1=[1536]
+    # k_list_1=[2048]
+    
+    ##qwen3-30b-A3B-tp2
+    # n_list_1=[768]
+    # k_list_1=[2048]
+    
+    ##qwen3-235b-A22B-tp8
+    n_list_1=[384]
+    k_list_1=[4096]
+    
+    # n_list_2=[7168,]
     # k_list_2=[256,]
-
-    n_list_2=[2048, 2048]
-    k_list_2=[768, 384]
-
-    # n_list_2=[4096]
-    # k_list_2=[192]
-
+    # n_list_2=[7168]
+    # k_list_2=[256]
+    
+    ##qwen3-30b-A3B-tp1
+    # n_list_2=[2048]
+    # k_list_2=[768]
+    
+    #qwen3-30b-A3B-tp2
+    # n_list_2=[2048]
+    # k_list_2=[384]
+    
+    ##qwen3-235b-A22B-tp8
+    n_list_2=[4096]
+    k_list_2=[192]
+    
     out_dtype=torch.bfloat16
     # out_dtype = torch.float16
 
     topk=8
     # configs=BlockSizeMConfigGen()
     best_config = None
+    # E=256
     E=128
     triton_json_dir="./cache/moe/"
     os.makedirs(triton_json_dir, exist_ok=True)
@@ -892,10 +939,13 @@ def run_perchannel_vaild():
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
+    mode_ranges = [mode for mode in blockM_configs.keys()]
     # mode_ranges = [4,]
     # compare_fail = [42,43,46,52,54,60]
-    # ignored_modes = [5,7,8,12,34,37,38,44,55,56,57,58,61,63,62]
-    # exclude_modes = compare_fail + ignored_modes
+    # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
+    compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
+    ignored_modes = [5,7,8,12,34,37,38,44,55,56,57,58,61,63,62]
+    exclude_modes = compare_fail + ignored_modes
 
     # decode corrtnese
     mode_ranges = [i for i in range(len(blockM_configs_decode))]

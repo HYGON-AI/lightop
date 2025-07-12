@@ -19,6 +19,7 @@ from vllm.platforms import current_platform
 from vllm.utils import FlexibleArgumentParser
 from fuse_moegemm import fused_moe_impl, fused_moe_first_stage_tune, fused_moe_second_stage_tune, \
                             grouped_topk, fused_topk, blockM_configs, blockM_configs_decode
+from fuse_moegemm_correctness import fused_experts_impl_int8
 # from test_ori_fuse_moe import fused_moe_impl
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
@@ -766,8 +767,8 @@ def benchmark_config_profile(
     return avg
 
 def get_rocm_tuning_space(use_fp16):
-    mode_range_prefill = [i for i in range(len(blockM_configs))]
-    mode_range_decode = [i for i in range(len(blockM_configs_decode))]
+    mode_range_prefill = [mode for mode in blockM_configs.keys()]
+    mode_range_decode = [mode for mode in blockM_configs_decode.keys()]
     param_ranges_prefill = {
         "MODE_PREFILL": mode_range_prefill,    
     }
@@ -843,7 +844,12 @@ def prune_rocm_configs(M, N, K, configs, is_fp16=True):
     if(M > M_THRESHOLD):
         for config in configs[0]:
             mode = config.get("MODE_PREFILL")
-            compare_fail = [42,43,46,52,54,60]
+            if N == 4096 and K == 192:
+                compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94] + [i for i in range(64)]
+            elif N == 384 and K == 4096:
+                compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
+            else:
+                compare_fail = [42,43,46,52,54,60]
             ignored_modes = [5,7,8,12,34,37,38,44,55,56,57,58,61,63,62]
             exclude_modes = compare_fail + ignored_modes
             # #remove warps=2
@@ -855,7 +861,8 @@ def prune_rocm_configs(M, N, K, configs, is_fp16=True):
         for config in configs[1]:
             mode = config.get("MODE_DECODE")
             pruned_configs.append(config)
-
+    # import pdb
+    # pdb.set_trace()
     return pruned_configs
 
 
@@ -1192,6 +1199,17 @@ def main(args: argparse.Namespace):
     use_fp8_w8a8 = args.dtype == "fp8_w8a8"
     use_int8_w8a16 = args.dtype == "int8_w8a16"
     use_int8_w8a8 = args.dtype == "int8_w8a8"
+    
+    E = 128
+    # ##qwen3-30b-A3B-tp1
+    # shard_intermediate_size=1536
+    # hidden_size=2048
+    # ##qwen3-30b-A3B-tp2
+    # shard_intermediate_size=768
+    # hidden_size=2048
+    ##qwen3-235b-A22B-tp8
+    shard_intermediate_size=384
+    hidden_size=4096
 
     shard_intermediate_size = 384 #N
     hidden_size = 4096 #k
@@ -1200,7 +1218,8 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            1, 2, 4, 8, 16, 32, 64, 128
+            # 1, 2, 4, 8, 16, 32, 64, 128
+            256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
             # 1, 2, 4, 8, 16, 32, 64, 8192, 16384, 32768
             # 4096, 6144, 8192, 16384, 32768
@@ -1209,7 +1228,7 @@ def main(args: argparse.Namespace):
             # 32768, 49152, 65536, 131072
             # 6144, 8192, 16384, 32768, 40960
             # 4096,
-            # 1024,
+            # 256,
         ]
     else:
         batch_sizes = [args.batch_size]
