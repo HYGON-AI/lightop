@@ -134,19 +134,9 @@ def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_qua
     return avg_time_us
  
 
- 
-if __name__ == "__main__":
+def main(m, n, k, use_random=True, use_bias=False, out_dtype=torch.bfloat16, use_quant=True, enable_speed_test=False, speed_test_include_quant=False):
+    # 这里可以添加测试代码
     device = "cuda"
-    use_bias = False
-    m,n,k = (8192,3584,5120)
-    use_random = True
-    # out_dtype = torch.bfloat16
-    out_dtype = torch.float16
-    use_quant = True
-    
-    # 新增：速度测试选项
-    enable_speed_test = True  # 设置为True启用速度测试
-    speed_test_include_quant = False  # 速度测试是否包含量化过程
     
     if use_random == False:
         a = torch.ones((m, k), device=device, dtype=torch.float16)
@@ -182,7 +172,7 @@ if __name__ == "__main__":
     scale_a_original = scale_a.clone()
     
     out = _rocblas_scaled_mm(a,b.contiguous().reshape(k,-1),scale_a,scale_b,out_dtype,bias)
-    out_w8a8 = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
+    status, out_w8a8 = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
     print("rocblas out:",out[0:1,0:1])
     print("w8a8 out:",out_w8a8[0:1,0:1])
     diff_max = (out - out_w8a8).abs().max()
@@ -206,4 +196,27 @@ if __name__ == "__main__":
         # 测试不包含量化的情况
         benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, 
                               out_dtype, include_quant=False, warmup_iters=10, test_iters=100)
-    
+
+
+
+if __name__ == "__main__":
+    m1=[item if item < 17 else  1 << (item - 27) for item in range(1, 17)]
+    m2=[item<<2  if item <17 else (item - 8)<<3  for item in range(5, 29)]
+    m3=[2<<(item)  for item in range(7, 15)]
+        
+    m_list = m1+m2+m3
+    n_list=[3584]
+    k_list=[5120]
+
+    for i in range(0,len(k_list),1):
+        for m in m_list:
+            m, n, k = m, n_list[i], k_list[i]
+            print("m:{} n:{} k:{} ".format(m, n, k))
+            use_bias = False
+            use_random = True
+            # out_dtype = torch.bfloat16
+            out_dtype = torch.float16
+            use_quant = True
+            enable_speed_test = True  # 设置为True启用速度测试
+            speed_test_include_quant = False  # 速度测试是否包含量化过程
+            main(m, n, k, use_random, use_bias, out_dtype, use_quant, enable_speed_test, speed_test_include_quant)

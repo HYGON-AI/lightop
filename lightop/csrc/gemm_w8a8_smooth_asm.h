@@ -41,5 +41,6 @@ struct hipFunctionArgs_wa8a_smooth{
       // unsigned int pad;
     float* dataAs;  
     float* dataBs;
+    int pad=0;
   } ;
 
