@@ -962,10 +962,11 @@ class BenchmarkWorker:
                                                    hidden_size, search_space,
                                                    is_fp16, topk)
         mode_pattern = "MODE_DECODE"
-        block_configs = blockM_configs
+        block_configs = blockM_configs_decode
         if num_tokens > M_THRESHOLD:
             mode_pattern = "MODE_PREFILL"
-            block_configs = blockM_configs_decode
+            block_configs = blockM_configs
+        exclude_modes = [13, 32, 33, 34, 35]
 
 
         with torch.cuda.device(self.device_id):
@@ -977,7 +978,7 @@ class BenchmarkWorker:
                 time_kernel1 = float('inf')
                 config_kernel1 = None
                 for config in search_space_kernel0:
-                    if block_configs[config[mode_pattern]] != block_m:
+                    if block_configs[config[mode_pattern]] != block_m or config[mode_pattern] in exclude_modes:
                         continue
                     try:
                         kernel_time = benchmark_config(
@@ -1002,7 +1003,7 @@ class BenchmarkWorker:
                         time_kernel0 = kernel_time
                         config_kernel0 = config 
                 for config in search_space_kernel1:
-                    if block_configs[config[mode_pattern]] != block_m:
+                    if block_configs[config[mode_pattern]] != block_m or config[mode_pattern] in exclude_modes:
                         continue
                     try:
                         kernel_time = benchmark_config(
@@ -1192,10 +1193,14 @@ def main(args: argparse.Namespace):
     use_int8_w8a16 = args.dtype == "int8_w8a16"
     use_int8_w8a8 = args.dtype == "int8_w8a8"
 
+    shard_intermediate_size = 768 #N
+    hidden_size = 2048 #k
+    E = 128
+
     if args.batch_size is None:
         batch_sizes = [
-            1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            # 1, 2, 4, 8, 16, 32, 64, 128
+            # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
+            1, 2, 4, 8, 16, 32, 64, 128
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
             # 1, 2, 4, 8, 16, 32, 64, 8192, 16384, 32768
             # 4096, 6144, 8192, 16384, 32768
