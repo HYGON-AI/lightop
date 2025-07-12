@@ -362,6 +362,11 @@ static std::unordered_map<int, KernelFunc> kernel_maps_gemm1_decode = {
     {29, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 32, 1024, 16, 32, 64, char>(p); }},
     {30, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 32, 1024, 16, 16, 128, char>(p); }},
     {31, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 32, 1024, 16, 32, 128, char>(p); }},
+
+    {32, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 32, 384, 16, 32, 64, char>(p); }},
+    {33, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 16, 384, 16, 16, 64, char>(p); }},
+    {34, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 32, 384, 16, 16, 64, char>(p); }},
+    {35, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 32, 384, 16, 32, 64, char>(p); }},
     
     
 };
@@ -408,6 +413,11 @@ static std::unordered_map<int, KernelFunc> kernel_maps_gemm2_decode = {
     {29, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<16, 512, 128, 16, 32, 128, char>(p); }},
     {30, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<16, 128, 128, 16, 32, 128, char>(p); }},
     {31, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<16, 256, 128, 16, 32, 128, char>(p); }},
+
+    {32, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 64, 384, 16, 32, 64, char>(p); }},
+    {33, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 32, 384, 16, 32, 64, char>(p); }},
+    {34, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 16, 384, 16, 16, 64, char>(p); }},
+    {35, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 32, 384, 16, 32, 64, char>(p); }},
 };
 
 }
