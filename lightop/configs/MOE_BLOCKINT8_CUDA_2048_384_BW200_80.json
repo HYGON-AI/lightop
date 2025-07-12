@@ -31,6 +31,38 @@
         "128": {
             "MODE": 20,
             "BLOCK_SIZE_M": 16
+        },
+        "256": {
+            "MODE": 20,
+            "BLOCK_SIZE_M": 32
+        },
+        "512": {
+            "MODE": 20,
+            "BLOCK_SIZE_M": 32
+        },
+        "1024": {
+            "MODE": 23,
+            "BLOCK_SIZE_M": 64
+        },
+        "2048": {
+            "MODE": 17,
+            "BLOCK_SIZE_M": 64
+        },
+        "4096": {
+            "MODE": 17,
+            "BLOCK_SIZE_M": 64
+        },
+        "6144": {
+            "MODE": 17,
+            "BLOCK_SIZE_M": 64
+        },
+        "8192": {
+            "MODE": 17,
+            "BLOCK_SIZE_M": 64
+        },
+        "16384": {
+            "MODE": 17,
+            "BLOCK_SIZE_M": 64
         }
     }
 }
