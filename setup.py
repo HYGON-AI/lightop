@@ -351,6 +351,7 @@ setup(
             "librarygemmdbiasb/*",
             "hsa/*",
             "hsa/*/*",
+            "configs/*"
         ]
     },
     ext_modules=get_extensions(),
