@@ -173,6 +173,9 @@ def main(m, n, k, use_random=True, use_bias=False, out_dtype=torch.bfloat16, use
     
     out = _rocblas_scaled_mm(a,b.contiguous().reshape(k,-1),scale_a,scale_b,out_dtype,bias)
     status, out_w8a8 = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
+    if status is False:
+        print("gemm_w8a8_smooth 执行失败，错误码:", status)
+        return
     print("rocblas out:",out[0:1,0:1])
     print("w8a8 out:",out_w8a8[0:1,0:1])
     diff_max = (out - out_w8a8).abs().max()
@@ -203,7 +206,7 @@ if __name__ == "__main__":
     m1=[item if item < 17 else  1 << (item - 27) for item in range(1, 17)]
     m2=[item<<2  if item <17 else (item - 8)<<3  for item in range(5, 29)]
     m3=[2<<(item)  for item in range(7, 15)]
-        
+
     m_list = m1+m2+m3
     n_list=[3584]
     k_list=[5120]
