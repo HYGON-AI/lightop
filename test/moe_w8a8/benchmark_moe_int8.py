@@ -1201,24 +1201,20 @@ def main(args: argparse.Namespace):
     use_int8_w8a8 = args.dtype == "int8_w8a8"
     
     E = 128
-    # ##qwen3-30b-A3B-tp1
-    # shard_intermediate_size=1536
-    # hidden_size=2048
+    ##qwen3-30b-A3B-tp1
+    shard_intermediate_size=1536
+    hidden_size=2048
     # ##qwen3-30b-A3B-tp2
     # shard_intermediate_size=768
     # hidden_size=2048
     ##qwen3-235b-A22B-tp8
-    shard_intermediate_size=384
-    hidden_size=4096
-
-    shard_intermediate_size = 384 #N
-    hidden_size = 4096 #k
-    E = 128
+    # shard_intermediate_size=384
+    # hidden_size=4096
 
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            # 1, 2, 4, 8, 16, 32, 64, 128
+            1, 2, 4, 8, 16, 32, 64, 128,
             256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
             # 1, 2, 4, 8, 16, 32, 64, 8192, 16384, 32768
