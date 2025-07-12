@@ -1,0 +1,4 @@
+1. 生成配置文件到generator/w8a8_smooth_quant_config_dict.py：python ./w8a8_smooth_config_search.py
+2. 用generator/w8a8_smooth_quant_config_dict.py中的w8a8_smooth_quant_config_dict替换w8a8_smooth.py里面的w8a8_smooth_quant_config_dict
+3. 替换lightop/gemmopt.py里面的w8a8_smooth_quant_config_dict
+4. python setup.py install或者手动修改python包目录里面的gemmopt.py中的w8a8_smooth_quant_config_dict
