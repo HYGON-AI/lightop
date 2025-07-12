@@ -14,10 +14,12 @@ class FuseConvAdd(torch.nn.Module):
                 in_channels,
                 out_channels,
                 kernel_size,
-                stride=1,
-                padding=0,
-                dilation=1,
+                stride,
+                padding,
+                dilation,
                 groups=1,
+                scale=1,
+                zero_point=0,
                 bias=False,
                 padding_mode="zeros",
                 layout : str  = "NCHW", 
@@ -31,13 +33,15 @@ class FuseConvAdd(torch.nn.Module):
             padding=padding,
             dilation=dilation,
             groups=groups,
+            scale=scale,
+            zero_point=zero_point,
             bias=bias,
             padding_mode=padding_mode,
             layout = layout,
             device=device,
             dtype=dtype,)
     
-    def forward(self, input: Tensor, extra_input: Tensor, weight: Tensor) -> Tensor:
+    def forward(self, input: Tensor, add: Tensor, weight: Tensor) -> Tensor:
         # if len(input.shape) != 4:
         #     raise ValueError("Input shape must be `(N, C, H, W)`!")
         # if ctx.padding_mode != "zeros":
@@ -46,7 +50,7 @@ class FuseConvAdd(torch.nn.Module):
         #         input, _reversed_padding_repeated_twice, mode=ctx.padding_mode
         #     )
         return op.conv_add(
-            input, extra_input, weight, self.stride, self.padding, self.dilation, self.groups, self.scale, self.zero_point
+            input, add, weight, self.layout, self.stride, self.padding, self.dilation, self.groups, self.scale, self.zero_point
         )
     
     
@@ -79,7 +83,7 @@ class FuseConvBiasAdd(torch.nn.Module):
             dtype=dtype,)
         
         
-    def forward(self, input: Tensor, weight: Tensor, bias: Tensor, extra_input: Tensor) -> Tensor:
+    def forward(self, input: Tensor, weight: Tensor, bias: Tensor, add: Tensor) -> Tensor:
         # if ctx.padding_mode != "zeros":
         #     return F.conv2d(
         #         F.pad(
@@ -93,5 +97,5 @@ class FuseConvBiasAdd(torch.nn.Module):
         #         ctx.groups,
         #     )
         return op.conv_bias_add(
-            input, weight, bias, extra_input, self.stride, self.padding, self.dilation, self.groups
+            input, weight, bias, add, self.layout, self.stride, self.padding, self.dilation, self.groups
         )
