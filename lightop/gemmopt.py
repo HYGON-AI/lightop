@@ -925,8 +925,12 @@ def gemm_w8a8_smooth(a, b, scale_a, scale_b, bias, out_dtype):
         output = op.gemm_w8_a8_smooth_colmajor(a, b, scale_a, scale_b, bias, out_dtype, warps, nperblock, kperwarp, splitk, use_n_warps)
         status = True
     else:
-        output = op.gemm_w8a8_smooth_asm(a, b, scale_a, scale_b, bias, out_dtype,m, n, k)
-        status = False
+        if bias is not None:
+            status = False
+            output = None
+        else:
+            output = op.gemm_w8a8_smooth_asm(a, b, scale_a, scale_b, bias, out_dtype,m, n, k)
+            status = True
     return status, output
 
 
