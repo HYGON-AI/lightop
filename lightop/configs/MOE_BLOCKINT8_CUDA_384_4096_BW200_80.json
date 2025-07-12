@@ -31,6 +31,7 @@
         "128": {
             "MODE": 3,
             "BLOCK_SIZE_M": 16
+        },
         "256": {
             "MODE": 20,
             "BLOCK_SIZE_M": 32
