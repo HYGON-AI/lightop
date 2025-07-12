@@ -2304,7 +2304,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                 _, _N, _K = w2.shape
             _M=curr_hidden_states.shape[0]
             # config=get_moe_config(_M,_N,_K)
-            config,status=get_moe_cuda_config(E,M,N,K,device_name,num_cus,compute_type)
+            config,status=get_moe_cuda_config(E,_M,_N,_K,device_name,num_cus,compute_type)
 
         qintermediate_cache2, qa2_scale = moe_kernel_prepare_input(
             A=intermediate_cache2,
