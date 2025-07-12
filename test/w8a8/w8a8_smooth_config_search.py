@@ -91,16 +91,21 @@ def test(m, n, k, warps, nperblock, kperwarp, splitk, use_n_warps=False):
 import sys
 sys.stdout = open(sys.stdout.fileno(), 'w', buffering=1) 
 
-# 测试参数配置
+m = [1,2]
+nk = [(1536,7168),]
 # m = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
-# nk = [(3584, 5120), (5120, 2560),(5120,13824),(27684,5120),]
-# warps = [1, 2, 4, 8, 16]
-# nperblock = [16, 32, 64, 128, 256]
-# splitk = [1,2,4,8,10]
-# kperwarp = [64, 128, 256]
-
-m = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
-nk = [(3584, 5120), (5120, 2560),(5120,13824),(27684,5120),]
+# nk = list(set([
+#     (3584, 5120), (5120, 2560),(5120,13824),(27684,5120),(10240, 5120),(51200,5120),(5120,25600),(5120,2048),(2048,4096),(5120,5120),(5120,4096),(25600,5120),(5120,12800),(2560,2048),(2048,2048),
+#     (2560,5120),(5120,2048),(12800,5120),(5120,6400),(1280,2048),(2048,1024),
+#     (256,7168),(576,7168),(1536,1536),(2048,512),(2304,7168),(7168,128),(7168,1024),(7168,1152),
+#     (1280,4096),(4096,1024),
+#     (768,4096),
+#     (6144,4096),(4096,4096),(24576,4096),(4096,12288),
+#     (28672,8192),(8192,14336),(5120,8192),(8192,4096),
+#     (14336,8192),(8192,7168),(2560,8192),(8192,2048),
+#     (7168,8192),(8192,3584),(1280,8192),(8192,1024),
+#     (512, 7168),(3072, 1536), (1536, 7168), (4096, 512), (4608, 7168), (7168, 256), (7168, 2048), (7168, 2304)
+# ]))
 warps = [1, 2, 4, 8, 16]
 nperblock = [16, 32, 64,]
 splitk = [1,2,4,8,10]
@@ -158,10 +163,10 @@ for shape, configs in results_dict.items():
 
 def generate_optimal_config_function():
     """
-    根据tuning结果生成bw_config字典
+    根据tuning结果生成w8a8_smooth_quant_config_dict字典
     """
     # 整理所有shape的最佳配置
-    bw_config = {}
+    w8a8_smooth_quant_config_dict = {}
     
     for shape_key, configs in results_dict.items():
         if configs:
@@ -176,7 +181,7 @@ def generate_optimal_config_function():
             # 使用字符串键格式: "M1N5120K13824"
             string_key = f"M{M}N{N}K{K}"
             # 使用元组格式: (warps, nperblock, kperwarp, splitk, use_n_warps)
-            bw_config[string_key] = (
+            w8a8_smooth_quant_config_dict[string_key] = (
                 best_config['warps'],
                 best_config['nperblock'],
                 best_config['kperwarp'],
@@ -184,26 +189,28 @@ def generate_optimal_config_function():
                 best_config['use_n_warps']
             )
     
-    return bw_config
+    return w8a8_smooth_quant_config_dict
 
 # 生成并打印最优配置函数
 if GENERATE_OPTIMAL_FUNCTION:
     print("\n" + "=" * 80)
-    print("生成的bw_config字典：")
+    print("生成的w8a8_smooth_quant_config_dict字典：")
     print("=" * 80)
-    bw_config = generate_optimal_config_function()
-    print("bw_config = {")
-    for key, config in bw_config.items():
+    w8a8_smooth_quant_config_dict = generate_optimal_config_function()
+    print("w8a8_smooth_quant_config_dict = {")
+    for key, config in w8a8_smooth_quant_config_dict.items():
         print(f"    \"{key}\": {config},")
     print("}")
 
     # 可选：将字典保存到文件
-    with open('generator/bw_config.py', 'w') as f:
-        f.write("bw_config = {\n")
-        for key, config in bw_config.items():
+    import os
+    os.makedirs('generator', exist_ok=True)
+    with open('generator/w8a8_smooth_quant_config_dict.py', 'w') as f:
+        f.write("w8a8_smooth_quant_config_dict = {\n")
+        for key, config in w8a8_smooth_quant_config_dict.items():
             f.write(f"    \"{key}\": {config},\n")
         f.write("}\n")
 
     print("\n" + "=" * 80)
-    print("bw_config字典已保存到 generator/bw_config.py")
+    print("w8a8_smooth_quant_config_dict字典已保存到 generator/w8a8_smooth_quant_config_dict.py")
     print("=" * 80) 

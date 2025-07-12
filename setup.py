@@ -348,7 +348,9 @@ setup(
         'lightop': [
             "lib/*",
             "librarygemmbiasf/*",
-            "librarygemmdbiasb/*"
+            "librarygemmdbiasb/*",
+            "hsa/*",
+            "hsa/*/*",
         ]
     },
     ext_modules=get_extensions(),
