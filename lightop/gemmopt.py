@@ -923,7 +923,7 @@ def gemm_w8a8_smooth(a, b, scale_a, scale_b, bias, out_dtype):
         return False, None
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()==False
     m, n, k = a.shape[0], b.shape[1], a.shape[1]
-    print(f"gemm_w8a8_smooth: m={m}, n={n}, k={k}, scale_a.shape={scale_a.shape}, scale_b.shape={scale_b.shape}, bias={bias}, out_dtype={out_dtype}")
+    # print(f"gemm_w8a8_smooth: m={m}, n={n}, k={k}, scale_a.shape={scale_a.shape}, scale_b.shape={scale_b.shape}, bias={bias}, out_dtype={out_dtype}")
     if m<=16:
         if k%128 != 0:
             return False, None
