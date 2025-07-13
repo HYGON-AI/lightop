@@ -19,7 +19,7 @@ from vllm.platforms import current_platform
 from vllm.utils import FlexibleArgumentParser
 from fuse_moegemm import fused_moe_impl, fused_moe_first_stage_tune, fused_moe_second_stage_tune, \
                             grouped_topk, fused_topk, blockM_configs, blockM_configs_decode
-from fuse_moegemm_correctness import fused_experts_impl_int8
+from fuse_moegemm_correct import fused_moe_impl as fused_moe_impl_debug
 # from test_ori_fuse_moe import fused_moe_impl
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
@@ -616,7 +616,23 @@ def fuse_moe_correctness(
 
         input_gating = torch.randn(num_tokens, num_experts, device=device, dtype=torch.float32)
 
-        triton_output = fused_moe_impl(x,
+        # triton_output = fused_moe_impl(x,
+        #                     w1,
+        #                     w2,
+        #                     input_gating,
+        #                     topk,
+        #                     renormalize=True,
+        #                     inplace=False,
+        #                     use_fp8_w8a8=use_fp8_w8a8,
+        #                     use_int8_w8a16=use_int8_w8a16,
+        #                     w1_scale=w1_scale,
+        #                     w2_scale=w2_scale,
+        #                     a1_scale=a1_scale,
+        #                     a2_scale=a2_scale,
+        #                     block_shape=block_quant_shape,
+        #                     config=None)
+        
+        triton_output = fused_moe_impl_debug(x,
                             w1,
                             w2,
                             input_gating,
@@ -1201,15 +1217,15 @@ def main(args: argparse.Namespace):
     use_int8_w8a8 = args.dtype == "int8_w8a8"
     
     E = 128
-    ##qwen3-30b-A3B-tp1
-    shard_intermediate_size=1536
-    hidden_size=2048
+    # ##qwen3-30b-A3B-tp1
+    # shard_intermediate_size=1536
+    # hidden_size=2048
     # ##qwen3-30b-A3B-tp2
     # shard_intermediate_size=768
     # hidden_size=2048
-    ##qwen3-235b-A22B-tp8
-    # shard_intermediate_size=384
-    # hidden_size=4096
+    #qwen3-235b-A22B-tp8
+    shard_intermediate_size=384
+    hidden_size=4096
 
     if args.batch_size is None:
         batch_sizes = [
@@ -1224,7 +1240,7 @@ def main(args: argparse.Namespace):
             # 32768, 49152, 65536, 131072
             # 6144, 8192, 16384, 32768, 40960
             # 4096,
-            # 256,
+            # 32,
         ]
     else:
         batch_sizes = [args.batch_size]
