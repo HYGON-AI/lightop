@@ -208,8 +208,8 @@ if __name__ == "__main__":
     m3=[2<<(item)  for item in range(7, 15)]
 
     m_list = m1+m2+m3
-    n_list=[3584]
-    k_list=[5120]
+    n_list=[1280, 4096, 384, 4096, 768, 4096, 192, 4096,]
+    k_list=[4096, 1024, 4096, 192,4096,512,4096,96]
 
     for i in range(0,len(k_list),1):
         for m in m_list:
@@ -220,6 +220,6 @@ if __name__ == "__main__":
             # out_dtype = torch.bfloat16
             out_dtype = torch.float16
             use_quant = True
-            enable_speed_test = True  # 设置为True启用速度测试
+            enable_speed_test = False  # 设置为True启用速度测试
             speed_test_include_quant = False  # 速度测试是否包含量化过程
             main(m, n, k, use_random, use_bias, out_dtype, use_quant, enable_speed_test, speed_test_include_quant)
