@@ -2,7 +2,7 @@ import torch
 from typing import Optional
 from lightop import op
 import functools
-
+import os
 
 
 w8a8_smooth_quant_config_dict = {
@@ -918,6 +918,9 @@ def w8a8_smooth_quant_config(m, n, k):
 
 
 def gemm_w8a8_smooth(a, b, scale_a, scale_b, bias, out_dtype):
+    use_gemm_w8s8_smooth = os.getenv("LIGHTOP_GEMM_W8A8_SMOOTH", "1")
+    if use_gemm_w8s8_smooth != "1":
+        return False, None
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()==False
     m, n, k = a.shape[0], b.shape[1], a.shape[1]
     if m<=16:
