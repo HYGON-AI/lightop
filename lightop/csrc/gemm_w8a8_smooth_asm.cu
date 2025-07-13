@@ -184,8 +184,8 @@ void _gemm_w8a8_smooth_256x256x128_TN_impl(
 	size_t paramsSize = sizeof(params);
 
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    static AiterAsmKernel gemm_w8a8_smooth_fp16("Cijk_Alik_Bljk_I8II_BH_MT256x256x128_SE_AMAS3_BW_DTL0_BL1_DRB16_ALT_KME0_ETSP_EPS1_FL0_GRVW8_GSU1_ISA936_IU1_KME_GRCMn2_K1_KLA_LDL1_LRVW8_MAC_MMAC_BW1_MMAC_KM0_MMAC_KME1_NLCA1_NLCB1_OLDSR0_PGR1_PLR1_RK1_SU0_SUM0_SUS256_SVW4_TT16_8_TLM0_ULDSWM0_USFGRO0_VAW1_VSn1_VW8_WSS0_WG16_32_1_WGM1", "gemm_w8a8_smooth_256x256x128_TN_FP16.co");
-	static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT256x256x128_SE_AMAS3_BW_DTL0_BL1_DRB16_ALT_KME0_ETSP_EPS1_FL0_GRVW8_GSU1_ISA936_IU1_KME_GRCMn2_K1_KLA_LDL1_LRVW8_MAC_MMAC_BW1_MMAC_KM0_MMAC_KME1_NLCA1_NLCB1_OLDSR0_PGR1_PLR1_RK1_SU0_SUM0_SUS256_SVW4_TT16_8_TLM0_ULDSWM0_USFGRO0_VAW1_VSn1_VW8_WSS0_WG16_32_1_WGM1", "gemm_w8a8_smooth_256x256x128_TN_BF16.co");
+    static AiterAsmKernel gemm_w8a8_smooth_fp16("Cijk_Alik_Bljk_I8II_BH_MT256x256x128_TT16x8_WG16x32x2_Squant", "gemm_w8a8_smooth_256x256x128_TN_FP16.co");
+	static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT256x256x128_TT16x8_WG16x32x2_Squant", "gemm_w8a8_smooth_256x256x128_TN_BF16.co");
 	AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
     if (isBfloat16) 
         impl_ptr = &gemm_w8a8_smooth_bf16;
