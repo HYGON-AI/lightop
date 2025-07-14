@@ -11,8 +11,6 @@ BackendDescriptor CreatConvOp(miopenDataType_t data_type,
                               const std::vector<int64_t>& pads,
                               const std::vector<int64_t>& strides,
                               const std::vector<int64_t>& dilations,
-                              float alpha,
-                              float beta,
                               const BackendDescriptor& output)
 {
 
@@ -35,7 +33,7 @@ BackendDescriptor CreatConvOp(miopenDataType_t data_type,
     conv_operator.set(MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_X, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, input.desc());
     conv_operator.set(MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_W, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, weight.desc());
     conv_operator.set(MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_Y, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, output.desc());
-
+    float alpha = 1.0, beta = 0.0;
     conv_operator.set(MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_ALPHA, MIOPEN_TYPE_FLOAT, 1, &alpha);
     conv_operator.set(MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_BETA, MIOPEN_TYPE_FLOAT, 1, &beta);
 

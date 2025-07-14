@@ -12,18 +12,21 @@
 #include <tuple>
 namespace at {
 namespace native {
-Tensor miopen_fusion_conv_bias_add(const Tensor& x,
+
+Tensor fused_conv_bias_add_forward(const Tensor& x,
                                    const Tensor& weight,
                                    const Tensor& bias,
                                    const Tensor& add,
                                    const std::vector<int64_t>& pads,
                                    const std::vector<int64_t>& strides,
                                    const std::vector<int64_t>& dilations,
-                                   const std::string& layout,
-                                   float alpha,
-                                   float beta)
+                                   const std::string& layout)
 
 {
+    if(x.dim() != 4 || weight.dim() != 4)
+    {
+        MIOPEN_THROW("Only support conv2d");
+    }
 
     TensorDescriptor conv_input_tensor(x);
     TensorDescriptor conv_weight_tensor(weight);
@@ -42,8 +45,7 @@ Tensor miopen_fusion_conv_bias_add(const Tensor& x,
     auto [conv_weight, conv_weight_uuid] = CreatGraphTensor(conv_weight_tensor, data_type, tensor_layout, false);
     auto [conv_output, conv_output_uuid] = CreatGraphTensor(output_tensor, data_type, tensor_layout, true);
 
-    auto conv_operation =
-        CreatConvOp(data_type, conv_input, conv_weight, pads, strides, dilations, alpha, beta, conv_output);
+    auto conv_operation = CreatConvOp(data_type, conv_input, conv_weight, pads, strides, dilations, conv_output);
 
     // bias op
     auto [bias_input, bias_input_uuid]   = CreatGraphTensor(bias_input_tensor, data_type, tensor_layout, false);
@@ -57,11 +59,11 @@ Tensor miopen_fusion_conv_bias_add(const Tensor& x,
     auto exec_plan = CreatExeutionPlan({conv_operation.desc(), bias_operation.desc(), add_operation.desc()});
     // creat varpack
     std::vector<std::pair<size_t, void*>> tensor_id_with_addr;
-    tensor_id_with_addr.emplace_back(std::make_pair(conv_input_uuid, x.data_ptr<void*>()));
-    tensor_id_with_addr.emplace_back(std::make_pair(conv_weight_uuid, weight.data_ptr<void*>()));
-    tensor_id_with_addr.emplace_back(std::make_pair(bias_input_uuid, bias.data_ptr<void*>()));
-    tensor_id_with_addr.emplace_back(std::make_pair(add_input_uuid, add.data_ptr<void*>()));
-    tensor_id_with_addr.emplace_back(std::make_pair(add_output_uuid, out.data_ptr<void*>()));
+    tensor_id_with_addr.emplace_back(std::make_pair(conv_input_uuid, x.data_ptr()));
+    tensor_id_with_addr.emplace_back(std::make_pair(conv_weight_uuid, weight.data_ptr()));
+    tensor_id_with_addr.emplace_back(std::make_pair(bias_input_uuid, bias.data_ptr()));
+    tensor_id_with_addr.emplace_back(std::make_pair(add_input_uuid, add.data_ptr()));
+    tensor_id_with_addr.emplace_back(std::make_pair(add_output_uuid, out.data_ptr()));
 
     size_t workspaceSize = GetPlanWorkspaceSize(exec_plan);
 
@@ -71,7 +73,7 @@ Tensor miopen_fusion_conv_bias_add(const Tensor& x,
         workspace_tensor = at::empty({workspaceSize}, x.options());
     }
     auto varpack =
-        CreatVarpack(tensor_id_with_addr, workspace_tensor.defined() ? workspace_tensor.data_ptr<void*>() : nullptr);
+        CreatVarpack(tensor_id_with_addr, workspace_tensor.defined() ? workspace_tensor.data_ptr() : nullptr);
 
     // run kernel
     MIOPEN_CHECK(miopenBackendExecute(getMiopenHandle_new(), exec_plan.desc(), varpack.desc()));
