@@ -9,7 +9,7 @@ import torch.ao.nn.quantized as nnq
 # _reverse_repeat_padding = nnq.modules.conv._reverse_repeat_padding
 
      
-class FuseConvAdd(nnq.Conv2d):
+class FuseConvAdd(torch.nn.Module):
     def __init__(self,
                 in_channels,
                 out_channels,
@@ -23,37 +23,28 @@ class FuseConvAdd(nnq.Conv2d):
                 bias=False,
                 padding_mode="zeros",
                 layout : str  = "NCHW", 
+                alhpa = 1,
+                beta = 0, 
                 device=None,
                 dtype=None,):
         
-        super().__init__(in_channels,
-            out_channels,
-            kernel_size,
-            stride=stride,
-            padding=padding,
-            dilation=dilation,
-            groups=groups,
-           # scale=scale,
-           # zero_point=zero_point,
-            bias=bias,
-            padding_mode=padding_mode,
-           # layout = layout,
-            device=device,
-            dtype=dtype,)
-        # self.in_channels = in_channels
-        # self.out_channels = out_channels
-        # self.kernel_size = kernel_size
-        # self.stride = stride
-        # self.padding = padding
-        # self.dilation = dilation
-        # self.groups = groups
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.dilation = dilation
+        self.groups = groups
         self.scale = scale
         self.zero_point = zero_point
-        # self.bias = bias
-        # self.padding_mode = padding_mode
+        self.bias = bias
+        self.padding_mode = padding_mode
         self.layout = layout
-        # self.device = device
-        # self.dtype = dtype
+        self.device = device
+        self.dtype = dtype
+        self.alpha = alhpa
+        self.beta = beta
     
     def forward(self, input: Tensor, add: Tensor, weight: Tensor) -> Tensor:
         # if len(input.shape) != 4:
@@ -64,7 +55,7 @@ class FuseConvAdd(nnq.Conv2d):
         #         input, _reversed_padding_repeated_twice, mode=ctx.padding_mode
         #     )
         return op.conv_add(
-            input, add, weight, self.padding, self.stride, self.dilation, self.layout, self.groups, self.scale, self.zero_point
+            input, add, weight, self.padding, self.stride, self.dilation, self.layout, self.groups, self.alpha, self.beta, self.scale, self.zero_point
         )
     
     
@@ -79,7 +70,9 @@ class FuseConvBiasAdd(torch.nn.Module):
                 groups = 1,
                 bias = True,
                 padding_mode = "zeros",
-                layout : str  = "NCHW", 
+                layout : str  = "NCHW",
+                alhpa = 1,
+                beta = 0, 
                 device=None,
                 dtype=None,) -> None:
         
@@ -96,6 +89,8 @@ class FuseConvBiasAdd(torch.nn.Module):
         self.layout = layout
         self.device = device
         self.dtype = dtype
+        self.alpha = alhpa
+        self.beta = beta
         
         
     def forward(self, input: Tensor, weight: Tensor, bias: Tensor, add: Tensor) -> Tensor:
@@ -112,5 +107,5 @@ class FuseConvBiasAdd(torch.nn.Module):
         #         ctx.groups,
         #     )
         return op.conv_bias_add(
-            input, weight, bias, add, self.padding, self.stride, self.dilation, self.layout, 1, 0
+            input, weight, bias, add, self.padding, self.stride, self.dilation, self.layout, self.alpha, self.beta
         )

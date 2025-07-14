@@ -21,7 +21,7 @@ int fused_conv_add_forward(
     const std::vector<int64_t>& strides,
     const std::vector<int64_t>& dilations,
     const std::string& layout, 
-    int groups, double scale, int64_t zero_point)
+    int groups, float alpha, float beta, double scale, int64_t zero_point)
 {
     // cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
     // int N = x.numel();
