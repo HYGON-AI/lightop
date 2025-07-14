@@ -19,5 +19,10 @@ BackendDescriptor CreatPointWiseOp(miopenDataType_t data_type,
                                    const BackendDescriptor& input,
                                    const BackendDescriptor& output);
 
+BackendDescriptor CreatPointWiseOp(miopenDataType_t data_type,
+                                   miopenPointwiseMode_t mode,
+                                   const BackendDescriptor& pre_operator_output,
+                                   const BackendDescriptor& output);
+
 } // namespace native
 } // namespace at
