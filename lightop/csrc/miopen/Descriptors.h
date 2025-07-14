@@ -209,7 +209,7 @@ public:
     explicit BackendDescriptor(miopenBackendDescriptorType_t type)
     {
         MIOPEN_CHECK(miopenBackendCreateDescriptor(type, &storage_));
-        desc_.reset(raw_desc);
+        desc_.reset(storage_);
     }
     miopenBackendDescriptor_t desc() const { return desc_.get(); }
     miopenBackendDescriptor_t desc() { return desc_.get(); }
@@ -232,7 +232,7 @@ public:
             desc(), attributeName, attributeType, requestedElementCount, elementCount, arrayOfElements));
     }
 
-    miopenBackendDescriptor_t* storage_addr() const { return &storage_; }
+    const miopenBackendDescriptor_t* storage_addr() const { return &storage_; }
 
     void finalize() { MIOPEN_CHECK(miopenBackendFinalize(desc())); }
 

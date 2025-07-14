@@ -8,11 +8,12 @@ namespace native {
 BackendDescriptor CreatExeutionPlan(const std::vector<miopenBackendDescriptor_t>& ops_operation)
 
 {
+    auto handle = getMiopenHandle_new();
     // graph
     BackendDescriptor fusion_op_graph(MIOPEN_BACKEND_OPERATIONGRAPH_DESCRIPTOR);
     fusion_op_graph.set(
         MIOPEN_ATTR_OPERATIONGRAPH_OPS, MIOPEN_TYPE_BACKEND_DESCRIPTOR, ops_operation.size(), ops_operation.data());
-    fusion_op_graph.set(MIOPEN_ATTR_OPERATIONGRAPH_HANDLE, MIOPEN_TYPE_HANDLE, 1, getMiopenHandle_new());
+    fusion_op_graph.set(MIOPEN_ATTR_OPERATIONGRAPH_HANDLE, MIOPEN_TYPE_HANDLE, 1, &handle);
     fusion_op_graph.finalize();
 
     // engine
@@ -30,7 +31,7 @@ BackendDescriptor CreatExeutionPlan(const std::vector<miopenBackendDescriptor_t>
 
     BackendDescriptor exec_plan(MIOPEN_BACKEND_EXECUTION_PLAN_DESCRIPTOR);
 
-    exec_plan.set(MIOPEN_ATTR_EXECUTION_PLAN_HANDLE, MIOPEN_TYPE_HANDLE, 1, getMiopenHandle_new());
+    exec_plan.set(MIOPEN_ATTR_EXECUTION_PLAN_HANDLE, MIOPEN_TYPE_HANDLE, 1, &handle);
 
     exec_plan.set(MIOPEN_ATTR_EXECUTION_PLAN_ENGINE_CONFIG, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, engcfg.storage_addr());
     exec_plan.finalize();
