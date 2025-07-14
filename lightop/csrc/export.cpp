@@ -51,7 +51,7 @@ Tensor gemm_w8_a16_fp8_colmajor(const Tensor& x,const Tensor& y,const Tensor& sc
 void fp8to16(Tensor &ret, const Tensor &x,const Tensor& scale);
 Tensor moe_gemm_w8a8(torch::Tensor input,Tensor b_qweight,Tensor output,Tensor a_scale,Tensor b_scale,std::optional<Tensor> topk_weights,Tensor sorted_token_ids,Tensor expert_ids,Tensor num_tokens_post_pad, int64_t top_k, int mode);
 Tensor gemm_w8_a8_smooth_colmajor(const Tensor& x,const Tensor& y,const Tensor& scale_a,const Tensor& scale_b,  const std::optional<Tensor> bias,at::ScalarType out_dtype,int warps,int n_per_block, int n_per_warp, int splitk, bool use_n_warps);
-Tensor fused_conv_add_forward(const Tensor &x, const Tensor &extra_x, const Tensor &weight, const Tensor &stride, const Tensor &padding, const Tensor &dilation, int groups, double scale, int64_t zero_point);
+int fused_conv_add_forward(const Tensor &x, const Tensor &extra_x, const Tensor &weight, const std::vector<int64_t>& pads, const std::vector<int64_t>& strides, const std::vector<int64_t>& dilations, const std::string& layout, int groups, double scale, int64_t zero_point);
 Tensor fused_conv_bias_add_forward(const Tensor &x, const Tensor &weight, const Tensor &bias, const Tensor &extra_x, const Tensor &stride, const Tensor &padding, const Tensor &dilation, int groups);
 
 void create_gemmbias_handle();

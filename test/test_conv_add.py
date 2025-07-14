@@ -15,26 +15,29 @@ def get_data(batch_size, in_channels_per_group, H, W, use_half = False):
     if use_half:
         input = torch.rand((batch_size, in_channels_per_group, H, W)).cuda().half()
         add = torch.rand((batch_size, in_channels_per_group, H, W)).cuda().half()
+        weight = torch.rand((batch_size, in_channels_per_group, H, W)).cuda().half()
         
     else:
         input = torch.rand((in_channels_per_group, batch_size, H, W)).cuda()
         add  = torch.rand((batch_size, in_channels_per_group, H, W)).cuda()
+        weight = torch.rand((batch_size, in_channels_per_group, H, W)).cuda().half()
    
     x1 = input.clone().detach()
     x2 = add.clone().detach()
+    x3 = weight.clone().detach()
     
-    return x1, x2
+    return x1, x2, x3
 
 # 获取模型
 def get_model(batch_size, channels, out_channels, kernel_size, stride, padding, dilation, layout, use_half=False):
 
     if use_half:
-        fuse_conv_add=FuseConvAdd(batch_size = batch_size, in_channels = channels, out_channels = out_channels,
+        fuse_conv_add=FuseConvAdd(in_channels = channels, out_channels = out_channels,
                                   kernel_size = kernel_size, stride = stride, padding = padding,
                                   dilation = dilation, layout = layout).cuda().half()
         
     else:
-        fuse_conv_add=FuseConvAdd(batch_size = batch_size, in_channels = channels, out_channels = out_channels,
+        fuse_conv_add=FuseConvAdd(in_channels = channels, out_channels = out_channels,
                                   kernel_size = kernel_size, stride = stride, padding = padding,
                                   dilation = dilation, layout = layout).cuda()
     
@@ -42,10 +45,10 @@ def get_model(batch_size, channels, out_channels, kernel_size, stride, padding, 
 
 def test_speed(batch_size, channels, H, W, out_channels_per_group,
                groups, kernel_h, kernel_w, stride_h, stride_w, pad_h, pad_w, dilation,
-               layout, repeat_num=1000,use_half=False):
+               layout, repeat_num=10,use_half=False):
 
 
-    x1,x2 = get_data(batch_size, channels, H, W, use_half=use_half)
+    x1,x2, weight = get_data(batch_size, channels, H, W, use_half=use_half)
     
     out_channels = out_channels_per_group * groups
     kernel_size = (kernel_h, kernel_w)
@@ -59,7 +62,7 @@ def test_speed(batch_size, channels, H, W, out_channels_per_group,
     torch.manual_seed(0)
     start_time = time.time()
     for i in range(repeat_num):
-        y1 = f1(x1, x2)
+        y1 = f1(x1, x2, weight)
         torch.cuda.synchronize()
     end_time = time.time()
     fc1_espl = end_time - start_time
@@ -110,6 +113,6 @@ if __name__ == "__main__":
     #耗时测试
     test_speed(batch_size, channels, H, W, out_channels_per_group,
                groups, kernel_h, kernel_w, stride_h, stride_w, pad_h, pad_w, dilation,
-               layout, repeat_num=1000, use_half=False)
+               layout, repeat_num=10, use_half=False)
     #性能分析
     #test_profile(batchsize, seqs, cols,dropout_p,repeat_num=100,use_half=False)

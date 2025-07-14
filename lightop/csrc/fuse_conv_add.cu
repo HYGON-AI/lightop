@@ -15,12 +15,20 @@
 namespace at{
 namespace native{
 
-Tensor fused_conv_add_forward(const Tensor &x, const Tensor &extra_x, const Tensor &weight, const Tensor &stride, const Tensor &padding, const Tensor &dilation, int groups, double scale, int64_t zero_point){
-    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
-    int N = x.numel();
-    int dim=x.sizes().back();
-    auto dst_options = x.options().requires_grad(false);
-    Tensor results = torch::empty(x.sizes(), dst_options);
+int fused_conv_add_forward(
+    const Tensor &x, const Tensor &extra_x, const Tensor &weight, 
+    const std::vector<int64_t>& pads,
+    const std::vector<int64_t>& strides,
+    const std::vector<int64_t>& dilations,
+    const std::string& layout, 
+    int groups, double scale, int64_t zero_point)
+{
+    // cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+    // int N = x.numel();
+    // int dim=x.sizes().back();
+    printf("This is a test of conv_add.................\n");
+    // auto dst_options = x.options().requires_grad(false);
+    // Tensor results = torch::empty(x.sizes(), dst_options);
     // const int ThreadsPerBlock=256;
     // AT_DISPATCH_FLOATING_TYPES_AND2(
     //   at::ScalarType::Half,
@@ -47,7 +55,7 @@ Tensor fused_conv_add_forward(const Tensor &x, const Tensor &extra_x, const Tens
     //     }
     //     C10_CUDA_KERNEL_LAUNCH_CHECK();
     // });
-    return results;
+    return 0;
 }
 
 
