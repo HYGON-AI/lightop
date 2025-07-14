@@ -158,7 +158,11 @@ blockM_configs_decode = {
     28: 16,
     29: 16,
     30: 16,
-    31: 16
+    31: 16,
+    32: 16,
+    33: 16,
+    34: 16,
+    35: 16
 }
 
 
@@ -1635,7 +1639,7 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                                                                                             per_channel_quant=per_channel_quant,
                                                                                             block_shape=block_shape,
                                                                                             use_nn_moe=use_nn_moe,
-                                                                                            mode=config['MODE']),quantiles=quantiles)
+                                                                                            mode=config[M_pattern]),quantiles=quantiles)
        
         elapsed_time = ms
         print("w13 _time:{} ms\n".format(elapsed_time))
@@ -1864,7 +1868,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                                                                             per_channel_quant=per_channel_quant,
                                                                                             block_shape=block_shape,
                                                                                             use_nn_moe=use_nn_moe,
-                                                                                            mode=config['MODE']),quantiles=quantiles)
+                                                                                            mode=config[M_pattern]),quantiles=quantiles)
        
         elapsed_time = ms
         print("w2 _time:{} ms\n".format(elapsed_time))
