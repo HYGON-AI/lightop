@@ -40,11 +40,11 @@ std::pair<BackendDescriptor, size_t> CreatGraphTensor(const TensorDescriptor& te
     tensor_desc.finalize();
     return std::make_pair(std::move(tensor_desc), uuid);
 }
-std::vector<int> GetConvForwardOutputDim(const TensorDescriptor& input,
-                                         const TensorDescriptor& weight,
-                                         const std::vector<int64_t>& pads,
-                                         const std::vector<int64_t>& strides,
-                                         const std::vector<int64_t>& dilations)
+std::vector<int64_t> GetConvForwardOutputDim(const TensorDescriptor& input,
+                                             const TensorDescriptor& weight,
+                                             const std::vector<int64_t>& pads,
+                                             const std::vector<int64_t>& strides,
+                                             const std::vector<int64_t>& dilations)
 {
     if(pads.size() != 2)
     {
@@ -76,7 +76,7 @@ std::vector<int> GetConvForwardOutputDim(const TensorDescriptor& input,
                                                       &output_dims[1],
                                                       &output_dims[2],
                                                       &output_dims[3]));
-    return output_dims;
+    return std::vector<int64_t>(output_dims.cbegin(), output_dims.cend());
 }
 } // namespace native
 } // namespace at
