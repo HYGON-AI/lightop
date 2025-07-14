@@ -34,7 +34,7 @@ Tensor miopen_fusion_conv_bias_add(const Tensor& x,
 
     // output
     auto output_dims = GetConvForwardOutputDim(conv_input_tensor, conv_weight_tensor, pads, strides, dilations);
-    Tensor out       = at::empty({output_dims[0], output_dims[1], output_dims[2], output_dims[3]}, x.options());
+    Tensor out       = at::empty(output_dims, x.options());
     TensorDescriptor output_tensor(out);
 
     // conv op

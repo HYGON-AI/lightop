@@ -10,11 +10,11 @@ std::pair<BackendDescriptor, size_t> CreatGraphTensor(const TensorDescriptor& te
                                                       miopenTensorLayout_t tensor_layout,
                                                       const bool is_virtual);
 
-std::vector<int> GetConvForwardOutputDim(const TensorDescriptor& input,
-                                         const TensorDescriptor& weight,
-                                         const std::vector<int64_t>& pads,
-                                         const std::vector<int64_t>& strides,
-                                         const std::vector<int64_t>& dilations);
+std::vector<int64_t> GetConvForwardOutputDim(const TensorDescriptor& input,
+                                             const TensorDescriptor& weight,
+                                             const std::vector<int64_t>& pads,
+                                             const std::vector<int64_t>& strides,
+                                             const std::vector<int64_t>& dilations);
 
 } // namespace native
 } // namespace at
