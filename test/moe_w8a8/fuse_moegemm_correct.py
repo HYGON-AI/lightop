@@ -1739,7 +1739,7 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
                     top_k,
                     mode=mode)
     
-    torch.cuda.synchronize()
+    # torch.cuda.synchronize()
     if not (torch.allclose(C, out_cuda, rtol=1e-2, atol=1e-2)):
         print("kernel 精度检查不合格!!!")
         # torch.set_printoptions(profile="full")  
@@ -2498,11 +2498,20 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                                       topk_ids.shape[1]]
             intermediate_cache3 = intermediate_cache3[:tokens_in_chunk]
 
+        # if use_int8_w8a8:
+        #     M=curr_hidden_states.shape[0]
+        #     #print(f'+++++++-------_{M}_--------+++++++')
+        #     # config=get_moe_config(M,N,K)
+        #     config,status=get_moe_cuda_config(E,M,N,K,device_name,num_cus,compute_type)
+        
         if use_int8_w8a8:
-            M=curr_hidden_states.shape[0]
-            #print(f'+++++++-------_{M}_--------+++++++')
-            # config=get_moe_config(M,N,K)
-            config,status=get_moe_cuda_config(E,M,N,K,device_name,num_cus,compute_type)
+            if use_nn_moe:
+                _, _K, _N = w2.shape
+            else:
+                _, _N, _K = w2.shape
+            # _M=curr_hidden_states.shape[0]
+            # config=get_moe_config(_M,_N,_K)
+            config1, config2, status=get_moe_cuda_config(E,M,N,K,_N,_K,top_k_num,device_name,num_cus,compute_type)
             
         curr_topk_ids = topk_ids[begin_chunk_idx:end_chunk_idx]
         curr_topk_weights = topk_weights[begin_chunk_idx:end_chunk_idx]
@@ -2520,7 +2529,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
             block_shape=block_shape)
 
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
-                moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
+                moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
 
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
@@ -2536,7 +2545,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 num_tokens_post_padded,
                                 apply_router_weight_on_input,
                                 top_k_num,
-                                config,
+                                config1,
                                 compute_type=compute_type,
                                 use_fp8_w8a8=use_fp8_w8a8,
                                 use_int8_w8a8=use_int8_w8a8,
@@ -2545,7 +2554,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe,
-                                mode=config['MODE'])
+                                mode=config1['MODE'])
         
         if activation == "silu":
             torch.ops._C.silu_and_mul(intermediate_cache2,
@@ -2556,14 +2565,14 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
         else:
             raise ValueError(f"Unsupported FusedMoe activation: {activation}")
 
-        if use_int8_w8a8:
-            if use_nn_moe:
-                _, _K, _N = w2.shape
-            else:
-                _, _N, _K = w2.shape
-            _M=curr_hidden_states.shape[0]
-            # config=get_moe_config(_M,_N,_K)
-            config,status=get_moe_cuda_config(E,_M,_N,_K,device_name,num_cus,compute_type)
+        # if use_int8_w8a8:
+        #     if use_nn_moe:
+        #         _, _K, _N = w2.shape
+        #     else:
+        #         _, _N, _K = w2.shape
+        #     _M=curr_hidden_states.shape[0]
+        #     # config=get_moe_config(_M,_N,_K)
+        #     config,status=get_moe_cuda_config(E,_M,_N,_K,device_name,num_cus,compute_type)
 
         qintermediate_cache2, qa2_scale = moe_kernel_prepare_input(
             A=intermediate_cache2,
@@ -2590,7 +2599,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 num_tokens_post_padded,
                                 not apply_router_weight_on_input,
                                 1,
-                                config,
+                                config2,
                                 compute_type=compute_type,
                                 use_fp8_w8a8=use_fp8_w8a8,
                                 use_int8_w8a8=use_int8_w8a8,
@@ -2599,7 +2608,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe,
-                                mode=config['MODE'])
+                                mode=config2['MODE'])
         
         # torch.cuda.synchronize()
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),

@@ -21,8 +21,11 @@ def get_config_file_name(E: int,
 def get_moe_cuda_config(
     E: int,
     M: int,
-    N: int,
-    K: int,
+    N1: int,
+    K1: int,
+    N2: int,
+    K2: int,
+    topk: int,
     device_name: str,
     num_cus: str,
     dtype: Optional[str],
@@ -40,20 +43,21 @@ def get_moe_cuda_config(
 
     # First look up if an optimized configuration is available in the configs
     # directory
-    file_name = f"MOE_BLOCKINT8_CUDA_{N}_{K}_{device_name}_{num_cus}.json"
-    config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", file_name)
+    gemm1_file_name = f"MOE_BLOCKINT8_CUDA_{N1}_{K1}_{device_name}_{num_cus}.json"
+    gemm1_config_file_path = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
+    
     try:
-        with open(config_file_path, 'r') as file:
+        with open(gemm1_config_file_path, 'r') as file:
             config_infos = json.load(file)
-            if f"{N}_{K}" in config_infos:
-                config_info = config_infos[f"{N}_{K}"]
+            if f"{N1}_{K1}" in config_infos:
+                config_info = config_infos[f"{N1}_{K1}"]
                 int_keys = [int(key) for key in config_info.keys()]
                 greater_numbers = [num for num in int_keys if num >= M]
                 num_token = min(greater_numbers) if greater_numbers else None
-                config = config_info[f"{num_token}"] if f"{num_token}" in config_info else {}
+                gemm1_config = config_info[f"{num_token}"] if f"{num_token}" in config_info else {}
                 # 如果config没有，找到最接近的token数
-                if not config:
+                if not gemm1_config:
                     min_diff = float('inf')
                     closest_token = None
                     for token in int_keys:
@@ -61,19 +65,46 @@ def get_moe_cuda_config(
                         if diff < min_diff:
                             min_diff = diff
                             closest_token = token
-                    config = config_info[f"{closest_token}"] if f"{closest_token}" in config_info else {}
+                    gemm1_config = config_info[f"{closest_token}"] if f"{closest_token}" in config_info else {}
             else:
-                config={}
+                gemm1_config={}
     except FileNotFoundError:
-        config = {}
+        gemm1_config = {}
     
+    gemm2_file_name = f"MOE_BLOCKINT8_CUDA_{N2}_{K2}_{device_name}_{num_cus}.json"
+    gemm2_config_file_path = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
+    try:
+        with open(gemm2_config_file_path, 'r') as file:
+            config_infos = json.load(file)
+            if f"{N2}_{K2}" in config_infos:
+                config_info = config_infos[f"{N2}_{K2}"]
+                int_keys = [int(key) for key in config_info.keys()]
+                greater_numbers = [num for num in int_keys if num >= M]
+                num_token = min(greater_numbers) if greater_numbers else None
+                gemm2_config = config_info[f"{num_token}"] if f"{num_token}" in config_info else {}
+                # 如果config没有，找到最接近的token数
+                if not gemm2_config:
+                    min_diff = float('inf')
+                    closest_token = None
+                    for token in int_keys:
+                        diff = abs(token - M)
+                        if diff < min_diff:
+                            min_diff = diff
+                            closest_token = token
+                    gemm2_config = config_info[f"{closest_token}"] if f"{closest_token}" in config_info else {}
+            else:
+                gemm2_config={}
+    except FileNotFoundError:
+        gemm2_config = {}
+        
     status = True    
-    if not config: 
+    if not gemm1_config or not gemm2_config: 
         # print("Config is not found! Use default config.")
         status = False
         
-    config = config if config else {
+    gemm2_config = gemm2_config if gemm2_config else {
         "MODE": 0,
         "BLOCK_SIZE_M": 16,
     }
-    return config, status
+    return gemm1_config, gemm2_config, status

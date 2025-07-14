@@ -520,7 +520,7 @@ def moe_cuda_graph(
             #                 a2_scale=a2_scale,
             #                 block_shape=block_quant_shape,
             #                 config=None)
-            fused_moe_impl(x,
+            fused_moe_impl_debug(x,
                             w1,
                             w2,
                             input_gating,
@@ -1217,15 +1217,15 @@ def main(args: argparse.Namespace):
     use_int8_w8a8 = args.dtype == "int8_w8a8"
     
     E = 128
-    # ##qwen3-30b-A3B-tp1
-    # shard_intermediate_size=1536
-    # hidden_size=2048
+    ##qwen3-30b-A3B-tp1
+    shard_intermediate_size=1536
+    hidden_size=2048
     # ##qwen3-30b-A3B-tp2
     # shard_intermediate_size=768
     # hidden_size=2048
-    #qwen3-235b-A22B-tp8
-    shard_intermediate_size=384
-    hidden_size=4096
+    # #qwen3-235b-A22B-tp8
+    # shard_intermediate_size=384
+    # hidden_size=4096
 
     if args.batch_size is None:
         batch_sizes = [
