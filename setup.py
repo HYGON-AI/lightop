@@ -308,7 +308,7 @@ def get_extensions():
     op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + glob.glob('./lightop/csrc/layernorm/*.cu') + \
                glob.glob('./lightop/csrc/loss/*.cu') + glob.glob('./lightop/csrc/scaledmask/*.cu') + glob.glob('./lightop/csrc/groupnorm/*.cu') + \
                glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + glob.glob('./lightop/csrc/miopen/*.cpp') + \
-               glob.glob('./lightop/csrc/softmax/*.cu') + glob.glob('./lightop/csrc/moew8a8/*.cu')
+               glob.glob('./lightop/csrc/softmax/*.cu') + glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/miopen/*/*.cpp')
     extension = CUDAExtension
     include_dirs.append(os.path.abspath('./lightop/csrc/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/layernorm/'))

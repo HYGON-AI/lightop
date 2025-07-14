@@ -1,8 +1,8 @@
 from torch.autograd import Function
 import torch
 from torch import Tensor
-from torch.nn import functional as F, init
-from typing import Optional, Union
+# from torch.nn import functional as F
+# from torch.nn import init
 from lightop import op
 import torch.ao.nn.quantized as nnq
 
@@ -73,9 +73,9 @@ class FuseConvBiasAdd(torch.nn.Module):
                  in_channels,
                 out_channels,
                 kernel_size,
-                stride = 1,
-                padding = 0,
-                dilation = 1,
+                stride,
+                padding ,
+                dilation ,
                 groups = 1,
                 bias = True,
                 padding_mode = "zeros",
@@ -83,18 +83,19 @@ class FuseConvBiasAdd(torch.nn.Module):
                 device=None,
                 dtype=None,) -> None:
         
-        super().__init__(in_channels,
-            out_channels,
-            kernel_size,
-            stride,
-            padding,
-            dilation,
-            groups,
-            bias,
-            padding_mode,
-            layout,
-            device=device,
-            dtype=dtype,)
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.padding = padding
+        self.dilation = dilation
+        self.groups = groups
+        self.bias = bias
+        self.padding_mode = padding_mode
+        self.layout = layout
+        self.device = device
+        self.dtype = dtype
         
         
     def forward(self, input: Tensor, weight: Tensor, bias: Tensor, add: Tensor) -> Tensor:
@@ -111,5 +112,5 @@ class FuseConvBiasAdd(torch.nn.Module):
         #         ctx.groups,
         #     )
         return op.conv_bias_add(
-            input, weight, bias, add, self.padding, self.stride, self.dilation, self.layout, self.groups
+            input, weight, bias, add, self.padding, self.stride, self.dilation, self.layout, 1, 0
         )
