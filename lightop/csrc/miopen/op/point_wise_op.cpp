@@ -18,10 +18,10 @@ BackendDescriptor CreatPointWiseOp(miopenDataType_t data_type,
 
     BackendDescriptor operation(MIOPEN_BACKEND_OPERATION_POINTWISE_DESCRIPTOR);
     operation.set(
-        MIOPEN_ATTR_OPERATION_POINTWISE_PW_DESCRIPTOR, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, point_wise_desc.desc());
-    operation.set(MIOPEN_ATTR_OPERATION_POINTWISE_XDESC, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, pre_operator_output.desc());
-    operation.set(MIOPEN_ATTR_OPERATION_POINTWISE_BDESC, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, input.desc());
-    operation.set(MIOPEN_ATTR_OPERATION_POINTWISE_YDESC, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, output.desc());
+        MIOPEN_ATTR_OPERATION_POINTWISE_PW_DESCRIPTOR, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, point_wise_desc.storage_addr());
+    operation.set(MIOPEN_ATTR_OPERATION_POINTWISE_XDESC, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, pre_operator_output.storage_addr());
+    operation.set(MIOPEN_ATTR_OPERATION_POINTWISE_BDESC, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, input.storage_addr());
+    operation.set(MIOPEN_ATTR_OPERATION_POINTWISE_YDESC, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, output.storage_addr());
 
     operation.finalize();
     return std::move(operation);

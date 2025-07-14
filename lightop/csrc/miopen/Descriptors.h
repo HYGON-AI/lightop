@@ -208,8 +208,7 @@ struct BackendDescriptor
 public:
     explicit BackendDescriptor(miopenBackendDescriptorType_t type)
     {
-        miopenBackendDescriptor_t raw_desc;
-        MIOPEN_CHECK(miopenBackendCreateDescriptor(type, &raw_desc));
+        MIOPEN_CHECK(miopenBackendCreateDescriptor(type, &storage_));
         desc_.reset(raw_desc);
     }
     miopenBackendDescriptor_t desc() const { return desc_.get(); }
@@ -232,9 +231,13 @@ public:
         MIOPEN_CHECK(miopenBackendGetAttribute(
             desc(), attributeName, attributeType, requestedElementCount, elementCount, arrayOfElements));
     }
+
+    miopenBackendDescriptor_t* storage_addr() const { return &storage_; }
+
     void finalize() { MIOPEN_CHECK(miopenBackendFinalize(desc())); }
 
 private:
+    miopenBackendDescriptor_t storage_;
     std::unique_ptr<miopenBackendDescriptor,
                     DescriptorDeleter<miopenBackendDescriptor, &miopenBackendDestroyDescriptor>>
         desc_;
