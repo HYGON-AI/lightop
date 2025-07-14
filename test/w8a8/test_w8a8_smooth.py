@@ -207,12 +207,12 @@ if __name__ == "__main__":
     m2=[item<<2  if item <17 else (item - 8)<<3  for item in range(5, 29)]
     m3=[2<<(item)  for item in range(7, 15)]
 
-    # m_list = m1+m2+m3
+    m_list = m1+m2+m3
     # n_list=[1280, 4096, 384, 4096, 768, 4096, 192, 4096,]
     # k_list=[4096, 1024, 4096, 192,4096,512,4096,96]
-    m_list = [item for item in range(1, 2048)]
-    n_list = [6144, 4096, 24576, 4096]
-    k_list = [4096, 4096, 4096, 12288]
+    # m_list = [16384]
+    n_list = [7168, 256, 7168, 2048, 1536, 1536, 7168, 2304, 7168,  576]
+    k_list = [128, 7168, 1024, 512, 1536, 7168, 1152, 7168, 1024, 7168]
     for i in range(0,len(k_list),1):
         for m in m_list:
             m, n, k = m, n_list[i], k_list[i]

@@ -128,11 +128,11 @@ void _gemm_w8a8_smooth_256x256x128_TN_impl(
 	uint64_t tensor2dSizeA = 1;
 	uint64_t tensor2dSizeAStride = 0;
 	uint64_t tensor2dSizeAOffset = 0;
-	tensor2dSizeAStride = std::max(tensor2dSizeA*size_m, (uint64_t)strideA1L);
-	tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_m;
-	tensor2dSizeA = tensor2dSizeAStride;
-	tensor2dSizeAStride = std::max(tensor2dSizeA*size_k, (uint64_t)strideA2K);
+	tensor2dSizeAStride = std::max(tensor2dSizeA*size_k, (uint64_t)strideA1L);
 	tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_k;
+	tensor2dSizeA = tensor2dSizeAStride;
+	tensor2dSizeAStride = std::max(tensor2dSizeA*size_m, (uint64_t)strideA2K);
+	tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_m;
 	tensor2dSizeA = tensor2dSizeAStride;
 	tensor2dSizeA -= tensor2dSizeAOffset;
 
@@ -321,11 +321,11 @@ void _gemm_w8a8_smooth_256x128x128_TN_impl(
 	uint64_t tensor2dSizeA = 1;
 	uint64_t tensor2dSizeAStride = 0;
 	uint64_t tensor2dSizeAOffset = 0;
-	tensor2dSizeAStride = std::max(tensor2dSizeA*size_m, (uint64_t)strideA1L);
-	tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_m;
-	tensor2dSizeA = tensor2dSizeAStride;
-	tensor2dSizeAStride = std::max(tensor2dSizeA*size_k, (uint64_t)strideA2K);
+	tensor2dSizeAStride = std::max(tensor2dSizeA*size_k, (uint64_t)strideA1L);
 	tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_k;
+	tensor2dSizeA = tensor2dSizeAStride;
+	tensor2dSizeAStride = std::max(tensor2dSizeA*size_m, (uint64_t)strideA2K);
+	tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_m;
 	tensor2dSizeA = tensor2dSizeAStride;
 	tensor2dSizeA -= tensor2dSizeAOffset;
 
@@ -512,11 +512,11 @@ void _gemm_w8a8_smooth_128x128x64_TN_impl(
 	uint64_t tensor2dSizeA = 1;
 	uint64_t tensor2dSizeAStride = 0;
 	uint64_t tensor2dSizeAOffset = 0;
-	tensor2dSizeAStride = std::max(tensor2dSizeA*size_m, (uint64_t)strideA1L);
-	tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_m;
-	tensor2dSizeA = tensor2dSizeAStride;
-	tensor2dSizeAStride = std::max(tensor2dSizeA*size_k, (uint64_t)strideA2K);
+	tensor2dSizeAStride = std::max(tensor2dSizeA*size_k, (uint64_t)strideA1L);
 	tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_k;
+	tensor2dSizeA = tensor2dSizeAStride;
+	tensor2dSizeAStride = std::max(tensor2dSizeA*size_m, (uint64_t)strideA2K);
+	tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_m;
 	tensor2dSizeA = tensor2dSizeAStride;
 	tensor2dSizeA -= tensor2dSizeAOffset;
 
@@ -703,11 +703,11 @@ void _gemm_w8a8_smooth_64x64x128_TN_impl(
 	uint64_t tensor2dSizeA = 1;
 	uint64_t tensor2dSizeAStride = 0;
 	uint64_t tensor2dSizeAOffset = 0;
-	tensor2dSizeAStride = std::max(tensor2dSizeA*size_m, (uint64_t)strideA1L);
-	tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_m;
-	tensor2dSizeA = tensor2dSizeAStride;
-	tensor2dSizeAStride = std::max(tensor2dSizeA*size_k, (uint64_t)strideA2K);
+	tensor2dSizeAStride = std::max(tensor2dSizeA*size_k, (uint64_t)strideA1L);
 	tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_k;
+	tensor2dSizeA = tensor2dSizeAStride;
+	tensor2dSizeAStride = std::max(tensor2dSizeA*size_m, (uint64_t)strideA2K);
+	tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_m;
 	tensor2dSizeA = tensor2dSizeAStride;
 	tensor2dSizeA -= tensor2dSizeAOffset;
 
