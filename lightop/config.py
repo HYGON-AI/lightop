@@ -71,9 +71,6 @@ def get_moe_cuda_config(
     if not config: 
         # print("Config is not found! Use default config.")
         status = False
-    env_value = os.getenv("LIGHTOP_DEBUG_MOE_W8A8", "0")
-    if env_value == "1":
-        status = False
         
     config = config if config else {
         "MODE": 0,
