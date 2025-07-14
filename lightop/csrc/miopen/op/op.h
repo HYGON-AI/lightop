@@ -11,8 +11,6 @@ BackendDescriptor CreatConvOp(miopenDataType_t data_type,
                               const std::vector<int64_t>& pads,
                               const std::vector<int64_t>& strides,
                               const std::vector<int64_t>& dilations,
-                              float alpha,
-                              float beta,
                               const BackendDescriptor& output);
 // pointwise op
 BackendDescriptor CreatPointWiseOp(miopenDataType_t data_type,
