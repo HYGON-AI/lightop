@@ -925,7 +925,9 @@ def gemm_w8a8_smooth(a, b, scale_a, scale_b, bias, out_dtype):
         return False, None
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()==False
     m, n, k = a.shape[0], b.shape[1], a.shape[1]
-    # print(f"gemm_w8a8_smooth: m={m}, n={n}, k={k}, scale_a.shape={scale_a.shape}, scale_b.shape={scale_b.shape}, bias={bias}, out_dtype={out_dtype}")
+    use_gemm_w8s8_smooth_print = os.getenv("LIGHTOP_GEMM_W8A8_SMOOTH_PRINT", "0")
+    if use_gemm_w8s8_smooth_print == "1":
+        print(f"[LIGHTOP] gemm_w8a8_smooth: m={m}, n={n}, k={k}, scale_a.shape={scale_a.shape}, scale_b.shape={scale_b.shape}, bias={bias}, out_dtype={out_dtype}")
     if m<=16:
         warps, nperblock, kperwarp, splitk, use_n_warps,status = w8a8_smooth_quant_config(m, n, k)
         if status is True:
