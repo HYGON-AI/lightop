@@ -22,5 +22,30 @@ def conv_bias_add(input, weight, bias, add, padding, stride, dilation, layout):
 
 def add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon):
     """
+        (in) hidden_states
+            [num_tokens, hidden_size]
+            bfloat16
+        (in) residual
+            optional
+            [num_tokens, hidden_size]
+            bfloat16
+        (in) weight
+            [hidden_size]
+            bfloat16 or float32
+        (in) smooth_scale
+            [hidden_size]
+            bfloat16 or float32
+        (out) after_res
+            [num_tokens, hidden_size]
+            bfloat16
+        (out) y
+            [num_tokens, hidden_size]
+            int8
+        (out) per_token_scale
+            [num_tokens]
+            float32
+        (attr) epsilon
+            float32
     """
+    
     return op.add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon)
