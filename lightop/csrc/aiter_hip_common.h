@@ -77,6 +77,18 @@ public:
                                        kargs.bdx, kargs.bdy, kargs.bdz,
                                        0, kargs.stream, nullptr, (void **)&config));
     };
+
+    void launch_kernel_ext(const AiterAsmKernelArgs &kargs)
+    {
+        void *config[] = {HIP_LAUNCH_PARAM_BUFFER_POINTER, kargs.args_ptr,
+                          HIP_LAUNCH_PARAM_BUFFER_SIZE, kargs.arg_size_ptr,
+                          HIP_LAUNCH_PARAM_END};
+
+        HIP_CALL(hipExtModuleLaunchKernel(kernel_func,
+                                       kargs.gdx * kargs.bdx, kargs.gdy * kargs.bdy, kargs.gdz * kargs.bdz,
+                                       kargs.bdx, kargs.bdy, kargs.bdz,
+                                       0, kargs.stream, nullptr, (void **)&config, 0, 0, 0));
+    };
 };
 
 class AiterAsmKernelFast
