@@ -1,21 +1,20 @@
+#include "miopen/miopen-wrapper.h"
+#include "miopen/op/op.h"
+#include "miopen/graph/tensor.hpp"
+#include "miopen/graph/execution_plan.hpp"
+#include "miopen/graph/varpack.hpp"
+#include "miopen/Handle.h"
+#include <miopen/Exceptions.h>
+#include <vector>
+#include <torch/extension.h>
 #include <ATen/ATen.h>
-#include <ATen/AccumulateType.h>
-#include <ATen/cuda/detail/IndexUtils.cuh>
-#include <ATen/cuda/detail/TensorInfo.cuh>
-#include <c10/cuda/CUDAMathCompat.h>
-
-#include <ATen/cuda/CUDAContext.h>
-#include <torch/extension.h>
-#include <ATen/native/cuda/Loops.cuh>
-#include <torch/extension.h>
-
-#include "reduce.h"
+#include <tuple>
 
 
 namespace at{
 namespace native{
 
-Tensor fused_conv_add_forward(const Tensor &x, 
+int fused_conv_add_forward(const Tensor &x, 
                            const Tensor &add,
                            const Tensor &weight, 
                            const std::vector<int64_t>& pads,
@@ -28,7 +27,7 @@ Tensor fused_conv_add_forward(const Tensor &x,
                            const double scale = 1, 
                            const double zero_point = 0)
 {
-    return ;
+    return 0;
 }
 
 }

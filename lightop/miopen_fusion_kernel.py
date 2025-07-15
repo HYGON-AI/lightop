@@ -41,4 +41,4 @@ def conv_add(x, add, weight, pads, strides, dilations, layout, groups = 1, alpha
     Returns:
         Tensor: 结果张量
     """
-    return op.con_add(x, add, weight, pads, strides, dilations, layout, groups, alpha, beta, scale, zero_point)
+    return op.conv_add(x, add, weight, pads, strides, dilations, layout, groups, alpha, beta, scale, zero_point)
