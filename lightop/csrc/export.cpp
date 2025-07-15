@@ -57,6 +57,7 @@ Tensor fused_conv_bias_add_forward(const Tensor &x, const Tensor &weight,
                                    const std::vector<int64_t> &strides,
                                    const std::vector<int64_t> &dilations,
                                    const std::string &layout);
+std::vector<Tensor> add_rms_norm_dynamic_quant(const Tensor& x, const Tensor& x2, const Tensor& weight, const Tensor& smoothScale, const float epsilon);
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
@@ -119,4 +120,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gemm_w8_a8_smooth_colmajor", &at::native::gemm_w8_a8_smooth_colmajor, "gemm_w8_a8_smooth_colmajor");
   // m.def("conv_add", &at::native::fused_conv_add_forward, "fused_conv_add forward");
   m.def("conv_bias_add", &at::native::fused_conv_bias_add_forward, "fused_conv_bias_add forward");
+  m.def("add_rms_norm_dynamic_quant", &at::native::add_rms_norm_dynamic_quant, "fused add rms morm dynamic quant");
 }

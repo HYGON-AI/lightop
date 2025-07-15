@@ -19,3 +19,8 @@ def conv_bias_add(input, weight, bias, add, padding, stride, dilation, layout):
         Tensor: 计算结果张量
     """
     return op.conv_bias_add(input, weight, bias, add, padding, stride, dilation, layout)
+
+def add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon):
+    """
+    """
+    return op.add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon)
