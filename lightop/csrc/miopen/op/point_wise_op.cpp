@@ -4,11 +4,11 @@
 namespace at {
 namespace native {
 
-BackendDescriptor CreatPointWiseOp(miopenDataType_t data_type,
-                                   miopenPointwiseMode_t mode,
-                                   const BackendDescriptor& pre_operator_output,
-                                   const BackendDescriptor& input,
-                                   const BackendDescriptor& output)
+std::pair<BackendDescriptor, BackendDescriptor> CreatPointWiseOp(miopenDataType_t data_type,
+                                                                 miopenPointwiseMode_t mode,
+                                                                 const BackendDescriptor& pre_operator_output,
+                                                                 const BackendDescriptor& input,
+                                                                 const BackendDescriptor& output)
 {
 
     BackendDescriptor point_wise_desc(MIOPEN_BACKEND_POINTWISE_DESCRIPTOR);
@@ -27,12 +27,12 @@ BackendDescriptor CreatPointWiseOp(miopenDataType_t data_type,
     operation.set(MIOPEN_ATTR_OPERATION_POINTWISE_YDESC, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, output.storage_addr());
 
     operation.finalize();
-    return std::move(operation);
+    return std::make_pair(std::move(operation), std::move(point_wise_desc));
 }
-BackendDescriptor CreatPointWiseOp(miopenDataType_t data_type,
-                                   miopenPointwiseMode_t mode,
-                                   const BackendDescriptor& pre_operator_output,
-                                   const BackendDescriptor& output)
+std::pair<BackendDescriptor, BackendDescriptor> CreatPointWiseOp(miopenDataType_t data_type,
+                                                                 miopenPointwiseMode_t mode,
+                                                                 const BackendDescriptor& pre_operator_output,
+                                                                 const BackendDescriptor& output)
 {
 
     BackendDescriptor point_wise_desc(MIOPEN_BACKEND_POINTWISE_DESCRIPTOR);
@@ -50,7 +50,7 @@ BackendDescriptor CreatPointWiseOp(miopenDataType_t data_type,
     operation.set(MIOPEN_ATTR_OPERATION_POINTWISE_YDESC, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, output.storage_addr());
 
     operation.finalize();
-    return std::move(operation);
+    return std::make_pair(std::move(operation), std::move(point_wise_desc));
 }
 } // namespace native
 } // namespace at
