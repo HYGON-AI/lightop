@@ -19,3 +19,26 @@ def conv_bias_add(input, weight, bias, add, padding, stride, dilation, layout):
         Tensor: 计算结果张量
     """
     return op.conv_bias_add(input, weight, bias, add, padding, stride, dilation, layout)
+
+
+def conv_add(x, add, weight, pads, strides, dilations, layout, groups = 1, alpha = 1 , beta = 0, scale = 1, zero_point = 0):
+    """_summary_
+
+    Args:
+        x (Tensor): 输入张量
+        add (Tensor): 需要加和的张量
+        weight (Tensor): 卷积核权重
+        pads (int|tuple): 填充大小。(padH, padW) 元组
+        strides (int|tuple): 卷积步长。 (strideH, strideW) 元组
+        dilations (int|tuple): 卷积膨胀率。(dilationH, dilationW) 元组
+        layout (str): 数据布局格式。支持的格式: "NCHW" | "NHWC"
+        groups (int): 是否为组卷积。1为普通卷积, >1 为组卷积
+        alpha (float): _description_
+        beta (float): _description_
+        scale (double): _description_
+        zero_point (double): _description_
+
+    Returns:
+        Tensor: 结果张量
+    """
+    return op.con_add(x, add, weight, pads, strides, dilations, layout, groups, alpha, beta, scale, zero_point)
