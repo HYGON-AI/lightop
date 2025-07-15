@@ -981,3 +981,12 @@ def moe_gemm_w8a8(input: torch.Tensor,
                                     sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
     return output
 
+
+
+def gemm_w8a8_asm(a, b, scale_a, scale_b, block_size, out_dtype, isWgrad = False):
+    assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()
+    assert block_size[0] == 128 and block_size[1] == 128
+    m, n, k = a.shape[0], b.shape[0], a.shape[1]
+    # print(f"gemm_w8a8_block: m={m}, n={n}, k={k}, scale_a.shape={scale_a.shape}, scale_b.shape={scale_b.shape}, out_dtype={out_dtype}")
+    
+    return op.gemm_w8a8_asm(a, b, scale_a, scale_b, None, out_dtype, m, n, k, isWgrad)
