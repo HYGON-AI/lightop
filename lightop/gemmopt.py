@@ -909,11 +909,13 @@ def w8a8_smooth_quant_config(m, n, k):
     key = f"M{m}N{n}K{k}"
     if key in w8a8_smooth_quant_config_dict:
         warps, nperblock, kperwarp, splitk, use_n_warps = w8a8_smooth_quant_config_dict[key]
-        return warps, nperblock, kperwarp, splitk, use_n_warps
+        status = True
+        return warps, nperblock, kperwarp, splitk, use_n_warps,status,
     else:
         # 如果没有完全匹配的配置，返回默认配置，并提示警告
-        print(f"警告：未找到维度({m}, {n}, {k})的最优配置，已返回默认配置 (2, 32, 256, 1, False)。如需最佳性能，请先进行tuning。")
-        return 2, 32, 256, 1, False
+        # print(f"警告：未找到维度({m}, {n}, {k})的最优配置，已返回默认配置 (2, 32, 256, 1, False)。如需最佳性能，请先进行tuning。")
+        status = False
+        return -1, -1, -1, -1, False, status
 
 
 
@@ -925,12 +927,12 @@ def gemm_w8a8_smooth(a, b, scale_a, scale_b, bias, out_dtype):
     m, n, k = a.shape[0], b.shape[1], a.shape[1]
     # print(f"gemm_w8a8_smooth: m={m}, n={n}, k={k}, scale_a.shape={scale_a.shape}, scale_b.shape={scale_b.shape}, bias={bias}, out_dtype={out_dtype}")
     if m<=16:
-        if k%128 != 0:
-            return False, None
-        else:
-            warps, nperblock, kperwarp, splitk, use_n_warps = w8a8_smooth_quant_config(m, n, k)
+        warps, nperblock, kperwarp, splitk, use_n_warps,status = w8a8_smooth_quant_config(m, n, k)
+        if status is True:
             output = op.gemm_w8_a8_smooth_colmajor(a, b, scale_a, scale_b, bias, out_dtype, warps, nperblock, kperwarp, splitk, use_n_warps)
-            status = True
+            return status, output
+        else:
+            return False, None
     else:
         if bias is not None:
             status = False
