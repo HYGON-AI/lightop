@@ -21,48 +21,42 @@ from lightop import moe_gemm_w8a8
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
 
-import pdb
+gemm1_compare_failed_list = []
+gemm2_compare_failed_list = []
 
 blockM_configs = {
-    0: 16,   # 索引0对应M=16
-    1: 32,   # 索引1对应M=32
-    2: 64,   # 索引2对应M=64
-    3: 16,   # 索引3对应M=16
-    4: 32,   # 索引4对应M=32
-    5: 64,   # 索引5对应M=64
-    6: 16,   # 索引6对应M=16
-    7: 32,   # 索引7对应M=32
-    8: 64,   # 索引8对应M=64
-    9: 32,   # 索引9对应M=32
-    10: 64,  # 索引10对应M=64
-    11: 32,  # 索引11对应M=32
-    12: 64,  # 索引12对应M=64
-    13: 64,  # 索引13对应M=64
-    14: 32,  # 索引14对应M=32
-    15: 32,  # 索引15对应M=32
-    16: 64,  # 索引16对应M=64
-    17: 64,  # 索引17对应M=64
-    18: 32,  # 索引18对应M=32
-    19: 64,  # 索引19对应M=64
-    20: 32,  # 索引20对应M=32
-    21: 64,  # 索引21对应M=64
-    22: 64,  # 索引22对应M=64
-    23: 64,  # 索引23对应M=64
-    24: 128, # 索引24对应M=128
-    25: 128, # 索引25对应M=128
-    26: 16,  # 索引26对应M=16
-    27: 32,  # 索引27对应M=32
-    28: 16,  # 索引28对应M=16
-    29: 16,  # 索引29对应M=16
-    30: 16,  # 索引30对应M=16
-    31: 32,  # 索引31对应M=32
-    32: 32,  # 索引32对应M=32
-    33: 32,  # 索引33对应M=32
-    34: 32,  # 索引34对应M=32
-    35: 64,  # 索引35对应M=64
-    36: 64,  # 索引36对应M=64
-    37: 64,  # 索引37对应M=64
-    38: 64,  # 索引38对应M=64
+    0 : 16,
+    1 : 32,
+    2 : 64,
+    3 : 16,
+    4 : 32,
+    6 : 16,
+    9 : 32,
+    10: 64,
+    11: 32,
+    13: 64,
+    14: 32,
+    15: 32,
+    16: 64,
+    17: 64,
+    18: 32,
+    19: 64,
+    20: 32,
+    21: 64,
+    22: 64,
+    23: 64,
+    24: 128,
+    25: 128,
+    26: 16,
+    27: 32,
+    28: 16,
+    29: 16,
+    30: 16,
+    31: 32,
+    32: 32,
+    33: 32,
+    35: 64,
+    36: 64,
     39: 32,
     40: 64,
     41: 32,
@@ -79,14 +73,10 @@ blockM_configs = {
     52: 64,
     53: 16,
     54: 32,
-    55: 64,
     56: 16,
-    57: 32,
-    58: 64,
     59: 32,
     60: 64,
     61: 32,
-    62: 64,
     63: 64,
     
     64: 16,
@@ -539,8 +529,18 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
                     top_k,
                     mode=mode)
     torch.cuda.synchronize()
+    stage = 0
+    if not mul_routed_weight:
+        stage = 1
+    else:
+        stage = 2
     if not (torch.allclose(C, out_cuda, rtol=1e-2, atol=1e-2)):
-        print("kernel 精度检查不合格!!!")
+        if not mul_routed_weight and stage == 1:
+            gemm1_compare_failed_list.append(mode)
+        elif stage == 2:
+            gemm2_compare_failed_list.append(mode)
+        
+        print(f"kernel{stage} 精度检查不合格!!!")
         # torch.set_printoptions(profile="full")  
         # ftriton = open('cuda_output.txt', 'w')   
         # print(f'cuda_output: {out_cuda}', file=ftriton)
@@ -549,7 +549,7 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
         # print(f'bench_output: {C}', file=ftorch)
         # ftorch.close
     else:
-        print("kernel 精度检查合格.")
+        print(f"kernel{stage} 精度检查合格.")
     
     
     # torch_c = torch.zeros_like(C)
@@ -667,7 +667,8 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                               num_tokens))
         curr_hidden_states = hidden_states[begin_chunk_idx:end_chunk_idx]
         tokens_in_chunk, _ = curr_hidden_states.shape
-        mode0, mode1 = mode, mode # 44
+        # mode0, mode1 = 4, 68 # 44
+        mode0, mode1 = mode, mode
     
         if tokens_in_chunk == 0:
             break
@@ -700,10 +701,9 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
 
         # config['BLOCK_SIZE_M'] = blockM_configs[mode0]
         if M > M_THRESHOLD:
-            config['BLOCK_SIZE_M'] = blockM_configs[mode]
+            config['BLOCK_SIZE_M'] = blockM_configs[mode0]
         else:
-            config['BLOCK_SIZE_M'] = blockM_configs_decode[mode]
-        config['BLOCK_SIZE_M'] = 128
+            config['BLOCK_SIZE_M'] = blockM_configs_decode[mode0]
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
@@ -732,8 +732,8 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe,
-                                mode=mode)
-        return
+                                mode=mode0)
+
         if activation == "silu":
             # d = intermediate_cache1.shape[-1] // 2
             # intermediate_cache2 = F.silu(intermediate_cache1[..., :d]) * intermediate_cache1[..., d:]
@@ -779,7 +779,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe,
-                                mode=mode)
+                                mode=mode1)
         
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
                     out_hidden_states[begin_chunk_idx:end_chunk_idx])
@@ -894,19 +894,23 @@ def torch_w8a8_per_column_moe(a, w1, w2, w1_s, w2_s, topk_weight, topk_ids,topk)
 def run_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
-    # m_list=[1,256,512,1024,2048,4096,8192,16384,32768] #prefill
-    m_list=[4096]
-    n_list_1=[256]
-    k_list_1=[7168]
-    n_list_2=[7168]
-    k_list_2=[128]
-    # m_list=[512,]
-    # m_list = [259]
+    m_list=[256,512,1024,2048,4096,8192,16384,32768] #prefill
+    # m_list=[8192,]
+    # m_list = [16384]
     # n_list_1=[512,]
     # k_list_1=[7168,]
+    
+    E=256
+    #deepseek-671b-tp16
+    n_list_1=[256]
+    k_list_1=[7168]
+    
+    # #deepseek-671b-tp8
     # n_list_1=[512]
     # k_list_1=[7168]
     
+    #qwen3
+    # E=128
     ##qwen3-30b-A3B-tp1
     # n_list_1=[1536]
     # k_list_1=[2048]
@@ -915,12 +919,14 @@ def run_perchannel_vaild():
     # n_list_1=[768]
     # k_list_1=[2048]
     
-    ##qwen3-235b-A22B-tp8
+    # ##qwen3-235b-A22B-tp8
     # n_list_1=[384]
     # k_list_1=[4096]
     
-    # n_list_2=[7168,]
-    # k_list_2=[256,]
+    #deepseek-671b-tp16
+    n_list_2=[7168]
+    k_list_2=[128]
+    # #deepseek-671b-tp8
     # n_list_2=[7168]
     # k_list_2=[256]
     
@@ -942,8 +948,6 @@ def run_perchannel_vaild():
     topk=8
     # configs=BlockSizeMConfigGen()
     best_config = None
-    E=256
-    # E=128
     triton_json_dir="./cache/moe/"
     os.makedirs(triton_json_dir, exist_ok=True)
     
@@ -951,24 +955,22 @@ def run_perchannel_vaild():
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
     mode_ranges = [mode for mode in blockM_configs.keys()]
-    # mode_ranges = [4,]
+    # mode_ranges = [61]
     # compare_fail = [42,43,46,52,54,60]
     # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
-    compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
-    ignored_modes = [5,7,8,12,34,37,38,44,55,56,57,58,61,63,62]
-    exclude_modes = compare_fail + ignored_modes
+    # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
+    #deepseek-471b-tp16
 
-    # decode corrtnese
-    mode_ranges = [i for i in range(len(blockM_configs_decode))]
-    exclude_modes = [13, 32, 33, 34, 35]
-    #mode_ranges = [3,4,6,8,10,12,14]
-    #exclude_modes = [13] # nk 4096 192 gemm2<16
+    # # decode corrtnese
+    # mode_ranges = [i for i in range(len(blockM_configs_decode))]
+    # exclude_modes = [13, 32, 33, 34, 35]
+    # #mode_ranges = [3,4,6,8,10,12,14]
+    # #exclude_modes = [13] # nk 4096 192 gemm2<16
     
-    for mode in mode_ranges:
-        if mode in exclude_modes:
-            continue
-        for i in range(0,len(k_list_1),1):
-            for m in m_list:
+    
+    for i in range(0,len(k_list_1),1):
+        for m in m_list:
+            for mode in mode_ranges:
                 print("mode:{} m:{} n:{} k:{} ".format(mode, m,n_list_1[i],k_list_1[i]))
                 input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=m,n=n_list_1[i],k=k_list_1[i],n2=n_list_2[i],k2=k_list_2[i],topk=topk,E=E,block_size=None,out_dtype=out_dtype)
                 # triton moe: output
@@ -995,7 +997,10 @@ def run_perchannel_vaild():
                     # print("output:",output)
                     # print("out_native:",out_native)
                 else:
-                    print("triton 精度检查合格") 
+                    print("triton 精度检查合格")
+                     
+    print("gemm1_compare_failed_list: ", gemm1_compare_failed_list)
+    print("gemm2_compare_failed_list: ", gemm2_compare_failed_list)
             
 def main():
     # run_tuning()

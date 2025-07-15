@@ -19,7 +19,7 @@ from vllm.platforms import current_platform
 from vllm.utils import FlexibleArgumentParser
 from fuse_moegemm import fused_moe_impl, fused_moe_first_stage_tune, fused_moe_second_stage_tune, \
                             grouped_topk, fused_topk, blockM_configs, blockM_configs_decode
-from fuse_moegemm_correct import fused_moe_impl as fused_moe_impl_debug
+from fuse_moegemm_dev import fused_moe_impl_test
 # from test_ori_fuse_moe import fused_moe_impl
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
@@ -397,6 +397,7 @@ def benchmark_config(config: BenchmarkConfig,
 
     input_gating = torch.randn(num_tokens, num_experts, dtype=torch.float32)
     
+    print("Tuing config: ", config)
     latencies: list[float] = []
     for i in range(num_iters):
         prepare(i)
@@ -504,23 +505,7 @@ def moe_cuda_graph(
         input_gating = torch.randn(num_tokens, num_experts, device=device, dtype=torch.float32)
 
         def run():
-            # fused_moe_impl(x,
-            #                 w1,
-            #                 w2,
-            #                 input_gating,
-            #                 topk,
-            #                 renormalize=True,
-            #                 inplace=False,
-            #                 use_fp8_w8a8=use_fp8_w8a8,
-            #                 use_int8_w8a16=use_int8_w8a16,
-            #                 use_int8_w8a8=use_int8_w8a8,
-            #                 w1_scale=w1_scale,
-            #                 w2_scale=w2_scale,
-            #                 a1_scale=a1_scale,
-            #                 a2_scale=a2_scale,
-            #                 block_shape=block_quant_shape,
-            #                 config=None)
-            fused_moe_impl_debug(x,
+            fused_moe_impl(x,
                             w1,
                             w2,
                             input_gating,
@@ -632,7 +617,7 @@ def fuse_moe_correctness(
         #                     block_shape=block_quant_shape,
         #                     config=None)
         
-        triton_output = fused_moe_impl_debug(x,
+        triton_output = fused_moe_impl_test(x,
                             w1,
                             w2,
                             input_gating,
@@ -864,10 +849,13 @@ def prune_rocm_configs(M, N, K, configs, is_fp16=True):
                 compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94] + [i for i in range(64)]
             elif N == 384 and K == 4096:
                 compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
+            elif N == 256 and K == 7168:
+                compare_fail = [56, 61, 63]
+            elif N == 7168 and K == 128:
+                compare_fail =  [64, 66, 67, 69, 70, 71, 77, 78, 79, 80, 81, 82, 83, 84, 85, 94]
             else:
                 compare_fail = [42,43,46,52,54,60]
-            ignored_modes = [5,7,8,12,34,37,38,44,55,56,57,58,61,63,62]
-            exclude_modes = compare_fail + ignored_modes
+            exclude_modes = compare_fail
             # #remove warps=2
             if mode in exclude_modes:
                 continue
@@ -1216,31 +1204,31 @@ def main(args: argparse.Namespace):
     use_int8_w8a16 = args.dtype == "int8_w8a16"
     use_int8_w8a8 = args.dtype == "int8_w8a8"
     
-    E = 128
-    ##qwen3-30b-A3B-tp1
-    shard_intermediate_size=1536
-    hidden_size=2048
-    # ##qwen3-30b-A3B-tp2
-    # shard_intermediate_size=768
+    # E = 128
+    # ##qwen3-30b-A3B-tp1
+    # shard_intermediate_size=1536
     # hidden_size=2048
-    # #qwen3-235b-A22B-tp8
-    # shard_intermediate_size=384
-    # hidden_size=4096
+    # # ##qwen3-30b-A3B-tp2
+    # # shard_intermediate_size=768
+    # # hidden_size=2048
+    # # #qwen3-235b-A22B-tp8
+    # # shard_intermediate_size=384
+    # # hidden_size=4096
 
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            1, 2, 4, 8, 16, 32, 64, 128,
-            256, 512, 1024, 2048, 4096, 6144, 8192, 16384
+            # 1, 2, 4, 8, 16, 32, 64, 128,
+            # 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
             # 1, 2, 4, 8, 16, 32, 64, 8192, 16384, 32768
             # 4096, 6144, 8192, 16384, 32768
-            # 8192
+            16384
             # 65536,32768,
             # 32768, 49152, 65536, 131072
             # 6144, 8192, 16384, 32768, 40960
-            # 4096,
-            # 32,
+            # 2048,
+            # 256,
         ]
     else:
         batch_sizes = [args.batch_size]
