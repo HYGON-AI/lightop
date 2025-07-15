@@ -2,7 +2,7 @@ import torch
 import time
 import torch.nn.functional as F
 from torch.autograd import Variable
-from lightop import FuseConvAdd
+from lightop import conv_add
 
 # 检验计算结果存在的误差是否可接受
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
@@ -32,12 +32,12 @@ def get_data(batch_size, in_channels_per_group, H, W, use_half = False):
 def get_model(batch_size, channels, out_channels, kernel_size, stride, padding, dilation, layout, use_half=False):
 
     if use_half:
-        fuse_conv_add=FuseConvAdd(in_channels = channels, out_channels = out_channels,
+        fuse_conv_add=conv_add(in_channels = channels, out_channels = out_channels,
                                   kernel_size = kernel_size, stride = stride, padding = padding,
                                   dilation = dilation, layout = layout).cuda().half()
         
     else:
-        fuse_conv_add=FuseConvAdd(in_channels = channels, out_channels = out_channels,
+        fuse_conv_add=conv_add(in_channels = channels, out_channels = out_channels,
                                   kernel_size = kernel_size, stride = stride, padding = padding,
                                   dilation = dilation, layout = layout).cuda()
     
