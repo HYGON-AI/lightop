@@ -4,40 +4,61 @@
 #include <string>
 #include <stdexcept>
 #include <sstream>
+#include <exception>
+#include <string>
 
 struct THCState;
 
-namespace at { namespace native {
+namespace at {
+namespace native {
+struct Exception : std::exception
+{
+    std::string message;
+    miopenStatus_t status;
+    Exception(const std::string& msg = "") : message(msg), status(miopenStatusUnknownError) {}
 
-class miopen_exception : public std::runtime_error {
-public:
-  miopenStatus_t status;
-  miopen_exception(miopenStatus_t status, const char* msg)
-      : std::runtime_error(msg)
-      , status(status) {}
-  miopen_exception(miopenStatus_t status, const std::string& msg)
-      : std::runtime_error(msg)
-      , status(status) {}
+    Exception(miopenStatus_t s, const std::string& msg = "") : message(msg), status(s) {}
+
+    Exception SetContext(const std::string& file, int line)
+    {
+
+        message = file + ":" + std::to_string(line) + ": " + message;
+        return *this;
+    }
+
+    // Workaround for HIP, this must be inline
+    const char* what() const noexcept override { return message.c_str(); }
 };
+
+#define MIOPEN_THROW(...)                                            \
+    do                                                               \
+    {                                                                \
+        throw Exception(__VA_ARGS__).SetContext(__FILE__, __LINE__); \
+    } while(false)
 
 inline void MIOPEN_CHECK(miopenStatus_t status)
 {
-  if (status != miopenStatusSuccess) {
-    if (status == miopenStatusNotImplemented) {
-        throw miopen_exception(status, std::string(miopenGetErrorString(status)) +
-                ". This error may appear if you passed in a non-contiguous input.");
+    if(status != miopenStatusSuccess)
+    {
+        if(status == miopenStatusNotImplemented)
+        {
+            MIOPEN_THROW(status,
+                         std::string(miopenGetErrorString(status)) +
+                             ". This error may appear if you passed in a non-contiguous input.");
+        }
+        MIOPEN_THROW(status, miopenGetErrorString(status));
     }
-    throw miopen_exception(status, miopenGetErrorString(status));
-  }
 }
 
 inline void HIP_CHECK(hipError_t error)
 {
-  if (error != hipSuccess) {
-    std::string msg("HIP error: ");
-    msg += hipGetErrorString(error);
-    throw std::runtime_error(msg);
-  }
+    if(error != hipSuccess)
+    {
+        std::string msg("HIP error: ");
+        msg += hipGetErrorString(error);
+        throw std::runtime_error(msg);
+    }
 }
 
-}} // namespace at::native
+} // namespace native
+} // namespace at
