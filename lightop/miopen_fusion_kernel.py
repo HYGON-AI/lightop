@@ -73,3 +73,6 @@ def add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon):
     """
     
     return op.add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon)
+
+def head_rms_norm(x, weight, epsilon, head_offset, head_num):
+    return op.head_rms_norm(x, weight, epsilon, head_offset, head_num)
