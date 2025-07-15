@@ -44,15 +44,18 @@ Tensor fused_conv_bias_add_forward(const Tensor& x,
     auto [conv_weight, conv_weight_uuid] = CreatGraphTensor(conv_weight_tensor, data_type, tensor_layout, false);
     auto [conv_output, conv_output_uuid] = CreatGraphTensor(output_tensor, data_type, tensor_layout, true);
 
-    auto conv_operation = CreatConvOp(data_type, conv_input, conv_weight, pads, strides, dilations, conv_output);
+    auto [conv_operation, conv_operation_desc] =
+        CreatConvOp(data_type, conv_input, conv_weight, pads, strides, dilations, conv_output);
 
     // bias op
     auto [bias_input, bias_input_uuid]   = CreatGraphTensor(bias_input_tensor, data_type, tensor_layout, false);
     auto [bias_output, bias_output_uuid] = CreatGraphTensor(output_tensor, data_type, tensor_layout, true);
-    auto bias_operation = CreatPointWiseOp(data_type, MIOPEN_POINTWISE_ADD, conv_output, bias_input, bias_output);
+    auto [bias_operation, bias_operation_desc] =
+        CreatPointWiseOp(data_type, MIOPEN_POINTWISE_ADD, conv_output, bias_input, bias_output);
     // relu op
     auto [relu_output, relu_output_uuid] = CreatGraphTensor(output_tensor, data_type, tensor_layout, false);
-    auto relu_operation = CreatPointWiseOp(data_type, MIOPEN_POINTWISE_RELU_FWD, bias_output, relu_output);
+    auto [relu_operation, relu_operation_desc] =
+        CreatPointWiseOp(data_type, MIOPEN_POINTWISE_RELU_FWD, bias_output, relu_output);
     // creat plan
     auto exec_plan = CreatExeutionPlan({conv_operation.desc(), bias_operation.desc(), relu_operation.desc()});
     // creat varpack

@@ -5,13 +5,13 @@
 namespace at {
 namespace native {
 
-BackendDescriptor CreatConvOp(miopenDataType_t data_type,
-                              const BackendDescriptor& input,
-                              const BackendDescriptor& weight,
-                              const std::vector<int64_t>& pads,
-                              const std::vector<int64_t>& strides,
-                              const std::vector<int64_t>& dilations,
-                              const BackendDescriptor& output)
+std::pair<BackendDescriptor, BackendDescriptor> CreatConvOp(miopenDataType_t data_type,
+                                                            const BackendDescriptor& input,
+                                                            const BackendDescriptor& weight,
+                                                            const std::vector<int64_t>& pads,
+                                                            const std::vector<int64_t>& strides,
+                                                            const std::vector<int64_t>& dilations,
+                                                            const BackendDescriptor& output)
 {
 
     BackendDescriptor conv_desc(MIOPEN_BACKEND_CONVOLUTION_DESCRIPTOR);
@@ -28,17 +28,22 @@ BackendDescriptor CreatConvOp(miopenDataType_t data_type,
     conv_desc.finalize();
 
     BackendDescriptor conv_operator(MIOPEN_BACKEND_OPERATION_CONVOLUTION_FORWARD_DESCRIPTOR);
+    conv_operator.set(MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_CONV_DESC,
+                      MIOPEN_TYPE_BACKEND_DESCRIPTOR,
+                      1,
+                      conv_desc.storage_addr());
     conv_operator.set(
-        MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_CONV_DESC, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, conv_desc.storage_addr());
-    conv_operator.set(MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_X, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, input.storage_addr());
-    conv_operator.set(MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_W, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, weight.storage_addr());
-    conv_operator.set(MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_Y, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, output.storage_addr());
+        MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_X, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, input.storage_addr());
+    conv_operator.set(
+        MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_W, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, weight.storage_addr());
+    conv_operator.set(
+        MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_Y, MIOPEN_TYPE_BACKEND_DESCRIPTOR, 1, output.storage_addr());
     float alpha = 1.0, beta = 0.0;
     conv_operator.set(MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_ALPHA, MIOPEN_TYPE_FLOAT, 1, &alpha);
     conv_operator.set(MIOPEN_ATTR_OPERATION_CONVOLUTION_FORWARD_BETA, MIOPEN_TYPE_FLOAT, 1, &beta);
 
     conv_operator.finalize();
-    return std::move(conv_operator);
+    return std::make_pair(std::move(conv_operator), std::move(conv_desc));
 }
 } // namespace native
 } // namespace at
