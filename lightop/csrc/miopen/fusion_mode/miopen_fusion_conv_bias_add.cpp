@@ -31,6 +31,7 @@ Tensor fused_conv_bias_add_forward(const Tensor& x,
     TensorDescriptor conv_input_tensor(x);
     TensorDescriptor conv_weight_tensor(weight);
     TensorDescriptor bias_input_tensor(bias);
+    TensorDescriptor add_input_tensor(add);
     auto data_type     = getDataType(x);
     auto tensor_layout = getLayout(layout);
 
@@ -53,20 +54,27 @@ Tensor fused_conv_bias_add_forward(const Tensor& x,
     auto [bias_operation, bias_operation_desc] =
         CreatPointWiseOp(data_type, MIOPEN_POINTWISE_ADD, conv_output, bias_input, bias_output);
     // relu op
-    auto [relu_output, relu_output_uuid] = CreatGraphTensor(output_tensor, data_type, tensor_layout, false);
-    auto [relu_operation, relu_operation_desc] =
-        CreatPointWiseOp(data_type, MIOPEN_POINTWISE_RELU_FWD, bias_output, relu_output);
+    // auto [relu_output, relu_output_uuid] = CreatGraphTensor(output_tensor, data_type, tensor_layout, false);
+    // auto [relu_operation, relu_operation_desc] =
+    //     CreatPointWiseOp(data_type, MIOPEN_POINTWISE_RELU_FWD, bias_output, relu_output);
+    // add op
+    auto [add_input, add_input_uuid] = CreatGraphTensor(add_input_tensor, data_type, tensor_layout, false);
+    auto [add_output, add_output_uuid] = CreatGraphTensor(output_tensor, data_type, tensor_layout, false);
+    auto [add_operation, add_operation_desc] = 
+        CreatPointWiseOp(data_type, MIOPEN_POINTWISE_ADD, bias_output, add_input, add_output);
     // creat plan
-    auto exec_plan = CreatExeutionPlan({conv_operation.desc(), bias_operation.desc(), relu_operation.desc()});
+    auto exec_plan = CreatExeutionPlan({conv_operation.desc(), bias_operation.desc(), add_operation.desc()});
     // creat varpack
     std::vector<std::pair<size_t, void*>> tensor_id_with_addr;
     tensor_id_with_addr.emplace_back(std::make_pair(conv_input_uuid, x.data_ptr()));
     tensor_id_with_addr.emplace_back(std::make_pair(conv_weight_uuid, weight.data_ptr()));
     tensor_id_with_addr.emplace_back(std::make_pair(bias_input_uuid, bias.data_ptr()));
-    tensor_id_with_addr.emplace_back(std::make_pair(relu_output_uuid, out.data_ptr()));
+    tensor_id_with_addr.emplace_back(std::make_pair(add_input_uuid, add.data_ptr()));
+    tensor_id_with_addr.emplace_back(std::make_pair(add_output_uuid, out.data_ptr()));
+    // tensor_id_with_addr.emplace_back(std::make_pair(relu_output_uuid, out.data_ptr()));
 
     size_t workspaceSize = GetPlanWorkspaceSize(exec_plan);
-
+    printf("new test...........\n");
     Tensor workspace_tensor;
     if(workspaceSize > 0)
     {
