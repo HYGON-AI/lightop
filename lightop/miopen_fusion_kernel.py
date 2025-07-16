@@ -76,3 +76,19 @@ def add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon):
 
 def head_rms_norm(x, weight, epsilon, head_offset, head_num):
     return op.head_rms_norm(x, weight, epsilon, head_offset, head_num)
+
+
+def groupnorm(x, weight, bias, num_groups, epsilon, mode):
+    return op.groupnorm(x, weight, bias, num_groups, epsilon, mode)
+
+def add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode):
+    return op.add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode)
+
+def layernorm(x, weight, bias, epsilon, normalized_dim, mode):
+    return op.layernorm(x, weight, bias, epsilon, normalized_dim, mode)
+
+def add_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode):
+    return op.add_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode)
+
+def skip_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode):
+    return op.skip_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode)
