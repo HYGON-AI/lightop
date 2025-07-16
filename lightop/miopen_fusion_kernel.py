@@ -21,7 +21,7 @@ def conv_bias_add(input, weight, bias, add, padding, stride, dilation, layout):
     return op.conv_bias_add(input, weight, bias, add, padding, stride, dilation, layout)
 
 
-def conv_add(x, add, weight, pads, strides, dilations, layout, groups = 1, alpha = 1 , beta = 0, scale = 1, zero_point = 0):
+def conv_add(x, weight, add, padding, stride, dilation, layout, groups = 1, alpha = 1 , beta = 0, scale = 1, zero_point = 0):
     """_summary_
 
     Args:
@@ -41,7 +41,7 @@ def conv_add(x, add, weight, pads, strides, dilations, layout, groups = 1, alpha
     Returns:
         Tensor: 结果张量
     """
-    return op.conv_add(x, add, weight, pads, strides, dilations, layout, groups, alpha, beta, scale, zero_point)
+    return op.conv_add(x, weight, add, padding, stride, dilation, layout, groups, alpha, beta, scale, zero_point)
 
 
 def add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon):
