@@ -21,6 +21,8 @@ from lightop import moe_gemm_w8a8
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
 
+import pdb
+
 blockM_configs = {
     0: 16,   # 索引0对应M=16
     1: 32,   # 索引1对应M=32
@@ -701,9 +703,13 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
             config['BLOCK_SIZE_M'] = blockM_configs[mode]
         else:
             config['BLOCK_SIZE_M'] = blockM_configs_decode[mode]
+        config['BLOCK_SIZE_M'] = 128
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
+        print("sorted_token_ids:", sorted_token_ids[:128])
+        print("sorted_token_ids // 128:", sorted_token_ids[:128] // 128)
+        pdb.set_trace()
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
@@ -727,7 +733,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe,
                                 mode=mode)
-
+        return
         if activation == "silu":
             # d = intermediate_cache1.shape[-1] // 2
             # intermediate_cache2 = F.silu(intermediate_cache1[..., :d]) * intermediate_cache1[..., d:]
@@ -888,7 +894,12 @@ def torch_w8a8_per_column_moe(a, w1, w2, w1_s, w2_s, topk_weight, topk_ids,topk)
 def run_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
-    m_list=[256,512,1024,2048,4096,8192,16384,32768] #prefill
+    # m_list=[1,256,512,1024,2048,4096,8192,16384,32768] #prefill
+    m_list=[4096]
+    n_list_1=[256]
+    k_list_1=[7168]
+    n_list_2=[7168]
+    k_list_2=[128]
     # m_list=[512,]
     # m_list = [259]
     # n_list_1=[512,]
@@ -905,8 +916,8 @@ def run_perchannel_vaild():
     # k_list_1=[2048]
     
     ##qwen3-235b-A22B-tp8
-    n_list_1=[384]
-    k_list_1=[4096]
+    # n_list_1=[384]
+    # k_list_1=[4096]
     
     # n_list_2=[7168,]
     # k_list_2=[256,]
@@ -922,8 +933,8 @@ def run_perchannel_vaild():
     # k_list_2=[384]
     
     ##qwen3-235b-A22B-tp8
-    n_list_2=[4096]
-    k_list_2=[192]
+    # n_list_2=[4096]
+    # k_list_2=[192]
     
     out_dtype=torch.bfloat16
     # out_dtype = torch.float16
@@ -931,8 +942,8 @@ def run_perchannel_vaild():
     topk=8
     # configs=BlockSizeMConfigGen()
     best_config = None
-    # E=256
-    E=128
+    E=256
+    # E=128
     triton_json_dir="./cache/moe/"
     os.makedirs(triton_json_dir, exist_ok=True)
     
