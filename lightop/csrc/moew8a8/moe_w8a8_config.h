@@ -181,20 +181,20 @@ static std::unordered_map<int, KernelFunc> kernel_maps_gemm1_prefill = {
 
     ///////////////////////////////////////////////////////N_warp-256////////////////////////////////////////////////
     // 4warp BLOCKN 64 
-    {50, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<16, 64, 256, 16, 16, 64, char>(p); }},
-    {51, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 64, 256, 32, 16, 64, char>(p); }},
-    {52, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 64, 256, 64, 16, 64, char>(p); }},
+    {50, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<16, 64, 256, 16, 16, 128, char>(p); }},
+    {51, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 64, 256, 32, 16, 128, char>(p); }},
+    {52, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 64, 256, 64, 16, 128, char>(p); }},
     // 4warp BLOCKN 128 
-    {53, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<16, 128, 256, 16, 32, 64, char>(p); }},
-    {54, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 128, 256, 32, 32, 64, char>(p); }},
+    {53, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<16, 128, 256, 16, 32, 128, char>(p); }},
+    {54, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 128, 256, 32, 32, 128, char>(p); }},
     //{55, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 128, 128, 64, 32, 64, char>(p); }}, // 寄存器溢出 32
     // 4warp BLOCKN 256 
     {56, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<16, 256, 256, 16, 64, 64, char>(p); }},
     //{57, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 256, 128, 32, 64, 64, char>(p); }}, // 寄存器溢出 60
     //{58, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 256, 128, 64, 64, 64, char>(p); }}, //寄存器溢出 392
     // 8warp BLOCKN 128 
-    {59, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 128, 256, 32, 16, 64, char>(p); }},
-    {60, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 128, 256, 64, 16, 64, char>(p); }},
+    {59, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 128, 256, 32, 16, 128, char>(p); }},
+    {60, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 128, 256, 64, 16, 128, char>(p); }},
     // 8warp BLOCKN 256 
     {61, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 256, 256, 32, 32, 64, char>(p); }},
     //{62, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 256, 128, 64, 32, 64, char>(p); }}, //寄存器溢出28
@@ -217,36 +217,36 @@ static std::unordered_map<int, KernelFunc> kernel_maps_gemm1_prefill = {
     ///////////////////////////////////////////////////////MN_WARP////////////////////////////////////////////////
     // 4 warp:  2,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {74, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 32, 128, 16, 16, 64, char>(p); }},
-    {75, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 64, 128, 16, 32, 64, char>(p); }},
-    {76, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 32, 128, 32, 16, 64, char>(p); }},
-    {77, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 64, 128, 32, 32, 64, char>(p); }},
+    {74, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 32, 256, 16, 16, 128, char>(p); }},
+    {75, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 64, 256, 16, 32, 128, char>(p); }},
+    {76, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 32, 256, 32, 16, 128, char>(p); }},
+    {77, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 64, 256, 32, 32, 128, char>(p); }},
     // 8 warp:  2,4,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {78, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 64, 128, 16, 16, 64, char>(p); }},
-    {79, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 64, 128, 32, 16, 64, char>(p); }},
-    {80, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 128, 128, 16, 32, 64, char>(p); }},
-    {81, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 128, 128, 32, 32, 64, char>(p); }},
+    {78, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 64, 256, 16, 16, 128, char>(p); }},
+    {79, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 64, 256, 32, 16, 128, char>(p); }},
+    {80, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 128, 256, 16, 32, 128, char>(p); }},
+    {81, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 128, 256, 32, 32, 128, char>(p); }},
     // 8 warp:  4,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {82, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 32, 128, 16, 16, 64, char>(p); }},
-    {83, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 64, 128, 16, 32, 64, char>(p); }},
-    {84, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<128, 32, 128, 32, 16, 64, char>(p); }},
-    {85, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<128, 64, 128, 32, 32, 64, char>(p); }},
+    {82, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 32, 256, 16, 16, 128, char>(p); }},
+    {83, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 64, 256, 16, 32, 128, char>(p); }},
+    {84, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<128, 32, 256, 32, 16, 128, char>(p); }},
+    {85, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<128, 64, 256, 32, 32, 128, char>(p); }},
     /////////////////////////////////////////////////////////M_WARP////////////////////////////////////////////////////
     // 1 warp
-    {86, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<16, 16, 128, 16, 16, 64, char>(p); }},
-    {87, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 16, 128, 16, 16, 64, char>(p); }},
-    {88, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<16, 32, 128, 16, 32, 64, char>(p); }},
+    {86, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<16, 16, 256, 16, 16, 128, char>(p); }},
+    {87, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 16, 256, 16, 16, 128, char>(p); }},
+    {88, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<16, 32, 256, 16, 32, 128, char>(p); }},
     {89, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<16, 64, 128, 16, 64, 64, char>(p); }},
     {90, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<16, 64, 128, 16, 64, 64, char>(p); }},
     // 2 warp
-    {91, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 16, 128, 16, 16, 64, char>(p); }},
-    {92, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 32, 128, 16, 32, 64, char>(p); }},
+    {91, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 16, 256, 16, 16, 128, char>(p); }},
+    {92, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 32, 256, 16, 32, 128, char>(p); }},
     {93, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 64, 128, 16, 64, 64, char>(p); }},
     // 4 warp
-    {94, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 16, 128, 16, 16, 64, char>(p); }},
-    {95, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 32, 128, 16, 32, 64, char>(p); }},
+    {94, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 16, 256, 16, 16, 128, char>(p); }},
+    {95, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 32, 256, 16, 32, 128, char>(p); }},
 };
 
 

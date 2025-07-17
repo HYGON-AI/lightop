@@ -845,7 +845,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
     }
 
     int num_pad = 0;
-
+    printf("modemode: %d\n", mode);
     if (input.scalar_type() == at::ScalarType::Char){
       if(first_stage){
      
@@ -881,7 +881,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
         
 
         // if(size_m > MOE_THRESHOLD){
-        if(size_m > 128){
+        if(1){
           auto it = kernel_maps_gemm1_prefill.find(mode);
           if (it != kernel_maps_gemm1_prefill.end()) {
               it->second(params_in);
@@ -903,7 +903,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
         
         //if(size_m / 8 > MOE_THRESHOLD)
-        if(size_m / 8 > 128)
+        if(1)
           num_pad = num_tokens_post_pad[0].item<int>();
           
         // 使用int8类型处理
@@ -934,7 +934,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
         
 
         //if(size_m / 8 > MOE_THRESHOLD){
-        if(size_m / 8 > 128){
+        if(1){
           auto it = kernel_maps_gemm2_prefill.find(mode);
           if (it != kernel_maps_gemm2_prefill.end()) {
               it->second(params_in);

@@ -454,11 +454,12 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
                  A.shape[0] * top_k * config['BLOCK_SIZE_M'])
     grid = lambda META: (triton.cdiv(EM, META['BLOCK_SIZE_M']) * triton.cdiv(
         B.shape[1] if not use_nn_moe else B.shape[2], META['BLOCK_SIZE_N']), )
-
-    # A = torch.ones_like(A)
-    # B = torch.ones_like(B)
-    # A_scale = torch.ones_like(A_scale)
-    # B_scale = torch.ones_like(B_scale)
+    print("mode: ", mode)
+    A = torch.ones_like(A)
+    B = torch.ones_like(B)
+    A_scale = torch.ones_like(A_scale)
+    B_scale = torch.ones_like(B_scale)
+    topk_weights = torhc.ones_like(topk_weights)
     fused_moe_kernel[grid](
             A,
             B,
@@ -541,13 +542,13 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
             gemm2_compare_failed_list.append(mode)
         
         print(f"kernel{stage} 精度检查不合格!!!")
-        # torch.set_printoptions(profile="full")  
-        # ftriton = open('cuda_output.txt', 'w')   
-        # print(f'cuda_output: {out_cuda}', file=ftriton)
-        # ftriton.close
-        # ftorch = open('bench_output.txt', 'w')   
-        # print(f'bench_output: {C}', file=ftorch)
-        # ftorch.close
+        torch.set_printoptions(profile="full")  
+        ftriton = open('cuda_output.txt', 'w')   
+        print(f'cuda_output: {out_cuda}', file=ftriton)
+        ftriton.close
+        ftorch = open('bench_output.txt', 'w')   
+        print(f'bench_output: {C}', file=ftorch)
+        ftorch.close
     else:
         print(f"kernel{stage} 精度检查合格.")
     
@@ -605,7 +606,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                        block_shape: Optional[List[int]] = None,
                        use_nn_moe: Optional[bool] = False,
                        config: Optional[Dict[str, Any]] = None,
-                       mode: Optional[int]=0):
+                       mode: Optional[List[int]]=None):
     # Check constraints. 
     assert use_int8_w8a8 is True
     assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch"
@@ -668,7 +669,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         curr_hidden_states = hidden_states[begin_chunk_idx:end_chunk_idx]
         tokens_in_chunk, _ = curr_hidden_states.shape
         # mode0, mode1 = 4, 68 # 44
-        mode0, mode1 = mode, mode
+        mode0, mode1 = mode[0], mode[1]
     
         if tokens_in_chunk == 0:
             break
@@ -699,17 +700,15 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape)
 
-        # config['BLOCK_SIZE_M'] = blockM_configs[mode0]
-        if M > M_THRESHOLD:
-            config['BLOCK_SIZE_M'] = blockM_configs[mode0]
-        else:
-            config['BLOCK_SIZE_M'] = blockM_configs_decode[mode0]
+        config['BLOCK_SIZE_M'] = blockM_configs[mode0]
+        # if M > M_THRESHOLD:
+        #     config['BLOCK_SIZE_M'] = blockM_configs[mode0]
+        # else:
+        #     config['BLOCK_SIZE_M'] = blockM_configs_decode[mode0]
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-        print("sorted_token_ids:", sorted_token_ids[:128])
-        print("sorted_token_ids // 128:", sorted_token_ids[:128] // 128)
-        pdb.set_trace()
+
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
@@ -894,8 +893,9 @@ def torch_w8a8_per_column_moe(a, w1, w2, w1_s, w2_s, topk_weight, topk_ids,topk)
 def run_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
-    m_list=[256,512,1024,2048,4096,8192,16384,32768] #prefill
-    # m_list=[8192,]
+    # m_list=[256,512,1024,2048,4096,8192,16384,32768] #prefill
+    m_list=[2048,]
+    # m_list=[32,]
     # m_list = [16384]
     # n_list_1=[512,]
     # k_list_1=[7168,]
@@ -903,7 +903,7 @@ def run_perchannel_vaild():
     E=256
     #deepseek-671b-tp16
     n_list_1=[256]
-    k_list_1=[7168]
+    k_list_1=[256]
     
     # #deepseek-671b-tp8
     # n_list_1=[512]
@@ -924,7 +924,7 @@ def run_perchannel_vaild():
     # k_list_1=[4096]
     
     #deepseek-671b-tp16
-    n_list_2=[7168]
+    n_list_2=[256]
     k_list_2=[128]
     # #deepseek-671b-tp8
     # n_list_2=[7168]
@@ -954,8 +954,8 @@ def run_perchannel_vaild():
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
-    mode_ranges = [mode for mode in blockM_configs.keys()]
-    # mode_ranges = [61]
+    # mode_ranges = [mode for mode in blockM_configs.keys()]
+    mode_ranges = [61]
     # compare_fail = [42,43,46,52,54,60]
     # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
     # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
@@ -971,7 +971,8 @@ def run_perchannel_vaild():
     for i in range(0,len(k_list_1),1):
         for m in m_list:
             for mode in mode_ranges:
-                print("mode:{} m:{} n:{} k:{} ".format(mode, m,n_list_1[i],k_list_1[i]))
+                mode_list=[81, 81] # 80, 81
+                print("mode:{} m:{} n:{} k:{} ".format(mode_list, m,n_list_1[i],k_list_1[i]))
                 input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=m,n=n_list_1[i],k=k_list_1[i],n2=n_list_2[i],k2=k_list_2[i],topk=topk,E=E,block_size=None,out_dtype=out_dtype)
                 # triton moe: output
                 output=fused_experts_impl_int8(hidden_states=input,
@@ -986,7 +987,7 @@ def run_perchannel_vaild():
                                                 block_shape=None,
                                                 config={"BLOCK_SIZE_M": 32},
                                                 per_channel_quant=True,
-                                                mode=mode)
+                                                mode=mode_list)
                 #torch native moe: out_native
                 out_native = torch_w8a8_per_column_moe(input, weight13, weight2, weight13_scale, weight2_scale, topk_weights, topk_ids,topk)
                 
