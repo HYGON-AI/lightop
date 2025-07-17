@@ -17,7 +17,7 @@ from .scaled_masked_softmax import FusedScaleMaskSoftmax,FusedScaleMaskSoftmaxDr
 from .groupnorm import GroupNorm ,CeluGN,GNSilu
 from .reduce import sum, mean,topk
 from .gemmopt import gemm, gemm_w4a16, w4tow16,gemm_w8a16_fp8,fp8_to_16,moe_gemm_w8a8,gemm_w8a8_smooth
-from .miopen_fusion_kernel import conv_bias_add, conv_add, add_rms_norm_dynamic_quant, head_rms_norm
+from .miopen_fusion_kernel import conv_bias_add, conv_add, conv_bias_relu, add_rms_norm_dynamic_quant, head_rms_norm, groupnorm, add_groupnorm, layernorm, add_layernorm, skip_layernorm, rms_norm_dynamic_quant_without_residual
 
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401

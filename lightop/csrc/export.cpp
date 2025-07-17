@@ -96,7 +96,8 @@ std::vector<Tensor> groupnorm(const Tensor &x,
                               const Tensor &bias,
                               const int num_groups,
                               const float epsilon,
-                              const int mode);
+                              const int mode,
+                              const std::string &layout);
 
 std::vector<Tensor> add_groupnorm(const Tensor &x1,
                                   const Tensor &x2,
@@ -104,7 +105,8 @@ std::vector<Tensor> add_groupnorm(const Tensor &x1,
                                   const Tensor &bias,
                                   const int num_groups,
                                   const float epsilon,
-                                  const int mode);
+                                  const int mode,
+                                  const std::string &layout);
 
 std::vector<Tensor> layernorm(const Tensor &x,
                               const Tensor &weight,
