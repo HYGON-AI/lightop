@@ -53,7 +53,6 @@ std::vector<Tensor> rms_norm_dynamic_quant_without_residual(
 {
 
     TensorDescriptor x_tensor(x);
-    TensorDescriptor x2_tensor(x);
     TensorDescriptor weight_tensor(weight);
     TensorDescriptor smoothScale_tensor(smoothScale);
 
@@ -68,7 +67,7 @@ std::vector<Tensor> rms_norm_dynamic_quant_without_residual(
                                               MIOPEN_ELEMENTWISE_AFFINE,
                                               x_tensor.desc(),
                                               x.data_ptr(),
-                                              x2_tensor.desc(),
+                                              x_tensor.desc(),
                                               nullptr,
                                               weight_tensor.desc(),
                                               weight.data_ptr(),

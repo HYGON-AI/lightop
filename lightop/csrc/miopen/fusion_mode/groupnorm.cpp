@@ -16,12 +16,11 @@ std::vector<Tensor> groupnorm(const Tensor &x,
     const Tensor &bias,
     const int num_groups,
     const float epsilon,
-    const int mode,
-    const std::string &layout)
+    const int mode)
 {
-    TensorDescriptor x_tensor(x, layout);
-    TensorDescriptor weight_tensor(weight, layout);
-    TensorDescriptor bias_tensor(bias, layout);
+    TensorDescriptor x_tensor(x);
+    TensorDescriptor weight_tensor(weight);
+    TensorDescriptor bias_tensor(bias);
 
     std::vector<int64_t> mean_rstd_len   = {x.sizes()[0] * num_groups, 1, 1, 1};
 
@@ -34,9 +33,9 @@ std::vector<Tensor> groupnorm(const Tensor &x,
     Tensor out_mean = at::empty(mean_rstd_len, x.options());
     Tensor out_rstd = at::empty(mean_rstd_len, x.options());
 
-    TensorDescriptor output_y(out_y, layout);
-    TensorDescriptor output_mean(out_mean, layout);
-    TensorDescriptor output_rstd(out_rstd, layout);
+    TensorDescriptor output_y(out_y);
+    TensorDescriptor output_mean(out_mean);
+    TensorDescriptor output_rstd(out_rstd);
 
     MIOPEN_CHECK(miopenGroupNormForward(
         getMiopenHandle_new(),
@@ -67,13 +66,12 @@ std::vector<Tensor> add_groupnorm(const Tensor &x1,
     const Tensor &bias,
     const int num_groups,
     const float epsilon,
-    const int mode,
-    const std::string &layout)
+    const int mode)
 {
-    TensorDescriptor x1_tensor(x1, layout);
-    TensorDescriptor x2_tensor(x2, layout);
-    TensorDescriptor weight_tensor(weight, layout);
-    TensorDescriptor bias_tensor(bias, layout);
+    TensorDescriptor x1_tensor(x1);
+    TensorDescriptor x2_tensor(x2);
+    TensorDescriptor weight_tensor(weight);
+    TensorDescriptor bias_tensor(bias);
 
     std::vector<int64_t> mean_rstd_len   = {x1.sizes()[0] * num_groups, 1, 1, 1};
 
@@ -86,9 +84,9 @@ std::vector<Tensor> add_groupnorm(const Tensor &x1,
     Tensor out_mean = at::empty(mean_rstd_len, x1.options());
     Tensor out_rstd = at::empty(mean_rstd_len, x1.options());
 
-    TensorDescriptor output_y(out_y, layout);
-    TensorDescriptor output_mean(out_mean, layout);
-    TensorDescriptor output_rstd(out_rstd, layout);
+    TensorDescriptor output_y(out_y);
+    TensorDescriptor output_mean(out_mean);
+    TensorDescriptor output_rstd(out_rstd);
 
     MIOPEN_CHECK(miopenAddGroupNormForward(
         getMiopenHandle_new(),
