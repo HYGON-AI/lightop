@@ -128,7 +128,7 @@ def head_rms_norm(x, weight, epsilon, head_offset, head_num):
     """
     return op.head_rms_norm(x, weight, epsilon, head_offset, head_num)
 
-def groupnorm(x, weight, bias, num_groups, epsilon, mode):
+def groupnorm(x, weight, bias, num_groups, epsilon, mode, layout):
     """_summary_
 
     Args:
@@ -144,9 +144,9 @@ def groupnorm(x, weight, bias, num_groups, epsilon, mode):
                             meanDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
                             rstdDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
     """
-    return op.groupnorm(x, weight, bias, num_groups, epsilon, mode)
+    return op.groupnorm(x, weight, bias, num_groups, epsilon, mode, layout)
 
-def add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode):
+def add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode, layout):
     """_summary_
 
     Args:
@@ -163,7 +163,7 @@ def add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode):
                             meanDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
                             rstdDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
     """
-    return op.add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode)
+    return op.add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode, layout)
 
 def layernorm(x, weight, bias, epsilon, normalized_dim, mode):
     """_summary_
