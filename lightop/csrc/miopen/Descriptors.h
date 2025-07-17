@@ -30,22 +30,6 @@ inline miopenDataType_t getDataType(const at::Tensor& t)
     }
 }
 
-inline miopenTensorLayout_t getLayout(const std::string& layout_str)
-{
-    if(layout_str == "NCHW")
-    {
-        return miopenTensorNCHW;
-    }
-    else if(layout_str == "NHWC")
-    {
-        return miopenTensorNHWC;
-    }
-    else
-    {
-        MIOPEN_THROW("Non-vectorized tensor only support layout NCHW and NHWC");
-    }
-}
-
 inline int dataSize(miopenDataType_t dataType)
 {
     switch(dataType)
