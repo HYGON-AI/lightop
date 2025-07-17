@@ -52,6 +52,7 @@ void _gemm_w8a8_128x256x128_TN_impl(
   const int8_t *A_data, int8_t *B_data,
   float *As_data, float *Bs_data, // scales
   OutputType *bias_data,
+  OutputType *C_data,
   OutputType *D_data,
   const int &size_m, const int &size_n, const int &size_k,
   bool isBfloat16, bool isWgrad) {
@@ -83,7 +84,7 @@ void _gemm_w8a8_128x256x128_TN_impl(
   hipFunctionArgs.size2 = 1;
   hipFunctionArgs.size3 = size_k;
   hipFunctionArgs.dataD = D_data;
-  hipFunctionArgs.dataC = D_data;
+  hipFunctionArgs.dataC = C_data;
   hipFunctionArgs.dataA = B_data;
   hipFunctionArgs.dataB = A_data;
   hipFunctionArgs.strideD1 = strideC1;
@@ -95,7 +96,7 @@ void _gemm_w8a8_128x256x128_TN_impl(
   hipFunctionArgs.strideB1 = strideB1;
   hipFunctionArgs.strideB2 = strideB2;
   hipFunctionArgs.alpha = 1.0;
-  hipFunctionArgs.beta = 0.0;
+  hipFunctionArgs.beta = isWgrad ? 1.0 : 0.0;
   hipFunctionArgs.scaleA = Bs_data;
   hipFunctionArgs.scaleB = As_data;
   hipFunctionArgs.debugBuffer = nullptr;
@@ -105,8 +106,8 @@ void _gemm_w8a8_128x256x128_TN_impl(
   string fp16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_FP16.co";
   string bf16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_BF16.co";
   if (isWgrad) {
-    string fp16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_FP16_wgrad.co";
-    string bf16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_BF16_wgrad.co";
+    fp16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_FP16_wgrad.co";
+    bf16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_BF16_wgrad.co";
   }
 	static AiterAsmKernel gemm_w8a8_fp16("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", fp16_co_file.c_str());
 	static AiterAsmKernel gemm_w8a8_bf16("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", bf16_co_file.c_str());
@@ -133,11 +134,18 @@ torch::Tensor gemm_w8a8_asm(
   torch::Tensor &B,
   torch::Tensor &As,
   torch::Tensor &Bs,
+  c10::optional<torch::Tensor> &C,
+  c10::optional<torch::Tensor> &D_,
   c10::optional<torch::Tensor> bias,
   torch::Dtype output_dtype, int M, int N, int K, bool isWgrad = false) {
   
-  torch::TensorOptions options = torch::TensorOptions().dtype(output_dtype).device(A.device());
-	torch::Tensor D = torch::empty({M, N}, options);
+  torch::Tensor D;
+  if (D_.has_value()) {
+    D = D_.value();
+  } else {
+    torch::TensorOptions options = torch::TensorOptions().dtype(output_dtype).device(A.device());
+    D = torch::empty({M, N}, options);
+  }
 	const at::cuda::OptionalCUDAGuard device_guard(device_of(A));
   if (output_dtype == torch::kFloat16)
     _gemm_w8a8_128x256x128_TN_impl<half_t>(
@@ -146,6 +154,7 @@ torch::Tensor gemm_w8a8_asm(
       As.data_ptr<float>(),
       Bs.data_ptr<float>(),
       nullptr,
+      C.has_value() ? reinterpret_cast<half_t *>(C.value().data_ptr()) : nullptr,
       reinterpret_cast<half_t *>(D.data_ptr()),
       M, N, K, 0, isWgrad);
   else if (output_dtype == torch::kBFloat16)
@@ -155,6 +164,7 @@ torch::Tensor gemm_w8a8_asm(
       As.data_ptr<float>(),
       Bs.data_ptr<float>(),
       nullptr,
+      C.has_value() ? reinterpret_cast<bhalf_t *>(C.value().data_ptr()) : nullptr,
       reinterpret_cast<bhalf_t *>(D.data_ptr()),
       M, N, K, 1, isWgrad);
   else

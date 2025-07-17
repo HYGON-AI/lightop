@@ -31,7 +31,7 @@ struct HipFunctionArgs {
   const int32_t* sorted_token_ids;   // sorted token ids
   const int32_t* expert_ids;         // expert ids
   const int32_t* num_tokens_post_pad_ptr;// num tokens after padding
-  const int32_t num_tokens_post_pad;// num tokens after padding
+  int32_t num_tokens_post_pad;// num tokens after padding
   uint32_t size_m;                   // input size m
   uint32_t size_n;                   // output size n
   uint32_t size_k;                   // input size k
@@ -41,8 +41,8 @@ struct HipFunctionArgs {
   uint32_t stride_bsn;               // weight scale stride n
   uint32_t stride_bsk;               // weight scale stride k
   uint32_t sorted_token_lens;        // sorted token length
-  uint32_t topk;                    // top k
   void *debugBuffer;
+  uint32_t topk;                    // top k
 };
 
 namespace at {
@@ -74,6 +74,7 @@ void _moe_w8a8_256x128x128_TN_impl(
   }
 
   int num_pad = num_tokens_post_pad[0].item<int>();
+  int sorted_token_lens = sorted_token_ids.size(0);
 
   /* grid sizes */
   size_t localWorkSize[3] = {768, 1, 1};
@@ -85,9 +86,9 @@ void _moe_w8a8_256x128x128_TN_impl(
   globalWorkSize[2] = std::min(DIVIDE(sorted_token_lens, BLOCKM), DIVIDE(num_pad, BLOCKM));
 
   HipFunctionArgs<OutputType> hipFunctionArgs;
-  hipFunctionArgs.numWorkGroups0 = totalWorkGroups0;
-  hipFunctionArgs.numWorkGroups1 = totalWorkGroups1;
-  hipFunctionArgs.ptr_C = output.data_prt<OutputType>();
+  hipFunctionArgs.numWorkGroups0 = globalWorkSize[0];
+  hipFunctionArgs.numWorkGroups1 = globalWorkSize[2];
+  hipFunctionArgs.ptr_C = static_cast<OutputType*>(output.data_ptr());
   hipFunctionArgs.ptr_A = b_qweight.data_ptr<int8_t>();
   hipFunctionArgs.ptr_B0 = input.data_ptr<int8_t>();
   hipFunctionArgs.ptr_A_scale = b_scale.data_ptr<float>();
@@ -107,9 +108,16 @@ void _moe_w8a8_256x128x128_TN_impl(
   hipFunctionArgs.stride_bsk = b_scale.stride(2);
   hipFunctionArgs.sorted_token_lens = sorted_token_ids.size(0);
   hipFunctionArgs.topk = top_k;
-  hipFunctionArgs.debugBuffer = nullptr;
+  // torch::TensorOptions options = torch::TensorOptions().dtype(torch::kInt).device(input.device());
+  // torch::Tensor debug = torch::empty({768}, options);
+  void * debug_host, * debug_device;
+  int debug_size = 768 * 4;
+  debug_host = malloc(debug_size);
+  hipMalloc((void **)&debug_device, debug_size);
+  hipFunctionArgs.debugBuffer = debug_device;
   size_t argsSize = sizeof(hipFunctionArgs);
 
+  // printf("%s:%d isbf16:%d\n", __FILE__, __LINE__, isBfloat16);
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   string fp16_co_file = "moe_w8a8_block/moe_w8a8_128x256x128_TN_FP16.co";
   string bf16_co_file = "moe_w8a8_block/moe_w8a8_128x256x128_TN_BF16.co";
@@ -129,6 +137,23 @@ void _moe_w8a8_256x128x128_TN_impl(
     localWorkSize[2],            // bdz
     stream
   });
+
+  // AT_CUDA_CHECK(cudaStreamSynchronize(stream));
+  
+  printf("%s:%d gdx:%d gdy:%d gdz:%d bdx:%d bdy:%d bdz:%d\n", __FILE__, __LINE__, globalWorkSize[0], globalWorkSize[1], globalWorkSize[2],
+    localWorkSize[0], localWorkSize[1], localWorkSize[2]);
+  printf("\ndebug:\n");
+  hipMemcpy(debug_host, debug_device, debug_size, hipMemcpyDeviceToHost);
+  // using DEBUG_TYPE = int8_t;
+  // using DEBUG_TYPE = uint32_t;
+  using DEBUG_TYPE = int32_t;
+  // using DEBUG_TYPE = float;
+  DEBUG_TYPE *p_debug = reinterpret_cast<DEBUG_TYPE*>(debug_host);
+  for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
+    if (i % 8 == 0) printf("\n");
+    printf("%3d:%6d\t", i, p_debug[i]);
+  }
+  printf("\n");
   
   return;
 }
@@ -146,18 +171,18 @@ torch::Tensor moe_w8a8_asm(
   int64_t top_k,
   int mode) {
   
-	const at::cuda::OptionalCUDAGuard device_guard(device_of(A));
+	const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
 
-  if (output_dtype == torch::kFloat16)
+  if (output.dtype() == torch::kFloat16)
     _moe_w8a8_256x128x128_TN_impl<half_t>(
       input, b_qweight, output, a_scale, b_scale,
       topk_weights, sorted_token_ids, expert_ids,
-      num_tokens_post_pad, top_k);
-  else if (output_dtype == torch::kBFloat16)
+      num_tokens_post_pad, top_k, 0);
+  else if (output.dtype() == torch::kBFloat16)
     _moe_w8a8_256x128x128_TN_impl<bhalf_t>(
       input, b_qweight, output, a_scale, b_scale,
       topk_weights, sorted_token_ids, expert_ids,
-      num_tokens_post_pad, top_k);
+      num_tokens_post_pad, top_k, 1);
   else
     TORCH_CHECK(false, "moe_w8a8 only supports outputType in [Float16, BFloat16]");
   return output;

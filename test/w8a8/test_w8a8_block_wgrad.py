@@ -4,7 +4,7 @@ import torch
 import triton
 import triton.language as tl
 
-from lightop import gemm_w8a8_asm
+from lightop import gemm_w8a8_wgrad_asm
 
 
 @triton.jit
@@ -193,14 +193,18 @@ def w8a8_block_int8_linear(
     
     torch_output = native_w8a8_block_int8_matmul(q_input, weight, x_scale, weight_scale, block_size, out_dtype)
 
+    N, K = weight.shape
+    C_shape = q_input.shape[:-1] + (N,)
+    output = q_input.new_empty(C_shape, dtype=out_dtype)
+
     # x_scale = x_scale.permute(1, 0).contiguous()
     # weight_scale = weight_scale.permute(1, 0).contiguous()
 
-    output = gemm_w8a8_asm(
-        q_input, weight, x_scale, weight_scale, block_size, out_dtype, True
+    output = gemm_w8a8_wgrad_asm(
+        q_input, weight, x_scale, weight_scale, output, False, block_size, out_dtype
     )
-    print("output:", output.shape, output)
-    print("torch_output:", torch_output.shape, torch_output)
+    # print("output:", output.shape, output)
+    # print("torch_output:", torch_output.shape, torch_output)
 
     
     if not torch.allclose(output, torch_output, rtol=1e-2, atol=5e-2):
@@ -218,9 +222,9 @@ if __name__ == "__main__":
     n_list=[576,2048,7168,256,7168,1536,1536,2304,7168]
     k_list=[7168,512,1024,7168,128,7168,1536,7168,1152]
 
-    m_list = [8192]
-    n_list=[7168]
-    k_list=[1152]
+    # m_list = [8192]
+    # n_list=[7168]
+    # k_list=[1152]
 
     block_size=[128, 128]
     
