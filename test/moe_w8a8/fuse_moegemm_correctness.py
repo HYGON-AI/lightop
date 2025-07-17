@@ -605,7 +605,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                        block_shape: Optional[List[int]] = None,
                        use_nn_moe: Optional[bool] = False,
                        config: Optional[Dict[str, Any]] = None,
-                       mode: Optional[int]=0):
+                       mode: Optional[List[int]]=None):
     # Check constraints. 
     assert use_int8_w8a8 is True
     assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch"
@@ -668,7 +668,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         curr_hidden_states = hidden_states[begin_chunk_idx:end_chunk_idx]
         tokens_in_chunk, _ = curr_hidden_states.shape
         # mode0, mode1 = 4, 68 # 44
-        mode0, mode1 = mode, mode
+        mode0, mode1 = mode[0], mode[1]
     
         if tokens_in_chunk == 0:
             break
@@ -707,9 +707,9 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-        print("sorted_token_ids:", sorted_token_ids[:128])
-        print("sorted_token_ids // 128:", sorted_token_ids[:128] // 128)
-        pdb.set_trace()
+        # print("sorted_token_ids:", sorted_token_ids[:128])
+        # print("sorted_token_ids // 128:", sorted_token_ids[:128] // 128)
+        # pdb.set_trace()
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
@@ -971,7 +971,8 @@ def run_perchannel_vaild():
     for i in range(0,len(k_list_1),1):
         for m in m_list:
             for mode in mode_ranges:
-                print("mode:{} m:{} n:{} k:{} ".format(mode, m,n_list_1[i],k_list_1[i]))
+                mode_list=[mode,mode]
+                print("mode:{} m:{} n:{} k:{} ".format(mode_list, m,n_list_1[i],k_list_1[i]))
                 input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=m,n=n_list_1[i],k=k_list_1[i],n2=n_list_2[i],k2=k_list_2[i],topk=topk,E=E,block_size=None,out_dtype=out_dtype)
                 # triton moe: output
                 output=fused_experts_impl_int8(hidden_states=input,
@@ -986,7 +987,7 @@ def run_perchannel_vaild():
                                                 block_shape=None,
                                                 config={"BLOCK_SIZE_M": 32},
                                                 per_channel_quant=True,
-                                                mode=mode)
+                                                mode=mode_list)
                 #torch native moe: out_native
                 out_native = torch_w8a8_per_column_moe(input, weight13, weight2, weight13_scale, weight2_scale, topk_weights, topk_ids,topk)
                 
