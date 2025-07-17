@@ -7,7 +7,6 @@ namespace native {
 
 std::pair<BackendDescriptor, size_t> CreatGraphTensor(const TensorDescriptor& tensor,
                                                       miopenDataType_t data_type,
-                                                      miopenTensorLayout_t tensor_layout,
                                                       const bool is_virtual);
 
 std::vector<int64_t> GetConvForwardOutputDim(const TensorDescriptor& input,
