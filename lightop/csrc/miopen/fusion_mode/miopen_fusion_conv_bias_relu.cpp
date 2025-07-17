@@ -17,8 +17,7 @@ Tensor fused_conv_bias_relu_forward(const Tensor& x,
                                    const Tensor& bias,
                                    const std::vector<int64_t>& pads,
                                    const std::vector<int64_t>& strides,
-                                   const std::vector<int64_t>& dilations,
-                                   const std::string& layout)
+                                   const std::vector<int64_t>& dilations)
 
 {
     if(x.dim() != 4 || weight.dim() != 4)
@@ -30,7 +29,6 @@ Tensor fused_conv_bias_relu_forward(const Tensor& x,
     TensorDescriptor conv_weight_tensor(weight);
     TensorDescriptor bias_input_tensor(bias);
     auto data_type     = getDataType(x);
-    auto tensor_layout = getLayout(layout);
 
     // output
     auto output_dims = GetConvForwardOutputDim(conv_input_tensor, conv_weight_tensor, pads, strides, dilations);
@@ -38,20 +36,20 @@ Tensor fused_conv_bias_relu_forward(const Tensor& x,
     TensorDescriptor output_tensor(out);
 
     // conv op
-    auto [conv_input, conv_input_uuid]   = CreatGraphTensor(conv_input_tensor, data_type, tensor_layout, false);
-    auto [conv_weight, conv_weight_uuid] = CreatGraphTensor(conv_weight_tensor, data_type, tensor_layout, false);
-    auto [conv_output, conv_output_uuid] = CreatGraphTensor(output_tensor, data_type, tensor_layout, true);
+    auto [conv_input, conv_input_uuid]   = CreatGraphTensor(conv_input_tensor, data_type, false);
+    auto [conv_weight, conv_weight_uuid] = CreatGraphTensor(conv_weight_tensor, data_type, false);
+    auto [conv_output, conv_output_uuid] = CreatGraphTensor(output_tensor, data_type, true);
 
     auto [conv_operation, conv_operation_desc] =
         CreatConvOp(data_type, conv_input, conv_weight, pads, strides, dilations, conv_output);
 
     // bias op
-    auto [bias_input, bias_input_uuid]   = CreatGraphTensor(bias_input_tensor, data_type, tensor_layout, false);
-    auto [bias_output, bias_output_uuid] = CreatGraphTensor(output_tensor, data_type, tensor_layout, true);
+    auto [bias_input, bias_input_uuid]   = CreatGraphTensor(bias_input_tensor, data_type, false);
+    auto [bias_output, bias_output_uuid] = CreatGraphTensor(output_tensor, data_type, true);
     auto [bias_operation, bias_operation_desc] =
         CreatPointWiseOp(data_type, MIOPEN_POINTWISE_ADD, conv_output, bias_input, bias_output);
     // relu op
-    auto [relu_output, relu_output_uuid] = CreatGraphTensor(output_tensor, data_type, tensor_layout, false);
+    auto [relu_output, relu_output_uuid] = CreatGraphTensor(output_tensor, data_type, false);
     auto [relu_operation, relu_operation_desc] =
         CreatPointWiseOp(data_type, MIOPEN_POINTWISE_RELU_FWD, bias_output, relu_output);
     // creat plan

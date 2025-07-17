@@ -55,27 +55,19 @@ Tensor fused_conv_add_forward(const Tensor &x, const Tensor &weight,
                            const Tensor &add, 
                            const std::vector<int64_t>& pads, 
                            const std::vector<int64_t>& strides, 
-                           const std::vector<int64_t>& dilations, 
-                           const std::string& layout, 
-                           const int groups, 
-                           const float alpha, 
-                           const float beta, 
-                           const double scale, 
-                           const double zero_point);
+                           const std::vector<int64_t>& dilations);
 
 Tensor fused_conv_bias_add_forward(const Tensor &x, const Tensor &weight,
                                    const Tensor &bias, const Tensor &add,
                                    const std::vector<int64_t> &pads,
                                    const std::vector<int64_t> &strides,
-                                   const std::vector<int64_t> &dilations,
-                                   const std::string &layout);
+                                   const std::vector<int64_t> &dilations);
 
 Tensor fused_conv_bias_relu_forward(const Tensor &x, const Tensor &weight,
                                   const Tensor &bias,
                                   const std::vector<int64_t> &pads,
                                   const std::vector<int64_t> &strides,
-                                  const std::vector<int64_t> &dilations,
-                                  const std::string &layout);
+                                  const std::vector<int64_t> &dilations);
 
 std::vector<Tensor> add_rms_norm_dynamic_quant(const Tensor& x, 
                                                const Tensor& x2,

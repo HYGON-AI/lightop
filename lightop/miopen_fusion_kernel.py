@@ -4,7 +4,7 @@ from torch import Tensor
 from lightop import op
 
 
-def conv_bias_add(input, weight, bias, add, padding, stride, dilation, layout):
+def conv_bias_add(input, weight, bias, add, padding, stride, dilation):
     """
     参数:
         input (Tensor): 输入张量，形状为 [N, C_in, H, W] (NCHW) 或 [N, H, W, C_in] (NHWC)
@@ -14,14 +14,13 @@ def conv_bias_add(input, weight, bias, add, padding, stride, dilation, layout):
         padding (int|tuple): 填充大小。(padH, padW) 元组
         stride (int|tuple): 卷积步长。 (strideH, strideW) 元组
         dilation (int|tuple): 卷积膨胀率。(dilationH, dilationW) 元组
-        layout (str): 数据布局格式。支持的格式: "NCHW" | "NHWC"
     返回:
         Tensor: 计算结果张量
     """
-    return op.conv_bias_add(input, weight, bias, add, padding, stride, dilation, layout)
+    return op.conv_bias_add(input, weight, bias, add, padding, stride, dilation)
 
 
-def conv_add(x, weight, add, padding, stride, dilation, layout, groups = 1, alpha = 1 , beta = 0, scale = 1, zero_point = 0):
+def conv_add(x, weight, add, padding, stride, dilation):
     """_summary_
 
     Args:
@@ -31,7 +30,6 @@ def conv_add(x, weight, add, padding, stride, dilation, layout, groups = 1, alph
         pads (int|tuple): 填充大小。(padH, padW) 元组
         strides (int|tuple): 卷积步长。 (strideH, strideW) 元组
         dilations (int|tuple): 卷积膨胀率。(dilationH, dilationW) 元组
-        layout (str): 数据布局格式。支持的格式: "NCHW" | "NHWC"
         groups (int): 是否为组卷积。1为普通卷积, >1 为组卷积
         alpha (float): _description_
         beta (float): _description_
@@ -41,9 +39,9 @@ def conv_add(x, weight, add, padding, stride, dilation, layout, groups = 1, alph
     Returns:
         Tensor: 结果张量
     """
-    return op.conv_add(x, weight, add, padding, stride, dilation, layout, groups, alpha, beta, scale, zero_point)
+    return op.conv_add(x, weight, add, padding, stride, dilation)
 
-def conv_bias_relu(input, weight, bias, padding, stride, dilation, layout):
+def conv_bias_relu(input, weight, bias, padding, stride, dilation):
     """_summary_
 
     Args:
@@ -53,12 +51,11 @@ def conv_bias_relu(input, weight, bias, padding, stride, dilation, layout):
         ppadding (int|tuple): 填充大小。(padH, padW) 元组
         stride (int|tuple): 卷积步长。 (strideH, strideW) 元组
         dilation (int|tuple): 卷积膨胀率。(dilationH, dilationW) 元组
-        layout (str): 数据布局格式。支持的格式: "NCHW" | "NHWC"
 
     Returns:
         Tensor: yDesc 计算结果张量
     """
-    return op.conv_bias_relu(input, weight, bias, padding, stride, dilation, layout)
+    return op.conv_bias_relu(input, weight, bias, padding, stride, dilation)
 
 def add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon):
     """
