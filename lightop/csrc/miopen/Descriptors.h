@@ -121,16 +121,6 @@ public:
     TensorDescriptor() {}
     explicit TensorDescriptor(const at::Tensor& t, size_t pad = 0) { set(t, pad); }
 
-    explicit TensorDescriptor(const at::Tensor& t, const std::string& layout) 
-    { 
-        auto tensor_layout = getLayout(layout);
-        std::vector<int> data_vec;
-        for (int64_t size : t.sizes()) {
-            data_vec.push_back(static_cast<int>(size));
-        }
-        set(getDataType(t), tensor_layout, data_vec.data(), data_vec.size()); 
-    }
-
     void set(const at::Tensor& t, size_t pad = 0);
     void set(miopenDataType_t dataType, IntArrayRef sizes, IntArrayRef strides, size_t pad = 0);
 
