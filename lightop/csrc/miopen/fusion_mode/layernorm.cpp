@@ -81,7 +81,7 @@ std::vector<Tensor> skip_layernorm(const Tensor &x1,
     Tensor out_y = at::empty_like(x1);
     Tensor out_mean = at::empty(outer_len, x1.options());
     Tensor out_rstd = at::empty(outer_len, x1.options());
-    Tensor out_skip = at::empty(outer_len, x1.options());
+    Tensor out_skip = at::empty_like(x1);
    
     TensorDescriptor output_y(out_y);
     TensorDescriptor output_mean(out_mean);

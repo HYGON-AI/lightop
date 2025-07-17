@@ -19,13 +19,7 @@ Tensor fused_conv_add_forward(const Tensor &x,
                            const Tensor &add, 
                            const std::vector<int64_t>& pads,
                            const std::vector<int64_t>& strides,
-                           const std::vector<int64_t>& dilations,
-                           const std::string& layout, 
-                           const int groups = 1, 
-                           const float alpha = 1,
-                           const float beta = 0, 
-                           const double scale = 1, 
-                           const double zero_point = 0)
+                           const std::vector<int64_t>& dilations)
 {
     if(x.dim() != 4 || weight.dim() != 4 )
     {
@@ -36,7 +30,6 @@ Tensor fused_conv_add_forward(const Tensor &x,
     TensorDescriptor conv_weight_tensor(weight);
     TensorDescriptor add_input_tensor(add);
     auto data_type     = getDataType(x);
-    auto tensor_layout = getLayout(layout);
 
     // output
     auto output_dims = GetConvForwardOutputDim(conv_input_tensor, conv_weight_tensor, pads, strides, dilations);
@@ -44,16 +37,16 @@ Tensor fused_conv_add_forward(const Tensor &x,
     TensorDescriptor output_tensor(out);
 
     // conv op
-    auto [conv_input, conv_input_uuid]   = CreatGraphTensor(conv_input_tensor, data_type, tensor_layout, false);
-    auto [conv_weight, conv_weight_uuid] = CreatGraphTensor(conv_weight_tensor, data_type, tensor_layout, false);
-    auto [conv_output, conv_output_uuid] = CreatGraphTensor(output_tensor, data_type, tensor_layout, true);
+    auto [conv_input, conv_input_uuid]   = CreatGraphTensor(conv_input_tensor, data_type, false);
+    auto [conv_weight, conv_weight_uuid] = CreatGraphTensor(conv_weight_tensor, data_type, false);
+    auto [conv_output, conv_output_uuid] = CreatGraphTensor(output_tensor, data_type, true);
 
     auto [conv_operation, conv_operation_desc] =
         CreatConvOp(data_type, conv_input, conv_weight, pads, strides, dilations, conv_output);
 
     // add op
-    auto [add_input, add_input_uuid] = CreatGraphTensor(add_input_tensor, data_type, tensor_layout, false);
-    auto [add_output, add_output_uuid] = CreatGraphTensor(output_tensor, data_type, tensor_layout, false);
+    auto [add_input, add_input_uuid] = CreatGraphTensor(add_input_tensor, data_type, false);
+    auto [add_output, add_output_uuid] = CreatGraphTensor(output_tensor, data_type, false);
     auto [add_operation, add_operation_desc] = 
         CreatPointWiseOp(data_type, MIOPEN_POINTWISE_ADD, conv_output, add_input, add_output);
     

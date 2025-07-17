@@ -14,7 +14,6 @@ static size_t GetGraphTensorUUID()
 }
 std::pair<BackendDescriptor, size_t> CreatGraphTensor(const TensorDescriptor& tensor,
                                                       miopenDataType_t data_type,
-                                                      miopenTensorLayout_t tensor_layout,
                                                       const bool is_virtual)
 {
     static const int64_t alignment = 4;
@@ -30,7 +29,6 @@ std::pair<BackendDescriptor, size_t> CreatGraphTensor(const TensorDescriptor& te
 
     BackendDescriptor tensor_desc(MIOPEN_BACKEND_TENSOR_DESCRIPTOR);
     tensor_desc.set(MIOPEN_ATTR_TENSOR_DATA_TYPE, MIOPEN_TYPE_DATA_TYPE, 1, &data_type);
-    tensor_desc.set(MIOPEN_ATTR_TENSOR_DATA_LAYOUT, MIOPEN_TYPE_DATA_LAYOUT, 1, &tensor_layout);
     tensor_desc.set(MIOPEN_ATTR_TENSOR_DIMENSIONS, MIOPEN_TYPE_INT64, input_lens.size(), input_lens.data());
     tensor_desc.set(MIOPEN_ATTR_TENSOR_STRIDES, MIOPEN_TYPE_INT64, input_strides.size(), input_strides.data());
     auto uuid = GetGraphTensorUUID();
