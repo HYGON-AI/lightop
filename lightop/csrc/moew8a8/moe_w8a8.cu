@@ -247,22 +247,28 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel(
   auto g_weight_scale = weight_scale + weight_scale_offset; // 配置weight的scale信息 todo 这里n_loop=0没有计算偏移
   intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; // [4][2]  每个warp在n方向重复两次 tileN = 16*2
   float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id*WARP_N;
+  float weight_dot_a_scale[WARP_M / mfma_m];
+
+  #pragma unroll
+  for(int idx = 0; idx < WARP_M / mfma_m; idx++){
+      int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + warp_m_id * WARP_M + idx * mfma_m + row_id, int(sorted_token_lens - 1))];
+      int token_index_safe = std::min(token_index, size_m * top_k-1);
+      float input_scale_value = *(input_scale + token_index_safe * stride_asm); //计算M方向的偏移
+      weight_dot_a_scale[idx] = topk_weights[token_index_safe] * input_scale_value;
+  }
   
   gemm_nt_first_stage<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
   (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
   //save output to lds
   #pragma unroll
   for(int min_tile_m = 0; min_tile_m < WARP_M / mfma_m; min_tile_m++){
-    const int32_t token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + warp_m_id * WARP_M + min_tile_m * mfma_m + (lane_id % 16), int(sorted_token_lens - 1))];
-    const int32_t token_index_safe = std::min(token_index, size_m * top_k-1);
-    float *a_scale = input_scale + token_index_safe * stride_asm; //计算M方向的偏移
-    float weight_value = topk_weights[token_index_safe];
+    float weight_dot_a_scale_value = weight_dot_a_scale[min_tile_m];
     #pragma unroll
     for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
       #pragma unroll
       for(int reg_id = 0; reg_id < 4; reg_id++){
         float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
-        float value = C_reg[0][min_tile_m * (WARP_N/mfma_n) + min_tile_n][reg_id] * weight_value * a_scale[0] * b_scale[0];
+        float value = C_reg[0][min_tile_m * (WARP_N/mfma_n) + min_tile_n][reg_id] * weight_dot_a_scale_value * b_scale[0];
         int index = warp_m_id * WARP_M * BLOCK_SIZE_N + min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + warp_m_id * WARP_M + (lane_id % 16))/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
         output_lds[index] = __float2bfloat16(value);
       }
