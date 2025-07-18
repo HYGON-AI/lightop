@@ -332,6 +332,14 @@ static float __e4m32float(const uint8_t src) {
 #endif // end of #if !defined(__NVCC__)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+static __device__ inline uint16_t f32_to_bf16(float f){
+  
+    uint32_t u = *(uint32_t*)(&f);
+    u += 0x7fff + ((u >> 16) & 1); 
+    return u>>16;
+
+}
+
 //f32转bf16
 // to simplify f32 -> bf16 conversion, filter some branch
 // inline __HOST_DEVICE__ bhalf_t inlineasm_float2bfloat16_nonan(const float f) {

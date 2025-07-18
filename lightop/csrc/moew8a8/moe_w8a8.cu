@@ -136,7 +136,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel(
         float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
         float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
         int index = warp_m_id * WARP_M * BLOCK_SIZE_N + min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + warp_m_id * WARP_M+ (lane_id % 16) )/2 * 2/*padding*/;
-        output_lds[index] = __float2bfloat16(value);
+        output_lds[index] = f32_to_bf16(value);
       }
     }
   }
@@ -270,7 +270,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel(
         float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
         float value = C_reg[0][min_tile_m * (WARP_N/mfma_n) + min_tile_n][reg_id] * weight_dot_a_scale_value * b_scale[0];
         int index = warp_m_id * WARP_M * BLOCK_SIZE_N + min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + warp_m_id * WARP_M + (lane_id % 16))/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
-        output_lds[index] = __float2bfloat16(value);
+        output_lds[index] = f32_to_bf16(value);
       }
     }
   }
@@ -407,7 +407,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
           float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
           float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
           int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + (lane_id % 16) )/2 * 2/*padding*/;
-          output_lds[index] = __float2bfloat16(value);
+          output_lds[index] = f32_to_bf16(value);
         }
       }
     }
@@ -543,7 +543,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
           float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
           float value = C_reg[0][min_tile_m * (WARP_N/mfma_n) + min_tile_n][reg_id] * weight_value * a_scale[0] * b_scale[0];
           int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + (lane_id % 16))/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
-          output_lds[index] = __float2bfloat16(value);
+          output_lds[index] = f32_to_bf16(value);
         }
       }
     }
