@@ -42,7 +42,8 @@ struct HipFunctionArgs {
   uint32_t stride_bsk;               // weight scale stride k
   uint32_t sorted_token_lens;        // sorted token length
   void *debugBuffer;
-  uint32_t topk;                    // top k
+  // uint32_t topk;                    // top k
+  float topk;                    // top k
 };
 
 namespace at {
@@ -59,7 +60,7 @@ void _moe_w8a8_256x128x128_TN_impl(
   torch::Tensor sorted_token_ids, 
   torch::Tensor expert_ids,
   torch::Tensor num_tokens_post_pad, 
-  int64_t top_k, bool isBfloat16) {
+  uint32_t top_k, bool isBfloat16) {
 
   const int size_m = input.size(0); 
   const int size_n = b_qweight.size(1); 
@@ -107,7 +108,7 @@ void _moe_w8a8_256x128x128_TN_impl(
   hipFunctionArgs.stride_bsn = b_scale.stride(1);
   hipFunctionArgs.stride_bsk = b_scale.stride(2);
   hipFunctionArgs.sorted_token_lens = sorted_token_ids.size(0);
-  hipFunctionArgs.topk = top_k;
+  hipFunctionArgs.topk = 1.0 / top_k;
   // torch::TensorOptions options = torch::TensorOptions().dtype(torch::kInt).device(input.device());
   // torch::Tensor debug = torch::empty({768}, options);
   void * debug_host, * debug_device;
@@ -117,7 +118,7 @@ void _moe_w8a8_256x128x128_TN_impl(
   hipFunctionArgs.debugBuffer = debug_device;
   size_t argsSize = sizeof(hipFunctionArgs);
 
-  // printf("%s:%d isbf16:%d\n", __FILE__, __LINE__, isBfloat16);
+  printf("%s:%d top_k:%d topk:%f\n", __FILE__, __LINE__, top_k, hipFunctionArgs.topk);
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   string fp16_co_file = "moe_w8a8_block/moe_w8a8_128x256x128_TN_FP16.co";
   string bf16_co_file = "moe_w8a8_block/moe_w8a8_128x256x128_TN_BF16.co";
@@ -150,8 +151,11 @@ void _moe_w8a8_256x128x128_TN_impl(
   // using DEBUG_TYPE = float;
   DEBUG_TYPE *p_debug = reinterpret_cast<DEBUG_TYPE*>(debug_host);
   for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
+  // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / 2; ++i) {
     if (i % 8 == 0) printf("\n");
+    // printf("%3d:%10.4f\t", i, p_debug[i]);
     printf("%3d:%6d\t", i, p_debug[i]);
+    // printf("%3d:0x%x 0x%x\t", i, p_debug[2*i], p_debug[2*i+1]);
   }
   printf("\n");
   
@@ -168,7 +172,7 @@ torch::Tensor moe_w8a8_asm(
   torch::Tensor sorted_token_ids, 
   torch::Tensor expert_ids,
   torch::Tensor num_tokens_post_pad, 
-  int64_t top_k,
+  uint32_t top_k,
   int mode) {
   
 	const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
