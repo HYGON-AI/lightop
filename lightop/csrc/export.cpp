@@ -120,7 +120,31 @@ std::vector<Tensor> skip_layernorm(const Tensor &x1,
                                     const float epsilon,
                                     const int normalized_dim,
                                     const int mode);
-                                    
+
+std::vector<Tensor> moe_scatter_dynamic_quant(const Tensor &hidden,
+                                              const Tensor &selected_experts,
+                                              const Tensor &smooth,
+                                              const int expert_start_idx,
+                                              const int expert_end_idx,
+                                              const int num_shared_experts_per_rank,
+                                              const int num_tokens_offset,
+                                              const int num_tokens_per_rank);
+
+std::vector<Tensor> moe_swiglu_dynamic_quant(const Tensor &scatter_tokens,
+                                             const Tensor &smooth_scale,
+                                             const Tensor &experts_tokens_count,
+                                             const int num_shared_experts_per_rank,
+                                             const int num_tokens_offset,
+                                             const int num_tokens_per_rank,
+                                             const float beta);
+
+Tensor moe_gather(const Tensor &scatter_tokens,
+                  const Tensor &token_offset,
+                  const Tensor &expert_weights,
+                  const int num_shared_experts_per_rank,
+                  const int num_tokens_offset,
+                  const int num_tokens_per_rank);                                             
+
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
@@ -192,4 +216,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("layernorm", &at::native::layernorm, "layernorm");
   m.def("add_layernorm", &at::native::add_layernorm, "add_layernorm");
   m.def("skip_layernorm", &at::native::skip_layernorm, "skip_layernorm");
+  m.def("moe_scatter_dynamic_quant", &at::native::moe_scatter_dynamic_quant, "moe_scatter_dynamic_quant");
+  m.def("moe_swiglu_dynamic_quant", &at::native::moe_swiglu_dynamic_quant, "moe_swiglu_dynamic_quant");
+  m.def("moe_gather", &at::native::moe_gather, "moe_gather");
 }
