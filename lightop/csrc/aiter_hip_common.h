@@ -55,10 +55,10 @@ public:
     AiterAsmKernel(const char *name, const char *hsaco)
     {
         const char *LIGHTOP_ASM_DIR = std::getenv("LIGHTOP_ASM_DIR");
-        // std::cout << "[lightop] hipModuleLoad: " << (std::string(LIGHTOP_ASM_DIR) + hsaco).c_str() << " GetFunction: " << name;
+        std::cout << "[lightop] hipModuleLoad: " << (std::string(LIGHTOP_ASM_DIR) + hsaco).c_str() << " GetFunction: " << name;
         HIP_CALL(hipModuleLoad(&module, (std::string(LIGHTOP_ASM_DIR) + hsaco).c_str()));
         HIP_CALL(hipModuleGetFunction(&kernel_func, module, name));
-        // std::cout << " Success" << std::endl;
+        std::cout << " Success" << std::endl;
     };
 
     ~AiterAsmKernel()

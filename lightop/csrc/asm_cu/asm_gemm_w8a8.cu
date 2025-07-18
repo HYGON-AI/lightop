@@ -13,6 +13,12 @@
 using half_t = __half;
 using bhalf_t = __hip_bfloat16;
 
+enum GRAD_TYPE {
+  nograd,
+  wgrad,
+  xgrad
+};
+
 /* module function args */
 template <typename T>
 struct HipFunctionArgs {
@@ -55,7 +61,7 @@ void _gemm_w8a8_128x256x128_TN_impl(
   OutputType *C_data,
   OutputType *D_data,
   const int &size_m, const int &size_n, const int &size_k,
-  bool isBfloat16, bool isWgrad) {
+  bool isBfloat16, GRAD_TYPE gradType = nograd) {
   
   size_t strideC1 = size_n;
   size_t strideC2 = 0;
@@ -96,7 +102,7 @@ void _gemm_w8a8_128x256x128_TN_impl(
   hipFunctionArgs.strideB1 = strideB1;
   hipFunctionArgs.strideB2 = strideB2;
   hipFunctionArgs.alpha = 1.0;
-  hipFunctionArgs.beta = isWgrad ? 1.0 : 0.0;
+  hipFunctionArgs.beta = 0.0;
   hipFunctionArgs.scaleA = Bs_data;
   hipFunctionArgs.scaleB = As_data;
   hipFunctionArgs.debugBuffer = nullptr;
@@ -105,9 +111,12 @@ void _gemm_w8a8_128x256x128_TN_impl(
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   string fp16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_FP16.co";
   string bf16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_BF16.co";
-  if (isWgrad) {
+  if (gradType == wgrad) {
     fp16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_FP16_wgrad.co";
     bf16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_BF16_wgrad.co";
+  } else if (gradType == xgrad) {
+    fp16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_NN_FP16.co";
+    bf16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_NN_BF16.co";
   }
 	static AiterAsmKernel gemm_w8a8_fp16("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", fp16_co_file.c_str());
 	static AiterAsmKernel gemm_w8a8_bf16("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", bf16_co_file.c_str());
@@ -137,7 +146,7 @@ torch::Tensor gemm_w8a8_asm(
   c10::optional<torch::Tensor> &C,
   c10::optional<torch::Tensor> &D_,
   c10::optional<torch::Tensor> bias,
-  torch::Dtype output_dtype, int M, int N, int K, bool isWgrad = false) {
+  torch::Dtype output_dtype, int M, int N, int K, GRAD_TYPE gradType = nograd) {
   
   torch::Tensor D;
   if (D_.has_value()) {
@@ -156,7 +165,7 @@ torch::Tensor gemm_w8a8_asm(
       nullptr,
       C.has_value() ? reinterpret_cast<half_t *>(C.value().data_ptr()) : nullptr,
       reinterpret_cast<half_t *>(D.data_ptr()),
-      M, N, K, 0, isWgrad);
+      M, N, K, 0, gradType);
   else if (output_dtype == torch::kBFloat16)
     _gemm_w8a8_128x256x128_TN_impl<bhalf_t>(
       A.data_ptr<int8_t>(),
@@ -166,7 +175,7 @@ torch::Tensor gemm_w8a8_asm(
       nullptr,
       C.has_value() ? reinterpret_cast<bhalf_t *>(C.value().data_ptr()) : nullptr,
       reinterpret_cast<bhalf_t *>(D.data_ptr()),
-      M, N, K, 1, isWgrad);
+      M, N, K, 1, gradType);
   else
     TORCH_CHECK(false, "gemm_w8a8 only supports outputType in [Float16, BFloat16]");
   return D;
