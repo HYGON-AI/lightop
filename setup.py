@@ -350,6 +350,7 @@ setup(
             "librarygemmbiasf/*",
             "librarygemmdbiasb/*",
             "hsa/*",
+            "hsa/*/*",
             "hsa/*/*/*",
             "configs/*"
         ]
