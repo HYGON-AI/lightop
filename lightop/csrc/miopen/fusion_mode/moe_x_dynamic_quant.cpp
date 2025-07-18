@@ -112,6 +112,42 @@ std::vector<Tensor> moe_swiglu_dynamic_quant(const Tensor &scatter_tokens,
 
     std::cout << "moe_swiglu_dynamic_quant test ok" << std::endl;
     return {std::move(out_y), std::move(out_per_token_scale)};
+};
+
+
+Tensor moe_gather(const Tensor &scatter_tokens,
+    const Tensor &token_offset,
+    const Tensor &expert_weights,
+    const int num_shared_experts_per_rank,
+    const int num_tokens_offset,
+    const int num_tokens_per_rank)
+{
+    TensorDescriptor scatter_tokens_tensor(scatter_tokens);
+    TensorDescriptor token_offset_tesnor(token_offset);
+    TensorDescriptor expert_weights_tensor(expert_weights);
+
+    std::vector<int64_t> y_shape = {expert_weights.sizes()[0], scatter_tokens.sizes()[1]};
+
+    Tensor out_y = at::empty(y_shape, scatter_tokens.options());
+    TensorDescriptor output_y(out_y);
+
+    MIOPEN_CHECK(miopenMoeGather(
+        getMiopenHandle_new(),
+        scatter_tokens_tensor.desc(),
+        scatter_tokens.data_ptr(),
+        token_offset_tesnor.desc(),
+        token_offset.data_ptr(),
+        expert_weights_tensor.desc(),
+        expert_weights.data_ptr(),
+        output_y.desc(),
+        out_y.data_ptr(),
+        num_shared_experts_per_rank,
+        num_tokens_offset,
+        num_tokens_per_rank
+    ));
+
+    std::cout << "moe_gather test ok" << std::endl;
+    return std::move(out_y);
 }
 
 
