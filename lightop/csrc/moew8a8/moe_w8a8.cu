@@ -590,11 +590,12 @@ void launch_moe_gemm_first_stage(const GemmParams<T>& params) {
     blockDim.y = 1;
     blockDim.z = 1;
     
-    if(params.size_m > 128) //减少小shape的 device->host拷贝
-      gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M), DIVIDE(params.num_tokens_post_pad, BLOCK_SIZE_M)); // m方向
-    else
-      gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    // if(params.size_m > 128) //减少小shape的 device->host拷贝
+    //   gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M), DIVIDE(params.num_tokens_post_pad, BLOCK_SIZE_M)); // m方向
+    // else
+    //   gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
 
+    gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
     gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
     gridDim.x = 1; // k方向
 
@@ -653,10 +654,12 @@ void launch_moe_gemm_second_stage(const GemmParams<T>& params) {
     blockDim.y = 1;
     blockDim.z = 1;
 
-    if(params.size_m > 128) //减少小shape的 device->host拷贝
-      gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M), DIVIDE(params.num_tokens_post_pad, BLOCK_SIZE_M)); // m方向
-    else
-      gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    // if(params.size_m > 128) //减少小shape的 device->host拷贝
+    //   gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M), DIVIDE(params.num_tokens_post_pad, BLOCK_SIZE_M)); // m方向
+    // else
+    //   gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    
+    gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
     gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
     gridDim.x = 1; // k方向
 
@@ -858,8 +861,8 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
         
         //if(size_m > MOE_THRESHOLD)
-        if(size_m > 128)
-          num_pad = num_tokens_post_pad[0].item<int>();
+        // if(size_m > 128)
+        //   num_pad = num_tokens_post_pad[0].item<int>();
 
         GemmParams<char> params_in(
           (const char*)input.data_ptr<int8_t>(), 
@@ -909,8 +912,8 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
         
         //if(size_m / 8 > MOE_THRESHOLD)
-        if(size_m / 8 > 128)
-          num_pad = num_tokens_post_pad[0].item<int>();
+        // if(size_m / 8 > 128)
+        //   num_pad = num_tokens_post_pad[0].item<int>();
           
         // 使用int8类型处理
         GemmParams<char> params_in(
