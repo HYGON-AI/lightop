@@ -189,7 +189,7 @@ static std::unordered_map<int, KernelFunc> kernel_maps_gemm1_prefill = {
     {54, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 128, 256, 32, 32, 64, char>(p); }},
     //{55, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 128, 128, 64, 32, 64, char>(p); }}, // 寄存器溢出 32
     // 4warp BLOCKN 256 
-    {56, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<16, 256, 256, 16, 64, 64, char>(p); }},
+    {56, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<16, 128, 128, 16, 64, 64, char>(p); }},
     //{57, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<32, 256, 128, 32, 64, 64, char>(p); }}, // 寄存器溢出 60
     //{58, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage<64, 256, 128, 64, 64, 64, char>(p); }}, //寄存器溢出 392
     // 8warp BLOCKN 128 
