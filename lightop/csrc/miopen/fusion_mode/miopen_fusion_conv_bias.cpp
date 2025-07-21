@@ -14,9 +14,9 @@
 namespace at{
 namespace native{
 
-Tensor fused_conv_add_forward(const Tensor &x, 
+Tensor fused_conv_bias_forward(const Tensor &x, 
                            const Tensor &weight,
-                           const Tensor &add, 
+                           const Tensor &bias, 
                            const std::vector<int64_t>& pads,
                            const std::vector<int64_t>& strides,
                            const std::vector<int64_t>& dilations)
@@ -28,7 +28,7 @@ Tensor fused_conv_add_forward(const Tensor &x,
 
     TensorDescriptor conv_input_tensor(x);
     TensorDescriptor conv_weight_tensor(weight);
-    TensorDescriptor add_input_tensor(add);
+    TensorDescriptor bias_input_tensor(bias);
     auto data_type     = getDataType(x);
 
     // output
@@ -43,22 +43,22 @@ Tensor fused_conv_add_forward(const Tensor &x,
 
     auto [conv_operation, conv_operation_desc] =
         CreatConvOp(data_type, conv_input, conv_weight, pads, strides, dilations, conv_output);
-
-    // add op
-    auto [add_input, add_input_uuid] = CreatGraphTensor(add_input_tensor, data_type, false);
-    auto [add_output, add_output_uuid] = CreatGraphTensor(output_tensor, data_type, false);
-    auto [add_operation, add_operation_desc] = 
-        CreatPointWiseOp(data_type, MIOPEN_POINTWISE_ADD, conv_output, add_input, add_output);
+    
+    // bias op
+    auto [bias_input, bias_input_uuid]   = CreatGraphTensor(bias_input_tensor, data_type, false);
+    auto [bias_output, bias_output_uuid] = CreatGraphTensor(output_tensor, data_type, false);
+    auto [bias_operation, bias_operation_desc] =
+        CreatPointWiseOp(data_type, MIOPEN_POINTWISE_ADD, conv_output, bias_input, bias_output);
     
     // creat plan
-    auto exec_plan = CreatExeutionPlan({conv_operation.desc(), add_operation.desc()});
+    auto exec_plan = CreatExeutionPlan({conv_operation.desc(), bias_operation.desc()});
 
     // creat varpack
     std::vector<std::pair<size_t, void*>> tensor_id_with_addr;
     tensor_id_with_addr.emplace_back(std::make_pair(conv_input_uuid, x.data_ptr()));
     tensor_id_with_addr.emplace_back(std::make_pair(conv_weight_uuid, weight.data_ptr()));
-    tensor_id_with_addr.emplace_back(std::make_pair(add_input_uuid, add.data_ptr()));
-    tensor_id_with_addr.emplace_back(std::make_pair(add_output_uuid, out.data_ptr()));
+    tensor_id_with_addr.emplace_back(std::make_pair(bias_input_uuid, bias.data_ptr()));
+    tensor_id_with_addr.emplace_back(std::make_pair(bias_output_uuid, out.data_ptr()));
 
     size_t workspaceSize = GetPlanWorkspaceSize(exec_plan);
 

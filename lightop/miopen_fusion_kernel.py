@@ -20,7 +20,7 @@ def conv_bias_add(input, weight, bias, add, padding, stride, dilation):
     return op.conv_bias_add(input, weight, bias, add, padding, stride, dilation)
 
 
-def conv_add(x, weight, add, padding, stride, dilation):
+def conv_bias(x, weight, bias, padding, stride, dilation):
     """_summary_
 
     Args:
@@ -39,7 +39,7 @@ def conv_add(x, weight, add, padding, stride, dilation):
     Returns:
         Tensor: 结果张量
     """
-    return op.conv_add(x, weight, add, padding, stride, dilation)
+    return op.conv_bias(x, weight, bias, padding, stride, dilation)
 
 def conv_bias_relu(input, weight, bias, padding, stride, dilation):
     """_summary_
