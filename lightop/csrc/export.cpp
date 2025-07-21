@@ -51,8 +51,8 @@ Tensor gemm_w8_a16_fp8_colmajor(const Tensor& x,const Tensor& y,const Tensor& sc
 void fp8to16(Tensor &ret, const Tensor &x,const Tensor& scale);
 Tensor moe_gemm_w8a8(torch::Tensor input,Tensor b_qweight,Tensor output,Tensor a_scale,Tensor b_scale,std::optional<Tensor> topk_weights,Tensor sorted_token_ids,Tensor expert_ids,Tensor num_tokens_post_pad, int64_t top_k, int mode);
 Tensor gemm_w8_a8_smooth_colmajor(const Tensor& x,const Tensor& y,const Tensor& scale_a,const Tensor& scale_b,  const std::optional<Tensor> bias,at::ScalarType out_dtype,int warps,int n_per_block, int n_per_warp, int splitk, bool use_n_warps);
-Tensor fused_conv_add_forward(const Tensor &x, const Tensor &weight,
-                           const Tensor &add, 
+Tensor fused_conv_bias_forward(const Tensor &x, const Tensor &weight,
+                           const Tensor &bias, 
                            const std::vector<int64_t>& pads, 
                            const std::vector<int64_t>& strides, 
                            const std::vector<int64_t>& dilations);
@@ -205,7 +205,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("fp8to16", &at::native::fp8to16, "fp8to16");
   m.def("moe_gemm_w8a8", &at::native::moe_gemm_w8a8, "moe_gemm_w8a8");
   m.def("gemm_w8_a8_smooth_colmajor", &at::native::gemm_w8_a8_smooth_colmajor, "gemm_w8_a8_smooth_colmajor");
-  m.def("conv_add", &at::native::fused_conv_add_forward, "fused_conv_add forward");
+  m.def("conv_bias", &at::native::fused_conv_bias_forward, "fused_conv_bias forward");
   m.def("conv_bias_add", &at::native::fused_conv_bias_add_forward, "fused_conv_bias_add forward");
   m.def("conv_bias_relu", &at::native::fused_conv_bias_relu_forward, "fused_conv_bias_relu forward");
   m.def("add_rms_norm_dynamic_quant", &at::native::add_rms_norm_dynamic_quant, "fused add rms morm dynamic quant");
