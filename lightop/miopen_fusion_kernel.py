@@ -20,7 +20,7 @@ def conv_bias_add(input, weight, bias, add, padding, stride, dilation):
     return op.conv_bias_add(input, weight, bias, add, padding, stride, dilation)
 
 
-def conv_add(x, weight, add, padding, stride, dilation):
+def conv_bias(x, weight, bias, padding, stride, dilation):
     """_summary_
 
     Args:
@@ -39,7 +39,7 @@ def conv_add(x, weight, add, padding, stride, dilation):
     Returns:
         Tensor: 结果张量
     """
-    return op.conv_add(x, weight, add, padding, stride, dilation)
+    return op.conv_bias(x, weight, bias, padding, stride, dilation)
 
 def conv_bias_relu(input, weight, bias, padding, stride, dilation):
     """_summary_
@@ -273,3 +273,28 @@ def moe_gather(scatter_tokens, token_offset, expert_weights, num_shared_experts_
         Tensor: y 形状为 [num_tokens, hidden_size]
     """
     return op.moe_gather(scatter_tokens, token_offset, expert_weights, num_shared_experts_per_rank, num_tokens_offset, num_tokens_per_rank)
+
+
+
+class miopenGroupNorm(torch.nn.Module):
+    # mode = 0 , MIOPEN_ELEMENTWISE_AFFINE
+    # mode = 1 , MIOPEN_WEIGHT_BIAS
+    # mode = 10 , MIOPEN_WEIGHT_BIAS_FUSION_SILU
+    # mode = 11 ,  MIOPEN_FUSION_SILU
+    def __init__(self, num_groups:int, num_channels:int, mode: int, eps: float = 1e-5, device=None, dtype=None ):
+        super(miopenGroupNorm , self).__init__()
+        self.eps = eps
+        self.num_groups = num_groups
+        self.num_channels = num_channels
+        self.mode = mode
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        self.weight = torch.nn.Parameter(torch.empty(num_channels, **factory_kwargs))
+        self.bias = torch.nn.Parameter(torch.empty(num_channels, **factory_kwargs))
+        torch.nn.init.ones_(self.weight)
+        torch.nn.init.zeros_(self.bias)
+    
+    def forward(self, x):
+        return op.groupnorm(x, self.weight, self.bias, self.num_groups, self.eps, self.mode)
+
+    def extra_repr(self):
+        return f'num_groups={self.num_groups},num_channels={self.num_channels},eps={round(self.eps,5):0.5f},mode={self.mode}'
