@@ -17,9 +17,10 @@ from transformers import AutoConfig
 # from vllm.model_executor.layers.fused_moe.fused_moe import *
 from vllm.platforms import current_platform
 from vllm.utils import FlexibleArgumentParser
-from fuse_moegemm import fused_moe_impl, fused_moe_first_stage_tune, fused_moe_second_stage_tune, \
+from fuse_moegemm import fused_experts_impl_int8_preprocess, fused_moe_impl, fused_moe_first_stage_tune, fused_moe_second_stage_tune, \
                             grouped_topk, fused_topk, blockM_configs, blockM_configs_decode
 from fuse_moegemm_dev import fused_moe_impl_test
+from fuse_moegemm_correctness import _fused_moe_helper
 # from test_ori_fuse_moe import fused_moe_impl
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
@@ -655,6 +656,49 @@ def fuse_moe_correctness(
         else:
             print("triton 精度检查不合格！！！")
 
+def fuse_moe_correctness_preprocess(
+        num_tokens: int,
+        num_experts: int,
+        shard_intermediate_size: int,
+        hidden_size: int,
+        topk: int,
+        dtype: torch.dtype,
+        use_fp8_w8a8: bool,
+        use_int8_w8a16: bool,
+        use_int8_w8a8: bool,
+        num_iters: int=100,
+        block_quant_shape: List[int] = None,
+        block_m_configs: dict[str, int]=None,
+    ) -> tuple[dict[str, int], float]:
+    
+    mode_ranges = [mode for mode in block_m_configs.keys()]
+    gemm1_compare_failed_list = []
+    gemm2_compare_failed_list = []
+    
+    for mode in mode_ranges:
+        mode_list=[mode,mode]
+        # print("mode:{} m:{} n:{} k:{} ".format(mode_list, num_tokens,shard_intermediate_size,hidden_size))
+        input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=num_experts,block_size=None,out_dtype=dtype)
+        # triton moe: output
+        output=fused_experts_impl_int8_preprocess(hidden_states=input,
+                                                    w1=weight13,
+                                                    w2=weight2,
+                                                    topk_weights=topk_weights,
+                                                    topk_ids=topk_ids,
+                                                    inplace=False,
+                                                    use_int8_w8a8=True,
+                                                    w1_scale=weight13_scale,
+                                                    w2_scale=weight2_scale,
+                                                    block_shape=None,
+                                                    config={"BLOCK_SIZE_M": 32},
+                                                    per_channel_quant=True,
+                                                    mode=mode_list,
+                                                    gemm1_compare_list=gemm1_compare_failed_list,
+                                                    gemm2_compare_list=gemm2_compare_failed_list)
+    
+    print("gemm1_compare_failed_list: ", gemm1_compare_failed_list)
+    print("gemm2_compare_failed_list: ", gemm2_compare_failed_list)
+    return gemm1_compare_failed_list, gemm2_compare_failed_list
 
 ## benchmark_config_profile(8, 256, 256, 7168, 8, torch.bfloat16, use_fp8_w8a8=False, use_int8_w8a16=False, use_int8_w8a8=True, num_iters=10, block_quant_shape=[128,128])
 def benchmark_config_profile(
@@ -824,38 +868,28 @@ def get_configs_compute_bound(use_fp16,
 
 
 def prune_rocm_search_space_kernel0(num_tokens, shard_intermediate_size, hidden_size,
-                            search_space, is_fp16, topk):
+                            search_space, is_fp16, topk, gemm_compare_failed_list):
     N1, K1 = shard_intermediate_size, hidden_size
     pruned_space_0 = prune_rocm_configs(num_tokens, N1, K1,
-                                        search_space, is_fp16)
+                                        search_space, is_fp16, gemm_compare_failed_list)
     return pruned_space_0
 
 def prune_rocm_search_space_kernel1(num_tokens, shard_intermediate_size, hidden_size,
-                            search_space, is_fp16, topk):
+                            search_space, is_fp16, topk, gemm_compare_failed_list):
     N2, K2 = hidden_size, shard_intermediate_size // 2
     pruned_space_1 = prune_rocm_configs(num_tokens, N2, K2,
-                                        search_space, is_fp16)
+                                        search_space, is_fp16, gemm_compare_failed_list)
     return pruned_space_1
 
 
 # The following code is inspired by ROCm/Triton GEMM tuning script:
 # https://github.com/ROCm/triton/blob/triton-mlir/scripts/amd/gemm/tune_gemm.py#L89
-def prune_rocm_configs(M, N, K, configs, is_fp16=True):
+def prune_rocm_configs(M, N, K, configs, is_fp16=True, gemm_compare_failed_list=[]):
     pruned_configs = []
     if(M > M_THRESHOLD):
         for config in configs[0]:
             mode = config.get("MODE_PREFILL")
-            if N == 4096 and K == 192:
-                compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94] + [i for i in range(64)]
-            elif N == 384 and K == 4096:
-                compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
-            elif N == 256 and K == 7168:
-                compare_fail = [56, 61, 63]
-            elif N == 7168 and K == 128:
-                compare_fail =  [64, 66, 67, 69, 70, 71, 77, 78, 79, 80, 81, 82, 83, 84, 85, 94]
-            else:
-                compare_fail = [42,43,46,52,54,60]
-            exclude_modes = compare_fail
+            exclude_modes = gemm_compare_failed_list
             # #remove warps=2
             if mode in exclude_modes:
                 continue
@@ -864,6 +898,10 @@ def prune_rocm_configs(M, N, K, configs, is_fp16=True):
     else:
         for config in configs[1]:
             mode = config.get("MODE_DECODE")
+            exclude_modes = gemm_compare_failed_list
+            # #remove warps=2
+            if mode in exclude_modes:
+                continue
             pruned_configs.append(config)
     # import pdb
     # pdb.set_trace()
@@ -961,23 +999,29 @@ class BenchmarkWorker:
         best_time = float("inf")
         from vllm.platforms import current_platform
         current_platform.seed_everything(self.seed)
+            
+        mode_pattern = "MODE_DECODE"
+        block_configs = blockM_configs_decode
+        if num_tokens > M_THRESHOLD:
+            mode_pattern = "MODE_PREFILL"
+            block_configs = blockM_configs
+
+        gemm1_compare_failed_list, gemm2_compare_failed_list = fuse_moe_correctness_preprocess(num_tokens, num_experts,
+                                                                        shard_intermediate_size, hidden_size,
+                                                                        topk, dtype, use_fp8_w8a8,
+                                                                        use_int8_w8a16, use_int8_w8a8, block_quant_shape=block_quant_shape,
+                                                                        block_m_configs = block_configs)
         
         if current_platform.is_rocm():
             is_fp16 = is_fp16 = not (use_fp8_w8a8 or use_int8_w8a16 or use_int8_w8a8)
             search_space_kernel0 = prune_rocm_search_space_kernel0(num_tokens,
                                                    shard_intermediate_size,
                                                    hidden_size, search_space,
-                                                   is_fp16, topk)
+                                                   is_fp16, topk, gemm1_compare_failed_list)
             search_space_kernel1 = prune_rocm_search_space_kernel1(num_tokens,
                                                    shard_intermediate_size,
                                                    hidden_size, search_space,
-                                                   is_fp16, topk)
-        mode_pattern = "MODE_DECODE"
-        block_configs = blockM_configs_decode
-        if num_tokens > M_THRESHOLD:
-            mode_pattern = "MODE_PREFILL"
-            block_configs = blockM_configs
-        exclude_modes = [13, 32, 33, 34, 35]
+                                                   is_fp16, topk, gemm2_compare_failed_list)
 
 
         with torch.cuda.device(self.device_id):
@@ -1044,6 +1088,10 @@ class BenchmarkWorker:
                     best_time = time_kernel0 + time_kernel1
                     best_config_kernel0 = config_kernel0
                     best_config_kernel1 = config_kernel1
+        
+        if best_config_kernel0 and best_config_kernel1:     
+            best_config_kernel0['MODE'] = best_config_kernel0.pop(mode_pattern)
+            best_config_kernel1['MODE'] = best_config_kernel1.pop(mode_pattern)             
         return best_config_kernel0, best_config_kernel1
 
 

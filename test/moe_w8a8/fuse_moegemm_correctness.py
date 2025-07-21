@@ -812,7 +812,7 @@ def _fused_moe_helper(m: int,
     # weight2_scale = (torch.randn((E,math.ceil(n2/block_size[0]), math.ceil(k2/block_size[1])), device=device,
     #                        dtype=torch.float32))    
     
-    print("input.dtype:",input.dtype)
+    # print("input.dtype:",input.dtype)
 
     #q_input, x_scale = per_token_group_quant_int8(input_2d, block_size[1])
     
