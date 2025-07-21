@@ -11,7 +11,7 @@ import triton
 import triton.language as tl
 from triton.language.extra import libdevice
 import functools
-
+import pandas as pd
 
 @triton.jit
 def _per_token_quant_int8(
@@ -99,7 +99,7 @@ def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_qua
         if include_quant:
             # 包含量化的测试
             a_quant, scale_a_quant = per_token_quant_int8(a)
-            _ = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
+            _ = lightop.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype)
         else:
             # 不包含量化的测试
             _ = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
@@ -115,7 +115,7 @@ def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_qua
         # 包含量化的测试
         for _ in range(test_iters):
             a_quant, scale_a_quant = per_token_quant_int8(a)
-            _ = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
+            _ = lightop.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype)
     else:
         # 不包含量化的测试
         for _ in range(test_iters):
@@ -132,7 +132,7 @@ def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_qua
     print(f"w8a8算子速度测试结果 ({test_type}) - M{m}xN{n}xK{k}: 总耗时: {total_time_us:.2f} us, 平均耗时: {avg_time_us:.2f} us, 测试次数: {test_iters}")
     
     return avg_time_us
- 
+
 
 def main(m, n, k, use_random=True, use_bias=False, out_dtype=torch.bfloat16, use_quant=True, enable_speed_test=False, speed_test_include_quant=False):
     # 这里可以添加测试代码
@@ -172,7 +172,9 @@ def main(m, n, k, use_random=True, use_bias=False, out_dtype=torch.bfloat16, use
     scale_a_original = scale_a.clone()
     
     out = _rocblas_scaled_mm(a,b.contiguous().reshape(k,-1),scale_a,scale_b,out_dtype,bias)
+    print("rocblas out.shape:",out.shape)
     status, out_w8a8 = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
+
     if status is False:
         print("gemm_w8a8_smooth 执行失败，错误码:", status)
         return
@@ -185,6 +187,8 @@ def main(m, n, k, use_random=True, use_bias=False, out_dtype=torch.bfloat16, use
         print("success gemm_w8a8_smooth 精度检查合格")    
     print(f"diff_max={diff_max}")
     
+    time = 0
+    timeq = 0
     # 速度测试
     if enable_speed_test:
         print("\n" + "="*50)
@@ -193,35 +197,75 @@ def main(m, n, k, use_random=True, use_bias=False, out_dtype=torch.bfloat16, use
         
         # 测试包含量化的情况
         if speed_test_include_quant:
-            benchmark_w8a8_operator(a_original, b, scale_a_original, scale_b, bias, 
+            timeq = benchmark_w8a8_operator(a_original, b, None, scale_b, bias, 
                                   out_dtype, include_quant=True, warmup_iters=10, test_iters=100)
         
         # 测试不包含量化的情况
-        benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, 
+        time = benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, 
                               out_dtype, include_quant=False, warmup_iters=10, test_iters=100)
+    return time, timeq
 
 
 
 if __name__ == "__main__":
     m1=[item if item < 17 else  1 << (item - 27) for item in range(1, 17)]
     m2=[item<<2  if item <17 else (item - 8)<<3  for item in range(5, 29)]
-    m3=[2<<(item)  for item in range(7, 15)]
+    m3=[2<<(item)  for item in range(7, 14)]
 
     m_list = m1+m2+m3
     # n_list=[1280, 4096, 384, 4096, 768, 4096, 192, 4096,]
     # k_list=[4096, 1024, 4096, 192,4096,512,4096,96]
     # m_list = [16384]
-    n_list = [7168, 256, 7168, 2048, 1536, 1536, 7168, 2304, 7168,  576]
-    k_list = [128, 7168, 1024, 512, 1536, 7168, 1152, 7168, 1024, 7168]
+
+    # # # dpsk 671b
+    # n_list = [256, 576, 1536, 1536, 2048, 2304, 7168, 7168, 7168,]
+    # k_list = [7168, 7168, 1536, 7168, 512, 7168, 128, 1024, 1152,]
+
+
+    # # qwen3-8b-tp1
+    # n_list = [6144, 4096, 24576, 4096,]
+    # k_list = [4096, 4096, 4096, 12288,]
+
+    # # qwen3-32b-tp1,tp2,tp4
+    n_list = [10240, 5120, 51200, 5120, 5120, 5120, 25600, 5120, 2560, 5120, 12800, 5120,]
+    k_list = [5120, 8192, 5120, 25600, 5120, 4096, 5120, 12800, 5120, 2048, 5120, 6400,]
+
+    # qwen3-30b-A3B-tp1,tp2,tp4
+    # n_list = [5120, 2048, 2560, 2048, 1280, 2048]
+    # k_list = [2048, 4096, 2048, 2048, 2048, 1024]
+
+    # # qwen3-235b-tp8,tp16
+    # n_list = [1280, 4096, 768, 4096, ]
+    # k_list = [4096, 1024, 4096, 512,]
+
+    # m_list = [8192]
+    # n_list = [24576]
+    # k_list = [4096]
+    
+    excel_m_list = []
+    excel_n_list = []
+    excel_k_list = []
+    excel_time_list = []
+    excel_timeq_list = []
     for i in range(0,len(k_list),1):
         for m in m_list:
             m, n, k = m, n_list[i], k_list[i]
             print("m:{} n:{} k:{} ".format(m, n, k))
             use_bias = False
             use_random = True
-            # out_dtype = torch.bfloat16
-            out_dtype = torch.float16
-            use_quant = True
-            enable_speed_test = False  # 设置为True启用速度测试
+            out_dtype = torch.bfloat16
+            # out_dtype = torch.float16
+            use_quant = False  # 设置为True启用量化
+            enable_speed_test = True  # 设置为True启用速度测试
             speed_test_include_quant = False  # 速度测试是否包含量化过程
-            main(m, n, k, use_random, use_bias, out_dtype, use_quant, enable_speed_test, speed_test_include_quant)
+            elapsed_time, elapsed_timeq = main(m, n, k, use_random, use_bias, out_dtype, use_quant, enable_speed_test, speed_test_include_quant)
+            excel_time_list.append(elapsed_time)
+            excel_timeq_list.append(elapsed_timeq)
+            excel_m_list.append(m)
+            excel_n_list.append(n)
+            excel_k_list.append(k)
+    
+    df = pd.DataFrame({'m':excel_m_list,'n':excel_n_list,'k':excel_k_list,'lightop_gemm_smooth': excel_time_list,'lightop_gemm_smooth+q': excel_timeq_list})
+    df.to_excel('lightop_gemm_smooth.xlsx', index=False)
+
+
