@@ -20,8 +20,8 @@ std::vector<Tensor> add_rms_norm_dynamic_quant(
     TensorDescriptor smoothScale_tensor(smoothScale);
 
     Tensor out_add               = at::empty_like(x);
-    Tensor out_y                 = at::empty_like(x);
-    Tensor out_perTokenScaleDesc = at::empty(x.sizes()[0], x.options());
+    Tensor out_y                 = at::empty_like(x, x.options().dtype(at::kByte));
+    Tensor out_perTokenScaleDesc = at::empty(x.sizes()[0], x.options().dtype(at::kFloat));
 
     TensorDescriptor output_add(out_add);
     TensorDescriptor output_y(out_y);
