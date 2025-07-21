@@ -266,7 +266,7 @@ __forceinline__ __device__ void  gemm_nt_first_stage(
                                                     vec_size, per_phase, max_phase);  
         }
 
-        vmcnt_wait((BLOCK_N * WARP_K) / (4*64)/WARP_NUM + (BLOCK_M*WARP_K) / (4*64)/WARP_NUM);
+        vmcnt_wait(((BLOCK_N * WARP_K) / (4*64)/WARP_NUM + (BLOCK_M*WARP_K) / (4*64)/WARP_NUM) * (STAGES - 1));
 
         stage_id_reg_A = k & (STAGES-1);
         int A_lds_stage_offset_loop = stage_id_reg_A * A_lds_stage_offset;
@@ -301,7 +301,7 @@ __forceinline__ __device__ void  gemm_nt_first_stage(
     ///////////////////////////////////////////////////// for 迭代完 ///////////////////////////////////////////////////////////////////////////
     #pragma unroll
     for(int stage_id=0; stage_id<STAGES-2; stage_id++){
-        vmcnt_wait((BLOCK_N * WARP_K) / (4*64)/WARP_NUM + (BLOCK_M*WARP_K) / (4*64)/WARP_NUM);
+        vmcnt_wait(((BLOCK_N * WARP_K) / (4*64)/WARP_NUM + (BLOCK_M*WARP_K) / (4*64)/WARP_NUM) * (STAGES-2-stage_id));
         {
             stage_id_reg_A = stage_id+1;
             int A_lds_stage_offset_loop = stage_id_reg_A * A_lds_stage_offset;
