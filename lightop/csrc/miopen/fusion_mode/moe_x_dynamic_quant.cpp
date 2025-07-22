@@ -33,8 +33,8 @@ std::vector<Tensor> moe_scatter_dynamic_quant(const Tensor &hidden,
 
     Tensor out_scatter_tokens = at::empty(out_scatter_tokens_shape, hidden.options());
     Tensor out_scatter_per_token_scale = at::empty(x_dim, hidden.options().dtype(at::kFloat));
-    Tensor out_experts_token_count  = at::empty(num_experts_per_rank, hidden.options().dtype(at::kByte));
-    Tensor out_token_offset = at::empty({allocated_tokens, topk}, hidden.options().dtype(at::kByte));
+    Tensor out_experts_token_count  = at::empty(num_experts_per_rank, hidden.options().dtype(at::kInt));
+    Tensor out_token_offset = at::empty({allocated_tokens, topk}, hidden.options().dtype(at::kInt));
 
     TensorDescriptor output_scatter_tokens(out_scatter_tokens);
     TensorDescriptor output_scatter_per_token_scale(out_scatter_per_token_scale);
