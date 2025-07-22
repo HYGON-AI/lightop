@@ -9,6 +9,7 @@
 
 #include "aiter_hip_common.h"
 
+#define DEBUG 0
 
 using half_t = __half;
 using bhalf_t = __hip_bfloat16;
@@ -110,8 +111,8 @@ void _moe_w8a8_256x128x128_TN_impl(
   hipFunctionArgs.sorted_token_lens = sorted_token_ids.size(0);
   hipFunctionArgs.topk = 1.0 / top_k;
   void * debug_host = nullptr, * debug_device = nullptr;
-  #if 0
-  int debug_size = 768 * 128;
+  #if DEBUG
+  int debug_size = 768 * 8;
   debug_host = malloc(debug_size);
   hipMalloc((void **)&debug_device, debug_size);
   // printf("%s:%d top_k:%d topk:%f\n", __FILE__, __LINE__, top_k, hipFunctionArgs.topk);
@@ -139,7 +140,7 @@ void _moe_w8a8_256x128x128_TN_impl(
     stream
   });
 
-  #if 0
+  #if DEBUG
   // AT_CUDA_CHECK(cudaStreamSynchronize(stream));
   
   printf("%s:%d gdx:%d gdy:%d gdz:%d bdx:%d bdy:%d bdz:%d\n", __FILE__, __LINE__, globalWorkSize[0], globalWorkSize[1], globalWorkSize[2],
@@ -148,13 +149,13 @@ void _moe_w8a8_256x128x128_TN_impl(
   hipMemcpy(debug_host, debug_device, debug_size, hipMemcpyDeviceToHost);
   // using DEBUG_TYPE = int8_t;
   // using DEBUG_TYPE = uint32_t;
-  using DEBUG_TYPE = int32_t;
-  // using DEBUG_TYPE = float;
+  // using DEBUG_TYPE = int32_t;
+  using DEBUG_TYPE = float;
   // using DEBUG_TYPE = bhalf_t;
   DEBUG_TYPE *p_debug = reinterpret_cast<DEBUG_TYPE*>(debug_host);
   // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
-  for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / 32; ++i) {
-    // if (i % 8 == 0) printf("\n");
+  for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / 2; ++i) {
+    if (i % 16 == 0) printf("\n");
     // if (i % 16 == 0) printf("\ni:%d ", i / 16);
     // printf("%3d:%10.4f\t", i, p_debug[i]);
     // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
@@ -163,20 +164,8 @@ void _moe_w8a8_256x128x128_TN_impl(
     // printf("%3d\t", p_debug[i]);
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f ", static_cast<float>(tmp[0]));
-    int index = 32 * i;
-    printf("i:%d 0:%6d 1:%6d 2:%6d 3:%6d 4:%6d 5:%6d 6:%6d 7:%6d "
-      "8:%6d 9:%6d 10:%6d 11:%6d 12:%6d 13:%6d 14:%6d 15:%6d "
-      "16:%6d 17:%6d 18:%6d 19:%6d 20:%6d 21:%6d 22:%6d 23:%6d "
-      "24:%6d 25:%6d 26:%6d 27:%6d 28:%6d 29:%6d 30:%6d 31:%6d\n", i,
-      p_debug[index + 0], p_debug[index + 1], p_debug[index + 2], p_debug[index + 3], 
-      p_debug[index + 4], p_debug[index + 5], p_debug[index + 6], p_debug[index + 7], 
-      p_debug[index + 8], p_debug[index + 9], p_debug[index +10], p_debug[index +11], 
-      p_debug[index +12], p_debug[index +13], p_debug[index +14], p_debug[index +15], 
-      p_debug[index +16], p_debug[index +17], p_debug[index +18], p_debug[index +19], 
-      p_debug[index +20], p_debug[index +21], p_debug[index +22], p_debug[index +23], 
-      p_debug[index +24], p_debug[index +25], p_debug[index +26], p_debug[index +27], 
-      p_debug[index +28], p_debug[index +29], p_debug[index +30], p_debug[index +31]
-      );
+    int index = 2 * i;
+    printf("i:%d %10.4f %6d\t", i, p_debug[index], *reinterpret_cast<uint32_t*>(p_debug + index + 1));
     // printf("i:%d bidz:%d sa:%10.4f sb:%10.4f v:%10.4f\t", i, *reinterpret_cast<int32_t*>(p_debug+index), p_debug[index+1], p_debug[index+2], p_debug[index+3]);
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + index + 4);
     // printf("i:%d scale:%10.4f %10.4f value:%10.4f %10.4f out:%10.4f %10.4f\n", i, 
