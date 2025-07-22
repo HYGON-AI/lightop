@@ -146,7 +146,7 @@ torch::Tensor gemm_w8a8_asm(
   c10::optional<torch::Tensor> &C,
   c10::optional<torch::Tensor> &D_,
   c10::optional<torch::Tensor> bias,
-  torch::Dtype output_dtype, int M, int N, int K, GRAD_TYPE gradType = nograd) {
+  torch::Dtype output_dtype, int M, int N, int K, int gradType = 0) {
   
   torch::Tensor D;
   if (D_.has_value()) {
@@ -165,7 +165,7 @@ torch::Tensor gemm_w8a8_asm(
       nullptr,
       C.has_value() ? reinterpret_cast<half_t *>(C.value().data_ptr()) : nullptr,
       reinterpret_cast<half_t *>(D.data_ptr()),
-      M, N, K, 0, gradType);
+      M, N, K, 0, static_cast<GRAD_TYPE>(gradType));
   else if (output_dtype == torch::kBFloat16)
     _gemm_w8a8_128x256x128_TN_impl<bhalf_t>(
       A.data_ptr<int8_t>(),
@@ -175,7 +175,7 @@ torch::Tensor gemm_w8a8_asm(
       nullptr,
       C.has_value() ? reinterpret_cast<bhalf_t *>(C.value().data_ptr()) : nullptr,
       reinterpret_cast<bhalf_t *>(D.data_ptr()),
-      M, N, K, 1, gradType);
+      M, N, K, 1, static_cast<GRAD_TYPE>(gradType));
   else
     TORCH_CHECK(false, "gemm_w8a8 only supports outputType in [Float16, BFloat16]");
   return D;
