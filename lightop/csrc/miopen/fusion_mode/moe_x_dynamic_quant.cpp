@@ -32,9 +32,9 @@ std::vector<Tensor> moe_scatter_dynamic_quant(const Tensor &hidden,
     std::vector<int64_t> out_scatter_tokens_shape = {x_dim, hidden.sizes()[1]};
 
     Tensor out_scatter_tokens = at::empty(out_scatter_tokens_shape, hidden.options());
-    Tensor out_scatter_per_token_scale = at::empty(x_dim, hidden.options());
-    Tensor out_experts_token_count  = at::empty(num_experts_per_rank, hidden.options());
-    Tensor out_token_offset = at::empty({allocated_tokens, topk}, hidden.options());
+    Tensor out_scatter_per_token_scale = at::empty(x_dim, hidden.options().dtype(at::kFloat));
+    Tensor out_experts_token_count  = at::empty(num_experts_per_rank, hidden.options().dtype(at::kByte));
+    Tensor out_token_offset = at::empty({allocated_tokens, topk}, hidden.options().dtype(at::kByte));
 
     TensorDescriptor output_scatter_tokens(out_scatter_tokens);
     TensorDescriptor output_scatter_per_token_scale(out_scatter_per_token_scale);
@@ -86,8 +86,8 @@ std::vector<Tensor> moe_swiglu_dynamic_quant(const Tensor &scatter_tokens,
     int64_t x_dim = scatter_tokens.sizes()[0];
     int64_t y_dim = smooth_scale.sizes()[1];
 
-    Tensor out_y = at::empty({x_dim, y_dim}, scatter_tokens.options());
-    Tensor out_per_token_scale = at::empty(x_dim, scatter_tokens.options());
+    Tensor out_y = at::empty({x_dim, y_dim}, scatter_tokens.options().dtype(at::kByte));
+    Tensor out_per_token_scale = at::empty(x_dim, scatter_tokens.options().dtype(at::kFloat));
 
     TensorDescriptor output_y(out_y);
     TensorDescriptor output_per_token_scale(out_per_token_scale);
