@@ -300,7 +300,7 @@ class miopenGroupNorm(torch.nn.Module):
 
     def extra_repr(self):
         return f'num_groups={self.num_groups},num_channels={self.num_channels},eps={round(self.eps,5):0.5f},mode={self.mode}'
-    
+
     
 class miopenLayerNorm(torch.nn.Module):
     def __init__(self, normalized_shape: _shape_t, mode: int = 0, eps: float = 1e-5, bias: bool = True, device=None, dtype=None):
