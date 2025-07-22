@@ -31,7 +31,7 @@ Tensor fused_conv_bias_add_forward(const Tensor& x,
     TensorDescriptor conv_weight_tensor(weight);
     TensorDescriptor bias_input_tensor(bias);
     TensorDescriptor add_input_tensor(add);
-    auto data_type     = getDataType(x);
+    auto data_type = getDataType(x);
 
     // output
     auto output_dims = GetConvForwardOutputDim(conv_input_tensor, conv_weight_tensor, pads, strides, dilations);
@@ -53,9 +53,9 @@ Tensor fused_conv_bias_add_forward(const Tensor& x,
         CreatPointWiseOp(data_type, MIOPEN_POINTWISE_ADD, conv_output, bias_input, bias_output);
 
     // add op
-    auto [add_input, add_input_uuid] = CreatGraphTensor(add_input_tensor, data_type, false);
+    auto [add_input, add_input_uuid]   = CreatGraphTensor(add_input_tensor, data_type, false);
     auto [add_output, add_output_uuid] = CreatGraphTensor(output_tensor, data_type, false);
-    auto [add_operation, add_operation_desc] = 
+    auto [add_operation, add_operation_desc] =
         CreatPointWiseOp(data_type, MIOPEN_POINTWISE_ADD, bias_output, add_input, add_output);
     // creat plan
     auto exec_plan = CreatExeutionPlan({conv_operation.desc(), bias_operation.desc(), add_operation.desc()});
