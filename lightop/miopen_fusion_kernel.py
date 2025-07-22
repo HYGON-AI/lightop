@@ -1,8 +1,10 @@
-
+import numbers
 import torch
-from torch import Tensor
+from torch import Tensor, Size
 from lightop import op
+from typing import Union
 
+_shape_t = Union[int, list[int], Size]
 
 def conv_bias_add(input, weight, bias, add, padding, stride, dilation):
     """
@@ -281,7 +283,7 @@ class miopenGroupNorm(torch.nn.Module):
     # mode = 1 , MIOPEN_WEIGHT_BIAS
     # mode = 10 , MIOPEN_WEIGHT_BIAS_FUSION_SILU
     # mode = 11 ,  MIOPEN_FUSION_SILU
-    def __init__(self, num_groups:int, num_channels:int, mode: int, eps: float = 1e-5, device=None, dtype=None ):
+    def __init__(self, num_groups:int, num_channels:int, mode: int, eps: float = 1e-5, device=None, dtype=None):
         super(miopenGroupNorm , self).__init__()
         self.eps = eps
         self.num_groups = num_groups
@@ -298,3 +300,42 @@ class miopenGroupNorm(torch.nn.Module):
 
     def extra_repr(self):
         return f'num_groups={self.num_groups},num_channels={self.num_channels},eps={round(self.eps,5):0.5f},mode={self.mode}'
+
+    
+class miopenLayerNorm(torch.nn.Module):
+    def __init__(self, normalized_shape: _shape_t, mode: int = 0, eps: float = 1e-5, bias: bool = True, device=None, dtype=None):
+        super(miopenLayerNorm, self).__init__()
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        
+        if isinstance(normalized_shape, numbers.Integral):
+            normalized_shape = (normalized_shape,) 
+            
+        self.normalized_shape = tuple(normalized_shape)
+        self.mode = mode
+        self.eps = eps
+        self.bias = bias
+        
+        self.weight = torch.nn.Parameter(torch.empty(self.normalized_shape, **factory_kwargs))
+        self.bias = torch.nn.Parameter(torch.empty(self.normalized_shape, **factory_kwargs))
+        
+        torch.nn.init.ones_(self.weight)
+        torch.nn.init.zeros_(self.bias)
+      
+                
+    def forward(self, x):
+        rank = x.dim()
+        norm_shape_rank = len(self.normalized_shape)
+        
+        normalized_dim = rank-norm_shape_rank
+        
+        if normalized_dim >= rank or normalized_dim < 0:
+            raise ValueError("normalized_dim out of range")
+        
+        return op.layernorm(x, self.weight, self.bias, self.eps, normalized_dim, self.mode)            
+    
+    
+    def extra_repr(self) -> str:
+        return (
+            "normalized_shape = {normalized_shape}, eps = {eps}, "
+            "elementwise_affine= {mode}".format(**self.__dict__)
+        )

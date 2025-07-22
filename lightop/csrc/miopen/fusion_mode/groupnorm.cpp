@@ -30,8 +30,8 @@ std::vector<Tensor> groupnorm(const Tensor &x,
     }
 
     Tensor out_y = at::empty_like(x);
-    Tensor out_mean = at::empty(mean_rstd_len, x.options());
-    Tensor out_rstd = at::empty(mean_rstd_len, x.options());
+    Tensor out_mean = at::empty(mean_rstd_len, x.options().dtype(at::kFloat));
+    Tensor out_rstd = at::empty(mean_rstd_len, x.options().dtype(at::kFloat));
 
     TensorDescriptor output_y(out_y);
     TensorDescriptor output_mean(out_mean);
