@@ -24,6 +24,10 @@ inline miopenDataType_t getDataType(const at::Tensor& t)
     {
         return miopenBFloat16;
     }
+    else if(scalar_type == at::kByte)
+    {
+        return miopenInt32;
+    }
     else
     {
         throw std::runtime_error("TensorDescriptor only supports float, half and bfloat16 tensors");
