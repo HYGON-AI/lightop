@@ -112,8 +112,8 @@ void _gemm_w8a8_128x256x128_TN_impl(
   string fp16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_FP16.co";
   string bf16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_BF16.co";
   if (gradType == wgrad) {
-    fp16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_FP16_wgrad.co";
-    bf16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_BF16_wgrad.co";
+    fp16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_BF16_wgrad_scale_T.co";
+    bf16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_BF16_wgrad_scale_T.co";
   } else if (gradType == xgrad) {
     fp16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_NN_FP16.co";
     bf16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_NN_BF16.co";
