@@ -193,7 +193,6 @@ def w8a8_block_int8_linear(
     )
     # print("output:", output.shape, output)
 
-    
     if not torch.allclose(output, torch_output, rtol=1e-2, atol=5e-2):
         print("cuda 精度检查不合格！！！") 
         
