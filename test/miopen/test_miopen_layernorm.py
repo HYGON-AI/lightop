@@ -50,7 +50,7 @@ print("skiplayernorm-----------------------\n")
 
 
 input = torch.randn(3, 512, 128).cuda().half()
-layernorm = miopenLayerNorm([512, 128], 1).cuda().half()
+layernorm = miopenLayerNorm([512, 128]).cuda().half()
 out_y, out_mean, out_rstd = layernorm(input)
 print(out_y)
 print(out_mean)

@@ -10,18 +10,17 @@
 #include <ATen/ATen.h>
 #include <tuple>
 
+namespace at {
+namespace native {
 
-namespace at{
-namespace native{
-
-Tensor fused_conv_bias_forward(const Tensor &x, 
-                           const Tensor &weight,
-                           const Tensor &bias, 
-                           const std::vector<int64_t>& pads,
-                           const std::vector<int64_t>& strides,
-                           const std::vector<int64_t>& dilations)
+Tensor fused_conv_bias_forward(const Tensor& x,
+                               const Tensor& weight,
+                               const Tensor& bias,
+                               const std::vector<int64_t>& pads,
+                               const std::vector<int64_t>& strides,
+                               const std::vector<int64_t>& dilations)
 {
-    if(x.dim() != 4 || weight.dim() != 4 )
+    if(x.dim() != 4 || weight.dim() != 4)
     {
         MIOPEN_THROW("Only support conv2d");
     }
@@ -29,12 +28,12 @@ Tensor fused_conv_bias_forward(const Tensor &x,
     TensorDescriptor conv_input_tensor(x);
     TensorDescriptor conv_weight_tensor(weight);
     TensorDescriptor bias_input_tensor(bias);
-    auto data_type     = getDataType(x);
+    auto data_type = getDataType(x);
 
     // output
     auto output_dims = GetConvForwardOutputDim(conv_input_tensor, conv_weight_tensor, pads, strides, dilations);
     Tensor out       = at::empty(output_dims, x.options());
-    if (!x.is_contiguous())
+    if(!x.is_contiguous())
         out = out.to(at::MemoryFormat::ChannelsLast);
     TensorDescriptor output_tensor(out);
 
@@ -45,13 +44,13 @@ Tensor fused_conv_bias_forward(const Tensor &x,
 
     auto [conv_operation, conv_operation_desc] =
         CreatConvOp(data_type, conv_input, conv_weight, pads, strides, dilations, conv_output);
-    
+
     // bias op
     auto [bias_input, bias_input_uuid]   = CreatGraphTensor(bias_input_tensor, data_type, false);
     auto [bias_output, bias_output_uuid] = CreatGraphTensor(output_tensor, data_type, false);
     auto [bias_operation, bias_operation_desc] =
         CreatPointWiseOp(data_type, MIOPEN_POINTWISE_ADD, conv_output, bias_input, bias_output);
-    
+
     // creat plan
     auto exec_plan = CreatExeutionPlan({conv_operation.desc(), bias_operation.desc()});
 
