@@ -985,7 +985,7 @@ def moe_gemm_w8a8(input: torch.Tensor,
 
 
 
-def gemm_w8a8_asm(a, b, scale_a, scale_b, block_size, out_dtype):
+def gemm_w8a8_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 'TN'):
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()
     assert block_size[0] == 128 and block_size[1] == 128
     m, n, k = a.shape[0], b.shape[0], a.shape[1]
@@ -993,7 +993,7 @@ def gemm_w8a8_asm(a, b, scale_a, scale_b, block_size, out_dtype):
     
     return op.gemm_w8a8_asm(a, b, scale_a, scale_b, None, None, None, out_dtype, m, n, k, 0)
 
-def gemm_w8a8_wgrad_asm(a, b, scale_a, scale_b, c, accumulate, block_size, out_dtype):
+def gemm_w8a8_wgrad_asm(a, b, scale_a, scale_b, c, accumulate, block_size, out_dtype, layout = 'TN'):
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()
     assert block_size[0] == 128 and block_size[1] == 128
     m, n, k = a.shape[0], b.shape[0], a.shape[1]
@@ -1003,7 +1003,7 @@ def gemm_w8a8_wgrad_asm(a, b, scale_a, scale_b, c, accumulate, block_size, out_d
         return op.gemm_w8a8_asm(a, b, scale_a, scale_b, c, c, None, out_dtype, m, n, k, 1)
     return op.gemm_w8a8_asm(a, b, scale_a, scale_b, None, None, None, out_dtype, m, n, k, 1)
 
-def gemm_w8a8_xgrad_asm(a, b, scale_a, scale_b, block_size, out_dtype):
+def gemm_w8a8_xgrad_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 'TN'):
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()
     assert block_size[0] == 128 and block_size[1] == 128
     m, n, k = a.shape[0], b.shape[1], a.shape[1]
