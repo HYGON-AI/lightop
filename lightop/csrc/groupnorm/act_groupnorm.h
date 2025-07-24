@@ -728,23 +728,23 @@ void act_groupnorm_forward_NHWC(const Tensor& self,const Tensor& weight,const Te
     auto stream = at::cuda::getCurrentCUDAStream();
     if(D % 4 == 0&&cols<=2048){
       act_groupnorm_forward_kernel_fast_NHWC<scalar_t,act_op,4><<<dim3(N , G), get_groupnorm_blocksize(cols/4), 0, stream>>>(
-                              self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+                              self_data,ret_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
     }
     else if(D % 2 == 0&&cols<=1024){
       act_groupnorm_forward_kernel_fast_NHWC<scalar_t,act_op,2><<<dim3(N , G), get_groupnorm_blocksize(cols/2), 0, stream>>>(
-                              self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+                              self_data,ret_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
     }
     else if(cols<=512){
       act_groupnorm_forward_kernel_fast_NHWC<scalar_t,act_op,1><<<dim3(N , G), get_groupnorm_blocksize(cols), 0, stream>>>(
-                              self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+                              self_data,ret_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
     }
     else if(D%8==0&&cols<=4096){
       act_groupnorm_forward_kernel_fast_NHWC<scalar_t,act_op,8><<<dim3(N , G), 512, 0, stream>>>(
-                            self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+                            self_data,ret_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
     }
     else if(D%16==0&&cols<=8192){
       act_groupnorm_forward_kernel_fast_NHWC<scalar_t,act_op,16><<<dim3(N , G), 512, 0, stream>>>(
-                            self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+                            self_data,ret_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
     }
     else{//very long last dim
       if(D%4==0){
