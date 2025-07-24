@@ -33,12 +33,12 @@
             "BLOCK_SIZE_M": 16
         },
         "8192": {
-            "MODE": 81,
-            "BLOCK_SIZE_M": 64
+            "MODE": 1000,
+            "BLOCK_SIZE_M": 128
         },
         "4096": {
-            "MODE": 4,
-            "BLOCK_SIZE_M": 32
+            "MODE": 1000,
+            "BLOCK_SIZE_M": 128
         },
         "256": {
             "MODE": 50,
@@ -49,16 +49,16 @@
             "BLOCK_SIZE_M": 32
         },
         "1024": {
-            "MODE": 11,
-            "BLOCK_SIZE_M": 32
+            "MODE": 1000,
+            "BLOCK_SIZE_M": 128
         },
         "2048": {
-            "MODE": 11,
-            "BLOCK_SIZE_M": 32
+            "MODE": 1000,
+            "BLOCK_SIZE_M": 128
         },
         "16384": {
-            "MODE": 11,
-            "BLOCK_SIZE_M": 32
+            "MODE": 1000,
+            "BLOCK_SIZE_M": 128
         }
     }
 }

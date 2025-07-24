@@ -978,10 +978,12 @@ def moe_gemm_w8a8(input: torch.Tensor,
                     num_tokens_post_pad: torch.Tensor, 
                     top_k: int,
                     mode: int) -> torch.Tensor:
-    # op.moe_gemm_w8a8(input, b_qweight, output, a_scale, b_scale, topk_weights,
-    #                                 sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
-    op.moe_w8a8_asm(input, b_qweight, output, a_scale, b_scale, topk_weights,
-                                    sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
+    if mode < 1000:
+        op.moe_gemm_w8a8(input, b_qweight, output, a_scale, b_scale, topk_weights,
+                                        sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
+    else:
+        op.moe_w8a8_asm(input, b_qweight, output, a_scale, b_scale, topk_weights,
+                                        sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
     return output
 
 
