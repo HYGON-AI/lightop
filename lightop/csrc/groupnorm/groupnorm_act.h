@@ -59,7 +59,7 @@ __global__ void groupnorm_act_forward_kernel_fast(scalar_t* input,scalar_t* ret,
 }
 
 template <typename scalar_t,class act_op, int VEC=4>
-__global__ void groupnorm_act_forward_kernel_fast_NHWC(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
+__global__ void groupnorm_act_forward_kernel_fast_NHWC(scalar_t* input,scalar_t* ret,
                                             scalar_t* gamma,scalar_t* beta,int cols,int spatial_size,int channel_size,acc_type<scalar_t, true> eps,act_op op)
 {
   int blockidx=blockIdx.x;
@@ -114,11 +114,6 @@ __global__ void groupnorm_act_forward_kernel_fast_NHWC(scalar_t* input,scalar_t*
     }
     Y[j2]=ty;
   }
-  if(threadIdx.x==0&&rstd!=NULL){
-      int bid=blockidx*gridDim.y+blockidy;
-      mean[bid] = tmean;
-      rstd[bid] = trstd;
-  }
 }
 
 template <typename scalar_t,class act_op, int VEC=4>
@@ -147,7 +142,7 @@ __global__ void groupnorm_act_forward_kernel(scalar_t* input,scalar_t* ret,scala
 }
 
 template <typename scalar_t,class act_op, int VEC=4>
-__global__ void groupnorm_act_forward_kernel_NHWC(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
+__global__ void groupnorm_act_forward_kernel_NHWC(scalar_t* input,scalar_t* ret,float* mean,float* rstd,
                                             scalar_t* gamma,scalar_t* beta,int cols,int spatial_size,int N,int G,act_op op)
 {
   using VecTpye=memory::aligned_vector<scalar_t, VEC>;
@@ -183,13 +178,13 @@ void groupnorm_act_forward_NHWC(const Tensor& self,const Tensor& weight,const Te
     const int G = num_groups;
     const int D = num_channels / G;
     const int cols=D * HxW;
-    scalar_t* mean_data=NULL,*rstd_data=NULL;
+    float* mean_data=NULL,*rstd_data=NULL;
     bool small=(D % 4 == 0&&cols<=2048)||(D % 2 == 0&&cols<=1024)||(cols<=512)||(D%8==0&&cols<=4096)||(D%16==0&&cols<=8192);
-    if(training||!small){
+    if(!small){
       mean = at::empty({N, G},self.options());
       rstd = at::empty({N, G},self.options());
-      mean_data=mean.data_ptr<scalar_t>();
-      rstd_data=rstd.data_ptr<scalar_t>();
+      mean_data=mean.data_ptr<float>();
+      rstd_data=rstd.data_ptr<float>();
     }
     using T_ACC = acc_type<scalar_t, true>;
     scalar_t* self_data = self.data_ptr<scalar_t>();
@@ -201,23 +196,23 @@ void groupnorm_act_forward_NHWC(const Tensor& self,const Tensor& weight,const Te
     PassThrough<scalar_t> passop;
     if(D % 4 == 0&&cols<=2048){
       groupnorm_act_forward_kernel_fast_NHWC<scalar_t,act_op,4><<<dim3(N , G), get_groupnorm_blocksize(cols/4), 0, stream>>>(
-                              self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+                              self_data,ret_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
     }
     else if(D % 2 == 0&&cols<=1024){
       groupnorm_act_forward_kernel_fast_NHWC<scalar_t,act_op,2><<<dim3(N , G), get_groupnorm_blocksize(cols/2), 0, stream>>>(
-                              self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+                              self_data,ret_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
     }
     else if(cols<=512){
       groupnorm_act_forward_kernel_fast_NHWC<scalar_t,act_op,1><<<dim3(N , G), get_groupnorm_blocksize(cols), 0, stream>>>(
-                              self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+                              self_data,ret_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
     }
     else if(D%8==0&&cols<=4096){
       groupnorm_act_forward_kernel_fast_NHWC<scalar_t,act_op,8><<<dim3(N , G), 512, 0, stream>>>(
-                            self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+                            self_data,ret_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
     }
     else if(D%16==0&&cols<=8192){
       groupnorm_act_forward_kernel_fast_NHWC<scalar_t,act_op,16><<<dim3(N , G), 512, 0, stream>>>(
-                            self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
+                            self_data,ret_data,weight_data,bias_data,cols,HxW,num_channels,eps,op);
     }
     else{//very long last dim
       if(D%4==0){

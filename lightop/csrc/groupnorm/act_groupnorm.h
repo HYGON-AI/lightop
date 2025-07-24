@@ -290,7 +290,7 @@ __global__ void act_groupnorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,
 }
 
 template <typename scalar_t,class act_op, int VEC=4>
-__global__ void act_groupnorm_forward_kernel_fast_NHWC(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
+__global__ void act_groupnorm_forward_kernel_fast_NHWC(scalar_t* input,scalar_t* ret,
                                             scalar_t* gamma,scalar_t* beta,int cols,int spatial_size,int channel_size,acc_type<scalar_t, true> eps,act_op op)
 {
   int blockidx=blockIdx.x;
@@ -346,11 +346,6 @@ __global__ void act_groupnorm_forward_kernel_fast_NHWC(scalar_t* input,scalar_t*
       py[i]=(static_cast<T_ACC>(px[i]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
     }
     Y[j2]=ty;
-  }
-  if(threadIdx.x==0&&rstd!=NULL){
-      int bid=blockidx*gridDim.y+blockidy;
-      mean[bid] = tmean;
-      rstd[bid] = trstd;
   }
 }
 
