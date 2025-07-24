@@ -1,5 +1,6 @@
 import lightop
 import torch
+from lightop import miopenConvBias
 
 input = torch.randn(3,512, 14, 14).cuda() # NCHW 格式
 input_nhwc = input.contiguous(memory_format=torch.channels_last)
@@ -17,3 +18,14 @@ output = lightop.conv_bias(
         dilation=[1,1])
 torch.cuda.synchronize()
 print(output)
+
+
+print("---------------conv_bias function call-------------\n")
+
+convbias = miopenConvBias(512, 256, 1).cuda()
+result = convbias(input_nhwc).cuda()
+torch.cuda.synchronize()
+print(result)
+
+
+print("---------------conv_bias class call---------------\n")
