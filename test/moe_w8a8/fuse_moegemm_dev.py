@@ -1659,10 +1659,11 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
     grid = lambda META: (triton.cdiv(EM, META['BLOCK_SIZE_M']) * triton.cdiv(
         B.shape[1] if not use_nn_moe else B.shape[2], META['BLOCK_SIZE_N']), )
 
+    out_cuda = torch.zeros_like(C)
     fused_moe_kernel[grid](
             A,
             B,
-            C,
+            out_cuda,
             A_scale,
             B_scale,
             topk_weights,
@@ -1702,10 +1703,10 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
             **new_config
         )
     
-    out_cuda = torch.zeros_like(C)
+    
     moe_gemm_w8a8(A, 
                     B, 
-                    out_cuda,
+                    C,
                     A_scale, 
                     B_scale,
                     topk_weights if mul_routed_weight else None,
@@ -1715,7 +1716,7 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
                     top_k,
                     mode=mode)
     
-    # torch.cuda.synchronize()
+    torch.cuda.synchronize()
     if not (torch.allclose(C, out_cuda, rtol=1e-2, atol=1e-2)):
         print("kernel 精度检查不合格!!!")
         # torch.set_printoptions(profile="full")  
@@ -2505,8 +2506,14 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
             block_shape=block_shape)
 
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
-                moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
+                moe_align_block_size(curr_topk_ids, 128,
                                     global_num_experts, expert_map))
+        
+        sorted_token_ids_2, expert_ids_2, num_tokens_post_padded_2 = (
+                moe_align_block_size(curr_topk_ids, config2['BLOCK_SIZE_M'],
+                                    global_num_experts, expert_map))
+        # import pdb
+        # pdb.set_trace()
 
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
@@ -2530,6 +2537,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe,
+                                #mode=1000)
                                 mode=config1['MODE'])
         
         if activation == "silu":
@@ -2570,9 +2578,9 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 w2_zp,
                                 curr_topk_weights,
                                 curr_topk_ids,
-                                sorted_token_ids,
-                                expert_ids,
-                                num_tokens_post_padded,
+                                sorted_token_ids_2,
+                                expert_ids_2,
+                                num_tokens_post_padded_2,
                                 not apply_router_weight_on_input,
                                 1,
                                 config2,

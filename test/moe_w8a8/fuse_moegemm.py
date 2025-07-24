@@ -1825,7 +1825,11 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
             block_shape=block_shape)
 
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
-                moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
+                moe_align_block_size(curr_topk_ids, 128,
+                                    global_num_experts, expert_map))
+        
+        sorted_token_ids_2, expert_ids_2, num_tokens_post_padded_2 = (
+                moe_align_block_size(curr_topk_ids, config2['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
 
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
@@ -1881,9 +1885,9 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 w2_zp,
                                 curr_topk_weights,
                                 curr_topk_ids,
-                                sorted_token_ids,
-                                expert_ids,
-                                num_tokens_post_padded,
+                                sorted_token_ids_2,
+                                expert_ids_2,
+                                num_tokens_post_padded_2,
                                 not apply_router_weight_on_input,
                                 1,
                                 config2,
