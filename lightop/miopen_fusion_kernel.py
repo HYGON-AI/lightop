@@ -399,3 +399,4 @@ class miopenConvBiasAdd(torch.nn.Conv2d):
         
     def forward(self, input: Tensor, extra_input: Tensor):
         return op.conv_bias_add(input, self.weight, self.bias, extra_input, list(self.padding), list(self.stride), list(self.dilation))
+    
