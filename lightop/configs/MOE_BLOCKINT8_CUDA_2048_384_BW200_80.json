@@ -1,0 +1,36 @@
+{
+    "2048_384": {
+        "1": {
+            "MODE": 30,
+            "BLOCK_SIZE_M": 16
+        },
+        "2": {
+            "MODE": 30,
+            "BLOCK_SIZE_M": 16
+        },
+        "4": {
+            "MODE": 30,
+            "BLOCK_SIZE_M": 16
+        },
+        "8": {
+            "MODE": 30,
+            "BLOCK_SIZE_M": 16
+        },
+        "16": {
+            "MODE": 4,
+            "BLOCK_SIZE_M": 16
+        },
+        "32": {
+            "MODE": 17,
+            "BLOCK_SIZE_M": 16
+        },
+        "64": {
+            "MODE": 16,
+            "BLOCK_SIZE_M": 16
+        },
+        "128": {
+            "MODE": 20,
+            "BLOCK_SIZE_M": 16
+        }
+    }
+}

@@ -145,6 +145,8 @@ Tensor moe_gather(const Tensor &scatter_tokens,
                   const int num_tokens_offset,
                   const int num_tokens_per_rank);                                             
 
+Tensor gemm_w8_a8_smooth_colmajor(const Tensor& x,const Tensor& y,const Tensor& scale_a,const Tensor& scale_b,  const std::optional<Tensor> bias, at::ScalarType out_dtype,int warps,int n_per_block, int n_per_warp, int splitk, bool use_n_warps);
+Tensor gemm_w8a8_smooth_asm(Tensor &A, Tensor &B, Tensor &As, Tensor &Bs, const std::optional<Tensor> bias, torch::Dtype output_dtype, int M, int N, int K);
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
@@ -219,4 +221,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("moe_scatter_dynamic_quant", &at::native::moe_scatter_dynamic_quant, "moe_scatter_dynamic_quant");
   m.def("moe_swiglu_dynamic_quant", &at::native::moe_swiglu_dynamic_quant, "moe_swiglu_dynamic_quant");
   m.def("moe_gather", &at::native::moe_gather, "moe_gather");
+  m.def("gemm_w8a8_smooth_asm", &at::native::gemm_w8a8_smooth_asm, "gemm_w8a8_smooth_asm");
 }
