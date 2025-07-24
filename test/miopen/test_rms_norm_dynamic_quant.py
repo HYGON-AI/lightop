@@ -15,8 +15,7 @@ weight = torch.randn(hidden_size, dtype=torch.bfloat16).cuda()  # 测试float32�
 smoothScale = torch.randn(hidden_size, dtype=torch.bfloat16).cuda()  # 测试bfloat16版本
 
 # 调用被测函数
-after_res, y, per_token_scale = lightop.add_rms_norm_dynamic_quant(
-        x, x2, weight, smoothScale, epsilon)
- 
+after_res, y, per_token_scale = lightop.add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon)
+
 torch.cuda.synchronize()
 print(y)
