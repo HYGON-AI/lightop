@@ -43,6 +43,7 @@ from .miopen_fusion_kernel import (
     moe_scatter_dynamic_quant,
     moe_swiglu_dynamic_quant,
     moe_gather,
+    mha,
 )
 from .miopen_fusion_kernel import miopenGroupNorm, miopenLayerNorm, miopenConvBias, miopenConvBiasAdd
 from .config import get_moe_cuda_config

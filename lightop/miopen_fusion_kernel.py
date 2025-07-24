@@ -22,6 +22,7 @@ def conv_bias_add(input, weight, bias, add, padding, stride, dilation):
     """
     return op.conv_bias_add(input, weight, bias, add, padding, stride, dilation)
 
+
 def conv_bias(x, weight, bias, padding, stride, dilation):
     """_summary_
 
@@ -332,6 +333,29 @@ def moe_gather(
     )
 
 
+def mha(query, key, value, n, head_q, head_k, seqlen_q, seqlen_k, dim_q, dim_v, droprate, layout):
+    """_summary_
+
+    Args:
+        q (Tensor): 输入张量
+        k (Tensor): 输入张量
+        v (Tensor): 输入张量
+        n (int): _description_
+        head_q (int): Q张量的head数
+        head_k (int): K张量的head数
+        seqlen_q (int): Q/O的序列长度
+        seqlen_k (int): K/V的序列长度
+        dim_q (int): Q/K的嵌入维度
+        dim_v (int): V/O的嵌入维度
+        droprate (float): 丢弃率
+        layout (str): 布局 (BHSD | BSHD)
+
+    Returns:
+        Tensor: O张量
+    """
+    return op.mha(query, key, value, n, head_q, head_k, seqlen_q, seqlen_k, dim_q, dim_v, droprate, layout)
+
+
 class miopenGroupNorm(torch.nn.Module):
     # mode = 0 , MIOPEN_ELEMENTWISE_AFFINE
     # mode = 1 , MIOPEN_WEIGHT_BIAS
@@ -443,60 +467,48 @@ class miopenConvBiasAdd(torch.nn.Conv2d):
 
 
 class miopenConvBias(torch.nn.Conv2d):
-    def __init__(self, 
-                 in_channels: int, 
-                 out_channels: int, 
-                 kernel_size: _size_2_t, 
-                 stride: _size_2_t = 1, 
-                 padding: Union[str, _size_2_t]= 0, 
-                 dilation: _size_2_t = 1, 
-                 groups: int = 1, 
-                 bias: bool = True, 
-                 padding_mode: str = "zeros", 
-                 device=None, dtype=None):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: _size_2_t,
+        stride: _size_2_t = 1,
+        padding: Union[str, _size_2_t] = 0,
+        dilation: _size_2_t = 1,
+        groups: int = 1,
+        bias: bool = True,
+        padding_mode: str = "zeros",
+        device=None,
+        dtype=None,
+    ):
         super().__init__(
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride,
-            padding,
-            dilation,
-            groups,
-            bias,
-            padding_mode,
-            device,
-            dtype
+            in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype
         )
-        
+
     def forward(self, input):
         return op.conv_bias(input, self.weight, self.bias, list(self.padding), list(self.stride), list(self.dilation))
 
 
 class miopenConvBiasAdd(torch.nn.Conv2d):
-    def __init__(self, 
-                 in_channels: int, 
-                 out_channels: int, 
-                 kernel_size: _size_2_t, 
-                 stride: _size_2_t = 1, 
-                 padding: Union[str, _size_2_t]= 0, 
-                 dilation: _size_2_t = 1, 
-                 groups: int = 1, 
-                 bias: bool = True, 
-                 padding_mode: str = "zeros", 
-                 device=None, dtype=None):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: _size_2_t,
+        stride: _size_2_t = 1,
+        padding: Union[str, _size_2_t] = 0,
+        dilation: _size_2_t = 1,
+        groups: int = 1,
+        bias: bool = True,
+        padding_mode: str = "zeros",
+        device=None,
+        dtype=None,
+    ):
         super().__init__(
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride,
-            padding,
-            dilation,
-            groups,
-            bias,
-            padding_mode,
-            device,
-            dtype
+            in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype
         )
-        
+
     def forward(self, input: Tensor, extra_input: Tensor):
-        return op.conv_bias_add(input, self.weight, self.bias, extra_input, list(self.padding), list(self.stride), list(self.dilation))
+        return op.conv_bias_add(
+            input, self.weight, self.bias, extra_input, list(self.padding), list(self.stride), list(self.dilation)
+        )

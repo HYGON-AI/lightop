@@ -1,61 +1,152 @@
-#include <torch/extension.h>
 #include <ATen/ATen.h>
 #include <c10/macros/Macros.h>
+#include <torch/extension.h>
 
-namespace at {  namespace native {
-Tensor rmsnorm_forward_autograd(const Tensor& x,const Tensor& weight,double eps,bool training);
-std::tuple<Tensor,Tensor>rmsnorm_forward(const Tensor& self,const Tensor& weight,c10::optional<Tensor>& output_inplace,double eps,bool training);
-std::tuple<Tensor,Tensor>rmsnorm_backward(const Tensor& grad, const Tensor& X,const Tensor& rstd,const Tensor& gamma);
-Tensor fuse_rn_dropout_forward_autograd(const Tensor& x,const Tensor& weight,double eps,double rate,bool training);
-Tensor fuse_rn_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,double eps,double rate,bool training);
-Tensor fuse_rn_add_dropout_bias_forward_autograd(const Tensor& x,const Tensor& y,const Tensor &bias, const Tensor& weight,double eps,double rate,bool training);
-Tensor fuse_rn_add_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,double eps,bool training,bool inplace);
-Tensor drop_path_forward_autograd(const Tensor& x,double p, bool training,bool scale_by_keep) ;
-Tensor fuse_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,double rate,bool training);
-Tensor fuse_layernorm_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,double eps,bool training);
-Tensor fuse_add_ln_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,const Tensor& bias,double eps,bool training);
-Tensor fuse_ln_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,const Tensor& bias,double eps,double rate,bool training);
-Tensor fuse_ln_add_dropout_bias_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& attention_bias,const Tensor& weight,const Tensor& bias,double eps,double rate,bool training);
-Tensor fuse_ln_dropout_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,double eps,double rate,bool training);
-Tensor fuse_layernorm_droppath_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,double eps, double keep_prob, bool scale_by_keep, bool training);
-Tensor fused_linear_bias_forward_autograd(const Tensor& input, const Tensor& weight, const Tensor& bias);
-std::tuple <Tensor, Tensor> fused_relu_dropout_forward(const Tensor &self, const double &p, const bool &use_relu, const bool &training);
+namespace at {
+namespace native {
+Tensor rmsnorm_forward_autograd(const Tensor &x, const Tensor &weight,
+                                double eps, bool training);
+std::tuple<Tensor, Tensor>
+rmsnorm_forward(const Tensor &self, const Tensor &weight,
+                c10::optional<Tensor> &output_inplace, double eps,
+                bool training);
+std::tuple<Tensor, Tensor> rmsnorm_backward(const Tensor &grad, const Tensor &X,
+                                            const Tensor &rstd,
+                                            const Tensor &gamma);
+Tensor fuse_rn_dropout_forward_autograd(const Tensor &x, const Tensor &weight,
+                                        double eps, double rate, bool training);
+Tensor fuse_rn_add_dropout_forward_autograd(const Tensor &x, const Tensor &y,
+                                            const Tensor &weight, double eps,
+                                            double rate, bool training);
+Tensor fuse_rn_add_dropout_bias_forward_autograd(
+    const Tensor &x, const Tensor &y, const Tensor &bias, const Tensor &weight,
+    double eps, double rate, bool training);
+Tensor fuse_rn_add_forward_autograd(const Tensor &x, const Tensor &y,
+                                    const Tensor &weight, double eps,
+                                    bool training, bool inplace);
+Tensor drop_path_forward_autograd(const Tensor &x, double p, bool training,
+                                  bool scale_by_keep);
+Tensor fuse_add_dropout_forward_autograd(const Tensor &x, const Tensor &y,
+                                         double rate, bool training);
+Tensor fuse_layernorm_forward_autograd(const Tensor &x, const Tensor &weight,
+                                       const Tensor &bias, double eps,
+                                       bool training);
+Tensor fuse_add_ln_forward_autograd(const Tensor &x, const Tensor &y,
+                                    const Tensor &weight, const Tensor &bias,
+                                    double eps, bool training);
+Tensor fuse_ln_add_dropout_forward_autograd(const Tensor &x, const Tensor &y,
+                                            const Tensor &weight,
+                                            const Tensor &bias, double eps,
+                                            double rate, bool training);
+Tensor fuse_ln_add_dropout_bias_forward_autograd(const Tensor &x,
+                                                 const Tensor &y,
+                                                 const Tensor &attention_bias,
+                                                 const Tensor &weight,
+                                                 const Tensor &bias, double eps,
+                                                 double rate, bool training);
+Tensor fuse_ln_dropout_forward_autograd(const Tensor &x, const Tensor &weight,
+                                        const Tensor &bias, double eps,
+                                        double rate, bool training);
+Tensor fuse_layernorm_droppath_forward_autograd(
+    const Tensor &x, const Tensor &weight, const Tensor &bias, double eps,
+    double keep_prob, bool scale_by_keep, bool training);
+Tensor fused_linear_bias_forward_autograd(const Tensor &input,
+                                          const Tensor &weight,
+                                          const Tensor &bias);
+std::tuple<Tensor, Tensor> fused_relu_dropout_forward(const Tensor &self,
+                                                      const double &p,
+                                                      const bool &use_relu,
+                                                      const bool &training);
 Tensor fused_relu_dropout_backward(Tensor &grad, Tensor &mask);
-Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim, const bool half_to_float, const bool training);
-Tensor fuse_logsoftmax_forward_autograd(const at::Tensor &input, const int64_t dim, const bool half_to_float, const bool training);
-Tensor accelerate_rnnt_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool compute_sum, bool compute_mean, bool check_lengths);
-Tensor accelerate_ctc_loss(Tensor &logits, const Tensor &targets, const Tensor &logit_lengths, const Tensor &target_lengths, int blank, double clamp, bool logits_time_major, bool compute_sum, bool compute_mean, bool check_lengths);
+Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim,
+                                     const bool half_to_float,
+                                     const bool training);
+Tensor fuse_logsoftmax_forward_autograd(const at::Tensor &input,
+                                        const int64_t dim,
+                                        const bool half_to_float,
+                                        const bool training);
+Tensor accelerate_rnnt_loss(Tensor &logits, const Tensor &targets,
+                            const Tensor &logit_lengths,
+                            const Tensor &target_lengths, int blank,
+                            double clamp, bool compute_sum, bool compute_mean,
+                            bool check_lengths);
+Tensor accelerate_ctc_loss(Tensor &logits, const Tensor &targets,
+                           const Tensor &logit_lengths,
+                           const Tensor &target_lengths, int blank,
+                           double clamp, bool logits_time_major,
+                           bool compute_sum, bool compute_mean,
+                           bool check_lengths);
 Tensor fused_bias_gelu_forward(const Tensor &x, const Tensor &bias);
-std::tuple <Tensor, Tensor> fused_bias_gelu_backward(const Tensor  &x, const Tensor &bias,const Tensor &grad);
-Tensor fuse_scaled_upper_triang_masked_softmax_forward_autograd(torch::Tensor const& input, float scale_factor);
-Tensor fuse_scaled_masked_softmax_forward_autograd(torch::Tensor const& input, torch::Tensor const& mask, float scale_factor);
-int get_batch_per_block(int query_seq_len, int key_seq_len, int batches, int attn_heads);
-Tensor fuse_scaled_upper_triang_masked_softmax_dropout_forward_autograd(torch::Tensor const& input, float scale_factor, float p);
-Tensor fuse_scaled_masked_softmax_dropout_forward_autograd(torch::Tensor const& input, torch::Tensor const& mask, float scale_factor, double p);
-Tensor RoPE_forward_gpu(int sq, int b, int np, int hn, Tensor tensor_q,Tensor tensor_cos, Tensor tensor_sin);
-Tensor RoPE_backward_gpu(int sq, int b, int np, int hn,Tensor tensor_grad_out, Tensor tensor_cos, Tensor tensor_sin);
+std::tuple<Tensor, Tensor> fused_bias_gelu_backward(const Tensor &x,
+                                                    const Tensor &bias,
+                                                    const Tensor &grad);
+Tensor fuse_scaled_upper_triang_masked_softmax_forward_autograd(
+    torch::Tensor const &input, float scale_factor);
+Tensor fuse_scaled_masked_softmax_forward_autograd(torch::Tensor const &input,
+                                                   torch::Tensor const &mask,
+                                                   float scale_factor);
+int get_batch_per_block(int query_seq_len, int key_seq_len, int batches,
+                        int attn_heads);
+Tensor fuse_scaled_upper_triang_masked_softmax_dropout_forward_autograd(
+    torch::Tensor const &input, float scale_factor, float p);
+Tensor fuse_scaled_masked_softmax_dropout_forward_autograd(
+    torch::Tensor const &input, torch::Tensor const &mask, float scale_factor,
+    double p);
+Tensor RoPE_forward_gpu(int sq, int b, int np, int hn, Tensor tensor_q,
+                        Tensor tensor_cos, Tensor tensor_sin);
+Tensor RoPE_backward_gpu(int sq, int b, int np, int hn, Tensor tensor_grad_out,
+                         Tensor tensor_cos, Tensor tensor_sin);
 Tensor FusedBiasSwiGLU_forward_gpu(Tensor in, Tensor bias);
-std::vector<Tensor> FusedBiasSwiGLU_backward_gpu(Tensor out_grad,Tensor in,Tensor bias);
-std::tuple <Tensor, Tensor> fuse_bias_dropout_add_forward(const Tensor &x,const Tensor &bias,const Tensor &residual,double droprate,bool training);
-std::tuple <Tensor, Tensor> fuse_bias_dropout_add_backward(const Tensor &grad,const Tensor &mask, double droprate);
-Tensor fuse_groupnorm_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,bool training);
-Tensor fuse_celu_gn_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,double alpha,bool training);
-Tensor fuse_gn_silu_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,bool training);
-Tensor sum_opt(const Tensor& x,int dim);
-Tensor mean_opt(const Tensor& x,int dim);
-std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k,int dim,bool sorted);
-Tensor gemm_opt(const Tensor& x,const Tensor& y);
-Tensor gemm_w4_a16(const Tensor& x,const Tensor& y,const Tensor& scale_m,const Tensor& zero_m);
-Tensor w4_to_w16(const Tensor& x,const Tensor& scale_m,const Tensor& zero_m);
-Tensor gemm_w8_a16_fp8_colmajor(const Tensor& x,const Tensor& y,const Tensor& scale,int warps,int n_per_block,int splitk);
-void fp8to16(Tensor &ret, const Tensor &x,const Tensor& scale);
-Tensor moe_gemm_w8a8(torch::Tensor input,Tensor b_qweight,Tensor output,Tensor a_scale,Tensor b_scale,std::optional<Tensor> topk_weights,Tensor sorted_token_ids,Tensor expert_ids,Tensor num_tokens_post_pad, int64_t top_k, int mode);
-Tensor gemm_w8_a8_smooth_colmajor(const Tensor& x,const Tensor& y,const Tensor& scale_a,const Tensor& scale_b,  const std::optional<Tensor> bias,at::ScalarType out_dtype,int warps,int n_per_block, int n_per_warp, int splitk, bool use_n_warps);
+std::vector<Tensor> FusedBiasSwiGLU_backward_gpu(Tensor out_grad, Tensor in,
+                                                 Tensor bias);
+std::tuple<Tensor, Tensor> fuse_bias_dropout_add_forward(const Tensor &x,
+                                                         const Tensor &bias,
+                                                         const Tensor &residual,
+                                                         double droprate,
+                                                         bool training);
+std::tuple<Tensor, Tensor> fuse_bias_dropout_add_backward(const Tensor &grad,
+                                                          const Tensor &mask,
+                                                          double droprate);
+Tensor fuse_groupnorm_forward_autograd(const Tensor &x, const Tensor &weight,
+                                       const Tensor &bias, int num_groups,
+                                       int num_channels, double eps,
+                                       bool training);
+Tensor fuse_celu_gn_forward_autograd(const Tensor &x, const Tensor &weight,
+                                     const Tensor &bias, int num_groups,
+                                     int num_channels, double eps, double alpha,
+                                     bool training);
+Tensor fuse_gn_silu_forward_autograd(const Tensor &x, const Tensor &weight,
+                                     const Tensor &bias, int num_groups,
+                                     int num_channels, double eps,
+                                     bool training);
+Tensor sum_opt(const Tensor &x, int dim);
+Tensor mean_opt(const Tensor &x, int dim);
+std::tuple<Tensor, Tensor> topk_opt(const Tensor &x, int k, int dim,
+                                    bool sorted);
+Tensor gemm_opt(const Tensor &x, const Tensor &y);
+Tensor gemm_w4_a16(const Tensor &x, const Tensor &y, const Tensor &scale_m,
+                   const Tensor &zero_m);
+Tensor w4_to_w16(const Tensor &x, const Tensor &scale_m, const Tensor &zero_m);
+Tensor gemm_w8_a16_fp8_colmajor(const Tensor &x, const Tensor &y,
+                                const Tensor &scale, int warps, int n_per_block,
+                                int splitk);
+void fp8to16(Tensor &ret, const Tensor &x, const Tensor &scale);
+Tensor moe_gemm_w8a8(torch::Tensor input, Tensor b_qweight, Tensor output,
+                     Tensor a_scale, Tensor b_scale,
+                     std::optional<Tensor> topk_weights,
+                     Tensor sorted_token_ids, Tensor expert_ids,
+                     Tensor num_tokens_post_pad, int64_t top_k, int mode);
+Tensor gemm_w8_a8_smooth_colmajor(const Tensor &x, const Tensor &y,
+                                  const Tensor &scale_a, const Tensor &scale_b,
+                                  const std::optional<Tensor> bias,
+                                  at::ScalarType out_dtype, int warps,
+                                  int n_per_block, int n_per_warp, int splitk,
+                                  bool use_n_warps);
 Tensor fused_conv_bias_forward(const Tensor &x, const Tensor &weight,
-                           const Tensor &bias, 
-                           const std::vector<int64_t>& pads, 
-                           const std::vector<int64_t>& strides, 
-                           const std::vector<int64_t>& dilations);
+                               const Tensor &bias,
+                               const std::vector<int64_t> &pads,
+                               const std::vector<int64_t> &strides,
+                               const std::vector<int64_t> &dilations);
 
 Tensor fused_conv_bias_add_forward(const Tensor &x, const Tensor &weight,
                                    const Tensor &bias, const Tensor &add,
@@ -64,162 +155,218 @@ Tensor fused_conv_bias_add_forward(const Tensor &x, const Tensor &weight,
                                    const std::vector<int64_t> &dilations);
 
 Tensor fused_conv_bias_relu_forward(const Tensor &x, const Tensor &weight,
-                                  const Tensor &bias,
-                                  const std::vector<int64_t> &pads,
-                                  const std::vector<int64_t> &strides,
-                                  const std::vector<int64_t> &dilations);
+                                    const Tensor &bias,
+                                    const std::vector<int64_t> &pads,
+                                    const std::vector<int64_t> &strides,
+                                    const std::vector<int64_t> &dilations);
 
-std::vector<Tensor> add_rms_norm_dynamic_quant(const Tensor& x, 
-                                               const Tensor& x2,
-                                               const Tensor& weight,
-                                               const Tensor& smoothScale,
+std::vector<Tensor> add_rms_norm_dynamic_quant(const Tensor &x,
+                                               const Tensor &x2,
+                                               const Tensor &weight,
+                                               const Tensor &smoothScale,
                                                const float epsilon);
 
-std::vector<Tensor> rms_norm_dynamic_quant_without_residual(const Tensor& x, 
-                                                            const Tensor& weight,
-                                                            const Tensor& smoothScale,
-                                                            const float epsilon);
-Tensor head_rms_norm(const Tensor& x, const Tensor& weight,
-                     const float epsilon, const float head_offset,
-                     const float head_num);
+std::vector<Tensor>
+rms_norm_dynamic_quant_without_residual(const Tensor &x, const Tensor &weight,
+                                        const Tensor &smoothScale,
+                                        const float epsilon);
+Tensor head_rms_norm(const Tensor &x, const Tensor &weight, const float epsilon,
+                     const float head_offset, const float head_num);
 
-std::vector<Tensor> groupnorm(const Tensor &x,
-                              const Tensor &weight,
-                              const Tensor &bias,
-                              const int num_groups,
-                              const float epsilon,
-                              const int mode);
+std::vector<Tensor> groupnorm(const Tensor &x, const Tensor &weight,
+                              const Tensor &bias, const int num_groups,
+                              const float epsilon, const int mode);
 
-std::vector<Tensor> add_groupnorm(const Tensor &x1,
-                                  const Tensor &x2,
-                                  const Tensor &weight,
-                                  const Tensor &bias,
-                                  const int num_groups,
-                                  const float epsilon,
+std::vector<Tensor> add_groupnorm(const Tensor &x1, const Tensor &x2,
+                                  const Tensor &weight, const Tensor &bias,
+                                  const int num_groups, const float epsilon,
                                   const int mode);
 
-std::vector<Tensor> layernorm(const Tensor &x,
-                              const Tensor &weight,
-                              const Tensor &bias,
-                              const float epsilon,
-                              const int normalized_dim,
-                              const int mode);
+std::vector<Tensor> layernorm(const Tensor &x, const Tensor &weight,
+                              const Tensor &bias, const float epsilon,
+                              const int normalized_dim, const int mode);
 
-std::vector<Tensor> add_layernorm(const Tensor &x1,
-                                  const Tensor &x2,
-                                  const Tensor &weight,
-                                  const Tensor &bias,
-                                  const float epsilon,
-                                  const int normalized_dim,
-                                  const int mode); 
+std::vector<Tensor> add_layernorm(const Tensor &x1, const Tensor &x2,
+                                  const Tensor &weight, const Tensor &bias,
+                                  const float epsilon, const int normalized_dim,
+                                  const int mode);
 
-std::vector<Tensor> skip_layernorm(const Tensor &x1,
-                                    const Tensor &x2,
-                                    const Tensor &weight,
-                                    const Tensor &bias,
-                                    const float epsilon,
-                                    const int normalized_dim,
-                                    const int mode);
+std::vector<Tensor> skip_layernorm(const Tensor &x1, const Tensor &x2,
+                                   const Tensor &weight, const Tensor &bias,
+                                   const float epsilon,
+                                   const int normalized_dim, const int mode);
 
-std::vector<Tensor> moe_scatter_dynamic_quant(const Tensor &hidden,
-                                              const Tensor &selected_experts,
-                                              const Tensor &smooth,
-                                              const int expert_start_idx,
-                                              const int expert_end_idx,
-                                              const int num_shared_experts_per_rank,
-                                              const int num_tokens_offset,
-                                              const int num_tokens_per_rank);
+std::vector<Tensor> moe_scatter_dynamic_quant(
+    const Tensor &hidden, const Tensor &selected_experts, const Tensor &smooth,
+    const int expert_start_idx, const int expert_end_idx,
+    const int num_shared_experts_per_rank, const int num_tokens_offset,
+    const int num_tokens_per_rank);
 
-std::vector<Tensor> moe_swiglu_dynamic_quant(const Tensor &scatter_tokens,
-                                             const Tensor &smooth_scale,
-                                             const Tensor &experts_tokens_count,
-                                             const int num_shared_experts_per_rank,
-                                             const int num_tokens_offset,
-                                             const int num_tokens_per_rank,
-                                             const float beta);
+std::vector<Tensor> moe_swiglu_dynamic_quant(
+    const Tensor &scatter_tokens, const Tensor &smooth_scale,
+    const Tensor &experts_tokens_count, const int num_shared_experts_per_rank,
+    const int num_tokens_offset, const int num_tokens_per_rank,
+    const float beta);
 
-Tensor moe_gather(const Tensor &scatter_tokens,
-                  const Tensor &token_offset,
+Tensor moe_gather(const Tensor &scatter_tokens, const Tensor &token_offset,
                   const Tensor &expert_weights,
                   const int num_shared_experts_per_rank,
-                  const int num_tokens_offset,
-                  const int num_tokens_per_rank);                                             
+                  const int num_tokens_offset, const int num_tokens_per_rank);
 
-Tensor gemm_w8_a8_smooth_colmajor(const Tensor& x,const Tensor& y,const Tensor& scale_a,const Tensor& scale_b,  const std::optional<Tensor> bias, at::ScalarType out_dtype,int warps,int n_per_block, int n_per_warp, int splitk, bool use_n_warps);
-Tensor gemm_w8a8_smooth_asm(Tensor &A, Tensor &B, Tensor &As, Tensor &Bs, const std::optional<Tensor> bias, torch::Dtype output_dtype, int M, int N, int K);
+Tensor gemm_w8_a8_smooth_colmajor(const Tensor &x, const Tensor &y,
+                                  const Tensor &scale_a, const Tensor &scale_b,
+                                  const std::optional<Tensor> bias,
+                                  at::ScalarType out_dtype, int warps,
+                                  int n_per_block, int n_per_warp, int splitk,
+                                  bool use_n_warps);
+Tensor gemm_w8a8_smooth_asm(Tensor &A, Tensor &B, Tensor &As, Tensor &Bs,
+                            const std::optional<Tensor> bias,
+                            torch::Dtype output_dtype, int M, int N, int K);
+Tensor mha(const Tensor &query, const Tensor &key, const Tensor &value,
+           const int n, const int head_q, const int head_k, const int seqlen_q,
+           const int seqlen_k, const int dim_q, const int dim_v,
+           const float droprate, const std::string layout);
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
 void destroy_gemmdbias_handle();
 
-}
-}
+} // namespace native
+} // namespace at
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("layernorm_forward_autograd", &at::native::fuse_layernorm_forward_autograd, "layernorm forward");
-  m.def("add_ln_forward_autograd", &at::native::fuse_add_ln_forward_autograd, "layernorm forward");
-  m.def("ln_dropout_forward_autograd", &at::native::fuse_ln_dropout_forward_autograd, "fused_ln_dropout forward");
-  m.def("ln_add_dropout_forward_autograd", &at::native::fuse_ln_add_dropout_forward_autograd, "fused_ln_add_dropout forward");
-  m.def("ln_add_dropout_bias_forward_autograd", &at::native::fuse_ln_add_dropout_bias_forward_autograd, "fused_ln_add_dropout_bias forward");
-  m.def("layernorm_droppath_forward_autograd", &at::native::fuse_layernorm_droppath_forward_autograd, "layernorm then droppath forward");
-  m.def("rmsnorm_forward_autograd", &at::native::rmsnorm_forward_autograd, "rmsnorm forward autograd");
+  m.def("layernorm_forward_autograd",
+        &at::native::fuse_layernorm_forward_autograd, "layernorm forward");
+  m.def("add_ln_forward_autograd", &at::native::fuse_add_ln_forward_autograd,
+        "layernorm forward");
+  m.def("ln_dropout_forward_autograd",
+        &at::native::fuse_ln_dropout_forward_autograd,
+        "fused_ln_dropout forward");
+  m.def("ln_add_dropout_forward_autograd",
+        &at::native::fuse_ln_add_dropout_forward_autograd,
+        "fused_ln_add_dropout forward");
+  m.def("ln_add_dropout_bias_forward_autograd",
+        &at::native::fuse_ln_add_dropout_bias_forward_autograd,
+        "fused_ln_add_dropout_bias forward");
+  m.def("layernorm_droppath_forward_autograd",
+        &at::native::fuse_layernorm_droppath_forward_autograd,
+        "layernorm then droppath forward");
+  m.def("rmsnorm_forward_autograd", &at::native::rmsnorm_forward_autograd,
+        "rmsnorm forward autograd");
   m.def("rmsnorm_forward", &at::native::rmsnorm_forward, "rmsnorm forward");
   m.def("rmsnorm_backward", &at::native::rmsnorm_backward, "rmsnorm backward");
-  m.def("rn_dropout_forward_autograd", &at::native::fuse_rn_dropout_forward_autograd, "fused_rn_dropout forward");
-  m.def("rn_add_forward_autograd", &at::native::fuse_rn_add_forward_autograd, "fused_rn_add forward");
-  m.def("rn_add_dropout_forward_autograd", &at::native::fuse_rn_add_dropout_forward_autograd, "fused_rn_add_dropout forward");
-  m.def("rn_add_dropout_bias_forward_autograd", &at::native::fuse_rn_add_dropout_bias_forward_autograd, "fused_rn_add_dropout_bias forward");
-  m.def("droppath_forward_autograd",&at::native::drop_path_forward_autograd,"droppath forward") ;
-  m.def("add_dropout_forward_autograd", &at::native::fuse_add_dropout_forward_autograd, "fused_dropout forward");
-  m.def("fused_linear_bias_forward_autograd", &at::native::fused_linear_bias_forward_autograd, "fused_linearbias forward autograd");
-  m.def("relu_dropout_forward", &at::native::fused_relu_dropout_forward, "fused_relu_dropout forward");
-  m.def("relu_dropout_backward", &at::native::fused_relu_dropout_backward, "fused_relu_dropout backward");
-  m.def("softmax_forward_autograd", &at::native::fuse_softmax_forward_autograd, "softmax autograd of forward");
-  m.def("logsoftmax_forward_autograd", &at::native::fuse_logsoftmax_forward_autograd, "logsoftmax autograd of forward");
-  m.def("accelerate_rnnt_loss", &at::native::accelerate_rnnt_loss, "accelerated rnntloss");
-  m.def("accelerate_ctc_loss", &at::native::accelerate_ctc_loss, "accelerated ctcloss");
-  m.def("create_gemmbias_handle", &at::native::create_gemmbias_handle, "create_gemmbias_handle");
-  m.def("destroy_gemmbias_handle", &at::native::destroy_gemmbias_handle, "destroy_gemmbias_handle");
-  m.def("create_gemmdbias_handle", &at::native::create_gemmdbias_handle, "create_gemmdbias_handle");
-  m.def("destroy_gemmdbias_handle", &at::native::destroy_gemmdbias_handle, "destroy_gemmdbias_handle");
-  m.def("scaled_upper_triang_masked_softmax_forward_autograd", &at::native::fuse_scaled_upper_triang_masked_softmax_forward_autograd, "scaled_upper_masked_softmax forward");
-  m.def("scaled_masked_softmax_forward_autograd", &at::native::fuse_scaled_masked_softmax_forward_autograd, "masked_softmax_forward  forward");
-  m.def("scaled_upper_triang_masked_softmax_dropout_forward_autograd", &at::native::fuse_scaled_upper_triang_masked_softmax_dropout_forward_autograd, "scaled_upper_triang_masked_softmax_dropout forward");
-  m.def("scaled_masked_softmax_dropout_forward_autograd", &at::native::fuse_scaled_masked_softmax_dropout_forward_autograd, "scaled_masked_softmax_dropout forward");
-  m.def("get_batch_per_block",&at::native::get_batch_per_block, "get_batch_per_block");
-  m.def("bias_gelu_forward", &at::native::fused_bias_gelu_forward, "fused_bias_gelu forward");
-  m.def("bias_gelu_backward", &at::native::fused_bias_gelu_backward, "fused_bias_gelu backward");
-  m.def("rotary_positional_embedding_forward", &at::native::RoPE_forward_gpu, "rotary positional embedding forward for gpu");
-  m.def("rotary_positional_embedding_backward", &at::native::RoPE_backward_gpu, "rotary positional embedding backward for gpu");
-  m.def("FusedBiasSwiGLU_forward", &at::native::FusedBiasSwiGLU_forward_gpu, "fused bias SwiGLU forward for gpu");
-  m.def("FusedBiasSwiGLU_backward", &at::native::FusedBiasSwiGLU_backward_gpu, "fused bias SwiGLU backward for gpu");
-  m.def("bias_dropout_add_forward", &at::native::fuse_bias_dropout_add_forward, "fuse_bias_dropout_add forward");
-  m.def("bias_dropout_add_backward", &at::native::fuse_bias_dropout_add_backward, "fuse_bias_dropout_add backward");
-  m.def("groupnorm_forward_autograd", &at::native::fuse_groupnorm_forward_autograd, "groupnorm forward");
-  m.def("celu_gn_forward_autograd", &at::native::fuse_celu_gn_forward_autograd, "celu_gn forward");
-  m.def("gn_silu_forward_autograd", &at::native::fuse_gn_silu_forward_autograd, "gn_silu forward");
+  m.def("rn_dropout_forward_autograd",
+        &at::native::fuse_rn_dropout_forward_autograd,
+        "fused_rn_dropout forward");
+  m.def("rn_add_forward_autograd", &at::native::fuse_rn_add_forward_autograd,
+        "fused_rn_add forward");
+  m.def("rn_add_dropout_forward_autograd",
+        &at::native::fuse_rn_add_dropout_forward_autograd,
+        "fused_rn_add_dropout forward");
+  m.def("rn_add_dropout_bias_forward_autograd",
+        &at::native::fuse_rn_add_dropout_bias_forward_autograd,
+        "fused_rn_add_dropout_bias forward");
+  m.def("droppath_forward_autograd", &at::native::drop_path_forward_autograd,
+        "droppath forward");
+  m.def("add_dropout_forward_autograd",
+        &at::native::fuse_add_dropout_forward_autograd,
+        "fused_dropout forward");
+  m.def("fused_linear_bias_forward_autograd",
+        &at::native::fused_linear_bias_forward_autograd,
+        "fused_linearbias forward autograd");
+  m.def("relu_dropout_forward", &at::native::fused_relu_dropout_forward,
+        "fused_relu_dropout forward");
+  m.def("relu_dropout_backward", &at::native::fused_relu_dropout_backward,
+        "fused_relu_dropout backward");
+  m.def("softmax_forward_autograd", &at::native::fuse_softmax_forward_autograd,
+        "softmax autograd of forward");
+  m.def("logsoftmax_forward_autograd",
+        &at::native::fuse_logsoftmax_forward_autograd,
+        "logsoftmax autograd of forward");
+  m.def("accelerate_rnnt_loss", &at::native::accelerate_rnnt_loss,
+        "accelerated rnntloss");
+  m.def("accelerate_ctc_loss", &at::native::accelerate_ctc_loss,
+        "accelerated ctcloss");
+  m.def("create_gemmbias_handle", &at::native::create_gemmbias_handle,
+        "create_gemmbias_handle");
+  m.def("destroy_gemmbias_handle", &at::native::destroy_gemmbias_handle,
+        "destroy_gemmbias_handle");
+  m.def("create_gemmdbias_handle", &at::native::create_gemmdbias_handle,
+        "create_gemmdbias_handle");
+  m.def("destroy_gemmdbias_handle", &at::native::destroy_gemmdbias_handle,
+        "destroy_gemmdbias_handle");
+  m.def("scaled_upper_triang_masked_softmax_forward_autograd",
+        &at::native::fuse_scaled_upper_triang_masked_softmax_forward_autograd,
+        "scaled_upper_masked_softmax forward");
+  m.def("scaled_masked_softmax_forward_autograd",
+        &at::native::fuse_scaled_masked_softmax_forward_autograd,
+        "masked_softmax_forward  forward");
+  m.def("scaled_upper_triang_masked_softmax_dropout_forward_autograd",
+        &at::native::
+            fuse_scaled_upper_triang_masked_softmax_dropout_forward_autograd,
+        "scaled_upper_triang_masked_softmax_dropout forward");
+  m.def("scaled_masked_softmax_dropout_forward_autograd",
+        &at::native::fuse_scaled_masked_softmax_dropout_forward_autograd,
+        "scaled_masked_softmax_dropout forward");
+  m.def("get_batch_per_block", &at::native::get_batch_per_block,
+        "get_batch_per_block");
+  m.def("bias_gelu_forward", &at::native::fused_bias_gelu_forward,
+        "fused_bias_gelu forward");
+  m.def("bias_gelu_backward", &at::native::fused_bias_gelu_backward,
+        "fused_bias_gelu backward");
+  m.def("rotary_positional_embedding_forward", &at::native::RoPE_forward_gpu,
+        "rotary positional embedding forward for gpu");
+  m.def("rotary_positional_embedding_backward", &at::native::RoPE_backward_gpu,
+        "rotary positional embedding backward for gpu");
+  m.def("FusedBiasSwiGLU_forward", &at::native::FusedBiasSwiGLU_forward_gpu,
+        "fused bias SwiGLU forward for gpu");
+  m.def("FusedBiasSwiGLU_backward", &at::native::FusedBiasSwiGLU_backward_gpu,
+        "fused bias SwiGLU backward for gpu");
+  m.def("bias_dropout_add_forward", &at::native::fuse_bias_dropout_add_forward,
+        "fuse_bias_dropout_add forward");
+  m.def("bias_dropout_add_backward",
+        &at::native::fuse_bias_dropout_add_backward,
+        "fuse_bias_dropout_add backward");
+  m.def("groupnorm_forward_autograd",
+        &at::native::fuse_groupnorm_forward_autograd, "groupnorm forward");
+  m.def("celu_gn_forward_autograd", &at::native::fuse_celu_gn_forward_autograd,
+        "celu_gn forward");
+  m.def("gn_silu_forward_autograd", &at::native::fuse_gn_silu_forward_autograd,
+        "gn_silu forward");
   m.def("sum_opt", &at::native::sum_opt, "sum_opt");
   m.def("mean_opt", &at::native::mean_opt, "mean_opt");
   m.def("topk_opt", &at::native::topk_opt, "topk_opt");
   m.def("gemm_opt", &at::native::gemm_opt, "gemm_opt");
   m.def("gemm_w4_a16", &at::native::gemm_w4_a16, "gemm_w4_a16");
   m.def("w4_to_w16", &at::native::w4_to_w16, "w4_to_w16");
-  m.def("gemm_w8_a16_fp8_colmajor", &at::native::gemm_w8_a16_fp8_colmajor, "gemm_w8_a16_fp8_colmajor");
+  m.def("gemm_w8_a16_fp8_colmajor", &at::native::gemm_w8_a16_fp8_colmajor,
+        "gemm_w8_a16_fp8_colmajor");
   m.def("fp8to16", &at::native::fp8to16, "fp8to16");
   m.def("moe_gemm_w8a8", &at::native::moe_gemm_w8a8, "moe_gemm_w8a8");
-  m.def("gemm_w8_a8_smooth_colmajor", &at::native::gemm_w8_a8_smooth_colmajor, "gemm_w8_a8_smooth_colmajor");
-  m.def("conv_bias", &at::native::fused_conv_bias_forward, "fused_conv_bias forward");
-  m.def("conv_bias_add", &at::native::fused_conv_bias_add_forward, "fused_conv_bias_add forward");
-  m.def("conv_bias_relu", &at::native::fused_conv_bias_relu_forward, "fused_conv_bias_relu forward");
-  m.def("add_rms_norm_dynamic_quant", &at::native::add_rms_norm_dynamic_quant, "fused add rms morm dynamic quant");
-  m.def("rms_norm_dynamic_quant_without_residual", &at::native::rms_norm_dynamic_quant_without_residual, "rms_norm_dynamic_quant_without_residual");
+  m.def("gemm_w8_a8_smooth_colmajor", &at::native::gemm_w8_a8_smooth_colmajor,
+        "gemm_w8_a8_smooth_colmajor");
+  m.def("conv_bias", &at::native::fused_conv_bias_forward,
+        "fused_conv_bias forward");
+  m.def("conv_bias_add", &at::native::fused_conv_bias_add_forward,
+        "fused_conv_bias_add forward");
+  m.def("conv_bias_relu", &at::native::fused_conv_bias_relu_forward,
+        "fused_conv_bias_relu forward");
+  m.def("add_rms_norm_dynamic_quant", &at::native::add_rms_norm_dynamic_quant,
+        "fused add rms morm dynamic quant");
+  m.def("rms_norm_dynamic_quant_without_residual",
+        &at::native::rms_norm_dynamic_quant_without_residual,
+        "rms_norm_dynamic_quant_without_residual");
   m.def("head_rms_norm", &at::native::head_rms_norm, "head_rms_norm");
   m.def("groupnorm", &at::native::groupnorm, "groupnorm");
   m.def("add_groupnorm", &at::native::add_groupnorm, "add_groupnorm");
   m.def("layernorm", &at::native::layernorm, "layernorm");
   m.def("add_layernorm", &at::native::add_layernorm, "add_layernorm");
   m.def("skip_layernorm", &at::native::skip_layernorm, "skip_layernorm");
-  m.def("moe_scatter_dynamic_quant", &at::native::moe_scatter_dynamic_quant, "moe_scatter_dynamic_quant");
-  m.def("moe_swiglu_dynamic_quant", &at::native::moe_swiglu_dynamic_quant, "moe_swiglu_dynamic_quant");
+  m.def("moe_scatter_dynamic_quant", &at::native::moe_scatter_dynamic_quant,
+        "moe_scatter_dynamic_quant");
+  m.def("moe_swiglu_dynamic_quant", &at::native::moe_swiglu_dynamic_quant,
+        "moe_swiglu_dynamic_quant");
   m.def("moe_gather", &at::native::moe_gather, "moe_gather");
-  m.def("gemm_w8a8_smooth_asm", &at::native::gemm_w8a8_smooth_asm, "gemm_w8a8_smooth_asm");
+  m.def("gemm_w8a8_smooth_asm", &at::native::gemm_w8a8_smooth_asm,
+        "gemm_w8a8_smooth_asm");
+  m.def("mha", &at::native::mha, "mha");
 }
