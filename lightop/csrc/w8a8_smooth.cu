@@ -650,8 +650,8 @@ Tensor gemm_w8_a8_smooth_colmajor(const Tensor& x,const Tensor& weight,const Ten
     auto stream = at::cuda::getCurrentCUDAStream();
 #define UseStaticWorkSpace 1
 #if UseStaticWorkSpace
-    static thread_local int* splitk_work_space = nullptr;
-    static thread_local int* semaphores = nullptr;
+    static  int* splitk_work_space = nullptr;
+    static  int* semaphores = nullptr;
     if(splitk_work_space == nullptr){
         hipMalloc(&splitk_work_space, 10000000); // 10m
         hipMemset(splitk_work_space,0,10000000);
