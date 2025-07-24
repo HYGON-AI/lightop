@@ -1,4 +1,5 @@
 import os
+from .utils import gfx, LIGHTOP_ROOT_DIR, LIGHTOP_ASM_DIR
 from .rmsnorm import RMSNorm, RMSNormTorch, RMSNormDropout, RMSNormAddDropout, RMSNormAddDropoutBias, RMSNormAdd,rmsnorm_forward,rmsnorm_backward
 from .layernorm import LayerNorm, LnDropout, LnAddDropout, LnAddDropoutBias, LnDropPath, AddLn
 from .droppath import DropPath
@@ -19,6 +20,7 @@ from .reduce import sum, mean,topk
 from .gemmopt import gemm, gemm_w4a16, w4tow16,gemm_w8a16_fp8,fp8_to_16,moe_gemm_w8a8,gemm_w8a8_smooth
 from .miopen_fusion_kernel import conv_bias_add, conv_bias, conv_bias_relu, add_rms_norm_dynamic_quant, head_rms_norm, groupnorm, add_groupnorm, layernorm, add_layernorm, skip_layernorm, rms_norm_dynamic_quant_without_residual, moe_scatter_dynamic_quant, moe_swiglu_dynamic_quant, moe_gather
 from .miopen_fusion_kernel import miopenGroupNorm, miopenLayerNorm, miopenConvBias, miopenConvBiasAdd
+from .config import get_moe_cuda_config
 
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401

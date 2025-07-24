@@ -122,7 +122,11 @@ blockM_configs_decode = {
     28: 16,
     29: 16,
     30: 16,
-    31: 16
+    31: 16,
+    32: 16,
+    33: 16,
+    34: 16,
+    35: 16
 }
 
 def to_int8(tensor: torch.Tensor):
@@ -669,7 +673,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-        
+
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
@@ -782,7 +786,8 @@ def _fused_moe_helper(m: int,
     #print("topk_weights:",topk_weights)
     
     #topk_ids [m,topk]
-    topk_ids=generate_unique_int_tensor(m, topk).cuda()
+    topk_ids=generate_unique_int_tensor(m=m, topk=topk, low=0, high=E).cuda()
+    # topk_ids=generate_unique_int_tensor(m, topk).cuda()
     #print("topk_ids:",topk_ids)
     
     return input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids
@@ -853,36 +858,50 @@ def torch_w8a8_per_column_moe(a, w1, w2, w1_s, w2_s, topk_weight, topk_ids,topk)
 def run_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
-    m_list=[256,512,1024,2048,4096,8192,16384,32768] #prefill
+    # m_list=[256,512,1024,2048,4096,8192,16384,32768] #prefill
+    m_list=[32]
     # m_list = [259]
-    n_list_1=[256,512]
-    k_list_1=[7168,7168]
-    # n_list_1=[512]
-    # k_list_1=[7168]
+    # n_list_1=[512,] #E为256
+    # k_list_1=[7168,]
+
+    n_list_1=[1536, 768] #E为128
+    k_list_1=[2048, 2048]
+
+    # n_list_1=[384] #E为128
+    # k_list_1=[4096]
     
-    n_list_2=[7168,7168]
-    k_list_2=[128,256]
-    # n_list_2=[7168]
-    # k_list_2=[256]
+    # n_list_2=[7168,] #E为256
+    # k_list_2=[256,]
+
+    n_list_2=[2048, 2048]
+    k_list_2=[768, 384]
+
+    # n_list_2=[4096]
+    # k_list_2=[192]
+
     out_dtype=torch.bfloat16
+    # out_dtype = torch.float16
 
     topk=8
     # configs=BlockSizeMConfigGen()
     best_config = None
-    E=256
+    E=128
     triton_json_dir="./cache/moe/"
     os.makedirs(triton_json_dir, exist_ok=True)
     
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
-    mode_ranges = [i for i in range(len(blockM_configs))]
-    compare_fail = [42,43,46,52,54,60]
-    ignored_modes = [5,7,8,12,34,37,38,44,55,56,57,58,61,63,62]
-    exclude_modes = compare_fail + ignored_modes
+    # mode_ranges = [i for i in range(len(blockM_configs))]
+    # mode_ranges = [4,]
+    # compare_fail = [42,43,46,52,54,60]
+    # ignored_modes = [5,7,8,12,34,37,38,44,55,56,57,58,61,63,62]
+    # exclude_modes = compare_fail + ignored_modes
 
     # decode corrtnese
-    # mode_ranges = [i for i in range(len(blockM_configs_decode))]
-    # exclude_modes = [13]
+    mode_ranges = [i for i in range(len(blockM_configs_decode))]
+    exclude_modes = [13, 32, 33, 34, 35]
+    #mode_ranges = [3,4,6,8,10,12,14]
+    #exclude_modes = [13] # nk 4096 192 gemm2<16
     
     for mode in mode_ranges:
         if mode in exclude_modes:
@@ -902,7 +921,7 @@ def run_perchannel_vaild():
                                                 w1_scale=weight13_scale,
                                                 w2_scale=weight2_scale,
                                                 block_shape=None,
-                                                config={"BLOCK_SIZE_M": 64},
+                                                config={"BLOCK_SIZE_M": 32},
                                                 per_channel_quant=True,
                                                 mode=mode)
                 #torch native moe: out_native

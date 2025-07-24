@@ -15,3 +15,5 @@ lightop/csrc/*/*_hip.h
 test/moe_w8a8/__pycache__/*
 test/moe_w8a8/.triton/
 .vscode
+test/w8a8/__pycache__/*
+*/.triton/
