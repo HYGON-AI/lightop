@@ -22,6 +22,7 @@ def conv_bias_add(input, weight, bias, add, padding, stride, dilation):
     """
     return op.conv_bias_add(input, weight, bias, add, padding, stride, dilation)
 
+
 def conv_bias(x, weight, bias, padding, stride, dilation):
     """_summary_
 
@@ -43,6 +44,7 @@ def conv_bias(x, weight, bias, padding, stride, dilation):
     """
     return op.conv_bias(x, weight, bias, padding, stride, dilation)
 
+
 def conv_bias_relu(input, weight, bias, padding, stride, dilation):
     """_summary_
 
@@ -59,41 +61,43 @@ def conv_bias_relu(input, weight, bias, padding, stride, dilation):
     """
     return op.conv_bias_relu(input, weight, bias, padding, stride, dilation)
 
+
 def add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon):
     """
-        (in) hidden_states
-            [num_tokens, hidden_size]
-            bfloat16
-            
-        (in) residual
-            optional
-            [num_tokens, hidden_size]
-            bfloat16
-            
-        (in) weight
-            [hidden_size]
-            bfloat16 or float32
-            
-        (in) smooth_scale
-            [hidden_size]
-            bfloat16 or float32
-            
-        (out) after_res
-            [num_tokens, hidden_size]
-            bfloat16
-            
-        (out) y
-            [num_tokens, hidden_size]
-            int8
-            
-        (out) per_token_scale
-            [num_tokens]
-            float32
-            
-        (attr) epsilon
-            float32
+    (in) hidden_states
+        [num_tokens, hidden_size]
+        bfloat16
+
+    (in) residual
+        optional
+        [num_tokens, hidden_size]
+        bfloat16
+
+    (in) weight
+        [hidden_size]
+        bfloat16 or float32
+
+    (in) smooth_scale
+        [hidden_size]
+        bfloat16 or float32
+
+    (out) after_res
+        [num_tokens, hidden_size]
+        bfloat16
+
+    (out) y
+        [num_tokens, hidden_size]
+        int8
+
+    (out) per_token_scale
+        [num_tokens]
+        float32
+
+    (attr) epsilon
+        float32
     """
     return op.add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon)
+
 
 def rms_norm_dynamic_quant_without_residual(x, weight, smoothScale, epsilon):
     """_summary_
@@ -108,9 +112,10 @@ def rms_norm_dynamic_quant_without_residual(x, weight, smoothScale, epsilon):
         vector<Tensor>: 返回 addDesc 形状为  [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
                             yDesc 形状为 [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
                             perTokenScaleDesc/rstdDesc 形状为 [N, C_in, H] (NCHW) 或 [N, C_in, D, H] (NCDHW)
-                            
+
     """
     return op.rms_norm_dynamic_quant_without_residual(x, weight, smoothScale, epsilon)
+
 
 def head_rms_norm(x, weight, epsilon, head_offset, head_num):
     """_summary_
@@ -126,6 +131,7 @@ def head_rms_norm(x, weight, epsilon, head_offset, head_num):
         Tensor: 返回 yDesc, 形状为 [N, C_in, H, W] (NCHW) 或  [N, C_in, D, H, W] (NCDHW)
     """
     return op.head_rms_norm(x, weight, epsilon, head_offset, head_num)
+
 
 def groupnorm(x, weight, bias, num_groups, epsilon, mode):
     """_summary_
@@ -144,6 +150,7 @@ def groupnorm(x, weight, bias, num_groups, epsilon, mode):
                             rstdDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
     """
     return op.groupnorm(x, weight, bias, num_groups, epsilon, mode)
+
 
 def add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode):
     """_summary_
@@ -164,6 +171,7 @@ def add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode):
     """
     return op.add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode)
 
+
 def layernorm(x, weight, bias, epsilon, normalized_dim, mode):
     """_summary_
 
@@ -181,6 +189,7 @@ def layernorm(x, weight, bias, epsilon, normalized_dim, mode):
                             rstdDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
     """
     return op.layernorm(x, weight, bias, epsilon, normalized_dim, mode)
+
 
 def add_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode):
     """_summary_
@@ -200,6 +209,7 @@ def add_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode):
                             rstdDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
     """
     return op.add_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode)
+
 
 def skip_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode):
     """_summary_
@@ -221,7 +231,17 @@ def skip_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode):
     """
     return op.skip_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode)
 
-def moe_scatter_dynamic_quant(hidden, selected_experts, smooth, expert_start_idx, expert_end_idx, num_shared_experts_per_rank, num_tokens_offset, num_tokens_per_rank):
+
+def moe_scatter_dynamic_quant(
+    hidden,
+    selected_experts,
+    smooth,
+    expert_start_idx,
+    expert_end_idx,
+    num_shared_experts_per_rank,
+    num_tokens_offset,
+    num_tokens_per_rank,
+):
     """_summary_
 
     Args:
@@ -230,7 +250,7 @@ def moe_scatter_dynamic_quant(hidden, selected_experts, smooth, expert_start_idx
         smooth (Tensor): 输入张量，形状为 [num_shared_experts_per_rank + num_experts_per_rank, hidden_size]
         expert_start_idx (int): expert 开始索引
         expert_end_idx (int): expert 结束索引
-        num_shared_experts_per_rank (int): 共享的expert的数量, 默认为 0, 如果 shared_expert 可用, 请添加到 num_experts_per_rank 
+        num_shared_experts_per_rank (int): 共享的expert的数量, 默认为 0, 如果 shared_expert 可用, 请添加到 num_experts_per_rank
         num_tokens_offset (int): Token偏移, 如果shared_experts需要 num_tokens 进行拆分, 则这是当前排名的token_offset
         num_tokens_per_rank (int): 每维上的Token数量, 如果需要shared_experts num_tokens 在上拆分, 则这是当前排名的num_tokens
 
@@ -240,9 +260,27 @@ def moe_scatter_dynamic_quant(hidden, selected_experts, smooth, expert_start_idx
                         experts_token_count, 形状为 [num_experts_per_rank]
                         token_offset, 形状为 [allocated_tokens, topk]
     """
-    return op.moe_scatter_dynamic_quant(hidden, selected_experts, smooth, expert_start_idx, expert_end_idx, num_shared_experts_per_rank, num_tokens_offset, num_tokens_per_rank)
+    return op.moe_scatter_dynamic_quant(
+        hidden,
+        selected_experts,
+        smooth,
+        expert_start_idx,
+        expert_end_idx,
+        num_shared_experts_per_rank,
+        num_tokens_offset,
+        num_tokens_per_rank,
+    )
 
-def moe_swiglu_dynamic_quant(scatter_tokens, smooth_scale, experts_tokens_count, num_shared_experts_per_rank, num_tokens_offset, num_tokens_per_rank, beta):
+
+def moe_swiglu_dynamic_quant(
+    scatter_tokens,
+    smooth_scale,
+    experts_tokens_count,
+    num_shared_experts_per_rank,
+    num_tokens_offset,
+    num_tokens_per_rank,
+    beta,
+):
     """_summary_
 
     Args:
@@ -258,9 +296,20 @@ def moe_swiglu_dynamic_quant(scatter_tokens, smooth_scale, experts_tokens_count,
         vector<Tensor>:: y, 形状为 [num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens, hidden_size]
                         per_token_scale, 形状为 [num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens]
     """
-    return op.moe_swiglu_dynamic_quant(scatter_tokens, smooth_scale, experts_tokens_count, num_shared_experts_per_rank, num_tokens_offset, num_tokens_per_rank, beta)
+    return op.moe_swiglu_dynamic_quant(
+        scatter_tokens,
+        smooth_scale,
+        experts_tokens_count,
+        num_shared_experts_per_rank,
+        num_tokens_offset,
+        num_tokens_per_rank,
+        beta,
+    )
 
-def moe_gather(scatter_tokens, token_offset, expert_weights, num_shared_experts_per_rank, num_tokens_offset, num_tokens_per_rank):
+
+def moe_gather(
+    scatter_tokens, token_offset, expert_weights, num_shared_experts_per_rank, num_tokens_offset, num_tokens_per_rank
+):
     """_summary_
 
     Args:
@@ -274,8 +323,14 @@ def moe_gather(scatter_tokens, token_offset, expert_weights, num_shared_experts_
     Returns:
         Tensor: y 形状为 [num_tokens, hidden_size]
     """
-    return op.moe_gather(scatter_tokens, token_offset, expert_weights, num_shared_experts_per_rank, num_tokens_offset, num_tokens_per_rank)
-
+    return op.moe_gather(
+        scatter_tokens,
+        token_offset,
+        expert_weights,
+        num_shared_experts_per_rank,
+        num_tokens_offset,
+        num_tokens_per_rank,
+    )
 
 
 class miopenGroupNorm(torch.nn.Module):
@@ -283,119 +338,106 @@ class miopenGroupNorm(torch.nn.Module):
     # mode = 1 , MIOPEN_WEIGHT_BIAS
     # mode = 10 , MIOPEN_WEIGHT_BIAS_FUSION_SILU
     # mode = 11 ,  MIOPEN_FUSION_SILU
-    def __init__(self, num_groups:int, num_channels:int, mode: int, eps: float = 1e-5, device=None, dtype=None):
-        super(miopenGroupNorm , self).__init__()
+    def __init__(self, num_groups: int, num_channels: int, mode: int, eps: float = 1e-5, device=None, dtype=None):
+        super(miopenGroupNorm, self).__init__()
         self.eps = eps
         self.num_groups = num_groups
         self.num_channels = num_channels
         self.mode = mode
-        factory_kwargs = {'device': device, 'dtype': dtype}
+        factory_kwargs = {"device": device, "dtype": dtype}
         self.weight = torch.nn.Parameter(torch.empty(num_channels, **factory_kwargs))
         self.bias = torch.nn.Parameter(torch.empty(num_channels, **factory_kwargs))
         torch.nn.init.ones_(self.weight)
         torch.nn.init.zeros_(self.bias)
-    
+
     def forward(self, x):
         return op.groupnorm(x, self.weight, self.bias, self.num_groups, self.eps, self.mode)
 
     def extra_repr(self):
-        return f'num_groups={self.num_groups},num_channels={self.num_channels},eps={round(self.eps,5):0.5f},mode={self.mode}'
+        return f"num_groups={self.num_groups},num_channels={self.num_channels},eps={round(self.eps,5):0.5f},mode={self.mode}"
 
-    
+
 class miopenLayerNorm(torch.nn.Module):
-    def __init__(self, normalized_shape: _shape_t, mode: int = 0, eps: float = 1e-5, bias: bool = True, device=None, dtype=None):
+    def __init__(
+        self, normalized_shape: _shape_t, mode: int = 0, eps: float = 1e-5, bias: bool = True, device=None, dtype=None
+    ):
         super(miopenLayerNorm, self).__init__()
-        factory_kwargs = {'device': device, 'dtype': dtype}
-        
+        factory_kwargs = {"device": device, "dtype": dtype}
+
         if isinstance(normalized_shape, numbers.Integral):
-            normalized_shape = (normalized_shape,) 
-            
+            normalized_shape = (normalized_shape,)
+
         self.normalized_shape = tuple(normalized_shape)
         self.mode = mode
         self.eps = eps
         self.bias = bias
-        
+
         self.weight = torch.nn.Parameter(torch.empty(self.normalized_shape, **factory_kwargs))
         self.bias = torch.nn.Parameter(torch.empty(self.normalized_shape, **factory_kwargs))
-        
+
         torch.nn.init.ones_(self.weight)
         torch.nn.init.zeros_(self.bias)
-      
-                
+
     def forward(self, x):
         rank = x.dim()
         norm_shape_rank = len(self.normalized_shape)
-        
-        normalized_dim = rank-norm_shape_rank
-        
+
+        normalized_dim = rank - norm_shape_rank
+
         if normalized_dim >= rank or normalized_dim < 0:
             raise ValueError("normalized_dim out of range")
-        
-        return op.layernorm(x, self.weight, self.bias, self.eps, normalized_dim, self.mode)            
-    
-    
+
+        return op.layernorm(x, self.weight, self.bias, self.eps, normalized_dim, self.mode)
+
     def extra_repr(self) -> str:
-        return (
-            "normalized_shape = {normalized_shape}, eps = {eps}, "
-            "elementwise_affine= {mode}".format(**self.__dict__)
+        return "normalized_shape = {normalized_shape}, eps = {eps}, " "elementwise_affine= {mode}".format(
+            **self.__dict__
         )
 
 
 class miopenConvBias(torch.nn.Conv2d):
-    def __init__(self, 
-                 in_channels: int, 
-                 out_channels: int, 
-                 kernel_size: _size_2_t, 
-                 stride: _size_2_t = 1, 
-                 padding: Union[str, _size_2_t]= 0, 
-                 dilation: _size_2_t = 1, 
-                 groups: int = 1, 
-                 bias: bool = True, 
-                 padding_mode: str = "zeros", 
-                 device=None, dtype=None):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: _size_2_t,
+        stride: _size_2_t = 1,
+        padding: Union[str, _size_2_t] = 0,
+        dilation: _size_2_t = 1,
+        groups: int = 1,
+        bias: bool = True,
+        padding_mode: str = "zeros",
+        device=None,
+        dtype=None,
+    ):
         super().__init__(
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride,
-            padding,
-            dilation,
-            groups,
-            bias,
-            padding_mode,
-            device,
-            dtype
+            in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype
         )
-        
+
     def forward(self, input):
         return op.conv_bias(input, self.weight, self.bias, list(self.padding), list(self.stride), list(self.dilation))
 
 
 class miopenConvBiasAdd(torch.nn.Conv2d):
-    def __init__(self, 
-                 in_channels: int, 
-                 out_channels: int, 
-                 kernel_size: _size_2_t, 
-                 stride: _size_2_t = 1, 
-                 padding: Union[str, _size_2_t]= 0, 
-                 dilation: _size_2_t = 1, 
-                 groups: int = 1, 
-                 bias: bool = True, 
-                 padding_mode: str = "zeros", 
-                 device=None, dtype=None):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: _size_2_t,
+        stride: _size_2_t = 1,
+        padding: Union[str, _size_2_t] = 0,
+        dilation: _size_2_t = 1,
+        groups: int = 1,
+        bias: bool = True,
+        padding_mode: str = "zeros",
+        device=None,
+        dtype=None,
+    ):
         super().__init__(
-            in_channels,
-            out_channels,
-            kernel_size,
-            stride,
-            padding,
-            dilation,
-            groups,
-            bias,
-            padding_mode,
-            device,
-            dtype
+            in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype
         )
-        
+
     def forward(self, input: Tensor, extra_input: Tensor):
-        return op.conv_bias_add(input, self.weight, self.bias, extra_input, list(self.padding), list(self.stride), list(self.dilation))
+        return op.conv_bias_add(
+            input, self.weight, self.bias, extra_input, list(self.padding), list(self.stride), list(self.dilation)
+        )
