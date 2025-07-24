@@ -32,7 +32,7 @@ struct HipFunctionArgs {
   const int32_t* sorted_token_ids;   // sorted token ids
   const int32_t* expert_ids;         // expert ids
   const int32_t* num_tokens_post_pad_ptr;// num tokens after padding
-  int32_t num_tokens_post_pad;// num tokens after padding
+  uint32_t experts_num;              // num of experts
   uint32_t size_m;                   // input size m
   uint32_t size_n;                   // output size n
   uint32_t size_k;                   // input size k
@@ -61,7 +61,7 @@ void _moe_w8a8_256x128x128_TN_impl(
   torch::Tensor sorted_token_ids, 
   torch::Tensor expert_ids,
   torch::Tensor num_tokens_post_pad, 
-  uint32_t top_k, bool isBfloat16) {
+  uint32_t top_k, uint32_t experts_num, bool isBfloat16) {
 
   const int size_m = input.size(0); 
   const int size_n = b_qweight.size(1); 
@@ -99,7 +99,7 @@ void _moe_w8a8_256x128x128_TN_impl(
   hipFunctionArgs.sorted_token_ids = sorted_token_ids.data_ptr<int32_t>();
   hipFunctionArgs.expert_ids = expert_ids.data_ptr<int32_t>();
   hipFunctionArgs.num_tokens_post_pad_ptr = num_tokens_post_pad.data_ptr<int32_t>();
-  hipFunctionArgs.num_tokens_post_pad = num_pad;
+  hipFunctionArgs.experts_num = experts_num;
   hipFunctionArgs.size_m = size_m;
   hipFunctionArgs.size_n = size_n;
   hipFunctionArgs.size_k = size_k;
@@ -194,21 +194,22 @@ torch::Tensor moe_w8a8_asm(
   
 	const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
 
+  uint32_t experts_num = b_qweight.sizes()[0];
   if (output.dtype() == torch::kFloat16)
     _moe_w8a8_256x128x128_TN_impl<half_t>(
       input, b_qweight, output, a_scale, b_scale,
       topk_weights, sorted_token_ids, expert_ids,
-      num_tokens_post_pad, top_k, 0);
+      num_tokens_post_pad, top_k, experts_num, 0);
   else if (output.dtype() == torch::kBFloat16)
     _moe_w8a8_256x128x128_TN_impl<bhalf_t>(
       input, b_qweight, output, a_scale, b_scale,
       topk_weights, sorted_token_ids, expert_ids,
-      num_tokens_post_pad, top_k, 1);
+      num_tokens_post_pad, top_k, experts_num, 1);
   else if (output.dtype() == torch::kFloat32)
     _moe_w8a8_256x128x128_TN_impl<float>(
       input, b_qweight, output, a_scale, b_scale,
       topk_weights, sorted_token_ids, expert_ids,
-      num_tokens_post_pad, top_k, 1);
+      num_tokens_post_pad, top_k, experts_num, 1);
   else
     TORCH_CHECK(false, "moe_w8a8 only supports outputType in [Float16, BFloat16, Float32]");
   return output;
