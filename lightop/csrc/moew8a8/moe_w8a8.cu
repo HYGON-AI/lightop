@@ -63,7 +63,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel(
   uint32_t stride_bsn, 
   uint32_t stride_bsk,
   uint32_t sorted_token_lens,
-  uint32_t top_k 
+  uint32_t top_k,
+  uint32_t delta  
 ) {
   const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
   const int bidy = blockIdx.y; // pid_n
@@ -77,7 +78,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel(
   if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   constexpr int STAGES = BLOCK_SIZE_K/WARP_K; 
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
-  const int32_t expert_id = expert_ids[bidx]; // 专家的索引
+  const uint32_t delta_bidx = bidx / delta;
+  const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
   const uint64_t expert_offset = ((uint64_t)size_n) * size_k * expert_id; // 这个是对应专家的weight偏移
   const uint64_t qweight_offset = expert_offset + bidy * size_k * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
   const uint32_t output_offset = bidy * BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
@@ -194,7 +196,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel(
   uint32_t stride_bsn, 
   uint32_t stride_bsk,
   uint32_t sorted_token_lens,
-  uint32_t top_k 
+  uint32_t top_k,
+  uint32_t delta 
 ) {
   const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
   const int bidy = blockIdx.y; // pid_n
@@ -208,7 +211,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel(
   if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   const int STAGES = BLOCK_SIZE_K/WARP_K; // 采用两stage
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
-  const int32_t expert_id = expert_ids[bidx]; // 专家的索引
+  const uint32_t delta_bidx = bidx / delta;
+  const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
   const uint64_t expert_offset = ((uint64_t)size_n) * size_k * expert_id; // 这个是对应专家的weight偏移
   const uint64_t qweight_offset = expert_offset + bidy * size_k * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
   const uint32_t output_offset = bidy * BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
@@ -330,7 +334,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
   uint32_t stride_bsn, 
   uint32_t stride_bsk,
   uint32_t sorted_token_lens,
-  uint32_t top_k 
+  uint32_t top_k,
+  uint32_t delta 
 ) {
   const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
   const int bidy = blockIdx.y; // pid_n
@@ -344,7 +349,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
   if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   constexpr int STAGES = BLOCK_SIZE_K/WARP_K; 
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
-  const int32_t expert_id = expert_ids[bidx]; // 专家的索引
+  const int32_t delta_bidx = bidx / delta;
+  const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
   const uint64_t expert_offset = ((uint64_t)size_n) * size_k * expert_id; // 这个是对应专家的weight偏移
   const uint64_t qweight_offset = expert_offset + bidy * size_k * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
   const uint32_t output_offset = bidy * BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
@@ -466,7 +472,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
   uint32_t stride_bsn, 
   uint32_t stride_bsk,
   uint32_t sorted_token_lens,
-  uint32_t top_k 
+  uint32_t top_k,
+  uint32_t delta 
 ) {
   const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
   const int bidy = blockIdx.y; // pid_n
@@ -481,7 +488,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
   if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   const int STAGES = BLOCK_SIZE_K/WARP_K; // 采用两stage
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
-  const int32_t expert_id = expert_ids[bidx]; // 专家的索引
+  const int32_t delta_bidx = bidx / delta;
+  const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
   const uint64_t expert_offset = ((uint64_t)size_n) * size_k * expert_id; // 这个是对应专家的weight偏移
   const uint64_t qweight_offset = expert_offset + bidy * size_k * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
   const uint32_t output_offset = bidy * BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
@@ -629,7 +637,8 @@ void launch_moe_gemm_first_stage(const GemmParams<T>& params) {
       params.stride_bsn,
       params.stride_bsk,
       params.sorted_token_lens,
-      params.top_k);
+      params.top_k,
+      params.delta);
 
       auto err = cudaGetLastError();
       if (err != cudaSuccess) {
@@ -693,7 +702,8 @@ void launch_moe_gemm_second_stage(const GemmParams<T>& params) {
       params.stride_bsn,
       params.stride_bsk,
       params.sorted_token_lens,
-      params.top_k);
+      params.top_k,
+      params.delta);
 
       auto err = cudaGetLastError();
       if (err != cudaSuccess) {
@@ -752,7 +762,8 @@ void launch_moe_gemm_first_stage_decode(const GemmParams<T>& params) {
       params.stride_bsn,
       params.stride_bsk,
       params.sorted_token_lens,
-      params.top_k);
+      params.top_k,
+      params.delta);
 
       auto err = cudaGetLastError();
       if (err != cudaSuccess) {
@@ -808,7 +819,8 @@ void launch_moe_gemm_second_stage_decode(const GemmParams<T>& params) {
       params.stride_bsn,
       params.stride_bsk,
       params.sorted_token_lens,
-      params.top_k);
+      params.top_k,
+      params.delta);
 
       auto err = cudaGetLastError();
       if (err != cudaSuccess) {
@@ -832,7 +844,8 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
   torch::Tensor expert_ids,
   torch::Tensor num_tokens_post_pad, 
   int64_t top_k,
-  int mode
+  int mode,
+  int delta
   ) {
     const int size_m = input.size(0); 
     const int size_n = b_qweight.size(1); 
@@ -884,7 +897,8 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
           stride_bsn,
           stride_bsk,
           EM,
-          top_k
+          top_k,
+          delta
         );
 
         
@@ -936,7 +950,8 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
           stride_bsn,
           stride_bsk,
           EM,
-          top_k
+          top_k,
+          delta
         );
 
         
