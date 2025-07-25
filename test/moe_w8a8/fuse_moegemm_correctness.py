@@ -668,11 +668,11 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
             config2['DELTA']        = 1
         else:
             config1['BLOCK_SIZE_M'] = blockM_configs_decode[mode0]
-            config1['BLOCK_SIZE_M'] = mode0
-            config1['BLOCK_SIZE_M'] = 1
+            config1['MODE'] = mode0
+            config1['DELTA'] = 1
             config2['BLOCK_SIZE_M'] = blockM_configs_decode[mode1]
-            config2['BLOCK_SIZE_M'] = mode1
-            config2['BLOCK_SIZE_M'] = 1
+            config2['MODE'] = mode1
+            config2['DELTA'] = 1
             
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
