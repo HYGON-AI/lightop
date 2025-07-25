@@ -30,7 +30,8 @@ struct GemmParams {
                uint32_t stride_bsn, 
                uint32_t stride_bsk,
                uint32_t sorted_token_lens,
-               uint32_t top_k)
+               uint32_t top_k,
+               uint32_t delta)
         : ptr_A(ptr_A),
           ptr_B0(ptr_B0),
           ptr_C(ptr_C),
@@ -50,7 +51,8 @@ struct GemmParams {
           stride_bsn(stride_bsn),
           stride_bsk(stride_bsk),
           sorted_token_lens(sorted_token_lens),
-          top_k(top_k)
+          top_k(top_k),
+          delta(delta)
          {}
 
     const T* ptr_A;                    // input
@@ -73,6 +75,7 @@ struct GemmParams {
     uint32_t stride_bsk;               // weight scale stride k
     uint32_t sorted_token_lens;        // sorted token length
     uint32_t top_k;                    // top k
+    uint32_t delta;                    // delta
 };
 
 ///////////////////////////////////////////////////////////////////////launch_moe_function///////////////////////////////////////////////////////////////////////////////////////
