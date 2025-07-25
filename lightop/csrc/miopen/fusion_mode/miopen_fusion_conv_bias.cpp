@@ -32,9 +32,9 @@ Tensor fused_conv_bias_forward(const Tensor& x,
 
     // output
     auto output_dims = GetConvForwardOutputDim(conv_input_tensor, conv_weight_tensor, pads, strides, dilations);
-    Tensor out       = at::empty(output_dims, x.options());
-    if(!x.is_contiguous())
-        out = out.to(at::MemoryFormat::ChannelsLast);
+
+    Tensor out = x.is_contiguous() ? at::empty(output_dims, x.options())
+                                   : at::empty(output_dims, x.options().memory_format(at::MemoryFormat::ChannelsLast));
     TensorDescriptor output_tensor(out);
 
     // conv op
