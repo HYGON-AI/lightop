@@ -223,8 +223,6 @@ Tensor gemm_w8a8_smooth_asm(Tensor &A, Tensor &B, Tensor &As, Tensor &Bs,
                             const std::optional<Tensor> bias,
                             torch::Dtype output_dtype, int M, int N, int K);
 Tensor mha(const Tensor &query, const Tensor &key, const Tensor &value,
-           const int n, const int head_q, const int head_k, const int seqlen_q,
-           const int seqlen_k, const int dim_q, const int dim_v,
            const float droprate, const std::string layout);
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();

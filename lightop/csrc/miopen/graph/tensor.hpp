@@ -1,3 +1,4 @@
+#pragma once
 #include "miopen/miopen-wrapper.h"
 #include "miopen/Descriptors.h"
 #include <ATen/ATen.h>
@@ -24,21 +25,20 @@ private:
     std::map<miopenTensorArgumentId_t, at::Tensor> tensors;
 
 public:
-    void setTensor(miopenTensorArgumentId_t id, at::Tensor& tensor)
+    void setTensor(miopenTensorArgumentId_t id, TensorDescriptor& input, const at::Tensor& tensor)
     {
-        TensorDescriptor input(tensor);
-        MIOPEN_CHECK(miopenSetProblemTensorDescriptor(problem, id, input));
-        descVector.push_back(&input);
+        MIOPEN_CHECK(miopenSetProblemTensorDescriptor(problem, id, input.mut_desc()));
+        descVector.push_back(input.mut_desc());
         args.emplace_back();
         args.back().id     = id;
         args.back().buffer = tensor.data_ptr();
         if(tensors.count(id) != 0)
-            raise ValueError("The ID has been inserted multiple times");
+            Exception("The ID has been inserted multiple times");
         tensors[id] = std::move(tensor);
     }
 
-    std::vector<miopenTensorArgument_t> getArgs() { return args; }
-    miopenProblem_t getProblem() { return problem; }
+    std::vector<miopenTensorArgument_t>& getArgs() { return args; }
+    miopenProblem_t& getProblem() { return problem; }
     std::vector<miopenTensorDescriptor_t> getDescVector() { return descVector; }
     std::map<miopenTensorArgumentId_t, at::Tensor> getTensors() { return tensors; }
 };
