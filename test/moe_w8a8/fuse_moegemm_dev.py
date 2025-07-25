@@ -1659,11 +1659,11 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
     grid = lambda META: (triton.cdiv(EM, META['BLOCK_SIZE_M']) * triton.cdiv(
         B.shape[1] if not use_nn_moe else B.shape[2], META['BLOCK_SIZE_N']), )
 
-    out_cuda = torch.zeros_like(C)
+    out_triton = torch.zeros_like(C)
     fused_moe_kernel[grid](
             A,
             B,
-            out_cuda,
+            out_triton,
             A_scale,
             B_scale,
             topk_weights,
@@ -1717,7 +1717,7 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
                     mode=mode)
     
     torch.cuda.synchronize()
-    if not (torch.allclose(C, out_cuda, rtol=1e-2, atol=1e-2)):
+    if not (torch.allclose(C, out_triton, rtol=1e-2, atol=1e-2)):
         print("kernel 精度检查不合格!!!")
         # torch.set_printoptions(profile="full")  
         # ftriton = open('cuda_output.txt', 'w')   
@@ -2506,7 +2506,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
             block_shape=block_shape)
 
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
-                moe_align_block_size(curr_topk_ids, 128,
+                moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
         
         sorted_token_ids_2, expert_ids_2, num_tokens_post_padded_2 = (
