@@ -1825,7 +1825,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
             block_shape=block_shape)
 
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
-                moe_align_block_size(curr_topk_ids, 128,
+                moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
         
         sorted_token_ids_2, expert_ids_2, num_tokens_post_padded_2 = (

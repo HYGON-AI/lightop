@@ -567,8 +567,13 @@ def fuse_moe_correctness(
         use_int8_w8a8: bool,
         num_iters: int=100,
         block_quant_shape: List[int] = None,
+        seed: int=0,
+        device_id: int=0,
     ) -> tuple[dict[str, int], float]:
-        device="cuda"    
+        from vllm.platforms import current_platform
+        current_platform.seed_everything(seed)
+
+        device="cuda:"+str(device_id)   
         x = torch.randn(num_tokens, hidden_size, device=device, dtype=dtype)
         w1_scale = None
         w2_scale = None
@@ -975,7 +980,7 @@ class BenchmarkWorker:
         fuse_moe_correctness(num_tokens, num_experts,
                                        shard_intermediate_size, hidden_size,
                                        topk, dtype, use_fp8_w8a8,
-                                       use_int8_w8a16, use_int8_w8a8, block_quant_shape=block_quant_shape)
+                                       use_int8_w8a16, use_int8_w8a8, block_quant_shape=block_quant_shape,seed=self.seed, device_id=self.device_id)
 
         return
 
@@ -1266,12 +1271,12 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            # 1, 2, 4, 8, 16, 32, 64, 128,
+            1, 2, 4, 8, 16, 32, 64, 128,
             # 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
             # 1, 2, 4, 8, 16, 32, 64, 8192, 16384, 32768
             # 4096, 6144, 8192, 16384, 32768
-            1024, 2048, 4096, 6144, 8192, 16384
+            #1024, 2048, 4096, 6144, 8192, 16384
             # 65536,32768,
             # 32768, 49152, 65536, 131072
             # 6144, 8192, 16384, 32768, 40960
