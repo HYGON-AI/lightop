@@ -1063,7 +1063,7 @@ class BenchmarkWorker:
                         time_kernel0 = kernel_time
                         config_kernel0 = config 
                 for config in search_space_kernel1:
-                    if block_configs[config[mode_pattern]] != block_m:
+                    if block_configs[config[mode_pattern]] > block_m:
                         continue
                     try:
                         kernel_time = benchmark_config(
@@ -1096,7 +1096,11 @@ class BenchmarkWorker:
         
         if best_config_kernel0 and best_config_kernel1:     
             best_config_kernel0['MODE'] = best_config_kernel0.pop(mode_pattern)
-            best_config_kernel1['MODE'] = best_config_kernel1.pop(mode_pattern)             
+            best_config_kernel1['MODE'] = best_config_kernel1.pop(mode_pattern)
+
+
+        best_config_kernel1['DELTA'] = 1
+        best_config_kernel1['DELTA'] = best_config_kernel0['BLOCK_SIZE_M']/best_config_kernel1['BLOCK_SIZE_M']           
         return best_config_kernel0, best_config_kernel1
 
 
@@ -1271,7 +1275,7 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            1, 2, 4, 8, 16, 32, 64, 128,
+            # 1, 2, 4, 8, 16, 32, 64, 128,
             # 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
             # 1, 2, 4, 8, 16, 32, 64, 8192, 16384, 32768
@@ -1280,7 +1284,7 @@ def main(args: argparse.Namespace):
             # 65536,32768,
             # 32768, 49152, 65536, 131072
             # 6144, 8192, 16384, 32768, 40960
-            # 2048,
+            4096,
             # 256,
         ]
     else:
