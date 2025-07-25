@@ -147,6 +147,23 @@ public:
         MIOPEN_CHECK(miopenGetTensorNumBytes(desc(), &number_size));
         return number_size;
     }
+
+    // void setMha(miopenProblem_t& problem,
+    //             miopenTensorArgumentId_t& id,
+    //             std::vector<miopenTensorDescriptor_t>& descVector,
+    //             std::vector<miopenTensorArgument_t>& args,
+    //             std::map<miopenTensorArgumentId_t, at::Tensor>& tensors,
+    //             at::Tensor& tensor)
+    // {
+    //     MIOPEN_CHECK(miopenSetProblemTensorDescriptor(problem, id, mut_desc()));
+    //     descVector.push_back(mut_desc());
+    //     args.emplace_back();
+    //     args.back().id     = id;
+    //     args.back().buffer = tensor.data_ptr();
+    //     if(tensors.count(id) != 0)
+    //         Exception("The ID has been inserted multiple times");
+    //     tensors[id] = std::move(tensor);
+    // }
 };
 
 std::ostream& operator<<(std::ostream& out, const TensorDescriptor& d);
@@ -239,7 +256,7 @@ private:
         desc_;
 };
 
-struct MhaDescriptor
+struct MhaDescriptor : public miopenMhaDescriptor
 {
 public:
     void SetParams(float scale_,
@@ -281,8 +298,7 @@ private:
     bool use_alibi_mask;
     bool use_padding_mask;
     bool use_attn_bias;
-    std::unique_ptr<miopenMhaDescriptor, DescriptorDeleter<miopenMhaDescriptor, &miopenMhaDestroyDescriptor>> desc_;
-}
+};
 
 union Constant
 {

@@ -333,7 +333,7 @@ def moe_gather(
     )
 
 
-def mha(query, key, value, n, head_q, head_k, seqlen_q, seqlen_k, dim_q, dim_v, droprate, layout):
+def mha(query, key, value, droprate, layout):
     """_summary_
 
     Args:
@@ -353,7 +353,7 @@ def mha(query, key, value, n, head_q, head_k, seqlen_q, seqlen_k, dim_q, dim_v, 
     Returns:
         Tensor: O张量
     """
-    return op.mha(query, key, value, n, head_q, head_k, seqlen_q, seqlen_k, dim_q, dim_v, droprate, layout)
+    return op.mha(query, key, value, droprate, layout)
 
 
 class miopenGroupNorm(torch.nn.Module):
