@@ -3,8 +3,6 @@ from typing import Optional
 from lightop import op
 import functools
 
-
-
 w8a8_smooth_quant_config_dict = {
     "M1N5120K4096": (2, 16, 256, 1, False),
     "M2N5120K4096": (2, 16, 256, 1, False),
@@ -965,5 +963,53 @@ def moe_gemm_w8a8(input: torch.Tensor,
                     mode: int) -> torch.Tensor:
     op.moe_gemm_w8a8(input, b_qweight, output, a_scale, b_scale, topk_weights,
                                     sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
+    return output
+
+def moe_marlin_w4a16(a: torch.Tensor,
+                    c_or_none: Optional[torch.Tensor],
+                    b_q_weight: torch.Tensor,
+                    b_scale_zeros: torch.Tensor,
+                    g_idx_or_none: Optional[torch.Tensor],
+                    perm_or_none: Optional[torch.Tensor],
+                    workspace: torch.Tensor,
+                    sorted_token_ids: torch.Tensor,
+                    expert_ids: torch.Tensor,
+                    num_tokens_past_padded: torch.Tensor,
+                    topk_weights: torch.Tensor,
+                    moe_block_size: int,
+                    top_k: int,
+                    mul_topk_weights: bool,
+                    is_ep: bool,
+                    size_m: int,
+                    size_n: int,
+                    size_k: int,
+                    is_k_full: bool,
+                    use_atomic_add: bool,
+                    use_fp32_reduce: bool,
+                    is_zp_float: bool
+                    ) -> torch.Tensor:
+    output = op.moe_marlin_w4a16(a, 
+                        c_or_none, 
+                        b_q_weight, 
+                        b_scale_zeros, 
+                        g_idx_or_none, 
+                        perm_or_none, 
+                        workspace, 
+                        sorted_token_ids, 
+                        expert_ids,
+                        num_tokens_past_padded,
+                        topk_weights,
+                        moe_block_size,
+                        top_k,
+                        mul_topk_weights,
+                        is_ep,
+                        size_m,
+                        size_n,
+                        size_k,
+                        is_k_full,
+                        use_atomic_add,
+                        use_fp32_reduce,
+                        is_zp_float
+                        )
     return output
 
