@@ -11,37 +11,26 @@
 namespace at {
 namespace native {
 
-Tensor mha(const Tensor& query,
-           const Tensor& key,
-           const Tensor& value,
-           //    const int n              = 1,
-           //    const int head_q         = 4,
-           //    const int head_k         = -1,
-           //    const int seqlen_q       = 128,
-           //    const int seqlen_k       = -1,
-           //    const int dim_q          = 128,
-           //    const int dim_v          = -1,
-           const float droprate     = 0.5,
-           const std::string layout = "BHSD")
+Tensor miopen_scaled_dot_product_attention(const Tensor& query,
+                                           const Tensor& key,
+                                           const Tensor& value,
+                                           const float droprate     = 0.5,
+                                           const std::string layout = "BHSD")
 {
-
-    std::size_t found;
-    MhaDescriptor mha_descriptor;
-    std::vector<miopenSolution_t> solutions(1);
-
     InitTensor x;
     miopenProblem_t& problem = x.getProblem();
-    bool is_bshd             = layout.compare("BSHD") == 0;
-    const int n              = query.sizes()[0];
-    const int head_q         = query.sizes()[1];
-    const int head_k         = key.sizes()[1];
-    const int seqlen_q       = query.sizes()[2];
-    const int seqlen_k       = key.sizes()[2];
-    const int dim_q          = query.sizes()[3];
-    const int dim_v          = value.sizes()[3];
-
+    MhaDescriptor mha_descriptor;
     mha_descriptor.SetParams(1);
     MIOPEN_CHECK(miopenCreateMhaProblem(&problem, &mha_descriptor, miopenProblemDirectionForward));
+
+    bool is_bshd       = layout.compare("BSHD") == 0;
+    const int n        = query.sizes()[0];
+    const int head_q   = query.sizes()[1];
+    const int head_k   = key.sizes()[1];
+    const int seqlen_q = query.sizes()[2];
+    const int seqlen_k = key.sizes()[2];
+    const int dim_q    = query.sizes()[3];
+    const int dim_v    = value.sizes()[3];
 
     Tensor padding_mask = at::empty({n, 1, 1, 1}, query.options().dtype(at::kInt)).fill_(seqlen_k);
     Tensor bias         = at::empty({n, 1, seqlen_q, seqlen_k}, query.options().dtype(at::kFloat)).fill_(0);
@@ -118,15 +107,19 @@ Tensor mha(const Tensor& query,
 
     miopenHandle_t handle = getMiopenHandle_new();
 
+    size_t found = 0;
+    std::vector<miopenSolution_t> solutions(1);
     MIOPEN_CHECK(miopenFindSolutions(handle, problem, nullptr, solutions.data(), &found, solutions.size()));
 
     miopenSolution_t solution = solutions[0];
 
     size_t workspace_size = 0;
-    MIOPEN_CHECK(miopenGetSolutionWorkspaceSize(solution, &workspace_size));
-
     Tensor workspace_tensor;
-    workspace_tensor = at::empty(workspace_size, query.options());
+    MIOPEN_CHECK(miopenGetSolutionWorkspaceSize(solution, &workspace_size));
+    if(workspace_size > 0)
+    {
+        workspace_tensor = at::empty(workspace_size, query.options());
+    }
 
     MIOPEN_CHECK(
         miopenRunSolution(handle, solutions[0], args.size(), args.data(), workspace_tensor.data_ptr(), workspace_size));
