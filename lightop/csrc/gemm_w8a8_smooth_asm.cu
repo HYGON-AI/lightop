@@ -1214,30 +1214,6 @@ torch::Tensor gemm_w8a8_smooth_32x32x256_TN_dispatch(torch::Tensor &A,
     return D;
 }
 
-template <typename OutputType>
-void _gemm_w8a8_smooth_32x32x128_TN_impl(
-    const int8_t *A_data, int8_t *B_data,
-    float *As_data, float *Bs_data, // scales
-    OutputType *bias_data,
-    OutputType *D_data,
-    const int &size_m, const int &size_n, const int &size_k,
-    bool isBfloat16)
-{
-	size_t lda=size_k;
-	size_t ldb=size_k;
-	size_t ldc=size_m;
-	size_t stridea=lda;
-	size_t strideb=ldb;
-	size_t stridec=ldc;
-	int workgroupmapping = 8;	//
-	int depth= 128;//atoi(argv[8]);
-	int SU = 0;					//kernel中没有StaggerU相关代码
-	size_t strideC1J = ldc;
-	size_t strideC2K = stridec;
-	size_t strideA1L = lda;
-	size_t strideA2K = stridea;
-	size_t strideB1L = ldb;
-	size_t strideB2K = strideb;
 
 template <typename OutputType>
 void _gemm_w8a8_smooth_128x32x128_TN_impl(
@@ -1620,7 +1596,31 @@ torch::Tensor gemm_w8a8_smooth_128x96x128_TN_dispatch(torch::Tensor &A,
     return D;
 }
 
-
+template <typename OutputType>
+void _gemm_w8a8_smooth_32x32x128_TN_impl(
+    const int8_t *A_data, int8_t *B_data,
+    float *As_data, float *Bs_data, // scales
+    OutputType *bias_data,
+    OutputType *D_data,
+    const int &size_m, const int &size_n, const int &size_k,
+    bool isBfloat16)
+{
+	size_t lda=size_k;
+	size_t ldb=size_k;
+	size_t ldc=size_m;
+	size_t stridea=lda;
+	size_t strideb=ldb;
+	size_t stridec=ldc;
+	int workgroupmapping = 8;	//
+	int depth= 128;//atoi(argv[8]);
+	int SU = 0;					//kernel中没有StaggerU相关代码
+	size_t strideC1J = ldc;
+	size_t strideC2K = stridec;
+	size_t strideA1L = lda;
+	size_t strideA2K = stridea;
+	size_t strideB1L = ldb;
+	size_t strideB2K = strideb;
+	
     unsigned int staggerUIter = SU; // how many stride-sized clicks to stagger start offset
 	int unrollLoopIters = size_k/depth/1; // /DepthU/GSU
 	int tmp;
