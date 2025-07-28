@@ -617,7 +617,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                           expert_ids,
                           num_tokens_post_padded,
                           top_k_num,
-                          mode=config1['MODE'])
+                          config1)
         elif use_lightop and block_shape is not None and device_name=='K100_AI_120' and m <= 64:
             moe_gemm_decode_prof.CUDA_W8A8_MOE1(qcurr_hidden_states,
                                                 w1,
@@ -697,7 +697,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                           expert_ids,
                           num_tokens_post_padded,
                           1,
-                          mode=config2['MODE'])
+                          config2)
         elif use_lightop and block_shape is not None and device_name=='K100_AI_120' and m <= 64:
             moe_gemm_decode_prof.CUDA_W8A8_MOE2(qintermediate_cache2,
                                                 w2,
@@ -1295,4 +1295,4 @@ if __name__ == "__main__":
     #脚本执行命令： python3 moe_benchmark.py  --E 128 --n1-list '[1536,768,384,384,192]'  --n2-list '[2048,2048,2048,4096,4096]' --k-list '[768,374,192,192,96]'
 
     #deepseek系列
-    #python3 moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise 0
+    #HIP_VISIBLE_DEVICES=3 python3 moe_w8a8/moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise

@@ -617,7 +617,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                           expert_ids,
                           num_tokens_post_padded,
                           top_k_num,
-                          mode=config1['MODE'])
+                          config1)
         elif use_lightop and block_shape is not None and device_name=='K100_AI_120' and m <= 64:
             moe_gemm_decode_prof.CUDA_W8A8_MOE1(qcurr_hidden_states,
                                                 w1,
@@ -697,7 +697,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                           expert_ids,
                           num_tokens_post_padded,
                           1,
-                          mode=config2['MODE'])
+                          config2)
         elif use_lightop and block_shape is not None and device_name=='K100_AI_120' and m <= 64:
             moe_gemm_decode_prof.CUDA_W8A8_MOE2(qintermediate_cache2,
                                                 w2,
