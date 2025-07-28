@@ -2174,7 +2174,7 @@ def invoke_fused_moe_kernel_int8_preprocess(A: torch.Tensor,
             use_int8_w8a8=use_int8_w8a8,
             use_int8_w8a16=use_int8_w8a16,
             per_channel_quant=per_channel_quant,
-            delta=config['DELTA'],
+            delta=int(config['DELTA']),
             **triton_config
         )
     out_cuda = torch.zeros_like(C)
