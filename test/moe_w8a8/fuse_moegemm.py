@@ -144,6 +144,7 @@ blockM_configs = {
     93: 32,
     94: 64,
     95: 64,
+    1000: 128,
 }
 
 blockM_configs_decode = {
@@ -463,32 +464,32 @@ def grouped_topk(hidden_states: torch.Tensor,
 
     return topk_weights.to(torch.float32), topk_ids.to(torch.int32)
 
-def ConfigGen():
-    import itertools
-    # BLOCK_N = [64,128,256]
-    # BLOCK_K = [64,128]
-    # GROUP_SIZE_M = [1,2,4]
-    # num_stages = [0]
-    # num_warps = [4,8,16]
-    BLOCK_N = [64]
-    BLOCK_K = [128]
-    GROUP_SIZE_M = [1]
-    num_stages = [1]
-    num_warps = [4]
+# def ConfigGen():
+#     import itertools
+#     # BLOCK_N = [64,128,256]
+#     # BLOCK_K = [64,128]
+#     # GROUP_SIZE_M = [1,2,4]
+#     # num_stages = [0]
+#     # num_warps = [4,8,16]
+#     BLOCK_N = [64]
+#     BLOCK_K = [128]
+#     GROUP_SIZE_M = [1]
+#     num_stages = [1]
+#     num_warps = [4]
     
-    config_list = list(itertools.product(
-        BLOCK_N, BLOCK_K, GROUP_SIZE_M, num_stages, num_warps,
-    ))
-    configs = [
-        triton.Config({"BLOCK_SIZE_N": i[0], "BLOCK_SIZE_K" : i[1], 'GROUP_SIZE_M': i[2]}, num_stages=i[3], num_warps=i[4])
-        for i in config_list
-    ]
-    return configs
+#     config_list = list(itertools.product(
+#         BLOCK_N, BLOCK_K, GROUP_SIZE_M, num_stages, num_warps,
+#     ))
+#     configs = [
+#         triton.Config({"BLOCK_SIZE_N": i[0], "BLOCK_SIZE_K" : i[1], 'GROUP_SIZE_M': i[2]}, num_stages=i[3], num_warps=i[4])
+#         for i in config_list
+#     ]
+#     return configs
 
-@triton.autotune(
-    configs=ConfigGen(),
-    key=['N', 'K', 'EM', 'num_valid_tokens'],
-)
+# @triton.autotune(
+#     configs=ConfigGen(),
+#     key=['N', 'K', 'EM', 'num_valid_tokens'],
+# )
 
 @triton.jit
 def fused_moe_kernel(
@@ -538,6 +539,7 @@ def fused_moe_kernel(
     use_int8_w8a8: tl.constexpr,
     use_int8_w8a16: tl.constexpr,
     per_channel_quant: tl.constexpr,
+    delta: tl.constexpr,
 ):
     """
     Implements the fused computation for a Mixture of Experts (MOE) using
@@ -611,7 +613,7 @@ def fused_moe_kernel(
     a_ptrs = a_ptr + (offs_token[:, None] // top_k * stride_am +
                       offs_k[None, :] * stride_ak)
 
-    off_experts = tl.load(expert_ids_ptr + pid_m).to(tl.int64)
+    off_experts = tl.load(expert_ids_ptr + pid_m // delta).to(tl.int64)
     b_ptrs = b_ptr + off_experts * stride_be + (offs_k[:, None] * stride_bk +
                                                 offs_bn[None, :] * stride_bn)
     if use_int8_w8a16:
@@ -972,8 +974,7 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
                             use_int4_w4a16: bool,
                             per_channel_quant: bool,
                             block_shape: Optional[List[int]] = None,
-                            use_nn_moe: Optional[bool]=False,
-                            mode: Optional[int]=0) -> None:
+                            use_nn_moe: Optional[bool]=False) -> None:
     assert topk_weights is not None or not mul_routed_weight
     assert topk_weights is None or topk_weights.stride(1) == 1
     assert sorted_token_ids.stride(0) == 1
@@ -1046,7 +1047,7 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
                     expert_ids,
                     num_tokens_post_padded, 
                     top_k,
-                    mode=mode)
+                    config)
 
 def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                        w1: torch.Tensor,
@@ -1151,13 +1152,20 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
         if M > M_THRESHOLD:
             M_pattern = "MODE_PREFILL"
         if use_int8_w8a8:
+            config1 = {}
+            config2 = {}
             M=curr_hidden_states.shape[0]
             #print(f'+++++++-------_{M}_--------+++++++')
             if M > M_THRESHOLD:
-                config['BLOCK_SIZE_M'] = blockM_configs[config[M_pattern]]
+                config1['BLOCK_SIZE_M'] = blockM_configs[config[M_pattern]]
+                config1['MODE']         = config[M_pattern]
+                config1['DELTA']        = 1
+                config['BLOCK_SIZE_M']  = blockM_configs[config[M_pattern]]
             else:
-                config['BLOCK_SIZE_M'] = blockM_configs_decode[config[M_pattern]]
-            # config['BLOCK_SIZE_M'] = blockM_configs[config['MODE']]
+                config1['BLOCK_SIZE_M'] = blockM_configs_decode[config[M_pattern]]
+                config1['MODE']         = config[M_pattern]
+                config1['DELTA']        = 1
+                config['BLOCK_SIZE_M']  = blockM_configs_decode[config[M_pattern]]
             
         curr_topk_ids = topk_ids[begin_chunk_idx:end_chunk_idx]
         curr_topk_weights = topk_weights[begin_chunk_idx:end_chunk_idx]
@@ -1175,7 +1183,7 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
             block_shape=block_shape)
 
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
-                moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
+                moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
 
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
@@ -1191,7 +1199,7 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                                 num_tokens_post_padded,
                                 apply_router_weight_on_input,
                                 top_k_num,
-                                config,
+                                config1,
                                 compute_type=compute_type,
                                 use_fp8_w8a8=use_fp8_w8a8,
                                 use_int8_w8a8=use_int8_w8a8,
@@ -1199,8 +1207,7 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                                 use_int4_w4a16=use_int4_w4a16,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
-                                use_nn_moe=use_nn_moe,
-                                mode=config[M_pattern])
+                                use_nn_moe=use_nn_moe)
         
         quantiles = [0.5, 0.2, 0.8]
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: invoke_fused_moe_kernel_int8(qcurr_hidden_states,
@@ -1216,7 +1223,7 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                                                                                             num_tokens_post_padded,
                                                                                             apply_router_weight_on_input,
                                                                                             top_k_num,
-                                                                                            config,
+                                                                                            config1,
                                                                                             compute_type=compute_type,
                                                                                             use_fp8_w8a8=use_fp8_w8a8,
                                                                                             use_int8_w8a8=use_int8_w8a8,
@@ -1224,8 +1231,7 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                                                                                             use_int4_w4a16=use_int4_w4a16,
                                                                                             per_channel_quant=per_channel_quant,
                                                                                             block_shape=block_shape,
-                                                                                            use_nn_moe=use_nn_moe,
-                                                                                            mode=config[M_pattern]),quantiles=quantiles)
+                                                                                            use_nn_moe=use_nn_moe),quantiles=quantiles)
        
         elapsed_time = ms
         print("w13 _time:{} ms\n".format(elapsed_time))
@@ -1332,6 +1338,8 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                                       topk_ids.shape[1]]
             intermediate_cache3 = intermediate_cache3[:tokens_in_chunk]
 
+        config1={}
+        config2={}
         M_pattern = "MODE_DECODE"
         if M > M_THRESHOLD:
             M_pattern = "MODE_PREFILL"  
@@ -1339,10 +1347,21 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
             M=curr_hidden_states.shape[0]
             #print(f'+++++++-------_{M}_--------+++++++')
             if M > M_THRESHOLD:
-                config['BLOCK_SIZE_M'] = blockM_configs[config[M_pattern]]
+                config1['BLOCK_SIZE_M'] = blockM_configs[config[M_pattern]]
+                config1['MODE']         = config[M_pattern]
+                config1['DELTA']        = 1
+                config2['BLOCK_SIZE_M'] = blockM_configs[config[M_pattern]]
+                config2['MODE']         = config[M_pattern]
+                config2['DELTA']        = 1
+                config['BLOCK_SIZE_M']  = blockM_configs[config[M_pattern]]
             else:
-                config['BLOCK_SIZE_M'] = blockM_configs_decode[config[M_pattern]]
-            # config['BLOCK_SIZE_M'] = blockM_configs[config['MODE']]
+                config1['BLOCK_SIZE_M'] = blockM_configs_decode[config[M_pattern]]
+                config1['MODE']         = config[M_pattern]
+                config1['DELTA']        = 1
+                config2['BLOCK_SIZE_M'] = blockM_configs_decode[config[M_pattern]]
+                config2['MODE']         = config[M_pattern]
+                config2['DELTA']        = 1
+                config['BLOCK_SIZE_M']  = blockM_configs_decode[config[M_pattern]]
             
         curr_topk_ids = topk_ids[begin_chunk_idx:end_chunk_idx]
         curr_topk_weights = topk_weights[begin_chunk_idx:end_chunk_idx]
@@ -1360,7 +1379,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
             block_shape=block_shape)
 
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
-                moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
+                moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
 
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
@@ -1376,7 +1395,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                 num_tokens_post_padded,
                                 apply_router_weight_on_input,
                                 top_k_num,
-                                config,
+                                config1,
                                 compute_type=compute_type,
                                 use_fp8_w8a8=use_fp8_w8a8,
                                 use_int8_w8a8=use_int8_w8a8,
@@ -1384,8 +1403,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                 use_int4_w4a16=use_int4_w4a16,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
-                                use_nn_moe=use_nn_moe,
-                                mode=config[M_pattern])
+                                use_nn_moe=use_nn_moe)
         
         if activation == "silu":
             torch.ops._C.silu_and_mul(intermediate_cache2,
@@ -1421,7 +1439,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                 num_tokens_post_padded,
                                 not apply_router_weight_on_input,
                                 1,
-                                config,
+                                config2,
                                 compute_type=compute_type,
                                 use_fp8_w8a8=use_fp8_w8a8,
                                 use_int8_w8a8=use_int8_w8a8,
@@ -1429,8 +1447,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                 use_int4_w4a16=use_int4_w4a16,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
-                                use_nn_moe=use_nn_moe,
-                                mode=config[M_pattern])
+                                use_nn_moe=use_nn_moe)
         quantiles = [0.5, 0.2, 0.8]
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: invoke_fused_moe_kernel_int8(qintermediate_cache2,
                                                                                             w2,
@@ -1445,7 +1462,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                                                                             num_tokens_post_padded,
                                                                                             not apply_router_weight_on_input,
                                                                                             1,
-                                                                                            config,
+                                                                                            config2,
                                                                                             compute_type=compute_type,
                                                                                             use_fp8_w8a8=use_fp8_w8a8,
                                                                                             use_int8_w8a8=use_int8_w8a8,
@@ -1453,8 +1470,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                                                                             use_int4_w4a16=use_int4_w4a16,
                                                                                             per_channel_quant=per_channel_quant,
                                                                                             block_shape=block_shape,
-                                                                                            use_nn_moe=use_nn_moe,
-                                                                                            mode=config[M_pattern]),quantiles=quantiles)
+                                                                                            use_nn_moe=use_nn_moe),quantiles=quantiles)
        
         elapsed_time = ms
         print("w2 _time:{} ms\n".format(elapsed_time))
@@ -1853,8 +1869,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 use_int4_w4a16=use_int4_w4a16,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
-                                use_nn_moe=use_nn_moe,
-                                mode=config1['MODE'])
+                                use_nn_moe=use_nn_moe)
         
         if activation == "silu":
             torch.ops._C.silu_and_mul(intermediate_cache2,
@@ -1898,8 +1913,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 use_int4_w4a16=use_int4_w4a16,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
-                                use_nn_moe=use_nn_moe,
-                                mode=config2['MODE'])
+                                use_nn_moe=use_nn_moe)
         
         # torch.cuda.synchronize()
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
@@ -2094,7 +2108,6 @@ def invoke_fused_moe_kernel_int8_preprocess(A: torch.Tensor,
                                             per_channel_quant: bool,
                                             block_shape: Optional[List[int]] = None,
                                             use_nn_moe: Optional[bool]=False,
-                                            mode: Optional[int]=0,
                                             gemm_compare_list: List[int]=[]) -> None:
     assert topk_weights is not None or not mul_routed_weight
     assert topk_weights is None or topk_weights.stride(1) == 1
@@ -2104,14 +2117,24 @@ def invoke_fused_moe_kernel_int8_preprocess(A: torch.Tensor,
     M = A.shape[0]
     num_tokens = M * top_k
 
+    triton_config = {   "BLOCK_SIZE_M": 64,
+        "BLOCK_SIZE_N": 64,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 1,
+        "kpack": 1,
+        "num_stages": 0,
+        "num_warps": 2
+    }
+    triton_config["BLOCK_SIZE_M"] = config["BLOCK_SIZE_M"]
+
     EM = sorted_token_ids.shape[0]
-    if A.shape[0] < config["BLOCK_SIZE_M"]:
+    if A.shape[0] < triton_config["BLOCK_SIZE_M"]:
         # optimize for small batch_size.
         # We assume that top_ids of each token is unique, so
         # so num_valid_experts <= batch_size <= BLOCK_SIZE_M,
         # and we can skip some invalid blocks.
         EM = min(sorted_token_ids.shape[0],
-                 A.shape[0] * top_k * config['BLOCK_SIZE_M'])
+                 A.shape[0] * top_k * triton_config['BLOCK_SIZE_M'])
     grid = lambda META: (triton.cdiv(EM, META['BLOCK_SIZE_M']) * triton.cdiv(
         B.shape[1] if not use_nn_moe else B.shape[2], META['BLOCK_SIZE_N']), )
 
@@ -2155,7 +2178,8 @@ def invoke_fused_moe_kernel_int8_preprocess(A: torch.Tensor,
             use_int8_w8a8=use_int8_w8a8,
             use_int8_w8a16=use_int8_w8a16,
             per_channel_quant=per_channel_quant,
-            **config
+            delta=config['DELTA'],
+            **triton_config
         )
     out_cuda = torch.zeros_like(C)
 
@@ -2169,7 +2193,7 @@ def invoke_fused_moe_kernel_int8_preprocess(A: torch.Tensor,
                     expert_ids,
                     num_tokens_post_padded, 
                     top_k,
-                    mode=mode)
+                    config)
     torch.cuda.synchronize()
     stage = 0
     if not mul_routed_weight:
@@ -2178,9 +2202,9 @@ def invoke_fused_moe_kernel_int8_preprocess(A: torch.Tensor,
         stage = 2
     if not (torch.allclose(C, out_cuda, rtol=1e-2, atol=1e-2)):
         if not mul_routed_weight and stage == 1:
-            gemm_compare_list.append(mode)
+            gemm_compare_list.append(config['MODE'])
         elif stage == 2:
-            gemm_compare_list.append(mode)    
+            gemm_compare_list.append(config['MODE'])    
 
 def fused_experts_impl_int8_preprocess(hidden_states: torch.Tensor,
                                         w1: torch.Tensor,
@@ -2302,13 +2326,24 @@ def fused_experts_impl_int8_preprocess(hidden_states: torch.Tensor,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape)
 
-        # config['BLOCK_SIZE_M'] = blockM_configs[mode0]
+        config1={}
+        config2={}
         if M > M_THRESHOLD:
-            config['BLOCK_SIZE_M'] = blockM_configs[mode0]
+            config1['BLOCK_SIZE_M'] = blockM_configs[mode0]
+            config1['MODE']         = mode0
+            config1['DELTA']        = 1
+            config2['BLOCK_SIZE_M'] = blockM_configs[mode1]
+            config2['MODE']         = mode1
+            config2['DELTA']        = 1
         else:
-            config['BLOCK_SIZE_M'] = blockM_configs_decode[mode0]
+            config1['BLOCK_SIZE_M'] = blockM_configs_decode[mode0]
+            config1['MODE']         = mode0
+            config1['DELTA']        = 1
+            config2['BLOCK_SIZE_M'] = blockM_configs_decode[mode1]
+            config2['MODE']         = mode1
+            config2['DELTA']        = 1
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
-                moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
+                moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
 
         invoke_fused_moe_kernel_int8_preprocess(qcurr_hidden_states,
@@ -2324,7 +2359,7 @@ def fused_experts_impl_int8_preprocess(hidden_states: torch.Tensor,
                                                 num_tokens_post_padded,
                                                 apply_router_weight_on_input,
                                                 top_k_num,
-                                                config,
+                                                config1,
                                                 compute_type=compute_type,
                                                 use_fp8_w8a8=use_fp8_w8a8,
                                                 use_int8_w8a8=use_int8_w8a8,
@@ -2333,7 +2368,6 @@ def fused_experts_impl_int8_preprocess(hidden_states: torch.Tensor,
                                                 per_channel_quant=per_channel_quant,
                                                 block_shape=block_shape,
                                                 use_nn_moe=use_nn_moe,
-                                                mode=mode0,
                                                 gemm_compare_list=gemm1_compare_list)
 
         if activation == "silu":
@@ -2372,7 +2406,7 @@ def fused_experts_impl_int8_preprocess(hidden_states: torch.Tensor,
                                                 num_tokens_post_padded,
                                                 not apply_router_weight_on_input,
                                                 1,
-                                                config,
+                                                config2,
                                                 compute_type=compute_type,
                                                 use_fp8_w8a8=use_fp8_w8a8,
                                                 use_int8_w8a8=use_int8_w8a8,
@@ -2381,7 +2415,6 @@ def fused_experts_impl_int8_preprocess(hidden_states: torch.Tensor,
                                                 per_channel_quant=per_channel_quant,
                                                 block_shape=block_shape,
                                                 use_nn_moe=use_nn_moe,
-                                                mode=mode1,
                                                 gemm_compare_list=gemm2_compare_list)
         
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
