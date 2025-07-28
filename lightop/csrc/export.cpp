@@ -160,18 +160,20 @@ Tensor fused_conv_bias_relu_forward(const Tensor &x, const Tensor &weight,
                                     const std::vector<int64_t> &strides,
                                     const std::vector<int64_t> &dilations);
 
-std::vector<Tensor> add_rms_norm_dynamic_quant(const Tensor &x,
-                                               const Tensor &x2,
-                                               const Tensor &weight,
-                                               const Tensor &smoothScale,
-                                               const float epsilon);
+// std::vector<Tensor> add_rms_norm_dynamic_quant(const Tensor &x,
+//                                                const Tensor &x2,
+//                                                const Tensor &weight,
+//                                                const Tensor &smoothScale,
+//                                                const float epsilon);
 
-std::vector<Tensor>
-rms_norm_dynamic_quant_without_residual(const Tensor &x, const Tensor &weight,
-                                        const Tensor &smoothScale,
-                                        const float epsilon);
-Tensor head_rms_norm(const Tensor &x, const Tensor &weight, const float epsilon,
-                     const float head_offset, const float head_num);
+// std::vector<Tensor>
+// rms_norm_dynamic_quant_without_residual(const Tensor &x, const Tensor
+// &weight,
+//                                         const Tensor &smoothScale,
+//                                         const float epsilon);
+// Tensor head_rms_norm(const Tensor &x, const Tensor &weight, const float
+// epsilon,
+//                      const float head_offset, const float head_num);
 
 std::vector<Tensor> groupnorm(const Tensor &x, const Tensor &weight,
                               const Tensor &bias, const int num_groups,
@@ -196,22 +198,23 @@ std::vector<Tensor> skip_layernorm(const Tensor &x1, const Tensor &x2,
                                    const float epsilon,
                                    const int normalized_dim, const int mode);
 
-std::vector<Tensor> moe_scatter_dynamic_quant(
-    const Tensor &hidden, const Tensor &selected_experts, const Tensor &smooth,
-    const int expert_start_idx, const int expert_end_idx,
-    const int num_shared_experts_per_rank, const int num_tokens_offset,
-    const int num_tokens_per_rank);
+// std::vector<Tensor> moe_scatter_dynamic_quant(
+//     const Tensor &hidden, const Tensor &selected_experts, const Tensor
+//     &smooth, const int expert_start_idx, const int expert_end_idx, const int
+//     num_shared_experts_per_rank, const int num_tokens_offset, const int
+//     num_tokens_per_rank);
 
-std::vector<Tensor> moe_swiglu_dynamic_quant(
-    const Tensor &scatter_tokens, const Tensor &smooth_scale,
-    const Tensor &experts_tokens_count, const int num_shared_experts_per_rank,
-    const int num_tokens_offset, const int num_tokens_per_rank,
-    const float beta);
+// std::vector<Tensor> moe_swiglu_dynamic_quant(
+//     const Tensor &scatter_tokens, const Tensor &smooth_scale,
+//     const Tensor &experts_tokens_count, const int
+//     num_shared_experts_per_rank, const int num_tokens_offset, const int
+//     num_tokens_per_rank, const float beta);
 
-Tensor moe_gather(const Tensor &scatter_tokens, const Tensor &token_offset,
-                  const Tensor &expert_weights,
-                  const int num_shared_experts_per_rank,
-                  const int num_tokens_offset, const int num_tokens_per_rank);
+// Tensor moe_gather(const Tensor &scatter_tokens, const Tensor &token_offset,
+//                   const Tensor &expert_weights,
+//                   const int num_shared_experts_per_rank,
+//                   const int num_tokens_offset, const int
+//                   num_tokens_per_rank);
 
 Tensor gemm_w8_a8_smooth_colmajor(const Tensor &x, const Tensor &y,
                                   const Tensor &scale_a, const Tensor &scale_b,
@@ -222,8 +225,11 @@ Tensor gemm_w8_a8_smooth_colmajor(const Tensor &x, const Tensor &y,
 Tensor gemm_w8a8_smooth_asm(Tensor &A, Tensor &B, Tensor &As, Tensor &Bs,
                             const std::optional<Tensor> bias,
                             torch::Dtype output_dtype, int M, int N, int K);
-Tensor mha(const Tensor &query, const Tensor &key, const Tensor &value,
-           const float droprate, const std::string layout);
+Tensor miopen_scaled_dot_product_attention(const Tensor &query,
+                                           const Tensor &key,
+                                           const Tensor &value,
+                                           const float droprate,
+                                           const std::string layout);
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
@@ -348,23 +354,27 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "fused_conv_bias_add forward");
   m.def("conv_bias_relu", &at::native::fused_conv_bias_relu_forward,
         "fused_conv_bias_relu forward");
-  m.def("add_rms_norm_dynamic_quant", &at::native::add_rms_norm_dynamic_quant,
-        "fused add rms morm dynamic quant");
-  m.def("rms_norm_dynamic_quant_without_residual",
-        &at::native::rms_norm_dynamic_quant_without_residual,
-        "rms_norm_dynamic_quant_without_residual");
-  m.def("head_rms_norm", &at::native::head_rms_norm, "head_rms_norm");
+  //   m.def("add_rms_norm_dynamic_quant",
+  //   &at::native::add_rms_norm_dynamic_quant,
+  //         "fused add rms morm dynamic quant");
+  //   m.def("rms_norm_dynamic_quant_without_residual",
+  //         &at::native::rms_norm_dynamic_quant_without_residual,
+  //         "rms_norm_dynamic_quant_without_residual");
+  //   m.def("head_rms_norm", &at::native::head_rms_norm, "head_rms_norm");
   m.def("groupnorm", &at::native::groupnorm, "groupnorm");
   m.def("add_groupnorm", &at::native::add_groupnorm, "add_groupnorm");
   m.def("layernorm", &at::native::layernorm, "layernorm");
   m.def("add_layernorm", &at::native::add_layernorm, "add_layernorm");
   m.def("skip_layernorm", &at::native::skip_layernorm, "skip_layernorm");
-  m.def("moe_scatter_dynamic_quant", &at::native::moe_scatter_dynamic_quant,
-        "moe_scatter_dynamic_quant");
-  m.def("moe_swiglu_dynamic_quant", &at::native::moe_swiglu_dynamic_quant,
-        "moe_swiglu_dynamic_quant");
-  m.def("moe_gather", &at::native::moe_gather, "moe_gather");
+  //   m.def("moe_scatter_dynamic_quant",
+  //   &at::native::moe_scatter_dynamic_quant,
+  //         "moe_scatter_dynamic_quant");
+  //   m.def("moe_swiglu_dynamic_quant", &at::native::moe_swiglu_dynamic_quant,
+  //         "moe_swiglu_dynamic_quant");
+  //   m.def("moe_gather", &at::native::moe_gather, "moe_gather");
   m.def("gemm_w8a8_smooth_asm", &at::native::gemm_w8a8_smooth_asm,
         "gemm_w8a8_smooth_asm");
-  m.def("mha", &at::native::mha, "mha");
+  m.def("miopen_scaled_dot_product_attention",
+        &at::native::miopen_scaled_dot_product_attention,
+        "miopen_scaled_dot_product_attention");
 }

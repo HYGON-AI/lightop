@@ -33,7 +33,7 @@ public:
         args.back().id     = id;
         args.back().buffer = tensor.data_ptr();
         if(tensors.count(id) != 0)
-            Exception("The ID has been inserted multiple times");
+            MIOPEN_THROW("The ID has been inserted multiple times");
         tensors[id] = std::move(tensor);
     }
 
