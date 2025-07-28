@@ -1783,32 +1783,81 @@ torch::Tensor gemm_w8a8_smooth_32x32x128_TN_dispatch(torch::Tensor &A,
     return D;
 }
 
-
+enum class Tunning_slide_block : uint8_t { // 使用 8 位无符号整数
+    B_32x32x128 = 0,
+    B_32x32x256 = 1,
+    B_64x32x128 = 2,
+	B_64x64x128 = 3,
+	B_128x32x128 = 4,
+	B_128x96x128 = 5,
+	B_128x128x64 = 6,
+	B_256x128x128 = 7,
+	B_256x256x128 = 8
+};
 
 torch::Tensor gemm_w8a8_smooth_asm_bridg(torch::Tensor &A,
                                            torch::Tensor &B,
                                            torch::Tensor &As,
                                            torch::Tensor &Bs,
                                            c10::optional<torch::Tensor> bias,
-                                           torch::Dtype output_dtype, int M, int N, int K)
+                                           torch::Dtype output_dtype, int M, int N, int K,
+										   bool isTunning_slide_block, int tunning_slide_block)
 {
-	static int BW_CUS = 80;
-	
-	
-	int numBlocks_32x32asm = (N + 32 -1)/32 * ((M + 32 -1)/32);
-	int numBlocks_64x32asm = (N + 64 -1)/64 * ((M + 32 -1)/32);
-	int numBlocks_64x64asm = (N + 64 -1)/64 * ((M + 64 -1)/64);
-	int numBlocks_128x32asm = (N + 128 -1)/128 * ((M + 32 -1)/32);
-	int numBlocks_128x96asm = (N + 128 -1)/128 * ((M + 96 -1)/96);
-	int numBlocks_128x128asm = (N + 128 -1)/128 *((M + 128 -1)/128);
-	int numBlocks_256x128asm = (N + 256 -1)/256 * ((M + 128 -1)/128);
-	int numBlocks_256x256asm = (N + 256 -1)/256 * ((M + 256 -1)/256);
-	
-	if(K == 128){
-		if(M<=64){
-			return gemm_w8a8_smooth_128x32x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
-		}else if(M<=256){
-			return gemm_w8a8_smooth_128x96x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+
+	if(isTunning_slide_block){
+		switch (static_cast<Tunning_slide_block>(tunning_slide_block)) {
+			case Tunning_slide_block::B_32x32x128:
+				return gemm_w8a8_smooth_32x32x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+			case Tunning_slide_block::B_32x32x256:
+				return gemm_w8a8_smooth_32x32x256_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+			case Tunning_slide_block::B_64x32x128:
+				return gemm_w8a8_smooth_64x32x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+			case Tunning_slide_block::B_64x64x128:
+				return gemm_w8a8_smooth_64x64x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+			case Tunning_slide_block::B_128x32x128:
+				return gemm_w8a8_smooth_128x32x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+			case Tunning_slide_block::B_128x96x128:
+				return gemm_w8a8_smooth_128x96x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+			case Tunning_slide_block::B_128x128x64:
+				return gemm_w8a8_smooth_128x128x64_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+			case Tunning_slide_block::B_256x128x128:
+				return gemm_w8a8_smooth_256x128x128_TN_dispatch(A,B ,As,Bs,M,N,K,bias ,output_dtype);
+			case Tunning_slide_block::B_256x256x128:
+				return gemm_w8a8_smooth_256x256x128_TN_dispatch(A,B ,As,Bs,M,N,K,bias ,output_dtype);
+			default:
+				TORCH_CHECK(false,"Unsupported tunning slide block type: ", tunning_slide_block);
+		}
+	}else{
+		static int BW_CUS = 80;
+		int numBlocks_32x32asm = (N + 32 -1)/32 * ((M + 32 -1)/32);
+		int numBlocks_64x32asm = (N + 64 -1)/64 * ((M + 32 -1)/32);
+		int numBlocks_64x64asm = (N + 64 -1)/64 * ((M + 64 -1)/64);
+		int numBlocks_128x32asm = (N + 128 -1)/128 * ((M + 32 -1)/32);
+		int numBlocks_128x96asm = (N + 128 -1)/128 * ((M + 96 -1)/96);
+		int numBlocks_128x128asm = (N + 128 -1)/128 *((M + 128 -1)/128);
+		int numBlocks_256x128asm = (N + 256 -1)/256 * ((M + 128 -1)/128);
+		int numBlocks_256x256asm = (N + 256 -1)/256 * ((M + 256 -1)/256);
+		
+		if(K == 128){
+			if(M<=64){
+				return gemm_w8a8_smooth_128x32x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+			}else if(M<=256){
+				return gemm_w8a8_smooth_128x96x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+			}else{
+				if(numBlocks_32x32asm < BW_CUS)
+					return gemm_w8a8_smooth_32x32x256_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+				if(numBlocks_64x32asm < BW_CUS)
+					return gemm_w8a8_smooth_64x32x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+				if(numBlocks_64x64asm < BW_CUS)
+					return gemm_w8a8_smooth_64x64x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+				if(numBlocks_128x96asm < BW_CUS)
+					return gemm_w8a8_smooth_128x96x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+				if(numBlocks_128x128asm < BW_CUS)
+					return gemm_w8a8_smooth_128x128x64_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+				if(numBlocks_256x128asm < BW_CUS*1.5)
+					return gemm_w8a8_smooth_256x128x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+				return gemm_w8a8_smooth_256x256x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
+			}
 		}else{
 			if(numBlocks_32x32asm < BW_CUS)
 				return gemm_w8a8_smooth_32x32x256_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
@@ -1824,20 +1873,6 @@ torch::Tensor gemm_w8a8_smooth_asm_bridg(torch::Tensor &A,
 				return gemm_w8a8_smooth_256x128x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
 			return gemm_w8a8_smooth_256x256x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
 		}
-	}else{
-		if(numBlocks_32x32asm < BW_CUS)
-			return gemm_w8a8_smooth_32x32x256_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
-		if(numBlocks_64x32asm < BW_CUS)
-			return gemm_w8a8_smooth_64x32x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
-		if(numBlocks_64x64asm < BW_CUS)
-			return gemm_w8a8_smooth_64x64x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
-		if(numBlocks_128x96asm < BW_CUS)
-			return gemm_w8a8_smooth_128x96x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
-		if(numBlocks_128x128asm < BW_CUS)
-			return gemm_w8a8_smooth_128x128x64_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
-		if(numBlocks_256x128asm < BW_CUS*1.5)
-			return gemm_w8a8_smooth_256x128x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
-		return gemm_w8a8_smooth_256x256x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
 	}
 	
 }
@@ -1850,10 +1885,11 @@ torch::Tensor gemm_w8a8_smooth_asm(torch::Tensor &A,
 									torch::Tensor &Bs,
 									c10::optional<torch::Tensor> bias,
 									torch::Dtype output_dtype,
-									int M, int N, int K)
+									int M, int N, int K,
+									bool isTunning_slide_block, int tunning_slide_block)
 {
     return gemm_w8a8_smooth_asm_bridg(A, B, As, Bs, bias, output_dtype,
-												  M, N, K);
+												  M, N, K, isTunning_slide_block, tunning_slide_block);
 }
 }
 } // namespace at
