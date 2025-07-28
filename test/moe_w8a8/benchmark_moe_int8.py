@@ -674,16 +674,19 @@ def fuse_moe_correctness_preprocess(
         num_iters: int=100,
         block_quant_shape: List[int] = None,
         block_m_configs: dict[str, int]=None,
+        seed: int=0,
+        device_id: int=0,
     ) -> tuple[dict[str, int], float]:
     
-    mode_ranges = [mode for mode in block_m_configs.keys()]
+    mode_ranges = [mode for mode in block_m_configs.keys() if mode < 1000]
     gemm1_compare_failed_list = []
-    gemm2_compare_failed_list = []
+    gemm2_compare_failed_list = [1000]
+    device="cuda:"+str(device_id)
     
     for mode in mode_ranges:
         mode_list=[mode,mode]
         # print("mode:{} m:{} n:{} k:{} ".format(mode_list, num_tokens,shard_intermediate_size,hidden_size))
-        input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=num_experts,block_size=None,out_dtype=dtype)
+        input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=num_experts,device=device,block_size=None,out_dtype=dtype)
         # triton moe: output
         output=fused_experts_impl_int8_preprocess(hidden_states=input,
                                                     w1=weight13,
@@ -893,23 +896,24 @@ def prune_rocm_configs(M, N, K, configs, is_fp16=True, gemm_compare_failed_list=
     pruned_configs = []
     if(M > M_THRESHOLD):
         for config in configs[0]:
-            mode = config.get("MODE_PREFILL")
+            prefill_config = {k : v for k, v in config.items()}
+            mode = prefill_config.get("MODE_PREFILL")
             exclude_modes = gemm_compare_failed_list
             # #remove warps=2
             if mode in exclude_modes:
                 continue
 
-            pruned_configs.append(config)
+            pruned_configs.append(prefill_config)
     else:
         for config in configs[1]:
-            mode = config.get("MODE_DECODE")
+            decode_config = {k : v for k, v in config.items()}
+            mode = decode_config.get("MODE_DECODE")
             exclude_modes = gemm_compare_failed_list
             # #remove warps=2
             if mode in exclude_modes:
                 continue
-            pruned_configs.append(config)
-    # import pdb
-    # pdb.set_trace()
+            pruned_configs.append(decode_config)
+
     return pruned_configs
 
 
@@ -1015,7 +1019,8 @@ class BenchmarkWorker:
                                                                         shard_intermediate_size, hidden_size,
                                                                         topk, dtype, use_fp8_w8a8,
                                                                         use_int8_w8a16, use_int8_w8a8, block_quant_shape=block_quant_shape,
-                                                                        block_m_configs = block_configs)
+                                                                        block_m_configs = block_configs,seed=self.seed, device_id=self.device_id)
+        
         
         if current_platform.is_rocm():
             is_fp16 = is_fp16 = not (use_fp8_w8a8 or use_int8_w8a16 or use_int8_w8a8)
@@ -1037,12 +1042,12 @@ class BenchmarkWorker:
                 
                 time_kernel1 = float('inf')
                 config_kernel1 = None
-                for config in search_space_kernel0:
-                    if block_configs[config[mode_pattern]] != block_m:
+                for config0 in search_space_kernel0:
+                    if block_configs[config0[mode_pattern]] != block_m:
                         continue
                     try:
                         kernel_time = benchmark_config(
-                                            config,
+                                            config0,
                                             num_tokens,
                                             num_experts,
                                             shard_intermediate_size,
@@ -1061,13 +1066,13 @@ class BenchmarkWorker:
                         continue
                     if kernel_time < time_kernel0:
                         time_kernel0 = kernel_time
-                        config_kernel0 = config 
-                for config in search_space_kernel1:
-                    if block_configs[config[mode_pattern]] > block_m:
+                        config_kernel0 = config0
+                for config1 in search_space_kernel1:
+                    if block_configs[config1[mode_pattern]] > block_m:
                         continue
                     try:
                         kernel_time = benchmark_config(
-                                            config,
+                                            config1,
                                             num_tokens,
                                             num_experts,
                                             shard_intermediate_size,
@@ -1086,7 +1091,7 @@ class BenchmarkWorker:
                         continue
                     if kernel_time < time_kernel1:
                         time_kernel1 = kernel_time
-                        config_kernel1 = config                     
+                        config_kernel1 = config1                     
                 now = datetime.now()
                 print(f"{now.ctime()}] Completed tuning for batch_size={num_tokens}")
                 if (time_kernel0 + time_kernel1) < best_time:
@@ -1098,9 +1103,8 @@ class BenchmarkWorker:
             best_config_kernel0['MODE'] = best_config_kernel0.pop(mode_pattern)
             best_config_kernel1['MODE'] = best_config_kernel1.pop(mode_pattern)
 
-
-        best_config_kernel1['DELTA'] = 1
-        best_config_kernel1['DELTA'] = best_config_kernel0['BLOCK_SIZE_M']/best_config_kernel1['BLOCK_SIZE_M']           
+        best_config_kernel0['DELTA'] = 1
+        best_config_kernel1['DELTA'] = int(best_config_kernel0['BLOCK_SIZE_M']/best_config_kernel1['BLOCK_SIZE_M'])           
         return best_config_kernel0, best_config_kernel1
 
 
@@ -1276,16 +1280,16 @@ def main(args: argparse.Namespace):
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             # 1, 2, 4, 8, 16, 32, 64, 128,
-            # 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
+            256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
             # 1, 2, 4, 8, 16, 32, 64, 8192, 16384, 32768
             # 4096, 6144, 8192, 16384, 32768
-            #1024, 2048, 4096, 6144, 8192, 16384
+            # 1024, 2048, 4096, 6144, 8192, 16384
             # 65536,32768,
             # 32768, 49152, 65536, 131072
             # 6144, 8192, 16384, 32768, 40960
-            4096,
-            # 256,
+            # 512,
+            # 1024,2048,4096
         ]
     else:
         batch_sizes = [args.batch_size]
