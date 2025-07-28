@@ -1200,6 +1200,7 @@ def fused_moe_kernel(
     use_int8_w8a8: tl.constexpr,
     use_int8_w8a16: tl.constexpr,
     per_channel_quant: tl.constexpr,
+    delta: tl.constexpr,
 ):
     """
     Implements the fused computation for a Mixture of Experts (MOE) using
@@ -1273,7 +1274,7 @@ def fused_moe_kernel(
     a_ptrs = a_ptr + (offs_token[:, None] // top_k * stride_am +
                       offs_k[None, :] * stride_ak)
 
-    off_experts = tl.load(expert_ids_ptr + pid_m).to(tl.int64)
+    off_experts = tl.load(expert_ids_ptr + pid_m // delta).to(tl.int64)
     b_ptrs = b_ptr + off_experts * stride_be + (offs_k[:, None] * stride_bk +
                                                 offs_bn[None, :] * stride_bn)
     if use_int8_w8a16:
@@ -1639,7 +1640,7 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
     M = A.shape[0]
     num_tokens = M * top_k
 
-    new_config = {   "BLOCK_SIZE_M": 64,
+    triton_config = {   "BLOCK_SIZE_M": 64,
         "BLOCK_SIZE_N": 64,
         "BLOCK_SIZE_K": 64,
         "GROUP_SIZE_M": 1,
@@ -1647,15 +1648,15 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
         "num_stages": 0,
         "num_warps": 2
     }
-    new_config["BLOCK_SIZE_M"] = config["BLOCK_SIZE_M"]
+    triton_config["BLOCK_SIZE_M"] = config["BLOCK_SIZE_M"]
     EM = sorted_token_ids.shape[0]
-    if A.shape[0] < new_config["BLOCK_SIZE_M"]:
+    if A.shape[0] < triton_config["BLOCK_SIZE_M"]:
         # optimize for small batch_size.
         # We assume that top_ids of each token is unique, so
         # so num_valid_experts <= batch_size <= BLOCK_SIZE_M,
         # and we can skip some invalid blocks.
         EM = min(sorted_token_ids.shape[0],
-                 A.shape[0] * top_k * new_config['BLOCK_SIZE_M'])
+                 A.shape[0] * top_k * triton_config['BLOCK_SIZE_M'])
     grid = lambda META: (triton.cdiv(EM, META['BLOCK_SIZE_M']) * triton.cdiv(
         B.shape[1] if not use_nn_moe else B.shape[2], META['BLOCK_SIZE_N']), )
 
@@ -1700,7 +1701,8 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
             use_int8_w8a8=use_int8_w8a8,
             use_int8_w8a16=use_int8_w8a16,
             per_channel_quant=per_channel_quant,
-            **new_config
+            delta=config['DELTA']
+            **triton_config
         )
     
     
@@ -1714,7 +1716,7 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
                     expert_ids,
                     num_tokens_post_padded, 
                     top_k,
-                    mode=mode)
+                    config)
     
     torch.cuda.synchronize()
     if not (torch.allclose(C, out_triton, rtol=1e-2, atol=1e-2)):
@@ -2536,9 +2538,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 use_int4_w4a16=use_int4_w4a16,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
-                                use_nn_moe=use_nn_moe,
-                                #mode=1000)
-                                mode=config1['MODE'])
+                                use_nn_moe=use_nn_moe)
         
         if activation == "silu":
             torch.ops._C.silu_and_mul(intermediate_cache2,
@@ -2591,8 +2591,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 use_int4_w4a16=use_int4_w4a16,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
-                                use_nn_moe=use_nn_moe,
-                                mode=config2['MODE'])
+                                use_nn_moe=use_nn_moe)
         
         # torch.cuda.synchronize()
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
