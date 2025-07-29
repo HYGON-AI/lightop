@@ -75,7 +75,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel(
   // int bidz = blockIdx.z; // pid_k 
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 4, bidx, bidy);
 
-  if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   
   constexpr int STAGES = BLOCK_SIZE_K/WARP_K; 
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
@@ -231,8 +231,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel(
   // int bidz = blockIdx.x; // pid_k 
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 8, bidx, bidy);
 
-  if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  
   const int STAGES = BLOCK_SIZE_K/WARP_K; // 采用两stage
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
   const uint32_t delta_bidx = bidx / delta;
@@ -392,8 +392,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
   // int bidz = blockIdx.z; // pid_k 
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 4, bidx, bidy);
 
-  if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  
   constexpr int STAGES = BLOCK_SIZE_K/WARP_K; 
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
   const int32_t delta_bidx = bidx / delta;
@@ -552,9 +552,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
   // int bidz = blockIdx.x; // pid_k 
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 8, bidx, bidy);
 
-
-  if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  
   const int STAGES = BLOCK_SIZE_K/WARP_K; // 采用两stage
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
   const int32_t delta_bidx = bidx / delta;
