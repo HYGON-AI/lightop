@@ -678,13 +678,17 @@ def fuse_moe_correctness_preprocess(
         device_id: int=0,
     ) -> tuple[dict[str, int], float]:
     
-    mode_ranges = [mode for mode in block_m_configs.keys() if mode < 1000]
+    mode_ranges = [mode for mode in block_m_configs.keys()]
     gemm1_compare_failed_list = []
     gemm2_compare_failed_list = [1000]
     device="cuda:"+str(device_id)
     
     for mode in mode_ranges:
-        mode_list=[mode,mode]
+        mode0 = mode
+        mode1 = mode
+        if mode0 == 1000:
+            mode1 = 49
+        mode_list=[mode0,mode1]
         # print("mode:{} m:{} n:{} k:{} ".format(mode_list, num_tokens,shard_intermediate_size,hidden_size))
         input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=num_experts,device=device,block_size=None,out_dtype=dtype)
         # triton moe: output
