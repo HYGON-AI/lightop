@@ -9,7 +9,7 @@ weight_nhwc = weight.contiguous(memory_format=torch.channels_last)
 bias = torch.randn(1, 256, 1, 1).cuda()
 bias_nhwc = bias.contiguous(memory_format=torch.channels_last)
 
-output = lightop.conv_bias(
+output = lightop.miopen_conv_bias(
     x=input_nhwc, weight=weight_nhwc, bias=bias_nhwc, padding=[1, 1], stride=[1, 1], dilation=[1, 1]
 )
 torch.cuda.synchronize()
