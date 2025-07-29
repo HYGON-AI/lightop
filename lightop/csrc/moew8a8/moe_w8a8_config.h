@@ -1,8 +1,8 @@
 #pragma once
 #include <unordered_map>
 #include <functional>
-#define MOE_THRESHOLD 128  // MOE prefill和decode的分界线
-
+// MOE prefill和decode的分界线
+#define MOE_THRESHOLD 128  
 
 namespace at {
 namespace native {
@@ -464,6 +464,15 @@ static std::unordered_map<int, KernelFunc> kernel_maps_gemm1_decode = {
     {33, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 16, 384, 16, 16, 64, char>(p); }},
     {34, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 32, 384, 16, 16, 64, char>(p); }},
     {35, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 32, 384, 16, 32, 64, char>(p); }},
+    {36, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<32, 16, 1024, 16, 16, 64, char>(p); }},
+    {37, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<32, 32, 1024, 16, 32, 64, char>(p); }},
+    {38, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<32, 32, 512, 16, 16, 64, char>(p); }},
+    {39, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<32, 32, 512, 16, 16, 64, char>(p); }},
+
+    {40, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 32, 512, 16, 16, 64, char>(p); }},
+    {41, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 64, 512, 16, 32, 64, char>(p); }},
+    {42, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 64, 256, 16, 16, 64, char>(p); }},
+    {43, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 128, 256, 32, 16, 64, char>(p); }},
     
     
 };
@@ -511,10 +520,20 @@ static std::unordered_map<int, KernelFunc> kernel_maps_gemm2_decode = {
     {30, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<16, 128, 128, 16, 32, 128, char>(p); }},
     {31, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<16, 256, 128, 16, 32, 128, char>(p); }},
 
-    {32, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 64, 384, 16, 32, 64, char>(p); }},
-    {33, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 32, 384, 16, 32, 64, char>(p); }},
-    {34, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 16, 384, 16, 16, 64, char>(p); }},
-    {35, [](const GemmParams<char>& p) { launch_moe_gemm_first_stage_decode<16, 32, 384, 16, 32, 64, char>(p); }},
+    {32, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<16, 64, 384, 16, 32, 64, char>(p); }},
+    {33, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<16, 32, 384, 16, 32, 64, char>(p); }},
+    {34, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<16, 16, 384, 16, 16, 64, char>(p); }},
+    {35, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<16, 32, 384, 16, 32, 64, char>(p); }},
+
+    {36, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<32, 16, 1024, 16, 16, 64, char>(p); }},
+    {37, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<32, 32, 1024, 16, 32, 64, char>(p); }},
+    {38, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<32, 32, 512, 16, 16, 64, char>(p); }},
+    {39, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<32, 32, 512, 16, 16, 64, char>(p); }},
+
+    {40, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<16, 16, 1024, 16, 16, 64, char>(p); }},
+    {41, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<16, 32, 1024, 16, 32, 64, char>(p); }},
+    {42, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<16, 32, 512, 16, 16, 64, char>(p); }},
+    {43, [](const GemmParams<char>& p) { launch_moe_gemm_second_stage_decode<16, 32, 512, 16, 16, 64, char>(p); }},
 };
 
 }
