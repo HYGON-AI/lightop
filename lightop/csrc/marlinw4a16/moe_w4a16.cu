@@ -12,70 +12,6 @@ namespace at {
 namespace native {
 namespace marlin_moe_w4a16{
 
-// 目前只支持了 uint4 数据的量化
-torch::Tensor awq_marlin_repack(torch::Tensor& b_q_weight, int64_t size_k, int64_t size_n, int64_t num_bits){
-  // Verify compatibility with marlin tile of 16x128
-  TORCH_CHECK(size_k % at::native::marlin_moe_w4a16::tile_k_size == 0, "size_k = ", size_k,
-              " is not divisible by tile_k_size = ", at::native::marlin_moe_w4a16::tile_k_size); // K维度 必须是 16 的倍数
-  TORCH_CHECK(size_n % at::native::marlin_moe_w4a16::tile_n_size == 0, "size_n = ", size_n,
-              " is not divisible by tile_n_size = ", at::native::marlin_moe_w4a16::tile_n_size); // N维度 必须是 128 的倍数
-
-  TORCH_CHECK(num_bits == 4,
-              "num_bits must be 4. Got = ", num_bits); // 目前只支持 uint4 量化
-  int const pack_factor = 32 / num_bits; // 一个int32 需要包含几个 量化后的权重数据  8
-
-  // Verify B   量化后B矩阵size  size_k, size_n / pack_factor
-  TORCH_CHECK(b_q_weight.size(0) == size_k,
-              "b_q_weight.size(0) = ", b_q_weight.size(0),
-              " is not size_k = ", size_k);
-  TORCH_CHECK((size_n / pack_factor) == b_q_weight.size(1),
-              "Shape mismatch: b_q_weight.size(1) = ", b_q_weight.size(1),
-              ", size_n = ", size_n, ", pack_factor = ", pack_factor);
-  
-  // Verify device and strides
-  TORCH_CHECK(b_q_weight.device().is_cuda(), "b_q_weight is not on GPU");
-  TORCH_CHECK(b_q_weight.is_contiguous(), "b_q_weight is not contiguous");
-  TORCH_CHECK(b_q_weight.dtype() == at::kInt, "b_q_weight type is not kInt");
-
-  // Alloc buffers
-  const at::cuda::OptionalCUDAGuard device_guard(device_of(b_q_weight));
-  auto options = torch::TensorOptions()
-                    .dtype(b_q_weight.dtype())
-                    .device(b_q_weight.device());
-  // 申请一个 [size_k /16, size_n * 16 / 8] 的Tensor 即 Marlin 处理后的结果Tensor
-  torch::Tensor out = torch::empty(
-      {size_k / at::native::marlin_moe_w4a16::tile_size, size_n * at::native::marlin_moe_w4a16::tile_size / pack_factor},
-      options);
-
-  // Get ptrs 转成 uint32 的指针
-  uint32_t const* b_q_weight_ptr =
-      reinterpret_cast<uint32_t const*>(b_q_weight.data_ptr());
-  uint32_t* out_ptr = reinterpret_cast<uint32_t*>(out.data_ptr());
-
-  // Get dev info
-  int dev = b_q_weight.get_device();
-  cudaStream_t stream = at::cuda::getCurrentCUDAStream(dev);
-  int blocks;
-  cudaDeviceGetAttribute(&blocks, cudaDevAttrMultiProcessorCount, dev);
-
-  int max_shared_mem = 0;
-  cudaDeviceGetAttribute(&max_shared_mem,
-                        cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
-  TORCH_CHECK(max_shared_mem > 0);
-
-  
-  // 目前只支持 uint4
-  if (false) {
-  }else if(num_bits==4){
-    awq_marlin_repack_kernel<256, 4><<<blocks, 256, max_shared_mem, stream>>>(b_q_weight_ptr, out_ptr, size_k, size_n);
-  }
-  else {
-    TORCH_CHECK(false, "Unsupported repack config: num_bits = ", num_bits);
-  }
-
-  return out;
-}
-
 void marlin_mm(const void* A, const void* B, void* C, void* s_zp,
               void* sorted_token_ids, void* expert_ids,
               void* num_tokens_past_padded, void* topk_weights,
@@ -341,6 +277,70 @@ torch::Tensor moe_marlin_w4a16(torch::Tensor& a,
 
   return c;
 } // end moe_wna16_marlin_gemm
+
+// 目前只支持了 uint4 数据的量化
+torch::Tensor awq_marlin_repack(torch::Tensor& b_q_weight, int64_t size_k, int64_t size_n, int64_t num_bits){
+  // Verify compatibility with marlin tile of 16x128
+  TORCH_CHECK(size_k % at::native::marlin_moe_w4a16::tile_k_size == 0, "size_k = ", size_k,
+              " is not divisible by tile_k_size = ", at::native::marlin_moe_w4a16::tile_k_size); // K维度 必须是 16 的倍数
+  TORCH_CHECK(size_n % at::native::marlin_moe_w4a16::tile_n_size == 0, "size_n = ", size_n,
+              " is not divisible by tile_n_size = ", at::native::marlin_moe_w4a16::tile_n_size); // N维度 必须是 128 的倍数
+
+  TORCH_CHECK(num_bits == 4,
+              "num_bits must be 4. Got = ", num_bits); // 目前只支持 uint4 量化
+  int const pack_factor = 32 / num_bits; // 一个int32 需要包含几个 量化后的权重数据  8
+
+  // Verify B   量化后B矩阵size  size_k, size_n / pack_factor
+  TORCH_CHECK(b_q_weight.size(0) == size_k,
+              "b_q_weight.size(0) = ", b_q_weight.size(0),
+              " is not size_k = ", size_k);
+  TORCH_CHECK((size_n / pack_factor) == b_q_weight.size(1),
+              "Shape mismatch: b_q_weight.size(1) = ", b_q_weight.size(1),
+              ", size_n = ", size_n, ", pack_factor = ", pack_factor);
+  
+  // Verify device and strides
+  TORCH_CHECK(b_q_weight.device().is_cuda(), "b_q_weight is not on GPU");
+  TORCH_CHECK(b_q_weight.is_contiguous(), "b_q_weight is not contiguous");
+  TORCH_CHECK(b_q_weight.dtype() == at::kInt, "b_q_weight type is not kInt");
+
+  // Alloc buffers
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(b_q_weight));
+  auto options = torch::TensorOptions()
+                    .dtype(b_q_weight.dtype())
+                    .device(b_q_weight.device());
+  // 申请一个 [size_k /16, size_n * 16 / 8] 的Tensor 即 Marlin 处理后的结果Tensor
+  torch::Tensor out = torch::empty(
+      {size_k / at::native::marlin_moe_w4a16::tile_size, size_n * at::native::marlin_moe_w4a16::tile_size / pack_factor},
+      options);
+
+  // Get ptrs 转成 uint32 的指针
+  uint32_t const* b_q_weight_ptr =
+      reinterpret_cast<uint32_t const*>(b_q_weight.data_ptr());
+  uint32_t* out_ptr = reinterpret_cast<uint32_t*>(out.data_ptr());
+
+  // Get dev info
+  int dev = b_q_weight.get_device();
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream(dev);
+  int blocks;
+  cudaDeviceGetAttribute(&blocks, cudaDevAttrMultiProcessorCount, dev);
+
+  int max_shared_mem = 0;
+  cudaDeviceGetAttribute(&max_shared_mem,
+                        cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
+  TORCH_CHECK(max_shared_mem > 0);
+
+  
+  // 目前只支持 uint4
+  if (false) {
+  }else if(num_bits==4){
+    at::native::marlin_moe_w4a16::awq_marlin_repack_kernel<256, 4><<<blocks, 256, max_shared_mem, stream>>>(b_q_weight_ptr, out_ptr, size_k, size_n);
+  }
+  else {
+    TORCH_CHECK(false, "Unsupported repack config: num_bits = ", num_bits);
+  }
+
+  return out;
+}
 
 } 
 }

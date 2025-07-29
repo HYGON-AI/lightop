@@ -1013,3 +1013,7 @@ def moe_marlin_w4a16(a: torch.Tensor,
                         )
     return output
 
+def awq_marlin_repack(b_q_weight: torch.Tensor, size_k: int, size_n: int, num_bits: int) -> torch.Tensor:
+    output = op.awq_marlin_repack(b_q_weight, size_k, size_n, num_bits)
+    return output
+
