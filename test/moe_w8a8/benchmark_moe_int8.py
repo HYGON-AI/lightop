@@ -1220,59 +1220,70 @@ def main(args: argparse.Namespace):
         tp_size = tp_size // moe_ep_size
     
     block_quant_shape = None
-    config = AutoConfig.from_pretrained(
-        args.model, trust_remote_code=args.trust_remote_code)
-    if config.architectures[0] == "DbrxForCausalLM":
-        E = config.ffn_config.moe_num_experts
-        E = E // moe_ep_size
-        topk = config.ffn_config.moe_top_k
-        intermediate_size = config.ffn_config.ffn_hidden_size
-        shard_intermediate_size = 2 * intermediate_size // tp_size
-    elif config.architectures[0] == "JambaForCausalLM":
-        E = config.num_experts
-        E = E // moe_ep_size
-        topk = config.num_experts_per_tok
-        intermediate_size = config.intermediate_size
-        shard_intermediate_size = 2 * intermediate_size // tp_size
-    elif (config.architectures[0] == "DeepseekV3ForCausalLM"
-          or config.architectures[0] == "DeepseekV2ForCausalLM"):
-        E = config.n_routed_experts
-        E = E // moe_ep_size
-        topk = config.num_experts_per_tok
-        intermediate_size = config.moe_intermediate_size
-        shard_intermediate_size = 2 * intermediate_size // tp_size
-        block_quant_shape = get_weight_block_size_safety(config)
-    elif config.architectures[0] == "Qwen2MoeForCausalLM":
-        E = config.num_experts
-        E = E // moe_ep_size
-        topk = config.num_experts_per_tok
-        intermediate_size = config.moe_intermediate_size
-        shard_intermediate_size = 2 * intermediate_size // tp_size
-    else:
-        if not hasattr(config, "hidden_size"):
-            # Support for llama4
-            config = config.text_config
-        # Default: Mixtral.
-        E = config.num_local_experts
-        E = E // moe_ep_size
-        topk = config.num_experts_per_tok
-        intermediate_size = config.intermediate_size
-        shard_intermediate_size = 2 * intermediate_size // tp_size
+    topk = 8
+    # config = AutoConfig.from_pretrained(
+    #     args.model, trust_remote_code=args.trust_remote_code)
+    # if config.architectures[0] == "DbrxForCausalLM":
+    #     E = config.ffn_config.moe_num_experts
+    #     E = E // moe_ep_size
+    #     topk = config.ffn_config.moe_top_k
+    #     intermediate_size = config.ffn_config.ffn_hidden_size
+    #     shard_intermediate_size = 2 * intermediate_size // tp_size
+    # elif config.architectures[0] == "JambaForCausalLM":
+    #     E = config.num_experts
+    #     E = E // moe_ep_size
+    #     topk = config.num_experts_per_tok
+    #     intermediate_size = config.intermediate_size
+    #     shard_intermediate_size = 2 * intermediate_size // tp_size
+    # elif (config.architectures[0] == "DeepseekV3ForCausalLM"
+    #       or config.architectures[0] == "DeepseekV2ForCausalLM"):
+    #     E = config.n_routed_experts
+    #     E = E // moe_ep_size
+    #     topk = config.num_experts_per_tok
+    #     intermediate_size = config.moe_intermediate_size
+    #     shard_intermediate_size = 2 * intermediate_size // tp_size
+    #     block_quant_shape = get_weight_block_size_safety(config)
+    # elif config.architectures[0] == "Qwen2MoeForCausalLM":
+    #     E = config.num_experts
+    #     E = E // moe_ep_size
+    #     topk = config.num_experts_per_tok
+    #     intermediate_size = config.moe_intermediate_size
+    #     shard_intermediate_size = 2 * intermediate_size // tp_size
+    # else:
+    #     if not hasattr(config, "hidden_size"):
+    #         # Support for llama4
+    #         config = config.text_config
+    #     # Default: Mixtral.
+    #     E = config.num_local_experts
+    #     E = E // moe_ep_size
+    #     topk = config.num_experts_per_tok
+    #     intermediate_size = config.intermediate_size
+    #     shard_intermediate_size = 2 * intermediate_size // tp_size
 
-    # int8 fuse-moe
-    shard_intermediate_size = shard_intermediate_size * 2
-    # block_quant_shape = [128, 128]
-    block_quant_shape = None
-    hidden_size = config.hidden_size
+    # # int8 fuse-moe
+    # shard_intermediate_size = shard_intermediate_size * 2
+    # # block_quant_shape = [128, 128]
+    # block_quant_shape = None
+    # hidden_size = config.hidden_size
     dtype = torch.bfloat16 if current_platform.is_rocm() else config.torch_dtype
     use_fp8_w8a8 = args.dtype == "fp8_w8a8"
     use_int8_w8a16 = args.dtype == "int8_w8a16"
     use_int8_w8a8 = args.dtype == "int8_w8a8"
     
-    # E = 128
-    # ##qwen3-30b-A3B-tp1
-    # shard_intermediate_size=1536
-    # hidden_size=2048
+    # ## deepseek-r1-tp16
+    # E = 256
+    # shard_intermediate_size=256
+    # hidden_size=7168
+    
+    # ## deepseek-r1-tp8
+    # E = 256
+    # shard_intermediate_size=512
+    # hidden_size=7168
+    
+    E = 128
+    ##qwen3-30b-A3B-tp1
+    shard_intermediate_size=1536
+    hidden_size=2048
     # # ##qwen3-30b-A3B-tp2
     # # shard_intermediate_size=768
     # # hidden_size=2048
