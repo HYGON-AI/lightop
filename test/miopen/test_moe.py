@@ -20,7 +20,7 @@ smooth = torch.randn(num_shared_experts_per_rank + num_experts_per_rank, hidden_
 
 # 调用被测函数
 scatter_tokens, scatter_per_token_scale, per_tokeexperts_token_countn_scale, token_offset = (
-    lightop.moe_scatter_dynamic_quant(
+    lightop.miopen_moe_scatter_dynamic_quant(
         hidden,
         selected_experts,
         smooth,
@@ -42,7 +42,7 @@ scatter_tokens1 = torch.randn(
     num_shared_experts_per_rank * num_tokens_per_rank + num_tokens_per_rank * topk, hidden_size, dtype=torch.bfloat16
 ).cuda()
 experts_tokens_count = torch.randn(num_experts_per_rank, dtype=torch.bfloat16).cuda()
-y, per_token_scale = lightop.moe_swiglu_dynamic_quant(
+y, per_token_scale = lightop.miopen_moe_swiglu_dynamic_quant(
     scatter_tokens1,
     smooth,
     experts_tokens_count,
@@ -62,7 +62,7 @@ x1 = torch.randn(
 x2 = torch.randn(num_tokens_per_rank * topk, dtype=torch.bfloat16).cuda()
 x3 = torch.randn(num_tokens, topk, dtype=torch.float32).cuda()
 
-y = lightop.moe_gather(x1, x2, x3, num_shared_experts_per_rank, num_tokens_offset, num_tokens_per_rank)
+y = lightop.miopen_moe_gather(x1, x2, x3, num_shared_experts_per_rank, num_tokens_offset, num_tokens_per_rank)
 
 print(y)
 

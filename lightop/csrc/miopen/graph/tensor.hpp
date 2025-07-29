@@ -1,4 +1,3 @@
-#pragma once
 #include "miopen/miopen-wrapper.h"
 #include "miopen/Descriptors.h"
 #include <ATen/ATen.h>
@@ -15,32 +14,5 @@ std::vector<int64_t> GetConvForwardOutputDim(const TensorDescriptor& input,
                                              const std::vector<int64_t>& pads,
                                              const std::vector<int64_t>& strides,
                                              const std::vector<int64_t>& dilations);
-
-class InitTensor
-{
-private:
-    std::vector<miopenTensorDescriptor_t> descVector;
-    std::vector<miopenTensorArgument_t> args;
-    miopenProblem_t problem = nullptr;
-    std::map<miopenTensorArgumentId_t, at::Tensor> tensors;
-
-public:
-    void setTensor(miopenTensorArgumentId_t id, TensorDescriptor& input, const at::Tensor& tensor)
-    {
-        MIOPEN_CHECK(miopenSetProblemTensorDescriptor(problem, id, input.mut_desc()));
-        descVector.push_back(input.mut_desc());
-        args.emplace_back();
-        args.back().id     = id;
-        args.back().buffer = tensor.data_ptr();
-        if(tensors.count(id) != 0)
-            MIOPEN_THROW("The ID has been inserted multiple times");
-        tensors[id] = std::move(tensor);
-    }
-
-    std::vector<miopenTensorArgument_t>& getArgs() { return args; }
-    miopenProblem_t& getProblem() { return problem; }
-    std::vector<miopenTensorDescriptor_t> getDescVector() { return descVector; }
-    std::map<miopenTensorArgumentId_t, at::Tensor> getTensors() { return tensors; }
-};
 } // namespace native
 } // namespace at

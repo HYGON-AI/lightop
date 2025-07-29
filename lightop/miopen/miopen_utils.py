@@ -1,6 +1,6 @@
 import collections
 from itertools import repeat
-from typing import Any, Union
+from typing import Union
 from torch import Size
 
 

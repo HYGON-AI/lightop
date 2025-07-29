@@ -3,6 +3,8 @@
 #include "miopen/Handle.h"
 #include <miopen/Exceptions.h>
 #include <vector>
+#include <optional>
+#include <cmath>
 #include <torch/extension.h>
 #include <ATen/ATen.h>
 #include <tuple>
@@ -11,35 +13,45 @@
 namespace at {
 namespace native {
 
+static miopenTensorArgument_t setProblemTensorDescriptor(miopenProblem_t& problem,
+                                                         miopenTensorArgumentId_t id,
+                                                         TensorDescriptor& input,
+                                                         const void* tensor_data_ptr)
+{
+    MIOPEN_CHECK(miopenSetProblemTensorDescriptor(problem, id, input.mut_desc()));
+    return miopenTensorArgument_t{id, input.get_storage_addr(), const_cast<void*>(tensor_data_ptr)};
+}
+
 Tensor miopen_scaled_dot_product_attention(const Tensor& query,
                                            const Tensor& key,
                                            const Tensor& value,
-                                           const float droprate     = 0.5,
-                                           const std::string layout = "BHSD")
+                                           const std::optional<Tensor>& attn_mask_,
+                                           const double droprate       = 0.0,
+                                           const bool is_causal        = false,
+                                           std::optional<double> scale = std::nullopt,
+                                           const bool enable_gqa       = false)
 {
-    InitTensor x;
-    miopenProblem_t& problem = x.getProblem();
+
     MhaDescriptor mha_descriptor;
-    mha_descriptor.SetParams(1);
+    mha_descriptor.SetParams(1 / std::sqrt(query.sizes()[3]));
+    miopenProblem_t problem = nullptr;
     MIOPEN_CHECK(miopenCreateMhaProblem(&problem, &mha_descriptor, miopenProblemDirectionForward));
 
-    bool is_bshd       = layout.compare("BSHD") == 0;
+    bool is_bshd       = false;
     const int n        = query.sizes()[0];
     const int head_q   = query.sizes()[1];
-    const int head_k   = key.sizes()[1];
     const int seqlen_q = query.sizes()[2];
     const int seqlen_k = key.sizes()[2];
-    const int dim_q    = query.sizes()[3];
     const int dim_v    = value.sizes()[3];
 
     Tensor padding_mask = at::empty({n, 1, 1, 1}, query.options().dtype(at::kInt)).fill_(seqlen_k);
     Tensor bias         = at::empty({n, 1, seqlen_q, seqlen_k}, query.options().dtype(at::kFloat)).fill_(0);
     Tensor descaleQ     = at::empty({1, 1, 1, 1}, query.options().dtype(at::kFloat)).fill_(1);
-    Tensor descaleK     = at::empty_like(descaleQ);
-    Tensor descaleV     = at::empty_like(descaleQ);
-    Tensor descaleS     = at::empty_like(descaleQ);
-    Tensor scaleS       = at::empty_like(descaleQ);
-    Tensor scaleO       = at::empty_like(descaleQ);
+    Tensor descaleK     = at::empty_like(descaleQ).fill_(1);
+    Tensor descaleV     = at::empty_like(descaleQ).fill_(1);
+    Tensor descaleS     = at::empty_like(descaleQ).fill_(1);
+    Tensor scaleS       = at::empty_like(descaleQ).fill_(1);
+    Tensor scaleO       = at::empty_like(descaleQ).fill_(1);
     Tensor dropProb     = at::empty({1, 1, 1, 1}, query.options().dtype(at::kFloat)).fill_(droprate);
     Tensor dropSeed     = at::empty({1, 1, 1, 1}, query.options().dtype(at::kLong))
                           .fill_(c10::Scalar(static_cast<uint64_t>(0xAAFFFFFFFFull)));
@@ -50,72 +62,55 @@ Tensor miopen_scaled_dot_product_attention(const Tensor& query,
     Tensor AmaxO      = at::empty({1, 1, 1, 1}, query.options().dtype(at::kFloat));
     Tensor AmaxS      = at::empty_like(AmaxO);
     Tensor O          = !is_bshd ? at::empty_strided({n, head_q, seqlen_q, dim_v},
-                                            {n * head_q * seqlen_q, seqlen_q * dim_v, dim_v, 1},
+                                            {head_q * seqlen_q * dim_v, seqlen_q * dim_v, dim_v, 1},
                                             query.options())
                                  : at::empty_strided({n, head_q, seqlen_q, dim_v},
-                                            {n * head_q * seqlen_q, dim_v, head_q * dim_v, 1},
+                                            {head_q * seqlen_q * dim_v, dim_v, head_q * dim_v, 1},
                                             query.options());
 
-    TensorDescriptor tquery(query);
-    TensorDescriptor tkey(key);
-    TensorDescriptor tvalue(value);
-    TensorDescriptor tpadding_mask(padding_mask);
-    TensorDescriptor tbias(bias);
-    TensorDescriptor tdescaleQ(descaleQ);
-    TensorDescriptor tdescaleK(descaleK);
-    TensorDescriptor tdescaleV(descaleV);
-    TensorDescriptor tdescaleS(descaleS);
-    TensorDescriptor tscaleS(scaleS);
-    TensorDescriptor tscaleO(scaleO);
-    TensorDescriptor tdropProb(dropProb);
-    TensorDescriptor tdropSeed(dropSeed);
-    TensorDescriptor tdropOffset(dropOffset);
-    TensorDescriptor tM(M);
-    TensorDescriptor tZInv(ZInv);
-    TensorDescriptor tLSE(LSE);
-    TensorDescriptor tAmaxO(AmaxO);
-    TensorDescriptor tAmaxS(AmaxS);
-    TensorDescriptor tO(O);
+    TensorDescriptor tquery(query), tkey(key), tvalue(value), tpadding_mask(padding_mask), tbias(bias),
+        tdescaleQ(descaleQ), tdescaleK(descaleK), tdescaleV(descaleV), tdescaleS(descaleS), tscaleS(scaleS),
+        tscaleO(scaleO), tdropProb(dropProb), tdropSeed(dropSeed), tdropOffset(dropOffset), tM(M), tZInv(ZInv),
+        tLSE(LSE), tAmaxO(AmaxO), tAmaxS(AmaxS), tO(O);
 
-    x.setTensor(miopenTensorMhaQ, tquery, query);
-    x.setTensor(miopenTensorMhaK, tkey, key);
-    x.setTensor(miopenTensorMhaV, tvalue, value);
-    x.setTensor(miopenTensorMhaPaddingMask, tpadding_mask, padding_mask);
-    x.setTensor(miopenTensorMhaBias, tbias, bias);
-    x.setTensor(miopenTensorMhaDescaleQ, tdescaleQ, descaleQ);
-    x.setTensor(miopenTensorMhaDescaleK, tdescaleK, descaleK);
-    x.setTensor(miopenTensorMhaDescaleV, tdescaleV, descaleV);
-    x.setTensor(miopenTensorMhaDescaleS, tdescaleS, descaleS);
-    x.setTensor(miopenTensorMhaScaleS, tscaleS, scaleS);
-    x.setTensor(miopenTensorMhaScaleO, tscaleO, scaleO);
-    x.setTensor(miopenTensorMhaDropoutProbability, tdropProb, dropProb);
-    x.setTensor(miopenTensorMhaDropoutSeed, tdropSeed, dropSeed);
-    x.setTensor(miopenTensorMhaDropoutOffset, tdropOffset, dropOffset);
-    x.setTensor(miopenTensorMhaO, tO, O);
-    x.setTensor(miopenTensorMhaM, tM, M);
-    x.setTensor(miopenTensorMhaZInv, tZInv, ZInv);
-    x.setTensor(miopenTensorMhaLSE, tLSE, LSE);
-    x.setTensor(miopenTensorMhaAmaxO, tAmaxO, AmaxO);
-    x.setTensor(miopenTensorMhaAmaxS, tAmaxS, AmaxS);
+    std::vector<miopenTensorArgument_t> args;
 
-    std::vector<miopenTensorArgument_t>& args        = x.getArgs();
-    std::vector<miopenTensorDescriptor_t> descVector = x.getDescVector();
-    for(size_t i = 0; i < descVector.size(); ++i)
-    {
-        args[i].descriptor = &descVector[i];
-    }
-
-    miopenHandle_t handle = getMiopenHandle_new();
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaQ, tquery, query.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaK, tkey, key.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaV, tvalue, value.data_ptr()));
+    args.emplace_back(
+        setProblemTensorDescriptor(problem, miopenTensorMhaPaddingMask, tpadding_mask, padding_mask.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaBias, tbias, bias.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaDescaleQ, tdescaleQ, descaleQ.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaDescaleK, tdescaleK, descaleK.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaDescaleV, tdescaleV, descaleV.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaDescaleS, tdescaleS, descaleS.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaScaleS, tscaleS, scaleS.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaScaleO, tscaleO, scaleO.data_ptr()));
+    args.emplace_back(
+        setProblemTensorDescriptor(problem, miopenTensorMhaDropoutProbability, tdropProb, dropProb.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaDropoutSeed, tdropSeed, dropSeed.data_ptr()));
+    args.emplace_back(
+        setProblemTensorDescriptor(problem, miopenTensorMhaDropoutOffset, tdropOffset, dropOffset.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaO, tO, O.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaM, tM, M.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaZInv, tZInv, ZInv.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaLSE, tLSE, LSE.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaAmaxO, tAmaxO, AmaxO.data_ptr()));
+    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaAmaxS, tAmaxS, AmaxS.data_ptr()));
 
     size_t found = 0;
     std::vector<miopenSolution_t> solutions(1);
+    miopenHandle_t handle = getMiopenHandle_new();
     MIOPEN_CHECK(miopenFindSolutions(handle, problem, nullptr, solutions.data(), &found, solutions.size()));
-
-    miopenSolution_t solution = solutions[0];
+    if(found == 0)
+        MIOPEN_THROW("no solution found");
 
     size_t workspace_size = 0;
+
+    MIOPEN_CHECK(miopenGetSolutionWorkspaceSize(solutions[0], &workspace_size));
     Tensor workspace_tensor;
-    MIOPEN_CHECK(miopenGetSolutionWorkspaceSize(solution, &workspace_size));
+
     if(workspace_size > 0)
     {
         workspace_tensor = at::empty(workspace_size, query.options());
@@ -124,9 +119,7 @@ Tensor miopen_scaled_dot_product_attention(const Tensor& query,
     MIOPEN_CHECK(
         miopenRunSolution(handle, solutions[0], args.size(), args.data(), workspace_tensor.data_ptr(), workspace_size));
 
-    std::map<miopenTensorArgumentId_t, at::Tensor> tensors = x.getTensors();
-
-    return tensors[miopenTensorMhaO];
+    return O;
 };
 
 } // namespace native

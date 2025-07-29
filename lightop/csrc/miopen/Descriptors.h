@@ -95,18 +95,21 @@ public:
         return desc_.get();
     }
 
+    miopenTensorDescriptor_t* get_storage_addr() { return &raw_desc; }
+
 protected:
     void init()
     {
         if(desc_ == nullptr)
         {
-            T* raw_desc;
+            // T* raw_desc;
             MIOPEN_CHECK(ctor(&raw_desc));
             desc_.reset(raw_desc);
         }
     }
 
 private:
+    T* raw_desc;
     mutable std::unique_ptr<T, DescriptorDeleter<T, dtor>> desc_;
 };
 

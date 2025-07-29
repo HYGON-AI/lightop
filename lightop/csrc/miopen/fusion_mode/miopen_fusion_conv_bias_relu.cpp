@@ -12,12 +12,12 @@
 namespace at {
 namespace native {
 // fused_conv_bias_relu_forward
-Tensor fused_conv_bias_relu_forward(const Tensor& x,
-                                    const Tensor& weight,
-                                    const Tensor& bias,
-                                    const std::vector<int64_t>& pads,
-                                    const std::vector<int64_t>& strides,
-                                    const std::vector<int64_t>& dilations)
+Tensor miopen_fused_conv_bias_relu_forward(const Tensor& x,
+                                           const Tensor& weight,
+                                           const Tensor& bias,
+                                           const std::vector<int64_t>& pads,
+                                           const std::vector<int64_t>& strides,
+                                           const std::vector<int64_t>& dilations)
 
 {
     if(x.dim() != 4 || weight.dim() != 4)
