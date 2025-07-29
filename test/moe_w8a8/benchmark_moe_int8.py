@@ -1276,6 +1276,10 @@ def main(args: argparse.Namespace):
     # # shard_intermediate_size=384
     # # hidden_size=4096
 
+    # E = 16
+    # shard_intermediate_size=4096
+    # hidden_size=7168
+
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384

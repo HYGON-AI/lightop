@@ -76,9 +76,10 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel(
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 4, bidx, bidy);
 
   if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  
   constexpr int STAGES = BLOCK_SIZE_K/WARP_K; 
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
-  const uint32_t delta_bidx = bidx / delta;
+  const uint32_t delta_bidx = bidx;
   const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
   const uint64_t expert_offset = ((uint64_t)size_n) * size_k * expert_id; // 这个是对应专家的weight偏移
   const uint64_t qweight_offset = expert_offset + bidy * size_k * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
@@ -91,6 +92,28 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel(
   bhalf_t* g_output;
 
   g_output = output + output_offset;
+
+  if(expert_id == -1){ //EP算法处理 epxert_id为-1 写回0
+    const int tid = threadIdx.x;
+    constexpr int N_thread = BLOCK_SIZE_N / 8;  //N方向需要的线程数 使用dwordx4即8个bf16
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    vec_bf16_8 zero_bf16_8;
+
+    #pragma unroll
+    for(int i = 0; i < 8; ++i)
+      zero_bf16_8[i] = 0;
+
+    int m_idx = threadIdx.x / N_thread;  
+    int n_idx = threadIdx.x % N_thread;  
+    for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
+      const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
+
+      if(token_index < size_m * top_k) {
+        *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * size_n + n_idx * 8]) = zero_bf16_8;
+      }
+    } 
+    return;
+  } 
 
   constexpr int mfma_m = 16;
   constexpr int mfma_n = 16;
@@ -209,6 +232,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel(
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 8, bidx, bidy);
 
   if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   const int STAGES = BLOCK_SIZE_K/WARP_K; // 采用两stage
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
   const uint32_t delta_bidx = bidx / delta;
@@ -224,6 +248,28 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel(
   bhalf_t* g_output;
 
   g_output = output + output_offset;
+
+  if(expert_id == -1){ //EP算法处理 epxert_id为-1 写回0
+    const int tid = threadIdx.x;
+    constexpr int N_thread = BLOCK_SIZE_N / 8;  //N方向需要的线程数 使用dwordx4即8个bf16
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    vec_bf16_8 zero_bf16_8;
+
+    #pragma unroll
+    for(int i = 0; i < 8; ++i)
+      zero_bf16_8[i] = 0;
+
+    int m_idx = threadIdx.x / N_thread;  
+    int n_idx = threadIdx.x % N_thread;  
+    for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
+      const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
+
+      if(token_index < size_m * top_k) {
+        *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * size_n + n_idx * 8]) = zero_bf16_8;
+      }
+    } 
+    return;
+  }  
 
   constexpr int mfma_m = 16;
   constexpr int mfma_n = 16;
@@ -347,6 +393,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 4, bidx, bidy);
 
   if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   constexpr int STAGES = BLOCK_SIZE_K/WARP_K; 
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
   const int32_t delta_bidx = bidx / delta;
@@ -359,8 +406,29 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
   auto g_input = input;
   auto g_input_scale = input_scale; // 配置全局显存信息
   bhalf_t* g_output;
-
   g_output = output + output_offset;
+
+  if(expert_id == -1){ //EP算法处理 epxert_id为-1 写回0
+    const int tid = threadIdx.x;
+    constexpr int N_thread = BLOCK_SIZE_N / 8;  //N方向需要的线程数 使用dwordx4即8个bf16
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    vec_bf16_8 zero_bf16_8;
+
+    #pragma unroll
+    for(int i = 0; i < 8; ++i)
+      zero_bf16_8[i] = 0;
+
+    int m_idx = threadIdx.x / N_thread;  
+    int n_idx = threadIdx.x % N_thread;  
+    for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
+      const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
+
+      if(token_index < size_m * top_k) {
+        *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * size_n + n_idx * 8]) = zero_bf16_8;
+      }
+    } 
+    return;
+  }  
 
   constexpr int mfma_m = 16;
   constexpr int mfma_n = 16;
@@ -486,6 +554,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
 
 
   if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   const int STAGES = BLOCK_SIZE_K/WARP_K; // 采用两stage
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
   const int32_t delta_bidx = bidx / delta;
@@ -499,8 +568,29 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
   auto g_input = input;
   auto g_input_scale = input_scale; // 配置全局显存信息
   bhalf_t* g_output;
-
   g_output = output + output_offset;
+
+  if(expert_id == -1){ //EP算法处理 epxert_id为-1 写回0
+    const int tid = threadIdx.x;
+    constexpr int N_thread = BLOCK_SIZE_N / 8;  //N方向需要的线程数 使用dwordx4即8个bf16
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    vec_bf16_8 zero_bf16_8;
+
+    #pragma unroll
+    for(int i = 0; i < 8; ++i)
+      zero_bf16_8[i] = 0;
+
+    int m_idx = threadIdx.x / N_thread;  
+    int n_idx = threadIdx.x % N_thread;  
+    for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
+      const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
+
+      if(token_index < size_m * top_k) {
+        *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * size_n + n_idx * 8]) = zero_bf16_8;
+      }
+    } 
+    return;
+  }  
 
   constexpr int mfma_m = 16;
   constexpr int mfma_n = 16;
@@ -848,6 +938,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
   int delta
   ) {
     const int size_m = input.size(0); 
+    const int EXPERTS = b_qweight.size(0);
     const int size_n = b_qweight.size(1); 
     const int size_k = input.size(1);
     const int stride_asm = a_scale.stride(0);
@@ -873,9 +964,6 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
      
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
         
-        //if(size_m > MOE_THRESHOLD)
-        // if(size_m > 128)
-        //   num_pad = num_tokens_post_pad[0].item<int>();
 
         GemmParams<char> params_in(
           (const char*)input.data_ptr<int8_t>(), 
@@ -903,8 +991,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
 
         
 
-        // if(size_m > MOE_THRESHOLD){
-        if(size_m > 128){
+        if(size_m > MOE_THRESHOLD || (size_m > 2 && EXPERTS == 16) ){
           auto it = kernel_maps_gemm1_prefill.find(mode);
           if (it != kernel_maps_gemm1_prefill.end()) {
               it->second(params_in);
@@ -957,8 +1044,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
         
         
 
-        //if(size_m / 8 > MOE_THRESHOLD){
-        if(size_m / 8 > 128){
+        if(size_m / 8 > MOE_THRESHOLD || (size_m / 8 > 32 && EXPERTS == 16)){
           auto it = kernel_maps_gemm2_prefill.find(mode);
           if (it != kernel_maps_gemm2_prefill.end()) {
               it->second(params_in);
