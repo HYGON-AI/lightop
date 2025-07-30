@@ -14,8 +14,6 @@
 using half_t = __half;
 using bhalf_t = __hip_bfloat16;
 
-#define BLOCKM 128
-#define BLOCKN 256
 #define DIVIDE(x, size) (((x) + (size) - 1) / (size))
 
 /* module function args */
@@ -50,8 +48,8 @@ struct HipFunctionArgs {
 namespace at {
 namespace native {
 
-template <typename OutputType>
-void _moe_w8a8_256x128x128_TN_impl(
+template <int BLOCKM, int BLOCKN, int BLOCKK, typename OutputType>
+void _moe_w8a8_TN_impl(
   torch::Tensor input,
   torch::Tensor b_qweight,
   torch::Tensor output,
@@ -61,7 +59,7 @@ void _moe_w8a8_256x128x128_TN_impl(
   torch::Tensor sorted_token_ids, 
   torch::Tensor expert_ids,
   torch::Tensor num_tokens_post_pad, 
-  uint32_t top_k, uint32_t experts_num, bool isBfloat16) {
+  uint32_t top_k, uint32_t experts_num) {
 
   const int size_m = input.size(0); 
   const int size_n = b_qweight.size(1); 
@@ -113,23 +111,29 @@ void _moe_w8a8_256x128x128_TN_impl(
   hipFunctionArgs.topk_rcip = 1.0 / top_k;
   void * debug_host = nullptr, * debug_device = nullptr;
   #if DEBUG
-  int debug_size = 768 * 4;
+  int debug_size = 768 * 32;
   debug_host = malloc(debug_size);
   hipMalloc((void **)&debug_device, debug_size);
-  // printf("%s:%d top_k:%d topk:%f\n", __FILE__, __LINE__, top_k, hipFunctionArgs.topk);
+  // printf("%s:%d isBfloat16:%d \n", __FILE__, __LINE__, isBfloat16);
   #endif
   hipFunctionArgs.debugBuffer = debug_device;
   size_t argsSize = sizeof(hipFunctionArgs);
 
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  string fp16_co_file = "moe_w8a8_channel/moe_w8a8_128x256x128_TN_FP16.co";
-  string bf16_co_file = "moe_w8a8_channel/moe_w8a8_128x256x128_TN_BF16.co";
-	static AiterAsmKernel moe_w8a8_fp16("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", fp16_co_file.c_str());
-	static AiterAsmKernel moe_w8a8_bf16("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", bf16_co_file.c_str());
-	AiterAsmKernel *impl_ptr = &moe_w8a8_fp16;
-  if (isBfloat16) 
-    impl_ptr = &moe_w8a8_bf16;
-	impl_ptr->launch_kernel_ext({
+  char funcName[1024], co_file[1024];
+  memset(funcName, 0x0, sizeof(funcName));
+  memset(co_file, 0x0, sizeof(co_file));
+  sprintf(funcName, "Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT%dx%dx%d_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", BLOCKM, BLOCKN, BLOCKK);
+  if (output.scalar_type() == at::ScalarType::Half) {
+    sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_FP16.co", BLOCKM, BLOCKN, BLOCKK);
+  } else if (output.scalar_type() == at::ScalarType::BFloat16) {
+    sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_BF16.co", BLOCKM, BLOCKN, BLOCKK);
+  } else {
+    TORCH_CHECK(false, "moe_w8a8 only supports outputType in [Float16, BFloat16]");
+  }
+  static AiterAsmKernel moe_w8a8(funcName, co_file);
+  AiterAsmKernel *impl_ptr = &moe_w8a8;
+  impl_ptr->launch_kernel_ext({
     &hipFunctionArgs,
     &argsSize,
     globalWorkSize[0],           // gdx
@@ -140,6 +144,7 @@ void _moe_w8a8_256x128x128_TN_impl(
     localWorkSize[2],            // bdz
     stream
   });
+
 
   #if DEBUG
   // AT_CUDA_CHECK(cudaStreamSynchronize(stream));
@@ -155,17 +160,31 @@ void _moe_w8a8_256x128x128_TN_impl(
   // using DEBUG_TYPE = bhalf_t;
   DEBUG_TYPE *p_debug = reinterpret_cast<DEBUG_TYPE*>(debug_host);
   for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
-  // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / 2; ++i) {
-    if (i % 16 == 0) printf("\n");
-    // if (i % 16 == 0) printf("\ni:%d ", i / 16);
+  // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / 32; ++i) {
+    // if (i % 8 == 0) printf("\n");
+    if (i % 8 == 0) printf("\ni:%d ", i / 8);
     // printf("%3d:%10.4f\t", i, p_debug[i]);
     // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%3d:%10.4f\t", i, static_cast<float>(tmp[i+1]));
-    printf("%3d:%6d\t", i, p_debug[i]);
-    // printf("%3d\t", p_debug[i]);
+    // printf("%3d:%6d\t", i, p_debug[i]);
+    printf("%3d\t", p_debug[i]);
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f ", static_cast<float>(tmp[0]));
-    // int index = 2 * i;
+    // int index = 32 * i;
+    // printf("tid:%d 0:%3d 1:%3d 2:%3d 3:%3d 4:%3d 5:%3d 6:%3d 7:%3d "
+    //   "8:%3d 9:%3d 10:%3d 11:%3d 12:%3d 13:%3d 14:%3d 15:%3d "
+    //   "16:%3d 17:%3d 18:%3d 19:%3d 20:%3d 21:%3d 22:%3d 23:%3d "
+    //   "24:%3d 25:%3d 26:%3d 27:%3d 28:%3d 29:%3d 30:%3d 31:%3d\n", i, 
+    //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ],
+    //   p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ], p_debug[index+7 ],
+    //   p_debug[index+8 ], p_debug[index+9 ], p_debug[index+10], p_debug[index+11],
+    //   p_debug[index+12], p_debug[index+13], p_debug[index+14], p_debug[index+15],
+    //   p_debug[index+16], p_debug[index+17], p_debug[index+18], p_debug[index+19],
+    //   p_debug[index+20], p_debug[index+21], p_debug[index+22], p_debug[index+23],
+    //   p_debug[index+24], p_debug[index+25], p_debug[index+26], p_debug[index+27],
+    //   p_debug[index+28], p_debug[index+29], p_debug[index+30], p_debug[index+31]
+    // );
+    // printf("%3d:%6d %6d\t", i, p_debug[index], p_debug[index+1]);
     // printf("i:%d %10.4f %6d\t", i, p_debug[index], *reinterpret_cast<uint32_t*>(p_debug + index + 1));
     // printf("i:%d bidz:%d sa:%10.4f sb:%10.4f v:%10.4f\t", i, *reinterpret_cast<int32_t*>(p_debug+index), p_debug[index+1], p_debug[index+2], p_debug[index+3]);
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + index + 4);
@@ -195,23 +214,40 @@ torch::Tensor moe_w8a8_asm(
 	const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
 
   uint32_t experts_num = b_qweight.sizes()[0];
-  if (output.dtype() == torch::kFloat16)
-    _moe_w8a8_256x128x128_TN_impl<half_t>(
-      input, b_qweight, output, a_scale, b_scale,
-      topk_weights, sorted_token_ids, expert_ids,
-      num_tokens_post_pad, top_k, experts_num, 0);
-  else if (output.dtype() == torch::kBFloat16)
-    _moe_w8a8_256x128x128_TN_impl<bhalf_t>(
-      input, b_qweight, output, a_scale, b_scale,
-      topk_weights, sorted_token_ids, expert_ids,
-      num_tokens_post_pad, top_k, experts_num, 1);
-  else if (output.dtype() == torch::kFloat32)
-    _moe_w8a8_256x128x128_TN_impl<float>(
-      input, b_qweight, output, a_scale, b_scale,
-      topk_weights, sorted_token_ids, expert_ids,
-      num_tokens_post_pad, top_k, experts_num, 1);
-  else
-    TORCH_CHECK(false, "moe_w8a8 only supports outputType in [Float16, BFloat16, Float32]");
+  if (mode == 0) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_w8a8_TN_impl",[&] {
+        _moe_w8a8_TN_impl<128, 256, 128, scalar_t>(
+          input, b_qweight, output, a_scale, b_scale,
+          topk_weights, sorted_token_ids, expert_ids,
+          num_tokens_post_pad, top_k, experts_num);
+      }
+    );
+  } else if (mode == 1) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_w8a8_TN_impl",[&] {
+        _moe_w8a8_TN_impl<64, 256, 128, scalar_t>(
+          input, b_qweight, output, a_scale, b_scale,
+          topk_weights, sorted_token_ids, expert_ids,
+          num_tokens_post_pad, top_k, experts_num);
+      }
+    );
+  } else if (mode == 2) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_w8a8_TN_impl",[&] {
+        _moe_w8a8_TN_impl<32, 256, 128, scalar_t>(
+          input, b_qweight, output, a_scale, b_scale,
+          topk_weights, sorted_token_ids, expert_ids,
+          num_tokens_post_pad, top_k, experts_num);
+      }
+    );
+  }
   return output;
 }
 
