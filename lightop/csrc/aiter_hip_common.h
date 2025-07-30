@@ -11,7 +11,7 @@
         hipError_t err = call;                                                                                                   \
         if (err != hipSuccess)                                                                                                   \
         {                                                                                                                        \
-            printf("\n[AITER] %s:%d fail to call %s ---> [HIP error](%s)\n", __FILE__, __LINE__, #call, hipGetErrorString(err)); \
+            printf("\n[lightop] %s:%d fail to call %s ---> [HIP error](%s)\n", __FILE__, __LINE__, #call, hipGetErrorString(err)); \
             exit(0);                                                                                                             \
         }                                                                                                                        \
     } while (0)
