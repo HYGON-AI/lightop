@@ -147,54 +147,61 @@ def _int8_gemm_helper(m: int,
     elapsed_time8_gpu = triton.testing.do_bench(lambda:dq_lightop_scaled_mm(a_fp16,b,None,scale_b,out_dtype,bias),quantiles=None, return_mode="mean")*1000
     # print("triton_time:{} us\n".format(elapsed_time8_gpu))
       
-    #测试激活量化算子耗时
-    for i in range(100):
-        x_q = per_token_quant_int8(a_fp16)  
+    # #测试激活量化算子耗时
+    # for i in range(100):
+    #     x_q = per_token_quant_int8(a_fp16)  
         
-    elapsed_time0_gpu = triton.testing.do_bench(lambda:per_token_quant_int8(a_fp16),quantiles=None, return_mode="mean")*1000
-    # print("triton_time:{} us\n".format(elapsed_time0_gpu))
+    # elapsed_time0_gpu = triton.testing.do_bench(lambda:per_token_quant_int8(a_fp16),quantiles=None, return_mode="mean")*1000
+    # # print("triton_time:{} us\n".format(elapsed_time0_gpu))
     
             
-    for i in range(100):
-        triton_out=_triton_scaled_mm(a,b,scale_a,scale_b,out_dtype,bias,best_config)
+    # for i in range(100):
+    #     triton_out=_triton_scaled_mm(a,b,scale_a,scale_b,out_dtype,bias,best_config)
 
-    elapsed_time1_gpu = triton.testing.do_bench(lambda:_triton_scaled_mm(a,b,scale_a,scale_b,out_dtype,bias,best_config),quantiles=None, return_mode="mean")*1000
-    # print("triton_time:{} us\n".format(elapsed_time1_gpu))
-    torch.cuda.synchronize()  
-    for i in range(100):
-        triton_out=dq_triton_scaled_mm(a_fp16,b,None,scale_b,out_dtype,bias,best_config)
+    # elapsed_time1_gpu = triton.testing.do_bench(lambda:_triton_scaled_mm(a,b,scale_a,scale_b,out_dtype,bias,best_config),quantiles=None, return_mode="mean")*1000
+    # # print("triton_time:{} us\n".format(elapsed_time1_gpu))
+    # torch.cuda.synchronize()  
+    # for i in range(100):
+    #     triton_out=dq_triton_scaled_mm(a_fp16,b,None,scale_b,out_dtype,bias,best_config)
 
-    elapsed_time2_gpu = triton.testing.do_bench(lambda:dq_triton_scaled_mm(a_fp16,b,None,scale_b,out_dtype,bias,best_config),quantiles=None, return_mode="mean")*1000
-    # print("triton_time:{} us\n".format(elapsed_time2_gpu))
-    torch.cuda.synchronize()     
+    # elapsed_time2_gpu = triton.testing.do_bench(lambda:dq_triton_scaled_mm(a_fp16,b,None,scale_b,out_dtype,bias,best_config),quantiles=None, return_mode="mean")*1000
+    # # print("triton_time:{} us\n".format(elapsed_time2_gpu))
+    # torch.cuda.synchronize()     
 
-    b=b.contiguous().reshape(k,-1)
+    # b=b.contiguous().reshape(k,-1)
     
-    for i in range(100):
-        out = _rocblas_scaled_mm(a,b,scale_a,scale_b,out_dtype,bias)
+    # for i in range(100):
+    #     out = _rocblas_scaled_mm(a,b,scale_a,scale_b,out_dtype,bias)
  
-    elapsed_time3_gpu = triton.testing.do_bench(lambda:_rocblas_scaled_mm(a,b,scale_a,scale_b,out_dtype,bias),quantiles=None, return_mode="mean")*1000
-    # print("rocblas_scaled_mm:{} us\n".format(elapsed_time3_gpu))
-    torch.cuda.synchronize()  
-    for i in range(100):
-        out = dq_rocblas_scaled_mm(a_fp16,b,None,scale_b,out_dtype,bias)
+    # elapsed_time3_gpu = triton.testing.do_bench(lambda:_rocblas_scaled_mm(a,b,scale_a,scale_b,out_dtype,bias),quantiles=None, return_mode="mean")*1000
+    # # print("rocblas_scaled_mm:{} us\n".format(elapsed_time3_gpu))
+    # torch.cuda.synchronize()  
+    # for i in range(100):
+    #     out = dq_rocblas_scaled_mm(a_fp16,b,None,scale_b,out_dtype,bias)
  
-    elapsed_time4_gpu = triton.testing.do_bench(lambda:dq_rocblas_scaled_mm(a_fp16,b,None,scale_b,out_dtype,bias),quantiles=None, return_mode="mean")*1000
-    torch.cuda.synchronize()  
-    # print("rocblas_scaled_mm:{} us\n".format(elapsed_time4_gpu))   
+    # elapsed_time4_gpu = triton.testing.do_bench(lambda:dq_rocblas_scaled_mm(a_fp16,b,None,scale_b,out_dtype,bias),quantiles=None, return_mode="mean")*1000
+    # torch.cuda.synchronize()  
+    # # print("rocblas_scaled_mm:{} us\n".format(elapsed_time4_gpu))   
     
-    for i in range(100):
-        rocblas_sgemm16_out=quant_ops.rocblas_sgemm_fp16_nn(a_fp16,b_fp16,out_dtype,bias)
+    # for i in range(100):
+    #     rocblas_sgemm16_out=quant_ops.rocblas_sgemm_fp16_nn(a_fp16,b_fp16,out_dtype,bias)
 
-    elapsed_time5_gpu = triton.testing.do_bench(lambda:quant_ops.rocblas_sgemm_fp16_nn(a_fp16,b_fp16,out_dtype,bias),quantiles=None, return_mode="mean")*1000
-    torch.cuda.synchronize()  
-    # print("rocblas_sgemm16_time:{} us\n".format(elapsed_time5_gpu))
+    # elapsed_time5_gpu = triton.testing.do_bench(lambda:quant_ops.rocblas_sgemm_fp16_nn(a_fp16,b_fp16,out_dtype,bias),quantiles=None, return_mode="mean")*1000
+    # torch.cuda.synchronize()  
+    # # print("rocblas_sgemm16_time:{} us\n".format(elapsed_time5_gpu))
     
-    for i in range(100):
-        rocblas_sgemmint8_out=quant_ops.rocblas_sgemm_int8_nn(a,b,out_dtype,bias)
+    # for i in range(100):
+    #     rocblas_sgemmint8_out=quant_ops.rocblas_sgemm_int8_nn(a,b,out_dtype,bias)
     
-    elapsed_time6_gpu= triton.testing.do_bench(lambda:quant_ops.rocblas_sgemm_int8_nn(a,b,out_dtype,bias),quantiles=None, return_mode="mean")*1000
-    # print("rocblas_sgemm16_time:{} us\n".format(elapsed_time6_gpu))
+    # elapsed_time6_gpu= triton.testing.do_bench(lambda:quant_ops.rocblas_sgemm_int8_nn(a,b,out_dtype,bias),quantiles=None, return_mode="mean")*1000
+    # # print("rocblas_sgemm16_time:{} us\n".format(elapsed_time6_gpu))
+    elapsed_time0_gpu = 0
+    elapsed_time1_gpu = 0
+    elapsed_time2_gpu = 0
+    elapsed_time3_gpu = 0
+    elapsed_time4_gpu = 0
+    elapsed_time5_gpu = 0
+    elapsed_time6_gpu = 0
     torch.cuda.synchronize()   
     return elapsed_time0_gpu,elapsed_time1_gpu,elapsed_time2_gpu,elapsed_time3_gpu,elapsed_time4_gpu,elapsed_time5_gpu,elapsed_time6_gpu,elapsed_time7_gpu,elapsed_time8_gpu
 
@@ -229,19 +236,13 @@ def getspec_config(configs_dict,M,N,K):
     else:
         return None  
 
-def main():
+def main(n_list, k_list ,excel_name="output.xlsx"):
     session=W8a8GetCacheJSON()
-    m=1
-    n_list=[24576]
-    k_list=[4096]
 
-    # # qwen3-8b-tp1
-    # n_list = [6144, 4096, 24576, 4096,]
-    # k_list = [4096, 4096, 4096, 12288,]
-
-    # # dpsk 671b
-    n_list = [256, 576, 1536, 1536, 2048, 2304, 7168, 7168, 7168,]
-    k_list = [7168, 7168, 1536, 7168, 512, 7168, 128, 1024, 1152,]
+    # m_list = [8192]
+    # n_list = [24576]
+    # k_list = [4096]
+    
    
     triton_json_dir=session.triton_json_dir
     print("triton_json_dir:",triton_json_dir)
@@ -264,7 +265,7 @@ def main():
         
         m1=[item if item < 17 else  1 << (item - 27) for item in range(1, 17)]
         m2=[item<<2  if item <17 else (item - 8)<<3  for item in range(5, 29)]
-        m3=[2<<(item)  for item in range(7, 14)]
+        m3=[2<<(item)  for item in range(7, 15)]
         
         m_list = m1+m2+m3
         for m in m_list:
@@ -295,9 +296,77 @@ def main():
     df = pd.DataFrame({'n':bs,'m':_m,'k':_k,'激活量化 GPU耗时': act_cost_gpu,'w8a8_triton GPU耗时': triton_cost_gpu,'激活量化+w8a8_triton GPU耗时': qtriton_cost_gpu, 'w8a8_rocblas GPU耗时': rocblas_cost_gpu, '激活量化+w8a8_rocblas GPU耗时': qrocblas_cost_gpu,'w8a8_lightop GPU耗时': lightop_cost_gpu, '激活量化+w8a8_lightop GPU耗时': qlightop_cost_gpu,'fp16 gemm GPU耗时':fp16gemm_cost_gpu,'int8 gemm GPU耗时':int8gemm_cost_gpu})
 
     # 将 DataFrame 写入 Excel 文件
-    df.to_excel('output_qwen8B.xlsx', index=False)
+    df.to_excel(excel_name, index=False)
 
-    print("表格已保存到 output.xlsx 文件中。")
+    print(f"表格已保存到 {excel_name}文件中。")
 
 if __name__ == "__main__":
-    main()
+
+     # # # dpsk 671b
+    n_list = [256, 576, 1536, 1536, 2048, 2304, 7168, 7168, 7168,]
+    k_list = [7168, 7168, 1536, 7168, 512, 7168, 128, 1024, 1152,]
+    main(n_list, k_list, excel_name='dpsk_671b.xlsx')
+
+
+    # # qwen3-8b-tp1
+    n_list = [6144, 4096, 24576, 4096,]
+    k_list = [4096, 4096, 4096, 12288,]
+    main(n_list, k_list, excel_name='qwen3_8b_tp1.xlsx')
+
+    # # qwen3-32b-tp1
+    n_list = [10240, 5120, 51200, 5120, ]
+    k_list = [5120, 8192, 5120, 25600, ]
+
+    main(n_list, k_list, excel_name='qwen3_32b_tp1.xlsx')
+
+    # # qwen3-32b-tp2
+    n_list = [5120, 5120, 25600, 5120,]
+    k_list = [5120, 4096, 5120, 12800, ]
+    main(n_list, k_list, excel_name='qwen3_32b_tp2.xlsx')
+
+    # # qwen3-32b-tp4
+    n_list = [2560, 5120, 12800, 5120,]
+    k_list = [5120, 2048, 5120, 6400,]
+    main(n_list, k_list, excel_name='qwen3_32b_tp4.xlsx')
+    
+
+    # qwen3-30b-A3B-tp1
+    n_list = [5120, 2048]
+    k_list = [2048, 4096]
+    main(n_list, k_list, excel_name='qwen3_30b_A3B_tp1.xlsx')
+
+    # qwen3-30b-A3B-tp2
+    n_list = [2560, 2048]
+    k_list = [2048, 2048]
+    main(n_list, k_list, excel_name='qwen3_30b_A3B_tp2.xlsx')
+
+    # qwen3-30b-A3B-tp4
+    n_list = [1280, 2048]
+    k_list = [2048, 1024]
+    main(n_list, k_list, excel_name='qwen3_30b_A3B_tp4.xlsx')
+
+    # # qwen3-235b-tp8
+    n_list = [1280, 4096,]
+    k_list = [4096, 1024,]
+    main(n_list, k_list, excel_name='qwen3_235b_tp8.xlsx')
+
+    # # qwen3-235b-tp16
+    n_list = [768, 4096,]
+    k_list = [4096, 512,]
+    main(n_list, k_list, excel_name='qwen3_235b_tp16.xlsx')
+
+    ## llama3.3-70b-tp2
+    n_list = [28672, 8192, 5120, 8192,]
+    k_list = [8192, 14336, 8192, 4096, ]
+    main(n_list, k_list, excel_name='llama3.3_70b_tp2.xlsx')
+
+    ## llama3.3-70b-tp4
+    n_list = [14336, 8192, 2560, 8192,]
+    k_list = [8192, 7168, 8192, 2048, ]
+    main(n_list, k_list, excel_name='llama3.3_70b_tp4.xlsx')
+
+    ## llama3.3-70b-tp8
+    n_list = [7168, 8192, 1280, 8192,]
+    k_list = [8192, 3584, 8192, 1024, ]
+    main(n_list, k_list, excel_name='llama3.3_70b_tp8.xlsx')
+
