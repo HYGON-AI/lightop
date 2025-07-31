@@ -102,6 +102,18 @@ def get_moe_cuda_config(
     if not gemm1_config or not gemm2_config: 
         # print("Config is not found! Use default config.")
         status = False
+
+    # asm files check  
+    if gemm1_config and gemm2_config:
+        mode1 = gemm1_config['MODE']
+        mode2 = gemm2_config['MODE']
+        if mode1 >= 1000 or mode2 >= 1000:
+            co_file = f"moe_w8a8_channel/moe_w8a8_128x256x128_TN_{str(dtype).upper()}.co"
+            LIGHTOP_ASM_DIR = os.environ["LIGHTOP_ASM_DIR"]
+            path_co_file = LIGHTOP_ASM_DIR + co_file
+            if not os.path.exists(path_co_file):
+                status=False
+            
         
     gemm2_config = gemm2_config if gemm2_config else {
         "MODE": 0,
