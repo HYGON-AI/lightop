@@ -66,13 +66,25 @@ print("miopen_moe_swiglu_dynamic_quant y is:\n", y)
 print("----moe_swiglu_dynamic_quant end-------------\n")
 
 
-x1 = torch.randn(
-    num_shared_experts_per_rank * num_tokens_per_rank + num_tokens_per_rank * topk, hidden_size, dtype=torch.bfloat16
-).cuda()
-x2 = torch.randn(num_tokens_per_rank * topk, dtype=torch.bfloat16).cuda()
-x3 = torch.randn(num_tokens, topk, dtype=torch.float32).cuda()
+world_size = 4
+num_tokens_per_rank = 64
+topk = 2
+current_rank = 1
+num_tokens_offset = num_tokens_per_rank * current_rank
+allocated_tokens = num_tokens_per_rank * topk
+hidden_size = 64
+num_shared_experts_per_rank = 2
+num_tokens = world_size * num_tokens_per_rank
 
-y = lightop.miopen_moe_gather(x1, x2, x3, num_shared_experts_per_rank, num_tokens_offset, num_tokens_per_rank)
+scatterDesc = torch.randn(
+    num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens, hidden_size, dtype=torch.bfloat16
+).cuda()
+tokenoffsetDesc = torch.randint(0, 2, (allocated_tokens,), dtype=torch.int32).cuda()
+expertweightsDesc = torch.randn(num_tokens, topk, dtype=torch.float32).cuda()
+
+y = lightop.miopen_moe_gather(
+    scatterDesc, tokenoffsetDesc, expertweightsDesc, num_shared_experts_per_rank, num_tokens_offset, num_tokens_per_rank
+)
 
 print("miopen_moe_gather y is:\n", y)
 
