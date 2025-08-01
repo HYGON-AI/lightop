@@ -116,8 +116,12 @@ Tensor miopen_scaled_dot_product_attention(const Tensor& query,
         workspace_tensor = at::empty(workspace_size, query.options());
     }
 
-    MIOPEN_CHECK(
-        miopenRunSolution(handle, solutions[0], args.size(), args.data(), workspace_tensor.data_ptr(), workspace_size));
+    MIOPEN_CHECK(miopenRunSolution(handle,
+                                   solutions[0],
+                                   args.size(),
+                                   args.data(),
+                                   workspace_tensor.defined() ? workspace_tensor.data_ptr() : nullptr,
+                                   workspace_size));
 
     return O;
 };
