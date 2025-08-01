@@ -1,6 +1,5 @@
 #include "miopen/miopen-wrapper.h"
 #include "miopen/Descriptors.h"
-#include <ATen/ATen.h>
 #include <vector>
 
 namespace at {
