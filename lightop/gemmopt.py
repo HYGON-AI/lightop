@@ -36,15 +36,39 @@ def w8a8_smooth_quant_config(m, n, k):
         return -1, -1, -1, -1, False, status
 
 
+def round_up_to_next_power_of_2(x):
+    if x == 0:
+        return 1  # 特殊情况：0 的向上取整是 1
+    x -= 1  # 处理 x 已经是 2 的幂的情况
+    # 填充所有低位为 1
+    x |= x >> 1
+    x |= x >> 2
+    x |= x >> 4
+    x |= x >> 8
+    x |= x >> 16
+    return x + 1
+
+
 @functools.lru_cache(maxsize=2048)
 def w8a8_smooth_asm_config(m, n, k):
     
-    key = f"M{math.ceil(m / 16) * 16}N{n}K{k}"
+    if m > 256:
+        adapt_m = math.ceil(m / 16) * 16  # 向上取整到下一个16的倍数
+    else:
+        adapt_m = round_up_to_next_power_of_2(m)
+    key = f"M{adapt_m}N{n}K{k}"
     if key in gemm_w8a8_smooth_config.get_gemm_w8a8_smooth_asm_dict():
         isTunning_slide_block, tunning_slide_block = True, gemm_w8a8_smooth_config.get_gemm_w8a8_smooth_asm_dict()[key]
     else:
         isTunning_slide_block, tunning_slide_block = False, 255
     return isTunning_slide_block, tunning_slide_block
+
+@functools.lru_cache(maxsize=1)
+def isNOt_exist_co_dir():
+    path_co_file = os.getenv("LIGHTOP_ASM_DIR", "")
+    if not os.path.exists(path_co_file):
+        return True
+    return False
 
 def gemm_w8a8_smooth(a, b, scale_a, scale_b, bias, out_dtype):
     use_gemm_w8s8_smooth = os.getenv("LIGHTOP_GEMM_W8A8_SMOOTH", "1")
@@ -63,17 +87,16 @@ def gemm_w8a8_smooth(a, b, scale_a, scale_b, bias, out_dtype):
         else:
             return False, None
     else:
+        if isNOt_exist_co_dir():
+            return False, None
         if bias is not None:
-            status = False
-            output = None
+            return False, None
+        if k < 128:
+            return False, None
         else:
-            if k < 128:
-                return False, None
-            else:
-                isTunning_slide_block, tunning_slide_block = w8a8_smooth_asm_config(m, n, k)
-                output = op.gemm_w8a8_smooth_asm(a, b, scale_a, scale_b, bias, out_dtype,m, n, k, isTunning_slide_block, tunning_slide_block)
-                status = True
-    return status, output
+            isTunning_slide_block, tunning_slide_block = w8a8_smooth_asm_config(m, n, k)
+            output = op.gemm_w8a8_smooth_asm(a, b, scale_a, scale_b, bias, out_dtype,m, n, k, isTunning_slide_block, tunning_slide_block)
+            return True, output
 
 
 def gemm(a,b):
