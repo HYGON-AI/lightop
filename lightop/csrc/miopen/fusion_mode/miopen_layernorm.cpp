@@ -9,12 +9,12 @@
 namespace at {
 namespace native {
 
-std::vector<Tensor> layernorm(const Tensor& x,
-                              const Tensor& weight,
-                              const Tensor& bias,
-                              const float epsilon,
-                              const int normalized_dim,
-                              const int mode)
+std::vector<Tensor> miopen_layernorm(const Tensor& x,
+                                     const Tensor& weight,
+                                     const Tensor& bias,
+                                     const float epsilon,
+                                     const int normalized_dim,
+                                     const int mode)
 {
     TensorDescriptor x_tensor(x);
     TensorDescriptor weight_tensor(weight);
@@ -51,17 +51,16 @@ std::vector<Tensor> layernorm(const Tensor& x,
                                         output_rstd.desc(),
                                         out_rstd.data_ptr()));
 
-    std::cout << "layernorm test ok" << std::endl;
     return {std::move(out_y), std::move(out_mean), std::move(out_rstd)};
 };
 
-std::vector<Tensor> skip_layernorm(const Tensor& x1,
-                                   const Tensor& x2,
-                                   const Tensor& weight,
-                                   const Tensor& bias,
-                                   const float epsilon,
-                                   const int normalized_dim,
-                                   const int mode)
+std::vector<Tensor> miopen_skip_layernorm(const Tensor& x1,
+                                          const Tensor& x2,
+                                          const Tensor& weight,
+                                          const Tensor& bias,
+                                          const float epsilon,
+                                          const int normalized_dim,
+                                          const int mode)
 {
     TensorDescriptor x1_tensor(x1);
     TensorDescriptor x2_tensor(x2);
@@ -105,17 +104,16 @@ std::vector<Tensor> skip_layernorm(const Tensor& x1,
                                             output_rstd.desc(),
                                             out_rstd.data_ptr()));
 
-    std::cout << "skiplayernorm test ok" << std::endl;
     return {std::move(out_y), std::move(out_skip), std::move(out_mean), std::move(out_rstd)};
 };
 
-std::vector<Tensor> add_layernorm(const Tensor& x1,
-                                  const Tensor& x2,
-                                  const Tensor& weight,
-                                  const Tensor& bias,
-                                  const float epsilon,
-                                  const int normalized_dim,
-                                  const int mode)
+std::vector<Tensor> miopen_add_layernorm(const Tensor& x1,
+                                         const Tensor& x2,
+                                         const Tensor& weight,
+                                         const Tensor& bias,
+                                         const float epsilon,
+                                         const int normalized_dim,
+                                         const int mode)
 {
     TensorDescriptor x1_tensor(x1);
     TensorDescriptor x2_tensor(x2);
@@ -157,7 +155,6 @@ std::vector<Tensor> add_layernorm(const Tensor& x1,
                                            output_rstd.desc(),
                                            out_rstd.data_ptr()));
 
-    std::cout << "addlayernorm test ok" << std::endl;
     return {std::move(out_y), std::move(out_mean), std::move(out_rstd)};
 };
 

@@ -8,14 +8,14 @@
 namespace at {
 namespace native {
 
-std::vector<Tensor> moe_scatter_dynamic_quant(const Tensor& hidden,
-                                              const Tensor& selected_experts,
-                                              const Tensor& smooth,
-                                              const int expert_start_idx,
-                                              const int expert_end_idx,
-                                              const int num_shared_experts_per_rank,
-                                              const int num_tokens_offset,
-                                              const int num_tokens_per_rank)
+std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor& hidden,
+                                                     const Tensor& selected_experts,
+                                                     const Tensor& smooth,
+                                                     const int expert_start_idx,
+                                                     const int expert_end_idx,
+                                                     const int num_shared_experts_per_rank,
+                                                     const int num_tokens_offset,
+                                                     const int num_tokens_per_rank)
 {
 
     TensorDescriptor hidden_tensor(hidden);
@@ -60,20 +60,19 @@ std::vector<Tensor> moe_scatter_dynamic_quant(const Tensor& hidden,
                                                      num_tokens_offset,
                                                      num_tokens_per_rank));
 
-    std::cout << "moe_scatter_dynamic_quant test ok" << std::endl;
     return {std::move(out_scatter_tokens),
             std::move(out_scatter_per_token_scale),
             std::move(out_experts_token_count),
             std::move(out_token_offset)};
 };
 
-std::vector<Tensor> moe_swiglu_dynamic_quant(const Tensor& scatter_tokens,
-                                             const Tensor& smooth_scale,
-                                             const Tensor& experts_tokens_count,
-                                             const int num_shared_experts_per_rank,
-                                             const int num_tokens_offset,
-                                             const int num_tokens_per_rank,
-                                             const float beta)
+std::vector<Tensor> miopen_moe_swiglu_dynamic_quant(const Tensor& scatter_tokens,
+                                                    const Tensor& smooth_scale,
+                                                    const Tensor& experts_tokens_count,
+                                                    const int num_shared_experts_per_rank,
+                                                    const int num_tokens_offset,
+                                                    const int num_tokens_per_rank,
+                                                    const float beta)
 {
 
     TensorDescriptor scatter_tokens_tensor(scatter_tokens);
@@ -105,16 +104,15 @@ std::vector<Tensor> moe_swiglu_dynamic_quant(const Tensor& scatter_tokens,
                                      output_y.desc(),
                                      out_y.data_ptr()));
 
-    std::cout << "moe_swiglu_dynamic_quant test ok" << std::endl;
     return {std::move(out_y), std::move(out_per_token_scale)};
 };
 
-Tensor moe_gather(const Tensor& scatter_tokens,
-                  const Tensor& token_offset,
-                  const Tensor& expert_weights,
-                  const int num_shared_experts_per_rank,
-                  const int num_tokens_offset,
-                  const int num_tokens_per_rank)
+Tensor miopen_moe_gather(const Tensor& scatter_tokens,
+                         const Tensor& token_offset,
+                         const Tensor& expert_weights,
+                         const int num_shared_experts_per_rank,
+                         const int num_tokens_offset,
+                         const int num_tokens_per_rank)
 {
     TensorDescriptor scatter_tokens_tensor(scatter_tokens);
     TensorDescriptor token_offset_tesnor(token_offset);
@@ -138,7 +136,6 @@ Tensor moe_gather(const Tensor& scatter_tokens,
                                  num_tokens_offset,
                                  num_tokens_per_rank));
 
-    std::cout << "moe_gather test ok" << std::endl;
     return std::move(out_y);
 }
 

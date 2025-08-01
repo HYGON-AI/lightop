@@ -9,12 +9,12 @@
 namespace at {
 namespace native {
 
-std::vector<Tensor> groupnorm(const Tensor& x,
-                              const Tensor& weight,
-                              const Tensor& bias,
-                              const int num_groups,
-                              const float epsilon,
-                              const int mode)
+std::vector<Tensor> miopen_groupnorm(const Tensor& x,
+                                     const Tensor& weight,
+                                     const Tensor& bias,
+                                     const int num_groups,
+                                     const float epsilon,
+                                     const int mode)
 {
     TensorDescriptor x_tensor(x);
     TensorDescriptor weight_tensor(weight);
@@ -52,17 +52,16 @@ std::vector<Tensor> groupnorm(const Tensor& x,
                                         output_rstd.desc(),
                                         out_rstd.data_ptr()));
 
-    std::cout << "groupnorm test ok" << std::endl;
     return {std::move(out_y), std::move(out_mean), std::move(out_rstd)};
 };
 
-std::vector<Tensor> add_groupnorm(const Tensor& x1,
-                                  const Tensor& x2,
-                                  const Tensor& weight,
-                                  const Tensor& bias,
-                                  const int num_groups,
-                                  const float epsilon,
-                                  const int mode)
+std::vector<Tensor> miopen_add_groupnorm(const Tensor& x1,
+                                         const Tensor& x2,
+                                         const Tensor& weight,
+                                         const Tensor& bias,
+                                         const int num_groups,
+                                         const float epsilon,
+                                         const int mode)
 {
     TensorDescriptor x1_tensor(x1);
     TensorDescriptor x2_tensor(x2);
@@ -103,7 +102,6 @@ std::vector<Tensor> add_groupnorm(const Tensor& x1,
                                            output_rstd.desc(),
                                            out_rstd.data_ptr()));
 
-    std::cout << "addgroupnorm test ok" << std::endl;
     return {std::move(out_y), std::move(out_mean), std::move(out_rstd)};
 };
 

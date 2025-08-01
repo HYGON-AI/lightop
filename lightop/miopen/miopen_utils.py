@@ -1,7 +1,8 @@
 import collections
 from itertools import repeat
-from typing import Any, Union
+from typing import Union
 from torch import Size
+
 
 def _ntuple(n, name="parse"):
     def parse(x):
@@ -11,6 +12,7 @@ def _ntuple(n, name="parse"):
 
     parse.__name__ = name
     return parse
+
 
 _pair = _ntuple(2, "_pair")
 
