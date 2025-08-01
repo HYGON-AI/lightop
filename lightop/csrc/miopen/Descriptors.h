@@ -102,7 +102,6 @@ protected:
     {
         if(desc_ == nullptr)
         {
-            // T* raw_desc;
             MIOPEN_CHECK(ctor(&raw_desc));
             desc_.reset(raw_desc);
         }

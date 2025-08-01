@@ -16,10 +16,10 @@ namespace native {
 static miopenTensorArgument_t setProblemTensorDescriptor(miopenProblem_t& problem,
                                                          miopenTensorArgumentId_t id,
                                                          TensorDescriptor& input,
-                                                         const void* tensor_data_ptr)
+                                                         void* tensor_data_ptr)
 {
     MIOPEN_CHECK(miopenSetProblemTensorDescriptor(problem, id, input.mut_desc()));
-    return miopenTensorArgument_t{id, input.get_storage_addr(), const_cast<void*>(tensor_data_ptr)};
+    return miopenTensorArgument_t{id, input.get_storage_addr(), tensor_data_ptr};
 }
 
 Tensor miopen_scaled_dot_product_attention(const Tensor& query,
@@ -31,6 +31,9 @@ Tensor miopen_scaled_dot_product_attention(const Tensor& query,
                                            std::optional<double> scale = std::nullopt,
                                            const bool enable_gqa       = false)
 {
+
+    if(query.dim() != 4 || key.dim() != 4 || value.dim() != 4)
+        MIOPEN_THROW("Only support MHA 2d");
 
     MhaDescriptor mha_descriptor;
     mha_descriptor.SetParams(1 / std::sqrt(query.sizes()[3]));
