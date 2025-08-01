@@ -52,7 +52,6 @@ std::vector<Tensor> miopen_groupnorm(const Tensor& x,
                                         output_rstd.desc(),
                                         out_rstd.data_ptr()));
 
-    std::cout << "groupnorm test ok" << std::endl;
     return {std::move(out_y), std::move(out_mean), std::move(out_rstd)};
 };
 
@@ -103,7 +102,6 @@ std::vector<Tensor> miopen_add_groupnorm(const Tensor& x1,
                                            output_rstd.desc(),
                                            out_rstd.data_ptr()));
 
-    std::cout << "addgroupnorm test ok" << std::endl;
     return {std::move(out_y), std::move(out_mean), std::move(out_rstd)};
 };
 
