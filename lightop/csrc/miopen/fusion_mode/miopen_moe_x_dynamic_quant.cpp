@@ -60,7 +60,6 @@ std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor& hidden,
                                                      num_tokens_offset,
                                                      num_tokens_per_rank));
 
-    std::cout << "moe_scatter_dynamic_quant test ok" << std::endl;
     return {std::move(out_scatter_tokens),
             std::move(out_scatter_per_token_scale),
             std::move(out_experts_token_count),
@@ -105,7 +104,6 @@ std::vector<Tensor> miopen_moe_swiglu_dynamic_quant(const Tensor& scatter_tokens
                                      output_y.desc(),
                                      out_y.data_ptr()));
 
-    std::cout << "moe_swiglu_dynamic_quant test ok" << std::endl;
     return {std::move(out_y), std::move(out_per_token_scale)};
 };
 
@@ -138,7 +136,6 @@ Tensor miopen_moe_gather(const Tensor& scatter_tokens,
                                  num_tokens_offset,
                                  num_tokens_per_rank));
 
-    std::cout << "moe_gather test ok" << std::endl;
     return std::move(out_y);
 }
 

@@ -51,7 +51,6 @@ std::vector<Tensor> miopen_layernorm(const Tensor& x,
                                         output_rstd.desc(),
                                         out_rstd.data_ptr()));
 
-    std::cout << "layernorm test ok" << std::endl;
     return {std::move(out_y), std::move(out_mean), std::move(out_rstd)};
 };
 
@@ -105,7 +104,6 @@ std::vector<Tensor> miopen_skip_layernorm(const Tensor& x1,
                                             output_rstd.desc(),
                                             out_rstd.data_ptr()));
 
-    std::cout << "skiplayernorm test ok" << std::endl;
     return {std::move(out_y), std::move(out_skip), std::move(out_mean), std::move(out_rstd)};
 };
 
@@ -157,7 +155,6 @@ std::vector<Tensor> miopen_add_layernorm(const Tensor& x1,
                                            output_rstd.desc(),
                                            out_rstd.data_ptr()));
 
-    std::cout << "addlayernorm test ok" << std::endl;
     return {std::move(out_y), std::move(out_mean), std::move(out_rstd)};
 };
 
