@@ -18,9 +18,13 @@ from .scaled_masked_softmax import FusedScaleMaskSoftmax,FusedScaleMaskSoftmaxDr
 from .groupnorm import GroupNorm ,CeluGN,GNSilu
 from .reduce import sum, mean,topk
 from .gemmopt import gemm, gemm_w4a16, w4tow16,gemm_w8a16_fp8,fp8_to_16,moe_gemm_w8a8,gemm_w8a8_smooth
-from .miopen_fusion_kernel import conv_bias_add, conv_bias, conv_bias_relu, add_rms_norm_dynamic_quant, head_rms_norm, groupnorm, add_groupnorm, layernorm, add_layernorm, skip_layernorm, rms_norm_dynamic_quant_without_residual, moe_scatter_dynamic_quant, moe_swiglu_dynamic_quant, moe_gather
-from .miopen_fusion_kernel import miopenGroupNorm, miopenLayerNorm, miopenConvBias, miopenConvBiasAdd
 from .config import get_moe_cuda_config
+from .miopen.miopen_mha import miopen_scaled_dot_product_attention
+from .miopen.miopen_conv_fusion import miopen_conv_bias, miopen_conv_bias_add, miopen_conv_bias_relu, miopenConvBias, miopenConvBiasAdd
+from .miopen.miopen_groupnorm import miopen_groupnorm, miopen_add_groupnorm, miopenGroupNorm
+from .miopen.miopen_layernorm import miopen_layernorm, miopen_add_layernorm, miopen_skip_layernorm, miopenLayerNorm
+from .miopen.miopen_moe import miopen_moe_gather, miopen_moe_scatter_dynamic_quant, miopen_moe_swiglu_dynamic_quant
+from .miopen.miopen_rms import miopen_add_rms_norm_dynamic_quant, miopen_head_rms_norm, miopen_rms_norm_dynamic_quant_without_residual
 
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401

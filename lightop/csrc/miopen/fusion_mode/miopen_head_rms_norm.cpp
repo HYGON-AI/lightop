@@ -8,8 +8,8 @@
 namespace at {
 namespace native {
 
-Tensor
-head_rms_norm(const Tensor& x, const Tensor& weight, const float epsilon, const float head_offset, const float head_num)
+Tensor miopen_head_rms_norm(
+    const Tensor& x, const Tensor& weight, const float epsilon, const float head_offset, const float head_num)
 {
     TensorDescriptor x_tensor(x);
     TensorDescriptor weight_tensor(weight);

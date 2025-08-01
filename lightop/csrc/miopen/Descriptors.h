@@ -32,6 +32,10 @@ inline miopenDataType_t getDataType(const at::Tensor& t)
     {
         return miopenInt32;
     }
+    else if(scalar_type == at::kLong)
+    {
+        return miopenInt64;
+    }
     else
     {
         throw std::runtime_error("TensorDescriptor only supports float, int32, int8, half and bfloat16 tensors");
@@ -91,18 +95,20 @@ public:
         return desc_.get();
     }
 
+    miopenTensorDescriptor_t* get_storage_addr() { return &raw_desc; }
+
 protected:
     void init()
     {
         if(desc_ == nullptr)
         {
-            T* raw_desc;
             MIOPEN_CHECK(ctor(&raw_desc));
             desc_.reset(raw_desc);
         }
     }
 
 private:
+    T* raw_desc;
     mutable std::unique_ptr<T, DescriptorDeleter<T, dtor>> desc_;
 };
 
@@ -233,6 +239,50 @@ private:
     std::unique_ptr<miopenBackendDescriptor,
                     DescriptorDeleter<miopenBackendDescriptor, &miopenBackendDestroyDescriptor>>
         desc_;
+};
+
+struct MhaDescriptor : public miopenMhaDescriptor
+{
+public:
+    void SetParams(float scale_,
+                   bool is_inference_     = false,
+                   bool use_causal_mask_  = false,
+                   bool use_alibi_mask_   = false,
+                   bool use_padding_mask_ = false,
+                   bool use_attn_bias_    = false)
+    {
+        scale            = scale_;
+        is_inference     = is_inference_;
+        use_causal_mask  = use_causal_mask_;
+        use_alibi_mask   = use_alibi_mask_;
+        use_padding_mask = use_padding_mask_;
+        use_attn_bias    = use_attn_bias_;
+    }
+
+    void GetParams(float* scale_,
+                   bool* is_inference_,
+                   bool* use_causal_mask_,
+                   bool* use_alibi_mask_,
+                   bool* use_padding_mask_,
+                   bool* use_attn_bias_) const
+    {
+        *scale_            = scale;
+        *is_inference_     = is_inference;
+        *use_causal_mask_  = use_causal_mask;
+        *use_alibi_mask_   = use_alibi_mask;
+        *use_padding_mask_ = use_padding_mask;
+        *use_attn_bias_    = use_attn_bias;
+    }
+
+    float GetScale() const { return scale; }
+
+private:
+    float scale;
+    bool is_inference;
+    bool use_causal_mask;
+    bool use_alibi_mask;
+    bool use_padding_mask;
+    bool use_attn_bias;
 };
 
 union Constant

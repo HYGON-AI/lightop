@@ -10,7 +10,7 @@
 namespace at {
 namespace native {
 
-std::vector<Tensor> add_rms_norm_dynamic_quant(
+std::vector<Tensor> miopen_add_rms_norm_dynamic_quant(
     const Tensor& x, const Tensor& x2, const Tensor& weight, const Tensor& smoothScale, const float epsilon)
 {
 
@@ -44,12 +44,13 @@ std::vector<Tensor> add_rms_norm_dynamic_quant(
                                               output_perTokenScaleDesc.desc(),
                                               out_perTokenScaleDesc.data_ptr()));
 
-    std::cout << "add_rms_norm_dynamic_quant test ok" << std::endl;
     return {std::move(out_add), std::move(out_y), std::move(out_perTokenScaleDesc)};
 };
 
-std::vector<Tensor> rms_norm_dynamic_quant_without_residual(
-    const Tensor& x, const Tensor& weight, const Tensor& smoothScale, const float epsilon)
+std::vector<Tensor> miopen_rms_norm_dynamic_quant_without_residual(const Tensor& x,
+                                                                   const Tensor& weight,
+                                                                   const Tensor& smoothScale,
+                                                                   const float epsilon)
 {
 
     TensorDescriptor x_tensor(x);
@@ -81,7 +82,6 @@ std::vector<Tensor> rms_norm_dynamic_quant_without_residual(
                                               output_perTokenScaleDesc.desc(),
                                               out_perTokenScaleDesc.data_ptr()));
 
-    std::cout << "rms_norm_dynamic_quant_without_residual test ok" << std::endl;
     return {std::move(out_add), std::move(out_y), std::move(out_perTokenScaleDesc)};
 }
 

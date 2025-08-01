@@ -12,9 +12,8 @@ static size_t GetGraphTensorUUID()
     static size_t init_uuid = 1337;
     return init_uuid++;
 }
-std::pair<BackendDescriptor, size_t> CreatGraphTensor(const TensorDescriptor& tensor,
-                                                      miopenDataType_t data_type,
-                                                      const bool is_virtual)
+std::pair<BackendDescriptor, size_t>
+CreatGraphTensor(const TensorDescriptor& tensor, miopenDataType_t data_type, const bool is_virtual)
 {
     static const int64_t alignment = 4;
 
