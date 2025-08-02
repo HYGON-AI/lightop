@@ -159,22 +159,22 @@ void _moe_w8a8_TN_impl(
   // using DEBUG_TYPE = float;
   // using DEBUG_TYPE = bhalf_t;
   DEBUG_TYPE *p_debug = reinterpret_cast<DEBUG_TYPE*>(debug_host);
-  for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
-  // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / 32; ++i) {
+  // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
+  for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / 8; ++i) {
     // if (i % 8 == 0) printf("\n");
-    if (i % 8 == 0) printf("\ni:%d ", i / 8);
+    // if (i % 8 == 0) printf("\ni:%d ", i / 8);
     // printf("%3d:%10.4f\t", i, p_debug[i]);
     // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%3d:%10.4f\t", i, static_cast<float>(tmp[i+1]));
     // printf("%3d:%6d\t", i, p_debug[i]);
-    printf("%3d\t", p_debug[i]);
+    // printf("%3d\t", p_debug[i]);
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f ", static_cast<float>(tmp[0]));
-    // int index = 32 * i;
-    // printf("tid:%d 0:%3d 1:%3d 2:%3d 3:%3d 4:%3d 5:%3d 6:%3d 7:%3d "
-    //   "8:%3d 9:%3d 10:%3d 11:%3d 12:%3d 13:%3d 14:%3d 15:%3d "
-    //   "16:%3d 17:%3d 18:%3d 19:%3d 20:%3d 21:%3d 22:%3d 23:%3d "
-    //   "24:%3d 25:%3d 26:%3d 27:%3d 28:%3d 29:%3d 30:%3d 31:%3d\n", i, 
+    int index = 8 * i;
+    // printf("tid:%d %3d %3d %3d %3d %3d %3d %3d %3d "
+    //   "%3d %3d %3d %3d %3d %3d %3d %3d "
+    //   "%3d %3d %3d %3d %3d %3d %3d %3d "
+    //   "%3d %3d %3d %3d %3d %3d %3d %3d\n", i, 
     //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ],
     //   p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ], p_debug[index+7 ],
     //   p_debug[index+8 ], p_debug[index+9 ], p_debug[index+10], p_debug[index+11],
@@ -184,15 +184,14 @@ void _moe_w8a8_TN_impl(
     //   p_debug[index+24], p_debug[index+25], p_debug[index+26], p_debug[index+27],
     //   p_debug[index+28], p_debug[index+29], p_debug[index+30], p_debug[index+31]
     // );
-    // printf("%3d:%6d %6d\t", i, p_debug[index], p_debug[index+1]);
-    // printf("i:%d %10.4f %6d\t", i, p_debug[index], *reinterpret_cast<uint32_t*>(p_debug + index + 1));
-    // printf("i:%d bidz:%d sa:%10.4f sb:%10.4f v:%10.4f\t", i, *reinterpret_cast<int32_t*>(p_debug+index), p_debug[index+1], p_debug[index+2], p_debug[index+3]);
-    // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + index + 4);
-    // printf("i:%d scale:%10.4f %10.4f value:%10.4f %10.4f out:%10.4f %10.4f\n", i, 
-    //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ], static_cast<float>(tmp[0]), static_cast<float>(tmp[2])
-    //   );
+    printf("tid:%d %3d %3d %3d %3d %3d %3d %3d %3d\n", i, 
+      p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ],
+      p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ], p_debug[index+7 ]
+    );
   }
   printf("\n");
+  HIP_CALL(hipFree(debug_device));
+  free(debug_host);
   #endif
   
   return;
@@ -214,7 +213,7 @@ torch::Tensor moe_w8a8_asm(
 	const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
 
   uint32_t experts_num = b_qweight.sizes()[0];
-  if (mode == 0) {
+  if (mode == 1000) {
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
@@ -225,7 +224,7 @@ torch::Tensor moe_w8a8_asm(
           num_tokens_post_pad, top_k, experts_num);
       }
     );
-  } else if (mode == 1) {
+  } else if (mode == 1001) {
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
@@ -236,7 +235,7 @@ torch::Tensor moe_w8a8_asm(
           num_tokens_post_pad, top_k, experts_num);
       }
     );
-  } else if (mode == 2) {
+  } else if (mode == 1002) {
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
