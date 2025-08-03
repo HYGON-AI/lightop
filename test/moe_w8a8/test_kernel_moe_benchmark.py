@@ -604,7 +604,6 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                 moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
 
-        
         if use_lightop and per_channel_quant and status:
 
             moe_gemm_w8a8(qcurr_hidden_states,
@@ -884,6 +883,18 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
+        
+        # import pdb
+        # pdb.set_trace()
+        
+        # sorted_token_ids = torch.load("sorted_token_ids.pt")
+        # expert_ids1 = torch.load("expert_ids.pt")
+        # num_tokens_post_padded = torch.load("num_tokens_post_padded.pt")
+        # expert_ids = torch.where(expert_ids1 == 0, torch.tensor(1000), expert_ids1)
+        # expert_ids[0] = 0
+
+        # import pdb
+        # pdb.set_trace()
 
         
         if use_lightop and per_channel_quant and status:
@@ -898,7 +909,7 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                           expert_ids,
                           num_tokens_post_padded,
                           top_k_num,
-                          mode=config1['MODE'])
+                          config1)
             
             quantiles = [0.5, 0.2, 0.8]
             ms, min_ms, max_ms = triton.testing.do_bench(lambda:  moe_gemm_w8a8(qcurr_hidden_states,
@@ -911,7 +922,7 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                                                                                 expert_ids,
                                                                                 num_tokens_post_padded,
                                                                                 top_k_num,
-                                                                                mode=config1['MODE']),quantiles=quantiles)
+                                                                                config1),quantiles=quantiles)
        
             elapsed_time1 = ms*1000
             print("w13 _time:{} ms\n".format(elapsed_time1))
@@ -995,7 +1006,7 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                           expert_ids,
                           num_tokens_post_padded,
                           1,
-                          mode=config2['MODE'])
+                          config2)
             
             quantiles = [0.5, 0.2, 0.8]
             ms, min_ms, max_ms = triton.testing.do_bench(lambda:  moe_gemm_w8a8(qintermediate_cache2,
@@ -1008,7 +1019,7 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                                                                                 expert_ids,
                                                                                 num_tokens_post_padded,
                                                                                 1,
-                                                                                mode=config2['MODE']),quantiles=quantiles)
+                                                                                config2),quantiles=quantiles)
        
             elapsed_time2 = ms*1000
             print("w2 _time:{} ms\n".format(elapsed_time2))
@@ -1161,7 +1172,8 @@ def main():
     
     
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
-    m_list=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192,16384]
+    # m_list=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192,16384]
+    m_list = [1049]
     E=args.E 
     block_size=[128,128]
     out_dtype=args.out_dtype
@@ -1296,3 +1308,5 @@ if __name__ == "__main__":
 
     #deepseek系列
     #HIP_VISIBLE_DEVICES=3 python3 moe_w8a8/moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise
+    #HIP_VISIBLE_DEVICES=3 python3 test_kernel_moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise
+    # HIP_VISIBLE_DEVICES=3 python3 test_kernel_moe_benchmark.py  --E 16 --n1-list '[4096]'  --n2-list '[7168]' --k-list '[2048]' --use-channel-wise
