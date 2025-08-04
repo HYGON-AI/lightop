@@ -1,0 +1,15 @@
+from lightop import op
+
+
+def miopen_gemm_add(input_a, input_b, input_c):
+    """_summary_
+
+    Args:
+        input_a (Tensor): 输入张量, 形状如 [batch_size, m, k]
+        input_b (Tensor): 输入张量, 形状如 [k, n]
+        input_c (Tensor): 输入张量, 形状如 [batch_size, m, n]
+
+    Returns:
+        Tensor: 输出张量 y = input_a * input_b + input_c, 形状如 [batch_size, m, n]
+    """
+    return op.miopen_gemm_add(input_a, input_b, input_c)
