@@ -11,7 +11,11 @@ def miopen_groupnorm(x, weight, bias, num_groups, epsilon, mode):
         bias (Tensor): 偏置项，形状为 [1, C_in, 1, 1] (4D) 或 [1, C_in, 1, 1, 1] (5D)
         num_groups (int): 将通道分成的组数
         epsilon (float): 用于稳定逆方差计算的值
-        mode (int): 组归一化模式，支持(0, 1, 10, 11)
+        mode (int): 组归一化模式，支持(
+                                    0: MIOPEN_ELEMENTWISE_AFFINE [weights初始化为值为1的张量, bias初始化为值为0的张量] |
+                                    1: MIOPEN_WEIGHT_BIAS [具有可学习参数的weights和bias] |
+                                    10: MIOPEN_WEIGHT_BIAS_FUSION_SILU [适用于norm+silu场景的, 具有可学习参数的weights和bias] |
+                                    11: MIOPEN_FUSION_SILU [适用于norm+silu场景的, weights初始化为值为1的张量, bias初始化为值为0的张量])
 
     Returns:
         vector<Tensor>: 返回 yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, H, W, C_in] (NHWC) 或 [N, C_in, D, H, W] (NCDHW) 或 [N, D, H, W, C_in] (NDHWC)
@@ -31,7 +35,11 @@ def miopen_add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode):
         bias (Tensor): 偏置项，形状为 [1, C_in, 1, 1] (4D) 或 [1, C_in, 1, 1, 1] (5D)
         num_groups (int): 将通道分成的组数
         epsilon (float): 用于稳定逆方差计算的值
-        mode (int): 组归一化模式，支持(2, 3, 12, 13)
+        mode (int): 组归一化模式，支持(
+                                    2: MIOPEN_ELEMENTWISE_AFFINE_FUSED_ADD [适用于add+norm场景的, weights初始化为值为1的张量, bias初始化为值为0的张量]|
+                                    3: MIOPEN_WEIGHT_BIAS_FUSED_ADD [适用于add+norm场景的, 具有可学习参数的weights和bias]|
+                                    12: MIOPEN_WEIGHT_BIAS_FUSION_SILU_ADD [适用于add+norm+silu场景的, 具有可学习参数的weights和bias] |
+                                    13: MIOPEN_FUSION_SILU_ADD [适用于add+norm+silu场景的, weights初始化为值为1的张量, bias初始化为值为0的张量])
 
     Returns:
         vector<Tensor>: 返回 yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, H, W, C_in] (NHWC) 或 [N, C_in, D, H, W] (NCDHW) 或 [N, D, H, W, C_in] (NDHWC)
@@ -42,11 +50,21 @@ def miopen_add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode):
 
 
 class miopenGroupNorm(torch.nn.Module):
-    # mode = 0 , MIOPEN_ELEMENTWISE_AFFINE
-    # mode = 1 , MIOPEN_WEIGHT_BIAS
-    # mode = 10 , MIOPEN_WEIGHT_BIAS_FUSION_SILU
-    # mode = 11 ,  MIOPEN_FUSION_SILU
     def __init__(self, num_groups: int, num_channels: int, mode: int, eps: float = 1e-5, device=None, dtype=None):
+        """_summary_
+
+        Args:
+            num_groups (int): 分组数
+            num_channels (int): 输入张量通道数
+            mode (int): 归一化模式, 支持(
+                                    0: MIOPEN_ELEMENTWISE_AFFINE [weights初始化为值为1的张量, bias初始化为值为0的张量] |
+                                    1: MIOPEN_WEIGHT_BIAS [具有可学习参数的weights和bias] |
+                                    10: MIOPEN_WEIGHT_BIAS_FUSION_SILU [适用于norm+silu场景的, 具有可学习参数的weights和bias] |
+                                    11: MIOPEN_FUSION_SILU [适用于norm+silu场景的, weights初始化为值为1的张量, bias初始化为值为0的张量])
+            eps (float, optional): 用于稳定逆方差计算的值,  默认为 1e-5.
+            device (_type_, optional): 设备类型, 默认为 None.
+            dtype (_type_, optional): 数据类型, 默认为 None.
+        """
         super(miopenGroupNorm, self).__init__()
         self.eps = eps
         self.num_groups = num_groups
