@@ -24,5 +24,10 @@ std::pair<BackendDescriptor, BackendDescriptor> CreatPointWiseOp(miopenDataType_
                                                                  const BackendDescriptor& pre_operator_output,
                                                                  const BackendDescriptor& output);
 
+std::pair<BackendDescriptor, BackendDescriptor> CreatGemmOp(miopenDataType_t data_type,
+                                                            const int batch_size,
+                                                            const BackendDescriptor& matmul_input_a,
+                                                            const BackendDescriptor& matmul_input_b,
+                                                            const BackendDescriptor& matmul_output);
 } // namespace native
 } // namespace at
