@@ -135,7 +135,7 @@ def moe_gemm_w8a8(input: torch.Tensor,
                                         sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
     else:
         op.moe_w8a8_asm(input, b_qweight, output, a_scale, b_scale, topk_weights,
-                                        sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
+                                        sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
     return output
 
 def gemm_w8a8_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 'TN'):

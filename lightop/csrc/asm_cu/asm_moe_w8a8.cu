@@ -42,6 +42,7 @@ struct HipFunctionArgs {
   uint32_t sorted_token_lens;        // sorted token length
   uint32_t topk;                     // top k
   float topk_rcip;                   // top k
+  float delta_rcip;                  // delta
   void *debugBuffer;
 };
 
@@ -59,7 +60,7 @@ void _moe_w8a8_TN_impl(
   torch::Tensor sorted_token_ids, 
   torch::Tensor expert_ids,
   torch::Tensor num_tokens_post_pad, 
-  uint32_t top_k, uint32_t experts_num) {
+  uint32_t top_k, uint32_t experts_num, uint32_t delta) {
 
   const int size_m = input.size(0); 
   const int size_n = b_qweight.size(1); 
@@ -113,13 +114,13 @@ void _moe_w8a8_TN_impl(
   hipFunctionArgs.sorted_token_lens = sorted_token_ids.size(0);
   hipFunctionArgs.topk = top_k;
   hipFunctionArgs.topk_rcip = 1.0 / top_k;
+  hipFunctionArgs.delta_rcip = 1.0 / delta;
   void * debug_host = nullptr, * debug_device = nullptr;
   #if DEBUG
-  int bytes = 16;
-  int debug_size = blockDim * bytes;
+  int debug_size = 768 * 32;
   debug_host = malloc(debug_size);
   hipMalloc((void **)&debug_device, debug_size);
-  // printf("%s:%d isBfloat16:%d \n", __FILE__, __LINE__, isBfloat16);
+  printf("%s:%d top_k:%d topk:%d\n", __FILE__, __LINE__, top_k, hipFunctionArgs.topk);
   #endif
   hipFunctionArgs.debugBuffer = debug_device;
   size_t argsSize = sizeof(hipFunctionArgs);
@@ -132,23 +133,66 @@ void _moe_w8a8_TN_impl(
   if (output.scalar_type() == at::ScalarType::Half) {
     sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_FP16.co", BLOCKM, BLOCKN, BLOCKK);
   } else if (output.scalar_type() == at::ScalarType::BFloat16) {
-    sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_BF16.co", BLOCKM, BLOCKN, BLOCKK);
+    if (first_stage) {
+      sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
+    } else {
+      sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
+    }
   } else {
     TORCH_CHECK(false, "moe_w8a8 only supports outputType in [Float16, BFloat16]");
   }
-  static AiterAsmKernel moe_w8a8(funcName, co_file);
-  AiterAsmKernel *impl_ptr = &moe_w8a8;
-  impl_ptr->launch_kernel_ext({
-    &hipFunctionArgs,
-    &argsSize,
-    globalWorkSize[0],           // gdx
-    globalWorkSize[1],           // gdy
-    globalWorkSize[2],           // gdz
-    localWorkSize[0],            // bdx: 12 wv64
-    localWorkSize[1],            // bdy
-    localWorkSize[2],            // bdz
-    stream
-  });
+
+  if (output.scalar_type() == at::ScalarType::Half){
+
+    static AiterAsmKernel moe_w8a8(funcName, co_file);
+    AiterAsmKernel *impl_ptr = &moe_w8a8;
+      
+    impl_ptr->launch_kernel_ext({
+      &hipFunctionArgs,
+      &argsSize,
+      globalWorkSize[0],           // gdx
+      globalWorkSize[1],           // gdy
+      globalWorkSize[2],           // gdz
+      localWorkSize[0],            // bdx: 12 wv64
+      localWorkSize[1],            // bdy
+      localWorkSize[2],            // bdz
+      stream
+    });
+  }else{
+    if (first_stage) {
+      static AiterAsmKernel moe_w8a8_first_stage(funcName, co_file);
+      AiterAsmKernel *impl_ptr = &moe_w8a8_first_stage;
+        
+      impl_ptr->launch_kernel_ext({
+        &hipFunctionArgs,
+        &argsSize,
+        globalWorkSize[0],           // gdx
+        globalWorkSize[1],           // gdy
+        globalWorkSize[2],           // gdz
+        localWorkSize[0],            // bdx: 12 wv64
+        localWorkSize[1],            // bdy
+        localWorkSize[2],            // bdz
+        stream
+      });
+    } else {
+      static AiterAsmKernel moe_w8a8_second_stage(funcName, co_file);
+      AiterAsmKernel *impl_ptr = &moe_w8a8_second_stage;
+        
+      impl_ptr->launch_kernel_ext({
+        &hipFunctionArgs,
+        &argsSize,
+        globalWorkSize[0],           // gdx
+        globalWorkSize[1],           // gdy
+        globalWorkSize[2],           // gdz
+        localWorkSize[0],            // bdx: 12 wv64
+        localWorkSize[1],            // bdy
+        localWorkSize[2],            // bdz
+        stream
+      });
+    }
+  }
+  
+
 
 
   #if DEBUG
@@ -173,6 +217,7 @@ void _moe_w8a8_TN_impl(
     // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%3d:%10.4f\t", i, static_cast<float>(tmp[i+1]));
     // printf("%3d:%6d\t", i, p_debug[i]);
+    printf("%3d:%6f\t", i, p_debug[i]);
     // printf("%3d\t", p_debug[i]);
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f ", static_cast<float>(tmp[0]));
@@ -234,7 +279,8 @@ torch::Tensor moe_w8a8_asm(
   torch::Tensor expert_ids,
   torch::Tensor num_tokens_post_pad, 
   uint32_t top_k,
-  int mode) {
+  int mode,
+  int delta) {
   
 	const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
 
@@ -247,7 +293,7 @@ torch::Tensor moe_w8a8_asm(
         _moe_w8a8_TN_impl<128, 256, 128, scalar_t>(
           input, b_qweight, output, a_scale, b_scale,
           topk_weights, sorted_token_ids, expert_ids,
-          num_tokens_post_pad, top_k, experts_num);
+          num_tokens_post_pad, top_k, experts_num, delta);
       }
     );
   } else if (mode == 1001) {
@@ -258,7 +304,7 @@ torch::Tensor moe_w8a8_asm(
         _moe_w8a8_TN_impl<64, 256, 128, scalar_t>(
           input, b_qweight, output, a_scale, b_scale,
           topk_weights, sorted_token_ids, expert_ids,
-          num_tokens_post_pad, top_k, experts_num);
+          num_tokens_post_pad, top_k, experts_num, delta);
       }
     );
   } else if (mode == 1002) {
@@ -269,34 +315,11 @@ torch::Tensor moe_w8a8_asm(
         _moe_w8a8_TN_impl<32, 256, 128, scalar_t>(
           input, b_qweight, output, a_scale, b_scale,
           topk_weights, sorted_token_ids, expert_ids,
-          num_tokens_post_pad, top_k, experts_num);
+          num_tokens_post_pad, top_k, experts_num, delta);
       }
     );
-  } else if (mode == 1003) {
-    AT_DISPATCH_FLOATING_TYPES_AND2(
-      at::ScalarType::Half,
-      at::ScalarType::BFloat16,
-      output.scalar_type(), "moe_w8a8_TN_impl",[&] {
-        _moe_w8a8_TN_impl<32, 32, 256, scalar_t>(
-          input, b_qweight, output, a_scale, b_scale,
-          topk_weights, sorted_token_ids, expert_ids,
-          num_tokens_post_pad, top_k, experts_num);
-      }
-    );
-  } else if (mode == 1004) {
-    AT_DISPATCH_FLOATING_TYPES_AND2(
-      at::ScalarType::Half,
-      at::ScalarType::BFloat16,
-      output.scalar_type(), "moe_w8a8_TN_impl",[&] {
-        _moe_w8a8_TN_impl<16, 16, 256, scalar_t>(
-          input, b_qweight, output, a_scale, b_scale,
-          topk_weights, sorted_token_ids, expert_ids,
-          num_tokens_post_pad, top_k, experts_num);
-      }
-    );
-  } else {
-    TORCH_CHECK(false, mode, " mode error.");
   }
+
   return output;
 }
 
