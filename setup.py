@@ -378,7 +378,7 @@ def get_extensions():
                glob.glob('./lightop/csrc/scaledmask/*.cu') + glob.glob('./lightop/csrc/groupnorm/*.cu') + \
                glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + \
                glob.glob('./lightop/csrc/miopen/*.cpp') + glob.glob('./lightop/csrc/softmax/*.cu') + \
-               glob.glob('./lightop/csrc/moew8a8/*.cu') + + glob.glob('./lightop/csrc/asm_cu/*.cu') \
+               glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + \
                glob.glob('./lightop/csrc/marlinw4a16/*.cu')  # 添加marlinw4a16目录文件
     
     extension = CUDAExtension
