@@ -1,0 +1,42 @@
+# -*- coding:utf-8 -*-
+"""
+author: niutao
+date: 2025年08月02日
+description: 支持测试脚本执行的辅助功能，读取各个算子的测试size
+"""
+
+import pandas as pd
+
+
+def read_convfusion_size(size_file_path):
+    convfusion_df = pd.read_csv(size_file_path)
+    return [
+        {
+            'batch_size': row['n'],
+            'channels': row['c'],
+            'Height': row['H'],
+            'Width': row['W'],
+            'out_channels': row['k'],
+            'kernel_h': row['y'],
+            'kernel_w': row['x'],
+            'stride_h': row['u'],
+            'stride_w': row['v'],
+            'pad_h': row['p'],
+            'pad_w': row['q'],
+            'dilation_h': row['l'],
+            'dilation_w': row['j']
+        }
+        for _, row in convfusion_df.iterrows()
+    ]
+
+
+def read_gn_size(size_file_path):
+    gn_df = pd.read_csv(size_file_path)
+    return [{
+        'batch_size': row['n'],
+        'seqs': row['c'],
+        'cols': row['H'],
+        'rows': row['W'],
+        'num_groups': row['g']
+    }
+        for _, row in gn_df.iterrows()]
