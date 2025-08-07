@@ -13,21 +13,23 @@ namespace at {
 namespace native {
 Tensor miopen_gemm_add(const Tensor& input_a,
                        const Tensor& input_b,
-                       const Tensor& input_c)
+                       const Tensor& bias)
 {
 
-    if(input_a.dim() != 3 || input_b.dim() != 2 || input_c.dim() != 3)
+    if(input_a.dim() != 3 || input_b.dim() != 2 || bias.dim() != 2)
         MIOPEN_THROW("Gemm_Add Do not match input tensor dim");
 
     const int batch_size = input_a.sizes()[0];
+    const int m = input_a.sizes()[1];
+    const int n = bias.sizes()[1];
 
     TensorDescriptor gemm_x1(input_a);
     TensorDescriptor gemm_x2(input_b);
-    TensorDescriptor gemm_x3(input_c);
+    TensorDescriptor gemm_bias(bias);
     auto data_type = getDataType(input_a);
 
     // output
-    Tensor out = at::empty_like(input_c);
+    Tensor out = at::empty({batch_size, m, n}, input_a.options());
     TensorDescriptor output_tensor(out);
 
     // matmul op
@@ -38,7 +40,7 @@ Tensor miopen_gemm_add(const Tensor& input_a,
         CreatGemmOp(data_type, batch_size, matmul_input1, matmul_input2, matmul_output);
 
     // add op
-    auto [add_input, add_input_uuid]   = CreatGraphTensor(gemm_x3, data_type, false);
+    auto [add_input, add_input_uuid]   = CreatGraphTensor(gemm_bias, data_type, false);
     auto [add_output, add_output_uuid] = CreatGraphTensor(output_tensor, data_type, false);
     auto [add_operation, add_operation_desc] =
         CreatPointWiseOp(data_type, MIOPEN_POINTWISE_ADD, matmul_output, add_input, add_output);
@@ -50,7 +52,7 @@ Tensor miopen_gemm_add(const Tensor& input_a,
     std::vector<std::pair<size_t, void*>> tensor_id_with_addr;
     tensor_id_with_addr.emplace_back(std::make_pair(matmul_input1_uuid, input_a.data_ptr()));
     tensor_id_with_addr.emplace_back(std::make_pair(matmul_input2_uuid, input_b.data_ptr()));
-    tensor_id_with_addr.emplace_back(std::make_pair(add_input_uuid, input_c.data_ptr()));
+    tensor_id_with_addr.emplace_back(std::make_pair(add_input_uuid, bias.data_ptr()));
     tensor_id_with_addr.emplace_back(std::make_pair(add_output_uuid, out.data_ptr()));
 
     size_t workspaceSize = GetPlanWorkspaceSize(exec_plan);
