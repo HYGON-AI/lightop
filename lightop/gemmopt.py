@@ -7,7 +7,6 @@ import math
 from .config_smooth_gemm import gemm_w8a8_smooth_config
 
 
-
 @functools.lru_cache(maxsize=128)
 def w8a8_smooth_quant_config(m, n, k):
     """
@@ -117,8 +116,6 @@ def moe_gemm_w8a8(input: torch.Tensor,
                                         sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
     return output
 
-
-
 def gemm_w8a8_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 'TN'):
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()
     assert block_size[0] == 128 and block_size[1] == 128
@@ -146,3 +143,56 @@ def gemm_w8a8_xgrad_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 
     assert scale_b.shape[0] == math.ceil(n / block_size[1]) and scale_b.shape[1] == math.ceil(k / block_size[0])
     
     return op.gemm_w8a8_asm(a, b, scale_a, scale_b, None, None, None, out_dtype, m, n, k, 2)
+
+def moe_marlin_w4a16(a: torch.Tensor,
+                    c_or_none: Optional[torch.Tensor],
+                    b_q_weight: torch.Tensor,
+                    b_scale_zeros: torch.Tensor,
+                    g_idx_or_none: Optional[torch.Tensor],
+                    perm_or_none: Optional[torch.Tensor],
+                    workspace: torch.Tensor,
+                    sorted_token_ids: torch.Tensor,
+                    expert_ids: torch.Tensor,
+                    num_tokens_past_padded: torch.Tensor,
+                    topk_weights: torch.Tensor,
+                    moe_block_size: int,
+                    top_k: int,
+                    mul_topk_weights: bool,
+                    is_ep: bool,
+                    size_m: int,
+                    size_n: int,
+                    size_k: int,
+                    is_k_full: bool,
+                    use_atomic_add: bool,
+                    use_fp32_reduce: bool,
+                    is_zp_float: bool
+                    ) -> torch.Tensor:
+    output = op.moe_marlin_w4a16(a, 
+                        c_or_none, 
+                        b_q_weight, 
+                        b_scale_zeros, 
+                        g_idx_or_none, 
+                        perm_or_none, 
+                        workspace, 
+                        sorted_token_ids, 
+                        expert_ids,
+                        num_tokens_past_padded,
+                        topk_weights,
+                        moe_block_size,
+                        top_k,
+                        mul_topk_weights,
+                        is_ep,
+                        size_m,
+                        size_n,
+                        size_k,
+                        is_k_full,
+                        use_atomic_add,
+                        use_fp32_reduce,
+                        is_zp_float
+                        )
+    return output
+
+def awq_marlin_repack(b_q_weight: torch.Tensor, size_k: int, size_n: int, num_bits: int) -> torch.Tensor:
+    output = op.awq_marlin_repack(b_q_weight, size_k, size_n, num_bits)
+    return output
+
