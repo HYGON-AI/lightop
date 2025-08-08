@@ -19,7 +19,7 @@ from .groupnorm import GroupNorm ,CeluGN,GNSilu
 from .reduce import sum, mean,topk
 from .gemmopt import gemm, gemm_w4a16, w4tow16,gemm_w8a16_fp8,fp8_to_16,moe_gemm_w8a8,gemm_w8a8_smooth
 from .config import get_moe_cuda_config
-# from .miopen.miopen_mha import miopen_scaled_dot_product_attention
+from .miopen.miopen_mha import miopen_scaled_dot_product_attention
 from .miopen.miopen_conv_fusion import miopen_conv_bias, miopen_conv_bias_add, miopen_conv_bias_relu, miopenConvBias, miopenConvBiasAdd
 from .miopen.miopen_groupnorm import miopen_groupnorm, miopen_add_groupnorm, miopenGroupNorm
 from .miopen.miopen_layernorm import miopen_layernorm, miopen_add_layernorm, miopen_skip_layernorm, miopenLayerNorm
