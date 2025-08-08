@@ -573,6 +573,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         m=curr_hidden_states.shape[0]
         if use_lightop and per_channel_quant: #channel-wise cuda
             num_cus=torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
+            # get_config(E, M, Gemm1_N, K, Gemm2_N, Gemm2_K)  gemm1 [m, n, k]   gemm2[m, k, n/2]
             config1,config2,status=get_moe_cuda_config(E,m,w1.shape[1],w1.shape[2],w2.shape[1],w2.shape[2],top_k_num,device_name,num_cus,compute_type)      
             config=config1
             if status is False:
@@ -604,7 +605,6 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                 moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
 
-        
         if use_lightop and per_channel_quant and status:
 
             moe_gemm_w8a8(qcurr_hidden_states,
@@ -884,6 +884,18 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
+        
+        # import pdb
+        # pdb.set_trace()
+        
+        # sorted_token_ids = torch.load("sorted_token_ids.pt")
+        # expert_ids1 = torch.load("expert_ids.pt")
+        # num_tokens_post_padded = torch.load("num_tokens_post_padded.pt")
+        # expert_ids = torch.where(expert_ids1 == 0, torch.tensor(1000), expert_ids1)
+        # expert_ids[0] = 0
+
+        # import pdb
+        # pdb.set_trace()
 
         
         if use_lightop and per_channel_quant and status:
@@ -898,7 +910,7 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                           expert_ids,
                           num_tokens_post_padded,
                           top_k_num,
-                          mode=config1['MODE'])
+                          config1)
             
             quantiles = [0.5, 0.2, 0.8]
             ms, min_ms, max_ms = triton.testing.do_bench(lambda:  moe_gemm_w8a8(qcurr_hidden_states,
@@ -911,7 +923,7 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                                                                                 expert_ids,
                                                                                 num_tokens_post_padded,
                                                                                 top_k_num,
-                                                                                mode=config1['MODE']),quantiles=quantiles)
+                                                                                config1),quantiles=quantiles)
        
             elapsed_time1 = ms*1000
             print("w13 _time:{} ms\n".format(elapsed_time1))
@@ -995,7 +1007,7 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                           expert_ids,
                           num_tokens_post_padded,
                           1,
-                          mode=config2['MODE'])
+                          config2)
             
             quantiles = [0.5, 0.2, 0.8]
             ms, min_ms, max_ms = triton.testing.do_bench(lambda:  moe_gemm_w8a8(qintermediate_cache2,
@@ -1008,7 +1020,7 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                                                                                 expert_ids,
                                                                                 num_tokens_post_padded,
                                                                                 1,
-                                                                                mode=config2['MODE']),quantiles=quantiles)
+                                                                                config2),quantiles=quantiles)
        
             elapsed_time2 = ms*1000
             print("w2 _time:{} ms\n".format(elapsed_time2))
@@ -1161,8 +1173,10 @@ def main():
     
     
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
-    m_list=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192,16384]
-    E=args.E 
+    # m_list=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192,16384]
+    m_list = [1,2,4,8,16,32,64,128]
+    #m_list = [32]
+    E=args.E
     block_size=[128,128]
     out_dtype=args.out_dtype
     
@@ -1258,6 +1272,8 @@ def main():
                                                                                     w2_scale=weight2_scale,
                                                                                     block_shape=block_size,
                                                                                     per_channel_quant=per_channel_quant)
+
+            # _, elapsed_time1, elapsed_time2 = 0, 0, 0
             
             print("cost_time:{} us\n".format(gpu_costtime))
             moe_cost_gpu.append(gpu_costtime)           
@@ -1296,3 +1312,6 @@ if __name__ == "__main__":
 
     #deepseek系列
     #HIP_VISIBLE_DEVICES=3 python3 moe_w8a8/moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise
+    # HIP_VISIBLE_DEVICES=3 python3 test_kernel_moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise
+    # HIP_VISIBLE_DEVICES=3 python3 test_kernel_moe_benchmark.py  --E 16 --n1-list '[4096]'  --n2-list '[7168]' --k-list '[2048]' --use-channel-wise
+    # HIP_VISIBLE_DEVICES=6 hipprof --sqtt --kernel-name moe_w8a8_gemm_first_stage_kernel_decode  python3 ../test_kernel_moe_benchmark.py  --E 256 --n1-list '[512]'  --n2-list '[7168]' --k-list '[256]' --use-channel-wise
