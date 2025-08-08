@@ -109,7 +109,9 @@ blockM_configs = {
     93: 32,
     94: 64,
     95: 64,
+
     1000: 128,
+    1001: 64
 }
 
 M_THRESHOLD = 128
@@ -150,7 +152,15 @@ blockM_configs_decode = {
     32: 16,
     33: 16,
     34: 16,
-    35: 16
+    35: 16,
+    36: 16,
+    37: 16,
+    38: 16,
+    39: 16,
+    40: 16,
+    41: 16,
+    42: 16,
+    43: 16
 }
 
 def to_int8(tensor: torch.Tensor):
@@ -516,6 +526,9 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
                     top_k,
                     config)
     torch.cuda.synchronize()
+
+    # import pdb
+    # pdb.set_trace()
     stage = 0
     if not mul_routed_weight:
         stage = 1
@@ -673,8 +686,9 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
             config1['DELTA'] = 1
             config2['BLOCK_SIZE_M'] = blockM_configs_decode[mode1]
             config2['MODE'] = mode1
-            config2['DELTA'] = 1
+            config2['DELTA'] =  blockM_configs_decode[mode0]//blockM_configs_decode[mode1]
             
+    
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
@@ -750,23 +764,22 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
 
-        mode1=2
-        config1 = {}
-        config2 = {}
-        if M > M_THRESHOLD:
-            config1['BLOCK_SIZE_M'] = blockM_configs[mode0]
-            config1['MODE']         = mode0
-            config1['DELTA']        = 1
-            config2['BLOCK_SIZE_M'] = blockM_configs[mode1]
-            config2['MODE']         = mode1
-            config2['DELTA']        = blockM_configs[mode0]//blockM_configs[mode1]
-        else:
-            config1['BLOCK_SIZE_M'] = blockM_configs_decode[mode0]
-            config1['BLOCK_SIZE_M'] = mode0
-            config1['BLOCK_SIZE_M'] = 1
-            config2['BLOCK_SIZE_M'] = blockM_configs_decode[mode1]
-            config2['BLOCK_SIZE_M'] = mode1
-            config2['BLOCK_SIZE_M'] = blockM_configs[mode0]//blockM_configs[mode1]
+        # config1 = {}
+        # config2 = {}
+        # if M > M_THRESHOLD:
+        #     config1['BLOCK_SIZE_M'] = blockM_configs[mode0]
+        #     config1['MODE']         = mode0
+        #     config1['DELTA']        = 1
+        #     config2['BLOCK_SIZE_M'] = blockM_configs[mode1]
+        #     config2['MODE']         = mode1
+        #     config2['DELTA']        = blockM_configs[mode0]//blockM_configs[mode1]
+        # else:
+        #     config1['BLOCK_SIZE_M'] = blockM_configs_decode[mode0]
+        #     config1['MODE'] = mode0
+        #     config1['DELTA'] = 1
+        #     config2['BLOCK_SIZE_M'] = blockM_configs_decode[mode1]
+        #     config2['MODE'] = mode1
+        #     config2['DELTA'] = blockM_configs_decode[mode0]//blockM_configs_decode[mode1]
             
         intermediate_cache3_copy = torch.zeros_like(intermediate_cache3)
         invoke_fused_moe_kernel_int8(qintermediate_cache2,
@@ -917,7 +930,8 @@ def torch_w8a8_per_column_moe(a, w1, w2, w1_s, w2_s, topk_weight, topk_ids,topk)
 def run_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
-    m_list=[256,512,1024,2048,4096,8192,16384] #prefill
+    # m_list=[256,512,1024,2048,4096,8192,16384] #prefill
+    m_list = [32]
     # m_list=[8192,]
     # m_list = [16384]
     # n_list_1=[512,]
@@ -934,7 +948,7 @@ def run_perchannel_vaild():
     
     #qwen3
     # E=128
-    ##qwen3-30b-A3B-tp1
+    #qwen3-30b-A3B-tp1
     # n_list_1=[1536]
     # k_list_1=[2048]
     
@@ -978,14 +992,14 @@ def run_perchannel_vaild():
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
     # mode_ranges = [mode for mode in blockM_configs.keys()]
-    mode_ranges = [61]
+    mode_ranges = [1000]
     # compare_fail = [42,43,46,52,54,60]
     # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
     # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
     #deepseek-471b-tp16
 
     # # decode corrtnese
-    # mode_ranges = [i for i in range(len(blockM_configs_decode))]
+    mode_ranges = [i for i in range(len(blockM_configs_decode))]
     # exclude_modes = [13, 32, 33, 34, 35]
     # #mode_ranges = [3,4,6,8,10,12,14]
     # #exclude_modes = [13] # nk 4096 192 gemm2<16
@@ -994,7 +1008,8 @@ def run_perchannel_vaild():
     for i in range(0,len(k_list_1),1):
         for m in m_list:
             for mode in mode_ranges:
-                mode_list=[49,49]
+                mode_list=[mode,mode]
+                # mode_list=[3,3]
                 print("mode:{} m:{} n:{} k:{} ".format(mode_list, m,n_list_1[i],k_list_1[i]))
                 input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=m,n=n_list_1[i],k=k_list_1[i],n2=n_list_2[i],k2=k_list_2[i],topk=topk,E=E,block_size=None,out_dtype=out_dtype)
                 # triton moe: output
