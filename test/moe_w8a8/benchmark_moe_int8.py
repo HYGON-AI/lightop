@@ -680,7 +680,7 @@ def fuse_moe_correctness_preprocess(
     
     mode_ranges = [mode for mode in block_m_configs.keys()]
     gemm1_compare_failed_list = []
-    gemm2_compare_failed_list = [1000]
+    gemm2_compare_failed_list = [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]
     device="cuda:"+str(device_id)
     
     for mode in mode_ranges:
@@ -688,6 +688,8 @@ def fuse_moe_correctness_preprocess(
         mode1 = mode
         if mode0 == 1000:
             mode1 = 49
+        if mode1 in gemm2_compare_failed_list:
+            mode1 = 1
         mode_list=[mode0,mode1]
         # print("mode:{} m:{} n:{} k:{} ".format(mode_list, num_tokens,shard_intermediate_size,hidden_size))
         input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=num_experts,device=device,block_size=None,out_dtype=dtype)
@@ -875,7 +877,6 @@ def get_configs_compute_bound(use_fp16,
     for config_values in product(*values):
         config = dict(zip(keys, config_values))
         configs_decode.append(config)
-
     return [configs_prefill, configs_decode]
 
 
@@ -1037,7 +1038,8 @@ class BenchmarkWorker:
                                                    hidden_size, search_space,
                                                    is_fp16, topk, gemm2_compare_failed_list)
 
-
+        # import pdb
+        # pdb.set_trace()
         with torch.cuda.device(self.device_id):
             
             for block_m in tqdm([16,32,64,128], desc="Processing block_m......"):
@@ -1271,19 +1273,19 @@ def main(args: argparse.Namespace):
     use_int8_w8a8 = args.dtype == "int8_w8a8"
     
     # ## deepseek-r1-tp16
-    # E = 256
-    # shard_intermediate_size=256
-    # hidden_size=7168
+    E = 256
+    shard_intermediate_size=256
+    hidden_size=7168
     
     # ## deepseek-r1-tp8
     # E = 256
     # shard_intermediate_size=512
     # hidden_size=7168
     
-    E = 128
-    ##qwen3-30b-A3B-tp1
-    shard_intermediate_size=1536
-    hidden_size=2048
+    # E = 128
+    # ##qwen3-30b-A3B-tp1
+    # shard_intermediate_size=1536
+    # hidden_size=2048
     # # ##qwen3-30b-A3B-tp2
     # # shard_intermediate_size=768
     # # hidden_size=2048
@@ -1298,8 +1300,9 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            # 1, 2, 4, 8, 16, 32, 64, 128,
-            256, 512, 1024, 2048, 4096, 6144, 8192, 16384
+            1, 2, 4, 8, 16, 32, 64, 128
+            # 128
+            # 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
             # 1, 2, 4, 8, 16, 32, 64, 8192, 16384, 32768
             # 4096, 6144, 8192, 16384, 32768
