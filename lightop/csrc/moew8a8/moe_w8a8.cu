@@ -393,10 +393,9 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 4, bidx, bidy);
 
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
-  
-  constexpr int STAGES = BLOCK_SIZE_K/WARP_K; 
+  constexpr int STAGES = 4; 
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
-  const int32_t delta_bidx = bidx / delta;
+  const int32_t delta_bidx = bidx;
   const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
   const uint64_t expert_offset = ((uint64_t)size_n) * size_k * expert_id; // 这个是对应专家的weight偏移
   const uint64_t qweight_offset = expert_offset + bidy * size_k * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
@@ -444,15 +443,15 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
   int warp_k_id = warp_id % warp_k_num;
   int warp_n_id = warp_id / warp_k_num;
   extern __shared__ Element smem[]; // 声明lds信息
-  Element* input_lds = (Element*)&(smem); // 输入lds首地址,首地址开始分配给input
-  Element* qweight_lds = input_lds + STAGES * (BLOCK_SIZE_M * WARP_K); // 按照最简单的方式分块
+  Element* input_lds = (Element*)&(smem); // decode这里没用
+  Element* qweight_lds = input_lds; // decode这里没用
   bhalf_t* output_lds = (bhalf_t*)&(smem); // 重复使用lds,留给output_lds
   const int *sorted_token_ids_offset = sorted_token_ids;
 
   // union_vec<Element, 8> A_reg[WARP_M / mfma_m * STAGES][WARP_K/mfma_k]; 
   // union_vec<Element, 8> B_reg[WARP_N / mfma_n][WARP_K/mfma_k];
-  union_vec<Element, WARP_K / 4> A_reg[WARP_M / mfma_m]; 
-  union_vec<Element, WARP_K / 4> B_reg[WARP_N / mfma_n];
+  union_vec<Element, WARP_K / 4> A_reg[WARP_M / mfma_m][STAGES]; 
+  union_vec<Element, WARP_K / 4> B_reg[WARP_N / mfma_n][STAGES];
 
   auto g_qweight = qweight + qweight_offset;
   auto g_weight_scale = weight_scale + weight_scale_offset; // 配置weight的scale信息 todo 这里n_loop=0没有计算偏移
@@ -466,7 +465,11 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
       a_scale_ptr_arr[idx] = input_scale + std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm; //计算M方向的偏移
   }
   { 
-    gemm_nt_first_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+    //gemm_nt_first_stage_decode
+    // gemm_nt_two_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+    // (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
+
+    gemm_nt_four_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
     (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
   }
 
@@ -552,9 +555,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
   // int bidz = blockIdx.x; // pid_k 
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 8, bidx, bidy);
 
+  constexpr int STAGES = 2; 
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
-  
-  const int STAGES = BLOCK_SIZE_K/WARP_K; // 采用两stage
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
   const int32_t delta_bidx = bidx / delta;
   const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
@@ -605,23 +607,27 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
   int warp_k_id = warp_id % warp_k_num;
   int warp_n_id = warp_id / warp_k_num;
   extern __shared__ Element smem[]; // 声明lds信息
-  Element* input_lds = (Element*)&(smem); // 输入lds首地址,首地址开始分配给input
-  Element* qweight_lds = input_lds + STAGES * (BLOCK_SIZE_M * WARP_K); // 按照最简单的方式分块
+  Element* input_lds = (Element*)&(smem); // decode这里没用
+  Element* qweight_lds = input_lds; // decode这里没用
   bhalf_t* output_lds = (bhalf_t*)&(smem); // 重复使用lds,留给output_lds
 
   const int *sorted_token_ids_offset = sorted_token_ids;
 
   // union_vec<Element, 8> A_reg[WARP_M / mfma_m * STAGES][WARP_K/mfma_k]; //
   // union_vec<Element, 8> B_reg[WARP_N / mfma_n][WARP_K/mfma_k];
-  union_vec<Element, WARP_K / 4> A_reg[WARP_M / mfma_m]; 
-  union_vec<Element, WARP_K / 4> B_reg[WARP_N / mfma_n];
+  union_vec<Element, WARP_K / 4> A_reg[WARP_M / mfma_m][STAGES]; 
+  union_vec<Element, WARP_K / 4> B_reg[WARP_N / mfma_n][STAGES];
 
   auto g_qweight = qweight + qweight_offset;
   auto g_weight_scale = weight_scale + weight_scale_offset; // 配置weight的scale信息 todo 这里n_loop=0没有计算偏移
   intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; // [4][2]  每个warp在n方向重复两次 tileN = 16*2
   float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id*WARP_N;
   
-  gemm_nt_first_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+  //gemm_nt_first_stage_decode
+  // gemm_nt_two_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+  // (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
+
+  gemm_nt_four_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
   (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
   
   //save output to lds 

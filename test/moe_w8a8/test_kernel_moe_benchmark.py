@@ -573,6 +573,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         m=curr_hidden_states.shape[0]
         if use_lightop and per_channel_quant: #channel-wise cuda
             num_cus=torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
+            # get_config(E, M, Gemm1_N, K, Gemm2_N, Gemm2_K)  gemm1 [m, n, k]   gemm2[m, k, n/2]
             config1,config2,status=get_moe_cuda_config(E,m,w1.shape[1],w1.shape[2],w2.shape[1],w2.shape[2],top_k_num,device_name,num_cus,compute_type)      
             config=config1
             if status is False:
@@ -1173,8 +1174,9 @@ def main():
     
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192,16384]
-    m_list = [1049]
-    E=args.E 
+    m_list = [1,2,4,8,16,32,64,128]
+    #m_list = [32]
+    E=args.E
     block_size=[128,128]
     out_dtype=args.out_dtype
     
@@ -1270,6 +1272,8 @@ def main():
                                                                                     w2_scale=weight2_scale,
                                                                                     block_shape=block_size,
                                                                                     per_channel_quant=per_channel_quant)
+
+            # _, elapsed_time1, elapsed_time2 = 0, 0, 0
             
             print("cost_time:{} us\n".format(gpu_costtime))
             moe_cost_gpu.append(gpu_costtime)           
@@ -1308,5 +1312,6 @@ if __name__ == "__main__":
 
     #deepseek系列
     #HIP_VISIBLE_DEVICES=3 python3 moe_w8a8/moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise
-    #HIP_VISIBLE_DEVICES=3 python3 test_kernel_moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise
+    # HIP_VISIBLE_DEVICES=3 python3 test_kernel_moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise
     # HIP_VISIBLE_DEVICES=3 python3 test_kernel_moe_benchmark.py  --E 16 --n1-list '[4096]'  --n2-list '[7168]' --k-list '[2048]' --use-channel-wise
+    # HIP_VISIBLE_DEVICES=6 hipprof --sqtt --kernel-name moe_w8a8_gemm_first_stage_kernel_decode  python3 ../test_kernel_moe_benchmark.py  --E 256 --n1-list '[512]'  --n2-list '[7168]' --k-list '[256]' --use-channel-wise
