@@ -16,18 +16,21 @@ num_tokens_per_rank = 64
 hidden = torch.randn(num_tokens, hidden_size, dtype=torch.bfloat16).cuda()
 selected_experts = torch.randint(0, 2, (num_tokens, topk), dtype=torch.int32).cuda()
 smooth = torch.randn(num_shared_experts_per_rank + num_experts_per_rank, hidden_size, dtype=torch.float32).cuda()
+moe_weights = torch.ones(num_tokens, topk, dtype=torch.float32, device="cuda")
 
 # 调用被测函数
-scatter_tokens, scatter_per_token_scale, per_tokeexperts_token_countn_scale, token_offset = (
+scatter_tokens, scatter_per_token_scale, scatter_token_offset, experts_token_count, experts_token_start = (
     lightop.miopen_moe_scatter_dynamic_quant(
         hidden,
         selected_experts,
+        moe_weights,
         smooth,
         expert_start_idx,
         expert_end_idx,
         num_shared_experts_per_rank,
         num_tokens_offset,
         num_tokens_per_rank,
+        num_tokens,
     )
 )
 
@@ -46,19 +49,19 @@ num_tokens_per_rank = 1024
 topk = 6
 
 allocated_tokens = num_tokens_per_rank * topk
+token_nums = num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens
+total_expert_num = num_shared_experts_per_rank + num_experts_per_rank
 
-scatter_tokens1 = torch.randn(
-    num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens, hidden_size * 2, dtype=torch.bfloat16
-).cuda()
-smooth = torch.randn(num_shared_experts_per_rank + num_experts_per_rank, hidden_size, dtype=torch.float32).cuda()
-experts_tokens_count = torch.randint(0, 2, (num_experts_per_rank,), dtype=torch.int32).cuda()
+scatter_tokens = torch.randn(1, 1, token_nums, hidden_size * 2, dtype=torch.bfloat16).cuda()
+smooth = torch.randn(1, 1, total_expert_num, hidden_size, dtype=torch.float32).cuda()
+experts_tokens_count = torch.randint(0, 2, (1, 1, 1, total_expert_num,), dtype=torch.int32).cuda()
+exports_tokens_start = torch.randint(0, 2, (1, 1, 1, total_expert_num,), dtype=torch.int32).cuda()
+
 y, per_token_scale = lightop.miopen_moe_swiglu_dynamic_quant(
-    scatter_tokens1,
+    scatter_tokens,
     smooth,
     experts_tokens_count,
-    num_shared_experts_per_rank,
-    num_tokens_offset,
-    num_tokens_per_rank,
+    exports_tokens_start,
     1.0,
 )
 print("miopen_moe_swiglu_dynamic_quant y is:\n", y)
@@ -75,16 +78,12 @@ allocated_tokens = num_tokens_per_rank * topk
 hidden_size = 64
 num_shared_experts_per_rank = 2
 num_tokens = world_size * num_tokens_per_rank
+real_scatter_tokens = num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens
 
-scatterDesc = torch.randn(
-    num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens, hidden_size, dtype=torch.bfloat16
-).cuda()
-tokenoffsetDesc = torch.randint(0, 2, (allocated_tokens,), dtype=torch.int32).cuda()
-expertweightsDesc = torch.randn(num_tokens, topk, dtype=torch.float32).cuda()
+scatterDesc = torch.randn(real_scatter_tokens, hidden_size, dtype=torch.bfloat16).cuda()
+tokenoffsetDesc = torch.randint(0, 2, (real_scatter_tokens,), dtype=torch.int32).cuda()
 
-y = lightop.miopen_moe_gather(
-    scatterDesc, tokenoffsetDesc, expertweightsDesc, num_shared_experts_per_rank, num_tokens_offset, num_tokens_per_rank
-)
+y = lightop.miopen_moe_gather(scatterDesc, tokenoffsetDesc, real_scatter_tokens, num_tokens, hidden_size)
 
 print("miopen_moe_gather y is:\n", y)
 
