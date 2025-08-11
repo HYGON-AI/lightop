@@ -106,8 +106,13 @@ def moe_gemm_w4a8(input: torch.Tensor,
                     top_k: int,
                     config: Dict[str, Any]) -> torch.Tensor:
     mode = config['MODE']
+    delta = config['DELTA']
 
-    op.moe_w4a8_asm(input, b_qweight, output, a_scale, b_scale, topk_weights,
+    if mode < 1000:
+        op.moe_gemm_w4a8(input, b_qweight, output, a_scale, b_scale, topk_weights,
+                                        sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
+    else:
+        op.moe_w4a8_asm(input, b_qweight, output, a_scale, b_scale, topk_weights,
                                         sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
     return output
 
