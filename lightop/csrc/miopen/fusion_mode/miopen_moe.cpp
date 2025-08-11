@@ -29,7 +29,7 @@ std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor& hidden,
 
     int64_t max_sactter_tokens = num_shared_experts * num_tokens_per_rank + num_tokens * selected_experts.sizes()[1];
 
-    Tensor out_scatter_tokens = at::empty({max_sactter_tokens, hidden.sizes()[1]}, hidden.options().dtype(at::kByte));
+    Tensor out_scatter_tokens = at::empty({max_sactter_tokens, hidden.sizes()[1]}, hidden.options().dtype(at::kInt8));
     Tensor out_scatter_per_token_scale = at::empty(max_sactter_tokens, hidden.options().dtype(at::kFloat));
     Tensor out_scatter_tokens_offset   = at::empty(max_sactter_tokens, hidden.options().dtype(at::kInt));
     Tensor out_experts_token_count     = at::empty(smooth.sizes()[0], hidden.options().dtype(at::kInt));
