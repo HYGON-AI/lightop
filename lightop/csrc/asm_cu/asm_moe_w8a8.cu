@@ -77,12 +77,14 @@ void _moe_w8a8_TN_impl(
   int sorted_token_lens = sorted_token_ids.size(0);
 
   /* grid sizes */
-  size_t localWorkSize[3] = {768, 1, 1};
+  size_t blockDim = 768;
+  if constexpr(BLOCKM == 32 && BLOCKN == 32 && BLOCKK == 256) {
+    blockDim = 256;
+  }
+  size_t localWorkSize[3] = {blockDim, 1, 1};
   size_t globalWorkSize[3] = {1, 1, 1};
-  unsigned int totalWorkGroups0 = DIVIDE(size_n, BLOCKN);
-  unsigned int totalWorkGroups1 = 1;
-  globalWorkSize[0] = totalWorkGroups0;
-  globalWorkSize[1] = totalWorkGroups1;
+  globalWorkSize[0] = DIVIDE(size_n, BLOCKN);;
+  globalWorkSize[1] = 1;
   globalWorkSize[2] = std::min(DIVIDE(sorted_token_lens, BLOCKM), DIVIDE(num_pad, BLOCKM));
 
   HipFunctionArgs<OutputType> hipFunctionArgs;
@@ -111,7 +113,8 @@ void _moe_w8a8_TN_impl(
   hipFunctionArgs.topk_rcip = 1.0 / top_k;
   void * debug_host = nullptr, * debug_device = nullptr;
   #if DEBUG
-  int debug_size = 768 * 32;
+  int bytes = 64;
+  int debug_size = blockDim * bytes;
   debug_host = malloc(debug_size);
   hipMalloc((void **)&debug_device, debug_size);
   // printf("%s:%d isBfloat16:%d \n", __FILE__, __LINE__, isBfloat16);
@@ -149,20 +152,21 @@ void _moe_w8a8_TN_impl(
   #if DEBUG
   // AT_CUDA_CHECK(cudaStreamSynchronize(stream));
   
-  printf("%s:%d gdx:%d gdy:%d gdz:%d bdx:%d bdy:%d bdz:%d\n", __FILE__, __LINE__, globalWorkSize[0], globalWorkSize[1], globalWorkSize[2],
-    localWorkSize[0], localWorkSize[1], localWorkSize[2]);
+  printf("%s:%d gdx:%d gdy:%d gdz:%d bdx:%d bdy:%d bdz:%d topk_rcip:%f\n", __FILE__, __LINE__, globalWorkSize[0], globalWorkSize[1], globalWorkSize[2],
+    localWorkSize[0], localWorkSize[1], localWorkSize[2], hipFunctionArgs.topk_rcip);
   printf("\ndebug:\n");
   hipMemcpy(debug_host, debug_device, debug_size, hipMemcpyDeviceToHost);
   // using DEBUG_TYPE = int8_t;
   // using DEBUG_TYPE = uint32_t;
-  using DEBUG_TYPE = int32_t;
-  // using DEBUG_TYPE = float;
+  // using DEBUG_TYPE = int32_t;
+  using DEBUG_TYPE = float;
   // using DEBUG_TYPE = bhalf_t;
+  int split = bytes / sizeof(DEBUG_TYPE);
   DEBUG_TYPE *p_debug = reinterpret_cast<DEBUG_TYPE*>(debug_host);
   // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
-  for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / 8; ++i) {
-    // if (i % 8 == 0) printf("\n");
-    // if (i % 8 == 0) printf("\ni:%d ", i / 8);
+  for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / split; ++i) {
+    // if (i % 16 == 0) printf("\n");
+    // if (i % 16 == 0) printf("\ni:%d ", i / 16);
     // printf("%3d:%10.4f\t", i, p_debug[i]);
     // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%3d:%10.4f\t", i, static_cast<float>(tmp[i+1]));
@@ -170,7 +174,22 @@ void _moe_w8a8_TN_impl(
     // printf("%3d\t", p_debug[i]);
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f ", static_cast<float>(tmp[0]));
-    int index = 8 * i;
+    int index = split * i;
+    bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + index);
+    printf("tid:%d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f "
+      "%10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n", i, 
+      static_cast<float>(tmp[2*0 ]), static_cast<float>(tmp[2*1 ]), static_cast<float>(tmp[2*2 ]), static_cast<float>(tmp[2*3 ]),
+      static_cast<float>(tmp[2*4 ]), static_cast<float>(tmp[2*5 ]), static_cast<float>(tmp[2*6 ]), static_cast<float>(tmp[2*7 ]),
+      static_cast<float>(tmp[2*8 ]), static_cast<float>(tmp[2*9 ]), static_cast<float>(tmp[2*10]), static_cast<float>(tmp[2*11]),
+      static_cast<float>(tmp[2*12]), static_cast<float>(tmp[2*13]), static_cast<float>(tmp[2*14]), static_cast<float>(tmp[2*15])
+    );
+    // printf("tid:%d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f "
+    //   "%10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n", i, 
+    //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ],
+    //   p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ], p_debug[index+7 ],
+    //   p_debug[index+8 ], p_debug[index+9 ], p_debug[index+10], p_debug[index+11],
+    //   p_debug[index+12], p_debug[index+13], p_debug[index+14], p_debug[index+15]
+    // );
     // printf("tid:%d %3d %3d %3d %3d %3d %3d %3d %3d "
     //   "%3d %3d %3d %3d %3d %3d %3d %3d "
     //   "%3d %3d %3d %3d %3d %3d %3d %3d "
@@ -184,10 +203,13 @@ void _moe_w8a8_TN_impl(
     //   p_debug[index+24], p_debug[index+25], p_debug[index+26], p_debug[index+27],
     //   p_debug[index+28], p_debug[index+29], p_debug[index+30], p_debug[index+31]
     // );
-    printf("tid:%d %3d %3d %3d %3d %3d %3d %3d %3d\n", i, 
-      p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ],
-      p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ], p_debug[index+7 ]
-    );
+    // printf("tid:%d %6d %6d %6d %6d %6d %6d %6d %6d\n", i, 
+    //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ],
+    //   p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ], p_debug[index+7 ]
+    // );
+    // printf("tid:%d 0x%X 0x%X 0x%X 0x%X\n", i, 
+    //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ]
+    // );
   }
   printf("\n");
   HIP_CALL(hipFree(debug_device));
@@ -246,6 +268,19 @@ torch::Tensor moe_w8a8_asm(
           num_tokens_post_pad, top_k, experts_num);
       }
     );
+  } else if (mode == 1003) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_w8a8_TN_impl",[&] {
+        _moe_w8a8_TN_impl<32, 32, 256, scalar_t>(
+          input, b_qweight, output, a_scale, b_scale,
+          topk_weights, sorted_token_ids, expert_ids,
+          num_tokens_post_pad, top_k, experts_num);
+      }
+    );
+  } else {
+    TORCH_CHECK(false, mode, " mode error.");
   }
   return output;
 }
