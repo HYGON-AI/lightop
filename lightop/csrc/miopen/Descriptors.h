@@ -24,7 +24,7 @@ inline miopenDataType_t getDataType(const at::Tensor& t)
     {
         return miopenBFloat16;
     }
-    else if(scalar_type == at::kByte)
+    else if(scalar_type == at::kInt8)
     {
         return miopenInt8;
     }
