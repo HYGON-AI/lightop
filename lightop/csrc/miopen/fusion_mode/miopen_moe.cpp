@@ -88,7 +88,7 @@ std::vector<Tensor> miopen_moe_swiglu_dynamic_quant(const Tensor& scatter_tokens
 
     int64_t token_nums = scatter_tokens.sizes()[2];
 
-    Tensor out_y = at::empty({1, 1, token_nums, smooth_scale.sizes()[3]}, scatter_tokens.options().dtype(at::kByte));
+    Tensor out_y = at::empty({1, 1, token_nums, smooth_scale.sizes()[3]}, scatter_tokens.options().dtype(at::kInt8));
     Tensor out_per_token_scale = at::empty({1, 1, 1, token_nums}, scatter_tokens.options().dtype(at::kFloat));
 
     TensorDescriptor output_y(out_y);
