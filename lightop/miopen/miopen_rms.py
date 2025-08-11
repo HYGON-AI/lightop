@@ -56,17 +56,18 @@ def miopen_rms_norm_dynamic_quant_without_residual(x, weight, smoothScale, epsil
     return op.miopen_rms_norm_dynamic_quant_without_residual(x, weight, smoothScale, epsilon)
 
 
-def miopen_head_rms_norm(x, weight, epsilon, head_offset, head_num):
+def miopen_head_rms_norm(x, weight, epsilon, norm_head_start, norm_head_end, norm_head_num):
     """_summary_
 
     Args:
         x (Tensor): 输入张量，形状为 [N, C_in, H, W] (NCHW) 或  [N, C_in, D, H, W] (NCDHW)
-        weight (Tensor): 权重张量，形状为 [W]
+        weight (Tensor): 权重张量，形状为 [norm_head_num * H * W] 或 [norm_head_num * D * H * W]
         epsilon (float): 用于稳定逆方差计算的值
-        head_offset (float): 用于稳定逆方差计算的值
-        head_num (float): 用于稳定逆方差计算的值
+        norm_head_start (int): 用于稳定逆方差计算的值
+        norm_head_end (int): 用于稳定逆方差计算的值
+        norm_head_num (int)
 
     Returns:
         Tensor: 返回 yDesc, 形状为 [N, C_in, H, W] (NCHW) 或  [N, C_in, D, H, W] (NCDHW)
     """
-    return op.miopen_head_rms_norm(x, weight, epsilon, head_offset, head_num)
+    return op.miopen_head_rms_norm(x, weight, epsilon, norm_head_start, norm_head_end, norm_head_num)
