@@ -58,7 +58,7 @@ Tensor miopen_fused_conv_bias_add_forward(const Tensor &x, const Tensor &weight,
 Tensor miopen_fused_conv_bias_relu_forward(const Tensor &x, const Tensor &weight, const Tensor &bias, const std::vector<int64_t> &pads, const std::vector<int64_t> &strides, const std::vector<int64_t> &dilations);
 std::vector<Tensor> miopen_add_rms_norm_dynamic_quant(const Tensor &x, const Tensor &x2, const Tensor &weight, const Tensor &smoothScale, const float epsilon);
 std::vector<Tensor> miopen_rms_norm_dynamic_quant_without_residual(const Tensor &x, const Tensor &weight, const Tensor &smoothScale, const float epsilon);
-Tensor miopen_head_rms_norm(const Tensor &x, const Tensor &weight, const float epsilon, const float head_offset, const float head_num);
+Tensor miopen_head_rms_norm(const Tensor &x, const Tensor &weight, const float epsilon, const int norm_head_start, const int norm_head_end, const int norm_head_num);
 std::vector<Tensor> miopen_groupnorm(const Tensor &x, const Tensor &weight, const Tensor &bias, const int num_groups, const float epsilon, const int mode);
 std::vector<Tensor> miopen_add_groupnorm(const Tensor &x1, const Tensor &x2, const Tensor &weight, const Tensor &bias, const int num_groups, const float epsilon, const int mode);
 std::vector<Tensor> miopen_layernorm(const Tensor &x, const Tensor &weight, const Tensor &bias, const float epsilon, const int normalized_dim, const int mode);
