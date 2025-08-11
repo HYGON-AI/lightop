@@ -40,17 +40,10 @@ print("miopen_moe_scatter_dynamic_quant scatter_tokens is:\n", scatter_tokens)
 
 print("----miopen_moe_scatter_dynamic_quant end -------------\n")
 
-tokens_num = 8192
-hidden_size = 4096
-num_shared_experts_per_rank = 2
-num_tokens_offset = 0
-num_experts_per_rank = 6
-num_tokens_per_rank = 1024
-topk = 6
 
-allocated_tokens = num_tokens_per_rank * topk
-token_nums = num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens
-total_expert_num = num_shared_experts_per_rank + num_experts_per_rank
+hidden_size = 64
+token_nums = 4
+total_expert_num = 2
 
 scatter_tokens = torch.randn(1, 1, token_nums, hidden_size * 2, dtype=torch.bfloat16).cuda()
 smooth = torch.randn(1, 1, total_expert_num, hidden_size, dtype=torch.float32).cuda()
