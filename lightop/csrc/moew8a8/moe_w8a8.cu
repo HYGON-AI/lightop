@@ -66,14 +66,15 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel(
   uint32_t top_k,
   uint32_t delta  
 ) {
-  const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
-  const int bidy = blockIdx.y; // pid_n
-  const int bidz = blockIdx.x; // pid_k 
+  // const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
+  // const int bidy = blockIdx.y; // pid_n
+  // const int bidz = blockIdx.x; // pid_k 
 
-  // int bidx = blockIdx.x; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
-  // int bidy = blockIdx.y; // pid_n
-  // int bidz = blockIdx.z; // pid_k 
-  // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 4, bidx, bidy);
+  int bidx = blockIdx.x; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
+  int bidy = blockIdx.y; // pid_n
+  int bidz = blockIdx.z; // pid_k 
+  // constexpr int aaa = 1;
+  // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 8, bidx, bidy);
 
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   
@@ -362,7 +363,8 @@ template<
   uint16_t GROUP_K,
   bool mul_topk_weight> 
 __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
-  const Element* __restrict__ input,
+  //const Element* __restrict__ input,
+  const Element* input,
   const Element* __restrict__ qweight,
   bhalf_t* __restrict__ output,
   float* __restrict__ input_scale,
@@ -698,15 +700,14 @@ void launch_moe_gemm_first_stage(const GemmParams<T>& params) {
     // else
     //   gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
 
-    gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
-    gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
-    gridDim.x = 1; // k方向
+    // gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    // gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
+    // gridDim.x = 1; // k方向
 
     // block swizzle 效果提升不是很明显 需要tuning验证
-    // gridDim.x = min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M), DIVIDE(params.num_tokens_post_pad, BLOCK_SIZE_M)); // m方向
-    // //gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
-    // gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
-    // gridDim.z = 1; // k方向
+    gridDim.x = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
+    gridDim.z = 1; // k方向
 
     const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K), BLOCK_SIZE_M * BLOCK_SIZE_N * 2);
     const int shared_mem_size = lds_size;

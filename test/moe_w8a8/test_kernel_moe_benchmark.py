@@ -1135,6 +1135,8 @@ def _fused_moe_helper(m: int,
     topk_weights = F.softmax(tensor, dim=1)
     #topk_ids [m,topk]
     topk_ids=generate_unique_int_tensor(m=m, topk=topk,low=0,high=E).cuda()
+
+    #topk_ids = torch.zeros_like(topk_ids)
     
     return input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids
 
@@ -1175,7 +1177,7 @@ def main():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192,16384]
     m_list = [1,2,4,8,16,32,64,128]
-    #m_list = [32]
+    # m_list = [1024]
     E=args.E
     block_size=[128,128]
     out_dtype=args.out_dtype

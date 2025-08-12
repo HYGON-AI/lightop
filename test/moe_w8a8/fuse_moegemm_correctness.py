@@ -1003,7 +1003,9 @@ def run_perchannel_vaild():
     # exclude_modes = [13, 32, 33, 34, 35]
     # #mode_ranges = [3,4,6,8,10,12,14]
     # #exclude_modes = [13] # nk 4096 192 gemm2<16
-    
+
+    #mode_ranges = [3]
+
     
     for i in range(0,len(k_list_1),1):
         for m in m_list:

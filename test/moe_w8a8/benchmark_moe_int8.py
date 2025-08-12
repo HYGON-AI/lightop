@@ -680,7 +680,8 @@ def fuse_moe_correctness_preprocess(
     
     mode_ranges = [mode for mode in block_m_configs.keys()]
     gemm1_compare_failed_list = []
-    gemm2_compare_failed_list = [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]
+    gemm2_compare_failed_list = []
+    # gemm2_compare_failed_list = [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]
     device="cuda:"+str(device_id)
     
     for mode in mode_ranges:
@@ -688,8 +689,8 @@ def fuse_moe_correctness_preprocess(
         mode1 = mode
         if mode0 == 1000:
             mode1 = 49
-        if mode1 in gemm2_compare_failed_list:
-            mode1 = 1
+        # if mode1 in gemm2_compare_failed_list:
+        #     mode1 = 1
         mode_list=[mode0,mode1]
         # print("mode:{} m:{} n:{} k:{} ".format(mode_list, num_tokens,shard_intermediate_size,hidden_size))
         input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=num_experts,device=device,block_size=None,out_dtype=dtype)
@@ -1300,7 +1301,8 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            1, 2, 4, 8, 16, 32, 64, 128
+            # 1, 2, 4, 8, 16, 32, 64, 128
+            64, 128
             # 128
             # 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,

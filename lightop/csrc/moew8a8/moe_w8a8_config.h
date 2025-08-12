@@ -2,7 +2,7 @@
 #include <unordered_map>
 #include <functional>
 // MOE prefill和decode的分界线
-#define MOE_THRESHOLD 128  
+#define MOE_THRESHOLD 128
 
 namespace at {
 namespace native {

@@ -972,54 +972,90 @@ __forceinline__ __device__ void  gemm_nt_four_stage_decode(
     
 
     // ------------------------------------------------------------------------最后一次尾处理-------------------------------------------------------//
-
-    // if(bidx == 0)
-    //         printf("k_start stage_offset size_k: %d  %d %d\n  ", k_start, stage_offset, size_k);
-
-    //if(k_start + stage_offset  <= size_k){ // size_k / block 为偶数
-    //if(k_start != size_k){ // size_k / block 为偶数
     if(k_start + stage_offset < size_k){ // size_k / block 为偶数
-        // if(threadIdx.x == 0 && bidx == 0)
-        //     printf("run 981\n");
-        //  --------------------------------------------- load3 mmac ---------------------------------- //
-        // load A
-        #pragma unroll
-        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+        //  --------------------------------------------- load mmac ---------------------------------- //
+        int i = 0;
+        if constexpr (STAGE == 4){ //TODO: STAGE为4 尾处理有四种可能方式 需要size_k来确定loop次数，size_k如果为动态传入会有寄存器溢出 目前写死解决 
+            constexpr int epilogue_tile =  ( 7168/BLOCK_K - (STAGE - 1)) % STAGE; //( size_k/stage_offset - STAGE - 1) % STAGE;        
+       
             #pragma unroll
-            for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){ 
-                buffer_load_reg_dwordx4(input_ptr, A_reg[m_tile][(STAGE-1)].int4_array[k_tile], 0, g_row_A[m_tile] + stage_offset + k_tile * 64 + k_start);
-            }
-        }
-
-        // load B
-        #pragma unroll
-        for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
-            #pragma unroll
-            for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){
-                buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][(STAGE-1)].int4_array[k_tile], 0, g_row_B[n_tile] + stage_offset + k_tile * 64 + k_start);
-            }
-        }
-        vmcnt_wait((WARP_M / MFMA_M * WARP_K / READ_K  +  WARP_N / MFMA_N * WARP_K / READ_K) * (STAGE - 1));
-
-        #pragma unroll
-        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
-            #pragma unroll
-            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+            for(; i < epilogue_tile; i++){
                 #pragma unroll
-                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
-                    C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile] = mmac<Element>(
-                                *(typename vec<Element, 8>::type*)(&A_reg[m_tile][0].int8t_array[k_tile]), 
-                                *(typename vec<Element, 8>::type*)(&B_reg[n_tile][0].int8t_array[k_tile]), 
-                                C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile]);  
+                for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){ 
+                        buffer_load_reg_dwordx4(input_ptr, A_reg[m_tile][(i+STAGE-1)%STAGE].int4_array[k_tile], 0, g_row_A[m_tile] + (i+1) * stage_offset + k_tile * 64 + k_start);
+                    }
+                }
+
+                // load B
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){
+                        buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][(i+STAGE-1)%STAGE].int4_array[k_tile], 0, g_row_B[n_tile] + (i+1) * stage_offset + k_tile * 64 + k_start);
+                    }
+                }
+                vmcnt_wait((WARP_M / MFMA_M * WARP_K / READ_K  +  WARP_N / MFMA_N * WARP_K / READ_K) * (STAGE - 1));
+
+                #pragma unroll
+                for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                    #pragma unroll
+                    for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                        #pragma unroll
+                        for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                            C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile] = mmac<Element>(
+                                        *(typename vec<Element, 8>::type*)(&A_reg[m_tile][i].int8t_array[k_tile]), 
+                                        *(typename vec<Element, 8>::type*)(&B_reg[n_tile][i].int8t_array[k_tile]), 
+                                        C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile]);  
+                        }
+                    }
+                }
+            }
+        } else{ // two stage
+            constexpr int epilogue_tile =  1;      
+       
+            #pragma unroll
+            for(; i < epilogue_tile; i++){
+                #pragma unroll
+                for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){ 
+                        buffer_load_reg_dwordx4(input_ptr, A_reg[m_tile][(i+STAGE-1)%STAGE].int4_array[k_tile], 0, g_row_A[m_tile] + (i+1) * stage_offset + k_tile * 64 + k_start);
+                    }
+                }
+
+                // load B
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){
+                        buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][(i+STAGE-1)%STAGE].int4_array[k_tile], 0, g_row_B[n_tile] + (i+1) * stage_offset + k_tile * 64 + k_start);
+                    }
+                }
+                vmcnt_wait((WARP_M / MFMA_M * WARP_K / READ_K  +  WARP_N / MFMA_N * WARP_K / READ_K) * (STAGE - 1));
+
+                #pragma unroll
+                for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                    #pragma unroll
+                    for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                        #pragma unroll
+                        for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                            C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile] = mmac<Element>(
+                                        *(typename vec<Element, 8>::type*)(&A_reg[m_tile][i].int8t_array[k_tile]), 
+                                        *(typename vec<Element, 8>::type*)(&B_reg[n_tile][i].int8t_array[k_tile]), 
+                                        C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile]);  
+                        }
+                    }
                 }
             }
         }
-        //  --------------------------------------------- load3 mmac ---------------------------------- //
+        //  --------------------------------------------- load mmac ---------------------------------- //
 
         //---------------------------------------------------- mmac --------------------------------------------------------------------//
         #pragma unroll
-        for(int i = 1; i < STAGE; ++i){
-            vmcnt_wait((WARP_M / MFMA_M * WARP_K / READ_K  +  WARP_N / MFMA_N * WARP_K / READ_K) * (STAGE - 1 - i));
+        for(int ii = 1; ii < STAGE; ++ii){
+            vmcnt_wait((WARP_M / MFMA_M * WARP_K / READ_K  +  WARP_N / MFMA_N * WARP_K / READ_K) * (STAGE - 1 - ii));
 
             #pragma unroll
             for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
@@ -1028,8 +1064,8 @@ __forceinline__ __device__ void  gemm_nt_four_stage_decode(
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                         C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile] = mmac<Element>(
-                                    *(typename vec<Element, 8>::type*)(&A_reg[m_tile][i].int8t_array[k_tile]), 
-                                    *(typename vec<Element, 8>::type*)(&B_reg[n_tile][i].int8t_array[k_tile]), 
+                                    *(typename vec<Element, 8>::type*)(&A_reg[m_tile][(i+ii-1)%STAGE].int8t_array[k_tile]), 
+                                    *(typename vec<Element, 8>::type*)(&B_reg[n_tile][(i+ii-1)%STAGE].int8t_array[k_tile]), 
                                     C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile]);  
                     }
                 }
