@@ -42,6 +42,15 @@ python3 test_ln_add_dropout.py
 python -c "import lightop; print(lightop.__version__)",若成功打印版本信息则安装成功。
 ```
 
+## 核心算子测试
+
+```
+cd ./test
+
+test_kernel.sh
+
+```
+
 ## 算子简介
 
 以下时间均为单次前向传播和反向传播的总时间，包括了CPU时间和GPU时间。测试环境：pytorch1.13, dtk23.04, 10.6.10.67服务器z100计算卡。
