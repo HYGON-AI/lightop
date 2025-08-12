@@ -12,7 +12,7 @@
 #include <type_traits>
 #include <utility>
 #include "common.h"
-#include "block_scaled_1d_cast_transpose.cuh"
+#include "block_scaled_1d_cast_transpose.h"
 #include <ATen/ATen.h>
 #include <torch/all.h>
 #include <c10/cuda/CUDAStream.h>
