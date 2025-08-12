@@ -176,7 +176,7 @@ __forceinline__ __device__ intx4 builtin_amdgcn_buffer_load_reg_dwordx4(const T*
   rsrc[2] = 0x80000000;
   rsrc[3] = 0x00020000;
 
-  rsrc = __builtin_amdgcn_buffer_load_dwordx4(rsrc, vindex, offset, false, false);
+  rsrc = __builtin_amdgcn_buffer_load_dwordx4(rsrc, vindex, offset, false, false); // vindx -> sgpr offser->sgpr
 
 //   asm volatile("buffer_load_dwordx4 %0,%1,%2,0, offen offset:0 \n"
 //     : "=v"(rsrc), "+v"(offset), "+s"(rsrc));
@@ -194,7 +194,7 @@ __forceinline__ __device__ void buffer_load_reg_dwordx4(const T* ptr, typename v
   global_ptr[2] = 0x80000000;
   global_ptr[3] = 0x00020000;
 
-  asm volatile("buffer_load_dwordx4 %0,%1,%2,0, offen offset:0 \n"
+  asm volatile("buffer_load_dwordx4 %0,%1,%2,0, offen offset:0\n"
     : "=v"(rsrc), "+v"(offset), "+s"(global_ptr));
 
   return ;
@@ -221,11 +221,11 @@ __device__ typename vec<int, 4>::type mmac(const typename vec<Element, 8>::type 
     auto a = reinterpret_cast<const long*>(&v1);
     auto b = reinterpret_cast<const long*>(&v2);
     intx4 v4i;
-    __builtin_amdgcn_sched_barrier(0);
+    // __builtin_amdgcn_sched_barrier(0);
     #if defined(__gfx936__) || defined(__gfx928__)
         v4i = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
     #endif
-    __builtin_amdgcn_sched_barrier(0);
+    // __builtin_amdgcn_sched_barrier(0);
     return v4i;
 }
 
