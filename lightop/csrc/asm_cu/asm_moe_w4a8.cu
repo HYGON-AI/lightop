@@ -125,23 +125,63 @@ void _moe_w4a8_TN_impl(
   if (output.scalar_type() == at::ScalarType::Half) {
     sprintf(co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_FP16.co", BLOCKM, BLOCKN, BLOCKK);
   } else if (output.scalar_type() == at::ScalarType::BFloat16) {
-    sprintf(co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_BF16.co", BLOCKM, BLOCKN, BLOCKK);
+    if(first_stage){
+      sprintf(co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
+    }else{
+      sprintf(co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
+    }
   } else {
     TORCH_CHECK(false, "moe_w4a8 only supports outputType in [Float16, BFloat16]");
   }
-  static AiterAsmKernel moe_w4a8(funcName, co_file);
-  AiterAsmKernel *impl_ptr = &moe_w4a8;
-  impl_ptr->launch_kernel_ext({
-    &hipFunctionArgs,
-    &argsSize,
-    globalWorkSize[0],           // gdx
-    globalWorkSize[1],           // gdy
-    globalWorkSize[2],           // gdz
-    localWorkSize[0],            // bdx: 12 wv64
-    localWorkSize[1],            // bdy
-    localWorkSize[2],            // bdz
-    stream
-  });
+
+  if(output.scalar_type() == at::ScalarType::Half){
+    static AiterAsmKernel moe_w4a8(funcName, co_file);
+    AiterAsmKernel *impl_ptr = &moe_w4a8;
+    impl_ptr->launch_kernel_ext({
+      &hipFunctionArgs,
+      &argsSize,
+      globalWorkSize[0],           // gdx
+      globalWorkSize[1],           // gdy
+      globalWorkSize[2],           // gdz
+      localWorkSize[0],            // bdx: 12 wv64
+      localWorkSize[1],            // bdy
+      localWorkSize[2],            // bdz
+      stream
+    });
+  }else{
+    if(first_stage){
+      static AiterAsmKernel moe_w8a8_first_stage(funcName, co_file);
+      AiterAsmKernel *impl_ptr = &moe_w8a8_first_stage;
+        
+      impl_ptr->launch_kernel_ext({
+        &hipFunctionArgs,
+        &argsSize,
+        globalWorkSize[0],           // gdx
+        globalWorkSize[1],           // gdy
+        globalWorkSize[2],           // gdz
+        localWorkSize[0],            // bdx: 12 wv64
+        localWorkSize[1],            // bdy
+        localWorkSize[2],            // bdz
+        stream
+      });
+    }else{
+      static AiterAsmKernel moe_w8a8_second_stage(funcName, co_file);
+      AiterAsmKernel *impl_ptr = &moe_w8a8_second_stage;
+        
+      impl_ptr->launch_kernel_ext({
+        &hipFunctionArgs,
+        &argsSize,
+        globalWorkSize[0],           // gdx
+        globalWorkSize[1],           // gdy
+        globalWorkSize[2],           // gdz
+        localWorkSize[0],            // bdx: 12 wv64
+        localWorkSize[1],            // bdy
+        localWorkSize[2],            // bdz
+        stream
+      });
+    }
+  }
+
 
 
   #if DEBUG
