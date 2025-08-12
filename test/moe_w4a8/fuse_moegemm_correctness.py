@@ -319,7 +319,8 @@ def fused_moe_kernel(
         b = (b >> b_shifter) & 0xF
     
         # We accumulate along the K dimension.
-        b = (b[:,:]).to(a_ptr.type.element_ty)
+        
+        b = (b[:,:]-8).to(a_ptr.type.element_ty)
         accumulator += tl.dot(a, b) 
 
         # Advance the ptrs to the next K block.
