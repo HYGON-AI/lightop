@@ -457,14 +457,14 @@ __forceinline__ __device__ void  gemm_nt_first_stage_decode(
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                 tb = (&B_reg[n_tile][0].int8_array[k_tile*4]);
-                    b_vec[0] = (tb[0]& 0x0F);
-                    b_vec[1] = ((tb[0] >> 4) & 0x0F);
-                    b_vec[2] = (tb[1]& 0x0F);
-                    b_vec[3] = ((tb[1]>> 4) & 0x0F);
-                    b_vec[4] = (tb[2]& 0x0F);
-                    b_vec[5] = ((tb[2]>> 4) & 0x0F);
-                    b_vec[6] = (tb[3]& 0x0F);
-                    b_vec[7] = ((tb[3]>> 4) & 0x0F);
+                    b_vec[0] = (tb[0]& 0x0F) - 8 ;
+                    b_vec[1] = ((tb[0] >> 4) & 0x0F) - 8;
+                    b_vec[2] = (tb[1]& 0x0F)- 8;
+                    b_vec[3] = ((tb[1]>> 4) & 0x0F)- 8;
+                    b_vec[4] = (tb[2]& 0x0F)- 8;
+                    b_vec[5] = ((tb[2]>> 4) & 0x0F)- 8;
+                    b_vec[6] = (tb[3]& 0x0F)- 8 ;
+                    b_vec[7] = ((tb[3]>> 4) & 0x0F) - 8 ;
                     C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile] = mmac2<Element>(
                                 *(typename vec<Element, 8>::type*)(&A_reg[m_tile][0].int8t_array[k_tile]), 
                                 (&b_vec), 
