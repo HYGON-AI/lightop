@@ -1173,8 +1173,8 @@ def main():
     
     
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
-    # m_list=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192,16384]
-    m_list = [1,2,4,8,16,32,64,128]
+    m_list=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192,16384]
+    # m_list = [1,2,4,8,16,32,64,128]
     #m_list = [32]
     E=args.E
     block_size=[128,128]
@@ -1295,7 +1295,7 @@ def main():
 
     # 将 DataFrame 写入 Excel 文件
     if per_channel_quant:
-        excel_name="channel-wsie_output.xlsx"
+        excel_name="moe_w8a8_channel-wsie_output.xlsx"
     else:
         excel_name="block-wsie_output.xlsx"
         

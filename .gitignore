@@ -16,4 +16,4 @@ test/moe_w8a8/__pycache__/*
 test/moe_w8a8/.triton/
 test/w8a8/__pycache__/*
 */.triton/
-*.sh
+run.sh
