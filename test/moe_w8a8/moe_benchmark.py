@@ -954,7 +954,7 @@ if __name__ == "__main__":
     #脚本执行命令： python3 moe_benchmark.py  --E 128 --n1-list '[1536,768,384,384,192]'  --n2-list '[2048,2048,2048,4096,4096]' --k-list '[768,374,192,192,96]'
 
     #deepseek系列
-    #python3 moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise 0
+    # python3 moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise 0
     
     # channel-wise:
     # HIP_VISIBLE_DEVICES=3 python3 moe_w8a8/moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise

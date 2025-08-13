@@ -197,8 +197,8 @@ def w8a8_block_int8_linear(
     C_shape = q_input.shape[:-1] + (N,)
     output = q_input.new_empty(C_shape, dtype=out_dtype)
 
-    # x_scale = x_scale.permute(1, 0).contiguous()
-    # weight_scale = weight_scale.permute(1, 0).contiguous()
+    x_scale = x_scale.permute(1, 0).contiguous()
+    weight_scale = weight_scale.permute(1, 0).contiguous()
 
     output = gemm_w8a8_wgrad_asm(
         q_input, weight, x_scale, weight_scale, output, False, block_size, out_dtype
@@ -228,7 +228,7 @@ if __name__ == "__main__":
 
     block_size=[128, 128]
     
-    out_dtype=torch.float16
+    out_dtype=torch.bfloat16
     for i in range(0,len(k_list),1):
         for m in m_list:
             m, n, k = m, n_list[i], k_list[i]

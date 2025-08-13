@@ -393,12 +393,13 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
     grid = lambda META: (triton.cdiv(EM, META['BLOCK_SIZE_M']) * triton.cdiv(
         B.shape[1] if not use_nn_moe else B.shape[2], META['BLOCK_SIZE_N']), )
 
-    # import pdb
-    # pdb.set_trace()
-    # A = torch.ones_like(A)
-    # B = torch.ones_like(B)
-    # A_scale = torch.ones_like(A_scale)
-    # B_scale = torch.ones_like(B_scale)
+    # torch.manual_seed(0)
+    # begin, end, expert_id = 0, 1, 0
+    # A = torch.randint(-10, 10, A.shape, dtype=torch.int8, device=B.device)
+    # B = torch.randint(-10, 10, B.shape, dtype=torch.int8, device=B.device)
+    # res = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32), B[expert_id, :, :].t().cpu().to(torch.int32))
+    # out = res.to(A.device) * A_scale[sorted_token_ids[begin:end] // top_k] * B_scale[expert_id].t()
+    # '''
     fused_moe_kernel[grid](
             A,
             B,
@@ -436,22 +437,9 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
             compute_type=compute_type,   
             **triton_config, 
         )
+    #'''
     out_cuda = torch.zeros_like(C)
-    # out_cuda = C
-    # torch.set_printoptions(profile="full")
-    # print(f"AAAAA: {A.shape}\n: {A}")
-    # print("expert_ids: ", expert_ids)
-    # print(f"AAAAA: {A.shape}\n: {A[0,:]}")
-    # print(F"BBBBB: {B.shape}\n: {B[0,:,:]}" )
-    # print("\n\n")
-    # eye_b = torch.eye(A.shape[1], dtype=B.dtype, device=B.device)
-    # debug_b = eye_b.unsqueeze(0).repeat(256, 1, 1)
     
-    # debug_b = torch.ones_like(B)
-    # debug_b = B
-    
-    # A = torch.ones_like(A)
-    # B = torch.ones_like(B)
     print("A",A.size())
     print("B",B.size())
     print("out_cuda",out_cuda.size())
@@ -488,15 +476,28 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
             gemm2_compare_failed_list.append(config['MODE'])
         
         print(f"kernel{stage} 精度检查不合格!!!")
-        # torch.set_printoptions(profile="full")  
-        # ftriton = open('cuda_output.txt', 'w')   
-        # print(f'cuda_output: {out_cuda}', file=ftriton)
-        # ftriton.close
-        # ftorch = open('bench_output.txt', 'w')   
-        # print(f'bench_output: {C}', file=ftorch)
-        # ftorch.close
     else:
         print(f"kernel{stage} 精度检查合格.")
+    '''
+    def unpack_int8_to_int4(weight):
+        assert weight.dim() == 2
+        assert weight.dtype == torch.int8
+        return torch.stack((weight & 0xF, (weight >> 4) & 0xF), dim=2).view(
+            weight.shape[0], 2 * weight.shape[1]
+        )
+    bint8 = unpack_int8_to_int4(B.view(-1, B.shape[-1]))
+    bint8 = bint8.reshape(B.shape[0], B.shape[1], -1)
+    torch.stack((B.view(-1, B.shape[-1]) & 0xF, (B.view(-1, B.shape[-1]) >> 4) & 0xF), dim=2)
+    import pdb
+    pdb.set_trace()
+    torch.nonzero((C - out_cuda).abs() > 1)
+    torch.nonzero((C.view(-1, 256) - out_cuda.view(-1, 256)).abs() > 1)
+    torch.nonzero(sorted_token_ids == 3)
+    
+    begin, end, expert_id = 0, 128, 0
+    res = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32), bint8[expert_id, :, :].t().cpu().to(torch.int32))
+    out = res.to(A.device) * A_scale[sorted_token_ids[begin:end] // top_k] * B_scale[expert_id].t()
+    # '''
 
 
 def fused_experts_impl_int8(hidden_states: torch.Tensor,
@@ -638,15 +639,37 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
             config2['BLOCK_SIZE_M'] = blockM_configs_decode[mode1]
             config2['MODE'] = mode1
             config2['DELTA'] = 1
-            
+        
+        '''
+        align = 128
+        config1['BLOCK_SIZE_M'] = align
+        config1['MODE'] = 1000
+        # '''
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-        # print("sorted_token_ids:", sorted_token_ids[:128])
-        # print("sorted_token_ids // 128:", sorted_token_ids[:128] // 128)
-        # import pdb 
+        '''
+        # sorted_token_ids[:128] = torch.tensor([20375, 20444, 40787,  6104, 61222, 61244, 24493, 26563, 26412, 17653,
+        # 46929, 46945, 44895, 44441, 44353, 44411, 64849, 22648,  6940, 45239,
+        # 43188, 43162, 43011, 43078, 27564, 30711, 14325, 34653, 19490, 39950,
+        # 53233, 60612, 42139,  6305, 55230, 60539, 42237, 26709, 62640,  7779,
+        # 49381, 49402,  7817,  7867, 28337, 26189, 26282, 48722, 48740,  9009,
+        #  1839,  1895,  1901, 29597, 22437, 31736, 63363, 51971,  3661, 13135,
+        # 22095, 24130, 24146, 24205, 13263, 42684, 44571, 42603, 35685, 26073,
+        # 56318, 25895, 54050, 48426, 46415, 65045, 51485, 51526, 51545, 65145,
+        # 51532, 15411, 15386, 30951, 30952, 30968, 30843, 64161, 51233, 25504,
+        # 25575, 13877, 14024, 34546, 36352, 34315, 34345, 54972, 54841, 56903,
+        # 23463, 23481, 23353, 11320, 11371, 13415, 41935, 11512, 31751, 43838,
+        # 33910, 31815, 31889, 12537, 54480, 12380, 14491, 34881, 32952, 34820,
+        # 62423, 53424, 62445, 53281, 27033, 45492, 16208, 18295],
+        # device='cuda:0', dtype=torch.int32)
+        print("sorted_token_ids:", sorted_token_ids[0:align])
+        print("sorted_token_ids // topk:", sorted_token_ids[0:align] // top_k_num)
+        print("sorted_token_ids % topk:", sorted_token_ids[0:align] % top_k_num)
+        print("expert_ids:", expert_ids[:10])
         # pdb.set_trace()
-        # print("qcurr_hidden_states, qa1_scale",qcurr_hidden_states.size(), qa1_scale.size())
+        # torch.nonzero(sorted_token_ids == 0)
+        # '''
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
@@ -669,7 +692,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
-
+        # '''
         if activation == "silu":
             # d = intermediate_cache1.shape[-1] // 2
             # intermediate_cache2 = F.silu(intermediate_cache1[..., :d]) * intermediate_cache1[..., d:]
@@ -718,7 +741,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
 
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
                     out_hidden_states[begin_chunk_idx:end_chunk_idx])
-
+        # '''
     return out_hidden_states
 
 def _fused_moe_helper(m: int,
@@ -774,8 +797,8 @@ def run_perchannel_vaild():
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
-    # mode_ranges = [mode for mode in blockM_configs.keys()]
-    mode_ranges = [61]
+    mode_ranges = [mode for mode in blockM_configs.keys()]
+    # mode_ranges = [1000]
     # compare_fail = [42,43,46,52,54,60]
     # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
     # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
@@ -791,9 +814,10 @@ def run_perchannel_vaild():
     for i in range(0,len(k_list_1),1):
         for m in m_list:
             for mode in mode_ranges:
-                mode_list=[11,27]
-                print("mode:{} m:{} n:{} k:{} ".format(mode_list, m,n_list_1[i],k_list_1[i]))
-                input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=m,n=n_list_1[i],k=(k_list_1[i]),n2=n_list_2[i],k2=(k_list_2[i]),topk=topk,E=E,block_size=None,out_dtype=out_dtype)
+                mode_list=[mode,mode]
+                # mode_list=[11,27]
+                print("\033[32mmode:{} m:{} n:{} k:{}\033[0m ".format(mode_list, m,n_list_1[i],k_list_1[i]))
+                input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=m,n=n_list_1[i],k=k_list_1[i],n2=n_list_2[i],k2=k_list_2[i],topk=topk,E=E,block_size=None,out_dtype=out_dtype)
                 # triton moe: output
                 output=fused_experts_impl_int8(hidden_states=input,
                                                 w1=weight13,

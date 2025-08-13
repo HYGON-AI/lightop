@@ -1847,11 +1847,19 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
             use_int4_w4a16=use_int4_w4a16,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape)
-
+        #这里
+        align = 64
+        config1['MODE'] = 1000
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
-                moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
+                moe_align_block_size(curr_topk_ids, align,
                                     global_num_experts, expert_map))
-
+        
+        # sorted_token_ids_2, expert_ids_2, num_tokens_post_padded_2 = (
+        #         moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
+        #                             global_num_experts, expert_map))
+        
+        # import pdb
+        # pdb.set_trace()
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
@@ -1874,7 +1882,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
-        
+        '''
         if activation == "silu":
             torch.ops._C.silu_and_mul(intermediate_cache2,
                                       intermediate_cache1.view(-1, N))
@@ -1904,9 +1912,9 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 w2_zp,
                                 curr_topk_weights,
                                 curr_topk_ids,
-                                sorted_token_ids,
-                                expert_ids,
-                                num_tokens_post_padded,
+                                sorted_token_ids_2,
+                                expert_ids_2,
+                                num_tokens_post_padded_2,
                                 not apply_router_weight_on_input,
                                 1,
                                 config2,
@@ -1922,6 +1930,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
         # torch.cuda.synchronize()
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
                     out_hidden_states[begin_chunk_idx:end_chunk_idx])
+        '''    
         
         
     return out_hidden_states   

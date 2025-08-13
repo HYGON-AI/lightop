@@ -20,6 +20,7 @@ from vllm.logger import init_logger
 from vllm import _custom_ops as ops
 # import _custom_ops as ops
 from lightop import moe_gemm_w4a8, get_moe_cuda_config_w4a8
+from lightop import moe_gemm_w4a8, get_moe_cuda_config_w4a8
 from vllm.model_executor.layers.fused_moe.fused_moe import moe_kernel_prepare_input
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
@@ -1752,6 +1753,11 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape)
 
+        # '''
+        align = 128
+        config1['BLOCK_SIZE_M'] = align
+        config1['MODE'] = 1000
+        # '''
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
@@ -1824,7 +1830,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
         
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
                     out_hidden_states[begin_chunk_idx:end_chunk_idx])
-        
+        # '''
         
     return out_hidden_states   
 
@@ -2051,6 +2057,49 @@ def invoke_fused_moe_kernel_int8_preprocess(A: torch.Tensor,
     grid = lambda META: (triton.cdiv(EM, META['BLOCK_SIZE_M']) * triton.cdiv(
         B.shape[1] if not use_nn_moe else B.shape[2], META['BLOCK_SIZE_N']), )
 
+    # fused_moe_kernel[grid](
+    #         A,
+    #         B,
+    #         C,
+    #         A_scale,
+    #         B_scale,
+    #         topk_weights,
+    #         sorted_token_ids,
+    #         expert_ids,
+    #         num_tokens_post_padded,
+    #         B.shape[1] if not use_nn_moe else B.shape[2],
+    #         A.shape[1],
+    #         EM,
+    #         num_tokens,
+    #         A.stride(0),
+    #         A.stride(1),
+    #         B.stride(0),
+    #         B.stride(2) if not use_nn_moe else B.stride(1),
+    #         B.stride(1) if not use_nn_moe else B.stride(2),
+    #         C.stride(1),
+    #         C.stride(2),
+    #         A_scale.stride(0)
+    #         if A_scale is not None and A_scale.ndim == 2 else 0,
+    #         A_scale.stride(1)
+    #         if A_scale is not None and A_scale.ndim == 2 else 0,
+    #         B_scale.stride(0)
+    #         if B_scale is not None and B_scale.ndim >= 2 else 0,
+    #         B_scale.stride(2)
+    #         if B_scale is not None and B_scale.ndim == 3 else 0,
+    #         B_scale.stride(1)
+    #         if B_scale is not None and B_scale.ndim >= 2 else 0,
+    #         0 if block_shape is None else block_shape[0],
+    #         0 if block_shape is None else block_shape[1],
+    #         MUL_ROUTED_WEIGHT=mul_routed_weight,
+    #         top_k=top_k,
+    #         compute_type=compute_type,
+    #         use_fp8_w8a8=use_fp8_w8a8,
+    #         use_int8_w8a8=use_int8_w8a8,
+    #         use_int8_w8a16=use_int8_w8a16,
+    #         per_channel_quant=per_channel_quant,
+    #         delta=int(config['DELTA']),
+    #         **triton_config
+    #     )
     fused_moe_kernel[grid](
             A,
             B,

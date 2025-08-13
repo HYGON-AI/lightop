@@ -1,4 +1,6 @@
+import pdb
 import torch
+torch.manual_seed(0)
 import time
 from typing import Optional, Type,Any, Dict, List, Tuple
 import pandas as pd
@@ -449,12 +451,35 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
     grid = lambda META: (triton.cdiv(EM, META['BLOCK_SIZE_M']) * triton.cdiv(
         B.shape[1] if not use_nn_moe else B.shape[2], META['BLOCK_SIZE_N']), )
 
-    # import pdb
-    # pdb.set_trace()
-    # A = torch.ones_like(A)
-    # B = torch.ones_like(B)
-    # A_scale = torch.ones_like(A_scale)
-    # B_scale = torch.ones_like(B_scale)
+    torch.set_printoptions(precision=4, profile="default", sci_mode=False)
+    '''
+    # torch.manual_seed(0)
+    begin, end, expert_id = 0, 16, 0
+    # A = torch.randint(-10, 10, A.shape, dtype=torch.int8, device=B.device)
+    # B = torch.randint(-10, 10, B.shape, dtype=torch.int8, device=B.device)
+    res = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32), B[expert_id, :, :].t().cpu().to(torch.int32))
+    out = res.to(A.device) * A_scale[sorted_token_ids[begin:end] // top_k] * B_scale[expert_id].t()
+    
+    wid = 0
+    res0 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
+    wid = 4
+    res1 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
+    wid = 8
+    res2 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
+    wid = 12
+    res3 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
+    w0 = res0 + res1 + res2 + res3
+    wid = 2
+    res0 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
+    wid = 6
+    res1 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
+    wid = 10
+    res2 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
+    wid = 14
+    res3 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
+    w2 = res0 + res1 + res2 + res3
+    # '''
+    # '''
     fused_moe_kernel[grid](
             A,
             B,
@@ -498,22 +523,8 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
             delta=int(config['DELTA']),
             **triton_config
         )
+    #'''
     out_cuda = torch.zeros_like(C)
-    # out_cuda = C
-    # torch.set_printoptions(profile="full")
-    # print(f"AAAAA: {A.shape}\n: {A}")
-    # print("expert_ids: ", expert_ids)
-    # print(f"AAAAA: {A.shape}\n: {A[0,:]}")
-    # print(F"BBBBB: {B.shape}\n: {B[0,:,:]}" )
-    # print("\n\n")
-    # eye_b = torch.eye(A.shape[1], dtype=B.dtype, device=B.device)
-    # debug_b = eye_b.unsqueeze(0).repeat(256, 1, 1)
-    
-    # debug_b = torch.ones_like(B)
-    # debug_b = B
-    
-    # A = torch.ones_like(A)
-    # B = torch.ones_like(B)
     moe_gemm_w8a8(A, 
                     B, 
                     out_cuda,
@@ -541,15 +552,41 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
             gemm2_compare_failed_list.append(config['MODE'])
         
         print(f"kernel{stage} 精度检查不合格!!!")
-        # torch.set_printoptions(profile="full")  
-        # ftriton = open('cuda_output.txt', 'w')   
-        # print(f'cuda_output: {out_cuda}', file=ftriton)
-        # ftriton.close
-        # ftorch = open('bench_output.txt', 'w')   
-        # print(f'bench_output: {C}', file=ftorch)
-        # ftorch.close
     else:
         print(f"kernel{stage} 精度检查合格.")
+    
+    '''
+    def torch_moe(a, b, sa, sb, topk_ids, out_dtype):
+        B, D = a.shape
+        device = a.device
+        topk = topk_ids.shape[1]
+        topk_ids = topk_ids.view(-1)
+        out = torch.zeros(B * topk, b.shape[1], dtype=torch.float, device=device)
+        a = a.view(B, -1, D).repeat(1, topk, 1).reshape(-1, D).cpu().to(torch.int32)
+        b = b.cpu().to(torch.int32)
+        sa = sa.view(B, -1, 1).repeat(1, topk, 1).reshape(-1, 1)
+        for i in range(b.shape[0]):
+            mask = topk_ids == i
+            if mask.sum():
+                scale = sa[mask].mul(sb[i].t())
+                axb = a[mask.cpu()] @ b[i].transpose(0, 1)
+                out[mask] = axb.to(device).to(torch.float) * scale
+        
+        return out.reshape(B, topk, -1).to(out_dtype)
+        
+    pdb.set_trace()
+    torch.nonzero((C - out_cuda).abs() > 1)
+    torch.nonzero((C.view(-1, 256) - out_cuda.view(-1, 256)).abs() > 1)
+    torch.nonzero((C[404, 0] - out_cuda[404, 0]).abs() > 1)
+    torch.nonzero(sorted_token_ids == 135)
+    torch_c = torch.zeros_like(C)
+    out_dtype = torch_c.dtype
+    torch_c = torch_moe(A, B, A_scale, B_scale, topk_ids, out_dtype)
+    assert torch.allclose(torch_c, C, rtol=1e-2, atol=1e-2)
+    assert torch.allclose(torch_c, out_cuda, rtol=1e-2, atol=1e-2)
+    #'''
+    # torch.cuda.synchronize()
+    
 
 
 def fused_experts_impl_int8(hidden_states: torch.Tensor,
@@ -689,12 +726,34 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
             config2['DELTA'] =  blockM_configs_decode[mode0]//blockM_configs_decode[mode1]
             
     
+        align = 16
+        config1['BLOCK_SIZE_M'] = align
+        config1['MODE'] = 1004
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-        # print("sorted_token_ids:", sorted_token_ids[:128])
-        # print("sorted_token_ids // 128:", sorted_token_ids[:128] // 128)
+        # '''
+        # sorted_token_ids[:128] = torch.tensor([20375, 20444, 40787,  6104, 61222, 61244, 24493, 26563, 26412, 17653,
+        # 46929, 46945, 44895, 44441, 44353, 44411, 64849, 22648,  6940, 45239,
+        # 43188, 43162, 43011, 43078, 27564, 30711, 14325, 34653, 19490, 39950,
+        # 53233, 60612, 42139,  6305, 55230, 60539, 42237, 26709, 62640,  7779,
+        # 49381, 49402,  7817,  7867, 28337, 26189, 26282, 48722, 48740,  9009,
+        #  1839,  1895,  1901, 29597, 22437, 31736, 63363, 51971,  3661, 13135,
+        # 22095, 24130, 24146, 24205, 13263, 42684, 44571, 42603, 35685, 26073,
+        # 56318, 25895, 54050, 48426, 46415, 65045, 51485, 51526, 51545, 65145,
+        # 51532, 15411, 15386, 30951, 30952, 30968, 30843, 64161, 51233, 25504,
+        # 25575, 13877, 14024, 34546, 36352, 34315, 34345, 54972, 54841, 56903,
+        # 23463, 23481, 23353, 11320, 11371, 13415, 41935, 11512, 31751, 43838,
+        # 33910, 31815, 31889, 12537, 54480, 12380, 14491, 34881, 32952, 34820,
+        # 62423, 53424, 62445, 53281, 27033, 45492, 16208, 18295],
+        # device='cuda:0', dtype=torch.int32)
+        print("sorted_token_ids:", sorted_token_ids[0:align])
+        print("sorted_token_ids // topk:", sorted_token_ids[0:align] // top_k_num)
+        print("sorted_token_ids % topk:", sorted_token_ids[0:align] % top_k_num)
+        print("expert_ids:", expert_ids[:10])
         # pdb.set_trace()
+        # torch.nonzero(sorted_token_ids == 0)
+        # '''
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
@@ -717,7 +776,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
-
+        '''
         if activation == "silu":
             # d = intermediate_cache1.shape[-1] // 2
             # intermediate_cache2 = F.silu(intermediate_cache1[..., :d]) * intermediate_cache1[..., d:]
@@ -819,7 +878,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
 
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
                     out_hidden_states[begin_chunk_idx:end_chunk_idx])
-
+        '''
     return out_hidden_states
 
 def _fused_moe_helper(m: int,
@@ -835,6 +894,7 @@ def _fused_moe_helper(m: int,
                              best_config:Optional[list] = None):
     # Test for a cutlass kernel with per-token activation quantization
     # and per-output channel weight quantization.
+    torch.manual_seed(0)
     input = (torch.randn((m, k), device=device) * 5).to(dtype=out_dtype)
     weight13 = to_int8(torch.randn((E,n ,k), device=device) * 5)
     weight2 = to_int8(torch.randn((E,n2 ,k2), device=device) * 5)
@@ -929,9 +989,9 @@ def torch_w8a8_per_column_moe(a, w1, w2, w1_s, w2_s, topk_weight, topk_ids,topk)
 
 def run_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
-    # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
+    m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
     # m_list=[256,512,1024,2048,4096,8192,16384] #prefill
-    m_list = [32]
+    # m_list = [32]
     # m_list=[8192,]
     # m_list = [16384]
     # n_list_1=[512,]
@@ -1026,6 +1086,8 @@ def run_perchannel_vaild():
                                                 config={"BLOCK_SIZE_M": 32},
                                                 per_channel_quant=True,
                                                 mode=mode_list)
+                # pdb.set_trace()
+                '''
                 #torch native moe: out_native
                 out_native = torch_w8a8_per_column_moe(input, weight13, weight2, weight13_scale, weight2_scale, topk_weights, topk_ids,topk)
                 
@@ -1037,6 +1099,7 @@ def run_perchannel_vaild():
                     # print("out_native:",out_native)
                 else:
                     print("triton 精度检查合格")
+                '''
                      
     print("gemm1_compare_failed_list: ", gemm1_compare_failed_list)
     print("gemm2_compare_failed_list: ", gemm2_compare_failed_list)

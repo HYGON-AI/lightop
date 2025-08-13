@@ -80,7 +80,9 @@ void _moe_w8a8_TN_impl(
   size_t blockDim = 768;
   if constexpr(BLOCKM == 32 && BLOCKN == 32 && BLOCKK == 256) {
     blockDim = 256;
-  }
+  } else if constexpr(BLOCKM == 16 && BLOCKN == 16 && BLOCKK == 256) {
+    blockDim = 256;
+  } 
   size_t localWorkSize[3] = {blockDim, 1, 1};
   size_t globalWorkSize[3] = {1, 1, 1};
   globalWorkSize[0] = DIVIDE(size_n, BLOCKN);;
@@ -113,7 +115,7 @@ void _moe_w8a8_TN_impl(
   hipFunctionArgs.topk_rcip = 1.0 / top_k;
   void * debug_host = nullptr, * debug_device = nullptr;
   #if DEBUG
-  int bytes = 64;
+  int bytes = 16;
   int debug_size = blockDim * bytes;
   debug_host = malloc(debug_size);
   hipMalloc((void **)&debug_device, debug_size);
@@ -175,14 +177,14 @@ void _moe_w8a8_TN_impl(
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f ", static_cast<float>(tmp[0]));
     int index = split * i;
-    bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + index);
-    printf("tid:%d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f "
-      "%10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n", i, 
-      static_cast<float>(tmp[2*0 ]), static_cast<float>(tmp[2*1 ]), static_cast<float>(tmp[2*2 ]), static_cast<float>(tmp[2*3 ]),
-      static_cast<float>(tmp[2*4 ]), static_cast<float>(tmp[2*5 ]), static_cast<float>(tmp[2*6 ]), static_cast<float>(tmp[2*7 ]),
-      static_cast<float>(tmp[2*8 ]), static_cast<float>(tmp[2*9 ]), static_cast<float>(tmp[2*10]), static_cast<float>(tmp[2*11]),
-      static_cast<float>(tmp[2*12]), static_cast<float>(tmp[2*13]), static_cast<float>(tmp[2*14]), static_cast<float>(tmp[2*15])
-    );
+    // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + index);
+    // printf("tid:%d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f "
+    //   "%10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n", i, 
+    //   static_cast<float>(tmp[2*0 ]), static_cast<float>(tmp[2*1 ]), static_cast<float>(tmp[2*2 ]), static_cast<float>(tmp[2*3 ]),
+    //   static_cast<float>(tmp[2*4 ]), static_cast<float>(tmp[2*5 ]), static_cast<float>(tmp[2*6 ]), static_cast<float>(tmp[2*7 ]),
+    //   static_cast<float>(tmp[2*8 ]), static_cast<float>(tmp[2*9 ]), static_cast<float>(tmp[2*10]), static_cast<float>(tmp[2*11]),
+    //   static_cast<float>(tmp[2*12]), static_cast<float>(tmp[2*13]), static_cast<float>(tmp[2*14]), static_cast<float>(tmp[2*15])
+    // );
     // printf("tid:%d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f "
     //   "%10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n", i, 
     //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ],
@@ -191,25 +193,27 @@ void _moe_w8a8_TN_impl(
     //   p_debug[index+12], p_debug[index+13], p_debug[index+14], p_debug[index+15]
     // );
     // printf("tid:%d %3d %3d %3d %3d %3d %3d %3d %3d "
-    //   "%3d %3d %3d %3d %3d %3d %3d %3d "
-    //   "%3d %3d %3d %3d %3d %3d %3d %3d "
+    //   // "%3d %3d %3d %3d %3d %3d %3d %3d "
+    //   // "%3d %3d %3d %3d %3d %3d %3d %3d "
     //   "%3d %3d %3d %3d %3d %3d %3d %3d\n", i, 
     //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ],
     //   p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ], p_debug[index+7 ],
     //   p_debug[index+8 ], p_debug[index+9 ], p_debug[index+10], p_debug[index+11],
-    //   p_debug[index+12], p_debug[index+13], p_debug[index+14], p_debug[index+15],
-    //   p_debug[index+16], p_debug[index+17], p_debug[index+18], p_debug[index+19],
-    //   p_debug[index+20], p_debug[index+21], p_debug[index+22], p_debug[index+23],
-    //   p_debug[index+24], p_debug[index+25], p_debug[index+26], p_debug[index+27],
-    //   p_debug[index+28], p_debug[index+29], p_debug[index+30], p_debug[index+31]
+    //   p_debug[index+12], p_debug[index+13], p_debug[index+14], p_debug[index+15]
+    //   // ,
+    //   // p_debug[index+16], p_debug[index+17], p_debug[index+18], p_debug[index+19],
+    //   // p_debug[index+20], p_debug[index+21], p_debug[index+22], p_debug[index+23],
+    //   // p_debug[index+24], p_debug[index+25], p_debug[index+26], p_debug[index+27],
+    //   // p_debug[index+28], p_debug[index+29], p_debug[index+30], p_debug[index+31]
     // );
     // printf("tid:%d %6d %6d %6d %6d %6d %6d %6d %6d\n", i, 
     //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ],
     //   p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ], p_debug[index+7 ]
     // );
-    // printf("tid:%d 0x%X 0x%X 0x%X 0x%X\n", i, 
-    //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ]
-    // );
+    bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + index);
+    printf("tid:%d %10.4f %10.4f %10.4f %10.4f \n", i, 
+      static_cast<float>(tmp[2*0 ]), static_cast<float>(tmp[2*1 ]), static_cast<float>(tmp[2*2 ]), static_cast<float>(tmp[2*3 ])
+    );
   }
   printf("\n");
   HIP_CALL(hipFree(debug_device));
@@ -274,6 +278,17 @@ torch::Tensor moe_w8a8_asm(
       at::ScalarType::BFloat16,
       output.scalar_type(), "moe_w8a8_TN_impl",[&] {
         _moe_w8a8_TN_impl<32, 32, 256, scalar_t>(
+          input, b_qweight, output, a_scale, b_scale,
+          topk_weights, sorted_token_ids, expert_ids,
+          num_tokens_post_pad, top_k, experts_num);
+      }
+    );
+  } else if (mode == 1004) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_w8a8_TN_impl",[&] {
+        _moe_w8a8_TN_impl<16, 16, 256, scalar_t>(
           input, b_qweight, output, a_scale, b_scale,
           topk_weights, sorted_token_ids, expert_ids,
           num_tokens_post_pad, top_k, experts_num);
