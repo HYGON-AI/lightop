@@ -81,15 +81,19 @@ std::vector<Tensor> miopen_moe_swiglu_dynamic_quant(const Tensor& scatter_tokens
                                                     const float beta = 1.0)
 {
 
+    if(scatter_tokens.dim() != 2 || smooth_scale.dim() != 2 || experts_tokens_count.dim() != 1 ||
+       exports_tokens_start.dim() != 1)
+        MIOPEN_THROW("Moe swiglu dynamic quant can not match dimension");
+
     TensorDescriptor scatter_tokens_tensor(scatter_tokens);
     TensorDescriptor smooth_scale_tensor(smooth_scale);
     TensorDescriptor experts_tokens_count_tensor(experts_tokens_count);
     TensorDescriptor exports_tokens_start_tensor(exports_tokens_start);
 
-    int64_t token_nums = scatter_tokens.sizes()[2];
+    int64_t token_nums = scatter_tokens.sizes()[0];
 
-    Tensor out_y = at::empty({1, 1, token_nums, smooth_scale.sizes()[3]}, scatter_tokens.options().dtype(at::kChar));
-    Tensor out_per_token_scale = at::empty({1, 1, 1, token_nums}, scatter_tokens.options().dtype(at::kFloat));
+    Tensor out_y = at::empty({token_nums, smooth_scale.sizes()[1]}, scatter_tokens.options().dtype(at::kChar));
+    Tensor out_per_token_scale = at::empty(token_nums, scatter_tokens.options().dtype(at::kFloat));
 
     TensorDescriptor output_y(out_y);
     TensorDescriptor output_per_token_scale(out_per_token_scale);

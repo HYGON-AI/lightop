@@ -26,16 +26,11 @@ def miopen_conv_bias(x, weight, bias, padding, stride, dilation):
 
     Args:
         x (Tensor): 输入张量
-        add (Tensor): 需要加和的张量
         weight (Tensor): 卷积核权重
-        pads (int|tuple): 填充大小。(padH, padW) 元组
-        strides (int|tuple): 卷积步长。 (strideH, strideW) 元组
-        dilations (int|tuple): 卷积膨胀率。(dilationH, dilationW) 元组
-        groups (int): 是否为组卷积。1为普通卷积, >1 为组卷积
-        alpha (float): _description_
-        beta (float): _description_
-        scale (double): _description_
-        zero_point (double): _description_
+        add (Tensor): 需要加和的张量
+        padding (int|tuple): 填充大小。(padH, padW) 元组
+        stride (int|tuple): 卷积步长。 (strideH, strideW) 元组
+        dilation (int|tuple): 卷积膨胀率。(dilationH, dilationW) 元组
 
     Returns:
         Tensor: 结果张量

@@ -55,9 +55,7 @@ def miopen_moe_swiglu_dynamic_quant(scatter_tokens, smooth_scale, experts_tokens
         scatter_tokens (Tensor): 输入张量，形状为 [num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens, hidden_size * 2]
         smooth_scale (Tensor): 输入张量，形状为 [num_shared_experts_per_rank + num_experts_per_rank, hidden_size]
         experts_tokens_count (Tensor): 输入张量，形状为 [num_experts_per_rank]
-        num_shared_experts_per_rank (int): 默认为 0, 如果 shared_expert 可用, 请添加到 num_experts_per_rank
-        num_tokens_offset (int): 如果shared_experts需要 num_tokens 进行拆分, 则这是当前排名的token_offset
-        num_tokens_per_rank (int): 如果需要shared_experts num_tokens 在上拆分, 则这是当前排名的num_tokens
+        exports_tokens_start (Tensor): 输入张量，形状为 [num_experts_per_rank]
         beta (float): _description_
 
     Returns:
