@@ -728,18 +728,18 @@ def _fused_moe_helper(m: int,
                              k2:int,
                              topk:int,
                              E:int,
-                             out_dtype: Type[torch.dtype] = torch.float16,
+                             out_dtype: Type[torch.dtype] = torch.bfloat16,
                              device: str = "cuda",
                              block_size: List[int]=[128,128],
                              best_config:Optional[list] = None):
 
-    input = (torch.randn((m, 7168), device=device) * 5).to(dtype=out_dtype)
-    weight13 = to_int8(torch.randn((256,512 ,3584), device=device) * 5)
-    weight2 = to_int8(torch.randn((256,7168 ,128), device=device) * 5)
+    input = (torch.randn((m, n2), device=device) * 5).to(dtype=out_dtype)
+    weight13 = to_int8(torch.randn((E,n ,k), device=device) * 5)
+    weight2 = to_int8(torch.randn((E,n2 ,k2), device=device) * 5)
 
-    weight13_scale = (torch.randn((256, 512 ,1), device=device,
+    weight13_scale = (torch.randn((E, n ,1), device=device,
                            dtype=torch.float32))
-    weight2_scale = (torch.randn((256, 7168, 1), device=device,
+    weight2_scale = (torch.randn((E, n2, 1), device=device,
                            dtype=torch.float32))   
 
     tensor = torch.rand((m, topk),device=device)
@@ -759,12 +759,12 @@ def run_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
     # m_list=[256,512,1024,2048,4096,8192,16384] #prefill
-    m_list=[1,]    
+    m_list=[1,2,4,8,16,32,64,128]    
     E=256
     n_list_1=[512]
-    k_list_1=[7168]
+    k_list_1=[3584]
     n_list_2=[7168]
-    k_list_2=[256]
+    k_list_2=[128]
     out_dtype=torch.bfloat16
     topk=8
     best_config = None
@@ -793,7 +793,7 @@ def run_perchannel_vaild():
             for mode in mode_ranges:
                 mode_list=[11,27]
                 print("mode:{} m:{} n:{} k:{} ".format(mode_list, m,n_list_1[i],k_list_1[i]))
-                input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=m,n=n_list_1[i],k=k_list_1[i],n2=n_list_2[i],k2=k_list_2[i],topk=topk,E=E,block_size=None,out_dtype=out_dtype)
+                input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=m,n=n_list_1[i],k=(k_list_1[i]),n2=n_list_2[i],k2=(k_list_2[i]),topk=topk,E=E,block_size=None,out_dtype=out_dtype)
                 # triton moe: output
                 output=fused_experts_impl_int8(hidden_states=input,
                                                 w1=weight13,

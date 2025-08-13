@@ -359,35 +359,28 @@ def benchmark_config(config: BenchmarkConfig,
                      stages: int=1) -> float:
     init_dtype = torch.float16 if use_fp8_w8a8 else dtype
     x = torch.randn(num_tokens, hidden_size, dtype=dtype)
-    # print("num_tokens,hidden_size,shard_intermediate_size111111111111111111111111111",num_tokens,hidden_size,shard_intermediate_size)
     w1_scale = None
     w2_scale = None
     a1_scale = None
     a2_scale = None
-    # import pdb 
-    # pdb.set_trace()
     w1 = torch.randint(-127,
                         127, (
-                            256,
-                            512, # n
-                            3584, # k
+                            num_experts,
+                            shard_intermediate_size, # n
+                            hidden_size//2, # k
                         ),
                         dtype=torch.int8)
     w2 = torch.randint(-127,
                         127, (
-                            256,
-                            7168, # n2
-                            128, # k2
+                            num_experts,
+                            hidden_size, # n2
+                            shard_intermediate_size//4, # k2
                         ),
                         dtype=torch.int8)
-    # w1_scale = (torch.randn((256,math.ceil(shard_intermediate_size/block_quant_shape[0]), math.ceil(hidden_size/block_quant_shape[1])),
-    #                     dtype=torch.float32))
-    # w2_scale = (torch.randn((256,math.ceil(hidden_size/block_quant_shape[0]), math.ceil((shard_intermediate_size // 2)/block_quant_shape[1])),
-    #                     dtype=torch.float32))   
-    
-    w1_scale = (torch.randn((256, 512 ,1),
+
+    w1_scale = (torch.randn((num_experts, shard_intermediate_size ,1),
                            dtype=torch.float32))
-    w2_scale = (torch.randn((256, 7168, 1),
+    w2_scale = (torch.randn((num_experts, hidden_size, 1),
                            dtype=torch.float32))    
     
     gating_output = torch.randn(num_iters,
@@ -415,6 +408,7 @@ def benchmark_config(config: BenchmarkConfig,
                                                     renormalize=True,
                                                     inplace=True,
                                                     use_fp8_w8a8=use_fp8_w8a8,
+                                                    use_int8_w4a8=use_int8_w4a8,
                                                     use_int8_w8a16=use_int8_w8a16,
                                                     w1_scale=w1_scale,
                                                     w2_scale=w2_scale,
@@ -432,6 +426,7 @@ def benchmark_config(config: BenchmarkConfig,
                                                     renormalize=True,
                                                     inplace=True,
                                                     use_fp8_w8a8=use_fp8_w8a8,
+                                                    use_int8_w4a8=use_int8_w4a8,
                                                     use_int8_w8a16=use_int8_w8a16,
                                                     w1_scale=w1_scale,
                                                     w2_scale=w2_scale,
@@ -474,9 +469,9 @@ def moe_cuda_graph(
 
         w1 = torch.randint(-127,
                             127, (
-                                num_experts,
-                                shard_intermediate_size, # n
-                                hidden_size// 2, # k
+                                num_experts,#256
+                                shard_intermediate_size, # n:512
+                                hidden_size// 2, # k:3584
                             ),
                             device=device,
                             dtype=torch.int8)
@@ -484,14 +479,11 @@ def moe_cuda_graph(
                             127, (
                                 num_experts,
                                 hidden_size, # n2
-                                shard_intermediate_size // 4, # k2
+                                shard_intermediate_size // 4, # 128
                             ),
                             device=device,
                             dtype=torch.int8)
-        # w1_scale = (torch.randn((256,math.ceil(shard_intermediate_size/block_quant_shape[0]), math.ceil(hidden_size/block_quant_shape[1])),device=device,
-        #                     dtype=torch.float32))
-        # w2_scale = (torch.randn((256,math.ceil(hidden_size/block_quant_shape[0]), math.ceil((shard_intermediate_size // 2)/block_quant_shape[1])),device=device,
-        #                     dtype=torch.float32))   
+        
         w1_scale = (torch.randn((num_experts, shard_intermediate_size ,1),
                            dtype=torch.float32, device=device))
         w2_scale = (torch.randn((num_experts, hidden_size, 1),
@@ -692,7 +684,7 @@ def fuse_moe_correctness_preprocess(
             mode1 = 49
         mode_list=[mode0,mode1]
         # print("mode:{} m:{} n:{} k:{} ".format(mode_list, num_tokens,shard_intermediate_size,hidden_size))
-        input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=num_experts,device=device,block_size=None,out_dtype=dtype)
+        input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=(hidden_size//2),n2=hidden_size,k2=(shard_intermediate_size // 4),topk=topk,E=num_experts,device=device,block_size=None,out_dtype=dtype)
         # triton moe: output
         output=fused_experts_impl_int8_preprocess(hidden_states=input,
                                                     w1=weight13,
@@ -883,14 +875,14 @@ def get_configs_compute_bound(use_fp16,
 
 def prune_rocm_search_space_kernel0(num_tokens, shard_intermediate_size, hidden_size,
                             search_space, is_fp16, topk, gemm_compare_failed_list):
-    N1, K1 = shard_intermediate_size, hidden_size
+    N1, K1 = shard_intermediate_size, (hidden_size//2)
     pruned_space_0 = prune_rocm_configs(num_tokens, N1, K1,
                                         search_space, is_fp16, gemm_compare_failed_list)
     return pruned_space_0
 
 def prune_rocm_search_space_kernel1(num_tokens, shard_intermediate_size, hidden_size,
                             search_space, is_fp16, topk, gemm_compare_failed_list):
-    N2, K2 = hidden_size, shard_intermediate_size // 2
+    N2, K2 = hidden_size, (shard_intermediate_size // 2)
     pruned_space_1 = prune_rocm_configs(num_tokens, N2, K2,
                                         search_space, is_fp16, gemm_compare_failed_list)
     return pruned_space_1
@@ -1021,18 +1013,15 @@ class BenchmarkWorker:
             mode_pattern = "MODE_PREFILL"
             block_configs = blockM_configs
 
-        # gemm1_compare_failed_list, gemm2_compare_failed_list = fuse_moe_correctness_preprocess(num_tokens, num_experts,
-                                                                        # shard_intermediate_size, hidden_size,
-                                                                        # topk, dtype, use_fp8_w8a8,
-                                                                        # use_int8_w8a16, use_int8_w4a8, block_quant_shape=block_quant_shape,
-                                                                        # block_m_configs = block_configs,seed=self.seed, device_id=self.device_id)
-        # import pdb 
-        # pdb.set_trace()
-        gemm1_compare_failed_list = []
-        gemm2_compare_failed_list = []
+        gemm1_compare_failed_list, gemm2_compare_failed_list = fuse_moe_correctness_preprocess(num_tokens, num_experts,
+                                                                        shard_intermediate_size, hidden_size,
+                                                                        topk, dtype, use_fp8_w8a8,
+                                                                        use_int8_w8a16, use_int8_w4a8, block_quant_shape=block_quant_shape,
+                                                                        block_m_configs = block_configs,seed=self.seed, device_id=self.device_id)
+
 
         if current_platform.is_rocm():
-            is_fp16 = is_fp16 = not (use_fp8_w8a8 or use_int8_w8a16 or use_int8_w4a8)
+            is_fp16  = not (use_fp8_w8a8 or use_int8_w8a16 or use_int8_w4a8)
             # print("num_tokens,shard_intermediate_size,hidden_size,search_space",num_tokens,shard_intermediate_size,hidden_size,search_space)
             search_space_kernel0 = prune_rocm_search_space_kernel0(num_tokens,
                                                    shard_intermediate_size,
@@ -1159,8 +1148,8 @@ def save_configs(configs_first_stage: dict[int, BenchmarkConfig], configs_second
                  block_quant_shape: List[int]) -> None:
 
     N=shard_intermediate_size
-    K=hidden_size
-    filename = f"MOE_BLOCKINT8_CUDA_{N}_{K}_{device_name}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    K=hidden_size//2
+    filename = f"MOE_BLOCKINT4_CUDA_{N}_{K}_{device_name}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
 
     print(f"Writing best config to {filename}...")
     try:
@@ -1184,8 +1173,8 @@ def save_configs(configs_first_stage: dict[int, BenchmarkConfig], configs_second
         json.dump(config_infos, file, indent=4)  
      
     N=hidden_size
-    K=shard_intermediate_size // 2
-    filename = f"MOE_BLOCKINT8_CUDA_{N}_{K}_{device_name}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    K=shard_intermediate_size // 4
+    filename = f"MOE_BLOCKINT4_CUDA_{N}_{K}_{device_name}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
 
     print(f"Writing best config to {filename}...")
     try:
@@ -1240,18 +1229,7 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            1, 2, 4, 8, 16, 32, 64, 128,
-            
-            # 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
-            # 1, 2, 4, 8, 16, 32, 64, 8192, 16384, 32768
-            # 4096, 6144, 8192, 16384, 32768
-            # 1024, 2048, 4096, 6144, 8192, 16384
-            # 65536,32768,
-            # 32768, 49152, 65536, 131072
-            # 6144, 8192, 16384, 32768, 40960
-            # 512,
-            # 1024,2048,4096
+            1,# 2, 4, 8, 16, 32, 64, 128,
         ]
     else:
         batch_sizes = [args.batch_size]
@@ -1323,8 +1301,8 @@ def main(args: argparse.Namespace):
         _total_time=[]
         
         for batch_size, kernel_time in zip(batch_sizes, outputs):
-            _w13n.append(shard_intermediate_size//2)
-            _w13k.append(hidden_size)
+            _w13n.append(shard_intermediate_size)
+            _w13k.append(hidden_size//2)
             _w2n.append(hidden_size)
             _w2k.append(shard_intermediate_size//4)
             _m.append(batch_size)
