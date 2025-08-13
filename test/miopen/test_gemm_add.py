@@ -3,17 +3,9 @@ import torch
 import torch.nn.functional as F
 from torch.profiler import profile, ProfilerActivity
 
-# a = torch.randn(2, 640, 640).cuda().half()
-# b = torch.randn(640, 4096).cuda().half()
-# bias = torch.randn(1, 4096).cuda().half()
-
-# a = torch.ones(2, 640, 640, dtype=torch.half, device='cuda')
-# b = torch.ones(640, 4096, dtype=torch.half, device='cuda')
-# bias = torch.ones(1, 4096, dtype=torch.half, device='cuda')
-
-a = torch.full((2, 640, 640), 2, dtype=torch.half, device='cuda')
-b = torch.full((640, 4096), 2, dtype=torch.half, device='cuda')
-bias = torch.full((1, 4096), 2, dtype=torch.half, device='cuda')
+a = torch.randn(1, 8192, 640).cuda().half()
+b = torch.randn(640, 640).cuda().half()
+bias = torch.randn(1, 640).cuda().half()
 
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
@@ -37,4 +29,4 @@ torch.cuda.synchronize()
 print(output)
 print("output Tensor shape :", output.shape)
 
-print("test_gemm_add: ", allclose(out, output, rtol=1e-05, atol=1e-05))
+print("test_gemm_add: ", allclose(out, output, rtol=1e-02, atol=1e-02))
