@@ -19,7 +19,7 @@ import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm import _custom_ops as ops
 # import _custom_ops as ops
-from lightop import moe_gemm_w8a8, get_moe_cuda_config_w4a8
+from lightop import moe_gemm_w4a8, get_moe_cuda_config_w4a8
 from vllm.model_executor.layers.fused_moe.fused_moe import moe_kernel_prepare_input
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
@@ -1223,7 +1223,7 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
     # print("num_tokens_post_padded",num_tokens_post_padded)
     # print("top_k",top_k)
     # print("config",config)
-    moe_gemm_w8a8(A, 
+    moe_gemm_w4a8(A, 
                     B, 
                     C,
                     A_scale, 
@@ -2436,7 +2436,7 @@ def invoke_fused_moe_kernel_int8_preprocess(A: torch.Tensor,
         )
     out_cuda = torch.zeros_like(C)
 
-    moe_gemm_w8a8(A, 
+    moe_gemm_w4a8(A, 
                     B, 
                     out_cuda,
                     A_scale, 

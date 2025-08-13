@@ -601,8 +601,11 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape)
         
+        align = 16
+        config['BLOCK_SIZE_M'] = align
+        config['MODE'] = 1004
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
-                moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
+                moe_align_block_size(curr_topk_ids, align,
                                     global_num_experts, expert_map))
 
         if use_lightop and per_channel_quant and status:
@@ -617,7 +620,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                           expert_ids,
                           num_tokens_post_padded,
                           top_k_num,
-                          config1)
+                          config)
         elif use_lightop and block_shape is not None and device_name=='K100_AI_120' and m <= 64:
             moe_gemm_decode_prof.CUDA_W8A8_MOE1(qcurr_hidden_states,
                                                 w1,
@@ -664,6 +667,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
 
+        '''
         if activation == "silu":
             torch.ops._C.silu_and_mul(intermediate_cache2,
                                       intermediate_cache1.view(-1, N))
@@ -746,6 +750,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
+        '''
     return intermediate_cache3
 
 def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
@@ -881,23 +886,14 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape)
         
+        align = 16
+        config['BLOCK_SIZE_M'] = align
+        config['MODE'] = 1004
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-        
-        # import pdb
-        # pdb.set_trace()
-        
-        # sorted_token_ids = torch.load("sorted_token_ids.pt")
-        # expert_ids1 = torch.load("expert_ids.pt")
-        # num_tokens_post_padded = torch.load("num_tokens_post_padded.pt")
-        # expert_ids = torch.where(expert_ids1 == 0, torch.tensor(1000), expert_ids1)
-        # expert_ids[0] = 0
 
-        # import pdb
-        # pdb.set_trace()
-
-        
+        print("condition:", use_lightop, per_channel_quant, status)
         if use_lightop and per_channel_quant and status:
 
             moe_gemm_w8a8(qcurr_hidden_states,
@@ -974,6 +970,7 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
 
+        '''
         if activation == "silu":
             torch.ops._C.silu_and_mul(intermediate_cache2,
                                       intermediate_cache1.view(-1, N))
@@ -1073,7 +1070,10 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
+        
     return intermediate_cache3, elapsed_time1, elapsed_time2
+    '''
+    return intermediate_cache3, elapsed_time1, 0
 
 
 def to_int8(tensor: torch.Tensor):
@@ -1141,8 +1141,9 @@ def _fused_moe_helper(m: int,
 
 
 def main():
-    # HIP_VISIBLE_DEVICES=5 python3 test_kernel_moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise
+    
     # 创建解析器对象
+    # HIP_VISIBLE_DEVICES=5 python ./test_kernel_moe_benchmark.py --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise
     parser = argparse.ArgumentParser(description='这是一个示例脚本的描述')
     
     # 添加参数

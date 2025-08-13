@@ -108,7 +108,7 @@ void _moe_w4a8_TN_impl(
   hipFunctionArgs.topk_rcip = 1.0 / top_k;
   void * debug_host = nullptr, * debug_device = nullptr;
   #if DEBUG
-  int bytes = 32;
+  int bytes = 20;
   int debug_size = 768 * bytes;
   debug_host = malloc(debug_size);
   hipMalloc((void **)&debug_device, debug_size);
@@ -118,69 +118,35 @@ void _moe_w4a8_TN_impl(
   size_t argsSize = sizeof(hipFunctionArgs);
 
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  char funcName[1024], co_file[1024];
+  char funcName[1024], first_stage_co_file[1024], second_stage_co_file[1024];
   memset(funcName, 0x0, sizeof(funcName));
-  memset(co_file, 0x0, sizeof(co_file));
+  memset(first_stage_co_file, 0x0, sizeof(first_stage_co_file));
+  memset(second_stage_co_file, 0x0, sizeof(second_stage_co_file));
   sprintf(funcName, "Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT%dx%dx%d_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", BLOCKM, BLOCKN, BLOCKK);
-  if (output.scalar_type() == at::ScalarType::Half) {
-    sprintf(co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_FP16.co", BLOCKM, BLOCKN, BLOCKK);
-  } else if (output.scalar_type() == at::ScalarType::BFloat16) {
-    if(first_stage){
-      sprintf(co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
-    }else{
-      sprintf(co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
-    }
+  if (output.scalar_type() == at::ScalarType::BFloat16) {
+    sprintf(first_stage_co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(second_stage_co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
   } else {
-    TORCH_CHECK(false, "moe_w4a8 only supports outputType in [Float16, BFloat16]");
+    TORCH_CHECK(false, "moe_w4a8 only supports outputType in [BFloat16]");
   }
 
-  if(output.scalar_type() == at::ScalarType::Half){
-    static AiterAsmKernel moe_w4a8(funcName, co_file);
-    AiterAsmKernel *impl_ptr = &moe_w4a8;
-    impl_ptr->launch_kernel_ext({
-      &hipFunctionArgs,
-      &argsSize,
-      globalWorkSize[0],           // gdx
-      globalWorkSize[1],           // gdy
-      globalWorkSize[2],           // gdz
-      localWorkSize[0],            // bdx: 12 wv64
-      localWorkSize[1],            // bdy
-      localWorkSize[2],            // bdz
-      stream
-    });
-  }else{
-    if(first_stage){
-      static AiterAsmKernel moe_w8a8_first_stage(funcName, co_file);
-      AiterAsmKernel *impl_ptr = &moe_w8a8_first_stage;
-        
-      impl_ptr->launch_kernel_ext({
-        &hipFunctionArgs,
-        &argsSize,
-        globalWorkSize[0],           // gdx
-        globalWorkSize[1],           // gdy
-        globalWorkSize[2],           // gdz
-        localWorkSize[0],            // bdx: 12 wv64
-        localWorkSize[1],            // bdy
-        localWorkSize[2],            // bdz
-        stream
-      });
-    }else{
-      static AiterAsmKernel moe_w8a8_second_stage(funcName, co_file);
-      AiterAsmKernel *impl_ptr = &moe_w8a8_second_stage;
-        
-      impl_ptr->launch_kernel_ext({
-        &hipFunctionArgs,
-        &argsSize,
-        globalWorkSize[0],           // gdx
-        globalWorkSize[1],           // gdy
-        globalWorkSize[2],           // gdz
-        localWorkSize[0],            // bdx: 12 wv64
-        localWorkSize[1],            // bdy
-        localWorkSize[2],            // bdz
-        stream
-      });
-    }
+  static AiterAsmKernel moe_w4a8_first_stage(funcName, first_stage_co_file);
+  static AiterAsmKernel moe_w4a8_second_stage(funcName, second_stage_co_file);
+  AiterAsmKernel *impl_ptr = &moe_w4a8_first_stage;
+  if(!first_stage){
+    impl_ptr = &moe_w4a8_second_stage;
   }
+  impl_ptr->launch_kernel_ext({
+    &hipFunctionArgs,
+    &argsSize,
+    globalWorkSize[0],           // gdx
+    globalWorkSize[1],           // gdy
+    globalWorkSize[2],           // gdz
+    localWorkSize[0],            // bdx: 12 wv64
+    localWorkSize[1],            // bdy
+    localWorkSize[2],            // bdz
+    stream
+  });
 
 
 
@@ -191,9 +157,9 @@ void _moe_w4a8_TN_impl(
     localWorkSize[0], localWorkSize[1], localWorkSize[2]);
   printf("\ndebug:\n");
   hipMemcpy(debug_host, debug_device, debug_size, hipMemcpyDeviceToHost);
-  using DEBUG_TYPE = int8_t;
+  // using DEBUG_TYPE = int8_t;
   // using DEBUG_TYPE = uint32_t;
-  // using DEBUG_TYPE = int32_t;
+  using DEBUG_TYPE = int32_t;
   // using DEBUG_TYPE = float;
   // using DEBUG_TYPE = bhalf_t;
   int split = bytes / sizeof(DEBUG_TYPE);
@@ -210,27 +176,29 @@ void _moe_w4a8_TN_impl(
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f ", static_cast<float>(tmp[0]));
     int index = split * i;
-    printf("tid:%d %3d %3d %3d %3d %3d %3d %3d %3d "
-      "%3d %3d %3d %3d %3d %3d %3d %3d "
-      "%3d %3d %3d %3d %3d %3d %3d %3d "
-      "%3d %3d %3d %3d %3d %3d %3d %3d\n", i, 
-      p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ],
-      p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ], p_debug[index+7 ],
-      p_debug[index+8 ], p_debug[index+9 ], p_debug[index+10], p_debug[index+11],
-      p_debug[index+12], p_debug[index+13], p_debug[index+14], p_debug[index+15],
-      p_debug[index+16], p_debug[index+17], p_debug[index+18], p_debug[index+19],
-      p_debug[index+20], p_debug[index+21], p_debug[index+22], p_debug[index+23],
-      p_debug[index+24], p_debug[index+25], p_debug[index+26], p_debug[index+27],
-      p_debug[index+28], p_debug[index+29], p_debug[index+30], p_debug[index+31]
-    );
+    // printf("tid:%d %3d %3d %3d %3d %3d %3d %3d %3d "
+    //   // "%3d %3d %3d %3d %3d %3d %3d %3d "
+    //   // "%3d %3d %3d %3d %3d %3d %3d %3d "
+    //   "%3d %3d %3d %3d %3d %3d %3d %3d\n", i, 
+    //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ],
+    //   p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ], p_debug[index+7 ],
+    //   p_debug[index+8 ], p_debug[index+9 ], p_debug[index+10], p_debug[index+11],
+    //   p_debug[index+12], p_debug[index+13], p_debug[index+14], p_debug[index+15]
+    //   // ,
+    //   // p_debug[index+16], p_debug[index+17], p_debug[index+18], p_debug[index+19],
+    //   // p_debug[index+20], p_debug[index+21], p_debug[index+22], p_debug[index+23],
+    //   // p_debug[index+24], p_debug[index+25], p_debug[index+26], p_debug[index+27],
+    //   // p_debug[index+28], p_debug[index+29], p_debug[index+30], p_debug[index+31]
+    // );
     // printf("tid:%d %6d %6d %6d %6d\n", i, 
     //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ]
     // );
-    // int8_t * tmp = reinterpret_cast<int8_t*>(p_debug + index + 3);
-    // printf("tid:%d 0X%08X 0X%08X 0X%08X 0X%08X 0X%08X %3d %3d %3d %3d\n", i, 
-    //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ], p_debug[index+4 ],
-    //   tmp[0], tmp[1], tmp[2], tmp[3]
-    // );
+    int8_t * tmp = reinterpret_cast<int8_t*>(p_debug + index);
+    printf("tid:%d %3d %3d %3d %3d 0X%08X 0X%08X 0X%08X 0X%08X 0X%08X 0X%08X %3d %3d %3d %3d\n", i, 
+      tmp[0], tmp[1], tmp[2], tmp[3],
+      p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ], p_debug[index+4 ], p_debug[index+5 ], 
+      tmp[20], tmp[21], tmp[22], tmp[23] 
+    );
   }
   printf("\n");
   HIP_CALL(hipFree(debug_device));
