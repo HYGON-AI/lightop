@@ -45,10 +45,10 @@ hidden_size = 64
 token_nums = 4
 total_expert_num = 2
 
-scatter_tokens = torch.randn(1, 1, token_nums, hidden_size * 2, dtype=torch.bfloat16).cuda()
-smooth = torch.randn(1, 1, total_expert_num, hidden_size, dtype=torch.float32).cuda()
-experts_tokens_count = torch.randint(0, 2, (1, 1, 1, total_expert_num,), dtype=torch.int32).cuda()
-exports_tokens_start = torch.randint(0, 2, (1, 1, 1, total_expert_num,), dtype=torch.int32).cuda()
+scatter_tokens = torch.randn(token_nums, hidden_size * 2, dtype=torch.bfloat16).cuda()
+smooth = torch.randn(total_expert_num, hidden_size, dtype=torch.float32).cuda()
+experts_tokens_count = torch.randint(0, 2, (total_expert_num,), dtype=torch.int32).cuda()
+exports_tokens_start = torch.randint(0, 2, (total_expert_num,), dtype=torch.int32).cuda()
 
 y, per_token_scale = lightop.miopen_moe_swiglu_dynamic_quant(
     scatter_tokens,
