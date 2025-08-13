@@ -6,6 +6,11 @@ def miopen_moe_scatter_dynamic_quant(
     selected_experts,
     moe_weights,
     smooth,
+    out_scatter_tokens,
+    out_scatter_per_token_scale,
+    out_scatter_tokens_offset,
+    out_experts_token_count,
+    out_experts_token_start,
     expert_start_idx,
     expert_end_idx,
     num_shared_experts,
@@ -39,6 +44,11 @@ def miopen_moe_scatter_dynamic_quant(
         selected_experts,
         moe_weights,
         smooth,
+        out_scatter_tokens,
+        out_scatter_per_token_scale,
+        out_scatter_tokens_offset,
+        out_experts_token_count,
+        out_experts_token_start,
         expert_start_idx,
         expert_end_idx,
         num_shared_experts,
@@ -48,7 +58,7 @@ def miopen_moe_scatter_dynamic_quant(
     )
 
 
-def miopen_moe_swiglu_dynamic_quant(scatter_tokens, smooth_scale, experts_tokens_count, exports_tokens_start, beta = 1.0):
+def miopen_moe_swiglu_dynamic_quant(scatter_tokens, smooth_scale, experts_tokens_count, exports_tokens_start, beta=1.0):
     """_summary_
 
     Args:
@@ -62,7 +72,9 @@ def miopen_moe_swiglu_dynamic_quant(scatter_tokens, smooth_scale, experts_tokens
         vector<Tensor>:: y, 形状为 [num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens, hidden_size]
                         per_token_scale, 形状为 [num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens]
     """
-    return op.miopen_moe_swiglu_dynamic_quant(scatter_tokens, smooth_scale, experts_tokens_count, exports_tokens_start, beta)
+    return op.miopen_moe_swiglu_dynamic_quant(
+        scatter_tokens, smooth_scale, experts_tokens_count, exports_tokens_start, beta
+    )
 
 
 def miopen_moe_gather(scatter_tokens, token_offset, real_scatter_tokens, num_tokens, hidden_size):

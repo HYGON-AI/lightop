@@ -7,11 +7,15 @@
 #include <iostream>
 namespace at {
 namespace native {
-
 std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor& hidden,
                                                      const Tensor& selected_experts,
                                                      const Tensor& moe_weights,
                                                      const Tensor& smooth,
+                                                     Tensor& out_scatter_tokens,
+                                                     Tensor& out_scatter_per_token_scale,
+                                                     Tensor& out_scatter_tokens_offset,
+                                                     Tensor& out_experts_token_count,
+                                                     Tensor& out_experts_token_start,
                                                      const int expert_start_idx,
                                                      const int expert_end_idx,
                                                      const int num_shared_experts,
@@ -21,20 +25,14 @@ std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor& hidden,
 {
     if(hidden.dim() != 2 || selected_experts.dim() != 2 || moe_weights.dim() != 2)
         MIOPEN_THROW("Moe scatter dynamic quant can not match dimension");
+    if(out_scatter_tokens.dim() != 2 || out_scatter_per_token_scale.dim() != 1 ||
+       out_scatter_tokens_offset.dim() != 1 || out_experts_token_count.dim() != 1 || out_experts_token_start.dim() != 1)
+        MIOPEN_THROW("Moe scatter dynamic quant result can not match dimension");
 
     TensorDescriptor hidden_tensor(hidden);
     TensorDescriptor selected_experts_tensor(selected_experts);
     TensorDescriptor moe_weights_tensor(moe_weights);
     TensorDescriptor smooth_tensor(smooth);
-
-    int64_t max_sactter_tokens = num_shared_experts * num_tokens_per_rank + num_tokens * selected_experts.sizes()[1];
-
-    Tensor out_scatter_tokens = at::empty({max_sactter_tokens, hidden.sizes()[1]}, hidden.options().dtype(at::kChar));
-    Tensor out_scatter_per_token_scale = at::empty(max_sactter_tokens, hidden.options().dtype(at::kFloat));
-    Tensor out_scatter_tokens_offset   = at::empty(max_sactter_tokens, hidden.options().dtype(at::kInt));
-    Tensor out_experts_token_count     = at::empty(smooth.sizes()[0], hidden.options().dtype(at::kInt));
-    Tensor out_experts_token_start     = at::empty(smooth.sizes()[0], hidden.options().dtype(at::kInt));
-
     TensorDescriptor output_scatter_tokens(out_scatter_tokens);
     TensorDescriptor output_scatter_per_token_scale(out_scatter_per_token_scale);
     TensorDescriptor output_scatter_token_offset(out_scatter_tokens_offset);
