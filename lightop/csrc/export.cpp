@@ -68,7 +68,7 @@ std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor &hidden, const
 std::vector<Tensor> miopen_moe_swiglu_dynamic_quant(const Tensor &scatter_tokens, const Tensor &smooth_scale, const Tensor &experts_tokens_count, const int num_shared_experts_per_rank, const int num_tokens_offset, const int num_tokens_per_rank, const float beta);
 Tensor miopen_moe_gather(const Tensor &scatter_tokens, const Tensor &token_offset, const Tensor &expert_weights, const int num_shared_experts_per_rank, const int num_tokens_offset, const int num_tokens_per_rank);
 Tensor miopen_scaled_dot_product_attention(const Tensor &query, const Tensor &key, const Tensor &value, const std::optional<Tensor> &attn_mask_, const double droprate, const bool is_causal, std::optional<double> scale, const bool enable_gqa);
-Tensor miopen_gemm_add(const Tensor &input_a, const Tensor &input_b, const Tensor &bias);
+Tensor miopen_gemm_bias(const Tensor &input_a, const Tensor &input_b, const Tensor &bias);
 
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
@@ -145,6 +145,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("miopen_moe_swiglu_dynamic_quant", &at::native::miopen_moe_swiglu_dynamic_quant, "moe_swiglu_dynamic_quant");
   m.def("miopen_moe_gather", &at::native::miopen_moe_gather, "moe_gather");
   m.def("miopen_scaled_dot_product_attention", &at::native::miopen_scaled_dot_product_attention, "miopen_scaled_dot_product_attention");
-  m.def("miopen_gemm_add", &at::native::miopen_gemm_add, "miopen_gemm_add");
+  m.def("miopen_gemm_bias", &at::native::miopen_gemm_bias, "miopen_gemm_bias");
 }
 
