@@ -25,6 +25,7 @@ from .miopen.miopen_groupnorm import miopen_groupnorm, miopen_add_groupnorm, mio
 from .miopen.miopen_layernorm import miopen_layernorm, miopen_add_layernorm, miopen_skip_layernorm, miopenLayerNorm
 from .miopen.miopen_moe import miopen_moe_gather, miopen_moe_scatter_dynamic_quant, miopen_moe_swiglu_dynamic_quant
 from .miopen.miopen_rms import miopen_add_rms_norm_dynamic_quant, miopen_head_rms_norm, miopen_rms_norm_dynamic_quant_without_residual
+from .miopen.miopen_gemm_bias import miopen_gemm_bias
 
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401
