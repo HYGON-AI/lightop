@@ -8,8 +8,12 @@
 namespace at {
 namespace native {
 
-Tensor miopen_head_rms_norm(
-    const Tensor& x, const Tensor& weight, const float epsilon, const float head_offset, const float head_num)
+Tensor miopen_head_rms_norm(const Tensor& x,
+                            const Tensor& weight,
+                            const float epsilon,
+                            const int norm_head_start,
+                            const int norm_head_end,
+                            const int norm_head_num)
 {
     TensorDescriptor x_tensor(x);
     TensorDescriptor weight_tensor(weight);
@@ -23,8 +27,9 @@ Tensor miopen_head_rms_norm(
                                           weight_tensor.desc(),
                                           weight.data_ptr(),
                                           epsilon,
-                                          head_offset,
-                                          head_num,
+                                          norm_head_start,
+                                          norm_head_end,
+                                          norm_head_num,
                                           output_y.desc(),
                                           out_y.data_ptr()));
     return std::move(out_y);
