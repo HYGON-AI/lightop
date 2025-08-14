@@ -1,7 +1,7 @@
 from lightop import op
 
 
-def miopen_gemm_add(input_a, input_b, bias):
+def miopen_gemm_bias(input_a, input_b, bias):
     """_summary_
 
     Args:
@@ -12,4 +12,4 @@ def miopen_gemm_add(input_a, input_b, bias):
     Returns:
         Tensor: 输出张量 y = input_a * input_b + bias, 形状如 [batch_size, m, n]
     """
-    return op.miopen_gemm_add(input_a, input_b, bias)
+    return op.miopen_gemm_bias(input_a, input_b, bias)

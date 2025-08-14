@@ -11,7 +11,7 @@
 
 namespace at {
 namespace native {
-Tensor miopen_gemm_add(const Tensor& input_a,
+Tensor miopen_gemm_bias(const Tensor& input_a,
                        const Tensor& input_b,
                        const Tensor& bias)
 {
