@@ -22,6 +22,7 @@ from vllm.utils import FlexibleArgumentParser
 from fuse_moegemm import grouped_topk, blockM_gemm2_prefill_configs, gemm2_kernel_valid, gemm2_kernel_prof
 # 用于模型侧性能测试的文件
 from fused_moe_cuda import fused_moe_impl
+from fused_moe_cuda_valid import fused_moe_impl_valid
 
 from lmslim.layers.gemm.int8_utils import per_token_group_quant_int8, per_token_quant_int8
 import math
@@ -193,7 +194,7 @@ def moe_cuda_graph(
     ) -> tuple[dict[str, int], float]:
         from vllm.platforms import current_platform
         current_platform.seed_everything(seed)
-
+        print("====================== num_tokens: ", num_tokens, "  ====================")
         device="cuda:"+str(device_id)   
         x = torch.randn(num_tokens, hidden_size, device=device, dtype=dtype)
         w1_scale = None
@@ -232,6 +233,29 @@ def moe_cuda_graph(
             input_gating.copy_(gating_output[i])
 
         input_gating = torch.randn(num_tokens, num_experts, device=device, dtype=torch.float32)
+
+        # 正确性验证
+        is_true = fused_moe_impl_valid(x,
+                                        w1,
+                                        w2,
+                                        input_gating,
+                                        topk,
+                                        renormalize=True,
+                                        inplace=False,
+                                        use_fp8_w8a8=use_fp8_w8a8,
+                                        use_int8_w8a16=use_int8_w8a16,
+                                        use_int8_w4a8=use_int8_w4a8,
+                                        w1_scale=w1_scale,
+                                        w2_scale=w2_scale,
+                                        a1_scale=a1_scale,
+                                        a2_scale=a2_scale,
+                                        block_shape=block_quant_shape,
+                                        config=None)
+        if not is_true:
+            print("正确性验证存在错误！！")
+            assert False
+        else:
+            print("通过正确性验证！！！")
 
         def run():
             fused_moe_impl(x,
@@ -556,7 +580,7 @@ def main(args: argparse.Namespace):
         #     1,# 2, 4, 8, 16, 32, 64, 128,
         # ]
         # batch_sizes = [256]
-        batch_sizes = [256, 512, 1024, 2048, 4096, 6144, 8192, 16384]
+        batch_sizes = [256, 512, 1024]
 
     else:
         batch_sizes = [args.batch_size]
