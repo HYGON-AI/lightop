@@ -40,3 +40,14 @@ def read_gn_size(size_file_path):
         'num_groups': row['g']
     }
         for _, row in gn_df.iterrows()]
+
+
+def read_mha_size(size_file_path):
+    gn_df = pd.read_csv(size_file_path)
+    return [{
+        'batch_size': row['B'],
+        'head_nums': row['H'],
+        'sequence_length': row['S'],
+        'dim': row['D']
+    }
+        for _, row in gn_df.iterrows()]

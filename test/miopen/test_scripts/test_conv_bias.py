@@ -7,7 +7,7 @@ description: 测试conv_bias融合算子，输出torch_api, torch_prof, miopen_a
 
 import torch
 import torch.nn.functional as F
-from lightop import conv_bias
+from lightop import miopen_conv_bias
 from torch.profiler import profile, ProfilerActivity
 
 from read_test_size import read_convfusion_size
@@ -69,7 +69,7 @@ def test_speed(batch_size, channels, Height, Width, out_channels, kernel_h, kern
 
     # 调用miopen api warmup
     for i in range(10):
-        y2 = conv_bias(input_data, weight, bias, padding, stride, dilation)
+        y2 = miopen_conv_bias(input_data, weight, bias, padding, stride, dilation)
 
     # 统计miopen API耗时
     start_event = torch.cuda.Event(enable_timing=True)
@@ -77,7 +77,7 @@ def test_speed(batch_size, channels, Height, Width, out_channels, kernel_h, kern
     torch.cuda.synchronize()
     start_event.record()
     for i in range(10):
-        y2 = conv_bias(input_data, weight, bias, padding, stride, dilation)
+        y2 = miopen_conv_bias(input_data, weight, bias, padding, stride, dilation)
     end_event.record()
     torch.cuda.synchronize()
     miopen_api_time = start_event.elapsed_time(end_event) / 10
@@ -85,7 +85,7 @@ def test_speed(batch_size, channels, Height, Width, out_channels, kernel_h, kern
 
     # 测试miopen prof耗时
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
-        y2 = conv_bias(input_data, weight, bias, padding, stride, dilation)
+        y2 = miopen_conv_bias(input_data, weight, bias, padding, stride, dilation)
     print(prof.key_averages(group_by_input_shape=True).table(sort_by='self_cuda_time_total'))
 
     # 验证精度
