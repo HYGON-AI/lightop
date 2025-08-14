@@ -1753,7 +1753,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape)
 
-        # '''
+        '''
         align = 128
         config1['BLOCK_SIZE_M'] = align
         config1['MODE'] = 1000

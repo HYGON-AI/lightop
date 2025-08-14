@@ -41,4 +41,4 @@ LIGHTOP_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 LIGHTOP_ASM_DIR = f"{LIGHTOP_ROOT_DIR}/hsa/{gfx}/"
 os.environ["LIGHTOP_ASM_DIR"] = LIGHTOP_ASM_DIR
 # print(f"[lightop] LIGHTOP_ASM_DIR={LIGHTOP_ASM_DIR}")
-os.environ["LIGHTOP_ASM_DIR"] = "/root/lightop/lightop-gitlab/lightop/hsa/gfx936/"
+# os.environ["LIGHTOP_ASM_DIR"] = "/root/lightop/lightop-gitlab/lightop/hsa/gfx936/"

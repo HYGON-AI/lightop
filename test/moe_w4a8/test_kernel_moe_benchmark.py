@@ -1183,6 +1183,7 @@ def main():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     m_list=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192,16384]
     # m_list = [4096,6144,8192, 16384] 
+    # m_list=[256]
     E=args.E 
     block_size=[128,128]
     out_dtype=args.out_dtype
@@ -1190,7 +1191,10 @@ def main():
     n_list_1=parse_list(args.n1_list) #[256,512]
     k_list_1=parse_list(args.n2_list) #[7168,7168]
     
-    n_list_2=parse_list(args.n2_list) #[7168,7168]
+    # n_list_2=parse_list(args.n2_list) #[7168,7168]
+    n_list_2=[i * 2 for i in parse_list(args.n2_list)] #[7168,7168]
+    print("k_list_1:", k_list_1)
+    print("n_list_2:", n_list_2)
     k_list_2=parse_list(args.k_list) # [128,256]
     
     topk=args.topk
@@ -1256,6 +1260,8 @@ def main():
             print("m:{} n1:{} n2:{} k:{} ".format(m,n_list_1[i],n_list_2[i],k_list_2[i]))
             
             input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=m,n=n_list_1[i],k=k_list_1[i],n2=n_list_2[i],k2=k_list_2[i],topk=topk,E=E,block_size=block_size,out_dtype=out_dtype,per_channel_quant=per_channel_quant)
+            print("weight13:", weight13.shape)
+            print("weight2:", weight2.shape)
             gpu_costtime=triton.testing.do_bench(lambda:fused_experts_impl_int8(hidden_states=input,
                                                                                         w1=weight13,
                                                                                         w2=weight2,
