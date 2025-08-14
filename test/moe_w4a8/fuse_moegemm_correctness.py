@@ -797,7 +797,7 @@ def run_perchannel_vaild():
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
-    mode_ranges = [mode for mode in blockM_configs.keys()]
+    # mode_ranges = [mode for mode in blockM_configs.keys()]
     # mode_ranges = [1000]
     # compare_fail = [42,43,46,52,54,60]
     # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
@@ -805,7 +805,7 @@ def run_perchannel_vaild():
     #deepseek-471b-tp16
 
     # # decode corrtnese
-    # mode_ranges = [i for i in range(len(blockM_configs_decode))]
+    mode_ranges = [i for i in range(len(blockM_configs_decode))]
     # exclude_modes = [13, 32, 33, 34, 35]
     # #mode_ranges = [3,4,6,8,10,12,14]
     # #exclude_modes = [13] # nk 4096 192 gemm2<16
@@ -818,6 +818,8 @@ def run_perchannel_vaild():
                 # mode_list=[11,27]
                 print("\033[32mmode:{} m:{} n:{} k:{}\033[0m ".format(mode_list, m,n_list_1[i],k_list_1[i]))
                 input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=m,n=n_list_1[i],k=k_list_1[i],n2=n_list_2[i],k2=k_list_2[i],topk=topk,E=E,block_size=None,out_dtype=out_dtype)
+                print("weight13:", weight13.shape)
+                print("weight2:", weight2.shape)
                 # triton moe: output
                 output=fused_experts_impl_int8(hidden_states=input,
                                                 w1=weight13,
