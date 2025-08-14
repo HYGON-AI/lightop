@@ -704,14 +704,9 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
             config2['MODE']         = mode1
             config2['DELTA']        = int(blockM_configs[mode0]/blockM_configs[mode1])
             
-    
-        align = 16
-        config1['BLOCK_SIZE_M'] = align
-        config1['MODE'] = 1004
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-        
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
@@ -734,7 +729,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
-        '''
+
         if activation == "silu":
             # d = intermediate_cache1.shape[-1] // 2
             # intermediate_cache2 = F.silu(intermediate_cache1[..., :d]) * intermediate_cache1[..., d:]
@@ -839,7 +834,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
 
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
                     out_hidden_states[begin_chunk_idx:end_chunk_idx])
-        '''
+ 
     return out_hidden_states
 
 def _fused_moe_helper(m: int,
@@ -980,12 +975,6 @@ def run_perchannel_vaild():
     # n_list_1=[512]
     # k_list_1=[7168]
     
-    #qwen3
-    # E=128
-    #qwen3-30b-A3B-tp1
-    # n_list_1=[1536]
-    # k_list_1=[2048]
-    
     ##qwen3-30b-A3B-tp2
     # n_list_1=[768]
     # k_list_1=[2048]
@@ -1001,14 +990,14 @@ def run_perchannel_vaild():
     # n_list_2=[7168]
     # k_list_2=[256]
     
-    # #qwen3
-    # #qwen3-30b-A3B-tp1
-    # E=128
-    # topk=8
-    # n_list_1=[1536]
-    # k_list_1=[2048]
-    # n_list_2=[2048]
-    # k_list_2=[768]
+    #qwen3
+    #qwen3-30b-A3B-tp1
+    E=128
+    topk=8
+    n_list_1=[1536]
+    k_list_1=[2048]
+    n_list_2=[2048]
+    k_list_2=[768]
     
     # ##qwen3-30b-A3B-tp2
     # E=128
@@ -1054,7 +1043,7 @@ def run_perchannel_vaild():
     #deepseek-471b-tp16
 
     # # decode corrtnese
-    mode_ranges = [i for i in range(len(blockM_configs_decode))]
+    # mode_ranges = [i for i in range(len(blockM_configs_decode))]
     # exclude_modes = [13, 32, 33, 34, 35]
     # #mode_ranges = [3,4,6,8,10,12,14]
     # #exclude_modes = [13] # nk 4096 192 gemm2<16
