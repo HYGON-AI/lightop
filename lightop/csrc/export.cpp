@@ -85,6 +85,7 @@ Tensor awq_marlin_repack(torch::Tensor& b_q_weight, int64_t size_k, int64_t size
 void blockwise_scaled_1d_cast_transpose(const Tensor& input,std::optional<Tensor> output,std::optional<Tensor> scale_inv,std::optional<Tensor> output_t,
                                         std::optional<Tensor> scale_inv_t,std::optional<Tensor> noop,
                                         const float epsilon,const bool pow2_scale,const bool all_gather_usage,at::ScalarType out_dtype);
+void rms_norm_dynamic_per_token_quant(Tensor &output,const Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> scale_ub,std::optional<Tensor> residual);
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
@@ -153,5 +154,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("moe_marlin_w4a16", &at::native::moe_marlin_w4a16, "moe_marlin_w4a16");
   m.def("awq_marlin_repack", &at::native::awq_marlin_repack, "awq_marlin_repack");
   m.def("blockwise_scaled_1d_cast_transpose", &at::native::blockwise_scaled_1d_cast_transpose, "blockwise_scaled_1d_cast_transpose");
-
+  m.def("rms_norm_dynamic_per_token_quant",&at::native::rms_norm_dynamic_per_token_quant,"rms_norm_dynamic_per_token_quant");
 }
