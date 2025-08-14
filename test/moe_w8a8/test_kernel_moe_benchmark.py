@@ -601,11 +601,8 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape)
         
-        align = 16
-        config['BLOCK_SIZE_M'] = align
-        config['MODE'] = 1004
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
-                moe_align_block_size(curr_topk_ids, align,
+                moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
         
         if use_lightop and per_channel_quant and status:
@@ -667,7 +664,6 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
 
-        '''
         if activation == "silu":
             torch.ops._C.silu_and_mul(intermediate_cache2,
                                       intermediate_cache1.view(-1, N))
@@ -750,7 +746,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
-        '''
+
     return intermediate_cache3
 
 def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
@@ -886,14 +882,10 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape) # none
         
-        align = 16
-        config['BLOCK_SIZE_M'] = align
-        config['MODE'] = 1004
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
-                moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
+                moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
 
-        print("condition:", use_lightop, per_channel_quant, status)
         if use_lightop and per_channel_quant and status:
 
             moe_gemm_w8a8(qcurr_hidden_states,
@@ -970,7 +962,7 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
 
-        '''
+
         if activation == "silu":
             torch.ops._C.silu_and_mul(intermediate_cache2,
                                       intermediate_cache1.view(-1, N))
@@ -1072,8 +1064,6 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                                 use_nn_moe=use_nn_moe)
         
     return intermediate_cache3, elapsed_time1, elapsed_time2
-    '''
-    return intermediate_cache3, elapsed_time1, 0
 
 
 def to_int8(tensor: torch.Tensor):
@@ -1176,9 +1166,17 @@ def main():
     
     
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
-    m_list=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192,16384]
+    # m_list=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192,16384]
+    m_list=[32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 
+            144, 160, 176, 192, 208, 224, 240, 256, 
+            288, 320, 352, 384, 416, 448, 480, 512, 
+            640, 768, 896, 1024, 
+            1152, 1280, 1408, 1536, 1664, 1792, 1920, 2048,
+            2176, 2304, 2432, 2560, 2688, 2816, 2944, 3072,
+            3200, 3328, 3456, 3584, 3712, 3840, 3968, 4096,
+            6144, 8192, 10240, 12288, 14336, 16384]
     # m_list = [1,2,4,8,16,32,64,128]
-    #m_list = [32]
+    # m_list = [16384]
     E=args.E
     block_size=[128,128]
     out_dtype=args.out_dtype
@@ -1318,3 +1316,6 @@ if __name__ == "__main__":
 
     # 阿里
     # HIP_VISIBLE_DEVICES=6 python3 test_kernel_moe_benchmark.py  --E 128 --n1-list '[1536,768,384]'  --n2-list '[2048,2048,4096]' --k-list '[768,384,192]' --use-channel-wise
+
+    # 字节
+    # HIP_VISIBLE_DEVICES=2 python3 moe_w8a8/test_kernel_moe_benchmark.py  --E 64 --topk 4 --n1-list '[2048]'  --n2-list '[4096]' --k-list '[1024]' --use-channel-wise

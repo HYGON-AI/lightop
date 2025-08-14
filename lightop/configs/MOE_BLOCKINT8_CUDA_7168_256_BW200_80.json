@@ -53,7 +53,7 @@
         "1024": {
             "BLOCK_SIZE_M": 32,
             "MODE": 68,
-            "DELTA": 2
+            "DELTA": 1
         },
         "2048": {
             "BLOCK_SIZE_M": 32,
@@ -63,22 +63,22 @@
         "4096": {
             "BLOCK_SIZE_M": 32,
             "MODE": 68,
-            "DELTA": 2
+            "DELTA": 4
         },
         "6144": {
             "BLOCK_SIZE_M": 32,
             "MODE": 68,
-            "DELTA": 2
+            "DELTA": 4
         },
         "8192": {
             "BLOCK_SIZE_M": 32,
             "MODE": 68,
-            "DELTA": 2
+            "DELTA": 4
         },
         "16384": {
             "BLOCK_SIZE_M": 64,
             "MODE": 21,
-            "DELTA": 1
+            "DELTA": 2
         }
     }
 }
