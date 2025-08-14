@@ -607,7 +607,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, align,
                                     global_num_experts, expert_map))
-
+        
         if use_lightop and per_channel_quant and status:
 
             moe_gemm_w8a8(qcurr_hidden_states,
@@ -877,14 +877,14 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
         qcurr_hidden_states, qa1_scale = moe_kernel_prepare_input(
             A=curr_hidden_states,
             B=w1,
-            A_scale=a1_scale,
+            A_scale=a1_scale, #none
             B_scale=w1_scale,
             use_fp8_w8a8=use_fp8_w8a8,
-            use_int8_w8a8=use_int8_w8a8,
+            use_int8_w8a8=use_int8_w8a8, #true
             use_int8_w8a16=use_int8_w8a16,
             use_int4_w4a16=use_int4_w4a16,
             per_channel_quant=per_channel_quant,
-            block_shape=block_shape)
+            block_shape=block_shape) # none
         
         align = 16
         config['BLOCK_SIZE_M'] = align
@@ -1135,6 +1135,8 @@ def _fused_moe_helper(m: int,
     topk_weights = F.softmax(tensor, dim=1)
     #topk_ids [m,topk]
     topk_ids=generate_unique_int_tensor(m=m, topk=topk,low=0,high=E).cuda()
+
+    # topk_ids = torch.zeros_like(topk_ids)
     
     return input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids
 
@@ -1311,8 +1313,8 @@ if __name__ == "__main__":
     #qwen系列
     #脚本执行命令： python3 moe_benchmark.py  --E 128 --n1-list '[1536,768,384,384,192]'  --n2-list '[2048,2048,2048,4096,4096]' --k-list '[768,374,192,192,96]'
 
-    #deepseek系列
-    #HIP_VISIBLE_DEVICES=3 python3 moe_w8a8/moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise
-    # HIP_VISIBLE_DEVICES=3 python3 test_kernel_moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise
-    # HIP_VISIBLE_DEVICES=3 python3 test_kernel_moe_benchmark.py  --E 16 --n1-list '[4096]'  --n2-list '[7168]' --k-list '[2048]' --use-channel-wise
-    # HIP_VISIBLE_DEVICES=6 hipprof --sqtt --kernel-name moe_w8a8_gemm_first_stage_kernel_decode  python3 ../test_kernel_moe_benchmark.py  --E 256 --n1-list '[512]'  --n2-list '[7168]' --k-list '[256]' --use-channel-wise
+    # deepseek系列
+    # HIP_VISIBLE_DEVICES=6 python3 test_kernel_moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise
+
+    # 阿里
+    # HIP_VISIBLE_DEVICES=6 python3 test_kernel_moe_benchmark.py  --E 128 --n1-list '[1536,768,384]'  --n2-list '[2048,2048,4096]' --k-list '[768,384,192]' --use-channel-wise

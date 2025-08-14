@@ -2,12 +2,12 @@
     "256_7168": {
         "1": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 2,
+            "MODE": 25,
             "DELTA": 1
         },
         "2": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 25,
+            "MODE": 14,
             "DELTA": 1
         },
         "4": {
@@ -17,12 +17,12 @@
         },
         "8": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 2,
+            "MODE": 18,
             "DELTA": 1
         },
         "16": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 27,
+            "MODE": 31,
             "DELTA": 1
         },
         "32": {
@@ -32,7 +32,7 @@
         },
         "64": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 37,
+            "MODE": 27,
             "DELTA": 1
         },
         "128": {
