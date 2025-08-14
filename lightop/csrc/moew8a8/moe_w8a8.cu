@@ -66,14 +66,15 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel(
   uint32_t top_k,
   uint32_t delta  
 ) {
-  const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
-  const int bidy = blockIdx.y; // pid_n
-  const int bidz = blockIdx.x; // pid_k 
+  // const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
+  // const int bidy = blockIdx.y; // pid_n
+  // const int bidz = blockIdx.x; // pid_k 
 
-  // int bidx = blockIdx.x; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
-  // int bidy = blockIdx.y; // pid_n
-  // int bidz = blockIdx.z; // pid_k 
-  // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 4, bidx, bidy);
+  int bidx = blockIdx.x; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
+  int bidy = blockIdx.y; // pid_n
+  int bidz = blockIdx.z; // pid_k 
+  // constexpr int aaa = 1;
+  // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 8, bidx, bidy);
 
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   
@@ -362,7 +363,8 @@ template<
   uint16_t GROUP_K,
   bool mul_topk_weight> 
 __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
-  const Element* __restrict__ input,
+  //const Element* __restrict__ input,
+  const Element* input,
   const Element* __restrict__ qweight,
   bhalf_t* __restrict__ output,
   float* __restrict__ input_scale,
@@ -393,7 +395,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 4, bidx, bidy);
 
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
-  constexpr int STAGES = 4; 
+  constexpr int STAGES = 2; 
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
   const int32_t delta_bidx = bidx;
   const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
@@ -698,15 +700,14 @@ void launch_moe_gemm_first_stage(const GemmParams<T>& params) {
     // else
     //   gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
 
-    gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
-    gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
-    gridDim.x = 1; // k方向
+    // gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    // gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
+    // gridDim.x = 1; // k方向
 
     // block swizzle 效果提升不是很明显 需要tuning验证
-    // gridDim.x = min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M), DIVIDE(params.num_tokens_post_pad, BLOCK_SIZE_M)); // m方向
-    // //gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
-    // gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
-    // gridDim.z = 1; // k方向
+    gridDim.x = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
+    gridDim.z = 1; // k方向
 
     const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K), BLOCK_SIZE_M * BLOCK_SIZE_N * 2);
     const int shared_mem_size = lds_size;
@@ -938,7 +939,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
   torch::Tensor sorted_token_ids, 
   torch::Tensor expert_ids,
   torch::Tensor num_tokens_post_pad, 
-  int64_t top_k,
+  int64_t top_k, // gemm1为topk  gemm2为1  因为gemm1输入为[m, k]  gemm2输入为[m*topk, k]
   int mode,
   int delta
   ) {
@@ -946,6 +947,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
     const int EXPERTS = b_qweight.size(0);
     const int size_n = b_qweight.size(1); 
     const int size_k = input.size(1);
+    const int topk_size = output.size(1); // 输出为[m, topk_size, n]
     const int stride_asm = a_scale.stride(0);
     const int stride_ask = a_scale.stride(1);
     const int stride_bse = b_scale.stride(0);
@@ -1049,7 +1051,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
         
         
 
-        if(size_m / 8 > MOE_THRESHOLD || (size_m / 8 > 32 && EXPERTS == 16)){
+        if(size_m / topk_size > MOE_THRESHOLD || (size_m / topk_size > 32 && EXPERTS == 16)){
           auto it = kernel_maps_gemm2_prefill.find(mode);
           if (it != kernel_maps_gemm2_prefill.end()) {
               it->second(params_in);

@@ -732,34 +732,13 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-        # '''
-        # sorted_token_ids[:128] = torch.tensor([20375, 20444, 40787,  6104, 61222, 61244, 24493, 26563, 26412, 17653,
-        # 46929, 46945, 44895, 44441, 44353, 44411, 64849, 22648,  6940, 45239,
-        # 43188, 43162, 43011, 43078, 27564, 30711, 14325, 34653, 19490, 39950,
-        # 53233, 60612, 42139,  6305, 55230, 60539, 42237, 26709, 62640,  7779,
-        # 49381, 49402,  7817,  7867, 28337, 26189, 26282, 48722, 48740,  9009,
-        #  1839,  1895,  1901, 29597, 22437, 31736, 63363, 51971,  3661, 13135,
-        # 22095, 24130, 24146, 24205, 13263, 42684, 44571, 42603, 35685, 26073,
-        # 56318, 25895, 54050, 48426, 46415, 65045, 51485, 51526, 51545, 65145,
-        # 51532, 15411, 15386, 30951, 30952, 30968, 30843, 64161, 51233, 25504,
-        # 25575, 13877, 14024, 34546, 36352, 34315, 34345, 54972, 54841, 56903,
-        # 23463, 23481, 23353, 11320, 11371, 13415, 41935, 11512, 31751, 43838,
-        # 33910, 31815, 31889, 12537, 54480, 12380, 14491, 34881, 32952, 34820,
-        # 62423, 53424, 62445, 53281, 27033, 45492, 16208, 18295],
-        # device='cuda:0', dtype=torch.int32)
-        print("sorted_token_ids:", sorted_token_ids[0:align])
-        print("sorted_token_ids // topk:", sorted_token_ids[0:align] // top_k_num)
-        print("sorted_token_ids % topk:", sorted_token_ids[0:align] % top_k_num)
-        print("expert_ids:", expert_ids[:10])
-        # pdb.set_trace()
-        # torch.nonzero(sorted_token_ids == 0)
-        # '''
+        
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
                                 qa1_scale,
                                 w1_scale,
-                                w1_zp,
+                                w1_zp, #none
                                 curr_topk_weights,
                                 curr_topk_ids,
                                 sorted_token_ids,
@@ -799,7 +778,9 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
             use_int4_w4a16=use_int4_w4a16,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape)
-
+    
+        # import pdb
+        # pdb.set_trace()
         invoke_fused_moe_kernel_int8(qintermediate_cache2,
                                 w2,
                                 intermediate_cache3,
@@ -1063,7 +1044,9 @@ def run_perchannel_vaild():
     # exclude_modes = [13, 32, 33, 34, 35]
     # #mode_ranges = [3,4,6,8,10,12,14]
     # #exclude_modes = [13] # nk 4096 192 gemm2<16
-    
+
+    #mode_ranges = [3]
+
     
     for i in range(0,len(k_list_1),1):
         for m in m_list:
