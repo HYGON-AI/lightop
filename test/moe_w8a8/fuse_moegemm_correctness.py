@@ -692,15 +692,14 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-        # print("sorted_token_ids:", sorted_token_ids[:128])
-        # print("sorted_token_ids // 128:", sorted_token_ids[:128] // 128)
-        # pdb.set_trace()
+        import pdb
+        pdb.set_trace()
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
                                 qa1_scale,
                                 w1_scale,
-                                w1_zp,
+                                w1_zp, #none
                                 curr_topk_weights,
                                 curr_topk_ids,
                                 sorted_token_ids,
@@ -740,7 +739,9 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
             use_int4_w4a16=use_int4_w4a16,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape)
-
+    
+        # import pdb
+        # pdb.set_trace()
         invoke_fused_moe_kernel_int8(qintermediate_cache2,
                                 w2,
                                 intermediate_cache3,

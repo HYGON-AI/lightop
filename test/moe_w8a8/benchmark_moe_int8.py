@@ -1223,7 +1223,7 @@ def main(args: argparse.Namespace):
         tp_size = tp_size // moe_ep_size
     
     block_quant_shape = None
-    topk = 8
+    
     # config = AutoConfig.from_pretrained(
     #     args.model, trust_remote_code=args.trust_remote_code)
     # if config.architectures[0] == "DbrxForCausalLM":
@@ -1273,27 +1273,37 @@ def main(args: argparse.Namespace):
     use_int8_w8a16 = args.dtype == "int8_w8a16"
     use_int8_w8a8 = args.dtype == "int8_w8a8"
     
+    topk = 8
+    # 字节算子测试
+    # E = 64
+    # shard_intermediate_size=2048
+    # hidden_size=4096
+    # topk = 4
+
     # ## deepseek-r1-tp16
-    E = 256
-    shard_intermediate_size=256
-    hidden_size=7168
+    # E = 256
+    # shard_intermediate_size=256
+    # hidden_size=7168
     
     # ## deepseek-r1-tp8
     # E = 256
     # shard_intermediate_size=512
     # hidden_size=7168
     
-    # E = 128
+    E = 128
     # ##qwen3-30b-A3B-tp1
     # shard_intermediate_size=1536
     # hidden_size=2048
+    
     # # ##qwen3-30b-A3B-tp2
-    # # shard_intermediate_size=768
-    # # hidden_size=2048
-    # # #qwen3-235b-A22B-tp8
-    # # shard_intermediate_size=384
-    # # hidden_size=4096
+    # shard_intermediate_size=768
+    # hidden_size=2048
 
+    # # #qwen3-235b-A22B-tp8
+    shard_intermediate_size=384
+    hidden_size=4096
+
+    # deepseek-r1-EP16
     # E = 16
     # shard_intermediate_size=4096
     # hidden_size=7168
@@ -1301,8 +1311,8 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            # 1, 2, 4, 8, 16, 32, 64, 128
-            64, 128
+            1, 2, 4, 8, 16, 32, 64, 128
+            # 64, 128
             # 128
             # 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
