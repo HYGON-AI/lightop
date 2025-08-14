@@ -395,7 +395,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 4, bidx, bidy);
 
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
-  constexpr int STAGES = 4; 
+  constexpr int STAGES = 2; 
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
   const int32_t delta_bidx = bidx;
   const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
@@ -939,7 +939,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
   torch::Tensor sorted_token_ids, 
   torch::Tensor expert_ids,
   torch::Tensor num_tokens_post_pad, 
-  int64_t top_k,
+  int64_t top_k, // gemm1为topk  gemm2为1  因为gemm1输入为[m, k]  gemm2输入为[m*topk, k]
   int mode,
   int delta
   ) {
@@ -947,6 +947,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
     const int EXPERTS = b_qweight.size(0);
     const int size_n = b_qweight.size(1); 
     const int size_k = input.size(1);
+    const int topk_size = output.size(1); // 输出为[m, topk_size, n]
     const int stride_asm = a_scale.stride(0);
     const int stride_ask = a_scale.stride(1);
     const int stride_bse = b_scale.stride(0);
@@ -1050,7 +1051,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
         
         
 
-        if(size_m / 8 > MOE_THRESHOLD || (size_m / 8 > 32 && EXPERTS == 16)){
+        if(size_m / topk_size > MOE_THRESHOLD || (size_m / topk_size > 32 && EXPERTS == 16)){
           auto it = kernel_maps_gemm2_prefill.find(mode);
           if (it != kernel_maps_gemm2_prefill.end()) {
               it->second(params_in);
