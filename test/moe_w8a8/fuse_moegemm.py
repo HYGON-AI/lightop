@@ -145,6 +145,8 @@ blockM_configs = {
     94: 64,
     95: 64,
     1000: 128,
+    1001: 64,
+    1002: 32,
 }
 
 blockM_configs_decode = {

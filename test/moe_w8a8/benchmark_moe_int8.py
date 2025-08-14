@@ -681,16 +681,13 @@ def fuse_moe_correctness_preprocess(
     mode_ranges = [mode for mode in block_m_configs.keys()]
     gemm1_compare_failed_list = []
     gemm2_compare_failed_list = []
-    # gemm2_compare_failed_list = [32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43]
     device="cuda:"+str(device_id)
     
     for mode in mode_ranges:
         mode0 = mode
         mode1 = mode
-        if mode0 == 1000:
-            mode1 = 49
-        # if mode1 in gemm2_compare_failed_list:
-        #     mode1 = 1
+        # if mode0 == 1000:
+        #     mode1 = 49
         mode_list=[mode0,mode1]
         input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=num_experts,device=device,block_size=None,out_dtype=dtype)
         # triton moe: output
@@ -1274,10 +1271,10 @@ def main(args: argparse.Namespace):
     
     topk = 8
     # 字节算子测试
-    # E = 64
-    # shard_intermediate_size=2048
-    # hidden_size=4096
-    # topk = 4
+    E = 64
+    shard_intermediate_size=2048
+    hidden_size=4096
+    topk = 4
 
     # ## deepseek-r1-tp16
     # E = 256
@@ -1289,18 +1286,22 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=512
     # hidden_size=7168
     
-    E = 128
-    # ##qwen3-30b-A3B-tp1
+    # E = 128
+    # #qwen3-30b-A3B-tp1
     # shard_intermediate_size=1536
     # hidden_size=2048
-    
-    # # ##qwen3-30b-A3B-tp2
+    # #qwen3-30b-A3B-tp2
+    # E = 128
     # shard_intermediate_size=768
     # hidden_size=2048
+    # # #qwen3-235b-A22B-tp8
+    # E = 128
+    # # shard_intermediate_size=384
+    # # hidden_size=4096
 
     # # #qwen3-235b-A22B-tp8
-    shard_intermediate_size=384
-    hidden_size=4096
+    # shard_intermediate_size=384
+    # hidden_size=4096
 
     # deepseek-r1-EP16
     # E = 16
@@ -1310,10 +1311,20 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            1, 2, 4, 8, 16, 32, 64, 128
-            # 64, 128
-            # 128
-            # 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
+            # 1, 2, 4, 8, 16, 32, 64, 128,
+            # 256, 512, 1024, 2048, 
+            # 4096, 6144, 8192, 16384
+            
+            32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 
+            144, 160, 176, 192, 208, 224, 240, 256, 
+            288, 320, 352, 384, 416, 448, 480, 512, 
+
+            640, 768, 896, 1024, 
+            1152, 1280, 1408, 1536, 1664, 1792, 1920, 2048,
+            2176, 2304, 2432, 2560, 2688, 2816, 2944, 3072,
+            3200, 3328, 3456, 3584, 3712, 3840, 3968, 4096,
+            6144, 8192, 10240, 12288, 14336, 16384
+            
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
             # 1, 2, 4, 8, 16, 32, 64, 8192, 16384, 32768
             # 4096, 6144, 8192, 16384, 32768
