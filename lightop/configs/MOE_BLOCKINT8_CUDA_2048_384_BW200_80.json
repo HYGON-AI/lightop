@@ -58,27 +58,27 @@
         "2048": {
             "BLOCK_SIZE_M": 64,
             "MODE": 17,
-            "DELTA": 1
+            "DELTA": 2
         },
         "4096": {
             "BLOCK_SIZE_M": 64,
             "MODE": 17,
-            "DELTA": 1
+            "DELTA": 2
         },
         "6144": {
             "BLOCK_SIZE_M": 64,
             "MODE": 23,
-            "DELTA": 1
+            "DELTA": 2
         },
         "8192": {
-            "BLOCK_SIZE_M": 64,
-            "MODE": 21,
-            "DELTA": 1
+            "BLOCK_SIZE_M": 32,
+            "MODE": 68,
+            "DELTA": 4
         },
         "16384": {
             "BLOCK_SIZE_M": 64,
             "MODE": 23,
-            "DELTA": 1
+            "DELTA": 2
         }
     }
 }

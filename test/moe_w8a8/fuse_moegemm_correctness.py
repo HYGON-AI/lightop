@@ -113,7 +113,8 @@ blockM_configs = {
     95: 64,
 
     1000: 128,
-    1001: 64
+    1001: 64,
+    1002: 32,
 }
 
 M_THRESHOLD = 128
@@ -451,35 +452,13 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
     grid = lambda META: (triton.cdiv(EM, META['BLOCK_SIZE_M']) * triton.cdiv(
         B.shape[1] if not use_nn_moe else B.shape[2], META['BLOCK_SIZE_N']), )
 
-    torch.set_printoptions(precision=4, profile="default", sci_mode=False)
-    '''
-    # torch.manual_seed(0)
-    begin, end, expert_id = 0, 16, 0
-    # A = torch.randint(-10, 10, A.shape, dtype=torch.int8, device=B.device)
-    # B = torch.randint(-10, 10, B.shape, dtype=torch.int8, device=B.device)
-    res = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32), B[expert_id, :, :].t().cpu().to(torch.int32))
-    out = res.to(A.device) * A_scale[sorted_token_ids[begin:end] // top_k] * B_scale[expert_id].t()
-    
-    wid = 0
-    res0 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
-    wid = 4
-    res1 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
-    wid = 8
-    res2 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
-    wid = 12
-    res3 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
-    w0 = res0 + res1 + res2 + res3
-    wid = 2
-    res0 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
-    wid = 6
-    res1 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
-    wid = 10
-    res2 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
-    wid = 14
-    res3 = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32)[:, wid * 64:(wid + 1) * 64], B[expert_id, :, :].t().cpu().to(torch.int32)[wid * 64:(wid + 1) * 64, :])
-    w2 = res0 + res1 + res2 + res3
-    # '''
-    # '''
+    # import pdb
+    # pdb.set_trace()
+    # A = torch.ones_like(A)
+    # B = torch.ones_like(B)
+    # A_scale = torch.ones_like(A_scale)
+    # B_scale = torch.ones_like(B_scale)
+    # topk_weights = torch.ones_like(topk_weights)
     fused_moe_kernel[grid](
             A,
             B,
@@ -710,29 +689,24 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         # config['BLOCK_SIZE_M'] = blockM_configs[mode0]
         config1 = {}
         config2 = {}
-        if M > M_THRESHOLD:
+        if 1:
             config1['BLOCK_SIZE_M'] = blockM_configs[mode0]
             config1['MODE']         = mode0
             config1['DELTA']        = 1
             config2['BLOCK_SIZE_M'] = blockM_configs[mode1]
             config2['MODE']         = mode1
-            config2['DELTA']        = 1
+            config2['DELTA']        = int(blockM_configs[mode0]/blockM_configs[mode1])
         else:
             config1['BLOCK_SIZE_M'] = blockM_configs_decode[mode0]
-            config1['MODE'] = mode0
-            config1['DELTA'] = 1
+            config1['MODE']         = mode0
+            config1['DELTA']        = 1
             config2['BLOCK_SIZE_M'] = blockM_configs_decode[mode1]
-            config2['MODE'] = mode1
-            config2['DELTA'] =  blockM_configs_decode[mode0]//blockM_configs_decode[mode1]
+            config2['MODE']         = mode1
+            config2['DELTA']        = int(blockM_configs[mode0]/blockM_configs[mode1])
             
-    
-        align = 16
-        config1['BLOCK_SIZE_M'] = align
-        config1['MODE'] = 1004
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-        
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
@@ -755,7 +729,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
-        '''
+
         if activation == "silu":
             # d = intermediate_cache1.shape[-1] // 2
             # intermediate_cache2 = F.silu(intermediate_cache1[..., :d]) * intermediate_cache1[..., d:]
@@ -804,6 +778,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
 
+        # mode1=2
         # config1 = {}
         # config2 = {}
         # if M > M_THRESHOLD:
@@ -815,51 +790,51 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         #     config2['DELTA']        = blockM_configs[mode0]//blockM_configs[mode1]
         # else:
         #     config1['BLOCK_SIZE_M'] = blockM_configs_decode[mode0]
-        #     config1['MODE'] = mode0
-        #     config1['DELTA'] = 1
+        #     config1['BLOCK_SIZE_M'] = mode0
+        #     config1['BLOCK_SIZE_M'] = 1
         #     config2['BLOCK_SIZE_M'] = blockM_configs_decode[mode1]
-        #     config2['MODE'] = mode1
-        #     config2['DELTA'] = blockM_configs_decode[mode0]//blockM_configs_decode[mode1]
+        #     config2['BLOCK_SIZE_M'] = mode1
+        #     config2['BLOCK_SIZE_M'] = blockM_configs[mode0]//blockM_configs[mode1]
             
-        intermediate_cache3_copy = torch.zeros_like(intermediate_cache3)
-        invoke_fused_moe_kernel_int8(qintermediate_cache2,
-                                w2,
-                                intermediate_cache3_copy,
-                                qa2_scale,
-                                w2_scale,
-                                w2_zp,
-                                curr_topk_weights,
-                                curr_topk_ids,
-                                sorted_token_ids,
-                                expert_ids,
-                                num_tokens_post_padded,
-                                not apply_router_weight_on_input,
-                                1,
-                                config2,
-                                compute_type=compute_type,
-                                use_fp8_w8a8=use_fp8_w8a8,
-                                use_int8_w8a8=use_int8_w8a8,
-                                use_int8_w8a16=use_int8_w8a16,
-                                use_int4_w4a16=use_int4_w4a16,
-                                per_channel_quant=per_channel_quant,
-                                block_shape=block_shape,
-                                use_nn_moe=use_nn_moe)
+        # intermediate_cache3_copy = torch.zeros_like(intermediate_cache3)
+        # invoke_fused_moe_kernel_int8(qintermediate_cache2,
+        #                         w2,
+        #                         intermediate_cache3_copy,
+        #                         qa2_scale,
+        #                         w2_scale,
+        #                         w2_zp,
+        #                         curr_topk_weights,
+        #                         curr_topk_ids,
+        #                         sorted_token_ids,
+        #                         expert_ids,
+        #                         num_tokens_post_padded,
+        #                         not apply_router_weight_on_input,
+        #                         1,
+        #                         config2,
+        #                         compute_type=compute_type,
+        #                         use_fp8_w8a8=use_fp8_w8a8,
+        #                         use_int8_w8a8=use_int8_w8a8,
+        #                         use_int8_w8a16=use_int8_w8a16,
+        #                         use_int4_w4a16=use_int4_w4a16,
+        #                         per_channel_quant=per_channel_quant,
+        #                         block_shape=block_shape,
+        #                         use_nn_moe=use_nn_moe)
         
-        if not (torch.allclose(intermediate_cache3, intermediate_cache3_copy, rtol=1e-2, atol=1e-2)):            
-            print(f"block {config2['BLOCK_SIZE_M']} kernel 精度检查不合格!!!")
-            # torch.set_printoptions(profile="full")  
-            # ftriton = open('cuda_output.txt', 'w')   
-            # print(f'cuda_output: {out_cuda}', file=ftriton)
-            # ftriton.close
-            # ftorch = open('bench_output.txt', 'w')   
-            # print(f'bench_output: {C}', file=ftorch)
-            # ftorch.close
-        else:
-            print(f"block {config2['BLOCK_SIZE_M']} kernel 精度检查合格.")
+        # if not (torch.allclose(intermediate_cache3, intermediate_cache3_copy, rtol=1e-2, atol=1e-2)):            
+        #     print(f"block {config2['BLOCK_SIZE_M']} kernel 精度检查不合格!!!")
+        #     # torch.set_printoptions(profile="full")  
+        #     # ftriton = open('cuda_output.txt', 'w')   
+        #     # print(f'cuda_output: {out_cuda}', file=ftriton)
+        #     # ftriton.close
+        #     # ftorch = open('bench_output.txt', 'w')   
+        #     # print(f'bench_output: {C}', file=ftorch)
+        #     # ftorch.close
+        # else:
+        #     print(f"block {config2['BLOCK_SIZE_M']} kernel 精度检查合格.")
 
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
                     out_hidden_states[begin_chunk_idx:end_chunk_idx])
-        '''
+ 
     return out_hidden_states
 
 def _fused_moe_helper(m: int,
@@ -970,28 +945,35 @@ def torch_w8a8_per_column_moe(a, w1, w2, w1_s, w2_s, topk_weight, topk_ids,topk)
 
 def run_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
-    m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
+    # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
     # m_list=[256,512,1024,2048,4096,8192,16384] #prefill
-    # m_list = [32]
+    m_list=[
+            144,160,176,192,208,224,240,240,256,288,320,
+            # 352,384,416,448,480,512,640,768,896,1024,1152,
+            # 1280,1408,1536,1664,1792,192,1920, 2048,2176,
+            # 2304, 2432,2560,2688,2816, 2944,3072,
+            # 3200,3328,3456,3584,3712,3840,3968,4096,
+            # 6144, 8192, 10240, 12288, 14336, 16384, 
+            # 18432, 20480,22528,24576,26624,28672,32768
+            ]
     # m_list=[8192,]
     # m_list = [16384]
     # n_list_1=[512,]
     # k_list_1=[7168,]
     
-    E=256
-    #deepseek-671b-tp16
-    n_list_1=[256]
-    k_list_1=[7168]
+    # ##deepseek-671b-tp16
+    # E=256
+    # topk=8
+    # n_list_1=[256]
+    # k_list_1=[7168]
+    # n_list_2=[7168]
+    # k_list_2=[128]
     
     # #deepseek-671b-tp8
+    # E=256
+    # topk=8
     # n_list_1=[512]
     # k_list_1=[7168]
-    
-    #qwen3
-    # E=128
-    #qwen3-30b-A3B-tp1
-    # n_list_1=[1536]
-    # k_list_1=[2048]
     
     ##qwen3-30b-A3B-tp2
     # n_list_1=[768]
@@ -1002,28 +984,49 @@ def run_perchannel_vaild():
     # k_list_1=[4096]
     
     #deepseek-671b-tp16
-    n_list_2=[7168]
-    k_list_2=[128]
+    # n_list_2=[7168]
+    # k_list_2=[128]
     # #deepseek-671b-tp8
     # n_list_2=[7168]
     # k_list_2=[256]
     
-    ##qwen3-30b-A3B-tp1
-    # n_list_2=[2048]
-    # k_list_2=[768]
+    #qwen3
+    #qwen3-30b-A3B-tp1
+    E=128
+    topk=8
+    n_list_1=[1536]
+    k_list_1=[2048]
+    n_list_2=[2048]
+    k_list_2=[768]
     
-    #qwen3-30b-A3B-tp2
+    # ##qwen3-30b-A3B-tp2
+    # E=128
+    # topk=8
+    # n_list_1=[768]
+    # k_list_1=[2048]
     # n_list_2=[2048]
     # k_list_2=[384]
     
     ##qwen3-235b-A22B-tp8
+    # E=128
+    # topk=8
+    # n_list_1=[384]
+    # k_list_1=[4096]
     # n_list_2=[4096]
     # k_list_2=[192]
+    
+    ##zijie
+    E=64
+    topk=4
+    n_list_1=[2048]
+    k_list_1=[4096]
+    n_list_2=[4096]
+    k_list_2=[1024]
     
     out_dtype=torch.bfloat16
     # out_dtype = torch.float16
 
-    topk=8
+
     # configs=BlockSizeMConfigGen()
     best_config = None
     triton_json_dir="./cache/moe/"
@@ -1032,15 +1035,15 @@ def run_perchannel_vaild():
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
-    # mode_ranges = [mode for mode in blockM_configs.keys()]
-    mode_ranges = [1000]
+    mode_ranges = [mode for mode in blockM_configs.keys()]
+    # mode_ranges = [61]
     # compare_fail = [42,43,46,52,54,60]
     # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
     # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
     #deepseek-471b-tp16
 
     # # decode corrtnese
-    mode_ranges = [i for i in range(len(blockM_configs_decode))]
+    # mode_ranges = [i for i in range(len(blockM_configs_decode))]
     # exclude_modes = [13, 32, 33, 34, 35]
     # #mode_ranges = [3,4,6,8,10,12,14]
     # #exclude_modes = [13] # nk 4096 192 gemm2<16
@@ -1052,7 +1055,6 @@ def run_perchannel_vaild():
         for m in m_list:
             for mode in mode_ranges:
                 mode_list=[mode,mode]
-                # mode_list=[3,3]
                 print("mode:{} m:{} n:{} k:{} ".format(mode_list, m,n_list_1[i],k_list_1[i]))
                 input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=m,n=n_list_1[i],k=k_list_1[i],n2=n_list_2[i],k2=k_list_2[i],topk=topk,E=E,block_size=None,out_dtype=out_dtype)
                 # triton moe: output
