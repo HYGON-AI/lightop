@@ -8,7 +8,7 @@ description: 测试conv_bias_add融合算子，输出torch_api, torch_prof, miop
 
 import torch
 import torch.nn.functional as F
-from lightop import conv_bias_add
+from lightop import miopen_conv_bias_add
 from torch.profiler import profile, ProfilerActivity
 
 from read_test_size import read_convfusion_size
@@ -26,7 +26,7 @@ def get_data(batch_size, in_channels, out_channels, kernel_h, kernel_w, Height, 
         add = torch.rand((batch_size, out_channels, Height, Width)).cuda().half()
         add = add.to(memory_format=torch.channels_last)
     else:
-        raise ValueError(f'暂不支持 conv_bias_add 单精度性能测试')
+        raise ValueError(f'暂不支持 Conv_Bias_Add 单精度性能测试')
 
     x1 = input_data.clone().detach()
     x2 = weight.clone().detach()
@@ -72,7 +72,7 @@ def test_speed(batch_size, channels, Height, Width, out_channels, kernel_h, kern
 
     # 调用miopen api warmup
     for i in range(10):
-        y2 = conv_bias_add(input_data, weight, bias, add, padding, stride, dilation)
+        y2 = miopen_conv_bias_add(input_data, weight, bias, add, padding, stride, dilation)
 
     # 统计miopen API耗时
     start_event = torch.cuda.Event(enable_timing=True)
@@ -80,7 +80,7 @@ def test_speed(batch_size, channels, Height, Width, out_channels, kernel_h, kern
     torch.cuda.synchronize()
     start_event.record()
     for i in range(10):
-        y2 = conv_bias_add(input_data, weight, bias, add, padding, stride, dilation)
+        y2 = miopen_conv_bias_add(input_data, weight, bias, add, padding, stride, dilation)
     end_event.record()
     torch.cuda.synchronize()
     miopen_api_time = start_event.elapsed_time(end_event) / 10
@@ -88,7 +88,7 @@ def test_speed(batch_size, channels, Height, Width, out_channels, kernel_h, kern
 
     # 测试miopen prof耗时
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
-        y2 = conv_bias_add(input_data, weight, bias, add, padding, stride, dilation)
+        y2 = miopen_conv_bias_add(input_data, weight, bias, add, padding, stride, dilation)
 
     print(prof.key_averages(group_by_input_shape=True).table(sort_by='self_cuda_time_total'))
 

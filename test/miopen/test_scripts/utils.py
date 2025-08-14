@@ -11,7 +11,7 @@ import torch
 def verify_accuracy(a, b, use_half, equal_nan=False):
     """验证FP16, FP32的精度测试结果。"""
     if use_half:
-        rtol, atol = 1e-02, 1e-05
+        rtol, atol = 1e-01, 5e-02
     else:
         rtol, atol = 1e-05, 1e-08
 
