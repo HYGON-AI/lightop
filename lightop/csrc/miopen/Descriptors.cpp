@@ -6,11 +6,15 @@
 namespace at {
 namespace native {
 
-void TensorDescriptor::set(const at::Tensor& t, size_t pad) { set(getDataType(t), t.sizes(), t.strides(), pad); }
+void TensorDescriptor::set(const at::Tensor& t, size_t pad, int layout)
+{
+    set(getDataType(t), t.sizes(), t.strides(), pad, layout);
+}
 
 static int MIOPEN_DIM_MAX = 5;
 
-void TensorDescriptor::set(miopenDataType_t datatype, IntArrayRef t_sizes, IntArrayRef t_strides, size_t pad)
+void TensorDescriptor::set(
+    miopenDataType_t datatype, IntArrayRef t_sizes, IntArrayRef t_strides, size_t pad, int layout)
 {
     size_t dim = t_sizes.size();
     if(dim > MIOPEN_DIM_MAX || pad > MIOPEN_DIM_MAX)
@@ -31,7 +35,10 @@ void TensorDescriptor::set(miopenDataType_t datatype, IntArrayRef t_sizes, IntAr
         size[i]   = 1;
         stride[i] = 1;
     }
-    set(datatype, static_cast<int>(std::max(dim, pad)), size, stride);
+    if(layout)
+        set(datatype, static_cast<miopenTensorLayout_t>(layout), size, 4);
+    else
+        set(datatype, static_cast<int>(std::max(dim, pad)), size, stride);
 }
 
 std::string miopenTypeToString(miopenDataType_t dtype)
