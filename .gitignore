@@ -1,6 +1,7 @@
 lightop/csrc/*.hip
 lightop/csrc/topk.hip
 build/*
+dist/*
 lightop/__pycache__/*
 lightop/csrc/*/*.hip
 lightop/csrc/*/*.cuh
