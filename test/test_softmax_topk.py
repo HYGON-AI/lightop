@@ -29,7 +29,7 @@ except (ImportError, AttributeError) as e:
     op = MockOps()
 
 
-def torch_reference_topk_softmax(gating_output: torch.Tensor, topk: int):
+def torch_reference_topk_softmax(gating_output: torch.Tensor, topk: int,Is_renormalize: str):
     """
     使用 PyTorch 实现的 top-k softmax，作为基准进行对比。
     这个实现遵循了 'pre-softmax' 模式，即先进行 softmax，然后取 top-k，最后进行归一化。
@@ -42,7 +42,8 @@ def torch_reference_topk_softmax(gating_output: torch.Tensor, topk: int):
     topk_weights, topk_indices = torch.topk(softmax_output, topk, dim=-1)
 
     # # 3. 对选出的 top-k 权重进行归一化，使其和为 1。
-    topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+    if Is_renormalize == "true":
+        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
 
     return topk_weights, topk_indices
 
@@ -70,7 +71,7 @@ class TestTopkSoftmax(unittest.TestCase):
         print(f"✅ 性能测试结果已保存到 {os.path.abspath(output_filename)}")
 
 
-    def _run_test(self, num_tokens: int, num_experts: int, topk: int, dtype: torch.dtype, 
+    def _run_test(self, num_tokens: int, num_experts: int, topk: int, dtype: torch.dtype, Is_renormalize: str,
                   rtol=1e-5, atol=1e-5, warmup_iters=10, test_iters=100):
         """
         执行单次测试的辅助函数，包含精度验证和性能对比。
@@ -96,7 +97,7 @@ class TestTopkSoftmax(unittest.TestCase):
         for _ in range(warmup_iters):
             op.topk_softmax(
                 custom_topk_weights, custom_topk_indices,
-                custom_token_expert_indices, gating_output)
+                custom_token_expert_indices, gating_output, Is_renormalize)
         torch.cuda.synchronize()
 
         start_event = torch.cuda.Event(enable_timing=True)
@@ -105,7 +106,7 @@ class TestTopkSoftmax(unittest.TestCase):
         for _ in range(test_iters):
             op.topk_softmax(
                 custom_topk_weights, custom_topk_indices,
-                custom_token_expert_indices, gating_output)
+                custom_token_expert_indices, gating_output,Is_renormalize)
         end_event.record()
         torch.cuda.synchronize()
         # **修改**: 将毫秒 (ms) 转换为微秒 (us)
@@ -115,12 +116,12 @@ class TestTopkSoftmax(unittest.TestCase):
         # --- 性能测试：PyTorch 参考实现 ---
         print("\n[性能测试] 正在测试 PyTorch 参考实现...")
         for _ in range(warmup_iters):
-            _ = torch_reference_topk_softmax(gating_output, topk)
+            _ = torch_reference_topk_softmax(gating_output, topk,Is_renormalize)
         torch.cuda.synchronize()
 
         start_event.record()
         for _ in range(test_iters):
-            ref_topk_weights, ref_topk_indices = torch_reference_topk_softmax(gating_output, topk)
+            ref_topk_weights, ref_topk_indices = torch_reference_topk_softmax(gating_output, topk,Is_renormalize)
         end_event.record()
         torch.cuda.synchronize()
         # **修改**: 将毫秒 (ms) 转换为微秒 (us)
@@ -178,18 +179,19 @@ class TestTopkSoftmax(unittest.TestCase):
         """
         num_experts = 64
         topk = 4
-        # num_tokens_list = [
-        #     32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 144, 160,
-        #     176, 192, 208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480,
-        #     512, 640, 768, 896, 1024, 1152, 1280, 1408, 1536, 1664, 1792,
-        #     1920, 2048, 2176, 2304, 2432, 2560, 2688, 2816, 2944, 3072,
-        #     3200, 3328, 3456, 3584, 3712, 3840, 3968, 4096, 6144, 8192,
-        #     10240, 12288, 14336, 16384, 18432, 20480, 22528, 24576, 26624,
-        #     28672, 32768
-        # ]
+        num_tokens_list = [
+            32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 144, 160,
+            176, 192, 208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480,
+            512, 640, 768, 896, 1024, 1152, 1280, 1408, 1536, 1664, 1792,
+            1920, 2048, 2176, 2304, 2432, 2560, 2688, 2816, 2944, 3072,
+            3200, 3328, 3456, 3584, 3712, 3840, 3968, 4096, 6144, 8192,
+            10240, 12288, 14336, 16384, 18432, 20480, 22528, 24576, 26624,
+            28672, 32768
+        ]
        
         # num_tokens_list = [ 16384, 18432, 20480, 22528, 24576, 26624,28672, 32768]
-        num_tokens_list = [32768];
+        num_tokens_list = [32];
+        Is_renormalize = "true" #or false
         for num_tokens in num_tokens_list:
             self._run_test(
                 num_tokens=num_tokens,
@@ -197,7 +199,8 @@ class TestTopkSoftmax(unittest.TestCase):
                 topk=topk,
                 dtype=torch.float32, # 测试 float32
                 rtol=1e-5,  # 使用更适合 float32 的严格容忍度
-                atol=1e-5
+                atol=1e-5,
+                Is_renormalize=Is_renormalize,
             )
 
 
