@@ -24,10 +24,10 @@ std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor& hidden,
                                                      const int num_tokens)
 {
     if(hidden.dim() != 2 || selected_experts.dim() != 2 || moe_weights.dim() != 2)
-        MIOPEN_THROW("Moe scatter dynamic quant can not match dimension");
+        MIOPEN_THROW("Moe_Scatter_Dynamic_Quant: Input Tensor's dimension Does Not Match.");
     if(out_scatter_tokens.dim() != 2 || out_scatter_per_token_scale.dim() != 1 ||
        out_scatter_tokens_offset.dim() != 1 || out_experts_token_count.dim() != 1 || out_experts_token_start.dim() != 1)
-        MIOPEN_THROW("Moe scatter dynamic quant result can not match dimension");
+        MIOPEN_THROW("Moe_Scatter_Dynamic_Quant: Output Tensor's dimension Does Not Match.");
 
     TensorDescriptor hidden_tensor(hidden);
     TensorDescriptor selected_experts_tensor(selected_experts);
@@ -39,7 +39,33 @@ std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor& hidden,
     TensorDescriptor output_experts_token_count(out_experts_token_count);
     TensorDescriptor output_token_start(out_experts_token_start);
 
-    MIOPEN_CHECK(miopenMoeScatterDynamicQuantForward(getMiopenHandle_new(),
+    size_t workspace_size = 0;
+    miopenHandle_t handle = getMiopenHandle_new();
+    MIOPEN_CHECK(miopenGetMoeScatterDynamicQuantForwardWorkspaceSize(handle,
+                                                                     hidden_tensor.desc(),
+                                                                     selected_experts_tensor.desc(),
+                                                                     moe_weights_tensor.desc(),
+                                                                     smooth_tensor.desc(),
+                                                                     output_scatter_tokens.desc(),
+                                                                     output_scatter_per_token_scale.desc(),
+                                                                     output_experts_token_count.desc(),
+                                                                     output_token_start.desc(),
+                                                                     output_scatter_token_offset.desc(),
+                                                                     expert_start_idx,
+                                                                     expert_end_idx,
+                                                                     num_shared_experts,
+                                                                     num_tokens_offset,
+                                                                     num_tokens_per_rank,
+                                                                     num_tokens,
+                                                                     &workspace_size));
+
+    Tensor workspace_tensor;
+    if(workspace_size > 0)
+    {
+        workspace_tensor = at::empty(workspace_size, hidden.options());
+    }
+
+    MIOPEN_CHECK(miopenMoeScatterDynamicQuantForward(handle,
                                                      hidden_tensor.desc(),
                                                      hidden.data_ptr(),
                                                      selected_experts_tensor.desc(),
@@ -63,7 +89,9 @@ std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor& hidden,
                                                      num_shared_experts,
                                                      num_tokens_offset,
                                                      num_tokens_per_rank,
-                                                     num_tokens));
+                                                     num_tokens,
+                                                     workspace_tensor.defined() ? workspace_tensor.data_ptr() : nullptr,
+                                                     workspace_size));
 
     return {std::move(out_scatter_tokens),
             std::move(out_scatter_per_token_scale),
@@ -81,7 +109,7 @@ std::vector<Tensor> miopen_moe_swiglu_dynamic_quant(const Tensor& scatter_tokens
 
     if(scatter_tokens.dim() != 2 || smooth_scale.dim() != 2 || experts_tokens_count.dim() != 1 ||
        exports_tokens_start.dim() != 1)
-        MIOPEN_THROW("Moe swiglu dynamic quant can not match dimension");
+        MIOPEN_THROW("Moe_Swiglu_Dynamic_Quant: Input Tensor's dimension Does Not Match.");
 
     TensorDescriptor scatter_tokens_tensor(scatter_tokens);
     TensorDescriptor smooth_scale_tensor(smooth_scale);
@@ -120,13 +148,36 @@ Tensor miopen_moe_gather(const Tensor& scatter_tokens,
                          const int num_tokens,
                          const int hidden_size)
 {
+    if(scatter_tokens.dim() != 2 || token_offset.dim() != 1)
+        MIOPEN_THROW("Moe_Gather: Input Tensor's dimension Does Not Match.");
+
     TensorDescriptor scatter_tokens_tensor(scatter_tokens);
     TensorDescriptor token_offset_tesnor(token_offset);
 
     Tensor out_y = at::empty({num_tokens, hidden_size}, scatter_tokens.options());
     TensorDescriptor output_y(out_y);
 
-    MIOPEN_CHECK(miopenMoeGather(getMiopenHandle_new(),
+    size_t workspace_size = 0;
+    miopenHandle_t handle = getMiopenHandle_new();
+    MIOPEN_CHECK(miopenGetMoeGatherWorkspaceSize(handle,
+                                                 scatter_tokens_tensor.desc(),
+                                                 scatter_tokens.data_ptr(),
+                                                 token_offset_tesnor.desc(),
+                                                 token_offset.data_ptr(),
+                                                 output_y.desc(),
+                                                 out_y.data_ptr(),
+                                                 real_scatter_tokens,
+                                                 num_tokens,
+                                                 hidden_size,
+                                                 &workspace_size));
+
+    Tensor workspace_tensor;
+    if(workspace_size > 0)
+    {
+        workspace_tensor = at::empty(workspace_size, scatter_tokens.options());
+    }
+
+    MIOPEN_CHECK(miopenMoeGather(handle,
                                  scatter_tokens_tensor.desc(),
                                  scatter_tokens.data_ptr(),
                                  token_offset_tesnor.desc(),
@@ -135,7 +186,9 @@ Tensor miopen_moe_gather(const Tensor& scatter_tokens,
                                  out_y.data_ptr(),
                                  real_scatter_tokens,
                                  num_tokens,
-                                 hidden_size));
+                                 hidden_size,
+                                 workspace_tensor.defined() ? workspace_tensor.data_ptr() : nullptr,
+                                 workspace_size));
 
     return std::move(out_y);
 }
