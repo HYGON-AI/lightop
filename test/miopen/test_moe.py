@@ -4,10 +4,10 @@ import torch
 # 定义张量维度
 num_tokens = 256
 hidden_size = 16
-topk = 2
+topk = 4
 num_shared_experts_per_rank = 0
-expert_start_idx = 16
-expert_end_idx = 32
+expert_start_idx = 0
+expert_end_idx = 8
 num_experts_per_rank = expert_end_idx - expert_start_idx
 num_tokens_offset = 16
 num_tokens_per_rank = 64
