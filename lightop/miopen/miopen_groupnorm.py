@@ -2,7 +2,7 @@ import torch
 from lightop import op
 
 
-def miopen_groupnorm(x, weight, bias, num_groups, epsilon, mode):
+def miopen_groupnorm(x, weight, bias, num_groups, epsilon: float = 1e-5, mode: int = 0):
     """_summary_
 
     Args:
@@ -25,7 +25,7 @@ def miopen_groupnorm(x, weight, bias, num_groups, epsilon, mode):
     return op.miopen_groupnorm(x, weight, bias, num_groups, epsilon, mode)
 
 
-def miopen_add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode):
+def miopen_add_groupnorm(x1, x2, weight, bias, num_groups, epsilon: float = 1e-5, mode: int = 0):
     """_summary_
 
     Args:
