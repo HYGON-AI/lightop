@@ -692,7 +692,7 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_decode
 // launch_gemm1
 // 在GemmParams结构体后添加
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_gemm_first_stage(const GemmParams<T>& params) {
+void launch_moe_w4a8_gemm_first_stage(const GemmParams<T>& params) {
     const int STAGES = BLOCK_SIZE_K/WARP_K;
     const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
     const bool mul_topk_weight = false;
@@ -756,7 +756,7 @@ void launch_moe_gemm_first_stage(const GemmParams<T>& params) {
 // launch_gemm1
 // 在GemmParams结构体后添加
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_gemm_second_stage(const GemmParams<T>& params) {
+void launch_moe_w4a8_gemm_second_stage(const GemmParams<T>& params) {
     const int STAGES = BLOCK_SIZE_K/WARP_K;
     const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
     const bool mul_topk_weight = true;
@@ -809,7 +809,7 @@ void launch_moe_gemm_second_stage(const GemmParams<T>& params) {
 // launch_gemm1_decode
 // warp在n和k方向排列
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_gemm_first_stage_decode(const GemmParams<T>& params) {
+void launch_moe_w4a8_gemm_first_stage_decode(const GemmParams<T>& params) {
     constexpr int STAGES = 1;
     constexpr int WARP_NUM = (BLOCK_SIZE_N / WARP_N) * (BLOCK_SIZE_K / WARP_K);
     const bool mul_topk_weight = false;
@@ -869,7 +869,7 @@ void launch_moe_gemm_first_stage_decode(const GemmParams<T>& params) {
 
 // launch_gemm2_decode
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_gemm_second_stage_decode(const GemmParams<T>& params) {
+void launch_moe_w4a8_gemm_second_stage_decode(const GemmParams<T>& params) {
     const int STAGES = 1;    
     const int WARP_NUM = (BLOCK_SIZE_N / WARP_N) * (BLOCK_SIZE_K / WARP_K);
     const bool mul_topk_weight = true;
@@ -1001,20 +1001,19 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
         
 
         if(size_m > MOE_THRESHOLD || (size_m > 2 && EXPERTS == 16) ){
-        //   auto it = kernel_maps_gemm1_prefill.find(mode);
-        //   if (it != kernel_maps_gemm1_prefill.end()) {
-        //       it->second(params_in);
-        //   } else {
-        printf("developing \n");
-        //       launch_moe_gemm_first_stage<16, 64, 128, 16, 16, 64>(params_in);
-        // }
+          auto it = kernel_maps_gemm1_prefill.find(mode);
+          if (it != kernel_maps_gemm1_prefill.end()) {
+              it->second(params_in);
+          } else {
+              launch_moe_w4a8_gemm_first_stage<16, 64, 128, 16, 16, 64>(params_in);
+        }
         }else{ //decode
           auto it = kernel_maps_gemm1_decode.find(mode);
           if (it != kernel_maps_gemm1_decode.end()) {
             it->second(params_in);
           } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_gemm_first_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
+              launch_moe_w4a8_gemm_first_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
           }
         }
          
@@ -1066,7 +1065,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
               it->second(params_in);
           } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_gemm_second_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
+              launch_moe_w4a8_gemm_second_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
           }
 
         }
