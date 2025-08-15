@@ -1005,7 +1005,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
           if (it != kernel_maps_gemm1_prefill.end()) {
               it->second(params_in);
           } else {
-            printf("No matching kernel configuration found, using default settings:kernel_maps_gemm1_prefill \n");  
+            printf("No matching kernel configuration found, using default settings:kernel_maps_gemm1_prefill,mode:%d,M_id:%d\n",mode,size_m);  
             launch_moe_w4a8_gemm_first_stage<16, 64, 128, 16, 16, 64>(params_in);
         }
         }else{ //decode
@@ -1013,7 +1013,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
           if (it != kernel_maps_gemm1_decode.end()) {
             it->second(params_in);
           } else {
-              printf("No matching kernel configuration found, using default settings:kernel_maps_gemm1_decode \n");
+              printf("No matching kernel configuration found, using default settings:kernel_maps_gemm1_decode,mode:%d,M_id:%d\n",mode,size_m);
               launch_moe_w4a8_gemm_first_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
           }
         }
@@ -1057,7 +1057,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
           if (it != kernel_maps_gemm2_prefill.end()) {
               it->second(params_in);
           } else {
-              printf("No matching kernel configuration found, using default settings:kernel_maps_gemm2_prefill \n");
+              printf("No matching kernel configuration found, using default settings:kernel_maps_gemm2_prefill ,mode:%d,M_id:%d\n",mode,(size_m / 8));
               launch_moe_w4a8_gemm_second_stage<16, 32, 128, 16, 16, 64>(params_in);
               
           }
@@ -1067,7 +1067,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
           if (it != kernel_maps_gemm2_decode.end()) {
               it->second(params_in);
           } else {
-              printf("No matching kernel configuration found, using default settings:kernel_maps_gemm2_decode \n");
+              printf("No matching kernel configuration found, using default settings:kernel_maps_gemm2_decode,mode:%d,M_id:%d\n",mode,(size_m / 8 ));
               launch_moe_w4a8_gemm_second_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
           }
 
