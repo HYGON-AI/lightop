@@ -5,7 +5,7 @@ import torch
 num_tokens = 256
 hidden_size = 16
 topk = 2
-num_shared_experts_per_rank = 1
+num_shared_experts_per_rank = 0
 expert_start_idx = 16
 expert_end_idx = 32
 num_experts_per_rank = expert_end_idx - expert_start_idx

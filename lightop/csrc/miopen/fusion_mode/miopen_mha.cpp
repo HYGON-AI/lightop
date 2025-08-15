@@ -33,7 +33,7 @@ Tensor miopen_scaled_dot_product_attention(const Tensor& query,
 {
 
     if(query.dim() != 4 || key.dim() != 4 || value.dim() != 4)
-        MIOPEN_THROW("Only support MHA 2d");
+        MIOPEN_THROW("Scaled_Dot_Product_Attention: MHA Only support 2d.");
 
     MhaDescriptor mha_descriptor;
     mha_descriptor.SetParams(1 / std::sqrt(query.sizes()[3]));
