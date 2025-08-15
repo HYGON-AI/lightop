@@ -845,7 +845,7 @@ if __name__ == "__main__":
     #     --n1-list '[256]' \
     #     --n2-list '[7168]' \
     #     --k-list '[128]' \
-    #     --m-list '[32,128,512,1024]' \
+    #     --m-list '[32]' \
     #     --topk 8 \
     #     --out-dtype bfloat16 \
     #     --use-channel-wise \
