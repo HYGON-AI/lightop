@@ -89,7 +89,7 @@ def test_speed(batch_size, channels, Height, Width, out_channels, kernel_h, kern
     print(prof.key_averages(group_by_input_shape=True).table(sort_by='self_cuda_time_total'))
 
     # 验证精度
-    verify_accuracy(y1, y2, use_half)
+    verify_accuracy(y1, y2, rtol=1e-2, atol=1e-5, use_half=use_half)
     print('=' * 100 + '\n')
 
 
