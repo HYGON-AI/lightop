@@ -36,7 +36,7 @@ void TensorDescriptor::set(
         stride[i] = 1;
     }
     if(layout)
-        set(datatype, static_cast<miopenTensorLayout_t>(layout), size, 4);
+        set(datatype, static_cast<miopenTensorLayout_t>(layout), size, dim);
     else
         set(datatype, static_cast<int>(std::max(dim, pad)), size, stride);
 }
