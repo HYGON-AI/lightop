@@ -52,5 +52,6 @@ def extract_groupnorm_log(log_path, gn_silu=False):
 if __name__ == '__main__':
     # 将测试日志路径修改为真实文件路径
     log_path = r'your_log_path'
+    # 若是groupnorm算子测试，请将weather_gn_silu的值设置为False
     weather_gn_silu = True
     extract_groupnorm_log(log_path, weather_gn_silu)
