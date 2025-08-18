@@ -39,7 +39,7 @@ python3 setup.py install bdist_wheel
 <table>
   <th>算子</th><th>开发负责人</th><th>性能表</th>
     <tr>
-        <td>smooth_gemm</td><td>郑光飞 谢松林</td><td></td>
+        <td>smooth_gemm</td><td>郑光飞 谢松林 马翔</td><td></td>
     </tr>
     <tr>
         <td>moe_w8a8_gemm</td><td>杨亿男 罗尧</td><td>https://r0ddbu55vzx.feishu.cn/sheets/Fr3wsNhrmh777xtl7v4cOodjnH0?sheet=ClHIQQ</td>
