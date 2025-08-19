@@ -82,6 +82,15 @@ def _rocblas_scaled_mm(a: torch.Tensor,   #input
                             bias: Optional[torch.Tensor] = None) -> torch.Tensor:
     return quant_ops.rocblas_scaled_mm_nn(a,b,scale_a,scale_b,out_dtype,bias)
 
+def q_gemm_w8a8_smooth(a: torch.Tensor,   #input
+                        b: torch.Tensor,  #weight
+                        scale_b: torch.Tensor,
+                        bias: Optional[torch.Tensor] = None,
+                        out_dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:  
+    
+     a_quant, scale_a_quant = per_token_quant_int8(a)
+     lightop.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype)
+
 def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_quant=True, warmup_iters=10, test_iters=100):
     """
     对w8a8算子进行速度测试
@@ -108,30 +117,18 @@ def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_qua
     torch.cuda.synchronize()
     
     # 性能测试阶段
-    # print(f"开始性能测试 {test_iters}次...")
-    start_time = time.time()
-    
+    elapsed_time = 0
     if include_quant:
         # 包含量化的测试
-        for _ in range(test_iters):
-            a_quant, scale_a_quant = per_token_quant_int8(a)
-            _ = lightop.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype)
+        elapsed_time = triton.testing.do_bench(lambda:q_gemm_w8a8_smooth(a, b, scale_b, bias, out_dtype),quantiles=None, return_mode="mean")*1000
     else:
         # 不包含量化的测试
-        for _ in range(test_iters):
-            _ = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
-    
-    # 同步GPU并计算平均耗时
-    torch.cuda.synchronize()
-    end_time = time.time()
-    
-    total_time_us = (end_time - start_time) * 1e6  # 转换为微秒
-    avg_time_us = total_time_us / test_iters
+        elapsed_time = triton.testing.do_bench(lambda:lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype),quantiles=None, return_mode="mean")*1000
     
     test_type = "包含量化" if include_quant else "不包含量化"
-    print(f"w8a8算子速度测试结果 ({test_type}) - M{m}xN{n}xK{k}: 总耗时: {total_time_us:.2f} us, 平均耗时: {avg_time_us:.2f} us, 测试次数: {test_iters}")
+    print(f"w8a8算子速度测试结果 ({test_type}) - M{m}xN{n}xK{k}, 平均耗时: {elapsed_time:.2f} us")
     
-    return avg_time_us
+    return elapsed_time
 
 
 def main(m, n, k, use_random=True, use_bias=False, out_dtype=torch.bfloat16, use_quant=True, enable_speed_test=False, speed_test_include_quant=False):
@@ -223,12 +220,12 @@ if __name__ == "__main__":
 
 
     # # qwen3-8b-tp1
-    # n_list = [6144, 4096, 24576, 4096,]
-    # k_list = [4096, 4096, 4096, 12288,]
+    n_list = [6144, 4096, 24576, 4096,]
+    k_list = [4096, 4096, 4096, 12288,]
 
     # # qwen3-32b-tp1,tp2,tp4
-    n_list = [10240, 5120, 51200, 5120, 5120, 5120, 25600, 5120, 2560, 5120, 12800, 5120,]
-    k_list = [5120, 8192, 5120, 25600, 5120, 4096, 5120, 12800, 5120, 2048, 5120, 6400,]
+    # n_list = [10240, 5120, 51200, 5120, 5120, 5120, 25600, 5120, 2560, 5120, 12800, 5120,]
+    # k_list = [5120, 8192, 5120, 25600, 5120, 4096, 5120, 12800, 5120, 2048, 5120, 6400,]
 
     # qwen3-30b-A3B-tp1,tp2,tp4
     # n_list = [5120, 2048, 2560, 2048, 1280, 2048]
