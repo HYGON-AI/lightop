@@ -82,6 +82,19 @@ def _rocblas_scaled_mm(a: torch.Tensor,   #input
                             bias: Optional[torch.Tensor] = None) -> torch.Tensor:
     return quant_ops.rocblas_scaled_mm_nn(a,b,scale_a,scale_b,out_dtype,bias)
 
+
+def q_gemm_w8a8_smooth(a,   #input
+                        b,  #weight
+                        scale_b,
+                        bias,
+                        out_dtype,
+                        isTunning_slide_block,
+                        tunning_slide_block) -> torch.Tensor:  
+    
+     a_quant, scale_a_quant = per_token_quant_int8(a)
+     lightop.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype,isTunning_slide_block,tunning_slide_block)
+
+
 def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_quant=True, warmup_iters=10, test_iters=100, isTunning_slide_block=False, tunning_slide_block=0):
     """
     对w8a8算子进行速度测试
@@ -108,30 +121,18 @@ def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_qua
     torch.cuda.synchronize()
     
     # 性能测试阶段
-    # print(f"开始性能测试 {test_iters}次...")
-    start_time = time.time()
-    
+    elapsed_time = 0
     if include_quant:
         # 包含量化的测试
-        for _ in range(test_iters):
-            a_quant, scale_a_quant = per_token_quant_int8(a)
-            _ = lightop.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype, isTunning_slide_block=isTunning_slide_block, tunning_slide_block=tunning_slide_block)
+        elapsed_time = triton.testing.do_bench(lambda:q_gemm_w8a8_smooth(a, b, scale_b, bias, out_dtype, isTunning_slide_block, tunning_slide_block),quantiles=None, return_mode="mean")*1000
     else:
         # 不包含量化的测试
-        for _ in range(test_iters):
-            _ = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype, isTunning_slide_block=isTunning_slide_block, tunning_slide_block=tunning_slide_block)
-    
-    # 同步GPU并计算平均耗时
-    torch.cuda.synchronize()
-    end_time = time.time()
-    
-    total_time_us = (end_time - start_time) * 1e6  # 转换为微秒
-    avg_time_us = total_time_us / test_iters
+        elapsed_time = triton.testing.do_bench(lambda:lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype, isTunning_slide_block, tunning_slide_block),quantiles=None, return_mode="mean")*1000
     
     test_type = "包含量化" if include_quant else "不包含量化"
-    print(f"w8a8算子速度测试结果 ({test_type}) - M{m}xN{n}xK{k}: 总耗时: {total_time_us:.2f} us, 平均耗时: {avg_time_us:.2f} us, 测试次数: {test_iters}")
+    print(f"w8a8算子速度测试结果 ({test_type}) - M{m}xN{n}xK{k}, 平均耗时: {elapsed_time:.2f} us")
     
-    return avg_time_us
+    return elapsed_time
 
 
 def main(m, n, k, use_random=True, use_bias=False, out_dtype=torch.bfloat16, use_quant=True, enable_speed_test=False, speed_test_include_quant=False, isTunning_slide_block=False, tunning_slide_block=0):
@@ -210,10 +211,10 @@ def main(m, n, k, use_random=True, use_bias=False, out_dtype=torch.bfloat16, use
 if __name__ == "__main__":
     m1=[item if item < 17 else  1 << (item - 27) for item in range(1, 17)]
     m2=[item<<2  if item <17 else (item - 8)<<3  for item in range(5, 29)]
-    m3=[2<<(item)  for item in range(7, 14)]
+    m3=[2<<(item)  for item in range(8, 14)]
 
     m_list = m1+m2+m3
-    m_list = multiples_of_16 = range(32, 256 + 1, 16)
+    m_list = list(range(32, 256 + 1, 16)) + m3
     # n_list=[1280, 4096, 384, 4096, 768, 4096, 192, 4096,]
     # k_list=[4096, 1024, 4096, 192,4096,512,4096,96]
     # m_list = [16384]
@@ -224,8 +225,8 @@ if __name__ == "__main__":
 
 
     # # # qwen3-8b-tp1
-    n_list = [6144, 4096, 24576, 4096,]
-    k_list = [4096, 4096, 4096, 12288,]
+    # n_list = [6144, 4096, 24576, 4096,]
+    # k_list = [4096, 4096, 4096, 12288,]
 
     # # # qwen3-32b-tp1,tp2,tp4
     # n_list = [10240, 5120, 51200, 5120, 5120, 5120, 25600, 5120, 2560, 5120, 12800, 5120,]
@@ -240,7 +241,67 @@ if __name__ == "__main__":
     # k_list = [4096, 1024, 4096, 512,]
 
     # m_list = [8192]
-    # n_list = [24576]
+    
+
+    n_list = [
+        # dpsk_671b
+        256, 576, 1536, 1536, 2048, 2304, 7168, 7168, 7168,
+        # qwen3-8b-tp1
+        6144, 4096, 24576, 4096,
+        # qwen3-32b-tp1
+        10240, 5120, 51200, 5120,
+        # qwen3-32b-tp2
+        5120, 5120, 25600, 5120,
+        # qwen3-32b-tp4
+        2560, 5120, 12800, 5120,
+        # qwen3-30b-A3B-tp1
+        5120, 2048,
+        # qwen3-30b-A3B-tp2
+        2560, 2048,
+        # qwen3-30b-A3B-tp4
+        1280, 2048,
+        # qwen3-235b-tp8
+        1280, 4096,
+        # qwen3-235b-tp16
+        768, 4096,
+        # llama3.3-70b-tp2
+        28672, 8192, 5120, 8192,
+        # llama3.3-70b-tp4
+        14336, 8192, 2560, 8192,
+        # llama3.3-70b-tp8
+        7168, 8192, 1280, 8192,
+    ]
+
+    k_list = [
+        # dpsk_671b
+        7168, 7168, 1536, 7168, 512, 7168, 128, 1024, 1152,
+        # qwen3-8b-tp1
+        4096, 4096, 4096, 12288,
+        # qwen3-32b-tp1
+        5120, 8192, 5120, 25600,
+        # qwen3-32b-tp2
+        5120, 4096, 5120, 12800,
+        # qwen3-32b-tp4
+        5120, 2048, 5120, 6400,
+        # qwen3-30b-A3B-tp1
+        2048, 4096,
+        # qwen3-30b-A3B-tp2
+        2048, 2048,
+        # qwen3-30b-A3B-tp4
+        2048, 1024,
+        # qwen3-235b-tp8
+        4096, 1024,
+        # qwen3-235b-tp16
+        4096, 512,
+        # llama3.3-70b-tp2
+        8192, 14336, 8192, 4096,
+        # llama3.3-70b-tp4
+        8192, 7168, 8192, 2048,
+        # llama3.3-70b-tp8
+        8192, 3584, 8192, 1024,
+    ]
+
+    # n_list = [4096]
     # k_list = [4096]
     
     excel_m_list = []
@@ -254,15 +315,21 @@ if __name__ == "__main__":
         for m in m_list:
             isTunning_slide_block = True 
             
-            for tunning_slide_block in range(0, 9, 1):
+            for tunning_slide_block in range(0, 11, 1):
                 m, n, k = m, n_list[i], k_list[i]
+                if tunning_slide_block == 9:
+                    continue
+                    # if ((m >= 16 and m <=64) or (m > 128 and m < 256)  and n >= 4096):
+                    #     pass
+                    # else:
+                    #     continue
                 if k%256 != 0 and tunning_slide_block == 1:
                     continue
-                print("m:{} n:{} k:{} ".format(m, n, k))
+                print("m:{} n:{} k:{} tunning_slide_block:{}".format(m, n, k, tunning_slide_block))
                 use_bias = False
                 use_random = True
-                out_dtype = torch.bfloat16
-                # out_dtype = torch.float16
+                # out_dtype = torch.bfloat16
+                out_dtype = torch.float16
                 use_quant = False  # 设置为True启用量化
                 enable_speed_test = True  # 设置为True启用速度测试
                 speed_test_include_quant = False  # 速度测试是否包含量化过程

@@ -52,7 +52,7 @@ def round_up_to_next_power_of_2(x):
 @functools.lru_cache(maxsize=2048)
 def w8a8_smooth_asm_config(m, n, k):
     
-    if m > 256:
+    if m < 256:
         adapt_m = math.ceil(m / 16) * 16  # 向上取整到下一个16的倍数
     else:
         adapt_m = round_up_to_next_power_of_2(m)
