@@ -109,7 +109,7 @@ def test_speed(batch_size, seqs, cols, rows, num_groups, repeat_num, use_half=Fa
           format(fc2_espl * 1000 / repeat_num, '.3f'), 'ms speedup:', format(fc1_espl / fc2_espl - 1, '.2f'))
 
     # 执行精度验证
-    verify_accuracy(y1, y2[0], use_half)
+    verify_accuracy(y1, y2[0], rtol=1e-2, atol=1e-5, use_half=use_half)
 
 
 if __name__ == "__main__":
