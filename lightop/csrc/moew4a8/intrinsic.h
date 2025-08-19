@@ -61,6 +61,7 @@ struct vec<int, len> {
 template <typename Element, size_t len>
 union union_vec{
   int8_t int8_array[len * sizeof(Element)];
+  int8x8_t int8x8_array[len * sizeof(Element)/ 8];
   Element scalar_array[len];
   typename vec<Element, 2>::type scalar2_array[len/2];
   int int_array[len * sizeof(Element) / 4];
