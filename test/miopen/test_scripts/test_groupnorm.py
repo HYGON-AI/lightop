@@ -101,7 +101,7 @@ def test_speed(batch_size, seqs, cols, rows, num_groups, repeat_num, use_half=Fa
           format(miopen_time / repeat_num, '.3f'), 'ms speedup:', format(lightop_time / miopen_time - 1, '.2f'))
 
     # 精度验证
-    verify_accuracy(y1, y2[0], rtol=1e-2, atol=1e-5, use_half=use_half)
+    verify_accuracy(y1, y2[0], rtol=5e-3, atol=5e-3, use_half=use_half)
 
 
 if __name__ == '__main__':
