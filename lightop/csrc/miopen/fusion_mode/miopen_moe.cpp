@@ -39,9 +39,11 @@ std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor& hidden,
     TensorDescriptor output_experts_token_count(out_experts_token_count);
     TensorDescriptor output_token_start(out_experts_token_start);
 
-    std::vector<Tensor> result = at::where((selected_experts >= expert_start_idx) & (selected_experts < expert_end_idx));
+    std::vector<Tensor> result =
+        at::where((selected_experts >= expert_start_idx) & (selected_experts < expert_end_idx));
     std::vector<Tensor> unique_results;
-    for (const auto& tensor : result) {
+    for(const auto& tensor : result)
+    {
         unique_results.push_back(std::get<0>(at::_unique(tensor)));
     }
     Tensor associateToken = unique_results[0].to(at::kLong);
@@ -153,56 +155,62 @@ std::vector<Tensor> miopen_moe_swiglu_dynamic_quant(const Tensor& scatter_tokens
     return {std::move(out_y), std::move(out_per_token_scale)};
 };
 
-// Tensor miopen_moe_gather(const Tensor& scatter_tokens,
-//                          const Tensor& token_offset,
-//                          const int real_scatter_tokens,
-//                          const int num_tokens,
-//                          const int hidden_size)
-// {
-//     if(scatter_tokens.dim() != 2 || token_offset.dim() != 1)
-//         MIOPEN_THROW("Moe_Gather: Input Tensor's dimension Does Not Match.");
+Tensor miopen_moe_gather(const Tensor& scatter_tokens,
+                         const Tensor& token_offset,
+                         const int real_scatter_tokens,
+                         const int num_tokens,
+                         const int hidden_size,
+                         const int topk,
+                         const int num_shared_experts)
+{
+    if(scatter_tokens.dim() != 2 || token_offset.dim() != 1)
+        MIOPEN_THROW("Moe_Gather: Input Tensor's dimension Does Not Match.");
 
-//     TensorDescriptor scatter_tokens_tensor(scatter_tokens);
-//     TensorDescriptor token_offset_tesnor(token_offset);
+    TensorDescriptor scatter_tokens_tensor(scatter_tokens);
+    TensorDescriptor token_offset_tesnor(token_offset);
 
-//     Tensor out_y = at::empty({num_tokens, hidden_size}, scatter_tokens.options());
-//     TensorDescriptor output_y(out_y);
+    Tensor out_y = at::empty({num_tokens, hidden_size}, scatter_tokens.options());
+    TensorDescriptor output_y(out_y);
 
-//     size_t workspace_size = 0;
-//     miopenHandle_t handle = getMiopenHandle_new();
-//     MIOPEN_CHECK(miopenGetMoeGatherWorkspaceSize(handle,
-//                                                  scatter_tokens_tensor.desc(),
-//                                                  scatter_tokens.data_ptr(),
-//                                                  token_offset_tesnor.desc(),
-//                                                  token_offset.data_ptr(),
-//                                                  output_y.desc(),
-//                                                  out_y.data_ptr(),
-//                                                  real_scatter_tokens,
-//                                                  num_tokens,
-//                                                  hidden_size,
-//                                                  &workspace_size));
+    size_t workspace_size = 0;
+    miopenHandle_t handle = getMiopenHandle_new();
+    MIOPEN_CHECK(miopenGetMoeGatherWorkspaceSize(handle,
+                                                 scatter_tokens_tensor.desc(),
+                                                 scatter_tokens.data_ptr(),
+                                                 token_offset_tesnor.desc(),
+                                                 token_offset.data_ptr(),
+                                                 output_y.desc(),
+                                                 out_y.data_ptr(),
+                                                 real_scatter_tokens,
+                                                 num_tokens,
+                                                 hidden_size,
+                                                 topk,
+                                                 num_shared_experts,
+                                                 &workspace_size));
 
-//     Tensor workspace_tensor;
-//     if(workspace_size > 0)
-//     {
-//         workspace_tensor = at::empty(workspace_size, scatter_tokens.options());
-//     }
+    Tensor workspace_tensor;
+    if(workspace_size > 0)
+    {
+        workspace_tensor = at::empty(workspace_size, scatter_tokens.options());
+    }
 
-//     MIOPEN_CHECK(miopenMoeGather(handle,
-//                                  scatter_tokens_tensor.desc(),
-//                                  scatter_tokens.data_ptr(),
-//                                  token_offset_tesnor.desc(),
-//                                  token_offset.data_ptr(),
-//                                  output_y.desc(),
-//                                  out_y.data_ptr(),
-//                                  real_scatter_tokens,
-//                                  num_tokens,
-//                                  hidden_size,
-//                                  workspace_tensor.defined() ? workspace_tensor.data_ptr() : nullptr,
-//                                  workspace_size));
+    MIOPEN_CHECK(miopenMoeGather(handle,
+                                 scatter_tokens_tensor.desc(),
+                                 scatter_tokens.data_ptr(),
+                                 token_offset_tesnor.desc(),
+                                 token_offset.data_ptr(),
+                                 output_y.desc(),
+                                 out_y.data_ptr(),
+                                 real_scatter_tokens,
+                                 num_tokens,
+                                 hidden_size,
+                                 topk,
+                                 num_shared_experts,
+                                 workspace_tensor.defined() ? workspace_tensor.data_ptr() : nullptr,
+                                 workspace_size));
 
-//     return std::move(out_y);
-// }
+    return std::move(out_y);
+}
 
 } // namespace native
 

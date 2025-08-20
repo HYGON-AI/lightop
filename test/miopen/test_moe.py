@@ -19,11 +19,15 @@ hidden = torch.randn(num_tokens, hidden_size, dtype=torch.bfloat16).cuda()
 selected_experts = torch.randint(0, 2, (num_tokens, topk), dtype=torch.int32).cuda()
 smooth = torch.randn(num_shared_experts_per_rank + num_experts_per_rank, hidden_size, dtype=torch.float32).cuda()
 moe_weights = torch.ones(num_tokens, topk, dtype=torch.float32, device="cuda")
-out_scatter_tokens = torch.full((max_sactter_tokens, hidden_size), 0, dtype=torch.int8, device='cuda')
-out_scatter_per_token_scale = torch.full((max_sactter_tokens, ), 0, dtype=torch.float32, device='cuda')
-out_scatter_tokens_offset = torch.full((max_sactter_tokens, ), 0, dtype=torch.int32, device='cuda')
-out_experts_token_count = torch.full((num_shared_experts_per_rank + num_experts_per_rank, ), 0, dtype=torch.int32, device='cuda')
-out_experts_token_start = torch.full((num_shared_experts_per_rank + num_experts_per_rank, ), 0, dtype=torch.int32, device='cuda')
+out_scatter_tokens = torch.full((max_sactter_tokens, hidden_size), 0, dtype=torch.int8, device="cuda")
+out_scatter_per_token_scale = torch.full((max_sactter_tokens,), 0, dtype=torch.float32, device="cuda")
+out_scatter_tokens_offset = torch.full((max_sactter_tokens,), 0, dtype=torch.int32, device="cuda")
+out_experts_token_count = torch.full(
+    (num_shared_experts_per_rank + num_experts_per_rank,), 0, dtype=torch.int32, device="cuda"
+)
+out_experts_token_start = torch.full(
+    (num_shared_experts_per_rank + num_experts_per_rank,), 0, dtype=torch.int32, device="cuda"
+)
 
 # 调用被测函数
 scatter_tokens, scatter_per_token_scale, scatter_token_offset, experts_token_count, experts_token_start = (
@@ -81,14 +85,22 @@ current_rank = 1
 num_tokens_offset = num_tokens_per_rank * current_rank
 allocated_tokens = num_tokens_per_rank * topk
 hidden_size = 64
-num_shared_experts_per_rank = 2
+num_shared_experts = 2
 num_tokens = world_size * num_tokens_per_rank
 real_scatter_tokens = num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens
 
 scatterDesc = torch.randn(real_scatter_tokens, hidden_size, dtype=torch.bfloat16).cuda()
 tokenoffsetDesc = torch.randint(0, 2, (real_scatter_tokens,), dtype=torch.int32).cuda()
 
-y = lightop.miopen_moe_gather(scatterDesc, tokenoffsetDesc, real_scatter_tokens, num_tokens, hidden_size)
+y = lightop.miopen_moe_gather(
+    scatterDesc,
+    tokenoffsetDesc,
+    real_scatter_tokens,
+    num_tokens,
+    hidden_size,
+    topk,
+    num_shared_experts
+)
 
 print("miopen_moe_gather y is:\n", y)
 
