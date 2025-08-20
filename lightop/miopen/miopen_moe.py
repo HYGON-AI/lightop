@@ -77,7 +77,9 @@ def miopen_moe_swiglu_dynamic_quant(scatter_tokens, smooth_scale, experts_tokens
     )
 
 
-def miopen_moe_gather(scatter_tokens, token_offset, real_scatter_tokens, num_tokens, hidden_size):
+def miopen_moe_gather(
+    scatter_tokens, token_offset, real_scatter_tokens, num_tokens, hidden_size, topk, num_shared_experts
+):
     """_summary_
 
     Args:
@@ -86,8 +88,12 @@ def miopen_moe_gather(scatter_tokens, token_offset, real_scatter_tokens, num_tok
         real_scatter_tokens (int):
         num_tokens (int):
         hidden_size (int):
+        topk (int):
+        num_shared_exports (int):
 
     Returns:
         Tensor: y 形状为 [num_tokens, hidden_size]
     """
-    return op.miopen_moe_gather(scatter_tokens, token_offset, real_scatter_tokens, num_tokens, hidden_size)
+    return op.miopen_moe_gather(
+        scatter_tokens, token_offset, real_scatter_tokens, num_tokens, hidden_size, topk, num_shared_experts
+    )
