@@ -7,10 +7,10 @@ import torch
 import dataclasses
 from typing import Optional, Protocol, Tuple,Iterable, Union
 from torch.utils.cpp_extension import IS_HIP_EXTENSION
-from lightop import blockwise_scaled_1d_cast_transpose
+from lightop import blockwise_scaled_cast_transpose
 
 blockwise_fp8_block_len=128
-
+block_scaling_dim=1
 
 def scale_from_amax_tensor(
     x_dtype: torch.dtype,
@@ -471,8 +471,8 @@ def test_quantization_1D_block_tiling_with_compact_data_and_scales(
 
 
    for i in range(10):
-        blockwise_scaled_1d_cast_transpose(x,rowwise_data,rowwise_scale_inv, columnwise_data,columnwise_scale_inv, 
-                                           None,eps,pow_2_scales,True,quant_dtype)
+        blockwise_scaled_cast_transpose(x,rowwise_data,rowwise_scale_inv, columnwise_data,columnwise_scale_inv, None,
+                                        blockwise_fp8_block_len,block_scaling_dim,True,True,eps,pow_2_scales,True,quant_dtype)
 
    torch.cuda.synchronize()
 
@@ -481,8 +481,8 @@ def test_quantization_1D_block_tiling_with_compact_data_and_scales(
    start.record()
    for i in range(100):
         
-        blockwise_scaled_1d_cast_transpose(x,rowwise_data,rowwise_scale_inv, columnwise_data,columnwise_scale_inv, 
-                                           None,eps,pow_2_scales,True,quant_dtype)
+        blockwise_scaled_cast_transpose(x,rowwise_data,rowwise_scale_inv, columnwise_data,columnwise_scale_inv, None,
+                                        blockwise_fp8_block_len,block_scaling_dim,True,True,eps,pow_2_scales,True,quant_dtype)
 
    end.record()
    torch.cuda.synchronize() 
@@ -561,10 +561,10 @@ def test_quantization_1D_block_tiling_versus_reference(
    else:
         columnwise_data=None
         columnwise_scale_inv=None
- 
+
    for i in range(10):
-        blockwise_scaled_1d_cast_transpose(x,rowwise_data,rowwise_scale_inv, columnwise_data,columnwise_scale_inv, 
-                                           None,eps,pow_2_scales,False,quant_dtype)
+        blockwise_scaled_cast_transpose(x,rowwise_data,rowwise_scale_inv, columnwise_data,columnwise_scale_inv, None,
+                                        blockwise_fp8_block_len,block_scaling_dim,True,return_transpose,eps,pow_2_scales,False,quant_dtype)
 
    torch.cuda.synchronize()
 
@@ -573,8 +573,8 @@ def test_quantization_1D_block_tiling_versus_reference(
    start.record()
    for i in range(100):
         
-        blockwise_scaled_1d_cast_transpose(x,rowwise_data,rowwise_scale_inv, columnwise_data,columnwise_scale_inv, 
-                                           None,eps,pow_2_scales,False,quant_dtype)
+        blockwise_scaled_cast_transpose(x,rowwise_data,rowwise_scale_inv, columnwise_data,columnwise_scale_inv, None,
+                                        blockwise_fp8_block_len,block_scaling_dim,True,return_transpose,eps,pow_2_scales,False,quant_dtype)
 
    end.record()
    torch.cuda.synchronize() 
