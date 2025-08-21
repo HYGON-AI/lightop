@@ -92,9 +92,16 @@ void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
 void destroy_gemmdbias_handle();
+void store_kv_cache(torch::Tensor packed_qkv,torch::Tensor& K_cache,torch::Tensor& V_cache,torch::Tensor q_lens,torch::Tensor accum_q_lens,
+                              torch::Tensor cache_lens,torch::Tensor cache_slot_ids,torch::Tensor k_scale,torch::Tensor v_scale,const std::string& kv_cache_dtype_str,int q_head_num,int kv_head_num);
+void store_kv_cache_paged(const torch::Tensor& key, const torch::Tensor& value,torch::Tensor& K_cache, torch::Tensor& V_cache,const torch::Tensor& q_lens, const torch::Tensor& accum_q_lens,
+                          const torch::Tensor& cache_lens, const torch::Tensor& block_table,const torch::Tensor& k_scale, const torch::Tensor& v_scale,const std::string& kv_cache_dtype_str);
 
+void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::Tensor& token_expert_indices,torch::Tensor& gating_output, const std::string& renormalize = "false");             
 }
 }
+
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("layernorm_forward_autograd", &at::native::fuse_layernorm_forward_autograd, "layernorm forward");
   m.def("add_ln_forward_autograd", &at::native::fuse_add_ln_forward_autograd, "layernorm forward");
@@ -150,6 +157,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("moe_gemm_w4a8", &at::native::moe_gemm_w4a8, "moe_gemm_w4a8");
   m.def("gemm_w8_a8_smooth_colmajor", &at::native::gemm_w8_a8_smooth_colmajor, "gemm_w8_a8_smooth_colmajor");
   m.def("gemm_w8a8_smooth_asm", &at::native::gemm_w8a8_smooth_asm, "gemm_w8a8_smooth_asm");
+  m.def("store_kv_cache", &at::native::store_kv_cache, "store_kv_cache");
+  m.def("store_kv_cache_paged", &at::native::store_kv_cache_paged, "store_kv_cache_paged");
+  m.def("topk_softmax", &at::native::topk_softmax, "topk_softmax");
   m.def("gemm_w8a8_asm", &at::native::gemm_w8a8_asm, "gemm_w8a8_block_asm");
   m.def("moe_w8a8_asm", &at::native::moe_w8a8_asm, "moe_w8a8_asm");
   m.def("moe_w4a8_asm", &at::native::moe_w4a8_asm, "moe_w4a8_asm");
