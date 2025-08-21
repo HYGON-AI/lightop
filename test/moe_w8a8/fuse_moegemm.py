@@ -386,7 +386,7 @@ def fused_topk(
     if renormalize:
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
 
-    return topk_weights, topk_ids 
+    return topk_weights, topk_ids
 
 
 # This is used by the Deepseek-V2 and Deepseek-V3 model
