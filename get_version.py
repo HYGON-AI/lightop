@@ -29,7 +29,7 @@ def _make_version_file(version, sha, abi, dtk, torch_version, branch):
     sha = "Unknown" if sha is None else sha
     torch_version = '.'.join(torch_version.split('.')[:2])
     # dcu_version = f"{version}+das1.1git{sha}.abi{abi}.dtk{dtk}.torch{torch_version}"
-    dcu_version = f"{version}+das.dtk{dtk}"
+    dcu_version = f"{version}+das.dtk{dtk}.{sha}"
     print("dcu_version")
     print(dcu_version)
     version_path = ROOT_DIR / "lightop" / "version.py"
