@@ -305,10 +305,15 @@ def get_extensions():
     extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas','-w'], 'nvcc': ['-O3','-ldl', '-lrocblas','-w']}
     if torch_version_over110():
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_110')
-    op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + glob.glob('./lightop/csrc/layernorm/*.cu') + \
-               glob.glob('./lightop/csrc/loss/*.cu') + glob.glob('./lightop/csrc/scaledmask/*.cu') + glob.glob('./lightop/csrc/groupnorm/*.cu') + \
-               glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + glob.glob('./lightop/csrc/miopen/*.cpp') + \
-               glob.glob('./lightop/csrc/softmax/*.cu') + glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu')
+    op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + \
+               glob.glob('./lightop/csrc/layernorm/*.cu') + glob.glob('./lightop/csrc/loss/*.cu') + \
+               glob.glob('./lightop/csrc/scaledmask/*.cu') + glob.glob('./lightop/csrc/groupnorm/*.cu') + \
+               glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + \
+               glob.glob('./lightop/csrc/miopen/*.cpp') + glob.glob('./lightop/csrc/softmax/*.cu') + \
+               glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + \
+               glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+\
+               glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu')
+
     extension = CUDAExtension
     include_dirs.append(os.path.abspath('./lightop/csrc/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/layernorm/'))
@@ -322,6 +327,8 @@ def get_extensions():
     include_dirs.append(os.path.abspath('./lightop/csrc/moew8a8/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/storeKvcache/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/storeKvcache/attention/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/moew4a8/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/blockwise_scaling/'))
     rocm_home=_find_rocm_home()
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/rocrand/include')

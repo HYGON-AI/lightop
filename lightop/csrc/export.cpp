@@ -123,4 +123,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("store_kv_cache", &at::native::store_kv_cache, "store_kv_cache");
   m.def("store_kv_cache_paged", &at::native::store_kv_cache_paged, "store_kv_cache_paged");
   m.def("topk_softmax", &at::native::topk_softmax, "topk_softmax");
+  m.def("gemm_w8a8_asm", &at::native::gemm_w8a8_asm, "gemm_w8a8_block_asm");
+  m.def("moe_w8a8_asm", &at::native::moe_w8a8_asm, "moe_w8a8_asm");
+  m.def("moe_w4a8_asm", &at::native::moe_w4a8_asm, "moe_w4a8_asm");
+  m.def("moe_marlin_w4a16", &at::native::moe_marlin_w4a16, "moe_marlin_w4a16");
+  m.def("awq_marlin_repack", &at::native::awq_marlin_repack, "awq_marlin_repack");
+  m.def("blockwise_scaled_cast_transpose", &at::native::blockwise_scaled_cast_transpose, "blockwise_scaled_cast_transpose");
+  m.def("rms_norm_dynamic_per_token_quant",&at::native::rms_norm_dynamic_per_token_quant,"rms_norm_dynamic_per_token_quant");
 }
