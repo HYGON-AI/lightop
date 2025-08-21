@@ -98,7 +98,6 @@ __global__ void rms_norm_dynamic_per_token_quant_(scalar_t* input,scalar_t* resi
     // token scale computation
     scale = fmaxf(scale / qmax, min_scale);
     s_token_scale = scale;                 // shared memory store
-    scales[blockIdx.x] = scale;  // global output store
   }
   __syncthreads();
 
@@ -112,6 +111,7 @@ __global__ void rms_norm_dynamic_per_token_quant_(scalar_t* input,scalar_t* resi
     }
   *(LoadT_out*)(out+idx)=*(LoadT_out*)out_vec;
   }
+  if(tid==0)scales[blockIdx.x] = s_token_scale;
 }
 
 template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec,int block_size>
@@ -240,6 +240,7 @@ __global__ void rms_norm_dynamic_per_token_quant_residual(scalar_t* input,scalar
       out_vec[ii] = float_to_int8_rn(elem[ii] * scale);
     }
   *(LoadT_out*)(out+idx) =*(LoadT_out*)out_vec;
+  *(LoadT*)(residual+idx) = *(LoadT*)residual_vec;
   }
 }
 
@@ -270,7 +271,6 @@ __global__ void rms_norm_dynamic_per_token_quant_residual_loop(scalar_t* input,s
   for(int i = tid;i < cols;i += block_size){
     float x = static_cast<float>(residual[i + rows]) + static_cast<float>(input[i + rows]);
     block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(static_cast<float>(static_cast<scalar_t>(x * trstd) * gamma[i])));
-    residual[i + rows] = static_cast<scalar_t>(x);
   }
 
   block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe, val_shared);
@@ -298,7 +298,8 @@ __global__ void rms_norm_dynamic_per_token_quant_residual_loop(scalar_t* input,s
   scalar_out_t out_vec[Vec];
   for(int i = tid;i < cols;i += block_size)
   {
-    out[rows + i] = float_to_int8_rn(static_cast<float>(input[rows + i]) * trstd * static_cast<float>(gamma[i]) * scale);
+    residual[rows + i] = static_cast<float>(residual[i + rows]) + static_cast<float>(input[i + rows]);
+    out[rows + i] = float_to_int8_rn(static_cast<scalar_t>(residual[rows + i] ) * trstd * static_cast<float>(gamma[i]) * scale);
   }
 
 }
@@ -330,7 +331,6 @@ void rms_norm_dynamic_per_token_quant_(
           residual_flag = true;
           other_data = residual->data_ptr<scalar_in_t>();
         }
-
         scalar_in_t* weight_data = weight.data_ptr<scalar_in_t>();
 
         AT_DISPATCH_INTEGRAL_TYPES(
@@ -342,62 +342,62 @@ void rms_norm_dynamic_per_token_quant_(
         float* scaless = scales.data_ptr<float>();
         if(residual_flag){
               if (hidden_size <= 1024){
-                rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,128><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-            }
+                  rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,128><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+                  }
             else if(hidden_size <= 2048){
               if(num_tokens >= 1024){
-                rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-              }
+                  rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,2,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+                  }
               else{
-                rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-              }  
+                  rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+            }  
               
             }
             else if(hidden_size <= 4096){
                 if(num_tokens > 1200){
-                  rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-                }
+                    rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+              }
                 else{
-                  rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-                }
+                    rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+              }
             }
             else if(hidden_size <= 8192){
-                rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-            }
+                  rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+          }
             else{
-                rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-            }
+                  rms_norm_dynamic_per_token_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+          }
 
         }else{
 
             if (hidden_size <= 1024){
                 rms_norm_dynamic_per_token_quant_<scalar_in_t,scalar_t,T_ACC,8,128><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-            }
+          }
             else if(hidden_size <= 2048){
                 if(num_tokens >= 1024){
                   rms_norm_dynamic_per_token_quant_<scalar_in_t,scalar_t,T_ACC,4,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-                }
+              }
                 else{
-                  rms_norm_dynamic_per_token_quant_<scalar_in_t,scalar_t,T_ACC,8,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-                }                      
+                    rms_norm_dynamic_per_token_quant_<scalar_in_t,scalar_t,T_ACC,8,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+                      }              
 
             }
             else if(hidden_size <= 4096){
                 if(num_tokens > 1200){
-                  rms_norm_dynamic_per_token_quant_<scalar_in_t,scalar_t,T_ACC,8,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+                    rms_norm_dynamic_per_token_quant_<scalar_in_t,scalar_t,T_ACC,8,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
                 }
                 else{
-                  rms_norm_dynamic_per_token_quant_<scalar_in_t,scalar_t,T_ACC,4,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-                }
+                    rms_norm_dynamic_per_token_quant_<scalar_in_t,scalar_t,T_ACC,4,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+              }
             }
             else if(hidden_size <= 8192){
-                rms_norm_dynamic_per_token_quant_<scalar_in_t,scalar_t,T_ACC,8,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+                  rms_norm_dynamic_per_token_quant_<scalar_in_t,scalar_t,T_ACC,8,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
             }
             else{
-                rms_norm_dynamic_per_token_quant_<scalar_in_t,scalar_t,T_ACC,16,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+                  rms_norm_dynamic_per_token_quant_<scalar_in_t,scalar_t,T_ACC,16,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
             }
         }
-
+        
       });
 
   }
@@ -424,53 +424,49 @@ void rms_norm_dynamic_per_token_quant_(
             }
             else if(hidden_size <= 2048){
               if(num_tokens >= 1024){
-                rms_norm_dynamic_per_token_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+                  rms_norm_dynamic_per_token_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
               }
               else{
-                rms_norm_dynamic_per_token_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+                  rms_norm_dynamic_per_token_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
               }  
               
             }
             else if(hidden_size <= 4096){
-                if(num_tokens > 1200){
+              if(num_tokens > 1200){
                   rms_norm_dynamic_per_token_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-                }
-                else{
+                  
+              }
+              else{
                   rms_norm_dynamic_per_token_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-                }
+              }
             }
-            else if(hidden_size <= 8192){
+            else {
                 rms_norm_dynamic_per_token_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
             }
-            else{
-                rms_norm_dynamic_per_token_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-            }
+
         }else{
             if (hidden_size <= 1024){
                 rms_norm_dynamic_per_token_quant_loop<scalar_in_t,scalar_t,T_ACC,1,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
             }
             else if(hidden_size <= 2048){
                 if(num_tokens >= 1024){
-                  rms_norm_dynamic_per_token_quant_loop<scalar_in_t,scalar_t,T_ACC,1,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+                    rms_norm_dynamic_per_token_quant_loop<scalar_in_t,scalar_t,T_ACC,1,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
                 }
                 else{
-                  rms_norm_dynamic_per_token_quant_loop<scalar_in_t,scalar_t,T_ACC,1,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+                    rms_norm_dynamic_per_token_quant_loop<scalar_in_t,scalar_t,T_ACC,1,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
                 }                      
 
             }
             else if(hidden_size <= 4096){
                 if(num_tokens > 1200){
-                  rms_norm_dynamic_per_token_quant_loop<scalar_in_t,scalar_t,T_ACC,1,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
-                }
+                    rms_norm_dynamic_per_token_quant_loop<scalar_in_t,scalar_t,T_ACC,1,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+                  }
                 else{
-                  rms_norm_dynamic_per_token_quant_loop<scalar_in_t,scalar_t,T_ACC,1,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+                    rms_norm_dynamic_per_token_quant_loop<scalar_in_t,scalar_t,T_ACC,1,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
                 }
-            }
-            else if(hidden_size <= 8192){
-                rms_norm_dynamic_per_token_quant_loop<scalar_in_t,scalar_t,T_ACC,1,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
             }
             else{
-                rms_norm_dynamic_per_token_quant_loop<scalar_in_t,scalar_t,T_ACC,1,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
+                  rms_norm_dynamic_per_token_quant_loop<scalar_in_t,scalar_t,T_ACC,1,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
             }
         }
 

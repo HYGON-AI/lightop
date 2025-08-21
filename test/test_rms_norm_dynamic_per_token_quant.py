@@ -22,10 +22,10 @@ import pandas as pd
 def bench_fn_triton_stable(rms_norm_layer, x, residual, quant_dtype, fn):
 
     # 增加预热次数，保证GPU进入稳定状态，JIT编译完成等
-    warmup = 100
+    warmup = 50
 
     # 增大重复次数，让统计更加稳定
-    rep = 1000
+    rep = 500
 
     ms = triton.testing.do_bench(
         lambda: fn(rms_norm_layer, x, residual, quant_dtype),
@@ -35,7 +35,7 @@ def bench_fn_triton_stable(rms_norm_layer, x, residual, quant_dtype, fn):
 
     return ms
 
-def bench_fn_multi(rms_norm_layer, x, residual, quant_dtype, fn, runs=1):
+def bench_fn_multi(rms_norm_layer, x, residual, quant_dtype, fn, runs=5):
     results = []
     for _ in range(runs):
         ms = bench_fn_triton_stable(rms_norm_layer, x, residual, quant_dtype, fn)
@@ -63,7 +63,7 @@ class bench_params_t:
 def get_bench_params() -> list[bench_params_t]:
     ## Test Fixtures
     NUM_TOKENS = [2**x for x in range(11)]
-    HIDDEN_SIZES = list(range(2048, 8129, 1024))
+    HIDDEN_SIZES = list(range(1024, 8129, 1024))
     ADD_RESIDUAL = [True, False]
     DTYPES = [torch.bfloat16, torch.float]
 
@@ -180,6 +180,16 @@ def check_accuracy(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: Optional[
         # # Quant
         # test_out, _, _ = ops.scaled_int8_quant(torch_out)
 
+        # if residual is not None:
+        #     ref_out_f = ref_residual.to(torch.float32)
+        #     test_out_f = test_residual.to(torch.float32)
+        #     abs_diff = (ref_out_f - test_out_f).abs()
+        #     max_diff = abs_diff.max().item()
+        #     mean_diff = abs_diff.mean().item()
+        #     denom = ref_out_f.abs().max().item() or 1.0
+        #     rel_err = max_diff / denom
+
+        #     print(f"[residual精度验证] max_abs_diff={max_diff:.6e}, mean_abs_diff={mean_diff:.6e}, rel_err={rel_err:.6e}")            
         # 转为 float32 再比较
         ref_out_f = ref_scales.to(torch.float32)
         test_out_f = test_scales.to(torch.float32)
@@ -194,8 +204,25 @@ def check_accuracy(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: Optional[
         denom = ref_out_f.abs().max().item() or 1.0
         rel_err = max_diff / denom
 
-        print(f"[精度验证] max_abs_diff={max_diff:.6e}, mean_abs_diff={mean_diff:.6e}, rel_err={rel_err:.6e}")
+        print(f"[scale精度验证] max_abs_diff={max_diff:.6e}, mean_abs_diff={mean_diff:.6e}, rel_err={rel_err:.6e}")
 
+
+        # 转为 float32 再比较
+        ref_out_f = ref_out.to(torch.float32)
+        test_out_f = test_out.to(torch.float32)
+
+        # print(ref_out_f)
+        # print(test_out_f)
+        abs_diff = (ref_out_f - test_out_f).abs()
+        max_diff = abs_diff.max().item()
+        mean_diff = abs_diff.mean().item()
+
+        # 避免除零
+        denom = ref_out_f.abs().max().item() or 1.0
+        rel_err = max_diff / denom
+
+        print(f"[out精度验证] max_abs_diff={max_diff:.6e}, mean_abs_diff={mean_diff:.6e}, rel_err={rel_err:.6e}")
+        
         return max_diff, mean_diff, rel_err
 
 
@@ -216,7 +243,7 @@ def bench(params: bench_params_t, label: str, sub_label: str):
         ("fused_int8_impl", fused_impl),
         ("fused_int8_fast_impl", fused_fast_impl)
     ]:
-        ms, all_times = bench_fn_multi(layer, x, residual, torch.int8, fn, runs=5)
+        ms, all_times = bench_fn_multi(layer, x, residual, torch.int8, fn, runs=1)
         print(f"[{label} | {sub_label} | {name}] avg={ms:.5f} ms")
 
         results.append({
