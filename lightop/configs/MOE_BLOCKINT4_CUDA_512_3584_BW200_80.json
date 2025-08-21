@@ -36,8 +36,8 @@
             "DELTA": 1
         },
         "128": {
-            "BLOCK_SIZE_M": 16,
-            "MODE": 6,
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
             "DELTA": 1
         },
         "256": {
