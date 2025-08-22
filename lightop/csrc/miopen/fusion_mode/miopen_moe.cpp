@@ -39,15 +39,15 @@ std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor& hidden,
     TensorDescriptor output_experts_token_count(out_experts_token_count);
     TensorDescriptor output_token_start(out_experts_token_start);
 
-    std::vector<Tensor> result =
-        at::where((selected_experts >= expert_start_idx) & (selected_experts < expert_end_idx));
-    std::vector<Tensor> unique_results;
-    for(const auto& tensor : result)
-    {
-        unique_results.push_back(std::get<0>(at::_unique(tensor)));
-    }
-    Tensor associateToken = unique_results[0].to(at::kLong);
-    TensorDescriptor associate_token_tensor(associateToken);
+    // std::vector<Tensor> result =
+    //     at::where((selected_experts >= expert_start_idx) & (selected_experts < expert_end_idx));
+    // std::vector<Tensor> unique_results;
+    // for(const auto& tensor : result)
+    // {
+    //     unique_results.push_back(std::get<0>(at::_unique(tensor)));
+    // }
+    // Tensor associateToken = unique_results[0].to(at::kLong);
+    // TensorDescriptor associate_token_tensor(associateToken);
 
     size_t workspace_size = 0;
     miopenHandle_t handle = getMiopenHandle_new();
@@ -56,7 +56,7 @@ std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor& hidden,
                                                                      selected_experts_tensor.desc(),
                                                                      moe_weights_tensor.desc(),
                                                                      smooth_tensor.desc(),
-                                                                     associate_token_tensor.desc(),
+                                                                     selected_experts_tensor.desc(),
                                                                      output_scatter_tokens.desc(),
                                                                      output_scatter_per_token_scale.desc(),
                                                                      output_experts_token_count.desc(),
@@ -85,8 +85,8 @@ std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor& hidden,
                                                      moe_weights.data_ptr(),
                                                      smooth_tensor.desc(),
                                                      smooth.data_ptr(),
-                                                     associate_token_tensor.desc(),
-                                                     associateToken.data_ptr(),
+                                                     selected_experts_tensor.desc(),
+                                                     nullptr,
                                                      output_scatter_tokens.desc(),
                                                      out_scatter_tokens.data_ptr(),
                                                      output_scatter_per_token_scale.desc(),
