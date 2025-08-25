@@ -245,5 +245,68 @@ void bias_reduce_sum(scalar_t* output_gpu, scalar_t* data_gpu,int length,int str
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+template <typename T,int reducesize=C10_WARP_SIZE>
+__inline__ __device__ T WarpReduceSum_ROW(T val) {
+#pragma unroll
+  for (int offset = reducesize/2; offset > 0; offset >>= 1) {
+    val += WARP_SHFL_DOWN(val, offset);
+  }
+  return val;
+}
+
+template <typename T,int block_size=512>
+__inline__ __device__ T BlockReduceSum_ROW(T val, T* shared) {
+  constexpr int share_size=block_size/C10_WARP_SIZE;
+  val = WarpReduceSum_ROW<T>(val);
+  if constexpr(block_size==C10_WARP_SIZE)
+  {
+    return val;
+  }
+  else{
+    const int lid = threadIdx.x % C10_WARP_SIZE;
+    const int wid = threadIdx.x / C10_WARP_SIZE;
+    if (lid == 0&&wid<share_size) {
+      shared[wid] = val;
+    }
+    __syncthreads();
+    if (wid == 0&&lid<share_size) {
+      val = WarpReduceSum_ROW<T,share_size>(shared[lid]);
+    }
+    return val;
+  }
+}
+
+template <typename T,int reducesize=C10_WARP_SIZE>
+__inline__ __device__ T WarpReduceMax_ROW(T val) {
+#pragma unroll
+  for (int offset = reducesize/2; offset > 0; offset >>= 1) {
+    val =  fmaxf(val,  WARP_SHFL_DOWN(val, offset));
+  }
+  return val;
+}
+
+template <typename T,int block_size=512>
+__inline__ __device__ T BlockReduceMax_ROW(T val, T* shared) {
+  constexpr int share_size=block_size/C10_WARP_SIZE;
+  val = WarpReduceMax_ROW<T>(val);
+  if constexpr(block_size==C10_WARP_SIZE)
+  {
+    return val;
+  }
+  else{
+    const int lid = threadIdx.x % C10_WARP_SIZE;
+    const int wid = threadIdx.x / C10_WARP_SIZE;
+    if (lid == 0&&wid<share_size) {
+      shared[wid] = val;
+    }
+    __syncthreads();
+    if (wid == 0&&lid<share_size) {
+      val = WarpReduceMax_ROW<T,share_size>(shared[lid]);
+    }
+    return val;
+  }
+}
+
+
 }//namespace native
 }//namespace at

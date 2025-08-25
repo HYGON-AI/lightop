@@ -17,8 +17,10 @@ from transformers import AutoConfig
 # from vllm.model_executor.layers.fused_moe.fused_moe import *
 from vllm.platforms import current_platform
 from vllm.utils import FlexibleArgumentParser
-from fuse_moegemm import fused_moe_impl, fused_moe_first_stage_tune, fused_moe_second_stage_tune, \
+from fuse_moegemm import fused_experts_impl_int8_preprocess, fused_moe_impl, fused_moe_first_stage_tune, fused_moe_second_stage_tune, \
                             grouped_topk, fused_topk, blockM_configs, blockM_configs_decode
+from fuse_moegemm_dev import fused_moe_impl_test
+from fuse_moegemm_correctness import _fused_moe_helper
 # from test_ori_fuse_moe import fused_moe_impl
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
@@ -396,6 +398,7 @@ def benchmark_config(config: BenchmarkConfig,
 
     input_gating = torch.randn(num_tokens, num_experts, dtype=torch.float32)
     
+    print("Tuing config: ", config)
     latencies: list[float] = []
     for i in range(num_iters):
         prepare(i)
@@ -466,7 +469,7 @@ def moe_cuda_graph(
         w2_scale = None
         a1_scale = None
         a2_scale = None
-
+        # num_iters = 10
         w1 = torch.randint(-127,
                             127, (
                                 num_experts,
@@ -503,22 +506,6 @@ def moe_cuda_graph(
         input_gating = torch.randn(num_tokens, num_experts, device=device, dtype=torch.float32)
 
         def run():
-            # fused_moe_impl(x,
-            #                 w1,
-            #                 w2,
-            #                 input_gating,
-            #                 topk,
-            #                 renormalize=True,
-            #                 inplace=False,
-            #                 use_fp8_w8a8=use_fp8_w8a8,
-            #                 use_int8_w8a16=use_int8_w8a16,
-            #                 use_int8_w8a8=use_int8_w8a8,
-            #                 w1_scale=w1_scale,
-            #                 w2_scale=w2_scale,
-            #                 a1_scale=a1_scale,
-            #                 a2_scale=a2_scale,
-            #                 block_shape=block_quant_shape,
-            #                 config=None)
             fused_moe_impl(x,
                             w1,
                             w2,
@@ -580,8 +567,13 @@ def fuse_moe_correctness(
         use_int8_w8a8: bool,
         num_iters: int=100,
         block_quant_shape: List[int] = None,
+        seed: int=0,
+        device_id: int=0,
     ) -> tuple[dict[str, int], float]:
-        device="cuda"    
+        from vllm.platforms import current_platform
+        current_platform.seed_everything(seed)
+
+        device="cuda:"+str(device_id)   
         x = torch.randn(num_tokens, hidden_size, device=device, dtype=dtype)
         w1_scale = None
         w2_scale = None
@@ -615,7 +607,23 @@ def fuse_moe_correctness(
 
         input_gating = torch.randn(num_tokens, num_experts, device=device, dtype=torch.float32)
 
-        triton_output = fused_moe_impl(x,
+        # triton_output = fused_moe_impl(x,
+        #                     w1,
+        #                     w2,
+        #                     input_gating,
+        #                     topk,
+        #                     renormalize=True,
+        #                     inplace=False,
+        #                     use_fp8_w8a8=use_fp8_w8a8,
+        #                     use_int8_w8a16=use_int8_w8a16,
+        #                     w1_scale=w1_scale,
+        #                     w2_scale=w2_scale,
+        #                     a1_scale=a1_scale,
+        #                     a2_scale=a2_scale,
+        #                     block_shape=block_quant_shape,
+        #                     config=None)
+        
+        triton_output = fused_moe_impl_test(x,
                             w1,
                             w2,
                             input_gating,
@@ -653,6 +661,55 @@ def fuse_moe_correctness(
         else:
             print("triton 精度检查不合格！！！")
 
+def fuse_moe_correctness_preprocess(
+        num_tokens: int,
+        num_experts: int,
+        shard_intermediate_size: int,
+        hidden_size: int,
+        topk: int,
+        dtype: torch.dtype,
+        use_fp8_w8a8: bool,
+        use_int8_w8a16: bool,
+        use_int8_w8a8: bool,
+        num_iters: int=100,
+        block_quant_shape: List[int] = None,
+        block_m_configs: dict[str, int]=None,
+        seed: int=0,
+        device_id: int=0,
+    ) -> tuple[dict[str, int], float]:
+    
+    mode_ranges = [mode for mode in block_m_configs.keys()]
+    gemm1_compare_failed_list = []
+    gemm2_compare_failed_list = []
+    device="cuda:"+str(device_id)
+    
+    for mode in mode_ranges:
+        mode0 = mode
+        mode1 = mode
+        # if mode0 == 1000:
+        #     mode1 = 49
+        mode_list=[mode0,mode1]
+        input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=num_experts,device=device,block_size=None,out_dtype=dtype)
+        # triton moe: output
+        output=fused_experts_impl_int8_preprocess(hidden_states=input,
+                                                    w1=weight13,
+                                                    w2=weight2,
+                                                    topk_weights=topk_weights,
+                                                    topk_ids=topk_ids,
+                                                    inplace=False,
+                                                    use_int8_w8a8=True,
+                                                    w1_scale=weight13_scale,
+                                                    w2_scale=weight2_scale,
+                                                    block_shape=None,
+                                                    config={"BLOCK_SIZE_M": 32},
+                                                    per_channel_quant=True,
+                                                    mode=mode_list,
+                                                    gemm1_compare_list=gemm1_compare_failed_list,
+                                                    gemm2_compare_list=gemm2_compare_failed_list)
+    
+    print("gemm1_compare_failed_list: ", gemm1_compare_failed_list)
+    print("gemm2_compare_failed_list: ", gemm2_compare_failed_list)
+    return gemm1_compare_failed_list, gemm2_compare_failed_list
 
 ## benchmark_config_profile(8, 256, 256, 7168, 8, torch.bfloat16, use_fp8_w8a8=False, use_int8_w8a16=False, use_int8_w8a8=True, num_iters=10, block_quant_shape=[128,128])
 def benchmark_config_profile(
@@ -766,8 +823,8 @@ def benchmark_config_profile(
     return avg
 
 def get_rocm_tuning_space(use_fp16):
-    mode_range_prefill = [i for i in range(len(blockM_configs))]
-    mode_range_decode = [i for i in range(len(blockM_configs_decode))]
+    mode_range_prefill = [mode for mode in blockM_configs.keys()]
+    mode_range_decode = [mode for mode in blockM_configs_decode.keys()]
     param_ranges_prefill = {
         "MODE_PREFILL": mode_range_prefill,    
     }
@@ -817,44 +874,47 @@ def get_configs_compute_bound(use_fp16,
     for config_values in product(*values):
         config = dict(zip(keys, config_values))
         configs_decode.append(config)
-
     return [configs_prefill, configs_decode]
 
 
 def prune_rocm_search_space_kernel0(num_tokens, shard_intermediate_size, hidden_size,
-                            search_space, is_fp16, topk):
+                            search_space, is_fp16, topk, gemm_compare_failed_list):
     N1, K1 = shard_intermediate_size, hidden_size
     pruned_space_0 = prune_rocm_configs(num_tokens, N1, K1,
-                                        search_space, is_fp16)
+                                        search_space, is_fp16, gemm_compare_failed_list)
     return pruned_space_0
 
 def prune_rocm_search_space_kernel1(num_tokens, shard_intermediate_size, hidden_size,
-                            search_space, is_fp16, topk):
+                            search_space, is_fp16, topk, gemm_compare_failed_list):
     N2, K2 = hidden_size, shard_intermediate_size // 2
     pruned_space_1 = prune_rocm_configs(num_tokens, N2, K2,
-                                        search_space, is_fp16)
+                                        search_space, is_fp16, gemm_compare_failed_list)
     return pruned_space_1
 
 
 # The following code is inspired by ROCm/Triton GEMM tuning script:
 # https://github.com/ROCm/triton/blob/triton-mlir/scripts/amd/gemm/tune_gemm.py#L89
-def prune_rocm_configs(M, N, K, configs, is_fp16=True):
+def prune_rocm_configs(M, N, K, configs, is_fp16=True, gemm_compare_failed_list=[]):
     pruned_configs = []
     if(M > M_THRESHOLD):
         for config in configs[0]:
-            mode = config.get("MODE_PREFILL")
-            compare_fail = [42,43,46,52,54,60]
-            ignored_modes = [5,7,8,12,34,37,38,44,55,56,57,58,61,63,62]
-            exclude_modes = compare_fail + ignored_modes
+            prefill_config = {k : v for k, v in config.items()}
+            mode = prefill_config.get("MODE_PREFILL")
+            exclude_modes = gemm_compare_failed_list
             # #remove warps=2
             if mode in exclude_modes:
                 continue
 
-            pruned_configs.append(config)
+            pruned_configs.append(prefill_config)
     else:
         for config in configs[1]:
-            mode = config.get("MODE_DECODE")
-            pruned_configs.append(config)
+            decode_config = {k : v for k, v in config.items()}
+            mode = decode_config.get("MODE_DECODE")
+            exclude_modes = gemm_compare_failed_list
+            # #remove warps=2
+            if mode in exclude_modes:
+                continue
+            pruned_configs.append(decode_config)
 
     return pruned_configs
 
@@ -926,7 +986,7 @@ class BenchmarkWorker:
         fuse_moe_correctness(num_tokens, num_experts,
                                        shard_intermediate_size, hidden_size,
                                        topk, dtype, use_fp8_w8a8,
-                                       use_int8_w8a16, use_int8_w8a8, block_quant_shape=block_quant_shape)
+                                       use_int8_w8a16, use_int8_w8a8, block_quant_shape=block_quant_shape,seed=self.seed, device_id=self.device_id)
 
         return
 
@@ -950,25 +1010,33 @@ class BenchmarkWorker:
         best_time = float("inf")
         from vllm.platforms import current_platform
         current_platform.seed_everything(self.seed)
+            
+        mode_pattern = "MODE_DECODE"
+        block_configs = blockM_configs_decode
+        if num_tokens > M_THRESHOLD:
+            mode_pattern = "MODE_PREFILL"
+            block_configs = blockM_configs
+
+        gemm1_compare_failed_list, gemm2_compare_failed_list = fuse_moe_correctness_preprocess(num_tokens, num_experts,
+                                                                        shard_intermediate_size, hidden_size,
+                                                                        topk, dtype, use_fp8_w8a8,
+                                                                        use_int8_w8a16, use_int8_w8a8, block_quant_shape=block_quant_shape,
+                                                                        block_m_configs = block_configs,seed=self.seed, device_id=self.device_id)
+        
         
         if current_platform.is_rocm():
             is_fp16 = is_fp16 = not (use_fp8_w8a8 or use_int8_w8a16 or use_int8_w8a8)
             search_space_kernel0 = prune_rocm_search_space_kernel0(num_tokens,
                                                    shard_intermediate_size,
                                                    hidden_size, search_space,
-                                                   is_fp16, topk)
+                                                   is_fp16, topk, gemm1_compare_failed_list)
             search_space_kernel1 = prune_rocm_search_space_kernel1(num_tokens,
                                                    shard_intermediate_size,
                                                    hidden_size, search_space,
-                                                   is_fp16, topk)
-        mode_pattern = "MODE_DECODE"
-        block_configs = blockM_configs_decode
-        if num_tokens > M_THRESHOLD:
-            mode_pattern = "MODE_PREFILL"
-            block_configs = blockM_configs
-        exclude_modes = [13, 32, 33, 34, 35]
+                                                   is_fp16, topk, gemm2_compare_failed_list)
 
-
+        # import pdb
+        # pdb.set_trace()
         with torch.cuda.device(self.device_id):
             
             for block_m in tqdm([16,32,64,128], desc="Processing block_m......"):
@@ -977,12 +1045,12 @@ class BenchmarkWorker:
                 
                 time_kernel1 = float('inf')
                 config_kernel1 = None
-                for config in search_space_kernel0:
-                    if block_configs[config[mode_pattern]] != block_m:
+                for config0 in search_space_kernel0:
+                    if block_configs[config0[mode_pattern]] != block_m:
                         continue
                     try:
                         kernel_time = benchmark_config(
-                                            config,
+                                            config0,
                                             num_tokens,
                                             num_experts,
                                             shard_intermediate_size,
@@ -1001,13 +1069,13 @@ class BenchmarkWorker:
                         continue
                     if kernel_time < time_kernel0:
                         time_kernel0 = kernel_time
-                        config_kernel0 = config 
-                for config in search_space_kernel1:
-                    if block_configs[config[mode_pattern]] != block_m:
+                        config_kernel0 = config0
+                for config1 in search_space_kernel1:
+                    if block_configs[config1[mode_pattern]] > block_m:
                         continue
                     try:
                         kernel_time = benchmark_config(
-                                            config,
+                                            config1,
                                             num_tokens,
                                             num_experts,
                                             shard_intermediate_size,
@@ -1026,13 +1094,20 @@ class BenchmarkWorker:
                         continue
                     if kernel_time < time_kernel1:
                         time_kernel1 = kernel_time
-                        config_kernel1 = config                     
+                        config_kernel1 = config1                     
                 now = datetime.now()
                 print(f"{now.ctime()}] Completed tuning for batch_size={num_tokens}")
                 if (time_kernel0 + time_kernel1) < best_time:
                     best_time = time_kernel0 + time_kernel1
                     best_config_kernel0 = config_kernel0
                     best_config_kernel1 = config_kernel1
+        
+        if best_config_kernel0 and best_config_kernel1:     
+            best_config_kernel0['MODE'] = best_config_kernel0.pop(mode_pattern)
+            best_config_kernel1['MODE'] = best_config_kernel1.pop(mode_pattern)
+
+        best_config_kernel0['DELTA'] = 1
+        best_config_kernel1['DELTA'] = int(best_config_kernel0['BLOCK_SIZE_M']/best_config_kernel1['BLOCK_SIZE_M'])           
         return best_config_kernel0, best_config_kernel1
 
 
@@ -1144,72 +1219,121 @@ def main(args: argparse.Namespace):
         tp_size = tp_size // moe_ep_size
     
     block_quant_shape = None
-    config = AutoConfig.from_pretrained(
-        args.model, trust_remote_code=args.trust_remote_code)
-    if config.architectures[0] == "DbrxForCausalLM":
-        E = config.ffn_config.moe_num_experts
-        E = E // moe_ep_size
-        topk = config.ffn_config.moe_top_k
-        intermediate_size = config.ffn_config.ffn_hidden_size
-        shard_intermediate_size = 2 * intermediate_size // tp_size
-    elif config.architectures[0] == "JambaForCausalLM":
-        E = config.num_experts
-        E = E // moe_ep_size
-        topk = config.num_experts_per_tok
-        intermediate_size = config.intermediate_size
-        shard_intermediate_size = 2 * intermediate_size // tp_size
-    elif (config.architectures[0] == "DeepseekV3ForCausalLM"
-          or config.architectures[0] == "DeepseekV2ForCausalLM"):
-        E = config.n_routed_experts
-        E = E // moe_ep_size
-        topk = config.num_experts_per_tok
-        intermediate_size = config.moe_intermediate_size
-        shard_intermediate_size = 2 * intermediate_size // tp_size
-        block_quant_shape = get_weight_block_size_safety(config)
-    elif config.architectures[0] == "Qwen2MoeForCausalLM":
-        E = config.num_experts
-        E = E // moe_ep_size
-        topk = config.num_experts_per_tok
-        intermediate_size = config.moe_intermediate_size
-        shard_intermediate_size = 2 * intermediate_size // tp_size
-    else:
-        if not hasattr(config, "hidden_size"):
-            # Support for llama4
-            config = config.text_config
-        # Default: Mixtral.
-        E = config.num_local_experts
-        E = E // moe_ep_size
-        topk = config.num_experts_per_tok
-        intermediate_size = config.intermediate_size
-        shard_intermediate_size = 2 * intermediate_size // tp_size
+    
+    # config = AutoConfig.from_pretrained(
+    #     args.model, trust_remote_code=args.trust_remote_code)
+    # if config.architectures[0] == "DbrxForCausalLM":
+    #     E = config.ffn_config.moe_num_experts
+    #     E = E // moe_ep_size
+    #     topk = config.ffn_config.moe_top_k
+    #     intermediate_size = config.ffn_config.ffn_hidden_size
+    #     shard_intermediate_size = 2 * intermediate_size // tp_size
+    # elif config.architectures[0] == "JambaForCausalLM":
+    #     E = config.num_experts
+    #     E = E // moe_ep_size
+    #     topk = config.num_experts_per_tok
+    #     intermediate_size = config.intermediate_size
+    #     shard_intermediate_size = 2 * intermediate_size // tp_size
+    # elif (config.architectures[0] == "DeepseekV3ForCausalLM"
+    #       or config.architectures[0] == "DeepseekV2ForCausalLM"):
+    #     E = config.n_routed_experts
+    #     E = E // moe_ep_size
+    #     topk = config.num_experts_per_tok
+    #     intermediate_size = config.moe_intermediate_size
+    #     shard_intermediate_size = 2 * intermediate_size // tp_size
+    #     block_quant_shape = get_weight_block_size_safety(config)
+    # elif config.architectures[0] == "Qwen2MoeForCausalLM":
+    #     E = config.num_experts
+    #     E = E // moe_ep_size
+    #     topk = config.num_experts_per_tok
+    #     intermediate_size = config.moe_intermediate_size
+    #     shard_intermediate_size = 2 * intermediate_size // tp_size
+    # else:
+    #     if not hasattr(config, "hidden_size"):
+    #         # Support for llama4
+    #         config = config.text_config
+    #     # Default: Mixtral.
+    #     E = config.num_local_experts
+    #     E = E // moe_ep_size
+    #     topk = config.num_experts_per_tok
+    #     intermediate_size = config.intermediate_size
+    #     shard_intermediate_size = 2 * intermediate_size // tp_size
 
-    # int8 fuse-moe
-    shard_intermediate_size = shard_intermediate_size * 2
-    # block_quant_shape = [128, 128]
-    block_quant_shape = None
-    hidden_size = config.hidden_size
+    # # int8 fuse-moe
+    # shard_intermediate_size = shard_intermediate_size * 2
+    # # block_quant_shape = [128, 128]
+    # block_quant_shape = None
+    # hidden_size = config.hidden_size
     dtype = torch.bfloat16 if current_platform.is_rocm() else config.torch_dtype
     use_fp8_w8a8 = args.dtype == "fp8_w8a8"
     use_int8_w8a16 = args.dtype == "int8_w8a16"
     use_int8_w8a8 = args.dtype == "int8_w8a8"
+    
+    topk = 8
+    # 字节算子测试
+    E = 64
+    shard_intermediate_size=2048
+    hidden_size=4096
+    topk = 4
 
-    shard_intermediate_size = 384 #N
-    hidden_size = 4096 #k
-    E = 128
+    # ## deepseek-r1-tp16
+    # E = 256
+    # shard_intermediate_size=256
+    # hidden_size=7168
+    
+    # ## deepseek-r1-tp8
+    # E = 256
+    # shard_intermediate_size=512
+    # hidden_size=7168
+    
+    # E = 128
+    # #qwen3-30b-A3B-tp1
+    # shard_intermediate_size=1536
+    # hidden_size=2048
+    # #qwen3-30b-A3B-tp2
+    # E = 128
+    # shard_intermediate_size=768
+    # hidden_size=2048
+    # # #qwen3-235b-A22B-tp8
+    # E = 128
+    # # shard_intermediate_size=384
+    # # hidden_size=4096
+
+    # # #qwen3-235b-A22B-tp8
+    # shard_intermediate_size=384
+    # hidden_size=4096
+
+    # deepseek-r1-EP16
+    # E = 16
+    # shard_intermediate_size=4096
+    # hidden_size=7168
 
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            1, 2, 4, 8, 16, 32, 64, 128
+            # 1, 2, 4, 8, 16, 32, 64, 128,
+            # 256, 512, 1024, 2048, 
+            # 4096, 6144, 8192, 16384
+            
+            32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 
+            144, 160, 176, 192, 208, 224, 240, 256, 
+            288, 320, 352, 384, 416, 448, 480, 512, 
+
+            640, 768, 896, 1024, 
+            1152, 1280, 1408, 1536, 1664, 1792, 1920, 2048,
+            2176, 2304, 2432, 2560, 2688, 2816, 2944, 3072,
+            3200, 3328, 3456, 3584, 3712, 3840, 3968, 4096,
+            6144, 8192, 10240, 12288, 14336, 16384
+            
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
             # 1, 2, 4, 8, 16, 32, 64, 8192, 16384, 32768
             # 4096, 6144, 8192, 16384, 32768
-            # 8192
+            # 16384
             # 65536,32768,
             # 32768, 49152, 65536, 131072
             # 6144, 8192, 16384, 32768, 40960
-            # 4096,
-            # 1024,
+            # 512,
+            # 1024,2048,4096
         ]
     else:
         batch_sizes = [args.batch_size]
