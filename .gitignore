@@ -1,6 +1,7 @@
 lightop/csrc/*.hip
 lightop/csrc/topk.hip
 build/*
+dist/*
 lightop/__pycache__/*
 lightop/csrc/*/*.hip
 lightop/csrc/*/*.cuh
@@ -16,4 +17,8 @@ test/moe_w8a8/__pycache__/*
 test/moe_w8a8/.triton/
 .vscode
 test/w8a8/__pycache__/*
+test/w8a8/*.xlsx
+test/w8a8/*/*.xlsx
+dist/*
 */.triton/
+run.sh

@@ -1,5 +1,7 @@
 #include "reduce.h"
 #include "hip/hip_bf16.h"
+#include <sys/syscall.h>
+#include <unistd.h>
 namespace at {
 namespace native {
 
@@ -648,16 +650,46 @@ Tensor gemm_w8_a8_smooth_colmajor(const Tensor& x,const Tensor& weight,const Ten
     int temp;
     Tensor ret=at::empty(size,x.options().dtype(out_dtype));
     auto stream = at::cuda::getCurrentCUDAStream();
+// GPU 内存管理结构体
+struct GPUWorkSpace {
+    int* splitk_work_space;
+    int* semaphores;
+    int gpu_id;
+    int process_id;
+    pid_t thread_id;
+    
+    GPUWorkSpace() : splitk_work_space(nullptr), semaphores(nullptr) {
+        hipGetDevice(&gpu_id);
+        process_id = getpid();
+        thread_id = syscall(SYS_gettid);
+        // printf("gemm_w8_a8_smooth_colmajor Current GPU ID: %d, Process ID: %d, Thread ID: %d, hipmalloc\n", gpu_id, process_id, thread_id);
+        
+        hipMalloc(&splitk_work_space, 10000000); // 10m
+        hipMemset(splitk_work_space, 0, 10000000);
+        hipMalloc(&semaphores, 100000); // 100k
+        hipMemset(semaphores, 0, 100000);
+    }
+    
+    ~GPUWorkSpace() {
+        if (splitk_work_space) {
+            hipFree(splitk_work_space);
+            // printf("gemm_w8_a8_smooth_colmajor GPU ID: %d, Process ID: %d, Thread ID: %d, hipfree splitk_work_space\n", gpu_id, process_id, thread_id);
+        }
+        if (semaphores) {
+            hipFree(semaphores);
+            // printf("gemm_w8_a8_smooth_colmajor GPU ID: %d, Process ID: %d, Thread ID: %d, hipfree semaphores\n", gpu_id, process_id, thread_id);
+        }
+    }
+};
+
 #define UseStaticWorkSpace 1
 #if UseStaticWorkSpace
-    static thread_local int* splitk_work_space = nullptr;
-    static thread_local int* semaphores = nullptr;
-    if(splitk_work_space == nullptr){
-        hipMalloc(&splitk_work_space, 10000000); // 10m
-        hipMemset(splitk_work_space,0,10000000);
-        hipMalloc(&semaphores, 100000); // 100k
-        hipMemset(semaphores,0,100000);
+    static GPUWorkSpace* workspace = nullptr;
+    if(workspace == nullptr){
+        workspace = new GPUWorkSpace();
     }
+    int* splitk_work_space = workspace->splitk_work_space;
+    int* semaphores = workspace->semaphores;
 #else
     int* splitk_work_space = (int*)work_space.data_ptr();  // 10MB
     int* semaphores = splitk_work_space + 3*1024*1024;  
