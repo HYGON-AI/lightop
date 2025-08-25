@@ -6,6 +6,7 @@ using half_t  = _Float16;
 using half2_t = __attribute__((__vector_size__(2 * sizeof(half_t)))) half_t;
 using half4_t = __attribute__((__vector_size__(4 * sizeof(half_t)))) half_t;
 using float4_t = __attribute__((__vector_size__(4 * sizeof(float)))) float;
+using bhalf_t = uint16_t;  // bf16 type using uint16_t
 
 namespace at {
 namespace native {
@@ -37,34 +38,103 @@ namespace marlin_moe_w4a16{
     output[1] = __hfma2(hi_val, *mul_ptr, *add_ptr);  // (hi * 0.0625) - 72.0
   }
 
+  // 设备侧函数：将4位整数反量化为BF16并写入FragB
+  __device__ void dequantize_int4_to_bf16(int q, typename ScalarType<uint16_t>::FragB& output) {
+    // 复用fp16的反量化逻辑，然后转换为bf16
+    typename ScalarType<__half>::FragB fp16_output;
+    dequantize_int4_to_fp16(q, fp16_output);
+    
+    // 将fp16转换为bf16
+    __half* fp16_ptr = reinterpret_cast<__half*>(&fp16_output);
+    
+    // 转换4个fp16值到bf16
+    for (int i = 0; i < 4; i++) {
+      float f32_val = __half2float(fp16_ptr[i]);
+      output[i] = ScalarType<uint16_t>::float2num(f32_val);
+    }
+  }
+
+  // 通用反量化函数，根据scalar_t类型选择正确的反量化函数
+  template <typename scalar_t>
+  __device__ inline void dequantize_int4(int q, typename ScalarType<scalar_t>::FragB& output) {
+    if constexpr (std::is_same<scalar_t, __half>::value) {
+      dequantize_int4_to_fp16(q, output);
+    } else {
+      dequantize_int4_to_bf16(q, output);
+    }
+  }
+
   // FragB = Vec<__half2, 2>;
   // scalar_t = __half;
   // FragS = Vec<__half2, 1>;
   // using scalar_t2 = __half2;
   template <typename scalar_t>
   __device__ inline void scale_and_sub(
-      typename ScalarType<scalar_t>::FragB& frag_b, scalar_t s, scalar_t zp) {
+      typename ScalarType<scalar_t>::FragB& frag_b, __half s, __half zp) {
     
-    using scalar_t2 = typename ScalarType<scalar_t>::scalar_t2;
-    // 将 half的类型的值 扩展为 half2 scalar_t2就是half2
-    scalar_t2 s2 = ScalarType<scalar_t>::num2num2(s);
-    scalar_t2 zp2 = ScalarType<scalar_t>::num2num2(zp);
-    // __hneg2 对half2数据类型取反并返回结果
-    // __hfma2 对half2数据类型 执行 乘加融合操作
-    frag_b[0] = __hfma2(frag_b[0], s2, __hneg2(zp2));
-    frag_b[1] = __hfma2(frag_b[1], s2, __hneg2(zp2));
+    if constexpr (std::is_same<scalar_t, __half>::value) {
+      // fp16 version
+      using scalar_t2 = typename ScalarType<scalar_t>::scalar_t2;
+      scalar_t2 s2 = ScalarType<scalar_t>::num2num2(s);
+      scalar_t2 zp2 = ScalarType<scalar_t>::num2num2(zp);
+      frag_b[0] = __hfma2(frag_b[0], s2, __hneg2(zp2));
+      frag_b[1] = __hfma2(frag_b[1], s2, __hneg2(zp2));
+    } else {
+      // bf16 version - convert to fp16 for computation, then back to bf16
+      float s_f32 = __half2float(s);
+      float zp_f32 = __half2float(zp);
+      for (int i = 0; i < 4; i++) {
+        float f32_val = ScalarType<uint16_t>::num2float(frag_b[i]);
+        float result = f32_val * s_f32 - zp_f32;
+        frag_b[i] = ScalarType<uint16_t>::float2num(result);
+      }
+    }
   }
 
   template <typename scalar_t>
   __device__ inline void mmac_volatile(const typename ScalarType<scalar_t>::FragA& frag_a,
                             const typename ScalarType<scalar_t>::FragB& frag_b,
                             typename ScalarType<scalar_t>::FragC& frag_c) {
-    // #if defined(__gfx936__) || defined(__gfx928__)
+    // #if defined(__gfx936__) || defined(__gfx936__) || defined(__gfx928__)
     //   *(reinterpret_cast<float4_t*>(&frag_c)) = __builtin_amdgcn_mmac_f32_16x16x16f16(*(reinterpret_cast<const half4_t*>(&frag_a)), *(reinterpret_cast<const half4_t*>(&frag_b)), *(reinterpret_cast<float4_t*>(&frag_c)));
     // #endif
 
-    *(reinterpret_cast<float4_t*>(&frag_c)) = __builtin_amdgcn_mmac_f32_16x16x16f16(*(reinterpret_cast<const half4_t*>(&frag_a)), *(reinterpret_cast<const half4_t*>(&frag_b)), *(reinterpret_cast<float4_t*>(&frag_c)));
-  }
+    if constexpr (std::is_same<scalar_t, __half>::value) {
+      // fp16 computation
+      *(reinterpret_cast<float4_t*>(&frag_c)) = __builtin_amdgcn_mmac_f32_16x16x16f16(*(reinterpret_cast<const half4_t*>(&frag_a)), *(reinterpret_cast<const half4_t*>(&frag_b)), *(reinterpret_cast<float4_t*>(&frag_c)));
+    } else {
+      // bf16 computation - need to convert frag_b from uint16_t to v4bh format
+      using v4bh = __attribute__((__vector_size__(4 * sizeof(short)))) short;
+      
+      // Directly reinterpret frag_b as v4bh type
+      const v4bh& bf16_vec = *(reinterpret_cast<const v4bh*>(&frag_b));
+      
+
+      *(reinterpret_cast<float4_t*>(&frag_c)) = __builtin_amdgcn_mmac_f32_16x16x16bf16(*(reinterpret_cast<const v4bh*>(&frag_a)), bf16_vec, *(reinterpret_cast<float4_t*>(&frag_c)));
+  
+      // if(blockIdx.x==0 && threadIdx.x==0)
+      // {
+      //   auto temp_a = *(reinterpret_cast<const half4_t*>(&frag_a));
+      //   float frag_a_f[4] = {
+      //     ScalarType<uint16_t>::num2float(reinterpret_cast<const uint16_t*>(&temp_a)[0]),
+      //     ScalarType<uint16_t>::num2float(reinterpret_cast<const uint16_t*>(&temp_a)[1]),
+      //     ScalarType<uint16_t>::num2float(reinterpret_cast<const uint16_t*>(&temp_a)[2]),
+      //     ScalarType<uint16_t>::num2float(reinterpret_cast<const uint16_t*>(&temp_a)[3])
+      //   };
+      //   float frag_b_f[4] = {
+      //     ScalarType<uint16_t>::num2float(frag_b.elems[0]),
+      //     ScalarType<uint16_t>::num2float(frag_b.elems[1]),
+      //     ScalarType<uint16_t>::num2float(frag_b.elems[2]),
+      //     ScalarType<uint16_t>::num2float(frag_b.elems[3])
+      //   };
+      //   printf("bf16 frag_a: %f %f %f %f | bf16 frag_b: %f %f %f %f | bf16 frag_c before: %f %f %f %f\n",
+      //     frag_a_f[0], frag_a_f[1], frag_a_f[2], frag_a_f[3],
+      //     frag_b_f[0], frag_b_f[1], frag_b_f[2], frag_b_f[3],
+      //     frag_c[0], frag_c[1], frag_c[2], frag_c[3]
+      //   );
+      }
+
+    }
 
   template <typename scalar_t,  // compute dtype, half or __hip_float16
           const int threads,          // number of threads in a threadblock
@@ -99,8 +169,9 @@ namespace marlin_moe_w4a16{
     using FragA = typename ScalarType<scalar_t>::FragA;
     using FragB = typename ScalarType<scalar_t>::FragB;
     using FragC = typename ScalarType<scalar_t>::FragC;
-    using FragS = typename ScalarType<scalar_t>::FragS;
-    using FragZP = typename ScalarType<scalar_t>::FragZP;
+    // For both fp16 and bf16, scale and zero point should be fp16 to reuse existing logic
+    using FragS = Vec<__half2, 1>;
+    using FragZP = Vec<__half2, 4>;
  
     const int blcok_idx_x = blockIdx.x;
     const int warp_idx = threadIdx.x % 64;
@@ -192,7 +263,7 @@ namespace marlin_moe_w4a16{
         if (mul_topk_weights) {
           for (int i = 0; (tid4 * 4 + i) < block_num_valid_tokens; i++) {
             sh_block_topk_weights[tid4 * 4 + i] =
-                Dtype::num2num2(Dtype::float2num(
+                Dtype::num2num2g(Dtype::float2num(
                     topk_weights_ptr[sh_block_sorted_ids[tid4 * 4 + i]]));
           }
         }
@@ -552,27 +623,22 @@ namespace marlin_moe_w4a16{
       bool pred = (k == 0) || (group_blocks < thread_k_blocks);
       if (pred){
         int k2 = k % 2;
-        // 反量化 zero矩阵
+        // 反量化 zero矩阵 - 对于bf16版本，也使用fp16进行反量化以复用现有逻辑
         // if (is_new_zp) { // 仅在 k==0 时执行一次， 因为 两次[16, 128]计算用的同一个 scale和zero数据
-        FragB frag_zp_0; // 4个fp16 Vec<__half2, 2> 第一次mac zero 矩阵数据
-        FragB frag_zp_1; // 4个fp16 Vec<__half2, 2> 第二次mac zero 矩阵数据
         int zp_quant_0; // int32 
         int zp_quant_1; // int32
 
         zp_quant_0 = frag_qzp[k2];
         zp_quant_1 = zp_quant_0 >> 8;
 
-        // dequant<scalar_t, w_type.size_bits()>(zp_quant_0, frag_zp_0);
-        // dequant<scalar_t, w_type.size_bits()>(zp_quant_1, frag_zp_1);
-        dequantize_int4_to_fp16(zp_quant_0, frag_zp_0);
-        dequantize_int4_to_fp16(zp_quant_1, frag_zp_1);
-
-        frag_zp[0] = frag_zp_0[0];
-        frag_zp[1] = frag_zp_0[1];
-        frag_zp[2] = frag_zp_1[0];
-        frag_zp[3] = frag_zp_1[1];
-        // zero*scale
+        // 直接反量化到frag_zp中，复用同一个寄存器
+        typename ScalarType<__half>::FragB* frag_zp_ptr = reinterpret_cast<typename ScalarType<__half>::FragB*>(&frag_zp[0]);
+        dequantize_int4<__half>(zp_quant_0, frag_zp_ptr[0]);
+        dequantize_int4<__half>(zp_quant_1, frag_zp_ptr[1]);
+        
+        // zero*scale - 都使用fp16运算，因为scale和zero都是fp16
         for (int j = 0; j < 4; j++) { 
+          using scalar_t2 = typename ScalarType<__half>::scalar_t2;
           frag_zp[j] = __hmul2(frag_zp[j], *reinterpret_cast<scalar_t2*>(&frag_s[k2][j]));
         }
       }
@@ -596,8 +662,8 @@ namespace marlin_moe_w4a16{
         // frag_b1: 存储后4个fp16数据，用于第二次mac Vec<half2, 2>
         // dequant<scalar_t, w_type.size_bits()>(b_quant_0, frag_b0);
         // dequant<scalar_t, w_type.size_bits()>(b_quant_1, frag_b1);
-        dequantize_int4_to_fp16(b_quant_0, frag_b0);
-        dequantize_int4_to_fp16(b_quant_1, frag_b1);
+        dequantize_int4<scalar_t>(b_quant_0, frag_b0);
+        dequantize_int4<scalar_t>(b_quant_1, frag_b1);
         // b *scale - zero*scale
         // 将b 还原成 fp16                  
         scale_and_sub<scalar_t>(frag_b0, frag_s[k2][j][0].x, frag_zp[j].x);
@@ -686,7 +752,7 @@ namespace marlin_moe_w4a16{
       constexpr int c_sh_rd_delta =
           c_sh_stride * (threads / (2 * thread_n_blocks));  // c_sh_stride * 8
 
-      auto write = [&](int idx, float c_float) { // 在 sh_red 的 idx 索引处插入 float转成的 fp16
+      auto write = [&](int idx, float c_float) { // 在 sh_red 的 idx 索引处插入 float转成的 fp16/bf16
         // // 进行异或变换, 一个 swizzle的组包含8行数据
         // int row = idx / (8 * c_sh_stride);
         // int col = idx % (8 * c_sh_stride);
@@ -694,7 +760,7 @@ namespace marlin_moe_w4a16{
         // col = ((row % 8) ^ (col / 8)) * 8 + col % 8;
 
         // idx = row * (8 * c_sh_stride) + col;
-        ((__half*)sh_red)[idx] = __float2half(c_float);
+        ((scalar_t*)sh_red)[idx] = Dtype::float2num(c_float);
       };
       
       // 遍历 多个thread_m_blocks, 128个线程将自己 frag_c寄存器中的数据写入到lds中
@@ -759,10 +825,10 @@ namespace marlin_moe_w4a16{
               for (int a = 0; a < 4; a++) { // 逐次原子加 4 次, 每次 __half2 即32bit
                 scalar_t2 res = sh_red_half2[a];
                 if (mul_topk_weights) {
-                  res = __hmul2(res, topk_weight_score);
+                  res = mul2(res, topk_weight_score);
                 }
                 if (slice_count > 1) {
-                  atomicAdd(&C_half2[a], res);
+                  atomic_add_generic<scalar_t2>(&C_half2[a], res);
                 } else {
                   C_half2[a] = res;
                 };

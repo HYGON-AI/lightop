@@ -12,7 +12,33 @@ namespace at {
 namespace native {
 namespace marlin_moe_w4a16{
 
+template <typename scalar_t>
+void marlin_mm_impl(const void* A, const void* B, void* C, void* s_zp,
+              void* sorted_token_ids, void* expert_ids,
+              void* num_tokens_past_padded, void* topk_weights,
+              int moe_block_size, int top_k, bool mul_topk_weights,
+              int prob_m, int prob_n, int prob_k, void* workspace,
+              int num_groups, int group_size,
+              int dev, cudaStream_t stream, int thread_k, int thread_n,
+              int sms);
+
 void marlin_mm(const void* A, const void* B, void* C, void* s_zp,
+              void* sorted_token_ids, void* expert_ids,
+              void* num_tokens_past_padded, void* topk_weights,
+              int moe_block_size, int top_k, bool mul_topk_weights,
+              int prob_m, int prob_n, int prob_k, void* workspace,
+              int num_groups, int group_size,
+              int dev, cudaStream_t stream, int thread_k, int thread_n,
+              int sms) {
+  // 默认使用fp16，保持向后兼容
+  marlin_mm_impl<__half>(A, B, C, s_zp, sorted_token_ids, expert_ids,
+                         num_tokens_past_padded, topk_weights, moe_block_size, top_k, mul_topk_weights,
+                         prob_m, prob_n, prob_k, workspace, num_groups, group_size,
+                         dev, stream, thread_k, thread_n, sms);
+}
+
+template <typename scalar_t>
+void marlin_mm_impl(const void* A, const void* B, void* C, void* s_zp,
               void* sorted_token_ids, void* expert_ids,
               void* num_tokens_past_padded, void* topk_weights,
               int moe_block_size, int top_k, bool mul_topk_weights,
@@ -56,7 +82,7 @@ void marlin_mm(const void* A, const void* B, void* C, void* s_zp,
   if(prob_k==7168 && prob_n==512){
     switch(moe_block_size / 16) {
       case 1: // 16-256-64
-        Marlin<__half, 256, 1, 16, 4, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        Marlin<scalar_t, 256, 1, 16, 4, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
@@ -64,7 +90,7 @@ void marlin_mm(const void* A, const void* B, void* C, void* s_zp,
         break;
 
       case 2: // 32-256-64
-        Marlin<__half, 256, 2, 16, 4, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        Marlin<scalar_t, 256, 2, 16, 4, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
@@ -72,21 +98,21 @@ void marlin_mm(const void* A, const void* B, void* C, void* s_zp,
         break;
 
       case 3: // 48-512-32
-        Marlin_512_32<__half, 256, 3, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        Marlin_512_32<scalar_t, 256, 3, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
             prob_n, prob_k, locks);         
         break;
       case 4: // 64-512-32
-        Marlin_512_32<__half, 256, 4, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        Marlin_512_32<scalar_t, 256, 4, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
             prob_n, prob_k, locks);          
         break;
       case 5: // 80-512-32
-        Marlin_512_32<__half, 256, 5, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        Marlin_512_32<scalar_t, 256, 5, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
@@ -100,7 +126,7 @@ void marlin_mm(const void* A, const void* B, void* C, void* s_zp,
   }else if(prob_k==256 && prob_n==7168){ //  deepseek gemm2
     switch(moe_block_size / 16) {
       case 1: // 16-256-64
-        Marlin_512_32<__half, 256, 1, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        Marlin_512_32<scalar_t, 256, 1, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
@@ -108,7 +134,7 @@ void marlin_mm(const void* A, const void* B, void* C, void* s_zp,
         break;
 
       case 2: // 32-256-64
-        Marlin_512_32<__half, 256, 2, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        Marlin_512_32<scalar_t, 256, 2, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
@@ -116,21 +142,21 @@ void marlin_mm(const void* A, const void* B, void* C, void* s_zp,
         break;
 
       case 3: // 48-512-32
-        Marlin_512_32<__half, 256, 3, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        Marlin_512_32<scalar_t, 256, 3, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
             prob_n, prob_k, locks);         
         break;
       case 4: // 64-512-32
-        Marlin_512_32<__half, 256, 4, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        Marlin_512_32<scalar_t, 256, 4, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
             prob_n, prob_k, locks);          
         break;
       case 5: // 80-512-32
-        Marlin_512_32<__half, 256, 5, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        Marlin_512_32<scalar_t, 256, 5, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
@@ -173,7 +199,7 @@ torch::Tensor moe_marlin_w4a16(torch::Tensor& a,
                               bool is_zp_float
                             ) {
   int pack_factor = 8;
-
+  int temp8;
   if (moe_block_size != 8) {
     TORCH_CHECK(moe_block_size % 16 == 0,
                 "unsupported moe_block_size=", moe_block_size);
@@ -261,8 +287,18 @@ torch::Tensor moe_marlin_w4a16(torch::Tensor& a,
 
   int dev = a.get_device();
   if (a.scalar_type() == at::ScalarType::Half) {
-    at::native::marlin_moe_w4a16::marlin_mm(
+    at::native::marlin_moe_w4a16::marlin_mm_impl<__half>(
         a.data_ptr<at::Half>(), b_q_weight.data_ptr(), c.data_ptr<at::Half>(),
+        b_scale_zeros.data_ptr<int>(),
+        sorted_token_ids.data_ptr(),
+        expert_ids.data_ptr(), num_tokens_past_padded.data_ptr(),
+        topk_weights.data_ptr(), moe_block_size, top_k, mul_topk_weights,
+        size_m, size_n, size_k, workspace.data_ptr(),
+        num_groups, group_size, dev,
+        at::cuda::getCurrentCUDAStream(dev), thread_k, thread_n, sms);
+  } else if (a.scalar_type() == at::ScalarType::BFloat16) {
+    at::native::marlin_moe_w4a16::marlin_mm_impl<uint16_t>(
+        a.data_ptr<at::BFloat16>(), b_q_weight.data_ptr(), c.data_ptr<at::BFloat16>(),
         b_scale_zeros.data_ptr<int>(),
         sorted_token_ids.data_ptr(),
         expert_ids.data_ptr(), num_tokens_past_padded.data_ptr(),
@@ -272,7 +308,7 @@ torch::Tensor moe_marlin_w4a16(torch::Tensor& a,
         at::cuda::getCurrentCUDAStream(dev), thread_k, thread_n, sms);
   } else {
     TORCH_CHECK(false,
-                "moe_wna16_marlin_gemm only supports and float16");
+                "moe_wna16_marlin_gemm only supports Half and BFloat16");
   }
 
   return c;
