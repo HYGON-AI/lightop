@@ -39,16 +39,6 @@ std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor& hidden,
     TensorDescriptor output_experts_token_count(out_experts_token_count);
     TensorDescriptor output_token_start(out_experts_token_start);
 
-    // std::vector<Tensor> result =
-    //     at::where((selected_experts >= expert_start_idx) & (selected_experts < expert_end_idx));
-    // std::vector<Tensor> unique_results;
-    // for(const auto& tensor : result)
-    // {
-    //     unique_results.push_back(std::get<0>(at::_unique(tensor)));
-    // }
-    // Tensor associateToken = unique_results[0].to(at::kLong);
-    // TensorDescriptor associate_token_tensor(associateToken);
-
     size_t workspace_size = 0;
     miopenHandle_t handle = getMiopenHandle_new();
     MIOPEN_CHECK(miopenGetMoeScatterDynamicQuantForwardWorkspaceSize(handle,
