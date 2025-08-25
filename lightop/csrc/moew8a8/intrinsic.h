@@ -169,14 +169,35 @@ __forceinline__ __device__ void builtin_buffer_load_dword_lds(src_type *const sh
 
 // buferr_load_reg
 template<typename T>	
-__forceinline__ __device__ intx4 builtin_amdgcn_buffer_load_reg_dwordx4(const T* ptr, const int vindex, const int offset){
+__forceinline__ __device__ intx4 builtin_amdgcn_buffer_load_reg_dwordx4(const T* ptr, const int vindex, const int offset){ // const int offset
   intx4 rsrc;
   *(uint64_t*)&rsrc = reinterpret_cast<uint64_t>(ptr); //res[0]放首地址信息
   rsrc[1] += 0x40800000;
   rsrc[2] = 0x80000000;
   rsrc[3] = 0x00020000;
-  rsrc = __builtin_amdgcn_buffer_load_dwordx4(rsrc, vindex, offset, false, false);
+
+  rsrc = __builtin_amdgcn_buffer_load_dwordx4(rsrc, vindex, offset, false, false); // vindx -> sgpr offser->sgpr
+
+//   asm volatile("buffer_load_dwordx4 %0,%1,%2,0, offen offset:0 \n"
+//     : "=v"(rsrc), "+v"(offset), "+s"(rsrc));
+
   return rsrc;
+}
+
+// buferr_load_reg
+template<typename T>	
+__forceinline__ __device__ void buffer_load_reg_dwordx4(const T* ptr, typename vec<int,4>::type & rsrc , const int vindex, int offset){ // const int offset
+ 
+  intx4 global_ptr;
+  *(uint64_t*)&global_ptr = reinterpret_cast<uint64_t>(ptr); //res[0]放首地址信息
+  global_ptr[1] += 0x40800000;
+  global_ptr[2] = 0x80000000;
+  global_ptr[3] = 0x00020000;
+
+  asm volatile("buffer_load_dwordx4 %0,%1,%2,0, offen offset:0\n"
+    : "=v"(rsrc), "+v"(offset), "+s"(global_ptr));
+
+  return ;
 }
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //封装mmac
@@ -200,10 +221,30 @@ __device__ typename vec<int, 4>::type mmac(const typename vec<Element, 8>::type 
     auto a = reinterpret_cast<const long*>(&v1);
     auto b = reinterpret_cast<const long*>(&v2);
     intx4 v4i;
+    // __builtin_amdgcn_sched_barrier(0);
     #if defined(__gfx936__) || defined(__gfx928__)
         v4i = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
     #endif
+    // __builtin_amdgcn_sched_barrier(0);
     return v4i;
+}
+
+template<class Element>
+__device__ typename vec<int, 4>::type mmac_int8(const typename vec<Element, 8>::type &v1, const typename vec<Element, 8>::type &v2, typename vec<int, 4>::type &v3)
+{
+    
+    auto a = reinterpret_cast<const long*>(&v1);
+    auto b = reinterpret_cast<const long*>(&v2);
+    #if defined(__gfx936__) || defined(__gfx928__)
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile(
+        "v_mmac_i32_16x16x32_i8 %0, %1, %2, %0 \n"
+        : "+v"(v3)
+        : "v"(*a), "v"(*b)
+      );
+    __builtin_amdgcn_sched_barrier(0);
+    #endif
+    return v3;
 }
 
 template<>
@@ -332,6 +373,14 @@ static float __e4m32float(const uint8_t src) {
 #endif // end of #if !defined(__NVCC__)
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+static __device__ inline uint16_t f32_to_bf16(float f){
+  
+    uint32_t u = *(uint32_t*)(&f);
+    u += 0x7fff + ((u >> 16) & 1); 
+    return u>>16;
+
+}
+
 //f32转bf16
 // to simplify f32 -> bf16 conversion, filter some branch
 // inline __HOST_DEVICE__ bhalf_t inlineasm_float2bfloat16_nonan(const float f) {

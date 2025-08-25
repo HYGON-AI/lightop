@@ -63,21 +63,25 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel(
   uint32_t stride_bsn, 
   uint32_t stride_bsk,
   uint32_t sorted_token_lens,
-  uint32_t top_k 
+  uint32_t top_k,
+  uint32_t delta  
 ) {
-  const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
-  const int bidy = blockIdx.y; // pid_n
-  const int bidz = blockIdx.x; // pid_k 
+  // const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
+  // const int bidy = blockIdx.y; // pid_n
+  // const int bidz = blockIdx.x; // pid_k 
 
-  // int bidx = blockIdx.x; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
-  // int bidy = blockIdx.y; // pid_n
-  // int bidz = blockIdx.z; // pid_k 
-  // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 4, bidx, bidy);
+  int bidx = blockIdx.x; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
+  int bidy = blockIdx.y; // pid_n
+  int bidz = blockIdx.z; // pid_k 
+  // constexpr int aaa = 1;
+  // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 8, bidx, bidy);
 
-  if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  
   constexpr int STAGES = BLOCK_SIZE_K/WARP_K; 
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
-  const int32_t expert_id = expert_ids[bidx]; // 专家的索引
+  const uint32_t delta_bidx = bidx;
+  const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
   const uint64_t expert_offset = ((uint64_t)size_n) * size_k * expert_id; // 这个是对应专家的weight偏移
   const uint64_t qweight_offset = expert_offset + bidy * size_k * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
   const uint32_t output_offset = bidy * BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
@@ -89,6 +93,28 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel(
   bhalf_t* g_output;
 
   g_output = output + output_offset;
+
+  if(expert_id == -1){ //EP算法处理 epxert_id为-1 写回0
+    const int tid = threadIdx.x;
+    constexpr int N_thread = BLOCK_SIZE_N / 8;  //N方向需要的线程数 使用dwordx4即8个bf16
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    vec_bf16_8 zero_bf16_8;
+
+    #pragma unroll
+    for(int i = 0; i < 8; ++i)
+      zero_bf16_8[i] = 0;
+
+    int m_idx = threadIdx.x / N_thread;  
+    int n_idx = threadIdx.x % N_thread;  
+    for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
+      const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
+
+      if(token_index < size_m * top_k) {
+        *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * size_n + n_idx * 8]) = zero_bf16_8;
+      }
+    } 
+    return;
+  } 
 
   constexpr int mfma_m = 16;
   constexpr int mfma_n = 16;
@@ -136,7 +162,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel(
         float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
         float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
         int index = warp_m_id * WARP_M * BLOCK_SIZE_N + min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + warp_m_id * WARP_M+ (lane_id % 16) )/2 * 2/*padding*/;
-        output_lds[index] = __float2bfloat16(value);
+        output_lds[index] = f32_to_bf16(value);
       }
     }
   }
@@ -194,7 +220,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel(
   uint32_t stride_bsn, 
   uint32_t stride_bsk,
   uint32_t sorted_token_lens,
-  uint32_t top_k 
+  uint32_t top_k,
+  uint32_t delta 
 ) {
   const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
   const int bidy = blockIdx.y; // pid_n
@@ -205,10 +232,12 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel(
   // int bidz = blockIdx.x; // pid_k 
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 8, bidx, bidy);
 
-  if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  
   const int STAGES = BLOCK_SIZE_K/WARP_K; // 采用两stage
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
-  const int32_t expert_id = expert_ids[bidx]; // 专家的索引
+  const uint32_t delta_bidx = bidx / delta;
+  const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
   const uint64_t expert_offset = ((uint64_t)size_n) * size_k * expert_id; // 这个是对应专家的weight偏移
   const uint64_t qweight_offset = expert_offset + bidy * size_k * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
   const uint32_t output_offset = bidy * BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
@@ -220,6 +249,28 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel(
   bhalf_t* g_output;
 
   g_output = output + output_offset;
+
+  if(expert_id == -1){ //EP算法处理 epxert_id为-1 写回0
+    const int tid = threadIdx.x;
+    constexpr int N_thread = BLOCK_SIZE_N / 8;  //N方向需要的线程数 使用dwordx4即8个bf16
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    vec_bf16_8 zero_bf16_8;
+
+    #pragma unroll
+    for(int i = 0; i < 8; ++i)
+      zero_bf16_8[i] = 0;
+
+    int m_idx = threadIdx.x / N_thread;  
+    int n_idx = threadIdx.x % N_thread;  
+    for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
+      const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
+
+      if(token_index < size_m * top_k) {
+        *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * size_n + n_idx * 8]) = zero_bf16_8;
+      }
+    } 
+    return;
+  }  
 
   constexpr int mfma_m = 16;
   constexpr int mfma_n = 16;
@@ -247,24 +298,30 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel(
   auto g_weight_scale = weight_scale + weight_scale_offset; // 配置weight的scale信息 todo 这里n_loop=0没有计算偏移
   intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; // [4][2]  每个warp在n方向重复两次 tileN = 16*2
   float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id*WARP_N;
+  float weight_dot_a_scale[WARP_M / mfma_m];
+
+  #pragma unroll
+  for(int idx = 0; idx < WARP_M / mfma_m; idx++){
+      int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + warp_m_id * WARP_M + idx * mfma_m + row_id, int(sorted_token_lens - 1))];
+      int token_index_safe = std::min(token_index, size_m * top_k-1);
+      float input_scale_value = *(input_scale + token_index_safe * stride_asm); //计算M方向的偏移
+      weight_dot_a_scale[idx] = topk_weights[token_index_safe] * input_scale_value;
+  }
   
   gemm_nt_first_stage<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
   (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
   //save output to lds
   #pragma unroll
   for(int min_tile_m = 0; min_tile_m < WARP_M / mfma_m; min_tile_m++){
-    const int32_t token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + warp_m_id * WARP_M + min_tile_m * mfma_m + (lane_id % 16), int(sorted_token_lens - 1))];
-    const int32_t token_index_safe = std::min(token_index, size_m * top_k-1);
-    float *a_scale = input_scale + token_index_safe * stride_asm; //计算M方向的偏移
-    float weight_value = topk_weights[token_index_safe];
+    float weight_dot_a_scale_value = weight_dot_a_scale[min_tile_m];
     #pragma unroll
     for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
       #pragma unroll
       for(int reg_id = 0; reg_id < 4; reg_id++){
         float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
-        float value = C_reg[0][min_tile_m * (WARP_N/mfma_n) + min_tile_n][reg_id] * weight_value * a_scale[0] * b_scale[0];
+        float value = C_reg[0][min_tile_m * (WARP_N/mfma_n) + min_tile_n][reg_id] * weight_dot_a_scale_value * b_scale[0];
         int index = warp_m_id * WARP_M * BLOCK_SIZE_N + min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + warp_m_id * WARP_M + (lane_id % 16))/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
-        output_lds[index] = __float2bfloat16(value);
+        output_lds[index] = f32_to_bf16(value);
       }
     }
   }
@@ -306,7 +363,8 @@ template<
   uint16_t GROUP_K,
   bool mul_topk_weight> 
 __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
-  const Element* __restrict__ input,
+  //const Element* __restrict__ input,
+  const Element* input,
   const Element* __restrict__ qweight,
   bhalf_t* __restrict__ output,
   float* __restrict__ input_scale,
@@ -324,7 +382,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
   uint32_t stride_bsn, 
   uint32_t stride_bsk,
   uint32_t sorted_token_lens,
-  uint32_t top_k 
+  uint32_t top_k,
+  uint32_t delta 
 ) {
   const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
   const int bidy = blockIdx.y; // pid_n
@@ -335,10 +394,11 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
   // int bidz = blockIdx.z; // pid_k 
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 4, bidx, bidy);
 
-  if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
-  constexpr int STAGES = BLOCK_SIZE_K/WARP_K; 
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  constexpr int STAGES = 2; 
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
-  const int32_t expert_id = expert_ids[bidx]; // 专家的索引
+  const int32_t delta_bidx = bidx;
+  const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
   const uint64_t expert_offset = ((uint64_t)size_n) * size_k * expert_id; // 这个是对应专家的weight偏移
   const uint64_t qweight_offset = expert_offset + bidy * size_k * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
   const uint32_t output_offset = bidy * BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
@@ -347,8 +407,29 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
   auto g_input = input;
   auto g_input_scale = input_scale; // 配置全局显存信息
   bhalf_t* g_output;
-
   g_output = output + output_offset;
+
+  if(expert_id == -1){ //EP算法处理 epxert_id为-1 写回0
+    const int tid = threadIdx.x;
+    constexpr int N_thread = BLOCK_SIZE_N / 8;  //N方向需要的线程数 使用dwordx4即8个bf16
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    vec_bf16_8 zero_bf16_8;
+
+    #pragma unroll
+    for(int i = 0; i < 8; ++i)
+      zero_bf16_8[i] = 0;
+
+    int m_idx = threadIdx.x / N_thread;  
+    int n_idx = threadIdx.x % N_thread;  
+    for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
+      const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
+
+      if(token_index < size_m * top_k) {
+        *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * size_n + n_idx * 8]) = zero_bf16_8;
+      }
+    } 
+    return;
+  }  
 
   constexpr int mfma_m = 16;
   constexpr int mfma_n = 16;
@@ -364,15 +445,15 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
   int warp_k_id = warp_id % warp_k_num;
   int warp_n_id = warp_id / warp_k_num;
   extern __shared__ Element smem[]; // 声明lds信息
-  Element* input_lds = (Element*)&(smem); // 输入lds首地址,首地址开始分配给input
-  Element* qweight_lds = input_lds + STAGES * (BLOCK_SIZE_M * WARP_K); // 按照最简单的方式分块
+  Element* input_lds = (Element*)&(smem); // decode这里没用
+  Element* qweight_lds = input_lds; // decode这里没用
   bhalf_t* output_lds = (bhalf_t*)&(smem); // 重复使用lds,留给output_lds
   const int *sorted_token_ids_offset = sorted_token_ids;
 
   // union_vec<Element, 8> A_reg[WARP_M / mfma_m * STAGES][WARP_K/mfma_k]; 
   // union_vec<Element, 8> B_reg[WARP_N / mfma_n][WARP_K/mfma_k];
-  union_vec<Element, WARP_K / 4> A_reg[WARP_M / mfma_m]; 
-  union_vec<Element, WARP_K / 4> B_reg[WARP_N / mfma_n];
+  union_vec<Element, WARP_K / 4> A_reg[WARP_M / mfma_m][STAGES]; 
+  union_vec<Element, WARP_K / 4> B_reg[WARP_N / mfma_n][STAGES];
 
   auto g_qweight = qweight + qweight_offset;
   auto g_weight_scale = weight_scale + weight_scale_offset; // 配置weight的scale信息 todo 这里n_loop=0没有计算偏移
@@ -386,7 +467,11 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
       a_scale_ptr_arr[idx] = input_scale + std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm; //计算M方向的偏移
   }
   { 
-    gemm_nt_first_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+    //gemm_nt_first_stage_decode
+    // gemm_nt_two_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+    // (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
+
+    gemm_nt_four_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
     (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
   }
 
@@ -401,7 +486,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_first_stage_kernel_decode(
           float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
           float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
           int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + (lane_id % 16) )/2 * 2/*padding*/;
-          output_lds[index] = __float2bfloat16(value);
+          output_lds[index] = f32_to_bf16(value);
         }
       }
     }
@@ -460,7 +545,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
   uint32_t stride_bsn, 
   uint32_t stride_bsk,
   uint32_t sorted_token_lens,
-  uint32_t top_k 
+  uint32_t top_k,
+  uint32_t delta 
 ) {
   const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
   const int bidy = blockIdx.y; // pid_n
@@ -471,11 +557,11 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
   // int bidz = blockIdx.x; // pid_k 
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 8, bidx, bidy);
 
-
-  if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
-  const int STAGES = BLOCK_SIZE_K/WARP_K; // 采用两stage
+  constexpr int STAGES = 2; 
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
-  const int32_t expert_id = expert_ids[bidx]; // 专家的索引
+  const int32_t delta_bidx = bidx / delta;
+  const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
   const uint64_t expert_offset = ((uint64_t)size_n) * size_k * expert_id; // 这个是对应专家的weight偏移
   const uint64_t qweight_offset = expert_offset + bidy * size_k * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
   const uint32_t output_offset = bidy * BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
@@ -485,8 +571,29 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
   auto g_input = input;
   auto g_input_scale = input_scale; // 配置全局显存信息
   bhalf_t* g_output;
-
   g_output = output + output_offset;
+
+  if(expert_id == -1){ //EP算法处理 epxert_id为-1 写回0
+    const int tid = threadIdx.x;
+    constexpr int N_thread = BLOCK_SIZE_N / 8;  //N方向需要的线程数 使用dwordx4即8个bf16
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    vec_bf16_8 zero_bf16_8;
+
+    #pragma unroll
+    for(int i = 0; i < 8; ++i)
+      zero_bf16_8[i] = 0;
+
+    int m_idx = threadIdx.x / N_thread;  
+    int n_idx = threadIdx.x % N_thread;  
+    for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
+      const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
+
+      if(token_index < size_m * top_k) {
+        *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * size_n + n_idx * 8]) = zero_bf16_8;
+      }
+    } 
+    return;
+  }  
 
   constexpr int mfma_m = 16;
   constexpr int mfma_n = 16;
@@ -502,23 +609,27 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
   int warp_k_id = warp_id % warp_k_num;
   int warp_n_id = warp_id / warp_k_num;
   extern __shared__ Element smem[]; // 声明lds信息
-  Element* input_lds = (Element*)&(smem); // 输入lds首地址,首地址开始分配给input
-  Element* qweight_lds = input_lds + STAGES * (BLOCK_SIZE_M * WARP_K); // 按照最简单的方式分块
+  Element* input_lds = (Element*)&(smem); // decode这里没用
+  Element* qweight_lds = input_lds; // decode这里没用
   bhalf_t* output_lds = (bhalf_t*)&(smem); // 重复使用lds,留给output_lds
 
   const int *sorted_token_ids_offset = sorted_token_ids;
 
   // union_vec<Element, 8> A_reg[WARP_M / mfma_m * STAGES][WARP_K/mfma_k]; //
   // union_vec<Element, 8> B_reg[WARP_N / mfma_n][WARP_K/mfma_k];
-  union_vec<Element, WARP_K / 4> A_reg[WARP_M / mfma_m]; 
-  union_vec<Element, WARP_K / 4> B_reg[WARP_N / mfma_n];
+  union_vec<Element, WARP_K / 4> A_reg[WARP_M / mfma_m][STAGES]; 
+  union_vec<Element, WARP_K / 4> B_reg[WARP_N / mfma_n][STAGES];
 
   auto g_qweight = qweight + qweight_offset;
   auto g_weight_scale = weight_scale + weight_scale_offset; // 配置weight的scale信息 todo 这里n_loop=0没有计算偏移
   intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; // [4][2]  每个warp在n方向重复两次 tileN = 16*2
   float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id*WARP_N;
   
-  gemm_nt_first_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+  //gemm_nt_first_stage_decode
+  // gemm_nt_two_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+  // (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
+
+  gemm_nt_four_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
   (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
   
   //save output to lds 
@@ -537,7 +648,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
           float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
           float value = C_reg[0][min_tile_m * (WARP_N/mfma_n) + min_tile_n][reg_id] * weight_value * a_scale[0] * b_scale[0];
           int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + (lane_id % 16))/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
-          output_lds[index] = __float2bfloat16(value);
+          output_lds[index] = f32_to_bf16(value);
         }
       }
     }
@@ -572,7 +683,7 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm_second_stage_kernel_decode
 // launch_gemm1
 // 在GemmParams结构体后添加
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_gemm_first_stage(const GemmParams<T>& params) {
+void launch_moe_w8a8_first_stage(const GemmParams<T>& params) {
     const int STAGES = BLOCK_SIZE_K/WARP_K;
     const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
     const bool mul_topk_weight = false;
@@ -584,19 +695,19 @@ void launch_moe_gemm_first_stage(const GemmParams<T>& params) {
     blockDim.y = 1;
     blockDim.z = 1;
     
-    if(params.size_m > 128) //减少小shape的 device->host拷贝
-      gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M), DIVIDE(params.num_tokens_post_pad, BLOCK_SIZE_M)); // m方向
-    else
-      gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    // if(params.size_m > 128) //减少小shape的 device->host拷贝
+    //   gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M), DIVIDE(params.num_tokens_post_pad, BLOCK_SIZE_M)); // m方向
+    // else
+    //   gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
 
-    gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
-    gridDim.x = 1; // k方向
+    // gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    // gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
+    // gridDim.x = 1; // k方向
 
     // block swizzle 效果提升不是很明显 需要tuning验证
-    // gridDim.x = min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M), DIVIDE(params.num_tokens_post_pad, BLOCK_SIZE_M)); // m方向
-    // //gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
-    // gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
-    // gridDim.z = 1; // k方向
+    gridDim.x = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
+    gridDim.z = 1; // k方向
 
     const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K), BLOCK_SIZE_M * BLOCK_SIZE_N * 2);
     const int shared_mem_size = lds_size;
@@ -622,7 +733,8 @@ void launch_moe_gemm_first_stage(const GemmParams<T>& params) {
       params.stride_bsn,
       params.stride_bsk,
       params.sorted_token_lens,
-      params.top_k);
+      params.top_k,
+      params.delta);
 
       auto err = cudaGetLastError();
       if (err != cudaSuccess) {
@@ -634,7 +746,7 @@ void launch_moe_gemm_first_stage(const GemmParams<T>& params) {
 // launch_gemm1
 // 在GemmParams结构体后添加
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_gemm_second_stage(const GemmParams<T>& params) {
+void launch_moe_w8a8_second_stage(const GemmParams<T>& params) {
     const int STAGES = BLOCK_SIZE_K/WARP_K;
     const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
     const bool mul_topk_weight = true;
@@ -647,10 +759,12 @@ void launch_moe_gemm_second_stage(const GemmParams<T>& params) {
     blockDim.y = 1;
     blockDim.z = 1;
 
-    if(params.size_m > 128) //减少小shape的 device->host拷贝
-      gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M), DIVIDE(params.num_tokens_post_pad, BLOCK_SIZE_M)); // m方向
-    else
-      gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    // if(params.size_m > 128) //减少小shape的 device->host拷贝
+    //   gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M), DIVIDE(params.num_tokens_post_pad, BLOCK_SIZE_M)); // m方向
+    // else
+    //   gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    
+    gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
     gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
     gridDim.x = 1; // k方向
 
@@ -684,7 +798,8 @@ void launch_moe_gemm_second_stage(const GemmParams<T>& params) {
       params.stride_bsn,
       params.stride_bsk,
       params.sorted_token_lens,
-      params.top_k);
+      params.top_k,
+      params.delta);
 
       auto err = cudaGetLastError();
       if (err != cudaSuccess) {
@@ -695,7 +810,7 @@ void launch_moe_gemm_second_stage(const GemmParams<T>& params) {
 // launch_gemm1_decode
 // warp在n和k方向排列
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_gemm_first_stage_decode(const GemmParams<T>& params) {
+void launch_moe_w8a8_first_stage_decode(const GemmParams<T>& params) {
     constexpr int STAGES = 2;
     constexpr int WARP_NUM = (BLOCK_SIZE_N / WARP_N) * (BLOCK_SIZE_K / WARP_K);
     const bool mul_topk_weight = false;
@@ -743,7 +858,8 @@ void launch_moe_gemm_first_stage_decode(const GemmParams<T>& params) {
       params.stride_bsn,
       params.stride_bsk,
       params.sorted_token_lens,
-      params.top_k);
+      params.top_k,
+      params.delta);
 
       auto err = cudaGetLastError();
       if (err != cudaSuccess) {
@@ -753,7 +869,7 @@ void launch_moe_gemm_first_stage_decode(const GemmParams<T>& params) {
 
 // launch_gemm2_decode
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_gemm_second_stage_decode(const GemmParams<T>& params) {
+void launch_moe_w8a8_second_stage_decode(const GemmParams<T>& params) {
     const int STAGES = 2;
     const int WARP_NUM = (BLOCK_SIZE_N / WARP_N) * (BLOCK_SIZE_K / WARP_K);
     const bool mul_topk_weight = true;
@@ -799,7 +915,8 @@ void launch_moe_gemm_second_stage_decode(const GemmParams<T>& params) {
       params.stride_bsn,
       params.stride_bsk,
       params.sorted_token_lens,
-      params.top_k);
+      params.top_k,
+      params.delta);
 
       auto err = cudaGetLastError();
       if (err != cudaSuccess) {
@@ -822,12 +939,15 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
   torch::Tensor sorted_token_ids, 
   torch::Tensor expert_ids,
   torch::Tensor num_tokens_post_pad, 
-  int64_t top_k,
-  int mode
+  int64_t top_k, // gemm1为topk  gemm2为1  因为gemm1输入为[m, k]  gemm2输入为[m*topk, k]
+  int mode,
+  int delta
   ) {
     const int size_m = input.size(0); 
+    const int EXPERTS = b_qweight.size(0);
     const int size_n = b_qweight.size(1); 
     const int size_k = input.size(1);
+    const int topk_size = output.size(1); // 输出为[m, topk_size, n]
     const int stride_asm = a_scale.stride(0);
     const int stride_ask = a_scale.stride(1);
     const int stride_bse = b_scale.stride(0);
@@ -851,9 +971,6 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
      
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
         
-        //if(size_m > MOE_THRESHOLD)
-        if(size_m > 128)
-          num_pad = num_tokens_post_pad[0].item<int>();
 
         GemmParams<char> params_in(
           (const char*)input.data_ptr<int8_t>(), 
@@ -875,19 +992,19 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
           stride_bsn,
           stride_bsk,
           EM,
-          top_k
+          top_k,
+          delta
         );
 
         
 
-        // if(size_m > MOE_THRESHOLD){
-        if(size_m > 128){
+        if(size_m > MOE_THRESHOLD || (size_m > 2 && EXPERTS == 16) ){
           auto it = kernel_maps_gemm1_prefill.find(mode);
           if (it != kernel_maps_gemm1_prefill.end()) {
               it->second(params_in);
           } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_gemm_first_stage<16, 64, 128, 16, 16, 64>(params_in);
+              launch_moe_w8a8_first_stage<16, 64, 128, 16, 16, 64>(params_in);
           }
         }else{ //decode 
           auto it = kernel_maps_gemm1_decode.find(mode);
@@ -895,7 +1012,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
               it->second(params_in);
           } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_gemm_first_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
+              launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
           }
         }
         
@@ -903,8 +1020,8 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
         
         //if(size_m / 8 > MOE_THRESHOLD)
-        if(size_m / 8 > 128)
-          num_pad = num_tokens_post_pad[0].item<int>();
+        // if(size_m / 8 > 128)
+        //   num_pad = num_tokens_post_pad[0].item<int>();
           
         // 使用int8类型处理
         GemmParams<char> params_in(
@@ -927,20 +1044,20 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
           stride_bsn,
           stride_bsk,
           EM,
-          top_k
+          top_k,
+          delta
         );
 
         
         
 
-        //if(size_m / 8 > MOE_THRESHOLD){
-        if(size_m / 8 > 128){
+        if(size_m / topk_size > MOE_THRESHOLD || (size_m / topk_size > 32 && EXPERTS == 16)){
           auto it = kernel_maps_gemm2_prefill.find(mode);
           if (it != kernel_maps_gemm2_prefill.end()) {
               it->second(params_in);
           } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_gemm_second_stage<16, 64, 128, 16, 16, 64>(params_in);
+              launch_moe_w8a8_second_stage<16, 64, 128, 16, 16, 64>(params_in);
           }
         }else
         {
@@ -949,7 +1066,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
               it->second(params_in);
           } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_gemm_second_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
+              launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
           }
 
         }
