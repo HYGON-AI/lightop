@@ -63,7 +63,7 @@ def test_speed(batch_size, head_nums, sequence_length, dim, use_half=False, forw
     end_event.record()
     torch.cuda.synchronize()
     torch_api_time = start_event.elapsed_time(end_event) / 10
-    print('Self torch api time: ', round(torch_api_time, 3))
+    print(f'Self torch api time: {round(torch_api_time, 3)}ms')
 
     # 测试torch prof耗时
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
@@ -84,7 +84,7 @@ def test_speed(batch_size, head_nums, sequence_length, dim, use_half=False, forw
     end_event.record()
     torch.cuda.synchronize()
     miopen_api_time = start_event.elapsed_time(end_event) / 10
-    print('Self miopen api time: ', round(miopen_api_time, 3))
+    print(f'Self miopen api time: {round(miopen_api_time, 3)}ms')
 
     # 测试miopen prof耗时
     with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:
