@@ -1,36 +1,84 @@
 {
     "2048_384": {
         "1": {
+            "BLOCK_SIZE_M": 16,
             "MODE": 30,
-            "BLOCK_SIZE_M": 16
+            "DELTA": 1
         },
         "2": {
+            "BLOCK_SIZE_M": 16,
             "MODE": 30,
-            "BLOCK_SIZE_M": 16
+            "DELTA": 1
         },
         "4": {
+            "BLOCK_SIZE_M": 16,
             "MODE": 30,
-            "BLOCK_SIZE_M": 16
+            "DELTA": 1
         },
         "8": {
-            "MODE": 30,
-            "BLOCK_SIZE_M": 16
+            "BLOCK_SIZE_M": 16,
+            "MODE": 21,
+            "DELTA": 1
         },
         "16": {
-            "MODE": 4,
-            "BLOCK_SIZE_M": 16
+            "BLOCK_SIZE_M": 16,
+            "MODE": 11,
+            "DELTA": 1
         },
         "32": {
-            "MODE": 17,
-            "BLOCK_SIZE_M": 16
+            "BLOCK_SIZE_M": 16,
+            "MODE": 3,
+            "DELTA": 1
         },
         "64": {
-            "MODE": 16,
-            "BLOCK_SIZE_M": 16
+            "BLOCK_SIZE_M": 16,
+            "MODE": 9,
+            "DELTA": 1
         },
         "128": {
-            "MODE": 20,
-            "BLOCK_SIZE_M": 16
+            "BLOCK_SIZE_M": 16,
+            "MODE": 11,
+            "DELTA": 1
+        },
+        "256": {
+            "BLOCK_SIZE_M": 32,
+            "MODE": 68,
+            "DELTA": 1
+        },
+        "512": {
+            "BLOCK_SIZE_M": 32,
+            "MODE": 68,
+            "DELTA": 2
+        },
+        "1024": {
+            "BLOCK_SIZE_M": 32,
+            "MODE": 68,
+            "DELTA": 2
+        },
+        "2048": {
+            "BLOCK_SIZE_M": 64,
+            "MODE": 17,
+            "DELTA": 2
+        },
+        "4096": {
+            "BLOCK_SIZE_M": 64,
+            "MODE": 17,
+            "DELTA": 2
+        },
+        "6144": {
+            "BLOCK_SIZE_M": 64,
+            "MODE": 23,
+            "DELTA": 2
+        },
+        "8192": {
+            "BLOCK_SIZE_M": 32,
+            "MODE": 68,
+            "DELTA": 4
+        },
+        "16384": {
+            "BLOCK_SIZE_M": 64,
+            "MODE": 23,
+            "DELTA": 2
         }
     }
 }
