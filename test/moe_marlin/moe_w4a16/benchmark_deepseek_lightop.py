@@ -281,7 +281,7 @@ def perf_deepseek_v3():
         (256, 8, 256 * 2, 7168),
         (256, 8, 7168, 256),
     ]
-
+    use_bf16 = False
     res = []
     for num_experts, top_k, n, k in weight_shapes:
         # print("num_experts: ", num_experts, "top_k", top_k, "n", n, "k", k)
@@ -322,13 +322,16 @@ def perf_deepseek_v3():
             # 准确性对比
             triton_output, triton_time = run_moe_triton_gemm(inputs, weight, topk_ids, bit)
             triton_output = triton_output.reshape(-1, n)
-
+            if use_bf16:
+                inputs = inputs.to(torch.bfloat16)
             marlin_output, marlin_time = run_moe_marlin(inputs, weight, topk_ids, bit)
 
             # print("triton_output: ", triton_output)
             # print("marlin_output: ", marlin_output)
-
-            torch.testing.assert_close(marlin_output, triton_output, atol=1e-2, rtol=0)
+            if use_bf16:
+                torch.testing.assert_close(marlin_output.to(torch.float16), triton_output, atol=1e-1, rtol=0)
+            else:
+                torch.testing.assert_close(marlin_output, triton_output, atol=1e-2, rtol=0)
             print("通过正确性验证！！！")
             print("triton_time: ", triton_time*1000)
             print("marlin_time: ", marlin_time*1000)
@@ -342,7 +345,7 @@ def perf_deepseek_v3():
     # # 保存到文件中
     # print(res)
 
-    pd.DataFrame(res).to_excel("./marlin_triton.xlsx", index=False)
+    pd.DataFrame(res).to_excel(f"./marlin_{'bf16' if use_bf16 else 'fp16'}.xlsx", index=False)
 
 
 #### 
