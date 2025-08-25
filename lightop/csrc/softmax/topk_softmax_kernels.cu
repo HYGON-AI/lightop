@@ -411,8 +411,6 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
        
 }
 
-
-
 template <int VPT, int NUM_EXPERTS, int WARPS_PER_CTA, int BYTES_PER_LDG,bool Is_renormalize, typename IndType>
 __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     void topk4GatingSoftmax_opt(const float* input, const bool* finished, float* output, const int num_rows, IndType* indices,
@@ -423,15 +421,15 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     static_assert(BYTES_PER_LDG == (BYTES_PER_LDG & -BYTES_PER_LDG), "BYTES_PER_LDG must be power of 2");
 
 
-    static constexpr int ELTS_PER_LDG = BYTES_PER_LDG / sizeof(float);
+    static constexpr int ELTS_PER_LDG = 4;//BYTES_PER_LDG / sizeof(float);
     static constexpr int ELTS_PER_ROW = NUM_EXPERTS;
     static constexpr int THREADS_PER_ROW = ELTS_PER_ROW / VPT;
     static constexpr int LDG_PER_THREAD = VPT / ELTS_PER_LDG;
 
-    static_assert(VPT % ELTS_PER_LDG == 0, "The elements per thread must be a multiple of the elements per ldg");
-    static_assert(WARP_SIZE % THREADS_PER_ROW == 0, "The threads per row must cleanly divide the threads per warp");
-    static_assert(THREADS_PER_ROW == (THREADS_PER_ROW & -THREADS_PER_ROW), "THREADS_PER_ROW must be power of 2");
-    static_assert(THREADS_PER_ROW <= WARP_SIZE, "THREADS_PER_ROW can be at most warp size");
+    // static_assert(VPT % ELTS_PER_LDG == 0, "The elements per thread must be a multiple of the elements per ldg");
+    // static_assert(WARP_SIZE % THREADS_PER_ROW == 0, "The threads per row must cleanly divide the threads per warp");
+    // static_assert(THREADS_PER_ROW == (THREADS_PER_ROW & -THREADS_PER_ROW), "THREADS_PER_ROW must be power of 2");
+    // static_assert(THREADS_PER_ROW <= WARP_SIZE, "THREADS_PER_ROW can be at most warp size");
 
     static constexpr int ELTS_PER_WARP = WARP_SIZE * VPT;
     static constexpr int ROWS_PER_WARP = ELTS_PER_WARP / ELTS_PER_ROW;
@@ -449,7 +447,8 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     {
         return;
     }
-
+    float max_val;
+    int expert;
     const bool row_is_active = finished ? !finished[thread_row] : true;
 
     const float* thread_row_ptr = input + thread_row * ELTS_PER_ROW;
@@ -461,19 +460,43 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     float row_chunk[VPT];
     AccessType* row_chunk_vec_ptr = reinterpret_cast<AccessType*>(&row_chunk);
     const AccessType* vec_thread_read_ptr = reinterpret_cast<const AccessType*>(thread_read_ptr);
+// #pragma unroll
+//     for (int ii = 0; ii < LDG_PER_THREAD; ++ii)
+//     {
+//         row_chunk_vec_ptr[ii] = vec_thread_read_ptr[ii * THREADS_PER_ROW];
+//     }
 #pragma unroll
-    for (int ii = 0; ii < LDG_PER_THREAD; ++ii)
+    for (int ii = 0; ii < 4; ++ii)
     {
-        row_chunk_vec_ptr[ii] = vec_thread_read_ptr[ii * THREADS_PER_ROW];
+        row_chunk[ii] = thread_read_ptr[ii];
     }
-
+#pragma unroll
+    for (int ii = 0; ii < 4; ++ii)
+    {
+        row_chunk[ii+4] = thread_read_ptr[ii+THREADS_PER_ROW*ELTS_PER_LDG];
+    }
     float thread_max = -FLT_MAX;
-    for(int i = 0; i < VPT; ++i) thread_max = std::max(thread_max, row_chunk[i]);
+    int thread_max_idx = -1;
+    for(int i = 0; i < VPT; ++i) {
+        if (row_chunk[i] > thread_max) {
+            thread_max = row_chunk[i];
+            int ldg_idx = i / ELTS_PER_LDG;
+            int elt_idx_in_ldg = i % ELTS_PER_LDG;
+            thread_max_idx = first_elt_read_by_thread + ldg_idx * (THREADS_PER_ROW * ELTS_PER_LDG) + elt_idx_in_ldg;
+        }
+    }
 
 #pragma unroll
     for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2)
     {
-        thread_max = std::max(thread_max, VLLM_SHFL_XOR_SYNC_WIDTH(thread_max, mask, THREADS_PER_ROW));
+        
+        float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(thread_max, mask, THREADS_PER_ROW);
+        int other_idx = VLLM_SHFL_XOR_SYNC_WIDTH(thread_max_idx, mask, THREADS_PER_ROW);
+        if (other_max > thread_max) {
+            thread_max = other_max;
+            thread_max_idx = other_idx;
+        }
+      //  thread_max = std::max(thread_max, VLLM_SHFL_XOR_SYNC_WIDTH(thread_max, mask, THREADS_PER_ROW));
     }
 
     float row_sum = 0;
@@ -537,12 +560,13 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
             } \
         }
 
-    float max_val;
-    int expert;
+  
+    if (thread_group_idx == 0) { 
+        top_vals[0] = 1.0 * reciprocal_row_sum; 
+        top_indices[0] = thread_max_idx; 
 
-    FIND_AND_REDUCE_MAX(max_val, expert);
-    if (thread_group_idx == 0) { top_vals[0] = max_val; top_indices[0] = expert; }
-    ERASE_MAX(expert);
+    }
+   ERASE_MAX(thread_max_idx);
 
     FIND_AND_REDUCE_MAX(max_val, expert);
     if (thread_group_idx == 0) { top_vals[1] = max_val; top_indices[1] = expert; }
@@ -772,180 +796,6 @@ void topk2GatingSoftmax_opt(const float* input, const bool* finished, float* out
     }
 }
 
-// template <int VPT, int NUM_EXPERTS, int WARPS_PER_CTA, int BYTES_PER_LDG, typename IndType>
-// __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
-//     void topk4GatingSoftmax_opt_GridStride(const float* input, const bool* finished, float* output, const int num_rows, IndType* indices,
-//         int* source_rows, const int start_expert, const int end_expert)
-// {
-//     static_assert(VPT == (VPT & -VPT), "VPT must be power of 2");
-//     static_assert(NUM_EXPERTS == (NUM_EXPERTS & -NUM_EXPERTS), "NUM_EXPERTS must be power of 2");
-//     static_assert(BYTES_PER_LDG == (BYTES_PER_LDG & -BYTES_PER_LDG), "BYTES_PER_LDG must be power of 2");
-//  //   static_assert(BYTES_PER_LDG <= 16, "BYTES_PER_LDG must be leq 16");
-
-//     static constexpr int ELTS_PER_LDG = BYTES_PER_LDG / sizeof(float);
-//     static constexpr int ELTS_PER_ROW = NUM_EXPERTS;
-//     static constexpr int THREADS_PER_ROW = ELTS_PER_ROW / VPT;
-//     static constexpr int LDG_PER_THREAD = VPT / ELTS_PER_LDG;
-//     static constexpr int ROWS_PER_WARP = (WARP_SIZE * VPT) / ELTS_PER_ROW;
-//     static constexpr int ROWS_PER_CTA = WARPS_PER_CTA * ROWS_PER_WARP;
-
-//     const int rows_per_grid_pass = gridDim.x * ROWS_PER_CTA;
-//     const int cta_base_row =  blockIdx.x * ROWS_PER_CTA + threadIdx.y * ROWS_PER_WARP + threadIdx.x / THREADS_PER_ROW;
-//     // const int thread_row_in_warp = ;
-//     // const int thread_row = warp_base_row + thread_row_in_warp;
-//     for (int thread_row = cta_base_row; thread_row < num_rows; thread_row += rows_per_grid_pass)
-//     {
-//         // if (thread_row >= num_rows)
-//         // {
-//         //     continue;
-//         // }
-//         const bool row_is_active = finished ? !finished[thread_row] : true;
-
-//         const float* thread_row_ptr = input + thread_row * ELTS_PER_ROW;
-//         const int thread_group_idx = threadIdx.x % THREADS_PER_ROW;
-//         const int first_elt_read_by_thread = thread_group_idx * ELTS_PER_LDG;
-//         const float* thread_read_ptr = thread_row_ptr + first_elt_read_by_thread;
-
-//         using AccessType = AlignedArray<float, ELTS_PER_LDG>;
-//         float row_chunk[VPT];
-//         AccessType* row_chunk_vec_ptr = reinterpret_cast<AccessType*>(&row_chunk);
-//         const AccessType* vec_thread_read_ptr = reinterpret_cast<const AccessType*>(thread_read_ptr);
-//     #pragma unroll
-//         for (int ii = 0; ii < LDG_PER_THREAD; ++ii)
-//         {
-//             row_chunk_vec_ptr[ii] = vec_thread_read_ptr[ii * THREADS_PER_ROW];
-//         }
-
-//         float thread_max = -FLT_MAX;
-//         for(int i = 0; i < VPT; ++i) thread_max = std::max(thread_max, row_chunk[i]);
-
-//     #pragma unroll
-//         for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2)
-//         {
-//             thread_max = std::max(thread_max, VLLM_SHFL_XOR_SYNC_WIDTH(thread_max, mask, THREADS_PER_ROW));
-//         }
-
-//         float row_sum = 0;
-//     #pragma unroll
-//         for (int ii = 0; ii < VPT; ++ii)
-//         {
-//             row_chunk[ii] = __expf(row_chunk[ii] - thread_max);
-//             row_sum += row_chunk[ii];
-//         }
-
-//     #pragma unroll
-//         for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2)
-//         {
-//             row_sum += VLLM_SHFL_XOR_SYNC_WIDTH(row_sum, mask, THREADS_PER_ROW);
-//         }
-
-//         const float reciprocal_row_sum = 1.f / (row_sum + 1e-8f);
-//     #pragma unroll
-//         for (int ii = 0; ii < VPT; ++ii)
-//         {
-//             row_chunk[ii] = row_chunk[ii] * reciprocal_row_sum;
-//         }
-
-//         float top_vals[4];
-//         IndType top_indices[4];
-
-//         #define FIND_AND_REDUCE_MAX_GRID_STRIDE(k_val, k_expert) \
-//         do { \
-//             k_val = -FLT_MAX; \
-//             k_expert = -1; \
-//             int current_col_base = first_elt_read_by_thread; \
-//             _Pragma("unroll") \
-//             for (int ldg = 0; ldg < LDG_PER_THREAD; ++ldg) { \
-//                 _Pragma("unroll") \
-//                 for (int ii = 0; ii < ELTS_PER_LDG; ++ii) { \
-//                     float val = row_chunk[ldg * ELTS_PER_LDG + ii]; \
-//                     if (val > k_val) { \
-//                         k_val = val; \
-//                         k_expert = current_col_base + ii; \
-//                     } \
-//                 } \
-//                 current_col_base += THREADS_PER_ROW * ELTS_PER_LDG; \
-//             } \
-//             _Pragma("unroll") \
-//             for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2) { \
-//                 float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(k_val, mask, THREADS_PER_ROW); \
-//                 int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(k_expert, mask, THREADS_PER_ROW); \
-//                 if (other_max > k_val || (other_max == k_val && other_expert < k_expert)) { \
-//                     k_val = other_max; \
-//                     k_expert = other_expert; \
-//                 } \
-//             } \
-//         } while(0)
-
-//         #define ERASE_MAX_GRID_STRIDE(k_expert) \
-//             if (k_expert != -1) { \
-//                 int current_col_base = first_elt_read_by_thread; \
-//                 bool erased = false; \
-//                 _Pragma("unroll") \
-//                 for (int ldg = 0; ldg < LDG_PER_THREAD && !erased; ++ldg) { \
-//                     _Pragma("unroll") \
-//                     for (int ii = 0; ii < ELTS_PER_LDG && !erased; ++ii) { \
-//                         if (current_col_base + ii == k_expert) { \
-//                             row_chunk[ldg * ELTS_PER_LDG + ii] = -FLT_MAX; \
-//                             erased = true; \
-//                         } \
-//                     } \
-//                     current_col_base += THREADS_PER_ROW * ELTS_PER_LDG; \
-//                 } \
-//             }
-
-//         float max_val;
-//         int expert;
-
-//         FIND_AND_REDUCE_MAX_GRID_STRIDE(max_val, expert);
-//         if (thread_group_idx == 0) { top_vals[0] = max_val; top_indices[0] = expert; }
-//         ERASE_MAX_GRID_STRIDE(expert);
-
-//         FIND_AND_REDUCE_MAX_GRID_STRIDE(max_val, expert);
-//         if (thread_group_idx == 0) { top_vals[1] = max_val; top_indices[1] = expert; }
-//         ERASE_MAX_GRID_STRIDE(expert);
-
-//         FIND_AND_REDUCE_MAX_GRID_STRIDE(max_val, expert);
-//         if (thread_group_idx == 0) { top_vals[2] = max_val; top_indices[2] = expert; }
-//         ERASE_MAX_GRID_STRIDE(expert);
-
-//         FIND_AND_REDUCE_MAX_GRID_STRIDE(max_val, expert);
-//         if (thread_group_idx == 0) { top_vals[3] = max_val; top_indices[3] = expert; }
-
-//         if (thread_group_idx == 0 && row_is_active)
-//         {
-//             const float topk_sum = top_vals[0] + top_vals[1] + top_vals[2] + top_vals[3];
-//             const float r_topk_sum = 1.0f / (topk_sum + 1e-8f);
-
-//     #pragma unroll
-//             for (int i = 0; i < 4; ++i) {
-//                 top_vals[i] *= r_topk_sum;
-//                 const bool node_uses_expert = top_indices[i] >= start_expert && top_indices[i] < end_expert;
-//                 top_indices[i] = node_uses_expert ? (top_indices[i] - start_expert) : NUM_EXPERTS;
-//             }
-
-//             const int k = 4;
-//             const int base_idx = k * thread_row;
-//             *reinterpret_cast<float4*>(&output[base_idx]) = *reinterpret_cast<float4*>(&top_vals[0]);
-            
-//             if constexpr (std::is_same_v<IndType, int>) {
-//                 *reinterpret_cast<int4*>(&indices[base_idx]) = *reinterpret_cast<int4*>(&top_indices[0]);
-//             } else { // Fallback for int64_t
-//                 for (int i = 0; i < 4; ++i) {
-//                     indices[base_idx + i] = top_indices[i];
-//                 }
-//             }
-
-//             int source_rows_temp[4];
-//             source_rows_temp[0] = 0 * num_rows + thread_row;
-//             source_rows_temp[1] = 1 * num_rows + thread_row;
-//             source_rows_temp[2] = 2 * num_rows + thread_row;
-//             source_rows_temp[3] = 3 * num_rows + thread_row;
-//             *reinterpret_cast<int4*>(&source_rows[base_idx]) = *reinterpret_cast<int4*>(&source_rows_temp[0]);
-//         }
-//     }
-// }
-
 namespace detail
 {
 // Constructs some constants needed to partition the work across threads at compile time.
@@ -977,12 +827,13 @@ void topkGatingSoftmaxLauncherHelper(const float* input, const bool* finished, f
     static constexpr int VPT = Constants::VPT;
     static constexpr int ROWS_PER_WARP = Constants::ROWS_PER_WARP;
     const int num_warps = (num_rows + ROWS_PER_WARP - 1) / ROWS_PER_WARP;
-    const int num_blocks = (num_warps + WARPS_PER_TB - 1) / WARPS_PER_TB;
+    const int num_blocks = (num_warps + WARPS_PER_TB - 1) / WARPS_PER_TB / 1;
     dim3 block_dim(WARP_SIZE, WARPS_PER_TB);
    
     if(k == 4){
-        topk4GatingSoftmax_opt<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG,Is_renormalize><<<num_blocks, block_dim, 0, stream>>>(
+     topk4GatingSoftmax_opt<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG,Is_renormalize><<<num_blocks, block_dim, 0, stream>>>(
                     input, finished, output, num_rows, indices, source_row, start_expert, end_expert);
+     
     }else if(k == 2){
         topk2GatingSoftmax_opt<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG,Is_renormalize><<<num_blocks, block_dim, 0, stream>>>(
                     input, finished, output, num_rows, indices, source_row, start_expert, end_expert);
@@ -992,98 +843,6 @@ void topkGatingSoftmaxLauncherHelper(const float* input, const bool* finished, f
     }
    
 }
-// template <int EXPERTS, int WARPS_PER_TB, typename IndType>
-// void topk4GatingSoftmaxLauncherHelper_GridStride(const float* input, const bool* finished, float* output, IndType* indices,
-//     int* source_row, const int num_rows, const int start_expert, const int end_expert, cudaStream_t stream)
-// {
-//     static constexpr std::size_t MAX_BYTES_PER_LDG = 32;
-//     static constexpr int BYTES_PER_LDG = MIN(MAX_BYTES_PER_LDG, sizeof(float) * EXPERTS);
-//     using Constants = detail::TopkConstants<EXPERTS, BYTES_PER_LDG>;
-//     static constexpr int VPT = Constants::VPT;
-    
-//     // Heuristic for launch configuration
-//     int num_sms;
-//     cudaDeviceGetAttribute(&num_sms, cudaDevAttrMultiProcessorCount, 0);
-//     const int num_blocks = num_sms * 4; // Launch 4 waves of blocks
-//     dim3 block_dim(WARP_SIZE, WARPS_PER_TB);
-
-//     topk4GatingSoftmax_opt_GridStride<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG><<<num_blocks, block_dim, 0, stream>>>(
-//         input, finished, output, num_rows, indices, source_row, start_expert, end_expert);
-// }
-
-
-// #define LAUNCH_SOFTMAX(NUM_EXPERTS, WARPS_PER_TB,Is_renormalize)                       \
-//     topkGatingSoftmaxLauncherHelper<NUM_EXPERTS, WARPS_PER_TB,IndType,Is_renormalize>(         \
-//         gating_output, nullptr, topk_weights, topk_indicies,            \
-//         token_expert_indices, num_tokens, topk, 0, num_experts,         \
-//         stream);
-// #define LAUNCH_SOFTMAX_EXTREME_K4_GRID_STRIDE(NUM_EXPERTS, WARPS_PER_TB) \
-//     topk4GatingSoftmaxLauncherHelper_GridStride<NUM_EXPERTS, WARPS_PER_TB>( \
-//         gating_output, nullptr, topk_weights, topk_indicies, \
-//         token_expert_indices, num_tokens, 0, num_experts, \
-//         stream);
-// template <typename IndType>
-// void topkGatingSoftmaxKernelLauncher(
-//     const float* gating_output,
-//     float* topk_weights,
-//     IndType* topk_indicies,
-//     int* token_expert_indices,
-//     float* softmax_workspace,
-//     const int num_tokens,
-//     const int num_experts,
-//     const int topk,
-//     cudaStream_t stream,
-//     stirng& renormalize) {
-//     if(renormalize == "true"){
-//         static constexpr bool  is_renormalize = true;
-//     }else{
-//         static constexpr bool  is_renormalize = false;
-//     }    
-//     static constexpr int WARPS_PER_TB = 4;
-//     switch (num_experts) {
-//         case 1:
-//             LAUNCH_SOFTMAX(1, WARPS_PER_TB,IndType,is_renormalize);
-//             break;
-//         case 2:
-//             LAUNCH_SOFTMAX(2, WARPS_PER_TB,IndType,is_renormalize);
-//             break;
-//         case 4:
-//             LAUNCH_SOFTMAX(4, WARPS_PER_TB,IndType,is_renormalize);
-//             break;
-//         case 8:
-//             LAUNCH_SOFTMAX(8, WARPS_PER_TB,IndType,is_renormalize);
-//             break;
-//         case 16:
-//             LAUNCH_SOFTMAX(16, WARPS_PER_TB,IndType,is_renormalize);
-//             break;
-//         case 32:
-//             LAUNCH_SOFTMAX(32, WARPS_PER_TB,IndType,is_renormalize);
-//             break;
-//         case 64:
-//             if(num_tokens < 16384){
-//                  LAUNCH_SOFTMAX(64,WARPS_PER_TB,IndType,is_renormalize);
-//             }else{
-//                  LAUNCH_SOFTMAX(64,1,IndType,is_renormalize);
-//             }
-//             break;
-//         case 128:
-//             LAUNCH_SOFTMAX(128, WARPS_PER_TB,IndType,is_renormalize);
-//             break;
-//         case 256:
-//             LAUNCH_SOFTMAX(256, WARPS_PER_TB,IndType,is_renormalize);
-//             break;
-//         default: {
-//             TORCH_CHECK(softmax_workspace != nullptr,
-//                 "softmax_workspace must be provided for num_experts that are not a power of 2.");
-//             static constexpr int TPB = 256;
-//             moeSoftmax<TPB><<<num_tokens, TPB, 0, stream>>>(
-//                 gating_output, nullptr, softmax_workspace, num_experts);
-//             moeTopK<TPB><<<num_tokens, TPB, 0, stream>>>(
-//                 softmax_workspace, nullptr, topk_weights, topk_indicies, token_expert_indices,
-//                 num_experts, topk, 0, num_experts);
-//         }
-//     }
-// }
  #define LAUNCH_SOFTMAX(NUM_EXPERTS, WARPS_PER_TB) \
             topkGatingSoftmaxLauncherHelper<NUM_EXPERTS, WARPS_PER_TB, IndType, Is_renormalize>( \
                 gating_output, nullptr, topk_weights, topk_indicies, \
