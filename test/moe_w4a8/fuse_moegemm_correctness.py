@@ -148,7 +148,8 @@ blockM_configs_decode = {
     32: 16,
     33: 16,
     34: 16,
-    35: 16
+    35: 16,
+    1000: 128,
 }
 
 def to_int8(tensor: torch.Tensor):
@@ -438,7 +439,16 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
             **triton_config, 
         )
     #'''
-    out_cuda = torch.zeros_like(C)
+    # out_cuda = torch.zeros_like(C)
+    _, n, k = B.shape
+    num_size = 1024 * 1024 * 1024
+    out_cuda_size = M * top_k * n
+    str_offset = 100 * 1024 * 1024
+    end_offset = str_offset + out_cuda_size
+    buff = torch.ones(num_size, dtype=C.dtype, device=C.device)
+    out_cuda = buff[str_offset:end_offset].reshape(C.shape)
+    print(f"num_size:{num_size}, out_cuda_size:{out_cuda_size}, start offset:{str_offset}, end offset:{end_offset}")
+
     
     print("A",A.size())
     print("B",B.size())
@@ -478,6 +488,8 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
         print(f"kernel{stage} 精度检查不合格!!!")
     else:
         print(f"kernel{stage} 精度检查合格.")
+    
+    print(torch.nonzero(buff != 1))
     '''
     def unpack_int8_to_int4(weight):
         assert weight.dim() == 2
@@ -492,7 +504,7 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
     pdb.set_trace()
     torch.nonzero((C - out_cuda).abs() > 1)
     torch.nonzero((C.view(-1, 256) - out_cuda.view(-1, 256)).abs() > 1)
-    torch.nonzero(sorted_token_ids == 3)
+    torch.nonzero(sorted_token_ids == 0)
     
     begin, end, expert_id = 0, 128, 0
     res = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32), bint8[expert_id, :, :].t().cpu().to(torch.int32))
@@ -648,7 +660,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-        '''
+        # '''
         # sorted_token_ids[:128] = torch.tensor([20375, 20444, 40787,  6104, 61222, 61244, 24493, 26563, 26412, 17653,
         # 46929, 46945, 44895, 44441, 44353, 44411, 64849, 22648,  6940, 45239,
         # 43188, 43162, 43011, 43078, 27564, 30711, 14325, 34653, 19490, 39950,
@@ -663,6 +675,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         # 33910, 31815, 31889, 12537, 54480, 12380, 14491, 34881, 32952, 34820,
         # 62423, 53424, 62445, 53281, 27033, 45492, 16208, 18295],
         # device='cuda:0', dtype=torch.int32)
+        align = 128
         print("sorted_token_ids:", sorted_token_ids[0:align])
         print("sorted_token_ids // topk:", sorted_token_ids[0:align] // top_k_num)
         print("sorted_token_ids % topk:", sorted_token_ids[0:align] % top_k_num)
@@ -781,8 +794,8 @@ def _fused_moe_helper(m: int,
 def run_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
-    # m_list=[256,512,1024,2048,4096,8192,16384] #prefill
-    m_list=[1,2,4,8,16,32,64,128]    
+    m_list=[128, 256,512,1024,2048,4096,8192,16384] #prefill
+    # m_list=[1,2,4,8,16,32,64,128]    
     E=256
     n_list_1=[512]
     k_list_1=[3584]
@@ -798,14 +811,14 @@ def run_perchannel_vaild():
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
     # mode_ranges = [mode for mode in blockM_configs.keys()]
-    # mode_ranges = [1000]
+    mode_ranges = [1000]
     # compare_fail = [42,43,46,52,54,60]
     # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
     # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
     #deepseek-471b-tp16
 
     # # decode corrtnese
-    mode_ranges = [i for i in range(len(blockM_configs_decode))]
+    # mode_ranges = [i for i in range(len(blockM_configs_decode))]
     # exclude_modes = [13, 32, 33, 34, 35]
     # #mode_ranges = [3,4,6,8,10,12,14]
     # #exclude_modes = [13] # nk 4096 192 gemm2<16
