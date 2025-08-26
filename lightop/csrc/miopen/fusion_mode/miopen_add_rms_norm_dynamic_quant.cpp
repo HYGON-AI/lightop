@@ -22,7 +22,7 @@ std::vector<Tensor> miopen_add_rms_norm_dynamic_quant(
     TensorDescriptor smoothScale_tensor(smoothScale);
 
     Tensor out_add               = at::empty_like(x);
-    Tensor out_y                 = at::empty_like(x, x.options().dtype(at::kByte));
+    Tensor out_y                 = at::empty_like(x, x.options().dtype(at::kChar));
     Tensor out_perTokenScaleDesc = at::empty(x.sizes()[0], x.options().dtype(at::kFloat));
 
     TensorDescriptor output_add(out_add);
