@@ -190,7 +190,7 @@ class TestTopkSoftmax(unittest.TestCase):
         ]
        
         # num_tokens_list = [ 16384, 18432, 20480, 22528, 24576, 26624,28672, 32768]
-        num_tokens_list = [32];
+        # num_tokens_list = [32];
         Is_renormalize = "true" #or false
         for num_tokens in num_tokens_list:
             self._run_test(
