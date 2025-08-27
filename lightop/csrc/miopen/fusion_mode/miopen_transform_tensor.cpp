@@ -17,9 +17,9 @@ enum class TRANSFROM_MODE
 };
 
 Tensor miopen_transform_tensor(const Tensor& input,
-                        const int transpose_mode = 0,
-                        const float alpha        = 1.0,
-                        const float beta         = 0.0)
+                               const int transpose_mode = 0,
+                               const float alpha        = 1.0,
+                               const float beta         = 0.0)
 {
     if(input.dim() != 4)
         MIOPEN_THROW("Transform_Tensor: Only Support 2D.");
@@ -65,5 +65,7 @@ Tensor miopen_transform_tensor(const Tensor& input,
                                        out.data_ptr()));
     return out;
 }
+
 } // namespace native
+
 } // namespace at
