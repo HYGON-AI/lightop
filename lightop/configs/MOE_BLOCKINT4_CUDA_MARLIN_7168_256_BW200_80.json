@@ -1,7 +1,7 @@
 {
     "7168_256": {
         "1": {
-            "MODE": 500,
+            "MODE": 401,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 128,
@@ -9,7 +9,7 @@
             "blocks_per_cu": 6
         },
         "2": {
-            "MODE": 500,
+            "MODE": 401,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 128,
@@ -17,7 +17,7 @@
             "blocks_per_cu": 6
         },
         "4": {
-            "MODE": 500,
+            "MODE": 402,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 128,
@@ -25,7 +25,7 @@
             "blocks_per_cu": 6
         },
         "8": {
-            "MODE": 500,
+            "MODE": 402,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -33,7 +33,7 @@
             "blocks_per_cu": 5
         },
         "16": {
-            "MODE": 500,
+            "MODE": 401,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -41,7 +41,7 @@
             "blocks_per_cu": 5
         },
         "32": {
-            "MODE": 500,
+            "MODE": 401,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -49,7 +49,7 @@
             "blocks_per_cu": 5
         },
         "64": {
-            "MODE": 500,
+            "MODE": 401,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -57,7 +57,7 @@
             "blocks_per_cu": 5
         },
         "128": {
-            "MODE": 500,
+            "MODE": 401,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -65,7 +65,7 @@
             "blocks_per_cu": 5
         },
         "256": {
-            "MODE": 500,
+            "MODE": 401,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -73,9 +73,9 @@
             "blocks_per_cu": 5
         },
         "512": {
-            "MODE": 500,
+            "MODE": 402,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 32,
+            "BLOCK_SIZE_M": 16,
             "thread_n": 256,
             "thread_k": 64,
             "blocks_per_cu": 6 
