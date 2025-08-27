@@ -16,7 +16,7 @@ from triton_w4a8 import invoke_fused_moe_kernel_w4a8
 import triton
 import triton.language as tl
 
-from lightop import moe_gemm_w4a8, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8
+from lightop import moe_gemm_marlin_w4a8, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8
 
 from vllm.platforms import current_platform
 device_name = current_platform.get_device_name().replace(" ", "_")
@@ -109,7 +109,9 @@ def fused_marlin_moe_valid(
     #                     'MODE': 500,
     #                     'DELTA': 1
     #                 }
-    lightop.moe_gemm_marlin_w4a8(
+        
+    if(M > 512):
+        moe_gemm_marlin_w4a8(
                             a_1,
                             w1_marlin,
                             intermediate_cache1,
@@ -122,6 +124,22 @@ def fused_marlin_moe_valid(
                             topk,
                             workspace,
                             global_reduce_buffer,
+                            config_marlin_0
+                        )
+    else:
+        moe_gemm_marlin_w4a8(
+                            a_1,
+                            w1_marlin,
+                            intermediate_cache1,
+                            a_1_scale,
+                            w1_scale,
+                            None, # topk_weights,
+                            sorted_token_ids,
+                            expert_ids,
+                            num_tokens_post_padded,
+                            topk,
+                            None,
+                            None,
                             config_marlin_0
                         )
     # =========================== gemm1 triton 计算 ===============================
@@ -167,7 +185,7 @@ def fused_marlin_moe_valid(
     # [M*topk, N] [32*8, 256]
     a_2, a_2_scale = per_token_quant_int8(intermediate_cache2)
     torch.cuda.synchronize()
-    lightop.moe_gemm_marlin_w4a8(
+    moe_gemm_marlin_w4a8(
                                 a_2,
                                 w2_marlin,
                                 intermediate_cache3, # [M * topk, K]  [32*8, 7168]
