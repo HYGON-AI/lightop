@@ -95,7 +95,7 @@ def fused_marlin_moe(
     end_event = torch.cuda.Event(enable_timing=True)
     start_event.record()
 
-    lightop.moe_gemm_w4a8(
+    lightop.moe_gemm_marlin_w4a8(
                             a_1,
                             w1,
                             intermediate_cache1,
@@ -125,7 +125,7 @@ def fused_marlin_moe(
     torch.cuda.synchronize()
     start_event.record()
     
-    lightop.moe_gemm_w4a8(
+    lightop.moe_gemm_marlin_w4a8(
                             a_2,
                             w2,
                             intermediate_cache3, # [M * topk, K]  [32*8, 7168]

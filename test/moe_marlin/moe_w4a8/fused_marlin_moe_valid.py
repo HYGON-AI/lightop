@@ -109,7 +109,7 @@ def fused_marlin_moe_valid(
     #                     'MODE': 500,
     #                     'DELTA': 1
     #                 }
-    lightop.moe_gemm_w4a8(
+    lightop.moe_gemm_marlin_w4a8(
                             a_1,
                             w1_marlin,
                             intermediate_cache1,
@@ -167,7 +167,7 @@ def fused_marlin_moe_valid(
     # [M*topk, N] [32*8, 256]
     a_2, a_2_scale = per_token_quant_int8(intermediate_cache2)
     torch.cuda.synchronize()
-    lightop.moe_gemm_w4a8(
+    lightop.moe_gemm_marlin_w4a8(
                                 a_2,
                                 w2_marlin,
                                 intermediate_cache3, # [M * topk, K]  [32*8, 7168]
