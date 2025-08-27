@@ -1,11 +1,10 @@
 import torch
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, NamedTuple
 from lightop import op
 import functools
 import os
 import math
 from .config_smooth_gemm import gemm_w8a8_smooth_config
-
 
 @functools.lru_cache(maxsize=128)
 def w8a8_smooth_quant_config(m, n, k):
@@ -118,28 +117,6 @@ def fp8_to_16(out,intput,scale):
     return op.fp8to16(out,intput,scale)
 
 def moe_gemm_w4a8(input: torch.Tensor,
-                    b_qweight: torch.Tensor,
-                    output: torch.Tensor,
-                    a_scale: torch.Tensor,
-                    b_scale: torch.Tensor,
-                    topk_weights: Optional[torch.Tensor],
-                    sorted_token_ids: torch.Tensor,
-                    experts_ids: torch.Tensor,
-                    num_tokens_post_pad: torch.Tensor, 
-                    top_k: int,
-                    config: Dict[str, Any]) -> torch.Tensor:
-    mode = config['MODE']
-    delta = config['DELTA']
-
-    if mode < 1000:
-        op.moe_gemm_w4a8(input, b_qweight, output, a_scale, b_scale, topk_weights,
-                                        sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
-    else:
-        op.moe_w4a8_asm(input, b_qweight, output, a_scale, b_scale, topk_weights,
-                                        sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
-    return output
-
-def moe_gemm_marlin_w4a8(input: torch.Tensor,
                     b_qweight: torch.Tensor,
                     output: torch.Tensor,
                     a_scale: torch.Tensor,
@@ -297,3 +274,24 @@ def awq_marlin_repack(b_q_weight: torch.Tensor, size_k: int, size_n: int, num_bi
     output = op.awq_marlin_repack(b_q_weight, size_k, size_n, num_bits)
     return output
 
+def groupgemm(arg_list: list[dict]) -> list[torch.Tensor]:
+    gemm_args = []
+    for g in arg_list:
+        ga = op.GemmArg()  # 默认构造
+        ga.a = g['a']
+        ga.b = g['b']
+        ga.c = g['c']
+        ga.d = g['d']
+        ga.M = g['M']
+        ga.N = g['N']
+        ga.K = g['K']
+        ga.batchcount = g['batchcount']
+        ga.alpha = g['alpha']
+        ga.beta = g['beta']
+        ga.bias = g['bias']
+        ga.biastype = g['biastype']
+        ga.activationType = g['activationType']
+        ga.scaleAlphaVec = g.get('scaleAlphaVec', None)
+        gemm_args.append(ga)
+    outs = op.groupgemm(gemm_args)
+    return outs
