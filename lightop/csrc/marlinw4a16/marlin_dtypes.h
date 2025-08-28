@@ -96,14 +96,19 @@ class ScalarType<uint16_t> {
     return __half2half2(x);
   }
 
+  static __host__ __device__ uint16_t inline float2num_fast(const float x) {
+    return reinterpret_cast<const uint16_t*>(&x)[1];
+  }
 
 
   static __host__ __device__ uint16_t inline float2num(const float x) {
     // Convert float to bf16
-    uint32_t u = *(uint32_t*)(&x);
+    uint32_t& u = *(uint32_t*)(&x);
+    
     u += 0x7fff + ((u >> 16) & 1);
     return u >> 16;
   }
+
 
 };
 
@@ -115,6 +120,12 @@ union BF16Union {
     uint16_t y;  // 第二个bf16元素
   };
 };
+
+union FragUnion {
+    typename ScalarType<__half>::FragB frag_fp16;
+    typename ScalarType<uint16_t>::FragB frag_bf16;
+};
+
 
 // 通用atomicAdd函数，支持fp16和bf16
 template<typename scalar_t2>
