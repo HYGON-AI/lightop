@@ -23,17 +23,17 @@ Tensor miopen_transform_tensor(const Tensor& input,
 {
     if(input.dim() != 4)
         MIOPEN_THROW("Transform_Tensor: Only Support 2D.");
-    if((transpose_mode == static_cast<int>(TRANSFROM_MODE::NCHWc32ToNCHW) ||
-        transpose_mode == static_cast<int>(TRANSFROM_MODE::NCHWc32ToNHWC)) &&
-       input.sizes()[1] % 32 != 0)
+
+    TRANSFROM_MODE mode = static_cast<TRANSFROM_MODE>(transpose_mode);
+    if((mode == TRANSFROM_MODE::NCHWc32ToNCHW || mode == TRANSFROM_MODE::NCHWc32ToNHWC) && input.sizes()[1] % 32 != 0)
         MIOPEN_THROW("Transform_Tensor: Wrong channel value, must be divided by 32.");
 
-    const int original_layout  = transpose_mode == static_cast<int>(TRANSFROM_MODE::NCHWToNCHWc32)   ? 0
-                                 : transpose_mode == static_cast<int>(TRANSFROM_MODE::NHWCToNCHWc32) ? 1
-                                                                                                     : 10;
-    const int transpose_layout = transpose_mode == static_cast<int>(TRANSFROM_MODE::NCHWc32ToNCHW)   ? 0
-                                 : transpose_mode == static_cast<int>(TRANSFROM_MODE::NCHWc32ToNHWC) ? 1
-                                                                                                     : 10;
+    const miopenTensorLayout_t original_layout  = mode == TRANSFROM_MODE::NCHWToNCHWc32   ? miopenTensorNCHW
+                                                  : mode == TRANSFROM_MODE::NHWCToNCHWc32 ? miopenTensorNHWC
+                                                                                          : miopenTensorNCHWc32;
+    const miopenTensorLayout_t transpose_layout = mode == TRANSFROM_MODE::NCHWc32ToNCHW   ? miopenTensorNCHW
+                                                  : mode == TRANSFROM_MODE::NCHWc32ToNHWC ? miopenTensorNHWC
+                                                                                          : miopenTensorNCHWc32;
 
     TensorDescriptor input_tensor(input, original_layout);
 
@@ -46,15 +46,7 @@ Tensor miopen_transform_tensor(const Tensor& input,
         c = (c + 31) / 32 * 32;
 
     TensorDescriptor out_tensor(input, transpose_layout);
-    Tensor out = [&] {
-        switch(transpose_mode)
-        {
-        case static_cast<int>(TRANSFROM_MODE::NCHWToNCHWc32):
-        case static_cast<int>(TRANSFROM_MODE::NHWCToNCHWc32):
-        default:
-            return at::empty_strided({n, c / 32, h, w, 32}, {c * h * w, h * w * 32, w * 32, 32, 1}, input.options());
-        }
-    }();
+    Tensor out = at::empty_strided({n, c / 32, h, w, 32}, {c * h * w, h * w * 32, w * 32, 32, 1}, input.options());
 
     MIOPEN_CHECK(miopenTransformTensor(getMiopenHandle_new(),
                                        &alpha,

@@ -117,10 +117,17 @@ class TensorDescriptor
 {
 public:
     TensorDescriptor() {}
-    explicit TensorDescriptor(const at::Tensor& t, int layout = 0, size_t pad = 0) { set(t, pad, layout); }
+    explicit TensorDescriptor(const at::Tensor& t, miopenTensorLayout_t layout = miopenTensorNCHW, size_t pad = 0)
+    {
+        set(t, layout, pad);
+    }
 
-    void set(const at::Tensor& t, size_t pad = 0, int layout = 0);
-    void set(miopenDataType_t dataType, IntArrayRef sizes, IntArrayRef strides, size_t pad = 0, int layout = 0);
+    void set(const at::Tensor& t, miopenTensorLayout_t layout = miopenTensorNCHW, size_t pad = 0);
+    void set(miopenDataType_t dataType,
+             IntArrayRef sizes,
+             IntArrayRef strides,
+             miopenTensorLayout_t layout = miopenTensorNCHW,
+             size_t pad                  = 0);
 
     void print();
     void set(miopenDataType_t dataType, int dim, int* size, int* stride)
