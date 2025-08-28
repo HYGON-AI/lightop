@@ -199,7 +199,7 @@ torch::Tensor moe_marlin_w4a16(torch::Tensor& a,
                               bool is_zp_float
                             ) {
   int pack_factor = 8;
-  int temp8;
+  int temp27;
   if (moe_block_size != 8) {
     TORCH_CHECK(moe_block_size % 16 == 0,
                 "unsupported moe_block_size=", moe_block_size);

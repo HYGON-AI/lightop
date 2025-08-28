@@ -60,7 +60,7 @@ namespace marlin_moe_w4a16{
     if constexpr (std::is_same<scalar_t, __half>::value) {
       dequantize_int4_to_fp16(q, output);
     } else {
-      dequantize_int4_to_bf16(q, output);
+      dequantize_int4_to_fp16(q, *reinterpret_cast<typename ScalarType<__half>::FragB*>(&output));
     }
   }
 
@@ -71,24 +71,34 @@ namespace marlin_moe_w4a16{
   template <typename scalar_t>
   __device__ inline void scale_and_sub(
       typename ScalarType<scalar_t>::FragB& frag_b, __half s, __half zp) {
-    
+    using scalar_t2 = typename ScalarType<__half>::scalar_t2;
+    scalar_t2 s2 = __half2half2(s);
+    scalar_t2 zp2 = __half2half2(zp);
     if constexpr (std::is_same<scalar_t, __half>::value) {
-      // fp16 version
-      using scalar_t2 = typename ScalarType<scalar_t>::scalar_t2;
-      scalar_t2 s2 = ScalarType<scalar_t>::num2num2(s);
-      scalar_t2 zp2 = ScalarType<scalar_t>::num2num2(zp);
       frag_b[0] = __hfma2(frag_b[0], s2, __hneg2(zp2));
       frag_b[1] = __hfma2(frag_b[1], s2, __hneg2(zp2));
-    } else {
-      // bf16 version - convert to fp16 for computation, then back to bf16
-      float s_f32 = __half2float(s);
-      float zp_f32 = __half2float(zp);
-      for (int i = 0; i < 4; i++) {
-        float f32_val = ScalarType<uint16_t>::num2float(frag_b[i]);
-        float result = f32_val * s_f32 - zp_f32;
-        frag_b[i] = ScalarType<uint16_t>::float2num(result);
-      }
+    } 
+    else {
+      FragUnion& frag_union = *reinterpret_cast<FragUnion*>(&frag_b);
+      using Dtype = ScalarType<scalar_t>;
+      frag_union.frag_fp16[0] = __hfma2(frag_union.frag_fp16[0], s2, __hneg2(zp2));
+      frag_union.frag_fp16[1] = __hfma2(frag_union.frag_fp16[1], s2, __hneg2(zp2));
+
+      // half -> float -> half  : 750 -> 754
+      // frag_union.frag_fp16[0].x = __float2half(__half2float(frag_union.frag_fp16[0].x));
+      // frag_union.frag_fp16[0].y = __float2half(__half2float(frag_union.frag_fp16[0].y));
+      // frag_union.frag_fp16[1].x = __float2half(__half2float(frag_union.frag_fp16[1].x));
+      // frag_union.frag_fp16[1].y = __float2half(__half2float(frag_union.frag_fp16[1].y));
+
+        
+
+      // half -> flaot -> bf16 : 750 -> 1200 
+      frag_union.frag_bf16[0] = Dtype::float2num_fast(__half2float(frag_union.frag_fp16[0].x));        
+      frag_union.frag_bf16[1] = Dtype::float2num_fast(__half2float(frag_union.frag_fp16[0].y));
+      frag_union.frag_bf16[2] = Dtype::float2num_fast(__half2float(frag_union.frag_fp16[1].x));
+      frag_union.frag_bf16[3] = Dtype::float2num_fast(__half2float(frag_union.frag_fp16[1].y));
     }
+    
   }
 
   template <typename scalar_t>
