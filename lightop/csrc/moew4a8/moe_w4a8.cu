@@ -1203,7 +1203,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
     bool first_stage = true;
     torch::Tensor output_alias = output.alias();
 
-        const float* topk_weights_ptr; // 第一阶段这里为null
+    const float* topk_weights_ptr; // 第一阶段这里为null
     if (topk_weights.has_value()){
       topk_weights_ptr = (const float*)topk_weights.value().data_ptr();
       first_stage = false;
@@ -1214,7 +1214,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
   if(mode > 400 && mode <500){
     int size_n = b_qweight.size(2); 
     int size_kb = b_qweight.size(1);
-    if(first_stage){
+    if(top_k==8){
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id        
         GemmParams2<char> params_in2(
           (const char*)input.data_ptr<int8_t>(), 
@@ -1242,7 +1242,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
         );
 
         
-        if(size_m > 1024 || (size_m > 2 && EXPERTS == 16) ){
+        if(size_m > 512 || (size_m > 2 && EXPERTS == 16) ){
         //   auto it = kernel_maps_gemm1_prefill.find(mode);
         //   if (it != kernel_maps_gemm1_prefill.end()) {
         //       it->second(params_in);
@@ -1259,7 +1259,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
               launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 128, 16, 16, 32, char>(params_in2);
           }
         }      
-      }else{ //gemm2 
+      }else if (top_k==1){ //gemm2 
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
         GemmParams2<char> params_in2(
           (const char*)input.data_ptr<int8_t>(), 
@@ -1286,7 +1286,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
           delta
         );
         
-        if(size_m / 8 > 1024 || (size_m / 8 > 32 && EXPERTS == 16)){
+        if(size_m / 8 > 512 || (size_m / 8 > 32 && EXPERTS == 16)){
           printf("developing \n");
         }else
         {

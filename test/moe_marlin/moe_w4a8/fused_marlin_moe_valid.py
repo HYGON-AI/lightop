@@ -110,8 +110,7 @@ def fused_marlin_moe_valid(
     #                     'DELTA': 1
     #                 }
         
-    if(M > 512):
-        moe_gemm_marlin_w4a8(
+    moe_gemm_marlin_w4a8(
                             a_1,
                             w1_marlin,
                             intermediate_cache1,
@@ -124,22 +123,6 @@ def fused_marlin_moe_valid(
                             topk,
                             workspace,
                             global_reduce_buffer,
-                            config_marlin_0
-                        )
-    else:
-        moe_gemm_marlin_w4a8(
-                            a_1,
-                            w1_marlin,
-                            intermediate_cache1,
-                            a_1_scale,
-                            w1_scale,
-                            None, # topk_weights,
-                            sorted_token_ids,
-                            expert_ids,
-                            num_tokens_post_padded,
-                            topk,
-                            None,
-                            None,
                             config_marlin_0
                         )
     # =========================== gemm1 triton 计算 ===============================
