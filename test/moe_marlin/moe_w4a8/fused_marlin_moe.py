@@ -96,8 +96,7 @@ def fused_marlin_moe(
     start_event.record()
 
     
-    if(M>512):
-        moe_gemm_marlin_w4a8(
+    moe_gemm_marlin_w4a8(
                             a_1,
                             w1,
                             intermediate_cache1,
@@ -110,22 +109,6 @@ def fused_marlin_moe(
                             topk,
                             workspace,
                             global_reduce_buffer,
-                            config_marlin_0
-                        )
-    else:
-        moe_gemm_marlin_w4a8(
-                            a_1,
-                            w1,
-                            intermediate_cache1,
-                            a_1_scale,
-                            w1_scale,
-                            None,
-                            sorted_token_ids,
-                            expert_ids,
-                            num_tokens_post_padded,
-                            topk,
-                            None,
-                            None,
                             config_marlin_0
                         )
     end_event.record()
