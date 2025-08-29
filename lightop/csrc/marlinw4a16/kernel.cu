@@ -182,7 +182,13 @@ namespace marlin_moe_w4a16{
     // For both fp16 and bf16, scale and zero point should be fp16 to reuse existing logic
     using FragS = Vec<__half2, 1>;
     using FragZP = Vec<__half2, 4>;
- 
+    # ifdef __gfx936__
+      constexpr int gridx = 80*3;
+    # else
+      constexpr int gridx = 120*3;
+    # endif
+
+
     const int blcok_idx_x = blockIdx.x;
     const int warp_idx = threadIdx.x % 64;
     
@@ -202,7 +208,7 @@ namespace marlin_moe_w4a16{
   
     int k_tiles = prob_k / 16 / thread_k_blocks; // k 方向 有几个 [128, 128]、[]的数据块 56  有几个 [64, 256] 的数据块 112
     int n_tiles = prob_n / 16 / thread_n_blocks; // n 方向 有几个 [128, 128]的数据块 4  有几个 [64, 256] 的数据块  2
-    int iters = div_ceil(k_tiles * n_tiles * parallel, gridDim.x); // 每个block 需要处理 [128, 128]数据块的数量 468  需处理 [64, 256] 的总数据块
+    int iters = div_ceil(k_tiles * n_tiles * parallel, gridx); // 每个block 需要处理 [128, 128]数据块的数量 468  需处理 [64, 256] 的总数据块
     if (group_blocks >= thread_k_blocks) {
       iters = (group_blocks / thread_k_blocks) *
               div_ceil(iters, (group_blocks / thread_k_blocks));
@@ -240,7 +246,7 @@ namespace marlin_moe_w4a16{
       par_id = slice_col_par / n_tiles;
     }
     
-    if (parallel * n_tiles >= gridDim.x) {
+    if (parallel * n_tiles >= gridx) {
       // when parallel * n_tiles >= sms
       // then there are at most $sms$ conflict tile blocks
       locks_off = blockIdx.x;
@@ -484,7 +490,7 @@ namespace marlin_moe_w4a16{
         }
       }
 
-      if (parallel * n_tiles >= gridDim.x) {
+      if (parallel * n_tiles >= gridx) {
         if (slice_count > 1 && slice_idx == slice_count - 1) {
           locks_off++;
         }
