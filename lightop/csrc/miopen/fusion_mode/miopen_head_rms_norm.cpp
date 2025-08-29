@@ -15,8 +15,6 @@ Tensor miopen_head_rms_norm(const Tensor& x,
                             const int norm_head_end,
                             const int norm_head_num)
 {
-    // if(x.dim() != 4)
-    //     MIOPEN_THROW("Head_RMS_Norm: Input Tensor's dimension Does Not Match.");
     TensorDescriptor x_tensor(x);
     TensorDescriptor weight_tensor(weight);
 
