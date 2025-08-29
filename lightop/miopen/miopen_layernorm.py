@@ -4,7 +4,7 @@ from lightop import op
 from .miopen_utils import _shape_t
 
 
-def miopen_layernorm(x, weight, bias, epsilon, normalized_dim, mode):
+def miopen_layernorm(x, weight, bias, epsilon: float = 1e-5, normalized_dim: int = 0, mode: int = 0):
     """_summary_
 
     Args:
@@ -25,7 +25,7 @@ def miopen_layernorm(x, weight, bias, epsilon, normalized_dim, mode):
     return op.miopen_layernorm(x, weight, bias, epsilon, normalized_dim, mode)
 
 
-def miopen_add_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode):
+def miopen_add_layernorm(x1, x2, weight, bias, epsilon: float = 1e-5, normalized_dim: int = 0, mode: int = 0):
     """_summary_
 
     Args:
@@ -47,7 +47,7 @@ def miopen_add_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode):
     return op.miopen_add_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode)
 
 
-def miopen_skip_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode):
+def miopen_skip_layernorm(x1, x2, weight, bias, epsilon: float = 1e-5, normalized_dim: int = 0, mode: int = 0):
     """_summary_
 
     Args:
