@@ -882,6 +882,9 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape) # none
         
+        config1['BLOCK_SIZE_M'] = 16
+        config1['MODE'] = 1003
+
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))

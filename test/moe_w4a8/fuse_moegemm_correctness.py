@@ -1,4 +1,5 @@
 import torch
+torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 import time
 from typing import Optional, Type,Any, Dict, List, Tuple
 import pandas as pd
@@ -382,7 +383,7 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
         # "num_warps": 2
     }
     triton_config["BLOCK_SIZE_M"] = config["BLOCK_SIZE_M"]
-    print("config[]",config["BLOCK_SIZE_M"])
+    print("BLOCK_SIZE_M",config["BLOCK_SIZE_M"])
     EM = sorted_token_ids.shape[0]
     if A.shape[0] < triton_config["BLOCK_SIZE_M"]:
         # optimize for small batch_size.
@@ -460,6 +461,7 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
     print("num_tokens_post_padded",num_tokens_post_padded)
     print("top_k",top_k)
     print("config",config)
+    # print("end offset:", m*top*n)
     moe_gemm_w4a8(A, 
                     B, 
                     out_cuda,
@@ -479,7 +481,14 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
         stage = 2
     # print("C",C)
     # print("out_cuda",out_cuda)
-    if not (torch.allclose(C, out_cuda, rtol=1e-2, atol=1e-2)):
+    if not (torch.mean(torch.abs(C.to(torch.float32) - out_cuda.to(torch.float32)))
+            / torch.mean(torch.abs(C.to(torch.float32)))
+            < 0.05):
+        print(f"kernel{stage} torch.mean 精度检查不合格!!!")
+    else:
+        print(f"kernel{stage} torch.mean 精度检查合格.")
+    # if not (torch.allclose(C.to(torch.bfloat16), out_cuda.to(torch.bfloat16), rtol=1e-3, atol=1e-5)):
+    if not (torch.allclose(C, out_cuda, rtol=1e-3, atol=1e-5)):
         if not mul_routed_weight and stage == 1:
             gemm1_compare_failed_list.append(config['MODE'])
         elif stage == 2:
@@ -497,19 +506,24 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
         return torch.stack((weight & 0xF, (weight >> 4) & 0xF), dim=2).view(
             weight.shape[0], 2 * weight.shape[1]
         )
-    bint8 = unpack_int8_to_int4(B.view(-1, B.shape[-1]))
+    bint8 = unpack_int8_to_int4(B.view(-1, B.shape[-1])) - 8
     bint8 = bint8.reshape(B.shape[0], B.shape[1], -1)
     torch.stack((B.view(-1, B.shape[-1]) & 0xF, (B.view(-1, B.shape[-1]) >> 4) & 0xF), dim=2)
-    import pdb
-    pdb.set_trace()
-    torch.nonzero((C - out_cuda).abs() > 1)
+    torch.nonzero((C - out_cuda).abs() > 0.001)
+    torch.nonzero((C.to(torch.bfloat16) - out_cuda.to(torch.bfloat16)).abs() > 2)
     torch.nonzero((C.view(-1, 256) - out_cuda.view(-1, 256)).abs() > 1)
     torch.nonzero(sorted_token_ids == 0)
     
-    begin, end, expert_id = 0, 128, 0
+    begin, end, expert_id = 6918, 6919, 54
     res = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32), bint8[expert_id, :, :].t().cpu().to(torch.int32))
+    scale = A_scale[sorted_token_ids[begin:end] // top_k] * B_scale[expert_id].t()
+    # out = res.to(A.device) * scale
     out = res.to(A.device) * A_scale[sorted_token_ids[begin:end] // top_k] * B_scale[expert_id].t()
+    out_bf16 =  out.to(torch.bfloat16)
+    import pdb
+    pdb.set_trace()
     # '''
+    return out_cuda, C
 
 
 def fused_experts_impl_int8(hidden_states: torch.Tensor,
@@ -590,11 +604,16 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
     else:
         raise ValueError(f"Unsupported compute_type: {hidden_states.dtype}")
 
+    # debug_output = torch.zeros([16512, 7680], dtype=hidden_states.dtype, device=hidden_states.device)
     if inplace:
         out_hidden_states = hidden_states
     else:
+        # print("hidden_states:", hidden_states.shape)
         out_hidden_states = torch.empty_like(hidden_states)
-
+        # row, col = hidden_states.shape
+        # out_hidden_states = debug_output[:row, :col]
+    # torch.nonzero(out_hidden_states==0)
+    # torch.nonzero(debug_output[256:, 7168:]!=0)
 
     for chunk in range((num_tokens // CHUNK_SIZE) + 1):
         begin_chunk_idx, end_chunk_idx = (chunk * CHUNK_SIZE,
@@ -683,7 +702,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         # pdb.set_trace()
         # torch.nonzero(sorted_token_ids == 0)
         # '''
-        invoke_fused_moe_kernel_int8(qcurr_hidden_states,
+        out_cuda, out_triton = invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
                                 qa1_scale,
@@ -755,6 +774,8 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
                     out_hidden_states[begin_chunk_idx:end_chunk_idx])
         # '''
+        # import pdb
+        # pdb.set_trace()
     return out_hidden_states
 
 def _fused_moe_helper(m: int,
@@ -792,7 +813,7 @@ def _fused_moe_helper(m: int,
 
 
 def run_perchannel_vaild():
-    # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
+    m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
     m_list=[128, 256,512,1024,2048,4096,8192,16384] #prefill
     # m_list=[1,2,4,8,16,32,64,128]    
@@ -820,7 +841,7 @@ def run_perchannel_vaild():
     # # decode corrtnese
     # mode_ranges = [i for i in range(len(blockM_configs_decode))]
     # exclude_modes = [13, 32, 33, 34, 35]
-    # #mode_ranges = [3,4,6,8,10,12,14]
+    # mode_ranges = [3,4,6,14,22,26,28,29]
     # #exclude_modes = [13] # nk 4096 192 gemm2<16
     
     
@@ -831,8 +852,10 @@ def run_perchannel_vaild():
                 # mode_list=[11,27]
                 print("\033[32mmode:{} m:{} n:{} k:{}\033[0m ".format(mode_list, m,n_list_1[i],k_list_1[i]))
                 input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=m,n=n_list_1[i],k=k_list_1[i],n2=n_list_2[i],k2=k_list_2[i],topk=topk,E=E,block_size=None,out_dtype=out_dtype)
-                print("weight13:", weight13.shape)
-                print("weight2:", weight2.shape)
+                # input = input.to(torch.float)
+                print("input:", input.shape, input)
+                # print("weight13:", weight13.shape, weight13)
+                # print("weight2:", weight2.shape, weight2)
                 # triton moe: output
                 output=fused_experts_impl_int8(hidden_states=input,
                                                 w1=weight13,
@@ -848,7 +871,7 @@ def run_perchannel_vaild():
                                                 per_channel_quant=True,
                                                 mode=mode_list)
 
-                
+                # print("output:", output)
                 # if not (torch.mean(torch.abs(output.to(torch.float32) - out_native.to(torch.float32)))
                 # / torch.mean(torch.abs(out_native.to(torch.float32)))
                 # < 0.05):

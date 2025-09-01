@@ -115,6 +115,7 @@ blockM_configs = {
     1000: 128,
     1001: 64,
     1002: 32,
+    1003: 16,
 }
 
 M_THRESHOLD = 128
@@ -452,13 +453,13 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
     grid = lambda META: (triton.cdiv(EM, META['BLOCK_SIZE_M']) * triton.cdiv(
         B.shape[1] if not use_nn_moe else B.shape[2], META['BLOCK_SIZE_N']), )
 
-    # import pdb
-    # pdb.set_trace()
-    # A = torch.ones_like(A)
-    # B = torch.ones_like(B)
-    # A_scale = torch.ones_like(A_scale)
-    # B_scale = torch.ones_like(B_scale)
-    # topk_weights = torch.ones_like(topk_weights)
+    # torch.manual_seed(0)
+    # begin, end, expert_id = 0, 1, 0
+    # A = torch.randint(-10, 10, A.shape, dtype=torch.int8, device=B.device)
+    # B = torch.randint(-10, 10, B.shape, dtype=torch.int8, device=B.device)
+    # res = torch.matmul(A[sorted_token_ids[begin:end] // top_k].cpu().to(torch.int32), B[expert_id, :, :].t().cpu().to(torch.int32))
+    # out = res.to(A.device) * A_scale[sorted_token_ids[begin:end] // top_k] * B_scale[expert_id].t()
+    # '''
     fused_moe_kernel[grid](
             A,
             B,
@@ -707,6 +708,28 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
+        '''
+        # sorted_token_ids[:128] = torch.tensor([20375, 20444, 40787,  6104, 61222, 61244, 24493, 26563, 26412, 17653,
+        # 46929, 46945, 44895, 44441, 44353, 44411, 64849, 22648,  6940, 45239,
+        # 43188, 43162, 43011, 43078, 27564, 30711, 14325, 34653, 19490, 39950,
+        # 53233, 60612, 42139,  6305, 55230, 60539, 42237, 26709, 62640,  7779,
+        # 49381, 49402,  7817,  7867, 28337, 26189, 26282, 48722, 48740,  9009,
+        #  1839,  1895,  1901, 29597, 22437, 31736, 63363, 51971,  3661, 13135,
+        # 22095, 24130, 24146, 24205, 13263, 42684, 44571, 42603, 35685, 26073,
+        # 56318, 25895, 54050, 48426, 46415, 65045, 51485, 51526, 51545, 65145,
+        # 51532, 15411, 15386, 30951, 30952, 30968, 30843, 64161, 51233, 25504,
+        # 25575, 13877, 14024, 34546, 36352, 34315, 34345, 54972, 54841, 56903,
+        # 23463, 23481, 23353, 11320, 11371, 13415, 41935, 11512, 31751, 43838,
+        # 33910, 31815, 31889, 12537, 54480, 12380, 14491, 34881, 32952, 34820,
+        # 62423, 53424, 62445, 53281, 27033, 45492, 16208, 18295],
+        # device='cuda:0', dtype=torch.int32)
+        print("sorted_token_ids:", sorted_token_ids[0:align])
+        print("sorted_token_ids // topk:", sorted_token_ids[0:align] // top_k_num)
+        print("sorted_token_ids % topk:", sorted_token_ids[0:align] % top_k_num)
+        print("expert_ids:", expert_ids[:10])
+        # pdb.set_trace()
+        # torch.nonzero(sorted_token_ids == 0)
+        # '''
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
@@ -729,7 +752,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
-
+        '''
         if activation == "silu":
             # d = intermediate_cache1.shape[-1] // 2
             # intermediate_cache2 = F.silu(intermediate_cache1[..., :d]) * intermediate_cache1[..., d:]
@@ -778,63 +801,9 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
 
-        # mode1=2
-        # config1 = {}
-        # config2 = {}
-        # if M > M_THRESHOLD:
-        #     config1['BLOCK_SIZE_M'] = blockM_configs[mode0]
-        #     config1['MODE']         = mode0
-        #     config1['DELTA']        = 1
-        #     config2['BLOCK_SIZE_M'] = blockM_configs[mode1]
-        #     config2['MODE']         = mode1
-        #     config2['DELTA']        = blockM_configs[mode0]//blockM_configs[mode1]
-        # else:
-        #     config1['BLOCK_SIZE_M'] = blockM_configs_decode[mode0]
-        #     config1['BLOCK_SIZE_M'] = mode0
-        #     config1['BLOCK_SIZE_M'] = 1
-        #     config2['BLOCK_SIZE_M'] = blockM_configs_decode[mode1]
-        #     config2['BLOCK_SIZE_M'] = mode1
-        #     config2['BLOCK_SIZE_M'] = blockM_configs[mode0]//blockM_configs[mode1]
-            
-        # intermediate_cache3_copy = torch.zeros_like(intermediate_cache3)
-        # invoke_fused_moe_kernel_int8(qintermediate_cache2,
-        #                         w2,
-        #                         intermediate_cache3_copy,
-        #                         qa2_scale,
-        #                         w2_scale,
-        #                         w2_zp,
-        #                         curr_topk_weights,
-        #                         curr_topk_ids,
-        #                         sorted_token_ids,
-        #                         expert_ids,
-        #                         num_tokens_post_padded,
-        #                         not apply_router_weight_on_input,
-        #                         1,
-        #                         config2,
-        #                         compute_type=compute_type,
-        #                         use_fp8_w8a8=use_fp8_w8a8,
-        #                         use_int8_w8a8=use_int8_w8a8,
-        #                         use_int8_w8a16=use_int8_w8a16,
-        #                         use_int4_w4a16=use_int4_w4a16,
-        #                         per_channel_quant=per_channel_quant,
-        #                         block_shape=block_shape,
-        #                         use_nn_moe=use_nn_moe)
-        
-        # if not (torch.allclose(intermediate_cache3, intermediate_cache3_copy, rtol=1e-2, atol=1e-2)):            
-        #     print(f"block {config2['BLOCK_SIZE_M']} kernel 精度检查不合格!!!")
-        #     # torch.set_printoptions(profile="full")  
-        #     # ftriton = open('cuda_output.txt', 'w')   
-        #     # print(f'cuda_output: {out_cuda}', file=ftriton)
-        #     # ftriton.close
-        #     # ftorch = open('bench_output.txt', 'w')   
-        #     # print(f'bench_output: {C}', file=ftorch)
-        #     # ftorch.close
-        # else:
-        #     print(f"block {config2['BLOCK_SIZE_M']} kernel 精度检查合格.")
-
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
                     out_hidden_states[begin_chunk_idx:end_chunk_idx])
- 
+        '''
     return out_hidden_states
 
 def _fused_moe_helper(m: int,
@@ -947,16 +916,8 @@ def run_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
     # m_list=[256,512,1024,2048,4096,8192,16384] #prefill
-    m_list=[
-            144,160,176,192,208,224,240,240,256,288,320,
-            # 352,384,416,448,480,512,640,768,896,1024,1152,
-            # 1280,1408,1536,1664,1792,192,1920, 2048,2176,
-            # 2304, 2432,2560,2688,2816, 2944,3072,
-            # 3200,3328,3456,3584,3712,3840,3968,4096,
-            # 6144, 8192, 10240, 12288, 14336, 16384, 
-            # 18432, 20480,22528,24576,26624,28672,32768
-            ]
-    # m_list=[8192,]
+    # m_list=[144,160,176,192,208,224,240,240,256,288,320,]
+    m_list=[144,]
     # m_list = [16384]
     # n_list_1=[512,]
     # k_list_1=[7168,]
@@ -1035,8 +996,8 @@ def run_perchannel_vaild():
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
-    mode_ranges = [mode for mode in blockM_configs.keys()]
-    # mode_ranges = [61]
+    # mode_ranges = [mode for mode in blockM_configs.keys()]
+    mode_ranges = [1003]
     # compare_fail = [42,43,46,52,54,60]
     # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
     # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
