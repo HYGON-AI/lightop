@@ -13,6 +13,8 @@ namespace native {
 std::vector<Tensor> miopen_add_rms_norm_dynamic_quant(
     const Tensor& x, const Tensor& x2, const Tensor& weight, const Tensor& smoothScale, const float epsilon)
 {
+    if(x.dim() != 2 || x2.dim() != 2 || weight.dim() != 1 || smoothScale.dim() != 1)
+        MIOPEN_THROW("Add_RMS_Norm_Dynamic_Quant: Input Tensor's dimension Does Not Match.");
 
     TensorDescriptor x_tensor(x);
     TensorDescriptor x2_tensor(x2);
@@ -20,7 +22,7 @@ std::vector<Tensor> miopen_add_rms_norm_dynamic_quant(
     TensorDescriptor smoothScale_tensor(smoothScale);
 
     Tensor out_add               = at::empty_like(x);
-    Tensor out_y                 = at::empty_like(x, x.options().dtype(at::kByte));
+    Tensor out_y                 = at::empty_like(x, x.options().dtype(at::kChar));
     Tensor out_perTokenScaleDesc = at::empty(x.sizes()[0], x.options().dtype(at::kFloat));
 
     TensorDescriptor output_add(out_add);
@@ -52,6 +54,8 @@ std::vector<Tensor> miopen_rms_norm_dynamic_quant_without_residual(const Tensor&
                                                                    const Tensor& smoothScale,
                                                                    const float epsilon)
 {
+    if(x.dim() != 2 || weight.dim() != 1 || smoothScale.dim() != 1)
+        MIOPEN_THROW("Add_RMS_Norm_Dynamic_Quant_Without_Residual: Input Tensor's dimension Does Not Match.");
 
     TensorDescriptor x_tensor(x);
     TensorDescriptor weight_tensor(weight);
