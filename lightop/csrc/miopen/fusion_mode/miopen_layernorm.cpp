@@ -16,8 +16,6 @@ std::vector<Tensor> miopen_layernorm(const Tensor& x,
                                      const int normalized_dim,
                                      const int mode)
 {
-    if(x.dim() != 4)
-        MIOPEN_THROW("LayerNorm: Only Support 2d.");
     TensorDescriptor x_tensor(x);
     TensorDescriptor weight_tensor(weight);
     TensorDescriptor bias_tensor(bias);
@@ -64,9 +62,6 @@ std::vector<Tensor> miopen_skip_layernorm(const Tensor& x1,
                                           const int normalized_dim,
                                           const int mode)
 {
-    if(x1.dim() != 4 || x2.dim() != 4)
-        MIOPEN_THROW("SkipLayerNorm: Only Support 2d.");
-
     TensorDescriptor x1_tensor(x1);
     TensorDescriptor x2_tensor(x2);
     TensorDescriptor weight_tensor(weight);
@@ -120,9 +115,6 @@ std::vector<Tensor> miopen_add_layernorm(const Tensor& x1,
                                          const int normalized_dim,
                                          const int mode)
 {
-    if(x1.dim() != 4 || x2.dim() != 4)
-        MIOPEN_THROW("AddLayerNorm: Only Support 2d.");
-
     TensorDescriptor x1_tensor(x1);
     TensorDescriptor x2_tensor(x2);
     TensorDescriptor weight_tensor(weight);
