@@ -122,17 +122,8 @@ void store_kv_cache_paged(const torch::Tensor& key, const torch::Tensor& value,t
 
 void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::Tensor& token_expert_indices,torch::Tensor& gating_output, const std::string& renormalize = "false"); 
 
-struct GemmArg {
-    torch::Tensor a, b, c, d;     // 输入/输出张量
-    uint32_t M, N, K;               // GEMM 形状
-    uint32_t batchcount;          // 批次
-    float alpha, beta;            // 缩放系数
-    torch::Tensor bias;           // bias
-    int biastype;                 // bias 类型枚举
-    uint32_t activationType;      // 激活类型枚举
-    c10::optional<torch::Tensor> scaleAlphaVec; // 可选的 per-row 缩放
-};
-std::vector<Tensor> groupgemm(const std::vector<GemmArg>& args);
+Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b);
+
 }
 }
 
@@ -204,20 +195,4 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("blockwise_scaled_cast_transpose", &at::native::blockwise_scaled_cast_transpose, "blockwise_scaled_cast_transpose");
   m.def("rms_norm_dynamic_per_token_quant",&at::native::rms_norm_dynamic_per_token_quant,"rms_norm_dynamic_per_token_quant");
   m.def("groupgemm",&at::native::groupgemm,"groupgemm");
-  py::class_<at::native::GemmArg>(m, "GemmArg")// 注册 GemmArg 类型
-      .def(py::init<>())  // 默认构造
-      .def_readwrite("a", &at::native::GemmArg::a)
-      .def_readwrite("b", &at::native::GemmArg::b)
-      .def_readwrite("c", &at::native::GemmArg::c)
-      .def_readwrite("d", &at::native::GemmArg::d)
-      .def_readwrite("M", &at::native::GemmArg::M)
-      .def_readwrite("N", &at::native::GemmArg::N)
-      .def_readwrite("K", &at::native::GemmArg::K)
-      .def_readwrite("batchcount", &at::native::GemmArg::batchcount)
-      .def_readwrite("alpha", &at::native::GemmArg::alpha)
-      .def_readwrite("beta", &at::native::GemmArg::beta)
-      .def_readwrite("bias", &at::native::GemmArg::bias)
-      .def_readwrite("biastype", &at::native::GemmArg::biastype)
-      .def_readwrite("activationType", &at::native::GemmArg::activationType)
-      .def_readwrite("scaleAlphaVec", &at::native::GemmArg::scaleAlphaVec);
 }

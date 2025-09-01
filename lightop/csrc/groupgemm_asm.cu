@@ -30,7 +30,6 @@
 #include "aiter_hip_common.h"
 
 using bhalf_t = hip_bfloat16;
-
 enum class BiasType : int
 {
     Float,
@@ -68,78 +67,72 @@ enum class ActivationType : uint32_t
     Count
 };
 
+
 namespace at {
 namespace native {
-struct GemmArg {
-    torch::Tensor a, b, c, d;     
-    uint32_t M, N, K;              
-    uint32_t batchcount;       
-    float alpha, beta;         
-    torch::Tensor bias;        
-    int biastype;         
-    uint32_t activationType;     
-    c10::optional<torch::Tensor> scaleAlphaVec; 
-};
-
 
 template <typename Ti, typename To, typename Tc, typename Talpha = Tc, typename Tbias = Tc>
 int makeArg(
-    const GemmArg& args,
-    GPUProb<Ti, To, Tc, Talpha, Tbias>& d_prob)
-{
+    torch::Tensor& a, torch::Tensor& b, torch::Tensor& d,
+    GPUProb<Ti, To, Tc, Talpha, Tbias>& d_prob,
+    uint32_t M, uint32_t N, uint32_t K,
+    // size_t batch_count,
+    BiasType use_bias_type,
+    ActivationType use_activation_type){
 
-    uint32_t lda = args.N;
-    uint32_t ldb = args.K;
-    uint32_t ldc = args.N;
-    uint32_t ldd = args.N;
+    uint32_t lda = N;
+    uint32_t ldb = K;
+    uint32_t ldc = N;
+    uint32_t ldd = N;
 
-    uint32_t stride_a = args.N * args.K;
-    uint32_t stride_b = args.M * args.K;
-    uint32_t stride_c = args.M * args.N;
-    uint32_t stride_d = args.M * args.N;
+    uint32_t stride_a = N * K;
+    uint32_t stride_b = M * K;
+    uint32_t stride_c = M * N;
+    uint32_t stride_d = M * N;
 
     Tc h_alpha = 1;
     Tc h_beta  = 0;
+    int batchcount = 1;
 
-    d_prob.a = reinterpret_cast<Ti*>(args.b.data_ptr());
-    d_prob.b = reinterpret_cast<Ti*>(args.a.data_ptr());
-    d_prob.c = reinterpret_cast<To*>(args.c.data_ptr());
-    d_prob.d = reinterpret_cast<To*>(args.d.data_ptr());
+    d_prob.a = reinterpret_cast<Ti*>(b.data_ptr());
+    d_prob.b = reinterpret_cast<Ti*>(a.data_ptr());
+    // d_prob.c = reinterpret_cast<To*>(c.data_ptr());
+    d_prob.c = nullptr;
+    d_prob.d = reinterpret_cast<To*>(d.data_ptr());
     
-    d_prob.size_0 = static_cast<uint32_t>(args.N);
-    d_prob.size_1 = static_cast<uint32_t>(args.M);
-    d_prob.size_2 = static_cast<uint32_t>(args.batchcount);
-    d_prob.size_3 = static_cast<uint32_t>(args.K);
+    d_prob.size_0 = static_cast<uint32_t>(N);
+    d_prob.size_1 = static_cast<uint32_t>(M);
+    d_prob.size_2 = static_cast<uint32_t>(batchcount);
+    d_prob.size_3 = static_cast<uint32_t>(K);
 
-    d_prob.strideD1 = static_cast<uint32_t>(ldd);
-    d_prob.strideD2 = static_cast<uint32_t>(stride_d);
-    d_prob.strideC1 = static_cast<uint32_t>(ldc);
-    d_prob.strideC2 = static_cast<uint32_t>(stride_c);
-    d_prob.strideA1 = static_cast<uint32_t>(lda);
-    d_prob.strideA2 = static_cast<uint32_t>(stride_a);
-    d_prob.strideB1 = static_cast<uint32_t>(ldb);
-    d_prob.strideB2 = static_cast<uint32_t>(stride_b);
+    d_prob.strideD1 = static_cast<unsigned int>(ldd);
+    d_prob.strideD2 = static_cast<unsigned int>(stride_d);
+    d_prob.strideC1 = static_cast<unsigned int>(ldc);
+    d_prob.strideC2 = static_cast<unsigned int>(stride_c);
+    d_prob.strideA1 = static_cast<unsigned int>(lda);
+    d_prob.strideA2 = static_cast<unsigned int>(stride_a);
+    d_prob.strideB1 = static_cast<unsigned int>(ldb);
+    d_prob.strideB2 = static_cast<unsigned int>(stride_b);
 
-    if(args.scaleAlphaVec.has_value()) {
-        // d_prob.scaleAlphaVec = reinterpret_cast<Talpha*>(args.scaleAlphaVec.value().data_ptr());
-        d_prob.scaleAlphaVec = nullptr;
-    } else {
-        d_prob.scaleAlphaVec = nullptr;
-    }
-    d_prob.alpha = d_prob.scaleAlphaVec == nullptr ? h_alpha : 1;
-    d_prob.beta = h_beta;
-    // d_prob.bias =  reinterpret_cast<Tbias*>(args.bias.data_ptr());         
+    d_prob.alpha = h_alpha;
+    d_prob.beta = h_beta; 
+    d_prob.scaleAlphaVec == nullptr;       
     d_prob.bias =  nullptr;       
-    d_prob.bias_type = static_cast<uint32_t>(args.biastype);
+    d_prob.bias_type = static_cast<unsigned int>(use_bias_type);
     d_prob.strideBias = 0;
     d_prob.activation_0 = 2;
     d_prob.activation_1 = 2;
-    d_prob.activationType = static_cast<uint32_t>(args.activationType);
+    d_prob.activationType = static_cast<unsigned int>(use_activation_type);
 
     return 0;
 }
 
-std::vector<torch::Tensor> groupgemm(const std::vector<GemmArg>& args)
+int _groupgemm_nn_impl(std::vector<torch::Tensor>& a_list,
+                       std::vector<torch::Tensor>& b_list,
+                       std::vector<torch::Tensor>& d_list,
+                       const std::vector<uint32_t>& M_list,
+                       const std::vector<uint32_t>& N_list,
+                       const std::vector<uint32_t>& K_list)
 {
     using Ti = bhalf_t;
     using To = bhalf_t;
@@ -154,16 +147,22 @@ std::vector<torch::Tensor> groupgemm(const std::vector<GemmArg>& args)
     unsigned int macroTile0 = static_cast<unsigned int>(groupSize[0] * threadTile[0]);
     unsigned int macroTile1 = static_cast<unsigned int>(groupSize[1] * threadTile[1]);
 
-    int gemm_count=static_cast<int>(args.size());
+    int gemm_count=static_cast<int>(a_list.size());;
     int wgRight=0;//gemm对于每个size的WG的偏移量
     
-    std::vector<GPUProb<Ti,To,Tc,Talpha,Tbias>> d_prob(gemm_count);
-    
+    std::vector<GPUProb<Ti,To,Tc,Talpha,Tbias>> d_prob(gemm_count);  
     std::vector<uint32_t> arg_wgRight(gemm_count);
-    
+        
+    for (int i = 0; i < gemm_count; ++i) {
+        makeArg<Ti,To,Tc,Talpha,Tbias>(a_list[i], b_list[i], d_list[i],
+                                    d_prob[i],
+                                    M_list[i], N_list[i], K_list[i],
+                                    BiasType::Float, ActivationType::None);
+    }
+
+
     for (int i=0;i<gemm_count;i++)
     {
-        makeArg<Ti, To, Tc, Talpha, Tbias>(args[i], d_prob[i]);
         arg_wgRight[i]=wgRight;
         int wg_M=(d_prob[i].size_0+macroTile0-1)/macroTile0;
         int wg_N=(d_prob[i].size_1+macroTile1-1)/macroTile1;
@@ -197,8 +196,8 @@ std::vector<torch::Tensor> groupgemm(const std::vector<GemmArg>& args)
     hipFunctionArgs.gsu=1;
 
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-	static AiterAsmKernel groupgemm("Custom_Cijk_Ailk_Bljk_BBS_BH_Bias_GG_AS_SAV_UserArgs_MT256x256x16_MI16x16x1_SN_GSU1_K1_MIWT8_4", "groupgemm.co");
-	AiterAsmKernel *impl_ptr = &groupgemm;
+	static AiterAsmKernel groupgemm_NN_BF16("Custom_Cijk_Ailk_Bljk_BBS_BH_Bias_GG_AS_SAV_UserArgs_MT256x256x16_MI16x16x1_SN_GSU1_K1_MIWT8_4", "groupgemm.co");
+	AiterAsmKernel *impl_ptr = &groupgemm_NN_BF16;
     size_t size = sizeof(hipFunctionArgs);
 	impl_ptr->launch_kernel({&hipFunctionArgs,
                              &size,
@@ -211,9 +210,56 @@ std::vector<torch::Tensor> groupgemm(const std::vector<GemmArg>& args)
                              stream});
     hipDeviceSynchronize();
     hipFree(d_argsPtr);
-    std::vector<torch::Tensor> outputs;
-    for(const auto& arg : args) outputs.push_back(arg.d);
-    return outputs;
+    return 0;
+}
+
+Tensor groupgemm_dispatch(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b) {
+    TORCH_CHECK(b.dim() == 3, "b 必须是三维 [?, K, N]");
+    auto options = torch::TensorOptions()
+                    .dtype(a.scalar_type())
+                    .device(a.device());
+
+    const uint32_t M = a.size(0);
+    const uint32_t K = a.size(1);
+    const uint32_t N = b.size(2);
+    TORCH_CHECK(b.size(1) == K, "b.size(1) 必须等于 a.size(1)");
+
+    Tensor d = torch::empty({M, N}, options);
+
+    const int parts_num = batch_sizes.size(0);
+    int64_t row_offset = 0;
+
+    std::vector<Tensor> a_parts, b_parts, d_parts;
+    std::vector<uint32_t> M_list, N_list, K_list;
+
+    a_parts.reserve(parts_num);
+    b_parts.reserve(parts_num);
+    d_parts.reserve(parts_num);
+    M_list.reserve(parts_num);
+    N_list.reserve(parts_num);
+    K_list.reserve(parts_num);
+
+    for (int i = 0; i < parts_num; ++i) {
+        const int64_t rows = batch_sizes[i].item<int64_t>();
+
+        a_parts.emplace_back(a.narrow(0, row_offset, rows));
+        b_parts.emplace_back(b[i]);
+        d_parts.emplace_back(d.narrow(0, row_offset, rows));
+
+        M_list.emplace_back(static_cast<uint32_t>(rows));
+        N_list.emplace_back(N);
+        K_list.emplace_back(K);
+
+        row_offset += rows;
+    }
+
+    _groupgemm_nn_impl(a_parts, b_parts, d_parts, M_list, N_list, K_list);
+    return d;
+}
+
+
+Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b){
+    return groupgemm_dispatch(a, b, batch_sizes, trans_b);
 }
 
 }
