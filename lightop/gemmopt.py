@@ -297,24 +297,7 @@ def awq_marlin_repack(b_q_weight: torch.Tensor, size_k: int, size_n: int, num_bi
     output = op.awq_marlin_repack(b_q_weight, size_k, size_n, num_bits)
     return output
 
-def groupgemm(arg_list: list[dict]) -> list[torch.Tensor]:
-    gemm_args = []
-    for g in arg_list:
-        ga = op.GemmArg()  # 默认构造
-        ga.a = g['a']
-        ga.b = g['b']
-        ga.c = g['c']
-        ga.d = g['d']
-        ga.M = g['M']
-        ga.N = g['N']
-        ga.K = g['K']
-        ga.batchcount = g['batchcount']
-        ga.alpha = g['alpha']
-        ga.beta = g['beta']
-        ga.bias = g['bias']
-        ga.biastype = g['biastype']
-        ga.activationType = g['activationType']
-        ga.scaleAlphaVec = g.get('scaleAlphaVec', None)
-        gemm_args.append(ga)
-    outs = op.groupgemm(gemm_args)
+
+def groupgemm(a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor, trans_b: bool = False) -> torch.Tensor:
+    outs = op.groupgemm(a, b, batch_sizes, trans_b)
     return outs
