@@ -16,6 +16,9 @@ std::vector<Tensor> miopen_groupnorm(const Tensor& x,
                                      const float epsilon,
                                      const int mode)
 {
+    if(x.dim() != 4 || x.dim() != 5)
+        MIOPEN_THROW("GroupNorm: Only Support 2d or 3d.");
+
     TensorDescriptor x_tensor(x);
     TensorDescriptor weight_tensor(weight);
     TensorDescriptor bias_tensor(bias);
@@ -63,6 +66,11 @@ std::vector<Tensor> miopen_add_groupnorm(const Tensor& x1,
                                          const float epsilon,
                                          const int mode)
 {
+    if(x1.dim() != 4 || x1.dim() != 5)
+        MIOPEN_THROW("GroupNorm: x1 Only Support 2d or 3d.");
+    if(x2.dim() != 4 || x2.dim() != 5)
+        MIOPEN_THROW("GroupNorm: x2 Only Support 2d or 3d.");
+
     TensorDescriptor x1_tensor(x1);
     TensorDescriptor x2_tensor(x2);
     TensorDescriptor weight_tensor(weight);

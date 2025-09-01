@@ -22,7 +22,7 @@ Tensor miopen_fused_conv_bias_forward(const Tensor& x,
 {
     if(x.dim() != 4 || weight.dim() != 4)
     {
-        MIOPEN_THROW("Only support conv2d");
+        MIOPEN_THROW("Fused_Conv_Bias_Forward: Only Support Conv2d.");
     }
 
     TensorDescriptor conv_input_tensor(x);

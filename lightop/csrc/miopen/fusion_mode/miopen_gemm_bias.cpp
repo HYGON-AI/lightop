@@ -17,7 +17,7 @@ Tensor miopen_gemm_bias(const Tensor& input_a,
 {
 
     if(input_a.dim() != 3 || input_b.dim() != 2 || bias.dim() != 2)
-        MIOPEN_THROW("Gemm_Add Do not match input tensor dim");
+        MIOPEN_THROW("Gemm_Bias: Moe_Gather: Input Tensor's dimension Does Not Match.");
 
     const int batch_size = input_a.sizes()[0];
     const int m = input_a.sizes()[1];
