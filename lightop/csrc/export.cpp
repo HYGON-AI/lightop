@@ -113,6 +113,7 @@ void blockwise_scaled_cast_transpose(const Tensor& input,std::optional<Tensor> o
 void rms_norm_dynamic_per_token_quant(Tensor &output,const Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> scale_ub,std::optional<Tensor> residual);
 Tensor miopen_fused_conv_bias_forward(const Tensor &x, const Tensor &weight, const Tensor &bias, const std::vector<int64_t> &pads, const std::vector<int64_t> &strides, const std::vector<int64_t> &dilations);
 Tensor miopen_fused_conv_bias_add_forward(const Tensor &x, const Tensor &weight, const Tensor &bias, const Tensor &add, const std::vector<int64_t> &pads, const std::vector<int64_t> &strides, const std::vector<int64_t> &dilations);
+Tensor miopen_fused_conv_bias_add_relu_forward(const Tensor &x, const Tensor &weight, const Tensor &bias, const Tensor &add, const std::vector<int64_t> &pads, const std::vector<int64_t> &strides, const std::vector<int64_t> &dilations);
 Tensor miopen_fused_conv_bias_relu_forward(const Tensor &x, const Tensor &weight, const Tensor &bias, const std::vector<int64_t> &pads, const std::vector<int64_t> &strides, const std::vector<int64_t> &dilations);
 std::vector<Tensor> miopen_add_rms_norm_dynamic_quant(const Tensor &x, const Tensor &x2, const Tensor &weight, const Tensor &smoothScale, const float epsilon);
 std::vector<Tensor> miopen_rms_norm_dynamic_quant_without_residual(const Tensor &x, const Tensor &weight, const Tensor &smoothScale, const float epsilon);
@@ -199,6 +200,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("miopen_conv_bias", &at::native::miopen_fused_conv_bias_forward, "fused_conv_bias forward");
   m.def("miopen_conv_bias_add", &at::native::miopen_fused_conv_bias_add_forward, "fused_conv_bias_add forward");
   m.def("miopen_conv_bias_relu", &at::native::miopen_fused_conv_bias_relu_forward, "fused_conv_bias_relu forward");
+  m.def("miopen_conv_bias_add_relu", &at::native::miopen_fused_conv_bias_add_relu_forward, "miopen_fused_conv_bias_add_relu_forward");
   m.def("miopen_add_rms_norm_dynamic_quant", &at::native::miopen_add_rms_norm_dynamic_quant, "fused add rms morm dynamic quant");
   m.def("miopen_rms_norm_dynamic_quant_without_residual", &at::native::miopen_rms_norm_dynamic_quant_without_residual, "rms_norm_dynamic_quant_without_residual");
   m.def("miopen_head_rms_norm", &at::native::miopen_head_rms_norm, "head_rms_norm");
