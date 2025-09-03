@@ -700,20 +700,22 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
             }
         }        
     }
-
     extern __shared__ int out_smem[]; // 声明lds信息
 
     if constexpr (warp_k_num > 1){
         //计算一个warp需要的空间即：64x16
-        constexpr int lds_offset = warp_k_num * 16 * 64;
-        #pragma unroll
-        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+        constexpr int lineoffset=65;
+        constexpr int lds_offset = warp_k_num * 16 * lineoffset;
+        if(warp_k_id>0){
             #pragma unroll
-            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
                 #pragma unroll
-                for(int k = 0; k < 4; k++){
-                    *(intx4*)( &out_smem[(m_tile * MFMA_M) * lds_offset  + n_tile * 16 
-                        + (warp_k_id +  warp_n_id * warp_k_num)  * 64 * 16 +  row_id * 64 + col_id * 16  + k * 4] ) = C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + k];
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k = 0; k < 4; k++){
+                        *(intx4*)(out_smem+(m_tile * MFMA_M) * lds_offset + n_tile * 16+ (warp_k_id-1 +  warp_n_id * warp_k_num)  * lineoffset * 16 +  row_id * lineoffset + col_id * 16  + k * 4) 
+                          = C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + k];
+                    }
                 }
             }
         }
@@ -725,26 +727,13 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
                 #pragma unroll
                 for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
                     #pragma unroll
-                    for(int k = 0; k < 4; k++){
-                        C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + k] = {0, 0, 0, 0};
-                    }
-                }
-            }
-
-            #pragma unroll
-            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
-                #pragma unroll
-                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
-                    #pragma unroll
-                    for(int k_tile = 0; k_tile < warp_k_num; k_tile++){//warp迭代
+                    for(int k_tile = 0; k_tile < warp_k_num-1; k_tile++){//warp迭代
                         #pragma unroll
                         for(int k = 0; k < 4; k++){//4组数据按组迭代
+                            intx4 temp = *(intx4*)(out_smem+ (m_tile * MFMA_M) * lds_offset + n_tile * 16 + ( k_tile +  warp_n_id * warp_k_num ) * lineoffset *16 + row_id * lineoffset + col_id * 16  + k * 4);
                             #pragma unroll
                             for(int i = 0; i < 4; i++){ //组内迭代
-
-                                C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + k ][i] += 
-                                
-                                    out_smem[(m_tile * MFMA_M) * lds_offset  + n_tile * 16 + ( k_tile +  warp_n_id * warp_k_num ) * 64 *16 + row_id * 64 + col_id * 16  + k * 4 + i];
+                                C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + k ][i] += temp[i];
                             }
                         }
                     }
