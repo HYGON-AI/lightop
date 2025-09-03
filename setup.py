@@ -43,7 +43,9 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
 
 def _get_rocm_arch_flags_marlin(cflags: Optional[List[str]] = None) -> List[str]:
     flags = ['--offload-arch=gfx936']
-    flags +=['--gpu-max-threads-per-block=256']
+    flags +=['--gpu-max-threads-per-block=512']
+    flags +=['-mllvm']
+    flags +=['-enable-num-vgprs-512=true']
     return flags
 
 

@@ -1,17 +1,10 @@
 #include "marlin.h"
 
-using intx4 = __attribute__((__vector_size__(4 * sizeof(int)))) int;
-using bhalf_t = __hip_bfloat16;
 
 namespace at {
 namespace native {
 namespace marlin_moe_w4a8{
 
-  using FragA = Vec<int8_t, 8>; // 计算时 参与一次mmac运算的 A矩阵 向量数据类型 
-  using FragB = Vec<int8_t, 8>; // 计算时 参与一次mmac运算的 B矩阵 向量数据类型 
-  using FragC = Vec<int32_t, 4>; // mmac的结果 4 个 int32
-  using FragS_CHANNEL = Vec<float, 2>; // weight per-channel quantization scales or activaton per-token quantization scales
-  
   __device__ inline void mmac_bw_int8(
                                       const FragA& frag_a,
                                       const FragB& frag_b,
@@ -42,12 +35,6 @@ namespace marlin_moe_w4a8{
       int val = 1;
       atomicAdd(lock, val);
     }
-  }
-
-  static __device__ inline uint16_t f32_to_bf16(float f){
-      uint32_t u = *(uint32_t*)(&f);
-      u += 0x7fff + ((u >> 16) & 1); 
-      return u>>16;
   }
 
   template <

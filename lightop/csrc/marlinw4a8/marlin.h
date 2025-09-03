@@ -13,7 +13,7 @@ namespace at {
 namespace native {
 namespace marlin_moe_w4a8{
 // Marlin params
-
+#define S_BARRIER asm volatile("s_barrier")
 // 8 warps are a good choice since every SM has 4 schedulers and having more
 // than 1 warp per schedule allows some more latency hiding. At the same time,
 // we want relatively few warps to have many registers per warp and small tiles.
@@ -46,8 +46,21 @@ struct Vec {
 
 using I4 = Vec<int, 4>;
 using intx4_t = __attribute__((__vector_size__(4 * sizeof(int)))) int;
+using intx4 = __attribute__((__vector_size__(4 * sizeof(int)))) int;
+
+using FragA = Vec<int8_t, 8>; // 计算时 参与一次mmac运算的 A矩阵 向量数据类型 
+using FragB = Vec<int8_t, 8>; // 计算时 参与一次mmac运算的 B矩阵 向量数据类型 
+using FragC = Vec<int32_t, 4>; // mmac的结果 4 个 int32
+using FragS_CHANNEL = Vec<float, 2>; // weight per-channel quantization scales or activaton per-token quantization scales
+using bhalf_t = __hip_bfloat16;
 
 constexpr int div_ceil(int a, int b) { return (a + b - 1) / b; }
+
+static __device__ inline uint16_t f32_to_bf16(float f){
+    uint32_t u = *(uint32_t*)(&f);
+    u += 0x7fff + ((u >> 16) & 1); 
+    return u>>16;
+}
 
 /*
 template<typename T>
