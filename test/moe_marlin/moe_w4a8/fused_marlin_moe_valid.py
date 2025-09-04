@@ -232,3 +232,4 @@ def fused_marlin_moe_valid(
     # pdb.set_trace()
     torch.testing.assert_close(intermediate_cache3, triton_gemm2_output, atol=1e-2, rtol=1e-2)
     print("        gemm2 success!!!!")
+    return (num_tokens_post_padded.item() * 7168 * 512 * 2),(num_tokens_post_padded.item()  * 256 * 7168 * 2)
