@@ -232,13 +232,6 @@ Tensor groupgemm_dispatch(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_
     const uint32_t N = b.size(2);
     TORCH_CHECK(b.size(1) == K, "b.size(1) 必须等于 a.size(1)");
 
-int64_t batch_sum = batch_sizes.sum().item<int64_t>();
-    TORCH_CHECK(batch_sum == M,
-                "batch_sizes 的和必须等于 a.size(0)，即 ", M,
-                "，但得到 ", batch_sum);
-    TORCH_CHECK(batch_sum > 0,
-            "batch_sizes 全为 0,无有效计算,请检查输入");
-
     Tensor d = torch::empty({M, N}, options);
 
     const int parts_num = batch_sizes.size(0);
