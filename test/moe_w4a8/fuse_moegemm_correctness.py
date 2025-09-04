@@ -724,7 +724,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
-        # '''
+        '''
         if activation == "silu":
             # d = intermediate_cache1.shape[-1] // 2
             # intermediate_cache2 = F.silu(intermediate_cache1[..., :d]) * intermediate_cache1[..., d:]
@@ -813,10 +813,11 @@ def _fused_moe_helper(m: int,
 
 
 def run_perchannel_vaild():
-    m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
+    # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
-    m_list=[128, 256,512,1024,2048,4096,8192,16384] #prefill
-    # m_list=[1,2,4,8,16,32,64,128]    
+    # m_list=[128, 256,512,1024,2048,4096,8192,16384] #prefill
+    # m_list=[1,2,4,8,16,32,64,128]   
+    m_list = [4096] 
     E=256
     n_list_1=[512]
     k_list_1=[3584]
