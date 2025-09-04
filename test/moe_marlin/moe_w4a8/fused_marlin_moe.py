@@ -5,7 +5,6 @@ from typing import Optional
 
 import torch
 import lightop
-import marlin
 
 import vllm._custom_ops as ops
 from vllm.model_executor.layers.fused_moe.fused_moe import moe_align_block_size

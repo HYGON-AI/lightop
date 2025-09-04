@@ -3,6 +3,7 @@
 import functools
 from typing import Optional
 
+import pdb
 import torch
 import lightop
 
@@ -15,6 +16,8 @@ from lmslim.layers.gemm.int8_utils import (
 from triton_w4a8 import invoke_fused_moe_kernel_w4a8
 import triton
 import triton.language as tl
+
+from marlin_quant import unpack_int8_to_int4
 
 from lightop import moe_gemm_marlin_w4a8, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8
 
@@ -52,17 +55,13 @@ def fused_marlin_moe_valid(
     topk = topk_ids.shape[1] 
 
 
-    config_marlin_0, config_marlin_1, status = get_moe_cuda_marlin_config_w4a8(
-                                                                                E,
-                                                                                M,
-                                                                                2 * N,
-                                                                                K,
-                                                                                K,
-                                                                                N,
-                                                                                topk,
-                                                                                device_name,
-                                                                                num_cus,
-                                                                                tl.bfloat16)
+    config_marlin_0, config_marlin_1, status = get_moe_cuda_marlin_config_w4a8(E, M, 2 * N, K, K, N, topk, device_name, num_cus, tl.bfloat16)
+    # debug
+    # config_marlin_0["BLOCK_SIZE_M"] = 128
+    # config_marlin_0["MODE"] = 1000
+    # config_marlin_1["BLOCK_SIZE_M"] = 128
+    # config_marlin_1["MODE"] = 1000
+
     print("         config_marlin_0: ", config_marlin_0)
     print("         config_marlin_1: ", config_marlin_1)
 
@@ -109,29 +108,28 @@ def fused_marlin_moe_valid(
     #                     'MODE': 500,
     #                     'DELTA': 1
     #                 }
-        
-    moe_gemm_marlin_w4a8(
-                            a_1,
-                            w1_marlin,
-                            intermediate_cache1,
-                            a_1_scale,
-                            w1_scale,
-                            topk_weights, # topk_weights,
-                            sorted_token_ids,
-                            expert_ids,
-                            num_tokens_post_padded,
-                            topk,
-                            workspace,
-                            global_reduce_buffer,
-                            config_marlin_0
-                        )
+    '''
+    print("a_1:", a_1.shape)
+    print("w1_marlin:", w1_marlin.shape, w1_marlin.dtype, w1_marlin.stride())
+    print("intermediate_cache1:", intermediate_cache1.shape)
+    print("a_1_scale:", a_1_scale.shape)
+    print("w1_scale:", w1_scale.shape)
+    print("topk_weights:", topk_weights.shape)
+    align = block_size_m
+    print("sorted_token_ids:", sorted_token_ids[0:align])
+    print("sorted_token_ids // topk:", sorted_token_ids[0:align] // topk)
+    print("sorted_token_ids % topk:", sorted_token_ids[0:align] % topk)
+    print("expert_ids:", expert_ids[:10])
+    print("num_tokens_post_padded:", num_tokens_post_padded)
+    print("topk:", topk)
+    print("config_marlin_0:", config_marlin_0)
+    print("topk_ids:", topk_ids.shape)
+    # '''
+    moe_gemm_marlin_w4a8(a_1, w1_marlin, intermediate_cache1, a_1_scale, w1_scale, None, sorted_token_ids, 
+                         expert_ids, num_tokens_post_padded, topk, workspace, global_reduce_buffer, config_marlin_0)
     # =========================== gemm1 triton 计算 ===============================
     triton_gemm1_output = torch.zeros_like(intermediate_cache1).reshape((M, topk, 2 * N))
-    config = {"BLOCK_SIZE_M": 16,
-            "BLOCK_SIZE_N": 128,
-            "BLOCK_SIZE_K": 32,
-            "GROUP_SIZE_M": 1
-            }
+    config = {"BLOCK_SIZE_M": 16, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 1}
     torch.cuda.synchronize()
     invoke_fused_moe_kernel_w4a8(
                                 a_1,
@@ -157,9 +155,29 @@ def fused_marlin_moe_valid(
                                 )
 
     triton_gemm1_output = triton_gemm1_output.reshape((-1, 2 * N))
+    # debug
+    '''
+    w1_int8_list = []
+    for i in range(w1_triton.shape[0]):
+        w1_int8 = unpack_int8_to_int4(w1_triton[i])
+        w1_int8_list.append(w1_int8)
+    w1_int8 = torch.stack(w1_int8_list, dim=0).to(torch.uint8) << 4
+    w1_int8 = w1_int8.to(torch.int8)
+    begin, end, expert_id = 0, 128, 0
+    res = torch.matmul(a_1[sorted_token_ids[begin:end] // topk].cpu().to(torch.int32), w1_int8[expert_id, :, :].t().cpu().to(torch.int32))
+    out = res.to(a_1.device) * a_1_scale[sorted_token_ids[begin:end] // topk] * w1_scale[expert_id].t()
+    out_bf16 =  out.to(torch.bfloat16)
+    torch.nonzero(intermediate_cache1 != triton_gemm1_output)
+    torch.nonzero(intermediate_cache1[sorted_token_ids[begin:end]] != triton_gemm1_output[sorted_token_ids[begin:end]])
+    # torch.nonzero(out_bf16 != intermediate_cache1)
+    torch.nonzero(sorted_token_ids == 1)
+    pdb.set_trace()
+    # '''
+
     torch.testing.assert_close(intermediate_cache1, triton_gemm1_output, atol=1e-3, rtol=1e-3)
     print("         gemm1 success!!!!")
     torch.cuda.synchronize()
+    # return
     # 激活函数
     torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1)
 
@@ -168,30 +186,29 @@ def fused_marlin_moe_valid(
     # [M*topk, N] [32*8, 256]
     a_2, a_2_scale = per_token_quant_int8(intermediate_cache2)
     torch.cuda.synchronize()
-    moe_gemm_marlin_w4a8(
-                                a_2,
-                                w2_marlin,
-                                intermediate_cache3, # [M * topk, K]  [32*8, 7168]
-                                a_2_scale,
-                                w2_scale,
-                                topk_weights,
-                                sorted_token_ids,
-                                expert_ids,
-                                num_tokens_post_padded,                                
-                                1, # topk
-                                workspace,
-                                global_reduce_buffer,
-                                config_marlin_1
-                            )
+    '''
+    print("a_2:", a_2.shape)
+    print("w2_marlin:", w2_marlin.shape, w2_marlin.dtype, w2_marlin.stride())
+    print("intermediate_cache3:", intermediate_cache3.shape)
+    print("a_2_scale:", a_2_scale.shape)
+    print("w2_scale:", w2_scale.shape)
+    print("topk_weights:", topk_weights.shape)
+    align = block_size_m
+    print("sorted_token_ids:", sorted_token_ids[0:align])
+    print("sorted_token_ids // topk:", sorted_token_ids[0:align] // topk)
+    print("sorted_token_ids % topk:", sorted_token_ids[0:align] % topk)
+    print("expert_ids:", expert_ids[:10])
+    print("num_tokens_post_padded:", num_tokens_post_padded)
+    print("topk:", topk)
+    print("config_marlin_1:", config_marlin_1)
+    print("topk_ids:", topk_ids.shape)
+    # '''
+    moe_gemm_marlin_w4a8(a_2, w2_marlin, intermediate_cache3, a_2_scale, w2_scale, topk_weights, 
+                         sorted_token_ids, expert_ids, num_tokens_post_padded, 1, workspace, global_reduce_buffer, config_marlin_1)
     # =========================== gemm2 triton 计算 ===============================
     triton_gemm2_output = torch.zeros_like(intermediate_cache3).reshape((M, topk, K))
 
-    invoke_fused_moe_kernel_w4a8(
-                                a_2,
-                                w2_triton,
-                                triton_gemm2_output,
-                                a_2_scale,
-                                w2_scale,
+    invoke_fused_moe_kernel_w4a8(a_2, w2_triton, triton_gemm2_output, a_2_scale, w2_scale,
                                 None, # w2_zero
                                 topk_weights,
                                 topk_ids,
@@ -210,5 +227,8 @@ def fused_marlin_moe_valid(
                                 )
 
     triton_gemm2_output = triton_gemm2_output.reshape((-1, K))
+    torch.nonzero(intermediate_cache3 != triton_gemm2_output)
+    
+    # pdb.set_trace()
     torch.testing.assert_close(intermediate_cache3, triton_gemm2_output, atol=1e-2, rtol=1e-2)
-    print("        gemm1 success!!!!")
+    print("        gemm2 success!!!!")

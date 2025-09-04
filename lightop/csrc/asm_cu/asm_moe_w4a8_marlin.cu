@@ -9,7 +9,7 @@
 
 #include "aiter_hip_common.h"
 
-#define DEBUG 1
+#define DEBUG 0
 
 using half_t = __half;
 using bhalf_t = __hip_bfloat16;
@@ -62,8 +62,7 @@ void _moe_w4a8_marlin_TN_impl(
   uint32_t top_k, uint32_t experts_num) {
 
   const int size_m = input.size(0); 
-  // const int size_n = b_qweight.size(1); 
-  const int size_n = 512; 
+  const int size_n = b_qweight.size(2) / 4; 
   const int size_k = input.size(1);
 
   bool first_stage = true;
@@ -110,7 +109,7 @@ void _moe_w4a8_marlin_TN_impl(
   hipFunctionArgs.topk_rcip = 1.0 / top_k;
   void * debug_host = nullptr, * debug_device = nullptr;
   #if DEBUG
-  int bytes = 32;
+  int bytes = 28;
   int debug_size = 768 * bytes;
   debug_host = malloc(debug_size);
   hipMalloc((void **)&debug_device, debug_size);
@@ -136,11 +135,11 @@ void _moe_w4a8_marlin_TN_impl(
   }
 
   static AiterAsmKernel moe_w4a8_marlin_first_stage(funcName, first_stage_co_file);
-  // static AiterAsmKernel moe_w4a8_marlin_second_stage(funcName, second_stage_co_file);
+  static AiterAsmKernel moe_w4a8_marlin_second_stage(funcName, second_stage_co_file);
   AiterAsmKernel *impl_ptr = &moe_w4a8_marlin_first_stage;
-  // if(!first_stage){
-  //   impl_ptr = &moe_w4a8_marlin_second_stage;
-  // }
+  if(!first_stage){
+    impl_ptr = &moe_w4a8_marlin_second_stage;
+  }
   impl_ptr->launch_kernel_ext({
     &hipFunctionArgs,
     &argsSize,
@@ -172,51 +171,27 @@ void _moe_w4a8_marlin_TN_impl(
   // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
   for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / split; ++i) {
     // if (i % 16 == 0) printf("\n");
-    // if (i % 8 == 0) printf("\ni:%d ", i / 8);
-    // printf("%10.4f\t", p_debug[i]);
+    // if (i % 2 == 0) printf("\ni:%d ", i / 2);
     // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
+    // printf("%10.4f\t", p_debug[i]);
     // printf("%3d:%10.4f\t", i, static_cast<float>(tmp[i+1]));
     // printf("%3d:%6d\t", i, p_debug[i]);
     // printf("%3d\t", p_debug[i]);
-    // printf("%6d\t", p_debug[i]);
+    // printf("%10d\t", p_debug[i]);
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f ", static_cast<float>(tmp[0]));
     int index = split * i;
-    // printf("tid:%d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n", i, 
-    //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ], p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ]
-    // );
-    bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + index);
-    printf("tid:%d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n", i, 
-      static_cast<float>(tmp[0]), static_cast<float>(tmp[2]), static_cast<float>(tmp[4]), static_cast<float>(tmp[6]), 
-      static_cast<float>(tmp[8]), static_cast<float>(tmp[10]), static_cast<float>(tmp[12]), static_cast<float>(tmp[14])
+    // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + index + 8);
+    printf("tid:%d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n", i, 
+      p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ], p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ]
     );
-    // printf("tid:%d %6d %6d %6d %6d %6d %6d %6d %6d "
-    //   "%6d %6d %6d %6d %6d %6d %6d %6d "
-    //   "%6d %6d %6d %6d %6d %6d %6d %6d "
-    //   "%6d %6d %6d %6d %6d %6d %6d %6d "
-    //   "%6d %6d %6d %6d %6d %6d %6d %6d "
-    //   "%6d %6d %6d %6d %6d %6d %6d %6d "
-    //   "%6d %6d %6d %6d %6d %6d %6d %6d "
-    //   "%6d %6d %6d %6d %6d %6d %6d %6d\n", i, 
-    //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ],
-    //   p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ], p_debug[index+7 ],
-    //   p_debug[index+8 ], p_debug[index+9 ], p_debug[index+10], p_debug[index+11],
-    //   p_debug[index+12], p_debug[index+13], p_debug[index+14], p_debug[index+15],
-    //   p_debug[index+16], p_debug[index+17], p_debug[index+18], p_debug[index+19],
-    //   p_debug[index+20], p_debug[index+21], p_debug[index+22], p_debug[index+23],
-    //   p_debug[index+24], p_debug[index+25], p_debug[index+26], p_debug[index+27],
-    //   p_debug[index+28], p_debug[index+29], p_debug[index+30], p_debug[index+31],
-    //   p_debug[index+32], p_debug[index+33], p_debug[index+34], p_debug[index+35],
-    //   p_debug[index+36], p_debug[index+37], p_debug[index+38], p_debug[index+39],
-    //   p_debug[index+40], p_debug[index+41], p_debug[index+42], p_debug[index+43],
-    //   p_debug[index+44], p_debug[index+45], p_debug[index+46], p_debug[index+47],
-    //   p_debug[index+48], p_debug[index+49], p_debug[index+50], p_debug[index+51],
-    //   p_debug[index+52], p_debug[index+53], p_debug[index+54], p_debug[index+55],
-    //   p_debug[index+56], p_debug[index+57], p_debug[index+58], p_debug[index+59],
-    //   p_debug[index+60], p_debug[index+61], p_debug[index+62], p_debug[index+63]
+    // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + index);
+    // printf("tid:%d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n", i, 
+    //   static_cast<float>(tmp[0]), static_cast<float>(tmp[2]), static_cast<float>(tmp[4]), static_cast<float>(tmp[6]), 
+    //   static_cast<float>(tmp[8]), static_cast<float>(tmp[10]), static_cast<float>(tmp[12]), static_cast<float>(tmp[14])
     // );
-    // printf("tid:%d %6d %6d %6d %6d\n", i, 
-    //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ]
+    // printf("tid:%d %6d %6d %10.4f\n", i, 
+    //   p_debug[index+0 ], p_debug[index+1 ], *reinterpret_cast<float*>(p_debug + index + 2)
     // );
     // int8_t * tmp = reinterpret_cast<int8_t*>(p_debug + index);
     // printf("tid:%d %6d 0X%08X 0X%08X 0X%08X 0X%08X "
@@ -257,7 +232,7 @@ torch::Tensor moe_w4a8_marlin_asm(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
       output.scalar_type(), "moe_w4a8_marlin_TN_impl",[&] {
-        _moe_w4a8_marlin_TN_impl<128, 128, 128, scalar_t>(
+        _moe_w4a8_marlin_TN_impl<128, 512, 128, scalar_t>(
           input, b_qweight, output, a_scale, b_scale,
           topk_weights, sorted_token_ids, expert_ids,
           num_tokens_post_pad, top_k, experts_num);
