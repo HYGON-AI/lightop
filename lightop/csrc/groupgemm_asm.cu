@@ -246,10 +246,12 @@ Tensor groupgemm_dispatch(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_
     M_list.reserve(parts_num);
     N_list.reserve(parts_num);
     K_list.reserve(parts_num);
+    Tensor batch_sizes_cpu = batch_sizes.to(torch::kCPU);
+    int64_t* batch_ptr = batch_sizes_cpu.data_ptr<int64_t>();
 
     for (int i = 0; i < parts_num; ++i) {
-        const int64_t rows = batch_sizes[i].item<int64_t>();
-
+        // const int64_t rows = batch_sizes[i].item<int64_t>();
+        const int64_t rows = batch_ptr[i];
         a_parts.emplace_back(a.narrow(0, row_offset, rows));
         b_parts.emplace_back(b[i]);
         d_parts.emplace_back(d.narrow(0, row_offset, rows));
@@ -272,3 +274,4 @@ Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b){
 
 }
 } // namespace at
+
