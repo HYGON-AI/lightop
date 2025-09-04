@@ -141,7 +141,7 @@ def benchmark_config(
 
     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
     # 先进行准确度测试
-    fused_marlin_moe_valid(                      
+    GEMM1_Peak,GEMM2_Peak = fused_marlin_moe_valid(                      
                             x,
                             w1,
                             w2,
@@ -195,7 +195,9 @@ def benchmark_config(
             gemm2_time_us_total += gemm2_time_us
 
     print("      GEMM1_Time_us: ", gemm1_time_us_total/num_iters/10, "GEMM2_Time_us: ", gemm2_time_us_total/num_iters/10)
-    
+    print("GEMM1峰值:",GEMM1_Peak/(gemm1_time_us_total/num_iters/10 /1000/1000)/10**12)
+    print("GEMM2峰值:",GEMM2_Peak/(gemm2_time_us_total/num_iters/10 /1000/1000)/10**12)
+    print("GEMM1+GEMM2总峰值:",GEMM1_Peak/(gemm1_time_us_total/num_iters/10 /1000/1000)/10**12 + GEMM2_Peak/(gemm2_time_us_total/num_iters/10 /1000/1000)/10**12)
     return {
         'M': num_tokens,
         'N1': shard_intermediate_size,

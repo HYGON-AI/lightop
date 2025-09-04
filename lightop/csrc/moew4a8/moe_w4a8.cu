@@ -1132,8 +1132,8 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
   int* output_lds = (int*)&(smem); // 重复使用lds,留给output_lds
   const int *sorted_token_ids_offset = sorted_token_ids;
   //存储数据的寄存器
-  union_vec<Element, WARP_K/4> A_reg[WARP_M/mfma_m][2];
-  int8_vec<WARP_K/8> B_reg[WARP_N/mfma_n][2];
+  union_vec<Element, WARP_K/4> A_reg[WARP_M/mfma_m][1];
+  int8_vec<WARP_K/8> B_reg[WARP_N/mfma_n][1];
   auto g_qweight = qweight + qweight_offset;
   auto g_weight_scale = weight_scale + weight_scale_offset; // 配置weight的scale信息 todo 这里n_loop=0没有计算偏移
   intx4 C_reg[1][4 * (WARP_M/16)*(WARP_N/16)];
@@ -1149,7 +1149,7 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
   // float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id * WARP_N * 4 + col_id * 4;
   float *b_scale_ptr = weight_scale + weight_scale_offset;
   { 
-    gemm_nt_first_stage_marlin_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+    gemm_nt_second_stage_marlin_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
     (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx, bidy);
   }
   const int32_t token_index = sorted_token_ids[std::min(bidx * 16 + row_id, int(sorted_token_lens - 1))];
