@@ -575,19 +575,26 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
     int warp_k_id = warp_id % warp_k_num;//0:0 1:1 2:0 3:1
     int warp_n_id = warp_id / warp_k_num;//0:0 1:0 2:1 3:1
     int g_row_A[WARP_M / MFMA_M];
+    int g_row_B[WARP_N / MFMA_N];
+    int i = 0;
+    int B_stride_k = WARP_K / 32;
+
     #pragma unroll
     for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
         int sorted_token_idx = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
-        g_row_A[m_tile] = (std::min(sorted_token_idx / top_k,  max_n_len_offset - 1)) * size_k + col_id * 8;
+        g_row_A[m_tile] = (std::min(sorted_token_idx / top_k,  max_n_len_offset - 1)) * size_k + warp_k_id * WARP_K + col_id * 16;
     }
 
-    int i = 0;
-    int B_stride_k = WARP_K / 32;
+    #pragma unroll
+    for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+        g_row_B[n_tile] =  warp_k_id * B_stride_k * seqlen_B_stride + warp_n_id * WARP_N * 4 * 4 + row_id * 4 + (col_id % 2) * 128 +(col_id/2)*seqlen_B_stride;
+    }
+
     #pragma unroll
     for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
         #pragma unroll
-        for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
-                A_reg[m_tile][0].int2_array[k_tile] = *(intx2*)(input_ptr+ g_row_A[m_tile] + i + warp_k_id * WARP_K + k_tile * MFMA_K);
+        for(int k_tile = 0; k_tile < WARP_K / MFMA_K / 2; k_tile++){ 
+                A_reg[m_tile][0].int4_array[k_tile] = *(intx4*)(input_ptr + g_row_A[m_tile] + i * warp_k_num * WARP_K  + k_tile * 16 );
         }
     }
         
@@ -595,29 +602,29 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
     for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
         #pragma unroll
         for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
-            B_reg[n_tile][0].vec[k_tile]  = *(intx4*)(weight_ptr + (warp_k_id * B_stride_k + k_tile) * seqlen_B_stride + warp_n_id * WARP_N * 4 * 4   + lane_id * 4 );
+           B_reg[n_tile][0].vec[k_tile]  = *(intx4*)(weight_ptr + (i * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64);
         }
     }
 
     i=1; 
+    union_vec<Element,8> midval;
     int itk = size_k/warp_k_num/WARP_K; //112
     for(; i < itk ; i += 2){
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
             #pragma unroll
-            for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
-                A_reg[m_tile][1].int2_array[k_tile] = *(intx2*)(input_ptr+ g_row_A[m_tile] + i * warp_k_num * WARP_K + warp_k_id * WARP_K + k_tile * MFMA_K );
+            for(int k_tile = 0; k_tile < WARP_K / MFMA_K / 2; k_tile++){ 
+                A_reg[m_tile][1].int4_array[k_tile] = *(intx4*)(input_ptr+ g_row_A[m_tile] + i * warp_k_num * WARP_K  + k_tile * 16);
             }
         }
         #pragma unroll
         for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
             #pragma unroll
             for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
-                B_reg[n_tile][1].vec[k_tile]  = *(intx4*)(weight_ptr + (i * warp_k_num * B_stride_k + B_stride_k * warp_k_id + k_tile) * seqlen_B_stride + warp_n_id * WARP_N * 4 * 4 + lane_id * 4);
+                B_reg[n_tile][1].vec[k_tile]  = *(intx4*)(weight_ptr + (i * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64);
             }
         }
         // mmac
-        union_vec<Element,8> midval;
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
             #pragma unroll
@@ -641,16 +648,17 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
             #pragma unroll
             for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
                 #pragma unroll
-                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
-                   
-                    A_reg[m_tile][0].int2_array[k_tile] = *(intx2*)(input_ptr+ g_row_A[m_tile] + (i + 1)* warp_k_num * WARP_K + warp_k_id  * WARP_K + k_tile * MFMA_K );
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K / 2; k_tile++){ 
+                   A_reg[m_tile][0].int4_array[k_tile] = *(intx4*)(input_ptr+ g_row_A[m_tile] + (i + 1) * warp_k_num * WARP_K  + k_tile * 16);
+                    // A_reg[m_tile][0].int2_array[k_tile] = *(intx2*)(input_ptr+ g_row_A[m_tile] + (i + 1)* warp_k_num * WARP_K + warp_k_id  * WARP_K + k_tile * MFMA_K );
                 }
             }
             #pragma unroll
             for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){  
-                    B_reg[n_tile][0].vec[k_tile]  = *(intx4*)(weight_ptr + ((i+1) * warp_k_num * B_stride_k + B_stride_k * warp_k_id + k_tile) * seqlen_B_stride + warp_n_id * WARP_N * 4 * 4 + lane_id * 4);
+                    B_reg[n_tile][0].vec[k_tile]  = *(intx4*)(weight_ptr + ((i+1) * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64);
+                    // B_reg[n_tile][0].vec[k_tile]  = *(intx4*)(weight_ptr + ((i+1) * warp_k_num * B_stride_k + B_stride_k * warp_k_id + k_tile) * seqlen_B_stride + warp_n_id * WARP_N * 4 * 4 + lane_id * 4);
                 }
             }
         }
