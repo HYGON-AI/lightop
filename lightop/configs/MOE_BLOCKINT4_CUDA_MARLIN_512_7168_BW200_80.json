@@ -17,7 +17,7 @@
             "blocks_per_cu": 3 
         },
         "4": {
-            "MODE": 403,
+            "MODE": 402,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 128,
