@@ -216,7 +216,6 @@ int _groupgemm_nn_impl(std::vector<torch::Tensor>& a_list,
                              localWorkSize[1],               // bdy
                              localWorkSize[2],               // bdz
                              stream});
-    hipDeviceSynchronize();
     hipFree(d_argsPtr);
     return 0;
 }
