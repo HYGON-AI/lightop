@@ -132,7 +132,8 @@ int _groupgemm_nn_impl(std::vector<torch::Tensor>& a_list,
                        std::vector<torch::Tensor>& d_list,
                        const std::vector<uint32_t>& M_list,
                        const std::vector<uint32_t>& N_list,
-                       const std::vector<uint32_t>& K_list)
+                       const std::vector<uint32_t>& K_list,
+                       int device_id)
 {
     using Ti = bhalf_t;
     using To = bhalf_t;
@@ -172,13 +173,20 @@ int _groupgemm_nn_impl(std::vector<torch::Tensor>& a_list,
     size_t arg_wgRight_size= gemm_count*sizeof(uint32_t);
     size_t arg_size = gemm_count*sizeof(GPUProb<Ti,To,Tc,Talpha,Tbias>);
     
+    HIP_CALL(hipSetDevice(device_id));
     uint8_t* d_argsPtr;
-    hipMalloc((void **)&d_argsPtr,arg_wgRight_size+arg_size);
-    hipMemcpy(d_argsPtr,arg_wgRight.data(),arg_wgRight_size,hipMemcpyHostToDevice);
-    hipMemcpy(d_argsPtr+arg_wgRight_size,d_prob.data(),arg_size,hipMemcpyHostToDevice);
+    HIP_CALL(hipMalloc((void**)&d_argsPtr, arg_wgRight_size + arg_size));
+    HIP_CALL(hipMemcpy(d_argsPtr,
+                    arg_wgRight.data(),
+                    arg_wgRight_size,
+                    hipMemcpyHostToDevice));
+    HIP_CALL(hipMemcpy(d_argsPtr + arg_wgRight_size,
+                    d_prob.data(),
+                    arg_size,
+                    hipMemcpyHostToDevice));
 
     //计算launch等参数
-    size_t numWorkItems[3]={localWorkSize[0]*wgRight,1,1};
+    size_t numWorkItems[3]={static_cast<size_t>(wgRight),1,1};
     
     //GPU_launch
 	struct __attribute__((packed)){
@@ -199,7 +207,7 @@ int _groupgemm_nn_impl(std::vector<torch::Tensor>& a_list,
 	static AiterAsmKernel groupgemm_NN_BF16("Custom_Cijk_Ailk_Bljk_BBS_BH_Bias_GG_AS_SAV_UserArgs_MT256x256x16_MI16x16x1_SN_GSU1_K1_MIWT8_4", "groupgemm.co");
 	AiterAsmKernel *impl_ptr = &groupgemm_NN_BF16;
     size_t size = sizeof(hipFunctionArgs);
-	impl_ptr->launch_kernel({&hipFunctionArgs,
+	impl_ptr->launch_kernel_ext({&hipFunctionArgs,
                              &size,
                              numWorkItems[0], 
                              numWorkItems[1], 
@@ -215,6 +223,7 @@ int _groupgemm_nn_impl(std::vector<torch::Tensor>& a_list,
 
 Tensor groupgemm_dispatch(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b) {
     TORCH_CHECK(b.dim() == 3, "b 必须是三维 [?, K, N]");
+    int device_id = a.device().index(); 
     auto options = torch::TensorOptions()
                     .dtype(a.scalar_type())
                     .device(a.device());
@@ -223,6 +232,13 @@ Tensor groupgemm_dispatch(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_
     const uint32_t K = a.size(1);
     const uint32_t N = b.size(2);
     TORCH_CHECK(b.size(1) == K, "b.size(1) 必须等于 a.size(1)");
+
+int64_t batch_sum = batch_sizes.sum().item<int64_t>();
+    TORCH_CHECK(batch_sum == M,
+                "batch_sizes 的和必须等于 a.size(0)，即 ", M,
+                "，但得到 ", batch_sum);
+    TORCH_CHECK(batch_sum > 0,
+            "batch_sizes 全为 0,无有效计算,请检查输入");
 
     Tensor d = torch::empty({M, N}, options);
 
@@ -253,7 +269,7 @@ Tensor groupgemm_dispatch(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_
         row_offset += rows;
     }
 
-    _groupgemm_nn_impl(a_parts, b_parts, d_parts, M_list, N_list, K_list);
+    _groupgemm_nn_impl(a_parts, b_parts, d_parts, M_list, N_list, K_list, device_id);
     return d;
 }
 
