@@ -233,5 +233,5 @@ def fused_marlin_moe_valid(
     torch.testing.assert_close(intermediate_cache3, triton_gemm2_output, atol=1e-2, rtol=1e-2)
     print("        gemm2 success!!!!")
     return (num_tokens_post_padded.item() * 7168 * 512 * 2),(num_tokens_post_padded.item()  * 256 * 7168 * 2), \
-    (num_tokens_post_padded.item() * 7168 + num_tokens_post_padded.item() / block_size_m * 512 * 3584  + M * 8 * 512 * 2 + num_tokens_post_padded.item() * 4 + num_tokens_post_padded.item() / block_size_m * 512 * 4)/1024/1024/1024, \
-    (num_tokens_post_padded.item() * 256 + num_tokens_post_padded.item() / block_size_m * 128 * 7168 + M * 7168 * 2 + num_tokens_post_padded.item()  * 4 + num_tokens_post_padded.item() / block_size_m * 7168 * 4)/1024/1024/1024
+    (num_tokens_post_padded.item() * 7168 + (256 if (num_tokens_post_padded.item() / block_size_m) > 256 else (num_tokens_post_padded.item() / block_size_m)) * 512 * 3584  + M * 8 * 512 * 2 + num_tokens_post_padded.item() * 4 + (256 if (num_tokens_post_padded.item() / block_size_m) > 256 else (num_tokens_post_padded.item() / block_size_m)) * 512 * 4)/1024/1024/1024, \
+    (num_tokens_post_padded.item() * 256 + (256 if (num_tokens_post_padded.item() / block_size_m) > 256 else (num_tokens_post_padded.item() / block_size_m)) * 128 * 7168 + M * 7168 * 2 + num_tokens_post_padded.item()  * 4 + (256 if (num_tokens_post_padded.item() / block_size_m) > 256 else (num_tokens_post_padded.item() / block_size_m)) * 7168 * 4)/1024/1024/1024
