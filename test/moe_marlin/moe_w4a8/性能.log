@@ -1,0 +1,80 @@
+root@bw14:~/lightop/test/moe_marlin/moe_w4a8# HIP_VISIBLE_DEVICES=2 python benchmark_moe_R1_tp8_precise_sz.py 
+INFO 09-05 15:10:13 [importing.py:53] Triton module has been replaced with a placeholder.
+INFO 09-05 15:10:14 [__init__.py:240] Automatically detected platform rocm.
+进行全size性能测试: 
+2025-09-05 15:10:19,368 INFO worker.py:1917 -- Started a local Ray instance.
+:job_id:01000000
+:job_id:01000000
+:actor_name:BenchmarkWorker
+:actor_name:BenchmarkWorker
+m =  1024  性能测试......
+         config_marlin_0:  {'MODE': 500, 'DELTA': 1, 'BLOCK_SIZE_M': 48, 'thread_n': 256, 'thread_k': 128, 'blocks_per_cu': 1}
+         config_marlin_1:  {'MODE': 500, 'DELTA': 1, 'BLOCK_SIZE_M': 48, 'thread_n': 512, 'thread_k': 64, 'blocks_per_cu': 3}
+         gemm1 success!!!!
+        gemm2 success!!!!
+      GEMM1_Time_us:  496.7212483584881 GEMM2_Time_us:  474.3579525053501
+GEMM1峰值: 182.2886277791195
+GEMM2峰值: 95.44125303873636
+GEMM1+GEMM2总峰值: 277.72988081785587
+GEMM1带宽GB/s: 1063.3698935710295
+GEMM2带宽GB/s: 510.67953639964855
+m =  2048  性能测试......
+         config_marlin_0:  {'MODE': 500, 'DELTA': 1, 'BLOCK_SIZE_M': 80, 'thread_n': 512, 'thread_k': 64, 'blocks_per_cu': 2}
+         config_marlin_1:  {'MODE': 500, 'DELTA': 1, 'BLOCK_SIZE_M': 80, 'thread_n': 512, 'thread_k': 64, 'blocks_per_cu': 2}
+         gemm1 success!!!!
+        gemm2 success!!!!
+      GEMM1_Time_us:  570.4118121862411 GEMM2_Time_us:  683.6604987382889
+GEMM1峰值: 267.6534081838963
+GEMM2峰值: 111.6582469528084
+GEMM1+GEMM2总峰值: 379.3116551367047
+GEMM1带宽GB/s: 1038.8034313067312
+GEMM2带宽GB/s: 377.33097123441127
+m =  4096  性能测试......
+         config_marlin_0:  {'MODE': 1000, 'DELTA': 1, 'BLOCK_SIZE_M': 128, 'thread_n': 256, 'thread_k': 128, 'blocks_per_cu': 1}
+         config_marlin_1:  {'MODE': 500, 'DELTA': 1, 'BLOCK_SIZE_M': 128, 'thread_n': 512, 'thread_k': 64, 'blocks_per_cu': 2}
+[lightop] hipModuleLoad: /usr/local/lib/python3.10/dist-packages/lightop/hsa/gfx936/moe_w4a8_channel/moe_w4a8_marlin_128x512x128_TN_BF16_FirstStage.co GetFunction: Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x512x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16 Success
+[lightop] hipModuleLoad: /usr/local/lib/python3.10/dist-packages/lightop/hsa/gfx936/moe_w4a8_channel/moe_w4a8_marlin_128x512x128_TN_BF16_SecondStage.co GetFunction: Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x512x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16 Success
+         gemm1 success!!!!
+        gemm2 success!!!!
+      GEMM1_Time_us:  605.6000795960426 GEMM2_Time_us:  1708.397701382637
+GEMM1峰值: 594.1837540840895
+GEMM2峰值: 105.31439151339787
+GEMM1+GEMM2总峰值: 699.4981455974873
+GEMM1带宽GB/s: 1315.5404771834146
+GEMM2带宽GB/s: 171.0048534466121
+m =  6144  性能测试......
+         config_marlin_0:  {'MODE': 1000, 'DELTA': 1, 'BLOCK_SIZE_M': 128, 'thread_n': 256, 'thread_k': 128, 'blocks_per_cu': 1}
+         config_marlin_1:  {'MODE': 500, 'DELTA': 1, 'BLOCK_SIZE_M': 128, 'thread_n': 512, 'thread_k': 64, 'blocks_per_cu': 1}
+         gemm1 success!!!!
+        gemm2 success!!!!
+      GEMM1_Time_us:  817.1209845542908 GEMM2_Time_us:  2164.5799746513367
+GEMM1峰值: 588.6965899112082
+GEMM2峰值: 111.11539947362851
+GEMM1+GEMM2总峰值: 699.8119893848367
+GEMM1带宽GB/s: 1129.0952494363466
+GEMM2带宽GB/s: 149.44531129052234
+m =  8192  性能测试......
+         config_marlin_0:  {'MODE': 1000, 'DELTA': 1, 'BLOCK_SIZE_M': 128, 'thread_n': 256, 'thread_k': 128, 'blocks_per_cu': 1}
+         config_marlin_1:  {'MODE': 500, 'DELTA': 1, 'BLOCK_SIZE_M': 128, 'thread_n': 512, 'thread_k': 64, 'blocks_per_cu': 1}
+         gemm1 success!!!!
+        gemm2 success!!!!
+      GEMM1_Time_us:  954.656998693943 GEMM2_Time_us:  2927.2065105438232
+GEMM1峰值: 626.9024895546466
+GEMM2峰值: 102.2266189618466
+GEMM1+GEMM2总峰值: 729.1291085164933
+GEMM1带宽GB/s: 1094.742458691521
+GEMM2带宽GB/s: 121.17504479364614
+m =  16384  性能测试......
+         config_marlin_0:  {'MODE': 1000, 'DELTA': 1, 'BLOCK_SIZE_M': 128, 'thread_n': 256, 'thread_k': 128, 'blocks_per_cu': 1}
+         config_marlin_1:  {'MODE': 500, 'DELTA': 1, 'BLOCK_SIZE_M': 128, 'thread_n': 512, 'thread_k': 64, 'blocks_per_cu': 3}
+         gemm1 success!!!!
+        gemm2 success!!!!
+      GEMM1_Time_us:  1754.5543333292007 GEMM2_Time_us:  5406.680663108826
+GEMM1峰值: 615.7989467045353
+GEMM2峰值: 99.91830271872787
+GEMM1+GEMM2总峰值: 715.7172494232632
+GEMM1带宽GB/s: 881.2509423250931
+GEMM2带宽GB/s: 88.77526619071614
+[{'M': 1024, 'N1': 512, 'K1': 3584, 'N2': 7168, 'K2': 128, 'E': 256, 'TopK': 8, 'GEMM1_Time_us': 496.7212483584881, 'GEMM2_Time_us': 474.3579525053501}, {'M': 2048, 'N1': 512, 'K1': 3584, 'N2': 7168, 'K2': 128, 'E': 256, 'TopK': 8, 'GEMM1_Time_us': 570.4118121862411, 'GEMM2_Time_us': 683.6604987382889}, {'M': 4096, 'N1': 512, 'K1': 3584, 'N2': 7168, 'K2': 128, 'E': 256, 'TopK': 8, 'GEMM1_Time_us': 605.6000795960426, 'GEMM2_Time_us': 1708.397701382637}, {'M': 6144, 'N1': 512, 'K1': 3584, 'N2': 7168, 'K2': 128, 'E': 256, 'TopK': 8, 'GEMM1_Time_us': 817.1209845542908, 'GEMM2_Time_us': 2164.5799746513367}, {'M': 8192, 'N1': 512, 'K1': 3584, 'N2': 7168, 'K2': 128, 'E': 256, 'TopK': 8, 'GEMM1_Time_us': 954.656998693943, 'GEMM2_Time_us': 2927.2065105438232}, {'M': 16384, 'N1': 512, 'K1': 3584, 'N2': 7168, 'K2': 128, 'E': 256, 'TopK': 8, 'GEMM1_Time_us': 1754.5543333292007, 'GEMM2_Time_us': 5406.680663108826}]
+数据已成功写入到 marlin_prof.xlsx 文件
+root@bw14:~/lightop/test/moe_marlin/moe_w4a8# 

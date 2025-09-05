@@ -141,7 +141,7 @@ def benchmark_config(
 
     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
     # 先进行准确度测试
-    GEMM1_Peak,GEMM2_Peak = fused_marlin_moe_valid(                      
+    GEMM1_Peak,GEMM2_Peak,bandwith1,bandwith2 = fused_marlin_moe_valid(                      
                             x,
                             w1,
                             w2,
@@ -198,6 +198,8 @@ def benchmark_config(
     print("GEMM1峰值:",GEMM1_Peak/(gemm1_time_us_total/num_iters/10 /1000/1000)/10**12)
     print("GEMM2峰值:",GEMM2_Peak/(gemm2_time_us_total/num_iters/10 /1000/1000)/10**12)
     print("GEMM1+GEMM2总峰值:",GEMM1_Peak/(gemm1_time_us_total/num_iters/10 /1000/1000)/10**12 + GEMM2_Peak/(gemm2_time_us_total/num_iters/10 /1000/1000)/10**12)
+    print("GEMM1带宽GB/s:",bandwith1/(gemm1_time_us_total/num_iters/10/1000/1000))
+    print("GEMM2带宽GB/s:",bandwith2/(gemm2_time_us_total/num_iters/10/1000/1000))
     return {
         'M': num_tokens,
         'N1': shard_intermediate_size,
@@ -260,6 +262,7 @@ def main(args: argparse.Namespace):
         # batch_sizes = [512, 1024, 2048, 4096, 6144, 8192, 16384]
         # batch_sizes = [4096]
         batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]
+        # batch_sizes = [1024, 2048, 4096, 6144, 8192, 16384]
     else:
         batch_sizes = args.batch_size
 

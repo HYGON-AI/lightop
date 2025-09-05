@@ -92,8 +92,8 @@
             "MODE": 500,
             "DELTA": 1,
             "BLOCK_SIZE_M": 80,
-            "thread_n": 256,
-            "thread_k": 128,
+            "thread_n": 512,
+            "thread_k": 64,
             "blocks_per_cu": 2 
         },
         "4096": {
