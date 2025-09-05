@@ -222,13 +222,12 @@ def moe_groupgemm_w4a8(input: torch.Tensor,
                         output: torch.Tensor,
                         a_scale: torch.Tensor,
                         b_scale: torch.Tensor,
-                        topk_weights: Optional[torch.Tensor],
                         problem_size: torch.Tensor,
                         experts_offsets: torch.Tensor,
                         config: Dict[str, Any]) -> torch.Tensor:
 
     mode = config['MODE']
-    op.moe_groupgemm_w4a8_asm(input, b_qweight, output, a_scale, b_scale, topk_weights,
+    op.moe_groupgemm_w4a8_asm(input, b_qweight, output, a_scale, b_scale,
                                         problem_size, experts_offsets, mode)
     return output
 
