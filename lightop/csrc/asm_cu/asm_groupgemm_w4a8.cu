@@ -67,16 +67,13 @@ void _moe_groupgemm_w4a8_TN_impl(
     first_stage = false;
   }
 
-  // int num_pad = num_tokens_post_pad[0].item<int>();
-  // int sorted_token_lens = sorted_token_ids.size(0);
-
   /* grid sizes */
   size_t localWorkSize[3] = {768, 1, 1};
   size_t globalWorkSize[3] = {1, 1, 1};
   globalWorkSize[0] = DIVIDE(size_n, BLOCKN);
-  // globalWorkSize[2] = std::min(DIVIDE(sorted_token_lens, BLOCKM), DIVIDE(num_pad, BLOCKM));
   globalWorkSize[1] = experts_num;
   globalWorkSize[2] = DIVIDE(problem_size.max().item<int>(), BLOCKM);
+  // printf("globalWorkSize[0]:%d globalWorkSize[1]:%d globalWorkSize[2]:%d\n", globalWorkSize[0], globalWorkSize[1], globalWorkSize[2]);
 
   HipFunctionArgs<OutputType> hipFunctionArgs;
   hipFunctionArgs.numWorkGroups0 = globalWorkSize[0];
@@ -100,7 +97,7 @@ void _moe_groupgemm_w4a8_TN_impl(
   hipFunctionArgs.stride_bsk = b_scale.stride(2);
   void * debug_host = nullptr, * debug_device = nullptr;
   #if DEBUG
-  int bytes = 20;
+  int bytes = 4;
   int debug_size = 768 * bytes;
   debug_host = malloc(debug_size);
   hipMalloc((void **)&debug_device, debug_size);
@@ -116,38 +113,38 @@ void _moe_groupgemm_w4a8_TN_impl(
   memset(second_stage_co_file, 0x0, sizeof(second_stage_co_file));
   sprintf(funcName, "Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT%dx%dx%d_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", BLOCKM, BLOCKN, BLOCKK);
   if (output.scalar_type() == at::ScalarType::BFloat16) {
-    sprintf(first_stage_co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
-    sprintf(second_stage_co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(first_stage_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(second_stage_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
   } else {
-    TORCH_CHECK(false, "moe_w4a8 only supports outputType in [BFloat16]");
+    TORCH_CHECK(false, "moe_groupgemm_w4a8 only supports outputType in [BFloat16]");
   }
 
-  static AiterAsmKernel moe_w4a8_first_stage(funcName, first_stage_co_file);
-  static AiterAsmKernel moe_w4a8_second_stage(funcName, second_stage_co_file);
+  static AiterAsmKernel moe_groupgemm_w4a8_first_stage(funcName, first_stage_co_file);
+  static AiterAsmKernel moe_groupgemm_w4a8_second_stage(funcName, second_stage_co_file);
   if(first_stage){
-    // moe_w4a8_first_stage.launch_kernel_ext({
-    //   &hipFunctionArgs,
-    //   &argsSize,
-    //   globalWorkSize[0],           // gdx
-    //   globalWorkSize[1],           // gdy
-    //   globalWorkSize[2],           // gdz
-    //   localWorkSize[0],            // bdx: 12 wv64
-    //   localWorkSize[1],            // bdy
-    //   localWorkSize[2],            // bdz
-    //   stream
-    // });
+    moe_groupgemm_w4a8_first_stage.launch_kernel_ext({
+      &hipFunctionArgs,
+      &argsSize,
+      globalWorkSize[0],           // gdx
+      globalWorkSize[1],           // gdy
+      globalWorkSize[2],           // gdz
+      localWorkSize[0],            // bdx: 12 wv64
+      localWorkSize[1],            // bdy
+      localWorkSize[2],            // bdz
+      stream
+    });
   } else {
-    // moe_w4a8_second_stage.launch_kernel_ext({
-    //   &hipFunctionArgs,
-    //   &argsSize,
-    //   globalWorkSize[0],           // gdx
-    //   globalWorkSize[1],           // gdy
-    //   globalWorkSize[2],           // gdz
-    //   localWorkSize[0],            // bdx: 12 wv64
-    //   localWorkSize[1],            // bdy
-    //   localWorkSize[2],            // bdz
-    //   stream
-    // });
+    moe_groupgemm_w4a8_second_stage.launch_kernel_ext({
+      &hipFunctionArgs,
+      &argsSize,
+      globalWorkSize[0],           // gdx
+      globalWorkSize[1],           // gdy
+      globalWorkSize[2],           // gdz
+      localWorkSize[0],            // bdx: 12 wv64
+      localWorkSize[1],            // bdy
+      localWorkSize[2],            // bdz
+      stream
+    });
   }
 
 
@@ -156,20 +153,20 @@ void _moe_groupgemm_w4a8_TN_impl(
   
   printf("%s:%d gdx:%d gdy:%d gdz:%d bdx:%d bdy:%d bdz:%d\n", __FILE__, __LINE__, globalWorkSize[0], globalWorkSize[1], globalWorkSize[2],
     localWorkSize[0], localWorkSize[1], localWorkSize[2]);
-  // printf("\ndebug:\n");
-  // hipMemcpy(debug_host, debug_device, debug_size, hipMemcpyDeviceToHost);
+  printf("\ndebug:\n");
+  hipMemcpy(debug_host, hipFunctionArgs.ptr_C, debug_size, hipMemcpyDeviceToHost);
   // using DEBUG_TYPE = int8_t;
   // using DEBUG_TYPE = uint32_t;
   using DEBUG_TYPE = int32_t;
   // using DEBUG_TYPE = float;
   // using DEBUG_TYPE = bhalf_t;
-  int split = bytes / sizeof(DEBUG_TYPE);
+  // int split = bytes / sizeof(DEBUG_TYPE);
   DEBUG_TYPE *p_debug = reinterpret_cast<DEBUG_TYPE*>(debug_host);
-  // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
+  for (int i = 0; i < 5; ++i) {
   // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / split; ++i) {
-    // if (i % 8 == 0) printf("\n");
-    // if (i % 8 == 0) printf("\ni:%d ", i / 8);
-    // printf("%3d:%10.4f\t", i, p_debug[i]);
+    if (i % 8 == 0) printf("\n");
+    if (i % 8 == 0) printf("\ni:%d ", i / 8);
+    printf("i:%3d:%d\t", i, p_debug[i]);
     // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%3d:%10.4f\t", i, static_cast<float>(tmp[i+1]));
     // printf("%3d:%6d\t", i, p_debug[i]);
@@ -200,8 +197,8 @@ void _moe_groupgemm_w4a8_TN_impl(
     //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ], p_debug[index+4 ], p_debug[index+5 ], 
     //   tmp[20], tmp[21], tmp[22], tmp[23] 
     // );
-  // }
-  // printf("\n");
+  }
+  printf("\n");
   HIP_CALL(hipFree(debug_device));
   free(debug_host);
   #endif
