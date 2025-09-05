@@ -270,6 +270,8 @@ if __name__ == "__main__":
         14336, 8192, 2560, 8192,
         # llama3.3-70b-tp8
         7168, 8192, 1280, 8192,
+        # dpsk_671b tp4
+        1024, 576, 6144, 1536, 8192, 9216, 7168, 7168, 7168,
     ]
 
     k_list = [
@@ -299,6 +301,8 @@ if __name__ == "__main__":
         8192, 7168, 8192, 2048,
         # llama3.3-70b-tp8
         8192, 3584, 8192, 1024,
+        # dpsk_671b tp4
+        7168, 7168, 1536, 7168, 512, 7168, 512, 4096, 4608,
     ]
 
     # n_list = [4096]
@@ -317,8 +321,8 @@ if __name__ == "__main__":
             
             for tunning_slide_block in range(0, 11, 1):
                 m, n, k = m, n_list[i], k_list[i]
-                if tunning_slide_block == 9:
-                    continue
+                # if tunning_slide_block == 9:
+                #     continue
                     # if ((m >= 16 and m <=64) or (m > 128 and m < 256)  and n >= 4096):
                     #     pass
                     # else:
