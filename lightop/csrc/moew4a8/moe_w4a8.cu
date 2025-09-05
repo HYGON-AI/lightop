@@ -1321,7 +1321,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
   if(mode > 400 && mode <500){
     int size_n = b_qweight.size(2); 
     int size_kb = b_qweight.size(1);
-    if(top_k==8){
+    if(first_stage){
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id        
         GemmParams2<char> params_in2(
           (const char*)input.data_ptr<int8_t>(), 
@@ -1365,7 +1365,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
               launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64, char>(params_in2);
           }
         }      
-      }else if (top_k==1){ //gemm2 
+      }else{ //gemm2 
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
         GemmParams2<char> params_in2(
           (const char*)input.data_ptr<int8_t>(), 
