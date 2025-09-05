@@ -139,7 +139,8 @@ def moe_gemm_w4a8(input: torch.Tensor,
                                         sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
     return output
 
-def moe_gemm_marlin_w4a8(input: torch.Tensor,
+def moe_gemm_marlin_w4a8(
+                    input: torch.Tensor,
                     b_qweight: torch.Tensor,
                     output: torch.Tensor,
                     a_scale: torch.Tensor,
@@ -160,7 +161,6 @@ def moe_gemm_marlin_w4a8(input: torch.Tensor,
                                         sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
     elif mode >= 500 and mode < 1000: # marlin版 w4a8 算子实现
         block_m = config["BLOCK_SIZE_M"]
-        mul_topk_weights = top_k == 1
         size_m = input.shape[0]
         size_k = input.shape[1]
         size_n = b_qweight.shape[2] // 4
@@ -181,7 +181,6 @@ def moe_gemm_marlin_w4a8(input: torch.Tensor,
                                 topk_weights,
                                 block_m,
                                 top_k,
-                                mul_topk_weights,
                                 False,
                                 size_m,
                                 size_n,

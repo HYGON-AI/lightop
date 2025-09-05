@@ -101,7 +101,7 @@ def fused_marlin_moe(
                             intermediate_cache1,
                             a_1_scale,
                             w1_scale,
-                            topk_weights,
+                            None,
                             sorted_token_ids,
                             expert_ids,
                             num_tokens_post_padded,

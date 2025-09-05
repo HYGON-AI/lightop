@@ -51,6 +51,7 @@ using intx4 = __attribute__((__vector_size__(4 * sizeof(int)))) int;
 using FragA = Vec<int8_t, 8>; // 计算时 参与一次mmac运算的 A矩阵 向量数据类型 
 using FragB = Vec<int8_t, 8>; // 计算时 参与一次mmac运算的 B矩阵 向量数据类型 
 using FragC = Vec<int32_t, 4>; // mmac的结果 4 个 int32
+using FragC_fp32 = Vec<float, 4>; // mmac的结果 4 个 int32
 using FragS_CHANNEL = Vec<float, 2>; // weight per-channel quantization scales or activaton per-token quantization scales
 using bhalf_t = __hip_bfloat16;
 
