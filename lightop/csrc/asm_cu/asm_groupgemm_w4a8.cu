@@ -51,21 +51,12 @@ void _moe_groupgemm_w4a8_TN_impl(
   torch::Tensor output,
   torch::Tensor a_scale,
   torch::Tensor b_scale,
-  std::optional<torch::Tensor> topk_weights,
   torch::Tensor problem_size,
   torch::Tensor expert_offsets, uint32_t experts_num) {
 
   const int size_m = input.size(0); 
   const int size_n = b_qweight.size(1); 
   const int size_k = input.size(1);
-
-  bool first_stage = true;
-
-  const float* topk_weights_ptr; // 第一阶段这里为null
-  if (topk_weights.has_value()){
-    topk_weights_ptr = (const float*)topk_weights.value().data_ptr();
-    first_stage = false;
-  }
 
   /* grid sizes */
   size_t localWorkSize[3] = {768, 1, 1};
@@ -83,7 +74,7 @@ void _moe_groupgemm_w4a8_TN_impl(
   hipFunctionArgs.ptr_B = input.data_ptr<int8_t>();
   hipFunctionArgs.ptr_A_scale = b_scale.data_ptr<float>();
   hipFunctionArgs.ptr_B_scale = a_scale.data_ptr<float>();
-  hipFunctionArgs.topk_weights = topk_weights_ptr;
+  hipFunctionArgs.topk_weights = nullptr;
   hipFunctionArgs.expert_offsets = expert_offsets.data_ptr<int32_t>();
   hipFunctionArgs.problem_size = problem_size.data_ptr<int32_t>();
   hipFunctionArgs.experts_num = experts_num;
@@ -102,52 +93,41 @@ void _moe_groupgemm_w4a8_TN_impl(
   debug_host = malloc(debug_size);
   hipMalloc((void **)&debug_device, debug_size);
   // printf("%s:%d isBfloat16:%d \n", __FILE__, __LINE__, isBfloat16);
+  // 通过 data_ptr 访问
+  // printf("expert_offsets\n");
+  // int* p = expert_offsets.data_ptr<int>();
+
+  // for (int i = 0; i < 32; i++) {
+  //     std::cout << p[i] << " ";
+  // }
   #endif
   hipFunctionArgs.debugBuffer = debug_device;
   size_t argsSize = sizeof(hipFunctionArgs);
 
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  char funcName[1024], first_stage_co_file[1024], second_stage_co_file[1024];
+  char funcName[1024], w4a8_groupgemm_co_file[1024];
   memset(funcName, 0x0, sizeof(funcName));
-  memset(first_stage_co_file, 0x0, sizeof(first_stage_co_file));
-  memset(second_stage_co_file, 0x0, sizeof(second_stage_co_file));
+  memset(w4a8_groupgemm_co_file, 0x0, sizeof(w4a8_groupgemm_co_file));
   sprintf(funcName, "Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT%dx%dx%d_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", BLOCKM, BLOCKN, BLOCKK);
   if (output.scalar_type() == at::ScalarType::BFloat16) {
-    sprintf(first_stage_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
-    sprintf(second_stage_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
   } else {
     TORCH_CHECK(false, "moe_groupgemm_w4a8 only supports outputType in [BFloat16]");
   }
 
-  static AiterAsmKernel moe_groupgemm_w4a8_first_stage(funcName, first_stage_co_file);
-  static AiterAsmKernel moe_groupgemm_w4a8_second_stage(funcName, second_stage_co_file);
-  if(first_stage){
-    moe_groupgemm_w4a8_first_stage.launch_kernel_ext({
-      &hipFunctionArgs,
-      &argsSize,
-      globalWorkSize[0],           // gdx
-      globalWorkSize[1],           // gdy
-      globalWorkSize[2],           // gdz
-      localWorkSize[0],            // bdx: 12 wv64
-      localWorkSize[1],            // bdy
-      localWorkSize[2],            // bdz
-      stream
-    });
-  } else {
-    moe_groupgemm_w4a8_second_stage.launch_kernel_ext({
-      &hipFunctionArgs,
-      &argsSize,
-      globalWorkSize[0],           // gdx
-      globalWorkSize[1],           // gdy
-      globalWorkSize[2],           // gdz
-      localWorkSize[0],            // bdx: 12 wv64
-      localWorkSize[1],            // bdy
-      localWorkSize[2],            // bdz
-      stream
-    });
-  }
-
-
+  static AiterAsmKernel moe_groupgemm_w4a8_stage(funcName, w4a8_groupgemm_co_file);
+  moe_groupgemm_w4a8_stage.launch_kernel_ext({
+    &hipFunctionArgs,
+    &argsSize,
+    globalWorkSize[0],           // gdx
+    globalWorkSize[1],           // gdy
+    globalWorkSize[2],           // gdz
+    localWorkSize[0],            // bdx: 12 wv64
+    localWorkSize[1],            // bdy
+    localWorkSize[2],            // bdz
+    stream
+  });
+  
   #if DEBUG
   // AT_CUDA_CHECK(cudaStreamSynchronize(stream));
   
@@ -162,11 +142,11 @@ void _moe_groupgemm_w4a8_TN_impl(
   // using DEBUG_TYPE = bhalf_t;
   // int split = bytes / sizeof(DEBUG_TYPE);
   DEBUG_TYPE *p_debug = reinterpret_cast<DEBUG_TYPE*>(debug_host);
-  for (int i = 0; i < 5; ++i) {
+  for (int i = 0; i < 32; ++i) {
   // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / split; ++i) {
     if (i % 8 == 0) printf("\n");
-    if (i % 8 == 0) printf("\ni:%d ", i / 8);
-    printf("i:%3d:%d\t", i, p_debug[i]);
+    // if (i % 8 == 0) printf("\ni:%d ", i / 8);
+    printf("iiii:%3d:%d\t", i, p_debug[i]);
     // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%3d:%10.4f\t", i, static_cast<float>(tmp[i+1]));
     // printf("%3d:%6d\t", i, p_debug[i]);
@@ -212,7 +192,6 @@ torch::Tensor moe_groupgemm_w4a8_asm(
   torch::Tensor output,
   torch::Tensor a_scale,
   torch::Tensor b_scale,
-  std::optional<torch::Tensor> topk_weights,
   torch::Tensor problem_size, 
   torch::Tensor expert_offsets,
   int mode) {
@@ -227,7 +206,7 @@ torch::Tensor moe_groupgemm_w4a8_asm(
       output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
         _moe_groupgemm_w4a8_TN_impl<128, 256, 128, scalar_t>(
           input, b_qweight, output, a_scale, b_scale,
-          topk_weights, problem_size, expert_offsets, experts_num);
+          problem_size, expert_offsets, experts_num);
       }
     );
   } else {
