@@ -840,12 +840,12 @@ if __name__ == "__main__":
     main()
     # 运行所有shape: python benchmark_moe_w8a8.py 
     # 单侧某一个
-    # python benchmark_moe_w8a8.py \
+    # HIP_VISIBLE_DEVICES=3 python benchmark_moe_w8a8.py \
     #     --E [256] \
     #     --n1-list '[256]' \
     #     --n2-list '[7168]' \
     #     --k-list '[128]' \
-    #     --m-list '[32]' \
+    #     --m-list '[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]' \
     #     --topk 8 \
     #     --out-dtype bfloat16 \
     #     --use-channel-wise \

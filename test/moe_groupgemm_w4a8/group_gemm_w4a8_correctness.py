@@ -467,6 +467,8 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
     assert len(expert_offsets) == len(problem_size)
     tensor_problem_size = torch.tensor(problem_size, dtype=torch.int32, device=A.device)
     tensor_expert_offsets = torch.tensor(expert_offsets, dtype=torch.int32, device=A.device)
+    print("tensor_problem_size",tensor_problem_size)
+    print("tensor_expert_offsets",tensor_expert_offsets)
     moe_groupgemm_w4a8(A, 
                         B, 
                         out_cuda,
@@ -657,37 +659,10 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
             config2['MODE'] = mode1
             config2['DELTA'] = 1
         
-        '''
-        align = 128
-        config1['BLOCK_SIZE_M'] = align
-        config1['MODE'] = 1000
-        # '''
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-        # '''
-        # sorted_token_ids[:128] = torch.tensor([20375, 20444, 40787,  6104, 61222, 61244, 24493, 26563, 26412, 17653,
-        # 46929, 46945, 44895, 44441, 44353, 44411, 64849, 22648,  6940, 45239,
-        # 43188, 43162, 43011, 43078, 27564, 30711, 14325, 34653, 19490, 39950,
-        # 53233, 60612, 42139,  6305, 55230, 60539, 42237, 26709, 62640,  7779,
-        # 49381, 49402,  7817,  7867, 28337, 26189, 26282, 48722, 48740,  9009,
-        #  1839,  1895,  1901, 29597, 22437, 31736, 63363, 51971,  3661, 13135,
-        # 22095, 24130, 24146, 24205, 13263, 42684, 44571, 42603, 35685, 26073,
-        # 56318, 25895, 54050, 48426, 46415, 65045, 51485, 51526, 51545, 65145,
-        # 51532, 15411, 15386, 30951, 30952, 30968, 30843, 64161, 51233, 25504,
-        # 25575, 13877, 14024, 34546, 36352, 34315, 34345, 54972, 54841, 56903,
-        # 23463, 23481, 23353, 11320, 11371, 13415, 41935, 11512, 31751, 43838,
-        # 33910, 31815, 31889, 12537, 54480, 12380, 14491, 34881, 32952, 34820,
-        # 62423, 53424, 62445, 53281, 27033, 45492, 16208, 18295],
-        # device='cuda:0', dtype=torch.int32)
-        align = 128
-        print("sorted_token_ids:", sorted_token_ids[0:align])
-        print("sorted_token_ids // topk:", sorted_token_ids[0:align] // top_k_num)
-        print("sorted_token_ids % topk:", sorted_token_ids[0:align] % top_k_num)
-        print("expert_ids:", expert_ids[:10])
-        # pdb.set_trace()
-        # torch.nonzero(sorted_token_ids == 0)
-        # '''
+
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
@@ -710,56 +685,56 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
-        # '''
-        if activation == "silu":
-            # d = intermediate_cache1.shape[-1] // 2
-            # intermediate_cache2 = F.silu(intermediate_cache1[..., :d]) * intermediate_cache1[..., d:]
-            torch.ops._C.silu_and_mul(intermediate_cache2,
-                                      intermediate_cache1.view(-1, N))
-        elif activation == "gelu":
-            torch.ops._C.gelu_and_mul(intermediate_cache2,
-                                      intermediate_cache1.view(-1, N))
-        else:
-            raise ValueError(f"Unsupported FusedMoe activation: {activation}")
 
-        qintermediate_cache2, qa2_scale = moe_kernel_prepare_input(
-            A=intermediate_cache2,
-            B=w2,
-            A_scale=a2_scale,
-            B_scale=w2_scale,
-            use_fp8_w8a8=use_fp8_w8a8,
-            use_int8_w8a8=use_int8_w4a8,
-            use_int8_w8a16=use_int8_w8a16,
-            use_int4_w4a16=use_int4_w4a16,
-            per_channel_quant=per_channel_quant,
-            block_shape=block_shape)
-        # print("qintermediate_cache2, qa2_scale",qintermediate_cache2.size(), qa2_scale.size())
-        invoke_fused_moe_kernel_int8(qintermediate_cache2,
-                                w2,
-                                intermediate_cache3,
-                                qa2_scale,
-                                w2_scale,
-                                w2_zp,
-                                curr_topk_weights,
-                                curr_topk_ids,
-                                sorted_token_ids,
-                                expert_ids,
-                                num_tokens_post_padded,
-                                not apply_router_weight_on_input,
-                                1,
-                                config2,
-                                compute_type=compute_type,
-                                use_fp8_w8a8=use_fp8_w8a8,
-                                use_int8_w4a8=use_int8_w4a8,
-                                use_int8_w8a16=use_int8_w8a16,
-                                use_int4_w4a16=use_int4_w4a16,
-                                per_channel_quant=per_channel_quant,
-                                block_shape=block_shape,
-                                use_nn_moe=use_nn_moe)
+        # if activation == "silu":
+        #     # d = intermediate_cache1.shape[-1] // 2
+        #     # intermediate_cache2 = F.silu(intermediate_cache1[..., :d]) * intermediate_cache1[..., d:]
+        #     torch.ops._C.silu_and_mul(intermediate_cache2,
+        #                               intermediate_cache1.view(-1, N))
+        # elif activation == "gelu":
+        #     torch.ops._C.gelu_and_mul(intermediate_cache2,
+        #                               intermediate_cache1.view(-1, N))
+        # else:
+        #     raise ValueError(f"Unsupported FusedMoe activation: {activation}")
+
+        # qintermediate_cache2, qa2_scale = moe_kernel_prepare_input(
+        #     A=intermediate_cache2,
+        #     B=w2,
+        #     A_scale=a2_scale,
+        #     B_scale=w2_scale,
+        #     use_fp8_w8a8=use_fp8_w8a8,
+        #     use_int8_w8a8=use_int8_w4a8,
+        #     use_int8_w8a16=use_int8_w8a16,
+        #     use_int4_w4a16=use_int4_w4a16,
+        #     per_channel_quant=per_channel_quant,
+        #     block_shape=block_shape)
+        # # print("qintermediate_cache2, qa2_scale",qintermediate_cache2.size(), qa2_scale.size())
+        # invoke_fused_moe_kernel_int8(qintermediate_cache2,
+        #                         w2,
+        #                         intermediate_cache3,
+        #                         qa2_scale,
+        #                         w2_scale,
+        #                         w2_zp,
+        #                         curr_topk_weights,
+        #                         curr_topk_ids,
+        #                         sorted_token_ids,
+        #                         expert_ids,
+        #                         num_tokens_post_padded,
+        #                         not apply_router_weight_on_input,
+        #                         1,
+        #                         config2,
+        #                         compute_type=compute_type,
+        #                         use_fp8_w8a8=use_fp8_w8a8,
+        #                         use_int8_w4a8=use_int8_w4a8,
+        #                         use_int8_w8a16=use_int8_w8a16,
+        #                         use_int4_w4a16=use_int4_w4a16,
+        #                         per_channel_quant=per_channel_quant,
+        #                         block_shape=block_shape,
+        #                         use_nn_moe=use_nn_moe)
 
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
                     out_hidden_states[begin_chunk_idx:end_chunk_idx])
-        # '''
+        
     return out_hidden_states
 
 def _fused_moe_helper(m: int,
