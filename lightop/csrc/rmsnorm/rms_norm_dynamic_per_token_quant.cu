@@ -19,21 +19,38 @@
 #include <c10/cuda/CUDAMathCompat.h>
 
 #include "reduce.h"
-
+#ifndef USE_ROCM
+  #include <cub/cub.cuh>
+  #include <cub/util_type.cuh>
+#else
+  #include <hipcub/hipcub.hpp>
+  #include <hipcub/util_type.hpp>
+#endif
 
 namespace at{
 namespace native{
 
-static __device__ __forceinline__ int8_t float_to_int8_rn(float const x) {
+static inline __device__ int8_t float_to_int8_rn(float x) {
 #ifdef USE_ROCM
-  static const float i8_min =
-    static_cast<float>(std::numeric_limits<int8_t>::min());
-  static const float i8_max =
-    static_cast<float>(std::numeric_limits<int8_t>::max());
-  // round
+  static constexpr auto i8_min =
+      static_cast<float>(std::numeric_limits<int8_t>::min());
+  static constexpr auto i8_max =
+      static_cast<float>(std::numeric_limits<int8_t>::max());
+
+  // To match the rounding mode of CUDA, we use nearbyint.
+  // It uses the current rounding mode, which is always FE_TONEAREST on HIP.
+  // If that changes in the future, we may need to set the rounding mode
+  // explicitly, either at runtime or compile time.
   float dst = std::nearbyint(x);
+
   // saturate
-  dst = std::clamp(dst, i8_min, i8_max);
+
+  // See https://github.com/pytorch/pytorch/issues/127666
+  // See https://github.com/llvm/llvm-project/issues/95183
+  // hip-clang std::clamp __glibcxx_assert_fail host function when building on
+  // Arch/gcc14. The following replaces std::clamp usage with similar logic
+  // dst = std::clamp(dst, i8_min, i8_max);
+  dst = (dst < i8_min) ? i8_min : (dst > i8_max) ? i8_max : dst;
   return static_cast<int8_t>(dst);
 #else
   // CUDA path
@@ -50,42 +67,42 @@ __global__ void rms_norm_dynamic_per_token_quant_(scalar_t* input,scalar_t* resi
   constexpr int share_size=block_size/C10_WARP_SIZE;
   __shared__ T_ACC val_shared[share_size];
   __shared__ T_ACC s_rstd;
-  float val = 0.0f;
+  T_ACC val = 0;
   int bid = blockIdx.x;
   int tid = threadIdx.x;
   int tcol = cols / Vec;
   using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
   using LoadT_out = at::native::memory::aligned_vector<scalar_out_t, Vec>;
   scalar_t intput_vec[Vec];
-  float trstd;
+  T_ACC trstd;
   int64_t idx = bid * tcol + tid;
   idx *= Vec;
 
-  if(tid < tcol) {
+  if (tid < tcol) {
     *(LoadT*)intput_vec = *(LoadT*)(input+idx);
       #pragma unroll
       for (int ii = 0; ii < Vec; ii++) {
-        val += static_cast<float>(intput_vec[ii])*static_cast<float>(intput_vec[ii]);
+          val += static_cast<T_ACC>(intput_vec[ii])*static_cast<T_ACC>(intput_vec[ii]);
       }
   }
-  val = BlockReduceSum_ROW<T_ACC,block_size>(val,val_shared);
-  if (tid == 0) s_rstd = c10::cuda::compat::rsqrt(val/cols + eps);
+  val = BlockReduceSum_ROW<T_ACC,block_size>(val, val_shared);
+  if (tid == 0) s_rstd=c10::cuda::compat::rsqrt(val / cols + eps);
   __syncthreads();
-  trstd = s_rstd;
-  float block_absmax_val_maybe = 0.0f;
-  float elem[Vec];
-  if (tid < tcol) {
-    #pragma unroll
-    for(int ii = 0;ii < Vec;ii ++){
-      int jj = tid * Vec + ii;
-      elem[ii] = static_cast<scalar_t>(intput_vec[ii] * trstd) * gamma[jj];
-      block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(elem[ii]));
-    }      
+  trstd=s_rstd;
 
+  float block_absmax_val_maybe = 0.f;
+  scalar_t elem[Vec];
+  if (tid < tcol) {
+      #pragma unroll
+      for(int ii = 0;ii < Vec;ii++){
+        int jj=tid * Vec + ii;
+        elem[ii] = static_cast<T_ACC>(intput_vec[ii]) * trstd * static_cast<T_ACC>(gamma[jj]);
+        block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(elem[ii]));
+      }      
   }
-  block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe,val_shared);
+  block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe, val_shared);
   __shared__ float s_token_scale; 
-  float scale = 0.0f;
+  float scale = 0.0f;     
   if(tid == 0)
   {
     if (scale_ub) {
@@ -96,22 +113,21 @@ __global__ void rms_norm_dynamic_per_token_quant_(scalar_t* input,scalar_t* resi
     constexpr float qmax = 127.0f;
     constexpr float min_scale = 1.19209e-07f;
     // token scale computation
-    scale = fmaxf(scale / qmax, min_scale);
-    s_token_scale = scale;                 // shared memory store
+    s_token_scale = scale;               // shared memory store
+    scales[blockIdx.x] = fmaxf(scale / qmax, min_scale);  // global output store
   }
   __syncthreads();
+  float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
 
-  scale = 1.0f / s_token_scale;//int8 need invert
   scalar_out_t out_vec[Vec];
   if (tid < tcol) {
   #pragma unroll
-  for(int ii = 0;ii < Vec;ii ++){
-    int jj = tid * Vec + ii;
-    out_vec[ii] = float_to_int8_rn(elem[ii] * scale);
+  for(int ii = 0;ii < Vec;ii++){
+      int jj = tid * Vec + ii;
+      out_vec[ii] = float_to_int8_rn(elem[ii] * inv_s);
     }
-  *(LoadT_out*)(out+idx)=*(LoadT_out*)out_vec;
+  *(LoadT_out*)(out+idx) =*(LoadT_out*)out_vec;
   }
-  if(tid==0)scales[blockIdx.x] = s_token_scale;
 }
 
 template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec,int block_size>
@@ -120,15 +136,15 @@ __global__ void rms_norm_dynamic_per_token_quant_loop(scalar_t* input,scalar_t* 
   constexpr int share_size=block_size / C10_WARP_SIZE;
   __shared__ T_ACC val_shared[share_size];
   __shared__ T_ACC s_rstd;
-  float val = 0.0f;
+  T_ACC val = 0.0f;
   int bid = blockIdx.x;
   int tid = threadIdx.x;
-  float trstd;
+  T_ACC trstd;
   int64_t rows = bid * cols;
 
   for(int i = tid;i < cols;i += block_size)
   {
-    val += static_cast<float>(input[rows + i])*static_cast<float>(input[rows + i]);
+    val += static_cast<T_ACC>(input[rows + i])*static_cast<T_ACC>(input[rows + i]);
   }
   val = BlockReduceSum_ROW<T_ACC,block_size>(val, val_shared);
   if (tid == 0) s_rstd = c10::cuda::compat::rsqrt(val / cols + eps);
@@ -136,7 +152,7 @@ __global__ void rms_norm_dynamic_per_token_quant_loop(scalar_t* input,scalar_t* 
   trstd = s_rstd;
   float block_absmax_val_maybe = 0.0f;
   for(int i = tid;i < cols;i += block_size){
-    block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(static_cast<scalar_t>(input[i + rows]) * trstd * static_cast<float>(gamma[i])));
+    block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(static_cast<T_ACC>(input[i + rows]) * trstd * static_cast<T_ACC>(gamma[i])));
   }
   block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe,val_shared);
 
@@ -152,16 +168,15 @@ __global__ void rms_norm_dynamic_per_token_quant_loop(scalar_t* input,scalar_t* 
     constexpr float qmax = 127.0f;
     constexpr float min_scale = 1.19209e-07f;
     // token scale computation
-    scale = fmaxf(scale / qmax, min_scale);
     s_token_scale = scale;                 // shared memory store
-    scales[blockIdx.x] = scale;  // global output store
+    scales[blockIdx.x] = fmaxf(scale / qmax, min_scale); // global output store
   }
   __syncthreads();
-  scale = 1.0f / s_token_scale;//int8 need invert
+  float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
   scalar_out_t out_vec[Vec];
   for(int i = tid; i < cols; i += block_size)
   {
-    out[rows + i] = float_to_int8_rn(static_cast<scalar_t>(input[rows + i]) *trstd* static_cast<float>(gamma[i]) * scale);
+    out[rows + i] = float_to_int8_rn(static_cast<T_ACC>(input[rows + i]) *trstd* static_cast<T_ACC>(gamma[i]) * inv_s);
   }
 }
 
@@ -172,7 +187,7 @@ __global__ void rms_norm_dynamic_per_token_quant_residual(scalar_t* input,scalar
   constexpr int share_size=block_size/C10_WARP_SIZE;
   __shared__ T_ACC val_shared[share_size];
   __shared__ T_ACC s_rstd;
-  float val = 0;
+  T_ACC val = 0;
   int bid = blockIdx.x;
   int tid = threadIdx.x;
   int tcol = cols / Vec;
@@ -180,7 +195,7 @@ __global__ void rms_norm_dynamic_per_token_quant_residual(scalar_t* input,scalar
   using LoadT_out = at::native::memory::aligned_vector<scalar_out_t, Vec>;
   scalar_t intput_vec[Vec];
   scalar_t residual_vec[Vec];
-  float trstd;
+  T_ACC trstd;
   int64_t idx = bid * tcol + tid;
   idx *= Vec;
 
@@ -191,7 +206,7 @@ __global__ void rms_norm_dynamic_per_token_quant_residual(scalar_t* input,scalar
       #pragma unroll
       for (int ii = 0; ii < Vec; ii++) {
           residual_vec[ii] += intput_vec[ii];
-          val += static_cast<float>(residual_vec[ii])*static_cast<float>(residual_vec[ii]);
+          val += static_cast<T_ACC>(residual_vec[ii])*static_cast<T_ACC>(residual_vec[ii]);
       }
   }
 
@@ -200,13 +215,13 @@ __global__ void rms_norm_dynamic_per_token_quant_residual(scalar_t* input,scalar
   __syncthreads();
   trstd=s_rstd;
 
-  float block_absmax_val_maybe = 0.0f;
-  float elem[Vec];
+  float block_absmax_val_maybe = 0.f;
+  scalar_t elem[Vec];
   if (tid < tcol) {
       #pragma unroll
       for(int ii = 0;ii < Vec;ii++){
         int jj=tid * Vec + ii;
-        elem[ii] = static_cast<float>(residual_vec[ii]) * trstd * static_cast<float>(gamma[jj]);
+        elem[ii] = static_cast<T_ACC>(residual_vec[ii]) * trstd * static_cast<T_ACC>(gamma[jj]);
         block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(elem[ii]));
       }      
   }
@@ -221,23 +236,21 @@ __global__ void rms_norm_dynamic_per_token_quant_residual(scalar_t* input,scalar
     } else {
       scale = block_absmax_val_maybe;
     }
-
     constexpr float qmax = 127.0f;
     constexpr float min_scale = 1.19209e-07f;
     // token scale computation
-    scale = fmaxf(scale / qmax, min_scale);
     s_token_scale = scale;                 // shared memory store
-    scales[blockIdx.x] = scale;  // global output store
+    scales[blockIdx.x] = fmaxf(scale / qmax, min_scale);  // global output store
     
   }
   __syncthreads();
-  scale = 1.0f / s_token_scale;//int8 need invert
+  float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
   scalar_out_t out_vec[Vec];
   if (tid < tcol) {
   #pragma unroll
   for(int ii = 0;ii < Vec;ii++){
       int jj = tid * Vec + ii;
-      out_vec[ii] = float_to_int8_rn(elem[ii] * scale);
+      out_vec[ii] = float_to_int8_rn(elem[ii] * inv_s);
     }
   *(LoadT_out*)(out+idx) =*(LoadT_out*)out_vec;
   *(LoadT*)(residual+idx) = *(LoadT*)residual_vec;
@@ -250,15 +263,15 @@ __global__ void rms_norm_dynamic_per_token_quant_residual_loop(scalar_t* input,s
   constexpr int share_size = block_size / C10_WARP_SIZE;
   __shared__ T_ACC val_shared[share_size];
   __shared__ T_ACC s_rstd;
-  float val = 0.0f;
+  T_ACC val = 0.0f;
   int bid = blockIdx.x;
   int tid = threadIdx.x;
-  float trstd;
+  T_ACC trstd;
   int64_t rows = bid * cols;
 
   for(int i = tid;i < cols;i += block_size)
   {
-    float x = static_cast<float>(residual[rows + i]) + static_cast<float>(input[rows + i]);
+    float x = static_cast<T_ACC>(residual[rows + i]) + static_cast<T_ACC>(input[rows + i]);
         val += x * x;
   }
     
@@ -269,8 +282,8 @@ __global__ void rms_norm_dynamic_per_token_quant_residual_loop(scalar_t* input,s
   float block_absmax_val_maybe = 0.0f;
 
   for(int i = tid;i < cols;i += block_size){
-    float x = static_cast<float>(residual[i + rows]) + static_cast<float>(input[i + rows]);
-    block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(static_cast<float>(static_cast<scalar_t>(x * trstd) * gamma[i])));
+    T_ACC x = static_cast<T_ACC>(residual[i + rows]) + static_cast<T_ACC>(input[i + rows]);
+    block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(static_cast<T_ACC>(static_cast<T_ACC>(x * trstd) * gamma[i])));
   }
 
   block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe, val_shared);
@@ -287,19 +300,17 @@ __global__ void rms_norm_dynamic_per_token_quant_residual_loop(scalar_t* input,s
     }
     constexpr float qmax = 127.0f;
     constexpr float min_scale = 1.19209e-07f;
-    // token scale computation
-    scale = fmaxf(scale / qmax, min_scale);
     s_token_scale = scale;                 // shared memory store
-    scales[blockIdx.x] = scale;  // global output store
+    scales[blockIdx.x] = fmaxf(scale / qmax, min_scale);  // global output store
     
   }
    __syncthreads();
-  scale = 1.0f / s_token_scale;//int8 need invert
+  float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
   scalar_out_t out_vec[Vec];
   for(int i = tid;i < cols;i += block_size)
   {
-    residual[rows + i] = static_cast<float>(residual[i + rows]) + static_cast<float>(input[i + rows]);
-    out[rows + i] = float_to_int8_rn(static_cast<scalar_t>(residual[rows + i] ) * trstd * static_cast<float>(gamma[i]) * scale);
+    residual[rows + i] = static_cast<T_ACC>(residual[i + rows]) + static_cast<T_ACC>(input[i + rows]);
+    out[rows + i] = float_to_int8_rn(static_cast<T_ACC>(residual[rows + i] ) * trstd * static_cast<T_ACC>(gamma[i]) * inv_s);
   }
 
 }
@@ -411,13 +422,12 @@ void rms_norm_dynamic_per_token_quant_(
           other_data = residual->data_ptr<scalar_in_t>();
         }
         scalar_in_t* weight_data = weight.data_ptr<scalar_in_t>();
-
+        float* scaless = scales.data_ptr<float>();
         AT_DISPATCH_INTEGRAL_TYPES(
           out.scalar_type(),  // scalar_out_t 跟 output 对应
           "fused_add_rms_norm_kernel_out_type",
           [&] {
           scalar_t* out_data = out.data_ptr<scalar_t>();
-          float* scaless = scales.data_ptr<float>();
         if(residual_flag){
             if (hidden_size <= 1024){
                 rms_norm_dynamic_per_token_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,scale_ub.has_value() ? scale_ub->data_ptr<float>() : nullptr);
