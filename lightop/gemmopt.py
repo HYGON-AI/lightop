@@ -1,5 +1,5 @@
 import torch
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, NamedTuple
 from lightop import op
 import functools
 import os
@@ -139,6 +139,61 @@ def moe_gemm_w4a8(input: torch.Tensor,
                                         sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
     return output
 
+def moe_gemm_marlin_w4a8(
+                    input: torch.Tensor,
+                    b_qweight: torch.Tensor,
+                    output: torch.Tensor,
+                    a_scale: torch.Tensor,
+                    b_scale: torch.Tensor,
+                    topk_weights: Optional[torch.Tensor],
+                    sorted_token_ids: torch.Tensor,
+                    experts_ids: torch.Tensor,
+                    num_tokens_post_pad: torch.Tensor, 
+                    top_k: int,
+                    locks: Optional[torch.Tensor], # 用于控制 block间归约的 信号量Tensor
+                    global_reduce_buffer: Optional[torch.Tensor], # 用于 block间归约的 缓存区Tensor
+                    config: Dict[str, Any]) -> torch.Tensor:
+    mode = config['MODE']
+    delta = config['DELTA']
+
+    if mode < 500: # 手写算子实现
+        op.moe_gemm_w4a8(input, b_qweight, output, a_scale, b_scale, topk_weights,
+                                        sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
+    elif mode >= 500 and mode < 1000: # marlin版 w4a8 算子实现
+        block_m = config["BLOCK_SIZE_M"]
+        size_m = input.shape[0]
+        size_k = input.shape[1]
+        size_n = b_qweight.shape[2] // 4
+
+        thread_n = config["thread_n"]
+        thread_k = config["thread_k"]
+        blocks_per_cu = config["blocks_per_cu"]
+        op.moe_marlin_w4a8(input,  # A
+                                a_scale, # a_scale
+                                output, # 输出
+                                b_qweight, # B 
+                                b_scale, # B_scale
+                                locks,
+                                global_reduce_buffer,
+                                sorted_token_ids, 
+                                experts_ids, 
+                                num_tokens_post_pad, 
+                                topk_weights,
+                                block_m,
+                                top_k,
+                                False,
+                                size_m,
+                                size_n,
+                                size_k,
+                                thread_n,
+                                thread_k,
+                                blocks_per_cu)  
+
+    else: # 汇编版 w4a8 实现
+        op.moe_w4a8_marlin_asm(input, b_qweight, output, a_scale, b_scale, topk_weights,
+                                        sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
+    return output
+
 def moe_gemm_w8a8(input: torch.Tensor,
                     b_qweight: torch.Tensor,
                     output: torch.Tensor,
@@ -241,3 +296,7 @@ def awq_marlin_repack(b_q_weight: torch.Tensor, size_k: int, size_n: int, num_bi
     output = op.awq_marlin_repack(b_q_weight, size_k, size_n, num_bits)
     return output
 
+
+def groupgemm(a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor, trans_b: bool = False) -> torch.Tensor:
+    outs = op.groupgemm(a, b, batch_sizes, trans_b)
+    return outs
