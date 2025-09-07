@@ -96,23 +96,20 @@ __device__ void moe_fused_gate_impl(
     void* bias,
     float* output_ptr,
     int32_t* indices_ptr,
-    int64_t num_rows,
-    int64_t topk_group,
-    int64_t topk,
-    int64_t n_share_experts_fusion,
+    int num_rows,
+    int topk_group,
+    int topk,
+    int n_share_experts_fusion,
     double routed_scaling_factor,
     Params params) {
   int tidx = threadIdx.x;//0-63
-  int64_t thread_row =
-      blockIdx.x * params.ROWS_PER_CTA + threadIdx.y * params.ROWS_PER_WARP + tidx / params.THREADS_PER_ROW;
+  int thread_row = blockIdx.x * params.ROWS_PER_CTA +  tidx / params.THREADS_PER_ROW;
   if (thread_row >= num_rows) {
     return;
   }
-
   int group_row = tidx / params.THREADS_PER_ROW;
-
   // Calculate topk_excluding_share_expert_fusion from topk
-  int64_t topk_excluding_share_expert_fusion = topk - (n_share_experts_fusion > 0 ? 1 : 0);
+  int topk_excluding_share_expert_fusion = topk - (n_share_experts_fusion > 0 ? 1 : 0);
 
   // Cast pointers to type T:
   auto* input_ptr = reinterpret_cast<T*>(input);
@@ -126,12 +123,12 @@ __device__ void moe_fused_gate_impl(
   // Create local arrays for the row chunk and bias chunk and then reinterpret the address of row_chunk as a pointer to
   // AccessType.
   T* thread_read_ptr = thread_row_ptr + first_elt_read_by_thread;
-  Array<T, MAX_VPT> row_chunk;
+  Array<float, MAX_VPT> row_chunk;
   // T row_chunk[params.VPT];
   AccessType<T> const* vec_thread_read_ptr = reinterpret_cast<AccessType<T> const*>(thread_read_ptr);
 
   T* bias_thread_read_ptr = bias_ptr + first_elt_read_by_thread;
-  Array<T, MAX_VPT> bias_chunk;
+  Array<float, MAX_VPT> bias_chunk;
   // T bias_chunk[params.VPT];
   AccessType<T> const* vec_bias_thread_read_ptr = reinterpret_cast<AccessType<T> const*>(bias_thread_read_ptr);
 
@@ -145,24 +142,15 @@ __device__ void moe_fused_gate_impl(
 
 #pragma unroll
   for (int ii = 0; ii < params.VPT; ++ii) {
-    row_chunk[ii] = vec_thread_read_ptr[0][ii];
-    bias_chunk[ii] = vec_bias_thread_read_ptr[0][ii];
+    row_chunk[ii] = static_cast<float>(vec_thread_read_ptr[0][ii]);
+    bias_chunk[ii] = static_cast<float>(vec_bias_thread_read_ptr[0][ii]);
   }
-  /*row_chunk_vec_ptr[0] = vec_thread_read_ptr[0];
-  bias_chunk_vec_ptr[0] = vec_bias_thread_read_ptr[0];*/
 
 ////////////////////// Sigmoid //////////////////////
 #pragma unroll
   for (int ii = 0; ii < params.VPT; ++ii) {
-    float x = -static_cast<float>(row_chunk[ii]);
-    float sigmoid = __fdividef(1.0f, 1.0f + __expf(x)); 
-    row_chunk[ii] = static_cast<T>(sigmoid);
-  }
-
-////////////////////// Add Bias //////////////////////
-#pragma unroll
-  for (int ii = 0; ii < params.VPT; ++ii) {
-    bias_chunk[ii] = row_chunk[ii] + bias_chunk[ii];
+    row_chunk[ii] = __fdividef(1.0f, 1.0f + __expf(-row_chunk[ii])); 
+    bias_chunk[ii] += row_chunk[ii] ;
   }
 
 ////////////////////// Exclude Groups //////////////////////
@@ -171,11 +159,11 @@ __device__ void moe_fused_gate_impl(
        ++k_idx) {  // QQ NOTE Here params.THREADS_PER_ROW = num_expert_group
     int expert = first_elt_read_by_thread;
     // local argmax
-    T max_val = static_cast<T>(-FLT_MAX);
-    T max_val_second = static_cast<T>(-FLT_MAX);
+    float max_val = -FLT_MAX;
+    float max_val_second = -FLT_MAX;
 #pragma unroll
     for (int ii = 0; ii < params.VPT; ++ii) {
-      T val = bias_chunk[ii];
+      float val = bias_chunk[ii];
 
       if (cmp_gt(val, max_val)) {
         max_val_second = max_val;
@@ -187,13 +175,12 @@ __device__ void moe_fused_gate_impl(
 
     // QQ NOTE: currently fixed to pick top2 sigmoid weight value in each expert group and sum them as the group weight
     // to select expert groups
-    T max_sum = max_val + max_val_second;
+    float max_sum = max_val + max_val_second;
 
 // argmin reduce
 #pragma unroll
     for (int mask = params.THREADS_PER_ROW / 2; mask > 0; mask /= 2) {
-      T other_max_sum =
-          static_cast<T>(VLLM_SHFL_XOR_SYNC_WIDTH(static_cast<float>(max_sum), mask, params.THREADS_PER_ROW));
+      float other_max_sum = VLLM_SHFL_XOR_SYNC_WIDTH(max_sum, mask, params.THREADS_PER_ROW);
       int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(expert, mask, params.THREADS_PER_ROW);
 
       // higher indices win
@@ -211,7 +198,7 @@ __device__ void moe_fused_gate_impl(
       if (thread_group_idx == thread_to_clear_in_group) {
 #pragma unroll
         for (int ii = 0; ii < params.VPT; ++ii) {
-          bias_chunk[ii] = static_cast<T>(FLT_MAX);
+          bias_chunk[ii] = FLT_MAX;
         }
       }
     }
@@ -223,27 +210,26 @@ __device__ void moe_fused_gate_impl(
    __shared__ float s_output[8][9];
   for (int k_idx = 0; k_idx < topk_excluding_share_expert_fusion; ++k_idx) {
     // local argmax
-    T max_val = bias_chunk[0];
+    float max_val = bias_chunk[0];
     int expert = first_elt_read_by_thread;
 
-    if (!cmp_eq(max_val, static_cast<T>(FLT_MAX))) {
+    if (!cmp_eq(max_val, FLT_MAX)) {
 #pragma unroll
       for (int ii = 1; ii < params.VPT; ++ii) {
-        T val = bias_chunk[ii];
+        float val = bias_chunk[ii];
         if (cmp_gt(val, max_val)) {
           max_val = val;
           expert = first_elt_read_by_thread + ii;
         }
       }
     } else {
-      max_val = static_cast<T>(-FLT_MAX);
+      max_val = -FLT_MAX;
     }
 
     // argmax reduce
 #pragma unroll
     for (int mask = params.THREADS_PER_ROW / 2; mask > 0; mask /= 2) {
-      T other_max =
-          static_cast<T>(VLLM_SHFL_XOR_SYNC_WIDTH(static_cast<float>(max_val), mask, params.THREADS_PER_ROW));
+      float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(max_val, mask, params.THREADS_PER_ROW);
       int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(expert, mask, params.THREADS_PER_ROW);
 
       // lower indices to win
@@ -260,11 +246,11 @@ __device__ void moe_fused_gate_impl(
       int expert_to_clear_in_thread = expert % params.VPT;
 
       // clear the max value in the thread
-      bias_chunk[expert_to_clear_in_thread] = static_cast<T>(-FLT_MAX);
+      bias_chunk[expert_to_clear_in_thread] = -FLT_MAX;
 
       // store output
-      s_output[group_row][k_idx] = static_cast<float>(row_chunk[expert_to_clear_in_thread]);
-      indices_ptr[idx] = static_cast<int32_t>(expert);
+      s_output[group_row][k_idx] = row_chunk[expert_to_clear_in_thread];
+      indices_ptr[idx] = expert;
     }
 
     // accumulate sum for all elements
@@ -280,7 +266,7 @@ __device__ void moe_fused_gate_impl(
 
   // Use round-robin to select expert
   int64_t expert_offset = thread_row % n_share_experts_fusion;
-  indices_ptr[last_idx] = static_cast<int32_t>(params.NUM_EXPERTS + expert_offset);
+  indices_ptr[last_idx] = params.NUM_EXPERTS + expert_offset;
 
   // Set the weight to the sum of all weights divided by routed_scaling_factor
   output_ptr[last_idx] = output_sum / routed_scaling_factor;
@@ -414,23 +400,23 @@ __global__ void moe_fused_gate_kernel_dynamic(
 // Host Launcher Function
 //------------------------------------------------------------------------------
 std::vector<torch::Tensor> moe_fused_gate(
-    torch::Tensor& input,
-    torch::Tensor& bias,
-    int64_t num_expert_group,
-    int64_t topk_group,
-    int64_t topk,
-    int64_t n_share_experts_fusion,
-    double routed_scaling_factor) {
-  int64_t num_rows = input.size(0);
-  int32_t num_experts = input.size(1);
+    torch::Tensor& input,//[160,256]
+    torch::Tensor& bias,//[256]
+    int64_t num_expert_group,//8
+    int64_t topk_group,//4
+    int64_t topk,//8
+    int64_t n_share_experts_fusion,//0
+    double routed_scaling_factor) {//2.5
+  int64_t num_rows = input.size(0);//160
+  int32_t num_experts = input.size(1);//256
   auto options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
-  auto output = torch::empty({num_rows, topk}, options);
-  auto indices = torch::empty({num_rows, topk}, options.dtype(torch::kInt32));
+  auto output = torch::empty({num_rows, topk}, options);//160,8
+  auto indices = torch::empty({num_rows, topk}, options.dtype(torch::kInt32));//160,8
 
   // Compute grid dimensions based on runtime value for num_expert_group.
-  int64_t rows_per_warp = std::max<int64_t>(1, WARP_SIZE / num_expert_group);
-  int64_t num_warps = (num_rows + rows_per_warp - 1) / rows_per_warp;
-  int64_t num_blocks = (num_warps + WARPS_PER_CTA - 1) / WARPS_PER_CTA;
+  int64_t rows_per_warp = std::max<int64_t>(1, WARP_SIZE / num_expert_group);//8
+  int64_t num_warps = (num_rows + rows_per_warp - 1) / rows_per_warp;//20
+  int64_t num_blocks = (num_warps + WARPS_PER_CTA - 1) / WARPS_PER_CTA;//20
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   dim3 block_dim(WARP_SIZE, WARPS_PER_CTA);
 

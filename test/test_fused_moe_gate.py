@@ -27,7 +27,7 @@ def check_correctness_once(
     atol=1e-9
 ):
     device = torch.device("cuda")
-    dtype = torch.bfloat16
+    dtype = torch.float
 
     scores = torch.randn((token_num, num_experts), device=device, dtype=dtype)
     bias = torch.randn(num_experts, device=device, dtype=dtype)
