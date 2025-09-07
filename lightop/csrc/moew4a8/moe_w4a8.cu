@@ -925,6 +925,357 @@ void launch_moe_w4a8_gemm_second_stage_decode(const GemmParams<T>& params) {
       }
 }
 
+/****************************************marlin*************************************************/
+
+template<
+  typename Element, 
+  uint16_t WARP_NUM,
+  uint16_t BLOCK_SIZE_M, 
+  uint16_t BLOCK_SIZE_N, 
+  uint16_t BLOCK_SIZE_K, 
+  uint16_t WARP_M, 
+  uint16_t WARP_N, 
+  uint16_t WARP_K, 
+  uint16_t GROUP_N,
+  uint16_t GROUP_K,
+  bool mul_topk_weight> 
+__global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_decode(
+  const Element* __restrict__ input,
+  const int* __restrict__ qweight,
+  bhalf_t* __restrict__ output,
+  float* __restrict__ input_scale,
+  float* __restrict__ weight_scale,
+  const float* __restrict__ topk_weights,
+  const int32_t* __restrict__ sorted_token_ids,
+  const int32_t* __restrict__ expert_ids,
+  const int32_t* __restrict__ num_tokens_post_pad,
+  uint32_t size_m,
+  uint32_t size_n, 
+  uint32_t size_k,
+  uint32_t size_kb,
+  uint32_t stride_asm,
+  uint32_t stride_ask,
+  uint32_t stride_bse,
+  uint32_t stride_bsn, 
+  uint32_t stride_bsk,
+  uint32_t sorted_token_lens,
+  uint32_t top_k,
+  uint32_t delta
+) {
+  const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
+  const int bidy = blockIdx.y; // pid_n
+  const int bidz = blockIdx.x; // pid_k
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回
+  constexpr int STAGES = 2; 
+  const int32_t expert_id = expert_ids[bidx]; // 专家的索引
+  if(expert_id >=256 || expert_id <0) return;
+ 
+  //我理解的这个blocksizek类似128，blocksizen类似64
+  //对于A和B的分块现在都是不一致的，因为A一次只需要64个数据，然后这是K方向，4个线程，需要的是128，M方向是默认16，所以这个k对于A来说就是128
+  //但是这个k对于B来说，肯定是8x1x4x64一次 因为是4个warp 
+  //默认size_n是512
+  const uint64_t expert_offset = ((uint64_t)size_n) * size_kb  * expert_id; // 这个是对应专家的weight偏移
+  
+  const uint64_t qweight_offset = expert_offset + bidy * 4 * BLOCK_SIZE_N ; // 具体偏移到对应专家的weight的某一个小的分块
+  //待修改
+  const uint32_t output_offset = bidy *  BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
+  //待修改
+  const uint64_t weight_scale_offset = stride_bse * stride_bsn * expert_id + bidy * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
+  
+  auto g_input = input;
+  auto g_input_scale = input_scale; // 配置全局显存信息
+  bhalf_t* g_output;
+  
+  g_output = output + output_offset;
+
+
+  constexpr int mfma_m = 16;
+  constexpr int mfma_n = 16;
+  constexpr int mfma_k = 32;
+
+  int warp_id_vec = threadIdx.x / 64; //warp id in a block
+  int warp_id = __builtin_amdgcn_readfirstlane(warp_id_vec); // 用于对warp id直接进行广播，不同一个block中的每个线程都去计算threadIdx.x / 64
+  int lane_id = threadIdx.x & 63; // thread_id
+  int row_id = lane_id % 16;
+  int col_id = lane_id / 16;
+
+  const int warp_n_num = BLOCK_SIZE_N / (WARP_N * 4);
+  const int warp_k_num = BLOCK_SIZE_K / WARP_K;
+   
+  int warp_k_id = warp_id % warp_k_num;
+  int warp_n_id = warp_id / warp_k_num;
+  extern __shared__ Element smem[]; // 声明lds信息
+  Element* input_lds = (Element*)&(smem); // decode这里没用
+  Element* qweight_lds = input_lds; // decode这里没用
+  int* output_lds = (int*)&(smem); // 重复使用lds,留给output_lds
+  const int *sorted_token_ids_offset = sorted_token_ids;
+  //存储数据的寄存器
+  union_vec<Element, WARP_K/4> A_reg[WARP_M/mfma_m][2];
+  int8_vec<WARP_K/8> B_reg[WARP_N/mfma_n][2];
+  auto g_qweight = qweight + qweight_offset;
+  auto g_weight_scale = weight_scale + weight_scale_offset; // 配置weight的scale信息 todo 这里n_loop=0没有计算偏移
+  intx4 C_reg[1][4 * (WARP_M/16)*(WARP_N/16)];
+  for(int init=0; init< (4 * (WARP_M/16)*(WARP_N/16)); init++){
+    C_reg[0][init] = {0,0,0,0};
+  }
+  
+  { 
+    gemm_nt_first_stage_marlin_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+    (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx, bidy);
+  }
+  //这里的存储不需要过lds，直接写出到对应的输出位置即可
+  const int32_t token_index = sorted_token_ids[std::min(bidx * 16 + row_id, int(sorted_token_lens - 1))];
+  if(warp_k_id == 0){
+    float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id * WARP_N * 4 + col_id * 4;
+    int sorted_token_offset = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + row_id, int(sorted_token_lens - 1))];
+    float a_scale = input_scale[std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm]; //计算M方向的偏移
+    using vec_bf16_4 = __attribute__((__vector_size__(4 * sizeof(uint16_t)))) unsigned short;
+    using vec_float_4 = __attribute__((__vector_size__(4 * sizeof(float)))) float;
+    for (int i = 0; i < 4; i++) {
+      vec_bf16_4 D ;
+      vec_float_4 bscale4;
+      if(row_id==0) bscale4=*(vec_float_4*)(b_scale_ptr+i*16);
+      if(token_index < size_m * top_k){
+        for (int j = 0; j < 4; j++) {
+            float bscale=bscale4[j];
+            bscale=__shfl(bscale,col_id*16);
+            ((bhalf_t*)&D)[j] = f32_to_bf16(static_cast<float> (((int*)&C_reg[0][j])[i]  ) * a_scale * bscale);
+        }
+        *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = D;
+      }
+    }
+  }
+} 
+
+
+template<
+  typename Element, 
+  uint16_t WARP_NUM,
+  uint16_t BLOCK_SIZE_M, 
+  uint16_t BLOCK_SIZE_N, 
+  uint16_t BLOCK_SIZE_K, 
+  uint16_t WARP_M, 
+  uint16_t WARP_N, 
+  uint16_t WARP_K, 
+  uint16_t GROUP_N,
+  uint16_t GROUP_K,
+  bool mul_topk_weight> 
+__global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin_decode(
+  const Element* __restrict__ input,
+  const int* __restrict__ qweight,
+  bhalf_t* __restrict__ output,
+  float* __restrict__ input_scale,
+  float* __restrict__ weight_scale,
+  const float* __restrict__ topk_weights,
+  const int32_t* __restrict__ sorted_token_ids,
+  const int32_t* __restrict__ expert_ids,
+  const int32_t* __restrict__ num_tokens_post_pad,
+  uint32_t size_m,
+  uint32_t size_n, 
+  uint32_t size_k,
+  uint32_t size_kb,
+  uint32_t stride_asm,
+  uint32_t stride_ask,
+  uint32_t stride_bse,
+  uint32_t stride_bsn, 
+  uint32_t stride_bsk,
+  uint32_t sorted_token_lens,
+  uint32_t top_k,
+  uint32_t delta
+) {
+  
+  const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
+  const int bidy = blockIdx.y; // pid_n
+  const int bidz = blockIdx.x; // pid_k
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回
+  constexpr int STAGES = 2; 
+  const int32_t expert_id = expert_ids[bidx]; // 专家的索引
+  if(expert_id >=256 || expert_id <0) return;
+ 
+  //我理解的这个blocksizek类似128，blocksizen类似64
+  //对于A和B的分块现在都是不一致的，因为A一次只需要64个数据，然后这是K方向，4个线程，需要的是128，M方向是默认16，所以这个k对于A来说就是128
+  //但是这个k对于B来说，肯定是8x1x4x64一次 因为是4个warp 
+  //默认size_n是512
+  const uint64_t expert_offset = ((uint64_t)size_n) * size_kb  * expert_id; // 这个是对应专家的weight偏移
+  
+  const uint64_t qweight_offset = expert_offset + bidy * 4 * BLOCK_SIZE_N ; // 具体偏移到对应专家的weight的某一个小的分块
+  //待修改
+  const uint32_t output_offset = bidy *  BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
+  //待修改
+  const uint64_t weight_scale_offset = stride_bse * stride_bsn * expert_id + bidy * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
+  
+  auto g_input = input;
+  auto g_input_scale = input_scale; // 配置全局显存信息
+  bhalf_t* g_output;
+  
+  g_output = output + output_offset;
+
+
+  constexpr int mfma_m = 16;
+  constexpr int mfma_n = 16;
+  constexpr int mfma_k = 32;
+  int tid = threadIdx.x;
+  int warp_id_vec = tid / 64; //warp id in a block
+  int warp_id = __builtin_amdgcn_readfirstlane(warp_id_vec); // 用于对warp id直接进行广播，不同一个block中的每个线程都去计算threadIdx.x / 64
+  int lane_id = tid & 63; // thread_id
+  int row_id = lane_id % 16;
+  int col_id = lane_id / 16;
+
+  const int warp_n_num = BLOCK_SIZE_N / (WARP_N * 4);
+  const int warp_k_num = BLOCK_SIZE_K / WARP_K;
+   
+  int warp_k_id = warp_id % warp_k_num;
+  int warp_n_id = warp_id / warp_k_num;
+  extern __shared__ Element smem[]; // 声明lds信息
+  Element* input_lds = (Element*)&(smem); // decode这里没用
+  Element* qweight_lds = input_lds; // decode这里没用
+  int* output_lds = (int*)&(smem); // 重复使用lds,留给output_lds
+  const int *sorted_token_ids_offset = sorted_token_ids;
+  //存储数据的寄存器
+  union_vec<Element, WARP_K/4> A_reg[WARP_M/mfma_m][1];
+  int8_vec<WARP_K/8> B_reg[WARP_N/mfma_n][1];
+  auto g_qweight = qweight + qweight_offset;
+  auto g_weight_scale = weight_scale + weight_scale_offset; // 配置weight的scale信息 todo 这里n_loop=0没有计算偏移
+  intx4 C_reg[1][4 * (WARP_M/16)*(WARP_N/16)];
+  for(int init=0; init< (4 * (WARP_M/16)*(WARP_N/16)); init++){
+    C_reg[0][init] = {0,0,0,0};
+  }
+  
+  float *a_scale_ptr_arr[WARP_M / mfma_m];
+  int sorted_token_offset = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + row_id, int(sorted_token_lens - 1))];
+  const int32_t token_index_safe = std::min(sorted_token_offset, size_m * top_k-1);
+  float topk_weight_value  = (topk_weights + token_index_safe)[0];
+  float a_scale= input_scale [std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm]*topk_weight_value; //计算M方向的偏移
+  // float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id * WARP_N * 4 + col_id * 4;
+  float *b_scale_ptr = weight_scale + weight_scale_offset;
+  { 
+    gemm_nt_second_stage_marlin_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+    (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx, bidy);
+  }
+  const int32_t token_index = sorted_token_ids[std::min(bidx * 16 + row_id, int(sorted_token_lens - 1))];
+  
+  using vec_bf16_4 = __attribute__((__vector_size__(4 * sizeof(uint16_t)))) unsigned short;
+  using vec_float_4 = __attribute__((__vector_size__(4 * sizeof(float)))) float;
+  vec_bf16_4 D ;
+  __shared__ float bscale[WARP_NUM*64];
+  bscale[tid]=b_scale_ptr[tid];
+  if(token_index < size_m * top_k) {
+    for (int i = 0; i < 4; i++) {
+      for (int j = 0; j < 4; j++) {
+
+        ((bhalf_t*)&D)[j] = f32_to_bf16(static_cast<float> (((int*)&C_reg[0][j])[i]  ) * a_scale * bscale[warp_n_id * WARP_N * 4 + col_id * 4 + i*16 + j] );
+      }
+      *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = D;
+    }  
+  }
+}
+
+//16, 64, 512, 16, 16, 64,
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
+void launch_moe_w4a8_gemm_first_stage_decode_marlin(const GemmParams2<T>& params) {
+    constexpr int kwarp=BLOCK_SIZE_K / WARP_K ;
+    constexpr int nwarp=BLOCK_SIZE_N / (WARP_N * 4);
+    constexpr int WARP_NUM = kwarp*nwarp ;
+    const bool mul_topk_weight = false;
+    constexpr int GROUP_N = 1;
+    constexpr int GROUP_K = 1;
+
+    dim3 blockDim, gridDim;
+    blockDim.x = WARP_NUM*64;
+    blockDim.y = 1;
+    blockDim.z = 1;
+    
+    //规定BLOCKSIZE_N固定位256
+    gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    gridDim.y = DIVIDE(params.size_n , 4 * BLOCK_SIZE_N); // n方向
+    gridDim.x = 1; // k方向
+    constexpr int lds_size = (kwarp-1)* nwarp * 68 * 16 * 4;
+    const hipStream_t stream = at::cuda::getCurrentHIPStream();
+          
+    moe_w4a8_gemm_first_stage_kernel_marlin_decode<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+      GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, lds_size, stream>>>(
+      params.ptr_A, 
+      params.ptr_B0, 
+      params.ptr_C, 
+      params.ptr_A_scale, 
+      params.ptr_B_scale,  
+      params.topk_weights,
+      params.sorted_token_ids,
+      params.expert_ids, 
+      params.num_tokens_post_pad_ptr,
+      params.size_m,
+      params.size_n,
+      params.size_k,
+      params.size_kofb,
+      params.stride_asm,
+      params.stride_ask,
+      params.stride_bse,
+      params.stride_bsn,
+      params.stride_bsk,
+      params.sorted_token_lens,
+      params.top_k,
+      params.delta
+      );
+
+      auto err = cudaGetLastError();
+      if (err != cudaSuccess) {
+          printf("CUDA error in gemm1: %s\n", cudaGetErrorString(err));
+      }
+}  
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
+void launch_moe_w4a8_gemm_second_stage_decode_marlin(const GemmParams2<T>& params) {
+
+    constexpr int kwarp=BLOCK_SIZE_K / WARP_K ;
+    constexpr int nwarp=BLOCK_SIZE_N / (WARP_N * 4);
+    constexpr int WARP_NUM = kwarp*nwarp ;
+    const bool mul_topk_weight =  true;
+    constexpr int GROUP_N = 1;
+    constexpr int GROUP_K = 1;
+
+    dim3 blockDim, gridDim;
+    blockDim.x = WARP_NUM*64;
+    blockDim.y = 1;
+    blockDim.z = 1;
+    
+    //规定BLOCKSIZE_N固定位256
+    gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    gridDim.y = DIVIDE(params.size_n , 4 * BLOCK_SIZE_N); // n方向
+    gridDim.x = 1; // k方向
+
+    constexpr int lds_size = (kwarp-1)* nwarp * 65 * 16 * 4;
+    const hipStream_t stream = at::cuda::getCurrentHIPStream();
+    
+    moe_w4a8_gemm_second_stage_kernel_marlin_decode<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+      GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, lds_size, stream>>>(
+      params.ptr_A, 
+      params.ptr_B0, 
+      params.ptr_C, 
+      params.ptr_A_scale, 
+      params.ptr_B_scale,  
+      params.topk_weights,
+      params.sorted_token_ids,
+      params.expert_ids, 
+      params.num_tokens_post_pad_ptr,
+      params.size_m,
+      params.size_n,
+      params.size_k,
+      params.size_kofb,
+      params.stride_asm,
+      params.stride_ask,
+      params.stride_bse,
+      params.stride_bsn,
+      params.stride_bsk,
+      params.sorted_token_lens,
+      params.top_k,
+      params.delta
+      );
+
+      auto err = cudaGetLastError();
+      if (err != cudaSuccess) {
+          printf("CUDA error in gemm1: %s\n", cudaGetErrorString(err));
+      }
+}
+
 // 模板抽象
 // BLOCK_MNK: [16, 128, 128]
 // WARP_MNK: [16, 32, 64]
@@ -946,9 +1297,9 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
   ) {
     const int size_m = input.size(0);
     const int EXPERTS = b_qweight.size(0);
-    const int size_n = b_qweight.size(1); 
+    int size_n = b_qweight.size(1); 
     const int size_k = input.size(1);
-    const int size_kb = b_qweight.size(2);
+    int size_kb = b_qweight.size(2);
     const int stride_asm = a_scale.stride(0);
     const int stride_ask = a_scale.stride(1);
     const int stride_bse = b_scale.stride(0);
@@ -959,17 +1310,104 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
     bool first_stage = true;
     torch::Tensor output_alias = output.alias();
 
-        const float* topk_weights_ptr; // 第一阶段这里为null
+    const float* topk_weights_ptr; // 第一阶段这里为null
     if (topk_weights.has_value()){
       topk_weights_ptr = (const float*)topk_weights.value().data_ptr();
       first_stage = false;
     }
 
     int num_pad = 0;
-
     if (input.scalar_type() == at::ScalarType::Char){
-      if(first_stage){
-         
+  if(mode > 400 && mode <500){
+    int size_n = b_qweight.size(2); 
+    int size_kb = b_qweight.size(1);
+    if(first_stage){
+        int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id        
+        GemmParams2<char> params_in2(
+          (const char*)input.data_ptr<int8_t>(), 
+          (const int*)b_qweight.data_ptr(), 
+          (bhalf_t*)output_alias.data_ptr(),
+          (float*)a_scale.data_ptr(), 
+          (float*)b_scale.data_ptr(),  
+          topk_weights_ptr,
+          sorted_token_ids.data_ptr<int32_t>(),
+          expert_ids.data_ptr<int32_t>(), 
+          num_pad, //num_tokens_post_pad[0].item<int>(), //这里获取值 会造成device->host的拷贝和一部分空泡
+          num_tokens_post_pad.data_ptr<int32_t>(),
+          size_m,
+          size_n,
+          size_k,
+          size_kb,
+          stride_asm,
+          stride_ask,
+          stride_bse,
+          stride_bsn,
+          stride_bsk,
+          EM,
+          top_k,
+          delta
+        );
+
+        if(size_m > 512 || (size_m > 2 && EXPERTS == 16) ){
+        //   auto it = kernel_maps_gemm1_prefill.find(mode);
+        //   if (it != kernel_maps_gemm1_prefill.end()) {
+        //       it->second(params_in);
+        //   } else {
+        printf("developing \n");
+        //       launch_moe_gemm_first_stage<16, 64, 128, 16, 16, 64>(params_in);
+        // }
+        }else{ //decode
+          auto it = kernel_maps_gemm1_decode_marlin.find(mode);
+          if (it != kernel_maps_gemm1_decode_marlin.end()) {
+            it->second(params_in2);
+          } else {
+              printf("No matching kernel configuration found, using default settings \n");
+              launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64, char>(params_in2);
+          }
+        }      
+      }else{ //gemm2 
+        int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
+        GemmParams2<char> params_in2(
+          (const char*)input.data_ptr<int8_t>(), 
+          (const int*)b_qweight.data_ptr(), 
+          (bhalf_t*)output_alias.data_ptr(),
+          (float*)a_scale.data_ptr(), 
+          (float*)b_scale.data_ptr(),  
+          topk_weights_ptr,
+          sorted_token_ids.data_ptr<int32_t>(),
+          expert_ids.data_ptr<int32_t>(), 
+          num_pad, //num_tokens_post_pad[0].item<int>(),
+          num_tokens_post_pad.data_ptr<int32_t>(),
+          size_m,
+          size_n,
+          size_k,
+          size_kb,
+          stride_asm,
+          stride_ask,
+          stride_bse,
+          stride_bsn,
+          stride_bsk,
+          EM,
+          top_k,
+          delta
+        );
+        
+        if(size_m / 8 > 512 || (size_m / 8 > 32 && EXPERTS == 16)){
+          printf("developing \n");
+        }else
+        {
+          auto it = kernel_maps_gemm2_decode_marlin.find(mode);
+          if (it != kernel_maps_gemm2_decode_marlin.end()) {
+              it->second(params_in2);
+          } else {
+              printf("No matching kernel configuration found, using default settings \n");
+              launch_moe_w4a8_gemm_second_stage_decode_marlin<16, 256, 64, 16, 16, 64, char>(params_in2);
+          }
+        }
+      }
+  }
+  else{
+      if(first_stage){ 
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
         
         
@@ -1073,6 +1511,8 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
 
         }
       }
+  }
+
     } else {
       TORCH_CHECK(false, "moe_w4a8_gemm only supports int8");
     }

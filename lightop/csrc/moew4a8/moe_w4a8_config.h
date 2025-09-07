@@ -80,6 +80,77 @@ struct GemmParams {
     uint32_t top_k;                    // top k
     uint32_t delta;                    // delta
 };
+template <typename T>
+struct GemmParams2 {
+    GemmParams2(const T* ptr_A,
+               const int32_t* ptr_B0,
+               bhalf_t* ptr_C,
+               float* ptr_A_scale,
+               float* ptr_B_scale,
+               const float* topk_weights,
+               const int32_t* sorted_token_ids,
+               const int32_t* expert_ids,
+               const int32_t num_tokens_post_pad,
+               const int32_t* num_tokens_post_pad_ptr,
+               uint32_t size_m,
+               uint32_t size_n, 
+               uint32_t size_k,
+               uint32_t size_kofb, 
+               uint32_t stride_asm,
+               uint32_t stride_ask,
+               uint32_t stride_bse,
+               uint32_t stride_bsn, 
+               uint32_t stride_bsk,
+               uint32_t sorted_token_lens,
+               uint32_t top_k,
+               uint32_t delta)
+        : ptr_A(ptr_A),
+          ptr_B0(ptr_B0),
+          ptr_C(ptr_C),
+          ptr_A_scale(ptr_A_scale),
+          ptr_B_scale(ptr_B_scale),
+          topk_weights(topk_weights),
+          sorted_token_ids(sorted_token_ids),
+          expert_ids(expert_ids),
+          num_tokens_post_pad(num_tokens_post_pad),
+          num_tokens_post_pad_ptr(num_tokens_post_pad_ptr),
+          size_m(size_m),
+          size_n(size_n),
+          size_k(size_k),
+          size_kofb(size_kofb),
+          stride_asm(stride_asm),
+          stride_ask(stride_ask),
+          stride_bse(stride_bse),
+          stride_bsn(stride_bsn),
+          stride_bsk(stride_bsk),
+          sorted_token_lens(sorted_token_lens),
+          top_k(top_k),
+          delta(delta)
+         {}
+
+    const T* ptr_A;                    // input
+    const int32_t* ptr_B0;                   // weight
+    bhalf_t* ptr_C;                   // output
+    float* ptr_A_scale;                // input scale
+    float* ptr_B_scale;                // weight scale
+    const float* topk_weights;         // topk weights
+    const int32_t* sorted_token_ids;   // sorted token ids
+    const int32_t* expert_ids;         // expert ids
+    const int32_t num_tokens_post_pad;// num tokens after padding
+    const int32_t* num_tokens_post_pad_ptr;// num tokens after padding
+    uint32_t size_m;                   // input size m
+    uint32_t size_n;                   // output size n
+    uint32_t size_k;                    // input size k of a
+    uint32_t size_kofb;                     // input size k of b
+    uint32_t stride_asm;               // input scale stride m
+    uint32_t stride_ask;               // input scale stride k
+    uint32_t stride_bse;               // weight scale stride expert
+    uint32_t stride_bsn;               // weight scale stride n
+    uint32_t stride_bsk;               // weight scale stride k
+    uint32_t sorted_token_lens;        // sorted token length
+    uint32_t top_k;                    // top k
+    uint32_t delta;                    // delta
+};
 
 ///////////////////////////////////////////////////////////////////////launch_moe_function///////////////////////////////////////////////////////////////////////////////////////
 
@@ -95,9 +166,16 @@ void launch_moe_w4a8_gemm_first_stage_decode(const GemmParams<T>& params);
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
 void launch_moe_w4a8_gemm_second_stage_decode(const GemmParams<T>& params);
 
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
+void launch_moe_w4a8_gemm_first_stage_decode_marlin(const GemmParams2<T>& params);
+
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
+void launch_moe_w4a8_gemm_second_stage_decode_marlin(const GemmParams2<T>& params);
+
 ///////////////////////////////////////////////////////////////////////prefill_config///////////////////////////////////////////////////////////////////////////////////////
 // 创建kernel映射
 using KernelFunc = std::function<void(const GemmParams<char>&)>;
+using KernelFunc2 = std::function<void(const GemmParams2<char>&)>;
 
 static std::unordered_map<int, KernelFunc> kernel_maps_gemm1_prefill = {
     ///////////////////////////////////////////////////////N_warp////////////////////////////////////////////////
@@ -415,6 +493,33 @@ static std::unordered_map<int, KernelFunc> kernel_maps_gemm2_decode = {
     {41, [](const GemmParams<char>& p) { launch_moe_w4a8_gemm_second_stage_decode<16, 32, 1024, 16, 32, 64, char>(p); }},
     {42, [](const GemmParams<char>& p) { launch_moe_w4a8_gemm_second_stage_decode<16, 32, 512, 16, 16, 64, char>(p); }},
     {43, [](const GemmParams<char>& p) { launch_moe_w4a8_gemm_second_stage_decode<16, 32, 512, 16, 16, 64, char>(p); }},
+};
+
+
+static std::unordered_map<int, KernelFunc2> kernel_maps_gemm1_decode_marlin = {
+    // MN 16 16 
+    {401, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 128, 16, 16, 32, char>(p); }},
+    {402, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 256, 16, 16, 64, char>(p); }},
+    {403, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64, char>(p); }},
+    {404, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 256, 16, 16, 32, char>(p); }},
+    // MN 16 32  k方向2个warp N方向2个warp
+    // {405, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 256, 64, 16, 16, 64, char>(p); }},
+    // {406, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 128, 64, 16, 16, 64, char>(p); }},
+    // {407, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 128, 64, 16, 16, 32, char>(p); }},
+    // {408, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 128, 128, 16, 16, 32, char>(p); }},
+    // {409, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 128, 256, 16, 16, 64, char>(p); }},
+    // {410, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 256, 64, 16, 32, 32, char>(p); }},    
+};
+
+static std::unordered_map<int, KernelFunc2> kernel_maps_gemm2_decode_marlin = {
+    // MN 16 16 N方向为4或者8个warp
+    {401, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_second_stage_decode_marlin<16, 256, 64, 16, 16, 64, char>(p); }},
+    {402, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_second_stage_decode_marlin<16, 512, 64, 16, 16, 64, char>(p); }},
+    // MN 16 16  K方向2个warp N方向2或4个warp 
+    // {403, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_second_stage_decode_marlin<16, 256, 64, 16, 16, 32, char>(p); }},
+    // {404, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_second_stage_decode_marlin<16, 128, 64, 16, 16, 32, char>(p); }},
+    // {405, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_second_stage_decode_marlin<16, 256, 128, 16, 16, 64, char>(p); }},
+
 };
 
 }

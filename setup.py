@@ -43,7 +43,10 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
 
 def _get_rocm_arch_flags_marlin(cflags: Optional[List[str]] = None) -> List[str]:
     flags = ['--offload-arch=gfx936']
-    flags +=['--gpu-max-threads-per-block=256']
+    flags +=['--gpu-max-threads-per-block=512']
+    flags +=['-mllvm']
+    flags +=['-enable-num-vgprs-512=true']
+    flags +=['--save-temps']
     return flags
 
 
@@ -265,12 +268,14 @@ class BuildReleaseExtension(BuildExtension):
                 print("release mode")
             
             # 定义marlinw4a16目录路径
-            marlinw4a16_dir = os.path.abspath('./lightop/csrc/marlinw4a16/')
+            marlin_dirs = [os.path.abspath('./lightop/csrc/marlinw4a16/'),
+                                os.path.abspath('./lightop/csrc/marlinw4a8/')]
             # 分离marlinw4a16目录的源文件和其他文件
             marlin_sources = []
             other_sources = []
             for s in sources:
-                if os.path.abspath(s).startswith(marlinw4a16_dir):
+                abs_path = os.path.abspath(s)
+                if any(abs_path.startswith(d) for d in marlin_dirs):
                     marlin_sources.append(s)
                 else:
                     other_sources.append(s)
@@ -375,13 +380,14 @@ def get_extensions():
                glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + \
                glob.glob('./lightop/csrc/miopen/*.cpp') + glob.glob('./lightop/csrc/softmax/*.cu') + \
                glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + \
-               glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+\
+               glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
                glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu')
 
     extension = CUDAExtension
     # 添加marlinw4a16目录的包含路径
     include_dirs.append(os.path.abspath('./lightop/csrc/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/marlinw4a16/'))  # 新增marlinw4a16的include路径
+    include_dirs.append(os.path.abspath('./lightop/csrc/marlinw4a8/'))  # 新增marlinw4a8的include路径
     include_dirs.append(os.path.abspath('./lightop/csrc/layernorm/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/groupnorm/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/rmsnorm/'))
@@ -396,6 +402,7 @@ def get_extensions():
     include_dirs.append(os.path.abspath('./lightop/csrc/moew4a8/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/blockwise_scaling/'))
     rocm_home=_find_rocm_home()
+    include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/rocrand/include')
     

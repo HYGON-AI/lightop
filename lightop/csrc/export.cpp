@@ -58,6 +58,7 @@ Tensor gemm_w8a8_smooth_asm(Tensor &A, Tensor &B, Tensor &As, Tensor &Bs, const 
 Tensor gemm_w8a8_asm(Tensor &A, Tensor &B, Tensor &As, Tensor &Bs, c10::optional<Tensor> &C, c10::optional<Tensor> &D_, c10::optional<Tensor> bias, torch::Dtype output_dtype, int M, int N, int K, int gradType = 0);
 Tensor moe_w8a8_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, std::optional<Tensor> topk_weights, Tensor sorted_token_ids, Tensor expert_ids, Tensor num_tokens_post_pad, uint32_t top_k, int mode, int delta);
 Tensor moe_w4a8_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, std::optional<Tensor> topk_weights, Tensor sorted_token_ids, Tensor expert_ids, Tensor num_tokens_post_pad, uint32_t top_k, int mode);
+Tensor moe_w4a8_marlin_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, std::optional<Tensor> topk_weights, Tensor sorted_token_ids, Tensor expert_ids, Tensor num_tokens_post_pad, uint32_t top_k, int mode);
 Tensor moe_marlin_w4a16(torch::Tensor& a, 
                         std::optional<torch::Tensor> const& c_or_none,
                         torch::Tensor& b_q_weight, 
@@ -82,6 +83,28 @@ Tensor moe_marlin_w4a16(torch::Tensor& a,
                         bool is_zp_float
                         );
 Tensor awq_marlin_repack(torch::Tensor& b_q_weight, int64_t size_k, int64_t size_n, int64_t num_bits);
+Tensor moe_marlin_w4a8(
+                        torch::Tensor& a_q, 
+                        torch::Tensor& a_scales, 
+                        torch::Tensor& c,
+                        torch::Tensor& b_q_weight, 
+                        torch::Tensor& b_scales,
+                        torch::Tensor& workspace, 
+                        torch::Tensor& global_reduce_buffer,  // 用于全局规约的缓冲区
+                        torch::Tensor& sorted_token_ids, 
+                        torch::Tensor& expert_ids,
+                        torch::Tensor& num_tokens_past_padded, 
+                        std::optional<torch::Tensor> topk_weights,
+                        int64_t moe_block_size, 
+                        int64_t top_k, 
+                        bool is_ep,
+                        int64_t size_m, 
+                        int64_t size_n,
+                        int64_t size_k,
+                        int64_t thread_n,
+                        int64_t thread_k,
+                        int64_t blocks_per_cu
+                        );
 void blockwise_scaled_cast_transpose(const Tensor& input,std::optional<Tensor> output,std::optional<Tensor> scale_inv,
                                     std::optional<Tensor> output_t,std::optional<Tensor> scale_inv_t,std::optional<Tensor> noop,
                                     const int block_len,const int block_scaling_dim,const bool rowwise,const bool columnwise,
@@ -166,7 +189,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gemm_w8a8_asm", &at::native::gemm_w8a8_asm, "gemm_w8a8_block_asm");
   m.def("moe_w8a8_asm", &at::native::moe_w8a8_asm, "moe_w8a8_asm");
   m.def("moe_w4a8_asm", &at::native::moe_w4a8_asm, "moe_w4a8_asm");
+  m.def("moe_w4a8_marlin_asm", &at::native::moe_w4a8_marlin_asm, "moe_w4a8_marlin_asm");
   m.def("moe_marlin_w4a16", &at::native::moe_marlin_w4a16, "moe_marlin_w4a16");
+  m.def("moe_marlin_w4a8", &at::native::moe_marlin_w4a8, "moe_marlin_w4a8");
   m.def("awq_marlin_repack", &at::native::awq_marlin_repack, "awq_marlin_repack");
   m.def("blockwise_scaled_cast_transpose", &at::native::blockwise_scaled_cast_transpose, "blockwise_scaled_cast_transpose");
   m.def("rms_norm_dynamic_per_token_quant",&at::native::rms_norm_dynamic_per_token_quant,"rms_norm_dynamic_per_token_quant");

@@ -5,6 +5,7 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import quantize_w
 
 import numpy as np
 import pandas as pd
+import pdb
 
 GPTQ_MARLIN_TILE = 16
 
@@ -257,6 +258,16 @@ def awq_marlin_quantize(
                                          quant_type,
                                          group_size,
                                          zero_points=True)
+    
+    # w_ref[:]=1
+    # q_w[:] = 1
+    # s[:]=1
+    # zp[:]=0
+    # pdb.set_trace()
+    #  将weight、scale置为全1，zp置为0，
+
+
+
     # 权重初步量化
     #  q_w  [7168, 512] torch.int32
     #  s  [56, 512]  # torch.float16
