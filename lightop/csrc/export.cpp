@@ -173,4 +173,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("moe_align_block_size",&at::native::moe_align_block_size,"moe_align_block_size");
   m.def("rotary_embedding_fuse", &at::native::rotary_embedding_fuse, "rotary_embedding_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"));
   m.def("groupgemm",&at::native::groupgemm,"groupgemm");
+  
 }
