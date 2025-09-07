@@ -99,7 +99,8 @@ void store_kv_cache_paged(const torch::Tensor& key, const torch::Tensor& value,t
 
 void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::Tensor& token_expert_indices,torch::Tensor& gating_output, const std::string& renormalize = "false");
 void rotary_embedding_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox);    
-void moe_align_block_size(torch::Tensor topk_ids, int64_t num_experts,int64_t block_size, torch::Tensor sorted_token_ids,torch::Tensor experts_ids,torch::Tensor num_tokens_post_pad);          
+void moe_align_block_size(torch::Tensor topk_ids, int64_t num_experts,int64_t block_size, torch::Tensor sorted_token_ids,torch::Tensor experts_ids,torch::Tensor num_tokens_post_pad);
+Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b);          
 }
 }
 
@@ -171,4 +172,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rms_norm_dynamic_per_token_quant",&at::native::rms_norm_dynamic_per_token_quant,"rms_norm_dynamic_per_token_quant");
   m.def("moe_align_block_size",&at::native::moe_align_block_size,"moe_align_block_size");
   m.def("rotary_embedding_fuse", &at::native::rotary_embedding_fuse, "rotary_embedding_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"));
+  m.def("groupgemm",&at::native::groupgemm,"groupgemm");
 }
