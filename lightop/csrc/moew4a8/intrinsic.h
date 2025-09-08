@@ -20,7 +20,7 @@ using uintx4  = __attribute__((__vector_size__(4 * sizeof(uint32_t)))) uint32_t;
 using intx4 = __attribute__((__vector_size__(4 * sizeof(int)))) int;
 using intx2 = __attribute__((__vector_size__(2 * sizeof(int)))) int;
 using int8x16 = __attribute__((__vector_size__(16 * sizeof(int8_t)))) char;
-
+using bhalf_tx4 = __attribute__((__vector_size__(4 * sizeof(uint16_t)))) Int16;
 //fp8_e4m3 definitions
 struct alignas(1) Float8_e4m3_t{
     /// Data container
@@ -56,6 +56,19 @@ struct vec<int8_t, len> {
 template <size_t len>
 struct vec<int, len> {
     using type = __attribute__((__vector_size__(len * sizeof(int)))) int;
+};
+ union alignas(16)  int4_vec {
+    intx4   vec;        // 128bit 向量，用于 SIMD 读取
+    int     data[4];    // 4 个 int，用于逐个访问
+    // 禁止默认构造（避免未初始化）
+    
+};
+template <size_t len>
+union alignas(32)  int8_vec {
+    intx4   vec[len/4];        // 128bit 向量，用于 SIMD 读取
+    int     data[len];    // 4 个 int，用于逐个访问
+    // 禁止默认构造（避免未初始化）
+    
 };
 
 template <typename Element, size_t len>

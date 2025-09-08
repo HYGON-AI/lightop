@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Tuple, TypedDict
 import numpy as np
 import ray
 import torch
+torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 import triton
 from ray.experimental.tqdm_ray import tqdm
 from transformers import AutoConfig
@@ -140,7 +141,7 @@ def benchmark_config(
 
     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
     # 先进行准确度测试
-    fused_marlin_moe_valid(                      
+    GEMM1_Peak,GEMM2_Peak,bandwith1,bandwith2 = fused_marlin_moe_valid(                      
                             x,
                             w1,
                             w2,
@@ -152,7 +153,7 @@ def benchmark_config(
                             topk_weights,
                             topk_ids
                             )
-
+    # return
     # 预热
     for i in range(10):
         # 使用新的专家得分
@@ -194,7 +195,11 @@ def benchmark_config(
             gemm2_time_us_total += gemm2_time_us
 
     print("      GEMM1_Time_us: ", gemm1_time_us_total/num_iters/10, "GEMM2_Time_us: ", gemm2_time_us_total/num_iters/10)
-    
+    print("GEMM1峰值:",GEMM1_Peak/(gemm1_time_us_total/num_iters/10 /1000/1000)/10**12)
+    print("GEMM2峰值:",GEMM2_Peak/(gemm2_time_us_total/num_iters/10 /1000/1000)/10**12)
+    print("GEMM1+GEMM2总峰值:",GEMM1_Peak/(gemm1_time_us_total/num_iters/10 /1000/1000)/10**12 + GEMM2_Peak/(gemm2_time_us_total/num_iters/10 /1000/1000)/10**12)
+    print("GEMM1带宽GB/s:",bandwith1/(gemm1_time_us_total/num_iters/10/1000/1000))
+    print("GEMM2带宽GB/s:",bandwith2/(gemm2_time_us_total/num_iters/10/1000/1000))
     return {
         'M': num_tokens,
         'N1': shard_intermediate_size,
@@ -251,32 +256,13 @@ def main(args: argparse.Namespace):
 
     if len(args.batch_size) == 0:
         print("进行全size性能测试: ")
-        # batch_sizes = [32]
-        # batch_sizes = [512, 1024, 2048, 4096, 8192, 16384]
-        # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256]
-        # batch_sizes = [1]
-        # batch_sizes = [32]
-        # batch_sizes = [131072]
-        # batch_sizes = [32]
-        # batch_sizes = [512]
-        # batch_sizes = [1024]
         # batch_sizes = [2048]
         # batch_sizes = [512, 1024, 2048, 4096, 6144, 8192, 16384]
         # batch_sizes = [2048]
         # batch_sizes = [512, 1024, 2048, 4096, 6144, 8192, 16384]
         # batch_sizes = [4096]
         batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]
-        # batch_sizes = [512]
-        # batch_sizes = [
-        #     # 1,
-        # #     2,
-        # #     4,
-        # #     8,
-        # #     16,
-        # #     9,
-        # #     24,
-        #     32,
-        # ]
+        # batch_sizes = [1024, 2048, 4096, 6144, 8192, 16384]
     else:
         batch_sizes = args.batch_size
 
@@ -339,4 +325,4 @@ if __name__ == "__main__":
 
     main(args)
 
-    # benchmark_config(512, 256, 512, 7168, 8)
+    # benchmark_config(4096, 256, 512, 7168, 8)

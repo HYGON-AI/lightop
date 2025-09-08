@@ -43,7 +43,10 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
 
 def _get_rocm_arch_flags_marlin(cflags: Optional[List[str]] = None) -> List[str]:
     flags = ['--offload-arch=gfx936']
-    flags +=['--gpu-max-threads-per-block=256']
+    flags +=['--gpu-max-threads-per-block=512']
+    flags +=['-mllvm']
+    flags +=['-enable-num-vgprs-512=true']
+    flags +=['--save-temps']
     return flags
 
 
@@ -400,6 +403,7 @@ def get_extensions():
     include_dirs.append(os.path.abspath('./lightop/csrc/moew4a8/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/blockwise_scaling/'))
     rocm_home=_find_rocm_home()
+    include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/rocrand/include')
     

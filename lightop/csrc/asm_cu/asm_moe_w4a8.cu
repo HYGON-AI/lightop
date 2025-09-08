@@ -73,14 +73,15 @@ void _moe_w4a8_TN_impl(
     first_stage = false;
   }
 
-  int num_pad = num_tokens_post_pad[0].item<int>();
+  // int num_pad = num_tokens_post_pad[0].item<int>();
   int sorted_token_lens = sorted_token_ids.size(0);
 
   /* grid sizes */
   size_t localWorkSize[3] = {768, 1, 1};
   size_t globalWorkSize[3] = {1, 1, 1};
   globalWorkSize[0] = DIVIDE(size_n, BLOCKN);
-  globalWorkSize[2] = std::min(DIVIDE(sorted_token_lens, BLOCKM), DIVIDE(num_pad, BLOCKM));
+  // globalWorkSize[2] = std::min(DIVIDE(sorted_token_lens, BLOCKM), DIVIDE(num_pad, BLOCKM));
+  globalWorkSize[2] = DIVIDE(sorted_token_lens, BLOCKM);
 
   HipFunctionArgs<OutputType> hipFunctionArgs;
   hipFunctionArgs.numWorkGroups0 = globalWorkSize[0];
@@ -108,8 +109,8 @@ void _moe_w4a8_TN_impl(
   hipFunctionArgs.topk_rcip = 1.0 / top_k;
   void * debug_host = nullptr, * debug_device = nullptr;
   #if DEBUG
-  int bytes = 20;
-  int debug_size = 768 * bytes;
+  int bytes = 256 * 2;
+  int debug_size = 512 * bytes;
   debug_host = malloc(debug_size);
   hipMalloc((void **)&debug_device, debug_size);
   // printf("%s:%d isBfloat16:%d \n", __FILE__, __LINE__, isBfloat16);
@@ -126,27 +127,40 @@ void _moe_w4a8_TN_impl(
   if (output.scalar_type() == at::ScalarType::BFloat16) {
     sprintf(first_stage_co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
     sprintf(second_stage_co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
+  } else if (output.scalar_type() == at::ScalarType::Float) {
+    sprintf(first_stage_co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(second_stage_co_file, "moe_w4a8_channel/moe_w4a8_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
   } else {
     TORCH_CHECK(false, "moe_w4a8 only supports outputType in [BFloat16]");
   }
 
   static AiterAsmKernel moe_w4a8_first_stage(funcName, first_stage_co_file);
   static AiterAsmKernel moe_w4a8_second_stage(funcName, second_stage_co_file);
-  AiterAsmKernel *impl_ptr = &moe_w4a8_first_stage;
-  if(!first_stage){
-    impl_ptr = &moe_w4a8_second_stage;
+  if(first_stage){
+    moe_w4a8_first_stage.launch_kernel_ext({
+      &hipFunctionArgs,
+      &argsSize,
+      globalWorkSize[0],           // gdx
+      globalWorkSize[1],           // gdy
+      globalWorkSize[2],           // gdz
+      localWorkSize[0],            // bdx: 12 wv64
+      localWorkSize[1],            // bdy
+      localWorkSize[2],            // bdz
+      stream
+    });
+  } else {
+    moe_w4a8_second_stage.launch_kernel_ext({
+      &hipFunctionArgs,
+      &argsSize,
+      globalWorkSize[0],           // gdx
+      globalWorkSize[1],           // gdy
+      globalWorkSize[2],           // gdz
+      localWorkSize[0],            // bdx: 12 wv64
+      localWorkSize[1],            // bdy
+      localWorkSize[2],            // bdz
+      stream
+    });
   }
-  impl_ptr->launch_kernel_ext({
-    &hipFunctionArgs,
-    &argsSize,
-    globalWorkSize[0],           // gdx
-    globalWorkSize[1],           // gdy
-    globalWorkSize[2],           // gdz
-    localWorkSize[0],            // bdx: 12 wv64
-    localWorkSize[1],            // bdy
-    localWorkSize[2],            // bdz
-    stream
-  });
 
 
 
@@ -155,17 +169,17 @@ void _moe_w4a8_TN_impl(
   
   printf("%s:%d gdx:%d gdy:%d gdz:%d bdx:%d bdy:%d bdz:%d\n", __FILE__, __LINE__, globalWorkSize[0], globalWorkSize[1], globalWorkSize[2],
     localWorkSize[0], localWorkSize[1], localWorkSize[2]);
-  printf("\ndebug:\n");
-  hipMemcpy(debug_host, debug_device, debug_size, hipMemcpyDeviceToHost);
+  // printf("\ndebug:\n");
+  // hipMemcpy(debug_host, debug_device, debug_size, hipMemcpyDeviceToHost);
   // using DEBUG_TYPE = int8_t;
   // using DEBUG_TYPE = uint32_t;
-  using DEBUG_TYPE = int32_t;
-  // using DEBUG_TYPE = float;
+  // using DEBUG_TYPE = int32_t;
+  using DEBUG_TYPE = float;
   // using DEBUG_TYPE = bhalf_t;
   int split = bytes / sizeof(DEBUG_TYPE);
   DEBUG_TYPE *p_debug = reinterpret_cast<DEBUG_TYPE*>(debug_host);
   // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
-  for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / split; ++i) {
+  // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / split; ++i) {
     // if (i % 8 == 0) printf("\n");
     // if (i % 8 == 0) printf("\ni:%d ", i / 8);
     // printf("%3d:%10.4f\t", i, p_debug[i]);
@@ -175,7 +189,7 @@ void _moe_w4a8_TN_impl(
     // printf("%3d\t", p_debug[i]);
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f ", static_cast<float>(tmp[0]));
-    int index = split * i;
+    // int index = split * i;
     // printf("tid:%d %3d %3d %3d %3d %3d %3d %3d %3d "
     //   // "%3d %3d %3d %3d %3d %3d %3d %3d "
     //   // "%3d %3d %3d %3d %3d %3d %3d %3d "
@@ -183,24 +197,31 @@ void _moe_w4a8_TN_impl(
     //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ],
     //   p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ], p_debug[index+7 ],
     //   p_debug[index+8 ], p_debug[index+9 ], p_debug[index+10], p_debug[index+11],
-    //   p_debug[index+12], p_debug[index+13], p_debug[index+14], p_debug[index+15]
-    //   // ,
-    //   // p_debug[index+16], p_debug[index+17], p_debug[index+18], p_debug[index+19],
-    //   // p_debug[index+20], p_debug[index+21], p_debug[index+22], p_debug[index+23],
-    //   // p_debug[index+24], p_debug[index+25], p_debug[index+26], p_debug[index+27],
-    //   // p_debug[index+28], p_debug[index+29], p_debug[index+30], p_debug[index+31]
+    //   p_debug[index+12], p_debug[index+13], p_debug[index+14], p_debug[index+15],
+    //   p_debug[index+16], p_debug[index+17], p_debug[index+18], p_debug[index+19],
+    //   p_debug[index+20], p_debug[index+21], p_debug[index+22], p_debug[index+23],
+    //   p_debug[index+24], p_debug[index+25], p_debug[index+26], p_debug[index+27],
+    //   p_debug[index+28], p_debug[index+29], p_debug[index+30], p_debug[index+31],
+    //   p_debug[index+32], p_debug[index+33], p_debug[index+34], p_debug[index+35],
+    //   p_debug[index+36], p_debug[index+37], p_debug[index+38], p_debug[index+39],
+    //   p_debug[index+40], p_debug[index+41], p_debug[index+42], p_debug[index+43],
+    //   p_debug[index+44], p_debug[index+45], p_debug[index+46], p_debug[index+47],
+    //   p_debug[index+48], p_debug[index+49], p_debug[index+50], p_debug[index+51],
+    //   p_debug[index+52], p_debug[index+53], p_debug[index+54], p_debug[index+55],
+    //   p_debug[index+56], p_debug[index+57], p_debug[index+58], p_debug[index+59],
+    //   p_debug[index+60], p_debug[index+61], p_debug[index+62], p_debug[index+63]
     // );
     // printf("tid:%d %6d %6d %6d %6d\n", i, 
     //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ]
     // );
-    int8_t * tmp = reinterpret_cast<int8_t*>(p_debug + index);
-    printf("tid:%d %3d %3d %3d %3d 0X%08X 0X%08X 0X%08X 0X%08X 0X%08X 0X%08X %3d %3d %3d %3d\n", i, 
-      tmp[0], tmp[1], tmp[2], tmp[3],
-      p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ], p_debug[index+4 ], p_debug[index+5 ], 
-      tmp[20], tmp[21], tmp[22], tmp[23] 
-    );
-  }
-  printf("\n");
+    // int8_t * tmp = reinterpret_cast<int8_t*>(p_debug + index);
+    // printf("tid:%d %3d %3d %3d %3d 0X%08X 0X%08X 0X%08X 0X%08X 0X%08X 0X%08X %3d %3d %3d %3d\n", i, 
+    //   tmp[0], tmp[1], tmp[2], tmp[3],
+    //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ], p_debug[index+4 ], p_debug[index+5 ], 
+    //   tmp[20], tmp[21], tmp[22], tmp[23] 
+    // );
+  // }
+  // printf("\n");
   HIP_CALL(hipFree(debug_device));
   free(debug_host);
   #endif
