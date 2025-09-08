@@ -247,9 +247,67 @@ namespace native{
         for(int i = tid * VEC; i < hidden_size; i += blockDim.x * VEC) {
             vec_T permuted_tokens_vec = *(vec_T*)(&permuted_tokens[permuted_token_idx * hidden_size + i]);
             T* permute_tokens_T = (T*)(&permuted_tokens_vec);
+
+            
             #pragma unroll
             for(int j = 0; j < VEC; j++) {
                 permute_tokens_T[j] = permute_tokens_T[j] * prob_weight;
+                //atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]); //todo bf16的原子加优化
+                // #ifdef __gfx936__
+                // __builtin_amdgcn_global_atomic_fadd_f32((float*)(output_tokens + dst_token_idx * hidden_size + i + j), (float)permute_tokens_T[j]);
+                // #else
+                // atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]);
+                // #endif
+            }
+
+            #pragma unroll
+            for(int j = 0; j < VEC; j++){
+                atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]); //todo bf16的原子加优化
+            }
+        }
+    }
+
+    template<typename T, int VEC = 8, int TC = 2>
+    __global__ void __launch_bounds__(1024) unpermute_with_probs_kernel_fast2(
+        const T* permuted_tokens,       // [num_selected_tokens, hidden_size]
+        T* output_tokens,              // [num_tokens, hidden_size]
+        const int* sorted_indices,     // [num_selected_tokens]
+        const T* permuted_probs,       // [num_selected_tokens]
+        const int hidden_size,
+        const int num_tokens,
+        const int num_selected_tokens
+    ) {
+        int permuted_token_idx = blockIdx.x / TC;
+        const int tid_offset = hidden_size / TC;
+
+        int tid_start = (blockIdx.x % TC) * tid_offset;
+        int tid_end = tid_start + tid_offset;
+        int tid = threadIdx.x;
+
+        using vec_T = __attribute__((__vector_size__(VEC * sizeof(uint16_t)))) unsigned short;
+     
+        T prob_weight = permuted_probs[permuted_token_idx];
+        int dst_token_idx = sorted_indices[permuted_token_idx];
+
+        //for(int i = tid * VEC; i < hidden_size; i += blockDim.x * VEC) {
+        for(int i = tid * VEC + tid_start; i < tid_end; i += blockDim.x * VEC) {
+            vec_T permuted_tokens_vec = *(vec_T*)(&permuted_tokens[permuted_token_idx * hidden_size + i]);
+            T* permute_tokens_T = (T*)(&permuted_tokens_vec);
+
+            
+            #pragma unroll
+            for(int j = 0; j < VEC; j++) {
+                permute_tokens_T[j] = permute_tokens_T[j] * prob_weight;
+                //atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]); //todo bf16的原子加优化
+                // #ifdef __gfx936__
+                // __builtin_amdgcn_global_atomic_fadd_f32((float*)(output_tokens + dst_token_idx * hidden_size + i + j), (float)permute_tokens_T[j]);
+                // #else
+                // atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]);
+                // #endif
+            }
+
+            #pragma unroll
+            for(int j = 0; j < VEC; j++){
                 atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]); //todo bf16的原子加优化
             }
         }
@@ -443,7 +501,7 @@ namespace native{
             //     num_selected_tokens
             // );
 
-            unpermute_with_probs_kernel_fast<scalar_t, 8><<<num_selected_tokens, 512, 0, stream>>>(
+            unpermute_with_probs_kernel_fast<scalar_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
                 (scalar_t*)permuted_tokens.data_ptr(),
                 (scalar_t*)output_tokens.data_ptr(),
                 sorted_indices_int.data_ptr<int>(),
@@ -452,6 +510,16 @@ namespace native{
                 num_tokens,
                 num_selected_tokens
             );
+
+            // unpermute_with_probs_kernel_fast2<scalar_t, 4, 2><<<num_selected_tokens, 256, 0, stream>>>(
+            //     (scalar_t*)permuted_tokens.data_ptr(),
+            //     (scalar_t*)output_tokens.data_ptr(),
+            //     sorted_indices_int.data_ptr<int>(),
+            //     (scalar_t*)permuted_probs.data_ptr(),
+            //     hidden_size,
+            //     num_tokens,
+            //     num_selected_tokens
+            // );
          
         } else {
        
