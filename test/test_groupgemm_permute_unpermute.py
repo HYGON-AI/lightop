@@ -332,7 +332,7 @@ def _test_permutation_mask_map(
 def test_permutation_single_case():
     print("GPU:", torch.cuda.get_device_name(0))
 
-    num_tokens = 32  # 1 - 64k
+    num_tokens = 128  # 1 - 64k
     num_expert = 8
     hidden_size = 7168 #16
     topK = 2
