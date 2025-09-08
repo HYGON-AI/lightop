@@ -21,3 +21,4 @@ test/w8a8/*/*.xlsx
 dist/*
 */.triton/
 run.sh
+.vscode/*
