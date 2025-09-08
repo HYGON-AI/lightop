@@ -332,27 +332,46 @@ def _test_permutation_mask_map(
 def test_permutation_single_case():
     print("GPU:", torch.cuda.get_device_name(0))
 
-    num_tokens = 128  # 1 - 64k
+    # num_tokens = 128  # 1 - 64k
     num_expert = 8
-    hidden_size = 7168 #16
+    hidden_size = 7168 
     topK = 2
-    num_out_tokens = num_tokens * topK - 1
+    # num_out_tokens = num_tokens * topK - 1
     with_probs = True
     Benchmark = True
 
     dtype = torch.bfloat16
 
-    _test_permutation_mask_map(
-        num_tokens=num_tokens,
-        num_expert=num_expert,
-        hidden_size=hidden_size,
-        topK=topK,
-        num_out_tokens=num_out_tokens,
-        with_probs=with_probs,
-        dtype=dtype,
-        BENCHMARK=Benchmark,
-    )
+    for num_tokens in [128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]:
+        num_out_tokens = num_tokens * topK - 1
+        print("-----------------------------------------------------------------------------------")
+        print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
+        _test_permutation_mask_map(
+            num_tokens=num_tokens,
+            num_expert=num_expert,
+            hidden_size=hidden_size,
+            topK=topK,
+            num_out_tokens=num_out_tokens,
+            with_probs=with_probs,
+            dtype=dtype,
+            BENCHMARK=Benchmark,
+        )
 
+
+    # for num_tokens in [16384]:
+    #     num_out_tokens = num_tokens * topK - 1
+    #     print("-----------------------------------------------------------------------------------")
+    #     print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
+    #     _test_permutation_mask_map(
+    #         num_tokens=num_tokens,
+    #         num_expert=num_expert,
+    #         hidden_size=hidden_size,
+    #         topK=topK,
+    #         num_out_tokens=num_out_tokens,
+    #         with_probs=with_probs,
+    #         dtype=dtype,
+    #         BENCHMARK=True,
+    #     )
 
 
 if __name__ == "__main__":
