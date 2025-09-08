@@ -23,6 +23,7 @@ from .moe_fused_gate import moe_fused_gate
 from .blockwise_scaling import blockwise_scaled_cast_transpose
 from .config import get_moe_cuda_config, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8, get_moe_groupgemm_config_w4a8
 from .config_smooth_gemm import gemm_w8a8_smooth_config
+from .permute_unpermute import groupgemm_permute, groupgemm_unpermute
 
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401
