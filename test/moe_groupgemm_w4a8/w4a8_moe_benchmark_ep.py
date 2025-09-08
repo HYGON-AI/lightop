@@ -180,9 +180,9 @@ def fused_experts_impl_w4a8_ep_correctness(hidden_states,weight13, weight2, w13_
     assert len(expert_offsets) == len(problem_size)
     tensor_problem_size = torch.tensor(problem_size, dtype=torch.int32, device=hidden_states.device)
     tensor_expert_offsets = torch.tensor(expert_offsets, dtype=torch.int32, device=hidden_states.device)
-
-    print("tensor_problem_size: ", tensor_problem_size)
-    print("tensor_expert_offsets: ", tensor_expert_offsets)
+    torch.cuda.synchronize()
+    # print("tensor_problem_size: ", tensor_problem_size)
+    # print("tensor_expert_offsets: ", tensor_expert_offsets)
     
     # # gemm1
     moe_groupgemm_w4a8(q_a1_all, 
@@ -212,26 +212,26 @@ def fused_experts_impl_w4a8_ep_correctness(hidden_states,weight13, weight2, w13_
     # import pdb
     # pdb.set_trace()
     # gemm2
-    # moe_groupgemm_w4a8(act_out_q, 
-    #                     weight2, 
-    #                     gemm2_out_cuda,
-    #                     act_out_s, 
-    #                     w2_scale,
-    #                     tensor_problem_size, 
-    #                     tensor_expert_offsets,
-    #                     problem_size_max,
-    #                     config2)
-    # if not (torch.allclose(expert_output, gemm2_out_cuda, rtol=1e-2, atol=1e-2)):
-    #     print("error moe_groupgemm_w4a8 gemm2 精度检查不合格！！！")
-    #     # torch.set_printoptions(profile="full")  
-    #     # fasm = open('asm_output.txt', 'w')   
-    #     # print(f'asm_output: {out_cuda}', file=fasm)
-    #     # fasm.close
-    #     # ftorch = open('torch_output.txt', 'w')   
-    #     # print(f'torch_output: {inter_out_gemm1_out_ref}', file=ftorch)
-    #     # ftorch.close
-    # else:
-    #     print("success moe_groupgemm_w4a8 gemm2 精度检查合格")
+    moe_groupgemm_w4a8(act_out_q, 
+                        weight2, 
+                        gemm2_out_cuda,
+                        act_out_s, 
+                        w2_scale,
+                        tensor_problem_size, 
+                        tensor_expert_offsets,
+                        problem_size_max,
+                        config2)
+    if not (torch.allclose(expert_output, gemm2_out_cuda, rtol=1e-2, atol=1e-2)):
+        print("error moe_groupgemm_w4a8 gemm2 精度检查不合格！！！")
+        # torch.set_printoptions(profile="full")  
+        # fasm = open('asm_output.txt', 'w')   
+        # print(f'asm_output: {out_cuda}', file=fasm)
+        # fasm.close
+        # ftorch = open('torch_output.txt', 'w')   
+        # print(f'torch_output: {inter_out_gemm1_out_ref}', file=ftorch)
+        # ftorch.close
+    else:
+        print("success moe_groupgemm_w4a8 gemm2 精度检查合格")
     
     return expert_output
 
@@ -298,7 +298,7 @@ def main():
             raise ValueError(f"无法解析列表参数: {list_str}。错误: {str(e)}")
     
     
-    m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096]
+    m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]
     # m_list=[1024]
     E=args.E 
     out_dtype=args.out_dtype
