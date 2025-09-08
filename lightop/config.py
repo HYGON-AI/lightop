@@ -322,8 +322,8 @@ def get_moe_cuda_marlin_config_w4a8(
         mode1 = gemm1_config['MODE']
         mode2 = gemm2_config['MODE']
         if mode1 >= 1000 or mode2 >= 1000:
-            co_file1 = f"moe_w4a8_channel/moe_w4a8_128x256x128_TN_{str(dtype).upper()}_FirstStage.co"
-            co_file2 = f"moe_w4a8_channel/moe_w4a8_128x256x128_TN_{str(dtype).upper()}_SecondStage.co"
+            co_file1 = f"moe_w4a8_channel/moe_w4a8_marlin_128x512x128_TN_{str(dtype).upper()}_FirstStage.co"
+            co_file2 = f"moe_w4a8_channel/moe_w4a8_marlin_128x512x128_TN_{str(dtype).upper()}_SecondStage.co"
             LIGHTOP_ASM_DIR = os.environ["LIGHTOP_ASM_DIR"]
             path_co_file1 = LIGHTOP_ASM_DIR + co_file1
             path_co_file2 = LIGHTOP_ASM_DIR + co_file2

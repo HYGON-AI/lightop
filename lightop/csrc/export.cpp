@@ -58,6 +58,7 @@ Tensor gemm_w8a8_smooth_asm(Tensor &A, Tensor &B, Tensor &As, Tensor &Bs, const 
 Tensor gemm_w8a8_asm(Tensor &A, Tensor &B, Tensor &As, Tensor &Bs, c10::optional<Tensor> &C, c10::optional<Tensor> &D_, c10::optional<Tensor> bias, torch::Dtype output_dtype, int M, int N, int K, int gradType = 0);
 Tensor moe_w8a8_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, std::optional<Tensor> topk_weights, Tensor sorted_token_ids, Tensor expert_ids, Tensor num_tokens_post_pad, uint32_t top_k, int mode, int delta);
 Tensor moe_w4a8_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, std::optional<Tensor> topk_weights, Tensor sorted_token_ids, Tensor expert_ids, Tensor num_tokens_post_pad, uint32_t top_k, int mode);
+Tensor moe_w4a8_marlin_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, std::optional<Tensor> topk_weights, Tensor sorted_token_ids, Tensor expert_ids, Tensor num_tokens_post_pad, uint32_t top_k, int mode);
 Tensor moe_marlin_w4a16(torch::Tensor& a, 
                         std::optional<torch::Tensor> const& c_or_none,
                         torch::Tensor& b_q_weight, 
@@ -85,7 +86,7 @@ Tensor awq_marlin_repack(torch::Tensor& b_q_weight, int64_t size_k, int64_t size
 Tensor moe_marlin_w4a8(
                         torch::Tensor& a_q, 
                         torch::Tensor& a_scales, 
-                        std::optional<torch::Tensor> const& c_or_none,
+                        torch::Tensor& c,
                         torch::Tensor& b_q_weight, 
                         torch::Tensor& b_scales,
                         torch::Tensor& workspace, 
@@ -93,10 +94,9 @@ Tensor moe_marlin_w4a8(
                         torch::Tensor& sorted_token_ids, 
                         torch::Tensor& expert_ids,
                         torch::Tensor& num_tokens_past_padded, 
-                        torch::Tensor& topk_weights,
+                        std::optional<torch::Tensor> topk_weights,
                         int64_t moe_block_size, 
                         int64_t top_k, 
-                        bool mul_topk_weights, 
                         bool is_ep,
                         int64_t size_m, 
                         int64_t size_n,
@@ -139,7 +139,13 @@ void store_kv_cache(torch::Tensor packed_qkv,torch::Tensor& K_cache,torch::Tenso
 void store_kv_cache_paged(const torch::Tensor& key, const torch::Tensor& value,torch::Tensor& K_cache, torch::Tensor& V_cache,const torch::Tensor& q_lens, const torch::Tensor& accum_q_lens,
                           const torch::Tensor& cache_lens, const torch::Tensor& block_table,const torch::Tensor& k_scale, const torch::Tensor& v_scale,const std::string& kv_cache_dtype_str);
 
-void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::Tensor& token_expert_indices,torch::Tensor& gating_output, const std::string& renormalize = "false");             
+void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::Tensor& token_expert_indices,torch::Tensor& gating_output, const std::string& renormalize = "false");
+void rotary_embedding_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox);    
+void moe_align_block_size(torch::Tensor topk_ids, int64_t num_experts,int64_t block_size, torch::Tensor sorted_token_ids,torch::Tensor experts_ids,torch::Tensor num_tokens_post_pad);
+Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b);          
+
+std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor);
+
 }
 }
 
@@ -223,10 +229,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gemm_w8a8_asm", &at::native::gemm_w8a8_asm, "gemm_w8a8_block_asm");
   m.def("moe_w8a8_asm", &at::native::moe_w8a8_asm, "moe_w8a8_asm");
   m.def("moe_w4a8_asm", &at::native::moe_w4a8_asm, "moe_w4a8_asm");
+  m.def("moe_w4a8_marlin_asm", &at::native::moe_w4a8_marlin_asm, "moe_w4a8_marlin_asm");
   m.def("moe_marlin_w4a16", &at::native::moe_marlin_w4a16, "moe_marlin_w4a16");
   m.def("moe_marlin_w4a8", &at::native::moe_marlin_w4a8, "moe_marlin_w4a8");
   m.def("awq_marlin_repack", &at::native::awq_marlin_repack, "awq_marlin_repack");
   m.def("blockwise_scaled_cast_transpose", &at::native::blockwise_scaled_cast_transpose, "blockwise_scaled_cast_transpose");
   m.def("rms_norm_dynamic_per_token_quant",&at::native::rms_norm_dynamic_per_token_quant,"rms_norm_dynamic_per_token_quant");
+  m.def("moe_align_block_size",&at::native::moe_align_block_size,"moe_align_block_size");
+  m.def("rotary_embedding_fuse", &at::native::rotary_embedding_fuse, "rotary_embedding_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"));
+  m.def("groupgemm",&at::native::groupgemm,"groupgemm");
+  m.def("moe_fused_gate",&at::native::moe_fused_gate,"moe_fused_gate");
 }
 

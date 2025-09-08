@@ -5,7 +5,6 @@ from typing import Optional
 
 import torch
 import lightop
-import marlin
 
 import vllm._custom_ops as ops
 from vllm.model_executor.layers.fused_moe.fused_moe import moe_align_block_size
@@ -13,7 +12,7 @@ from vllm.model_executor.layers.fused_moe.fused_moe import moe_align_block_size
 from lmslim.layers.gemm.int8_utils import (
    per_token_group_quant_int8, per_token_quant_int8)
 
-from lightop import moe_gemm_w4a8, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8
+from lightop import moe_gemm_marlin_w4a8,moe_gemm_w4a8, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8
 
 from vllm.platforms import current_platform
 device_name = current_platform.get_device_name().replace(" ", "_")
@@ -95,13 +94,14 @@ def fused_marlin_moe(
     end_event = torch.cuda.Event(enable_timing=True)
     start_event.record()
 
-    lightop.moe_gemm_w4a8(
+    
+    moe_gemm_marlin_w4a8(
                             a_1,
                             w1,
                             intermediate_cache1,
                             a_1_scale,
                             w1_scale,
-                            topk_weights,
+                            None,
                             sorted_token_ids,
                             expert_ids,
                             num_tokens_post_padded,
@@ -110,7 +110,6 @@ def fused_marlin_moe(
                             global_reduce_buffer,
                             config_marlin_0
                         )
-
     end_event.record()
     end_event.synchronize()
     gemm1_time_us = start_event.elapsed_time(end_event) * 1000
@@ -125,7 +124,7 @@ def fused_marlin_moe(
     torch.cuda.synchronize()
     start_event.record()
     
-    lightop.moe_gemm_w4a8(
+    moe_gemm_marlin_w4a8(
                             a_2,
                             w2,
                             intermediate_cache3, # [M * topk, K]  [32*8, 7168]

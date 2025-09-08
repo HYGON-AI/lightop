@@ -154,31 +154,31 @@ def check_accuracy(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: Optional[
     x_copy = copy.deepcopy(x)
     with torch.no_grad():
         # 统一用 float32 比较
-        ref_out, ref_scales = ops.rms_norm_dynamic_per_token_quant(
-            x.to(torch.float32),
-            rms_norm_layer.weight.to(torch.float32),
-            1e-6,
-            torch.int8,
-            residual=residual.to(torch.float32) if residual is not None else None
-        )
+        # test_out, test_scales = ops.rms_norm_dynamic_per_token_quant(
+        #     x.to(torch.float32),
+        #     rms_norm_layer.weight.to(torch.float32),
+        #     1e-6,
+        #     torch.int8,
+        #     residual=residual.to(torch.float32) if residual is not None else None
+        # )
 
         test_out, test_scales = rms_norm_dynamic_per_token_quant(
-            x_copy.to(torch.float32),
-            rms_norm_layer_copy.weight.to(torch.float32),
+            x_copy,
+            rms_norm_layer_copy.weight,
             1e-6,
             torch.int8,
-            residual=residual_copy.to(torch.float32) if residual_copy is not None else None
+            residual=residual_copy if residual_copy is not None else None
         )
         
         #unfused int8
-        # torch_out = None
-        # if residual is None:
-        #     torch_out = rms_norm_layer.forward_cuda(x, residual)
-        # else:
-        #     torch_out, _ = rms_norm_layer.forward_cuda(x, residual)
-
-        # # Quant
-        # test_out, _, _ = ops.scaled_int8_quant(torch_out)
+        torch_out = None
+        if residual is None:
+            torch_out = rms_norm_layer.forward_cuda(x, residual)
+        else:
+            torch_out, _ = rms_norm_layer.forward_cuda(x, residual)
+        torch_out_copy=copy.deepcopy(torch_out)
+        # Quant
+        ref_out, ref_scales, _ = ops.scaled_int8_quant(torch_out)
 
         # if residual is not None:
         #     ref_out_f = ref_residual.to(torch.float32)
@@ -232,7 +232,11 @@ def bench(params: bench_params_t, label: str, sub_label: str):
 
     scale = 1 / params.hidden_size
     x = torch.randn(params.num_tokens, params.hidden_size, dtype=params.dtype, device='cuda') * scale
+    # x = torch.load("hidden_state_1241.pt")
+    # residual = torch.load("residual_38.pt")
     residual = (torch.randn_like(x) * scale) if params.add_residual else None
+    # import pdb
+    # pdb.set_trace()
 
     # 精度验证（可选）
     max_diff, mean_diff, rel_err = check_accuracy(layer, x, residual)

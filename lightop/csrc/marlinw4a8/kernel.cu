@@ -1,17 +1,10 @@
 #include "marlin.h"
 
-using intx4 = __attribute__((__vector_size__(4 * sizeof(int)))) int;
-using bhalf_t = __hip_bfloat16;
 
 namespace at {
 namespace native {
 namespace marlin_moe_w4a8{
 
-  using FragA = Vec<int8_t, 8>; // 计算时 参与一次mmac运算的 A矩阵 向量数据类型 
-  using FragB = Vec<int8_t, 8>; // 计算时 参与一次mmac运算的 B矩阵 向量数据类型 
-  using FragC = Vec<int32_t, 4>; // mmac的结果 4 个 int32
-  using FragS_CHANNEL = Vec<float, 2>; // weight per-channel quantization scales or activaton per-token quantization scales
-  
   __device__ inline void mmac_bw_int8(
                                       const FragA& frag_a,
                                       const FragB& frag_b,
@@ -42,12 +35,6 @@ namespace marlin_moe_w4a8{
       int val = 1;
       atomicAdd(lock, val);
     }
-  }
-
-  static __device__ inline uint16_t f32_to_bf16(float f){
-      uint32_t u = *(uint32_t*)(&f);
-      u += 0x7fff + ((u >> 16) & 1); 
-      return u>>16;
   }
 
   template <
@@ -279,6 +266,7 @@ namespace marlin_moe_w4a8{
     FragA frag_a[2][thread_m_blocks]; // Vec<int8_t, 8>;   frag_a[2][1]
     I4 frag_b_quant[stages][b_sh_wr_iters]; // I4 = Vec<int, 4>;   frag_b_quant[2][2]
     FragC frag_c[thread_m_blocks][4]; // FragC = Vec<int32_t, 4>; 存储每个线程 mmac 计算之后的结果
+    FragC_fp32 frag_c_fp32[thread_m_blocks][4]; // FragC = Vec<int32_t, 4>; 存储每个线程 mmac 计算之后的结果
 
     FragS_CHANNEL frag_s1[thread_m_blocks]; // A_scale
     FragS_CHANNEL frag_s2[2][4];  // B_scale
@@ -572,15 +560,13 @@ namespace marlin_moe_w4a8{
       constexpr int c_sh_rd_delta = c_sh_stride * (threads / (2 * thread_n_blocks));
 
       // 写回之前，先乘 a_scale 和 b_scale
-      auto write = [&](int idx, int c_int, float a_scale, int b_scale_idx) { // 在 sh_red 的 idx 索引处插入 float转成的 fp16
+      auto write = [&](int idx, float c_fp32, int b_scale_idx) { // 在 sh_red 的 idx 索引处插入 float转成的 fp16
         // 先 load B_scale 到 vgpr 中
         int cur_b_scale_idx =  B_scale_off + slice_col * (thread_n_blocks * 16) + b_scale_idx;
         float b_scale = B_scales[cur_b_scale_idx];
-        // 反量化成 fp32
-        float c_float =  c_int * a_scale * b_scale;
-        // float c_float =  c_int * 1.0;
-        // 转成 bf16 然后写入 LDS 中
-        // ((bhalf_t*)sh_red)[idx] = __float2bfloat16(c_float);
+        // 反量化
+        float c_float =  c_fp32 * b_scale;
+        // 转成 bf16
         ((bhalf_t*)sh_red)[idx] = f32_to_bf16(c_float);
       };
       
@@ -610,9 +596,22 @@ namespace marlin_moe_w4a8{
           if(cur_a_scale_idx < block_num_valid_tokens){
             int cur_a_scale_idx_0 = sh_block_sorted_ids[cur_a_scale_idx] / top_k;
             cur_a_scale_val = A_scales[cur_a_scale_idx_0];
+            // gemm2 先乘 topk_weight 
             if(mul_topk_weights){
-              float cur_topk_weight = sh_block_topk_weights[cur_a_scale_idx];
-              cur_a_scale_val = cur_a_scale_val * cur_topk_weight;
+              float topk_weight_val = sh_block_topk_weights[cur_a_scale_idx];
+              for (int i = 0; i < 4; i++){
+                frag_c_fp32[b_blocks_idx][i][0] = frag_c[b_blocks_idx][i][0] * topk_weight_val * cur_a_scale_val;
+                frag_c_fp32[b_blocks_idx][i][1] = frag_c[b_blocks_idx][i][1] * topk_weight_val * cur_a_scale_val;
+                frag_c_fp32[b_blocks_idx][i][2] = frag_c[b_blocks_idx][i][2] * topk_weight_val * cur_a_scale_val;
+                frag_c_fp32[b_blocks_idx][i][3] = frag_c[b_blocks_idx][i][3] * topk_weight_val * cur_a_scale_val;
+              }
+            }else{
+              for (int i = 0; i < 4; i++){
+                frag_c_fp32[b_blocks_idx][i][0] = frag_c[b_blocks_idx][i][0] * cur_a_scale_val;
+                frag_c_fp32[b_blocks_idx][i][1] = frag_c[b_blocks_idx][i][1] * cur_a_scale_val;
+                frag_c_fp32[b_blocks_idx][i][2] = frag_c[b_blocks_idx][i][2] * cur_a_scale_val;
+                frag_c_fp32[b_blocks_idx][i][3] = frag_c[b_blocks_idx][i][3] * cur_a_scale_val;
+              } 
             }
           }
 
@@ -623,10 +622,10 @@ namespace marlin_moe_w4a8{
             int wr = c_sh_wr + j;
             int cur_b_scale_idx = b_scale_idx_base + j;
           
-            write(wr +  0, frag_c[b_blocks_idx][j][0], cur_a_scale_val, cur_b_scale_idx +  0);
-            write(wr + 16, frag_c[b_blocks_idx][j][1], cur_a_scale_val, cur_b_scale_idx + 16);
-            write(wr + 32, frag_c[b_blocks_idx][j][2], cur_a_scale_val, cur_b_scale_idx + 32);
-            write(wr + 48, frag_c[b_blocks_idx][j][3], cur_a_scale_val, cur_b_scale_idx + 48); 
+            write(wr +  0, frag_c_fp32[b_blocks_idx][j][0], cur_b_scale_idx +  0);
+            write(wr + 16, frag_c_fp32[b_blocks_idx][j][1], cur_b_scale_idx + 16);
+            write(wr + 32, frag_c_fp32[b_blocks_idx][j][2], cur_b_scale_idx + 32);
+            write(wr + 48, frag_c_fp32[b_blocks_idx][j][3], cur_b_scale_idx + 48); 
           }
         }
         __syncthreads();
