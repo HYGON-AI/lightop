@@ -227,6 +227,34 @@ namespace native{
         }
     }
 
+    template<typename T, int VEC = 8>
+    __global__ void __launch_bounds__(1024) unpermute_with_probs_kernel_fast(
+        const T* permuted_tokens,       // [num_selected_tokens, hidden_size]
+        T* output_tokens,              // [num_tokens, hidden_size]
+        const int* sorted_indices,     // [num_selected_tokens]
+        const T* permuted_probs,       // [num_selected_tokens]
+        const int hidden_size,
+        const int num_tokens,
+        const int num_selected_tokens
+    ) {
+        int permuted_token_idx = blockIdx.x;
+        int tid = threadIdx.x;
+
+        using vec_T = __attribute__((__vector_size__(VEC * sizeof(uint16_t)))) unsigned short;
+     
+        T prob_weight = permuted_probs[permuted_token_idx];
+        int dst_token_idx = sorted_indices[permuted_token_idx];
+        for(int i = tid * VEC; i < hidden_size; i += blockDim.x * VEC) {
+            vec_T permuted_tokens_vec = *(vec_T*)(&permuted_tokens[permuted_token_idx * hidden_size + i]);
+            T* permute_tokens_T = (T*)(&permuted_tokens_vec);
+            #pragma unroll
+            for(int j = 0; j < VEC; j++) {
+                permute_tokens_T[j] = permute_tokens_T[j] * prob_weight;
+                atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]); //todo bf16的原子加优化
+            }
+        }
+    }
+
     // CUDA kernel for unpermuting tokens
     template<typename T>
     __global__ void unpermute_tokens_kernel(
@@ -405,7 +433,17 @@ namespace native{
             );
           
             // Unpermute with probabilities  
-            unpermute_with_probs_kernel<scalar_t><<<grid, block, 0, stream>>>(
+            // unpermute_with_probs_kernel<scalar_t><<<grid, block, 0, stream>>>(
+            //     (scalar_t*)permuted_tokens.data_ptr(),
+            //     (scalar_t*)output_tokens.data_ptr(),
+            //     sorted_indices_int.data_ptr<int>(),
+            //     (scalar_t*)permuted_probs.data_ptr(),
+            //     hidden_size,
+            //     num_tokens,
+            //     num_selected_tokens
+            // );
+
+            unpermute_with_probs_kernel_fast<scalar_t, 8><<<num_selected_tokens, 512, 0, stream>>>(
                 (scalar_t*)permuted_tokens.data_ptr(),
                 (scalar_t*)output_tokens.data_ptr(),
                 sorted_indices_int.data_ptr<int>(),
