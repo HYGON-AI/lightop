@@ -22,6 +22,12 @@ print(output)
 print("addgroupnorm-----------------------\n")
 
 
+output = lightop.miopen_groupnorm_backward(input, num_groups = 2, epsilon=0.00001, mode=0, use_meaninvar=1)
+torch.cuda.synchronize()
+print(output)
+
+print("miopen_backward----------------------\n")
+
 input = torch.randn(3, 512, 128, 128).cuda().half()
 group_norm = miopenGroupNorm(2, 512, 0).cuda().half()
 group_norm(input)
