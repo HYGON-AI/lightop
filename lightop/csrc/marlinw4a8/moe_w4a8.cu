@@ -131,27 +131,27 @@ void marlin_mm_bf16_per_channel(
                                                               global_reduce_buffer_int4
                                                             );   
         break;
-      // case 5: // 80-256-128
-      //   max_shared_mem = 21120;
-      //   Marlin_256_128<512, 5, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
-      //                                                         A_ptr, 
-      //                                                         A_scales_ptr, 
-      //                                                         B_ptr, 
-      //                                                         B_scales_ptr,
-      //                                                         C_ptr, 
-      //                                                         sorted_token_ids_ptr, 
-      //                                                         expert_ids_ptr, 
-      //                                                         num_tokens_past_padded_ptr,
-      //                                                         topk_weights_ptr, 
-      //                                                         top_k, 
-      //                                                         mul_topk_weights, 
-      //                                                         prob_m,
-      //                                                         prob_n, 
-      //                                                         prob_k,
-      //                                                         locks,
-      //                                                         global_reduce_buffer_int4
-      //                                                       );   
-      //   break;
+      case 5: // 80-256-128
+        max_shared_mem = 21120;
+        Marlin_256_128<512, 5, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                              A_ptr, 
+                                                              A_scales_ptr, 
+                                                              B_ptr, 
+                                                              B_scales_ptr,
+                                                              C_ptr, 
+                                                              sorted_token_ids_ptr, 
+                                                              expert_ids_ptr, 
+                                                              num_tokens_past_padded_ptr,
+                                                              topk_weights_ptr, 
+                                                              top_k, 
+                                                              mul_topk_weights, 
+                                                              prob_m,
+                                                              prob_n, 
+                                                              prob_k,
+                                                              locks,
+                                                              global_reduce_buffer_int4
+                                                            );   
+        break;
       // case 8: // 128-256-128
       //   max_shared_mem = 33792;
       //   Marlin_256_128<512, 8, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
