@@ -119,6 +119,7 @@ std::vector<Tensor> miopen_add_rms_norm_dynamic_quant(const Tensor &x, const Ten
 std::vector<Tensor> miopen_rms_norm_dynamic_quant_without_residual(const Tensor &x, const Tensor &weight, const Tensor &smoothScale, const float epsilon);
 Tensor miopen_head_rms_norm(const Tensor &x, const Tensor &weight, const float epsilon, const int norm_head_start, const int norm_head_end, const int norm_head_num);
 std::vector<Tensor> miopen_groupnorm(const Tensor &x, const Tensor &weight, const Tensor &bias, const int num_groups, const float epsilon, const int mode);
+std::vector<Tensor> miopen_groupnorm_backward(const Tensor &x, const int num_groups, const float epsilon, const int mode, const int use_meaninvar);
 std::vector<Tensor> miopen_add_groupnorm(const Tensor &x1, const Tensor &x2, const Tensor &weight, const Tensor &bias, const int num_groups, const float epsilon, const int mode);
 std::vector<Tensor> miopen_layernorm(const Tensor &x, const Tensor &weight, const Tensor &bias, const float epsilon, const int normalized_dim, const int mode);
 std::vector<Tensor> miopen_add_layernorm(const Tensor &x1, const Tensor &x2, const Tensor &weight, const Tensor &bias, const float epsilon, const int normalized_dim, const int mode);
@@ -213,6 +214,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("miopen_rms_norm_dynamic_quant_without_residual", &at::native::miopen_rms_norm_dynamic_quant_without_residual, "rms_norm_dynamic_quant_without_residual");
   m.def("miopen_head_rms_norm", &at::native::miopen_head_rms_norm, "head_rms_norm");
   m.def("miopen_groupnorm", &at::native::miopen_groupnorm, "groupnorm");
+  m.def("miopen_groupnorm_backward", &at::native::miopen_groupnorm_backward, "groupnorm_backward");
   m.def("miopen_add_groupnorm", &at::native::miopen_add_groupnorm, "add_groupnorm");
   m.def("miopen_layernorm", &at::native::miopen_layernorm, "layernorm");
   m.def("miopen_add_layernorm", &at::native::miopen_add_layernorm, "add_layernorm");
