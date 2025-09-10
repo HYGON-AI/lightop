@@ -311,6 +311,10 @@ def awq_marlin_repack(b_q_weight: torch.Tensor, size_k: int, size_n: int, num_bi
     output = op.awq_marlin_repack(b_q_weight, size_k, size_n, num_bits)
     return output
 
+def awq_marlin_repack_w4a8(b_q_weight: torch.Tensor, marlin_weight: torch.Tensor, size_batch:int, size_k: int, size_n: int) -> torch.Tensor:
+    output = op.awq_marlin_repack_w4a8(b_q_weight, marlin_weight, size_batch, size_k, size_n)
+    return output
+
 
 def groupgemm(a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor, trans_b: bool = False) -> torch.Tensor:
     outs = op.groupgemm(a, b, batch_sizes, trans_b)
