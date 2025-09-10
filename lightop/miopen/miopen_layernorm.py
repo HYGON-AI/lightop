@@ -18,9 +18,10 @@ def miopen_layernorm(x, weight, bias, epsilon: float = 1e-5, normalized_dim: int
                                     1: MIOPEN_WEIGHT_BIAS [具有可学习参数的weights和bias] )
 
     Returns:
-        vector<Tensor>: 返回 yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
-                            meanDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
-                            rstdDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
+        vector<Tensor>: 
+            yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
+            meanDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
+            rstdDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
     """
     return op.miopen_layernorm(x, weight, bias, epsilon, normalized_dim, mode)
 
@@ -40,9 +41,10 @@ def miopen_add_layernorm(x1, x2, weight, bias, epsilon: float = 1e-5, normalized
                                     1: MIOPEN_WEIGHT_BIAS [具有可学习参数的weights和bias] )
 
     Returns:
-        vector<Tensor>: 返回 yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
-                            meanDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
-                            rstdDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
+        vector<Tensor>: 
+            yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
+            meanDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
+            rstdDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
     """
     return op.miopen_add_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode)
 
@@ -62,10 +64,11 @@ def miopen_skip_layernorm(x1, x2, weight, bias, epsilon: float = 1e-5, normalize
                                     1: MIOPEN_WEIGHT_BIAS [具有可学习参数的weights和bias] )
 
     Returns:
-        vector<Tensor>: 返回 yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
-                            skipDesc, 形状为 [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
-                            meanDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
-                            rstdDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
+        vector<Tensor>: 
+            yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
+            skipDesc, 形状为 [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
+            meanDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
+            rstdDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
     """
     return op.miopen_skip_layernorm(x1, x2, weight, bias, epsilon, normalized_dim, mode)
 
@@ -85,6 +88,12 @@ class miopenLayerNorm(torch.nn.Module):
             bias (bool, optional): 是否具有偏置项. 默认为 True.
             device (_type_, optional): 设备类型. 默认为 None.
             dtype (_type_, optional): 数据类型. 默认为 None.
+            
+        Returns:
+        vector<Tensor>: 
+            yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
+            meanDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
+            rstdDesc, 形状为 [1] (normalized_dim = 0) 或 [{x.size().begin(), x.size().end() - (x.size()-normalized_dim)}] (normalized_dim != 0)
         """
         super(miopenLayerNorm, self).__init__()
         factory_kwargs = {"device": device, "dtype": dtype}
