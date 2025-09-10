@@ -134,6 +134,7 @@ Tensor groupgemm_unpermute(const Tensor& permuted_tokens, const Tensor& sorted_i
 std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor);
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales);
+void moe_sum(torch::Tensor& input,torch::Tensor& output);   
 }
 }
 
@@ -213,4 +214,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("groupgemm_unpermute",&at::native::groupgemm_unpermute,"groupgemm_unpermute");
   m.def("moe_fused_gate",&at::native::moe_fused_gate,"moe_fused_gate");
   m.def("fuse_silu_mul_quant",&at::native::fuse_silu_mul_quant,"fuse_silu_mul_quant");
+    m.def("moe_sum",&at::native::moe_sum,"moe_sum");
 }
