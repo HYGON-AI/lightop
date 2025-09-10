@@ -22,3 +22,8 @@ dist/*
 */.triton/
 run.sh
 .vscode/*
+**/*.xlsx
+**/__pycache__/
+**/*.log
+**/*.txt
+test/**/*.json
