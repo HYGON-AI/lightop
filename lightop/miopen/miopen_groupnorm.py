@@ -51,8 +51,26 @@ def miopen_add_groupnorm(x1, x2, weight, bias, num_groups, epsilon: float = 1e-5
     return op.miopen_add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode)
 
 
-def miopen_groupnorm_backward(x, num_groups, epsilon: float = 1e-5, mode: int =0, use_meaninvar: int = 1):
-    return op.miopen_groupnorm_backward(x, num_groups, epsilon, mode, use_meaninvar)
+def miopen_groupnorm_backward(x, dy, weight, mean, rstd, num_groups, epsilon: float = 1e-5, mode: int =0):
+    """_summary_
+
+    Args:
+        x (Tensor): _description_
+        dy (Tensor): _description_
+        weight (Tensor): _description_
+        mean (Tensor): _description_
+        rstd (Tensor): _description_
+        num_groups (int): _description_
+        epsilon (float, optional): _description_. Defaults to 1e-5.
+        mode (int, optional): _description_. Defaults to 0.
+
+    Returns:
+        vector<Tensor>:
+            dx: 形状与x相同
+            dscale: 形状 [x[0]*x[1], 1, ,1 ,1]
+            dbias: 形状 [x[0]*x[1], 1, ,1 ,1]
+    """
+    return op.miopen_groupnorm_backward(x, dy, weight, mean, rstd, num_groups, epsilon, mode)
 
 class miopenGroupNorm(torch.nn.Module):
     def __init__(self, num_groups: int, num_channels: int, mode: int, eps: float = 1e-5, device=None, dtype=None):
