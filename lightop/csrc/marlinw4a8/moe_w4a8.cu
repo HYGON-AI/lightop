@@ -6,7 +6,7 @@
 // 8warp 取消归约 复用 sorted_token_id
 #include "kernel_256_128.cu"
 #include "kernel_512_64.cu"
-
+#include "awq_marlin_repack_w4a8.cu"
 #include <torch/extension.h>
 #include <iostream>
 
@@ -353,6 +353,46 @@ torch::Tensor moe_marlin_w4a8(
   return c;
 
 } // end moe_marlin_w4a8
+
+// uint4 [32, 64] 大小的重排
+torch::Tensor awq_marlin_repack_w4a8(torch::Tensor& b_q_weight,  
+                                    torch::Tensor& marlin_weight, 
+                                    int64_t size_batch, 
+                                    int64_t size_k, 
+                                    int64_t size_n
+                                  ){
+  // Verify compatibility with marlin tile of 16x128
+  TORCH_CHECK(size_k % 32 == 0, "size_k = ", size_k,
+              " is not divisible by tile_k_size = ", 32); // K维度 必须是 32 的倍数
+  TORCH_CHECK(size_n % 64 == 0, "size_n = ", size_n,
+              " is not divisible by tile_n_size = ", 64); // N维度 必须是 64 的倍数
+
+  // Verify device and strides
+  TORCH_CHECK(b_q_weight.device().is_cuda(), "b_q_weight is not on GPU");
+  TORCH_CHECK(b_q_weight.is_contiguous(), "b_q_weight is not contiguous");
+
+  uint8_t const* b_q_weight_ptr = reinterpret_cast<uint8_t const*>(b_q_weight.data_ptr());
+  uint32_t* marlin_weight_ptr = reinterpret_cast<uint32_t*>(marlin_weight.data_ptr());
+
+  // Get dev info
+  int dev = b_q_weight.get_device();
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream(dev);
+
+  dim3 gridDim;
+  gridDim.x = size_batch; // 有几个专家矩阵需要处理
+  gridDim.y = size_k / 32; // 专家矩阵的K维度 包含 [32, 64]数据块的数目
+  gridDim.z = size_n / 64; // 专家矩阵的N维度 包含 [32, 64]数据块的数目
+
+  // // 不用 LDS
+  at::native::marlin_moe_w4a8::awq_marlin_w4a8_repack_kernel<256, 4><<<gridDim, 256, 0, stream>>>(
+                                                                  b_q_weight_ptr,
+                                                                  marlin_weight_ptr, 
+                                                                  size_batch,
+                                                                  size_k, 
+                                                                  size_n
+                                                                  );
+  return marlin_weight;
+}
 
 } // end native 
 } // end at
