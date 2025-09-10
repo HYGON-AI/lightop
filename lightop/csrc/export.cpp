@@ -127,8 +127,10 @@ void moe_align_block_size(torch::Tensor topk_ids, int64_t num_experts,int64_t bl
 
 //------------------------------------------------- groupgemm ---------------------------------------//
 Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b);    
-std::tuple<Tensor, Tensor, Tensor, Tensor, Tensor> groupgemm_permute(const Tensor& tokens, const Tensor& routing_map);
-Tensor groupgemm_unpermute(const Tensor& permuted_tokens, const Tensor& sorted_indices, const std::vector<int64_t>& restore_shape, const Tensor& probs, const Tensor& routing_map, const Tensor& expert_m_count);      
+// std::tuple<Tensor, Tensor, Tensor, Tensor, Tensor> groupgemm_permute(const Tensor& tokens, const Tensor& routing_map);
+// Tensor groupgemm_unpermute(const Tensor& permuted_tokens, const Tensor& sorted_indices, const std::vector<int64_t>& restore_shape, std::optional<torch::Tensor> probs, std::optional<torch::Tensor> routing_map, const Tensor& expert_m_count);      
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> groupgemm_permute(const torch::Tensor& tokens, const torch::Tensor& routing_map);
+torch::Tensor groupgemm_unpermute(const torch::Tensor& permuted_tokens, const torch::Tensor& sorted_indices, const std::vector<int64_t>& restore_shape, std::optional<torch::Tensor> probs, std::optional<torch::Tensor> routing_map, const torch::Tensor& expert_m_count); 
 //------------------------------------------------- groupgemm ---------------------------------------//
 
 std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor);

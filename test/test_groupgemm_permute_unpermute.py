@@ -183,21 +183,19 @@ def _test_permutation_mask_map(
         
         # Test CUDA permutation
         #routing_map = routing_map.bool().T.contiguous()
-  
-        cuda_permute_output, cuda_sorted_indices, expert_m, expert_m_count, expert_m_max = groupgemm_permute(
+
+        # input [num_tokens, hidden_size]
+        # routing_map [num_token, num_experts]
+        cuda_permute_output, cuda_sorted_indices, expert_m_count = groupgemm_permute(
             pytorch_permute_fwd_input.detach(), routing_map
         )
-        
-        # import pdb
-        # pdb.set_trace()
-
 
         # Test CUDA unpermutation
         cuda_unpermute_output = groupgemm_unpermute(    
             cuda_permute_output, cuda_sorted_indices, list(restore_shape), probs, routing_map, expert_m_count
         )
 
-        
+        print("expert_m_count:", cuda_sorted_indices.size(0))
         # indices_close = torch.allclose(sorted_indices.float(), cuda_sorted_indices[0:8191].float())
         # Compare results
 
@@ -267,7 +265,6 @@ def _test_permutation_mask_map(
             start_time = time.time()
             for _ in range(num_trials):
                 cuda_permute_result = groupgemm_permute(pytorch_permute_fwd_input, routing_map)
-                #cuda_permute_output, cuda_sorted_indices, expert_m, expert_m_count, expert_m_max = groupgemm_permute(pytorch_permute_fwd_input, routing_map)
             torch.cuda.synchronize()
             cuda_permute_time = (time.time() - start_time) / num_trials
             
@@ -284,7 +281,7 @@ def _test_permutation_mask_map(
             # Use the results from permute operations for unpermute testing
             pytorch_tokens, pytorch_indices = pytorch_permute_result
             #cuda_tokens, cuda_indices = cuda_permute_result
-            cuda_tokens, cuda_indices, expert_m, expert_m_count, expert_m_max = cuda_permute_result
+            cuda_tokens, cuda_indices, expert_m_count = cuda_permute_result
             
             # Warmup for unpermute
             for _ in range(num_warmup):
@@ -333,32 +330,35 @@ def test_permutation_single_case():
     print("GPU:", torch.cuda.get_device_name(0))
 
     # num_tokens = 128  # 1 - 64k
-    num_expert = 8
+    num_expert = 256
     hidden_size = 7168 
-    topK = 2
+    topK = 8
     # num_out_tokens = num_tokens * topK - 1
     with_probs = True
     Benchmark = True
 
     dtype = torch.bfloat16
 
-    for num_tokens in [128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768]:
-        num_out_tokens = num_tokens * topK - 1
-        print("-----------------------------------------------------------------------------------")
-        print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
-        _test_permutation_mask_map(
-            num_tokens=num_tokens,
-            num_expert=num_expert,
-            hidden_size=hidden_size,
-            topK=topK,
-            num_out_tokens=num_out_tokens,
-            with_probs=with_probs,
-            dtype=dtype,
-            BENCHMARK=Benchmark,
-        )
+    # for num_tokens in [1, 2, 4, 8, 137, 139, 177, 200, 201, 202, 203, 204, 205, 677,512, 1024, 2048, 4096, 8192, 16384]:
+    #     num_out_tokens = num_tokens * topK - 1
+    #     print("-----------------------------------------------------------------------------------")
+    #     print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
+    #     _test_permutation_mask_map(
+    #         num_tokens=num_tokens,
+    #         num_expert=num_expert,
+    #         hidden_size=hidden_size,
+    #         topK=topK,
+    #         num_out_tokens=num_out_tokens,
+    #         with_probs=with_probs,
+    #         dtype=dtype,
+    #         BENCHMARK=Benchmark,
+    #     )
 
 
-    # for num_tokens in [16384]:
+
+    # with_probs = False
+    # print("------------------------------------with_probs = False------------------------------------")
+    # for num_tokens in [1, 2, 4, 8, 137, 139, 177, 200, 201, 202, 203, 204, 205, 677, 512, 1024, 2048, 4096, 8192, 16384]:
     #     num_out_tokens = num_tokens * topK - 1
     #     print("-----------------------------------------------------------------------------------")
     #     print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
@@ -372,6 +372,23 @@ def test_permutation_single_case():
     #         dtype=dtype,
     #         BENCHMARK=True,
     #     )
+
+    with_probs = True
+    print("------------------------------------with_probs = False------------------------------------")
+    for num_tokens in [200]:
+        num_out_tokens = num_tokens * topK
+        print("-----------------------------------------------------------------------------------")
+        print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
+        _test_permutation_mask_map(
+            num_tokens=num_tokens,
+            num_expert=num_expert,
+            hidden_size=hidden_size,
+            topK=topK,
+            num_out_tokens=num_out_tokens,
+            with_probs=with_probs,
+            dtype=dtype,
+            BENCHMARK=False,
+        )
 
 
 if __name__ == "__main__":
