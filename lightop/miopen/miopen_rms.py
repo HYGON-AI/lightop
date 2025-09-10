@@ -2,39 +2,20 @@ from lightop import op
 
 
 def miopen_add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon):
+    """_summary_
+    Args:
+        x (Tensor): hidden_states张量, 形状为 [num_tokens, hidden_size], bfloat16类型
+        x2 (Tensor): residual张量, 形状为 [num_tokens, hidden_size], bfloat16类型
+        weight (Tensor): 权值张量, 形状为 [hidden_size], bfloat16 or float32类型
+        smoothScale (Tensor): 缩放张量, 形状为 [hidden_size], bfloat16 or float32类型
+        
+    Returns:
+        vector<Tensor>:
+            after_res (Tensor): 形状为 [num_tokens, hidden_size], int8类型
+            y (Tensor): 形状为 [num_tokens, hidden_size], int8类型
+            per_token_scale (Tensor): 形状为 [num_tokens], float32类型
     """
-    (in) hidden_states
-        [num_tokens, hidden_size]
-        bfloat16
-
-    (in) residual
-        optional
-        [num_tokens, hidden_size]
-        bfloat16
-
-    (in) weight
-        [hidden_size]
-        bfloat16 or float32
-
-    (in) smooth_scale
-        [hidden_size]
-        bfloat16 or float32
-
-    (out) after_res
-        [num_tokens, hidden_size]
-        bfloat16
-
-    (out) y
-        [num_tokens, hidden_size]
-        int8
-
-    (out) per_token_scale
-        [num_tokens]
-        float32
-
-    (attr) epsilon
-        float32
-    """
+    
     return op.miopen_add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon)
 
 
@@ -48,9 +29,10 @@ def miopen_rms_norm_dynamic_quant_without_residual(x, weight, smoothScale, epsil
         epsilon (_tfloatype_): 用于稳定逆方差计算的值
 
     Returns:
-        vector<Tensor>: 返回 addDesc 形状为  [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
-                            yDesc 形状为 [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
-                            perTokenScaleDesc/rstdDesc 形状为 [N, C_in, H] (NCHW) 或 [N, C_in, D, H] (NCDHW)
+        vector<Tensor>: 
+            addDesc 形状为  [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
+            yDesc 形状为 [N, C_in, H, W] (NCHW) 或 [N, C_in, D, H, W] (NCDHW)
+            perTokenScaleDesc/rstdDesc 形状为 [N, C_in, H] (NCHW) 或 [N, C_in, D, H] (NCDHW)
 
     """
     return op.miopen_rms_norm_dynamic_quant_without_residual(x, weight, smoothScale, epsilon)

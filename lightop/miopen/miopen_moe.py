@@ -33,11 +33,12 @@ def miopen_moe_scatter_dynamic_quant(
         num_tokens (int):
 
     Returns:
-        vector<Tensor>: scatter_tokens, 形状为 [num_shared_experts * num_tokens_per_rank + num_tokens * topk, hidden_size]
-                        scatter_per_token_scale, 形状为 [num_shared_experts * num_tokens_per_rank + num_tokens * topk]
-                        scatter_tokens_offset, 形状为 [num_shared_experts * num_tokens_per_rank + num_tokens * topk]
-                        experts_token_count, 形状为 [shared_experts_per_rank + experts_per_rank]
-                        experts_token_start, 形状为 [shared_experts_per_rank + experts_per_rank]
+        vector<Tensor>: 
+            scatter_tokens, 形状为 [num_shared_experts * num_tokens_per_rank + num_tokens * topk, hidden_size]
+            scatter_per_token_scale, 形状为 [num_shared_experts * num_tokens_per_rank + num_tokens * topk]
+            scatter_tokens_offset, 形状为 [num_shared_experts * num_tokens_per_rank + num_tokens * topk]
+            experts_token_count, 形状为 [shared_experts_per_rank + experts_per_rank]
+            experts_token_start, 形状为 [shared_experts_per_rank + experts_per_rank]
     """
     return op.miopen_moe_scatter_dynamic_quant(
         hidden,
@@ -69,8 +70,9 @@ def miopen_moe_swiglu_dynamic_quant(scatter_tokens, smooth_scale, experts_tokens
         beta (float): _description_
 
     Returns:
-        vector<Tensor>:: y, 形状为 [num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens, hidden_size]
-                        per_token_scale, 形状为 [num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens]
+        vector<Tensor>:
+            y, 形状为 [num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens, hidden_size]
+            per_token_scale, 形状为 [num_shared_experts_per_rank * num_tokens_per_rank + allocated_tokens]
     """
     return op.miopen_moe_swiglu_dynamic_quant(
         scatter_tokens, smooth_scale, experts_tokens_count, exports_tokens_start, beta
