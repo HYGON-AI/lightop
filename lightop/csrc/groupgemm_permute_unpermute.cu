@@ -62,7 +62,7 @@ namespace native{
         for(int i = tid * VEC; i < num_tokens; i += VEC * blockDim.x) {
             boolVEC tmp_map = *(boolVEC*)(&map_ptr[i]);
             #pragma unroll
-            for(int j = 0; j < VEC; j++) {
+            for(int j = 0; j < VEC && i+j < num_tokens; j++) { //这里
                 if(tmp_map[j]) {
                     sum++;
                 }
@@ -115,7 +115,6 @@ namespace native{
             count_total[0] = sum;
             expert_m_max[0] = max;
         }
-        
     }
 
     template<int VEC = 16>
@@ -129,6 +128,7 @@ namespace native{
     ) {
         int tid = threadIdx.x;
         int offset_start = expert_m_count[blockIdx.x];
+        int offset_end = offset_start + expert_m[blockIdx.x];
         routing_map = routing_map + blockIdx.x*num_tokens;
         using bool_vec = __attribute__((__vector_size__(VEC * sizeof(uint8_t)))) uint8_t;
         
@@ -136,13 +136,16 @@ namespace native{
             bool_vec routing_map_vec = *(bool_vec*)(&routing_map[idx]);
 
             int prefix_count = offset_start;
-            for(int t = 0; t < idx; ++t){
+            for(int t = 0; t < idx; ++t){ 
                 if(routing_map[t])
                     prefix_count++;
             }
 
+            // if(prefix_count >= offset_end) //todo
+            //     return;
+
             #pragma unroll
-            for(int i = 0; i < VEC; i++) {
+            for(int i = 0; i < VEC && i+idx < num_tokens; i++) { //这里
                 if(routing_map_vec[i]) {
                     sorted_indices[prefix_count] = idx + i;
                     prefix_count++;
@@ -195,7 +198,7 @@ namespace native{
             }
 
             #pragma unroll
-            for(int i = 0; i < VEC; i++) {
+            for(int i = 0; i < VEC && i+idx < num_tokens; i++) { //这里
                 if(routing_map_vec[i]) {
                     int token_idx = (blockIdx.x*num_tokens + idx + i) % num_tokens;
                     permuted_probs[prefix_count] = probs[token_idx * num_experts + blockIdx.x];
@@ -252,13 +255,33 @@ namespace native{
             #pragma unroll
             for(int j = 0; j < VEC; j++) {
                 permute_tokens_T[j] = permute_tokens_T[j] * prob_weight;
-                //atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]); //todo bf16的原子加优化
-                // #ifdef __gfx936__
-                // __builtin_amdgcn_global_atomic_fadd_f32((float*)(output_tokens + dst_token_idx * hidden_size + i + j), (float)permute_tokens_T[j]);
-                // #else
-                // atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]);
-                // #endif
             }
+
+            #pragma unroll
+            for(int j = 0; j < VEC; j++){
+                atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]); //todo bf16的原子加优化
+            }
+        }
+    }
+
+    template<typename T, int VEC = 8>
+    __global__ void __launch_bounds__(1024) unpermute_tokens_kernel_fast(
+        const T* permuted_tokens,       // [num_selected_tokens, hidden_size]
+        T* output_tokens,              // [num_tokens, hidden_size]
+        const int* sorted_indices,     // [num_selected_tokens]
+        const int hidden_size,
+        const int num_tokens,
+        const int num_selected_tokens
+    ) {
+        int permuted_token_idx = blockIdx.x;
+        int tid = threadIdx.x;
+
+        using vec_T = __attribute__((__vector_size__(VEC * sizeof(uint16_t)))) unsigned short;
+     
+        int dst_token_idx = sorted_indices[permuted_token_idx];
+        for(int i = tid * VEC; i < hidden_size; i += blockDim.x * VEC) {
+            vec_T permuted_tokens_vec = *(vec_T*)(&permuted_tokens[permuted_token_idx * hidden_size + i]);
+            T* permute_tokens_T = (T*)(&permuted_tokens_vec);
 
             #pragma unroll
             for(int j = 0; j < VEC; j++){
@@ -333,7 +356,8 @@ namespace native{
         }
     }
 
-//----------------------------------------------------------------------------------------------------------python 接口--------------------------------------------------------------------------------------------------//
+//-----------------------------------------------------------------------------------------------------下发后的permute python 接口--------------------------------------------------------------------------------------------------//
+#if 0
     std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> groupgemm_permute(
         const torch::Tensor& tokens,
         const torch::Tensor& routing_map
@@ -414,7 +438,7 @@ namespace native{
         int num_selected_tokens = count_tensor.item<int>();
         auto sorted_indices = torch::zeros({num_selected_tokens}, 
                                          torch::TensorOptions().dtype(torch::kInt32).device(device));
-        sorted_indices_optimized_kernel<16><<<num_experts, 1024, 0, stream>>>(
+        sorted_indices_optimized_kernel<4><<<num_experts, 1024, 0, stream>>>(
             routing_map_bool.data_ptr<bool>(),
             sorted_indices.data_ptr<int>(),
             expert_m.data_ptr<int>(),
@@ -445,8 +469,10 @@ namespace native{
         const torch::Tensor& permuted_tokens,
         const torch::Tensor& sorted_indices,
         const std::vector<int64_t>& restore_shape,
-        const torch::Tensor& probs,
-        const torch::Tensor& routing_map,
+        //const torch::Tensor& probs,
+        //const torch::Tensor& routing_map,
+        std::optional<torch::Tensor> probs,
+        std::optional<torch::Tensor> routing_map,
         const torch::Tensor& expert_m_count
     ) {
         auto device = permuted_tokens.device();
@@ -465,24 +491,24 @@ namespace native{
         dim3 block(256);
         dim3 grid(num_selected_tokens, (hidden_size + block.x - 1) / block.x);
         
-        bool use_probs = probs.defined() && probs.numel() > 0;
+        //bool use_probs = probs.defined() && probs.numel() > 0;
+        bool use_probs = probs.has_value();
         
         if (use_probs) {
             // Need to permute probs first
-            TORCH_CHECK(routing_map.defined() && routing_map.numel() > 0, 
-                       "routing_map must be provided when using probs");
             
-            int num_experts = routing_map.size(1);
-            auto routing_map_bool = routing_map.to(torch::kBool).transpose(0, 1).contiguous();
+            int num_experts = routing_map.value().size(1);
+            auto routing_map_bool = routing_map.value().to(torch::kBool).transpose(0, 1).contiguous();
             
-            auto permuted_probs = torch::empty({num_selected_tokens}, probs.options());
+            auto permuted_probs = torch::empty({num_selected_tokens}, probs.value().options());
             
             dim3 prob_grid((num_experts * num_tokens + 255) / 256);
             dim3 prob_block(256);
             
     
             permute_probs_kernel_vec<scalar_t, 8><<<num_experts, 512, 0, stream>>>(
-                (scalar_t*)probs.data_ptr(),
+                //(scalar_t*)probs.data_ptr(),
+                (scalar_t*)probs.value().data_ptr(),
                 (scalar_t*)permuted_probs.data_ptr(),
                 expert_m_count.data_ptr<int>(),
                 routing_map_bool.data_ptr<bool>(),
@@ -490,16 +516,6 @@ namespace native{
                 num_experts
             );
           
-            // Unpermute with probabilities  
-            // unpermute_with_probs_kernel<scalar_t><<<grid, block, 0, stream>>>(
-            //     (scalar_t*)permuted_tokens.data_ptr(),
-            //     (scalar_t*)output_tokens.data_ptr(),
-            //     sorted_indices_int.data_ptr<int>(),
-            //     (scalar_t*)permuted_probs.data_ptr(),
-            //     hidden_size,
-            //     num_tokens,
-            //     num_selected_tokens
-            // );
 
             unpermute_with_probs_kernel_fast<scalar_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
                 (scalar_t*)permuted_tokens.data_ptr(),
@@ -510,20 +526,11 @@ namespace native{
                 num_tokens,
                 num_selected_tokens
             );
-
-            // unpermute_with_probs_kernel_fast2<scalar_t, 4, 2><<<num_selected_tokens, 256, 0, stream>>>(
-            //     (scalar_t*)permuted_tokens.data_ptr(),
-            //     (scalar_t*)output_tokens.data_ptr(),
-            //     sorted_indices_int.data_ptr<int>(),
-            //     (scalar_t*)permuted_probs.data_ptr(),
-            //     hidden_size,
-            //     num_tokens,
-            //     num_selected_tokens
-            // );
          
         } else {
-       
-            unpermute_tokens_kernel<scalar_t><<<grid, block, 0, stream>>>(
+            // printf("unpermute_with_probs_kernel_fast null\n");
+         
+            unpermute_tokens_kernel_fast<scalar_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
                 (scalar_t*)permuted_tokens.data_ptr(),
                 (scalar_t*)output_tokens.data_ptr(),
                 sorted_indices_int.data_ptr<int>(),
@@ -531,7 +538,179 @@ namespace native{
                 num_tokens,
                 num_selected_tokens
             );
+        }
+        
+        return output_tokens;
+    }
+#endif
+    ////////////////////////////////////////////////////////////////// torch_permute 接口////////////////////////////////////////////////////////////////////
+    template <int VEC> // VEC
+    __global__ void  count_expert_cm(
+        int* expert_m,
+        int* expert_m_count,
+        int* count_total,
+        const int num_experts,
+        const int num_tokens
+    ) {
+        using value_VEC = __attribute__((__vector_size__(VEC * sizeof(int)))) int;
+        int sum = 0;
+        int count_vec[VEC];
+        if(threadIdx.x == 0){
+            for(int i = 0; i < num_experts; i+=VEC) {
+                value_VEC expert_m_reg = *(value_VEC*)(&expert_m[i]);
+
+                #pragma unroll
+                for(int j = 0; j < VEC; ++j){
+                    count_vec[j] = sum;
+                    sum += expert_m_reg[j];
+                }
+
+                *(value_VEC*)(expert_m_count + i) = *(value_VEC*)(&count_vec);
+            }
+            count_total[0] = sum;
+        }
+    }
+
+    std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> groupgemm_permute(
+        const torch::Tensor& tokens,
+        const torch::Tensor& routing_map
+    ) {
+        auto device = tokens.device();
+        auto stream = at::cuda::getCurrentCUDAStream();
+        
+        int num_tokens = tokens.size(0);
+        int hidden_size = tokens.size(1);
+        int num_experts = routing_map.size(1);
+
+        auto routing_map_bool = routing_map.to(torch::kBool).transpose(0, 1).contiguous();
+        
+        // Count selected tokens
+        auto count_tensor = torch::zeros({1}, torch::TensorOptions().dtype(torch::kInt32).device(device));
+
+        auto expert_m = torch::zeros({num_experts}, torch::TensorOptions().dtype(torch::kInt32).device(device));
+        auto expert_m_count = torch::zeros({num_experts}, torch::TensorOptions().dtype(torch::kInt32).device(device));
+
+        
+        
+        dim3 block_size(512);
+        dim3 grid_size(1);
+        count_exper_m_kernel<8><<<num_experts, block_size, 256, stream>>>(
+            routing_map_bool.data_ptr<bool>(),
+            expert_m.data_ptr<int>(),
+            num_experts,
+            num_tokens
+        );
+
+        // 获取count expert_m expert_m_count
+        count_expert_cm<4><<<1, 1, 0, stream>>>(
+            expert_m.data_ptr<int>(),
+            expert_m_count.data_ptr<int>(),
+            count_tensor.data_ptr<int>(),
+            num_experts,
+            num_tokens
+        );
+
+        
+        int num_selected_tokens = count_tensor.item<int>();
+        auto sorted_indices = torch::zeros({num_selected_tokens}, 
+                                        torch::TensorOptions().dtype(torch::kInt32).device(device));
+        sorted_indices_optimized_kernel<4><<<num_experts, 1024, 0, stream>>>(
+            routing_map_bool.data_ptr<bool>(),
+            sorted_indices.data_ptr<int>(),
+            expert_m.data_ptr<int>(),
+            expert_m_count.data_ptr<int>(),
+            num_tokens,
+            num_experts
+        );
+
+        
+        // Permute tokens
+        auto permuted_tokens = torch::empty({num_selected_tokens, hidden_size}, tokens.options());
+        int permute_grid = num_selected_tokens;
+        int permute_block = std::min(hidden_size / 8, 1024);
+        permute_tokens_kernel_vec<scalar_t, 8><<<permute_grid, permute_block, 0, stream>>>(
+            (scalar_t*)tokens.data_ptr(),
+            (scalar_t*)permuted_tokens.data_ptr(),
+            sorted_indices.data_ptr<int>(),
+            hidden_size,
+            num_selected_tokens
+        );
+
+
+        return std::make_tuple(permuted_tokens, sorted_indices, expert_m_count);
+    }
+
+    torch::Tensor groupgemm_unpermute(
+        const torch::Tensor& permuted_tokens,
+        const torch::Tensor& sorted_indices,
+        const std::vector<int64_t>& restore_shape,
+        std::optional<torch::Tensor> probs,
+        std::optional<torch::Tensor> routing_map,
+        const torch::Tensor& expert_m_count
+    ) {
+        auto device = permuted_tokens.device();
+        auto stream = at::cuda::getCurrentCUDAStream();
+        
+        int num_selected_tokens = permuted_tokens.size(0);
+        int hidden_size = permuted_tokens.size(1);
+        int num_tokens = restore_shape[0];
+        
+        // Create output tensor filled with zeros
+        auto output_tokens = torch::zeros(restore_shape, permuted_tokens.options());
+        
+        // Convert sorted_indices to int32 for CUDA kernel
+        auto sorted_indices_int = sorted_indices.to(torch::kInt32);
+        
+        dim3 block(256);
+        dim3 grid(num_selected_tokens, (hidden_size + block.x - 1) / block.x);
+        
+        //bool use_probs = probs.defined() && probs.numel() > 0;
+        bool use_probs = probs.has_value();
+        
+        if (use_probs) {
+            // Need to permute probs first
+            
+            int num_experts = routing_map.value().size(1);
+            auto routing_map_bool = routing_map.value().to(torch::kBool).transpose(0, 1).contiguous();
+            
+            auto permuted_probs = torch::empty({num_selected_tokens}, probs.value().options());
+            
+            dim3 prob_grid((num_experts * num_tokens + 255) / 256);
+            dim3 prob_block(256);
+            
+    
+            permute_probs_kernel_vec<scalar_t, 8><<<num_experts, 512, 0, stream>>>(
+                //(scalar_t*)probs.data_ptr(),
+                (scalar_t*)probs.value().data_ptr(),
+                (scalar_t*)permuted_probs.data_ptr(),
+                expert_m_count.data_ptr<int>(),
+                routing_map_bool.data_ptr<bool>(),
+                num_tokens,
+                num_experts
+            );
+          
+
+            unpermute_with_probs_kernel_fast<scalar_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
+                (scalar_t*)permuted_tokens.data_ptr(),
+                (scalar_t*)output_tokens.data_ptr(),
+                sorted_indices_int.data_ptr<int>(),
+                (scalar_t*)permuted_probs.data_ptr(),
+                hidden_size,
+                num_tokens,
+                num_selected_tokens
+            );
          
+        } else {
+            // printf("unpermute_with_probs_kernel_fast null\n");
+         
+            unpermute_tokens_kernel_fast<scalar_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
+                (scalar_t*)permuted_tokens.data_ptr(),
+                (scalar_t*)output_tokens.data_ptr(),
+                sorted_indices_int.data_ptr<int>(),
+                hidden_size,
+                num_tokens,
+                num_selected_tokens
+            );
         }
         
         return output_tokens;
