@@ -1,4 +1,5 @@
 import torch
+from torch.autograd import Function
 from lightop import op
 
 
@@ -72,6 +73,28 @@ def miopen_groupnorm_backward(x, dy, weight, mean, rstd, num_groups, epsilon: fl
     """
     return op.miopen_groupnorm_backward(x, dy, weight, mean, rstd, num_groups, epsilon, mode)
 
+
+class miopenGroupNormFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, weight, bias, num_groups, eps, mode):
+        ctx.num_groups = num_groups
+        ctx.eps = eps
+        ctx.mode = mode
+        result = op.miopen_groupnorm(x, weight, bias, num_groups, eps, mode)
+        ctx.save_for_backward(x, weight, result[1], result[2])
+        return result[0]
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, weight, mean, rstd = ctx.saved_tensors
+        num_groups = ctx.num_groups
+        eps = ctx.eps
+        mode = ctx.mode
+        
+        result = op.miopen_groupnorm_backward(x, grad_output, weight, mean, rstd, num_groups, eps, mode)
+        return result[0], result[1], result[2], None, None, None
+
+
 class miopenGroupNorm(torch.nn.Module):
     def __init__(self, num_groups: int, num_channels: int, mode: int, eps: float = 1e-5, device=None, dtype=None):
         """_summary_
@@ -106,7 +129,9 @@ class miopenGroupNorm(torch.nn.Module):
         torch.nn.init.zeros_(self.bias)
 
     def forward(self, x):
-        return op.miopen_groupnorm(x, self.weight, self.bias, self.num_groups, self.eps, self.mode)
+        return miopenGroupNormFunction.apply(x, self.weight, self.bias, self.num_groups, self.eps, self.mode)
+        # return op.miopen_groupnorm(x, self.weight, self.bias, self.num_groups, self.eps, self.mode)
 
     def extra_repr(self):
         return f"num_groups={self.num_groups},num_channels={self.num_channels},eps={round(self.eps,5):0.5f},mode={self.mode}"
+
