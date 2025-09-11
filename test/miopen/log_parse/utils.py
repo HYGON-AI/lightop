@@ -32,3 +32,13 @@ def process_time(time_word: str) -> float:
         raise ValueError(f'无效的时间单位: {time_word}')
     return time_count
 
+
+def split_lines(test_res, filter_cols):
+    """对测试结果中的行数进行切片，过滤掉重复行。
+    test_res：日志解析结果，dict
+    filter_cols：需要过滤的列名称，list
+    """
+    num_of_tcs = len(test_res[list(test_res.keys())[-1]])
+    for each_col in filter_cols:
+        test_res[each_col] = test_res[each_col][:num_of_tcs]
+    return test_res
