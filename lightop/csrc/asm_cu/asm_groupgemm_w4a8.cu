@@ -53,7 +53,6 @@ void _moe_groupgemm_w4a8_TN_impl(
   torch::Tensor b_scale,
   torch::Tensor problem_size,
   torch::Tensor expert_offsets, 
-  uint32_t problem_size_max,
   uint32_t experts_num) {
 
   const int size_m = input.size(0); 
@@ -65,7 +64,7 @@ void _moe_groupgemm_w4a8_TN_impl(
   size_t globalWorkSize[3] = {1, 1, 1};
   globalWorkSize[0] = DIVIDE(size_n, BLOCKN);
   globalWorkSize[1] = experts_num;
-  globalWorkSize[2] = DIVIDE(problem_size_max, BLOCKM);
+  globalWorkSize[2] = DIVIDE(size_m, BLOCKM);
   // printf("globalWorkSize[0]:%d globalWorkSize[1]:%d globalWorkSize[2]:%d\n", globalWorkSize[0], globalWorkSize[1], globalWorkSize[2]);
 
   HipFunctionArgs<OutputType> hipFunctionArgs;
@@ -196,7 +195,6 @@ torch::Tensor moe_groupgemm_w4a8_asm(
   torch::Tensor b_scale,
   torch::Tensor problem_size, 
   torch::Tensor expert_offsets,
-  int problem_size_max,
   int mode) {
   
 	const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
@@ -209,7 +207,7 @@ torch::Tensor moe_groupgemm_w4a8_asm(
       output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
         _moe_groupgemm_w4a8_TN_impl<128, 256, 128, scalar_t>(
           input, b_qweight, output, a_scale, b_scale,
-          problem_size, expert_offsets, problem_size_max, experts_num);
+          problem_size, expert_offsets, experts_num);
       }
     );
   } else {
