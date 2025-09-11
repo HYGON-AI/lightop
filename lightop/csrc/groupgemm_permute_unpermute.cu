@@ -130,8 +130,8 @@ namespace native{
         int offset_start = expert_m_count[blockIdx.x];
         int offset_end = offset_start + expert_m[blockIdx.x];
         routing_map = routing_map + blockIdx.x*num_tokens;
-        using bool_vec = __attribute__((__vector_size__(VEC * sizeof(uint8_t)))) uint8_t;
-        
+        //using bool_vec = __attribute__((__vector_size__(VEC * sizeof(uint8_t)))) uint8_t;
+        using bool_vec = bool;
         for(int idx = tid*VEC; idx < num_tokens; idx += blockDim.x*VEC) {
             bool_vec routing_map_vec = *(bool_vec*)(&routing_map[idx]);
 
@@ -146,7 +146,8 @@ namespace native{
 
             #pragma unroll
             for(int i = 0; i < VEC && i+idx < num_tokens; i++) { //这里
-                if(routing_map_vec[i]) {
+                //if(routing_map_vec[i]) {
+                if(routing_map_vec) {
                     sorted_indices[prefix_count] = idx + i;
                     prefix_count++;
                 }
@@ -594,7 +595,8 @@ namespace native{
         
         dim3 block_size(512);
         dim3 grid_size(1);
-        count_exper_m_kernel<8><<<num_experts, block_size, 256, stream>>>(
+        //count_exper_m_kernel<8><<<num_experts, block_size, 256, stream>>>(
+        count_exper_m_kernel<1><<<256, block_size, 256, stream>>>(
             routing_map_bool.data_ptr<bool>(),
             expert_m.data_ptr<int>(),
             num_experts,
@@ -614,7 +616,8 @@ namespace native{
         int num_selected_tokens = count_tensor.item<int>();
         auto sorted_indices = torch::zeros({num_selected_tokens}, 
                                         torch::TensorOptions().dtype(torch::kInt32).device(device));
-        sorted_indices_optimized_kernel<4><<<num_experts, 1024, 0, stream>>>(
+        //sorted_indices_optimized_kernel<4><<<num_experts, 1024, 0, stream>>>(
+        sorted_indices_optimized_kernel<1><<<num_experts, 1024, 0, stream>>>(
             routing_map_bool.data_ptr<bool>(),
             sorted_indices.data_ptr<int>(),
             expert_m.data_ptr<int>(),
@@ -628,7 +631,8 @@ namespace native{
         auto permuted_tokens = torch::empty({num_selected_tokens, hidden_size}, tokens.options());
         int permute_grid = num_selected_tokens;
         int permute_block = std::min(hidden_size / 8, 1024);
-        permute_tokens_kernel_vec<scalar_t, 8><<<permute_grid, permute_block, 0, stream>>>(
+       // permute_tokens_kernel_vec<scalar_t, 8><<<permute_grid, permute_block, 0, stream>>>(
+       permute_tokens_kernel_vec<scalar_t, 8><<<permute_grid, 512, 0, stream>>>(
             (scalar_t*)tokens.data_ptr(),
             (scalar_t*)permuted_tokens.data_ptr(),
             sorted_indices.data_ptr<int>(),
