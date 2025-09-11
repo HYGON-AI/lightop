@@ -223,12 +223,11 @@ def moe_groupgemm_w4a8(input: torch.Tensor,
                         b_scale: torch.Tensor,
                         problem_size: torch.Tensor,
                         experts_offsets: torch.Tensor,
-                        problem_size_max: int,
                         config: Dict[str, Any]) -> torch.Tensor:
 
     mode = config['MODE']
     op.moe_groupgemm_w4a8_asm(input, b_qweight, output, a_scale, b_scale,
-                                        problem_size, experts_offsets, problem_size_max, mode)
+                                        problem_size, experts_offsets, mode)
     return output
 
 def gemm_w8a8_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 'TN'):

@@ -317,7 +317,6 @@ def fused_experts_impl_w4a8_ep_dobench(hidden_states,weight13, weight2, w13_scal
     config1, config2, status = get_moe_groupgemm_config_w4a8(E, M, N1, K1, N2, K2, device_name, num_cus, dtype, None, None)
         
     problem_size = tokens_per_expert
-    problem_size_max = problem_size.max()
     expert_offsets = list(itertools.accumulate(tokens_per_expert, initial=0))[:-1]
     assert len(expert_offsets) == len(problem_size)
     tensor_problem_size = torch.tensor(problem_size, dtype=torch.int32, device=hidden_states.device)
@@ -334,7 +333,6 @@ def fused_experts_impl_w4a8_ep_dobench(hidden_states,weight13, weight2, w13_scal
                             w13_scale,
                             tensor_problem_size, 
                             tensor_expert_offsets,
-                            problem_size_max,
                             config1)
         
     asm_gemm1_cost=triton.testing.do_bench(lambda: moe_groupgemm_w4a8(q_a1_all, 
@@ -344,7 +342,6 @@ def fused_experts_impl_w4a8_ep_dobench(hidden_states,weight13, weight2, w13_scal
                                                                     w13_scale,
                                                                     tensor_problem_size, 
                                                                     tensor_expert_offsets,
-                                                                    problem_size_max,
                                                                     config1),quantiles=None, return_mode="mean")*1000
     
     # gemm2
@@ -357,7 +354,6 @@ def fused_experts_impl_w4a8_ep_dobench(hidden_states,weight13, weight2, w13_scal
                             w2_scale,
                             tensor_problem_size, 
                             tensor_expert_offsets,
-                            problem_size_max,
                             config2)
         
     asm_gemm2_cost=triton.testing.do_bench(lambda: moe_groupgemm_w4a8(act_out_q, 
@@ -367,7 +363,6 @@ def fused_experts_impl_w4a8_ep_dobench(hidden_states,weight13, weight2, w13_scal
                                                                     w2_scale,
                                                                     tensor_problem_size, 
                                                                     tensor_expert_offsets,
-                                                                    problem_size_max,
                                                                     config2),quantiles=None, return_mode="mean")*1000
 
     return expert_output, torch_gemm1_cost, torch_gemm2_cost, asm_gemm1_cost, asm_gemm2_cost
@@ -434,7 +429,7 @@ def main():
         except (ValueError, SyntaxError) as e:
             raise ValueError(f"无法解析列表参数: {list_str}。错误: {str(e)}")
     
-    m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768,65536]
+    m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]
     E=args.E 
     out_dtype=args.out_dtype
     
