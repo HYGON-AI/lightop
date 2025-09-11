@@ -44,8 +44,10 @@ Tensor miopen_transform_tensor(const Tensor& input,
 
     if(c % 32 != 0)
         c = (c + 31) / 32 * 32;
-
-    TensorDescriptor out_tensor(input, transpose_layout);
+    
+    Tensor _out = at::empty({n, c, h, w}, input.options());
+    TensorDescriptor out_tensor(_out, transpose_layout);
+    
     Tensor out = at::empty_strided({n, c / 32, h, w, 32}, {c * h * w, h * w * 32, w * 32, 32, 1}, input.options());
 
     MIOPEN_CHECK(miopenTransformTensor(getMiopenHandle_new(),
