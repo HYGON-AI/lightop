@@ -51,3 +51,24 @@ def read_mha_size(size_file_path):
         'dim': row['D']
     }
         for _, row in gn_df.iterrows()]
+
+
+def read_ln_size(size_file_path):
+    ln_df = pd.read_csv(size_file_path)
+    return [{
+        'batch_size': row['dim1'],
+        'seqs': row['dim2'],
+        'cols': row['dim3']
+    }
+        for _, row in ln_df.iterrows()]
+
+def read_ln5d_size(size_file_path):
+    ln_df = pd.read_csv(size_file_path)
+    return [{
+        'batch_size': row['dim1'],
+        'dima': row['dim2'],
+        'dimb': row['dim3'],
+        'seqs': row['dim4'],
+        'cols': row['dim5']
+    }
+        for _, row in ln_df.iterrows()]
