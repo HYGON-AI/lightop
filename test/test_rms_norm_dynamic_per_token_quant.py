@@ -63,8 +63,8 @@ class bench_params_t:
 def get_bench_params() -> list[bench_params_t]:
     ## Test Fixtures
     NUM_TOKENS = [2**x for x in range(11)]
-    HIDDEN_SIZES = list(range(1024, 8129, 1024))
-    ADD_RESIDUAL = [True, False]
+    HIDDEN_SIZES = list(range(512, 8129, 1024))
+    ADD_RESIDUAL = [True,False]
     DTYPES = [torch.bfloat16, torch.float]
 
     combinations = product(NUM_TOKENS, HIDDEN_SIZES, ADD_RESIDUAL, DTYPES)
@@ -122,7 +122,7 @@ def fused_fast_impl(
                                                   rms_norm_layer.weight,
                                                   1e-6,
                                                   quant_dtype,
-                                                  residual=residual)
+                                                  residual=residual,update_input=True)
 
 # Bench functions
 def bench_fn(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: torch.Tensor,
@@ -152,6 +152,7 @@ def check_accuracy(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: Optional[
     residual_copy = copy.deepcopy(residual)
     rms_norm_layer_copy = copy.deepcopy(rms_norm_layer)
     x_copy = copy.deepcopy(x)
+    xx_copy = copy.deepcopy(x)
     with torch.no_grad():
         # 统一用 float32 比较
         # test_out, test_scales = ops.rms_norm_dynamic_per_token_quant(
@@ -167,7 +168,8 @@ def check_accuracy(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: Optional[
             rms_norm_layer_copy.weight,
             1e-6,
             torch.int8,
-            residual=residual_copy if residual_copy is not None else None
+            residual=residual_copy if residual_copy is not None else None,
+            update_input=True
         )
         
         #unfused int8
@@ -232,13 +234,9 @@ def bench(params: bench_params_t, label: str, sub_label: str):
 
     scale = 1 / params.hidden_size
     x = torch.randn(params.num_tokens, params.hidden_size, dtype=params.dtype, device='cuda') * scale
-    # x = torch.load("hidden_state_1241.pt")
-    # residual = torch.load("residual_38.pt")
     residual = (torch.randn_like(x) * scale) if params.add_residual else None
-    # import pdb
-    # pdb.set_trace()
 
-    # 精度验证（可选）
+    # === 精度验证 ===
     max_diff, mean_diff, rel_err = check_accuracy(layer, x, residual)
 
     results = []
@@ -259,12 +257,14 @@ def bench(params: bench_params_t, label: str, sub_label: str):
             "DType": str(params.dtype),
             "Impl": name,
             "AvgTime_ms": ms,
-            # "MaxAbsDiff": max_diff,
-            # "MeanAbsDiff": mean_diff,
-            # "RelError": rel_err
+            # === 新增: 把精度结果写进去 ===
+            "MaxAbsDiff": max_diff,
+            "MeanAbsDiff": mean_diff,
+            "RelError": rel_err,
         })
 
     return results
+
 
 
 # launch bench
@@ -285,37 +285,25 @@ def main():
         )
 
     df = pd.DataFrame(all_results)
-    # 先把 AvgTime_ms 根据 Impl 转成多列
+
+    # 保留精度字段，不再只 pivot 时间
+    df.to_excel("rms_norm_dpt_quant_full.xlsx", index=False)
+    print("完整结果已保存到 rms_norm_dpt_quant_full.xlsx")
+
+    # 如果你还想要之前的透视表（只比较时间），可以单独再做一份：
     df_pivot = df.pivot_table(
         index=["SubLabel", "NumTokens", "HiddenSize", "AddResidual", "DType"],
         columns="Impl",
         values="AvgTime_ms"
     ).reset_index()
-    # 重命名列顺序和表头，顺便去掉列名多余层级
-    df_pivot.columns.name = None  # 去掉 columns name
-    df_pivot = df_pivot.rename(columns={
-        "unfused_int8_impl": "unfused_int8_impl",
-        "fused_int8_impl": "fused_int8_impl",
-        "fused_int8_fast_impl": "fused_int8_fast_impl"
-    })
-
-    # 调整列顺序，符合你想要的
-    cols = [
-        "SubLabel",
-        "NumTokens",
-        "HiddenSize",
-        "AddResidual",
-        "DType",
-        "unfused_int8_impl",
-        "fused_int8_impl",
-        "fused_int8_fast_impl",
-    ]
-
-    df_pivot = df_pivot[cols]
-
-    # 保存新的 Excel
+    df_pivot.columns.name = None
+    df_pivot = df_pivot[[
+        "SubLabel", "NumTokens", "HiddenSize", "AddResidual", "DType",
+        "unfused_int8_impl", "fused_int8_impl", "fused_int8_fast_impl"
+    ]]
     df_pivot.to_excel("rms_norm_dpt_quant_pivot.xlsx", index=False)
     print("透视表已保存到 rms_norm_dpt_quant_pivot.xlsx")
+
 
 
 if __name__ == '__main__':
