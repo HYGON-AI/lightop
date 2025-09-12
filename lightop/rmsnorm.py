@@ -150,8 +150,8 @@ def rms_norm_dynamic_per_token_quant(
     weight: torch.Tensor,
     epsilon: float,
     quant_dtype: torch.dtype,
-    scale_ub: Optional[torch.Tensor] = None,
-    residual: Optional[torch.Tensor] = None
+    residual: Optional[torch.Tensor] = None,
+    update_input: bool = True
 ) -> tuple[torch.Tensor, torch.Tensor]:
     output = torch.empty_like(input, dtype=quant_dtype)
     scales = torch.empty((input.numel() // input.shape[-1], 1),
@@ -159,6 +159,7 @@ def rms_norm_dynamic_per_token_quant(
                         dtype=torch.float32)
 
     op.rms_norm_dynamic_per_token_quant(output, input, weight,
-                                                    scales, epsilon, scale_ub,
-                                                    residual)
+                                                    scales, epsilon,
+                                                    residual, update_input)
     return output, scales
+

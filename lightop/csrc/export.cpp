@@ -112,7 +112,7 @@ void blockwise_scaled_cast_transpose(const Tensor& input,std::optional<Tensor> o
                                     const int block_len,const int block_scaling_dim,const bool rowwise,const bool columnwise,
                                     const float epsilon,const bool pow2_scale,const bool all_gather_usage, at::ScalarType out_dtype);
 
-void rms_norm_dynamic_per_token_quant(Tensor &output,const Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> scale_ub,std::optional<Tensor> residual);
+void rms_norm_dynamic_per_token_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input);
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
