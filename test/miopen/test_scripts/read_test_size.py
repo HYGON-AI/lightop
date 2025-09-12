@@ -72,3 +72,14 @@ def read_ln5d_size(size_file_path):
         'cols': row['dim5']
     }
         for _, row in ln_df.iterrows()]
+
+def read_tt_size(size_file_path):
+    ln_df = pd.read_csv(size_file_path)
+    return [{
+        'batch_size': row['n'],
+        'seqs': row['c'],
+        'cols': row['H'],
+        'rows': row['W'],
+        'transpose_mode': row['transpose_mode']
+    }
+        for _, row in ln_df.iterrows()]
