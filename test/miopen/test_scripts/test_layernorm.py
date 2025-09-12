@@ -143,7 +143,7 @@ def test_speed(batch_size, seqs, cols, repeat_num, use_half=False, forward_only=
     print('torch time:', format(torch_time / repeat_num, '.3f'), 'lightop time:', format(lightop_time / repeat_num, '.3f'), 'ms. miopen time:',format(miopen_time / repeat_num, '.3f'), 'ms speedup:', format(lightop_time / miopen_time - 1, '.2f'))
 
     # 精度验证
-    verify_accuracy(y2, y3[0], rtol=1e-2, atol=1e-5, use_half=use_half)
+    verify_accuracy(y2, y3[0], rtol=1e-2, atol=1e-5, precision='FP16')
 
 
 if __name__ == '__main__':
