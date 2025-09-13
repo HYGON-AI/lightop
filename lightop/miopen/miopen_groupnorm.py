@@ -82,17 +82,22 @@ class miopenGroupNormFunction(torch.autograd.Function):
         ctx.mode = mode
         result = op.miopen_groupnorm(x, weight, bias, num_groups, eps, mode)
         ctx.save_for_backward(x, weight, result[1], result[2])
+        print("fwd out shape is:{}, {}, {}".format(result[0].shape, weight.shape(), bias.shape()))
         return result[0]
     
     @staticmethod
     def backward(ctx, grad_output):
         x, weight, mean, rstd = ctx.saved_tensors
+        print("x shape is:{0}, weight shape is:{1}, mean shape is:{2}, rstd shape is:{3}".format(x.shape, weight.shape, mean.shape, rstd.shape))
         num_groups = ctx.num_groups
         eps = ctx.eps
         mode = ctx.mode
         
         result = op.miopen_groupnorm_backward(x, grad_output, weight, mean, rstd, num_groups, eps, mode)
-        return result[0], result[1], result[2], None, None, None
+        
+        print("bwd resutl shape is:{}, result1 is:{}, result2 shape is:{}".format(result[0].shape, result[1].shape, result[2].shape))
+        
+        return result[0], result[1].squeeze(), result[2].squeeze(), None, None, None
 
 
 class miopenGroupNorm(torch.nn.Module):
