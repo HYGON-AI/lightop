@@ -131,9 +131,9 @@ std::vector<Tensor> miopen_groupnorm_backward(const Tensor& x,
     TensorDescriptor mean_tensor(mean);
     TensorDescriptor rstd_tensor(rstd);
 
-    // std::vector<int64_t> weight_bias_len  = {1, x.sizes()[1], 1, 1};
+    std::vector<int64_t> dscale_dbias_len  = {1, x.sizes()[1], 1, 1};
     // std::vector<int64_t> mean_rstd_len    = {x.sizes()[0] * num_groups, 1, 1, 1};
-    std::vector<int64_t> dscale_dbias_len = {x.sizes()[0] * x.sizes()[1], 1, 1, 1};
+    // std::vector<int64_t> dscale_dbias_len = {x.sizes()[0] * x.sizes()[1], 1, 1, 1};
 
     if(x.sizes() == 5)
     {
@@ -148,8 +148,8 @@ std::vector<Tensor> miopen_groupnorm_backward(const Tensor& x,
     // Tensor rstd   = at::empty(mean_rstd_len, x.options().dtype(at::kFloat));
 
     Tensor out_dx     = at::empty_like(x);
-    Tensor out_dscale = at::empty(dscale_dbias_len, x.options().dtype(at::kFloat));
-    Tensor out_dbias  = at::empty(dscale_dbias_len, x.options().dtype(at::kFloat));
+    Tensor out_dscale = at::empty(dscale_dbias_len, x.options());
+    Tensor out_dbias  = at::empty(dscale_dbias_len, x.options());
 
     TensorDescriptor output_dx(out_dx);
     TensorDescriptor output_dscale(out_dscale);
