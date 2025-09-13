@@ -499,17 +499,13 @@ __global__ void moe_sum_kernel_reg(scalar_t *__restrict__ out,
     const int current_idx = tile_start_idx + tid_in_block;
     if (current_idx < d_vec) {
       VecType sum_vec = input_base_ptr[0 * d_vec + current_idx];
-
 #pragma unroll
       for (int k = 1; k < TOPK; ++k) {
         VecType current_vec = input_base_ptr[k * d_vec + current_idx];
-        __half2 *sum_h2 = reinterpret_cast<__half2 *>(sum_vec.val);
-        const __half2 *current_h2 =
-            reinterpret_cast<const __half2 *>(current_vec.val);
-        sum_h2[0] = __hadd2(sum_h2[0], current_h2[0]);
-        sum_h2[1] = __hadd2(sum_h2[1], current_h2[1]);
-        sum_h2[2] = __hadd2(sum_h2[2], current_h2[2]);
-        sum_h2[3] = __hadd2(sum_h2[3], current_h2[3]);
+        #pragma unroll
+            for(int i = 0; i < 8; i ++){
+                sum_vec.val[i] += current_vec.val[i];
+            }
       }
       out_base_ptr[current_idx] = sum_vec;
     }
@@ -537,26 +533,19 @@ __global__ void moe_sum_kernel_shared_mem(scalar_t *__restrict__ out,
         tile[k][tid_in_block] = input_base_ptr[k * d_vec + current_idx];
       }
     }
-
     __syncthreads();
     if (current_idx < d_vec) {
       VecType sum_vec = tile[0][tid_in_block];
-
 #pragma unroll
       for (int k = 1; k < TOPK; ++k) {
         VecType current_vec = tile[k][tid_in_block];
-        __half2 *sum_h2 = reinterpret_cast<__half2 *>(sum_vec.val);
-        const __half2 *current_h2 =
-            reinterpret_cast<const __half2 *>(current_vec.val);
-        sum_h2[0] = __hadd2(sum_h2[0], current_h2[0]);
-        sum_h2[1] = __hadd2(sum_h2[1], current_h2[1]);
-        sum_h2[2] = __hadd2(sum_h2[2], current_h2[2]);
-        sum_h2[3] = __hadd2(sum_h2[3], current_h2[3]);
+        #pragma unroll
+            for(int i = 0; i < 8; i ++){
+                sum_vec.val[i] += current_vec.val[i];
+            }
       }
-
       out_base_ptr[current_idx] = sum_vec;
     }
-
     __syncthreads();
   }
 }
