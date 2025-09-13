@@ -190,21 +190,19 @@ __global__ void rms_norm_dynamic_per_token_quant_residual(scalar_t* input,scalar
   using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
   using LoadT_out = at::native::memory::aligned_vector<scalar_out_t, Vec>;
   scalar_t intput_vec[Vec];
-  scalar_t residual_vec1[Vec];
-  T_ACC residual_vec[Vec];
+  scalar_t residual_vec[Vec];
   T_ACC trstd;
   int64_t idx = bid * tcol + tid;
   idx *= Vec;
 
   if (tid < tcol) {
     *(LoadT*)intput_vec = *(LoadT*)(input+idx);
-      *(LoadT*)residual_vec1 = *(LoadT*)(residual+idx);
+      *(LoadT*)residual_vec = *(LoadT*)(residual+idx);
 
       #pragma unroll
       for (int ii = 0; ii < Vec; ii++) {
-         residual_vec1[ii] += (intput_vec[ii]);  
-          residual_vec[ii] = static_cast<T_ACC>(residual_vec1[ii]);
-          val += residual_vec[ii]*residual_vec[ii];
+         residual_vec[ii] += (intput_vec[ii]);  
+          val += static_cast<T_ACC>(residual_vec[ii])*static_cast<T_ACC>(residual_vec[ii]);
       }
   }
 
@@ -219,7 +217,7 @@ __global__ void rms_norm_dynamic_per_token_quant_residual(scalar_t* input,scalar
       #pragma unroll
       for(int ii = 0;ii < Vec;ii++){
         int jj=tid * Vec + ii;
-        elem[ii] = residual_vec[ii] * trstd * static_cast<T_ACC>(gamma[jj]);
+        elem[ii] = static_cast<T_ACC>(residual_vec[ii]) * trstd * static_cast<T_ACC>(gamma[jj]);
         block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(elem[ii]));
       }      
   }
