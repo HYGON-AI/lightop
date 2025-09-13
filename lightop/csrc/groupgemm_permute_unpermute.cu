@@ -16,6 +16,73 @@
 #include "reduce.h"
 
 
+class uint16x2 {
+    public:
+        uint16_t x;
+        uint16_t y;
+        __host__ __device__ uint16x2() = default;
+        __host__ __device__ uint16x2(uint16_t x_, uint16_t y_) : x(x_), y(y_) {}
+};
+
+union BF16Union {
+    uint32_t as_uint32;
+    struct {
+        uint16_t x;  // 第一个bf16元素
+        uint16_t y;  // 第二个bf16元素
+    };
+};
+
+static __device__ float inline num2float(const uint16_t x) {
+    // Convert bf16 to float
+    uint32_t u = static_cast<uint32_t>(x) << 16;
+    return *(float*)(&u);
+  }
+
+static __host__ __device__ uint16_t inline float2num(const float x) {
+    // Convert float to bf16
+    uint32_t& u = *(uint32_t*)(&x);
+
+    u += 0x7fff + ((u >> 16) & 1);
+    return u >> 16;
+}
+
+template<typename scalar_t2>
+static __device__ inline scalar_t2 atomic_add_bf16(scalar_t2* p_dst, const scalar_t2& x) {
+
+    // bf16版本，使用atomicCAS
+    // 对于bf16，scalar_t2实际上是__half2，但存储的是bf16数据
+    uint32_t* dword_addr = reinterpret_cast<uint32_t*>(p_dst);
+
+    BF16Union cur_val, old_val, new_val, x_val;
+    cur_val.as_uint32 = *dword_addr;
+    // if(threadIdx.x == 0) {
+    //     printf("cur_val: %f, x_val: %f\n", cur_val.x, cur_val.y);
+    // }
+    x_val.as_uint32 = reinterpret_cast<const uint32_t&>(x);
+    do {
+        old_val = cur_val;
+        
+        // 转换为float进行计算
+        float f1 = num2float(cur_val.x);
+        float f2 = num2float(cur_val.y);
+
+        float fx1 = num2float(x_val.x);
+        float fx2 = num2float(x_val.y); 
+        
+        // 执行加法并转换回bf16
+        new_val.x = float2num(f1 + fx1); 
+        new_val.y = float2num(f2 + fx2);
+        
+
+        // 原子比较并交换
+        cur_val.as_uint32 = atomicCAS(dword_addr, old_val.as_uint32, new_val.as_uint32); //builting
+    } while (cur_val.as_uint32 != old_val.as_uint32);
+
+    return x;
+
+}
+
+
 namespace at{
 namespace native{
     using scalar_t = __hip_bfloat16;
@@ -48,6 +115,35 @@ namespace native{
         return val;
     }
 
+    // template <int VEC>
+    // __global__ void __launch_bounds__(1024) count_exper_m_kernel(
+    //     bool* routing_map,        // [num_experts, num_tokens]
+    //     int* expert_m,
+    //     const int num_experts,
+    //     const int num_tokens
+    // ) {
+    //     using boolVEC = __attribute__((__vector_size__(VEC * sizeof(uint8_t)))) uint8_t;
+    //     int tid = threadIdx.x;
+    //     bool* map_ptr = routing_map + blockIdx.x * num_tokens;
+    //     int sum = 0;
+    //     for(int i = tid * VEC; i < num_tokens; i += VEC * blockDim.x) {
+    //         boolVEC tmp_map = *(boolVEC*)(&map_ptr[i]);
+    //         #pragma unroll
+    //         for(int j = 0; j < VEC && i+j < num_tokens; j++) { //这里
+    //             if(tmp_map[j]) {
+    //                 sum++;
+    //             }
+    //         }
+    //     }
+
+    //     __shared__ int shared[32];
+    //     sum = BlockReduceSum1<int>(sum, shared);
+    //     __syncthreads();
+    //     if(tid == 0) {
+    //         expert_m[blockIdx.x] = sum;
+    //     }
+    // }
+
     template <int VEC>
     __global__ void __launch_bounds__(1024) count_exper_m_kernel(
         bool* routing_map,        // [num_experts, num_tokens]
@@ -59,23 +155,35 @@ namespace native{
         int tid = threadIdx.x;
         bool* map_ptr = routing_map + blockIdx.x * num_tokens;
         int sum = 0;
-        for(int i = tid * VEC; i < num_tokens; i += VEC * blockDim.x) {
-            boolVEC tmp_map = *(boolVEC*)(&map_ptr[i]);
+        int loop = num_tokens / VEC;
+        int remain = num_tokens % VEC;
+
+        for( ; tid < loop; tid += blockDim.x) {
+            boolVEC tmp_map = *(boolVEC*)(&map_ptr[tid * VEC]);
+
             #pragma unroll
-            for(int j = 0; j < VEC && i+j < num_tokens; j++) { //这里
+            for(int j = 0; j < VEC; j++) { //这里
                 if(tmp_map[j]) {
                     sum++;
                 }
             }
         }
 
+        tid = num_tokens - remain + threadIdx.x;
+        for( ; tid < num_tokens; tid += blockDim.x) {
+            if(map_ptr[tid]) {
+                sum++;
+            }
+        }
+
         __shared__ int shared[32];
         sum = BlockReduceSum1<int>(sum, shared);
         __syncthreads();
-        if(tid == 0) {
+        if(threadIdx.x == 0) {
             expert_m[blockIdx.x] = sum;
         }
     }
+
     template <int VEC, int EXPERT> // VEC = EXPERT
     __global__ void count_exper_summ_kernel(
         int* expert_m,
@@ -117,6 +225,45 @@ namespace native{
         }
     }
 
+    // template<int VEC = 16>
+    // __global__ void __launch_bounds__(1024) sorted_indices_optimized_kernel(
+    //     bool* routing_map,          // [num_experts, num_tokens]
+    //     int* sorted_indices,              // output: [num_selected_tokens]
+    //     int* expert_m,
+    //     int* expert_m_count,
+    //     const int num_tokens,
+    //     const int num_experts
+    // ) {
+    //     int tid = threadIdx.x;
+    //     int offset_start = expert_m_count[blockIdx.x];
+    //     int offset_end = offset_start + expert_m[blockIdx.x];
+    //     routing_map = routing_map + blockIdx.x*num_tokens;
+    //     //using bool_vec = __attribute__((__vector_size__(VEC * sizeof(uint8_t)))) uint8_t;
+    //     using bool_vec = bool;
+    //     for(int idx = tid*VEC; idx < num_tokens; idx += blockDim.x*VEC) {
+    //         bool_vec routing_map_vec = *(bool_vec*)(&routing_map[idx]);
+
+    //         int prefix_count = offset_start;
+    //         for(int t = 0; t < idx; ++t){ 
+    //             if(routing_map[t])
+    //                 prefix_count++;
+    //         }
+
+    //         // if(prefix_count >= offset_end) //todo
+    //         //     return;
+
+    //         #pragma unroll
+    //         for(int i = 0; i < VEC && i+idx < num_tokens; i++) { //这里
+    //             //if(routing_map_vec[i]) {
+    //             if(routing_map_vec) {
+    //                 sorted_indices[prefix_count] = idx + i;
+    //                 prefix_count++;
+    //             }
+    //         }
+    //     }
+    // }
+
+
     template<int VEC = 16>
     __global__ void __launch_bounds__(1024) sorted_indices_optimized_kernel(
         bool* routing_map,          // [num_experts, num_tokens]
@@ -128,29 +275,42 @@ namespace native{
     ) {
         int tid = threadIdx.x;
         int offset_start = expert_m_count[blockIdx.x];
-        int offset_end = offset_start + expert_m[blockIdx.x];
+        //int offset_end = offset_start + expert_m[blockIdx.x];
+        
         routing_map = routing_map + blockIdx.x*num_tokens;
-        //using bool_vec = __attribute__((__vector_size__(VEC * sizeof(uint8_t)))) uint8_t;
-        using bool_vec = bool;
-        for(int idx = tid*VEC; idx < num_tokens; idx += blockDim.x*VEC) {
-            bool_vec routing_map_vec = *(bool_vec*)(&routing_map[idx]);
+
+        int loop = num_tokens / VEC;
+        int remain = num_tokens % VEC;
+
+        using bool_vec = __attribute__((__vector_size__(VEC * sizeof(uint8_t)))) uint8_t;
+        for( ; tid < loop; tid += blockDim.x) {
+            bool_vec routing_map_vec = *(bool_vec*)(&routing_map[tid * VEC]);
 
             int prefix_count = offset_start;
-            for(int t = 0; t < idx; ++t){ 
+            for(int t = 0; t < tid * VEC; ++t){ 
                 if(routing_map[t])
                     prefix_count++;
             }
 
-            // if(prefix_count >= offset_end) //todo
-            //     return;
-
             #pragma unroll
-            for(int i = 0; i < VEC && i+idx < num_tokens; i++) { //这里
-                //if(routing_map_vec[i]) {
-                if(routing_map_vec) {
-                    sorted_indices[prefix_count] = idx + i;
+            for(int i = 0; i < VEC; i++) { //这里
+                if(routing_map_vec[i]) {
+                    sorted_indices[prefix_count] = tid * VEC + i;
                     prefix_count++;
                 }
+            }
+        }
+
+        tid = num_tokens - remain + threadIdx.x;
+        int prefix_count = offset_start;
+        for( ; tid < num_tokens; tid += blockDim.x) {
+            if(routing_map[tid]) {
+                for(int t = 0; t < tid; ++t){ 
+                    if(routing_map[t])
+                        prefix_count++;
+                }
+                sorted_indices[prefix_count] = tid;
+                prefix_count++;
             }
         }
     }
@@ -231,6 +391,40 @@ namespace native{
         }
     }
 
+    // template<typename T, int VEC = 8>
+    // __global__ void __launch_bounds__(1024) unpermute_with_probs_kernel_fast(
+    //     const T* permuted_tokens,       // [num_selected_tokens, hidden_size]
+    //     T* output_tokens,              // [num_tokens, hidden_size]
+    //     const int* sorted_indices,     // [num_selected_tokens]
+    //     const T* permuted_probs,       // [num_selected_tokens]
+    //     const int hidden_size,
+    //     const int num_tokens,
+    //     const int num_selected_tokens
+    // ) {
+    //     int permuted_token_idx = blockIdx.x;
+    //     int tid = threadIdx.x;
+
+    //     using vec_T = __attribute__((__vector_size__(VEC * sizeof(uint16_t)))) unsigned short;
+     
+    //     T prob_weight = permuted_probs[permuted_token_idx];
+    //     int dst_token_idx = sorted_indices[permuted_token_idx];
+    //     for(int i = tid * VEC; i < hidden_size; i += blockDim.x * VEC) {
+    //         vec_T permuted_tokens_vec = *(vec_T*)(&permuted_tokens[permuted_token_idx * hidden_size + i]);
+    //         T* permute_tokens_T = (T*)(&permuted_tokens_vec);
+
+            
+    //         #pragma unroll
+    //         for(int j = 0; j < VEC; j++) {
+    //             permute_tokens_T[j] = permute_tokens_T[j] * prob_weight;
+    //         }
+
+    //         #pragma unroll
+    //         for(int j = 0; j < VEC; j++){
+    //             atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]); //todo bf16的原子加优化
+    //         }
+    //     }
+    // }
+
     template<typename T, int VEC = 8>
     __global__ void __launch_bounds__(1024) unpermute_with_probs_kernel_fast(
         const T* permuted_tokens,       // [num_selected_tokens, hidden_size]
@@ -249,18 +443,16 @@ namespace native{
         T prob_weight = permuted_probs[permuted_token_idx];
         int dst_token_idx = sorted_indices[permuted_token_idx];
         for(int i = tid * VEC; i < hidden_size; i += blockDim.x * VEC) {
-            vec_T permuted_tokens_vec = *(vec_T*)(&permuted_tokens[permuted_token_idx * hidden_size + i]);
-            T* permute_tokens_T = (T*)(&permuted_tokens_vec);
-
-            
+        
             #pragma unroll
-            for(int j = 0; j < VEC; j++) {
-                permute_tokens_T[j] = permute_tokens_T[j] * prob_weight;
-            }
-
-            #pragma unroll
-            for(int j = 0; j < VEC; j++){
-                atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]); //todo bf16的原子加优化
+            for(int j = 0; j < VEC; j+=2){
+                
+                uint16x2 permute_tokens_T = *(uint16x2*)(&permuted_tokens[permuted_token_idx * hidden_size + i+j]);
+                T* tmp_t = (T*)(&permute_tokens_T);
+                tmp_t[0] = (tmp_t[0] * prob_weight);
+                tmp_t[1] = (tmp_t[1] * prob_weight); 
+                bf16_2* output_c = reinterpret_cast<bf16_2*>(&output_tokens[dst_token_idx * hidden_size + i + j]);
+                atomic_add_bf16<bf16_2>(output_c, permute_tokens_T);
             }
         }
     }
@@ -278,15 +470,22 @@ namespace native{
         int tid = threadIdx.x;
 
         using vec_T = __attribute__((__vector_size__(VEC * sizeof(uint16_t)))) unsigned short;
+        //using bf16_2 = __attribute__((__vector_size__(2 * sizeof(uint16_t)))) uint16_t;
+        using bf16_2 = uint16x2;
      
         int dst_token_idx = sorted_indices[permuted_token_idx];
         for(int i = tid * VEC; i < hidden_size; i += blockDim.x * VEC) {
-            vec_T permuted_tokens_vec = *(vec_T*)(&permuted_tokens[permuted_token_idx * hidden_size + i]);
-            T* permute_tokens_T = (T*)(&permuted_tokens_vec);
+            //vec_T permuted_tokens_vec = *(vec_T*)(&permuted_tokens[permuted_token_idx * hidden_size + i]);
+            //T* permute_tokens_T = (T*)(&permuted_tokens_vec);
 
+            // bf16_2* permute_tokens_T = (bf16_2*)(&permuted_tokens_vec);
             #pragma unroll
-            for(int j = 0; j < VEC; j++){
-                atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]); //todo bf16的原子加优化
+            for(int j = 0; j < VEC; j+=2){
+                //atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]); //todo bf16的原子加优化
+                
+                uint16x2 permute_tokens_T = *(uint16x2*)(&permuted_tokens[permuted_token_idx * hidden_size + i+j]);
+                bf16_2* output_c = reinterpret_cast<bf16_2*>(&output_tokens[dst_token_idx * hidden_size + i + j]);
+                atomic_add_bf16<bf16_2>(output_c, permute_tokens_T);
             }
         }
     }
@@ -593,10 +792,8 @@ namespace native{
 
         
         
-        dim3 block_size(512);
-        dim3 grid_size(1);
-        //count_exper_m_kernel<8><<<num_experts, block_size, 256, stream>>>(
-        count_exper_m_kernel<1><<<256, block_size, 256, stream>>>(
+        int block_size = std::min(std::max(num_tokens / 8, 256), 512); // =512
+        count_exper_m_kernel<8><<<num_experts, block_size, 256, stream>>>(
             routing_map_bool.data_ptr<bool>(),
             expert_m.data_ptr<int>(),
             num_experts,
@@ -613,11 +810,13 @@ namespace native{
         );
 
         
-        int num_selected_tokens = count_tensor.item<int>();
+        //int num_selected_tokens = count_tensor.item<int>();
+        int num_selected_tokens = num_tokens * 8;  // topk固定为8
         auto sorted_indices = torch::zeros({num_selected_tokens}, 
                                         torch::TensorOptions().dtype(torch::kInt32).device(device));
         //sorted_indices_optimized_kernel<4><<<num_experts, 1024, 0, stream>>>(
-        sorted_indices_optimized_kernel<1><<<num_experts, 1024, 0, stream>>>(
+        block_size = std::min(std::max(num_tokens / 4, 256), 512);
+        sorted_indices_optimized_kernel<4><<<num_experts, block_size, 0, stream>>>(
             routing_map_bool.data_ptr<bool>(),
             sorted_indices.data_ptr<int>(),
             expert_m.data_ptr<int>(),
@@ -630,9 +829,8 @@ namespace native{
         // Permute tokens
         auto permuted_tokens = torch::empty({num_selected_tokens, hidden_size}, tokens.options());
         int permute_grid = num_selected_tokens;
-        int permute_block = std::min(hidden_size / 8, 1024);
-       // permute_tokens_kernel_vec<scalar_t, 8><<<permute_grid, permute_block, 0, stream>>>(
-       permute_tokens_kernel_vec<scalar_t, 8><<<permute_grid, 512, 0, stream>>>(
+        int permute_block = std::min(hidden_size / 8, 512); // 1024 512?
+       permute_tokens_kernel_vec<scalar_t, 8><<<permute_grid, permute_block, 0, stream>>>(
             (scalar_t*)tokens.data_ptr(),
             (scalar_t*)permuted_tokens.data_ptr(),
             sorted_indices.data_ptr<int>(),
