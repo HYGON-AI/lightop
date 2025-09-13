@@ -439,7 +439,7 @@ namespace native{
         int tid = threadIdx.x;
 
         using vec_T = __attribute__((__vector_size__(VEC * sizeof(uint16_t)))) unsigned short;
-     
+        using bf16_2 = uint16x2;
         T prob_weight = permuted_probs[permuted_token_idx];
         int dst_token_idx = sorted_indices[permuted_token_idx];
         for(int i = tid * VEC; i < hidden_size; i += blockDim.x * VEC) {
