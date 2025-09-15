@@ -22,7 +22,7 @@ struct HipFunctionArgs {
   uint32_t numWorkGroups0;
   uint32_t numWorkGroups1;
   T* ptr_C;                          // output
-  const int8_t* ptr_A;               // input
+  const int32_t* ptr_A;              // input
   const int8_t* ptr_B;               // weight
   float* ptr_A_scale;                // input scale
   float* ptr_B_scale;                // weight scale
@@ -56,7 +56,7 @@ void _moe_groupgemm_w4a8_TN_impl(
   uint32_t experts_num) {
 
   const int size_m = input.size(0); 
-  const int size_n = b_qweight.size(1); 
+  const int size_n = b_qweight.size(2) / 4;
   const int size_k = input.size(1);
 
   /* grid sizes */
@@ -71,7 +71,7 @@ void _moe_groupgemm_w4a8_TN_impl(
   hipFunctionArgs.numWorkGroups0 = globalWorkSize[0];
   hipFunctionArgs.numWorkGroups1 = globalWorkSize[2];
   hipFunctionArgs.ptr_C = static_cast<OutputType*>(output.data_ptr());
-  hipFunctionArgs.ptr_A = b_qweight.data_ptr<int8_t>();
+  hipFunctionArgs.ptr_A = b_qweight.data_ptr<int32_t>();
   hipFunctionArgs.ptr_B = input.data_ptr<int8_t>();
   hipFunctionArgs.ptr_A_scale = b_scale.data_ptr<float>();
   hipFunctionArgs.ptr_B_scale = a_scale.data_ptr<float>();
@@ -111,7 +111,7 @@ void _moe_groupgemm_w4a8_TN_impl(
   memset(w4a8_groupgemm_co_file, 0x0, sizeof(w4a8_groupgemm_co_file));
   sprintf(funcName, "Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT%dx%dx%d_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", BLOCKM, BLOCKN, BLOCKK);
   if (output.scalar_type() == at::ScalarType::BFloat16) {
-    sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
   } else {
     TORCH_CHECK(false, "moe_groupgemm_w4a8 only supports outputType in [BFloat16]");
   }
@@ -131,14 +131,14 @@ void _moe_groupgemm_w4a8_TN_impl(
   
   #if DEBUG
   // AT_CUDA_CHECK(cudaStreamSynchronize(stream));
-  
+  printf("argsSize:%d\n", argsSize);
   printf("%s:%d gdx:%d gdy:%d gdz:%d bdx:%d bdy:%d bdz:%d\n", __FILE__, __LINE__, globalWorkSize[0], globalWorkSize[1], globalWorkSize[2],
     localWorkSize[0], localWorkSize[1], localWorkSize[2]);
   printf("\ndebug:\n");
-  hipMemcpy(debug_host, hipFunctionArgs.ptr_C, debug_size, hipMemcpyDeviceToHost);
-  // using DEBUG_TYPE = int8_t;
+  hipMemcpy(debug_host, hipFunctionArgs.debugBuffer, debug_size, hipMemcpyDeviceToHost);
+  using DEBUG_TYPE = int8_t;
   // using DEBUG_TYPE = uint32_t;
-  using DEBUG_TYPE = int32_t;
+  // using DEBUG_TYPE = int32_t;
   // using DEBUG_TYPE = float;
   // using DEBUG_TYPE = bhalf_t;
   // int split = bytes / sizeof(DEBUG_TYPE);
@@ -205,7 +205,7 @@ torch::Tensor moe_groupgemm_w4a8_asm(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
       output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
-        _moe_groupgemm_w4a8_TN_impl<128, 256, 128, scalar_t>(
+        _moe_groupgemm_w4a8_TN_impl<128, 512, 128, scalar_t>(
           input, b_qweight, output, a_scale, b_scale,
           problem_size, expert_offsets, experts_num);
       }
