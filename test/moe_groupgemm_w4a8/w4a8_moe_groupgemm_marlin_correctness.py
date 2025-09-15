@@ -184,7 +184,6 @@ def fused_experts_impl_w4a8_ep_correctness(hidden_states,weight13, weight2, w13_
     config1, config2, status = get_moe_groupgemm_config_w4a8(E, M, N1, K1, N2, K2, device_name, num_cus, dtype, None, None)
         
     problem_size = tokens_per_expert
-    problem_size_max = problem_size.max()
     expert_offsets = list(itertools.accumulate(tokens_per_expert, initial=0))[:-1]
     assert len(expert_offsets) == len(problem_size)
     tensor_problem_size = torch.tensor(problem_size, dtype=torch.int32, device=hidden_states.device)
@@ -201,7 +200,6 @@ def fused_experts_impl_w4a8_ep_correctness(hidden_states,weight13, weight2, w13_
                         w13_scale,
                         tensor_problem_size, 
                         tensor_expert_offsets,
-                        problem_size_max,
                         config1)
     torch.cuda.synchronize()
     
@@ -225,7 +223,6 @@ def fused_experts_impl_w4a8_ep_correctness(hidden_states,weight13, weight2, w13_
                         w2_scale,
                         tensor_problem_size, 
                         tensor_expert_offsets,
-                        problem_size_max,
                         config2)
     if not (torch.allclose(expert_output, gemm2_out_cuda, rtol=1e-2, atol=1e-2)):
         print("error moe_groupgemm_w4a8 gemm2 精度检查不合格！！！")
