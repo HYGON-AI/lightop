@@ -107,6 +107,7 @@ Tensor moe_marlin_w4a8(
                         int64_t blocks_per_cu
                         );
 Tensor awq_marlin_repack_w4a8(torch::Tensor& b_q_weight, torch::Tensor& marlin_weight, int64_t size_batch, int64_t size_k, int64_t size_n);
+Tensor ds_concat(torch::Tensor input_A, torch::Tensor input_B, torch::Tensor output, int32_t mode);
 void blockwise_scaled_cast_transpose(const Tensor& input,std::optional<Tensor> output,std::optional<Tensor> scale_inv,
                                     std::optional<Tensor> output_t,std::optional<Tensor> scale_inv_t,std::optional<Tensor> noop,
                                     const int block_len,const int block_scaling_dim,const bool rowwise,const bool columnwise,
@@ -218,5 +219,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("groupgemm_unpermute",&at::native::groupgemm_unpermute,"groupgemm_unpermute");
   m.def("moe_fused_gate",&at::native::moe_fused_gate,"moe_fused_gate");
   m.def("fuse_silu_mul_quant",&at::native::fuse_silu_mul_quant,"fuse_silu_mul_quant");
-    m.def("moe_sum",&at::native::moe_sum,"moe_sum");
+  m.def("moe_sum",&at::native::moe_sum,"moe_sum");
+  m.def("ds_concat",&at::native::ds_concat,"ds_concat");
+  
 }
