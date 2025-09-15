@@ -19,6 +19,7 @@ import torch.multiprocessing as mp
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
 import argparse
+from w4a8_moe_groupgemm_marlin_quant import w4a8_2_marlin_weight  # pyright: ignore[reportMissingImports]
 
 from vllm.platforms import current_platform
 device_name = current_platform.get_device_name().replace(" ", "_")
@@ -244,6 +245,21 @@ def fused_experts_impl_w4a8_ep_dobench(hidden_states,weight13, weight2, w13_scal
             
     outputs = []
     start_idx = 0
+    
+    # -------- 处理 gemm1 权重矩阵 ------------------
+    w1_marlin_list = []
+    for i in range(weight13.shape[0]):
+        w1_marlin_in = w4a8_2_marlin_weight(weight13[i])
+        w1_marlin_list.append(w1_marlin_in)
+    weight13_marlin = torch.stack(w1_marlin_list, dim=0)
+    
+    # -------- 处理 gemm2 权重矩阵 ------------------
+    w2_marlin_list = []
+    for i in range(weight2.shape[0]):
+        w2_marlin_in = w4a8_2_marlin_weight(weight2[i])
+        w2_marlin_list.append(w2_marlin_in)
+    weight2_marlin = torch.stack(w2_marlin_list, dim=0)
+    
     w13 = unpack_int8_to_int4(weight13)
     w2 = unpack_int8_to_int4(weight2)
     inter_out_gemm1 = []
@@ -327,7 +343,7 @@ def fused_experts_impl_w4a8_ep_dobench(hidden_states,weight13, weight2, w13_scal
     # warp
     for i in range(10):
         moe_groupgemm_w4a8(q_a1_all, 
-                            weight13, 
+                            weight13_marlin, 
                             gemm1_out_cuda,
                             qa1_scale_all, 
                             w13_scale,
@@ -336,19 +352,19 @@ def fused_experts_impl_w4a8_ep_dobench(hidden_states,weight13, weight2, w13_scal
                             config1)
         
     asm_gemm1_cost=triton.testing.do_bench(lambda: moe_groupgemm_w4a8(q_a1_all, 
-                                                                    weight13, 
-                                                                    gemm1_out_cuda,
-                                                                    qa1_scale_all, 
-                                                                    w13_scale,
-                                                                    tensor_problem_size, 
-                                                                    tensor_expert_offsets,
-                                                                    config1),quantiles=None, return_mode="mean")*1000
+                                                                        weight13_marlin, 
+                                                                        gemm1_out_cuda,
+                                                                        qa1_scale_all, 
+                                                                        w13_scale,
+                                                                        tensor_problem_size, 
+                                                                        tensor_expert_offsets,
+                                                                        config1),quantiles=None, return_mode="mean")*1000
     
     # gemm2
     # warmup
     for i in range(10):
         moe_groupgemm_w4a8(act_out_q, 
-                            weight2, 
+                            weight2_marlin, 
                             gemm2_out_cuda,
                             act_out_s, 
                             w2_scale,
@@ -357,13 +373,13 @@ def fused_experts_impl_w4a8_ep_dobench(hidden_states,weight13, weight2, w13_scal
                             config2)
         
     asm_gemm2_cost=triton.testing.do_bench(lambda: moe_groupgemm_w4a8(act_out_q, 
-                                                                    weight2, 
-                                                                    gemm2_out_cuda,
-                                                                    act_out_s, 
-                                                                    w2_scale,
-                                                                    tensor_problem_size, 
-                                                                    tensor_expert_offsets,
-                                                                    config2),quantiles=None, return_mode="mean")*1000
+                                                                        weight2_marlin, 
+                                                                        gemm2_out_cuda,
+                                                                        act_out_s, 
+                                                                        w2_scale,
+                                                                        tensor_problem_size, 
+                                                                        tensor_expert_offsets,
+                                                                        config2),quantiles=None, return_mode="mean")*1000
 
     return expert_output, torch_gemm1_cost, torch_gemm2_cost, asm_gemm1_cost, asm_gemm2_cost
 
