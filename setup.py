@@ -381,7 +381,7 @@ def get_extensions():
                glob.glob('./lightop/csrc/miopen/*.cpp') + glob.glob('./lightop/csrc/softmax/*.cu') + \
                glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + \
                glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
-               glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu')
+               glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu')
 
     extension = CUDAExtension
     # 添加marlinw4a16目录的包含路径
@@ -401,6 +401,7 @@ def get_extensions():
     include_dirs.append(os.path.abspath('./lightop/csrc/storeKvcache/attention/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/moew4a8/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/blockwise_scaling/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/concat/'))
     rocm_home=_find_rocm_home()
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/hiprand/include')
