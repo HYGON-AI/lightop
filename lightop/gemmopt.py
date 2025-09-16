@@ -230,6 +230,20 @@ def moe_groupgemm_w4a8(input: torch.Tensor,
                                         problem_size, experts_offsets, mode)
     return output
 
+def moe_groupgemm_marlin_w4a8(input: torch.Tensor,
+                               b_qweight: torch.Tensor,
+                               output: torch.Tensor,
+                               a_scale: torch.Tensor,
+                               b_scale: torch.Tensor,
+                               problem_size: torch.Tensor,
+                               experts_offsets: torch.Tensor,
+                               config: Dict[str, Any]) -> torch.Tensor:
+
+    mode = config['MODE']
+    op.moe_groupgemm_marlin_w4a8_asm(input, b_qweight, output, a_scale, b_scale,
+                                        problem_size, experts_offsets, mode)
+    return output
+
 def gemm_w8a8_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 'TN'):
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()
     assert block_size[0] == 128 and block_size[1] == 128

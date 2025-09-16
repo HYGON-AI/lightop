@@ -1,5 +1,4 @@
 import torch
-torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 import time
 import pandas as pd
 import functools
@@ -8,6 +7,7 @@ import os
 import math
 from typing import Any, Callable, Dict, List, Optional, Tuple,Type,Any
 from vllm import _custom_ops as ops
+import torch
 import triton
 import itertools
 from lightop import moe_groupgemm_w4a8
@@ -19,7 +19,6 @@ import torch.multiprocessing as mp
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
 import argparse
-from w4a8_moe_groupgemm_marlin_quant import w4a8_2_marlin_weight  # pyright: ignore[reportMissingImports]
 
 from vllm.platforms import current_platform
 device_name = current_platform.get_device_name().replace(" ", "_")
@@ -119,11 +118,7 @@ def fused_experts_impl_w4a8_ep_correctness(hidden_states,weight13, weight2, w13_
     inter_out_gemm2 = []  # pyright: ignore[reportUnusedVariable]
     act_out_gemm2 = []
     q_a1_all, qa1_scale_all = per_token_quant_int8(hidden_states)
-    # q_a1_all = torch.ones_like(q_a1_all)*5
-    # qa1_scale_all = torch.ones_like(qa1_scale_all)
-    # w13_scale = torch.ones_like(w13_scale)
-    # import pdb
-    # pdb.set_trace()
+
     for i, num_tokens in enumerate(tokens_per_expert):
         end_idx = start_idx + num_tokens
         if num_tokens == 0:
@@ -144,8 +139,6 @@ def fused_experts_impl_w4a8_ep_correctness(hidden_states,weight13, weight2, w13_
         act_out = F.silu(inter_out[..., :d]) * inter_out[..., d:]
         act_out_gemm2.append(act_out)
         act_out_q, act_out_s = per_token_quant_int8(act_out)
-        # import pdb
-        # pdb.set_trace()
 
         expert_out= native_w8a8_per_token_matmul(
             act_out_q, current_w2, act_out_s, current_w2_s, output_dtype=hidden_states.dtype
@@ -179,13 +172,9 @@ def fused_experts_impl_w4a8_ep_correctness(hidden_states,weight13, weight2, w13_
     problem_size_max = problem_size.max()
     expert_offsets = list(itertools.accumulate(tokens_per_expert, initial=0))[:-1]
     assert len(expert_offsets) == len(problem_size)
-    # tensor_problem_size = torch.tensor(problem_size, dtype=torch.int32, device=hidden_states.device)
-    tensor_problem_size = problem_size.to(device=hidden_states.device, dtype=torch.int32)
+    tensor_problem_size = torch.tensor(problem_size, dtype=torch.int32, device=hidden_states.device)
     tensor_expert_offsets = torch.tensor(expert_offsets, dtype=torch.int32, device=hidden_states.device)
-
-    print("tensor_problem_size: ", tensor_problem_size)
-    print("tensor_expert_offsets: ", tensor_expert_offsets)
-    print("problem_size_max: ", problem_size_max)
+    torch.cuda.synchronize()
     
     # # gemm1
     moe_groupgemm_w4a8(q_a1_all, 
@@ -198,13 +187,19 @@ def fused_experts_impl_w4a8_ep_correctness(hidden_states,weight13, weight2, w13_
                         problem_size_max,
                         config1)
     torch.cuda.synchronize()
+
     if not (torch.allclose(inter_out_gemm1_out_ref, gemm1_out_cuda, rtol=1e-2, atol=1e-2)):
         print("error moe_groupgemm_w4a8 gemm1 精度检查不合格！！！")
+        # torch.set_printoptions(profile="full")  
+        # fasm = open('asm_output.txt', 'w')   
+        # print(f'asm_output: {out_cuda}', file=fasm)
+        # fasm.close
+        # ftorch = open('torch_output.txt', 'w')   
+        # print(f'torch_output: {inter_out_gemm1_out_ref}', file=ftorch)
+        # ftorch.close
     else:
         print("success moe_groupgemm_w4a8 gemm1 精度检查合格")
     
-    # import pdb
-    # pdb.set_trace()
     # gemm2
     moe_groupgemm_w4a8(act_out_q, 
                         weight2, 
@@ -238,21 +233,6 @@ def fused_experts_impl_w4a8_ep_dobench(hidden_states,weight13, weight2, w13_scal
             
     outputs = []
     start_idx = 0
-    
-    # -------- 处理 gemm1 权重矩阵 ------------------
-    w1_marlin_list = []
-    for i in range(weight13.shape[0]):
-        w1_marlin_in = w4a8_2_marlin_weight(weight13[i])
-        w1_marlin_list.append(w1_marlin_in)
-    weight13_marlin = torch.stack(w1_marlin_list, dim=0)
-    
-    # -------- 处理 gemm2 权重矩阵 ------------------
-    w2_marlin_list = []
-    for i in range(weight2.shape[0]):
-        w2_marlin_in = w4a8_2_marlin_weight(weight2[i])
-        w2_marlin_list.append(w2_marlin_in)
-    weight2_marlin = torch.stack(w2_marlin_list, dim=0)
-    
     w13 = unpack_int8_to_int4(weight13)
     w2 = unpack_int8_to_int4(weight2)
     inter_out_gemm1 = []
@@ -326,6 +306,7 @@ def fused_experts_impl_w4a8_ep_dobench(hidden_states,weight13, weight2, w13_scal
     config1, config2, status = get_moe_groupgemm_config_w4a8(E, M, N1, K1, N2, K2, device_name, num_cus, dtype, None, None)
         
     problem_size = tokens_per_expert
+    problem_size_max = problem_size.max()
     expert_offsets = list(itertools.accumulate(tokens_per_expert, initial=0))[:-1]
     assert len(expert_offsets) == len(problem_size)
     tensor_problem_size = torch.tensor(problem_size, dtype=torch.int32, device=hidden_states.device)
@@ -336,43 +317,43 @@ def fused_experts_impl_w4a8_ep_dobench(hidden_states,weight13, weight2, w13_scal
     # warp
     for i in range(10):
         moe_groupgemm_w4a8(q_a1_all, 
-                            weight13_marlin, 
-                            gemm1_out_cuda,
-                            qa1_scale_all, 
-                            w13_scale,
-                            tensor_problem_size, 
-                            tensor_expert_offsets,
-                            config1)
+                                    weight13, 
+                                    gemm1_out_cuda,
+                                    qa1_scale_all, 
+                                    w13_scale,
+                                    tensor_problem_size, 
+                                    tensor_expert_offsets,
+                                    config1)
         
     asm_gemm1_cost=triton.testing.do_bench(lambda: moe_groupgemm_w4a8(q_a1_all, 
-                                                                        weight13_marlin, 
-                                                                        gemm1_out_cuda,
-                                                                        qa1_scale_all, 
-                                                                        w13_scale,
-                                                                        tensor_problem_size, 
-                                                                        tensor_expert_offsets,
-                                                                        config1),quantiles=None, return_mode="mean")*1000
+                                                                                weight13, 
+                                                                                gemm1_out_cuda,
+                                                                                qa1_scale_all, 
+                                                                                w13_scale,
+                                                                                tensor_problem_size, 
+                                                                                tensor_expert_offsets,
+                                                                                config1),quantiles=None, return_mode="mean")*1000
     
     # gemm2
     # warmup
     for i in range(10):
         moe_groupgemm_w4a8(act_out_q, 
-                            weight2_marlin, 
-                            gemm2_out_cuda,
-                            act_out_s, 
-                            w2_scale,
-                            tensor_problem_size, 
-                            tensor_expert_offsets,
-                            config2)
+                                    weight2, 
+                                    gemm2_out_cuda,
+                                    act_out_s, 
+                                    w2_scale,
+                                    tensor_problem_size, 
+                                    tensor_expert_offsets,
+                                    config2)
         
     asm_gemm2_cost=triton.testing.do_bench(lambda: moe_groupgemm_w4a8(act_out_q, 
-                                                                        weight2_marlin, 
-                                                                        gemm2_out_cuda,
-                                                                        act_out_s, 
-                                                                        w2_scale,
-                                                                        tensor_problem_size, 
-                                                                        tensor_expert_offsets,
-                                                                        config2),quantiles=None, return_mode="mean")*1000
+                                                                                weight2, 
+                                                                                gemm2_out_cuda,
+                                                                                act_out_s, 
+                                                                                w2_scale,
+                                                                                tensor_problem_size, 
+                                                                                tensor_expert_offsets,
+                                                                                config2),quantiles=None, return_mode="mean")*1000
 
     return expert_output, torch_gemm1_cost, torch_gemm2_cost, asm_gemm1_cost, asm_gemm2_cost
 
@@ -438,9 +419,7 @@ def main():
         except (ValueError, SyntaxError) as e:
             raise ValueError(f"无法解析列表参数: {list_str}。错误: {str(e)}")
     
-    
-    # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096]
-    m_list=[2048]
+    m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]
     E=args.E 
     out_dtype=args.out_dtype
     
@@ -499,6 +478,6 @@ def main():
 if __name__ == "__main__":
     main()
     #dp2
-    #HIP_VISIBLE_DEVICES=3 python moe_groupgemm_w4a8/w4a8_moe_benchmark_ep.py  --E 16 --n1-list '[4096]'  --n2-list '[7168]' --k-list '[2048]'
+    #HIP_VISIBLE_DEVICES=3 python moe_groupgemm_w4a8/w4a8_moe_groupgemm_benchmark_ep.py  --E 16 --n1-list '[4096]'  --n2-list '[7168]' --k-list '[2048]'
     #dp4
-    #HIP_VISIBLE_DEVICES=3 python moe_groupgemm_w4a8/w4a8_moe_benchmark_ep.py  --E 8 --n1-list '[4096]'  --n2-list '[7168]' --k-list '[2048]'
+    #HIP_VISIBLE_DEVICES=3 python moe_groupgemm_w4a8/w4a8_moe_groupgemm_benchmark_ep.py  --E 8 --n1-list '[4096]'  --n2-list '[7168]' --k-list '[2048]'
