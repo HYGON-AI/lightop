@@ -9,7 +9,7 @@
 
 #include "aiter_hip_common.h"
 
-#define DEBUG 1
+#define DEBUG 0
 
 using half_t = __half;
 using bhalf_t = __hip_bfloat16;
@@ -67,7 +67,7 @@ void _moe_groupgemm_w4a8_TN_impl(
   globalWorkSize[2] = DIVIDE(size_m, BLOCKM);
   if constexpr(BLOCKM == 256 && BLOCKN == 128 && BLOCKK == 128 && BLOCKDIM == 512) {
     globalWorkSize[0] = DIVIDE(size_n, BLOCKM);
-    globalWorkSize[2] = DIVIDE(problem_size_max, BLOCKN);
+    globalWorkSize[2] = DIVIDE(size_m, BLOCKN);
   } 
 
   // printf("globalWorkSize[0]:%d globalWorkSize[1]:%d globalWorkSize[2]:%d\n", globalWorkSize[0], globalWorkSize[1], globalWorkSize[2]);
@@ -225,7 +225,7 @@ torch::Tensor moe_groupgemm_w4a8_asm(
       output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
         _moe_groupgemm_w4a8_TN_impl<256, 128, 128, scalar_t, 512>(  // 
           input, b_qweight, output, a_scale, b_scale,
-          problem_size, expert_offsets, problem_size_max, experts_num);
+          problem_size, expert_offsets, experts_num);
       }
     );
   } else {
