@@ -9,7 +9,7 @@
 
 #include "aiter_hip_common.h"
 
-#define DEBUG 0
+#define DEBUG 1
 
 using half_t = __half;
 using bhalf_t = __hip_bfloat16;
@@ -44,7 +44,7 @@ struct HipFunctionArgs {
 namespace at {
 namespace native {
 
-template <int BLOCKM, int BLOCKN, int BLOCKK, typename OutputType>
+template <int BLOCKM, int BLOCKN, int BLOCKK, typename OutputType, int BLOCKDIM = 768>
 void _moe_groupgemm_w4a8_TN_impl(
   torch::Tensor input,
   torch::Tensor b_qweight,
@@ -60,11 +60,16 @@ void _moe_groupgemm_w4a8_TN_impl(
   const int size_k = input.size(1);
 
   /* grid sizes */
-  size_t localWorkSize[3] = {768, 1, 1};
+  size_t localWorkSize[3] = {BLOCKDIM, 1, 1};
   size_t globalWorkSize[3] = {1, 1, 1};
   globalWorkSize[0] = DIVIDE(size_n, BLOCKN);
   globalWorkSize[1] = experts_num;
   globalWorkSize[2] = DIVIDE(size_m, BLOCKM);
+  if constexpr(BLOCKM == 256 && BLOCKN == 128 && BLOCKK == 128 && BLOCKDIM == 512) {
+    globalWorkSize[0] = DIVIDE(size_n, BLOCKM);
+    globalWorkSize[2] = DIVIDE(problem_size_max, BLOCKN);
+  } 
+
   // printf("globalWorkSize[0]:%d globalWorkSize[1]:%d globalWorkSize[2]:%d\n", globalWorkSize[0], globalWorkSize[1], globalWorkSize[2]);
 
   HipFunctionArgs<OutputType> hipFunctionArgs;
@@ -89,18 +94,10 @@ void _moe_groupgemm_w4a8_TN_impl(
   hipFunctionArgs.stride_bsk = b_scale.stride(2);
   void * debug_host = nullptr, * debug_device = nullptr;
   #if DEBUG
-  int bytes = 4;
-  int debug_size = 768 * bytes;
+  int bytes = 64;
+  int debug_size = BLOCKDIM * bytes;
   debug_host = malloc(debug_size);
   hipMalloc((void **)&debug_device, debug_size);
-  // printf("%s:%d isBfloat16:%d \n", __FILE__, __LINE__, isBfloat16);
-  // 通过 data_ptr 访问
-  // printf("expert_offsets\n");
-  // int* p = expert_offsets.data_ptr<int>();
-
-  // for (int i = 0; i < 32; i++) {
-  //     std::cout << p[i] << " ";
-  // }
   #endif
   hipFunctionArgs.debugBuffer = debug_device;
   size_t argsSize = sizeof(hipFunctionArgs);
@@ -131,9 +128,19 @@ void _moe_groupgemm_w4a8_TN_impl(
   
   #if DEBUG
   // AT_CUDA_CHECK(cudaStreamSynchronize(stream));
-  printf("argsSize:%d\n", argsSize);
-  printf("%s:%d gdx:%d gdy:%d gdz:%d bdx:%d bdy:%d bdz:%d\n", __FILE__, __LINE__, globalWorkSize[0], globalWorkSize[1], globalWorkSize[2],
-    localWorkSize[0], localWorkSize[1], localWorkSize[2]);
+  
+  printf("%s:%d gdx:%d gdy:%d gdz:%d bdx:%d bdy:%d bdz:%d argsSize:%ld\n", __FILE__, __LINE__, globalWorkSize[0], globalWorkSize[1], globalWorkSize[2],
+    localWorkSize[0], localWorkSize[1], localWorkSize[2], argsSize);
+  printf("numWorkGroups0:%p\nnumWorkGroups1:%p\nptr_C:%p\nptr_A:%p\nptr_B:%p\nptr_A_scale:%p\nptr_B_scale:%p\ntopk_weights:%p\nexpert_offsets:%p\nproblem_size:%p\nexperts_num:%p\n"
+    "size_m:%p\nsize_n:%p\nsize_k:%p\nstride_asm:%p\nstride_ask:%p\nstride_bse:%p\nstride_bsn:%p\nstride_bsk:%p\ndebugBuffer%p\n",
+    &hipFunctionArgs.numWorkGroups0, &hipFunctionArgs.numWorkGroups1, &hipFunctionArgs.ptr_C,
+    &hipFunctionArgs.ptr_A, &hipFunctionArgs.ptr_B, &hipFunctionArgs.ptr_A_scale,
+    &hipFunctionArgs.ptr_B_scale, &hipFunctionArgs.topk_weights, &hipFunctionArgs.expert_offsets, 
+    &hipFunctionArgs.problem_size, &hipFunctionArgs.experts_num, &hipFunctionArgs.size_m,
+    &hipFunctionArgs.size_n, &hipFunctionArgs.size_k, &hipFunctionArgs.stride_asm, 
+    &hipFunctionArgs.stride_ask, &hipFunctionArgs.stride_bse, &hipFunctionArgs.stride_bsn,
+    &hipFunctionArgs.stride_bsk, &hipFunctionArgs.debugBuffer
+  );
   printf("\ndebug:\n");
   hipMemcpy(debug_host, hipFunctionArgs.debugBuffer, debug_size, hipMemcpyDeviceToHost);
   using DEBUG_TYPE = int8_t;
@@ -141,17 +148,18 @@ void _moe_groupgemm_w4a8_TN_impl(
   // using DEBUG_TYPE = int32_t;
   // using DEBUG_TYPE = float;
   // using DEBUG_TYPE = bhalf_t;
-  // int split = bytes / sizeof(DEBUG_TYPE);
+  int split = bytes / sizeof(DEBUG_TYPE);
   DEBUG_TYPE *p_debug = reinterpret_cast<DEBUG_TYPE*>(debug_host);
-  for (int i = 0; i < 32; ++i) {
+  for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
   // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / split; ++i) {
-    if (i % 8 == 0) printf("\n");
-    // if (i % 8 == 0) printf("\ni:%d ", i / 8);
-    printf("iiii:%3d:%d\t", i, p_debug[i]);
+    // if (i % 8 == 0) printf("\n");
+    if (i % 32 == 0) printf("\ni:%d ", i / 32);
     // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%3d:%10.4f\t", i, static_cast<float>(tmp[i+1]));
     // printf("%3d:%6d\t", i, p_debug[i]);
-    // printf("%3d\t", p_debug[i]);
+    printf("%6d\t", p_debug[i]);
+    // printf("%10d\t", p_debug[i]);
+    // printf("%10.4f\t", p_debug[i]);
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f ", static_cast<float>(tmp[0]));
     // int index = split * i;
@@ -205,9 +213,19 @@ torch::Tensor moe_groupgemm_w4a8_asm(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
       output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
-        _moe_groupgemm_w4a8_TN_impl<128, 512, 128, scalar_t>(
+        _moe_groupgemm_w4a8_TN_impl<128, 256, 128, scalar_t>(
           input, b_qweight, output, a_scale, b_scale,
           problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1001) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_w4a8_TN_impl<256, 128, 128, scalar_t, 512>(  // 
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, problem_size_max, experts_num);
       }
     );
   } else {

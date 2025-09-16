@@ -108,7 +108,7 @@ def fused_marlin_moe_valid(
     #                     'MODE': 500,
     #                     'DELTA': 1
     #                 }
-    '''
+    # '''
     print("a_1:", a_1.shape)
     print("w1_marlin:", w1_marlin.shape, w1_marlin.dtype, w1_marlin.stride())
     print("intermediate_cache1:", intermediate_cache1.shape)
@@ -156,18 +156,20 @@ def fused_marlin_moe_valid(
 
     triton_gemm1_output = triton_gemm1_output.reshape((-1, 2 * N))
     # debug
-    '''
+    # '''
     w1_int8_list = []
     for i in range(w1_triton.shape[0]):
         w1_int8 = unpack_int8_to_int4(w1_triton[i])
         w1_int8_list.append(w1_int8)
     w1_int8 = torch.stack(w1_int8_list, dim=0).to(torch.uint8) << 4
     w1_int8 = w1_int8.to(torch.int8)
-    begin, end, expert_id = 0, 128, 0
+    begin, end, expert_id = 0, 10, 0
     res = torch.matmul(a_1[sorted_token_ids[begin:end] // topk].cpu().to(torch.int32), w1_int8[expert_id, :, :].t().cpu().to(torch.int32))
+    res0 = torch.matmul(a_1[sorted_token_ids[begin:end] // topk].cpu().to(torch.int32)[:, :128], w1_int8[expert_id, :, :].t().cpu().to(torch.int32)[:128, :])
     out = res.to(a_1.device) * a_1_scale[sorted_token_ids[begin:end] // topk] * w1_scale[expert_id].t()
     out_bf16 =  out.to(torch.bfloat16)
     torch.nonzero(intermediate_cache1 != triton_gemm1_output)
+    torch.nonzero(intermediate_cache1[1] != triton_gemm1_output[1])
     torch.nonzero(intermediate_cache1[sorted_token_ids[begin:end]] != triton_gemm1_output[sorted_token_ids[begin:end]])
     # torch.nonzero(out_bf16 != intermediate_cache1)
     torch.nonzero(sorted_token_ids == 1)
@@ -186,7 +188,7 @@ def fused_marlin_moe_valid(
     # [M*topk, N] [32*8, 256]
     a_2, a_2_scale = per_token_quant_int8(intermediate_cache2)
     torch.cuda.synchronize()
-    '''
+    # '''
     print("a_2:", a_2.shape)
     print("w2_marlin:", w2_marlin.shape, w2_marlin.dtype, w2_marlin.stride())
     print("intermediate_cache3:", intermediate_cache3.shape)
