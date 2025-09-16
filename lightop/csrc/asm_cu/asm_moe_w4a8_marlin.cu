@@ -37,8 +37,8 @@ struct HipFunctionArgs {
   uint32_t stride_asm;               // input scale stride m
   uint32_t stride_ask;               // input scale stride k
   uint32_t stride_bse;               // weight scale stride expert
-  uint32_t stride_bsn;               // weight scale stride n
-  uint32_t stride_bsk;               // weight scale stride k
+  uint32_t stride_bn;               // weight scale stride n
+  uint32_t stride_bk;               // weight scale stride k
   uint32_t sorted_token_lens;        // sorted token length
   uint32_t topk;                     // top k
   float topk_rcip;                   // top k
@@ -102,14 +102,14 @@ void _moe_w4a8_marlin_TN_impl(
   hipFunctionArgs.stride_asm = a_scale.stride(0);
   hipFunctionArgs.stride_ask = a_scale.stride(1);
   hipFunctionArgs.stride_bse = b_scale.stride(0);
-  hipFunctionArgs.stride_bsn = b_scale.stride(1);
-  hipFunctionArgs.stride_bsk = b_scale.stride(2);
+  hipFunctionArgs.stride_bn = b_qweight.size(2) * 4;
+  hipFunctionArgs.stride_bk = b_qweight.size(1);
   hipFunctionArgs.sorted_token_lens = sorted_token_ids.size(0);
   hipFunctionArgs.topk = top_k;
   hipFunctionArgs.topk_rcip = 1.0 / top_k;
   void * debug_host = nullptr, * debug_device = nullptr;
   #if DEBUG
-  int bytes = 28;
+  int bytes = 128;
   int debug_size = 768 * bytes;
   debug_host = malloc(debug_size);
   hipMalloc((void **)&debug_device, debug_size);
@@ -161,30 +161,30 @@ void _moe_w4a8_marlin_TN_impl(
     localWorkSize[0], localWorkSize[1], localWorkSize[2]);
   printf("\ndebug:\n");
   hipMemcpy(debug_host, debug_device, debug_size, hipMemcpyDeviceToHost);
-  // using DEBUG_TYPE = int8_t;
+  using DEBUG_TYPE = int8_t;
   // using DEBUG_TYPE = uint32_t;
   // using DEBUG_TYPE = int32_t;
-  using DEBUG_TYPE = float;
+  // using DEBUG_TYPE = float;
   // using DEBUG_TYPE = bhalf_t;
   int split = bytes / sizeof(DEBUG_TYPE);
   DEBUG_TYPE *p_debug = reinterpret_cast<DEBUG_TYPE*>(debug_host);
   // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
   for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / split; ++i) {
     // if (i % 16 == 0) printf("\n");
-    // if (i % 2 == 0) printf("\ni:%d ", i / 2);
+    if (i % 32 == 0) printf("\ni:%d ", i / 32);
     // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f\t", p_debug[i]);
     // printf("%3d:%10.4f\t", i, static_cast<float>(tmp[i+1]));
     // printf("%3d:%6d\t", i, p_debug[i]);
-    // printf("%3d\t", p_debug[i]);
+    printf("%6d\t", p_debug[i]);
     // printf("%10d\t", p_debug[i]);
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f ", static_cast<float>(tmp[0]));
-    int index = split * i;
-    // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + index + 8);
-    printf("tid:%d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n", i, 
-      p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ], p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ]
-    );
+    // int index = split * i;
+    // // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + index + 8);
+    // printf("tid:%d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n", i, 
+    //   p_debug[index+0 ], p_debug[index+1 ], p_debug[index+2 ], p_debug[index+3 ], p_debug[index+4 ], p_debug[index+5 ], p_debug[index+6 ]
+    // );
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + index);
     // printf("tid:%d %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f %10.4f\n", i, 
     //   static_cast<float>(tmp[0]), static_cast<float>(tmp[2]), static_cast<float>(tmp[4]), static_cast<float>(tmp[6]), 
