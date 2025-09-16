@@ -10,8 +10,8 @@ from vllm import _custom_ops as ops
 import torch
 import triton
 import itertools
-from lightop import moe_groupgemm_w4a8
-from lightop import get_moe_groupgemm_config_w4a8
+from lightop import moe_groupgemm_marlin_w4a8
+from lightop import get_moe_groupgemm_marlin_config_w4a8
 import triton.language as tl
 import torch.nn.functional as F
 import ast  
@@ -181,7 +181,7 @@ def fused_experts_impl_w4a8_ep_correctness(hidden_states,weight13, weight2, w13_
     K2 = N1 // 4
 
     dtype = hidden_states.dtype
-    config1, config2, status = get_moe_groupgemm_config_w4a8(E, M, N1, K1, N2, K2, device_name, num_cus, dtype, None, None)
+    config1, config2, status = get_moe_groupgemm_marlin_config_w4a8(E, M, N1, K1, N2, K2, device_name, num_cus, dtype, None, None)
         
     problem_size = tokens_per_expert
     expert_offsets = list(itertools.accumulate(tokens_per_expert, initial=0))[:-1]
@@ -193,14 +193,14 @@ def fused_experts_impl_w4a8_ep_correctness(hidden_states,weight13, weight2, w13_
     # print("tensor_expert_offsets: ", tensor_expert_offsets)
     
     # # gemm1
-    moe_groupgemm_w4a8(q_a1_all, 
-                        weight13_marlin, 
-                        gemm1_out_cuda,
-                        qa1_scale_all, 
-                        w13_scale,
-                        tensor_problem_size, 
-                        tensor_expert_offsets,
-                        config1)
+    moe_groupgemm_marlin_w4a8(q_a1_all, 
+                                weight13_marlin, 
+                                gemm1_out_cuda,
+                                qa1_scale_all, 
+                                w13_scale,
+                                tensor_problem_size, 
+                                tensor_expert_offsets,
+                                config1)
     torch.cuda.synchronize()
     
     if not (torch.allclose(inter_out_gemm1_out_ref, gemm1_out_cuda, rtol=1e-2, atol=1e-2)):
@@ -216,14 +216,14 @@ def fused_experts_impl_w4a8_ep_correctness(hidden_states,weight13, weight2, w13_
         print("success moe_groupgemm_w4a8 gemm1 精度检查合格")
     
     # gemm2
-    moe_groupgemm_w4a8(act_out_q, 
-                        weight2_marlin, 
-                        gemm2_out_cuda,
-                        act_out_s, 
-                        w2_scale,
-                        tensor_problem_size, 
-                        tensor_expert_offsets,
-                        config2)
+    moe_groupgemm_marlin_w4a8(act_out_q, 
+                                weight2_marlin, 
+                                gemm2_out_cuda,
+                                act_out_s, 
+                                w2_scale,
+                                tensor_problem_size, 
+                                tensor_expert_offsets,
+                                config2)
     if not (torch.allclose(expert_output, gemm2_out_cuda, rtol=1e-2, atol=1e-2)):
         print("error moe_groupgemm_w4a8 gemm2 精度检查不合格！！！")
         # torch.set_printoptions(profile="full")  
