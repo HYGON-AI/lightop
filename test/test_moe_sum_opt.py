@@ -32,18 +32,19 @@ def _test_helper(m: int,
     output_pytorch_ref = torch.zeros_like(output_ops)
     moe_sum_reduce_torch_compile(input, output_pytorch_ref, 1.0)
     bias = torch.randn_like(output_ops)
-
+    factor = 2.5
     if out_dtype == torch.bfloat16:
         # bfloat16: output = sum_result * 2.5 + bias
-        output_pytorch_ref.mul_(2.5).add_(bias)
+        output_pytorch_ref.mul_(factor).add_(bias)
     elif out_dtype == torch.float16:
+        factor_inverse = 1.0 / factor
         # float16: output = sum_result + (bias * 2.5)
-        output_pytorch_ref.add_(bias.mul(2.5))
+        output_pytorch_ref.add_(bias.mul(factor_inverse))
      
     # --- 1. 手写 CUDA 算子计时 ---
     # do_bench 自带预热，无需手动循环
     torch.cuda.synchronize()
-    elapsed_time0_gpu = triton.testing.do_bench(lambda: ops.moe_sum(input, output_ops,bias), quantiles=None, return_mode="mean") * 1000
+    elapsed_time0_gpu = triton.testing.do_bench(lambda: ops.moe_sum(input, output_ops,bias,factor), quantiles=None, return_mode="mean") * 1000
     print(f"cuda time: {elapsed_time0_gpu:.4f} us")
     torch.cuda.synchronize()
     

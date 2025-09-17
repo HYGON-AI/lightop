@@ -41,6 +41,7 @@ __global__ void moe_align_block_size_kernel_opt_fused(
   if (expert_map != nullptr) {
     for (size_t i = tid; i < numel; i += stride) {
       int32_t logical_expert_id = topk_ids[i];
+      //判断  rank 判断
       int32_t mapped_expert_id = expert_map[logical_expert_id];
       atomicAdd(&shared_counts[mapped_expert_id], 1);
     }
@@ -375,9 +376,10 @@ template <typename scalar_t, int TOPK, bool Is_bf16>
 __global__ void
 moe_sum_kernel(scalar_t *__restrict__ out,         // [..., d]
                const scalar_t *__restrict__ input, // [..., topk, d]
-               const int d, scalar_t *__restrict__ bias) {
+               const int d, scalar_t *__restrict__ bias, float factor) {
   const int64_t token_idx = blockIdx.x;
   for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+    if(!Is_bf16) factor = 1.0f / factor;
     scalar_t x = 0.0;
 #pragma unroll
     for (int k = 0; k < TOPK; ++k) {
@@ -387,9 +389,9 @@ moe_sum_kernel(scalar_t *__restrict__ out,         // [..., d]
       out[token_idx * d + idx] = x;
     } else {
       if (Is_bf16) {
-        out[token_idx * d + idx] = x * 2.5 + bias[token_idx * d + idx];
+        out[token_idx * d + idx] = x * factor + bias[token_idx * d + idx];
       } else {
-        out[token_idx * d + idx] = x + bias[token_idx * d + idx] * 2.5;
+        out[token_idx * d + idx] = x + bias[token_idx * d + idx] * factor;
       }
     }
   }
@@ -494,7 +496,7 @@ template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
           int total_threads_per_token, int TILE_WIDTH, bool Is_bf16>
 __global__ void moe_sum_kernel_reg(scalar_t *__restrict__ out,
                                    const scalar_t *__restrict__ input,
-                                   scalar_t *__restrict__ bias) {
+                                   scalar_t *__restrict__ bias, float factor) {
   using VecType = Vector<scalar_t, VEC_SIZE>;
   const int token_idx = blockIdx.y;
   const VecType *input_base_ptr =
@@ -502,7 +504,6 @@ __global__ void moe_sum_kernel_reg(scalar_t *__restrict__ out,
   VecType *out_base_ptr = reinterpret_cast<VecType *>(out) + token_idx * d_vec;
 
   const int tid_in_block = threadIdx.x;
-
   for (int tile_start_idx = blockIdx.x * TILE_WIDTH; tile_start_idx < d_vec;
        tile_start_idx += total_threads_per_token) {
     const int current_idx = tile_start_idx + tid_in_block;
@@ -524,11 +525,11 @@ __global__ void moe_sum_kernel_reg(scalar_t *__restrict__ out,
         VecType bias_val = bias_base_ptr[current_idx];
         if (Is_bf16) {
           for (int i = 0; i < VEC_SIZE; i++) {
-            sum_vec.val[i] = sum_vec.val[i] * 2.5f + bias_val.val[i];
+            sum_vec.val[i] = sum_vec.val[i] * factor + bias_val.val[i];
           }
         } else {
           for (int i = 0; i < VEC_SIZE; i++) {
-            sum_vec.val[i] = sum_vec.val[i] + bias_val.val[i] * 2.5f;
+            sum_vec.val[i] = sum_vec.val[i] + bias_val.val[i] * factor;
           }
         }
         out_base_ptr[current_idx] = sum_vec;
@@ -540,7 +541,7 @@ template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
           int total_threads_per_token, int TILE_WIDTH, bool Is_bf16>
 __global__ void moe_sum_kernel_reg_bf16_add_bias(scalar_t *__restrict__ out,
                                             const scalar_t *__restrict__ input,
-                                            scalar_t *__restrict__ bias) {
+                                            scalar_t *__restrict__ bias, float factor) {
   using VecType = Vector<scalar_t, VEC_SIZE>;
   const int token_idx = blockIdx.y;
   const VecType *input_base_ptr =
@@ -580,7 +581,7 @@ __global__ void moe_sum_kernel_reg_bf16_add_bias(scalar_t *__restrict__ out,
 #pragma unroll
       for (int i = 0; i < VEC_SIZE; i++) {
         temp_mul_rounded.val[i] = static_cast<scalar_t>(
-            static_cast<float>(sum_vec_rounded.val[i]) * 2.5f);
+            static_cast<float>(sum_vec_rounded.val[i]) * factor);
       }
 #pragma unroll
       for (int i = 0; i < VEC_SIZE; i++) {
@@ -596,7 +597,7 @@ template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
           int total_threads_per_token, int TILE_WIDTH, bool Is_bf16>
 __global__ void moe_sum_kernel_shared_mem(scalar_t *__restrict__ out,
                                           const scalar_t *__restrict__ input,
-                                          scalar_t *__restrict__ bias) {
+                                          scalar_t *__restrict__ bias, float factor) {
   using VecType = Vector<scalar_t, VEC_SIZE>;
   __shared__ VecType tile[TOPK][TILE_WIDTH];
   const int token_idx = blockIdx.y;
@@ -605,7 +606,7 @@ __global__ void moe_sum_kernel_shared_mem(scalar_t *__restrict__ out,
   VecType *out_base_ptr = reinterpret_cast<VecType *>(out) + token_idx * d_vec;
 
   const int tid_in_block = threadIdx.x;
-
+// if(!Is_bf16) factor = 1.0f / factor;
   for (int tile_start_idx = blockIdx.x * TILE_WIDTH; tile_start_idx < d_vec;
        tile_start_idx += total_threads_per_token) {
 
@@ -635,11 +636,11 @@ __global__ void moe_sum_kernel_shared_mem(scalar_t *__restrict__ out,
         VecType bias_val = bias_base_ptr[current_idx];
         if (Is_bf16) {
           for (int i = 0; i < VEC_SIZE; i++) {
-            sum_vec.val[i] = sum_vec.val[i] * 2.5f + bias_val.val[i];
+            sum_vec.val[i] = sum_vec.val[i] *factor + bias_val.val[i];
           }
         } else {
           for (int i = 0; i < VEC_SIZE; i++) {
-            sum_vec.val[i] = sum_vec.val[i] + bias_val.val[i] * 2.5f;
+            sum_vec.val[i] = sum_vec.val[i] + bias_val.val[i] * factor;
           }
         }
         out_base_ptr[current_idx] = sum_vec;
@@ -926,7 +927,8 @@ void moe_align_block_size(torch::Tensor topk_ids, int64_t num_experts,
 void moe_sum(
     torch::Tensor &input,  // [num_tokens, topk, hidden_size]
     torch::Tensor &output, // [num_tokens, hidden_size]
-    const torch::optional<torch::Tensor> &bias) 
+    const torch::optional<torch::Tensor> &bias,
+    const float factor = 1.f) 
 {
   const int hidden_size = input.size(-1);
   const auto num_tokens = output.numel() / hidden_size;
@@ -946,12 +948,14 @@ void moe_sum(
             moe_sum_kernel<scalar_t, 2, true><<<grid, block, 0, stream>>>(
                 output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
                 hidden_size,
-                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                factor);
           } else {
             moe_sum_kernel<scalar_t, 2, false><<<grid, block, 0, stream>>>(
                 output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
                 hidden_size,
-                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+               factor);
           }
         });
     break;
@@ -964,12 +968,14 @@ void moe_sum(
             moe_sum_kernel<scalar_t, 3, true><<<grid, block, 0, stream>>>(
                 output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
                 hidden_size,
-                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+               factor);
           } else {
             moe_sum_kernel<scalar_t, 3, false><<<grid, block, 0, stream>>>(
                 output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
                 hidden_size,
-                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+               factor);
           }
         });
     break;
@@ -982,12 +988,14 @@ void moe_sum(
             moe_sum_kernel<scalar_t, 4, true><<<grid, block, 0, stream>>>(
                 output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
                 hidden_size,
-                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+               factor);
           } else {
             moe_sum_kernel<scalar_t, 4, false><<<grid, block, 0, stream>>>(
                 output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
                 hidden_size,
-                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+               factor);
           }
         });
     break;
@@ -1007,15 +1015,15 @@ void moe_sum(
                                             block_size, true>
                     <<<Grid, block_size, 0, stream>>>(
                         output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                        bias.has_value() ? bias->data_ptr<scalar_t>()
-                                         : nullptr);
+                        bias.has_value() ? bias->data_ptr<scalar_t>(): nullptr,
+                        factor);
               } else {
                 moe_sum_kernel_reg<scalar_t, 8, VEC_SIZE, 7168 / VEC_SIZE,
                                    7 * block_size, block_size, false>
                     <<<Grid, block_size, 0, stream>>>(
                         output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                        bias.has_value() ? bias->data_ptr<scalar_t>()
-                                         : nullptr);
+                        bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                        1.0/factor);
               }
             });
       } else {
@@ -1029,8 +1037,8 @@ void moe_sum(
                                             block_size, true>
                     <<<Grid, block_size, 0, stream>>>(
                         output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                        bias.has_value() ? bias->data_ptr<scalar_t>()
-                                         : nullptr);
+                        bias.has_value() ? bias->data_ptr<scalar_t>(): nullptr,
+                         factor);
 
               } else {
                 moe_sum_kernel_shared_mem<scalar_t, 8, VEC_SIZE,
@@ -1038,8 +1046,8 @@ void moe_sum(
                                           block_size, false>
                     <<<Grid, block_size, 0, stream>>>(
                         output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                        bias.has_value() ? bias->data_ptr<scalar_t>()
-                                         : nullptr);
+                        bias.has_value() ? bias->data_ptr<scalar_t>(): nullptr,
+                         1.0/factor);
               }
             });
       }
@@ -1051,12 +1059,14 @@ void moe_sum(
               moe_sum_kernel<scalar_t, 8, true><<<grid, block, 0, stream>>>(
                   output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
                   hidden_size,
-                  bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+                  bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                 factor);
             } else {
               moe_sum_kernel<scalar_t, 8, false><<<grid, block, 0, stream>>>(
                   output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
                   hidden_size,
-                  bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+                  bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                 factor);
             }
           });
     }
