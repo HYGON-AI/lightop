@@ -371,11 +371,11 @@ __global__ void sgl_ep_moe_align_block_size_kernel(
   }
 }
 
-template <typename scalar_t, int TOPK>
+template <typename scalar_t, int TOPK, bool Is_bf16>
 __global__ void
 moe_sum_kernel(scalar_t *__restrict__ out,         // [..., d]
                const scalar_t *__restrict__ input, // [..., topk, d]
-               const int d) {
+               const int d, scalar_t *__restrict__ bias) {
   const int64_t token_idx = blockIdx.x;
   for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
     scalar_t x = 0.0;
@@ -383,7 +383,15 @@ moe_sum_kernel(scalar_t *__restrict__ out,         // [..., d]
     for (int k = 0; k < TOPK; ++k) {
       x += input[token_idx * TOPK * d + k * d + idx];
     }
-    out[token_idx * d + idx] = x;
+    if (bias == nullptr) {
+      out[token_idx * d + idx] = x;
+    } else {
+      if (Is_bf16) {
+        out[token_idx * d + idx] = x * 2.5 + bias[token_idx * d + idx];
+      } else {
+        out[token_idx * d + idx] = x + bias[token_idx * d + idx] * 2.5;
+      }
+    }
   }
 }
 template <typename scalar_t, int TOPK, int group_size, int VEC_SIZE, int d_vec,
@@ -483,9 +491,10 @@ moe_sum_kernel_fully_unrolled(scalar_t *__restrict__ out, // [..., d]
 }
 
 template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
-          int total_threads_per_token,int TILE_WIDTH>
+          int total_threads_per_token, int TILE_WIDTH, bool Is_bf16>
 __global__ void moe_sum_kernel_reg(scalar_t *__restrict__ out,
-                                   const scalar_t *__restrict__ input) {
+                                   const scalar_t *__restrict__ input,
+                                   scalar_t *__restrict__ bias) {
   using VecType = Vector<scalar_t, VEC_SIZE>;
   const int token_idx = blockIdx.y;
   const VecType *input_base_ptr =
@@ -502,18 +511,92 @@ __global__ void moe_sum_kernel_reg(scalar_t *__restrict__ out,
 #pragma unroll
       for (int k = 1; k < TOPK; ++k) {
         VecType current_vec = input_base_ptr[k * d_vec + current_idx];
-        #pragma unroll
-            for(int i = 0; i < 8; i ++){
-                sum_vec.val[i] += current_vec.val[i];
-            }
+#pragma unroll
+        for (int i = 0; i < VEC_SIZE; i++) {
+          sum_vec.val[i] += current_vec.val[i];
+        }
       }
-      out_base_ptr[current_idx] = sum_vec;
+      if (bias == nullptr) {
+        out_base_ptr[current_idx] = sum_vec;
+      } else {
+        VecType *bias_base_ptr =
+            reinterpret_cast<VecType *>(bias) + token_idx * d_vec;
+        VecType bias_val = bias_base_ptr[current_idx];
+        if (Is_bf16) {
+          for (int i = 0; i < VEC_SIZE; i++) {
+            sum_vec.val[i] = sum_vec.val[i] * 2.5f + bias_val.val[i];
+          }
+        } else {
+          for (int i = 0; i < VEC_SIZE; i++) {
+            sum_vec.val[i] = sum_vec.val[i] + bias_val.val[i] * 2.5f;
+          }
+        }
+        out_base_ptr[current_idx] = sum_vec;
+      }
     }
   }
 }
-template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,int total_threads_per_token,int TILE_WIDTH>
+template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
+          int total_threads_per_token, int TILE_WIDTH, bool Is_bf16>
+__global__ void moe_sum_kernel_reg_bf16_add_bias(scalar_t *__restrict__ out,
+                                            const scalar_t *__restrict__ input,
+                                            scalar_t *__restrict__ bias) {
+  using VecType = Vector<scalar_t, VEC_SIZE>;
+  const int token_idx = blockIdx.y;
+  const VecType *input_base_ptr =
+      reinterpret_cast<const VecType *>(input) + token_idx * TOPK * d_vec;
+  VecType *out_base_ptr = reinterpret_cast<VecType *>(out) + token_idx * d_vec;
+
+  const int tid_in_block = threadIdx.x;
+
+  for (int tile_start_idx = blockIdx.x * TILE_WIDTH; tile_start_idx < d_vec;
+       tile_start_idx += total_threads_per_token) {
+    const int current_idx = tile_start_idx + tid_in_block;
+    if (current_idx < d_vec) {
+      Vector<float, VEC_SIZE> sum_vec_f32;
+      VecType initial_vec = input_base_ptr[0 * d_vec + current_idx];
+#pragma unroll
+      for (int i = 0; i < VEC_SIZE; i++) {
+        sum_vec_f32.val[i] = static_cast<float>(initial_vec.val[i]);
+      }
+
+#pragma unroll
+      for (int k = 1; k < TOPK; ++k) {
+        VecType current_vec = input_base_ptr[k * d_vec + current_idx];
+#pragma unroll
+        for (int i = 0; i < VEC_SIZE; i++) {
+          sum_vec_f32.val[i] += static_cast<float>(current_vec.val[i]);
+        }
+      }
+      VecType sum_vec_rounded;
+#pragma unroll
+      for (int i = 0; i < VEC_SIZE; i++) {
+        sum_vec_rounded.val[i] = static_cast<scalar_t>(sum_vec_f32.val[i]);
+      }
+      VecType temp_mul_rounded;
+      VecType *bias_base_ptr =
+          reinterpret_cast<VecType *>(bias) + token_idx * d_vec;
+      VecType bias_val = bias_base_ptr[current_idx];
+#pragma unroll
+      for (int i = 0; i < VEC_SIZE; i++) {
+        temp_mul_rounded.val[i] = static_cast<scalar_t>(
+            static_cast<float>(sum_vec_rounded.val[i]) * 2.5f);
+      }
+#pragma unroll
+      for (int i = 0; i < VEC_SIZE; i++) {
+        sum_vec_rounded.val[i] =
+            static_cast<scalar_t>(static_cast<float>(temp_mul_rounded.val[i]) +
+                                  static_cast<float>(bias_val.val[i]));
+      }
+      out_base_ptr[current_idx] = sum_vec_rounded;
+    }
+  }
+}
+template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
+          int total_threads_per_token, int TILE_WIDTH, bool Is_bf16>
 __global__ void moe_sum_kernel_shared_mem(scalar_t *__restrict__ out,
-                                          const scalar_t *__restrict__ input) {
+                                          const scalar_t *__restrict__ input,
+                                          scalar_t *__restrict__ bias) {
   using VecType = Vector<scalar_t, VEC_SIZE>;
   __shared__ VecType tile[TOPK][TILE_WIDTH];
   const int token_idx = blockIdx.y;
@@ -539,229 +622,89 @@ __global__ void moe_sum_kernel_shared_mem(scalar_t *__restrict__ out,
 #pragma unroll
       for (int k = 1; k < TOPK; ++k) {
         VecType current_vec = tile[k][tid_in_block];
-        #pragma unroll
-            for(int i = 0; i < 8; i ++){
-                sum_vec.val[i] += current_vec.val[i];
-            }
+#pragma unroll
+        for (int i = 0; i < 8; i++) {
+          sum_vec.val[i] += current_vec.val[i];
+        }
       }
-      out_base_ptr[current_idx] = sum_vec;
+      if (bias == nullptr) {
+        out_base_ptr[current_idx] = sum_vec;
+      } else {
+        VecType *bias_base_ptr =
+            reinterpret_cast<VecType *>(bias) + token_idx * d_vec;
+        VecType bias_val = bias_base_ptr[current_idx];
+        if (Is_bf16) {
+          for (int i = 0; i < VEC_SIZE; i++) {
+            sum_vec.val[i] = sum_vec.val[i] * 2.5f + bias_val.val[i];
+          }
+        } else {
+          for (int i = 0; i < VEC_SIZE; i++) {
+            sum_vec.val[i] = sum_vec.val[i] + bias_val.val[i] * 2.5f;
+          }
+        }
+        out_base_ptr[current_idx] = sum_vec;
+      }
     }
     __syncthreads();
   }
 }
-// 内外预取
-template <typename scalar_t, int TOPK, int group_size, int VEC_SIZE>
+template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
+          int total_threads_per_token, int TILE_WIDTH, bool Is_bf16>
 __global__ void
-moe_sum_kernel_2level_db(scalar_t *__restrict__ out,         // [..., d]
-                         const scalar_t *__restrict__ input, // [..., topk, d]
-                         const int d) {
-
+moe_sum_kernel_shared_mem_rounding(scalar_t *__restrict__ out,
+                                   const scalar_t *__restrict__ input,
+                                   scalar_t *__restrict__ bias) {
   using VecType = Vector<scalar_t, VEC_SIZE>;
-
-  const int d_vec = d / VEC_SIZE;
-  const int token_idx = blockIdx.x / group_size;
-  const int start_idx = (blockIdx.x % group_size) * blockDim.x + threadIdx.x;
-  const int total_threads_per_token = group_size * blockDim.x;
-
+  __shared__ VecType tile[TOPK][TILE_WIDTH];
+  const int token_idx = blockIdx.y;
   const VecType *input_base_ptr =
       reinterpret_cast<const VecType *>(input) + token_idx * TOPK * d_vec;
   VecType *out_base_ptr = reinterpret_cast<VecType *>(out) + token_idx * d_vec;
 
-  int current_idx = start_idx;
+  const int tid_in_block = threadIdx.x;
 
-  VecType current_k0_vec, current_k1_vec;
-  if (current_idx < d_vec) {
-    current_k0_vec = input_base_ptr[0 * d_vec + current_idx];
-    if (TOPK > 1) {
-      current_k1_vec = input_base_ptr[1 * d_vec + current_idx];
-    }
-  }
-  for (; current_idx < d_vec; current_idx += total_threads_per_token) {
-    const int next_idx = current_idx + total_threads_per_token;
+  for (int tile_start_idx = blockIdx.x * TILE_WIDTH; tile_start_idx < d_vec;
+       tile_start_idx += total_threads_per_token) {
 
-    VecType prefetch_k0_vec, prefetch_k1_vec;
-    if (next_idx < d_vec) {
-      prefetch_k0_vec = input_base_ptr[0 * d_vec + next_idx];
-      if (TOPK > 1) {
-        prefetch_k1_vec = input_base_ptr[1 * d_vec + next_idx];
+    const int current_idx = tile_start_idx + tid_in_block;
+    if (current_idx < d_vec) {
+#pragma unroll
+      for (int k = 0; k < TOPK; ++k) {
+        tile[k][tid_in_block] = input_base_ptr[k * d_vec + current_idx];
       }
     }
-
-    VecType sum_vec = current_k0_vec;
-
-    if (TOPK > 1) {
-
-      VecType compute_k_vec = current_k1_vec;
-      VecType prefetch_k_vec;
-
-      if (2 < TOPK) {
-        prefetch_k_vec = input_base_ptr[2 * d_vec + current_idx];
-      }
-
-#pragma unroll 4
-      for (int k = 1; k < TOPK - 1; ++k) {
-
+    __syncthreads();
+    if (current_idx < d_vec) {
+      VecType sum_vec = tile[0][tid_in_block];
 #pragma unroll
-        for (int i = 0; i < VEC_SIZE; ++i) {
-          sum_vec.val[i] += compute_k_vec.val[i];
-        }
-
-        compute_k_vec = prefetch_k_vec;
-
-        if (k + 2 < TOPK) {
-          prefetch_k_vec = input_base_ptr[(k + 2) * d_vec + current_idx];
-        }
-      }
-
+      for (int k = 1; k < TOPK; ++k) {
+        VecType current_vec = tile[k][tid_in_block];
 #pragma unroll
-      for (int i = 0; i < VEC_SIZE; ++i) {
-        sum_vec.val[i] += compute_k_vec.val[i];
-      }
-    }
-
-    out_base_ptr[current_idx] = sum_vec;
-
-    current_k0_vec = prefetch_k0_vec;
-    current_k1_vec = prefetch_k1_vec;
-  }
-}
-// 内层topk预取
-template <typename scalar_t, int TOPK, int group_size, int VEC_SIZE>
-__global__ void moe_sum_kernel_prefetch_topk(
-    scalar_t *__restrict__ out,         // [..., d]
-    const scalar_t *__restrict__ input, // [..., topk, d]
-    const int d) {
-
-  using VecType = Vector<scalar_t, VEC_SIZE>;
-
-  const int d_vec = d / VEC_SIZE;
-  const int token_idx = blockIdx.x / group_size;
-  const int start_idx = (blockIdx.x % group_size) * blockDim.x + threadIdx.x;
-  const int total_threads_per_token = group_size * blockDim.x;
-
-  const VecType *input_base_ptr =
-      reinterpret_cast<const VecType *>(input) + token_idx * TOPK * d_vec;
-  VecType *out_base_ptr = reinterpret_cast<VecType *>(out) + token_idx * d_vec;
-
-  for (int idx = start_idx; idx < d_vec; idx += total_threads_per_token) {
-    VecType sum_vec = input_base_ptr[0 * d_vec + idx];
-
-    if (TOPK > 1) {
-      VecType current_vec = input_base_ptr[1 * d_vec + idx];
-
-#pragma unroll 4
-      for (int k = 1; k < TOPK - 1; ++k) {
-        VecType prefetch_vec = input_base_ptr[(k + 1) * d_vec + idx];
-#pragma unroll
-        for (int i = 0; i < VEC_SIZE; ++i) {
+        for (int i = 0; i < 8; i++) {
           sum_vec.val[i] += current_vec.val[i];
         }
-        current_vec = prefetch_vec;
       }
-
-#pragma unroll
-      for (int i = 0; i < VEC_SIZE; ++i) {
-        sum_vec.val[i] += current_vec.val[i];
-      }
-    }
-    out_base_ptr[idx] = sum_vec;
-  }
-}
-// 外层预取
-template <typename scalar_t, int TOPK, int TILE_M, int TILE_D_VEC, int VEC_SIZE>
-__global__ void moe_sum_kernel_prefetch(scalar_t *__restrict__ out,
-                                        const scalar_t *__restrict__ input,
-                                        const int num_tokens, const int d) {
-
-  using VecType = Vector<scalar_t, VEC_SIZE>;
-  const int d_vec = d / VEC_SIZE;
-  const int token_start_block = blockIdx.x * TILE_M;
-  const int dim_start_block_vec = blockIdx.y * blockDim.x * TILE_D_VEC;
-  const int local_tid = threadIdx.x;
-  const VecType *input_base_ptr = reinterpret_cast<const VecType *>(input);
-  VecType *out_base_ptr = reinterpret_cast<VecType *>(out);
-  for (int m = 0; m < TILE_M; ++m) {
-    const int token_idx = token_start_block + m;
-    if (token_idx >= num_tokens) {
-      break;
-    }
-    for (int d_i = 0; d_i < TILE_D_VEC; ++d_i) {
-      const int dim_offset_vec =
-          dim_start_block_vec + d_i * blockDim.x + local_tid;
-
-      if (dim_offset_vec >= d_vec) {
-        break;
-      }
-      const VecType *current_input_ptr =
-          input_base_ptr + token_idx * TOPK * d_vec + dim_offset_vec;
-
-      VecType sum_vec = current_input_ptr[0 * d_vec];
-      VecType next_vec = current_input_ptr[1 * d_vec];
-#pragma unroll
-      for (int k = 1; k < TOPK - 1; ++k) {
-#pragma unroll
-        for (int i = 0; i < VEC_SIZE; ++i) {
-          sum_vec.val[i] += next_vec.val[i];
+      if (bias == nullptr) {
+        out_base_ptr[current_idx] = sum_vec;
+      } else {
+        VecType *bias_base_ptr =
+            reinterpret_cast<VecType *>(bias) + token_idx * d_vec;
+        VecType bias_val = bias_base_ptr[current_idx];
+        if (Is_bf16) {
+          for (int i = 0; i < VEC_SIZE; i++) {
+            sum_vec.val[i] = sum_vec.val[i] * 2.5f + bias_val.val[i];
+          }
+        } else {
+          for (int i = 0; i < VEC_SIZE; i++) {
+            sum_vec.val[i] = sum_vec.val[i] + bias_val.val[i] * 2.5f;
+          }
         }
-        next_vec = current_input_ptr[(k + 1) * d_vec];
+        out_base_ptr[current_idx] = sum_vec;
       }
-
-#pragma unroll
-      for (int i = 0; i < VEC_SIZE; ++i) {
-        sum_vec.val[i] += next_vec.val[i];
-      }
-      out_base_ptr[token_idx * d_vec + dim_offset_vec] = sum_vec;
     }
+    __syncthreads();
   }
 }
-// 三级流水
-template <typename scalar_t, int TOPK, int group_size, int VEC_SIZE>
-__global__ void
-moe_sum_kernel_3stage(scalar_t *__restrict__ out,         // [..., d]
-                      const scalar_t *__restrict__ input, // [..., topk, d]
-                      const int d) {
-
-  using VecType = Vector<scalar_t, VEC_SIZE>;
-
-  const int d_vec = d / VEC_SIZE;
-  const int token_idx = blockIdx.x / group_size;
-  const int start_idx = (blockIdx.x % group_size) * blockDim.x + threadIdx.x;
-  const int total_threads_per_token = group_size * blockDim.x;
-
-  const VecType *input_base_ptr =
-      reinterpret_cast<const VecType *>(input) + token_idx * TOPK * d_vec;
-  VecType *out_base_ptr = reinterpret_cast<VecType *>(out) + token_idx * d_vec;
-
-  for (int idx = start_idx; idx < d_vec; idx += total_threads_per_token) {
-
-    VecType sum_vec = input_base_ptr[0 * d_vec + idx];
-
-    VecType vec_k1 = input_base_ptr[1 * d_vec + idx];
-    VecType vec_k2 = input_base_ptr[2 * d_vec + idx];
-#pragma unroll 4
-    for (int k = 1; k < TOPK - 2; ++k) {
-
-      VecType vec_k3 = input_base_ptr[(k + 2) * d_vec + idx];
-#pragma unroll
-      for (int i = 0; i < VEC_SIZE; ++i) {
-        sum_vec.val[i] += vec_k1.val[i];
-      }
-      vec_k1 = vec_k2;
-      vec_k2 = vec_k3;
-    }
-#pragma unroll 8
-    for (int i = 0; i < VEC_SIZE; ++i) {
-      sum_vec.val[i] += vec_k1.val[i];
-    }
-#pragma unroll 8
-    for (int i = 0; i < VEC_SIZE; ++i) {
-      sum_vec.val[i] += vec_k2.val[i];
-    }
-
-    out_base_ptr[idx] = sum_vec;
-  }
-}
-
 template <typename scalar_t>
 __global__ void moe_align_block_size_small_batch_expert_kernel(
     const scalar_t *__restrict__ topk_ids,
@@ -980,8 +923,10 @@ void moe_align_block_size(torch::Tensor topk_ids, int64_t num_experts,
       });
 }
 
-void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
-             torch::Tensor &output) // [num_tokens, hidden_size]
+void moe_sum(
+    torch::Tensor &input,  // [num_tokens, topk, hidden_size]
+    torch::Tensor &output, // [num_tokens, hidden_size]
+    const torch::optional<torch::Tensor> &bias) 
 {
   const int hidden_size = input.size(-1);
   const auto num_tokens = output.numel() / hidden_size;
@@ -997,9 +942,17 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
         "moe_sum_kernel", [&] {
-          moe_sum_kernel<scalar_t, 2><<<grid, block, 0, stream>>>(
-              output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-              hidden_size);
+          if (input.scalar_type() == at::ScalarType::BFloat16) {
+            moe_sum_kernel<scalar_t, 2, true><<<grid, block, 0, stream>>>(
+                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                hidden_size,
+                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+          } else {
+            moe_sum_kernel<scalar_t, 2, false><<<grid, block, 0, stream>>>(
+                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                hidden_size,
+                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+          }
         });
     break;
 
@@ -1007,9 +960,17 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
         "moe_sum_kernel", [&] {
-          moe_sum_kernel<scalar_t, 3><<<grid, block, 0, stream>>>(
-              output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-              hidden_size);
+          if (input.scalar_type() == at::ScalarType::BFloat16) {
+            moe_sum_kernel<scalar_t, 3, true><<<grid, block, 0, stream>>>(
+                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                hidden_size,
+                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+          } else {
+            moe_sum_kernel<scalar_t, 3, false><<<grid, block, 0, stream>>>(
+                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                hidden_size,
+                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+          }
         });
     break;
 
@@ -1017,9 +978,17 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
         "moe_sum_kernel", [&] {
-          moe_sum_kernel<scalar_t, 4><<<grid, block, 0, stream>>>(
-              output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-              hidden_size);
+          if (input.scalar_type() == at::ScalarType::BFloat16) {
+            moe_sum_kernel<scalar_t, 4, true><<<grid, block, 0, stream>>>(
+                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                hidden_size,
+                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+          } else {
+            moe_sum_kernel<scalar_t, 4, false><<<grid, block, 0, stream>>>(
+                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                hidden_size,
+                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+          }
         });
     break;
   case 8: {
@@ -1030,27 +999,65 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
       if (num_tokens <= 512) {
         AT_DISPATCH_FLOATING_TYPES_AND2(
             at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
-            "moe_sum_kernel", [&] {
-              moe_sum_kernel_reg<scalar_t, 8, VEC_SIZE, 7168 / VEC_SIZE, 7 * block_size,block_size>
-                  <<<Grid, block_size, 0, stream>>>(output.data_ptr<scalar_t>(),
-                                             input.data_ptr<scalar_t>());
+            "moe_sum_kernel_reg", [&] {
+              if (input.scalar_type() == at::ScalarType::BFloat16 &&
+                  bias.has_value()) {
+                moe_sum_kernel_reg_bf16_add_bias<scalar_t, 8, VEC_SIZE,
+                                            7168 / VEC_SIZE, 7 * block_size,
+                                            block_size, true>
+                    <<<Grid, block_size, 0, stream>>>(
+                        output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                        bias.has_value() ? bias->data_ptr<scalar_t>()
+                                         : nullptr);
+              } else {
+                moe_sum_kernel_reg<scalar_t, 8, VEC_SIZE, 7168 / VEC_SIZE,
+                                   7 * block_size, block_size, false>
+                    <<<Grid, block_size, 0, stream>>>(
+                        output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                        bias.has_value() ? bias->data_ptr<scalar_t>()
+                                         : nullptr);
+              }
             });
       } else {
-       AT_DISPATCH_FLOATING_TYPES_AND2(
+        AT_DISPATCH_FLOATING_TYPES_AND2(
             at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
-            "moe_sum_kernel", [&] {
-              moe_sum_kernel_shared_mem<scalar_t, 8, VEC_SIZE, 7168 / VEC_SIZE, 7 * block_size,block_size>
-                  <<<Grid, block_size, 0, stream>>>(output.data_ptr<scalar_t>(),
-                                             input.data_ptr<scalar_t>());
+            "moe_sum_kernel_shared_mem", [&] {
+              if (input.scalar_type() == at::ScalarType::BFloat16 &&
+                  bias.has_value()) {
+                moe_sum_kernel_reg_bf16_add_bias<scalar_t, 8, VEC_SIZE,
+                                            7168 / VEC_SIZE, 7 * block_size,
+                                            block_size, true>
+                    <<<Grid, block_size, 0, stream>>>(
+                        output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                        bias.has_value() ? bias->data_ptr<scalar_t>()
+                                         : nullptr);
+
+              } else {
+                moe_sum_kernel_shared_mem<scalar_t, 8, VEC_SIZE,
+                                          7168 / VEC_SIZE, 7 * block_size,
+                                          block_size, false>
+                    <<<Grid, block_size, 0, stream>>>(
+                        output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                        bias.has_value() ? bias->data_ptr<scalar_t>()
+                                         : nullptr);
+              }
             });
       }
     } else {
       AT_DISPATCH_FLOATING_TYPES_AND2(
           at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
           "moe_sum_kernel", [&] {
-            moe_sum_kernel<scalar_t, 8><<<grid, block, 0, stream>>>(
-                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                hidden_size);
+            if (input.scalar_type() == at::ScalarType::BFloat16) {
+              moe_sum_kernel<scalar_t, 8, true><<<grid, block, 0, stream>>>(
+                  output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                  hidden_size,
+                  bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+            } else {
+              moe_sum_kernel<scalar_t, 8, false><<<grid, block, 0, stream>>>(
+                  output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                  hidden_size,
+                  bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr);
+            }
           });
     }
   } break;
