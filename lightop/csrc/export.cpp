@@ -139,7 +139,7 @@ torch::Tensor groupgemm_unpermute(const torch::Tensor& permuted_tokens, const to
 std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor);
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales);
-void moe_sum(torch::Tensor& input,torch::Tensor& output);   
+void moe_sum(torch::Tensor& input,torch::Tensor& output,const torch::optional<torch::Tensor> &bias);   
 }
 }
 
