@@ -228,7 +228,7 @@ def fused_moe_kernel_int4_w4a8(
     #NN load copy in register by broadcast
     b_ptrs = (
         b_ptr
-        + off_experts * stride_be
+        + off_experts.to(tl.int64) * stride_be
         #+ (offs_bk[None, :] * stride_bk + offs_bn[:, None] * stride_bn)
         + (offs_bn[:, None] * stride_bn + offs_bk[None, :] * stride_bk)
     )
