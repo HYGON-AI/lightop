@@ -379,3 +379,39 @@ def get_moe_groupgemm_config_w4a8(
     status = True
     
     return gemm1_config, gemm2_config, status
+
+# Adapted from: https://github.com/sgl-project/sglang/pull/2628
+@functools.lru_cache
+def get_moe_groupgemm_marlin_config_w4a8(
+    E: int,
+    M: int,
+    N1: int,
+    K1: int,
+    N2: int,
+    K2: int,
+    device_name: str,
+    num_cus: str,
+    dtype: Optional[str],
+    block_n: Optional[int] = None,
+    block_k: Optional[int] = None,
+) -> Optional[dict[int, Any]]:
+    """
+    Return optimized configurations for the fused MoE kernel.
+
+    The return value will be a dictionary that maps an irregular grid of
+    batch sizes to configurations of the fused_moe kernel. To evaluate the
+    kernel on a given batch size bs, the closest batch size in the grid should
+    be picked and the associated configuration chosen to invoke the kernel.
+    """
+
+    # First look up if an optimized configuration is available in the configs
+    # directory  
+    gemm1_config = {
+        "MODE": 1000,
+    }
+    gemm2_config = {
+        "MODE": 1000,
+    }
+    status = True
+    
+    return gemm1_config, gemm2_config, status
