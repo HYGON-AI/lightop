@@ -71,6 +71,7 @@ void _gemm_w8a8_128x256x128_TN_impl(
   size_t strideB1 = size_k;
   size_t strideB2 = 0;
 
+  float beta = (C_data != nullptr && gradType == wgrad) ? 1.0 : 0.0;
   /* grid sizes */
   size_t localWorkSize[3] = {768, 1, 1};
   size_t globalWorkSize[3] = {1, 1, 1};
@@ -103,7 +104,7 @@ void _gemm_w8a8_128x256x128_TN_impl(
   hipFunctionArgs.strideB1 = strideB1;
   hipFunctionArgs.strideB2 = strideB2;
   hipFunctionArgs.alpha = 1.0;
-  hipFunctionArgs.beta = 0.0;
+  hipFunctionArgs.beta = beta;
   hipFunctionArgs.scaleA = Bs_data;
   hipFunctionArgs.scaleB = As_data;
   void * debug_host = nullptr, * debug_device = nullptr;
@@ -120,7 +121,7 @@ void _gemm_w8a8_128x256x128_TN_impl(
   string fp16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_FP16.co";
   string bf16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_BF16.co";
   if (gradType == wgrad) {
-    fp16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_BF16_wgrad_scale_T.co";
+    fp16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_FP16_wgrad_scale_T.co";
     bf16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_BF16_wgrad_scale_T.co";
   } else if (gradType == xgrad) {
     fp16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_NN_FP16.co";
