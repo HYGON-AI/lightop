@@ -188,6 +188,7 @@ def w8a8_block_int8_linear(
     torch_output = native_w8a8_block_int8_matmul(q_input, weight, x_scale, weight_scale, block_size, out_dtype)
 
     x_scale = x_scale.permute(1, 0).contiguous()
+    print(x_scale.stride(-2))
     output = gemm_w8a8_asm(
         q_input, weight, x_scale, weight_scale, block_size, out_dtype
     )
