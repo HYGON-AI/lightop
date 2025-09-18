@@ -34,7 +34,6 @@ namespace marlin_moe_w4a8{
     int* locks,             // 用于 全局归约的信号控制
     int4* C_tmp             // 用于 全局归约的 缓冲区
   ) {
-
     extern __shared__ int4 sh[];
   
     constexpr int pack_factor = 8; //  一个int32中有几个 数据被pack
@@ -226,7 +225,8 @@ namespace marlin_moe_w4a8{
       block_id = par_id;
       expert_id = expert_ids_ptr[block_id];
   
-      B_expert_off = expert_id * prob_n * prob_k / (pack_factor * 4);
+      // B_expert_off = expert_id * prob_n * prob_k / (pack_factor * 4);
+      B_expert_off = (static_cast<int64_t>(expert_id) * prob_n * prob_k) / (pack_factor * 4);
 
       // 增加 a_scale 和  b_scale的偏移
       B_scale_off = expert_id * prob_n;
@@ -292,8 +292,10 @@ namespace marlin_moe_w4a8{
         // load B矩阵
         for (int i = 0; i < b_sh_wr_iters; i++) {
           // // 移动到0号线程的起始地址
-          int b_global_idx = 16 * (B_idx_int[i] + B_expert_off);
-          cp_async4_vgpr(&frag_b_quant[pipe][i], &B[0], b_global_idx);
+          // int b_global_idx = 16 * (B_idx_int[i] + B_expert_off);
+          // cp_async4_vgpr(&frag_b_quant[pipe][i], &B[0], b_global_idx);
+          int b_global_idx = B_idx_int[i] + B_expert_off;
+          cp_async4_vgpr_s128(&frag_b_quant[pipe][i], &B[0], b_global_idx);
           B_idx_int[i] += b_gl_rd_delta_o;
         }
       }

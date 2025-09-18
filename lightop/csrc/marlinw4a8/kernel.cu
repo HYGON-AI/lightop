@@ -362,8 +362,10 @@ namespace marlin_moe_w4a8{
         // load B矩阵
         for (int i = 0; i < b_sh_wr_iters; i++) {
           // 移动到0号线程的起始地址
-          int b_global_idx = 16 * (B_idx_int[i] + B_expert_off);
-          cp_async4_vgpr(&frag_b_quant[pipe][i], &B[0], b_global_idx);
+          // int b_global_idx = 16 * (B_idx_int[i] + B_expert_off);
+          // cp_async4_vgpr(&frag_b_quant[pipe][i], &B[0], b_global_idx);
+          int b_global_idx = B_idx_int[i] + B_expert_off;
+          cp_async4_vgpr_s128(&frag_b_quant[pipe][i], &B[0], b_global_idx);
           B_idx_int[i] += b_gl_rd_delta_o;
         }
       }
