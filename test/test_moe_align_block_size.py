@@ -146,7 +146,8 @@ def run_test():
         (sorted_token_ids_py, experts_ids_py, num_tokens_post_pad_py) = moe_align_block_size_python(
             topk_ids, num_experts, block_size, expert_map=expert_map
         )
-
+        num_local_tokens = [num_tokens]
+        num_local_tokens_tensor = torch.tensor(num_local_tokens, device=device, dtype=torch.int32)
         # CUDA 实现
         total_tokens_post_pad_cuda = num_tokens_post_pad_py.item()
         if total_tokens_post_pad_cuda == 0:
@@ -161,7 +162,7 @@ def run_test():
             
             moe_align_block_size(
                 topk_ids, num_experts, block_size, sorted_token_ids_cuda,
-                experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map
+                experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map,num_local_tokens_tensor
             )
             torch.cuda.synchronize()
 
@@ -201,19 +202,20 @@ def run_test():
             topk_ids, num_experts, block_size, expert_map=expert_map
         )
         total_tokens_post_pad = num_tokens_post_pad_py.item()
-
+        
         if total_tokens_post_pad > 0:
             sorted_token_ids_cuda = torch.empty((total_tokens_post_pad,), dtype=torch.int32, device=device)
             num_blocks = total_tokens_post_pad // block_size
             experts_ids_cuda = torch.empty((num_blocks,), dtype=torch.int32, device=device)
             num_tokens_post_pad_tensor_cuda = torch.empty(1, dtype=torch.int32, device=device)
-
+        num_local_tokens = [n_tokens]
+        num_local_tokens_tensor = torch.tensor(num_local_tokens, device=device, dtype=torch.int32)
         # 预热
         for _ in range(warmup_runs):
             if total_tokens_post_pad > 0:
                 moe_align_block_size(
                     topk_ids, num_experts, block_size, sorted_token_ids_cuda,
-                    experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map
+                    experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map,num_local_tokens_tensor
                 )
         torch.cuda.synchronize()
 
@@ -226,7 +228,7 @@ def run_test():
             for _ in range(test_runs):
                 moe_align_block_size(
                     topk_ids, num_experts, block_size, sorted_token_ids_cuda,
-                    experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map
+                    experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map,num_local_tokens_tensor
                 )
             end_event.record()
             torch.cuda.synchronize()
