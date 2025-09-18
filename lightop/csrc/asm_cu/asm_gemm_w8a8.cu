@@ -48,6 +48,10 @@ struct HipFunctionArgs {
   float beta;
   const float *scaleA;
   const float *scaleB;
+  uint32_t strideAs1J;
+  uint32_t strideAs2K;
+  uint32_t strideBs1J;
+  uint32_t strideBs2K;
   void *debugBuffer;
 };
 
@@ -62,8 +66,11 @@ void _gemm_w8a8_128x256x128_TN_impl(
   OutputType *C_data,
   OutputType *D_data,
   const int &size_m, const int &size_n, const int &size_k,
-  bool isBfloat16, GRAD_TYPE gradType = nograd) {
-  
+  bool isBfloat16, 
+  uint32_t strideAs1J, uint32_t strideAs2K,
+  uint32_t strideBs1J, uint32_t strideBs2K,
+  GRAD_TYPE gradType = nograd) {
+  // printf("strideAs1J: %d,strideAs2K: %d,strideBs1J: %d, strideBs2K: %d\n", strideAs1J, strideAs2K, strideBs1J, strideBs2K);
   size_t strideC1 = size_n;
   size_t strideC2 = 0;
   size_t strideA1 = gradType == xgrad ? size_n : size_k;
@@ -72,6 +79,7 @@ void _gemm_w8a8_128x256x128_TN_impl(
   size_t strideB2 = 0;
 
   float beta = (C_data != nullptr && gradType == wgrad) ? 1.0 : 0.0;
+  // printf("beta : %f\n", beta);
   /* grid sizes */
   size_t localWorkSize[3] = {768, 1, 1};
   size_t globalWorkSize[3] = {1, 1, 1};
@@ -107,6 +115,10 @@ void _gemm_w8a8_128x256x128_TN_impl(
   hipFunctionArgs.beta = beta;
   hipFunctionArgs.scaleA = Bs_data;
   hipFunctionArgs.scaleB = As_data;
+  hipFunctionArgs.strideAs1J = strideAs1J;
+  hipFunctionArgs.strideAs2K = strideAs2K;
+  hipFunctionArgs.strideBs1J = strideBs1J;
+  hipFunctionArgs.strideBs2K = strideBs2K;
   void * debug_host = nullptr, * debug_device = nullptr;
   #if DEBUG
   int debug_size = 768 * 4;
@@ -208,7 +220,9 @@ torch::Tensor gemm_w8a8_asm(
       nullptr,
       C.has_value() ? reinterpret_cast<half_t *>(C.value().data_ptr()) : nullptr,
       reinterpret_cast<half_t *>(D.data_ptr()),
-      M, N, K, 0, static_cast<GRAD_TYPE>(gradType));
+      M, N, K, 0, 
+      Bs.stride(-2), 0, As.stride(-2), 0,
+      static_cast<GRAD_TYPE>(gradType));
   else if (output_dtype == torch::kBFloat16)
     _gemm_w8a8_128x256x128_TN_impl<bhalf_t>(
       A.data_ptr<int8_t>(),
@@ -218,7 +232,9 @@ torch::Tensor gemm_w8a8_asm(
       nullptr,
       C.has_value() ? reinterpret_cast<bhalf_t *>(C.value().data_ptr()) : nullptr,
       reinterpret_cast<bhalf_t *>(D.data_ptr()),
-      M, N, K, 1, static_cast<GRAD_TYPE>(gradType));
+      M, N, K, 1, 
+      Bs.stride(-2), 0, As.stride(-2), 0, 
+      static_cast<GRAD_TYPE>(gradType));
   else
     TORCH_CHECK(false, "gemm_w8a8 only supports outputType in [Float16, BFloat16]");
   return D;
