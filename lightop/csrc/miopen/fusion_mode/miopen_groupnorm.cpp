@@ -131,21 +131,12 @@ std::vector<Tensor> miopen_groupnorm_backward(const Tensor& x,
     TensorDescriptor mean_tensor(mean);
     TensorDescriptor rstd_tensor(rstd);
 
-    std::vector<int64_t> dscale_dbias_len  = {1, x.sizes()[1], 1, 1};
-    // std::vector<int64_t> mean_rstd_len    = {x.sizes()[0] * num_groups, 1, 1, 1};
-    // std::vector<int64_t> dscale_dbias_len = {x.sizes()[0] * x.sizes()[1], 1, 1, 1};
+    std::vector<int64_t> dscale_dbias_len = {1, x.sizes()[1], 1, 1};
 
     if(x.sizes() == 5)
     {
-        // weight_bias_len.push_back(1);
-        // mean_rstd_len.push_back(1);
         dscale_dbias_len.push_back(1);
     }
-
-    // Tensor dy     = at::empty_like(x);
-    // Tensor weight = at::empty(weight_bias_len, x.options());
-    // Tensor mean   = at::empty(mean_rstd_len, x.options().dtype(at::kFloat));
-    // Tensor rstd   = at::empty(mean_rstd_len, x.options().dtype(at::kFloat));
 
     Tensor out_dx     = at::empty_like(x);
     Tensor out_dscale = at::empty(dscale_dbias_len, x.options());
@@ -155,8 +146,30 @@ std::vector<Tensor> miopen_groupnorm_backward(const Tensor& x,
     TensorDescriptor output_dscale(out_dscale);
     TensorDescriptor output_dbias(out_dbias);
 
-    MIOPEN_CHECK(miopenGroupNormBackward(getMiopenHandle_new(),
+    size_t workspace_size = 0;
+    miopenHandle_t handle = getMiopenHandle_new();
+    MIOPEN_CHECK(miopenGetGroupNormBackwardWorkspaceSize(handle,
+                                                         static_cast<miopenNormMode_t>(mode),
+                                                         x_tensor.desc(),
+                                                         dy_tensor.desc(),
+                                                         weight_tensor.desc(),
+                                                         output_dx.desc(),
+                                                         output_dscale.desc(),
+                                                         output_dbias.desc(),
+                                                         mean_tensor.desc(),
+                                                         num_groups,
+                                                         &workspace_size));
+
+    Tensor workspace_tensor;
+    if(workspace_size > 0)
+    {
+        workspace_tensor = at::empty(workspace_size, x.options().dtype(at::kChar));
+    }
+
+    MIOPEN_CHECK(miopenGroupNormBackward(handle,
                                          static_cast<miopenNormMode_t>(mode),
+                                         workspace_tensor.defined() ? workspace_tensor.data_ptr() : nullptr,
+                                         workspace_size,
                                          x_tensor.desc(),
                                          x.data_ptr(),
                                          dy_tensor.desc(),

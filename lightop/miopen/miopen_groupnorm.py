@@ -52,18 +52,18 @@ def miopen_add_groupnorm(x1, x2, weight, bias, num_groups, epsilon: float = 1e-5
     return op.miopen_add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode)
 
 
-def miopen_groupnorm_backward(x, dy, weight, mean, rstd, num_groups, epsilon: float = 1e-5, mode: int =0):
+def miopen_groupnorm_backward(x, dy, weight, mean, rstd, num_groups, epsilon: float = 1e-5, mode: int =1):
     """_summary_
 
     Args:
-        x (Tensor): _description_
-        dy (Tensor): _description_
-        weight (Tensor): _description_
+        x (Tensor): 输入张量
+        dy (Tensor): 
+        weight (Tensor): 权值张量
         mean (Tensor): _description_
         rstd (Tensor): _description_
-        num_groups (int): _description_
-        epsilon (float, optional): _description_. Defaults to 1e-5.
-        mode (int, optional): _description_. Defaults to 0.
+        num_groups (int): 组数
+        epsilon (float, optional): 用于稳定逆方差计算的值. 默认为 1e-5.
+        mode (int, optional): 组归一化模式. 默认为 1,  MIOPEN_WEIGHT_BIAS [具有可学习参数的weights和bias]
 
     Returns:
         vector<Tensor>:
@@ -82,21 +82,15 @@ class miopenGroupNormFunction(torch.autograd.Function):
         ctx.mode = mode
         result = op.miopen_groupnorm(x, weight, bias, num_groups, eps, mode)
         ctx.save_for_backward(x, weight, result[1], result[2])
-        print("fwd out shape is:{}, {}, {}".format(result[0].shape, weight.shape(), bias.shape()))
         return result[0]
     
     @staticmethod
     def backward(ctx, grad_output):
         x, weight, mean, rstd = ctx.saved_tensors
-        print("x shape is:{0}, weight shape is:{1}, mean shape is:{2}, rstd shape is:{3}".format(x.shape, weight.shape, mean.shape, rstd.shape))
         num_groups = ctx.num_groups
         eps = ctx.eps
         mode = ctx.mode
-        
         result = op.miopen_groupnorm_backward(x, grad_output, weight, mean, rstd, num_groups, eps, mode)
-        
-        print("bwd resutl shape is:{}, result1 is:{}, result2 shape is:{}".format(result[0].shape, result[1].shape, result[2].shape))
-        
         return result[0], result[1].squeeze(), result[2].squeeze(), None, None, None
 
 
