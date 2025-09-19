@@ -72,3 +72,30 @@ def read_ln5d_size(size_file_path):
         'cols': row['dim5']
     }
         for _, row in ln_df.iterrows()]
+
+
+def read_moe_size(size_file_path):
+    ln_df = pd.read_csv(size_file_path)
+    return [{
+        'hidden_size': row['hidden_size'],
+        'num_tokens': row['num_tokens'],
+        'world_size': row['world_size'],
+        'num_shared_experts': row['num_shared_experts'],
+        'dp_size': row['dp_size'],
+        'sp_size': row['sp_size'],
+        'num_experts': row['num_experts'],
+        'topk': row['topk'],
+        'ep_size': row['ep_size']
+    }
+        for _, row in ln_df.iterrows()]
+
+def read_tt_size(size_file_path):
+    ln_df = pd.read_csv(size_file_path)
+    return [{
+        'batch_size': row['n'],
+        'seqs': row['c'],
+        'cols': row['H'],
+        'rows': row['W'],
+        'transpose_mode': row['transpose_mode']
+    }
+        for _, row in ln_df.iterrows()]
