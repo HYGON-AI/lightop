@@ -28,6 +28,7 @@ namespace marlin_moe_w4a8{
     const float* __restrict__ topk_weights_ptr,              // moe top weights
     int top_k,              // num of experts per token
     bool mul_topk_weights,  // mul topk weights or not
+    bool is_ep,  // 是否启用 EP
     int prob_m,             // batch dimension m
     int prob_n,             // output dimension n
     int prob_k,             // reduction dimension k
@@ -46,7 +47,17 @@ namespace marlin_moe_w4a8{
     // parallel: 需要计算的专家数 // 167
     int num_tokens_past_padded = num_tokens_past_padded_ptr[0]; // 一共几个token选择
     int parallel = num_tokens_past_padded / moe_block_size; 
-  
+    
+    // ============================= 启用 EP 则要修正 parallel 值 =====================
+    int num_valid_blocks = parallel;
+    if (is_ep) {
+      for (int i = 0; i < parallel; i++) { // 遍历整个专家索引组，获取总的有效专家索引数
+        if (expert_ids_ptr[i] == -1) num_valid_blocks--;
+      }
+    }
+    int num_invalid_blocks = parallel - num_valid_blocks; // 总的无效专家索引数量
+    parallel = num_valid_blocks; // 总的有效专家索引数量
+
     int n_tiles = prob_n / mfma_n / thread_n_blocks; // n 方向 有几个 [128, 128]的数据块 4 
     int k_tiles = prob_k / mfma_k / thread_k_blocks; // k 方向 有几个 [128, 128] 的数据块 56
 
@@ -221,12 +232,26 @@ namespace marlin_moe_w4a8{
       if (par_id >= parallel) return;
   
       old_expert_id = expert_id;
-
-      block_id = par_id;
-      expert_id = expert_ids_ptr[block_id];
+      // ============================ EP 需要更改 block_id 和 expert_id 的获取逻辑 =====================
+      if(num_invalid_blocks > 0){ // 如果启用EP
+        int skip_count = block_id == -1 ? par_id : 0; // 记录需要跳过的有效专家数，第一次是 par_id 之后都是 0
+        block_id++;
+        for (int i = block_id; i < num_tokens_past_padded / moe_block_size; i++) { // 遍历 所有的专家索引
+          expert_id = expert_ids_ptr[i];
+          if (expert_id != -1) { // 如果当前专家索引是有效的
+            if (skip_count == 0) { // skip_count = 0,说明遍历到了 当前block要处理的专家
+              block_id = i;
+              break;
+            };
+            skip_count--;
+          };
+        }
+      }else{
+        block_id = par_id;
+        expert_id = expert_ids_ptr[block_id];
+      }
   
-      // B_expert_off = expert_id * prob_n * prob_k / (pack_factor * 4);
-      B_expert_off = (static_cast<int64_t>(expert_id) * prob_n * prob_k) / (pack_factor * 4);
+      B_expert_off = expert_id * prob_n * prob_k / (pack_factor * 4);
 
       // 增加 a_scale 和  b_scale的偏移
       B_scale_off = expert_id * prob_n;

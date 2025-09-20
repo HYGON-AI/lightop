@@ -28,7 +28,7 @@ namespace marlin_moe_w4a8{
         int gl_rd_n_idx = first_n + threadIdx.x % 64;
         int gl_rd_k_idx = first_k / 2 + (threadIdx.x / 64) * 4;
 
-        int gl_rd_idx =  batch_idx * size_n * size_k / 2 + gl_rd_n_idx * (size_k / 2) + gl_rd_k_idx;
+        int64_t gl_rd_idx =  batch_idx * size_n * size_k / 2 + gl_rd_n_idx * (size_k / 2) + gl_rd_k_idx;
 
         uint32_t vals[8]; // 使用uint32 的 低4bit 记录
         for(int i=0;i<4;i++){
