@@ -103,7 +103,8 @@ struct GemmParams2 {
                uint32_t stride_bsk,
                uint32_t sorted_token_lens,
                uint32_t top_k,
-               uint32_t delta)
+               uint32_t delta,
+               uint32_t expert_num)
         : ptr_A(ptr_A),
           ptr_B0(ptr_B0),
           ptr_C(ptr_C),
@@ -125,7 +126,8 @@ struct GemmParams2 {
           stride_bsk(stride_bsk),
           sorted_token_lens(sorted_token_lens),
           top_k(top_k),
-          delta(delta)
+          delta(delta),
+          expert_num(expert_num)
          {}
 
     const T* ptr_A;                    // input
@@ -150,6 +152,7 @@ struct GemmParams2 {
     uint32_t sorted_token_lens;        // sorted token length
     uint32_t top_k;                    // top k
     uint32_t delta;                    // delta
+    uint32_t expert_num;
 };
 
 ///////////////////////////////////////////////////////////////////////launch_moe_function///////////////////////////////////////////////////////////////////////////////////////

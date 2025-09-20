@@ -960,7 +960,8 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
   uint32_t stride_bsk,
   uint32_t sorted_token_lens,
   uint32_t top_k,
-  uint32_t delta
+  uint32_t delta,
+  uint32_t expert_num
 ) {
   const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
   const int bidy = blockIdx.y; // pid_n
@@ -968,12 +969,8 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回
   constexpr int STAGES = 2; 
   const int32_t expert_id = expert_ids[bidx]; // 专家的索引
-  if(expert_id >=256 || expert_id <0) return;
+  if(expert_id >=expert_num || expert_id <0) return;
  
-  //我理解的这个blocksizek类似128，blocksizen类似64
-  //对于A和B的分块现在都是不一致的，因为A一次只需要64个数据，然后这是K方向，4个线程，需要的是128，M方向是默认16，所以这个k对于A来说就是128
-  //但是这个k对于B来说，肯定是8x1x4x64一次 因为是4个warp 
-  //默认size_n是512
   const uint64_t expert_offset = ((uint64_t)size_n) * size_kb  * expert_id; // 这个是对应专家的weight偏移
   
   const uint64_t qweight_offset = expert_offset + bidy * 4 * BLOCK_SIZE_N ; // 具体偏移到对应专家的weight的某一个小的分块
@@ -1041,7 +1038,16 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
             bscale=__shfl(bscale,col_id*16);
             ((bhalf_t*)&D)[j] = f32_to_bf16(static_cast<float> (((int*)&C_reg[0][j])[i]  ) * a_scale * bscale);
         }
-        *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = D;
+        //修改为builtin atomic add
+        // if(splitk>1){
+        //   using bf16_2 = uint16x2;
+        //   for (int j = 0; j < 4; j+=2) {
+        //       bf16_2* output_c = reinterpret_cast<bf16_2*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16 + j]);
+        //       uint16x2 permute_tokens(D[j],D[j+1]);
+        //       atomic_add_bf16<bf16_2>(output_c, permute_tokens);
+        //   }
+        // }
+        *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = D;        
       }
     }
   }
@@ -1081,7 +1087,8 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
   uint32_t stride_bsk,
   uint32_t sorted_token_lens,
   uint32_t top_k,
-  uint32_t delta
+  uint32_t delta,
+  uint32_t expert_num
 ) {
   
   const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
@@ -1090,18 +1097,14 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回
   constexpr int STAGES = 2; 
   const int32_t expert_id = expert_ids[bidx]; // 专家的索引
-  if(expert_id >=256 || expert_id <0) return;
+  if(expert_id >= expert_num || expert_id <0) return;
  
-  //我理解的这个blocksizek类似128，blocksizen类似64
-  //对于A和B的分块现在都是不一致的，因为A一次只需要64个数据，然后这是K方向，4个线程，需要的是128，M方向是默认16，所以这个k对于A来说就是128
-  //但是这个k对于B来说，肯定是8x1x4x64一次 因为是4个warp 
-  //默认size_n是512
   const uint64_t expert_offset = ((uint64_t)size_n) * size_kb  * expert_id; // 这个是对应专家的weight偏移
   
   const uint64_t qweight_offset = expert_offset + bidy * 4 * BLOCK_SIZE_N ; // 具体偏移到对应专家的weight的某一个小的分块
-  //待修改
+  
   const uint32_t output_offset = bidy *  BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
-  //待修改
+  
   const uint64_t weight_scale_offset = stride_bse * stride_bsn * expert_id + bidy * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
   
   auto g_input = input;
@@ -1214,7 +1217,8 @@ void launch_moe_w4a8_gemm_first_stage_decode_marlin(const GemmParams2<T>& params
       params.stride_bsk,
       params.sorted_token_lens,
       params.top_k,
-      params.delta
+      params.delta,
+      params.expert_num
       );
 
       auto err = cudaGetLastError();
@@ -1267,7 +1271,8 @@ void launch_moe_w4a8_gemm_second_stage_decode_marlin(const GemmParams2<T>& param
       params.stride_bsk,
       params.sorted_token_lens,
       params.top_k,
-      params.delta
+      params.delta,
+      params.expert_num
       );
 
       auto err = cudaGetLastError();
@@ -1345,17 +1350,12 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
           stride_bsk,
           EM,
           top_k,
-          delta
+          delta,
+          EXPERTS
         );
 
-        if(size_m > 512 || (size_m > 2 && EXPERTS == 16) ){
-        //   auto it = kernel_maps_gemm1_prefill.find(mode);
-        //   if (it != kernel_maps_gemm1_prefill.end()) {
-        //       it->second(params_in);
-        //   } else {
-        printf("developing \n");
-        //       launch_moe_gemm_first_stage<16, 64, 128, 16, 16, 64>(params_in);
-        // }
+        if(size_m > 512){
+          printf("developing \n");
         }else{ //decode
           auto it = kernel_maps_gemm1_decode_marlin.find(mode);
           if (it != kernel_maps_gemm1_decode_marlin.end()) {
@@ -1389,10 +1389,11 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
           stride_bsk,
           EM,
           top_k,
-          delta
+          delta,
+          EXPERTS
         );
         
-        if(size_m / 8 > 512 || (size_m / 8 > 32 && EXPERTS == 16)){
+        if(size_m / 8 > 512){
           printf("developing \n");
         }else
         {
