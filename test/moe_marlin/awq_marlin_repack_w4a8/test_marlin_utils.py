@@ -15,10 +15,14 @@ import lightop
 
 @pytest.mark.parametrize("size_batch", [256])  # 可扩展其他batch值（如128）
 @pytest.mark.parametrize("size_k, size_n", [
-    (7168, 512),   # 第一组组合：size_k=7168，size_n=512
-    (256, 7168),    # 第二组组合：size_k=256，size_n=7168
-    (7168, 256),    # 第二组组合：size_k=256，size_n=7168
-    (128, 7168),   # 第二组组合：size_k=256，size_n=7168
+    (7168, 4096),   # TP1
+    (2048, 7168),   # TP1
+    (7168, 2048),   # TP2
+    (1024, 7168),   # TP2
+    (7168, 1024),   # TP4
+    (512, 7168),    # TP4
+    (7168, 512),    # TP8
+    (256, 7168),    # TP8
 ])
 def test_awq_marlin_repack_w4a8(size_batch, size_k, size_n):
     # （可选）提前验证参数合法性，与C++算子的TORCH_CHECK对齐

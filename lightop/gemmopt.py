@@ -152,7 +152,8 @@ def moe_gemm_marlin_w4a8(
                     top_k: int,
                     locks: Optional[torch.Tensor], # 用于控制 block间归约的 信号量Tensor
                     global_reduce_buffer: Optional[torch.Tensor], # 用于 block间归约的 缓存区Tensor
-                    config: Dict[str, Any]) -> torch.Tensor:
+                    config: Dict[str, Any],
+                    is_ep:bool = False) -> torch.Tensor:
     mode = config['MODE']
     delta = config['DELTA']
 
@@ -181,7 +182,7 @@ def moe_gemm_marlin_w4a8(
                                 topk_weights,
                                 block_m,
                                 top_k,
-                                False,
+                                is_ep,
                                 size_m,
                                 size_n,
                                 size_k,
