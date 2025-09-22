@@ -1,76 +1,76 @@
 {
     "7168_2048": {
         "1": {
-            "MODE": 1000,
+            "MODE": 402,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 128,
-            "thread_n": 256,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
             "thread_k": 128,
-            "blocks_per_cu": 1
+            "blocks_per_cu": 3
         },
         "2": {
-            "MODE": 1000,
+            "MODE": 402,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 128,
-            "thread_n": 256,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
             "thread_k": 128,
-            "blocks_per_cu": 1
+            "blocks_per_cu": 3
         },
         "4": {
-            "MODE": 1000,
+            "MODE": 402,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 128,
-            "thread_n": 256,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
             "thread_k": 128,
-            "blocks_per_cu": 1
+            "blocks_per_cu": 3
         },
         "8": {
-            "MODE": 1000,
+            "MODE": 402,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 128,
-            "thread_n": 256,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
             "thread_k": 128,
-            "blocks_per_cu": 1
+            "blocks_per_cu": 3
         },
         "16": {
-            "MODE": 1000,
+            "MODE": 402,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 128,
-            "thread_n": 256,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
             "thread_k": 128,
-            "blocks_per_cu": 1
+            "blocks_per_cu": 3
         },
         "32": {
-            "MODE": 1000,
+            "MODE": 402,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 128,
-            "thread_n": 256,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
             "thread_k": 128,
-            "blocks_per_cu": 1
+            "blocks_per_cu": 3
         },
         "64": {
-            "MODE": 1000,
+            "MODE": 500,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 128,
-            "thread_n": 256,
-            "thread_k": 128,
+            "BLOCK_SIZE_M": 32,
+            "thread_n": 512,
+            "thread_k": 64,
             "blocks_per_cu": 1
         },
         "128": {
-            "MODE": 1000,
+            "MODE": 500,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 128,
-            "thread_n": 256,
-            "thread_k": 128,
-            "blocks_per_cu": 1
+            "BLOCK_SIZE_M": 48,
+            "thread_n": 512,
+            "thread_k": 64,
+            "blocks_per_cu": 2
         },
         "256": {
-            "MODE": 1000,
+            "MODE": 500,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 128,
-            "thread_n": 256,
-            "thread_k": 128,
-            "blocks_per_cu": 1
+            "BLOCK_SIZE_M": 80,
+            "thread_n": 512,
+            "thread_k": 64,
+            "blocks_per_cu": 2
         },
         "512": {
             "MODE": 1000,

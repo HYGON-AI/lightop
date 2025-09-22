@@ -245,7 +245,8 @@ def get_moe_cuda_marlin_config_w4a8(
     dtype: Optional[str],
     block_n: Optional[int] = None,
     block_k: Optional[int] = None,
-    is_ep: Optional[bool] = False
+    is_ep: Optional[bool] = False,
+    ep_size: Optional[int] = 8
 ) -> Optional[dict[int, Any]]:
     """
     Return optimized configurations for the fused MoE kernel.
@@ -260,7 +261,7 @@ def get_moe_cuda_marlin_config_w4a8(
     # directory
     gemm1_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_{N1}_{K1}_{device_name}_{num_cus}.json"
     if is_ep:
-        gemm1_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_EP_{N1}_{K1}_{device_name}_{num_cus}.json"
+        gemm1_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_EP{ep_size}_{N1}_{K1}_{device_name}_{num_cus}.json"
 
     gemm1_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
@@ -291,7 +292,7 @@ def get_moe_cuda_marlin_config_w4a8(
     
     gemm2_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_{N2}_{K2}_{device_name}_{num_cus}.json"
     if is_ep:
-        gemm2_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_EP_{N2}_{K2}_{device_name}_{num_cus}.json"
+        gemm2_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_EP{ep_size}_{N2}_{K2}_{device_name}_{num_cus}.json"
 
     gemm2_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
