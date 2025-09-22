@@ -121,7 +121,7 @@ def run_test():
     110, 135, 160, 190, 225, 260, 300, 350, 410, 480,
     550, 630, 720, 810, 900, 1000, 1110, 1230, 1350, 1480,
     1600, 1750, 1900, 2050, 2200, 2350, 2500, 2650, 2800, 2950,
-    3100, 3300, 3500, 3750, 4000, 4250, 4500, 4800, 5100, 5500
+    3100, 3300, 3500, 3750, 4000, 4250, 4500, 4800, 5100, 5500,8192,16384
     ]
     all_accuracy_tests_passed = True
     performance_results = []
@@ -162,7 +162,7 @@ def run_test():
             
             moe_align_block_size(
                 topk_ids, num_experts, block_size, sorted_token_ids_cuda,
-                experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map,num_local_tokens_tensor
+                experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map,None,num_local_tokens_tensor
             )
             torch.cuda.synchronize()
 
@@ -215,7 +215,7 @@ def run_test():
             if total_tokens_post_pad > 0:
                 moe_align_block_size(
                     topk_ids, num_experts, block_size, sorted_token_ids_cuda,
-                    experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map,num_local_tokens_tensor
+                     experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map,None,num_local_tokens_tensor
                 )
         torch.cuda.synchronize()
 
@@ -228,7 +228,7 @@ def run_test():
             for _ in range(test_runs):
                 moe_align_block_size(
                     topk_ids, num_experts, block_size, sorted_token_ids_cuda,
-                    experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map,num_local_tokens_tensor
+                    experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map,None,num_local_tokens_tensor
                 )
             end_event.record()
             torch.cuda.synchronize()

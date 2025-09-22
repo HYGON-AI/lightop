@@ -10,10 +10,9 @@ import triton.language as tl
 
 from lightop import op as ops
 
-@torch.compile
-def moe_sum_reduce_torch_compile(x, out, routed_scaling_factor):
+def moe_sum_reduce_torch_compile(x, out):
     torch.sum(x, dim=1, out=out)
-    out.mul_(routed_scaling_factor)
+ 
 
 
 def _test_helper(m: int,
@@ -27,24 +26,24 @@ def _test_helper(m: int,
     output_ops = torch.zeros((m, hidden_size), device=device, dtype=out_dtype)
     output_triton = torch.zeros((m, hidden_size), device=device, dtype=out_dtype)
     output_torch = torch.zeros((m, hidden_size), device=device, dtype=out_dtype)
-    
+    factor = 2.5
     # 使用一个未被修改的输出来计算 PyTorch 的基准结果
     output_pytorch_ref = torch.zeros_like(output_ops)
-    moe_sum_reduce_torch_compile(input, output_pytorch_ref, 1.0)
+    moe_sum_reduce_torch_compile(input, output_pytorch_ref)
     bias = torch.randn_like(output_ops)
-    factor = 2.5
-    if out_dtype == torch.bfloat16:
-        # bfloat16: output = sum_result * 2.5 + bias
-        output_pytorch_ref.mul_(factor).add_(bias)
-    elif out_dtype == torch.float16:
-        factor_inverse = 1.0 / factor
-        # float16: output = sum_result + (bias * 2.5)
-        output_pytorch_ref.add_(bias.mul(factor_inverse))
+  
+    # if out_dtype == torch.bfloat16:
+    #     # bfloat16: output = sum_result * 2.5 + bias
+    #     output_pytorch_ref.mul_(factor).add_(bias)
+    # elif out_dtype == torch.float16:
+    #     factor_inverse = 1.0 / factor
+    #     # float16: output = sum_result + (bias * 2.5)
+    #     output_pytorch_ref.add_(bias.mul(factor_inverse))
      
     # --- 1. 手写 CUDA 算子计时 ---
     # do_bench 自带预热，无需手动循环
     torch.cuda.synchronize()
-    elapsed_time0_gpu = triton.testing.do_bench(lambda: ops.moe_sum(input, output_ops,bias,factor), quantiles=None, return_mode="mean") * 1000
+    elapsed_time0_gpu = triton.testing.do_bench(lambda: ops.moe_sum(input, output_ops,None,None,factor), quantiles=None, return_mode="mean") * 1000
     print(f"cuda time: {elapsed_time0_gpu:.4f} us")
     torch.cuda.synchronize()
     
@@ -67,7 +66,7 @@ def main():
     vllm_reduce_cost_gpu=[]
     triton_reduce_cost_gpu=[]
     torch_reduce_cost_gpu=[]
-    
+    print(out_dtype) 
     m_list =[1<<(item)  for item in range(0, 17)]
     # m_list =[128,256]
     for m in m_list:

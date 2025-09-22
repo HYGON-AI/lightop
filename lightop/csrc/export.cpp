@@ -126,9 +126,9 @@ void store_kv_cache_paged(const torch::Tensor& key, const torch::Tensor& value,t
 
 void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::Tensor& token_expert_indices,torch::Tensor& gating_output, const std::string& renormalize = "false");
 void rotary_embedding_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox);    
-void moe_align_block_size(torch::Tensor topk_ids, int64_t num_experts,int64_t block_size, torch::Tensor sorted_token_ids,
-  torch::Tensor experts_ids,torch::Tensor num_tokens_post_pad,const torch::optional<torch::Tensor> &expert_map,
-  const torch::optional<torch::Tensor> &num_local_tokens);
+void moe_align_block_size(torch::Tensor topk_ids, int64_t num_experts,int64_t block_size, torch::Tensor sorted_token_ids,torch::Tensor experts_ids,
+                          torch::Tensor num_tokens_post_pad,const torch::optional<torch::Tensor> &expert_map ,
+                          const torch::optional<torch::Tensor> &expert_mask,const torch::optional<torch::Tensor> &num_local_tokens);
 
 //------------------------------------------------- groupgemm ---------------------------------------//
 Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b);    
@@ -141,7 +141,7 @@ torch::Tensor groupgemm_unpermute(const torch::Tensor& permuted_tokens, const to
 std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor);
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales);
-void moe_sum(torch::Tensor& input,torch::Tensor& output,const torch::optional<torch::Tensor> &bias,const float factor = 1.f);   
+void moe_sum(torch::Tensor& input,torch::Tensor& output,const torch::optional<torch::Tensor> &bias,  const torch::optional<torch::Tensor> &expert_mask,const float factor = 1.f);    
 Tensor ms_deform_attn_cuda_forward(const Tensor &value, const Tensor &spatial_shapes, const Tensor &level_start_index, const Tensor &sampling_loc, const Tensor &attn_weight, const int im2col_step);
 void ms_deform_attn_cuda_backward(const Tensor &value, const Tensor &spatial_shapes, const Tensor &level_start_index, const Tensor &sampling_loc, const Tensor &attn_weight, const Tensor &grad_output, Tensor &grad_value, Tensor &grad_sampling_loc, Tensor &grad_attn_weight, const int im2col_step);
 }
@@ -218,15 +218,31 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("awq_marlin_repack_w4a8", &at::native::awq_marlin_repack_w4a8, "awq_marlin_repack_w4a8");
   m.def("blockwise_scaled_cast_transpose", &at::native::blockwise_scaled_cast_transpose, "blockwise_scaled_cast_transpose");
   m.def("rms_norm_dynamic_per_token_quant",&at::native::rms_norm_dynamic_per_token_quant,"rms_norm_dynamic_per_token_quant");
-  m.def("moe_align_block_size",&at::native::moe_align_block_size,"moe_align_block_size");
   m.def("rotary_embedding_fuse", &at::native::rotary_embedding_fuse, "rotary_embedding_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"));
   m.def("groupgemm",&at::native::groupgemm,"groupgemm");
   m.def("groupgemm_permute",&at::native::groupgemm_permute,"groupgemm_permute");
   m.def("groupgemm_unpermute",&at::native::groupgemm_unpermute,"groupgemm_unpermute");
   m.def("moe_fused_gate",&at::native::moe_fused_gate,"moe_fused_gate");
   m.def("fuse_silu_mul_quant",&at::native::fuse_silu_mul_quant,"fuse_silu_mul_quant");
-  m.def("moe_sum",&at::native::moe_sum,"moe_sum");
   m.def("ds_concat",&at::native::ds_concat,"ds_concat");
   m.def("ms_deform_attn_forward", &at::native::ms_deform_attn_cuda_forward,"ms_deform_attn_forward");
   m.def("ms_deform_attn_backward", &at::native::ms_deform_attn_cuda_backward,"ms_deform_attn_backward");
+  m.def("moe_sum", &at::native::moe_sum, "moe_sum",
+      py::arg("input"),
+      py::arg("output"),
+      py::arg("bias"),
+      py::arg("expert_mask"),
+      py::arg("factor") = 1.0f
+  );
+  m.def("moe_align_block_size", &at::native::moe_align_block_size, "moe_align_block_size",
+      py::arg("topk_ids"),
+      py::arg("num_experts"),
+      py::arg("block_size"),
+      py::arg("sorted_token_ids"),
+      py::arg("experts_ids"),
+      py::arg("num_tokens_post_pad"),
+      py::arg("expert_map"),
+      py::arg("expert_mask"),
+      py::arg("num_local_tokens")
+  );
 }
