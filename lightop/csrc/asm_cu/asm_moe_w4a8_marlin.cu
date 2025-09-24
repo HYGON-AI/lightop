@@ -39,16 +39,18 @@ struct HipFunctionArgs {
   uint32_t stride_bse;               // weight scale stride expert
   uint32_t stride_bn;               // weight scale stride n
   uint32_t stride_bk;               // weight scale stride k
-  uint32_t sorted_token_lens;        // sorted token length
   uint32_t topk;                     // top k
   float topk_rcip;                   // top k
+  uint32_t numFullBlocks;
+  uint32_t wgmRemainder1;
+  uint32_t magicNumberWgmRemainder1;
   void *debugBuffer;
 };
 
 namespace at {
 namespace native {
 
-template <int BLOCKM, int BLOCKN, int BLOCKK, typename OutputType>
+template <int BLOCKM, int BLOCKN, int BLOCKK, typename OutputType, int IS_WGM8 = false>
 void _moe_w4a8_marlin_TN_impl(
   torch::Tensor input,
   torch::Tensor b_qweight,
@@ -83,6 +85,11 @@ void _moe_w4a8_marlin_TN_impl(
   // globalWorkSize[2] = std::min(DIVIDE(sorted_token_lens, BLOCKM), DIVIDE(num_pad, BLOCKM));
   globalWorkSize[2] = DIVIDE(sorted_token_lens, BLOCKM);
 
+  uint32_t workgroupmapping = 8;
+  uint32_t numFullBlocks = globalWorkSize[2] / workgroupmapping;
+  uint32_t wgmRemainder1 = globalWorkSize[2] % workgroupmapping;
+  if (wgmRemainder1 = 0) wgmRemainder1 = workgroupmapping;
+
   HipFunctionArgs<OutputType> hipFunctionArgs;
   hipFunctionArgs.numWorkGroups0 = globalWorkSize[0];
   hipFunctionArgs.numWorkGroups1 = globalWorkSize[2];
@@ -104,9 +111,11 @@ void _moe_w4a8_marlin_TN_impl(
   hipFunctionArgs.stride_bse = b_scale.stride(0);
   hipFunctionArgs.stride_bn = b_qweight.size(2) * 4;
   hipFunctionArgs.stride_bk = b_qweight.size(1);
-  hipFunctionArgs.sorted_token_lens = sorted_token_ids.size(0);
   hipFunctionArgs.topk = top_k;
   hipFunctionArgs.topk_rcip = 1.0 / top_k;
+  hipFunctionArgs.numFullBlocks = numFullBlocks;
+  hipFunctionArgs.wgmRemainder1 = wgmRemainder1;
+  hipFunctionArgs.magicNumberWgmRemainder1 = ((1L<<31) / wgmRemainder1 + 1);;
   void * debug_host = nullptr, * debug_device = nullptr;
   #if DEBUG
   int bytes = 128;
@@ -125,8 +134,8 @@ void _moe_w4a8_marlin_TN_impl(
   memset(second_stage_co_file, 0x0, sizeof(second_stage_co_file));
   sprintf(funcName, "Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT%dx%dx%d_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", BLOCKM, BLOCKN, BLOCKK);
   if (output.scalar_type() == at::ScalarType::BFloat16) {
-    sprintf(first_stage_co_file, "moe_w4a8_channel/moe_w4a8_marlin_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
-    sprintf(second_stage_co_file, "moe_w4a8_channel/moe_w4a8_marlin_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(first_stage_co_file, "moe_w4a8_channel/moe_w4a8_marlin_%dx%dx%d_TN_BF16_%sFirstStage.co", BLOCKM, BLOCKN, BLOCKK, IS_WGM8?"WGM8_":"");
+    sprintf(second_stage_co_file, "moe_w4a8_channel/moe_w4a8_marlin_%dx%dx%d_TN_BF16_%sSecondStage.co", BLOCKM, BLOCKN, BLOCKK, IS_WGM8?"WGM8_":"");
   } else if (output.scalar_type() == at::ScalarType::Float) { // debug
     sprintf(first_stage_co_file, "moe_w4a8_channel/moe_w4a8_marlin_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
     sprintf(second_stage_co_file, "moe_w4a8_channel/moe_w4a8_marlin_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
@@ -159,6 +168,18 @@ void _moe_w4a8_marlin_TN_impl(
   
   printf("%s:%d gdx:%d gdy:%d gdz:%d bdx:%d bdy:%d bdz:%d\n", __FILE__, __LINE__, globalWorkSize[0], globalWorkSize[1], globalWorkSize[2],
     localWorkSize[0], localWorkSize[1], localWorkSize[2]);
+  printf("argsSize:%ld\nnumWorkGroups0:%p\nnumWorkGroups1:%p\nptr_C:%p\nptr_A:%p\ptr_B0:%p\nptr_A_scale:%p\nptr_B_scale:%p\ntopk_weights:%p\sorted_token_ids:%p\n"
+    "expert_ids:%pnum_tokens_post_pad_ptr:%p\nexperts_num:%p\nsize_m:%p\nsize_n:%p\nsize_k:%p\nstride_asm:%p\nstride_ask:%p\nstride_bse:%p\stride_bn:%p\n"
+    "stride_bk:%p\ntopk:%p\ntopk_rcip:%p\nnumFullBlocks:%p\nwgmRemainder1:%p\nmagicNumberWgmRemainder1:%p\ndebugBuffer%p\n", argsSize,
+    &hipFunctionArgs.numWorkGroups0, &hipFunctionArgs.numWorkGroups1, &hipFunctionArgs.ptr_C,
+    &hipFunctionArgs.ptr_A, &hipFunctionArgs.ptr_B0, &hipFunctionArgs.ptr_A_scale,
+    &hipFunctionArgs.ptr_B_scale, &hipFunctionArgs.topk_weights, &hipFunctionArgs.sorted_token_ids, 
+    &hipFunctionArgs.expert_ids, &hipFunctionArgs.num_tokens_post_pad_ptr, &hipFunctionArgs.experts_num, &hipFunctionArgs.size_m,
+    &hipFunctionArgs.size_n, &hipFunctionArgs.size_k, &hipFunctionArgs.stride_asm, 
+    &hipFunctionArgs.stride_ask, &hipFunctionArgs.stride_bse, &hipFunctionArgs.stride_bn,
+    &hipFunctionArgs.stride_bk, &hipFunctionArgs.topk, &hipFunctionArgs.topk_rcip, &hipFunctionArgs.numFullBlocks, 
+    &hipFunctionArgs.wgmRemainder1, &hipFunctionArgs.magicNumberWgmRemainder1, &hipFunctionArgs.debugBuffer
+  );
   printf("\ndebug:\n");
   hipMemcpy(debug_host, debug_device, debug_size, hipMemcpyDeviceToHost);
   using DEBUG_TYPE = int8_t;
@@ -171,12 +192,12 @@ void _moe_w4a8_marlin_TN_impl(
   // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
   for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / split; ++i) {
     // if (i % 16 == 0) printf("\n");
-    if (i % 32 == 0) printf("\ni:%d ", i / 32);
+    // if (i % 32 == 0) printf("\ni:%d ", i / 32);
     // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f\t", p_debug[i]);
     // printf("%3d:%10.4f\t", i, static_cast<float>(tmp[i+1]));
     // printf("%3d:%6d\t", i, p_debug[i]);
-    printf("%6d\t", p_debug[i]);
+    // printf("%6d\t", p_debug[i]);
     // printf("%10d\t", p_debug[i]);
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f ", static_cast<float>(tmp[0]));
@@ -233,6 +254,17 @@ torch::Tensor moe_w4a8_marlin_asm(
       at::ScalarType::BFloat16,
       output.scalar_type(), "moe_w4a8_marlin_TN_impl",[&] {
         _moe_w4a8_marlin_TN_impl<128, 512, 128, scalar_t>(
+          input, b_qweight, output, a_scale, b_scale,
+          topk_weights, sorted_token_ids, expert_ids,
+          num_tokens_post_pad, top_k, experts_num);
+      }
+    );
+  } else if (mode == 1001) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_w4a8_marlin_TN_impl",[&] {
+        _moe_w4a8_marlin_TN_impl<128, 512, 128, scalar_t, true>(
           input, b_qweight, output, a_scale, b_scale,
           topk_weights, sorted_token_ids, expert_ids,
           num_tokens_post_pad, top_k, experts_num);
