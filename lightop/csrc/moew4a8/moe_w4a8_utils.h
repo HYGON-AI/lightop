@@ -534,6 +534,7 @@ template<bool Is_store_A,
     int STAGES,  
     int GROUP_N,
     int GROUP_K,
+    int splitk,
     typename Element, 
     typename ElementAccum = int32_t>                                                                                                            
 __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
@@ -606,7 +607,7 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
 
     i=1; 
     union_vec<Element,8> midval;
-    int itk = size_k/warp_k_num/WARP_K; //112
+    int itk = size_k/warp_k_num/WARP_K/splitk; //112
     for(; i < itk ; i += 2){
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){

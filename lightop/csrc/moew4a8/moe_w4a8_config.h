@@ -169,7 +169,7 @@ void launch_moe_w4a8_gemm_first_stage_decode(const GemmParams<T>& params);
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
 void launch_moe_w4a8_gemm_second_stage_decode(const GemmParams<T>& params);
 
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int splitk, typename T>
 void launch_moe_w4a8_gemm_first_stage_decode_marlin(const GemmParams2<T>& params);
 
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
@@ -501,10 +501,19 @@ static std::unordered_map<int, KernelFunc> kernel_maps_gemm2_decode = {
 
 static std::unordered_map<int, KernelFunc2> kernel_maps_gemm1_decode_marlin = {
     // MN 16 16 
-    {401, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 128, 16, 16, 32, char>(p); }},
-    {402, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 256, 16, 16, 64, char>(p); }},
-    {403, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64, char>(p); }},
-    {404, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 256, 16, 16, 32, char>(p); }},
+    {401, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 128, 16, 16, 32,1, char>(p); }},
+    {402, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 256, 16, 16, 64,1, char>(p); }},
+    {403, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64,1, char>(p); }},
+    {404, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 256, 16, 16, 32,1, char>(p); }},
+    {405, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 256, 16, 16, 64,2, char>(p); }},
+    {406, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 256, 16, 16, 64,4, char>(p); }},
+    {407, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64,2, char>(p); }},
+
+    {408, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 256, 16, 16, 64,4, char>(p); }},
+    {409, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 256, 16, 16, 64,8, char>(p); }},
+    {410, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64,2, char>(p); }},
+    {411, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64,4, char>(p); }},
+    {412, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64,8, char>(p); }},
     // MN 16 32  k方向2个warp N方向2个warp
     // {405, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 256, 64, 16, 16, 64, char>(p); }},
     // {406, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 128, 64, 16, 16, 64, char>(p); }},
