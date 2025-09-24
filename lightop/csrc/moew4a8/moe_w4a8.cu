@@ -938,7 +938,8 @@ template<
   uint16_t WARP_K, 
   uint16_t GROUP_N,
   uint16_t GROUP_K,
-  bool mul_topk_weight> 
+  bool mul_topk_weight,
+  uint16_t splitk> 
 __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_decode(
   const Element* __restrict__ input,
   const int* __restrict__ qweight,
@@ -961,7 +962,9 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
   uint32_t sorted_token_lens,
   uint32_t top_k,
   uint32_t delta,
-  uint32_t expert_num
+  uint32_t expert_num,
+  float* d_output_fp32,
+  int* global_semaphore
 ) {
   const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
   const int bidy = blockIdx.y; // pid_n
@@ -973,13 +976,13 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
  
   const uint64_t expert_offset = ((uint64_t)size_n) * size_kb  * expert_id; // 这个是对应专家的weight偏移
   
-  const uint64_t qweight_offset = expert_offset + bidy * 4 * BLOCK_SIZE_N ; // 具体偏移到对应专家的weight的某一个小的分块
-  //待修改
-  const uint32_t output_offset = bidy *  BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
-  //待修改
+  const uint64_t qweight_offset = expert_offset + bidy * 4 * BLOCK_SIZE_N  +  bidz * (size_kb /splitk) * size_n; // 具体偏移到对应专家的weight的某一个小的分块
+
+  const uint32_t output_offset = bidy *  BLOCK_SIZE_N; 
+
   const uint64_t weight_scale_offset = stride_bse * stride_bsn * expert_id + bidy * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
-  
-  auto g_input = input;
+
+  auto g_input = input + bidz * (size_k /splitk) ;
   auto g_input_scale = input_scale; // 配置全局显存信息
   bhalf_t* g_output;
   
@@ -1017,37 +1020,64 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
   }
   
   { 
-    gemm_nt_first_stage_marlin_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+    gemm_nt_first_stage_marlin_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K,splitk, Element>
     (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx, bidy);
   }
-  //这里的存储不需要过lds，直接写出到对应的输出位置即可
+
   const int32_t token_index = sorted_token_ids[std::min(bidx * 16 + row_id, int(sorted_token_lens - 1))];
   if(warp_k_id == 0){
     float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id * WARP_N * 4 + col_id * 4;
     int sorted_token_offset = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + row_id, int(sorted_token_lens - 1))];
     float a_scale = input_scale[std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm]; //计算M方向的偏移
     using vec_bf16_4 = __attribute__((__vector_size__(4 * sizeof(uint16_t)))) unsigned short;
-    using vec_float_4 = __attribute__((__vector_size__(4 * sizeof(float)))) float;
     for (int i = 0; i < 4; i++) {
-      vec_bf16_4 D ;
-      vec_float_4 bscale4;
-      if(row_id==0) bscale4=*(vec_float_4*)(b_scale_ptr+i*16);
+      floatx4 bscale4;
+      if(row_id==0) bscale4=*(floatx4*)(b_scale_ptr+i*16);
       if(token_index < size_m * top_k){
-        for (int j = 0; j < 4; j++) {
+        
+        if(splitk>1 && splitk%2 ==0){
+          floatx4 D ;
+          for (int j = 0; j < 4; j++) {
+            ((float*)&D)[j] = static_cast<float>(((int*)&C_reg[0][j])[i]);
+          }
+          floatx4* output_c_fp32 = reinterpret_cast<floatx4*>(&d_output_fp32[output_offset + token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]);
+          
+          #ifdef __gfx936__
+          __builtin_amdgcn_global_atomic_fadd_v4f32(output_c_fp32, D);
+          #endif
+          #ifdef __gfx926__
+          atomicAdd(output_c_fp32, D);
+          // __syncthreads();
+          #endif
+          const int index = (bidx * gridDim.y + bidy) * 4 + i;
+          if(threadIdx.x==0) {
+            output_lds[index] = -1;
+            output_lds[index] = atomicAdd(global_semaphore+index,1);
+          }
+          __syncthreads();
+          if(output_lds[index] == splitk-1){
+            auto result_fp32 = *(floatx4*)(output_c_fp32) ;
+            vec_bf16_4 result_bf16 = {0,0,0,0};
+            for (int j = 0; j < 4; j++) {
+              float bscale=bscale4[j];
+              bscale=__shfl(bscale,col_id*16);
+              ((bhalf_t*)&result_bf16)[j] = f32_to_bf16((result_fp32[j]) * a_scale * bscale); 
+            }
+            *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = result_bf16;
+        }
+      }
+      else if(splitk==1){
+            vec_bf16_4 D;
+            for (int j = 0; j < 4; j++) {
             float bscale=bscale4[j];
             bscale=__shfl(bscale,col_id*16);
             ((bhalf_t*)&D)[j] = f32_to_bf16(static_cast<float> (((int*)&C_reg[0][j])[i]  ) * a_scale * bscale);
+            }
+            *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = D;
         }
-        //修改为builtin atomic add
-        // if(splitk>1){
-        //   using bf16_2 = uint16x2;
-        //   for (int j = 0; j < 4; j+=2) {
-        //       bf16_2* output_c = reinterpret_cast<bf16_2*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16 + j]);
-        //       uint16x2 permute_tokens(D[j],D[j+1]);
-        //       atomic_add_bf16<bf16_2>(output_c, permute_tokens);
-        //   }
-        // }
-        *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = D;        
+      else{
+        printf("splitk value can't be negative or zero");
+      }    
       }
     }
   }
@@ -1148,7 +1178,7 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
   int sorted_token_offset = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + row_id, int(sorted_token_lens - 1))];
   const int32_t token_index_safe = std::min(sorted_token_offset, size_m * top_k-1);
   float topk_weight_value  = (topk_weights + token_index_safe)[0];
-  float a_scale= input_scale [std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm]*topk_weight_value; //计算M方向的偏移
+  float a_scale= input_scale [std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm]; //计算M方向的偏移
   // float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id * WARP_N * 4 + col_id * 4;
   float *b_scale_ptr = weight_scale + weight_scale_offset;
   { 
@@ -1166,7 +1196,7 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
     for (int i = 0; i < 4; i++) {
       for (int j = 0; j < 4; j++) {
 
-        ((bhalf_t*)&D)[j] = f32_to_bf16(static_cast<float> (((int*)&C_reg[0][j])[i]  ) * a_scale * bscale[warp_n_id * WARP_N * 4 + col_id * 4 + i*16 + j] );
+        ((bhalf_t*)&D)[j] = f32_to_bf16(static_cast<float> (((int*)&C_reg[0][j])[i]  ) *topk_weight_value * a_scale * bscale[warp_n_id * WARP_N * 4 + col_id * 4 + i*16 + j] );
       }
       *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = D;
     }  
@@ -1174,7 +1204,7 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
 }
 
 //16, 64, 512, 16, 16, 64,
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int splitk, typename T>
 void launch_moe_w4a8_gemm_first_stage_decode_marlin(const GemmParams2<T>& params) {
     constexpr int kwarp=BLOCK_SIZE_K / WARP_K ;
     constexpr int nwarp=BLOCK_SIZE_N / (WARP_N * 4);
@@ -1191,12 +1221,22 @@ void launch_moe_w4a8_gemm_first_stage_decode_marlin(const GemmParams2<T>& params
     //规定BLOCKSIZE_N固定位256
     gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
     gridDim.y = DIVIDE(params.size_n , 4 * BLOCK_SIZE_N); // n方向
-    gridDim.x = 1; // k方向
+    gridDim.x = splitk; // k方向
+    float *d_output_fp32 = nullptr; 
+    int *global_semaphore = nullptr;
+    if(splitk>1){
+      size_t tempfp32_bytes = params.size_m * params.top_k * (params.size_n>>2) * sizeof(float);
+      cudaMalloc(&d_output_fp32, tempfp32_bytes);
+      cudaMemset(d_output_fp32, 0, tempfp32_bytes);
+      cudaMalloc(&global_semaphore, gridDim.z * gridDim.y * 4 *sizeof(int));
+      cudaMemset(global_semaphore, 0, gridDim.z * gridDim.y * 4 * sizeof(int));
+    }
+    
+
     constexpr int lds_size = (kwarp-1)* nwarp * 68 * 16 * 4;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
-          
     moe_w4a8_gemm_first_stage_kernel_marlin_decode<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
-      GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, lds_size, stream>>>(
+      GROUP_N, GROUP_K, mul_topk_weight,splitk><<<gridDim, blockDim, lds_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
       params.ptr_C, 
@@ -1218,9 +1258,14 @@ void launch_moe_w4a8_gemm_first_stage_decode_marlin(const GemmParams2<T>& params
       params.sorted_token_lens,
       params.top_k,
       params.delta,
-      params.expert_num
+      params.expert_num,
+      d_output_fp32,
+      global_semaphore
       );
-
+      if(splitk>1){
+        cudaFree(d_output_fp32);
+        cudaFree(global_semaphore);
+      }
       auto err = cudaGetLastError();
       if (err != cudaSuccess) {
           printf("CUDA error in gemm1: %s\n", cudaGetErrorString(err));
@@ -1362,7 +1407,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
             it->second(params_in2);
           } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64, char>(params_in2);
+              launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64,1, char>(params_in2);
           }
         }      
       }else{ //gemm2 
