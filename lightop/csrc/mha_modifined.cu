@@ -6,6 +6,7 @@
 #include <ATen/ATen.h>
 #include <torch/library.h>
 #include <ATen/cuda/CUDAContext.h>
+#include <ATen/native/TensorIterator.h>
 #include <c10/cuda/CUDAStream.h>
 #include <c10/util/Optional.h>
 
@@ -61,8 +62,8 @@ __global__ void mha_norm_rope_qkv_inplace_kernel(
     using WelfordOp   = at::native::WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
     WelfordOp welford_op;
 
-    __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type sh_q[8];
-    __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type sh_k[8];
+    __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type sh_q[64];
+    __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type sh_k[64];
     __shared__ T_ACC mean_q, mean_k, rstd_q, rstd_k;
 
     using Vec = at::native::memory::aligned_vector<scalar_t, VEC>;
@@ -124,30 +125,34 @@ __global__ void mha_norm_rope_qkv_inplace_kernel(
             pyq[i] = static_cast<scalar_t>(vq_);
             pyk[i] = static_cast<scalar_t>(vk_);
         }
+        // RoPE: 对每个 Vec 内的成对元素 (0,1), (2,3), ...
+        #pragma unroll
+        for (int i = 0; i < VEC; i += 2) {
+            const int idx0 = j * VEC + i;
+            const int idx1 = idx0 + 1;
+            // safety check (shouldn't trigger because VEC even and pairs inside Vec)
+            if (idx1 >= D) break;
+            const T_ACC c0 = static_cast<T_ACC>(cos_row[idx0]);
+            const T_ACC s0 = static_cast<T_ACC>(sin_row[idx0]);
+            const T_ACC c1 = static_cast<T_ACC>(cos_row[idx1]);
+            const T_ACC s1 = static_cast<T_ACC>(sin_row[idx1]);
 
-        // RoPE: 对 (2k, 2k+1) 成对旋转
-        const int idx0 = j * VEC + 0;
-        const int idx1 = j * VEC + 1;
+            const T_ACC q0 = static_cast<T_ACC>(pyq[i]);
+            const T_ACC q1 = static_cast<T_ACC>(pyq[i+1]);
+            const T_ACC k0 = static_cast<T_ACC>(pyk[i]);
+            const T_ACC k1 = static_cast<T_ACC>(pyk[i+1]);
 
-        const T_ACC c0 = static_cast<T_ACC>(cos_row[idx0]);
-        const T_ACC s0 = static_cast<T_ACC>(sin_row[idx0]);
-        const T_ACC c1 = static_cast<T_ACC>(cos_row[idx1]);
-        const T_ACC s1 = static_cast<T_ACC>(sin_row[idx1]);
-
-        const T_ACC q0 = static_cast<T_ACC>(pyq[0]);
-        const T_ACC q1 = static_cast<T_ACC>(pyq[1]);
-        const T_ACC k0 = static_cast<T_ACC>(pyk[0]);
-        const T_ACC k1 = static_cast<T_ACC>(pyk[1]);
-
-        pyq[0] = static_cast<scalar_t>(q0 * c0 + (-q1) * s0);
-        pyq[1] = static_cast<scalar_t>(q1 * c1 + ( q0) * s1);
-        pyk[0] = static_cast<scalar_t>(k0 * c0 + (-k1) * s0);
-        pyk[1] = static_cast<scalar_t>(k1 * c1 + ( k0) * s1);
-
+            pyq[i+0] = static_cast<scalar_t>(q0 * c0 + (-q1) * s0);
+            pyq[i+1] = static_cast<scalar_t>(q1 * c1 + ( q0) * s1);
+            pyk[i+0] = static_cast<scalar_t>(k0 * c0 + (-k1) * s0);
+            pyk[i+1] = static_cast<scalar_t>(k1 * c1 + ( k0) * s1);
+        }
+        // vectorized write-back
         Yq[j] = yq;
         Yk[j] = yk;
-    }
+    } 
 }
+
 
 template <typename scalar_t, int VEC=2>
 __global__ void cross_qk_ln_rope_fused_kernel(
@@ -170,11 +175,11 @@ __global__ void cross_qk_ln_rope_fused_kernel(
     const int64_t row = static_cast<int64_t>(blockIdx.x);
     if (row >= total_rows) return;
 
-    // 决定block 处理 Q 行还是 K 行
+    // 决定 block 处理 Q 行还是 K 行
     const bool is_q = (row < rows_q);
     const int64_t r = is_q ? row : (row - rows_q);
 
-    // 解码索引
+    // 解码索引 (b,s,h)
     int64_t b, s, h;
     if (is_q) {
         h = r % H;
@@ -184,7 +189,7 @@ __global__ void cross_qk_ln_rope_fused_kernel(
     } else {
         h = r % H;
         const int64_t t = r / H;
-        s = t % S2;     // 这里S2 的索引仅用于 K
+        s = t % S2;     // 这里 S2 的索引用于 K 行
         b = t / S2;
     }
 
@@ -193,16 +198,17 @@ __global__ void cross_qk_ln_rope_fused_kernel(
     using WelfordOp   = at::native::WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
     WelfordOp welford_op;
 
-    __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type sh_wf[8];
+    __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type sh_wf[64];
     __shared__ T_ACC mean_, rstd_;
 
     using Vec = at::native::memory::aligned_vector<scalar_t, VEC>;
-    const int tcol = D / VEC;
+    const int tcol = D / VEC; // 假设 D % VEC == 0
 
-    // 选择数据行与 γ/β
+    // 选择 gamma/beta
     const scalar_t* gamma = is_q ? gamma_q : gamma_k;
     const scalar_t* beta  = is_q ? beta_q  : beta_k;
 
+    // 计算行偏移（单位：scalar）
     size_t off = 0;
     if (is_q) {
         // q offset: ((((b*S1 + s)*H + h)*D)
@@ -217,14 +223,15 @@ __global__ void cross_qk_ln_rope_fused_kernel(
     const Vec* __restrict__ X = reinterpret_cast<const Vec*>((is_q ? (q  + off) : (kv + off)));
           Vec* __restrict__ Y = reinterpret_cast<      Vec*>((is_q ? (q  + off) : (kv + off)));
 
-    // -------- Welford 均值/方差 --------
+    // -------- Welford 均值/方差（向量化读取）--------
     WelfordType acc = {};
     for (int j = tid; j < tcol; j += blockDim.x) {
         const Vec vx = X[j];
         const scalar_t* px = reinterpret_cast<const scalar_t*>(&vx);
         #pragma unroll
-        for (int i=0;i<VEC;++i)
+        for (int i = 0; i < VEC; ++i) {
             acc = welford_op.reduce(acc, static_cast<T_ACC>(px[i]));
+        }
     }
     acc = at::native::BlockReduce(acc, welford_op, reinterpret_cast<WelfordType*>(sh_wf));
     if (tid == 0) {
@@ -233,48 +240,54 @@ __global__ void cross_qk_ln_rope_fused_kernel(
     }
     __syncthreads();
 
-    const T_ACC m = mean_, rcp = rstd_;
+    const T_ACC m   = mean_;
+    const T_ACC rcp = rstd_;
 
-    // -------- 写回
+    // cos/sin 行，仅用于 Q
     const float* __restrict__ cos_row = is_q ? (cos + static_cast<size_t>(s) * static_cast<size_t>(D)) : nullptr;
     const float* __restrict__ sin_row = is_q ? (sin + static_cast<size_t>(s) * static_cast<size_t>(D)) : nullptr;
 
+    // VEC in {2,4,8}：对每个 Vec 做 LayerNorm，然后在 Vec 内按 (0,1),(2,3)... 做 RoPE（向量化写回）
     for (int j = tid; j < tcol; j += blockDim.x) {
-        Vec vx = X[j];
+        const Vec vx = X[j];
         Vec vy;
         scalar_t* py = reinterpret_cast<scalar_t*>(&vy);
         const scalar_t* px = reinterpret_cast<const scalar_t*>(&vx);
 
-        // LN + γβ
+        // LayerNorm + affine（Vec 内逐元素）
         #pragma unroll
-        for (int i=0;i<VEC;++i) {
-            const int idx = j*VEC + i;
+        for (int i = 0; i < VEC; ++i) {
+            const int idx = j * VEC + i;
             T_ACC val = (static_cast<T_ACC>(px[i]) - m) * rcp *
                         (gamma ? static_cast<T_ACC>(gamma[idx]) : T_ACC(1)) +
-                        (beta  ? static_cast<T_ACC>(beta [idx]) : T_ACC(0));
+                        (beta  ? static_cast<T_ACC>(beta[idx])  : T_ACC(0));
             py[i] = static_cast<scalar_t>(val);
         }
 
+        // 如果是 Q 行，在 Vec 内按成对 (2k,2k+1) 做 RoPE
         if (is_q) {
-            // RoPE: 成对旋转 (2k,2k+1)
-            const int idx0 = j*VEC + 0;
-            const int idx1 = j*VEC + 1;
+            #pragma unroll
+            for (int i = 0; i < VEC; i += 2) {
+                const int idx0 = j * VEC + i;
+                const int idx1 = idx0 + 1;
+                if (idx1 >= D) break; // 安全检查（在假设 D%VEC==0 时一般不会触发）
+                const T_ACC c0 = static_cast<T_ACC>(cos_row[idx0]);
+                const T_ACC s0 = static_cast<T_ACC>(sin_row[idx0]);
+                const T_ACC c1 = static_cast<T_ACC>(cos_row[idx1]);
+                const T_ACC s1 = static_cast<T_ACC>(sin_row[idx1]);
 
-            const T_ACC c0 = static_cast<T_ACC>(cos_row[idx0]);
-            const T_ACC s0 = static_cast<T_ACC>(sin_row[idx0]);
-            const T_ACC c1 = static_cast<T_ACC>(cos_row[idx1]);
-            const T_ACC s1 = static_cast<T_ACC>(sin_row[idx1]);
+                const T_ACC a0 = static_cast<T_ACC>(py[i + 0]);
+                const T_ACC a1 = static_cast<T_ACC>(py[i + 1]);
 
-            const T_ACC a0 = static_cast<T_ACC>(py[0]);
-            const T_ACC a1 = static_cast<T_ACC>(py[1]);
-
-            py[0] = static_cast<scalar_t>(a0 * c0 + (-a1) * s0);
-            py[1] = static_cast<scalar_t>(a1 * c1 + ( a0) * s1);
+                py[i + 0] = static_cast<scalar_t>(a0 * c0 + (-a1) * s0);
+                py[i + 1] = static_cast<scalar_t>(a1 * c1 + ( a0) * s1);
+            }
         }
-
+        // 向量化写回
         Y[j] = vy;
     }
 }
+
 
 template <typename scalar_t>
 void mha_norm_rope_qkv_inplace_launch(
@@ -290,13 +303,15 @@ void mha_norm_rope_qkv_inplace_launch(
 {
     TORCH_INTERNAL_ASSERT((D & 1) == 0, "head_dim must be even (RoPE pairing)");
     dim3 grid(B * S * H);
-    dim3 block(get_layernorm_blocksize(D));
-    mha_norm_rope_qkv_inplace_kernel<scalar_t, 2><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
+    dim3 block(64);
+    // dim3 block(get_layernorm_blocksize(D));
+    mha_norm_rope_qkv_inplace_kernel<scalar_t, 4><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
         qkv.data_ptr<scalar_t>(),
         gamma_q, beta_q, gamma_k, beta_k,
         cos, sin,
         B, S, H, D, eps
     );
+    AT_CUDA_CHECK(cudaGetLastError());
 }
 
 void mha_norm_rope_qkv_inplace_cuda(
@@ -358,8 +373,9 @@ void cross_norm_rope_q_kv_inplace_launch(
     const int64_t total  = rows_q + rows_k;
 
     dim3 grid(total);
-    dim3 block(get_layernorm_blocksize(D));
-    cross_qk_ln_rope_fused_kernel<scalar_t, 2><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
+    dim3 block(64);
+    // dim3 block(get_layernorm_blocksize(D));
+    cross_qk_ln_rope_fused_kernel<scalar_t, 4><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
         q.data_ptr<scalar_t>(),
         kv.data_ptr<scalar_t>(),
         gamma_q, beta_q, gamma_k, beta_k,
@@ -367,6 +383,7 @@ void cross_norm_rope_q_kv_inplace_launch(
         B, S1, S2, H, static_cast<int>(D),
         eps
     );
+    AT_CUDA_CHECK(cudaGetLastError());
 }
 
 // ---------------- Binding（CUDA 入口） ----------------
