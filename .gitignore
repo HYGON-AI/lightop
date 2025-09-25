@@ -4,7 +4,7 @@ build/*
 dist/*
 lightop/__pycache__/*
 lightop/csrc/*/*.hip
-lightop/csrc/*/*.cuh
+lightop/csrc/*/*_hip.cuh
 lightop/version.py
 __pycache__/*
 lightop/csrc/hip_*.cpp
