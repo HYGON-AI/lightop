@@ -202,7 +202,7 @@ namespace marlin_moe_w4a8{
         sh_block_sorted_ids_int4[threadIdx.x] = reinterpret_cast<const int4*>(sorted_token_ids_ptr)[block_id * sorted_token_ids_int4_len + threadIdx.x];
       }
       // 等待 sorted_token_ids 全部加载到LDS中
-      S_BARRIER;
+      __syncthreads();
       // 第二步：遍历获取 有效的 索引数
       block_num_valid_tokens = moe_block_size;
       for (int j = 0; j < moe_block_size; j++) {
