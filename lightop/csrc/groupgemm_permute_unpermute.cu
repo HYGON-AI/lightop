@@ -55,9 +55,6 @@ static __device__ inline scalar_t2 atomic_add_bf16(scalar_t2* p_dst, const scala
 
     BF16Union cur_val, old_val, new_val, x_val;
     cur_val.as_uint32 = *dword_addr;
-    // if(threadIdx.x == 0) {
-    //     printf("cur_val: %f, x_val: %f\n", cur_val.x, cur_val.y);
-    // }
     x_val.as_uint32 = reinterpret_cast<const uint32_t&>(x);
     do {
         old_val = cur_val;
@@ -67,13 +64,11 @@ static __device__ inline scalar_t2 atomic_add_bf16(scalar_t2* p_dst, const scala
         float f2 = num2float(cur_val.y);
 
         float fx1 = num2float(x_val.x);
-        float fx2 = num2float(x_val.y); 
+        float fx2 = num2float(x_val.y);
         
         // 执行加法并转换回bf16
         new_val.x = float2num(f1 + fx1); 
         new_val.y = float2num(f2 + fx2);
-        
-
         // 原子比较并交换
         cur_val.as_uint32 = atomicCAS(dword_addr, old_val.as_uint32, new_val.as_uint32); //builting
     } while (cur_val.as_uint32 != old_val.as_uint32);
@@ -85,7 +80,7 @@ static __device__ inline scalar_t2 atomic_add_bf16(scalar_t2* p_dst, const scala
 
 namespace at{
 namespace native{
-    using scalar_t = __hip_bfloat16;
+    using bf16_t = __hip_bfloat16;
 
     template <typename T>
     __inline__ __device__ T WarpReduceSum1(T val,int max=32) {
@@ -439,7 +434,7 @@ namespace native{
         int tid = threadIdx.x;
 
         using vec_T = __attribute__((__vector_size__(VEC * sizeof(uint16_t)))) unsigned short;
-     
+        using bf16_2 = uint16x2;
         T prob_weight = permuted_probs[permuted_token_idx];
         int dst_token_idx = sorted_indices[permuted_token_idx];
         for(int i = tid * VEC; i < hidden_size; i += blockDim.x * VEC) {
@@ -470,19 +465,12 @@ namespace native{
         int tid = threadIdx.x;
 
         using vec_T = __attribute__((__vector_size__(VEC * sizeof(uint16_t)))) unsigned short;
-        //using bf16_2 = __attribute__((__vector_size__(2 * sizeof(uint16_t)))) uint16_t;
         using bf16_2 = uint16x2;
      
         int dst_token_idx = sorted_indices[permuted_token_idx];
         for(int i = tid * VEC; i < hidden_size; i += blockDim.x * VEC) {
-            //vec_T permuted_tokens_vec = *(vec_T*)(&permuted_tokens[permuted_token_idx * hidden_size + i]);
-            //T* permute_tokens_T = (T*)(&permuted_tokens_vec);
-
-            // bf16_2* permute_tokens_T = (bf16_2*)(&permuted_tokens_vec);
             #pragma unroll
             for(int j = 0; j < VEC; j+=2){
-                //atomicAdd(&output_tokens[dst_token_idx * hidden_size + i + j], permute_tokens_T[j]); //todo bf16的原子加优化
-                
                 uint16x2 permute_tokens_T = *(uint16x2*)(&permuted_tokens[permuted_token_idx * hidden_size + i+j]);
                 bf16_2* output_c = reinterpret_cast<bf16_2*>(&output_tokens[dst_token_idx * hidden_size + i + j]);
                 atomic_add_bf16<bf16_2>(output_c, permute_tokens_T);
@@ -652,9 +640,9 @@ namespace native{
         auto permuted_tokens = torch::empty({num_selected_tokens, hidden_size}, tokens.options());
         int permute_grid = num_selected_tokens;
         int permute_block = std::min(hidden_size / 8, 1024);
-        permute_tokens_kernel_vec<scalar_t, 8><<<permute_grid, permute_block, 0, stream>>>(
-            (scalar_t*)tokens.data_ptr(),
-            (scalar_t*)permuted_tokens.data_ptr(),
+        permute_tokens_kernel_vec<bf16_t, 8><<<permute_grid, permute_block, 0, stream>>>(
+            (bf16_t*)tokens.data_ptr(),
+            (bf16_t*)permuted_tokens.data_ptr(),
             sorted_indices.data_ptr<int>(),
             hidden_size,
             num_selected_tokens
@@ -706,10 +694,10 @@ namespace native{
             dim3 prob_block(256);
             
     
-            permute_probs_kernel_vec<scalar_t, 8><<<num_experts, 512, 0, stream>>>(
-                //(scalar_t*)probs.data_ptr(),
-                (scalar_t*)probs.value().data_ptr(),
-                (scalar_t*)permuted_probs.data_ptr(),
+            permute_probs_kernel_vec<bf16_t, 8><<<num_experts, 512, 0, stream>>>(
+                //(bf16_t*)probs.data_ptr(),
+                (bf16_t*)probs.value().data_ptr(),
+                (bf16_t*)permuted_probs.data_ptr(),
                 expert_m_count.data_ptr<int>(),
                 routing_map_bool.data_ptr<bool>(),
                 num_tokens,
@@ -717,11 +705,11 @@ namespace native{
             );
           
 
-            unpermute_with_probs_kernel_fast<scalar_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
-                (scalar_t*)permuted_tokens.data_ptr(),
-                (scalar_t*)output_tokens.data_ptr(),
+            unpermute_with_probs_kernel_fast<bf16_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
+                (bf16_t*)permuted_tokens.data_ptr(),
+                (bf16_t*)output_tokens.data_ptr(),
                 sorted_indices_int.data_ptr<int>(),
-                (scalar_t*)permuted_probs.data_ptr(),
+                (bf16_t*)permuted_probs.data_ptr(),
                 hidden_size,
                 num_tokens,
                 num_selected_tokens
@@ -730,9 +718,9 @@ namespace native{
         } else {
             // printf("unpermute_with_probs_kernel_fast null\n");
          
-            unpermute_tokens_kernel_fast<scalar_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
-                (scalar_t*)permuted_tokens.data_ptr(),
-                (scalar_t*)output_tokens.data_ptr(),
+            unpermute_tokens_kernel_fast<bf16_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
+                (bf16_t*)permuted_tokens.data_ptr(),
+                (bf16_t*)output_tokens.data_ptr(),
                 sorted_indices_int.data_ptr<int>(),
                 hidden_size,
                 num_tokens,
@@ -830,9 +818,9 @@ namespace native{
         auto permuted_tokens = torch::empty({num_selected_tokens, hidden_size}, tokens.options());
         int permute_grid = num_selected_tokens;
         int permute_block = std::min(hidden_size / 8, 512); // 1024 512?
-       permute_tokens_kernel_vec<scalar_t, 8><<<permute_grid, permute_block, 0, stream>>>(
-            (scalar_t*)tokens.data_ptr(),
-            (scalar_t*)permuted_tokens.data_ptr(),
+       permute_tokens_kernel_vec<bf16_t, 8><<<permute_grid, permute_block, 0, stream>>>(
+            (bf16_t*)tokens.data_ptr(),
+            (bf16_t*)permuted_tokens.data_ptr(),
             sorted_indices.data_ptr<int>(),
             hidden_size,
             num_selected_tokens
@@ -881,10 +869,10 @@ namespace native{
             dim3 prob_block(256);
             
     
-            permute_probs_kernel_vec<scalar_t, 8><<<num_experts, 512, 0, stream>>>(
-                //(scalar_t*)probs.data_ptr(),
-                (scalar_t*)probs.value().data_ptr(),
-                (scalar_t*)permuted_probs.data_ptr(),
+            permute_probs_kernel_vec<bf16_t, 8><<<num_experts, 512, 0, stream>>>(
+                //(bf16_t*)probs.data_ptr(),
+                (bf16_t*)probs.value().data_ptr(),
+                (bf16_t*)permuted_probs.data_ptr(),
                 expert_m_count.data_ptr<int>(),
                 routing_map_bool.data_ptr<bool>(),
                 num_tokens,
@@ -892,11 +880,11 @@ namespace native{
             );
           
 
-            unpermute_with_probs_kernel_fast<scalar_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
-                (scalar_t*)permuted_tokens.data_ptr(),
-                (scalar_t*)output_tokens.data_ptr(),
+            unpermute_with_probs_kernel_fast<bf16_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
+                (bf16_t*)permuted_tokens.data_ptr(),
+                (bf16_t*)output_tokens.data_ptr(),
                 sorted_indices_int.data_ptr<int>(),
-                (scalar_t*)permuted_probs.data_ptr(),
+                (bf16_t*)permuted_probs.data_ptr(),
                 hidden_size,
                 num_tokens,
                 num_selected_tokens
@@ -905,9 +893,9 @@ namespace native{
         } else {
             // printf("unpermute_with_probs_kernel_fast null\n");
          
-            unpermute_tokens_kernel_fast<scalar_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
-                (scalar_t*)permuted_tokens.data_ptr(),
-                (scalar_t*)output_tokens.data_ptr(),
+            unpermute_tokens_kernel_fast<bf16_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
+                (bf16_t*)permuted_tokens.data_ptr(),
+                (bf16_t*)output_tokens.data_ptr(),
                 sorted_indices_int.data_ptr<int>(),
                 hidden_size,
                 num_tokens,
