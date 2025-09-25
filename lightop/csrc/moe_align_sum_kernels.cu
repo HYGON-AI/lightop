@@ -296,12 +296,29 @@ __global__ void count_and_sort_expert_tokens_kernel(
       numel = num_local_tokens[0] * TOPK;
     }
   }
+  int expert_id;
   const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
-  const size_t stride = blockDim.x * gridDim.x;
-  for (size_t i = tid; i < numel; i += stride) {
-    int32_t expert_id = topk_ids[i];
-    int32_t rank_post_pad = atomicAdd(&cumsum_buffer[expert_id], 1);
-    sorted_token_ids[rank_post_pad] = i;
+  //const size_t stride = blockDim.x * gridDim.x;
+  __shared__ int32_t lds_count[256];
+   if(threadIdx.x < 256){
+     lds_count[threadIdx.x ] = 0;
+  }
+  __syncthreads();
+  if(tid < numel){
+    expert_id = topk_ids[tid];
+    atomicAdd(&lds_count[expert_id], 1);
+  }
+  __syncthreads();
+  if(threadIdx.x < 256){
+     lds_count[threadIdx.x ] = atomicAdd(&cumsum_buffer[threadIdx.x ], lds_count[threadIdx.x ]);
+  }
+  // for (size_t i = threadIdx.x; i < 256; i += blockDim.x) {
+    
+  // }
+  __syncthreads();
+  if(tid < numel){
+    int32_t rank_post_pad = atomicAdd(&lds_count[expert_id], 1);
+     sorted_token_ids[rank_post_pad] = tid;
   }
 }
 // taken from
@@ -691,6 +708,23 @@ __global__ void moe_sum_kernel_shared_mem(scalar_t *__restrict__ out,
     }
   }
 }
+template <typename scalar_t, int TOPK, bool Is_bf16>
+__global__ void
+moe_sum_kernel_bf16(scalar_t *__restrict__ out,         // [..., d]
+               const scalar_t *__restrict__ input, // [..., topk, d]
+               const int d, scalar_t *__restrict__ bias, float factor,bool *expert_mask) {
+  const int64_t token_idx = blockIdx.x;
+  for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+    double x = 0;
+#pragma unroll
+    for (int k = 0; k < TOPK; ++k) {
+      if(expert_mask[token_idx * TOPK + k]){
+          x += static_cast<double>(input[token_idx * TOPK * d + k * d + idx]);
+      }
+    }
+    out[token_idx * d + idx] = static_cast<scalar_t>(x);
+  }
+}
 template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
           int total_threads_per_token, int TILE_WIDTH, bool Is_bf16>
 __global__ void
@@ -923,7 +957,7 @@ void moe_align_block_size(
                       ? num_local_tokens->data_ptr<int32_t>()
                       : nullptr);
 
-              const int block_threads = std::min(64, (int)threads);
+              const int block_threads = std::min(1024, (int)threads);
               const int num_blocks =
                   (topk_ids.numel() + block_threads - 1) / block_threads;
               const int max_blocks = 65535;
