@@ -29,4 +29,8 @@ output = lightop.miopen_groupnorm_backward(input, dy, weight, mean, rstd, num_gr
 torch.cuda.synchronize()
 print(output)
 
+
+output_cu = lightop.groupnorm_backward(input, dy, weight, mean, rstd)
+print("output_cu", output_cu)
+
 print("miopen_backward----------------------\n")
