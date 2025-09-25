@@ -719,7 +719,7 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
                 for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
                     #pragma unroll
                     for(int k = 0; k < 4; k++){
-                        *(intx4*)(out_smem+(m_tile * MFMA_M) * lds_offset + n_tile * 16+ (warp_k_id-1 +  warp_n_id * warp_k_num)  * lineoffset * 16 +  row_id * lineoffset + col_id * 16  + k * 4) 
+                        *(intx4*)(out_smem+(m_tile * MFMA_M) * lds_offset + n_tile * 16+ (warp_k_id-1 +  warp_n_id * (warp_k_num-1))  * lineoffset * 16 +  row_id * lineoffset + col_id * 16  + k * 4) 
                           = C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + k];
                     }
                 }
@@ -736,7 +736,7 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
                     for(int k_tile = 0; k_tile < warp_k_num-1; k_tile++){//warp迭代
                         #pragma unroll
                         for(int k = 0; k < 4; k++){//4组数据按组迭代
-                            intx4 temp = *(intx4*)(out_smem+ (m_tile * MFMA_M) * lds_offset + n_tile * 16 + ( k_tile +  warp_n_id * warp_k_num ) * lineoffset *16 + row_id * lineoffset + col_id * 16  + k * 4);
+                            intx4 temp = *(intx4*)(out_smem+ (m_tile * MFMA_M) * lds_offset + n_tile * 16 + ( k_tile +  warp_n_id * (warp_k_num-1) ) * lineoffset *16 + row_id * lineoffset + col_id * 16  + k * 4);
                             #pragma unroll
                             for(int i = 0; i < 4; i++){ //组内迭代
                                 C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + k ][i] += temp[i];
