@@ -25,11 +25,7 @@ print("addgroupnorm-----------------------\n")
 dy = torch.randn(3, 512, 14, 14).cuda()
 mean = torch.randn(6, 1, 1, 1).cuda()
 rstd = torch.randn(3*num_groups, 1, 1, 1).cuda()
-<<<<<<< HEAD
 output = lightop.miopen_groupnorm_backward(input, dy, weight, mean, rstd, num_groups, epsilon=0.00001, mode=1)
-=======
-output = lightop.miopen_groupnorm_backward(input, dy, weight, mean, rstd, num_groups, epsilon=0.00001, mode=0)
->>>>>>> feat_support_gn_bwd
 torch.cuda.synchronize()
 print(output)
 
