@@ -1,7 +1,7 @@
 {
     "4096_7168": {
         "1": {
-            "MODE": 500,
+            "MODE": 413,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -9,7 +9,7 @@
             "blocks_per_cu": 1
         },
         "2": {
-            "MODE": 500,
+            "MODE": 413,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -17,7 +17,7 @@
             "blocks_per_cu": 1
         },
         "4": {
-            "MODE": 500,
+            "MODE": 413,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -25,7 +25,7 @@
             "blocks_per_cu": 1
         },
         "8": {
-            "MODE": 500,
+            "MODE": 413,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -33,7 +33,7 @@
             "blocks_per_cu": 1
         },
         "16": {
-            "MODE": 500,
+            "MODE": 413,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 512,
@@ -41,7 +41,7 @@
             "blocks_per_cu": 1 
         },
         "32": {
-            "MODE": 402,
+            "MODE": 413,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 128,
