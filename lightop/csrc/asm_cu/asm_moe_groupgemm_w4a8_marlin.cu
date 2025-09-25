@@ -38,6 +38,9 @@ struct HipFunctionArgs {
   uint32_t stride_bse;               // weight scale stride expert
   uint32_t stride_bsn;               // weight scale stride n
   uint32_t stride_bsk;               // weight scale stride k
+  uint32_t numFullBlocks;
+  uint32_t wgmRemainder1;
+  uint32_t magicNumberWgmRemainder1;
   void *debugBuffer;
 };
 
@@ -58,19 +61,31 @@ void _moe_groupgemm_marlin_w4a8_TN_impl(
   const int size_m = input.size(0); 
   const int size_n = b_qweight.size(2) / 4;
   const int size_k = input.size(1);
+  const int workgroupmapping = 8;	//
 
   /* grid sizes */
   size_t localWorkSize[3] = {BLOCKDIM, 1, 1};
   size_t globalWorkSize[3] = {1, 1, 1};
-  globalWorkSize[0] = DIVIDE(size_n, BLOCKN);
-  globalWorkSize[1] = experts_num;
-  globalWorkSize[2] = DIVIDE(size_m, BLOCKM);
+  globalWorkSize[0] = DIVIDE(size_m, BLOCKM);
+  globalWorkSize[1] = DIVIDE(size_n, BLOCKN);
+  globalWorkSize[2] = experts_num;
+
+  unsigned int problemNumGroupTiles0 = globalWorkSize[0];
+  unsigned int problemNumGroupTiles1 = globalWorkSize[1];
+  const unsigned smallNumMagicShift = 31; // bozo, review
+  unsigned numFullBlocks =  problemNumGroupTiles1 / workgroupmapping; // divide by WorkGroupMapping
+  unsigned wgmRemainder1 =  problemNumGroupTiles1 % workgroupmapping;
+  if (wgmRemainder1 == 0) wgmRemainder1 = workgroupmapping;
+  unsigned magicNumberWgmRemainder1 = ((1L<<smallNumMagicShift) / wgmRemainder1 + 1);
 
   // printf("globalWorkSize[0]:%d globalWorkSize[1]:%d globalWorkSize[2]:%d\n", globalWorkSize[0], globalWorkSize[1], globalWorkSize[2]);
 
   HipFunctionArgs<OutputType> hipFunctionArgs;
   hipFunctionArgs.numWorkGroups0 = globalWorkSize[0];
-  hipFunctionArgs.numWorkGroups1 = globalWorkSize[2];
+  hipFunctionArgs.numWorkGroups1 = globalWorkSize[1];
+  hipFunctionArgs.numFullBlocks  = numFullBlocks;
+  hipFunctionArgs.wgmRemainder1  = wgmRemainder1;
+  hipFunctionArgs.magicNumberWgmRemainder1 = magicNumberWgmRemainder1;
   hipFunctionArgs.ptr_C = static_cast<OutputType*>(output.data_ptr());
   hipFunctionArgs.ptr_A = b_qweight.data_ptr<int32_t>();
   hipFunctionArgs.ptr_B = input.data_ptr<int8_t>();

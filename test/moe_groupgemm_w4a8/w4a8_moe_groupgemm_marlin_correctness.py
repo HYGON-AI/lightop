@@ -301,7 +301,6 @@ def main():
             raise ValueError(f"无法解析列表参数: {list_str}。错误: {str(e)}")
     
     m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]
-    # m_list=[1024]
     E=args.E 
     out_dtype=args.out_dtype
     
