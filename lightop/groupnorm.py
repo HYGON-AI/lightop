@@ -59,3 +59,7 @@ class GNSilu(torch.nn.Module):
 
     def extra_repr(self):
         return f'num_groups={self.num_groups},num_channels={self.num_channels},eps={round(self.eps,5):0.5f}'
+    
+
+def groupnorm_backward(x, dy, weight, mean, rstd):
+    return op.groupnorm_backward(dy, x, mean, rstd, weight)
