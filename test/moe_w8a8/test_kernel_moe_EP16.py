@@ -951,12 +951,18 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                 ep_rank=2,
                 global_num_experts=256)
         
+        # sorted_token_ids, expert_ids, num_tokens_post_padded = (
+        #         moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
+        #                             global_num_experts, expert_map))
+
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
-                                    global_num_experts, expert_map))
-        import pdb
-        pdb.set_trace()
+                                    256, expert_map))
+
+        # import pdb
+        # pdb.set_trace()
         
+        # 这里
         # sorted_token_ids2, expert_ids2, num_tokens_post_padded2 = (
         #         moe_align_block_size(curr_topk_ids, config2['BLOCK_SIZE_M'],
         #                             global_num_experts, expert_map))
@@ -1199,8 +1205,9 @@ def _fused_moe_helper(m: int,
     tensor = torch.rand((m, topk),device=device)
     topk_weights = F.softmax(tensor, dim=1)
     #topk_ids [m,topk]
-    topk_ids=generate_unique_int_tensor(m=m, topk=topk,low=0,high=E).cuda()
-    
+    #topk_ids=generate_unique_int_tensor(m=m, topk=topk,low=0,high=E).cuda()
+    topk_ids=generate_unique_int_tensor(m=m, topk=topk,low=0,high=256).cuda()
+
     return input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids
 
 

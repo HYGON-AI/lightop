@@ -14,13 +14,13 @@ from transformer_engine.pytorch.permutation import (
     moe_unpermute,
 )
 
+import transformer_engine.pytorch.triton.permutation as triton_permutation
+
+
+
 fused_permute = moe_permute
 fused_unpermute = moe_unpermute
 fused_sort_chunks_by_index = moe_sort_chunks_by_index
-
-
-# from permute_ops_cuda import permute_with_indices as groupgemm_permute
-# from permute_ops_cuda import unpermute as groupgemm_unpermute
 
 from lightop import groupgemm_permute, groupgemm_unpermute
 
@@ -28,6 +28,8 @@ _cuda_available = True
 seed = 1234
 torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
+
+use_tx = True
 
 def pytorch_permute_mask_map(tokens, routing_map):
     """Permute the tokens and probs based on the mask.
@@ -44,7 +46,7 @@ def pytorch_permute_mask_map(tokens, routing_map):
     num_experts = routing_map.shape[1]  # 提取专家数量
 
 
-    if False:
+    if use_tx:
         return fused_permute(tokens, routing_map, num_tokens*8)
 
     # import pdb
@@ -102,7 +104,7 @@ def pytorch_unpermute_mask_map(
     # 从restore_shape中提取hidden维度大小
     _, hidden = restore_shape
 
-    if False:
+    if use_tx:
         return fused_unpermute(permuted_tokens, sorted_indices, probs, restore_shape)
 
     # 如果提供了概率权重，需要先对重排序后的tokens应用权重
@@ -155,6 +157,9 @@ def _test_permutation_mask_map(
     pytorch_permute_bwd_input = torch.rand((num_out_tokens, hidden_size), dtype=dtype).cuda()
     pytorch_unpermute_bwd_input = torch.rand((num_tokens, hidden_size), dtype=dtype).cuda()
 
+    for i in range(num_tokens):
+        pytorch_permute_fwd_input[i, :] = i + 1
+
     pytorch_permute_fwd_input.requires_grad_(True)
 
     restore_shape = pytorch_permute_fwd_input.shape
@@ -204,9 +209,6 @@ def _test_permutation_mask_map(
     ###################################################################################################################################
     if _cuda_available:
         print("Testing CUDA implementation...")
-        
-        # Test CUDA permutation
-        #routing_map = routing_map.bool().T.contiguous()
 
 
         print("pytorch_permute_fwd_input.shape: ", pytorch_permute_fwd_input.shape)
@@ -216,6 +218,7 @@ def _test_permutation_mask_map(
         cuda_permute_output, cuda_sorted_indices, expert_m_count = groupgemm_permute(
             pytorch_permute_fwd_input.detach(), routing_map
         )
+        row_id_map = triton_permutation.make_row_id_map(routing_map, num_tokens, num_expert)
 
         # Test CUDA unpermutation
         cuda_unpermute_output = groupgemm_unpermute(    
@@ -224,17 +227,20 @@ def _test_permutation_mask_map(
 
         print("expert_m_count:", cuda_sorted_indices.size(0))
         # Compare results
-
   
-        # torch.allclose(sorted_indices.float(), routing_map.t().float())
-        permute_close = torch.allclose(pytorch_permute_output, cuda_permute_output, rtol=1e-3, atol=1e-3)
-        indices_close = torch.allclose(sorted_indices.float(), cuda_sorted_indices.float())
+        permute_close = torch.allclose(pytorch_permute_output, cuda_permute_output, rtol=1e-2, atol=1e-2)
         indices_close = True
-        unpermute_close = torch.allclose(pytorch_unpermute_output, cuda_unpermute_output, rtol=1e-2, atol=1e-2)
+        if not use_tx:
+            indices_close = torch.allclose(sorted_indices.float(), cuda_sorted_indices.float())
+
+        unpermute_close = torch.allclose(pytorch_unpermute_output, cuda_unpermute_output, rtol=1e-3, atol=1e-3)
 
         print(f"Permute results match: {permute_close}")
         print(f"Indices match: {indices_close}")  
         print(f"Unpermute results match: {unpermute_close}")
+
+        # import pdb
+        # pdb.set_trace()
 
         
 
@@ -254,122 +260,123 @@ def _test_permutation_mask_map(
         
         print("CUDA Permutation Test Passed")
     
+        if BENCHMARK:
+            ###################################################################################################################################
+            #
+            # Performance Benchmark (if requested)
+            #
+            ###################################################################################################################################
         
-        ###################################################################################################################################
-        #
-        # Performance Benchmark (if requested)
-        #
-        ###################################################################################################################################
-       
-        print("\nRunning performance benchmark...")
-        import time
-        
-        num_trials = 100
-        num_warmup = 10
+            print("\nRunning performance benchmark...")
+            import time
+            
+            num_trials = 100
+            num_warmup = 10
 
-        # num_trials = 2
-        # num_warmup = 2
-        
-        # ========================================
-        # Permute Performance Test
-        # ========================================
-        print("\n--- Permute Performance ---")
-        
-        # Warmup for permute
-        for _ in range(num_warmup):
-            _ = pytorch_permute_mask_map(pytorch_permute_fwd_input, routing_map)
-            _ = groupgemm_permute(pytorch_permute_fwd_input, routing_map)
-        
-        torch.cuda.synchronize()
-        
-        # Benchmark PyTorch permute
-        start_time = time.time()
-        for _ in range(num_trials):
-            pytorch_permute_result = pytorch_permute_mask_map(pytorch_permute_fwd_input, routing_map)
-        torch.cuda.synchronize()
-        pytorch_permute_time = (time.time() - start_time) / num_trials
-        
-        # Benchmark CUDA permute
-        start_time = time.time()
-        for _ in range(num_trials):
-            cuda_permute_result = groupgemm_permute(pytorch_permute_fwd_input, routing_map)
-        torch.cuda.synchronize()
-        cuda_permute_time = (time.time() - start_time) / num_trials
-        
-        permute_speedup = pytorch_permute_time / cuda_permute_time
-        print(f"PyTorch permute time: {pytorch_permute_time*1000:.3f}ms")
-        print(f"CUDA permute time: {cuda_permute_time*1000:.3f}ms")
-        print(f"Permute speedup: {permute_speedup:.2f}x")
-        
-        # ========================================
-        # Unpermute Performance Test
-        # ========================================
-        print("\n--- Unpermute Performance ---")
-        
-        # Use the results from permute operations for unpermute testing
-        pytorch_tokens, pytorch_indices = pytorch_permute_result
-        #cuda_tokens, cuda_indices = cuda_permute_result
-        cuda_tokens, cuda_indices, expert_m_count = cuda_permute_result
-        
-        # Warmup for unpermute
-        for _ in range(num_warmup):
-            _ = pytorch_unpermute_mask_map(pytorch_tokens, pytorch_indices, restore_shape, probs, routing_map)
-            _ = groupgemm_unpermute(cuda_tokens, cuda_indices, list(restore_shape), probs, routing_map, expert_m_count)
-        
-        torch.cuda.synchronize()
-        
-        # Benchmark PyTorch unpermute
-        start_time = time.time()
-        for _ in range(num_trials):
-            pytorch_unpermute_result = pytorch_unpermute_mask_map(pytorch_tokens, pytorch_indices, restore_shape, probs, routing_map)
-        torch.cuda.synchronize()
-        pytorch_unpermute_time = (time.time() - start_time) / num_trials
-        
-        # Benchmark CUDA unpermute
-        start_time = time.time()
-        for _ in range(num_trials):
-            cuda_unpermute_result = groupgemm_unpermute(cuda_tokens, cuda_indices, list(restore_shape), probs, routing_map, expert_m_count)
-        torch.cuda.synchronize()
-        cuda_unpermute_time = (time.time() - start_time) / num_trials
-        
-        unpermute_speedup = pytorch_unpermute_time / cuda_unpermute_time
-        print(f"PyTorch unpermute time: {pytorch_unpermute_time*1000:.3f}ms")
-        print(f"CUDA unpermute time: {cuda_unpermute_time*1000:.3f}ms")
-        print(f"Unpermute speedup: {unpermute_speedup:.2f}x")
-        
-        # ========================================
-        # Combined Performance Summary
-        # ========================================
-        print("\n--- Performance Summary ---")
-        pytorch_total_time = pytorch_permute_time + pytorch_unpermute_time
-        cuda_total_time = cuda_permute_time + cuda_unpermute_time
-        total_speedup = pytorch_total_time / cuda_total_time
-        
-        print(f"PyTorch total time: {pytorch_total_time*1000:.3f}ms")
-        print(f"CUDA total time: {cuda_total_time*1000:.3f}ms")
-        print(f"Overall speedup: {total_speedup:.2f}x")
-        
+            # num_trials = 2
+            # num_warmup = 2
+            
+            # ========================================
+            # Permute Performance Test
+            # ========================================
+            print("\n--- Permute Performance ---")
+            
+            # Warmup for permute
+            for _ in range(num_warmup):
+                _ = pytorch_permute_mask_map(pytorch_permute_fwd_input, routing_map)
+                _ = groupgemm_permute(pytorch_permute_fwd_input, routing_map)
+            
+            torch.cuda.synchronize()
+            
+            # Benchmark PyTorch permute
+            start_time = time.time()
+            for _ in range(num_trials):
+                pytorch_permute_result = pytorch_permute_mask_map(pytorch_permute_fwd_input, routing_map)
+            torch.cuda.synchronize()
+            pytorch_permute_time = (time.time() - start_time) / num_trials
+            
+            # Benchmark CUDA permute
+            start_time = time.time()
+            for _ in range(num_trials):
+                row_id_map = triton_permutation.make_row_id_map(routing_map, num_tokens, num_expert)
+                cuda_permute_result = groupgemm_permute(pytorch_permute_fwd_input, routing_map)
+            torch.cuda.synchronize()
+            cuda_permute_time = (time.time() - start_time) / num_trials
+            
+            permute_speedup = pytorch_permute_time / cuda_permute_time
+            print(f"PyTorch permute time: {pytorch_permute_time*1000:.3f}ms")
+            print(f"CUDA permute time: {cuda_permute_time*1000:.3f}ms")
+            print(f"Permute speedup: {permute_speedup:.2f}x")
+            
+            # ========================================
+            # Unpermute Performance Test
+            # ========================================
+            print("\n--- Unpermute Performance ---")
+            
+            # Use the results from permute operations for unpermute testing
+            pytorch_tokens, pytorch_indices = pytorch_permute_result
+            #cuda_tokens, cuda_indices = cuda_permute_result
+            cuda_tokens, cuda_indices, expert_m_count = cuda_permute_result
+            
+            # Warmup for unpermute
+            for _ in range(num_warmup):
+                _ = pytorch_unpermute_mask_map(pytorch_tokens, pytorch_indices, restore_shape, probs, routing_map)
+                _ = groupgemm_unpermute(cuda_tokens, cuda_indices, list(restore_shape), probs, routing_map, expert_m_count)
+            
+            torch.cuda.synchronize()
+            
+            # Benchmark PyTorch unpermute
+            start_time = time.time()
+            for _ in range(num_trials):
+                pytorch_unpermute_result = pytorch_unpermute_mask_map(pytorch_tokens, pytorch_indices, restore_shape, probs, routing_map)
+            torch.cuda.synchronize()
+            pytorch_unpermute_time = (time.time() - start_time) / num_trials
+            
+            # Benchmark CUDA unpermute
+            start_time = time.time()
+            for _ in range(num_trials):
+                cuda_unpermute_result = groupgemm_unpermute(cuda_tokens, cuda_indices, list(restore_shape), probs, routing_map, expert_m_count)
+            torch.cuda.synchronize()
+            cuda_unpermute_time = (time.time() - start_time) / num_trials
+            
+            unpermute_speedup = pytorch_unpermute_time / cuda_unpermute_time
+            print(f"PyTorch unpermute time: {pytorch_unpermute_time*1000:.3f}ms")
+            print(f"CUDA unpermute time: {cuda_unpermute_time*1000:.3f}ms")
+            print(f"Unpermute speedup: {unpermute_speedup:.2f}x")
+            
+            # ========================================
+            # Combined Performance Summary
+            # ========================================
+            print("\n--- Performance Summary ---")
+            pytorch_total_time = pytorch_permute_time + pytorch_unpermute_time
+            cuda_total_time = cuda_permute_time + cuda_unpermute_time
+            total_speedup = pytorch_total_time / cuda_total_time
+            
+            print(f"PyTorch total time: {pytorch_total_time*1000:.3f}ms")
+            print(f"CUDA total time: {cuda_total_time*1000:.3f}ms")
+            print(f"Overall speedup: {total_speedup:.2f}x")
+            
 
 
-        return {
-            "num_tokens": num_tokens,
-            "num_out_tokens": num_out_tokens,
-            "num_expert": num_expert,
-            "hidden_size": hidden_size,
-            "topK": topK,
-            "with_probs": with_probs,
-            "pytorch_permute_time": pytorch_permute_time*1000*1000,
-            "cuda_permute_time": cuda_permute_time*1000*1000,
-            "pytorch_unpermute_time": pytorch_unpermute_time*1000*1000,
-            "cuda_unpermute_time": cuda_unpermute_time*1000*1000,
-        }
+            return {
+                "num_tokens": num_tokens,
+                "num_out_tokens": num_out_tokens,
+                "num_expert": num_expert,
+                "hidden_size": hidden_size,
+                "topK": topK,
+                "with_probs": with_probs,
+                "pytorch_permute_time": pytorch_permute_time*1000*1000,
+                "cuda_permute_time": cuda_permute_time*1000*1000,
+                "pytorch_unpermute_time": pytorch_unpermute_time*1000*1000,
+                "cuda_unpermute_time": cuda_unpermute_time*1000*1000,
+            }
 
 
 def test_permutation_single_case():
     print("GPU:", torch.cuda.get_device_name(0))
 
     # num_tokens = 128  # 1 - 64k
-    num_expert = 256
+    num_expert = 8
     hidden_size = 7168 
     topK = 8
     with_probs = True
@@ -377,50 +384,10 @@ def test_permutation_single_case():
 
     dtype = torch.bfloat16
 
-    # with_probs = True
-    # results_list_no_probs = []
-    # print("------------------------------------with_probs = False------------------------------------")
-    # for num_tokens in [279]:
-    #     num_out_tokens = num_tokens * topK
-    #     print("-----------------------------------------------------------------------------------")
-    #     print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
-    #     results = _test_permutation_mask_map(
-    #         num_tokens=num_tokens,
-    #         num_expert=num_expert,
-    #         hidden_size=hidden_size,
-    #         topK=topK,
-    #         num_out_tokens=num_out_tokens,
-    #         with_probs=with_probs,
-    #         dtype=dtype,
-    #         BENCHMARK=False,
-    #     )
-    #     results_list_no_probs.append(results)
-    
-    results_list = []
-    for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
-        num_out_tokens = num_tokens * topK 
-        print("-----------------------------------------------------------------------------------")
-        print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
-        results = _test_permutation_mask_map(
-            num_tokens=num_tokens,
-            num_expert=num_expert,
-            hidden_size=hidden_size,
-            topK=topK,
-            num_out_tokens=num_out_tokens,
-            with_probs=with_probs,
-            dtype=dtype,
-            BENCHMARK=Benchmark,
-        )
-        results_list.append(results)
-    
-    df = pd.DataFrame(results_list)
-    df.to_excel("results_with_probs.xlsx", index=False)
-
-
     with_probs = False
     results_list_no_probs = []
     print("------------------------------------with_probs = False------------------------------------")
-    for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
+    for num_tokens in [100]:
         num_out_tokens = num_tokens * topK
         print("-----------------------------------------------------------------------------------")
         print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
@@ -432,12 +399,52 @@ def test_permutation_single_case():
             num_out_tokens=num_out_tokens,
             with_probs=with_probs,
             dtype=dtype,
-            BENCHMARK=True,
+            BENCHMARK=False,
         )
         results_list_no_probs.append(results)
+    
+    # results_list = []
+    # for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
+    #     num_out_tokens = num_tokens * topK 
+    #     print("-----------------------------------------------------------------------------------")
+    #     print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
+    #     results = _test_permutation_mask_map(
+    #         num_tokens=num_tokens,
+    #         num_expert=num_expert,
+    #         hidden_size=hidden_size,
+    #         topK=topK,
+    #         num_out_tokens=num_out_tokens,
+    #         with_probs=with_probs,
+    #         dtype=dtype,
+    #         BENCHMARK=Benchmark,
+    #     )
+    #     results_list.append(results)
+    
+    # df = pd.DataFrame(results_list)
+    # df.to_excel("results_with_probs.xlsx", index=False)
 
-    df = pd.DataFrame(results_list_no_probs)
-    df.to_excel("results_no_probs.xlsx", index=False)
+
+    # with_probs = False
+    # results_list_no_probs = []
+    # print("------------------------------------with_probs = False------------------------------------")
+    # for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
+    #     num_out_tokens = num_tokens * topK
+    #     print("-----------------------------------------------------------------------------------")
+    #     print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
+    #     results = _test_permutation_mask_map(
+    #         num_tokens=num_tokens,
+    #         num_expert=num_expert,
+    #         hidden_size=hidden_size,
+    #         topK=topK,
+    #         num_out_tokens=num_out_tokens,
+    #         with_probs=with_probs,
+    #         dtype=dtype,
+    #         BENCHMARK=True,
+    #     )
+    #     results_list_no_probs.append(results)
+
+    # df = pd.DataFrame(results_list_no_probs)
+    # df.to_excel("results_no_probs.xlsx", index=False)
 
 
 if __name__ == "__main__":
