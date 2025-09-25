@@ -65,12 +65,12 @@
             "blocks_per_cu": 2
         },
         "256": {
-            "MODE": 1000,
+            "MODE": 500,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 128,
-            "thread_n": 256,
-            "thread_k": 128,
-            "blocks_per_cu": 1
+            "BLOCK_SIZE_M": 80,
+            "thread_n": 512,
+            "thread_k": 64,
+            "blocks_per_cu": 2
         },
         "512": {
             "MODE": 1000,
