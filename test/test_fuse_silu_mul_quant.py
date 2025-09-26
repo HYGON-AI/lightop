@@ -31,6 +31,8 @@ def check_correctness_once(num_tokens: int, hidden_sizes: int, rtol=1e-7, atol=1
     out_init  = out_init[:m]   
     scales_init = scales_init[:m]
     out_opt , scales_opt = fuse_silu_mul_quant_opt(input,num_local_tokens_tensor)
+    out_opt  = out_opt[:m]   
+    scales_opt = scales_opt[:m]
 
     if not torch.allclose(scales_init, scales_opt, rtol=rtol, atol=atol):
         diff = (scales_init - scales_opt).abs()
