@@ -424,9 +424,12 @@ template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
 __global__ void moe_sum_kernel_reg(scalar_t *__restrict__ out,
                                    const scalar_t *__restrict__ input,
                                    scalar_t *__restrict__ bias, float factor,
-                                   bool *expert_mask) {
+                                   bool *expert_mask,int32_t *num_local_tokens) {
   using VecType = Vector<scalar_t, VEC_SIZE>;
   const int token_idx = blockIdx.y;
+   if(num_local_tokens != nullptr){
+    if(token_idx > num_local_tokens[0])  return;
+  }
   const VecType *input_base_ptr =
       reinterpret_cast<const VecType *>(input) + token_idx * TOPK * d_vec;
   VecType *out_base_ptr = reinterpret_cast<VecType *>(out) + token_idx * d_vec;
@@ -506,9 +509,12 @@ template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
           int total_threads_per_token, int TILE_WIDTH, bool Is_bf16>
 __global__ void moe_sum_kernel_reg_bf16_add_bias(
     scalar_t *__restrict__ out, const scalar_t *__restrict__ input,
-    scalar_t *__restrict__ bias, float factor, bool *expert_mask) {
+    scalar_t *__restrict__ bias, float factor, bool *expert_mask,int32_t *num_local_tokens) {
   using VecType = Vector<scalar_t, VEC_SIZE>;
   const int token_idx = blockIdx.y;
+  if(num_local_tokens != nullptr){
+    if(token_idx > num_local_tokens[0])  return;
+  }
   const VecType *input_base_ptr =
       reinterpret_cast<const VecType *>(input) + token_idx * TOPK * d_vec;
   VecType *out_base_ptr = reinterpret_cast<VecType *>(out) + token_idx * d_vec;
@@ -611,10 +617,13 @@ template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
 __global__ void moe_sum_kernel_shared_mem(scalar_t *__restrict__ out,
                                           const scalar_t *__restrict__ input,
                                           scalar_t *__restrict__ bias,
-                                          float factor, bool *expert_mask) {
+                                          float factor, bool *expert_mask,int32_t* num_local_tokens) {
   using VecType = Vector<scalar_t, VEC_SIZE>;
   __shared__ VecType tile[TOPK][TILE_WIDTH];
   const int token_idx = blockIdx.y;
+    if(num_local_tokens != nullptr){
+    if(token_idx > num_local_tokens[0])  return;
+  }
   const VecType *input_base_ptr =
       reinterpret_cast<const VecType *>(input) + token_idx * TOPK * d_vec;
   VecType *out_base_ptr = reinterpret_cast<VecType *>(out) + token_idx * d_vec;
@@ -1018,11 +1027,11 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
              torch::Tensor &output, // [num_tokens, hidden_size]
              const torch::optional<torch::Tensor> &bias,
              const torch::optional<torch::Tensor> &expert_mask,
+             const torch::optional<torch::Tensor> &num_local_tokens,
              const float factor = 1.f) {
   const int hidden_size = input.size(-1);
-  const auto num_tokens = output.numel() / hidden_size;
+  int  num_tokens = output.numel() / hidden_size;
   const int topk = input.size(1);
-
   dim3 grid(num_tokens);
   dim3 block(std::min(hidden_size, 1024));
   const at::cuda::OptionalCUDAGuard device_guard(device_of(output));
@@ -1105,7 +1114,7 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
                     bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
                     factor,
                     expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                            : nullptr);
+                                            : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr);
               } else {
                 moe_sum_kernel_reg<scalar_t, 8, VEC_SIZE, 7168 / VEC_SIZE,
                                    7 * block_size, block_size, false>
@@ -1114,7 +1123,7 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
                         bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
                         1.0 / factor,
                         expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                                : nullptr);
+                                                : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr);
               }
             });
       } else {
@@ -1129,7 +1138,7 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
                     bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
                     factor,
                     expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                            : nullptr);
+                                            : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr);
 
               } else {
                 moe_sum_kernel_shared_mem<scalar_t, 8, VEC_SIZE,
@@ -1140,7 +1149,7 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
                         bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
                         1.0 / factor,
                         expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                                : nullptr);
+                                                : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr);
               }
             });
       }
