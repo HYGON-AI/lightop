@@ -90,7 +90,8 @@ __global__ void act_and_mul_quant_kernel_opt1(
     int8_t* __restrict__ out,          // [..., d]
     const scalar_t* __restrict__ input,  // [..., 2, d]
     float* __restrict__ scales,
-    const int d
+    const int d,
+    int32_t *num_local_tokens_tensor
     ) {
   
   constexpr int share_size=block_size / C10_WARP_SIZE;
@@ -98,6 +99,10 @@ __global__ void act_and_mul_quant_kernel_opt1(
   using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
   using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
   const int64_t token_idx= blockIdx.x;
+  if(num_local_tokens_tensor != nullptr){
+    if(token_idx > num_local_tokens_tensor[0])  return;
+  }
+
   int idx = threadIdx.x * VEC;
   int tidx = threadIdx.x;
   const int64_t x_index = token_idx * 2 * d + idx;
@@ -155,12 +160,16 @@ __global__ void act_and_mul_quant_kernel_opt2(
     int8_t* __restrict__ out,          // [..., d]
     const scalar_t* __restrict__ input,  // [..., 2, d]
     float* __restrict__ scales,
-    const int d) {
+    const int d,
+    int32_t *num_local_tokens_tensor) {
   constexpr int share_size=block_size / C10_WARP_SIZE;
   __shared__ float val_shared[share_size];
   using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
   using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
   const int64_t token_idx = blockIdx.x;
+  if(num_local_tokens_tensor != nullptr){
+    if(token_idx > num_local_tokens_tensor[0])  return;
+  }
   int idx = threadIdx.x * VEC;
   int tidx = threadIdx.x;
 
@@ -247,10 +256,6 @@ __global__ void act_and_mul_quant_kernel_opt2(
 #define LAUNCH_ACTIVATION_GATE_KERNEL(ACT_FIRST)                                  \
   int d = input.size(-1) / 2;                                                  \
   int64_t num_tokens = input.numel() / input.size(-1);                         \
-  if (num_local_tokens_tensor.has_value()) {                                  \
-    auto tensor = num_local_tokens_tensor.value();\
-    num_tokens = tensor.item<int64_t>();\
-  }                                                                            \
   dim3 grid(num_tokens);                                                       \
   dim3 block(std::min(d, 1024));                                               \
   if (num_tokens == 0) {                                                       \
@@ -265,27 +270,27 @@ __global__ void act_and_mul_quant_kernel_opt2(
             act_and_mul_quant_kernel_opt1<scalar_t, 2, ACT_FIRST, 256> \
                 <<<grid, 256, 0, stream>>>(out.data_ptr<int8_t>(),           \
                                            input.data_ptr<scalar_t>(), \
-                                           scales.data_ptr<float>(),d);     \
+                                           scales.data_ptr<float>(),d, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
           } else if (d <= 1024) {                                              \
             act_and_mul_quant_kernel_opt1<scalar_t, 8, ACT_FIRST, 128> \
                 <<<grid, 128, 0, stream>>>(out.data_ptr<int8_t>(),           \
                                            input.data_ptr<scalar_t>(), \
-                                           scales.data_ptr<float>(),d);     \
+                                           scales.data_ptr<float>(),d, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
           } else if (d <= 2048) {                                              \
             act_and_mul_quant_kernel_opt1<scalar_t, 8, ACT_FIRST, 256> \
                 <<<grid, 256, 0, stream>>>(out.data_ptr<int8_t>(),           \
                                            input.data_ptr<scalar_t>(), \
-                                           scales.data_ptr<float>(),d);     \
+                                           scales.data_ptr<float>(),d, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
           } else if (d <= 4096) {                                              \
             act_and_mul_quant_kernel_opt1<scalar_t, 8, ACT_FIRST, 512> \
                 <<<grid, 512, 0, stream>>>(out.data_ptr<int8_t>(),           \
                                            input.data_ptr<scalar_t>(),      \
-                                           scales.data_ptr<float>(),d);     \
+                                           scales.data_ptr<float>(),d, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
           } else {                                                             \
             act_and_mul_quant_kernel_opt2<scalar_t, 8, ACT_FIRST, 1024> \
                 <<<grid, 1024, 0, stream>>>(out.data_ptr<int8_t>(),          \
                                             input.data_ptr<scalar_t>(),     \
-                                            scales.data_ptr<float>(),d);    \
+                                            scales.data_ptr<float>(),d, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);    \
           }                                                                    \
         } else {                                                               \
           printf("ERROR:fuse_silu_mul_quant.cu don't support this size.\n");\
