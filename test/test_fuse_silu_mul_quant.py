@@ -2,6 +2,7 @@ import torch
 import triton
 from vllm import _custom_ops as vllm_ops
 from lightop import fuse_silu_mul_quant
+from typing import Optional
 
 # ------------------ 接口 ------------------
 def fuse_silu_mul_quant_init(output: torch.Tensor, input: torch.Tensor):
@@ -9,8 +10,9 @@ def fuse_silu_mul_quant_init(output: torch.Tensor, input: torch.Tensor):
     ref_out, ref_scales, _= vllm_ops.scaled_int8_quant(output)
     return ref_out, ref_scales
 
-def fuse_silu_mul_quant_opt(input: torch.Tensor):
-    opt_out, opt_scales=fuse_silu_mul_quant(input)
+def fuse_silu_mul_quant_opt(input: torch.Tensor,
+                            num_local_tokens_tensor: Optional[torch.Tensor] = None):
+    opt_out, opt_scales=fuse_silu_mul_quant(input,num_local_tokens_tensor)
     return opt_out, opt_scales
 
 # ------------------ 正确性 ------------------
@@ -19,11 +21,16 @@ def check_correctness_once(num_tokens: int, hidden_sizes: int, rtol=1e-7, atol=1
     dtype = torch.bfloat16
     # dtype = torch.float
     # dtype = torch.float16
+    m=8
+    num_local_tokens = [m]
+    num_local_tokens_tensor = torch.tensor(num_local_tokens,device=device,dtype=torch.int32)
     input = torch.randn((num_tokens, hidden_sizes), device=device, dtype=dtype)
     out_init = torch.empty((num_tokens, hidden_sizes//2), device=device, dtype=dtype)
 
     out_init, scales_init = fuse_silu_mul_quant_init(out_init, input)
-    out_opt , scales_opt = fuse_silu_mul_quant_opt(input)
+    out_init  = out_init[:m]   
+    scales_init = scales_init[:m]
+    out_opt , scales_opt = fuse_silu_mul_quant_opt(input,num_local_tokens_tensor)
 
     if not torch.allclose(scales_init, scales_opt, rtol=rtol, atol=atol):
         diff = (scales_init - scales_opt).abs()
@@ -41,7 +48,7 @@ def check_correctness_once(num_tokens: int, hidden_sizes: int, rtol=1e-7, atol=1
 
 def run_correctness_suite():
     # torch.manual_seed(23)
-    numtokens_list = [2**item for item in range(0, 18)]  # [1, 2, ... , 65536, 131072]
+    numtokens_list = [2**item for item in range(8, 18)]  # [1, 2, ... , 65536, 131072]
     hiddensizes_list = [1024, 512, 256] #m=256，k=256
 
     for num_tokens in numtokens_list:

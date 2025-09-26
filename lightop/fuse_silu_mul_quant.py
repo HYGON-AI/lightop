@@ -2,16 +2,20 @@ import torch
 import enum
 import torch.nn as nn
 from lightop import op
+from typing import Optional, Tuple
 
-def fuse_silu_mul_quant(input: torch.Tensor
+def fuse_silu_mul_quant(input: torch.Tensor, 
+                        num_local_tokens_tensor: Optional[torch.Tensor] = None
                         ) -> tuple[torch.Tensor, torch.Tensor]:
     leading, d2 = input.shape          # d2 == 2*d
     d = d2 // 2
     # output = torch.empty(leading, d, dtype=input.dtype, device=input.device)
-    output = torch.empty(leading, d, dtype=torch.int8, device=input.device)
-    scales = torch.empty((input.numel() // input.shape[-1], 1),
+    
+    num_local_tokens = num_local_tokens_tensor.item() if num_local_tokens_tensor is not None else leading
+    output = torch.empty(num_local_tokens, d, dtype=torch.int8, device=input.device)
+    scales = torch.empty((num_local_tokens, 1),
                         device=input.device,
                         dtype=torch.float32)
     # scales = torch.empty(leading, d, dtype=input.dtype, device=input.device)
-    op.fuse_silu_mul_quant(input, output, scales)
+    op.fuse_silu_mul_quant(input, output, scales, num_local_tokens_tensor)
     return output, scales
