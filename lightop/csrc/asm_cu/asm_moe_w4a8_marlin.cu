@@ -88,7 +88,7 @@ void _moe_w4a8_marlin_TN_impl(
   uint32_t workgroupmapping = 8;
   uint32_t numFullBlocks = globalWorkSize[2] / workgroupmapping;
   uint32_t wgmRemainder1 = globalWorkSize[2] % workgroupmapping;
-  if (wgmRemainder1 = 0) wgmRemainder1 = workgroupmapping;
+  if (wgmRemainder1 == 0) wgmRemainder1 = workgroupmapping;
 
   HipFunctionArgs<OutputType> hipFunctionArgs;
   hipFunctionArgs.numWorkGroups0 = globalWorkSize[0];
@@ -115,10 +115,10 @@ void _moe_w4a8_marlin_TN_impl(
   hipFunctionArgs.topk_rcip = 1.0 / top_k;
   hipFunctionArgs.numFullBlocks = numFullBlocks;
   hipFunctionArgs.wgmRemainder1 = wgmRemainder1;
-  hipFunctionArgs.magicNumberWgmRemainder1 = ((1L<<31) / wgmRemainder1 + 1);;
+  hipFunctionArgs.magicNumberWgmRemainder1 = ((1L<<31) / wgmRemainder1 + 1);
   void * debug_host = nullptr, * debug_device = nullptr;
   #if DEBUG
-  int bytes = 128;
+  int bytes = 40;
   int debug_size = 768 * bytes;
   debug_host = malloc(debug_size);
   hipMalloc((void **)&debug_device, debug_size);
@@ -168,9 +168,11 @@ void _moe_w4a8_marlin_TN_impl(
   
   printf("%s:%d gdx:%d gdy:%d gdz:%d bdx:%d bdy:%d bdz:%d\n", __FILE__, __LINE__, globalWorkSize[0], globalWorkSize[1], globalWorkSize[2],
     localWorkSize[0], localWorkSize[1], localWorkSize[2]);
-  printf("argsSize:%ld\nnumWorkGroups0:%p\nnumWorkGroups1:%p\nptr_C:%p\nptr_A:%p\ptr_B0:%p\nptr_A_scale:%p\nptr_B_scale:%p\ntopk_weights:%p\sorted_token_ids:%p\n"
-    "expert_ids:%pnum_tokens_post_pad_ptr:%p\nexperts_num:%p\nsize_m:%p\nsize_n:%p\nsize_k:%p\nstride_asm:%p\nstride_ask:%p\nstride_bse:%p\stride_bn:%p\n"
+  printf("argsSize:%ld\nnumFullBlocks:%d\nwgmRemainder1:%d\nmagicNumberWgmRemainder1:%d\nnumWorkGroups0:%p\nnumWorkGroups1:%p\nptr_C:%p\n"
+    "ptr_A:%p\nptr_B0:%p\nptr_A_scale:%p\nptr_B_scale:%p\ntopk_weights:%p\nsorted_token_ids:%p\n"
+    "expert_ids:%p\nnum_tokens_post_pad_ptr:%p\nexperts_num:%p\nsize_m:%p\nsize_n:%p\nsize_k:%p\nstride_asm:%p\nstride_ask:%p\nstride_bse:%p\nstride_bn:%p\n"
     "stride_bk:%p\ntopk:%p\ntopk_rcip:%p\nnumFullBlocks:%p\nwgmRemainder1:%p\nmagicNumberWgmRemainder1:%p\ndebugBuffer%p\n", argsSize,
+    numFullBlocks, wgmRemainder1, hipFunctionArgs.magicNumberWgmRemainder1,
     &hipFunctionArgs.numWorkGroups0, &hipFunctionArgs.numWorkGroups1, &hipFunctionArgs.ptr_C,
     &hipFunctionArgs.ptr_A, &hipFunctionArgs.ptr_B0, &hipFunctionArgs.ptr_A_scale,
     &hipFunctionArgs.ptr_B_scale, &hipFunctionArgs.topk_weights, &hipFunctionArgs.sorted_token_ids, 
@@ -182,9 +184,9 @@ void _moe_w4a8_marlin_TN_impl(
   );
   printf("\ndebug:\n");
   hipMemcpy(debug_host, debug_device, debug_size, hipMemcpyDeviceToHost);
-  using DEBUG_TYPE = int8_t;
+  // using DEBUG_TYPE = int8_t;
   // using DEBUG_TYPE = uint32_t;
-  // using DEBUG_TYPE = int32_t;
+  using DEBUG_TYPE = int32_t;
   // using DEBUG_TYPE = float;
   // using DEBUG_TYPE = bhalf_t;
   int split = bytes / sizeof(DEBUG_TYPE);
@@ -192,13 +194,13 @@ void _moe_w4a8_marlin_TN_impl(
   // for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE); ++i) {
   for (int i = 0; i < debug_size / sizeof(DEBUG_TYPE) / split; ++i) {
     // if (i % 16 == 0) printf("\n");
-    // if (i % 32 == 0) printf("\ni:%d ", i / 32);
+    if (i % 10 == 0) printf("\ni:%d ", i / 10);
     // bhalf_t* tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f\t", p_debug[i]);
     // printf("%3d:%10.4f\t", i, static_cast<float>(tmp[i+1]));
     // printf("%3d:%6d\t", i, p_debug[i]);
     // printf("%6d\t", p_debug[i]);
-    // printf("%10d\t", p_debug[i]);
+    printf("%10d\t", p_debug[i]);
     // bhalf_t * tmp = reinterpret_cast<bhalf_t*>(p_debug + i);
     // printf("%10.4f ", static_cast<float>(tmp[0]));
     // int index = split * i;
