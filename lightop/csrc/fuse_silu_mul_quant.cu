@@ -90,7 +90,8 @@ __global__ void act_and_mul_quant_kernel_opt1(
     int8_t* __restrict__ out,          // [..., d]
     const scalar_t* __restrict__ input,  // [..., 2, d]
     float* __restrict__ scales,
-    const int d) {
+    const int d
+    ) {
   
   constexpr int share_size=block_size / C10_WARP_SIZE;
   __shared__ float val_shared[share_size];
@@ -99,7 +100,6 @@ __global__ void act_and_mul_quant_kernel_opt1(
   const int64_t token_idx= blockIdx.x;
   int idx = threadIdx.x * VEC;
   int tidx = threadIdx.x;
-
   const int64_t x_index = token_idx * 2 * d + idx;
   const int64_t y_index = token_idx * d + idx;
   VecType* x1 = (VecType*)(input + x_index);
@@ -129,8 +129,8 @@ __global__ void act_and_mul_quant_kernel_opt1(
     float scale = 0.0f;     
     if(tidx == 0){
       scale = row_max;
-      constexpr float qmax = 127.0f;
-      constexpr float min_scale = 1.19209e-07f;
+      // constexpr float qmax = 127.0f;
+      // constexpr float min_scale = 1.19209e-07f;
       s_token_scale = scale;  
       scales[token_idx] = s_token_scale / 127.f;  
     }
@@ -247,6 +247,10 @@ __global__ void act_and_mul_quant_kernel_opt2(
 #define LAUNCH_ACTIVATION_GATE_KERNEL(ACT_FIRST)                                  \
   int d = input.size(-1) / 2;                                                  \
   int64_t num_tokens = input.numel() / input.size(-1);                         \
+  if (num_local_tokens_tensor.has_value()) {                                  \
+    auto tensor = num_local_tokens_tensor.value();\
+    num_tokens = tensor.item<int64_t>();\
+  }                                                                            \
   dim3 grid(num_tokens);                                                       \
   dim3 block(std::min(d, 1024));                                               \
   if (num_tokens == 0) {                                                       \
@@ -288,7 +292,7 @@ __global__ void act_and_mul_quant_kernel_opt2(
         }                                                                      \
       });
 
-void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales)
+void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor)
 {
   LAUNCH_ACTIVATION_GATE_KERNEL(true);
 }
