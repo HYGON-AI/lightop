@@ -6,119 +6,152 @@ description：测试GNSilu算子，比较miopenGroupNorm(mode=1)+torch.silu()与
 """
 
 import torch
-import time
+from itertools import product
 from lightop import GNSilu, miopenGroupNorm
 
 from read_test_size import read_gn_size
 from utils import verify_accuracy
 
 
-class Torch_GNSilu(torch.nn.Module):
-
-    def __init__(self, num_groups, seqs):
-        super().__init__()
-        self.seqs = seqs
-        self.num_groups = num_groups
-        self.silu = torch.nn.SiLU()
-        # self.GroupNorm = torch.nn.GroupNorm(num_groups,seqs)
-        self.GroupNorm = miopenGroupNorm(num_groups, seqs, 1)
-
-    def forward(self, x):
-        out = self.GroupNorm(x)[0]
-        out = self.silu(out)
-        return out
+# 创建全局变量dtype_map, gn_silu仅支持fp16
+dtype_map = {
+    'FP16': torch.float16,
+}
 
 
-def get_data(batchsize=128, seqs=50, cols=128, rows=128, use_half=False):
-    if use_half:
-        x = torch.randn((batchsize, seqs, cols, rows)).to(memory_format=torch.channels_last).cuda().half()
-        grad = torch.randn((batchsize, seqs, cols, rows)).to(memory_format=torch.channels_last).cuda().half()
-    else:
-        x = torch.randn((batchsize, seqs, cols, rows)).to(memory_format=torch.channels_last).cuda()
-        grad = torch.randn((batchsize, seqs, cols, rows)).to(memory_format=torch.channels_last).cuda()
+def get_data(batchsize, seqs, cols, rows, data_layout, precision_type):
+
+    # 指定设备
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    # 创建浮点精度类型
+    dtype = dtype_map.get(precision_type, torch.float16)
+    x = torch.rand((batchsize, seqs, cols, rows), device=device, dtype=dtype)
+    grad = torch.rand((batchsize, seqs, cols, rows), device=device, dtype=dtype)
+
+    # 设置布局
+    if data_layout == 'NCHW':
+        x = x.to(memory_format=torch.contiguous_format)
+        grad = grad.to(memory_format=torch.contiguous_format)
+    elif data_layout == 'NHWC':
+        x = x.to(memory_format=torch.channels_last)
+        grad = grad.to(memory_format=torch.channels_last)
 
     x.requires_grad_(True)
-    x1 = x.clone().detach().requires_grad_()
-    x2 = x.clone().detach().requires_grad_()
+    x1 = x.clone().requires_grad_()
+    x2 = x.clone().requires_grad_()
     return x1, x2, grad
 
 
-def get_model(seqs=1024, num_groups=2, use_half=False):
-    if use_half:
-        fuse_gn_silu = miopenGroupNorm(num_groups, seqs, 10).cuda().half()
-        torch_gn_silu = Torch_GNSilu(num_groups, seqs).cuda().half()
-    else:
-        fuse_gn_silu = GNSilu(num_groups, seqs).cuda()
-        torch_gn_silu = Torch_GNSilu(num_groups, seqs).cuda()
+def get_model(seqs, num_groups, precision_type, mode):
+    # 指定设备
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    return torch_gn_silu, fuse_gn_silu
+    # 指定精度类型
+    if precision_type not in dtype_map:
+        raise ValueError(f'LightOP gn_silu算子暂不支持{precision_type}精度测试, 请完善测试用例或修改精度类型')
+    dtype = dtype_map[precision_type]
+
+    # 设置随机种子
+    torch.manual_seed(0)
+    # 初始化模型中的weight及bias，LightOP库中的weight默认为全1，bias默认为全0
+    if mode == 10:
+        weight = torch.rand(seqs, device=device, dtype=dtype)
+        bias = torch.rand(seqs, device=device, dtype=dtype)
+    elif mode == 11:
+        weight = torch.ones(seqs, device=device, dtype=dtype)
+        bias = torch.zeros(seqs, device=device, dtype=dtype)
+
+    # 创建模型实例
+    miopen_gnsilu = miopenGroupNorm(num_groups, seqs, mode).to(device=device, dtype=dtype)
+    lightop_gnsilu = GNSilu(num_groups, seqs, device=device, dtype=dtype)
+
+    # 将初始化后的weight及bias数据传入model
+    lightop_gnsilu.weight.data = weight.clone().detach()
+    lightop_gnsilu.bias.data = bias.clone().detach()
+    miopen_gnsilu.weight.data = weight.clone().detach()
+    miopen_gnsilu.bias.data = bias.clone().detach()
+
+    return lightop_gnsilu, miopen_gnsilu
 
 
-def test_speed(batch_size, seqs, cols, rows, num_groups, repeat_num, use_half=False, forward_only=False):
-
+def test_speed(batch_size, seqs, cols, rows, num_groups, repeat_num, precision_type, data_layout, mode,
+               forward_only=False):
     if not forward_only:
         raise ValueError(f'当前仅支持前向性能及精度测试，暂不支持其他类型测试任务')
 
-    torch.manual_seed(0)
-    x1, x2, grad = get_data(batch_size, seqs, cols, rows, use_half=use_half)
-    f1, f2 = get_model(seqs=seqs, num_groups=num_groups, use_half=use_half)
+    x1, x2, grad = get_data(batch_size, seqs, cols, rows, data_layout, precision_type)
+    lightop_model, miopen_model = get_model(seqs, num_groups, precision_type, mode)
     if forward_only:
-        f1 = f1.eval()
-        f2 = f2.eval()
-    torch.manual_seed(1)
-    weight = torch.rand(seqs).cuda()
-    if use_half:
-        weight = weight.half()
-    f1.GroupNorm.weight.data = weight.clone().detach()
-    f2.weight.data = weight.clone().detach()
-    print(f'size = ({batch_size}, {seqs}, {cols}, {rows})')
+        lightop_model = lightop_model.eval()
+        miopen_model = miopen_model.eval()
+    print(f'size大小 n: {batch_size}, c: {seqs}, H: {cols}, W: {rows}, groups: {num_groups}')
 
-    y1 = f1(x1)
-    if not forward_only:
-        y1.backward(grad)
-
-    torch.cuda.synchronize()
-    start_time = time.time()
-    for i in range(repeat_num):
-        x1.grad = None
-        f1.GroupNorm.weight.grad = None
-        f1.GroupNorm.bias.grad = None
-        y1 = f1(x1)
+    # lightop model warm up
+    for i in range(10):
+        y1 = lightop_model(x1)
         if not forward_only:
             y1.backward(grad)
-    torch.cuda.synchronize()
-    end_time = time.time()
-    fc1_espl = end_time - start_time
 
-    y2 = f2(x2)
-    if not forward_only:
-        y2.backward(grad)
+    # lightop model time count
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
     torch.cuda.synchronize()
-    start_time = time.time()
+    start_event.record()
     for i in range(repeat_num):
-        x2.grad = None
-        f2.weight.grad = None
-        f2.bias.grad = None
-        y2 = f2(x2)
+        x1.grad = None
+        lightop_model.weight.grad = None
+        lightop_model.bias.grad = None
+        y1 = lightop_model(x1)
+        if not forward_only:
+            y1.backward(grad)
+    end_event.record()
+    torch.cuda.synchronize()
+    lop_time = start_event.elapsed_time(end_event)
+
+    for i in range(10):
+        y2 = miopen_model(x2)
         if not forward_only:
             y2.backward(grad)
+
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
     torch.cuda.synchronize()
-    end_time = time.time()
-    fc2_espl = end_time - start_time
-    print('miopen_gn_torch_silu time:', format(fc1_espl * 1000 / repeat_num, '.3f'), 'ms. miopen time:',
-          format(fc2_espl * 1000 / repeat_num, '.3f'), 'ms speedup:', format(fc1_espl / fc2_espl - 1, '.2f'))
+    start_event.record()
+    for i in range(repeat_num):
+        x2.grad = None
+        miopen_model.weight.grad = None
+        miopen_model.bias.grad = None
+        y2 = miopen_model(x2)
+        if not forward_only:
+            y2.backward(grad)
+    end_event.record()
+    torch.cuda.synchronize()
+    mlop_time = start_event.elapsed_time(end_event)
+    print('lop_time:', format(lop_time / repeat_num, '.3f'), 'ms. mlop_time:',
+          format(mlop_time / repeat_num, '.3f'), 'ms. speedup:', format(lop_time / mlop_time - 1, '.2f'))
 
-    # 执行精度验证
-    verify_accuracy(y1, y2[0], rtol=1e-2, atol=1e-5, use_half=use_half)
+    # 精度验证
+    print(f'lightop_output_shape: {y1.shape}, lightop_miopen_output_shape: {y2[0].shape}')
+    assert y1.shape == y2[0].shape, 'lightop接口与miopen lightop接口的输出tensor shape不一致'
+    verify_accuracy(y1, y2[0], rtol=1e-2, atol=1e-2, precision=precision_type)
 
 
-if __name__ == "__main__":
-    print('=' * 30 + '测试GN_Silu Size' + '=' * 30)
+if __name__ == '__main__':
+    print('=' * 30 + '测试GNSilu Size' + '=' * 30)
     # 设置基础参数
     forward_only = True
-    use_half = True
+    mode_list = [10, 11]
+    precision_list = ['FP16']
+    data_layout_list = ['NHWC']
     repeat_num = 100
     gn_size_path = r'../test_size/groupnorm.csv'
     gn_size_list = read_gn_size(gn_size_path)
-    for params in gn_size_list:
-        test_speed(**params, repeat_num=repeat_num, use_half=use_half, forward_only=forward_only)
+    for mode in mode_list:
+        for precision, data_layout in list(product(precision_list, data_layout_list)):
+            for size_id, params in enumerate(gn_size_list):
+                print(f'size_id: {size_id}')
+                print(f'test_type: mode{mode}_{precision}_{data_layout}')
+                test_speed(**params, repeat_num=repeat_num, precision_type=precision, data_layout=data_layout,
+                           mode=mode, forward_only=forward_only)
+                print('-' * 50)
