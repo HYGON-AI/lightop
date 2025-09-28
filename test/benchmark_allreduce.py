@@ -14,8 +14,8 @@ from vllm.utils import FlexibleArgumentParser
 from lmslim.quantize.quant_ops import lm_faster_rmsquant
 
 
-DEFAULT_SEQUENCE_LENGTHS = [1000]
-HIDDEN_SIZE = 8192
+DEFAULT_SEQUENCE_LENGTHS = [512]
+HIDDEN_SIZE = 7168
 BENCHMARK_DTYPE = torch.float16
 
 CUDA_GRAPH_CAPTURE_CYCLES = 10
@@ -173,7 +173,7 @@ class CommunicatorBenchmark:
 
             return (
                 (end_time - start_time) / num_trials / CUDA_GRAPH_CAPTURE_CYCLES * 1000
-            )
+            ), out1
         except Exception as e:
             raise RuntimeError(
                 f"CUDA graph benchmark failed for communicator: {e}"

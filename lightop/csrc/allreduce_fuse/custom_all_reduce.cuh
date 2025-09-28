@@ -147,10 +147,10 @@ DINLINE P vec_add(const P& a, const P& b) {
   return sum_tmp;
 }
 
-template <typename T>
-__inline__ __device__ T WarpReduceSum(T val, int size) {
+template <typename T, int reducesize=64>
+__inline__ __device__ T WarpReduceSum(T val) {
   #pragma unroll
-  for (int offset = size/ 2; offset > 0; offset >>= 1) {
+  for (int offset = reducesize / 2; offset > 0; offset >>= 1) {
     val += WARP_SHFL_DOWN(val, offset);
   }
   return val;
@@ -162,15 +162,16 @@ DINLINE T BlockReduce(T val, T* shared) {
   const int wid = threadIdx.x / 64;
   const int block_size = blockDim.x;
   const int shared_size = block_size / 64;
-  val = WarpReduceSum(val, 64);
+  val = WarpReduceSum<T>(val);
   if(block_size==64) return val;
   if (lid == 0 && wid < shared_size) {
     shared[wid] = val;
   }
   __syncthreads();
-  if (wid == 0 && lid<shared_size) {
+  val = 0.0f;
+  if (wid == 0 && lid < block_size) {
     val= shared[lid];
-    val = WarpReduceSum(val,shared_size);
+    val = WarpReduceSum<T, 16>(val);
   }
   return val;
 }
@@ -219,15 +220,14 @@ static inline __device__ int8_t float_to_int8_rn(float x) {
 #endif
 }
 
-template <typename T>
-__inline__ __device__ T WarpReduceMax(T val, int reduceSize) {
+template <typename T, int reducesize=64>
+__inline__ __device__ T WarpReduceMax(T val) {
   #pragma unroll
-  for (int offset = reduceSize / 2; offset > 0; offset >>= 1) {
+  for (int offset = reducesize / 2; offset > 0; offset >>= 1) {
     val = fmaxf(val, WARP_SHFL_DOWN(val, offset));
   }
   return val;
 }
-
 
 template <typename T>
 DINLINE T BlockReduceMax_ROW(T val, T* shared) {
@@ -235,7 +235,7 @@ DINLINE T BlockReduceMax_ROW(T val, T* shared) {
   const int wid = threadIdx.x / 64;
   const int block_size = blockDim.x;
   const int shared_size = block_size / 64;
-  val = WarpReduceMax(val, 64);
+  val = WarpReduceMax<T>(val);
   if(block_size==64) return val;
   if (lid == 0 && wid < shared_size) {
     shared[wid] = val;
@@ -243,61 +243,10 @@ DINLINE T BlockReduceMax_ROW(T val, T* shared) {
   __syncthreads();
   if (wid == 0 && lid<shared_size) {
     val= shared[lid];
-    val = WarpReduceMax(val,shared_size);
+    val = WarpReduceMax<T, 16>(val);
   }
   return val;
 }
-
-// template <typename T, typename P, typename T_out>
-// DINLINE void rms_norm_dynamic_per_token_quant(P const& residual, P const& gamma, int hidden_dim,
-//                                               float* __restrict__ scales, float eps, 
-//                                               int cm_access_id, T_out* __restrict__ out) {
-//   static constexpr int VEC_SIZE = 16 / sizeof(T);
-//   using LoadT_out = at::native::memory::aligned_vector<T_out, VEC_SIZE>;
-//   __shared__ float s_val;
-//   float trstd;
-//   P norm_out;
-//   float acc = 0.0f;
-//   #pragma unroll
-//   for (int i = 0; i < VEC_SIZE; ++i) {
-//     float v = static_cast<float>(residual.data[i]);
-//     acc += v * v;
-//   }
-//   __shared__ float r_sum[16];
-//   acc = BlockReduce(acc, r_sum);
-//   if (threadIdx.x == 0)
-//     s_val = rsqrtf(acc / hidden_dim + eps);
-//   __syncthreads();
-//   trstd = s_val;
-
-//   float block_absmax_val_maybe = 0.f;
-
-//   #pragma unroll
-//   for (int i = 0; i < VEC_SIZE; ++i) {
-//     norm_out.data[i] = static_cast<T>(static_cast<float>(residual.data[i]) * trstd * static_cast<float>(gamma.data[i]));
-//     block_absmax_val_maybe = fmaxf(block_absmax_val_maybe, fabs[norm_out.data[i]]);
-//   }
-//   block_absmax_val_maybe = BlockReduceMax_ROW(block_absmax_val_maybe, r_sum);
-//   __shared__ float s_token_scale;
-//   float scale = 0.0f;
-//   if (threadIdx.x == 0) {
-//     scale = block_absmax_val_maybe;
-//     s_token_scale = scale;
-//   }
-//   __syncthreads();
-//   float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
-
-//   T_out out_vec[VEC_SIZE];
-//   #pragma unroll
-//   for (int i = 0; i < VEC_SIZE; ++i) {
-//     out_vec[i] = float_to_int8_rn(norm_out.data[i] * inv_s);
-//   }
-//   constexpr float qmax = 127.0f;
-//   constexpr float min_scale = 1.19209e-07f;
-//   if (threadIdx.x == 0) 
-//     scales[blockIdx.x] = fmaxf(scale/qmax, min_scale);
-//   *(LoadT_out*)(out+cm_access_id) =*(LoadT_out*)out_vec;
-// }
 
 /**************************************************************/
 template <typename T, int N>
