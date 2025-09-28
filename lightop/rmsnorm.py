@@ -163,3 +163,11 @@ def rms_norm_dynamic_per_token_quant(
                                                     residual, update_input)
     return output, scales
 
+def fused_rms_norm_contiguous(
+    out: torch.Tensor,
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    epsilon: float
+) -> torch.Tensor:
+    op.fused_rms_norm_contiguous(out, input, weight, epsilon)
+    return out
