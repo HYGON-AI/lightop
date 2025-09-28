@@ -514,8 +514,18 @@ static std::unordered_map<int, KernelFunc2> kernel_maps_gemm1_decode_marlin = {
     {410, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64, 2, char>(p); }},
     {411, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64, 4, char>(p); }},
     {412, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64, 8, char>(p); }},
-    //支持EP8 TP1时N比较大时，增大N分块，之前为64，现增加到128
+    //支持EP8 TP1时N比较大时，增大N分块，之前为64，现增加到128\256
     {413, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 128, 256, 16, 16, 64, 1, char>(p); }},
+    {414, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 256, 128, 16, 16, 64, 1, char>(p); }},
+    //支持EP8 TP1时blocksizeM=32的情况：
+    {415, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<32, 128, 256, 32, 16, 64, 1, char>(p); }},
+    
+    {416, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<32, 64, 256, 32, 16, 64, 1, char>(p); }},
+    {417, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<32, 64, 512, 32, 16, 64, 1, char>(p); }},
+    {418, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<64, 64, 256, 64, 16, 64, 1, char>(p); }},
+    {419, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<64, 128, 256, 64, 16, 64, 1, char>(p); }},
+    {420, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<128, 64, 256, 128, 16, 64, 1, char>(p); }},
+    {421, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<128, 128, 256, 128, 16, 64, 1, char>(p); }},
     // MN 16 32  k方向2个warp N方向2个warp
     // {405, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 256, 64, 16, 16, 64, char>(p); }},
     // {406, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 128, 64, 16, 16, 64, char>(p); }},
@@ -529,6 +539,8 @@ static std::unordered_map<int, KernelFunc2> kernel_maps_gemm2_decode_marlin = {
     // MN 16 16 N方向为4或者8个warp
     {401, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_second_stage_decode_marlin<16, 256, 64, 16, 16, 64, char>(p); }},
     {402, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_second_stage_decode_marlin<16, 512, 64, 16, 16, 64, char>(p); }},
+    {415, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_second_stage_decode_marlin<32, 256, 64, 32, 16, 64, char>(p); }},
+    {416, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_second_stage_decode_marlin<32, 512, 64, 32, 16, 64, char>(p); }},
     // MN 16 16  K方向2个warp N方向2或4个warp 
     // {403, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_second_stage_decode_marlin<16, 256, 64, 16, 16, 32, char>(p); }},
     // {404, [](const GemmParams2<char>& p) { launch_moe_w4a8_gemm_second_stage_decode_marlin<16, 128, 64, 16, 16, 32, char>(p); }},
