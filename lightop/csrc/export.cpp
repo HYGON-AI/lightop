@@ -7,6 +7,7 @@ namespace at {  namespace native {
 Tensor rmsnorm_forward_autograd(const Tensor& x,const Tensor& weight,double eps,bool training);
 std::tuple<Tensor,Tensor>rmsnorm_forward(const Tensor& self,const Tensor& weight,c10::optional<Tensor>& output_inplace,double eps,bool training);
 std::tuple<Tensor,Tensor>rmsnorm_backward(const Tensor& grad, const Tensor& X,const Tensor& rstd,const Tensor& gamma);
+void fused_rms_norm_contiguous(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight, double epsilon);
 Tensor fuse_rn_dropout_forward_autograd(const Tensor& x,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_bias_forward_autograd(const Tensor& x,const Tensor& y,const Tensor &bias, const Tensor& weight,double eps,double rate,bool training);
@@ -126,6 +127,7 @@ void store_kv_cache_paged(const torch::Tensor& key, const torch::Tensor& value,t
 
 void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::Tensor& token_expert_indices,torch::Tensor& gating_output, const std::string& renormalize = "false");
 void rotary_embedding_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox);    
+void rotary_embedding_deepseek_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox);
 void moe_align_block_size(torch::Tensor topk_ids, int64_t num_experts,int64_t block_size, torch::Tensor sorted_token_ids,torch::Tensor experts_ids,
                           torch::Tensor num_tokens_post_pad,const torch::optional<torch::Tensor> &expert_map ,
                           const torch::optional<torch::Tensor> &expert_mask,const torch::optional<torch::Tensor> &num_local_tokens);
@@ -160,6 +162,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rmsnorm_forward_autograd", &at::native::rmsnorm_forward_autograd, "rmsnorm forward autograd");
   m.def("rmsnorm_forward", &at::native::rmsnorm_forward, "rmsnorm forward");
   m.def("rmsnorm_backward", &at::native::rmsnorm_backward, "rmsnorm backward");
+  m.def("fused_rms_norm_contiguous", &at::native::fused_rms_norm_contiguous, "fused_rms_norm_contiguous");
   m.def("rn_dropout_forward_autograd", &at::native::fuse_rn_dropout_forward_autograd, "fused_rn_dropout forward");
   m.def("rn_add_forward_autograd", &at::native::fuse_rn_add_forward_autograd, "fused_rn_add forward");
   m.def("rn_add_dropout_forward_autograd", &at::native::fuse_rn_add_dropout_forward_autograd, "fused_rn_add_dropout forward");
@@ -221,6 +224,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("blockwise_scaled_cast_transpose", &at::native::blockwise_scaled_cast_transpose, "blockwise_scaled_cast_transpose");
   m.def("rms_norm_dynamic_per_token_quant",&at::native::rms_norm_dynamic_per_token_quant,"rms_norm_dynamic_per_token_quant");
   m.def("rotary_embedding_fuse", &at::native::rotary_embedding_fuse, "rotary_embedding_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"));
+  m.def("rotary_embedding_deepseek_fuse", &at::native::rotary_embedding_deepseek_fuse, "rotary_embedding_deepseek_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"));
   m.def("groupgemm",&at::native::groupgemm,"groupgemm");
   m.def("groupgemm_permute",&at::native::groupgemm_permute,"groupgemm_permute");
   m.def("groupgemm_unpermute",&at::native::groupgemm_unpermute,"groupgemm_unpermute");
