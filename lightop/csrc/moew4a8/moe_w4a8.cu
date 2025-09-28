@@ -1024,60 +1024,59 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
     (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx, bidy);
   }
 
-  const int32_t token_index = sorted_token_ids[std::min(bidx * 16 + row_id, int(sorted_token_lens - 1))];
+  
   if(warp_k_id == 0){
     float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id * WARP_N * 4 + col_id * 4;
-    int sorted_token_offset = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + row_id, int(sorted_token_lens - 1))];
-    float a_scale = input_scale[std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm]; //计算M方向的偏移
     using vec_bf16_4 = __attribute__((__vector_size__(4 * sizeof(uint16_t)))) unsigned short;
-    for (int i = 0; i < 4; i++) {
-      floatx4 bscale4;
-      if(row_id==0) bscale4=*(floatx4*)(b_scale_ptr+i*16);
-      if(token_index < size_m * top_k){
-        
-        if(splitk>1 && splitk%2 ==0){
-          floatx4 D ;
-          for (int j = 0; j < 4; j++) {
-            ((float*)&D)[j] = static_cast<float>(((int*)&C_reg[0][j])[i]);
-          }
-          floatx4* output_c_fp32 = reinterpret_cast<floatx4*>(&d_output_fp32[output_offset + token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]);
-          
-          #ifdef __gfx936__
-          __builtin_amdgcn_global_atomic_fadd_v4f32(output_c_fp32, D);
-          #endif
-          #ifdef __gfx926__
-          atomicAdd(output_c_fp32, D);
-          // __syncthreads();
-          #endif
-          const int index = (bidx * gridDim.y + bidy) * 4 + i;
-          if(threadIdx.x==0) {
-            output_lds[index] = -1;
-            output_lds[index] = atomicAdd(global_semaphore+index,1);
-          }
-          __syncthreads();
-          if(output_lds[index] == splitk-1){
-            auto result_fp32 = *(floatx4*)(output_c_fp32) ;
-            vec_bf16_4 result_bf16 = {0,0,0,0};
-            for (int j = 0; j < 4; j++) {
-              float bscale=bscale4[j];
-              bscale=__shfl(bscale,col_id*16);
-              ((bhalf_t*)&result_bf16)[j] = f32_to_bf16((result_fp32[j]) * a_scale * bscale); 
+    for(int m_tile = 0; m_tile < WARP_M / mfma_m; m_tile++){
+      int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + m_tile * mfma_m + row_id, int(sorted_token_lens - 1))];
+      float a_scale = input_scale[std::min(token_index / top_k,  size_m - 1) * stride_asm]; //计算M方向的偏移
+      for (int i = 0; i < 4; i++) {
+          floatx4 bscale4;
+          if(row_id==0) bscale4=*(floatx4*)(b_scale_ptr+i*16);
+          if(token_index < size_m * top_k){
+            if(splitk>1 && splitk%2 ==0){
+              floatx4 D ;
+                for (int j = 0; j < 4; j++) {
+                  ((float*)&D)[j] = static_cast<float>(((int*)&C_reg[0][j])[i]);
+                }
+              floatx4* output_c_fp32 = reinterpret_cast<floatx4*>(&d_output_fp32[output_offset + token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]);
+              #ifdef __gfx936__
+              __builtin_amdgcn_global_atomic_fadd_v4f32(output_c_fp32, D);
+              #endif
+              #ifdef __gfx926__
+              atomicAdd(output_c_fp32, D);
+              #endif
+              const int index = (bidx * gridDim.y + bidy) * 4 + i;
+              if(threadIdx.x==0) {
+                output_lds[index] = -1;
+                output_lds[index] = atomicAdd(global_semaphore+index,1);
+              }
+              __syncthreads();
+              if(output_lds[index] == splitk-1){
+                auto result_fp32 = *(floatx4*)(output_c_fp32) ;
+                vec_bf16_4 result_bf16 = {0,0,0,0};
+                  for (int j = 0; j < 4; j++) {
+                    float bscale=bscale4[j];
+                    bscale=__shfl(bscale,col_id*16);
+                    ((bhalf_t*)&result_bf16)[j] = f32_to_bf16((result_fp32[j]) * a_scale * bscale); 
+                  }
+                *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = result_bf16;
+              }
             }
-            *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = result_bf16;
-        }
-      }
-      else if(splitk==1){
-            vec_bf16_4 D;
-            for (int j = 0; j < 4; j++) {
-            float bscale=bscale4[j];
-            bscale=__shfl(bscale,col_id*16);
-            ((bhalf_t*)&D)[j] = f32_to_bf16(static_cast<float> (((int*)&C_reg[0][j])[i]  ) * a_scale * bscale);
+            else if(splitk==1){
+                vec_bf16_4 D;
+                for (int j = 0; j < 4; j++) {
+                  float bscale=bscale4[j];
+                  bscale=__shfl(bscale,col_id*16);
+                  ((bhalf_t*)&D)[j] = f32_to_bf16(static_cast<float> (((int*)&C_reg[0][m_tile*4+j])[i]  ) * a_scale * bscale);
+                }
+                *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = D;
             }
-            *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = D;
-        }
-      else{
-        printf("splitk value can't be negative or zero");
-      }    
+            else{
+              printf("splitk value can't be negative or zero");
+            }    
+          }
       }
     }
   }
@@ -1174,32 +1173,35 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
     C_reg[0][init] = {0,0,0,0};
   }
   
-  float *a_scale_ptr_arr[WARP_M / mfma_m];
-  int sorted_token_offset = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + row_id, int(sorted_token_lens - 1))];
-  const int32_t token_index_safe = std::min(sorted_token_offset, size_m * top_k-1);
-  float topk_weight_value  = (topk_weights + token_index_safe)[0];
-  float a_scale= input_scale [std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm]; //计算M方向的偏移
-  // float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id * WARP_N * 4 + col_id * 4;
-  float *b_scale_ptr = weight_scale + weight_scale_offset;
   { 
     gemm_nt_second_stage_marlin_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
     (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx, bidy);
   }
-  const int32_t token_index = sorted_token_ids[std::min(bidx * 16 + row_id, int(sorted_token_lens - 1))];
-  
   using vec_bf16_4 = __attribute__((__vector_size__(4 * sizeof(uint16_t)))) unsigned short;
   using vec_float_4 = __attribute__((__vector_size__(4 * sizeof(float)))) float;
-  vec_bf16_4 D ;
-  __shared__ float bscale[WARP_NUM*64];
-  bscale[tid]=b_scale_ptr[tid];
-  if(token_index < size_m * top_k) {
-    for (int i = 0; i < 4; i++) {
-      for (int j = 0; j < 4; j++) {
+  // float *a_scale_ptr_arr[WARP_M / mfma_m];
+  // int sorted_token_offset = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + row_id, int(sorted_token_lens - 1))];
+  // const int32_t token_index_safe = std::min(sorted_token_offset, size_m * top_k-1);
+  // float topk_weight_value  = (topk_weights + token_index_safe)[0];
+  // float a_scale= input_scale [std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm]; //计算M方向的偏移
+  float *b_scale_ptr = g_weight_scale;
 
-        ((bhalf_t*)&D)[j] = f32_to_bf16(static_cast<float> (((int*)&C_reg[0][j])[i]  ) *topk_weight_value * a_scale * bscale[warp_n_id * WARP_N * 4 + col_id * 4 + i*16 + j] );
+  for(int m_tile = 0;m_tile<WARP_M /mfma_m;m_tile++){
+      const int32_t sorted_token_offset = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_tile * mfma_m + row_id, int(sorted_token_lens - 1))];
+      const int32_t token_index_safe = std::min(sorted_token_offset, size_m * top_k-1);
+      float topk_weight_value  = (topk_weights + token_index_safe)[0];
+      float a_scale= input_scale [std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm]; //计算M方向的偏移
+      vec_bf16_4 D ;
+      __shared__ float bscale[WARP_NUM*64];
+      bscale[tid]=b_scale_ptr[tid];
+      if(sorted_token_offset < size_m * top_k) {
+        for (int i = 0; i < 4; i++) {
+          for (int j = 0; j < 4; j++) {
+            ((bhalf_t*)&D)[j] = f32_to_bf16(static_cast<float> (((int*)&C_reg[0][m_tile *4 + j])[i]  ) *topk_weight_value * a_scale * bscale[warp_n_id * WARP_N * 4 + col_id * 4 + i*16 + j] );
+          }
+          *reinterpret_cast<vec_bf16_4*>(&g_output[sorted_token_offset * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = D;
+        }  
       }
-      *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]) = D;
-    }  
   }
 }
 
@@ -1399,7 +1401,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
           EXPERTS
         );
 
-        if(size_m > 512){
+        if(size_m > 16384){
           printf("developing \n");
         }else{ //decode
           auto it = kernel_maps_gemm1_decode_marlin.find(mode);
@@ -1438,7 +1440,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
           EXPERTS
         );
         
-        if(size_m / 8 > 512){
+        if(size_m / 8 > 16384){
           printf("developing \n");
         }else
         {
