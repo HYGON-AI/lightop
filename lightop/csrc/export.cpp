@@ -138,6 +138,7 @@ Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b);
 // Tensor groupgemm_unpermute(const Tensor& permuted_tokens, const Tensor& sorted_indices, const std::vector<int64_t>& restore_shape, std::optional<torch::Tensor> probs, std::optional<torch::Tensor> routing_map, const Tensor& expert_m_count);      
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> groupgemm_permute(const torch::Tensor& tokens, const torch::Tensor& routing_map);
 torch::Tensor groupgemm_unpermute(const torch::Tensor& permuted_tokens, const torch::Tensor& sorted_indices, const std::vector<int64_t>& restore_shape, std::optional<torch::Tensor> probs, std::optional<torch::Tensor> routing_map, const torch::Tensor& expert_m_count); 
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> fuse_groupgemm_permute_quant(const torch::Tensor& tokens, const torch::Tensor& routing_map, torch::Tensor& scales);
 //------------------------------------------------- groupgemm ---------------------------------------//
 
 std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor);
@@ -228,6 +229,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("groupgemm",&at::native::groupgemm,"groupgemm");
   m.def("groupgemm_permute",&at::native::groupgemm_permute,"groupgemm_permute");
   m.def("groupgemm_unpermute",&at::native::groupgemm_unpermute,"groupgemm_unpermute");
+  m.def("fuse_groupgemm_permute_quant",&at::native::fuse_groupgemm_permute_quant,"fuse_groupgemm_permute_quant");
   m.def("moe_fused_gate",&at::native::moe_fused_gate,"moe_fused_gate");
   m.def("fuse_silu_mul_quant",&at::native::fuse_silu_mul_quant,"fuse_silu_mul_quant");
   m.def("ds_concat",&at::native::ds_concat,"ds_concat");
