@@ -2,7 +2,7 @@
 """
 author: niutao
 date: 2025年08月01日
-description: 解析groupnorm及groupnorm_silu日志，解析groupnorm_silu日志时需打开weather_gn_silu开关
+description: 解析groupnorm及groupnorm_silu日志
 """
 
 import re
@@ -35,7 +35,7 @@ def extract_groupnorm_log(log_path):
             test_res['g'].append(g)
         try:
             test_type = re.search(pattern_for_test_type, each_content).group(1)
-        except ArithmeticError:
+        except AttributeError:
             print('报错content:', each_content)
         time_match = re.search(pattern_for_time, each_content)
         if time_match:
