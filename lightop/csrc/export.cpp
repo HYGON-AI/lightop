@@ -130,7 +130,7 @@ void rotary_embedding_fuse(torch::Tensor& positions,  torch::Tensor& query, std:
 void rotary_embedding_deepseek_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox);
 void moe_align_block_size(torch::Tensor topk_ids, int64_t num_experts,int64_t block_size, torch::Tensor sorted_token_ids,torch::Tensor experts_ids,
                           torch::Tensor num_tokens_post_pad,const torch::optional<torch::Tensor> &expert_map ,
-                          const torch::optional<torch::Tensor> &expert_mask,const torch::optional<torch::Tensor> &num_local_tokens);
+                          const torch::optional<torch::Tensor> &expert_mask,const torch::optional<torch::Tensor> &num_local_tokens,bool Is_EP = false);
 
 //------------------------------------------------- groupgemm ---------------------------------------//
 Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b);    
@@ -250,7 +250,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("num_tokens_post_pad"),
       py::arg("expert_map"),
       py::arg("expert_mask"),
-      py::arg("num_local_tokens")
+      py::arg("num_local_tokens"),
+      py::arg("Is_EP") = false
   );
   m.def("mha_norm_rope_qkv_inplace_cuda", &at::native::mha_norm_rope_qkv_inplace_cuda,"mha_norm_rope_qkv_inplace_cuda");
   m.def("cross_norm_rope_q_kv_inplace_cuda", &at::native::cross_norm_rope_q_kv_inplace_cuda,"cross_norm_rope_q_kv_inplace_cuda");

@@ -25,7 +25,8 @@ def moe_align_block_size(
     num_tokens_post_pad: torch.Tensor,
     expert_map: Optional[torch.Tensor] = None,
     expert_mask: Optional[torch.Tensor] = None,
-    num_local_tokens: Optional[torch.Tensor] = None
+    num_local_tokens: Optional[torch.Tensor] = None,
+    is_EP : bool = False 
 ) -> None:
     op.moe_align_block_size(
         topk_ids,
@@ -36,6 +37,7 @@ def moe_align_block_size(
         num_tokens_post_pad,
         expert_map,
         expert_mask,
-        num_local_tokens
+        num_local_tokens,
+        is_EP
     )
     

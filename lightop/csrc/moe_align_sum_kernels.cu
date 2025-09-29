@@ -22,7 +22,7 @@ __global__ void moe_align_block_size_kernel_opt_fused(
     int32_t *__restrict__ total_tokens_post_pad, int32_t num_experts,
     int32_t padded_num_experts, int32_t experts_per_warp, int32_t block_size,
     size_t numel, int32_t *__restrict__ expert_map,
-    bool *__restrict__ expert_mask, int32_t *__restrict__ num_local_tokens) {
+    bool *__restrict__ expert_mask, int32_t *__restrict__ num_local_tokens,bool Is_EP) {
 
   if (num_local_tokens != nullptr) {
     if (num_local_tokens[0] == 0) {
@@ -49,13 +49,23 @@ __global__ void moe_align_block_size_kernel_opt_fused(
 
   for (size_t i = tid; i < numel; i += stride) {
     int expert_id = topk_ids[i];
-    atomicAdd(&shared_counts[expert_id], 1);
-    if (expert_mask) {
-      if (expert_map && expert_map[expert_id] == -1) {
-        expert_mask[i] = false;
-      } else {
-        expert_mask[i] = true;
-      }
+    //EP
+    if(Is_EP){
+        if(expert_map[expert_id] != -1){
+           atomicAdd(&shared_counts[expert_id], 1);
+           if(expert_mask)  expert_mask[i] = true;
+        }else{
+           if(expert_mask)  expert_mask[i] = false;
+        }
+    }else{
+        atomicAdd(&shared_counts[expert_id], 1);
+        if (expert_mask) {
+          if (expert_map && expert_map[expert_id] == -1) {
+            expert_mask[i] = false;
+          } else {
+            expert_mask[i] = true;
+          }
+        }
     }
   }
 
@@ -115,8 +125,15 @@ __global__ void moe_align_block_size_kernel_opt_fused(
   __syncthreads();
   for (size_t i = tid; i < numel; i += stride) {
     int32_t expert_id = topk_ids[i];
-    int32_t rank_post_pad = atomicAdd(&shared_counts[expert_id], 1);
-    sorted_token_ids[rank_post_pad] = i;
+    if(Is_EP){
+        if(expert_map[expert_id] != -1){
+            int32_t rank_post_pad = atomicAdd(&shared_counts[expert_id], 1);
+            sorted_token_ids[rank_post_pad] = i;
+        }
+    }else{
+        int32_t rank_post_pad = atomicAdd(&shared_counts[expert_id], 1);
+        sorted_token_ids[rank_post_pad] = i;
+    }
   }
 }
 
@@ -128,7 +145,7 @@ __global__ void moe_align_block_size_kernel_opt(
     int32_t padded_num_experts, int32_t experts_per_warp, int32_t block_size,
     size_t numel, int32_t *__restrict__ cumsum,
     int32_t *__restrict__ expert_map, bool *__restrict__ expert_mask,
-    int32_t *__restrict__ num_local_tokens) {
+    int32_t *__restrict__ num_local_tokens,bool Is_EP) {
 
   if (num_local_tokens != nullptr) {
     if (num_local_tokens[0] == 0) {
@@ -154,16 +171,25 @@ __global__ void moe_align_block_size_kernel_opt(
 
   for (size_t i = tid; i < numel; i += stride) {
     int expert_id = topk_ids[i];
-    atomicAdd(&shared_counts[expert_id], 1);
-    if (expert_mask) {
-      if (expert_map && expert_map[expert_id] == -1) {
-        expert_mask[i] = false;
-      } else {
-        expert_mask[i] = true;
-      }
+    //EP
+    if(Is_EP){
+        if(expert_map[expert_id] != -1){
+           atomicAdd(&shared_counts[expert_id], 1);
+           if(expert_mask)  expert_mask[i] = true;
+        }else{
+           if(expert_mask)  expert_mask[i] = false;
+        }
+    }else{
+        atomicAdd(&shared_counts[expert_id], 1);
+        if (expert_mask) {
+          if (expert_map && expert_map[expert_id] == -1) {
+            expert_mask[i] = false;
+          } else {
+            expert_mask[i] = true;
+          }
+        }
     }
   }
-
   __syncthreads();
 
   if (threadIdx.x < num_experts) {
@@ -319,6 +345,55 @@ __global__ void count_and_sort_expert_tokens_kernel(
   if(tid < numel){
     int32_t rank_post_pad = atomicAdd(&lds_count[expert_id], 1);
      sorted_token_ids[rank_post_pad] = tid;
+  }
+}
+
+template <typename scalar_t, int TOPK>
+__global__ void count_and_sort_expert_tokens_kernel_EP(
+    const scalar_t *__restrict__ topk_ids,
+    int32_t *__restrict__ sorted_token_ids, int32_t *__restrict__ cumsum_buffer,
+    size_t numel, int32_t *__restrict__ num_local_tokens,int32_t* expert_map,bool Is_EP) {
+  if (num_local_tokens != nullptr) {
+    if (num_local_tokens[0] == 0) {
+      return;
+    } else {
+      numel = num_local_tokens[0] * TOPK;
+    }
+  }
+  int expert_id;
+  const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+  //const size_t stride = blockDim.x * gridDim.x;
+  __shared__ int32_t lds_count[256];
+   if(threadIdx.x < 256){
+     lds_count[threadIdx.x ] = 0;
+  }
+  __syncthreads();
+  if(tid < numel){
+    expert_id = topk_ids[tid];
+    if(Is_EP){
+      if(expert_map[expert_id] != -1){
+          atomicAdd(&lds_count[expert_id], 1);
+      }
+    }else{
+        atomicAdd(&lds_count[expert_id], 1);
+    }
+  }
+  __syncthreads();
+  if(threadIdx.x < 256){
+     lds_count[threadIdx.x ] = atomicAdd(&cumsum_buffer[threadIdx.x ], lds_count[threadIdx.x ]);
+  }
+
+  __syncthreads();
+  if(tid < numel){
+    if(Is_EP){
+      if(expert_map[expert_id] != -1){
+           int32_t rank_post_pad = atomicAdd(&lds_count[expert_id], 1);
+           sorted_token_ids[rank_post_pad] = tid;
+      }
+    }else{
+         int32_t rank_post_pad = atomicAdd(&lds_count[expert_id], 1);
+         sorted_token_ids[rank_post_pad] = tid;
+    }
   }
 }
 // taken from
@@ -881,7 +956,7 @@ void moe_align_block_size(
     torch::Tensor num_tokens_post_pad,
     const torch::optional<torch::Tensor> &expert_map,
     const torch::optional<torch::Tensor> &expert_mask, // bool
-    const torch::optional<torch::Tensor> &num_local_tokens) {
+    const torch::optional<torch::Tensor> &num_local_tokens,bool Is_EP = false) {
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   int64_t padded_num_experts =
@@ -939,7 +1014,7 @@ void moe_align_block_size(
                                           : nullptr,
                   num_local_tokens.has_value()
                       ? num_local_tokens->data_ptr<int32_t>()
-                      : nullptr);
+                      : nullptr,Is_EP);
             } else {
               auto align_kernel =
                   moe_align_block_size_kernel_opt<scalar_t, 256, 8>;
@@ -964,7 +1039,7 @@ void moe_align_block_size(
                                           : nullptr,
                   num_local_tokens.has_value()
                       ? num_local_tokens->data_ptr<int32_t>()
-                      : nullptr);
+                      : nullptr,Is_EP);
 
               const int block_threads = std::min(1024, (int)threads);
               const int num_blocks =
@@ -973,14 +1048,15 @@ void moe_align_block_size(
               const int actual_blocks = std::min(num_blocks, max_blocks);
 
               auto sort_kernel =
-                  count_and_sort_expert_tokens_kernel<scalar_t, 8>;
+                  count_and_sort_expert_tokens_kernel_EP<scalar_t, 8>;
               sort_kernel<<<actual_blocks, block_threads, 0, stream>>>(
                   topk_ids.data_ptr<scalar_t>(),
                   sorted_token_ids.data_ptr<int32_t>(),
                   cumsum_buffer.data_ptr<int32_t>(), topk_ids.numel(),
                   num_local_tokens.has_value()
                       ? num_local_tokens->data_ptr<int32_t>()
-                      : nullptr);
+                      : nullptr,   expert_map.has_value() ? expert_map->data_ptr<int32_t>()
+                                         : nullptr,Is_EP);
             }
 
           } else {
