@@ -9,7 +9,7 @@
             "blocks_per_cu": 1
         },
         "2": {
-            "MODE": 413,
+            "MODE": 414,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -17,7 +17,7 @@
             "blocks_per_cu": 1
         },
         "4": {
-            "MODE": 413,
+            "MODE": 414,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -41,9 +41,9 @@
             "blocks_per_cu": 1 
         },
         "32": {
-            "MODE": 413,
+            "MODE": 415,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_M": 32,
             "thread_n": 128,
             "thread_k": 128,
             "blocks_per_cu": 1
