@@ -1045,9 +1045,9 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
               #ifdef __gfx936__
               __builtin_amdgcn_global_atomic_fadd_v4f32(output_c_fp32, D);
               #endif
-              #ifdef __gfx926__
-              atomicAdd(output_c_fp32, D);
-              #endif
+              // #ifdef __gfx926__
+              // atomicAdd(output_c_fp32, D);
+              // #endif
               const int index = (bidx * gridDim.y + bidy) * 4 + i;
               if(threadIdx.x==0) {
                 output_lds[index] = -1;
