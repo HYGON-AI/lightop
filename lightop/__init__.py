@@ -25,7 +25,7 @@ from .ds_cat import ds_cat
 from .blockwise_scaling import blockwise_scaled_cast_transpose
 from .config import get_moe_cuda_config, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8, get_moe_groupgemm_config_w4a8, get_moe_groupgemm_marlin_config_w4a8
 from .config_smooth_gemm import gemm_w8a8_smooth_config
-from .permute_unpermute import groupgemm_permute, groupgemm_unpermute
+from .permute_unpermute import groupgemm_permute, groupgemm_unpermute, fuse_groupgemm_permute_quant
 from .moe_sum import moe_sum, moe_align_block_size
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401
