@@ -971,7 +971,8 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
   const int bidz = blockIdx.x; // pid_k
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回
   constexpr int STAGES = 2; 
-  const int32_t expert_id = expert_ids[bidx]; // 专家的索引
+  const uint32_t delta_bidx = bidx / delta;
+  const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
   if(expert_id >=expert_num || expert_id <0) return;
  
   const uint64_t expert_offset = ((uint64_t)size_n) * size_kb  * expert_id; // 这个是对应专家的weight偏移
@@ -1125,7 +1126,8 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
   const int bidz = blockIdx.x; // pid_k
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回
   constexpr int STAGES = 2; 
-  const int32_t expert_id = expert_ids[bidx]; // 专家的索引
+  const uint32_t delta_bidx = bidx / delta;
+  const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
   if(expert_id >= expert_num || expert_id <0) return;
  
   const uint64_t expert_offset = ((uint64_t)size_n) * size_kb  * expert_id; // 这个是对应专家的weight偏移
