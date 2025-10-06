@@ -142,7 +142,7 @@ class CommunicatorBenchmark:
                 pp = allreduce_fn(g_i)
                 out1, s = lm_faster_rmsquant(pp, rms_weight, eps, torch.int8, residual=residual, update_input=False)
             else:
-                out1, s, normout = allreduce_fn(g_i, HIDDEN_SIZE, rms_weight, eps, torch.int8, residual False)
+                out1, s = allreduce_fn(g_i, HIDDEN_SIZE, rms_weight, eps, torch.int8, residual, False)
             torch.cuda.synchronize()
             stream = torch.cuda.Stream()
             with torch.cuda.stream(stream):
