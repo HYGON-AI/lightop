@@ -2196,9 +2196,9 @@ def all_reduce_fuse_norm(fa: int, inp: torch.Tensor, out:torch.Tensor, hidden_si
 
 def all_reduce_fuse_norm_quant(fa: int, inp: torch.Tensor, out:torch.Tensor, hidden_size:int,
                                rms_weight: torch.Tensor, eps: float, scales: torch.Tensor,
-                               reg_buffer: int, reg_buffer_sz_bytes: int, normout:torch.Tensor, residual: torch.Tensor) -> None:
+                               reg_buffer: int, reg_buffer_sz_bytes: int, residual: torch.Tensor, update_input: bool) -> None:
     torch.ops._C_custom_ar.all_reduce_fuse_norm_quant(fa, inp, out, hidden_size, rms_weight, eps, scales, 
-                                    reg_buffer, reg_buffer_sz_bytes, normout, residual)
+                                    reg_buffer, reg_buffer_sz_bytes, residual, update_input)
 
 def dispose(fa: int) -> None:
     torch.ops._C_custom_ar.dispose(fa)

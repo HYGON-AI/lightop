@@ -320,43 +320,43 @@ class CustomAllreduce:
                                   eps,
                                   quant_dtype,
                                   residual,
+                                  update_input: bool = False,
                                   registered: bool = False):
         output = torch.empty_like(inp, dtype=quant_dtype)
-        normout = torch.empty_like(inp)
         scales = torch.empty((inp.numel() // inp.shape[-1], 1),
                             device=inp.device,
                             dtype=torch.float32)
         if registered:
             ops.all_reduce_fuse_norm_quant(self._ptr, inp, output,
-                    hidden_size, rms_weight, eps, scales, 0, 0, normout, residual)
+                    hidden_size, rms_weight, eps, scales, 0, 0, residual, update_input)
         else:
             ops.all_reduce_fuse_norm_quant(self._ptr, inp, output,
                     hidden_size, rms_weight, eps, scales, 
-                    self.buffer_ptrs[self.rank], self.max_size, normout, residual)
+                    self.buffer_ptrs[self.rank], self.max_size, residual, update_input)
                     
-        return output, scales, normout
-        # return normout
+        return output, scales
 
     def custom_all_reduce_fuse_norm_quant(self, 
                                           inp: torch.Tensor,
-                                          hidden_size: int,
                                           rms_weight: torch.Tensor,
                                           eps,
                                           quant_type,
-                                          residual: Optional[torch.Tensor] = None
-                                          ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+                                          residual: Optional[torch.Tensor] = None,
+                                          update_input = False
+                                          ) -> tuple[torch.Tensor, torch.Tensor]:
         # print(f'hidden_size : {hidden_size}')
+        hidden_size = inp.size(-1)
         if self.disabled or not self.should_custom_ar(inp):
             return None
         if self._IS_CAPTURING:
             if torch.cuda.is_current_stream_capturing():
                 return self.allreduce_fuse_norm_quant(inp, hidden_size, rms_weight,
-                            eps, quant_type, residual, registered=False)
+                            eps, quant_type, residual, update_input = update_input, registered=False)
             else:
                 return torch.empty_like(inp), torch.empty_like((inp.numel() // inp.shape[-1], 1))
         else:
             return self.allreduce_fuse_norm_quant(inp, hidden_size, rms_weight,
-                            eps, quant_type, residual, registered=False)
+                            eps, quant_type, residual, update_input = update_input, registered=False)
 
     def close(self):
         if not self.disabled and self._ptr:

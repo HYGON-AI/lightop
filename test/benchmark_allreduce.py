@@ -142,7 +142,7 @@ class CommunicatorBenchmark:
                 pp = allreduce_fn(g_i)
                 out1, s = lm_faster_rmsquant(pp, rms_weight, eps, torch.int8, residual=residual, update_input=False)
             else:
-                out1, s, normout = allreduce_fn(g_i, HIDDEN_SIZE, rms_weight, eps, torch.int8, residual)
+                out1, s, normout = allreduce_fn(g_i, HIDDEN_SIZE, rms_weight, eps, torch.int8, residual False)
             torch.cuda.synchronize()
             stream = torch.cuda.Stream()
             with torch.cuda.stream(stream):
@@ -156,7 +156,7 @@ class CommunicatorBenchmark:
                                 out = allreduce_fn(graph_input)
                                 vllm_ops.rms_norm_dynamic_per_token_quant(out, rms_weight, eps, torch.int8, residual=residual)
                             else:
-                                allreduce_fn(graph_input, HIDDEN_SIZE, rms_weight, eps, torch.int8, residual)
+                                allreduce_fn(graph_input, HIDDEN_SIZE, rms_weight, eps, torch.int8, residual, False)
             torch.cuda.synchronize()
             for _ in range(num_warmup):
                 graph.replay()
