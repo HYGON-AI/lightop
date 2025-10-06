@@ -117,12 +117,11 @@ void all_reduce_fuse_norm(fptr_t _fa, torch::Tensor& inp, torch::Tensor& out,
 
 
 /*********************************************************/
-template<typename scalar_in_t>
+template<typename scalar_in_t, bool update_input>
 void allreduce_fuse_norm_quant_dispath(fptr_t _fa, torch::Tensor& inp, torch::Tensor& out, 
                                   int hidden_size,torch::Tensor& rms_weight, double eps, 
                                   torch::Tensor& scales, fptr_t _reg_buffer, 
                                   int64_t reg_buffer_sz_bytes,
-                                  torch::Tensor& normout,
                                   std::optional<at::Tensor> residual) {
   auto fa = reinterpret_cast<vllm::CustomAllreduce*>(_fa);
   const at::cuda::OptionalCUDAGuard device_guard(device_of(inp));
@@ -142,21 +141,26 @@ void allreduce_fuse_norm_quant_dispath(fptr_t _fa, torch::Tensor& inp, torch::Te
   if (residual.has_value()) {
     VLLM_DISPATCH_QUANT_TYPES(
       out.scalar_type(), "fa->allreduce_fuse_norm_quant", [&] {
-        fa->allreduce_fuse_norm_quant<scalar_in_t, scalar_t, true>
+        fa->allreduce_fuse_norm_quant<scalar_in_t, scalar_t, true, update_input>
           (stream, reinterpret_cast<scalar_in_t*>(reg_buffer), out.data_ptr<scalar_t>(),
           out.numel(), token_num, hidden_size, residual->data_ptr<scalar_in_t>(),
-          rms_weight.data_ptr<scalar_in_t>(), normout.data_ptr<scalar_in_t>(),
+          rms_weight.data_ptr<scalar_in_t>(),
           eps, scales.data_ptr<float>());
       });
   } else {
     VLLM_DISPATCH_QUANT_TYPES(
       out.scalar_type(), "fa->allreduce_fuse_norm_quant", [&] {
-        fa->allreduce_fuse_norm_quant<scalar_in_t, scalar_t, false>
+        fa->allreduce_fuse_norm_quant<scalar_in_t, scalar_t, false, update_input>
           (stream, reinterpret_cast<scalar_in_t*>(reg_buffer), out.data_ptr<scalar_t>(),
           out.numel(), token_num, hidden_size, nullptr,
-          rms_weight.data_ptr<scalar_in_t>(), normout.data_ptr<scalar_in_t>(),  
+          rms_weight.data_ptr<scalar_in_t>(),  
           eps, scales.data_ptr<float>());
       });
+  }
+  if constexpr (update_input) {
+    if (reg_buffer)
+      AT_CUDA_CHECK(cudaMemcpyAsync(inp.data_ptr(), reg_buffer, input_size,
+                                  cudaMemcpyDeviceToDevice, stream));
   }
 }
 
@@ -164,8 +168,7 @@ void all_reduce_fuse_norm_quant(fptr_t fa, torch::Tensor& inp, torch::Tensor& ou
                           int64_t hidden_size,torch::Tensor& rms_weight, double eps, 
                           torch::Tensor& scales, fptr_t reg_buffer, 
                           int64_t reg_buffer_sz_bytes,
-                          torch::Tensor& normout,
-                          std::optional<at::Tensor> residual) {
+                          std::optional<at::Tensor> residual, bool update_input) {
 
   static c10::ScalarType kFp8Type = c10::ScalarType::Float8_e4m3fn;
 
@@ -179,11 +182,16 @@ void all_reduce_fuse_norm_quant(fptr_t fa, torch::Tensor& inp, torch::Tensor& ou
   TORCH_CHECK_EQ(inp.numel(), out.numel());
   TORCH_CHECK(out.is_contiguous() && inp.is_contiguous());
   VLLM_DISPATCH_FLOATING_TYPES(
-      inp.scalar_type(), "allreduce_fuse_norm_quant_dispath", [&] {
-        allreduce_fuse_norm_quant_dispath<scalar_t>(
-            fa, inp, out, hidden_size, rms_weight, eps, scales,
-            reg_buffer, reg_buffer_sz_bytes, normout, residual);
-      });
+        inp.scalar_type(), "allreduce_fuse_norm_quant_dispath", [&] {
+          if (update_input)
+            allreduce_fuse_norm_quant_dispath<scalar_t, true>(
+                fa, inp, out, hidden_size, rms_weight, eps, scales,
+                reg_buffer, reg_buffer_sz_bytes, residual);
+          else 
+            allreduce_fuse_norm_quant_dispath<scalar_t, false>(
+                fa, inp, out, hidden_size, rms_weight, eps, scales,
+                reg_buffer, reg_buffer_sz_bytes, residual);
+        });
 }
 
 /******************************************/

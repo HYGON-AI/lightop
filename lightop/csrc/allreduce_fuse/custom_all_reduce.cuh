@@ -522,12 +522,11 @@ __global__ void __launch_bounds__(1024, 1)
   }
 }
 
-template <typename T, typename T_out, int ngpus, bool isResidual=true>
+template <typename T, typename T_out, int ngpus, bool isResidual=true, bool update_input=false>
 __global__ void __launch_bounds__(1024, 1)
     cross_device_reduce_2stage_fuse_norm_quant(RankData* _dp, RankSignals sg, Signal* self_sg,
                                               T_out* __restrict__ result, int rank, int size,
                                               int hidden_dim, T* residual_in, T* rms_gamma,
-                                              T* __restrict__ normout,
                                               float* __restrict__ scales, float eps, 
                                               std::array<int, ngpus> begin_tokens,
                                               std::array<int, ngpus> token_num_per_ranks) {
@@ -557,6 +556,7 @@ __global__ void __launch_bounds__(1024, 1)
   int part = (begin_tokens[rank] + token_num_per_ranks[rank]) * H_D_word_num;
 
   auto tmp_out = tmps[0];   // 当前rank的 (meta_data + sizeof(signal))  偏移
+  auto input = ptrs[0];
   barrier_at_start<ngpus>(sg, self_sg, rank);
 
   #pragma unroll
@@ -604,7 +604,7 @@ __global__ void __launch_bounds__(1024, 1)
         norm_out.data[i] = static_cast<T>(static_cast<float>(sum_val.data[i]) * s_val * static_cast<float>(m_gamm_val.data[i]));
         block_absmax_val_maybe = fmaxf(block_absmax_val_maybe, fabs(norm_out.data[i]));
       }
-      // ((P*)normout)[idx] = norm_out;
+
       block_absmax_val_maybe = BlockReduceMax_ROW(block_absmax_val_maybe, r_sum);
       __shared__ float s_token_scale;
       float scale = 0.0f;
@@ -622,12 +622,11 @@ __global__ void __launch_bounds__(1024, 1)
 
       constexpr float qmax = 127.0f;
       constexpr float min_scale = 1.19209e-07f;
-
+      ((F*)result)[idx] = out_vec;
+      if constexpr (update_input)
+        ((P*)input)[idx] = norm_out;
       if (threadIdx.x == 0)
         scales[tidx] = fmaxf(scale/qmax, min_scale);
-        
-      // *(LoadT_out*)(result+idx) =*(LoadT_out*)out_vec;
-      ((F*)result)[idx] = out_vec;
     }
   }
 }

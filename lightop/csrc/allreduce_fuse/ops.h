@@ -498,8 +498,7 @@ void all_reduce_fuse_norm_quant(fptr_t fa, torch::Tensor& inp, torch::Tensor& ou
                                 int64_t hidden_size,torch::Tensor& rms_weight, double eps, 
                                 torch::Tensor& scales,
                                 fptr_t reg_buffer, int64_t reg_buffer_sz_bytes,
-                                torch::Tensor& normout,
-                                std::optional<at::Tensor> residual);
+                                std::optional<at::Tensor> residual, bool update_input);
 
 void dispose(fptr_t _fa);
 int64_t meta_size();

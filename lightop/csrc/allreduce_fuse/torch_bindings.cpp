@@ -945,7 +945,7 @@ TORCH_LIBRARY_EXPAND(CONCAT(TORCH_EXTENSION_NAME, _custom_ar), custom_ar) {
   custom_ar.def(
       "all_reduce_fuse_norm_quant(int fa, Tensor inp, Tensor! out, int hidden_size, "
       "Tensor rms_weight, float eps, Tensor! scales, int reg_buffer, " 
-      "int reg_buffer_sz_bytes, Tensor! normout, Tensor? residual) -> ()");
+      "int reg_buffer_sz_bytes,  Tensor? residual, bool update_input) -> ()");
   custom_ar.impl("all_reduce_fuse_norm_quant", torch::kCUDA, &all_reduce_fuse_norm_quant);
 
   custom_ar.def("dispose", &dispose);
