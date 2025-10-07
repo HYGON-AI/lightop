@@ -524,6 +524,81 @@ __global__ void __launch_bounds__(1024, 1)
 
 template <typename T, typename T_out, int ngpus, bool isResidual=true, bool update_input=false>
 __global__ void __launch_bounds__(1024, 1)
+    cross_device_reduce_1stage_norm_quant(RankData* _dp, RankSignals sg, Signal* self_sg,
+                                          T_out* __restrict__ result, int rank, int size,
+                                          int hidden_dim, T* residual_in, T* rms_gamma,
+                                          float* __restrict__ scales, float eps) {
+  static constexpr int VEC_SIZE = 16 / sizeof(T);
+  int H_D_word_num = hidden_dim / VEC_SIZE;
+  int token_id = blockIdx.x; 
+  int access_id_in_token = threadIdx.x; 
+  int token_stride = gridDim.x;
+  int access_id = token_id * H_D_word_num + access_id_in_token;
+  int access_stride = token_stride * H_D_word_num; 
+
+  using P = typename packed_t<T>::P;
+  using A = typename packed_t<T>::A;
+  using F = typename packed_t<T>::F;
+
+  auto dp = *_dp;
+  P sum_val;
+  barrier_at_start<ngpus>(sg, self_sg, rank);
+  sum_val = packed_reduce<P, ngpus, A>((const P**)&dp.ptrs[0], access_id);
+  barrier_at_end<ngpus, true>(sg, self_sg, rank);
+
+  P m_residual_val, m_gamm_val;
+  m_gamm_val = reinterpret_cast<P*>(rms_gamma)[access_id_in_token];
+  if constexpr(isResidual) {
+    m_residual_val = reinterpret_cast<P*>(residual_in)[access_id];
+    sum_val = vec_add<P, VEC_SIZE>(m_residual_val, sum_val);
+    ((P*)residual_in)[access_id] = sum_val;
+  }
+
+  __shared__ float s_val;
+  P norm_out;
+  float acc = 0.0f;
+  #pragma unroll
+  for (int i = 0; i < VEC_SIZE; ++i) {
+    float v = static_cast<float>(sum_val.data[i]);
+    acc += v * v;
+  }
+  __shared__ float r_sum[16];
+  acc = BlockReduce(acc, r_sum);
+  if (threadIdx.x == 0)
+    s_val = rsqrtf(acc / hidden_dim + eps);
+  __syncthreads();
+
+  float block_absmax_val_maybe = 0.f;
+  #pragma unroll
+  for (int i = 0; i < VEC_SIZE; ++i) {
+    norm_out.data[i] = static_cast<T>(static_cast<float>(sum_val.data[i]) * s_val * static_cast<float>(m_gamm_val.data[i]));
+    block_absmax_val_maybe = fmaxf(block_absmax_val_maybe, fabs(norm_out.data[i]));
+  }
+  block_absmax_val_maybe = BlockReduceMax_ROW(block_absmax_val_maybe,r_sum);
+  __shared__ float s_token_scale;
+  float scale = 0.0f;
+  if (threadIdx.x == 0) {
+    scale = block_absmax_val_maybe;
+    s_token_scale = scale;
+  }
+  __syncthreads();
+  float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
+  F out_vec;
+  #pragma unroll
+  for (int i = 0; i < VEC_SIZE; ++i)
+    out_vec.data[i] = float_to_int8_rn(norm_out.data[i] * inv_s);
+  constexpr float qmax = 127.0f;
+  constexpr float min_scale = 1.19209e-07f;
+  ((F*)result)[access_id] = out_vec;
+  // if constexpr (update_input)
+  // ((P*)input)[access_id] = norm_out;
+  if (threadIdx.x == 0)
+    scales[token_id] = fmaxf(scale/qmax, min_scale);
+
+}
+
+template <typename T, typename T_out, int ngpus, bool isResidual=true, bool update_input=false>
+__global__ void __launch_bounds__(1024, 1)
     cross_device_reduce_2stage_fuse_norm_quant(RankData* _dp, RankSignals sg, Signal* self_sg,
                                               T_out* __restrict__ result, int rank, int size,
                                               int hidden_dim, T* residual_in, T* rms_gamma,
@@ -1078,10 +1153,9 @@ class CustomAllreduce {
   } 
 
 /***********************************************/
-  template<typename scalar_in_t, typename scalar_out_t, bool isResidual=true>
+ template<typename scalar_in_t, typename scalar_out_t, bool isResidual=true, bool update_input=false>
   void allreduce_fuse_norm_quant(cudaStream_t stream, scalar_in_t* input, scalar_out_t* output, int size,
                                  int token_num, int hidden_dim, scalar_in_t* residual, scalar_in_t* rms_weight,
-                                 scalar_in_t* normout,
                                  double eps, float* scales, int threads = 512, int block_limit = defaultBlockLimit) {
     auto d = packed_t<scalar_in_t>::P::size;
     if (hidden_dim % d != 0)
@@ -1111,8 +1185,9 @@ class CustomAllreduce {
     }
 
     int block_num = token_num;
-    
-#define KL(ngpus, name)                                                 \
+    int thread_per_token = hidden_dim / d;  
+    auto bytes = (size / d) * sizeof(typename packed_t<scalar_in_t>::P);
+#define KL1(ngpus, name)                                                 \
     std::array<int, ngpus> begin_tokens, token_num_per_ranks;           \
     int remaining_token = token_num % ngpus;                            \
     int token_num_per_rank = token_num / ngpus;                         \
@@ -1122,27 +1197,26 @@ class CustomAllreduce {
     for (int i = 0; i < ngpus; ++i) {                                   \
       begin_tokens[i] = i * token_num_per_rank + (remaining_token > i ? i : remaining_token);     \
       token_num_per_ranks[i] = token_num_per_rank + (remaining_token > i ? 1 : 0);                \
-    }                                                                                             \
-    int thread_per_token = hidden_dim / d;                                                        \
+    }                                                                                             \                                                      
     int grid_size = std::min(kMaxBlocks, block_num);                                              \
     int threads_in_block = thread_per_token;                                                      \
-    printf("grid_size : %d\n", grid_size);                                                \
-    printf("cross_device_reduce_2stage_fuse_norm_quant start\n");                                            \
-  name<scalar_in_t, scalar_out_t, ngpus, isResidual><<<grid_size, threads_in_block, 0, stream>>>(ptrs, sg_,  \
+  name<scalar_in_t, scalar_out_t, ngpus, isResidual, update_input><<<token_num, threads_in_block, 0, stream>>>(ptrs, sg_,  \
                                                 self_sg_, output,  rank_, size, hidden_dim, residual,        \
-                                                 rms_weight, normout, scales, eps, begin_tokens, token_num_per_ranks); 
+                                                 rms_weight, scales, eps, begin_tokens, token_num_per_ranks); 
+#define KL(ngpus, name)                                              \
+    name<scalar_in_t, scalar_out_t, ngpus, isResidual, update_input><<<token_num, thread_per_token, 0, stream>>>(ptrs, sg_, \
+                                                self_sg_, output, rank_, size, hidden_dim, residual, rms_weight,             \
+                                                scales, eps);                                
 #define REDUCE_CASE(ngpus)                            \
   case ngpus: {                                       \
     if (world_size_ == 2) {                           \
-      KL(ngpus, cross_device_reduce_2stage_fuse_norm_quant);          \
+      KL(ngpus, cross_device_reduce_1stage_norm_quant);          \
     } else if (fully_connected_) {                    \
-      if ((world_size_ <= 4) || \
-          (world_size_ <= 8 )) { \
-        printf("cross_device_reduce_2stage_fuse_norm_quant\n");       \
-        KL(ngpus, cross_device_reduce_2stage_fuse_norm_quant);        \
+      if ((world_size_ <= 4 && bytes < 1024 * 1024) || \
+          (world_size_ <= 8 && bytes < 512 * 1024)) { \
+        KL(ngpus, cross_device_reduce_1stage_norm_quant);        \
       } else {                                        \
-        printf("cross_device_reduce_2stage_fuse_norm_quant\n");       \
-        KL(ngpus, cross_device_reduce_2stage_fuse_norm_quant);        \
+        KL1(ngpus, cross_device_reduce_2stage_fuse_norm_quant);        \
       }                                               \
     }                                                 \
     break;                                            \
@@ -1163,6 +1237,7 @@ class CustomAllreduce {
 #undef REDUCE_CASE
 #undef KL
   }
+
 
 
 
