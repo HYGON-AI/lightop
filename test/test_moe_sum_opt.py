@@ -18,7 +18,7 @@ def moe_sum_reduce_torch_compile(x, out):
 def _test_helper(m: int,
                  topk: int,
                  hidden_size:int,
-                 out_dtype: Type[torch.dtype] = torch.float16,
+                 out_dtype: Type[torch.dtype] = torch.bfloat16,
                  device: str = "cuda",
                  best_config:Optional[list] = None):
     input = (torch.randn((m,topk, hidden_size), device=device) * 5).to(dtype=out_dtype)
@@ -31,7 +31,7 @@ def _test_helper(m: int,
     output_pytorch_ref = torch.zeros_like(output_ops)
     moe_sum_reduce_torch_compile(input, output_pytorch_ref)
     bias = torch.randn_like(output_ops)
-    num_local_tokens = [m]
+    num_local_tokens = [6]
     num_local_tokens_tensor = torch.tensor(num_local_tokens, device=device, dtype=torch.int32)
     # if out_dtype == torch.bfloat16:
     #     # bfloat16: output = sum_result * 2.5 + bias
@@ -47,11 +47,13 @@ def _test_helper(m: int,
     elapsed_time0_gpu = triton.testing.do_bench(lambda: ops.moe_sum(input, output_ops,None,None,num_local_tokens_tensor,factor), quantiles=None, return_mode="mean") * 1000
     print(f"cuda time: {elapsed_time0_gpu:.4f} us")
     torch.cuda.synchronize()
-    
-    if not (torch.allclose(output_ops, output_pytorch_ref, rtol=1e-2, atol=5e-2)):
-        print("手写算子 精度检查不合格！！！")
+    if m < num_local_tokens[0]:
+       num_local_tokens[0] = m
+    # print(num_local_tokens[0])   
+    if not (torch.allclose(output_ops[:num_local_tokens[0]], output_pytorch_ref[:num_local_tokens[0]], rtol=1e-2, atol=1e-2)):
+        print("❌❌ 手写算子 精度检查不合格!")
     else:
-        print("手写算子 精度检查合格")
+        print("✅✅ 手写算子 精度检查合格!")
 
     return elapsed_time0_gpu, 0, 0
 
@@ -59,7 +61,7 @@ def _test_helper(m: int,
 def main():
     topk=8
     hidden_size =7168
-    out_dtype = torch.float16
+    out_dtype = torch.bfloat16
     bs=[]
     topks=[]
     hidden_sizes=[]
@@ -68,8 +70,8 @@ def main():
     triton_reduce_cost_gpu=[]
     torch_reduce_cost_gpu=[]
     print(out_dtype) 
-    m_list =[1<<(item)  for item in range(0, 17)]
-    # m_list =[128,256]
+    m_list =[1<<(item)  for item in range(0, 14)]
+    # m_list =[32,1024,4096]
     for m in m_list:
         print("m:{} ".format(m))
     

@@ -584,13 +584,16 @@ template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
           int total_threads_per_token, int TILE_WIDTH, bool Is_bf16>
 __global__ void moe_sum_kernel_reg_bf16_add_bias(
     scalar_t *__restrict__ out, const scalar_t *__restrict__ input,
-    scalar_t *__restrict__ bias, float factor, bool *expert_mask,int32_t *num_local_tokens) {
-  using VecType = Vector<scalar_t, VEC_SIZE>;
-  const int token_idx = blockIdx.y;
+    scalar_t *__restrict__ bias, float factor, bool *expert_mask,int32_t *num_local_tokens,int num_tokens) {
+  int token_idx = blockIdx.y;
+  int token_num = num_tokens;    
   if(num_local_tokens != nullptr){
     if(token_idx > num_local_tokens[0])  return;
+    token_num = std::min(token_num,num_local_tokens[0]);
   }
-  const VecType *input_base_ptr =
+  using VecType = Vector<scalar_t, VEC_SIZE>;
+  for(;token_idx < token_num; token_idx += gridDim.y){
+      const VecType *input_base_ptr =
       reinterpret_cast<const VecType *>(input) + token_idx * TOPK * d_vec;
   VecType *out_base_ptr = reinterpret_cast<VecType *>(out) + token_idx * d_vec;
 
@@ -685,6 +688,7 @@ __global__ void moe_sum_kernel_reg_bf16_add_bias(
         }
       }
     }
+  }
   }
 }
 template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
@@ -1175,7 +1179,17 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
     break;
   case 8: {
     if (hidden_size == 7168) {
-      dim3 Grid(7, num_tokens);
+      int gridy = num_tokens;
+      if(num_local_tokens.has_value() && input.scalar_type() == at::ScalarType::BFloat16){
+        if(num_tokens < 1024){
+             gridy =  std::max(1,num_tokens/2);
+        }else if(num_tokens < 2048){
+             gridy =  std::max(1,num_tokens/4);
+        }else{
+             gridy =  std::max(1,num_tokens/8);
+        }
+      }
+      dim3 Grid(7, gridy);
       const int block_size = 128;
       const int VEC_SIZE = 8;
       if (num_tokens <= 512) {
@@ -1190,7 +1204,7 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
                     bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
                     factor,
                     expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                            : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr);
+                                            : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr,num_tokens);
               } else {
                 moe_sum_kernel_reg<scalar_t, 8, VEC_SIZE, 7168 / VEC_SIZE,
                                    7 * block_size, block_size, false>
@@ -1214,7 +1228,7 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
                     bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
                     factor,
                     expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                            : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr);
+                                            : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr,num_tokens);
 
               } else {
                 moe_sum_kernel_shared_mem<scalar_t, 8, VEC_SIZE,
