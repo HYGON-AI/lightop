@@ -163,7 +163,7 @@ __global__ void act_and_mul_quant_kernel_opt1(
 
 template <typename scalar_t, int VEC,
           bool act_first, int block_size>
-__global__ void act_and_mul_quant_kernel_opt1_1024(
+__global__ void act_and_mul_quant_kernel_opt1_8192(
     int64_t num_tokens,
     int8_t* __restrict__ out,          // [..., d]
     const scalar_t* __restrict__ input,  // [..., 2, d]
@@ -349,9 +349,9 @@ __global__ void act_and_mul_quant_kernel_opt2(
   int64_t num_tokens = input.numel() / input.size(-1);                         \
   int grid_opt = num_tokens;                                             \
   if(num_local_tokens_tensor.has_value() && input.scalar_type() == at::ScalarType::BFloat16){\
-    if(num_tokens < 1024 * topK){                                                \
+    if(num_tokens < 8192){                                                \
       grid_opt = std::max(1, num_tokens);                                   \
-    }else if(num_tokens < 2048 * topK){                                            \
+    }else if(num_tokens < 16384){                                            \
       grid_opt = std::max(1, num_tokens/4);                                  \
     }else{                                                                 \
       grid_opt = std::max(1, num_tokens/8);                                      \
@@ -366,34 +366,34 @@ __global__ void act_and_mul_quant_kernel_opt2(
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();                \
   VLLM_DISPATCH_FLOATING_TYPES(                                                \
       input.scalar_type(), "act_and_mul_kernel", [&] {                         \
-      if(num_tokens < 1024 * topK){\
+      if(num_tokens < 8192){\
         if (0 == d % 8 && d <= 16384) {                                        \
           if (d <= 512) {                                                      \
-            act_and_mul_quant_kernel_opt1_1024<scalar_t, 2, ACT_FIRST, 256> \
+            act_and_mul_quant_kernel_opt1_8192<scalar_t, 2, ACT_FIRST, 256> \
                 <<<grid, 256, 0, stream>>>(num_tokens ,                  \
                                            out.data_ptr<int8_t>(),           \
                                            input.data_ptr<scalar_t>(), \
                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
           } else if (d <= 1024) {                                              \
-            act_and_mul_quant_kernel_opt1_1024<scalar_t, 8, ACT_FIRST, 128> \
+            act_and_mul_quant_kernel_opt1_8192<scalar_t, 8, ACT_FIRST, 128> \
                 <<<grid, 128, 0, stream>>>(num_tokens ,\
                                            out.data_ptr<int8_t>(),           \
                                            input.data_ptr<scalar_t>(), \
                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
           } else if (d <= 2048) {                                              \
-            act_and_mul_quant_kernel_opt1_1024<scalar_t, 8, ACT_FIRST, 256> \
+            act_and_mul_quant_kernel_opt1_8192<scalar_t, 8, ACT_FIRST, 256> \
                 <<<grid, 256, 0, stream>>>(num_tokens ,\
                                            out.data_ptr<int8_t>(),           \
                                            input.data_ptr<scalar_t>(), \
                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
           } else if (d <= 4096) {                                              \
-            act_and_mul_quant_kernel_opt1_1024<scalar_t, 8, ACT_FIRST, 512> \
+            act_and_mul_quant_kernel_opt1_8192<scalar_t, 8, ACT_FIRST, 512> \
                 <<<grid, 512, 0, stream>>>(num_tokens ,\
                                            out.data_ptr<int8_t>(),           \
                                            input.data_ptr<scalar_t>(),      \
                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
           } else {                                                             \
-            act_and_mul_quant_kernel_opt1_1024<scalar_t, 8, ACT_FIRST, 1024> \
+            act_and_mul_quant_kernel_opt1_8192<scalar_t, 8, ACT_FIRST, 1024> \
                 <<<grid, 1024, 0, stream>>>(num_tokens ,\
                                             out.data_ptr<int8_t>(),          \
                                             input.data_ptr<scalar_t>(),     \
