@@ -87,6 +87,7 @@ __global__ void act_and_mul_kernel(
 template <typename scalar_t, int VEC,
           bool act_first, int block_size>
 __global__ void act_and_mul_quant_kernel_opt1(
+    int64_t num_tokens,
     int8_t* __restrict__ out,          // [..., d]
     const scalar_t* __restrict__ input,  // [..., 2, d]
     float* __restrict__ scales,
@@ -94,135 +95,223 @@ __global__ void act_and_mul_quant_kernel_opt1(
     const int topK,
     int32_t *num_local_tokens_tensor
     ) {
-  
-  constexpr int share_size=block_size / C10_WARP_SIZE;
-  __shared__ float val_shared[share_size];
-  using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
-  using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
-  const int64_t token_idx= blockIdx.x;
+   int64_t token_idx= blockIdx.x;
+   int num_local_tokens = num_tokens;
   if(num_local_tokens_tensor != nullptr){
     if(token_idx >= num_local_tokens_tensor[0] * topK)  return;
+      num_local_tokens =  num_local_tokens_tensor[0] * topK;
   }
 
-  int idx = threadIdx.x * VEC;
-  int tidx = threadIdx.x;
-  const int64_t x_index = token_idx * 2 * d + idx;
-  const int64_t y_index = token_idx * d + idx;
-  VecType* x1 = (VecType*)(input + x_index);
-  VecType* x2 = (VecType*)(input + x_index + d);
-  VecInt8Type* y = (VecInt8Type*)(out + y_index);
-  scalar_t r_x1[VEC];
-  scalar_t r_x2[VEC];
-  float r_y[VEC];
-  if (idx < d) {
-    *(VecType*)r_x1 = *x1;
-    *(VecType*)r_x2 = *x2;
-    #pragma unroll
-    for (int i = 0; i < VEC; i++) {
-      r_y[i] = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
-    }
-  }
-  float row_max = 0.f;
-  if (idx < d) {
-    #pragma unroll
-    for(int ii = 0;ii < VEC;ii++){
-      row_max = fmaxf(row_max,fabsf(r_y[ii]));
-    }
-  }
+  for(; token_idx < num_local_tokens ;token_idx += gridDim.x){
+  // for(; token_idx < num_tokens ;token_idx += gridDim.x){
+    constexpr int share_size=block_size / C10_WARP_SIZE;
+    __shared__ float val_shared[share_size];
+    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+    using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
 
-    row_max = BlockReduceMax_ROW<float,block_size>(row_max, val_shared);
-    __shared__ float s_token_scale; 
-    float scale = 0.0f;     
-    if(tidx == 0){
-      scale = row_max;
-      // constexpr float qmax = 127.0f;
-      // constexpr float min_scale = 1.19209e-07f;
-      s_token_scale = scale;  
-      scales[token_idx] = s_token_scale / 127.f;  
-    }
-    __syncthreads();
-
-    float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
-
-    int8_t out_vec[VEC];
+    int idx = threadIdx.x * VEC;
+    int tidx = threadIdx.x;
+    const int64_t x_index = token_idx * 2 * d + idx;
+    const int64_t y_index = token_idx * d + idx;
+    VecType* x1 = (VecType*)(input + x_index);
+    VecType* x2 = (VecType*)(input + x_index + d);
+    VecInt8Type* y = (VecInt8Type*)(out + y_index);
+    scalar_t r_x1[VEC];
+    scalar_t r_x2[VEC];
+    float r_y[VEC];
     if (idx < d) {
-    #pragma unroll
-    for(int ii = 0;ii < VEC;ii++){
-        out_vec[ii] = float_to_int8_rn(r_y[ii] * inv_s);
+      *(VecType*)r_x1 = *x1;
+      *(VecType*)r_x2 = *x2;
+      #pragma unroll
+      for (int i = 0; i < VEC; i++) {
+        r_y[i] = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
       }
-    *y =*(VecInt8Type*)out_vec;
-    
+    }
+    float row_max = 0.f;
+    if (idx < d) {
+      #pragma unroll
+      for(int ii = 0;ii < VEC;ii++){
+        row_max = fmaxf(row_max,fabsf(r_y[ii]));
+      }
+    }
+
+      row_max = BlockReduceMax_ROW<float,block_size>(row_max, val_shared);
+      __shared__ float s_token_scale; 
+      float scale = 0.0f;     
+      if(tidx == 0){
+        scale = row_max;
+        // constexpr float qmax = 127.0f;
+        // constexpr float min_scale = 1.19209e-07f;
+        s_token_scale = scale;  
+        scales[token_idx] = s_token_scale / 127.f;  
+      }
+      __syncthreads();
+
+      float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
+
+      int8_t out_vec[VEC];
+      if (idx < d) {
+      #pragma unroll
+      for(int ii = 0;ii < VEC;ii++){
+          out_vec[ii] = float_to_int8_rn(r_y[ii] * inv_s);
+        }
+      *y =*(VecInt8Type*)out_vec;
+      
+    }
   }
 }
 
 template <typename scalar_t, int VEC,
           bool act_first, int block_size>
+__global__ void act_and_mul_quant_kernel_opt1_1024(
+    int64_t num_tokens,
+    int8_t* __restrict__ out,          // [..., d]
+    const scalar_t* __restrict__ input,  // [..., 2, d]
+    float* __restrict__ scales,
+    const int d,
+    const int topK,
+    int32_t *num_local_tokens_tensor
+    ) {
+   int64_t token_idx= blockIdx.x;
+   int num_local_tokens = num_tokens;
+  if(num_local_tokens_tensor != nullptr){
+    if(token_idx >= num_local_tokens_tensor[0] * topK)  return;
+      // num_local_tokens =  num_local_tokens_tensor[0] * topK;
+  }
+
+  // for(; token_idx < num_local_tokens ;token_idx += gridDim.x){
+    constexpr int share_size=block_size / C10_WARP_SIZE;
+    __shared__ float val_shared[share_size];
+    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+    using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
+
+    int idx = threadIdx.x * VEC;
+    int tidx = threadIdx.x;
+    const int64_t x_index = token_idx * 2 * d + idx;
+    const int64_t y_index = token_idx * d + idx;
+    VecType* x1 = (VecType*)(input + x_index);
+    VecType* x2 = (VecType*)(input + x_index + d);
+    VecInt8Type* y = (VecInt8Type*)(out + y_index);
+    scalar_t r_x1[VEC];
+    scalar_t r_x2[VEC];
+    float r_y[VEC];
+    if (idx < d) {
+      *(VecType*)r_x1 = *x1;
+      *(VecType*)r_x2 = *x2;
+      #pragma unroll
+      for (int i = 0; i < VEC; i++) {
+        r_y[i] = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
+      }
+    }
+    float row_max = 0.f;
+    if (idx < d) {
+      #pragma unroll
+      for(int ii = 0;ii < VEC;ii++){
+        row_max = fmaxf(row_max,fabsf(r_y[ii]));
+      }
+    }
+
+      row_max = BlockReduceMax_ROW<float,block_size>(row_max, val_shared);
+      __shared__ float s_token_scale; 
+      float scale = 0.0f;     
+      if(tidx == 0){
+        scale = row_max;
+        // constexpr float qmax = 127.0f;
+        // constexpr float min_scale = 1.19209e-07f;
+        s_token_scale = scale;  
+        scales[token_idx] = s_token_scale / 127.f;  
+      }
+      __syncthreads();
+
+      float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
+
+      int8_t out_vec[VEC];
+      if (idx < d) {
+      #pragma unroll
+      for(int ii = 0;ii < VEC;ii++){
+          out_vec[ii] = float_to_int8_rn(r_y[ii] * inv_s);
+        }
+      *y =*(VecInt8Type*)out_vec;
+      
+    }
+  // }
+}
+
+template <typename scalar_t, int VEC,
+          bool act_first, int block_size>
 __global__ void act_and_mul_quant_kernel_opt2(
+    int64_t num_tokens,
     int8_t* __restrict__ out,          // [..., d]
     const scalar_t* __restrict__ input,  // [..., 2, d]
     float* __restrict__ scales,
     const int d,
     const int topK,
     int32_t *num_local_tokens_tensor) {
-  constexpr int share_size=block_size / C10_WARP_SIZE;
-  __shared__ float val_shared[share_size];
-  using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
-  using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
-  const int64_t token_idx = blockIdx.x;
+  int64_t token_idx = blockIdx.x;
+  int num_local_tokens = num_tokens;
   if(num_local_tokens_tensor != nullptr){
     if(token_idx >= num_local_tokens_tensor[0] * topK)  return;
+      num_local_tokens =  num_local_tokens_tensor[0] * topK;
   }
-  int idx = threadIdx.x * VEC;
-  int tidx = threadIdx.x;
 
-  const int64_t x_index = token_idx * 2 * d + idx;
-  const int64_t y_index = token_idx * d + idx;
-  VecType* x1 = (VecType*)(input + x_index);
-  VecType* x2 = (VecType*)(input + x_index + d);
-  VecInt8Type* y = (VecInt8Type*)(out + y_index);
-  scalar_t r_x1[VEC];
-  scalar_t r_x2[VEC];
-  float r_y[VEC];
+  for(; token_idx < num_local_tokens ;token_idx += gridDim.x){
 
-  for (int tt = tidx; tt < d; tt += blockDim.x * VEC) {
-    *(VecType*)r_x1 = *x1;
-    *(VecType*)r_x2 = *x2;
-#pragma unroll
-    for (int i = 0; i < VEC; i++) {
-      r_y[i] = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
-    }
-  }
-    
-  float row_max = 0.f;
-  if (idx < d){
-    #pragma unroll
-    for(int ii = 0;ii < VEC; ii++){
-      row_max = fmaxf(row_max,fabs(r_y[ii]));
-    }
-  }  
+    constexpr int share_size=block_size / C10_WARP_SIZE;
+    __shared__ float val_shared[share_size];
+    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+    using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
+    int idx = threadIdx.x * VEC;
+    int tidx = threadIdx.x;
 
-  row_max = BlockReduceMax_ROW<float,block_size>(row_max, val_shared);
-  __shared__ float s_token_scale; 
-  float scale = 0.0f;     
-  if(tidx == 0){
-    scale = row_max;
-    constexpr float qmax = 127.0f;
-    constexpr float min_scale = 1.19209e-07f;
-    s_token_scale = scale;               
-    scales[token_idx] = fmaxf(scale / qmax, min_scale);  
-  }
-  __syncthreads();
+    const int64_t x_index = token_idx * 2 * d + idx;
+    const int64_t y_index = token_idx * d + idx;
+    VecType* x1 = (VecType*)(input + x_index);
+    VecType* x2 = (VecType*)(input + x_index + d);
+    VecInt8Type* y = (VecInt8Type*)(out + y_index);
+    scalar_t r_x1[VEC];
+    scalar_t r_x2[VEC];
+    float r_y[VEC];
 
-  float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
-
-  int8_t out_vec[VEC];
-  for (int tt = tidx; tt < d; tt += blockDim.x * VEC) {
-    #pragma unroll
-    for(int ii = 0;ii < VEC;ii++){
-        out_vec[ii] = float_to_int8_rn(r_y[ii] * inv_s);
+    for (int tt = tidx; tt < d; tt += blockDim.x * VEC) {
+      *(VecType*)r_x1 = *x1;
+      *(VecType*)r_x2 = *x2;
+  #pragma unroll
+      for (int i = 0; i < VEC; i++) {
+        r_y[i] = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
       }
-    *y =*(VecInt8Type*)out_vec;
-  }  
+    }
+      
+    float row_max = 0.f;
+    if (idx < d){
+      #pragma unroll
+      for(int ii = 0;ii < VEC; ii++){
+        row_max = fmaxf(row_max,fabs(r_y[ii]));
+      }
+    }  
+
+    row_max = BlockReduceMax_ROW<float,block_size>(row_max, val_shared);
+    __shared__ float s_token_scale; 
+    float scale = 0.0f;     
+    if(tidx == 0){
+      scale = row_max;
+      constexpr float qmax = 127.0f;
+      constexpr float min_scale = 1.19209e-07f;
+      s_token_scale = scale;               
+      scales[token_idx] = fmaxf(scale / qmax, min_scale);  
+    }
+    __syncthreads();
+
+    float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
+
+    int8_t out_vec[VEC];
+    for (int tt = tidx; tt < d; tt += blockDim.x * VEC) {
+      #pragma unroll
+      for(int ii = 0;ii < VEC;ii++){
+          out_vec[ii] = float_to_int8_rn(r_y[ii] * inv_s);
+        }
+      *y =*(VecInt8Type*)out_vec;
+    }  
+}
 }
 
 
@@ -258,7 +347,17 @@ __global__ void act_and_mul_quant_kernel_opt2(
 #define LAUNCH_ACTIVATION_GATE_KERNEL(ACT_FIRST)                                  \
   int d = input.size(-1) / 2;                                                  \
   int64_t num_tokens = input.numel() / input.size(-1);                         \
-  dim3 grid(num_tokens);                                                       \
+  int grid_opt = num_tokens;                                             \
+  if(num_local_tokens_tensor.has_value() && input.scalar_type() == at::ScalarType::BFloat16){\
+    if(num_tokens < 1024 * topK){                                                \
+      grid_opt = std::max(1, num_tokens);                                   \
+    }else if(num_tokens < 2048 * topK){                                            \
+      grid_opt = std::max(1, num_tokens/4);                                  \
+    }else{                                                                 \
+      grid_opt = std::max(1, num_tokens/8);                                      \
+    }                                                                          \
+  }                                                                        \
+  dim3 grid(grid_opt);                                                   \
   dim3 block(std::min(d, 1024));                                               \
   if (num_tokens == 0) {                                                       \
     return;                                                                    \
@@ -267,36 +366,80 @@ __global__ void act_and_mul_quant_kernel_opt2(
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();                \
   VLLM_DISPATCH_FLOATING_TYPES(                                                \
       input.scalar_type(), "act_and_mul_kernel", [&] {                         \
+      if(num_tokens < 1024 * topK){\
         if (0 == d % 8 && d <= 16384) {                                        \
           if (d <= 512) {                                                      \
-            act_and_mul_quant_kernel_opt1<scalar_t, 2, ACT_FIRST, 256> \
-                <<<grid, 256, 0, stream>>>(out.data_ptr<int8_t>(),           \
+            act_and_mul_quant_kernel_opt1_1024<scalar_t, 2, ACT_FIRST, 256> \
+                <<<grid, 256, 0, stream>>>(num_tokens ,                  \
+                                           out.data_ptr<int8_t>(),           \
                                            input.data_ptr<scalar_t>(), \
                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
           } else if (d <= 1024) {                                              \
-            act_and_mul_quant_kernel_opt1<scalar_t, 8, ACT_FIRST, 128> \
-                <<<grid, 128, 0, stream>>>(out.data_ptr<int8_t>(),           \
+            act_and_mul_quant_kernel_opt1_1024<scalar_t, 8, ACT_FIRST, 128> \
+                <<<grid, 128, 0, stream>>>(num_tokens ,\
+                                           out.data_ptr<int8_t>(),           \
                                            input.data_ptr<scalar_t>(), \
                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
           } else if (d <= 2048) {                                              \
-            act_and_mul_quant_kernel_opt1<scalar_t, 8, ACT_FIRST, 256> \
-                <<<grid, 256, 0, stream>>>(out.data_ptr<int8_t>(),           \
+            act_and_mul_quant_kernel_opt1_1024<scalar_t, 8, ACT_FIRST, 256> \
+                <<<grid, 256, 0, stream>>>(num_tokens ,\
+                                           out.data_ptr<int8_t>(),           \
                                            input.data_ptr<scalar_t>(), \
                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
           } else if (d <= 4096) {                                              \
-            act_and_mul_quant_kernel_opt1<scalar_t, 8, ACT_FIRST, 512> \
-                <<<grid, 512, 0, stream>>>(out.data_ptr<int8_t>(),           \
+            act_and_mul_quant_kernel_opt1_1024<scalar_t, 8, ACT_FIRST, 512> \
+                <<<grid, 512, 0, stream>>>(num_tokens ,\
+                                           out.data_ptr<int8_t>(),           \
                                            input.data_ptr<scalar_t>(),      \
                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
           } else {                                                             \
-            act_and_mul_quant_kernel_opt2<scalar_t, 8, ACT_FIRST, 1024> \
-                <<<grid, 1024, 0, stream>>>(out.data_ptr<int8_t>(),          \
+            act_and_mul_quant_kernel_opt1_1024<scalar_t, 8, ACT_FIRST, 1024> \
+                <<<grid, 1024, 0, stream>>>(num_tokens ,\
+                                            out.data_ptr<int8_t>(),          \
                                             input.data_ptr<scalar_t>(),     \
                                             scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);    \
           }                                                                    \
         } else {                                                               \
           printf("ERROR:fuse_silu_mul_quant.cu don't support this size.\n");\
-        }                                                                      \
+        } \
+      }                                                                     \
+        else{\
+        if (0 == d % 8 && d <= 16384) {                                        \
+          if (d <= 512) {                                                      \
+            act_and_mul_quant_kernel_opt1<scalar_t, 2, ACT_FIRST, 256> \
+                <<<grid, 256, 0, stream>>>(num_tokens ,\
+                                           out.data_ptr<int8_t>(),           \
+                                           input.data_ptr<scalar_t>(), \
+                                           scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
+          } else if (d <= 1024) {                                              \
+            act_and_mul_quant_kernel_opt1<scalar_t, 8, ACT_FIRST, 128> \
+                <<<grid, 128, 0, stream>>>(num_tokens ,\
+                                           out.data_ptr<int8_t>(),           \
+                                           input.data_ptr<scalar_t>(), \
+                                           scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
+          } else if (d <= 2048) {                                              \
+            act_and_mul_quant_kernel_opt1<scalar_t, 8, ACT_FIRST, 256> \
+                <<<grid, 256, 0, stream>>>(num_tokens ,\
+                                           out.data_ptr<int8_t>(),           \
+                                           input.data_ptr<scalar_t>(), \
+                                           scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
+          } else if (d <= 4096) {                                              \
+            act_and_mul_quant_kernel_opt1<scalar_t, 8, ACT_FIRST, 512> \
+                <<<grid, 512, 0, stream>>>(num_tokens ,\
+                                           out.data_ptr<int8_t>(),           \
+                                           input.data_ptr<scalar_t>(),      \
+                                           scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     \
+          } else {                                                             \
+            act_and_mul_quant_kernel_opt1<scalar_t, 8, ACT_FIRST, 1024> \
+                <<<grid, 1024, 0, stream>>>(num_tokens ,\
+                                            out.data_ptr<int8_t>(),          \
+                                            input.data_ptr<scalar_t>(),     \
+                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);    \
+          }                                                                    \
+        } else {                                                               \
+          printf("ERROR:fuse_silu_mul_quant.cu don't support this size.\n");\
+        } \
+        }\
       });
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK)
