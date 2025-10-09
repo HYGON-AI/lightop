@@ -30,9 +30,15 @@ std::vector<Tensor> miopen_groupnorm(const Tensor& x,
         mean_rstd_len.push_back(1);
     }
 
-    Tensor out_y    = at::empty_like(x);
-    Tensor out_mean = at::empty(mean_rstd_len, x.options().dtype(at::kFloat));
-    Tensor out_rstd = at::empty(mean_rstd_len, x.options().dtype(at::kFloat));
+    Tensor out_y = at::empty_like(x);
+    Tensor out_mean =
+        x.is_contiguous()
+            ? at::empty(mean_rstd_len, x.options().dtype(at::kFloat))
+            : at::empty(mean_rstd_len, x.options().dtype(at::kFloat).memory_format(at::MemoryFormat::ChannelsLast));
+    Tensor out_rstd =
+        x.is_contiguous()
+            ? at::empty(mean_rstd_len, x.options().dtype(at::kFloat))
+            : at::empty(mean_rstd_len, x.options().dtype(at::kFloat).memory_format(at::MemoryFormat::ChannelsLast));
 
     TensorDescriptor output_y(out_y);
     TensorDescriptor output_mean(out_mean);
@@ -83,9 +89,15 @@ std::vector<Tensor> miopen_add_groupnorm(const Tensor& x1,
         mean_rstd_len.push_back(1);
     }
 
-    Tensor out_y    = at::empty_like(x1);
-    Tensor out_mean = at::empty(mean_rstd_len, x1.options());
-    Tensor out_rstd = at::empty(mean_rstd_len, x1.options());
+    Tensor out_y = at::empty_like(x1);
+    Tensor out_mean =
+        x1.is_contiguous()
+            ? at::empty(mean_rstd_len, x1.options().dtype(at::kFloat))
+            : at::empty(mean_rstd_len, x1.options().dtype(at::kFloat).memory_format(at::MemoryFormat::ChannelsLast));
+    Tensor out_rstd =
+        x1.is_contiguous()
+            ? at::empty(mean_rstd_len, x1.options().dtype(at::kFloat))
+            : at::empty(mean_rstd_len, x1.options().dtype(at::kFloat).memory_format(at::MemoryFormat::ChannelsLast));
 
     TensorDescriptor output_y(out_y);
     TensorDescriptor output_mean(out_mean);
@@ -138,9 +150,15 @@ std::vector<Tensor> miopen_groupnorm_backward(const Tensor& x,
         dscale_dbias_len.push_back(1);
     }
 
-    Tensor out_dx     = at::empty_like(x);
-    Tensor out_dscale = at::empty(dscale_dbias_len, x.options());
-    Tensor out_dbias  = at::empty(dscale_dbias_len, x.options());
+    Tensor out_dx = at::empty_like(x);
+    Tensor out_dscale =
+        x.is_contiguous()
+            ? at::empty(dscale_dbias_len, x.options().dtype(at::kFloat))
+            : at::empty(dscale_dbias_len, x.options().dtype(at::kFloat).memory_format(at::MemoryFormat::ChannelsLast));
+    Tensor out_dbias =
+        x.is_contiguous()
+            ? at::empty(dscale_dbias_len, x.options().dtype(at::kFloat))
+            : at::empty(dscale_dbias_len, x.options().dtype(at::kFloat).memory_format(at::MemoryFormat::ChannelsLast));
 
     TensorDescriptor output_dx(out_dx);
     TensorDescriptor output_dscale(out_dscale);
