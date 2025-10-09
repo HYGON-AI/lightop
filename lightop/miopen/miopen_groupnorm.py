@@ -81,17 +81,28 @@ class miopenGroupNormFunction(torch.autograd.Function):
         ctx.eps = eps
         ctx.mode = mode
         result = op.miopen_groupnorm(x, weight, bias, num_groups, eps, mode)
+        print("forward y shape is:{0} and stride is:{1} ", result[0].shape, result[0].stride())
+        print("forward mean shape is:{0} and stride is:{1} ", result[1].shape, result[1].stride())
+        print("forward rstd shape is:{0} and stride is:{1} ", result[2].shape, result[2].stride())
         ctx.save_for_backward(x, weight, result[0], result[1], result[2])
-        return result[0], result[1], result[2]
+        return result[0]
     
     @staticmethod
-    def backward(ctx, grad_output0, grad_output1, grad_output2):
+    def backward(ctx, grad_output):
         x, weight, dy, mean, rstd = ctx.saved_tensors
-        grad_output0 = grad_output0 if x.is_contiguous() else grad_output0.contiguous(memory_format=torch.channels_last)
+        grad_output = grad_output if x.is_contiguous() else grad_output.contiguous(memory_format=torch.channels_last)
         num_groups = ctx.num_groups
         eps = ctx.eps
         mode = ctx.mode
-        result = op.miopen_groupnorm_backward(x, grad_output0, weight, mean, rstd, num_groups, eps, mode)
+        print("backward grad_output shape is:{0} and stride is:{1} ", grad_output.shape, grad_output.stride())
+        print("backward dy shape is:{0} and stride is:{1} ", dy.shape, dy.stride())
+        print("backward x shape is:{0} and stride is:{1} ", x.shape, x.stride())
+        print("backward mean shape is:{0} and stride is:{1} ", mean.shape, mean.stride())
+        print("backward rstd shape is:{0} and stride is:{1} ", rstd.shape, rstd.stride())
+        result = op.miopen_groupnorm_backward(x, grad_output, weight, mean, rstd, num_groups, eps, mode)
+        print("backward dx shape is:{0} and stride is:{1} ", result[0].shape, result[0].stride())
+        print("backward dscale shape is:{0} and stride is:{1} ", result[1].shape, result[1].stride())
+        print("backward dbias shape is:{0} and stride is:{1} ", result[2].shape, result[2].stride())
         return result[0], result[1].squeeze(), result[2].squeeze(), None, None, None
 
 
