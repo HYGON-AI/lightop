@@ -2,7 +2,7 @@
 """
 author: niutao
 date: 2025年08月01日
-description: 解析groupnorm及groupnorm_silu日志，解析groupnorm_silu日志时需打开weather_gn_silu开关
+description: 解析groupnorm及groupnorm_silu日志
 """
 
 import re
@@ -13,7 +13,7 @@ import pandas as pd
 from utils import generate_parsed_file_path, split_lines
 
 
-def extract_groupnorm_log(log_path, gn_silu=False):
+def extract_groupnorm_log(log_path):
     with open(log_path, 'r', encoding='utf-8') as f:
         content = f.read()
     contents = content.split('-' * 50)
@@ -23,10 +23,7 @@ def extract_groupnorm_log(log_path, gn_silu=False):
     pattern_for_size = r'size大小\s*n:\s*(\d+),\s*c:\s*(\d+),\s*H:\s*(\d+),\s*W:\s*(\d+),\s*groups:\s*(\d+)'  # 匹配n,c,h,w,g参数
     pattern_for_test_type = r'test_type:\s+(\w+)'  # 匹配测试类型
     pattern_for_result = r'verify:\s+(.*)'
-    if gn_silu:
-        pattern_for_time = r'miopen_gn_torch_silu time: (\d+\.\d+) ms\. miopen time: (\d+\.\d+) ms speedup: (-?\d+\.\d+)'
-    else:
-        pattern_for_time = r'lop_time: (\d+\.\d+) ms\. mlop_time: (\d+\.\d+) ms\. speedup: (-?\d+\.\d+)'
+    pattern_for_time = r'lop_time: (\d+\.\d+) ms\. mlop_time: (\d+\.\d+) ms\. speedup: (-?\d+\.\d+)'
     for each_content in contents:
         size_match = re.search(pattern_for_size, each_content)
         if size_match:
@@ -38,15 +35,12 @@ def extract_groupnorm_log(log_path, gn_silu=False):
             test_res['g'].append(g)
         try:
             test_type = re.search(pattern_for_test_type, each_content).group(1)
-        except ArithmeticError:
+        except AttributeError:
             print('报错content:', each_content)
         time_match = re.search(pattern_for_time, each_content)
         if time_match:
             lop_time, mlop_time, speedup = map(float, time_match.groups())
-            if gn_silu:
-                test_res['miopen_gn_torch_silu_time(ms)'].append(lop_time)
-            else:
-                test_res[f'{test_type}_lop_time(ms)'].append(lop_time)
+            test_res[f'{test_type}_lop_time(ms)'].append(lop_time)
             test_res[f'{test_type}_mlop_time(ms)'].append(mlop_time)
             test_res[f'{test_type}_speedup'].append(speedup)
             verify_result = re.search(pattern_for_result, each_content).group(1)
@@ -65,6 +59,4 @@ def extract_groupnorm_log(log_path, gn_silu=False):
 if __name__ == '__main__':
     # 将测试日志路径修改为真实文件路径
     log_path = r'your_log_path'
-    # 若是groupnorm算子测试，请将weather_gn_silu的值设置为False
-    weather_gn_silu = False
-    extract_groupnorm_log(log_path, weather_gn_silu)
+    extract_groupnorm_log(log_path)

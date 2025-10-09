@@ -62,6 +62,7 @@ def read_ln_size(size_file_path):
     }
         for _, row in ln_df.iterrows()]
 
+
 def read_ln5d_size(size_file_path):
     ln_df = pd.read_csv(size_file_path)
     return [{
@@ -75,7 +76,19 @@ def read_ln5d_size(size_file_path):
 
 
 def read_moe_size(size_file_path):
-    ln_df = pd.read_csv(size_file_path)
+    # 指定每列的数据类型（根据你的实际需求调整）
+    dtype_dict = {
+        'hidden_size': int,
+        'num_tokens': int,
+        'world_size': int,
+        'num_shared_experts': int,
+        'dp_size': int,
+        'sp_size': int,
+        'num_experts': int,
+        'topk': int,
+        'ep_size': int
+    }
+    ln_df = pd.read_csv(size_file_path, dtype=dtype_dict)
     return [{
         'hidden_size': row['hidden_size'],
         'num_tokens': row['num_tokens'],
