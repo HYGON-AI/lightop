@@ -5912,8 +5912,6 @@ class gemm_w8a8_smooth_config:
         }
 
         gpu_cus = int(os.environ.get("LIGHTOP_GPU_CUS", "80"))
-        import pdb
-        pdb.set_trace()
         if gpu_cus == 80:
             w8a8_smooth_quant_config_dict = w8a8_smooth_quant_config_dict_80
         elif gpu_cus == 64:
