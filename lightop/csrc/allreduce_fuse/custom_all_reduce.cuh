@@ -539,7 +539,7 @@ __global__ void __launch_bounds__(1024, 1)
   using P = typename packed_t<T>::P;
   using A = typename packed_t<T>::A;
   using F = typename packed_t<T>::F;
-
+  const P* input = (const P*)_dp->ptrs[rank];
   auto dp = *_dp;
   P sum_val;
   barrier_at_start<ngpus>(sg, self_sg, rank);
@@ -590,8 +590,8 @@ __global__ void __launch_bounds__(1024, 1)
   constexpr float qmax = 127.0f;
   constexpr float min_scale = 1.19209e-07f;
   ((F*)result)[access_id] = out_vec;
-  // if constexpr (update_input)
-  // ((P*)input)[access_id] = norm_out;
+  if constexpr (update_input)
+  ((P*)input)[access_id] = norm_out;
   if (threadIdx.x == 0)
     scales[token_id] = fmaxf(scale/qmax, min_scale);
 
