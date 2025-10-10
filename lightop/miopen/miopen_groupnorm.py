@@ -82,14 +82,13 @@ class miopenGroupNormFunction(torch.autograd.Function):
         ctx.eps = eps
         ctx.mode = mode
         result = op.miopen_groupnorm(x, weight, bias, num_groups, eps, mode)
-        ctx.save_for_backward(x, weight, result[0], result[1], result[2])
+        ctx.save_for_backward(x, weight, result[1], result[2])
         return result[0]
     
     @staticmethod
     def backward(ctx, grad_output):
-        x, weight, dy, mean, rstd = ctx.saved_tensors
-        if x.is_contiguous() == False:
-            grad_output = grad_output.contiguous(memory_format=torch.channels_last)
+        x, weight, mean, rstd = ctx.saved_tensors
+        grad_output = grad_output.contiguous(memory_format=torch.channels_last) if x.is_contiguous() == False else grad_output
         num_groups = ctx.num_groups
         eps = ctx.eps
         mode = ctx.mode
