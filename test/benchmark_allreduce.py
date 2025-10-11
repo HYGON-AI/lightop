@@ -12,9 +12,12 @@ from vllm.distributed.device_communicators.custom_all_reduce import CustomAllred
 
 from vllm.utils import FlexibleArgumentParser
 from lmslim.quantize.quant_ops import lm_faster_rmsquant
+from vllm.distributed.device_communicators.pynccl import (
+    PyNcclCommunicator
+)
 
 
-DEFAULT_SEQUENCE_LENGTHS = [512]
+DEFAULT_SEQUENCE_LENGTHS = [36]
 HIDDEN_SIZE = 7168
 BENCHMARK_DTYPE = torch.float16
 
@@ -49,9 +52,15 @@ class CommunicatorBenchmark:
                 device=self.device,
                 max_size=self.max_size_override,
             )
-            print()
         except Exception as e:
             self.custom_all_reduce = None
+        try:
+            self.pynccl_comm = PyNcclCommunicator(
+                group=self.cpu_group,
+                device=self.device,
+            )
+        except Exception as e:
+            self.pynccl_comm = None        
     
     def benchmark_allreduce(
         self,
@@ -62,17 +71,30 @@ class CommunicatorBenchmark:
         results = {}
         
         communicators = []
+
+        if self.pynccl_comm is not None:
+            comm = self.pynccl_comm
+            # communicators.append(
+            #     (
+            #         "pynccl",
+            #         lambda t, c=comm: c.all_reduce(t),
+            #         lambda t: True,  
+            #         nullcontext(),
+            #         None, 
+            #     )
+            # )
         if self.custom_all_reduce is not None:
             comm = self.custom_all_reduce
             communicators.append(
                 (
                     "ca_stage2_fuse_norm_quant",
-                    lambda t,d,w,e,q,r, c = comm: c.custom_all_reduce_fuse_norm_quant(t,d,w,e,q,r),
+                    lambda t,w,e,q,r,u, c = comm: c.custom_all_reduce_fuse_norm_quant(t,w,e,q,r,u),
                     lambda t, c = comm: c.should_custom_ar(t),
                     comm.capture(),
                     "2stage_fuse_norm_quant",
                 )
             )
+
             communicators.append(
                 (
                     "ca_stage2",
@@ -90,7 +112,7 @@ class CommunicatorBenchmark:
             else:
                 os.environ.pop("VLLM_CUSTOM_ALLREDUCE_ALGO", None)
             
-            latency_time[name], out[name] = self.benchmark_allreduce_single(
+            latency_time[name],out[name] = self.benchmark_allreduce_single(
                 sequence_length,
                 allreduce_fn,
                 should_use_fn,
@@ -140,9 +162,15 @@ class CommunicatorBenchmark:
             g_i = tensor.clone()
             if (os.environ["VLLM_CUSTOM_ALLREDUCE_ALGO"] == "2stage"):
                 pp = allreduce_fn(g_i)
-                out1, s = lm_faster_rmsquant(pp, rms_weight, eps, torch.int8, residual=residual, update_input=False)
+                out1, s = lm_faster_rmsquant(pp, rms_weight, eps, torch.int8, residual=residual, update_input=True)
+                # out1 = s
+            # #     print(f'naive:{s}')
             else:
-                out1, s = allreduce_fn(g_i, HIDDEN_SIZE, rms_weight, eps, torch.int8, residual, False)
+                out1, s = allreduce_fn(g_i, rms_weight, eps, torch.int8, residual, True)
+                # out1 = s
+                # print(f'custom:{s}')
+            # pp = allreduce_fn(g_i)
+            #out1, s = lm_faster_rmsquant(g_i, rms_weight, eps, torch.int8, residual=residual, update_input=False)
             torch.cuda.synchronize()
             stream = torch.cuda.Stream()
             with torch.cuda.stream(stream):
@@ -154,9 +182,13 @@ class CommunicatorBenchmark:
                         for _ in range(CUDA_GRAPH_CAPTURE_CYCLES):
                             if (os.environ["VLLM_CUSTOM_ALLREDUCE_ALGO"] == "2stage"):
                                 out = allreduce_fn(graph_input)
-                                vllm_ops.rms_norm_dynamic_per_token_quant(out, rms_weight, eps, torch.int8, residual=residual)
+                                lm_faster_rmsquant(out, rms_weight, eps, torch.int8, residual=residual, update_input=False)
+                            # #     #vllm_ops.rms_norm_dynamic_per_token_quant(out, rms_weight, eps, torch.int8, residual=residual)
+
                             else:
-                                allreduce_fn(graph_input, HIDDEN_SIZE, rms_weight, eps, torch.int8, residual, False)
+                                allreduce_fn(graph_input, rms_weight, eps, torch.int8, residual, False)
+                            # out = allreduce_fn(graph_input)
+                            # lm_faster_rmsquant(out, rms_weight, eps, torch.int8, residual=residual, update_input=False)
             torch.cuda.synchronize()
             for _ in range(num_warmup):
                 graph.replay()
@@ -173,7 +205,7 @@ class CommunicatorBenchmark:
 
             return (
                 (end_time - start_time) / num_trials / CUDA_GRAPH_CAPTURE_CYCLES * 1000
-            ), out1
+            ),out1
         except Exception as e:
             raise RuntimeError(
                 f"CUDA graph benchmark failed for communicator: {e}"
