@@ -119,6 +119,7 @@ std::vector<Tensor> miopen_add_rms_norm_dynamic_quant(const Tensor &x, const Ten
 std::vector<Tensor> miopen_rms_norm_dynamic_quant_without_residual(const Tensor &x, const Tensor &weight, const Tensor &smoothScale, const float epsilon);
 Tensor miopen_head_rms_norm(const Tensor &x, const Tensor &weight, const float epsilon, const int norm_head_start, const int norm_head_end, const int norm_head_num);
 std::vector<Tensor> miopen_groupnorm(const Tensor &x, const Tensor &weight, const Tensor &bias, const int num_groups, const float epsilon, const int mode);
+std::vector<Tensor> miopen_groupnorm_backward(const Tensor &x, const Tensor &dy, const Tensor &weight, const Tensor &mean, const Tensor &rstd, const int num_groups, const float epsilon, const int mode);
 std::vector<Tensor> miopen_add_groupnorm(const Tensor &x1, const Tensor &x2, const Tensor &weight, const Tensor &bias, const int num_groups, const float epsilon, const int mode);
 std::vector<Tensor> miopen_layernorm(const Tensor &x, const Tensor &weight, const Tensor &bias, const float epsilon, const int normalized_dim, const int mode);
 std::vector<Tensor> miopen_add_layernorm(const Tensor &x1, const Tensor &x2, const Tensor &weight, const Tensor &bias, const float epsilon, const int normalized_dim, const int mode);
@@ -145,7 +146,7 @@ void moe_align_block_size(torch::Tensor topk_ids, int64_t num_experts,int64_t bl
 Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b);          
 
 std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor);
-
+std::tuple <Tensor,Tensor,Tensor> groupnorm_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const Tensor& rstd,const Tensor& gamma);
 }
 }
 
@@ -213,6 +214,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("miopen_rms_norm_dynamic_quant_without_residual", &at::native::miopen_rms_norm_dynamic_quant_without_residual, "rms_norm_dynamic_quant_without_residual");
   m.def("miopen_head_rms_norm", &at::native::miopen_head_rms_norm, "head_rms_norm");
   m.def("miopen_groupnorm", &at::native::miopen_groupnorm, "groupnorm");
+  m.def("miopen_groupnorm_backward", &at::native::miopen_groupnorm_backward, "groupnorm_backward");
   m.def("miopen_add_groupnorm", &at::native::miopen_add_groupnorm, "add_groupnorm");
   m.def("miopen_layernorm", &at::native::miopen_layernorm, "layernorm");
   m.def("miopen_add_layernorm", &at::native::miopen_add_layernorm, "add_layernorm");
@@ -239,5 +241,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rotary_embedding_fuse", &at::native::rotary_embedding_fuse, "rotary_embedding_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"));
   m.def("groupgemm",&at::native::groupgemm,"groupgemm");
   m.def("moe_fused_gate",&at::native::moe_fused_gate,"moe_fused_gate");
+  m.def("groupnorm_backward", &at::native::groupnorm_backward, "groupnorm backward");
 }
 

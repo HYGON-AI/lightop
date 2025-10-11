@@ -1,4 +1,5 @@
 import torch
+from torch.autograd import Function
 from lightop import op
 
 
@@ -18,11 +19,13 @@ def miopen_groupnorm(x, weight, bias, num_groups, epsilon: float = 1e-5, mode: i
                                     11: MIOPEN_FUSION_SILU [适用于norm+silu场景的, weights初始化为值为1的张量, bias初始化为值为0的张量])
 
     Returns:
-        vector<Tensor>: 返回 yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, H, W, C_in] (NHWC) 或 [N, C_in, D, H, W] (NCDHW) 或 [N, D, H, W, C_in] (NDHWC)
-                            meanDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
-                            rstdDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
+        vector<Tensor>:
+            yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, H, W, C_in] (NHWC) 或 [N, C_in, D, H, W] (NCDHW) 或 [N, D, H, W, C_in] (NDHWC)
+            meanDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
+            rstdDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
     """
-    return op.miopen_groupnorm(x, weight, bias, num_groups, epsilon, mode)
+    result = op.miopen_groupnorm(x, weight, bias, num_groups, epsilon, mode)
+    return result[0]
 
 
 def miopen_add_groupnorm(x1, x2, weight, bias, num_groups, epsilon: float = 1e-5, mode: int = 0):
@@ -42,11 +45,55 @@ def miopen_add_groupnorm(x1, x2, weight, bias, num_groups, epsilon: float = 1e-5
                                     13: MIOPEN_FUSION_SILU_ADD [适用于add+norm+silu场景的, weights初始化为值为1的张量, bias初始化为值为0的张量])
 
     Returns:
-        vector<Tensor>: 返回 yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, H, W, C_in] (NHWC) 或 [N, C_in, D, H, W] (NCDHW) 或 [N, D, H, W, C_in] (NDHWC)
-                            meanDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
-                            rstdDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
+        vector<Tensor>: 
+            yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, H, W, C_in] (NHWC) 或 [N, C_in, D, H, W] (NCDHW) 或 [N, D, H, W, C_in] (NDHWC)
+            meanDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
+            rstdDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
     """
     return op.miopen_add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode)
+
+
+def miopen_groupnorm_backward(x, dy, weight, mean, rstd, num_groups, epsilon: float = 1e-5, mode: int =1):
+    """_summary_
+
+    Args:
+        x (Tensor): 输入张量
+        dy (Tensor): 
+        weight (Tensor): 权值张量
+        mean (Tensor): 均值张量
+        rstd (Tensor): 方差张量
+        num_groups (int): 组数
+        epsilon (float, optional): 用于稳定逆方差计算的值. 默认为 1e-5.
+        mode (int, optional): 组归一化模式. 默认为 1,  MIOPEN_WEIGHT_BIAS [具有可学习参数的weights和bias]
+
+    Returns:
+        vector<Tensor>:
+            dx: 形状与x相同
+            dscale: 形状 [x[0]*x[1], 1, ,1 ,1]
+            dbias: 形状 [x[0]*x[1], 1, ,1 ,1]
+    """
+    return op.miopen_groupnorm_backward(x, dy, weight, mean, rstd, num_groups, epsilon, mode)
+
+
+class miopenGroupNormFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, weight, bias, num_groups, eps, mode):
+        ctx.num_groups = num_groups
+        ctx.eps = eps
+        ctx.mode = mode
+        result = op.miopen_groupnorm(x, weight, bias, num_groups, eps, mode)
+        ctx.save_for_backward(x, weight, result[1], result[2])
+        return result[0]
+    
+    @staticmethod
+    def backward(ctx, grad_output):
+        x, weight, mean, rstd = ctx.saved_tensors
+        grad_output = grad_output.contiguous(memory_format=torch.channels_last) if x.is_contiguous() == False else grad_output
+        num_groups = ctx.num_groups
+        eps = ctx.eps
+        mode = ctx.mode
+        result = op.miopen_groupnorm_backward(x, grad_output, weight, mean, rstd, num_groups, eps, mode)
+        return result[0], result[1].squeeze(), result[2].squeeze(), None, None, None
 
 
 class miopenGroupNorm(torch.nn.Module):
@@ -64,6 +111,12 @@ class miopenGroupNorm(torch.nn.Module):
             eps (float, optional): 用于稳定逆方差计算的值,  默认为 1e-5.
             device (_type_, optional): 设备类型, 默认为 None.
             dtype (_type_, optional): 数据类型, 默认为 None.
+            
+        Returns:
+        vector<Tensor>: 
+            yDesc, 形状为  [N, C_in, H, W] (NCHW) 或 [N, H, W, C_in] (NHWC) 或 [N, C_in, D, H, W] (NCDHW) 或 [N, D, H, W, C_in] (NDHWC)
+            meanDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
+            rstdDesc, 形状为 [N*num_groups, 1, 1, 1] (4D) 或 [N*num_groups, 1, 1, 1, 1] (5D)
         """
         super(miopenGroupNorm, self).__init__()
         self.eps = eps
@@ -77,7 +130,8 @@ class miopenGroupNorm(torch.nn.Module):
         torch.nn.init.zeros_(self.bias)
 
     def forward(self, x):
-        return op.miopen_groupnorm(x, self.weight, self.bias, self.num_groups, self.eps, self.mode)
+        return miopenGroupNormFunction.apply(x, self.weight, self.bias, self.num_groups, self.eps, self.mode)
 
     def extra_repr(self):
         return f"num_groups={self.num_groups},num_channels={self.num_channels},eps={round(self.eps,5):0.5f},mode={self.mode}"
+
