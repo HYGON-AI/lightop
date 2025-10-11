@@ -30,9 +30,15 @@ std::vector<Tensor> miopen_groupnorm(const Tensor& x,
         mean_rstd_len.push_back(1);
     }
 
-    Tensor out_y    = at::empty_like(x);
-    Tensor out_mean = at::empty(mean_rstd_len, x.options().dtype(at::kFloat));
-    Tensor out_rstd = at::empty(mean_rstd_len, x.options().dtype(at::kFloat));
+    Tensor out_y = at::empty_like(x);
+    Tensor out_mean =
+        x.is_contiguous()
+            ? at::empty(mean_rstd_len, x.options().dtype(at::kFloat))
+            : at::empty(mean_rstd_len, x.options().dtype(at::kFloat).memory_format(at::MemoryFormat::ChannelsLast));
+    Tensor out_rstd =
+        x.is_contiguous()
+            ? at::empty(mean_rstd_len, x.options().dtype(at::kFloat))
+            : at::empty(mean_rstd_len, x.options().dtype(at::kFloat).memory_format(at::MemoryFormat::ChannelsLast));
 
     TensorDescriptor output_y(out_y);
     TensorDescriptor output_mean(out_mean);
@@ -83,9 +89,15 @@ std::vector<Tensor> miopen_add_groupnorm(const Tensor& x1,
         mean_rstd_len.push_back(1);
     }
 
-    Tensor out_y    = at::empty_like(x1);
-    Tensor out_mean = at::empty(mean_rstd_len, x1.options());
-    Tensor out_rstd = at::empty(mean_rstd_len, x1.options());
+    Tensor out_y = at::empty_like(x1);
+    Tensor out_mean =
+        x1.is_contiguous()
+            ? at::empty(mean_rstd_len, x1.options().dtype(at::kFloat))
+            : at::empty(mean_rstd_len, x1.options().dtype(at::kFloat).memory_format(at::MemoryFormat::ChannelsLast));
+    Tensor out_rstd =
+        x1.is_contiguous()
+            ? at::empty(mean_rstd_len, x1.options().dtype(at::kFloat))
+            : at::empty(mean_rstd_len, x1.options().dtype(at::kFloat).memory_format(at::MemoryFormat::ChannelsLast));
 
     TensorDescriptor output_y(out_y);
     TensorDescriptor output_mean(out_mean);
@@ -112,6 +124,90 @@ std::vector<Tensor> miopen_add_groupnorm(const Tensor& x1,
 
     return {std::move(out_y), std::move(out_mean), std::move(out_rstd)};
 };
+
+std::vector<Tensor> miopen_groupnorm_backward(const Tensor& x,
+                                              const Tensor& dy,
+                                              const Tensor& weight,
+                                              const Tensor& mean,
+                                              const Tensor& rstd,
+                                              const int num_groups,
+                                              const float epsilon,
+                                              const int mode)
+{
+    if(x.dim() > 5 || x.dim() < 3)
+        MIOPEN_THROW("GroupNorm: Only Support 1d, 2d or 3d.");
+
+    TensorDescriptor x_tensor(x);
+    TensorDescriptor dy_tensor(dy);
+    TensorDescriptor weight_tensor(weight);
+    TensorDescriptor mean_tensor(mean);
+    TensorDescriptor rstd_tensor(rstd);
+
+    std::vector<int64_t> dscale_dbias_len = {1, x.sizes()[1], 1, 1};
+
+    if(x.sizes() == 5)
+    {
+        dscale_dbias_len.push_back(1);
+    }
+
+    Tensor out_dx = at::empty_like(x);
+    Tensor out_dscale =
+        x.is_contiguous()
+            ? at::empty(dscale_dbias_len, x.options().dtype(at::kFloat))
+            : at::empty(dscale_dbias_len, x.options().dtype(at::kFloat).memory_format(at::MemoryFormat::ChannelsLast));
+    Tensor out_dbias =
+        x.is_contiguous()
+            ? at::empty(dscale_dbias_len, x.options().dtype(at::kFloat))
+            : at::empty(dscale_dbias_len, x.options().dtype(at::kFloat).memory_format(at::MemoryFormat::ChannelsLast));
+
+    TensorDescriptor output_dx(out_dx);
+    TensorDescriptor output_dscale(out_dscale);
+    TensorDescriptor output_dbias(out_dbias);
+
+    size_t workspace_size = 0;
+    miopenHandle_t handle = getMiopenHandle_new();
+    MIOPEN_CHECK(miopenGetGroupNormBackwardWorkspaceSize(handle,
+                                                         static_cast<miopenNormMode_t>(mode),
+                                                         x_tensor.desc(),
+                                                         dy_tensor.desc(),
+                                                         weight_tensor.desc(),
+                                                         output_dx.desc(),
+                                                         output_dscale.desc(),
+                                                         output_dbias.desc(),
+                                                         mean_tensor.desc(),
+                                                         num_groups,
+                                                         &workspace_size));
+
+    Tensor workspace_tensor;
+    if(workspace_size > 0)
+    {
+        workspace_tensor = at::empty(workspace_size, x.options().dtype(at::kChar));
+    }
+
+    MIOPEN_CHECK(miopenGroupNormBackward(handle,
+                                         static_cast<miopenNormMode_t>(mode),
+                                         workspace_tensor.defined() ? workspace_tensor.data_ptr() : nullptr,
+                                         workspace_size,
+                                         x_tensor.desc(),
+                                         x.data_ptr(),
+                                         dy_tensor.desc(),
+                                         dy.data_ptr(),
+                                         weight_tensor.desc(),
+                                         weight.data_ptr(),
+                                         output_dx.desc(),
+                                         out_dx.data_ptr(),
+                                         output_dscale.desc(),
+                                         out_dscale.data_ptr(),
+                                         output_dbias.desc(),
+                                         out_dbias.data_ptr(),
+                                         mean_tensor.desc(),
+                                         mean.data_ptr(),
+                                         rstd.data_ptr(),
+                                         num_groups,
+                                         epsilon));
+
+    return {std::move(out_dx), std::move(out_dscale), std::move(out_dbias)};
+}
 
 } // namespace native
 

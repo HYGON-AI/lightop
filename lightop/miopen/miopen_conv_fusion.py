@@ -16,7 +16,7 @@ def miopen_conv_bias_add(input, weight, bias, add, padding, stride, dilation):
         stride (int|tuple): 卷积步长, (strideH, strideW) 元组
         dilation (int|tuple): 卷积膨胀率, (dilationH, dilationW) 元组
     返回:
-        Tensor: 计算结果张量
+        Tensor: 计算结果张量 out
     """
     return op.miopen_conv_bias_add(input, weight, bias, add, padding, stride, dilation)
 
@@ -33,7 +33,7 @@ def miopen_conv_bias(x, weight, bias, padding, stride, dilation):
         dilations (int|tuple): 卷积膨胀率, (dilationH, dilationW) 元组
 
     Returns:
-        Tensor: 计算结果张量
+        Tensor: 计算结果张量 out
     """
     return op.miopen_conv_bias(x, weight, bias, padding, stride, dilation)
 
@@ -50,7 +50,7 @@ def miopen_conv_bias_relu(input, weight, bias, padding, stride, dilation):
         dilation (int|tuple): 卷积膨胀率, (dilationH, dilationW) 元组
 
     Returns:
-        Tensor: yDesc 计算结果张量
+        Tensor: 计算结果张量 out
     """
     return op.miopen_conv_bias_relu(input, weight, bias, padding, stride, dilation)
 
@@ -68,7 +68,7 @@ def miopen_conv_bias_add_relu(input, weight, bias, add, padding, stride, dilatio
         dilation (int|tuple): 卷积膨胀率, (dilationH, dilationW) 元组
 
     Returns:
-        Tensor: yDesc 计算结果张量
+        Tensor: 计算结果张量 out
     """
     return op.miopen_conv_bias_add_relu(input, weight, bias, add, padding, stride, dilation)
 
@@ -102,6 +102,9 @@ class miopenConvBias(torch.nn.Conv2d):
             padding_mode (str, optional): 填充模式, 默认为 "zeros".
             device (_type_, optional): 设备类型, 默认为 None.
             dtype (_type_, optional): 数据类型, 默认为 None.
+        
+        Returns:
+            Tensor: 计算结果张量 out
         """
         super().__init__(
             in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype
@@ -142,6 +145,9 @@ class miopenConvBiasRelu(torch.nn.Conv2d):
             padding_mode (str, optional): 填充模式, 默认为 "zeros".
             device (_type_, optional): 设备类型, 默认为 None.
             dtype (_type_, optional): 数据类型, 默认为 None.
+            
+        Returns:
+            Tensor: 计算结果张量 out
         """
         super().__init__(
             in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype
@@ -182,6 +188,9 @@ class miopenConvBiasAdd(torch.nn.Conv2d):
             padding_mode (str, optional): 填充模式, 默认为 "zeros".
             device (_type_, optional): 设备类型, 默认为 None.
             dtype (_type_, optional): 数据类型, 默认为 None.
+            
+        Returns:
+            Tensor: 计算结果张量 out
         """
         super().__init__(
             in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype
@@ -222,6 +231,9 @@ class miopenConvBiasAddRelu(torch.nn.Conv2d):
             padding_mode (str, optional): 填充模式, 默认为 "zeros".
             device (_type_, optional): 设备类型, 默认为 None.
             dtype (_type_, optional): 数据类型, 默认为 None.
+            
+        Returns:
+            Tensor: 计算结果张量 out
         """
         super().__init__(
             in_channels, out_channels, kernel_size, stride, padding, dilation, groups, bias, padding_mode, device, dtype
