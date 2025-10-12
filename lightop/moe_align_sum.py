@@ -1,26 +1,36 @@
-# SPDX-License-Identifier: Apache-2.0
-from typing import Optional, Tuple
-
 import torch
-import triton
-import triton.language as tl
-
-import vllm.envs as envs
-from lightop import op as ops
-from vllm.utils import round_up
-
+from lightop import op
+from typing import Optional, Tuple
 
 def ceil_div(a, b):
     return (a + b - 1) // b
 
-def moe_align_block_size_lightop(
-    topk_ids: torch.Tensor,
+def moe_sum(
+    input: torch.Tensor,
+    output: torch.Tensor,
+    bias: Optional[torch.Tensor] = None,
+    expert_mask: Optional[torch.Tensor] = None,
+    factor: float = 1.0
+) -> None:
+    op.moe_sum(
+        input,
+        output,
+        bias,
+        expert_mask,
+        factor
+    )
+
+def moe_align_block_size(
+     topk_ids: torch.Tensor,
     block_size: int,
     num_experts: int,
     expert_map: Optional[torch.Tensor] = None,
     expert_mask: Optional[torch.Tensor] = None,
     pad_sorted_ids: bool = False,
-    num_token: Optional[int] = None
+    num_token: Optional[int] = None,
+    ep_size: int = 8,
+    is_EP : bool  = False,
+    local_num_tokens: Optional[torch.Tensor]=None
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Aligns the token distribution across experts to be compatible with block
@@ -65,22 +75,22 @@ def moe_align_block_size_lightop(
     - The padding ensures that the total number of tokens is now divisible
         by block_size for proper block matrix operations.
     """
-  
+    local_num_experts = num_experts // ep_size
     if num_token:
         if num_token < block_size:
-            max_num_tokens_padded = min(topk_ids.numel() * block_size, topk_ids.numel() + num_experts * (block_size - 1))
+            max_num_tokens_padded = min(topk_ids.numel() * block_size, topk_ids.numel() + local_num_experts * (block_size - 1))
         else:
-            max_num_tokens_padded = topk_ids.numel() + num_experts * (block_size - 1)
+            max_num_tokens_padded = topk_ids.numel() + local_num_experts * (block_size - 1)
         sorted_ids = torch.full((max_num_tokens_padded,), fill_value=topk_ids.numel(), dtype=torch.int32, device=topk_ids.device)
     else:
-        max_num_tokens_padded = topk_ids.numel() + num_experts * (block_size - 1)
+        max_num_tokens_padded = topk_ids.numel() + local_num_experts * (block_size - 1)
         if pad_sorted_ids:
             max_num_tokens_padded = round_up(max_num_tokens_padded, block_size)
         sorted_ids = torch.empty((max_num_tokens_padded, ),
                                  dtype=torch.int32,
                                  device=topk_ids.device)
         sorted_ids.fill_(topk_ids.numel())
-    max_num_m_blocks = triton.cdiv(max_num_tokens_padded, block_size)
+    max_num_m_blocks = ceil_div(max_num_tokens_padded, block_size)
     # Expert ids must be zeroed out to prevent index out of bounds error while
     # mapping global expert ids to local expert ids in expert parallelism.
     if expert_map is not None:
@@ -91,12 +101,11 @@ def moe_align_block_size_lightop(
         expert_ids = torch.empty((max_num_m_blocks, ),
                                 dtype=torch.int32,
                                 device=topk_ids.device)
-    num_tokens_post_pad = torch.empty((1),
+    num_tokens_post_pad = torch.zeros((1),
                                       dtype=torch.int32,
-                                      device=topk_ids.device)    
-    ops.moe_align_block_size(topk_ids, num_experts, block_size, sorted_ids,
-                                 expert_ids, num_tokens_post_pad,expert_map,expert_mask,None);
-    # if expert_map is not None:
-    #     expert_ids = expert_map[expert_ids]
-
+                                      device=topk_ids.device)   
+    op.moe_align_block_size(topk_ids, num_experts, block_size, sorted_ids,
+                                 expert_ids, num_tokens_post_pad,expert_map,expert_mask,local_num_tokens,is_EP);
+    
     return sorted_ids, expert_ids, num_tokens_post_pad
+    
