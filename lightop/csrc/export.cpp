@@ -128,9 +128,13 @@ void store_kv_cache_paged(const torch::Tensor& key, const torch::Tensor& value,t
 void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::Tensor& token_expert_indices,torch::Tensor& gating_output, const std::string& renormalize = "false");
 void rotary_embedding_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox);    
 void rotary_embedding_deepseek_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox);
-void moe_align_block_size(torch::Tensor topk_ids, int64_t num_experts,int64_t block_size, torch::Tensor sorted_token_ids,torch::Tensor experts_ids,
-                          torch::Tensor num_tokens_post_pad,const torch::optional<torch::Tensor> &expert_map ,
-                          const torch::optional<torch::Tensor> &expert_mask,const torch::optional<torch::Tensor> &num_local_tokens,bool Is_EP = false);
+void moe_align_block_size(
+    torch::Tensor topk_ids, int64_t num_experts, int64_t block_size,
+    torch::Tensor sorted_token_ids, torch::Tensor experts_ids,
+    torch::Tensor num_tokens_post_pad,
+    const torch::optional<torch::Tensor> &expert_map =  torch::nullopt,
+    const torch::optional<torch::Tensor> &expert_mask =  torch::nullopt, // bool
+    const torch::optional<torch::Tensor> &num_local_tokens =  torch::nullopt,bool Is_EP = false); 
 
 //------------------------------------------------- groupgemm ---------------------------------------//
 Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b);    
@@ -144,7 +148,12 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> fuse_grou
 std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor);
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK);
-void moe_sum(torch::Tensor& input,torch::Tensor& output,const torch::optional<torch::Tensor> &bias,  const torch::optional<torch::Tensor> &expert_mask,const torch::optional<torch::Tensor> &num_local_tokens,const float factor = 1.f);    
+void moe_sum(torch::Tensor &input,
+             torch::Tensor &output, 
+             const torch::optional<torch::Tensor> &bias = torch::nullopt ,
+             const torch::optional<torch::Tensor> &expert_mask = torch::nullopt ,
+             const torch::optional<torch::Tensor> &num_local_tokens = torch::nullopt ,
+             const float factor = 1.f);    
 Tensor ms_deform_attn_cuda_forward(const Tensor &value, const Tensor &spatial_shapes, const Tensor &level_start_index, const Tensor &sampling_loc, const Tensor &attn_weight, const int im2col_step);
 void ms_deform_attn_cuda_backward(const Tensor &value, const Tensor &spatial_shapes, const Tensor &level_start_index, const Tensor &sampling_loc, const Tensor &attn_weight, const Tensor &grad_output, Tensor &grad_value, Tensor &grad_sampling_loc, Tensor &grad_attn_weight, const int im2col_step);
 void mha_norm_rope_qkv_inplace_cuda(at::Tensor qkv, c10::optional<at::Tensor> gamma_q, c10::optional<at::Tensor> beta_q, c10::optional<at::Tensor> gamma_k,c10::optional<at::Tensor> beta_k,at::Tensor cos, at::Tensor sin, double eps);
@@ -238,9 +247,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("moe_sum", &at::native::moe_sum, "moe_sum",
       py::arg("input"),
       py::arg("output"),
-      py::arg("bias"),
-      py::arg("expert_mask"),
-      py::arg("num_local_tokens"),
+      py::arg("bias")  =   torch::nullopt ,
+      py::arg("expert_mask") =   torch::nullopt,
+      py::arg("num_local_tokens") =   torch::nullopt,
       py::arg("factor") = 1.0f
   );
   m.def("moe_align_block_size", &at::native::moe_align_block_size, "moe_align_block_size",
@@ -250,9 +259,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("sorted_token_ids"),
       py::arg("experts_ids"),
       py::arg("num_tokens_post_pad"),
-      py::arg("expert_map"),
-      py::arg("expert_mask"),
-      py::arg("num_local_tokens"),
+      py::arg("expert_map") =   torch::nullopt,
+      py::arg("expert_mask") =   torch::nullopt,
+      py::arg("num_local_tokens") =   torch::nullopt,
       py::arg("Is_EP") = false
   );
   m.def("mha_norm_rope_qkv_inplace_cuda", &at::native::mha_norm_rope_qkv_inplace_cuda,"mha_norm_rope_qkv_inplace_cuda");

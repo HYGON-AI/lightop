@@ -958,9 +958,9 @@ void moe_align_block_size(
     torch::Tensor topk_ids, int64_t num_experts, int64_t block_size,
     torch::Tensor sorted_token_ids, torch::Tensor experts_ids,
     torch::Tensor num_tokens_post_pad,
-    const torch::optional<torch::Tensor> &expert_map,
-    const torch::optional<torch::Tensor> &expert_mask, // bool
-    const torch::optional<torch::Tensor> &num_local_tokens,bool Is_EP = false) {
+    const torch::optional<torch::Tensor> &expert_map =  torch::nullopt,
+    const torch::optional<torch::Tensor> &expert_mask =  torch::nullopt, // bool
+    const torch::optional<torch::Tensor> &num_local_tokens =  torch::nullopt,bool Is_EP = false) {
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   int64_t padded_num_experts =
@@ -1105,9 +1105,9 @@ void moe_align_block_size(
 
 void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
              torch::Tensor &output, // [num_tokens, hidden_size]
-             const torch::optional<torch::Tensor> &bias,
-             const torch::optional<torch::Tensor> &expert_mask,
-             const torch::optional<torch::Tensor> &num_local_tokens,
+             const torch::optional<torch::Tensor> &bias = torch::nullopt ,
+             const torch::optional<torch::Tensor> &expert_mask = torch::nullopt ,
+             const torch::optional<torch::Tensor> &num_local_tokens = torch::nullopt ,
              const float factor = 1.f) {
   const int hidden_size = input.size(-1);
   int  num_tokens = output.numel() / hidden_size;
