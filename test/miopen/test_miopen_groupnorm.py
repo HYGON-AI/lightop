@@ -34,49 +34,49 @@ print("rstd is:", rstd, rstd.shape, rstd.stride())
 input_nhwc = input.to(memory_format=torch.channels_last)
 dy_nhwc = dy.to(memory_format=torch.channels_last)
 
-output = lightop.miopen_groupnorm_backward(
-    input_nhwc, dy_nhwc, weight, mean, rstd, num_groups, epsilon=0.00001, mode=1
-)
-torch.cuda.synchronize()
-print("miopen shape is:", output[0].shape, output[0].stride())
+# output = lightop.miopen_groupnorm_backward(
+#     input_nhwc, dy_nhwc, weight, mean, rstd, num_groups, epsilon=0.00001, mode=1
+# )
+# torch.cuda.synchronize()
+# print("miopen shape is:", output[0].shape, output[0].stride())
 
-# NCHW 布局下, miopen的gn算子的第一个输出以这个为准
-print("miopen bwn nchw output is: =============\n", output[0])
+# # NCHW 布局下, miopen的gn算子的第一个输出以这个为准
+# print("miopen bwn nchw output is: =============\n", output[0])
 
-# NHWC 布局下, miopen的gn算子的第一个输出以这个为准
-output_nhwc = output[0].permute(0, 2, 3, 1).contiguous(memory_format=torch.channels_last)
-print("miopen nhwc shape is:", output_nhwc.shape, output_nhwc.stride())
-print("miopen bwn nhwc output is: =============\n", output_nhwc)
+# # NHWC 布局下, miopen的gn算子的第一个输出以这个为准
+# output_nhwc = output[0].permute(0, 2, 3, 1).contiguous(memory_format=torch.channels_last)
+# print("miopen nhwc shape is:", output_nhwc.shape, output_nhwc.stride())
+# print("miopen bwn nhwc output is: =============\n", output_nhwc)
 
-# 以下两个输出为1维张量, 数值对上即可
-print("miopen shape1 is:", output[1].shape, output[1].stride())
-print("miopen bwn output1 is: =============\n", output[1])
-print("miopen shape2 is:", output[2].shape, output[2].stride())
-print("miopen bwn output2 is: =============\n", output[2])
+# # 以下两个输出为1维张量, 数值对上即可
+# print("miopen shape1 is:", output[1].shape, output[1].stride())
+# print("miopen bwn output1 is: =============\n", output[1])
+# print("miopen shape2 is:", output[2].shape, output[2].stride())
+# print("miopen bwn output2 is: =============\n", output[2])
 
 
-# NCHW、NHWC(不变)
-output_cu = lightop.groupnorm_backward(input, dy, weight, mean, rstd)
-out_cu = output_cu[0]
-out_1 = output_cu[1]
-out_2 = output_cu[2]
+# # NCHW、NHWC(不变)
+# output_cu = lightop.groupnorm_backward(input, dy, weight, mean, rstd)
+# out_cu = output_cu[0]
+# out_1 = output_cu[1]
+# out_2 = output_cu[2]
 
-print("lightop shape is:", out_cu.shape, out_cu.stride())
-# NCHW 布局下, lightop自带的gn算子的第一个输出以这个为准
-print("lightop bwn nchw output is: ============\n", out_cu)
+# print("lightop shape is:", out_cu.shape, out_cu.stride())
+# # NCHW 布局下, lightop自带的gn算子的第一个输出以这个为准
+# print("lightop bwn nchw output is: ============\n", out_cu)
 
-# 以下两个输出为1维张量, 数值对上即可
-print("lightop nchw shape1 is:", out_1.shape, out_1.stride())
-print("lightop bwn output1 is: ============\n", out_1)
-print("lightop nchw shape2 is:", out_2.shape, out_2.stride())
-print("lightop bwn output2 is: ============\n", out_2)
+# # 以下两个输出为1维张量, 数值对上即可
+# print("lightop nchw shape1 is:", out_1.shape, out_1.stride())
+# print("lightop bwn output1 is: ============\n", out_1)
+# print("lightop nchw shape2 is:", out_2.shape, out_2.stride())
+# print("lightop bwn output2 is: ============\n", out_2)
 
-# NHWC 布局下, lightop自带的gn算子的第一个输出以这个为准
-out_cu_nhwc = out_cu.permute(0, 2, 3, 1).contiguous(memory_format=torch.channels_last)
-print("lightop nhwc shape is:", out_cu_nhwc.shape, out_cu_nhwc.stride())
-print("lightop nhwc bwn output is: ============\n", out_cu_nhwc)
+# # NHWC 布局下, lightop自带的gn算子的第一个输出以这个为准
+# out_cu_nhwc = out_cu.permute(0, 2, 3, 1).contiguous(memory_format=torch.channels_last)
+# print("lightop nhwc shape is:", out_cu_nhwc.shape, out_cu_nhwc.stride())
+# print("lightop nhwc bwn output is: ============\n", out_cu_nhwc)
 
-print("=============== GroupNorm Backward End =============== \n")
+# print("=============== GroupNorm Backward End =============== \n")
 
 
 output = lightop.miopen_groupnorm(
