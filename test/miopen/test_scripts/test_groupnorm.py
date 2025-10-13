@@ -147,9 +147,9 @@ def test_speed(batch_size, seqs, cols, rows, num_groups, repeat_num, precision_t
           format(mlop_time / repeat_num, '.3f'), 'ms. speedup:', format(lop_time / mlop_time - 1, '.2f'))
 
     # 精度验证
-    print(f'lightop_output_shape: {y1.shape}, lightop_miopen_output_shape: {y2[0].shape}')
-    assert y1.shape == y2[0].shape, 'lightop接口与miopen lightop接口的输出tensor shape不一致'
-    verify_accuracy(y1, y2[0], rtol=5e-3, atol=5e-3, precision=precision_type)
+    print(f'lightop_output_shape: {y1.shape}, lightop_miopen_output_shape: {y2.shape}')
+    assert y1.shape == y2.shape, 'lightop接口与miopen lightop接口的输出tensor shape不一致'
+    verify_accuracy(y1, y2, rtol=5e-3, atol=5e-3, precision=precision_type)
 
 
 if __name__ == '__main__':

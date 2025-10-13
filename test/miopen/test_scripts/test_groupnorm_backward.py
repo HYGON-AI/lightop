@@ -52,11 +52,15 @@ def get_data(batchsize, seqs, cols, rows, num_groups, data_layout, precision_typ
     if data_layout == 'NCHW':
         x = x.to(memory_format=torch.contiguous_format)
         dy = dy.to(memory_format=torch.contiguous_format)
+        x_ = x.clone()
+        dy_ = dy.clone()
     elif data_layout == 'NHWC':
         x = x.to(memory_format=torch.channels_last)
         dy = dy.to(memory_format=torch.channels_last)
+        x_ = x.to(memory_format=torch.contiguous_format)
+        dy_ = dy.to(memory_format=torch.contiguous_format)
 
-    return x, dy, weight, mean, rstd
+    return x, dy, x_, dy_, weight, mean, rstd
 
 
 def test_speed(batch_size, seqs, cols, rows, num_groups, repeat_num, precision_type, data_layout, backward_only=False):
@@ -64,19 +68,19 @@ def test_speed(batch_size, seqs, cols, rows, num_groups, repeat_num, precision_t
         raise ValueError(f'当前仅支持反向性能及精度测试，暂不支持其他类型测试任务')
 
     print(f'size大小 n: {batch_size}, c: {seqs}, H: {cols}, W: {rows}, groups: {num_groups}')
-    input_tensor, dy, weight, mean, rstd = get_data(batch_size, seqs, cols, rows, num_groups, data_layout,
+    input_tensor, dy, input_tensor_, dy_, weight, mean, rstd = get_data(batch_size, seqs, cols, rows, num_groups, data_layout,
                                                     precision_type)
 
     # 测试lightop原库接口性能
     for i in range(10):
-        groupnorm_backward(input_tensor, dy, weight, mean, rstd)
+        groupnorm_backward(input_tensor_, dy_, weight, mean, rstd)
 
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
     torch.cuda.synchronize()
     start_event.record()
     for i in range(repeat_num):
-        lop_output = groupnorm_backward(input_tensor, dy, weight, mean, rstd)
+        lop_output = groupnorm_backward(input_tensor_, dy_, weight, mean, rstd)
     end_event.record()
     torch.cuda.synchronize()
     lop_time = start_event.elapsed_time(end_event)
@@ -97,13 +101,20 @@ def test_speed(batch_size, seqs, cols, rows, num_groups, repeat_num, precision_t
 
     print('lop_time:', format(lop_time / repeat_num, '.3f'), 'ms. mlop_time:',
           format(mlop_time / repeat_num, '.3f'), 'ms. speedup:', format(lop_time / mlop_time - 1, '.2f'))
-    # print('lop vs mlop输出结果比较:', lop_output[0].view(-1)[:5], mlop_output[0].view(-1)[:5])
 
     # 精度验证
-    print(f'lop_shape: {lop_output[0].shape}, mlop_shape: {mlop_output[1].shape}')
+    print(f'lop_shape: {lop_output[0].shape}, mlop_shape: {mlop_output[0].shape}')
     assert lop_output[0].shape == mlop_output[0].shape, 'groupnorm_backward API的输出dx shape与输入shape不一致，请检查'
-    verify_accuracy(lop_output[0], mlop_output[0], rtol=5e-3, atol=5e-3, precision=precision)
-    find_topk_errors(lop_output[0], mlop_output[0], 5)
+    if data_layout == 'NCHW':
+        verify_accuracy(lop_output[0], mlop_output[0], rtol=5e-3, atol=5e-3, precision=precision)
+        verify_accuracy(lop_output[1], mlop_output[1], rtol=5e-3, atol=5e-3, precision=precision)
+        verify_accuracy(lop_output[2], mlop_output[2], rtol=5e-3, atol=5e-3, precision=precision)
+    else:
+        lop_output_ = lop_output[0].permute(0, 2, 3, 1).contiguous(memory_format=torch.channels_last)
+        mlop_output_ = mlop_output[0].permute(0, 2, 3, 1).contiguous(memory_format=torch.channels_last)
+        verify_accuracy(lop_output_, mlop_output_, rtol=5e-3, atol=5e-3, precision=precision)
+        verify_accuracy(lop_output[1], mlop_output[1], rtol=5e-3, atol=5e-3, precision=precision)
+        verify_accuracy(lop_output[2], mlop_output[2], rtol=5e-3, atol=5e-3, precision=precision)
 
 
 if __name__ == '__main__':
