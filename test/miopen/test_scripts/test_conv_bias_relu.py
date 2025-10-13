@@ -13,43 +13,7 @@ from lightop import miopen_conv_bias_relu
 from torch.profiler import profile, ProfilerActivity
 
 from read_test_size import read_convfusion_size
-from utils import verify_accuracy
-
-
-dtype_map = {
-    'FP16': torch.float16,
-    'FP32': torch.float32
-    }
-
-
-# 创建指定配置的张量
-def get_data(batchsize, in_channels, out_channels, kernel_h, kernel_w, Height, Width, data_layout, precision_type):
-    # 指定设备
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
-    # 创建浮点精度类型
-    dtype = dtype_map.get(precision_type, torch.float16)
-    input_data = torch.rand((batchsize, in_channels, Height, Width), device=device, dtype=dtype)
-    weight = torch.rand((out_channels, in_channels, kernel_h, kernel_w), device=device, dtype=dtype)
-    bias = torch.rand((out_channels), device=device, dtype=dtype)
-    add = torch.rand((batchsize, out_channels, Height, Width), device=device, dtype=dtype)
-
-
-    # 设置布局
-    if data_layout == 'NCHW':
-        input_data = input_data.to(memory_format=torch.contiguous_format)
-        weight = weight.to(memory_format=torch.contiguous_format)
-        add = add.to(memory_format=torch.contiguous_format)
-    elif data_layout == 'NHWC':
-        input_data = input_data.to(memory_format=torch.channels_last)
-        weight = weight.to(memory_format=torch.channels_last)
-        add = add.to(memory_format=torch.channels_last)
-
-    x1 = input_data.clone().detach()
-    x2 = weight.clone().detach()
-    x3 = bias.clone().detach()
-    x4 = add.clone().detach()
-    return x1, x2, x3, x4
+from utils import verify_accuracy, get_data
 
 
 def test_speed(batch_size, channels, Height, Width, out_channels, kernel_h, kernel_w, stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w,
