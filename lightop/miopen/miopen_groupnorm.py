@@ -53,26 +53,26 @@ def miopen_add_groupnorm(x1, x2, weight, bias, num_groups, epsilon: float = 1e-5
     return op.miopen_add_groupnorm(x1, x2, weight, bias, num_groups, epsilon, mode)
 
 
-def miopen_groupnorm_backward(x, dy, weight, mean, rstd, num_groups, epsilon: float = 1e-5, mode: int =1):
-    """_summary_
+# def miopen_groupnorm_backward(x, dy, weight, mean, rstd, num_groups, epsilon: float = 1e-5, mode: int =1):
+#     """_summary_
 
-    Args:
-        x (Tensor): 输入张量
-        dy (Tensor): 
-        weight (Tensor): 权值张量
-        mean (Tensor): 均值张量
-        rstd (Tensor): 方差张量
-        num_groups (int): 组数
-        epsilon (float, optional): 用于稳定逆方差计算的值. 默认为 1e-5.
-        mode (int, optional): 组归一化模式. 默认为 1,  MIOPEN_WEIGHT_BIAS [具有可学习参数的weights和bias]
+#     Args:
+#         x (Tensor): 输入张量
+#         dy (Tensor): 
+#         weight (Tensor): 权值张量
+#         mean (Tensor): 均值张量
+#         rstd (Tensor): 方差张量
+#         num_groups (int): 组数
+#         epsilon (float, optional): 用于稳定逆方差计算的值. 默认为 1e-5.
+#         mode (int, optional): 组归一化模式. 默认为 1,  MIOPEN_WEIGHT_BIAS [具有可学习参数的weights和bias]
 
-    Returns:
-        vector<Tensor>:
-            dx: 形状与x相同
-            dscale: 形状 [x[0]*x[1], 1, ,1 ,1]
-            dbias: 形状 [x[0]*x[1], 1, ,1 ,1]
-    """
-    return op.miopen_groupnorm_backward(x, dy, weight, mean, rstd, num_groups, epsilon, mode)
+#     Returns:
+#         vector<Tensor>:
+#             dx: 形状与x相同
+#             dscale: 形状 [x[0]*x[1], 1, ,1 ,1]
+#             dbias: 形状 [x[0]*x[1], 1, ,1 ,1]
+#     """
+#     return op.miopen_groupnorm_backward(x, dy, weight, mean, rstd, num_groups, epsilon, mode)
 
 
 class miopenGroupNormFunction(torch.autograd.Function):
@@ -85,15 +85,15 @@ class miopenGroupNormFunction(torch.autograd.Function):
         ctx.save_for_backward(x, weight, result[1], result[2])
         return result[0]
     
-    @staticmethod
-    def backward(ctx, grad_output):
-        x, weight, mean, rstd = ctx.saved_tensors
-        grad_output = grad_output.contiguous(memory_format=torch.channels_last) if x.is_contiguous() == False else grad_output
-        num_groups = ctx.num_groups
-        eps = ctx.eps
-        mode = ctx.mode
-        result = op.miopen_groupnorm_backward(x, grad_output, weight, mean, rstd, num_groups, eps, mode)
-        return result[0], result[1].squeeze(), result[2].squeeze(), None, None, None
+    # @staticmethod
+    # def backward(ctx, grad_output):
+    #     x, weight, mean, rstd = ctx.saved_tensors
+    #     grad_output = grad_output.contiguous(memory_format=torch.channels_last) if x.is_contiguous() == False else grad_output
+    #     num_groups = ctx.num_groups
+    #     eps = ctx.eps
+    #     mode = ctx.mode
+    #     result = op.miopen_groupnorm_backward(x, grad_output, weight, mean, rstd, num_groups, eps, mode)
+    #     return result[0], result[1].squeeze(), result[2].squeeze(), None, None, None
 
 
 class miopenGroupNorm(torch.nn.Module):

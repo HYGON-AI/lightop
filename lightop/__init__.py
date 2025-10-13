@@ -24,7 +24,7 @@ from .config import get_moe_cuda_config, get_moe_cuda_config_w4a8, get_moe_cuda_
 from .config_smooth_gemm import gemm_w8a8_smooth_config
 from .miopen.miopen_mha import miopen_scaled_dot_product_attention
 from .miopen.miopen_conv_fusion import miopen_conv_bias, miopen_conv_bias_add, miopen_conv_bias_relu, miopen_conv_bias_add_relu, miopenConvBias, miopenConvBiasAdd, miopenConvBiasRelu, miopenConvBiasAddRelu
-from .miopen.miopen_groupnorm import miopen_groupnorm, miopen_groupnorm_backward, miopen_add_groupnorm, miopenGroupNorm
+from .miopen.miopen_groupnorm import miopen_groupnorm, miopen_add_groupnorm, miopenGroupNorm
 from .miopen.miopen_layernorm import miopen_layernorm, miopen_add_layernorm, miopen_skip_layernorm, miopenLayerNorm
 from .miopen.miopen_moe import miopen_moe_gather, miopen_moe_scatter_dynamic_quant, miopen_moe_swiglu_dynamic_quant
 from .miopen.miopen_rms import miopen_add_rms_norm_dynamic_quant, miopen_head_rms_norm, miopen_rms_norm_dynamic_quant_without_residual
