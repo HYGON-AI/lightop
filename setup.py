@@ -445,7 +445,7 @@ setup(
     },
     zip_safe=False,
     install_requires=[
-         f"torch=={_get_pytorch_version()}",
+         "torch",
      ],
 )
 
