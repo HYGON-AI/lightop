@@ -367,6 +367,34 @@ torch::Tensor moe_marlin_w4a8(
 
 } // end moe_marlin_w4a8
 
+#else
+torch::Tensor moe_marlin_w4a8(
+                                  torch::Tensor& a_q, 
+                                  torch::Tensor& a_scales, 
+                                  torch::Tensor& c,
+                                  torch::Tensor& b_q_weight, 
+                                  torch::Tensor& b_scales,
+                                  torch::Tensor& workspace, 
+                                  torch::Tensor& global_reduce_buffer,  // 用于全局规约的缓冲区
+                                  torch::Tensor& sorted_token_ids, 
+                                  torch::Tensor& expert_ids,
+                                  torch::Tensor& num_tokens_past_padded, 
+                                  std::optional<torch::Tensor> topk_weights,
+                                  int64_t moe_block_size, 
+                                  int64_t top_k, 
+                                  bool is_ep,
+                                  int64_t size_m, 
+                                  int64_t size_n,
+                                  int64_t size_k,
+                                  int64_t thread_n,
+                                  int64_t thread_k,
+                                  int64_t blocks_per_cu
+                                ) {
+                                  TORCH_CHECK_NOT_IMPLEMENTED(false, "marlin w4a8 fused_moe only support gfx936 !!!");
+                                  return torch::empty({1, 1});
+                                }
+#endif
+
 // uint4 [32, 64] 大小的重排
 torch::Tensor awq_marlin_repack_w4a8(torch::Tensor& b_q_weight,  
                                     torch::Tensor& marlin_weight, 
@@ -406,34 +434,6 @@ torch::Tensor awq_marlin_repack_w4a8(torch::Tensor& b_q_weight,
                                                                   );
   return marlin_weight;
 }
-
-#else
-torch::Tensor moe_marlin_w4a8(
-                                  torch::Tensor& a_q, 
-                                  torch::Tensor& a_scales, 
-                                  torch::Tensor& c,
-                                  torch::Tensor& b_q_weight, 
-                                  torch::Tensor& b_scales,
-                                  torch::Tensor& workspace, 
-                                  torch::Tensor& global_reduce_buffer,  // 用于全局规约的缓冲区
-                                  torch::Tensor& sorted_token_ids, 
-                                  torch::Tensor& expert_ids,
-                                  torch::Tensor& num_tokens_past_padded, 
-                                  std::optional<torch::Tensor> topk_weights,
-                                  int64_t moe_block_size, 
-                                  int64_t top_k, 
-                                  bool is_ep,
-                                  int64_t size_m, 
-                                  int64_t size_n,
-                                  int64_t size_k,
-                                  int64_t thread_n,
-                                  int64_t thread_k,
-                                  int64_t blocks_per_cu
-                                ) {
-                                  TORCH_CHECK_NOT_IMPLEMENTED(false, "marlin w4a8 fused_moe only support gfx936 !!!");
-                                  return torch::empty({1, 1});
-                                }
-#endif
 
 } // end native 
 } // end at
