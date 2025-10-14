@@ -1181,13 +1181,12 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
     if (hidden_size == 7168) {
       int gridy = num_tokens;
       if(num_local_tokens.has_value() && input.scalar_type() == at::ScalarType::BFloat16){
-          if(num_tokens < 512){
-                int size = (num_tokens / 80);
-                gridy = std::min(std::max( size*80 , 80), num_tokens);
-          }else{
-               gridy = ((num_tokens / 4) / 80)*80;
-               gridy = gridy*3;
-          }
+          if(num_tokens >= 2048 && num_tokens < 4096){
+              gridy /= 2; 
+            } else if(num_tokens >= 4096)
+            { 
+               gridy /= 4;
+            }
       }
       dim3 Grid(7, gridy);
       const int block_size = 128;
