@@ -63,6 +63,41 @@ static __device__ inline uint16_t f32_to_bf16(float f){
     return u>>16;
 }
 
+// 仅在 BW gfx 936 上才编译实际算子
+#ifdef __gfx936__
+
+__device__ inline void mmac_bw_int8(
+                                      const FragA& frag_a,
+                                      const FragB& frag_b,
+                                      FragC& frag_c
+                                    ) {
+    *(reinterpret_cast<intx4*>(&frag_c)) = __builtin_amdgcn_mmac_i32_16x16x32i8(*(reinterpret_cast<const long*>(&frag_a)), *(reinterpret_cast<const long*>(&frag_b)), *(reinterpret_cast<intx4*>(&frag_c)));
+}
+
+// Wait until barrier reaches `count`, then lock for current threadblock.
+__device__ inline void barrier_acquire(int* lock, int count) {
+  if (threadIdx.x == 0) {
+    int state = -1;
+    do
+      state = __atomic_load_n(lock, __ATOMIC_ACQUIRE);
+    while (state != count);
+  }
+  __syncthreads();
+}
+
+// Release barrier and increment visitation count.
+__device__ inline void barrier_release(int* lock, bool reset = false) {
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    if (reset) {
+      lock[0] = 0;
+      return;
+    }
+    int val = 1;
+    atomicAdd(lock, val);
+  }
+}
+
 /*
 template<typename T>
 __device__ __forceinline__ uint32_t cvta_to_shared(const T* ptr) {
@@ -184,6 +219,8 @@ __device__ inline void cp_async_wait_0() {
     "s_barrier;\n"
   );
 }
+
+#endif
 
 }  // namespace marlin
 }

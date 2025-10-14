@@ -108,7 +108,7 @@ namespace marlin_moe_w4a16{
     // #if defined(__gfx936__) || defined(__gfx936__) || defined(__gfx928__)
     //   *(reinterpret_cast<float4_t*>(&frag_c)) = __builtin_amdgcn_mmac_f32_16x16x16f16(*(reinterpret_cast<const half4_t*>(&frag_a)), *(reinterpret_cast<const half4_t*>(&frag_b)), *(reinterpret_cast<float4_t*>(&frag_c)));
     // #endif
-
+#ifdef __gfx936__
     if constexpr (std::is_same<scalar_t, __half>::value) {
       // fp16 computation
       *(reinterpret_cast<float4_t*>(&frag_c)) = __builtin_amdgcn_mmac_f32_16x16x16f16(*(reinterpret_cast<const half4_t*>(&frag_a)), *(reinterpret_cast<const half4_t*>(&frag_b)), *(reinterpret_cast<float4_t*>(&frag_c)));
@@ -142,7 +142,8 @@ namespace marlin_moe_w4a16{
       //     frag_b_f[0], frag_b_f[1], frag_b_f[2], frag_b_f[3],
       //     frag_c[0], frag_c[1], frag_c[2], frag_c[3]
       //   );
-      }
+    }
+#endif
 
     }
 

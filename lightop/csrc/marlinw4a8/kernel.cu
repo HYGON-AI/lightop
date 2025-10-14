@@ -5,38 +5,8 @@ namespace at {
 namespace native {
 namespace marlin_moe_w4a8{
 
-  __device__ inline void mmac_bw_int8(
-                                      const FragA& frag_a,
-                                      const FragB& frag_b,
-                                      FragC& frag_c
-                                    ) {
-    *(reinterpret_cast<intx4*>(&frag_c)) = __builtin_amdgcn_mmac_i32_16x16x32i8(*(reinterpret_cast<const long*>(&frag_a)), *(reinterpret_cast<const long*>(&frag_b)), *(reinterpret_cast<intx4*>(&frag_c)));
-  }
-
-  // Wait until barrier reaches `count`, then lock for current threadblock.
-  __device__ inline void barrier_acquire(int* lock, int count) {
-    if (threadIdx.x == 0) {
-      int state = -1;
-      do
-        state = __atomic_load_n(lock, __ATOMIC_ACQUIRE);
-      while (state != count);
-    }
-    __syncthreads();
-  }
-
-  // Release barrier and increment visitation count.
-  __device__ inline void barrier_release(int* lock, bool reset = false) {
-    __syncthreads();
-    if (threadIdx.x == 0) {
-      if (reset) {
-        lock[0] = 0;
-        return;
-      }
-      int val = 1;
-      atomicAdd(lock, val);
-    }
-  }
-
+// 仅在 BW gfx 936 上才编译实际算子
+#ifdef __gfx936__
   template <
           const int threads,          // number of threads in a threadblock
           const int thread_m_blocks,  // number of 16x16 blocks in the m
@@ -741,6 +711,40 @@ namespace marlin_moe_w4a8{
     } // 结束 while 循环
   }//  结束 Marlin 算子循环
 
+// 其他架构上编译空算子
+#else
+  template <
+          const int threads,          // number of threads in a threadblock
+          const int thread_m_blocks,  // number of 16x16 blocks in the m
+                                      // dimension (batchsize) of the
+                                      // threadblock
+          const int thread_n_blocks,  // same for n dimension (output)
+          const int thread_k_blocks,  // same for k dimension (reduction)
+          const int stages 
+          >
+  __global__ void Marlin(
+    const int4* __restrict__ A,  // fp16 input matrix of shape mxk
+    const float* __restrict__ A_scales,  // 
+    const int4* __restrict__ B,  // 4bit quantized weight matrix of shape kxn
+    const float* __restrict__ B_scales, 
+    int4* __restrict__ C,        // fp16 output buffer of shape mxn
+    const int32_t* __restrict__ sorted_token_ids_ptr,        // moe sorted_ids
+    const int32_t* __restrict__ expert_ids_ptr,              // moe expert ids
+    const int32_t* __restrict__ num_tokens_past_padded_ptr,  // moe num tokens
+    const float* __restrict__ topk_weights_ptr,              // moe top weights
+    int top_k,              // num of experts per token
+    bool mul_topk_weights,  // mul topk weights or not
+    int prob_m,             // batch dimension m
+    int prob_n,             // output dimension n
+    int prob_k,             // reduction dimension k
+    int* locks,             // 用于 全局归约的信号控制
+    int4* C_tmp             // 用于 全局归约的 缓冲区
+  ) {
+
+  }
+#endif 
+
 }// namespace MARLIN_NAMESPACE_NAME
 }
 }
+

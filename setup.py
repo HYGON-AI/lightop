@@ -42,11 +42,12 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
     return flags
 
 def _get_rocm_arch_flags_marlin(cflags: Optional[List[str]] = None) -> List[str]:
-    flags = ['--offload-arch=gfx936']
+    archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
+    flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
     flags +=['--gpu-max-threads-per-block=512']
     flags +=['-mllvm']
     flags +=['-enable-num-vgprs-512=true']
-    flags +=['--save-temps']
+    # flags +=['--save-temps']
     return flags
 
 

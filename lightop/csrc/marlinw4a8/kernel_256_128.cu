@@ -6,7 +6,7 @@ namespace marlin_moe_w4a8{
   /*
     采用顺序分割 条带方式
   */
-
+#ifdef __gfx936__
   template <
           const int threads,          // number of threads in a threadblock
           const int thread_m_blocks,  // number of 16x16 blocks in the m
@@ -605,6 +605,39 @@ namespace marlin_moe_w4a8{
     } // 结束 while 循环
 
   }//  结束 Marlin 算子循环
+
+#else
+    template <
+          const int threads,          // number of threads in a threadblock
+          const int thread_m_blocks,  // number of 16x16 blocks in the m
+                                      // dimension (batchsize) of the
+                                      // threadblock
+          const int thread_n_blocks,  // same for n dimension (output)
+          const int thread_k_blocks,  // same for k dimension (reduction)
+          const int stages 
+          >
+  __global__ void Marlin_256_128(
+    const int4* __restrict__ A,  // fp16 input matrix of shape mxk
+    const float* __restrict__ A_scales,  // 
+    const int4* __restrict__ B,  // 4bit quantized weight matrix of shape kxn
+    const float* __restrict__ B_scales, 
+    int4* __restrict__ C,        // fp16 output buffer of shape mxn
+    const int32_t* __restrict__ sorted_token_ids_ptr,        // moe sorted_ids
+    const int32_t* __restrict__ expert_ids_ptr,              // moe expert ids
+    const int32_t* __restrict__ num_tokens_past_padded_ptr,  // moe num tokens
+    const float* __restrict__ topk_weights_ptr,              // moe top weights
+    int top_k,              // num of experts per token
+    bool mul_topk_weights,  // mul topk weights or not
+    bool is_ep,  // 是否启用 EP
+    int prob_m,             // batch dimension m
+    int prob_n,             // output dimension n
+    int prob_k,             // reduction dimension k
+    int* locks,             // 用于 全局归约的信号控制
+    int4* C_tmp             // 用于 全局归约的 缓冲区
+  ) {
+  }
+
+#endif
 
 }// namespace MARLIN_NAMESPACE_NAME
 }
