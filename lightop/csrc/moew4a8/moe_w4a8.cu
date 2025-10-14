@@ -969,7 +969,8 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
   const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
   const int bidy = blockIdx.y; // pid_n
   const int bidz = blockIdx.x; // pid_k
-  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回
+  if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k) return; // 对于无效的block,直接返回
   constexpr int STAGES = 2; 
   const uint32_t delta_bidx = bidx / delta;
   const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
@@ -1124,7 +1125,8 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
   const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
   const int bidy = blockIdx.y; // pid_n
   const int bidz = blockIdx.x; // pid_k
-  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回
+  if (bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k) return; // 对于无效的block,直接返回
   constexpr int STAGES = 2; 
   const uint32_t delta_bidx = bidx / delta;
   const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
