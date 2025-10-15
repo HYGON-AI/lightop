@@ -175,6 +175,7 @@ void marlin_mm_impl(const void* A, const void* B, void* C, void* s_zp,
 
 }
 
+#ifdef __gfx936__
 torch::Tensor moe_marlin_w4a16(torch::Tensor& a, 
                               std::optional<torch::Tensor> const& c_or_none,
                               torch::Tensor& b_q_weight, 
@@ -313,6 +314,35 @@ torch::Tensor moe_marlin_w4a16(torch::Tensor& a,
 
   return c;
 } // end moe_wna16_marlin_gemm
+
+#else
+torch::Tensor moe_marlin_w4a16(torch::Tensor& a, 
+                              std::optional<torch::Tensor> const& c_or_none,
+                              torch::Tensor& b_q_weight, 
+                              torch::Tensor& b_scale_zeros,
+                              std::optional<torch::Tensor> const& g_idx_or_none,
+                              std::optional<torch::Tensor> const& perm_or_none, 
+                              torch::Tensor& workspace, 
+                              torch::Tensor& sorted_token_ids, 
+                              torch::Tensor& expert_ids,
+                              torch::Tensor& num_tokens_past_padded, 
+                              torch::Tensor& topk_weights,
+                              int64_t moe_block_size, 
+                              int64_t top_k, 
+                              bool mul_topk_weights, 
+                              bool is_ep,
+                              int64_t size_m, 
+                              int64_t size_n,
+                              int64_t size_k, 
+                              bool is_k_full, 
+                              bool use_atomic_add, 
+                              bool use_fp32_reduce,
+                              bool is_zp_float
+                            ) {
+                              TORCH_CHECK_NOT_IMPLEMENTED(false, "marlin w4a16 fused_moe only support gfx936 !!!");
+                              return torch::empty({1, 1});
+                            }
+#endif
 
 // 目前只支持了 uint4 数据的量化
 torch::Tensor awq_marlin_repack(torch::Tensor& b_q_weight, int64_t size_k, int64_t size_n, int64_t num_bits){

@@ -6,7 +6,8 @@ namespace marlin_moe_w4a8{
   /*
     采用顺序分割 条带方式
   */
-
+// 仅在 BW gfx 936 上才编译实际算子
+#ifdef __gfx936__
   template <
           const int threads,          // number of threads in a threadblock
           const int thread_m_blocks,  // number of 16x16 blocks in the m
@@ -28,13 +29,13 @@ namespace marlin_moe_w4a8{
     const float* __restrict__ topk_weights_ptr,              // moe top weights
     int top_k,              // num of experts per token
     bool mul_topk_weights,  // mul topk weights or not
+    bool is_ep,  // 是否启用 EP
     int prob_m,             // batch dimension m
     int prob_n,             // output dimension n
     int prob_k,             // reduction dimension k
     int* locks,             // 用于 全局归约的信号控制
     int4* C_tmp             // 用于 全局归约的 缓冲区
   ) {
-
     extern __shared__ int4 sh[];
   
     constexpr int pack_factor = 8; //  一个int32中有几个 数据被pack
@@ -47,7 +48,17 @@ namespace marlin_moe_w4a8{
     // parallel: 需要计算的专家数 // 167
     int num_tokens_past_padded = num_tokens_past_padded_ptr[0]; // 一共几个token选择
     int parallel = num_tokens_past_padded / moe_block_size; 
-  
+    
+    // ============================= 启用 EP 则要修正 parallel 值 =====================
+    int num_valid_blocks = parallel;
+    if (is_ep) {
+      for (int i = 0; i < parallel; i++) { // 遍历整个专家索引组，获取总的有效专家索引数
+        if (expert_ids_ptr[i] == -1) num_valid_blocks--;
+      }
+    }
+    int num_invalid_blocks = parallel - num_valid_blocks; // 总的无效专家索引数量
+    parallel = num_valid_blocks; // 总的有效专家索引数量
+
     int n_tiles = prob_n / mfma_n / thread_n_blocks; // n 方向 有几个 [128, 128]的数据块 4 
     int k_tiles = prob_k / mfma_k / thread_k_blocks; // k 方向 有几个 [128, 128] 的数据块 56
 
@@ -192,7 +203,7 @@ namespace marlin_moe_w4a8{
         sh_block_sorted_ids_int4[threadIdx.x] = reinterpret_cast<const int4*>(sorted_token_ids_ptr)[block_id * sorted_token_ids_int4_len + threadIdx.x];
       }
       // 等待 sorted_token_ids 全部加载到LDS中
-      S_BARRIER;
+      __syncthreads();
       // 第二步：遍历获取 有效的 索引数
       block_num_valid_tokens = moe_block_size;
       for (int j = 0; j < moe_block_size; j++) {
@@ -222,9 +233,24 @@ namespace marlin_moe_w4a8{
       if (par_id >= parallel) return;
   
       old_expert_id = expert_id;
-
-      block_id = par_id;
-      expert_id = expert_ids_ptr[block_id];
+      // ============================ EP 需要更改 block_id 和 expert_id 的获取逻辑 =====================
+      if(num_invalid_blocks > 0){ // 如果启用EP
+        int skip_count = block_id == -1 ? par_id : 0; // 记录需要跳过的有效专家数，第一次是 par_id 之后都是 0
+        block_id++;
+        for (int i = block_id; i < num_tokens_past_padded / moe_block_size; i++) { // 遍历 所有的专家索引
+          expert_id = expert_ids_ptr[i];
+          if (expert_id != -1) { // 如果当前专家索引是有效的
+            if (skip_count == 0) { // skip_count = 0,说明遍历到了 当前block要处理的专家
+              block_id = i;
+              break;
+            };
+            skip_count--;
+          };
+        }
+      }else{
+        block_id = par_id;
+        expert_id = expert_ids_ptr[block_id];
+      }
   
       B_expert_off = expert_id * prob_n * prob_k / (pack_factor * 4);
 
@@ -292,8 +318,10 @@ namespace marlin_moe_w4a8{
         // load B矩阵
         for (int i = 0; i < b_sh_wr_iters; i++) {
           // // 移动到0号线程的起始地址
-          int b_global_idx = 16 * (B_idx_int[i] + B_expert_off);
-          cp_async4_vgpr(&frag_b_quant[pipe][i], &B[0], b_global_idx);
+          // int b_global_idx = 16 * (B_idx_int[i] + B_expert_off);
+          // cp_async4_vgpr(&frag_b_quant[pipe][i], &B[0], b_global_idx);
+          int b_global_idx = B_idx_int[i] + B_expert_off;
+          cp_async4_vgpr_s128(&frag_b_quant[pipe][i], &B[0], b_global_idx);
           B_idx_int[i] += b_gl_rd_delta_o;
         }
       }
@@ -672,6 +700,40 @@ namespace marlin_moe_w4a8{
     } // 结束 while 循环
 
   }//  结束 Marlin 算子循环
+
+// 其他架构上编译空算子
+#else
+  template <
+          const int threads,          // number of threads in a threadblock
+          const int thread_m_blocks,  // number of 16x16 blocks in the m
+                                      // dimension (batchsize) of the
+                                      // threadblock
+          const int thread_n_blocks,  // same for n dimension (output)
+          const int thread_k_blocks,  // same for k dimension (reduction)
+          const int stages 
+          >
+  __global__ void Marlin_512_64(
+    const int4* __restrict__ A,  // fp16 input matrix of shape mxk
+    const float* __restrict__ A_scales,  // 
+    const int4* __restrict__ B,  // 4bit quantized weight matrix of shape kxn
+    const float* __restrict__ B_scales, 
+    int4* __restrict__ C,        // fp16 output buffer of shape mxn
+    const int32_t* __restrict__ sorted_token_ids_ptr,        // moe sorted_ids
+    const int32_t* __restrict__ expert_ids_ptr,              // moe expert ids
+    const int32_t* __restrict__ num_tokens_past_padded_ptr,  // moe num tokens
+    const float* __restrict__ topk_weights_ptr,              // moe top weights
+    int top_k,              // num of experts per token
+    bool mul_topk_weights,  // mul topk weights or not
+    bool is_ep,  // 是否启用 EP
+    int prob_m,             // batch dimension m
+    int prob_n,             // output dimension n
+    int prob_k,             // reduction dimension k
+    int* locks,             // 用于 全局归约的信号控制
+    int4* C_tmp             // 用于 全局归约的 缓冲区
+  ) {
+  
+  }
+#endif
 
 }// namespace MARLIN_NAMESPACE_NAME
 }

@@ -21,6 +21,17 @@ from lmslim.layers.gemm.int8_utils import (
 def to_int8(tensor: torch.Tensor):
     return torch.round(tensor.clamp(min=-128,max=127)).to(dtype=torch.int8)
 
+@triton.jit
+def write_zeros_to_output(c_ptr, stride_cm, stride_cn, pid_n, N, offs_token,
+                          token_mask, BLOCK_SIZE_M, BLOCK_SIZE_N,
+                          compute_type):
+    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=compute_type)
+    offs_cn = pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
+    c_ptrs = c_ptr + stride_cm * offs_token[:, None] + stride_cn * offs_cn[
+                                                                   None, :]
+    c_mask = token_mask[:, None] & (offs_cn[None, :] < N)
+    tl.store(c_ptrs, accumulator, mask=c_mask)
+    
 def grouped_topk(
     hidden_states: torch.Tensor,
     gating_output: torch.Tensor,
@@ -205,11 +216,19 @@ def fused_moe_kernel_int4_w4a8(
     )
 
     off_experts = tl.load(expert_ids_ptr + pid_m)
+    if off_experts == -1:
+        # -----------------------------------------------------------
+        # Write back zeros to the output when the expert is not
+        # in the current expert parallel rank.
+        write_zeros_to_output(c_ptr, stride_cm, stride_cn, pid_n, N,
+                              offs_token, token_mask, BLOCK_SIZE_M,
+                              BLOCK_SIZE_N, compute_type)
+        return
     offs_bk = tl.arange(0, BLOCK_SIZE_K // 2)
     #NN load copy in register by broadcast
     b_ptrs = (
         b_ptr
-        + off_experts * stride_be
+        + off_experts.to(tl.int64) * stride_be
         #+ (offs_bk[None, :] * stride_bk + offs_bn[:, None] * stride_bn)
         + (offs_bn[:, None] * stride_bn + offs_bk[None, :] * stride_bk)
     )

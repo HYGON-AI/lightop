@@ -249,7 +249,7 @@ class BenchmarkWorker:
 def main(args: argparse.Namespace):
     
     num_experts = 256
-    shard_intermediate_size=512
+    shard_intermediate_size=4096
     hidden_size=7168
     renormalize=True
     topk = 8
@@ -262,7 +262,6 @@ def main(args: argparse.Namespace):
         # batch_sizes = [512, 1024, 2048, 4096, 6144, 8192, 16384]
         # batch_sizes = [4096]
         batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]
-        # batch_sizes = [1024, 2048, 4096, 6144, 8192, 16384]
     else:
         batch_sizes = args.batch_size
 

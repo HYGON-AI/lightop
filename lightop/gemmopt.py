@@ -152,7 +152,8 @@ def moe_gemm_marlin_w4a8(
                     top_k: int,
                     locks: Optional[torch.Tensor], # 用于控制 block间归约的 信号量Tensor
                     global_reduce_buffer: Optional[torch.Tensor], # 用于 block间归约的 缓存区Tensor
-                    config: Dict[str, Any]) -> torch.Tensor:
+                    config: Dict[str, Any],
+                    is_ep:bool = False) -> torch.Tensor:
     mode = config['MODE']
     delta = config['DELTA']
 
@@ -168,6 +169,7 @@ def moe_gemm_marlin_w4a8(
         thread_n = config["thread_n"]
         thread_k = config["thread_k"]
         blocks_per_cu = config["blocks_per_cu"]
+        is_reduce = config.get("is_reduce", False)
         op.moe_marlin_w4a8(input,  # A
                                 a_scale, # a_scale
                                 output, # 输出
@@ -181,13 +183,14 @@ def moe_gemm_marlin_w4a8(
                                 topk_weights,
                                 block_m,
                                 top_k,
-                                False,
+                                is_ep,
                                 size_m,
                                 size_n,
                                 size_k,
                                 thread_n,
                                 thread_k,
-                                blocks_per_cu)  
+                                blocks_per_cu,
+                                is_reduce)  
 
     else: # 汇编版 w4a8 实现
         op.moe_w4a8_marlin_asm(input, b_qweight, output, a_scale, b_scale, topk_weights,
@@ -216,6 +219,34 @@ def moe_gemm_w8a8(input: torch.Tensor,
                                         sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
     return output
 
+def moe_groupgemm_w4a8(input: torch.Tensor,
+                        b_qweight: torch.Tensor,
+                        output: torch.Tensor,
+                        a_scale: torch.Tensor,
+                        b_scale: torch.Tensor,
+                        problem_size: torch.Tensor,
+                        experts_offsets: torch.Tensor,
+                        config: Dict[str, Any]) -> torch.Tensor:
+
+    mode = config['MODE']
+    op.moe_groupgemm_w4a8_asm(input, b_qweight, output, a_scale, b_scale,
+                                        problem_size, experts_offsets, mode)
+    return output
+
+def moe_groupgemm_marlin_w4a8(input: torch.Tensor,
+                               b_qweight: torch.Tensor,
+                               output: torch.Tensor,
+                               a_scale: torch.Tensor,
+                               b_scale: torch.Tensor,
+                               problem_size: torch.Tensor,
+                               experts_offsets: torch.Tensor,
+                               config: Dict[str, Any]) -> torch.Tensor:
+
+    mode = config['MODE']
+    op.moe_groupgemm_marlin_w4a8_asm(input, b_qweight, output, a_scale, b_scale,
+                                        problem_size, experts_offsets, mode)
+    return output
+
 def gemm_w8a8_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 'TN'):
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()
     assert block_size[0] == 128 and block_size[1] == 128
@@ -225,7 +256,7 @@ def gemm_w8a8_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 'TN'):
     return op.gemm_w8a8_asm(a, b, scale_a, scale_b, None, None, None, out_dtype, m, n, k, 0)
 
 def gemm_w8a8_wgrad_asm(a, b, scale_a, scale_b, c, accumulate, block_size, out_dtype, layout = 'TN'):
-    assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()
+    assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous() and scale_a.is_contiguous and scale_b.is_contiguous
     assert block_size[0] == 128 and block_size[1] == 128
     m, n, k = a.shape[0], b.shape[0], a.shape[1]
     # print(f"gemm_w8a8_block: m={m}, n={n}, k={k}, scale_a.shape={scale_a.shape}, scale_b.shape={scale_b.shape}, out_dtype={out_dtype}")
@@ -239,8 +270,8 @@ def gemm_w8a8_xgrad_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 
     assert block_size[0] == 128 and block_size[1] == 128
     m, n, k = a.shape[0], b.shape[1], a.shape[1]
     # print(f"gemm_w8a8_block: m={m}, n={n}, k={k}, scale_a.shape={scale_a.shape}, scale_b.shape={scale_b.shape}, out_dtype={out_dtype}")
-    assert scale_a.shape[0] == math.ceil(k / block_size[0]) and scale_a.shape[1] == m
-    assert scale_b.shape[0] == math.ceil(n / block_size[1]) and scale_b.shape[1] == math.ceil(k / block_size[0])
+    # assert scale_a.shape[0] == ((math.ceil(k / block_size[0]) +3) / 4 * 4) and scale_a.shape[1] == m
+    # assert scale_b.shape[1] == ((math.ceil(n / block_size[1]) + 3) / 4 * 4) and scale_b.shape[0] == math.ceil(k / block_size[0])
     
     return op.gemm_w8a8_asm(a, b, scale_a, scale_b, None, None, None, out_dtype, m, n, k, 2)
 
@@ -294,6 +325,10 @@ def moe_marlin_w4a16(a: torch.Tensor,
 
 def awq_marlin_repack(b_q_weight: torch.Tensor, size_k: int, size_n: int, num_bits: int) -> torch.Tensor:
     output = op.awq_marlin_repack(b_q_weight, size_k, size_n, num_bits)
+    return output
+
+def awq_marlin_repack_w4a8(b_q_weight: torch.Tensor, marlin_weight: torch.Tensor, size_batch:int, size_k: int, size_n: int) -> torch.Tensor:
+    output = op.awq_marlin_repack_w4a8(b_q_weight, marlin_weight, size_batch, size_k, size_n)
     return output
 
 

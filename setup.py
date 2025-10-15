@@ -42,11 +42,12 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
     return flags
 
 def _get_rocm_arch_flags_marlin(cflags: Optional[List[str]] = None) -> List[str]:
-    flags = ['--offload-arch=gfx936']
+    archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
+    flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
     flags +=['--gpu-max-threads-per-block=512']
     flags +=['-mllvm']
     flags +=['-enable-num-vgprs-512=true']
-    flags +=['--save-temps']
+    # flags +=['--save-temps']
     return flags
 
 
@@ -381,8 +382,8 @@ def get_extensions():
                glob.glob('./lightop/csrc/miopen/*.cpp') + glob.glob('./lightop/csrc/softmax/*.cu') + \
                glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + \
                glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
-               glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/miopen/fusion_mode/*.cpp') + \
-               glob.glob('./lightop/csrc/miopen/graph/*.cpp')+ glob.glob('./lightop/csrc/miopen/op/*.cpp')
+               glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu') + \
+               glob.glob('./lightop/csrc/miopen/fusion_mode/*.cpp') + glob.glob('./lightop/csrc/miopen/graph/*.cpp') + glob.glob('./lightop/csrc/miopen/op/*.cpp')
 
     extension = CUDAExtension
     # 添加marlinw4a16目录的包含路径
@@ -402,6 +403,7 @@ def get_extensions():
     include_dirs.append(os.path.abspath('./lightop/csrc/storeKvcache/attention/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/moew4a8/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/blockwise_scaling/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/concat/'))
     rocm_home=_find_rocm_home()
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/hiprand/include')
@@ -445,7 +447,7 @@ setup(
     },
     zip_safe=False,
     install_requires=[
-         f"torch=={_get_pytorch_version()}",
+         "torch",
      ],
 )
 

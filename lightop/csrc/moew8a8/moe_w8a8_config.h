@@ -31,7 +31,9 @@ struct GemmParams {
                uint32_t stride_bsk,
                uint32_t sorted_token_lens,
                uint32_t top_k,
-               uint32_t delta)
+               uint32_t delta,
+               bool is_marlin
+            )
         : ptr_A(ptr_A),
           ptr_B0(ptr_B0),
           ptr_C(ptr_C),
@@ -52,7 +54,8 @@ struct GemmParams {
           stride_bsk(stride_bsk),
           sorted_token_lens(sorted_token_lens),
           top_k(top_k),
-          delta(delta)
+          delta(delta),
+          is_marlin(is_marlin)
          {}
 
     const T* ptr_A;                    // input
@@ -76,6 +79,7 @@ struct GemmParams {
     uint32_t sorted_token_lens;        // sorted token length
     uint32_t top_k;                    // top k
     uint32_t delta;                    // delta
+    bool is_marlin;                    // 是否使用weight重排
 };
 
 ///////////////////////////////////////////////////////////////////////launch_moe_function///////////////////////////////////////////////////////////////////////////////////////
