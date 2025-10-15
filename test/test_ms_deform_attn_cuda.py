@@ -1,11 +1,53 @@
-from lightop import op as ops
 import torch
+import torch.nn.functional as F
 import os
+from lightop import op as ops
 
+
+# ============================================================
+# 纯 PyTorch 参考实现：multi_scale_deformable_attn_pytorch
+# ============================================================
+def multi_scale_deformable_attn_pytorch(value, value_spatial_shapes, sampling_locations, attention_weights):
+    """
+    纯 PyTorch 实现的 Multi-Scale Deformable Attention
+    与 mmcv.ops.multi_scale_deform_attn_pytorch 逻辑完全等价
+    可用于正确性验证
+    """
+    bs, _, num_heads, embed_dim_per_head = value.shape
+    num_levels = value_spatial_shapes.shape[0]
+    num_query = sampling_locations.shape[1]
+    num_points = sampling_locations.shape[-2]
+
+    # 按 level 分割 value
+    value_list = value.split([H_ * W_ for H_, W_ in value_spatial_shapes], dim=1)
+    sampling_grids = 2 * sampling_locations - 1  # [0,1] -> [-1,1]
+
+    output = torch.zeros((bs, num_query, num_heads, embed_dim_per_head),
+                         dtype=value.dtype, device=value.device)
+
+    for lvl, (H_, W_) in enumerate(value_spatial_shapes):
+        value_l = value_list[lvl].reshape(bs, H_, W_, num_heads, embed_dim_per_head)
+        value_l = value_l.permute(0, 3, 4, 1, 2).reshape(bs * num_heads, embed_dim_per_head, H_, W_)
+
+        sampling_grid_l = sampling_grids[:, :, :, lvl].reshape(bs, num_query, num_heads, num_points, 2)
+        sampling_grid_l = sampling_grid_l.permute(0, 2, 1, 3, 4).reshape(bs * num_heads, num_query, num_points, 2)
+
+        sampled_value = F.grid_sample(value_l, sampling_grid_l, mode='bilinear',
+                                      padding_mode='zeros', align_corners=False)
+        sampled_value = sampled_value.permute(0, 2, 3, 1)  # [B*H, C, Q, P] -> [B*H, Q, P, C]
+        sampled_value = sampled_value.reshape(bs, num_heads, num_query, num_points, embed_dim_per_head)
+
+        attn_weight = attention_weights[:, :, :, lvl].reshape(bs, num_query, num_heads, num_points)
+        attn_weight = attn_weight.permute(0, 2, 1, 3).unsqueeze(-1)
+        output += (sampled_value * attn_weight).sum(-2).permute(0, 2, 1, 3)
+
+    return output.reshape(bs, num_query, num_heads * embed_dim_per_head)
+
+
+# ============================================================
+# GPU性能基准测试 + 正确性验证
+# ============================================================
 def benchmark_gpu_timing_and_correctness(num_runs=50):
-    """
-    GPU前向和后向时间测试，以及与PyTorch参考实现比较
-    """
     device = torch.device("cuda")
     B = 2
     H = 8
@@ -88,7 +130,6 @@ def benchmark_gpu_timing_and_correctness(num_runs=50):
     # ==================== 前向正确性对比 ====================
     gpu_output = ops.ms_deform_attn_forward(value, shapes_gpu, level_start_index_gpu,
                                             sampling_locations, attention_weights, im2col_step).detach().cpu()
-    from mmcv.ops.multi_scale_deform_attn import multi_scale_deformable_attn_pytorch
     pytorch_output = multi_scale_deformable_attn_pytorch(
         value.detach().cpu(), value_spatial_shapes, sampling_locations.detach().cpu(),
         attention_weights.detach().cpu()
