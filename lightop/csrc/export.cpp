@@ -154,7 +154,7 @@ void moe_sum(torch::Tensor &input,
              const torch::optional<torch::Tensor> &bias = torch::nullopt ,
              const torch::optional<torch::Tensor> &expert_mask = torch::nullopt ,
              const torch::optional<torch::Tensor> &num_local_tokens = torch::nullopt ,
-             const float factor = 1.f);    
+             const float factor = 1.f,const int expect_m = -1);    
 Tensor ms_deform_attn_cuda_forward(const Tensor &value, const Tensor &spatial_shapes, const Tensor &level_start_index, const Tensor &sampling_loc, const Tensor &attn_weight, const int im2col_step);
 void ms_deform_attn_cuda_backward(const Tensor &value, const Tensor &spatial_shapes, const Tensor &level_start_index, const Tensor &sampling_loc, const Tensor &attn_weight, const Tensor &grad_output, Tensor &grad_value, Tensor &grad_sampling_loc, Tensor &grad_attn_weight, const int im2col_step);
 void mha_norm_rope_qkv_inplace_cuda(at::Tensor qkv, c10::optional<at::Tensor> gamma_q, c10::optional<at::Tensor> beta_q, c10::optional<at::Tensor> gamma_k,c10::optional<at::Tensor> beta_k,at::Tensor cos, at::Tensor sin, double eps);
@@ -251,7 +251,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("bias")  =   torch::nullopt ,
       py::arg("expert_mask") =   torch::nullopt,
       py::arg("num_local_tokens") =   torch::nullopt,
-      py::arg("factor") = 1.0f
+      py::arg("factor") = 1.0f,
+      py::arg("expect_m") = -1
   );
   m.def("moe_align_block_size", &at::native::moe_align_block_size, "moe_align_block_size",
       py::arg("topk_ids"),
