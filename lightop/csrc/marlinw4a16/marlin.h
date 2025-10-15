@@ -79,11 +79,13 @@ __device__ __forceinline__ void cp_async4_pred_a(void* smem_ptr, int m, int k, c
   
   global_addr[2] = mk_value;
   global_addr[3] = 0x00020000;
+#ifdef __gfx936__
   asm volatile(
       "s_mov_b32 m0, %1 \n\t"
       "buffer_load_dwordx4 %0, %2, 0 ,offen  offset:0, lds \n" ::"v"(offset_v),
       "s"(smem_offset), "s"(global_addr)
   :);
+#endif
 }
 
 // 按照pred 的值进行 128bit的 load
@@ -103,12 +105,13 @@ __device__ __forceinline__ void cp_async4_pred(void* smem_ptr, const int4* glob_
     //       "s"(smem_offset), "s"(global_addr)
     //   :);
     // #endif
-
+#ifdef __gfx936__
     asm volatile(
         "s_mov_b32 m0, %1 \n\t"
         "buffer_load_dwordx4 %0, %2, 0 ,offen  offset:0, lds \n" ::"v"(offset_v),
         "s"(smem_offset), "s"(global_addr)
     :);
+#endif
   }
 }
 
@@ -129,11 +132,13 @@ __device__ __forceinline__ void cp_async4(void* smem_ptr, const int4* glob_ptr, 
   //       "s"(smem_offset), "s"(global_addr)
   //   :);
   // #endif
+#ifdef __gfx936__
   asm volatile(
       "s_mov_b32 m0, %1 \n\t"
       "buffer_load_dwordx4 %0, %2, 0 ,offen  offset:0, lds \n" ::"v"(offset_v),
       "s"(smem_offset), "s"(global_addr)
   :);
+#endif
 }
 
 // 从global load 128bit 到 VGPR 中

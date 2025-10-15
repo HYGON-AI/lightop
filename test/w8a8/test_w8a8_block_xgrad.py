@@ -194,14 +194,15 @@ def w8a8_block_int8_linear(
 
     x_scale = x_scale.permute(1, 0).contiguous()
     weight = weight.permute(1, 0).contiguous()
+    weight_scale = weight_scale.permute(1,0).contiguous()
     output = gemm_w8a8_xgrad_asm(
         q_input, weight, x_scale, weight_scale, block_size, out_dtype
     )
     # print("output:", output.shape, output)
     # print("q_input:", q_input.shape)
     # print("weight:", weight.shape)
-    # print("x_scale:", x_scale.shape)
-    # print("weight_scale:", weight_scale.shape)
+    print("x_scale:", x_scale.shape)
+    print("weight_scale:", weight_scale.shape)
 
     if not torch.allclose(output, torch_output, rtol=1e-2, atol=5e-2):
         print("cuda 精度检查不合格！！！") 

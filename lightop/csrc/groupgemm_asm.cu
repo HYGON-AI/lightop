@@ -172,10 +172,14 @@ int _groupgemm_nn_impl(std::vector<torch::Tensor>& a_list,
 
     size_t arg_wgRight_size= gemm_count*sizeof(uint32_t);
     size_t arg_size = gemm_count*sizeof(GPUProb<Ti,To,Tc,Talpha,Tbias>);
+    const uint32_t total_size = arg_wgRight_size + arg_size;
     
-    HIP_CALL(hipSetDevice(device_id));
-    uint8_t* d_argsPtr;
-    HIP_CALL(hipMalloc((void**)&d_argsPtr, arg_wgRight_size + arg_size));
+    auto options = torch::TensorOptions()
+                    .dtype(torch::kUInt8)
+                    .device(a_list[0].device());
+    Tensor argsTensor = torch::empty({total_size}, options);
+
+    uint8_t* d_argsPtr = argsTensor.data_ptr<uint8_t>();
     HIP_CALL(hipMemcpy(d_argsPtr,
                     arg_wgRight.data(),
                     arg_wgRight_size,
@@ -216,7 +220,6 @@ int _groupgemm_nn_impl(std::vector<torch::Tensor>& a_list,
                              localWorkSize[1],               // bdy
                              localWorkSize[2],               // bdz
                              stream});
-    hipFree(d_argsPtr);
     return 0;
 }
 

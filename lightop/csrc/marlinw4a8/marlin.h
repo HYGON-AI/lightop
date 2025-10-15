@@ -63,6 +63,41 @@ static __device__ inline uint16_t f32_to_bf16(float f){
     return u>>16;
 }
 
+// 仅在 BW gfx 936 上才编译实际算子
+#ifdef __gfx936__
+
+__device__ inline void mmac_bw_int8(
+                                      const FragA& frag_a,
+                                      const FragB& frag_b,
+                                      FragC& frag_c
+                                    ) {
+    *(reinterpret_cast<intx4*>(&frag_c)) = __builtin_amdgcn_mmac_i32_16x16x32i8(*(reinterpret_cast<const long*>(&frag_a)), *(reinterpret_cast<const long*>(&frag_b)), *(reinterpret_cast<intx4*>(&frag_c)));
+}
+
+// Wait until barrier reaches `count`, then lock for current threadblock.
+__device__ inline void barrier_acquire(int* lock, int count) {
+  if (threadIdx.x == 0) {
+    int state = -1;
+    do
+      state = __atomic_load_n(lock, __ATOMIC_ACQUIRE);
+    while (state != count);
+  }
+  __syncthreads();
+}
+
+// Release barrier and increment visitation count.
+__device__ inline void barrier_release(int* lock, bool reset = false) {
+  __syncthreads();
+  if (threadIdx.x == 0) {
+    if (reset) {
+      lock[0] = 0;
+      return;
+    }
+    int val = 1;
+    atomicAdd(lock, val);
+  }
+}
+
 /*
 template<typename T>
 __device__ __forceinline__ uint32_t cvta_to_shared(const T* ptr) {
@@ -136,7 +171,6 @@ __device__ __forceinline__ void cp_async4(void* smem_ptr, const int4* glob_ptr, 
 __device__ __forceinline__ void cp_async4_vgpr(I4* dst_vgpr, const int4* glob_ptr, int offset_v) {
 
   intx4_t res;
-
   typedef uint32_t uint32x4_t __attribute__((ext_vector_type(4)));
   uint32x4_t global_addr = {0};
   *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(glob_ptr);
@@ -144,9 +178,8 @@ __device__ __forceinline__ void cp_async4_vgpr(I4* dst_vgpr, const int4* glob_pt
   global_addr[2] = 0x80000000;
   global_addr[3] = 0x00020000; // 0000 0000 0000 0010 0000 0000 0000 0000
   //  000
-
   asm volatile(
-    "buffer_load_dwordx4 %0, %1, %2 ,0 offen\n" 
+    "buffer_load_dwordx4 %0, %1, %2 ,0 offen slc\n" 
     " \n\t" :"=v"(res),
     "+v"(offset_v), "+s"(global_addr)
   );
@@ -156,6 +189,29 @@ __device__ __forceinline__ void cp_async4_vgpr(I4* dst_vgpr, const int4* glob_pt
   *reinterpret_cast<intx4_t*>(dst_vgpr) = res;
 }
 
+// 步长设置为 128bit从而避免 * 16 从global load 128bit 到 VGPR 中
+__device__ __forceinline__ void cp_async4_vgpr_s128(I4* dst_vgpr, const int4* glob_ptr, int offset_v) {
+
+  intx4_t res;
+  typedef uint32_t uint32x4_t __attribute__((ext_vector_type(4)));
+  uint32x4_t global_addr = {0};
+  *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(glob_ptr);
+  global_addr[1] += 0x00100000; // 128bit的步长，并且启用idxen的地址计算模式
+  global_addr[2] = 0x80000000;
+  global_addr[3] = 0x00020000; // 0000 0000 0000 0010 0000 0000 0000 0000
+  //  000
+  asm volatile(
+    "buffer_load_dwordx4 %0, %1, %2 ,0 idxen\n" 
+    " \n\t" :"=v"(res),
+    "+v"(offset_v), "+s"(global_addr)
+  );
+
+  // res = __builtin_amdgcn_buffer_load_dwordx4(global_addr, 0, offset_v, false, false);
+
+  *reinterpret_cast<intx4_t*>(dst_vgpr) = res;
+}
+
+
 __device__ inline void cp_async_wait_0() {
   // asm volatile("s_waitcnt vmcnt(0);");
   asm volatile(
@@ -163,6 +219,8 @@ __device__ inline void cp_async_wait_0() {
     "s_barrier;\n"
   );
 }
+
+#endif
 
 }  // namespace marlin
 }

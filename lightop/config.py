@@ -245,6 +245,8 @@ def get_moe_cuda_marlin_config_w4a8(
     dtype: Optional[str],
     block_n: Optional[int] = None,
     block_k: Optional[int] = None,
+    is_ep: Optional[bool] = False,
+    ep_size: Optional[int] = 8
 ) -> Optional[dict[int, Any]]:
     """
     Return optimized configurations for the fused MoE kernel.
@@ -258,6 +260,9 @@ def get_moe_cuda_marlin_config_w4a8(
     # First look up if an optimized configuration is available in the configs
     # directory
     gemm1_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_{N1}_{K1}_{device_name}_{num_cus}.json"
+    if is_ep:
+        gemm1_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_EP{ep_size}_{N1}_{K1}_{device_name}_{num_cus}.json"
+
     gemm1_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
     
@@ -286,6 +291,9 @@ def get_moe_cuda_marlin_config_w4a8(
         gemm1_config = {}
     
     gemm2_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_{N2}_{K2}_{device_name}_{num_cus}.json"
+    if is_ep:
+        gemm2_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_EP{ep_size}_{N2}_{K2}_{device_name}_{num_cus}.json"
+
     gemm2_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
     try:
@@ -335,4 +343,76 @@ def get_moe_cuda_marlin_config_w4a8(
         "MODE": 0,
         "BLOCK_SIZE_M": 16,
     }
+    return gemm1_config, gemm2_config, status
+
+# Adapted from: https://github.com/sgl-project/sglang/pull/2628
+@functools.lru_cache
+def get_moe_groupgemm_config_w4a8(
+    E: int,
+    M: int,
+    N1: int,
+    K1: int,
+    N2: int,
+    K2: int,
+    device_name: str,
+    num_cus: str,
+    dtype: Optional[str],
+    block_n: Optional[int] = None,
+    block_k: Optional[int] = None,
+) -> Optional[dict[int, Any]]:
+    """
+    Return optimized configurations for the fused MoE kernel.
+
+    The return value will be a dictionary that maps an irregular grid of
+    batch sizes to configurations of the fused_moe kernel. To evaluate the
+    kernel on a given batch size bs, the closest batch size in the grid should
+    be picked and the associated configuration chosen to invoke the kernel.
+    """
+
+    # First look up if an optimized configuration is available in the configs
+    # directory  
+    gemm1_config = {
+        "MODE": 1000,
+    }
+    gemm2_config = {
+        "MODE": 1000,
+    }
+    status = True
+    
+    return gemm1_config, gemm2_config, status
+
+# Adapted from: https://github.com/sgl-project/sglang/pull/2628
+@functools.lru_cache
+def get_moe_groupgemm_marlin_config_w4a8(
+    E: int,
+    M: int,
+    N1: int,
+    K1: int,
+    N2: int,
+    K2: int,
+    device_name: str,
+    num_cus: str,
+    dtype: Optional[str],
+    block_n: Optional[int] = None,
+    block_k: Optional[int] = None,
+) -> Optional[dict[int, Any]]:
+    """
+    Return optimized configurations for the fused MoE kernel.
+
+    The return value will be a dictionary that maps an irregular grid of
+    batch sizes to configurations of the fused_moe kernel. To evaluate the
+    kernel on a given batch size bs, the closest batch size in the grid should
+    be picked and the associated configuration chosen to invoke the kernel.
+    """
+
+    # First look up if an optimized configuration is available in the configs
+    # directory  
+    gemm1_config = {
+        "MODE": 1000,
+    }
+    gemm2_config = {
+        "MODE": 1000,
+    }
+    status = True
+    
     return gemm1_config, gemm2_config, status

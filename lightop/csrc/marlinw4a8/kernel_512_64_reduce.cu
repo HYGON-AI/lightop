@@ -1,42 +1,13 @@
 #include "marlin.h"
 
-
 namespace at {
 namespace native {
 namespace marlin_moe_w4a8{
-
-  __device__ inline void mmac_bw_int8(
-                                      const FragA& frag_a,
-                                      const FragB& frag_b,
-                                      FragC& frag_c
-                                    ) {
-    *(reinterpret_cast<intx4*>(&frag_c)) = __builtin_amdgcn_mmac_i32_16x16x32i8(*(reinterpret_cast<const long*>(&frag_a)), *(reinterpret_cast<const long*>(&frag_b)), *(reinterpret_cast<intx4*>(&frag_c)));
-  }
-
-  // Wait until barrier reaches `count`, then lock for current threadblock.
-  __device__ inline void barrier_acquire(int* lock, int count) {
-    if (threadIdx.x == 0) {
-      int state = -1;
-      do
-        state = __atomic_load_n(lock, __ATOMIC_ACQUIRE);
-      while (state != count);
-    }
-    __syncthreads();
-  }
-
-  // Release barrier and increment visitation count.
-  __device__ inline void barrier_release(int* lock, bool reset = false) {
-    __syncthreads();
-    if (threadIdx.x == 0) {
-      if (reset) {
-        lock[0] = 0;
-        return;
-      }
-      int val = 1;
-      atomicAdd(lock, val);
-    }
-  }
-
+  /*
+      采用原版marlin 启用 reduce的实现
+  */
+// 仅在 BW gfx 936 上才编译实际算子
+#ifdef __gfx936__
   template <
           const int threads,          // number of threads in a threadblock
           const int thread_m_blocks,  // number of 16x16 blocks in the m
@@ -46,7 +17,7 @@ namespace marlin_moe_w4a8{
           const int thread_k_blocks,  // same for k dimension (reduction)
           const int stages 
           >
-  __global__ void Marlin(
+  __global__ void Marlin_512_64_reduce(
     const int4* __restrict__ A,  // fp16 input matrix of shape mxk
     const float* __restrict__ A_scales,  // 
     const int4* __restrict__ B,  // 4bit quantized weight matrix of shape kxn
@@ -58,13 +29,13 @@ namespace marlin_moe_w4a8{
     const float* __restrict__ topk_weights_ptr,              // moe top weights
     int top_k,              // num of experts per token
     bool mul_topk_weights,  // mul topk weights or not
+    bool is_ep,  // 是否启用 EP
     int prob_m,             // batch dimension m
     int prob_n,             // output dimension n
     int prob_k,             // reduction dimension k
     int* locks,             // 用于 全局归约的信号控制
     int4* C_tmp             // 用于 全局归约的 缓冲区
   ) {
-
     extern __shared__ int4 sh[];
   
     constexpr int pack_factor = 8; //  一个int32中有几个 数据被pack
@@ -77,7 +48,17 @@ namespace marlin_moe_w4a8{
     // parallel: 需要计算的专家数 // 167
     int num_tokens_past_padded = num_tokens_past_padded_ptr[0]; // 一共几个token选择
     int parallel = num_tokens_past_padded / moe_block_size; 
-  
+    
+    // ============================= 启用 EP 则要修正 parallel 值 =====================
+    int num_valid_blocks = parallel;
+    if (is_ep) {
+      for (int i = 0; i < parallel; i++) { // 遍历整个专家索引组，获取总的有效专家索引数
+        if (expert_ids_ptr[i] == -1) num_valid_blocks--;
+      }
+    }
+    int num_invalid_blocks = parallel - num_valid_blocks; // 总的无效专家索引数量
+    parallel = num_valid_blocks; // 总的有效专家索引数量
+
     int n_tiles = prob_n / mfma_n / thread_n_blocks; // n 方向 有几个 [128, 128]的数据块 4 
     int k_tiles = prob_k / mfma_k / thread_k_blocks; // k 方向 有几个 [128, 128] 的数据块 56
 
@@ -125,55 +106,6 @@ namespace marlin_moe_w4a8{
       locks_off = (iters * blockIdx.x) / k_tiles - 1;
     }
 
-    // sh_block_sorted_ids_int4 sh_block_topk_weights 赋值
-    auto read_moe_block_data = [&](int block_id) {
-      block_num_valid_tokens = moe_block_size;
-      for (int i = 0; i < moe_block_size / 4; i++) {
-        int4 sorted_token_ids_int4 = reinterpret_cast<const int4*>(
-            sorted_token_ids_ptr)[block_id * moe_block_size / 4 + i];
-        int* sorted_token_ids = reinterpret_cast<int*>(&sorted_token_ids_int4);
-        for (int j = 0; j < 4; j++) {
-          if (sorted_token_ids[j] >= prob_m * top_k) {
-            block_num_valid_tokens = i * 4 + j;
-            break;
-          }
-        }
-        if (block_num_valid_tokens != moe_block_size) break;
-      }
-  
-      __syncthreads();
-      // 将 sorted_ids 加载到 LDS中
-      int tid4 = threadIdx.x / 4;
-      if (threadIdx.x % 4 == 0 && threadIdx.x < block_num_valid_tokens) {
-        sh_block_sorted_ids_int4[tid4] = reinterpret_cast<const int4*>(sorted_token_ids_ptr)[block_id * moe_block_size / 4 + tid4];
-      }
-      // 将 topk_weight 加载到 LDS中, block_num_valid_tokens 个线程把 topk_weight 数据加载到 LDS 中
-      if (mul_topk_weights && (threadIdx.x < block_num_valid_tokens)) {
-        sh_block_topk_weights[threadIdx.x] = topk_weights_ptr[sh_block_sorted_ids[threadIdx.x]]; 
-      }
-
-      __syncthreads();
-    };
-  
-    // 计算 B_expert_off ： 当前专家权重的全局偏移,指向 该专家权重的 （0, 0）处
-    // 更新 sh_block_sorted_ids_int4 中的值
-    // 更新 sh_block_topk_weights 中的值
-    auto update_next_moe_block_data = [&]() {
-      if (par_id >= parallel) return;
-  
-      old_expert_id = expert_id;
-
-      block_id = par_id;
-      expert_id = expert_ids_ptr[block_id];
-  
-      B_expert_off = expert_id * prob_n * prob_k / (pack_factor * 4);
-
-      // 增加 a_scale 和  b_scale的偏移
-      B_scale_off = expert_id * prob_n;
-      
-      read_moe_block_data(block_id);
-    };
-
     // A sizes/strides
     int a_gl_stride = prob_k / 16; // int4 7168(uint8) --> 448(int4) 16个int8数据类型组成一个 int4 数据类型
     constexpr int a_sh_stride = mfma_k * thread_k_blocks / 16; // int4 8
@@ -196,18 +128,18 @@ namespace marlin_moe_w4a8{
    
     // B sizes/strides
     int b_gl_stride = 32 * prob_n / pack_factor / 4; // 512 int4 全局B矩阵 一行的步长
-    constexpr int b_sh_stride = (thread_n_blocks * 16) * 32 / pack_factor / 4;  // 128 int4 lds中B矩阵一行的步长
+    constexpr int b_sh_stride = (thread_n_blocks * 16) * 32 / pack_factor / 4;  // 256 int4 lds中B矩阵一行的步长
 
-    constexpr int b_sh_stride_threads = b_sh_stride; // 128 lds中 B矩阵一行需要多少线程读取
+    constexpr int b_sh_stride_threads = b_sh_stride; // 256 lds中 B矩阵一行需要多少线程读取
 
     int b_gl_rd_delta_o = b_gl_stride * thread_k_blocks; // b_gl_stride * 4   B矩阵跨数据块的偏移
     int b_gl_rd_delta_i = b_gl_stride * (threads / b_sh_stride_threads); //  b_gl_stride * 2  B矩阵内部两次load的偏移
 
-    constexpr int b_sh_wr_delta = threads; // 256
-    constexpr int b_sh_rd_delta = threads; // 256
+    constexpr int b_sh_wr_delta = threads; // 512
+    constexpr int b_sh_rd_delta = threads; // 512
 
-    constexpr int b_sh_stage = b_sh_stride * thread_k_blocks; // b_sh_stride * 4   lds中B矩阵的大小 int4
-    constexpr int b_sh_wr_iters = b_sh_stage / b_sh_wr_delta; // 2 B矩阵需要256个线程load 两次才能load完成
+    constexpr int b_sh_stage = b_sh_stride * thread_k_blocks; // b_sh_stride * 4   lds中B矩阵的大小 int4 256 * 4
+    constexpr int b_sh_wr_iters = b_sh_stage / b_sh_wr_delta; // 2 B矩阵需要 512 个线程load 两次才能load完成
 
     // Global A read index of current thread. 64bit
     int row = threadIdx.x / a_gl_rd_delta_o;
@@ -254,22 +186,18 @@ namespace marlin_moe_w4a8{
     for (int i = 0; i < b_sh_wr_iters; i++)
       B_idx_int[i] = b_gl_rd_delta_i * i + b_gl_rd;
 
-    // a_scale 和 b_scale 需要和 sh_red 进行隔离，因为要互相遮掩
-    int4* sh_a_scale = sh_new;
-    int4* sh_b_scale = sh_a_scale + 0;
     // Shared memory storage for global fetch pipelines.
-    int4* sh_a = sh_b_scale + 0;
-
+    int4* sh_a = sh_new;
     // 用来进行 block内的规约
     int4* sh_red = sh_a;
     
+    // 将每个线程load A 矩阵的行索引存储在寄存器中，避免每次执行任务块前都在 LDS 中load
+    int32_t load_a_row_idx[a_sh_wr_iters];
+
     FragA frag_a[2][thread_m_blocks]; // Vec<int8_t, 8>;   frag_a[2][1]
+    FragB frag_b_mmac[4];
     I4 frag_b_quant[stages][b_sh_wr_iters]; // I4 = Vec<int, 4>;   frag_b_quant[2][2]
     FragC frag_c[thread_m_blocks][4]; // FragC = Vec<int32_t, 4>; 存储每个线程 mmac 计算之后的结果
-    FragC_fp32 frag_c_fp32[thread_m_blocks][4]; // FragC = Vec<int32_t, 4>; 存储每个线程 mmac 计算之后的结果
-
-    FragS_CHANNEL frag_s1[thread_m_blocks]; // A_scale
-    FragS_CHANNEL frag_s2[2][4];  // B_scale
 
     // Zero accumulators.
     auto zero_accums = [&]() {
@@ -277,15 +205,73 @@ namespace marlin_moe_w4a8{
         reinterpret_cast<int*>(frag_c)[i] = 0;
     };
 
-    // 根据 slice_col_par 、slice_row
-    //      更新 slice_iters
-    //      更新 slice_count、slice_idx
-    //      slice_col、par_id
-    //      B_expert_off
-    //      scales_ptr 和 zp_ptr 指针指向当前的起始位置
-    //      sh_block_sorted_ids_int4、sh_block_topk_weights
-    //      新增 获取当前条带中 每个线程 发射 buffer_load_dwordx4的指令条数  
-    auto init_slice = [&](bool first_init = false) {
+    constexpr int sorted_token_ids_int4_len = moe_block_size / 4;
+    // 重构更新逻辑
+    auto read_moe_block_data = [&](int block_id) {
+      // 第一步：128bit 带宽加载 sort_token_ids 的数据到 LDS 中
+      if (threadIdx.x < sorted_token_ids_int4_len) {
+        sh_block_sorted_ids_int4[threadIdx.x] = reinterpret_cast<const int4*>(sorted_token_ids_ptr)[block_id * sorted_token_ids_int4_len + threadIdx.x];
+      }
+      // 等待 sorted_token_ids 全部加载到LDS中
+      __syncthreads();
+      // 第二步：遍历获取 有效的 索引数
+      block_num_valid_tokens = moe_block_size;
+      for (int j = 0; j < moe_block_size; j++) {
+        // 遍历到第一个 不合法的索引，记录到 block_num_valid_tokens 中后返回
+        if (sh_block_sorted_ids[j] >= prob_m * top_k) {
+          block_num_valid_tokens = j;
+          break;
+        }
+      }
+      // 将每个线程需要 全局内存中 load 的行索引提前load到寄存器中，并只在 跳转专家矩阵时更新
+      for(int ii=0;ii < a_sh_wr_iters;ii++){
+        int block_idx = std::min((block_num_valid_tokens - 1), (threadIdx.x / a_gl_rd_delta_o  + (threads / a_gl_rd_delta_o) * ii));
+        load_a_row_idx[ii] = (sh_block_sorted_ids[block_idx] / top_k) * a_gl_stride * 16;
+      }
+      // 将 topk_weight 加载到 LDS中, block_num_valid_tokens 个线程把 topk_weight 数据加载到 LDS 中
+      if (mul_topk_weights && (threadIdx.x < block_num_valid_tokens)) {
+        sh_block_topk_weights[threadIdx.x] = topk_weights_ptr[sh_block_sorted_ids[threadIdx.x]]; 
+      }
+    };
+  
+    // 更新 B_expert_off ： 当前专家权重的全局偏移,指向 该专家权重的 （0, 0）处
+    // 更新 B_scale_off
+    // read_moe_block_data
+    //        更新 sh_block_sorted_ids_int4 中的值
+    //        更新 sh_block_topk_weights 中的值
+    auto update_next_moe_block_data = [&]() {
+      if (par_id >= parallel) return;
+  
+      old_expert_id = expert_id;
+      // ============================ EP 需要更改 block_id 和 expert_id 的获取逻辑 =====================
+      if(num_invalid_blocks > 0){ // 如果启用EP
+        int skip_count = block_id == -1 ? par_id : 0; // 记录需要跳过的有效专家数，第一次是 par_id 之后都是 0
+        block_id++;
+        for (int i = block_id; i < num_tokens_past_padded / moe_block_size; i++) { // 遍历 所有的专家索引
+          expert_id = expert_ids_ptr[i];
+          if (expert_id != -1) { // 如果当前专家索引是有效的
+            if (skip_count == 0) { // skip_count = 0,说明遍历到了 当前block要处理的专家
+              block_id = i;
+              break;
+            };
+            skip_count--;
+          };
+        }
+      }else{
+        block_id = par_id;
+        expert_id = expert_ids_ptr[block_id];
+      }
+  
+      B_expert_off = expert_id * prob_n * prob_k / (pack_factor * 4);
+
+      // 增加 a_scale 和  b_scale的偏移
+      B_scale_off = expert_id * prob_n;
+      
+      read_moe_block_data(block_id);
+    };
+
+    // 更新 slice_col，并选择性更新 slice_col、par_id、B_expert_off、B_scale_offsh_block_sorted_ids_int4、sh_block_topk_weights
+    auto init_slice = [&]() {
       slice_iters = // 当前 block还需 处理的总 [128, 128] 数据块数   468 - 56 = 412
           iters * (blockIdx.x + 1) - (k_tiles * slice_col_par + slice_row);
       // 不符合要求的 slice_iters 置为零
@@ -335,24 +321,23 @@ namespace marlin_moe_w4a8{
         par_id++;
         update_next_moe_block_data();
       }
-
     };
 
+    // 更新第一个条带的 B_expert_off、B_scale_off、sh_block_sorted_ids_int4、sh_block_topk_weights
     update_next_moe_block_data();
-    init_slice(true);
+    init_slice();
 
     int warp_a_idx = a_sh_stride * ((threadIdx.x / 64) * (64 / a_gl_rd_delta_o));
     auto fetch_to_shared = [&](int pipe, int a_off, bool pred = true) {
       if (pred){
-        // load [16, 128](uint8) ==> [16， 8]（int4） 
-        int4* sh_a_stage = sh_a + a_sh_stage * pipe; 
+        // 避免从 LDS从加载 sorted_ids 
+        int4* sh_a_stage = sh_a + a_sh_stage * pipe;
         for (int i = 0; i < a_sh_wr_iters; i++) {
           int row = a_gl_rd_row + (threads / a_gl_rd_delta_o) * i;
           int col = a_gl_rd_col + a_gl_rd_delta_o * a_off;
-
-          int sorted_row = sh_block_sorted_ids[row] / top_k; // 213 / 8 --> 26
+          int cur_row_offset_bytes = load_a_row_idx[i];
           // 获取A矩阵的实际偏移 128bit  
-          int true_idx = 16 * (sorted_row * a_gl_stride + col);
+          int true_idx = cur_row_offset_bytes + 16 * col;
           sh_a_stage = sh_a_stage + threads * i; // 行索引已经提前
           // 通过 read_a 判断是否进行 load
           bool read_a = (row < block_num_valid_tokens);
@@ -361,9 +346,11 @@ namespace marlin_moe_w4a8{
 
         // load B矩阵
         for (int i = 0; i < b_sh_wr_iters; i++) {
-          // 移动到0号线程的起始地址
-          int b_global_idx = 16 * (B_idx_int[i] + B_expert_off);
-          cp_async4_vgpr(&frag_b_quant[pipe][i], &B[0], b_global_idx);
+          // // 移动到0号线程的起始地址
+          // int b_global_idx = 16 * (B_idx_int[i] + B_expert_off);
+          // cp_async4_vgpr(&frag_b_quant[pipe][i], &B[0], b_global_idx);
+          int b_global_idx = B_idx_int[i] + B_expert_off;
+          cp_async4_vgpr_s128(&frag_b_quant[pipe][i], &B[0], b_global_idx);
           B_idx_int[i] += b_gl_rd_delta_o;
         }
       }
@@ -371,28 +358,22 @@ namespace marlin_moe_w4a8{
 
     // 从 [16, 128]的 lds A中拷贝 每个线程需要的 A矩阵 数据 
     auto fetch_a_to_registers = [&](int k, int pipe) {
-      int4* sh_a_stage = sh_a + a_sh_stage*pipe;
+      int4* sh_a_stage = sh_a + a_sh_stage * pipe;
       // 强转成 FragA类型指针  FragA: Vec<int8_t, 8>
       FragA* sh_a_stage_fraga = reinterpret_cast<FragA*>(sh_a_stage);
       for (int i = 0; i < thread_m_blocks; i++){
         // 读取预先计算的 偏移 然后去读取
-        frag_a[k % 2][i] = sh_a_stage_fraga[a_sh_rd_trans[k % b_sh_wr_iters][i]];
+        frag_a[k][i] = sh_a_stage_fraga[a_sh_rd_trans[k][i]];
       }
     };
 
-    auto matmul = [&](int k, int b_com_pipe) { // 0, 1 代表当前在第几个 [16, 128]块上执行计算
-      int k2 = k % 2; // 0, 1 当前使用 双缓冲区的那一块缓冲区
+    // 执行拆解
+    auto prepare_frag_b = [&](int k, int b_com_pipe) { // 0, 1 代表当前在第几个 [16, 128]块上执行计算
       // 在 [32, 64]的四个 [32, 16] 数据块上逐个计算
       for (int j = 0; j < 4; j++) { 
-      // for (int j = 0; j < 1; j++) { 
-        //  左矩阵: [16, 32] 右矩阵：[32, 16]
-
-        // 存储该次 mmac计算中 B矩阵参与运算的 8个 int8数据
-        FragB frag_b; // FragB: Vec<int8_t, 8>  一次mmac中 B矩阵的8个int8类型数据
-
         int b_quant_0, b_quant_1;
         // 取 第 j 次 [32, 16]计算中8个uint4 B矩阵 pack成int32的数据
-        b_quant_0 = frag_b_quant[b_com_pipe][k2][j];
+        b_quant_0 = frag_b_quant[b_com_pipe][k][j];
         b_quant_1 = b_quant_0 << 4;
         // 0 1 2 3 位置的 int8 数据
         int first_val = b_quant_0 & 0xf0f0f0f0; // 保留高 4位
@@ -400,32 +381,24 @@ namespace marlin_moe_w4a8{
         int second_val = b_quant_1 & 0xf0f0f0f0; // 保留高四位
 
         // 强制类型转换为 int32_t 指针（8 字节 → 2 × int32_t）
-        int32_t* frag_b_int32_ptr = reinterpret_cast<int32_t*>(&frag_b);
-
-        // 进行填充
+        int32_t* frag_b_int32_ptr = reinterpret_cast<int32_t*>(&frag_b_mmac[j]);
         frag_b_int32_ptr[0] = first_val;
         frag_b_int32_ptr[1] = second_val;
+      }
+    };
 
-        // if(blockIdx.x==0){
-        //   // 每个线程将 拆解出来的 8个int8数据写回，以进行正确性判断
-        //   debug_b_1[threadIdx.x * 32 + j * 8 + 0] = frag_b[0];
-        //   debug_b_1[threadIdx.x * 32 + j * 8 + 1] = frag_b[1];
-        //   debug_b_1[threadIdx.x * 32 + j * 8 + 2] = frag_b[2];
-        //   debug_b_1[threadIdx.x * 32 + j * 8 + 3] = frag_b[3];
-        //   debug_b_1[threadIdx.x * 32 + j * 8 + 4] = frag_b[4];
-        //   debug_b_1[threadIdx.x * 32 + j * 8 + 5] = frag_b[5];
-        //   debug_b_1[threadIdx.x * 32 + j * 8 + 6] = frag_b[6];
-        //   debug_b_1[threadIdx.x * 32 + j * 8 + 7] = frag_b[7];
-        // }
-
+    // 只执行计算
+    auto matmul = [&](int k, int b_com_pipe) { // 0, 1 代表当前在第几个 [16, 128]块上执行计算
+      // 在 [32, 64]的四个 [32, 16] 数据块上逐个计算
+      for (int j = 0; j < 4; j++) { 
         // A矩阵数据 和 拆解出来的B矩阵数据 进行mmac运算
         for (int i = 0; i < thread_m_blocks; i++) {
-          mmac_bw_int8(frag_a[k2][i], frag_b, frag_c[i][j]);
+          mmac_bw_int8(frag_a[k][i], frag_b_mmac[j], frag_c[i][j]);
         }
 
       }
     };
-
+    
     // block内归约函数
     auto thread_block_reduce = [&]() {
       //  2  需要进行几次 规约操作
@@ -467,7 +440,7 @@ namespace marlin_moe_w4a8{
                 sh_red[red_sh_wr] = reinterpret_cast<int4*>(&frag_c)[4 * m_block + j];
               }
             }
-            __syncthreads();
+            S_BARRIER;
           }
           // warp 0 先读取 red_sh_rd 位置的数据，然后加到 自己持有的frag_c 寄存器中
           if (red_idx == 0) {
@@ -479,7 +452,7 @@ namespace marlin_moe_w4a8{
               frag_c[m_block][i][3] += add_data.w;
             }
           }
-          __syncthreads();
+          S_BARRIER;
         }
       }
     };
@@ -560,12 +533,17 @@ namespace marlin_moe_w4a8{
       constexpr int c_sh_rd_delta = c_sh_stride * (threads / (2 * thread_n_blocks));
 
       // 写回之前，先乘 a_scale 和 b_scale
-      auto write = [&](int idx, float c_fp32, int b_scale_idx) { // 在 sh_red 的 idx 索引处插入 float转成的 fp16
+      auto write = [&](int idx, int c_int32, float top_weight_val, float a_scale, int b_scale_idx) { // 在 sh_red 的 idx 索引处插入 float转成的 fp16
         // 先 load B_scale 到 vgpr 中
         int cur_b_scale_idx =  B_scale_off + slice_col * (thread_n_blocks * 16) + b_scale_idx;
         float b_scale = B_scales[cur_b_scale_idx];
         // 反量化
-        float c_float =  c_fp32 * b_scale;
+        float c_float;
+        if(mul_topk_weights){
+          c_float =  c_int32 * top_weight_val * a_scale * b_scale;
+        }else{
+          c_float =  c_int32 * a_scale * b_scale;
+        }
         // 转成 bf16
         ((bhalf_t*)sh_red)[idx] = f32_to_bf16(c_float);
       };
@@ -591,27 +569,16 @@ namespace marlin_moe_w4a8{
         // 处理 B矩阵第一行数据的warp将 结果寄存器中的数据写入 lds中
         if (threadIdx.x / 64 < thread_n_blocks / 4) {
           // a_scale的话 同个线程中使用同一个a_scale，所以提前 load 到寄存器中进行复用
+          float topk_weight_val = 1.0;
           float cur_a_scale_val = 0.0;
           int cur_a_scale_idx = b_blocks_idx * 16 + threadIdx.x % 16;
           if(cur_a_scale_idx < block_num_valid_tokens){
             int cur_a_scale_idx_0 = sh_block_sorted_ids[cur_a_scale_idx] / top_k;
             cur_a_scale_val = A_scales[cur_a_scale_idx_0];
             // gemm2 先乘 topk_weight 
+            
             if(mul_topk_weights){
-              float topk_weight_val = sh_block_topk_weights[cur_a_scale_idx];
-              for (int i = 0; i < 4; i++){
-                frag_c_fp32[b_blocks_idx][i][0] = frag_c[b_blocks_idx][i][0] * topk_weight_val * cur_a_scale_val;
-                frag_c_fp32[b_blocks_idx][i][1] = frag_c[b_blocks_idx][i][1] * topk_weight_val * cur_a_scale_val;
-                frag_c_fp32[b_blocks_idx][i][2] = frag_c[b_blocks_idx][i][2] * topk_weight_val * cur_a_scale_val;
-                frag_c_fp32[b_blocks_idx][i][3] = frag_c[b_blocks_idx][i][3] * topk_weight_val * cur_a_scale_val;
-              }
-            }else{
-              for (int i = 0; i < 4; i++){
-                frag_c_fp32[b_blocks_idx][i][0] = frag_c[b_blocks_idx][i][0] * cur_a_scale_val;
-                frag_c_fp32[b_blocks_idx][i][1] = frag_c[b_blocks_idx][i][1] * cur_a_scale_val;
-                frag_c_fp32[b_blocks_idx][i][2] = frag_c[b_blocks_idx][i][2] * cur_a_scale_val;
-                frag_c_fp32[b_blocks_idx][i][3] = frag_c[b_blocks_idx][i][3] * cur_a_scale_val;
-              } 
+              topk_weight_val = sh_block_topk_weights[cur_a_scale_idx];
             }
           }
 
@@ -622,10 +589,10 @@ namespace marlin_moe_w4a8{
             int wr = c_sh_wr + j;
             int cur_b_scale_idx = b_scale_idx_base + j;
           
-            write(wr +  0, frag_c_fp32[b_blocks_idx][j][0], cur_b_scale_idx +  0);
-            write(wr + 16, frag_c_fp32[b_blocks_idx][j][1], cur_b_scale_idx + 16);
-            write(wr + 32, frag_c_fp32[b_blocks_idx][j][2], cur_b_scale_idx + 32);
-            write(wr + 48, frag_c_fp32[b_blocks_idx][j][3], cur_b_scale_idx + 48); 
+            write(wr +  0, frag_c[b_blocks_idx][j][0], topk_weight_val, cur_a_scale_val, cur_b_scale_idx +  0);
+            write(wr + 16, frag_c[b_blocks_idx][j][1], topk_weight_val, cur_a_scale_val, cur_b_scale_idx + 16);
+            write(wr + 32, frag_c[b_blocks_idx][j][2], topk_weight_val, cur_a_scale_val, cur_b_scale_idx + 32);
+            write(wr + 48, frag_c[b_blocks_idx][j][3], topk_weight_val, cur_a_scale_val, cur_b_scale_idx + 48); 
           }
         }
         __syncthreads();
@@ -646,7 +613,7 @@ namespace marlin_moe_w4a8{
       }
     }; // 完成结果回写
 
-    // =============================== 流水计算的整体代码 ========================
+    // // =============================== 流水计算的整体代码 ========================
     // 启动 全局预取 和 寄存器流水
     auto start_pipes = [&]() {
       // 发射 一组global ==> lds的指令
@@ -666,21 +633,30 @@ namespace marlin_moe_w4a8{
       // 遍历 两级流水
       for (int pipe = 0; pipe < stages;pipe++) { // 遍历 2 段流水
         // 等待当前执行数据块的数据均 加载到 LDS 或 VGPR中
-        cp_async_wait_0(); 
-        // __syncthreads();
-      
-        for (int k = 0; k < b_sh_wr_iters; k++) {
-          // 发射下一个数据块的全局 load 指令
-          if (k == b_sh_wr_iters - 2) {
-            fetch_a_to_registers(0, pipe);
-            fetch_a_to_registers(1, pipe);
-            // 发射下一个数据块的 全局 load 指令
-            fetch_to_shared((pipe + stages - 1) % stages, pipe,
-                            slice_iters >= stages);
-          }
-          // 执行 a: [16, 32] b:[32, 128] 数据块上的mmac计算
-          matmul(k, pipe);
-        }
+        // cp_async_wait_0(); 
+        // 等待 除最后一条加载 B矩阵的 buffer_load_dwordx4指令外的全部 buffer_load_dwordx4指令
+        cp_async_wait_0();
+
+        fetch_a_to_registers(0, pipe);
+        fetch_a_to_registers(1, pipe);
+        // 发射下一个数据块的 全局 load 指令
+        fetch_to_shared((pipe + stages - 1) % stages, pipe,
+                        slice_iters >= stages);
+
+        // for (int k = 0; k < b_sh_wr_iters; k++) {
+        //   prepare_frag_b(k, pipe);
+        //   // 执行 a: [16, 32] b:[32, 128] 数据块上的mmac计算
+        //   matmul(k, pipe);
+        // }
+        // 拆成两次计算
+        prepare_frag_b(0, pipe);
+        // 执行 a: [16, 32] b:[32, 128] 数据块上的mmac计算
+        matmul(0, pipe);
+        
+        prepare_frag_b(1, pipe);
+        // 执行 a: [16, 32] b:[32, 128] 数据块上的mmac计算
+        matmul(1, pipe);
+
         slice_iters--;
         if (slice_iters == 0) {
           break;
@@ -688,14 +664,14 @@ namespace marlin_moe_w4a8{
       }
       a_gl_rd_col += a_gl_rd_delta_o * stages;
 
+      // 
+
       if (slice_iters == 0) {
-        // 在条带的尾部，此时
-        // cp_async_wait_0();
-        // __syncthreads();
-        
         bool last = slice_idx == slice_count - 1;
+
         // block 内进行归约 
         thread_block_reduce();
+        
 
         // 同一个条带中有多个blcok执行计算时，在全局内存中进行规约操作，
         // 将多个blokc的计算结果 累加到 条带顶端的 block中
@@ -707,8 +683,6 @@ namespace marlin_moe_w4a8{
           // locks[locks_off] + 1 ,通知下一个block当前已写入完成，且最后一个block，将其中的值重置为 0
           barrier_release(&locks[locks_off], last);
         }
-        
-        // 每个条带中 最上面的 block 将结果写回到全局
         if (last){
           write_result();
         }
@@ -719,25 +693,59 @@ namespace marlin_moe_w4a8{
         slice_col++;
 
         init_slice(); // 初始化 slice_row、slice_col
-        // 如果下一个条带中有任务执行
+
         if (slice_iters) {
           // 更新a 矩阵新的索引地址
           a_gl_rd_row = row;
           a_gl_rd_col = col;
-      
+        
           // 更新B 矩阵新的索引地址 先向右偏移 b_sh_stride 个 int4步长, 再向上偏移 整个条带的步长
           for (int i = 0; i < b_sh_wr_iters; i++)
             B_idx_int[i] += b_sh_stride - b_gl_rd_delta_o * k_tiles;
           if (slice_col == 0) { // 如果转到下一个专家进行处理, 则整体左移 b_gl_stride 步长，相当于回到专家矩阵左上角第一个数据块
             for (int i = 0; i < b_sh_wr_iters; i++) B_idx_int[i] -= b_gl_stride;
           }
-
           // 启动下一阶段的流水 
           start_pipes();
         }
       } 
     } // 结束 while 循环
+
   }//  结束 Marlin 算子循环
+
+// 其他架构上编译空算子
+#else
+    template <
+          const int threads,          // number of threads in a threadblock
+          const int thread_m_blocks,  // number of 16x16 blocks in the m
+                                      // dimension (batchsize) of the
+                                      // threadblock
+          const int thread_n_blocks,  // same for n dimension (output)
+          const int thread_k_blocks,  // same for k dimension (reduction)
+          const int stages 
+          >
+  __global__ void Marlin_512_64_reduce(
+    const int4* __restrict__ A,  // fp16 input matrix of shape mxk
+    const float* __restrict__ A_scales,  // 
+    const int4* __restrict__ B,  // 4bit quantized weight matrix of shape kxn
+    const float* __restrict__ B_scales, 
+    int4* __restrict__ C,        // fp16 output buffer of shape mxn
+    const int32_t* __restrict__ sorted_token_ids_ptr,        // moe sorted_ids
+    const int32_t* __restrict__ expert_ids_ptr,              // moe expert ids
+    const int32_t* __restrict__ num_tokens_past_padded_ptr,  // moe num tokens
+    const float* __restrict__ topk_weights_ptr,              // moe top weights
+    int top_k,              // num of experts per token
+    bool mul_topk_weights,  // mul topk weights or not
+    bool is_ep,  // 是否启用 EP
+    int prob_m,             // batch dimension m
+    int prob_n,             // output dimension n
+    int prob_k,             // reduction dimension k
+    int* locks,             // 用于 全局归约的信号控制
+    int4* C_tmp             // 用于 全局归约的 缓冲区
+  ) {
+    
+  }
+#endif
 
 }// namespace MARLIN_NAMESPACE_NAME
 }

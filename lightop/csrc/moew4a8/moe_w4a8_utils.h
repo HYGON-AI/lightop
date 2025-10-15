@@ -534,6 +534,7 @@ template<bool Is_store_A,
     int STAGES,  
     int GROUP_N,
     int GROUP_K,
+    int splitk,
     typename Element, 
     typename ElementAccum = int32_t>                                                                                                            
 __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
@@ -606,7 +607,7 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
 
     i=1; 
     union_vec<Element,8> midval;
-    int itk = size_k/warp_k_num/WARP_K; //112
+    int itk = size_k/warp_k_num/WARP_K/splitk; //112
     for(; i < itk ; i += 2){
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
@@ -634,10 +635,10 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
                         int first_val = B_reg[n_tile][0].data[ 4 * k_tile + N_PACKID];
                         midval.int_array[0] = first_val & 0xf0f0f0f0 ;
                         midval.int_array[1] = (first_val << 4) & 0xf0f0f0f0;
-                        C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + N_PACKID] = mmac2<Element>(
+                        C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2<Element>(
                                 *(typename vec<Element, 8>::type*)(&A_reg[m_tile][0].int8t_array[k_tile]), 
                                 (&midval.int8x8_array[0]), 
-                                C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + N_PACKID]);  
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
                         }
                 }
             }
@@ -671,10 +672,10 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
                     int first_val = B_reg[n_tile][1].data[4*k_tile + N_PACKID];
                     midval.int_array[0] = first_val & 0xf0f0f0f0 ;
                     midval.int_array[1] = (first_val << 4) & 0xf0f0f0f0;
-                    C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + N_PACKID] = mmac2<Element>(
+                    C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2<Element>(
                                 *(typename vec<Element, 8>::type*)(&A_reg[m_tile][1].int8t_array[k_tile]), 
                                 (&midval.int8x8_array[0]), 
-                                C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + N_PACKID]);  
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
                     }
                 }
             }
@@ -696,10 +697,10 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
                     midval.int_array[0] = first_val & 0xf0f0f0f0 ;
                     midval.int_array[1] = (first_val << 4) & 0xf0f0f0f0;
 
-                    C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + N_PACKID] = mmac2<Element>(
+                    C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2<Element>(
                                 *(typename vec<Element, 8>::type*)(&A_reg[m_tile][0].int8t_array[k_tile]), 
                                 (&midval.int8x8_array[0]), 
-                                C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + N_PACKID]);  
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
                     }
                 }
             }
@@ -710,42 +711,42 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
     if constexpr (warp_k_num > 1){
         //计算一个warp需要的空间即：64x16
         constexpr int lineoffset=65;
-        constexpr int lds_offset = warp_k_num * 16 * lineoffset;
-        if(warp_k_id>0){
-            #pragma unroll
-            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+        // constexpr int lds_offset = (warp_k_num-1) * warp_n_num * lineoffset;
+        #pragma unroll
+        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+            if(warp_k_id>0){
                 #pragma unroll
                 for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
                     #pragma unroll
                     for(int k = 0; k < 4; k++){
-                        *(intx4*)(out_smem+(m_tile * MFMA_M) * lds_offset + n_tile * 16+ (warp_k_id-1 +  warp_n_id * warp_k_num)  * lineoffset * 16 +  row_id * lineoffset + col_id * 16  + k * 4) 
-                          = C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + k];
+                        *(intx4*)(out_smem+ n_tile * 16+ (warp_k_id-1 +  warp_n_id * (warp_k_num-1))  * lineoffset * 16 +  row_id * lineoffset + col_id * 16  + k * 4) 
+                          = C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + k];
                     }
                 }
             }
-        }
+        
         __syncthreads();
 
         if(warp_k_id == 0){ //存在多个warp的warpkid=0，这些warp都需要和附近的warpknum块数据进行reduce
-            #pragma unroll
-            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
                 #pragma unroll
                 for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
                     #pragma unroll
                     for(int k_tile = 0; k_tile < warp_k_num-1; k_tile++){//warp迭代
                         #pragma unroll
                         for(int k = 0; k < 4; k++){//4组数据按组迭代
-                            intx4 temp = *(intx4*)(out_smem+ (m_tile * MFMA_M) * lds_offset + n_tile * 16 + ( k_tile +  warp_n_id * warp_k_num ) * lineoffset *16 + row_id * lineoffset + col_id * 16  + k * 4);
+                            intx4 temp = *(intx4*)(out_smem + n_tile * 16 + ( k_tile +  warp_n_id * (warp_k_num-1) ) * lineoffset *16 + row_id * lineoffset + col_id * 16  + k * 4);
                             #pragma unroll
                             for(int i = 0; i < 4; i++){ //组内迭代
-                                C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + k ][i] += temp[i];
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + k][i] += temp[i];
                             }
                         }
                     }
                 }
             }
+        __syncthreads();
         }
     }
+    
 }
 
 // MOE-DECODE-W4A8 针对小shape优化
@@ -848,10 +849,10 @@ __forceinline__ __device__ void  gemm_nt_second_stage_marlin_decode(
                         int first_val = B_reg[n_tile][0].data[ 4 * k_tile + N_PACKID];
                         midval.int_array[0] = first_val & 0xf0f0f0f0 ;
                         midval.int_array[1] = (first_val << 4) & 0xf0f0f0f0;
-                        C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + N_PACKID] = mmac2<Element>(
+                        C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2<Element>(
                                 *(typename vec<Element, 8>::type*)(&A_reg[m_tile][0].int8t_array[k_tile]), 
                                 (&midval.int8x8_array[0]), 
-                                C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + N_PACKID]);  
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
                         }
                 }
             }

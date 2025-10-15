@@ -124,7 +124,7 @@ def fused_marlin_moe_valid(
     print("topk:", topk)
     print("config_marlin_0:", config_marlin_0)
     print("topk_ids:", topk_ids.shape)
-    # '''
+    '''
     moe_gemm_marlin_w4a8(a_1, w1_marlin, intermediate_cache1, a_1_scale, w1_scale, None, sorted_token_ids, 
                          expert_ids, num_tokens_post_padded, topk, workspace, global_reduce_buffer, config_marlin_0)
     # =========================== gemm1 triton 计算 ===============================
@@ -163,16 +163,18 @@ def fused_marlin_moe_valid(
         w1_int8_list.append(w1_int8)
     w1_int8 = torch.stack(w1_int8_list, dim=0).to(torch.uint8) << 4
     w1_int8 = w1_int8.to(torch.int8)
-    begin, end, expert_id = 0, 128, 0
+    begin, end, expert_id = 0, 10, 0
     res = torch.matmul(a_1[sorted_token_ids[begin:end] // topk].cpu().to(torch.int32), w1_int8[expert_id, :, :].t().cpu().to(torch.int32))
+    res0 = torch.matmul(a_1[sorted_token_ids[begin:end] // topk].cpu().to(torch.int32)[:, :128], w1_int8[expert_id, :, :].t().cpu().to(torch.int32)[:128, :])
     out = res.to(a_1.device) * a_1_scale[sorted_token_ids[begin:end] // topk] * w1_scale[expert_id].t()
     out_bf16 =  out.to(torch.bfloat16)
     torch.nonzero(intermediate_cache1 != triton_gemm1_output)
+    torch.nonzero(intermediate_cache1[1] != triton_gemm1_output[1])
     torch.nonzero(intermediate_cache1[sorted_token_ids[begin:end]] != triton_gemm1_output[sorted_token_ids[begin:end]])
     # torch.nonzero(out_bf16 != intermediate_cache1)
     torch.nonzero(sorted_token_ids == 1)
-    pdb.set_trace()
-    # '''
+    # pdb.set_trace()
+    '''
 
     torch.testing.assert_close(intermediate_cache1, triton_gemm1_output, atol=1e-3, rtol=1e-3)
     print("         gemm1 success!!!!")
@@ -202,7 +204,7 @@ def fused_marlin_moe_valid(
     print("topk:", topk)
     print("config_marlin_1:", config_marlin_1)
     print("topk_ids:", topk_ids.shape)
-    # '''
+    '''
     moe_gemm_marlin_w4a8(a_2, w2_marlin, intermediate_cache3, a_2_scale, w2_scale, topk_weights, 
                          sorted_token_ids, expert_ids, num_tokens_post_padded, 1, workspace, global_reduce_buffer, config_marlin_1)
     # =========================== gemm2 triton 计算 ===============================

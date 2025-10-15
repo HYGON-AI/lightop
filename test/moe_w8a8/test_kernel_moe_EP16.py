@@ -650,12 +650,25 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
                 ep_size=16,
                 ep_rank=0,
                 global_num_experts=256)
+
+        local_num_experts1, expert_map1 = determine_expert_map(
+                ep_size=16,
+                ep_rank=1,
+                global_num_experts=256)
+        
+        local_num_experts2, expert_map2 = determine_expert_map(
+                ep_size=16,
+                ep_rank=2,
+                global_num_experts=256)
         
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
-                                    global_num_experts, expert_map))
+                                    global_num_experts, expert_map2))
 
-        
+        # sorted_token_ids, expert_ids, num_tokens_post_padded = (moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'], global_num_experts, expert_map1))
+
+        # import pdb
+        # pdb.set_trace()
         
         if use_lightop and per_channel_quant and status:
 
@@ -935,14 +948,21 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
         
         local_num_experts, expert_map = determine_expert_map(
                 ep_size=16,
-                ep_rank=0,
+                ep_rank=2,
                 global_num_experts=256)
         
+        # sorted_token_ids, expert_ids, num_tokens_post_padded = (
+        #         moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
+        #                             global_num_experts, expert_map))
+
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
-                                    global_num_experts, expert_map))
+                                    256, expert_map))
+
+        # import pdb
+        # pdb.set_trace()
         
-        
+        # 这里
         # sorted_token_ids2, expert_ids2, num_tokens_post_padded2 = (
         #         moe_align_block_size(curr_topk_ids, config2['BLOCK_SIZE_M'],
         #                             global_num_experts, expert_map))
@@ -1185,14 +1205,16 @@ def _fused_moe_helper(m: int,
     tensor = torch.rand((m, topk),device=device)
     topk_weights = F.softmax(tensor, dim=1)
     #topk_ids [m,topk]
-    topk_ids=generate_unique_int_tensor(m=m, topk=topk,low=0,high=E).cuda()
-    
+    #topk_ids=generate_unique_int_tensor(m=m, topk=topk,low=0,high=E).cuda()
+    topk_ids=generate_unique_int_tensor(m=m, topk=topk,low=0,high=256).cuda()
+
     return input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids
 
 
 
 def main():
     # HIP_VISIBLE_DEVICES=5 python3 test_kernel_moe_benchmark.py  --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[128]' --use-channel-wise
+    # python ./moe_w8a8/test_kernel_moe_EP16.py --E 256 --n1-list '[256]'  --n2-list '[7168]' --k-list '[2048]' --use-channel-wise
     # 创建解析器对象
     parser = argparse.ArgumentParser(description='这是一个示例脚本的描述')
     
@@ -1225,7 +1247,8 @@ def main():
     
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192,16384]
-    m_list = [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192]
+    # m_list = [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192]
+    m_list = [2048]
     E=args.E 
     block_size=[128,128]
     out_dtype=args.out_dtype

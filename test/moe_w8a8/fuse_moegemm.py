@@ -20,7 +20,7 @@ from vllm.logger import init_logger
 from vllm import _custom_ops as ops
 # import _custom_ops as ops
 from lightop import moe_gemm_w8a8, get_moe_cuda_config
-from vllm.model_executor.layers.fused_moe.fused_moe import moe_kernel_prepare_input
+# from vllm.model_executor.layers.fused_moe.fused_moe import moe_kernel_prepare_input
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
 
@@ -32,32 +32,59 @@ logger = init_logger(__name__)
 device_name = current_platform.get_device_name().replace(" ", "_")
 num_cus= torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 
-#mode->blockm
-# blockM_configs = {
-#         0: 16,   # 2warp
-#         1: 32,
-#         2: 64,
-#         3: 16,   # 4warp
-#         4: 32,
-#         5: 64,
-#         6: 16,   # 4warp
-#         7: 32,
-#         8: 64,
-#         9: 32,   # 8warp
-#         10: 64,
-#         11: 32,  # 8warp
-#         12: 64,
-#         13: 64,  # 16warp
-#         14: 16,  # 2warp
-#         15: 32,
-#         16: 64,
-#         17: 16,  # 2warp
-#         18: 32,
-#         19: 64,
-#         20: 16,  # 2warp
-#         21: 32,
-#         22: 64
-#     }
+from lmslim.layers.gemm.int8_utils import (
+   per_token_group_quant_int8, per_token_quant_int8)
+def moe_kernel_prepare_input(
+    A: torch.Tensor,
+    B: torch.Tensor,
+    A_scale: Optional[torch.Tensor],
+    B_scale: Optional[torch.Tensor],
+    use_fp8_w8a8: bool,
+    use_int8_w8a8: bool,
+    use_int8_w8a16: bool,
+    use_int4_w4a16: bool,
+    per_channel_quant: bool,
+    block_shape: Optional[List[int]] = None,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    if use_fp8_w8a8:
+        assert B_scale is not None
+        if block_shape is None:
+            # If weights are per-channel (per_channel_quant=True), then
+            # activations apply per-token quantization. Otherwise, assume
+            # activation tensor-wise fp8 quantization, dynamic or static
+            A, A_scale = ops.scaled_fp8_quant(
+                A, A_scale, use_per_token_if_dynamic=per_channel_quant)
+        else:
+            # activation block-wise fp8 quantization
+            assert len(block_shape) == 2
+            _, block_k = block_shape[0], block_shape[1]
+            A, A_scale = per_token_group_quant_fp8(A, block_k)
+            assert triton.cdiv(A.shape[-1], block_k) == A_scale.shape[-1]
+            # assert triton.cdiv(B.shape[-2], block_n) == B_scale.shape[-2]
+            # assert triton.cdiv(B.shape[-1], block_k) == B_scale.shape[-1]
+    elif use_int8_w8a8:
+        assert B_scale is not None
+        if block_shape is None:
+            # activation channel-wise int8 quantization
+            assert (per_channel_quant
+                    ), "int8 quantization only supports block or channel-wise"
+            A, A_scale = per_token_quant_int8(A)
+        else:
+            # activation block-wise int8 quantization
+            assert len(block_shape) == 2
+            _, block_k = block_shape[0], block_shape[1]
+            A, A_scale = per_token_group_quant_int8(A, block_k)
+            assert triton.cdiv(A.shape[-1], block_k) == A_scale.shape[-1]
+            # assert triton.cdiv(B.shape[-2], block_n) == B_scale.shape[-2]
+            # assert triton.cdiv(B.shape[-1], block_k) == B_scale.shape[-1]
+    elif use_int8_w8a16 or use_int4_w4a16:
+        assert B_scale is not None
+        assert block_shape is None or block_shape[0] == 0
+    else:
+        assert A_scale is None
+        assert B_scale is None
+
+    return A, A_scale
 
 blockM_configs = {
     0 : 16,

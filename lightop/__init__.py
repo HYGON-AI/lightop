@@ -1,6 +1,6 @@
 import os
 from .utils import gfx, LIGHTOP_ROOT_DIR, LIGHTOP_ASM_DIR
-from .rmsnorm import RMSNorm, RMSNormTorch, RMSNormDropout, RMSNormAddDropout, RMSNormAddDropoutBias, RMSNormAdd,rmsnorm_forward,rmsnorm_backward,rms_norm_dynamic_per_token_quant
+from .rmsnorm import RMSNorm, RMSNormTorch, RMSNormDropout, RMSNormAddDropout, RMSNormAddDropoutBias, RMSNormAdd,rmsnorm_forward,rmsnorm_backward,rms_norm_dynamic_per_token_quant,fused_rms_norm_contiguous
 from .layernorm import LayerNorm, LnDropout, LnAddDropout, LnAddDropoutBias, LnDropPath, AddLn
 from .droppath import DropPath
 from .fuse_bias_swiglu import FuseBiasSwiGLU
@@ -17,10 +17,13 @@ from .lossrnnt import RNNTLoss
 from .scaled_masked_softmax import FusedScaleMaskSoftmax,FusedScaleMaskSoftmaxDropout,AttnMaskType
 from .groupnorm import GroupNorm ,CeluGN,GNSilu
 from .reduce import sum, mean,topk
-from .gemmopt import gemm, gemm_w4a16, w4tow16,gemm_w8a16_fp8,fp8_to_16,moe_gemm_w8a8,gemm_w8a8_smooth, moe_marlin_w4a16, awq_marlin_repack, gemm_w8a8_asm, gemm_w8a8_wgrad_asm, gemm_w8a8_xgrad_asm, moe_gemm_w4a8,moe_gemm_marlin_w4a8,groupgemm
+from .gemmopt import gemm, gemm_w4a16, w4tow16,gemm_w8a16_fp8,fp8_to_16,moe_gemm_w8a8,gemm_w8a8_smooth, moe_marlin_w4a16, awq_marlin_repack, gemm_w8a8_asm, gemm_w8a8_wgrad_asm, \
+      gemm_w8a8_xgrad_asm, moe_gemm_w4a8, moe_gemm_marlin_w4a8, groupgemm, moe_groupgemm_w4a8, moe_groupgemm_marlin_w4a8, awq_marlin_repack_w4a8
 from .moe_fused_gate import moe_fused_gate
+from .fuse_silu_mul_quant import fuse_silu_mul_quant
+from .ds_cat import ds_cat
 from .blockwise_scaling import blockwise_scaled_cast_transpose
-from .config import get_moe_cuda_config, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8
+from .config import get_moe_cuda_config, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8, get_moe_groupgemm_config_w4a8, get_moe_groupgemm_marlin_config_w4a8
 from .config_smooth_gemm import gemm_w8a8_smooth_config
 from .miopen.miopen_mha import miopen_scaled_dot_product_attention
 from .miopen.miopen_conv_fusion import miopen_conv_bias, miopen_conv_bias_add, miopen_conv_bias_relu, miopen_conv_bias_add_relu, miopenConvBias, miopenConvBiasAdd, miopenConvBiasRelu, miopenConvBiasAddRelu
@@ -30,7 +33,8 @@ from .miopen.miopen_moe import miopen_moe_gather, miopen_moe_scatter_dynamic_qua
 from .miopen.miopen_rms import miopen_add_rms_norm_dynamic_quant, miopen_head_rms_norm, miopen_rms_norm_dynamic_quant_without_residual
 from .miopen.miopen_gemm_bias import miopen_gemm_bias
 from .miopen.miopen_transform_tensor import miopen_transform_tensor
-
+from .permute_unpermute import groupgemm_permute, groupgemm_unpermute, fuse_groupgemm_permute_quant
+from .moe_align_sum import moe_sum, moe_align_block_size
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401
     __version__, __dcu_version__ = version, dcu_version
