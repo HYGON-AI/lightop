@@ -106,7 +106,8 @@ Tensor moe_marlin_w4a8(
                         int64_t size_k,
                         int64_t thread_n,
                         int64_t thread_k,
-                        int64_t blocks_per_cu
+                        int64_t blocks_per_cu,
+                        bool is_reduce
                         );
 Tensor awq_marlin_repack_w4a8(torch::Tensor& b_q_weight, torch::Tensor& marlin_weight, int64_t size_batch, int64_t size_k, int64_t size_n);
 Tensor ds_concat(torch::Tensor input_A, torch::Tensor input_B, torch::Tensor output, int32_t mode);
