@@ -2,8 +2,10 @@
 
 #include "miopen-wrapper.h"
 
-namespace at { namespace native {
+namespace at {
+namespace native {
 
 miopenHandle_t getMiopenHandle_new();
 
-}} // namespace
+}
+} // namespace at
