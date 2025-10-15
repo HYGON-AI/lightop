@@ -130,20 +130,30 @@ void _gemm_w8a8_128x256x128_TN_impl(
   size_t argsSize = sizeof(hipFunctionArgs);
 
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  string fp16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_FP16.co";
-  string bf16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_BF16.co";
-  if (gradType == wgrad) {
-    fp16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_FP16_wgrad_scale_T.co";
-    bf16_co_file = "gemm_w8a8_block/blockwise_w8a8_gemm_BF16_wgrad_scale_T.co";
-  } else if (gradType == xgrad) {
-    fp16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_NN_FP16.co";
-    bf16_co_file = "gemm_w8a8_block/gemm_w8a8_128x256x128_NN_BF16.co";
+  string fp16_co_file_tn = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_FP16.co";
+  string bf16_co_file_tn = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_BF16.co";
+  string fp16_co_file_wgrad = "gemm_w8a8_block/blockwise_w8a8_gemm_FP16_wgrad_scale_T.co";
+  string bf16_co_file_wgrad = "gemm_w8a8_block/blockwise_w8a8_gemm_BF16_wgrad_scale_T.co";
+  string fp16_co_file_xgrad = "gemm_w8a8_block/gemm_w8a8_128x256x128_NN_FP16.co";
+  string bf16_co_file_xgrad = "gemm_w8a8_block/gemm_w8a8_128x256x128_NN_BF16.co";
+	static AiterAsmKernel gemm_w8a8_fp16_tn("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", fp16_co_file_tn.c_str());
+	static AiterAsmKernel gemm_w8a8_bf16_tn("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", bf16_co_file_tn.c_str());
+  static AiterAsmKernel gemm_w8a8_fp16_wgrad("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", fp16_co_file_wgrad.c_str());
+  static AiterAsmKernel gemm_w8a8_bf16_wgrad("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", bf16_co_file_wgrad.c_str());
+  static AiterAsmKernel gemm_w8a8_fp16_xgrad("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", fp16_co_file_xgrad.c_str());
+  static AiterAsmKernel gemm_w8a8_bf16_xgrad("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", bf16_co_file_xgrad.c_str());
+
+	AiterAsmKernel *impl_ptr = nullptr;
+  if (gradType == nograd) {
+    impl_ptr = isBfloat16 ? &gemm_w8a8_bf16_tn : &gemm_w8a8_fp16_tn;
+  }else if (gradType == wgrad) {
+    impl_ptr = isBfloat16 ? &gemm_w8a8_bf16_wgrad : &gemm_w8a8_fp16_wgrad;
+  }else if (gradType == xgrad) {
+    impl_ptr = isBfloat16 ? &gemm_w8a8_bf16_xgrad : &gemm_w8a8_fp16_xgrad;
+  }else{
+    printf("Type not in {forward, wgrad, xgrad}\n");
+    return;
   }
-	static AiterAsmKernel gemm_w8a8_fp16("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", fp16_co_file.c_str());
-	static AiterAsmKernel gemm_w8a8_bf16("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", bf16_co_file.c_str());
-	AiterAsmKernel *impl_ptr = &gemm_w8a8_fp16;
-  if (isBfloat16) 
-    impl_ptr = &gemm_w8a8_bf16;
 	impl_ptr->launch_kernel_ext({
     &hipFunctionArgs,
     &argsSize,
