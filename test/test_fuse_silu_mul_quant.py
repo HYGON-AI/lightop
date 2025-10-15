@@ -12,17 +12,18 @@ def fuse_silu_mul_quant_init(output: torch.Tensor, input: torch.Tensor):
 
 def fuse_silu_mul_quant_opt(input: torch.Tensor,
                             num_local_tokens_tensor: Optional[torch.Tensor] = None,
-                            topk:int=1):
-    opt_out, opt_scales=fuse_silu_mul_quant(input,num_local_tokens_tensor,topk)
+                            topk:int=1,
+                            expect_m=-1):
+    opt_out, opt_scales=fuse_silu_mul_quant(input,num_local_tokens_tensor,topk,expect_m)
     return opt_out, opt_scales
 
 # ------------------ 正确性 ------------------
-def check_correctness_once(num_tokens: int, hidden_sizes: int, topK: int,rtol=1e-7, atol=1e-7):
+def check_correctness_once(num_tokens: int, hidden_sizes: int, topK: int, localtoken:int, expect_m: int, rtol=1e-7, atol=1e-7):
     device = torch.device("cuda")
     dtype = torch.bfloat16
     # dtype = torch.float
     # dtype = torch.float16
-    m=num_tokens
+    m=localtoken
     num_local_tokens = [m]
     num_local_tokens_tensor = torch.tensor(num_local_tokens,device=device,dtype=torch.int32)
     input = torch.randn((num_tokens*topK, hidden_sizes), device=device, dtype=dtype)
@@ -32,7 +33,7 @@ def check_correctness_once(num_tokens: int, hidden_sizes: int, topK: int,rtol=1e
     out_init  = out_init[:m*topK]   
     scales_init = scales_init[:m*topK]
     
-    out_opt , scales_opt = fuse_silu_mul_quant_opt(input,num_local_tokens_tensor,topK)
+    out_opt , scales_opt = fuse_silu_mul_quant_opt(input,num_local_tokens_tensor,topK,expect_m)#lj
     out_opt  = out_opt[:m*topK]   
     scales_opt = scales_opt[:m*topK]
 
@@ -50,7 +51,7 @@ def check_correctness_once(num_tokens: int, hidden_sizes: int, topK: int,rtol=1e
         diff = (out_init - out_opt).abs()
         max_abs = diff.max().item()
         print("out_shape:",out_init.shape)
-        raise AssertionError(f"scales_max_abs={max_abs:.4e}")
+        raise AssertionError(f"output_max_abs={max_abs:.4e}")
     
 
 def run_correctness_suite():
@@ -58,10 +59,16 @@ def run_correctness_suite():
     numtokens_list = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]   # [1, 2, ... , 8192]
     topK = 8
     hiddensizes_list = [4096] # 7168
-
+    expect_m_list = [1, 2, 4, 6, 8, 16, 32 ,64]
+    # expect_m_list = [64]
+    localtoken_list = [0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128]
+    # localtoken_list = [8]
+    
     for num_tokens in numtokens_list:
         for hidden_size in hiddensizes_list:
-            check_correctness_once(num_tokens, hidden_size, topK)
+            for expect_m in expect_m_list:
+                for localtoken in localtoken_list:
+                    check_correctness_once(num_tokens, hidden_size, topK, localtoken, expect_m)
     print("[Correctness] All tests passed ")
 
 # ------------------ 性能 ------------------
