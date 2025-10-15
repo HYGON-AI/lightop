@@ -1108,7 +1108,7 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
              const torch::optional<torch::Tensor> &bias = torch::nullopt ,
              const torch::optional<torch::Tensor> &expert_mask = torch::nullopt ,
              const torch::optional<torch::Tensor> &num_local_tokens = torch::nullopt ,
-             const float factor = 1.f) {
+             const float factor = 1.f,const int expect_m = -1) {
   const int hidden_size = input.size(-1);
   int  num_tokens = output.numel() / hidden_size;
   const int topk = input.size(1);
@@ -1181,12 +1181,16 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
     if (hidden_size == 7168) {
       int gridy = num_tokens;
       if(num_local_tokens.has_value() && input.scalar_type() == at::ScalarType::BFloat16){
-          if(num_tokens >= 2048 && num_tokens < 4096){
+          if(expect_m > 0){
+            gridy = expect_m;
+          }else{
+            if(num_tokens >= 2048 && num_tokens < 4096){
               gridy /= 2; 
             } else if(num_tokens >= 4096)
             { 
                gridy /= 4;
             }
+          }
       }
       dim3 Grid(7, gridy);
       const int block_size = 128;
