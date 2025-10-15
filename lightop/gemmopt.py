@@ -169,6 +169,7 @@ def moe_gemm_marlin_w4a8(
         thread_n = config["thread_n"]
         thread_k = config["thread_k"]
         blocks_per_cu = config["blocks_per_cu"]
+        is_reduce = config.get("is_reduce", False)
         op.moe_marlin_w4a8(input,  # A
                                 a_scale, # a_scale
                                 output, # 输出
@@ -188,7 +189,8 @@ def moe_gemm_marlin_w4a8(
                                 size_k,
                                 thread_n,
                                 thread_k,
-                                blocks_per_cu)  
+                                blocks_per_cu,
+                                is_reduce)  
 
     else: # 汇编版 w4a8 实现
         op.moe_w4a8_marlin_asm(input, b_qweight, output, a_scale, b_scale, topk_weights,

@@ -4,8 +4,8 @@
 // 算子实现文件
 #include "kernel.cu"
 // 8warp 取消归约 复用 sorted_token_id
-#include "kernel_256_128.cu"
 #include "kernel_512_64.cu"
+#include "kernel_512_64_reduce.cu"
 #include "awq_marlin_repack_w4a8.cu"
 #include <torch/extension.h>
 #include <iostream>
@@ -38,7 +38,8 @@ void marlin_mm_bf16_per_channel(
                               int thread_k, 
                               int thread_n,
                               int sms,
-                              int blocks_per_cu // 一个CU上并行执行多少block
+                              int blocks_per_cu, // 一个CU上并行执行多少block
+                              bool is_reduce
                             ) {
 
   const int4* A_ptr = (const int4*)A;
@@ -65,99 +66,186 @@ void marlin_mm_bf16_per_channel(
   int4* global_reduce_buffer_int4 = (int4*)global_reduce_buffer;
 
   int max_shared_mem = 0;
-
   // X-256-128
   if(thread_n==256 && thread_k == 128){
     switch(moe_block_size / 16) {
       case 1: // 16-256-128
         max_shared_mem = 20000;
-        Marlin_256_128<512, 1, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
-                                                              A_ptr, 
-                                                              A_scales_ptr, 
-                                                              B_ptr, 
-                                                              B_scales_ptr,
-                                                              C_ptr, 
-                                                              sorted_token_ids_ptr, 
-                                                              expert_ids_ptr, 
-                                                              num_tokens_past_padded_ptr,
-                                                              topk_weights_ptr, 
-                                                              top_k, 
-                                                              mul_topk_weights, 
-                                                              is_ep,
-                                                              prob_m,
-                                                              prob_n, 
-                                                              prob_k,
-                                                              locks,
-                                                              global_reduce_buffer_int4
-                                                            );   
+        if (!is_reduce){
+          Marlin_512_64<512, 1, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights, 
+                                                                is_ep,
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              );            
+        }else{
+          Marlin_512_64_reduce<512, 1, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights, 
+                                                                is_ep,
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              );   
+        }
         break;
       case 2: // 32-256-128
         max_shared_mem = 20000;
-        Marlin_256_128<512, 2, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
-                                                              A_ptr, 
-                                                              A_scales_ptr, 
-                                                              B_ptr, 
-                                                              B_scales_ptr,
-                                                              C_ptr, 
-                                                              sorted_token_ids_ptr, 
-                                                              expert_ids_ptr, 
-                                                              num_tokens_past_padded_ptr,
-                                                              topk_weights_ptr, 
-                                                              top_k, 
-                                                              mul_topk_weights,
-                                                              is_ep, 
-                                                              prob_m,
-                                                              prob_n, 
-                                                              prob_k,
-                                                              locks,
-                                                              global_reduce_buffer_int4
-                                                            );   
+        if (!is_reduce){
+          Marlin_512_64<512, 2, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              );   
+        }else{
+          Marlin_512_64_reduce<512, 2, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              );           
+        }
         break;
       case 3: // 48-256-128
         max_shared_mem = 20000;
-        Marlin_256_128<512, 3, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
-                                                              A_ptr, 
-                                                              A_scales_ptr, 
-                                                              B_ptr, 
-                                                              B_scales_ptr,
-                                                              C_ptr, 
-                                                              sorted_token_ids_ptr, 
-                                                              expert_ids_ptr, 
-                                                              num_tokens_past_padded_ptr,
-                                                              topk_weights_ptr, 
-                                                              top_k, 
-                                                              mul_topk_weights,
-                                                              is_ep, 
-                                                              prob_m,
-                                                              prob_n, 
-                                                              prob_k,
-                                                              locks,
-                                                              global_reduce_buffer_int4
-                                                            );   
+        if(!is_reduce){
+          Marlin_512_64<512, 3, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              );   
+        }else{
+          Marlin_512_64_reduce<512, 3, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              );   
+        }
         break;
       case 5: // 80-256-128
         max_shared_mem = 21120;
-        Marlin_256_128<512, 5, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
-                                                              A_ptr, 
-                                                              A_scales_ptr, 
-                                                              B_ptr, 
-                                                              B_scales_ptr,
-                                                              C_ptr, 
-                                                              sorted_token_ids_ptr, 
-                                                              expert_ids_ptr, 
-                                                              num_tokens_past_padded_ptr,
-                                                              topk_weights_ptr, 
-                                                              top_k, 
-                                                              mul_topk_weights,
-                                                              is_ep, 
-                                                              prob_m,
-                                                              prob_n, 
-                                                              prob_k,
-                                                              locks,
-                                                              global_reduce_buffer_int4
-                                                            );   
+        if(!is_reduce){
+          Marlin_512_64<512, 5, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                      A_ptr, 
+                                                      A_scales_ptr, 
+                                                      B_ptr, 
+                                                      B_scales_ptr,
+                                                      C_ptr, 
+                                                      sorted_token_ids_ptr, 
+                                                      expert_ids_ptr, 
+                                                      num_tokens_past_padded_ptr,
+                                                      topk_weights_ptr, 
+                                                      top_k, 
+                                                      mul_topk_weights,
+                                                      is_ep, 
+                                                      prob_m,
+                                                      prob_n, 
+                                                      prob_k,
+                                                      locks,
+                                                      global_reduce_buffer_int4
+                                                    );   
+        }else{
+          Marlin_512_64_reduce<512, 5, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                      A_ptr, 
+                                                      A_scales_ptr, 
+                                                      B_ptr, 
+                                                      B_scales_ptr,
+                                                      C_ptr, 
+                                                      sorted_token_ids_ptr, 
+                                                      expert_ids_ptr, 
+                                                      num_tokens_past_padded_ptr,
+                                                      topk_weights_ptr, 
+                                                      top_k, 
+                                                      mul_topk_weights,
+                                                      is_ep, 
+                                                      prob_m,
+                                                      prob_n, 
+                                                      prob_k,
+                                                      locks,
+                                                      global_reduce_buffer_int4
+                                                    );           
+        } 
         break;
-      // case 8: // 128-256-128
+      // case 8: // 128-256-128 
       //   max_shared_mem = 33792;
       //   Marlin_256_128<512, 8, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
       //                                                         A_ptr, 
@@ -179,80 +267,393 @@ void marlin_mm_bf16_per_channel(
       //                                                       );   
       //   break;
       default:
-        printf("仅支持 moe_block_size = 16、32、48、64、80 四个值, 当前值: %d \n", moe_block_size);
+        printf("X-256-128 config 仅支持 moe_block_size = 16、32、48、64、80 四个值, 当前值: %d \n", moe_block_size);
+        break;
+    }
+  }else if(thread_n==128 && thread_k == 256){
+    switch(moe_block_size / 16) {
+      case 1: // 16-128-256
+        max_shared_mem = 20000;
+        if(!is_reduce){
+          Marlin_512_64<512, 1, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              ); 
+        }else{
+          Marlin_512_64_reduce<512, 1, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                      A_ptr, 
+                                                      A_scales_ptr, 
+                                                      B_ptr, 
+                                                      B_scales_ptr,
+                                                      C_ptr, 
+                                                      sorted_token_ids_ptr, 
+                                                      expert_ids_ptr, 
+                                                      num_tokens_past_padded_ptr,
+                                                      topk_weights_ptr, 
+                                                      top_k, 
+                                                      mul_topk_weights,
+                                                      is_ep, 
+                                                      prob_m,
+                                                      prob_n, 
+                                                      prob_k,
+                                                      locks,
+                                                      global_reduce_buffer_int4
+                                                    ); 
+        }
+        break;
+      case 2: // 32-128-256
+        max_shared_mem = 20000;
+        if(!is_reduce){
+          Marlin_512_64<512, 2, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              ); 
+        }else{
+          Marlin_512_64_reduce<512, 2, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              ); 
+        }
+        break;
+      case 3: // 48-128-256
+        max_shared_mem = 20000;
+        if(!is_reduce){
+          Marlin_512_64<512, 3, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              ); 
+        }else{
+          Marlin_512_64_reduce<512, 3, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                      A_ptr, 
+                                                      A_scales_ptr, 
+                                                      B_ptr, 
+                                                      B_scales_ptr,
+                                                      C_ptr, 
+                                                      sorted_token_ids_ptr, 
+                                                      expert_ids_ptr, 
+                                                      num_tokens_past_padded_ptr,
+                                                      topk_weights_ptr, 
+                                                      top_k, 
+                                                      mul_topk_weights,
+                                                      is_ep, 
+                                                      prob_m,
+                                                      prob_n, 
+                                                      prob_k,
+                                                      locks,
+                                                      global_reduce_buffer_int4
+                                                    ); 
+        }
+        break;
+      case 5: // 80-128-256
+        max_shared_mem = 21120;
+        if(!is_reduce){
+          Marlin_512_64<512, 5, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              ); 
+        }else{
+          Marlin_512_64_reduce<512, 5, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                              A_ptr, 
+                                                              A_scales_ptr, 
+                                                              B_ptr, 
+                                                              B_scales_ptr,
+                                                              C_ptr, 
+                                                              sorted_token_ids_ptr, 
+                                                              expert_ids_ptr, 
+                                                              num_tokens_past_padded_ptr,
+                                                              topk_weights_ptr, 
+                                                              top_k, 
+                                                              mul_topk_weights,
+                                                              is_ep, 
+                                                              prob_m,
+                                                              prob_n, 
+                                                              prob_k,
+                                                              locks,
+                                                              global_reduce_buffer_int4
+                                                            );            
+        }
+        break;
+      case 8: // 128-512-64
+        max_shared_mem = 20000;
+        if(!is_reduce){
+          Marlin_512_64<512, 8, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              ); 
+        }else{
+          Marlin_512_64_reduce<512, 8, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              );           
+        }
+        break;
+      default:
+        printf(" X-512-65 config 仅支持 moe_block_size = 16、32、48、64、80、128四个值, 当前值: %d \n", moe_block_size);
         break;
     }
   }else if(thread_n==512 && thread_k == 64){
     switch(moe_block_size / 16) {
       case 1: // 16-512-64
         max_shared_mem = 20000;
-        Marlin_512_64<512, 1, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
-                                                              A_ptr, 
-                                                              A_scales_ptr, 
-                                                              B_ptr, 
-                                                              B_scales_ptr,
-                                                              C_ptr, 
-                                                              sorted_token_ids_ptr, 
-                                                              expert_ids_ptr, 
-                                                              num_tokens_past_padded_ptr,
-                                                              topk_weights_ptr, 
-                                                              top_k, 
-                                                              mul_topk_weights,
-                                                              is_ep, 
-                                                              prob_m,
-                                                              prob_n, 
-                                                              prob_k,
-                                                              locks,
-                                                              global_reduce_buffer_int4
-                                                            ); 
+        if(!is_reduce){
+          Marlin_512_64<512, 1, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              ); 
+        }else{
+          Marlin_512_64_reduce<512, 1, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                      A_ptr, 
+                                                      A_scales_ptr, 
+                                                      B_ptr, 
+                                                      B_scales_ptr,
+                                                      C_ptr, 
+                                                      sorted_token_ids_ptr, 
+                                                      expert_ids_ptr, 
+                                                      num_tokens_past_padded_ptr,
+                                                      topk_weights_ptr, 
+                                                      top_k, 
+                                                      mul_topk_weights,
+                                                      is_ep, 
+                                                      prob_m,
+                                                      prob_n, 
+                                                      prob_k,
+                                                      locks,
+                                                      global_reduce_buffer_int4
+                                                    ); 
+        }
         break;
       case 2: // 32-512-64
         max_shared_mem = 20000;
-        Marlin_512_64<512, 2, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
-                                                              A_ptr, 
-                                                              A_scales_ptr, 
-                                                              B_ptr, 
-                                                              B_scales_ptr,
-                                                              C_ptr, 
-                                                              sorted_token_ids_ptr, 
-                                                              expert_ids_ptr, 
-                                                              num_tokens_past_padded_ptr,
-                                                              topk_weights_ptr, 
-                                                              top_k, 
-                                                              mul_topk_weights,
-                                                              is_ep, 
-                                                              prob_m,
-                                                              prob_n, 
-                                                              prob_k,
-                                                              locks,
-                                                              global_reduce_buffer_int4
-                                                            ); 
+        if(!is_reduce){
+          Marlin_512_64<512, 2, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              ); 
+        }else{
+          Marlin_512_64_reduce<512, 2, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              ); 
+        }
         break;
       case 3: // 48-512-64
         max_shared_mem = 20000;
-        Marlin_512_64<512, 3, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
-                                                              A_ptr, 
-                                                              A_scales_ptr, 
-                                                              B_ptr, 
-                                                              B_scales_ptr,
-                                                              C_ptr, 
-                                                              sorted_token_ids_ptr, 
-                                                              expert_ids_ptr, 
-                                                              num_tokens_past_padded_ptr,
-                                                              topk_weights_ptr, 
-                                                              top_k, 
-                                                              mul_topk_weights,
-                                                              is_ep, 
-                                                              prob_m,
-                                                              prob_n, 
-                                                              prob_k,
-                                                              locks,
-                                                              global_reduce_buffer_int4
-                                                            ); 
+        if(!is_reduce){
+          Marlin_512_64<512, 3, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              ); 
+        }else{
+          Marlin_512_64_reduce<512, 3, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                      A_ptr, 
+                                                      A_scales_ptr, 
+                                                      B_ptr, 
+                                                      B_scales_ptr,
+                                                      C_ptr, 
+                                                      sorted_token_ids_ptr, 
+                                                      expert_ids_ptr, 
+                                                      num_tokens_past_padded_ptr,
+                                                      topk_weights_ptr, 
+                                                      top_k, 
+                                                      mul_topk_weights,
+                                                      is_ep, 
+                                                      prob_m,
+                                                      prob_n, 
+                                                      prob_k,
+                                                      locks,
+                                                      global_reduce_buffer_int4
+                                                    ); 
+        }
         break;
       case 5: // 80-512-64
         max_shared_mem = 20000;
-        Marlin_512_64<512, 5, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+        if(!is_reduce){
+          Marlin_512_64<512, 5, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              ); 
+        }else{
+          Marlin_512_64_reduce<512, 5, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                               A_ptr, 
                                                               A_scales_ptr, 
                                                               B_ptr, 
@@ -270,44 +671,65 @@ void marlin_mm_bf16_per_channel(
                                                               prob_k,
                                                               locks,
                                                               global_reduce_buffer_int4
-                                                            ); 
+                                                            );            
+        }
         break;
       case 8: // 128-512-64
         max_shared_mem = 20000;
-        Marlin_512_64<512, 8, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
-                                                              A_ptr, 
-                                                              A_scales_ptr, 
-                                                              B_ptr, 
-                                                              B_scales_ptr,
-                                                              C_ptr, 
-                                                              sorted_token_ids_ptr, 
-                                                              expert_ids_ptr, 
-                                                              num_tokens_past_padded_ptr,
-                                                              topk_weights_ptr, 
-                                                              top_k, 
-                                                              mul_topk_weights,
-                                                              is_ep, 
-                                                              prob_m,
-                                                              prob_n, 
-                                                              prob_k,
-                                                              locks,
-                                                              global_reduce_buffer_int4
-                                                            ); 
+        if(!is_reduce){
+          Marlin_512_64<512, 8, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              ); 
+        }else{
+          Marlin_512_64_reduce<512, 8, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+                                                                A_ptr, 
+                                                                A_scales_ptr, 
+                                                                B_ptr, 
+                                                                B_scales_ptr,
+                                                                C_ptr, 
+                                                                sorted_token_ids_ptr, 
+                                                                expert_ids_ptr, 
+                                                                num_tokens_past_padded_ptr,
+                                                                topk_weights_ptr, 
+                                                                top_k, 
+                                                                mul_topk_weights,
+                                                                is_ep, 
+                                                                prob_m,
+                                                                prob_n, 
+                                                                prob_k,
+                                                                locks,
+                                                                global_reduce_buffer_int4
+                                                              );           
+        }
         break;
       default:
-        printf("仅支持 moe_block_size = 16、32、48、64、80 四个值, 当前值: %d \n", moe_block_size);
+        printf(" X-512-65 config 仅支持 moe_block_size = 16、32、48、64、80、128四个值, 当前值: %d \n", moe_block_size);
         break;
     }
   }else{
-    printf(" config not support!!!!");
+    printf("config not support!!!!");
   }
 
 }  // namespace 
 
 }
 
-// 仅在 BW gfx 936 上才编译实际算子
-#ifdef __gfx936__
 torch::Tensor moe_marlin_w4a8(
                                   torch::Tensor& a_q, 
                                   torch::Tensor& a_scales, 
@@ -328,7 +750,8 @@ torch::Tensor moe_marlin_w4a8(
                                   int64_t size_k,
                                   int64_t thread_n,
                                   int64_t thread_k,
-                                  int64_t blocks_per_cu
+                                  int64_t blocks_per_cu,
+                                  bool is_reduce
                                 ) {
   // Alloc buffers
   const at::cuda::OptionalCUDAGuard device_guard(device_of(a_q));
@@ -360,40 +783,13 @@ torch::Tensor moe_marlin_w4a8(
                                           thread_k, 
                                           thread_n, 
                                           80,
-                                          blocks_per_cu
+                                          blocks_per_cu,
+                                          is_reduce
                                         );
 
   return c;
 
 } // end moe_marlin_w4a8
-
-#else
-torch::Tensor moe_marlin_w4a8(
-                                  torch::Tensor& a_q, 
-                                  torch::Tensor& a_scales, 
-                                  torch::Tensor& c,
-                                  torch::Tensor& b_q_weight, 
-                                  torch::Tensor& b_scales,
-                                  torch::Tensor& workspace, 
-                                  torch::Tensor& global_reduce_buffer,  // 用于全局规约的缓冲区
-                                  torch::Tensor& sorted_token_ids, 
-                                  torch::Tensor& expert_ids,
-                                  torch::Tensor& num_tokens_past_padded, 
-                                  std::optional<torch::Tensor> topk_weights,
-                                  int64_t moe_block_size, 
-                                  int64_t top_k, 
-                                  bool is_ep,
-                                  int64_t size_m, 
-                                  int64_t size_n,
-                                  int64_t size_k,
-                                  int64_t thread_n,
-                                  int64_t thread_k,
-                                  int64_t blocks_per_cu
-                                ) {
-                                  TORCH_CHECK_NOT_IMPLEMENTED(false, "marlin w4a8 fused_moe only support gfx936 !!!");
-                                  return torch::empty({1, 1});
-                                }
-#endif
 
 // uint4 [32, 64] 大小的重排
 torch::Tensor awq_marlin_repack_w4a8(torch::Tensor& b_q_weight,  
