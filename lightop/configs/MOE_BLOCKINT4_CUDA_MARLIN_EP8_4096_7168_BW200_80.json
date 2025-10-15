@@ -9,7 +9,7 @@
             "blocks_per_cu": 1
         },
         "2": {
-            "MODE": 414,
+            "MODE": 413,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -17,7 +17,7 @@
             "blocks_per_cu": 1
         },
         "4": {
-            "MODE": 414,
+            "MODE": 413,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
@@ -25,11 +25,11 @@
             "blocks_per_cu": 1
         },
         "8": {
-            "MODE": 414,
+            "MODE": 413,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
-            "thread_n": 512,
-            "thread_k": 64,
+            "thread_n": 256,
+            "thread_k": 128,
             "blocks_per_cu": 1
         },
         "16": {
@@ -38,22 +38,22 @@
             "BLOCK_SIZE_M": 16,
             "thread_n": 256,
             "thread_k": 128,
-            "blocks_per_cu": 1 
+            "blocks_per_cu": 1
         },
         "32": {
             "MODE": 415,
             "DELTA": 1,
             "BLOCK_SIZE_M": 32,
-            "thread_n": 512,
-            "thread_k": 64,
-            "blocks_per_cu": 2 
+            "thread_n": 256,
+            "thread_k": 128,
+            "blocks_per_cu": 1 
         },
         "64": {
             "MODE": 415,
             "DELTA": 1,
             "BLOCK_SIZE_M": 32,
-            "thread_n": 512,
-            "thread_k": 64,
+            "thread_n": 256,
+            "thread_k": 128,
             "blocks_per_cu": 1
         },
         "128": {
@@ -62,7 +62,8 @@
             "BLOCK_SIZE_M": 48,
             "thread_n": 512,
             "thread_k": 64,
-            "blocks_per_cu": 1
+            "blocks_per_cu": 1,
+            "is_reduce:": true
         },
         "256": {
             "MODE": 500,
@@ -70,7 +71,8 @@
             "BLOCK_SIZE_M": 80,
             "thread_n": 512,
             "thread_k": 64,
-            "blocks_per_cu": 2
+            "blocks_per_cu": 2,
+            "is_reduce:": false
         },
         "512": {
             "MODE": 1000,

@@ -41,20 +41,20 @@
             "blocks_per_cu": 2
         },
         "32": {
-            "MODE": 1000,
+            "MODE": 416,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 128,
+            "BLOCK_SIZE_M": 32,
             "thread_n": 512,
             "thread_k": 64,
             "blocks_per_cu": 2
         },
         "64": {
-            "MODE": 1000,
+            "MODE": 500,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 128,
+            "BLOCK_SIZE_M": 80,
             "thread_n": 512,
             "thread_k": 64,
-            "blocks_per_cu": 2
+            "blocks_per_cu": 1
         },
         "128": {
             "MODE": 1000,

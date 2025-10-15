@@ -37,7 +37,7 @@ from vllm.scalar_type import scalar_types
 FP8_DTYPE = torch.float8_e4m3fnuz if current_platform.is_rocm(
 ) else torch.float8_e4m3fn
 
-is_print = True
+is_print = False
 
 def determine_expert_map(
         ep_size: int, ep_rank: int,
@@ -103,15 +103,10 @@ def get_ep_topk_ids_weight(
     local_num_experts = global_num_experts // ep_size
     # 生成返回的 topk_ids Tensor，填充255代表其他卡上的 专家索引
     topk_ids = torch.full((M, top_k), global_num_experts - 1, dtype=torch.int32, device=device)
-    
-    # 生成 [M, num_experts_select] Tensor，标记在当前卡专家上选择的专家
-    local_experts_select = torch.randint(
-        low=0, 
-        high=local_num_experts, 
-        size=(M, num_experts_select), 
-        dtype=torch.int32,
-        device=device
-    )
+
+    # 生成每一行专家索引 不重复的 local_experts_select 
+    local_experts_select = torch.stack([
+    torch.randperm(local_num_experts, device=device)[:num_experts_select] for _ in range(M) ])
 
     # 插入到 topk_ids 前 num_experts_select 个位置中
     topk_ids[:, :num_experts_select] = local_experts_select
@@ -383,7 +378,8 @@ if __name__ == "__main__":
 
     prof_results_1 = []
     prof_results_8 = []
-    for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]:
+    # for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]:
+    for num_tokens in [128, 256]:
     # for num_tokens in [32]:
         x = torch.randn((num_tokens, hidden_size), device='cuda:0', dtype=torch.bfloat16) / 10 # [256*8, 7168] (bf16)
         
