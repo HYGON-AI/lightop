@@ -98,8 +98,8 @@ __global__ void act_and_mul_quant_kernel_opt1(
    int64_t token_idx= blockIdx.x;
    int num_local_tokens = num_tokens;
   if(num_local_tokens_tensor != nullptr){
-    if(token_idx >= num_local_tokens_tensor[0] * topK)  return;
-      num_local_tokens =  num_local_tokens_tensor[0] * topK;
+    if(num_local_tokens >= num_local_tokens_tensor[0] * topK) num_local_tokens =  num_local_tokens_tensor[0] * topK;
+    if(token_idx >= num_local_tokens)  return;
   }
 
   for(; token_idx < num_local_tokens ;token_idx += gridDim.x){
@@ -176,10 +176,8 @@ __global__ void act_and_mul_quant_kernel_opt1_8192(
    int num_local_tokens = num_tokens;
   if(num_local_tokens_tensor != nullptr){
     if(token_idx >= num_local_tokens_tensor[0] * topK)  return;
-      // num_local_tokens =  num_local_tokens_tensor[0] * topK;
   }
 
-  // for(; token_idx < num_local_tokens ;token_idx += gridDim.x){
     constexpr int share_size=block_size / C10_WARP_SIZE;
     __shared__ float val_shared[share_size];
     using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
@@ -250,8 +248,8 @@ __global__ void act_and_mul_quant_kernel_opt2(
   int64_t token_idx = blockIdx.x;
   int num_local_tokens = num_tokens;
   if(num_local_tokens_tensor != nullptr){
-    if(token_idx >= num_local_tokens_tensor[0] * topK)  return;
-      num_local_tokens =  num_local_tokens_tensor[0] * topK;
+    if(num_local_tokens >= num_local_tokens_tensor[0] * topK) num_local_tokens =  num_local_tokens_tensor[0] * topK;
+    if(token_idx >= num_local_tokens)  return;    
   }
 
   for(; token_idx < num_local_tokens ;token_idx += gridDim.x){
@@ -348,14 +346,19 @@ __global__ void act_and_mul_quant_kernel_opt2(
   int d = input.size(-1) / 2;                                                  \
   int64_t num_tokens = input.numel() / input.size(-1);                         \
   int grid_opt = num_tokens;                                             \
-  if(num_local_tokens_tensor.has_value() && input.scalar_type() == at::ScalarType::BFloat16){\
-    if(num_tokens < 8192){                                                \
-      grid_opt = std::max(1, num_tokens);                                   \
-    }else if(num_tokens < 16384){                                            \
-      grid_opt = std::max(1, num_tokens/4);                                  \
-    }else{                                                                 \
-      grid_opt = std::max(1, num_tokens/8);                                      \
-    }                                                                          \
+  if(num_local_tokens_tensor.has_value()  && input.scalar_type() == at::ScalarType::BFloat16){\
+    if(expert_m != -1){\
+      grid_opt = std::max(1, expert_m * topK);\
+    }\
+    else{\
+      if(num_tokens < 8192){                                                \
+        grid_opt = std::max(1, num_tokens);                                   \
+      }else if(num_tokens < 16384){                                            \
+        grid_opt = std::max(1, num_tokens/4);                                  \
+      }else{                                                                 \
+        grid_opt = std::max(1, num_tokens/8);                                      \
+      }                                                                          \
+    }\
   }                                                                        \
   dim3 grid(grid_opt);                                                   \
   dim3 block(std::min(d, 1024));                                               \
@@ -366,7 +369,7 @@ __global__ void act_and_mul_quant_kernel_opt2(
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();                \
   VLLM_DISPATCH_FLOATING_TYPES(                                                \
       input.scalar_type(), "act_and_mul_kernel", [&] {                         \
-      if(num_tokens < 8192){\
+      if(num_tokens < 8192 && expert_m == -1){\
         if (0 == d % 8 && d <= 16384) {                                        \
           if (d <= 512) {                                                      \
             act_and_mul_quant_kernel_opt1_8192<scalar_t, 2, ACT_FIRST, 256> \
@@ -442,7 +445,7 @@ __global__ void act_and_mul_quant_kernel_opt2(
         }\
       });
 
-void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK)
+void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m)
 {
   LAUNCH_ACTIVATION_GATE_KERNEL(true);
 }
