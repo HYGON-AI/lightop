@@ -1,5 +1,6 @@
 import torch
-from lightop import op
+#from lightop import op
+from . import op
 import numbers
 import torch.nn as nn
 from typing import List, Optional, Tuple

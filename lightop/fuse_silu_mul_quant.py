@@ -1,7 +1,8 @@
 import torch
 import enum
 import torch.nn as nn
-from lightop import op
+##from lightop import op
+from . import op
 from typing import Optional, Tuple
 
 def fuse_silu_mul_quant(input: torch.Tensor, 

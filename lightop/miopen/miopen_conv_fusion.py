@@ -1,6 +1,7 @@
 import torch
 from torch import Tensor
-from lightop import op
+#from lightop import op
+from .. import op
 from typing import Union
 from torch.nn.common_types import _size_2_t
 

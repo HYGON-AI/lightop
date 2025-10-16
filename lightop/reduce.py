@@ -1,5 +1,6 @@
 import torch
-from lightop import op
+#from lightop import op
+from . import op
 
 def mean(x, dim=-1):
     assert dim < x.dim() and dim >=-1

@@ -1,7 +1,8 @@
 import torch
 import enum
 import torch.nn as nn
-from lightop import op
+#from lightop import op
+from . import op
 
 def ds_cat(
             input_A: torch.Tensor,

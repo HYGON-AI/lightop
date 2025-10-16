@@ -1,6 +1,7 @@
 import torch
 from torch.autograd import Function
-from lightop import op
+#from lightop import op
+from .. import op
 
 
 def miopen_groupnorm(x, weight, bias, num_groups, epsilon: float = 1e-5, mode: int = 0):
