@@ -35,9 +35,6 @@ from vllm.scalar_type import scalar_types
 FP8_DTYPE = torch.float8_e4m3fnuz if current_platform.is_rocm(
 ) else torch.float8_e4m3fn
 
-
-BLOCK_M_TOTAL = 80
-
 def grouped_topk(hidden_states: torch.Tensor,
                  gating_output: torch.Tensor,
                  topk: int,
