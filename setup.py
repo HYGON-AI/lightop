@@ -339,6 +339,9 @@ class BuildReleaseExtension(BuildExtension):
                     marlin_cuda_cflags = [shlex.quote(f) for f in common_cflags]
                     marlin_cuda_post_cflags = marlin_nvcc_flags
                     if IS_HIP_EXTENSION:
+                        archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936').split(';')
+                        if 'gfx936' in archs:
+                            marlin_cuda_post_cflags.append('-D__gfx936__') 
                         marlin_cuda_post_cflags = marlin_cuda_post_cflags + _get_rocm_arch_flags_marlin(marlin_cuda_post_cflags)
                         marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + marlin_cuda_post_cflags
                     append_std17_if_no_std_present(marlin_cuda_post_cflags)
