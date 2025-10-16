@@ -1,4 +1,5 @@
-from lightop import op
+#from lightop import op
+from .. import op
 
 
 def miopen_transform_tensor(input, transpose_mode: int = 0, alpha: float = 1.0, beta: float = 0.0):

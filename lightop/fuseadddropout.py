@@ -1,5 +1,6 @@
 import torch
-from lightop import op
+#from lightop import op
+from . import op
 
 
 class AddDropout(torch.nn.Module):

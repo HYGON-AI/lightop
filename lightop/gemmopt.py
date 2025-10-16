@@ -1,6 +1,7 @@
 import torch
 from typing import Optional, Dict, Any, List, NamedTuple
-from lightop import op
+#from lightop import op
+from . import op
 import functools
 import os
 import math
