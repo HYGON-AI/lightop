@@ -1,4 +1,30 @@
 import os
+import subprocess
+import importlib
+from pathlib import Path
+from torch.utils.cpp_extension import ROCM_HOME
+ROOT_DIR = Path(__file__).parent.resolve()
+
+def _run_cmd(cmd, shell=False):
+    try:
+        return subprocess.check_output(cmd, cwd=ROOT_DIR, stderr=subprocess.DEVNULL, shell=shell).decode("ascii").strip()
+    except Exception:
+        return None
+    
+def get_dtk_version(ROCM_HOME):
+    dtk_version = _run_cmd(["cat", os.path.join(ROCM_HOME, '.info/rocm_version')])
+    dtk_version = ''.join(dtk_version.split('.'))
+    dtk_version = int(dtk_version)
+    return dtk_version
+
+dtk_version = get_dtk_version(ROCM_HOME) #动态获取运行时的dtk版本
+
+if dtk_version >= 25042:
+    op = importlib.import_module('.op_core_miopen', __name__)   #包含core+miopen
+else:
+    op = importlib.import_module('.op_core', __name__)         #只包含core
+
+
 from .utils import gfx, LIGHTOP_ROOT_DIR, LIGHTOP_ASM_DIR
 from .rmsnorm import RMSNorm, RMSNormTorch, RMSNormDropout, RMSNormAddDropout, RMSNormAddDropoutBias, RMSNormAdd,rmsnorm_forward,rmsnorm_backward,rms_norm_dynamic_per_token_quant,fused_rms_norm_contiguous
 from .layernorm import LayerNorm, LnDropout, LnAddDropout, LnAddDropoutBias, LnDropPath, AddLn
@@ -25,14 +51,6 @@ from .ds_cat import ds_cat
 from .blockwise_scaling import blockwise_scaled_cast_transpose
 from .config import get_moe_cuda_config, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8, get_moe_groupgemm_config_w4a8, get_moe_groupgemm_marlin_config_w4a8
 from .config_smooth_gemm import gemm_w8a8_smooth_config
-from .miopen.miopen_mha import miopen_scaled_dot_product_attention
-from .miopen.miopen_conv_fusion import miopen_conv_bias, miopen_conv_bias_add, miopen_conv_bias_relu, miopen_conv_bias_add_relu, miopenConvBias, miopenConvBiasAdd, miopenConvBiasRelu, miopenConvBiasAddRelu
-from .miopen.miopen_groupnorm import miopen_groupnorm, miopen_add_groupnorm, miopenGroupNorm
-from .miopen.miopen_layernorm import miopen_layernorm, miopen_add_layernorm, miopen_skip_layernorm, miopenLayerNorm
-from .miopen.miopen_moe import miopen_moe_gather, miopen_moe_scatter_dynamic_quant, miopen_moe_swiglu_dynamic_quant
-from .miopen.miopen_rms import miopen_add_rms_norm_dynamic_quant, miopen_head_rms_norm, miopen_rms_norm_dynamic_quant_without_residual
-from .miopen.miopen_gemm_bias import miopen_gemm_bias
-from .miopen.miopen_transform_tensor import miopen_transform_tensor
 from .permute_unpermute import groupgemm_permute, groupgemm_unpermute, fuse_groupgemm_permute_quant
 from .moe_align_sum import moe_sum, moe_align_block_size
 try:
@@ -40,3 +58,13 @@ try:
     __version__, __dcu_version__ = version, dcu_version
 except ImportError:
     pass
+
+if dtk_version >= 25042:
+    from .miopen.miopen_mha import miopen_scaled_dot_product_attention
+    from .miopen.miopen_conv_fusion import miopen_conv_bias, miopen_conv_bias_add, miopen_conv_bias_relu, miopen_conv_bias_add_relu, miopenConvBias, miopenConvBiasAdd, miopenConvBiasRelu, miopenConvBiasAddRelu
+    from .miopen.miopen_groupnorm import miopen_groupnorm, miopen_add_groupnorm, miopenGroupNorm
+    from .miopen.miopen_layernorm import miopen_layernorm, miopen_add_layernorm, miopen_skip_layernorm, miopenLayerNorm
+    from .miopen.miopen_moe import miopen_moe_gather, miopen_moe_scatter_dynamic_quant, miopen_moe_swiglu_dynamic_quant
+    from .miopen.miopen_rms import miopen_add_rms_norm_dynamic_quant, miopen_head_rms_norm, miopen_rms_norm_dynamic_quant_without_residual
+    from .miopen.miopen_gemm_bias import miopen_gemm_bias
+    from .miopen.miopen_transform_tensor import miopen_transform_tensor

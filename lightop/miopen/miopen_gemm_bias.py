@@ -1,4 +1,5 @@
-from lightop import op
+#from lightop import op
+from .. import op
 
 
 def miopen_gemm_bias(input_a, input_b, bias):

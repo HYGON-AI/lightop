@@ -1,4 +1,5 @@
-from lightop import op
+#from lightop import op
+from .. import op
 
 
 def miopen_moe_scatter_dynamic_quant(

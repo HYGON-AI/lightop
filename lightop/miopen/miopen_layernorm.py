@@ -1,6 +1,7 @@
 import numbers
 import torch
-from lightop import op
+#from lightop import op
+from .. import op
 from .miopen_utils import _shape_t
 
 
