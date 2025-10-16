@@ -4,7 +4,8 @@ from typing import Optional
 from typing import Any, List, Optional, Tuple, TYPE_CHECKING, Union
 
 from torch import Tensor
-from lightop import op
+#from lightop import op
+from . import op
 
 
 def _get_softmax_dim(name: str, ndim: int, stacklevel: int) -> int:

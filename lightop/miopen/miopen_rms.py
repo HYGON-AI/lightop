@@ -1,4 +1,5 @@
-from lightop import op
+#from lightop import op
+from .. import op
 
 
 def miopen_add_rms_norm_dynamic_quant(x, x2, weight, smoothScale, epsilon):

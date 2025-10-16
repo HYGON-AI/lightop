@@ -115,7 +115,7 @@ void blockwise_scaled_cast_transpose(const Tensor& input,std::optional<Tensor> o
                                     std::optional<Tensor> output_t,std::optional<Tensor> scale_inv_t,std::optional<Tensor> noop,
                                     const int block_len,const int block_scaling_dim,const bool rowwise,const bool columnwise,
                                     const float epsilon,const bool pow2_scale,const bool all_gather_usage, at::ScalarType out_dtype);
-
+#ifdef USE_MIOPEN
 Tensor miopen_fused_conv_bias_forward(const Tensor &x, const Tensor &weight, const Tensor &bias, const std::vector<int64_t> &pads, const std::vector<int64_t> &strides, const std::vector<int64_t> &dilations);
 Tensor miopen_fused_conv_bias_add_forward(const Tensor &x, const Tensor &weight, const Tensor &bias, const Tensor &add, const std::vector<int64_t> &pads, const std::vector<int64_t> &strides, const std::vector<int64_t> &dilations);
 Tensor miopen_fused_conv_bias_add_relu_forward(const Tensor &x, const Tensor &weight, const Tensor &bias, const Tensor &add, const std::vector<int64_t> &pads, const std::vector<int64_t> &strides, const std::vector<int64_t> &dilations);
@@ -135,6 +135,7 @@ Tensor miopen_moe_gather(const Tensor &scatter_tokens, const Tensor &token_offse
 Tensor miopen_scaled_dot_product_attention(const Tensor &query, const Tensor &key, const Tensor &value, const std::optional<Tensor> &attn_mask_, const double droprate, const bool is_causal, std::optional<double> scale, const bool enable_gqa);
 Tensor miopen_gemm_bias(const Tensor &input_a, const Tensor &input_b, const Tensor &bias);
 Tensor miopen_transform_tensor(const Tensor &input, const int transpose_mode, const float alpha, const float beta);
+#endif
 
 void rms_norm_dynamic_per_token_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input);
 void create_gemmbias_handle();
@@ -239,6 +240,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("moe_gemm_w4a8", &at::native::moe_gemm_w4a8, "moe_gemm_w4a8");
   m.def("gemm_w8_a8_smooth_colmajor", &at::native::gemm_w8_a8_smooth_colmajor, "gemm_w8_a8_smooth_colmajor");
   m.def("gemm_w8a8_smooth_asm", &at::native::gemm_w8a8_smooth_asm, "gemm_w8a8_smooth_asm");
+#ifdef USE_MIOPEN
   m.def("miopen_conv_bias", &at::native::miopen_fused_conv_bias_forward, "fused_conv_bias forward");
   m.def("miopen_conv_bias_add", &at::native::miopen_fused_conv_bias_add_forward, "fused_conv_bias_add forward");
   m.def("miopen_conv_bias_relu", &at::native::miopen_fused_conv_bias_relu_forward, "fused_conv_bias_relu forward");
@@ -258,6 +260,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("miopen_scaled_dot_product_attention", &at::native::miopen_scaled_dot_product_attention, "miopen_scaled_dot_product_attention");
   m.def("miopen_gemm_bias", &at::native::miopen_gemm_bias, "miopen_gemm_bias");
   m.def("miopen_transform_tensor", &at::native::miopen_transform_tensor, "miopen_transform_tensor");
+#endif
   m.def("store_kv_cache", &at::native::store_kv_cache, "store_kv_cache");
   m.def("store_kv_cache_paged", &at::native::store_kv_cache_paged, "store_kv_cache_paged");
   m.def("topk_softmax", &at::native::topk_softmax, "topk_softmax");

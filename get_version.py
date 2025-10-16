@@ -43,6 +43,13 @@ def _make_version_file(version, sha, abi, dtk, torch_version, branch):
         f.write(f"dcu_version = '{dcu_version}'\n")
     return dcu_version
 
+def get_dtk_version(ROCM_HOME):
+    dtk_version = _run_cmd(["cat", os.path.join(ROCM_HOME, '.info/rocm_version')])
+    dtk_version = ''.join(dtk_version.split('.'))
+    dtk_version = int(dtk_version)
+    return dtk_version
+
+
 
 def _get_pytorch_version():
     if "PYTORCH_VERSION" in os.environ:
