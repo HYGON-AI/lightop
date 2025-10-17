@@ -3,7 +3,8 @@ import os
 
 from torch.autograd import Function
 import torch
-from lightop import op
+#from lightop import op
+from . import op
 from torch.nn.parameter import Parameter
 from torch import Tensor
 from torch.nn import init

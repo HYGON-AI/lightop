@@ -1,5 +1,6 @@
 import torch
-from lightop import op
+#from lightop import op
+from . import op
 import torch.nn.functional as F
 
 class RotaryEmbedding(torch.nn.Module):

@@ -11,7 +11,7 @@
         hipError_t err = call;                                                                                                   \
         if (err != hipSuccess)                                                                                                   \
         {                                                                                                                        \
-            printf("\n[AITER] %s:%d fail to call %s ---> [HIP error](%s)\n", __FILE__, __LINE__, #call, hipGetErrorString(err)); \
+            printf("\n[lightop] %s:%d fail to call %s ---> [HIP error](%s)\n", __FILE__, __LINE__, #call, hipGetErrorString(err)); \
             exit(0);                                                                                                             \
         }                                                                                                                        \
     } while (0)
@@ -55,10 +55,10 @@ public:
     AiterAsmKernel(const char *name, const char *hsaco)
     {
         const char *LIGHTOP_ASM_DIR = std::getenv("LIGHTOP_ASM_DIR");
-        // std::cout << "[lightop] hipModuleLoad: " << (std::string(LIGHTOP_ASM_DIR) + hsaco).c_str() << " GetFunction: " << name;
+        std::cout << "[lightop] hipModuleLoad: " << (std::string(LIGHTOP_ASM_DIR) + hsaco).c_str() << " GetFunction: " << name;
         HIP_CALL(hipModuleLoad(&module, (std::string(LIGHTOP_ASM_DIR) + hsaco).c_str()));
         HIP_CALL(hipModuleGetFunction(&kernel_func, module, name));
-        // std::cout << " Success" << std::endl;
+        std::cout << " Success" << std::endl;
     };
 
     ~AiterAsmKernel()
@@ -76,6 +76,18 @@ public:
                                        kargs.gdx, kargs.gdy, kargs.gdz,
                                        kargs.bdx, kargs.bdy, kargs.bdz,
                                        0, kargs.stream, nullptr, (void **)&config));
+    };
+
+    void launch_kernel_ext(const AiterAsmKernelArgs &kargs)
+    {
+        void *config[] = {HIP_LAUNCH_PARAM_BUFFER_POINTER, kargs.args_ptr,
+                          HIP_LAUNCH_PARAM_BUFFER_SIZE, kargs.arg_size_ptr,
+                          HIP_LAUNCH_PARAM_END};
+
+        HIP_CALL(hipExtModuleLaunchKernel(kernel_func,
+                                       kargs.gdx * kargs.bdx, kargs.gdy * kargs.bdy, kargs.gdz * kargs.bdz,
+                                       kargs.bdx, kargs.bdy, kargs.bdz,
+                                       0, kargs.stream, nullptr, (void **)&config, 0, 0, 0));
     };
 };
 

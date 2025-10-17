@@ -1,16 +1,18 @@
 # Lightop
 
-## 简介
+# 简介
 Lightop是一个自研的融合算子库，提供了大量的自研算子，用来加速模型的推理和训练。
 
 这些算子通常从torch里面获取，然后进行性能优化，常见的norm类算子比torch native有2-5倍的性能提升。
 
-## 安装
+# 安装
 
 环境依赖：
 pytorch1.10 \ pytorch1.13 \ pytorch2.0 \ pytorch2.1 \ pytoch2.3
 
 dtk22.04 \ dtk22.10 \ dtk23.04 \ dtk23.10 \ dtk24.04
+
+
 
 安装脚本：
 
@@ -20,31 +22,52 @@ python3 setup.py install
 
 PYTORCH_ROCM_ARCH='gfx906;gfx926' python3 setup.py install
 
+
+
 编译安装包：
 
 python3 setup.py install bdist_wheel
 
 编译好之后，安装包在dist目录
 
-## 测试
-进入test文件夹
+# 算子介绍
 
-运行任意一个测试脚本，例如：
+## 核心算子
 
-python3 test_ln_add_dropout.py
+核心算子主要包括quant_gemm、moe_gemm，具体算子类型和开发负责人如下：
 
-运行python3 all_test.py可以测试全部脚本
+<table>
+  <th>算子</th><th>开发负责人</th><th>性能表</th>
+    <tr>
+        <td>gemm_w8a8</td><td>郑光飞 谢松林 马翔</td><td></td>
+    </tr>
+    <tr>
+        <td>moe_gemm_w8a8</td><td>杨亿男 罗尧</td><td>https://r0ddbu55vzx.feishu.cn/sheets/Fr3wsNhrmh777xtl7v4cOodjnH0?sheet=ClHIQQ</td>
+    </tr>
+    <tr>
+        <td>moe_gemm_w4a8</td><td>王安全 刘振成 桂中化</td><td></td>
+    </tr>
+    <tr>
+        <td>moe_gemmm_w4a16</td><td>刘振成</td><td></td>
+    </tr>
+</table>
 
-测试模型时，参考测试脚本里调用算子的方法。
+**测试方法：**
 
-若无test文件夹，则运行以下指令验证是否安装成功：
-```shell
-python -c "import lightop; print(lightop.__version__)",若成功打印版本信息则安装成功。
+```
+cd ./test
+
+benchmark_test_kernel.sh
+
+生成对应的算子性能和精度表格
+
 ```
 
-## 算子简介
 
-以下时间均为单次前向传播和反向传播的总时间，包括了CPU时间和GPU时间。测试环境：pytorch1.13, dtk23.04, 10.6.10.67服务器z100计算卡。
+
+## torch算子
+
+主要对应的torch的原生算子，以下时间均为单次前向传播和反向传播的总时间，包括了CPU时间和GPU时间。测试环境：pytorch1.13, dtk23.04, 10.6.10.67服务器z100计算卡。
 
 <table>
   <th>算子</th><th>测试size</th><th>优化前</th><th>优化后</th><th>性能提升</th><th>使用说明</th>
@@ -116,3 +139,20 @@ python -c "import lightop; print(lightop.__version__)",若成功打印版本信�
     </tr>
 
 </table>
+
+**测试方式：**
+
+- 进入test文件夹
+
+- 运行任意一个测试脚本，例如：python3 test_ln_add_dropout.py
+
+- 运行python3 all_test.py可以测试全部脚本
+
+- 测试模型时，参考测试脚本里调用算子的方法。
+
+- 若无test文件夹，则运行以下指令验证是否安装成功：
+
+```shell
+python -c "import lightop; print(lightop.__version__)",若成功打印版本信息则安装成功。
+```
+

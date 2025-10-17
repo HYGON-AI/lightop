@@ -29,7 +29,7 @@ def _make_version_file(version, sha, abi, dtk, torch_version, branch):
     sha = "Unknown" if sha is None else sha
     torch_version = '.'.join(torch_version.split('.')[:2])
     # dcu_version = f"{version}+das1.1git{sha}.abi{abi}.dtk{dtk}.torch{torch_version}"
-    dcu_version = f"{version}+das.dtk{dtk}"
+    dcu_version = f"{version}+das.dtk{dtk}.{sha}"
     print("dcu_version")
     print(dcu_version)
     version_path = ROOT_DIR / "lightop" / "version.py"
@@ -42,6 +42,13 @@ def _make_version_file(version, sha, abi, dtk, torch_version, branch):
         f.write(f"torch_version = '{torch_version}'\n")
         f.write(f"dcu_version = '{dcu_version}'\n")
     return dcu_version
+
+def get_dtk_version(ROCM_HOME):
+    dtk_version = _run_cmd(["cat", os.path.join(ROCM_HOME, '.info/rocm_version')])
+    dtk_version = ''.join(dtk_version.split('.'))
+    dtk_version = int(dtk_version)
+    return dtk_version
+
 
 
 def _get_pytorch_version():
