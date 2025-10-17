@@ -41,3 +41,19 @@ LIGHTOP_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 LIGHTOP_ASM_DIR = f"{LIGHTOP_ROOT_DIR}/hsa/{gfx}/"
 os.environ["LIGHTOP_ASM_DIR"] = LIGHTOP_ASM_DIR
 # print(f"[lightop] LIGHTOP_ASM_DIR={LIGHTOP_ASM_DIR}")
+
+
+@functools.lru_cache(maxsize=1)
+def get_CUs():
+    try:
+        result = subprocess.run(
+            ["rocminfo"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        output = result.stdout
+        for line in reversed(output.split("\n")):
+            if "compute unit" in line.lower():
+                return line.split(":")[-1].strip()
+    except Exception as e:
+        raise RuntimeError(f"Get DCU CUS from rocminfo failed {str(e)}")
+CUs = get_CUs()
+os.environ["LIGHTOP_GPU_CUS"] = CUs

@@ -1,8 +1,9 @@
 import torch
-from lightop import op
+#from lightop import op
+from . import op
 import numbers
 import torch.nn as nn
-
+from typing import List, Optional, Tuple
 
 def rmsnorm_forward(x,weight,output=None,eps:float = 1e-5,training:bool=True):
     return op.rmsnorm_forward(x,weight,output,eps,training)
@@ -144,3 +145,30 @@ class RMSNormAddDropoutBias(torch.nn.Module):
 
     def extra_repr(self):
         return f'rate={round(self.rate,3):0.3f},eps={round(self.eps,5):0.5f}'
+
+def rms_norm_dynamic_per_token_quant(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    epsilon: float,
+    quant_dtype: torch.dtype,
+    residual: Optional[torch.Tensor] = None,
+    update_input: bool = True
+) -> tuple[torch.Tensor, torch.Tensor]:
+    output = torch.empty_like(input, dtype=quant_dtype)
+    scales = torch.empty((input.numel() // input.shape[-1], 1),
+                        device=input.device,
+                        dtype=torch.float32)
+
+    op.rms_norm_dynamic_per_token_quant(output, input, weight,
+                                                    scales, epsilon,
+                                                    residual, update_input)
+    return output, scales
+
+def fused_rms_norm_contiguous(
+    out: torch.Tensor,
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    epsilon: float
+) -> torch.Tensor:
+    op.fused_rms_norm_contiguous(out, input, weight, epsilon)
+    return out

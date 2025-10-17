@@ -2,7 +2,8 @@ from torch.autograd import Function
 import torch
 from torch import Tensor
 
-from lightop import op
+#from lightop import op
+from . import op
 
 
 class FuseBiasGeluFunction(Function):

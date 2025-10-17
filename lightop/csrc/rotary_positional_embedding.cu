@@ -49,8 +49,18 @@
 #define grad_out(sq_id, b_id, head_id, hn_id) \
         (grad_out + sq_id * b * np * hn + b_id * np * hn + head_id * hn + hn_id)
 
+template <typename T, int N>
+struct alignas(sizeof(T) * N) Vector {
+    T val[N];
+};
+template <typename Element, size_t len>
+struct vec {
+    using type = __attribute__((__vector_size__(len * sizeof(Element)))) Element;
+};
 namespace at{
 namespace native{
+
+    
 
 template <typename scalar_t, int BLOCK_NP, int BLOCK_HN, int VEC>
 __global__ void RoPE_gpu_kernel(int sq, int b, int np, int hn,
@@ -142,6 +152,499 @@ __global__ void RoPE_backward_gpu_kernel(int sq, int b, int np,
         }
     }
 }
+template <typename scalar_t, bool IS_NEOX, int num_tokens_per_block,
+          int total_thread_per_tokens, int num_group_per_token_q,
+          int num_group_per_token_k, int thread_per_head_q,
+          int thread_per_head_k, int VEC_SIZE_Q, int VEC_SIZE_K, int Rot_dim>
+__global__ void rotary_embedding_kernel_opt(
+    const int64_t* __restrict__ positions,      // [batch_size, seq_len] or [num_tokens]
+    scalar_t* __restrict__ query,              // [batch_size, seq_len, num_heads, head_size] or [num_tokens, num_heads, head_size]
+    scalar_t* __restrict__ key,                // nullptr or [batch_size, seq_len, num_kv_heads, head_size] or [num_tokens, num_kv_heads, head_size]
+    const scalar_t* __restrict__ cos_sin_cache,  // [max_position, 2, rot_dim / 2]
+    const int rot_dim, const int64_t query_stride, const int64_t key_stride,
+    const int64_t head_stride, const int num_heads, const int num_kv_heads,
+    const int head_size, const int num_tokens) {
+    const int token_idx =
+        blockIdx.x * num_tokens_per_block + threadIdx.x / total_thread_per_tokens;
+    if (token_idx >= num_tokens) {
+        return;
+    }
+    int64_t pos = positions[token_idx];
+    const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+    const int embed_dim = rot_dim / 2;
+
+    using vector_q = Vector<scalar_t, VEC_SIZE_Q>;
+    using vector_k = Vector<scalar_t, VEC_SIZE_K>;
+
+    const int group_id_q = (threadIdx.x / thread_per_head_q) % num_group_per_token_q;
+    const int local_id_q = threadIdx.x % thread_per_head_q;
+    const int group_id_k = (threadIdx.x / thread_per_head_k) % num_group_per_token_k;
+    const int local_id_k = threadIdx.x % thread_per_head_k;
+    const int rot_offset_q = local_id_q * VEC_SIZE_Q;
+    int rot_offset_k = local_id_k * VEC_SIZE_K;
+
+    // for seme
+    const int local_token_idx = threadIdx.x / total_thread_per_tokens;
+    const int laneid = threadIdx.x & (total_thread_per_tokens - 1);
+    const int thread_per_load_num = Rot_dim / total_thread_per_tokens;
+    __shared__ scalar_t cos_sin_seme[num_tokens_per_block][Rot_dim];
+
+#pragma unroll
+    for (int i = 0; i < thread_per_load_num; i++) {
+        cos_sin_seme[local_token_idx][laneid * thread_per_load_num + i] = cache_ptr[laneid * thread_per_load_num + i];
+    }
+    __syncthreads();
+  
+    if constexpr(IS_NEOX) {  // gpt-neox style
+        const vector_q cos_vec = *reinterpret_cast<const vector_q*>(&cos_sin_seme[local_token_idx][rot_offset_q]);
+        const vector_q sin_vec = *reinterpret_cast<const vector_q*>(&cos_sin_seme[local_token_idx][rot_offset_q + embed_dim]);
+        
+        for (int head_idx = group_id_q; head_idx < num_heads; head_idx += num_group_per_token_q) {
+            const int64_t token_head_base = token_idx * query_stride + head_idx * head_stride;
+
+            auto x_ptr = reinterpret_cast<vector_q*>(&query[token_head_base + rot_offset_q]);
+            auto y_ptr = reinterpret_cast<vector_q*>(&query[token_head_base + rot_offset_q + embed_dim]);
+
+            const vector_q x = *x_ptr;
+            const vector_q y = *y_ptr;
+
+            vector_q x_out;
+            vector_q y_out;
+
+#pragma unroll
+            for (int i = 0; i < VEC_SIZE_Q; i++) {
+                y_out.val[i] = fma(y.val[i], cos_vec.val[i], x.val[i] * sin_vec.val[i]);
+                x_out.val[i] = fma(x.val[i], cos_vec.val[i], -y.val[i] * sin_vec.val[i]);
+            }
+
+            *x_ptr = x_out;
+            *y_ptr = y_out;
+        }
+
+        if (key != nullptr) {
+            const vector_k cos_vec_k = *reinterpret_cast<const vector_k*>(&cos_sin_seme[local_token_idx][rot_offset_k]);
+            const vector_k sin_vec_k = *reinterpret_cast<const vector_k*>(&cos_sin_seme[local_token_idx][rot_offset_k + embed_dim]);
+            for (int head_idx = group_id_k; head_idx < num_kv_heads; head_idx += num_group_per_token_k) {
+                const int64_t token_head_base = token_idx * key_stride + head_idx * head_stride;
+
+                auto x_ptr = reinterpret_cast<vector_k*>(&key[token_head_base + rot_offset_k]);
+                auto y_ptr = reinterpret_cast<vector_k*>(&key[token_head_base + rot_offset_k + embed_dim]);
+
+                const vector_k x = *x_ptr;
+                const vector_k y = *y_ptr;
+
+                vector_k x_out;
+                vector_k y_out;
+
+#pragma unroll
+                for (int i = 0; i < VEC_SIZE_K; i++) {
+                    y_out.val[i] = fma(y.val[i], cos_vec_k.val[i], x.val[i] * sin_vec_k.val[i]);
+                    x_out.val[i] = fma(x.val[i], cos_vec_k.val[i], -y.val[i] * sin_vec_k.val[i]);
+                }
+                *x_ptr = x_out;
+                *y_ptr = y_out;
+            }
+        }
+    } else {  // gpt-j style
+        for (int head_idx = group_id_q; head_idx < num_heads; head_idx += num_group_per_token_q) {
+        
+            const int current_rot_offset = local_id_q * VEC_SIZE_Q * 2;
+
+            if (current_rot_offset >= rot_dim) {
+                continue;
+            }
+
+            const int64_t token_head_base = token_idx * query_stride + head_idx * head_stride;
+         
+            auto* x_ptr = reinterpret_cast<vector_q*>(&query[token_head_base + current_rot_offset]);
+            auto* y_ptr = reinterpret_cast<vector_q*>(&query[token_head_base + current_rot_offset + VEC_SIZE_Q]);
+            
+            const vector_q x_in = *x_ptr;
+            const vector_q y_in = *y_ptr;
+            vector_q x_out;
+            vector_q y_out;
+
+
+            #pragma unroll
+            for (int i = 0; i < VEC_SIZE_Q; i += 2) {
+                const int cache_idx = (current_rot_offset + i) / 2;
+                const scalar_t cos_val = cos_sin_seme[local_token_idx][cache_idx];
+                const scalar_t sin_val = cos_sin_seme[local_token_idx][cache_idx + embed_dim];
+                const scalar_t x0 = x_in.val[i];
+                const scalar_t x1 = x_in.val[i + 1];
+                x_out.val[i]     = fma(x0, cos_val, -x1 * sin_val);
+                x_out.val[i + 1] = fma(x1, cos_val, x0 * sin_val);
+            }
+            
+            #pragma unroll
+            for (int i = 0; i < VEC_SIZE_Q; i += 2) {
+                const int cache_idx = (current_rot_offset + VEC_SIZE_Q + i) / 2;
+                const scalar_t cos_val = cos_sin_seme[local_token_idx][cache_idx];
+                const scalar_t sin_val = cos_sin_seme[local_token_idx][cache_idx + embed_dim];
+                const scalar_t y0 = y_in.val[i];
+                const scalar_t y1 = y_in.val[i + 1];
+                y_out.val[i]     = fma(y0, cos_val, -y1 * sin_val);
+                y_out.val[i + 1] = fma(y1, cos_val, y0 * sin_val);
+            }
+            
+            *x_ptr = x_out;
+            *y_ptr = y_out;
+        }
+        if (key != nullptr) {
+            for (int head_idx = group_id_k; head_idx < num_kv_heads; head_idx += num_group_per_token_k) {
+                const int current_rot_offset = local_id_k * VEC_SIZE_K * 2;
+                if (current_rot_offset >= rot_dim) {
+                    continue;
+                }
+                if constexpr(VEC_SIZE_K == 1){
+                    const int64_t token_head_base = token_idx * key_stride + head_idx * head_stride;
+                    using vector_2 = Vector<scalar_t, 2>;
+                    auto* x_ptr = reinterpret_cast<vector_2*>(&key[token_head_base + current_rot_offset]);
+                    const vector_2 x_in = *x_ptr;
+                    vector_2 x_out;
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE_K; i += 2) {
+                        const int cache_idx = (current_rot_offset + i) / 2;
+                        const scalar_t cos_val = cos_sin_seme[local_token_idx][cache_idx];
+                        const scalar_t sin_val = cos_sin_seme[local_token_idx][cache_idx + embed_dim];
+                        const scalar_t x0 = x_in.val[i];
+                        const scalar_t x1 = x_in.val[i + 1];
+                        x_out.val[i]     = fma(x0, cos_val, -x1 * sin_val);
+                        x_out.val[i + 1] = fma(x1, cos_val, x0 * sin_val);
+                    }
+                    *x_ptr = x_out;
+                }else{
+                    const int64_t token_head_base = token_idx * key_stride + head_idx * head_stride;
+                    
+                    auto* x_ptr = reinterpret_cast<vector_k*>(&key[token_head_base + current_rot_offset]);
+                    auto* y_ptr = reinterpret_cast<vector_k*>(&key[token_head_base + current_rot_offset + VEC_SIZE_K]);
+                    
+                    const vector_k x_in = *x_ptr;
+                    const vector_k y_in = *y_ptr;
+                    vector_k x_out;
+                    vector_k y_out;
+
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE_K; i += 2) {
+                        const int cache_idx = (current_rot_offset + i) / 2;
+                        const scalar_t cos_val = cos_sin_seme[local_token_idx][cache_idx];
+                        const scalar_t sin_val = cos_sin_seme[local_token_idx][cache_idx + embed_dim];
+                        const scalar_t x0 = x_in.val[i];
+                        const scalar_t x1 = x_in.val[i + 1];
+                        x_out.val[i]     = fma(x0, cos_val, -x1 * sin_val);
+                        x_out.val[i + 1] = fma(x1, cos_val, x0 * sin_val);
+                    }
+
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE_K; i += 2) {
+                        const int cache_idx = (current_rot_offset + VEC_SIZE_K + i) / 2;
+                        const scalar_t cos_val = cos_sin_seme[local_token_idx][cache_idx];
+                        const scalar_t sin_val = cos_sin_seme[local_token_idx][cache_idx + embed_dim];
+                        const scalar_t y0 = y_in.val[i];
+                        const scalar_t y1 = y_in.val[i + 1];
+                        y_out.val[i]     = fma(y0, cos_val, -y1 * sin_val);
+                        y_out.val[i + 1] = fma(y1, cos_val, y0 * sin_val);
+                    }
+                    
+                    *x_ptr = x_out;
+                    *y_ptr = y_out;
+                }
+            }
+        }
+    }
+}
+
+//deepseek 融合q、k
+template <typename scalar_t, bool IS_NEOX, int num_tokens_per_block,
+          int total_thread_per_tokens, int num_group_per_token_q,
+          int num_group_per_token_k, int thread_per_head_q,
+          int thread_per_head_k, int VEC_SIZE_Q, int VEC_SIZE_K, int Rot_dim>
+__global__ void rotary_embedding_deepseek_kernel_opt(
+    const int64_t* __restrict__ positions,      // [batch_size, seq_len] or [num_tokens]
+    scalar_t* __restrict__ query,              // [batch_size, seq_len, num_heads, head_size] or [num_tokens, num_heads, head_size]
+    scalar_t* __restrict__ key,                // nullptr or [batch_size, seq_len, num_kv_heads, head_size] or [num_tokens, num_kv_heads, head_size]
+    const scalar_t* __restrict__ cos_sin_cache,  // [max_position, 2, rot_dim / 2]
+    const int rot_dim, const int64_t query_stride, const int64_t key_stride,
+    const int64_t head_stride, const int num_heads, const int num_kv_heads,
+    const int head_size, const int num_tokens) {
+    const int token_idx =
+        blockIdx.x * num_tokens_per_block + threadIdx.x / total_thread_per_tokens;
+    if (token_idx >= num_tokens) {
+        return;
+    }
+    int64_t pos = positions[token_idx];
+    const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+    const int embed_dim = rot_dim / 2;
+
+    using vector_q = Vector<scalar_t, VEC_SIZE_Q>;
+    using vector_k = Vector<scalar_t, VEC_SIZE_K>;
+
+    const int group_id_q = (threadIdx.x / thread_per_head_q) % num_group_per_token_q;
+    const int local_id_q = threadIdx.x % thread_per_head_q;
+    const int group_id_k = (threadIdx.x / thread_per_head_k) % num_group_per_token_k;
+    const int local_id_k = threadIdx.x % thread_per_head_k;
+    const int rot_offset_q = local_id_q * VEC_SIZE_Q;
+    int rot_offset_k = local_id_k * VEC_SIZE_K;
+
+    // for seme
+    const int local_token_idx = threadIdx.x / total_thread_per_tokens;
+    const int laneid = threadIdx.x & (total_thread_per_tokens - 1);
+    const int thread_per_load_num = Rot_dim / total_thread_per_tokens;
+    __shared__ scalar_t cos_sin_seme[num_tokens_per_block][Rot_dim];
+
+#pragma unroll
+    for (int i = 0; i < thread_per_load_num; i++) {
+        cos_sin_seme[local_token_idx][laneid * thread_per_load_num + i] = cache_ptr[laneid * thread_per_load_num + i];
+    }
+    __syncthreads();
+  
+    if constexpr(IS_NEOX) {  // gpt-neox style
+        const vector_q cos_vec = *reinterpret_cast<const vector_q*>(&cos_sin_seme[local_token_idx][rot_offset_q]);
+        const vector_q sin_vec = *reinterpret_cast<const vector_q*>(&cos_sin_seme[local_token_idx][rot_offset_q + embed_dim]);
+        
+        for (int head_idx = group_id_q; head_idx < num_heads; head_idx += num_group_per_token_q) {
+            const int64_t token_head_base = token_idx * query_stride + head_idx * head_stride;
+
+            auto x_ptr = reinterpret_cast<vector_q*>(&query[token_head_base + rot_offset_q]);
+            auto y_ptr = reinterpret_cast<vector_q*>(&query[token_head_base + rot_offset_q + embed_dim]);
+
+            const vector_q x = *x_ptr;
+            const vector_q y = *y_ptr;
+
+            vector_q x_out;
+            vector_q y_out;
+
+#pragma unroll
+            for (int i = 0; i < VEC_SIZE_Q; i++) {
+                x_out.val[i] = x.val[i] * cos_vec.val[i] - y.val[i] * sin_vec.val[i];
+                y_out.val[i] = y.val[i] * cos_vec.val[i] + x.val[i] * sin_vec.val[i];
+            }
+
+            *x_ptr = x_out;
+            *y_ptr = y_out;
+        }
+
+        if (key != nullptr) {
+            const vector_k cos_vec_k = *reinterpret_cast<const vector_k*>(&cos_sin_seme[local_token_idx][rot_offset_k]);
+            const vector_k sin_vec_k = *reinterpret_cast<const vector_k*>(&cos_sin_seme[local_token_idx][rot_offset_k + embed_dim]);
+            for (int head_idx = group_id_k; head_idx < num_kv_heads; head_idx += num_group_per_token_k) {
+                const int64_t token_head_base = token_idx * key_stride + head_idx * head_stride;
+
+                auto x_ptr = reinterpret_cast<vector_k*>(&key[token_head_base + rot_offset_k]);
+                auto y_ptr = reinterpret_cast<vector_k*>(&key[token_head_base + rot_offset_k + embed_dim]);
+
+                const vector_k x = *x_ptr;
+                const vector_k y = *y_ptr;
+
+                vector_k x_out;
+                vector_k y_out;
+
+#pragma unroll
+                for (int i = 0; i < VEC_SIZE_K; i++) {
+                    y_out.val[i] = y.val[i] * cos_vec_k.val[i] + x.val[i] * sin_vec_k.val[i];
+                    x_out.val[i] = x.val[i] * cos_vec_k.val[i] - y.val[i] * sin_vec_k.val[i];
+                }
+                *x_ptr = x_out;
+                *y_ptr = y_out;
+            }
+        }
+    } else {  // gpt-j style
+        for (int head_idx = group_id_q; head_idx < num_heads; head_idx += num_group_per_token_q) {
+        
+            const int current_rot_offset = local_id_q * VEC_SIZE_Q * 2;
+
+            if (current_rot_offset >= rot_dim) {
+                continue;
+            }
+
+            const int64_t token_head_base = token_idx * query_stride + head_idx * head_stride;
+         
+            auto* x_ptr = reinterpret_cast<vector_q*>(&query[token_head_base + current_rot_offset]);
+            auto* y_ptr = reinterpret_cast<vector_q*>(&query[token_head_base + current_rot_offset + VEC_SIZE_Q]);
+            
+            const vector_q x_in = *x_ptr;
+            const vector_q y_in = *y_ptr;
+            vector_q x_out;
+            vector_q y_out;
+
+
+            #pragma unroll
+            for (int i = 0; i < VEC_SIZE_Q; i += 2) {
+                const int cache_idx = (current_rot_offset + i) / 2;
+                const scalar_t cos_val = cos_sin_seme[local_token_idx][cache_idx];
+                const scalar_t sin_val = cos_sin_seme[local_token_idx][cache_idx + embed_dim];
+                const scalar_t x0 = x_in.val[i];
+                const scalar_t x1 = x_in.val[i + 1];
+                x_out.val[i]     = x0 * cos_val - x1 * sin_val;
+                x_out.val[i + 1] = x1 * cos_val + x0 * sin_val;
+            }
+            
+            #pragma unroll
+            for (int i = 0; i < VEC_SIZE_Q; i += 2) {
+                const int cache_idx = (current_rot_offset + VEC_SIZE_Q + i) / 2;
+                const scalar_t cos_val = cos_sin_seme[local_token_idx][cache_idx];
+                const scalar_t sin_val = cos_sin_seme[local_token_idx][cache_idx + embed_dim];
+                const scalar_t y0 = y_in.val[i];
+                const scalar_t y1 = y_in.val[i + 1];
+                y_out.val[i]     = y0 * cos_val - y1 * sin_val;
+                y_out.val[i + 1] = y1 * cos_val + y0 * sin_val;
+            }
+            
+            *x_ptr = x_out;
+            *y_ptr = y_out;
+        }
+        if (key != nullptr) {
+            for (int head_idx = group_id_k; head_idx < num_kv_heads; head_idx += num_group_per_token_k) {
+                const int current_rot_offset = local_id_k * VEC_SIZE_K * 2;
+                if (current_rot_offset >= rot_dim) {
+                    continue;
+                }
+                if constexpr(VEC_SIZE_K == 1){
+                    const int64_t token_head_base = token_idx * key_stride + head_idx * head_stride;
+                    using vector_2 = Vector<scalar_t, 2>;
+                    auto* x_ptr = reinterpret_cast<vector_2*>(&key[token_head_base + current_rot_offset]);
+                    const vector_2 x_in = *x_ptr;
+                    vector_2 x_out;
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE_K; i += 2) {
+                        const int cache_idx = (current_rot_offset + i) / 2;
+                        const scalar_t cos_val = cos_sin_seme[local_token_idx][cache_idx];
+                        const scalar_t sin_val = cos_sin_seme[local_token_idx][cache_idx + embed_dim];
+                        const scalar_t x0 = x_in.val[i];
+                        const scalar_t x1 = x_in.val[i + 1];
+                        x_out.val[i]     = x0 * cos_val - x1 * sin_val;
+                        x_out.val[i + 1] = x1 * cos_val + x0 * sin_val;
+                    }
+                    *x_ptr = x_out;
+                }else{
+                    const int64_t token_head_base = token_idx * key_stride + head_idx * head_stride;
+                    
+                    auto* x_ptr = reinterpret_cast<vector_k*>(&key[token_head_base + current_rot_offset]);
+                    auto* y_ptr = reinterpret_cast<vector_k*>(&key[token_head_base + current_rot_offset + VEC_SIZE_K]);
+                    
+                    const vector_k x_in = *x_ptr;
+                    const vector_k y_in = *y_ptr;
+                    vector_k x_out;
+                    vector_k y_out;
+
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE_K; i += 2) {
+                        const int cache_idx = (current_rot_offset + i) / 2;
+                        const scalar_t cos_val = cos_sin_seme[local_token_idx][cache_idx];
+                        const scalar_t sin_val = cos_sin_seme[local_token_idx][cache_idx + embed_dim];
+                        const scalar_t x0 = x_in.val[i];
+                        const scalar_t x1 = x_in.val[i + 1];
+                        x_out.val[i]     = x0 * cos_val - x1 * sin_val;
+                        x_out.val[i + 1] = x1 * cos_val + x0 * sin_val;
+                    }
+
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE_K; i += 2) {
+                        const int cache_idx = (current_rot_offset + VEC_SIZE_K + i) / 2;
+                        const scalar_t cos_val = cos_sin_seme[local_token_idx][cache_idx];
+                        const scalar_t sin_val = cos_sin_seme[local_token_idx][cache_idx + embed_dim];
+                        const scalar_t y0 = y_in.val[i];
+                        const scalar_t y1 = y_in.val[i + 1];
+                        y_out.val[i]     = y0 * cos_val - y1 * sin_val;
+                        y_out.val[i + 1] = y1 * cos_val + y0 * sin_val;
+                    }
+                    
+                    *x_ptr = x_out;
+                    *y_ptr = y_out;
+                }
+            }
+        }
+    }
+}
+
+template <typename scalar_t, bool IS_NEOX>
+inline __device__ void apply_token_rotary_embedding(
+    scalar_t* __restrict__ arr, const scalar_t* __restrict__ cos_ptr,
+    const scalar_t* __restrict__ sin_ptr, int rot_offset, int embed_dim) {
+  int x_index, y_index;
+  scalar_t cos, sin;
+  if (IS_NEOX) {
+    x_index = rot_offset;
+    y_index = embed_dim + rot_offset;
+    cos = cos_ptr[x_index];
+    sin = sin_ptr[x_index];
+  } else {
+    x_index = 2 * rot_offset;
+    y_index = 2 * rot_offset + 1;
+    cos = cos_ptr[x_index / 2]; //VLLM_LDG(cos_ptr + x_index / 2);
+    sin = sin_ptr[x_index / 2]; //VLLM_LDG(sin_ptr + x_index / 2);
+  }
+  const scalar_t x = arr[x_index];
+  const scalar_t y = arr[y_index];
+  arr[x_index] = x * cos - y * sin;
+  arr[y_index] = y * cos + x * sin;
+}
+
+template <typename scalar_t, bool IS_NEOX>
+inline __device__ void apply_rotary_embedding(
+    scalar_t* __restrict__ query,    
+    scalar_t* __restrict__ key,     
+    const scalar_t* cache_ptr,      
+    const int head_size,              
+    const int num_heads,             
+    const int num_kv_heads,           
+    const int rot_dim,               
+    const int token_idx,               
+    const int64_t query_stride,        
+    const int64_t key_stride,        
+    const int64_t head_stride) {
+
+  const int embed_dim = rot_dim / 2;
+  const scalar_t* cos_ptr = cache_ptr;
+  const scalar_t* sin_ptr = cache_ptr + embed_dim;
+  const int nq = num_heads * embed_dim;
+  for (int i = threadIdx.x; i < nq; i += blockDim.x) {
+    const int head_idx = i / embed_dim;  
+    const int64_t token_head =
+        token_idx * query_stride + head_idx * head_stride;
+    const int rot_offset = i % embed_dim;
+    apply_token_rotary_embedding<scalar_t, IS_NEOX>(
+        query + token_head, cos_ptr, sin_ptr, rot_offset, embed_dim);
+
+  }
+
+  if (key != nullptr) {
+    const int nk = num_kv_heads * embed_dim;
+    for (int i = threadIdx.x; i < nk; i += blockDim.x) {
+      const int head_idx = i / embed_dim;
+      const int64_t token_head =
+          token_idx * key_stride + head_idx * head_stride;
+      const int rot_offset = i % embed_dim;
+      apply_token_rotary_embedding<scalar_t, IS_NEOX>(
+          key + token_head, cos_ptr, sin_ptr, rot_offset, embed_dim);
+    }
+  }
+}
+template <typename scalar_t, bool IS_NEOX>
+__global__ void rotary_embedding_kernel(
+    const int64_t* __restrict__ positions,  // [batch_size, seq_len] or
+                                           // [num_tokens]
+    scalar_t* __restrict__ query,          // [batch_size, seq_len, num_heads,
+                                           // head_size] or [num_tokens, num_heads,
+                                           // head_size]
+    scalar_t* __restrict__ key,  // nullptr or
+                                 // [batch_size, seq_len, num_kv_heads,
+                                 // head_size] or [num_tokens, num_kv_heads,
+                                 // head_size]
+    const scalar_t* __restrict__ cos_sin_cache,  // [max_position, 2, rot_dim //
+                                                 // 2]
+    const int rot_dim, const int64_t query_stride, const int64_t key_stride,
+    const int64_t head_stride, const int num_heads, const int num_kv_heads,
+    const int head_size) {
+  const int token_idx = blockIdx.x;
+  int64_t pos = positions[token_idx];
+  const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+  apply_rotary_embedding<scalar_t, IS_NEOX>(
+      query, key, cache_ptr, head_size, num_heads, num_kv_heads, rot_dim,
+      token_idx, query_stride, key_stride, head_stride);
+}
 
 template <typename scalar_t>
 void host_apply_RoPE_backward_gpu(int sq, int b, int np, int hn,
@@ -194,6 +697,515 @@ at::Tensor RoPE_backward_gpu(int sq, int b, int np, int hn,
     RoPE_backward_gpu_launch(sq, b, np, hn, &tensor_grad_out, &tensor_cos,
                              &tensor_sin, &tensor_res);
     return tensor_res;
+}
+
+//融合qk
+void rotary_embedding_fuse(
+    torch::Tensor& positions,  // [batch_size, seq_len] or [num_tokens]
+    torch::Tensor& query,  // [batch_size, seq_len, num_heads * head_size] or
+                           // [num_tokens, num_heads * head_size] or
+                           // [batch_size, seq_len, num_heads, head_size] or
+                           // [num_tokens, num_heads, head_size]
+    std::optional<torch::Tensor> key,
+    // null or
+    // [batch_size, seq_len, num_kv_heads * head_size] or
+    // [num_tokens, num_kv_heads * head_size] or
+    // [batch_size, seq_len, num_heads, head_size] or
+    // [num_tokens, num_heads, head_size]
+    int64_t head_size,
+    torch::Tensor& cos_sin_cache,  // [max_position, rot_dim]
+    bool is_neox) {
+
+    int64_t num_tokens = positions.numel();
+    int positions_ndim = positions.dim();
+  TORCH_CHECK(
+      positions_ndim == 1 || positions_ndim == 2,
+      "positions must have shape [num_tokens] or [batch_size, seq_len]");
+  if (positions_ndim == 1) {
+    TORCH_CHECK(query.size(0) == positions.size(0) &&
+                    (!key.has_value() || key->size(0) == positions.size(0)),
+                "query, key and positions must have the same number of tokens");
+  }
+  if (positions_ndim == 2) {
+    TORCH_CHECK(
+        query.size(0) == positions.size(0) &&
+            (!key.has_value() || key->size(0) == positions.size(0)) &&
+            query.size(1) == positions.size(1) &&
+            (!key.has_value() || key->size(1) == positions.size(1)),
+        "query, key and positions must have the same batch_size and seq_len");
+  }
+
+  int query_hidden_size = query.numel() / num_tokens;
+  int key_hidden_size = key.has_value() ? key->numel() / num_tokens : 0;
+
+  TORCH_CHECK(query_hidden_size % head_size == 0);
+  TORCH_CHECK(key_hidden_size % head_size == 0);
+
+  int num_heads = query_hidden_size / head_size;
+  int num_kv_heads = key.has_value() ? key_hidden_size / head_size : num_heads;
+  TORCH_CHECK(num_heads % num_kv_heads == 0);
+
+
+  int rot_dim = cos_sin_cache.size(1);
+  int seq_dim_idx = positions_ndim - 1;
+ 
+  int64_t query_stride = query.stride(seq_dim_idx);
+  int64_t key_stride = key.has_value() ? key->stride(seq_dim_idx) : 0;
+
+  int query_ndim = query.dim();
+  int64_t head_stride =
+      (query_ndim == positions_ndim + 2) ? query.stride(-2) : head_size;
+      
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(query));
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+ 
+    
+   AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16, 
+      query.scalar_type(), "rotary_embedding", [&] {
+
+  int rot_dim = cos_sin_cache.size(1);
+
+  const int q_k_size_multiple = num_heads / num_kv_heads;
+  bool is_allign_qk = (num_heads % num_kv_heads == 0) && (num_heads % 2 == 0) && (num_heads >= 8) && (q_k_size_multiple <= 8);
+
+  
+    if (head_size == 64 && is_allign_qk) {
+        constexpr int num_tokens_per_block = 2;
+        constexpr int total_thread_per_tokens = 64;
+    
+        constexpr int num_group_per_token_q = 8;
+        constexpr int thread_per_head_q = 8;
+        constexpr int vec_size_q = 4;
+
+        dim3 grid((num_tokens + num_tokens_per_block -1) / num_tokens_per_block);
+        dim3 block(total_thread_per_tokens * num_tokens_per_block);
+
+        
+      #define LAUNCH_ROTARY_KERNEL_64(IS_NEOX,NUM_GROUP_K, THREAD_PER_HEAD_K, VEC_SIZE_K, ROT_DIM_VAL) \
+        rotary_embedding_kernel_opt<scalar_t, IS_NEOX, num_tokens_per_block, total_thread_per_tokens, \
+                                          num_group_per_token_q, NUM_GROUP_K, \
+                                          thread_per_head_q, THREAD_PER_HEAD_K, \
+                                          vec_size_q, VEC_SIZE_K, ROT_DIM_VAL><<<grid, block, 0, stream>>>( \
+            positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(), \
+            key.has_value() ? key->data_ptr<scalar_t>() : nullptr, \
+            cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
+            head_stride, num_heads, num_kv_heads, head_size,num_tokens)
+        
+        if (q_k_size_multiple == 8) {
+            switch (num_kv_heads) {
+                case 1:
+                case 2:
+                {
+                    if(is_neox){
+                        LAUNCH_ROTARY_KERNEL_64(true,2, 32, 1, 64);
+                    }else{
+                        LAUNCH_ROTARY_KERNEL_64(false,2, 32, 1, 64);
+                    }
+                }  break;
+                case 4: {
+                    if(is_neox){
+                        LAUNCH_ROTARY_KERNEL_64(true,4, 16, 2, 64);
+                    }else{
+                        LAUNCH_ROTARY_KERNEL_64(false,4, 16, 2, 64);
+                    }
+                } break;
+                default: {
+                     if(is_neox){
+                         LAUNCH_ROTARY_KERNEL_64(true,8, 8, 4, 64);
+                    }else{
+                         LAUNCH_ROTARY_KERNEL_64(false,8, 8, 4, 64);
+                    }
+                } break;
+            }
+        } else if (q_k_size_multiple == 4) {
+            switch (num_kv_heads) {
+                  case 2:
+                {
+                    if(is_neox){
+                        LAUNCH_ROTARY_KERNEL_64(true,2, 32, 1, 64);
+                    }else{
+                        LAUNCH_ROTARY_KERNEL_64(false,2, 32, 1, 64);
+                    }
+                }  break;
+                case 4: {
+                    if(is_neox){
+                        LAUNCH_ROTARY_KERNEL_64(true,4, 16, 2, 64);
+                    }else{
+                        LAUNCH_ROTARY_KERNEL_64(false,4, 16, 2, 64);
+                    }
+                } break;
+                default: {
+                     if(is_neox){
+                         LAUNCH_ROTARY_KERNEL_64(true,8, 8, 4, 64);
+                    }else{
+                         LAUNCH_ROTARY_KERNEL_64(false,8, 8, 4, 64);
+                    }
+                } break;
+            }
+        } else if (q_k_size_multiple == 2) {
+            switch (num_kv_heads) {
+                   case 4: {
+                    if(is_neox){
+                        LAUNCH_ROTARY_KERNEL_64(true,4, 16, 2, 64);
+                    }else{
+                        LAUNCH_ROTARY_KERNEL_64(false,4, 16, 2, 64);
+                    }
+                } break;
+                default: {
+                     if(is_neox){
+                         LAUNCH_ROTARY_KERNEL_64(true,8, 8, 4, 64);
+                    }else{
+                         LAUNCH_ROTARY_KERNEL_64(false,8, 8, 4, 64);
+                    }
+                } break;
+            }
+        } else if (q_k_size_multiple == 1) {
+              if(is_neox){
+                         LAUNCH_ROTARY_KERNEL_64(true,8, 8, 4, 64);
+                    }else{
+                         LAUNCH_ROTARY_KERNEL_64(false,8, 8, 4, 64);
+                    }
+        }
+ 
+    } else if (head_size == 128 && is_allign_qk) {
+
+        
+        constexpr int num_tokens_per_block = 2;
+        constexpr int total_thread_per_tokens = 64;
+
+        constexpr int num_group_per_token_q = 8;
+        constexpr int thread_per_head_q = 8;
+        constexpr int vec_size_q = 8;
+
+        dim3 grid((num_tokens + num_tokens_per_block -1) / num_tokens_per_block);
+        dim3 block(total_thread_per_tokens * num_tokens_per_block);
+        
+
+      #define LAUNCH_ROTARY_KERNEL_128(IS_NEOX,NUM_GROUP_K, THREAD_PER_HEAD_K, VEC_SIZE_K, ROT_DIM_VAL) \
+        rotary_embedding_kernel_opt<scalar_t, IS_NEOX, num_tokens_per_block, total_thread_per_tokens, \
+                                          num_group_per_token_q, NUM_GROUP_K, \
+                                          thread_per_head_q, THREAD_PER_HEAD_K, \
+                                          vec_size_q, VEC_SIZE_K, ROT_DIM_VAL><<<grid, block, 0, stream>>>( \
+            positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(), \
+            key.has_value() ? key->data_ptr<scalar_t>() : nullptr, \
+            cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
+            head_stride, num_heads, num_kv_heads, head_size,num_tokens)
+
+        if (q_k_size_multiple == 8) {
+            switch (num_kv_heads) {
+                case 1: {
+                    if(is_neox){
+                         LAUNCH_ROTARY_KERNEL_128(true,1, 64, 1, 128);
+                    }else{
+                         LAUNCH_ROTARY_KERNEL_128(false,1, 64, 1, 128);
+                    }
+                } break;
+                case 2:{
+                    if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_128(true,2, 32, 2, 128);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_128(false,2, 32, 2, 128);
+                    }
+                } break;
+                case 4: {
+                    if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_128(true,4, 16, 4, 128);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_128(false,4, 16, 4, 128);
+                    }
+                } break;
+                default:{
+                     if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_128(true,8, 8, 8, 128);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_128(false,8, 8, 8, 128);
+                    }
+                }  break; // Fallback
+            }
+        } else if (q_k_size_multiple == 4) {
+            switch (num_kv_heads) {
+               case 2:{
+                    if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_128(true,2, 32, 2, 128);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_128(false,2, 32, 2, 128);
+                    }
+                } break;
+                case 4: {
+                    if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_128(true,4, 16, 4, 128);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_128(false,4, 16, 4, 128);
+                    }
+                } break;
+                default:{
+                     if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_128(true,8, 8, 8, 128);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_128(false,8, 8, 8, 128);
+                    }
+                }  break; // Fallback
+            }
+        } else if (q_k_size_multiple == 2) {
+            switch (num_kv_heads) {
+                 case 4: {
+                    if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_128(true,4, 16, 4, 128);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_128(false,4, 16, 4, 128);
+                    }
+                } break;
+                default:{
+                     if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_128(true,8, 8, 8, 128);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_128(false,8, 8, 8, 128);
+                    }
+                }  break; // Fallback
+            }
+        } else if (q_k_size_multiple == 1) {
+               if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_128(true,8, 8, 8, 128);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_128(false,8, 8, 8, 128);
+                }
+        }
+    } else if (head_size == 256 && is_allign_qk) {
+        constexpr int num_tokens_per_block = 2;
+        constexpr int total_thread_per_tokens = 64;
+ 
+        constexpr int num_group_per_token_q = 4;
+        constexpr int thread_per_head_q = 16;
+        constexpr int vec_size_q = 8;
+
+        dim3 grid((num_tokens + num_tokens_per_block -1) / num_tokens_per_block);
+        dim3 block(total_thread_per_tokens * num_tokens_per_block);
+
+      #define LAUNCH_ROTARY_KERNEL_256(IS_NEOX,NUM_GROUP_K, THREAD_PER_HEAD_K, VEC_SIZE_K, ROT_DIM_VAL) \
+        rotary_embedding_kernel_opt<scalar_t, IS_NEOX, num_tokens_per_block, total_thread_per_tokens, \
+                                          num_group_per_token_q, NUM_GROUP_K, \
+                                          thread_per_head_q, THREAD_PER_HEAD_K, \
+                                          vec_size_q, VEC_SIZE_K, ROT_DIM_VAL><<<grid, block, 0, stream>>>( \
+            positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(), \
+            key.has_value() ? key->data_ptr<scalar_t>() : nullptr, \
+            cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
+            head_stride, num_heads, num_kv_heads, head_size,num_tokens)
+
+        if (q_k_size_multiple == 8) {
+             switch (num_kv_heads) {
+                case 1:{
+                    if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_256(true,1, 64, 2, 256);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_256(false,1, 64, 2, 256);
+                    }
+                }  break;
+                case 2:{
+                     if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_256(true,2, 32, 4, 256);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_256(false,2, 32, 4, 256);
+                    }
+                } break;
+                default: {
+                  if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_256(true,4, 16, 8, 256);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_256(false,4, 16, 8, 256);
+                    }
+                }break; // Fallback
+            }
+        } else if (q_k_size_multiple == 4) {
+            switch (num_kv_heads) {
+               case 2:{
+                     if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_256(true,2, 32, 4, 256);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_256(false,2, 32, 4, 256);
+                    }
+                } break;
+                default: {
+                  if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_256(true,4, 16, 8, 256);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_256(false,4, 16, 8, 256);
+                    }
+                }break; // Fallback
+            }
+        } else if (q_k_size_multiple == 2) {
+             if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_256(true,2, 32, 4, 256);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_256(false,2, 32, 4, 256);
+                    }
+        } else if (q_k_size_multiple == 1) {
+               if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_256(true,4, 16, 8, 256);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_256(false,4, 16, 8, 256);
+                    }
+        }
+    } else { 
+    
+        dim3 grid(num_tokens);
+        dim3 block(std::min<int64_t>(num_heads * (rot_dim / 2), 512));
+        if (is_neox) {
+            rotary_embedding_kernel<scalar_t, true><<<grid, block, 0, stream>>>(
+                positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
+                key.has_value() ? key->data_ptr<scalar_t>() : nullptr,
+                cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride,
+                head_stride, num_heads, num_kv_heads, head_size);
+        } else {
+            rotary_embedding_kernel<scalar_t, false><<<grid, block, 0, stream>>>(
+                positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
+                key.has_value() ? key->data_ptr<scalar_t>() : nullptr,
+                cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride,
+                head_stride, num_heads, num_kv_heads, head_size);
+        }
+    }
+  }
+);
+}
+
+//融合opt 
+void rotary_embedding_deepseek_fuse(
+    torch::Tensor& positions,  // [batch_size, seq_len] or [num_tokens]
+    torch::Tensor& query,  // [batch_size, seq_len, num_heads * head_size] or
+                           // [num_tokens, num_heads * head_size] or
+                           // [batch_size, seq_len, num_heads, head_size] or
+                           // [num_tokens, num_heads, head_size]
+    std::optional<torch::Tensor> key,
+    // null or
+    // [batch_size, seq_len, num_kv_heads * head_size] or
+    // [num_tokens, num_kv_heads * head_size] or
+    // [batch_size, seq_len, num_heads, head_size] or
+    // [num_tokens, num_heads, head_size]
+    int64_t head_size,
+    torch::Tensor& cos_sin_cache,  // [max_position, rot_dim]
+    bool is_neox) {
+
+    int64_t num_tokens = positions.numel();
+    int positions_ndim = positions.dim();
+    TORCH_CHECK(
+        positions_ndim == 1 || positions_ndim == 2,
+        "positions must have shape [num_tokens] or [batch_size, seq_len]");
+    if (positions_ndim == 1) {
+        TORCH_CHECK(query.size(0) == positions.size(0) &&
+                        (!key.has_value() || key->size(0) == positions.size(0)),
+                    "query, key and positions must have the same number of tokens");
+    }
+    if (positions_ndim == 2) {
+        TORCH_CHECK(
+            query.size(0) == positions.size(0) &&
+                (!key.has_value() || key->size(0) == positions.size(0)) &&
+                query.size(1) == positions.size(1) &&
+                (!key.has_value() || key->size(1) == positions.size(1)),
+            "query, key and positions must have the same batch_size and seq_len");
+    }
+
+    int batch_size = query.size(0);
+    int query_hidden_size = query.numel() / num_tokens;
+    int key_hidden_size = key.has_value() ? key->numel() / num_tokens : 0;
+
+    TORCH_CHECK(query_hidden_size % head_size == 0);
+    TORCH_CHECK(key_hidden_size % head_size == 0);
+
+    int num_heads = query_hidden_size / head_size;
+    int num_kv_heads = key.has_value() ? key_hidden_size / head_size : num_heads;
+    TORCH_CHECK(num_heads % num_kv_heads == 0);
+
+
+    int rot_dim = cos_sin_cache.size(1);
+    int seq_dim_idx = positions_ndim - 1;
+
+    int64_t query_stride = query.stride(seq_dim_idx);
+    int64_t key_stride = key.has_value() ? key->stride(seq_dim_idx) : 0;
+
+    int query_ndim = query.dim();
+    int64_t head_stride =
+        (query_ndim == positions_ndim + 2) ? query.stride(-2) : head_size;
+        
+    const at::cuda::OptionalCUDAGuard device_guard(device_of(query));
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    
+   AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16, 
+      query.scalar_type(), "rotary_embedding", [&] {
+
+    int rot_dim = cos_sin_cache.size(1);
+    const int q_k_size_multiple = num_heads / num_kv_heads;
+
+    bool is_allign_qk = (num_heads % num_kv_heads == 0) && (num_heads % 2 == 0) && (num_heads >= 8) && (q_k_size_multiple <= 128);
+
+    if (head_size == 64 && is_allign_qk && batch_size > 16) {
+        constexpr int num_tokens_per_block = 2;
+        constexpr int total_thread_per_tokens = 64;
+    
+        constexpr int num_group_per_token_q = 8;
+        constexpr int thread_per_head_q = 8;
+        constexpr int vec_size_q = 4;
+
+        dim3 grid((num_tokens + num_tokens_per_block -1) / num_tokens_per_block);
+        dim3 block(total_thread_per_tokens * num_tokens_per_block);
+
+      #define LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(IS_NEOX,NUM_GROUP_K, THREAD_PER_HEAD_K, VEC_SIZE_K, ROT_DIM_VAL) \
+        rotary_embedding_deepseek_kernel_opt<scalar_t, IS_NEOX, num_tokens_per_block, total_thread_per_tokens, \
+                                          num_group_per_token_q, NUM_GROUP_K, \
+                                          thread_per_head_q, THREAD_PER_HEAD_K, \
+                                          vec_size_q, VEC_SIZE_K, ROT_DIM_VAL><<<grid, block, 0, stream>>>( \
+            positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(), \
+            key.has_value() ? key->data_ptr<scalar_t>() : nullptr, \
+            cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
+            head_stride, num_heads, num_kv_heads, head_size,num_tokens)
+        
+        if (num_heads == 128) {
+            if(is_neox){
+                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(true,2, 32, 2, 64);
+            }else{
+                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(false,2, 32, 2, 64);
+            }
+        } else if (num_heads == 64) {
+            if(is_neox){
+                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(true,2, 32, 2, 64);
+            }else{
+                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(false,2, 32, 2, 64);
+            }    
+        } else if (num_heads == 32) {
+            if(is_neox){
+                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(true,2, 32, 2, 64);
+            }else{
+                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(false,2, 32, 2, 64);
+            }
+        } else if (num_heads == 16) {
+            if(is_neox){
+                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(true,2, 32, 2, 64);
+            }else{
+                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(false,2, 32, 2, 64);
+            }
+        }
+    } else {
+        dim3 grid(num_tokens);
+        dim3 block(std::min<int64_t>(num_heads * (rot_dim / 2), 512));
+        if (is_neox) {
+            rotary_embedding_kernel<scalar_t, true><<<grid, block, 0, stream>>>(
+                positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
+                key.has_value() ? key->data_ptr<scalar_t>() : nullptr,
+                cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride,
+                head_stride, num_heads, num_kv_heads, head_size);
+        } else {
+            rotary_embedding_kernel<scalar_t, false><<<grid, block, 0, stream>>>(
+                positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
+                key.has_value() ? key->data_ptr<scalar_t>() : nullptr,
+                cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride,
+                head_stride, num_heads, num_kv_heads, head_size);
+        }
+    }
+  }
+);
 }
 
 }

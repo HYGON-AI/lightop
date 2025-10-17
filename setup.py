@@ -5,11 +5,14 @@ import os
 import shlex
 import subprocess
 import sys
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension,ROCM_HOME
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension, ROCM_HOME
 from setuptools import find_packages, setup
 from setuptools.command.build_ext import build_ext
 from pkg_resources import packaging  # type: ignore[attr-defined]
-from get_version import get_version
+from get_version import get_version, get_dtk_version
+
+dtk_version = get_dtk_version(ROCM_HOME)
+
 
 def _find_rocm_home() -> Optional[str]:
     rocm_home = os.environ.get('ROCM_HOME') or os.environ.get('ROCM_PATH')
@@ -18,7 +21,7 @@ def _find_rocm_home() -> Optional[str]:
             pipe_hipcc = subprocess.Popen(
                 ["which hipcc | xargs readlink -f"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
             hipcc, _ = pipe_hipcc.communicate()
-            rocm_home = os.path.dirname(os.path.dirname(hipcc.decode(*()).rstrip('\r\n')))
+            rocm_home = os.path.dirname(os.path.dirname(hipcc.decode().rstrip('\r\n')))
             if os.path.basename(rocm_home) == 'hip':
                 rocm_home = os.path.dirname(rocm_home)
         except Exception:
@@ -41,6 +44,15 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
     flags +=['--gpu-max-threads-per-block=1024']
     return flags
 
+def _get_rocm_arch_flags_marlin(cflags: Optional[List[str]] = None) -> List[str]:
+    archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
+    flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
+    flags +=['--gpu-max-threads-per-block=512']
+    flags +=['-mllvm']
+    flags +=['-enable-num-vgprs-512=true']
+    # flags +=['--save-temps']
+    return flags
+
 
 ROCM_HOME = _find_rocm_home()
 IS_HIP_EXTENSION = True if ((ROCM_HOME is not None) and (torch.version.hip is not None)) else False
@@ -52,8 +64,6 @@ COMMON_HIP_FLAGS = [
 
 COMMON_HIPCC_FLAGS = [
     '-DCUDA_HAS_FP16=1',
-    '-D__HIP_NO_HALF_OPERATORS__=1',
-    '-D__HIP_NO_HALF_CONVERSIONS__=1',
 ]
 
 
@@ -181,7 +191,6 @@ def _run_ninja_build(build_directory: str, verbose: bool, error_prefix: str) -> 
             message += f": {error.output.decode(*SUBPROCESS_DECODE_ARGS)}"  # type: ignore[union-attr]
         raise RuntimeError(message) from e
 
-
 def _write_ninja_file_and_compile_objects(sources: List[str], objects, cflags, post_cflags, cuda_cflags,
                                           cuda_post_cflags, build_directory: str, verbose: bool,
                                           with_cuda: Optional[bool]) -> None:
@@ -261,35 +270,100 @@ class BuildReleaseExtension(BuildExtension):
                 if('-Wall' in extra_cc_cflags):
                     extra_cc_cflags.remove('-Wall')
                 print("release mode")
-            with_cuda = any(map(_is_cuda_file, sources))
-            if isinstance(extra_postargs, dict):
-                post_cflags = extra_postargs['cxx']
-            else:
-                post_cflags = list(extra_postargs)
-            if IS_HIP_EXTENSION:
-                post_cflags = COMMON_HIP_FLAGS + post_cflags
-            append_std17_if_no_std_present(post_cflags)
-            cuda_post_cflags = None
-            cuda_cflags = None
-            if with_cuda:
-                cuda_cflags = common_cflags
-                if isinstance(extra_postargs, dict):
-                    cuda_post_cflags = extra_postargs['nvcc']
+            
+            # 定义marlinw4a16目录路径
+            marlin_dirs = [os.path.abspath('./lightop/csrc/marlinw4a16/'),
+                                os.path.abspath('./lightop/csrc/marlinw4a8/')]
+            # 分离marlinw4a16目录的源文件和其他文件
+            marlin_sources = []
+            other_sources = []
+            for s in sources:
+                abs_path = os.path.abspath(s)
+                if any(abs_path.startswith(d) for d in marlin_dirs):
+                    marlin_sources.append(s)
                 else:
-                    cuda_post_cflags = list(extra_postargs)
+                    other_sources.append(s)
+            
+            # 分离对应的目标文件
+            marlin_objects = [obj for src, obj in zip(sources, objects) if src in marlin_sources]
+            other_objects = [obj for src, obj in zip(sources, objects) if src in other_sources]
+            
+            with_cuda = any(map(_is_cuda_file, sources))
+            
+            # 编译其他目录文件（使用默认选项）
+            if other_sources:
+                if isinstance(extra_postargs, dict):
+                    post_cflags = extra_postargs['cxx']
+                else:
+                    post_cflags = list(extra_postargs)
                 if IS_HIP_EXTENSION:
-                    cuda_post_cflags = cuda_post_cflags + _get_rocm_arch_flags(cuda_post_cflags)
-                    cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + cuda_post_cflags
-                append_std17_if_no_std_present(cuda_post_cflags)
-                cuda_cflags = [shlex.quote(f) for f in cuda_cflags]
-                cuda_post_cflags = [shlex.quote(f) for f in cuda_post_cflags]
-            _write_ninja_file_and_compile_objects(sources=sources, objects=objects,
-                                                  cflags=[shlex.quote(f) for f in extra_cc_cflags + common_cflags],
-                                                  post_cflags=[shlex.quote(f) for f in post_cflags],
-                                                  cuda_cflags=cuda_cflags,
-                                                  cuda_post_cflags=cuda_post_cflags, build_directory=output_dir,
-                                                  verbose=True, with_cuda=with_cuda)
-            return objects
+                    post_cflags = COMMON_HIP_FLAGS + post_cflags
+                append_std17_if_no_std_present(post_cflags)
+                
+                cuda_post_cflags = None
+                if with_cuda:
+                    if isinstance(extra_postargs, dict):
+                        cuda_post_cflags = extra_postargs['nvcc']
+                    else:
+                        cuda_post_cflags = list(extra_postargs)
+                    if IS_HIP_EXTENSION:
+                        cuda_post_cflags = cuda_post_cflags + _get_rocm_arch_flags(cuda_post_cflags)
+                        cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + cuda_post_cflags
+                    append_std17_if_no_std_present(cuda_post_cflags)
+                    cuda_cflags = [shlex.quote(f) for f in common_cflags]
+                    cuda_post_cflags = [shlex.quote(f) for f in cuda_post_cflags]
+                
+                _write_ninja_file_and_compile_objects(
+                    sources=other_sources, 
+                    objects=other_objects,
+                    cflags=[shlex.quote(f) for f in extra_cc_cflags + common_cflags],
+                    post_cflags=[shlex.quote(f) for f in post_cflags],
+                    cuda_cflags=cuda_cflags if with_cuda else None,
+                    cuda_post_cflags=cuda_post_cflags if with_cuda else None,
+                    build_directory=output_dir,
+                    verbose=True,
+                    with_cuda=with_cuda
+                )
+            
+            # 编译marlinw4a16目录文件（使用自定义选项）
+            if marlin_sources:
+                # 自定义编译选项（根据需要调整）
+                marlin_cxx_flags = ['-O3', '-w', ]
+                marlin_nvcc_flags = ['-O3', '-w', ]
+                
+                if IS_HIP_EXTENSION:
+                    marlin_cxx_flags = COMMON_HIP_FLAGS + marlin_cxx_flags
+                
+                append_std17_if_no_std_present(marlin_cxx_flags)
+                
+                marlin_cuda_cflags = None
+                marlin_cuda_post_cflags = None
+                if with_cuda:
+                    marlin_cuda_cflags = [shlex.quote(f) for f in common_cflags]
+                    marlin_cuda_post_cflags = marlin_nvcc_flags
+                    if IS_HIP_EXTENSION:
+                        # archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936').split(';')
+                        # if 'gfx936' in archs:
+                        #     marlin_cuda_post_cflags.append('-D__gfx936__') 
+                        marlin_cuda_post_cflags = marlin_cuda_post_cflags + _get_rocm_arch_flags_marlin(marlin_cuda_post_cflags)
+                        marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + marlin_cuda_post_cflags
+                    append_std17_if_no_std_present(marlin_cuda_post_cflags)
+                    marlin_cuda_post_cflags = [shlex.quote(f) for f in marlin_cuda_post_cflags]
+                
+                _write_ninja_file_and_compile_objects(
+                    sources=marlin_sources,
+                    objects=marlin_objects,
+                    cflags=[shlex.quote(f) for f in extra_cc_cflags + common_cflags],
+                    post_cflags=[shlex.quote(f) for f in marlin_cxx_flags],
+                    cuda_cflags=marlin_cuda_cflags if with_cuda else None,
+                    cuda_post_cflags=marlin_cuda_post_cflags if with_cuda else None,
+                    build_directory=output_dir,
+                    verbose=True,
+                    with_cuda=with_cuda
+                )
+            
+            # 返回所有目标文件
+            return other_objects + marlin_objects
 
         self.compiler.compile = unix_wrap_ninja_compile
         build_ext.build_extensions(self)
@@ -302,15 +376,37 @@ def get_extensions():
     extensions = []
     include_dirs = []
     define_macros = []
-    extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas','-w'], 'nvcc': ['-O3','-ldl', '-lrocblas','-w']}
+
+    # 全局默认编译选项
+    extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas','-w'], 'nvcc': ['-O3','-ldl', '-lrocblas','-w','-mllvm -enable-num-vgprs-512=true']}
     if torch_version_over110():
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_110')
-    op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + glob.glob('./lightop/csrc/layernorm/*.cu') + \
-               glob.glob('./lightop/csrc/loss/*.cu') + glob.glob('./lightop/csrc/scaledmask/*.cu') + glob.glob('./lightop/csrc/groupnorm/*.cu') + \
-               glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + glob.glob('./lightop/csrc/miopen/*.cpp') + \
-               glob.glob('./lightop/csrc/softmax/*.cu') + glob.glob('./lightop/csrc/moew8a8/*.cu')
+    op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + \
+               glob.glob('./lightop/csrc/layernorm/*.cu') + glob.glob('./lightop/csrc/loss/*.cu') + \
+               glob.glob('./lightop/csrc/scaledmask/*.cu') + glob.glob('./lightop/csrc/groupnorm/*.cu') + \
+               glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + \
+               glob.glob('./lightop/csrc/softmax/*.cu') + \
+               glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + \
+               glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
+               glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu')
+               
+    miopen_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + \
+                   glob.glob('./lightop/csrc/layernorm/*.cu') + glob.glob('./lightop/csrc/loss/*.cu') + \
+                   glob.glob('./lightop/csrc/scaledmask/*.cu') + glob.glob('./lightop/csrc/groupnorm/*.cu') + \
+                   glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + \
+                   glob.glob('./lightop/csrc/miopen/*.cpp') + glob.glob('./lightop/csrc/softmax/*.cu') + \
+                   glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + \
+                   glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
+                   glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu') + \
+                   glob.glob('./lightop/csrc/miopen/fusion_mode/*.cpp') + glob.glob('./lightop/csrc/miopen/graph/*.cpp') + glob.glob('./lightop/csrc/miopen/op/*.cpp')
+
+               
+
     extension = CUDAExtension
+    # 添加marlinw4a16目录的包含路径
     include_dirs.append(os.path.abspath('./lightop/csrc/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/marlinw4a16/'))  # 新增marlinw4a16的include路径
+    include_dirs.append(os.path.abspath('./lightop/csrc/marlinw4a8/'))  # 新增marlinw4a8的include路径
     include_dirs.append(os.path.abspath('./lightop/csrc/layernorm/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/groupnorm/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/rmsnorm/'))
@@ -320,16 +416,36 @@ def get_extensions():
     include_dirs.append(os.path.abspath('./lightop/csrc/miopen/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/softmax/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/moew8a8/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/storeKvcache/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/storeKvcache/attention/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/moew4a8/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/blockwise_scaling/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/concat/'))
     rocm_home=_find_rocm_home()
     include_dirs.append(rocm_home+'/hiprand/include')
+    include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/rocrand/include')
+    
+    # 1) 不含 miopen 的核心库：lightop.op_core
     ext_ops = extension(
-        name="lightop.op",
+        name="lightop.op_core",
         sources=op_files,
         include_dirs=include_dirs,
         define_macros=define_macros,
         extra_compile_args=extra_compile_args)
+
+    # 2) 含 miopen 的库：lightop.op_miopen（在宏中开启接口）
+    ext_miopen = extension(
+        name="lightop.op_core_miopen",
+        sources=miopen_files,
+        include_dirs=include_dirs,
+        define_macros=define_macros + [("USE_MIOPEN", "1")],
+        extra_compile_args=extra_compile_args
+    )
+    
     extensions.append(ext_ops)
+    if dtk_version >= 25042: #  调试时建议关闭
+        extensions.append(ext_miopen)
     return extensions
 
 def _get_pytorch_version():
@@ -351,6 +467,7 @@ setup(
             "librarygemmdbiasb/*",
             "hsa/*",
             "hsa/*/*",
+            "hsa/*/*/*",
             "configs/*"
         ]
     },
@@ -360,7 +477,7 @@ setup(
     },
     zip_safe=False,
     install_requires=[
-         f"torch=={_get_pytorch_version()}",
+         "torch",
      ],
 )
 
