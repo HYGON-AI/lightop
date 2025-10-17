@@ -16,8 +16,8 @@ from . import op
 def groupgemm_permute(tokens, routing_map):
     return op.groupgemm_permute(tokens, routing_map)
 
-def groupgemm_unpermute(permuted_tokens, sorted_indices, restore_shape, probs, routing_map, expert_m_count):
-    return op.groupgemm_unpermute(permuted_tokens, sorted_indices, restore_shape, probs, routing_map, expert_m_count)
+def groupgemm_unpermute(permuted_tokens, sorted_indices, restore_shape, probs, routing_map, expert_m_count, use_fp32 = False):
+    return op.groupgemm_unpermute(permuted_tokens, sorted_indices, restore_shape, probs, routing_map, expert_m_count, use_fp32)
 
 def fuse_groupgemm_permute_quant(tokens, routing_map):
     num_rows = tokens.numel() // tokens.shape[-1]

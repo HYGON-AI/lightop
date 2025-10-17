@@ -221,8 +221,9 @@ def _test_permutation_mask_map(
         row_id_map = triton_permutation.make_row_id_map(routing_map, num_tokens, num_expert)
 
         # Test CUDA unpermutation
+        # use_tx 训练模式下用fp32做中间规约
         cuda_unpermute_output = groupgemm_unpermute(    
-            cuda_permute_output, cuda_sorted_indices, list(restore_shape), probs, routing_map, expert_m_count
+            cuda_permute_output, cuda_sorted_indices, list(restore_shape), probs, routing_map, expert_m_count, use_tx 
         )
 
         print("expert_m_count:", cuda_sorted_indices.size(0))
@@ -254,9 +255,9 @@ def _test_permutation_mask_map(
             diff = torch.abs(pytorch_unpermute_output - cuda_unpermute_output)
             print(f"Max unpermute difference: {diff.max().item():.2e}")
             
-        # assert permute_close, "CUDA permute results don't match PyTorch"
-        # assert indices_close, "CUDA indices don't match PyTorch"
-        # assert unpermute_close, "CUDA unpermute results don't match PyTorch"
+        assert permute_close, "CUDA permute results don't match PyTorch"
+        assert indices_close, "CUDA indices don't match PyTorch"
+        assert unpermute_close, "CUDA unpermute results don't match PyTorch"
         
         print("CUDA Permutation Test Passed")
     
@@ -321,7 +322,7 @@ def _test_permutation_mask_map(
             # Warmup for unpermute
             for _ in range(num_warmup):
                 _ = pytorch_unpermute_mask_map(pytorch_tokens, pytorch_indices, restore_shape, probs, routing_map)
-                _ = groupgemm_unpermute(cuda_tokens, cuda_indices, list(restore_shape), probs, routing_map, expert_m_count)
+                _ = groupgemm_unpermute(cuda_tokens, cuda_indices, list(restore_shape), probs, routing_map, expert_m_count, use_tx)
             
             torch.cuda.synchronize()
             
@@ -335,7 +336,7 @@ def _test_permutation_mask_map(
             # Benchmark CUDA unpermute
             start_time = time.time()
             for _ in range(num_trials):
-                cuda_unpermute_result = groupgemm_unpermute(cuda_tokens, cuda_indices, list(restore_shape), probs, routing_map, expert_m_count)
+                cuda_unpermute_result = groupgemm_unpermute(cuda_tokens, cuda_indices, list(restore_shape), probs, routing_map, expert_m_count, use_tx)
             torch.cuda.synchronize()
             cuda_unpermute_time = (time.time() - start_time) / num_trials
             
@@ -384,50 +385,11 @@ def test_permutation_single_case():
 
     dtype = torch.bfloat16
 
-    with_probs = False
-    results_list_no_probs = []
-    print("------------------------------------with_probs = False------------------------------------")
-    for num_tokens in [100]:
-        num_out_tokens = num_tokens * topK
-        print("-----------------------------------------------------------------------------------")
-        print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
-        results = _test_permutation_mask_map(
-            num_tokens=num_tokens,
-            num_expert=num_expert,
-            hidden_size=hidden_size,
-            topK=topK,
-            num_out_tokens=num_out_tokens,
-            with_probs=with_probs,
-            dtype=dtype,
-            BENCHMARK=False,
-        )
-        results_list_no_probs.append(results)
-    
-    # results_list = []
-    # for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
-    #     num_out_tokens = num_tokens * topK 
-    #     print("-----------------------------------------------------------------------------------")
-    #     print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
-    #     results = _test_permutation_mask_map(
-    #         num_tokens=num_tokens,
-    #         num_expert=num_expert,
-    #         hidden_size=hidden_size,
-    #         topK=topK,
-    #         num_out_tokens=num_out_tokens,
-    #         with_probs=with_probs,
-    #         dtype=dtype,
-    #         BENCHMARK=Benchmark,
-    #     )
-    #     results_list.append(results)
-    
-    # df = pd.DataFrame(results_list)
-    # df.to_excel("results_with_probs.xlsx", index=False)
-
-
+    # 单测
     # with_probs = False
     # results_list_no_probs = []
     # print("------------------------------------with_probs = False------------------------------------")
-    # for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
+    # for num_tokens in [4096]:
     #     num_out_tokens = num_tokens * topK
     #     print("-----------------------------------------------------------------------------------")
     #     print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
@@ -439,12 +401,52 @@ def test_permutation_single_case():
     #         num_out_tokens=num_out_tokens,
     #         with_probs=with_probs,
     #         dtype=dtype,
-    #         BENCHMARK=True,
+    #         BENCHMARK=False,
     #     )
     #     results_list_no_probs.append(results)
+    
+    results_list = []
+    for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
+        num_out_tokens = num_tokens * topK 
+        print("-----------------------------------------------------------------------------------")
+        print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
+        results = _test_permutation_mask_map(
+            num_tokens=num_tokens,
+            num_expert=num_expert,
+            hidden_size=hidden_size,
+            topK=topK,
+            num_out_tokens=num_out_tokens,
+            with_probs=with_probs,
+            dtype=dtype,
+            BENCHMARK=Benchmark,
+        )
+        results_list.append(results)
+    
+    df = pd.DataFrame(results_list)
+    df.to_excel("results_with_probs.xlsx", index=False)
 
-    # df = pd.DataFrame(results_list_no_probs)
-    # df.to_excel("results_no_probs.xlsx", index=False)
+
+    with_probs = False
+    results_list_no_probs = []
+    print("------------------------------------with_probs = False------------------------------------")
+    for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192]:
+        num_out_tokens = num_tokens * topK
+        print("-----------------------------------------------------------------------------------")
+        print(f"Testing num_tokens: {num_tokens}, num_out_tokens: {num_out_tokens}")
+        results = _test_permutation_mask_map(
+            num_tokens=num_tokens,
+            num_expert=num_expert,
+            hidden_size=hidden_size,
+            topK=topK,
+            num_out_tokens=num_out_tokens,
+            with_probs=with_probs,
+            dtype=dtype,
+            BENCHMARK=True,
+        )
+        results_list_no_probs.append(results)
+
+    df = pd.DataFrame(results_list_no_probs)
+    df.to_excel("results_no_probs.xlsx", index=False)
 
 
 if __name__ == "__main__":
