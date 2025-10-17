@@ -523,6 +523,45 @@ namespace native{
             }
         }
     }
+    template<typename T>
+    __global__ void unpermute_tokens_accum_fp32_kernel(
+        const T* __restrict__ permuted_tokens,   // [num_selected_tokens, hidden_size]
+        const int* __restrict__ sorted_indices,  // [num_selected_tokens]
+        float* __restrict__ output_fp32,         // [num_tokens, hidden_size]
+        int hidden_size,
+        int num_selected_tokens
+    ) {
+        int row = blockIdx.x;
+        if (row >= num_selected_tokens) return;
+        int dst = sorted_indices[row];
+        const T* src = permuted_tokens + row * hidden_size;
+        float* dst_ptr = output_fp32 + dst * hidden_size;
+        for (int i = threadIdx.x; i < hidden_size; i += blockDim.x) {
+            float v = static_cast<float>(src[i]);
+            atomicAdd(&dst_ptr[i], v);
+        }
+    }
+
+    template<typename T>
+    __global__ void unpermute_with_probs_accum_fp32_kernel(
+        const T* __restrict__ permuted_tokens,   // [num_selected_tokens, hidden_size]
+        const int* __restrict__ sorted_indices,  // [num_selected_tokens]
+        const T* __restrict__ permuted_probs,    // [num_selected_tokens]
+        float* __restrict__ output_fp32,         // [num_tokens, hidden_size]
+        int hidden_size,
+        int num_selected_tokens
+    ) {
+        int row = blockIdx.x;
+        if (row >= num_selected_tokens) return;
+        int dst = sorted_indices[row];
+        const T* src = permuted_tokens + row * hidden_size;
+        float prob = static_cast<float>(permuted_probs[row]);
+        float* dst_ptr = output_fp32 + dst * hidden_size;
+        for (int i = threadIdx.x; i < hidden_size; i += blockDim.x) {
+            float v = static_cast<float>(src[i]) * prob;
+            atomicAdd(&dst_ptr[i], v);
+        }
+    }
 
     // CUDA kernel for unpermuting tokens
     template<typename T>
@@ -836,7 +875,8 @@ namespace native{
         const std::vector<int64_t>& restore_shape,
         std::optional<torch::Tensor> probs,
         std::optional<torch::Tensor> routing_map,
-        const torch::Tensor& expert_m_count
+        const torch::Tensor& expert_m_count,
+        bool use_fp32
     ) {
         auto device = permuted_tokens.device();
         auto stream = at::cuda::getCurrentCUDAStream();
@@ -845,20 +885,78 @@ namespace native{
         int hidden_size = permuted_tokens.size(1);
         int num_tokens = restore_shape[0];
         
-        // Create output tensor filled with zeros
-        auto output_tokens = torch::zeros(restore_shape, permuted_tokens.options());
+        if(use_fp32){
+            auto output_fp32 = torch::zeros(
+            restore_shape,torch::TensorOptions().dtype(torch::kFloat32).device(device));
+         
+            
+            // Convert sorted_indices to int32 for CUDA kernel
+            auto sorted_indices_int = sorted_indices.to(torch::kInt32);
+            
+            dim3 block(256);
+            dim3 grid(num_selected_tokens, (hidden_size + block.x - 1) / block.x);
+            
+            bool use_probs = probs.has_value();
+            
+            if (use_probs) {
+                // Need to permute probs first
+                
+                int num_experts = routing_map.value().size(1);
+                auto routing_map_bool = routing_map.value().to(torch::kBool).transpose(0, 1).contiguous();
+                
+                auto permuted_probs = torch::empty({num_selected_tokens}, probs.value().options());
+                
+                dim3 prob_grid((num_experts * num_tokens + 255) / 256);
+                dim3 prob_block(256);
+                
         
-        // Convert sorted_indices to int32 for CUDA kernel
-        auto sorted_indices_int = sorted_indices.to(torch::kInt32);
-        
-        dim3 block(256);
-        dim3 grid(num_selected_tokens, (hidden_size + block.x - 1) / block.x);
-        
-        //bool use_probs = probs.defined() && probs.numel() > 0;
-        bool use_probs = probs.has_value();
-        
-        if (use_probs) {
-            // Need to permute probs first
+                permute_probs_kernel_vec<bf16_t, 8><<<num_experts, 512, 0, stream>>>(
+                    //(bf16_t*)probs.data_ptr(),
+                    (bf16_t*)probs.value().data_ptr(),
+                    (bf16_t*)permuted_probs.data_ptr(),
+                    expert_m_count.data_ptr<int>(),
+                    routing_map_bool.data_ptr<bool>(),
+                    num_tokens,
+                    num_experts
+                );
+                
+                unpermute_with_probs_accum_fp32_kernel<bf16_t><<<num_selected_tokens, 512, 0, stream>>>(
+                (bf16_t*)permuted_tokens.data_ptr(),
+                sorted_indices_int.data_ptr<int>(),
+                (bf16_t*)permuted_probs.data_ptr(),
+                (float*)output_fp32.data_ptr(),
+                hidden_size,
+                num_selected_tokens
+                );
+
+                
+            } else {
+                // printf("unpermute_with_probs_kernel_fast null\n");
+                unpermute_tokens_accum_fp32_kernel<bf16_t><<<num_selected_tokens, 512, 0, stream>>>(
+                (bf16_t*)permuted_tokens.data_ptr(),
+                sorted_indices_int.data_ptr<int>(),
+                (float*)output_fp32.data_ptr(),
+                hidden_size,
+                num_selected_tokens
+                );
+            }
+            
+            return output_fp32.to(permuted_tokens.dtype());
+
+        } else{ // bf16
+            auto output_tokens = torch::zeros(restore_shape, permuted_tokens.options());
+            
+            // Convert sorted_indices to int32 for CUDA kernel
+            auto sorted_indices_int = sorted_indices.to(torch::kInt32);
+            
+            dim3 block(256);
+            dim3 grid(num_selected_tokens, (hidden_size + block.x - 1) / block.x);
+            
+            //bool use_probs = probs.defined() && probs.numel() > 0;
+            bool use_probs = probs.has_value();
+            
+            if (use_probs) { 
+                // Need to permute probs first
             
             int num_experts = routing_map.value().size(1);
             auto routing_map_bool = routing_map.value().to(torch::kBool).transpose(0, 1).contiguous();
@@ -890,20 +988,23 @@ namespace native{
                 num_selected_tokens
             );
          
-        } else {
-            // printf("unpermute_with_probs_kernel_fast null\n");
-         
-            unpermute_tokens_kernel_fast<bf16_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
-                (bf16_t*)permuted_tokens.data_ptr(),
-                (bf16_t*)output_tokens.data_ptr(),
-                sorted_indices_int.data_ptr<int>(),
-                hidden_size,
-                num_tokens,
-                num_selected_tokens
-            );
+            } else {
+                // printf("unpermute_with_probs_kernel_fast null\n");
+            
+                unpermute_tokens_kernel_fast<bf16_t, 4><<<num_selected_tokens, 512, 0, stream>>>(
+                    (bf16_t*)permuted_tokens.data_ptr(),
+                    (bf16_t*)output_tokens.data_ptr(),
+                    sorted_indices_int.data_ptr<int>(),
+                    hidden_size,
+                    num_tokens,
+                    num_selected_tokens
+                );
+            }
+            
+            return output_tokens;
         }
+
         
-        return output_tokens;
     }
 
 }//namespace native
