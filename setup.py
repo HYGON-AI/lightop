@@ -389,15 +389,8 @@ def get_extensions():
                glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + \
                glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
                glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu')
-               
-    miopen_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + \
-                   glob.glob('./lightop/csrc/layernorm/*.cu') + glob.glob('./lightop/csrc/loss/*.cu') + \
-                   glob.glob('./lightop/csrc/scaledmask/*.cu') + glob.glob('./lightop/csrc/groupnorm/*.cu') + \
-                   glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + \
-                   glob.glob('./lightop/csrc/miopen/*.cpp') + glob.glob('./lightop/csrc/softmax/*.cu') + \
-                   glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + \
-                   glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
-                   glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu') + \
+
+    miopen_files = glob.glob('./lightop/csrc/miopen/*.cpp') + \
                    glob.glob('./lightop/csrc/miopen/fusion_mode/*.cpp') + glob.glob('./lightop/csrc/miopen/graph/*.cpp') + glob.glob('./lightop/csrc/miopen/op/*.cpp')
 
                
@@ -426,18 +419,18 @@ def get_extensions():
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/rocrand/include')
     
-    # 1) 不含 miopen 的核心库：lightop.op_core
+    # 1) 不含 miopen 的核心库：lightop.op 
     ext_ops = extension(
-        name="lightop.op_core",
+        name="lightop.op",
         sources=op_files,
         include_dirs=include_dirs,
         define_macros=define_macros,
         extra_compile_args=extra_compile_args)
 
-    # 2) 含 miopen 的库：lightop.op_miopen（在宏中开启接口）
+    # 2) 含 miopen + op 的库：lightop.op_miopen（在宏中开启接口）
     ext_miopen = extension(
         name="lightop.op_core_miopen",
-        sources=miopen_files,
+        sources=op_files + miopen_files,
         include_dirs=include_dirs,
         define_macros=define_macros + [("USE_MIOPEN", "1")],
         extra_compile_args=extra_compile_args
