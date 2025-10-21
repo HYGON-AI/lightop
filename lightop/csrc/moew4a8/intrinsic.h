@@ -2,6 +2,10 @@
 #include "hip/hip_fp16.h"
 #include "hip/hip_bf16.h"
 #include "hip/hip_runtime.h"
+#include "hip/hip_fp8.h" 
+using fp8_e4m3 = __hip_fp8_e4m3;
+using fp8_e4m3x4 = __hip_fp8x4_e4m3;
+using fp8_e5m2x4 = __hip_fp8x4_e5m2;
 using bhalf_t = __hip_bfloat16;
 using half  = __half;
 using BFloat16 = bhalf_t;
@@ -10,7 +14,11 @@ using Int32 = int;
 using Int16 = unsigned short;
 using Float32 = float;
 using f8_t = uint8_t;
+
+//GCC\CLANG编译器支持的，为了向量化扩展的向量化类型，主要是SIMD适用不如cuda中的float4内置类型可高效生成汇编
+using fp8_e4m3x8_t = __attribute__((__vector_size__(8 * sizeof(uint8_t)))) uint8_t;
 using int8x8_t = __attribute__((__vector_size__(8 * sizeof(int8_t)))) int8_t;
+using uint8x8_t = __attribute__((__vector_size__(8 * sizeof(uint8_t)))) uint8_t;
 using half2_t = __attribute__((__vector_size__(2 * sizeof(_Float16)))) _Float16;
 using half4_t = __attribute__((__vector_size__(4 * sizeof(_Float16)))) _Float16;
 using half8_t = __attribute__((__vector_size__(8 * sizeof(_Float16)))) _Float16;
@@ -70,6 +78,23 @@ union alignas(32)  int8_vec {
     // 禁止默认构造（避免未初始化）
     
 };
+
+
+template <typename Element, size_t len>
+union union_vec_fp8{
+  uint8_t uint8_array[len * sizeof(Element)];
+  int8_t int8_array[len * sizeof(Element)];
+  uint8x8_t uint8x8_array[len * sizeof(Element)/ 8];
+  Element scalar_array[len];
+  int int_array[len * sizeof(Element) / 4];
+  float float_array[len * sizeof(Element) / 4];
+  int32_t uint_array[len * sizeof(Element) / 4];
+  int64_t uint64_array[len * sizeof(Element) / 8];
+  intx2 int2_array[len * sizeof(Element) / 8];
+  intx4 int4_array[len * sizeof(Element) / 16];
+  floatx4 float4_array[len * sizeof(Element) / 16];
+};
+
 
 template <typename Element, size_t len>
 union union_vec{
@@ -297,6 +322,18 @@ __device__ typename vec<int, 4>::type mmac_int8(const typename vec<Element, 8>::
     __builtin_amdgcn_sched_barrier(0);
     #endif
     return v3;
+}
+
+template<class Element>
+__device__ typename vec<float, 4>::type mmac_fp8_fp8(const intx2* v1, const intx2* v2, const typename vec<float, 4>::type &v3)
+{
+    // auto a = reinterpret_cast<const long*>(v1);
+    // auto b = reinterpret_cast<const long*>(v2);
+    floatx4 f4i;
+    #if defined(__gfx938__)
+        f4i = __builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(*v1, *v2, v3,false,false);
+    #endif
+    return f4i;
 }
 
 template<class Element>
