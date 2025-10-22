@@ -997,11 +997,11 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode_fp8(
     // };
     // 定义 FP8 E4M3 查找表
     // 负数查找表（int4: -8, -7, -6, -5, -4, -3, -2, -1）
-    constexpr uint32_t neg0 = 0xb8c0c4c8; // -8, -7, -6, -5
-    constexpr uint32_t neg1 = 0xcaccced0; // -4, -3, -2, -1
-    // 正数查找表（int4: 0,1,2,3,4,5,6,7）
-    constexpr uint32_t pos0 = 0x4e4c4a48; // 7,6,5,4
-    constexpr uint32_t pos1 = 0x44403800; // 3,2,1,0
+    // constexpr uint32_t neg0 = 0xb8c0c4c8; // -8, -7, -6, -5
+    // constexpr uint32_t neg1 = 0xcaccced0; // -4, -3, -2, -1
+    // // 正数查找表（int4: 0,1,2,3,4,5,6,7）
+    // constexpr uint32_t pos0 = 0x4e4c4a48; // 7,6,5,4
+    // constexpr uint32_t pos1 = 0x44403800; // 3,2,1,0
 
     for(; i < itk ; i += 2){
         #pragma unroll
@@ -1028,46 +1028,47 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode_fp8(
                     #pragma unroll
                     for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
                         int first_val = B_reg[n_tile][0].data[ 4 * k_tile + N_PACKID];
-                        uint32_t sign = ((first_val & 0x88888888) | 0x66442200) >> 1;
-                        uint32_t lut_idx = first_val & 0x77777777;
-                        // =============================== 处理低4个 int4 (bit 0~3) ===============================
-                        uint32_t sign_low = sign & 0x0f0f0f0f;
-                        uint32_t lut_idx_low4 = lut_idx & 0x0f0f0f0f;
-                        uint32_t output_low_neg = 0;
-                        asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                      : "=v"(output_low_neg)
-                                      : "v"(neg0), "v"(neg1), "v"(lut_idx_low4));
+                        // uint32_t sign = ((first_val & 0x88888888) | 0x66442200) >> 1;
+                        // uint32_t lut_idx = first_val & 0x77777777;
+                        // // =============================== 处理低4个 int4 (bit 0~3) ===============================
+                        // uint32_t sign_low = sign & 0x0f0f0f0f;
+                        // uint32_t lut_idx_low4 = lut_idx & 0x0f0f0f0f;
+                        // uint32_t output_low_neg = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //               : "=v"(output_low_neg)
+                        //               : "v"(neg0), "v"(neg1), "v"(lut_idx_low4));
 
-                        uint32_t output_low_pos = 0;
-                        asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                      : "=v"(output_low_pos)
-                                      : "v"(pos0), "v"(pos1), "v"(lut_idx_low4));
+                        // uint32_t output_low_pos = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //               : "=v"(output_low_pos)
+                        //               : "v"(pos0), "v"(pos1), "v"(lut_idx_low4));
 
-                        uint32_t output_low = 0;
-                        asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                      : "=v"(output_low)
-                                      : "v"(output_low_neg), "v"(output_low_pos), "v"(sign_low));
+                        // uint32_t output_low = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //               : "=v"(output_low)
+                        //               : "v"(output_low_neg), "v"(output_low_pos), "v"(sign_low));
 
-                        // =============================== 处理高4个 int4 (bit 4~7) ===============================
-                        uint32_t sign_high = (sign >> 4) & 0x0f0f0f0f;
-                        uint32_t lut_idx_high4 = (lut_idx >> 4) & 0x0f0f0f0f;
+                        // // =============================== 处理高4个 int4 (bit 4~7) ===============================
+                        // uint32_t sign_high = (sign >> 4) & 0x0f0f0f0f;
+                        // uint32_t lut_idx_high4 = (lut_idx >> 4) & 0x0f0f0f0f;
 
-                        uint32_t output_high_neg = 0;
-                        asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                      : "=v"(output_high_neg)
-                                      : "v"(neg0), "v"(neg1), "v"(lut_idx_high4));
+                        // uint32_t output_high_neg = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //               : "=v"(output_high_neg)
+                        //               : "v"(neg0), "v"(neg1), "v"(lut_idx_high4));
 
-                        uint32_t output_high_pos = 0;
-                        asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                      : "=v"(output_high_pos)
-                                      : "v"(pos0), "v"(pos1), "v"(lut_idx_high4));
+                        // uint32_t output_high_pos = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //               : "=v"(output_high_pos)
+                        //               : "v"(pos0), "v"(pos1), "v"(lut_idx_high4));
 
-                        uint32_t output_high = 0;
-                        asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                      : "=v"(output_high)
-                                      : "v"(output_high_neg), "v"(output_high_pos), "v"(sign_high));
-                        midval.int_array[0] = output_low;
-                        midval.int_array[1] = output_high;
+                        // uint32_t output_high = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //               : "=v"(output_high)
+                        //               : "v"(output_high_neg), "v"(output_high_pos), "v"(sign_high));
+                        // midval.int_array[0] = output_low;
+                        // midval.int_array[1] = output_high;
+                        midval.int2_array[0] = amd_assembly_i4_to_inx2(first_val);
                         // midval.uint8_array[0] = lookup_table(midval.int8_array[0]);
                         // midval.uint8_array[1] = lookup_table(midval.int8_array[1]);
                         // midval.uint8_array[2] = lookup_table(midval.int8_array[2]);
@@ -1121,46 +1122,47 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode_fp8(
                     // midval.uint8_array[5] = lookup_table(midval.int8_array[5]);
                     // midval.uint8_array[6] = lookup_table(midval.int8_array[6]);
                     // midval.uint8_array[7] = lookup_table(midval.int8_array[7]);
-                    uint32_t sign = ((first_val & 0x88888888) | 0x66442200) >> 1;
-                    uint32_t lut_idx = first_val & 0x77777777;
-                    // =============================== 处理低4个 int4 (bit 0~3) ===============================
-                    uint32_t sign_low = sign & 0x0f0f0f0f;
-                    uint32_t lut_idx_low4 = lut_idx & 0x0f0f0f0f;
-                    uint32_t output_low_neg = 0;
-                    asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                    : "=v"(output_low_neg)
-                                    : "v"(neg0), "v"(neg1), "v"(lut_idx_low4));
+                    // uint32_t sign = ((first_val & 0x88888888) | 0x66442200) >> 1;
+                    // uint32_t lut_idx = first_val & 0x77777777;
+                    // // =============================== 处理低4个 int4 (bit 0~3) ===============================
+                    // uint32_t sign_low = sign & 0x0f0f0f0f;
+                    // uint32_t lut_idx_low4 = lut_idx & 0x0f0f0f0f;
+                    // uint32_t output_low_neg = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_low_neg)
+                    //                 : "v"(neg0), "v"(neg1), "v"(lut_idx_low4));
 
-                    uint32_t output_low_pos = 0;
-                    asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                    : "=v"(output_low_pos)
-                                    : "v"(pos0), "v"(pos1), "v"(lut_idx_low4));
+                    // uint32_t output_low_pos = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_low_pos)
+                    //                 : "v"(pos0), "v"(pos1), "v"(lut_idx_low4));
 
-                    uint32_t output_low = 0;
-                    asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                    : "=v"(output_low)
-                                    : "v"(output_low_neg), "v"(output_low_pos), "v"(sign_low));
+                    // uint32_t output_low = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_low)
+                    //                 : "v"(output_low_neg), "v"(output_low_pos), "v"(sign_low));
 
-                    // =============================== 处理高4个 int4 (bit 4~7) ===============================
-                    uint32_t sign_high = (sign >> 4) & 0x0f0f0f0f;
-                    uint32_t lut_idx_high4 = (lut_idx >> 4) & 0x0f0f0f0f;
+                    // // =============================== 处理高4个 int4 (bit 4~7) ===============================
+                    // uint32_t sign_high = (sign >> 4) & 0x0f0f0f0f;
+                    // uint32_t lut_idx_high4 = (lut_idx >> 4) & 0x0f0f0f0f;
 
-                    uint32_t output_high_neg = 0;
-                    asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                    : "=v"(output_high_neg)
-                                    : "v"(neg0), "v"(neg1), "v"(lut_idx_high4));
+                    // uint32_t output_high_neg = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_high_neg)
+                    //                 : "v"(neg0), "v"(neg1), "v"(lut_idx_high4));
 
-                    uint32_t output_high_pos = 0;
-                    asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                    : "=v"(output_high_pos)
-                                    : "v"(pos0), "v"(pos1), "v"(lut_idx_high4));
+                    // uint32_t output_high_pos = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_high_pos)
+                    //                 : "v"(pos0), "v"(pos1), "v"(lut_idx_high4));
 
-                    uint32_t output_high = 0;
-                    asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                    : "=v"(output_high)
-                                    : "v"(output_high_neg), "v"(output_high_pos), "v"(sign_high));
-                    midval.int_array[0] = output_low;
-                    midval.int_array[1] = output_high;                    
+                    // uint32_t output_high = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_high)
+                    //                 : "v"(output_high_neg), "v"(output_high_pos), "v"(sign_high));
+                    // midval.int_array[0] = output_low;
+                    // midval.int_array[1] = output_high;   
+                    midval.int2_array[0] = amd_assembly_i4_to_inx2(first_val);                 
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac_fp8_fp8<Element>(
                                 (&A_reg[m_tile][1].int2_array[k_tile]), 
                                 (&midval.int2_array[0]), 
@@ -1193,46 +1195,47 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode_fp8(
                     // midval.uint8_array[5] = lookup_table(midval.int8_array[5]);
                     // midval.uint8_array[6] = lookup_table(midval.int8_array[6]);
                     // midval.uint8_array[7] = lookup_table(midval.int8_array[7]);
-                    uint32_t sign = ((first_val & 0x88888888) | 0x66442200) >> 1;
-                    uint32_t lut_idx = first_val & 0x77777777;
-                    // =============================== 处理低4个 int4 (bit 0~3) ===============================
-                    uint32_t sign_low = sign & 0x0f0f0f0f;
-                    uint32_t lut_idx_low4 = lut_idx & 0x0f0f0f0f;
-                    uint32_t output_low_neg = 0;
-                    asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                    : "=v"(output_low_neg)
-                                    : "v"(neg0), "v"(neg1), "v"(lut_idx_low4));
+                    // uint32_t sign = ((first_val & 0x88888888) | 0x66442200) >> 1;
+                    // uint32_t lut_idx = first_val & 0x77777777;
+                    // // =============================== 处理低4个 int4 (bit 0~3) ===============================
+                    // uint32_t sign_low = sign & 0x0f0f0f0f;
+                    // uint32_t lut_idx_low4 = lut_idx & 0x0f0f0f0f;
+                    // uint32_t output_low_neg = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_low_neg)
+                    //                 : "v"(neg0), "v"(neg1), "v"(lut_idx_low4));
 
-                    uint32_t output_low_pos = 0;
-                    asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                    : "=v"(output_low_pos)
-                                    : "v"(pos0), "v"(pos1), "v"(lut_idx_low4));
+                    // uint32_t output_low_pos = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_low_pos)
+                    //                 : "v"(pos0), "v"(pos1), "v"(lut_idx_low4));
 
-                    uint32_t output_low = 0;
-                    asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                    : "=v"(output_low)
-                                    : "v"(output_low_neg), "v"(output_low_pos), "v"(sign_low));
+                    // uint32_t output_low = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_low)
+                    //                 : "v"(output_low_neg), "v"(output_low_pos), "v"(sign_low));
 
-                    // =============================== 处理高4个 int4 (bit 4~7) ===============================
-                    uint32_t sign_high = (sign >> 4) & 0x0f0f0f0f;
-                    uint32_t lut_idx_high4 = (lut_idx >> 4) & 0x0f0f0f0f;
+                    // // =============================== 处理高4个 int4 (bit 4~7) ===============================
+                    // uint32_t sign_high = (sign >> 4) & 0x0f0f0f0f;
+                    // uint32_t lut_idx_high4 = (lut_idx >> 4) & 0x0f0f0f0f;
 
-                    uint32_t output_high_neg = 0;
-                    asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                    : "=v"(output_high_neg)
-                                    : "v"(neg0), "v"(neg1), "v"(lut_idx_high4));
+                    // uint32_t output_high_neg = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_high_neg)
+                    //                 : "v"(neg0), "v"(neg1), "v"(lut_idx_high4));
 
-                    uint32_t output_high_pos = 0;
-                    asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                    : "=v"(output_high_pos)
-                                    : "v"(pos0), "v"(pos1), "v"(lut_idx_high4));
+                    // uint32_t output_high_pos = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_high_pos)
+                    //                 : "v"(pos0), "v"(pos1), "v"(lut_idx_high4));
 
-                    uint32_t output_high = 0;
-                    asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                    : "=v"(output_high)
-                                    : "v"(output_high_neg), "v"(output_high_pos), "v"(sign_high));
-                    midval.int_array[0] = output_low;
-                    midval.int_array[1] = output_high;
+                    // uint32_t output_high = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_high)
+                    //                 : "v"(output_high_neg), "v"(output_high_pos), "v"(sign_high));
+                    // midval.int_array[0] = output_low;
+                    // midval.int_array[1] = output_high;
+                    midval.int2_array[0] = amd_assembly_i4_to_inx2(first_val);
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac_fp8_fp8<Element>(
                                 (&A_reg[m_tile][0].int2_array[k_tile]), 
                                 (&midval.int2_array[0]), 
@@ -1399,46 +1402,47 @@ __forceinline__ __device__ void  gemm_nt_second_stage_marlin_decode_fp8(
                         // midval.uint8_array[5] = lookup_table(midval.int8_array[5]);
                         // midval.uint8_array[6] = lookup_table(midval.int8_array[6]);
                         // midval.uint8_array[7] = lookup_table(midval.int8_array[7]);
-                        uint32_t sign = ((first_val & 0x88888888) | 0x66442200) >> 1;
-                        uint32_t lut_idx = first_val & 0x77777777;
-                        // =============================== 处理低4个 int4 (bit 0~3) ===============================
-                        uint32_t sign_low = sign & 0x0f0f0f0f;
-                        uint32_t lut_idx_low4 = lut_idx & 0x0f0f0f0f;
-                        uint32_t output_low_neg = 0;
-                        asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                        : "=v"(output_low_neg)
-                                        : "v"(neg0), "v"(neg1), "v"(lut_idx_low4));
+                        // uint32_t sign = ((first_val & 0x88888888) | 0x66442200) >> 1;
+                        // uint32_t lut_idx = first_val & 0x77777777;
+                        // // =============================== 处理低4个 int4 (bit 0~3) ===============================
+                        // uint32_t sign_low = sign & 0x0f0f0f0f;
+                        // uint32_t lut_idx_low4 = lut_idx & 0x0f0f0f0f;
+                        // uint32_t output_low_neg = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //                 : "=v"(output_low_neg)
+                        //                 : "v"(neg0), "v"(neg1), "v"(lut_idx_low4));
 
-                        uint32_t output_low_pos = 0;
-                        asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                        : "=v"(output_low_pos)
-                                        : "v"(pos0), "v"(pos1), "v"(lut_idx_low4));
+                        // uint32_t output_low_pos = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //                 : "=v"(output_low_pos)
+                        //                 : "v"(pos0), "v"(pos1), "v"(lut_idx_low4));
 
-                        uint32_t output_low = 0;
-                        asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                        : "=v"(output_low)
-                                        : "v"(output_low_neg), "v"(output_low_pos), "v"(sign_low));
+                        // uint32_t output_low = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //                 : "=v"(output_low)
+                        //                 : "v"(output_low_neg), "v"(output_low_pos), "v"(sign_low));
 
-                        // =============================== 处理高4个 int4 (bit 4~7) ===============================
-                        uint32_t sign_high = (sign >> 4) & 0x0f0f0f0f;
-                        uint32_t lut_idx_high4 = (lut_idx >> 4) & 0x0f0f0f0f;
+                        // // =============================== 处理高4个 int4 (bit 4~7) ===============================
+                        // uint32_t sign_high = (sign >> 4) & 0x0f0f0f0f;
+                        // uint32_t lut_idx_high4 = (lut_idx >> 4) & 0x0f0f0f0f;
 
-                        uint32_t output_high_neg = 0;
-                        asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                        : "=v"(output_high_neg)
-                                        : "v"(neg0), "v"(neg1), "v"(lut_idx_high4));
+                        // uint32_t output_high_neg = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //                 : "=v"(output_high_neg)
+                        //                 : "v"(neg0), "v"(neg1), "v"(lut_idx_high4));
 
-                        uint32_t output_high_pos = 0;
-                        asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                        : "=v"(output_high_pos)
-                                        : "v"(pos0), "v"(pos1), "v"(lut_idx_high4));
+                        // uint32_t output_high_pos = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //                 : "=v"(output_high_pos)
+                        //                 : "v"(pos0), "v"(pos1), "v"(lut_idx_high4));
 
-                        uint32_t output_high = 0;
-                        asm volatile ("v_perm_b32 %0, %1, %2, %3"
-                                        : "=v"(output_high)
-                                        : "v"(output_high_neg), "v"(output_high_pos), "v"(sign_high));
-                        midval.int_array[0] = output_low;
-                        midval.int_array[1] = output_high;
+                        // uint32_t output_high = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //                 : "=v"(output_high)
+                        //                 : "v"(output_high_neg), "v"(output_high_pos), "v"(sign_high));
+                        // midval.int_array[0] = output_low;
+                        // midval.int_array[1] = output_high;
+                        midval.int2_array[0] = amd_assembly_i4_to_inx2(first_val);
                         C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac_fp8_fp8<Element>(
                                 (&A_reg[m_tile][0].int2_array[k_tile]), 
                                 (&midval.int2_array[0]), 
