@@ -34,7 +34,7 @@ namespace marlin_moe_w4a16{
                               // fetch pipeline
           const int group_blocks   // number of consecutive 16x16 blocks
           >
-  __global__ void Marlin_512_32(
+  __global__ void MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce(
     const int4* __restrict__ A,  // fp16 input matrix of shape mxk
     const int4* __restrict__ B,  // 4bit quantized weight matrix of shape kxn
     int4* __restrict__ C,        // fp16 output buffer of shape mxn

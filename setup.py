@@ -388,6 +388,7 @@ def get_extensions():
                glob.glob('./lightop/csrc/softmax/*.cu') + \
                glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + \
                glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
+               glob.glob('./lightop/csrc/marlinw4fp8/*.cu') +\
                glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu')
 
     miopen_files = glob.glob('./lightop/csrc/miopen/*.cpp') + \
@@ -400,6 +401,7 @@ def get_extensions():
     include_dirs.append(os.path.abspath('./lightop/csrc/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/marlinw4a16/'))  # 新增marlinw4a16的include路径
     include_dirs.append(os.path.abspath('./lightop/csrc/marlinw4a8/'))  # 新增marlinw4a8的include路径
+    include_dirs.append(os.path.abspath('./lightop/csrc/marlinw4fp8/'))  # 新增marlinw4a8的include路径
     include_dirs.append(os.path.abspath('./lightop/csrc/layernorm/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/groupnorm/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/rmsnorm/'))
