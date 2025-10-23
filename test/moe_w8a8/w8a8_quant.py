@@ -64,7 +64,7 @@ def marlin_weights(
                     q_w,
                     weight_perm,
                     k_tile=64,
-                    n_tile=64,
+                    n_tile=32,
                     pack_factor=8):
     # 7168, 512
     size_k, size_n = q_w.shape

@@ -860,9 +860,9 @@ def main():
 
 if __name__ == "__main__":
     main()
-    # 运行所有shape: python benchmark_moe_w8a8.py 
+    # 运行所有shape: HIP_VISIBLE_DEVICES=2 python benchmark_moe_marlin_w8a8.py 
     # 单侧某一个
-    # HIP_VISIBLE_DEVICES=3 python benchmark_moe_w8a8.py \
+    # HIP_VISIBLE_DEVICES=3 python benchmark_moe_marlin_w8a8.py \
     #     --E [256] \
     #     --n1-list '[256]' \
     #     --n2-list '[7168]' \
