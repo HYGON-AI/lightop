@@ -386,7 +386,7 @@ template<bool Is_store_A,
     int GROUP_K,
     typename Element, 
     typename ElementAccum = int32_t>                                                                                                            
-__forceinline__ __device__ void  gemm_nt_first_stage_decode(
+__forceinline__ __device__ void  MOE_WI4AI8_PERCHANNEL_HIP_NT_decode_kernel(
     const Element* input_ptr, 
     const Element* weight_ptr, 
     Element* A_lds,
@@ -537,7 +537,7 @@ template<bool Is_store_A,
     int splitk,
     typename Element, 
     typename ElementAccum = int32_t>                                                                                                            
-__forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
+__forceinline__ __device__ void  MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode_kernel(
     const Element* input_ptr, 
     const int* weight_ptr, 
     Element* A_lds,
@@ -765,7 +765,7 @@ template<bool Is_store_A,
     int GROUP_K,
     typename Element, 
     typename ElementAccum = int32_t>                                                                                                            
-__forceinline__ __device__ void  gemm_nt_second_stage_marlin_decode(
+__forceinline__ __device__ void  MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode_kernel(
     const Element* input_ptr, 
     const int* weight_ptr, 
     Element* A_lds,
@@ -919,7 +919,7 @@ template<bool Is_store_A,
     int splitk,
     typename Element, 
     typename ElementAccum = int32_t>                                                                                                            
-__forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode_fp8(
+__forceinline__ __device__ void  MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_UP_decode_kernel(
     const Element* input_ptr, 
     const int* weight_ptr, 
     Element* A_lds,
@@ -1304,7 +1304,7 @@ template<bool Is_store_A,
     int GROUP_K,
     typename Element, 
     typename ElementAccum = int32_t>                                                                                                            
-__forceinline__ __device__ void  gemm_nt_second_stage_marlin_decode_fp8(
+__forceinline__ __device__ void  MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode_kernel(
     const Element* input_ptr, 
     const int* weight_ptr, 
     Element* A_lds,
