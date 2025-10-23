@@ -108,8 +108,8 @@ def get_moe_cuda_config(
         mode1 = gemm1_config['MODE']
         mode2 = gemm2_config['MODE']
         if mode1 >= 1000 or mode2 >= 1000:
-            first_stage_co_file = f"moe_w8a8_channel/moe_w8a8_128x256x128_TN_{str(dtype).upper()}_FirstStage.co"
-            second_stage_co_file = f"moe_w8a8_channel/moe_w8a8_128x256x128_TN_{str(dtype).upper()}_SecondStage.co"
+            first_stage_co_file = f"moe_w8a8_channel/moe_w8a8_128x256x128_TN_{str(dtype).upper()}_UP.co"
+            second_stage_co_file = f"moe_w8a8_channel/moe_w8a8_128x256x128_TN_{str(dtype).upper()}_DOWN.co"
             LIGHTOP_ASM_DIR = os.environ["LIGHTOP_ASM_DIR"]
             path_first_stage_co_file = LIGHTOP_ASM_DIR + first_stage_co_file
             path_second_stage_co_file = LIGHTOP_ASM_DIR + second_stage_co_file
