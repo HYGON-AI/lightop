@@ -50,7 +50,7 @@ struct HipFunctionArgs {
 namespace at {
 namespace native {
 
-template <int BLOCKM, int BLOCKN, int BLOCKK, typename OutputType, int IS_WGM8 = false>
+template <int BLOCKM, int BLOCKN, int BLOCKK, typename OutputType, int WGM = 1>
 void _moe_w4a8_marlin_TN_impl(
   torch::Tensor input,
   torch::Tensor b_qweight,
@@ -132,13 +132,14 @@ void _moe_w4a8_marlin_TN_impl(
   memset(funcName, 0x0, sizeof(funcName));
   memset(first_stage_co_file, 0x0, sizeof(first_stage_co_file));
   memset(second_stage_co_file, 0x0, sizeof(second_stage_co_file));
-  sprintf(funcName, "Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT%dx%dx%d_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", BLOCKM, BLOCKN, BLOCKK);
+  // moe_wi4ai8_marlin_perchannel_Asm_TN_MT128x512x128_WGM1
+  sprintf(funcName, "moe_wi4ai8_marlin_perchannel_Asm_TN_MT%dx%dx%d_WGM%d", BLOCKM, BLOCKN, BLOCKK, WGM);
   if (output.scalar_type() == at::ScalarType::BFloat16) {
-    sprintf(first_stage_co_file, "moe_w4a8_channel/moe_w4a8_marlin_%dx%dx%d_TN_BF16_%sFirstStage.co", BLOCKM, BLOCKN, BLOCKK, IS_WGM8?"WGM8_":"");
-    sprintf(second_stage_co_file, "moe_w4a8_channel/moe_w4a8_marlin_%dx%dx%d_TN_BF16_%sSecondStage.co", BLOCKM, BLOCKN, BLOCKK, IS_WGM8?"WGM8_":"");
+    sprintf(first_stage_co_file, "moe_w4a8_channel/moe_wi4ai8_marlin_%dx%dx%d_TN_BF16_WGM%d_FirstStage.co", BLOCKM, BLOCKN, BLOCKK, WGM);
+    sprintf(second_stage_co_file, "moe_w4a8_channel/moe_wi4ai8_marlin_%dx%dx%d_TN_BF16_WGM%d_SecondStage.co", BLOCKM, BLOCKN, BLOCKK, WGM);
   } else if (output.scalar_type() == at::ScalarType::Float) { // debug
-    sprintf(first_stage_co_file, "moe_w4a8_channel/moe_w4a8_marlin_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
-    sprintf(second_stage_co_file, "moe_w4a8_channel/moe_w4a8_marlin_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(first_stage_co_file, "moe_w4a8_channel/moe_wi4ai8_marlin_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(second_stage_co_file, "moe_w4a8_channel/moe_wi4ai8_marlin_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
   } else {
     TORCH_CHECK(false, "moe_w4a8_marlin only supports outputType in [BFloat16]");
   }
@@ -266,7 +267,7 @@ torch::Tensor moe_w4a8_marlin_asm(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
       output.scalar_type(), "moe_w4a8_marlin_TN_impl",[&] {
-        _moe_w4a8_marlin_TN_impl<128, 512, 128, scalar_t, true>(
+        _moe_w4a8_marlin_TN_impl<128, 512, 128, scalar_t, 8>(
           input, b_qweight, output, a_scale, b_scale,
           topk_weights, sorted_token_ids, expert_ids,
           num_tokens_post_pad, top_k, experts_num);
