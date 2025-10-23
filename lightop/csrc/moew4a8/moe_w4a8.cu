@@ -32,7 +32,8 @@ namespace native {
       return __VA_ARGS__();                     \
     }                                           \
   }()
-  
+
+/****************************************normal layout kernel*************************************************/
 template<
   typename Element, 
   uint16_t WARP_NUM,
@@ -45,7 +46,7 @@ template<
   uint16_t GROUP_N,
   uint16_t GROUP_K,
   bool mul_topk_weight> 
-__global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel(
+__global__ void __launch_bounds__(1024) MOE_WI4AI8_PERCHANNEL_HIP_NN_UP_prefill(
   const Element* __restrict__ input,
   const Element* __restrict__ qweight,
   bhalf_t* __restrict__ output,
@@ -201,7 +202,7 @@ template<
   uint16_t GROUP_N,  // 1
   uint16_t GROUP_K,  // 1
   bool mul_topk_weight> // true
-__global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel(
+__global__ void __launch_bounds__(1024) MOE_WI4AI8_PERCHANNEL_HIP_NN_DOWN_prefill(
   const Element* __restrict__ input, //  [2048, 256] torch.int8
   const Element* __restrict__ qweight, // [256, 7168, 128] torch.int8
   bhalf_t* __restrict__ output,  // [256, 8, 7168] torch.bfloat16
@@ -393,7 +394,7 @@ template<
   uint16_t GROUP_N,
   uint16_t GROUP_K,
   bool mul_topk_weight> 
-__global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_decode(
+__global__ void __launch_bounds__(1024) MOE_WI4AI8_PERCHANNEL_HIP_NN_UP_decode(
   const Element* __restrict__ input,
   const Element* __restrict__ qweight,
   bhalf_t* __restrict__ output,
@@ -425,7 +426,7 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_decode(
   // int bidz = blockIdx.z; // pid_k 
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 4, bidx, bidy);
 
-if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   constexpr int STAGES = 1; 
   const int32_t delta_bidx = bidx;
   const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
@@ -477,11 +478,11 @@ if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M
       a_scale_ptr_arr[idx] = input_scale + std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm; //计算M方向的偏移
   }
   { 
-    //gemm_nt_first_stage_decode
+    //MOE_WI4AI8_PERCHANNEL_HIP_NT_decode_kernel
     // gemm_nt_two_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
     // (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
 
-    gemm_nt_first_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+    MOE_WI4AI8_PERCHANNEL_HIP_NT_decode_kernel<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
     (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
   }
 
@@ -536,7 +537,7 @@ template<
   uint16_t GROUP_N,
   uint16_t GROUP_K,
   bool mul_topk_weight> // true
-__global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_decode(
+__global__ void __launch_bounds__(1024) MOE_WI4AI8_PERCHANNEL_HIP_NN_DOWN_decode(
   const Element* __restrict__ input,
   const Element* __restrict__ qweight,
   bhalf_t* __restrict__ output,
@@ -634,11 +635,11 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_decode
   intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; // [4][2]  每个warp在n方向重复两次 tileN = 16*2
   float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id*WARP_N;
   
-  //gemm_nt_first_stage_decode
+  //MOE_WI4AI8_PERCHANNEL_HIP_NT_decode_kernel
   // gemm_nt_two_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
   // (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
 
-  gemm_nt_first_stage_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+  MOE_WI4AI8_PERCHANNEL_HIP_NT_decode_kernel<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
   (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
   
   //save output to lds 
@@ -687,12 +688,9 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_decode
 
 }
 
-
-
-// launch_gemm1
-// 在GemmParams结构体后添加
+/****************************************normal layout launch*************************************************/
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_w4a8_gemm_first_stage(const GemmParams<T>& params) {
+void launch_MOE_WI4AI8_PERCHANNEL_HIP_NN_UP_prefill(const GemmParams<T>& params) {
     const int STAGES = BLOCK_SIZE_K/WARP_K;
     const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
     const bool mul_topk_weight = false;
@@ -723,7 +721,7 @@ void launch_moe_w4a8_gemm_first_stage(const GemmParams<T>& params) {
     const int shared_mem_size = lds_size;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
-    moe_w4a8_gemm_first_stage_kernel<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+    MOE_WI4AI8_PERCHANNEL_HIP_NN_UP_prefill<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
@@ -752,11 +750,8 @@ void launch_moe_w4a8_gemm_first_stage(const GemmParams<T>& params) {
       }
 }
 
-
-// launch_gemm1
-// 在GemmParams结构体后添加
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_w4a8_gemm_second_stage(const GemmParams<T>& params) {
+void launch_MOE_WI4AI8_PERCHANNEL_HIP_NN_DOWN_prefill(const GemmParams<T>& params) {
     const int STAGES = BLOCK_SIZE_K/WARP_K;
     const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
     const bool mul_topk_weight = true;
@@ -777,7 +772,7 @@ void launch_moe_w4a8_gemm_second_stage(const GemmParams<T>& params) {
     const int shared_mem_size = lds_size;// + BLOCK_SIZE_M * 4 * 2 + 32; // 额外分配sort_token_ids的空间
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
-    moe_w4a8_gemm_second_stage_kernel<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+    MOE_WI4AI8_PERCHANNEL_HIP_NN_DOWN_prefill<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
@@ -806,10 +801,8 @@ void launch_moe_w4a8_gemm_second_stage(const GemmParams<T>& params) {
       }
 }
 
-// launch_gemm1_decode
-// warp在n和k方向排列
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_w4a8_gemm_first_stage_decode(const GemmParams<T>& params) {
+void launch_MOE_WI4AI8_PERCHANNEL_HIP_NN_UP_decode(const GemmParams<T>& params) {
     constexpr int STAGES = 1;
     constexpr int WARP_NUM = (BLOCK_SIZE_N / WARP_N) * (BLOCK_SIZE_K / WARP_K);
     const bool mul_topk_weight = false;
@@ -837,7 +830,7 @@ void launch_moe_w4a8_gemm_first_stage_decode(const GemmParams<T>& params) {
     const int shared_mem_size = lds_size;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
-    moe_w4a8_gemm_first_stage_kernel_decode<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+    MOE_WI4AI8_PERCHANNEL_HIP_NN_UP_decode<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
@@ -867,9 +860,8 @@ void launch_moe_w4a8_gemm_first_stage_decode(const GemmParams<T>& params) {
       }
 }
 
-// launch_gemm2_decode
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_w4a8_gemm_second_stage_decode(const GemmParams<T>& params) {
+void launch_MOE_WI4AI8_PERCHANNEL_HIP_NN_DOWN_decode(const GemmParams<T>& params) {
     const int STAGES = 1;    
     const int WARP_NUM = (BLOCK_SIZE_N / WARP_N) * (BLOCK_SIZE_K / WARP_K);
     const bool mul_topk_weight = true;
@@ -895,7 +887,7 @@ void launch_moe_w4a8_gemm_second_stage_decode(const GemmParams<T>& params) {
     const int shared_mem_size = lds_size;// + BLOCK_SIZE_M * 4 * 2 + 32; // 额外分配sort_token_ids的空间
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
-    moe_w4a8_gemm_second_stage_kernel_decode<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+    MOE_WI4AI8_PERCHANNEL_HIP_NN_DOWN_decode<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
@@ -925,8 +917,7 @@ void launch_moe_w4a8_gemm_second_stage_decode(const GemmParams<T>& params) {
       }
 }
 
-/****************************************marlin*************************************************/
-
+/****************************************marlin layout kernel*************************************************/
 template<
   typename Element, 
   uint16_t WARP_NUM,
@@ -940,7 +931,7 @@ template<
   uint16_t GROUP_K,
   bool mul_topk_weight,
   uint16_t splitk> 
-__global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_decode(
+__global__ void __launch_bounds__(1024) MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode(
   const Element* __restrict__ input,
   const int* __restrict__ qweight,
   bhalf_t* __restrict__ output,
@@ -1022,7 +1013,7 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
   }
   
   { 
-    gemm_nt_first_stage_marlin_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K,splitk, Element>
+    MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode_kernel<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K,splitk, Element>
     (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx, bidy);
   }
 
@@ -1084,7 +1075,6 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
   }
 } 
 
-
 template<
   typename Element, 
   uint16_t WARP_NUM,
@@ -1097,7 +1087,7 @@ template<
   uint16_t GROUP_N,
   uint16_t GROUP_K,
   bool mul_topk_weight> 
-__global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin_decode(
+__global__ void __launch_bounds__(1024) MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode(
   const Element* __restrict__ input,
   const int* __restrict__ qweight,
   bhalf_t* __restrict__ output,
@@ -1178,7 +1168,7 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
   }
   
   { 
-    gemm_nt_second_stage_marlin_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+    MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode_kernel<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
     (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx, bidy);
   }
   using vec_bf16_4 = __attribute__((__vector_size__(4 * sizeof(uint16_t)))) unsigned short;
@@ -1208,6 +1198,7 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
       }
   }
 }
+
 template<
   typename Element, 
   uint16_t WARP_NUM,
@@ -1221,7 +1212,7 @@ template<
   uint16_t GROUP_K,
   bool mul_topk_weight,
   uint16_t splitk> 
-__global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_decode_fp8(
+__global__ void __launch_bounds__(1024) MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_UP_decode(
   const Element* __restrict__ input,
   const int* __restrict__ qweight,
   bhalf_t* __restrict__ output,
@@ -1303,7 +1294,7 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
   }
   
   { 
-    gemm_nt_first_stage_marlin_decode_fp8<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K,splitk, Element>
+    MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_UP_decode_kernel<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K,splitk, Element>
     (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx, bidy);
   }
 
@@ -1365,7 +1356,6 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_first_stage_kernel_marlin_
   }
 } 
 
-
 template<
   typename Element, 
   uint16_t WARP_NUM,
@@ -1378,7 +1368,7 @@ template<
   uint16_t GROUP_N,
   uint16_t GROUP_K,
   bool mul_topk_weight> 
-__global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin_decode_fp8(
+__global__ void __launch_bounds__(1024) MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode(
   const Element* __restrict__ input,
   const int* __restrict__ qweight,
   bhalf_t* __restrict__ output,
@@ -1459,7 +1449,7 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
   }
   
   { 
-    gemm_nt_second_stage_marlin_decode_fp8<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
+    MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode_kernel<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
     (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx, bidy);
   }
   using vec_bf16_4 = __attribute__((__vector_size__(4 * sizeof(uint16_t)))) unsigned short;
@@ -1489,9 +1479,10 @@ __global__ void __launch_bounds__(1024) moe_w4a8_gemm_second_stage_kernel_marlin
       }
   }
 }
-//16, 64, 512, 16, 16, 64,
+
+/****************************************marlin layout launch*************************************************/
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int splitk, typename T>
-void launch_moe_w4a8_gemm_first_stage_decode_marlin(const GemmParams2<T>& params) {
+void launch_MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode(const GemmParams2<T>& params) {
     constexpr int kwarp=BLOCK_SIZE_K / WARP_K ;
     constexpr int nwarp=BLOCK_SIZE_N / (WARP_N * 4);
     constexpr int WARP_NUM = kwarp*nwarp ;
@@ -1521,7 +1512,7 @@ void launch_moe_w4a8_gemm_first_stage_decode_marlin(const GemmParams2<T>& params
 
     constexpr int lds_size = (kwarp-1)* nwarp * 68 * 16 * 4;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
-    moe_w4a8_gemm_first_stage_kernel_marlin_decode<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+    MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       GROUP_N, GROUP_K, mul_topk_weight,splitk><<<gridDim, blockDim, lds_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
@@ -1557,8 +1548,9 @@ void launch_moe_w4a8_gemm_first_stage_decode_marlin(const GemmParams2<T>& params
           printf("CUDA error in gemm1: %s\n", cudaGetErrorString(err));
       }
 }  
+
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_w4a8_gemm_second_stage_decode_marlin(const GemmParams2<T>& params) {
+void launch_MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode(const GemmParams2<T>& params) {
 
     constexpr int kwarp=BLOCK_SIZE_K / WARP_K ;
     constexpr int nwarp=BLOCK_SIZE_N / (WARP_N * 4);
@@ -1580,7 +1572,7 @@ void launch_moe_w4a8_gemm_second_stage_decode_marlin(const GemmParams2<T>& param
     constexpr int lds_size = (kwarp-1)* nwarp * 65 * 16 * 4;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
-    moe_w4a8_gemm_second_stage_kernel_marlin_decode<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+    MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, lds_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
@@ -1613,7 +1605,7 @@ void launch_moe_w4a8_gemm_second_stage_decode_marlin(const GemmParams2<T>& param
 }
 
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int splitk, typename T>
-void launch_moe_w4a8_gemm_first_stage_decode_marlin_fp8(const GemmParams2<T>& params) {
+void launch_MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_UP_decode(const GemmParams2<T>& params) {
     constexpr int kwarp=BLOCK_SIZE_K / WARP_K ;
     constexpr int nwarp=BLOCK_SIZE_N / (WARP_N * 4);
     constexpr int WARP_NUM = kwarp*nwarp ;
@@ -1643,7 +1635,7 @@ void launch_moe_w4a8_gemm_first_stage_decode_marlin_fp8(const GemmParams2<T>& pa
 
     constexpr int lds_size = (kwarp-1)* nwarp * 68 * 16 * 4;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
-    moe_w4a8_gemm_first_stage_kernel_marlin_decode_fp8<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+    MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_UP_decode<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       GROUP_N, GROUP_K, mul_topk_weight,splitk><<<gridDim, blockDim, lds_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
@@ -1679,8 +1671,9 @@ void launch_moe_w4a8_gemm_first_stage_decode_marlin_fp8(const GemmParams2<T>& pa
           printf("CUDA error in gemm1: %s\n", cudaGetErrorString(err));
       }
 }  
+
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_w4a8_gemm_second_stage_decode_marlin_fp8(const GemmParams2<T>& params) {
+void launch_MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode(const GemmParams2<T>& params) {
 
     constexpr int kwarp=BLOCK_SIZE_K / WARP_K ;
     constexpr int nwarp=BLOCK_SIZE_N / (WARP_N * 4);
@@ -1702,7 +1695,7 @@ void launch_moe_w4a8_gemm_second_stage_decode_marlin_fp8(const GemmParams2<T>& p
     constexpr int lds_size = (kwarp-1)* nwarp * 65 * 16 * 4;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
-    moe_w4a8_gemm_second_stage_kernel_marlin_decode_fp8<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+    MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, lds_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
@@ -1733,12 +1726,8 @@ void launch_moe_w4a8_gemm_second_stage_decode_marlin_fp8(const GemmParams2<T>& p
           printf("CUDA error in gemm1: %s\n", cudaGetErrorString(err));
       }
 }
-// 模板抽象
-// BLOCK_MNK: [16, 128, 128]
-// WARP_MNK: [16, 32, 64]
-// MMA_MNK: [16, 16, 32]
-// BLOCK_MNK / WARP_MNK = [1, 4, 2]  代表warp在MN方向的排布 block_k/warp_k代表stage
-// WARP_MNK / MMA_MNK = [1, 2, 2]    代表warp在MNK方向重复计算的次数 会分配额外的寄存器
+
+/****************************************pybind func entry*************************************************/
 torch::Tensor moe_gemm_w4a8(torch::Tensor input,
   torch::Tensor b_qweight,
   torch::Tensor output,
@@ -1774,7 +1763,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
     }
 
     int num_pad = 0;
-    //int8 version 
+    //int8 marlin version 
     if (input.scalar_type() == at::ScalarType::Char){
       if(mode > 400 && mode <500){
         int size_n = b_qweight.size(2); 
@@ -1814,7 +1803,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
               it->second(params_in2);
             } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_w4a8_gemm_first_stage_decode_marlin<16, 64, 512, 16, 16, 64,1, char>(params_in2);
+              launch_MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode<16, 64, 512, 16, 16, 64,1, char>(params_in2);
             }
           }      
         }else{ //gemm2 
@@ -1853,11 +1842,12 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
               it->second(params_in2);
             } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_w4a8_gemm_second_stage_decode_marlin<16, 256, 64, 16, 16, 64, char>(params_in2);
+              launch_MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode<16, 256, 64, 16, 16, 64, char>(params_in2);
             }
           }
         }
       }
+      // 非marlin cuda version
       else{
       if(first_stage){ 
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
@@ -1896,7 +1886,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
               it->second(params_in);
           } else {
             printf("No matching kernel configuration found, using default settings:kernel_maps_gemm1_prefill,mode:%d,M_id:%d\n",mode,size_m);  
-            launch_moe_w4a8_gemm_first_stage<16, 64, 128, 16, 16, 64>(params_in);
+            launch_MOE_WI4AI8_PERCHANNEL_HIP_NN_UP_prefill<16, 64, 128, 16, 16, 64>(params_in);
         }
         }else{ //decode
           auto it = kernel_maps_gemm1_decode.find(mode);
@@ -1904,7 +1894,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
             it->second(params_in);
           } else {
               printf("No matching kernel configuration found, using default settings:kernel_maps_gemm1_decode,mode:%d,M_id:%d\n",mode,size_m);
-              launch_moe_w4a8_gemm_first_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
+              launch_MOE_WI4AI8_PERCHANNEL_HIP_NN_UP_decode<16, 32, 128, 16, 16, 64>(params_in);
           }
         }
          
@@ -1948,7 +1938,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
               it->second(params_in);
           } else {
               printf("No matching kernel configuration found, using default settings:kernel_maps_gemm2_prefill ,mode:%d,M_id:%d\n",mode,(size_m / 8));
-              launch_moe_w4a8_gemm_second_stage<16, 32, 128, 16, 16, 64>(params_in);
+              launch_MOE_WI4AI8_PERCHANNEL_HIP_NN_DOWN_prefill<16, 32, 128, 16, 16, 64>(params_in);
               
           }
         }else
@@ -1958,14 +1948,14 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
               it->second(params_in);
           } else {
               printf("No matching kernel configuration found, using default settings:kernel_maps_gemm2_decode,mode:%d,M_id:%d\n",mode,(size_m / 8 ));
-              launch_moe_w4a8_gemm_second_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
+              launch_MOE_WI4AI8_PERCHANNEL_HIP_NN_DOWN_decode<16, 32, 128, 16, 16, 64>(params_in);
           }
 
         }
       }
       }
     }
-    // fp8 version prototype 
+    // fp8 marlin version prototype 
     else if (input.scalar_type() == at::kFloat8_e4m3fn){
       int size_n = b_qweight.size(2); 
       int size_kb = b_qweight.size(1);
@@ -2005,7 +1995,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
               it->second(params_in2);
             } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_w4a8_gemm_first_stage_decode_marlin_fp8<16, 64, 512, 16, 16, 64,1, fp8_e4m3>(params_in2);
+              launch_MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_UP_decode<16, 64, 512, 16, 16, 64,1, fp8_e4m3>(params_in2);
             }
         }      
       }
@@ -2046,7 +2036,7 @@ torch::Tensor moe_gemm_w4a8(torch::Tensor input,
               it->second(params_in2);
           } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_w4a8_gemm_second_stage_decode_marlin_fp8<16, 256, 64, 16, 16, 64, fp8_e4m3>(params_in2);
+              launch_MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode<16, 256, 64, 16, 16, 64, fp8_e4m3>(params_in2);
           }
         }
       }
