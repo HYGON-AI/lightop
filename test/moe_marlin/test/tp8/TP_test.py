@@ -140,7 +140,8 @@ def benchmark_config(
 
 
 if __name__ == "__main__":
-    for tp_size in [1, 2, 4, 8]:
+    # for tp_size in [1, 2, 4, 8]:
+    for tp_size in [8]:
         test_results_total = []
         top_k = 8
         global_num_experts = 256
@@ -172,7 +173,7 @@ if __name__ == "__main__":
         
         # for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]:
         # for num_tokens in [128, 256]:
-        for num_tokens in [32]:
+        for num_tokens in [4096]:
             x = torch.randn((num_tokens, hidden_size), device='cuda:0', dtype=torch.bfloat16) / 10 # [256*8, 7168] (bf16)
             test_results_cur = benchmark_config(
                                                     num_tokens, 
