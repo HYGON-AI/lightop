@@ -117,6 +117,8 @@ torch::Tensor moe_marlin_w4fp8(
   int dev = a_q.get_device();
 
   bool mul_topk_weights = topk_weights.has_value();
+  int sms = -1;
+  cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, a_q.get_device());
   at::native::marlin_moe_w4fp8::marlin_mm_bf16_per_channel(
                                           a_q.data_ptr(), 
                                           a_scales.data_ptr(), 
@@ -140,7 +142,7 @@ torch::Tensor moe_marlin_w4fp8(
                                           at::cuda::getCurrentCUDAStream(dev), 
                                           thread_k, 
                                           thread_n, 
-                                          80,
+                                          sms,
                                           blocks_per_cu,
                                           is_reduce
                                         );
