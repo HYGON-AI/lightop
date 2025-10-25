@@ -386,7 +386,7 @@ template<bool Is_store_A,
     int GROUP_K,
     typename Element, 
     typename ElementAccum = int32_t>                                                                                                            
-__forceinline__ __device__ void  gemm_nt_first_stage_decode(
+__forceinline__ __device__ void  MOE_WI4AI8_PERCHANNEL_HIP_NT_decode_kernel(
     const Element* input_ptr, 
     const Element* weight_ptr, 
     Element* A_lds,
@@ -537,7 +537,7 @@ template<bool Is_store_A,
     int splitk,
     typename Element, 
     typename ElementAccum = int32_t>                                                                                                            
-__forceinline__ __device__ void  gemm_nt_first_stage_marlin_decode(
+__forceinline__ __device__ void  MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode_kernel(
     const Element* input_ptr, 
     const int* weight_ptr, 
     Element* A_lds,
@@ -765,7 +765,7 @@ template<bool Is_store_A,
     int GROUP_K,
     typename Element, 
     typename ElementAccum = int32_t>                                                                                                            
-__forceinline__ __device__ void  gemm_nt_second_stage_marlin_decode(
+__forceinline__ __device__ void  MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode_kernel(
     const Element* input_ptr, 
     const int* weight_ptr, 
     Element* A_lds,
@@ -891,6 +891,600 @@ __forceinline__ __device__ void  gemm_nt_second_stage_marlin_decode(
                         #pragma unroll
                         for(int k = 0; k < 4; k++){//4组数据按组迭代
                             intx4 temp = *(intx4*)(out_smem+ (m_tile * MFMA_M) * lds_offset + n_tile * 16 + ( k_tile +  warp_n_id * warp_k_num ) * lineoffset *16 + row_id * lineoffset + col_id * 16  + k * 4);
+                            #pragma unroll
+                            for(int i = 0; i < 4; i++){ //组内迭代
+                                C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + k ][i] += temp[i];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+template<bool Is_store_A, 
+    int A_prefetch_level, 
+    int B_prefetch_level, 
+    int WARP_NUM,
+    int BLOCK_M, 
+    int BLOCK_N, 
+    int BLOCK_K, 
+    int WARP_M,  
+    int WARP_N,  
+    int WARP_K,  
+    int STAGES,  
+    int GROUP_N,
+    int GROUP_K,
+    int splitk,
+    typename Element, 
+    typename ElementAccum = int32_t>                                                                                                            
+__forceinline__ __device__ void  MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_UP_decode_kernel(
+    const Element* input_ptr, 
+    const int* weight_ptr, 
+    Element* A_lds,
+    Element* B_lds,
+    float* input_scale_ptr,
+    float* weight_scale_ptr,
+    int max_n_len_offset, 
+    union_vec_fp8<Element,WARP_K/4> A_reg[WARP_M/16][2], // 2 = warpk/mmak
+    int8_vec<WARP_K/8> B_reg[WARP_N/16][2], // 2 = warpk/mmak
+    floatx4 C_reg[][4 * (WARP_M/16)*(WARP_N/16)],
+    int warp_id, 
+    int seqlen_A_stride, // size_k: 7168
+    int seqlen_B_stride, // size_k: 7168
+    int scale_A_stride_m,
+    int scale_A_stride_k,
+    int scale_B_stride_e,
+    int scale_B_stride_n,
+    int scale_B_stride_k,
+    int top_k, // 8/1
+    const int* sorted_token_ids_offset,
+    int sorted_token_lens,
+    const int32_t expert_id,
+    const int bidx,
+    const int bidy) 
+{
+    const int size_k = seqlen_A_stride;//7168
+    int lane_id = threadIdx.x & 63; // thread_id
+    int row_id = lane_id % 16;
+    int col_id = lane_id / 16;
+    constexpr int MFMA_M = 16;
+    constexpr int MFMA_N = 16;
+    constexpr int MFMA_K = 32;
+    constexpr int warp_k_num = BLOCK_K/WARP_K;
+    int warp_k_id = warp_id % warp_k_num;//0:0 1:1 2:0 3:1
+    int warp_n_id = warp_id / warp_k_num;//0:0 1:0 2:1 3:1
+    int g_row_A[WARP_M / MFMA_M];
+    int g_row_B[WARP_N / MFMA_N];
+    int i = 0;
+    int B_stride_k = WARP_K / 32;
+
+    #pragma unroll
+    for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+        int sorted_token_idx = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
+        g_row_A[m_tile] = (std::min(sorted_token_idx / top_k,  max_n_len_offset - 1)) * size_k + warp_k_id * WARP_K + col_id * 16;
+    }
+
+    #pragma unroll
+    for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+        g_row_B[n_tile] =  warp_k_id * B_stride_k * seqlen_B_stride + warp_n_id * WARP_N * 4 * 4 + row_id * 4 + (col_id % 2) * 128 +(col_id/2)*seqlen_B_stride;
+    }
+
+    #pragma unroll
+    for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+        #pragma unroll
+        for(int k_tile = 0; k_tile < WARP_K / MFMA_K / 2; k_tile++){ 
+                A_reg[m_tile][0].int4_array[k_tile] = *(intx4*)(input_ptr + g_row_A[m_tile] + i * warp_k_num * WARP_K  + k_tile * 16 );
+        }
+    }
+        
+    #pragma unroll
+    for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+        #pragma unroll
+        for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+           B_reg[n_tile][0].vec[k_tile]  = *(intx4*)(weight_ptr + (i * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64);
+        }
+    }
+    i=1; 
+    union_vec_fp8<Element,8> midval;
+    int itk = size_k/warp_k_num/WARP_K/splitk; //112
+    //新增一个int8到fp8的映射表，因为是int4转的int8，实际上int8中只有16个数据。
+    //该方案因为数组过大，需要额外的load加载和等待
+    // static const uint8_t lookup_table[16] = {
+    //     0xd0, 0xce, 0xcc, 0xca, 0xc8, 0xc4, 0xc0, 0xb8,  // key: -8 ~ -1
+    //     0x00, 0x38, 0x40, 0x44, 0x48, 0x4a, 0x4c, 0x4e   // key:  0 ~  7
+    // };
+    // 定义 FP8 E4M3 查找表
+    // 负数查找表（int4: -8, -7, -6, -5, -4, -3, -2, -1）
+    // constexpr uint32_t neg0 = 0xb8c0c4c8; // -8, -7, -6, -5
+    // constexpr uint32_t neg1 = 0xcaccced0; // -4, -3, -2, -1
+    // // 正数查找表（int4: 0,1,2,3,4,5,6,7）
+    // constexpr uint32_t pos0 = 0x4e4c4a48; // 7,6,5,4
+    // constexpr uint32_t pos1 = 0x44403800; // 3,2,1,0
+
+    for(; i < itk ; i += 2){
+        #pragma unroll
+        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+            #pragma unroll
+            for(int k_tile = 0; k_tile < WARP_K / MFMA_K / 2; k_tile++){ 
+                A_reg[m_tile][1].int4_array[k_tile] = *(intx4*)(input_ptr+ g_row_A[m_tile] + i * warp_k_num * WARP_K  + k_tile * 16);
+            }
+        }
+        #pragma unroll
+        for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+            #pragma unroll
+            for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+                B_reg[n_tile][1].vec[k_tile]  = *(intx4*)(weight_ptr + (i * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64);
+            }
+        }
+        // mmac
+        #pragma unroll
+        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                    #pragma unroll
+                    for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                        int first_val = B_reg[n_tile][0].data[ 4 * k_tile + N_PACKID];
+                        // uint32_t sign = ((first_val & 0x88888888) | 0x66442200) >> 1;
+                        // uint32_t lut_idx = first_val & 0x77777777;
+                        // // =============================== 处理低4个 int4 (bit 0~3) ===============================
+                        // uint32_t sign_low = sign & 0x0f0f0f0f;
+                        // uint32_t lut_idx_low4 = lut_idx & 0x0f0f0f0f;
+                        // uint32_t output_low_neg = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //               : "=v"(output_low_neg)
+                        //               : "v"(neg0), "v"(neg1), "v"(lut_idx_low4));
+
+                        // uint32_t output_low_pos = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //               : "=v"(output_low_pos)
+                        //               : "v"(pos0), "v"(pos1), "v"(lut_idx_low4));
+
+                        // uint32_t output_low = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //               : "=v"(output_low)
+                        //               : "v"(output_low_neg), "v"(output_low_pos), "v"(sign_low));
+
+                        // // =============================== 处理高4个 int4 (bit 4~7) ===============================
+                        // uint32_t sign_high = (sign >> 4) & 0x0f0f0f0f;
+                        // uint32_t lut_idx_high4 = (lut_idx >> 4) & 0x0f0f0f0f;
+
+                        // uint32_t output_high_neg = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //               : "=v"(output_high_neg)
+                        //               : "v"(neg0), "v"(neg1), "v"(lut_idx_high4));
+
+                        // uint32_t output_high_pos = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //               : "=v"(output_high_pos)
+                        //               : "v"(pos0), "v"(pos1), "v"(lut_idx_high4));
+
+                        // uint32_t output_high = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //               : "=v"(output_high)
+                        //               : "v"(output_high_neg), "v"(output_high_pos), "v"(sign_high));
+                        // midval.int_array[0] = output_low;
+                        // midval.int_array[1] = output_high;
+                        midval.int2_array[0] = amd_assembly_i4_to_inx2(first_val);
+                        // midval.uint8_array[0] = lookup_table(midval.int8_array[0]);
+                        // midval.uint8_array[1] = lookup_table(midval.int8_array[1]);
+                        // midval.uint8_array[2] = lookup_table(midval.int8_array[2]);
+                        // midval.uint8_array[3] = lookup_table(midval.int8_array[3]);
+                        // midval.uint8_array[4] = lookup_table(midval.int8_array[4]);
+                        // midval.uint8_array[5] = lookup_table(midval.int8_array[5]);
+                        // midval.uint8_array[6] = lookup_table(midval.int8_array[6]);
+                        // midval.uint8_array[7] = lookup_table(midval.int8_array[7]);
+                        C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac_fp8_fp8<Element>(
+                                (&A_reg[m_tile][0].int2_array[k_tile]), 
+                                (&midval.int2_array[0]), 
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                        }
+                }
+            }
+        }
+        if((i + 1) < itk){
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K / 2; k_tile++){ 
+                   A_reg[m_tile][0].int4_array[k_tile] = *(intx4*)(input_ptr+ g_row_A[m_tile] + (i + 1) * warp_k_num * WARP_K  + k_tile * 16);
+                    // A_reg[m_tile][0].int2_array[k_tile] = *(intx2*)(input_ptr+ g_row_A[m_tile] + (i + 1)* warp_k_num * WARP_K + warp_k_id  * WARP_K + k_tile * MFMA_K );
+                }
+            }
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){  
+                    B_reg[n_tile][0].vec[k_tile]  = *(intx4*)(weight_ptr + ((i+1) * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64);
+                    // B_reg[n_tile][0].vec[k_tile]  = *(intx4*)(weight_ptr + ((i+1) * warp_k_num * B_stride_k + B_stride_k * warp_k_id + k_tile) * seqlen_B_stride + warp_n_id * WARP_N * 4 * 4 + lane_id * 4);
+                }
+            }
+        }
+        #pragma unroll
+        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                    #pragma unroll
+                    for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                    int first_val = B_reg[n_tile][1].data[4*k_tile + N_PACKID];
+                    // midval.int_array[0] = first_val & 0xf0f0f0f0 ;
+                    // midval.int_array[1] = (first_val << 4) & 0xf0f0f0f0;
+                    // midval.uint8_array[0] = lookup_table(midval.int8_array[0]);
+                    // midval.uint8_array[1] = lookup_table(midval.int8_array[1]);
+                    // midval.uint8_array[2] = lookup_table(midval.int8_array[2]);
+                    // midval.uint8_array[3] = lookup_table(midval.int8_array[3]);
+                    // midval.uint8_array[4] = lookup_table(midval.int8_array[4]);
+                    // midval.uint8_array[5] = lookup_table(midval.int8_array[5]);
+                    // midval.uint8_array[6] = lookup_table(midval.int8_array[6]);
+                    // midval.uint8_array[7] = lookup_table(midval.int8_array[7]);
+                    // uint32_t sign = ((first_val & 0x88888888) | 0x66442200) >> 1;
+                    // uint32_t lut_idx = first_val & 0x77777777;
+                    // // =============================== 处理低4个 int4 (bit 0~3) ===============================
+                    // uint32_t sign_low = sign & 0x0f0f0f0f;
+                    // uint32_t lut_idx_low4 = lut_idx & 0x0f0f0f0f;
+                    // uint32_t output_low_neg = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_low_neg)
+                    //                 : "v"(neg0), "v"(neg1), "v"(lut_idx_low4));
+
+                    // uint32_t output_low_pos = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_low_pos)
+                    //                 : "v"(pos0), "v"(pos1), "v"(lut_idx_low4));
+
+                    // uint32_t output_low = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_low)
+                    //                 : "v"(output_low_neg), "v"(output_low_pos), "v"(sign_low));
+
+                    // // =============================== 处理高4个 int4 (bit 4~7) ===============================
+                    // uint32_t sign_high = (sign >> 4) & 0x0f0f0f0f;
+                    // uint32_t lut_idx_high4 = (lut_idx >> 4) & 0x0f0f0f0f;
+
+                    // uint32_t output_high_neg = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_high_neg)
+                    //                 : "v"(neg0), "v"(neg1), "v"(lut_idx_high4));
+
+                    // uint32_t output_high_pos = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_high_pos)
+                    //                 : "v"(pos0), "v"(pos1), "v"(lut_idx_high4));
+
+                    // uint32_t output_high = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_high)
+                    //                 : "v"(output_high_neg), "v"(output_high_pos), "v"(sign_high));
+                    // midval.int_array[0] = output_low;
+                    // midval.int_array[1] = output_high;   
+                    midval.int2_array[0] = amd_assembly_i4_to_inx2(first_val);                 
+                    C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac_fp8_fp8<Element>(
+                                (&A_reg[m_tile][1].int2_array[k_tile]), 
+                                (&midval.int2_array[0]), 
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                    }
+                }
+            }
+        }
+    } 
+    //尾处理
+    if((i + 1) < itk){
+        #pragma unroll
+        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                    #pragma unroll
+                    for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                    // int first_val = B_reg[n_tile][0].int_array[k_tile];
+                    int first_val = B_reg[n_tile][0].data[4*k_tile + N_PACKID];
+                    union_vec_fp8<Element,8> midval;
+                    // midval.int_array[0] = first_val & 0xf0f0f0f0 ;
+                    // midval.int_array[1] = (first_val << 4) & 0xf0f0f0f0;
+                    // midval.uint8_array[0] = lookup_table(midval.int8_array[0]);
+                    // midval.uint8_array[1] = lookup_table(midval.int8_array[1]);
+                    // midval.uint8_array[2] = lookup_table(midval.int8_array[2]);
+                    // midval.uint8_array[3] = lookup_table(midval.int8_array[3]);
+                    // midval.uint8_array[4] = lookup_table(midval.int8_array[4]);
+                    // midval.uint8_array[5] = lookup_table(midval.int8_array[5]);
+                    // midval.uint8_array[6] = lookup_table(midval.int8_array[6]);
+                    // midval.uint8_array[7] = lookup_table(midval.int8_array[7]);
+                    // uint32_t sign = ((first_val & 0x88888888) | 0x66442200) >> 1;
+                    // uint32_t lut_idx = first_val & 0x77777777;
+                    // // =============================== 处理低4个 int4 (bit 0~3) ===============================
+                    // uint32_t sign_low = sign & 0x0f0f0f0f;
+                    // uint32_t lut_idx_low4 = lut_idx & 0x0f0f0f0f;
+                    // uint32_t output_low_neg = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_low_neg)
+                    //                 : "v"(neg0), "v"(neg1), "v"(lut_idx_low4));
+
+                    // uint32_t output_low_pos = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_low_pos)
+                    //                 : "v"(pos0), "v"(pos1), "v"(lut_idx_low4));
+
+                    // uint32_t output_low = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_low)
+                    //                 : "v"(output_low_neg), "v"(output_low_pos), "v"(sign_low));
+
+                    // // =============================== 处理高4个 int4 (bit 4~7) ===============================
+                    // uint32_t sign_high = (sign >> 4) & 0x0f0f0f0f;
+                    // uint32_t lut_idx_high4 = (lut_idx >> 4) & 0x0f0f0f0f;
+
+                    // uint32_t output_high_neg = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_high_neg)
+                    //                 : "v"(neg0), "v"(neg1), "v"(lut_idx_high4));
+
+                    // uint32_t output_high_pos = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_high_pos)
+                    //                 : "v"(pos0), "v"(pos1), "v"(lut_idx_high4));
+
+                    // uint32_t output_high = 0;
+                    // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                    //                 : "=v"(output_high)
+                    //                 : "v"(output_high_neg), "v"(output_high_pos), "v"(sign_high));
+                    // midval.int_array[0] = output_low;
+                    // midval.int_array[1] = output_high;
+                    midval.int2_array[0] = amd_assembly_i4_to_inx2(first_val);
+                    C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac_fp8_fp8<Element>(
+                                (&A_reg[m_tile][0].int2_array[k_tile]), 
+                                (&midval.int2_array[0]), 
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                    }
+                }
+            }
+        }        
+    }
+    extern __shared__ float out_smemf[]; // 声明lds信息
+
+    if constexpr (warp_k_num > 1){
+        //计算一个warp需要的空间即：64x16
+        constexpr int lineoffset=65;
+        // constexpr int lds_offset = (warp_k_num-1) * warp_n_num * lineoffset;
+        #pragma unroll
+        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+            if(warp_k_id>0){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k = 0; k < 4; k++){
+                        *(floatx4*)(out_smemf+ n_tile * 16+ (warp_k_id-1 +  warp_n_id * (warp_k_num-1))  * lineoffset * 16 +  row_id * lineoffset + col_id * 16  + k * 4) 
+                          = C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + k];
+                    }
+                }
+            }
+        
+        __syncthreads();
+
+        if(warp_k_id == 0){ //存在多个warp的warpkid=0，这些warp都需要和附近的warpknum块数据进行reduce
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < warp_k_num-1; k_tile++){//warp迭代
+                        #pragma unroll
+                        for(int k = 0; k < 4; k++){//4组数据按组迭代
+                            floatx4 temp = *(floatx4*)(out_smemf + n_tile * 16 + ( k_tile +  warp_n_id * (warp_k_num-1) ) * lineoffset *16 + row_id * lineoffset + col_id * 16  + k * 4);
+                            #pragma unroll
+                            for(int i = 0; i < 4; i++){ //组内迭代
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + k][i] += temp[i];
+                            }
+                        }
+                    }
+                }
+            }
+        __syncthreads();
+        }
+    }
+    
+}
+
+// MOE-DECODE-W4A8 针对小shape优化
+template<bool Is_store_A, 
+    int A_prefetch_level, 
+    int B_prefetch_level, 
+    int WARP_NUM,
+    int BLOCK_M, 
+    int BLOCK_N, 
+    int BLOCK_K, 
+    int WARP_M,  
+    int WARP_N,  
+    int WARP_K,  
+    int STAGES,  
+    int GROUP_N,
+    int GROUP_K,
+    typename Element, 
+    typename ElementAccum = int32_t>                                                                                                            
+__forceinline__ __device__ void  MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_DOWN_decode_kernel(
+    const Element* input_ptr, 
+    const int* weight_ptr, 
+    Element* A_lds,
+    Element* B_lds,
+    float* input_scale_ptr,
+    float* weight_scale_ptr,
+    int max_n_len_offset, 
+    union_vec_fp8<Element,WARP_K/4> A_reg[WARP_M/16][1], // 2 = warpk/mmak
+    int8_vec<WARP_K/8> B_reg[WARP_N/16][1], // 2 = warpk/mmak
+    floatx4 C_reg[][4 * (WARP_M/16)*(WARP_N/16)],
+    int warp_id, 
+    int seqlen_A_stride, // size_k: 7168
+    int seqlen_B_stride, // size_k: 7168
+    int scale_A_stride_m,
+    int scale_A_stride_k,
+    int scale_B_stride_e,
+    int scale_B_stride_n,
+    int scale_B_stride_k,
+    int top_k, // 8/1
+    const int* sorted_token_ids_offset,
+    int sorted_token_lens,
+    const int32_t expert_id,
+    const int bidx,
+    const int bidy) 
+{
+    const int size_k = seqlen_A_stride;//7168
+    int lane_id = threadIdx.x & 63; // thread_id
+    int row_id = lane_id % 16;
+    int col_id = lane_id / 16;
+    constexpr int MFMA_M = 16;
+    constexpr int MFMA_N = 16;
+    constexpr int MFMA_K = 32;
+    constexpr int warp_k_num = BLOCK_K/WARP_K;
+    int warp_k_id = warp_id % warp_k_num;//0:0 1:1 2:0 3:1
+    int warp_n_id = warp_id / warp_k_num;//0:0 1:0 2:1 3:1
+    int g_row_A[WARP_M / MFMA_M];
+    int g_row_B[WARP_N / MFMA_N];
+    int i = 0;
+    int B_stride_k = WARP_K / 32;
+    // 定义 FP8 E4M3 查找表
+    // 负数查找表（int4: -8, -7, -6, -5, -4, -3, -2, -1）
+    constexpr uint32_t neg0 = 0xb8c0c4c8; // -8, -7, -6, -5
+    constexpr uint32_t neg1 = 0xcaccced0; // -4, -3, -2, -1
+    // 正数查找表（int4: 0,1,2,3,4,5,6,7）
+    constexpr uint32_t pos0 = 0x4e4c4a48; // 7,6,5,4
+    constexpr uint32_t pos1 = 0x44403800; // 3,2,1,0
+    #pragma unroll
+    for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+        int sorted_token_idx = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
+        g_row_A[m_tile] = (std::min(sorted_token_idx / top_k,  max_n_len_offset - 1)) * size_k + warp_k_id * WARP_K + col_id * 16;
+    }
+
+    #pragma unroll
+    for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+        g_row_B[n_tile] =  warp_k_id * B_stride_k * seqlen_B_stride + warp_n_id * WARP_N * 4 * 4 + row_id * 4 + (col_id % 2) * 128 +(col_id/2)*seqlen_B_stride;
+    }
+
+    union_vec_fp8<Element,8> midval;
+    int itk = size_k/warp_k_num/WARP_K; //112
+    for(; i < itk ; i += 1){
+        #pragma unroll
+        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+            #pragma unroll
+            for(int k_tile = 0; k_tile < WARP_K / MFMA_K / 2; k_tile++){ 
+                // A_reg[m_tile][1].int4_array[k_tile] = *(intx4*)(input_ptr+ g_row_A[m_tile] + i * warp_k_num * WARP_K  + k_tile * 16);
+                buffer_load_reg_dwordx4(input_ptr,A_reg[m_tile][0].int4_array[k_tile],0, g_row_A[m_tile] + i * warp_k_num * WARP_K  + k_tile * 16);
+            }
+        }
+        #pragma unroll
+        for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+            #pragma unroll
+            for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+                buffer_load_reg_dwordx4(weight_ptr,B_reg[n_tile][0].vec[k_tile],0,((i * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64) * sizeof(int));
+                // B_reg[n_tile][1].vec[k_tile]  = *(intx4*)(weight_ptr + (i * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64);
+            }
+        }
+        vmcnt_wait(0);
+        // mmac
+        #pragma unroll
+        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                    #pragma unroll
+                    for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                        int first_val = B_reg[n_tile][0].data[ 4 * k_tile + N_PACKID];
+                        // midval.int_array[0] = first_val & 0xf0f0f0f0 ;
+                        // midval.int_array[1] = (first_val << 4) & 0xf0f0f0f0;
+                        // midval.uint8_array[0] = lookup_table(midval.int8_array[0]);
+                        // midval.uint8_array[1] = lookup_table(midval.int8_array[1]);
+                        // midval.uint8_array[2] = lookup_table(midval.int8_array[2]);
+                        // midval.uint8_array[3] = lookup_table(midval.int8_array[3]);
+                        // midval.uint8_array[4] = lookup_table(midval.int8_array[4]);
+                        // midval.uint8_array[5] = lookup_table(midval.int8_array[5]);
+                        // midval.uint8_array[6] = lookup_table(midval.int8_array[6]);
+                        // midval.uint8_array[7] = lookup_table(midval.int8_array[7]);
+                        // uint32_t sign = ((first_val & 0x88888888) | 0x66442200) >> 1;
+                        // uint32_t lut_idx = first_val & 0x77777777;
+                        // // =============================== 处理低4个 int4 (bit 0~3) ===============================
+                        // uint32_t sign_low = sign & 0x0f0f0f0f;
+                        // uint32_t lut_idx_low4 = lut_idx & 0x0f0f0f0f;
+                        // uint32_t output_low_neg = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //                 : "=v"(output_low_neg)
+                        //                 : "v"(neg0), "v"(neg1), "v"(lut_idx_low4));
+
+                        // uint32_t output_low_pos = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //                 : "=v"(output_low_pos)
+                        //                 : "v"(pos0), "v"(pos1), "v"(lut_idx_low4));
+
+                        // uint32_t output_low = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //                 : "=v"(output_low)
+                        //                 : "v"(output_low_neg), "v"(output_low_pos), "v"(sign_low));
+
+                        // // =============================== 处理高4个 int4 (bit 4~7) ===============================
+                        // uint32_t sign_high = (sign >> 4) & 0x0f0f0f0f;
+                        // uint32_t lut_idx_high4 = (lut_idx >> 4) & 0x0f0f0f0f;
+
+                        // uint32_t output_high_neg = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //                 : "=v"(output_high_neg)
+                        //                 : "v"(neg0), "v"(neg1), "v"(lut_idx_high4));
+
+                        // uint32_t output_high_pos = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //                 : "=v"(output_high_pos)
+                        //                 : "v"(pos0), "v"(pos1), "v"(lut_idx_high4));
+
+                        // uint32_t output_high = 0;
+                        // asm volatile ("v_perm_b32 %0, %1, %2, %3"
+                        //                 : "=v"(output_high)
+                        //                 : "v"(output_high_neg), "v"(output_high_pos), "v"(sign_high));
+                        // midval.int_array[0] = output_low;
+                        // midval.int_array[1] = output_high;
+                        midval.int2_array[0] = amd_assembly_i4_to_inx2(first_val);
+                        C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac_fp8_fp8<Element>(
+                                (&A_reg[m_tile][0].int2_array[k_tile]), 
+                                (&midval.int2_array[0]), 
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                        }
+                }
+            }
+        }
+    } 
+
+
+    extern __shared__ float out_smemf[]; // 声明lds信息
+
+    if constexpr (warp_k_num > 1){
+        //计算一个warp需要的空间即：64x16
+        constexpr int lineoffset=65;
+        constexpr int lds_offset = warp_k_num * 16 * lineoffset;
+        if(warp_k_id>0){
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k = 0; k < 4; k++){
+                        *(floatx4*)(out_smemf+(m_tile * MFMA_M) * lds_offset + n_tile * 16+ (warp_k_id-1 +  warp_n_id * warp_k_num)  * lineoffset * 16 +  row_id * lineoffset + col_id * 16  + k * 4) 
+                          = C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + k];
+                    }
+                }
+            }
+        }
+        __syncthreads();
+
+        if(warp_k_id == 0){ //存在多个warp的warpkid=0，这些warp都需要和附近的warpknum块数据进行reduce
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < warp_k_num-1; k_tile++){//warp迭代
+                        #pragma unroll
+                        for(int k = 0; k < 4; k++){//4组数据按组迭代
+                            floatx4 temp = *(intx4*)(out_smemf+ (m_tile * MFMA_M) * lds_offset + n_tile * 16 + ( k_tile +  warp_n_id * warp_k_num ) * lineoffset *16 + row_id * lineoffset + col_id * 16  + k * 4);
                             #pragma unroll
                             for(int i = 0; i < 4; i++){ //组内迭代
                                 C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + k ][i] += temp[i];

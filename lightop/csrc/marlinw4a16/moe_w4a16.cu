@@ -82,7 +82,7 @@ void marlin_mm_impl(const void* A, const void* B, void* C, void* s_zp,
   if(prob_k==7168 && prob_n==512){
     switch(moe_block_size / 16) {
       case 1: // 16-256-64
-        Marlin<scalar_t, 256, 1, 16, 4, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_256_128_reduce<scalar_t, 256, 1, 16, 4, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
@@ -90,7 +90,7 @@ void marlin_mm_impl(const void* A, const void* B, void* C, void* s_zp,
         break;
 
       case 2: // 32-256-64
-        Marlin<scalar_t, 256, 2, 16, 4, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_256_128_reduce<scalar_t, 256, 2, 16, 4, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
@@ -98,21 +98,21 @@ void marlin_mm_impl(const void* A, const void* B, void* C, void* s_zp,
         break;
 
       case 3: // 48-512-32
-        Marlin_512_32<scalar_t, 256, 3, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 3, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
             prob_n, prob_k, locks);         
         break;
       case 4: // 64-512-32
-        Marlin_512_32<scalar_t, 256, 4, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 4, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
             prob_n, prob_k, locks);          
         break;
       case 5: // 80-512-32
-        Marlin_512_32<scalar_t, 256, 5, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 5, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
@@ -126,7 +126,7 @@ void marlin_mm_impl(const void* A, const void* B, void* C, void* s_zp,
   }else if(prob_k==256 && prob_n==7168){ //  deepseek gemm2
     switch(moe_block_size / 16) {
       case 1: // 16-256-64
-        Marlin_512_32<scalar_t, 256, 1, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 1, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
@@ -134,7 +134,7 @@ void marlin_mm_impl(const void* A, const void* B, void* C, void* s_zp,
         break;
 
       case 2: // 32-256-64
-        Marlin_512_32<scalar_t, 256, 2, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 2, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
@@ -142,21 +142,21 @@ void marlin_mm_impl(const void* A, const void* B, void* C, void* s_zp,
         break;
 
       case 3: // 48-512-32
-        Marlin_512_32<scalar_t, 256, 3, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 3, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
             prob_n, prob_k, locks);         
         break;
       case 4: // 64-512-32
-        Marlin_512_32<scalar_t, 256, 4, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 4, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
             prob_n, prob_k, locks);          
         break;
       case 5: // 80-512-32
-        Marlin_512_32<scalar_t, 256, 5, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 5, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
