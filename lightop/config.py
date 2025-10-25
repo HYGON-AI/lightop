@@ -258,9 +258,10 @@ def get_moe_cuda_marlin_config_w4a8(
     kernel on a given batch size bs, the closest batch size in the grid should
     be picked and the associated configuration chosen to invoke the kernel.
     """
-
+    
     # First look up if an optimized configuration is available in the configs
     # directory
+    device_name = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
     gemm1_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_{N1}_{K1}_{device_name}_{num_cus}.json"
     if is_ep:
         gemm1_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_EP{ep_size}_{N1}_{K1}_{device_name}_{num_cus}.json"

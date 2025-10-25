@@ -9,11 +9,8 @@ from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
 import torch
 import triton
 import triton.language as tl
-import lmslim.envs as lsenvs
 from vllm.utils import W8a8GetCacheJSON
 
-use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
-device_name = lsenvs.LMSLIM_GPU_NAME
 
 from lmslim.layers.gemm.int8_utils import (
    per_token_group_quant_int8, per_token_quant_int8)
@@ -228,7 +225,7 @@ def fused_moe_kernel_int4_w4a8(
     #NN load copy in register by broadcast
     b_ptrs = (
         b_ptr
-        + off_experts * stride_be
+        + off_experts.to(tl.int64) * stride_be
         #+ (offs_bk[None, :] * stride_bk + offs_bn[:, None] * stride_bn)
         + (offs_bn[:, None] * stride_bn + offs_bk[None, :] * stride_bk)
     )

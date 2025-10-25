@@ -147,7 +147,7 @@ def get_gemm1_config(num_tokens, topk, num_experts):
                             "blocks_per_cu": 1 
                         }
                     )
-    return test_config
+    # return test_config
     # # ======================= 手写config ==========================
     test_config.append(
                         {
@@ -325,7 +325,7 @@ def get_gemm2_config(num_tokens, topk, num_experts):
                             "blocks_per_cu": 1 
                         }
                     )
-    return test_config
+    # return test_config
     # # ======================= 手写config ==========================
     test_config.append(
                         {
@@ -633,9 +633,10 @@ if __name__ == "__main__":
         # 用于保存性能数据
         prof_results = []
 
-        # for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]:
+        for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]:
+        # for num_tokens in [6144]:
         # for num_tokens in [1, 2, 4, 8, 16, 32]:
-        for num_tokens in [32]:
+        # for num_tokens in [32]:
             # 激活矩第一维度： batch_size * ep_size     
             x = torch.randn((num_tokens, hidden_size), device='cuda:0', dtype=torch.bfloat16) / 10  # [256*8, 7168] (bf16)
             # 遍历所有config从中选取性能最好的config, 并返回 最优的config 和时间
@@ -656,73 +657,71 @@ if __name__ == "__main__":
 
             prof_results.append(best_config_info)
 
-        # print(prof_results)
+        print(prof_results)
 
-        # # 创建Excel工作簿和工作表
-        # wb = Workbook()
-        # ws = wb.active
-        # ws.title = "GEMM数据"  # 工作表名称
+        # 创建Excel工作簿和工作表
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "GEMM数据"  # 工作表名称
 
-        # # 表头（与数据字典的键对应）
-        # headers = [
-        #     'num_tokens',
-        #     'best_gemm1_time',
-        #     'best_gemm1_config',
-        #     'best_gemm2_time',
-        #     'best_gemm2_config'
-        # ]
-        # # 写入表头（第一行）
-        # for col, header in enumerate(headers, 1):  # 列从1开始（Excel列索引从1起）
-        #     ws.cell(row=1, column=col, value=header)
+        # 表头（与数据字典的键对应）
+        headers = [
+            'num_tokens',
+            'best_gemm1_time',
+            'best_gemm1_config',
+            'best_gemm2_time',
+            'best_gemm2_config'
+        ]
+        # 写入表头（第一行）
+        for col, header in enumerate(headers, 1):  # 列从1开始（Excel列索引从1起）
+            ws.cell(row=1, column=col, value=header)
 
-        # # 写入数据（从第二行开始）
-        # for row_idx, item in enumerate(prof_results, 2):  # row_idx为行号（从2开始）
-        #     for col_idx, key in enumerate(headers, 1):  # col_idx为列号
-        #         value = item[key]
-        #         # 若为字典（即config字段），转为JSON字符串
-        #         if isinstance(value, dict):
-        #             value = json.dumps(value, ensure_ascii=False, indent=2)  # indent=2让格式更易读
-        #         # 写入单元格
-        #         ws.cell(row=row_idx, column=col_idx, value=value)
+        # 写入数据（从第二行开始）
+        for row_idx, item in enumerate(prof_results, 2):  # row_idx为行号（从2开始）
+            for col_idx, key in enumerate(headers, 1):  # col_idx为列号
+                value = item[key]
+                # 若为字典（即config字段），转为JSON字符串
+                if isinstance(value, dict):
+                    value = json.dumps(value, ensure_ascii=False, indent=2)  # indent=2让格式更易读
+                # 写入单元格
+                ws.cell(row=row_idx, column=col_idx, value=value)
 
-        # file_name = "moe_w4a8_i8_marlin_tp" + str(tp_sizes) + ".xlsx"
-        # # 保存Excel文件
-        # wb.save(file_name)
-        # print("数据已成功写入 ", file_name)
+        file_name = "moe_w4a8_i8_marlin_tp" + str(tp_sizes) + ".xlsx"
+        # 保存Excel文件
+        wb.save(file_name)
+        print("数据已成功写入 ", file_name)
 
         gemm1_n = shard_intermediate_size 
         gemm1_k = hidden_size 
         gemm2_n = hidden_size
         gemm2_k = shard_intermediate_size // 2 
 
-        # 3. 提取数据中的关键字段（假设列表中只有一个元素，若有多个可循环处理）
-        item = prof_results[0]
-        num_tokens = item['num_tokens']
-        gemm1_config = item['best_gemm1_config']
-        gemm2_config = item['best_gemm2_config']
+        # 3. 构建gemm1_config的JSON结构
+        gemm1_top_key = f"{gemm1_n}_{gemm1_k}"  # 顶层键（如"7168_1024"）
+        gemm1_data = {gemm1_top_key: {}}        # 初始化结构
 
-        # 4. 构建gemm1的JSON结构
-        gemm1_key = f"{gemm1_n}_{gemm1_k}"  # 顶层键："n_k"格式
-        gemm1_json = {
-            gemm1_key: {
-                str(num_tokens): gemm1_config  # 子键为num_tokens的字符串形式，值为config字典
-            }
-        }
+        # 3.1 遍历数据，填充gemm1_config
+        for item in prof_results:
+            num_tokens = str(item['num_tokens'])  # 子键：num_tokens转为字符串
+            gemm1_config = item['best_gemm1_config']  # 对应的值：config字典
+            gemm1_data[gemm1_top_key][num_tokens] = gemm1_config
 
-        # 5. 构建gemm2的JSON结构
-        gemm2_key = f"{gemm2_n}_{gemm2_k}"  # 顶层键："n_k"格式
-        gemm2_json = {
-            gemm2_key: {
-                str(num_tokens): gemm2_config  # 子键为num_tokens的字符串形式，值为config字典
-            }
-        }
+        # 4. 构建gemm2_config的JSON结构（逻辑同上）
+        gemm2_top_key = f"{gemm2_n}_{gemm2_k}"
+        gemm2_data = {gemm2_top_key: {}}
 
-        json_gemm1_name = "MOE_BLOCKINT4_CUDA_MARLIN_" + str(gemm1_n) + "_" + str(gemm1_k) + "_BW200_80.json"
-        # 6. 写入JSON文件（带缩进，便于阅读）
+        for item in prof_results:
+            num_tokens = str(item['num_tokens'])
+            gemm2_config = item['best_gemm2_config']
+            gemm2_data[gemm2_top_key][num_tokens] = gemm2_config
+
+        # 5. 写入JSON文件（带缩进，便于阅读）
+        json_gemm1_name = "MOE_BLOCKINT4_CUDA_MARLIN_" + str(gemm1_n) + "_" + str(gemm1_k) + "_gfx936_64.json"
         with open(json_gemm1_name, "w", encoding="utf-8") as f:
-            json.dump(gemm1_json, f, indent=4, ensure_ascii=False)
-        json_gemm2_name = "MOE_BLOCKINT4_CUDA_MARLIN_" + str(gemm2_n) + "_" + str(gemm2_k) + "_BW200_80.json"
-        with open(json_gemm2_name, "w", encoding="utf-8") as f:
-            json.dump(gemm2_json, f, indent=4, ensure_ascii=False)
+            json.dump(gemm1_data, f, indent=4, ensure_ascii=False)
 
-        print("JSON文件已生成: ", json_gemm1_name, json_gemm2_name)
+        json_gemm2_name = "MOE_BLOCKINT4_CUDA_MARLIN_" + str(gemm2_n) + "_" + str(gemm2_k) + "_gfx936_64.json"
+        with open(json_gemm2_name, "w", encoding="utf-8") as f:
+            json.dump(gemm2_data, f, indent=4, ensure_ascii=False)
+
+        print("JSON文件生成完成：gemm1_config.json 和 gemm2_config.json")
