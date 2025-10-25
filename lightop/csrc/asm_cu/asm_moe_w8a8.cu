@@ -129,14 +129,15 @@ void _moe_w8a8_TN_impl(
   char funcName[1024], co_file[1024];
   memset(funcName, 0x0, sizeof(funcName));
   memset(co_file, 0x0, sizeof(co_file));
-  sprintf(funcName, "Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT%dx%dx%d_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", BLOCKM, BLOCKN, BLOCKK);
   if (output.scalar_type() == at::ScalarType::Half) {
     sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_FP16.co", BLOCKM, BLOCKN, BLOCKK);
   } else if (output.scalar_type() == at::ScalarType::BFloat16) {
     if (first_stage) {
-      sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(funcName, "MOE_W8A8_I8_PERCHANNEL_ASM_TN_MT%dx%dx%d_WGM1_UP", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_BF16_UP.co", BLOCKM, BLOCKN, BLOCKK);
     } else {
-      sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_BF16_SecondStage.co", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(funcName, "MOE_W8A8_I8_PERCHANNEL_ASM_TN_MT%dx%dx%d_WGM1_DOWN", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_BF16_DOWN.co", BLOCKM, BLOCKN, BLOCKK);
     }
   } else {
     TORCH_CHECK(false, "moe_w8a8 only supports outputType in [Float16, BFloat16]");

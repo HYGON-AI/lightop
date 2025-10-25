@@ -1,0 +1,44 @@
+{
+    "2048_384": {
+        "256": {
+            "BLOCK_SIZE_M": 32,
+            "MODE": 68,
+            "DELTA": 1
+        },
+        "512": {
+            "BLOCK_SIZE_M": 32,
+            "MODE": 68,
+            "DELTA": 2
+        },
+        "1024": {
+            "BLOCK_SIZE_M": 32,
+            "MODE": 68,
+            "DELTA": 4
+        },
+        "2048": {
+            "BLOCK_SIZE_M": 32,
+            "MODE": 68,
+            "DELTA": 4
+        },
+        "4096": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
+        },
+        "6144": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
+        },
+        "8192": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
+        },
+        "16384": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
+        }
+    }
+}
