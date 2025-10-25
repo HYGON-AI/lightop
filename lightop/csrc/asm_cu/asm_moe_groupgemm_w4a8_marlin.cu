@@ -117,9 +117,10 @@ void _moe_groupgemm_marlin_w4a8_TN_impl(
   char funcName[1024], w4a8_groupgemm_co_file[1024];
   memset(funcName, 0x0, sizeof(funcName));
   memset(w4a8_groupgemm_co_file, 0x0, sizeof(w4a8_groupgemm_co_file));
-  sprintf(funcName, "Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT%dx%dx%d_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", BLOCKM, BLOCKN, BLOCKK);
+  
   if (output.scalar_type() == at::ScalarType::BFloat16) {
-    sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_FirstStage.co", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGM8_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16.co", BLOCKM, BLOCKN, BLOCKK);
   } else {
     TORCH_CHECK(false, "moe_groupgemm_w4a8 only supports outputType in [BFloat16]");
   }
