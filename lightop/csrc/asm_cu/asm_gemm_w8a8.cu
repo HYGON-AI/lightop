@@ -130,18 +130,18 @@ void _gemm_w8a8_128x256x128_TN_impl(
   size_t argsSize = sizeof(hipFunctionArgs);
 
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  string fp16_co_file_tn = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_FP16.co";
-  string bf16_co_file_tn = "gemm_w8a8_block/gemm_w8a8_128x256x128_TN_BF16.co";
-  string fp16_co_file_wgrad = "gemm_w8a8_block/blockwise_w8a8_gemm_FP16_wgrad_scale_T.co";
-  string bf16_co_file_wgrad = "gemm_w8a8_block/blockwise_w8a8_gemm_BF16_wgrad_scale_T.co";
-  string fp16_co_file_xgrad = "gemm_w8a8_block/gemm_w8a8_128x256x128_NN_FP16.co";
-  string bf16_co_file_xgrad = "gemm_w8a8_block/gemm_w8a8_128x256x128_NN_BF16.co";
-	static AiterAsmKernel gemm_w8a8_fp16_tn("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", fp16_co_file_tn.c_str());
-	static AiterAsmKernel gemm_w8a8_bf16_tn("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", bf16_co_file_tn.c_str());
-  static AiterAsmKernel gemm_w8a8_fp16_wgrad("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", fp16_co_file_wgrad.c_str());
-  static AiterAsmKernel gemm_w8a8_bf16_wgrad("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", bf16_co_file_wgrad.c_str());
-  static AiterAsmKernel gemm_w8a8_fp16_xgrad("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", fp16_co_file_xgrad.c_str());
-  static AiterAsmKernel gemm_w8a8_bf16_xgrad("Cijk_Alik_Bljk_I8HS_BH_SABB_UserArgs_MT128x256x128_SN_K1_SB2_SSA0_SSB1024_SWMNK1_8_1_TT8_16", bf16_co_file_xgrad.c_str());
+  string fp16_co_file_tn = "gemm_w8a8_block/GEMM_W8A8_I8_PERBLOCK_ACTIVE_ASM_TN_MT128X256X128_WGM1_FP16.co";
+  string bf16_co_file_tn = "gemm_w8a8_block/GEMM_W8A8_I8_PERBLOCK_ACTIVE_ASM_TN_MT128X256X128_WGM1_BF16.co";
+  string fp16_co_file_wgrad = "gemm_w8a8_block/GEMM_W8A8_I8_PERBLOCK_WGRAD_ASM_TN_MT128X256X128_WGM1_FP16.co";
+  string bf16_co_file_wgrad = "gemm_w8a8_block/GEMM_W8A8_I8_PERBLOCK_WGRAD_ASM_TN_MT128X256X128_WGM1_BF16.co";
+  string fp16_co_file_xgrad = "gemm_w8a8_block/GEMM_W8A8_I8_PERBLOCK_XGRAD_ASM_NN_MT128X256X128_WGM1_FP16.co";
+  string bf16_co_file_xgrad = "gemm_w8a8_block/GEMM_W8A8_I8_PERBLOCK_XGRAD_ASM_NN_MT128X256X128_WGM1_BF16.co";
+	static AiterAsmKernel gemm_w8a8_fp16_tn("GEMM_W8A8_I8_PERBLOCK_ACTIVE_ASM_TN_MT128X256X128_WGM1_FP16", fp16_co_file_tn.c_str());
+	static AiterAsmKernel gemm_w8a8_bf16_tn("GEMM_W8A8_I8_PERBLOCK_ACTIVE_ASM_TN_MT128X256X128_WGM1_BF16", bf16_co_file_tn.c_str());
+  static AiterAsmKernel gemm_w8a8_fp16_wgrad("GEMM_W8A8_I8_PERBLOCK_WGRAD_ASM_TN_MT128X256X128_WGM1_FP16", fp16_co_file_wgrad.c_str());
+  static AiterAsmKernel gemm_w8a8_bf16_wgrad("GEMM_W8A8_I8_PERBLOCK_WGRAD_ASM_TN_MT128X256X128_WGM1_BF16", bf16_co_file_wgrad.c_str());
+  static AiterAsmKernel gemm_w8a8_fp16_xgrad("GEMM_W8A8_I8_PERBLOCK_XGRAD_ASM_NN_MT128X256X128_WGM1_FP16", fp16_co_file_xgrad.c_str());
+  static AiterAsmKernel gemm_w8a8_bf16_xgrad("GEMM_W8A8_I8_PERBLOCK_XGRAD_ASM_NN_MT128X256X128_WGM1_BF16", bf16_co_file_xgrad.c_str());
 
 	AiterAsmKernel *impl_ptr = nullptr;
   if (gradType == nograd) {
