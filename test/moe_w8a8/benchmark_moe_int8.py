@@ -1279,27 +1279,29 @@ def main(args: argparse.Namespace):
     # topk = 4
 
     ## deepseek-r1-tp16
-    E = 256
-    shard_intermediate_size=256
-    hidden_size=7168
-    
-    # ## deepseek-r1-tp8
     # E = 256
-    # shard_intermediate_size=512
+    # shard_intermediate_size=256
     # hidden_size=7168
     
+    # ## deepseek-r1-tp8
+    E = 256
+    shard_intermediate_size=512
+    hidden_size=7168
+    
     # E = 128
-    # #qwen3-30b-A3B-tp1
+    # # #qwen3-30b-A3B-tp1
     # shard_intermediate_size=1536
     # hidden_size=2048
     # #qwen3-30b-A3B-tp2
     # E = 128
     # shard_intermediate_size=768
     # hidden_size=2048
+
+
     # # #qwen3-235b-A22B-tp8
-    # E = 128
-    # # shard_intermediate_size=384
-    # # hidden_size=4096
+    E = 128
+    shard_intermediate_size=384
+    hidden_size=4096
 
     # # #qwen3-235b-A22B-tp8
     # shard_intermediate_size=384
