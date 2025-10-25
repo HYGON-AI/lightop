@@ -23,6 +23,9 @@ from lmslim.layers.gemm.int8_utils import (
 use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 device_name = lsenvs.LMSLIM_GPU_NAME
 
+# device_name = torch.cuda.get_device_properties(torch.cuda.current_device()).name
+
+
 if use_lightop:
     from lightop import moe_gemm_w8a8, get_moe_cuda_config
     try:
@@ -607,6 +610,9 @@ def test_moe_performance_accuracy(
     
     if use_lightop and per_channel_quant:
         # 使用get_moe_cuda_config获取配置
+        
+        # import pdb
+        # pdb.set_trace()
         num_cus = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
         try:
             cuda_config1, cuda_config2, status = get_moe_cuda_config(
