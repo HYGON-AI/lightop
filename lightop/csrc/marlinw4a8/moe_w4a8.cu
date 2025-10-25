@@ -71,7 +71,7 @@ void marlin_mm_bf16_per_channel(
       case 1: // 16-256-128
         max_shared_mem = 20000;
         if (!is_reduce){
-          Marlin_512_64<512, 1, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 1, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -91,7 +91,7 @@ void marlin_mm_bf16_per_channel(
                                                                 global_reduce_buffer_int4
                                                               );            
         }else{
-          Marlin_512_64_reduce<512, 1, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 1, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -115,7 +115,7 @@ void marlin_mm_bf16_per_channel(
       case 2: // 32-256-128
         max_shared_mem = 20000;
         if (!is_reduce){
-          Marlin_512_64<512, 2, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 2, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -135,7 +135,7 @@ void marlin_mm_bf16_per_channel(
                                                                 global_reduce_buffer_int4
                                                               );   
         }else{
-          Marlin_512_64_reduce<512, 2, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 2, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -159,7 +159,7 @@ void marlin_mm_bf16_per_channel(
       case 3: // 48-256-128
         max_shared_mem = 20000;
         if(!is_reduce){
-          Marlin_512_64<512, 3, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 3, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -179,7 +179,7 @@ void marlin_mm_bf16_per_channel(
                                                                 global_reduce_buffer_int4
                                                               );   
         }else{
-          Marlin_512_64_reduce<512, 3, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 3, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -203,7 +203,7 @@ void marlin_mm_bf16_per_channel(
       case 5: // 80-256-128
         max_shared_mem = 21120;
         if(!is_reduce){
-          Marlin_512_64<512, 5, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 5, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                       A_ptr, 
                                                       A_scales_ptr, 
                                                       B_ptr, 
@@ -223,7 +223,7 @@ void marlin_mm_bf16_per_channel(
                                                       global_reduce_buffer_int4
                                                     );   
         }else{
-          Marlin_512_64_reduce<512, 5, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 5, 16, 4, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                       A_ptr, 
                                                       A_scales_ptr, 
                                                       B_ptr, 
@@ -274,7 +274,7 @@ void marlin_mm_bf16_per_channel(
       case 1: // 16-128-256
         max_shared_mem = 20000;
         if(!is_reduce){
-          Marlin_512_64<512, 1, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 1, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -294,7 +294,7 @@ void marlin_mm_bf16_per_channel(
                                                                 global_reduce_buffer_int4
                                                               ); 
         }else{
-          Marlin_512_64_reduce<512, 1, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 1, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                       A_ptr, 
                                                       A_scales_ptr, 
                                                       B_ptr, 
@@ -318,7 +318,7 @@ void marlin_mm_bf16_per_channel(
       case 2: // 32-128-256
         max_shared_mem = 20000;
         if(!is_reduce){
-          Marlin_512_64<512, 2, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 2, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -338,7 +338,7 @@ void marlin_mm_bf16_per_channel(
                                                                 global_reduce_buffer_int4
                                                               ); 
         }else{
-          Marlin_512_64_reduce<512, 2, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 2, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -362,7 +362,7 @@ void marlin_mm_bf16_per_channel(
       case 3: // 48-128-256
         max_shared_mem = 20000;
         if(!is_reduce){
-          Marlin_512_64<512, 3, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 3, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -382,7 +382,7 @@ void marlin_mm_bf16_per_channel(
                                                                 global_reduce_buffer_int4
                                                               ); 
         }else{
-          Marlin_512_64_reduce<512, 3, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 3, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                       A_ptr, 
                                                       A_scales_ptr, 
                                                       B_ptr, 
@@ -406,7 +406,7 @@ void marlin_mm_bf16_per_channel(
       case 5: // 80-128-256
         max_shared_mem = 21120;
         if(!is_reduce){
-          Marlin_512_64<512, 5, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 5, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -426,7 +426,7 @@ void marlin_mm_bf16_per_channel(
                                                                 global_reduce_buffer_int4
                                                               ); 
         }else{
-          Marlin_512_64_reduce<512, 5, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 5, 8, 8, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                               A_ptr, 
                                                               A_scales_ptr, 
                                                               B_ptr, 
@@ -450,7 +450,7 @@ void marlin_mm_bf16_per_channel(
       case 8: // 128-512-64
         max_shared_mem = 20000;
         if(!is_reduce){
-          Marlin_512_64<512, 8, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 8, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -470,7 +470,7 @@ void marlin_mm_bf16_per_channel(
                                                                 global_reduce_buffer_int4
                                                               ); 
         }else{
-          Marlin_512_64_reduce<512, 8, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 8, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -500,7 +500,7 @@ void marlin_mm_bf16_per_channel(
       case 1: // 16-512-64
         max_shared_mem = 20000;
         if(!is_reduce){
-          Marlin_512_64<512, 1, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 1, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -520,7 +520,7 @@ void marlin_mm_bf16_per_channel(
                                                                 global_reduce_buffer_int4
                                                               ); 
         }else{
-          Marlin_512_64_reduce<512, 1, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 1, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                       A_ptr, 
                                                       A_scales_ptr, 
                                                       B_ptr, 
@@ -544,7 +544,7 @@ void marlin_mm_bf16_per_channel(
       case 2: // 32-512-64
         max_shared_mem = 20000;
         if(!is_reduce){
-          Marlin_512_64<512, 2, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 2, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -564,7 +564,7 @@ void marlin_mm_bf16_per_channel(
                                                                 global_reduce_buffer_int4
                                                               ); 
         }else{
-          Marlin_512_64_reduce<512, 2, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 2, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -588,7 +588,7 @@ void marlin_mm_bf16_per_channel(
       case 3: // 48-512-64
         max_shared_mem = 20000;
         if(!is_reduce){
-          Marlin_512_64<512, 3, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 3, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -608,7 +608,7 @@ void marlin_mm_bf16_per_channel(
                                                                 global_reduce_buffer_int4
                                                               ); 
         }else{
-          Marlin_512_64_reduce<512, 3, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 3, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                       A_ptr, 
                                                       A_scales_ptr, 
                                                       B_ptr, 
@@ -632,7 +632,7 @@ void marlin_mm_bf16_per_channel(
       case 5: // 80-512-64
         max_shared_mem = 20000;
         if(!is_reduce){
-          Marlin_512_64<512, 5, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 5, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -652,7 +652,7 @@ void marlin_mm_bf16_per_channel(
                                                                 global_reduce_buffer_int4
                                                               ); 
         }else{
-          Marlin_512_64_reduce<512, 5, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 5, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                               A_ptr, 
                                                               A_scales_ptr, 
                                                               B_ptr, 
@@ -676,7 +676,7 @@ void marlin_mm_bf16_per_channel(
       case 8: // 128-512-64
         max_shared_mem = 20000;
         if(!is_reduce){
-          Marlin_512_64<512, 8, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64<512, 8, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -696,7 +696,7 @@ void marlin_mm_bf16_per_channel(
                                                                 global_reduce_buffer_int4
                                                               ); 
         }else{
-          Marlin_512_64_reduce<512, 8, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
+          MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64_reduce<512, 8, 32, 2, 2><<<sms * blocks_per_cu, 512, max_shared_mem, stream>>>(
                                                                 A_ptr, 
                                                                 A_scales_ptr, 
                                                                 B_ptr, 
@@ -758,6 +758,8 @@ torch::Tensor moe_marlin_w4a8(
   int dev = a_q.get_device();
 
   bool mul_topk_weights = topk_weights.has_value();
+  int sms = -1;
+  cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, a_q.get_device());
   at::native::marlin_moe_w4a8::marlin_mm_bf16_per_channel(
                                           a_q.data_ptr(), 
                                           a_scales.data_ptr(), 
@@ -781,11 +783,10 @@ torch::Tensor moe_marlin_w4a8(
                                           at::cuda::getCurrentCUDAStream(dev), 
                                           thread_k, 
                                           thread_n, 
-                                          80,
+                                          sms,
                                           blocks_per_cu,
                                           is_reduce
                                         );
-
   return c;
 
 } // end moe_marlin_w4a8

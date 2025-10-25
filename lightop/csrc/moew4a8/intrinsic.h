@@ -2,6 +2,10 @@
 #include "hip/hip_fp16.h"
 #include "hip/hip_bf16.h"
 #include "hip/hip_runtime.h"
+#include "hip/hip_fp8.h" 
+using fp8_e4m3 = __hip_fp8_e4m3;
+using fp8_e4m3x4 = __hip_fp8x4_e4m3;
+using fp8_e5m2x4 = __hip_fp8x4_e5m2;
 using bhalf_t = __hip_bfloat16;
 using half  = __half;
 using BFloat16 = bhalf_t;
@@ -10,7 +14,11 @@ using Int32 = int;
 using Int16 = unsigned short;
 using Float32 = float;
 using f8_t = uint8_t;
+
+//GCC\CLANG编译器支持的，为了向量化扩展的向量化类型，主要是SIMD适用不如cuda中的float4内置类型可高效生成汇编
+using fp8x8_t = __attribute__((__vector_size__(8 * sizeof(uint8_t)))) uint8_t;
 using int8x8_t = __attribute__((__vector_size__(8 * sizeof(int8_t)))) int8_t;
+using uint8x8_t = __attribute__((__vector_size__(8 * sizeof(uint8_t)))) uint8_t;
 using half2_t = __attribute__((__vector_size__(2 * sizeof(_Float16)))) _Float16;
 using half4_t = __attribute__((__vector_size__(4 * sizeof(_Float16)))) _Float16;
 using half8_t = __attribute__((__vector_size__(8 * sizeof(_Float16)))) _Float16;
@@ -70,6 +78,56 @@ union alignas(32)  int8_vec {
     // 禁止默认构造（避免未初始化）
     
 };
+
+//int4x8 --> fp8x8 --> intx2 
+inline __device__ intx2 amd_assembly_i4_to_inx2(int a)
+{
+    uint32_t i4x8 = static_cast<uint32_t>(a);
+    uint32_t fp8x4_0;
+    uint32_t fp8x4_1;
+    float tmp_0, tmp_1, tmp_2;
+    #if defined(__gfx938__)
+    asm volatile("v_cvt_off_f32_i4 %[v_tmp_0], %[v_src]\n"
+                 "v_cvt_off_f32_i4 %[v_tmp_1], %[v_src], src0_sel:BYTE_2\n"
+                 "v_cvt_pk_fp8_f32 %[v_dst_0], %[v_tmp_0], %[v_tmp_1], %[v_tmp_1]\n"
+                 "v_cvt_off_f32_i4 %[v_tmp_0], %[v_src], src0_sel:BYTE_1\n"
+                 "v_cvt_off_f32_i4 %[v_tmp_1], %[v_src], src0_sel:BYTE_3\n"
+                 "v_cvt_pk_fp8_f32 %[v_dst_1], %[v_tmp_0], %[v_tmp_1], %[v_tmp_1]\n"
+                 "v_lshrrev_b32 %[v_tmp_2], 4, %[v_src]\n"
+                 "v_cvt_off_f32_i4 %[v_tmp_0], %[v_tmp_2]\n"
+                 "v_cvt_off_f32_i4 %[v_tmp_1], %[v_tmp_2], src0_sel:BYTE_2\n"
+                 "v_cvt_pk_fp8_f32 %[v_dst_0], %[v_tmp_0], %[v_tmp_1], %[v_tmp_1], op_sel:[0, 0, 1]\n"
+                 "v_cvt_off_f32_i4 %[v_tmp_0], %[v_tmp_2], src0_sel:BYTE_1\n"
+                 "v_cvt_off_f32_i4 %[v_tmp_1], %[v_tmp_2], src0_sel:BYTE_3\n"
+                 "v_cvt_pk_fp8_f32 %[v_dst_1], %[v_tmp_0], %[v_tmp_1], %[v_tmp_1], op_sel:[0, 0, 1]\n"                 
+                 : [v_tmp_0] "+v"(tmp_0),
+                   [v_tmp_1] "+v"(tmp_1),
+                   [v_tmp_2] "+v"(tmp_2),
+                   [v_dst_0] "+v"(fp8x4_0),
+                   [v_dst_1] "+v"(fp8x4_1),
+                   [v_src] "+v"(i4x8)
+                 :);
+    #endif
+    // return bit_cast<f8x8_t>(((static_cast<uint64_t>(fp8x4_1) << 32) | fp8x4_0));
+    return (intx2){static_cast<int>(fp8x4_0), static_cast<int>(fp8x4_1)};
+}
+
+
+template <typename Element, size_t len>
+union union_vec_fp8{
+  uint8_t uint8_array[len * sizeof(Element)];
+  int8_t int8_array[len * sizeof(Element)];
+  uint8x8_t uint8x8_array[len * sizeof(Element)/ 8];
+  Element scalar_array[len];
+  int int_array[len * sizeof(Element) / 4];
+  float float_array[len * sizeof(Element) / 4];
+  int32_t uint_array[len * sizeof(Element) / 4];
+  int64_t uint64_array[len * sizeof(Element) / 8];
+  intx2 int2_array[len * sizeof(Element) / 8];
+  intx4 int4_array[len * sizeof(Element) / 16];
+  floatx4 float4_array[len * sizeof(Element) / 16];
+};
+
 
 template <typename Element, size_t len>
 union union_vec{
@@ -297,6 +355,18 @@ __device__ typename vec<int, 4>::type mmac_int8(const typename vec<Element, 8>::
     __builtin_amdgcn_sched_barrier(0);
     #endif
     return v3;
+}
+
+template<class Element>
+__device__ typename vec<float, 4>::type mmac_fp8_fp8(const intx2* v1, const intx2* v2, const typename vec<float, 4>::type &v3)
+{
+    // auto a = reinterpret_cast<const long*>(v1);
+    // auto b = reinterpret_cast<const long*>(v2);
+    floatx4 f4i;
+    #if defined(__gfx938__)
+        f4i = __builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(*v1, *v2, v3,false,false);
+    #endif
+    return f4i;
 }
 
 template<class Element>

@@ -2,6 +2,7 @@ import functools
 from typing import Any, Optional
 import os
 import json
+import torch
 
 # Adapted from: https://github.com/sgl-project/sglang/pull/2628
 def get_config_file_name(E: int,
@@ -43,7 +44,8 @@ def get_moe_cuda_config(
 
     # First look up if an optimized configuration is available in the configs
     # directory
-    gemm1_file_name = f"MOE_BLOCKINT8_CUDA_{N1}_{K1}_{device_name}_{num_cus}.json"
+    gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
+    gemm1_file_name = f"MOE_BLOCKINT8_CUDA_{N1}_{K1}_{gfx_version.upper()}_CU{num_cus}.json"
     gemm1_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
     
@@ -71,7 +73,7 @@ def get_moe_cuda_config(
     except FileNotFoundError:
         gemm1_config = {}
     
-    gemm2_file_name = f"MOE_BLOCKINT8_CUDA_{N2}_{K2}_{device_name}_{num_cus}.json"
+    gemm2_file_name = f"MOE_BLOCKINT8_CUDA_{N2}_{K2}_{gfx_version.upper()}_CU{num_cus}.json"
     gemm2_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
     try:
@@ -108,8 +110,8 @@ def get_moe_cuda_config(
         mode1 = gemm1_config['MODE']
         mode2 = gemm2_config['MODE']
         if mode1 >= 1000 or mode2 >= 1000:
-            first_stage_co_file = f"moe_w8a8_channel/moe_w8a8_128x256x128_TN_{str(dtype).upper()}_FirstStage.co"
-            second_stage_co_file = f"moe_w8a8_channel/moe_w8a8_128x256x128_TN_{str(dtype).upper()}_SecondStage.co"
+            first_stage_co_file = f"moe_w8a8_channel/moe_w8a8_128x256x128_TN_{str(dtype).upper()}_UP.co" 
+            second_stage_co_file = f"moe_w8a8_channel/moe_w8a8_128x256x128_TN_{str(dtype).upper()}_DOWN.co"
             LIGHTOP_ASM_DIR = os.environ["LIGHTOP_ASM_DIR"]
             path_first_stage_co_file = LIGHTOP_ASM_DIR + first_stage_co_file
             path_second_stage_co_file = LIGHTOP_ASM_DIR + second_stage_co_file
@@ -256,9 +258,10 @@ def get_moe_cuda_marlin_config_w4a8(
     kernel on a given batch size bs, the closest batch size in the grid should
     be picked and the associated configuration chosen to invoke the kernel.
     """
-
+    
     # First look up if an optimized configuration is available in the configs
     # directory
+    device_name = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
     gemm1_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_{N1}_{K1}_{device_name}_{num_cus}.json"
     if is_ep:
         gemm1_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_EP{ep_size}_{N1}_{K1}_{device_name}_{num_cus}.json"

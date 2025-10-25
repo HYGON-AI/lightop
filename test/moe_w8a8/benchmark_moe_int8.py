@@ -1153,7 +1153,8 @@ def save_configs(configs_first_stage: dict[int, BenchmarkConfig], configs_second
 
     N=shard_intermediate_size
     K=hidden_size
-    filename = f"MOE_BLOCKINT8_CUDA_{N}_{K}_{device_name}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
+    filename = f"MOE_BLOCKINT8_CUDA_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
 
     print(f"Writing best config to {filename}...")
     try:
@@ -1178,7 +1179,7 @@ def save_configs(configs_first_stage: dict[int, BenchmarkConfig], configs_second
      
     N=hidden_size
     K=shard_intermediate_size // 2
-    filename = f"MOE_BLOCKINT8_CUDA_{N}_{K}_{device_name}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    filename = f"MOE_BLOCKINT8_CUDA_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
 
     print(f"Writing best config to {filename}...")
     try:
@@ -1279,27 +1280,29 @@ def main(args: argparse.Namespace):
     # topk = 4
 
     ## deepseek-r1-tp16
-    E = 256
-    shard_intermediate_size=256
-    hidden_size=7168
-    
-    # ## deepseek-r1-tp8
     # E = 256
-    # shard_intermediate_size=512
+    # shard_intermediate_size=256
     # hidden_size=7168
     
+    # ## deepseek-r1-tp8
+    E = 256
+    shard_intermediate_size=512
+    hidden_size=7168
+    
     # E = 128
-    # #qwen3-30b-A3B-tp1
+    # # #qwen3-30b-A3B-tp1
     # shard_intermediate_size=1536
     # hidden_size=2048
     # #qwen3-30b-A3B-tp2
     # E = 128
     # shard_intermediate_size=768
     # hidden_size=2048
+
+
     # # #qwen3-235b-A22B-tp8
     # E = 128
-    # # shard_intermediate_size=384
-    # # hidden_size=4096
+    # shard_intermediate_size=384
+    # hidden_size=4096
 
     # # #qwen3-235b-A22B-tp8
     # shard_intermediate_size=384

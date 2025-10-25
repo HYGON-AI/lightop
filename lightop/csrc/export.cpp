@@ -109,6 +109,29 @@ Tensor moe_marlin_w4a8(
                         int64_t blocks_per_cu,
                         bool is_reduce
                         );
+Tensor moe_marlin_w4fp8(
+                        torch::Tensor& a_q, 
+                        torch::Tensor& a_scales, 
+                        torch::Tensor& c,
+                        torch::Tensor& b_q_weight, 
+                        torch::Tensor& b_scales,
+                        torch::Tensor& workspace, 
+                        torch::Tensor& global_reduce_buffer,  // 用于全局规约的缓冲区
+                        torch::Tensor& sorted_token_ids, 
+                        torch::Tensor& expert_ids,
+                        torch::Tensor& num_tokens_past_padded, 
+                        std::optional<torch::Tensor> topk_weights,
+                        int64_t moe_block_size, 
+                        int64_t top_k, 
+                        bool is_ep,
+                        int64_t size_m, 
+                        int64_t size_n,
+                        int64_t size_k,
+                        int64_t thread_n,
+                        int64_t thread_k,
+                        int64_t blocks_per_cu,
+                        bool is_reduce
+                        );
 Tensor awq_marlin_repack_w4a8(torch::Tensor& b_q_weight, torch::Tensor& marlin_weight, int64_t size_batch, int64_t size_k, int64_t size_n);
 Tensor ds_concat(torch::Tensor input_A, torch::Tensor input_B, torch::Tensor output, int32_t mode);
 void blockwise_scaled_cast_transpose(const Tensor& input,std::optional<Tensor> output,std::optional<Tensor> scale_inv,
@@ -272,6 +295,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("moe_groupgemm_marlin_w4a8_asm", &at::native::moe_groupgemm_marlin_w4a8_asm, "moe_groupgemm_marlin_w4a8_asm");
   m.def("moe_marlin_w4a16", &at::native::moe_marlin_w4a16, "moe_marlin_w4a16");
   m.def("moe_marlin_w4a8", &at::native::moe_marlin_w4a8, "moe_marlin_w4a8");
+  m.def("moe_marlin_w4fp8", &at::native::moe_marlin_w4fp8, "moe_marlin_w4fp8");
   m.def("awq_marlin_repack", &at::native::awq_marlin_repack, "awq_marlin_repack");
   m.def("awq_marlin_repack_w4a8", &at::native::awq_marlin_repack_w4a8, "awq_marlin_repack_w4a8");
   m.def("blockwise_scaled_cast_transpose", &at::native::blockwise_scaled_cast_transpose, "blockwise_scaled_cast_transpose");

@@ -17,7 +17,7 @@ namespace marlin_moe_w4a8{
           const int thread_k_blocks,  // same for k dimension (reduction)
           const int stages 
           >
-  __global__ void Marlin_512_64(
+  __global__ void MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64(
     const int4* __restrict__ A,  // fp16 input matrix of shape mxk
     const float* __restrict__ A_scales,  // 
     const int4* __restrict__ B,  // 4bit quantized weight matrix of shape kxn
@@ -712,7 +712,7 @@ namespace marlin_moe_w4a8{
           const int thread_k_blocks,  // same for k dimension (reduction)
           const int stages 
           >
-  __global__ void Marlin_512_64(
+  __global__ void MOE_W4A8_I8_PERCHANNEL_HIP_NT_marlin_512_64(
     const int4* __restrict__ A,  // fp16 input matrix of shape mxk
     const float* __restrict__ A_scales,  // 
     const int4* __restrict__ B,  // 4bit quantized weight matrix of shape kxn
