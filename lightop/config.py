@@ -2,6 +2,7 @@ import functools
 from typing import Any, Optional
 import os
 import json
+import torch
 
 # Adapted from: https://github.com/sgl-project/sglang/pull/2628
 def get_config_file_name(E: int,
@@ -43,7 +44,8 @@ def get_moe_cuda_config(
 
     # First look up if an optimized configuration is available in the configs
     # directory
-    gemm1_file_name = f"MOE_BLOCKINT8_CUDA_{N1}_{K1}_CU{num_cus}.json"
+    gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
+    gemm1_file_name = f"MOE_BLOCKINT8_CUDA_{N1}_{K1}_{gfx_version.upper()}_CU{num_cus}.json"
     gemm1_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
     
@@ -71,7 +73,7 @@ def get_moe_cuda_config(
     except FileNotFoundError:
         gemm1_config = {}
     
-    gemm2_file_name = f"MOE_BLOCKINT8_CUDA_{N2}_{K2}_CU{num_cus}.json"
+    gemm2_file_name = f"MOE_BLOCKINT8_CUDA_{N2}_{K2}_{gfx_version.upper()}_CU{num_cus}.json"
     gemm2_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
     try:

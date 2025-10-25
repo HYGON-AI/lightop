@@ -1153,7 +1153,8 @@ def save_configs(configs_first_stage: dict[int, BenchmarkConfig], configs_second
 
     N=shard_intermediate_size
     K=hidden_size
-    filename = f"MOE_BLOCKINT8_CUDA_{N}_{K}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
+    filename = f"MOE_BLOCKINT8_CUDA_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
 
     print(f"Writing best config to {filename}...")
     try:
@@ -1178,7 +1179,7 @@ def save_configs(configs_first_stage: dict[int, BenchmarkConfig], configs_second
      
     N=hidden_size
     K=shard_intermediate_size // 2
-    filename = f"MOE_BLOCKINT8_CUDA_{N}_{K}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    filename = f"MOE_BLOCKINT8_CUDA_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
 
     print(f"Writing best config to {filename}...")
     try:
