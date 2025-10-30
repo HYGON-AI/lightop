@@ -133,7 +133,7 @@ def set_random_seed(seed=42):
         # 确保CUDA卷积操作的确定性
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
-
+        
 def get_gemm1_config(num_tokens, topk, num_experts):
     test_config = []
     # ======================= 汇编config =========================
