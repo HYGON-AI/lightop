@@ -1039,4 +1039,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    # HIP_VISIBLE_DEVICES=1 python3 fuse_moegemm_marlin_correctness.py
+    # HIP_VISIBLE_DEVICES=1 python3 fuse_moegemm_correctness_marlin.py
