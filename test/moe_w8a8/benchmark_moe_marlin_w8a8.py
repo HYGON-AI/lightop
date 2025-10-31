@@ -26,7 +26,7 @@ use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 device_name = lsenvs.LMSLIM_GPU_NAME
 
 if use_lightop:
-    from lightop import moe_gemm_w8a8, get_moe_cuda_config
+    from lightop import moe_gemm_w8a8, get_moe_cuda_marlin_config
     try:
         from moe_w8a8_prefill_gemm import backend
         from grouped_gemm import moe_gemm_decode_prof
@@ -631,7 +631,7 @@ def test_moe_performance_accuracy(
         # 使用get_moe_cuda_config获取配置
         num_cus = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
         try:
-            cuda_config1, cuda_config2, status = get_moe_cuda_config(
+            cuda_config1, cuda_config2, status = get_moe_cuda_marlin_config(
                 E, m, n1, k1, n2, k2, topk, device_name, num_cus, compute_type
             )
         except Exception as e:
