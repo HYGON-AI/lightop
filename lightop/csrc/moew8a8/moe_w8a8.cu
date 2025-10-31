@@ -2055,6 +2055,154 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
     return output;
 }
 
+// 模板抽象
+// BLOCK_MNK: [16, 128, 128]
+// WARP_MNK: [16, 32, 64]
+// MMA_MNK: [16, 16, 32]
+// BLOCK_MNK / WARP_MNK = [1, 4, 2]  代表warp在MN方向的排布 block_k/warp_k代表stage
+// WARP_MNK / MMA_MNK = [1, 2, 2]    代表warp在MNK方向重复计算的次数 会分配额外的寄存器
+torch::Tensor moe_gemm_marlin_w8a8(torch::Tensor input,
+  torch::Tensor b_qweight,
+  torch::Tensor output,
+  torch::Tensor a_scale,
+  torch::Tensor b_scale,
+  std::optional<torch::Tensor> topk_weights,
+  torch::Tensor sorted_token_ids, 
+  torch::Tensor expert_ids,
+  torch::Tensor num_tokens_post_pad, 
+  int64_t top_k, // gemm1为topk  gemm2为1  因为gemm1输入为[m, k]  gemm2输入为[m*topk, k]
+  int mode,
+  int delta
+  ) {
+    const int size_m = input.size(0); 
+    const int EXPERTS = b_qweight.size(0);
+    const int size_k = input.size(1);
+    const int size_n = b_qweight.size(2)*b_qweight.size(1)/size_k;
+    const int topk_size = output.size(1); // 输出为[m, topk_size, n]
+    const int stride_asm = a_scale.stride(0);
+    const int stride_ask = a_scale.stride(1);
+    const int stride_bse = b_scale.stride(0);
+    const int stride_bsn = b_scale.stride(1); 
+    const int stride_bsk = b_scale.stride(2);
+    constexpr int GROUP_N = 1;
+    constexpr int GROUP_K = 1;
+    bool is_marlin = true; // weight为[E, N, K]时 代表不进行重排
+    bool first_stage = true;
+    torch::Tensor output_alias = output.alias();
+
+    //printf("size_n: %d stride_bse: %d stride_bsn: %d stride_bsk: %d\n", size_n, stride_bse, stride_bsn, stride_bsk);
+
+    const float* topk_weights_ptr; // 第一阶段这里为null
+    if (topk_weights.has_value()){
+      topk_weights_ptr = (const float*)topk_weights.value().data_ptr();
+      first_stage = false;
+    }
+
+    int num_pad = 0;
+
+    if (input.scalar_type() == at::ScalarType::Char){
+      if(first_stage){
+     
+        int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
+        GemmParams<char> params_in(
+          (const char*)input.data_ptr<int8_t>(), 
+          (const char*)b_qweight.data_ptr<int8_t>(), 
+          (bhalf_t*)output_alias.data_ptr(),
+          (float*)a_scale.data_ptr(), 
+          (float*)b_scale.data_ptr(),  
+          topk_weights_ptr,
+          sorted_token_ids.data_ptr<int32_t>(),
+          expert_ids.data_ptr<int32_t>(), 
+          num_pad, //num_tokens_post_pad[0].item<int>(), //这里获取值 会造成device->host的拷贝和一部分空泡
+          num_tokens_post_pad.data_ptr<int32_t>(),
+          size_m,
+          size_n,
+          size_k,
+          stride_asm,
+          stride_ask,
+          stride_bse,
+          stride_bsn,
+          stride_bsk,
+          EM,
+          top_k,
+          delta,
+          is_marlin
+        );
+
+        if(size_m > MOE_THRESHOLD || (size_m > 2 && EXPERTS == 16) ){
+          auto it = kernel_maps_gemm1_prefill.find(mode);
+          if (it != kernel_maps_gemm1_prefill.end()) {
+              it->second(params_in);
+          } else {
+              printf("No matching kernel configuration found, using default settings \n");
+              launch_moe_w8a8_first_stage_prefill<16, 64, 128, 16, 16, 64>(params_in);
+          }
+        }else{ //decode 
+          auto it = kernel_maps_gemm1_decode.find(mode);
+          if (it != kernel_maps_gemm1_decode.end()) {
+              it->second(params_in);
+          } else {
+              printf("No matching kernel configuration found, using default settings \n");
+              launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
+          }
+        }
+        
+      }else{ //gemm2
+        int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
+          
+        // 使用int8类型处理
+        GemmParams<char> params_in(
+          (const char*)input.data_ptr<int8_t>(), 
+          (const char*)b_qweight.data_ptr<int8_t>(), 
+          (bhalf_t*)output_alias.data_ptr(),
+          (float*)a_scale.data_ptr(), 
+          (float*)b_scale.data_ptr(),  
+          topk_weights_ptr,
+          sorted_token_ids.data_ptr<int32_t>(),
+          expert_ids.data_ptr<int32_t>(), 
+          num_pad, //num_tokens_post_pad[0].item<int>(),
+          num_tokens_post_pad.data_ptr<int32_t>(),
+          size_m,
+          size_n,
+          size_k,
+          stride_asm,
+          stride_ask,
+          stride_bse,
+          stride_bsn,
+          stride_bsk,
+          EM,
+          top_k,
+          delta,
+          is_marlin
+        );
+
+        if(size_m / topk_size > MOE_THRESHOLD || (size_m / topk_size > 32 && EXPERTS == 16)){
+          auto it = kernel_maps_gemm2_prefill.find(mode);
+          if (it != kernel_maps_gemm2_prefill.end()) {
+              it->second(params_in);
+          } else {
+              printf("No matching kernel configuration found, using default settings \n");
+              launch_moe_w8a8_second_stage_prefill<16, 64, 128, 16, 16, 64>(params_in);
+          }
+        }else
+        {
+          auto it = kernel_maps_gemm2_decode.find(mode);
+          if (it != kernel_maps_gemm2_decode.end()) {
+              it->second(params_in);
+          } else {
+              printf("No matching kernel configuration found, using default settings \n");
+              launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
+          }
+
+        }
+      }
+    } else {
+      TORCH_CHECK(false, "moe_w8a8_gemm only supports int8");
+    }
+
+    return output;
+}
+
 }
 }
 

@@ -26,7 +26,7 @@ use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 device_name = lsenvs.LMSLIM_GPU_NAME
 
 if use_lightop:
-    from lightop import moe_gemm_w8a8, get_moe_cuda_marlin_config
+    from lightop import moe_gemm_marlin_w8a8, get_moe_cuda_marlin_config
     try:
         from moe_w8a8_prefill_gemm import backend
         from grouped_gemm import moe_gemm_decode_prof
@@ -468,7 +468,7 @@ def test_single_gemm_performance_accuracy(
     
     # CUDA实现性能测试
     def run_cuda_gemm():
-        moe_gemm_w8a8(
+        moe_gemm_marlin_w8a8(
             qinput,
             w_marlin, #weight,
             output_cuda,
@@ -491,7 +491,7 @@ def test_single_gemm_performance_accuracy(
     # CUDA性能测试
     quantiles = [0.5, 0.2, 0.8]
     #ms, min_ms, max_ms = triton.testing.do_bench(run_cuda_gemm, quantiles=quantiles)
-    ms, min_ms, max_ms = triton.testing.do_bench(lambda:  moe_gemm_w8a8(
+    ms, min_ms, max_ms = triton.testing.do_bench(lambda:  moe_gemm_marlin_w8a8(
                                                                 qinput,
                                                                 w_marlin, #weight,
                                                                 output_cuda,
@@ -692,7 +692,7 @@ def test_moe_performance_accuracy(
     
     # 执行CUDA GEMM1获取中间结果
     intermediate_cache1 = torch.zeros((m, topk, n1), device=input_data.device, dtype=input_data.dtype)
-    moe_gemm_w8a8(qinput1, w1_marlin, intermediate_cache1, qa1_scale, weight1_scale,
+    moe_gemm_marlin_w8a8(qinput1, w1_marlin, intermediate_cache1, qa1_scale, weight1_scale,
                   None, sorted_token_ids, expert_ids, num_tokens_post_padded, topk, cuda_config1)
     
     # 执行激活函数
