@@ -748,15 +748,15 @@ def main():
     parser = argparse.ArgumentParser(description='MOE GEMM性能和精度测试脚本')
     
     # 添加参数
-    parser.add_argument('--E', type=str, default='[256]', 
+    parser.add_argument('--E', type=str, default='[256, 256]', 
                         help='专家数量,如 "[256]"')
-    parser.add_argument('--n1-list', type=str, required=False, default='[256]',
+    parser.add_argument('--n1-list', type=str, required=False, default='[256, 512]',
                        help='N1参数列表，如 "[256]"')
-    parser.add_argument('--n2-list', type=str, required=False, default='[7168]',
+    parser.add_argument('--n2-list', type=str, required=False, default='[7168, 7168]',
                        help='N2参数列表，如 "[7168]"')
-    parser.add_argument('--k-list', type=str, required=False, default='[128]',
+    parser.add_argument('--k-list', type=str, required=False, default='[128, 256]',
                        help='K2参数列表，如 "[128]"')
-    parser.add_argument('--m-list', type=str, default='[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128]',
+    parser.add_argument('--m-list', type=str, default='[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]',
                        help='M参数列表，如 "[32,128,512,1024]"')
     parser.add_argument('--topk', type=int, default=8, 
                        help='topk参数')
@@ -765,7 +765,7 @@ def main():
                        help='输出数据类型')
     parser.add_argument('--use-channel-wise', action='store_true', default=True,
                        help='使用channel-wise量化')
-    parser.add_argument('--output-file', type=str, default='moe_w8a8_gemm_channel-wise.xlsx',
+    parser.add_argument('--output-file', type=str, default='moe_w8a8_gemm_channel_marlin_wise.xlsx',
                        help='输出Excel文件名')
     
     # 解析参数

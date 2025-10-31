@@ -825,7 +825,7 @@ template<
   uint16_t GROUP_N,
   uint16_t GROUP_K,
   bool mul_topk_weight> 
-__global__ void __launch_bounds__(1024) moe_w8a8_gemm1_decode_marlin(
+__global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_UP(
   //const Element* __restrict__ input,
   const Element* input,
   const Element* __restrict__ qweight,
@@ -1186,7 +1186,7 @@ template<
   uint16_t GROUP_N,
   uint16_t GROUP_K,
   bool mul_topk_weight> // true
-__global__ void __launch_bounds__(1024) moe_w8a8_gemm2_decode_marlin(
+__global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_DOWN(
   const Element* __restrict__ input,
   const Element* __restrict__ qweight,
   bhalf_t* __restrict__ output,
@@ -1785,7 +1785,7 @@ void launch_moe_w8a8_first_stage_decode(const GemmParams<T>& params) {
       gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
       gridDim.x = 1; // k方向
 
-      moe_w8a8_gemm1_decode_marlin<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+      MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_UP<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
@@ -1867,7 +1867,7 @@ void launch_moe_w8a8_second_stage_decode(const GemmParams<T>& params) {
         params.top_k,
         params.delta);
     } else{
-        moe_w8a8_gemm2_decode_marlin<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+        MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_DOWN<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
         GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
         params.ptr_A, 
         params.ptr_B0, 
