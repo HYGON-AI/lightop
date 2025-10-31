@@ -1202,7 +1202,7 @@ def save_configs(configs_first_stage: dict[int, BenchmarkConfig], configs_second
     N=shard_intermediate_size
     K=hidden_size
     gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
-    filename = f"MOE_BLOCKINT8_CUDA_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    filename = f"MOE_BLOCKINT8_CUDA_MARLIN_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
 
     print(f"Writing best config to {filename}...")
     try:
@@ -1227,7 +1227,7 @@ def save_configs(configs_first_stage: dict[int, BenchmarkConfig], configs_second
      
     N=hidden_size
     K=shard_intermediate_size // 2
-    filename = f"MOE_BLOCKINT8_CUDA_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    filename = f"MOE_BLOCKINT8_CUDA_MARLIN_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
 
     print(f"Writing best config to {filename}...")
     try:
@@ -1495,3 +1495,4 @@ if __name__ == "__main__":
 
     main(args)
     # benchmark_config_profile(49152, 256, 256, 7168, 8, torch.bfloat16, use_fp8_w8a8=False, use_int8_w8a16=False, use_int8_w8a8=True, num_iters=10, block_quant_shape=[128,128])
+    # HIP_VISIBLE_DEVICES=3 python moe_w8a8/benchmark_moe_int8_marlin.py --num-gpus 1 --benchmark
