@@ -1328,14 +1328,14 @@ def main(args: argparse.Namespace):
     # topk = 4
 
     ## deepseek-r1-tp16
-    E = 256
-    shard_intermediate_size=256
-    hidden_size=7168
+    # E = 256
+    # shard_intermediate_size=256
+    # hidden_size=7168
     
     # ## deepseek-r1-tp8
-    # E = 256
-    # shard_intermediate_size=512
-    # hidden_size=7168
+    E = 256
+    shard_intermediate_size=512
+    hidden_size=7168
     
     # E = 128
     # # #qwen3-30b-A3B-tp1
@@ -1364,8 +1364,8 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            # 1, 2, 4, 8, 16, 32, 64, 128,
-            256, 512, 1024, 2048, 
+            1, 2, 4, 8, 16, 32, 64, 128,
+            # 256, 512, 1024, 2048, 
             # 4096, 8192, 16384
             
             # 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 
