@@ -63,8 +63,8 @@ void _moe_w8a8_TN_impl(
   uint32_t top_k, uint32_t experts_num, uint32_t delta) {
 
   const int size_m = input.size(0); 
-  const int size_n = b_qweight.size(1); 
   const int size_k = input.size(1);
+  const int size_n = b_qweight.size(2)*b_qweight.size(1)/size_k; 
 
   bool first_stage = true;
 
@@ -122,22 +122,23 @@ void _moe_w8a8_TN_impl(
   hipMalloc((void **)&debug_device, debug_size);
   printf("%s:%d top_k:%d topk:%d\n", __FILE__, __LINE__, top_k, hipFunctionArgs.topk);
   #endif
+  
   hipFunctionArgs.debugBuffer = debug_device;
   size_t argsSize = sizeof(hipFunctionArgs);
-
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   char funcName[1024], co_file[1024];
   memset(funcName, 0x0, sizeof(funcName));
   memset(co_file, 0x0, sizeof(co_file));
+  
   if (output.scalar_type() == at::ScalarType::Half) {
     sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_FP16.co", BLOCKM, BLOCKN, BLOCKK);
   } else if (output.scalar_type() == at::ScalarType::BFloat16) {
     if (first_stage) {
-      sprintf(funcName, "MOE_W8A8_I8_PERCHANNEL_ASM_TN_MT%dx%dx%d_WGM1_UP", BLOCKM, BLOCKN, BLOCKK);
-      sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_BF16_UP.co", BLOCKM, BLOCKN, BLOCKK);
+        sprintf(funcName, "MOE_W8A8_I8_PERCHANNEL_ASM_TN_MT%dx%dx%d_WGM1_UP", BLOCKM, BLOCKN, BLOCKK);
+        sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_BF16_UP.co", BLOCKM, BLOCKN, BLOCKK);
     } else {
-      sprintf(funcName, "MOE_W8A8_I8_PERCHANNEL_ASM_TN_MT%dx%dx%d_WGM1_DOWN", BLOCKM, BLOCKN, BLOCKK);
-      sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_BF16_DOWN.co", BLOCKM, BLOCKN, BLOCKK);
+        sprintf(funcName, "MOE_W8A8_I8_PERCHANNEL_ASM_TN_MT%dx%dx%d_WGM1_DOWN", BLOCKM, BLOCKN, BLOCKK);
+        sprintf(co_file, "moe_w8a8_channel/moe_w8a8_%dx%dx%d_TN_BF16_DOWN.co", BLOCKM, BLOCKN, BLOCKK);
     }
   } else {
     TORCH_CHECK(false, "moe_w8a8 only supports outputType in [Float16, BFloat16]");

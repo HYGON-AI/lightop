@@ -844,7 +844,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-    # 运行所有shape: python benchmark_moe_w8a8.py 
+    # 运行所有shape: HIP_VISIBLE_DEVICES=3 python benchmark_moe_w8a8.py 
     # 单侧某一个
     # HIP_VISIBLE_DEVICES=3 python benchmark_moe_w8a8.py \
     #     --E [256] \
