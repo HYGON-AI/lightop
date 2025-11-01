@@ -160,7 +160,10 @@ __device__ __forceinline__ typename vec<uint, 4>::type tcp_cache_swizzle_func(co
     res[3] = 0x00020000;
     return res;
 }
-#define S_BARRIER asm volatile("s_barrier")
+#define S_BARRIER \
+__builtin_amdgcn_sched_barrier(0);\
+asm volatile("s_barrier");\
+__builtin_amdgcn_sched_barrier(0);
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //封装vmcnt wait
 #define vmcnt_wait(X)\
@@ -171,6 +174,16 @@ __builtin_amdgcn_sched_barrier(0);\
       :: "I"(X)\
       :);\
 __builtin_amdgcn_sched_barrier(0);
+
+//封装vmcnt 
+#define vmcnt(X)\
+__builtin_amdgcn_sched_barrier(0);\
+    asm volatile(\
+      "s_waitcnt vmcnt(%0)\n\t"\
+      :: "I"(X)\
+      :);\
+__builtin_amdgcn_sched_barrier(0);
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //封装lgkmcnt wait
 #define lgkmcnt_wait(X)\
@@ -188,7 +201,18 @@ __forceinline__  __device__ void  inline_ds_read2_b32_no_wait(VEC *shared_addr, 
       : "v"(ldsAddr), "B"(offset1)
       :);
 }
-
+//封装ds_readb128
+template<typename VEC, typename dwordx4>
+__forceinline__  __device__ void  inline_ds_read_b128_no_wait(VEC *shared_addr,  dwordx4& reg_val) {
+  int ldsAddr = reinterpret_cast<size_t>(shared_addr) ;
+  __builtin_amdgcn_sched_barrier(0);
+  asm volatile(
+      "\n ds_read_b128 %0 ,%1\n"
+      : "=v"(reg_val)
+      : "v"(ldsAddr)
+      :);
+  __builtin_amdgcn_sched_barrier(0);
+}
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //封装lgkmcnt wait
 #define lgkmcnt_wait_barrier(X)\
@@ -238,6 +262,103 @@ __forceinline__ __device__ void builtin_buffer_load_dword_lds(src_type *const sh
     // global_ptr[2] = rsrc[2];
     // global_ptr[3] = rsrc[3];
     // cp_async4(ptr, global_ptr, gvOffset_s * bytes_per_element, gvOffset_v * bytes_per_element);
+}
+
+// buferr_load_lds_x4
+template<typename T>    
+__forceinline__ __device__ void buffer_load_lds_dwordx4(const T* ptr, T* lds_ptr, int offset, int lds_offset){ // offset 代表global的offset
+// __forceinline__ __device__ void buffer_load_lds_dwordx4(const void* ptr, void* dst_ptr, int offset){ // offset 代表global的offset
+  intx4 global_ptr;
+  *(uint64_t*)&global_ptr = reinterpret_cast<uint64_t>(ptr); //res[0]放首地址信息
+  global_ptr[1] += 0x40800000; // 0x40400000？ 0x40800000
+  global_ptr[2] = 0x80000000;
+  global_ptr[3] = 0x00020000;
+  constexpr int bytes_per_element = sizeof(T);
+  T *dst_ptr = reinterpret_cast<T*>(lds_ptr) + lds_offset;
+//   __builtin_amdgcn_raw_buffer_load_lds( //offen模式
+//       global_ptr,
+//       (__attribute__((address_space(3))) int*)dst_ptr,
+//       16, // dword读取
+//       offset,
+//       0,
+//       0, /* immediate offset, instruction offset */
+//       0 /* auxilariy data| bit 0: glc, bit 1: slc, bit 2: dlc, bit 3: cache swizzle */
+//   );
+    // __builtin_amdgcn_struct_buffer_load_lds( // idxn模式
+    //     global_ptr,
+    //     (__attribute__((address_space(3))) int*)dst_ptr,
+    //     16,
+    //     0, // vindex
+    //     offset * bytes_per_element, //gvOffset_v * bytes_per_element, // gvOffset_v * bytes_per_element, // global偏移字节数 
+    //     0, //gvOffset_s * bytes_per_element, // 0
+    //     0, // immediate offset 只能传立即数
+    //     0 //auxilariy 影响不是很大
+    // );
+  int smem_offset = __builtin_amdgcn_readfirstlane(cvta_to_shared(dst_ptr));
+  #if defined(__gfx936__)
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile(
+        "s_mov_b32 m0, %1 \n\t"
+        "buffer_load_dwordx4 %0, %2, 0 ,offen  offset:0, lds \n" ::"v"(offset),
+        "s"(smem_offset), "s"(global_ptr)
+    :);
+    __builtin_amdgcn_sched_barrier(0);
+  #endif
+}
+
+// 进行 128bit的 load
+template<typename T>
+__device__ inline void amdgcn_buffer_load_dwordx4_lds(void* smem_ptr, const T* glob_ptr, int offset_v, const int offset_s) {
+  // int smem_offset = cvta_to_shared(smem_ptr);
+  int smem_offset_sgpr = __builtin_amdgcn_readfirstlane(cvta_to_shared(smem_ptr));
+  typedef uint32_t uint32x4_t __attribute__((ext_vector_type(4)));
+  uint32x4_t global_addr = {0};
+  *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(glob_ptr);
+  global_addr[1] += 0x41000000; // 62 bit: cache swizzle;  48~61: Stride
+  global_addr[2] = 0x80000000;
+  global_addr[3] = 0x00020000; // 0000 0000 0000 0010 0000 0000 0000 0000
+  //  000
+//   int offset_s = offset_s;
+    #if defined(__gfx936__)
+  __builtin_amdgcn_sched_barrier(0);
+  asm volatile(
+      "s_mov_b32 m0, %1 \n\t"
+      "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
+      "s"(smem_offset_sgpr), "s"(global_addr), "s"(offset_s)
+  :);
+  __builtin_amdgcn_sched_barrier(0);
+  #endif
+}
+
+
+//封装s_setprio 1
+#define s_setprio(X)\
+__builtin_amdgcn_sched_barrier(0);\
+    asm volatile(\
+      "s_setprio %0\n\t"\
+      :: "I"(X)\
+      :);\
+__builtin_amdgcn_sched_barrier(0);
+
+// 进行 64bit的 load
+template<typename T>
+__device__ inline void amdgcn_buffer_load_dwordx2_lds(void* smem_ptr, const T* glob_ptr, int offset_v, const int offset_s) {
+  // int smem_offset = cvta_to_shared(smem_ptr);
+  int smem_offset_sgpr = __builtin_amdgcn_readfirstlane(cvta_to_shared(smem_ptr));
+  typedef uint32_t uint32x4_t __attribute__((ext_vector_type(4)));
+  uint32x4_t global_addr = {0};
+  *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(glob_ptr);
+  global_addr[1] += 0x41000000; // 62 bit: cache swizzle;  48~61: Stride
+  global_addr[2] = 0x80000000;
+  global_addr[3] = 0x00020000; // 0000 0000 0000 0010 0000 0000 0000 0000
+  //  000
+//   int offset_s = offset_s;
+  asm volatile(
+      "s_mov_b32 m0, %1 \n\t"
+      "buffer_load_dwordx2 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
+      "s"(smem_offset_sgpr), "s"(global_addr), "s"(offset_s)
+  :);
+  return;
 }
 
 // buferr_load_reg
@@ -303,10 +424,10 @@ __forceinline__ __device__ void buffer_load_reg_dwordx4(const T* ptr, typename v
   global_ptr[1] += 0x40800000;
   global_ptr[2] = 0x80000000;
   global_ptr[3] = 0x00020000;
-
+  __builtin_amdgcn_sched_barrier(0);
   asm volatile("buffer_load_dwordx4 %0,%1,%2,0, offen offset:0 \n"
     : "=v"(rsrc), "+v"(offset), "+s"(global_ptr));
-
+  __builtin_amdgcn_sched_barrier(0);
   return ;
 }
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -353,6 +474,42 @@ __device__ typename vec<int, 4>::type mmac_int8(const typename vec<Element, 8>::
         : "v"(*a), "v"(*b)
       );
     __builtin_amdgcn_sched_barrier(0);
+    #endif
+    return v3;
+}
+
+
+template<class Element>
+__device__ typename vec<int, 4>::type mmac2_asm_snop1(const typename vec<Element, 8>::type &v1, const int8x8_t* v2, typename vec<int, 4>::type &v3)
+{
+    auto a = reinterpret_cast<const long*>(&v1);
+    auto b = reinterpret_cast<const long*>(v2);
+    #if defined(__gfx936__) || defined(__gfx928__)
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile(
+        "\n s_nop 1 \n v_mmac_i32_16x16x32_i8 %0, %1, %2, %0 \n"
+        : "+v"(v3)
+        : "v"(*a), "v"(*b)
+      );
+      __builtin_amdgcn_sched_barrier(0);
+    #endif
+    return v3;
+}
+
+
+template<class Element>
+__device__ typename vec<int, 4>::type mmac2_asm(const typename vec<Element, 8>::type &v1, const int8x8_t* v2, typename vec<int, 4>::type &v3)
+{
+    auto a = reinterpret_cast<const long*>(&v1);
+    auto b = reinterpret_cast<const long*>(v2);
+    #if defined(__gfx936__) || defined(__gfx928__)
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile(
+        "\n v_mmac_i32_16x16x32_i8 %0, %1, %2, %0 \n"
+        : "+v"(v3)
+        : "v"(*a), "v"(*b)
+      );
+      __builtin_amdgcn_sched_barrier(0);
     #endif
     return v3;
 }
