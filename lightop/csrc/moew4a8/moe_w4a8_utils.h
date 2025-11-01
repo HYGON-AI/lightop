@@ -520,6 +520,40 @@ __forceinline__ __device__ void  MOE_WI4AI8_PERCHANNEL_HIP_NT_decode_kernel(
         }
     }
 }
+#define buffer_load_lds_tile_pad_sorted_token_marlin(WARP_NUM, N_row_len, WARP_M, WARP_K, Element, global_ptr, lds_ptr, global_offset, lds_stage_offset, max_M_len, warp_id_M,warp_id_K, lane_id,vec_size,per_phase,max_phase)\
+{\
+    int bytes_per_Element = 1;\
+    int Element_per_dword = 4/bytes_per_Element;\
+    int thread_K_perWarp = WARP_K * 2 / vec_size;\
+    int thread_M_perWarp = 64 / thread_K_perWarp;\ 
+    int lane_M_idx = lane_id / thread_K_perWarp;\  
+    int lane_N_idx = lane_id % thread_K_perWarp;\  
+    const int lds_load_num_per_warp = (WARP_M * WARP_K * 2 * bytes_per_Element) / (vec_size * 64);\
+    int WARP_NUM_M=2;\
+    int WARP_NUM_K=1;\
+    for(int load = 0,warp_loop = warp_id_M; load < (lds_load_num_per_warp / WARP_NUM_M); warp_loop += WARP_NUM_M, ++load) {\
+        for(int iter_K = 0; iter_K < std::min(1,(BLOCK_K / WARP_NUM_K / WARP_K)); iter_K++){\
+            int block_row = warp_loop * thread_M_perWarp + lane_M_idx;\ 
+            int g_col = lane_N_idx ;\ 
+            int phase = (block_row/per_phase) % max_phase; \
+            int vec_size_dword = vec_size / Element_per_dword; \ 
+            int g_col_swizzle = (g_col ^ phase) * vec_size_dword;\ 
+            int gsOffset   = global_offset/Element_per_dword;\
+            int sorted_token_ids_tt = sorted_token_ids_offset[std::min(bidx * BLOCK_M + block_row, int(sorted_token_lens - 1))];\
+            int g_row = (std::min(sorted_token_ids_tt / top_k,  max_n_len_offset - 1)); \
+            int gvOffset   = (g_row * seqlen_A_stride + iter_K * WARP_NUM_K *  thread_K_perWarp * vec_size  + warp_id_K * WARP_K) / Element_per_dword +  g_col_swizzle;\
+            int lds_offset = lds_stage_offset + (warp_loop * thread_M_perWarp * WARP_K * 2 + iter_K * WARP_NUM * 16 * WARP_K) + warp_id_K * WARP_K;\
+            amdgcn_buffer_load_dwordx4_lds((lds_ptr+lds_offset), global_ptr, gvOffset*4, gsOffset);\
+        }\
+    }\
+}
+
+#define ds_readb128_tile_pad_no_wait(M,n_idx,WARP_NUM,Element,lds_v16i8,precompute_offset,lds_stage_offset_loop,reg,loop)\
+{\
+    for(int m_idx = 0; m_idx < M / 16; m_idx ++){\
+        inline_ds_read_b128_no_wait(lds_v16i8 + precompute_offset[m_idx+ n_idx]+ lds_stage_offset_loop, reg[m_idx][n_idx].int4_array[0]);\
+    }\
+}
 
 template<bool Is_store_A, 
     int A_prefetch_level, 
@@ -748,6 +782,703 @@ __forceinline__ __device__ void  MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode_k
     }
     
 }
+template<bool Is_store_A, 
+    int A_prefetch_level, 
+    int B_prefetch_level, 
+    int WARP_NUM,
+    int BLOCK_M, 
+    int BLOCK_N, 
+    int BLOCK_K, 
+    int WARP_M,  
+    int WARP_N,  
+    int WARP_K,  
+    int STAGES,  
+    int GROUP_N,
+    int GROUP_K,
+    int splitk,
+    typename Element, 
+    typename ElementAccum = int32_t>                                                                                                            
+__forceinline__ __device__ void  MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode_warp_specialization_kernel(
+    const Element* input_ptr, 
+    const int* weight_ptr, 
+    Element* A_lds,
+    Element* B_lds,
+    float* input_scale_ptr,
+    float* weight_scale_ptr,
+    int max_n_len_offset, 
+    union_vec<Element,WARP_K/4> A_reg[WARP_M/16][2], // 2 = warpk/mmak
+    int8_vec<WARP_K/8> B_reg[WARP_N/16][2], // 2 = warpk/mmak
+    int warp_id, 
+    int seqlen_A_stride, // size_k: 7168
+    int seqlen_B_stride, // size_k: 16384
+    int scale_A_stride_m,
+    int scale_A_stride_k,
+    int scale_B_stride_e,
+    int scale_B_stride_n,
+    int scale_B_stride_k,
+    int top_k, // 8/1
+    const int* sorted_token_ids_offset,
+    int sorted_token_lens,
+    const int32_t expert_id,
+    const int bidx,
+    const int bidy,
+    bhalf_t* g_output,
+    int stride_asm
+    ) 
+{
+    const int size_k = seqlen_A_stride;  //7168
+    int lane_id = threadIdx.x & 63; // thread_id
+    //符合mmac 列主序
+    int row_id = lane_id % 16;
+    int col_id = lane_id / 16;
+    constexpr int MFMA_M = 16;
+    constexpr int MFMA_N = 16;
+    constexpr int MFMA_K = 32;
+    constexpr int warp_m_num = BLOCK_M/WARP_M; //1
+    constexpr int warp_k_num = BLOCK_K/WARP_K; //1
+    constexpr int warp_n_num = BLOCK_N / (WARP_N * 4); // 8
+    constexpr int type_width_in_bit = 8;
+    constexpr int num_banks = 32;
+    constexpr int bank_bit_width = 32;
+    constexpr int elems_per_one_banks_row = (num_banks * bank_bit_width) / type_width_in_bit; // 128
+    constexpr int vec_sizeA = 16; 
+    const int per_phaseA = std::max(1, elems_per_one_banks_row / WARP_K / 2);
+    const int max_phaseA = 32 / (vec_sizeA * type_width_in_bit / bank_bit_width); // 8
+    int warp_m_id = 0; //默认不分布 
+    int warp_k_id = warp_id % warp_k_num; 
+    int warp_n_id = warp_id / warp_k_num; 
+    // int g_row_A[WARP_M / MFMA_M]; //1
+    int g_row_B[WARP_N / MFMA_N]; //1
+    int i = 0;
+    int B_stride_k = WARP_K / 32; //2
+    int precompute_A_lds_offset[(WARP_M/MFMA_M)*(WARP_K/MFMA_K)]; //1 * 2 =2
+    int A_lds_stage_offset = STAGES == 1 ? 0 : BLOCK_M * BLOCK_K * 2;
+    int A_lds_stage_offset_loop = A_lds_stage_offset * warp_k_num;
+    union_vec<Element,8> midval[8];
+    int itk = size_k/warp_k_num/WARP_K/splitk; //112 
+    if(warp_id>7 ){
+        if(warp_id > 9) return;
+
+        //----------------------------------------------------Init----------------------------------------------------------//
+
+        //warp8 9 负责将A预取到lds，A的大小为16x128 需要迭代56次
+        //----------------------------------------------------Prefetch----------------------------------------------------------//
+        int warp_id_M = warp_id % 4; 
+        auto A_ptr = input_ptr; 
+        int A_block_buffer_load_global_offset = 0; 
+        int A_lds_stage_offset_loop = 0; 
+        buffer_load_lds_tile_pad_sorted_token_marlin(WARP_NUM, seqlen_A_stride, WARP_M, WARP_K, Element, A_ptr, A_lds, A_block_buffer_load_global_offset, A_lds_stage_offset_loop, BLOCK_K, warp_id_M,0, lane_id,vec_sizeA,per_phaseA,max_phaseA);                
+        vmcnt_wait(0);
+        A_lds_stage_offset_loop = A_lds_stage_offset * warp_k_num ;
+        A_ptr = (input_ptr + WARP_K * 2);
+        buffer_load_lds_tile_pad_sorted_token_marlin(WARP_NUM, seqlen_A_stride, WARP_M, WARP_K, Element, A_ptr, A_lds, A_block_buffer_load_global_offset, A_lds_stage_offset_loop, BLOCK_K, warp_id_M,0, lane_id,vec_sizeA,per_phaseA,max_phaseA);                
+        //----------------------------------------------------Main loop----------------------------------------------------------//
+        for(i=2;i<(size_k/warp_k_num/WARP_K/2/splitk);i+=2){
+            
+            S_BARRIER;
+            vmcnt_wait(0);
+            
+            A_ptr = (input_ptr + i * warp_k_num * WARP_K * 2); 
+            A_lds_stage_offset_loop = 0;
+            buffer_load_lds_tile_pad_sorted_token_marlin(WARP_NUM, seqlen_A_stride, WARP_M, WARP_K, Element, A_ptr, A_lds, A_block_buffer_load_global_offset, A_lds_stage_offset_loop, BLOCK_K, warp_id_M,0, lane_id,vec_sizeA,per_phaseA,max_phaseA);                
+            S_BARRIER;
+            vmcnt_wait(0); 
+
+            A_ptr = (input_ptr + (i+1) * warp_k_num * WARP_K * 2); 
+            A_lds_stage_offset_loop = A_lds_stage_offset * warp_k_num;
+            buffer_load_lds_tile_pad_sorted_token_marlin(WARP_NUM, seqlen_A_stride, WARP_M, WARP_K, Element, A_ptr, A_lds, A_block_buffer_load_global_offset, A_lds_stage_offset_loop, BLOCK_K, warp_id_M,0, lane_id,vec_sizeA,per_phaseA,max_phaseA);                
+ 
+        }
+        S_BARRIER;
+        vmcnt_wait(0);
+    }
+    else if(warp_id<4){
+        //----------------------------------------------------Init----------------------------------------------------------//
+        intx4 C_reg[1][4 * (WARP_M/16)*(WARP_N/16)];
+        for(int init=0; init< (4 * (WARP_M/16)*(WARP_N/16)); init++){
+            C_reg[0][init] = {0,0,0,0};
+        }
+        int warp_n_id  = warp_id;
+        #pragma unroll
+        for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+            g_row_B[n_tile] =  warp_k_id * B_stride_k * seqlen_B_stride + warp_n_id * WARP_N * 4 * 4 + row_id * 4 + (col_id % 2) * 128 +(col_id/2)*seqlen_B_stride;
+        }
+        #pragma unroll 
+        for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+            #pragma unroll
+            for(int min_tile_k=0; min_tile_k<(WARP_K/(MFMA_K )); min_tile_k++) {
+                int lds_col = col_id + 4 * min_tile_k;
+                int phase = (row_id / per_phaseA) % max_phaseA;
+                int col_swizzle = (lds_col ^ phase) * vec_sizeA;       
+                int lds_offset =(min_tile_m * MFMA_M + row_id) * WARP_K * 2 + col_swizzle + warp_k_id * WARP_M * WARP_K + (min_tile_k * 0 * WARP_NUM * WARP_M * WARP_K ); 
+                precompute_A_lds_offset[min_tile_m * (WARP_K/(MFMA_K)) + min_tile_k] = lds_offset; 
+            }
+        }
+        //----------------------------------------------------Prefetch----------------------------------------------------------//
+        #pragma unroll
+        for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+            #pragma unroll
+            for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+            buffer_load_reg_dwordx4(weight_ptr,B_reg[n_tile][0].vec[k_tile],0,((i * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64) * sizeof(int));
+            }
+        }
+        S_BARRIER;
+        for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++){
+            for(int k_idx = 0; k_idx < (WARP_K / MFMA_K / 2); k_idx++){
+                inline_ds_read_b128_no_wait(A_lds + precompute_A_lds_offset[min_tile_m * (WARP_K/(MFMA_K)) + k_idx], A_reg[min_tile_m][0].int4_array[k_idx]);         
+            }
+        }
+        //----------------------------------------------------Main loop----------------------------------------------------------//
+        for(i=1 ; i < itk ; i += 4){
+            //b-->REG1
+            for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++){
+                for(int k_idx = 0; k_idx < (WARP_K / MFMA_K / 2); k_idx++){         
+                    // A_reg[min_tile_m][1].int4_array[k_idx] = *(intx4*)(A_lds +(precompute_A_lds_offset[1]));
+                    inline_ds_read_b128_no_wait(A_lds + precompute_A_lds_offset[1], A_reg[min_tile_m][1].int4_array[k_idx]);
+                }
+            }
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+                    // B_reg[n_tile][1].vec[k_tile]  = *(intx4*)(weight_ptr + (i * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64);
+                    buffer_load_reg_dwordx4(weight_ptr,B_reg[n_tile][1].vec[k_tile],0,(((i) * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64) * sizeof(int));
+                }
+            }
+            lgkmcnt_wait(1);
+            vmcnt(2);
+            //mmac
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            int first_val = B_reg[n_tile][0].data[ 4 * k_tile + N_PACKID];
+                            midval[ 4 * k_tile + N_PACKID].int_array[0] = first_val & 0xf0f0f0f0 ;
+                            midval[ 4 * k_tile + N_PACKID].int_array[1] = (first_val << 4) & 0xf0f0f0f0;
+                        }
+                    }
+                }
+            s_setprio(1);
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2_asm<Element>(
+                                *(typename vec<Element, 8>::type*)(&A_reg[m_tile][0].int8t_array[k_tile]), 
+                                (&(midval[ 4 * k_tile + N_PACKID]).int8x8_array[0]), 
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                            }
+                    }
+                }
+            }
+            s_setprio(0);
+            S_BARRIER;
+ 
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+                    buffer_load_reg_dwordx4(weight_ptr,B_reg[n_tile][0].vec[k_tile],0,(((i+1) * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64) * sizeof(int));
+                }
+            }
+            lgkmcnt_wait(0);//等待完成即可mmac与下次的执行进行遮掩
+            vmcnt(2);
+            //mmac
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            int first_val = B_reg[n_tile][1].data[ 4 * k_tile + N_PACKID];
+                            midval[ 4 * k_tile + N_PACKID].int_array[0] = first_val & 0xf0f0f0f0 ;
+                            midval[ 4 * k_tile + N_PACKID].int_array[1] = (first_val << 4) & 0xf0f0f0f0;
+                        }
+                    }
+                }
+            s_setprio(1);
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2_asm<Element>(
+                                *(typename vec<Element, 8>::type*)(&A_reg[m_tile][1].int8t_array[k_tile]), 
+                                (&(midval[ 4 * k_tile + N_PACKID]).int8x8_array[0]), 
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                            }
+                    }
+                }
+            }
+            s_setprio(0);            
+            S_BARRIER;
+            for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++){
+                for(int k_idx = 0; k_idx < (WARP_K / MFMA_K / 2); k_idx++){         
+                    inline_ds_read_b128_no_wait(A_lds + A_lds_stage_offset_loop +precompute_A_lds_offset[min_tile_m * (WARP_K/(MFMA_K)) + k_idx], A_reg[min_tile_m][0].int4_array[k_idx]);
+                }
+            }
+            for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++){
+                for(int k_idx = 0; k_idx < (WARP_K / MFMA_K / 2); k_idx++){         
+                    
+                    inline_ds_read_b128_no_wait(A_lds + A_lds_stage_offset_loop +precompute_A_lds_offset[1], A_reg[min_tile_m][1].int4_array[k_idx]);
+                }
+            } 
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+                    // B_reg[n_tile][1].vec[k_tile]  = *(intx4*)(weight_ptr + ((i+1) * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64);
+                    buffer_load_reg_dwordx4(weight_ptr,B_reg[n_tile][1].vec[k_tile],0,(((i+2) * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64) * sizeof(int));
+                }
+            }
+            lgkmcnt_wait(1);
+            vmcnt(2);
+            //mmac
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            int first_val = B_reg[n_tile][0].data[ 4 * k_tile + N_PACKID];
+                            midval[ 4 * k_tile + N_PACKID].int_array[0] = first_val & 0xf0f0f0f0 ;
+                            midval[ 4 * k_tile + N_PACKID].int_array[1] = (first_val << 4) & 0xf0f0f0f0;
+                        }
+                    }
+                }
+            s_setprio(1);
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2_asm<Element>(
+                                *(typename vec<Element, 8>::type*)(&A_reg[m_tile][0].int8t_array[k_tile]), 
+                                (&(midval[ 4 * k_tile + N_PACKID]).int8x8_array[0]), 
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                            }
+                    }
+                }
+            }
+            s_setprio(0);           
+            S_BARRIER;
+            if((i +3)< itk){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+                        buffer_load_reg_dwordx4(weight_ptr,B_reg[n_tile][0].vec[k_tile],0,(((i+3) * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64) * sizeof(int));
+                    }
+                }
+                
+            
+                vmcnt(2);               
+            }else{
+                vmcnt(0);  
+            } 
+            lgkmcnt_wait(0);//等待完成即可mmac与下次的执行进行遮掩
+            //mmac
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            int first_val = B_reg[n_tile][1].data[ 4 * k_tile + N_PACKID];
+                            midval[ 4 * k_tile + N_PACKID].int_array[0] = first_val & 0xf0f0f0f0 ;
+                            midval[ 4 * k_tile + N_PACKID].int_array[1] = (first_val << 4) & 0xf0f0f0f0;
+                        }
+                    }
+                }
+            s_setprio(1);
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2_asm<Element>(
+                                *(typename vec<Element, 8>::type*)(&A_reg[m_tile][1].int8t_array[k_tile]), 
+                                (&(midval[ 4 * k_tile + N_PACKID]).int8x8_array[0]), 
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                            }
+                    }
+                }
+            }
+            s_setprio(0);
+            S_BARRIER;
+            if((i +3)< itk){
+                for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++){
+                    for(int k_idx = 0; k_idx < (WARP_K / MFMA_K / 2); k_idx++){         
+                        inline_ds_read_b128_no_wait(A_lds + precompute_A_lds_offset[min_tile_m * (WARP_K/(MFMA_K)) + k_idx], A_reg[min_tile_m][0].int4_array[k_idx]);
+                    }
+                }
+            }
+        }
+        if((i +3)< itk){
+            lgkmcnt_wait(0);
+            vmcnt(0);
+            //mmac
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            int first_val = B_reg[n_tile][0].data[ 4 * k_tile + N_PACKID];
+                            midval[ 4 * k_tile + N_PACKID].int_array[0] = first_val & 0xf0f0f0f0 ;
+                            midval[ 4 * k_tile + N_PACKID].int_array[1] = (first_val << 4) & 0xf0f0f0f0;
+                        }
+                    }
+                }
+            s_setprio(1);
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2_asm<Element>(
+                                *(typename vec<Element, 8>::type*)(&A_reg[m_tile][0].int8t_array[k_tile]), 
+                                (&(midval[ 4 * k_tile + N_PACKID]).int8x8_array[0]), 
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                            }
+                    }
+                }
+            }
+            s_setprio(0);
+            S_BARRIER;            
+        }
+        //----------------------------------------------------Write back----------------------------------------------------------//
+        if(warp_k_id == 0){
+            float *b_scale_ptr = weight_scale_ptr + warp_n_id * WARP_N * 4 + col_id * 4;
+            using vec_bf16_4 = __attribute__((__vector_size__(4 * sizeof(uint16_t)))) unsigned short;
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
+                float a_scale = input_scale_ptr[std::min(token_index / top_k,  max_n_len_offset - 1) * stride_asm]; //计算M方向的偏移
+                for (int i = 0; i < 4; i++) {
+                    floatx4 bscale4;
+                    if(row_id==0) bscale4=*(floatx4*)(b_scale_ptr+i*16);
+                    if(token_index < max_n_len_offset * top_k){
+                        vec_bf16_4 D;
+                        for (int j = 0; j < 4; j++) {
+                            float bscale=bscale4[j];
+                            bscale=__shfl(bscale,col_id*16);
+                            ((bhalf_t*)&D)[j] = f32_to_bf16(static_cast<float> (((int*)&C_reg[0][m_tile*4+j])[i]  ) * a_scale * bscale);
+                        }
+                        *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (seqlen_B_stride>>2) + warp_n_id * WARP_N * 4 + col_id * 4 + i * 16]) = D;
+                    }
+                }
+            }
+        }
+    }
+else{//线程5 6 7 8
+        //----------------------------------------------------Init----------------------------------------------------------//
+        int warp_n_id  = warp_id;
+        intx4 C_reg1[1][4 * (WARP_M/16)*(WARP_N/16)];
+        for(int init=0; init< (4 * (WARP_M/16)*(WARP_N/16)); init++){
+            C_reg1[0][init] = {0,0,0,0};
+        }
+        #pragma unroll
+        for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+            g_row_B[n_tile] =  warp_k_id * B_stride_k * seqlen_B_stride + warp_n_id * WARP_N * 4 * 4 + row_id * 4 + (col_id % 2) * 128 +(col_id/2)*seqlen_B_stride;
+        }
+        #pragma unroll 
+        for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+            #pragma unroll
+            for(int min_tile_k=0; min_tile_k<(WARP_K/(MFMA_K )); min_tile_k++) {
+                int lds_col = col_id + 4 * min_tile_k;
+                int phase = (row_id / per_phaseA) % max_phaseA;
+                int col_swizzle = (lds_col ^ phase) * vec_sizeA;       
+                int lds_offset =(min_tile_m * MFMA_M + row_id) * WARP_K * 2 + col_swizzle + warp_k_id * WARP_M * WARP_K + (min_tile_k * 0 * WARP_NUM * WARP_M * WARP_K ); 
+                precompute_A_lds_offset[min_tile_m * (WARP_K/(MFMA_K)) + min_tile_k] = lds_offset; 
+            }
+        }
+        //----------------------------------------------------Prefetch----------------------------------------------------------//
+        #pragma unroll
+        for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+            #pragma unroll
+            for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+            buffer_load_reg_dwordx4(weight_ptr,B_reg[n_tile][0].vec[k_tile],0,((i * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64) * sizeof(int));
+            }
+        }
+        S_BARRIER;  
+        for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++){
+            for(int k_idx = 0; k_idx < (WARP_K / MFMA_K / 2); k_idx++){         
+                inline_ds_read_b128_no_wait(A_lds + precompute_A_lds_offset[min_tile_m * (WARP_K/(MFMA_K)) + k_idx], A_reg[min_tile_m][0].int4_array[k_idx]); 
+            }
+        }
+               
+        //----------------------------------------------------main loop ----------------------------------------------------------//
+        for(i = 1; i < itk ; i += 4){
+            lgkmcnt_wait(0);
+            vmcnt_wait(0);            
+            //mmac
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            int first_val = B_reg[n_tile][0].data[ 4 * k_tile + N_PACKID];
+                            midval[ 4 * k_tile + N_PACKID].int_array[0] = first_val & 0xf0f0f0f0 ;
+                            midval[ 4 * k_tile + N_PACKID].int_array[1] = (first_val << 4) & 0xf0f0f0f0;
+                        }
+                    }
+                }
+            s_setprio(1);
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            C_reg1[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2_asm<Element>(
+                                *(typename vec<Element, 8>::type*)(&A_reg[m_tile][0].int8t_array[k_tile]), 
+                                (&(midval[ 4 * k_tile + N_PACKID]).int8x8_array[0]), 
+                                C_reg1[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                            }
+                    }
+                }
+            }
+            s_setprio(0);
+            for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++){
+                for(int k_idx = 0; k_idx < (WARP_K / MFMA_K / 2); k_idx++){         
+                    inline_ds_read_b128_no_wait(A_lds + (precompute_A_lds_offset[1]), A_reg[min_tile_m][1].int4_array[k_idx]);
+                    }
+            }
+            //b-->REG1 取1
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+                    buffer_load_reg_dwordx4(weight_ptr,B_reg[n_tile][1].vec[k_tile],0,(((i) * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64) * sizeof(int));
+                }
+            }
+          
+            
+            
+            lgkmcnt_wait(0);//等待完成即可mmac与下次的执行进行遮掩
+            vmcnt_wait(0);
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            int first_val = B_reg[n_tile][1].data[ 4 * k_tile + N_PACKID];
+                            midval[ 4 * k_tile + N_PACKID].int_array[0] = first_val & 0xf0f0f0f0 ;
+                            midval[ 4 * k_tile + N_PACKID].int_array[1] = (first_val << 4) & 0xf0f0f0f0;
+                        }
+                    }
+                }
+            s_setprio(1);
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            C_reg1[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2_asm<Element>(
+                                *(typename vec<Element, 8>::type*)(&A_reg[m_tile][1].int8t_array[k_tile]), 
+                                (&(midval[ 4 * k_tile + N_PACKID]).int8x8_array[0]), 
+                                C_reg1[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                            }
+                    }
+                }
+            }
+            s_setprio(0);
+            for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++){
+                for(int k_idx = 0; k_idx < (WARP_K / MFMA_K / 2); k_idx++){         
+                    inline_ds_read_b128_no_wait(A_lds + A_lds_stage_offset_loop +(precompute_A_lds_offset[min_tile_m * (WARP_K/(MFMA_K)) + k_idx]), A_reg[min_tile_m][0].int4_array[k_idx]);
+                    }
+            }
+            //b-->REG1
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+                    buffer_load_reg_dwordx4(weight_ptr,B_reg[n_tile][0].vec[k_tile],0,(((i+1) * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64) * sizeof(int));
+                }
+            } 
+            lgkmcnt_wait(0);
+            vmcnt_wait(0);
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            int first_val = B_reg[n_tile][0].data[ 4 * k_tile + N_PACKID];
+                            midval[ 4 * k_tile + N_PACKID].int_array[0] = first_val & 0xf0f0f0f0 ;
+                            midval[ 4 * k_tile + N_PACKID].int_array[1] = (first_val << 4) & 0xf0f0f0f0;
+                        }
+                    }
+                }
+            s_setprio(1);
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            C_reg1[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2_asm<Element>(
+                                *(typename vec<Element, 8>::type*)(&A_reg[m_tile][0].int8t_array[k_tile]), 
+                                (&(midval[ 4 * k_tile + N_PACKID]).int8x8_array[0]), 
+                                C_reg1[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                            }
+                    }
+                }
+            }
+            s_setprio(0);
+            for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++){
+                for(int k_idx = 0; k_idx < (WARP_K / MFMA_K / 2); k_idx++){         
+                inline_ds_read_b128_no_wait(A_lds + A_lds_stage_offset_loop +(precompute_A_lds_offset[1]), A_reg[min_tile_m][1].int4_array[k_idx]);
+                        }
+            }
+            //b-->REG1
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+                    buffer_load_reg_dwordx4(weight_ptr,B_reg[n_tile][1].vec[k_tile],0,(((i+2) * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64) * sizeof(int));
+                }
+            }              
+            
+            lgkmcnt_wait(0);
+            vmcnt_wait(0);
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            int first_val = B_reg[n_tile][1].data[ 4 * k_tile + N_PACKID];
+                            midval[ 4 * k_tile + N_PACKID].int_array[0] = first_val & 0xf0f0f0f0 ;
+                            midval[ 4 * k_tile + N_PACKID].int_array[1] = (first_val << 4) & 0xf0f0f0f0;
+                        }
+                    }
+                }
+            s_setprio(1);
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            C_reg1[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2_asm<Element>(
+                                *(typename vec<Element, 8>::type*)(&A_reg[m_tile][1].int8t_array[k_tile]), 
+                                (&(midval[ 4 * k_tile + N_PACKID]).int8x8_array[0]), 
+                                C_reg1[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                            }
+                    }
+                }
+            }
+            s_setprio(0);
+            if((i +3)< itk){
+                //b-->REG1
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+                        buffer_load_reg_dwordx4(weight_ptr,B_reg[n_tile][0].vec[k_tile],0,(((i+3) * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64) * sizeof(int));
+                    }
+                }
+                
+                
+            
+                //A-->lds 0
+            for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++){
+                for(int k_idx = 0; k_idx < (WARP_K / MFMA_K / 2); k_idx++){         
+                    inline_ds_read_b128_no_wait(A_lds + (precompute_A_lds_offset[min_tile_m * (WARP_K/(MFMA_K)) + k_idx]), A_reg[min_tile_m][0].int4_array[k_idx]);
+                    }
+            }
+            }                
+        }
+        if((i +3)< itk){
+            lgkmcnt_wait(0);
+            vmcnt_wait(0);
+            //mmac
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            int first_val = B_reg[n_tile][0].data[ 4 * k_tile + N_PACKID];
+                            midval[ 4 * k_tile + N_PACKID].int_array[0] = first_val & 0xf0f0f0f0 ;
+                            midval[ 4 * k_tile + N_PACKID].int_array[1] = (first_val << 4) & 0xf0f0f0f0;
+                        }
+                    }
+                }
+            s_setprio(1);
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 4; N_PACKID++){
+                            C_reg1[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID] = mmac2_asm<Element>(
+                                *(typename vec<Element, 8>::type*)(&A_reg[m_tile][0].int8t_array[k_tile]), 
+                                (&(midval[ 4 * k_tile + N_PACKID]).int8x8_array[0]), 
+                                C_reg1[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 4 + N_PACKID]);  
+                            }
+                    }
+                }
+            }
+            s_setprio(0);            
+        }
+        //----------------------------------------------------Write back----------------------------------------------------------// 
+        if(warp_k_id == 0){
+        float *b_scale_ptr = weight_scale_ptr + warp_n_id * WARP_N * 4 + col_id * 4;
+        using vec_bf16_4 = __attribute__((__vector_size__(4 * sizeof(uint16_t)))) unsigned short;
+        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+            int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
+            float a_scale = input_scale_ptr[std::min(token_index / top_k,  max_n_len_offset - 1) * stride_asm]; //计算M方向的偏移
+            for (int i = 0; i < 4; i++) {
+                floatx4 bscale4;
+                if(row_id==0) bscale4=*(floatx4*)(b_scale_ptr+i*16);
+                if(token_index < max_n_len_offset * top_k){
+                    vec_bf16_4 D;
+                    for (int j = 0; j < 4; j++) {
+                        float bscale=bscale4[j];
+                        bscale=__shfl(bscale,col_id*16);
+                        ((bhalf_t*)&D)[j] = f32_to_bf16(static_cast<float> (((int*)&C_reg1[0][m_tile*4+j])[i]  ) * a_scale * bscale);
+                    }
+                    *reinterpret_cast<vec_bf16_4*>(&g_output[token_index * (seqlen_B_stride>>2) + warp_n_id * WARP_N * 4 + col_id * 4 + i * 16]) = D;
+                }
+            }
+        }
+        }    
+    }
+}
+
 
 // MOE-DECODE-W4A8 针对小shape优化
 template<bool Is_store_A, 

@@ -525,7 +525,8 @@ static std::unordered_map<int, KernelFunc2> kernel_maps_gemm1_decode_marlin = {
     {419, [](const GemmParams2<char>& p) { launch_MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode<64, 64, 256, 64, 16, 64, 1, char>(p); }},
     {420, [](const GemmParams2<char>& p) { launch_MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode<64, 128, 256, 64, 16, 64, 1, char>(p); }},
     {421, [](const GemmParams2<char>& p) { launch_MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode<128, 64, 256, 128, 16, 64, 1, char>(p); }},
-    {422, [](const GemmParams2<char>& p) { launch_MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode<128, 128, 256, 128, 16, 64, 1, char>(p); }},   
+    {422, [](const GemmParams2<char>& p) { launch_MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode<128, 128, 256, 128, 16, 64, 1, char>(p); }}, 
+    {451, [](const GemmParams2<char>& p) { launch_MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_decode<16, 512, 64, 16, 16, 64, 1, char>(p); }},  
 };
 
 static std::unordered_map<int, KernelFunc2> kernel_maps_gemm2_decode_marlin = {
