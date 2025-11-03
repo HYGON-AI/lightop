@@ -1162,31 +1162,12 @@ void rotary_embedding_deepseek_fuse(
             cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
             head_stride, num_heads, num_kv_heads, head_size,num_tokens)
         
-        if (num_heads == 128) {
             if(is_neox){
                 LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(true,2, 32, 2, 64);
             }else{
                 LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(false,2, 32, 2, 64);
             }
-        } else if (num_heads == 64) {
-            if(is_neox){
-                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(true,2, 32, 2, 64);
-            }else{
-                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(false,2, 32, 2, 64);
-            }    
-        } else if (num_heads == 32) {
-            if(is_neox){
-                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(true,2, 32, 2, 64);
-            }else{
-                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(false,2, 32, 2, 64);
-            }
-        } else if (num_heads == 16) {
-            if(is_neox){
-                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(true,2, 32, 2, 64);
-            }else{
-                LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(false,2, 32, 2, 64);
-            }
-        }
+
     } else {
         dim3 grid(num_tokens);
         dim3 block(std::min<int64_t>(num_heads * (rot_dim / 2), 512));
