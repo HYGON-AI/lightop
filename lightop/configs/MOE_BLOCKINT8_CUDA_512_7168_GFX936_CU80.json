@@ -22,22 +22,22 @@
         },
         "16": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 26,
+            "MODE": 27,
             "DELTA": 1
         },
         "32": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 15,
+            "MODE": 37,
             "DELTA": 1
         },
         "64": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 29,
+            "MODE": 22,
             "DELTA": 1
         },
         "128": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 29,
+            "MODE": 37,
             "DELTA": 1
         },
         "256": {
