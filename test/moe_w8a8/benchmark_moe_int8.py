@@ -686,8 +686,6 @@ def fuse_moe_correctness_preprocess(
     for mode in mode_ranges:
         mode0 = mode
         mode1 = mode
-        # if mode0 == 1000:
-        #     mode1 = 49
         mode_list=[mode0,mode1]
         input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=num_experts,device=device,block_size=None,out_dtype=dtype)
         # triton moe: output
@@ -1289,15 +1287,20 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=512
     # hidden_size=7168
     
-    # ## deepseek-671b-tp4
-    E = 256
-    shard_intermediate_size=1024
-    hidden_size=7168
+    # # ## deepseek-671b-tp4
+    # E = 256
+    # shard_intermediate_size=1024
+    # hidden_size=7168
     
     # ## deepseek-671b-tp2
     # E = 256
     # shard_intermediate_size=2048
     # hidden_size=7168
+    
+    ## deepseek-671b-tp1
+    E = 256
+    shard_intermediate_size=4096
+    hidden_size=7168
     
     # E = 128
     # # #qwen3-30b-A3B-tp1

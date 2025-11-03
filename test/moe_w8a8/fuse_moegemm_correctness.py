@@ -807,9 +807,10 @@ def _fused_moe_helper(m: int,
     # and per-output channel weight quantization.
     torch.manual_seed(0)
     input = (torch.randn((m, k), device=device) * 5).to(dtype=out_dtype)
-    weight13 = to_int8(torch.randn((E,n ,k), device=device) * 5)
-    weight2 = to_int8(torch.randn((E,n2 ,k2), device=device) * 5)
-
+    # weight13 = to_int8(torch.randn((E,n ,k), device=device) * 5)
+    # weight2 = to_int8(torch.randn((E,n2 ,k2), device=device) * 5)
+    weight13 = torch.randint(-128, 127, (E,n ,k), device=device, dtype=torch.int8)
+    weight2 = torch.randint(-128, 127, (E,n2 ,k2), device=device, dtype=torch.int8)
     weight13_scale = (torch.randn((E, n ,1), device=device,
                            dtype=torch.float32))
     weight2_scale = (torch.randn((E, n2, 1), device=device,
