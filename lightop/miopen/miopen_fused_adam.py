@@ -5,7 +5,7 @@ from .. import op
 from typing import Optional, Union
 
 
-def adamw(
+def miopen_adamw(
     params: list[Tensor],
     grads: list[Tensor],
     exp_avgs: list[Tensor],
@@ -33,25 +33,25 @@ def adamw(
     """_summary_
 
     Args:
-        params (list[Tensor]): 
-        grads (list[Tensor]): _description_
-        exp_avgs (list[Tensor]): _description_
-        exp_avg_sqs (list[Tensor]): _description_
-        max_exp_avg_sqs (list[Tensor]): _description_
-        state_steps (list[Tensor]): _description_
-        amsgrad (bool): _description_
-        beta1 (Union[float, Tensor]): _description_
-        beta2 (Union[float, Tensor]): _description_
-        lr (Union[float, Tensor]): _description_
-        weight_decay (float): _description_
-        eps (float): _description_
-        maximize (bool): _description_
+        params (list[Tensor]): 输入输出
+        grads (list[Tensor]): 输入
+        exp_avgs (list[Tensor]): 输入输出
+        exp_avg_sqs (list[Tensor]): 输入输出
+        max_exp_avg_sqs (list[Tensor]): 输入输出
+        state_steps (list[Tensor]): 输入输出
+        amsgrad (bool): 输入
+        beta1 (Union[float, Tensor]): 输入
+        beta2 (Union[float, Tensor]): 输入
+        lr (Union[float, Tensor]): 输入
+        weight_decay (float): 输入
+        eps (float): 输入
+        maximize (bool): 输入
         foreach (Optional[bool], optional): _description_. Defaults to None.
         capturable (bool, optional): _description_. Defaults to False.
         differentiable (bool, optional): _description_. Defaults to False.
         fused (Optional[bool], optional): _description_. Defaults to None.
-        grad_scale (Optional[Tensor], optional): _description_. Defaults to None.
-        found_inf (Optional[Tensor], optional): _description_. Defaults to None.
+        grad_scale (Optional[Tensor], optional): 输入. Defaults to None.
+        found_inf (Optional[Tensor], optional): 输入. Defaults to None.
         has_complex (bool, optional): _description_. Defaults to False.
 
     Returns:
@@ -72,7 +72,6 @@ def adamw(
         eps,
         amsgrad,
         maximize,
-        False,
         grad_scale,
         found_inf
     )

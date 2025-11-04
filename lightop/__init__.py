@@ -68,4 +68,4 @@ if dtk_version >= 25042:
     from .miopen.miopen_rms import miopen_add_rms_norm_dynamic_quant, miopen_head_rms_norm, miopen_rms_norm_dynamic_quant_without_residual
     from .miopen.miopen_gemm_bias import miopen_gemm_bias
     from .miopen.miopen_transform_tensor import miopen_transform_tensor
-    from .miopen.miopen_fused_adam import adamw
+    from .miopen.miopen_fused_adam import miopen_adamw
