@@ -160,7 +160,7 @@ Tensor miopen_moe_gather(const Tensor &scatter_tokens, const Tensor &token_offse
 Tensor miopen_scaled_dot_product_attention(const Tensor &query, const Tensor &key, const Tensor &value, const std::optional<Tensor> &attn_mask_, const double droprate, const bool is_causal, std::optional<double> scale, const bool enable_gqa);
 Tensor miopen_gemm_bias(const Tensor &input_a, const Tensor &input_b, const Tensor &bias);
 Tensor miopen_transform_tensor(const Tensor &input, const int transpose_mode, const float alpha, const float beta);
-std::vector<Tensor> miopen_fused_adam(Tensor& params, Tensor& grads, Tensor& exp_avgs, Tensor& exp_avg_sqs, Tensor& max_exp_avg_sqs, Tensor& state_steps, const float& lr, const float& beta1, const float& beta2, const float& weight_decay, const float& eps, const bool& amsgrad, const bool& maximize, const Tensor& grad_scale, const Tensor& found_inf);
+void miopen_fused_adam(Tensor& params, const Tensor& grads, Tensor& exp_avgs, Tensor& exp_avg_sqs, Tensor& max_exp_avg_sqs, Tensor& state_steps, const float& lr, const float& beta1, const float& beta2, const float& weight_decay, const float& eps, const bool& amsgrad, const bool& maximize, const c10::optional<Tensor>& grad_scale, const c10::optional<Tensor>& found_inf);
 #endif
 
 void rms_norm_dynamic_per_token_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input);
