@@ -1327,12 +1327,12 @@ def main(args: argparse.Namespace):
     # hidden_size=4096
     # topk = 4
 
-    ## deepseek-r1-tp16
+    # # deepseek-r1-tp16
     # E = 256
     # shard_intermediate_size=256
     # hidden_size=7168
     
-    # ## deepseek-r1-tp8
+    ## deepseek-r1-tp8
     E = 256
     shard_intermediate_size=512
     hidden_size=7168
