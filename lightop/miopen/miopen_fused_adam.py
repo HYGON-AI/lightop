@@ -33,26 +33,27 @@ def miopen_adamw(
     """_summary_
 
     Args:
-        params (list[Tensor]): 输出
-        grads (list[Tensor]): 输入
-        exp_avgs (list[Tensor]): 输入输出
-        exp_avg_sqs (list[Tensor]): 输入输出
-        max_exp_avg_sqs (list[Tensor]): 输入输出
-        state_steps (list[Tensor]): 输入输出
-        amsgrad (bool): 是否使用论文<On the Convergence of Adam and Beyond>中该算法的 AMSGrad 变体. 默认值 False.
-        beta1 (Union[float, Tensor]): 计算梯度的滑动平均值的系数. 默认值 0.9
-        beta2 (Union[float, Tensor]): 计算梯度平方的滑动平均值的系数. 默认值 0.999
+        params (list[Tensor]): 要优化的模型参数.
+        grads (list[Tensor]): 对应每个参数的梯度.
+        exp_avgs (list[Tensor]): 梯度的一阶矩估计, 即梯度的指数移动平均值.
+        exp_avg_sqs (list[Tensor]): 梯度的二阶矩估计, 即梯度平方的指数移动平均值.
+        max_exp_avg_sqs (list[Tensor]): 仅在使用AMSGrad变体时才会使用, 
+                                        AMSGrad算法会使用到当前为止的最大二阶矩估计, 而不是指数移动平均值.
+        state_steps (list[Tensor]): 每个参数的当前更新步数.
+        amsgrad (bool): 是否使用 AMSGrad 变体. 默认值 False.
+        beta1 (Union[float, Tensor]): 一阶矩估计的指数衰减率. 默认值 0.9
+        beta2 (Union[float, Tensor]): 二阶矩估计的指数衰减率. 默认值 0.999
         lr (Union[float, Tensor]): 学习率, 默认值 1e-3.
                                    如果没有同时指定 fused=True 或 capturable=True, 需使用浮点式的学习率.
         weight_decay (float): 权重衰减系数. 默认值 1e-2.
         eps (float): 添加到分母中的项, 用于提高数值稳定性. 默认值 1e-8.
-        maximize (bool): 相对于 params 最大化目标, 而非最小化. 默认值 False.
+        maximize (bool): 相对于 params 使用梯度上升, 而非梯度下降. 默认值 False.
         foreach (Optional[bool], optional): 是否使用优化器的 foreach 实现. 默认值 None.
         capturable (bool, optional): 此实例是否可以安全地在图中捕获. 默认值 False.
-        differentiable (bool, optional): 自动求导是否应通过优化器的 step 步骤进行. 默认值 False.
+        differentiable (bool, optional): 是否在优化器步骤中允许自动求导. 默认值 False.
         fused (Optional[bool], optional): 是否使用融合实现. 默认值 None.
-        grad_scale (Optional[Tensor], optional): 输入. 梯度缩放张量, 对于Adamw不支持传递该参数. 默认值 None.
-        found_inf (Optional[Tensor], optional): 输入. 是否发现无穷梯度值. 默认值 None.
+        grad_scale (Optional[Tensor], optional): 梯度缩放张量, 对于Adamw不支持传递该参数. 默认值 None.
+        found_inf (Optional[Tensor], optional): 如果设置并包含一个表示是否发现无穷梯度的值, 则可能会跳过更新. 默认值 None.
         has_complex (bool, optional): 是否存在复数. 默认值 False.
 
     """
