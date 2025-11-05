@@ -47,7 +47,7 @@ def miopen_adamw(
                                    如果没有同时指定 fused=True 或 capturable=True, 需使用浮点式的学习率.
         weight_decay (float): 权重衰减系数. 默认值 1e-2.
         eps (float): 添加到分母中的项, 用于提高数值稳定性. 默认值 1e-8.
-        maximize (bool): 相对于 params 使用梯度上升, 而非梯度下降. 默认值 False.
+        maximize (bool): 相对于 params 是否使用梯度上升. 默认值 False.
         foreach (Optional[bool], optional): 是否使用优化器的 foreach 实现. 默认值 None.
         capturable (bool, optional): 此实例是否可以安全地在图中捕获. 默认值 False.
         differentiable (bool, optional): 是否在优化器步骤中允许自动求导. 默认值 False.
