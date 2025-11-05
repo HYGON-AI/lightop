@@ -19,13 +19,13 @@ void miopen_fused_adam(Tensor& params,
                        Tensor& exp_avg_sqs,
                        Tensor& max_exp_avg_sqs,
                        Tensor& state_steps,
-                       const float& lr,
-                       const float& beta1,
-                       const float& beta2,
-                       const float& weight_decay,
-                       const float& eps,
-                       const bool& amsgrad,
-                       const bool& maximize,
+                       const float lr,
+                       const float beta1,
+                       const float beta2,
+                       const float weight_decay,
+                       const float eps,
+                       const bool amsgrad,
+                       const bool maximize,
                        const c10::optional<Tensor>& grad_scale,
                        const c10::optional<Tensor>& found_inf)
 {
@@ -47,7 +47,7 @@ void miopen_fused_adam(Tensor& params,
         found_inf.has_value() ? TensorDescriptor(found_inf.value()) : TensorDescriptor();
 
     const unsigned int state_step = 10;
-    const bool& adamw             = true;
+    const bool adamw              = true;
 
     MIOPEN_CHECK(miopenFusedAdam(getMiopenHandle_new(),
                                  params_tensor.desc(),
