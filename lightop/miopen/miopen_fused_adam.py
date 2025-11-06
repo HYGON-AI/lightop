@@ -37,7 +37,7 @@ def miopen_adamw(
         grads (list[Tensor]): 对应每个参数的梯度.
         exp_avgs (list[Tensor]): 梯度的一阶矩估计, 即梯度的指数移动平均值.
         exp_avg_sqs (list[Tensor]): 梯度的二阶矩估计, 即梯度平方的指数移动平均值.
-        max_exp_avg_sqs (list[Tensor]): 仅在使用AMSGrad变体时才会使用, 
+        max_exp_avg_sqs (list[Tensor]): 仅在使用AMSGrad变体时才会使用,
                                         AMSGrad算法会使用到当前为止的最大二阶矩估计, 而不是指数移动平均值.
         state_steps (list[Tensor]): 每个参数的当前更新步数.
         amsgrad (bool): 是否使用 AMSGrad 变体. 默认值 False.
@@ -63,12 +63,12 @@ def miopen_adamw(
         raise ValueError(f"miopen_adamw does not support found_inf")
 
     op.miopen_fused_adam(
-        params,
-        grads,
-        exp_avgs,
-        exp_avg_sqs,
-        max_exp_avg_sqs,
-        state_steps,
+        params[0] if isinstance(params, list) else params,
+        grads[0] if isinstance(grads, list) else grads,
+        exp_avgs[0] if isinstance(exp_avgs, list) else exp_avgs,
+        exp_avg_sqs[0] if isinstance(exp_avg_sqs, list) else exp_avg_sqs,
+        max_exp_avg_sqs[0] if isinstance(max_exp_avg_sqs, list) else max_exp_avg_sqs,
+        state_steps[0] if isinstance(state_steps, list) else state_steps,
         lr,
         beta1,
         beta2,
@@ -79,4 +79,7 @@ def miopen_adamw(
         grad_scale,
         found_inf,
     )
-    state_steps.add_(1)
+    if isinstance(state_steps, list):
+        state_steps[0] += 1
+    else:
+        state_steps += 1

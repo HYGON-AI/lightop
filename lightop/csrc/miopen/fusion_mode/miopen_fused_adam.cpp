@@ -29,9 +29,9 @@ void miopen_fused_adam(Tensor& params,
                        const c10::optional<Tensor>& grad_scale,
                        const c10::optional<Tensor>& found_inf)
 {
-    if(state_steps.dim() != 1)
+    if(state_steps.numel() != 1)
     {
-        MIOPEN_THROW("Fused_Adam: state_steps tensor set worng.");
+        MIOPEN_THROW("Fused_Adam: state_steps must be a scalar.");
     }
     TensorDescriptor params_tensor(params);
     TensorDescriptor grads_tensor(grads);
@@ -44,7 +44,7 @@ void miopen_fused_adam(Tensor& params,
     TensorDescriptor found_inf_tensor =
         found_inf.has_value() ? TensorDescriptor(found_inf.value()) : TensorDescriptor();
 
-    const unsigned int state_step = state_steps.sizes()[0];
+    const unsigned int state_step = static_cast<unsigned int>(state_steps.item().toInt());
     const bool adamw              = true;
 
     MIOPEN_CHECK(miopenFusedAdam(getMiopenHandle_new(),
