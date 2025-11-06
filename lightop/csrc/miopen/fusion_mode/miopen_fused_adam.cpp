@@ -29,9 +29,9 @@ void miopen_fused_adam(Tensor& params,
                        const c10::optional<Tensor>& grad_scale,
                        const c10::optional<Tensor>& found_inf)
 {
-    if(params.dim() != 4)
+    if(state_steps.dim() != 1)
     {
-        MIOPEN_THROW("Fused_Adam: Only Support 4D.");
+        MIOPEN_THROW("Fused_Adam: state_steps tensor set worng.");
     }
     TensorDescriptor params_tensor(params);
     TensorDescriptor grads_tensor(grads);
@@ -46,7 +46,7 @@ void miopen_fused_adam(Tensor& params,
     TensorDescriptor found_inf_tensor =
         found_inf.has_value() ? TensorDescriptor(found_inf.value()) : TensorDescriptor();
 
-    const unsigned int state_step = 10;
+    const unsigned int state_step = state_steps.sizes()[0];
     const bool adamw              = true;
 
     MIOPEN_CHECK(miopenFusedAdam(getMiopenHandle_new(),
