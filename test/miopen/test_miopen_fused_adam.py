@@ -7,7 +7,7 @@ beta1 = 0.9
 beta2 = 0.999
 weight_decay = 0
 eps = 1e-8
-amsgrad = True
+amsgrad = False
 maximize = False
 
 # 生成随机输入数据 (float)
