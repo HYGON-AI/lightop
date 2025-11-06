@@ -79,3 +79,4 @@ def miopen_adamw(
         grad_scale,
         found_inf,
     )
+    state_steps.add_(1)
