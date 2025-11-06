@@ -882,8 +882,8 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape) # none
         
-        config1['BLOCK_SIZE_M'] = 16
-        config1['MODE'] = 1003
+        # config1['BLOCK_SIZE_M'] = 16
+        # config1['MODE'] = 1003
 
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
@@ -1105,8 +1105,10 @@ def _fused_moe_helper(m: int,
     # Test for a cutlass kernel with per-token activation quantization
     # and per-output channel weight quantization.
     input = (torch.randn((m, k), device=device) * 5).to(dtype=out_dtype)
-    weight13 = to_int8(torch.randn((E,n ,k), device=device) * 5)
-    weight2 = to_int8(torch.randn((E,n2 ,k2), device=device) * 5)
+    # weight13 = to_int8(torch.randn((E,n ,k), device=device) * 5)
+    # weight2 = to_int8(torch.randn((E,n2 ,k2), device=device) * 5)
+    weight13 = torch.randint(-128, 127, (E,n ,k), device=device, dtype=torch.int8)
+    weight2 = torch.randint(-128, 127, (E,n2 ,k2), device=device, dtype=torch.int8)
 
     if per_channel_quant is False:
         weight13_scale = (torch.randn((E,math.ceil(n/block_size[0]), math.ceil(k/block_size[1])), device=device,
