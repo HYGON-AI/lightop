@@ -41,4 +41,4 @@ lightop.miopen_adamw(
 torch.cuda.synchronize()
 print("================= After Compute ===================\n")
 print(params)
-
+print(state_steps)
