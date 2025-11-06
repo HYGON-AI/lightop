@@ -38,8 +38,6 @@ void miopen_fused_adam(Tensor& params,
     TensorDescriptor exp_avgs_tensor(exp_avgs);
     TensorDescriptor exp_avg_sqs_tensor(exp_avg_sqs);
 
-    TensorDescriptor state_steps_tensor(state_steps);
-
     TensorDescriptor max_exp_avg_sqs_tensor = amsgrad ? TensorDescriptor(max_exp_avg_sqs) : TensorDescriptor();
     TensorDescriptor grad_scale_tensor =
         grad_scale.has_value() ? TensorDescriptor(grad_scale.value()) : TensorDescriptor();
