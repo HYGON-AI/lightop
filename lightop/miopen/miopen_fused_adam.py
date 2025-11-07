@@ -74,7 +74,7 @@ def miopen_adamw(
         grad = grads[i] if not maximize else -grads[i]
         exp_avg = exp_avgs[i]
         exp_avg_sq = exp_avg_sqs[i]
-        step_t = state_steps[i]
+        state_steps[i] += 1
         max_exp_avg_sq = max_exp_avg_sqs[i]
 
         op.miopen_fused_adam(
@@ -83,7 +83,7 @@ def miopen_adamw(
             exp_avg,
             exp_avg_sq,
             max_exp_avg_sq,
-            step_t,
+            state_steps[i],
             lr,
             beta1,
             beta2,
@@ -94,4 +94,3 @@ def miopen_adamw(
             grad_scale,
             found_inf,
         )
-        step_t += 1
