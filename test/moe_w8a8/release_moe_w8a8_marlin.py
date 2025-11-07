@@ -750,13 +750,13 @@ def main():
     parser = argparse.ArgumentParser(description='MOE GEMM性能和精度测试脚本')
     
     # 添加参数
-    parser.add_argument('--E', type=str, default='[256, 256]', 
+    parser.add_argument('--E', type=str, default='[256, 256, 256, 256, 256, 128, 128]', 
                         help='专家数量,如 "[256]"')
-    parser.add_argument('--n1-list', type=str, required=False, default='[256, 512]',
+    parser.add_argument('--n1-list', type=str, required=False, default='[256, 512, 1024, 2048, 4096, 1536, 768]',
                        help='N1参数列表，如 "[256]"')
-    parser.add_argument('--n2-list', type=str, required=False, default='[7168, 7168]',
+    parser.add_argument('--n2-list', type=str, required=False, default='[7168, 7168, 7168, 7168, 7168, 2048, 2048]',
                        help='N2参数列表，如 "[7168]"')
-    parser.add_argument('--k-list', type=str, required=False, default='[128, 256]',
+    parser.add_argument('--k-list', type=str, required=False, default='[128, 256, 512, 1024, 2048, 768, 384]',
                        help='K2参数列表，如 "[128]"')
     parser.add_argument('--m-list', type=str, default='[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]',
                        help='M参数列表，如 "[32,128,512,1024]"')
