@@ -525,7 +525,9 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PRE
   const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
   const int bidy = blockIdx.y; // pid_n
   const int bidz = blockIdx.x; // pid_k
-  int marlin_size_k = size_n * WARP_K; 
+  const int marlin_k = 64;     // marlin weight tile: 16x64
+  const int marlin_warp_k = std::max(WARP_K, marlin_k);
+  int marlin_size_k = size_n * marlin_warp_k;  // 可能存在warpk<64的情况，需要特殊处理
 
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   
@@ -533,7 +535,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PRE
   const uint32_t delta_bidx = bidx / delta;
   const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
   const uint64_t expert_offset = ((uint64_t)size_n) * size_k * expert_id; // 这个是对应专家的weight偏移
-  const uint64_t qweight_offset = expert_offset + bidy * WARP_K * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
+  const uint64_t qweight_offset = expert_offset + bidy * marlin_warp_k * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
   const uint32_t output_offset = bidy * BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
 
   const uint64_t weight_scale_offset = stride_bse * stride_bsn * expert_id + bidy * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块

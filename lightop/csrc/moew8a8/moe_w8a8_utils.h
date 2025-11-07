@@ -476,6 +476,11 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_prefill(
     constexpr int MFMA_N = 16;
     constexpr int MFMA_K = 32;
     const int warp_n_num = BLOCK_N / WARP_N;
+    const int marlin_tile_k = 64;
+    const int marlin_iter_num = marlin_tile_k / WARP_K; // only value 2 or 1
+    const int shift_value = marlin_iter_num - 1;
+    const int switch_value = marlin_iter_num >> 1;
+    const int marlin_warp_k = std::max(marlin_tile_k, WARP_K);
     int warp_n_id = warp_id % warp_n_num;
     int warp_m_id = warp_id / warp_n_num;
 
@@ -516,9 +521,9 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_prefill(
             }
 
             if(B_prefetch_level == 0) { // 预加载B矩阵
-                int B_block_buffer_load_global_offset = stage_id_num * seqlen_B_stride; 
+                int B_block_buffer_load_global_offset = (1 - switch_value) * stage_id_num * seqlen_B_stride + switch_value * ((stage_id_num >> shift_value) * seqlen_B_stride + (stage_id_num & shift_value) * WARP_K); 
                 int B_lds_stage_offset_loop = stage_id_num * B_lds_stage_offset; 
-                buffer_load_lds_tile_pad_weight(WARP_NUM, WARP_K, BLOCK_N, WARP_K, Element, B_ptr, B_lds, B_block_buffer_load_global_offset, B_lds_stage_offset_loop, BLOCK_K, warp_id, lane_id,
+                buffer_load_lds_tile_pad_weight(WARP_NUM, marlin_warp_k, BLOCK_N, WARP_K, Element, B_ptr, B_lds, B_block_buffer_load_global_offset, B_lds_stage_offset_loop, BLOCK_K, warp_id, lane_id,
                                                             vec_size, per_phase, max_phase);
             }
         }
@@ -560,8 +565,9 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_prefill(
     for(int k=0; k < size_k/WARP_K - (STAGES - 1); k++){
 
         int k_offset = k * WARP_K;
+        int b_offset = (1 - switch_value) * k * seqlen_B_stride + switch_value * ((k + (STAGES - 1)) >> shift_value) * seqlen_B_stride;
         auto A_ptr = tcp_cache_swizzle_func<64, Element>(input_ptr + k_offset); // 配置全局显存信息
-        auto B_ptr = tcp_cache_swizzle_func<64, Element>(weight_ptr + k * seqlen_B_stride); // 配置全局显存信息
+        auto B_ptr = tcp_cache_swizzle_func<64, Element>(weight_ptr + b_offset); // 配置全局显存信息
         { 
             // 预加载A矩阵->lds
             int A_block_buffer_load_global_offset = (STAGES - 1) * WARP_K; 
@@ -570,10 +576,10 @@ __forceinline__ __device__ void  gemm_nt_first_stage_marlin_prefill(
                                                         vec_size, per_phase, max_phase);                
 
             // 预加载B矩阵->lds
-            int B_block_buffer_load_global_offset = (STAGES - 1) * seqlen_B_stride; 
+            int B_block_buffer_load_global_offset = (1 - switch_value) * (STAGES - 1) * seqlen_B_stride + switch_value * ((k + (STAGES - 1)) & shift_value) * WARP_K;
             int B_lds_stage_offset_loop = ((k+(STAGES - 1)) & (STAGES - 1)) * B_lds_stage_offset; 
 
-            buffer_load_lds_tile_pad_weight(WARP_NUM, WARP_K, BLOCK_N, WARP_K, Element, B_ptr, B_lds, B_block_buffer_load_global_offset, B_lds_stage_offset_loop, BLOCK_K, warp_id, lane_id,
+            buffer_load_lds_tile_pad_weight(WARP_NUM, marlin_warp_k, BLOCK_N, WARP_K, Element, B_ptr, B_lds, B_block_buffer_load_global_offset, B_lds_stage_offset_loop, BLOCK_K, warp_id, lane_id,
                                                     vec_size, per_phase, max_phase);  
         }
 
