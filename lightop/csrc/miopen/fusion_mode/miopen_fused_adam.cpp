@@ -31,7 +31,7 @@ void miopen_fused_adam(Tensor& params,
 {
     if(state_steps.numel() != 1)
     {
-        MIOPEN_THROW("Fused_Adam: state_steps must be a scalar.");
+        MIOPEN_THROW("Fused_Adam: state_step must be a scalar list.");
     }
     TensorDescriptor params_tensor(params);
     TensorDescriptor grads_tensor(grads);

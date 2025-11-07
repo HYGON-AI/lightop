@@ -61,25 +61,37 @@ def miopen_adamw(
         raise ValueError(f"miopen_adamw does not support grad_scale")
     if found_inf is not None:
         raise ValueError(f"miopen_adamw does not support found_inf")
+    if (
+        len(params) != len(grads)
+        or len(params) != len(exp_avgs)
+        or len(params) != len(exp_avg_sqs)
+        or len(params) != len(max_exp_avg_sqs)
+        or len(params) != len(state_steps)
+    ):
+        raise ValueError(f"All input lists must have the same length.")
 
-    op.miopen_fused_adam(
-        params[0] if isinstance(params, list) else params,
-        grads[0] if isinstance(grads, list) else grads,
-        exp_avgs[0] if isinstance(exp_avgs, list) else exp_avgs,
-        exp_avg_sqs[0] if isinstance(exp_avg_sqs, list) else exp_avg_sqs,
-        max_exp_avg_sqs[0] if isinstance(max_exp_avg_sqs, list) else max_exp_avg_sqs,
-        state_steps[0] if isinstance(state_steps, list) else state_steps,
-        lr,
-        beta1,
-        beta2,
-        weight_decay,
-        eps,
-        amsgrad,
-        maximize,
-        grad_scale,
-        found_inf,
-    )
-    if isinstance(state_steps, list):
-        state_steps[0] += 1
-    else:
-        state_steps += 1
+    for i, param in enumerate(params):
+        grad = grads[i] if not maximize else -grads[i]
+        exp_avg = exp_avgs[i]
+        exp_avg_sq = exp_avg_sqs[i]
+        step_t = state_steps[i]
+        max_exp_avg_sq = max_exp_avg_sqs[i]
+
+        op.miopen_fused_adam(
+            param,
+            grad,
+            exp_avg,
+            exp_avg_sq,
+            max_exp_avg_sq,
+            step_t,
+            lr,
+            beta1,
+            beta2,
+            weight_decay,
+            eps,
+            amsgrad,
+            maximize,
+            grad_scale,
+            found_inf,
+        )
+        step_t += 1
