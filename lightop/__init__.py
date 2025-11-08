@@ -46,7 +46,7 @@ from .reduce import sum, mean,topk
 from .gemmopt import gemm, gemm_w4a16, w4tow16,gemm_w8a16_fp8,fp8_to_16,moe_gemm_w8a8, moe_gemm_marlin_w8a8, gemm_w8a8_smooth, moe_marlin_w4a16, awq_marlin_repack, gemm_w8a8_asm, gemm_w8a8_wgrad_asm, \
       gemm_w8a8_xgrad_asm, moe_gemm_w4a8, moe_gemm_marlin_w4a8, groupgemm, moe_groupgemm_w4a8, moe_groupgemm_marlin_w4a8, awq_marlin_repack_w4a8, m_grouped_w4a8_gemm_nt_masked
 from .moe_fused_gate import moe_fused_gate
-from .fuse_silu_mul_quant import fuse_silu_mul_quant
+from .fuse_silu_mul_quant import fuse_silu_mul_quant, fuse_silu_mul_quant_ep
 from .ds_cat import ds_cat
 from .blockwise_scaling import blockwise_scaled_cast_transpose
 from .config import get_moe_cuda_config, get_moe_cuda_marlin_config, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8, get_moe_groupgemm_config_w4a8, get_moe_groupgemm_marlin_config_w4a8
