@@ -196,6 +196,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> fuse_grou
 std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor);
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m);
+void fuse_silu_mul_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m);
 void moe_sum(torch::Tensor &input,
              torch::Tensor &output, 
              const torch::optional<torch::Tensor> &bias = torch::nullopt ,
@@ -314,6 +315,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("fuse_groupgemm_permute_quant",&at::native::fuse_groupgemm_permute_quant,"fuse_groupgemm_permute_quant");
   m.def("moe_fused_gate",&at::native::moe_fused_gate,"moe_fused_gate");
   m.def("fuse_silu_mul_quant",&at::native::fuse_silu_mul_quant,"fuse_silu_mul_quant");
+  m.def("fuse_silu_mul_quant_ep",&at::native::fuse_silu_mul_quant_ep,"fuse_silu_mul_quant_ep");
   m.def("ds_concat",&at::native::ds_concat,"ds_concat");
   m.def("ms_deform_attn_forward", &at::native::ms_deform_attn_cuda_forward,"ms_deform_attn_forward");
   m.def("ms_deform_attn_backward", &at::native::ms_deform_attn_cuda_backward,"ms_deform_attn_backward");
