@@ -315,9 +315,6 @@ def gemm_w8a8_xgrad_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 
     
     return op.gemm_w8a8_asm(a, b, scale_a, scale_b, None, None, None, out_dtype, m, n, k, 2)
 
-
-
-
 def moe_marlin_w4a16(a: torch.Tensor,
                     c_or_none: Optional[torch.Tensor],
                     b_q_weight: torch.Tensor,
@@ -374,9 +371,6 @@ def awq_marlin_repack_w4a8(b_q_weight: torch.Tensor, marlin_weight: torch.Tensor
     output = op.awq_marlin_repack_w4a8(b_q_weight, marlin_weight, size_batch, size_k, size_n)
     return output
 
-def grougemm_w8a8_pertensor_asm(A_list:list[torch.Tensor], B_list:list[torch.Tensor], D_list:list[torch.Tensor], As_list:list[torch.Tensor], Bs_list:list[torch.Tensor], 
-                                alphas:list[float], C_list:Optional[list[torch.Tensor]], betas:Optional[list[float]], out_dtype):
-    return op.grougemm_w8a8_pertensor_asm(A_list, B_list, D_list, As_list, Bs_list, alphas, C_list, betas, out_dtype)
 
 def groupgemm(a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor, trans_b: bool = False) -> torch.Tensor:
     outs = op.groupgemm(a, b, batch_sizes, trans_b)
