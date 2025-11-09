@@ -147,7 +147,7 @@ def native_w8a8_block_int8_matmul(A, B, As, Bs, block_size, output_dtype=torch.b
     assert k_tiles == Bs.shape[1]
 
     C_shape = (M, N)
-    C = torch.zeros(C_shape, dtype=torch.float32, device=A.device)
+    C = torch.(C_shape, dtype=torch.float32, device=A.device)
 
     A_tiles = [A[:, i * block_k : min((i + 1) * block_k, K)] for i in range(k_tiles)]
     B_tiles = [
