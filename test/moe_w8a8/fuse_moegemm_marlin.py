@@ -1574,6 +1574,7 @@ def fused_moe_first_stage_tune(
                                 start_expert: Optional[int] = None,
                                 end_expert: Optional[int] = None,
                                 config:  Dict[str, Any] = None,
+                                expert_map: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     This function computes a Mixture of Experts (MoE) layer using two sets of
@@ -1638,6 +1639,7 @@ def fused_moe_first_stage_tune(
                                                     topk_ids=topk_ids,
                                                     inplace=False,
                                                     use_int8_w8a8=True,
+                                                    expert_map=expert_map,
                                                     w1_scale=w1_scale,
                                                     w2_scale=w2_scale,
                                                     block_shape=block_shape,
@@ -1674,6 +1676,7 @@ def fused_moe_second_stage_tune(
                                 start_expert: Optional[int] = None,
                                 end_expert: Optional[int] = None,
                                 config:  Dict[str, Any] = None,
+                                expert_map: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     This function computes a Mixture of Experts (MoE) layer using two sets of
@@ -1738,6 +1741,7 @@ def fused_moe_second_stage_tune(
                                                     topk_ids=topk_ids,
                                                     inplace=False,
                                                     use_int8_w8a8=True,
+                                                    expert_map=expert_map,
                                                     w1_scale=w1_scale,
                                                     w2_scale=w2_scale,
                                                     block_shape=block_shape,
