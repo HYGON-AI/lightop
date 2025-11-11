@@ -53,6 +53,28 @@ def generate_unique_int_tensor(m, topk, low=0, high=256):
     
     return tensor
 
+def determine_expert_map(
+        ep_size: int, ep_rank: int,
+        global_num_experts: int) -> tuple[int, Optional[torch.Tensor]]:
+    """计算专家映射关系（保留原逻辑）"""
+    assert ep_size > 0
+    if ep_size == 1:
+        return (global_num_experts, None)
+
+    local_num_experts = global_num_experts // ep_size
+
+    # 创建全局到本地专家的映射，-1表示非当前rank的专家
+    expert_map = torch.full((global_num_experts, ), -1, dtype=torch.int32)
+    if ep_rank < (ep_size - 1):
+        expert_map[ep_rank * local_num_experts : (ep_rank + 1) * local_num_experts] = \
+            torch.arange(0, local_num_experts, dtype=torch.int32)
+    else:
+        local_num_experts = (global_num_experts - ep_rank * local_num_experts)
+        expert_map[-local_num_experts:] = torch.arange(0, local_num_experts, dtype=torch.int32)
+    
+    expert_map = expert_map.cuda(0)
+    return (local_num_experts, expert_map)
+
 # For test
 def native_per_token_group_quant_int8(x, group_size, eps=1e-10, dtype=torch.int8):
     """Function to perform per-token-group quantization on an input tensor `x` using native torch.
@@ -354,6 +376,8 @@ def benchmark_config(config: BenchmarkConfig,
                      use_fp8_w8a8: bool,
                      use_int8_w8a16: bool,
                      use_int8_w8a8: bool,
+                     moe_ep_size: int = 1,
+                     ep_rank: int = 0,
                      num_iters: int = 100,
                      block_quant_shape: List[int] = None,
                      stages: int=1) -> float:
@@ -364,16 +388,23 @@ def benchmark_config(config: BenchmarkConfig,
     a1_scale = None
     a2_scale = None
     
+    # 计算本地专家数量和映射
+    local_num_experts, expert_map = determine_expert_map(
+        ep_size=moe_ep_size,
+        ep_rank=ep_rank,
+        global_num_experts=num_experts
+    )
+    
     w1 = torch.randint(-127,
                         127, (
-                            num_experts,
+                            local_num_experts,
                             shard_intermediate_size, # n
                             hidden_size, # k
                         ),
                         dtype=torch.int8)
     w2 = torch.randint(-127,
                         127, (
-                            num_experts,
+                            local_num_experts,
                             hidden_size, # n2
                             shard_intermediate_size // 2, # k2
                         ),
@@ -397,20 +428,20 @@ def benchmark_config(config: BenchmarkConfig,
     w2_marlin = torch.stack(w2_marlin_list, dim=0)
       
     
-    w1_scale = (torch.randn((num_experts, shard_intermediate_size ,1),
+    w1_scale = (torch.randn((local_num_experts, shard_intermediate_size ,1),
                            dtype=torch.float32))
-    w2_scale = (torch.randn((num_experts, hidden_size, 1),
+    w2_scale = (torch.randn((local_num_experts, hidden_size, 1),
                            dtype=torch.float32))    
     
     gating_output = torch.randn(num_iters,
                                 num_tokens,
-                                num_experts,
+                                local_num_experts,
                                 dtype=torch.float32)
     
     def prepare(i: int):
         input_gating.copy_(gating_output[i])
 
-    input_gating = torch.randn(num_tokens, num_experts, dtype=torch.float32)
+    input_gating = torch.randn(num_tokens, local_num_experts, dtype=torch.float32)
     
     print("Tuing config: ", config)
     latencies: list[float] = []
@@ -435,7 +466,8 @@ def benchmark_config(config: BenchmarkConfig,
                                                     a1_scale=a1_scale,
                                                     a2_scale=a2_scale,
                                                     block_shape=block_quant_shape,
-                                                    config=config)
+                                                    config=config,
+                                                    expert_map=expert_map)
 
         elif stages == 2:
             kernel_time = fused_moe_second_stage_tune(x,
@@ -454,7 +486,8 @@ def benchmark_config(config: BenchmarkConfig,
                                                     a1_scale=a1_scale,
                                                     a2_scale=a2_scale,
                                                     block_shape=block_quant_shape,
-                                                    config=config)
+                                                    config=config,
+                                                    expert_map=expert_map)
         else:
             assert False
 
@@ -705,6 +738,8 @@ def fuse_moe_correctness_preprocess(
         use_fp8_w8a8: bool,
         use_int8_w8a16: bool,
         use_int8_w8a8: bool,
+        moe_ep_size: int = 1,
+        ep_rank: int = 0,
         num_iters: int=100,
         block_quant_shape: List[int] = None,
         block_m_configs: dict[str, int]=None,
@@ -717,13 +752,20 @@ def fuse_moe_correctness_preprocess(
     gemm2_compare_failed_list = []
     device="cuda:"+str(device_id)
     
+    # 计算本地专家数量和映射
+    local_num_experts, expert_map = determine_expert_map(
+        ep_size=moe_ep_size,
+        ep_rank=ep_rank,
+        global_num_experts=num_experts
+    )
+    
     for mode in mode_ranges:
         mode0 = mode
         mode1 = mode
         # if mode0 == 1000:
         #     mode1 = 49
         mode_list=[mode0,mode1]
-        input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=num_experts,device=device,block_size=None,out_dtype=dtype)
+        input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=local_num_experts,device=device,block_size=None,out_dtype=dtype)
         # triton moe: output
         # weight重排
         w1_marlin_list = []
@@ -746,6 +788,7 @@ def fuse_moe_correctness_preprocess(
                                                     topk_ids=topk_ids,
                                                     inplace=False,
                                                     use_int8_w8a8=True,
+                                                    expert_map=expert_map,
                                                     w1_scale=weight13_scale,
                                                     w2_scale=weight2_scale,
                                                     block_shape=None,
@@ -1052,6 +1095,7 @@ class BenchmarkWorker:
         search_space,
         block_quant_shape: list[int],
         use_deep_gemm: bool,
+        ep_size: int = 1,
     ) -> dict[str, int]:
         best_config_kernel0 = None
         best_config_kernel1 = None
@@ -1068,7 +1112,7 @@ class BenchmarkWorker:
         gemm1_compare_failed_list, gemm2_compare_failed_list = fuse_moe_correctness_preprocess(num_tokens, num_experts,
                                                                         shard_intermediate_size, hidden_size,
                                                                         topk, dtype, use_fp8_w8a8,
-                                                                        use_int8_w8a16, use_int8_w8a8, block_quant_shape=block_quant_shape,
+                                                                        use_int8_w8a16, use_int8_w8a8, moe_ep_size=ep_size, block_quant_shape=block_quant_shape,
                                                                         block_m_configs = block_configs,seed=self.seed, device_id=self.device_id)
         
         
@@ -1108,6 +1152,7 @@ class BenchmarkWorker:
                                             use_fp8_w8a8,
                                             use_int8_w8a16,
                                             use_int8_w8a8,
+                                            moe_ep_size=ep_size,
                                             num_iters=10,
                                             block_quant_shape=block_quant_shape,
                                             stages=1)
@@ -1133,6 +1178,7 @@ class BenchmarkWorker:
                                             use_fp8_w8a8,
                                             use_int8_w8a16,
                                             use_int8_w8a8,
+                                            moe_ep_size=ep_size,
                                             num_iters=10,
                                             block_quant_shape=block_quant_shape,
                                             stages=2)
@@ -1196,14 +1242,19 @@ def sort_config(config: BenchmarkConfig) -> BenchmarkConfig:
 
 def save_configs(configs_first_stage: dict[int, BenchmarkConfig], configs_second_stage: dict[int, BenchmarkConfig], num_experts: int,
                  shard_intermediate_size: int, hidden_size: int, topk: int,
-                 dtype: torch.dtype, use_fp8_w8a8: bool, use_int8_w8a16: bool, use_int8_w8a8: bool,
-                 block_quant_shape: List[int]) -> None:
+                 dtype: torch.dtype, use_fp8_w8a8: bool, use_int8_w8a16: bool, use_int8_w8a8: bool, moe_ep_size: int = 1,
+                 block_quant_shape: List[int] = None) -> None:
 
     N=shard_intermediate_size
     K=hidden_size
     gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
-    filename = f"MOE_BLOCKINT8_CUDA_MARLIN_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
-
+    if moe_ep_size > 1:
+        filename = f"MOE_BLOCKINT8_CUDA_MARLIN_EP{moe_ep_size}_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    elif moe_ep_size == 1:
+        filename = f"MOE_BLOCKINT8_CUDA_MARLIN_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    else:
+        raise ValueError(f"Invalid moe_ep_size: {moe_ep_size}")
+    
     print(f"Writing best config to {filename}...")
     try:
         with open(filename, 'r') as file:
@@ -1227,9 +1278,15 @@ def save_configs(configs_first_stage: dict[int, BenchmarkConfig], configs_second
      
     N=hidden_size
     K=shard_intermediate_size // 2
-    filename = f"MOE_BLOCKINT8_CUDA_MARLIN_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    if moe_ep_size > 1:
+        filename = f"MOE_BLOCKINT8_CUDA_MARLIN_EP{moe_ep_size}_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    elif moe_ep_size == 1:
+        filename = f"MOE_BLOCKINT8_CUDA_MARLIN_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    else:
+        raise ValueError(f"Invalid moe_ep_size: {moe_ep_size}")
 
     print(f"Writing best config to {filename}...")
+    
     try:
         with open(filename, 'r') as file:
                 config_infos = json.load(file)
@@ -1318,6 +1375,7 @@ def main(args: argparse.Namespace):
     use_int8_w8a16 = args.dtype == "int8_w8a16"
     use_int8_w8a8 = args.dtype == "int8_w8a8"
     topk = 8
+    ep_size = 1
 
 
 
@@ -1337,10 +1395,10 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=512
     # hidden_size=7168
     
-    # ## deepseek-671b-tp4
-    E = 256
-    shard_intermediate_size=1024
-    hidden_size=7168
+    # # ## deepseek-671b-tp4
+    # E = 256
+    # shard_intermediate_size=1024
+    # hidden_size=7168
     
     # ## deepseek-671b-tp2
     # E = 256
@@ -1372,14 +1430,16 @@ def main(args: argparse.Namespace):
     # hidden_size=4096
 
     # deepseek-r1-EP16
-    # E = 16
-    # shard_intermediate_size=4096
-    # hidden_size=7168
+    E = 256
+    ep_size = 16
+    shard_intermediate_size=4096
+    hidden_size=7168
 
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            1, 2, 4, 8, 16, 32, 64, 128,
+            1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 
+            # 32, 64, 128,
             # 256, 512, 1024, 2048, 
             # 4096, 8192, 16384
             
@@ -1431,7 +1491,7 @@ def main(args: argparse.Namespace):
         configs = _distribute(
             "tune", [(batch_size, E, shard_intermediate_size, hidden_size,
                       topk, dtype, use_fp8_w8a8, use_int8_w8a16, use_int8_w8a8, search_space,
-                      block_quant_shape, use_deep_gemm)
+                      block_quant_shape, use_deep_gemm, ep_size)
                      for batch_size in batch_sizes])
         
         best_configs_first_stage = {}
