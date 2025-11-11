@@ -10,9 +10,9 @@ import time
 
 @triton.jit
 def deepseek_scaling_rotary_emb_kernel_gptj(cos_sin, q, stride1: int,
-                                             stride2: int, stride_cs: int,
-                                             dim1: int, dim2: int, dim3: int,
-                                             BLOCK_SIZE: tl.constexpr):
+                                         stride2: int, stride_cs: int,
+                                         dim1: int, dim2: int, dim3: int,
+                                         BLOCK_SIZE: tl.constexpr):
     pid0 = tl.program_id(0)
     pid1 = tl.program_id(1)
     pid2 = tl.program_id(2)
@@ -54,7 +54,6 @@ def triton_call(q, rotary_dim, cos_sin):
 # Main Benchmark Logic
 # ------------------------------------------------------------------
 if __name__ == '__main__':
-    # --- Configuration (your original settings) ---
     device = torch.device("cuda:0")
     current_platform.seed_everything(0)
     torch.set_default_device("cuda:0")
@@ -82,16 +81,20 @@ if __name__ == '__main__':
     results = []
     ATOL = 1e-2 if DTYPE in [torch.float16, torch.bfloat16] else 1e-7
     
-    # --- Main Test Loop ---
     for num_heads in num_heads_list:
         print(f"\n\n### Benchmarking for Query Heads = {num_heads}\n")
         print(f"{'Batch Size':<12} | {'Correctness':<12} | {'Triton (us)':<15} | {'LightOp (us)':<15} | {'Speedup':<10}")
         print("-" * 80)
 
         for bs in batch_sizes:
-            # Create input tensors
             positions = torch.randint(0, max_position, (bs,), device=device)
-            cos_sin = cos_sin_cache[positions] #[bs,rotary_dim]
+            
+            # offsets = torch.ones_like(positions)
+            offsets = torch.randint_like(positions, low=0, high=10)
+            
+            effective_positions_triton = torch.add(positions, offsets)
+            cos_sin = cos_sin_cache[effective_positions_triton] 
+            
             q_orig = torch.randn(bs, num_heads, head_size, dtype=DTYPE, device=device)
             k_orig = torch.randn(bs, 1, head_size, dtype=DTYPE, device=device)
 
@@ -103,7 +106,8 @@ if __name__ == '__main__':
 
             q_lightop = q_orig.clone()
             k_lightop = k_orig.clone()
-            op.rotary_embedding_deepseek_fuse(positions, q_lightop, k_lightop, head_size, cos_sin_cache, is_neox_style)
+            
+            op.rotary_embedding_deepseek_fuse(positions, q_lightop, k_lightop, head_size, cos_sin_cache, is_neox_style, offsets)
             
             is_correct = torch.allclose(q_triton, q_lightop, atol=ATOL) and torch.allclose(k_triton, k_lightop, atol=ATOL)
             correctness_status = " Pass" if is_correct else " Fail"
@@ -114,32 +118,26 @@ if __name__ == '__main__':
             test_runs = 100
 
             # --- Test Triton Kernel ---
-            # Prepare tensors for benchmarking
             q_triton_bench = q_orig.clone()
             k_triton_bench = k_orig.clone()
-            # Warm-up
             for _ in range(warmup_runs):
                 triton_call(q_triton_bench, rotary_dim, cos_sin)
                 triton_call(k_triton_bench, rotary_dim, cos_sin)
             torch.cuda.synchronize()
 
-            # Timed run
             triton_avg_time = triton.testing.do_bench(lambda: [triton_call(q_triton_bench, rotary_dim, cos_sin), triton_call(q_triton_bench, rotary_dim, cos_sin)])
             triton_us = triton_avg_time * 1_000
 
             # --- Test LightOp Kernel ---
-            # Prepare tensors for benchmarking
             q_lightop_bench = q_orig.clone()
             k_lightop_bench = k_orig.clone()
-            # Warm-up
             for _ in range(warmup_runs):
-                op.rotary_embedding_deepseek_fuse(positions, q_lightop_bench, k_lightop_bench, head_size, cos_sin_cache, is_neox_style)
+                op.rotary_embedding_deepseek_fuse(positions, q_lightop_bench, k_lightop_bench, head_size, cos_sin_cache, is_neox_style, offsets)
             torch.cuda.synchronize()
 
-            # Timed run
             start_time = time.time()
             for _ in range(test_runs):
-                op.rotary_embedding_deepseek_fuse(positions, q_lightop_bench, k_lightop_bench, head_size, cos_sin_cache, is_neox_style)
+                op.rotary_embedding_deepseek_fuse(positions, q_lightop_bench, k_lightop_bench, head_size, cos_sin_cache, is_neox_style, offsets)
             torch.cuda.synchronize()
             lightop_avg_time = (time.time() - start_time) / test_runs
             lightop_us = lightop_avg_time * 1_000_000
