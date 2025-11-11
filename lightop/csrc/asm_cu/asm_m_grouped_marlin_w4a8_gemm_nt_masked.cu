@@ -67,7 +67,8 @@ void _m_grouped_marlin_w4a8_gemm_nt_masked_asm_impl(
   /* grid sizes */
   size_t localWorkSize[3] = {BLOCKDIM, 1, 1};
   size_t globalWorkSize[3] = {1, 1, 1};
-  globalWorkSize[0] = DIVIDE(expected_m_per_group*1.3, BLOCKM);
+  auto need_size_m = std::min(size_m, expected_m_per_group*1.3);
+  globalWorkSize[0] = DIVIDE(need_size_m, BLOCKM);
   globalWorkSize[1] = DIVIDE(size_n, BLOCKN);
   globalWorkSize[2] = experts_num;
 
