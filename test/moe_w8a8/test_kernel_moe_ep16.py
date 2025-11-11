@@ -1183,8 +1183,10 @@ def _fused_moe_helper(m: int,
     # Test for a cutlass kernel with per-token activation quantization
     # and per-output channel weight quantization.
     input = (torch.randn((m, k), device=device) * 5).to(dtype=out_dtype)
-    weight13 = to_int8(torch.randn((E,n ,k), device=device) * 5)
-    weight2 = to_int8(torch.randn((E,n2 ,k2), device=device) * 5)
+    # weight13 = to_int8(torch.randn((E,n ,k), device=device) * 5)
+    # weight2 = to_int8(torch.randn((E,n2 ,k2), device=device) * 5)
+    weight13 = torch.randint(-128, 127, (E,n ,k), device=device, dtype=torch.int8)
+    weight2 = torch.randint(-128, 127, (E,n2 ,k2), device=device, dtype=torch.int8)
 
     if per_channel_quant is False:
         weight13_scale = (torch.randn((E,math.ceil(n/block_size[0]), math.ceil(k/block_size[1])), device=device,
@@ -1248,7 +1250,7 @@ def main():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192,16384]
     # m_list = [1,2,4,8,16,32,64,128,256,512,1024,2048,4096,6144,8192]
-    m_list = [2048]
+    m_list = [1,2,4,8,16]
     E=args.E 
     block_size=[128,128]
     out_dtype=args.out_dtype
