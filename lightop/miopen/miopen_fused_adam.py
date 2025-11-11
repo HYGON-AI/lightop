@@ -65,17 +65,19 @@ def miopen_adamw(
         len(params) != len(grads)
         or len(params) != len(exp_avgs)
         or len(params) != len(exp_avg_sqs)
-        or len(params) != len(max_exp_avg_sqs)
         or len(params) != len(state_steps)
     ):
         raise ValueError(f"All input lists must have the same length.")
+    
+    if(amsgrad and len(params) != len(max_exp_avg_sqs)):
+        raise ValueError(f"max_exp_avg_sqs list and params list must have the same length when use amsgrad")
 
     for i, param in enumerate(params):
         grad = grads[i] if not maximize else -grads[i]
         exp_avg = exp_avgs[i]
         exp_avg_sq = exp_avg_sqs[i]
         state_steps[i] += 1
-        max_exp_avg_sq = max_exp_avg_sqs[i]
+        max_exp_avg_sq = max_exp_avg_sqs[i] if amsgrad else None
 
         op.miopen_fused_adam(
             param,

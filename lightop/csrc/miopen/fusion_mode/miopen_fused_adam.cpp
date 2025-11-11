@@ -17,7 +17,7 @@ void miopen_fused_adam(Tensor& params,
                        const Tensor& grads,
                        Tensor& exp_avgs,
                        Tensor& exp_avg_sqs,
-                       Tensor& max_exp_avg_sqs,
+                       c10::optional<Tensor>& max_exp_avg_sqs,
                        Tensor& state_steps,
                        const float lr,
                        const float beta1,
@@ -38,7 +38,7 @@ void miopen_fused_adam(Tensor& params,
     TensorDescriptor exp_avgs_tensor(exp_avgs);
     TensorDescriptor exp_avg_sqs_tensor(exp_avg_sqs);
 
-    TensorDescriptor max_exp_avg_sqs_tensor = amsgrad ? TensorDescriptor(max_exp_avg_sqs) : TensorDescriptor();
+    TensorDescriptor max_exp_avg_sqs_tensor = amsgrad ? TensorDescriptor(max_exp_avg_sqs.value()) : TensorDescriptor();
     TensorDescriptor grad_scale_tensor =
         grad_scale.has_value() ? TensorDescriptor(grad_scale.value()) : TensorDescriptor();
     TensorDescriptor found_inf_tensor =
@@ -57,7 +57,7 @@ void miopen_fused_adam(Tensor& params,
                                  exp_avg_sqs_tensor.desc(),
                                  exp_avg_sqs.data_ptr(),
                                  amsgrad ? max_exp_avg_sqs_tensor.desc() : nullptr,
-                                 amsgrad ? max_exp_avg_sqs.data_ptr() : nullptr,
+                                 amsgrad ? max_exp_avg_sqs.vaule().data_ptr() : nullptr,
                                  nullptr,
                                  nullptr,
                                  state_step,
