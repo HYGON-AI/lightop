@@ -55,6 +55,7 @@ from .config_smooth_gemm import gemm_w8a8_smooth_config
 from .permute_unpermute import groupgemm_permute, groupgemm_unpermute, fuse_groupgemm_permute_quant
 from .moe_align_sum import moe_sum, moe_align_block_size
 from .batch_linear_assignment import batch_linear_assignment
+from .fill_zeros import fill_zeros
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401
     __version__, __dcu_version__ = version, dcu_version
