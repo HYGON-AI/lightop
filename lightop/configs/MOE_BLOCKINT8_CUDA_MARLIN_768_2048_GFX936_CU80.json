@@ -42,12 +42,12 @@
         },
         "256": {
             "BLOCK_SIZE_M": 32,
-            "MODE": 14,
+            "MODE": 514,
             "DELTA": 1
         },
         "512": {
             "BLOCK_SIZE_M": 32,
-            "MODE": 15,
+            "MODE": 515,
             "DELTA": 1
         },
         "1024": {
