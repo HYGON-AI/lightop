@@ -208,6 +208,7 @@ void ms_deform_attn_cuda_backward(const Tensor &value, const Tensor &spatial_sha
 void mha_norm_rope_qkv_inplace_cuda(at::Tensor qkv, c10::optional<at::Tensor> gamma_q, c10::optional<at::Tensor> beta_q, c10::optional<at::Tensor> gamma_k,c10::optional<at::Tensor> beta_k,at::Tensor cos, at::Tensor sin, double eps);
 void cross_norm_rope_q_kv_inplace_cuda(at::Tensor q,at::Tensor kv,  c10::optional<at::Tensor> gamma_q, c10::optional<at::Tensor> beta_q,c10::optional<at::Tensor> gamma_k,c10::optional<at::Tensor> beta_k, at::Tensor cos,  at::Tensor sin,  double eps);
 torch::Tensor encode_reg_t(const torch::Tensor &input, const int64_t lengths);
+torch::Tensor box_cost(const torch::Tensor &pred,const torch::Tensor &target,const torch::Tensor &inst_weights,const torch::Tensor &dim_weights,const float cost_weight);
 }
 }
 
@@ -344,5 +345,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("mha_norm_rope_qkv_inplace_cuda", &at::native::mha_norm_rope_qkv_inplace_cuda,"mha_norm_rope_qkv_inplace_cuda");
   m.def("cross_norm_rope_q_kv_inplace_cuda", &at::native::cross_norm_rope_q_kv_inplace_cuda,"cross_norm_rope_q_kv_inplace_cuda");
   m.def("encode_reg_t", &at::native::encode_reg_t, "encode_reg_t");
+  m.def("box_cost", &at::native::box_cost,"box_cost");
 }
 
