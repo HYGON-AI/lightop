@@ -1509,6 +1509,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_decode(
     constexpr int MFMA_K = 32;
     constexpr int READ_K = 64; // k方向 4个线程 每个线程读16个int8
     constexpr int warp_k_num = BLOCK_K / WARP_K;
+    constexpr int warp_n_num = BLOCK_N / WARP_N;
     int warp_k_id = warp_id % warp_k_num;
     int warp_n_id = warp_id / warp_k_num;
 
@@ -1747,6 +1748,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_decode(
 
     // warp间的规约 
     extern __shared__ int out_smem[]; // 声明lds信息
+#if 1
     if constexpr (warp_k_num > 1){
         constexpr int lds_n_offset = warp_k_num * BLOCK_N;
         #pragma unroll
@@ -1787,6 +1789,49 @@ __forceinline__ __device__ void  gemm_nt_marlin_decode(
             }
         }
     }
+#else //解bank冲突版本
+    if constexpr (warp_k_num > 1){
+
+        constexpr int pading_n = WARP_N + 1;
+
+        if(warp_k_id > 0){ //0和1 只需要 warpk_id为1去拷贝数据
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){ 
+                   
+                    *(intx4*)(&out_smem[(m_tile * MFMA_M + row_id) * pading_n  + n_tile * 16 + col_id * 4 + (warp_k_id-1 +  warp_n_id * (warp_k_num-1))  * pading_n * 16])  = C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile];
+
+                    // #pragma unroll
+                    // for(int k = 0; k < 4; ++k){ // 重排数据
+                    //     out_smem[(m_tile * MFMA_M + row_id) * pading_n  + n_tile * 16 + col_id * 4 + (warp_k_id-1 +  warp_n_id * (warp_k_num-1))  * pading_n * 16 + k*4]  = C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile + k];
+                    // } 
+                }
+            }
+        }
+
+        __syncthreads();
+
+
+        if(warp_k_id == 0){
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < warp_k_num - 1; k_tile++){
+                        intx4 temp = *(intx4*)(&out_smem[(m_tile * MFMA_M + row_id) * pading_n  + n_tile * 16 + col_id * 4 + (k_tile +  warp_n_id * (warp_k_num-1))  * pading_n * 16]);
+                        #pragma unroll
+                        for(int i = 0; i < 4; ++i){
+                            C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile][i] += temp[i];
+        
+                        }
+                    }
+                }
+            }
+        }
+    }
+#endif
 }
 
 } //namespace end
