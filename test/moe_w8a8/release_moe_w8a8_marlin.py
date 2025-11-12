@@ -798,6 +798,10 @@ def test_moe_performance_accuracy(
         global_num_experts=E
     )
     
+    if ep_size == 1:
+        local_num_experts == E
+        expert_map = None
+
     # 生成测试数据
     input_data, w1_marlin, w2_marlin, weight1, weight2, weight1_scale, weight2_scale, topk_weights, topk_ids = _fused_moe_helper(
         m, n1, k1, n2, k2, topk, local_num_experts, out_dtype, per_channel_quant=per_channel_quant
@@ -914,7 +918,20 @@ def test_moe_performance_accuracy(
     
     #GEMM1+GEMM2的总耗时
     total_time = gemm1_time + gemm2_time # 转换为微秒
+    gemm1_peak = m * k1 * n1 * 2 * topk
+    gemm2_peak = m * k2 * n2 * 2 * topk
+    gemm1_bytes = num_tokens_post_padded.item() * k1 + (E if (num_tokens_post_padded.item() / cuda_config1['BLOCK_SIZE_M']) > E else (num_tokens_post_padded.item() / cuda_config1['BLOCK_SIZE_M'])) * k1 * n1 \
+     + m * topk * n1 * 2 + num_tokens_post_padded.item() * 4 + (E if (num_tokens_post_padded.item() / cuda_config1['BLOCK_SIZE_M']) > E else (num_tokens_post_padded.item() / cuda_config1['BLOCK_SIZE_M'])) * n1 * 4
+    gemm1_gb = gemm1_bytes / 1024 / 1024 / 1024 # GB
+    gemm2_bytes = num_tokens_post_padded.item() * k2 + (E if (num_tokens_post_padded.item() / cuda_config1['BLOCK_SIZE_M']) > E else (num_tokens_post_padded.item() / cuda_config1['BLOCK_SIZE_M'])) * k2 * n2 \
+     + m * n2 * 2 + num_tokens_post_padded.item() * 4 + (E if (num_tokens_post_padded.item() / cuda_config1['BLOCK_SIZE_M']) > E else (num_tokens_post_padded.item() / cuda_config1['BLOCK_SIZE_M'])) * n2 * 4
+    gemm2_gb = gemm2_bytes / 1024 / 1024 / 1024 # GB
     
+    gemm1_tflops = (gemm1_peak / (gemm1_time / 1000 / 1000)) / 1e12
+    gemm2_tflops = (gemm2_peak / (gemm2_time / 1000 / 1000)) / 1e12
+    gemm1_bw = gemm1_gb / (gemm1_time / 1000 / 1000)
+    gemm2_bw = gemm2_gb / (gemm2_time / 1000 / 1000)
+
     return {
         'M': m,
         'N1': n1,
@@ -926,6 +943,10 @@ def test_moe_performance_accuracy(
         'GEMM1_Time_us': gemm1_time,
         'GEMM2_Time_us': gemm2_time,
         'Total_Time_us': total_time,
+        'GEMM1_TFlops': gemm1_tflops,
+        'GEMM2_TFlops': gemm2_tflops,
+        'GEMM1_GB/s': gemm1_bw,
+        'GEMM2_GB/s': gemm2_bw,
         'GEMM1_Accuracy_Pass': gemm1_accuracy,
         'GEMM2_Accuracy_Pass': gemm2_accuracy,
         'Overall_Accuracy_Pass': overall_accuracy
