@@ -287,6 +287,22 @@ def m_grouped_w4a8_gemm_nt_masked(a: tuple[torch.Tensor, torch.Tensor],
     return output
 
 
+def m_grouped_w8a8_gemm_nt_masked(a: tuple[torch.Tensor, torch.Tensor],
+                                  b: tuple[torch.Tensor, torch.Tensor],
+                                  d: torch.Tensor,
+                                  masked_m: torch.Tensor,
+                                  expected_m_per_group: int,
+                                  config: Optional[Dict[str, Any]] = {"MODE": 1000,}) -> torch.Tensor:
+
+    mode = config['MODE']
+    input, a_scale = a
+    b_qweight, b_scale = b
+    output = d
+    op.m_grouped_marlin_w8a8_gemm_nt_masked_asm(input, b_qweight, output, a_scale, b_scale,
+                                        masked_m, expected_m_per_group, mode)
+    return output
+
+
 def gemm_w8a8_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 'TN'):
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()
     assert block_size[0] == 128 and block_size[1] == 128
