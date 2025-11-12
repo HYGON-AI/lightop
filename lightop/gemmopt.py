@@ -394,6 +394,17 @@ def grougemm_w8a8_pertensor_asm(A_list:list[torch.Tensor], B_list:list[torch.Ten
                                 alphas:list[float], C_list:Optional[list[torch.Tensor]], betas:Optional[list[float]], out_dtype):
     return op.grougemm_w8a8_pertensor_asm(A_list, B_list, D_list, As_list, Bs_list, alphas, C_list, betas, out_dtype)
 
+def m_grouped_w8a8_gemm_nt_contig_asm( a: tuple[torch.Tensor, torch.Tensor],
+                                       b: tuple[torch.Tensor, torch.Tensor], 
+                                       output:torch.Tensor, m_indices:torch.Tensor, 
+                                       config: Optional[Dict[str, Any]] = {"MODE": 1000,}) -> torch.Tensor:
+    mode = config['MODE']
+    input, a_scale = a
+    b_qweight, b_scale = b
+    return op.m_grouped_w8a8_gemm_nt_contig_asm(input, b_qweight, output, a_scale, b_scale, m_indices, mode)
+    
 def groupgemm(a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor, trans_b: bool = False) -> torch.Tensor:
     outs = op.groupgemm(a, b, batch_sizes, trans_b)
     return outs
+
+
