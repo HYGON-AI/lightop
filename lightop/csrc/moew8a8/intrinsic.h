@@ -90,12 +90,21 @@ __device__ __forceinline__ typename vec<uint, 4>::type tcp_cache_swizzle_func(co
 #define S_BARRIER asm volatile("s_barrier")
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //封装vmcnt wait
+// #define vmcnt_wait(X)\
+// __builtin_amdgcn_sched_barrier(0);\
+//     asm volatile(\
+//       "s_waitcnt vmcnt(%0)\n\t"\
+//       "s_barrier\n"\
+//       :: "I"(X)\
+//       :);\
+// __builtin_amdgcn_sched_barrier(0);
+// 小i 可以让计数器的范围更大
 #define vmcnt_wait(X)\
 __builtin_amdgcn_sched_barrier(0);\
     asm volatile(\
       "s_waitcnt vmcnt(%0)\n\t"\
       "s_barrier\n"\
-      :: "I"(X)\
+      :: "i"(X)\
       :);\
 __builtin_amdgcn_sched_barrier(0);
 ////////////////////////////////////////////////////////////////////////////////////////////////////

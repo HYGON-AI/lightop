@@ -90,10 +90,10 @@ void launch_moe_w8a8_first_stage_prefill(const GemmParams<T>& params);
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
 void launch_moe_w8a8_second_stage_prefill(const GemmParams<T>& params);
 
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int STAGES, typename T>
 void launch_moe_w8a8_first_stage_decode(const GemmParams<T>& params);
 
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int STAGES, typename T>
 void launch_moe_w8a8_second_stage_decode(const GemmParams<T>& params);
 
 ///////////////////////////////////////////////////////////////////////prefill_config///////////////////////////////////////////////////////////////////////////////////////
@@ -419,164 +419,223 @@ static std::unordered_map<int, KernelFunc> kernel_maps_gemm2_prefill = {
 
 static std::unordered_map<int, KernelFunc> kernel_maps_gemm1_decode = {
     // MN 16 16 
-    {0, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 64, 16, 16, 64, char>(p); }},
-    {1, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 128, 16, 16, 64, char>(p); }},
-    {2, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 256, 16, 16, 64, char>(p); }},
-    {3, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 512, 16, 16, 64, char>(p); }},
+    {0, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 64, 16, 16,  64, 2, char>(p); }},
+    {1, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 128, 16, 16, 64, 2, char>(p); }},
+    {2, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 256, 16, 16, 64, 2, char>(p); }},
+    {3, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 512, 16, 16, 64, 2, char>(p); }},
     // MN 16 32  N方向两个warp
-    {4, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 64, 16, 16, 64, char>(p); }},
-    {5, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 64, char>(p); }},
-    {6, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 16, 64, char>(p); }},
-    {7, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 16, 64, char>(p); }},
+    {4, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 64, 16, 16,  64, 2, char>(p); }},
+    {5, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 64, 2, char>(p); }},
+    {6, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 16, 64, 2, char>(p); }},
+    {7, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 16, 64, 2, char>(p); }},
     // MN 16 32  N方向重复算
-    {8, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 64, 16, 32, 64, char>(p); }},
-    {9, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 32, 64, char>(p); }},
-    {10, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 32, 64, char>(p); }},
-    {11, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 32, 64, char>(p); }},
+    {8, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 64, 16, 32, 64, 2, char>(p); }},
+    {9, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 32, 64, 2, char>(p); }},
+    {10, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 32, 64, 2, char>(p); }},
+    {11, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 32, 64, 2, char>(p); }},
     // MN 16 64 N方向两个warp+重复算两次
-    {12, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 64, 16, 32, 64, char>(p); }},
-    {13, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 128, 16, 32, 64, char>(p); }},
-    {14, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 256, 16, 32, 64, char>(p); }},
-    {15, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 512, 16, 32, 64, char>(p); }},
+    {12, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 64, 16, 32, 64, 2, char>(p); }},
+    {13, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 128, 16, 32, 64, 2, char>(p); }},
+    {14, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 256, 16, 32, 64, 2, char>(p); }},
+    {15, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 512, 16, 32, 64, 2, char>(p); }},
     // /////////////////////////////////////////////////// warpk 128/////////////////////////////////////////////////////////////
-    {16, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 128, 16, 16, 128, char>(p); }},
-    {17, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 256, 16, 16, 128, char>(p); }},
-    {18, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 512, 16, 16, 128, char>(p); }},
-    {19, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 1024, 16, 16, 128, char>(p); }},
+    {16, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 128, 16, 16, 128, 2,char>(p); }},
+    {17, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 256, 16, 16, 128, 2,char>(p); }},
+    {18, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 512, 16, 16, 128, 2,char>(p); }}, //8提升明显
+    {19, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 1024, 16, 16, 128,2, char>(p); }},
     // MN 16 32  N方向两个warp
-    {20, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 128, char>(p); }},
-    {21, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 16, 128, char>(p); }},
-    {22, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 16, 128, char>(p); }},
-    {23, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 16, 128, char>(p); }},
+    {20, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 128, 2,char>(p); }},
+    {21, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 16, 128, 2,char>(p); }},
+    {22, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 16, 128, 2,char>(p); }},
+    {23, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 16, 128,2, char>(p); }},
     // MN 16 32  N方向重复算
-    {24, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 32, 128, char>(p); }},
-    {25, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 32, 128, char>(p); }},
-    {26, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 32, 128, char>(p); }},
-    {27, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 32, 128, char>(p); }},
-    // MN 16 64 N方向两个warp+重复算两次
-    // {28, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 128, 16, 32, 128, char>(p); }},
-    // {29, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 256, 16, 32, 128, char>(p); }},
-    // {30, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 512, 16, 32, 128, char>(p); }},
-    // {31, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 1024, 16, 32, 128, char>(p); }},
+    {24, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 32, 128, 2, char>(p); }},
+    {25, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 32, 128, 2, char>(p); }},
+    {26, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 32, 128, 2, char>(p); }},
+    {27, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 32, 128,2,  char>(p); }},
     // 16 warp
-    {28, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 1024, 16, 16, 64, char>(p); }},
-    {29, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 32, 64, char>(p); }},
-    {30, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 16, 128, char>(p); }},
-    {31, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 32, 128, char>(p); }},
+    {28, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 1024, 16, 16, 64, 2, char>(p); }},
+    {29, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 32, 64, 2, char>(p); }}, //8提升明显
+    {30, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 16, 128,2,  char>(p); }},
+    {31, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 32, 128,2,  char>(p); }},
 
-    {32, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 384, 16, 32, 64, char>(p); }},
-    {33, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 384, 16, 16, 64, char>(p); }},
-    {34, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 384, 16, 16, 64, char>(p); }},
-    {35, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 384, 16, 32, 64, char>(p); }},
-    {36, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 1024, 16, 16, 64, char>(p); }},
-    {37, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 32, 64, char>(p); }},
-    {38, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 16, 64, char>(p); }},
-    {39, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 16, 64, char>(p); }},
+    {32, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 384, 16, 32, 64, 2, char>(p); }},
+    {33, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 384, 16, 16, 64, 2, char>(p); }},
+    {34, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 384, 16, 16, 64, 2, char>(p); }},
+    {35, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 384, 16, 32, 64, 2, char>(p); }},
+    {36, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 1024, 16, 16, 64, 2, char>(p); }},
+    {37, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 32, 64, 2, char>(p); }},
+    {38, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 16, 64, 2, char>(p); }},
+    {39, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 16, 64, 2, char>(p); }},
 
-    {40, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 16, 64, char>(p); }},
-    {41, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 512, 16, 32, 64, char>(p); }},
-    {42, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 256, 16, 16, 64, char>(p); }},
-    {43, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 128, 256, 32, 16, 64, char>(p); }},
+    {40, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 16, 64, 2, char>(p); }},
+    {41, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 512, 16, 32, 64, 2, char>(p); }},
+    {42, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 256, 16, 16, 64, 2, char>(p); }},
+    {43, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 128, 256, 32, 16, 64, 2, char>(p); }},
 
     // MN 16 64 N方向两个warp+重复算两次
-    {44, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 128, 16, 32, 128, char>(p); }},
-    {45, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 256, 16, 32, 128, char>(p); }},
-    {46, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 512, 16, 32, 128, char>(p); }},
-    {47, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 1024, 16, 32, 128, char>(p); }},
+    {44, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 128, 16, 32, 128, 2, char>(p); }},
+    {45, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 256, 16, 32, 128, 2, char>(p); }},
+    {46, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 512, 16, 32, 128, 2, char>(p); }},
+    {47, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 1024, 16, 32, 128, 2, char>(p); }},
 
-    {48, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 128, 16,  64, 128, char>(p); }},
-    {49, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 256, 16,  64, 128, char>(p); }},
-    {50, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 512, 16,  64, 128, char>(p); }},
-    {51, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 1024, 16, 64, 128, char>(p); }},
+    {48, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 128, 16,  64, 128, 2, char>(p); }},
+    {49, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 256, 16,  64, 128, 2, char>(p); }},
+    {50, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 512, 16,  64, 128, 2, char>(p); }},
+    {51, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 1024, 16, 64, 128, 2, char>(p); }},
 
-    {52, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 256, 16, 32, 256, char>(p); }},
-    {53, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 512, 16, 32, 256, char>(p); }},
-    {54, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 1024, 16, 32, 256, char>(p); }},
-    {55, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 2048, 16, 32, 256, char>(p); }},
+    {52, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 256, 16, 32, 256, 2, char>(p); }},
+    {53, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 512, 16, 32, 256, 2, char>(p); }},
+    {54, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 1024, 16, 32, 256, 2, char>(p); }},
+    {55, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 2048, 16, 32, 256, 2, char>(p); }},
 
-    {56, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 32, 256, char>(p); }},
-    {57, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 32, 256, char>(p); }},
-    {58, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 32, 256, char>(p); }},
-    {59, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 2048, 16, 32, 256, char>(p); }},
+    {56, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 32, 256, 2, char>(p); }}, 
+    {57, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 32, 256, 2, char>(p); }},
+    {58, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 1024, 16, 32, 256, 2, char>(p); }},
+    {59, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 2048, 16, 32, 256, 2, char>(p); }},
     
+// stages 4
+    {60, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 64, 16, 16, 64, 4, char>(p); }},
+    {61, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 128, 16, 16, 64, 4, char>(p); }},
+    {62, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 256, 16, 16, 64, 4, char>(p); }},
+    {63, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 512, 16, 16, 64, 4, char>(p); }},
+    // MN 16 32  N方向两个warp
+    {64, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 64, 16, 16, 64, 4, char>(p); }},
+    {65, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 64, 4, char>(p); }},
+    {66, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 16, 64, 4, char>(p); }},
+    {67, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 16, 64, 4, char>(p); }},
+    // MN 16 32  N方向重复算
+    {68, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 64, 16, 32, 64, 4, char>(p); }},
+    {69, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 32, 64, 4, char>(p); }},
+    {70, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 32, 64, 4, char>(p); }},
+    {71, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 32, 64, 4, char>(p); }},
+    // MN 4, 16 64 N方向两个warp+重复算两次
+    {72, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 64, 16, 32, 64, 4, char>(p); }},
+    {73, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 128, 16, 32, 64, 4, char>(p); }},
+    {74, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 256, 16, 32, 64, 4, char>(p); }},
+    {75, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 64, 512, 16, 32, 64, 4, char>(p); }},
+    // /////////////////////////////////////////////////// warpk 128/////////////////////////////////////////////////////////////
+    {76, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 128, 16, 16, 128, 4, char>(p); }},
+    {77, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 256, 16, 16, 128, 4, char>(p); }},
+    {78, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 16, 512, 16, 16, 128, 4, char>(p); }},
+    // MN 16 32  N方向两个warp
+    {79, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 128, 4, char>(p); }},
+    {80, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 16, 128, 4, char>(p); }},
+    {81, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 16, 128, 4, char>(p); }},
+     // MN 16 32  N方向重复算
+    {82, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 32, 128, 4, char>(p); }},
+    {83, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 256, 16, 32, 128, 4, char>(p); }},
+    {84, [](const GemmParams<char>& p) { launch_moe_w8a8_first_stage_decode<16, 32, 512, 16, 32, 128, 4, char>(p); }},
     
 };
 
 static std::unordered_map<int, KernelFunc> kernel_maps_gemm2_decode = {
     // MN 16 16 
     // MN 16 16 
-    {0, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 64, 16, 16, 64, char>(p); }},
-    {1, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 128, 16, 16, 64, char>(p); }},
+    {0, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 64, 16, 16, 64, 2, char>(p); }},
+    {1, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 128, 16, 16, 64, 2, char>(p); }},
     // MN 16 32  N方向多个warp 2-8
-    {2, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 64, 16, 16, 64, char>(p); }},
-    {3, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 64, char>(p); }},
-    {4, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 64, 16, 16, 64, char>(p); }},
-    {5, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 128, 16, 16, 64, char>(p); }},
-    {6, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 64, 16, 16, 64, char>(p); }},
-    {7, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 16, 64, char>(p); }},
+    {2, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 64, 16, 16, 64, 2, char>(p); }},
+    {3, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 64, 2, char>(p); }},
+    {4, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 64, 16, 16, 64, 2, char>(p); }},
+    {5, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 128, 16, 16, 64, 2, char>(p); }},
+    {6, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 64, 16, 16, 64, 2, char>(p); }},
+    {7, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 16, 64, 2, char>(p); }},
     // MN 16 32  N方向重复算 + 多个warp
-    {8, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 64, 16, 32, 64, char>(p); }},
-    {9, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 32, 64, char>(p); }},
-    {10, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 64, 16, 32, 64, char>(p); }},
-    {11, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 128, 16, 32, 64, char>(p); }},
-    {12, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 64, 16, 32, 64, char>(p); }},
-    {13, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 32, 64, char>(p); }},
-    {14, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 64, 16, 32, 64, char>(p); }},
-    {15, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 128, 16, 32, 64, char>(p); }},
+    {8, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 64, 16, 32, 64, 2, char>(p); }},
+    {9, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 32, 64, 2, char>(p); }},
+    {10, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 64, 16, 32, 64, 2, char>(p); }},
+    {11, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 128, 16, 32, 64, 2, char>(p); }},
+    {12, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 64, 16, 32, 64, 2, char>(p); }},
+    {13, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 32, 64, 2, char>(p); }},
+    {14, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 64, 16, 32, 64, 2, char>(p); }},
+    {15, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 128, 16, 32, 64, 2, char>(p); }},
     // warpk 128
-    {16, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 128, 16, 16, 128, char>(p); }},
-    {17, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 128, 16, 16, 128, char>(p); }},
-    {18, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 128, char>(p); }},
-    {19, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 128, char>(p); }},
-    {20, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 128, 16, 16, 128, char>(p); }},
-    {21, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 128, 16, 16, 128, char>(p); }},
-    {22, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 16, 128, char>(p); }},
-    {23, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 16, 128, char>(p); }},
-    {24, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 16, 128, char>(p); }},
+    {16, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 128, 16, 16, 128, 2, char>(p); }},
+    {17, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 128, 16, 16, 128, 2, char>(p); }},
+    {18, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 128, 2, char>(p); }},
+    {19, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 128, 2, char>(p); }},
+    {20, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 128, 16, 16, 128, 2, char>(p); }},
+    {21, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 128, 16, 16, 128, 2, char>(p); }},
+    {22, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 16, 128, 2, char>(p); }},
+    {23, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 16, 128, 2, char>(p); }},
+    {24, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 16, 128, 2, char>(p); }},
     // MN 16 32  N方向重复算 + 多个warp
-    {25, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 32, 128, char>(p); }},
-    {26, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 64, 16, 32, 64, char>(p); }},
-    {27, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 32, 64, char>(p); }},
-    {28, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 128, 16, 32, 128, char>(p); }},
+    {25, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 32, 128, 2, char>(p); }},
+    {26, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 64, 16, 32, 64, 2, char>(p); }},
+    {27, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 32, 64, 2, char>(p); }},
+    {28, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 128, 16, 32, 128, 2, char>(p); }},
 
-    {29, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 128, 16, 32, 128, char>(p); }},
-    {30, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 32, 128, char>(p); }},
-    {31, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 128, 16, 32, 128, char>(p); }},
+    {29, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 128, 16, 32, 128, 2, char>(p); }},
+    {30, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 32, 128, 2, char>(p); }},
+    {31, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 128, 16, 32, 128, 2, char>(p); }},
 
-    {32, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 384, 16, 32, 64, char>(p); }},
-    {33, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 384, 16, 32, 64, char>(p); }},
-    {34, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 384, 16, 16, 64, char>(p); }},
-    {35, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 384, 16, 32, 64, char>(p); }},
+    {32, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 384, 16, 32, 64, 2, char>(p); }},
+    {33, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 384, 16, 32, 64, 2, char>(p); }},
+    {34, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 384, 16, 16, 64, 2, char>(p); }},
+    {35, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 384, 16, 32, 64, 2, char>(p); }},
 
-    {36, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 1024, 16, 16, 64, char>(p); }},
-    {37, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 1024, 16, 32, 64, char>(p); }},
-    {38, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 512, 16, 16, 64, char>(p); }},
-    {39, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 512, 16, 16, 64, char>(p); }},
+    {36, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 1024, 16, 16, 64, 2, char>(p); }},
+    {37, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 1024, 16, 32, 64, 2, char>(p); }},
+    {38, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 512, 16, 16, 64, 2, char>(p); }},
+    {39, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 512, 16, 16, 64, 2, char>(p); }},
 
-    {40, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 1024, 16, 16, 64, char>(p); }},
-    {41, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 1024, 16, 32, 64, char>(p); }},
-    {42, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 512, 16, 16, 64, char>(p); }},
-    {43, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 512, 16, 16, 64, char>(p); }},
+    {40, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 1024, 16, 16, 64, 2, char>(p); }},
+    {41, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 1024, 16, 32, 64, 2, char>(p); }},
+    {42, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 512, 16, 16, 64, 2, char>(p); }},
+    {43, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 512, 16, 16, 64, 2, char>(p); }},
 
-    {44, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 128, 16, 64, 128, char>(p); }},
-    {45, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 1024, 128, 16, 64, 128, char>(p); }},
-    {46, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 128, 16, 32, 128, char>(p); }},
-    {47, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 128, 16, 16, 128, char>(p); }},
+    {44, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 128, 16, 64, 128, 2, char>(p); }},
+    {45, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 1024, 128, 16, 64, 128, 2, char>(p); }},
+    {46, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 128, 16, 32, 128, 2, char>(p); }},
+    {47, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 128, 16, 16, 128, 2, char>(p); }},
 
-    {48, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 64, 64, char>(p); }},
-    {49, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 64, 64, char>(p); }},
-    {50, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 32, 64, char>(p); }},
-    {51, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 64, 16, 16, 64, char>(p); }},
+    {48, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 64, 64, 2, char>(p); }},
+    {49, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 64, 64, 2, char>(p); }},
+    {50, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 32, 64, 2, char>(p); }},
+    {51, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 64, 16, 16, 64, 2, char>(p); }},
 
-    {52, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 64, 16, 128, 64, char>(p); }},
-    {53, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 64, 16, 128, 64, char>(p); }},
-    {54, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 128, 64, char>(p); }},
-    {55, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 128, 64, char>(p); }},
+    {52, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 64, 16, 128, 64, 2, char>(p); }},
+    {53, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 64, 16, 128, 64, 2, char>(p); }},
+    {54, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 128, 64, 2, char>(p); }},
+    {55, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 128, 64, 2, char>(p); }},
 
-    {56, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 64, 128, char>(p); }},
-    {57, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 128, 16, 64, 128, char>(p); }},
-    {58, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 128, 16, 64, 128, char>(p); }},
-    {59, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 128, 16, 64, 128, char>(p); }}
+    {56, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 128, 16, 64, 128, 2, char>(p); }},
+    {57, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 128, 16, 64, 128, 2, char>(p); }},
+    {58, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 128, 64, 4, char>(p); }},
+    {59, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 128, 64, 4, char>(p); }},
+
+// stage4
+    {60, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 16, 64, 16, 16, 64, 4, char>(p); }},
+    {61, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 64, 16, 128, 64, 4, char>(p); }},
+    // MN 16 32  N方向多个warp 2-8
+    {62, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 64, 16, 16, 64, 4, char>(p); }},
+    {63, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 64, 16, 16, 64, 4, char>(p); }},
+    {64, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 64, 16, 16, 64, 4, char>(p); }},
+    {65, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 64, 16, 16, 64, 4, char>(p); }},
+    {66, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 64, 16, 16, 64, 4, char>(p); }},
+    {67, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 64, 16, 16, 64, 4, char>(p); }},
+    // MN 16 32  N方向重复算 + 多个warp
+    {68, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 64, 16, 32, 64, 4, char>(p); }},
+    {69, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 64, 16, 32, 64, 4, char>(p); }},
+    {70, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 64, 16, 32, 64, 4, char>(p); }},
+    {71, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 64, 64, 16, 32, 64, 4, char>(p); }},
+    {72, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 64, 16, 32, 64, 4, char>(p); }},
+    {73, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 64, 16, 32, 64, 4, char>(p); }},
+    {74, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 64, 16, 32, 64, 4, char>(p); }},
+    {75, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 128, 16, 32, 64, 4, char>(p); }},
+    // warpk 128
+    {76, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 32, 64, 16, 32, 64, 4, char>(p); }},
+    {77, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 64, 16, 32, 64, 4, char>(p); }},
+    {78, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 32, 64, 4, char>(p); }},
+    {79, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 64, 16, 32, 64, 4, char>(p); }},
+
+    {80, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 64, 64, 4, char>(p); }},
+    {81, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 64, 64, 4, char>(p); }},
+    {82, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 512, 64, 16, 32, 64, 4, char>(p); }},
+    {83, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 256, 64, 16, 16, 64, 4, char>(p); }},
+
+    {84, [](const GemmParams<char>& p) { launch_moe_w8a8_second_stage_decode<16, 128, 64, 16, 128, 64, 4, char>(p); }}
 };
 
 }
