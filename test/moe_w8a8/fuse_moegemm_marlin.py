@@ -243,6 +243,158 @@ blockM_configs_decode = {
     84: 16,
 }
 
+blockM_all_configs = {
+    #decode
+    0: 16,   # 索引0对应M=16
+    1: 16,   # 索引1对应M=32
+    2: 16,   # 索引2对应M=64
+    3: 16,   # 索引3对应M=16
+    4: 16,   # 索引4对应M=32
+    5: 16,   # 索引5对应M=64
+    6: 16,   # 索引6对应M=16
+    7: 16,   # 索引7对应M=32
+    8: 16,   # 索引8对应M=64
+    9: 16,   # 索引9对应M=32
+    10: 16,  # 索引10对应M=64
+    11: 16,  # 索引11对应M=32
+    12: 16,  # 索引12对应M=64
+    13: 16,  # 索引13对应M=64
+    14: 16,  # 索引14对应M=32
+    15: 16,  # 索引15对应M=32
+    16: 16,  # 索引16对应M=64
+    17: 16,  # 索引17对应M=64
+    18: 16,  # 索引18对应M=32
+    19: 16,  # 索引19对应M=64
+    20: 16,
+    21: 16,
+    22: 16,
+    23: 16,
+    24: 16,
+    25: 16,
+    26: 16,
+    27: 16,
+    28: 16,
+    29: 16,
+    30: 16,
+    31: 16,
+    32: 16,
+    33: 16,
+    34: 16,
+    35: 16,
+    36: 16,
+    37: 16,
+    38: 16,
+    39: 16,
+    40: 16,
+    41: 16,
+    42: 16,
+    43: 16,
+    44: 16,
+    45: 16,
+    46: 16,
+    47: 16,
+    48: 16,
+    49: 16,
+    50: 16,
+    51: 16,
+    52: 16,
+    53: 16,
+    54: 16,
+    55: 16,
+    56: 16,
+    57: 16,
+    58: 16,
+    59: 16,
+    # prefill
+    500 : 16,
+    501 : 32,
+    502 : 64,
+    503 : 16,
+    504 : 32,
+    506 : 16,
+    509 : 32,
+    510: 64,
+    511: 32,
+    513: 64,
+    514: 32,
+    515: 32,
+    516: 64,
+    517: 64,
+    518: 32,
+    519: 64,
+    520: 32,
+    521: 64,
+    522: 64,
+    523: 64,
+    524: 128,
+    525: 128,
+    526: 16,
+    527: 32,
+    528: 16,
+    529: 16,
+    530: 16,
+    531: 32,
+    532: 32,
+    533: 32,
+    535: 64,
+    536: 64,
+    539: 32,
+    540: 64,
+    541: 32,
+    542: 64,
+    543: 32,
+    544: 64,
+    545: 64,
+    546: 64,
+    547: 64,
+    548: 64,
+    549: 128,
+    550: 16,
+    551: 32,
+    552: 64,
+    553: 16,
+    554: 32,
+    556: 16,
+    559: 32,
+    560: 64,
+    561: 32,
+    563: 64,
+    
+    564: 16,
+    565: 32,
+    566: 64,
+    567: 16,
+    568: 32,
+    569: 16,
+    570: 32,
+    571: 64,
+    574: 32,
+    575: 32,
+    576: 64,
+    577: 64,
+    578: 32,
+    579: 64,
+    580: 32,
+    581: 64,
+    582: 64,
+    583: 64,
+    584: 128,
+    585: 128,
+    586: 16,
+    587: 32,
+    588: 16,
+    589: 16,
+    590: 16,
+    591: 32,
+    592: 32,
+    593: 32,
+    594: 64,
+    595: 64,
+    1000: 128,
+    1001: 64,
+    1002: 32,
+}
+
 
 def get_moe_config(M, N, K):
     # print("#####################################################")
@@ -1208,24 +1360,17 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                                                       topk_ids.shape[1]]
             intermediate_cache3 = intermediate_cache3[:tokens_in_chunk]
 
-        M_pattern = "MODE_DECODE"
-        if M > M_THRESHOLD:
-            M_pattern = "MODE_PREFILL"
+
+        M_pattern = "MODE"
         if use_int8_w8a8:
             config1 = {}
             config2 = {}
             M=curr_hidden_states.shape[0]
             #print(f'+++++++-------_{M}_--------+++++++')
-            if M > M_THRESHOLD:
-                config1['BLOCK_SIZE_M'] = blockM_configs[config[M_pattern]]
-                config1['MODE']         = config[M_pattern]
-                config1['DELTA']        = 1
-                config['BLOCK_SIZE_M']  = blockM_configs[config[M_pattern]]
-            else:
-                config1['BLOCK_SIZE_M'] = blockM_configs_decode[config[M_pattern]]
-                config1['MODE']         = config[M_pattern]
-                config1['DELTA']        = 1
-                config['BLOCK_SIZE_M']  = blockM_configs_decode[config[M_pattern]]
+            config1['BLOCK_SIZE_M'] = blockM_all_configs[config[M_pattern]]
+            config1['MODE']         = config[M_pattern]
+            config1['DELTA']        = 1
+            config['BLOCK_SIZE_M']  = blockM_all_configs[config[M_pattern]]
             
         curr_topk_ids = topk_ids[begin_chunk_idx:end_chunk_idx]
         curr_topk_weights = topk_weights[begin_chunk_idx:end_chunk_idx]
@@ -1404,28 +1549,17 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
 
         config1={}
         config2={}
-        M_pattern = "MODE_DECODE"
-        if M > M_THRESHOLD:
-            M_pattern = "MODE_PREFILL"  
+        M_pattern = "MODE"
         if use_int8_w8a8:
             M=curr_hidden_states.shape[0]
             #print(f'+++++++-------_{M}_--------+++++++')
-            if M > M_THRESHOLD:
-                config1['BLOCK_SIZE_M'] = blockM_configs[config[M_pattern]]
-                config1['MODE']         = config[M_pattern]
-                config1['DELTA']        = 1
-                config2['BLOCK_SIZE_M'] = blockM_configs[config[M_pattern]]
-                config2['MODE']         = config[M_pattern]
-                config2['DELTA']        = 1
-                config['BLOCK_SIZE_M']  = blockM_configs[config[M_pattern]]
-            else:
-                config1['BLOCK_SIZE_M'] = blockM_configs_decode[config[M_pattern]]
-                config1['MODE']         = config[M_pattern]
-                config1['DELTA']        = 1
-                config2['BLOCK_SIZE_M'] = blockM_configs_decode[config[M_pattern]]
-                config2['MODE']         = config[M_pattern]
-                config2['DELTA']        = 1
-                config['BLOCK_SIZE_M']  = blockM_configs_decode[config[M_pattern]]
+            config1['BLOCK_SIZE_M'] = blockM_all_configs[config[M_pattern]]
+            config1['MODE']         = config[M_pattern]
+            config1['DELTA']        = 1
+            config2['BLOCK_SIZE_M'] = blockM_all_configs[config[M_pattern]]
+            config2['MODE']         = config[M_pattern]
+            config2['DELTA']        = 1
+            config['BLOCK_SIZE_M']  = blockM_all_configs[config[M_pattern]]
             
         curr_topk_ids = topk_ids[begin_chunk_idx:end_chunk_idx]
         curr_topk_weights = topk_weights[begin_chunk_idx:end_chunk_idx]
@@ -1578,6 +1712,7 @@ def fused_moe_first_stage_tune(
                                 start_expert: Optional[int] = None,
                                 end_expert: Optional[int] = None,
                                 config:  Dict[str, Any] = None,
+                                expert_map: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     This function computes a Mixture of Experts (MoE) layer using two sets of
@@ -1642,6 +1777,7 @@ def fused_moe_first_stage_tune(
                                                     topk_ids=topk_ids,
                                                     inplace=False,
                                                     use_int8_w8a8=True,
+                                                    expert_map=expert_map,
                                                     w1_scale=w1_scale,
                                                     w2_scale=w2_scale,
                                                     block_shape=block_shape,
@@ -1678,6 +1814,7 @@ def fused_moe_second_stage_tune(
                                 start_expert: Optional[int] = None,
                                 end_expert: Optional[int] = None,
                                 config:  Dict[str, Any] = None,
+                                expert_map: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
     This function computes a Mixture of Experts (MoE) layer using two sets of
@@ -1742,6 +1879,7 @@ def fused_moe_second_stage_tune(
                                                     topk_ids=topk_ids,
                                                     inplace=False,
                                                     use_int8_w8a8=True,
+                                                    expert_map=expert_map,
                                                     w1_scale=w1_scale,
                                                     w2_scale=w2_scale,
                                                     block_shape=block_shape,
@@ -2411,20 +2549,12 @@ def fused_experts_impl_int8_preprocess(hidden_states: torch.Tensor,
 
         config1={}
         config2={}
-        if M > M_THRESHOLD:
-            config1['BLOCK_SIZE_M'] = blockM_configs[mode0]
-            config1['MODE']         = mode0
-            config1['DELTA']        = 1
-            config2['BLOCK_SIZE_M'] = blockM_configs[mode1]
-            config2['MODE']         = mode1
-            config2['DELTA']        = 1
-        else:
-            config1['BLOCK_SIZE_M'] = blockM_configs_decode[mode0]
-            config1['MODE']         = mode0
-            config1['DELTA']        = 1
-            config2['BLOCK_SIZE_M'] = blockM_configs_decode[mode1]
-            config2['MODE']         = mode1
-            config2['DELTA']        = 1
+        config1['BLOCK_SIZE_M'] = blockM_all_configs[mode0]
+        config1['MODE']         = mode0
+        config1['DELTA']        = 1
+        config2['BLOCK_SIZE_M'] = blockM_all_configs[mode1]
+        config2['MODE']         = mode1
+        config2['DELTA']        = 1
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
