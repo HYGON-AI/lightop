@@ -1228,6 +1228,73 @@ def sort_config(config: BenchmarkConfig) -> BenchmarkConfig:
 
     return configs_tuple
 
+def save_single_config(batch_size: int, first_stage_config: BenchmarkConfig, second_stage_config: BenchmarkConfig,
+                       num_experts: int, shard_intermediate_size: int, hidden_size: int, topk: int,
+                       dtype: torch.dtype, use_fp8_w8a8: bool, use_int8_w8a16: bool, use_int8_w8a8: bool,
+                       moe_ep_size: int = 1, block_quant_shape: List[int] = None) -> None:
+    """保存单个batch_size的配置结果，支持增量保存"""
+    # 保存第一阶段配置
+    N = shard_intermediate_size
+    K = hidden_size
+    gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
+    if moe_ep_size > 1:
+        filename = f"MOE_BLOCKINT8_CUDA_MARLIN_EP{moe_ep_size}_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    elif moe_ep_size == 1:
+        filename = f"MOE_BLOCKINT8_CUDA_MARLIN_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    else:
+        raise ValueError(f"Invalid moe_ep_size: {moe_ep_size}")
+    
+    try:
+        with open(filename, 'r') as file:
+            config_infos = json.load(file)
+            if f"{N}_{K}" in config_infos:
+                config_info = config_infos[f"{N}_{K}"]
+            else:
+                config_info = {}
+    except FileNotFoundError:
+        config_infos = {}
+        config_info = {}
+    
+    # 更新当前batch_size的配置
+    config_info[f"{batch_size}"] = first_stage_config
+    config_infos[f"{N}_{K}"] = config_info
+    
+    # 保存文件
+    with open(filename, 'w') as file:
+        json.dump(config_infos, file, indent=4)
+    print(f"Saved first stage config for batch_size={batch_size} to {filename}")
+    
+    # 保存第二阶段配置
+    N = hidden_size
+    K = shard_intermediate_size // 2
+    if moe_ep_size > 1:
+        filename = f"MOE_BLOCKINT8_CUDA_MARLIN_EP{moe_ep_size}_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    elif moe_ep_size == 1:
+        filename = f"MOE_BLOCKINT8_CUDA_MARLIN_{N}_{K}_{gfx_version.upper()}_CU{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+    else:
+        raise ValueError(f"Invalid moe_ep_size: {moe_ep_size}")
+    
+    try:
+        with open(filename, 'r') as file:
+            config_infos = json.load(file)
+            if f"{N}_{K}" in config_infos:
+                config_info = config_infos[f"{N}_{K}"]
+            else:
+                config_info = {}
+    except FileNotFoundError:
+        config_infos = {}
+        config_info = {}
+    
+    # 更新当前batch_size的配置
+    config_info[f"{batch_size}"] = second_stage_config
+    config_infos[f"{N}_{K}"] = config_info
+    
+    # 保存文件
+    with open(filename, 'w') as file:
+        json.dump(config_infos, file, indent=4)
+    print(f"Saved second stage config for batch_size={batch_size} to {filename}")
+
+
 def save_configs(configs_first_stage: dict[int, BenchmarkConfig], configs_second_stage: dict[int, BenchmarkConfig], num_experts: int,
                  shard_intermediate_size: int, hidden_size: int, topk: int,
                  dtype: torch.dtype, use_fp8_w8a8: bool, use_int8_w8a16: bool, use_int8_w8a8: bool, moe_ep_size: int = 1,
@@ -1393,19 +1460,19 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=2048
     # hidden_size=7168
     
-    # deepseek-671b-tp1
-    E = 256
-    shard_intermediate_size=4096
-    hidden_size=7168
+    # # deepseek-671b-tp1
+    # E = 256
+    # shard_intermediate_size=4096
+    # hidden_size=7168
     
-    # E = 128
-    # #qwen3-30b-A3B-tp1
-    # shard_intermediate_size=1536
-    # hidden_size=2048
-    #qwen3-30b-A3B-tp2
     E = 128
-    shard_intermediate_size=768
+    #qwen3-30b-A3B-tp1
+    shard_intermediate_size=1536
     hidden_size=2048
+    # #qwen3-30b-A3B-tp2
+    # E = 128
+    # shard_intermediate_size=768
+    # hidden_size=2048
 
 
     # # #qwen3-235b-A22B-tp8
@@ -1477,24 +1544,57 @@ def main(args: argparse.Namespace):
         search_space = get_configs_compute_bound(is_fp16, block_quant_shape)
         print(f"Start tuning over {len(search_space)} configurations...")
         start = time.time()
-        configs = _distribute(
-            "tune", [(batch_size, E, shard_intermediate_size, hidden_size,
-                      topk, dtype, use_fp8_w8a8, use_int8_w8a16, use_int8_w8a8, search_space,
-                      block_quant_shape, use_deep_gemm, ep_size)
-                     for batch_size in batch_sizes])
         
+        # 提交所有任务
+        worker_idx = 0
+        task_refs = []
+        batch_size_to_ref = {}
+        for batch_size in batch_sizes:
+            worker = workers[worker_idx]
+            task_ref = worker.tune.remote(
+                batch_size, E, shard_intermediate_size, hidden_size,
+                topk, dtype, use_fp8_w8a8, use_int8_w8a16, use_int8_w8a8, search_space,
+                block_quant_shape, use_deep_gemm, ep_size
+            )
+            task_refs.append(task_ref)
+            batch_size_to_ref[task_ref] = batch_size
+            worker_idx = (worker_idx + 1) % num_gpus
+        
+        # 逐个获取结果并立即保存（增量保存）
         best_configs_first_stage = {}
         best_configs_second_stage = {}
-        for M, config in zip(batch_sizes, configs):
-            first_stage_config, second_stage_config = config
-            best_configs_first_stage[M] = first_stage_config
-            best_configs_second_stage[M] = second_stage_config          
+        completed_count = 0
+        
+        while task_refs:
+            # 等待至少一个任务完成
+            ready_refs, remaining_refs = ray.wait(task_refs, num_returns=1, timeout=None)
+            task_refs = remaining_refs
             
-        save_configs(best_configs_first_stage, best_configs_second_stage, E, shard_intermediate_size, hidden_size,
-                     topk, dtype, use_fp8_w8a8, use_int8_w8a16, use_int8_w8a8,ep_size,
-                     block_quant_shape)
+            for ref in ready_refs:
+                try:
+                    config = ray.get(ref)
+                    batch_size = batch_size_to_ref[ref]
+                    first_stage_config, second_stage_config = config
+                    best_configs_first_stage[batch_size] = first_stage_config
+                    best_configs_second_stage[batch_size] = second_stage_config
+                    
+                    # 立即保存当前结果
+                    save_single_config(
+                        batch_size, first_stage_config, second_stage_config,
+                        E, shard_intermediate_size, hidden_size, topk,
+                        dtype, use_fp8_w8a8, use_int8_w8a16, use_int8_w8a8,
+                        ep_size, block_quant_shape
+                    )
+                    completed_count += 1
+                    print(f"Progress: {completed_count}/{len(batch_sizes)} batch sizes completed")
+                except Exception as e:
+                    batch_size = batch_size_to_ref[ref]
+                    print(f"Error processing batch_size={batch_size}: {e}")
+                    # 继续处理其他任务
+        
         end = time.time()
         print(f"Tuning took {end - start:.2f} seconds")
+        print(f"All {len(batch_sizes)} batch sizes have been tuned and saved")
     elif args.correctness:
         outputs = _distribute(
             "correctness",
