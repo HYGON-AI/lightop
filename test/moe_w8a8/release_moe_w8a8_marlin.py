@@ -51,6 +51,158 @@ blockM_configs_decode = {i: 16 for i in range(44)}
 
 M_THRESHOLD = 128
 
+blockM_all_configs = {
+    #decode
+    0: 16,   # 索引0对应M=16
+    1: 16,   # 索引1对应M=32
+    2: 16,   # 索引2对应M=64
+    3: 16,   # 索引3对应M=16
+    4: 16,   # 索引4对应M=32
+    5: 16,   # 索引5对应M=64
+    6: 16,   # 索引6对应M=16
+    7: 16,   # 索引7对应M=32
+    8: 16,   # 索引8对应M=64
+    9: 16,   # 索引9对应M=32
+    10: 16,  # 索引10对应M=64
+    11: 16,  # 索引11对应M=32
+    12: 16,  # 索引12对应M=64
+    13: 16,  # 索引13对应M=64
+    14: 16,  # 索引14对应M=32
+    15: 16,  # 索引15对应M=32
+    16: 16,  # 索引16对应M=64
+    17: 16,  # 索引17对应M=64
+    18: 16,  # 索引18对应M=32
+    19: 16,  # 索引19对应M=64
+    20: 16,
+    21: 16,
+    22: 16,
+    23: 16,
+    24: 16,
+    25: 16,
+    26: 16,
+    27: 16,
+    28: 16,
+    29: 16,
+    30: 16,
+    31: 16,
+    32: 16,
+    33: 16,
+    34: 16,
+    35: 16,
+    36: 16,
+    37: 16,
+    38: 16,
+    39: 16,
+    40: 16,
+    41: 16,
+    42: 16,
+    43: 16,
+    44: 16,
+    45: 16,
+    46: 16,
+    47: 16,
+    48: 16,
+    49: 16,
+    50: 16,
+    51: 16,
+    52: 16,
+    53: 16,
+    54: 16,
+    55: 16,
+    56: 16,
+    57: 16,
+    58: 16,
+    59: 16,
+    # prefill
+    500 : 16,
+    501 : 32,
+    502 : 64,
+    503 : 16,
+    504 : 32,
+    506 : 16,
+    509 : 32,
+    510: 64,
+    511: 32,
+    513: 64,
+    514: 32,
+    515: 32,
+    516: 64,
+    517: 64,
+    518: 32,
+    519: 64,
+    520: 32,
+    521: 64,
+    522: 64,
+    523: 64,
+    524: 128,
+    525: 128,
+    526: 16,
+    527: 32,
+    528: 16,
+    529: 16,
+    530: 16,
+    531: 32,
+    532: 32,
+    533: 32,
+    535: 64,
+    536: 64,
+    539: 32,
+    540: 64,
+    541: 32,
+    542: 64,
+    543: 32,
+    544: 64,
+    545: 64,
+    546: 64,
+    547: 64,
+    548: 64,
+    549: 128,
+    550: 16,
+    551: 32,
+    552: 64,
+    553: 16,
+    554: 32,
+    556: 16,
+    559: 32,
+    560: 64,
+    561: 32,
+    563: 64,
+    
+    564: 16,
+    565: 32,
+    566: 64,
+    567: 16,
+    568: 32,
+    569: 16,
+    570: 32,
+    571: 64,
+    574: 32,
+    575: 32,
+    576: 64,
+    577: 64,
+    578: 32,
+    579: 64,
+    580: 32,
+    581: 64,
+    582: 64,
+    583: 64,
+    584: 128,
+    585: 128,
+    586: 16,
+    587: 32,
+    588: 16,
+    589: 16,
+    590: 16,
+    591: 32,
+    592: 32,
+    593: 32,
+    594: 64,
+    595: 64,
+    1000: 128,
+    1001: 64,
+    1002: 32,
+}
+
 
 @triton.jit
 def fused_moe_kernel(
@@ -338,6 +490,27 @@ def generate_unique_int_tensor(m, topk, low=0, high=256):
         tensor[i] = row
     return tensor
 
+def determine_expert_map(
+        ep_size: int, ep_rank: int,
+        global_num_experts: int) -> tuple[int, Optional[torch.Tensor]]:
+    """计算专家映射关系（保留原逻辑）"""
+    assert ep_size > 0
+    if ep_size == 1:
+        return (global_num_experts, None)
+
+    local_num_experts = global_num_experts // ep_size
+
+    # 创建全局到本地专家的映射，-1表示非当前rank的专家
+    expert_map = torch.full((global_num_experts, ), -1, dtype=torch.int32)
+    if ep_rank < (ep_size - 1):
+        expert_map[ep_rank * local_num_experts : (ep_rank + 1) * local_num_experts] = \
+            torch.arange(0, local_num_experts, dtype=torch.int32)
+    else:
+        local_num_experts = (global_num_experts - ep_rank * local_num_experts)
+        expert_map[-local_num_experts:] = torch.arange(0, local_num_experts, dtype=torch.int32)
+    
+    expert_map = expert_map.cuda(0)
+    return (local_num_experts, expert_map)
 
 # Torch参考实现已移除，现在使用Triton作为参考实现进行精度验证
 
@@ -549,7 +722,7 @@ def test_single_gemm_performance_accuracy(
 
 
 def _fused_moe_helper(
-    m: int, n: int, k: int, n2: int, k2: int, topk: int, E: int,
+    m: int, n: int, k: int, n2: int, k2: int, topk: int, E: int, ep_size: int,
     out_dtype: Type[torch.dtype] = torch.bfloat16,
     device: str = "cuda",
     per_channel_quant: bool = True
@@ -596,7 +769,7 @@ def _fused_moe_helper(
 
 
 def test_moe_performance_accuracy(
-    m: int, n1: int, k1: int, n2: int, k2: int, topk: int, E: int,
+    m: int, n1: int, k1: int, n2: int, k2: int, topk: int, E: int, ep_size: int, ep_rank: int = 0,
     out_dtype: Type[torch.dtype] = torch.bfloat16,
     per_channel_quant: bool = True
 ) -> Dict[str, Any]:
@@ -606,13 +779,18 @@ def test_moe_performance_accuracy(
     Returns:
         Dict包含所有测试结果
     """
-    # 生成测试数据
-    input_data, w1_marlin, w2_marlin, weight1, weight2, weight1_scale, weight2_scale, topk_weights, topk_ids = _fused_moe_helper(
-        m, n1, k1, n2, k2, topk, E, out_dtype, per_channel_quant=per_channel_quant
+    
+    # 计算本地专家数量和映射
+    local_num_experts, expert_map = determine_expert_map(
+        ep_size=ep_size,
+        ep_rank=ep_rank,
+        global_num_experts=E
     )
     
-    # import pdb
-    # pdb.set_trace()
+    # 生成测试数据
+    input_data, w1_marlin, w2_marlin, weight1, weight2, weight1_scale, weight2_scale, topk_weights, topk_ids = _fused_moe_helper(
+        m, n1, k1, n2, k2, topk, local_num_experts, out_dtype, per_channel_quant=per_channel_quant
+    )
 
     # 设置compute_type
     if out_dtype == torch.bfloat16:
@@ -633,8 +811,9 @@ def test_moe_performance_accuracy(
         # 使用get_moe_cuda_config获取配置
         num_cus = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
         try:
+            is_ep = True if ep_size > 1 else False
             cuda_config1, cuda_config2, status = get_moe_cuda_marlin_config(
-                E, m, n1, k1, n2, k2, topk, device_name, num_cus, compute_type
+                E, m, n1, k1, n2, k2, topk, device_name, num_cus, compute_type, is_ep, ep_size,
             )
         except Exception as e:
             print(f"Warning: get_moe_cuda_config failed: {e}")
@@ -646,28 +825,24 @@ def test_moe_performance_accuracy(
         
         # 如果没有找到配置，根据数据大小设置默认值
         if cuda_config1 is None:
-            if m > M_THRESHOLD:
-                cuda_config1 = {'BLOCK_SIZE_M': blockM_configs.get(0, 16), 'MODE': 0, 'DELTA': 1}
-                cuda_config2 = {'BLOCK_SIZE_M': blockM_configs.get(0, 16), 'MODE': 0, 'DELTA': 1}
-            else:
-                cuda_config1 = {'BLOCK_SIZE_M': blockM_configs_decode.get(0, 16), 'MODE': 0, 'DELTA': 1}
-                cuda_config2 = {'BLOCK_SIZE_M': blockM_configs_decode.get(0, 16), 'MODE': 0, 'DELTA': 1}
+            cuda_config1 = {'BLOCK_SIZE_M': blockM_all_configs.get(0, 16), 'MODE': 0, 'DELTA': 1}
+            cuda_config2 = {'BLOCK_SIZE_M': blockM_all_configs.get(0, 16), 'MODE': 0, 'DELTA': 1}
     
     # 为Triton设置不同的配置（使用默认blockM配置）
     triton_config1 = {
-        'BLOCK_SIZE_M': blockM_configs.get(0, 64) if m > M_THRESHOLD else blockM_configs_decode.get(0, 16),
+        'BLOCK_SIZE_M': blockM_all_configs.get(0, 64),
         'MODE': 1000,  # 使用不同的MODE
         'DELTA': 1
     }
     triton_config2 = {
-        'BLOCK_SIZE_M': blockM_configs.get(1, 64) if m > M_THRESHOLD else blockM_configs_decode.get(1, 16),
+        'BLOCK_SIZE_M': blockM_all_configs.get(1, 64),
         'MODE': 1001,  # 使用不同的MODE
         'DELTA': 1
     }
     
     # 准备MOE对齐
     sorted_token_ids, expert_ids, num_tokens_post_padded = (
-        moe_align_block_size(topk_ids, cuda_config1['BLOCK_SIZE_M'], E, None)
+        moe_align_block_size(topk_ids, cuda_config1['BLOCK_SIZE_M'], local_num_experts, expert_map)
     )
     
     # 准备第一阶段的输入
@@ -735,7 +910,7 @@ def test_moe_performance_accuracy(
         'K1': k1,
         'N2': n2,
         'K2': k2,
-        'E': E,
+        'E': local_num_experts,
         'TopK': topk,
         'GEMM1_Time_us': gemm1_time,
         'GEMM2_Time_us': gemm2_time,
@@ -752,6 +927,8 @@ def main():
     # 添加参数
     parser.add_argument('--E', type=str, default='[256, 256, 256, 256, 256, 128, 128]', 
                         help='专家数量,如 "[256]"')
+    parser.add_argument('--ep_size', type=str, default='[1, 1, 1, 1, 1, 1, 1]', 
+                        help='专家并行的大小,如 "[1]"')
     parser.add_argument('--n1-list', type=str, required=False, default='[256, 512, 1024, 2048, 4096, 1536, 768]',
                        help='N1参数列表，如 "[256]"')
     parser.add_argument('--n2-list', type=str, required=False, default='[7168, 7168, 7168, 7168, 7168, 2048, 2048]',
@@ -786,6 +963,7 @@ def main():
     k_list = parse_list(args.k_list)
     m_list = parse_list(args.m_list)
     topk = args.topk
+    ep_size_list = parse_list(args.ep_size)
     per_channel_quant = args.use_channel_wise
     
     # 设置数据类型
@@ -811,6 +989,8 @@ def main():
     # 测试所有配置组合
     for i in range(len(n1_list)):
         E = E_list[i]
+        ep_size = ep_size_list[i]
+        ep_rank = 0
         n1, n2, k2 = n1_list[i], n2_list[i], k_list[i]
         k1 = n2  # 根据MOE结构，第一个GEMM的K维度等于第二个GEMM的N维度
         
@@ -821,7 +1001,7 @@ def main():
             try:
                 # 调用测试
                 result = test_moe_performance_accuracy(
-                    m, n1, k1, n2, k2, topk, E, out_dtype, per_channel_quant
+                    m, n1, k1, n2, k2, topk, E, ep_size, ep_rank, out_dtype, per_channel_quant
                 )
                 all_results.append(result)
                 
@@ -866,6 +1046,7 @@ if __name__ == "__main__":
     # 单侧某一个
     # HIP_VISIBLE_DEVICES=3 python release_moe_w8a8_marlin.py \
     #     --E [256] \
+    #     --ep_size '[1]' \
     #     --n1-list '[256]' \
     #     --n2-list '[7168]' \
     #     --k-list '[128]' \

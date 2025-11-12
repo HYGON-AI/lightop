@@ -18,7 +18,7 @@ from transformers import AutoConfig
 from vllm.platforms import current_platform
 from vllm.utils import FlexibleArgumentParser
 from fuse_moegemm_marlin import fused_experts_impl_int8_preprocess, fused_moe_impl, fused_moe_first_stage_tune, fused_moe_second_stage_tune, \
-                            grouped_topk, fused_topk, blockM_configs, blockM_configs_decode
+                            grouped_topk, fused_topk, blockM_configs, blockM_configs_decode, blockM_all_configs
 from fuse_moegemm_dev import fused_moe_impl_test
 from fuse_moegemm_correctness import _fused_moe_helper
 # from test_ori_fuse_moe import fused_moe_impl
@@ -914,17 +914,12 @@ def benchmark_config_profile(
     return avg
 
 def get_rocm_tuning_space(use_fp16):
-    mode_range_prefill = [mode for mode in blockM_configs.keys()]
-    mode_range_decode = [mode for mode in blockM_configs_decode.keys()]
-    param_ranges_prefill = {
-        "MODE_PREFILL": mode_range_prefill,    
-    }
 
-    param_ranges_decode = {    
-        "MODE_DECODE": mode_range_decode, 
+    mode_range = [mode for mode in blockM_all_configs.keys()]
+    param_ranges = {
+        "MODE": mode_range,
     }
-    
-    return [param_ranges_prefill, param_ranges_decode]
+    return param_ranges
 
 
 def get_configs_compute_bound(use_fp16,
@@ -953,19 +948,12 @@ def get_configs_compute_bound(use_fp16,
             "num_stages": num_stage_range,
         }
 
-    configs_prefill = []
-    configs_decode = []
-
-    keys, values = zip(*param_ranges[0].items())
+    keys, values = zip(*param_ranges.items())
     for config_values in product(*values):
         config = dict(zip(keys, config_values))
-        configs_prefill.append(config)
-
-    keys, values = zip(*param_ranges[1].items())
-    for config_values in product(*values):
-        config = dict(zip(keys, config_values))
-        configs_decode.append(config)
-    return [configs_prefill, configs_decode]
+        configs.append(config)
+        
+    return configs
 
 
 def prune_rocm_search_space_kernel0(num_tokens, shard_intermediate_size, hidden_size,
@@ -987,25 +975,13 @@ def prune_rocm_search_space_kernel1(num_tokens, shard_intermediate_size, hidden_
 # https://github.com/ROCm/triton/blob/triton-mlir/scripts/amd/gemm/tune_gemm.py#L89
 def prune_rocm_configs(M, N, K, configs, is_fp16=True, gemm_compare_failed_list=[]):
     pruned_configs = []
-    if(M > M_THRESHOLD):
-        for config in configs[0]:
-            prefill_config = {k : v for k, v in config.items()}
-            mode = prefill_config.get("MODE_PREFILL")
-            exclude_modes = gemm_compare_failed_list
-            # #remove warps=2
-            if mode in exclude_modes:
-                continue
-
-            pruned_configs.append(prefill_config)
-    else:
-        for config in configs[1]:
-            decode_config = {k : v for k, v in config.items()}
-            mode = decode_config.get("MODE_DECODE")
-            exclude_modes = gemm_compare_failed_list
-            # #remove warps=2
-            if mode in exclude_modes:
-                continue
-            pruned_configs.append(decode_config)
+    for config in configs:
+        mode = config.get("MODE")
+        exclude_modes = gemm_compare_failed_list
+        # #remove warps=2
+        if mode in exclude_modes:
+            continue
+        pruned_configs.append(config)
 
     return pruned_configs
 
@@ -1102,12 +1078,9 @@ class BenchmarkWorker:
         best_time = float("inf")
         from vllm.platforms import current_platform
         current_platform.seed_everything(self.seed)
-            
-        mode_pattern = "MODE_DECODE"
-        block_configs = blockM_configs_decode
-        if num_tokens > M_THRESHOLD:
-            mode_pattern = "MODE_PREFILL"
-            block_configs = blockM_configs
+
+        mode_pattern = "MODE"
+        block_configs = blockM_all_configs
 
         gemm1_compare_failed_list, gemm2_compare_failed_list = fuse_moe_correctness_preprocess(num_tokens, num_experts,
                                                                         shard_intermediate_size, hidden_size,
@@ -1115,7 +1088,7 @@ class BenchmarkWorker:
                                                                         use_int8_w8a16, use_int8_w8a8, moe_ep_size=ep_size, block_quant_shape=block_quant_shape,
                                                                         block_m_configs = block_configs,seed=self.seed, device_id=self.device_id)
         
-        
+
         if current_platform.is_rocm():
             is_fp16 = is_fp16 = not (use_fp8_w8a8 or use_int8_w8a16 or use_int8_w8a8)
             search_space_kernel0 = prune_rocm_search_space_kernel0(num_tokens,
@@ -1129,9 +1102,17 @@ class BenchmarkWorker:
 
         # import pdb
         # pdb.set_trace()
+        block_m_range = [16,32,64,128]
+        if num_tokens <= 32:
+            block_m_range = [16,32]
+        elif num_tokens <= 64:
+            block_m_range = [16,32,64]
+        elif num_tokens <= 128:
+            block_m_range = [16,32,64,128]
+            
         with torch.cuda.device(self.device_id):
             
-            for block_m in tqdm([16,32,64,128], desc="Processing block_m......"):
+            for block_m in tqdm(block_m_range, desc="Processing block_m......"):
                 time_kernel0 = float('inf')
                 config_kernel0 = None
                 
@@ -1390,7 +1371,7 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=256
     # hidden_size=7168
     
-    ## deepseek-r1-tp8
+    # # deepseek-r1-tp8
     # E = 256
     # shard_intermediate_size=512
     # hidden_size=7168
@@ -1405,10 +1386,10 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=2048
     # hidden_size=7168
     
-    # # deepseek-671b-tp1
-    # E = 256
-    # shard_intermediate_size=4096
-    # hidden_size=7168
+    # deepseek-671b-tp1
+    E = 256
+    shard_intermediate_size=4096
+    hidden_size=7168
     
     # E = 128
     # #qwen3-30b-A3B-tp1
@@ -1429,19 +1410,22 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=384
     # hidden_size=4096
 
-    # deepseek-r1-EP16
-    E = 256
-    ep_size = 16
-    shard_intermediate_size=4096
-    hidden_size=7168
+    # # deepseek-r1-EP16
+    # E = 256
+    # ep_size = 16
+    # shard_intermediate_size=4096
+    # hidden_size=7168
 
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16 
+            # 1,2,3,4,5,6,7,
+            # 8,9,10,11,12,13,14,15,16, 
             # 32, 64, 128,
             # 256, 512, 1024, 2048, 
             # 4096, 8192, 16384
+            # 1,8,16,32,64,128,256,512,
+            8,
             
             # 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 
             # 144, 160, 176, 192, 208, 224, 240, 256, 
@@ -1502,7 +1486,7 @@ def main(args: argparse.Namespace):
             best_configs_second_stage[M] = second_stage_config          
             
         save_configs(best_configs_first_stage, best_configs_second_stage, E, shard_intermediate_size, hidden_size,
-                     topk, dtype, use_fp8_w8a8, use_int8_w8a16, use_int8_w8a8,
+                     topk, dtype, use_fp8_w8a8, use_int8_w8a16, use_int8_w8a8,ep_size,
                      block_quant_shape)
         end = time.time()
         print(f"Tuning took {end - start:.2f} seconds")
