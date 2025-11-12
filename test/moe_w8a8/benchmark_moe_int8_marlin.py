@@ -713,16 +713,24 @@ def fuse_moe_correctness_preprocess(
     ) -> tuple[dict[str, int], float]:
     
     mode_ranges = [mode for mode in block_m_configs.keys()]
-    gemm1_compare_failed_list = []
+    gemm1_compare_failed_list = [] #这里
     gemm2_compare_failed_list = []
     device="cuda:"+str(device_id)
     
     for mode in mode_ranges:
         mode0 = mode
         mode1 = mode
-        # if mode0 == 1000:
-        #     mode1 = 49
+
+        # if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43, 75]: TP8 gemm2
+        #     mode1 = 0
+
+        # if mode0 in [63, 67, 71, 75, 78, 81, 84]: #qwen30b gemm1
+        #     mode0 = 0
+        # if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43, 63, 67,71, 78, 75, 79, 80, 81, 82, 83, 84]: #qwen30b gemm2
+        #     mode1 = 0
+
         mode_list=[mode0,mode1]
+        print(f"acc {mode0} start")
         input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=num_experts,device=device,block_size=None,out_dtype=dtype)
         # triton moe: output
         # weight重排
@@ -754,7 +762,7 @@ def fuse_moe_correctness_preprocess(
                                                     mode=mode_list,
                                                     gemm1_compare_list=gemm1_compare_failed_list,
                                                     gemm2_compare_list=gemm2_compare_failed_list)
-    
+    print(f"acc {mode0} end")
     print("gemm1_compare_failed_list: ", gemm1_compare_failed_list)
     print("gemm2_compare_failed_list: ", gemm2_compare_failed_list)
     return gemm1_compare_failed_list, gemm2_compare_failed_list
@@ -1338,9 +1346,9 @@ def main(args: argparse.Namespace):
     # hidden_size=7168
     
     # ## deepseek-671b-tp4
-    E = 256
-    shard_intermediate_size=1024
-    hidden_size=7168
+    # E = 256
+    # shard_intermediate_size=1024
+    # hidden_size=7168
     
     # ## deepseek-671b-tp2
     # E = 256
@@ -1356,10 +1364,10 @@ def main(args: argparse.Namespace):
     # #qwen3-30b-A3B-tp1
     # shard_intermediate_size=1536
     # hidden_size=2048
-    # #qwen3-30b-A3B-tp2
-    # E = 128
-    # shard_intermediate_size=768
-    # hidden_size=2048
+    #qwen3-30b-A3B-tp2
+    E = 128
+    shard_intermediate_size=768
+    hidden_size=2048
 
 
     # # #qwen3-235b-A22B-tp8
@@ -1379,7 +1387,8 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            1, 2, 4, 8, 16, 32, 64, 128,
+            #1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 32, 64, 128,
+            1, 2, 4, 8, 16, 32, 64, 128
             # 256, 512, 1024, 2048, 
             # 4096, 8192, 16384
             

@@ -826,6 +826,7 @@ template<
   uint16_t WARP_K, 
   uint16_t GROUP_N,
   uint16_t GROUP_K,
+  int STAGES,
   bool mul_topk_weight> 
 __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_UP(
   //const Element* __restrict__ input,
@@ -860,7 +861,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 4, bidx, bidy);
 
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
-  constexpr int STAGES = 2; 
+  //constexpr int STAGES = 4; 
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
   const int32_t delta_bidx = bidx;
   const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
@@ -1187,6 +1188,7 @@ template<
   uint16_t WARP_K, 
   uint16_t GROUP_N,
   uint16_t GROUP_K,
+  int STAGES,
   bool mul_topk_weight> // true
 __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_DOWN(
   const Element* __restrict__ input,
@@ -1219,7 +1221,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
   // int bidz = blockIdx.x; // pid_k 
   // GetBLockIdx(bidx + bidy * gridDim.x, gridDim.x, gridDim.y, 0, 8, bidx, bidy);
 
-  constexpr int STAGES = 2; 
+  //constexpr int STAGES = 2; 
   if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
   const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
   const int32_t delta_bidx = bidx / delta;
@@ -1736,9 +1738,9 @@ void launch_moe_w8a8_second_stage_prefill(const GemmParams<T>& params) {
 
 // launch_gemm1_decode
 // warp在n和k方向排列
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int STAGES, typename T>
 void launch_moe_w8a8_first_stage_decode(const GemmParams<T>& params) {
-    constexpr int STAGES = 2;
+    //constexpr int STAGES = 2;
     constexpr int WARP_NUM = (BLOCK_SIZE_N / WARP_N) * (BLOCK_SIZE_K / WARP_K);
     const bool mul_topk_weight = false;
     constexpr int GROUP_N = 1;
@@ -1781,14 +1783,15 @@ void launch_moe_w8a8_first_stage_decode(const GemmParams<T>& params) {
         params.sorted_token_lens,
         params.top_k,
         params.delta);
-    } else{
+    } else{ //marlin版本
 
       gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+      //gridDim.z = params.size_m*params.top_k; // m方向
       gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
       gridDim.x = 1; // k方向
 
       MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_UP<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
-      GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
+      GROUP_N, GROUP_K, STAGES, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
       params.ptr_C, 
@@ -1818,9 +1821,9 @@ void launch_moe_w8a8_first_stage_decode(const GemmParams<T>& params) {
 }
 
 // launch_gemm2_decode
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int STAGES, typename T>
 void launch_moe_w8a8_second_stage_decode(const GemmParams<T>& params) {
-    const int STAGES = 2;
+    //const int STAGES = 2;
     const int WARP_NUM = (BLOCK_SIZE_N / WARP_N) * (BLOCK_SIZE_K / WARP_K);
     const bool mul_topk_weight = true;
     constexpr int GROUP_N = 1;
@@ -1870,7 +1873,7 @@ void launch_moe_w8a8_second_stage_decode(const GemmParams<T>& params) {
         params.delta);
     } else{
         MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_DOWN<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
-        GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
+        GROUP_N, GROUP_K, STAGES, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
         params.ptr_A, 
         params.ptr_B0, 
         params.ptr_C, 
@@ -1994,7 +1997,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
               it->second(params_in);
           } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
+              launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 64, 2>(params_in);
           }
         }
         
@@ -2045,7 +2048,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
               it->second(params_in);
           } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
+              launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 64, 2>(params_in);
           }
 
         }
@@ -2145,7 +2148,7 @@ torch::Tensor moe_gemm_marlin_w8a8(torch::Tensor input,
               it->second(params_in);
           } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
+              launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 64, 2>(params_in);
           }
         }
         
@@ -2193,7 +2196,7 @@ torch::Tensor moe_gemm_marlin_w8a8(torch::Tensor input,
               it->second(params_in);
           } else {
               printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 64>(params_in);
+              launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 64, 2>(params_in);
           }
 
         }
