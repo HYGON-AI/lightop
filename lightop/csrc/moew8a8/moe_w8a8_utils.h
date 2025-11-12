@@ -1748,7 +1748,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_decode(
 
     // warp间的规约 
     extern __shared__ int out_smem[]; // 声明lds信息
-#if 1
+#if 0
     if constexpr (warp_k_num > 1){
         constexpr int lds_n_offset = warp_k_num * BLOCK_N;
         #pragma unroll
