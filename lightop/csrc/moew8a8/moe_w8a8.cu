@@ -2131,7 +2131,7 @@ torch::Tensor moe_gemm_marlin_w8a8(torch::Tensor input,
           is_marlin
         );
 
-        if(size_m > MOE_THRESHOLD || (size_m > 2 && EXPERTS == 16) ){
+        if(mode >= 500){
           auto it = kernel_maps_gemm1_prefill.find(mode);
           if (it != kernel_maps_gemm1_prefill.end()) {
               it->second(params_in);
@@ -2178,7 +2178,7 @@ torch::Tensor moe_gemm_marlin_w8a8(torch::Tensor input,
           is_marlin
         );
 
-        if(size_m / topk_size > MOE_THRESHOLD || (size_m / topk_size > 32 && EXPERTS == 16)){
+        if(mode >= 500){
           auto it = kernel_maps_gemm2_prefill.find(mode);
           if (it != kernel_maps_gemm2_prefill.end()) {
               it->second(params_in);
