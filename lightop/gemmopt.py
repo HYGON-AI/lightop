@@ -407,4 +407,11 @@ def groupgemm(a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor, trans
     outs = op.groupgemm(a, b, batch_sizes, trans_b)
     return outs
 
-
+def mqa_logits(Q: torch.Tensor, K: torch.Tensor, Weights: torch.Tensor, ks:torch.Tensor, ke:torch.Tensor) -> torch.Tensor:
+    q_seq_len, num_heads, head_dim = Q.shape
+    kv_seq_len = K.shape[0]
+    clean_logit = True
+    # pdb.set_trace()
+    outs = op.mqa_logits(Q, K, Weights, ks, ke, q_seq_len, kv_seq_len, num_heads, head_dim,clean_logit)
+    # outs = torch.nn.functional.linear(Q.view(q_seq_len*num_heads, head_dim), K)
+    return outs
