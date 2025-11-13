@@ -5,6 +5,7 @@ dist/*
 lightop/__pycache__/*
 lightop/csrc/*/*.hip
 lightop/csrc/*/*_hip.cuh
+lightop/csrc/*/*_hip.hpp
 lightop/version.py
 __pycache__/*
 lightop/csrc/hip_*.cpp
