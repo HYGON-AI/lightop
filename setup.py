@@ -389,7 +389,8 @@ def get_extensions():
                glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + \
                glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
                glob.glob('./lightop/csrc/marlinw4fp8/*.cu') +\
-               glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu')
+               glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu') +\
+               glob.glob('./lightop/csrc/mqa_logits/*.cu')
 
     miopen_files = glob.glob('./lightop/csrc/miopen/*.cpp') + \
                    glob.glob('./lightop/csrc/miopen/fusion_mode/*.cpp') + glob.glob('./lightop/csrc/miopen/graph/*.cpp') + glob.glob('./lightop/csrc/miopen/op/*.cpp')
@@ -420,6 +421,7 @@ def get_extensions():
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/rocrand/include')
+    include_dirs.append(os.path.abspath('./lightop/csrc/mqa_logits/'))
     
     # 1) 不含 miopen 的核心库：lightop.op 
     ext_ops = extension(

@@ -217,6 +217,7 @@ void mha_norm_rope_qkv_inplace_cuda(at::Tensor qkv, c10::optional<at::Tensor> ga
 void cross_norm_rope_q_kv_inplace_cuda(at::Tensor q,at::Tensor kv,  c10::optional<at::Tensor> gamma_q, c10::optional<at::Tensor> beta_q,c10::optional<at::Tensor> gamma_k,c10::optional<at::Tensor> beta_k, at::Tensor cos,  at::Tensor sin,  double eps);
 torch::Tensor box_cost(const torch::Tensor &pred, const torch::Tensor &target, const torch::Tensor &inst_weights, const torch::Tensor &dim_weights, const float cost_weight); 
 torch::Tensor encode_reg_t(const torch::Tensor &input, const torch::Tensor &lengths); 
+Tensor mqa_logits(torch::Tensor &Q, torch::Tensor &K, torch::Tensor &Weights, torch::Tensor &KS, torch::Tensor &KE, int seq_len, int kv_seq_len, int num_heads, int head_dim,bool clean_logits = true);
 }
 }
 
@@ -357,5 +358,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("cross_norm_rope_q_kv_inplace_cuda", &at::native::cross_norm_rope_q_kv_inplace_cuda,"cross_norm_rope_q_kv_inplace_cuda");
   m.def("box_cost", &at::native::box_cost, "box_cost");
   m.def("encode_reg_t", &at::native::encode_reg_t, "encode_reg_t");
+  m.def("mqa_logits", &at::native::mqa_logits, "mqa_logits");
 }
 
