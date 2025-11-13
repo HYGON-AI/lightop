@@ -3,6 +3,8 @@
 #include <c10/macros/Macros.h>
 #include <vector>
 
+#include "paged_mqa_logits/paged_mqa_logits.h"
+
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace at {  namespace native {
 Tensor rmsnorm_forward_autograd(const Tensor& x,const Tensor& weight,double eps,bool training);
@@ -73,46 +75,46 @@ Tensor moe_groupgemm_w4a8_asm(Tensor input, Tensor b_qweight, Tensor output, Ten
 Tensor moe_groupgemm_marlin_w4a8_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, Tensor problem_size, Tensor expert_offsets, int mode);
 Tensor m_grouped_marlin_w4a8_gemm_nt_masked_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, Tensor masked_m, int expected_m_per_group, int mode);
 Tensor m_grouped_marlin_w8a8_gemm_nt_masked_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, Tensor masked_m, int expected_m_per_group, int mode);
-Tensor moe_marlin_w4a16(torch::Tensor& a, 
+Tensor moe_marlin_w4a16(torch::Tensor& a,
                         std::optional<torch::Tensor> const& c_or_none,
-                        torch::Tensor& b_q_weight, 
+                        torch::Tensor& b_q_weight,
                         torch::Tensor& b_scale_zeros,
                         std::optional<torch::Tensor> const& g_idx_or_none,
-                        std::optional<torch::Tensor> const& perm_or_none, 
-                        torch::Tensor& workspace, 
-                        torch::Tensor& sorted_token_ids, 
+                        std::optional<torch::Tensor> const& perm_or_none,
+                        torch::Tensor& workspace,
+                        torch::Tensor& sorted_token_ids,
                         torch::Tensor& expert_ids,
-                        torch::Tensor& num_tokens_past_padded, 
+                        torch::Tensor& num_tokens_past_padded,
                         torch::Tensor& topk_weights,
-                        int64_t moe_block_size, 
-                        int64_t top_k, 
-                        bool mul_topk_weights, 
+                        int64_t moe_block_size,
+                        int64_t top_k,
+                        bool mul_topk_weights,
                         bool is_ep,
-                        int64_t size_m, 
+                        int64_t size_m,
                         int64_t size_n,
-                        int64_t size_k, 
-                        bool is_k_full, 
-                        bool use_atomic_add, 
+                        int64_t size_k,
+                        bool is_k_full,
+                        bool use_atomic_add,
                         bool use_fp32_reduce,
                         bool is_zp_float
                         );
 Tensor awq_marlin_repack(torch::Tensor& b_q_weight, int64_t size_k, int64_t size_n, int64_t num_bits);
 Tensor moe_marlin_w4a8(
-                        torch::Tensor& a_q, 
-                        torch::Tensor& a_scales, 
+                        torch::Tensor& a_q,
+                        torch::Tensor& a_scales,
                         torch::Tensor& c,
-                        torch::Tensor& b_q_weight, 
+                        torch::Tensor& b_q_weight,
                         torch::Tensor& b_scales,
-                        torch::Tensor& workspace, 
+                        torch::Tensor& workspace,
                         torch::Tensor& global_reduce_buffer,  // 用于全局规约的缓冲区
-                        torch::Tensor& sorted_token_ids, 
+                        torch::Tensor& sorted_token_ids,
                         torch::Tensor& expert_ids,
-                        torch::Tensor& num_tokens_past_padded, 
+                        torch::Tensor& num_tokens_past_padded,
                         std::optional<torch::Tensor> topk_weights,
-                        int64_t moe_block_size, 
-                        int64_t top_k, 
+                        int64_t moe_block_size,
+                        int64_t top_k,
                         bool is_ep,
-                        int64_t size_m, 
+                        int64_t size_m,
                         int64_t size_n,
                         int64_t size_k,
                         int64_t thread_n,
@@ -193,11 +195,11 @@ void moe_align_block_size(
     const torch::optional<torch::Tensor> &num_local_tokens =  torch::nullopt,bool Is_EP = false); 
 
 //------------------------------------------------- groupgemm ---------------------------------------//
-Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b);    
+Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b);
 // std::tuple<Tensor, Tensor, Tensor, Tensor, Tensor> groupgemm_permute(const Tensor& tokens, const Tensor& routing_map);
-// Tensor groupgemm_unpermute(const Tensor& permuted_tokens, const Tensor& sorted_indices, const std::vector<int64_t>& restore_shape, std::optional<torch::Tensor> probs, std::optional<torch::Tensor> routing_map, const Tensor& expert_m_count);      
+// Tensor groupgemm_unpermute(const Tensor& permuted_tokens, const Tensor& sorted_indices, const std::vector<int64_t>& restore_shape, std::optional<torch::Tensor> probs, std::optional<torch::Tensor> routing_map, const Tensor& expert_m_count);
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> groupgemm_permute(const torch::Tensor& tokens, const torch::Tensor& routing_map);
-torch::Tensor groupgemm_unpermute(const torch::Tensor& permuted_tokens, const torch::Tensor& sorted_indices, const std::vector<int64_t>& restore_shape, std::optional<torch::Tensor> probs, std::optional<torch::Tensor> routing_map, const torch::Tensor& expert_m_count, bool use_fp32); 
+torch::Tensor groupgemm_unpermute(const torch::Tensor& permuted_tokens, const torch::Tensor& sorted_indices, const std::vector<int64_t>& restore_shape, std::optional<torch::Tensor> probs, std::optional<torch::Tensor> routing_map, const torch::Tensor& expert_m_count, bool use_fp32);
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> fuse_groupgemm_permute_quant(const torch::Tensor& tokens, const torch::Tensor& routing_map, torch::Tensor& scales);
 //------------------------------------------------- groupgemm ---------------------------------------//
 
@@ -359,5 +361,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("box_cost", &at::native::box_cost, "box_cost");
   m.def("encode_reg_t", &at::native::encode_reg_t, "encode_reg_t");
   m.def("mqa_logits", &at::native::mqa_logits, "mqa_logits");
+  m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
+  m.def("paged_mqa_logits", &lightop::deep_gemm::paged_mqa_logits,"paged_mqa_logits");
 }
 
