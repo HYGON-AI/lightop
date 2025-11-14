@@ -220,6 +220,7 @@ void cross_norm_rope_q_kv_inplace_cuda(at::Tensor q,at::Tensor kv,  c10::optiona
 torch::Tensor box_cost(const torch::Tensor &pred, const torch::Tensor &target, const torch::Tensor &inst_weights, const torch::Tensor &dim_weights, const float cost_weight); 
 torch::Tensor encode_reg_t(const torch::Tensor &input, const torch::Tensor &lengths); 
 Tensor mqa_logits(torch::Tensor &Q, torch::Tensor &K, torch::Tensor &Weights, torch::Tensor &KS, torch::Tensor &KE, int seq_len, int kv_seq_len, int num_heads, int head_dim,bool clean_logits = true);
+std::vector<torch::Tensor> batch_linear_assignment(torch::Tensor cost);
 }
 }
 
@@ -363,5 +364,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("mqa_logits", &at::native::mqa_logits, "mqa_logits");
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
   m.def("paged_mqa_logits", &lightop::deep_gemm::paged_mqa_logits,"paged_mqa_logits");
+  m.def("batch_linear_assignment", &at::native::batch_linear_assignment, "batch_linear_assignment");
 }
 
