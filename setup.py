@@ -386,7 +386,7 @@ def get_extensions():
                glob.glob('./lightop/csrc/scaledmask/*.cu') + glob.glob('./lightop/csrc/groupnorm/*.cu') + \
                glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + \
                glob.glob('./lightop/csrc/softmax/*.cu') + \
-               glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + \
+               glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + glob.glob('./lightop/csrc/moew16a16/*.cu') + \
                glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
                glob.glob('./lightop/csrc/marlinw4fp8/*.cu') +\
                glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu') +\
@@ -415,6 +415,7 @@ def get_extensions():
     include_dirs.append(os.path.abspath('./lightop/csrc/storeKvcache/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/storeKvcache/attention/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/moew4a8/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/moew16a16/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/blockwise_scaling/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/concat/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/paged_mqa_logits/'))
