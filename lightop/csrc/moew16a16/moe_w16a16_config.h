@@ -226,13 +226,6 @@ static std::unordered_map<int, KernelFunc4> kernel_maps_gemm1_decode_w16a16 = {
 
 
 static std::unordered_map<int, KernelFunc4> kernel_maps_gemm2_decode_w16a16 = {
-    // {401, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 16, 16, 16, 16, bhalf_t>(p); }},
-    // {402, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 64, 16, 16, 64, 16, bhalf_t>(p); }},
-    // {403, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 128, 16, 16, 128, 16, bhalf_t>(p); }},
-    // {415, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<32, 32, 16, 32, 16, 16, bhalf_t>(p); }},
-    // {416, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<32, 128, 16, 32, 16, 16, bhalf_t>(p); }},
-    // {417, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<64, 128, 16, 64, 16, 16, bhalf_t>(p); }},
-    // {418, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<64, 128, 16, 64, 16, 16, bhalf_t>(p); }},
     //初始基准，验证精度
     {401, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 16, 16, 16, 16, bhalf_t>(p); }},
     //默认仅在n方向分布warp

@@ -429,13 +429,10 @@ void launch_MOE_W16A16_HIP_NT_UP_decode(const GemmParams3<T>& params) {
     gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向 16大小分块
     gridDim.y = DIVIDE(params.size_n , BLOCK_SIZE_N); // n方向 16大小分块 数量为48
     gridDim.x = 1; // k方向
-    // printf("BLOCK_SIZE_M,BLOCK_SIZE_N,BLOCK_SIZE_K,WARP_M,WARP_N,WARP_K,splitk,gridDim.z,gridDim.y,kwarp,nwarp,params.size_m,params.size_n,params.size_k,params.size_kofb,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",BLOCK_SIZE_M,BLOCK_SIZE_N,BLOCK_SIZE_K,WARP_M,WARP_N,WARP_K,splitk,gridDim.z,gridDim.y,kwarp,nwarp,params.size_m,params.size_n,params.size_k,params.size_kofb);
-    //BLOCK_SIZE_M,BLOCK_SIZE_N,BLOCK_SIZE_K,WARP_M,WARP_N,WARP_K,splitk,gridDim.z,gridDim.y,kwarp,nwarp,params.size_m,params.size_n,params.size_k,params.size_kofb,16,16,64,16,16,16,1,121,48,4,1,1,768,2048,2048
-    // constexpr int lds_size = (kwarp-1)* nwarp * 68 * 16 * 4; 
-    // constexpr int lds_size = kwarp * nwarp * 64 * 4 * 2 * 2; 
     
     int lds_size = kwarp * nwarp * 64 * 4 * 4;
     if(WARP_K==32) lds_size = kwarp * nwarp * 64 * 8 * 4;
+    if(kwarp==1) lds_size = (nwarp * 64 * 4 + 14 )* 2 ;
     // out_smemf[(row_id) * warp_k_num * BLOCK_N  + n_tile * 16 * warp_k_num * BLOCK_N + col_id * 4 + warp_n_id * WARP_N + k_tile * BLOCK_N + i];
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     MOE_W16A16_HIP_NT_UP_decode<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
@@ -480,8 +477,9 @@ void launch_MOE_W16A16_HIP_NT_DOWN_decode(const GemmParams3<T>& params) {
     gridDim.y = DIVIDE(params.size_n , BLOCK_SIZE_N); // 2048 /16 
     gridDim.x = 1; 
 
-    int lds_size = kwarp * nwarp * 64 * 4 * 4;;
+    int lds_size = kwarp * nwarp * 64 * 4 * 4;
     if(WARP_K==32) lds_size = kwarp * nwarp * 64 * 8 * 4;
+    if(kwarp==1) lds_size = (nwarp * 64 * 4 + 14 )* 2;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
     MOE_W16A16_HIP_NT_DOWN_decode<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
