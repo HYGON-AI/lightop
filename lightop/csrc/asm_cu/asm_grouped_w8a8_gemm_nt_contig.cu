@@ -52,8 +52,8 @@ void _m_grouped_w8a8_gemm_nt_contig_asm_impl(
     uint32_t experts_num) {
     GemmInfo<OutputType> d_prob;
     const int size_m = input.size(0);        //(M, K)
-    const int size_n = b_qweight.size(1);    //(E, N, K)
-    const int size_k = b_qweight.size(2);
+    const int size_n = b_qweight.size(1) * 16;    //(E, N // 16, K * 16)
+    const int size_k = input.size(1);
 
     uint32_t lda = size_k;
     uint32_t ldb = size_k;
@@ -121,8 +121,8 @@ void _m_grouped_w8a8_gemm_nt_contig_asm_impl(
 
     size_t size = sizeof(hipFunctionArgs);
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    string fp16_co_file_tn = "deepgemm_channel/w8a8/DeepGemm_W8A8_I8_PERCHANNEL_ASM_TN_MT256X256X128_FP16.co";
-    string bf16_co_file_tn = "deepgemm_channel/w8a8/DeepGemm_W8A8_I8_PERCHANNEL_ASM_TN_MT256X256X128_BF16.co";
+    string fp16_co_file_tn = "deepgemm_channel/w8a8/DeepGemm_W8A8_I8_MARLIN_PERCHANNEL_ASM_TN_MT256X256X128_FP16.co";
+    string bf16_co_file_tn = "deepgemm_channel/w8a8/DeepGemm_W8A8_I8_MARLIN_PERCHANNEL_ASM_TN_MT256X256X128_BF16.co";
 	static AiterAsmKernel deepgemm_w8a8_fp16_tn("DeepGemm_W8A8_I8_PERCHANNEL_ASM_TN_MT256X256X128_FP16", fp16_co_file_tn.c_str());
 	static AiterAsmKernel deepgemm_w8a8_bf16_tn("DeepGemm_W8A8_I8_PERCHANNEL_ASM_TN_MT256X256X128_BF16", bf16_co_file_tn.c_str());
 
