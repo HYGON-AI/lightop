@@ -1,7 +1,7 @@
 {
     "2048_384": {
         "1": {
-            "MODE": 402,
+            "MODE": 414,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 128,
@@ -9,7 +9,7 @@
             "blocks_per_cu": 3 
         },
         "2": {
-            "MODE": 402,
+            "MODE": 414,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 128,
@@ -33,7 +33,7 @@
             "blocks_per_cu": 3 
         },
         "16": {
-            "MODE": 410,
+            "MODE": 411,
             "DELTA": 1,
             "BLOCK_SIZE_M": 16,
             "thread_n": 128,

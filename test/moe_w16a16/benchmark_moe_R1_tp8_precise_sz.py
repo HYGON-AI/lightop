@@ -12,7 +12,7 @@ torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 import triton
 from ray.experimental.tqdm_ray import tqdm
 from transformers import AutoConfig
-
+from fused_time_moe_triton import do_bench_fused_time_moe_triton
 # from vllm.model_executor.layers.fused_moe.fused_moe import *
 # from fused_moe import *
 # from fused_moe_3 import *
@@ -218,6 +218,64 @@ def benchmark_config(
     #     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
     #     for j in range(10): # 一次随机专家运行10次
     #         gemm1_time_us, gemm2_time_us =  fused_time_moe_triton(
+    #                                                         x,
+    #                                                         w1,
+    #                                                         w2,
+    #                                                         w1_scale,
+    #                                                         w2_scale,
+    #                                                         score,
+    #                                                         topk_weights,
+    #                                                         topk_ids
+    #                                                         )
+            
+    #         gemm1_time_us_total += gemm1_time_us
+    #         gemm2_time_us_total += gemm2_time_us
+
+    # print("      GEMM3_Time_us: ", gemm1_time_us_total/num_iters/10, "GEMM4_Time_us: ", gemm2_time_us_total/num_iters/10)
+    
+
+
+    # return {
+    #     'M': num_tokens,
+    #     'N1': shard_intermediate_size,
+    #     'K1': hidden_size//2,
+    #     'N2': hidden_size,
+    #     'K2': shard_intermediate_size // 4,
+    #     'E': num_experts,
+    #     'TopK': topk,
+    #     'GEMM1_Time_us': gemm1_time_us_total/num_iters/10,
+    #     'GEMM2_Time_us': gemm2_time_us_total/num_iters/10,
+    # }
+
+
+    # add triton tunning 
+    # for i in range(10):
+    #     # 使用新的专家得分
+    #     prepare(i)
+    #     # 获取新专家得分的 算子时间
+    #     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
+    #     for j in range(10): # 一次随机专家运行10次
+    #         do_bench_fused_time_moe_triton(
+    #                         x,
+    #                         w1,
+    #                         w2,
+    #                         w1_scale,
+    #                         w2_scale,
+    #                         score,
+    #                         topk_weights,
+    #                         topk_ids
+    #                         )
+            
+
+    # gemm1_time_us_total = 0 
+    # gemm2_time_us_total = 0
+    # for i in range(num_iters):
+    #     # 使用新的专家得分
+    #     prepare(i)
+    #     # 获取新专家得分的 算子时间
+    #     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
+    #     for j in range(10): # 一次随机专家运行10次
+    #         gemm1_time_us, gemm2_time_us =  do_bench_fused_time_moe_triton(
     #                                                         x,
     #                                                         w1,
     #                                                         w2,

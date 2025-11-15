@@ -1816,6 +1816,23 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel2(
     } 
   } 
 
+
+
+//     if(warp_k_id == 0 || warp_k_num == 1){
+//     for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+//         for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+//         int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
+//           if(token_index < max_n_len_offset * top_k){
+//             for (int j = 0; j < 4; j++) {
+//                 Element D = f32_to_bf16((C_reg[0][(m_tile*(WARP_N/MFMA_N))][j]) * topk_weight_value );
+//                 *reinterpret_cast<Element*>(&g_output[token_index * size_n + 0 * 16 + col_id + j * 4 ]) = D;
+//             }
+//           }
+//         }
+//    }     
+// }
+
+
 }
 
 template<bool Is_store_A, 
@@ -2056,6 +2073,22 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel(
     } 
   } 
 
+
+
+//     if(warp_k_id == 0 || warp_k_num == 1){
+//     for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+//         for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+//         int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
+//           if(token_index < max_n_len_offset * top_k){
+//             for (int j = 0; j < 4; j++) {
+//                 Element D = f32_to_bf16((C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N))][j]) * topk_weight_value );
+//                 *reinterpret_cast<Element*>(&g_output[token_index * size_n + warp_n_id * 16 + col_id + j * 4 ]) = D;
+//             }
+//           }
+//         }
+//    }     
+// }
+
 }
 
 
@@ -2295,6 +2328,20 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kernel(
     } 
   }      
 
+
+//     if(warp_k_id == 0 || warp_k_num == 1){
+//     for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+//         for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+//         int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
+//           if(token_index < max_n_len_offset * top_k){
+//             for (int j = 0; j < 4; j++) {
+//                 Element D = f32_to_bf16((C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N))][j]) * topk_weight_value );
+//                 *reinterpret_cast<Element*>(&g_output[token_index * size_n + warp_n_id * 16 + col_id + j * 4 ]) = D;
+//             }
+//           }
+//         }
+//    }     
+// }
 
 }
 
