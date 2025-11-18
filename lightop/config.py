@@ -547,7 +547,8 @@ def get_moe_cuda_marlin_config_w16a16(
     block_n: Optional[int] = None,
     block_k: Optional[int] = None,
     is_ep: Optional[bool] = False,
-    ep_size: Optional[int] = 8
+    ep_size: Optional[int] = 8,
+    is_marlin: Optional[bool] = False
 ) -> Optional[dict[int, Any]]:
     """
     Return optimized configurations for the fused MoE kernel.
@@ -564,7 +565,8 @@ def get_moe_cuda_marlin_config_w16a16(
     gemm1_file_name = f"MOE_W16A16_CUDA_{N1}_{K1}_{device_name}_{num_cus}.json"
     if is_ep:
         gemm1_file_name = f"MOE_W16A16_CUDA_EP{ep_size}_{N1}_{K1}_{device_name}_{num_cus}.json"
-
+    if is_marlin:
+        gemm1_file_name = f"MOE_W16A16_CUDA_MARLIN_{N1}_{K1}_{device_name}_{num_cus}.json"
     gemm1_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
     
@@ -595,7 +597,8 @@ def get_moe_cuda_marlin_config_w16a16(
     gemm2_file_name = f"MOE_W16A16_CUDA_{N2}_{K2}_{device_name}_{num_cus}.json"
     if is_ep:
         gemm2_file_name = f"MOE_W16A16_CUDA_EP{ep_size}_{N2}_{K2}_{device_name}_{num_cus}.json"
-
+    if is_marlin:
+        gemm2_file_name = f"MOE_W16A16_CUDA_MARLIN_{N2}_{K2}_{device_name}_{num_cus}.json"
     gemm2_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
     try:

@@ -111,9 +111,9 @@ def fused_marlin_moe_valid(
     print("E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16",E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16)
     # debug
     # config_marlin_0["BLOCK_SIZE_M"] = 16
-    # config_marlin_0["MODE"] = 412
+    # config_marlin_0["MODE"] = 417
     # config_marlin_1["BLOCK_SIZE_M"] = 16
-    # config_marlin_1["MODE"] = 411
+    # config_marlin_1["MODE"] = 415
     print("         config_marlin_0: ", config_marlin_0)
     print("         config_marlin_1: ", config_marlin_1)
     block_size_m = config_marlin_0["BLOCK_SIZE_M"]
