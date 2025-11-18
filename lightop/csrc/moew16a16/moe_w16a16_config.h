@@ -165,35 +165,52 @@ using KernelFunc4 = std::function<void(const GemmParams3<bhalf_t>&)>;
 
 
 
-// static std::unordered_map<int, KernelFunc4> kernel_maps_gemm1_decode_marlin_w16a16 = {
-//     {401, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 16, 128, 16, 16, 16, 1, bhalf_t>(p); }},
-//     {402, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 256, 16, 16, 64, 1, bhalf_t>(p); }},
-//     {403, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 512, 16, 16, 64, 1, bhalf_t>(p); }},
-//     {404, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 256, 16, 16, 32, 1, bhalf_t>(p); }},
-//     //支持EP8 TP1时N比较大时，增大N分块，之前为64，现增加到128\256
-//     {413, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 128, 256, 16, 16, 64, 1, bhalf_t>(p); }},
-//     {414, [](const GemmParams3<bhalf_t>& p) { launch_MO_W16A16_MARLIN_HIP_NN_UP_decode<16, 256, 128, 16, 16, 64, 1, bhalf_t>(p); }},
-//     //支持EP8 TP1时blocksizeM=32的情况：
-//     {415, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<32, 128, 256, 32, 16, 64, 1, bhalf_t>(p); }},
-//     {416, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<32, 256, 128, 32, 16, 64, 1, bhalf_t>(p); }},
-//     {417, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<32, 64, 256, 32, 16, 64, 1, bhalf_t>(p); }},
-//     {418, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<32, 64, 512, 32, 16, 64, 1, bhalf_t>(p); }},
+static std::unordered_map<int, KernelFunc4> kernel_maps_gemm1_decode_marlin_w16a16 = {
+    {300, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 16, 16, 16, 16, 1, bhalf_t>(p); }},
+    {301, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 64, 16, 16, 16, 1, bhalf_t>(p); }},
+    {302, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 128, 16, 16, 16, 1, bhalf_t>(p); }},
+    //kpack2
+    {303, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 32, 16, 16, 32, 1, bhalf_t>(p); }},
+    {304, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 128, 16, 16, 32, 1, bhalf_t>(p); }},
+    {305, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 256, 16, 16, 32, 1, bhalf_t>(p); }},
+    //
+    {306, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 16, 16, 16, 16, 1, bhalf_t>(p); }},
+    {307, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 128, 16, 16, 16, 16, 1, bhalf_t>(p); }},
+    {308, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 256, 16, 16, 16, 16, 1, bhalf_t>(p); }},
+    //KPACK2
+    {309, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 32, 16, 16, 32, 1, bhalf_t>(p); }},
+    {310, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 128, 32, 16, 16, 32, 1, bhalf_t>(p); }},
+    {311, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 256, 32, 16, 16, 32, 1, bhalf_t>(p); }},
+    //MIX
+    {312, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 128, 64, 16, 16, 32, 1, bhalf_t>(p); }},
+    {313, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 128, 16, 16, 32, 1, bhalf_t>(p); }}, 
+    {314, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 128, 32, 16, 16, 16, 1, bhalf_t>(p); }},
+    {315, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 64, 16, 16, 16, 1, bhalf_t>(p); }},   
+};
 
-//     {419, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<64, 64, 256, 64, 16, 64, 1, bhalf_t>(p); }},
-//     {420, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<64, 128, 256, 64, 16, 64, 1, bhalf_t>(p); }},
-//     {421, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<128, 64, 256, 128, 16, 64, 1, bhalf_t>(p); }},
-//     {422, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<128, 128, 256, 128, 16, 64, 1, bhalf_t>(p); }},   
-// };
+static std::unordered_map<int, KernelFunc4> kernel_maps_gemm2_decode_marlin_w16a16 = {
+    {300, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 16, 16, 16, 16, bhalf_t>(p); }},
+    {301, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 64, 16, 16, 16, bhalf_t>(p); }},
+    // {302, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 128, 16, 16, 16, bhalf_t>(p); }},
+    //kpack2
+    {303, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 32, 16, 16, 32, bhalf_t>(p); }},
+    // {304, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 128, 16, 16, 32, bhalf_t>(p); }},
+    // {305, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 256, 16, 16, 32, bhalf_t>(p); }},
+    
+    {306, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 64, 16, 16, 16, 16, bhalf_t>(p); }},
+    {307, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 128, 16, 16, 16, 16, bhalf_t>(p); }},
+    {308, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 256, 16, 16, 16, 16, bhalf_t>(p); }},
+   
+    {309, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 64, 32, 16, 16, 32, bhalf_t>(p); }},
+    {310, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 128, 32, 16, 16, 32, bhalf_t>(p); }},
+    {311, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 256, 32, 16, 16, 32, bhalf_t>(p); }},
+    //MIX
+    {312, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 128, 64, 16, 16, 32, bhalf_t>(p); }},
+    // {313, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 64, 128, 16, 16, 32, bhalf_t>(p); }}, 
+    {314, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 128, 32, 16, 16, 16, bhalf_t>(p); }},
+    {315, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 64, 64, 16, 16, 16, bhalf_t>(p); }}, 
 
-// static std::unordered_map<int, KernelFunc4> kernel_maps_gemm2_decode_marlin_w16a16 = {
-//     {401, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 256, 64, 16, 16, 64, bhalf_t>(p); }},
-//     {402, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 512, 64, 16, 16, 64, bhalf_t>(p); }},
-//     {415, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<32, 256, 64, 32, 16, 64, bhalf_t>(p); }},
-//     {416, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<32, 512, 64, 32, 16, 64, bhalf_t>(p); }},
-//     {417, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<64, 256, 64, 64, 16, 64, bhalf_t>(p); }},
-//     {418, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<64, 512, 64, 64, 16, 64, bhalf_t>(p); }},
-
-// };
+};
 
 
 static std::unordered_map<int, KernelFunc4> kernel_maps_gemm1_decode_w16a16 = {
