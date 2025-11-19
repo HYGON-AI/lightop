@@ -261,7 +261,7 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
   int64_t num_tokens = E * T; 
   
   int64_t grid_opt = num_tokens;
-  if (T == 4096 || T == 2560 || T == 5120) {
+  if (T >= 1024) {
       grid_opt = std::max(1, (int)num_tokens / (T / 256));
   }
   
@@ -304,7 +304,7 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
                                             T, 
                                             tokens_per_expert_ptr); 
             } else if (d <= 2048) {
-             if(T == 4096){
+              if((E == 8 && T >= 4096) || (E == 16 && T >= 2048)){
                 act_and_mul_quant_kernel_opt1_ep<scalar_t, 32, true, 64>
                     <<<grid, 64, 0, stream>>>(num_tokens ,
                                               out.data_ptr<int8_t>(),
@@ -313,18 +313,9 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
                                               d,
                                               T,
                                               tokens_per_expert_ptr); 
-              }else if(T == 2560){
-                act_and_mul_quant_kernel_opt1_ep<scalar_t, 32, true, 64>
-                    <<<grid, 64, 0, stream>>>(num_tokens ,
-                                              out.data_ptr<int8_t>(),
-                                              input.data_ptr<scalar_t>(),
-                                              scales.data_ptr<float>(),
-                                              d,
-                                              T,
-                                              tokens_per_expert_ptr); 
-              }else if(T == 5120){
-                act_and_mul_quant_kernel_opt1_ep<scalar_t, 32, true, 64>
-                    <<<grid, 64, 0, stream>>>(num_tokens ,
+              }else if((E == 8 && T < 4096) || (E == 16 && T < 2048)){
+                act_and_mul_quant_kernel_opt1_ep<scalar_t, 16, true, 128>
+                    <<<grid, 128, 0, stream>>>(num_tokens ,
                                               out.data_ptr<int8_t>(),
                                               input.data_ptr<scalar_t>(),
                                               scales.data_ptr<float>(),
