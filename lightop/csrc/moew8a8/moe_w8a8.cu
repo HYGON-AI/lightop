@@ -1785,8 +1785,10 @@ void launch_moe_w8a8_first_stage_decode(const GemmParams<T>& params) {
         params.delta);
     } else{ //marlin版本
 
-      gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
-      //gridDim.z = params.size_m*params.top_k; // m方向
+      if(params.size_m < 32)
+        gridDim.z = params.size_m*params.top_k; // m方向
+      else
+        gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
       gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
       gridDim.x = 1; // k方向
 
@@ -1872,6 +1874,12 @@ void launch_moe_w8a8_second_stage_decode(const GemmParams<T>& params) {
         params.top_k,
         params.delta);
     } else{
+
+        if(params.size_m / 8 < 32)
+          gridDim.z = params.size_m*params.top_k; // m方向
+        else
+          gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+
         MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_DOWN<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
         GROUP_N, GROUP_K, STAGES, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
         params.ptr_A, 
