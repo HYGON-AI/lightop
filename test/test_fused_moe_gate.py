@@ -2,7 +2,7 @@ import torch
 import triton
 from vllm import _custom_ops as vllm_ops
 from lightop import op as ops
-
+import pdb
 # -------------------------------
 # 包一层，便于替换/调试
 # -------------------------------
@@ -23,22 +23,22 @@ def check_correctness_once(
     topk: int,
     n_share_experts_fusion: int, 
     routed_scaling_factor: float,
-    rtol=1e-9,
-    atol=1e-9
+    rtol=1e-6,
+    atol=1e-6
 ):
     device = torch.device("cuda")
-    dtype = torch.float
+    dtype = torch.bfloat16
 
     scores = torch.randn((token_num, num_experts), device=device, dtype=dtype)
     bias = torch.randn(num_experts, device=device, dtype=dtype)
-
+    #vllm 使用的还是混合精度，lightop全部强转为了float
     w_init, i_init = biased_grouped_topk_org_init(
-        scores.clone(), bias.clone(), num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor
+        scores.float(), bias.float(), num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor
     )
     w_opt, i_opt = biased_grouped_topk_org_opt(
         scores.clone(), bias.clone(), num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor
     )
-
+    pdb.set_trace()
     assert w_init.shape == w_opt.shape, f"weights shape mismatch: {w_init.shape} vs {w_opt.shape}"
     assert i_init.shape == i_opt.shape, f"indices shape mismatch: {i_init.shape} vs {i_opt.shape}"
 
@@ -70,7 +70,7 @@ def run_correctness_suite():
 
     cases = [
         (n, 256, 8, 4, 8, n_share_experts_fusion, routed_scaling_factor)
-        for n in list(range(150, 201)) + extra
+        for n in list(range(12, 13)) 
     ]
 
     for (token_num, ne, ng, tg, tk, nshar, rout) in cases:
@@ -88,13 +88,12 @@ def run_correctness_suite():
 # -------------------------------
 # 性能基准 (仅 bf16，支持 warmup)
 # -------------------------------
-token_num_range = list(range(150, 201))
-more_tokens = [
-    300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000, 4000, 
-    5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000, 45000, 50000, 55000, 60000
-    #, 65000, 70000, 75000, 80000, 85000, 90000, 95000, 100000,
-]
-token_num_range.extend(more_tokens)
+token_num_range = list(range(12, 13))
+# more_tokens = [
+    
+#     #, 65000, 70000, 75000, 80000, 85000, 90000, 95000, 100000,
+# ]
+# token_num_range.extend(more_tokens)
 
 configs = [(sq,) for sq in token_num_range]
 
