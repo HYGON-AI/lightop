@@ -6,6 +6,7 @@ import functools
 import os
 import math
 from .config_smooth_gemm import gemm_w8a8_smooth_config
+from .config_deepgemm import gemm_w8a8_deepgemm_masked_config
 
 
 @functools.lru_cache(maxsize=128)
@@ -289,6 +290,21 @@ def moe_groupgemm_marlin_w4a8(input: torch.Tensor,
     return output
 
 
+@functools.lru_cache(maxsize=2048)
+def w8a8_deepgemm_masked_asm_config(m):
+    
+    if m < 16:
+        adapt_m = 16  # 向上取整到下一个16的倍数
+    else:
+        adapt_m = round_up_to_next_power_of_2(m)
+    key = f"EXPECTED_M{adapt_m}"
+    if key in gemm_w8a8_deepgemm_masked_config.get_deepgemm_w8a8_smooth_asm_dict():
+        MODE = gemm_w8a8_deepgemm_masked_config.get_deepgemm_w8a8_smooth_asm_dict()[key]
+    else:
+        MODE = 1000
+    return MODE
+
+
 def m_grouped_w4a8_gemm_nt_masked(a: tuple[torch.Tensor, torch.Tensor],
                                   b: tuple[torch.Tensor, torch.Tensor],
                                   d: torch.Tensor,
@@ -312,7 +328,7 @@ def m_grouped_w8a8_gemm_nt_masked(a: tuple[torch.Tensor, torch.Tensor],
                                   expected_m_per_group: int,
                                   config: Optional[Dict[str, Any]] = {"MODE": 1000,}) -> torch.Tensor:
 
-    mode = config['MODE']
+    mode = w8a8_deepgemm_masked_asm_config(expected_m_per_group)
     input, a_scale = a
     b_qweight, b_scale = b
     output = d
