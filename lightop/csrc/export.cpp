@@ -193,7 +193,7 @@ void moe_align_block_size(
     torch::Tensor num_tokens_post_pad,
     const torch::optional<torch::Tensor> &expert_map =  torch::nullopt,
     const torch::optional<torch::Tensor> &expert_mask =  torch::nullopt, // bool
-    const torch::optional<torch::Tensor> &num_local_tokens =  torch::nullopt,bool Is_EP = false); 
+    const torch::optional<torch::Tensor> &num_local_tokens =  torch::nullopt,bool Is_EP = false,bool Is_fuse_fill = true); 
 
 //------------------------------------------------- groupgemm ---------------------------------------//
 Tensor groupgemm(Tensor &a, Tensor &b, Tensor &batch_sizes, bool trans_b);
@@ -358,7 +358,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("expert_map") =   torch::nullopt,
       py::arg("expert_mask") =   torch::nullopt,
       py::arg("num_local_tokens") =   torch::nullopt,
-      py::arg("Is_EP") = false
+      py::arg("Is_EP") = false,
+      py::arg("Is_fuse_fill") = true
   );
   m.def("mha_norm_rope_qkv_inplace_cuda", &at::native::mha_norm_rope_qkv_inplace_cuda,"mha_norm_rope_qkv_inplace_cuda");
   m.def("cross_norm_rope_q_kv_inplace_cuda", &at::native::cross_norm_rope_q_kv_inplace_cuda,"cross_norm_rope_q_kv_inplace_cuda");

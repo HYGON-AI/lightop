@@ -1,10 +1,10 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <torch/all.h>
-
+#include <cub/cub.cuh>
 #include <ATen/ATen.h>
 #include <ATen/cuda/Atomic.cuh>
-
+#include <cub/block/block_scan.cuh>
 #define WARP_SIZE 1
 
 #define CEILDIV(x, y) (((x) + (y) - 1) / (y))
@@ -15,6 +15,139 @@ template <typename T, int N> struct alignas(sizeof(T) * N) Vector {
 namespace at {
 namespace native {
 
+/* numel <= 256 */
+template <typename scalar_t, int smem_size, int TOPK, bool Is_EP,int CUB_BLOCK_THREADS>
+__global__ void moe_align_block_size_kernel_opt_fused_small_size(
+    const scalar_t* __restrict__ topk_ids,
+    int32_t* __restrict__ sorted_token_ids, int32_t* __restrict__ expert_ids,
+    int32_t* __restrict__ total_tokens_post_pad, int32_t num_experts,
+    int32_t padded_num_experts, int32_t experts_per_warp, int32_t block_size,
+    size_t numel, int32_t* __restrict__ expert_map,
+    bool* __restrict__ expert_mask, int32_t* __restrict__ num_local_tokens, int32_t sorted_token_ids_len,bool Is_fuse_fill) {
+  const int topk_numel = numel;
+  if (num_local_tokens != nullptr) {
+    if (num_local_tokens[0] == 0) {
+      return;
+    } else {
+      numel = num_local_tokens[0] * TOPK;
+    }
+  }
+  const size_t tid = threadIdx.x;
+  const size_t stride = blockDim.x;
+  if(Is_fuse_fill){
+      for (int i = tid; i < sorted_token_ids_len; i += stride) {
+         sorted_token_ids[i] = topk_numel;
+    }
+  }
+
+  __shared__ int32_t shared_counts[smem_size + 1];
+  
+  // CUB Scan 需要额外的共享内存
+  typedef cub::BlockScan<int32_t, CUB_BLOCK_THREADS> BlockScan;
+  __shared__ typename BlockScan::TempStorage temp_storage;
+  // 保存总和
+  // int32_t block_total_sum;
+
+  __shared__ int32_t local_expert_map[smem_size];
+
+  //初始化
+  for (int i = tid; i < num_experts; i += stride) {
+    shared_counts[i] = 0;
+  }
+   if (expert_map != nullptr) {
+      local_expert_map[tid] = expert_map[tid];
+    }
+  // // 单独处理最后一个元素
+  // if (tid == 0) {
+  //   shared_counts[num_experts] = 0;
+  // }
+  __syncthreads();
+
+  //直方图统计
+  bool is_valid_expert = true;
+  int expert_id = 0;
+
+  if(tid < numel){
+      expert_id = topk_ids[tid];
+      if (expert_map) {
+          if (local_expert_map[expert_id] == -1) {
+              is_valid_expert = false;
+          }
+      }
+
+      if constexpr(Is_EP) {
+          if (is_valid_expert) {
+              atomicAdd(&shared_counts[expert_id], 1);
+          }
+      } else {
+          atomicAdd(&shared_counts[expert_id], 1);
+      }
+  }
+  __syncthreads();
+
+  // Padding 
+  if (threadIdx.x < num_experts) {
+    int expert_count = shared_counts[threadIdx.x];
+    // (a + b - 1) & ~(b - 1)
+    shared_counts[threadIdx.x] = (expert_count + block_size - 1) & ~(block_size - 1);
+  }
+  
+  __syncthreads(); 
+
+  //执行 CUB 扫描
+  int32_t my_padded_count = (threadIdx.x < num_experts) ? shared_counts[threadIdx.x] : 0;
+  int32_t exclusive_prefix_sum = 0;
+  cub::Sum scan_op;
+
+  BlockScan(temp_storage).ExclusiveScan(
+      my_padded_count,      
+      exclusive_prefix_sum,  
+      0,                    
+      scan_op                
+  );
+  // 总和等于最后一个线程的排他和+自己padd的值
+  if (tid == CUB_BLOCK_THREADS - 1) {
+    *total_tokens_post_pad = exclusive_prefix_sum + my_padded_count;
+     shared_counts[num_experts] = exclusive_prefix_sum + my_padded_count;
+  }
+
+  //__syncthreads();
+  if (threadIdx.x < num_experts) {
+    shared_counts[threadIdx.x] = exclusive_prefix_sum;
+  }
+
+//  if (tid == CUB_BLOCK_THREADS - 1) {
+//     *total_tokens_post_pad = block_total_sum;
+//     shared_counts[num_experts] = block_total_sum;
+//   }
+
+  __syncthreads(); 
+
+  if (threadIdx.x < num_experts) {
+    for (int i = shared_counts[threadIdx.x]; i < shared_counts[threadIdx.x + 1];
+         i += block_size) {
+      if (expert_map != nullptr) {
+        expert_ids[i / block_size] = local_expert_map[threadIdx.x];
+      } else {
+        expert_ids[i / block_size] = threadIdx.x;
+      }
+    }
+  }
+  __syncthreads(); 
+  if(tid < numel){
+      if constexpr(Is_EP){
+          if(is_valid_expert){
+              int32_t rank_post_pad = atomicAdd(&shared_counts[expert_id], 1); 
+              sorted_token_ids[rank_post_pad] = tid;
+          }
+      }else{
+              int32_t rank_post_pad = atomicAdd(&shared_counts[expert_id], 1);
+              sorted_token_ids[rank_post_pad] = tid;
+      }
+       if (expert_mask) expert_mask[tid] = is_valid_expert;
+  }
+
+}
 template <typename scalar_t, int smem_size, int TOPK>
 __global__ void moe_align_block_size_kernel_opt_fused(
     const scalar_t *__restrict__ topk_ids,
@@ -22,7 +155,7 @@ __global__ void moe_align_block_size_kernel_opt_fused(
     int32_t *__restrict__ total_tokens_post_pad, int32_t num_experts,
     int32_t padded_num_experts, int32_t experts_per_warp, int32_t block_size,
     size_t numel, int32_t *__restrict__ expert_map,
-    bool *__restrict__ expert_mask, int32_t *__restrict__ num_local_tokens,bool Is_EP,int32_t sorted_token_ids_len) {
+    bool *__restrict__ expert_mask, int32_t *__restrict__ num_local_tokens,bool Is_EP,int32_t sorted_token_ids_len,bool Is_fuse_fill) {
    const int topk_numel = numel;
   if (num_local_tokens != nullptr) {
     if (num_local_tokens[0] == 0) {
@@ -31,10 +164,13 @@ __global__ void moe_align_block_size_kernel_opt_fused(
       numel = num_local_tokens[0] * TOPK;
     }
   }
-   const size_t tid = threadIdx.x;
+  const size_t tid = threadIdx.x;
   const size_t stride = blockDim.x;
-  for(int i = tid; i < sorted_token_ids_len; i += stride){
-      sorted_token_ids[i] = topk_numel;
+
+   if(Is_fuse_fill){
+      for (int i = tid; i < sorted_token_ids_len; i += stride) {
+         sorted_token_ids[i] = topk_numel;
+    }
   }
   __shared__ int32_t shared_counts[smem_size + 1];
   int32_t *cumsum = shared_counts;
@@ -144,6 +280,7 @@ __global__ void moe_align_block_size_kernel_opt_fused(
   // }
 }
 
+
 template <typename scalar_t, int seme_size, int TOPK>
 __global__ void moe_align_block_size_kernel_opt(
     const scalar_t *__restrict__ topk_ids,
@@ -152,7 +289,7 @@ __global__ void moe_align_block_size_kernel_opt(
     int32_t padded_num_experts, int32_t experts_per_warp, int32_t block_size,
     size_t numel, int32_t *__restrict__ cumsum,
     int32_t *__restrict__ expert_map, bool *__restrict__ expert_mask,
-    int32_t *__restrict__ num_local_tokens,bool Is_EP,int32_t sorted_token_ids_len) {
+    int32_t *__restrict__ num_local_tokens,bool Is_EP,int32_t sorted_token_ids_len,bool Is_fuse_fill) {
    const int topk_numel = numel;
   if (num_local_tokens != nullptr) {
     if (num_local_tokens[0] == 0) {
@@ -161,9 +298,6 @@ __global__ void moe_align_block_size_kernel_opt(
       numel = num_local_tokens[0] * TOPK;
     }
   }
-  for (int i = threadIdx.x; i <= sorted_token_ids_len; i += blockDim.x){
-      sorted_token_ids[i] = topk_numel;
-   } 
 
   __shared__ int32_t shared_counts[seme_size + 1];
 
@@ -172,7 +306,11 @@ __global__ void moe_align_block_size_kernel_opt(
   const int my_expert_start = warp_id * experts_per_warp;
   const size_t tid = threadIdx.x;
   const size_t stride = blockDim.x;
-
+     if(Is_fuse_fill){
+      for (int i = tid; i < sorted_token_ids_len; i += stride) {
+         sorted_token_ids[i] = topk_numel;
+    }
+  }
   for (int i = tid; i <= num_experts; i += stride) {
     shared_counts[i] = 0;
   }
@@ -970,7 +1108,7 @@ void moe_align_block_size(
     torch::Tensor num_tokens_post_pad,
     const torch::optional<torch::Tensor> &expert_map =  torch::nullopt,
     const torch::optional<torch::Tensor> &expert_mask =  torch::nullopt, // bool
-    const torch::optional<torch::Tensor> &num_local_tokens =  torch::nullopt,bool Is_EP = false) {
+    const torch::optional<torch::Tensor> &num_local_tokens =  torch::nullopt,bool Is_EP = false,bool Is_fuse_fill = true) {
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   int64_t padded_num_experts =
@@ -1003,7 +1141,38 @@ void moe_align_block_size(
                                      : nullptr);
         } else {
           if (num_experts == 256) {
-            if (topk_ids.numel() <= 1024) {
+            if (topk_ids.numel() <= 256) {
+              threads = 256;
+               if (Is_EP) {
+                moe_align_block_size_kernel_opt_fused_small_size<scalar_t, 256, 8, true,256><<<
+                    1, threads, 0, stream>>>(
+                    topk_ids.data_ptr<scalar_t>(),
+                    sorted_token_ids.data_ptr<int32_t>(),
+                    experts_ids.data_ptr<int32_t>(),
+                    num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
+                    padded_num_experts, experts_per_warp, block_size, topk_ids.numel(),
+                    expert_map.has_value() ? expert_map->data_ptr<int32_t>() : nullptr,
+                    expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr,
+                    num_local_tokens.has_value()
+                        ? num_local_tokens->data_ptr<int32_t>()
+                        : nullptr,
+                    sorted_token_ids.numel(),Is_fuse_fill);
+              } else {
+                moe_align_block_size_kernel_opt_fused_small_size<scalar_t, 256, 8, false,256><<<
+                    1, threads, 0, stream>>>(
+                    topk_ids.data_ptr<scalar_t>(),
+                    sorted_token_ids.data_ptr<int32_t>(),
+                    experts_ids.data_ptr<int32_t>(),
+                    num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
+                    padded_num_experts, experts_per_warp, block_size, topk_ids.numel(),
+                    expert_map.has_value() ? expert_map->data_ptr<int32_t>() : nullptr,
+                    expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr,
+                    num_local_tokens.has_value()
+                        ? num_local_tokens->data_ptr<int32_t>()
+                        : nullptr,
+                    sorted_token_ids.numel(),Is_fuse_fill);
+              }
+            }else if (topk_ids.numel() <= 1024) {
               auto align_kernel =
                   moe_align_block_size_kernel_opt_fused<scalar_t, 256, 8>;
               size_t num_warps = CEILDIV(padded_num_experts, experts_per_warp);
@@ -1028,7 +1197,7 @@ void moe_align_block_size(
                                           : nullptr,
                   num_local_tokens.has_value()
                       ? num_local_tokens->data_ptr<int32_t>()
-                      : nullptr,Is_EP,sorted_token_ids.numel());
+                      : nullptr,Is_EP,sorted_token_ids.numel(),Is_fuse_fill);
             } else {
               auto align_kernel =
                   moe_align_block_size_kernel_opt<scalar_t, 256, 8>;
@@ -1053,7 +1222,7 @@ void moe_align_block_size(
                                           : nullptr,
                   num_local_tokens.has_value()
                       ? num_local_tokens->data_ptr<int32_t>()
-                      : nullptr,Is_EP,sorted_token_ids.numel());
+                      : nullptr,Is_EP,sorted_token_ids.numel(),Is_fuse_fill);
 
               const int block_threads = std::min(1024, (int)threads);
               const int num_blocks =
