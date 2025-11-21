@@ -121,10 +121,21 @@ void _m_grouped_w8a8_gemm_nt_contig_asm_impl(
 
     size_t size = sizeof(hipFunctionArgs);
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    string fp16_co_file_tn = "deepgemm_channel/w8a8/DeepGemm_W8A8_I8_MARLIN_PERCHANNEL_ASM_TN_MT256X256X128_FP16.co";
-    string bf16_co_file_tn = "deepgemm_channel/w8a8/DeepGemm_W8A8_I8_MARLIN_PERCHANNEL_ASM_TN_MT256X256X128_BF16.co";
-	static AiterAsmKernel deepgemm_w8a8_fp16_tn("DeepGemm_W8A8_I8_PERCHANNEL_ASM_TN_MT256X256X128_FP16", fp16_co_file_tn.c_str());
-	static AiterAsmKernel deepgemm_w8a8_bf16_tn("DeepGemm_W8A8_I8_PERCHANNEL_ASM_TN_MT256X256X128_BF16", bf16_co_file_tn.c_str());
+    char func_name_fp[1024], fp16_co_file_tn[1024], bf16_co_file_tn[1024], func_name_bf[1024];
+    memset(func_name_fp, 0x0, sizeof(func_name_fp));
+    memset(fp16_co_file_tn, 0x0, sizeof(fp16_co_file_tn));
+    memset(func_name_bf, 0x0, sizeof(func_name_bf));
+    memset(bf16_co_file_tn, 0x0, sizeof(bf16_co_file_tn));
+    
+    sprintf(func_name_fp, "DeepGemm_W8A8_I8_PERCHANNEL_ASM_TN_MT%dX%dX%d_FP16", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(func_name_bf, "DeepGemm_W8A8_I8_PERCHANNEL_ASM_TN_MT%dX%dX%d_BF16", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(fp16_co_file_tn, "deepgemm_channel/w8a8/DeepGemm_W8A8_I8_MARLIN_PERCHANNEL_ASM_TN_MT%dX%dX%d_FP16.co", BLOCKM, BLOCKN, BLOCKK);
+    sprintf(bf16_co_file_tn, "deepgemm_channel/w8a8/DeepGemm_W8A8_I8_MARLIN_PERCHANNEL_ASM_TN_MT%dX%dX%d_BF16.co", BLOCKM, BLOCKN, BLOCKK);
+    // string fp16_co_file_tn = "deepgemm_channel/w8a8/DeepGemm_W8A8_I8_MARLIN_PERCHANNEL_ASM_TN_MT256X256X128_FP16.co";
+    // string bf16_co_file_tn = "deepgemm_channel/w8a8/DeepGemm_W8A8_I8_MARLIN_PERCHANNEL_ASM_TN_MT256X256X128_BF16.co";
+
+	static AiterAsmKernel deepgemm_w8a8_fp16_tn(func_name_fp, fp16_co_file_tn);
+	static AiterAsmKernel deepgemm_w8a8_bf16_tn(func_name_bf, bf16_co_file_tn);
 
     AiterAsmKernel *impl_ptr = nullptr;
     if (output.scalar_type() == at::ScalarType::BFloat16)
@@ -162,6 +173,15 @@ torch::Tensor m_grouped_w8a8_gemm_nt_contig_asm(
         at::ScalarType::BFloat16,
         output.scalar_type(), "_m_grouped_w8a8_gemm_nt_contig_asm_impl",[&] {
             _m_grouped_w8a8_gemm_nt_contig_asm_impl<256, 256, 128, scalar_t>(
+            input, b_qweight, output, a_scale, b_scale, m_indices, experts_num);
+        }
+        );
+    } else if (mode == 100) {
+        AT_DISPATCH_FLOATING_TYPES_AND2(
+        at::ScalarType::Half,
+        at::ScalarType::BFloat16,
+        output.scalar_type(), "_m_grouped_w8a8_gemm_nt_contig_asm_impl",[&] {
+            _m_grouped_w8a8_gemm_nt_contig_asm_impl<256, 128, 128, scalar_t, 512>(
             input, b_qweight, output, a_scale, b_scale, m_indices, experts_num);
         }
         );
