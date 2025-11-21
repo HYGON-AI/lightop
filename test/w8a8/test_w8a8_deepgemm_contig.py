@@ -110,28 +110,29 @@ def torch_gemm(
 
 def test_m_grouped_gemm_contiguous() -> None:
     num_groups = 16
-    expected_m_per_group = 256
-    n = 512
-    k = 512
-
-    m, a, b, m_indices, d, ref_d = generate_m_grouped_contiguous(num_groups, expected_m_per_group, n, k)
-
-    a_int8, a_scale = a
-    b_int8, b_scale = b
-    bm_int8 = []
-    for i in range(b_int8.shape[0]):
-        w_marlin = w8a8_nt_kpack2_marlin_weight(b_int8[i])
-        bm_int8.append(w_marlin)
-    w = torch.stack(bm_int8, dim=0)
-    b = [w, b_scale]
-    d = m_grouped_w8a8_gemm_nt_contig_asm(a, b, d, m_indices)
-    ref_d = torch_gemm(a_int8, b_int8, ref_d, a_scale, b_scale, 1.0, 0.0, m_index_h=m_indices)
-
-    if not torch.allclose(ref_d, d, rtol=1e-2, atol=5e-2):
-        print("精度检查不合格！！！") 
-    else:
-        print("精度检查合格！！！")
-
+    expected_m_per_group_list = [128, 256, 512, 1024, 2048]
+    n_list = [4096, 7168]
+    k_list = [7168, 2048]
+    out_dtype = torch.bfloat16
+    for i in range(0,len(k_list),1):
+        for me in expected_m_per_group_list:
+            expected_m_per_group, n, k = me, n_list[0], k_list[0]
+            m, a, b, m_indices, d, ref_d = generate_m_grouped_contiguous(num_groups, expected_m_per_group, n, k)
+            print("m:{} n:{} k:{}".format(m, n, k))
+            a_int8, a_scale = a
+            b_int8, b_scale = b
+            bm_int8 = []
+            for i in range(b_int8.shape[0]):
+                w_marlin = w8a8_nt_kpack2_marlin_weight(b_int8[i])
+                bm_int8.append(w_marlin)
+            w = torch.stack(bm_int8, dim=0)
+            b = [w, b_scale]
+            d = m_grouped_w8a8_gemm_nt_contig_asm(a, b, d, m_indices)
+            ref_d = torch_gemm(a_int8, b_int8, ref_d, a_scale, b_scale, 1.0, 0.0, m_index_h=m_indices)
+            if not torch.allclose(ref_d, d, rtol=1e-2, atol=5e-2):
+                print("精度检查不合格！！！") 
+            else:
+                print("精度检查合格！！！")
 
 test_m_grouped_gemm_contiguous()
 
