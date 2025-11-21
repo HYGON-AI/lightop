@@ -70,8 +70,8 @@ void _m_grouped_marlin_w8a8_gemm_nt_masked_asm_impl(
   size_t localWorkSize[3] = {BLOCKDIM, 1, 1};
   size_t globalWorkSize[3] = {1, 1, 1};
   auto need_size_m = std::min(size_m, expected_m_per_group*1.3);
-  globalWorkSize[0] = DIVIDE(need_size_m, BLOCKM);
-  globalWorkSize[1] = DIVIDE(size_n, BLOCKN);
+  globalWorkSize[0] = DIVIDE(need_size_m, BLOCKN);
+  globalWorkSize[1] = DIVIDE(size_n, BLOCKM);
   globalWorkSize[2] = experts_num;
 
   unsigned int problemNumGroupTiles0 = globalWorkSize[0];
@@ -111,6 +111,7 @@ void _m_grouped_marlin_w8a8_gemm_nt_masked_asm_impl(
   #if DEBUG
   std::cout << "_m_grouped_marlin_w8a8_gemm_nt_masked_asm_impl "
           << " size_m: " << size_m
+          << " need_size_m: " << need_size_m
           << " size_n: " << size_n
           << " size_k: " << size_k
           << " expected_m_per_group: " << expected_m_per_group
@@ -237,6 +238,16 @@ torch::Tensor m_grouped_marlin_w8a8_gemm_nt_masked_asm(
       at::ScalarType::BFloat16,
       output.scalar_type(), "m_groupgemm_w8a8_TN_impl",[&] {
         _m_grouped_marlin_w8a8_gemm_nt_masked_asm_impl<256, 256, 128, scalar_t>(
+          input, b_qweight, output, a_scale, b_scale,
+          masked_m, expected_m_per_group, experts_num);
+      }
+    );
+  } else if(mode == 1001) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "m_groupgemm_w8a8_TN_impl",[&] {
+        _m_grouped_marlin_w8a8_gemm_nt_masked_asm_impl<256, 128, 128, scalar_t>(
           input, b_qweight, output, a_scale, b_scale,
           masked_m, expected_m_per_group, experts_num);
       }

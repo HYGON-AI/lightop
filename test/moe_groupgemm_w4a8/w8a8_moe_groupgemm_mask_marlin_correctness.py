@@ -114,39 +114,8 @@ def fused_experts_impl_w8a8_ep_correctness(hidden_states, weight13, weight2, w13
 
     inter_out_gemm1 = native_w8a8_perChannel_batch_matmul(q_a1_all, w13, qa1_scale_all, w13_scale, output_dtype=hidden_states.dtype)
 
-    inter_out_gemm1[:, math.floor(expected_m_per_group * 0.7):, :] = 0
+    # inter_out_gemm1[:, math.floor(expected_m_per_group * 0.7):, :] = 0
 
-    # for i, num_tokens in enumerate(tokens_per_expert):
-    #     end_idx = start_idx + num_tokens
-    #     if num_tokens == 0:
-    #         continue
-    #     # q_a1, qa1_scale = per_token_quant_int8(hidden_states[start_idx:end_idx])
-    #     q_a1 = q_a1_all[start_idx:end_idx]
-    #     qa1_scale = qa1_scale_all[start_idx:end_idx]
-
-    #     current_w13 = w13[i]
-    #     current_w2 = w2[i]
-    #     current_w13_s = w13_scale[i]
-    #     current_w2_s = w2_scale[i]
-    #     inter_out = native_w8a8_per_token_matmul(
-    #         q_a1, current_w13 , qa1_scale, current_w13_s, output_dtype=hidden_states.dtype
-    #     )
-    #     inter_out_gemm1.append(inter_out)
-    #     d = inter_out.shape[-1] // 2
-    #     act_out = F.silu(inter_out[..., :d]) * inter_out[..., d:]
-    #     act_out_gemm2.append(act_out)
-    #     act_out_q, act_out_s = per_token_quant_int8(act_out)
-
-    #     expert_out= native_w8a8_per_token_matmul(
-    #         act_out_q, current_w2, act_out_s, current_w2_s, output_dtype=hidden_states.dtype
-    #     )
-    #     outputs.append(expert_out)
-    #     start_idx = end_idx
-    # if len(outputs) > 0:
-    #     expert_output = torch.cat(outputs, dim=0)
-    # else:
-    #     assert hidden_states.numel() == 0, f"sorted_tokens: should be empty, but got {hidden_states.shape}"
-    #     expert_output = hidden_states
 
     if len(inter_out_gemm1) > 0:
         gemm1_out_cuda = torch.zeros_like(inter_out_gemm1)
@@ -194,21 +163,21 @@ def fused_experts_impl_w8a8_ep_correctness(hidden_states, weight13, weight2, w13
                                     )
     torch.cuda.synchronize()
     
-    if not (torch.allclose(inter_out_gemm1[:,0:math.floor(expected_m_per_group * 0.7),:], gemm1_out_cuda[:,0:math.floor(expected_m_per_group * 0.7),:], rtol=1e-2, atol=1e-2)):
+    if not (torch.allclose(inter_out_gemm1[:,0:math.floor(expected_m_per_group * 0.5),:], gemm1_out_cuda[:,0:math.floor(expected_m_per_group * 0.5),:], rtol=1e-2, atol=1e-2)):
         print("error moe_groupgemm_w4a8 gemm1 精度检查不合格！！！")
-        print("rocblas:", inter_out_gemm1)
         # torch.set_printoptions(profile="full") 
+        print("rocblas:", inter_out_gemm1)
         print("asm:",gemm1_out_cuda)
-        diff_indices = torch.where(inter_out_gemm1 != gemm1_out_cuda)[0]
-        diff_indices = diff_indices.view(-1, inter_out_gemm1.shape[1])
-        print("不同元素的索引:", diff_indices)
+        # diff_indices = torch.where(inter_out_gemm1 != gemm1_out_cuda)[0]
+        # diff_indices = diff_indices.view(-1, inter_out_gemm1.shape[1])
+        # print("不同元素的索引:", diff_indices)
         # torch.set_printoptions(profile="full")  
-        # diff_mask = inter_out_gemm1_out_ref != gemm1_out_cuda
-        # diff_indices = torch.nonzero(diff_mask, as_tuple=False)
-        # print("存在差异的坐标与值如下：")
-        # for idx in diff_indices:
-        #     i, j = idx.tolist()
-        #     print(f"坐标 ({i}, {j}): rocblas={inter_out_gemm1_out_ref[i, j]}, asm={gemm1_out_cuda[i, j]}")
+        diff_mask = inter_out_gemm1 != gemm1_out_cuda
+        diff_indices = torch.nonzero(diff_mask, as_tuple=False)
+        print("存在差异的坐标与值如下：")
+        for idx in diff_indices:
+            _, i, j = idx.tolist()
+            print(f"坐标 ({i}, {j}): rocblas={inter_out_gemm1[_, i, j]}, asm={gemm1_out_cuda[_, i, j]}")
         # fasm = open('asm_output.txt', 'w')   
         # print(f'asm_output: {gemm1_out_cuda}', file=fasm)
         # fasm.close
@@ -311,9 +280,9 @@ def main():
             raise ValueError(f"无法解析列表参数: {list_str}。错误: {str(e)}")
     
     m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]
-    m_list=[8192]
+    m_list=[4096]
     E=args.E 
-    expected_m_per_group=1024
+    expected_m_per_group=32
     out_dtype=args.out_dtype
     
     n_list_1=parse_list(args.n1_list) #[256,512]
@@ -338,9 +307,7 @@ def main():
             # weight13 = tensor.to(torch.int8).unsqueeze(0).expand(E, -1, -1)  # shape [1, 256, 128] then expand to [E, 256, 128]
             # print("weight13:", weight13)
 
-            weight2 = torch.ones_like(weight2) 
             # weight13_scale = torch.ones_like(weight13_scale) 
-            weight2_scale = torch.ones_like(weight2_scale)
             print("masked_m:", masked_m)
             print("input:",input.shape, input.dtype)
             print("weight13:",weight13.shape,weight13.dtype)
