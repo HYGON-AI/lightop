@@ -42,6 +42,7 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
     flags += ['-fno-gpu-rdc']
     flags +=['--gpu-max-threads-per-block=1024']
+    flags +=['-ffast-math']
     return flags
 
 def _get_rocm_arch_flags_marlin(cflags: Optional[List[str]] = None) -> List[str]:

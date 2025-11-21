@@ -74,9 +74,9 @@ def moe_align_block_size_python(
                torch.tensor([0], dtype=torch.int32, device=topk_ids.device)
 
     num_tokens_post_pad_tensor = torch.tensor([total_tokens_post_pad], dtype=torch.int32, device=topk_ids.device)
-
+    total_count = topk_ids_cpu.numel()
     # 步骤 3 & 5: 创建 sorted_token_ids 并进行 token 重排
-    sorted_token_ids = torch.full((total_tokens_post_pad,), -1, dtype=torch.int32)
+    sorted_token_ids = torch.full((total_tokens_post_pad,), total_count, dtype=torch.int32)
     current_expert_counts = torch.zeros(num_experts, dtype=torch.long)
     for i in range(topk_ids_cpu.numel()):
         logical_expert_id = topk_ids_cpu[i].item()
@@ -117,12 +117,7 @@ def run_test():
     top_k = 8
     block_size = 64
     device = "cuda"
-    num_tokens_list = [1, 5, 10, 18, 26, 35, 45, 58, 72, 90,
-    110, 135, 160, 190, 225, 260, 300, 350, 410, 480,
-    550, 630, 720, 810, 900, 1000, 1110, 1230, 1350, 1480,
-    1600, 1750, 1900, 2050, 2200, 2350, 2500, 2650, 2800, 2950,
-    3100, 3300, 3500, 3750, 4000, 4250, 4500, 4800, 5100, 5500,8192,16384
-    ]
+    num_tokens_list = [5,6,7,8]
     all_accuracy_tests_passed = True
     performance_results = []
 

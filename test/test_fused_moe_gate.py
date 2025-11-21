@@ -38,7 +38,7 @@ def check_correctness_once(
     w_opt, i_opt = biased_grouped_topk_org_opt(
         scores.clone(), bias.clone(), num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor
     )
-    pdb.set_trace()
+    # pdb.set_trace()
     assert w_init.shape == w_opt.shape, f"weights shape mismatch: {w_init.shape} vs {w_opt.shape}"
     assert i_init.shape == i_opt.shape, f"indices shape mismatch: {i_init.shape} vs {i_opt.shape}"
 
