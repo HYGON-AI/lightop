@@ -97,7 +97,7 @@ __device__ void moe_fused_gate_impl(
   vectype in = *((vectype*)(thread_read_ptr));
   vectype b = *((vectype*)(bias_thread_read_ptr));
   for(int kk =0; kk < 8; kk++){
-   row_chunk[kk]=__fdividef(1.0f, 1.0f + __expf(static_cast<float>(-in[kk])));
+   row_chunk[kk]=1.0f/(1.0f + __expf(-static_cast<float>(in[kk])));
    scores_chunk[kk]=static_cast<float>(b[kk])+row_chunk[kk];
   }
 
