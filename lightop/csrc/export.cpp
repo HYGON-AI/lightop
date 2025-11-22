@@ -11,6 +11,7 @@ Tensor rmsnorm_forward_autograd(const Tensor& x,const Tensor& weight,double eps,
 std::tuple<Tensor,Tensor>rmsnorm_forward(const Tensor& self,const Tensor& weight,c10::optional<Tensor>& output_inplace,double eps,bool training);
 std::tuple<Tensor,Tensor>rmsnorm_backward(const Tensor& grad, const Tensor& X,const Tensor& rstd,const Tensor& gamma);
 void fused_rms_norm_contiguous(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight, double epsilon);
+void fused_rms_norm_rope_contiguous(torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& weight, torch::Tensor& cos_sin_cache, bool is_neox_style, float epsilon);
 Tensor fuse_rn_dropout_forward_autograd(const Tensor& x,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_bias_forward_autograd(const Tensor& x,const Tensor& y,const Tensor &bias, const Tensor& weight,double eps,double rate,bool training);
@@ -238,6 +239,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rmsnorm_forward", &at::native::rmsnorm_forward, "rmsnorm forward");
   m.def("rmsnorm_backward", &at::native::rmsnorm_backward, "rmsnorm backward");
   m.def("fused_rms_norm_contiguous", &at::native::fused_rms_norm_contiguous, "fused_rms_norm_contiguous");
+  m.def("fused_rms_norm_rope_contiguous", &at::native::fused_rms_norm_rope_contiguous, "fused_rms_norm_rope_contiguous");
   m.def("rn_dropout_forward_autograd", &at::native::fuse_rn_dropout_forward_autograd, "fused_rn_dropout forward");
   m.def("rn_add_forward_autograd", &at::native::fuse_rn_add_forward_autograd, "fused_rn_add forward");
   m.def("rn_add_dropout_forward_autograd", &at::native::fuse_rn_add_dropout_forward_autograd, "fused_rn_add_dropout forward");
