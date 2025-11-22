@@ -31,6 +31,92 @@ AT_DISPATCH_SWITCH(TYPE, NAME, VLLM_DISPATCH_CASE_FLOATING_TYPES(__VA_ARGS__))
   AT_DISPATCH_CASE(at::ScalarType::Half, __VA_ARGS__)  \
   AT_DISPATCH_CASE(at::ScalarType::BFloat16, __VA_ARGS__)
 
+
+  inline __device__ uint8_t float_to_fp8e5m2(float f) {
+    constexpr uint32_t fp32_inf = UINT32_C(255) << 23;
+    constexpr uint32_t fp8_max = UINT32_C(143) << 23;
+    constexpr uint32_t denorm_mask = UINT32_C(134) << 23;
+    uint32_t f_bits = c10::detail::fp32_to_bits(f);
+    uint8_t result = 0u;
+    const uint32_t sign = f_bits & UINT32_C(0x80000000);
+    f_bits ^= sign;
+    if (f_bits >= fp8_max) {
+      result = f_bits > fp32_inf ? UINT8_C(0x7F) : UINT8_C(0x7C);
+    } else {
+      if (f_bits < (UINT32_C(113) << 23)) {
+        f_bits = c10::detail::fp32_to_bits(c10::detail::fp32_from_bits(f_bits)
+                 + c10::detail::fp32_from_bits(denorm_mask));
+        result = static_cast<uint8_t>(f_bits - denorm_mask);
+      } else {
+        uint32_t mant_odd = (f_bits >> 21) & 1;
+        f_bits += ((uint32_t)(15 - 127) << 23) + 0xFFFFF;
+        f_bits += mant_odd;
+        result = static_cast<uint8_t>(f_bits >> 21);
+      }
+    }
+    result |= static_cast<uint8_t>(sign >> 24);
+    return result;
+  }
+
+
+  inline __device__ uint8_t float_to_fp8e4m3(float f) {
+    // ===== 常量定义 =====
+    // FP8 E4M3最大值: 1087 << 20
+    // 1087 = 2^(4+1) - 1 + 2^4 = 31 + 16 = 47? 等等，这里需要重新计算
+    // 实际上是基于指数和尾数的位模式
+    constexpr uint32_t fp8_max = UINT32_C(1087) << 20;
+    
+    // 非正规化数处理掩码
+    constexpr uint32_t denorm_mask = UINT32_C(141) << 23;
+    
+    // ===== 步骤1: 提取float的位表示 =====
+    uint32_t f_bits = c10::detail::fp32_to_bits(f);
+    uint8_t result = 0u;
+    
+    // ===== 步骤2: 提取符号位并移除 =====
+    const uint32_t sign = f_bits & UINT32_C(0x80000000);
+    f_bits ^= sign;
+    
+    // ===== 步骤3: 处理不同数值范围 =====
+    
+    // 3a. 溢出处理
+    if (f_bits >= fp8_max) {
+      result = 0x7f;  // 01111111 (NaN/最大值)
+    } else {
+      
+      // 3b. 非正规化数处理
+      if (f_bits < (UINT32_C(121) << 23)) {
+        f_bits = c10::detail::fp32_to_bits(
+          c10::detail::fp32_from_bits(f_bits) + 
+          c10::detail::fp32_from_bits(denorm_mask)
+        );
+        result = static_cast<uint8_t>(f_bits - denorm_mask);
+      
+      // 3c. 正规化数处理
+      } else {
+        // 检查尾数第20位是否为1（对应FP8 E4M3 3位尾数的LSB）
+        uint8_t mant_odd = (f_bits >> 20) & 1;
+        
+        // 指数偏置调整: FP32偏置127 → FP8 E4M3偏置7
+        // 调整量 = 7 - 127 = -120
+        f_bits += ((uint32_t)(7 - 127) << 23) + 0x7FFFF;
+        
+        // 应用奇数舍入
+        f_bits += mant_odd;
+        
+        // 右移20位得到8位结果
+        result = static_cast<uint8_t>(f_bits >> 20);
+      }
+    }
+    
+    // ===== 步骤4: 加上符号位 =====
+    result |= static_cast<uint8_t>(sign >> 24);
+    
+    return result;
+  }
+
+
+
 template <typename T,int reducesize=C10_WARP_SIZE>
 __inline__ __device__ T WarpReduceSum_NEW(T val) {
 #pragma unroll
@@ -63,7 +149,8 @@ __inline__ __device__ T BlockReduceSum_NEW(T val, T* shared) {
 }
 
 
-template <typename scalar_t,typename T_ACC, int Vec=8, int num_warp_per_block=4, int rot_dim=64, int kv_c_dim=512>
+template <typename scalar_t,typename T_ACC, int Vec=8, int num_warp_per_block=4, int rot_dim=64,
+int kv_c_dim=512>
 __global__ void rms_rope_kernel(
     scalar_t* __restrict__ input_q,  // [bs, num_head, q_c_dim + rot_dim]
     scalar_t* __restrict__ input_k,  // [bs, kv_c_dim + rot_dim]
@@ -71,6 +158,9 @@ __global__ void rms_rope_kernel(
     scalar_t* __restrict__ weight,  // [kv_c_dim]
     const scalar_t* __restrict__ cos_sin_cache,  // [max_position, 2, rot_dim / 2]
     const int64_t* __restrict__ positions,  // [bs]
+    const int64_t* __restrict__ slot_mapping,  // [bs]
+    void* __restrict__ kv_cache,  // [num_kv_cache_blocks, kv_cache_blocks_size, kv_c_dim + rot_dim]
+    const int kv_cache_blocks_size,
     const int q_c_dim,  // 128
     const int num_head,  // 128
     const int q_stride_head,
@@ -79,7 +169,8 @@ __global__ void rms_rope_kernel(
     const int k_grid_x,
     const int k_rms_grid_x,
     const int bs,
-    const float epsilon) 
+    const float epsilon,
+    const int kv_dtype) 
   {
 
     if(blockIdx.x < q_grid_x){
@@ -145,6 +236,7 @@ __global__ void rms_rope_kernel(
       constexpr int num_token_per_block = num_token_per_warp * num_warp_per_block;
       using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
       using LoadTheta = at::native::memory::aligned_vector<scalar_t, Vec/2>;
+      using OutputT = at::native::memory::aligned_vector<uint8_t, Vec>;
       constexpr int embed_dim = rot_dim / 2;
       const int warpid = threadIdx.x / C10_WARP_SIZE;
       const int laneid = threadIdx.x % C10_WARP_SIZE;
@@ -159,25 +251,59 @@ __global__ void rms_rope_kernel(
       const int cos_index_in_cache = thread_offset_in_token /2;
       const int sin_index_in_cache = cos_index_in_cache + embed_dim;
       const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+      // 计算output的偏移量
+      const int64_t slot = slot_mapping[token_idx];
+      const int64_t kv_cache_offset = slot * 576 + thread_offset_in_token;
       // 读取q_pe、cos、sin
       scalar_t input_vec[Vec];
       scalar_t cos_vec[Vec/2];
       scalar_t sin_vec[Vec/2];
+      uint8_t output_vec[Vec];
       *(LoadT*)(input_vec) = *(LoadT*)(k_pe_ptr);
       *(LoadTheta*)cos_vec = *(LoadTheta*)(cache_ptr + cos_index_in_cache);
       *(LoadTheta*)sin_vec = *(LoadTheta*)(cache_ptr + sin_index_in_cache);
 
-      for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
-        scalar_t x = input_vec[ii];
-        scalar_t y = input_vec[ii+1];
-        scalar_t cos_val = cos_vec[rot_dim_idx];
-        scalar_t sin_val = sin_vec[rot_dim_idx];
-        input_vec[ii] = x * cos_val - y * sin_val;
-        input_vec[ii+1] = y * cos_val + x * sin_val;
-        rot_dim_idx += 1;
+      if (kv_dtype == 0) // fp8_e5m2
+      {
+        for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
+          scalar_t x = input_vec[ii];
+          scalar_t y = input_vec[ii+1];
+          scalar_t cos_val = cos_vec[rot_dim_idx];
+          scalar_t sin_val = sin_vec[rot_dim_idx];
+          output_vec[ii] = float_to_fp8e5m2(x * cos_val - y * sin_val);
+          output_vec[ii+1] = float_to_fp8e5m2(y * cos_val + x * sin_val);
+          rot_dim_idx += 1;
+        }
+        uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset + 512;
+        *(OutputT*)output_ptr = *(OutputT*)output_vec;
       }
-      // 写回k_pe
-      *(LoadT*)k_pe_ptr = *(LoadT*)input_vec;
+      else if (kv_dtype == 1) // fp8_e4m3
+      {
+        for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
+          scalar_t x = input_vec[ii];
+          scalar_t y = input_vec[ii+1];
+          scalar_t cos_val = cos_vec[rot_dim_idx];
+          scalar_t sin_val = sin_vec[rot_dim_idx];
+          output_vec[ii] = float_to_fp8e4m3(x * cos_val - y * sin_val);
+          output_vec[ii+1] = float_to_fp8e4m3(y * cos_val + x * sin_val);
+          rot_dim_idx += 1;
+        }
+        uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset + 512;
+        *(OutputT*)output_ptr = *(OutputT*)output_vec;
+      }
+      else{
+        for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
+          scalar_t x = input_vec[ii];
+          scalar_t y = input_vec[ii+1];
+          scalar_t cos_val = cos_vec[rot_dim_idx];
+          scalar_t sin_val = sin_vec[rot_dim_idx];
+          input_vec[ii] = static_cast<scalar_t>(x * cos_val - y * sin_val);
+          input_vec[ii+1] = static_cast<scalar_t>(y * cos_val + x * sin_val);
+          rot_dim_idx += 1;
+        }
+        scalar_t* output_ptr = (scalar_t*)kv_cache + kv_cache_offset + 512;
+        *(LoadT*)output_ptr = *(LoadT*)input_vec;
+      }
     }
     else
     {
@@ -186,6 +312,7 @@ __global__ void rms_rope_kernel(
       constexpr int token_per_block = token_per_warp * num_warp_per_block; // 1 * 4 = 4
       using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
       using LoadTheta = at::native::memory::aligned_vector<scalar_t, Vec/2>;
+      using OutputT = at::native::memory::aligned_vector<uint8_t, Vec>;
       const int warpid = threadIdx.x / C10_WARP_SIZE;
       const int laneid = threadIdx.x % C10_WARP_SIZE;
       const int block_token_id = (blockIdx.x - q_grid_x - k_grid_x) * token_per_block;
@@ -197,11 +324,15 @@ __global__ void rms_rope_kernel(
       if(thread_offset_in_token >= kv_c_dim) return;
       const int kv_c_offset = token_id * k_stride_head + thread_offset_in_token;
       scalar_t* kv_c_ptr = input_kv_c + kv_c_offset;
+      // 计算output的偏移量
+      const int64_t slot = slot_mapping[token_id];
+      const int64_t kv_cache_offset = slot * 576 + thread_offset_in_token;
       // 计算weight的offset
       scalar_t* weight_ptr = weight + thread_offset_in_token;
       // 读取kv_c, weight
       scalar_t input_vec[Vec];
       scalar_t weight_vec[Vec];
+      uint8_t output_vec[Vec];
       *(LoadT*)(input_vec) = *(LoadT*)(kv_c_ptr);
       *(LoadT*)(weight_vec) = *(LoadT*)(weight_ptr);
       T_ACC val = 0;
@@ -215,18 +346,41 @@ __global__ void rms_rope_kernel(
         s_rstd = c10::cuda::compat::rsqrt(val / kv_c_dim + epsilon);
       }
       s_rstd = __shfl(s_rstd, 0);
-      #pragma unroll
-      for(int ii = 0; ii < Vec; ii+=1){
-        input_vec[ii] = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
+      if (kv_dtype == 0) // fp8_e5m2
+      {
+        #pragma unroll
+        for(int ii = 0; ii < Vec; ii+=1){
+          float value = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
+          output_vec[ii] = float_to_fp8e5m2(value);
+        }
+        uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset;
+        *(OutputT*)output_ptr = *(OutputT*)output_vec;
       }
-      *(LoadT*)kv_c_ptr = *(LoadT*)input_vec;
+      else if (kv_dtype == 1) // fp8_e4m3
+      {
+        #pragma unroll
+        for(int ii = 0; ii < Vec; ii+=1){
+          scalar_t value = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
+          output_vec[ii] = float_to_fp8e4m3(value);
+        }
+        uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset;
+        *(OutputT*)output_ptr = *(OutputT*)output_vec;
+      }
+      else{
+        for(int ii = 0; ii < Vec; ii+=1){
+          input_vec[ii] = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
+        }
+        scalar_t* output_ptr = (scalar_t*)kv_cache + kv_cache_offset;
+        *(LoadT*)(output_ptr) = *(LoadT*)(input_vec);
+      }
     }
   }
 
 
 
   void fused_rms_norm_rope_contiguous(torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe, torch::Tensor& kv_c, 
-    torch::Tensor& weight, torch::Tensor& cos_sin_cache, bool is_neox_style, float epsilon) {
+    torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, 
+    std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon) {
 
     // printf("hello fused_rms_norm_rope_contiguous\n");
     // 暂时只实现rope逻辑，rms norm逻辑后续添加
@@ -274,6 +428,26 @@ __global__ void rms_rope_kernel(
     constexpr int k_rms_token_per_warp = element_per_warp / (kv_c_dim);// 1
     constexpr int k_rms_token_per_block = k_rms_token_per_warp * num_warp_per_block; // 4
     const int k_rms_grid_x = (bs + k_rms_token_per_block - 1) / k_rms_token_per_block; // (32 + 32 - 1) / 32 = 1
+    // 检查KV_CACHE相关参数
+    TORCH_CHECK(slot_mapping.dim() == 1, "slot_mapping must be 1D tensor [bs]");
+    TORCH_CHECK(slot_mapping.size(0) == bs, "slot_mapping.size(0) must be bs");
+    TORCH_CHECK(kv_cache.dim() == 3, "kv_cache must be 3D tensor [num_kv_cache_blocks, kv_cache_blocks_size, kv_c_dim + rot_dim]");
+    TORCH_CHECK(kv_cache.size(2) == kv_c_dim + rot_dim, "kv_cache.size(2) must be kv_c_dim + rot_dim");
+    const int num_kv_cache_blocks = kv_cache.size(0);
+    const int kv_cache_blocks_size = kv_cache.size(1);
+    TORCH_CHECK(kv_cache_dtype_str == "fp8_e4m3" || kv_cache_dtype_str == "fp8_e5m2" ||
+      kv_cache_dtype_str == "fp16" || kv_cache_dtype_str == "bf16" , "kv_cache_dtype_str must be fp8_e4m3 or fp8_e5m2 or fp16 or bf16");
+    TORCH_CHECK(kv_cache_scale == 1.0f, "kv_cache_scale must be 1.0");
+    int kv_dtype = -1;
+    if(kv_cache_dtype_str == "fp8_e5m2"){
+      kv_dtype = 0;
+    }
+    else if(kv_cache_dtype_str == "fp8_e4m3"){
+      kv_dtype = 1;
+    }
+    else {
+      kv_dtype = 2;
+    }
 
 
 
@@ -298,11 +472,27 @@ __global__ void rms_rope_kernel(
         scalar_t* k_pe_ptr  = k_pe.data_ptr<scalar_t>();
         scalar_t* kv_c_ptr = kv_c.data_ptr<scalar_t>();
         scalar_t* weight_ptr = weight.data_ptr<scalar_t>();
+        void* kv_cache_ptr;
+        if (kv_cache.scalar_type() == at::ScalarType::Byte) {
+            kv_cache_ptr = kv_cache.data_ptr<uint8_t>();
+        } else {
+            // 对于 float16/bfloat16，使用相应的指针
+            if (kv_cache.scalar_type() == at::ScalarType::Half) {
+                kv_cache_ptr = kv_cache.data_ptr<at::Half>();
+            } else if (kv_cache.scalar_type() == at::ScalarType::BFloat16) {
+                kv_cache_ptr = kv_cache.data_ptr<at::BFloat16>();
+            }
+        }
+        int64_t* slot_mapping_ptr = slot_mapping.data_ptr<int64_t>();
         const scalar_t* cos_sin_cache_ptr = cos_sin_cache.data_ptr<scalar_t>();
         const int64_t* positions_ptr = positions.data_ptr<int64_t>();
 
-        rms_rope_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,kv_c_dim><<<grid, block, 0, stream>>>(
-            q_pe_ptr,k_pe_ptr,kv_c_ptr,weight_ptr,cos_sin_cache_ptr,positions_ptr,q_c_dim,num_head,q_stride_head,k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon);
+        rms_rope_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,
+        kv_c_dim><<<grid, block, 0, stream>>>(
+            q_pe_ptr,k_pe_ptr,kv_c_ptr,weight_ptr,cos_sin_cache_ptr,
+            positions_ptr,slot_mapping_ptr,kv_cache_ptr,
+            kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
+            k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon, kv_dtype);
 
       });
 
