@@ -282,7 +282,7 @@ def main():
     m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]
     m_list=[4096]
     E=args.E 
-    expected_m_per_group=32
+    expected_m_per_group=256
     out_dtype=args.out_dtype
     
     n_list_1=parse_list(args.n1_list) #[256,512]

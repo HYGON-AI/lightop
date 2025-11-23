@@ -335,7 +335,7 @@ def main():
 
     df = pd.DataFrame({'E':df_E, 'm':df_m,'n':df_n,'k':df_k,'expected_m':df_expected_m,'asm deepgemm 耗时(us)': deepgemm_asm_costs,'asm deepgemm TFlops':df_tflops,'asm deepgemm Bandwidth(GB/s)':df_bandwidth})
         # 将 DataFrame 写入 Excel 文件
-    excel_name="DeepGEMM_masked_groupgemm.xlsx"
+    excel_name="DeepGEMM_masked_groupgemm_w8a8.xlsx"
         
     df.to_excel(excel_name, index=False)
 
