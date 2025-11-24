@@ -67,7 +67,7 @@ Tensor gemm_w8a8_asm(Tensor &A, Tensor &B, Tensor &As, Tensor &Bs, c10::optional
 std::vector<torch::Tensor> grougemm_w8a8_pertensor_asm(std::vector<torch::Tensor>& A_list, std::vector<torch::Tensor>& B_list, std::vector<torch::Tensor>& D_list, std::vector<torch::Tensor>& As_list, std::vector<torch::Tensor>& Bs_list, 
                                                       std::vector<float>& alphas, c10::optional<std::vector<torch::Tensor>>& C_list, c10::optional<std::vector<float>>& betas, torch::Dtype output_dtype);
 Tensor m_grouped_w8a8_gemm_nt_contig_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, Tensor m_indices, int mode);
-
+Tensor m_grouped_w16a16_gemm_nt_contig_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, Tensor m_indices, int mode);
 
 Tensor moe_w8a8_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, std::optional<Tensor> topk_weights, Tensor sorted_token_ids, Tensor expert_ids, Tensor num_tokens_post_pad, uint32_t top_k, int mode, int delta);
 Tensor moe_marlin_w8a8_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, std::optional<Tensor> topk_weights, Tensor sorted_token_ids, Tensor expert_ids, Tensor num_tokens_post_pad, uint32_t top_k, int mode, int delta);
@@ -284,6 +284,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("fp8to16", &at::native::fp8to16, "fp8to16");
   m.def("grougemm_w8a8_pertensor_asm", &at::native::grougemm_w8a8_pertensor_asm, "grougemm_w8a8_pertensor_asm");
   m.def("m_grouped_w8a8_gemm_nt_contig_asm", &at::native::m_grouped_w8a8_gemm_nt_contig_asm, "m_grouped_w8a8_gemm_nt_contig_asm");
+  m.def("m_grouped_w16a16_gemm_nt_contig_asm",&at::native::m_grouped_w16a16_gemm_nt_contig_asm,"m_grouped_w16a16_gemm_nt_contig_asm");
   m.def("moe_gemm_w8a8", &at::native::moe_gemm_w8a8, "moe_gemm_w8a8");
   m.def("moe_gemm_marlin_w8a8", &at::native::moe_gemm_marlin_w8a8, "moe_gemm_marlin_w8a8");
   m.def("moe_gemm_w4a8", &at::native::moe_gemm_w4a8, "moe_gemm_w4a8");
