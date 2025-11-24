@@ -180,6 +180,7 @@ def fused_rms_norm_rope_contiguous(
     q_pe: torch.Tensor,
     k_pe: torch.Tensor,
     kv_c: torch.Tensor,
+    kv_c_normed: torch.Tensor,
     weight: torch.Tensor,
     cos_sin_cache: torch.Tensor,
     slot_mapping: torch.Tensor,
@@ -189,5 +190,5 @@ def fused_rms_norm_rope_contiguous(
     is_neox_style: bool = False,
     epsilon: float = 1e-5,
 ) -> None:
-    op.fused_rms_norm_rope_contiguous(positions, q_pe, k_pe, kv_c, weight, cos_sin_cache, slot_mapping, kv_cache, kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon)
+    op.fused_rms_norm_rope_contiguous(positions, q_pe, k_pe, kv_c, kv_c_normed, weight, cos_sin_cache, slot_mapping, kv_cache, kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon)
     return
