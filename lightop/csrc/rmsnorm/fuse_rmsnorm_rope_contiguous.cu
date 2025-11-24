@@ -155,6 +155,7 @@ __global__ void rms_rope_kernel(
     scalar_t* __restrict__ input_q,  // [bs, num_head, q_c_dim + rot_dim]
     scalar_t* __restrict__ input_k,  // [bs, kv_c_dim + rot_dim]
     scalar_t* __restrict__ input_kv_c,  // [bs, kv_c_dim]
+    scalar_t* __restrict__ output_kv_c_normed,  // [bs, kv_c_dim]
     scalar_t* __restrict__ weight,  // [kv_c_dim]
     const scalar_t* __restrict__ cos_sin_cache,  // [max_position, 2, rot_dim / 2]
     const int64_t* __restrict__ positions,  // [bs]
@@ -327,6 +328,8 @@ __global__ void rms_rope_kernel(
       // 计算output的偏移量
       const int64_t slot = slot_mapping[token_id];
       const int64_t kv_cache_offset = slot * 576 + thread_offset_in_token;
+      const int64_t kv_c_normed_offset = token_id * kv_c_dim + thread_offset_in_token;
+      scalar_t* kv_c_normed_ptr = output_kv_c_normed + kv_c_normed_offset;
       // 计算weight的offset
       scalar_t* weight_ptr = weight + thread_offset_in_token;
       // 读取kv_c, weight
@@ -351,20 +354,24 @@ __global__ void rms_rope_kernel(
         #pragma unroll
         for(int ii = 0; ii < Vec; ii+=1){
           float value = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
+          input_vec[ii] = value;
           output_vec[ii] = float_to_fp8e5m2(value);
         }
         uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset;
         *(OutputT*)output_ptr = *(OutputT*)output_vec;
+        *(LoadT*)kv_c_normed_ptr = *(LoadT*)input_vec;
       }
       else if (kv_dtype == 1) // fp8_e4m3
       {
         #pragma unroll
         for(int ii = 0; ii < Vec; ii+=1){
           scalar_t value = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
+          input_vec[ii] = value;
           output_vec[ii] = float_to_fp8e4m3(value);
         }
         uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset;
         *(OutputT*)output_ptr = *(OutputT*)output_vec;
+        *(LoadT*)kv_c_normed_ptr = *(LoadT*)input_vec;
       }
       else{
         for(int ii = 0; ii < Vec; ii+=1){
@@ -372,13 +379,14 @@ __global__ void rms_rope_kernel(
         }
         scalar_t* output_ptr = (scalar_t*)kv_cache + kv_cache_offset;
         *(LoadT*)(output_ptr) = *(LoadT*)(input_vec);
+        *(LoadT*)kv_c_normed_ptr = *(LoadT*)input_vec;
       }
     }
   }
 
 
 
-  void fused_rms_norm_rope_contiguous(torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe, torch::Tensor& kv_c, 
+  void fused_rms_norm_rope_contiguous(torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,
     torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, 
     std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon) {
 
@@ -414,7 +422,10 @@ __global__ void rms_rope_kernel(
     TORCH_CHECK(k_pe.size(1) ==  rot_dim, "k_pe.size(1) must be rot_dim");
     TORCH_CHECK(k_pe.size(0) == bs, "k_pe.size(0) must be bs");
     TORCH_CHECK(k_pe.stride(0) == kv_c_dim + rot_dim, "k_pe.stride(0) must be kv_c_dim + rot_dim");
-    
+    TORCH_CHECK(kv_c_normed.dim() == 2, "kv_c_normed must be 2D tensor [bs, kv_c_dim]");
+    TORCH_CHECK(kv_c_normed.size(1) == kv_c_dim, "kv_c_normed.size(1) must be kv_c_dim");
+    TORCH_CHECK(kv_c_normed.size(0) == bs, "kv_c_normed.size(0) must be bs");
+    TORCH_CHECK(kv_c_normed.stride(0) == kv_c_dim, "kv_c_normed.stride(0) must be kv_c_dim");
     constexpr int element_per_warp = C10_WARP_SIZE * Vec;
     constexpr int k_token_per_warp = element_per_warp / (rot_dim);  // 8
     constexpr int k_token_per_block = k_token_per_warp * num_warp_per_block; // 32
@@ -472,6 +483,7 @@ __global__ void rms_rope_kernel(
         scalar_t* k_pe_ptr  = k_pe.data_ptr<scalar_t>();
         scalar_t* kv_c_ptr = kv_c.data_ptr<scalar_t>();
         scalar_t* weight_ptr = weight.data_ptr<scalar_t>();
+        scalar_t* kv_c_normed_ptr = kv_c_normed.data_ptr<scalar_t>();
         void* kv_cache_ptr;
         if (kv_cache.scalar_type() == at::ScalarType::Byte) {
             kv_cache_ptr = kv_cache.data_ptr<uint8_t>();
@@ -489,7 +501,7 @@ __global__ void rms_rope_kernel(
 
         rms_rope_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,
         kv_c_dim><<<grid, block, 0, stream>>>(
-            q_pe_ptr,k_pe_ptr,kv_c_ptr,weight_ptr,cos_sin_cache_ptr,
+            q_pe_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,cos_sin_cache_ptr,
             positions_ptr,slot_mapping_ptr,kv_cache_ptr,
             kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
             k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon, kv_dtype);

@@ -77,6 +77,7 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
     k_pe = k_tensor[...,kv_c_dim:]
     k_pe_no_fuse = k_pe.clone()
     kv_c = k_tensor[...,:kv_c_dim]
+    kv_c_normed = torch.empty_like(kv_c).contiguous()
     weight = torch.randn(kv_c_dim, dtype=DTYPE, device=DEVICE)
     kv_c_no_fuse = kv_c.clone()
     kv_c_no_fuse_out = torch.empty_like(kv_c_no_fuse).contiguous()
@@ -96,7 +97,7 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
         kv_cache_no_fuse = kv_cache_no_fuse.bfloat16()
 
     def run_fuse_opt():
-        fused_rms_norm_rope_contiguous(positions,q_pe,k_pe,kv_c,weight,cos_sin_cache,slot_mapping,kv_cache,kv_cache_dtype_str,kv_cache_scale,is_neox_style,variance_epsilon)
+        fused_rms_norm_rope_contiguous(positions,q_pe,k_pe,kv_c,kv_c_normed,weight,cos_sin_cache,slot_mapping,kv_cache,kv_cache_dtype_str,kv_cache_scale,is_neox_style,variance_epsilon)
     def run_no_fuse_opt():
         op.rotary_embedding_deepseek_fuse(positions, q_pe_no_fuse, k_pe_no_fuse, rot_dim, cos_sin_cache, is_neox_style, None)
         fused_rms_norm_contiguous(kv_c_no_fuse_out, kv_c_no_fuse, weight, variance_epsilon)
@@ -116,8 +117,9 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
         run_no_fuse_opt()
         run_fuse_opt()
         diff_max_q = torch.max(torch.abs(q_pe - q_pe_no_fuse))
+        diff_max_kv_c = torch.max(torch.abs(kv_c_no_fuse_out - kv_c_normed))
         diff_max_kv_cache = torch.max(torch.abs(kv_cache.float() - kv_cache_no_fuse.float()))
-        print(f"bs: {batch_size}, num_head: {num_head}, diff_max_q: {diff_max_q}, diff_max_kv_cache: {diff_max_kv_cache}")
+        print(f"bs: {batch_size}, num_head: {num_head}, diff_max_q: {diff_max_q}, diff_max_kv_c: {diff_max_kv_c}, diff_max_kv_cache: {diff_max_kv_cache}")
         kv_no_fuse_temp = kv_cache_no_fuse[slot_mapping[0]//kv_cache_blocks_size, slot_mapping[0]%kv_cache_blocks_size, :].view(torch.float8_e4m3fn)
         kv_fuse_temp = kv_cache[slot_mapping[0]//kv_cache_blocks_size, slot_mapping[0]%kv_cache_blocks_size, :].view(torch.float8_e4m3fn)
         # print(f"kv_no_fuse_temp: {kv_no_fuse_temp}")
@@ -126,7 +128,7 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
         pdb.set_trace()
 
 if __name__ == "__main__":
-    rms_rope_single_test(kv_cache_dtype_str = "fp8_e4m3", batch_size=32,num_head=128,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=1000, kv_cache_blocks_size=16, test_speed=False)
+    rms_rope_single_test(kv_cache_dtype_str = "bf16", batch_size=32,num_head=128,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=1000, kv_cache_blocks_size=16, test_speed=False)
     # rms_rope_single_test(kv_cache_dtype_str = "fp8_e5m2",batch_size=32,num_head=128,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=1000, kv_cache_blocks_size=16, test_speed=True)
     # for bs in [1, 2,4,8,16,24,32, 48, 64]:
     #    for num_head in [128,]:
