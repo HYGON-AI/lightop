@@ -493,13 +493,13 @@ __global__ void silu_and_mul_base(scalar_t * __restrict__ output, const scalar_t
 
 template <typename scalar_t, int VEC, int D>
 __launch_bounds__(1024,1)
-__global__ void silu_and_mul_d384(scalar_t * __restrict__ output, const scalar_t __restrict__ *input)
+__global__ void silu_and_mul_d384(scalar_t * __restrict__ output, const scalar_t * __restrict__ input)
 {
     int t_row = threadIdx.x / 192;
     int t_col = threadIdx.x % 192;
     const int64_t row = blockIdx.x * 4 + t_row;
     const int64_t idx = t_col * VEC;
-    using VecType = __attribute__( (__vector_size__(VEC * sizeof(scalar_t)) )) scalar_t;
+    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
     if(idx < D){
         const int64_t x_index = row * 2 * D + idx;
         const int64_t y_index = row * D + idx;
@@ -525,7 +525,7 @@ __global__ void silu_and_mul_kernel_opt1(
     scalar_t* __restrict__ out,          // [..., d]
     const scalar_t* __restrict__ input,  // [..., 2, d]
     const int d) {
-  using VecType = __attribute__( (__vector_size__(VEC * sizeof(T)) )) T;
+  using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
   const int64_t token_idx= blockIdx.x;
   int idx = threadIdx.x * VEC;
   if (idx < d) {
@@ -552,7 +552,7 @@ __global__ void silu_and_mul_kernel_opt2(
     scalar_t* __restrict__ out,          // [..., d]
     const scalar_t* __restrict__ input,  // [..., 2, d]
     const int d) {
-  using VecType = __attribute__( (__vector_size__(VEC * sizeof(T)) )) T;
+  using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
   const int64_t token_idx = blockIdx.x;
   int idx = threadIdx.x * VEC;
   for (; idx < d; idx += blockDim.x * VEC) {
