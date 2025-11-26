@@ -111,9 +111,9 @@ def fused_marlin_moe_valid(
     print("E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16",E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16)
     # debug
     # config_marlin_0["BLOCK_SIZE_M"] = 16
-    # config_marlin_0["MODE"] = 417
+    config_marlin_0["MODE"] = 500
     # config_marlin_1["BLOCK_SIZE_M"] = 16
-    # config_marlin_1["MODE"] = 415
+    config_marlin_1["MODE"] = 500
     print("         config_marlin_0: ", config_marlin_0)
     print("         config_marlin_1: ", config_marlin_1)
     block_size_m = config_marlin_0["BLOCK_SIZE_M"]
@@ -283,7 +283,10 @@ def fused_marlin_moe_valid(
     #         # 将索引转换为 Python 元组以便索引
     #         pos = tuple(idx.tolist())
     #         print(f"位置 {pos}: x={intermediate_cache1[pos].item()}, y={torch_output_gemm1[pos].item()}")   
-
+    print("triton_gemm1_output",triton_gemm1_output.size())
+    print("triton_gemm1_output",triton_gemm1_output)
+    print("intermediate_cache1",intermediate_cache1)
+    print("intermediate_cache1",intermediate_cache1.size())
     torch.testing.assert_close(intermediate_cache1, triton_gemm1_output, atol=1e-2, rtol=1e-2)
     print("        cuda对比triton gemm1 success!!!!")
 
