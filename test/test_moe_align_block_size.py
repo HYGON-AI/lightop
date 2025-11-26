@@ -113,11 +113,11 @@ def run_test():
         return
 
     # --- 通用测试参数 ---
-    num_experts = 256
+    num_experts = 128
     top_k = 8
-    block_size = 64
+    block_size = 16
     device = "cuda"
-    num_tokens_list = [5,6,7,8]
+    num_tokens_list = [1,2,5,7,16,32,64,128,256,323,512,1024,2048,4096,8192,12800]
     all_accuracy_tests_passed = True
     performance_results = []
 

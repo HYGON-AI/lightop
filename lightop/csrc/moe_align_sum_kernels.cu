@@ -115,14 +115,7 @@ __global__ void moe_align_block_size_kernel_opt_fused_small_size(
   if (threadIdx.x < num_experts) {
     shared_counts[threadIdx.x] = exclusive_prefix_sum;
   }
-
-//  if (tid == CUB_BLOCK_THREADS - 1) {
-//     *total_tokens_post_pad = block_total_sum;
-//     shared_counts[num_experts] = block_total_sum;
-//   }
-
   __syncthreads(); 
-
   if (threadIdx.x < num_experts) {
     for (int i = shared_counts[threadIdx.x]; i < shared_counts[threadIdx.x + 1];
          i += block_size) {
@@ -146,8 +139,8 @@ __global__ void moe_align_block_size_kernel_opt_fused_small_size(
       }
        if (expert_mask) expert_mask[tid] = is_valid_expert;
   }
-
 }
+
 template <typename scalar_t, int smem_size, int TOPK>
 __global__ void moe_align_block_size_kernel_opt_fused(
     const scalar_t *__restrict__ topk_ids,
@@ -274,10 +267,6 @@ __global__ void moe_align_block_size_kernel_opt_fused(
         sorted_token_ids[rank_post_pad] = i;
     }
   }
-  //不能加这中间可能填充了
-  // for(int i = tid + numel; i < sorted_token_ids_len; i += stride){
-  //     sorted_token_ids[i] = topk_numel;
-  // }
 }
 
 
@@ -496,7 +485,7 @@ __global__ void count_and_sort_expert_tokens_kernel(
   }
 }
 
-template <typename scalar_t, int TOPK>
+template <typename scalar_t, int TOPK,int seme_size,int num_experts>
 __global__ void count_and_sort_expert_tokens_kernel_EP(
     const scalar_t *__restrict__ topk_ids,
     int32_t *__restrict__ sorted_token_ids, int32_t *__restrict__ cumsum_buffer,
@@ -509,38 +498,47 @@ __global__ void count_and_sort_expert_tokens_kernel_EP(
     }
   }
   int expert_id;
-  const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+  const int tid = blockIdx.x * blockDim.x + threadIdx.x;
+   const int stride = blockDim.x * gridDim.x;
   //const size_t stride = blockDim.x * gridDim.x;
-  __shared__ int32_t lds_count[256];
-   if(threadIdx.x < 256){
+  __shared__ int32_t lds_count[seme_size];
+   if(threadIdx.x < num_experts){
      lds_count[threadIdx.x ] = 0;
   }
   __syncthreads();
-  if(tid < numel){
-    expert_id = topk_ids[tid];
-    if(Is_EP){
-      if(expert_map[expert_id] != -1){
-          atomicAdd(&lds_count[expert_id], 1);
+   for (size_t i = tid; i < numel; i += stride) {
+    int expert_id = topk_ids[i];
+    if (Is_EP) {
+      if (expert_map != nullptr) {
+          int32_t local_idx = expert_map[expert_id];
+          if (local_idx != -1) {
+              atomicAdd(&lds_count[local_idx], 1);
+          }
       }
-    }else{
+    } else {
         atomicAdd(&lds_count[expert_id], 1);
     }
   }
   __syncthreads();
-  if(threadIdx.x < 256){
+
+  if(threadIdx.x < num_experts){
      lds_count[threadIdx.x ] = atomicAdd(&cumsum_buffer[threadIdx.x ], lds_count[threadIdx.x ]);
   }
 
   __syncthreads();
-  if(tid < numel){
-    if(Is_EP){
-      if(expert_map[expert_id] != -1){
-           int32_t rank_post_pad = atomicAdd(&lds_count[expert_id], 1);
-           sorted_token_ids[rank_post_pad] = tid;
+  for (size_t i = tid; i < numel; i += stride) {
+    int expert_id = topk_ids[i];
+    if (Is_EP) {
+      if (expert_map != nullptr) {
+           int32_t local_idx = expert_map[expert_id];
+           if (local_idx != -1) {
+               int32_t rank_post_pad = atomicAdd(&lds_count[local_idx], 1);
+               sorted_token_ids[rank_post_pad] = i; 
+           }
       }
-    }else{
+    } else {
          int32_t rank_post_pad = atomicAdd(&lds_count[expert_id], 1);
-         sorted_token_ids[rank_post_pad] = tid;
+         sorted_token_ids[rank_post_pad] = i; 
     }
   }
 }
@@ -1294,7 +1292,7 @@ void moe_align_block_size(
               const int actual_blocks = std::min(num_blocks, max_blocks);
 
               auto sort_kernel =
-                  count_and_sort_expert_tokens_kernel_EP<scalar_t, 8>;
+                  count_and_sort_expert_tokens_kernel_EP<scalar_t, 8, 256,256>;
               sort_kernel<<<actual_blocks, block_threads, 0, stream>>>(
                   topk_ids.data_ptr<scalar_t>(),
                   sorted_token_ids.data_ptr<int32_t>(),
@@ -1304,7 +1302,107 @@ void moe_align_block_size(
                       : nullptr,   expert_map.has_value() ? expert_map->data_ptr<int32_t>()
                                          : nullptr,Is_EP);
             }
+          }else if(num_experts == 128){
+             if (topk_ids.numel() <= 128) {
+               threads = 128;
+               if (Is_EP) {
+                moe_align_block_size_kernel_opt_fused_small_size<scalar_t, 128, 8, true, 128><<<
+                    1, threads, 0, stream>>>(
+                    topk_ids.data_ptr<scalar_t>(),
+                    sorted_token_ids.data_ptr<int32_t>(),
+                    experts_ids.data_ptr<int32_t>(),
+                    num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
+                    padded_num_experts, experts_per_warp, block_size, topk_ids.numel(),
+                    expert_map.has_value() ? expert_map->data_ptr<int32_t>() : nullptr,
+                    expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr,
+                    num_local_tokens.has_value()
+                        ? num_local_tokens->data_ptr<int32_t>()
+                        : nullptr,
+                    sorted_token_ids.numel(),Is_fuse_fill);
+              } else {
+                moe_align_block_size_kernel_opt_fused_small_size<scalar_t, 128, 8, true, 128><<<
+                    1, threads, 0, stream>>>(
+                    topk_ids.data_ptr<scalar_t>(),
+                    sorted_token_ids.data_ptr<int32_t>(),
+                    experts_ids.data_ptr<int32_t>(),
+                    num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
+                    padded_num_experts, experts_per_warp, block_size, topk_ids.numel(),
+                    expert_map.has_value() ? expert_map->data_ptr<int32_t>() : nullptr,
+                    expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr,
+                    num_local_tokens.has_value()
+                        ? num_local_tokens->data_ptr<int32_t>()
+                        : nullptr,
+                    sorted_token_ids.numel(),Is_fuse_fill);
+              }
+            }else if (topk_ids.numel() <= 1024){
+                auto align_kernel =
+                  moe_align_block_size_kernel_opt_fused<scalar_t, 128, 8>;
+              size_t num_warps = CEILDIV(padded_num_experts, experts_per_warp);
+              size_t shared_mem_size = (num_experts + 1) * sizeof(int32_t);
+              if (topk_ids.numel() <= 256) {
+                  threads = 256;
+              } else if (topk_ids.numel() <= 512) {
+                  threads = 512;
+              } else {
+                 threads = 1024;
+              }
+              align_kernel<<<1, threads, shared_mem_size, stream>>>(
+                  topk_ids.data_ptr<scalar_t>(),
+                  sorted_token_ids.data_ptr<int32_t>(),
+                  experts_ids.data_ptr<int32_t>(),
+                  num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
+                  padded_num_experts, experts_per_warp, block_size,
+                  topk_ids.numel(),
+                  expert_map.has_value() ? expert_map->data_ptr<int32_t>()
+                                         : nullptr,
+                  expert_mask.has_value() ? expert_mask->data_ptr<bool>()
+                                          : nullptr,
+                  num_local_tokens.has_value()
+                      ? num_local_tokens->data_ptr<int32_t>()
+                      : nullptr,Is_EP,sorted_token_ids.numel(),Is_fuse_fill);
+            } else {
+                 auto align_kernel =
+                  moe_align_block_size_kernel_opt<scalar_t, 128, 8>;
+              auto options_int = torch::TensorOptions()
+                                     .dtype(torch::kInt)
+                                     .device(topk_ids.device());
+              torch::Tensor cumsum_buffer =
+                  torch::zeros({num_experts + 1}, options_int);
+              size_t num_warps = CEILDIV(padded_num_experts, experts_per_warp);
+              size_t shared_mem_size = num_experts * sizeof(int32_t);
+              threads = 1024;
+              align_kernel<<<1, threads, shared_mem_size, stream>>>(
+                  topk_ids.data_ptr<scalar_t>(),
+                  sorted_token_ids.data_ptr<int32_t>(),
+                  experts_ids.data_ptr<int32_t>(),
+                  num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
+                  padded_num_experts, experts_per_warp, block_size,
+                  topk_ids.numel(), cumsum_buffer.data_ptr<int32_t>(),
+                  expert_map.has_value() ? expert_map->data_ptr<int32_t>()
+                                         : nullptr,
+                  expert_mask.has_value() ? expert_mask->data_ptr<bool>()
+                                          : nullptr,
+                  num_local_tokens.has_value()
+                      ? num_local_tokens->data_ptr<int32_t>()
+                      : nullptr,Is_EP,sorted_token_ids.numel(),Is_fuse_fill);
 
+              const int block_threads = std::min(1024, (int)threads);
+              const int num_blocks =
+                  (topk_ids.numel() + block_threads - 1) / block_threads;
+              const int max_blocks = 65535;
+              const int actual_blocks = std::min(num_blocks, max_blocks);
+
+              auto sort_kernel =
+                  count_and_sort_expert_tokens_kernel_EP<scalar_t, 8,128,128>;
+              sort_kernel<<<actual_blocks, block_threads, 0, stream>>>(
+                  topk_ids.data_ptr<scalar_t>(),
+                  sorted_token_ids.data_ptr<int32_t>(),
+                  cumsum_buffer.data_ptr<int32_t>(), topk_ids.numel(),
+                  num_local_tokens.has_value()
+                      ? num_local_tokens->data_ptr<int32_t>()
+                      : nullptr,   expert_map.has_value() ? expert_map->data_ptr<int32_t>()
+                                         : nullptr,Is_EP);
+            }
           } else {
             auto align_kernel = moe_align_block_size_kernel<scalar_t>;
             auto options_int = torch::TensorOptions()
@@ -1420,6 +1518,7 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
         });
     break;
   case 8: {
+    /* deepseek */
     if (hidden_size == 7168) {
       int gridy = num_tokens;
       if(num_local_tokens.has_value() && input.scalar_type() == at::ScalarType::BFloat16){
@@ -1453,7 +1552,6 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
                     expert_mask.has_value() ? expert_mask->data_ptr<bool>()
                                             : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr,num_tokens);
                 }else{
-                  /* deepseek */
                   if(bias.has_value()){
                     moe_sum_kernel_reg_bf16_add_bias_opt<
                     scalar_t, 8, VEC_SIZE, 7168, x_dim * block_size,
@@ -1526,7 +1624,112 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
               }
             });
       }
-    } else {
+    } else if (hidden_size == 2048){    /* qwen-30b */
+      int gridy = num_tokens;
+      if(num_local_tokens.has_value() && input.scalar_type() == at::ScalarType::BFloat16){
+          if(expect_m > 0){
+            gridy = expect_m;
+          }else{
+            if(num_tokens >= 2048 && num_tokens < 4096){
+              gridy /= 2; 
+            } else if(num_tokens >= 4096)
+            { 
+               gridy /= 4;
+            }
+          }
+      }
+      const int x_dim = 2;
+      dim3 Grid(x_dim, gridy);
+      const int block_size = 128;
+      const int VEC_SIZE = 8;
+      const int hiddenSize = 2048;
+      if (num_tokens <= 512) {
+        AT_DISPATCH_FLOATING_TYPES_AND2(
+            at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
+            "moe_sum_kernel_reg", [&] {
+              if (input.scalar_type() == at::ScalarType::BFloat16) {
+                if(expert_mask.has_value() || num_local_tokens.has_value()){
+                  moe_sum_kernel_reg_bf16_add_bias<
+                    scalar_t, 8, VEC_SIZE, hiddenSize / VEC_SIZE, x_dim * block_size,
+                    block_size, true><<<Grid, block_size, 0, stream>>>(
+                    output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                    bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                    factor,
+                    expert_mask.has_value() ? expert_mask->data_ptr<bool>()
+                                            : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr,num_tokens);
+                }else{
+                  if(bias.has_value()){
+                    moe_sum_kernel_reg_bf16_add_bias_opt<
+                    scalar_t, 8, VEC_SIZE, hiddenSize, x_dim * block_size,
+                    block_size, true><<<Grid, block_size, 0, stream>>>(
+                    output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                    bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                    factor,num_tokens);
+                  }else{
+                    moe_sum_kernel_reg_bf16_add_bias_opt<
+                    scalar_t, 8, VEC_SIZE, hiddenSize, x_dim * block_size,
+                    block_size, false><<<Grid, block_size, 0, stream>>>(
+                    output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                    bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                    factor,num_tokens);
+                  }
+                }
+              } else {
+                moe_sum_kernel_reg<scalar_t, 8, VEC_SIZE, hiddenSize / VEC_SIZE,
+                                   x_dim * block_size, block_size, false>
+                    <<<Grid, block_size, 0, stream>>>(
+                        output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                        bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                        1.0 / factor,
+                        expert_mask.has_value() ? expert_mask->data_ptr<bool>()
+                                                : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr);
+              }
+            });
+      } else {
+        AT_DISPATCH_FLOATING_TYPES_AND2(
+            at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
+            "moe_sum_kernel_shared_mem", [&] {
+              if (input.scalar_type() == at::ScalarType::BFloat16) {
+                  if(expert_mask.has_value() || num_local_tokens.has_value()){
+                  moe_sum_kernel_reg_bf16_add_bias<
+                    scalar_t, 8, VEC_SIZE, hiddenSize / VEC_SIZE, x_dim * block_size,
+                    block_size, true><<<Grid, block_size, 0, stream>>>(
+                    output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                    bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                    factor,
+                    expert_mask.has_value() ? expert_mask->data_ptr<bool>()
+                                            : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr,num_tokens);
+                }else{
+                  if(bias.has_value()){
+                    moe_sum_kernel_reg_bf16_add_bias_opt<
+                    scalar_t, 8, VEC_SIZE, hiddenSize, x_dim * block_size,
+                    block_size, true><<<Grid, block_size, 0, stream>>>(
+                    output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                    bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                    factor,num_tokens);
+                  }else{
+                    moe_sum_kernel_reg_bf16_add_bias_opt<
+                    scalar_t, 8, VEC_SIZE, hiddenSize, x_dim * block_size,
+                    block_size, false><<<Grid, block_size, 0, stream>>>(
+                    output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                    bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                    factor,num_tokens);
+                  }
+                }
+              } else {
+                moe_sum_kernel_shared_mem<scalar_t, 8, VEC_SIZE,
+                                          hiddenSize / VEC_SIZE, x_dim * block_size,
+                                          block_size, false>
+                    <<<Grid, block_size, 0, stream>>>(
+                        output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                        bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                        1.0 / factor,
+                        expert_mask.has_value() ? expert_mask->data_ptr<bool>()
+                                                : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr);
+              }
+            });
+      }
+    }else {
       AT_DISPATCH_FLOATING_TYPES_AND2(
           at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
           "moe_sum_kernel", [&] {

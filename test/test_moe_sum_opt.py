@@ -35,17 +35,17 @@ def _test_helper(m: int,
     num_local_tokens = [m]
     num_local_tokens_tensor = torch.tensor(num_local_tokens, device=device, dtype=torch.int32)
     
-    if out_dtype == torch.bfloat16:
-        # bfloat16: output = sum_result * 2.5 + bias
-        output_pytorch_ref.mul_(factor).add_(bias)
-    elif out_dtype == torch.float16:
-        factor_inverse = 1.0 / factor
-        # float16: output = sum_result + (bias * 2.5)
-        output_pytorch_ref.add_(bias.mul(factor_inverse))
+    # if out_dtype == torch.bfloat16:
+    #     # bfloat16: output = sum_result * 2.5 + bias
+    #     output_pytorch_ref.mul_(factor).add_(bias)
+    # elif out_dtype == torch.float16:
+    #     factor_inverse = 1.0 / factor
+    #     # float16: output = sum_result + (bias * 2.5)
+    #     output_pytorch_ref.add_(bias.mul(factor_inverse))
       
     # --- 1. 精度检查 ---
     output_ops.zero_()
-    ops.moe_sum(input, output_ops, bias, None, None, factor)
+    ops.moe_sum(input, output_ops, None, None, None, factor)
     torch.cuda.synchronize()
     # pdb.set_trace()
     if not (torch.allclose(output_ops, output_pytorch_ref, rtol=1e-2, atol=1e-2)):
@@ -55,7 +55,7 @@ def _test_helper(m: int,
 
     # --- 2. 预热 (10轮) ---
     for _ in range(10):
-        ops.moe_sum(input, output_ops, bias, None, None, factor)
+        ops.moe_sum(input, output_ops, None, None, None, factor)
     torch.cuda.synchronize()
 
     # --- 3. 性能测试 (100轮) ---
@@ -64,7 +64,7 @@ def _test_helper(m: int,
 
     start_event.record()
     for _ in range(100):
-        ops.moe_sum(input, output_ops, bias, None, None, factor)
+        ops.moe_sum(input, output_ops, None, None, None, factor)
     end_event.record()
     torch.cuda.synchronize()
 
@@ -78,7 +78,7 @@ def _test_helper(m: int,
 
 def main():
     topk = 8
-    hidden_size = 7168
+    hidden_size = 2048
     out_dtype = torch.bfloat16
     bs = []
     topks = []
@@ -89,8 +89,11 @@ def main():
     torch_reduce_cost_gpu = []
     print(f"Testing dtype: {out_dtype}") 
     
-    # m_list = [2, 4, 6, 8,12,16,32]
-    m_list = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]
+    # m_list = [1]
+    #deepseek 带bias
+    # m_list = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]
+    #qwen-30b  不带bias
+    m_list =  [1,2,5,7,16,32,64,128,256,323,512,1024,2048,4096,8192,12800]
     for m in m_list:
         print("-" * 30)
         print("Batch size m: {}".format(m))
