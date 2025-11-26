@@ -866,11 +866,9 @@ template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int W
 void launch_MOE_W16A16_HIP_NT_UP_prefill(const GemmParams3<T>& params) {
     
     const int STAGES = BLOCK_SIZE_K/WARP_K; //1
-    constexpr int kwarp=BLOCK_SIZE_K / WARP_K ; //1
-    constexpr int nwarp=BLOCK_SIZE_N / WARP_N  ; //1
-    constexpr int WARP_NUM = kwarp*nwarp ; //1
+    const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
     const bool mul_topk_weight = false;
-    // printf("BLOCK_SIZE_M,BLOCK_SIZE_N,BLOCK_SIZE_K,WARP_M,WARP_N,WARP_K,STAGES,params.size_n,params.size_K, %d,%d,%d,%d,%d,%d,%d,%d,%d,\n",BLOCK_SIZE_M,BLOCK_SIZE_N,BLOCK_SIZE_K,WARP_M,WARP_N,WARP_K,STAGES,params.size_n,params.size_k);
+
     dim3 blockDim, gridDim;
     blockDim.x = WARP_NUM*64;
     blockDim.y = 1;
@@ -881,8 +879,6 @@ void launch_MOE_W16A16_HIP_NT_UP_prefill(const GemmParams3<T>& params) {
     gridDim.y = DIVIDE(params.size_n , BLOCK_SIZE_N); // n方向 16大小分块 数量为48
     gridDim.x = 1; // k方向
     
-    // int lds_size = std::max(kwarp * nwarp * 64 * 4 * 4,BLOCK_SIZE_M*BLOCK_SIZE_K + BLOCK_SIZE_N*BLOCK_SIZE_K);
-    // if(kwarp==1) lds_size = std::max(BLOCK_SIZE_M*BLOCK_SIZE_K + BLOCK_SIZE_N*BLOCK_SIZE_K,(nwarp * 64 * 4 + 14 )* 2) ;
     const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K)  *bytes_per_element, BLOCK_SIZE_M * BLOCK_SIZE_N * 2 * bytes_per_element);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     MOE_W16A16_HIP_NT_UP_prefill<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
@@ -913,9 +909,7 @@ template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int W
 void launch_MOE_W16A16_HIP_NT_DOWN_prefill(const GemmParams3<T>& params) {
     
     const int STAGES = BLOCK_SIZE_K/WARP_K;
-    constexpr int kwarp=BLOCK_SIZE_K / WARP_K ; //1
-    constexpr int nwarp=BLOCK_SIZE_N / WARP_N  ; //4
-    constexpr int WARP_NUM = kwarp*nwarp ; //4
+    const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
     const bool mul_topk_weight = true;
 
     dim3 blockDim, gridDim;
@@ -923,13 +917,11 @@ void launch_MOE_W16A16_HIP_NT_DOWN_prefill(const GemmParams3<T>& params) {
     blockDim.y = 1;
     blockDim.z = 1;
     constexpr int bytes_per_element = 2;
-    //规定BLOCKSIZE_N固定位256
+
     gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向 16大小分块
     gridDim.y = DIVIDE(params.size_n , BLOCK_SIZE_N); // n方向 16大小分块 数量为48
     gridDim.x = 1; // k方向
     
-    // int lds_size = std::max(kwarp * nwarp * 64 * 4 * 4,BLOCK_SIZE_M*BLOCK_SIZE_K + BLOCK_SIZE_N*BLOCK_SIZE_K);
-    // if(kwarp==1) lds_size = std::max(BLOCK_SIZE_M*BLOCK_SIZE_K + BLOCK_SIZE_N*BLOCK_SIZE_K,(nwarp * 64 * 4 + 14 )* 2) ;
     const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K) * bytes_per_element, BLOCK_SIZE_M * BLOCK_SIZE_N * 2 * bytes_per_element);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     MOE_W16A16_HIP_NT_DOWN_prefill<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
