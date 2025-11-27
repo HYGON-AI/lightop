@@ -5,6 +5,9 @@ import torch.nn as nn
 from . import op
 from typing import Optional, Tuple
 
+def fuse_silu_and_mul(input: torch.Tensor,output: torch.Tensor) -> None:
+    op.fuse_silu_and_mul(input, output)
+
 def fuse_silu_mul_quant(input: torch.Tensor, 
                         num_local_tokens_tensor: Optional[torch.Tensor] = None,
                         topk:int=1,
