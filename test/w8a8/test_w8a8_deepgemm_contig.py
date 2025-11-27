@@ -8,6 +8,8 @@ import json
 from lightop import m_grouped_w8a8_gemm_nt_contig_asm
 import torch
 import random
+import triton
+
 
 def w8a8_nt_kpack2_marlin_weight(w8a8_w, # [size_n, size_k// 2 ]
                                 k_tile=16,
@@ -108,7 +110,7 @@ def torch_gemm(
 
     return D
 
-def test_m_grouped_gemm_contiguous() -> None:
+def test_m_grouped_gemm_contiguous(warmup_iters=10, test_iters=100, acc_check=True) -> None:
     num_groups = 16
     expected_m_per_group_list = [128, 256, 512, 1024, 2048]
     n_list = [4096, 7168]
@@ -127,12 +129,21 @@ def test_m_grouped_gemm_contiguous() -> None:
                 bm_int8.append(w_marlin)
             w = torch.stack(bm_int8, dim=0)
             b = [w, b_scale]
-            d = m_grouped_w8a8_gemm_nt_contig_asm(a, b, d, m_indices)
-            ref_d = torch_gemm(a_int8, b_int8, ref_d, a_scale, b_scale, 1.0, 0.0, m_index_h=m_indices)
-            if not torch.allclose(ref_d, d, rtol=1e-2, atol=5e-2):
-                print("精度检查不合格！！！") 
-            else:
-                print("精度检查合格！！！")
+            for _ in range(warmup_iters):
+                d = m_grouped_w8a8_gemm_nt_contig_asm(a, b, d, m_indices)
+            torch.cuda.synchronize()
 
-test_m_grouped_gemm_contiguous()
+            if (acc_check):
+                ref_d = torch_gemm(a_int8, b_int8, ref_d, a_scale, b_scale, 1.0, 0.0, m_index_h=m_indices)
+                if not torch.allclose(ref_d, d, rtol=1e-2, atol=5e-2):
+                    print("精度检查不合格！！！") 
+                else:
+                    print("精度检查合格！！！")
+            
+            elapsed_time = 0
+            elapsed_time = triton.testing.do_bench(lambda:m_grouped_w8a8_gemm_nt_contig_asm(a, b, d, m_indices),quantiles=None, return_mode="mean")*1000
+            print(f"deepGemm continue算子速度测试结果 ({out_dtype}) - M{m}xN{n}xK{k}, 平均耗时: {elapsed_time:.2f} us")
+
+
+test_m_grouped_gemm_contiguous(acc_check=False)
 
