@@ -1,17 +1,24 @@
 import torch
 import random
+import time
+import pandas as pd
+import functools
+import json
+import os
 import math
 from typing import Any, Callable, Dict, List, Optional, Tuple,Type,Any
 from vllm import _custom_ops as ops
 import torch
+import triton
+import itertools
 from lightop import moe_groupgemm_marlin_w4a8
-from lightop import m_grouped_w8a8_gemm_nt_masked
+from lightop import m_grouped_w4a8_gemm_nt_masked
 from lightop import get_moe_groupgemm_marlin_config_w4a8
 import ast  
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
 import argparse
-from w8a8_moe_groupgemm_marlin_quant import w8a8_nt_kpack2_marlin_weight  # pyright: ignore[reportMissingImports]
+from w4a8_moe_groupgemm_marlin_quant import w4a8_2_marlin_weight  # pyright: ignore[reportMissingImports]
 
 from vllm.platforms import current_platform
 device_name = current_platform.get_device_name().replace(" ", "_")
@@ -74,48 +81,35 @@ def native_w8a8_perChannel_batch_matmul(q_a1_all, weight13, qa1_scale_all, w13_s
 
     return C
            
-def fused_experts_impl_w8a8_ep_correctness(hidden_states, weight13, weight2, w13_scale, w2_scale, masked_m, expected_m_per_group):
+def deepgemm_masked_impl_w4a8_ep_correctness(hidden_states, weight13, w13_scale, masked_m, expected_m_per_group):
     
     # w13:[num_experts/ep, N, K // 2] [16, 4096, 3584]
     # w2: [num_experts/ep, K, N//2//2] [16, 7168, 1024]
     # w13_scale:[num_experts/ep, N, 1] [16, 4096, 1]
     # w2_scale: [num_experts/ep, K, 1] [16, 7168, 1]
     
-    outputs = []
-    start_idx = 0
     # -------- 处理 gemm1 权重矩阵 ------------------
     w1_marlin_list = []
-    print("weight13:", weight13.shape, weight13.dtype)
     for i in range(weight13.shape[0]):
-        w1_marlin_in = w8a8_nt_kpack2_marlin_weight(weight13[i])
+        w1_marlin_in = w4a8_2_marlin_weight(weight13[i])
         w1_marlin_list.append(w1_marlin_in)
     weight13_marlin = torch.stack(w1_marlin_list, dim=0)
     
-    # -------- 处理 gemm2 权重矩阵 ------------------
-    # w2_marlin_list = []
-    # for i in range(weight2.shape[0]):
-    #     w2_marlin_in = w8a8_nt_kpack2_marlin_weight(weight2[i])
-    #     w2_marlin_list.append(w2_marlin_in)
-    # weight2_marlin = torch.stack(w2_marlin_list, dim=0)
 
-    w13 = weight13.to(torch.int32)
-    w2 = unpack_int8_to_int4(weight2)
+
+    w13 = unpack_int8_to_int4(weight13)
     inter_out_gemm1 = []
-    inter_out_gemm2 = []  # pyright: ignore[reportUnusedVariable]
-    act_out_gemm2 = []
     q_a1_all, qa1_scale_all = per_token_quant_int8(hidden_states)
     # print("q_a1_all:", q_a1_all.shape, qa1_scale_all.shape)
     # torch.set_printoptions(profile="full")
     # q_a1_all = torch.ones_like(q_a1_all)
-    # qa1_scale_all = torch.ones_like(qa1_scale_all)
     # q_a1_all[:, 128:192] = 0
     # print("q_a1_all:",q_a1_all.shape,q_a1_all)
-    
+    # qa1_scale_all = torch.ones_like(qa1_scale_all)
 
     inter_out_gemm1 = native_w8a8_perChannel_batch_matmul(q_a1_all, w13, qa1_scale_all, w13_scale, output_dtype=hidden_states.dtype)
 
-    # inter_out_gemm1[:, math.floor(expected_m_per_group * 0.7):, :] = 0
-
+    inter_out_gemm1[:, math.floor(expected_m_per_group * 0.7):, :] = 0
 
     if len(inter_out_gemm1) > 0:
         gemm1_out_cuda = torch.zeros_like(inter_out_gemm1)
@@ -129,8 +123,6 @@ def fused_experts_impl_w8a8_ep_correctness(hidden_states, weight13, weight2, w13
     N2 = K1*2
     K2 = N1 // 4
 
-    dtype = hidden_states.dtype
-    config1, config2, status = get_moe_groupgemm_marlin_config_w4a8(E, M, N1, K1, N2, K2, device_name, num_cus, dtype, None, None)
         
     problem_size = masked_m
     tensor_problem_size = torch.tensor(problem_size, dtype=torch.int32, device=hidden_states.device)
@@ -153,9 +145,7 @@ def fused_experts_impl_w8a8_ep_correctness(hidden_states, weight13, weight2, w13
     # q_a1_all = row_values.expand(M, N2).reshape(1, M, N2).to(hidden_states.device).to(torch.int8)
 
     # print("q_a1_all:", q_a1_all)
-    # torch.set_printoptions(profile="full") 
-    # print("weight13_marlin:", weight13_marlin)
-    m_grouped_w8a8_gemm_nt_masked((q_a1_all, qa1_scale_all), 
+    m_grouped_w4a8_gemm_nt_masked((q_a1_all, qa1_scale_all), 
                                   (weight13_marlin, w13_scale),
                                     gemm1_out_cuda,
                                     tensor_problem_size, 
@@ -163,21 +153,21 @@ def fused_experts_impl_w8a8_ep_correctness(hidden_states, weight13, weight2, w13
                                     )
     torch.cuda.synchronize()
     
-    if not (torch.allclose(inter_out_gemm1[:,0:math.floor(expected_m_per_group * 0.5),:], gemm1_out_cuda[:,0:math.floor(expected_m_per_group * 0.5),:], rtol=1e-2, atol=1e-2)):
+    if not (torch.allclose(inter_out_gemm1[:,0:math.floor(expected_m_per_group * 0.7),:], gemm1_out_cuda[:,0:math.floor(expected_m_per_group * 0.7),:], rtol=1e-2, atol=1e-2)):
         print("error moe_groupgemm_w4a8 gemm1 精度检查不合格！！！")
-        # torch.set_printoptions(profile="full") 
         print("rocblas:", inter_out_gemm1)
+        # torch.set_printoptions(profile="full") 
         print("asm:",gemm1_out_cuda)
-        # diff_indices = torch.where(inter_out_gemm1 != gemm1_out_cuda)[0]
-        # diff_indices = diff_indices.view(-1, inter_out_gemm1.shape[1])
-        # print("不同元素的索引:", diff_indices)
+        diff_indices = torch.where(inter_out_gemm1 != gemm1_out_cuda)[0]
+        diff_indices = diff_indices.view(-1, inter_out_gemm1.shape[1])
+        print("不同元素的索引:", diff_indices)
         # torch.set_printoptions(profile="full")  
-        diff_mask = inter_out_gemm1 != gemm1_out_cuda
-        diff_indices = torch.nonzero(diff_mask, as_tuple=False)
-        print("存在差异的坐标与值如下：")
-        for idx in diff_indices:
-            _, i, j = idx.tolist()
-            print(f"坐标 ({i}, {j}): rocblas={inter_out_gemm1[_, i, j]}, asm={gemm1_out_cuda[_, i, j]}")
+        # diff_mask = inter_out_gemm1_out_ref != gemm1_out_cuda
+        # diff_indices = torch.nonzero(diff_mask, as_tuple=False)
+        # print("存在差异的坐标与值如下：")
+        # for idx in diff_indices:
+        #     i, j = idx.tolist()
+        #     print(f"坐标 ({i}, {j}): rocblas={inter_out_gemm1_out_ref[i, j]}, asm={gemm1_out_cuda[i, j]}")
         # fasm = open('asm_output.txt', 'w')   
         # print(f'asm_output: {gemm1_out_cuda}', file=fasm)
         # fasm.close
@@ -186,35 +176,12 @@ def fused_experts_impl_w8a8_ep_correctness(hidden_states, weight13, weight2, w13
         # ftorch.close
     else:
         print("success moe_groupgemm_w4a8 gemm1 精度检查合格")
-    return
-    # gemm2
-    moe_groupgemm_marlin_w4a8(act_out_q, 
-                                weight2_marlin, 
-                                gemm2_out_cuda,
-                                act_out_s, 
-                                w2_scale,
-                                tensor_problem_size, 
-                                tensor_expert_offsets,
-                                config2)
-    if not (torch.allclose(expert_output, gemm2_out_cuda, rtol=1e-2, atol=1e-2)):
-        print("error moe_groupgemm_w4a8 gemm2 精度检查不合格！！！")
-        # torch.set_printoptions(profile="full")  
-        # fasm = open('asm_output.txt', 'w')   
-        # print(f'asm_output: {out_cuda}', file=fasm)
-        # fasm.close
-        # ftorch = open('torch_output.txt', 'w')   
-        # print(f'torch_output: {inter_out_gemm1_out_ref}', file=ftorch)
-        # ftorch.close
-    else:
-        print("success moe_groupgemm_w4a8 gemm2 精度检查合格")
     
-    return expert_output
+    return gemm1_out_cuda
 
 def _fused_moe_helper(m: int,
                              n: int,
                              k: int,
-                             n2:int,
-                             k2:int,
                              E:int,
                              out_dtype: Type[torch.dtype] = torch.float16,
                              expected_m_per_group: int = 256,
@@ -222,13 +189,11 @@ def _fused_moe_helper(m: int,
                              ):
     # Test for a cutlass kernel with per-token activation quantization
     # and per-output channel weight quantization.
-    input = (torch.randn((E, m, n2), device=device) * 5).to(dtype=out_dtype)
+    input = (torch.randn((E, m, k), device=device) * 5).to(dtype=out_dtype)
 
-    weight13 = to_int8(torch.randn((E,n ,k), device=device) )
-    weight2 = to_int8(torch.randn((E,n2 ,k2), device=device))
+    weight13 = to_int8(torch.randn((E, n ,k // 2), device=device) )
 
     weight13_scale = (torch.randn((E,n,1), device=device, dtype=torch.float32))
-    weight2_scale = (torch.randn((E,n2,1), device=device, dtype=torch.float32))        
     
     # cuts = torch.randint(1, m + 1, (E - 1,))
     # print("cuts:", cuts)
@@ -239,7 +204,7 @@ def _fused_moe_helper(m: int,
     for j in range(E):
         masked_m[j] = int(expected_m_per_group * random.uniform(0.7, 1.3))
         # masked_m[j] = int(256)
-    return input,weight13,weight2,weight13_scale,weight2_scale,masked_m
+    return input,weight13,weight13_scale,masked_m
 
 
 
@@ -252,26 +217,26 @@ def main():
     # PyTorch GPU随机种子
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)  # 多GPU情况
-    # 创建解析器对象
-    parser = argparse.ArgumentParser(description='这是一个示例脚本的描述')
+    # # 创建解析器对象
+    # parser = argparse.ArgumentParser(description='这是一个示例脚本的描述')
     
-    # 添加参数
-    parser.add_argument('--E', type=int, default=16, help='E 参数')
-    parser.add_argument('--n1-list', type=str, required=True, 
-                       help='N1 参数列表，如 "[1536,768,384,384,192]"')
-    parser.add_argument('--n2-list', type=str, required=True,
-                       help='N2 参数列表，如 "[2048,2048,2048,4096,4096]"')
-    parser.add_argument('--k-list', type=str, required=True,
-                       help='K 参数列表，如 "[768,374,192,192,96]"')
-    parser.add_argument('--topk', type=int, default=8, 
-                       help='topk 参数')
-    parser.add_argument('--out-dtype', type=torch.dtype, default=torch.bfloat16,
-                       help='out-dtype')
-    # parser.add_argument('--use-channel-wise',action='store_true', default=False,
-    #                    help='use-channel-wise')
+    # # 添加参数
+    # parser.add_argument('--E', type=int, default=16, help='E 参数')
+    # parser.add_argument('--n1-list', type=str, required=True, 
+    #                    help='N1 参数列表，如 "[1536,768,384,384,192]"')
+    # parser.add_argument('--n2-list', type=str, required=True,
+    #                    help='N2 参数列表，如 "[2048,2048,2048,4096,4096]"')
+    # parser.add_argument('--k-list', type=str, required=True,
+    #                    help='K 参数列表，如 "[768,374,192,192,96]"')
+    # parser.add_argument('--topk', type=int, default=8, 
+    #                    help='topk 参数')
+    # parser.add_argument('--out-dtype', type=torch.dtype, default=torch.bfloat16,
+    #                    help='out-dtype')
+    # # parser.add_argument('--use-channel-wise',action='store_true', default=False,
+    # #                    help='use-channel-wise')
 
-    # 解析参数
-    args = parser.parse_args()
+    # # 解析参数
+    # args = parser.parse_args()
     
     def parse_list(list_str):
         try:
@@ -279,45 +244,28 @@ def main():
         except (ValueError, SyntaxError) as e:
             raise ValueError(f"无法解析列表参数: {list_str}。错误: {str(e)}")
     
-    m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]
     m_list=[4096]
-    E=args.E 
-    expected_m_per_group=256
-    out_dtype=args.out_dtype
+    E=8
+    expected_m_per_group=1024
+    out_dtype=torch.bfloat16
     
-    n_list_1=parse_list(args.n1_list) #[256,512]
-    k_list_1=parse_list(args.n2_list) #[7168,7168]
+    n_list=[4096, 7168] #[256,512]
+    k_list=[7168, 2048] #[7168,7168]
     
-    n_list_2=parse_list(args.n2_list) #[7168,7168]
-    k_list_2=parse_list(args.k_list) # [128,256]
-    block_size=None
     
-    for i in range(0,len(k_list_1),1):
+    for i in range(0, len(k_list), 1):
+
         for m in m_list:
-            print("m:{} n1:{} n2:{} k:{} ".format(m,n_list_1[i],n_list_2[i],k_list_2[i]))
-            input,weight13,weight2,weight13_scale,weight2_scale,masked_m=_fused_moe_helper(m=m,n=n_list_1[i],
-                    k=k_list_1[i],n2=n_list_2[i],k2=k_list_2[i],E=E,out_dtype=out_dtype,expected_m_per_group=expected_m_per_group)
-            
-            # weight13 = torch.ones_like(weight13) 
-
-            # rows = torch.arange(-128, 128).unsqueeze(1)  # shape [256, 1]
-
-            # # 扩展成每行重复 128 次，得到 shape [256, 128]
-            # tensor = rows.expand(-1, 128).cuda()
-            # weight13 = tensor.to(torch.int8).unsqueeze(0).expand(E, -1, -1)  # shape [1, 256, 128] then expand to [E, 256, 128]
-            # print("weight13:", weight13)
-
-            # weight13_scale = torch.ones_like(weight13_scale) 
+            print("m:{} expected_m:{} n:{} k:{} ".format(m, expected_m_per_group, n_list[i], k_list[i]))
+            input,weight13,weight13_scale,masked_m=_fused_moe_helper(m=m,n=n_list[i],
+                    k=k_list[i], E=E,out_dtype=out_dtype,expected_m_per_group=expected_m_per_group)
             print("masked_m:", masked_m)
             print("input:",input.shape, input.dtype)
             print("weight13:",weight13.shape,weight13.dtype)
-            print("weight2:",weight2.shape,weight2.dtype)
             print("weight13_scale:",weight13_scale.shape,weight13_scale.dtype)
-            print("weight2_scale:",weight2_scale.shape,weight2_scale.dtype)
             print("masked_m:", masked_m.shape, masked_m.dtype, masked_m)
 
-            
-            fused_experts_impl_w8a8_ep_correctness(input, weight13, weight2, weight13_scale, weight2_scale, masked_m, expected_m_per_group)
+            deepgemm_masked_impl_w4a8_ep_correctness(input,weight13, weight13_scale, masked_m, expected_m_per_group)
 
 if __name__ == "__main__":
     main()

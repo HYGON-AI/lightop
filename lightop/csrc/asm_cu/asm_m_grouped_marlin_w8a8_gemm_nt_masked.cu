@@ -247,7 +247,17 @@ torch::Tensor m_grouped_marlin_w8a8_gemm_nt_masked_asm(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
       output.scalar_type(), "m_groupgemm_w8a8_TN_impl",[&] {
-        _m_grouped_marlin_w8a8_gemm_nt_masked_asm_impl<256, 128, 128, scalar_t>(
+        _m_grouped_marlin_w8a8_gemm_nt_masked_asm_impl<256, 128, 128, scalar_t, 768>(
+          input, b_qweight, output, a_scale, b_scale,
+          masked_m, expected_m_per_group, experts_num);
+      }
+    );
+  }else if(mode == 1002) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "m_groupgemm_w8a8_TN_impl",[&] {
+        _m_grouped_marlin_w8a8_gemm_nt_masked_asm_impl<256, 64, 128, scalar_t, 512>(
           input, b_qweight, output, a_scale, b_scale,
           masked_m, expected_m_per_group, experts_num);
       }

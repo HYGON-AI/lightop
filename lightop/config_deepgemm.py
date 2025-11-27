@@ -5,20 +5,20 @@ class gemm_w8a8_deepgemm_masked_config:
     @staticmethod
     def get_deepgemm_w8a8_smooth_asm_dict():
         gemm_w8a8_smooth_asm_dict_80 = {
-            "EXPECTED_M16": 1001,
-            "EXPECTED_M32": 1001,
+            "EXPECTED_M16": 1002,
+            "EXPECTED_M32": 1002,
             "EXPECTED_M64": 1001,
         }
 
         gemm_w8a8_smooth_asm_dict_64 = {
-            "EXPECTED_M16": 1001,
-            "EXPECTED_M32": 1001,
+            "EXPECTED_M16": 1002,
+            "EXPECTED_M32": 1002,
             "EXPECTED_M64": 1001,
         }
 
         gemm_w8a8_smooth_asm_dict_48 = {
-            "EXPECTED_M16": 1001,
-            "EXPECTED_M32": 1001,
+            "EXPECTED_M16": 1002,
+            "EXPECTED_M32": 1002,
             "EXPECTED_M64": 1001,
         }
         gpu_cus = int(os.environ.get("LIGHTOP_GPU_CUS", "80"))

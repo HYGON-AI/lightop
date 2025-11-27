@@ -130,8 +130,6 @@ def deepgemm_masked_impl_bf16_correctness(input, weight13, masked_m, expected_m_
 def _fused_moe_helper(m: int,
                              n: int,
                              k: int,
-                             n2:int,
-                             k2:int,
                              E:int,
                              out_dtype: Type[torch.dtype] = torch.bfloat16,
                              expected_m_per_group: int = 256,
@@ -139,7 +137,7 @@ def _fused_moe_helper(m: int,
                              ):
     # Test for a cutlass kernel with per-token activation quantization
     # and per-output channel weight quantization.
-    input = (torch.randn((E, m, n2), device=device) * 5).to(dtype=out_dtype)
+    input = (torch.randn((E, m, k), device=device) * 5).to(dtype=out_dtype)
 
     weight13 = torch.randn((E, n, k), device=device).to(dtype=out_dtype)
 
@@ -165,51 +163,46 @@ def main():
     # PyTorch GPU随机种子
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)  # 多GPU情况
-    # 创建解析器对象
-    parser = argparse.ArgumentParser(description='这是一个示例脚本的描述')
+    # # 创建解析器对象
+    # parser = argparse.ArgumentParser(description='这是一个示例脚本的描述')
     
-    # 添加参数
-    parser.add_argument('--E', type=int, default=16, help='E 参数')
-    parser.add_argument('--n1-list', type=str, required=True, 
-                       help='N1 参数列表，如 "[1536,768,384,384,192]"')
-    parser.add_argument('--n2-list', type=str, required=True,
-                       help='N2 参数列表，如 "[2048,2048,2048,4096,4096]"')
-    parser.add_argument('--k-list', type=str, required=True,
-                       help='K 参数列表，如 "[768,374,192,192,96]"')
-    parser.add_argument('--topk', type=int, default=8, 
-                       help='topk 参数')
-    parser.add_argument('--out-dtype', type=torch.dtype, default=torch.bfloat16,
-                       help='out-dtype')
-    # parser.add_argument('--use-channel-wise',action='store_true', default=False,
-    #                    help='use-channel-wise')
+    # # 添加参数
+    # parser.add_argument('--E', type=int, default=16, help='E 参数')
+    # parser.add_argument('--n1-list', type=str, required=True, 
+    #                    help='N1 参数列表，如 "[1536,768,384,384,192]"')
+    # parser.add_argument('--n2-list', type=str, required=True,
+    #                    help='N2 参数列表，如 "[2048,2048,2048,4096,4096]"')
+    # parser.add_argument('--k-list', type=str, required=True,
+    #                    help='K 参数列表，如 "[768,374,192,192,96]"')
+    # parser.add_argument('--topk', type=int, default=8, 
+    #                    help='topk 参数')
+    # parser.add_argument('--out-dtype', type=torch.dtype, default=torch.bfloat16,
+    #                    help='out-dtype')
+    # # parser.add_argument('--use-channel-wise',action='store_true', default=False,
+    # #                    help='use-channel-wise')
 
-    # 解析参数
-    args = parser.parse_args()
+    # # 解析参数
+    # args = parser.parse_args()
     
-    def parse_list(list_str):
-        try:
-            return ast.literal_eval(list_str)
-        except (ValueError, SyntaxError) as e:
-            raise ValueError(f"无法解析列表参数: {list_str}。错误: {str(e)}")
+    # def parse_list(list_str):
+    #     try:
+    #         return ast.literal_eval(list_str)
+    #     except (ValueError, SyntaxError) as e:
+    #         raise ValueError(f"无法解析列表参数: {list_str}。错误: {str(e)}")
     
-    m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]
     m_list=[4096]
-    E=args.E 
+    E=8
     expected_m_per_group=1024
-    out_dtype=args.out_dtype
+    out_dtype=torch.bfloat16
     
-    n_list_1=parse_list(args.n1_list) #[256,512]
-    k_list_1=parse_list(args.n2_list) #[7168,7168]
+    n_list=[4096, 7168]
+    k_list=[7168, 2048]
     
-    n_list_2=parse_list(args.n2_list) #[7168,7168]
-    k_list_2=parse_list(args.k_list) # [128,256]
-    block_size=None
-    
-    for i in range(0,len(k_list_1),1):
+    for i in range(0,len(k_list),1):
         for m in m_list:
-            print("m:{} n1:{} n2:{} k:{} ".format(m,n_list_1[i],n_list_2[i],k_list_2[i]))
-            input,weight,masked_m=_fused_moe_helper(m=m,n=n_list_1[i],
-                    k=k_list_1[i],n2=n_list_2[i],k2=k_list_2[i],E=E,out_dtype=out_dtype,expected_m_per_group=expected_m_per_group)
+            print("m:{} expected_m:{} n:{} k:{} ".format(m, expected_m_per_group, n_list[i], k_list[i]))
+            input,weight,masked_m=_fused_moe_helper(m=m,n=n_list[i],
+                    k=k_list[i],E=E,out_dtype=out_dtype,expected_m_per_group=expected_m_per_group)
             
             # weight13 = torch.ones_like(weight13) 
 
