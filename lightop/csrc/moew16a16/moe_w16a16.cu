@@ -413,17 +413,15 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_HIP_NT_UP_prefill(
 
   const int *sorted_token_ids_offset = sorted_token_ids;
   
-  union_vec<Element,WARP_K/4> A_reg[WARP_M/mfma_m* STAGES][WARP_K/mfma_k]; //bf16_vec<4>
-  union_vec<Element,WARP_K/4> B_reg[WARP_N/mfma_n][WARP_K/mfma_k]; //bf16_vec<4>
+  union_vec<Element,4> A_reg[WARP_M/mfma_m* STAGES][WARP_K/mfma_k]; //bf16_vec<4> A[2][4]
+  union_vec<Element,4> B_reg[WARP_N/mfma_n][WARP_K/mfma_k]; //bf16_vec<4> B[1][4]
 
   floatx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; 
   { 
     MOE_W16A16_HIP_NT_prefill_kernel<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
     (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
   }
-  // if(bidx==0 && bidy==0 && bidz==0 && warp_id==0 && lane_id ==0)
-  // printf("C_reg[0][0]%f,%f,%f,%f\n",C_reg[0][0][0],C_reg[0][0][1],C_reg[0][0][2],C_reg[0][0][3]);
-  //save output to lds
+
   for(int min_tile_m = 0; min_tile_m < WARP_M / mfma_m; min_tile_m++){
     for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
       #pragma unroll
@@ -448,7 +446,6 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_HIP_NT_UP_prefill(
       const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
       if(token_index < size_m * top_k) {
         *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * size_n + n_idx * 8]) = 
-        
         *reinterpret_cast<vec_bf16_8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 8 + m_idx/2 * 2/*padding*/]);
       }
     } 
@@ -519,8 +516,8 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_HIP_NT_DOWN_prefill(
 
   const int *sorted_token_ids_offset = sorted_token_ids;
 
-  union_vec<Element,WARP_K/4> A_reg[WARP_M / mfma_m * STAGES][WARP_K/mfma_k]; //
-  union_vec<Element,WARP_K/4> B_reg[WARP_N / mfma_n][WARP_K/mfma_k];
+  union_vec<Element,4> A_reg[WARP_M / mfma_m * STAGES][WARP_K/mfma_k]; //
+  union_vec<Element,4> B_reg[WARP_N / mfma_n][WARP_K/mfma_k];
 
   auto g_qweight = qweight + qweight_offset;
 
@@ -866,9 +863,9 @@ template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int W
 void launch_MOE_W16A16_HIP_NT_UP_prefill(const GemmParams3<T>& params) {
     
     const int STAGES = BLOCK_SIZE_K/WARP_K; //1
-    constexpr int kwarp=BLOCK_SIZE_K / WARP_K ; //1
+    constexpr int mwarp=BLOCK_SIZE_M / WARP_M ; //1
     constexpr int nwarp=BLOCK_SIZE_N / WARP_N  ; //1
-    constexpr int WARP_NUM = kwarp*nwarp ; //1
+    constexpr int WARP_NUM = mwarp*nwarp ; //1
     const bool mul_topk_weight = false;
     // printf("BLOCK_SIZE_M,BLOCK_SIZE_N,BLOCK_SIZE_K,WARP_M,WARP_N,WARP_K,STAGES,params.size_n,params.size_K, %d,%d,%d,%d,%d,%d,%d,%d,%d,\n",BLOCK_SIZE_M,BLOCK_SIZE_N,BLOCK_SIZE_K,WARP_M,WARP_N,WARP_K,STAGES,params.size_n,params.size_k);
     dim3 blockDim, gridDim;
@@ -883,7 +880,7 @@ void launch_MOE_W16A16_HIP_NT_UP_prefill(const GemmParams3<T>& params) {
     
     // int lds_size = std::max(kwarp * nwarp * 64 * 4 * 4,BLOCK_SIZE_M*BLOCK_SIZE_K + BLOCK_SIZE_N*BLOCK_SIZE_K);
     // if(kwarp==1) lds_size = std::max(BLOCK_SIZE_M*BLOCK_SIZE_K + BLOCK_SIZE_N*BLOCK_SIZE_K,(nwarp * 64 * 4 + 14 )* 2) ;
-    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K)  *bytes_per_element, BLOCK_SIZE_M * BLOCK_SIZE_N * 2 * bytes_per_element);
+    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K)  * bytes_per_element, BLOCK_SIZE_M * BLOCK_SIZE_N * 2 * bytes_per_element);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     MOE_W16A16_HIP_NT_UP_prefill<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       mul_topk_weight><<<gridDim, blockDim, lds_size, stream>>>(
@@ -913,9 +910,9 @@ template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int W
 void launch_MOE_W16A16_HIP_NT_DOWN_prefill(const GemmParams3<T>& params) {
     
     const int STAGES = BLOCK_SIZE_K/WARP_K;
-    constexpr int kwarp=BLOCK_SIZE_K / WARP_K ; //1
+    constexpr int mwarp=BLOCK_SIZE_M / WARP_M ; //1
     constexpr int nwarp=BLOCK_SIZE_N / WARP_N  ; //4
-    constexpr int WARP_NUM = kwarp*nwarp ; //4
+    constexpr int WARP_NUM = mwarp*nwarp ; //4
     const bool mul_topk_weight = true;
 
     dim3 blockDim, gridDim;

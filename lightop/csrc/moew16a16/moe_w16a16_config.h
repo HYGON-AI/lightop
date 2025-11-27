@@ -277,63 +277,6 @@ static std::unordered_map<int, KernelFunc4> kernel_maps_gemm2_decode_w16a16 = {
 };
 
 
-// static std::unordered_map<int, KernelFunc4> kernel_maps_gemm1_prefill_w16a16 = {
-//     //初始基准，验证精度
-//     {201, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 16, 16, 16, 16, 1, bhalf_t>(p); }},
-//     //默认仅在n方向分布warp
-//     {202, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 32, 16, 16, 16, 16, 1, bhalf_t>(p); }},
-//     {203, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 16, 16, 16, 16, 1, bhalf_t>(p); }},
-//     {204, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 16, 16, 16, 16, 1, bhalf_t>(p); }},
-//     //默认仅在k方向分布warp
-//     {205, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 32, 16, 16, 16, 1, bhalf_t>(p); }},
-//     {206, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 64, 16, 16, 16, 1, bhalf_t>(p); }},
-//     {207, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 16, 1, bhalf_t>(p); }},
-//     //同时在n和k方向分布
-//     {208, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 32, 64, 16, 16, 16, 1, bhalf_t>(p); }},
-//     {209, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 32, 16, 16, 16, 1, bhalf_t>(p); }},
-//     //kpack2默认
-//     {210, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 32, 16, 16, 32, 1, bhalf_t>(p); }},
-//     //多warp在k方向的kpack2
-//     {211, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 64, 16, 16, 32, 1, bhalf_t>(p); }},
-//     {212, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 32, 1, bhalf_t>(p); }},
-//     {213, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 256, 16, 16, 32, 1, bhalf_t>(p); }},
-//     //多warp在n方向的kpack2
-//     {214, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 32, 16, 16, 32, 1, bhalf_t>(p); }},
-//     {215, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 32, 16, 16, 32, 1, bhalf_t>(p); }},    
-//     //FINAL 多warp在k方向的kpack2 叠加n方向分布warp
-//     {216, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 32, 128, 16, 16, 32, 1, bhalf_t>(p); }},
-//     {217, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 64, 16, 16, 32, 1, bhalf_t>(p); }},
-// };
-
-
-// static std::unordered_map<int, KernelFunc4> kernel_maps_gemm2_prefill_w16a16 = {
-//     //初始基准，验证精度
-//     {201, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 16, 16, 16, 16, 16, bhalf_t>(p); }},
-//     //默认仅在n方向分布warp
-//     {202, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 32, 16, 16, 16, 16, bhalf_t>(p); }},
-//     {203, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 16, 16, 16, 16, bhalf_t>(p); }},
-//     {204, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 16, 16, 16, 16, bhalf_t>(p); }},
-//     //默认仅在k方向分布warp
-//     {205, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 16, 32, 16, 16, 16, bhalf_t>(p); }},
-//     {206, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 16, 64, 16, 16, 16, bhalf_t>(p); }},
-//     // {407, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 128, 16, 16, 16, bhalf_t>(p); }}, 
-//     //同时在n和k方向分布
-//     {208, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 32, 64, 16, 16, 16, bhalf_t>(p); }},
-//     {209, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 32, 16, 16, 16, bhalf_t>(p); }},
-//     //kpack2默认
-//     {210, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 16, 32, 16, 16, 32, bhalf_t>(p); }},
-//     //多warp在k方向的kpack2
-//     {211, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 16, 64, 16, 16, 32, bhalf_t>(p); }},
-//     // {412, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 128, 16, 16, 32, bhalf_t>(p); }},
-//     // {413, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 256, 16, 16, 32, bhalf_t>(p); }},
-//     //多warp在n方向的kpack2
-//     {214, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 32, 16, 16, 32, bhalf_t>(p); }},
-//     {215, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 32, 16, 16, 32, bhalf_t>(p); }},    
-//     //FINAL 多warp在k方向的kpack2 叠加n方向分布warp
-//     // {416, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 32, 128, 16, 16, 32, bhalf_t>(p); }},
-//     // {417, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 64, 64, 16, 16, 32, bhalf_t>(p); }},
-// };
-
 
 static std::unordered_map<int, KernelFunc4> kernel_maps_gemm1_prefill_w16a16 = {
    ///////////////////////////////////////////////////////N_warp////////////////////////////////////////////////
