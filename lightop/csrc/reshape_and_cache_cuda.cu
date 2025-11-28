@@ -29,7 +29,7 @@
 
 namespace at{
 namespace native{
-
+typedef __hip_bfloat16 __nv_bfloat16;
 enum class Fp8KVCacheDataType {
   kAuto = 0,
   kFp8E4M3 = 1,
@@ -43,7 +43,6 @@ static inline __device__ uint8_t float_to_int8(float x, const float scale) {
 
   return res;
 }
-
 
 // Define custom FP32 vector data types.
 struct Float4_ {
@@ -103,8 +102,8 @@ __inline__ __device__ float4 scaled_vec_conversion_int8(
       }                                                                        \
     }
 
-template <int VEC, typename scalar_t, typename cache_t, Fp8KVCacheDataType kv_dt>
-__global__ void reshape_and_cache_kernel_cuda(
+template <typename scalar_t, typename cache_t, Fp8KVCacheDataType kv_dt>
+__global__ void reshape_and_cache_kernel_vllm(
     const scalar_t* __restrict__ key,       // [num_tokens, num_heads, head_size]
     const scalar_t* __restrict__ value,     // [num_tokens, num_heads, head_size]
     cache_t* __restrict__ key_cache,        // [num_blocks, num_heads, block_size, head_size]  target layout
@@ -120,67 +119,139 @@ __global__ void reshape_and_cache_kernel_cuda(
       return;
     }               
 
-    
+    const int64_t block_idx = slot_idx / block_size;
+    const int64_t block_offset = slot_idx % block_size;
+
+    const int n = num_heads * head_size;
+    for (int i = threadIdx.x; i < n; i += blockDim.x) {
+      const int64_t src_key_idx = token_idx * key_stride + i;
+      const int64_t src_value_idx = token_idx * value_stride + i;
+
+      const int head_idx  = i / head_size;   
+      const int head_offset = i % head_size; 
+
+      // ---------- calculate target index ----------
+      // K: [num_blocks, num_heads, block_size, head_size]
+      const int64_t tgt_key_idx = 
+        block_idx * num_heads * block_size * head_size +
+        head_idx * block_size * head_size + block_offset * head_size +
+        head_offset;
+      // V: [num_blocks, num_heads, head_size, block_size]
+      const int64_t tgt_value_idx = 
+        block_idx  * num_heads * head_size * block_size +
+        head_idx * head_size * block_size + head_offset * block_size +
+        block_offset;
+      scalar_t tgt_key = key[src_key_idx];
+      scalar_t tgt_value = value[src_value_idx];
+      if constexpr (kv_dt == Fp8KVCacheDataType::kAuto) {
+        key_cache[tgt_key_idx] = tgt_key;
+        value_cache[tgt_value_idx] = tgt_value;
+      } else if constexpr (kv_dt == Fp8KVCacheDataType::kInt8) {
+        key_cache[tgt_key_idx] =
+            scaled_vec_conversion_int8<cache_t, scalar_t>(tgt_key, 
+                                                                *k_scale);
+        value_cache[tgt_value_idx] =
+            scaled_vec_conversion_int8<cache_t, scalar_t>(tgt_value, 
+                                                                *v_scale);
+      } 
+      // else {
+      //   key_cache[tgt_key_idx] =
+      //       scaled_convert<cache_t, scalar_t, kv_dt>(tgt_key, *k_scale);
+      //   value_cache[tgt_value_idx] =
+      //       scaled_convert<cache_t, scalar_t, kv_dt>(tgt_value, *v_scale);
+      // }
+    }
+}
+
+
+template <int token_in_block, int VEC, typename scalar_t, typename cache_t, Fp8KVCacheDataType kv_dt>
+__global__ void reshape_and_cache_kernel_cuda(
+    const scalar_t* __restrict__ key,       // [num_tokens, num_heads, head_size]
+    const scalar_t* __restrict__ value,     // [num_tokens, num_heads, head_size]
+    cache_t* __restrict__ key_cache,        // [num_blocks, num_heads, block_size, head_size]  target layout
+    cache_t* __restrict__ value_cache,      // [num_blocks, num_heads, head_size, block_size]  
+    const int64_t* __restrict__ slot_mapping,   // [num_tokens]
+    const int key_stride, const int value_stride, const int num_heads, 
+    const int head_size, const int block_size, int x,    
+    const float* k_scale, const float* v_scale) {
     int tid = threadIdx.x;
+
+    const int64_t token_idx = blockIdx.x * token_in_block + tid * VEC / (head_size * num_heads);
+    const int64_t slot_idx = slot_mapping[token_idx];
+    if (slot_idx < 0) {
+      // Padding token that should be ignored.
+      return;
+    }               
+
     using LoadT = at::native::memory::aligned_vector<scalar_t, VEC>;
     const int64_t idx = threadIdx.x * VEC;
     scalar_t key_vec[VEC];
     scalar_t value_vec[VEC];
-    const int64_t block_idx = slot_idx / block_size;
-  const int64_t block_offset = slot_idx % block_size;
 
-  const int n = num_heads * head_size;
-    int index = tid * VEC;
+    const int64_t block_idx = slot_idx / block_size;
+    const int64_t block_offset = slot_idx % block_size;
+
+    int index = (idx) % (head_size * num_heads);
     const int64_t src_key_idx = token_idx * key_stride + index;
     const int64_t src_value_idx = token_idx * value_stride + index;
 
     const int head_idx  = index / head_size;   
     const int head_offset = index % head_size; 
 
-    // ---------- calculate target index ----------
-    // K: [num_blocks, num_heads, block_size, head_size]
     const int64_t tgt_key_idx = 
       block_idx * num_heads * block_size * head_size +
       head_idx * block_size * head_size + block_offset * head_size +
       head_offset;
-    scalar_t tgt_key = key[src_key_idx];
-    scalar_t tgt_value = value[src_value_idx];
     *(LoadT*)key_vec = *(LoadT*)(key+src_key_idx);
     *(LoadT*)value_vec = *(LoadT*)(value+src_value_idx);
 
       if constexpr (kv_dt == Fp8KVCacheDataType::kAuto) {
           *(LoadT*)(key_cache+tgt_key_idx)=*(LoadT*)key_vec;
+          #pragma unroll
           for(int i=0;i<VEC;i++)
           {
-            
             const int64_t src_key_idx = token_idx * key_stride + index + i;
             const int64_t src_value_idx = token_idx * value_stride + index + i;
-
             const int head_idx  = (index + i) / head_size;   
             const int head_offset = (index + i) % head_size; 
-
               const int64_t tgt_value_idx = 
             block_idx  * num_heads * head_size * block_size +
             head_idx * head_size * block_size + head_offset * block_size +
             block_offset;
             value_cache[tgt_value_idx] = value_vec[i];
           }
+
           } else if constexpr (kv_dt == Fp8KVCacheDataType::kInt8) {
-            const int64_t tgt_value_idx = 
-            block_idx  * num_heads * head_size * block_size +
-            head_idx * head_size * block_size + head_offset * block_size +
-            block_offset;
-            key_cache[tgt_key_idx] =
-                scaled_vec_conversion_int8<cache_t, scalar_t>(tgt_key, 
-                                                                    *k_scale);
-            value_cache[tgt_value_idx] =
-                scaled_vec_conversion_int8<cache_t, scalar_t>(tgt_value, 
-                                                                    *v_scale);
+            #pragma unroll
+            for(int i=0; i < VEC; i++)
+            {
+              const int64_t src_key_idx = token_idx * key_stride + index + i;
+              const int64_t src_value_idx = token_idx * value_stride + index + i;
+
+              const int head_idx  = (index + i) / head_size;   
+              const int head_offset = (index + i) % head_size; 
+                const int64_t tgt_key_idx = 
+              block_idx * num_heads * block_size * head_size +
+              head_idx * block_size * head_size + block_offset * head_size +
+              head_offset;
+                const int64_t tgt_value_idx = 
+              block_idx  * num_heads * head_size * block_size +
+              head_idx * head_size * block_size + head_offset * block_size +
+              block_offset;
+
+              key_cache[tgt_key_idx] =
+                  scaled_vec_conversion_int8<cache_t, scalar_t>(key_vec[i], 
+                                                                      *k_scale);
+              value_cache[tgt_value_idx] =
+                  scaled_vec_conversion_int8<cache_t, scalar_t>(value_vec[i], 
+                                                                      *v_scale);
+            }
           } 
+  
 }
 
 #define CALL_RESHAPE_AND_CACHE_CUDA(KV_T, CACHE_T, KV_DTYPE)               \
-  reshape_and_cache_kernel_cuda<VEC, KV_T, CACHE_T, KV_DTYPE>             \
+  reshape_and_cache_kernel_cuda<token_in_block, VEC, KV_T, CACHE_T, KV_DTYPE>             \
       <<<grid, block, 0, stream>>>(                                        \
           reinterpret_cast<KV_T*>(key.data_ptr()),                         \
           reinterpret_cast<KV_T*>(value.data_ptr()),                       \
@@ -191,6 +262,17 @@ __global__ void reshape_and_cache_kernel_cuda(
           reinterpret_cast<const float*>(k_scale.data_ptr()),              \
           reinterpret_cast<const float*>(v_scale.data_ptr()));
 
+#define CALL_RESHAPE_AND_CACHE_VLLM(KV_T, CACHE_T, KV_DTYPE)               \
+  reshape_and_cache_kernel_vllm<KV_T, CACHE_T, KV_DTYPE>             \
+      <<<grid, block, 0, stream>>>(                                        \
+          reinterpret_cast<KV_T*>(key.data_ptr()),                         \
+          reinterpret_cast<KV_T*>(value.data_ptr()),                       \
+          reinterpret_cast<CACHE_T*>(key_cache.data_ptr()),                \
+          reinterpret_cast<CACHE_T*>(value_cache.data_ptr()),              \
+          slot_mapping.data_ptr<int64_t>(), key_stride, value_stride,      \
+          num_heads, head_size, block_size, 1,                             \
+          reinterpret_cast<const float*>(k_scale.data_ptr()),              \
+          reinterpret_cast<const float*>(v_scale.data_ptr()));
 
 void reshape_and_cache_cuda(
     torch::Tensor& key,        // [num_tokens, num_heads, head_size]
@@ -224,16 +306,51 @@ AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16, 
       key.scalar_type(), "reshape_and_cache_cuda", [&] {
-    using T_ACC = at::acc_type<scalar_t, true>;
-    constexpr int VEC = 2;
-  dim3 grid(num_tokens);
-  dim3 block(num_heads * head_size / VEC);
-  const at::cuda::OptionalCUDAGuard device_guard(device_of(key));
-  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  DISPATCH_BY_KV_CACHE_DTYPE(key.dtype(), kv_cache_dtype,
-                             CALL_RESHAPE_AND_CACHE_CUDA);
+
+  
+  if(num_heads <= 2 && head_size == 128){
+    if(num_tokens<=32)
+    {
+      constexpr int VEC = 2;
+      constexpr int token_in_block = 1;
+      dim3 grid((num_tokens + token_in_block - 1) / token_in_block);
+      dim3 block(num_heads * head_size * token_in_block / VEC);
+      const at::cuda::OptionalCUDAGuard device_guard(device_of(key));
+      const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+      DISPATCH_BY_KV_CACHE_DTYPE(key.dtype(), kv_cache_dtype,
+                                CALL_RESHAPE_AND_CACHE_CUDA);
+    }else if(num_tokens<=512)
+    {
+      constexpr int VEC = 4;
+      constexpr int token_in_block = 4;
+      dim3 grid((num_tokens + token_in_block - 1) / token_in_block);
+      dim3 block(num_heads * head_size * token_in_block / VEC);
+      const at::cuda::OptionalCUDAGuard device_guard(device_of(key));
+      const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+      DISPATCH_BY_KV_CACHE_DTYPE(key.dtype(), kv_cache_dtype,
+                                CALL_RESHAPE_AND_CACHE_CUDA);
+    }else
+    {
+      constexpr int VEC = 16;
+      constexpr int token_in_block = 8;
+      dim3 grid((num_tokens + token_in_block - 1) / token_in_block);
+      dim3 block(num_heads * head_size * token_in_block / VEC);
+      const at::cuda::OptionalCUDAGuard device_guard(device_of(key));
+      const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+      DISPATCH_BY_KV_CACHE_DTYPE(key.dtype(), kv_cache_dtype,
+                                CALL_RESHAPE_AND_CACHE_CUDA);
+    }
+    
+  }else{
+    dim3 grid(num_tokens);
+    dim3 block(std::min(num_heads * head_size, 512));
+    const at::cuda::OptionalCUDAGuard device_guard(device_of(key));
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    DISPATCH_BY_KV_CACHE_DTYPE(key.dtype(), kv_cache_dtype,
+                             CALL_RESHAPE_AND_CACHE_VLLM);
+  }
       }
       );
 }
-
 }}
