@@ -20,6 +20,10 @@ test/moe_w16a16/__pycache__/*
 test/moe_w16a16/.triton/
 test/moe_w16a16/*.xlsx
 test/moe_w16a16/*/*.xlsx
+test/moe_marlin/moe_w16a16/__pycache__/*
+test/moe_marlin/moe_w16a16/.triton/
+test/moe_marlin/moe_w16a16/*.xlsx
+test/moe_marlin/moe_w16a16/*/*.xlsx
 .vscode
 test/w8a8/__pycache__/*
 test/w8a8/*.xlsx

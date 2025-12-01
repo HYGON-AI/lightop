@@ -242,6 +242,22 @@ __forceinline__  __device__ void  inline_ds_read_b128_no_wait(VEC *shared_addr, 
       :);
   __builtin_amdgcn_sched_barrier(0);
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//封装ds_read_b128
+template<typename VEC, typename dwordx4>
+__forceinline__  __device__ void  inline_ds_read_b128_no_wait_marlin(VEC *shared_addr, const int &lds_offset, dwordx4& reg_val) {
+  int ldsAddr = reinterpret_cast<size_t>(shared_addr) + lds_offset;
+  __builtin_amdgcn_sched_barrier(0);
+  asm volatile(
+      "ds_read_b128 %0, %1\n"
+      : "=v"(reg_val)
+      : "v"(ldsAddr)
+      :);
+  __builtin_amdgcn_sched_barrier(0);
+}
+
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //封装lgkmcnt wait
 #define lgkmcnt_wait_barrier(X)\
@@ -272,7 +288,7 @@ __device__ __forceinline__ void cp_async4(float* smem_ptr, uintx4 global_addr, c
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //封装buffer_load_dword
-template<typename src_type=int8_t, typename dst_type=float, const int dword_count=1, const int auxilariy=0>
+template<typename src_type=bhalf_t, typename dst_type=float, const int dword_count=1, const int auxilariy=0>
 __forceinline__ __device__ void builtin_buffer_load_dword_lds(src_type *const shared_addr, const typename vec<uint,4>::type rsrc, const int &lds_offset, const int gvOffset_s, const int &gvOffset_v) {
     constexpr int bytes_per_element = sizeof(dst_type);
     dst_type *ptr = reinterpret_cast<dst_type*>(shared_addr) + lds_offset;
@@ -357,6 +373,35 @@ __device__ inline void amdgcn_buffer_load_dwordx4_lds(void* smem_ptr, const T* g
   :);
   __builtin_amdgcn_sched_barrier(0);
   #endif
+}
+
+// 拷贝4字节（1xfloat）从全局内存到共享内存
+__device__ __forceinline__ void cp_async_buffer_load_dwordx4(void* smem_ptr, uintx4 global_addr, const int gvOffset_s, const int &gvOffset_v) {
+    int smem_offset_sgpr = __builtin_amdgcn_readfirstlane(cvta_to_shared(smem_ptr));
+#if defined(__gfx936__)
+    asm volatile(
+        "s_mov_b32 m0, %1 \n\t"
+        "buffer_load_dwordx4 %0, %2, %3, offen  offset:0, lds \n" ::"v"(gvOffset_v),
+        "s"(smem_offset_sgpr), "s"(global_addr), "s"(gvOffset_s)
+    :);
+#endif
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//封装buffer_load_dwordx4
+template<typename src_type=bhalf_t, typename dst_type=char, const int dword_count=4, const int auxilariy=0>
+__forceinline__ __device__ void builtin_buffer_load_dwordx4_lds(src_type *const shared_addr, const typename vec<uint,4>::type rsrc, const int &lds_offset, const int gvOffset_s, const int &gvOffset_v) {
+    constexpr int bytes_per_element = sizeof(dst_type);
+    dst_type *ptr = reinterpret_cast<dst_type*>(shared_addr) + lds_offset/*bytes*/;
+    __builtin_amdgcn_raw_buffer_load_lds(
+        rsrc,
+        (__attribute__((address_space(3))) int*)ptr,
+        dword_count * 4, // dword读取
+        gvOffset_v,
+        gvOffset_s,
+        0, /* immediate offset, instruction offset */
+        auxilariy /* auxilariy data| bit 0: glc, bit 1: slc, bit 2: dlc, bit 3: cache swizzle */
+    );
 }
 
 

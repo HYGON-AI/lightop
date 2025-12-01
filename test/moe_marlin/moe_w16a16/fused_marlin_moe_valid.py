@@ -240,7 +240,7 @@ def fused_marlin_moe_valid(
     # import pdb 
     # pdb.set_trace()
     moe_gemm_marlin_w16a16(intermediate_cache2, w2_marlin, intermediate_cache3,topk_weights, sorted_token_ids, 
-                         expert_ids_triton, num_tokens_post_padded, 1, config_marlin_1)
+                         expert_ids, num_tokens_post_padded, 1, config_marlin_1)
     # =========================== gemm2 triton 计算 ===============================
     triton_gemm2_output = torch.zeros_like(intermediate_cache3).reshape((M, topk, K))
     # topk_weights = torch.ones_like(topk_weights)
