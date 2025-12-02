@@ -438,6 +438,20 @@ static std::unordered_map<int, KernelFunc4> kernel_maps_gemm1_prefill_w16a16 = {
     // 4 warp
     {594, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 16, 128, 16, 16, 64, bhalf_t>(p); }},
     {595, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 32, 128, 16, 32, 64, bhalf_t>(p); }},
+    //kpack2 stage1
+    // {501, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 128, bhalf_t>(p); }},
+    // {502, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 16, 128, bhalf_t>(p); }},
+    // {503, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 128, 16, 16, 128, bhalf_t>(p); }},
+    //kpack2 STAGE2
+    {596, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 256, 16, 16, 128, bhalf_t>(p); }},
+    // {505, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 256, 16, 16, 128, bhalf_t>(p); }},//out of memory
+    {597, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 256, 16, 16, 128, bhalf_t>(p); }},
+    // {507, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 256, 16, 16, 128, bhalf_t>(p); }},//out of memory
+    {598, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 256, 32, 16, 128, bhalf_t>(p); }},
+    // {509, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 256, 32, 16, 128, bhalf_t>(p); }},//out of memory
+    {599, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 256, 64, 16, 128, bhalf_t>(p); }},
+    // {511, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 256, 64, 16, 128, bhalf_t>(p); }},//out of memory
+    // {512, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 256, 16, 32, 128, bhalf_t>(p); }},//out of memory 
 };
 
 // gemm2        
@@ -595,7 +609,21 @@ static std::unordered_map<int, KernelFunc4> kernel_maps_gemm2_prefill_w16a16 = {
     // 4 warp
     {594, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 16, 64, 16, 16, 32, bhalf_t>(p); }},
     {595, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 32, 64, 16, 32, 32, bhalf_t>(p); }},
-};
+    //kpack2
+    {596, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 16, 128, 16, 16, 128, bhalf_t>(p); }},
+    {597, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 128, 16, 16, 128, bhalf_t>(p); }},
+    {698, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 16, 128, 32, 16, 128, bhalf_t>(p); }},
+    {599, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 16, 16, 128, bhalf_t>(p); }},
+    {600, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 128, 16, 16, 128, bhalf_t>(p); }},
+    {601, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 128, bhalf_t>(p); }},
+    {602, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 16, 128, bhalf_t>(p); }},
+    {603, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 128, bhalf_t>(p); }},
+    {604, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 16, 128, 16, 16, 128, bhalf_t>(p); }},
+    {605, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 128, bhalf_t>(p); }},
+    {606, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 16, 32, 128, bhalf_t>(p); }},
+    {607, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 128, bhalf_t>(p); }},    
+    {608, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 128, bhalf_t>(p); }},
+    };
 
 // marlin
 static std::unordered_map<int, KernelFunc4> kernel_maps_gemm1_prefill_marlin_w16a16 = {

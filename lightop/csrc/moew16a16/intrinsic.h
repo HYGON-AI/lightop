@@ -285,7 +285,46 @@ __device__ __forceinline__ void cp_async4(float* smem_ptr, uintx4 global_addr, c
     //     "s_waitcnt vmcnt(0) \n\t"
     // :);
 }
-
+template<typename src_type=int8_t, typename dst_type=float, const int dword_count=2, const int auxilariy=0>
+__forceinline__ __device__ void builtin_buffer_load_dword_lds2(src_type *const shared_addr, const typename vec<uint,4>::type rsrc, const int &lds_offset, const int gvOffset_s, const int &gvOffset_v) {
+    constexpr int bytes_per_element = sizeof(dst_type);
+    dst_type *ptr = reinterpret_cast<dst_type*>(shared_addr) + lds_offset;
+    __builtin_amdgcn_raw_buffer_load_lds(
+        rsrc,
+        (__attribute__((address_space(3))) int*)ptr,
+        dword_count * 4, // dword读取
+        gvOffset_v * bytes_per_element,
+        gvOffset_s * bytes_per_element,
+        0, /* immediate offset, instruction offset */
+        auxilariy /* auxilariy data| bit 0: glc, bit 1: slc, bit 2: dlc, bit 3: cache swizzle */
+    );
+    // uintx4 global_ptr = {0};
+    // global_ptr[0] = rsrc[0];
+    // global_ptr[1] = rsrc[1];
+    // global_ptr[2] = rsrc[2];
+    // global_ptr[3] = rsrc[3];
+    // cp_async4(ptr, global_ptr, gvOffset_s * bytes_per_element, gvOffset_v * bytes_per_element);
+}
+template<typename src_type=int8_t, typename dst_type=float, const int dword_count=4, const int auxilariy=0>
+__forceinline__ __device__ void builtin_buffer_load_dword_lds4(src_type *const shared_addr, const typename vec<uint,4>::type rsrc, const int &lds_offset, const int gvOffset_s, const int &gvOffset_v) {
+    constexpr int bytes_per_element = sizeof(dst_type);
+    dst_type *ptr = reinterpret_cast<dst_type*>(shared_addr) + lds_offset;
+    __builtin_amdgcn_raw_buffer_load_lds(
+        rsrc,
+        (__attribute__((address_space(3))) int*)ptr,
+        dword_count * 4, // dword读取
+        gvOffset_v * bytes_per_element,
+        gvOffset_s * bytes_per_element,
+        0, /* immediate offset, instruction offset */
+        auxilariy /* auxilariy data| bit 0: glc, bit 1: slc, bit 2: dlc, bit 3: cache swizzle */
+    );
+    // uintx4 global_ptr = {0};
+    // global_ptr[0] = rsrc[0];
+    // global_ptr[1] = rsrc[1];
+    // global_ptr[2] = rsrc[2];
+    // global_ptr[3] = rsrc[3];
+    // cp_async4(ptr, global_ptr, gvOffset_s * bytes_per_element, gvOffset_v * bytes_per_element);
+}
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //封装buffer_load_dword
 template<typename src_type=bhalf_t, typename dst_type=float, const int dword_count=1, const int auxilariy=0>
@@ -416,7 +455,7 @@ __builtin_amdgcn_sched_barrier(0);
 
 // 进行 64bit的 load
 template<typename T>
-__device__ inline void amdgcn_buffer_load_dwordx2_lds(void* smem_ptr, const T* glob_ptr, int offset_v, const int offset_s) {
+__device__ inline void amdgcn_buffer_load_dwordx2_lds(void* smem_ptr, T* glob_ptr, int offset_v, int offset_s) {
   // int smem_offset = cvta_to_shared(smem_ptr);
   int smem_offset_sgpr = __builtin_amdgcn_readfirstlane(cvta_to_shared(smem_ptr));
   typedef uint32_t uint32x4_t __attribute__((ext_vector_type(4)));

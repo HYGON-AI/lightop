@@ -417,7 +417,13 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_HIP_NT_UP_prefill(
   union_vec<Element,4> B_reg[WARP_N/mfma_n][WARP_K/mfma_k]; //bf16_vec<4> B[1][4]
 
   floatx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; 
-  { 
+  if(BLOCK_SIZE_K== 256 && WARP_K== 128 ){
+      union_vec<Element,8> A_reg1[WARP_M/mfma_m* STAGES][4]; 
+      union_vec<Element,8> B_reg1[WARP_N/mfma_n][4]; 
+      MOE_W16A16_HIP_NT_prefill_kpack2_stage2_kernel<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
+      (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg1, B_reg1, C_reg, warp_id, size_k, size_k, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx,bidy);
+  }
+  else{ 
     MOE_W16A16_HIP_NT_prefill_kernel<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
     (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
   }
@@ -656,10 +662,17 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_HIP_NT_DOWN_prefill(
       int token_index_safe = std::min(token_index, size_m * top_k-1);
       weight_value_arr[idx] = topk_weights[token_index_safe] ;
   }
-
+  //KPACK2
+  if(BLOCK_SIZE_K== 128 && WARP_K== 128 ){
+    union_vec<Element,8> A_reg1[WARP_M / mfma_m * STAGES][4]; //
+    union_vec<Element,8> B_reg1[WARP_N / mfma_n][4];
+    MOE_W16A16_HIP_NT_prefill_kpack2_stage1_kernel<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
+    (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg1, B_reg1, C_reg, warp_id, size_k, size_k, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx,bidy);
+  }
+  else{ 
   MOE_W16A16_HIP_NT_prefill_kernel<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
     (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
-  
+  }
   //save output to lds
   #pragma unroll
   for(int min_tile_m = 0; min_tile_m < WARP_M / mfma_m; min_tile_m++){
@@ -1116,10 +1129,10 @@ void launch_MOE_W16A16_HIP_NT_DOWN_decode(const GemmParams3<T>& params) {
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
 void launch_MOE_W16A16_HIP_NT_UP_prefill(const GemmParams3<T>& params) {
     
-    const int STAGES = BLOCK_SIZE_K/WARP_K; //1
-    constexpr int mwarp=BLOCK_SIZE_M / WARP_M ; //1
-    constexpr int nwarp=BLOCK_SIZE_N / WARP_N  ; //1
-    constexpr int WARP_NUM = mwarp*nwarp ; //1
+    const int STAGES = BLOCK_SIZE_K/WARP_K; 
+    constexpr int mwarp=BLOCK_SIZE_M / WARP_M ; 
+    constexpr int nwarp=BLOCK_SIZE_N / WARP_N  ; 
+    constexpr int WARP_NUM = mwarp*nwarp ; 
     const bool mul_topk_weight = false;
 
     dim3 blockDim, gridDim;
@@ -1206,7 +1219,7 @@ void launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill(const GemmParams3<T>& params) {
 
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
 void launch_MOE_W16A16_HIP_NT_DOWN_prefill(const GemmParams3<T>& params) {
-    
+
     const int STAGES = BLOCK_SIZE_K/WARP_K;
     constexpr int mwarp=BLOCK_SIZE_M / WARP_M ; //1
     constexpr int nwarp=BLOCK_SIZE_N / WARP_N  ; //4
@@ -1472,7 +1485,7 @@ torch::Tensor moe_gemm_w16a16(torch::Tensor input,
         }
       }      
     }
-    else if(499<mode && mode<600){
+    else if(499<mode && mode<700){
       //NT layout prefill
       int size_n = b_qweight.size(1);  //768
       int size_kb = b_qweight.size(2); //2048
