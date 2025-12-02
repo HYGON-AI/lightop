@@ -65,65 +65,65 @@
             "blocks_per_cu": 3 
         },
         "256": {
-            "MODE": 412,
+            "MODE": 598,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_M": 32,
             "thread_n": 128,
             "thread_k": 128,
             "blocks_per_cu": 3 
         },
         "512": {
-            "MODE": 412,
+            "MODE": 598,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_M": 32,
             "thread_n": 128,
             "thread_k": 128,
             "blocks_per_cu": 3 
         },
         "1024": {
-            "MODE": 412,
+            "MODE": 577,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_M": 64,
             "thread_n": 256,
             "thread_k": 128,
             "blocks_per_cu": 1 
         },
         "2048": {
-            "MODE": 412,
+            "MODE": 517,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_M": 64,
             "thread_n": 512,
             "thread_k": 64,
             "blocks_per_cu": 2 
         },
         "4096": {
-            "MODE": 412,
+            "MODE": 517,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_M": 64,
             "thread_n": 256,
             "thread_k": 128,
             "blocks_per_cu": 1 
         },
         "6144": {
-            "MODE": 412,
+            "MODE": 523,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_M": 64,
             "thread_n": 256,
             "thread_k": 128,
             "blocks_per_cu": 1 
         },
         "8192": {
-            "MODE": 412,
+            "MODE": 523,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_M": 64,
             "thread_n": 256,
             "thread_k": 128,
             "blocks_per_cu": 1 
         },
         "16384": {
-            "MODE": 412,
+            "MODE": 583,
             "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_M": 64,
             "thread_n": 256,
             "thread_k": 128,
             "blocks_per_cu": 1
