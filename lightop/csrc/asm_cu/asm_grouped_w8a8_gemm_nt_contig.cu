@@ -54,11 +54,11 @@ void _m_grouped_w8a8_gemm_nt_contig_no_pad_asm_impl(
     std::vector<GemmInfo<bhalf_t>> d_prob_vec;
 
     const int token_num = input.size(0);
-    // printf("token_num : %d\n", token_num);
+    printf("token_num : %d\n", token_num);
     const int size_n = b_qweight.size(1) * 16;
-    // printf("size_n : %d\n", size_n);
+    printf("size_n : %d\n", size_n);
     const int size_k = input.size(1);
-    // printf("size_k : %d\n", size_k);
+    printf("size_k : %d\n", size_k);
     int32_t lda = size_k;
     int32_t ldb = size_k;
     int32_t ldc = size_n;
@@ -67,14 +67,17 @@ void _m_grouped_w8a8_gemm_nt_contig_no_pad_asm_impl(
     float d_alpha = 1.0;
     float d_beta = 0.0;
 
-
     int8_t* inp = input.data_ptr<int8_t>();
+    // std::cout << std::hex << reinterpret_cast<void*>(inp) << std::endl;
     int8_t* weight = b_qweight.data_ptr<int8_t>();
+    //std::cout << std::hex << reinterpret_cast<void*>(weight) << std::endl;
+
     int32_t* m_indices_ptr = m_indices.data_ptr<int32_t>();
     bhalf_t* output_ptr = reinterpret_cast<bhalf_t *>(output.data_ptr());
     //std::cout << std::hex << output.data_ptr() << std::endl;
     float* scaleA = a_scale.data_ptr<float>();
     float* scaleB = b_scale.data_ptr<float>();
+
     size_t 	size_nk = size_k * size_n;
     size_t stride_b = size_n * size_k;
 
@@ -108,12 +111,11 @@ void _m_grouped_w8a8_gemm_nt_contig_no_pad_asm_impl(
         memcpy(d_prob.beta,  &d_beta, sizeof(float));
 
         d_prob.a = weight + expertId * stride_b;
+        //std::cout << std::hex << reinterpret_cast<void*>(d_prob.a) << std::endl;
         d_prob.b = inp + start_token * lda;
-
+        // std::cout << std::hex << reinterpret_cast<void*>(d_prob.b) << std::endl;
         d_prob.c = output_ptr + start_token * ldc;
-
         d_prob.d = output_ptr + start_token * ldd;
-        //std::cout << std::hex << d_prob.d << std::endl;
         d_prob.scaleA = scaleB + expertId * ldd; 
         d_prob.scaleB = scaleA + start_token;
         
@@ -152,7 +154,7 @@ void _m_grouped_w8a8_gemm_nt_contig_no_pad_asm_impl(
     hipMalloc((void**)&d_argsPtr, arg_size);
     hipMemcpy(d_argsPtr, d_prob_vec.data(), arg_size, hipMemcpyHostToDevice);
 
-    hipFunctionArgs.gemm_count = 1;
+    hipFunctionArgs.gemm_count = d_prob_vec.size();
     hipFunctionArgs.DeviceUserArguments = d_argsPtr;
     hipFunctionArgs.argsPtr = nullptr;
     hipFunctionArgs.wgm = 1;

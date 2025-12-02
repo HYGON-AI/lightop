@@ -37,6 +37,7 @@ def generate_m_grouped_contiguous_nopad(num_groups: int, expected_m_per_group: i
     actual_mss = actual_mss.to('cuda')
     actual_mss = actual_mss.to(torch.int32)
     print("actual_ms after m : ", m)
+    print(actual_mss)
     a = torch.randn((m, k), device='cuda', dtype=torch.bfloat16)
     b = torch.randn((num_groups, n, k), device='cuda', dtype=torch.bfloat16)  
     m_indices = torch.empty(m, device='cuda', dtype=torch.int32)
@@ -47,7 +48,6 @@ def generate_m_grouped_contiguous_nopad(num_groups: int, expected_m_per_group: i
     start = 0
     for i, (actual_m, aligned_m) in enumerate(zip(actual_ms, actual_ms)):
         actual_end = start + actual_m
-        aligned_end = start + aligned_m
         m_indices[start:actual_end] = i  
         start = actual_end
     a_int8 = to_int8(a)
@@ -141,15 +141,17 @@ def torch_gemm(
     return D
 
 def test_m_grouped_gemm_contiguous(warmup_iters=10, test_iters=100, acc_check=True) -> None:
-    num_groups = 16
-    expected_m_per_group_list = [128]
-    n_list = [256]
-    k_list = [512]
+    num_groups = 8
+    expected_m_per_group_list = [128,256,512,1024,2048]
+    n_list = [7168,2048]
+    k_list = [4096,7168]
     out_dtype = torch.bfloat16
     for i in range(0,len(k_list),1):
         for me in expected_m_per_group_list:
             expected_m_per_group, n, k = me, n_list[i], k_list[i]
             m, a, b, m_indices, actual_ms, d, ref_d = generate_m_grouped_contiguous_nopad(num_groups, expected_m_per_group, n, k)
+            # print(m_indices)
+            # print(actual_ms)
             print("m:{} n:{} k:{}".format(m, n, k)) 
             a_int8, a_scale = a
             b_int8, b_scale = b
@@ -159,9 +161,9 @@ def test_m_grouped_gemm_contiguous(warmup_iters=10, test_iters=100, acc_check=Tr
                 bm_int8.append(w_marlin)
             w = torch.stack(bm_int8, dim=0)
             b = [w, b_scale]
-            # for _ in range(1):
             d = m_grouped_w8a8_gemm_nt_nopad_contig_asm(a, b, d, m_indices, actual_ms)
             torch.cuda.synchronize()
+
 
             if (acc_check):
                 ref_d = torch_gemm(a_int8, b_int8, ref_d, a_scale, b_scale, 1.0, 0.0, m_index_h=m_indices)
@@ -175,5 +177,5 @@ def test_m_grouped_gemm_contiguous(warmup_iters=10, test_iters=100, acc_check=Tr
             print(f"deepGemm continue算子速度测试结果 ({out_dtype}) - M{m}xN{n}xK{k}, 平均耗时: {elapsed_time:.2f} us")
 
 
-test_m_grouped_gemm_contiguous(acc_check=False)
+test_m_grouped_gemm_contiguous(acc_check=True)
 
