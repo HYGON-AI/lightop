@@ -233,4 +233,7 @@ def fused_marlin_moe_valid(
 
     torch.testing.assert_close(intermediate_cache3, triton_gemm2_output, atol=1e-2, rtol=1e-2)
     print("        Triton对比cuda gemm2 success!!!!")
+    return (num_tokens_post_padded.item() * K * 2*N * 2),(num_tokens_post_padded.item()  * N * K * 2), \
+           (num_tokens_post_padded.item() * K * 2 + (E if (num_tokens_post_padded.item() / block_size_m) > E else (num_tokens_post_padded.item() / block_size_m)) * 2*N * K * 2  + M * topk * 2*N * 2)/1024/1024/1024, \
+           (num_tokens_post_padded.item() * N * 2 + (E if (num_tokens_post_padded.item() / block_size_m) > E else (num_tokens_post_padded.item() / block_size_m)) * N * K * 2 + M * topk * K * 2 )/1024/1024/1024
  
