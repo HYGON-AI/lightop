@@ -22,11 +22,9 @@ import pandas as pd
 import triton
 import triton.language as tl
 
-from marlin_quant import w16a16_marlin_weight
 # 引入适配后的 marlin fused_moe实现
 # from fused_marlin_moe_chunk_size import fused_marlin_moe
-from fused_marlin_moe import fused_marlin_moe
-from fused_marlin_moe_valid import fused_marlin_moe_valid
+from fused_moe_w16a16_utility import fused_moe_w16a16_perf, fused_moe_w16a16_impl
 
 from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
 
@@ -138,7 +136,7 @@ def benchmark_config(
     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
     # 先进行准确度测试
     # GEMM1_Peak,GEMM2_Peak,bandwith1,bandwith2 = fused_marlin_moe_valid(   
-    GEMM1_Peak,GEMM2_Peak,bandwith1,bandwith2 = fused_marlin_moe_valid(                      
+    GEMM1_Peak,GEMM2_Peak,bandwith1,bandwith2 = fused_moe_w16a16_perf(                      
                                                                         x,
                                                                         w1,
                                                                         w2,
@@ -156,16 +154,16 @@ def benchmark_config(
         # 获取新专家得分的 算子时间
         topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
         for j in range(10): # 一次随机专家运行10次
-            fused_marlin_moe(
-                            x,
-                            w1,
-                            w2,
-                            w1_scale,
-                            w2_scale,
-                            score,
-                            topk_weights,
-                            topk_ids
-                            )
+            fused_moe_w16a16_impl(
+                                    x,
+                                    w1,
+                                    w2,
+                                    w1_scale,
+                                    w2_scale,
+                                    score,
+                                    topk_weights,
+                                    topk_ids
+                                    )
             
 
     gemm1_time_us_total = 0 
@@ -176,16 +174,16 @@ def benchmark_config(
         # 获取新专家得分的 算子时间
         topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
         for j in range(10): # 一次随机专家运行10次
-            gemm1_time_us, gemm2_time_us =  fused_marlin_moe(
-                                                            x,
-                                                            w1,
-                                                            w2,
-                                                            w1_scale,
-                                                            w2_scale,
-                                                            score,
-                                                            topk_weights,
-                                                            topk_ids
-                                                            )
+            gemm1_time_us, gemm2_time_us =  fused_moe_w16a16_impl(
+                                                                    x,
+                                                                    w1,
+                                                                    w2,
+                                                                    w1_scale,
+                                                                    w2_scale,
+                                                                    score,
+                                                                    topk_weights,
+                                                                    topk_ids
+                                                                    )
             
             gemm1_time_us_total += gemm1_time_us
             gemm2_time_us_total += gemm2_time_us

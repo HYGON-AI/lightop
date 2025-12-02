@@ -19,7 +19,7 @@ import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm import _custom_ops as ops
 # import _custom_ops as ops
-from lightop import moe_gemm_w8a8, get_moe_cuda_config, moe_gemm_marlin_w16a16
+from lightop import moe_gemm_w8a8, get_moe_cuda_config, moe_gemm_w16a16
 # from vllm.model_executor.layers.fused_moe.fused_moe import moe_kernel_prepare_input
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
@@ -1021,15 +1021,15 @@ def invoke_fused_moe_kernel_bf16(A: torch.Tensor,
     #         **config
     #     )
 
-    moe_gemm_marlin_w16a16(A, 
-                           B, 
-                           C, 
-                           topk_weights if mul_routed_weight else None, 
-                           sorted_token_ids, 
-                           expert_ids, 
-                           num_tokens_post_padded, 
-                           top_k, 
-                           config)
+    moe_gemm_w16a16(A, 
+                    B, 
+                    C, 
+                    topk_weights if mul_routed_weight else None, 
+                    sorted_token_ids, 
+                    expert_ids, 
+                    num_tokens_post_padded, 
+                    top_k, 
+                    config)
 
 def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                        w1: torch.Tensor,
