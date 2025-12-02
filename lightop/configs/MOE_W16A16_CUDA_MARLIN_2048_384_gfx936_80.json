@@ -65,68 +65,44 @@
             "blocks_per_cu": 3 
         },
         "256": {
-            "MODE": 301,
-            "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
-            "thread_n": 128,
-            "thread_k": 128,
-            "blocks_per_cu": 3 
+            "BLOCK_SIZE_M": 32,
+            "MODE": 168,
+            "DELTA": 1
         },
         "512": {
-            "MODE": 301,
-            "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
-            "thread_n": 128,
-            "thread_k": 128,
-            "blocks_per_cu": 3 
+            "BLOCK_SIZE_M": 32,
+            "MODE": 168,
+            "DELTA": 2
         },
         "1024": {
-            "MODE": 301,
-            "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
-            "thread_n": 256,
-            "thread_k": 128,
-            "blocks_per_cu": 1 
+            "BLOCK_SIZE_M": 64,
+            "MODE": 183,
+            "DELTA": 1
         },
         "2048": {
-            "MODE": 301,
-            "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
-            "thread_n": 512,
-            "thread_k": 64,
-            "blocks_per_cu": 2 
+            "BLOCK_SIZE_M": 64,
+            "MODE": 177,
+            "DELTA": 1
         },
         "4096": {
-            "MODE": 301,
-            "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
-            "thread_n": 256,
-            "thread_k": 128,
-            "blocks_per_cu": 1 
+            "BLOCK_SIZE_M": 64,
+            "MODE": 183,
+            "DELTA": 1
         },
         "6144": {
-            "MODE": 301,
-            "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
-            "thread_n": 256,
-            "thread_k": 128,
-            "blocks_per_cu": 1 
+            "BLOCK_SIZE_M": 64,
+            "MODE": 183,
+            "DELTA": 1
         },
         "8192": {
-            "MODE": 301,
-            "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
-            "thread_n": 256,
-            "thread_k": 128,
-            "blocks_per_cu": 1 
+            "BLOCK_SIZE_M": 64,
+            "MODE": 181,
+            "DELTA": 1
         },
         "16384": {
-            "MODE": 301,
-            "DELTA": 1,
-            "BLOCK_SIZE_M": 16,
-            "thread_n": 256,
-            "thread_k": 128,
-            "blocks_per_cu": 1
+            "BLOCK_SIZE_M": 64,
+            "MODE": 181,
+            "DELTA": 1
         }
     }
 }
