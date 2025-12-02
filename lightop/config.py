@@ -548,7 +548,6 @@ def get_moe_cuda_marlin_config_w16a16(
     block_k: Optional[int] = None,
     is_ep: Optional[bool] = False,
     ep_size: Optional[int] = 8,
-    is_marlin: Optional[bool] = False
 ) -> Optional[dict[int, Any]]:
     """
     Return optimized configurations for the fused MoE kernel.
@@ -562,11 +561,9 @@ def get_moe_cuda_marlin_config_w16a16(
     # First look up if an optimized configuration is available in the configs
     # directory
     device_name = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
-    gemm1_file_name = f"MOE_W16A16_CUDA_{N1}_{K1}_{device_name}_{num_cus}.json"
+    gemm1_file_name = f"MOE_W16A16_CUDA_MARLIN_{N1}_{K1}_{device_name}_{num_cus}.json"
     if is_ep:
         gemm1_file_name = f"MOE_W16A16_CUDA_EP{ep_size}_{N1}_{K1}_{device_name}_{num_cus}.json"
-    if is_marlin:
-        gemm1_file_name = f"MOE_W16A16_CUDA_MARLIN_{N1}_{K1}_{device_name}_{num_cus}.json"
     gemm1_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
     
@@ -594,11 +591,9 @@ def get_moe_cuda_marlin_config_w16a16(
     except FileNotFoundError:
         gemm1_config = {}
     
-    gemm2_file_name = f"MOE_W16A16_CUDA_{N2}_{K2}_{device_name}_{num_cus}.json"
+    gemm2_file_name = f"MOE_W16A16_CUDA_MARLIN_{N2}_{K2}_{device_name}_{num_cus}.json"
     if is_ep:
         gemm2_file_name = f"MOE_W16A16_CUDA_EP{ep_size}_{N2}_{K2}_{device_name}_{num_cus}.json"
-    if is_marlin:
-        gemm2_file_name = f"MOE_W16A16_CUDA_MARLIN_{N2}_{K2}_{device_name}_{num_cus}.json"
     gemm2_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
     try:
@@ -630,8 +625,114 @@ def get_moe_cuda_marlin_config_w16a16(
         # print("Config is not found! Use default config.")
         status = False
             
-    gemm2_config = gemm2_config if gemm2_config else {
-        "MODE": 0,
-        "BLOCK_SIZE_M": 16,
-    }
+        gemm1_config = {
+            "MODE": 103,
+            "BLOCK_SIZE_M": 16,
+        }
+        gemm2_config = {
+            "MODE": 103,
+            "BLOCK_SIZE_M": 16,
+        }
+    return gemm1_config, gemm2_config, status
+
+@functools.lru_cache
+def get_moe_cuda_config_w16a16(
+    E: int,
+    M: int,
+    N1: int,
+    K1: int,
+    N2: int,
+    K2: int,
+    topk: int,
+    device_name: str,
+    num_cus: str,
+    dtype: Optional[str],
+    block_n: Optional[int] = None,
+    block_k: Optional[int] = None,
+    is_ep: Optional[bool] = False,
+    ep_size: Optional[int] = 8,
+) -> Optional[dict[int, Any]]:
+    """
+    Return optimized configurations for the fused MoE kernel.
+
+    The return value will be a dictionary that maps an irregular grid of
+    batch sizes to configurations of the fused_moe kernel. To evaluate the
+    kernel on a given batch size bs, the closest batch size in the grid should
+    be picked and the associated configuration chosen to invoke the kernel.
+    """
+    
+    # First look up if an optimized configuration is available in the configs
+    # directory
+    device_name = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
+    gemm1_file_name = f"MOE_W16A16_CUDA_{N1}_{K1}_{device_name}_{num_cus}.json"
+    if is_ep:
+        gemm1_file_name = f"MOE_W16A16_CUDA_EP{ep_size}_{N1}_{K1}_{device_name}_{num_cus}.json"
+    gemm1_config_file_path = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
+    
+    try:
+        with open(gemm1_config_file_path, 'r') as file:
+            config_infos = json.load(file)
+            if f"{N1}_{K1}" in config_infos:
+                config_info = config_infos[f"{N1}_{K1}"]
+                int_keys = [int(key) for key in config_info.keys()]
+                greater_numbers = [num for num in int_keys if num >= M]
+                num_token = min(greater_numbers) if greater_numbers else None
+                gemm1_config = config_info[f"{num_token}"] if f"{num_token}" in config_info else {}
+                # 如果config没有，找到最接近的token数
+                if not gemm1_config:
+                    min_diff = float('inf')
+                    closest_token = None
+                    for token in int_keys:
+                        diff = abs(token - M)
+                        if diff < min_diff:
+                            min_diff = diff
+                            closest_token = token
+                    gemm1_config = config_info[f"{closest_token}"] if f"{closest_token}" in config_info else {}
+            else:
+                gemm1_config={}
+    except FileNotFoundError:
+        gemm1_config = {}
+    
+    gemm2_file_name = f"MOE_W16A16_CUDA_{N2}_{K2}_{device_name}_{num_cus}.json"
+    if is_ep:
+        gemm2_file_name = f"MOE_W16A16_CUDA_EP{ep_size}_{N2}_{K2}_{device_name}_{num_cus}.json"
+    gemm2_config_file_path = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
+    try:
+        with open(gemm2_config_file_path, 'r') as file:
+            config_infos = json.load(file)
+            if f"{N2}_{K2}" in config_infos:
+                config_info = config_infos[f"{N2}_{K2}"]
+                int_keys = [int(key) for key in config_info.keys()]
+                greater_numbers = [num for num in int_keys if num >= M]
+                num_token = min(greater_numbers) if greater_numbers else None
+                gemm2_config = config_info[f"{num_token}"] if f"{num_token}" in config_info else {}
+                # 如果config没有，找到最接近的token数
+                if not gemm2_config:
+                    min_diff = float('inf')
+                    closest_token = None
+                    for token in int_keys:
+                        diff = abs(token - M)
+                        if diff < min_diff:
+                            min_diff = diff
+                            closest_token = token
+                    gemm2_config = config_info[f"{closest_token}"] if f"{closest_token}" in config_info else {}
+            else:
+                gemm2_config={}
+    except FileNotFoundError:
+        gemm2_config = {}
+        
+    status = True    
+    if not gemm1_config or not gemm2_config: 
+        # print("Config is not found! Use default config.")
+        status = False
+        gemm1_config = {
+            "MODE": 500,
+            "BLOCK_SIZE_M": 16,
+        }
+        gemm2_config = {
+            "MODE": 500,
+            "BLOCK_SIZE_M": 16,
+        }
     return gemm1_config, gemm2_config, status

@@ -217,6 +217,28 @@ def moe_gemm_marlin_w16a16(
                                         sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
     return output
 
+def moe_gemm_w16a16(
+                    input: torch.Tensor,
+                    b_qweight: torch.Tensor,
+                    output: torch.Tensor,
+                    topk_weights: Optional[torch.Tensor],
+                    sorted_token_ids: torch.Tensor,
+                    experts_ids: torch.Tensor,
+                    num_tokens_post_pad: torch.Tensor, 
+                    top_k: int,
+                    config: Dict[str, Any],
+                    is_ep:bool = False) -> torch.Tensor:
+    mode = config['MODE']
+    delta = config['DELTA']
+
+    if mode < 1000:
+        op.moe_gemm_w16a16(input, b_qweight, output,  topk_weights,
+                                            sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
+    else:
+        op.moe_w16a16_asm(input, b_qweight, output,  topk_weights,
+                                            sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
+    return output
+
 def moe_gemm_w8a8(input: torch.Tensor,
                     b_qweight: torch.Tensor,
                     output: torch.Tensor,

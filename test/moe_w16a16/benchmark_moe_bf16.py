@@ -26,7 +26,7 @@ from lmslim.layers.gemm.int8_utils import (
 import math
 import torch.nn.functional as F
 import pandas as pd
-from fused_moe_valid_w16a16 import fused_moe_valid_w16a16
+from fused_moe_w16a16_utility import fused_moe_w16a16_valid
 
 import os
 os.environ["TRITON_CACHE_DIR"] = f".triton/cache"
@@ -711,7 +711,7 @@ def fuse_moe_correctness_preprocess(
         #                                             mode=mode_list,
         #                                             gemm1_compare_list=gemm1_compare_failed_list,
         #                                             gemm2_compare_list=gemm2_compare_failed_list)
-        output = fused_moe_valid_w16a16(                      
+        output = fused_moe_w16a16_valid(                      
                                         x,
                                         w1,
                                         w2,
@@ -1342,9 +1342,10 @@ def main(args: argparse.Namespace):
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             # 1, 2, 4, 8, 16, 32, 
-            64, 128,
-            256, 512, 1024, 2048, 
-            4096, 6144, 8192, 16384
+            # 64, 128,
+            # 256, 512, 1024, 2048, 
+            # 4096, 6144, 8192, 16384
+            128,
             
             # 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 
             # 144, 160, 176, 192, 208, 224, 240, 256, 

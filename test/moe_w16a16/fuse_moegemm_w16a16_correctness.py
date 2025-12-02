@@ -23,7 +23,7 @@ from lightop import moe_gemm_w8a8
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
 
-from fused_moe_valid_w16a16 import fused_moe_valid_w16a16, blockM_all_configs
+from fused_moe_w16a16_utility import fused_moe_w16a16_valid, blockM_all_configs
 
 gemm1_compare_failed_list = []
 gemm2_compare_failed_list = []
@@ -169,9 +169,8 @@ def benchmark_config(
     score = torch.randn((num_tokens, num_experts), device="cuda", dtype=torch.float32)
 
     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
-    # 先进行准确度测试
-    # GEMM1_Peak,GEMM2_Peak,bandwith1,bandwith2 = fused_marlin_moe_valid(   
-    fused_moe_valid_w16a16(                      
+    # 先进行准确度测试 
+    fused_moe_w16a16_valid(                      
                             x,
                             w1,
                             w2,
@@ -266,8 +265,8 @@ def run_moe_w16a16_perchannel_vaild():
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
-    mode_ranges = [mode for mode in blockM_all_configs.keys()]
-    # mode_ranges = [500]
+    # mode_ranges = [mode for mode in blockM_all_configs.keys()]
+    mode_ranges = [1000]
     # compare_fail = [42,43,46,52,54,60]
     # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
     # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
