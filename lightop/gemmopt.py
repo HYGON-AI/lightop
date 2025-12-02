@@ -459,6 +459,14 @@ def m_grouped_w16a16_gemm_nt_contig_asm(a:torch.Tensor, b:torch.Tensor, output:t
     b_scale = torch.ones((E,N),dtype=torch.float32, device=b.device)
     return op.m_grouped_w16a16_gemm_nt_contig_asm(a, b, output, a_scale, b_scale, m_indices, mode)
 
+def m_grouped_w8a8_gemm_nt_nopad_contig_asm( a: tuple[torch.Tensor, torch.Tensor],
+                                             b: tuple[torch.Tensor, torch.Tensor],
+                                             output:torch.Tensor, m_indices:torch.Tensor,
+                                             token_per_expert:torch.Tensor) -> torch.Tensor:
+    input, a_scale = a
+    b_qweight, b_scale = b
+    return op.m_grouped_w8a8_gemm_nt_nopad_contig_asm(input, b_qweight, output, a_scale, b_scale, m_indices, token_per_expert)
+
 def groupgemm(a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor, trans_b: bool = False) -> torch.Tensor:
     outs = op.groupgemm(a, b, batch_sizes, trans_b)
     return outs
