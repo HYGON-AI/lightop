@@ -338,3 +338,4 @@ if __name__ == "__main__":
     main(args)
 
     # benchmark_config(4096, 256, 512, 7168, 8)
+    # HIP_VISIBLE_DEVICES=1 python3 benchmark_moe_R1_tp8_precise_sz.py

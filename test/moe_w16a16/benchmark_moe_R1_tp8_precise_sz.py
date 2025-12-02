@@ -138,16 +138,16 @@ def benchmark_config(
     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
     # 先进行准确度测试
     # GEMM1_Peak,GEMM2_Peak,bandwith1,bandwith2 = fused_marlin_moe_valid(   
-    fused_marlin_moe_valid(                      
-                            x,
-                            w1,
-                            w2,
-                            w1_scale,
-                            w2_scale,
-                            score,
-                            topk_weights,
-                            topk_ids
-                            )
+    GEMM1_Peak,GEMM2_Peak,bandwith1,bandwith2 = fused_marlin_moe_valid(                      
+                                                                        x,
+                                                                        w1,
+                                                                        w2,
+                                                                        w1_scale,
+                                                                        w2_scale,
+                                                                        score,
+                                                                        topk_weights,
+                                                                        topk_ids
+                                                                        )
     # return
     # 预热
     for i in range(10):
@@ -191,120 +191,30 @@ def benchmark_config(
             gemm2_time_us_total += gemm2_time_us
 
     print("      GEMM1_Time_us: ", gemm1_time_us_total/num_iters/10, "GEMM2_Time_us: ", gemm2_time_us_total/num_iters/10)
-    # for i in range(10):
-    #     # 使用新的专家得分
-    #     prepare(i)
-    #     # 获取新专家得分的 算子时间
-    #     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
-    #     for j in range(10): # 一次随机专家运行10次
-    #         fused_time_moe_triton(
-    #                         x,
-    #                         w1,
-    #                         w2,
-    #                         w1_scale,
-    #                         w2_scale,
-    #                         score,
-    #                         topk_weights,
-    #                         topk_ids
-    #                         )
-            
-
-    # gemm1_time_us_total = 0 
-    # gemm2_time_us_total = 0
-    # for i in range(num_iters):
-    #     # 使用新的专家得分
-    #     prepare(i)
-    #     # 获取新专家得分的 算子时间
-    #     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
-    #     for j in range(10): # 一次随机专家运行10次
-    #         gemm1_time_us, gemm2_time_us =  fused_time_moe_triton(
-    #                                                         x,
-    #                                                         w1,
-    #                                                         w2,
-    #                                                         w1_scale,
-    #                                                         w2_scale,
-    #                                                         score,
-    #                                                         topk_weights,
-    #                                                         topk_ids
-    #                                                         )
-            
-    #         gemm1_time_us_total += gemm1_time_us
-    #         gemm2_time_us_total += gemm2_time_us
-
-    # print("      GEMM3_Time_us: ", gemm1_time_us_total/num_iters/10, "GEMM4_Time_us: ", gemm2_time_us_total/num_iters/10)
+    gemm1_time_us_total_avg = gemm1_time_us_total/num_iters/10
+    gemm2_time_us_total_avg = gemm2_time_us_total/num_iters/10
+    gemm1_gemm2_time_us_total_avg = gemm1_time_us_total_avg + gemm2_time_us_total_avg
+    gemm1_peak = GEMM1_Peak/(gemm1_time_us_total/num_iters/10 /1000/1000)/10**12
+    gemm2_peak = GEMM2_Peak/(gemm2_time_us_total/num_iters/10 /1000/1000)/10**12
+    gemm1_bandwidth = bandwith1/(gemm1_time_us_total/num_iters/10/1000/1000)
+    gemm2_bandwidth = bandwith2/(gemm2_time_us_total/num_iters/10/1000/1000)
     
-
-
-    # return {
-    #     'M': num_tokens,
-    #     'N1': shard_intermediate_size,
-    #     'K1': hidden_size//2,
-    #     'N2': hidden_size,
-    #     'K2': shard_intermediate_size // 4,
-    #     'E': num_experts,
-    #     'TopK': topk,
-    #     'GEMM1_Time_us': gemm1_time_us_total/num_iters/10,
-    #     'GEMM2_Time_us': gemm2_time_us_total/num_iters/10,
-    # }
-
-
-    # add triton tunning 
-    # for i in range(10):
-    #     # 使用新的专家得分
-    #     prepare(i)
-    #     # 获取新专家得分的 算子时间
-    #     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
-    #     for j in range(10): # 一次随机专家运行10次
-    #         do_bench_fused_time_moe_triton(
-    #                         x,
-    #                         w1,
-    #                         w2,
-    #                         w1_scale,
-    #                         w2_scale,
-    #                         score,
-    #                         topk_weights,
-    #                         topk_ids
-    #                         )
-            
-
-    # gemm1_time_us_total = 0 
-    # gemm2_time_us_total = 0
-    # for i in range(num_iters):
-    #     # 使用新的专家得分
-    #     prepare(i)
-    #     # 获取新专家得分的 算子时间
-    #     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
-    #     for j in range(10): # 一次随机专家运行10次
-    #         gemm1_time_us, gemm2_time_us =  do_bench_fused_time_moe_triton(
-    #                                                         x,
-    #                                                         w1,
-    #                                                         w2,
-    #                                                         w1_scale,
-    #                                                         w2_scale,
-    #                                                         score,
-    #                                                         topk_weights,
-    #                                                         topk_ids
-    #                                                         )
-            
-    #         gemm1_time_us_total += gemm1_time_us
-    #         gemm2_time_us_total += gemm2_time_us
-
-    # print("      GEMM3_Time_us: ", gemm1_time_us_total/num_iters/10, "GEMM4_Time_us: ", gemm2_time_us_total/num_iters/10)
-    
-
-
-    # return {
-    #     'M': num_tokens,
-    #     'N1': shard_intermediate_size,
-    #     'K1': hidden_size//2,
-    #     'N2': hidden_size,
-    #     'K2': shard_intermediate_size // 4,
-    #     'E': num_experts,
-    #     'TopK': topk,
-    #     'GEMM1_Time_us': gemm1_time_us_total/num_iters/10,
-    #     'GEMM2_Time_us': gemm2_time_us_total/num_iters/10,
-    # }
-
+    return {
+        'M': num_tokens,
+        'N1': shard_intermediate_size,
+        'K1': hidden_size,
+        'N2': hidden_size,
+        'K2': shard_intermediate_size // 2,
+        'E': num_experts,
+        'TopK': topk,
+        'GEMM1_Time_us': gemm1_time_us_total_avg,
+        'GEMM2_Time_us': gemm2_time_us_total_avg,
+        'GEMM1+GEMM2_us': gemm1_gemm2_time_us_total_avg,
+        'GEMM1_TFlops': gemm1_peak,
+        'GEMM2_TFlops': gemm2_peak,
+        'GEMM1_GB/s': gemm1_bandwidth,
+        'GEMM2_GB/s': gemm2_bandwidth,
+    }
 
 @ray.remote(num_gpus=1)
 class BenchmarkWorker:
@@ -353,8 +263,8 @@ def main(args: argparse.Namespace):
         # batch_sizes = [512, 1024, 2048, 4096, 6144, 8192, 16384]
         # batch_sizes = [2048]
         # batch_sizes = [512, 1024, 2048, 4096, 6144, 8192, 16384]
-        batch_sizes = [16,256,512,1024]
-        # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]
+        # batch_sizes = [16,256,512,1024]
+        batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]
     else:
         batch_sizes = args.batch_size
 
@@ -378,19 +288,12 @@ def main(args: argparse.Namespace):
     if args.tune:
         assert False
     else:
-       _distribute(
-            "benchmark", [(batch_size, num_experts, shard_intermediate_size, hidden_size,
-                           topk) for batch_size in batch_sizes])
-        # print(outputs)
-
-        # df = pd.DataFrame(outputs)
-
-        # # 将数据写入 Excel 文件
-        # try:
-        #     df.to_excel('./marlin_prof.xlsx', index=False)
-        #     print("数据已成功写入到 marlin_prof.xlsx 文件")
-        # except Exception as e:
-        #     print(f"写入文件时出错: {e}")    
+      results = _distribute(
+                            "benchmark", [(batch_size, num_experts, shard_intermediate_size, hidden_size,
+                                        topk) for batch_size in batch_sizes])
+      output_file = "moe_w16a16_gemm_channel_wise.xlsx"
+      df = pd.DataFrame(results)
+      df.to_excel(output_file, index=False)   
 
 
 
@@ -418,3 +321,4 @@ if __name__ == "__main__":
     main(args)
 
     # benchmark_config(4096, 256, 512, 7168, 8)
+    # HIP_VISIBLE_DEVICES=1 python3 benchmark_moe_R1_tp8_precise_sz.py
