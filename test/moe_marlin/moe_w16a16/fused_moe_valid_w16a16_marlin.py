@@ -60,7 +60,8 @@ blockM_all_configs = {
     190: 16, 
     192: 32, 
     193: 32, 
-    195: 64, 
+    195: 64,
+    1000: 128, 
 }
 
 def torch_moe(a, w1, w2, score, topk ,topk_weight1, topk_ids1):
