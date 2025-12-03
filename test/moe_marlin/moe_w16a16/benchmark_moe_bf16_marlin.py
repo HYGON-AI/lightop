@@ -1186,9 +1186,9 @@ def save_single_config(batch_size: int, first_stage_config: BenchmarkConfig, sec
     K = hidden_size
     gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
     if moe_ep_size > 1:
-        filename = f"MOE_W16A16_CUDA_EP{moe_ep_size}_{N}_{K}_{gfx_version.lower()}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+        filename = f"MOE_W16A16_CUDA_MARLIN_EP{moe_ep_size}_{N}_{K}_{gfx_version.lower()}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
     elif moe_ep_size == 1:
-        filename = f"MOE_W16A16_CUDA_{N}_{K}_{gfx_version.lower()}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+        filename = f"MOE_W16A16_CUDA_MARLIN_{N}_{K}_{gfx_version.lower()}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
     else:
         raise ValueError(f"Invalid moe_ep_size: {moe_ep_size}")
     
@@ -1216,9 +1216,9 @@ def save_single_config(batch_size: int, first_stage_config: BenchmarkConfig, sec
     N = hidden_size
     K = shard_intermediate_size // 2
     if moe_ep_size > 1:
-        filename = f"MOE_W16A16_CUDA_EP{moe_ep_size}_{N}_{K}_{gfx_version.lower()}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+        filename = f"MOE_W16A16_CUDA_MARLIN_EP{moe_ep_size}_{N}_{K}_{gfx_version.lower()}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
     elif moe_ep_size == 1:
-        filename = f"MOE_W16A16_CUDA_{N}_{K}_{gfx_version.lower()}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
+        filename = f"MOE_W16A16_CUDA_MARLIN_{N}_{K}_{gfx_version.lower()}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
     else:
         raise ValueError(f"Invalid moe_ep_size: {moe_ep_size}")
     
