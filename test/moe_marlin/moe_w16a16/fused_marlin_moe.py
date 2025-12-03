@@ -44,7 +44,7 @@ def fused_marlin_moe(
     E = w1.shape[0] # 128
     N = w1.shape[1] // 2 # 768
     topk = topk_ids.shape[1] 
-    config_marlin_0, config_marlin_1, status = get_moe_cuda_marlin_config_w16a16(E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16,is_marlin=True)
+    config_marlin_0, config_marlin_1, status = get_moe_cuda_marlin_config_w16a16(E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16)
     # debug
 
     # config_marlin_0["BLOCK_SIZE_M"] = 16
