@@ -198,7 +198,6 @@ __global__ void rms_rope_kernel(
       const int head_in_block = warpid * num_head_per_warp + lane_of_head;  // 0, 8, 16, 24
       const int64_t pos = positions[token_idx];
       const int head_offset_in_token = head_start + head_in_block;
-      if(head_offset_in_token >= num_head) return;
       // 计算q_pe的起始地址， 并读取q_pe
       const int element_in_head = (threadIdx.x % thread_per_head)*Vec; // 0 8 16 24 32 40 48 56 
       const int q_pe_offset = token_idx * num_head * (q_stride_head) + head_offset_in_token * (q_stride_head) + element_in_head;
@@ -211,6 +210,7 @@ __global__ void rms_rope_kernel(
       scalar_t input_vec[Vec];
       scalar_t cos_vec[Vec/2];
       scalar_t sin_vec[Vec/2];
+      if(head_offset_in_token >= num_head) return;
       *(LoadT*)(input_vec) = *(LoadT*)(q_pe_ptr);
       *(LoadTheta*)cos_vec = *(LoadTheta*)(cache_ptr + cos_index_in_cache);
       *(LoadTheta*)sin_vec = *(LoadTheta*)(cache_ptr + sin_index_in_cache);
@@ -241,8 +241,9 @@ __global__ void rms_rope_kernel(
       constexpr int embed_dim = rot_dim / 2;
       const int warpid = threadIdx.x / C10_WARP_SIZE;
       const int laneid = threadIdx.x % C10_WARP_SIZE;
-      const int token_idx = (blockIdx.x - q_grid_x)*num_token_per_block + warpid*num_token_per_warp + laneid/thread_per_head;
-      if(token_idx >= bs) return;
+      const int token_idx =  (blockIdx.x - q_grid_x)*num_token_per_block + warpid*num_token_per_warp + laneid/thread_per_head;
+      
+      
       // 计算k_pe的offset
       const int thread_offset_in_token = (laneid % thread_per_head)*Vec;
       const int k_pe_offset = token_idx * k_stride_head + thread_offset_in_token;
@@ -260,6 +261,7 @@ __global__ void rms_rope_kernel(
       scalar_t cos_vec[Vec/2];
       scalar_t sin_vec[Vec/2];
       uint8_t output_vec[Vec];
+      if(token_idx >= bs) return;  
       *(LoadT*)(input_vec) = *(LoadT*)(k_pe_ptr);
       *(LoadTheta*)cos_vec = *(LoadTheta*)(cache_ptr + cos_index_in_cache);
       *(LoadTheta*)sin_vec = *(LoadTheta*)(cache_ptr + sin_index_in_cache);
@@ -271,12 +273,19 @@ __global__ void rms_rope_kernel(
           scalar_t y = input_vec[ii+1];
           scalar_t cos_val = cos_vec[rot_dim_idx];
           scalar_t sin_val = sin_vec[rot_dim_idx];
-          output_vec[ii] = float_to_fp8e5m2(x * cos_val - y * sin_val);
-          output_vec[ii+1] = float_to_fp8e5m2(y * cos_val + x * sin_val);
+          // output_vec[ii] = float_to_fp8e5m2(x * cos_val - y * sin_val);
+          // output_vec[ii+1] = float_to_fp8e5m2(y * cos_val + x * sin_val);
+          float value_x = x * cos_val - y * sin_val;
+          float value_y = y * cos_val + x * sin_val;
+          input_vec[ii] = static_cast<scalar_t>(value_x);
+          input_vec[ii+1] = static_cast<scalar_t>(value_y);
+          output_vec[ii] = float_to_fp8e5m2(value_x);
+          output_vec[ii+1] = float_to_fp8e5m2(value_y);
           rot_dim_idx += 1;
         }
         uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset + 512;
         *(OutputT*)output_ptr = *(OutputT*)output_vec;
+        *(LoadT*)(k_pe_ptr) = *(LoadT*)input_vec;
       }
       else if (kv_dtype == 1) // fp8_e4m3
       {
@@ -285,12 +294,19 @@ __global__ void rms_rope_kernel(
           scalar_t y = input_vec[ii+1];
           scalar_t cos_val = cos_vec[rot_dim_idx];
           scalar_t sin_val = sin_vec[rot_dim_idx];
-          output_vec[ii] = float_to_fp8e4m3(x * cos_val - y * sin_val);
-          output_vec[ii+1] = float_to_fp8e4m3(y * cos_val + x * sin_val);
+          // output_vec[ii] = float_to_fp8e5m2(x * cos_val - y * sin_val);
+          // output_vec[ii+1] = float_to_fp8e5m2(y * cos_val + x * sin_val);
+          float value_x = x * cos_val - y * sin_val;
+          float value_y = y * cos_val + x * sin_val;
+          input_vec[ii] = static_cast<scalar_t>(value_x);
+          input_vec[ii+1] = static_cast<scalar_t>(value_y);
+          output_vec[ii] = float_to_fp8e4m3(value_x);
+          output_vec[ii+1] = float_to_fp8e4m3(value_y);
           rot_dim_idx += 1;
         }
         uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset + 512;
         *(OutputT*)output_ptr = *(OutputT*)output_vec;
+        *(LoadT*)(k_pe_ptr) = *(LoadT*)input_vec;
       }
       else{
         for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
@@ -304,6 +320,7 @@ __global__ void rms_rope_kernel(
         }
         scalar_t* output_ptr = (scalar_t*)kv_cache + kv_cache_offset + 512;
         *(LoadT*)output_ptr = *(LoadT*)input_vec;
+        *(LoadT*)(k_pe_ptr) = *(LoadT*)input_vec;
       }
     }
     else
@@ -319,7 +336,6 @@ __global__ void rms_rope_kernel(
       const int block_token_id = (blockIdx.x - q_grid_x - k_grid_x) * token_per_block;
       const int warp_token_id = warpid * token_per_warp;
       const int token_id = (blockIdx.x - q_grid_x - k_grid_x) * token_per_block + warp_token_id; // 每个block负责4个token，每个warp负责1个token
-      if(token_id >= bs) return;
       // 计算kv_c的offset
       const int thread_offset_in_token = laneid*Vec;
       if(thread_offset_in_token >= kv_c_dim) return;
@@ -336,6 +352,7 @@ __global__ void rms_rope_kernel(
       scalar_t input_vec[Vec];
       scalar_t weight_vec[Vec];
       uint8_t output_vec[Vec];
+      if(token_id >= bs) return;
       *(LoadT*)(input_vec) = *(LoadT*)(kv_c_ptr);
       *(LoadT*)(weight_vec) = *(LoadT*)(weight_ptr);
       T_ACC val = 0;
@@ -406,7 +423,7 @@ __global__ void rms_rope_kernel(
     TORCH_CHECK(q_pe.size(2) ==  rot_dim, "q_pe.size(2) must be rot_dim");
     TORCH_CHECK(cos_sin_cache.dim() == 2, "cos_sin_cache must be 2D tensor [max_position, rot_dim]");
     TORCH_CHECK(cos_sin_cache.size(1) == rot_dim, "cos_sin_cache.size(1) must equal rot_dim");
-
+    const int temp1= 0;
     // 计算ROPE(Q)grid和block尺寸
     constexpr int num_warp_per_block = 4;
     constexpr int Vec = 8;
@@ -470,7 +487,6 @@ __global__ void rms_rope_kernel(
     dim3 block(block_x);
     const at::cuda::OptionalCUDAGuard device_guard(device_of(q_pe));
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    int temp1;
 
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
