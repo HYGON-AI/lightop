@@ -213,8 +213,12 @@ def moe_gemm_marlin_w16a16(
     mode = config['MODE']
     delta = config['DELTA']
 
-    op.moe_gemm_w16a16(input, b_qweight, output,  topk_weights,
-                                        sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
+    if mode < 1000:
+        op.moe_gemm_w16a16(input, b_qweight, output,  topk_weights,
+                                            sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
+    else:
+        op.moe_marlin_w16a16_asm(input, b_qweight, output,  topk_weights,
+                                            sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
     return output
 
 def moe_gemm_w16a16(
