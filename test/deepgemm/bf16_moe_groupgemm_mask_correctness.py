@@ -163,32 +163,6 @@ def main():
     # PyTorch GPU随机种子
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)  # 多GPU情况
-    # # 创建解析器对象
-    # parser = argparse.ArgumentParser(description='这是一个示例脚本的描述')
-    
-    # # 添加参数
-    # parser.add_argument('--E', type=int, default=16, help='E 参数')
-    # parser.add_argument('--n1-list', type=str, required=True, 
-    #                    help='N1 参数列表，如 "[1536,768,384,384,192]"')
-    # parser.add_argument('--n2-list', type=str, required=True,
-    #                    help='N2 参数列表，如 "[2048,2048,2048,4096,4096]"')
-    # parser.add_argument('--k-list', type=str, required=True,
-    #                    help='K 参数列表，如 "[768,374,192,192,96]"')
-    # parser.add_argument('--topk', type=int, default=8, 
-    #                    help='topk 参数')
-    # parser.add_argument('--out-dtype', type=torch.dtype, default=torch.bfloat16,
-    #                    help='out-dtype')
-    # # parser.add_argument('--use-channel-wise',action='store_true', default=False,
-    # #                    help='use-channel-wise')
-
-    # # 解析参数
-    # args = parser.parse_args()
-    
-    # def parse_list(list_str):
-    #     try:
-    #         return ast.literal_eval(list_str)
-    #     except (ValueError, SyntaxError) as e:
-    #         raise ValueError(f"无法解析列表参数: {list_str}。错误: {str(e)}")
     
     m_list=[4096]
     E=8
@@ -231,5 +205,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    #HIP_VISIBLE_DEVICES=3 python bf16_moe_groupgemm_mask_correctness.py --E 8 --n1-list [4096] --n2-list [7168] --k-list [2048]
-    #HIP_VISIBLE_DEVICES=3 python bf16_moe_groupgemm_mask_correctness.py --E 8 --n1-list [4096] --n2-list [7168] --k-list [2048]

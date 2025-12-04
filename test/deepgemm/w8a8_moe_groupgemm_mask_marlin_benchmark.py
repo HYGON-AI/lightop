@@ -257,7 +257,6 @@ def _fused_moe_helper(m: int,
     masked_m = torch.empty((E, ), device='cuda', dtype=torch.int)
     for j in range(E):
         masked_m[j] = int(expected_m_per_group * random.uniform(0.7, 1.3))
-        # masked_m[j] = int(256)
     return input,weight13,weight13_scale,masked_m
 
 
@@ -280,8 +279,9 @@ def main():
     k_list=[7168, 2048]
     
     # m_list=[8192]
-    E=8 
+    E=16 
     expected_m_per_group_list=[32,64,128,256,512,1024]
+    #expected_m_per_group_list = [256]
     out_dtype=torch.bfloat16
     
     # n_list_1=n1_list #[256,12]
@@ -315,10 +315,10 @@ def main():
             df_expected_m.append(expected_m_per_group)
 
             valid_m = masked_m.sum().item()
+            print("valid_m:", valid_m, "masked_m:", masked_m)
             computes = 2 * valid_m * n_list[i] * k_list[i]
             tflops_asm = computes / (asm_cost_gemm / 1e6) / 1e12
 
-            datas = ( (expected_m_per_group + n_list[i]) * (k_list[i] + 4) + expected_m_per_group*k_list[i]) * E
             data_bytes = (valid_m * k_list[i] + k_list[i] * n_list[i] * E + valid_m * n_list[i] * 2)# bfloat16)   
             bandwidth_asm = data_bytes / (asm_cost_gemm / 1e6) / 1e9
 

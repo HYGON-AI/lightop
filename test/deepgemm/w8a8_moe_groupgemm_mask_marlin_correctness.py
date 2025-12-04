@@ -34,27 +34,6 @@ def unpack_int8_to_int4(tensor_int8: torch.Tensor) -> torch.Tensor:
 
     return unpacked
 
-def native_w8a8_per_token_matmul(A, B, As, Bs, output_dtype=torch.float16):
-    """Matrix multiplication function that supports per-token input quantization and per-column weight quantization"""
-    A = A.to(torch.float32)
-    B = B.to(torch.float32)
-
-    assert A.shape[-1] == B.shape[-1], "Dimension mismatch"
-    assert B.ndim == 2 and B.is_contiguous(), "B must be a 2D contiguous tensor"
-
-    # Reshape input
-    M = A.numel() // A.shape[-1]
-    B = B.t()  # Transpose weight matrix
-    N, K = B.shape
-    origin_C_shape = A.shape[:-1] + (K,)
-    A = A.reshape(M, N)
-
-    # As is per-token [M, 1], Bs is per-column [1, K]
-    C = torch.matmul(A, B)  # [M, K]
-    C = As * C * Bs.view(1, -1)  # Broadcast per-column scale
-
-    return C.reshape(origin_C_shape).to(output_dtype)
-
 def native_w8a8_perChannel_batch_matmul(q_a1_all, weight, qa1_scale_all, w13_scale, output_dtype):
 
     A = q_a1_all.to(torch.float32)
@@ -74,7 +53,7 @@ def native_w8a8_perChannel_batch_matmul(q_a1_all, weight, qa1_scale_all, w13_sca
 
     return C
            
-def fused_experts_impl_w8a8_ep_correctness(hidden_states, weight, w13_scale, masked_m, expected_m_per_group):
+def deepgemm_masked_impl_w8a8_ep_correctness(hidden_states, weight, w13_scale, masked_m, expected_m_per_group):
     
     # w13:[num_experts/ep, N, K // 2] [16, 4096, 3584]
     # w2: [num_experts/ep, K, N//2//2] [16, 7168, 1024]
@@ -229,31 +208,7 @@ def main():
     # PyTorch GPU随机种子
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)  # 多GPU情况
-    # 创建解析器对象
-    # parser = argparse.ArgumentParser(description='这是一个示例脚本的描述')
-    
-    # # 添加参数
-    # parser.add_argument('--E', type=int, default=16, help='E 参数')
-    # parser.add_argument('--n1-list', type=str, required=True, 
-    #                    help='N1 参数列表，如 "[1536,768,384,384,192]"')
-    # parser.add_argument('--n2-list', type=str, required=True,
-    #                    help='N2 参数列表，如 "[2048,2048,2048,4096,4096]"')
-    # parser.add_argument('--k-list', type=str, required=True,
-    #                    help='K 参数列表，如 "[768,374,192,192,96]"')
-    # parser.add_argument('--topk', type=int, default=8, 
-    #                    help='topk 参数')
-    # parser.add_argument('--out-dtype', type=torch.dtype, default=torch.bfloat16,
-    #                    help='out-dtype')
-    # parser.add_argument('--use-channel-wise',action='store_true', default=False,
-    #                    help='use-channel-wise')
 
-    # 解析参数
-    
-    def parse_list(list_str):
-        try:
-            return ast.literal_eval(list_str)
-        except (ValueError, SyntaxError) as e:
-            raise ValueError(f"无法解析列表参数: {list_str}。错误: {str(e)}")
     
     m_list=[4096]
     E=8
@@ -287,11 +242,7 @@ def main():
             print("masked_m:", masked_m.shape, masked_m.dtype, masked_m)
 
             
-            fused_experts_impl_w8a8_ep_correctness(input, weight, weight_scale, masked_m, expected_m_per_group)
+            deepgemm_masked_impl_w8a8_ep_correctness(input, weight, weight_scale, masked_m, expected_m_per_group)
 
 if __name__ == "__main__":
     main()
-    #dp2
-    #HIP_VISIBLE_DEVICES=3 python moe_groupgemm_w4a8/w4a8_moe_groupgemm_marlin_correctness.py  --E 16 --n1-list '[4096]'  --n2-list '[7168]' --k-list '[2048]'
-    #dp4
-    #HIP_VISIBLE_DEVICES=3 python moe_groupgemm_w4a8/w4a8_moe_groupgemm_marlin_correctness.py  --E 8 --n1-list '[4096]'  --n2-list '[7168]' --k-list '[2048]'
