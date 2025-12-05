@@ -10,85 +10,10 @@ namespace native {
 
 // GemmParams结构体定义
 template <typename T>
-struct GemmParams2 {
-    GemmParams2(const T* ptr_A,
-               const int32_t* ptr_B0,
-               bhalf_t* ptr_C,
-               float* ptr_A_scale,
-               float* ptr_B_scale,
-               const float* topk_weights,
-               const int32_t* sorted_token_ids,
-               const int32_t* expert_ids,
-               const int32_t num_tokens_post_pad,
-               const int32_t* num_tokens_post_pad_ptr,
-               uint32_t size_m,
-               uint32_t size_n, 
-               uint32_t size_k,
-               uint32_t size_kofb, 
-               uint32_t stride_asm,
-               uint32_t stride_ask,
-               uint32_t stride_bse,
-               uint32_t stride_bsn, 
-               uint32_t stride_bsk,
-               uint32_t sorted_token_lens,
-               uint32_t top_k,
-               uint32_t delta,
-               uint32_t expert_num)
-        : ptr_A(ptr_A),
-          ptr_B0(ptr_B0),
-          ptr_C(ptr_C),
-          ptr_A_scale(ptr_A_scale),
-          ptr_B_scale(ptr_B_scale),
-          topk_weights(topk_weights),
-          sorted_token_ids(sorted_token_ids),
-          expert_ids(expert_ids),
-          num_tokens_post_pad(num_tokens_post_pad),
-          num_tokens_post_pad_ptr(num_tokens_post_pad_ptr),
-          size_m(size_m),
-          size_n(size_n),
-          size_k(size_k),
-          size_kofb(size_kofb),
-          stride_asm(stride_asm),
-          stride_ask(stride_ask),
-          stride_bse(stride_bse),
-          stride_bsn(stride_bsn),
-          stride_bsk(stride_bsk),
-          sorted_token_lens(sorted_token_lens),
-          top_k(top_k),
-          delta(delta),
-          expert_num(expert_num)
-         {}
-
-    const T* ptr_A;                    // input
-    const int32_t* ptr_B0;                   // weight
-    bhalf_t* ptr_C;                   // output
-    float* ptr_A_scale;                // input scale
-    float* ptr_B_scale;                // weight scale
-    const float* topk_weights;         // topk weights
-    const int32_t* sorted_token_ids;   // sorted token ids
-    const int32_t* expert_ids;         // expert ids
-    const int32_t num_tokens_post_pad;// num tokens after padding
-    const int32_t* num_tokens_post_pad_ptr;// num tokens after padding
-    uint32_t size_m;                   // input size m
-    uint32_t size_n;                   // output size n
-    uint32_t size_k;                    // input size k of a
-    uint32_t size_kofb;                     // input size k of b
-    uint32_t stride_asm;               // input scale stride m
-    uint32_t stride_ask;               // input scale stride k
-    uint32_t stride_bse;               // weight scale stride expert
-    uint32_t stride_bsn;               // weight scale stride n
-    uint32_t stride_bsk;               // weight scale stride k
-    uint32_t sorted_token_lens;        // sorted token length
-    uint32_t top_k;                    // top k
-    uint32_t delta;                    // delta
-    uint32_t expert_num;
-};
-
-template <typename T>
 struct GemmParams3 {
     GemmParams3(const T* ptr_A,
                const T* ptr_B0,
-               bhalf_t* ptr_C,
+               T* ptr_C,
                const float* topk_weights,
                const int32_t* sorted_token_ids,
                const int32_t* expert_ids,
@@ -122,7 +47,7 @@ struct GemmParams3 {
 
     const T* ptr_A;                    // input
     const T* ptr_B0;                   // weight
-    bhalf_t* ptr_C;                   // output
+    T* ptr_C;                   // output
     const float* topk_weights;         // topk weights
     const int32_t* sorted_token_ids;   // sorted token ids
     const int32_t* expert_ids;         // expert ids
@@ -140,804 +65,855 @@ struct GemmParams3 {
 
 ///////////////////////////////////////////////////////////////////////launch_moe_function///////////////////////////////////////////////////////////////////////////////////////
 
-// template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-// void launch_MOE_WI4AI8_PERCHANNEL_HIP_NN_UP_prefill(const GemmParams<T>& params);
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int splitk, typename T>
+void kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode(const GemmParams3<T>& params){
+    launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,splitk, T>(params);
+}
 
-// template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-// void launch_MOE_WI4AI8_PERCHANNEL_HIP_NN_DOWN_prefill(const GemmParams<T>& params);
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
+void kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode(const GemmParams3<T>& params){
+    launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, T>(params);
+}
 
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int splitk, typename T>
-void launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode(const GemmParams3<T>& params);
+void kernel_launch_MOE_W16A16_HIP_NT_UP_decode(const GemmParams3<T>& params){
+    launch_MOE_W16A16_HIP_NT_UP_decode<BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,splitk, T>(params);
+}
 
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode(const GemmParams3<T>& params);
-
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int splitk, typename T>
-void launch_MOE_W16A16_HIP_NT_UP_decode(const GemmParams3<T>& params);
-
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_MOE_W16A16_HIP_NT_DOWN_decode(const GemmParams3<T>& params);
+void kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode(const GemmParams3<T>& params){
+    launch_MOE_W16A16_HIP_NT_DOWN_decode<BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, T>(params);
+}
 
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_MOE_W16A16_HIP_NT_UP_prefill(const GemmParams3<T>& params);
+void kernel_launch_MOE_W16A16_HIP_NT_UP_prefill(const GemmParams3<T>& params){
+    launch_MOE_W16A16_HIP_NT_UP_prefill<BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, T>(params);
+}
 
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_MOE_W16A16_HIP_NT_DOWN_prefill(const GemmParams3<T>& params);
+void kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill(const GemmParams3<T>& params){
+    launch_MOE_W16A16_HIP_NT_DOWN_prefill<BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, T>(params);
+}
 
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill(const GemmParams3<T>& params);
+void kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill(const GemmParams3<T>& params){
+    launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, T>(params);
+}
 
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(const GemmParams3<T>& params);
+void kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(const GemmParams3<T>& params){
+    launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, T>(params);
+}
 
 ///////////////////////////////////////////////////////////////////////prefill_config///////////////////////////////////////////////////////////////////////////////////////
 // 创建kernel映射
 // using KernelFunc = std::function<void(const GemmParams<char>&)>;
-using KernelFunc4 = std::function<void(const GemmParams3<bhalf_t>&)>;
+template<typename T>
+using KernelFunc4 = std::function<void(const GemmParams3<T>&)>;
 
 
+template <typename T>
+static std::unordered_map<int, KernelFunc4<T>> make_kernel_maps_gemm1_decode_marlin_w16a16(){
+    return{
+        {300, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 16, 16, 16, 16, 1, T> },
+        {301, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 64, 16, 16, 16, 1, T>},
+        {302, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 128, 16, 16, 16, 1, T>},
+        //kpack2
+        {303, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 32, 16, 16, 32, 1, T>},
+        {304, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 128, 16, 16, 32, 1, T>},
+        {305, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 256, 16, 16, 32, 1, T>},
+        //
+        {306, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 16, 16, 16, 16, 1, T>},
+        {307, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 128, 16, 16, 16, 16, 1, T>},
+        {308, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 256, 16, 16, 16, 16, 1, T>},
+        //KPACK2
+        {309, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 32, 16, 16, 32, 1, T>},
+        {310, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 128, 32, 16, 16, 32, 1, T>},
+        {311, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 256, 32, 16, 16, 32, 1, T>},
+        //MIX
+        {312, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 128, 64, 16, 16, 32, 1, T>},
+        {313, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 128, 16, 16, 32, 1, T>},
+        {314, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 128, 32, 16, 16, 16, 1, T>},
+        {315, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 64, 16, 16, 16, 1, T>}, 
+    };
+}
 
-static std::unordered_map<int, KernelFunc4> kernel_maps_gemm1_decode_marlin_w16a16 = {
-    {300, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 16, 16, 16, 16, 1, bhalf_t>(p); }},
-    {301, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 64, 16, 16, 16, 1, bhalf_t>(p); }},
-    {302, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 128, 16, 16, 16, 1, bhalf_t>(p); }},
+static auto kernel_maps_gemm1_decode_marlin_w16a16_half = make_kernel_maps_gemm1_decode_marlin_w16a16<half>();
+static auto kernel_maps_gemm1_decode_marlin_w16a16_bhalf_t = make_kernel_maps_gemm1_decode_marlin_w16a16<bhalf_t>();
+
+template <typename T>
+static std::unordered_map<int, KernelFunc4<T>> make_kernel_maps_gemm2_decode_marlin_w16a16(){
+    return{
+    {300, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 16, 16, 16, 16, T>}, 
+    {301, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 64, 16, 16, 16, T>}, 
+    {302, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 128, 16, 16, 16, T>}, 
     //kpack2
-    {303, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 32, 16, 16, 32, 1, bhalf_t>(p); }},
-    {304, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 128, 16, 16, 32, 1, bhalf_t>(p); }},
-    {305, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 32, 256, 16, 16, 32, 1, bhalf_t>(p); }},
-    //
-    {306, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 16, 16, 16, 16, 1, bhalf_t>(p); }},
-    {307, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 128, 16, 16, 16, 16, 1, bhalf_t>(p); }},
-    {308, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 256, 16, 16, 16, 16, 1, bhalf_t>(p); }},
-    //KPACK2
-    {309, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 32, 16, 16, 32, 1, bhalf_t>(p); }},
-    {310, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 128, 32, 16, 16, 32, 1, bhalf_t>(p); }},
-    {311, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 256, 32, 16, 16, 32, 1, bhalf_t>(p); }},
-    //MIX
-    {312, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 128, 64, 16, 16, 32, 1, bhalf_t>(p); }},
-    {313, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 128, 16, 16, 32, 1, bhalf_t>(p); }}, 
-    {314, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 128, 32, 16, 16, 16, 1, bhalf_t>(p); }},
-    {315, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode<16, 64, 64, 16, 16, 16, 1, bhalf_t>(p); }},   
-};
-
-static std::unordered_map<int, KernelFunc4> kernel_maps_gemm2_decode_marlin_w16a16 = {
-    {300, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 16, 16, 16, 16, bhalf_t>(p); }},
-    {301, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 64, 16, 16, 16, bhalf_t>(p); }},
-    {302, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 128, 16, 16, 16, bhalf_t>(p); }}, //
-    //kpack2
-    {303, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 32, 16, 16, 32, bhalf_t>(p); }},
-    {304, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 128, 16, 16, 32, bhalf_t>(p); }}, // 
-    {305, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 256, 16, 16, 32, bhalf_t>(p); }}, // 
-    
-    {306, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 64, 16, 16, 16, 16, bhalf_t>(p); }},
-    {307, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 128, 16, 16, 16, 16, bhalf_t>(p); }},
-    {308, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 256, 16, 16, 16, 16, bhalf_t>(p); }},
+    {303, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 32, 16, 16, 32, T>}, 
+    {304, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 128, 16, 16, 32, T>}, 
+    {305, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 32, 256, 16, 16, 32, T>}, 
+    {306, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 64, 16, 16, 16, 16, T>}, 
+    {307, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 128, 16, 16, 16, 16, T>}, 
+    {308, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 256, 16, 16, 16, 16, T>}, 
    
-    {309, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 64, 32, 16, 16, 32, bhalf_t>(p); }},
-    {310, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 128, 32, 16, 16, 32, bhalf_t>(p); }},
-    {311, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 256, 32, 16, 16, 32, bhalf_t>(p); }},
+    {309, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 64, 32, 16, 16, 32, T>}, 
+    {310, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 128, 32, 16, 16, 32, T>}, 
+    {311, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 256, 32, 16, 16, 32, T>}, 
     //MIX
-    {312, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 128, 64, 16, 16, 32, bhalf_t>(p); }},
-    {313, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 64, 128, 16, 16, 32, bhalf_t>(p); }},  //
-    {314, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 128, 32, 16, 16, 16, bhalf_t>(p); }},
-    {315, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 64, 64, 16, 16, 16, bhalf_t>(p); }}, 
+    {312, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 128, 64, 16, 16, 32, T>}, 
+    {313, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 64, 128, 16, 16, 32, T>}, 
+    {314, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 128, 32, 16, 16, 16, T>}, 
+    {315, &kernel_launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<16, 64, 64, 16, 16, 16, T>},  
 
 };
+}
 
-
-static std::unordered_map<int, KernelFunc4> kernel_maps_gemm1_decode_w16a16 = {
+static auto kernel_maps_gemm2_decode_marlin_w16a16_half = make_kernel_maps_gemm2_decode_marlin_w16a16<half>();
+static auto kernel_maps_gemm2_decode_marlin_w16a16_bhalf_t = make_kernel_maps_gemm2_decode_marlin_w16a16<bhalf_t>();
+template <typename T>
+static std::unordered_map<int, KernelFunc4<T>> make_kernel_maps_gemm1_decode_w16a16(){
+    return{
     //初始基准，验证精度
-    {401, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 16, 16, 16, 16, 1, bhalf_t>(p); }},
+    {401, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 16, 16, 16, 16, 1, T>},  
     //默认仅在n方向分布warp
-    {402, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 32, 16, 16, 16, 16, 1, bhalf_t>(p); }},
-    {403, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 64, 16, 16, 16, 16, 1, bhalf_t>(p); }},
-    {404, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 128, 16, 16, 16, 16, 1, bhalf_t>(p); }},
+    {402, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 32, 16, 16, 16, 16, 1, T>},  
+    {403, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 64, 16, 16, 16, 16, 1, T>},  
+    {404, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 128, 16, 16, 16, 16, 1, T>},  
     //默认仅在k方向分布warp
-    {405, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 32, 16, 16, 16, 1, bhalf_t>(p); }},
-    {406, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 64, 16, 16, 16, 1, bhalf_t>(p); }},
-    {407, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 128, 16, 16, 16, 1, bhalf_t>(p); }},
+    {405, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 32, 16, 16, 16, 1, T>},  
+    {406, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 64, 16, 16, 16, 1, T>},  
+    {407, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 128, 16, 16, 16, 1, T>},  
     //同时在n和k方向分布
-    {408, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 32, 64, 16, 16, 16, 1, bhalf_t>(p); }},
-    {409, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 64, 32, 16, 16, 16, 1, bhalf_t>(p); }},
+    {408, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 32, 64, 16, 16, 16, 1, T>},  
+    {409, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 64, 32, 16, 16, 16, 1, T>},  
     //kpack2默认
-    {410, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 32, 16, 16, 32, 1, bhalf_t>(p); }},
+    {410, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 32, 16, 16, 32, 1, T>},  
     //多warp在k方向的kpack2
-    {411, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 64, 16, 16, 32, 1, bhalf_t>(p); }},
-    {412, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 128, 16, 16, 32, 1, bhalf_t>(p); }},
-    {413, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 256, 16, 16, 32, 1, bhalf_t>(p); }},
+    {411, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 64, 16, 16, 32, 1, T>},  
+    {412, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 128, 16, 16, 32, 1, T>},  
+    {413, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 16, 256, 16, 16, 32, 1, T>},  
     //多warp在n方向的kpack2
-    {414, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 64, 32, 16, 16, 32, 1, bhalf_t>(p); }},
-    {415, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 128, 32, 16, 16, 32, 1, bhalf_t>(p); }},    
+    {414, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 64, 32, 16, 16, 32, 1, T>},  
+    {415, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 128, 32, 16, 16, 32, 1, T>},  
     //FINAL 多warp在k方向的kpack2 叠加n方向分布warp
-    {416, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 32, 128, 16, 16, 32, 1, bhalf_t>(p); }},
-    {417, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_decode<16, 64, 64, 16, 16, 32, 1, bhalf_t>(p); }},
+    {416, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 32, 128, 16, 16, 32, 1, T>},  
+    {417, &kernel_launch_MOE_W16A16_HIP_NT_UP_decode<16, 64, 64, 16, 16, 32, 1, T>},  
 };
+}
 
-
-static std::unordered_map<int, KernelFunc4> kernel_maps_gemm2_decode_w16a16 = {
+static auto kernel_maps_gemm1_decode_w16a16_half = make_kernel_maps_gemm1_decode_w16a16<half>();
+static auto kernel_maps_gemm1_decode_w16a16_bhalf_t = make_kernel_maps_gemm1_decode_w16a16<bhalf_t>();
+template <typename T>
+static std::unordered_map<int, KernelFunc4<T>> make_kernel_maps_gemm2_decode_w16a16(){
+    return{
     //初始基准，验证精度
-    {401, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 16, 16, 16, 16, bhalf_t>(p); }},
+    {401, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 16, 16, 16, 16, T>},  
     //默认仅在n方向分布warp
-    {402, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 32, 16, 16, 16, 16, bhalf_t>(p); }},
-    {403, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 64, 16, 16, 16, 16, bhalf_t>(p); }},
-    {404, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 128, 16, 16, 16, 16, bhalf_t>(p); }},
+    {402, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 32, 16, 16, 16, 16, T>},  
+    {403, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 64, 16, 16, 16, 16, T>},  
+    {404, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 128, 16, 16, 16, 16, T>},  
     //默认仅在k方向分布warp
-    {405, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 32, 16, 16, 16, bhalf_t>(p); }},
-    {406, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 64, 16, 16, 16, bhalf_t>(p); }},
-    // {407, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 128, 16, 16, 16, bhalf_t>(p); }}, 
+    {405, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 32, 16, 16, 16, T>},  
+    {406, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 64, 16, 16, 16, T>},  
+    // {407, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 128, 16, 16, 16, T>},   
     //同时在n和k方向分布
-    {408, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 32, 64, 16, 16, 16, bhalf_t>(p); }},
-    {409, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 64, 32, 16, 16, 16, bhalf_t>(p); }},
+    {408, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 32, 64, 16, 16, 16, T>},  
+    {409, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 64, 32, 16, 16, 16, T>},  
     //kpack2默认
-    {410, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 32, 16, 16, 32, bhalf_t>(p); }},
+    {410, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 32, 16, 16, 32, T>},  
     //多warp在k方向的kpack2
-    {411, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 64, 16, 16, 32, bhalf_t>(p); }},
-    // {412, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 128, 16, 16, 32, bhalf_t>(p); }},
-    // {413, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 256, 16, 16, 32, bhalf_t>(p); }},
+    {411, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 64, 16, 16, 32, T>},  
+    // {412, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 128, 16, 16, 32, T>},  
+    // {413, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 16, 256, 16, 16, 32, T>},  
     //多warp在n方向的kpack2
-    {414, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 64, 32, 16, 16, 32, bhalf_t>(p); }},
-    {415, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 128, 32, 16, 16, 32, bhalf_t>(p); }},    
+    {414, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 64, 32, 16, 16, 32, T>},  
+    {415, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 128, 32, 16, 16, 32, T>},      
     //FINAL 多warp在k方向的kpack2 叠加n方向分布warp
-    // {416, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 32, 128, 16, 16, 32, bhalf_t>(p); }},
-    // {417, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 64, 64, 16, 16, 32, bhalf_t>(p); }},
+    // {416, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 32, 128, 16, 16, 32, T>},  
+    // {417, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_decode<16, 64, 64, 16, 16, 32, T>},  
 };
+}
 
-
-
-static std::unordered_map<int, KernelFunc4> kernel_maps_gemm1_prefill_w16a16 = {
+static auto kernel_maps_gemm2_decode_w16a16_half = make_kernel_maps_gemm2_decode_w16a16<half>();
+static auto kernel_maps_gemm2_decode_w16a16_bhalf_t = make_kernel_maps_gemm2_decode_w16a16<bhalf_t>();
+template <typename T>
+static std::unordered_map<int, KernelFunc4<T>> make_kernel_maps_gemm1_prefill_w16a16(){
    ///////////////////////////////////////////////////////N_warp////////////////////////////////////////////////
-    // 4warp BLOCKN 64 
-    {500, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    {501, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-    {502, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 64, 16, 64, bhalf_t>(p); }},
+   return{ 
+   // 4warp BLOCKN 64 
+    {500, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 16, 64, T>},  
+    {501, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 32, 16, 64, T>},  
+    {502, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 64, 16, 64, T>},  
     // 4warp BLOCKN 128 
-    {503, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-    {504, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 64, bhalf_t>(p); }},
-    //{5, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 64, 32, 64, bhalf_t>(p); }}, // 寄存器溢出 32
+    {503, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, T>},  
+    {504, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 64, T>},  
+    //{5, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 64, 32, 64, T>},   // 寄存器溢出 32
     // 4warp BLOCKN 256 
-    {506, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 256, 128, 16, 64, 64, bhalf_t>(p); }},
-    //{507, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 256, 128, 32, 64, 64, bhalf_t>(p); }}, // 寄存器溢出 60
-    //{508, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 64, 64, bhalf_t>(p); }}, //寄存器溢出 392
+    {506, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 256, 128, 16, 64, 64, T>},  
+    //{507, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 256, 128, 32, 64, 64, T>},   // 寄存器溢出 60
+    //{508, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 64, 64, T>},   //寄存器溢出 392
     // 8warp BLOCKN 128 
-    {509, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 32, 16, 64, bhalf_t>(p); }},
-    {510, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 64, bhalf_t>(p); }},
+    {509, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 32, 16, 64, T>},  
+    {510, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 64, T>},  
     // 8warp BLOCKN 256 
-    {511, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 256, 128, 32, 32, 64, bhalf_t>(p); }},
-    //{512, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 32, 64, bhalf_t>(p); }}, //寄存器溢出28
+    {511, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 256, 128, 32, 32, 64, T>},  
+    //{512, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 32, 64, T>},   //寄存器溢出28
     // 16warp
-    {513, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 16, 64, bhalf_t>(p); }},
+    {513, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 16, 64, T>},  
     ///////////////////////////////////////////////////////MN_WARP////////////////////////////////////////////////
     // 4 warp:  2,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {514, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 32, 128, 16, 16, 64, bhalf_t>(p); }},
-    {515, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 16, 32, 64, bhalf_t>(p); }},
-    {516, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 32, 128, 32, 16, 64, bhalf_t>(p); }},
-    {517, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 32, 32, 64, bhalf_t>(p); }},
+    {514, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 32, 128, 16, 16, 64, T>},  
+    {515, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 16, 32, 64, T>},  
+    {516, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 32, 128, 32, 16, 64, T>},  
+    {517, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 32, 32, 64, T>},  
     // 8 warp:  2,4,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {518, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    {519, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-    {520, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-    {521, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 32, 32, 64, bhalf_t>(p); }},
+    {518, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 16, 16, 64, T>},  
+    {519, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 32, 16, 64, T>},  
+    {520, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 16, 32, 64, T>},  
+    {521, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 32, 32, 64, T>},  
     // 8 warp:  4,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {522, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 32, 128, 16, 16, 64, bhalf_t>(p); }},
-    {523, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 16, 32, 64, bhalf_t>(p); }},
-    {524, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<128, 32, 128, 32, 16, 64, bhalf_t>(p); }},
-    {525, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, bhalf_t>(p); }},
+    {522, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 32, 128, 16, 16, 64, T>},  
+    {523, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 16, 32, 64, T>},  
+    {524, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<128, 32, 128, 32, 16, 64, T>},  
+    {525, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, T>},  
     /////////////////////////////////////////////////////////M_WARP////////////////////////////////////////////////////
     // 1 warp
-    {526, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    {527, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    {528, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-    {529, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, bhalf_t>(p); }},
-    {530, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, bhalf_t>(p); }},
+    {526, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 64, T>},  
+    {527, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, T>},  
+    {528, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 32, 128, 16, 32, 64, T>},  
+    {529, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, T>},  
+    {530, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, T>},  
     // 2 warp
-    {531, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    {532, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-    {533, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 16, 64, 64, bhalf_t>(p); }},
-    //{534, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 16, 128, 64, bhalf_t>(p); }}, //寄存器溢出 156
+    {531, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, T>},  
+    {532, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 32, 128, 16, 32, 64, T>},  
+    {533, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 16, 64, 64, T>},  
+    //{534, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 16, 128, 64, T>},   //寄存器溢出 156
     // 4 warp
-    {535, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    {536, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-    // {37, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 16, 64, 64, bhalf_t>(p); }}, // 寄存器溢出 120
-    // {38, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 16, 128, 64, bhalf_t>(p); }}, // 寄存器溢出 120
+    {535, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 16, 128, 16, 16, 64, T>},  
+    {536, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 32, 128, 16, 32, 64, T>},  
+    // {37, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 16, 64, 64, T>},   // 寄存器溢出 120
+    // {38, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 16, 128, 64, T>},   // 寄存器溢出 120
     
     ////////////////////////////////////////////////////N_warp-stages=4//////////////////////////////////////////////
     // 4warp-4stages-warpk
-    {539, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 32, 16, 32, bhalf_t>(p); }},
-    {540, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 64, 16, 32, bhalf_t>(p); }},
+    {539, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 32, 16, 32, T>},  
+    {540, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 64, 16, 32, T>},  
 
-    {541, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 32, bhalf_t>(p); }},
-    {542, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 64, 32, 32, bhalf_t>(p); }},
+    {541, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 32, T>},  
+    {542, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 64, 32, 32, T>},  
 
-    {543, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 256, 128, 32, 64, 32, bhalf_t>(p); }},
-    {544, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 64, 32, bhalf_t>(p); }},
+    {543, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 256, 128, 32, 64, 32, T>},  
+    {544, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 64, 32, T>},  
     
     // 8warp-4stages-warpk
-    {545, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 32, bhalf_t>(p); }},
+    {545, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 32, T>},  
     // 8warp
-    {546, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 32, 32, bhalf_t>(p); }},
+    {546, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 32, 32, T>},  
 
     ////////////////////////////////////////////////////MN_WARP-stages=4/////////////////////////////////////////////
     // 4 warp:  2,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {547, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 32, 32, 32, bhalf_t>(p); }},
+    {547, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 32, 32, 32, T>},  
     // 8 warp:  2,4,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {548, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 32, 32, 32, bhalf_t>(p); }},
+    {548, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 32, 32, 32, T>},  
     // 8 warp:  4,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {549, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 32, bhalf_t>(p); }},
+    {549, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 32, T>},  
 
     ///////////////////////////////////////////////////////N_warp-256////////////////////////////////////////////////
     // 4warp BLOCKN 64 
-    {550, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 256, 16, 16, 64, bhalf_t>(p); }},
-    {551, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 256, 32, 16, 64, bhalf_t>(p); }},
-    {552, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 256, 64, 16, 64, bhalf_t>(p); }},
+    {550, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 256, 16, 16, 64, T>},  
+    {551, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 256, 32, 16, 64, T>},  
+    {552, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 256, 64, 16, 64, T>},  
     // 4warp BLOCKN 128 
-    {553, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 256, 16, 32, 64, bhalf_t>(p); }},
-    {554, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 256, 32, 32, 64, bhalf_t>(p); }},
-    //{555, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 64, 32, 64, bhalf_t>(p); }}, // 寄存器溢出 32
+    {553, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 256, 16, 32, 64, T>},  
+    {554, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 256, 32, 32, 64, T>},  
+    //{555, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 64, 32, 64, T>},   // 寄存器溢出 32
     // 4warp BLOCKN 256 
-    {556, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 128, 16, 64, 64, bhalf_t>(p); }},
-    //{557, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 256, 128, 32, 64, 64, bhalf_t>(p); }}, // 寄存器溢出 60
-    //{558, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 64, 64, bhalf_t>(p); }}, //寄存器溢出 392
+    {556, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 128, 16, 64, 64, T>},  
+    //{557, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 256, 128, 32, 64, 64, T>},   // 寄存器溢出 60
+    //{558, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 64, 64, T>},   //寄存器溢出 392
     // 8warp BLOCKN 128 
-    {559, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 256, 32, 16, 64, bhalf_t>(p); }},
-    {560, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 256, 64, 16, 64, bhalf_t>(p); }},
+    {559, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 256, 32, 16, 64, T>},  
+    {560, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 256, 64, 16, 64, T>},  
     // 8warp BLOCKN 256 
-    {561, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 256, 256, 32, 32, 64, bhalf_t>(p); }},
-    //{562, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 32, 64, bhalf_t>(p); }}, //寄存器溢出28
+    {561, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 256, 256, 32, 32, 64, T>},  
+    //{562, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 128, 64, 32, 64, T>},   //寄存器溢出28
     // 16warp
-    {563, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 256, 64, 16, 64, bhalf_t>(p); }},
+    {563, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 256, 256, 64, 16, 64, T>},  
     
     ///////////////////////////////////////////////////////N_warp-235b////////////////////////////////////////////////
     // 4warp BLOCKN 64 
-    {564, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    {565, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-    {566, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 64, 16, 64, bhalf_t>(p); }},
+    {564, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 16, 64, T>},  
+    {565, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 32, 16, 64, T>},  
+    {566, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 64, 16, 64, T>},  
     // 4warp BLOCKN 128 
-    {567, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-    {568, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 64, bhalf_t>(p); }},
+    {567, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, T>},  
+    {568, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 64, T>},  
     // 4warp BLOCKN 256 
-    {569, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 256, 128, 16, 64, 64, bhalf_t>(p); }},
+    {569, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 256, 128, 16, 64, 64, T>},  
     // 8warp BLOCKN 128 
-    {570, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 32, 16, 64, bhalf_t>(p); }},
-    {571, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 64, bhalf_t>(p); }},
+    {570, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 32, 16, 64, T>},  
+    {571, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 64, T>},  
     ///////////////////////////////////////////////////////MN_WARP////////////////////////////////////////////////
     // 4 warp:  2,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {574, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 32, 128, 16, 16, 64, bhalf_t>(p); }},
-    {575, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 16, 32, 64, bhalf_t>(p); }},
-    {576, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 32, 128, 32, 16, 64, bhalf_t>(p); }},
-    {577, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 32, 32, 64, bhalf_t>(p); }},
+    {574, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 32, 128, 16, 16, 64, T>},  
+    {575, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 16, 32, 64, T>},  
+    {576, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 32, 128, 32, 16, 64, T>},  
+    {577, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 32, 32, 64, T>},  
     // 8 warp:  2,4,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {578, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    {579, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-    {580, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-    {581, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 32, 32, 64, bhalf_t>(p); }},
+    {578, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 16, 16, 64, T>},  
+    {579, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 32, 16, 64, T>},  
+    {580, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 128, 16, 32, 64, T>},  
+    {581, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 128, 32, 32, 64, T>},  
     // 8 warp:  4,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {582, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 32, 128, 16, 16, 64, bhalf_t>(p); }},
-    {583, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 16, 32, 64, bhalf_t>(p); }},
-    {584, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<128, 32, 128, 32, 16, 64, bhalf_t>(p); }},
-    {585, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, bhalf_t>(p); }},
+    {582, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 32, 128, 16, 16, 64, T>},  
+    {583, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 128, 16, 32, 64, T>},  
+    {584, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<128, 32, 128, 32, 16, 64, T>},  
+    {585, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, T>},  
     /////////////////////////////////////////////////////////M_WARP////////////////////////////////////////////////////
     // 1 warp
-    {586, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    {587, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    {588, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-    {589, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, bhalf_t>(p); }},
-    {590, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, bhalf_t>(p); }},
+    {586, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 64, T>},  
+    {587, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, T>},  
+    {588, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 32, 128, 16, 32, 64, T>},  
+    {589, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, T>},  
+    {590, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, T>},  
     // 2 warp
-    {591, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    {592, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-    {593, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 16, 64, 64, bhalf_t>(p); }},
+    {591, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, T>},  
+    {592, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 32, 128, 16, 32, 64, T>},  
+    {593, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 128, 16, 64, 64, T>},  
     // 4 warp
-    {594, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    {595, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 32, 128, 16, 32, 64, bhalf_t>(p); }},
+    {594, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 16, 128, 16, 16, 64, T>},  
+    {595, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 32, 128, 16, 32, 64, T>},  
     //kpack2 stage1
-    // {501, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 128, bhalf_t>(p); }},
-    // {502, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 16, 128, bhalf_t>(p); }},
-    // {503, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 128, 16, 16, 128, bhalf_t>(p); }},
+    // {501, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 128, T>},  
+    // {502, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 128, 16, 16, 128, T>},  
+    // {503, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 128, 16, 16, 128, T>},  
     //kpack2 STAGE2
-    {596, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 256, 16, 16, 128, bhalf_t>(p); }},
-    // {505, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 256, 16, 16, 128, bhalf_t>(p); }},//out of memory
-    {597, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 256, 16, 16, 128, bhalf_t>(p); }},
-    // {507, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 256, 16, 16, 128, bhalf_t>(p); }},//out of memory
-    {598, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 256, 32, 16, 128, bhalf_t>(p); }},
-    // {509, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 256, 32, 16, 128, bhalf_t>(p); }},//out of memory
-    {599, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 256, 64, 16, 128, bhalf_t>(p); }},
-    // {511, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 256, 64, 16, 128, bhalf_t>(p); }},//out of memory
-    // {512, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 256, 16, 32, 128, bhalf_t>(p); }},//out of memory 
-};
+    {596, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 256, 16, 16, 128, T>},  
+    // {505, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 256, 16, 16, 128, T>},  //out of memory
+    {597, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 64, 256, 16, 16, 128, T>},  
+    // {507, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 256, 16, 16, 128, T>},  //out of memory
+    {598, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 64, 256, 32, 16, 128, T>},  
+    // {509, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<32, 128, 256, 32, 16, 128, T>},  //out of memory
+    {599, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 64, 256, 64, 16, 128, T>},  
+    // {511, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<64, 128, 256, 64, 16, 128, T>},  //out of memory
+    // {512, &kernel_launch_MOE_W16A16_HIP_NT_UP_prefill<16, 128, 256, 16, 32, 128, T>},  //out of memory 
+    };
+}
 
-// gemm2        
-static std::unordered_map<int, KernelFunc4> kernel_maps_gemm2_prefill_w16a16 = {
+static auto kernel_maps_gemm1_prefill_w16a16_half = make_kernel_maps_gemm1_prefill_w16a16<half>();
+static auto kernel_maps_gemm1_prefill_w16a16_bhalf_t = make_kernel_maps_gemm1_prefill_w16a16<bhalf_t>();
+
+// gemm2 
+template <typename T>       
+static std::unordered_map<int, KernelFunc4<T>> make_kernel_maps_gemm2_prefill_w16a16(){
+    return{
     ///////////////////////////////////////////////////////N_warp////////////////////////////////////////////////
     // 4warp BLOCKN 64 
-    {500, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    {501, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-    {502, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 64, bhalf_t>(p); }},
+    {500, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 128, 16, 16, 64, T>},  
+    {501, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 64, T>},  
+    {502, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 64, T>},  
     // 4warp BLOCKN 128 
-    {503, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-    {504, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 64, bhalf_t>(p); }},
-    //{505, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 64, bhalf_t>(p); }}, // 寄存器溢出 32
+    {503, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 64, T>},  
+    {504, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 64, T>},  
+    //{505, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 64, T>},   // 寄存器溢出 32
     // 4warp BLOCKN 256 
-    {506, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 256, 128, 16, 64, 64, bhalf_t>(p); }},
-    //{507, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 256, 128, 32, 64, 64, bhalf_t>(p); }}, // 寄存器溢出 60
-    //{508, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 256, 128, 64, 64, 64, bhalf_t>(p); }}, //寄存器溢出 392
+    {506, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 256, 128, 16, 64, 64, T>},  
+    //{507, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 256, 128, 32, 64, 64, T>},   // 寄存器溢出 60
+    //{508, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 256, 128, 64, 64, 64, T>},   //寄存器溢出 392
     // 8warp BLOCKN 128 
-    {509, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 16, 64, bhalf_t>(p); }},
-    {510, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 64, bhalf_t>(p); }},
+    {509, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 16, 64, T>},  
+    {510, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 64, T>},  
     // 8warp BLOCKN 256 
-    {511, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 256, 128, 32, 32, 64, bhalf_t>(p); }},
-    //{12, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 256, 128, 64, 32, 64, bhalf_t>(p); }}, //寄存器溢出28
+    {511, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 256, 128, 32, 32, 64, T>},  
+    //{12, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 256, 128, 64, 32, 64, T>},   //寄存器溢出28
     // 16warp
-    {513, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 256, 128, 64, 16, 64, bhalf_t>(p); }},
+    {513, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 256, 128, 64, 16, 64, T>},  
     ///////////////////////////////////////////////////////MN_WARP////////////////////////////////////////////////
     // 4 warp:  2,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {514, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 32, 128, 16, 16, 64, bhalf_t>(p); }},
-    {515, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 16, 32, 64, bhalf_t>(p); }},
-    {516, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 32, 128, 32, 16, 64, bhalf_t>(p); }},
-    {517, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 32, 32, 64, bhalf_t>(p); }},
+    {514, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 32, 128, 16, 16, 64, T>},  
+    {515, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 16, 32, 64, T>},  
+    {516, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 32, 128, 32, 16, 64, T>},  
+    {517, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 32, 32, 64, T>},  
     // 8 warp:  2,4,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {518, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    {519, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-    {520, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-    {521, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 32, 32, 64, bhalf_t>(p); }},
+    {518, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 16, 16, 64, T>},  
+    {519, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 32, 16, 64, T>},  
+    {520, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 16, 32, 64, T>},  
+    {521, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 32, 32, 64, T>},  
     // 8 warp:  4,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {522, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 32, 128, 16, 16, 64, bhalf_t>(p); }},
-    {523, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 16, 32, 64, bhalf_t>(p); }},
-    {524, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<128, 32, 128, 32, 16, 64, bhalf_t>(p); }},
-    {525, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 64, bhalf_t>(p); }},
+    {522, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 32, 128, 16, 16, 64, T>},  
+    {523, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 16, 32, 64, T>},  
+    {524, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<128, 32, 128, 32, 16, 64, T>},  
+    {525, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 64, T>},  
     /////////////////////////////////////////////////////////M_WARP////////////////////////////////////////////////////
     // 1 warp
-    {526, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    {527, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    {528, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-    {529, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 128, 16, 64, 64, bhalf_t>(p); }},
-    {530, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 128, 16, 64, 64, bhalf_t>(p); }},
+    {526, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 16, 128, 16, 16, 64, T>},  
+    {527, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 16, 128, 16, 16, 64, T>},  
+    {528, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 32, 128, 16, 32, 64, T>},  
+    {529, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 128, 16, 64, 64, T>},  
+    {530, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 128, 16, 64, 64, T>},  
     // 2 warp
-    {531, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    {532, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-    {533, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 16, 64, 64, bhalf_t>(p); }},
-    //{534, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 16, 128, 64, bhalf_t>(p); }}, //寄存器溢出 156
+    {531, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 16, 128, 16, 16, 64, T>},  
+    {532, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 32, 128, 16, 32, 64, T>},  
+    {533, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 16, 64, 64, T>},  
+    //{534, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 16, 128, 64, T>},   //寄存器溢出 156
     // 4 warp
-    {535, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    {536, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-    // {537, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 16, 64, 64, bhalf_t>(p); }}, // 寄存器溢出 120
-    // {538, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 16, 128, 64, bhalf_t>(p); }}, // 寄存器溢出 120
+    {535, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 16, 128, 16, 16, 64, T>},  
+    {536, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 32, 128, 16, 32, 64, T>},  
+    // {537, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 16, 64, 64, T>},   // 寄存器溢出 120
+    // {538, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 16, 128, 64, T>},   // 寄存器溢出 120
     
     ////////////////////////////////////////////////////N_warp-stages=4//////////////////////////////////////////////
     // 4warp-4stages-warpk
-    {539, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 32, bhalf_t>(p); }},
-    {540, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 32, bhalf_t>(p); }},
+    {539, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 32, T>},  
+    {540, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 32, T>},  
 
-    {541, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 32, bhalf_t>(p); }},
-    {542, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 32, bhalf_t>(p); }},
+    {541, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 32, T>},  
+    {542, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 32, T>},  
 
-    {543, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 256, 128, 32, 64, 32, bhalf_t>(p); }},
-    {544, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 256, 128, 64, 64, 32, bhalf_t>(p); }},
+    {543, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 256, 128, 32, 64, 32, T>},  
+    {544, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 256, 128, 64, 64, 32, T>},  
     
     // 8warp-4stages-warpk
-    {545, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 32, bhalf_t>(p); }},
+    {545, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 32, T>},  
     // 8warp
-    {546, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 256, 128, 64, 32, 32, bhalf_t>(p); }},
+    {546, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 256, 128, 64, 32, 32, T>},  
     
     ////////////////////////////////////////////////////MN_WARP-stages=4/////////////////////////////////////////////
     // 4 warp:  2,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {547, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 32, 32, 32, bhalf_t>(p); }},
+    {547, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 32, 32, 32, T>},  
     // 8 warp:  2,4,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {548, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 32, 32, 32, bhalf_t>(p); }},
+    {548, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 32, 32, 32, T>},  
     // 8 warp:  4,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {549, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 32, bhalf_t>(p); }},
+    {549, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 32, T>},  
 
     ///////////////////////////////////////////////////////N_warp-256////////////////////////////////////////////////
     // 4warp BLOCKN 64 
-    {550, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    {551, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-    {552, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 64, bhalf_t>(p); }},
+    {550, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 128, 16, 16, 64, T>},  
+    {551, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 64, T>},  
+    {552, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 64, T>},  
     // 4warp BLOCKN 128 
-    {553, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-    {554, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 64, bhalf_t>(p); }},
-    //{555, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 64, bhalf_t>(p); }}, // 寄存器溢出 32
+    {553, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 64, T>},  
+    {554, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 64, T>},  
+    //{555, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 64, T>},   // 寄存器溢出 32
     // 4warp BLOCKN 256 
-    {556, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 128, 16, 64, 64, bhalf_t>(p); }},
-    //{557, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 64, 64, bhalf_t>(p); }}, // 寄存器溢出 60
-    //{558, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 64, 64, bhalf_t>(p); }}, //寄存器溢出 392
+    {556, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 128, 16, 64, 64, T>},  
+    //{557, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 64, 64, T>},   // 寄存器溢出 60
+    //{558, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 64, 64, T>},   //寄存器溢出 392
     // 8warp BLOCKN 128 
-    {559, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 16, 64, bhalf_t>(p); }},
-    {560, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 64, bhalf_t>(p); }},
+    {559, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 16, 64, T>},  
+    {560, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 64, T>},  
     // 8warp BLOCKN 256 
-    {561, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 64, bhalf_t>(p); }},
-    //{562, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 64, bhalf_t>(p); }}, //寄存器溢出28
+    {561, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 64, T>},  
+    //{562, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 64, T>},   //寄存器溢出28
     // 16warp
-    {563, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 64, bhalf_t>(p); }},
+    {563, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 64, T>},  
     
     ///////////////////////////////////////////////////////N_warp-235b////////////////////////////////////////////////
     // 4warp BLOCKN 64 
-    {564, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 64, 16, 16, 32, bhalf_t>(p); }},
-    {565, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 64, 32, 16, 32, bhalf_t>(p); }},
-    {566, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 64, 64, 16, 32, bhalf_t>(p); }},
+    {564, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 64, 16, 16, 32, T>},  
+    {565, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 64, 32, 16, 32, T>},  
+    {566, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 64, 64, 16, 32, T>},  
     // 4warp BLOCKN 128 
-    {567, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 64, 16, 32, 32, bhalf_t>(p); }},
-    {568, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 64, 32, 32, 32, bhalf_t>(p); }},
+    {567, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 64, 16, 32, 32, T>},  
+    {568, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 64, 32, 32, 32, T>},  
     // 4warp BLOCKN 256 
-    {569, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 256, 64, 16, 64, 32, bhalf_t>(p); }},
+    {569, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 256, 64, 16, 64, 32, T>},  
     // 8warp BLOCKN 128 
-    {570, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 64, 32, 16, 32, bhalf_t>(p); }},
-    {571, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 64, 64, 16, 32, bhalf_t>(p); }},
+    {570, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 64, 32, 16, 32, T>},  
+    {571, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 64, 64, 16, 32, T>},  
     ///////////////////////////////////////////////////////MN_WARP////////////////////////////////////////////////
     // 4 warp:  2,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {574, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 32, 64, 16, 16, 32, bhalf_t>(p); }},
-    {575, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 64, 16, 32, 32, bhalf_t>(p); }},
-    {576, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 32, 64, 32, 16, 32, bhalf_t>(p); }},
-    {577, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 64, 32, 32, 32, bhalf_t>(p); }},
+    {574, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 32, 64, 16, 16, 32, T>},  
+    {575, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 64, 16, 32, 32, T>},  
+    {576, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 32, 64, 32, 16, 32, T>},  
+    {577, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 64, 32, 32, 32, T>},  
     // 8 warp:  2,4,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {578, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 64, 16, 16, 32, bhalf_t>(p); }},
-    {579, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 64, 32, 16, 32, bhalf_t>(p); }},
-    {580, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 64, 16, 32, 32, bhalf_t>(p); }},
-    {581, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 64, 32, 32, 32, bhalf_t>(p); }},
+    {578, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 64, 16, 16, 32, T>},  
+    {579, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 64, 32, 16, 32, T>},  
+    {580, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 64, 16, 32, 32, T>},  
+    {581, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 64, 32, 32, 32, T>},  
     // 8 warp:  4,2,1
     // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    {582, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 32, 64, 16, 16, 32, bhalf_t>(p); }},
-    {583, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 64, 16, 32, 32, bhalf_t>(p); }},
-    {584, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<128, 32, 64, 32, 16, 32, bhalf_t>(p); }},
-    {585, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<128, 64, 64, 32, 32, 32, bhalf_t>(p); }},
+    {582, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 32, 64, 16, 16, 32, T>},  
+    {583, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 64, 16, 32, 32, T>},  
+    {584, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<128, 32, 64, 32, 16, 32, T>},  
+    {585, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<128, 64, 64, 32, 32, 32, T>},  
     /////////////////////////////////////////////////////////M_WARP////////////////////////////////////////////////////
     // 1 warp
-    {586, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 16, 64, 16, 16, 32, bhalf_t>(p); }},
-    {587, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 16, 64, 16, 16, 32, bhalf_t>(p); }},
-    {588, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 32, 64, 16, 32, 32, bhalf_t>(p); }},
-    {589, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 64, 16, 64, 32, bhalf_t>(p); }},
-    {590, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 64, 16, 64, 32, bhalf_t>(p); }},
+    {586, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 16, 64, 16, 16, 32, T>},  
+    {587, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 16, 64, 16, 16, 32, T>},  
+    {588, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 32, 64, 16, 32, 32, T>},  
+    {589, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 64, 16, 64, 32, T>},  
+    {590, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 64, 16, 64, 32, T>},  
     // 2 warp
-    {591, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 16, 64, 16, 16, 32, bhalf_t>(p); }},
-    {592, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 32, 64, 16, 32, 32, bhalf_t>(p); }},
-    {593, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 64, 16, 64, 32, bhalf_t>(p); }},
+    {591, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 16, 64, 16, 16, 32, T>},  
+    {592, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 32, 64, 16, 32, 32, T>},  
+    {593, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 64, 16, 64, 32, T>},  
     // 4 warp
-    {594, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 16, 64, 16, 16, 32, bhalf_t>(p); }},
-    {595, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 32, 64, 16, 32, 32, bhalf_t>(p); }},
+    {594, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 16, 64, 16, 16, 32, T>},  
+    {595, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 32, 64, 16, 32, 32, T>},  
     //kpack2
-    {596, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 16, 128, 16, 16, 128, bhalf_t>(p); }},
-    {597, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 128, 16, 16, 128, bhalf_t>(p); }},
-    {698, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 16, 128, 32, 16, 128, bhalf_t>(p); }},
-    {599, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 16, 16, 128, bhalf_t>(p); }},
-    {600, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 128, 16, 16, 128, bhalf_t>(p); }},
-    {601, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 128, bhalf_t>(p); }},
-    {602, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 16, 128, bhalf_t>(p); }},
-    {603, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 128, bhalf_t>(p); }},
-    {604, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 16, 128, 16, 16, 128, bhalf_t>(p); }},
-    {605, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 128, bhalf_t>(p); }},
-    {606, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 16, 32, 128, bhalf_t>(p); }},
-    {607, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 128, bhalf_t>(p); }},    
-    {608, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 128, bhalf_t>(p); }},
+    {596, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 16, 128, 16, 16, 128, T>},  
+    {597, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 64, 128, 16, 16, 128, T>},  
+    {698, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 16, 128, 32, 16, 128, T>},  
+    {599, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 16, 16, 128, T>},  
+    {600, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 128, 16, 16, 128, T>},  
+    {601, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 128, T>},  
+    {602, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 16, 128, T>},  
+    {603, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 128, T>},  
+    {604, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 16, 128, 16, 16, 128, T>},  
+    {605, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 128, T>},  
+    {606, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 16, 32, 128, T>},  
+    {607, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 128, T>},      
+    {608, &kernel_launch_MOE_W16A16_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 128, T>},  
     };
+}
+
+static auto kernel_maps_gemm2_prefill_w16a16_half = make_kernel_maps_gemm2_prefill_w16a16<half>();
+static auto kernel_maps_gemm2_prefill_w16a16_bhalf_t = make_kernel_maps_gemm2_prefill_w16a16<bhalf_t>();
 
 // marlin
-static std::unordered_map<int, KernelFunc4> kernel_maps_gemm1_prefill_marlin_w16a16 = {
+template <typename T>
+static std::unordered_map<int, KernelFunc4<T>> make_kernel_maps_gemm1_prefill_marlin_w16a16(){
     ///////////////////////////////////////////////////////N_warp////////////////////////////////////////////////
-     // 4warp BLOCKN 64 
-    //  {100, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    //  {101, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-    //  {102, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 64, 16, 64, bhalf_t>(p); }},
+    return {
+    // 4warp BLOCKN 64 
+    //  {100, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 16, 64, T>},
+    //  {101, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 32, 16, 64, T>},
+    //  {102, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 64, 16, 64, T>},
      // 4warp BLOCKN 128 
-     {103, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-     {104, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 64, bhalf_t>(p); }},
-     //{5, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 32, 64, bhalf_t>(p); }}, // 寄存器溢出 32
+     {103, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, T>},
+     {104, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 64, T>},
+     //{5, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 32, 64, T>}, // 寄存器溢出 32
      // 4warp BLOCKN 256 
-     {106, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 256, 128, 16, 64, 64, bhalf_t>(p); }},
-     //{107, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 256, 128, 32, 64, 64, bhalf_t>(p); }}, // 寄存器溢出 60
-     //{108, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 64, 64, bhalf_t>(p); }}, //寄存器溢出 392
+     {106, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 256, 128, 16, 64, 64, T>},
+     //{107, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 256, 128, 32, 64, 64, T>},   // 寄存器溢出 60
+     //{108, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 64, 64, T>},   //寄存器溢出 392
      // 8warp BLOCKN 128 
-    //  {109, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 16, 64, bhalf_t>(p); }},
-    //  {110, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 64, bhalf_t>(p); }},
+    //  {109, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 16, 64, T>},  
+    //  {110, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 64, T>},  
      // 8warp BLOCKN 256 
-     {111, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 256, 128, 32, 32, 64, bhalf_t>(p); }},
-     //{512, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 32, 64, bhalf_t>(p); }}, //寄存器溢出28
+     {111, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 256, 128, 32, 32, 64, T>},
+     //{512, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 32, 64, T>},   //寄存器溢出28
      // 16warp
-    //  {113, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 16, 64, bhalf_t>(p); }},
+    //  {113, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 16, 64, T>},  
      ///////////////////////////////////////////////////////MN_WARP////////////////////////////////////////////////
      // 4 warp:  2,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    //  {114, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 32, 128, 16, 16, 64, bhalf_t>(p); }},
-     {115, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 32, 64, bhalf_t>(p); }},
-    //  {116, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 32, 16, 64, bhalf_t>(p); }},
-     {117, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 32, 32, 64, bhalf_t>(p); }},
+    //  {114, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 32, 128, 16, 16, 64, T>},  
+     {115, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 32, 64, T>},
+    //  {116, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 32, 16, 64, T>},  
+     {117, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 32, 32, 64, T>},
      // 8 warp:  2,4,1
     //  // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    //  {118, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    //  {119, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-     {120, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-     {121, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 32, 32, 64, bhalf_t>(p); }},
+    //  {118, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 16, 64, T>},  
+    //  {119, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 32, 16, 64, T>},  
+     {120, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 16, 32, 64, T>},
+     {121, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 32, 32, 64, T>},
      // 8 warp:  4,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    //  {122, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 16, 16, 64, bhalf_t>(p); }},
-     {123, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 16, 32, 64, bhalf_t>(p); }},
-    //  {124, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 32, 128, 32, 16, 64, bhalf_t>(p); }},
-     {125, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, bhalf_t>(p); }},
+    //  {122, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 16, 16, 64, T>},  
+     {123, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 16, 32, 64, T>},
+    //  {124, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 32, 128, 32, 16, 64, T>},  
+     {125, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, T>},
      /////////////////////////////////////////////////////////M_WARP////////////////////////////////////////////////////
      // 1 warp
-    //  {126, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    //  {127, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-     {128, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-     {129, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, bhalf_t>(p); }},
-     {130, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, bhalf_t>(p); }},
+    //  {126, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 64, T>},  
+    //  {127, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, T>},  
+     {128, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 32, 128, 16, 32, 64, T>},
+     {129, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, T>},
+     {130, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, T>},
      // 2 warp
-    //  {131, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-     {132, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-     {133, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 64, 64, bhalf_t>(p); }},
-     //{134, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 16, 128, 64, bhalf_t>(p); }}, //寄存器溢出 156
+    //  {131, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, T>},  
+     {132, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 32, 128, 16, 32, 64, T>},
+     {133, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 64, 64, T>},
+     //{134, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 16, 128, 64, T>},   //寄存器溢出 156
      // 4 warp
-    //  {135, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-     {136, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-     // {37, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 16, 64, 64, bhalf_t>(p); }}, // 寄存器溢出 120
-     // {38, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 16, 128, 64, bhalf_t>(p); }}, // 寄存器溢出 120
+    //  {135, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 16, 128, 16, 16, 64, T>},  
+     {136, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 16, 32, 64, T>},
+     // {37, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 16, 64, 64, T>},   // 寄存器溢出 120
+     // {38, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 16, 128, 64, T>},   // 寄存器溢出 120
      
      ////////////////////////////////////////////////////N_warp-stages=4//////////////////////////////////////////////
      // 4warp-4stages-warpk
-    //  {139, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 32, 16, 32, bhalf_t>(p); }},
-    //  {140, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 64, 16, 32, bhalf_t>(p); }},
+    //  {139, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 32, 16, 32, T>},  
+    //  {140, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 64, 16, 32, T>},  
  
-     {141, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 32, bhalf_t>(p); }},
-     {142, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 32, 32, bhalf_t>(p); }},
+     {141, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 32, T>},
+     {142, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 32, 32, T>},
  
-     {143, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 256, 128, 32, 64, 32, bhalf_t>(p); }},
-     {144, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 64, 32, bhalf_t>(p); }},
+     {143, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 256, 128, 32, 64, 32, T>},
+     {144, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 64, 32, T>},
      
      // 8warp-4stages-warpk
-    //  {145, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 32, bhalf_t>(p); }},
+    //  {145, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 32, T>},  
      // 8warp
-     {146, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 32, 32, bhalf_t>(p); }},
+     {146, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 32, 32, T>},
  
      ////////////////////////////////////////////////////MN_WARP-stages=4/////////////////////////////////////////////
      // 4 warp:  2,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-     {147, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 32, 32, 32, bhalf_t>(p); }},
+     {147, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 32, 32, 32, T>},
      // 8 warp:  2,4,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-     {148, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 32, 32, 32, bhalf_t>(p); }},
+     {148, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 32, 32, 32, T>},
      // 8 warp:  4,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-     {149, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 32, bhalf_t>(p); }},
+     {149, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 32, T>},
  
      ///////////////////////////////////////////////////////N_warp-256////////////////////////////////////////////////
      // 4warp BLOCKN 64 
-    //  {150, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 256, 16, 16, 64, bhalf_t>(p); }},
-    //  {151, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 256, 32, 16, 64, bhalf_t>(p); }},
-    //  {152, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 256, 64, 16, 64, bhalf_t>(p); }},
+    //  {150, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 256, 16, 16, 64, T>},  
+    //  {151, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 256, 32, 16, 64, T>},  
+    //  {152, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 256, 64, 16, 64, T>},  
      // 4warp BLOCKN 128 
-     {153, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 256, 16, 32, 64, bhalf_t>(p); }},
-     {154, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 256, 32, 32, 64, bhalf_t>(p); }},
-     //{155, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 32, 64, bhalf_t>(p); }}, // 寄存器溢出 32
+     {153, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 256, 16, 32, 64, T>},
+     {154, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 256, 32, 32, 64, T>},
+     //{155, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 32, 64, T>},   // 寄存器溢出 32
      // 4warp BLOCKN 256 
-     {156, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 64, 64, bhalf_t>(p); }},
-     //{157, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 256, 128, 32, 64, 64, bhalf_t>(p); }}, // 寄存器溢出 60
-     //{158, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 64, 64, bhalf_t>(p); }}, //寄存器溢出 392
+     {156, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 64, 64, T>},
+     //{157, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 256, 128, 32, 64, 64, T>},   // 寄存器溢出 60
+     //{158, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 64, 64, T>},   //寄存器溢出 392
      // 8warp BLOCKN 128 
-    //  {159, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 256, 32, 16, 64, bhalf_t>(p); }},
-    //  {160, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 256, 64, 16, 64, bhalf_t>(p); }},
+    //  {159, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 256, 32, 16, 64, T>},  
+    //  {160, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 256, 64, 16, 64, T>},  
      // 8warp BLOCKN 256 
-     {161, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 256, 256, 32, 32, 64, bhalf_t>(p); }},
-     //{162, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 32, 64, bhalf_t>(p); }}, //寄存器溢出28
+     {161, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 256, 256, 32, 32, 64, T>},
+     //{162, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 32, 64, T>},   //寄存器溢出28
      // 16warp
-    //  {163, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 256, 64, 16, 64, bhalf_t>(p); }},
+    //  {163, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 256, 64, 16, 64, T>},  
      
      ///////////////////////////////////////////////////////N_warp-235b////////////////////////////////////////////////
     //  // 4warp BLOCKN 64 
-    //  {164, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    //  {165, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-    //  {166, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 64, 16, 64, bhalf_t>(p); }},
+    //  {164, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 16, 64, T>},  
+    //  {165, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 32, 16, 64, T>},  
+    //  {166, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 64, 16, 64, T>},  
      // 4warp BLOCKN 128 
-     {167, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-     {168, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 64, bhalf_t>(p); }},
+     {167, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, T>},
+     {168, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 64, T>},
      // 4warp BLOCKN 256 
-     {169, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 256, 128, 16, 64, 64, bhalf_t>(p); }},
+     {169, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 256, 128, 16, 64, 64, T>},
      // 8warp BLOCKN 128 
-    //  {170, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 16, 64, bhalf_t>(p); }},
-    //  {171, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 64, bhalf_t>(p); }},
+    //  {170, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 16, 64, T>},  
+    //  {171, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 64, T>},  
      ///////////////////////////////////////////////////////MN_WARP////////////////////////////////////////////////
      // 4 warp:  2,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    //  {174, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 32, 128, 16, 16, 64, bhalf_t>(p); }},
-     {175, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 32, 64, bhalf_t>(p); }},
-    //  {176, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 32, 16, 64, bhalf_t>(p); }},
-     {177, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 32, 32, 64, bhalf_t>(p); }},
+    //  {174, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 32, 128, 16, 16, 64, T>},  
+     {175, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 32, 64, T>},
+    //  {176, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 32, 16, 64, T>},  
+     {177, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 32, 32, 64, T>},
      // 8 warp:  2,4,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    //  {178, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    //  {179, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-     {180, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-     {181, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 32, 32, 64, bhalf_t>(p); }},
+    //  {178, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 16, 64, T>},  
+    //  {179, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 32, 16, 64, T>},  
+     {180, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 16, 32, 64, T>},
+     {181, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 32, 32, 64, T>},
      // 8 warp:  4,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    //  {182, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 16, 16, 64, bhalf_t>(p); }},
-     {183, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 16, 32, 64, bhalf_t>(p); }},
-    //  {184, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 32, 128, 32, 16, 64, bhalf_t>(p); }},
-     {185, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, bhalf_t>(p); }},
+    //  {182, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 16, 16, 64, T>},  
+     {183, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 16, 32, 64, T>},
+    //  {184, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 32, 128, 32, 16, 64, T>},  
+     {185, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, T>},
      /////////////////////////////////////////////////////////M_WARP////////////////////////////////////////////////////
      // 1 warp
-    //  {186, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    //  {187, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-     {188, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-     {189, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, bhalf_t>(p); }},
-     {190, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, bhalf_t>(p); }},
+    //  {186, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 64, T>},  
+    //  {187, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, T>},  
+     {188, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 32, 128, 16, 32, 64, T>},
+     {189, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, T>},
+     {190, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, T>},
      // 2 warp
-    //  {191, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-     {192, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-     {193, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 64, 64, bhalf_t>(p); }},
+    //  {191, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, T>},  
+     {192, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 32, 128, 16, 32, 64, T>},
+     {193, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 64, 64, T>},
      // 4 warp
-    //  {194, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-     {195, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 16, 32, 64, bhalf_t>(p); }},
- };
- 
- // gemm2        
- static std::unordered_map<int, KernelFunc4> kernel_maps_gemm2_prefill_marlin_w16a16 = {
-     ///////////////////////////////////////////////////////N_warp////////////////////////////////////////////////
+    //  {194, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 16, 128, 16, 16, 64, T>},  
+     {195, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 16, 32, 64, T>},
+
+    };
+}
+
+static auto kernel_maps_gemm1_prefill_marlin_w16a16_half = make_kernel_maps_gemm1_prefill_marlin_w16a16<half>();
+static auto kernel_maps_gemm1_prefill_marlin_w16a16_bhalf_t = make_kernel_maps_gemm1_prefill_marlin_w16a16<bhalf_t>();
+
+template <typename T>
+ static std::unordered_map<int, KernelFunc4<T>> make_kernel_maps_gemm2_prefill_marlin_w16a16(){
+    return{
+    ///////////////////////////////////////////////////////N_warp////////////////////////////////////////////////
      // 4warp BLOCKN 64 
-    //  {100, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    //  {101, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-    //  {102, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 64, bhalf_t>(p); }},
+    //  {100, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 128, 16, 16, 64, T>},  
+    //  {101, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 64, T>},  
+    //  {102, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 64, T>},  
      // 4warp BLOCKN 128 
-     {103, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-     {104, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 64, bhalf_t>(p); }},
-     //{105, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 64, bhalf_t>(p); }}, // 寄存器溢出 32
+     {103, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 64, T>},
+     {104, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 64, T>},
+     //{105, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 64, T>},   // 寄存器溢出 32
      // 4warp BLOCKN 256 
-     {106, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 256, 128, 16, 64, 64, bhalf_t>(p); }},
-     //{107, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 256, 128, 32, 64, 64, bhalf_t>(p); }}, // 寄存器溢出 60
-     //{108, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 128, 64, 64, 64, bhalf_t>(p); }}, //寄存器溢出 392
+     {106, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 256, 128, 16, 64, 64, T>},
+     //{107, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 256, 128, 32, 64, 64, T>},   // 寄存器溢出 60
+     //{108, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 128, 64, 64, 64, T>},   //寄存器溢出 392
      // 8warp BLOCKN 128 
-    //  {109, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 16, 64, bhalf_t>(p); }},
-    //  {110, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 64, bhalf_t>(p); }},
+    //  {109, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 16, 64, T>},  
+    //  {110, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 64, T>},  
      // 8warp BLOCKN 256 
-     {111, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 256, 128, 32, 32, 64, bhalf_t>(p); }},
-     //{12, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 128, 64, 32, 64, bhalf_t>(p); }}, //寄存器溢出28
+     {111, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 256, 128, 32, 32, 64, T>},
+     //{12, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 128, 64, 32, 64, T>},   //寄存器溢出28
      // 16warp
-    //  {113, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 128, 64, 16, 64, bhalf_t>(p); }},
+    //  {113, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 128, 64, 16, 64, T>},  
      ///////////////////////////////////////////////////////MN_WARP////////////////////////////////////////////////
      // 4 warp:  2,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    //  {114, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 32, 128, 16, 16, 64, bhalf_t>(p); }},
-     {115, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 128, 16, 32, 64, bhalf_t>(p); }},
-    //  {116, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 32, 128, 32, 16, 64, bhalf_t>(p); }},
-     {117, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 32, 32, 64, bhalf_t>(p); }},
+    //  {114, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 32, 128, 16, 16, 64, T>},  
+     {115, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 128, 16, 32, 64, T>},
+    //  {116, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 32, 128, 32, 16, 64, T>},  
+     {117, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 32, 32, 64, T>},
      // 8 warp:  2,4,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    //  {118, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    //  {119, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-     {120, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-     {121, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 32, 32, 64, bhalf_t>(p); }},
+    //  {118, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 128, 16, 16, 64, T>},  
+    //  {119, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 32, 16, 64, T>},  
+     {120, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 16, 32, 64, T>},
+     {121, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 32, 32, 64, T>},
      // 8 warp:  4,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    //  {122, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 32, 128, 16, 16, 64, bhalf_t>(p); }},
-     {123, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 16, 32, 64, bhalf_t>(p); }},
-    //  {124, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 32, 128, 32, 16, 64, bhalf_t>(p); }},
-     {125, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 64, bhalf_t>(p); }},
+    //  {122, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 32, 128, 16, 16, 64, T>},  
+     {123, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 16, 32, 64, T>},
+    //  {124, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 32, 128, 32, 16, 64, T>},  
+     {125, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 64, T>},
      /////////////////////////////////////////////////////////M_WARP////////////////////////////////////////////////////
      // 1 warp
-    //  {126, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-    //  {127, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-     {128, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-     {129, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 128, 16, 64, 64, bhalf_t>(p); }},
-     {130, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 128, 16, 64, 64, bhalf_t>(p); }},
+    //  {126, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 16, 128, 16, 16, 64, T>},  
+    //  {127, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 16, 128, 16, 16, 64, T>},  
+     {128, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 32, 128, 16, 32, 64, T>},
+     {129, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 128, 16, 64, 64, T>},
+     {130, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 128, 16, 64, 64, T>},
      // 2 warp
-    //  {131, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-     {132, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-     {133, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 128, 16, 64, 64, bhalf_t>(p); }},
-     //{134, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 16, 128, 64, bhalf_t>(p); }}, //寄存器溢出 156
+    //  {131, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 16, 128, 16, 16, 64, T>},  
+     {132, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 32, 128, 16, 32, 64, T>},
+     {133, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 128, 16, 64, 64, T>},
+     //{134, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 16, 128, 64, T>},   //寄存器溢出 156
      // 4 warp
-    //  {135, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 16, 128, 16, 16, 64, bhalf_t>(p); }},
-     {136, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 32, 128, 16, 32, 64, bhalf_t>(p); }},
-     // {137, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 16, 64, 64, bhalf_t>(p); }}, // 寄存器溢出 120
-     // {138, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 16, 128, 64, bhalf_t>(p); }}, // 寄存器溢出 120
+    //  {135, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 16, 128, 16, 16, 64, T>},  
+     {136, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 32, 128, 16, 32, 64, T>},
+     // {137, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 16, 64, 64, T>},   // 寄存器溢出 120
+     // {138, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 16, 128, 64, T>},   // 寄存器溢出 120
      
      ////////////////////////////////////////////////////N_warp-stages=4//////////////////////////////////////////////
      // 4warp-4stages-warpk
-    //  {139, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 32, bhalf_t>(p); }},
-    //  {140, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 32, bhalf_t>(p); }},
+    //  {139, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 32, T>},  
+    //  {140, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 32, T>},  
  
-     {141, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 32, bhalf_t>(p); }},
-     {142, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 32, bhalf_t>(p); }},
+     {141, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 32, T>},
+     {142, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 32, T>},
  
-     {143, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 256, 128, 32, 64, 32, bhalf_t>(p); }},
-     {144, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 128, 64, 64, 32, bhalf_t>(p); }},
+     {143, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 256, 128, 32, 64, 32, T>},
+     {144, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 128, 64, 64, 32, T>},
      
      // 8warp-4stages-warpk
-    //  {145, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 32, bhalf_t>(p); }},
+    //  {145, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 32, T>},  
      // 8warp
-     {146, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 128, 64, 32, 32, bhalf_t>(p); }},
+     {146, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 128, 64, 32, 32, T>},
      
      ////////////////////////////////////////////////////MN_WARP-stages=4/////////////////////////////////////////////
      // 4 warp:  2,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-     {147, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 32, 32, 32, bhalf_t>(p); }},
+     {147, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 32, 32, 32, T>},
      // 8 warp:  2,4,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-     {148, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 32, 32, 32, bhalf_t>(p); }},
+     {148, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 32, 32, 32, T>},
      // 8 warp:  4,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-     {149, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 32, bhalf_t>(p); }},
+     {149, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 32, T>},
  
      ///////////////////////////////////////////////////////N_warp-256////////////////////////////////////////////////
      // 4warp BLOCKN 64 
-    //  {150, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 128, 16, 16, 64, bhalf_t>(p); }},
-    //  {151, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 64, bhalf_t>(p); }},
-    //  {152, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 64, bhalf_t>(p); }},
+    //  {150, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 128, 16, 16, 64, T>},  
+    //  {151, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 128, 32, 16, 64, T>},  
+    //  {152, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 128, 64, 16, 64, T>},  
      // 4warp BLOCKN 128 
-     {153, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 64, bhalf_t>(p); }},
-     {154, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 64, bhalf_t>(p); }},
-     //{155, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 64, bhalf_t>(p); }}, // 寄存器溢出 32
+     {153, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 64, T>},
+     {154, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 64, T>},
+     //{155, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 64, T>},   // 寄存器溢出 32
      // 4warp BLOCKN 256 
-     {156, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 128, 128, 16, 64, 64, bhalf_t>(p); }},
-     //{157, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 64, 64, bhalf_t>(p); }}, // 寄存器溢出 60
-     //{158, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 64, 64, bhalf_t>(p); }}, //寄存器溢出 392
+     {156, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 128, 128, 16, 64, 64, T>},
+     //{157, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 64, 64, T>},   // 寄存器溢出 60
+     //{158, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 64, 64, T>},   //寄存器溢出 392
      // 8warp BLOCKN 128 
-    //  {159, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 16, 64, bhalf_t>(p); }},
-    //  {160, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 64, bhalf_t>(p); }},
+    //  {159, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 16, 64, T>},  
+    //  {160, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 64, T>},  
      // 8warp BLOCKN 256 
-     {161, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 64, bhalf_t>(p); }},
-     //{162, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 64, bhalf_t>(p); }}, //寄存器溢出28
+     {161, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 64, T>},
+     //{162, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 64, T>},   //寄存器溢出28
      // 16warp
-    //  {163, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 64, bhalf_t>(p); }},
+    //  {163, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 16, 64, T>},  
      
      ///////////////////////////////////////////////////////N_warp-235b////////////////////////////////////////////////
      // 4warp BLOCKN 64 
-    //  {164, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 64, 16, 16, 32, bhalf_t>(p); }},
-    //  {165, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 64, 32, 16, 32, bhalf_t>(p); }},
-    //  {166, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 64, 64, 16, 32, bhalf_t>(p); }},
+    //  {164, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 64, 16, 16, 32, T>},  
+    //  {165, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 64, 32, 16, 32, T>},  
+    //  {166, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 64, 64, 16, 32, T>},  
      // 4warp BLOCKN 128 
-     {167, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 128, 64, 16, 32, 32, bhalf_t>(p); }},
-     {168, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 64, 32, 32, 32, bhalf_t>(p); }},
+     {167, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 128, 64, 16, 32, 32, T>},
+     {168, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 64, 32, 32, 32, T>},
      // 4warp BLOCKN 256 
-     {169, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 256, 64, 16, 64, 32, bhalf_t>(p); }},
+     {169, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 256, 64, 16, 64, 32, T>},
      // 8warp BLOCKN 128 
-    //  {170, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 64, 32, 16, 32, bhalf_t>(p); }},
-    //  {171, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 64, 64, 16, 32, bhalf_t>(p); }},
+    //  {170, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 64, 32, 16, 32, T>},  
+    //  {171, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 64, 64, 16, 32, T>},  
      ///////////////////////////////////////////////////////MN_WARP////////////////////////////////////////////////
      // 4 warp:  2,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    //  {174, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 32, 64, 16, 16, 32, bhalf_t>(p); }},
-     {175, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 64, 16, 32, 32, bhalf_t>(p); }},
-    //  {176, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 32, 64, 32, 16, 32, bhalf_t>(p); }},
-     {177, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 64, 32, 32, 32, bhalf_t>(p); }},
+    //  {174, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 32, 64, 16, 16, 32, T>},  
+     {175, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 64, 16, 32, 32, T>},
+    //  {176, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 32, 64, 32, 16, 32, T>},  
+     {177, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 64, 32, 32, 32, T>},
      // 8 warp:  2,4,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    //  {178, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 64, 16, 16, 32, bhalf_t>(p); }},
-    //  {179, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 64, 32, 16, 32, bhalf_t>(p); }},
-     {180, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 64, 16, 32, 32, bhalf_t>(p); }},
-     {181, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 64, 32, 32, 32, bhalf_t>(p); }},
+    //  {178, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 64, 16, 16, 32, T>},  
+    //  {179, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 64, 32, 16, 32, T>},  
+     {180, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 64, 16, 32, 32, T>},
+     {181, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 64, 32, 32, 32, T>},
      // 8 warp:  4,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
-    //  {182, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 32, 64, 16, 16, 32, bhalf_t>(p); }},
-     {183, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 64, 16, 32, 32, bhalf_t>(p); }},
-    //  {184, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 32, 64, 32, 16, 32, bhalf_t>(p); }},
-     {185, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 64, 64, 32, 32, 32, bhalf_t>(p); }},
+    //  {182, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 32, 64, 16, 16, 32, T>},  
+     {183, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 64, 64, 16, 32, 32, T>},
+    //  {184, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 32, 64, 32, 16, 32, T>},  
+     {185, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 64, 64, 32, 32, 32, T>},
      /////////////////////////////////////////////////////////M_WARP////////////////////////////////////////////////////
      // 1 warp
-    //  {186, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 16, 64, 16, 16, 32, bhalf_t>(p); }},
-    //  {187, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 16, 64, 16, 16, 32, bhalf_t>(p); }},
-     {188, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 32, 64, 16, 32, 32, bhalf_t>(p); }},
-     {189, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 64, 16, 64, 32, bhalf_t>(p); }},
-     {190, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 64, 16, 64, 32, bhalf_t>(p); }},
+    //  {186, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 16, 64, 16, 16, 32, T>},  
+    //  {187, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 16, 64, 16, 16, 32, T>},  
+     {188, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 32, 64, 16, 32, 32, T>},
+     {189, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 64, 16, 64, 32, T>},
+     {190, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 64, 64, 16, 64, 32, T>},
      // 2 warp
-    //  {191, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 16, 64, 16, 16, 32, bhalf_t>(p); }},
-     {192, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 32, 64, 16, 32, 32, bhalf_t>(p); }},
-     {193, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 64, 16, 64, 32, bhalf_t>(p); }},
+    //  {191, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 16, 64, 16, 16, 32, T>},  
+     {192, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 32, 64, 16, 32, 32, T>},
+     {193, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 64, 64, 16, 64, 32, T>},
      // 4 warp
-    //  {194, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 16, 64, 16, 16, 32, bhalf_t>(p); }},
-     {195, [](const GemmParams3<bhalf_t>& p) { launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 32, 64, 16, 32, 32, bhalf_t>(p); }},
- };
+    //  {194, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 16, 64, 16, 16, 32, T>},  
+     {195, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 32, 64, 16, 32, 32, T>},
+    };
+}
+
+static auto kernel_maps_gemm2_prefill_marlin_w16a16_half = make_kernel_maps_gemm2_prefill_marlin_w16a16<half>();
+static auto kernel_maps_gemm2_prefill_marlin_w16a16_bhalf_t = make_kernel_maps_gemm2_prefill_marlin_w16a16<bhalf_t>();
+
 
 }
 }

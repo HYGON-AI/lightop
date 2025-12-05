@@ -214,8 +214,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_UP_decode_kernel(
     const Element* input_ptr, 
     const Element* weight_ptr, 
     int max_n_len_offset, 
-    bf16_vec<WARP_K/4> A_reg[WARP_M/16][2], // 2 = warpk/mmak
-    bf16_vec<WARP_K/2> B_reg[WARP_N/16][2], // 2 = warpk/mmak
+    f16_vec<WARP_K/4,Element> A_reg[WARP_M/16][2], // 2 = warpk/mmak
+    f16_vec<WARP_K/2,Element> B_reg[WARP_N/16][2], // 2 = warpk/mmak
     floatx4 C_reg[][2 * (WARP_M/16)*(WARP_N/16)],
     int warp_id, 
     int seqlen_A_stride, // size_k: 2048
@@ -262,22 +262,7 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_UP_decode_kernel(
         for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
                 A_reg[m_tile][0].floatx2_array[k_tile] = *(floatx2*)(input_ptr + g_row_A[m_tile] + i * warp_k_num * WARP_K  + k_tile * 16 );
         }
-    }
-
-    // if(bidx==0 && bidy==0 && warp_id==0 && threadIdx.x==0){
-    //     printf(" warp_k_num * WARP_K:%d ,*, %d , 迭代%d次 first read A_reg[m_tile][0],%f,%f,%f,%f\n",warp_k_num ,WARP_K, i,static_cast<float>(A_reg[0][0].data[0]), static_cast<float>(A_reg[0][0].data[1]), static_cast<float>(A_reg[0][0].data[2]), static_cast<float>(A_reg[0][0].data[3]));
-    //     // printf(" 迭代%d次 first read B_reg[m_tile][0],%f,%f,%f,%f\n", i,static_cast<float>(B_reg[0][0].data[0]), static_cast<float>(B_reg[0][0].data[1]), static_cast<float>(B_reg[0][0].data[2]), static_cast<float>(B_reg[0][0].data[3]));
-        
-    // }
-    // if(bidx==0 && bidy==0 && warp_id==0 && threadIdx.x==16){
-    //     printf(" 迭代%d次 first read A_reg[m_tile][0],%f,%f,%f,%f\n", i,static_cast<float>(A_reg[0][0].data[0]), static_cast<float>(A_reg[0][0].data[1]), static_cast<float>(A_reg[0][0].data[2]), static_cast<float>(A_reg[0][0].data[3]));
-    // }
-    // if(bidx==0 && bidy==0 && warp_id==0 && threadIdx.x==32){
-    //     printf(" 迭代%d次 first read A_reg[m_tile][0],%f,%f,%f,%f\n", i,static_cast<float>(A_reg[0][0].data[0]), static_cast<float>(A_reg[0][0].data[1]), static_cast<float>(A_reg[0][0].data[2]), static_cast<float>(A_reg[0][0].data[3]));
-    // }
-    // if(bidx==0 && bidy==0 && warp_id==0 && threadIdx.x==48){
-    //     printf(" 迭代%d次 first read A_reg[m_tile][0],%f,%f,%f,%f\n", i,static_cast<float>(A_reg[0][0].data[0]), static_cast<float>(A_reg[0][0].data[1]), static_cast<float>(A_reg[0][0].data[2]), static_cast<float>(A_reg[0][0].data[3]));
-    // }    
+    }   
     #pragma unroll
     for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
         #pragma unroll
@@ -296,9 +281,7 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_UP_decode_kernel(
                 A_reg[m_tile][1].floatx2_array[k_tile] = *(floatx2*)(input_ptr+ g_row_A[m_tile] + i * warp_k_num * WARP_K  + k_tile * 16);
             }
         }
-        // if(bidx==0 && bidy==0 && warp_id==0 && threadIdx.x==0){
-        // printf(" 迭代%d次 first read A_reg[m_tile][1],%f,%f,%f,%f\n", i,static_cast<float>(A_reg[0][1].data[0]), static_cast<float>(A_reg[0][1].data[1]), static_cast<float>(A_reg[0][1].data[2]), static_cast<float>(A_reg[0][1].data[3]));
-        // }
+
         #pragma unroll
         for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
             #pragma unroll
@@ -316,8 +299,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_UP_decode_kernel(
                     #pragma unroll
                     for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){
                         C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_bf16_array[2 * k_tile + N_PACKID]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[2 * k_tile + N_PACKID]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
                         }
                 }
@@ -353,8 +336,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_UP_decode_kernel(
                     #pragma unroll
                     for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){                 
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][1].floatx2_bf16_array[2 * k_tile + N_PACKID]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][1].floatx2_f16_array[2 * k_tile + N_PACKID]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
                     }
                 }
@@ -372,8 +355,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_UP_decode_kernel(
                     #pragma unroll
                     for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_bf16_array[2 * k_tile + N_PACKID]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[2 * k_tile + N_PACKID]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
                     }
                 }
@@ -439,8 +422,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kernel(
     const Element* input_ptr, 
     const Element* weight_ptr, 
     int max_n_len_offset, 
-    bf16_vec<WARP_K/4> A_reg[WARP_M/16][2], // 2 = warpk/mmak
-    bf16_vec<WARP_K/2> B_reg[WARP_N/16][2], // 2 = warpk/mmak
+    f16_vec<WARP_K/4,Element> A_reg[WARP_M/16][2], // 2 = warpk/mmak
+    f16_vec<WARP_K/2,Element> B_reg[WARP_N/16][2], // 2 = warpk/mmak
     floatx4 C_reg[][2 * (WARP_M/16)*(WARP_N/16)],
     int warp_id, 
     int seqlen_A_stride, // size_k: 2048
@@ -528,8 +511,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kernel(
                     #pragma unroll
                     for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){
                         C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_bf16_array[2 * k_tile + N_PACKID]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[2 * k_tile + N_PACKID]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
                         }
                 }
@@ -565,8 +548,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kernel(
                     #pragma unroll
                     for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){                 
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][1].floatx2_bf16_array[2 * k_tile + N_PACKID]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][1].floatx2_f16_array[2 * k_tile + N_PACKID]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
                     }
                 }
@@ -584,8 +567,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kernel(
                     #pragma unroll
                     for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_bf16_array[2 * k_tile + N_PACKID]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[2 * k_tile + N_PACKID]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
                     }
                 }
@@ -650,8 +633,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_UP_decode_kpack2_kerne
     const Element* input_ptr, 
     const Element* weight_ptr, 
     int max_n_len_offset, 
-    bf16_vec<WARP_K/4> A_reg[WARP_M/16][2], // 2 = warpk/mmak
-    bf16_vec<WARP_K/2> B_reg[WARP_N/16][2], // 2 = warpk/mmak
+    f16_vec<WARP_K/4,Element> A_reg[WARP_M/16][2], // 2 = warpk/mmak
+    f16_vec<WARP_K/2,Element> B_reg[WARP_N/16][2], // 2 = warpk/mmak
     floatx4 C_reg[][2 * (WARP_M/16)*(WARP_N/16)],
     int warp_id, 
     int seqlen_A_stride, // size_k: 2048
@@ -739,8 +722,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_UP_decode_kpack2_kerne
                     #pragma unroll
                     for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){
                         C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_bf16_array[2 * k_tile + N_PACKID]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[2 * k_tile + N_PACKID]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
                         }
                 }
@@ -776,8 +759,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_UP_decode_kpack2_kerne
                     #pragma unroll
                     for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){                 
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][1].floatx2_bf16_array[2 * k_tile + N_PACKID]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][1].floatx2_f16_array[2 * k_tile + N_PACKID]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
                     }
                 }
@@ -795,8 +778,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_UP_decode_kpack2_kerne
                     #pragma unroll
                     for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_bf16_array[2 * k_tile + N_PACKID]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[2 * k_tile + N_PACKID]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
                     }
                 }
@@ -861,8 +844,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kpack2_ker
     const Element* input_ptr, 
     const Element* weight_ptr, 
     int max_n_len_offset, 
-    bf16_vec<WARP_K/4> A_reg[WARP_M/16][2], // 2 = warpk/mmak
-    bf16_vec<WARP_K/2> B_reg[WARP_N/16][2], // 2 = warpk/mmak
+    f16_vec<WARP_K/4,Element> A_reg[WARP_M/16][2], // 2 = warpk/mmak
+    f16_vec<WARP_K/2,Element> B_reg[WARP_N/16][2], // 2 = warpk/mmak
     floatx4 C_reg[][2 * (WARP_M/16)*(WARP_N/16)],
     int warp_id, 
     int seqlen_A_stride, // size_k: 2048
@@ -951,8 +934,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kpack2_ker
                     #pragma unroll
                     for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){
                         C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_bf16_array[2 * k_tile + N_PACKID]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[2 * k_tile + N_PACKID]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
                         }
                 }
@@ -988,8 +971,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kpack2_ker
                     #pragma unroll
                     for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){                 
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][1].floatx2_bf16_array[2 * k_tile + N_PACKID]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][1].floatx2_f16_array[2 * k_tile + N_PACKID]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
                     }
                 }
@@ -1007,8 +990,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kpack2_ker
                     #pragma unroll
                     for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_bf16_array[2 * k_tile + N_PACKID]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[2 * k_tile + N_PACKID]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
                     }
                 }
@@ -1072,8 +1055,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel2(
     const Element* input_ptr, 
     const Element* weight_ptr, 
     int max_n_len_offset, 
-    bf16_vec<WARP_K/4> A_reg[WARP_M/16][2], // 4
-    bf16_vec<WARP_K/4> B_reg[WARP_N/16][2], // 4
+    f16_vec<WARP_K/4,Element> A_reg[WARP_M/16][2], // 4
+    f16_vec<WARP_K/4,Element> B_reg[WARP_N/16][2], // 4
     floatx4 C_reg[][(WARP_M/16)*(WARP_N/16)], //1
     int warp_id, //0~3
     int seqlen_A_stride, // size_k: 2048
@@ -1085,7 +1068,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel2(
     const int bidx,
     const int bidy,
     const int size_n,
-    bhalf_t* g_output) 
+    Element* g_output) 
 {
     const int size_k = seqlen_A_stride;//2048=sizeofkb
     int lane_id = threadIdx.x & 63; // thread_id
@@ -1158,8 +1141,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel2(
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                         C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[k_tile]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
                         
                 }
@@ -1189,8 +1172,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel2(
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){               
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][1].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][1].floatx2_f16_array[k_tile]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
 
                 }
@@ -1206,15 +1189,15 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel2(
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[k_tile]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
                 }
             }        
         }
     }
     extern __shared__ float out_smemf[]; // 声明lds信息
-    Element* lds_bf16 = (Element*)out_smemf;
+    uint16_t* lds_bf16 = (uint16_t*)out_smemf;
     if constexpr (warp_k_num > 1){ //现在就2个warp来测试
         
 
@@ -1270,7 +1253,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel2(
                     + lane_id / 16 
                     + reg_id * 4 
                     + (min_tile_m * MFMA_M + (lane_id % 16) )/2 * 2/*padding*/;
-          lds_bf16[index] = f32_to_bf16(value);
+          lds_bf16[index] = f32_to_f16<Element>(value);
         }
       }
     }
@@ -1282,7 +1265,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel2(
   { 
     const int tid = threadIdx.x;
     constexpr int N_thread = BLOCK_N / 8;  //2
-    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) uint16_t;
     int m_idx = tid / N_thread;  //00 11 22 33 44 
     int n_idx = tid % N_thread;  //01 01 01 01 01
     for(; m_idx < BLOCK_M; m_idx += (WARP_NUM*64) / N_thread) {
@@ -1311,8 +1294,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel(
     const Element* input_ptr, 
     const Element* weight_ptr, 
     int max_n_len_offset, 
-    bf16_vec<WARP_K/4> A_reg[WARP_M/16][2], // 4
-    bf16_vec<WARP_K/4> B_reg[BLOCK_N/WARP_N][WARP_N/16][2], // 4
+    f16_vec<WARP_K/4,Element> A_reg[WARP_M/16][2], // 4
+    f16_vec<WARP_K/4,Element> B_reg[BLOCK_N/WARP_N][WARP_N/16][2], // 4
     floatx4 C_reg[][(WARP_M/16)*(WARP_N/16)], //1
     int warp_id, //0~3
     int seqlen_A_stride, // size_k: 2048
@@ -1324,7 +1307,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel(
     const int bidx,
     const int bidy,
     const int size_n,
-    bhalf_t* g_output) 
+    Element* g_output) 
 {
     const int size_k = seqlen_A_stride;//2048=sizeofkb
     int lane_id = threadIdx.x & 63; // thread_id
@@ -1396,8 +1379,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel(
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                         C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_f16_array[k_tile]), 
                                 C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
                         
                 }
@@ -1427,8 +1410,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel(
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){               
                     C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][1].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][1].floatx2_f16_array[k_tile]), 
                                 C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
 
                 }
@@ -1444,15 +1427,15 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel(
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                     C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_f16_array[k_tile]), 
                                 C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
                 }
             }        
         }
     }
     extern __shared__ float out_smemf[]; // 声明lds信息
-    Element* lds_bf16 = (Element*)out_smemf;
+    uint16_t* lds_bf16 = (uint16_t*)out_smemf;
     if constexpr (warp_k_num > 1){ //现在就2个warp来测试
         
         //假设这里是4个warp，blockm n 都是16 而blockk是16*2 =32 而对应的warp都是16 写入到kwarp个独立的空间中
@@ -1508,7 +1491,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel(
                     + lane_id / 16 
                     + reg_id * 4 
                     + (min_tile_m * MFMA_M + (lane_id % 16) )/2 * 2/*padding*/;
-          lds_bf16[index] = f32_to_bf16(value);
+          lds_bf16[index] = f32_to_f16<Element>(value);
         }
       }
     }
@@ -1520,7 +1503,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel(
   { 
     const int tid = threadIdx.x;
     constexpr int N_thread = BLOCK_N / 8;  //2
-    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) uint16_t;
     int m_idx = tid / N_thread;  //00 11 22 33 44 
     int n_idx = tid % N_thread;  //01 01 01 01 01
     for(; m_idx < BLOCK_M; m_idx += (WARP_NUM*64) / N_thread) {
@@ -1551,8 +1534,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kernel(
     const Element* input_ptr, 
     const Element* weight_ptr, 
     int max_n_len_offset, 
-    bf16_vec<WARP_K/4> A_reg[WARP_M/16][2], // 4
-    bf16_vec<WARP_K/4> B_reg[BLOCK_N/WARP_N][WARP_N/16][2], // 4
+    f16_vec<WARP_K/4,Element> A_reg[WARP_M/16][2], // 4
+    f16_vec<WARP_K/4,Element> B_reg[BLOCK_N/WARP_N][WARP_N/16][2], // 4
     floatx4 C_reg[][(WARP_M/16)*(WARP_N/16)], //1
     int warp_id, //0~3
     int seqlen_A_stride, // size_k: 2048
@@ -1564,7 +1547,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kernel(
     const int bidx,
     const int bidy,
     const int size_n,
-    bhalf_t* g_output) 
+    Element* g_output) 
 {
     const int size_k = seqlen_A_stride;//2048=sizeofkb
     int lane_id = threadIdx.x & 63; // thread_id
@@ -1632,8 +1615,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kernel(
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                         C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_f16_array[k_tile]), 
                                 C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
                         
                     }
@@ -1663,8 +1646,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kernel(
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){               
                         C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][1].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][1].floatx2_f16_array[k_tile]), 
                                 C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
 
                     }
@@ -1682,8 +1665,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kernel(
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                         C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_f16_array[k_tile]), 
                                 C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
                     }
                 }        
@@ -1691,7 +1674,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kernel(
     }
     
     extern __shared__ float out_smemf[]; // 声明lds信息
-    Element* lds_bf16 = (Element*)out_smemf;
+    uint16_t* lds_bf16 = (uint16_t*)out_smemf;
     if constexpr (warp_k_num > 1){ //现在就2个warp来测试
     constexpr int lds_n_offset = warp_k_num * BLOCK_N; // 2 * 16 = 32  
         #pragma unroll
@@ -1745,7 +1728,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kernel(
                     + lane_id / 16 
                     + reg_id * 4 
                     + (min_tile_m * MFMA_M + (lane_id % 16) )/2 * 2/*padding*/;
-          lds_bf16[index] = f32_to_bf16(value);
+          lds_bf16[index] = f32_to_f16<Element>(value);
         }
       }
     }
@@ -1757,7 +1740,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kernel(
   { 
     const int tid = threadIdx.x;
     constexpr int N_thread = BLOCK_N / 8;  //2
-    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) uint16_t;
     int m_idx = tid / N_thread;  //00 11 22 33 44 
     int n_idx = tid % N_thread;  //01 01 01 01 01
     for(; m_idx < BLOCK_M; m_idx += (WARP_NUM*64) / N_thread) {
@@ -1775,7 +1758,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kernel(
 //         int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
 //           if(token_index < max_n_len_offset * top_k){
 //             for (int j = 0; j < 4; j++) {
-//                 Element D = f32_to_bf16((C_reg[0][(m_tile*(WARP_N/MFMA_N)) + n_tile][j]));
+//                 Element D = f32_to_f16<Element>((C_reg[0][(m_tile*(WARP_N/MFMA_N)) + n_tile][j]));
 //                 *reinterpret_cast<Element*>(&g_output[token_index * size_n + n_tile * 16 + col_id + j * 4 ]) = D;
 //             }
 //           }
@@ -3073,8 +3056,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel2(
     const Element* input_ptr, 
     const Element* weight_ptr, 
     int max_n_len_offset, 
-    bf16_vec<WARP_K/4> A_reg[WARP_M/16][2], // 4
-    bf16_vec<WARP_K/4> B_reg[WARP_N/16][2], // 4
+    f16_vec<WARP_K/4,Element> A_reg[WARP_M/16][2], // 4
+    f16_vec<WARP_K/4,Element> B_reg[WARP_N/16][2], // 4
     floatx4 C_reg[][(WARP_M/16)*(WARP_N/16)], //1
     int warp_id, //0~3
     int seqlen_A_stride, // size_k: 2048
@@ -3086,7 +3069,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel2(
     const int bidx,
     const int bidy,
     const int size_n,
-    bhalf_t* g_output,
+    Element* g_output,
     const float* topk_weights) 
 {
     const int size_k = seqlen_A_stride;//2048=sizeofkb
@@ -3161,8 +3144,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel2(
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                         C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[k_tile]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
                         
                 }
@@ -3192,8 +3175,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel2(
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){               
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][1].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][1].floatx2_f16_array[k_tile]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
 
                 }
@@ -3209,15 +3192,15 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel2(
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                     C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[k_tile]), 
                                 C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
                 }
             }        
         }
     }
     extern __shared__ float out_smemf[]; // 声明lds信息
-    Element* lds_bf16 = (Element*)out_smemf;
+    uint16_t* lds_bf16 = (uint16_t*)out_smemf;
     if constexpr (warp_k_num > 1){ //现在就2个warp来测试
         
 
@@ -3273,7 +3256,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel2(
                     + lane_id / 16 
                     + reg_id * 4 
                     + (min_tile_m * MFMA_M + (lane_id % 16) )/2 * 2/*padding*/;
-          lds_bf16[index] = f32_to_bf16(value);
+          lds_bf16[index] = f32_to_f16<Element>(value);
         }
       }
     }
@@ -3285,7 +3268,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel2(
   { 
     const int tid = threadIdx.x;
     constexpr int N_thread = BLOCK_N / 8;  //2
-    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) uint16_t;
     int m_idx = tid / N_thread;  //00 11 22 33 44 
     int n_idx = tid % N_thread;  //01 01 01 01 01
     for(; m_idx < BLOCK_M; m_idx += (WARP_NUM*64) / N_thread) {
@@ -3306,7 +3289,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel2(
 //         int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
 //           if(token_index < max_n_len_offset * top_k){
 //             for (int j = 0; j < 4; j++) {
-//                 Element D = f32_to_bf16((C_reg[0][(m_tile*(WARP_N/MFMA_N))][j]) * topk_weight_value );
+//                 Element D = f32_to_f16<Element>((C_reg[0][(m_tile*(WARP_N/MFMA_N))][j]) * topk_weight_value );
 //                 *reinterpret_cast<Element*>(&g_output[token_index * size_n + 0 * 16 + col_id + j * 4 ]) = D;
 //             }
 //           }
@@ -3331,8 +3314,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel(
     const Element* input_ptr, 
     const Element* weight_ptr, 
     int max_n_len_offset, 
-    bf16_vec<WARP_K/4> A_reg[WARP_M/16][2], // 4
-    bf16_vec<WARP_K/4> B_reg[BLOCK_N/WARP_N][WARP_N/16][2], // 4
+    f16_vec<WARP_K/4,Element> A_reg[WARP_M/16][2], // 4
+    f16_vec<WARP_K/4,Element> B_reg[BLOCK_N/WARP_N][WARP_N/16][2], // 4
     floatx4 C_reg[][(WARP_M/16)*(WARP_N/16)], //1
     int warp_id, //0~3
     int seqlen_A_stride, // size_k: 2048
@@ -3344,7 +3327,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel(
     const int bidx,
     const int bidy,
     const int size_n,
-    bhalf_t* g_output,
+    Element* g_output,
     const float* topk_weights) 
 {
     const int size_k = seqlen_A_stride;//2048=sizeofkb
@@ -3418,8 +3401,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel(
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                         C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_f16_array[k_tile]), 
                                 C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
                         
                 }
@@ -3449,8 +3432,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel(
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){               
                     C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][1].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][1].floatx2_f16_array[k_tile]), 
                                 C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
 
                 }
@@ -3466,15 +3449,15 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel(
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                     C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_f16_array[k_tile]), 
                                 C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
                 }
             }        
         }
     }
     extern __shared__ float out_smemf[]; // 声明lds信息
-    Element* lds_bf16 = (Element*)out_smemf;
+    uint16_t* lds_bf16 = (uint16_t*)out_smemf;
     if constexpr (warp_k_num > 1){ //现在就2个warp来测试
         
         //假设这里是4个warp，blockm n 都是16 而blockk是16*2 =32 而对应的warp都是16 写入到kwarp个独立的空间中
@@ -3530,7 +3513,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel(
                     + lane_id / 16 
                     + reg_id * 4 
                     + (min_tile_m * MFMA_M + (lane_id % 16) )/2 * 2/*padding*/;
-          lds_bf16[index] = f32_to_bf16(value);
+          lds_bf16[index] = f32_to_f16<Element>(value);
         }
       }
     }
@@ -3542,7 +3525,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel(
   { 
     const int tid = threadIdx.x;
     constexpr int N_thread = BLOCK_N / 8;  //2
-    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) uint16_t;
     int m_idx = tid / N_thread;  //00 11 22 33 44 
     int n_idx = tid % N_thread;  //01 01 01 01 01
     for(; m_idx < BLOCK_M; m_idx += (WARP_NUM*64) / N_thread) {
@@ -3563,7 +3546,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel(
 //         int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
 //           if(token_index < max_n_len_offset * top_k){
 //             for (int j = 0; j < 4; j++) {
-//                 Element D = f32_to_bf16((C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N))][j]) * topk_weight_value );
+//                 Element D = f32_to_f16<Element>((C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N))][j]) * topk_weight_value );
 //                 *reinterpret_cast<Element*>(&g_output[token_index * size_n + warp_n_id * 16 + col_id + j * 4 ]) = D;
 //             }
 //           }
@@ -3589,8 +3572,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kernel(
     const Element* input_ptr, 
     const Element* weight_ptr, 
     int max_n_len_offset, 
-    bf16_vec<WARP_K/4> A_reg[WARP_M/16][2], // 4
-    bf16_vec<WARP_K/4> B_reg[BLOCK_N/WARP_N][WARP_N/16][2], // 4
+    f16_vec<WARP_K/4,Element> A_reg[WARP_M/16][2], // 4
+    f16_vec<WARP_K/4,Element> B_reg[BLOCK_N/WARP_N][WARP_N/16][2], // 4
     floatx4 C_reg[][(WARP_M/16)*(WARP_N/16)], //1
     int warp_id, //0~3
     int seqlen_A_stride, // size_k: 2048
@@ -3602,7 +3585,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kernel(
     const int bidx,
     const int bidy,
     const int size_n,
-    bhalf_t* g_output,
+    Element* g_output,
     const float* topk_weights) 
 {
     const int size_k = seqlen_A_stride;//2048=sizeofkb
@@ -3673,8 +3656,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kernel(
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                         C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_f16_array[k_tile]), 
                                 C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
                         
                     }
@@ -3704,8 +3687,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kernel(
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){               
                         C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][1].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][1].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][1].floatx2_f16_array[k_tile]), 
                                 C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
 
                     }
@@ -3723,8 +3706,8 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kernel(
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                         C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)] = mmac<Element>(
-                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_bf16_array[k_tile]), 
-                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_bf16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[warp_n_id][n_tile][0].floatx2_f16_array[k_tile]), 
                                 C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N) + n_tile)]);  
                     }
                 }        
@@ -3732,7 +3715,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kernel(
     } 
     
     extern __shared__ float out_smemf[]; // 声明lds信息
-    Element* lds_bf16 = (Element*)out_smemf;
+    uint16_t* lds_bf16 = (uint16_t*)out_smemf;
     if constexpr (warp_k_num > 1){ //现在就2个warp来测试
     constexpr int lds_n_offset = warp_k_num * BLOCK_N; // 2 * 16 = 32  
         #pragma unroll
@@ -3786,7 +3769,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kernel(
                     + lane_id / 16 
                     + reg_id * 4 
                     + (min_tile_m * MFMA_M + (lane_id % 16) )/2 * 2/*padding*/;
-          lds_bf16[index] = f32_to_bf16(value);
+          lds_bf16[index] = f32_to_f16<Element>(value);
         }
       }
     }
@@ -3798,7 +3781,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kernel(
   { 
     const int tid = threadIdx.x;
     constexpr int N_thread = BLOCK_N / 8;  //2
-    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) uint16_t;
     int m_idx = tid / N_thread;  //00 11 22 33 44 
     int n_idx = tid % N_thread;  //01 01 01 01 01
     for(; m_idx < BLOCK_M; m_idx += (WARP_NUM*64) / N_thread) {
@@ -3817,7 +3800,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kernel(
 //         int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
 //           if(token_index < max_n_len_offset * top_k){
 //             for (int j = 0; j < 4; j++) {
-//                 Element D = f32_to_bf16((C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N))][j]) * topk_weight_value );
+//                 Element D = f32_to_f16<Element>((C_reg[warp_n_id][(m_tile*(WARP_N/MFMA_N))][j]) * topk_weight_value );
 //                 *reinterpret_cast<Element*>(&g_output[token_index * size_n + warp_n_id * 16 + col_id + j * 4 ]) = D;
 //             }
 //           }
