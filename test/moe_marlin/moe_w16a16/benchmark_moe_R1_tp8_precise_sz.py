@@ -141,12 +141,16 @@ def benchmark_config(
     # ============================================ 准备 gating_output 和 score ======================================
     gating_output = torch.randn(num_iters, num_tokens, num_experts, dtype=torch.float32)
     score = torch.randn((num_tokens, num_experts), device="cuda", dtype=torch.float32)
-
+    # w2 = torch.ones_like(w2)
     def prepare(i: int):
         score.copy_(gating_output[i])
 
     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
     # 先进行准确度测试
+    # print("w1",w1.size())
+    # print("w1_marlin",w1_marlin.size())
+    # print("w1",w2.size())
+    # print("w1_marlin",w2_marlin.size())
     GEMM1_Peak,GEMM2_Peak,bandwith1,bandwith2 = fused_marlin_moe_valid(                         
                             x,
                             w1,
