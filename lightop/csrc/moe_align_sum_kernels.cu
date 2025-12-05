@@ -55,7 +55,7 @@ __global__ void moe_align_block_size_kernel_opt_fused_small_size(
     shared_counts[i] = 0;
   }
    if (expert_map != nullptr) {
-      local_expert_map[tid] = expert_map[tid];
+      if(tid < num_experts) local_expert_map[tid] = expert_map[tid];
     }
   // // 单独处理最后一个元素
   // if (tid == 0) {
@@ -220,7 +220,7 @@ __global__ void moe_align_block_size_kernel_opt_fused_cub(
       scan_op                
   );
   // 总和等于最后一个线程的排他和+自己padd的值
-  if (tid == CUB_BLOCK_THREADS - 1) {
+  if (tid == num_experts - 1) {
     *total_tokens_post_pad = exclusive_prefix_sum + my_padded_count;
      shared_counts[num_experts] = exclusive_prefix_sum + my_padded_count;
   }
@@ -1410,8 +1410,97 @@ __global__ void moe_align_block_size_small_batch_expert_kernel(
     }
   }
 }
-// taken from
-// https://github.com/sgl-project/sglang/blob/8b5f83ed3b7d2a49ad5c5cd5aa61c5d502f47dbc
+#define DISPATCH_MOE_ALIGN_KERNEL(TEMPLATE_CAPACITY) \
+    if (topk_ids.numel() <= TEMPLATE_CAPACITY) { \
+          /* 小size*/ \
+        threads = TEMPLATE_CAPACITY; \
+        if (Is_EP) { \
+            moe_align_block_size_kernel_opt_fused_small_size<scalar_t, TEMPLATE_CAPACITY, 8, true, TEMPLATE_CAPACITY><<< \
+                1, threads, 0, stream>>>( \
+                topk_ids.data_ptr<scalar_t>(), \
+                sorted_token_ids.data_ptr<int32_t>(), \
+                experts_ids.data_ptr<int32_t>(), \
+                num_tokens_post_pad.data_ptr<int32_t>(), num_experts, \
+                padded_num_experts, experts_per_warp, block_size, topk_ids.numel(), \
+                expert_map.has_value() ? expert_map->data_ptr<int32_t>() : nullptr, \
+                expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr, \
+                num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr, \
+                sorted_token_ids.numel(), Is_fuse_fill); \
+        } else { \
+            moe_align_block_size_kernel_opt_fused_small_size<scalar_t, TEMPLATE_CAPACITY, 8, false, TEMPLATE_CAPACITY><<< \
+                1, threads, 0, stream>>>( \
+                topk_ids.data_ptr<scalar_t>(), \
+                sorted_token_ids.data_ptr<int32_t>(), \
+                experts_ids.data_ptr<int32_t>(), \
+                num_tokens_post_pad.data_ptr<int32_t>(), num_experts, \
+                padded_num_experts, experts_per_warp, block_size, topk_ids.numel(), \
+                expert_map.has_value() ? expert_map->data_ptr<int32_t>() : nullptr, \
+                expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr, \
+                num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr, \
+                sorted_token_ids.numel(), Is_fuse_fill); \
+        } \
+    } else if (topk_ids.numel() <= 16384) { \
+        /* 中等size*/ \
+        auto align_kernel = moe_align_block_size_kernel_opt_fused_cub<scalar_t, TEMPLATE_CAPACITY, 8, TEMPLATE_CAPACITY>; \
+        size_t shared_mem_size = (num_experts + 1) * sizeof(int32_t); \
+            if (topk_ids.numel() <= 256) {   \
+                  threads = 128;                                      \
+              } else if (topk_ids.numel() <= 512) {                   \
+                  threads = 256;                                      \
+              } else if (topk_ids.numel() <= 1024){                   \
+                 threads = 512;                                        \
+              }else{                                                    \
+                 threads = 1024;                                        \
+              }                                                         \
+        if(threads <  TEMPLATE_CAPACITY) threads = TEMPLATE_CAPACITY; \
+        \
+        align_kernel<<<1, threads, shared_mem_size, stream>>>( \
+            topk_ids.data_ptr<scalar_t>(), \
+            sorted_token_ids.data_ptr<int32_t>(), \
+            experts_ids.data_ptr<int32_t>(), \
+            num_tokens_post_pad.data_ptr<int32_t>(), num_experts, \
+            padded_num_experts, experts_per_warp, block_size, \
+            topk_ids.numel(), \
+            expert_map.has_value() ? expert_map->data_ptr<int32_t>() : nullptr, \
+            expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr, \
+            num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr, \
+            Is_EP, sorted_token_ids.numel(), Is_fuse_fill); \
+    } else { \
+        /* 大size */ \
+        auto align_kernel = moe_align_block_size_kernel_opt_cub<scalar_t, TEMPLATE_CAPACITY, 8, 1024>; \
+        auto options_int = torch::TensorOptions().dtype(torch::kInt).device(topk_ids.device()); \
+        torch::Tensor cumsum_buffer = torch::zeros({TEMPLATE_CAPACITY + 1}, options_int); \
+        size_t num_warps = CEILDIV(padded_num_experts, experts_per_warp); \
+        size_t shared_mem_size = num_experts * sizeof(int32_t); \
+        threads = 1024; \
+        \
+        align_kernel<<<1, threads, shared_mem_size, stream>>>( \
+            topk_ids.data_ptr<scalar_t>(), \
+            sorted_token_ids.data_ptr<int32_t>(), \
+            experts_ids.data_ptr<int32_t>(), \
+            num_tokens_post_pad.data_ptr<int32_t>(), num_experts, \
+            padded_num_experts, experts_per_warp, block_size, \
+            topk_ids.numel(), cumsum_buffer.data_ptr<int32_t>(), \
+            expert_map.has_value() ? expert_map->data_ptr<int32_t>() : nullptr, \
+            expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr, \
+            num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr, \
+            Is_EP, sorted_token_ids.numel(), Is_fuse_fill); \
+        \
+        const int block_threads = std::min(1024, (int)threads); \
+        const int num_blocks = (topk_ids.numel() + block_threads - 1) / block_threads; \
+        const int max_blocks = 65535; \
+        const int actual_blocks = std::min(num_blocks, max_blocks); \
+        \
+        auto sort_kernel = count_and_sort_expert_tokens_kernel_EP<scalar_t, 8, TEMPLATE_CAPACITY, TEMPLATE_CAPACITY>; \
+        sort_kernel<<<std::max(actual_blocks / 2, 1), block_threads, 0, stream>>>( \
+            topk_ids.data_ptr<scalar_t>(), \
+            sorted_token_ids.data_ptr<int32_t>(), \
+            cumsum_buffer.data_ptr<int32_t>(), topk_ids.numel(), \
+            num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr, \
+            expert_map.has_value() ? expert_map->data_ptr<int32_t>() : nullptr, \
+            Is_EP); \
+    }
+
 void moe_align_block_size(
     torch::Tensor topk_ids, int64_t num_experts, int64_t block_size,
     torch::Tensor sorted_token_ids, torch::Tensor experts_ids,
@@ -1428,8 +1517,6 @@ void moe_align_block_size(
   threads = ((threads + WARP_SIZE - 1) / WARP_SIZE) * WARP_SIZE;
   AT_DISPATCH_INTEGRAL_TYPES(
       topk_ids.scalar_type(), "moe_align_block_size_kernel", [&] {
-        // calc needed amount of shared mem for `cumsum` tensors
-
         bool small_batch_expert_mode =
             (topk_ids.numel() < 1024) && (num_experts <= 64);
 
@@ -1450,246 +1537,71 @@ void moe_align_block_size(
               expert_map.has_value() ? expert_map->data_ptr<int32_t>()
                                      : nullptr);
         } else {
-          if (num_experts == 256) {
-            if (topk_ids.numel() <= 256) {
-              threads = 256;
-               if (Is_EP) {
-                moe_align_block_size_kernel_opt_fused_small_size<scalar_t, 256, 8, true,256><<<
-                    1, threads, 0, stream>>>(
-                    topk_ids.data_ptr<scalar_t>(),
-                    sorted_token_ids.data_ptr<int32_t>(),
-                    experts_ids.data_ptr<int32_t>(),
-                    num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
-                    padded_num_experts, experts_per_warp, block_size, topk_ids.numel(),
-                    expert_map.has_value() ? expert_map->data_ptr<int32_t>() : nullptr,
-                    expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr,
-                    num_local_tokens.has_value()
-                        ? num_local_tokens->data_ptr<int32_t>()
-                        : nullptr,
-                    sorted_token_ids.numel(),Is_fuse_fill);
-              } else {
-                moe_align_block_size_kernel_opt_fused_small_size<scalar_t, 256, 8, false,256><<<
-                    1, threads, 0, stream>>>(
-                    topk_ids.data_ptr<scalar_t>(),
-                    sorted_token_ids.data_ptr<int32_t>(),
-                    experts_ids.data_ptr<int32_t>(),
-                    num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
-                    padded_num_experts, experts_per_warp, block_size, topk_ids.numel(),
-                    expert_map.has_value() ? expert_map->data_ptr<int32_t>() : nullptr,
-                    expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr,
-                    num_local_tokens.has_value()
-                        ? num_local_tokens->data_ptr<int32_t>()
-                        : nullptr,
-                    sorted_token_ids.numel(),Is_fuse_fill);
-              }
-            }else if (topk_ids.numel() <= 16384) {
-              auto align_kernel =
-                  moe_align_block_size_kernel_opt_fused_cub<scalar_t, 256, 8,256>;
-              size_t num_warps = CEILDIV(padded_num_experts, experts_per_warp);
-              size_t shared_mem_size = (num_experts + 1) * sizeof(int32_t);
-              if (topk_ids.numel() <= 256) {
-                threads = 256;
-              } else if (topk_ids.numel() <= 512) {
-                threads = 512;
-              } else {
-                threads = 1024;
-              }
-              align_kernel<<<1, threads, shared_mem_size, stream>>>(
-                  topk_ids.data_ptr<scalar_t>(),
-                  sorted_token_ids.data_ptr<int32_t>(),
-                  experts_ids.data_ptr<int32_t>(),
-                  num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
-                  padded_num_experts, experts_per_warp, block_size,
-                  topk_ids.numel(),
-                  expert_map.has_value() ? expert_map->data_ptr<int32_t>()
-                                         : nullptr,
-                  expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                          : nullptr,
-                  num_local_tokens.has_value()
-                      ? num_local_tokens->data_ptr<int32_t>()
-                      : nullptr,Is_EP,sorted_token_ids.numel(),Is_fuse_fill);
-            } else {
-              auto align_kernel =
-                  moe_align_block_size_kernel_opt_cub<scalar_t, 256,8, 256>;
-              auto options_int = torch::TensorOptions()
-                                     .dtype(torch::kInt)
-                                     .device(topk_ids.device());
-              torch::Tensor cumsum_buffer =
-                  torch::zeros({num_experts + 1}, options_int);
-              size_t num_warps = CEILDIV(padded_num_experts, experts_per_warp);
-              size_t shared_mem_size = num_experts * sizeof(int32_t);
-              threads = 1024;
-              align_kernel<<<1, threads, shared_mem_size, stream>>>(
-                  topk_ids.data_ptr<scalar_t>(),
-                  sorted_token_ids.data_ptr<int32_t>(),
-                  experts_ids.data_ptr<int32_t>(),
-                  num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
-                  padded_num_experts, experts_per_warp, block_size,
-                  topk_ids.numel(), cumsum_buffer.data_ptr<int32_t>(),
-                  expert_map.has_value() ? expert_map->data_ptr<int32_t>()
-                                         : nullptr,
-                  expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                          : nullptr,
-                  num_local_tokens.has_value()
-                      ? num_local_tokens->data_ptr<int32_t>()
-                      : nullptr,Is_EP,sorted_token_ids.numel(),Is_fuse_fill);
-
-              const int block_threads = std::min(1024, (int)threads);
-              const int num_blocks =
-                  (topk_ids.numel() + block_threads - 1) / block_threads;
-              const int max_blocks = 65535;
-              const int actual_blocks = std::min(num_blocks, max_blocks);
-
-              auto sort_kernel =
-                  count_and_sort_expert_tokens_kernel_EP<scalar_t, 8, 256,256>;
-              sort_kernel<<<std::max(actual_blocks / 2,1), block_threads, 0, stream>>>(
-                  topk_ids.data_ptr<scalar_t>(),
-                  sorted_token_ids.data_ptr<int32_t>(),
-                  cumsum_buffer.data_ptr<int32_t>(), topk_ids.numel(),
-                  num_local_tokens.has_value()
-                      ? num_local_tokens->data_ptr<int32_t>()
-                      : nullptr,   expert_map.has_value() ? expert_map->data_ptr<int32_t>()
-                                         : nullptr,Is_EP);
+            int template_capacity = 0;
+            if (num_experts > 64 && num_experts <= 128) {
+                template_capacity = 128;
+            } else if (num_experts > 128 && num_experts <= 256) {
+                template_capacity = 256;
+            } else if (num_experts > 256 && num_experts <= 512) {
+                template_capacity = 512;
+            } else if (num_experts > 512 && num_experts <= 1024) {
+                template_capacity = 1024;
             }
-          }else if(num_experts == 128){
-             if (topk_ids.numel() <= 128) {
-               threads = 128;
-               if (Is_EP) {
-                moe_align_block_size_kernel_opt_fused_small_size<scalar_t, 128, 8, true, 128><<<
-                    1, threads, 0, stream>>>(
-                    topk_ids.data_ptr<scalar_t>(),
-                    sorted_token_ids.data_ptr<int32_t>(),
-                    experts_ids.data_ptr<int32_t>(),
-                    num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
-                    padded_num_experts, experts_per_warp, block_size, topk_ids.numel(),
-                    expert_map.has_value() ? expert_map->data_ptr<int32_t>() : nullptr,
-                    expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr,
-                    num_local_tokens.has_value()
-                        ? num_local_tokens->data_ptr<int32_t>()
-                        : nullptr,
-                    sorted_token_ids.numel(),Is_fuse_fill);
-              } else {
-                moe_align_block_size_kernel_opt_fused_small_size<scalar_t, 128, 8, true, 128><<<
-                    1, threads, 0, stream>>>(
-                    topk_ids.data_ptr<scalar_t>(),
-                    sorted_token_ids.data_ptr<int32_t>(),
-                    experts_ids.data_ptr<int32_t>(),
-                    num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
-                    padded_num_experts, experts_per_warp, block_size, topk_ids.numel(),
-                    expert_map.has_value() ? expert_map->data_ptr<int32_t>() : nullptr,
-                    expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr,
-                    num_local_tokens.has_value()
-                        ? num_local_tokens->data_ptr<int32_t>()
-                        : nullptr,
-                    sorted_token_ids.numel(),Is_fuse_fill);
-              }
-            }else if (topk_ids.numel() <= 16384){
-                auto align_kernel =
-                  moe_align_block_size_kernel_opt_fused_cub<scalar_t, 128, 8,128>;
-              size_t num_warps = CEILDIV(padded_num_experts, experts_per_warp);
-              size_t shared_mem_size = (num_experts + 1) * sizeof(int32_t);
-              if (topk_ids.numel() <= 256) {
-                  threads = 128;
-              } else if (topk_ids.numel() <= 512) {
-                  threads = 256;
-              } else if (topk_ids.numel() <= 1024){
-                 threads = 512;
-              }else{
-                 threads = 1024;
-              }
-              align_kernel<<<1, threads, shared_mem_size, stream>>>(
-                  topk_ids.data_ptr<scalar_t>(),
-                  sorted_token_ids.data_ptr<int32_t>(),
-                  experts_ids.data_ptr<int32_t>(),
-                  num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
-                  padded_num_experts, experts_per_warp, block_size,
-                  topk_ids.numel(),
-                  expert_map.has_value() ? expert_map->data_ptr<int32_t>()
-                                         : nullptr,
-                  expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                          : nullptr,
-                  num_local_tokens.has_value()
-                      ? num_local_tokens->data_ptr<int32_t>()
-                      : nullptr,Is_EP,sorted_token_ids.numel(),Is_fuse_fill);
-            } else {
-                 auto align_kernel =
-                  moe_align_block_size_kernel_opt_cub<scalar_t, 128, 8,128>;
-              auto options_int = torch::TensorOptions()
-                                     .dtype(torch::kInt)
-                                     .device(topk_ids.device());
-              torch::Tensor cumsum_buffer =
-                  torch::zeros({num_experts + 1}, options_int);
-              size_t num_warps = CEILDIV(padded_num_experts, experts_per_warp);
-              size_t shared_mem_size = num_experts * sizeof(int32_t);
-              threads = 1024;
-              align_kernel<<<1, threads, shared_mem_size, stream>>>(
-                  topk_ids.data_ptr<scalar_t>(),
-                  sorted_token_ids.data_ptr<int32_t>(),
-                  experts_ids.data_ptr<int32_t>(),
-                  num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
-                  padded_num_experts, experts_per_warp, block_size,
-                  topk_ids.numel(), cumsum_buffer.data_ptr<int32_t>(),
-                  expert_map.has_value() ? expert_map->data_ptr<int32_t>()
-                                         : nullptr,
-                  expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                          : nullptr,
-                  num_local_tokens.has_value()
-                      ? num_local_tokens->data_ptr<int32_t>()
-                      : nullptr,Is_EP,sorted_token_ids.numel(),Is_fuse_fill);
 
-              const int block_threads = std::min(1024, (int)threads);
-              const int num_blocks =
-                  (topk_ids.numel() + block_threads - 1) / block_threads;
-              const int max_blocks = 65535;
-              const int actual_blocks = std::min(num_blocks, max_blocks);
+            bool dispatched = false;
 
-              auto sort_kernel =
-                  count_and_sort_expert_tokens_kernel_EP<scalar_t, 8,128,128>;
-              sort_kernel<<<std::max(actual_blocks / 2,1), block_threads, 0, stream>>>(
-                  topk_ids.data_ptr<scalar_t>(),
-                  sorted_token_ids.data_ptr<int32_t>(),
-                  cumsum_buffer.data_ptr<int32_t>(), topk_ids.numel(),
-                  num_local_tokens.has_value()
-                      ? num_local_tokens->data_ptr<int32_t>()
-                      : nullptr,   expert_map.has_value() ? expert_map->data_ptr<int32_t>()
-                                         : nullptr,Is_EP);
+            if (template_capacity > 0) {
+                if (template_capacity == 128) {
+                    DISPATCH_MOE_ALIGN_KERNEL(128);
+                    dispatched = true;
+                } else if (template_capacity == 256) {
+                    DISPATCH_MOE_ALIGN_KERNEL(256);
+                    dispatched = true;
+                } else if (template_capacity == 512) {
+                    DISPATCH_MOE_ALIGN_KERNEL(512);
+                    dispatched = true;
+                } else if (template_capacity == 1024) {
+                    DISPATCH_MOE_ALIGN_KERNEL(1024);
+                    dispatched = true;
+                }
             }
-          } else {
-            auto align_kernel = moe_align_block_size_kernel<scalar_t>;
-            auto options_int = torch::TensorOptions()
-                                   .dtype(torch::kInt)
-                                   .device(topk_ids.device());
-            torch::Tensor cumsum_buffer =
-                torch::zeros({num_experts + 1}, options_int);
-            size_t num_warps = CEILDIV(padded_num_experts, experts_per_warp);
-            size_t shared_mem_size =
-                num_warps * experts_per_warp * sizeof(int32_t);
+            //baseline
+            if (!dispatched) {
+                auto align_kernel = moe_align_block_size_kernel<scalar_t>;
+                auto options_int = torch::TensorOptions()
+                                       .dtype(torch::kInt)
+                                       .device(topk_ids.device());
+                torch::Tensor cumsum_buffer =
+                    torch::zeros({num_experts + 1}, options_int);
+                size_t num_warps = CEILDIV(padded_num_experts, experts_per_warp);
+                size_t shared_mem_size =
+                    num_warps * experts_per_warp * sizeof(int32_t);
 
-            align_kernel<<<1, threads, shared_mem_size, stream>>>(
-                topk_ids.data_ptr<scalar_t>(),
-                sorted_token_ids.data_ptr<int32_t>(),
-                experts_ids.data_ptr<int32_t>(),
-                num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
-                padded_num_experts, experts_per_warp, block_size,
-                topk_ids.numel(), cumsum_buffer.data_ptr<int32_t>(),
-                expert_map.has_value() ? expert_map->data_ptr<int32_t>()
-                                       : nullptr);
+                align_kernel<<<1, threads, shared_mem_size, stream>>>(
+                    topk_ids.data_ptr<scalar_t>(),
+                    sorted_token_ids.data_ptr<int32_t>(),
+                    experts_ids.data_ptr<int32_t>(),
+                    num_tokens_post_pad.data_ptr<int32_t>(), num_experts,
+                    padded_num_experts, experts_per_warp, block_size,
+                    topk_ids.numel(), cumsum_buffer.data_ptr<int32_t>(),
+                    expert_map.has_value() ? expert_map->data_ptr<int32_t>()
+                                         : nullptr);
 
-            const int block_threads = std::min(256, (int)threads);
-            const int num_blocks =
-                (topk_ids.numel() + block_threads - 1) / block_threads;
-            const int max_blocks = 65535;
-            const int actual_blocks = std::min(num_blocks, max_blocks);
+                const int block_threads = std::min(256, (int)threads);
+                const int num_blocks =
+                    (topk_ids.numel() + block_threads - 1) / block_threads;
+                const int max_blocks = 65535;
+                const int actual_blocks = std::min(num_blocks, max_blocks);
 
-            auto sort_kernel = count_and_sort_expert_tokens_kernel<scalar_t, 8>;
-            sort_kernel<<<actual_blocks, block_threads, 0, stream>>>(
-                topk_ids.data_ptr<scalar_t>(),
-                sorted_token_ids.data_ptr<int32_t>(),
-                cumsum_buffer.data_ptr<int32_t>(), topk_ids.numel(),
-                num_local_tokens.has_value()
-                    ? num_local_tokens->data_ptr<int32_t>()
-                    : nullptr);
-          }
+                auto sort_kernel = count_and_sort_expert_tokens_kernel<scalar_t, 8>;
+                sort_kernel<<<actual_blocks, block_threads, 0, stream>>>(
+                    topk_ids.data_ptr<scalar_t>(),
+                    sorted_token_ids.data_ptr<int32_t>(),
+                    cumsum_buffer.data_ptr<int32_t>(), topk_ids.numel(),
+                    num_local_tokens.has_value()
+                        ? num_local_tokens->data_ptr<int32_t>()
+                        : nullptr);
+            }
         }
       });
 }
