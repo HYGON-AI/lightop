@@ -112,10 +112,10 @@ def fused_marlin_moe_valid(
     config_marlin_0, config_marlin_1, status = get_moe_cuda_marlin_config_w16a16(E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16)
     # print("E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16",E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16)
     # debug
-    # config_marlin_0["BLOCK_SIZE_M"] = 16
-    # config_marlin_0["MODE"] = 305
-    # config_marlin_1["BLOCK_SIZE_M"] = 16
-    # config_marlin_1["MODE"] = 315
+    # config_marlin_0["BLOCK_SIZE_M"] = 64
+    # config_marlin_0["MODE"] = 147
+    # config_marlin_1["BLOCK_SIZE_M"] = 64
+    # config_marlin_1["MODE"] = 183
     print("         config_marlin_0: ", config_marlin_0)
     print("         config_marlin_1: ", config_marlin_1)
     block_size_m = config_marlin_0["BLOCK_SIZE_M"]
@@ -237,13 +237,11 @@ def fused_marlin_moe_valid(
     print("config_marlin_1:", config_marlin_1)
     print("topk_ids:", topk_ids.shape)
     '''
-    # import pdb 
-    # pdb.set_trace()
     moe_gemm_marlin_w16a16(intermediate_cache2, w2_marlin, intermediate_cache3,topk_weights, sorted_token_ids, 
                          expert_ids, num_tokens_post_padded, 1, config_marlin_1)
     # =========================== gemm2 triton 计算 ===============================
     triton_gemm2_output = torch.zeros_like(intermediate_cache3).reshape((M, topk, K))
-    # topk_weights = torch.ones_like(topk_weights)
+    
     invoke_fused_moe_kernel_w16a16(
                                 intermediate_cache2,
                                 w2_triton,

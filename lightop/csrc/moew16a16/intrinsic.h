@@ -285,10 +285,10 @@ __device__ __forceinline__ void cp_async4(float* smem_ptr, uintx4 global_addr, c
     //     "s_waitcnt vmcnt(0) \n\t"
     // :);
 }
-template<typename src_type=int8_t, typename dst_type=float, const int dword_count=2, const int auxilariy=0>
+template<typename src_type=bhalf_t, typename dst_type=bhalf_t, const int dword_count=2, const int auxilariy=0>
 __forceinline__ __device__ void builtin_buffer_load_dword_lds2(src_type *const shared_addr, const typename vec<uint,4>::type rsrc, const int &lds_offset, const int gvOffset_s, const int &gvOffset_v) {
-    constexpr int bytes_per_element = sizeof(dst_type);
-    dst_type *ptr = reinterpret_cast<dst_type*>(shared_addr) + lds_offset;
+    constexpr int bytes_per_element = sizeof(float);
+    dst_type *ptr = reinterpret_cast<dst_type*>(shared_addr) + lds_offset * 2;
     __builtin_amdgcn_raw_buffer_load_lds(
         rsrc,
         (__attribute__((address_space(3))) int*)ptr,
@@ -350,7 +350,7 @@ __forceinline__ __device__ void builtin_buffer_load_dword_lds(src_type *const sh
 
 // buferr_load_lds_x4
 template<typename T>    
-__forceinline__ __device__ void buffer_load_lds_dwordx4(const T* ptr, T* lds_ptr, int offset, int lds_offset){ // offset 代表global的offset
+__forceinline__ __device__ void buffer_load_lds_dwordx4(const T* ptr, T* lds_ptr, int lds_offset, int offset_v, int offset_s){ // offset 代表global的offset
 // __forceinline__ __device__ void buffer_load_lds_dwordx4(const void* ptr, void* dst_ptr, int offset){ // offset 代表global的offset
   intx4 global_ptr;
   *(uint64_t*)&global_ptr = reinterpret_cast<uint64_t>(ptr); //res[0]放首地址信息
@@ -359,32 +359,59 @@ __forceinline__ __device__ void buffer_load_lds_dwordx4(const T* ptr, T* lds_ptr
   global_ptr[3] = 0x00020000;
   constexpr int bytes_per_element = sizeof(T);
   T *dst_ptr = reinterpret_cast<T*>(lds_ptr) + lds_offset;
-//   __builtin_amdgcn_raw_buffer_load_lds( //offen模式
-//       global_ptr,
-//       (__attribute__((address_space(3))) int*)dst_ptr,
-//       16, // dword读取
-//       offset,
-//       0,
-//       0, /* immediate offset, instruction offset */
-//       0 /* auxilariy data| bit 0: glc, bit 1: slc, bit 2: dlc, bit 3: cache swizzle */
-//   );
-    // __builtin_amdgcn_struct_buffer_load_lds( // idxn模式
-    //     global_ptr,
-    //     (__attribute__((address_space(3))) int*)dst_ptr,
-    //     16,
-    //     0, // vindex
-    //     offset * bytes_per_element, //gvOffset_v * bytes_per_element, // gvOffset_v * bytes_per_element, // global偏移字节数 
-    //     0, //gvOffset_s * bytes_per_element, // 0
-    //     0, // immediate offset 只能传立即数
-    //     0 //auxilariy 影响不是很大
-    // );
+
   int smem_offset = __builtin_amdgcn_readfirstlane(cvta_to_shared(dst_ptr));
   #if defined(__gfx936__)
     __builtin_amdgcn_sched_barrier(0);
     asm volatile(
         "s_mov_b32 m0, %1 \n\t"
-        "buffer_load_dwordx4 %0, %2, 0 ,offen  offset:0, lds \n" ::"v"(offset),
-        "s"(smem_offset), "s"(global_ptr)
+        "buffer_load_dwordx4 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
+        "s"(smem_offset), "s"(global_ptr), "s"(offset_s)
+    :);
+    __builtin_amdgcn_sched_barrier(0);
+  #endif
+}
+
+template<typename T>    
+__forceinline__ __device__ void buffer_load_lds_dwordx1(const T* ptr, T* lds_ptr, int lds_offset, int offset_v, int offset_s){ // offset 代表global的offset
+// __forceinline__ __device__ void buffer_load_lds_dwordx4(const void* ptr, void* dst_ptr, int offset){ // offset 代表global的offset
+  intx4 global_ptr;
+  *(uint64_t*)&global_ptr = (reinterpret_cast<uint64_t>(ptr)); //res[0]放首地址信息
+  global_ptr[1] += 0x41000000; // 0x40400000？ 0x40800000
+  global_ptr[2] = 0x80000000;
+  global_ptr[3] = 0x00020000;
+  constexpr int bytes_per_element = sizeof(T);
+  T *dst_ptr = reinterpret_cast<T*>(lds_ptr) + lds_offset;
+  int smem_offset = __builtin_amdgcn_readfirstlane(cvta_to_shared(dst_ptr));
+  #if defined(__gfx936__)
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile(
+        "s_mov_b32 m0, %1 \n\t"
+        "buffer_load_dword %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
+        "s"(smem_offset), "s"(global_ptr), "s"(offset_s)
+    :);
+    __builtin_amdgcn_sched_barrier(0);
+  #endif
+}
+
+
+template<typename T>    
+__forceinline__ __device__ void buffer_load_lds_dwordx2(const T* ptr, T* lds_ptr, int lds_offset, int offset_v, int offset_s){ // offset 代表global的offset
+// __forceinline__ __device__ void buffer_load_lds_dwordx4(const void* ptr, void* dst_ptr, int offset){ // offset 代表global的offset
+  intx4 global_ptr;
+  *(uint64_t*)&global_ptr = (reinterpret_cast<uint64_t>(ptr)); //res[0]放首地址信息
+  global_ptr[1] += 0x41000000; // 0x40400000？ 0x40800000
+  global_ptr[2] = 0x80000000;
+  global_ptr[3] = 0x00020000;
+  constexpr int bytes_per_element = sizeof(T);
+  T *dst_ptr = reinterpret_cast<T*>(lds_ptr) + lds_offset;
+  int smem_offset = __builtin_amdgcn_readfirstlane(cvta_to_shared(dst_ptr));
+  #if defined(__gfx936__)
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile(
+        "s_mov_b32 m0, %1 \n\t"
+        "buffer_load_dwordx2 %0, %2, %3 ,offen  offset:0, lds \n" ::"v"(offset_v),
+        "s"(smem_offset), "s"(global_ptr), "s"(offset_s)
     :);
     __builtin_amdgcn_sched_barrier(0);
   #endif
@@ -397,8 +424,14 @@ __device__ inline void amdgcn_buffer_load_dwordx4_lds(void* smem_ptr, const T* g
   int smem_offset_sgpr = __builtin_amdgcn_readfirstlane(cvta_to_shared(smem_ptr));
   typedef uint32_t uint32x4_t __attribute__((ext_vector_type(4)));
   uint32x4_t global_addr = {0};
-  *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(glob_ptr);
-  global_addr[1] += 0x41000000; // 62 bit: cache swizzle;  48~61: Stride
+  uint64_t addr = reinterpret_cast<uint64_t>(glob_ptr);
+  ptr_split_t ptr_split_t1;
+  ptr_split_t1.high = static_cast<std::uint32_t>(addr >> 32);
+  ptr_split_t1.low = static_cast<std::uint32_t>(addr);
+
+//   *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(glob_ptr);
+  global_addr[0] = __builtin_amdgcn_readfirstlane(ptr_split_t1.low);
+  global_addr[1] = __builtin_amdgcn_readfirstlane(ptr_split_t1.high + 0x41000000); // 0x40400000？ 0x40800000
   global_addr[2] = 0x80000000;
   global_addr[3] = 0x00020000; // 0000 0000 0000 0010 0000 0000 0000 0000
   //  000
