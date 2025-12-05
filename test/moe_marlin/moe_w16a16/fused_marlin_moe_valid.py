@@ -96,7 +96,7 @@ def fused_marlin_moe_valid(
     assert w1_triton.is_contiguous(), "Expert weights1 must be contiguous"
     assert w2_triton.is_contiguous(), "Expert weights2 must be contiguous"
     # 当前只支持 bf16
-    assert hidden_states.dtype in [torch.bfloat16]
+    assert hidden_states.dtype in [torch.float16,torch.bfloat16]
     # import pdb
     # pdb.set_trace()
     M, K = hidden_states.shape # 16 2048
@@ -109,8 +109,8 @@ def fused_marlin_moe_valid(
     # print("topk_weights",topk_weights)
     # print("topk_weights",topk_weights.size())   
 
-    config_marlin_0, config_marlin_1, status = get_moe_cuda_marlin_config_w16a16(E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16)
-    # print("E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16",E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16)
+    config_marlin_0, config_marlin_1, status = get_moe_cuda_marlin_config_w16a16(E, M, 2 * N, K, K, N, 8, device_name, num_cus, hidden_states.dtype)
+    # print("E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16",E, M, 2 * N, K, K, N, 8, device_name, num_cus, hidden_states.dtype)
     # debug
     # config_marlin_0["BLOCK_SIZE_M"] = 64
     # config_marlin_0["MODE"] = 147
@@ -144,22 +144,22 @@ def fused_marlin_moe_valid(
     intermediate_cache3 = intermediate_cache3.view(-1, K)  # [M * topk, K]  [32*8, 7168]
 
 
-    '''
-    print("a_1:", a_1.shape)
-    print("w1_marlin:", w1_marlin.shape, w1_marlin.dtype, w1_marlin.stride())
-    print("intermediate_cache1:", intermediate_cache1.shape)
-    print("a_1_scale:", a_1_scale.shape)
-    print("topk_weights:", topk_weights.shape)
-    align = block_size_m
-    print("sorted_token_ids:", sorted_token_ids[0:align])
-    print("sorted_token_ids // topk:", sorted_token_ids[0:align] // topk)
-    print("sorted_token_ids % topk:", sorted_token_ids[0:align] % topk)
-    print("expert_ids:", expert_ids[:10])
-    print("num_tokens_post_padded:", num_tokens_post_padded)
-    print("topk:", topk)
-    print("config_marlin_0:", config_marlin_0)
-    print("topk_ids:", topk_ids.shape)
-    '''
+    
+    # print("hidden_states:", hidden_states.dtype ,hidden_states )
+    # print("w1_marlin:", w1_marlin.shape, w1_marlin.dtype, w1_marlin.stride(),w1_marlin)
+    # print("intermediate_cache1:", intermediate_cache1.shape,intermediate_cache1.dtype,intermediate_cache1)
+    # # print("a_1_scale:", a_1_scale.shape)
+    # print("topk_weights:", topk_weights.shape)
+    # align = block_size_m
+    # print("sorted_token_ids:", sorted_token_ids[0:align])
+    # print("sorted_token_ids // topk:", sorted_token_ids[0:align] // topk)
+    # print("sorted_token_ids % topk:", sorted_token_ids[0:align] % topk)
+    # print("expert_ids:", expert_ids[:10])
+    # print("num_tokens_post_padded:", num_tokens_post_padded)
+    # print("topk:", topk)
+    # print("config_marlin_0:", config_marlin_0)
+    # print("topk_ids:", topk_ids.shape)
+    
     moe_gemm_marlin_w16a16(hidden_states, w1_marlin, intermediate_cache1, None, sorted_token_ids, 
                          expert_ids, num_tokens_post_padded, topk, config_marlin_0)
     # print("w16a16 kernel 执行成功")
@@ -183,7 +183,7 @@ def fused_marlin_moe_valid(
                                 False,  # 是否乘 top_weight
                                 topk, # top_k
                                 config,
-                                compute_type=tl.bfloat16,
+                                compute_type=tl.float16,
                                 use_fp8_w8a8=False,
                                 use_int8_w8a16=False,
                                 use_int8_w8a8 = False,
@@ -192,8 +192,6 @@ def fused_marlin_moe_valid(
                                 )
 
     triton_gemm1_output = triton_gemm1_output.reshape((-1, 2 * N))
-
-    
 
     # debug
     '''
@@ -257,7 +255,7 @@ def fused_marlin_moe_valid(
                                 True,  # 是否乘 top_weight
                                 1, # top_k
                                 config,
-                                compute_type=tl.bfloat16,
+                                compute_type=tl.float16,
                                 use_fp8_w8a8=False,
                                 use_int8_w8a16=False,
                                 use_int8_w8a8 = False,
@@ -267,7 +265,6 @@ def fused_marlin_moe_valid(
     triton_gemm2_output = triton_gemm2_output.reshape((-1, K))
     torch.testing.assert_close(intermediate_cache3, triton_gemm2_output, atol=1e-2, rtol=1e-2)
     print("        Triton对比cuda gemm2 success!!!!")
-    #N:384 K:2048
     return (num_tokens_post_padded.item() * K * 2*N * 2),(num_tokens_post_padded.item()  * N * K * 2), \
     (num_tokens_post_padded.item() * K * 2 + (E if (num_tokens_post_padded.item() / block_size_m) > E else (num_tokens_post_padded.item() / block_size_m)) * 2*N * K * 2  + M * topk * 2*N * 2)/1024/1024/1024, \
     (num_tokens_post_padded.item() * N * 2 + (E if (num_tokens_post_padded.item() / block_size_m) > E else (num_tokens_post_padded.item() / block_size_m)) * N * K * 2 + M * topk * K * 2 )/1024/1024/1024

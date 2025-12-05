@@ -38,13 +38,13 @@ def fused_marlin_moe(
     assert w1.is_contiguous(), "Expert weights1 must be contiguous"
     assert w2.is_contiguous(), "Expert weights2 must be contiguous"
     # 当前只支持 bf16
-    assert hidden_states.dtype in [torch.bfloat16]
+    assert hidden_states.dtype in [torch.bfloat16,torch.float16]
 
     M, K = hidden_states.shape # 16 2048
     E = w1.shape[0] # 128
     N = w1.shape[1] // 2 # 768
     topk = topk_ids.shape[1] 
-    config_marlin_0, config_marlin_1, status = get_moe_cuda_marlin_config_w16a16(E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16)
+    config_marlin_0, config_marlin_1, status = get_moe_cuda_marlin_config_w16a16(E, M, 2 * N, K, K, N, 8, device_name, num_cus, hidden_states.dtype)
     # debug
 
     # config_marlin_0["BLOCK_SIZE_M"] = 16

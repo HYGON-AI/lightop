@@ -97,10 +97,11 @@ def benchmark_config(
     num_experts: int,
     shard_intermediate_size: int,
     hidden_size: int,
-    topk: int
+    topk: int,
+    dtype: Optional[str]
 ) -> float:
 
-    print("m = ", num_tokens, " 性能测试......")
+    print("m = ", num_tokens, " 性能测试......",dtype)
     # print("num_experts: ", num_experts)
     # print("shard_intermediate_size: ", shard_intermediate_size)
     # print("hidden_size: ", hidden_size)
@@ -113,14 +114,11 @@ def benchmark_config(
 
 
     #  =========================================== 准备 gemm1 相关数据 =============================================
-    x = torch.randn((num_tokens, hidden_size),device='cuda',dtype=torch.bfloat16) / 10 # [256*8, 7168] (bf16)
-    # torch.set_printoptions(profile="full")   
-    # print("x",x[6].reshape(512,4))
-    
+    x = torch.randn((num_tokens, hidden_size),device='cuda',dtype=dtype) / 10 # [256*8, 7168] (bf16)
+    # torch.set_printoptions(profile="full")       
     # x = torch.ones_like(x)
-    w1 = torch.randn((num_experts, shard_intermediate_size, hidden_size), device=x.device, dtype=torch.bfloat16)
-    # w1 = torch.ones_like(w1)
-    # torch.set_printoptions(profile="full")             
+    w1 = torch.randn((num_experts, shard_intermediate_size, hidden_size), device=x.device, dtype=dtype)
+    # w1 = torch.ones_like(w1)            
     torch.set_printoptions(profile="default")
     # -------- 处理 gemm1 权重矩阵 ------------------
     w1_marlin_list = []
@@ -131,7 +129,7 @@ def benchmark_config(
     # print("gemm1 权重重排完成 重排前size为：重排后size为：",w1.size(),w1_marlin.size())
 
     #  =========================================== 准备 gemm2 相关数据 =============================================
-    w2 = torch.randn((num_experts, hidden_size, shard_intermediate_size // 2), device=x.device, dtype=torch.bfloat16)
+    w2 = torch.randn((num_experts, hidden_size, shard_intermediate_size // 2), device=x.device, dtype=dtype)
     w2_marlin_list = []
     for i in range(w2.shape[0]):
         w2_marlin_in = w16a16_marlin_weight(w2[i])
@@ -146,11 +144,7 @@ def benchmark_config(
         score.copy_(gating_output[i])
 
     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
-    # 先进行准确度测试
-    # print("w1",w1.size())
-    # print("w1_marlin",w1_marlin.size())
-    # print("w1",w2.size())
-    # print("w1_marlin",w2_marlin.size())
+
     GEMM1_Peak,GEMM2_Peak,bandwith1,bandwith2 = fused_marlin_moe_valid(                         
                             x,
                             w1,
@@ -258,7 +252,8 @@ class BenchmarkWorker:
         num_experts: int,
         shard_intermediate_size: int,
         hidden_size: int,
-        topk: int
+        topk: int,
+        dtype: Optional[str],
     ) -> Tuple[Dict[str, int], float]:
         # 测试                                         
         result = benchmark_config(
@@ -266,7 +261,8 @@ class BenchmarkWorker:
                                 num_experts,
                                 shard_intermediate_size, 
                                 hidden_size,
-                                topk)
+                                topk,
+                                dtype)
         return result
 
 def main(args: argparse.Namespace):
@@ -276,13 +272,14 @@ def main(args: argparse.Namespace):
     hidden_size=2048
     renormalize=True
     topk = 8
-
+    # dtype = torch.float16
+    dtype = torch.bfloat16
     if len(args.batch_size) == 0:
         print("进行全size性能测试: ")
         # batch_sizes = [2048]
         # batch_sizes = [512, 1024, 2048, 4096, 6144, 8192, 16384]
-        # batch_sizes = [2048]
         batch_sizes = [1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128, 256, 512, 1024, 1536, 2048, 3072, 4096] 
+        # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128] 
         # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128]
         # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]
     else:
@@ -310,7 +307,7 @@ def main(args: argparse.Namespace):
     else:
       results = _distribute(
                 "benchmark", [(batch_size, num_experts, shard_intermediate_size, hidden_size,
-                            topk) for batch_size in batch_sizes])
+                            topk,dtype) for batch_size in batch_sizes])
       output_file = "moe_w16a16_gemm_channel_marlin_wise.xlsx"
       df = pd.DataFrame(results)
       df.to_excel(output_file, index=False) 

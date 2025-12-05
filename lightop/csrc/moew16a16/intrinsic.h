@@ -3,6 +3,7 @@
 #include "hip/hip_bf16.h"
 #include "hip/hip_runtime.h"
 #include "hip/hip_fp8.h" 
+#include <type_traits>
 using fp8_e4m3 = __hip_fp8_e4m3;
 using fp8_e4m3x4 = __hip_fp8x4_e4m3;
 using fp8_e5m2x4 = __hip_fp8x4_e5m2;
@@ -82,14 +83,14 @@ union alignas(32)  int8_vec {
     
 };
 
-template <size_t len>
-union bf16_vec {
+template <size_t len,typename Element>
+union f16_vec {
     floatx2 floatx2_array[len/ 4];
     floatx4 floatx4_array[len/ 8];
-    BFloat16x4   vec1[len/4];        // 128bit 向量，用于 SIMD 读取
-    BFloat16     data[len];    // 4 个 int，用于逐个访问
-    vec<bhalf_t, 4>::type floatx2_bf16_array[len/ 4];
-    vec<bhalf_t, 8>::type floatx4_bf16_array[len/ 8];
+    BFloat16x4   vec1[len/4];        
+    BFloat16     data[len];    
+    typename vec<Element, 4>::type floatx2_f16_array[len/ 4];
+    typename vec<Element, 8>::type floatx4_f16_array[len/ 8];
     // 禁止默认构造（避免未初始化）
     
 };
@@ -676,16 +677,16 @@ __device__ floatx4 mmac(const typename vec<Element, 4>::type &v1, const typename
 //     #endif
 //     return v4i;
 // }
-// template<>
-// __device__ typename vec<float, 4>::type mmac<half>(const typename vec<half, 4>::type &v1, const typename vec<half, 4>::type &v2, const typename vec<float, 4>::type &v3)
-// {
-//     floatx4 v4f;
-//     #if defined(__gfx936__) || defined(__gfx928__)
-//         v4f = __builtin_amdgcn_mmac_f32_16x16x16f16(v1, v2, v3);
-//     #endif
-//     return v4f;
+template<>
+__device__ typename vec<float, 4>::type mmac<half>(const typename vec<half, 4>::type &v1, const typename vec<half, 4>::type &v2, floatx4 &v3)
+{
+    floatx4 v4f;
+    #if defined(__gfx936__) || defined(__gfx928__)
+        v4f = __builtin_amdgcn_mmac_f32_16x16x16f16(v1, v2, v3);
+    #endif
+    return v4f;
 
-// }
+}
 
 // template<>
 // __device__ typename vec<int, 4>::type mmac<int8_t>(const typename vec<int8_t, 8>::type &v1, const typename vec<int8_t, 8>::type &v2, const typename vec<int, 4>::type &v3)
@@ -811,13 +812,31 @@ static float __e4m32float(const uint8_t src) {
 }
 #endif // end of #if !defined(__NVCC__)
 
+
+
+static __device__ inline uint16_t half_as_uint16(__half h) {
+    union { __half h; uint16_t u; } converter;
+    converter.h = h;
+    return converter.u;
+}
+
+static __device__ inline __half uint16_as_half(uint16_t u) {
+    union { __half h; uint16_t u; } converter;
+    converter.u = u;
+    return converter.h;
+}
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-static __device__ inline uint16_t f32_to_bf16(float f){
-  
+template <typename T>
+static __device__ inline uint16_t f32_to_f16(float f){
+if constexpr(std::is_same<T,  half>::value){
+    return half_as_uint16(__float2half(f));
+  }
+  else{
     uint32_t u = *(uint32_t*)(&f);
     u += 0x7fff + ((u >> 16) & 1); 
     return u>>16;
-
+  }
 }
 
 //f32转bf16
