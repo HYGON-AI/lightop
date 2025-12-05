@@ -18,6 +18,24 @@ device_name = current_platform.get_device_name().replace(" ", "_")
 num_cus= torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 
 blockM_all_configs = {
+    #decode
+    300: 16,
+    301: 16,
+    302: 16,
+    303: 16,
+    304: 16,
+    305: 16,
+    306: 16,
+    307: 16,
+    308: 16,
+    309: 16,
+    310: 16,
+    311: 16,
+    312: 16,
+    313: 16,
+    314: 16,
+    315: 16,
+    #prefill
     103: 16, 
     104: 32, 
     106: 16, 
