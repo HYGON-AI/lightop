@@ -424,17 +424,10 @@ __device__ inline void amdgcn_buffer_load_dwordx4_lds(void* smem_ptr, const T* g
   int smem_offset_sgpr = __builtin_amdgcn_readfirstlane(cvta_to_shared(smem_ptr));
   typedef uint32_t uint32x4_t __attribute__((ext_vector_type(4)));
   uint32x4_t global_addr = {0};
-  uint64_t addr = reinterpret_cast<uint64_t>(glob_ptr);
-  ptr_split_t ptr_split_t1;
-  ptr_split_t1.high = static_cast<std::uint32_t>(addr >> 32);
-  ptr_split_t1.low = static_cast<std::uint32_t>(addr);
-
-//   *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(glob_ptr);
-  global_addr[0] = __builtin_amdgcn_readfirstlane(ptr_split_t1.low);
-  global_addr[1] = __builtin_amdgcn_readfirstlane(ptr_split_t1.high + 0x41000000); // 0x40400000？ 0x40800000
+  *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(glob_ptr);
+  global_addr[1] += 0x41000000; // 62 bit: cache swizzle;  48~61: Stride
   global_addr[2] = 0x80000000;
   global_addr[3] = 0x00020000; // 0000 0000 0000 0010 0000 0000 0000 0000
-  //  000
 //   int offset_s = offset_s;
     #if defined(__gfx936__)
   __builtin_amdgcn_sched_barrier(0);
