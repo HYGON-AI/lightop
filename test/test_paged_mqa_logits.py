@@ -95,8 +95,8 @@ def test_paged_mqa_logits():
             for avg_kv in (8192, 32768):
                 num_blocks, blocksize = max_model_len * 3, 64
 
-                q = torch.randn((batch_size, next_n, heads, index_dim), device='cuda', dtype=torch.float16)
-                kv_cache = torch.randn((num_blocks, blocksize, 1, index_dim), device='cuda', dtype=torch.float16)
+                q = torch.randn((batch_size, next_n, heads, index_dim), device='cuda', dtype=torch.bfloat16)
+                kv_cache = torch.randn((num_blocks, blocksize, 1, index_dim), device='cuda', dtype=torch.bfloat16)
                 weights = torch.randn((batch_size * next_n, heads), device='cuda', dtype=torch.float32)
 
                 context_lens = torch.randint(int(0.7 * avg_kv), int(1.3 * avg_kv), (batch_size, )).cuda().to(torch.int32)

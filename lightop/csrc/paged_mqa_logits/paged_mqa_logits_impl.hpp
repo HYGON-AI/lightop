@@ -21,6 +21,8 @@ typedef float fp32x2 __attribute__((ext_vector_type(2)));
 typedef float fp32x4 __attribute__((ext_vector_type(4)));
 typedef float fp32x8 __attribute__((ext_vector_type(8)));
 
+typedef int v4i __attribute__((ext_vector_type(4)));
+
 typedef union
 {
     fp16x8 data;
@@ -30,6 +32,17 @@ typedef union
         fp16x4 rear;
     };
 } f16x8_t;
+
+#define DIRECT_LDS_WORDx4 16
+
+#define WAIT_VMCNT_LDS(X)               \
+    __builtin_amdgcn_sched_barrier(0);  \
+    asm volatile(                       \
+    "s_waitcnt vmcnt(%0)\n\t"           \
+    "s_barrier\n"                       \
+    :: "I"(X)                           \
+    :);                                 \
+    __builtin_amdgcn_sched_barrier(0);
 
 #define CLEAR_ACC(acc, x)               \
     for (int i = 0; i < x; ++i) {       \
@@ -126,7 +139,15 @@ struct PagedMQALogitsScheduler {
         if (current_kv_idx >= current_num_kv) {
             ++ current_q_idx;
             current_kv_idx = 0;
-            current_context_len = current_q_idx < batch_size ? *(this->context_lens + current_q_idx) : 0;
+            // current_context_len = current_q_idx < batch_size ? *(this->context_lens + current_q_idx) : 0;
+            current_context_len = 0;
+            if (current_q_idx < batch_size) {
+                const auto* context_len_ptr = this->context_lens + current_q_idx;
+                asm volatile("s_load_dword %1, %0, 0x0\n\t"
+                    "s_waitcnt lgkmcnt(0)\n\t":
+                    "+s"(context_len_ptr),
+                    "=s"(current_context_len));
+            }
             current_num_kv = current_context_len ? ceil_div(current_context_len, BLOCK_KV) : 0;
         }
 
@@ -190,32 +211,49 @@ __global__ void paged_mqa_logits(const Element* q,
     // fetch Q && Q weights...
     auto gQ = q + next_q_idx * kNextN * kNumHeads * kHeadDim + next_n * kNumHeads * kHeadDim;
     constexpr int kAlignmentQ = 16 / sizeof(Element);
+    constexpr int fetch_q_cnt = kNumHeads * kHeadDim / kNumWarps / WARP_SIZE_GPU / kAlignmentQ;
+    constexpr int fetch_q_stride = kAlignmentQ * kNumWarps * WARP_SIZE_GPU;
+
+    #pragma unroll
+    for (int i = 0; i < fetch_q_cnt; ++i) {
+        auto pos = t_id * kAlignmentQ + i * fetch_q_stride;
+        *reinterpret_cast<f16x8_t *>(&smem_kv_block[pos]) = *reinterpret_cast<const f16x8_t *>(&gQ[pos]);
+    }
 
     constexpr int heads_cnt = kNumHeads / Q_TILE;
     constexpr int K_BLOCK_MAX = kHeadDim / K_TILE;
     f16x8_t reg_q_operand[heads_cnt][K_BLOCK_MAX];
 
+    __syncthreads();
+    // pre-fetch Q from smem...
     auto base_fetch_lds_Q = lane_idx % 16 * kHeadDim + lane_idx / 16 * 8;
     #pragma unroll
     for (int i = 0; i < heads_cnt; ++i) {
         #pragma unroll
         for (int j = 0; j < K_BLOCK_MAX; ++j) {
             auto offset = base_fetch_lds_Q + i * Q_TILE * kHeadDim + j * K_TILE;
-            reg_q_operand[i][j] = *reinterpret_cast<const f16x8_t *>(&gQ[offset]);
+            reg_q_operand[i][j] = *reinterpret_cast<f16x8_t *>(&smem_kv_block[offset]);
         }
     }
+    __syncthreads();
 
     auto gW = weights + next_q_idx * kNextN * kNumHeads + next_n * kNumHeads;
+    auto smem_weight = reinterpret_cast<float *>(smem_kv_block);
+    if (warp_idx == 0) {
+        smem_weight[lane_idx] = gW[lane_idx];
+    }
 
+    __syncthreads();
     // pre-fetch weights...
     float reg_weights[heads_cnt * 4];
     #pragma unroll
     for (int j = 0; j < kNumHeads / Q_TILE; ++j) {
         #pragma unroll
         for (int k = 0; k < 4; ++k) {
-            reg_weights[j * 4 + k] = gW[j * 16 + k * 4 + lane_idx / 16];
+            reg_weights[j * 4 + k] = smem_weight[j * 16 + k * 4 + lane_idx / 16];
         }
     }
+    __syncthreads();
 
     q_idx = next_q_idx;
     kv_idx = next_kv_idx;
@@ -223,7 +261,7 @@ __global__ void paged_mqa_logits(const Element* q,
     context_len = next_context_len;
 
     // fetch kv block idx...
-    uint64_t kv_block_idx;
+    uint32_t kv_block_idx;
 
     uint32_t block_table_offset = q_idx * block_table_stride + kv_idx;
     kv_block_idx = kv_idx < num_kv ? *(block_table + block_table_offset) : 0;
@@ -234,30 +272,62 @@ __global__ void paged_mqa_logits(const Element* q,
     constexpr int fetch_kv_block_cnt = BLOCK_KV * K_TILE / kNumWarps / WARP_SIZE_GPU / kAlignmentKV;
     constexpr int fetch_kv_block_stride = kNumWarps * WARP_SIZE_GPU / (K_TILE / kAlignmentKV) * kHeadDim;
 
+    long glob_kv_desc[2];
+
+    glob_kv_desc[0] = *reinterpret_cast<const long *>(&gKv);
+    // Use offset enable mode, it's unnecessary to set stride args.
+    long stride = 0x0;
+    glob_kv_desc[0] = glob_kv_desc[0] | stride << 48;
+    glob_kv_desc[1] = (long) 0x20000 << 32 | 0xFFFFFFFE;
+    auto *src = reinterpret_cast<v4i *>(glob_kv_desc);
+
     #pragma unroll
     for (int i = 0; i < Stages; ++i) {
+        auto smem_kv_stage = smem_kv_block + i * BLOCK_KV * K_TILE + warp_idx * kAlignmentKV * WARP_SIZE_GPU;
         #pragma unroll
         for (int j = 0; j < fetch_kv_block_cnt; ++j) {
-            auto pos = t_id % 4 * kAlignmentKV + t_id / 4 * kHeadDim + j * fetch_kv_block_stride + i * K_TILE;
-            *reinterpret_cast<fp16x8*>(&smem_kv_block[pos]) = *reinterpret_cast<const fp16x8*>(&gKv[pos]);
+            auto inner_warp_offset =
+                (t_id % 4 * kAlignmentKV + t_id / 4 * kHeadDim + i * K_TILE) * sizeof(__fp16);
+            #if defined(__gfx936__)
+            __builtin_amdgcn_raw_buffer_load_lds(*src,
+                                                 // Cast address type to which compiler can recognize as lds type.
+                                                 *(__attribute__((address_space(3))) int**) (&smem_kv_stage),
+                                                 DIRECT_LDS_WORDx4,
+                                                 inner_warp_offset,
+                                                 0,
+                                                 0,
+                                                 0);
+            #endif
         }
     }
 
-    __syncthreads();
-
     // pre-fetch KV from smem...
     f16x8_t reg_kv_operand;
-    auto base_fetch_lds_KV = warp_idx * 16 * kHeadDim + lane_idx % 16 * kHeadDim + lane_idx / 16 * 8;
+    auto base_fetch_lds_KV = warp_idx * 16 * K_TILE + lane_idx % 16 * K_TILE + lane_idx / 16 * 8;
 
     fp32x4 acc[kNumHeads / Q_TILE];
     CLEAR_ACC(acc, kNumHeads / Q_TILE);
     const int logits_t_offset = warp_idx * 16 + lane_idx % 16;
+    uint32_t s_kv_block_idx;
 
     while (scheduler.fetch_next_task(next_q_idx, next_kv_idx, next_num_kv, next_context_len)) {
         // fetch next kv block idx...
         block_table_offset = next_q_idx * block_table_stride + next_kv_idx;
-        kv_block_idx = next_kv_idx < num_kv ? *(block_table + block_table_offset) : 0;
-        gKv = kv_block + kv_block_idx * BLOCK_KV * kHeadDim;
+
+        s_kv_block_idx = 0;
+        if (next_kv_idx < num_kv) {
+            const auto* block_id_ptr = block_table + block_table_offset;
+            asm volatile("s_load_dword %1, %0, 0x0\n\t"
+                "s_waitcnt lgkmcnt(0)\n\t":
+                "+s"(block_id_ptr),
+                "=s"(s_kv_block_idx));
+        }
+        gKv = kv_block + s_kv_block_idx * BLOCK_KV * kHeadDim;
+
+        glob_kv_desc[0] = *reinterpret_cast<const long *>(&gKv);
+        glob_kv_desc[0] = glob_kv_desc[0] | stride << 48;
+        glob_kv_desc[1] = (long) 0x20000 << 32 | 0xFFFFFFFE;
+        src = reinterpret_cast<v4i *>(glob_kv_desc);
 
         // Calculate logits KV block offset in advance
         auto base_logits_offset = q_idx * kNextN * logits_stride;
@@ -265,16 +335,36 @@ __global__ void paged_mqa_logits(const Element* q,
 
         #pragma unroll
         for (uint32_t k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
+            auto fetch_lds_kv = base_fetch_lds_KV + k_block * BLOCK_KV * K_TILE;
+            WAIT_VMCNT_LDS(Stages - 1);
+
             // pre-fetch KV from smem...
-            reg_kv_operand = *reinterpret_cast<f16x8_t *>(&smem_kv_block[base_fetch_lds_KV + k_block * K_TILE]);
+            int ldsAddr = reinterpret_cast<size_t>(&smem_kv_block[fetch_lds_kv]) ;
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile(
+                "\n ds_read_b128 %0 ,%1\n\t"
+                "s_waitcnt lgkmcnt(0) \n\t"
+                "s_barrier \n\t"
+                : "=v"(reg_kv_operand)
+                : "v"(ldsAddr)
+                :);
+            __builtin_amdgcn_sched_barrier(0);
 
-            __syncthreads();
-
-            // pre-fetch next kv block per stage
+            auto smem_kv_stage = smem_kv_block + k_block * BLOCK_KV * K_TILE + warp_idx * kAlignmentKV * WARP_SIZE_GPU;
             #pragma unroll
             for (int j = 0; j < fetch_kv_block_cnt; ++j) {
-                auto pos = t_id % 4 * kAlignmentKV + t_id / 4 * kHeadDim + j * fetch_kv_block_stride + k_block * K_TILE;
-                *reinterpret_cast<fp16x8*>(&smem_kv_block[pos]) = *reinterpret_cast<const fp16x8*>(&gKv[pos]);
+                auto inner_warp_offset =
+                        (t_id % 4 * kAlignmentKV + t_id / 4 * kHeadDim + k_block * K_TILE) * sizeof(__fp16);
+                #if defined(__gfx936__)
+                __builtin_amdgcn_raw_buffer_load_lds(*src,
+                                                     // Cast address type to which compiler can recognize as lds type.
+                                                     *(__attribute__((address_space(3))) int**) (&smem_kv_stage),
+                                                     DIRECT_LDS_WORDx4,
+                                                     inner_warp_offset,
+                                                     0,
+                                                     0,
+                                                     0);
+                #endif
             }
 
             #pragma unroll
@@ -332,6 +422,8 @@ __global__ void paged_mqa_logits(const Element* q,
                     }
                 }
             }
+
+            __syncthreads();
         }
 
         // Fetch next task, reload idx to launch next mmac
@@ -349,8 +441,10 @@ __global__ void paged_mqa_logits(const Element* q,
 
     #pragma unroll
     for (uint32_t k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
+        auto fetch_lds_kv = base_fetch_lds_KV + k_block * BLOCK_KV * K_TILE;
+        WAIT_VMCNT_LDS(0);
         // pre-fetch KV from smem...
-        reg_kv_operand = *reinterpret_cast<f16x8_t *>(&smem_kv_block[base_fetch_lds_KV + k_block * K_TILE]);
+        reg_kv_operand = *reinterpret_cast<f16x8_t *>(&smem_kv_block[fetch_lds_kv]);
 
         #pragma unroll
         for (int i = 0; i < kHeadDim / Q_TILE; ++i) {
