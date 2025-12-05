@@ -1,11 +1,10 @@
 import torch
-from vllm import _custom_ops as vllm_ops
+# from vllm import _custom_ops as vllm_ops
 from triton.testing import do_bench 
 from lightop import fuse_rmsnorm_rope_quant_gfx938
 from lightop import fused_rms_norm_contiguous
 import pdb
 from lightop import op
-from vllm import _custom_ops as ops
 
 
 def _compute_inv_freq(base,rotary_dim, device) -> torch.Tensor:
@@ -106,7 +105,9 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
         cache_dtype = kv_cache_dtype_str
         if cache_dtype == "fp16" or cache_dtype == "bf16":
             cache_dtype = "auto"
-        ops.concat_and_cache_mla(kv_c_no_fuse_out, k_pe_no_fuse, kv_cache_no_fuse, slot_mapping, cache_dtype, kv_scale_tensor)
+        # ops.concat_and_cache_mla(kv_c_no_fuse_out, k_pe_no_fuse, kv_cache_no_fuse, slot_mapping, cache_dtype, kv_scale_tensor)
+        kv_cache_no_fuse.view(-1, 576)[slot_mapping, :kv_c_dim] = kv_c_no_fuse_out.to(KV_CACHE_DTYPE).view(torch.uint8)
+        kv_cache_no_fuse.view(-1, 576)[slot_mapping, kv_c_dim:] = k_pe_no_fuse.to(KV_CACHE_DTYPE).view(torch.uint8)
     if test_speed:
         warmup_runs = 25
         test_runs = 100
@@ -116,17 +117,16 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
                                  warmup=warmup_runs, rep=test_runs)
         print(f"bs: {batch_size}, num_head: {num_head}, opt non-fused time: {avg_time_no_fuse_opt * 1000:.2f} us, fuse opt time: {avg_time_fuse_opt * 1000:.2f} us")
     else:
-        run_no_fuse_opt()
         run_fuse_opt()
-        diff_max_q_pe = torch.max(torch.abs(q_pe - q_pe_no_fuse))
+        run_no_fuse_opt()
         diff_max_k_pe = torch.max(torch.abs(k_pe - k_pe_no_fuse))
-        diff_max_kv_c = torch.max(torch.abs(kv_c_no_fuse_out - kv_c_normed))
-        diff_max_kv_cache = torch.max(torch.abs(kv_cache.float() - kv_cache_no_fuse.float()))
+        diff_max_kv_c = torch.max(torch.abs(kv_c_normed - kv_c_no_fuse_out))
+        kv_cache = kv_cache.view(-1, 576).view(KV_CACHE_DTYPE).float()[slot_mapping[:],:]
+        kv_cache_no_fuse = kv_cache_no_fuse.view(-1, 576).view(KV_CACHE_DTYPE).float()[slot_mapping[:],:]
+        diff_max_kv_cache = torch.abs(kv_cache - kv_cache_no_fuse).max()
         diff_max_q_c_quant = torch.max(torch.abs(q_quant.float()[:,:,:q_c_dim] - q_quant_gt.float()[:,:,:q_c_dim]))
         diff_max_q_pe_quant = torch.max(torch.abs(q_quant.float()[:,:,q_c_dim:] - q_pe_no_fuse.to(KV_CACHE_DTYPE).float()))
         print(f"bs: {batch_size}, num_head: {num_head},  diff_max_k_pe: {diff_max_k_pe}, diff_max_kv_c: {diff_max_kv_c}, diff_max_kv_cache: {diff_max_kv_cache}, diff_max_q_c_quant: {diff_max_q_c_quant}, diff_max_q_pe_quant: {diff_max_q_pe_quant}")
-        kv_no_fuse_temp = kv_cache_no_fuse[slot_mapping[0]//kv_cache_blocks_size, slot_mapping[0]%kv_cache_blocks_size, :].view(torch.float8_e4m3fn)
-        kv_fuse_temp = kv_cache[slot_mapping[0]//kv_cache_blocks_size, slot_mapping[0]%kv_cache_blocks_size, :].view(torch.float8_e4m3fn)
         # print(f"kv_no_fuse_temp: {kv_no_fuse_temp}")
         # print(f"kv_fuse_temp: {kv_fuse_temp}")
 
