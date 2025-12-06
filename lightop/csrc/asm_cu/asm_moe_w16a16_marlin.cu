@@ -124,7 +124,13 @@ void _moe_marlin_w16a16_TN_impl(
   memset(co_file, 0x0, sizeof(co_file));
   
   if (output.scalar_type() == at::ScalarType::Half) {
-    sprintf(co_file, "moe_w16a16_channel/moe_w16a16_marlin_%dx%dx%d_TN_FP16.co", BLOCKM, BLOCKN, BLOCKK);
+    if (first_stage) {
+        sprintf(funcName, "MOE_W16A16_FP16_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGM1_UP", BLOCKM, BLOCKN, BLOCKK);
+        sprintf(co_file, "moe_w16a16_channel/moe_w16a16_marlin_%dx%dx%d_TN_FP16_UP.co", BLOCKM, BLOCKN, BLOCKK);
+    } else {
+        sprintf(funcName, "MOE_W16A16_FP16_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGM1_DOWN", BLOCKM, BLOCKN, BLOCKK);
+        sprintf(co_file, "moe_w16a16_channel/moe_w16a16_marlin_%dx%dx%d_TN_FP16_DOWN.co", BLOCKM, BLOCKN, BLOCKK);
+    }
   } else if (output.scalar_type() == at::ScalarType::BFloat16) {
     if (first_stage) {
         sprintf(funcName, "MOE_W16A16_BF16_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGM1_UP", BLOCKM, BLOCKN, BLOCKK);
@@ -137,23 +143,7 @@ void _moe_marlin_w16a16_TN_impl(
     TORCH_CHECK(false, "moe_marlin_w16a16 only supports outputType in [Float16, BFloat16]");
   }
 
-  if (output.scalar_type() == at::ScalarType::Half){
-
-    static AiterAsmKernel moe_w8a8(funcName, co_file);
-    AiterAsmKernel *impl_ptr = &moe_w8a8;
-      
-    impl_ptr->launch_kernel_ext({
-      &hipFunctionArgs,
-      &argsSize,
-      globalWorkSize[0],           // gdx
-      globalWorkSize[1],           // gdy
-      globalWorkSize[2],           // gdz
-      localWorkSize[0],            // bdx: 12 wv64
-      localWorkSize[1],            // bdy
-      localWorkSize[2],            // bdz
-      stream
-    });
-  }else{
+  if (output.scalar_type() == at::ScalarType::Half || output.scalar_type() == at::ScalarType::BFloat16){
     if (first_stage) {
       static AiterAsmKernel moe_w16a16_first_stage(funcName, co_file);
       AiterAsmKernel *impl_ptr = &moe_w16a16_first_stage;
