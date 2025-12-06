@@ -26,23 +26,178 @@ device_name = current_platform.get_device_name().replace(" ", "_")
 num_cus= torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 
 from vllm.model_executor.layers.activation import SiluAndMul
-# def torch_moe(a, w1, w2, score, topk ,topk_weight1, topk_ids1):
-#     B, D = a.shape
-#     a = a.view(B, -1, D).repeat(1, topk, 1).reshape(-1, D)      # [m*topk, k]
-#     out = torch.zeros(B * topk, w2.shape[1], dtype=a.dtype, device=a.device)  # [m*topk, k]
-#     score = torch.softmax(score, dim=-1, dtype=torch.float32) # [m, e]==> [m, e]
-#     topk_weight, topk_ids = torch.topk(score, topk) # [m, topk]
-#     topk_weight = topk_weight.view(-1) # [m*topk]
-#     topk_ids = topk_ids.view(-1) # [m*topk]
-    
-#     for i in range(w1.shape[0]): # 
-#         mask = topk_ids == i # [m*topk]
-#         if mask.sum():
-#             out[mask] = SiluAndMul()(
-#                 a[mask] @ w1[i].transpose(0, 1)) @ w2[i].transpose(0, 1)
-#     return (out.view(B, -1, w2.shape[1]) *
-#             topk_weight.view(B, -1, 1).to(out.dtype)).sum(dim=1)
 
+triton_opt_configs = {
+    "1": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 32,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 2,
+        "num_stages": 2
+    },
+    "2": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 64,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    },
+    "4": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 64,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    },
+    "8": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 64,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    },
+    "16": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 64,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    },
+    "24": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 64,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    },
+    "32": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 32,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 2,
+        "num_stages": 2
+    },
+    "48": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 64,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    },
+    "64": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 32,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 2,
+        "num_stages": 2
+    },
+    "96": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 64,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    },
+    "128": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 64,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    },    
+    "256": {
+        "BLOCK_SIZE_M": 32,
+        "BLOCK_SIZE_N": 32,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    },
+    "512": {
+        "BLOCK_SIZE_M": 64,
+        "BLOCK_SIZE_N": 64,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    },
+    "1024": {
+        "BLOCK_SIZE_M": 128,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    },
+    "1536": {
+        "BLOCK_SIZE_M": 128,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 16,
+        "num_warps": 4,
+        "num_stages": 2
+    },
+    "2048": {
+        "BLOCK_SIZE_M": 128,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    },
+    "3072": {
+        "BLOCK_SIZE_M": 128,
+        "BLOCK_SIZE_N": 256,
+        "BLOCK_SIZE_K": 32,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    },
+    "4096": {
+        "BLOCK_SIZE_M": 128,
+        "BLOCK_SIZE_N": 256,
+        "BLOCK_SIZE_K": 32,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2
+    }
+}
+
+def get_triton_config(num_tokens: int):
+    # 将字典的键转换为整数并排序
+    num_tokens_range = sorted([int(k) for k in triton_opt_configs.keys()])
+    
+    # 找到小于等于 num_tokens 的最大键
+    matched_key = None
+    for key in num_tokens_range:
+        if key <= num_tokens:
+            matched_key = key
+        else:
+            break
+    
+    # 如果找不到（num_tokens 小于所有键），返回最小的键对应的配置
+    if matched_key is None:
+        # 找距离 num_tokens 最近的键
+        min_distance = float('inf')
+        for key in num_tokens_range:
+            distance = abs(key - num_tokens)
+            if distance < min_distance:
+                min_distance = distance
+                matched_key = key
+    
+    # 返回对应的配置值
+    return triton_opt_configs[str(matched_key)]
 
 def torch_moe(a, w1, w2, score, topk ,topk_weight1, topk_ids1):
     B, D = a.shape
@@ -123,9 +278,11 @@ def fused_marlin_moe_valid(
     if global_num_experts == -1:
         global_num_experts = E
 
+    opt_config = get_triton_config(M)
     sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, block_size_m, global_num_experts)
     # triton 算子始终使用 block_m=16 测试
     sorted_token_ids_triton, expert_ids_triton, num_tokens_post_padded_triton = moe_align_block_size(topk_ids, 16, global_num_experts)
+    sorted_token_ids_triton_opt, expert_ids_triton_opt, num_tokens_post_padded_triton_opt = moe_align_block_size(topk_ids, opt_config["BLOCK_SIZE_M"], global_num_experts)
 
     # [M*topk, N] [32*8, 256]
     intermediate_cache2 = torch.empty(
@@ -143,29 +300,14 @@ def fused_marlin_moe_valid(
     intermediate_cache3 = intermediate_cache13[:M * topk_ids.shape[1] * K]
     intermediate_cache3 = intermediate_cache3.view(-1, K)  # [M * topk, K]  [32*8, 7168]
 
-
-    
-    # print("hidden_states:", hidden_states.dtype ,hidden_states )
-    # print("w1_marlin:", w1_marlin.shape, w1_marlin.dtype, w1_marlin.stride(),w1_marlin)
-    # print("intermediate_cache1:", intermediate_cache1.shape,intermediate_cache1.dtype,intermediate_cache1)
-    # # print("a_1_scale:", a_1_scale.shape)
-    # print("topk_weights:", topk_weights.shape)
-    # align = block_size_m
-    # print("sorted_token_ids:", sorted_token_ids[0:align])
-    # print("sorted_token_ids // topk:", sorted_token_ids[0:align] // topk)
-    # print("sorted_token_ids % topk:", sorted_token_ids[0:align] % topk)
-    # print("expert_ids:", expert_ids[:10])
-    # print("num_tokens_post_padded:", num_tokens_post_padded)
-    # print("topk:", topk)
-    # print("config_marlin_0:", config_marlin_0)
-    # print("topk_ids:", topk_ids.shape)
-    
     moe_gemm_marlin_w16a16(hidden_states, w1_marlin, intermediate_cache1, None, sorted_token_ids, 
                          expert_ids, num_tokens_post_padded, topk, config_marlin_0)
     # print("w16a16 kernel 执行成功")
     # =========================== gemm1 triton 计算 ===============================
     triton_gemm1_output = torch.zeros_like(intermediate_cache1).reshape((M, topk, 2 * N))
+    triton_opt_gemm1_output = torch.zeros_like(intermediate_cache1).reshape((M, topk, 2 * N))
     config = {"BLOCK_SIZE_M": 16, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 1}
+    
     torch.cuda.synchronize()
 
     invoke_fused_moe_kernel_w16a16(
@@ -190,55 +332,47 @@ def fused_marlin_moe_valid(
                                 use_int4_w4a8=False,
                                 block_shape=None
                                 )
+    
+    invoke_fused_moe_kernel_w16a16(
+                                hidden_states,
+                                w1_triton,
+                                triton_opt_gemm1_output,
+                                None,# a_scale
+                                None,# b_scale
+                                None, # w2_zero
+                                topk_weights,
+                                topk_ids,
+                                sorted_token_ids_triton_opt,
+                                expert_ids_triton_opt,
+                                num_tokens_post_padded_triton_opt,
+                                False,  # 是否乘 top_weight
+                                topk, # top_k
+                                opt_config,
+                                compute_type=tl.bfloat16,
+                                use_fp8_w8a8=False,
+                                use_int8_w8a16=False,
+                                use_int8_w8a8 = False,
+                                use_int4_w4a8=False,
+                                block_shape=None
+                                )
 
     triton_gemm1_output = triton_gemm1_output.reshape((-1, 2 * N))
-
-    # debug
-    '''
-    w1_int8_list = []
-    for i in range(w1_triton.shape[0]):
-        w1_int8 = unpack_int8_to_int4(w1_triton[i])
-        w1_int8_list.append(w1_int8)
-    w1_int8 = torch.stack(w1_int8_list, dim=0).to(torch.uint8) << 4
-    w1_int8 = w1_int8.to(torch.int8)
-    begin, end, expert_id = 0, 10, 0
-    res = torch.matmul(a_1[sorted_token_ids[begin:end] // topk].cpu().to(torch.int32), w1_int8[expert_id, :, :].t().cpu().to(torch.int32))
-    res0 = torch.matmul(a_1[sorted_token_ids[begin:end] // topk].cpu().to(torch.int32)[:, :128], w1_int8[expert_id, :, :].t().cpu().to(torch.int32)[:128, :])
-    out = res.to(a_1.device) * a_1_scale[sorted_token_ids[begin:end] // topk] * w1_scale[expert_id].t()
-    out_bf16 =  out.to(torch.bfloat16)
-    torch.nonzero(intermediate_cache1 != triton_gemm1_output)
-    torch.nonzero(intermediate_cache1[1] != triton_gemm1_output[1])
-    torch.nonzero(intermediate_cache1[sorted_token_ids[begin:end]] != triton_gemm1_output[sorted_token_ids[begin:end]])
-    # torch.nonzero(out_bf16 != intermediate_cache1)
-    torch.nonzero(sorted_token_ids == 1)
-    # pdb.set_trace()
-    '''
+    triton_opt_gemm1_output = triton_opt_gemm1_output.reshape((-1, 2 * N))
     torch.cuda.synchronize()
+    
+    torch.testing.assert_close(triton_opt_gemm1_output, triton_gemm1_output, atol=1e-2, rtol=1e-2)
+    print("        triton_opt对比triton gemm1 success!!!!")
+    
     torch.testing.assert_close(intermediate_cache1, triton_gemm1_output, atol=1e-2, rtol=1e-2)
     print("        cuda对比triton gemm1 success!!!!")
+    
     torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1)
-
-    torch.cuda.synchronize()
-    '''
-    print("a_2:", a_2.shape)
-    print("w2_marlin:", w2_marlin.shape, w2_marlin.dtype, w2_marlin.stride())
-    print("intermediate_cache3:", intermediate_cache3.shape)
-    print("a_2_scale:", a_2_scale.shape)
-    print("topk_weights:", topk_weights.shape)
-    align = block_size_m
-    print("sorted_token_ids:", sorted_token_ids[0:align])
-    print("sorted_token_ids // topk:", sorted_token_ids[0:align] // topk)
-    print("sorted_token_ids % topk:", sorted_token_ids[0:align] % topk)
-    print("expert_ids:", expert_ids[:10])
-    print("num_tokens_post_padded:", num_tokens_post_padded)
-    print("topk:", topk)
-    print("config_marlin_1:", config_marlin_1)
-    print("topk_ids:", topk_ids.shape)
-    '''
+   
     moe_gemm_marlin_w16a16(intermediate_cache2, w2_marlin, intermediate_cache3,topk_weights, sorted_token_ids, 
                          expert_ids, num_tokens_post_padded, 1, config_marlin_1)
     # =========================== gemm2 triton 计算 ===============================
     triton_gemm2_output = torch.zeros_like(intermediate_cache3).reshape((M, topk, K))
+    triton_opt_gemm2_output = torch.zeros_like(intermediate_cache3).reshape((M, topk, K))
     
     invoke_fused_moe_kernel_w16a16(
                                 intermediate_cache2,
@@ -262,9 +396,149 @@ def fused_marlin_moe_valid(
                                 use_int4_w4a8=False,
                                 block_shape=None
                                 )
+    
+    invoke_fused_moe_kernel_w16a16(
+                                intermediate_cache2,
+                                w2_triton,
+                                triton_opt_gemm2_output,
+                                None,# a_scale
+                                None,# b_scale
+                                None, # w2_zero
+                                topk_weights,
+                                topk_ids,
+                                sorted_token_ids_triton_opt,
+                                expert_ids_triton_opt,
+                                num_tokens_post_padded_triton_opt,
+                                True,  # 是否乘 top_weight
+                                1, # top_k
+                                opt_config,
+                                compute_type=tl.bfloat16,
+                                use_fp8_w8a8=False,
+                                use_int8_w8a16=False,
+                                use_int8_w8a8 = False,
+                                use_int4_w4a8=False,
+                                block_shape=None
+                                )
+    torch.cuda.synchronize()
     triton_gemm2_output = triton_gemm2_output.reshape((-1, K))
+    triton_opt_gemm2_output = triton_opt_gemm2_output.reshape((-1, K))
+    
+    torch.testing.assert_close(triton_opt_gemm2_output, triton_gemm2_output, atol=1e-2, rtol=1e-2)
+    print("        triton_opt对比triton gemm2 success!!!!")
+    
     torch.testing.assert_close(intermediate_cache3, triton_gemm2_output, atol=1e-2, rtol=1e-2)
     print("        Triton对比cuda gemm2 success!!!!")
+    
+    #N:384 K:2048
     return (num_tokens_post_padded.item() * K * 2*N * 2),(num_tokens_post_padded.item()  * N * K * 2), \
     (num_tokens_post_padded.item() * K * 2 + (E if (num_tokens_post_padded.item() / block_size_m) > E else (num_tokens_post_padded.item() / block_size_m)) * 2*N * K * 2  + M * topk * 2*N * 2)/1024/1024/1024, \
     (num_tokens_post_padded.item() * N * 2 + (E if (num_tokens_post_padded.item() / block_size_m) > E else (num_tokens_post_padded.item() / block_size_m)) * N * K * 2 + M * topk * K * 2 )/1024/1024/1024
+
+
+def fused_triton_moe(
+                     hidden_states: torch.Tensor, # 32, 7168
+                     w1: torch.Tensor, # 256, 512, 7168 --> 32*8, 512 --> 32*8, 256
+                     w2: torch.Tensor, # 256, 256, 7168, 
+                     w1_marlin: torch.Tensor, # 256, 512, 7168 --> 32*8, 512 --> 32*8, 256
+                     w2_marlin: torch.Tensor, # 256, 256, 7168,
+                     gating_output: torch.Tensor,
+                     topk_weights: torch.Tensor,
+                     topk_ids: torch.Tensor,
+                     global_num_experts: int = -1,
+                     expert_map: Optional[torch.Tensor] = None,
+                     inplace: bool = False) -> torch.Tensor:
+    assert hidden_states.shape[0] == gating_output.shape[0], "Number of tokens mismatch"
+    assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch w1"
+    
+    assert hidden_states.is_contiguous(), "Hidden_states must be contiguous"
+    assert w1.is_contiguous(), "Expert weights1 must be contiguous"
+    assert w2.is_contiguous(), "Expert weights2 must be contiguous"
+    # 当前支持 bf16和fp16
+    assert hidden_states.dtype in [torch.bfloat16, torch.float16]
+
+    M, K = hidden_states.shape # 16 2048
+    E = w1.shape[0] # 128
+    N = w1.shape[1] // 2 # 768
+    topk = topk_ids.shape[1] 
+    opt_config = get_triton_config(M)
+    block_size_m = opt_config["BLOCK_SIZE_M"]
+
+    if global_num_experts == -1:
+        global_num_experts = E
+
+    sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, block_size_m, global_num_experts)
+
+    intermediate_cache2 = torch.empty(
+        (M * topk_ids.shape[1], N),
+        device=hidden_states.device,
+        dtype=hidden_states.dtype,
+    )
+    intermediate_cache13 = torch.empty(
+        (M * topk_ids.shape[1] * max(2 * N, K), ),
+        device=hidden_states.device,
+        dtype=hidden_states.dtype,
+    )
+    intermediate_cache1 = intermediate_cache13[:M * topk_ids.shape[1] * 2 * N]
+    intermediate_cache1 = intermediate_cache1.view(-1, 2 * N) # [M * topk, 2 * N]  [32*8, 512]
+    intermediate_cache3 = intermediate_cache13[:M * topk_ids.shape[1] * K]
+    intermediate_cache3 = intermediate_cache3.view(-1, K)  # [M * topk, K]  [32*8, 7168]
+    triton_gemm1_output = torch.zeros_like(intermediate_cache1).reshape((M, topk, 2 * N))
+    triton_gemm2_output = torch.zeros_like(intermediate_cache3).reshape((M, topk, K))
+    
+    torch.cuda.synchronize()
+
+    quantiles = [0.5, 0.2, 0.8]
+    avg_ms, min_ms, max_ms = triton.testing.do_bench(lambda: invoke_fused_moe_kernel_w16a16(
+                                                                hidden_states,
+                                                                w1,
+                                                                triton_gemm1_output,
+                                                                None,# a_scale
+                                                                None,# b_scale
+                                                                None, # w2_zero
+                                                                topk_weights,
+                                                                topk_ids,
+                                                                sorted_token_ids,
+                                                                expert_ids,
+                                                                num_tokens_post_padded,
+                                                                False,  # 是否乘 top_weight
+                                                                topk, # top_k
+                                                                opt_config,
+                                                                compute_type=tl.bfloat16,
+                                                                use_fp8_w8a8=False,
+                                                                use_int8_w8a16=False,
+                                                                use_int8_w8a8 = False,
+                                                                use_int4_w4a8=False,
+                                                                block_shape=None
+                                                                ), quantiles=quantiles)
+
+    gemm1_time_us = avg_ms * 1000
+    # 激活函数
+    torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1)
+    torch.cuda.synchronize()
+
+    avg_ms, min_ms, max_ms = triton.testing.do_bench(lambda: invoke_fused_moe_kernel_w16a16(
+                                                                    intermediate_cache2,
+                                                                    w2,
+                                                                    triton_gemm2_output,
+                                                                    None,# a_scale
+                                                                    None,# b_scale
+                                                                    None, # w2_zero
+                                                                    topk_weights,
+                                                                    topk_ids,
+                                                                    sorted_token_ids,
+                                                                    expert_ids,
+                                                                    num_tokens_post_padded,
+                                                                    True,  # 是否乘 top_weight
+                                                                    1, # top_k
+                                                                    opt_config,
+                                                                    compute_type=tl.bfloat16,
+                                                                    use_fp8_w8a8=False,
+                                                                    use_int8_w8a16=False,
+                                                                    use_int8_w8a8 = False,
+                                                                    use_int4_w4a8=False,
+                                                                    block_shape=None
+                                                                    ), quantiles=quantiles)
+
+
+    gemm2_time_us =  avg_ms * 1000 
+    return gemm1_time_us, gemm2_time_us
