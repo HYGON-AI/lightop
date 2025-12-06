@@ -76,30 +76,37 @@ def fused_marlin_moe(
     intermediate_cache3 = intermediate_cache3.view(-1, K)  # [M * topk, K]  [32*8, 7168]
     
     torch.cuda.synchronize()
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
-    start_event.record()
 
     moe_gemm_marlin_w16a16(hidden_states, w1_marlin, intermediate_cache1, None, sorted_token_ids, 
                          expert_ids, num_tokens_post_padded, topk, config_marlin_0)
+    quantiles = [0.5, 0.2, 0.8]
+    avg_ms, min_ms, max_ms = triton.testing.do_bench(lambda: moe_gemm_marlin_w16a16(hidden_states, 
+                                                                                    w1_marlin, 
+                                                                                    intermediate_cache1, 
+                                                                                    None, 
+                                                                                    sorted_token_ids, 
+                                                                                    expert_ids, 
+                                                                                    num_tokens_post_padded, 
+                                                                                    topk, 
+                                                                                    config_marlin_0), quantiles=quantiles)
 
 
-    end_event.record()
-    end_event.synchronize()
-    gemm1_time_us = start_event.elapsed_time(end_event) * 1000
+
+    gemm1_time_us = avg_ms * 1000
     # 激活函数
     torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1)
 
-    start_event = torch.cuda.Event(enable_timing=True)
-    end_event = torch.cuda.Event(enable_timing=True)
-
     torch.cuda.synchronize()
-    start_event.record()
-    # print("aaa")
-    moe_gemm_marlin_w16a16(intermediate_cache2, w2_marlin, intermediate_cache3,topk_weights, sorted_token_ids, 
-                         expert_ids, num_tokens_post_padded, 1, config_marlin_1).view(-1, topk, K)
 
-    end_event.record()
-    end_event.synchronize()
-    gemm2_time_us =  start_event.elapsed_time(end_event) * 1000 
+    avg_ms, min_ms, max_ms = triton.testing.do_bench(lambda: moe_gemm_marlin_w16a16(intermediate_cache2, 
+                                                                                    w2_marlin, 
+                                                                                    intermediate_cache3,
+                                                                                    topk_weights, 
+                                                                                    sorted_token_ids, 
+                                                                                    expert_ids, 
+                                                                                    num_tokens_post_padded, 
+                                                                                    1, 
+                                                                                    config_marlin_1), quantiles=quantiles)
+
+    gemm2_time_us =  avg_ms * 1000 
     return gemm1_time_us, gemm2_time_us

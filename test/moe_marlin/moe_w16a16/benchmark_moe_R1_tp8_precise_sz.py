@@ -26,7 +26,7 @@ from marlin_quant import w16a16_marlin_weight
 # 引入适配后的 marlin fused_moe实现
 # from fused_marlin_moe_chunk_size import fused_marlin_moe
 from fused_marlin_moe import fused_marlin_moe
-from fused_marlin_moe_valid import fused_marlin_moe_valid
+from fused_marlin_moe_valid import fused_marlin_moe_valid, fused_triton_moe
 
 from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
 
@@ -173,17 +173,40 @@ def benchmark_config(
                             topk_weights,
                             topk_ids
                             )
+            fused_triton_moe(
+                            x,
+                            w1,
+                            w2,
+                            w1_marlin,
+                            w2_marlin,
+                            score,
+                            topk_weights,
+                            topk_ids
+                            )
             
 
     gemm1_time_us_total = 0 
     gemm2_time_us_total = 0
+    gemm1_time_us_total_triton = 0 
+    gemm2_time_us_total_triton = 0
+    kernel_num_iters = 1
     for i in range(num_iters):
         # 使用新的专家得分
         prepare(i)
         # 获取新专家得分的 算子时间
         topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
-        for j in range(10): # 一次随机专家运行10次
+        for j in range(kernel_num_iters): # 一次随机专家运行kernel_num_iters次
             gemm1_time_us, gemm2_time_us =  fused_marlin_moe(
+                                                            x,
+                                                            w1,
+                                                            w2,
+                                                            w1_marlin,
+                                                            w2_marlin,
+                                                            score,
+                                                            topk_weights,
+                                                            topk_ids
+                                                            )
+            gemm1_time_us_triton, gemm2_time_us_triton =  fused_triton_moe(
                                                             x,
                                                             w1,
                                                             w2,
@@ -196,20 +219,29 @@ def benchmark_config(
             
             gemm1_time_us_total += gemm1_time_us
             gemm2_time_us_total += gemm2_time_us
+            gemm1_time_us_total_triton += gemm1_time_us_triton
+            gemm2_time_us_total_triton += gemm2_time_us_triton
 
-    print("      GEMM1_Time_us: ", gemm1_time_us_total/num_iters/10, "GEMM2_Time_us: ", gemm2_time_us_total/num_iters/10)
-    print("GEMM1峰值:",GEMM1_Peak/(gemm1_time_us_total/num_iters/10 /1000/1000)/10**12)
-    print("GEMM2峰值:",GEMM2_Peak/(gemm2_time_us_total/num_iters/10 /1000/1000)/10**12)
-    print("GEMM1+GEMM2总峰值:",GEMM1_Peak/(gemm1_time_us_total/num_iters/10 /1000/1000)/10**12 + GEMM2_Peak/(gemm2_time_us_total/num_iters/10 /1000/1000)/10**12)
-    print("GEMM1带宽GB/s:",bandwith1/(gemm1_time_us_total/num_iters/10/1000/1000))
-    print("GEMM2带宽GB/s:",bandwith2/(gemm2_time_us_total/num_iters/10/1000/1000))
-    gemm1_time_us_total_avg = gemm1_time_us_total/num_iters/10
-    gemm2_time_us_total_avg = gemm2_time_us_total/num_iters/10
+
+    gemm1_time_us_total_avg = gemm1_time_us_total/num_iters/kernel_num_iters
+    gemm2_time_us_total_avg = gemm2_time_us_total/num_iters/kernel_num_iters
+    gemm1_time_us_total_avg_triton = gemm1_time_us_total_triton/num_iters/kernel_num_iters
+    gemm2_time_us_total_avg_triton = gemm2_time_us_total_triton/num_iters/kernel_num_iters
+    
+    print("      GEMM1_Time_us: ", gemm1_time_us_total_avg, "GEMM2_Time_us: ", gemm2_time_us_total_avg)
+    print("      GEMM1_Time_us_triton: ", gemm1_time_us_total_avg_triton, "GEMM2_Time_us_triton: ", gemm2_time_us_total_avg_triton)
+    print("GEMM1峰值:",GEMM1_Peak/(gemm1_time_us_total_avg /1000/1000)/10**12)
+    print("GEMM2峰值:",GEMM2_Peak/(gemm2_time_us_total_avg /1000/1000)/10**12)
+    print("GEMM1+GEMM2总峰值:",GEMM1_Peak/(gemm1_time_us_total_avg /1000/1000)/10**12 + GEMM2_Peak/(gemm2_time_us_total_avg /1000/1000)/10**12)
+    print("GEMM1带宽GB/s:",bandwith1/(gemm1_time_us_total_avg/1000/1000))
+    print("GEMM2带宽GB/s:",bandwith2/(gemm2_time_us_total_avg/1000/1000))
+
     gemm1_gemm2_time_us_total_avg = gemm1_time_us_total_avg + gemm2_time_us_total_avg
-    gemm1_peak = GEMM1_Peak/(gemm1_time_us_total/num_iters/10 /1000/1000)/10**12
-    gemm2_peak = GEMM2_Peak/(gemm2_time_us_total/num_iters/10 /1000/1000)/10**12
-    gemm1_bandwidth = bandwith1/(gemm1_time_us_total/num_iters/10/1000/1000)
-    gemm2_bandwidth = bandwith2/(gemm2_time_us_total/num_iters/10/1000/1000)
+    gemm1_gemm2_time_us_total_avg_triton = gemm1_time_us_total_avg_triton + gemm2_time_us_total_avg_triton
+    gemm1_peak = GEMM1_Peak/(gemm1_time_us_total_avg /1000/1000)/10**12
+    gemm2_peak = GEMM2_Peak/(gemm2_time_us_total_avg /1000/1000)/10**12
+    gemm1_bandwidth = bandwith1/(gemm1_time_us_total_avg/1000/1000)
+    gemm2_bandwidth = bandwith2/(gemm2_time_us_total_avg/1000/1000)
     
     return {
         'M': num_tokens,
@@ -219,6 +251,9 @@ def benchmark_config(
         'K2': shard_intermediate_size // 2,
         'E': num_experts,
         'TopK': topk,
+        'GEMM1_Time_us_triton': gemm1_time_us_total_avg_triton,
+        'GEMM2_Time_us_triton': gemm2_time_us_total_avg_triton,
+        'GEMM1+GEMM2_us_triton': gemm1_gemm2_time_us_total_avg_triton,
         'GEMM1_Time_us': gemm1_time_us_total_avg,
         'GEMM2_Time_us': gemm2_time_us_total_avg,
         'GEMM1+GEMM2_us': gemm1_gemm2_time_us_total_avg,
