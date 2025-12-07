@@ -467,6 +467,20 @@ def grougemm_w8a8_pertensor_asm(A_list:list[torch.Tensor], B_list:list[torch.Ten
                                 alphas:list[float], C_list:Optional[list[torch.Tensor]], betas:Optional[list[float]], out_dtype):
     return op.grougemm_w8a8_pertensor_asm(A_list, B_list, D_list, As_list, Bs_list, alphas, C_list, betas, out_dtype)
 
+
+def grougemm_bf16_fp16(A_list:list[torch.Tensor], B_list:list[torch.Tensor], D_list:list[torch.Tensor],
+                  alphas:list[float], C_list:Optional[list[torch.Tensor]], betas:Optional[list[float]], out_dtype, trans_a:bool=False, trans_b:bool=True):
+    if trans_a is False and trans_b is True:
+        return op.grougemm_bf16_fp16_nt_asm(A_list, B_list, D_list, alphas, C_list, betas, out_dtype)   
+    elif trans_a is True and trans_b is False:
+        return op.grougemm_bf16_fp16_tn_asm(A_list, B_list, D_list, alphas, C_list, betas, out_dtype)
+    elif trans_a is False and trans_b is False:
+        return op.grougemm_bf16_fp16_nn_asm(A_list, B_list, D_list, alphas, C_list, betas, out_dtype)
+    else:
+       raise ValueError(f" GROUPGEMM Unsupported Layout trans_a : {trans_a}, trans_b : {trans_b}")
+
+
+
 def m_grouped_w8a8_gemm_nt_contig_asm( a: tuple[torch.Tensor, torch.Tensor],
                                        b: tuple[torch.Tensor, torch.Tensor], 
                                        output:torch.Tensor, m_indices:torch.Tensor, 
