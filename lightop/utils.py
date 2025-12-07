@@ -38,8 +38,11 @@ def get_gfx():
 gfx = get_gfx()
 LIGHTOP_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 # LIGHTOP_ROOT_DIR = os.path.abspath(f"{this_dir}/../../")
+
 #LIGHTOP_ASM_DIR = f"{LIGHTOP_ROOT_DIR}/hsa/{gfx}/"
 LIGHTOP_ASM_DIR = f"{LIGHTOP_ROOT_DIR}/hsa/gfx936/"
+
+os.environ["LIGHTOP_GPU_TARGET"] = gfx
 os.environ["LIGHTOP_ASM_DIR"] = LIGHTOP_ASM_DIR
 # print(f"[lightop] LIGHTOP_ASM_DIR={LIGHTOP_ASM_DIR}")
 
