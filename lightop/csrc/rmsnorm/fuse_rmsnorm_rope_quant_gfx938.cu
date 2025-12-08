@@ -275,11 +275,11 @@ __global__ void rmsnorm_rope_quant_kernel(
       }
       if(kv_dtype == 0) // fp8_e5m2
       {
-        ((int32_t*)output_vec)[0] = float_to_fp8e5m2_x4(rope_vec[0], rope_vec[1], rope_vec[2], rope_vec[3]);
-        ((int32_t*)output_vec)[1] = float_to_fp8e5m2_x4(rope_vec[4], rope_vec[5], rope_vec[6], rope_vec[7]);   
+        ((uint32_t*)output_vec)[0] = float_to_fp8e5m2_x4(rope_vec[0], rope_vec[1], rope_vec[2], rope_vec[3]);
+        ((uint32_t*)output_vec)[1] = float_to_fp8e5m2_x4(rope_vec[4], rope_vec[5], rope_vec[6], rope_vec[7]);   
       }else{ // fp8_e4m3
-        ((int32_t*)output_vec)[0] = float_to_fp8e4m3_x4(rope_vec[0], rope_vec[1], rope_vec[2], rope_vec[3]);
-        ((int32_t*)output_vec)[1] = float_to_fp8e4m3_x4(rope_vec[4], rope_vec[5], rope_vec[6], rope_vec[7]);      
+        ((uint32_t*)output_vec)[0] = float_to_fp8e4m3_x4(rope_vec[0], rope_vec[1], rope_vec[2], rope_vec[3]);
+        ((uint32_t*)output_vec)[1] = float_to_fp8e4m3_x4(rope_vec[4], rope_vec[5], rope_vec[6], rope_vec[7]);      
       }
       // 写回q_pe
       *(OutputT*)q_quant_pe_ptr = *(OutputT*)output_vec;
@@ -338,13 +338,13 @@ __global__ void rmsnorm_rope_quant_kernel(
 
       if (kv_dtype == 0) // fp8_e5m2
       {
-        ((int32_t*)output_vec)[0] = float_to_fp8e5m2_x4(rope_vec[0], rope_vec[1], rope_vec[2], rope_vec[3]);
-        ((int32_t*)output_vec)[1] = float_to_fp8e5m2_x4(rope_vec[4], rope_vec[5], rope_vec[6], rope_vec[7]);
+        ((uint32_t*)output_vec)[0] = float_to_fp8e5m2_x4(rope_vec[0], rope_vec[1], rope_vec[2], rope_vec[3]);
+        ((uint32_t*)output_vec)[1] = float_to_fp8e5m2_x4(rope_vec[4], rope_vec[5], rope_vec[6], rope_vec[7]);
       }
       else // fp8_e4m3
       {
-        ((int32_t*)output_vec)[0] = float_to_fp8e4m3_x4(rope_vec[0], rope_vec[1], rope_vec[2], rope_vec[3]);
-        ((int32_t*)output_vec)[1] = float_to_fp8e4m3_x4(rope_vec[4], rope_vec[5], rope_vec[6], rope_vec[7]);
+        ((uint32_t*)output_vec)[0] = float_to_fp8e4m3_x4(rope_vec[0], rope_vec[1], rope_vec[2], rope_vec[3]);
+        ((uint32_t*)output_vec)[1] = float_to_fp8e4m3_x4(rope_vec[4], rope_vec[5], rope_vec[6], rope_vec[7]);
       }
       uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset + 512;
       *(OutputT*)output_ptr = *(OutputT*)output_vec;
@@ -401,13 +401,13 @@ __global__ void rmsnorm_rope_quant_kernel(
       }
       if (kv_dtype == 0) // fp8_e5m2
       {
-        ((int32_t*)output_vec)[0] = float_to_fp8e5m2_x4(rms_list[0], rms_list[1], rms_list[2], rms_list[3]);
-        ((int32_t*)output_vec)[1] = float_to_fp8e5m2_x4(rms_list[4], rms_list[5], rms_list[6], rms_list[7]);
+        ((uint32_t*)output_vec)[0] = float_to_fp8e5m2_x4(rms_list[0], rms_list[1], rms_list[2], rms_list[3]);
+        ((uint32_t*)output_vec)[1] = float_to_fp8e5m2_x4(rms_list[4], rms_list[5], rms_list[6], rms_list[7]);
       }
       else // fp8_e4m3
       {
-        ((int32_t*)output_vec)[0] = float_to_fp8e4m3_x4(rms_list[0], rms_list[1], rms_list[2], rms_list[3]);
-        ((int32_t*)output_vec)[1] = float_to_fp8e4m3_x4(rms_list[4], rms_list[5], rms_list[6], rms_list[7]);
+        ((uint32_t*)output_vec)[0] = float_to_fp8e4m3_x4(rms_list[0], rms_list[1], rms_list[2], rms_list[3]);
+        ((uint32_t*)output_vec)[1] = float_to_fp8e4m3_x4(rms_list[4], rms_list[5], rms_list[6], rms_list[7]);
       }
       uint8_t* output_ptr = kv_cache + kv_cache_offset;
       *(OutputT*)output_ptr = *(OutputT*)output_vec;
@@ -441,13 +441,13 @@ __global__ void rmsnorm_rope_quant_kernel(
       *(LoadT*)(input_vec) = *(LoadT*)(q_c_ptr);
       if(kv_dtype == 0) // fp8_e5m2
       {
-        ((int32_t*)output_vec)[0] = float_to_fp8e5m2_x4(input_vec[0], input_vec[1], input_vec[2], input_vec[3]);
-        ((int32_t*)output_vec)[1] = float_to_fp8e5m2_x4(input_vec[4], input_vec[5], input_vec[6], input_vec[7]);       
+        ((uint32_t*)output_vec)[0] = float_to_fp8e5m2_x4(input_vec[0], input_vec[1], input_vec[2], input_vec[3]);
+        ((uint32_t*)output_vec)[1] = float_to_fp8e5m2_x4(input_vec[4], input_vec[5], input_vec[6], input_vec[7]);       
       }
       else
       {
-        ((int32_t*)output_vec)[0] = float_to_fp8e4m3_x4(input_vec[0], input_vec[1], input_vec[2], input_vec[3]);
-        ((int32_t*)output_vec)[1] = float_to_fp8e4m3_x4(input_vec[4], input_vec[5], input_vec[6], input_vec[7]);
+        ((uint32_t*)output_vec)[0] = float_to_fp8e4m3_x4(input_vec[0], input_vec[1], input_vec[2], input_vec[3]);
+        ((uint32_t*)output_vec)[1] = float_to_fp8e4m3_x4(input_vec[4], input_vec[5], input_vec[6], input_vec[7]);
 
       }
       *(OutputT*)q_quant_c_ptr = *(OutputT*)output_vec;
