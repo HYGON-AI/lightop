@@ -1,6 +1,6 @@
 import torch
 from torch import Tensor
-#from lightop import op
+
 from .. import op
 from typing import Optional
 
@@ -14,6 +14,7 @@ def miopen_scaled_dot_product_attention(
     is_causal=False,
     scale: Optional[float] = None,
     enable_gqa=False,
+    is_training = False
 ):
     """_summary_
 
@@ -30,4 +31,4 @@ def miopen_scaled_dot_product_attention(
     Returns:
         Tensor: 输出Tensor, 形状为 [B, H, S, D_v]
     """
-    return op.miopen_scaled_dot_product_attention(query, key, value, attn_msk_, droprate, is_causal, scale, enable_gqa)
+    return op.miopen_scaled_dot_product_attention(query, key, value, attn_msk_, droprate, is_causal, scale, enable_gqa, is_training)
