@@ -191,11 +191,11 @@ __global__ void rms_rotary_embedding_kernel(
     if constexpr(IS_NEOX) {  // gpt-neox style
 
         for (int head_idx = 0; head_idx < num_heads / num_warp; head_idx ++) {
-                scalar_t* q_ptr = query + blockIdx.x * num_heads_size + head_idx * head_size * num_warp ;
+                scalar_t* q_ptr = query + blockIdx.x * query_stride + head_idx * head_stride * num_warp ;
                 scalar_t q_vec[VEC_SIZE_Q];
                 scalar_t q_data[VEC_SIZE_Q];
                 if constexpr (RESIDUAL){
-                    scalar_t* residual_q_ptr = residual_q + blockIdx.x * num_heads_size + head_idx * head_size * num_warp;
+                    scalar_t* residual_q_ptr = residual_q + blockIdx.x * query_stride + head_idx * head_stride * num_warp;
                     apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_Q, block_size, num_warp>(q_ptr, gamma_q, residual_q_ptr, head_size, eps, q_vec);
                 }else{
                     apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_Q, block_size, NUM_QK_MUL, num_warp>(q_ptr, gamma_q, head_size, eps, q_vec);
@@ -224,13 +224,13 @@ __global__ void rms_rotary_embedding_kernel(
             }
         if (key != nullptr) {
             for (int head_idx = 0; head_idx < num_kv_heads / num_warp; head_idx ++) {
-                scalar_t* k_ptr = key + blockIdx.x * num_kv_heads_size + head_idx * head_size * num_warp;
+                scalar_t* k_ptr = key + blockIdx.x * key_stride + head_idx * head_stride * num_warp;
                 
                 scalar_t k_vec[VEC_SIZE_K];
                 scalar_t k_data[VEC_SIZE_K];
                 if constexpr (RESIDUAL)
                 {
-                    scalar_t* residual_k_ptr = residual_k + blockIdx.x * num_kv_heads_size + head_idx * head_size * num_warp; ;
+                    scalar_t* residual_k_ptr = residual_k + blockIdx.x * key_stride + head_idx * head_stride * num_warp; ;
                     apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, num_warp>(k_ptr, gamma_k, residual_k_ptr, head_size, eps, k_vec);
                 }else{
                     apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, num_warp>(k_ptr, gamma_k, head_size, eps, k_vec);
@@ -261,11 +261,11 @@ __global__ void rms_rotary_embedding_kernel(
     else {  // gpt-j style
             if constexpr(VEC_SIZE_Q == 1){
                 for (int head_idx = 0; head_idx < num_heads / num_warp; head_idx ++) {
-                    scalar_t* q_ptr = query + blockIdx.x * num_heads_size + head_idx * head_size * num_warp;
+                    scalar_t* q_ptr = query + blockIdx.x * query_stride + head_idx * head_stride * num_warp;
                     scalar_t q_vec[VEC_SIZE_Q];
                     scalar_t q_data[VEC_SIZE_Q];
                     if constexpr (RESIDUAL){
-                        scalar_t* residual_q_ptr = residual_q + blockIdx.x * num_heads_size + head_idx * head_size * num_warp;
+                        scalar_t* residual_q_ptr = residual_q + blockIdx.x * query_stride + head_idx * head_stride * num_warp;
                         apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, num_warp>(q_ptr, gamma_q, residual_q_ptr, head_size, eps, q_vec);
                     }else{
                         apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, num_warp>(q_ptr, gamma_q, head_size, eps, q_vec);
@@ -285,11 +285,11 @@ __global__ void rms_rotary_embedding_kernel(
                 }
             }else{
                 for (int head_idx = 0; head_idx < num_heads / num_warp; head_idx ++) {
-                    scalar_t* q_ptr = query + blockIdx.x * num_heads_size + head_idx * head_size * num_warp;
+                    scalar_t* q_ptr = query + blockIdx.x * query_stride + head_idx * head_stride * num_warp;
                     scalar_t q_vec[VEC_SIZE_Q];
                     scalar_t q_data[VEC_SIZE_Q];
                     if constexpr (RESIDUAL){
-                        scalar_t* residual_q_ptr = residual_q + blockIdx.x * num_heads_size + head_idx * head_size * num_warp;
+                        scalar_t* residual_q_ptr = residual_q + blockIdx.x * query_stride + head_idx * head_stride * num_warp;
                         apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, num_warp>(q_ptr, gamma_q, residual_q_ptr, head_size, eps, q_vec);
                     }else{
                         apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, num_warp>(q_ptr, gamma_q, head_size, eps, q_vec);
@@ -320,12 +320,12 @@ __global__ void rms_rotary_embedding_kernel(
             if constexpr(VEC_SIZE_K == 1){
 
                 for (int head_idx = 0; head_idx < num_kv_heads / num_warp; head_idx ++) {
-                    scalar_t* k_ptr = key + blockIdx.x * num_kv_heads_size + head_idx * head_size * num_warp;
+                    scalar_t* k_ptr = key + blockIdx.x * key_stride + head_idx * head_stride * num_warp;
                     scalar_t k_vec[VEC_SIZE_K];
                     scalar_t k_data[VEC_SIZE_K];
                     if constexpr (RESIDUAL)
                     {
-                        scalar_t* residual_k_ptr = residual_k + blockIdx.x * num_kv_heads_size + head_idx * head_size * num_warp;
+                        scalar_t* residual_k_ptr = residual_k + blockIdx.x * key_stride + head_idx * head_stride * num_warp;
                         apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, num_warp>(k_ptr, gamma_k, residual_k_ptr, head_size, eps, k_vec);
                     }else{
                         apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, num_warp>(k_ptr, gamma_k, head_size, eps, k_vec);
@@ -345,12 +345,12 @@ __global__ void rms_rotary_embedding_kernel(
                 }
             }else{
                 for (int head_idx = 0; head_idx < num_kv_heads / num_warp; head_idx ++) {
-                    scalar_t* k_ptr = key + blockIdx.x * num_kv_heads_size + head_idx * head_size * num_warp;
+                    scalar_t* k_ptr = key + blockIdx.x * num_kv_heads_size + head_idx * head_stride * num_warp;
                     scalar_t k_vec[VEC_SIZE_K];
                     scalar_t k_data[VEC_SIZE_K];
                     if constexpr (RESIDUAL)
                     {
-                        scalar_t* residual_k_ptr = residual_k + blockIdx.x * num_kv_heads_size + head_idx * head_size * num_warp;
+                        scalar_t* residual_k_ptr = residual_k + blockIdx.x * num_kv_heads_size + head_idx * head_stride * num_warp;
                         apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, num_warp>(k_ptr, gamma_k, residual_k_ptr, head_size, eps, k_vec);
                     }else{
                         apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, num_warp>(k_ptr, gamma_k, head_size, eps, k_vec);
