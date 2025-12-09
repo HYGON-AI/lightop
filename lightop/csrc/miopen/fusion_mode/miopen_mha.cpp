@@ -29,7 +29,8 @@ Tensor miopen_scaled_dot_product_attention(const Tensor& query,
                                            const double droprate       = 0.0,
                                            const bool is_causal        = false,
                                            std::optional<double> scale = std::nullopt,
-                                           const bool enable_gqa       = false)
+                                           const bool enable_gqa       = false,
+                                           const bool is_training      = false)
 {
 
     if(query.dim() != 4 || key.dim() != 4 || value.dim() != 4)
@@ -47,22 +48,29 @@ Tensor miopen_scaled_dot_product_attention(const Tensor& query,
     const int seqlen_k = key.sizes()[2];
     const int dim_v    = value.sizes()[3];
 
-    Tensor LSE = at::empty({n, head_q, seqlen_q, 1}, query.options().dtype(at::kFloat));
-    Tensor O   = !is_bshd ? at::empty_strided({n, head_q, seqlen_q, dim_v},
+    Tensor O = !is_bshd ? at::empty_strided({n, head_q, seqlen_q, dim_v},
                                             {head_q * seqlen_q * dim_v, seqlen_q * dim_v, dim_v, 1},
                                             query.options())
-                          : at::empty_strided({n, head_q, seqlen_q, dim_v},
+                        : at::empty_strided({n, head_q, seqlen_q, dim_v},
                                             {head_q * seqlen_q * dim_v, dim_v, head_q * dim_v, 1},
                                             query.options());
 
-    TensorDescriptor tquery(query), tkey(key), tvalue(value), tLSE(LSE), tO(O);
+    TensorDescriptor tquery(query), tkey(key), tvalue(value), tO(O);
 
     std::vector<miopenTensorArgument_t> args;
     args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaQ, tquery, query.data_ptr()));
     args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaK, tkey, key.data_ptr()));
     args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaV, tvalue, value.data_ptr()));
     args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaO, tO, O.data_ptr()));
-    args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaLSE, tLSE, LSE.data_ptr()));
+
+    Tensor LSE;
+    TensorDescriptor tLSE;
+    if(is_training)
+    {
+        LSE  = at::empty({n, head_q, seqlen_q, 1}, query.options().dtype(at::kFloat));
+        tLSE = TensorDescriptor(LSE);
+        args.emplace_back(setProblemTensorDescriptor(problem, miopenTensorMhaLSE, tLSE, LSE.data_ptr()));
+    }
 
     size_t found = 0;
     std::vector<miopenSolution_t> solutions(1);
