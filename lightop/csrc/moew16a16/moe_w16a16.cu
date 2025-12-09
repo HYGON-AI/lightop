@@ -954,7 +954,7 @@ void launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode(const GemmParams3<T>& params) {
     blockDim.z = 1;
     
     //规定BLOCKSIZE_N固定位256
-    gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M),params.size_m*params.top_k); // m方向
     gridDim.y = DIVIDE(params.size_n , 16 * BLOCK_SIZE_N); // n方向
     gridDim.x = 1; // k方向
 
@@ -1000,7 +1000,7 @@ void launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode(const GemmParams3<T>& params) {
     blockDim.z = 1;
     
     //规定BLOCKSIZE_N固定位256
-    gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M),params.size_m*params.top_k); // m方向
     gridDim.y = DIVIDE(params.size_n , 16 * BLOCK_SIZE_N); // n方向
     gridDim.x = splitk; // k方向
 
@@ -1186,7 +1186,7 @@ void launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill(const GemmParams3<T>& params) {
     constexpr int bytes_per_element = 2;
     const int real_size_n = (params.size_n * params.size_kofb) / params.size_k;  
     //规定BLOCKSIZE_N固定位256
-    gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向 16大小分块
+    gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M),params.size_m*params.top_k); // m方向
     gridDim.y = DIVIDE(real_size_n , BLOCK_SIZE_N); // n方向 16大小分块 数量为48
     gridDim.x = 1; // k方向
 
@@ -1274,7 +1274,7 @@ void launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(const GemmParams3<T>& params) 
     constexpr int bytes_per_element = 2;
     const int real_size_n = (params.size_n * params.size_kofb) / params.size_k;  
 
-    gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向 16大小分块
+    gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M),params.size_m*params.top_k); // m方向
     gridDim.y = DIVIDE(real_size_n , BLOCK_SIZE_N); // n方向 16大小分块 数量为48
     gridDim.x = 1; // k方向
     
