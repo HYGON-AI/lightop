@@ -27,30 +27,31 @@ def lightop_encode_reg_target(box_target_list, device=None):
     dev = device if device is not None else box_target_list[0].device
     box_target_list = [t.to(dev) if t.device != dev else t for t in box_target_list]
 
-    for box in box_target_list:
-        N, D = box.shape
-        out = op.encode_reg_t(box, N)
-        outputs_lightop.append(out.contiguous())
-    return outputs_lightop
+    B = len(box_target_list)
+    N = box_target_list[0].shape[0]
+    D = box_target_list[0].shape[1]
 
+    input_tensor = torch.stack(box_target_list, dim=0)  # [B, N, D]
+
+    lengths_tensor = torch.tensor([N]*B, dtype=torch.int64, device=dev)
+
+    out_all = op.encode_reg_t(input_tensor, lengths_tensor)
+
+    outputs_lightop = [out_all[i, :N, :].contiguous() for i in range(B)]
+    return outputs_lightop
 
 if __name__ == '__main__':
 
     X, Y, Z, W, L, H, SIN_YAW, COS_YAW, VX, VY, VZ = list(range(11))
     YAW = 6
 
-    box_target_len = 20
-    box_pred_shape0 = 20
-    N_dim = 900
+    box_target_len = 100
+    box_pred_shape0 = 100
+    N_dim = 64
     D_dim = 10
-  
-    m_dims = [
-        40, 12, 25, 111, 45, 84, 19, 14, 52, 13, 
-        20, 19, 28, 28, 6, 62, 26, 56, 13, 33
-    ]
 
     box_pred = torch.randn(box_target_len, N_dim, D_dim, device='cuda:0')
-    box_target = [torch.rand(m, D_dim, dtype=torch.float32, device='cuda:0') for m in m_dims]
+    box_target = [torch.rand(32, D_dim, dtype=torch.float32, device='cuda:0') for _ in range(box_target_len)]
 
     num_warmup = 10
     num_runs = 100

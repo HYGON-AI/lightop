@@ -90,7 +90,8 @@ def moe_align_block_size(
         sorted_ids = torch.empty((max_num_tokens_padded, ),
                                  dtype=torch.int32,
                                  device=topk_ids.device)
-        sorted_ids.fill_(topk_ids.numel())
+        #融到算子里了
+        # sorted_ids.fill_(topk_ids.numel())
     max_num_m_blocks = ceil_div(max_num_tokens_padded, block_size)
     # Expert ids must be zeroed out to prevent index out of bounds error while
     # mapping global expert ids to local expert ids in expert parallelism.
