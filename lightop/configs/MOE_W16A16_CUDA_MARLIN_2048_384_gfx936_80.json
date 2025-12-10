@@ -2,17 +2,17 @@
     "2048_384": {
         "1": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 189,
+            "MODE": 303,
             "DELTA": 1
         },
         "2": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 300,
+            "MODE": 301,
             "DELTA": 1
         },
         "4": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 303,
+            "MODE": 301,
             "DELTA": 1
         },
         "8": {
