@@ -378,7 +378,7 @@ def get_extensions():
     define_macros = []
 
     # 全局默认编译选项
-    extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas','-w'], 'nvcc': ['-O3','-ldl', '-lrocblas','-w','-mllvm -enable-num-vgprs-512=true']}
+    extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas','-w'], 'nvcc': ['-O3','-ldl', '-lrocblas','-w','-mllvm -enable-num-vgprs-512=true', '-DHIP_ENABLE_WARP_SYNC_BUILTINS']}
     if torch_version_over110():
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_110')
     op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + \
@@ -386,10 +386,11 @@ def get_extensions():
                glob.glob('./lightop/csrc/scaledmask/*.cu') + glob.glob('./lightop/csrc/groupnorm/*.cu') + \
                glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + \
                glob.glob('./lightop/csrc/softmax/*.cu') + \
-               glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + \
+               glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + glob.glob('./lightop/csrc/moew16a16/*.cu') + \
                glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
                glob.glob('./lightop/csrc/marlinw4fp8/*.cu') +\
-               glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu')
+               glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu') +\
+               glob.glob('./lightop/csrc/mqa_logits/*.cu') + glob.glob('./lightop/csrc/paged_mqa_logits/*.cu')
 
     miopen_files = glob.glob('./lightop/csrc/miopen/*.cpp') + \
                    glob.glob('./lightop/csrc/miopen/fusion_mode/*.cpp') + glob.glob('./lightop/csrc/miopen/graph/*.cpp') + glob.glob('./lightop/csrc/miopen/op/*.cpp')
@@ -414,12 +415,15 @@ def get_extensions():
     include_dirs.append(os.path.abspath('./lightop/csrc/storeKvcache/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/storeKvcache/attention/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/moew4a8/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/moew16a16/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/blockwise_scaling/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/concat/'))
+    include_dirs.append(os.path.abspath('./lightop/csrc/paged_mqa_logits/'))
     rocm_home=_find_rocm_home()
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/rocrand/include')
+    include_dirs.append(os.path.abspath('./lightop/csrc/mqa_logits/'))
     
     # 1) 不含 miopen 的核心库：lightop.op 
     ext_ops = extension(

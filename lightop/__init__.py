@@ -26,7 +26,7 @@ else:
 
 
 from .utils import gfx, LIGHTOP_ROOT_DIR, LIGHTOP_ASM_DIR
-from .rmsnorm import RMSNorm, RMSNormTorch, RMSNormDropout, RMSNormAddDropout, RMSNormAddDropoutBias, RMSNormAdd,rmsnorm_forward,rmsnorm_backward,rms_norm_dynamic_per_token_quant,fused_rms_norm_contiguous
+from .rmsnorm import RMSNorm, RMSNormTorch, RMSNormDropout, RMSNormAddDropout, RMSNormAddDropoutBias, RMSNormAdd,rmsnorm_forward,rmsnorm_backward,rms_norm_dynamic_per_token_quant,fused_rms_norm_contiguous,fused_rms_norm_rope_contiguous
 from .layernorm import LayerNorm, LnDropout, LnAddDropout, LnAddDropoutBias, LnDropPath, AddLn
 from .droppath import DropPath
 from .fuse_bias_swiglu import FuseBiasSwiGLU
@@ -44,15 +44,23 @@ from .scaled_masked_softmax import FusedScaleMaskSoftmax,FusedScaleMaskSoftmaxDr
 from .groupnorm import GroupNorm ,CeluGN,GNSilu
 from .reduce import sum, mean,topk
 from .gemmopt import gemm, gemm_w4a16, w4tow16,gemm_w8a16_fp8,fp8_to_16,moe_gemm_w8a8, moe_gemm_marlin_w8a8, gemm_w8a8_smooth, moe_marlin_w4a16, awq_marlin_repack, gemm_w8a8_asm, gemm_w8a8_wgrad_asm, \
-      gemm_w8a8_xgrad_asm, moe_gemm_w4a8, moe_gemm_marlin_w4a8, groupgemm, moe_groupgemm_w4a8, moe_groupgemm_marlin_w4a8, awq_marlin_repack_w4a8, m_grouped_w4a8_gemm_nt_masked
+      gemm_w8a8_xgrad_asm, moe_gemm_w4a8, moe_gemm_marlin_w4a8, groupgemm, moe_groupgemm_w4a8, moe_groupgemm_marlin_w4a8, awq_marlin_repack_w4a8, m_grouped_w4a8_gemm_nt_masked, grougemm_w8a8_pertensor_asm, m_grouped_w8a8_gemm_nt_masked, \
+      m_grouped_w8a8_gemm_nt_contig_asm, mqa_logits,moe_gemm_marlin_w16a16,moe_gemm_w16a16,m_grouped_bf16_gemm_nt_masked,m_grouped_w16a16_gemm_nt_contig_asm,m_grouped_w8a8_gemm_nt_nopad_contig_asm, \
+      grougemm_bf16_fp16
 from .moe_fused_gate import moe_fused_gate
-from .fuse_silu_mul_quant import fuse_silu_mul_quant
+from .fuse_silu_mul_quant import fuse_silu_mul_quant, fuse_silu_mul_quant_ep, fuse_silu_and_mul
 from .ds_cat import ds_cat
 from .blockwise_scaling import blockwise_scaled_cast_transpose
-from .config import get_moe_cuda_config, get_moe_cuda_marlin_config, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8, get_moe_groupgemm_config_w4a8, get_moe_groupgemm_marlin_config_w4a8
+from .config import get_moe_cuda_config, get_moe_cuda_marlin_config, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8, get_moe_cuda_marlin_config_w16a16, \
+      get_moe_cuda_config_w16a16, get_moe_groupgemm_config_w4a8, get_moe_groupgemm_marlin_config_w4a8
 from .config_smooth_gemm import gemm_w8a8_smooth_config
+from .config_deepgemm import gemm_w8a8_deepgemm_masked_config
 from .permute_unpermute import groupgemm_permute, groupgemm_unpermute, fuse_groupgemm_permute_quant
 from .moe_align_sum import moe_sum, moe_align_block_size
+from .batch_linear_assignment import batch_linear_assignment
+from .fill_zeros import fill_zeros
+from .fuse_rmsnorm_rope import rms_rotary_embedding_fuse
+from .reshape_and_cache_cuda import reshape_and_cache_cuda
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401
     __version__, __dcu_version__ = version, dcu_version

@@ -6,6 +6,7 @@ import functools
 import os
 import math
 from .config_smooth_gemm import gemm_w8a8_smooth_config
+from .config_deepgemm import gemm_w8a8_deepgemm_masked_config
 
 
 @functools.lru_cache(maxsize=128)
@@ -198,6 +199,50 @@ def moe_gemm_marlin_w4a8(
                                         sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
     return output
 
+def moe_gemm_marlin_w16a16(
+                    input: torch.Tensor,
+                    b_qweight: torch.Tensor,
+                    output: torch.Tensor,
+                    topk_weights: Optional[torch.Tensor],
+                    sorted_token_ids: torch.Tensor,
+                    experts_ids: torch.Tensor,
+                    num_tokens_post_pad: torch.Tensor, 
+                    top_k: int,
+                    config: Dict[str, Any],
+                    is_ep:bool = False) -> torch.Tensor:
+    mode = config['MODE']
+    delta = config['DELTA']
+
+    if mode < 1000:
+        op.moe_gemm_w16a16(input, b_qweight, output,  topk_weights,
+                                            sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
+    else:
+        op.moe_marlin_w16a16_asm(input, b_qweight, output,  topk_weights,
+                                            sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
+    return output
+
+def moe_gemm_w16a16(
+                    input: torch.Tensor,
+                    b_qweight: torch.Tensor,
+                    output: torch.Tensor,
+                    topk_weights: Optional[torch.Tensor],
+                    sorted_token_ids: torch.Tensor,
+                    experts_ids: torch.Tensor,
+                    num_tokens_post_pad: torch.Tensor, 
+                    top_k: int,
+                    config: Dict[str, Any],
+                    is_ep:bool = False) -> torch.Tensor:
+    mode = config['MODE']
+    delta = config['DELTA']
+
+    if mode < 1000:
+        op.moe_gemm_w16a16(input, b_qweight, output,  topk_weights,
+                                            sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
+    else:
+        op.moe_w16a16_asm(input, b_qweight, output,  topk_weights,
+                                            sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
+    return output
+
 def moe_gemm_w8a8(input: torch.Tensor,
                     b_qweight: torch.Tensor,
                     output: torch.Tensor,
@@ -271,6 +316,21 @@ def moe_groupgemm_marlin_w4a8(input: torch.Tensor,
     return output
 
 
+@functools.lru_cache(maxsize=2048)
+def w8a8_deepgemm_masked_asm_config(m):
+    
+    if m < 16:
+        adapt_m = 16  # 向上取整到下一个16的倍数
+    else:
+        adapt_m = round_up_to_next_power_of_2(m)
+    key = f"EXPECTED_M{adapt_m}"
+    if key in gemm_w8a8_deepgemm_masked_config.get_deepgemm_w8a8_smooth_asm_dict():
+        MODE = gemm_w8a8_deepgemm_masked_config.get_deepgemm_w8a8_smooth_asm_dict()[key]
+    else:
+        MODE = 1000
+    return MODE
+
+
 def m_grouped_w4a8_gemm_nt_masked(a: tuple[torch.Tensor, torch.Tensor],
                                   b: tuple[torch.Tensor, torch.Tensor],
                                   d: torch.Tensor,
@@ -285,6 +345,35 @@ def m_grouped_w4a8_gemm_nt_masked(a: tuple[torch.Tensor, torch.Tensor],
     op.m_grouped_marlin_w4a8_gemm_nt_masked_asm(input, b_qweight, output, a_scale, b_scale,
                                         masked_m, expected_m_per_group, mode)
     return output
+
+
+def m_grouped_w8a8_gemm_nt_masked(a: tuple[torch.Tensor, torch.Tensor],
+                                  b: tuple[torch.Tensor, torch.Tensor],
+                                  d: torch.Tensor,
+                                  masked_m: torch.Tensor,
+                                  expected_m_per_group: int,
+                                  config: Optional[Dict[str, Any]] = {"MODE": 1000,}) -> torch.Tensor:
+
+    mode = w8a8_deepgemm_masked_asm_config(expected_m_per_group)
+    input, a_scale = a
+    b_qweight, b_scale = b
+    output = d
+    op.m_grouped_marlin_w8a8_gemm_nt_masked_asm(input, b_qweight, output, a_scale, b_scale,
+                                        masked_m, expected_m_per_group, mode)
+    return output
+
+
+def m_grouped_bf16_gemm_nt_masked(a: torch.Tensor,
+                                  b: torch.Tensor,
+                                  d: torch.Tensor,
+                                  masked_m: torch.Tensor,
+                                  expected_m_per_group: int,
+                                  config: Optional[Dict[str, Any]] = {"MODE": 1000,}) -> torch.Tensor:
+
+    # mode = w8a8_deepgemm_masked_asm_config(expected_m_per_group)
+    mode = config['MODE']
+    op.m_grouped_bf16_gemm_nt_masked_asm(a, b, d, masked_m, expected_m_per_group, mode)
+    return d
 
 
 def gemm_w8a8_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 'TN'):
@@ -314,6 +403,9 @@ def gemm_w8a8_xgrad_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 
     # assert scale_b.shape[1] == ((math.ceil(n / block_size[1]) + 3) / 4 * 4) and scale_b.shape[0] == math.ceil(k / block_size[0])
     
     return op.gemm_w8a8_asm(a, b, scale_a, scale_b, None, None, None, out_dtype, m, n, k, 2)
+
+
+
 
 def moe_marlin_w4a16(a: torch.Tensor,
                     c_or_none: Optional[torch.Tensor],
@@ -371,7 +463,89 @@ def awq_marlin_repack_w4a8(b_q_weight: torch.Tensor, marlin_weight: torch.Tensor
     output = op.awq_marlin_repack_w4a8(b_q_weight, marlin_weight, size_batch, size_k, size_n)
     return output
 
+def grougemm_w8a8_pertensor_asm(A_list:list[torch.Tensor], B_list:list[torch.Tensor], D_list:list[torch.Tensor], As_list:list[torch.Tensor], Bs_list:list[torch.Tensor], 
+                                alphas:list[float], C_list:Optional[list[torch.Tensor]], betas:Optional[list[float]], out_dtype):
+    return op.grougemm_w8a8_pertensor_asm(A_list, B_list, D_list, As_list, Bs_list, alphas, C_list, betas, out_dtype)
+
+
+def grougemm_bf16_fp16(A_list:list[torch.Tensor], B_list:list[torch.Tensor], D_list:list[torch.Tensor],
+                  alphas:list[float], C_list:Optional[list[torch.Tensor]], betas:Optional[list[float]], out_dtype, trans_a:bool=False, trans_b:bool=True):
+    if trans_a is False and trans_b is True:
+        return op.grougemm_bf16_fp16_nt_asm(A_list, B_list, D_list, alphas, C_list, betas, out_dtype)   
+    elif trans_a is True and trans_b is False:
+        return op.grougemm_bf16_fp16_tn_asm(A_list, B_list, D_list, alphas, C_list, betas, out_dtype)
+    elif trans_a is False and trans_b is False:
+        return op.grougemm_bf16_fp16_nn_asm(A_list, B_list, D_list, alphas, C_list, betas, out_dtype)
+    else:
+       raise ValueError(f" GROUPGEMM Unsupported Layout trans_a : {trans_a}, trans_b : {trans_b}")
+
+
+
+def m_grouped_w8a8_gemm_nt_contig_asm( a: tuple[torch.Tensor, torch.Tensor],
+                                       b: tuple[torch.Tensor, torch.Tensor], 
+                                       output:torch.Tensor, m_indices:torch.Tensor, 
+                                       config: Optional[Dict[str, Any]] = {"MODE": 1000,}) -> torch.Tensor:
+    mode = config['MODE']
+    input, a_scale = a
+    b_qweight, b_scale = b
+    return op.m_grouped_w8a8_gemm_nt_contig_asm(input, b_qweight, output, a_scale, b_scale, m_indices, mode)
+
+def m_grouped_w16a16_gemm_nt_contig_asm(a:torch.Tensor, b:torch.Tensor, output:torch.Tensor, m_indices:torch.Tensor,
+                                        config: Optional[Dict[str, Any]] = {"MODE": 1000,}) -> torch.Tensor:
+    mode = config['MODE']
+    M = a.shape[0]
+    E, N = b.shape[0],b.shape[1]
+    a_scale = torch.ones(M, dtype=torch.float32, device=a.device)
+    b_scale = torch.ones((E,N),dtype=torch.float32, device=b.device)
+    return op.m_grouped_w16a16_gemm_nt_contig_asm(a, b, output, a_scale, b_scale, m_indices, mode)
+
+def m_grouped_w8a8_gemm_nt_nopad_contig_asm( a: tuple[torch.Tensor, torch.Tensor],
+                                             b: tuple[torch.Tensor, torch.Tensor],
+                                             output:torch.Tensor, m_indices:torch.Tensor,
+                                             token_per_expert:torch.Tensor) -> torch.Tensor:
+    input, a_scale = a
+    b_qweight, b_scale = b
+    return op.m_grouped_w8a8_gemm_nt_nopad_contig_asm(input, b_qweight, output, a_scale, b_scale, m_indices, token_per_expert)
 
 def groupgemm(a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor, trans_b: bool = False) -> torch.Tensor:
     outs = op.groupgemm(a, b, batch_sizes, trans_b)
     return outs
+
+def mqa_logits(Q: torch.Tensor, K: torch.Tensor, Weights: torch.Tensor, ks:torch.Tensor, ke:torch.Tensor) -> torch.Tensor:
+    q_seq_len, num_heads, head_dim = Q.shape
+    kv_seq_len = K.shape[0]
+    clean_logit = True
+    # pdb.set_trace()
+    outs = op.mqa_logits(Q, K, Weights, ks, ke, q_seq_len, kv_seq_len, num_heads, head_dim,clean_logit)
+    # outs = torch.nn.functional.linear(Q.view(q_seq_len*num_heads, head_dim), K)
+    return outs
+
+def get_paged_mqa_logits_metadata(
+        context_lens: torch.Tensor,
+        block_kv: int,
+        num_sms: int) -> torch.Tensor:
+    schedule_metadata = op.get_paged_mqa_logits_metadata(
+        context_lens,
+        block_kv,
+        num_sms)
+    return schedule_metadata
+
+def paged_mqa_logits(
+        q: torch.Tensor,
+        fused_kv_cache: torch.Tensor,
+        weights: torch.Tensor,
+        context_lens: torch.Tensor,
+        block_table: torch.Tensor,
+        schedule_meta: torch.Tensor,
+        max_context_len: int,
+        clean_logits: bool = True) -> torch.Tensor:
+    logits = op.paged_mqa_logits(
+        q,
+        fused_kv_cache,
+        weights,
+        context_lens,
+        block_table,
+        schedule_meta,
+        max_context_len,
+        clean_logits)
+    return logits

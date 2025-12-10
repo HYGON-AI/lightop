@@ -730,6 +730,104 @@ def test_moe_performance_accuracy(
     }
 
 
+def test_moe_debug(
+    m: int, n1: int, k1: int, n2: int, k2: int, topk: int, E: int,
+    out_dtype: Type[torch.dtype] = torch.bfloat16,
+    per_channel_quant: bool = True
+) -> Dict[str, Any]:
+    """
+    测试完整MOE的性能和精度
+    
+    Returns:
+        Dict包含所有测试结果
+    """
+    # 生成测试数据
+    input_data, weight1, weight2, weight1_scale, weight2_scale, topk_weights, topk_ids = _fused_moe_helper(
+        m, n1, k1, n2, k2, topk, E, out_dtype, per_channel_quant=per_channel_quant
+    )
+    
+    # 设置compute_type
+    if out_dtype == torch.bfloat16:
+        compute_type = tl.bfloat16
+    elif out_dtype == torch.float16:
+        compute_type = tl.float16
+    elif out_dtype == torch.float32:
+        compute_type = tl.float32
+    else:
+        raise ValueError(f"Unsupported compute_type: {out_dtype}")
+    
+    # 获取CUDA配置
+    cuda_config1 = None
+    cuda_config2 = None
+    status = False
+    
+    if use_lightop and per_channel_quant:
+        # 使用get_moe_cuda_config获取配置
+        
+        # import pdb
+        # pdb.set_trace()
+        num_cus = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
+        try:
+            cuda_config1, cuda_config2, status = get_moe_cuda_config(
+                E, m, n1, k1, n2, k2, topk, device_name, num_cus, compute_type
+            )
+        except Exception as e:
+            print(f"Warning: get_moe_cuda_config failed: {e}")
+            status = False
+    
+    # 如果get_moe_cuda_config失败，使用默认配置
+    if not status:
+        cuda_config1, cuda_config2 = get_w8a8moe_json(E, m, n1, n2, k2)
+        
+        # 如果没有找到配置，根据数据大小设置默认值
+        if cuda_config1 is None:
+            if m > M_THRESHOLD:
+                cuda_config1 = {'BLOCK_SIZE_M': blockM_configs.get(0, 16), 'MODE': 0, 'DELTA': 1}
+                cuda_config2 = {'BLOCK_SIZE_M': blockM_configs.get(0, 16), 'MODE': 0, 'DELTA': 1}
+            else:
+                cuda_config1 = {'BLOCK_SIZE_M': blockM_configs_decode.get(0, 16), 'MODE': 0, 'DELTA': 1}
+                cuda_config2 = {'BLOCK_SIZE_M': blockM_configs_decode.get(0, 16), 'MODE': 0, 'DELTA': 1}
+    
+    # 为Triton设置不同的配置（使用默认blockM配置）
+    triton_config1 = {
+        'BLOCK_SIZE_M': blockM_configs.get(0, 64) if m > M_THRESHOLD else blockM_configs_decode.get(0, 16),
+        'MODE': 1000,  # 使用不同的MODE
+        'DELTA': 1
+    }
+    triton_config2 = {
+        'BLOCK_SIZE_M': blockM_configs.get(1, 64) if m > M_THRESHOLD else blockM_configs_decode.get(1, 16),
+        'MODE': 1001,  # 使用不同的MODE
+        'DELTA': 1
+    }
+    
+    # 准备MOE对齐
+    sorted_token_ids, expert_ids, num_tokens_post_padded = (
+        moe_align_block_size(topk_ids, cuda_config1['BLOCK_SIZE_M'], E, None)
+    )
+    
+    # 准备第一阶段的输入
+    qinput1, qa1_scale = moe_kernel_prepare_input(
+        A=input_data,
+        B=weight1,
+        A_scale=None,
+        B_scale=weight1_scale,
+        use_fp8_w8a8=False,
+        use_int8_w8a8=True,
+        use_int8_w8a16=False,
+        use_int4_w4a16=False,
+        per_channel_quant=per_channel_quant,
+        block_shape=None
+    )
+    
+   
+    # 执行CUDA GEMM1获取中间结果
+    intermediate_cache1 = torch.zeros((m, topk, n1), device=input_data.device, dtype=input_data.dtype)
+    moe_gemm_w8a8(qinput1, weight1, intermediate_cache1, qa1_scale, weight1_scale,
+                  None, sorted_token_ids, expert_ids, num_tokens_post_padded, topk, cuda_config1)
+    
+
+
+
 def main():
     parser = argparse.ArgumentParser(description='MOE GEMM性能和精度测试脚本')
     
@@ -753,6 +851,8 @@ def main():
                        help='使用channel-wise量化')
     parser.add_argument('--output-file', type=str, default='moe_w8a8_gemm_channel-wise.xlsx',
                        help='输出Excel文件名')
+    parser.add_argument('--debug', type=int, default=0, 
+                       help='是否启动debug模式')
     
     # 解析参数
     args = parser.parse_args()
@@ -791,7 +891,29 @@ def main():
     
     # 存储所有测试结果
     all_results = []
-    
+    debug = args.debug
+
+    if debug:
+        for i in range(len(n1_list)):
+            E = E_list[i]
+            n1, n2, k2 = n1_list[i], n2_list[i], k_list[i]
+            k1 = n2  # 根据MOE结构，第一个GEMM的K维度等于第二个GEMM的N维度
+            
+            print(f"\n测试配置: N1={n1}, N2={n2}, K1={k1}, K2={k2}")
+            
+            for m in m_list:
+                print(f"  测试 M={m}")
+                try:
+                    # 调用测试
+                     test_moe_debug(
+                        m, n1, k1, n2, k2, topk, E, out_dtype, per_channel_quant
+                    )
+                    
+                except Exception as e:
+                    print(f"    测试失败: {str(e)}")
+        return 1
+
+
     # 测试所有配置组合
     for i in range(len(n1_list)):
         E = E_list[i]

@@ -5,6 +5,7 @@ dist/*
 lightop/__pycache__/*
 lightop/csrc/*/*.hip
 lightop/csrc/*/*_hip.cuh
+lightop/csrc/*/*_hip.hpp
 lightop/version.py
 __pycache__/*
 lightop/csrc/hip_*.cpp
@@ -15,6 +16,14 @@ lightop/csrc/groupnorm/*_hip.h
 lightop/csrc/*/*_hip.h
 test/moe_w8a8/__pycache__/*
 test/moe_w8a8/.triton/
+test/moe_w16a16/__pycache__/*
+test/moe_w16a16/.triton/
+test/moe_w16a16/*.xlsx
+test/moe_w16a16/*/*.xlsx
+test/moe_marlin/moe_w16a16/__pycache__/*
+test/moe_marlin/moe_w16a16/.triton/
+test/moe_marlin/moe_w16a16/*.xlsx
+test/moe_marlin/moe_w16a16/*/*.xlsx
 .vscode
 test/w8a8/__pycache__/*
 test/w8a8/*.xlsx

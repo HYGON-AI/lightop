@@ -1,0 +1,132 @@
+{
+    "2048_384": {
+        "1": {
+            "MODE": 414,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
+            "thread_k": 128,
+            "blocks_per_cu": 3 
+        },
+        "2": {
+            "MODE": 414,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
+            "thread_k": 128,
+            "blocks_per_cu": 3 
+        },
+        "4": {
+            "MODE": 410,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
+            "thread_k": 128,
+            "blocks_per_cu": 3 
+        },
+        "8": {
+            "MODE": 410,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
+            "thread_k": 128,
+            "blocks_per_cu": 3 
+        },
+        "16": {
+            "MODE": 411,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
+            "thread_k": 128,
+            "blocks_per_cu": 3 
+        },
+        "32": {
+            "MODE": 411,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
+            "thread_k": 128,
+            "blocks_per_cu": 3 
+        },
+        "64": {
+            "MODE": 411,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
+            "thread_k": 128,
+            "blocks_per_cu": 3 
+        },
+        "128": {
+            "MODE": 411,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 16,
+            "thread_n": 128,
+            "thread_k": 128,
+            "blocks_per_cu": 3 
+        },
+        "256": {
+            "MODE": 568,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 32,
+            "thread_n": 128,
+            "thread_k": 128,
+            "blocks_per_cu": 3 
+        },
+        "512": {
+            "MODE": 568,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 32,
+            "thread_n": 128,
+            "thread_k": 128,
+            "blocks_per_cu": 3 
+        },
+        "1024": {
+            "MODE": 568,
+            "DELTA": 2,
+            "BLOCK_SIZE_M": 32,
+            "thread_n": 256,
+            "thread_k": 128,
+            "blocks_per_cu": 1 
+        },
+        "2048": {
+            "MODE": 568,
+            "DELTA": 2,
+            "BLOCK_SIZE_M": 32,
+            "thread_n": 512,
+            "thread_k": 64,
+            "blocks_per_cu": 2 
+        },
+        "4096": {
+            "MODE": 581,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 64,
+            "thread_n": 256,
+            "thread_k": 128,
+            "blocks_per_cu": 1 
+        },
+        "6144": {
+            "MODE": 581,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 64,
+            "thread_n": 256,
+            "thread_k": 128,
+            "blocks_per_cu": 1 
+        },
+        "8192": {
+            "MODE": 581,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 64,
+            "thread_n": 256,
+            "thread_k": 128,
+            "blocks_per_cu": 1 
+        },
+        "16384": {
+            "MODE": 581,
+            "DELTA": 1,
+            "BLOCK_SIZE_M": 64,
+            "thread_n": 256,
+            "thread_k": 128,
+            "blocks_per_cu": 1
+        }
+    }
+}
