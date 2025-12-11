@@ -18,7 +18,6 @@ def get_dtk_version(ROCM_HOME):
     return dtk_version
 
 dtk_version = get_dtk_version(ROCM_HOME) #动态获取运行时的dtk版本
-
 if dtk_version >= 25042:
     op = importlib.import_module('.op_core_miopen', __name__)   #包含core+miopen
 else:
@@ -27,6 +26,7 @@ else:
 
 from .utils import gfx, LIGHTOP_ROOT_DIR, LIGHTOP_ASM_DIR
 from .rmsnorm import RMSNorm, RMSNormTorch, RMSNormDropout, RMSNormAddDropout, RMSNormAddDropoutBias, RMSNormAdd,rmsnorm_forward,rmsnorm_backward,rms_norm_dynamic_per_token_quant,fused_rms_norm_contiguous,fused_rms_norm_rope_contiguous
+from .rmsnorm import fuse_rmsnorm_rope_quant_gfx938
 from .layernorm import LayerNorm, LnDropout, LnAddDropout, LnAddDropoutBias, LnDropPath, AddLn
 from .droppath import DropPath
 from .fuse_bias_swiglu import FuseBiasSwiGLU

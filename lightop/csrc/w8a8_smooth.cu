@@ -89,9 +89,14 @@ struct int8ABVector{
 inline __device__ void builtin_amdgcn_mmac(const int8x8& reg_a, const int8x8& reg_b, intx4& reg_c)
 {
     #if defined(__gfx936__) || defined(__gfx928__)
-    auto a = reinterpret_cast<const long*>(&reg_a);
-    auto b = reinterpret_cast<const long*>(&reg_b);
-    reg_c=__builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, reg_c);
+        auto a = reinterpret_cast<const long*>(&reg_a);
+        auto b = reinterpret_cast<const long*>(&reg_b);
+        reg_c=__builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, reg_c);
+    #elif defined(__gfx938__)
+        using intx2 = __attribute__((__vector_size__(2 * sizeof(int)))) int;
+        const intx2 A = *(reinterpret_cast<const intx2 *>(&reg_a));
+        const intx2 B = *(reinterpret_cast<const intx2 *>(&reg_b));
+        reg_c =__builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, reg_c, false, false, false);
     #endif
 }
 

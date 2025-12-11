@@ -38,14 +38,14 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
         for flag in cflags:
             if 'amdgpu-target' in flag:
                 return ['-fno-gpu-rdc']
-    archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
+    archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
     flags += ['-fno-gpu-rdc']
     flags +=['--gpu-max-threads-per-block=1024']
     return flags
 
 def _get_rocm_arch_flags_marlin(cflags: Optional[List[str]] = None) -> List[str]:
-    archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
+    archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
     flags +=['--gpu-max-threads-per-block=512']
     flags +=['-mllvm']
