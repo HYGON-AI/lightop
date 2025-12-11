@@ -443,8 +443,8 @@ def get_extensions():
     )
     
     extensions.append(ext_ops)
-    # if dtk_version >= 25042: #  调试时建议关闭
-    #     extensions.append(ext_miopen)
+    if dtk_version >= 25042: #  调试时建议关闭
+        extensions.append(ext_miopen)
     return extensions
 
 def _get_pytorch_version():
