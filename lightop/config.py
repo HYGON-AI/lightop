@@ -157,11 +157,11 @@ def get_moe_cuda_marlin_config(
     # First look up if an optimized configuration is available in the configs
     # directory
     gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
-    num_cus = 80
+    
     if not is_ep:
-        gemm1_file_name = f"MOE_BLOCKINT8_CUDA_MARLIN_{N1}_{K1}_GFX936_CU{num_cus}.json"
+        gemm1_file_name = f"MOE_BLOCKINT8_CUDA_MARLIN_{N1}_{K1}_{gfx_version.upper()}_CU{num_cus}.json"
     else:
-        gemm1_file_name = f"MOE_BLOCKINT8_CUDA_MARLIN_EP{ep_size}_{N1}_{K1}_GFX936_CU{num_cus}.json"
+        gemm1_file_name = f"MOE_BLOCKINT8_CUDA_MARLIN_EP{ep_size}_{N1}_{K1}_{gfx_version.upper()}_CU{num_cus}.json"
         
     gemm1_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
@@ -190,7 +190,7 @@ def get_moe_cuda_marlin_config(
     except FileNotFoundError:
         gemm1_config = {}
     
-    gemm2_file_name = f"MOE_BLOCKINT8_CUDA_MARLIN_{N2}_{K2}_GFX936_CU{num_cus}.json"
+    gemm2_file_name = f"MOE_BLOCKINT8_CUDA_MARLIN_{N2}_{K2}_{gfx_version.upper()}_CU{num_cus}.json"
     gemm2_config_file_path = os.path.join(
         os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
     try:
