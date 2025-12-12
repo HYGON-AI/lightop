@@ -491,64 +491,6 @@ __global__ void silu_and_mul_base(scalar_t * __restrict__ output, const scalar_t
     return;
 }
 
-template <typename scalar_t, int VEC, int D>
-__launch_bounds__(1024,1)
-__global__ void silu_and_mul_d384(scalar_t * __restrict__ output, const scalar_t * __restrict__ input)
-{
-    int t_row = threadIdx.x / 192;
-    int t_col = threadIdx.x % 192;
-    const int64_t row = blockIdx.x * 4 + t_row;
-    const int64_t idx = t_col * VEC;
-    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
-    if(idx < D){
-        const int64_t x_index = row * 2 * D + idx;
-        const int64_t y_index = row * D + idx;
-        VecType* x1 = (VecType*)(input + x_index);
-        VecType* x2 = (VecType*)(input + x_index + D);
-        VecType* y = (VecType*)(output + y_index);
-        scalar_t r_x1[VEC];
-        scalar_t r_x2[VEC];
-        scalar_t r_y[VEC];
-        *(VecType*)r_x1 = *x1;
-        *(VecType*)r_x2 = *x2;
-        #pragma unroll
-        for (int i = 0; i < VEC; i++) {
-            r_y[i] = silu_kernel_opt(r_x1[i]) * r_x2[i];
-        }
-        *y = *(VecType*)r_y;
-    }
-    return;
-}
-
-template <typename scalar_t, int VEC, int D>
-__launch_bounds__(1024,1)
-__global__ void silu_and_mul_d80(scalar_t * __restrict__ output, const scalar_t * __restrict__ input)
-{
-    int t_row = threadIdx.x / 64;
-    int t_col = threadIdx.x % 64;
-    const int64_t row = blockIdx.x * 4 + t_row;
-    const int64_t idx = t_col * VEC;
-    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
-    if(idx < D){
-        const int64_t x_index = row * 2 * D + idx;
-        const int64_t y_index = row * D + idx;
-        VecType* x1 = (VecType*)(input + x_index);
-        VecType* x2 = (VecType*)(input + x_index + D);
-        VecType* y = (VecType*)(output + y_index);
-        scalar_t r_x1[VEC];
-        scalar_t r_x2[VEC];
-        scalar_t r_y[VEC];
-        *(VecType*)r_x1 = *x1;
-        *(VecType*)r_x2 = *x2;
-        #pragma unroll
-        for (int i = 0; i < VEC; i++) {
-            r_y[i] = silu_kernel_opt(r_x1[i]) * r_x2[i];
-        }
-        *y = *(VecType*)r_y;
-    }
-    return;
-}
-
 template <typename scalar_t, int VEC>
 __global__ void silu_and_mul_kernel_opt1(
     scalar_t* __restrict__ out,          // [..., d]
@@ -603,6 +545,35 @@ __global__ void silu_and_mul_kernel_opt2(
   }
 }
 
+template <typename T, int VEC, int D,int THREAD_PER_ROW, int ROWS_PER_BLOCK>
+__launch_bounds__(1024,1)
+__global__ void silu_and_mul_opt3(T * __restrict__ output, const T * __restrict__ input)
+{
+    int t_row = threadIdx.x / THREAD_PER_ROW;
+    int t_col = threadIdx.x % THREAD_PER_ROW;
+    const int64_t row = blockIdx.x * ROWS_PER_BLOCK + t_row;
+    const int64_t idx = t_col * VEC;
+    using VecType = __attribute__( (__vector_size__(VEC * sizeof(T)) )) T;
+    if(idx < D){
+        const int64_t x_index = row * 2 * D + idx;
+        const int64_t y_index = row * D + idx;
+        VecType* x1 = (VecType*)(input + x_index);
+        VecType* x2 = (VecType*)(input + x_index + D);
+        VecType* y = (VecType*)(output + y_index);
+        T r_x1[VEC];
+        T r_x2[VEC];
+        T r_y[VEC];
+        *(VecType*)r_x1 = *x1;
+        *(VecType*)r_x2 = *x2;
+        #pragma unroll
+        for (int i = 0; i < VEC; i++) {
+            r_y[i] = silu_kernel(r_x1[i]) * r_x2[i];
+        }
+        *y = *(VecType*)r_y;
+    }
+    return;
+}
+
 void fuse_silu_and_mul(torch::Tensor& input, torch::Tensor& out)
 {
   int d = input.size(-1) / 2;
@@ -612,22 +583,39 @@ void fuse_silu_and_mul(torch::Tensor& input, torch::Tensor& out)
   VLLM_DISPATCH_FLOATING_TYPES(
     input.scalar_type(), "fuse_silu_and_mul", [&]{
       if(384 == d){
-        if(num_tokens >= 1024 & 0 == (num_tokens % 4)){
-          constexpr int VEC = 2;
-          dim3 grid(num_tokens / 4);
-          dim3 block(192 * 4);
-          silu_and_mul_d384<scalar_t, VEC, 384><<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>());
+        constexpr int VEC = 2;
+        constexpr int THREAD_PER_ROW = 192;
+        constexpr int ROWS_PER_BLOCK = 4;
+        if(num_tokens >= 1024 & 0 == (num_tokens % ROWS_PER_BLOCK)){
+          dim3 grid(num_tokens / ROWS_PER_BLOCK);
+          dim3 block(THREAD_PER_ROW * ROWS_PER_BLOCK);
+          silu_and_mul_opt3<scalar_t, VEC, 384, THREAD_PER_ROW, ROWS_PER_BLOCK><<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>());
         }else{
           dim3 grid(num_tokens);
           dim3 block(d);
           silu_and_mul_base<<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(), d);
         }
       }else if(80 == d){
-        if(num_tokens >= 1024 & 0 == (num_tokens % 4)){
-          constexpr int VEC = 2;
-          dim3 grid(num_tokens / 4);
-          dim3 block(64 * 4);
-          silu_and_mul_d80<scalar_t, VEC, 80><<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>());
+        constexpr int VEC = 2;
+        constexpr int THREAD_PER_ROW = 64;
+        constexpr int ROWS_PER_BLOCK = 4;
+        if(num_tokens >= 1024 & 0 == (num_tokens % ROWS_PER_BLOCK)){
+          dim3 grid(num_tokens / ROWS_PER_BLOCK);
+          dim3 block(THREAD_PER_ROW * ROWS_PER_BLOCK);
+          silu_and_mul_opt3<scalar_t, VEC, 80, THREAD_PER_ROW, ROWS_PER_BLOCK><<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>());
+        }else{
+          dim3 grid(num_tokens);
+          dim3 block(d);
+          silu_and_mul_base<<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(), d);
+        }
+      }else if(160 == d){
+        constexpr int VEC = 4;
+        constexpr int THREAD_PER_ROW = 64;
+        constexpr int ROWS_PER_BLOCK = 4;
+        if(num_tokens >= 1024 & 0 == (num_tokens % ROWS_PER_BLOCK)){
+          dim3 grid(num_tokens / ROWS_PER_BLOCK);
+          dim3 block(THREAD_PER_ROW * ROWS_PER_BLOCK);
+          silu_and_mul_opt3<scalar_t, VEC, 160, THREAD_PER_ROW, ROWS_PER_BLOCK><<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>());
         }else{
           dim3 grid(num_tokens);
           dim3 block(d);
