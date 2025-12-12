@@ -545,29 +545,29 @@ __global__ void silu_and_mul_kernel_opt2(
   }
 }
 
-template <typename T, int VEC, int D,int THREAD_PER_ROW, int ROWS_PER_BLOCK>
+template <typename scalar_t, int VEC, int D,int THREAD_PER_ROW, int ROWS_PER_BLOCK>
 __launch_bounds__(1024,1)
-__global__ void silu_and_mul_opt3(T * __restrict__ output, const T * __restrict__ input)
+__global__ void silu_and_mul_opt3(scalar_t * __restrict__ output, const scalar_t * __restrict__ input)
 {
     int t_row = threadIdx.x / THREAD_PER_ROW;
     int t_col = threadIdx.x % THREAD_PER_ROW;
     const int64_t row = blockIdx.x * ROWS_PER_BLOCK + t_row;
     const int64_t idx = t_col * VEC;
-    using VecType = __attribute__( (__vector_size__(VEC * sizeof(T)) )) T;
+    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
     if(idx < D){
         const int64_t x_index = row * 2 * D + idx;
         const int64_t y_index = row * D + idx;
         VecType* x1 = (VecType*)(input + x_index);
         VecType* x2 = (VecType*)(input + x_index + D);
         VecType* y = (VecType*)(output + y_index);
-        T r_x1[VEC];
-        T r_x2[VEC];
-        T r_y[VEC];
+        scalar_t r_x1[VEC];
+        scalar_t r_x2[VEC];
+        scalar_t r_y[VEC];
         *(VecType*)r_x1 = *x1;
         *(VecType*)r_x2 = *x2;
         #pragma unroll
         for (int i = 0; i < VEC; i++) {
-            r_y[i] = silu_kernel(r_x1[i]) * r_x2[i];
+            r_y[i] = silu_kernel_opt(r_x1[i]) * r_x2[i];
         }
         *y = *(VecType*)r_y;
     }
