@@ -174,9 +174,184 @@ triton_opt_configs = {
     }
 }
 
-def get_triton_config(num_tokens: int):
+triton_opt_configs_nn = {
+    "1": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 32,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 32,
+        "num_warps": 2,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "2": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 64,
+        "num_warps": 4,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "4": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 32,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 3,
+        "num_ldmatrixes": 1
+    },
+    "8": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "16": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "24": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "32": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 128,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "48": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 256,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "64": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 256,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 8,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "96": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 256,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 8,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "128": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 256,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 8,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "256": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "390": {
+        "BLOCK_SIZE_M": 32,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 8,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "512": {
+        "BLOCK_SIZE_M": 16,
+        "BLOCK_SIZE_N": 256,
+        "BLOCK_SIZE_K": 32,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "1024": {
+        "BLOCK_SIZE_M": 32,
+        "BLOCK_SIZE_N": 256,
+        "BLOCK_SIZE_K": 32,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 8,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "1536": {
+        "BLOCK_SIZE_M": 128,
+        "BLOCK_SIZE_N": 128,
+        "BLOCK_SIZE_K": 64,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "2048": {
+        "BLOCK_SIZE_M": 64,
+        "BLOCK_SIZE_N": 256,
+        "BLOCK_SIZE_K": 32,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "3072": {
+        "BLOCK_SIZE_M": 64,
+        "BLOCK_SIZE_N": 256,
+        "BLOCK_SIZE_K": 32,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    },
+    "4096": {
+        "BLOCK_SIZE_M": 128,
+        "BLOCK_SIZE_N": 256,
+        "BLOCK_SIZE_K": 32,
+        "GROUP_SIZE_M": 1,
+        "num_warps": 4,
+        "num_stages": 2,
+        "num_ldmatrixes": 1
+    }
+}
+
+
+def get_triton_config(num_tokens: int, use_nn_moe: Optional[bool]=False):
     # 将字典的键转换为整数并排序
-    num_tokens_range = sorted([int(k) for k in triton_opt_configs.keys()])
+    num_tokens_range = sorted([int(k) for k in triton_opt_configs_nn.keys()]) if use_nn_moe else sorted([int(k) for k in triton_opt_configs.keys()])
     
     # 找到小于等于 num_tokens 的最大键
     matched_key = None
@@ -197,7 +372,7 @@ def get_triton_config(num_tokens: int):
                 matched_key = key
     
     # 返回对应的配置值
-    return triton_opt_configs[str(matched_key)]
+    return triton_opt_configs[str(matched_key)] if not use_nn_moe else triton_opt_configs_nn[str(matched_key)]
 
 def torch_moe(a, w1, w2, score, topk ,topk_weight1, topk_ids1):
     B, D = a.shape
@@ -252,8 +427,13 @@ def fused_marlin_moe_valid(
     assert w2_triton.is_contiguous(), "Expert weights2 must be contiguous"
     # 当前只支持 bf16
     assert hidden_states.dtype in [torch.float16,torch.bfloat16]
-    # import pdb
-    # pdb.set_trace()
+    compute_type = None
+    if hidden_states.dtype == torch.float16:
+        compute_type = tl.float16
+    elif hidden_states.dtype == torch.bfloat16:
+        compute_type = tl.bfloat16
+    else:
+        raise ValueError(f"Unsupported compute_type: {hidden_states.dtype}")
     M, K = hidden_states.shape # 16 2048
     E = w1_triton.shape[0] # 128
     N = w1_triton.shape[1] // 2 # 768
@@ -271,14 +451,16 @@ def fused_marlin_moe_valid(
     # config_marlin_0["MODE"] = 147
     # config_marlin_1["BLOCK_SIZE_M"] = 64
     # config_marlin_1["MODE"] = 183
-    print("         config_marlin_0: ", config_marlin_0)
-    print("         config_marlin_1: ", config_marlin_1)
+    # print("         config_marlin_0: ", config_marlin_0)
+    # print("         config_marlin_1: ", config_marlin_1)
     block_size_m = config_marlin_0["BLOCK_SIZE_M"]
 
     if global_num_experts == -1:
         global_num_experts = E
 
-    opt_config = get_triton_config(M)
+    use_nn_moe = True
+    opt_config = get_triton_config(M, use_nn_moe)
+    # print("triton opt_config: ", opt_config, "use_nn_moe: ", use_nn_moe)
     sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, block_size_m, global_num_experts)
     # triton 算子始终使用 block_m=16 测试
     sorted_token_ids_triton, expert_ids_triton, num_tokens_post_padded_triton = moe_align_block_size(topk_ids, 16, global_num_experts)
@@ -325,17 +507,20 @@ def fused_marlin_moe_valid(
                                 False,  # 是否乘 top_weight
                                 topk, # top_k
                                 config,
-                                compute_type=tl.float16,
+                                compute_type=compute_type,
                                 use_fp8_w8a8=False,
                                 use_int8_w8a16=False,
                                 use_int8_w8a8 = False,
                                 use_int4_w4a8=False,
                                 block_shape=None
                                 )
-    
+    # 将 w1_triton 从 [E, 2*N, K] 转置为 [E, K, 2*N]，并在显存上实际修改
+    w1_triton_transposed = w1_triton.transpose(1, 2).contiguous()
+    # import pdb
+    # pdb.set_trace()
     invoke_fused_moe_kernel_w16a16(
                                 hidden_states,
-                                w1_triton,
+                                w1_triton_transposed,
                                 triton_opt_gemm1_output,
                                 None,# a_scale
                                 None,# b_scale
@@ -348,12 +533,13 @@ def fused_marlin_moe_valid(
                                 False,  # 是否乘 top_weight
                                 topk, # top_k
                                 opt_config,
-                                compute_type=tl.bfloat16,
+                                compute_type=compute_type,
                                 use_fp8_w8a8=False,
                                 use_int8_w8a16=False,
                                 use_int8_w8a8 = False,
                                 use_int4_w4a8=False,
-                                block_shape=None
+                                block_shape=None,
+                                use_nn_moe=use_nn_moe,
                                 )
 
     triton_gemm1_output = triton_gemm1_output.reshape((-1, 2 * N))
@@ -361,10 +547,10 @@ def fused_marlin_moe_valid(
     torch.cuda.synchronize()
     
     torch.testing.assert_close(triton_opt_gemm1_output, triton_gemm1_output, atol=1e-2, rtol=1e-2)
-    print("        triton_opt对比triton gemm1 success!!!!")
+    # print("        triton_opt对比triton gemm1 success!!!!")
     
     torch.testing.assert_close(intermediate_cache1, triton_gemm1_output, atol=1e-2, rtol=1e-2)
-    print("        cuda对比triton gemm1 success!!!!")
+    # print("        cuda对比triton gemm1 success!!!!")
     
     torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1)
    
@@ -373,7 +559,8 @@ def fused_marlin_moe_valid(
     # =========================== gemm2 triton 计算 ===============================
     triton_gemm2_output = torch.zeros_like(intermediate_cache3).reshape((M, topk, K))
     triton_opt_gemm2_output = torch.zeros_like(intermediate_cache3).reshape((M, topk, K))
-    
+    # import pdb
+    # pdb.set_trace()
     invoke_fused_moe_kernel_w16a16(
                                 intermediate_cache2,
                                 w2_triton,
@@ -389,17 +576,18 @@ def fused_marlin_moe_valid(
                                 True,  # 是否乘 top_weight
                                 1, # top_k
                                 config,
-                                compute_type=tl.float16,
+                                compute_type=compute_type,
                                 use_fp8_w8a8=False,
                                 use_int8_w8a16=False,
                                 use_int8_w8a8 = False,
                                 use_int4_w4a8=False,
                                 block_shape=None
                                 )
-    
+    # 将 w1_triton 从 [E, 2*N, K] 转置为 [E, K, 2*N]，并在显存上实际修改
+    w2_triton_transposed = w2_triton.transpose(1, 2).contiguous()
     invoke_fused_moe_kernel_w16a16(
                                 intermediate_cache2,
-                                w2_triton,
+                                w2_triton_transposed,
                                 triton_opt_gemm2_output,
                                 None,# a_scale
                                 None,# b_scale
@@ -412,31 +600,34 @@ def fused_marlin_moe_valid(
                                 True,  # 是否乘 top_weight
                                 1, # top_k
                                 opt_config,
-                                compute_type=tl.bfloat16,
+                                compute_type=compute_type,
                                 use_fp8_w8a8=False,
                                 use_int8_w8a16=False,
                                 use_int8_w8a8 = False,
                                 use_int4_w4a8=False,
-                                block_shape=None
+                                block_shape=None,
+                                use_nn_moe=use_nn_moe,
                                 )
     torch.cuda.synchronize()
     triton_gemm2_output = triton_gemm2_output.reshape((-1, K))
     triton_opt_gemm2_output = triton_opt_gemm2_output.reshape((-1, K))
     
     torch.testing.assert_close(triton_opt_gemm2_output, triton_gemm2_output, atol=1e-2, rtol=1e-2)
-    print("        triton_opt对比triton gemm2 success!!!!")
+    # print("        triton_opt对比triton gemm2 success!!!!")
     
     torch.testing.assert_close(intermediate_cache3, triton_gemm2_output, atol=1e-2, rtol=1e-2)
-    print("        Triton对比cuda gemm2 success!!!!")
+    # print("        Triton对比cuda gemm2 success!!!!")
     
     #N:384 K:2048
     return (num_tokens_post_padded.item() * K * 2*N * 2),(num_tokens_post_padded.item()  * N * K * 2), \
     (num_tokens_post_padded.item() * K * 2 + (E if (num_tokens_post_padded.item() / block_size_m) > E else (num_tokens_post_padded.item() / block_size_m)) * 2*N * K * 2  + M * topk * 2*N * 2)/1024/1024/1024, \
-    (num_tokens_post_padded.item() * N * 2 + (E if (num_tokens_post_padded.item() / block_size_m) > E else (num_tokens_post_padded.item() / block_size_m)) * N * K * 2 + M * topk * K * 2 )/1024/1024/1024
+    (num_tokens_post_padded.item() * N * 2 + (E if (num_tokens_post_padded.item() / block_size_m) > E else (num_tokens_post_padded.item() / block_size_m)) * N * K * 2 + M * topk * K * 2 )/1024/1024/1024, \
+    hidden_states, intermediate_cache2, triton_gemm1_output, triton_gemm2_output     
 
 
 def fused_triton_moe(
                      hidden_states: torch.Tensor, # 32, 7168
+                     intermediate_cache2: torch.Tensor, # 32*8, 256
                      w1: torch.Tensor, # 256, 512, 7168 --> 32*8, 512 --> 32*8, 256
                      w2: torch.Tensor, # 256, 256, 7168, 
                      w1_marlin: torch.Tensor, # 256, 512, 7168 --> 32*8, 512 --> 32*8, 256
@@ -446,7 +637,9 @@ def fused_triton_moe(
                      topk_ids: torch.Tensor,
                      global_num_experts: int = -1,
                      expert_map: Optional[torch.Tensor] = None,
-                     inplace: bool = False) -> torch.Tensor:
+                     inplace: bool = False,
+                     use_nn_moe: Optional[bool]=False,
+                     ) -> torch.Tensor:
     assert hidden_states.shape[0] == gating_output.shape[0], "Number of tokens mismatch"
     assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch w1"
     
@@ -455,24 +648,31 @@ def fused_triton_moe(
     assert w2.is_contiguous(), "Expert weights2 must be contiguous"
     # 当前支持 bf16和fp16
     assert hidden_states.dtype in [torch.bfloat16, torch.float16]
-
+    compute_type = None
+    if hidden_states.dtype == torch.float16:
+        compute_type = tl.float16
+    elif hidden_states.dtype == torch.bfloat16:
+        compute_type = tl.bfloat16
+    else:
+        raise ValueError(f"Unsupported compute_type: {hidden_states.dtype}")
     M, K = hidden_states.shape # 16 2048
     E = w1.shape[0] # 128
-    N = w1.shape[1] // 2 # 768
+    N = w1.shape[1] // 2 if not use_nn_moe else (w1.shape[1] // 2) # 768
     topk = topk_ids.shape[1] 
-    opt_config = get_triton_config(M)
+    opt_config = get_triton_config(M, use_nn_moe)
     block_size_m = opt_config["BLOCK_SIZE_M"]
+    # print("triton opt_config: ", opt_config, "use_nn_moe: ", use_nn_moe)
 
     if global_num_experts == -1:
         global_num_experts = E
 
     sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, block_size_m, global_num_experts)
 
-    intermediate_cache2 = torch.empty(
-        (M * topk_ids.shape[1], N),
-        device=hidden_states.device,
-        dtype=hidden_states.dtype,
-    )
+    # intermediate_cache2 = torch.empty(
+    #     (M * topk_ids.shape[1], N),
+    #     device=hidden_states.device,
+    #     dtype=hidden_states.dtype,
+    # )
     intermediate_cache13 = torch.empty(
         (M * topk_ids.shape[1] * max(2 * N, K), ),
         device=hidden_states.device,
@@ -484,7 +684,8 @@ def fused_triton_moe(
     intermediate_cache3 = intermediate_cache3.view(-1, K)  # [M * topk, K]  [32*8, 7168]
     triton_gemm1_output = torch.zeros_like(intermediate_cache1).reshape((M, topk, 2 * N))
     triton_gemm2_output = torch.zeros_like(intermediate_cache3).reshape((M, topk, K))
-    
+    w1 = w1.transpose(1, 2).contiguous() if use_nn_moe else w1
+    w2 = w2.transpose(1, 2).contiguous() if use_nn_moe else w2
     torch.cuda.synchronize()
 
     quantiles = [0.5, 0.2, 0.8]
@@ -503,19 +704,22 @@ def fused_triton_moe(
                                                                 False,  # 是否乘 top_weight
                                                                 topk, # top_k
                                                                 opt_config,
-                                                                compute_type=tl.bfloat16,
+                                                                compute_type=compute_type,
                                                                 use_fp8_w8a8=False,
                                                                 use_int8_w8a16=False,
                                                                 use_int8_w8a8 = False,
                                                                 use_int4_w4a8=False,
-                                                                block_shape=None
+                                                                block_shape=None,
+                                                                use_nn_moe=use_nn_moe,
                                                                 ), quantiles=quantiles)
 
     gemm1_time_us = avg_ms * 1000
     # 激活函数
-    torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1)
+    # torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1)
     torch.cuda.synchronize()
-
+    # import pdb
+    # pdb.set_trace()
+    # # opt_config = {"BLOCK_SIZE_M": 16, "BLOCK_SIZE_N": 128, "BLOCK_SIZE_K": 32, "GROUP_SIZE_M": 1}
     avg_ms, min_ms, max_ms = triton.testing.do_bench(lambda: invoke_fused_moe_kernel_w16a16(
                                                                     intermediate_cache2,
                                                                     w2,
@@ -531,14 +735,17 @@ def fused_triton_moe(
                                                                     True,  # 是否乘 top_weight
                                                                     1, # top_k
                                                                     opt_config,
-                                                                    compute_type=tl.bfloat16,
+                                                                    compute_type=compute_type,
                                                                     use_fp8_w8a8=False,
                                                                     use_int8_w8a16=False,
                                                                     use_int8_w8a8 = False,
                                                                     use_int4_w4a8=False,
-                                                                    block_shape=None
+                                                                    block_shape=None,
+                                                                    use_nn_moe=use_nn_moe,
                                                                     ), quantiles=quantiles)
 
 
     gemm2_time_us =  avg_ms * 1000 
-    return gemm1_time_us, gemm2_time_us
+    triton_gemm1_output = triton_gemm1_output.reshape((-1, 2 * N))
+    triton_gemm2_output = triton_gemm2_output.reshape((-1, K))
+    return gemm1_time_us, gemm2_time_us, triton_gemm1_output, triton_gemm2_output
