@@ -448,7 +448,8 @@ def fused_marlin_moe_valid(
     # print("E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16",E, M, 2 * N, K, K, N, 8, device_name, num_cus, hidden_states.dtype)
     # debug
     # config_marlin_0["BLOCK_SIZE_M"] = 64
-    # config_marlin_0["MODE"] = 147
+    # config_marlin_0["MODE"] = 304
+    # config_marlin_1["MODE"] = 304
     # config_marlin_1["BLOCK_SIZE_M"] = 64
     # config_marlin_1["MODE"] = 183
     # print("         config_marlin_0: ", config_marlin_0)
@@ -462,6 +463,9 @@ def fused_marlin_moe_valid(
     opt_config = get_triton_config(M, use_nn_moe)
     # print("triton opt_config: ", opt_config, "use_nn_moe: ", use_nn_moe)
     sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, block_size_m, global_num_experts)
+    # print("global_num_experts",global_num_experts)
+    # print("sorted_token_ids",sorted_token_ids.size())
+    # print("num_tokens_post_padded",num_tokens_post_padded)
     # triton 算子始终使用 block_m=16 测试
     sorted_token_ids_triton, expert_ids_triton, num_tokens_post_padded_triton = moe_align_block_size(topk_ids, 16, global_num_experts)
     sorted_token_ids_triton_opt, expert_ids_triton_opt, num_tokens_post_padded_triton_opt = moe_align_block_size(topk_ids, opt_config["BLOCK_SIZE_M"], global_num_experts)
@@ -553,7 +557,9 @@ def fused_marlin_moe_valid(
     # print("        cuda对比triton gemm1 success!!!!")
     
     torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1)
-   
+    # print("intermediate_cache2 size",intermediate_cache2.size())
+    # intermediate_cache2 = torch.ones_like(intermediate_cache2)
+    # topk_weights = torch.ones_like(topk_weights)
     moe_gemm_marlin_w16a16(intermediate_cache2, w2_marlin, intermediate_cache3,topk_weights, sorted_token_ids, 
                          expert_ids, num_tokens_post_padded, 1, config_marlin_1)
     # =========================== gemm2 triton 计算 ===============================

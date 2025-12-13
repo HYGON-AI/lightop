@@ -46,11 +46,12 @@ def fused_marlin_moe(
     topk = topk_ids.shape[1] 
     config_marlin_0, config_marlin_1, status = get_moe_cuda_marlin_config_w16a16(E, M, 2 * N, K, K, N, 8, device_name, num_cus, hidden_states.dtype)
     # debug
-
+    # config_marlin_0["DELTA"] = 1
+    # config_marlin_1["DELTA"] = 1
     # config_marlin_0["BLOCK_SIZE_M"] = 16
-    # config_marlin_0["MODE"] = 305
+    # config_marlin_0["MODE"] = 304
     # config_marlin_1["BLOCK_SIZE_M"] = 16
-    # config_marlin_1["MODE"] = 315
+    # config_marlin_1["MODE"] = 304
     # print("         config_marlin_0: ", config_marlin_0)
     # print("         config_marlin_1: ", config_marlin_1)
     block_size_m = config_marlin_0["BLOCK_SIZE_M"]

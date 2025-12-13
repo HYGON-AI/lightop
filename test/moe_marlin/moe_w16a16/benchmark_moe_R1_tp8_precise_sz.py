@@ -117,7 +117,9 @@ def benchmark_config(
     x = torch.randn((num_tokens, hidden_size),device='cuda',dtype=dtype) / 10 # [256*8, 7168] (bf16)
     # torch.set_printoptions(profile="full")       
     # x = torch.ones_like(x)
+    # print("x.size()",x.size())
     w1 = torch.randn((num_experts, shard_intermediate_size, hidden_size), device=x.device, dtype=dtype)
+    # print("w1.size()",w1.size())
     # w1 = torch.ones_like(w1)            
     torch.set_printoptions(profile="default")
     # -------- 处理 gemm1 权重矩阵 ------------------
@@ -130,6 +132,7 @@ def benchmark_config(
 
     #  =========================================== 准备 gemm2 相关数据 =============================================
     w2 = torch.randn((num_experts, hidden_size, shard_intermediate_size // 2), device=x.device, dtype=dtype)
+    # w2 = torch.ones_like(w2)
     w2_marlin_list = []
     for i in range(w2.shape[0]):
         w2_marlin_in = w16a16_marlin_weight(w2[i])
@@ -325,6 +328,9 @@ def main(args: argparse.Namespace):
     num_experts = 128
     shard_intermediate_size=768
     hidden_size=2048
+    # num_experts = 160
+    # shard_intermediate_size=320
+    # hidden_size=6144
     renormalize=True
     topk = 8
     # dtype = torch.float16
@@ -334,7 +340,6 @@ def main(args: argparse.Namespace):
         # batch_sizes = [256]
         # batch_sizes = [512, 1024, 2048, 4096, 6144, 8192, 16384]
         batch_sizes = [1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128, 256, 512, 1024, 1536, 2048, 3072, 4096] 
-        # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128] 
         # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128]
         # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]
     else:

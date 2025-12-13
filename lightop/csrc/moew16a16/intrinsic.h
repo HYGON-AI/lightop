@@ -963,7 +963,7 @@ __host__ __device__ half UpCast(const Float8_e4m3_t &from_var) {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //封装divide函数
 #define DIVIDE(x, size) (((x) + (size) - 1) / (size))
-
+#define DIV_ceil(x, size) (((x) - 1) / (size) + 1)
 ///////////////////////////////////////////////block swiizzle/////////////////////////////////////////////////////
 __device__ __forceinline__ void GetBLockIdx(
       int32_t loop_idx, int32_t m_loop, int32_t n_loop, int32_t swizzl_direction, int32_t swizzl_count,
