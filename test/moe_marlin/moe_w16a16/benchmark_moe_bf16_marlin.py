@@ -1353,6 +1353,10 @@ def main(args: argparse.Namespace):
     shard_intermediate_size=768
     hidden_size=2048
 
+    #qwen3-480b-tp16
+    # E = 160
+    # shard_intermediate_size=320
+    # hidden_size=6144
 
     # # #qwen3-235b-A22B-tp8
     # E = 128

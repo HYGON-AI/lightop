@@ -188,6 +188,8 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NN_UP_decode(
    
   int warp_k_id = warp_id % warp_k_num;
   int warp_n_id = warp_id / warp_k_num;
+
+  if(bidy * BLOCK_SIZE_N * 16 + warp_n_id * 64 * 8 >= size_n)  return;
   extern __shared__ uint8_t smem3[]; // 声明lds信息
   float* output_lds = (float*)&(smem3); 
 
@@ -218,7 +220,7 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NN_UP_decode(
                 for (int j = 0; j < 2; j++) {
                   (reinterpret_cast<uint16_t*>(&D))[j] = f32_to_f16<Element>((C_reg[0][m_tile*2+j])[i]);
                 }
-                *reinterpret_cast<vec_bf16_2*>(&g_output[token_index * (size_n>>4) + warp_n_id * WARP_N *4 + col_id * 2 + i * 8]) = D;
+                *reinterpret_cast<vec_bf16_2*>(&g_output[token_index * (size_n>>4) + warp_n_id * WARP_N *2 + col_id * 2 + i * 8]) = D;
           }
       }
     }
@@ -290,6 +292,7 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NN_DOWN_decode(
    
   int warp_k_id = warp_id % warp_k_num;
   int warp_n_id = warp_id / warp_k_num;
+  if(bidy * BLOCK_SIZE_N * 16 + warp_n_id * 64 * 8 >= size_n)  return;
   extern __shared__ uint8_t smem3[]; // 声明lds信息
   float* output_lds = (float*)&(smem3); 
 
@@ -959,7 +962,6 @@ void launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode(const GemmParams3<T>& params) {
     gridDim.x = 1; // k方向
 
     int lds_size =  (kwarp-1)* nwarp * 33 * 16 * 4;
-    if(kwarp==0) lds_size==0;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
     MOE_W16A16_MARLIN_HIP_NN_DOWN_decode<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
@@ -1001,7 +1003,7 @@ void launch_MOE_W16A16_MARLIN_HIP_NN_UP_decode(const GemmParams3<T>& params) {
     
     //规定BLOCKSIZE_N固定位256
     gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M),params.size_m*params.top_k); // m方向
-    gridDim.y = DIVIDE(params.size_n , 16 * BLOCK_SIZE_N); // n方向
+    gridDim.y = DIV_ceil(params.size_n , 16 * BLOCK_SIZE_N); // n方向
     gridDim.x = splitk; // k方向
 
     constexpr int lds_size = (kwarp-1)* nwarp * 33 * 16 * 4;

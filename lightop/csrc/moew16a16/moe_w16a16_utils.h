@@ -345,7 +345,7 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_UP_decode_kernel(
         }
     } 
     //尾处理
-    if((i + 1) < itk){
+    if((i - 1) < itk){
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
             #pragma unroll
@@ -436,7 +436,7 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kernel(
     const int bidy,
     const float* topk_weights) 
 {
-    const int size_k = seqlen_A_stride;//2048  sizeofkb是128
+    const int size_k = seqlen_A_stride;//6144 sizeofkb是5
     int lane_id = threadIdx.x & 63; // thread_id
     int row_id = lane_id % 16;
     int col_id = lane_id / 16;
@@ -481,7 +481,9 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kernel(
         }
     }
     i=1; 
-    int itk = size_k/warp_k_num/WARP_K; 
+    int k_block = warp_k_num * WARP_K; //64
+    int itk = size_k/ k_block ; //2
+    int remainder = size_k % k_block; 
 
     for(; i < itk ; i += 2){
         #pragma unroll
@@ -557,7 +559,7 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kernel(
         }
     } 
     //尾处理
-    if((i + 1) < itk){
+    if((i - 1) < itk){
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
             #pragma unroll
@@ -574,6 +576,44 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kernel(
                 }
             }
         }        
+    }
+
+    if(remainder > 0){
+        //仅迭代一次，不需要进行预取，直接读取然后计算写回即可
+        int k0 = (size_k/ k_block) * k_block; //128
+        if((k0 + warp_k_id * WARP_K) < size_k) {    
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                   A_reg[m_tile][0].floatx2_array[k_tile] = *(floatx2*)(input_ptr+ g_row_A[m_tile] + k0  + k_tile * 16); 
+                }
+            }
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+                     B_reg[n_tile][0].floatx4_array[k_tile]  = *(floatx4*)(weight_ptr + (itk * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64); 
+                   }
+            }
+        
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                    #pragma unroll
+                    for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                        #pragma unroll
+                        for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){                 
+                            C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[2 * k_tile + N_PACKID]), 
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
+                        }
+                    }
+                }
+            }
+        }                    
     }
     extern __shared__ float out_smemf[]; // 声明lds信息
 
@@ -768,7 +808,7 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_UP_decode_kpack2_kerne
         }
     } 
     //尾处理
-    if((i + 1) < itk){
+    if((i - 1) < itk){
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
             #pragma unroll
@@ -903,9 +943,10 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kpack2_ker
            B_reg[n_tile][0].floatx4_array[k_tile]  = *(floatx4*)(weight_ptr + (i * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 128);
         }
     }
-    i=1; 
-    int itk = size_k/warp_k_num/WARP_K; 
-
+    i=1;
+    int k_block =  warp_k_num * WARP_K;
+    int itk = size_k/k_block; 
+    int remainder = size_k % k_block; 
     for(; i < itk ; i += 2){
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
@@ -980,7 +1021,7 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kpack2_ker
         }
     } 
     //尾处理
-    if((i + 1) < itk){
+    if((i - 1) < itk){
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
             #pragma unroll
@@ -997,6 +1038,45 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kpack2_ker
                 }
             }
         }        
+    }
+
+    if(remainder > 0){
+        //仅迭代一次，不需要进行预取，直接读取然后计算写回即可
+        int k0 = (size_k/ k_block) * k_block; //128
+        if((k0 + warp_k_id * WARP_K) < size_k) {
+
+            #pragma unroll
+            for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K/2; k_tile++){ 
+                   A_reg[m_tile][0].floatx4_array[k_tile] = *(floatx4*)(input_ptr+ g_row_A[m_tile] + k0  + k_tile * 16); 
+                   }
+            }
+
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+                     B_reg[n_tile][0].floatx4_array[k_tile]  = *(floatx4*)(weight_ptr + (itk * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 128); 
+                    }
+            }
+        #pragma unroll
+        for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
+            #pragma unroll
+            for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
+                #pragma unroll
+                for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
+                    #pragma unroll
+                    for(int N_PACKID = 0; N_PACKID < 2; N_PACKID++){
+                    C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID] = mmac<Element>(
+                                (*(typename vec<Element, 4>::type*)&A_reg[m_tile][0].floatx2_f16_array[k_tile]), 
+                                (*(typename vec<Element, 4>::type*)&B_reg[n_tile][0].floatx2_f16_array[2 * k_tile + N_PACKID]), 
+                                C_reg[0][(m_tile*(WARP_N/MFMA_N) + n_tile) * 2 + N_PACKID]);  
+                    }
+                }
+            }
+        }
+        }                    
     }
     extern __shared__ float out_smemf[]; // 声明lds信息
 
@@ -1181,7 +1261,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel2(
         }
     } 
     //尾处理
-    if((i + 1) < itk){
+    if((i - 1) < itk){
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
             #pragma unroll
@@ -1419,7 +1499,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kpack2_kernel(
         }
     } 
     //尾处理
-    if((i + 1) < itk){
+    if((i - 1) < itk){
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
             #pragma unroll
@@ -1657,7 +1737,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_UP_decode_kernel(
         
     } 
     //尾处理
-    if((i + 1) < itk){        
+    if((i - 1) < itk){        
             #pragma unroll
             for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
                 #pragma unroll
@@ -3184,7 +3264,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel2(
         }
     } 
     //尾处理
-    if((i + 1) < itk){
+    if((i - 1) < itk){
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
             #pragma unroll
@@ -3441,7 +3521,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kpack2_kernel(
         }
     } 
     //尾处理
-    if((i + 1) < itk){
+    if((i - 1) < itk){
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
             #pragma unroll
@@ -3698,7 +3778,7 @@ __forceinline__ __device__ void  MOE_W16A16_HIP_NT_DOWN_decode_kernel(
         
     } 
     //尾处理
-    if((i + 1) < itk){        
+    if((i - 1) < itk){        
             #pragma unroll
             for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
                 #pragma unroll
