@@ -381,6 +381,7 @@ def invoke_fused_moe_kernel_w16a16(A: torch.Tensor,
                                     use_int8_w8a16: bool,
                                     use_int4_w4a8: bool,
                                     block_shape: Optional[List[int]] = None,
+                                    use_nn_moe: Optional[bool]=False,
                                 ) -> None:
     
     assert topk_weights is not None or not mul_routed_weight
@@ -392,7 +393,6 @@ def invoke_fused_moe_kernel_w16a16(A: torch.Tensor,
     assert use_int8_w8a8 is False
     M = A.size(0)
     num_tokens = M * top_k
-    use_nn_moe = False
     EM = sorted_token_ids.size(0)
     if A.size(0) < config["BLOCK_SIZE_M"]:
         # optimize for small batch_size.

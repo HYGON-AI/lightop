@@ -145,16 +145,16 @@ def benchmark_config(
 
     topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
 
-    GEMM1_Peak,GEMM2_Peak,bandwith1,bandwith2 = fused_marlin_moe_valid(                         
-                            x,
-                            w1,
-                            w2,
-                            w1_marlin,
-                            w2_marlin,
-                            score,
-                            topk_weights,
-                            topk_ids
-                            )
+    _, _, _, _, triton_gemm1_input, triton_gemm2_input, triton_gemm1_output, triton_gemm2_output = fused_marlin_moe_valid(                         
+                                                                                                                            x,
+                                                                                                                            w1,
+                                                                                                                            w2,
+                                                                                                                            w1_marlin,
+                                                                                                                            w2_marlin,
+                                                                                                                            score,
+                                                                                                                            topk_weights,
+                                                                                                                            topk_ids
+                                                                                                                            )
     # return
     # 预热
     for i in range(10):
@@ -174,15 +174,16 @@ def benchmark_config(
                             topk_ids
                             )
             fused_triton_moe(
-                            x,
+                            triton_gemm1_input,
+                            triton_gemm2_input,
                             w1,
                             w2,
                             w1_marlin,
                             w2_marlin,
                             score,
                             topk_weights,
-                            topk_ids
-                            )
+                            topk_ids,
+                            use_nn_moe=True)
             
 
     gemm1_time_us_total = 0 
@@ -195,6 +196,18 @@ def benchmark_config(
         prepare(i)
         # 获取新专家得分的 算子时间
         topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
+        GEMM1_Peak, GEMM2_Peak, bandwith1, bandwith2, triton_gemm1_input, triton_gemm2_input, triton_gemm1_output, triton_gemm2_output = fused_marlin_moe_valid(                         
+                                                                                                                                                                x,
+                                                                                                                                                                w1,
+                                                                                                                                                                w2,
+                                                                                                                                                                w1_marlin,
+                                                                                                                                                                w2_marlin,
+                                                                                                                                                                score,
+                                                                                                                                                                topk_weights,
+                                                                                                                                                                topk_ids
+                                                                                                                                                                )
+        triton_opt_gemm1_output = None
+        triton_opt_gemm2_output = None  
         for j in range(kernel_num_iters): # 一次随机专家运行kernel_num_iters次
             gemm1_time_us, gemm2_time_us =  fused_marlin_moe(
                                                             x,
@@ -206,22 +219,29 @@ def benchmark_config(
                                                             topk_weights,
                                                             topk_ids
                                                             )
-            gemm1_time_us_triton, gemm2_time_us_triton =  fused_triton_moe(
-                                                            x,
-                                                            w1,
-                                                            w2,
-                                                            w1_marlin,
-                                                            w2_marlin,
-                                                            score,
-                                                            topk_weights,
-                                                            topk_ids
-                                                            )
+            gemm1_time_us_triton, gemm2_time_us_triton, triton_opt_gemm1_output, triton_opt_gemm2_output =  fused_triton_moe(
+                                                                                                                                triton_gemm1_input,
+                                                                                                                                triton_gemm2_input,
+                                                                                                                                w1,
+                                                                                                                                w2,
+                                                                                                                                w1_marlin,
+                                                                                                                                w2_marlin,
+                                                                                                                                score,
+                                                                                                                                topk_weights,
+                                                                                                                                topk_ids,
+                                                                                                                                use_nn_moe=True
+                                                                                                                                )
             
             gemm1_time_us_total += gemm1_time_us
             gemm2_time_us_total += gemm2_time_us
             gemm1_time_us_total_triton += gemm1_time_us_triton
             gemm2_time_us_total_triton += gemm2_time_us_triton
-
+        # import pdb
+        # pdb.set_trace()
+        torch.testing.assert_close(triton_opt_gemm1_output, triton_gemm1_output, atol=1e-2, rtol=1e-2)
+        # print("do bench kernel triton_opt对比triton gemm1 success!!!!")
+        torch.testing.assert_close(triton_opt_gemm2_output, triton_gemm2_output, atol=1e-2, rtol=1e-2)
+        # print("do bench kernel triton_opt对比triton gemm2 success!!!!")
 
     gemm1_time_us_total_avg = gemm1_time_us_total/num_iters/kernel_num_iters
     gemm2_time_us_total_avg = gemm2_time_us_total/num_iters/kernel_num_iters
@@ -311,7 +331,7 @@ def main(args: argparse.Namespace):
     dtype = torch.bfloat16
     if len(args.batch_size) == 0:
         print("进行全size性能测试: ")
-        # batch_sizes = [2048]
+        # batch_sizes = [256]
         # batch_sizes = [512, 1024, 2048, 4096, 6144, 8192, 16384]
         batch_sizes = [1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128, 256, 512, 1024, 1536, 2048, 3072, 4096] 
         # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128] 
@@ -346,9 +366,6 @@ def main(args: argparse.Namespace):
       output_file = "moe_w16a16_gemm_channel_marlin_wise.xlsx"
       df = pd.DataFrame(results)
       df.to_excel(output_file, index=False) 
- 
-
-
 
 if __name__ == "__main__":
     parser = FlexibleArgumentParser()
