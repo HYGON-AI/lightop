@@ -20,7 +20,7 @@ from vllm.logger import init_logger
 from vllm import _custom_ops as ops
 # import _custom_ops as ops
 from lightop import moe_gemm_w8a8, get_moe_cuda_config, moe_gemm_marlin_w16a16
-# from vllm.model_executor.layers.fused_moe.fused_moe import moe_kernel_prepare_input
+from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
 
@@ -336,42 +336,7 @@ def try_get_optimal_moe_config(
             config = get_default_config(M, E, N, w1_shape[2] if not use_nn_moe else w1_shape[1], top_k, dtype,
                                         is_marlin, block_shape, use_nn_moe=use_nn_moe)
     return config
-def fused_topk(
-    hidden_states: torch.Tensor,
-    gating_output: torch.Tensor,
-    topk: int,
-    renormalize: bool,
-):
-    assert hidden_states.shape[0] == gating_output.shape[0], (
-        "Number of tokens mismatch")
 
-    M, _ = hidden_states.shape
-
-    topk_weights = torch.empty(M,
-                               topk,
-                               dtype=torch.float32,
-                               device=hidden_states.device)
-    topk_ids = torch.empty(M,
-                           topk,
-                           dtype=torch.int32,
-                           device=hidden_states.device)
-    token_expert_indicies = torch.empty(M,
-                                        topk,
-                                        dtype=torch.int32,
-                                        device=hidden_states.device)
-
-    ops.topk_softmax(
-        topk_weights,
-        topk_ids,
-        token_expert_indicies,
-        gating_output.float(),  # TODO(woosuk): Optimize this.
-    )
-    del token_expert_indicies  # Not used. Will be used in the future.
-
-    if renormalize:
-        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
-
-    return topk_weights, topk_ids
 
 
 # This is used by the Deepseek-V2 and Deepseek-V3 model
@@ -1506,7 +1471,7 @@ def fused_moe_first_stage_tune(
                                               topk, renormalize,
                                               num_expert_group, topk_group)
     elif custom_routing_function is None:
-        topk_weights, topk_ids = fused_topk(hidden_states, gating_output, topk,
+        topk_weights, topk_ids, _ = fused_topk(hidden_states, gating_output, topk,
                                             renormalize)
     else:
         topk_weights, topk_ids = custom_routing_function(
@@ -1606,7 +1571,7 @@ def fused_moe_second_stage_tune(
                                               topk, renormalize,
                                               num_expert_group, topk_group)
     elif custom_routing_function is None:
-        topk_weights, topk_ids = fused_topk(hidden_states, gating_output, topk,
+        topk_weights, topk_ids, _ = fused_topk(hidden_states, gating_output, topk,
                                             renormalize)
     else:
         topk_weights, topk_ids = custom_routing_function(
@@ -1954,7 +1919,7 @@ def fused_moe_impl( hidden_states: torch.Tensor,
                                               topk, renormalize,
                                               num_expert_group, topk_group)
     elif custom_routing_function is None:
-        topk_weights, topk_ids = fused_topk(hidden_states, gating_output, topk,
+        topk_weights, topk_ids, _ = fused_topk(hidden_states, gating_output, topk,
                                             renormalize)
     else:
         topk_weights, topk_ids = custom_routing_function(
