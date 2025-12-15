@@ -609,7 +609,7 @@ static std::unordered_map<int, KernelFunc4<T>> make_kernel_maps_gemm1_prefill_ma
     //  {109, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 16, 64, T>},  
     //  {110, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 64, T>},  
      // 8warp BLOCKN 256 
-     {111, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 256, 128, 32, 32, 64, T>},
+     {111, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 256, 64, 32, 32, 32, T>},
      //{512, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 32, 64, T>},   //寄存器溢出28
      // 16warp
     //  {113, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 16, 64, T>},  
@@ -705,10 +705,10 @@ static std::unordered_map<int, KernelFunc4<T>> make_kernel_maps_gemm1_prefill_ma
     //  {165, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 32, 16, 64, T>},  
     //  {166, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 64, 16, 64, T>},  
      // 4warp BLOCKN 128 
-     {167, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, T>},
-     {168, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 64, T>},
+     {167, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 64, 16, 32, 32, T>},
+     {168, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 64, 32, 32, 32, T>},
      // 4warp BLOCKN 256 
-     {169, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 256, 128, 16, 64, 64, T>},
+     {169, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 256, 64, 16, 64, 32, T>},
      // 8warp BLOCKN 128 
     //  {170, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 16, 64, T>},  
     //  {171, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 64, T>},  
@@ -716,35 +716,35 @@ static std::unordered_map<int, KernelFunc4<T>> make_kernel_maps_gemm1_prefill_ma
      // 4 warp:  2,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
     //  {174, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 32, 128, 16, 16, 64, T>},  
-     {175, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 32, 64, T>},
+     {175, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 64, 16, 32, 32, T>},
     //  {176, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 32, 16, 64, T>},  
-     {177, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 32, 32, 64, T>},
+     {177, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 64, 32, 32, 32, T>},
      // 8 warp:  2,4,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
     //  {178, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 16, 64, T>},  
     //  {179, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 32, 16, 64, T>},  
-     {180, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 16, 32, 64, T>},
-     {181, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 32, 32, 64, T>},
+     {180, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 64, 16, 32, 32, T>},
+     {181, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 64, 32, 32, 32, T>},
      // 8 warp:  4,2,1
      // thread: 2,2,1    1,2,1    2,1,1  1,1,1
     //  {182, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 16, 16, 64, T>},  
-     {183, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 128, 16, 32, 64, T>},
+     {183, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 64, 64, 16, 32, 32, T>},
     //  {184, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 32, 128, 32, 16, 64, T>},  
-     {185, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, T>},
+     {185, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 64, 32, 32, 32, T>},
      /////////////////////////////////////////////////////////M_WARP////////////////////////////////////////////////////
      // 1 warp
     //  {186, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 16, 128, 16, 16, 64, T>},  
     //  {187, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, T>},  
-     {188, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 32, 128, 16, 32, 64, T>},
-     {189, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, T>},
-     {190, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 128, 16, 64, 64, T>},
+     {188, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 32, 64, 16, 32, 32, T>},
+     {189, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 64, 16, 64, 32, T>},
+     {190, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 64, 64, 16, 64, 32, T>},
      // 2 warp
     //  {191, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 16, 128, 16, 16, 64, T>},  
-     {192, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 32, 128, 16, 32, 64, T>},
-     {193, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 128, 16, 64, 64, T>},
+     {192, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 32, 64, 16, 32, 32, T>},
+     {193, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 64, 64, 16, 64, 32, T>},
      // 4 warp
     //  {194, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 16, 128, 16, 16, 64, T>},  
-     {195, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 128, 16, 32, 64, T>},
+     {195, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 32, 64, 16, 32, 32, T>},
 
     };
 }

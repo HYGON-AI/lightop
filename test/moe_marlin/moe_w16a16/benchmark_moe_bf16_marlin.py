@@ -18,8 +18,8 @@ from transformers import AutoConfig
 from vllm.platforms import current_platform
 from vllm.utils import FlexibleArgumentParser
 from fuse_moegemm_marlin import fused_moe_impl, fused_moe_first_stage_tune, fused_moe_second_stage_tune, \
-                            grouped_topk, fused_topk, blockM_all_configs
-# from fuse_moegemm_dev import fused_moe_impl_test
+                            grouped_topk, blockM_all_configs
+from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
 # from test_ori_fuse_moe import fused_moe_impl
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
@@ -35,7 +35,130 @@ os.environ["TRITON_CACHE_DIR"] = f".triton/cache"
 triton_json_dir="./cache/moe"
 device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
-M_THRESHOLD = 128
+
+batch_size_router_logits_list = [256, 390] # 仅支持bs=256;390的router_logits用于tuning
+
+def is_supoort_router_logits(batch_size: int, hidden_size: int, experts_num: int) -> bool:
+    
+    if batch_size in batch_size_router_logits_list and hidden_size == 2048 and experts_num == 128:
+        return True
+    return False
+
+def _try_parse_layer_index(layer_name: str) -> Optional[int]:
+    # Typical: "model.layers.37.mlp.experts"
+    try:
+        prefix = "model.layers."
+        if not layer_name.startswith(prefix):
+            return None
+        rest = layer_name[len(prefix):]
+        return int(rest.split(".", 1)[0])
+    except Exception:
+        return None
+
+
+def _resolve_router_logits_pt(
+    source: Optional[str],
+    num_tokens: int,
+    *,
+    strict: bool = False,
+) -> Optional[str]:
+    if not source:
+        return None
+    source = os.path.expanduser(source)
+    if os.path.isdir(source):
+        # Convention: bs256.pt / bs390.pt
+        cand = os.path.join(source, f"bs{num_tokens}.pt")
+        if os.path.exists(cand):
+            return cand
+        if strict:
+            raise FileNotFoundError(
+                f"router_logits source is a dir but {cand} not found.")
+        return None
+    if os.path.exists(source):
+        return source
+    if strict:
+        raise FileNotFoundError(f"router_logits pt not found: {source}")
+    return None
+
+
+def _load_router_logits_samples(
+    router_logits_source: Optional[str],
+    num_tokens: int,
+    num_experts: int,
+    device: torch.device,
+    *,
+    layer: Optional[str] = None,
+    dtype: torch.dtype = torch.float32,
+    strict: bool = False,
+) -> Optional[List[torch.Tensor]]:
+    pt_path = _resolve_router_logits_pt(router_logits_source,
+                                        num_tokens,
+                                        strict=strict)
+    if pt_path is None:
+        return None
+
+    payload = torch.load(pt_path, map_location="cpu")
+    if not isinstance(payload, dict) or "layers" not in payload:
+        raise ValueError(
+            f"Unexpected router_logits .pt format: {pt_path} (missing 'layers')"
+        )
+    layers = payload["layers"]
+    if not isinstance(layers, dict) or not layers:
+        raise ValueError(
+            f"Unexpected router_logits .pt format: {pt_path} ('layers' empty)")
+
+    layer_names = list(layers.keys())
+    layer_names.sort(
+        key=lambda n: (_try_parse_layer_index(n) is None, _try_parse_layer_index(n) or 0, n)
+    )
+
+    selected_layer_names: List[str]
+    if layer is None or str(layer).strip() == "":
+        selected_layer_names = layer_names
+    else:
+        layer_s = str(layer).strip()
+        if layer_s.isdigit():
+            want_idx = int(layer_s)
+            selected_layer_names = [
+                n for n in layer_names if _try_parse_layer_index(n) == want_idx
+            ]
+            if not selected_layer_names:
+                raise ValueError(
+                    f"Layer index {want_idx} not found in {pt_path}")
+        else:
+            if layer_s not in layers:
+                raise ValueError(
+                    f"Layer name {layer_s} not found in {pt_path}. "
+                    f"Available example: {layer_names[0]}")
+            selected_layer_names = [layer_s]
+
+    samples: List[torch.Tensor] = []
+    for layer_name in selected_layer_names:
+        state = layers[layer_name]
+        if not isinstance(state, dict):
+            continue
+        chunks = state.get("router_logits_chunks", None)
+        if chunks is None:
+            continue
+        if not isinstance(chunks, list) or len(chunks) == 0:
+            continue
+
+        logits = torch.cat(chunks, dim=0)
+        if logits.dim() != 2:
+            continue
+        if logits.shape[0] != num_tokens or logits.shape[1] != num_experts:
+            continue
+
+        samples.append(logits.to(device=device, dtype=dtype, non_blocking=True))
+
+    if not samples:
+        raise ValueError(
+            f"No router_logits samples matched shape [{num_tokens}, {num_experts}] in {pt_path}"
+        )
+    print(
+        f"[router_logits] loaded {len(samples)} sample(s) from {pt_path} (layer={layer or 'ALL'})"
+    )
+    return samples
 
 # 生成 [m, topk] 的整数张量，每行元素不重复
 def generate_unique_int_tensor(m, topk, low=0, high=256):
@@ -356,7 +479,11 @@ def benchmark_config(config: BenchmarkConfig,
                      use_int8_w8a8: bool,
                      num_iters: int = 100,
                      block_quant_shape: List[int] = None,
-                     stages: int=1) -> float:
+                     stages: int=1,
+                     router_logits_source: Optional[str] = None,
+                     router_logits_layer: Optional[str] = None,
+                     router_topk_impl: str = "auto",
+                     router_logits_strict: bool = False,) -> float:
     
     w1_scale = None
     w2_scale = None
@@ -386,21 +513,29 @@ def benchmark_config(config: BenchmarkConfig,
 
 
     # ============================================ 准备 gating_output 和 score ======================================
-    gating_output = torch.randn(num_iters, num_tokens, num_experts, dtype=torch.float32)
-    # score = torch.randn((num_tokens, num_experts), device="cuda", dtype=torch.float32)
+    score = torch.randn(num_tokens, num_experts, dtype=torch.float32)
+    # gating_output = torch.randn(num_iters, num_tokens, num_experts, dtype=torch.float32)
 
-    # topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)  
-    
-    # gating_output = torch.randn(num_iters,
-    #                             num_tokens,
-    #                             num_experts,
-    #                             dtype=torch.float32)
-    
-    def prepare(i: int):
-        input_gating.copy_(gating_output[i])
+    router_logits_samples = _load_router_logits_samples(
+        router_logits_source,
+        num_tokens,
+        num_experts,
+        score.device,
+        layer=router_logits_layer,
+        dtype=torch.float32,
+        strict=router_logits_strict,
+    )
 
-    input_gating = torch.randn(num_tokens, num_experts, dtype=torch.float32)
-    
+    if router_logits_samples is None or not is_supoort_router_logits(num_tokens, hidden_size, num_experts): # 不支持router_logits的bs,hidden_size,experts_num
+        gating_output = torch.randn(num_iters, num_tokens, num_experts, dtype=torch.float32)
+
+        def prepare(i: int):
+            score.copy_(gating_output[i])
+    else:
+
+        def prepare(i: int):
+            score.copy_(router_logits_samples[i % len(router_logits_samples)])
+
     print("Tuing config: ", config)
     latencies: list[float] = []
     for i in range(num_iters):
@@ -413,7 +548,7 @@ def benchmark_config(config: BenchmarkConfig,
                                                     w2,
                                                     w1_marlin,
                                                     w2_marlin,
-                                                    input_gating,
+                                                    score,
                                                     topk,
                                                     renormalize=True,
                                                     inplace=True,
@@ -432,7 +567,7 @@ def benchmark_config(config: BenchmarkConfig,
                                                     w2,
                                                     w1_marlin,
                                                     w2_marlin,
-                                                    input_gating,
+                                                    score,
                                                     topk,
                                                     renormalize=True,
                                                     inplace=True,
@@ -959,7 +1094,13 @@ def merge_unique_dicts(list1, list2):
 @ray.remote(num_gpus=1)
 class BenchmarkWorker:
 
-    def __init__(self, seed: int, device_id: int) -> None:
+    def __init__(self, 
+                 seed: int, 
+                 device_id: int, 
+                 router_logits_source: Optional[str] = None, 
+                 router_logits_layer: Optional[str] = None, 
+                 router_topk_impl: str = "auto", 
+                 router_logits_strict: bool = False) -> None:
         from vllm.platforms import current_platform
         torch.set_default_device("cuda:"+ str(device_id))
         current_platform.seed_everything(seed)
@@ -968,6 +1109,10 @@ class BenchmarkWorker:
         # on the respective GPU. This is required for Ray to work
         # correctly with multi-GPU tuning on the ROCm platform.
         self.device_id = device_id
+        self.router_logits_source = router_logits_source
+        self.router_logits_layer = router_logits_layer
+        self.router_topk_impl = router_topk_impl
+        self.router_logits_strict = router_logits_strict
 
     def benchmark(
         self,
@@ -1092,7 +1237,11 @@ class BenchmarkWorker:
                                             use_int8_w8a8,
                                             num_iters=10,
                                             block_quant_shape=block_quant_shape,
-                                            stages=1)
+                                            stages=1,
+                                            router_logits_source=self.router_logits_source,
+                                            router_logits_layer=self.router_logits_layer,
+                                            router_topk_impl=self.router_topk_impl,
+                                            router_logits_strict=self.router_logits_strict)
                     except triton.runtime.autotuner.OutOfResources:
                         # Some configurations may be invalid and fail to compile.
                         # 捕获lds资源溢出错误
@@ -1117,7 +1266,11 @@ class BenchmarkWorker:
                                             use_int8_w8a8,
                                             num_iters=10,
                                             block_quant_shape=block_quant_shape,
-                                            stages=2)
+                                            stages=2,
+                                            router_logits_source=self.router_logits_source,
+                                            router_logits_layer=self.router_logits_layer,
+                                            router_topk_impl=self.router_topk_impl,
+                                            router_logits_strict=self.router_logits_strict)
                     except triton.runtime.autotuner.OutOfResources:
                         # Some configurations may be invalid and fail to compile.
                         # 捕获lds资源溢出错误
@@ -1377,8 +1530,9 @@ def main(args: argparse.Namespace):
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             # 1, 2, 4, 8, 16, 32, 
             # 64, 128,
-            256, 512, 1024, 2048, 
-            4096, 6144, 8192, 16384
+            # 256, 512, 1024, 2048, 
+            # 4096, 6144, 8192, 16384
+            390,
             
             # 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 
             # 144, 160, 176, 192, 208, 224, 240, 256, 
@@ -1408,7 +1562,8 @@ def main(args: argparse.Namespace):
                  ignore_reinit_error=True,
                  num_gpus=args.num_gpus)
     num_gpus = int(ray.available_resources()["GPU"])
-    workers = [BenchmarkWorker.remote(args.seed, i) for i in range(num_gpus)]
+    workers = [BenchmarkWorker.remote(args.seed, i, router_logits_source=args.router_logits_source, router_logits_layer=args.router_logits_layer, 
+                                      router_topk_impl=args.router_topk_impl, router_logits_strict=args.router_logits_strict) for i in range(num_gpus)]
     def _distribute(method: str, inputs: list[Any]) -> list[Any]:
         outputs = []
         worker_idx = 0
@@ -1535,8 +1690,36 @@ if __name__ == "__main__":
     parser.add_argument("--trust-remote-code", action="store_true",default=True)
     parser.add_argument("--num-gpus", type=int, default=1)
     parser.add_argument("--moe-ep-size", "-ep", type=int, default=1)
+    parser.add_argument(
+        "--router-logits-source",
+        type=str,
+        default="",
+        help=
+        "Path to router_logits .pt file, or a dir containing bs{num_tokens}.pt (from router_capture.py)."
+    )
+    parser.add_argument(
+        "--router-logits-layer",
+        type=str,
+        default="",
+        help=
+        "Layer selector for router_logits: empty=all layers (cycled), digit=layer index, otherwise full layer name."
+    )
+    parser.add_argument(
+        "--router-topk-impl",
+        type=str,
+        choices=["auto", "fused", "grouped"],
+        default="fused",
+        help=
+        "Top-k selection implementation: fused (vllm fused_topk), grouped (this script grouped_topk), auto (same as fused)."
+    )
+    parser.add_argument(
+        "--router-logits-strict",
+        action="store_true",
+        help=
+        "If set, missing bs{num_tokens}.pt (when source is a dir) raises instead of falling back to random."
+    )
     args = parser.parse_args()
 
     main(args)
     # benchmark_config_profile(49152, 256, 256, 7168, 8, torch.bfloat16, use_fp8_w8a8=False, use_int8_w8a16=False, use_int8_w8a8=True, num_iters=10, block_quant_shape=[128,128])
-    # HIP_VISIBLE_DEVICES=3 python benchmark_moe_bf16_marlin.py --num-gpus 1 --tune
+    # HIP_VISIBLE_DEVICES=3 python benchmark_moe_bf16_marlin.py --num-gpus 1 --tune --router-logits-source /home/data/qwen3-moe/logist/
