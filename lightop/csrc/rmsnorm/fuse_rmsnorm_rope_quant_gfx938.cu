@@ -214,7 +214,8 @@ __global__ void rmsnorm_rope_quant_kernel(
     const int k_rms_grid_x,
     const int bs,
     const float epsilon,
-    const int kv_dtype) 
+    const int kv_dtype,
+    const int max_slot_id) 
   {
     if(blockIdx.x < q_grid_x){
       constexpr int num_head_per_warp = (C10_WARP_SIZE * Vec) / rot_dim;
@@ -296,7 +297,7 @@ __global__ void rmsnorm_rope_quant_kernel(
       const int warpid = threadIdx.x / C10_WARP_SIZE;
       const int laneid = threadIdx.x % C10_WARP_SIZE;
       const int token_idx =  (blockIdx.x - q_grid_x)*num_token_per_block + warpid*num_token_per_warp + laneid/thread_per_head;
-      
+      if(token_idx >= bs) return;  
       
       // 计算k_pe的offset
       const int thread_offset_in_token = (laneid % thread_per_head)*Vec;
@@ -309,6 +310,10 @@ __global__ void rmsnorm_rope_quant_kernel(
       const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
       // 计算output的偏移量
       const int64_t slot = slot_mapping[token_idx];
+      if(slot >= max_slot_id || slot < 0)
+      {
+        return;
+      }
       const int64_t kv_cache_offset = slot * 576 + thread_offset_in_token;
       // 读取q_pe、cos、sin
       scalar_t input_vec[Vec];
@@ -316,7 +321,6 @@ __global__ void rmsnorm_rope_quant_kernel(
       scalar_t sin_vec[Vec/2];
       uint8_t output_vec[Vec];
       float_t rope_vec[Vec];
-      if(token_idx >= bs) return;  
       *(LoadT*)(input_vec) = *(LoadT*)(k_pe_ptr);
       *(LoadTheta*)cos_vec = *(LoadTheta*)(cache_ptr + cos_index_in_cache);
       *(LoadTheta*)sin_vec = *(LoadTheta*)(cache_ptr + sin_index_in_cache);
@@ -363,6 +367,7 @@ __global__ void rmsnorm_rope_quant_kernel(
       const int block_token_id = (blockIdx.x - q_grid_x - k_grid_x) * token_per_block;
       const int warp_token_id = warpid * token_per_warp;
       const int token_id = (blockIdx.x - q_grid_x - k_grid_x) * token_per_block + warp_token_id; // 每个block负责4个token，每个warp负责1个token
+      if(token_id >= bs) return;
       // 计算kv_c的offset
       const int thread_offset_in_token = laneid*Vec;
       if(thread_offset_in_token >= kv_c_dim) return;
@@ -370,6 +375,10 @@ __global__ void rmsnorm_rope_quant_kernel(
       scalar_t* kv_c_ptr = input_kv_c + kv_c_offset;
       // 计算output的偏移量
       const int64_t slot = slot_mapping[token_id];
+      if(slot >= max_slot_id || slot < 0)
+      {
+        return;
+      }
       const int64_t kv_cache_offset = slot * 576 + thread_offset_in_token;
       const int64_t kv_c_normed_offset = token_id * kv_c_dim + thread_offset_in_token;
       scalar_t* kv_c_normed_ptr = output_kv_c_normed + kv_c_normed_offset;
@@ -380,7 +389,6 @@ __global__ void rmsnorm_rope_quant_kernel(
       scalar_t weight_vec[Vec];
       uint8_t output_vec[Vec];
       float rms_list[Vec];
-      if(token_id >= bs) return;
       *(LoadT*)(input_vec) = *(LoadT*)(kv_c_ptr);
       *(LoadT*)(weight_vec) = *(LoadT*)(weight_ptr);
       T_ACC val = 0;
@@ -413,6 +421,9 @@ __global__ void rmsnorm_rope_quant_kernel(
       *(OutputT*)output_ptr = *(OutputT*)output_vec;
       *(LoadT*)kv_c_normed_ptr = *(LoadT*)input_vec;
     }
+    
+    
+    
     else  // 对q_c进行量化
     {
       // constexpr int num_head_per_warp = (C10_WARP_SIZE * Vec) / q_c_dim;
@@ -516,6 +527,7 @@ __global__ void rmsnorm_rope_quant_kernel(
     TORCH_CHECK(kv_cache.size(2) == kv_c_dim + rot_dim, "kv_cache.size(2) must be kv_c_dim + rot_dim");
     const int num_kv_cache_blocks = kv_cache.size(0);
     const int kv_cache_blocks_size = kv_cache.size(1);
+    const int max_slot_id = num_kv_cache_blocks * kv_cache_blocks_size;
     TORCH_CHECK(kv_cache_dtype_str == "fp8_e4m3" || kv_cache_dtype_str == "fp8_e5m2", "kv_cache_dtype_str must be fp8_e4m3 or fp8_e5m2");
     TORCH_CHECK(kv_cache_scale == 1.0f, "kv_cache_scale must be 1.0");
     int kv_dtype = -1;
@@ -559,7 +571,7 @@ __global__ void rmsnorm_rope_quant_kernel(
             q_c_ptr,q_pe_ptr,q_quant_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,cos_sin_cache_ptr,
             positions_ptr,slot_mapping_ptr,kv_cache_ptr,
             kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
-            k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon, kv_dtype);
+            k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon, kv_dtype, max_slot_id);
 
       });
 
