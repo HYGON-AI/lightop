@@ -117,6 +117,44 @@ AT_DISPATCH_SWITCH(TYPE, NAME, VLLM_DISPATCH_CASE_FLOATING_TYPES(__VA_ARGS__))
 
 
 
+
+  inline __device__ uint32_t float_to_fp8e4m3_x4(float a, float b, float c, float d)
+  {
+    #if defined(__gfx938__)
+      int32_t res;
+      res = __builtin_hcu_cvt_pk_fp8_f32(a, b, res, false);
+      res = __builtin_hcu_cvt_pk_fp8_f32(c, d, res, true);
+      return res;
+    #else
+      int32_t out;
+      reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e4m3(a);
+      reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e4m3(b);
+      reinterpret_cast<uint8_t*>(&out)[2] = float_to_fp8e4m3(c);
+      reinterpret_cast<uint8_t*>(&out)[3] = float_to_fp8e4m3(d);
+      return out;
+    #endif
+  }
+  
+  
+  
+  inline __device__ uint32_t float_to_fp8e5m2_x4(float a, float b, float c, float d)
+  {
+    #if defined(__gfx938__)
+      int32_t res;
+      res = __builtin_hcu_cvt_pk_bf8_f32(a, b, res, false);
+      res = __builtin_hcu_cvt_pk_bf8_f32(c, d, res, true);
+      return res;
+    #else
+      int32_t out;
+      reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e5m2(a);
+      reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e5m2(b);
+      reinterpret_cast<uint8_t*>(&out)[2] = float_to_fp8e5m2(c);
+      reinterpret_cast<uint8_t*>(&out)[3] = float_to_fp8e5m2(d);
+      return out;
+    #endif
+  }
+
+
 template <typename T,int reducesize=C10_WARP_SIZE>
 __inline__ __device__ T WarpReduceSum_NEW(T val) {
 #pragma unroll
@@ -222,10 +260,6 @@ __global__ void rms_rope_kernel(
         scalar_t sin_val = sin_vec[rot_dim_idx];
         input_vec[ii] = x * cos_val - y * sin_val;
         input_vec[ii+1] = y * cos_val + x * sin_val;
-        // if(blockIdx.x == 0 && threadIdx.x == 0){
-        //   printf("x: %f, y: %f, cos_val: %f, sin_val: %f, input_vec[ii]: %f, input_vec[ii+1]: %f, token_idx: %d, pos: %d, head_block_idx: %d, head_in_block: %d, lane_of_head: %d, element_in_head: %d, q_c_dim: %d, head_start: %d, q_pe_offset: %d\n", 
-        //     float(x), float(y), float(cos_val), float(sin_val), float(input_vec[ii]), float(input_vec[ii+1]), token_idx, int(pos), head_block_idx, head_in_block, lane_of_head, element_in_head, q_c_dim, head_start, q_pe_offset);
-        // }
         rot_dim_idx += 1;
       }
       // 写回q_pe
@@ -256,10 +290,10 @@ __global__ void rms_rope_kernel(
       const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
       // 计算output的偏移量
       const int64_t slot = slot_mapping[token_idx];
-      if(slot >= max_slot_id || slot < 0)
-      {
-        return;
-      }
+      // if(slot >= max_slot_id || slot < 0)
+      // {
+      //   return;
+      // }
 
 
 
@@ -269,11 +303,12 @@ __global__ void rms_rope_kernel(
       scalar_t cos_vec[Vec/2];
       scalar_t sin_vec[Vec/2];
       uint8_t output_vec[Vec];
+      float float_vec[Vec];
       *(LoadT*)(input_vec) = *(LoadT*)(k_pe_ptr);
       *(LoadTheta*)cos_vec = *(LoadTheta*)(cache_ptr + cos_index_in_cache);
       *(LoadTheta*)sin_vec = *(LoadTheta*)(cache_ptr + sin_index_in_cache);
 
-      if (kv_dtype == 0) // fp8_e5m2
+      if (kv_dtype != 2) // fp8_e5m2 or fp8_e4m3
       {
         for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
           scalar_t x = input_vec[ii];
@@ -282,34 +317,21 @@ __global__ void rms_rope_kernel(
           scalar_t sin_val = sin_vec[rot_dim_idx];
           // output_vec[ii] = float_to_fp8e5m2(x * cos_val - y * sin_val);
           // output_vec[ii+1] = float_to_fp8e5m2(y * cos_val + x * sin_val);
-          float value_x = x * cos_val - y * sin_val;
-          float value_y = y * cos_val + x * sin_val;
-          input_vec[ii] = static_cast<scalar_t>(value_x);
-          input_vec[ii+1] = static_cast<scalar_t>(value_y);
-          output_vec[ii] = float_to_fp8e5m2(value_x);
-          output_vec[ii+1] = float_to_fp8e5m2(value_y);
+          float_vec[ii] = x * cos_val - y * sin_val;
+          float_vec[ii+1] = y * cos_val + x * sin_val;
+          input_vec[ii] = static_cast<scalar_t>(float_vec[ii]);
+          input_vec[ii+1] = static_cast<scalar_t>(float_vec[ii+1]);
           rot_dim_idx += 1;
         }
-        uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset + 512;
-        *(OutputT*)output_ptr = *(OutputT*)output_vec;
-        *(LoadT*)(k_pe_ptr) = *(LoadT*)input_vec;
-      }
-      else if (kv_dtype == 1) // fp8_e4m3
-      {
-        for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
-          scalar_t x = input_vec[ii];
-          scalar_t y = input_vec[ii+1];
-          scalar_t cos_val = cos_vec[rot_dim_idx];
-          scalar_t sin_val = sin_vec[rot_dim_idx];
-          // output_vec[ii] = float_to_fp8e5m2(x * cos_val - y * sin_val);
-          // output_vec[ii+1] = float_to_fp8e5m2(y * cos_val + x * sin_val);
-          float value_x = x * cos_val - y * sin_val;
-          float value_y = y * cos_val + x * sin_val;
-          input_vec[ii] = static_cast<scalar_t>(value_x);
-          input_vec[ii+1] = static_cast<scalar_t>(value_y);
-          output_vec[ii] = float_to_fp8e4m3(value_x);
-          output_vec[ii+1] = float_to_fp8e4m3(value_y);
-          rot_dim_idx += 1;
+        if(kv_dtype == 0)
+        {
+          ((uint32_t*)output_vec)[0] = float_to_fp8e5m2_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
+          ((uint32_t*)output_vec)[1] = float_to_fp8e5m2_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
+        }
+        else
+        {
+          ((uint32_t*)output_vec)[0] = float_to_fp8e4m3_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
+          ((uint32_t*)output_vec)[1] = float_to_fp8e4m3_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
         }
         uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset + 512;
         *(OutputT*)output_ptr = *(OutputT*)output_vec;
@@ -351,11 +373,10 @@ __global__ void rms_rope_kernel(
       scalar_t* kv_c_ptr = input_kv_c + kv_c_offset;
       // 计算output的偏移量
       const int64_t slot = slot_mapping[token_id];
-      if(slot >= max_slot_id || slot < 0)
-      {
-        // printf("slot: %d, max_slot_id: %d, token_id: %d, bs: %d\n", slot, max_slot_id, token_id, bs);
-        return;
-      }
+      // if(slot >= max_slot_id || slot < 0)
+      // {
+      //   return;
+      // }
       const int64_t kv_cache_offset = slot * 576 + thread_offset_in_token;
       const int64_t kv_c_normed_offset = token_id * kv_c_dim + thread_offset_in_token;
       scalar_t* kv_c_normed_ptr = output_kv_c_normed + kv_c_normed_offset;
@@ -365,6 +386,7 @@ __global__ void rms_rope_kernel(
       scalar_t input_vec[Vec];
       scalar_t weight_vec[Vec];
       uint8_t output_vec[Vec];
+      float float_vec[Vec];
       *(LoadT*)(input_vec) = *(LoadT*)(kv_c_ptr);
       *(LoadT*)(weight_vec) = *(LoadT*)(weight_ptr);
       T_ACC val = 0;
@@ -378,25 +400,22 @@ __global__ void rms_rope_kernel(
         s_rstd = c10::cuda::compat::rsqrt(val / kv_c_dim + epsilon);
       }
       s_rstd = __shfl(s_rstd, 0);
-      if (kv_dtype == 0) // fp8_e5m2
+      if (kv_dtype != 2) // fp8_e5m2 or fp8_e4m3
       {
         #pragma unroll
         for(int ii = 0; ii < Vec; ii+=1){
-          float value = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
-          input_vec[ii] = value;
-          output_vec[ii] = float_to_fp8e5m2(value);
+          float_vec[ii] = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
+          input_vec[ii] = static_cast<scalar_t>(float_vec[ii]);
         }
-        uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset;
-        *(OutputT*)output_ptr = *(OutputT*)output_vec;
-        *(LoadT*)kv_c_normed_ptr = *(LoadT*)input_vec;
-      }
-      else if (kv_dtype == 1) // fp8_e4m3
-      {
-        #pragma unroll
-        for(int ii = 0; ii < Vec; ii+=1){
-          scalar_t value = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
-          input_vec[ii] = value;
-          output_vec[ii] = float_to_fp8e4m3(value);
+        if(kv_dtype == 0)
+        {
+          ((uint32_t*)output_vec)[0] = float_to_fp8e5m2_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
+          ((uint32_t*)output_vec)[1] = float_to_fp8e5m2_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
+        }
+        else
+        {
+          ((uint32_t*)output_vec)[0] = float_to_fp8e4m3_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
+          ((uint32_t*)output_vec)[1] = float_to_fp8e4m3_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
         }
         uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset;
         *(OutputT*)output_ptr = *(OutputT*)output_vec;
