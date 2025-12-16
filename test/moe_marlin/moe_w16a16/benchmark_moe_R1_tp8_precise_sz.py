@@ -40,6 +40,123 @@ FP8_DTYPE = torch.float8_e4m3fnuz if current_platform.is_rocm(
 
 BLOCK_M_TOTAL = 80
 
+def _try_parse_layer_index(layer_name: str) -> Optional[int]:
+    # Typical: "model.layers.37.mlp.experts"
+    try:
+        prefix = "model.layers."
+        if not layer_name.startswith(prefix):
+            return None
+        rest = layer_name[len(prefix):]
+        return int(rest.split(".", 1)[0])
+    except Exception:
+        return None
+
+
+def _resolve_router_logits_pt(
+    source: Optional[str],
+    num_tokens: int,
+    *,
+    strict: bool = False,
+) -> Optional[str]:
+    if not source:
+        return None
+    source = os.path.expanduser(source)
+    if os.path.isdir(source):
+        # Convention: bs256.pt / bs390.pt
+        cand = os.path.join(source, f"bs{num_tokens}.pt")
+        if os.path.exists(cand):
+            return cand
+        if strict:
+            raise FileNotFoundError(
+                f"router_logits source is a dir but {cand} not found.")
+        return None
+    if os.path.exists(source):
+        return source
+    if strict:
+        raise FileNotFoundError(f"router_logits pt not found: {source}")
+    return None
+
+
+def _load_router_logits_samples(
+    router_logits_source: Optional[str],
+    num_tokens: int,
+    num_experts: int,
+    device: torch.device,
+    *,
+    layer: Optional[str] = None,
+    dtype: torch.dtype = torch.float32,
+    strict: bool = False,
+) -> Optional[List[torch.Tensor]]:
+    pt_path = _resolve_router_logits_pt(router_logits_source,
+                                        num_tokens,
+                                        strict=strict)
+    if pt_path is None:
+        return None
+
+    payload = torch.load(pt_path, map_location="cpu")
+    if not isinstance(payload, dict) or "layers" not in payload:
+        raise ValueError(
+            f"Unexpected router_logits .pt format: {pt_path} (missing 'layers')"
+        )
+    layers = payload["layers"]
+    if not isinstance(layers, dict) or not layers:
+        raise ValueError(
+            f"Unexpected router_logits .pt format: {pt_path} ('layers' empty)")
+
+    layer_names = list(layers.keys())
+    layer_names.sort(
+        key=lambda n: (_try_parse_layer_index(n) is None, _try_parse_layer_index(n) or 0, n)
+    )
+
+    selected_layer_names: List[str]
+    if layer is None or str(layer).strip() == "":
+        selected_layer_names = layer_names
+    else:
+        layer_s = str(layer).strip()
+        if layer_s.isdigit():
+            want_idx = int(layer_s)
+            selected_layer_names = [
+                n for n in layer_names if _try_parse_layer_index(n) == want_idx
+            ]
+            if not selected_layer_names:
+                raise ValueError(
+                    f"Layer index {want_idx} not found in {pt_path}")
+        else:
+            if layer_s not in layers:
+                raise ValueError(
+                    f"Layer name {layer_s} not found in {pt_path}. "
+                    f"Available example: {layer_names[0]}")
+            selected_layer_names = [layer_s]
+
+    samples: List[torch.Tensor] = []
+    for layer_name in selected_layer_names:
+        state = layers[layer_name]
+        if not isinstance(state, dict):
+            continue
+        chunks = state.get("router_logits_chunks", None)
+        if chunks is None:
+            continue
+        if not isinstance(chunks, list) or len(chunks) == 0:
+            continue
+
+        logits = torch.cat(chunks, dim=0)
+        if logits.dim() != 2:
+            continue
+        if logits.shape[0] != num_tokens or logits.shape[1] != num_experts:
+            continue
+
+        samples.append(logits.to(device=device, dtype=dtype, non_blocking=True))
+
+    if not samples:
+        raise ValueError(
+            f"No router_logits samples matched shape [{num_tokens}, {num_experts}] in {pt_path}"
+        )
+    print(
+        f"[router_logits] loaded {len(samples)} sample(s) from {pt_path} (layer={layer or 'ALL'})"
+    )
+    return samples
+
+
 def grouped_topk(hidden_states: torch.Tensor,
                  gating_output: torch.Tensor,
                  topk: int,
@@ -98,7 +215,12 @@ def benchmark_config(
     shard_intermediate_size: int,
     hidden_size: int,
     topk: int,
-    dtype: Optional[str]
+    dtype: Optional[str],
+    router_logits_source: Optional[str] = None,
+    router_logits_layer: Optional[str] = None,
+    router_topk_impl: str = "auto",
+    router_logits_strict: bool = False,
+    use_nn_moe: bool = False,
 ) -> float:
 
     print("m = ", num_tokens, " 性能测试......",dtype)
@@ -117,9 +239,7 @@ def benchmark_config(
     x = torch.randn((num_tokens, hidden_size),device='cuda',dtype=dtype) / 10 # [256*8, 7168] (bf16)
     # torch.set_printoptions(profile="full")       
     # x = torch.ones_like(x)
-    # print("x.size()",x.size())
     w1 = torch.randn((num_experts, shard_intermediate_size, hidden_size), device=x.device, dtype=dtype)
-    # print("w1.size()",w1.size())
     # w1 = torch.ones_like(w1)            
     torch.set_printoptions(profile="default")
     # -------- 处理 gemm1 权重矩阵 ------------------
@@ -132,7 +252,6 @@ def benchmark_config(
 
     #  =========================================== 准备 gemm2 相关数据 =============================================
     w2 = torch.randn((num_experts, hidden_size, shard_intermediate_size // 2), device=x.device, dtype=dtype)
-    # w2 = torch.ones_like(w2)
     w2_marlin_list = []
     for i in range(w2.shape[0]):
         w2_marlin_in = w16a16_marlin_weight(w2[i])
@@ -140,13 +259,46 @@ def benchmark_config(
     w2_marlin = torch.stack(w2_marlin_list, dim=0)
     # print("gemm2 权重重排完成 重排前size为：重排后size为：",w2.size(),w2_marlin.size())
     # ============================================ 准备 gating_output 和 score ======================================
-    gating_output = torch.randn(num_iters, num_tokens, num_experts, dtype=torch.float32)
     score = torch.randn((num_tokens, num_experts), device="cuda", dtype=torch.float32)
     # w2 = torch.ones_like(w2)
-    def prepare(i: int):
-        score.copy_(gating_output[i])
 
-    topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
+    router_logits_samples = _load_router_logits_samples(
+        router_logits_source,
+        num_tokens,
+        num_experts,
+        score.device,
+        layer=router_logits_layer,
+        dtype=torch.float32,
+        strict=router_logits_strict,
+    )
+    if router_logits_samples is None:
+        gating_output = torch.randn(num_iters, num_tokens, num_experts, dtype=torch.float32)
+
+        def prepare(i: int):
+            score.copy_(gating_output[i])
+    else:
+
+        def prepare(i: int):
+            score.copy_(router_logits_samples[i % len(router_logits_samples)])
+
+    def select_topk() -> Tuple[torch.Tensor, torch.Tensor]:
+        if router_topk_impl == "auto":
+            # Keep routing/topk implementation consistent across
+            # random logits and dataset-captured logits.
+            impl = "fused"
+        else:
+            impl = router_topk_impl
+
+        if impl == "fused":
+            topk_weights, topk_ids, _ = fused_topk(x, score, topk, True)
+            return topk_weights, topk_ids
+        if impl == "grouped":
+            return grouped_topk(x, score, topk, True, 8, 4)
+        raise ValueError(
+            f"Unknown router_topk_impl={router_topk_impl} (expected: auto|fused|grouped)"
+        )
+
+    topk_weights, topk_ids = select_topk()
 
     _, _, _, _, triton_gemm1_input, triton_gemm2_input, triton_gemm1_output, triton_gemm2_output = fused_marlin_moe_valid(                         
                                                                                                                             x,
@@ -164,7 +316,7 @@ def benchmark_config(
         # 使用新的专家得分
         prepare(i)
         # 获取新专家得分的 算子时间
-        topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
+        topk_weights, topk_ids = select_topk()
         for j in range(10): # 一次随机专家运行10次
             fused_marlin_moe(
                             x,
@@ -186,7 +338,7 @@ def benchmark_config(
                             score,
                             topk_weights,
                             topk_ids,
-                            use_nn_moe=True)
+                            use_nn_moe=use_nn_moe)
             
 
     gemm1_time_us_total = 0 
@@ -198,7 +350,7 @@ def benchmark_config(
         # 使用新的专家得分
         prepare(i)
         # 获取新专家得分的 算子时间
-        topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
+        topk_weights, topk_ids = select_topk()
         GEMM1_Peak, GEMM2_Peak, bandwith1, bandwith2, triton_gemm1_input, triton_gemm2_input, triton_gemm1_output, triton_gemm2_output = fused_marlin_moe_valid(                         
                                                                                                                                                                 x,
                                                                                                                                                                 w1,
@@ -232,7 +384,7 @@ def benchmark_config(
                                                                                                                                 score,
                                                                                                                                 topk_weights,
                                                                                                                                 topk_ids,
-                                                                                                                                use_nn_moe=True
+                                                                                                                                use_nn_moe=use_nn_moe
                                                                                                                                 )
             
             gemm1_time_us_total += gemm1_time_us
@@ -291,9 +443,22 @@ def benchmark_config(
 @ray.remote(num_gpus=1)
 class BenchmarkWorker:
 
-    def __init__(self, seed: int) -> None:
+    def __init__(
+        self,
+        seed: int,
+        router_logits_source: Optional[str] = None,
+        router_logits_layer: Optional[str] = None,
+        router_topk_impl: str = "auto",
+        router_logits_strict: bool = False,
+        use_nn_moe: bool = False,
+    ) -> None:
         torch.set_default_device("cuda")
         self.seed = seed
+        self.router_logits_source = router_logits_source
+        self.router_logits_layer = router_logits_layer
+        self.router_topk_impl = router_topk_impl
+        self.router_logits_strict = router_logits_strict
+        self.use_nn_moe = use_nn_moe
         # Get the device ID to allocate tensors and kernels
         # on the respective GPU. This is required for Ray to work
         # correctly with multi-GPU tuning on the ROCm platform.
@@ -320,7 +485,12 @@ class BenchmarkWorker:
                                 shard_intermediate_size, 
                                 hidden_size,
                                 topk,
-                                dtype)
+                                dtype,
+                                router_logits_source=self.router_logits_source,
+                                router_logits_layer=self.router_logits_layer,
+                                router_topk_impl=self.router_topk_impl,
+                                router_logits_strict=self.router_logits_strict,
+                                use_nn_moe=self.use_nn_moe)
         return result
 
 def main(args: argparse.Namespace):
@@ -328,18 +498,18 @@ def main(args: argparse.Namespace):
     num_experts = 128
     shard_intermediate_size=768
     hidden_size=2048
-    # num_experts = 160
-    # shard_intermediate_size=320
-    # hidden_size=6144
     renormalize=True
     topk = 8
-    # dtype = torch.float16
-    dtype = torch.bfloat16
+    dtype = torch.float16
+    # dtype = torch.bfloat16
     if len(args.batch_size) == 0:
         print("进行全size性能测试: ")
         # batch_sizes = [256]
         # batch_sizes = [512, 1024, 2048, 4096, 6144, 8192, 16384]
-        batch_sizes = [1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128, 256, 512, 1024, 1536, 2048, 3072, 4096] 
+        # batch_sizes = [1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128, 256, 512, 1024, 1536, 2048, 3072, 4096] 
+        # batch_sizes = [ 256, 390] 
+        batch_sizes = [ 390] 
+        # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128] 
         # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128]
         # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]
     else:
@@ -349,7 +519,16 @@ def main(args: argparse.Namespace):
                  ignore_reinit_error=True,
                  num_gpus=1, local_mode = True) # local_mode = True用于debug
     num_gpus = int(ray.available_resources()["GPU"])
-    workers = [BenchmarkWorker.remote(args.seed) for _ in range(num_gpus)]
+    workers = [
+        BenchmarkWorker.remote(
+            args.seed,
+            args.router_logits_source,
+            args.router_logits_layer,
+            args.router_topk_impl,
+            args.router_logits_strict,
+            args.nn_moe,
+        ) for _ in range(num_gpus)
+    ]
 
     def _distribute(method: str, inputs: List[Any]) -> List[Any]:
         outputs = []
@@ -387,13 +566,46 @@ if __name__ == "__main__":
                         choices=["auto", "fp8_w8a8", "int8_w8a16", "int4_w4a16"],
                         default="int4_w4a16")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--batch-size", type=list, default=[])
+    parser.add_argument("--batch-size", type=int, nargs="*", default=[])
     parser.add_argument("--tune", action="store_true",default=False)
-    parser.add_argument("--nn_moe", type=bool, default=False)
+    parser.add_argument("--nn-moe", action="store_true", default=False,
+                        dest="nn_moe",
+                        help="Use nn-moe layout (default: False, uses tn-moe)")
+    parser.add_argument(
+        "--router-logits-source",
+        type=str,
+        default="",
+        help=
+        "Path to router_logits .pt file, or a dir containing bs{num_tokens}.pt (from router_capture.py)."
+    )
+    parser.add_argument(
+        "--router-logits-layer",
+        type=str,
+        default="",
+        help=
+        "Layer selector for router_logits: empty=all layers (cycled), digit=layer index, otherwise full layer name."
+    )
+    parser.add_argument(
+        "--router-topk-impl",
+        type=str,
+        choices=["auto", "fused", "grouped"],
+        default="fused",
+        help=
+        "Top-k selection implementation: fused (vllm fused_topk), grouped (this script grouped_topk), auto (same as fused)."
+    )
+    parser.add_argument(
+        "--router-logits-strict",
+        action="store_true",
+        help=
+        "If set, missing bs{num_tokens}.pt (when source is a dir) raises instead of falling back to random."
+    )
     parser.add_argument("--trust-remote-code", action="store_true", default=True)
     args = parser.parse_args()
 
     main(args)
 
     # benchmark_config(4096, 256, 512, 7168, 8)
+    # 默认随机数测试
     # HIP_VISIBLE_DEVICES=1 python3 benchmark_moe_R1_tp8_precise_sz.py
+    # 如果有真实数据集，可以用真实数据集测试
+    # HIP_VISIBLE_DEVICES=1 python3 benchmark_moe_R1_tp8_precise_sz.py -tp 2 --router-logits-source /home/data/qwen3-moe/logist/ --nn-moe
