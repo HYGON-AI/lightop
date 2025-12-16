@@ -955,6 +955,9 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
           float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
           int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + (lane_id % 16) )/2 * 2/*padding*/;
           output_lds[index] = f32_to_bf16(value);
+          // #if defined(__gfx938__)
+          // output_lds[index] = __builtin_hcu_cvt_bf16_f32(value, false, false); //fp32->bf16 精度有问题
+          // #endif
         }
       }
     }
@@ -1148,6 +1151,9 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_HIP_NT_DECODE_UP(
           float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
           int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + (lane_id % 16) )/2 * 2/*padding*/;
           output_lds[index] = f32_to_bf16(value);
+          // #if defined(__gfx938__)
+          // output_lds[index] = __builtin_hcu_cvt_bf16_f32(value, false, false); //fp32->bf16
+          // #endif
         }
       }
     }
@@ -1318,6 +1324,9 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
           float value = C_reg[0][min_tile_m * (WARP_N/mfma_n) + min_tile_n][reg_id] * weight_dot_a_scale_value * b_scale[0];
           int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + (lane_id % 16))/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
           output_lds[index] = f32_to_bf16(value);
+          // #if defined(__gfx938__)
+          // output_lds[index] = __builtin_hcu_cvt_bf16_f32(value, false, false); //fp32->bf16
+          // #endif
         }
       }
     }
@@ -1527,6 +1536,9 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_HIP_NT_DECODE_DOW
           float value = C_reg[0][min_tile_m * (WARP_N/mfma_n) + min_tile_n][reg_id] * weight_value * a_scale[0] * b_scale[0];
           int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + (lane_id % 16))/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
           output_lds[index] = f32_to_bf16(value);
+          // #if defined(__gfx938__)
+          // output_lds[index] = __builtin_hcu_cvt_bf16_f32(value, false, false); //fp32->bf16
+          // #endif
         }
       }
     }

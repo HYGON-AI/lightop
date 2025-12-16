@@ -12,7 +12,7 @@ from pkg_resources import packaging  # type: ignore[attr-defined]
 from get_version import get_version, get_dtk_version
 
 dtk_version = get_dtk_version(ROCM_HOME)
-
+gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
 
 def _find_rocm_home() -> Optional[str]:
     rocm_home = os.environ.get('ROCM_HOME') or os.environ.get('ROCM_PATH')
@@ -38,14 +38,22 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
         for flag in cflags:
             if 'amdgpu-target' in flag:
                 return ['-fno-gpu-rdc']
-    archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
+    dtk_ver = int(str(dtk_version)[:4])  # dtk命名问题25042和2604  取前四位比较
+    if dtk_ver >= 2604:  # dtk>=26042 can support gfx938
+        archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
+    else:
+        archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
     flags += ['-fno-gpu-rdc']
     flags +=['--gpu-max-threads-per-block=1024']
     return flags
 
 def _get_rocm_arch_flags_marlin(cflags: Optional[List[str]] = None) -> List[str]:
-    archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
+    dtk_ver = int(str(dtk_version)[:4])
+    if dtk_ver >= 2604:  # dtk>=26042 can support gfx938
+        archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
+    else:
+        archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
     flags +=['--gpu-max-threads-per-block=512']
     flags +=['-mllvm']
