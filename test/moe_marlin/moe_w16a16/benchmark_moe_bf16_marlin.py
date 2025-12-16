@@ -36,7 +36,7 @@ triton_json_dir="./cache/moe"
 device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
 
-batch_size_router_logits_list = [256, 390] # 仅支持bs=256;390的router_logits用于tuning
+batch_size_router_logits_list = [256, 390, 512] # 仅支持bs=256;390;512的router_logits用于tuning
 
 def is_supoort_router_logits(batch_size: int, hidden_size: int, experts_num: int) -> bool:
     
@@ -1532,7 +1532,7 @@ def main(args: argparse.Namespace):
             # 64, 128,
             # 256, 512, 1024, 2048, 
             # 4096, 6144, 8192, 16384
-            390,
+            512,
             
             # 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 
             # 144, 160, 176, 192, 208, 224, 240, 256, 
