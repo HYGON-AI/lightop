@@ -18,10 +18,14 @@ ROPE_THETA = 10000.0
 OUTPUT_FILE = "benchmark_final_results.xlsx"
 
 # 定义测试形状列表: (BATCH_Q, SEQ_Q, NUM_HEADS_Q, NUM_HEADS_K, HEAD_SIZE)
-TEST_SHAPES = [
-    (1, 128, 16, 4, 128),    # User Provided Case
-    (1, 128, 32, 8, 128),   # Batched
-]
+TEST_SHAPES = (
+    [(1, d1, 2, 1, 128) for d1 in (1 << i for i in range(17))]
+  + [(1, d2, 4, 1, 128) for d2 in (1 << i for i in range(17))]
+  + [(1, d3, 3, 1, 128) for d3 in (1 << i for i in range(17))]
+  + [(1, d4, 6, 1, 128) for d4 in (1 << i for i in range(17))]
+  + [(1, d5, 12, 1, 128) for d5 in (1 << i for i in range(17))]
+)
+
 
 TEST_NEOX_STYLES = [True, False]
 TEST_RESIDUALS = [True, False]
@@ -128,8 +132,8 @@ def run_single_case(shape_config, is_neox, use_residual):
     max_diff_record = 0.0
 
     try:
-        diff_q = compare(q_tgt, q_ref, "Query", DTYPE)
         diff_k = compare(k_tgt, k_ref, "Key", DTYPE)
+        diff_q = compare(q_tgt, q_ref, "Query", DTYPE)
         max_diff_record = max(diff_q, diff_k)
         print("   ✅ Accuracy Verified")
     except AssertionError as e:
