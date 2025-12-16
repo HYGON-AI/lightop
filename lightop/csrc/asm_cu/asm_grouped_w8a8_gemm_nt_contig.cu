@@ -199,7 +199,10 @@ void _m_grouped_w8a8_gemm_nt_contig_asm_impl(
     torch::Tensor m_indices,
     uint32_t experts_num) {
     
-    GemmInfo<OutputType> d_prob;
+    //GemmInfo<OutputType> d_prob;
+    GemmInfo<OutputType> *d_prob;
+    hipHostAlloc((void**)&d_prob, sizeof(GemmInfo<OutputType>), hipHostMallocDefault);
+
     const int size_m = input.size(0);        //(M, K)
     const int size_n = b_qweight.size(1) * 16;    //(E, N // 16, K * 16)
     const int size_k = input.size(1);
@@ -217,25 +220,25 @@ void _m_grouped_w8a8_gemm_nt_contig_asm_impl(
     size_t stride_c = size_m * size_n;
     size_t stride_d = size_m * size_n;
     {
-    d_prob.m = size_n;
-    d_prob.n = size_m;
-    d_prob.batch = 1;
-    d_prob.k = size_k;
-    d_prob.strideD1 = ldd;
-    d_prob.strideD2 = stride_d;
-    d_prob.strideC1 = ldc;
-    d_prob.strideC2 = stride_c;
-    d_prob.strideA1 = ldb;
-    d_prob.strideA2 = stride_b;
-    d_prob.strideB1 = lda;
-    d_prob.strideB2 = stride_a;
-    memcpy(d_prob.alpha, &d_alpha, sizeof(float));
-    memcpy(d_prob.beta,  &d_beta, sizeof(float));
-    d_prob.a = b_qweight.data_ptr<int8_t>();
-    d_prob.b = input.data_ptr<int8_t>();
-    d_prob.d = static_cast<OutputType*>(output.data_ptr());
-    d_prob.scaleA = b_scale.data_ptr<float>();
-    d_prob.scaleB = a_scale.data_ptr<float>();
+    d_prob->m = size_n;
+    d_prob->n = size_m;
+    d_prob->batch = 1;
+    d_prob->k = size_k;
+    d_prob->strideD1 = ldd;
+    d_prob->strideD2 = stride_d;
+    d_prob->strideC1 = ldc;
+    d_prob->strideC2 = stride_c;
+    d_prob->strideA1 = ldb;
+    d_prob->strideA2 = stride_b;
+    d_prob->strideB1 = lda;
+    d_prob->strideB2 = stride_a;
+    memcpy(d_prob->alpha, &d_alpha, sizeof(float));
+    memcpy(d_prob->beta,  &d_beta, sizeof(float));
+    d_prob->a = b_qweight.data_ptr<int8_t>();
+    d_prob->b = input.data_ptr<int8_t>();
+    d_prob->d = static_cast<OutputType*>(output.data_ptr());
+    d_prob->scaleA = b_scale.data_ptr<float>();
+    d_prob->scaleB = a_scale.data_ptr<float>();
     }
     
     size_t localWorkSize[3] = {BLOCKDIM, 1, 1};
@@ -257,9 +260,10 @@ void _m_grouped_w8a8_gemm_nt_contig_asm_impl(
     }hipFunctionArgs;
 
     uint8_t* d_argsPtr;
-    size_t arg_size = sizeof(d_prob);
+    size_t arg_size = sizeof(GemmInfo<OutputType>);
     hipMalloc((void**)&d_argsPtr, arg_size);
-    hipMemcpy(d_argsPtr, &d_prob, arg_size, hipMemcpyHostToDevice);
+
+    // hipMemcpyAsync(d_argsPtr, &d_prob, arg_size, hipMemcpyHostToDevice, 0);
 
     hipFunctionArgs.gemm_count = 1;
     hipFunctionArgs.DeviceUserArguments = d_argsPtr;
@@ -270,6 +274,7 @@ void _m_grouped_w8a8_gemm_nt_contig_asm_impl(
 
     size_t size = sizeof(hipFunctionArgs);
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    hipMemcpyAsync(d_argsPtr, d_prob, arg_size, hipMemcpyHostToDevice, stream);
     char func_name_fp[1024], fp16_co_file_tn[1024], bf16_co_file_tn[1024], func_name_bf[1024];
     memset(func_name_fp, 0x0, sizeof(func_name_fp));
     memset(fp16_co_file_tn, 0x0, sizeof(fp16_co_file_tn));
