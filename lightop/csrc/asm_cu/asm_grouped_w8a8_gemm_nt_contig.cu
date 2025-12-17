@@ -201,7 +201,7 @@ void _m_grouped_w8a8_gemm_nt_contig_asm_impl(
     
     //GemmInfo<OutputType> d_prob;
     GemmInfo<OutputType> *d_prob;
-    hipHostAlloc((void**)&d_prob, sizeof(GemmInfo<OutputType>), hipHostMallocDefault);
+    d_prob = (GemmInfo<OutputType> *)malloc(sizeof(GemmInfo<OutputType>));
 
     const int size_m = input.size(0);        //(M, K)
     const int size_n = b_qweight.size(1) * 16;    //(E, N // 16, K * 16)
@@ -259,10 +259,12 @@ void _m_grouped_w8a8_gemm_nt_contig_asm_impl(
         int32_t* debug_d;                                
     }hipFunctionArgs;
 
-    uint8_t* d_argsPtr;
-    size_t arg_size = sizeof(GemmInfo<OutputType>);
-    hipMalloc((void**)&d_argsPtr, arg_size);
-
+    // uint8_t* d_argsPtr;
+    // size_t arg_size = sizeof(d_prob);
+    // hipMalloc((void**)&d_argsPtr, arg_size);
+    hipHostRegister(d_prob, sizeof(GemmInfo<OutputType>), hipHostRegisterMapped);
+    uint8_t*  d_argsPtr;
+    hipHostGetDevicePointer((void**)&d_argsPtr, d_prob, 0);
     // hipMemcpyAsync(d_argsPtr, &d_prob, arg_size, hipMemcpyHostToDevice, 0);
 
     hipFunctionArgs.gemm_count = 1;
@@ -274,7 +276,7 @@ void _m_grouped_w8a8_gemm_nt_contig_asm_impl(
 
     size_t size = sizeof(hipFunctionArgs);
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    hipMemcpyAsync(d_argsPtr, d_prob, arg_size, hipMemcpyHostToDevice, stream);
+    // hipMemcpyAsync(d_argsPtr, &d_prob, arg_size, hipMemcpyHostToDevice, 0);
     char func_name_fp[1024], fp16_co_file_tn[1024], bf16_co_file_tn[1024], func_name_bf[1024];
     memset(func_name_fp, 0x0, sizeof(func_name_fp));
     memset(fp16_co_file_tn, 0x0, sizeof(fp16_co_file_tn));
