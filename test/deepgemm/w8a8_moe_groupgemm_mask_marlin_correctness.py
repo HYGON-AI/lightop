@@ -11,7 +11,7 @@ import ast
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
 import argparse
-from w8a8_moe_groupgemm_marlin_quant import w8a8_nt_kpack2_marlin_weight  # pyright: ignore[reportMissingImports]
+from deepgemm_groupgemm_marlin_quant import weight8bit_nt_kpack2_marlin  # pyright: ignore[reportMissingImports]
 
 from vllm.platforms import current_platform
 device_name = current_platform.get_device_name().replace(" ", "_")
@@ -66,14 +66,14 @@ def deepgemm_masked_impl_w8a8_ep_correctness(hidden_states, weight, w13_scale, m
     w1_marlin_list = []
     print("weight:", weight.shape, weight.dtype)
     for i in range(weight.shape[0]):
-        w1_marlin_in = w8a8_nt_kpack2_marlin_weight(weight[i])
+        w1_marlin_in = weight8bit_nt_kpack2_marlin(weight[i])
         w1_marlin_list.append(w1_marlin_in)
     weight_marlin = torch.stack(w1_marlin_list, dim=0)
     
     # -------- 处理 gemm2 权重矩阵 ------------------
     # w2_marlin_list = []
     # for i in range(weight2.shape[0]):
-    #     w2_marlin_in = w8a8_nt_kpack2_marlin_weight(weight2[i])
+    #     w2_marlin_in = weight8bit_nt_kpack2_marlin(weight2[i])
     #     w2_marlin_list.append(w2_marlin_in)
     # weight2_marlin = torch.stack(w2_marlin_list, dim=0)
 

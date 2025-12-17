@@ -105,7 +105,7 @@ def deepgemm_masked_impl_w4a8_ep_correctness(hidden_states, weight13, w13_scale,
     # print("tensor_expert_offsets: ", tensor_expert_offsets)
     
     # # gemm1
-    print("开始 m_grouped_w8a8_gemm_nt_masked gemm1...")
+    print("开始 m_grouped_w4a8_gemm_nt_masked gemm1...")
     print("q_a1_all:", q_a1_all.shape, q_a1_all.dtype)
     print("weight13_marlin:", weight13_marlin.shape, weight13_marlin.dtype)
     print("gemm1_out_cuda:", gemm1_out_cuda.shape, gemm1_out_cuda.dtype)

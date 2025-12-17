@@ -86,6 +86,7 @@ Tensor moe_groupgemm_w4a8_asm(Tensor input, Tensor b_qweight, Tensor output, Ten
 Tensor moe_groupgemm_marlin_w4a8_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, Tensor problem_size, Tensor expert_offsets, int mode);
 Tensor m_grouped_marlin_w4a8_gemm_nt_masked_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, Tensor masked_m, int expected_m_per_group, int mode);
 Tensor m_grouped_marlin_w8a8_gemm_nt_masked_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, Tensor masked_m, int expected_m_per_group, int mode);
+Tensor m_grouped_marlin_fp8_gemm_nt_masked_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor a_scale, Tensor b_scale, Tensor masked_m, int expected_m_per_group, int mode);
 Tensor m_grouped_bf16_gemm_nt_masked_asm(Tensor input, Tensor b_qweight, Tensor output, Tensor masked_m, int expected_m_per_group, int mode);
 Tensor moe_w16a16_asm(Tensor input,Tensor b_qweight,Tensor output,std::optional<Tensor> topk_weights,Tensor sorted_token_ids,Tensor expert_ids,Tensor num_tokens_post_pad, int top_k, int mode, int delta);
 Tensor moe_marlin_w16a16_asm(Tensor input,Tensor b_qweight,Tensor output,std::optional<Tensor> topk_weights,Tensor sorted_token_ids,Tensor expert_ids,Tensor num_tokens_post_pad, int top_k, int mode, int delta);
@@ -346,6 +347,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("moe_groupgemm_marlin_w4a8_asm", &at::native::moe_groupgemm_marlin_w4a8_asm, "moe_groupgemm_marlin_w4a8_asm");
   m.def("m_grouped_marlin_w4a8_gemm_nt_masked_asm", &at::native::m_grouped_marlin_w4a8_gemm_nt_masked_asm, "m_grouped_marlin_w4a8_gemm_nt_masked_asm");
   m.def("m_grouped_marlin_w8a8_gemm_nt_masked_asm", &at::native::m_grouped_marlin_w8a8_gemm_nt_masked_asm, "m_grouped_marlin_w8a8_gemm_nt_masked_asm");
+  m.def("m_grouped_marlin_fp8_gemm_nt_masked_asm", &at::native::m_grouped_marlin_fp8_gemm_nt_masked_asm, "m_grouped_marlin_fp8_gemm_nt_masked_asm");
   m.def("m_grouped_bf16_gemm_nt_masked_asm", &at::native::m_grouped_bf16_gemm_nt_masked_asm, "m_grouped_bf16_gemm_nt_masked_asm");
   m.def("moe_marlin_w4a16", &at::native::moe_marlin_w4a16, "moe_marlin_w4a16");
   m.def("moe_marlin_w4a8", &at::native::moe_marlin_w4a8, "moe_marlin_w4a8");
