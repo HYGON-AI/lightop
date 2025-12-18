@@ -121,7 +121,7 @@ def fused_moe_valid_w16a16_marlin(
     assert w1_triton.is_contiguous(), "Expert weights1 must be contiguous"
     assert w2_triton.is_contiguous(), "Expert weights2 must be contiguous"
     # 当前只支持 bf16
-    assert hidden_states.dtype in [torch.bfloat16]
+    assert hidden_states.dtype in [torch.bfloat16,torch.float16]
 
     M, K = hidden_states.shape # 16 2048
     E = w1_triton.shape[0] # 128
@@ -132,8 +132,8 @@ def fused_moe_valid_w16a16_marlin(
     # print("topk_weights",topk_weights)
     # print("topk_weights",topk_weights.size())   
 
-    config_marlin_0, config_marlin_1, status = get_moe_cuda_marlin_config_w16a16(E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16)
-    print("E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16",E, M, 2 * N, K, K, N, 8, device_name, num_cus, tl.bfloat16)
+    config_marlin_0, config_marlin_1, status = get_moe_cuda_marlin_config_w16a16(E, M, 2 * N, K, K, N, 8, device_name, num_cus, hidden_states.dtype)
+    print("E, M, 2 * N, K, K, N, 8, device_name, num_cus, hidden_states.dtype",E, M, 2 * N, K, K, N, 8, device_name, num_cus, hidden_states.dtype)
     # debug
     mode0 = modes[0]
     mode1 = modes[1]
@@ -168,14 +168,8 @@ def fused_moe_valid_w16a16_marlin(
     intermediate_cache1 = intermediate_cache1.view(-1, 2 * N) # [M * topk, 2 * N]  [32*8, 512]
     intermediate_cache3 = intermediate_cache13[:M * topk_ids.shape[1] * K]
     intermediate_cache3 = intermediate_cache3.view(-1, K)  # [M * topk, K]  [32*8, 7168]
-
-    # hidden_states = torch.ones_like(hidden_states)
-    # w1_triton = torch.ones_like(w1_triton)
-    # w1_marlin = torch.ones_like(w1_marlin)
-    # w2_triton = torch.ones_like(w2_triton)
-    # w2_marlin = torch.ones_like(w2_marlin)
-    # topk_weights = torch.ones_like(topk_weights)
     
+
     # =========================== gemm1 marlin 计算 ===============================
     moe_gemm_marlin_w16a16(hidden_states, w1_marlin, intermediate_cache1, None, sorted_token_ids, 
                          expert_ids, num_tokens_post_padded, topk, config_marlin_0)

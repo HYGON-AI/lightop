@@ -140,7 +140,8 @@ def benchmark_config(
     shard_intermediate_size: int,
     hidden_size: int,
     topk: int,
-    modes: Optional[List[int]]=None
+    modes: Optional[List[int]]=None,
+    dtype: Optional[torch.dtype]=None
 ) -> float:
 
     print("m = ", num_tokens, " 性能测试......")
@@ -156,8 +157,8 @@ def benchmark_config(
 
 
     #  =========================================== 准备 gemm1 相关数据 =============================================
-    x = torch.randn((num_tokens, hidden_size),device='cuda',dtype=torch.bfloat16) / 10 # [256*8, 7168] (bf16)
-    w1 = torch.randn((num_experts, shard_intermediate_size, hidden_size), device=x.device, dtype=torch.bfloat16)
+    x = torch.randn((num_tokens, hidden_size),device='cuda',dtype=dtype) / 10 # [256*8, 7168] (bf16)
+    w1 = torch.randn((num_experts, shard_intermediate_size, hidden_size), device=x.device, dtype=dtype)
     # -------- 处理 gemm1 权重矩阵 ------------------
     w1_marlin_list = []
     for i in range(w1.shape[0]):
@@ -167,7 +168,7 @@ def benchmark_config(
     w1_scale = (torch.randn((num_experts, shard_intermediate_size ,1), dtype=torch.float32, device=x.device))
     
     #  =========================================== 准备 gemm2 相关数据 =============================================
-    w2 = torch.randn((num_experts, hidden_size, shard_intermediate_size // 2), device=x.device, dtype=torch.bfloat16)
+    w2 = torch.randn((num_experts, hidden_size, shard_intermediate_size // 2), device=x.device, dtype=dtype)
     # -------- 处理 gemm2 权重矩阵 ------------------
     w2_marlin_list = []
     for i in range(w2.shape[0]):
@@ -197,10 +198,10 @@ def benchmark_config(
 def run_moe_w16a16_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
-    # m_list=[256,512,1024,2048,4096,8192,16384] #prefill
+    m_list=[256,512,1024,2048,4096,8192,16384] #prefill
     # m_list=[144,160,176,192,208,224,240,240,256,288,320,]
     # m_list=[1, 2, 4, 8, 16, 32, 64, 128]
-    m_list = [512]
+    # m_list = [512]
     # n_list_1=[512,]
     # k_list_1=[7168,]
     
@@ -242,15 +243,15 @@ def run_moe_w16a16_perchannel_vaild():
     # n_list_2=[2048]
     # k_list_2=[768]
     
-    ##qwen3-30b-A3B-tp2
-    E=128
-    topk=8
-    n_list_1=[768]
-    k_list_1=[2048]
-    n_list_2=[2048]
-    k_list_2=[384]
+    # ##qwen3-30b-A3B-tp2
+    # E=128
+    # topk=8
+    # n_list_1=[768]
+    # k_list_1=[2048]
+    # n_list_2=[2048]
+    # k_list_2=[384]
     
-    ##qwen3-235b-A22B-tp8
+    # #qwen3-235b-A22B-tp8
     # E=128
     # topk=8
     # n_list_1=[384]
@@ -258,13 +259,13 @@ def run_moe_w16a16_perchannel_vaild():
     # n_list_2=[4096]
     # k_list_2=[192]
     
-    # ##zijie
-    # E=64
-    # topk=4
-    # n_list_1=[2048]
-    # k_list_1=[4096]
-    # n_list_2=[4096]
-    # k_list_2=[1024]
+    #qwen3-480b-A35B-tp8
+    E=160
+    topk=8
+    n_list_1=[640]
+    k_list_1=[6144]
+    n_list_2=[6144]
+    k_list_2=[320]
     
     out_dtype=torch.bfloat16
     # out_dtype = torch.float16
@@ -278,8 +279,8 @@ def run_moe_w16a16_perchannel_vaild():
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
-    mode_ranges = [mode for mode in blockM_all_configs.keys()]
-    # mode_ranges = [103]
+    # mode_ranges = [mode for mode in blockM_all_configs.keys()]
+    mode_ranges = [1000]
     # compare_fail = [42,43,46,52,54,60]
     # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
     # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
@@ -310,7 +311,8 @@ def run_moe_w16a16_perchannel_vaild():
                                 shard_intermediate_size, 
                                 hidden_size,
                                 topk,
-                                mode_list)
+                                mode_list,
+                                out_dtype)
 
                      
     # print("gemm1_compare_failed_list: ", gemm1_compare_failed_list)
