@@ -290,10 +290,10 @@ __global__ void rms_rope_kernel(
       const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
       // 计算output的偏移量
       const int64_t slot = slot_mapping[token_idx];
-      // if(slot >= max_slot_id || slot < 0)
-      // {
-      //   return;
-      // }
+      if(slot >= max_slot_id || slot < 0)
+      {
+         return;
+      }
 
 
 
@@ -373,10 +373,10 @@ __global__ void rms_rope_kernel(
       scalar_t* kv_c_ptr = input_kv_c + kv_c_offset;
       // 计算output的偏移量
       const int64_t slot = slot_mapping[token_id];
-      // if(slot >= max_slot_id || slot < 0)
-      // {
-      //   return;
-      // }
+      if(slot >= max_slot_id || slot < 0)
+      {
+        return;
+      }
       const int64_t kv_cache_offset = slot * 576 + thread_offset_in_token;
       const int64_t kv_c_normed_offset = token_id * kv_c_dim + thread_offset_in_token;
       scalar_t* kv_c_normed_ptr = output_kv_c_normed + kv_c_normed_offset;
