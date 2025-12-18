@@ -420,6 +420,7 @@ def fused_marlin_moe_valid(
                      global_num_experts: int = -1,
                      expert_map: Optional[torch.Tensor] = None,
                      inplace: bool = False,
+                     debug_status: bool = False,
                      ) -> torch.Tensor:
     assert hidden_states.shape[0] == gating_output.shape[0], "Number of tokens mismatch"
     assert hidden_states.is_contiguous(), "Hidden_states must be contiguous"
@@ -551,10 +552,12 @@ def fused_marlin_moe_valid(
     torch.cuda.synchronize()
     
     torch.testing.assert_close(triton_opt_gemm1_output, triton_gemm1_output, atol=1e-2, rtol=1e-2)
-    # print("        triton_opt对比triton gemm1 success!!!!")
+    if debug_status:
+        print("        triton_opt对比triton gemm1 success!!!!")
     
     torch.testing.assert_close(intermediate_cache1, triton_gemm1_output, atol=1e-2, rtol=1e-2)
-    # print("        cuda对比triton gemm1 success!!!!")
+    if debug_status:
+        print("        cuda对比triton gemm1 success!!!!")
     
     torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1)
     # print("intermediate_cache2 size",intermediate_cache2.size())
@@ -619,10 +622,12 @@ def fused_marlin_moe_valid(
     triton_opt_gemm2_output = triton_opt_gemm2_output.reshape((-1, K))
     
     torch.testing.assert_close(triton_opt_gemm2_output, triton_gemm2_output, atol=1e-2, rtol=1e-2)
-    # print("        triton_opt对比triton gemm2 success!!!!")
+    if debug_status:
+        print("        triton_opt对比triton gemm2 success!!!!")
     
     torch.testing.assert_close(intermediate_cache3, triton_gemm2_output, atol=1e-2, rtol=1e-2)
-    # print("        Triton对比cuda gemm2 success!!!!")
+    if debug_status:
+        print("        Triton对比cuda gemm2 success!!!!")
     
     #N:384 K:2048
     return (num_tokens_post_padded.item() * K * 2*N * 2),(num_tokens_post_padded.item()  * N * K * 2), \
