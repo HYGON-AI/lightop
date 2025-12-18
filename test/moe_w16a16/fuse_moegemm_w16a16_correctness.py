@@ -229,21 +229,21 @@ def run_moe_w16a16_perchannel_vaild():
     # n_list_2=[2048]
     # k_list_2=[768]
     
-    ##qwen3-30b-A3B-tp2
-    E=128
-    topk=8
-    n_list_1=[768]
-    k_list_1=[2048]
-    n_list_2=[2048]
-    k_list_2=[384]
-    
-    ##qwen3-235b-A22B-tp8
+    # ##qwen3-30b-A3B-tp2
     # E=128
     # topk=8
-    # n_list_1=[384]
-    # k_list_1=[4096]
-    # n_list_2=[4096]
-    # k_list_2=[192]
+    # n_list_1=[768]
+    # k_list_1=[2048]
+    # n_list_2=[2048]
+    # k_list_2=[384]
+    
+    #qwen3-235b-A22B-tp8
+    E=128
+    topk=8
+    n_list_1=[384]
+    k_list_1=[4096]
+    n_list_2=[4096]
+    k_list_2=[192]
     
     # ##zijie
     # E=64
