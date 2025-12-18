@@ -45,7 +45,7 @@ def _create_mla_cache(
                        device=device)
 
 
-def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim,rot_dim,num_kv_cache_blocks,kv_cache_blocks_size,test_speed = False):
+def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim,rot_dim,num_kv_cache_blocks,kv_cache_blocks_size,k_bs_stride,test_speed = False):
     DEVICE = "cuda"
     variance_epsilon = 1e-6
     DTYPE = torch.bfloat16    
@@ -77,6 +77,17 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
     k_pe = k_tensor[...,kv_c_dim:]
     k_pe_no_fuse = k_pe.clone()
     kv_c = k_tensor[...,:kv_c_dim]
+
+    k_tensor_big= torch.randn(batch_size, k_bs_stride, dtype=DTYPE, device=DEVICE)
+    kv_c_big = k_tensor_big[...,:kv_c_dim]
+    kv_c_big[:]=kv_c
+    kv_c = kv_c_big
+
+    k_pe_big = k_tensor_big[...,kv_c_dim:kv_c_dim+rot_dim]
+    k_pe_big[:]=k_pe
+    k_pe = k_pe_big
+
+
     kv_c_normed = torch.empty_like(kv_c).contiguous()
     weight = torch.randn(kv_c_dim, dtype=DTYPE, device=DEVICE)
     kv_c_no_fuse = kv_c.clone()
@@ -122,11 +133,11 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
         print(f"bs: {batch_size}, num_head: {num_head}, diff_max_q: {diff_max_q}, diff_max_k_pe: {diff_max_k_pe}, diff_max_kv_c: {diff_max_kv_c}, diff_max_kv_cache: {diff_max_kv_cache}")
 
 if __name__ == "__main__":
-    # rms_rope_single_test(kv_cache_dtype_str = "bf16", batch_size=4096,num_head=128,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=1000, kv_cache_blocks_size=16, test_speed=False)
-    # rms_rope_single_test(kv_cache_dtype_str = "fp8_e5m2",batch_size=32,num_head=128,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=1000, kv_cache_blocks_size=16, test_speed=True)
-    for bs in [2048,4096,8192,16384]:
-       for num_head in [128,]:
-        rms_rope_single_test(kv_cache_dtype_str = "bf16",batch_size=bs,num_head=num_head,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=10000, kv_cache_blocks_size=64, test_speed=True)
+    # rms_rope_single_test(kv_cache_dtype_str = "bf16",batch_size=2048,num_head=16,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=10000, kv_cache_blocks_size=64, k_bs_stride=2112, test_speed=False)
+    rms_rope_single_test(kv_cache_dtype_str = "fp8_e4m3",batch_size=2048,num_head=16,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=10000, kv_cache_blocks_size=64, k_bs_stride=2112, test_speed=False)
+    # for bs in [2048,4096,8192,16384]:
+    #    for num_head in [16,]:
+    #     rms_rope_single_test(kv_cache_dtype_str = "bf16",batch_size=bs,num_head=num_head,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=10000, kv_cache_blocks_size=64, k_bs_stride=2112, test_speed=False)
 
 
 

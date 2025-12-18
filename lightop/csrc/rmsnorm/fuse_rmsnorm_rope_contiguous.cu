@@ -210,7 +210,8 @@ __global__ void rms_rope_kernel(
     const int bs,
     const float epsilon,
     const int kv_dtype,
-    const int max_slot_id) 
+    const int max_slot_id,
+    const int k_bs_stride) 
   {
 
     if(blockIdx.x < q_grid_x){
@@ -281,7 +282,8 @@ __global__ void rms_rope_kernel(
       
       // 计算k_pe的offset
       const int thread_offset_in_token = (laneid % thread_per_head)*Vec;
-      const int k_pe_offset = token_idx * k_stride_head + thread_offset_in_token;
+      // const int k_pe_offset = token_idx * k_stride_head + thread_offset_in_token;
+      const int k_pe_offset = token_idx * k_bs_stride + thread_offset_in_token;
       scalar_t* k_pe_ptr = input_k + k_pe_offset;
       // 计算cos_sin的偏移量
       const int64_t pos = positions[token_idx];
@@ -292,7 +294,7 @@ __global__ void rms_rope_kernel(
       const int64_t slot = slot_mapping[token_idx];
       if(slot >= max_slot_id || slot < 0)
       {
-         return;
+        return;
       }
 
 
@@ -369,7 +371,8 @@ __global__ void rms_rope_kernel(
       // 计算kv_c的offset
       const int thread_offset_in_token = laneid*Vec;
       if(thread_offset_in_token >= kv_c_dim) return;
-      const int kv_c_offset = token_id * k_stride_head + thread_offset_in_token;
+      // const int kv_c_offset = token_id * k_stride_head + thread_offset_in_token;
+      const int kv_c_offset = token_id * k_bs_stride + thread_offset_in_token;
       scalar_t* kv_c_ptr = input_kv_c + kv_c_offset;
       // 计算output的偏移量
       const int64_t slot = slot_mapping[token_id];
@@ -469,7 +472,8 @@ __global__ void rms_rope_kernel(
     TORCH_CHECK(k_pe.dim() == 2, "k_pe must be 2D tensor [bs, kv_c_dim + rot_dim]");
     TORCH_CHECK(k_pe.size(1) ==  rot_dim, "k_pe.size(1) must be rot_dim");
     TORCH_CHECK(k_pe.size(0) == bs, "k_pe.size(0) must be bs");
-    TORCH_CHECK(k_pe.stride(0) == kv_c_dim + rot_dim, "k_pe.stride(0) must be kv_c_dim + rot_dim");
+    // TORCH_CHECK(k_pe.stride(0) == kv_c_dim + rot_dim, "k_pe.stride(0) must be kv_c_dim + rot_dim");
+    const int k_bs_stride = k_pe.stride(0);
     TORCH_CHECK(kv_c_normed.dim() == 2, "kv_c_normed must be 2D tensor [bs, kv_c_dim]");
     TORCH_CHECK(kv_c_normed.size(1) == kv_c_dim, "kv_c_normed.size(1) must be kv_c_dim");
     TORCH_CHECK(kv_c_normed.size(0) == bs, "kv_c_normed.size(0) must be bs");
@@ -483,7 +487,8 @@ __global__ void rms_rope_kernel(
     TORCH_CHECK(kv_c.dim() == 2, "kv_c must be 2D tensor [bs, kv_c_dim + rot_dim]");
     TORCH_CHECK(kv_c.size(1) == kv_c_dim, "kv_c.size(1) must be kv_c_dim");
     TORCH_CHECK(kv_c.size(0) == bs, "kv_c.size(0) must be bs");
-    TORCH_CHECK(kv_c.stride(0) == kv_c_dim + rot_dim, "kv_c.stride(0) must be kv_c_dim + rot_dim");
+    TORCH_CHECK(kv_c.stride(0) == k_bs_stride, "kv_c.stride(0) must equal k_pe.stride(0)");
+    // const int k_bs_stride = kv_c.stride(0);
     constexpr int k_rms_token_per_warp = element_per_warp / (kv_c_dim);// 1
     constexpr int k_rms_token_per_block = k_rms_token_per_warp * num_warp_per_block; // 4
     const int k_rms_grid_x = (bs + k_rms_token_per_block - 1) / k_rms_token_per_block; // (32 + 32 - 1) / 32 = 1
@@ -553,7 +558,7 @@ __global__ void rms_rope_kernel(
             q_pe_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,cos_sin_cache_ptr,
             positions_ptr,slot_mapping_ptr,kv_cache_ptr,
             kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
-            k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon, kv_dtype, max_slot_id);
+            k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon, kv_dtype, max_slot_id, k_bs_stride);
 
       });
 
