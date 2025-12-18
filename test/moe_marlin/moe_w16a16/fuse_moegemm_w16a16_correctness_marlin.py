@@ -243,13 +243,13 @@ def run_moe_w16a16_perchannel_vaild():
     # n_list_2=[2048]
     # k_list_2=[768]
     
-    # ##qwen3-30b-A3B-tp2
-    # E=128
-    # topk=8
-    # n_list_1=[768]
-    # k_list_1=[2048]
-    # n_list_2=[2048]
-    # k_list_2=[384]
+    ##qwen3-30b-A3B-tp2
+    E=128
+    topk=8
+    n_list_1=[768]
+    k_list_1=[2048]
+    n_list_2=[2048]
+    k_list_2=[384]
     
     # #qwen3-235b-A22B-tp8
     # E=128
@@ -259,13 +259,13 @@ def run_moe_w16a16_perchannel_vaild():
     # n_list_2=[4096]
     # k_list_2=[192]
     
-    #qwen3-480b-A35B-tp8
-    E=160
-    topk=8
-    n_list_1=[640]
-    k_list_1=[6144]
-    n_list_2=[6144]
-    k_list_2=[320]
+    # #qwen3-480b-A35B-tp8
+    # E=160
+    # topk=8
+    # n_list_1=[640]
+    # k_list_1=[6144]
+    # n_list_2=[6144]
+    # k_list_2=[320]
     
     out_dtype=torch.bfloat16
     # out_dtype = torch.float16
@@ -280,7 +280,7 @@ def run_moe_w16a16_perchannel_vaild():
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
     # mode_ranges = [mode for mode in blockM_all_configs.keys()]
-    mode_ranges = [1000]
+    mode_ranges = [167]
     # compare_fail = [42,43,46,52,54,60]
     # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
     # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]

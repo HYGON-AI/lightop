@@ -308,7 +308,8 @@ def benchmark_config(
                                                                                                                             w2_marlin,
                                                                                                                             score,
                                                                                                                             topk_weights,
-                                                                                                                            topk_ids
+                                                                                                                            topk_ids,
+                                                                                                                            debug_status=True
                                                                                                                             )
     # return
     # 预热
@@ -506,9 +507,9 @@ def main(args: argparse.Namespace):
         print("进行全size性能测试: ")
         # batch_sizes = [256]
         # batch_sizes = [512, 1024, 2048, 4096, 6144, 8192, 16384]
-        # batch_sizes = [1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128, 256, 512, 1024, 1536, 2048, 3072, 4096] 
+        batch_sizes = [1, 2, 4, 8, 16, 24, 32, 48, 64, 96, 128, 256, 512, 1024, 1536, 2048, 3072, 4096] 
         # batch_sizes = [ 256, 390] 
-        batch_sizes = [ 390] 
+        # batch_sizes = [ 390] 
         # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128] 
         # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128]
         # batch_sizes = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]
