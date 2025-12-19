@@ -764,7 +764,7 @@ void launch_moe_w8a8_fp8_first_stage_prefill(const GemmParams<T>& params) {
     if(!params.is_marlin){
        printf("error: moe_w8a8_fp8_only support marlin\n");
     }else{
-        MOE_W8A8_FP8_PERCHANNEL_MARLIN_HIP_NT_PREFILL_UP<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+        MOE_W8A8_FP8_PERCHANNEL_MARLIN_HIP_NT_PREFILL_UP<uint8_t, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
           GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
           params.ptr_A, 
           params.ptr_B0, 
@@ -824,7 +824,7 @@ void launch_moe_w8a8_fp8_first_stage_decode(const GemmParams<T>& params) {
       gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
       gridDim.x = 1; // k方向
 
-      MOE_W8A8_FP8_PERCHANNEL_MARLIN_HIP_NT_DECODE_UP<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+      MOE_W8A8_FP8_PERCHANNEL_MARLIN_HIP_NT_DECODE_UP<uint8_t, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       GROUP_N, GROUP_K, STAGES, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
@@ -880,7 +880,7 @@ void launch_moe_w8a8_fp8_second_stage_prefill(const GemmParams<T>& params) {
     if(!params.is_marlin){
       printf("error: moe_w8a8_fp8_only support marlin\n");
     }else{
-      MOE_W8A8_FP8_PERCHANNEL_MARLIN_HIP_NT_PREFILL_DOWN<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+      MOE_W8A8_FP8_PERCHANNEL_MARLIN_HIP_NT_PREFILL_DOWN<uint8_t, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
         GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
         params.ptr_A, 
         params.ptr_B0, 
@@ -943,7 +943,7 @@ void launch_moe_w8a8_fp8_second_stage_decode(const GemmParams<T>& params) {
     } else{
 
         gridDim.z = std::min(params.size_m * params.top_k, DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M)); // m方向
-        MOE_W8A8_FP8_PERCHANNEL_MARLIN_HIP_NT_DECODE_DOWN<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+        MOE_W8A8_FP8_PERCHANNEL_MARLIN_HIP_NT_DECODE_DOWN<uint8_t, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
         GROUP_N, GROUP_K, STAGES, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
         params.ptr_A, 
         params.ptr_B0, 
@@ -1019,13 +1019,13 @@ torch::Tensor moe_gemm_marlin_w8a8_fp8(torch::Tensor input,
 
     int num_pad = 0;
 
-    if (input.scalar_type() == at::ScalarType::Char){
+    if (1){
       if(first_stage){
      
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
-        GemmParams<char> params_in(
-          (const char*)input.data_ptr<int8_t>(), 
-          (const char*)b_qweight.data_ptr<int8_t>(), 
+        GemmParams<uint8_t> params_in(
+          (const uint8_t*)input.data_ptr(), 
+          (const uint8_t*)b_qweight.data_ptr(), 
           (bhalf_t*)output_alias.data_ptr(),
           (float*)a_scale.data_ptr(), 
           (float*)b_scale.data_ptr(),  
@@ -1070,9 +1070,9 @@ torch::Tensor moe_gemm_marlin_w8a8_fp8(torch::Tensor input,
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
           
         // 使用int8类型处理
-        GemmParams<char> params_in(
-          (const char*)input.data_ptr<int8_t>(), 
-          (const char*)b_qweight.data_ptr<int8_t>(), 
+        GemmParams<uint8_t> params_in(
+          (const uint8_t*)input.data_ptr(), 
+          (const uint8_t*)b_qweight.data_ptr(), 
           (bhalf_t*)output_alias.data_ptr(),
           (float*)a_scale.data_ptr(), 
           (float*)b_scale.data_ptr(),  
