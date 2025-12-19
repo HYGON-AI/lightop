@@ -46,6 +46,36 @@ struct HipFunctionArgs {
   void *debugBuffer;
 };
 
+
+template <typename T>
+struct HipFunctionFP8Args {
+  uint32_t numWorkGroups0;
+  uint32_t numWorkGroups1;
+  T* ptr_C;                   // output
+  const uint8_t* ptr_A;                    // input
+  const uint8_t* ptr_B0;                   // weight
+  float* ptr_A_scale;                // input scale
+  float* ptr_B_scale;                // weight scale
+  const float* topk_weights;         // topk weights
+  const int32_t* sorted_token_ids;   // sorted token ids
+  const int32_t* expert_ids;         // expert ids
+  const int32_t* num_tokens_post_pad_ptr;// num tokens after padding
+  uint32_t experts_num;              // num of experts
+  uint32_t size_m;                   // input size m
+  uint32_t size_n;                   // output size n
+  uint32_t size_k;                   // input size k
+  uint32_t stride_asm;               // input scale stride m
+  uint32_t stride_ask;               // input scale stride k
+  uint32_t stride_bse;               // weight scale stride expert
+  uint32_t stride_bsn;               // weight scale stride n
+  uint32_t stride_bsk;               // weight scale stride k
+  uint32_t sorted_token_lens;        // sorted token length
+  uint32_t topk;                     // top k
+  float topk_rcip;                   // top k
+  float delta_rcip;                  // delta
+  void *debugBuffer;
+};
+
 namespace at {
 namespace native {
 
@@ -366,12 +396,12 @@ void _moe_marlin_w8a8_fp8_TN_impl(
   globalWorkSize[1] = 1;
   globalWorkSize[2] = std::min(DIVIDE(sorted_token_lens, BLOCKM), DIVIDE(num_pad, BLOCKM));
 
-  HipFunctionArgs<OutputType> hipFunctionArgs;
+  HipFunctionFP8Args<OutputType> hipFunctionArgs;
   hipFunctionArgs.numWorkGroups0 = globalWorkSize[0];
   hipFunctionArgs.numWorkGroups1 = globalWorkSize[2];
   hipFunctionArgs.ptr_C = static_cast<OutputType*>(output.data_ptr());
-  hipFunctionArgs.ptr_A = b_qweight.data_ptr<int8_t>();
-  hipFunctionArgs.ptr_B0 = input.data_ptr<int8_t>();
+  hipFunctionArgs.ptr_A = (const uint8_t*)b_qweight.data_ptr();
+  hipFunctionArgs.ptr_B0 = (const uint8_t*)input.data_ptr();
   hipFunctionArgs.ptr_A_scale = b_scale.data_ptr<float>();
   hipFunctionArgs.ptr_B_scale = a_scale.data_ptr<float>();
   hipFunctionArgs.topk_weights = topk_weights_ptr;
