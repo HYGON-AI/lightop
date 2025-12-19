@@ -737,6 +737,46 @@ void fuse_silu_and_mul(torch::Tensor& input, torch::Tensor& out)
           dim3 block(d);
           silu_and_mul_base<<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(), d);
         }
+      }else if(192 == d){
+        constexpr int VEC = 4;
+        constexpr int THREAD_PER_ROW = 64;
+        constexpr int ROWS_PER_BLOCK = 4;
+        if(num_tokens >= 1024 & 0 == (num_tokens % ROWS_PER_BLOCK)){
+          dim3 grid(num_tokens / ROWS_PER_BLOCK);
+          dim3 block(THREAD_PER_ROW * ROWS_PER_BLOCK);
+          silu_and_mul_opt3<scalar_t, VEC, 192, THREAD_PER_ROW, ROWS_PER_BLOCK><<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>());
+        }else{
+          dim3 grid(num_tokens);
+          dim3 block(d);
+          silu_and_mul_base<<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(), d);
+        }
+      }else if(96 == d){
+        constexpr int VEC = 2;
+        constexpr int THREAD_PER_ROW = 64;
+        constexpr int ROWS_PER_BLOCK = 4;
+        if(num_tokens >= 1024 & 0 == (num_tokens % ROWS_PER_BLOCK)){
+          dim3 grid(num_tokens / ROWS_PER_BLOCK);
+          dim3 block(THREAD_PER_ROW * ROWS_PER_BLOCK);
+          silu_and_mul_opt3<scalar_t, VEC, 96, THREAD_PER_ROW, ROWS_PER_BLOCK><<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>());
+        }else{
+          dim3 grid(num_tokens);
+          dim3 block(d);
+          silu_and_mul_base<<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(), d);
+        }
+      }
+      else if(48 == d){
+        constexpr int VEC = 1;
+        constexpr int THREAD_PER_ROW = 64;
+        constexpr int ROWS_PER_BLOCK = 4;
+        if(num_tokens >= 1024 & 0 == (num_tokens % ROWS_PER_BLOCK)){
+          dim3 grid(num_tokens / ROWS_PER_BLOCK);
+          dim3 block(THREAD_PER_ROW * ROWS_PER_BLOCK);
+          silu_and_mul_opt3<scalar_t, VEC, 48, THREAD_PER_ROW, ROWS_PER_BLOCK><<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>());
+        }else{
+          dim3 grid(num_tokens);
+          dim3 block(d);
+          silu_and_mul_base<<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(), d);
+        }
       }
       else{
         dim3 grid(num_tokens);
