@@ -68,8 +68,10 @@ union union_vec{
   int32_t uint_array[len * sizeof(Element) / 4];
   int64_t uint64_array[len * sizeof(Element) / 8];
   vec<int8_t, 8>::type int8t_array[len * sizeof(Element) / 8];
+  vec<uint8_t, 8>::type uint8t_array[len * sizeof(Element) / 8];
   vec<int, 2>::type int2_array[len * sizeof(Element) / 8];
   vec<int, 4>::type int4_array[len * sizeof(Element) / 16];
+  vec<uint32_t, 4>::type uint4_array[len * sizeof(Element) / 16];
   vec<float, 4>::type float4_array[len * sizeof(Element) / 16];
 };
 
@@ -198,6 +200,21 @@ __forceinline__ __device__ intx4 builtin_amdgcn_buffer_load_reg_dwordx4(const T*
 // buferr_load_reg
 template<typename T>	
 __forceinline__ __device__ void buffer_load_reg_dwordx4(const T* ptr, typename vec<int,4>::type & rsrc , const int vindex, int offset){ // const int offset
+ 
+  intx4 global_ptr;
+  *(uint64_t*)&global_ptr = reinterpret_cast<uint64_t>(ptr); //res[0]放首地址信息
+  global_ptr[1] += 0x40800000;
+  global_ptr[2] = 0x80000000;
+  global_ptr[3] = 0x00020000;
+
+  asm volatile("buffer_load_dwordx4 %0,%1,%2,0, offen offset:0\n"
+    : "=v"(rsrc), "+v"(offset), "+s"(global_ptr));
+
+  return ;
+}
+
+template<typename T>	
+__forceinline__ __device__ void buffer_load_reg_dwordx4(const T* ptr, typename vec<uint32_t,4>::type & rsrc , const int vindex, int offset){ // const int offset
  
   intx4 global_ptr;
   *(uint64_t*)&global_ptr = reinterpret_cast<uint64_t>(ptr); //res[0]放首地址信息

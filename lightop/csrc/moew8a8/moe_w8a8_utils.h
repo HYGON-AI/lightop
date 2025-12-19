@@ -2187,7 +2187,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
             #pragma unroll
             for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){ 
-                buffer_load_reg_dwordx4(input_ptr, A_reg[m_tile][i].int4_array[k_tile], 0, g_row_A[m_tile] + k_tile * 64 + k_start);
+                buffer_load_reg_dwordx4(input_ptr, A_reg[m_tile][i].uint4_array[k_tile], 0, g_row_A[m_tile] + k_tile * 64 + k_start);
             }
         }
 
@@ -2196,7 +2196,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
         for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
             #pragma unroll
             for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){
-                buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][i].int4_array[k_tile], 0, g_row_B[n_tile] + k_tile * 64 * size_n + k_start_b);
+                buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][i].uint4_array[k_tile], 0, g_row_B[n_tile] + k_tile * 64 * size_n + k_start_b);
                 //buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][i].int4_array[k_tile], 0, g_row_B[n_tile] + k_tile * 64 * WARP_N + k_start_b);
             }
         }
@@ -2216,7 +2216,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
             for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){ 
-                    buffer_load_reg_dwordx4(input_ptr, A_reg[m_tile][(i+STAGE-1)%STAGE].int4_array[k_tile], 0, g_row_A[m_tile] + (i + 1) * stage_offset + k_tile * 64 + k_start);
+                    buffer_load_reg_dwordx4(input_ptr, A_reg[m_tile][(i+STAGE-1)%STAGE].uint4_array[k_tile], 0, g_row_A[m_tile] + (i + 1) * stage_offset + k_tile * 64 + k_start);
                 }
             }
 
@@ -2225,7 +2225,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
             for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
                 #pragma unroll
                 for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){
-                    buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][(i+STAGE-1)%STAGE].int4_array[k_tile], 0, g_row_B[n_tile] + (i + 1) * stage_offset_b + k_tile * 64 * size_n + k_start_b);
+                    buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][(i+STAGE-1)%STAGE].uint4_array[k_tile], 0, g_row_B[n_tile] + (i + 1) * stage_offset_b + k_tile * 64 * size_n + k_start_b);
                     //buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][(i+STAGE-1)%STAGE].int4_array[k_tile], 0, g_row_B[n_tile] + (i + 1) * stage_offset_b + k_tile * 64 * WARP_N + k_start_b);
                 }
             }
@@ -2239,8 +2239,8 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                         C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile] = mmac_fp8<Element>(
-                                    *(typename vec<Element, 8>::type*)(&A_reg[m_tile][i].int8t_array[k_tile]), 
-                                    *(typename vec<Element, 8>::type*)(&B_reg[n_tile][i].int8t_array[k_tile]), 
+                                    *(typename vec<Element, 8>::type*)(&A_reg[m_tile][i].uint8t_array[k_tile]), 
+                                    *(typename vec<Element, 8>::type*)(&B_reg[n_tile][i].uint8t_array[k_tile]), 
                                     C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile]);  
                     }
                 }
@@ -2263,7 +2263,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
                 for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){ 
-                        buffer_load_reg_dwordx4(input_ptr, A_reg[m_tile][(i+STAGE-1)%STAGE].int4_array[k_tile], 0, g_row_A[m_tile] + (i+1) * stage_offset + k_tile * 64 + k_start);
+                        buffer_load_reg_dwordx4(input_ptr, A_reg[m_tile][(i+STAGE-1)%STAGE].uint4_array[k_tile], 0, g_row_A[m_tile] + (i+1) * stage_offset + k_tile * 64 + k_start);
                     }
                 }
 
@@ -2272,7 +2272,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
                 for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){
-                        buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][(i+STAGE-1)%STAGE].int4_array[k_tile], 0, g_row_B[n_tile] + (i+1) * stage_offset_b + k_tile * 64 * size_n + k_start_b);
+                        buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][(i+STAGE-1)%STAGE].uint4_array[k_tile], 0, g_row_B[n_tile] + (i+1) * stage_offset_b + k_tile * 64 * size_n + k_start_b);
                         //buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][(i+STAGE-1)%STAGE].int4_array[k_tile], 0, g_row_B[n_tile] + (i+1) * stage_offset_b + k_tile * 64 * WARP_N + k_start_b);
                     }
                 }
@@ -2285,8 +2285,8 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
                         #pragma unroll
                         for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                             C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile] = mmac_fp8<Element>(
-                                        *(typename vec<Element, 8>::type*)(&A_reg[m_tile][i].int8t_array[k_tile]), 
-                                        *(typename vec<Element, 8>::type*)(&B_reg[n_tile][i].int8t_array[k_tile]), 
+                                        *(typename vec<Element, 8>::type*)(&A_reg[m_tile][i].uint8t_array[k_tile]), 
+                                        *(typename vec<Element, 8>::type*)(&B_reg[n_tile][i].uint8t_array[k_tile]), 
                                         C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile]);  
                         }
                     }
@@ -2301,7 +2301,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
                 for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){ 
-                        buffer_load_reg_dwordx4(input_ptr, A_reg[m_tile][(i+STAGE-1)%STAGE].int4_array[k_tile], 0, g_row_A[m_tile] + (i+1) * stage_offset + k_tile * 64 + k_start);
+                        buffer_load_reg_dwordx4(input_ptr, A_reg[m_tile][(i+STAGE-1)%STAGE].uint4_array[k_tile], 0, g_row_A[m_tile] + (i+1) * stage_offset + k_tile * 64 + k_start);
                     }
                 }
 
@@ -2310,7 +2310,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
                 for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / READ_K; k_tile++){
-                        buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][(i+STAGE-1)%STAGE].int4_array[k_tile], 0, g_row_B[n_tile] + (i+1) * stage_offset_b + k_tile * 64 * size_n + k_start_b);
+                        buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][(i+STAGE-1)%STAGE].uint4_array[k_tile], 0, g_row_B[n_tile] + (i+1) * stage_offset_b + k_tile * 64 * size_n + k_start_b);
                         //buffer_load_reg_dwordx4(weight_ptr, B_reg[n_tile][(i+STAGE-1)%STAGE].int4_array[k_tile], 0, g_row_B[n_tile] + (i+1) * stage_offset_b + k_tile * 64 * WARP_N + k_start_b);
                     }
                 }
@@ -2323,8 +2323,8 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
                         #pragma unroll
                         for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                             C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile] = mmac_fp8<Element>(
-                                        *(typename vec<Element, 8>::type*)(&A_reg[m_tile][i].int8t_array[k_tile]), 
-                                        *(typename vec<Element, 8>::type*)(&B_reg[n_tile][i].int8t_array[k_tile]), 
+                                        *(typename vec<Element, 8>::type*)(&A_reg[m_tile][i].uint8t_array[k_tile]), 
+                                        *(typename vec<Element, 8>::type*)(&B_reg[n_tile][i].uint8t_array[k_tile]), 
                                         C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile]);  
                         }
                     }
@@ -2345,8 +2345,8 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                         C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile] = mmac_fp8<Element>(
-                                    *(typename vec<Element, 8>::type*)(&A_reg[m_tile][(i+ii-1)%STAGE].int8t_array[k_tile]), 
-                                    *(typename vec<Element, 8>::type*)(&B_reg[n_tile][(i+ii-1)%STAGE].int8t_array[k_tile]), 
+                                    *(typename vec<Element, 8>::type*)(&A_reg[m_tile][(i+ii-1)%STAGE].uint8t_array[k_tile]), 
+                                    *(typename vec<Element, 8>::type*)(&B_reg[n_tile][(i+ii-1)%STAGE].uint8t_array[k_tile]), 
                                     C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile]);  
                     }
                 }
@@ -2368,8 +2368,8 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
                     #pragma unroll
                     for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){
                         C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile] = mmac_fp8<Element>(
-                                    *(typename vec<Element, 8>::type*)(&A_reg[m_tile][i-1].int8t_array[k_tile]), 
-                                    *(typename vec<Element, 8>::type*)(&B_reg[n_tile][i-1].int8t_array[k_tile]), 
+                                    *(typename vec<Element, 8>::type*)(&A_reg[m_tile][i-1].uint8t_array[k_tile]), 
+                                    *(typename vec<Element, 8>::type*)(&B_reg[n_tile][i-1].uint8t_array[k_tile]), 
                                     C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile]);  
                     }
                 }
@@ -2378,7 +2378,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
     }
 
     // warp间的规约 
-    extern __shared__ int out_smem[]; // 声明lds信息
+    extern __shared__ float out_smem[]; // 声明lds信息
 #if 0
     if constexpr (warp_k_num > 1){
         constexpr int lds_n_offset = warp_k_num * BLOCK_N;
@@ -2431,7 +2431,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
                 #pragma unroll
                 for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){ 
                    
-                    *(intx4*)(&out_smem[(m_tile * MFMA_M + row_id) * pading_n  + n_tile * 16 + col_id * 4 + (warp_k_id-1 +  warp_n_id * (warp_k_num-1))  * pading_n * 16])  = C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile];
+                    *(floatx4*)(&out_smem[(m_tile * MFMA_M + row_id) * pading_n  + n_tile * 16 + col_id * 4 + (warp_k_id-1 +  warp_n_id * (warp_k_num-1))  * pading_n * 16])  = C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile];
 
                     // #pragma unroll
                     // for(int k = 0; k < 4; ++k){ // 重排数据
@@ -2451,7 +2451,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_fp8_decode(
                 for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
                     #pragma unroll
                     for(int k_tile = 0; k_tile < warp_k_num - 1; k_tile++){
-                        intx4 temp = *(intx4*)(&out_smem[(m_tile * MFMA_M + row_id) * pading_n  + n_tile * 16 + col_id * 4 + (k_tile +  warp_n_id * (warp_k_num-1))  * pading_n * 16]);
+                        floatx4 temp = *(floatx4*)(&out_smem[(m_tile * MFMA_M + row_id) * pading_n  + n_tile * 16 + col_id * 4 + (k_tile +  warp_n_id * (warp_k_num-1))  * pading_n * 16]);
                         #pragma unroll
                         for(int i = 0; i < 4; ++i){
                             C_reg[0][m_tile*(WARP_N/MFMA_N) + n_tile][i] += temp[i];
