@@ -821,13 +821,19 @@ def fuse_moe_correctness_preprocess(
     ) -> tuple[dict[str, int], float]:
     
     mode_ranges = [mode for mode in block_m_configs.keys()]
-    gemm1_compare_failed_list = []
-    gemm2_compare_failed_list = []
+    gemm1_compare_failed_list = [] # [111,169]: #qwen3-480b gemm1
+    gemm2_compare_failed_list = [] # [111,169]: #qwen3-480b gemm2
     device="cuda:"+str(device_id)
     
     for mode in mode_ranges:
         mode0 = mode
         mode1 = mode
+        
+        # if mode0 in [111,169]: #qwen3-480b gemm1
+        #     mode0 = 300
+        # if mode1 in [111,169]: #qwen3-480b gemm2
+        #     mode1 = 300
+            
         mode_list=[mode0,mode1]
         
         #  =========================================== 准备 gemm1 相关数据 =============================================
@@ -1506,6 +1512,11 @@ def main(args: argparse.Namespace):
     shard_intermediate_size=768
     hidden_size=2048
 
+    # #qwen3-480b-tp8
+    # E = 160
+    # shard_intermediate_size=640
+    # hidden_size=6144
+
     #qwen3-480b-tp16
     # E = 160
     # shard_intermediate_size=320
@@ -1516,8 +1527,9 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=384
     # hidden_size=4096
 
-    # # #qwen3-235b-A22B-tp8
-    # shard_intermediate_size=384
+    # # #qwen3-235b-A22B-tp16
+    # E = 128
+    # shard_intermediate_size=192
     # hidden_size=4096
 
     # deepseek-r1-EP16
