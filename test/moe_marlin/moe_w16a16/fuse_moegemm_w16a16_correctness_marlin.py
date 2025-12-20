@@ -267,6 +267,22 @@ def run_moe_w16a16_perchannel_vaild():
     # n_list_2=[6144]
     # k_list_2=[320]
     
+    # #qwen3-235b-A22B-tp16
+    # E=128
+    # topk=8
+    # n_list_1=[192]
+    # k_list_1=[4096]
+    # n_list_2=[4096]
+    # k_list_2=[96]
+    
+    # #qwen3-480b-A35B-tp16
+    # E=160
+    # topk=8
+    # n_list_1=[320]
+    # k_list_1=[6144]
+    # n_list_2=[6144]
+    # k_list_2=[160]
+    
     out_dtype=torch.bfloat16
     # out_dtype = torch.float16
 

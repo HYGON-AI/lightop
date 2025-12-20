@@ -496,11 +496,33 @@ class BenchmarkWorker:
 
 def main(args: argparse.Namespace):
     
+    #qwen3-30b-A3B-tp2
     num_experts = 128
     shard_intermediate_size=768
     hidden_size=2048
-    renormalize=True
+    
+    # # #qwen3-235b-A22B-tp8
+    # num_experts = 128
+    # shard_intermediate_size=384
+    # hidden_size=4096
+    
+    # # #qwen3-235b-A22B-tp16
+    # num_experts = 128
+    # shard_intermediate_size=192
+    # hidden_size=4096
+    
+    # # #qwen3-480b-A35B-tp8
+    # num_experts = 160
+    # shard_intermediate_size=640
+    # hidden_size=6144
+    
+    # # #qwen3-480b-A35B-tp16
+    # num_experts = 160
+    # shard_intermediate_size=320
+    # hidden_size=6144
+    
     topk = 8
+    renormalize=True
     dtype = torch.float16
     # dtype = torch.bfloat16
     if len(args.batch_size) == 0:
