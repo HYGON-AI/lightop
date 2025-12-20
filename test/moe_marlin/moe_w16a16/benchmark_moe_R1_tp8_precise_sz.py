@@ -629,6 +629,6 @@ if __name__ == "__main__":
 
     # benchmark_config(4096, 256, 512, 7168, 8)
     # 默认随机数测试
-    # HIP_VISIBLE_DEVICES=1 python3 benchmark_moe_R1_tp8_precise_sz.py
+    # HIP_VISIBLE_DEVICES=1 python3 benchmark_moe_R1_tp8_precise_sz.py --nn-moe
     # 如果有真实数据集，可以用真实数据集测试
     # HIP_VISIBLE_DEVICES=1 python3 benchmark_moe_R1_tp8_precise_sz.py -tp 2 --router-logits-source /home/data/qwen3-moe/logist/ --nn-moe

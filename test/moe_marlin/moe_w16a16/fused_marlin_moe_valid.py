@@ -1142,7 +1142,8 @@ def fused_marlin_moe_valid(
 
     use_nn_moe = True
     opt_config = get_triton_config(E, M, 2*N, K, use_nn_moe)
-    # print("triton opt_config: ", opt_config, "use_nn_moe: ", use_nn_moe)
+    if debug_status:
+        print("triton opt_config: ", opt_config, "use_nn_moe: ", use_nn_moe)
     sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size(topk_ids, block_size_m, global_num_experts)
     # print("global_num_experts",global_num_experts)
     # print("sorted_token_ids",sorted_token_ids.size())
