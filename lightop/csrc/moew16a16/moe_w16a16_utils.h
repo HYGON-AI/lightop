@@ -2894,7 +2894,7 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel(
     // 为了最后一次等到vmcnt_wait=0
     vmcnt_wait(0);
     {
-        stage_id_reg_A = STAGES-1;
+        stage_id_reg_A = ((size_k/WARP_K-1))%STAGES;	
         int A_lds_stage_offset_loop = stage_id_reg_A * A_lds_stage_offset;
         int B_lds_stage_offset_loop = stage_id_reg_A * B_lds_stage_offset;
         // 这里就开始从lds里面读取出来到vgpr了
