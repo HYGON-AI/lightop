@@ -18,7 +18,6 @@ def get_dtk_version(ROCM_HOME):
     return dtk_version
 
 dtk_version = get_dtk_version(ROCM_HOME) #动态获取运行时的dtk版本
-dtk_version = 25041
 if dtk_version >= 25042:
     op = importlib.import_module('.op_core_miopen', __name__)   #包含core+miopen
 else:
