@@ -213,3 +213,17 @@ def fuse_rmsnorm_rope_quant_gfx938(
 )->None:
     op.fuse_rmsnorm_rope_quant_gfx938(positions, q_c, q_pe, q_quant.view(torch.uint8), k_pe, kv_c, kv_c_normed, weight, cos_sin_cache, slot_mapping, kv_cache.view(torch.uint8), kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon)
     return
+
+def fuse_fill_rms_x2_concat(
+    hidden_states_fuse,
+    positions, 
+    inputs_embeds, 
+    previous_hidden_states, 
+    weight_inputs_embeds, 
+    weight_previous_hidden_states, 
+    epsilon)->None:
+    assert(inputs_embeds.shape == previous_hidden_states.shape, "inputs_embeds and previous_hidden_states must have the same shape")
+    assert(hidden_states_fuse.shape[-1] == inputs_embeds.shape[-1] * 2, "hidden_states_fuse and inputs_embeds must have the same shape")
+    assert(inputs_embeds.shape[-1]<=16384, "inputs_embeds size must be less than 16384")
+    op.fuse_fill_rms_x2_concat(hidden_states_fuse,positions, inputs_embeds, previous_hidden_states, weight_inputs_embeds, weight_previous_hidden_states, epsilon)
+    return

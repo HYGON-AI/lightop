@@ -13,6 +13,7 @@ std::tuple<Tensor,Tensor>rmsnorm_backward(const Tensor& grad, const Tensor& X,co
 void fused_rms_norm_contiguous(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight, double epsilon);
 void fused_rms_norm_rope_contiguous(torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon);
 void fuse_rmsnorm_rope_quant_gfx938(torch::Tensor& positions, torch::Tensor& q_c, torch::Tensor& q_pe, torch::Tensor& q_quant, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon);
+void fuse_fill_rms_x2_concat(torch::Tensor& hidden_states_fuse, torch::Tensor& positions, torch::Tensor& inputs_embeds, torch::Tensor& previous_hidden_states, torch::Tensor& weight_inputs_embeds, torch::Tensor& weight_previous_hidden_states, float epsilon);
 Tensor fuse_rn_dropout_forward_autograd(const Tensor& x,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_bias_forward_autograd(const Tensor& x,const Tensor& y,const Tensor &bias, const Tensor& weight,double eps,double rate,bool training);
@@ -258,6 +259,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("fused_rms_norm_contiguous", &at::native::fused_rms_norm_contiguous, "fused_rms_norm_contiguous");
   m.def("fused_rms_norm_rope_contiguous", &at::native::fused_rms_norm_rope_contiguous, "fused_rms_norm_rope_contiguous");
   m.def("fuse_rmsnorm_rope_quant_gfx938", &at::native::fuse_rmsnorm_rope_quant_gfx938, "fuse_rmsnorm_rope_quant_gfx938");
+  m.def("fuse_fill_rms_x2_concat", &at::native::fuse_fill_rms_x2_concat, "fuse_fill_rms_x2_concat");
   m.def("rn_dropout_forward_autograd", &at::native::fuse_rn_dropout_forward_autograd, "fused_rn_dropout forward");
   m.def("rn_add_forward_autograd", &at::native::fuse_rn_add_forward_autograd, "fused_rn_add forward");
   m.def("rn_add_dropout_forward_autograd", &at::native::fuse_rn_add_dropout_forward_autograd, "fused_rn_add_dropout forward");
