@@ -61,6 +61,7 @@ from .batch_linear_assignment import batch_linear_assignment
 from .fill_zeros import fill_zeros
 from .fuse_rmsnorm_rope import rms_rotary_embedding_fuse
 from .reshape_and_cache_cuda import reshape_and_cache_cuda
+from .wan_quant import destindex_copy_quantize_int8_cuda, destindex_dequantize_int8_cuda
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401
     __version__, __dcu_version__ = version, dcu_version
