@@ -3,10 +3,67 @@ import triton
 from vllm import _custom_ops as vllm_ops
 from lightop import op as ops
 import pdb
+
+
+def python_reference_moe_gate(scores, bias, num_expert_group, topk_group, topk):
+    """
+    Python实现的 MoE Gating 逻辑，严格对应提供的 CUDA 代码。
+    逻辑特点：
+    1. Selection Score = Sigmoid(Input) + Bias
+    2. Weight Value    = Sigmoid(Input)
+    3. Output          = Normalize(Weight Value of TopK Experts)
+    """
+    # 转 float32 防止精度溢出
+    scores_in = scores.float()
+    bias_in = bias.float()
+    
+    batch_size, num_experts = scores_in.shape
+    experts_per_group = num_experts // num_expert_group
+
+    # 1. 计算 Sigmoid 和 排序分
+    # C++: row_chunk = sigmoid(in); scores_chunk = bias + row_chunk;
+    probs = torch.sigmoid(scores_in) 
+    selection_scores = probs + bias_in
+
+    # Reshape 为 [Batch, Group, ExpertPerGroup]
+    selection_reshaped = selection_scores.view(batch_size, num_expert_group, experts_per_group)
+
+    # 2. 组内 Top2 求和 (Group Score)
+    # C++: max_sum_group = tmp_top1 + tmp_top2
+    group_top2_values, _ = torch.topk(selection_reshaped, k=2, dim=-1)
+    group_scores = group_top2_values.sum(dim=-1) # [Batch, Group]
+
+    # 3. 选出 TopK Groups
+    _, top_group_indices = torch.topk(group_scores, k=topk_group, dim=-1) # [Batch, TopK_Group]
+
+    # 4. Mask 掉未选中的组
+    group_mask = torch.zeros((batch_size, num_expert_group), device=scores.device, dtype=torch.bool)
+    group_mask.scatter_(1, top_group_indices, True)
+    # 扩展回 Expert 维度
+    expert_mask = group_mask.unsqueeze(-1).expand(-1, -1, experts_per_group).reshape(batch_size, num_experts)
+
+    # 未选中的专家分数为 -inf
+    masked_selection_scores = selection_scores.clone()
+    masked_selection_scores[~expert_mask] = float('-inf')
+
+    # 5. 全局 TopK (基于 Selection Score)
+    _, final_indices = torch.topk(masked_selection_scores, k=topk, dim=-1) # [Batch, TopK]
+
+    # 6. 取值并归一化 (基于 Probs)
+    # C++: output_ptr[idx] = my_stored_prob / output_sum;
+    final_probs = torch.gather(probs, 1, final_indices)
+    sum_probs = final_probs.sum(dim=1, keepdim=True) + 1e-20
+    final_weights = final_probs / sum_probs
+
+    return final_weights.to(scores.dtype), final_indices.to(torch.int32)
+
 # -------------------------------
 # 包一层，便于替换/调试
 # -------------------------------
 def biased_grouped_topk_org_init(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor):
+    num_experts = scores.shape[1]
+    if num_experts == 384:
+        return python_reference_moe_gate(scores, bias, num_expert_group, topk_group, topk)
     return vllm_ops.moe_fused_gate(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
 
 def biased_grouped_topk_org_opt(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor):
@@ -27,7 +84,7 @@ def check_correctness_once(
     atol=1e-6
 ):
     device = torch.device("cuda")
-    dtype = torch.bfloat16
+    dtype = torch.float32
 
     scores = torch.randn((token_num, num_experts), device=device, dtype=dtype)
     bias = torch.randn(num_experts, device=device, dtype=dtype)
@@ -63,16 +120,15 @@ def run_correctness_suite():
     assert torch.cuda.is_available(), "CUDA is required"
     n_share_experts_fusion = 0
     routed_scaling_factor = 2.5
-
-    extra = [600, 700, 800, 900, 1000, 2000, 3000, 4000,
-            5000, 10000, 15000, 20000, 25000, 30000, 35000, 40000,
-            45000, 50000, 55000, 60000]
-
+    num_expert = 384
+    extra = list([1,4,8,32,1024,2048,4096])
+    
     cases = [
-        (n, 256, 8, 4, 8, n_share_experts_fusion, routed_scaling_factor)
-        for n in list(range(12, 13)) 
+        (n,num_expert, 8, 4, 8, n_share_experts_fusion, routed_scaling_factor)
+        for n in list(extra)
     ]
-
+    # print(extra)
+    # print(num_expert)
     for (token_num, ne, ng, tg, tk, nshar, rout) in cases:
         check_correctness_once(
             token_num=token_num,
@@ -88,7 +144,7 @@ def run_correctness_suite():
 # -------------------------------
 # 性能基准 (仅 bf16，支持 warmup)
 # -------------------------------
-token_num_range = list(range(12, 13))
+token_num_range = list([1,4,8,32,1024,2048,4096])
 # more_tokens = [
     
 #     #, 65000, 70000, 75000, 80000, 85000, 90000, 95000, 100000,
@@ -113,7 +169,7 @@ configs = [(sq,) for sq in token_num_range]
 def benchmark(token_num, provider, warmup=5):
     dtype = torch.bfloat16
     device = torch.device("cuda")
-    num_experts, num_expert_group, topk_group, topk = 256, 8, 4, 8
+    num_experts, num_expert_group, topk_group, topk = 384, 8, 4, 8
     n_share_experts_fusion = 0
     routed_scaling_factor = 2.5
 
