@@ -247,6 +247,7 @@ void ep_scatter(torch::Tensor aq,torch::Tensor aq_scale,torch::Tensor topk_ids,t
 
 void destindex_copy_quantize_int8_cuda(const torch::Tensor& input, torch::Tensor& scale_zero, torch::Tensor& output);
 void destindex_dequantize_int8_cuda(const torch::Tensor& input, const torch::Tensor& scale_zero, torch::Tensor& output);
+std::vector<at::Tensor> kimi_k2_moe_fused_gate(at::Tensor &input, at::Tensor &bias, int64_t topk,bool renormalize, double routed_scaling_factor,bool apply_routed_scaling_factor_on_output); 
 }
 }
 
@@ -415,5 +416,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("ep_scatter", &at::native::ep_scatter,"ep_scatter");
   m.def("destindex_copy_quantize_int8_cuda", &at::native::destindex_copy_quantize_int8_cuda, "destindex_copy_quantize_int8_cuda");
   m.def("destindex_dequantize_int8_cuda", &at::native::destindex_dequantize_int8_cuda, "destindex_dequantize_int8_cuda");
+  m.def("kimi_k2_moe_fused_gate", &at::native::kimi_k2_moe_fused_gate, "kimi_k2_moe_fused_gate");
 }
 
