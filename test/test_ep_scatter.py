@@ -309,7 +309,7 @@ def run_single_benchmark(M, H, K, E, ALIGNMENT, device):
     x_bf16 = torch.randn((M, H), dtype=torch.bfloat16, device=device)
     x_int8, x_scales = per_token_quant_int8_triton(x_bf16)
     
-    topk_ids = torch.randint(0, E, (M, K), dtype=torch.int32, device=device)
+    topk_ids = torch.randint(0, E, (M, K), dtype=torch.int64, device=device)
     expert_map = None
 
     # 预计算缓冲区大小
@@ -480,8 +480,8 @@ def run_suite():
     ALIGNMENT = 256
     
     # 遍历的 M 值
-    # M_values = [256,512,1024,2048,4096,8192,16384,16384*2]
-    M_values = [65536]
+    M_values = [256,512,1024,2048,4096,8192,16384,16384*2]
+    # M_values = [65536]
     
     csv_filename = "moe_scatter_benchmark_results.csv"
     

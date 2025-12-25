@@ -62,7 +62,8 @@ ep_scan_kernel(const int32_t *__restrict__ num_tokens_per_expert,
 
 template <typename scalar_t, int BLOCK_SIZE, int GROUP_SIZE, int num_warps>
 __launch_bounds__(BLOCK_SIZE) __global__ void quant_scatter_opt_kernel(
-    const scalar_t *__restrict__ input, const int32_t *__restrict__ topk_ids,
+    const scalar_t *__restrict__ input, 
+    const int64_t *__restrict__ topk_ids, // int64_t
     const int32_t *__restrict__ expert_map,
     int32_t *__restrict__ expert_counters, int8_t *__restrict__ aq_out,
     float *__restrict__ aq_scale_out, int32_t *__restrict__ inv_perm,
@@ -94,7 +95,7 @@ __launch_bounds__(BLOCK_SIZE) __global__ void quant_scatter_opt_kernel(
     __syncthreads();
 
     if (tid < K) {
-      int expert_id = topk_ids[token_idx * K + tid];
+      int expert_id = (int)topk_ids[token_idx * K + tid]; 
       bool is_valid = true;
 
       if (has_expert_map) {
@@ -213,7 +214,7 @@ template <typename T, typename ScaleT, int SCATTER_THREADS_PER_GROUP,
 __launch_bounds__(1024) __global__
     void ep_scatter_kernel(const T *__restrict__ aq,            // int8
                            const ScaleT *__restrict__ aq_scale, // float
-                           const int32_t *__restrict__ topk_ids,
+                           const int64_t *__restrict__ topk_ids, // int64_t
                            const int32_t *__restrict__ expert_map,
                            int32_t *__restrict__ expert_counters,
                            T *__restrict__ aq_out,
@@ -246,7 +247,7 @@ __launch_bounds__(1024) __global__
 
         if (lane_id == 0) {
             int64_t row_idx = token_idx * K + k_idx;
-            int expert_id = topk_ids[row_idx];
+            int expert_id = (int)topk_ids[row_idx]; 
 
             bool is_valid = true;
 
@@ -295,7 +296,7 @@ template <typename ScaleT, int SCATTER_MAX_K>
 __launch_bounds__(1024) __global__ void ep_scatter_kernel_1024_opt(
     const int8_t *__restrict__ aq,            
     const ScaleT *__restrict__ aq_scale, 
-    const int32_t *__restrict__ topk_ids,
+    const int64_t *__restrict__ topk_ids, //int64_t
     const int32_t *__restrict__ expert_map,
     int32_t *__restrict__ expert_counters,
     int8_t *__restrict__ aq_out,
@@ -341,7 +342,7 @@ __launch_bounds__(1024) __global__ void ep_scatter_kernel_1024_opt(
   if (group_id < K) {
       if (lane_id == 0) {
           int64_t row_idx = global_token_idx * K + group_id;
-          int expert_id = topk_ids[row_idx];
+          int expert_id = (int)topk_ids[row_idx];
           bool is_valid = true;
 
           if (has_expert_map) {
@@ -362,8 +363,8 @@ __launch_bounds__(1024) __global__ void ep_scatter_kernel_1024_opt(
           }
       }
     }
-     __syncthreads(); 
-     
+      __syncthreads(); 
+      
     my_dest_row = __shfl(my_dest_row, 0);
 
      if (my_dest_row != -1) {
@@ -426,7 +427,8 @@ void ep_fused_quant_scatter(torch::Tensor input, // fp16 or bf16
           quant_scatter_opt_kernel<scalar_t, BLOCK_SIZE, GROUP_SIZE, NUM_WARPS>
               <<<grid, block, shmem_size, stream>>>(
                   input_tensor->data_ptr<scalar_t>(),
-                  topk_ids.data_ptr<int32_t>(), expert_map_ptr,
+                  topk_ids.data_ptr<int64_t>(), //data_ptr<int64_t>()
+                  expert_map_ptr,
                   expert_counters_ptr, aq_out.data_ptr<int8_t>(),
                   aq_scale_out.data_ptr<float>(), inv_perm.data_ptr<int32_t>(),
                   m_indices.data_ptr<int32_t>(), num_tokens, K,
@@ -484,7 +486,7 @@ void ep_scatter(torch::Tensor aq, torch::Tensor aq_scale,
                 <<<grid, block, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
                 aq_tensor->data_ptr<int8_t>(), 
                 aq_scale.data_ptr<scale_t>(),
-                topk_ids.data_ptr<int32_t>(), 
+                topk_ids.data_ptr<int64_t>(), //data_ptr<int64_t>()
                 expert_map_ptr, 
                 expert_counters_ptr,
                 aq_out.data_ptr<int8_t>(), 
@@ -512,7 +514,8 @@ void ep_scatter(torch::Tensor aq, torch::Tensor aq_scale,
             ep_scatter_kernel<data_t, scale_t, SCATTER_THREADS_PER_GROUP,
                                 SCATTER_MAX_K><<<grid, block, shmem_size>>>(
                 aq_tensor->data_ptr<data_t>(), aq_scale.data_ptr<scale_t>(),
-                topk_ids.data_ptr<int32_t>(), expert_map_ptr, expert_counters_ptr,
+                topk_ids.data_ptr<int64_t>(), //data_ptr<int64_t>()
+                expert_map_ptr, expert_counters_ptr,
                 aq_out.data_ptr<data_t>(), aq_scale_out.data_ptr<scale_t>(),
                 inv_perm.data_ptr<int32_t>(), m_indices.data_ptr<int32_t>(),
                 num_tokens, K, local_num_experts, H, HS, has_expert_map);
