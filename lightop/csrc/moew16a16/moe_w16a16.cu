@@ -469,7 +469,8 @@ template<
   uint16_t WARP_M, 
   uint16_t WARP_N, 
   uint16_t WARP_K, 
-  bool mul_topk_weight> 
+  bool mul_topk_weight,
+  bool tail_N_process> 
 __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_UP_prefill(
   const Element* __restrict__ input,
   const Element* __restrict__ qweight,
@@ -542,9 +543,14 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_UP_prefill(
   union_vec<Element,8> B_reg[WARP_N/marlin_warp_n][WARP_K/marlin_warp_k]; 
 
   floatx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; 
-
+  if(tail_N_process){
+  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_remainder<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
+    (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx,bidy);
+  }
+  else{
   MOE_W16A16_MARLIN_HIP_NT_prefill_kernel<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
     (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
+  }
 
 
   //save output to lds
@@ -575,13 +581,15 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_UP_prefill(
     using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) uint16_t;
     int m_idx = threadIdx.x / N_thread;  
     int n_idx = threadIdx.x % N_thread;  
+    if(bidy *  BLOCK_SIZE_N + n_idx * 8 < (size_n>>4)){  
     for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
       const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
       if(token_index < size_m * top_k) {
         *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * real_size_n + n_idx * 8]) = 
         
         *reinterpret_cast<vec_bf16_8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 8 + m_idx/2 * 2/*padding*/]);
-      }
+      } 
+    }
     } 
   }      
 }
@@ -721,7 +729,8 @@ template<
   uint16_t WARP_M, 
   uint16_t WARP_N, 
   uint16_t WARP_K, 
-  bool mul_topk_weight> // true
+  bool mul_topk_weight,
+  bool tail_k_process> // true
 __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(
   const Element* __restrict__ input,
   const Element* __restrict__ qweight,
@@ -798,9 +807,8 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(
   }
 
   
-  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
-    (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
-  
+  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES,tail_k_process, Element>
+    (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx,bidy);
   //save output to lds
   #pragma unroll
   for(int min_tile_m = 0; min_tile_m < WARP_M / mfma_m; min_tile_m++){
@@ -1186,16 +1194,19 @@ void launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill(const GemmParams3<T>& params) {
     blockDim.y = 1;
     blockDim.z = 1;
     constexpr int bytes_per_element = 2;
-    const int real_size_n = (params.size_n * params.size_kofb) / params.size_k;  
-    //规定BLOCKSIZE_N固定位256
+    const int real_size_n = (params.size_n * params.size_kofb) / params.size_k;
+    //规定BLOCKSIZE_N固定位256  
     gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
-    gridDim.y = DIVIDE(real_size_n , BLOCK_SIZE_N); // n方向 16大小分块 数量为48
+    gridDim.y = DIV_ceil(real_size_n , BLOCK_SIZE_N); // n方向 16大小分块 320/128数量为2余64
     gridDim.x = 1; // k方向
 
     const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K) * bytes_per_element, BLOCK_SIZE_M * BLOCK_SIZE_N * 2 * bytes_per_element);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
+    
+    BOOL_SWITCH(((real_size_n % BLOCK_SIZE_N)!=0),tail_N_process, [&] {
+
     MOE_W16A16_MARLIN_HIP_NT_UP_prefill<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
-      mul_topk_weight><<<gridDim, blockDim, lds_size, stream>>>(
+      mul_topk_weight,tail_N_process><<<gridDim, blockDim, lds_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
       params.ptr_C,   
@@ -1212,6 +1223,7 @@ void launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill(const GemmParams3<T>& params) {
       params.delta,
       params.expert_num
       );
+    });
       auto err = cudaGetLastError();
       if (err != cudaSuccess) {
           printf("CUDA error in gemm1: %s\n", cudaGetErrorString(err));
@@ -1282,8 +1294,11 @@ void launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(const GemmParams3<T>& params) 
     
     const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K) * bytes_per_element, BLOCK_SIZE_M * BLOCK_SIZE_N * 2 * bytes_per_element);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
+
+    BOOL_SWITCH(((params.size_k % WARP_K)!=0),tail_k_process, [&] {
+    
     MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
-      mul_topk_weight><<<gridDim, blockDim, lds_size, stream>>>(
+      mul_topk_weight,tail_k_process><<<gridDim, blockDim, lds_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
       params.ptr_C,   
@@ -1299,6 +1314,8 @@ void launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(const GemmParams3<T>& params) 
       params.top_k,
       params.delta
       );
+    });
+
       auto err = cudaGetLastError();
       if (err != cudaSuccess) {
           printf("CUDA error in gemm1: %s\n", cudaGetErrorString(err));

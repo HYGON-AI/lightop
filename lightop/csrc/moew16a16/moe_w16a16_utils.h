@@ -110,7 +110,7 @@ namespace native{
     }\
 }
 
-// B矩阵buffer_load读                                                                                          
+                                                                                        
 #define buffer_load_lds_tile_pad_weight_marlin(WARP_NUM, MARLIN_n_stride, BLOCK_N, WARP_K, Element, global_ptr, lds_ptr, global_offset, lds_stage_offset, marlin_warp_stride, warp_id, lane_id,\
     marlin_warp_n, marlin_warp_k)\
 {\
@@ -135,6 +135,36 @@ namespace native{
             int warp_k_id = warp_linear / warp_num_n; \
             int gsOffset   = global_offset;\
             int gvOffset   = warp_k_id * MARLIN_n_stride + warp_n_id * marlin_warp_stride + lane_id * element_num_per_thread * bytes_per_Element;\
+            int lds_offset = lds_stage_offset + (warp_n_id * warp_num_k + warp_k_id) * 64 * element_num_per_thread * bytes_per_Element;\
+            buffer_load_lds_dwordx4(global_ptr, lds_ptr, (lds_offset/bytes_per_Element), gvOffset, gsOffset);\
+        } \
+    }\
+}
+
+#define buffer_load_lds_tile_pad_weight_marlin_remiander(WARP_NUM, MARLIN_n_stride, BLOCK_N, WARP_K, Element, global_ptr, lds_ptr, global_offset, lds_stage_offset, marlin_warp_stride, warp_id, lane_id,\
+    marlin_warp_n, marlin_warp_k,warp_n_id_real)\
+{\
+    const int element_num_per_thread = 8;\
+    int bytes_per_Element = 2;\
+    const int lds_load_num = (BLOCK_N*WARP_K*bytes_per_Element) / (element_num_per_thread*64*bytes_per_Element);\
+    int warp_num_n = BLOCK_N/marlin_warp_n;\
+    int warp_num_k = lds_load_num/warp_num_n;\
+    if(WARP_NUM > lds_load_num){ \
+        if(warp_id < lds_load_num){ \ 
+            int warp_n_id = warp_id % warp_num_n;\
+            int warp_k_id = warp_id / warp_num_n;\
+            int gsOffset   = global_offset;\
+            int gvOffset   = (warp_k_id * MARLIN_n_stride + std::min(warp_n_id,warp_n_id_real) * marlin_warp_stride + lane_id * element_num_per_thread * bytes_per_Element);\
+            int lds_offset = lds_stage_offset + (warp_n_id * warp_num_k + warp_k_id) * 64 * element_num_per_thread * bytes_per_Element;\
+            buffer_load_lds_dwordx4(global_ptr,lds_ptr, (lds_offset/bytes_per_Element), gvOffset, gsOffset);\
+        } \
+    }else{ \
+        for(int load = 0; load < lds_load_num/WARP_NUM; ++load) {\
+            int warp_linear  = (load * WARP_NUM + warp_id); \
+            int warp_n_id = warp_linear % warp_num_n; \
+            int warp_k_id = warp_linear / warp_num_n; \
+            int gsOffset   = global_offset;\
+            int gvOffset   = warp_k_id * MARLIN_n_stride + std::min(warp_n_id,warp_n_id_real) * marlin_warp_stride + lane_id * element_num_per_thread * bytes_per_Element;\
             int lds_offset = lds_stage_offset + (warp_n_id * warp_num_k + warp_k_id) * 64 * element_num_per_thread * bytes_per_Element;\
             buffer_load_lds_dwordx4(global_ptr, lds_ptr, (lds_offset/bytes_per_Element), gvOffset, gsOffset);\
         } \
@@ -2925,6 +2955,611 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel(
         }
     }
     lgkmcnt_wait_barrier(0);
+}
+
+template<bool Is_store_A, 
+    int A_prefetch_level, 
+    int B_prefetch_level, 
+    int WARP_NUM,
+    int BLOCK_M, 
+    int BLOCK_N, 
+    int BLOCK_K, 
+    int WARP_M,  
+    int WARP_N,  
+    int WARP_K,  
+    int STAGES,  
+    typename Element, 
+    typename ElementAccum = int32_t>                                                                                                            
+__forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_remainder(
+    const Element* input_ptr, 
+    const Element* weight_ptr, 
+    Element* A_lds,
+    Element* B_lds,
+    int max_n_len_offset, 
+    union_vec<Element,4> A_reg[][WARP_K/16], 
+    union_vec<Element,8> B_reg[][WARP_K/16], 
+    floatx4 C_reg[][(WARP_M/16)*(WARP_N/16)],
+    int warp_id, 
+    int seqlen_A_k,  //2048
+    int seqlen_B_k,  //2048
+    int top_k, 
+    const int* sorted_token_ids_offset,
+    int sorted_token_lens,
+    const int32_t expert_id,
+    const int bidx,
+    const int bidy) {
+
+    const int size_k = seqlen_A_k;
+    int lane_id = threadIdx.x & 63; // thread_id
+    int row_id = lane_id % 16;
+    int col_id = lane_id / 16;
+    constexpr int MFMA_M = 16;
+    constexpr int MFMA_N = 16;
+    constexpr int MFMA_K = 16;
+
+    constexpr int bytes_per_element = 2;
+    constexpr int bytes_per_dword = 4;
+    const int seqlen_A_stride = seqlen_A_k * bytes_per_element;
+    const int seqlen_B_stride = seqlen_B_k * bytes_per_element;
+
+    const int marlin_warp_k = 16;// marlin weight tile: 16x32
+    const int marlin_warp_n = 32;
+    const int marlin_warp_stride = marlin_warp_k * marlin_warp_n * bytes_per_element/*bytes*/;
+
+    const int warp_n_num = BLOCK_N / WARP_N; //1
+    int warp_n_id = warp_id % warp_n_num;//0
+    int warp_m_id = warp_id / warp_n_num;//0
+    int weight_vec_size = 8;
+    int warp_n_id_1 = warp_n_id;
+    if((bidy * (BLOCK_N* marlin_warp_k)) + warp_n_id *marlin_warp_k * marlin_warp_n >= seqlen_B_k){
+        warp_n_id_1 =0;
+    }
+    int precompute_A_lds_offset[(WARP_M/MFMA_M)*(WARP_K/MFMA_K)]; 
+    int precompute_B_lds_offset[(WARP_N/MFMA_N)*(WARP_K/MFMA_K)];
+
+    typename vec<Element,4>::type *B_lds_v4bf16 = (typename vec<Element,4>::type *)(B_lds);
+    typename vec<Element,4>::type *A_lds_v4bf16 = (typename vec<Element,4>::type *)(A_lds);
+
+    const int type_width_in_bit = 16;
+    const int num_banks = 32;
+    const int bank_bit_width = 32;
+    const int elems_per_one_banks_row = (num_banks * bank_bit_width) / type_width_in_bit;
+    const int simd_width = 16;
+    const int inner_dim_length = WARP_K;
+    const int vec_size = 4;
+    const int per_phase = std::max(1, elems_per_one_banks_row / inner_dim_length); //4
+    const int max_phase = std::min(simd_width / per_phase, inner_dim_length / vec_size); //4
+    // const int max_phase = 32 / (vec_size * type_width_in_bit / bank_bit_width); // 32
+    int A_lds_stage_offset = STAGES == 1 ? 0 : BLOCK_M * WARP_K * bytes_per_element; 
+    int B_lds_stage_offset = STAGES == 1 ? 0 : BLOCK_N * WARP_K * bytes_per_element; 
+    int stage_id_reg_A = 0;
+    int stage_id_reg_B = 0;
+
+    {
+        auto A_ptr = (input_ptr + 0); 
+        auto B_ptr = (weight_ptr + 0); 
+
+        #pragma unroll 
+        for(int stage_id_num=0; stage_id_num<STAGES-1; stage_id_num++){
+
+            if(A_prefetch_level == 0) { // 预加载A矩阵
+                int A_block_buffer_load_global_offset = stage_id_num * WARP_K * bytes_per_element; 
+                int A_lds_stage_offset_loop = stage_id_num * A_lds_stage_offset; 
+                buffer_load_lds_tile_pad_sorted_token_dwordx2(WARP_NUM, seqlen_A_stride, BLOCK_M, WARP_K, Element, A_ptr, A_lds, A_block_buffer_load_global_offset, A_lds_stage_offset_loop, BLOCK_K, warp_id, lane_id,
+                                                            vec_size, per_phase, max_phase); 
+            }
+
+            if(B_prefetch_level == 0) { // 预加载B矩阵
+                int B_block_buffer_load_global_offset = stage_id_num * (WARP_K/marlin_warp_k) * seqlen_B_stride; 
+                int B_lds_stage_offset_loop = stage_id_num * B_lds_stage_offset; 
+                buffer_load_lds_tile_pad_weight_marlin_remiander(WARP_NUM, seqlen_B_stride, BLOCK_N, WARP_K, Element, B_ptr, B_lds, B_block_buffer_load_global_offset, B_lds_stage_offset_loop,
+                                                            marlin_warp_stride, warp_id, lane_id, marlin_warp_n, marlin_warp_k,warp_n_id_1);
+            }
+        }
+    }
+
+    // 构建A矩阵读取索引
+    #pragma unroll 
+    for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+        #pragma unroll
+        for(int min_tile_k=0; min_tile_k<(WARP_K/MFMA_K); min_tile_k++) {
+            int lds_row = (lane_id & 15);
+            int lds_col = (min_tile_k * MFMA_K) / 4 + lane_id/16;
+            
+            int vec_size_dword = vec_size/2/*dword*/;
+            int phase = (lds_row/per_phase) % max_phase;
+            int col_swizzle = (lds_col ^ phase) * vec_size_dword;
+            int lds_offset = warp_m_id * (WARP_M*WARP_K)/2 + (min_tile_m * MFMA_M + lds_row)*WARP_K/2/*dword*/ + col_swizzle/*dword*/; 
+            precompute_A_lds_offset[min_tile_m * (WARP_K/MFMA_K) + min_tile_k] = lds_offset; // 装载了两次,
+        }
+    }
+    // 构建B矩阵读取索引,完成一个warp读取WARP_NxWARP_K个元素
+    #pragma unroll 
+    for(int min_tile_n=0; min_tile_n<(WARP_N/marlin_warp_n); min_tile_n++) { 
+        #pragma unroll
+        for(int min_tile_k=0; min_tile_k<(WARP_K/marlin_warp_k); min_tile_k++) { 
+            int warp_offset = lane_id * weight_vec_size * bytes_per_element/*bytes*/;
+            int lds_offset = warp_n_id * (WARP_N/marlin_warp_n) * (WARP_K/marlin_warp_k) * marlin_warp_stride + 
+                                min_tile_n * (WARP_K/marlin_warp_k) * marlin_warp_stride + min_tile_k * marlin_warp_stride + warp_offset;
+            precompute_B_lds_offset[min_tile_n*(WARP_K/marlin_warp_k) + min_tile_k] = lds_offset;
+        }
+    }
+
+    //main loop 2048/16 = 128次迭代
+    for(int k=0; k < size_k/WARP_K - (STAGES - 1); k++){
+
+        int k_offset = k * WARP_K;
+        int kb_offset = k * (WARP_K/marlin_warp_k) * seqlen_B_k;
+        auto A_ptr = (input_ptr + k_offset); // 配置全局显存信息
+        auto B_ptr = (weight_ptr + kb_offset); // 配置全局显存信息
+        { 
+            // 预加载A矩阵
+            int A_block_buffer_load_global_offset = (STAGES - 1) * WARP_K * bytes_per_element; 
+            int A_lds_stage_offset_loop = ((k+(STAGES - 1)) & (STAGES - 1)) * A_lds_stage_offset; 
+            buffer_load_lds_tile_pad_sorted_token_dwordx2(WARP_NUM, seqlen_A_stride, BLOCK_M, WARP_K, Element, A_ptr, A_lds, A_block_buffer_load_global_offset, A_lds_stage_offset_loop, BLOCK_K, warp_id, lane_id,
+                                                        vec_size, per_phase, max_phase);                
+
+            // 预加载B矩阵
+            int B_block_buffer_load_global_offset = (STAGES - 1) * (WARP_K/marlin_warp_k) * seqlen_B_stride;
+            int B_lds_stage_offset_loop = ((k+(STAGES - 1)) & (STAGES - 1)) * B_lds_stage_offset; 
+            buffer_load_lds_tile_pad_weight_marlin_remiander(WARP_NUM, seqlen_B_stride, BLOCK_N, WARP_K, Element, B_ptr, B_lds, B_block_buffer_load_global_offset, 
+                                                        B_lds_stage_offset_loop, marlin_warp_stride, warp_id, lane_id, marlin_warp_n, marlin_warp_k,warp_n_id_1);
+                                    
+        }
+
+        vmcnt_wait((std::max(1, (BLOCK_N * WARP_K) / (8*64)/WARP_NUM) + (BLOCK_M*WARP_K) / (4*64)/WARP_NUM) * (STAGES - 1));
+
+        stage_id_reg_A = k & (STAGES-1);
+        int A_lds_stage_offset_loop = stage_id_reg_A * A_lds_stage_offset;
+        int B_lds_stage_offset_loop = stage_id_reg_A * B_lds_stage_offset;
+        // 这里就开始从lds里面读取出来到vgpr了
+        for(int k_idx = 0; k_idx < WARP_K / MFMA_K; k_idx++){ 
+            { // 加载A矩阵
+                ds_read2_tile_pad_no_wait(WARP_M, k_idx, WARP_NUM, Element, A_lds_v4bf16, precompute_A_lds_offset, A_lds_stage_offset_loop/bytes_per_dword, A_reg, stage_id_reg_A); // stage_id_reg_A: 0, 1
+            }
+
+            { // 加载B矩阵
+                ds_read_b128_tile_pad_no_wait(WARP_N, k_idx, WARP_NUM, Element, B_lds_v4bf16, precompute_B_lds_offset, B_lds_stage_offset_loop, B_reg);
+            } 
+        }
+
+        lgkmcnt_wait_barrier(0);
+
+        #pragma unroll
+        for(int min_tile_k=0; min_tile_k<WARP_K/MFMA_K; min_tile_k++) {
+            #pragma unroll
+            for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+                #pragma unroll
+                for(int min_tile_n=0; min_tile_n<(WARP_N/marlin_warp_n); min_tile_n++) {
+                    #pragma unroll
+                    for(int n_tile=0; n_tile<marlin_warp_n/MFMA_N; n_tile++) {
+                        C_reg[0][min_tile_m*(WARP_N / marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile] = mmac<Element>(
+                            *(typename vec<Element, 4>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].scalar_array[0]), 
+                            *(typename vec<Element, 4>::type*)(&B_reg[min_tile_n][min_tile_k].int2_array[n_tile]), 
+                            C_reg[0][min_tile_m*(WARP_N/marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile]);    
+                    }
+                }
+            }
+        }
+    }
+
+    ///////////////////////////////////////////////////// for 迭代完 ///////////////////////////////////////////////////////////////////////////
+    #pragma unroll
+    for(int stage_id=0; stage_id<STAGES-2; stage_id++){
+        vmcnt_wait((std::max(1, (BLOCK_N * WARP_K) / (8*64)/WARP_NUM) + (BLOCK_M*WARP_K) / (4*64)/WARP_NUM) * (STAGES-2-stage_id));
+        {
+            stage_id_reg_A = stage_id+1;
+            int A_lds_stage_offset_loop = stage_id_reg_A * A_lds_stage_offset;
+            int B_lds_stage_offset_loop = stage_id_reg_A * B_lds_stage_offset;
+            // 这里就开始从lds里面读取出来到vgpr了
+            for(int k_idx = 0; k_idx < WARP_K / MFMA_K; k_idx++){ 
+                // 加载A矩阵
+                ds_read2_tile_pad_no_wait(WARP_M, k_idx, WARP_NUM, Element, A_lds_v4bf16, precompute_A_lds_offset, A_lds_stage_offset_loop/bytes_per_dword, A_reg, stage_id_reg_A); // stage_id_reg_A: 0, 1     
+                // 加载B矩阵
+                ds_read_b128_tile_pad_no_wait(WARP_N, k_idx, WARP_NUM, Element, B_lds_v4bf16, precompute_B_lds_offset, B_lds_stage_offset_loop, B_reg);
+            }
+        }
+
+        lgkmcnt_wait_barrier(0);
+
+        #pragma unroll
+        for(int min_tile_k=0; min_tile_k<WARP_K/MFMA_K; min_tile_k++) {
+            #pragma unroll
+            for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+                #pragma unroll
+                for(int min_tile_n=0; min_tile_n < (WARP_N/marlin_warp_n); min_tile_n++) {  
+                    #pragma unroll
+                    for(int n_tile=0; n_tile<marlin_warp_n/MFMA_N; n_tile++) {
+                        C_reg[0][min_tile_m*(WARP_N/marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile] = mmac<Element>(
+                            *(typename vec<Element, 4>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].scalar_array[0]), 
+                            *(typename vec<Element, 4>::type*)(&B_reg[min_tile_n][min_tile_k].int2_array[n_tile]), 
+                            C_reg[0][min_tile_m*(WARP_N/marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile]); 
+                    }
+                }
+            }
+        }
+    }
+    vmcnt_wait(0);
+    {
+        stage_id_reg_A = ((size_k/WARP_K-1))%STAGES;	
+        int A_lds_stage_offset_loop = stage_id_reg_A * A_lds_stage_offset;
+        int B_lds_stage_offset_loop = stage_id_reg_A * B_lds_stage_offset;
+        // 这里就开始从lds里面读取出来到vgpr了
+        for(int k_idx = 0; k_idx < WARP_K / MFMA_K; k_idx++){ 
+            // 加载A矩阵
+            ds_read2_tile_pad_no_wait(WARP_M, k_idx, WARP_NUM, Element, A_lds_v4bf16, precompute_A_lds_offset, A_lds_stage_offset_loop/bytes_per_dword, A_reg, stage_id_reg_A); // stage_id_reg_A: 0, 1     
+            // 加载B矩阵
+            ds_read_b128_tile_pad_no_wait(WARP_N, k_idx, WARP_NUM, Element, B_lds_v4bf16, precompute_B_lds_offset, B_lds_stage_offset_loop, B_reg);
+        }
+    }
+
+    lgkmcnt_wait_barrier(0);
+
+    #pragma unroll
+    for(int min_tile_k=0; min_tile_k<WARP_K/MFMA_K; min_tile_k++) {
+        #pragma unroll
+        for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+            #pragma unroll
+            for(int min_tile_n=0; min_tile_n < (WARP_N/marlin_warp_n); min_tile_n++) {
+                #pragma unroll
+                for(int n_tile=0; n_tile<marlin_warp_n/MFMA_N; n_tile++) {
+                    C_reg[0][min_tile_m*(WARP_N/marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile] = mmac<Element>(
+                        *(typename vec<Element, 4>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].scalar_array[0]), 
+                        *(typename vec<Element, 4>::type*)(&B_reg[min_tile_n][min_tile_k].int2_array[n_tile]), 
+                        C_reg[0][min_tile_m*(WARP_N/marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile]); 
+                }
+            }
+        }
+    }
+
+    __syncthreads();
+}
+
+template<bool Is_store_A, 
+    int A_prefetch_level, 
+    int B_prefetch_level, 
+    int WARP_NUM,
+    int BLOCK_M, 
+    int BLOCK_N, 
+    int BLOCK_K, 
+    int WARP_M,  
+    int WARP_N,  
+    int WARP_K,  
+    int STAGES,
+    bool tail_k_process,  
+    typename Element, 
+    typename ElementAccum = int32_t>                                                                                                            
+__forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN(
+    const Element* input_ptr, 
+    const Element* weight_ptr, 
+    Element* A_lds,
+    Element* B_lds,
+    int max_n_len_offset, 
+    union_vec<Element,4> A_reg[][WARP_K/16], 
+    union_vec<Element,8> B_reg[][WARP_K/16], 
+    floatx4 C_reg[][(WARP_M/16)*(WARP_N/16)],
+    int warp_id, 
+    int seqlen_A_k,  //2048
+    int seqlen_B_k,  //2048
+    int top_k, 
+    const int* sorted_token_ids_offset,
+    int sorted_token_lens,
+    const int32_t expert_id,
+    const int bidx,
+    const int bidy) {
+
+    const int size_k = seqlen_A_k;
+    int lane_id = threadIdx.x & 63; // thread_id
+    int row_id = lane_id % 16;
+    int col_id = lane_id / 16;
+    constexpr int MFMA_M = 16;
+    constexpr int MFMA_N = 16;
+    constexpr int MFMA_K = 16;
+
+    constexpr int bytes_per_element = 2;
+    constexpr int bytes_per_dword = 4;
+    const int seqlen_A_stride = seqlen_A_k * bytes_per_element;
+    const int seqlen_B_stride = seqlen_B_k * bytes_per_element;
+
+    const int marlin_warp_k = 16;// marlin weight tile: 16x32
+    const int marlin_warp_n = 32;
+    const int marlin_warp_stride = marlin_warp_k * marlin_warp_n * bytes_per_element/*bytes*/;
+
+    const int warp_n_num = BLOCK_N / WARP_N; //1
+    int warp_n_id = warp_id % warp_n_num;//0
+    int warp_m_id = warp_id / warp_n_num;//0
+    int weight_vec_size = 8;
+
+    int precompute_A_lds_offset[(WARP_M/MFMA_M)*(WARP_K/MFMA_K)]; 
+    int precompute_B_lds_offset[(WARP_N/MFMA_N)*(WARP_K/MFMA_K)];
+
+    typename vec<Element,4>::type *B_lds_v4bf16 = (typename vec<Element,4>::type *)(B_lds);
+    typename vec<Element,4>::type *A_lds_v4bf16 = (typename vec<Element,4>::type *)(A_lds);
+
+    const int type_width_in_bit = 16;
+    const int num_banks = 32;
+    const int bank_bit_width = 32;
+    const int elems_per_one_banks_row = (num_banks * bank_bit_width) / type_width_in_bit;
+    const int simd_width = 16;
+    const int inner_dim_length = WARP_K;
+    const int vec_size = 4;
+    const int per_phase = std::max(1, elems_per_one_banks_row / inner_dim_length); //4
+    const int max_phase = std::min(simd_width / per_phase, inner_dim_length / vec_size); //4
+    // const int max_phase = 32 / (vec_size * type_width_in_bit / bank_bit_width); // 32
+    int A_lds_stage_offset = STAGES == 1 ? 0 : BLOCK_M * WARP_K * bytes_per_element; 
+    int B_lds_stage_offset = STAGES == 1 ? 0 : BLOCK_N * WARP_K * bytes_per_element; 
+    int stage_id_reg_A = 0;
+    int stage_id_reg_B = 0;
+
+    {
+        auto A_ptr = (input_ptr + 0); 
+        auto B_ptr = (weight_ptr + 0); 
+
+        #pragma unroll 
+        for(int stage_id_num=0; stage_id_num<STAGES-1; stage_id_num++){
+
+            if(A_prefetch_level == 0) { // 预加载A矩阵
+                int A_block_buffer_load_global_offset = stage_id_num * WARP_K * bytes_per_element; 
+                int A_lds_stage_offset_loop = stage_id_num * A_lds_stage_offset; 
+                buffer_load_lds_tile_pad_sorted_token_dwordx2(WARP_NUM, seqlen_A_stride, BLOCK_M, WARP_K, Element, A_ptr, A_lds, A_block_buffer_load_global_offset, A_lds_stage_offset_loop, BLOCK_K, warp_id, lane_id,
+                                                            vec_size, per_phase, max_phase); 
+            }
+
+            if(B_prefetch_level == 0) { // 预加载B矩阵
+                int B_block_buffer_load_global_offset = stage_id_num * (WARP_K/marlin_warp_k) * seqlen_B_stride; 
+                int B_lds_stage_offset_loop = stage_id_num * B_lds_stage_offset; 
+                buffer_load_lds_tile_pad_weight_marlin(WARP_NUM, seqlen_B_stride, BLOCK_N, WARP_K, Element, B_ptr, B_lds, B_block_buffer_load_global_offset, B_lds_stage_offset_loop,
+                                                            marlin_warp_stride, warp_id, lane_id, marlin_warp_n, marlin_warp_k);
+            }
+        }
+    }
+
+    // 构建A矩阵读取索引
+    #pragma unroll 
+    for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+        #pragma unroll
+        for(int min_tile_k=0; min_tile_k<(WARP_K/MFMA_K); min_tile_k++) {
+            int lds_row = (lane_id & 15);
+            int lds_col = (min_tile_k * MFMA_K) / 4 + lane_id/16;
+            
+            int vec_size_dword = vec_size/2/*dword*/;
+            int phase = (lds_row/per_phase) % max_phase;
+            int col_swizzle = (lds_col ^ phase) * vec_size_dword;
+            int lds_offset = warp_m_id * (WARP_M*WARP_K)/2 + (min_tile_m * MFMA_M + lds_row)*WARP_K/2/*dword*/ + col_swizzle/*dword*/; 
+            precompute_A_lds_offset[min_tile_m * (WARP_K/MFMA_K) + min_tile_k] = lds_offset; // 装载了两次,
+        }
+    }
+    // 构建B矩阵读取索引,完成一个warp读取WARP_NxWARP_K个元素
+    #pragma unroll 
+    for(int min_tile_n=0; min_tile_n<(WARP_N/marlin_warp_n); min_tile_n++) { 
+        #pragma unroll
+        for(int min_tile_k=0; min_tile_k<(WARP_K/marlin_warp_k); min_tile_k++) { 
+            int warp_offset = lane_id * weight_vec_size * bytes_per_element/*bytes*/;
+            int lds_offset = warp_n_id * (WARP_N/marlin_warp_n) * (WARP_K/marlin_warp_k) * marlin_warp_stride + 
+                                min_tile_n * (WARP_K/marlin_warp_k) * marlin_warp_stride + min_tile_k * marlin_warp_stride + warp_offset;
+            precompute_B_lds_offset[min_tile_n*(WARP_K/marlin_warp_k) + min_tile_k] = lds_offset;
+        }
+    }
+
+    //main loop 2048/16 = 128次迭代
+    for(int k=0; k < size_k/WARP_K - (STAGES - 1); k++){
+
+        int k_offset = k * WARP_K;
+        int kb_offset = k * (WARP_K/marlin_warp_k) * seqlen_B_k;
+        auto A_ptr = (input_ptr + k_offset); // 配置全局显存信息
+        auto B_ptr = (weight_ptr + kb_offset); // 配置全局显存信息
+        
+        { 
+            // 预加载A矩阵
+            int A_block_buffer_load_global_offset = (STAGES - 1) * WARP_K * bytes_per_element; 
+            int A_lds_stage_offset_loop = ((k+(STAGES - 1)) & (STAGES - 1)) * A_lds_stage_offset; 
+            buffer_load_lds_tile_pad_sorted_token_dwordx2(WARP_NUM, seqlen_A_stride, BLOCK_M, WARP_K, Element, A_ptr, A_lds, A_block_buffer_load_global_offset, A_lds_stage_offset_loop, BLOCK_K, warp_id, lane_id,
+                                                        vec_size, per_phase, max_phase);                
+
+            // 预加载B矩阵
+            int B_block_buffer_load_global_offset = (STAGES - 1) * (WARP_K/marlin_warp_k) * seqlen_B_stride;
+            int B_lds_stage_offset_loop = ((k+(STAGES - 1)) & (STAGES - 1)) * B_lds_stage_offset; 
+            buffer_load_lds_tile_pad_weight_marlin(WARP_NUM, seqlen_B_stride, BLOCK_N, WARP_K, Element, B_ptr, B_lds, B_block_buffer_load_global_offset, 
+                                                        B_lds_stage_offset_loop, marlin_warp_stride, warp_id, lane_id, marlin_warp_n, marlin_warp_k);
+        }
+
+        vmcnt_wait((std::max(1, (BLOCK_N * WARP_K) / (8*64)/WARP_NUM) + (BLOCK_M*WARP_K) / (4*64)/WARP_NUM) * (STAGES - 1));
+
+        stage_id_reg_A = k & (STAGES-1);
+        int A_lds_stage_offset_loop = stage_id_reg_A * A_lds_stage_offset;
+        int B_lds_stage_offset_loop = stage_id_reg_A * B_lds_stage_offset;
+        // 这里就开始从lds里面读取出来到vgpr了
+        for(int k_idx = 0; k_idx < WARP_K / MFMA_K; k_idx++){ 
+            { // 加载A矩阵
+                ds_read2_tile_pad_no_wait(WARP_M, k_idx, WARP_NUM, Element, A_lds_v4bf16, precompute_A_lds_offset, A_lds_stage_offset_loop/bytes_per_dword, A_reg, stage_id_reg_A); // stage_id_reg_A: 0, 1
+            }
+
+            { // 加载B矩阵
+                ds_read_b128_tile_pad_no_wait(WARP_N, k_idx, WARP_NUM, Element, B_lds_v4bf16, precompute_B_lds_offset, B_lds_stage_offset_loop, B_reg);
+            } 
+        }
+
+        lgkmcnt_wait_barrier(0);
+
+        #pragma unroll
+        for(int min_tile_k=0; min_tile_k<WARP_K/MFMA_K; min_tile_k++) {
+            #pragma unroll
+            for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+                #pragma unroll
+                for(int min_tile_n=0; min_tile_n<(WARP_N/marlin_warp_n); min_tile_n++) {
+                    #pragma unroll
+                    for(int n_tile=0; n_tile<marlin_warp_n/MFMA_N; n_tile++) {
+                        C_reg[0][min_tile_m*(WARP_N / marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile] = mmac<Element>(
+                            *(typename vec<Element, 4>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].scalar_array[0]), 
+                            *(typename vec<Element, 4>::type*)(&B_reg[min_tile_n][min_tile_k].int2_array[n_tile]), 
+                            C_reg[0][min_tile_m*(WARP_N/marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile]);    
+                    }
+                }
+            }
+        }
+    }
+
+    ///////////////////////////////////////////////////// for 迭代完 ///////////////////////////////////////////////////////////////////////////
+    #pragma unroll
+    for(int stage_id=0; stage_id<STAGES-2; stage_id++){
+        vmcnt_wait((std::max(1, (BLOCK_N * WARP_K) / (8*64)/WARP_NUM) + (BLOCK_M*WARP_K) / (4*64)/WARP_NUM) * (STAGES-2-stage_id));
+        {
+            stage_id_reg_A = stage_id+1;
+            int A_lds_stage_offset_loop = stage_id_reg_A * A_lds_stage_offset;
+            int B_lds_stage_offset_loop = stage_id_reg_A * B_lds_stage_offset;
+            // 这里就开始从lds里面读取出来到vgpr了
+            for(int k_idx = 0; k_idx < WARP_K / MFMA_K; k_idx++){ 
+                // 加载A矩阵
+                ds_read2_tile_pad_no_wait(WARP_M, k_idx, WARP_NUM, Element, A_lds_v4bf16, precompute_A_lds_offset, A_lds_stage_offset_loop/bytes_per_dword, A_reg, stage_id_reg_A); // stage_id_reg_A: 0, 1     
+                // 加载B矩阵
+                ds_read_b128_tile_pad_no_wait(WARP_N, k_idx, WARP_NUM, Element, B_lds_v4bf16, precompute_B_lds_offset, B_lds_stage_offset_loop, B_reg);
+            }
+        }
+
+        lgkmcnt_wait_barrier(0);
+
+        #pragma unroll
+        for(int min_tile_k=0; min_tile_k<WARP_K/MFMA_K; min_tile_k++) {
+            #pragma unroll
+            for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+                #pragma unroll
+                for(int min_tile_n=0; min_tile_n < (WARP_N/marlin_warp_n); min_tile_n++) {  
+                    #pragma unroll
+                    for(int n_tile=0; n_tile<marlin_warp_n/MFMA_N; n_tile++) {
+                        C_reg[0][min_tile_m*(WARP_N/marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile] = mmac<Element>(
+                            *(typename vec<Element, 4>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].scalar_array[0]), 
+                            *(typename vec<Element, 4>::type*)(&B_reg[min_tile_n][min_tile_k].int2_array[n_tile]), 
+                            C_reg[0][min_tile_m*(WARP_N/marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile]); 
+                    }
+                }
+            }
+        }
+    }
+
+    // 为了最后一次等到vmcnt_wait=0
+    vmcnt_wait(0);
+    {
+        stage_id_reg_A = ((size_k/WARP_K-1))%STAGES;	
+        int A_lds_stage_offset_loop = stage_id_reg_A * A_lds_stage_offset;
+        int B_lds_stage_offset_loop = stage_id_reg_A * B_lds_stage_offset;
+        // 这里就开始从lds里面读取出来到vgpr了
+        for(int k_idx = 0; k_idx < WARP_K / MFMA_K; k_idx++){ 
+            // 加载A矩阵
+            ds_read2_tile_pad_no_wait(WARP_M, k_idx, WARP_NUM, Element, A_lds_v4bf16, precompute_A_lds_offset, A_lds_stage_offset_loop/bytes_per_dword, A_reg, stage_id_reg_A); // stage_id_reg_A: 0, 1     
+            // 加载B矩阵
+            ds_read_b128_tile_pad_no_wait(WARP_N, k_idx, WARP_NUM, Element, B_lds_v4bf16, precompute_B_lds_offset, B_lds_stage_offset_loop, B_reg);
+        }
+    }
+
+    lgkmcnt_wait_barrier(0);
+
+    #pragma unroll
+    for(int min_tile_k=0; min_tile_k<WARP_K/MFMA_K; min_tile_k++) {
+        #pragma unroll
+        for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+            #pragma unroll
+            for(int min_tile_n=0; min_tile_n < (WARP_N/marlin_warp_n); min_tile_n++) {
+                #pragma unroll
+                for(int n_tile=0; n_tile<marlin_warp_n/MFMA_N; n_tile++) {
+                    C_reg[0][min_tile_m*(WARP_N/marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile] = mmac<Element>(
+                        *(typename vec<Element, 4>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].scalar_array[0]), 
+                        *(typename vec<Element, 4>::type*)(&B_reg[min_tile_n][min_tile_k].int2_array[n_tile]), 
+                        C_reg[0][min_tile_m*(WARP_N/marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile]); 
+                }
+            }
+        }
+    }
+
+    if constexpr (tail_k_process){
+        int k_offset = (size_k/ WARP_K) * WARP_K; //128  160-128=32 warpK=64 or warpk=32,剩下16需要处理
+        int kb_offset = (size_k/ WARP_K) * (WARP_K/marlin_warp_k) * seqlen_B_k; //8 max：10
+
+        auto A_ptr = (input_ptr + k_offset); // 配置全局显存信息
+        auto B_ptr = (weight_ptr + kb_offset); // 配置全局显存信息
+
+        int remain_WARP_K = size_k - k_offset; //32
+        //重新匹配swizzle参数
+        int inner_dim_length_remain = remain_WARP_K;//32
+        //elems_per_one_banks_row = 64
+        int per_phase_A = std::max(1, elems_per_one_banks_row / inner_dim_length_remain); //2
+        int max_phase_A = std::min(simd_width / per_phase_A, inner_dim_length_remain / vec_size); //8
+        
+        #pragma unroll 
+        for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+            #pragma unroll
+            for(int min_tile_k=0; min_tile_k<(remain_WARP_K/MFMA_K); min_tile_k++) {
+                int lds_row = (lane_id & 15);
+                int lds_col = (min_tile_k * MFMA_K) / 4 + lane_id/16; //0 1 2 3 4 5 6 7
+            
+                int vec_size_dword = vec_size/2/*dword*/;
+                int phase = (lds_row/per_phase_A) % max_phase_A;
+                int col_swizzle = (lds_col ^ phase) * vec_size_dword;
+                // int col_swizzle = lds_col * vec_size_dword ;
+                int lds_offset = warp_m_id * (WARP_M*remain_WARP_K)/2 + (min_tile_m * MFMA_M + lds_row) * remain_WARP_K/2/*dword*/ + col_swizzle/*dword*/; 
+                precompute_A_lds_offset[min_tile_m * (remain_WARP_K/MFMA_K) + min_tile_k] = lds_offset; // 装载了两次,
+            }
+        }
+        //这里要读取2次 //lds的offset必须是字节单位
+        #pragma unroll 
+        for(int min_tile_n=0; min_tile_n<(WARP_N/marlin_warp_n); min_tile_n++) { 
+            #pragma unroll
+            for(int min_tile_k=0; min_tile_k<(remain_WARP_K/marlin_warp_k); min_tile_k++) {
+
+                int warp_offset = lane_id * weight_vec_size * bytes_per_element/*bytes*/;
+                
+                int lds_offset = warp_n_id * (WARP_N/marlin_warp_n) * (remain_WARP_K/marlin_warp_k) * marlin_warp_stride + 
+                                min_tile_n * (remain_WARP_K/marlin_warp_k) * marlin_warp_stride + min_tile_k * marlin_warp_stride + warp_offset;
+                precompute_B_lds_offset[min_tile_n*(remain_WARP_K/marlin_warp_k) + min_tile_k] = lds_offset;
+            }
+        }
+        {     
+            buffer_load_lds_tile_pad_sorted_token_dwordx2(WARP_NUM, seqlen_A_stride, BLOCK_M, remain_WARP_K, Element, A_ptr, A_lds, 0, 0, BLOCK_K, warp_id, lane_id,
+                                                        vec_size, per_phase_A, max_phase_A);                 
+            buffer_load_lds_tile_pad_weight_marlin(WARP_NUM, seqlen_B_stride, BLOCK_N, remain_WARP_K, Element, B_ptr, B_lds, 0, 
+                                                        0, marlin_warp_stride, warp_id, lane_id, marlin_warp_n, marlin_warp_k);
+        }
+
+        vmcnt_wait(0);
+        //之前是读取2次，现在是读取4次
+        stage_id_reg_A = 0;
+        // int A_lds_stage_offset_loop = stage_id_reg_A * A_lds_stage_offset;
+        // int B_lds_stage_offset_loop = stage_id_reg_A * B_lds_stage_offset;
+        for(int k_idx = 0; k_idx < remain_WARP_K / MFMA_K; k_idx++){ 
+            { // 加载A矩阵
+            //     ds_read2_tile_pad_no_wait2(WARP_M, k_idx, WARP_NUM, Element, A_lds_v4bf16, precompute_A_lds_offset, A_lds_stage_offset_loop/bytes_per_dword, A_reg, stage_id_reg_A,remain_WARP_K); // stage_id_reg_A: 0, 1
+            for(int m_idx = 0; m_idx < WARP_M / 16; m_idx ++){\
+                A_reg[m_idx][k_idx].int2_array[0] = *(intx2*)((uint8_t*)A_lds+ precompute_A_lds_offset[m_idx * (remain_WARP_K/MFMA_K) + k_idx] * 4);
+            }
+                // ds_read2_tile_pad_no_wait2(16, k_idx, 4, Element, A_lds, precompute_A_lds_offset, 0, A_reg, 0,32);
+            }
+            { // 加载B矩阵
+                for(int m_idx = 0; m_idx < WARP_N / marlin_warp_n; m_idx ++){
+                    B_reg[m_idx][k_idx].int4_array[0] = *(intx4*)((uint8_t*)B_lds + precompute_B_lds_offset[m_idx * (remain_WARP_K/marlin_warp_k) + k_idx]);
+                }
+                // B_reg[m_idx][k_idx].int4_array[0] = *(intx4*)B_lds_v4bf16;
+                // ds_read_b128_tile_pad_no_wait2(WARP_N, k_idx, WARP_NUM, Element, B_lds_v4bf16, precompute_B_lds_offset, B_lds_stage_offset_loop, B_reg,remain_WARP_K);
+            } 
+        }
+
+        #pragma unroll
+        for(int min_tile_k=0; min_tile_k<remain_WARP_K/MFMA_K; min_tile_k++) {
+            #pragma unroll
+            for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+                #pragma unroll
+                for(int min_tile_n=0; min_tile_n<(WARP_N/marlin_warp_n); min_tile_n++) {
+                    #pragma unroll
+                    for(int n_tile=0; n_tile<marlin_warp_n/MFMA_N; n_tile++) {
+                        C_reg[0][min_tile_m*(WARP_N / marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile] = mmac<Element>(
+                            *(typename vec<Element, 4>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].scalar_array[0]), 
+                            *(typename vec<Element, 4>::type*)(&B_reg[min_tile_n][min_tile_k].int2_array[n_tile]), 
+                            C_reg[0][min_tile_m*(WARP_N/marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile]);    
+                    }
+                }
+            }
+        }
+                            
+    }      
+    __syncthreads();
 }
 
 
