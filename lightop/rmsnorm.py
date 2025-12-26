@@ -154,11 +154,12 @@ def rms_norm_dynamic_per_token_quant(
     residual: Optional[torch.Tensor] = None,
     update_input: bool = True
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    output = torch.empty_like(input, dtype=quant_dtype)
+    output = torch.empty(input.shape,device=input.device,dtype=quant_dtype)
     scales = torch.empty((input.numel() // input.shape[-1], 1),
                         device=input.device,
                         dtype=torch.float32)
-
+    import pdb
+    # pdb.set_trace()
     op.rms_norm_dynamic_per_token_quant(output, input, weight,
                                                     scales, epsilon,
                                                     residual, update_input)
