@@ -14,7 +14,7 @@ from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
 import triton
 import triton.language as tl
-import lmslim.envs as lsenvs
+# import lmslim.envs as lsenvs
 from vllm.utils import W8a8GetCacheJSON
 import torch.nn.functional as F
 from lmslim.layers.gemm.int8_utils import (
@@ -23,8 +23,12 @@ from w8a8_quant import w8a8_2_marlin_weight
 import random
 import numpy as np
 
-use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
-device_name = lsenvs.LMSLIM_GPU_NAME
+# use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
+# device_name = lsenvs.LMSLIM_GPU_NAME
+
+use_lightop = True
+device_name = 'gfx938'
+
 
 
 seed = 0
