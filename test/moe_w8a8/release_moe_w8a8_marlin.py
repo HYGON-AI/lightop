@@ -973,9 +973,7 @@ def test_moe_debug(
         m, n1, k1, n2, k2, topk, E, out_dtype, per_channel_quant=per_channel_quant
     )
     
-    # import pdb
-    # pdb.set_trace()
-
+    
     # 设置compute_type
     if out_dtype == torch.bfloat16:
         compute_type = tl.bfloat16
