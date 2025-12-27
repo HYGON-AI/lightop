@@ -18,7 +18,8 @@ from lightop import rms_norm_dynamic_per_token_quant
 
 import triton
 import pandas as pd
-
+#input contiguous status
+input_is_not_contiguous=True
 def bench_fn_triton_stable(rms_norm_layer, x, residual, quant_dtype, fn):
 
     # 增加预热次数，保证GPU进入稳定状态，JIT编译完成等
@@ -64,8 +65,8 @@ def get_bench_params() -> list[bench_params_t]:
     ## Test Fixtures
     NUM_TOKENS = [2**x for x in range(11)]
     HIDDEN_SIZES = list(range(512, 8129, 1024))
-    ADD_RESIDUAL = [True,False]
-    DTYPES = [torch.bfloat16, torch.float]
+    ADD_RESIDUAL = [False, True]
+    DTYPES = [torch.float16]
 
     combinations = product(NUM_TOKENS, HIDDEN_SIZES, ADD_RESIDUAL, DTYPES)
     bench_params = list(map(lambda x: \
@@ -118,6 +119,12 @@ def fused_fast_impl(
         x: torch.Tensor,
         residual: Optional[torch.Tensor],
         quant_dtype: torch.dtype):
+    import torch.nn.functional as F
+
+    _padded = F.pad(x, (0, 20))
+    y = _padded[:, :x.stride(-2)]
+    if input_is_not_contiguous is True and residual is None:
+        x = y
     out, _ = rms_norm_dynamic_per_token_quant(x,
                                                   rms_norm_layer.weight,
                                                   1e-6,
@@ -162,6 +169,12 @@ def check_accuracy(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: Optional[
         #     torch.int8,
         #     residual=residual.to(torch.float32) if residual is not None else None
         # )
+        import torch.nn.functional as F
+
+        _padded = F.pad(x_copy, (0, 16))
+        y = _padded[:, :x_copy.stride(-2)]
+        if input_is_not_contiguous is True and residual_copy is None:
+            x_copy = y
 
         test_out, test_scales = rms_norm_dynamic_per_token_quant(
             x_copy,
