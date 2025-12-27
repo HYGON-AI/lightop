@@ -1450,9 +1450,9 @@ def main(args: argparse.Namespace):
     # hidden_size=7168
     
     # # deepseek-r1-tp8
-    E = 256
-    shard_intermediate_size=512
-    hidden_size=7168
+    # E = 256
+    # shard_intermediate_size=512
+    # hidden_size=7168
     
     # ## deepseek-671b-tp4
     # E = 256
@@ -1460,9 +1460,9 @@ def main(args: argparse.Namespace):
     # hidden_size=7168
     
     # ## deepseek-671b-tp2
-    # E = 256
-    # shard_intermediate_size=2048
-    # hidden_size=7168
+    E = 256
+    shard_intermediate_size=2048
+    hidden_size=7168
     
     # # deepseek-671b-tp1
     # E = 256

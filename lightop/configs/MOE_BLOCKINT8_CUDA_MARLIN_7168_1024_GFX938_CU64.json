@@ -1,8 +1,8 @@
 {
-    "7168_512": {
+    "7168_1024": {
         "1": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 69,
+            "MODE": 76,
             "DELTA": 1
         },
         "2": {
@@ -12,67 +12,67 @@
         },
         "3": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 30,
+            "MODE": 76,
             "DELTA": 1
         },
         "4": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 57,
+            "MODE": 11,
             "DELTA": 1
         },
         "5": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 57,
+            "MODE": 30,
             "DELTA": 1
         },
         "6": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 57,
+            "MODE": 30,
             "DELTA": 1
         },
         "7": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 57,
+            "MODE": 11,
             "DELTA": 1
         },
         "8": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 57,
+            "MODE": 55,
             "DELTA": 1
         },
         "9": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 12,
+            "MODE": 26,
             "DELTA": 1
         },
         "10": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 57,
+            "MODE": 30,
             "DELTA": 1
         },
         "11": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 49,
+            "MODE": 54,
             "DELTA": 1
         },
         "12": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 56,
+            "MODE": 30,
             "DELTA": 1
         },
         "13": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 57,
+            "MODE": 54,
             "DELTA": 1
         },
         "14": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 57,
+            "MODE": 30,
             "DELTA": 1
         },
         "15": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 48,
+            "MODE": 57,
             "DELTA": 1
         },
         "16": {
@@ -87,33 +87,33 @@
         },
         "64": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 57,
+            "MODE": 54,
             "DELTA": 1
         },
         "128": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 57,
+            "MODE": 48,
             "DELTA": 1
         },
         "256": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 53,
+            "MODE": 49,
             "DELTA": 1
         },
         "512": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 53,
+            "MODE": 54,
             "DELTA": 2
         },
         "1024": {
-            "BLOCK_SIZE_M": 16,
-            "MODE": 53,
-            "DELTA": 4
-        },
-        "2048": {
             "BLOCK_SIZE_M": 64,
             "MODE": 1001,
-            "DELTA": 2
+            "DELTA": 1
+        },
+        "2048": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
         },
         "4096": {
             "BLOCK_SIZE_M": 128,
