@@ -483,7 +483,9 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kernel(
 
     int i = 0;
     int B_stride_k = WARP_K / 16;
-
+    int k_block = warp_k_num * WARP_K; //64
+    int itk = size_k/ k_block ; //2
+    int remainder = size_k % k_block; 
     #pragma unroll
     for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
         int sorted_token_idx = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
@@ -494,7 +496,7 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kernel(
     for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
         g_row_B[n_tile] =  warp_k_id * B_stride_k * seqlen_B_stride + warp_n_id * 64 * 8 + lane_id * 8;
     }
-
+    if(itk!=0){
     #pragma unroll
     for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
         #pragma unroll
@@ -510,10 +512,9 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kernel(
            B_reg[n_tile][0].floatx4_array[k_tile]  = *(floatx4*)(weight_ptr + (i * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 64);
         }
     }
+    }
     i=1; 
-    int k_block = warp_k_num * WARP_K; //64
-    int itk = size_k/ k_block ; //2
-    int remainder = size_k % k_block; 
+
 
     for(; i < itk ; i += 2){
         #pragma unroll
@@ -957,7 +958,8 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kpack2_ker
     for(int n_tile = 0; n_tile < WARP_N / MFMA_N; n_tile++){
         g_row_B[n_tile] =  warp_k_id * B_stride_k * seqlen_B_stride + warp_n_id * 64 * 8 + row_id * 8 + (col_id % 2)* 256 + (col_id/2)*seqlen_B_stride;
     }
-
+    int itk = size_k/BLOCK_K; 
+    if(itk!=0){
     #pragma unroll
     for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
         #pragma unroll
@@ -973,10 +975,11 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kpack2_ker
            B_reg[n_tile][0].floatx4_array[k_tile]  = *(floatx4*)(weight_ptr + (i * warp_k_num * B_stride_k) * seqlen_B_stride + g_row_B[n_tile] + k_tile * 128);
         }
     }
+    }
     i=1;
-    int k_block =  warp_k_num * WARP_K;
-    int itk = size_k/k_block; 
-    int remainder = size_k % k_block; 
+    // int k_block =  warp_k_num * WARP_K;
+    
+    int remainder = size_k % BLOCK_K; 
     for(; i < itk ; i += 2){
         #pragma unroll
         for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
@@ -1072,7 +1075,7 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NN_DOWN_decode_kpack2_ker
 
     if(remainder > 0){
         //仅迭代一次，不需要进行预取，直接读取然后计算写回即可
-        int k0 = (size_k/ k_block) * k_block; //128
+        int k0 = (size_k/ BLOCK_K) * BLOCK_K; //128
         if((k0 + warp_k_id * WARP_K) < size_k) {
 
             #pragma unroll
