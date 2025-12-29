@@ -1,129 +1,135 @@
-    #include <iostream>
-    #include <stdio.h>
-    #include <string.h>
-    #include <random>
-    #include "hip/hip_runtime.h"
-    #include <hip/hip_hcc.h>
-    #include "rocblas.h"
-    #include "internal/rocblas-auxiliary.h"
-    #include "mqa_logits_asm.h"
-    #include <limits>
-    #include <torch/extension.h>
-    #include <string>
-    #include <sstream>
-    #include <ATen/dtk_macros.h>
-    #include "hip/hip_runtime.h"
-    #include <c10/util/BFloat16.h>
-    #include "hip/hip_bf16.h"
-    #include "hip/hip_fp16.h"
-    #include <ATen/hip/HIPContext.h>
-    #include <hip/hip_hcc.h>
-    #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
-    #include <torch/python.h>
-    #include <torch/nn/functional.h>
-    #include <torch/torch.h>
-    #include <filesystem>
-    #include <torch/all.h>
-    #include <ATen/core/TensorBody.h>
-    #include <ATen/cuda/CUDAContext.h>
-    #include <c10/cuda/CUDAGuard.h>
-    #include "aiter_hip_common.h"
+#include <iostream>
+#include <stdio.h>
+#include <string.h>
+#include <random>
+#include <limits>
+#include <string>
+#include <sstream>
+#include <filesystem>
 
-    using half_t = __half;
-    using half2_t = __attribute__( (__vector_size__(2 * sizeof(_Float16)) )) _Float16;
-    using half4_t = __attribute__( (__vector_size__(4 * sizeof(_Float16)) )) _Float16;
-    using half8_t = __attribute__( (__vector_size__(8 * sizeof(_Float16)) )) _Float16;
-    using half16_t = __attribute__( (__vector_size__(16 * sizeof(_Float16)) )) _Float16;
-    using floatx4 = __attribute__( (__vector_size__(4 * sizeof(float)) )) float;
-    using floatx2 = __attribute__( (__vector_size__(2 * sizeof(float)) )) float;
-    using v4bh = __attribute__( (__vector_size__(4 * sizeof(short)) )) short;
-    using intx4 = __attribute__((__vector_size__(4 * sizeof(int)))) int;
-    using intx2 = __attribute__((__vector_size__(2 * sizeof(int)))) int;
-    #define FETCH_HALF8(pointer) (reinterpret_cast<half8_t*>(&(pointer))[0])
-    #define FETCH_HALF4(pointer) (reinterpret_cast<half4_t*>(&(pointer))[0])
-    #define DIV(x,y) ((x)+(y)-1)/(y)
-    namespace at {
-    namespace native {
+#include "hip/hip_runtime.h"
+#include <hip/hip_hcc.h>
+#include "rocblas.h"
+#include "internal/rocblas-auxiliary.h"
+#include "mqa_logits_asm.h"
 
+#include <torch/extension.h>
+#include <ATen/dtk_macros.h>
+#include <c10/util/BFloat16.h>
+#include "hip/hip_bf16.h"
+#include "hip/hip_fp16.h"
+#include <ATen/hip/HIPContext.h>
+#include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
+#include <torch/python.h>
+#include <torch/nn/functional.h>
+#include <torch/torch.h>
+#include <torch/all.h>
+#include <ATen/core/TensorBody.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include "aiter_hip_common.h"
 
-    struct half4x8{
+using half_t = __half;
+using half2_t = __attribute__((__vector_size__(2 * sizeof(_Float16)))) _Float16;
+using half4_t = __attribute__((__vector_size__(4 * sizeof(_Float16)))) _Float16;
+using half8_t = __attribute__((__vector_size__(8 * sizeof(_Float16)))) _Float16;
+using half16_t = __attribute__((__vector_size__(16 * sizeof(_Float16)))) _Float16;
+using floatx4 = __attribute__((__vector_size__(4 * sizeof(float)))) float;
+using floatx2 = __attribute__((__vector_size__(2 * sizeof(float)))) float;
+using v4bh = __attribute__((__vector_size__(4 * sizeof(short)))) short;
+using intx4 = __attribute__((__vector_size__(4 * sizeof(int)))) int;
+using intx2 = __attribute__((__vector_size__(2 * sizeof(int)))) int;
+
+#define FETCH_HALF8(pointer) (reinterpret_cast<half8_t*>(&(pointer))[0])
+#define FETCH_HALF4(pointer) (reinterpret_cast<half4_t*>(&(pointer))[0])
+#define DIV(x, y) ((x) + (y) - 1) / (y)
+
+namespace at {
+namespace native {
+
+struct half4x8 {
     half4_t data[8];
-    };
+};
 
-    struct half4x16{
+struct half4x16 {
     half4_t data[16];
-    };
-    #define Input_Type_SWITCH(SRC_DTYPE, ...)     \
-    [&] {                                       \
-        if (SRC_DTYPE == at::ScalarType::Half) {  \
-        using scalar_t=_Float16;                \
-        return __VA_ARGS__();                   \
-        }else {                                   \
-        using scalar_t=uint16_t;                \
-        return __VA_ARGS__();                   \
-        }                                         \
+};
+
+#define Input_Type_SWITCH(SRC_DTYPE, ...)      \
+    [&] {                                      \
+        if (SRC_DTYPE == at::ScalarType::Half) { \
+            using scalar_t = _Float16;         \
+            return __VA_ARGS__();              \
+        } else {                               \
+            using scalar_t = uint16_t;         \
+            return __VA_ARGS__();              \
+        }                                      \
     }()
 
+template <uint32_t kNextN, uint32_t kNumWarps>
+__global__ __launch_bounds__(kNumWarps * 64, 1) void clean_logits(
+    const uint32_t seq_len,
+    const uint32_t seq_len_kv,
+    const uint64_t stride_kv,
+    const uint32_t* cu_seq_len_k_start,
+    const uint32_t* cu_seq_len_k_end,
+    float* logits) {
+    const float neg_inf = -std::numeric_limits<float>::infinity();
+    const floatx4 neg_infx4 = {neg_inf, neg_inf, neg_inf, neg_inf};
+    const floatx2 neg_infx2 = {neg_inf, neg_inf};
 
-    template <uint32_t kNextN, uint32_t kNumWarps>
-    __global__ __launch_bounds__(kNumWarps * 64, 1) 
-    void clean_logits(const uint32_t seq_len, const uint32_t seq_len_kv, const uint64_t stride_kv,
-                        const uint32_t* cu_seq_len_k_start, const uint32_t* cu_seq_len_k_end, float* logits) 
-    {
-       const float neg_inf = -std::numeric_limits<float>::infinity();
-       const floatx4 neg_infx4 = {neg_inf, neg_inf, neg_inf, neg_inf};
-       const floatx2 neg_infx2 = {neg_inf, neg_inf};
-        
-        const uint32_t num_threads_per_block = kNumWarps * 64;
-        const uint32_t tid = threadIdx.x;
+    const uint32_t num_threads_per_block = kNumWarps * 64;
+    const uint32_t tid = threadIdx.x;
 
-        for (uint32_t i = blockIdx.x; i < seq_len; i += gridDim.x) {
-            const uint32_t row_group = i / kNextN;
-            const uint32_t ks = (cu_seq_len_k_start == nullptr) ? 0 : cu_seq_len_k_start[row_group];
-            const uint32_t ke = cu_seq_len_k_end[row_group] - kNextN + (i % kNextN) + 1;
-            const uint64_t row_base_addr = i * stride_kv;
-            for (uint32_t j = tid; j < ks; j += num_threads_per_block) {
-                logits[row_base_addr + j] = neg_inf;
+    for (uint32_t i = blockIdx.x; i < seq_len; i += gridDim.x) {
+        const uint32_t row_group = i / kNextN;
+        const uint32_t ks = (cu_seq_len_k_start == nullptr) ? 0 : cu_seq_len_k_start[row_group];
+        const uint32_t ke = cu_seq_len_k_end[row_group] - kNextN + (i % kNextN) + 1;
+        const uint64_t row_base_addr = i * stride_kv;
+        for (uint32_t j = tid; j < ks; j += num_threads_per_block) {
+            logits[row_base_addr + j] = neg_inf;
+        }
+        const uint32_t num_elements_to_clean = seq_len_kv - ke;
+        if (ke % 4 == 0 && num_elements_to_clean % 4 == 0) {
+            const uint32_t num_f4_chunks = num_elements_to_clean / 4;
+            floatx4* start_ptr_f4 = reinterpret_cast<floatx4*>(&logits[row_base_addr + ke]);
+            for (uint32_t j_f4 = tid; j_f4 < num_f4_chunks; j_f4 += num_threads_per_block) {
+                start_ptr_f4[j_f4] = neg_infx4;
             }
-            const uint32_t num_elements_to_clean = seq_len_kv - ke;
-            if (ke % 4 == 0 && num_elements_to_clean % 4 == 0) {
-                const uint32_t num_f4_chunks = num_elements_to_clean / 4;
-                floatx4* start_ptr_f4 = reinterpret_cast<floatx4*>(&logits[row_base_addr + ke]);
-                for (uint32_t j_f4 = tid; j_f4 < num_f4_chunks; j_f4 += num_threads_per_block) {
-                    start_ptr_f4[j_f4] = neg_infx4;
-                }
 
-            }else if (ke % 2 == 0 && num_elements_to_clean % 2 == 0) {
-                const uint32_t num_f2_chunks = num_elements_to_clean / 2;
-                floatx2* start_ptr_f2 = reinterpret_cast<floatx2*>(&logits[row_base_addr + ke]);
-                for (uint32_t j_f2 = tid; j_f2 < num_f2_chunks; j_f2 += num_threads_per_block) {
-                    start_ptr_f2[j_f2] = neg_infx2;
-                }
-            } 
-            else {
-                for (uint32_t j = ke + tid; j < seq_len_kv; j += num_threads_per_block) {
-                    logits[row_base_addr + j] = neg_inf;
-                }
+        } else if (ke % 2 == 0 && num_elements_to_clean % 2 == 0) {
+            const uint32_t num_f2_chunks = num_elements_to_clean / 2;
+            floatx2* start_ptr_f2 = reinterpret_cast<floatx2*>(&logits[row_base_addr + ke]);
+            for (uint32_t j_f2 = tid; j_f2 < num_f2_chunks; j_f2 += num_threads_per_block) {
+                start_ptr_f2[j_f2] = neg_infx2;
+            }
+        } else {
+            for (uint32_t j = ke + tid; j < seq_len_kv; j += num_threads_per_block) {
+                logits[row_base_addr + j] = neg_inf;
             }
         }
     }
+}
 
-
-    template <uint32_t kNextN, uint32_t kNumWarps>
-__global__ __launch_bounds__(kNumWarps * 64, 1) 
-void clean_logits_padding(const uint32_t seq_len, const uint32_t seq_len_kv, const uint64_t stride_kv,
-                                 const uint32_t* cu_seq_len_k_start, const uint32_t* cu_seq_len_k_end, float* logits,const uint32_t seq_len_padding) 
-{
+template <uint32_t kNextN, uint32_t kNumWarps>
+__global__ __launch_bounds__(kNumWarps * 64, 1) void clean_logits_padding(
+    const uint32_t seq_len,
+    const uint32_t seq_len_kv,
+    const uint64_t stride_kv,
+    const uint32_t* cu_seq_len_k_start,
+    const uint32_t* cu_seq_len_k_end,
+    float* logits,
+    const uint32_t seq_len_padding) {
     const float neg_inf = -std::numeric_limits<float>::infinity();
     const floatx4 neg_infx4 = {neg_inf, neg_inf, neg_inf, neg_inf};
     const uint32_t num_threads_per_block = kNumWarps * 64;
     const uint32_t tid = threadIdx.x;
     for (uint32_t i = blockIdx.x; i < seq_len_padding; i += gridDim.x) {
-        
+
         const uint32_t row_group = i / kNextN;
         const bool is_over_boundry = row_group >= seq_len;
         const uint32_t ks = is_over_boundry ? 0 : cu_seq_len_k_start[row_group];
-        //越界从0-seq_len_kv
+        // 越界从0-seq_len_kv
         const uint32_t ke = is_over_boundry ? 0 : (cu_seq_len_k_end[row_group] - kNextN + (i % kNextN) + 1);
         const uint64_t row_base_addr = i * stride_kv;
 
@@ -135,7 +141,7 @@ void clean_logits_padding(const uint32_t seq_len, const uint32_t seq_len_kv, con
         const uint32_t end_idx = seq_len_kv;
 
         if (start_idx >= end_idx) {
-            continue; 
+            continue;
         }
 
         const uint32_t aligned_start = std::min((start_idx + 3) & (~3U), end_idx);
@@ -159,775 +165,1021 @@ void clean_logits_padding(const uint32_t seq_len, const uint32_t seq_len_kv, con
         }
     }
 }
-    template<bool is_half=true>
-    inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& reg_b, floatx4& reg_c)
-    {
-        #if defined(__gfx936__) || defined(__gfx928__)
-            if constexpr (is_half)reg_c=__builtin_amdgcn_mmac_f32_16x16x16f16(reg_a,reg_b,reg_c);
-            else reg_c=__builtin_amdgcn_mmac_f32_16x16x16bf16(*(v4bh*)&reg_a,*(v4bh*)&reg_b,reg_c);
-        #endif
-    }
 
-    template <typename scalar_t>
-    inline __device__ void loadtileB2reg(half4x8 &B_reg,  scalar_t *B_data, const int row, const int col,const int N){
-    #pragma unroll 8
-        for(int i = 0; i < 8; i++){
-            B_reg.data[i] = FETCH_HALF4(B_data[row * N + col + i*16]);
+template <bool is_half = true>
+inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& reg_b, floatx4& reg_c) {
+#if defined(__gfx936__) || defined(__gfx928__)
+    if constexpr (is_half)
+        reg_c = __builtin_amdgcn_mmac_f32_16x16x16f16(reg_a, reg_b, reg_c);
+    else
+        reg_c = __builtin_amdgcn_mmac_f32_16x16x16bf16(*(v4bh*)&reg_a, *(v4bh*)&reg_b, reg_c);
+#endif
+}
+
+template<typename scalar_t, bool is_align_n>
+inline __device__ void
+loadtileB2reg(half4x8 &B_reg, scalar_t *B_data, const int row, const int col, const int head_dim, const int max_rows) {
+    if constexpr(is_align_n) {
+#pragma unroll 8
+        for (int i = 0; i < 8; i++) {
+            B_reg.data[i] = FETCH_HALF4(B_data[row * head_dim + col + i * 16]);
+        }
+    } else {
+        if (row >= max_rows) {
+            for (int i = 0; i < 8; i++) {
+                *reinterpret_cast<uint64_t*>(&B_reg.data[i]) = 0;
+            }
+        }else{
+            for (int i = 0; i < 8; i++) {
+                B_reg.data[i] = FETCH_HALF4(B_data[row * head_dim + col + i * 16]);
+            }
         }
     }
-    template<typename scalar_t>
-    __device__ __forceinline__ void cp_async4_vgpr(intx4* dst_vgpr, const scalar_t* glob_ptr, int offset_v,bool pred) {
-    if(pred){
-                intx4 res;
-            typedef uint32_t uint32x4_t __attribute__((ext_vector_type(4)));
-            uint32x4_t global_addr = {0};
-            *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(glob_ptr);
-            global_addr[1] += 0x41000000; // 62 bit: cache swizzle;  48~61: Stride
-            global_addr[2] = 0x80000000;
-            global_addr[3] = 0x00020000; // 0000 0000 0000 0010 0000 0000 0000 0000
-            //  000
-            asm volatile(
-                "buffer_load_dwordx4 %0, %1, %2 ,0 offen slc\n" 
-                " \n\t" :"=v"(res),
-                "+v"(offset_v), "+s"(global_addr)
-            );
+}
 
-            *reinterpret_cast<intx4*>(dst_vgpr) = res;
+template <typename scalar_t>
+__device__ __forceinline__ void cp_async4_vgpr(intx4* dst_vgpr, const scalar_t* glob_ptr, int offset_v, bool pred) {
+    if (pred) {
+        intx4 res;
+        typedef uint32_t uint32x4_t __attribute__((ext_vector_type(4)));
+        uint32x4_t global_addr = {0};
+        *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(glob_ptr);
+        global_addr[1] += 0x41000000; // 62 bit: cache swizzle;  48~61: Stride
+        global_addr[2] = 0x80000000;
+        global_addr[3] = 0x00020000; // 0000 0000 0000 0010 0000 0000 0000 0000
+        //  000
+        asm volatile(
+            "buffer_load_dwordx4 %0, %1, %2 ,0 offen slc\n"
+            " \n\t"
+            : "=v"(res),
+            "+v"(offset_v), "+s"(global_addr));
+
+        *reinterpret_cast<intx4*>(dst_vgpr) = res;
     }
+}
 
+template <typename scalar_t>
+__device__ __forceinline__ void cp_async2_vgpr(intx2* dst_vgpr, const scalar_t* glob_ptr, int offset_v, bool pred) {
+    if (pred) {
+        intx2 res;
+        typedef uint32_t uint32x4_t __attribute__((ext_vector_type(4)));
+        uint32x4_t global_addr = {0};
+        *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(glob_ptr);
+        global_addr[1] += 0x41000000; // 62 bit: cache swizzle;  48~61: Stride
+        global_addr[2] = 0x80000000;
+        global_addr[3] = 0x00020000; // 0000 0000 0000 0010 0000 0000 0000 0000
+        //  000
+        asm volatile(
+            "buffer_load_dwordx2 %0, %1, %2 ,0 offen slc\n"
+            " \n\t"
+            : "=v"(res),
+            "+v"(offset_v), "+s"(global_addr));
+
+        *reinterpret_cast<intx2*>(dst_vgpr) = res;
     }
+}
 
-    template<typename scalar_t>
-    __device__ __forceinline__ void cp_async2_vgpr(intx2* dst_vgpr, const scalar_t* glob_ptr, int offset_v,bool pred) {
-    if(pred){
-            intx2 res;
-            typedef uint32_t uint32x4_t __attribute__((ext_vector_type(4)));
-            uint32x4_t global_addr = {0};
-            *(uint64_t*)&global_addr = reinterpret_cast<uint64_t>(glob_ptr);
-            global_addr[1] += 0x41000000; // 62 bit: cache swizzle;  48~61: Stride
-            global_addr[2] = 0x80000000;
-            global_addr[3] = 0x00020000; // 0000 0000 0000 0010 0000 0000 0000 0000
-            //  000
-            asm volatile(
-                "buffer_load_dwordx2 %0, %1, %2 ,0 offen slc\n" 
-                " \n\t" :"=v"(res),
-                "+v"(offset_v), "+s"(global_addr)
-            );
-
-            *reinterpret_cast<intx2*>(dst_vgpr) = res;
-    }
-    }
-
-    /**
-    M = q_seq_len
-    K = head_dim 
-    N = kv_seq_len
-    shape C(M,N) , A(M,K) , B(N,k)
-    compute C = A * BT 
-    **/
-    template <typename scalar_t,int num_heads, int head_dim,int BlOCK_M,int BLOCK_K,int BLOCK_N>
-    __global__ void _mqa_logits_16x128x64_NT_impl_M64(scalar_t *A_data, scalar_t *B_data, float *D_data, float *Weights_data,uint32_t* KS,uint32_t* KE,
-            const int q_seq_len, const int kv_seq_len){
-            const int M = q_seq_len;
-            const int N = kv_seq_len;
-            const int K = head_dim * num_heads;
-            const int blockIdx_x =blockIdx.x; //(blockIdx.x << logtile) + ((blockIdx.y) & ((1 << (logtile)) - 1)); 
-            const int blockIdx_y = blockIdx.y;// >> logtile;
-            const int tid = threadIdx.x;
-            const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
-            const int lane = tid % C10_WARP_SIZE;
-            constexpr bool is_half = std::is_same<scalar_t, _Float16>::value;
-            __shared__ scalar_t A_Seme[2][16*128 + 16*4];
-            __shared__ uint32_t boundary_Seme[BlOCK_M];
-            __shared__ float W_Seme[2][BlOCK_M];
-          //  __shared__ float C_Seme[BlOCK_M][BLOCK_N+1];
-            //后面有同步
-            if(tid < BlOCK_M){
+/**
+M = q_seq_len
+K = head_dim
+N = kv_seq_len
+shape C(M,N) , A(M,K) , B(N,k)
+compute C = A * BT
+**/
+template <typename scalar_t, int num_heads, int head_dim, int BlOCK_M, int BLOCK_K, int BLOCK_N, bool is_align_m, bool is_align_n>
+__global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch(
+    scalar_t* A_data,
+    scalar_t* B_data,
+    float* D_data,
+    float* Weights_data,
+    uint32_t* KS,
+    uint32_t* KE,
+    const int q_seq_len,
+    const int kv_seq_len) {
+    const int M = q_seq_len;
+    const int N = kv_seq_len;
+    const int K = head_dim * num_heads;
+    const int blockIdx_x = blockIdx.x; // (blockIdx.x << logtile) + ((blockIdx.y) & ((1 << (logtile)) - 1));
+    const int blockIdx_y = blockIdx.y; // >> logtile;
+    const int tid = threadIdx.x;
+    const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
+    const int lane = tid % C10_WARP_SIZE;
+    constexpr bool is_half = std::is_same<scalar_t, _Float16>::value;
+    __shared__ scalar_t A_Seme[2][16 * 128 + 16 * 4];
+    __shared__ uint32_t boundary_Seme[BlOCK_M];
+    __shared__ float W_Seme[2][BlOCK_M];
+    //  __shared__ float C_Seme[BlOCK_M][BLOCK_N+1];
+    // 后面有同步
+    if (tid < BlOCK_M) {
+        if constexpr (is_align_m) {
+            boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+        } else {
+            if (blockIdx_y * BlOCK_M + tid < M) {
                 boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+            } else {
+                boundary_Seme[tid] = 0;
             }
-            
-            /* block mask */
-            if(blockIdx_x * BLOCK_N  >= KE[blockIdx_y * BlOCK_M + BlOCK_M - 1]){
-                return;
-            }
-            floatx4 C_reg_out = {0.0,0.0,0.0,0.0};
-            half4x8 A_reg;
-            half4x8 B_reg;
-            scalar_t A_reg_move[8];
-
-            /** ldg offset**/
-            int ldg_row_A = blockIdx_y * BlOCK_M + (tid / 16);
-            int ldg_col_A = (tid % 16) * 8;
-            int ldg_row_B = (lane / 16) * 4;
-            int ldg_col_B = blockIdx_x * BLOCK_N  + warp_idx * 16 + (lane % 16);
-            /** lds offset**/
-            int lds_row_A =  (lane % 16);
-            int lds_col_A =  (lane / 16) * 4;
-            /** sts offset**/
-            int sts_row_A =  (tid / 16);
-            int sts_col_A = (tid % 16) * 8;
-            /* stg offset */
-            const int stg_row = lane % 16 + blockIdx_y * BlOCK_M;
-            const int stg_col = lane / 16 +  warp_idx * 16 + blockIdx_x * BLOCK_N;
-            
-            //TODO buffer_load
-            /* B转置了 */
-            loadtileB2reg(B_reg,B_data,ldg_col_B,ldg_row_B,head_dim);
-            
-            //A->reg
-            FETCH_HALF8(A_reg_move[0]) = FETCH_HALF8(A_data[ldg_row_A*K + ldg_col_A]);
-            //A_reg to lds
-            FETCH_HALF8(A_Seme[0][sts_row_A*132+sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
-            if(tid < 16) {
-                W_Seme[0][tid] = Weights_data[stg_row * num_heads]; 
-            }
-            __syncthreads();
-            ldg_col_A += 128;  //滑动到下一个head;
-
-            for(int i = 0; i < num_heads; i++){
-                cp_async4_vgpr(reinterpret_cast<intx4*>(&A_reg_move[0]),A_data,(ldg_row_A*K + ldg_col_A)*2,(i + 1 < num_heads));
-                
-                floatx4 C_reg = {0.0,0.0,0.0,0.0};
-                asm volatile("s_waitcnt lgkmcnt(0)");
-                FETCH_HALF4(A_reg.data[0]) = FETCH_HALF4(A_Seme[i%2][lds_row_A*132 + lds_col_A + 0*16]);
-                for(int k = 0; k < 7; k++){
-                    FETCH_HALF4(A_reg.data[k+1]) = FETCH_HALF4(A_Seme[i%2][lds_row_A*132 + lds_col_A + (k+1)*16]);
-                    builtin_amdgcn_mmac<is_half>(A_reg.data[k], B_reg.data[k], C_reg);
-                }
-                builtin_amdgcn_mmac<is_half>(A_reg.data[7], B_reg.data[7], C_reg);
-
-                //asm volatile("s_waitcnt lgkmcnt(0)");
-                float w = W_Seme[i%2][lane % 16];
-                for(int j = 0; j < 4; j++){
-                    C_reg[j] = fmaxf(C_reg[j], 0.0f);
-                    C_reg_out[j] += C_reg[j] * w;
-                }
-                    //  __syncthreads();
-                if(i + 1 < num_heads){
-                    if(tid < 16) {
-                        W_Seme[1-i%2][tid] = Weights_data[stg_row* num_heads + (i+1)];
-                    }
-                    asm volatile("s_waitcnt vmcnt(0)");
-                    FETCH_HALF8(A_Seme[1-i%2][sts_row_A*132+sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
-                    ldg_col_A += 128;
-                }
-                asm volatile("s_barrier");
-            }
-            const int boundary =boundary_Seme[lane % 16];
-           if (stg_col < boundary) {
-                D_data[stg_row*N + stg_col] = C_reg_out[0];
-            }
-            if (stg_col + 4 < boundary) {
-                D_data[stg_row*N + stg_col + 4] = C_reg_out[1];
-            }
-            if (stg_col + 8 < boundary) {
-                D_data[stg_row*N + stg_col + 8] = C_reg_out[2];
-            }
-            if (stg_col + 12 < boundary) {
-                D_data[stg_row*N + stg_col + 12] = C_reg_out[3];
-            }
+        }
     }
 
-    template <typename scalar_t,int num_heads, int head_dim,int BlOCK_M,int BLOCK_K,int BLOCK_N>
-    __global__ void _mqa_logits_16x128x128_NT_impl(scalar_t *A_data, scalar_t *B_data, float *D_data, float *Weights_data,uint32_t* KS,uint32_t* KE,
-            const int q_seq_len, const int kv_seq_len){
-            const int M = q_seq_len;
-            const int N = kv_seq_len;
-            const int K = head_dim * num_heads;
-            const int SWIZZLE_Y_GROUP_SIZE = 4;
-            const int blockIdx_x =blockIdx.x; //(blockIdx.x << logtile) + ((blockIdx.y) & ((1 << (logtile)) - 1)); 
-            const int blockIdx_y = blockIdx.y;// >> logtile;
-            const int tid = threadIdx.x;
-            const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
-            const int lane = tid % C10_WARP_SIZE;
-            constexpr bool is_half = std::is_same<scalar_t, _Float16>::value;
-            __shared__ scalar_t A_Seme[2][16*128 + 16*4];
-            __shared__ uint32_t boundary_Seme[BlOCK_M];
-            __shared__ float W_Seme[2][BlOCK_M];
+    if (M > 0) {
+        const int ke_max_idx_in_block = blockIdx_y * BlOCK_M + BlOCK_M - 1;
+        const int clamped_ke_idx = (ke_max_idx_in_block < M) ? ke_max_idx_in_block : (M - 1);
 
-            //后面有同步
-            if(tid < BlOCK_M){
+        if (blockIdx_x * BLOCK_N >= KE[clamped_ke_idx]) {
+            return;
+        }
+    }
+    floatx4 C_reg_out = {0.0, 0.0, 0.0, 0.0};
+    half4x8 A_reg;
+    half4x8 B_reg;
+    scalar_t A_reg_move[8] = {0};
+
+    /** ldg offset**/
+    int ldg_row_A = blockIdx_y * BlOCK_M + (tid / 16);
+    int ldg_col_A = (tid % 16) * 8;
+    int ldg_row_B = (lane / 16) * 4;
+    int ldg_col_B = blockIdx_x * BLOCK_N + warp_idx * 16 + (lane % 16);
+    /** lds offset**/
+    int lds_row_A = (lane % 16);
+    int lds_col_A = (lane / 16) * 4;
+    /** sts offset**/
+    int sts_row_A = (tid / 16);
+    int sts_col_A = (tid % 16) * 8;
+    /* stg offset */
+    const int stg_row = lane % 16 + blockIdx_y * BlOCK_M;
+    const int stg_col = lane / 16 + warp_idx * 16 + blockIdx_x * BLOCK_N;
+
+    // TODO buffer_load
+    /* B转置了 */
+    loadtileB2reg<scalar_t, is_align_n>(B_reg, B_data, ldg_col_B, ldg_row_B, head_dim, N);
+
+    // A->reg
+    if (ldg_row_A < M) {
+        FETCH_HALF8(A_reg_move[0]) = FETCH_HALF8(A_data[ldg_row_A * K + ldg_col_A]);
+    }
+    // A_reg to lds
+    FETCH_HALF8(A_Seme[0][sts_row_A * 132 + sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
+    if constexpr (is_align_m) {
+        if (tid < 16) {
+            W_Seme[0][tid] = Weights_data[stg_row * num_heads];
+        }
+    } else {
+        if (tid < 16) {
+            if (stg_row < M) {
+                W_Seme[0][tid] = Weights_data[stg_row * num_heads];
+            } else {
+                W_Seme[0][tid] = 0.f;
+            }
+        }
+    }
+    __syncthreads();
+    ldg_col_A += 128; // 滑动到下一个head;
+
+    for (int i = 0; i < num_heads; i++) {
+        int offset;
+        if constexpr (is_align_m) {
+            offset = (ldg_row_A * K + ldg_col_A) * 2;
+        } else {
+            if (ldg_row_A < M) {
+                offset = (ldg_row_A * K + ldg_col_A) * 2;
+            } else {
+                offset = -1; // 越界取0
+            }
+        }
+        bool is_load = (i + 1 < num_heads);
+        cp_async4_vgpr(reinterpret_cast<intx4*>(&A_reg_move[0]), A_data, offset, is_load);
+
+        floatx4 C_reg = {0.0, 0.0, 0.0, 0.0};
+        asm volatile("s_waitcnt lgkmcnt(0)");
+        FETCH_HALF4(A_reg.data[0]) = FETCH_HALF4(A_Seme[i % 2][lds_row_A * 132 + lds_col_A + 0 * 16]);
+        for (int k = 0; k < 7; k++) {
+            FETCH_HALF4(A_reg.data[k + 1]) = FETCH_HALF4(
+                A_Seme[i % 2][lds_row_A * 132 + lds_col_A + (k + 1) * 16]);
+            builtin_amdgcn_mmac<is_half>(A_reg.data[k], B_reg.data[k], C_reg);
+        }
+        builtin_amdgcn_mmac<is_half>(A_reg.data[7], B_reg.data[7], C_reg);
+
+        // asm volatile("s_waitcnt lgkmcnt(0)");
+        float w = W_Seme[i % 2][lane % 16];
+        for (int j = 0; j < 4; j++) {
+            C_reg[j] = fmaxf(C_reg[j], 0.0f);
+            C_reg_out[j] += C_reg[j] * w;
+        }
+        //  __syncthreads();
+        if (i + 1 < num_heads) {
+            if (tid < 16) {
+                if constexpr(is_align_m) {
+                    W_Seme[1 - i % 2][tid] = Weights_data[stg_row * num_heads + (i + 1)];
+                } else {
+                    if (stg_row < M) {
+                        W_Seme[1 - i % 2][tid] = Weights_data[stg_row * num_heads + (i + 1)];
+                    } else {
+                        W_Seme[1 - i % 2][tid] = 0.0f;
+                    }
+                }
+            }
+            asm volatile("s_waitcnt vmcnt(0)");
+            FETCH_HALF8(A_Seme[1 - i % 2][sts_row_A * 132 + sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
+            ldg_col_A += 128;
+        }
+        asm volatile("s_barrier");
+    }
+    const int boundary = boundary_Seme[lane % 16];
+    if (stg_row < M) {
+        if (stg_col < boundary && stg_col < N) {
+            D_data[stg_row * N + stg_col] = C_reg_out[0];
+        }
+        if (stg_col + 4 < boundary && stg_col + 4 < N) {
+            D_data[stg_row * N + stg_col + 4] = C_reg_out[1];
+        }
+        if (stg_col + 8 < boundary && stg_col + 8 < N) {
+            D_data[stg_row * N + stg_col + 8] = C_reg_out[2];
+        }
+        if (stg_col + 12 < boundary && stg_col + 12 < N) {
+            D_data[stg_row * N + stg_col + 12] = C_reg_out[3];
+        }
+    }
+}
+
+template <typename scalar_t, int num_heads, int head_dim, int BlOCK_M, int BLOCK_K, int BLOCK_N, bool is_align_m, bool is_align_n>
+__global__ void _mqa_logits_16x128x128_TN_impl(
+    scalar_t* A_data,
+    scalar_t* B_data,
+    float* D_data,
+    float* Weights_data,
+    uint32_t* KS,
+    uint32_t* KE,
+    const int q_seq_len,
+    const int kv_seq_len) {
+    const int M = q_seq_len;
+    const int N = kv_seq_len;
+    const int K = head_dim * num_heads;
+    const int SWIZZLE_Y_GROUP_SIZE = 4;
+    const int blockIdx_x = blockIdx.x; // (blockIdx.x << logtile) + ((blockIdx.y) & ((1 << (logtile)) - 1));
+    const int blockIdx_y = blockIdx.y; // >> logtile;
+    const int tid = threadIdx.x;
+    const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
+    const int lane = tid % C10_WARP_SIZE;
+    constexpr bool is_half = std::is_same<scalar_t, _Float16>::value;
+    __shared__ scalar_t A_Seme[2][16 * 128 + 16 * 4];
+    __shared__ uint32_t boundary_Seme[BlOCK_M];
+    __shared__ float W_Seme[2][BlOCK_M];
+
+    // 后面有同步
+    if (tid < BlOCK_M) {
+        if constexpr (is_align_m) {
+            boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+        } else {
+            if (blockIdx_y * BlOCK_M + tid < M) {
                 boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
-            }
-            
-            /* block mask */
-            if(blockIdx_x * BLOCK_N  >= KE[blockIdx_y * BlOCK_M + BlOCK_M - 1]){
-                return;
-            }
-            floatx4 C_reg_out = {0.0,0.0,0.0,0.0};
-            half4x8 A_reg;
-            half4x8 B_reg;
-            scalar_t A_reg_move[4];
-
-            /** ldg offset 改为一个线程load4个**/ 
-            int ldg_row_A = blockIdx_y * BlOCK_M + (tid / 32);
-            int ldg_col_A = (tid % 32) * 4;
-        
-            int ldg_row_B = (lane / 16) * 4;
-            int ldg_col_B = blockIdx_x * BLOCK_N  + warp_idx * 16 + (lane % 16);
-            /** lds offset**/
-            int lds_row_A =  (lane % 16);
-            int lds_col_A =  (lane / 16) * 4;
-            /** sts offset 为一个线程store4个**/
-            int sts_row_A =  (tid / 32);
-            int sts_col_A = (tid % 32) * 4;
-            /* stg offset */
-            const int stg_row = lane % 16 + blockIdx_y * BlOCK_M;
-            const int stg_col = lane / 16 +  warp_idx * 16 + blockIdx_x * BLOCK_N;
-            
-            //TODO buffer_load
-            /* B转置了 */
-            loadtileB2reg(B_reg,B_data,ldg_col_B,ldg_row_B,head_dim);
-            
-            //A->reg
-            FETCH_HALF4(A_reg_move[0]) =  FETCH_HALF4(A_data[ldg_row_A*K + ldg_col_A]);
-            //A_reg to lds
-            FETCH_HALF4(A_Seme[0][sts_row_A*132+sts_col_A]) = FETCH_HALF4(A_reg_move[0]);
-            if(tid < BlOCK_M) {
-                W_Seme[0][tid] = Weights_data[stg_row * num_heads]; 
-            }
-            __syncthreads();
-            ldg_col_A += 128;  //滑动到下一个head;
-            for(int i = 0; i < num_heads; i++){
-            __syncthreads();
-                asm volatile("s_barrier");
-                int offset_bytes = (ldg_row_A*K + ldg_col_A) * 2;
-                cp_async2_vgpr(reinterpret_cast<intx2*>(&A_reg_move[0]), A_data, offset_bytes, (i + 1 < num_heads));
-                //FETCH_HALF4(A_reg_move[0]) =  FETCH_HALF4(A_data[ldg_row_A*K + ldg_col_A]);
-                floatx4 C_reg = {0.0,0.0,0.0,0.0};
-                asm volatile("s_waitcnt lgkmcnt(0)");
-                for(int k = 0; k < 8; k++){
-                    FETCH_HALF4(A_reg.data[k]) =  FETCH_HALF4(A_Seme[i%2][lds_row_A*132 + lds_col_A + k*16]);
-                    builtin_amdgcn_mmac<is_half>(A_reg.data[k],B_reg.data[k],C_reg);
-                }
-                //asm volatile("s_waitcnt lgkmcnt(0)");
-                float w = W_Seme[i%2][lane % 16];
-                for(int j = 0; j < 4; j++){
-                    C_reg[j] = fmaxf(C_reg[j], 0.0f);//C_reg[j] > 0.0f ? C_reg[j] : 0.0f;
-                    C_reg_out[j] += C_reg[j] * w;
-                }
-                    
-                if(i + 1 < num_heads){
-                    //  __syncthreads();
-                    if(tid < 16) {
-                        W_Seme[1-i%2][tid] = Weights_data[stg_row* num_heads + (i+1)];
-                    }
-                    asm volatile("s_waitcnt vmcnt(0)");
-                    FETCH_HALF4(A_Seme[1-i%2][sts_row_A*132+sts_col_A]) = FETCH_HALF4(A_reg_move[0]);
-                }
-                if(i + 2 < num_heads){
-                    ldg_col_A += 128;
-                }     
-            }
-        
-          const int boundary = boundary_Seme[lane % 16];
-            if (stg_col + 12 < boundary) {
-                D_data[stg_row*N + stg_col]      = C_reg_out[0];
-                D_data[stg_row*N + stg_col + 4]  = C_reg_out[1];
-                D_data[stg_row*N + stg_col + 8]  = C_reg_out[2];
-                D_data[stg_row*N + stg_col + 12] = C_reg_out[3];
             } else {
-               if (stg_col < boundary) {
-                    D_data[stg_row*N + stg_col] = C_reg_out[0];
-                    if (stg_col + 4 < boundary) {
-                        D_data[stg_row*N + stg_col + 4] = C_reg_out[1];
-                        if (stg_col + 8 < boundary) {
-                            D_data[stg_row*N + stg_col + 8] = C_reg_out[2];
-                            if (stg_col + 12 < boundary) {
-                                D_data[stg_row*N + stg_col + 12] = C_reg_out[3];
-                            }
-                        }
-                    }
-                }
+                boundary_Seme[tid] = 0; // 越界行对应的边界设为 0
             }
-    }
- template <typename scalar_t,int num_heads, int head_dim,int BlOCK_M,int BLOCK_K,int BLOCK_N>
-    __global__ void _mqa_logits_32x128x64_NT_impl(scalar_t *A_data, scalar_t *B_data, float *D_data, float *Weights_data,uint32_t* KS,uint32_t* KE,
-            const int q_seq_len, const int kv_seq_len){
-            const int M = q_seq_len;
-            const int N = kv_seq_len;
-            const int K = head_dim * num_heads;
-            const int blockIdx_x =blockIdx.x; 
-            const int blockIdx_y = blockIdx.y;
-            const int tid = threadIdx.x;
-            const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
-            const int lane = tid % C10_WARP_SIZE;
-            constexpr bool is_half = std::is_same<scalar_t, _Float16>::value;
-
-        
-            __shared__ scalar_t A_Seme[2][32*132]; 
-      
-            __shared__ uint32_t boundary_Seme[BlOCK_M]; // BLOCK_M = 32
-            __shared__ float W_Seme[2][BlOCK_M];      // BLOCK_M = 32
-
-        
-            if(tid < BlOCK_M){
-                boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
-            }
-            
-            /* block mask */
-            if(blockIdx_x * BLOCK_N  >= KE[blockIdx_y * BlOCK_M + BlOCK_M - 1]){
-                return;
-            }
-
-         
-            floatx4 C_reg_out1 = {0.0,0.0,0.0,0.0};
-            floatx4 C_reg_out2 = {0.0,0.0,0.0,0.0};
-            half4x16 A_reg;
-            half4x8 B_reg;
-            scalar_t A_reg_move[16]; 
-
-           
-            int ldg_row_A = blockIdx_y * BlOCK_M + (tid / 16); 
-            int ldg_col_A = (tid % 16) * 8;
-            int ldg_row_B = (lane / 16) * 4;
-            int ldg_col_B = blockIdx_x * BLOCK_N  + warp_idx * 16 + (lane % 16);
-            /** lds offset**/
-            int lds_row_A =  (lane % 16); // 对应 C_reg1
-            int lds_col_A =  (lane / 16) * 4;
-            // lds_row_A + 16 对应 C_reg2
-            /** sts offset**/
-            int sts_row_A =  (tid / 16); // 0
-            int sts_col_A = (tid % 16) * 8;
-            
-            //TODO buffer_load
-            /* B转置了 */
-            loadtileB2reg(B_reg,B_data,ldg_col_B,ldg_row_B,head_dim);
-            
-           
-            FETCH_HALF8(A_reg_move[0]) = FETCH_HALF8(A_data[ldg_row_A*K + ldg_col_A]);
-            FETCH_HALF8(A_reg_move[8]) = FETCH_HALF8(A_data[(ldg_row_A+16)*K + ldg_col_A]);
-            FETCH_HALF8(A_Seme[0][sts_row_A*132+sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
-            FETCH_HALF8(A_Seme[0][(sts_row_A+16)*132+sts_col_A]) = FETCH_HALF8(A_reg_move[8]);
-
-            
-            if(tid < BlOCK_M) { 
-                W_Seme[0][tid] = Weights_data[(blockIdx_y * BlOCK_M + tid) * num_heads]; 
-            }
-            __syncthreads();
-            ldg_col_A += 128;  
- 
-            for(int i = 0; i < num_heads; i++){
-                bool is_load = i + 1 < num_heads;
-                cp_async4_vgpr(reinterpret_cast<intx4*>(&A_reg_move[0]),A_data,(ldg_row_A*K + ldg_col_A)*2,is_load);
-                cp_async4_vgpr(reinterpret_cast<intx4*>(&A_reg_move[8]),A_data,((ldg_row_A+16)*K + ldg_col_A)*2,is_load);
-                
-                // float W_reg_move = 0.0f; 
-                // if((i + 1 < num_heads) && (tid < BlOCK_M)) {
-                //     W_reg_move = Weights_data[(blockIdx_y * BlOCK_M + tid) * num_heads + (i+1)]; 
-                // }
-
-                floatx4 C_reg1 = {0.0,0.0,0.0,0.0};
-                floatx4 C_reg2 = {0.0,0.0,0.0,0.0};
-            
-                FETCH_HALF4(A_reg.data[0]) = FETCH_HALF4(A_Seme[i%2][lds_row_A*132 + lds_col_A + 0*16]);
-                FETCH_HALF4(A_reg.data[8]) = FETCH_HALF4(A_Seme[i%2][(lds_row_A+16)*132 + lds_col_A + 0*16]);
-                for(int k = 0; k < 7; k++){
-                    FETCH_HALF4(A_reg.data[k+1]) = FETCH_HALF4(A_Seme[i%2][lds_row_A*132 + lds_col_A + (k+1)*16]);
-                    builtin_amdgcn_mmac<is_half>(A_reg.data[k], B_reg.data[k], C_reg1);
-
-                    FETCH_HALF4(A_reg.data[k+9]) = FETCH_HALF4(A_Seme[i%2][(lds_row_A+16)*132 + lds_col_A + (k+1)*16]);
-                    builtin_amdgcn_mmac<is_half>(A_reg.data[k+8], B_reg.data[k], C_reg2);
-                }
-                builtin_amdgcn_mmac<is_half>(A_reg.data[7], B_reg.data[7], C_reg1);
-                builtin_amdgcn_mmac<is_half>(A_reg.data[15], B_reg.data[7], C_reg2);
-
-                float w1 = W_Seme[i%2][lane % 16];
-                float w2 = W_Seme[i%2][lane % 16 + 16];
-                for(int j = 0; j < 4; j++){
-                    C_reg1[j] = fmaxf(C_reg1[j], 0.0f); 
-                    C_reg_out1[j] += C_reg1[j] * w1;
-                    C_reg2[j] = fmaxf(C_reg2[j], 0.0f); 
-                    C_reg_out2[j] += C_reg2[j] * w2;
-                }
-                
-                if(i + 1 < num_heads){
-                    asm volatile("s_waitcnt vmcnt(1)");
-                    FETCH_HALF8(A_Seme[1-i%2][sts_row_A*132+sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
-                    asm volatile("s_waitcnt vmcnt(0)");
-                    FETCH_HALF8(A_Seme[1-i%2][(sts_row_A+16)*132+sts_col_A]) = FETCH_HALF8(A_reg_move[8]);
-                    
-                    if(tid < BlOCK_M) {
-                        W_Seme[1-i%2][tid] =  Weights_data[(blockIdx_y * BlOCK_M + tid) * num_heads + (i+1)];
-                    }
-                     ldg_col_A += 128;
-                }
-                asm volatile("s_barrier");
-            }
-            const int stg_col = lane / 16 +  warp_idx * 16 + blockIdx_x * BLOCK_N;
-            const int stg_row1 = lane % 16 + blockIdx_y * BlOCK_M;
-            const int stg_row2 = lane % 16 + 16 + blockIdx_y * BlOCK_M;
-            const int boundary1 = boundary_Seme[lane % 16];
-            const int boundary2 = boundary_Seme[lane % 16 + 16];
-            if (stg_col + 12 < boundary1) {
-                D_data[stg_row1*N + stg_col]      = C_reg_out1[0];
-                D_data[stg_row1*N + stg_col + 4]  = C_reg_out1[1];
-                D_data[stg_row1*N + stg_col + 8]  = C_reg_out1[2];
-                D_data[stg_row1*N + stg_col + 12] = C_reg_out1[3];
-            } else {
-                if (stg_col < boundary1) {
-                    D_data[stg_row1*N + stg_col] = C_reg_out1[0];
-                    if (stg_col + 4 < boundary1) {
-                        D_data[stg_row1*N + stg_col + 4] = C_reg_out1[1];
-                        if (stg_col + 8 < boundary1) {
-                            D_data[stg_row1*N + stg_col + 8] = C_reg_out1[2];
-                            if (stg_col + 12 < boundary1) {
-                                D_data[stg_row1*N + stg_col + 12] = C_reg_out1[3];
-                            }
-                        }
-                    }
-                }
-            }
-            if (stg_col + 12 < boundary2) {
-                D_data[stg_row2*N + stg_col]      = C_reg_out2[0];
-                D_data[stg_row2*N + stg_col + 4]  = C_reg_out2[1];
-                D_data[stg_row2*N + stg_col + 8]  = C_reg_out2[2];
-                D_data[stg_row2*N + stg_col + 12] = C_reg_out2[3];
-            } else {
-                if (stg_col < boundary2) {
-                    D_data[stg_row2*N + stg_col] = C_reg_out2[0];
-                    if (stg_col + 4 < boundary2) {
-                        D_data[stg_row2*N + stg_col + 4] = C_reg_out2[1];
-                        if (stg_col + 8 < boundary2) {
-                            D_data[stg_row2*N + stg_col + 8] = C_reg_out2[2];
-                            if (stg_col + 12 < boundary2) {
-                                D_data[stg_row2*N + stg_col + 12] = C_reg_out2[3];
-                            }
-                        }
-                    }
-                }
-            }
-    }
-    template <typename scalar_t,int num_heads, int head_dim,int BlOCK_M,int BLOCK_K,int BLOCK_N>
-    __global__ void _mqa_logits_16x128x64_NT_impl(scalar_t *A_data, scalar_t *B_data, float *D_data, float *Weights_data,uint32_t* KS,uint32_t* KE,
-            const int q_seq_len, const int kv_seq_len){
-            const int M = q_seq_len;
-            const int N = kv_seq_len;
-            const int K = head_dim * num_heads;
-            
-            const int blockIdx_x = blockIdx.x ;
-            const int blockIdx_y = blockIdx.y ; 
-            const int tid = threadIdx.x;
-            const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
-            const int lane = tid % C10_WARP_SIZE;
-            constexpr bool is_half = std::is_same<scalar_t, _Float16>::value;
-            __shared__ scalar_t A_Seme[2][16*128 + 16*4];
-
-            /* block mask */
-            if(blockIdx_x * BLOCK_N  >= KE[blockIdx_y * BlOCK_M + BlOCK_M - 1]){
-                return;
-            }
-            floatx4 C_reg_out = {0.0,0.0,0.0,0.0};
-            half4x8 A_reg;
-            half4x8 B_reg;
-            scalar_t A_reg_move[8];
-
-            /** ldg offset**/
-            int ldg_row_A = blockIdx_y * BlOCK_M + (tid / 16);
-            int ldg_col_A = (tid % 16) * 8;
-            int ldg_row_B = (lane / 16) * 4;
-            int ldg_col_B = blockIdx.x * BLOCK_N  + warp_idx * 16 + (lane % 16);
-            /** lds offset**/
-            int lds_row_A =  (lane % 16);
-            int lds_col_A =  (lane / 16) * 4;
-            /** sts offset**/
-            int sts_row_A =  (tid / 16);
-            int sts_col_A = (tid % 16) * 8;
-            /* stg offset */
-            const int stg_row = lane % 16 + blockIdx_y * BlOCK_M;
-            const int stg_col = lane / 16 +  warp_idx * 16 + blockIdx_x * BLOCK_N;
-
-            //TODO buffer_load
-            /* B转置了 */
-            loadtileB2reg(B_reg,B_data,ldg_col_B,ldg_row_B,head_dim);
-
-            //A->reg
-            FETCH_HALF8(A_reg_move[0]) =  FETCH_HALF8(A_data[ldg_row_A*K + ldg_col_A]);
-            //A_reg to lds
-            FETCH_HALF8(A_Seme[0][sts_row_A*132+sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
-            
-            ldg_col_A += 128;  //滑动到下一个head;
-            for(int i = 0; i < num_heads; i++){
-                __syncthreads();
-                if(i + 1 < num_heads){
-                    FETCH_HALF8(A_reg_move[0]) = FETCH_HALF8(A_data[ldg_row_A*K + ldg_col_A]); 
-                    //*reinterpret_cast<intx4*>(&A_reg_move[0]) = builtin_amdgcn_buffer_load_reg_dwordx4(A_data,0,ldg_row_A*K + ldg_col_A);
-                }
-                floatx4 C_reg = {0.0,0.0,0.0,0.0};
-                //TODO lds预取
-                for(int k = 0; k < 8; k++){
-                    FETCH_HALF4(A_reg.data[k]) =  FETCH_HALF4(A_Seme[i%2][lds_row_A*132 + lds_col_A + k*16]);
-                    builtin_amdgcn_mmac<is_half>(A_reg.data[k],B_reg.data[k],C_reg);
-                }
-                float w = Weights_data[stg_row*num_heads + i];
-                for(int j = 0; j < 4; j++){
-                    C_reg[j] = C_reg[j] > 0.0f ? C_reg[j] : 0.0f;
-                    C_reg_out[j] += C_reg[j] * w;
-                }
-                    //  __syncthreads();
-                if(i + 1 < num_heads){
-                    //asm volatile("s_waitcnt vmcnt(1)");
-                    FETCH_HALF8(A_Seme[1-i%2][sts_row_A*132+sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
-                }
-                if(i + 2 < num_heads){
-                    ldg_col_A += 128;
-                }     
-            }
-            __syncthreads();
-            const int boundary = KE[stg_row];
-            if (stg_col < boundary) {
-                D_data[stg_row*N + stg_col] = C_reg_out[0];
-            }
-            if (stg_col + 4 < boundary) {
-                D_data[stg_row*N + stg_col + 4] = C_reg_out[1];
-            }
-            if (stg_col + 8 < boundary) {
-                D_data[stg_row*N + stg_col + 8] = C_reg_out[2];
-            }
-            if (stg_col + 12 < boundary) {
-                D_data[stg_row*N + stg_col + 12] = C_reg_out[3];
-            }
+        }
     }
 
-    void _mqa_logits_128x128x32_TN_impl(
-        half_t *A_data, half_t *B_data, float *D_data, float *Weights_data,uint32_t* KS,uint32_t* KE,
-        const int q_seq_len, const int kv_seq_len, const int q_seq_len_aligned, const int kv_seq_len_aligned, const int num_heads, const int head_dim, const bool use_fp16)
-    {
-        const int size_m = kv_seq_len;
-        const int size_n = q_seq_len;
-        const int size_k = head_dim*num_heads;
-        const int size_a_k =  head_dim; // 用于kv
-        const int size_b_k = head_dim*num_heads; //用于q
-        // printf("hello ! mqa_logits_asm: size_m=%d, size_n=%d, size_k=%d\n", size_m, size_n, size_k);
+    /* block mask */
+    if (M > 0) {
+        const int ke_max_idx_in_block = blockIdx_y * BlOCK_M + BlOCK_M - 1;
+        const int clamped_ke_idx = (ke_max_idx_in_block < M) ? ke_max_idx_in_block : (M - 1);
+        if (blockIdx_x * BLOCK_N >= KE[clamped_ke_idx]) {
+            return;
+        }
+    }
 
-        hipFunctionArgs_mqa_logits<half_t> hipFunctionArgs;
+    floatx4 C_reg_out = {0.0, 0.0, 0.0, 0.0};
+    half4x8 A_reg;
+    half4x8 B_reg;
+    scalar_t A_reg_move[4] = {0};
 
-        _Float16 *a_device = reinterpret_cast<_Float16 *>(A_data);  // PS, 由于是AWQ，我们这里传入4bit，但还是当成16bit来传入，以适应现有的接口
-        _Float16 *b_device = reinterpret_cast<_Float16 *>(B_data);
-        _Float16 *c_device = reinterpret_cast<_Float16 *>(Weights_data); //  这里视为 16bit来传入，以适应现有的接口。但实际是float。
-        _Float16 *d_device = reinterpret_cast<_Float16 *>(D_data);
-        _Float16 alpha = 1.0;
-        _Float16 beta = 0.0;
-        const size_t lda = size_a_k;
-        const size_t ldb = size_b_k;
-        const size_t ldc = size_m;
-        const size_t stridea = lda * size_m;
-        const size_t strideb = ldb * size_n;
-        const size_t stridec = ldc * size_n;
-        const int workgroupmapping = 8;
-        const int depth = 32;
-        const int SU = 32;
-        int lds = 0;
-        const size_t strideC1J = ldc; //
-        const size_t strideC2K = stridec; // 
-        const size_t strideA1L = lda;
-        const size_t strideA2K = stridea;
-        const size_t strideB1L = ldb;
-        const size_t strideB2K = strideb;
-        const size_t sizeA = lda*size_m;
-        const size_t sizeB = ldb*size_n;
-        unsigned int staggerUIter = SU;
-        const int unrollLoopIters = size_b_k/32/1;  // 待修改
-        const unsigned int workDim = 3;
-        const unsigned int threadTile[2] = { 8, 8 };
-        const unsigned int groupSize[2] = { 16, 16 };
-        size_t localWorkSize[3] = { 256, 1, 1 };
-        size_t globalWorkSize[1][3];
-        globalWorkSize[0][2] = 1;
-        const unsigned int sizeOfC0 = size_m;                 // C矩阵的0维度大小
-        const unsigned int sizeOfC1 = size_n;                 // C矩阵的1维度大小
-        unsigned int macroTile0 = static_cast<unsigned int>(groupSize[0] * threadTile[0]); // 宏瓦片0大小
-        unsigned int macroTile1 = static_cast<unsigned int>(groupSize[1] * threadTile[1]); // 宏瓦片1大小
-        unsigned int totalWorkGroups0 = sizeOfC0 / macroTile0; // 0维度的总工作组数
-        unsigned int totalWorkGroups1 = sizeOfC1 / macroTile1; // 1维度的总工作组数
-        if (totalWorkGroups0*macroTile0 < sizeOfC0) { totalWorkGroups0++; }
-        if (totalWorkGroups1*macroTile1 < sizeOfC1) { totalWorkGroups1++; }
-        unsigned int problemNumGroupTiles0 = totalWorkGroups0;
-        unsigned int problemNumGroupTiles1 = totalWorkGroups1;
-        const unsigned smallNumMagicShift = 31; // 小数字魔数移位
-        unsigned magicNumberProblemNumGroupTiles0 = (1L<<smallNumMagicShift) / problemNumGroupTiles0 + 1;
+    /** ldg offset 改为一个线程load4个**/
+    int ldg_row_A = blockIdx_y * BlOCK_M + (tid / 32);
+    int ldg_col_A = (tid % 32) * 4;
 
-        unsigned numFullBlocks =  problemNumGroupTiles1 / workgroupmapping; // 完整块数量
-        unsigned wgmRemainder1 =  problemNumGroupTiles1 % workgroupmapping; // 余数
-        if (wgmRemainder1 == 0) wgmRemainder1 = workgroupmapping;           // 处理余数为0的情况
-        unsigned magicNumberWgmRemainder1 = ((1L<<smallNumMagicShift) / wgmRemainder1 + 1); // 余数魔数
+    int ldg_row_B = (lane / 16) * 4;
+    int ldg_col_B = blockIdx_x * BLOCK_N + warp_idx * 16 + (lane % 16);
+    /** lds offset**/
+    int lds_row_A = (lane % 16);
+    int lds_col_A = (lane / 16) * 4;
+    /** sts offset 为一个线程store4个**/
+    int sts_row_A = (tid / 32);
+    int sts_col_A = (tid % 32) * 4;
+    /* stg offset */
+    const int stg_row = lane % 16 + blockIdx_y * BlOCK_M;
+    const int stg_col = lane / 16 + warp_idx * 16 + blockIdx_x * BLOCK_N;
 
-        globalWorkSize[0][0] = totalWorkGroups0; // gridDim.x = size_m / 256
-        globalWorkSize[0][1] = totalWorkGroups1; // gridDim.y = size_n / 256
+    // TODO buffer_load
+    /* B转置了 */
+    loadtileB2reg<scalar_t, is_align_n>(B_reg, B_data, ldg_col_B, ldg_row_B, head_dim, N);
 
-        const uint64_t tensor2dSizeC = 1 * std::max(size_m, strideC1J) * std::max(size_n, strideC2K);
-        uint64_t tensor2dSizeA = 1;
-        uint64_t tensor2dSizeAStride = 0;
-        uint64_t tensor2dSizeAOffset = 0;
-        tensor2dSizeAStride = std::max(tensor2dSizeA*size_a_k, (uint64_t)strideA1L);
-        tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_a_k;
-        tensor2dSizeA = tensor2dSizeAStride;
-        tensor2dSizeAStride = std::max(tensor2dSizeA*size_m, (uint64_t)strideA2K);
-        tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA*size_m;
-        tensor2dSizeA = tensor2dSizeAStride;
-        tensor2dSizeA -= tensor2dSizeAOffset;
+    // A->reg
+    if (ldg_row_A < M) {
+        FETCH_HALF4(A_reg_move[0]) = FETCH_HALF4(A_data[ldg_row_A * K + ldg_col_A]);
+    }
+    // A_reg to lds
+    FETCH_HALF4(A_Seme[0][sts_row_A * 132 + sts_col_A]) = FETCH_HALF4(A_reg_move[0]);
+    if (tid < BlOCK_M) {
+        if constexpr (is_align_m) {
+            W_Seme[0][tid] = Weights_data[stg_row * num_heads];
+        } else {
+            if (stg_row < M) {
+                W_Seme[0][tid] = Weights_data[stg_row * num_heads];
+            } else {
+                W_Seme[0][tid] = 0.f;
+            }
+        }
+    }
+    __syncthreads();
+    ldg_col_A += 128; // 滑动到下一个head;
+    for (int i = 0; i < num_heads; i++) {
+        __syncthreads();
+        asm volatile("s_barrier");
+        int offset_bytes;
+        bool is_load_next = (i + 1 < num_heads);
 
-        uint64_t tensor2dSizeB = 1;
-        uint64_t tensor2dSizeBStride = 0;
-        uint64_t tensor2dSizeBOffset = 0;
-        tensor2dSizeBStride = std::max(tensor2dSizeB*size_b_k , (uint64_t)strideB1L);
-        tensor2dSizeBOffset += tensor2dSizeBStride - tensor2dSizeB*size_b_k;
-        tensor2dSizeB = tensor2dSizeBStride;
-        tensor2dSizeBStride = std::max(tensor2dSizeB*size_n, (uint64_t)strideB2K);
-        tensor2dSizeBOffset += tensor2dSizeBStride - tensor2dSizeB*size_n;
-        tensor2dSizeB = tensor2dSizeBStride;
-        tensor2dSizeB -= tensor2dSizeBOffset;
-
-        hipFunctionArgs.tensor2dSizeC = tensor2dSizeC;
-        hipFunctionArgs.tensor2dSizeB = tensor2dSizeB;
-        hipFunctionArgs.tensor2dSizeA = tensor2dSizeA;
-        hipFunctionArgs.dataD = d_device;
-        hipFunctionArgs.dataC = c_device;
-        hipFunctionArgs.dataA = a_device;
-        hipFunctionArgs.dataB = b_device;
-        hipFunctionArgs.offseta = 0;
-        hipFunctionArgs.offsetb =0;
-        hipFunctionArgs.offsetc=0;
-        hipFunctionArgs.offsetd=0;
-        hipFunctionArgs.alpha[0] = alpha;
-        hipFunctionArgs.alpha[1] = alpha;
-        hipFunctionArgs.beta[0] = beta;
-        hipFunctionArgs.beta[1] = beta;
-        // hipFunctionArgs.strideD1J = strideC1J;
-        hipFunctionArgs.strideD1J = kv_seq_len_aligned;
-        hipFunctionArgs.strideD2K = strideC2K;
-        hipFunctionArgs.strideC1J = strideC1J;
-        hipFunctionArgs.strideC2K = strideC2K;
-        hipFunctionArgs.strideA1L = strideA1L;
-        hipFunctionArgs.strideA2K = strideA2K;
-        hipFunctionArgs.strideB1L = strideB1L;
-        hipFunctionArgs.strideB2K = strideB2K;
-        hipFunctionArgs.sizeI = size_m;
-        hipFunctionArgs.sizeJ = size_n;
-        hipFunctionArgs.sizeK = 1;
-        hipFunctionArgs.sizeL = size_k;
-
-        hipFunctionArgs.staggerUIter = staggerUIter;
-        hipFunctionArgs.problemNumGroupTiles0 = problemNumGroupTiles0;
-        hipFunctionArgs.problemNumGroupTiles1 = problemNumGroupTiles1;
-        hipFunctionArgs.numFullBlocks = numFullBlocks;
-        hipFunctionArgs.wgmRemainder1=wgmRemainder1;
-        hipFunctionArgs.use_fp16 = use_fp16;
-        hipFunctionArgs.cu_seq_len_k_start = KS;
-        hipFunctionArgs.cu_seq_len_k_end = KE;
-
-        const char *LIGHTOP_ASM_DIR = std::getenv("LIGHTOP_ASM_DIR");
-        auto co_file_path = std::string(LIGHTOP_ASM_DIR) + "mqa_logits/test_mqa_logits.co";
-        static hipModule_t Module = nullptr;             // 静态模块句柄，只加载一次
-        static hipFunction_t Function = nullptr;         // 静态函数句柄，只获取一次
-        static bool module_loaded = false;
-        if (!module_loaded) {
-            printf("load kernel module from %s\n", co_file_path.c_str());
-            HIP_CALL(hipModuleLoad(&Module,co_file_path.c_str()));        // 加载kernel文件
-            HIP_CALL(hipModuleGetFunction(&Function,Module,"mqa_logits_128x128x32")); // 获取kernel函数
-            module_loaded = true;
+        if constexpr (is_align_m) {
+            offset_bytes = (ldg_row_A * K + ldg_col_A) * 2;
+        } else {
+            if (ldg_row_A < M) {
+                offset_bytes = (ldg_row_A * K + ldg_col_A) * 2;
+            } else {
+                offset_bytes = -1; // 越界取 -1
+            }
+        }
+        // 只有当有下一个 head 且 offset 有效时才 load
+        cp_async2_vgpr(reinterpret_cast<intx2*>(&A_reg_move[0]), A_data, offset_bytes, is_load_next);
+        // FETCH_HALF4(A_reg_move[0]) =  FETCH_HALF4(A_data[ldg_row_A*K + ldg_col_A]);
+        floatx4 C_reg = {0.0, 0.0, 0.0, 0.0};
+        asm volatile("s_waitcnt lgkmcnt(0)");
+        for (int k = 0; k < 8; k++) {
+            FETCH_HALF4(A_reg.data[k]) = FETCH_HALF4(A_Seme[i % 2][lds_row_A * 132 + lds_col_A + k * 16]);
+            builtin_amdgcn_mmac<is_half>(A_reg.data[k], B_reg.data[k], C_reg);
+        }
+        // asm volatile("s_waitcnt lgkmcnt(0)");
+        float w = W_Seme[i % 2][lane % 16];
+        for (int j = 0; j < 4; j++) {
+            C_reg[j] = fmaxf(C_reg[j], 0.0f); // C_reg[j] > 0.0f ? C_reg[j] : 0.0f;
+            C_reg_out[j] += C_reg[j] * w;
         }
 
-        // 准备kernel启动配置
-        size_t size = sizeof(hipFunctionArgs);
-        void *config[] = {HIP_LAUNCH_PARAM_BUFFER_POINTER,&hipFunctionArgs,  // 设置参数缓冲区指针
-            HIP_LAUNCH_PARAM_BUFFER_SIZE,&size,HIP_LAUNCH_PARAM_END}; // 设置参数缓冲区大小
-        const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-        HIP_CALL(hipExtModuleLaunchKernel(Function, globalWorkSize[0][0]*localWorkSize[0],
-                globalWorkSize[0][1]*localWorkSize[1],
-                globalWorkSize[0][2]*localWorkSize[2],
-                localWorkSize[0],
-                localWorkSize[1],
-                localWorkSize[2],0,stream,NULL,(void**)&config,0,0,0));
-        // printf("finish launch hipExtModuleLaunchKernel!\n");
+        if (i + 1 < num_heads) {
+            //  __syncthreads();
+            if (tid < 16) {
+                if constexpr (is_align_m) {
+                    W_Seme[1 - i % 2][tid] = Weights_data[stg_row * num_heads + (i + 1)];
+                } else {
+                    if (stg_row < M) {
+                        W_Seme[1 - i % 2][tid] = Weights_data[stg_row * num_heads + (i + 1)];
+                    } else {
+                        W_Seme[1 - i % 2][tid] = 0.f;
+                    }
+                }
+            }
+            asm volatile("s_waitcnt vmcnt(0)");
+            FETCH_HALF4(A_Seme[1 - i % 2][sts_row_A * 132 + sts_col_A]) = FETCH_HALF4(A_reg_move[0]);
+            ldg_col_A += 128;
+        }
+    }
 
+    const int boundary = boundary_Seme[lane % 16];
+    if (stg_row < M) {
+        if (stg_col + 12 < boundary && stg_col + 12 < N) {
+            D_data[stg_row * N + stg_col] = C_reg_out[0];
+            D_data[stg_row * N + stg_col + 4] = C_reg_out[1];
+            D_data[stg_row * N + stg_col + 8] = C_reg_out[2];
+            D_data[stg_row * N + stg_col + 12] = C_reg_out[3];
+        } else {
+            if (stg_col < boundary && stg_col < N) {
+                D_data[stg_row * N + stg_col] = C_reg_out[0];
+                if (stg_col + 4 < boundary && stg_col + 4 < N) {
+                    D_data[stg_row * N + stg_col + 4] = C_reg_out[1];
+                    if (stg_col + 8 < boundary && stg_col + 8 < N) {
+                        D_data[stg_row * N + stg_col + 8] = C_reg_out[2];
+                        if (stg_col + 12 < boundary && stg_col + 12 < N) {
+                            D_data[stg_row * N + stg_col + 12] = C_reg_out[3];
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+template <typename scalar_t, int num_heads, int head_dim, int BlOCK_M, int BLOCK_K, int BLOCK_N>
+__global__ void _mqa_logits_32x128x64_NT_impl(
+    scalar_t* A_data,
+    scalar_t* B_data,
+    float* D_data,
+    float* Weights_data,
+    uint32_t* KS,
+    uint32_t* KE,
+    const int q_seq_len,
+    const int kv_seq_len) {
+    const int M = q_seq_len;
+    const int N = kv_seq_len;
+    const int K = head_dim * num_heads;
+    const int blockIdx_x = blockIdx.x;
+    const int blockIdx_y = blockIdx.y;
+    const int tid = threadIdx.x;
+    const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
+    const int lane = tid % C10_WARP_SIZE;
+    constexpr bool is_half = std::is_same<scalar_t, _Float16>::value;
+
+    __shared__ scalar_t A_Seme[2][32 * 132];
+
+    __shared__ uint32_t boundary_Seme[BlOCK_M]; // BLOCK_M = 32
+    __shared__ float W_Seme[2][BlOCK_M]; // BLOCK_M = 32
+
+    if (tid < BlOCK_M) {
+        boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+    }
+
+    /* block mask */
+    if (blockIdx_x * BLOCK_N >= KE[blockIdx_y * BlOCK_M + BlOCK_M - 1]) {
         return;
     }
 
+    floatx4 C_reg_out1 = {0.0, 0.0, 0.0, 0.0};
+    floatx4 C_reg_out2 = {0.0, 0.0, 0.0, 0.0};
+    half4x16 A_reg;
+    half4x8 B_reg;
+    scalar_t A_reg_move[16];
 
-    torch::Tensor mqa_logits(torch::Tensor &Q, torch::Tensor &K, torch::Tensor &Weights, torch::Tensor &KS, 
-                            torch::Tensor &KE, int q_seq_len, int kv_seq_len, int num_heads, int head_dim,bool clean_logits = true){
-    
-        
-        const int M = q_seq_len;
-        // const int K = head_dim;
-        const int N = kv_seq_len;
-        if(M >= 128){
-            torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
-            auto qtype = Q.scalar_type();
-            auto ktype = K.scalar_type();
-            if (! ((qtype == torch::kHalf && ktype == torch::kHalf) || (qtype == torch::kBFloat16 && ktype == torch::kBFloat16)) ){
-                TORCH_CHECK(false, "Q和K的类型必须同时为FP16或同时为BF16!");
+    int ldg_row_A = blockIdx_y * BlOCK_M + (tid / 16);
+    int ldg_col_A = (tid % 16) * 8;
+    int ldg_row_B = (lane / 16) * 4;
+    int ldg_col_B = blockIdx_x * BLOCK_N + warp_idx * 16 + (lane % 16);
+    /** lds offset**/
+    int lds_row_A = (lane % 16); // 对应 C_reg1
+    int lds_col_A = (lane / 16) * 4;
+    // lds_row_A + 16 对应 C_reg2
+    /** sts offset**/
+    int sts_row_A = (tid / 16); // 0
+    int sts_col_A = (tid % 16) * 8;
+
+    // TODO buffer_load
+    /* B转置了 */
+    loadtileB2reg<scalar_t, true>(B_reg, B_data, ldg_col_B, ldg_row_B, head_dim, N);
+
+    FETCH_HALF8(A_reg_move[0]) = FETCH_HALF8(A_data[ldg_row_A * K + ldg_col_A]);
+    FETCH_HALF8(A_reg_move[8]) = FETCH_HALF8(A_data[(ldg_row_A + 16) * K + ldg_col_A]);
+    FETCH_HALF8(A_Seme[0][sts_row_A * 132 + sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
+    FETCH_HALF8(A_Seme[0][(sts_row_A + 16) * 132 + sts_col_A]) = FETCH_HALF8(A_reg_move[8]);
+
+    if (tid < BlOCK_M) {
+        W_Seme[0][tid] = Weights_data[(blockIdx_y * BlOCK_M + tid) * num_heads];
+    }
+    __syncthreads();
+    ldg_col_A += 128;
+
+    for (int i = 0; i < num_heads; i++) {
+        bool is_load = i + 1 < num_heads;
+        cp_async4_vgpr(reinterpret_cast<intx4*>(&A_reg_move[0]), A_data, (ldg_row_A * K + ldg_col_A) * 2,
+            is_load);
+        cp_async4_vgpr(reinterpret_cast<intx4*>(&A_reg_move[8]), A_data,
+            ((ldg_row_A + 16) * K + ldg_col_A) * 2, is_load);
+
+        // float W_reg_move = 0.0f;
+        // if((i + 1 < num_heads) && (tid < BlOCK_M)) {
+        //     W_reg_move = Weights_data[(blockIdx_y * BlOCK_M + tid) * num_heads + (i+1)];
+        // }
+
+        floatx4 C_reg1 = {0.0, 0.0, 0.0, 0.0};
+        floatx4 C_reg2 = {0.0, 0.0, 0.0, 0.0};
+
+        FETCH_HALF4(A_reg.data[0]) = FETCH_HALF4(A_Seme[i % 2][lds_row_A * 132 + lds_col_A + 0 * 16]);
+        FETCH_HALF4(A_reg.data[8]) = FETCH_HALF4(A_Seme[i % 2][(lds_row_A + 16) * 132 + lds_col_A + 0 * 16]);
+        for (int k = 0; k < 7; k++) {
+            FETCH_HALF4(A_reg.data[k + 1]) = FETCH_HALF4(
+                A_Seme[i % 2][lds_row_A * 132 + lds_col_A + (k + 1) * 16]);
+            builtin_amdgcn_mmac<is_half>(A_reg.data[k], B_reg.data[k], C_reg1);
+
+            FETCH_HALF4(A_reg.data[k + 9]) = FETCH_HALF4(
+                A_Seme[i % 2][(lds_row_A + 16) * 132 + lds_col_A + (k + 1) * 16]);
+            builtin_amdgcn_mmac<is_half>(A_reg.data[k + 8], B_reg.data[k], C_reg2);
+        }
+        builtin_amdgcn_mmac<is_half>(A_reg.data[7], B_reg.data[7], C_reg1);
+        builtin_amdgcn_mmac<is_half>(A_reg.data[15], B_reg.data[7], C_reg2);
+
+        float w1 = W_Seme[i % 2][lane % 16];
+        float w2 = W_Seme[i % 2][lane % 16 + 16];
+        for (int j = 0; j < 4; j++) {
+            C_reg1[j] = fmaxf(C_reg1[j], 0.0f);
+            C_reg_out1[j] += C_reg1[j] * w1;
+            C_reg2[j] = fmaxf(C_reg2[j], 0.0f);
+            C_reg_out2[j] += C_reg2[j] * w2;
+        }
+
+        if (i + 1 < num_heads) {
+            asm volatile("s_waitcnt vmcnt(1)");
+            FETCH_HALF8(A_Seme[1 - i % 2][sts_row_A * 132 + sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
+            asm volatile("s_waitcnt vmcnt(0)");
+            FETCH_HALF8(A_Seme[1 - i % 2][(sts_row_A + 16) * 132 + sts_col_A]) = FETCH_HALF8(A_reg_move[8]);
+
+            if (tid < BlOCK_M) {
+                W_Seme[1 - i % 2][tid] = Weights_data[(blockIdx_y * BlOCK_M + tid) * num_heads + (i + 1)];
             }
-            const bool use_fp16 = (qtype == torch::kHalf);
-            // 将维度对齐到128的整数倍
-            const int q_seq_len_aligned = (q_seq_len + 127) / 128 * 128;
-            const int kv_seq_len_aligned = (kv_seq_len + 127) / 128 * 128;
-            torch::Tensor D = torch::empty({q_seq_len_aligned, kv_seq_len_aligned}, options);
-    
-            _mqa_logits_128x128x32_TN_impl(reinterpret_cast<half_t *>(K.data_ptr()),
-            reinterpret_cast<half_t *>(Q.data_ptr()),
+            ldg_col_A += 128;
+        }
+        asm volatile("s_barrier");
+    }
+    const int stg_col = lane / 16 + warp_idx * 16 + blockIdx_x * BLOCK_N;
+    const int stg_row1 = lane % 16 + blockIdx_y * BlOCK_M;
+    const int stg_row2 = lane % 16 + 16 + blockIdx_y * BlOCK_M;
+    const int boundary1 = boundary_Seme[lane % 16];
+    const int boundary2 = boundary_Seme[lane % 16 + 16];
+    if (stg_col + 12 < boundary1) {
+        D_data[stg_row1 * N + stg_col] = C_reg_out1[0];
+        D_data[stg_row1 * N + stg_col + 4] = C_reg_out1[1];
+        D_data[stg_row1 * N + stg_col + 8] = C_reg_out1[2];
+        D_data[stg_row1 * N + stg_col + 12] = C_reg_out1[3];
+    } else {
+        if (stg_col < boundary1) {
+            D_data[stg_row1 * N + stg_col] = C_reg_out1[0];
+            if (stg_col + 4 < boundary1) {
+                D_data[stg_row1 * N + stg_col + 4] = C_reg_out1[1];
+                if (stg_col + 8 < boundary1) {
+                    D_data[stg_row1 * N + stg_col + 8] = C_reg_out1[2];
+                    if (stg_col + 12 < boundary1) {
+                        D_data[stg_row1 * N + stg_col + 12] = C_reg_out1[3];
+                    }
+                }
+            }
+        }
+    }
+    if (stg_col + 12 < boundary2) {
+        D_data[stg_row2 * N + stg_col] = C_reg_out2[0];
+        D_data[stg_row2 * N + stg_col + 4] = C_reg_out2[1];
+        D_data[stg_row2 * N + stg_col + 8] = C_reg_out2[2];
+        D_data[stg_row2 * N + stg_col + 12] = C_reg_out2[3];
+    } else {
+        if (stg_col < boundary2) {
+            D_data[stg_row2 * N + stg_col] = C_reg_out2[0];
+            if (stg_col + 4 < boundary2) {
+                D_data[stg_row2 * N + stg_col + 4] = C_reg_out2[1];
+                if (stg_col + 8 < boundary2) {
+                    D_data[stg_row2 * N + stg_col + 8] = C_reg_out2[2];
+                    if (stg_col + 12 < boundary2) {
+                        D_data[stg_row2 * N + stg_col + 12] = C_reg_out2[3];
+                    }
+                }
+            }
+        }
+    }
+}
+
+template <typename scalar_t, int num_heads, int head_dim, int BlOCK_M, int BLOCK_K, int BLOCK_N, bool is_align_m, bool is_align_n>
+__global__ void _mqa_logits_16x128x64_NT_impl(
+    scalar_t* A_data,
+    scalar_t* B_data,
+    float* D_data,
+    float* Weights_data,
+    uint32_t* KS,
+    uint32_t* KE,
+    const int q_seq_len,
+    const int kv_seq_len) {
+    const int M = q_seq_len;
+    const int N = kv_seq_len;
+    const int K = head_dim * num_heads;
+
+    const int blockIdx_x = blockIdx.x;
+    const int blockIdx_y = blockIdx.y;
+    const int tid = threadIdx.x;
+    const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
+    const int lane = tid % C10_WARP_SIZE;
+    constexpr bool is_half = std::is_same<scalar_t, _Float16>::value;
+    __shared__ scalar_t A_Seme[2][16 * 128 + 16 * 4];
+
+    // /* block mask */
+    if (M > 0) {
+        const int ke_max_idx_in_block = blockIdx_y * BlOCK_M + BlOCK_M - 1;
+        const int clamped_ke_idx = (ke_max_idx_in_block < M) ? ke_max_idx_in_block : (M - 1);
+        if (blockIdx_x * BLOCK_N >= KE[clamped_ke_idx]) {
+            return;
+        }
+    }
+
+    floatx4 C_reg_out = {0.0, 0.0, 0.0, 0.0};
+    half4x8 A_reg;
+    half4x8 B_reg;
+    // 确保 A_reg_move 被初始化，以防越界后残留值影响 LDS
+    scalar_t A_reg_move[8] = {0};
+
+    /** ldg offset**/
+    int ldg_row_A = blockIdx_y * BlOCK_M + (tid / 16);
+    int ldg_col_A = (tid % 16) * 8;
+    int ldg_row_B = (lane / 16) * 4;
+    int ldg_col_B = blockIdx.x * BLOCK_N + warp_idx * 16 + (lane % 16);
+    /** lds offset**/
+    int lds_row_A = (lane % 16);
+    int lds_col_A = (lane / 16) * 4;
+    /** sts offset**/
+    int sts_row_A = (tid / 16);
+    int sts_col_A = (tid % 16) * 8;
+    /* stg offset */
+    const int stg_row = lane % 16 + blockIdx_y * BlOCK_M;
+    const int stg_col = lane / 16 + warp_idx * 16 + blockIdx_x * BLOCK_N;
+
+    // TODO buffer_load
+    /* B转置了 */
+    loadtileB2reg<scalar_t, is_align_n>(B_reg, B_data, ldg_col_B, ldg_row_B, head_dim, N);
+
+    // A->reg 增加 M 边界检查
+    if constexpr (is_align_m) {
+        FETCH_HALF8(A_reg_move[0]) = FETCH_HALF8(A_data[ldg_row_A * K + ldg_col_A]);
+    } else {
+        if (ldg_row_A < M) {
+            FETCH_HALF8(A_reg_move[0]) = FETCH_HALF8(A_data[ldg_row_A * K + ldg_col_A]);
+        }
+    }
+
+    // A_reg to lds
+    FETCH_HALF8(A_Seme[0][sts_row_A * 132 + sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
+    ldg_col_A += 128; // 滑动到下一个head;
+    for (int i = 0; i < num_heads; i++) {
+        __syncthreads();
+        if (i + 1 < num_heads) {
+            if constexpr (is_align_m) {
+                FETCH_HALF8(A_reg_move[0]) = FETCH_HALF8(A_data[ldg_row_A * K + ldg_col_A]);
+            } else {
+                if (ldg_row_A < M) {
+                    FETCH_HALF8(A_reg_move[0]) = FETCH_HALF8(A_data[ldg_row_A * K + ldg_col_A]);
+                }
+            }
+            // *reinterpret_cast<intx4*>(&A_reg_move[0]) = builtin_amdgcn_buffer_load_reg_dwordx4(A_data,0,ldg_row_A*K + ldg_col_A);
+        }
+        floatx4 C_reg = {0.0, 0.0, 0.0, 0.0};
+        // TODO lds预取
+        for (int k = 0; k < 8; k++) {
+            FETCH_HALF4(A_reg.data[k]) = FETCH_HALF4(A_Seme[i % 2][lds_row_A * 132 + lds_col_A + k * 16]);
+            builtin_amdgcn_mmac<is_half>(A_reg.data[k], B_reg.data[k], C_reg);
+        }
+        float w;
+        if constexpr (is_align_m) {
+            w = Weights_data[stg_row * num_heads + i];
+        } else {
+            if (stg_row < M) {
+                w = Weights_data[stg_row * num_heads + i];
+            } else {
+                w = 0.0f; // 越界权重设为 0
+            }
+        }
+        for (int j = 0; j < 4; j++) {
+            C_reg[j] = C_reg[j] > 0.0f ? C_reg[j] : 0.0f;
+            C_reg_out[j] += C_reg[j] * w;
+        }
+        //  __syncthreads();
+        if (i + 1 < num_heads) {
+            // asm volatile("s_waitcnt vmcnt(1)");
+            FETCH_HALF8(A_Seme[1 - i % 2][sts_row_A * 132 + sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
+            ldg_col_A += 128;
+        }
+    }
+    // __syncthreads();
+    const int boundary = KE[stg_row];
+    if constexpr (is_align_n && is_align_m) {
+        // if(stg_row < M){
+        if (stg_col < boundary) {
+            D_data[stg_row * N + stg_col] = C_reg_out[0];
+        }
+        if (stg_col + 4 < boundary) {
+            D_data[stg_row * N + stg_col + 4] = C_reg_out[1];
+        }
+        if (stg_col + 8 < boundary) {
+            D_data[stg_row * N + stg_col + 8] = C_reg_out[2];
+        }
+        if (stg_col + 12 < boundary) {
+            D_data[stg_row * N + stg_col + 12] = C_reg_out[3];
+        }
+        //  }
+    } else if (is_align_n) {
+        if (stg_row < M) {
+            if (stg_col < boundary) {
+                D_data[stg_row * N + stg_col] = C_reg_out[0];
+            }
+            if (stg_col + 4 < boundary) {
+                D_data[stg_row * N + stg_col + 4] = C_reg_out[1];
+            }
+            if (stg_col + 8 < boundary) {
+                D_data[stg_row * N + stg_col + 8] = C_reg_out[2];
+            }
+            if (stg_col + 12 < boundary) {
+                D_data[stg_row * N + stg_col + 12] = C_reg_out[3];
+            }
+        }
+    } else {
+        if (stg_row < M) {
+            if (stg_col < boundary && stg_col < N) {
+                D_data[stg_row * N + stg_col] = C_reg_out[0];
+            }
+            if (stg_col + 4 < boundary && stg_col + 4 < N) {
+                D_data[stg_row * N + stg_col + 4] = C_reg_out[1];
+            }
+            if (stg_col + 8 < boundary && stg_col + 8 < N) {
+                D_data[stg_row * N + stg_col + 8] = C_reg_out[2];
+            }
+            if (stg_col + 12 < boundary && stg_col + 12 < N) {
+                D_data[stg_row * N + stg_col + 12] = C_reg_out[3];
+            }
+        }
+    }
+}
+
+void _mqa_logits_128x128x32_TN_impl(
+    half_t* A_data,
+    half_t* B_data,
+    float* D_data,
+    float* Weights_data,
+    uint32_t* KS,
+    uint32_t* KE,
+    const int q_seq_len,
+    const int kv_seq_len,
+    const int q_seq_len_aligned,
+    const int kv_seq_len_aligned,
+    const int num_heads,
+    const int head_dim,
+    const bool use_fp16) {
+    const int size_m = kv_seq_len;
+    const int size_n = q_seq_len;
+    const int size_k = head_dim * num_heads;
+    const int size_a_k = head_dim; // 用于kv
+    const int size_b_k = head_dim * num_heads; // 用于q
+    // printf("hello ! mqa_logits_asm: size_m=%d, size_n=%d, size_k=%d\n", size_m, size_n, size_k);
+
+    hipFunctionArgs_mqa_logits<half_t> hipFunctionArgs;
+
+    _Float16* a_device = reinterpret_cast<_Float16*>(A_data); // PS, 由于是AWQ，我们这里传入4bit，但还是当成16bit来传入，以适应现有的接口
+    _Float16* b_device = reinterpret_cast<_Float16*>(B_data);
+    _Float16* c_device = reinterpret_cast<_Float16*>(Weights_data); //  这里视为 16bit来传入，以适应现有的接口。但实际是float。
+    _Float16* d_device = reinterpret_cast<_Float16*>(D_data);
+    _Float16 alpha = 1.0;
+    _Float16 beta = 0.0;
+    const size_t lda = size_a_k;
+    const size_t ldb = size_b_k;
+    const size_t ldc = size_m;
+    const size_t stridea = lda * size_m;
+    const size_t strideb = ldb * size_n;
+    const size_t stridec = ldc * size_n;
+    const int workgroupmapping = 8;
+    const int depth = 32;
+    const int SU = 32;
+    int lds = 0;
+    const size_t strideC1J = ldc; //
+    const size_t strideC2K = stridec; //
+    const size_t strideA1L = lda;
+    const size_t strideA2K = stridea;
+    const size_t strideB1L = ldb;
+    const size_t strideB2K = strideb;
+    const size_t sizeA = lda * size_m;
+    const size_t sizeB = ldb * size_n;
+    unsigned int staggerUIter = SU;
+    const int unrollLoopIters = size_b_k / 32 / 1; // 待修改
+    const unsigned int workDim = 3;
+    const unsigned int threadTile[2] = {8, 8};
+    const unsigned int groupSize[2] = {16, 16};
+    size_t localWorkSize[3] = {256, 1, 1};
+    size_t globalWorkSize[1][3];
+    globalWorkSize[0][2] = 1;
+    const unsigned int sizeOfC0 = size_m; // C矩阵的0维度大小
+    const unsigned int sizeOfC1 = size_n; // C矩阵的1维度大小
+    unsigned int macroTile0 = static_cast<unsigned int>(groupSize[0] * threadTile[0]); // 宏瓦片0大小
+    unsigned int macroTile1 = static_cast<unsigned int>(groupSize[1] * threadTile[1]); // 宏瓦片1大小
+    unsigned int totalWorkGroups0 = sizeOfC0 / macroTile0; // 0维度的总工作组数
+    unsigned int totalWorkGroups1 = sizeOfC1 / macroTile1; // 1维度的总工作组数
+    if (totalWorkGroups0 * macroTile0 < sizeOfC0) {
+        totalWorkGroups0++;
+    }
+    if (totalWorkGroups1 * macroTile1 < sizeOfC1) {
+        totalWorkGroups1++;
+    }
+    unsigned int problemNumGroupTiles0 = totalWorkGroups0;
+    unsigned int problemNumGroupTiles1 = totalWorkGroups1;
+    const unsigned smallNumMagicShift = 31; // 小数字魔数移位
+    unsigned magicNumberProblemNumGroupTiles0 = (1L << smallNumMagicShift) / problemNumGroupTiles0 + 1;
+
+    unsigned numFullBlocks = problemNumGroupTiles1 / workgroupmapping; // 完整块数量
+    unsigned wgmRemainder1 = problemNumGroupTiles1 % workgroupmapping; // 余数
+    if (wgmRemainder1 == 0) wgmRemainder1 = workgroupmapping; // 处理余数为0的情况
+    unsigned magicNumberWgmRemainder1 = ((1L << smallNumMagicShift) / wgmRemainder1 + 1); // 余数魔数
+
+    globalWorkSize[0][0] = totalWorkGroups0; // gridDim.x = size_m / 256
+    globalWorkSize[0][1] = totalWorkGroups1; // gridDim.y = size_n / 256
+
+    const uint64_t tensor2dSizeC = 1 * std::max(size_m, strideC1J) * std::max(size_n, strideC2K);
+    uint64_t tensor2dSizeA = 1;
+    uint64_t tensor2dSizeAStride = 0;
+    uint64_t tensor2dSizeAOffset = 0;
+    tensor2dSizeAStride = std::max(tensor2dSizeA * size_a_k, (uint64_t)strideA1L);
+    tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA * size_a_k;
+    tensor2dSizeA = tensor2dSizeAStride;
+    tensor2dSizeAStride = std::max(tensor2dSizeA * size_m, (uint64_t)strideA2K);
+    tensor2dSizeAOffset += tensor2dSizeAStride - tensor2dSizeA * size_m;
+    tensor2dSizeA = tensor2dSizeAStride;
+    tensor2dSizeA -= tensor2dSizeAOffset;
+
+    uint64_t tensor2dSizeB = 1;
+    uint64_t tensor2dSizeBStride = 0;
+    uint64_t tensor2dSizeBOffset = 0;
+    tensor2dSizeBStride = std::max(tensor2dSizeB * size_b_k, (uint64_t)strideB1L);
+    tensor2dSizeBOffset += tensor2dSizeBStride - tensor2dSizeB * size_b_k;
+    tensor2dSizeB = tensor2dSizeBStride;
+    tensor2dSizeBStride = std::max(tensor2dSizeB * size_n, (uint64_t)strideB2K);
+    tensor2dSizeBOffset += tensor2dSizeBStride - tensor2dSizeB * size_n;
+    tensor2dSizeB = tensor2dSizeBStride;
+    tensor2dSizeB -= tensor2dSizeBOffset;
+
+    hipFunctionArgs.tensor2dSizeC = tensor2dSizeC;
+    hipFunctionArgs.tensor2dSizeB = tensor2dSizeB;
+    hipFunctionArgs.tensor2dSizeA = tensor2dSizeA;
+    hipFunctionArgs.dataD = d_device;
+    hipFunctionArgs.dataC = c_device;
+    hipFunctionArgs.dataA = a_device;
+    hipFunctionArgs.dataB = b_device;
+    hipFunctionArgs.offseta = 0;
+    hipFunctionArgs.offsetb = 0;
+    hipFunctionArgs.offsetc = 0;
+    hipFunctionArgs.offsetd = 0;
+    hipFunctionArgs.alpha[0] = alpha;
+    hipFunctionArgs.alpha[1] = alpha;
+    hipFunctionArgs.beta[0] = beta;
+    hipFunctionArgs.beta[1] = beta;
+    // hipFunctionArgs.strideD1J = strideC1J;
+    hipFunctionArgs.strideD1J = kv_seq_len_aligned;
+    hipFunctionArgs.strideD2K = strideC2K;
+    hipFunctionArgs.strideC1J = strideC1J;
+    hipFunctionArgs.strideC2K = strideC2K;
+    hipFunctionArgs.strideA1L = strideA1L;
+    hipFunctionArgs.strideA2K = strideA2K;
+    hipFunctionArgs.strideB1L = strideB1L;
+    hipFunctionArgs.strideB2K = strideB2K;
+    hipFunctionArgs.sizeI = size_m;
+    hipFunctionArgs.sizeJ = size_n;
+    hipFunctionArgs.sizeK = 1;
+    hipFunctionArgs.sizeL = size_k;
+
+    hipFunctionArgs.staggerUIter = staggerUIter;
+    hipFunctionArgs.problemNumGroupTiles0 = problemNumGroupTiles0;
+    hipFunctionArgs.problemNumGroupTiles1 = problemNumGroupTiles1;
+    hipFunctionArgs.numFullBlocks = numFullBlocks;
+    hipFunctionArgs.wgmRemainder1 = wgmRemainder1;
+    hipFunctionArgs.use_fp16 = use_fp16;
+    hipFunctionArgs.cu_seq_len_k_start = KS;
+    hipFunctionArgs.cu_seq_len_k_end = KE;
+
+    const char* LIGHTOP_ASM_DIR = std::getenv("LIGHTOP_ASM_DIR");
+    auto co_file_path = std::string(LIGHTOP_ASM_DIR) + "mqa_logits/test_mqa_logits.co";
+    static hipModule_t Module = nullptr; // 静态模块句柄，只加载一次
+    static hipFunction_t Function = nullptr; // 静态函数句柄，只获取一次
+    static bool module_loaded = false;
+    if (!module_loaded) {
+        printf("load kernel module from %s\n", co_file_path.c_str());
+        HIP_CALL(hipModuleLoad(&Module, co_file_path.c_str())); // 加载kernel文件
+        HIP_CALL(hipModuleGetFunction(&Function, Module, "mqa_logits_128x128x32")); // 获取kernel函数
+        module_loaded = true;
+    }
+
+    // 准备kernel启动配置
+    size_t size = sizeof(hipFunctionArgs);
+    void* config[] = {HIP_LAUNCH_PARAM_BUFFER_POINTER, &hipFunctionArgs, // 设置参数缓冲区指针
+        HIP_LAUNCH_PARAM_BUFFER_SIZE, &size, HIP_LAUNCH_PARAM_END}; // 设置参数缓冲区大小
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    HIP_CALL(hipExtModuleLaunchKernel(
+        Function,
+        globalWorkSize[0][0] * localWorkSize[0],
+        globalWorkSize[0][1] * localWorkSize[1],
+        globalWorkSize[0][2] * localWorkSize[2],
+        localWorkSize[0],
+        localWorkSize[1],
+        localWorkSize[2],
+        0, stream, NULL, (void**)&config, 0, 0, 0));
+    // printf("finish launch hipExtModuleLaunchKernel!\n");
+
+    return;
+}
+
+torch::Tensor mqa_logits(
+    torch::Tensor& Q,
+    torch::Tensor& K,
+    torch::Tensor& Weights,
+    torch::Tensor& KS,
+    torch::Tensor& KE,
+    int q_seq_len,
+    int kv_seq_len,
+    int num_heads,
+    int head_dim,
+    bool clean_logits = true) {
+
+    const int M = q_seq_len;
+    // const int K = head_dim;
+    const int N = kv_seq_len;
+    if (M >= 128) {
+        torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
+        auto qtype = Q.scalar_type();
+        auto ktype = K.scalar_type();
+        if (!((qtype == torch::kHalf && ktype == torch::kHalf) || (qtype == torch::kBFloat16 && ktype == torch::kBFloat16))) {
+            TORCH_CHECK(false, "Q和K的类型必须同时为FP16或同时为BF16!");
+        }
+        const bool use_fp16 = (qtype == torch::kHalf);
+        // 将维度对齐到128的整数倍
+        const int q_seq_len_aligned = (q_seq_len + 127) / 128 * 128;
+        const int kv_seq_len_aligned = (kv_seq_len + 127) / 128 * 128;
+        torch::Tensor D = torch::empty({q_seq_len_aligned, kv_seq_len_aligned}, options);
+
+        _mqa_logits_128x128x32_TN_impl(
+            reinterpret_cast<half_t*>(K.data_ptr()),
+            reinterpret_cast<half_t*>(Q.data_ptr()),
             reinterpret_cast<float*>(D.data_ptr()),
             reinterpret_cast<float*>(Weights.data_ptr()),
             reinterpret_cast<uint32_t*>(KS.data_ptr()),
             reinterpret_cast<uint32_t*>(KE.data_ptr()),
-            q_seq_len, kv_seq_len, q_seq_len_aligned, kv_seq_len_aligned, num_heads, head_dim, use_fp16); 
-            if(true){
-                clean_logits_padding<1,4><<<DIV(M,4),256>>>(q_seq_len,kv_seq_len_aligned,kv_seq_len_aligned,
-                     reinterpret_cast<uint32_t*>(KS.data_ptr()),
-                     reinterpret_cast<uint32_t*>(KE.data_ptr()),
-                     reinterpret_cast<float*>(D.data_ptr()),q_seq_len_aligned);
-            }
-            return D;
-        }else{
-            torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
-            torch::Tensor D = torch::full({q_seq_len, kv_seq_len}, -std::numeric_limits<float>::infinity(), options);
-            Input_Type_SWITCH(Q.scalar_type(),[&]{
-                auto* q_ptr = reinterpret_cast<scalar_t *>(Q.data_ptr());
-                auto* k_ptr = reinterpret_cast<scalar_t *>(K.data_ptr());
-                auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
-                auto* w_ptr = reinterpret_cast<float*>(Weights.data_ptr());
-                auto* ks_ptr = reinterpret_cast<uint32_t*>(KS.data_ptr());
-                auto* ke_ptr = reinterpret_cast<uint32_t*>(KE.data_ptr());
-                using kernel_t = void(*)(
-                    scalar_t* A_data, 
-                    scalar_t* B_data, 
-                    float* D_data, 
-                    float* Weights_data,
-                    uint32_t* KS,
-                    uint32_t* KE,
-                    const int q_seq_len, 
-                    const int kv_seq_len
-                );
-                auto launch_kernel = [&](kernel_t kernel_to_launch, dim3 grid, dim3 block) {
-                    kernel_to_launch<<<grid, block>>>(
-                        q_ptr, k_ptr, d_ptr, w_ptr, ks_ptr, ke_ptr, q_seq_len, kv_seq_len
-                    );
-                };
-                  if(N > 8192){
-                        const int blockx=   (N + 127) / 128;
-                        const int blocky=  (M + 15) / 16;
-                        dim3 threadsPerBlock(512);
-                        dim3 numBlock(blockx,blocky);
-                        kernel_t kernel_ptr = _mqa_logits_16x128x128_NT_impl<scalar_t,64,128,16,128,128>;
-                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
-                  }else{
-                        const int blockx = DIV(N,64);
-                        const int blocky = DIV(M,16);
-                        dim3 threadsPerBlock(256);
-                        dim3 numBlock(blockx,blocky);
-                        if(M >= 64){
-                            kernel_t kernel_ptr = _mqa_logits_16x128x64_NT_impl_M64<scalar_t,64,128,16,128,64>;
-                            launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
-                        } else {
-                            kernel_t kernel_ptr = _mqa_logits_16x128x64_NT_impl<scalar_t,64,128,16,128,64>;
-                            launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
-                        }
-                  }
-            });
-            return D;
+            q_seq_len, kv_seq_len, q_seq_len_aligned, kv_seq_len_aligned, num_heads,
+            head_dim, use_fp16);
+        if (true) {
+            clean_logits_padding<1, 4><<<DIV(M, 4), 256>>>(
+                q_seq_len, kv_seq_len_aligned, kv_seq_len_aligned,
+                reinterpret_cast<uint32_t*>(KS.data_ptr()),
+                reinterpret_cast<uint32_t*>(KE.data_ptr()),
+                reinterpret_cast<float*>(D.data_ptr()), q_seq_len_aligned);
         }
-   
+        return D.slice(0, 0, q_seq_len).slice(1, 0, kv_seq_len);
+    } else {
+        torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
+        torch::Tensor D = torch::full({q_seq_len, kv_seq_len}, -std::numeric_limits<float>::infinity(), options);
+        Input_Type_SWITCH(Q.scalar_type(), [&] {
+            auto* q_ptr = reinterpret_cast<scalar_t*>(Q.data_ptr());
+            auto* k_ptr = reinterpret_cast<scalar_t*>(K.data_ptr());
+            auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
+            auto* w_ptr = reinterpret_cast<float*>(Weights.data_ptr());
+            auto* ks_ptr = reinterpret_cast<uint32_t*>(KS.data_ptr());
+            auto* ke_ptr = reinterpret_cast<uint32_t*>(KE.data_ptr());
+            using kernel_t = void (*)(
+                scalar_t * A_data,
+                scalar_t * B_data,
+                float* D_data,
+                float* Weights_data,
+                uint32_t* KS,
+                uint32_t* KE,
+                const int q_seq_len,
+                const int kv_seq_len);
+            auto launch_kernel = [&](kernel_t kernel_to_launch, dim3 grid, dim3 block) {
+                kernel_to_launch<<<grid, block>>>(
+                    q_ptr, k_ptr, d_ptr, w_ptr, ks_ptr, ke_ptr, q_seq_len, kv_seq_len);
+            };
+            if (N > 8192) {
+                const int blockx = (N + 127) / 128;
+                const int blocky = (M + 15) / 16;
+                dim3 threadsPerBlock(512);
+                bool is_align_m = (M % 16 == 0);
+                bool is_align_n = (N % 127 == 0);
+                dim3 numBlock(blockx, blocky);
+                if (is_align_m) {
+                    if (is_align_n) {
+                        kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, 64, 128, 16, 128, 128, true, true>;
+                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                    } else {
+                        kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, 64, 128, 16, 128, 128, true, false>;
+                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                    }
+
+                } else {
+                    if (is_align_n) {
+                        kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, 64, 128, 16, 128, 128, false, true>;
+                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                    } else {
+                        kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, 64, 128, 16, 128, 128, false, false>;
+                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                    }
+                }
+
+            } else {
+                const int blockx = DIV(N, 64);
+                const int blocky = DIV(M, 16);
+                dim3 threadsPerBlock(256);
+                dim3 numBlock(blockx, blocky);
+                bool is_align_m = (M % 16 == 0);
+                bool is_align_n = (N % 64 == 0);
+                if (is_align_m) {
+                    if (is_align_n) {
+                        kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, 64, 128, 16, 128, 64, true, true>;
+                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                    } else {
+                        kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, 64, 128, 16, 128, 64, true, false>;
+                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                    }
+                } else {
+                    if (is_align_n) {
+                        kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, 64, 128, 16, 128, 64, false, true>;
+                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                    } else {
+                        kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, 64, 128, 16, 128, 64, false, false>;
+                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                    }
+                }
+            }
+        });
+        return D;
     }
+}
 }
 }
