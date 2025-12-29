@@ -114,9 +114,13 @@ namespace native {
         int lane_id = tid % C10_WARP_SIZE;
         constexpr int thread_dim = 64/VEC;  //64/vec=8  64个元素在8个线程里面
         constexpr int WARP_DIM = WARP_SIZE * 64;
+        using float_8 = __attribute__((__vector_size__(thread_dim * sizeof(float)))) float;
         int dim_id = tid / thread_dim;
         int dim_lane_id = tid % thread_dim;
         
+        // if(bidx * WARP_DIM * VEC + tid * VEC > bs_head*head_dim) //加了后能保证精度 但会造成线程束分化
+        //     return;
+
         const bf16_t* input_ptr = input + bidx * WARP_DIM * VEC + tid * VEC;
         int8_t* output_ptr = output + bidx * WARP_DIM * VEC + tid * VEC;
         bf16_t* scale_zero_ptr = scale_zero +  bidx * WARP_DIM * VEC / 64 * 2 + (tid * VEC / 64) * 2;
@@ -126,26 +130,54 @@ namespace native {
         const bf16_t* input_vec8 = reinterpret_cast<const bf16_t*>(&input_vec);
         int8_8 output_vec8;
 
-        bf16_t local_max = input_vec8[0];
-        bf16_t local_min = input_vec8[0];
-        for(int i = 1; i < 8; i++){
-            local_max = local_max > input_vec8[i] ? local_max : input_vec8[i];
-            local_min = local_min < input_vec8[i] ? local_min : input_vec8[i];
-        }
-        
-        // 拷贝到lds
-        s_max[dim_id][dim_lane_id+2] = float(local_max);
-        s_min[dim_id][dim_lane_id+2] = float(local_min);
+        // bf16_t local_max = input_vec8[0];
+        // bf16_t local_min = input_vec8[0];
+        // // 30%的性能提升
+        // for(int i = 1; i < VEC; i++){
+        //     local_max = local_max > input_vec8[i] ? local_max : input_vec8[i];
+        //     local_min = local_min < input_vec8[i] ? local_min : input_vec8[i];
+        // }
+        // // 拷贝到lds 34%的提升
+        // s_max[dim_id][dim_lane_id+2] = float(local_max);
+        // s_min[dim_id][dim_lane_id+2] = float(local_min);
+        // __syncthreads();
 
+    /////////////////////////
+        
+
+        float local_max = input_vec8[0];
+        float local_min = input_vec8[0];
+        // 30%的性能提升
+        for(int i = 1; i < VEC; i++){
+            local_max = local_max > float(input_vec8[i]) ? local_max : float(input_vec8[i]);
+            local_min = local_min < float(input_vec8[i]) ? local_min : float(input_vec8[i]);
+        }
+
+        // 拷贝到lds 34%的提升  max和min合并成一个fp32_2来处理 尝试后没提升
+        s_max[dim_id][dim_lane_id+2] = local_max;
+        s_min[dim_id][dim_lane_id+2] = local_min;
         __syncthreads();
 
-        // 计算head_dim维度最大和最小值
+
+        // 计算head_dim维度最大和最小值 7%的提升
+        // if(dim_lane_id == 0){
+        //     s_max[dim_id][0] = s_max[dim_id][2];
+        //     s_min[dim_id][1] = s_min[dim_id][2];
+        //     for(int i = 1; i < thread_dim; i++){
+        //         s_max[dim_id][0] = s_max[dim_id][i+2] > s_max[dim_id][0] ? s_max[dim_id][i+2] : s_max[dim_id][0];
+        //         s_min[dim_id][1] = s_min[dim_id][i+2] < s_min[dim_id][1] ? s_min[dim_id][i+2] : s_min[dim_id][1];
+        //     }
+        // }
+
         if(dim_lane_id == 0){
-            s_max[dim_id][0] = s_max[dim_id][2];
-            s_min[dim_id][1] = s_min[dim_id][2];
+            float_8 max_vec8 = *(float_8*)(&s_max[dim_id][2]);
+            float_8 min_vec8 = *(float_8*)(&s_min[dim_id][2]);
+
+            s_max[dim_id][0] = max_vec8[0];
+            s_min[dim_id][1] = min_vec8[0];
             for(int i = 1; i < thread_dim; i++){
-                s_max[dim_id][0] = s_max[dim_id][i+2] > s_max[dim_id][0] ? s_max[dim_id][i+2] : s_max[dim_id][0];
-                s_min[dim_id][1] = s_min[dim_id][i+2] < s_min[dim_id][1] ? s_min[dim_id][i+2] : s_min[dim_id][1];
+                s_max[dim_id][0] = max_vec8[i] > s_max[dim_id][0] ? max_vec8[i] : s_max[dim_id][0];
+                s_min[dim_id][1] = min_vec8[i] < s_min[dim_id][1] ? min_vec8[i] : s_min[dim_id][1];
             }
         }
         __syncthreads();
@@ -159,9 +191,11 @@ namespace native {
         #pragma unroll
         for(int i = 0; i < VEC; i++){
             float q_tmp_data = float(input_vec8[i]);
+
             q_tmp_data = int(q_tmp_data / scale) + zero; //待验证 是否需要中转int32舍去尾数
             q_tmp_data = fminf(fmaxf(q_tmp_data, 0.0f), 255.0f);
             output_vec8[i] = static_cast<int8_t>(static_cast<int>(q_tmp_data) - 128);
+
         }
         *reinterpret_cast<int8_8*>(output_ptr) = output_vec8;
 
@@ -210,6 +244,7 @@ namespace native {
         const int head_dim
     ) {
         using bf16_8 = __attribute__((__vector_size__(VEC * sizeof(uint16_t)))) unsigned short;
+        using bf16_2 = __attribute__((__vector_size__(2 * sizeof(uint16_t)))) unsigned short;
         using int8_8 = __attribute__((__vector_size__(VEC * sizeof(int8_t)))) int8_t;
         const int bidx = blockIdx.x;
         int tid = threadIdx.x;
@@ -219,38 +254,44 @@ namespace native {
         constexpr int WARP_DIM = WARP_SIZE * 64;
         int dim_id = tid / thread_dim;
         int dim_lane_id = tid % thread_dim;
-        
+    
         const int8_t* input_ptr = input + bidx * WARP_DIM * VEC + tid * VEC;
         bf16_t* output_ptr = output + bidx * WARP_DIM * VEC + tid * VEC;
-        const bf16_t* scale_zero_ptr = scale_zero +  bidx * WARP_DIM * VEC / 64 * 2 + (tid * VEC / 64) * 2;
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+        const bf16_t* scale_zero_ptr = scale_zero +  bidx * WARP_DIM * VEC / 64 * 2;
+        constexpr int scale_size = WARP_DIM * VEC / 64 * 2;
+        __shared__ bf16_t s_scale_zero[scale_size];  // 256 * 8 / 64 * 2 = 16
+
+        for(int i = tid * VEC; i < scale_size; i += WARP_DIM * VEC){
+            *(bf16_8*)(s_scale_zero + i) = *(bf16_8*)(scale_zero_ptr + i);
+        }
+        __syncthreads();
+        bf16_t reg_scale_zero[2];
+        *(bf16_2*)(reg_scale_zero) = *(bf16_2*)(s_scale_zero + tid * VEC / 64 * 2);
 
         const int8_8 input_vec8 = *reinterpret_cast<const int8_8*>(input_ptr);
         bf16_8 output_vec8;
-        const bf16_t scale = scale_zero_ptr[0];
-        const bf16_t zero = scale_zero_ptr[1];
         #pragma unroll
         for(int i = 0; i < VEC; i++){
-            float tmp_out = (int(input_vec8[i]) + 128 - int(zero)) * float(scale);
+            float tmp_out = (int(input_vec8[i]) + 128 - int(reg_scale_zero[1])) * float(reg_scale_zero[0]);
             output_vec8[i] = f32_to_bf16(tmp_out);
         }
         *reinterpret_cast<bf16_8*>(output_ptr) = output_vec8;
-////////////////////////////////////////////////////////////////////////////////////////
-        // const int batch_idx = blockIdx.x;
-        // int tid = threadIdx.x;
-        // int warp_id = tid / C10_WARP_SIZE;
-        // int lane_id = tid % C10_WARP_SIZE;
-
-        // const int8_t* input_ptr = input + batch_idx * head_num * head_dim + warp_id * head_dim;
-        // bf16_t* output_ptr = output + batch_idx * head_num * head_dim + warp_id * head_dim;
-        // const bf16_t* scale_zero_ptr = scale_zero + batch_idx * head_num * 2 + warp_id * 2;
-
-        // int8_t input_data = input_ptr[lane_id];
-        // bf16_t scale = scale_zero_ptr[0];
-        // bf16_t zero = scale_zero_ptr[1];
-        // float tmp_out = (int(input_data) + 128 - int(zero)) * float(scale);
-        // bf16_t outptut_data = f32_to_bf16(tmp_out);
-
-        // output_ptr[lane_id] = outptut_data;
+///////////////////////////////////////////////////////////////////////////////////////////
+        // const bf16_t* scale_zero_ptr = scale_zero +  bidx * WARP_DIM * VEC / 64 * 2 + (tid * VEC / 64) * 2;
+        // const int8_8 input_vec8 = *reinterpret_cast<const int8_8*>(input_ptr);
+        // bf16_8 output_vec8;
+        // // 拷贝时间 10%
+        // const bf16_t scale = scale_zero_ptr[0];
+        // const bf16_t zero = scale_zero_ptr[1];
+        // #pragma unroll
+        // for(int i = 0; i < VEC; i++){
+        //     float tmp_out = (int(input_vec8[i]) + 128 - int(zero)) * float(scale);
+        //     //float tmp_out = int(input_vec8[i] + 128 - zero) * float(scale);
+        //     output_vec8[i] = f32_to_bf16(tmp_out);
+        // }
+        // *reinterpret_cast<bf16_8*>(output_ptr) = output_vec8;
     }
 
     // Python绑定：前向量化
@@ -279,7 +320,7 @@ namespace native {
         // );
 
         constexpr int WARP_SIZE = 4;
-        constexpr int VEC = 8;
+        constexpr int VEC = 16;  // 16更快
         int grid_num = (bs_head*head_dim + WARP_SIZE * 64 * VEC - 1) / (WARP_SIZE * 64*VEC);
         dim3 grid(grid_num);
         dim3 block(WARP_SIZE * 64);
