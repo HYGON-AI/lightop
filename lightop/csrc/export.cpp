@@ -185,9 +185,10 @@ std::vector<Tensor> miopen_skip_layernorm(const Tensor &x1, const Tensor &x2, co
 std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor &hidden, const Tensor &selected_experts, const Tensor &moe_weights, const Tensor &smooth, Tensor& out_scatter_tokens, Tensor& out_scatter_per_token_scale, Tensor& out_scatter_tokens_offset, Tensor& out_experts_token_count, Tensor& out_experts_token_start, const int expert_start_idx, const int expert_end_idx, const int num_shared_experts, const int num_tokens_offset, const int num_tokens_per_rank, const int num_tokens);
 std::vector<Tensor> miopen_moe_swiglu_dynamic_quant(const Tensor &scatter_tokens, const Tensor &smooth_scale, const Tensor &experts_tokens_count, const Tensor &exports_tokens_start, const float beta);
 Tensor miopen_moe_gather(const Tensor &scatter_tokens, const Tensor &token_offset, const int real_scatter_tokens, const int num_tokens, const int hidden_size, const int topk, const int num_shared_experts);
-Tensor miopen_scaled_dot_product_attention(const Tensor &query, const Tensor &key, const Tensor &value, const std::optional<Tensor> &attn_mask_, const double droprate, const bool is_causal, std::optional<double> scale, const bool enable_gqa);
+Tensor miopen_scaled_dot_product_attention(const Tensor &query, const Tensor &key, const Tensor &value, const std::optional<Tensor> &attn_mask_, const double droprate, const bool is_causal, std::optional<double> scale, const bool enable_gqa, const bool is_training);
 Tensor miopen_gemm_bias(const Tensor &input_a, const Tensor &input_b, const Tensor &bias);
 Tensor miopen_transform_tensor(const Tensor &input, const int transpose_mode, const float alpha, const float beta);
+void miopen_fused_adam(Tensor& params, const Tensor& grads, Tensor& exp_avgs, Tensor& exp_avg_sqs, c10::optional<Tensor>& max_exp_avg_sqs, Tensor& state_steps, const float lr, const float beta1, const float beta2, const float weight_decay, const float eps, const bool amsgrad, const bool maximize, const c10::optional<Tensor>& grad_scale, const c10::optional<Tensor>& found_inf);
 #endif
 
 void rms_norm_dynamic_per_token_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input);
@@ -342,6 +343,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("miopen_scaled_dot_product_attention", &at::native::miopen_scaled_dot_product_attention, "miopen_scaled_dot_product_attention");
   m.def("miopen_gemm_bias", &at::native::miopen_gemm_bias, "miopen_gemm_bias");
   m.def("miopen_transform_tensor", &at::native::miopen_transform_tensor, "miopen_transform_tensor");
+  m.def("miopen_fused_adam", &at::native::miopen_fused_adam, "miopen_fused_adam");
 #endif
   m.def("store_kv_cache", &at::native::store_kv_cache, "store_kv_cache");
   m.def("store_kv_cache_paged", &at::native::store_kv_cache_paged, "store_kv_cache_paged");
