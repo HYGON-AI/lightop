@@ -266,10 +266,10 @@ def fused_moe_valid_w16a16_marlin(
             print(f"kernel{2} 精度检查不合格!!!")
             # torch.set_printoptions(profile="full")  
             # ftriton = open('cuda_output.txt', 'w')   
-            # print(f'cuda_output: {out_cuda}', file=ftriton)
+            # print(f'cuda_output: {intermediate_cache3}', file=ftriton)
             # ftriton.close
             # ftorch = open('bench_output.txt', 'w')   
-            # print(f'bench_output: {C}', file=ftorch)
+            # print(f'bench_output: {triton_gemm2_output}', file=ftorch)
             # ftorch.close
         else:
             print(f"kernel{2} 精度检查合格.")
