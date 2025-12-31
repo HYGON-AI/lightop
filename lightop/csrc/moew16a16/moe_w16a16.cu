@@ -806,10 +806,14 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(
       weight_value_arr[idx] = topk_weights[token_index_safe] ;
   }
 
-  
-  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES,tail_k_process, Element>
+  if(BLOCK_SIZE_K == WARP_K)
+  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN_Blocksizek32<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES,tail_k_process, Element>
     (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx,bidy);
-  //save output to lds
+  else{
+   MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES,tail_k_process, Element>
+    (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx,bidy); 
+  }
+    //save output to lds
   #pragma unroll
   for(int min_tile_m = 0; min_tile_m < WARP_M / mfma_m; min_tile_m++){
     float weight_value = weight_value_arr[min_tile_m];
@@ -1619,7 +1623,7 @@ torch::Tensor moe_gemm_w16a16(torch::Tensor input,
         }      
       
       }
-      else{ //gemm2 
+      else{ //gemm2
         int64_t EM = sorted_token_ids.size(0); 
         GemmParams3<half> params_in3(
           (const half*)input.data_ptr(), 
