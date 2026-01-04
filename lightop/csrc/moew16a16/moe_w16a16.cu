@@ -1160,7 +1160,7 @@ void launch_MOE_W16A16_HIP_NT_UP_prefill(const GemmParams3<T>& params) {
     
     // int lds_size = std::max(kwarp * nwarp * 64 * 4 * 4,BLOCK_SIZE_M*BLOCK_SIZE_K + BLOCK_SIZE_N*BLOCK_SIZE_K);
     // if(kwarp==1) lds_size = std::max(BLOCK_SIZE_M*BLOCK_SIZE_K + BLOCK_SIZE_N*BLOCK_SIZE_K,(nwarp * 64 * 4 + 14 )* 2) ;
-    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K)  * bytes_per_element, BLOCK_SIZE_M * BLOCK_SIZE_N * 2 * bytes_per_element);
+    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K)  * bytes_per_element, (BLOCK_SIZE_M * BLOCK_SIZE_N * bytes_per_element + BLOCK_SIZE_M*(BLOCK_SIZE_M/2)*2*bytes_per_element)/*padding*/);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     MOE_W16A16_HIP_NT_UP_prefill<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       mul_topk_weight><<<gridDim, blockDim, lds_size, stream>>>(
@@ -1204,7 +1204,7 @@ void launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill(const GemmParams3<T>& params) {
     gridDim.y = DIV_ceil(real_size_n , BLOCK_SIZE_N); // n方向 16大小分块 320/128数量为2余64
     gridDim.x = 1; // k方向
 
-    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K) * bytes_per_element, BLOCK_SIZE_M * BLOCK_SIZE_N * 2 * bytes_per_element);
+    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K) * bytes_per_element, (BLOCK_SIZE_M * BLOCK_SIZE_N * bytes_per_element + BLOCK_SIZE_M*(BLOCK_SIZE_M/2)*2*bytes_per_element)/*padding*/);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
     BOOL_SWITCH(((real_size_n % BLOCK_SIZE_N)!=0),tail_N_process, [&] {
@@ -1253,7 +1253,7 @@ void launch_MOE_W16A16_HIP_NT_DOWN_prefill(const GemmParams3<T>& params) {
     gridDim.y = DIVIDE(params.size_n , BLOCK_SIZE_N); // n方向 16大小分块 数量为48
     gridDim.x = 1; // k方向
     
-    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K) * bytes_per_element, BLOCK_SIZE_M * BLOCK_SIZE_N * 2 * bytes_per_element);
+    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K) * bytes_per_element, (BLOCK_SIZE_M * BLOCK_SIZE_N * bytes_per_element + BLOCK_SIZE_M*(BLOCK_SIZE_M/2)*2*bytes_per_element)/*padding*/);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     MOE_W16A16_HIP_NT_DOWN_prefill<T, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       mul_topk_weight><<<gridDim, blockDim, lds_size, stream>>>(
@@ -1296,7 +1296,7 @@ void launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(const GemmParams3<T>& params) 
     gridDim.y = DIVIDE(real_size_n , BLOCK_SIZE_N); // n方向 16大小分块 数量为48
     gridDim.x = 1; // k方向
     
-    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K) * bytes_per_element, BLOCK_SIZE_M * BLOCK_SIZE_N * 2 * bytes_per_element);
+    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K) * bytes_per_element, (BLOCK_SIZE_M * BLOCK_SIZE_N * bytes_per_element + BLOCK_SIZE_M*(BLOCK_SIZE_M/2)*2*bytes_per_element)/*padding*/);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
 
     BOOL_SWITCH(((params.size_k % WARP_K)!=0),tail_k_process, [&] {
