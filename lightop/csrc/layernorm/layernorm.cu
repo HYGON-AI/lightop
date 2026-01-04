@@ -77,7 +77,47 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t*
   }
 }
 
-template <typename scalar_t, int VEC=4,int blocksize=512>
+template <typename scalar_t>
+struct TypeChange {
+  using type = scalar_t;
+};
+
+template <>
+struct TypeChange<c10::BFloat16> {
+  using type = uint16_t;
+};
+template<typename scalar_t>
+using __change_type = typename TypeChange<scalar_t>::type;
+
+
+template<typename scalar_t> 
+static __device__ inline void from_float(scalar_t &out ,float f){
+  if constexpr(!std::is_same<scalar_t, uint16_t>::value){
+    out=f;
+  }
+  else{
+    uint32_t u = *(uint32_t*)(&f);
+    // u += 0x7fff + ((u >> 16) & 1); 
+    u += 0x8000; 
+    out = u>>16;
+  }
+}
+
+template<typename scalar_t> 
+static __device__ inline float to_float(scalar_t in){
+  if constexpr(!std::is_same<scalar_t, uint16_t>::value){
+    return in;
+  }
+  else{
+    union{
+        uint32_t int32;
+        float    fp32;
+    } u = {uint32_t(in) << 16};
+    return u.fp32;
+  }
+}
+
+template <typename scalar_t, int VEC,int blocksize,bool is_affine,bool is_training>
 __global__ void layernorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd,
                                             const scalar_t* gamma,const scalar_t* beta,int cols,scalar_t eps)
 {
@@ -95,6 +135,7 @@ __global__ void layernorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,scal
   WelfordOp welford_op;
   WelfordType val;
   using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  using new_type = __change_type<scalar_t>;
   VecTpye *X=(VecTpye*)(input+block_cols);
   VecTpye *Y=(VecTpye*)(ret+block_cols);
   int tcol=cols/VEC;
@@ -102,21 +143,21 @@ __global__ void layernorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,scal
   T_ACC trstd;
   VecTpye tx;
   VecTpye ty;
-  scalar_t* px=(scalar_t*)(&tx);
-  scalar_t* py=(scalar_t*)(&ty);
+  new_type* px=(new_type*)(&tx);
+  new_type* py=(new_type*)(&ty);
   int j=threadidx;
   if (j < tcol) {
     tx = X[j];
     #pragma unroll
     for(int i=0;i<VEC;i++){
-      val = welford_op.reduce(val, static_cast<T_ACC>(px[i]));
+      val = welford_op.reduce(val, to_float(px[i]));
     }
   }
   val = BlockReduce(val,welford_op,val_shared_ptr);
   if (threadidx == 0) {
     //layernorm get mean and rstd
     thrust::tie(tmean, s_mean) = welford_op.project(val);
-    s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+    s_rstd=c10::cuda::compat::rsqrt(tmean + to_float(eps));
   }
   __syncthreads();
   tmean=s_mean;
@@ -125,17 +166,36 @@ __global__ void layernorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,scal
     #pragma unroll
     for(int i=0;i<VEC;i++){
       int jj=j*VEC+i;
-      py[i]=(static_cast<T_ACC>(px[i]) - tmean) * trstd * 
-            (gamma == nullptr ? T_ACC(1) : static_cast<T_ACC>(gamma[jj])) + 
-            (beta == nullptr ? T_ACC(0) : static_cast<T_ACC>(beta[jj]));
+      if constexpr(is_affine){
+        from_float(py[i],(to_float(px[i]) - tmean) * trstd * to_float(gamma[jj]) + to_float(beta[jj]));
+      }
+      else{
+        from_float(py[i],(to_float(px[i]) - tmean) * trstd);
+      }
+
     }
     Y[j]=ty;
   }
-  if(threadIdx.x==0&&rstd!=NULL){
-      mean[blockidx] = tmean;
-      rstd[blockidx] = trstd;
+  if constexpr(is_training){
+    if(threadIdx.x==0){
+        mean[blockidx] = tmean;
+        rstd[blockidx] = trstd;
+    }
   }
 }
+
+#define BOOL_SWITCH(COND, CONST_NAME, ...)      \
+  [&] {                                         \
+    if (COND) {                                 \
+      constexpr static bool CONST_NAME = true;  \
+      return __VA_ARGS__();                     \
+    } else {                                    \
+      constexpr static bool CONST_NAME = false; \
+      return __VA_ARGS__();                     \
+    }                                           \
+  }()
+
+
 
 std::tuple<Tensor,Tensor,Tensor>
 layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,double ln_epsilon,bool training)
@@ -168,38 +228,32 @@ layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,dou
           mean_data=mean.data_ptr<scalar_t>();
           rstd_data=rstd.data_ptr<scalar_t>();
         }
-        if (cols % 16 == 0&&cols<=16384){
-          if(cols<=1024){
-                layernorm_forward_kernel_fast<scalar_t,8,128><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                    self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-         } 
-          else if(cols<=2048){
-            layernorm_forward_kernel_fast<scalar_t,8,256><<<rows, 256, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                    self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-          }
-          else if(cols<=4096){
-            if(rows>1200){
-                layernorm_forward_kernel_fast<scalar_t,8,512><<<rows, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
-                          self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-            }
-            else{
-              layernorm_forward_kernel_fast<scalar_t,4,1024><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                      self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-            }
-          }
-          else if(cols<=8192){
-            layernorm_forward_kernel_fast<scalar_t,8,1024><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                    self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-          }
-          else {
-            layernorm_forward_kernel_fast<scalar_t,16,1024><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                    self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-          }
-        }
-        else{
-            layernorm_forward_kernel<scalar_t,1><<<rows, get_layernorm_blocksize(cols), 0, at::cuda::getCurrentCUDAStream()>>>(
-                                    self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-        }
+        // if (cols % 16 == 0&&cols<=16384){
+          BOOL_SWITCH(weight_data!=nullptr,is_affine,[&] {
+            BOOL_SWITCH(training,is_training,[&] {
+              if(cols<=1024){
+                layernorm_forward_kernel_fast<scalar_t,8,128,is_affine,is_training><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                        self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+              } 
+              else if(cols<=2048){
+                layernorm_forward_kernel_fast<scalar_t,16,128,is_affine,is_training><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                        self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+              }
+              else if(cols<=4096){
+                layernorm_forward_kernel_fast<scalar_t,16,256,is_affine,is_training><<<rows, 256, 0, at::cuda::getCurrentCUDAStream()>>>(
+                              self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+              }
+              else if(cols<=8192){
+                layernorm_forward_kernel_fast<scalar_t,8,1024,is_affine,is_training><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                        self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+              }
+              else {
+                layernorm_forward_kernel_fast<scalar_t,16,1024,is_affine,is_training><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                        self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+              }
+            });
+          });
+        // }
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       });
      return std::tuple<Tensor,Tensor,Tensor>(ret,mean,rstd);
@@ -441,7 +495,16 @@ class fuseLayerNormFunction : public torch::autograd::Function<fuseLayerNormFunc
     auto pweight=weight.expect_contiguous();
     auto pbias=bias.expect_contiguous();
     
-    auto ret = layernorm_forward(*px, *pweight,*pbias,eps,training);
+    std::tuple<Tensor,Tensor,Tensor> ret ;
+    int cols = px->sizes().back();
+    if(cols%16==0&&cols<=16384){
+      ret = layernorm_forward(*px, *pweight,*pbias,eps,training);
+    }
+    else{
+      std::vector<int64_t> shape;
+      shape.push_back(cols);
+      ret = at::native::layer_norm_cuda(*px,shape,weight_opt,bias_opt,eps);
+    }
 
     int flags = (weight_opt.has_value() ? 1 : 0) | (bias_opt.has_value() ? 2 : 0);
     torch::Tensor flags_tensor = torch::tensor(flags, torch::kInt32);
