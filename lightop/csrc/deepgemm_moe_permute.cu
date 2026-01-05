@@ -437,6 +437,64 @@ void ep_fused_quant_scatter(torch::Tensor input, // fp16 or bf16
   }
 }
 
+template <typename scalar_t, int K_MAX>
+__global__ void ep_gather_kernel(
+    const scalar_t* __restrict__ input_tensor,    
+    const int64_t* __restrict__ topk_ids,               
+    const float* __restrict__ topk_weights,     
+    const int* __restrict__ src_indices,      //inverm        
+    const int* __restrict__ expert_map,            
+    scalar_t* __restrict__ output_tensor,        
+    const int hidden_size,
+    const int topk_num,
+    const bool has_expert_map,
+    const int num_tokens                         
+) {
+  
+    constexpr int VEC_SIZE = 8;
+    using VecType = AlignedVector<scalar_t, VEC_SIZE>;
+
+    const int col_offset_base = blockIdx.x * blockDim.x * VEC_SIZE;
+    const int tid = threadIdx.x;
+    const int feat_idx = col_offset_base + tid * VEC_SIZE;
+    if (feat_idx >= hidden_size) return;
+
+    for (int token_idx = blockIdx.y; token_idx < num_tokens; token_idx += gridDim.y) {
+        float acc[VEC_SIZE] = {0.0f};
+        #pragma unroll
+        for (int k = 0; k < K_MAX; ++k) {
+             size_t flat_idx = static_cast<size_t>(token_idx) * topk_num + k;
+             int expert_id = topk_ids[flat_idx];
+             if (has_expert_map) {
+                 expert_id = expert_map[expert_id];
+             }
+             int src_idx = src_indices[flat_idx];
+             if (expert_id >= 0 && src_idx >= 0) {
+                 float w = topk_weights[flat_idx];
+                 
+                 size_t src_offset = static_cast<size_t>(src_idx) * hidden_size + feat_idx;
+                 const scalar_t* src_ptr = input_tensor + src_offset;
+                 
+                 VecType loaded_vec = *reinterpret_cast<const VecType*>(src_ptr);
+                 
+                 #pragma unroll
+                 for (int i = 0; i < VEC_SIZE; ++i) {
+                     acc[i] += static_cast<float>(loaded_vec.val[i]) * w;
+                 }
+             }
+        }
+
+        VecType out_vec;
+        #pragma unroll
+        for (int i = 0; i < VEC_SIZE; ++i) {
+            out_vec.val[i] = static_cast<scalar_t>(acc[i]);
+        }
+
+        size_t out_offset = static_cast<size_t>(token_idx) * hidden_size + feat_idx;
+        VecType* out_vec_ptr = reinterpret_cast<VecType*>(output_tensor + out_offset);
+        *out_vec_ptr = out_vec;
+    }
+}
 void ep_scatter(torch::Tensor aq, torch::Tensor aq_scale,
                 torch::Tensor topk_ids,
                 torch::optional<torch::Tensor> expert_map_opt,
@@ -522,6 +580,76 @@ void ep_scatter(torch::Tensor aq, torch::Tensor aq_scale,
             }));
     }
   }
+}
+
+//unpermute
+void ep_gather(
+    torch::Tensor& a,           
+    torch::Tensor& topk_ids,     
+    torch::Tensor& topk_weights, 
+    torch::Tensor& inv_perm,     
+    torch::optional<torch::Tensor> expert_map,
+    torch::Tensor& output        
+) {
+ 
+    const int num_tokens = output.size(0);
+    const int hidden_size = output.size(1);
+    const int topk_num = topk_ids.size(1);
+
+    const int* expert_map_ptr = nullptr;
+    bool has_expert_map = false;
+    if (expert_map.has_value() && expert_map->defined()) {
+        expert_map_ptr = expert_map->data_ptr<int>();
+        has_expert_map = true;
+    }
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+        at::ScalarType::Half,
+        at::ScalarType::BFloat16,
+        a.scalar_type(),
+        "ep_gather",
+        [&] {
+            constexpr int VEC_SIZE = 16 / sizeof(scalar_t);
+            TORCH_CHECK(hidden_size % VEC_SIZE == 0, "Hidden size must be divisible by vector size");
+
+            int threads_per_block = 256;
+            int elements_per_thread = VEC_SIZE;
+            int elements_per_block = threads_per_block * elements_per_thread;
+            int grid_x = (hidden_size + elements_per_block - 1) / elements_per_block;
+            int grid_y = num_tokens;
+
+            bool is_deepseek_config = (hidden_size == 7168) && (VEC_SIZE == 8);
+            // 7168 * 8 128线程*8 = 7168 loop 8次
+            if (is_deepseek_config) {
+                threads_per_block = 128;
+                grid_x = 7;
+            }
+            // if (grid_y > 65535) grid_y = 65535;
+            dim3 block(threads_per_block);
+            dim3 grid(grid_x, grid_y);
+
+            auto a_tensor = a.expect_contiguous();
+            if (topk_num <= 2) {
+                ep_gather_kernel<scalar_t, 2><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
+                    a_tensor->data_ptr<scalar_t>(), topk_ids.data_ptr<int64_t>(), topk_weights.data_ptr<float>(),
+                    inv_perm.data_ptr<int>(), expert_map_ptr, output.data_ptr<scalar_t>(),
+                    hidden_size, topk_num, has_expert_map, num_tokens
+                );
+            } else if (topk_num <= 4) {
+                ep_gather_kernel<scalar_t, 4><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
+                    a_tensor->data_ptr<scalar_t>(), topk_ids.data_ptr<int64_t>(), topk_weights.data_ptr<float>(),
+                    inv_perm.data_ptr<int>(), expert_map_ptr, output.data_ptr<scalar_t>(),
+                    hidden_size, topk_num, has_expert_map, num_tokens
+                );
+            } else {
+                ep_gather_kernel<scalar_t, 8><<<grid, block, 0, at::cuda::getCurrentCUDAStream()>>>(
+                    a_tensor->data_ptr<scalar_t>(), topk_ids.data_ptr<int64_t>(), topk_weights.data_ptr<float>(),
+                    inv_perm.data_ptr<int>(), expert_map_ptr, output.data_ptr<scalar_t>(),
+                    hidden_size, topk_num, has_expert_map, num_tokens
+                );
+            }
+        }
+    );
 }
 } // namespace native
 } // namespace at

@@ -158,8 +158,7 @@ def rms_norm_dynamic_per_token_quant(
     scales = torch.empty((input.numel() // input.shape[-1], 1),
                         device=input.device,
                         dtype=torch.float32)
-    import pdb
-    # pdb.set_trace()
+
     op.rms_norm_dynamic_per_token_quant(output, input, weight,
                                                     scales, epsilon,
                                                     residual, update_input)

@@ -1005,6 +1005,256 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
         }
     }
 }
+
+template <int VPT, int NUM_EXPERTS, int WARPS_PER_CTA, int BYTES_PER_LDG,bool Is_renormalize, typename IndType>
+__launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
+    void topk8GatingSoftmax_no_align(const float* input, const bool* finished, float* output, const int num_rows, IndType* indices,
+        int* source_rows, const int start_expert, const int end_expert, const int model_num_experts) 
+{
+    static_assert(VPT == (VPT & -VPT), "VPT must be power of 2");
+    // static_assert(NUM_EXPERTS == (NUM_EXPERTS & -NUM_EXPERTS), "NUM_EXPERTS must be power of 2"); // Relaxed for padded call
+    static_assert(BYTES_PER_LDG == (BYTES_PER_LDG & -BYTES_PER_LDG), "BYTES_PER_LDG must be power of 2");
+
+    static constexpr int ELTS_PER_LDG = 4;
+    static constexpr int ELTS_PER_ROW = NUM_EXPERTS;
+    static constexpr int THREADS_PER_ROW = ELTS_PER_ROW / VPT;
+    static constexpr int LDG_PER_THREAD = VPT / ELTS_PER_LDG;
+
+    static constexpr int ELTS_PER_WARP = WARP_SIZE * VPT;
+    static constexpr int ROWS_PER_WARP = ELTS_PER_WARP / ELTS_PER_ROW;
+    static constexpr int ROWS_PER_CTA = WARPS_PER_CTA * ROWS_PER_WARP;
+
+    static_assert(ELTS_PER_WARP % ELTS_PER_ROW == 0, "The elts per row must cleanly divide the total elt per warp");
+
+    const int cta_base_row = blockIdx.x * ROWS_PER_CTA;
+    const int warp_base_row = cta_base_row + threadIdx.y * ROWS_PER_WARP;
+    const int thread_row_in_warp = threadIdx.x / THREADS_PER_ROW;
+    const int thread_row = warp_base_row + thread_row_in_warp;
+    
+    if (thread_row >= num_rows)
+    {
+        return;
+    }
+    float max_val;
+    int expert;
+    const bool row_is_active = finished ? !finished[thread_row] : true;
+
+    // 使用 model_num_experts 计算 stride
+    const float* thread_row_ptr = input + thread_row * model_num_experts;
+    const int thread_group_idx = threadIdx.x % THREADS_PER_ROW;
+    const int first_elt_read_by_thread = thread_group_idx * ELTS_PER_LDG;
+    const float* thread_read_ptr = thread_row_ptr + first_elt_read_by_thread;
+
+    using AccessType = AlignedArray<float, ELTS_PER_LDG>;
+    float row_chunk[VPT];
+    
+   
+    #pragma unroll
+    for (int i=0; i<VPT; ++i) row_chunk[i] = -FLT_MAX;
+
+    // Load data
+    int col_idx_1 = thread_group_idx * ELTS_PER_LDG;
+    if (col_idx_1 < model_num_experts) {
+        #pragma unroll
+        for (int ii = 0; ii < 4; ++ii)
+        {
+            if (col_idx_1 + ii < model_num_experts) 
+                row_chunk[ii] = thread_read_ptr[ii];
+        }
+    }
+
+    int offset = THREADS_PER_ROW * ELTS_PER_LDG;
+    int col_idx_2 = col_idx_1 + offset;
+    if (col_idx_2 < model_num_experts) {
+        #pragma unroll
+        for (int ii = 0; ii < 4; ++ii)
+        {
+            if (col_idx_2 + ii < model_num_experts)
+                row_chunk[ii+4] = thread_read_ptr[ii+offset];
+        }
+    }
+
+    float thread_max = -FLT_MAX;
+    int thread_max_idx = -1;
+    for(int i = 0; i < VPT; ++i) {
+        if (row_chunk[i] > thread_max) {
+            thread_max = row_chunk[i];
+            int ldg_idx = i / ELTS_PER_LDG;
+            int elt_idx_in_ldg = i % ELTS_PER_LDG;
+            thread_max_idx = first_elt_read_by_thread + ldg_idx * (THREADS_PER_ROW * ELTS_PER_LDG) + elt_idx_in_ldg;
+        }
+    }
+
+#pragma unroll
+    for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2)
+    {
+        float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(thread_max, mask, THREADS_PER_ROW);
+        int other_idx = VLLM_SHFL_XOR_SYNC_WIDTH(thread_max_idx, mask, THREADS_PER_ROW);
+        if (other_max > thread_max || (other_max == thread_max && other_idx < thread_max_idx)) {
+            thread_max = other_max;
+            thread_max_idx = other_idx;
+        }
+    }
+
+    // Softmax Sum Reduction
+    float row_sum = 0;
+#pragma unroll
+    for (int ii = 0; ii < VPT; ++ii)
+    {
+        row_chunk[ii] = __expf(row_chunk[ii] - thread_max);
+        row_sum += row_chunk[ii];
+    }
+
+#pragma unroll
+    for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2)
+    {
+        row_sum += VLLM_SHFL_XOR_SYNC_WIDTH(row_sum, mask, THREADS_PER_ROW);
+    }
+
+    const float reciprocal_row_sum = 1.f / (row_sum);
+#pragma unroll
+    for (int ii = 0; ii < VPT; ++ii)
+    {
+        row_chunk[ii] = row_chunk[ii] * reciprocal_row_sum;
+    }
+
+   
+    float top_vals = 0.f;
+    IndType top_indices = IndType(0);
+
+    #define FIND_AND_REDUCE_MAX(k_val, k_expert) \
+    do { \
+        k_val = -1.f; \
+        k_expert = -1; \
+        int current_col_base = first_elt_read_by_thread; \
+       for (int ldg = 0; ldg < LDG_PER_THREAD; ++ldg) { \
+            for (int ii = 0; ii < ELTS_PER_LDG; ++ii) { \
+                float val = row_chunk[ldg * ELTS_PER_LDG + ii]; \
+                if (val > k_val) { \
+                    k_val = val; \
+                    k_expert = current_col_base + ii; \
+                } \
+            } \
+            current_col_base += THREADS_PER_ROW * ELTS_PER_LDG; \
+        } \
+        _Pragma("unroll") \
+        for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2) { \
+            float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(k_val, mask, THREADS_PER_ROW); \
+            int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(k_expert, mask, THREADS_PER_ROW); \
+            if (other_max > k_val || (other_max == k_val && other_expert < k_expert)) { \
+                k_val = other_max; \
+                k_expert = other_expert; \
+            } \
+        } \
+    } while(0)
+
+    #define ERASE_MAX(k_expert) \
+        if (k_expert != -1) { \
+            int expert_in_thread_col = (k_expert / ELTS_PER_LDG) % THREADS_PER_ROW; \
+            if (thread_group_idx == expert_in_thread_col) { \
+                int ldg_idx = k_expert / (THREADS_PER_ROW * ELTS_PER_LDG); \
+                int elt_idx = k_expert % ELTS_PER_LDG; \
+                row_chunk[ldg_idx * ELTS_PER_LDG + elt_idx] = -100000.f; \
+            } \
+        }
+    //第一次复用softmax
+    {
+        constexpr int i = 0;
+        if (thread_group_idx == i) { 
+            top_vals = reciprocal_row_sum * 1.0; 
+            top_indices = thread_max_idx; 
+        }
+        ERASE_MAX(thread_max_idx); 
+    }
+    {
+        constexpr int i = 1;
+        FIND_AND_REDUCE_MAX(max_val, expert);
+        if (thread_group_idx == i) { 
+            top_vals = max_val; 
+            top_indices = expert; 
+        }
+        ERASE_MAX(expert); 
+    }
+    {
+        constexpr int i = 2;
+        FIND_AND_REDUCE_MAX(max_val, expert);
+        if (thread_group_idx == i) { 
+            top_vals = max_val; 
+            top_indices = expert; 
+        }
+        ERASE_MAX(expert); 
+    }
+    {
+        constexpr int i = 3;
+        FIND_AND_REDUCE_MAX(max_val, expert);
+        if (thread_group_idx == i) { 
+            top_vals = max_val; 
+            top_indices = expert; 
+        }
+        ERASE_MAX(expert); 
+    }
+    {
+        constexpr int i = 4;
+        FIND_AND_REDUCE_MAX(max_val, expert);
+        if (thread_group_idx == i) { 
+            top_vals = max_val; 
+            top_indices = expert; 
+        }
+        ERASE_MAX(expert); 
+    }
+    {
+        constexpr int i = 5;
+        FIND_AND_REDUCE_MAX(max_val, expert);
+        if (thread_group_idx == i) { 
+            top_vals = max_val; 
+            top_indices = expert; 
+        }
+        ERASE_MAX(expert); 
+    }
+    {
+        constexpr int i = 6;
+        FIND_AND_REDUCE_MAX(max_val, expert);
+        if (thread_group_idx == i) { 
+            top_vals = max_val; 
+            top_indices = expert; 
+        }
+        ERASE_MAX(expert); 
+    }
+    //最后一次不擦除
+    {
+        constexpr int i = 7;
+        FIND_AND_REDUCE_MAX(max_val, expert);
+        if (thread_group_idx == i) { 
+            top_vals = max_val; 
+            top_indices = expert; 
+        }
+    }
+
+    if(row_is_active){
+        float r_topk_sum = 1.0f;
+        if constexpr(Is_renormalize){
+            float topk_sum = top_vals;
+    #pragma unroll
+            for(int i = 4; i > 0; i >>= 1) {
+                topk_sum += VLLM_SHFL_XOR_SYNC_WIDTH(topk_sum,i,THREADS_PER_ROW);
+            }
+            r_topk_sum = 1.0f / topk_sum;
+        }
+        if(thread_group_idx < 8){
+            if constexpr(Is_renormalize){
+                top_vals *= r_topk_sum;
+            }
+            const bool node_uses_expert = top_indices >= start_expert && top_indices  < end_expert;
+            top_indices = node_uses_expert ? (top_indices - start_expert) : NUM_EXPERTS;
+
+            const int base_idx = 8 * thread_row + thread_group_idx;
+            
+            indices[base_idx] = top_indices;
+            output[base_idx] = top_vals;
+            source_rows[base_idx] = thread_group_idx * num_rows + thread_row;
+        }
+    }
+}
 namespace detail
 {
 // Constructs some constants needed to partition the work across threads at compile time.
@@ -1028,7 +1278,7 @@ struct TopkConstants
 
 template <int EXPERTS, int WARPS_PER_TB, typename IndType,bool Is_renormalize>
 void topkGatingSoftmaxLauncherHelper(const float* input, const bool* finished, float* output, IndType* indices,
-    int* source_row, const int num_rows, const int k, const int start_expert, const int end_expert, cudaStream_t stream)
+    int* source_row, const int num_rows, const int k, const int start_expert, const int end_expert, cudaStream_t stream,const int num_experts)
 {
     static constexpr std::size_t MAX_BYTES_PER_LDG = 32; //每次32字节，8个float
     static constexpr int BYTES_PER_LDG = MIN(MAX_BYTES_PER_LDG, sizeof(float) * EXPERTS);
@@ -1048,8 +1298,13 @@ void topkGatingSoftmaxLauncherHelper(const float* input, const bool* finished, f
         topk2GatingSoftmax_opt<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG,Is_renormalize><<<num_blocks, block_dim, 0, stream>>>(
                     input, finished, output, num_rows, indices, source_row, start_expert, end_expert);
     }else if(k == 8){
-         topk8GatingSoftmax_opt<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG,Is_renormalize><<<num_blocks, block_dim, 0, stream>>>(
+        if(num_experts == 160){
+            topk8GatingSoftmax_no_align<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG,Is_renormalize><<<num_blocks, block_dim, 0, stream>>>(
+                    input, finished, output, num_rows, indices, source_row, start_expert, end_expert, num_experts);
+        }else{
+            topk8GatingSoftmax_opt<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG,Is_renormalize><<<num_blocks, block_dim, 0, stream>>>(
                     input, finished, output, num_rows, indices, source_row, start_expert, end_expert);
+        }
     }
     else{
         topkGatingSoftmax<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG,Is_renormalize><<<num_blocks, block_dim, 0, stream>>>(
@@ -1078,7 +1333,7 @@ void topkGatingSoftmaxKernelLauncher(
             topkGatingSoftmaxLauncherHelper<NUM_EXPERTS, WARPS_PER_TB, IndType, Is_renormalize>( \
                 gating_output, nullptr, topk_weights, topk_indicies, \
                 token_expert_indices, num_tokens, topk, 0, num_experts, \
-                stream);
+                stream,num_experts);
 
         switch (num_experts) {
             case 1: LAUNCH_SOFTMAX(1, WARPS_PER_TB); break;
@@ -1097,7 +1352,8 @@ void topkGatingSoftmaxKernelLauncher(
                 LAUNCH_SOFTMAX(128, 1); 
                 break;
             }
-            case 256: LAUNCH_SOFTMAX(256, WARPS_PER_TB); break;
+            case 160:                         //160使用256的模板
+            case 256: LAUNCH_SOFTMAX(256, 1); break;
             default: {
             TORCH_CHECK(softmax_workspace != nullptr,
                 "softmax_workspace must be provided for num_experts that are not a power of 2.");
@@ -1129,7 +1385,7 @@ void topk_softmax(
     const int topk = topk_weights.size(-1);
 
     const bool is_pow_2 = (num_experts != 0) && ((num_experts & (num_experts - 1)) == 0);
-    const bool needs_workspace = !is_pow_2 || num_experts > 256;
+    const bool needs_workspace = (!is_pow_2 && num_experts != 160) || num_experts > 256;
     const int64_t workspace_size = needs_workspace ? num_tokens * num_experts : 0;
 
     const at::cuda::OptionalCUDAGuard device_guard(device_of(gating_output));

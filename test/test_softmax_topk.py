@@ -15,7 +15,26 @@ except (ImportError, AttributeError) as e:
     print("   将使用模拟函数代替。")
     
 
+def torch_softmax_topk_base(topk_weights: torch.Tensor, topk_indices: torch.Tensor,
+                              token_expert_indices: torch.Tensor,
+                              gating_output: torch.Tensor,
+                              renormalize: bool) -> tuple[torch.Tensor, ...]:
+ 
+    probs = F.softmax(gating_output, dim=-1)
 
+  
+    k = topk_weights.size(-1)
+    vals, indices = torch.topk(probs, k=k, dim=-1)
+
+
+    topk_weights.copy_(vals)
+    topk_indices.copy_(indices)
+
+    if renormalize:
+        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+
+    return topk_weights, topk_indices
+    
 
 def vllm_topk_softmax_base(topk_weights: torch.Tensor, topk_indices: torch.Tensor,
                       token_expert_indices: torch.Tensor,
@@ -28,8 +47,6 @@ def vllm_topk_softmax_base(topk_weights: torch.Tensor, topk_indices: torch.Tenso
         gating_output,
     )
     if renormalize:
-        # 注意：此处除法会产生新的 Tensor，不影响传入的 topk_weights 原地内存，
-        # 所以必须返回新的 topk_weights 供后续比对
         topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
 
     return topk_weights, topk_indices
@@ -197,7 +214,7 @@ class TestTopkSoftmax(unittest.TestCase):
         })
 
     def test_specific_token_counts(self):
-        num_experts = 128
+        num_experts = 160
         topk = 8
         # num_tokens_list = [2048] # 调试用
         num_tokens_list = [1,6,8,32,64,128,256,356,512,1024,2048,4096,8192,16384,16384*2,41000]
