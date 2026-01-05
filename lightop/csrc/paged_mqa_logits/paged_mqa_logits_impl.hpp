@@ -132,7 +132,7 @@ struct PagedMQALogitsScheduler {
         num_kv = current_num_kv;
         context_len = current_context_len;
 
-        if (q_idx == end_q_idx and kv_idx == end_kv_idx)
+        if ((q_idx == end_q_idx and kv_idx == end_kv_idx) || q_idx >= this->batch_size)
             return false;
 
         current_kv_idx += kNumWarps;
