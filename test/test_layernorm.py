@@ -183,9 +183,9 @@ if __name__ == "__main__":
     run_benchmark('full', batchsize, seqs, cols, repeat_num, use_half)
     print(separator)
 
-    # 案例 2: 仅包含 Weight
-    run_benchmark('no_bias', batchsize, seqs, cols, repeat_num, use_half)
-    print(separator)
+    # # 案例 2: 仅包含 Weight
+    # run_benchmark('no_bias', batchsize, seqs, cols, repeat_num, use_half)
+    # print(separator)
 
     # 案例 3: 无 Weight 和 Bias (包含反向传播)
     run_benchmark('no_affine', batchsize, seqs, cols, repeat_num, use_half)
