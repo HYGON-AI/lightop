@@ -106,6 +106,35 @@ __inline__ __device__ T BlockReduceSum(T val, T* shared) {
 }
 
 
+template <typename T,int max>
+__inline__ __device__ void WarpReduceSum2(T& val1,T& val2) {
+  #pragma unroll
+  for (int offset = max; offset > 0; offset >>= 1) {
+    val1 += WARP_SHFL_DOWN(val1, offset);
+    val2 += WARP_SHFL_DOWN(val2, offset);
+  }
+}
+
+template <typename T,int blocksize>
+__inline__ __device__ void BlockReduceSum2(T& val1,T& val2, T* shared) {
+  const int lid = threadIdx.x % C10_WARP_SIZE;
+  const int wid = threadIdx.x / C10_WARP_SIZE;
+  WarpReduceSum2<T,32>(val1,val2);
+  if constexpr (blocksize==64) return;
+  constexpr int share_size=blocksize/C10_WARP_SIZE;
+  if (lid == 0&&wid<share_size) {
+      shared[wid] = val1;
+      shared[wid+share_size] = val2;
+  }
+  __syncthreads();
+  if (wid == 0&&lid<share_size) {
+      val1= shared[lid];
+      val2= shared[lid+share_size];
+      WarpReduceSum2<T,share_size/2>(val1,val2);
+  }
+}
+
+
 
 template <typename scalar_t>
 __global__ void col_wise_reduce(scalar_t *dst, const scalar_t *src,int M,int N){

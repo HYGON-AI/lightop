@@ -12,8 +12,8 @@ namespace native
 
 template <typename scalar_t, int VEC = 4, int blocksize = 512>
 __global__ void add_layernorm_forward_kernel(scalar_t *input, scalar_t *residual, scalar_t *ret, scalar_t *ret_sum,
-                                             scalar_t *mean, scalar_t *rstd, scalar_t *gamma, scalar_t *beta, int cols,
-                                             scalar_t eps)
+                                             float *mean, float *rstd, scalar_t *gamma, scalar_t *beta, int cols,
+                                             float eps)
 {
     int blockidx             = blockIdx.x;
     int threadidx            = threadIdx.x;
@@ -58,7 +58,7 @@ __global__ void add_layernorm_forward_kernel(scalar_t *input, scalar_t *residual
     {
         // layernorm get mean and rstd
         thrust::tie(tmean, s_mean) = welford_op.project(val);
-        s_rstd                     = c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+        s_rstd                     = c10::cuda::compat::rsqrt(tmean + eps);
     }
     __syncthreads();
     // s_mean,s_rstd为共享内存数据，块共享
@@ -103,8 +103,8 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> fused_add_ln_forward(const Tensor &se
     Tensor    rstd;
     if (training)
     {
-        mean = at::empty({rows}, self.options());
-        rstd = at::empty({rows}, self.options());
+        mean = at::empty({rows}, self.options().dtype(at::ScalarType::Float));
+        rstd = at::empty({rows}, self.options().dtype(at::ScalarType::Float));
     }
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half, at::ScalarType::BFloat16, self.scalar_type(), "add_layernorm_forward", [&] {
@@ -115,12 +115,12 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> fused_add_ln_forward(const Tensor &se
             scalar_t *ret_sum_data  = ret_sum.data_ptr<scalar_t>();
             scalar_t *weight_data   = weight.data_ptr<scalar_t>();
             scalar_t *bias_data     = bias.data_ptr<scalar_t>();
-            scalar_t  eps           = ln_epsilon;
-            scalar_t *mean_data = NULL, *rstd_data = NULL;
+            float  eps           = ln_epsilon;
+            float *mean_data = NULL, *rstd_data = NULL;
             if (training)
             {
-                mean_data = mean.data_ptr<scalar_t>();
-                rstd_data = rstd.data_ptr<scalar_t>();
+                mean_data = mean.data_ptr<float>();
+                rstd_data = rstd.data_ptr<float>();
             }
             if (cols <= 1024)
             {
@@ -163,8 +163,8 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> fused_add_ln_forward(const Tensor &se
 }
 
 template <typename scalar_t, int VEC = 4> __global__ void fused_add_ln_backward(int N, const scalar_t *dY, const scalar_t *X,
-                                                                                const scalar_t *gamma, const scalar_t *mean,
-                                                                                const scalar_t *rstd, scalar_t *dX)
+                                                                                const scalar_t *gamma, const float *mean,
+                                                                                const float *rstd, scalar_t *dX)
 {
     LAYERNORMBACKWARD_VEC_2048
     if (j < tcol)
@@ -195,8 +195,8 @@ std::tuple<Tensor, Tensor, Tensor, Tensor> fused_add_ln_backward(const Tensor &g
         at::ScalarType::Half, at::ScalarType::BFloat16, grad.scalar_type(), "layernorm_backward", [&] {
             scalar_t *dY_data     = pgrad->data_ptr<scalar_t>();
             scalar_t *X_data      = X.data_ptr<scalar_t>();
-            scalar_t *mean_data   = mean.data_ptr<scalar_t>();
-            scalar_t *rstd_data   = rstd.data_ptr<scalar_t>();
+            float *mean_data   = mean.data_ptr<float>();
+            float *rstd_data   = rstd.data_ptr<float>();
             scalar_t *gamma_data  = gamma.data_ptr<scalar_t>();
             scalar_t *dgamma_data = dgamma.data_ptr<scalar_t>();
             scalar_t *dbeta_data  = dbeta.data_ptr<scalar_t>();
