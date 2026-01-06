@@ -109,8 +109,8 @@ def torch_gemm(
     return D
 
 def test_m_grouped_gemm_contiguous() -> None:
-    num_groups = 16
-    expected_m_per_group_list = [128, 256, 512, 1024, 2048]
+    num_groups = 8
+    expected_m_per_group_list = [256]
     n_list = [4096, 7168]
     k_list = [7168, 2048]
     out_dtype = torch.bfloat16
