@@ -9,13 +9,6 @@ import time
 
 from vllm import _custom_ops as vllm_ops
 
-from transformer_engine.pytorch.permutation import (
-    moe_permute,
-    moe_sort_chunks_by_index,
-)
-
-fused_permute = moe_permute
-fused_sort_chunks_by_index = moe_sort_chunks_by_index
 
 from lightop import fuse_groupgemm_permute_quant
 
