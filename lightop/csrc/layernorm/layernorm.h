@@ -74,8 +74,8 @@ struct WelfordOps {
 };
 
 template <typename scalar_t>
-__global__ void GammaBetaBackward(int M,int N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
-                                  const scalar_t* rstd,scalar_t* dg,scalar_t* db)
+__global__ void GammaBetaBackward(int M,int N,const scalar_t* dY,const scalar_t* X,const float* mean,
+                                  const float* rstd,scalar_t* dg,scalar_t* db)
 {
   using T_ACC = acc_type<scalar_t, true>;
   __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize+1];
@@ -87,7 +87,7 @@ __global__ void GammaBetaBackward(int M,int N,const scalar_t* dY,const scalar_t*
     for (int i = threadIdx.y; i < M; i += blockDim.y) {
       const int index = i * N + j;
       const T_ACC cmask_dY = dY[index];
-      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
+      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - mean[i]) * rstd[i];
       db_sum += cmask_dY;
     }
   }
@@ -108,8 +108,8 @@ __global__ void GammaBetaBackward(int M,int N,const scalar_t* dY,const scalar_t*
 }
 
 template <typename scalar_t>
-__global__ void GammaBetaBackward_onlyweight(int M,int N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
-                                  const scalar_t* rstd,scalar_t* dg)
+__global__ void GammaBetaBackward_onlyweight(int M,int N,const scalar_t* dY,const scalar_t* X,const float* mean,
+                                  const float* rstd,scalar_t* dg)
 {
   using T_ACC = acc_type<scalar_t, true>;
   __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize+1];
@@ -121,7 +121,7 @@ __global__ void GammaBetaBackward_onlyweight(int M,int N,const scalar_t* dY,cons
     for (int i = threadIdx.y; i < M; i += blockDim.y) {
       const int index = i * N + j;
       const T_ACC cmask_dY = dY[index];
-      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
+      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - mean[i]) * rstd[i];
       // db_sum += cmask_dY;
     }
   }
@@ -142,8 +142,8 @@ __global__ void GammaBetaBackward_onlyweight(int M,int N,const scalar_t* dY,cons
 }
 
 template <typename scalar_t,typename T_ACC>
-__global__ void gb_backward_kernel_part_a(int M,int N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
-                                  const scalar_t* rstd,T_ACC* dg,T_ACC* db)
+__global__ void gb_backward_kernel_part_a(int M,int N,const scalar_t* dY,const scalar_t* X,const float* mean,
+                                  const float* rstd,T_ACC* dg,T_ACC* db)
 {
   __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize+1];
   __shared__ T_ACC b_shared[kColwiseReduceTileSize][kColwiseReduceTileSize+1];
@@ -162,7 +162,7 @@ __global__ void gb_backward_kernel_part_a(int M,int N,const scalar_t* dY,const s
       const int i2=i+off;
       const int index = i2* N + j;
       const T_ACC cmask_dY = dY[index];
-      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i2])) * static_cast<T_ACC>(rstd[i2]);
+      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - mean[i2]) * rstd[i2];
       db_sum += cmask_dY;
     }
   }
@@ -187,8 +187,8 @@ __global__ void gb_backward_kernel_part_a(int M,int N,const scalar_t* dY,const s
 }
 
 template <typename scalar_t,typename T_ACC>
-__global__ void gb_backward_kernel_part_a_onlyweight(int M,int N,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
-                                  const scalar_t* rstd,T_ACC* dg)
+__global__ void gb_backward_kernel_part_a_onlyweight(int M,int N,const scalar_t* dY,const scalar_t* X,const float* mean,
+                                  const float* rstd,T_ACC* dg)
 {
   __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize+1];
   // __shared__ T_ACC b_shared[kColwiseReduceTileSize][kColwiseReduceTileSize+1];
@@ -207,7 +207,7 @@ __global__ void gb_backward_kernel_part_a_onlyweight(int M,int N,const scalar_t*
       const int i2=i+off;
       const int index = i2* N + j;
       const T_ACC cmask_dY = dY[index];
-      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i2])) * static_cast<T_ACC>(rstd[i2]);
+      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - mean[i2]) * rstd[i2];
       // db_sum += cmask_dY;
     }
   }
@@ -260,7 +260,7 @@ __global__ void gb_backward_kernel_part_b_onlyweight(const T_ACC* part_grad_gamm
 }
 
 template <typename scalar_t>
-void GammaBeta_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,scalar_t* mean_data,scalar_t* rstd_data,scalar_t* dgamma_data,scalar_t* dbeta_data)
+void GammaBeta_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,float* mean_data,float* rstd_data,scalar_t* dgamma_data,scalar_t* dbeta_data)
 {
     using T_ACC = acc_type<scalar_t, true>;
     auto stream = at::cuda::getCurrentCUDAStream();
@@ -287,7 +287,7 @@ void GammaBeta_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,scal
 }
 
 template <typename scalar_t>
-void GammaBeta_Backward_optional(int length,int N,scalar_t* dY_data,scalar_t* X_data,scalar_t* mean_data,scalar_t* rstd_data,scalar_t* dgamma_data,scalar_t* dbeta_data)
+void GammaBeta_Backward_optional(int length,int N,scalar_t* dY_data,scalar_t* X_data,float* mean_data,float* rstd_data,scalar_t* dgamma_data,scalar_t* dbeta_data)
 {
     if (dgamma_data == nullptr && dbeta_data == nullptr) {
         return;
@@ -372,9 +372,9 @@ void GammaBeta_Backward_optional(int length,int N,scalar_t* dY_data,scalar_t* X_
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);\
   sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);\
   const T_ACC s = T_ACC(1) / static_cast<T_ACC>(N);\
-  T_ACC trstd = static_cast<T_ACC>(rstd[i]);\
+  T_ACC trstd = rstd[i];\
   if (threadIdx.x == 0) {\
-    T_ACC tmean = static_cast<T_ACC>(mean[i]);\
+    T_ACC tmean = mean[i];\
     const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;\
     b = a;\
     c = -a * tmean - sum2 * trstd * s;\
@@ -414,9 +414,9 @@ void GammaBeta_Backward_optional(int length,int N,scalar_t* dY_data,scalar_t* X_
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);\
   sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);\
   const T_ACC s = T_ACC(1) / static_cast<T_ACC>(N);\
-  T_ACC trstd = static_cast<T_ACC>(rstd[i]);\
+  T_ACC trstd = rstd[i];\
   if (threadIdx.x == 0) {\
-    T_ACC tmean = static_cast<T_ACC>(mean[i]);\
+    T_ACC tmean = mean[i];\
     const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;\
     b = a;\
     c = -a * tmean - sum2 * trstd * s;\
@@ -469,10 +469,10 @@ void GammaBeta_Backward_optional(int length,int N,scalar_t* dY_data,scalar_t* X_
   }\
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);\
   sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);\
-  T_ACC trstd=static_cast<T_ACC>(rstd[i]);\
+  T_ACC trstd=rstd[i];\
   if (threadIdx.x == 0) {\
     const T_ACC s = T_ACC(1) / static_cast<T_ACC>(N);\
-    T_ACC tmean = static_cast<T_ACC>(mean[i]);\
+    T_ACC tmean = mean[i];\
     const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;\
     b = a;\
     c = -a * tmean - sum2 * trstd * s;\
@@ -512,10 +512,10 @@ void GammaBeta_Backward_optional(int length,int N,scalar_t* dY_data,scalar_t* X_
   }\
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);\
   sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);\
-  T_ACC trstd=static_cast<T_ACC>(rstd[i]);\
+  T_ACC trstd=rstd[i];\
   if (threadIdx.x == 0) {\
     const T_ACC s = T_ACC(1) / static_cast<T_ACC>(N);\
-    T_ACC tmean = static_cast<T_ACC>(mean[i]);\
+    T_ACC tmean = mean[i];\
     const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;\
     b = a;\
     c = -a * tmean - sum2 * trstd * s;\
@@ -555,10 +555,10 @@ void GammaBeta_Backward_optional(int length,int N,scalar_t* dY_data,scalar_t* X_
   }\
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);\
   sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);\
-  T_ACC trstd=static_cast<T_ACC>(rstd[i]);\
+  T_ACC trstd=rstd[i];\
   if (threadIdx.x == 0) {\
     const T_ACC s = T_ACC(1) / static_cast<T_ACC>(N);\
-    T_ACC tmean = static_cast<T_ACC>(mean[i]);\
+    T_ACC tmean = mean[i];\
     const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;\
     b = a;\
     c = -a * tmean - sum2 * trstd * s;\
