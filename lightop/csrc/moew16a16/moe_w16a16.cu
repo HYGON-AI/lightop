@@ -536,6 +536,13 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_UP_prefill(
    
   int warp_n_id = warp_id % warp_n_num; //0
   int warp_m_id = warp_id / warp_n_num; //0
+  constexpr int dwordx4_num_elements = 8;
+  constexpr int N_thread = BLOCK_SIZE_N / dwordx4_num_elements;  //N方向需要的线程数 使用dwordx4即8个bf16
+  // const int m_num_threads = std::max(64 / N_thread, 1);
+  const int m_num_threads = 64 / N_thread; // 要求BLOCK_SIZE_N <= 512
+  const int n_num_threads = 64 / m_num_threads;
+  const int m_thread_idx = lane_id / n_num_threads;
+  const int n_thread_idx = lane_id & (n_num_threads-1);
 
   const int *sorted_token_ids_offset = sorted_token_ids;
   
@@ -543,6 +550,13 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_UP_prefill(
   union_vec<Element,8> B_reg[WARP_N/marlin_warp_n][WARP_K/marlin_warp_k]; 
 
   floatx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; 
+  int token_index_arr[BLOCK_SIZE_M / (m_num_threads*WARP_NUM)];
+  #pragma unroll
+  for(int m_idx = 0; m_idx < BLOCK_SIZE_M/(m_num_threads*WARP_NUM); m_idx++) {
+    const int token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx*m_num_threads*WARP_NUM + warp_id * m_num_threads + m_thread_idx, int(sorted_token_lens - 1))];
+    token_index_arr[m_idx] = token_index;
+  }
+
   if(tail_N_process){
   MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_remainder<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
     (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx,bidy);
@@ -575,22 +589,21 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_UP_prefill(
   __syncthreads();
 
   {
-    // 最大化利用dwordx4 通用
-    const int tid = threadIdx.x;
-    constexpr int N_thread = BLOCK_SIZE_N / 8;  //N方向需要的线程数 使用dwordx4即8个bf16
-    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) uint16_t;
-    int m_idx = threadIdx.x / N_thread;  
-    int n_idx = threadIdx.x % N_thread;  
-    if(bidy *  BLOCK_SIZE_N + n_idx * 8 < (size_n>>4)){  
-    for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
-      const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
-      if(token_index < size_m * top_k) {
-        *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * real_size_n + n_idx * 8]) = 
-        
-        *reinterpret_cast<vec_bf16_8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 8 + m_idx/2 * 2/*padding*/]);
-      } 
+
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    #pragma unroll
+    for(int m_idx = 0; m_idx < BLOCK_SIZE_M; m_idx += m_num_threads*WARP_NUM) {
+      const int32_t token_index = token_index_arr[m_idx/(m_num_threads*WARP_NUM)];
+      #pragma unroll
+      for(int n_idx = 0; n_idx < BLOCK_SIZE_N; n_idx += n_num_threads*dwordx4_num_elements) {
+        // const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx + warp_id * m_num_threads + m_thread_idx, int(sorted_token_lens - 1))];
+        if((token_index < size_m * top_k) && (bidy *  BLOCK_SIZE_N + n_idx + n_thread_idx*dwordx4_num_elements < (size_n>>4))) {
+          *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * real_size_n + n_idx + n_thread_idx*dwordx4_num_elements]) = 
+          *reinterpret_cast<vec_bf16_8*>(&output_lds[(m_idx + m_thread_idx + warp_id * m_num_threads) * BLOCK_SIZE_N 
+            + n_idx + n_thread_idx*dwordx4_num_elements + (m_idx + m_thread_idx + warp_id * m_num_threads)/2 * 2/*padding*/]);
+        }
+      }
     }
-    } 
   }      
 }
 
@@ -782,6 +795,13 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(
   const int warp_n_num = BLOCK_SIZE_N / WARP_N;
   int warp_n_id = warp_id % warp_n_num;
   int warp_m_id = warp_id / warp_n_num;
+  constexpr int dwordx4_num_elements = 8;
+  constexpr int N_thread = BLOCK_SIZE_N / dwordx4_num_elements;  //N方向需要的线程数 使用dwordx4即8个bf16
+  // const int m_num_threads = std::max(64 / N_thread, 1);
+  const int m_num_threads = 64 / N_thread; // 要求BLOCK_SIZE_N <= 512
+  const int n_num_threads = 64 / m_num_threads;
+  const int m_thread_idx = lane_id / n_num_threads;
+  const int n_thread_idx = lane_id & (n_num_threads-1);
 
   extern __shared__ uint8_t smem[]; // 声明lds信息
   Element* input_lds = (Element*)&(smem); // 输入lds首地址,首地址开始分配给input
@@ -798,6 +818,12 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(
   floatx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; 
 
   float weight_value_arr[WARP_M / mfma_m];
+  int token_index_arr[BLOCK_SIZE_M / (m_num_threads*WARP_NUM)];
+  #pragma unroll
+  for(int m_idx = 0; m_idx < BLOCK_SIZE_M/(m_num_threads*WARP_NUM); m_idx++) {
+    const int token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx*m_num_threads*WARP_NUM + warp_id * m_num_threads + m_thread_idx, int(sorted_token_lens - 1))];
+    token_index_arr[m_idx] = token_index;
+  }
 
   #pragma unroll
   for(int idx = 0; idx < WARP_M / mfma_m; idx++){
@@ -834,20 +860,20 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(
   __syncthreads();
   {
 
-    // 最大化利用dwordx4 通用
-    const int tid = threadIdx.x;
-    constexpr int N_thread = BLOCK_SIZE_N / 8;  //N方向需要的线程数 使用dwordx4即8个bf16
     using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
-    int m_idx = threadIdx.x / N_thread;  // tid / 4 = 0-32
-    int n_idx = threadIdx.x % N_thread;  // tid % 4 = 0-3
-    for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
-      const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
-
-      if(token_index < size_m * top_k) {
-        *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * real_size_n + n_idx * 8]) = 
-        *reinterpret_cast<vec_bf16_8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 8 + m_idx/2 * 2/*padding*/]);
+    #pragma unroll
+    for(int m_idx = 0; m_idx < BLOCK_SIZE_M; m_idx += m_num_threads*WARP_NUM) {
+      const int32_t token_index = token_index_arr[m_idx/(m_num_threads*WARP_NUM)];
+      #pragma unroll
+      for(int n_idx = 0; n_idx < BLOCK_SIZE_N; n_idx += n_num_threads*dwordx4_num_elements) {
+        // const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx + warp_id * m_num_threads + m_thread_idx, int(sorted_token_lens - 1))];
+        if(token_index < size_m * top_k) {
+          *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * real_size_n + n_idx + n_thread_idx*dwordx4_num_elements]) = 
+          *reinterpret_cast<vec_bf16_8*>(&output_lds[(m_idx + m_thread_idx + warp_id * m_num_threads) * BLOCK_SIZE_N 
+            + n_idx + n_thread_idx*dwordx4_num_elements + (m_idx + m_thread_idx + warp_id * m_num_threads)/2 * 2/*padding*/]);
+        }
       }
-    } 
+    }
   }
        
 

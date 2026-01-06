@@ -603,15 +603,14 @@ static std::unordered_map<int, KernelFunc4<T>> make_kernel_maps_gemm1_prefill_ma
      {110, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 64, 32, 32, 32, T>},
      {112, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 64, 32, 32, 32, T>},
      // 4warp BLOCKN 128 
-     {105, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, T>},
-     // 4warp BLOCKN 128 
      {103, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, T>},
      {104, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 32, 64, T>},
+     {105, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, T>},
      //{5, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 32, 64, T>}, // 寄存器溢出 32
      // 4warp BLOCKN 256 
      {106, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 256, 128, 16, 64, 64, T>},
-     //{107, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 256, 128, 32, 64, 64, T>},   // 寄存器溢出 60
-     //{108, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 128, 64, 64, 64, T>},   //寄存器溢出 392
+     {113, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 64, 64, 64, 32, T>},   
+     {114, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 256, 64, 64, 64, 32, T>},   
      // 8warp BLOCKN 128 
     //  {109, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 128, 32, 16, 64, T>},  
     //  {110, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 128, 64, 16, 64, T>},  
@@ -773,13 +772,14 @@ template <typename T>
      {110, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 256, 32, 32, 32, 32, T>},
      {112, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 32, 64, 32, 32, T>},
      // 4warp BLOCKN 128 
-     {105, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 256, 16, 16, 32, 16, T>},
      {103, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 64, T>},
      {104, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 32, 64, T>},
+     {105, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 256, 16, 16, 32, 16, T>},
      //{105, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 128, 64, 32, 64, T>},   // 寄存器溢出 32
      // 4warp BLOCKN 256 
      {106, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 256, 128, 16, 64, 64, T>},
-     //{107, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 256, 128, 32, 64, 64, T>},   // 寄存器溢出 60
+     {113, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 64, 64, 64, 32, T>},   
+     {114, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 32, 64, 64, 32, T>},   
      //{108, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 128, 64, 64, 64, T>},   //寄存器溢出 392
      // 8warp BLOCKN 128 
     //  {109, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 128, 32, 16, 64, T>},  
