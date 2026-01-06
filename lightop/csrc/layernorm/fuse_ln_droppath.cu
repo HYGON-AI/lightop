@@ -28,8 +28,8 @@ template <typename index_t, typename scalar_t, typename acc_t>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void layernorm_droppath_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* mean,scalar_t* rstd, scalar_t* mask,
-                                            scalar_t* gamma,scalar_t* beta,PhiloxCudaState philox_args,index_t cols,acc_t keep_prob,scalar_t eps,bool scale_by_keep)
+__global__ void layernorm_droppath_forward_kernel(scalar_t* input,scalar_t* ret,float* mean,float* rstd, scalar_t* mask,
+                                            scalar_t* gamma,scalar_t* beta,PhiloxCudaState philox_args,index_t cols,acc_t keep_prob,float eps,bool scale_by_keep)
 {
   int j=threadIdx.x;
   int maskID=blockIdx.y;
@@ -84,7 +84,7 @@ __global__ void layernorm_droppath_forward_kernel(scalar_t* input,scalar_t* ret,
   if (j == 0) {
     //layernorm get mean and rstd
     thrust::tie(tmean, s_mean) = welford_op.project(val);
-    s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+    s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
   }
   __syncthreads();
   tmean=s_mean;
@@ -125,8 +125,8 @@ layernorm_droppath_forward(const Tensor& self,const Tensor&weight,const Tensor& 
     std::tie(ret, mean, rstd) = layernorm_forward(self, weight, bias, ln_epsilon,training);
   } else {
     ret = at::empty_like(self);
-    mean = at::empty({rows},self.options());
-    rstd = at::empty({rows},self.options());
+    mean = at::empty({rows},self.options().dtype(at::ScalarType::Float));
+    rstd = at::empty({rows},self.options().dtype(at::ScalarType::Float));
     mask = at::empty({batchsize},self.options());
     auto gen = get_generator_or_default<CUDAGeneratorImpl>(Generator(), cuda::detail::getDefaultCUDAGenerator());
     int rand_offset=at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor*
@@ -147,11 +147,11 @@ layernorm_droppath_forward(const Tensor& self,const Tensor&weight,const Tensor& 
       "layernorm_droppath_forward",
       [&] {
         using acc_t = acc_type<scalar_t, true>;
-        scalar_t eps = ln_epsilon;
+        float eps = ln_epsilon;
         scalar_t* self_data = self.data_ptr<scalar_t>();
         scalar_t* ret_data = ret.data_ptr<scalar_t>();
-        scalar_t* mean_data = mean.data_ptr<scalar_t>();
-        scalar_t* rstd_data = rstd.data_ptr<scalar_t>();
+        float* mean_data = mean.data_ptr<float>();
+        float* rstd_data = rstd.data_ptr<float>();
         scalar_t* weight_data = weight.data_ptr<scalar_t>();
         scalar_t* bias_data = bias.data_ptr<scalar_t>();
         scalar_t* mask_data = mask.data_ptr<scalar_t>();
@@ -165,8 +165,8 @@ layernorm_droppath_forward(const Tensor& self,const Tensor&weight,const Tensor& 
 }
 
 template <typename scalar_t>
-__global__ void gb_with_drop_backward_kernel(int batch,int rows,int cols,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
-                                  const scalar_t* rstd,const scalar_t* mask,scalar_t* dg,scalar_t* db)
+__global__ void gb_with_drop_backward_kernel(int batch,int rows,int cols,const scalar_t* dY,const scalar_t* X,const float* mean,
+                                  const float* rstd,const scalar_t* mask,scalar_t* dg,scalar_t* db)
 {
   using T_ACC = acc_type<scalar_t, true>;
   __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize+1];
@@ -180,7 +180,7 @@ __global__ void gb_with_drop_backward_kernel(int batch,int rows,int cols,const s
       const int bc = i / rows;
       const int index = i * cols + j;
       const T_ACC cmask_dY = dY[index] * mask[bc];
-      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i])) * static_cast<T_ACC>(rstd[i]);
+      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - mean[i]) * rstd[i];
       db_sum += cmask_dY;
     }
   }
@@ -205,8 +205,8 @@ __global__ void gb_with_drop_backward_kernel(int batch,int rows,int cols,const s
 }
 
 template <typename scalar_t,typename T_ACC>
-__global__ void gb_with_drop_backward_kernel_part_a(int batch,int rows,int cols,const scalar_t* dY,const scalar_t* X,const scalar_t* mean,
-                                  const scalar_t* rstd,const scalar_t* mask,T_ACC* dg,T_ACC* db)
+__global__ void gb_with_drop_backward_kernel_part_a(int batch,int rows,int cols,const scalar_t* dY,const scalar_t* X,const float* mean,
+                                  const float* rstd,const scalar_t* mask,T_ACC* dg,T_ACC* db)
 {
   __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize+1];
   __shared__ T_ACC b_shared[kColwiseReduceTileSize][kColwiseReduceTileSize+1];
@@ -234,7 +234,7 @@ __global__ void gb_with_drop_backward_kernel_part_a(int batch,int rows,int cols,
       const int bc = i2 / rows;
       const int index = i2* cols + j;
       const T_ACC cmask_dY = dY[index] * mask[bc];
-      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - static_cast<T_ACC>(mean[i2])) * static_cast<T_ACC>(rstd[i2]);
+      dg_sum += cmask_dY * (static_cast<T_ACC>(X[index]) - mean[i2]) * rstd[i2];
       db_sum += cmask_dY;
     }
   }
@@ -259,8 +259,8 @@ __global__ void gb_with_drop_backward_kernel_part_a(int batch,int rows,int cols,
 }
 
 template <typename scalar_t>
-__global__ void layernorm_droppath_backward_kernel(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
-                                         const scalar_t* rstd, const scalar_t* mask, scalar_t* dX)
+__global__ void layernorm_droppath_backward_kernel(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const float* mean,
+                                         const float* rstd, const scalar_t* mask, scalar_t* dX)
 {
   using T_ACC = acc_type<scalar_t, true>;
   __shared__ T_ACC ds_shared[8];
@@ -311,9 +311,9 @@ __global__ void layernorm_droppath_backward_kernel(int N,const scalar_t* dY,cons
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);
   sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);
   const T_ACC s = T_ACC(1) / static_cast<T_ACC>(N);
-  T_ACC trstd = static_cast<T_ACC>(rstd[i]);
+  T_ACC trstd = rstd[i];
   if (threadIdx.x == 0) {
-    T_ACC tmean = static_cast<T_ACC>(mean[i]);
+    T_ACC tmean = mean[i];
     const T_ACC a = (sum2 * tmean - sum1) * trstd * trstd * trstd * s;
     b = a;
     c = -a * tmean - sum2 * trstd * s;
@@ -358,8 +358,8 @@ layernorm_droppath_backward(const Tensor& grad, const Tensor& X,const Tensor& me
         using T_ACC = acc_type<scalar_t, true>;
         scalar_t* dY_data = pgrad->data_ptr<scalar_t>();
         scalar_t* X_data = X.data_ptr<scalar_t>();
-        scalar_t* mean_data = mean.data_ptr<scalar_t>();
-        scalar_t* rstd_data = rstd.data_ptr<scalar_t>();
+        float* mean_data = mean.data_ptr<float>();
+        float* rstd_data = rstd.data_ptr<float>();
         scalar_t* gamma_data = gamma.data_ptr<scalar_t>();
         scalar_t* dgamma_data = dgamma.data_ptr<scalar_t>();
         scalar_t* dbeta_data = dbeta.data_ptr<scalar_t>();

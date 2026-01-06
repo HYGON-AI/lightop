@@ -11,7 +11,7 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_add_dropout_bias_kernel_val_2048(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* bias,scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
+__global__ void fused_ln_add_dropout_kernel_val_2048(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* gamma,scalar_t* beta,int cols,float eps)
 {
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
@@ -37,8 +37,7 @@ __global__ void fused_ln_add_dropout_bias_kernel_val_2048(scalar_t* input,scalar
     *(LoadT*)residual4 = *(LoadT*)(residual+idx);
     #pragma unroll
     for (int ii = 0; ii < VEC; ii++) {
-      int jj=j*VEC+ii;
-      input4[ii]+=bias[jj]+residual4[ii];
+      input4[ii]+=residual4[ii];
       val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]));
     }
   }
@@ -46,7 +45,7 @@ __global__ void fused_ln_add_dropout_bias_kernel_val_2048(scalar_t* input,scalar
   if (j == 0) {
       //layernorm get mean and rstd
       thrust::tie(tmean, s_mean) = welford_op.project(val);
-      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+      s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
   }
   __syncthreads();
   if(j<tcol){
@@ -66,7 +65,7 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_add_dropout_bias_kernel_val_4096(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* bias,scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
+__global__ void fused_ln_add_dropout_kernel_val_4096(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* gamma,scalar_t* beta,int cols,float eps)
 {
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
@@ -95,8 +94,7 @@ __global__ void fused_ln_add_dropout_bias_kernel_val_4096(scalar_t* input,scalar
   *(LoadT*)residual4 = *(LoadT*)(residual+idx1);
   #pragma unroll
   for (int ii = 0; ii < VEC; ii++) {
-    int jj=j*VEC+ii;
-    input4[ii]+=bias[jj]+residual4[ii];
+    input4[ii]+=residual4[ii];
     val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]));
   }
   if(j<tcol-512){
@@ -105,8 +103,7 @@ __global__ void fused_ln_add_dropout_bias_kernel_val_4096(scalar_t* input,scalar
     *(LoadT*)residual8 = *(LoadT*)(residual+idx2);
     #pragma unroll
     for (int ii = 0; ii < VEC; ii++) {
-      int jj=j*VEC+ii+2048;
-      input8[ii]+=bias[jj]+residual8[ii];
+      input8[ii]+=residual8[ii];
       val = welford_op.reduce(val, static_cast<T_ACC>(input8[ii]));
     }
   }
@@ -114,7 +111,7 @@ __global__ void fused_ln_add_dropout_bias_kernel_val_4096(scalar_t* input,scalar
   if (j == 0) {
       //layernorm get mean and rstd
       thrust::tie(tmean, s_mean) = welford_op.project(val);
-      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+      s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
   }
   __syncthreads();
   tmean=s_mean;
@@ -139,7 +136,7 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_add_dropout_bias_kernel_val(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* bias,scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
+__global__ void fused_ln_add_dropout_kernel_val(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* gamma,scalar_t* beta,int cols,float eps)
 {
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
@@ -167,15 +164,14 @@ __global__ void fused_ln_add_dropout_bias_kernel_val(scalar_t* input,scalar_t* r
     *(LoadT*)residual4 = *(LoadT*)(residual+idx);
     #pragma unroll
     for (int ii = 0; ii < VEC; ii++) {
-      int jj=off*VEC+ii;
-      val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]+bias[jj]+residual4[ii]));
+      val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]+residual4[ii]));
     }
   }
   val = BlockReduce(val,welford_op,val_shared_ptr);
   if (j == 0) {
       //layernorm get mean and rstd
       thrust::tie(tmean, s_mean) = welford_op.project(val);
-      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+      s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
   }
   __syncthreads();
   tmean=s_mean;
@@ -188,7 +184,7 @@ __global__ void fused_ln_add_dropout_bias_kernel_val(scalar_t* input,scalar_t* r
     #pragma unroll
     for(int ii=0;ii<VEC;ii++){
       int jj=off*VEC+ii;
-      output4[ii] = (static_cast<T_ACC>(input4[ii]+bias[jj]+residual4[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
+      output4[ii] = (static_cast<T_ACC>(input4[ii]+residual4[ii]) - tmean) * trstd * static_cast<T_ACC>(gamma[jj]) + static_cast<T_ACC>(beta[jj]);
     }
     *(LoadT*)(ret+idx)=*(LoadT*)output4;
   }
@@ -199,8 +195,8 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_add_dropout_bias_kernel_train_2048(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retdrop_data,scalar_t* mean,scalar_t* rstd,scalar_t* bias,scalar_t* gamma,
-                                              scalar_t* beta,scalar_t* mask,int cols,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,int rand_offset)
+__global__ void fused_ln_add_dropout_kernel_train_2048(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retdrop_data,float* mean,float* rstd,scalar_t* gamma,
+                                              scalar_t* beta,scalar_t* mask,int cols,T_ACC p,float eps,PhiloxCudaState philox_args,int rand_offset)
 {
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
@@ -233,9 +229,8 @@ __global__ void fused_ln_add_dropout_bias_kernel_train_2048(scalar_t* input,scal
     *(LoadT*)residual4 = *(LoadT*)(residual+idx);
     #pragma unroll
     for (int ii = 0; ii < VEC; ii++) {
-      int jj=j*VEC+ii;
       mask4[ii] = (rand[ii]<p)*pinv;
-      input4[ii] = (input4[ii]+bias[jj])*mask4[ii]+residual4[ii];
+      input4[ii] = input4[ii]*mask4[ii]+residual4[ii];
       val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]));
     }
   }
@@ -243,7 +238,7 @@ __global__ void fused_ln_add_dropout_bias_kernel_train_2048(scalar_t* input,scal
   if (j == 0) {
       //layernorm get mean and rstd
       thrust::tie(tmean, s_mean) = welford_op.project(val);
-      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+      s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
   }
   __syncthreads();
   if(j<tcol){
@@ -269,8 +264,8 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_add_dropout_bias_kernel_train_4096(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retdrop_data,scalar_t* mean,scalar_t* rstd,scalar_t* bias,scalar_t* gamma,
-                                              scalar_t* beta,scalar_t* mask,int cols,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,int rand_offset)
+__global__ void fused_ln_add_dropout_kernel_train_4096(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retdrop_data,float* mean,float* rstd,scalar_t* gamma,
+                                              scalar_t* beta,scalar_t* mask,int cols,T_ACC p,float eps,PhiloxCudaState philox_args,int rand_offset)
 {
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
@@ -307,9 +302,8 @@ __global__ void fused_ln_add_dropout_bias_kernel_train_4096(scalar_t* input,scal
   *(LoadT*)residual4 = *(LoadT*)(residual+idx1);
   #pragma unroll
   for (int ii = 0; ii < VEC; ii++) {
-    int jj=j*VEC+ii;
     mask4[ii] = (rand[ii]<p)*pinv;
-    input4[ii] = (input4[ii]+bias[jj])*mask4[ii]+residual4[ii];
+    input4[ii] = input4[ii]*mask4[ii]+residual4[ii];
     val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]));
   }
   if(j<tcol-512){
@@ -320,9 +314,8 @@ __global__ void fused_ln_add_dropout_bias_kernel_train_4096(scalar_t* input,scal
     *(LoadT*)residual8 = *(LoadT*)(residual+idx2);
     #pragma unroll
     for (int ii = 0; ii < VEC; ii++) {
-      int jj=j*VEC+ii+2048;
       mask8[ii] = (rand[ii]<p)*pinv;
-      input8[ii] = (input8[ii]+bias[jj])*mask8[ii]+residual8[ii];
+      input8[ii] = input8[ii]*mask8[ii]+residual8[ii];
       val = welford_op.reduce(val, static_cast<T_ACC>(input8[ii]));
     }
   }
@@ -330,7 +323,7 @@ __global__ void fused_ln_add_dropout_bias_kernel_train_4096(scalar_t* input,scal
   if (j == 0) {
       //layernorm get mean and rstd
       thrust::tie(tmean, s_mean) = welford_op.project(val);
-      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+      s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
   }
   __syncthreads();
   tmean=s_mean;
@@ -363,8 +356,8 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_add_dropout_bias_kernel_train(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retdrop_data,scalar_t* mean,scalar_t* rstd,scalar_t* bias,scalar_t* gamma,
-                                         scalar_t* beta,scalar_t* mask,int cols,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,int rand_offset)
+__global__ void fused_ln_add_dropout_kernel_train(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retdrop_data,float* mean,float* rstd,scalar_t* gamma,
+                                         scalar_t* beta,scalar_t* mask,int cols,T_ACC p,float eps,PhiloxCudaState philox_args,int rand_offset)
 {
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
@@ -397,9 +390,8 @@ __global__ void fused_ln_add_dropout_bias_kernel_train(scalar_t* input,scalar_t*
     *(LoadT*)residual4 = *(LoadT*)(residual+idx);
     #pragma unroll
     for (int ii = 0; ii < VEC; ii++) {
-      int jj=off*VEC+ii;
       mask4[ii] = (rand[ii]<p)*pinv;
-      input4[ii] = (input4[ii]+bias[jj])*mask4[ii]+residual4[ii];
+      input4[ii] = input4[ii]*mask4[ii]+residual4[ii];
       val = welford_op.reduce(val, static_cast<T_ACC>(input4[ii]));
     }
     *(LoadT*)(retdrop_data+idx) = *(LoadT*)input4;
@@ -409,7 +401,7 @@ __global__ void fused_ln_add_dropout_bias_kernel_train(scalar_t* input,scalar_t*
   if (j == 0) {
       //layernorm get mean and rstd
       thrust::tie(tmean, s_mean) = welford_op.project(val);
-      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+      s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
   }
   __syncthreads();
   tmean=s_mean;
@@ -432,7 +424,7 @@ __global__ void fused_ln_add_dropout_bias_kernel_train(scalar_t* input,scalar_t*
 }
 
 std::tuple<Tensor,Tensor,Tensor,Tensor>
-fused_ln_add_dropout_bias_forward(const Tensor& self,const Tensor& other,const Tensor& attention_bias,const Tensor& weight,const Tensor& bias,
+fused_ln_add_dropout_forward(const Tensor& self,const Tensor& other,const Tensor&weight,const Tensor& bias,
                              double ln_epsilon, double p, bool training)
 {
     AT_ASSERTM(self.sizes() == other.sizes(), "x must be the same size as y");
@@ -453,26 +445,25 @@ fused_ln_add_dropout_bias_forward(const Tensor& self,const Tensor& other,const T
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
       self.scalar_type(),
-      "fused_ln_add_dropout_bias_forward",
+      "fused_ln_add_dropout_forward",
       [&] {
         p=1-p;
         using T_ACC = acc_type<scalar_t, true>;
         T_ACC pa = (T_ACC)(p);
-        scalar_t eps = ln_epsilon;
+        float eps = ln_epsilon;
         scalar_t* self_data = self.data_ptr<scalar_t>();
         scalar_t* other_data =other.data_ptr<scalar_t>();
         scalar_t* ret_data=ret.data_ptr<scalar_t>();
         scalar_t* weight_data=weight.data_ptr<scalar_t>();
         scalar_t* bias_data=bias.data_ptr<scalar_t>();
-        scalar_t* attention_bias_data=attention_bias.data_ptr<scalar_t>();
         if(training)
         {
           retdrop = at::empty({nelem*2},self.options());
-          mean = at::empty({rows},self.options());
-          rstd = at::empty({rows},self.options());
+          mean = at::empty({rows},self.options().dtype(at::ScalarType::Float));
+          rstd = at::empty({rows},self.options().dtype(at::ScalarType::Float));
           scalar_t* retdrop_data=retdrop.data_ptr<scalar_t>();
-          scalar_t* mean_data=mean.data_ptr<scalar_t>();
-          scalar_t* rstd_data=rstd.data_ptr<scalar_t>();
+          float* mean_data=mean.data_ptr<float>();
+          float* rstd_data=rstd.data_ptr<float>();
           auto gen = get_generator_or_default<CUDAGeneratorImpl>(Generator(), cuda::detail::getDefaultCUDAGenerator());
           int rand_offset=at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor*
                                     at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
@@ -485,27 +476,27 @@ fused_ln_add_dropout_bias_forward(const Tensor& self,const Tensor& other,const T
             rng_engine_inputs = gen->philox_cuda_state(counter_offset);
           }
           if(cols<=2048){
-            fused_ln_add_dropout_bias_kernel_train_2048<scalar_t,T_ACC><<<rows, get_layernorm_blocksize(cols/4), 0, stream>>>(self_data,other_data,ret_data,
-                retdrop_data,mean_data,rstd_data,attention_bias_data,weight_data,bias_data,retdrop_data+nelem,cols,pa,eps,rng_engine_inputs,rand_offset);
+            fused_ln_add_dropout_kernel_train_2048<scalar_t,T_ACC><<<rows, get_layernorm_blocksize(cols/4), 0, stream>>>(self_data,other_data,ret_data,
+                retdrop_data,mean_data,rstd_data,weight_data,bias_data,retdrop_data+nelem,cols,pa,eps,rng_engine_inputs,rand_offset);
           }
           else if(cols<=4096){
-            fused_ln_add_dropout_bias_kernel_train_4096<scalar_t,T_ACC><<<rows, 512, 0, stream>>>(self_data,other_data,ret_data,
-                retdrop_data,mean_data,rstd_data,attention_bias_data,weight_data,bias_data,retdrop_data+nelem,cols,pa,eps,rng_engine_inputs,rand_offset);
+            fused_ln_add_dropout_kernel_train_4096<scalar_t,T_ACC><<<rows, 512, 0, stream>>>(self_data,other_data,ret_data,
+                retdrop_data,mean_data,rstd_data,weight_data,bias_data,retdrop_data+nelem,cols,pa,eps,rng_engine_inputs,rand_offset);
           }
           else{
-            fused_ln_add_dropout_bias_kernel_train<scalar_t,T_ACC><<<rows,512, 0, stream>>>(self_data,other_data,ret_data,
-                retdrop_data,mean_data,rstd_data,attention_bias_data,weight_data,bias_data,retdrop_data+nelem,cols,pa,eps,rng_engine_inputs,rand_offset);
+            fused_ln_add_dropout_kernel_train<scalar_t,T_ACC><<<rows,512, 0, stream>>>(self_data,other_data,ret_data,
+                retdrop_data,mean_data,rstd_data,weight_data,bias_data,retdrop_data+nelem,cols,pa,eps,rng_engine_inputs,rand_offset);
           }
         }
         else {
           if(cols<=2048){
-            fused_ln_add_dropout_bias_kernel_val_2048<scalar_t,T_ACC><<<rows,  get_layernorm_blocksize(cols/4), 0, stream>>>(self_data,other_data,ret_data,attention_bias_data,weight_data,bias_data,cols,eps);
+            fused_ln_add_dropout_kernel_val_2048<scalar_t,T_ACC><<<rows,  get_layernorm_blocksize(cols/4), 0, stream>>>(self_data,other_data,ret_data,weight_data,bias_data,cols,eps);
           }
           else if(cols<=4096){
-            fused_ln_add_dropout_bias_kernel_val_4096<scalar_t,T_ACC><<<rows,  512, 0, stream>>>(self_data,other_data,ret_data,attention_bias_data,weight_data,bias_data,cols,eps);
+            fused_ln_add_dropout_kernel_val_4096<scalar_t,T_ACC><<<rows,  512, 0, stream>>>(self_data,other_data,ret_data,weight_data,bias_data,cols,eps);
           }
           else{
-            fused_ln_add_dropout_bias_kernel_val<scalar_t,T_ACC><<<rows, 512, 0, stream>>>(self_data,other_data,ret_data,attention_bias_data,weight_data,bias_data,cols,eps);
+            fused_ln_add_dropout_kernel_val<scalar_t,T_ACC><<<rows, 512, 0, stream>>>(self_data,other_data,ret_data,weight_data,bias_data,cols,eps);
           }
         }
         C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -514,8 +505,8 @@ fused_ln_add_dropout_bias_forward(const Tensor& self,const Tensor& other,const T
 }
 
 template <typename scalar_t>
-__global__ void LayerNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
-                                         const scalar_t* rstd, scalar_t* dX1,scalar_t* dX2,scalar_t* mask)
+__global__ void LayerNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const float* mean,
+                                         const float* rstd, scalar_t* dX1,scalar_t* dX2,scalar_t* mask)
 {
   LAYERNORMBACKWARD_VEC_2048
   VecTpye tmask;
@@ -535,8 +526,8 @@ __global__ void LayerNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const
 }
 
 template <typename scalar_t>
-__global__ void LayerNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
-                                         const scalar_t* rstd, scalar_t* dX1,scalar_t* dX2,scalar_t* mask)
+__global__ void LayerNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const float* mean,
+                                         const float* rstd, scalar_t* dX1,scalar_t* dX2,scalar_t* mask)
 {
   LAYERNORMBACKWARD_VEC_4096
   VecTpye tmask;
@@ -566,8 +557,8 @@ __global__ void LayerNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const
 }
 
 template <typename scalar_t>
-__global__ void LayerNormBackward_kernel_vec(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
-                                         const scalar_t* rstd, scalar_t* dX1,scalar_t* dX2,scalar_t* mask)
+__global__ void LayerNormBackward_kernel_vec(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const float* mean,
+                                         const float* rstd, scalar_t* dX1,scalar_t* dX2,scalar_t* mask)
 {
   LAYERNORMBACKWARD_VEC
   VecTpye tmask;
@@ -591,8 +582,8 @@ __global__ void LayerNormBackward_kernel_vec(int N,const scalar_t* dY,const scal
 }
 
 
-std::tuple<Tensor,Tensor,Tensor,Tensor,Tensor>
-fused_ln_add_dropout_bias_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const Tensor& rstd,const Tensor& gamma)
+std::tuple<Tensor,Tensor,Tensor,Tensor>
+fused_ln_add_dropout_backward(const Tensor& grad, const Tensor& X,const Tensor& mean,const Tensor& rstd,const Tensor& gamma)
 {
   int N=grad.sizes().back();
   int nelem=grad.numel();
@@ -602,24 +593,22 @@ fused_ln_add_dropout_bias_backward(const Tensor& grad, const Tensor& X,const Ten
   Tensor dX2 = at::empty_like(dX1);
   Tensor dgamma = at::empty_like(gamma);
   Tensor dbeta = at::empty_like(gamma);
-  Tensor dbias = at::empty_like(gamma);
   auto cuda_stream=at::cuda::getCurrentCUDAStream();
   AT_DISPATCH_FLOATING_TYPES_AND2(
     at::ScalarType::Half,
     at::ScalarType::BFloat16,
     grad.scalar_type(),
-    "fused_ln_add_dropout_bias_backward",
+    "fused_ln_add_dropout_backward",
     [&] {
       scalar_t* dY_data = pgrad->data_ptr<scalar_t>();
       scalar_t* X_data = X.data_ptr<scalar_t>();
-      scalar_t* mean_data = mean.data_ptr<scalar_t>();
-      scalar_t* rstd_data = rstd.data_ptr<scalar_t>();
+      float* mean_data = mean.data_ptr<float>();
+      float* rstd_data = rstd.data_ptr<float>();
       scalar_t* gamma_data = gamma.data_ptr<scalar_t>();
       scalar_t* dgamma_data = dgamma.data_ptr<scalar_t>();
       scalar_t* dbeta_data = dbeta.data_ptr<scalar_t>();
       scalar_t* dX1_data = dX1.data_ptr<scalar_t>();
       scalar_t* dX2_data = dX2.data_ptr<scalar_t>();
-      scalar_t* dbias_data = dbias.data_ptr<scalar_t>();
       
       GammaBeta_Backward(nelem,N,dY_data,X_data,mean_data,rstd_data,dgamma_data,dbeta_data);
       if(N<=2048){
@@ -635,18 +624,15 @@ fused_ln_add_dropout_bias_backward(const Tensor& grad, const Tensor& X,const Ten
                   N, dY_data, X_data,gamma_data,mean_data,rstd_data,dX1_data,dX2_data,X_data+grad.numel());
       }
       C10_CUDA_KERNEL_LAUNCH_CHECK();
-      bias_reduce_sum(dbias_data,dX1_data,nelem,N);
-      C10_CUDA_KERNEL_LAUNCH_CHECK();
   });
-  return std::tuple<Tensor,Tensor,Tensor,Tensor,Tensor>(dX1,dX2,dbias,dgamma,dbeta);
+  return std::tuple<Tensor,Tensor,Tensor,Tensor>(dX1,dX2,dgamma,dbeta);
 }
-class fuselnAddDropoutBiasFunction : public torch::autograd::Function<fuselnAddDropoutBiasFunction> {
+class fuselnAddDropoutFunction : public torch::autograd::Function<fuselnAddDropoutFunction> {
  public:
   static torch::autograd::variable_list forward(
     torch::autograd::AutogradContext* ctx,
     const torch::autograd::Variable& x,
     const torch::autograd::Variable& y,
-    const torch::autograd::Variable& attention_bias,
     const torch::autograd::Variable& weight,
     const torch::autograd::Variable& bias,
     double eps,double rate,bool training) {
@@ -654,7 +640,7 @@ class fuselnAddDropoutBiasFunction : public torch::autograd::Function<fuselnAddD
     auto py=y.expect_contiguous();
     auto pweight=weight.expect_contiguous();
     auto pbias=bias.expect_contiguous();
-    auto ret = fused_ln_add_dropout_bias_forward(*px,*py,attention_bias,*pweight,*pbias,eps,rate,training);
+    auto ret = fused_ln_add_dropout_forward(*px,*py, *pweight,*pbias,eps,rate,training);
     ctx->save_for_backward({std::get<1>(ret),std::get<2>(ret),std::get<3>(ret),weight});
     return {std::get<0>(ret)};
   }
@@ -667,14 +653,14 @@ class fuselnAddDropoutBiasFunction : public torch::autograd::Function<fuselnAddD
     auto mean = saved[1];
     auto rstd = saved[2];
     auto gamma = saved[3];
-    auto ret = fused_ln_add_dropout_bias_backward(gradOutput[0],X,mean,rstd,gamma);
-    return {std::get<0>(ret),std::get<1>(ret),std::get<2>(ret),std::get<3>(ret),std::get<4>(ret),
+    auto ret = fused_ln_add_dropout_backward(gradOutput[0],X,mean,rstd,gamma);
+    return {std::get<0>(ret),std::get<1>(ret),std::get<2>(ret),std::get<3>(ret),
             torch::autograd::Variable(),torch::autograd::Variable(),torch::autograd::Variable()};
   }
 };
-Tensor fuse_ln_add_dropout_bias_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& attention_bias,const Tensor& weight,
+Tensor fuse_ln_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,
                                             const Tensor& bias,double eps,double rate,bool training) {
-   auto result = fuselnAddDropoutBiasFunction::apply(x,y,attention_bias,weight,bias,eps,rate,training);
+   auto result = fuselnAddDropoutFunction::apply(x,y, weight,bias,eps,rate,training);
    return result[0];
 }
 }

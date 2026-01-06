@@ -11,7 +11,7 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_dropout_kernel_val_2048(scalar_t* input,scalar_t* ret,scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
+__global__ void fused_ln_dropout_kernel_val_2048(scalar_t* input,scalar_t* ret,scalar_t* gamma,scalar_t* beta,int cols,float eps)
 {
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
@@ -42,7 +42,7 @@ __global__ void fused_ln_dropout_kernel_val_2048(scalar_t* input,scalar_t* ret,s
   if (j == 0) {
       //layernorm get mean and rstd
       thrust::tie(tmean, s_mean) = welford_op.project(val);
-      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+      s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
   }
   __syncthreads();
   if(j<tcol){
@@ -62,7 +62,7 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_dropout_kernel_val_4096(scalar_t* input,scalar_t* ret,scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
+__global__ void fused_ln_dropout_kernel_val_4096(scalar_t* input,scalar_t* ret,scalar_t* gamma,scalar_t* beta,int cols,float eps)
 {
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
@@ -102,7 +102,7 @@ __global__ void fused_ln_dropout_kernel_val_4096(scalar_t* input,scalar_t* ret,s
   if (j == 0) {
       //layernorm get mean and rstd
       thrust::tie(tmean, s_mean) = welford_op.project(val);
-      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+      s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
   }
   __syncthreads();
   tmean=s_mean;
@@ -127,7 +127,7 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_dropout_kernel_val(scalar_t* input,scalar_t* ret,scalar_t* gamma,scalar_t* beta,int cols,scalar_t eps)
+__global__ void fused_ln_dropout_kernel_val(scalar_t* input,scalar_t* ret,scalar_t* gamma,scalar_t* beta,int cols,float eps)
 {
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
@@ -160,7 +160,7 @@ __global__ void fused_ln_dropout_kernel_val(scalar_t* input,scalar_t* ret,scalar
   if (j == 0) {
       //layernorm get mean and rstd
       thrust::tie(tmean, s_mean) = welford_op.project(val);
-      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+      s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
   }
   __syncthreads();
   tmean=s_mean;
@@ -183,8 +183,8 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_dropout_kernel_train_2048(scalar_t* input,scalar_t* ret,scalar_t* retdrop_data,scalar_t* mean,scalar_t* rstd,scalar_t* gamma,
-                                              scalar_t* beta,scalar_t* mask,int cols,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,int rand_offset)
+__global__ void fused_ln_dropout_kernel_train_2048(scalar_t* input,scalar_t* ret,scalar_t* retdrop_data,float* mean,float* rstd,scalar_t* gamma,
+                                              scalar_t* beta,scalar_t* mask,int cols,T_ACC p,float eps,PhiloxCudaState philox_args,int rand_offset)
 {
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
@@ -224,7 +224,7 @@ __global__ void fused_ln_dropout_kernel_train_2048(scalar_t* input,scalar_t* ret
   if (j == 0) {
       //layernorm get mean and rstd
       thrust::tie(tmean, s_mean) = welford_op.project(val);
-      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+      s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
   }
   __syncthreads();
   if(j<tcol){
@@ -250,8 +250,8 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_dropout_kernel_train_4096(scalar_t* input,scalar_t* ret,scalar_t* retdrop_data,scalar_t* mean,scalar_t* rstd,scalar_t* gamma,
-                                              scalar_t* beta,scalar_t* mask,int cols,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,int rand_offset)
+__global__ void fused_ln_dropout_kernel_train_4096(scalar_t* input,scalar_t* ret,scalar_t* retdrop_data,float* mean,float* rstd,scalar_t* gamma,
+                                              scalar_t* beta,scalar_t* mask,int cols,T_ACC p,float eps,PhiloxCudaState philox_args,int rand_offset)
 {
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
@@ -305,7 +305,7 @@ __global__ void fused_ln_dropout_kernel_train_4096(scalar_t* input,scalar_t* ret
   if (j == 0) {
       //layernorm get mean and rstd
       thrust::tie(tmean, s_mean) = welford_op.project(val);
-      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+      s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
   }
   __syncthreads();
   tmean=s_mean;
@@ -338,8 +338,8 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_ln_dropout_kernel_train(scalar_t* input,scalar_t* ret,scalar_t* retdrop_data,scalar_t* mean,scalar_t* rstd,scalar_t* gamma,
-                                         scalar_t* beta,scalar_t* mask,int cols,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,int rand_offset)
+__global__ void fused_ln_dropout_kernel_train(scalar_t* input,scalar_t* ret,scalar_t* retdrop_data,float* mean,float* rstd,scalar_t* gamma,
+                                         scalar_t* beta,scalar_t* mask,int cols,T_ACC p,float eps,PhiloxCudaState philox_args,int rand_offset)
 {
   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
@@ -381,7 +381,7 @@ __global__ void fused_ln_dropout_kernel_train(scalar_t* input,scalar_t* ret,scal
   if (j == 0) {
       //layernorm get mean and rstd
       thrust::tie(tmean, s_mean) = welford_op.project(val);
-      s_rstd=c10::cuda::compat::rsqrt(tmean + static_cast<T_ACC>(eps));
+      s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
   }
   __syncthreads();
   tmean=s_mean;
@@ -429,7 +429,7 @@ fused_ln_dropout_forward(const Tensor& self,const Tensor&weight,const Tensor& bi
         p=1-p;
         using T_ACC = acc_type<scalar_t, true>;
         T_ACC pa = (T_ACC)(p);
-        scalar_t eps = ln_epsilon;
+        float eps = ln_epsilon;
         scalar_t* self_data = self.data_ptr<scalar_t>();
         scalar_t* ret_data=ret.data_ptr<scalar_t>();
         scalar_t* weight_data=weight.data_ptr<scalar_t>();
@@ -437,11 +437,11 @@ fused_ln_dropout_forward(const Tensor& self,const Tensor&weight,const Tensor& bi
         if(training)
         {
           retdrop = at::empty({nelem*2},self.options());
-          mean = at::empty({rows},self.options());
-          rstd = at::empty({rows},self.options());
+          mean = at::empty({rows},self.options().dtype(at::ScalarType::Float));
+          rstd = at::empty({rows},self.options().dtype(at::ScalarType::Float));
           scalar_t* retdrop_data=retdrop.data_ptr<scalar_t>();
-          scalar_t* mean_data=mean.data_ptr<scalar_t>();
-          scalar_t* rstd_data=rstd.data_ptr<scalar_t>();
+          float* mean_data=mean.data_ptr<float>();
+          float* rstd_data=rstd.data_ptr<float>();
           auto gen = get_generator_or_default<CUDAGeneratorImpl>(Generator(), cuda::detail::getDefaultCUDAGenerator());
           int rand_offset=at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor*
                                     at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
@@ -483,8 +483,8 @@ fused_ln_dropout_forward(const Tensor& self,const Tensor&weight,const Tensor& bi
 }
 
 template <typename scalar_t>
-__global__ void LayerNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
-                                         const scalar_t* rstd, scalar_t* dX,scalar_t* mask)
+__global__ void LayerNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const float* mean,
+                                         const float* rstd, scalar_t* dX,scalar_t* mask)
 {
   LAYERNORMBACKWARD_VEC_2048
   VecTpye tmask;
@@ -500,8 +500,8 @@ __global__ void LayerNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const
 }
 
 template <typename scalar_t>
-__global__ void LayerNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
-                                         const scalar_t* rstd, scalar_t* dX,scalar_t* mask)
+__global__ void LayerNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const float* mean,
+                                         const float* rstd, scalar_t* dX,scalar_t* mask)
 {
   LAYERNORMBACKWARD_VEC_4096
   VecTpye tmask;
@@ -525,8 +525,8 @@ __global__ void LayerNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const
 }
 
 template <typename scalar_t>
-__global__ void LayerNormBackward_kernel_vec(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* mean,
-                                         const scalar_t* rstd, scalar_t* dX,scalar_t* mask)
+__global__ void LayerNormBackward_kernel_vec(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const float* mean,
+                                         const float* rstd, scalar_t* dX,scalar_t* mask)
 {
   LAYERNORMBACKWARD_VEC
   VecTpye tmask;
@@ -565,8 +565,8 @@ fused_ln_dropout_backward(const Tensor& grad, const Tensor& X,const Tensor& mean
     [&] {
       scalar_t* dY_data = pgrad->data_ptr<scalar_t>();
       scalar_t* X_data = X.data_ptr<scalar_t>();
-      scalar_t* mean_data = mean.data_ptr<scalar_t>();
-      scalar_t* rstd_data = rstd.data_ptr<scalar_t>();
+      float* mean_data = mean.data_ptr<float>();
+      float* rstd_data = rstd.data_ptr<float>();
       scalar_t* gamma_data = gamma.data_ptr<scalar_t>();
       scalar_t* dgamma_data = dgamma.data_ptr<scalar_t>();
       scalar_t* dbeta_data = dbeta.data_ptr<scalar_t>();
