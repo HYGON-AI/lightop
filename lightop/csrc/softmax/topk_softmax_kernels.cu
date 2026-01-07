@@ -3,7 +3,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 
-
+constexpr float LOG2_E = 1.44269504089f; 
 #ifndef USE_ROCM
   #define VLLM_SHFL_XOR_SYNC(var, lane_mask) \
     __shfl_xor_sync(uint32_t(-1), var, lane_mask)
@@ -800,6 +800,10 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     }
     float max_val;
     int expert;
+ 
+    int my_search_expert_idx = -1; 
+    int my_search_reg_idx = -1;
+    
     const bool row_is_active = finished ? !finished[thread_row] : true;
 
     const float* thread_row_ptr = input + thread_row * ELTS_PER_ROW;
@@ -832,6 +836,9 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
             int ldg_idx = i / ELTS_PER_LDG;
             int elt_idx_in_ldg = i % ELTS_PER_LDG;
             thread_max_idx = first_elt_read_by_thread + ldg_idx * (THREADS_PER_ROW * ELTS_PER_LDG) + elt_idx_in_ldg;
+        
+            my_search_reg_idx = i;
+            my_search_expert_idx = thread_max_idx;
         }
     }
 
@@ -840,42 +847,42 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     {
         float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(thread_max, mask, THREADS_PER_ROW);
         int other_idx = VLLM_SHFL_XOR_SYNC_WIDTH(thread_max_idx, mask, THREADS_PER_ROW);
-        if (other_max > thread_max) {
-            thread_max = other_max;
-            thread_max_idx = other_idx;
-        }
+        bool swap = (other_max > thread_max);
+        thread_max = swap ? other_max : thread_max;
+        thread_max_idx = swap ? other_idx : thread_max_idx;
     }
 
-    // Softmax Sum Reduction
+ 
     float row_sum = 0;
-#pragma unroll
-    for (int ii = 0; ii < VPT; ++ii)
-    {
-        row_chunk[ii] = __expf(row_chunk[ii] - thread_max);
-        row_sum += row_chunk[ii];
-    }
-
-#pragma unroll
-    for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2)
-    {
-        row_sum += VLLM_SHFL_XOR_SYNC_WIDTH(row_sum, mask, THREADS_PER_ROW);
-    }
-
-    const float reciprocal_row_sum = 1.f / (row_sum);
-#pragma unroll
-    for (int ii = 0; ii < VPT; ++ii)
-    {
-        row_chunk[ii] = row_chunk[ii] * reciprocal_row_sum;
-    }
+    float reciprocal_row_sum = 0.0f;
 
    
+    if constexpr (!Is_renormalize) {
+#pragma unroll
+        for (int ii = 0; ii < VPT; ++ii)
+        {
+            row_chunk[ii] = __expf(row_chunk[ii] - thread_max);
+            row_sum += row_chunk[ii];
+        }
+
+#pragma unroll
+        for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2)
+        {
+            row_sum += VLLM_SHFL_XOR_SYNC_WIDTH(row_sum, mask, THREADS_PER_ROW);
+        }
+        reciprocal_row_sum = 1.f / (row_sum + 1e-6f);
+    }
+
+    
     float top_vals = 0.f;
     IndType top_indices = IndType(0);
 
+    
     #define FIND_AND_REDUCE_MAX(k_val, k_expert) \
     do { \
-        k_val = -1.f; \
+        k_val = -FLT_MAX; \
         k_expert = -1; \
+        my_search_reg_idx = -1;  \
         int current_col_base = first_elt_read_by_thread; \
        for (int ldg = 0; ldg < LDG_PER_THREAD; ++ldg) { \
             for (int ii = 0; ii < ELTS_PER_LDG; ++ii) { \
@@ -883,35 +890,36 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
                 if (val > k_val) { \
                     k_val = val; \
                     k_expert = current_col_base + ii; \
+                    my_search_reg_idx = ldg * ELTS_PER_LDG + ii;  \
                 } \
             } \
             current_col_base += THREADS_PER_ROW * ELTS_PER_LDG; \
         } \
+        my_search_expert_idx = k_expert; \
         _Pragma("unroll") \
         for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2) { \
             float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(k_val, mask, THREADS_PER_ROW); \
             int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(k_expert, mask, THREADS_PER_ROW); \
-            if (other_max > k_val ) { \
-                k_val = other_max; \
-                k_expert = other_expert; \
-            } \
+            bool swap = (other_max > k_val);  \
+            k_val = swap ? other_max : k_val; \
+            k_expert = swap ? other_expert : k_expert; \
         } \
     } while(0)
 
     #define ERASE_MAX(k_expert) \
-        if (k_expert != -1) { \
-            int expert_in_thread_col = (k_expert / ELTS_PER_LDG) % THREADS_PER_ROW; \
-            if (thread_group_idx == expert_in_thread_col) { \
-                int ldg_idx = k_expert / (THREADS_PER_ROW * ELTS_PER_LDG); \
-                int elt_idx = k_expert % ELTS_PER_LDG; \
-                row_chunk[ldg_idx * ELTS_PER_LDG + elt_idx] = -100000.f; \
-            } \
+        if (k_expert == my_search_expert_idx) { \
+            row_chunk[my_search_reg_idx] = -FLT_MAX; \
         }
+
     //第一次复用softmax
     {
         constexpr int i = 0;
         if (thread_group_idx == i) { 
-            top_vals = reciprocal_row_sum * 1.0; 
+            if constexpr (Is_renormalize) {
+                top_vals = thread_max; // 原始 Logits
+            } else {
+                top_vals = 1.0f;       // Exp 值
+            }
             top_indices = thread_max_idx; 
         }
         ERASE_MAX(thread_max_idx); 
@@ -981,24 +989,30 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     }
 
     if(row_is_active){
-        float r_topk_sum = 1.0f;
+        float final_scale = 1.0f; 
+
         if constexpr(Is_renormalize){
-            float topk_sum = top_vals;
+            float val_exp = 0.0f;
+            if (thread_group_idx < 8) {
+                val_exp = __expf(top_vals - thread_max);
+                top_vals = val_exp; 
+            }
+            float topk_sum = val_exp;
     #pragma unroll
             for(int i = 4; i > 0; i >>= 1) {
                 topk_sum += VLLM_SHFL_XOR_SYNC_WIDTH(topk_sum,i,THREADS_PER_ROW);
             }
-            r_topk_sum = 1.0f / topk_sum;
+            final_scale = 1.0f / (topk_sum + 1e-6f);
+        } else {
+             final_scale = reciprocal_row_sum;
         }
+
         if(thread_group_idx < 8){
-            if constexpr(Is_renormalize){
-                top_vals *= r_topk_sum;
-            }
+            top_vals *= final_scale;
+            
             const bool node_uses_expert = top_indices >= start_expert && top_indices  < end_expert;
             top_indices = node_uses_expert ? (top_indices - start_expert) : NUM_EXPERTS;
-
             const int base_idx = 8 * thread_row + thread_group_idx;
-            
             indices[base_idx] = top_indices;
             output[base_idx] = top_vals;
             source_rows[base_idx] = thread_group_idx * num_rows + thread_row;
@@ -1006,13 +1020,20 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     }
 }
 
-template <int VPT, int NUM_EXPERTS, int WARPS_PER_CTA, int BYTES_PER_LDG,bool Is_renormalize, typename IndType>
+template <int VPT, int NUM_EXPERTS, int WARPS_PER_CTA, int BYTES_PER_LDG, bool Is_renormalize, typename IndType>
 __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
-    void topk8GatingSoftmax_no_align(const float* input, const bool* finished, float* output, const int num_rows, IndType* indices,
-        int* source_rows, const int start_expert, const int end_expert, const int model_num_experts) 
+void topk8GatingSoftmax_no_align(
+    const float* input, 
+    const bool* finished, 
+    float* output,   
+    const int num_rows, 
+    IndType* indices,
+    int* source_rows, 
+    const int start_expert, 
+    const int end_expert, 
+    const int model_num_experts) 
 {
     static_assert(VPT == (VPT & -VPT), "VPT must be power of 2");
-    // static_assert(NUM_EXPERTS == (NUM_EXPERTS & -NUM_EXPERTS), "NUM_EXPERTS must be power of 2"); // Relaxed for padded call
     static_assert(BYTES_PER_LDG == (BYTES_PER_LDG & -BYTES_PER_LDG), "BYTES_PER_LDG must be power of 2");
 
     static constexpr int ELTS_PER_LDG = 4;
@@ -1035,11 +1056,14 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     {
         return;
     }
+    
     float max_val;
     int expert;
+    int my_search_expert_idx = -1; 
+    int my_search_reg_idx = -1;   
+
     const bool row_is_active = finished ? !finished[thread_row] : true;
 
-    // 使用 model_num_experts 计算 stride
     const float* thread_row_ptr = input + thread_row * model_num_experts;
     const int thread_group_idx = threadIdx.x % THREADS_PER_ROW;
     const int first_elt_read_by_thread = thread_group_idx * ELTS_PER_LDG;
@@ -1048,11 +1072,9 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     using AccessType = AlignedArray<float, ELTS_PER_LDG>;
     float row_chunk[VPT];
     
-   
     #pragma unroll
     for (int i=0; i<VPT; ++i) row_chunk[i] = -FLT_MAX;
 
-    // Load data
     int col_idx_1 = thread_group_idx * ELTS_PER_LDG;
     if (col_idx_1 < model_num_experts) {
         #pragma unroll
@@ -1076,92 +1098,95 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
 
     float thread_max = -FLT_MAX;
     int thread_max_idx = -1;
+    
     for(int i = 0; i < VPT; ++i) {
         if (row_chunk[i] > thread_max) {
             thread_max = row_chunk[i];
             int ldg_idx = i / ELTS_PER_LDG;
             int elt_idx_in_ldg = i % ELTS_PER_LDG;
             thread_max_idx = first_elt_read_by_thread + ldg_idx * (THREADS_PER_ROW * ELTS_PER_LDG) + elt_idx_in_ldg;
+            
+            my_search_reg_idx = i;
+            my_search_expert_idx = thread_max_idx;
         }
     }
 
-#pragma unroll
+    #pragma unroll
     for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2)
     {
         float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(thread_max, mask, THREADS_PER_ROW);
         int other_idx = VLLM_SHFL_XOR_SYNC_WIDTH(thread_max_idx, mask, THREADS_PER_ROW);
-        if (other_max > thread_max || (other_max == thread_max && other_idx < thread_max_idx)) {
-            thread_max = other_max;
-            thread_max_idx = other_idx;
-        }
+        bool swap = (other_max > thread_max);
+        // bool swap = (other_max > thread_max) | ((other_max == thread_max) & (other_idx < thread_max_idx));
+        thread_max = swap ? other_max : thread_max;
+        thread_max_idx = swap ? other_idx : thread_max_idx;
     }
 
     // Softmax Sum Reduction
-    float row_sum = 0;
-#pragma unroll
-    for (int ii = 0; ii < VPT; ++ii)
-    {
-        row_chunk[ii] = __expf(row_chunk[ii] - thread_max);
-        row_sum += row_chunk[ii];
-    }
+    float row_sum = 0.0f;
+    float reciprocal_row_sum = 0.0f; 
 
-#pragma unroll
-    for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2)
-    {
-        row_sum += VLLM_SHFL_XOR_SYNC_WIDTH(row_sum, mask, THREADS_PER_ROW);
-    }
+    // Is_renormalize 时跳过softmax
+    if constexpr(!Is_renormalize){
+        #pragma unroll
+        for (int ii = 0; ii < VPT; ++ii)
+        {
+            row_chunk[ii] = exp2f((row_chunk[ii] - thread_max)* LOG2_E); 
+            row_sum += row_chunk[ii];
+        }
 
-    const float reciprocal_row_sum = 1.f / (row_sum);
-#pragma unroll
-    for (int ii = 0; ii < VPT; ++ii)
-    {
-        row_chunk[ii] = row_chunk[ii] * reciprocal_row_sum;
+        #pragma unroll
+        for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2)
+        {
+            row_sum += VLLM_SHFL_XOR_SYNC_WIDTH(row_sum, mask, THREADS_PER_ROW);
+        }
+        reciprocal_row_sum = 1.f / (row_sum + 1e-6f); 
     }
-
    
-    float top_vals = 0.f;
+    float top_vals = 0.f; 
     IndType top_indices = IndType(0);
 
     #define FIND_AND_REDUCE_MAX(k_val, k_expert) \
     do { \
-        k_val = -1.f; \
+        k_val = -FLT_MAX; \
         k_expert = -1; \
+        my_search_reg_idx = -1; \
         int current_col_base = first_elt_read_by_thread; \
-       for (int ldg = 0; ldg < LDG_PER_THREAD; ++ldg) { \
+        for (int ldg = 0; ldg < LDG_PER_THREAD; ++ldg) { \
             for (int ii = 0; ii < ELTS_PER_LDG; ++ii) { \
                 float val = row_chunk[ldg * ELTS_PER_LDG + ii]; \
                 if (val > k_val) { \
                     k_val = val; \
                     k_expert = current_col_base + ii; \
+                    my_search_reg_idx = ldg * ELTS_PER_LDG + ii; \
                 } \
             } \
             current_col_base += THREADS_PER_ROW * ELTS_PER_LDG; \
         } \
+        my_search_expert_idx = k_expert; \
         _Pragma("unroll") \
         for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2) { \
             float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(k_val, mask, THREADS_PER_ROW); \
             int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(k_expert, mask, THREADS_PER_ROW); \
-            if (other_max > k_val || (other_max == k_val && other_expert < k_expert)) { \
-                k_val = other_max; \
-                k_expert = other_expert; \
-            } \
+            bool swap = (other_max > k_val); \
+            k_val = swap ? other_max : k_val; \
+            k_expert = swap ? other_expert : k_expert; \
         } \
     } while(0)
 
     #define ERASE_MAX(k_expert) \
-        if (k_expert != -1) { \
-            int expert_in_thread_col = (k_expert / ELTS_PER_LDG) % THREADS_PER_ROW; \
-            if (thread_group_idx == expert_in_thread_col) { \
-                int ldg_idx = k_expert / (THREADS_PER_ROW * ELTS_PER_LDG); \
-                int elt_idx = k_expert % ELTS_PER_LDG; \
-                row_chunk[ldg_idx * ELTS_PER_LDG + elt_idx] = -100000.f; \
-            } \
+        if (k_expert == my_search_expert_idx) { \
+            row_chunk[my_search_reg_idx] = -FLT_MAX; \
         }
-    //第一次复用softmax
+
     {
         constexpr int i = 0;
         if (thread_group_idx == i) { 
-            top_vals = reciprocal_row_sum * 1.0; 
+            if constexpr (Is_renormalize) {
+                top_vals = thread_max; 
+            } else {
+                top_vals = 1.0f;       
+            }
             top_indices = thread_max_idx; 
         }
         ERASE_MAX(thread_max_idx); 
@@ -1220,7 +1245,6 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
         }
         ERASE_MAX(expert); 
     }
-    //最后一次不擦除
     {
         constexpr int i = 7;
         FIND_AND_REDUCE_MAX(max_val, expert);
@@ -1231,26 +1255,37 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     }
 
     if(row_is_active){
-        float r_topk_sum = 1.0f;
+        float final_scale = 1.0f;
+        
         if constexpr(Is_renormalize){
-            float topk_sum = top_vals;
-    #pragma unroll
+            // 此时 top_vals 还是原始 Logits，需要转为 Exp 值
+            float val_exp = 0.0f;
+            if (thread_group_idx < 8) {
+                val_exp = exp2f((top_vals - thread_max) * LOG2_E);
+                top_vals = val_exp; 
+            }
+            
+            // 计算局部 TopK Sum
+            float topk_sum = val_exp;
+            #pragma unroll
             for(int i = 4; i > 0; i >>= 1) {
-                topk_sum += VLLM_SHFL_XOR_SYNC_WIDTH(topk_sum,i,THREADS_PER_ROW);
+                topk_sum += VLLM_SHFL_XOR_SYNC_WIDTH(topk_sum, i, THREADS_PER_ROW);
             }
-            r_topk_sum = 1.0f / topk_sum;
+            final_scale = 1.0f / (topk_sum + 1e-6f); 
+        } else {
+            final_scale = reciprocal_row_sum;
         }
+
         if(thread_group_idx < 8){
-            if constexpr(Is_renormalize){
-                top_vals *= r_topk_sum;
-            }
-            const bool node_uses_expert = top_indices >= start_expert && top_indices  < end_expert;
+            top_vals *= final_scale;
+
+            const bool node_uses_expert = top_indices >= start_expert && top_indices < end_expert;
             top_indices = node_uses_expert ? (top_indices - start_expert) : NUM_EXPERTS;
 
             const int base_idx = 8 * thread_row + thread_group_idx;
             
             indices[base_idx] = top_indices;
-            output[base_idx] = top_vals;
+            output[base_idx] = top_vals; 
             source_rows[base_idx] = thread_group_idx * num_rows + thread_row;
         }
     }
@@ -1262,16 +1297,12 @@ template <int EXPERTS, int BYTES_PER_LDG>
 struct TopkConstants
 {
    
-    static constexpr int ELTS_PER_LDG = BYTES_PER_LDG / sizeof(float);  // 4 
+    static constexpr int ELTS_PER_LDG = BYTES_PER_LDG / sizeof(float);  
     static_assert(EXPERTS / (ELTS_PER_LDG * WARP_SIZE) == 0 || EXPERTS % (ELTS_PER_LDG * WARP_SIZE) == 0, "");
 
-    /// 计算每个线程需要处理的向量数。
     static constexpr int VECs_PER_THREAD = MAX(1, EXPERTS / (ELTS_PER_LDG * WARP_SIZE));
-    // // 计算每个线程总共处理的元素数 (Values Per Thread)。
-    static constexpr int VPT = VECs_PER_THREAD * ELTS_PER_LDG;  // 4
-    // 处理一行（一个 token 的所有 expert 分数）所需要的线程数。
-    static constexpr int THREADS_PER_ROW = EXPERTS / VPT;  // 32
-    //一个warp处理多少行
+    static constexpr int VPT = VECs_PER_THREAD * ELTS_PER_LDG;  
+    static constexpr int THREADS_PER_ROW = EXPERTS / VPT; 
     static constexpr int ROWS_PER_WARP = WARP_SIZE / THREADS_PER_ROW;
 };
 } // namespace detail
