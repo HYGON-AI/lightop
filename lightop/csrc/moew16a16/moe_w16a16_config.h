@@ -885,6 +885,11 @@ template <typename T>
      {168, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 64, 32, 32, 32, T>},
      // 4warp BLOCKN 256 
      {169, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 256, 64, 16, 64, 32, T>},
+     {170, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 64, 64, 64, 32, T>},
+     {171, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 32, 64, 64, 32, T>},
+     {172, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 32, 64, 32, 32, T>},
+     {173, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 256, 32, 32, 32, 32, T>},
+     {174, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 256, 32, 64, 32, 32, T>},
      // 8warp BLOCKN 128 
     //  {170, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 64, 32, 16, 32, T>},  
     //  {171, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 64, 64, 16, 32, T>},  
