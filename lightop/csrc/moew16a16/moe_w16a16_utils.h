@@ -3361,6 +3361,20 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN(
             precompute_A_lds_offset[min_tile_m * (WARP_K/MFMA_K) + min_tile_k] = lds_offset; // 装载了两次,
         }
     }
+    //dowrdx1 swizzle offset 
+    // #pragma unroll 
+    // for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+    //     #pragma unroll
+    //     for(int min_tile_k=0; min_tile_k<(WARP_K/MFMA_K); min_tile_k++) {
+    //         int lds_col = (min_tile_k * MFMA_K * bytes_per_element) / bytes_per_dword/*dword*/ + (lane_id/16)*2/*每个线程持有4个bf16,共2个dword*/;
+    //         int lds_row = (lane_id & 15);
+    //         int vec_size_dword = (vec_size*bytes_per_element)/bytes_per_dword/*dword*/;
+    //         int phase = (lds_row/per_phase) % max_phase;
+    //         int col_swizzle = ((lds_col/vec_size_dword) ^ phase) * vec_size_dword;
+    //         int lds_offset = warp_m_id * (WARP_M*WARP_K*bytes_per_element)/bytes_per_dword + (min_tile_m * MFMA_M + lds_row)*WARP_K*bytes_per_element/bytes_per_dword/*dword*/ + col_swizzle/*dword*/; 
+    //         precompute_A_lds_offset[min_tile_m * (WARP_K/MFMA_K) + min_tile_k] = lds_offset; // 装载了两次,
+    //     }
+    // }
     // 构建B矩阵读取索引,完成一个warp读取WARP_NxWARP_K个元素
     #pragma unroll 
     for(int min_tile_n=0; min_tile_n<(WARP_N/marlin_warp_n); min_tile_n++) { 
@@ -3591,6 +3605,148 @@ __forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN(
         }
                             
     }      
+    __syncthreads();
+}
+
+template<bool Is_store_A, 
+    int A_prefetch_level, 
+    int B_prefetch_level, 
+    int WARP_NUM,
+    int BLOCK_M, 
+    int BLOCK_N, 
+    int BLOCK_K, 
+    int WARP_M,  
+    int WARP_N,  
+    int WARP_K,  
+    int STAGES,
+    bool tail_k_process,  
+    typename Element, 
+    typename ElementAccum = int32_t>                                                                                                            
+__forceinline__ __device__ void  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN_Blocksizek32_weight_bypass_lds(
+    const Element* input_ptr, 
+    const Element* weight_ptr, 
+    Element* A_lds,
+    Element* B_lds,
+    int max_n_len_offset, 
+    union_vec<Element,4> A_reg[][WARP_K/16], 
+    union_vec<Element,8> B_reg[][WARP_K/16], 
+    floatx4 C_reg[][(WARP_M/16)*(WARP_N/16)],
+    int warp_id, 
+    int seqlen_A_k,  //2048
+    int seqlen_B_k,  //2048
+    int top_k, 
+    const int* sorted_token_ids_offset,
+    int sorted_token_lens,
+    const int32_t expert_id,
+    const int bidx,
+    const int bidy) {
+
+    const int size_k = seqlen_A_k; //96
+    int lane_id = threadIdx.x & 63; // thread_id
+    int row_id = lane_id % 16;
+    int col_id = lane_id / 16;
+    constexpr int MFMA_M = 16;
+    constexpr int MFMA_N = 16;
+    constexpr int MFMA_K = 16;
+
+    constexpr int bytes_per_element = 2;
+    constexpr int bytes_per_dword = 4;
+    const int seqlen_A_stride = seqlen_A_k * bytes_per_element;
+    const int seqlen_B_stride = seqlen_B_k * bytes_per_element;
+
+    const int marlin_warp_k = 16;// marlin weight tile: 16x32
+    const int marlin_warp_n = 32;
+    const int marlin_warp_stride = marlin_warp_k * marlin_warp_n * bytes_per_element/*bytes*/;
+
+    const int warp_n_num = BLOCK_N / WARP_N; //1
+    int warp_n_id = warp_id % warp_n_num;//0
+    int warp_m_id = warp_id / warp_n_num;//0
+    int weight_vec_size = 8;
+
+    int precompute_A_lds_offset[(WARP_M/MFMA_M)*(WARP_K/MFMA_K)]; 
+    int precompute_B_lds_offset[(WARP_N/MFMA_N)*(WARP_K/MFMA_K)];
+
+    typename vec<Element,4>::type *B_lds_v4bf16 = (typename vec<Element,4>::type *)(B_lds);
+    typename vec<Element,4>::type *A_lds_v4bf16 = (typename vec<Element,4>::type *)(A_lds);
+
+    const int type_width_in_bit = 16;
+    const int num_banks = 32;
+    const int bank_bit_width = 32;
+    const int elems_per_one_banks_row = (num_banks * bank_bit_width) / type_width_in_bit;
+    const int simd_width = 16;
+    const int inner_dim_length = WARP_K;
+    const int vec_size = 4;
+    const int per_phase = std::max(1, elems_per_one_banks_row / inner_dim_length); //4
+    const int max_phase = std::min(simd_width / per_phase, inner_dim_length / vec_size); //4
+    // const int max_phase = 32 / (vec_size * type_width_in_bit / bank_bit_width); // 32
+    int A_lds_stage_offset = STAGES == 1 ? 0 : BLOCK_M * WARP_K * bytes_per_element; 
+    int B_lds_stage_offset = STAGES == 1 ? 0 : BLOCK_N * WARP_K * bytes_per_element; 
+    int stage_id_reg_A = 0;
+    int stage_id_reg_B = 0;
+
+    // 构建A矩阵读取索引
+    #pragma unroll 
+    for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+        #pragma unroll
+        for(int min_tile_k=0; min_tile_k<(WARP_K/MFMA_K); min_tile_k++) {
+            int lds_row = (lane_id & 15);
+            int lds_col = (min_tile_k * MFMA_K) / 4 + lane_id/16;
+            
+            int vec_size_dword = vec_size/2/*dword*/;
+            int phase = (lds_row/per_phase) % max_phase;
+            int col_swizzle = (lds_col ^ phase) * vec_size_dword;
+            int lds_offset = warp_m_id * (WARP_M*WARP_K)/2 + (min_tile_m * MFMA_M + lds_row)*WARP_K/2/*dword*/ + col_swizzle/*dword*/; 
+            precompute_A_lds_offset[min_tile_m * (WARP_K/MFMA_K) + min_tile_k] = lds_offset; // 装载了两次,
+        }
+    }
+    //main loop 
+    for(int k=0; k < size_k/WARP_K - (STAGES - 1); k++){
+        int k_offset = k * WARP_K;
+        int kb_offset = k * (WARP_K/marlin_warp_k) * seqlen_B_k;
+        auto A_ptr = (input_ptr + k_offset); // 配置全局显存信息
+        auto B_ptr = (weight_ptr + kb_offset); // 配置全局显存信息
+        
+        { 
+            // 预加载A矩阵
+            int A_block_buffer_load_global_offset = (STAGES - 1) * WARP_K * bytes_per_element; 
+            int A_lds_stage_offset_loop = ((k+(STAGES - 1)) & (STAGES - 1)) * A_lds_stage_offset; 
+            buffer_load_lds_tile_pad_sorted_token_dwordx2_blocksizek32(WARP_NUM, seqlen_A_stride, BLOCK_M, WARP_K, Element, A_ptr, A_lds, A_block_buffer_load_global_offset, A_lds_stage_offset_loop, BLOCK_K, warp_id, lane_id,
+                                                        vec_size, per_phase, max_phase);                
+        }
+        vmcnt_wait(0);
+        #pragma unroll
+        for(int n_tile = 0; n_tile < WARP_N/marlin_warp_n; n_tile++){
+            #pragma unroll
+            for(int k_tile = 0; k_tile < WARP_K / MFMA_K; k_tile++){ 
+                B_reg[n_tile][k_tile].int4_array[0]  = *(intx4*)(B_ptr + warp_n_id * (WARP_N/marlin_warp_n) * 64 * 8 + lane_id * 8 + k_tile * seqlen_B_k + n_tile * 64 * 8);
+            }
+        }
+        stage_id_reg_A = k & (STAGES-1);
+        int A_lds_stage_offset_loop = stage_id_reg_A * A_lds_stage_offset;
+        for(int k_idx = 0; k_idx < WARP_K / MFMA_K; k_idx++){ 
+            { 
+                ds_read2_tile_pad_no_wait(WARP_M, k_idx, WARP_NUM, Element, A_lds_v4bf16, precompute_A_lds_offset, A_lds_stage_offset_loop/bytes_per_dword, A_reg, stage_id_reg_A); // stage_id_reg_A: 0, 1
+            } 
+        }
+        lgkmcnt_wait_barrier(0);
+
+        #pragma unroll
+        for(int min_tile_k=0; min_tile_k<WARP_K/MFMA_K; min_tile_k++) {
+            #pragma unroll
+            for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
+                #pragma unroll
+                for(int min_tile_n=0; min_tile_n<(WARP_N/marlin_warp_n); min_tile_n++) {
+                    #pragma unroll
+                    for(int n_tile=0; n_tile<marlin_warp_n/MFMA_N; n_tile++) {
+                        C_reg[0][min_tile_m*(WARP_N / marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile] = mmac<Element>(
+                            *(typename vec<Element, 4>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].scalar_array[0]), 
+                            *(typename vec<Element, 4>::type*)(&B_reg[min_tile_n][min_tile_k].int2_array[n_tile]), 
+                            C_reg[0][min_tile_m*(WARP_N/marlin_warp_n) * (marlin_warp_n/MFMA_N) + min_tile_n * (marlin_warp_n/MFMA_N) + n_tile]);    
+                    }
+                }
+            }
+        }
+    }
     __syncthreads();
 }
 

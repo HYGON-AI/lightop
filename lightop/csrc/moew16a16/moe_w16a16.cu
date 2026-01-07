@@ -876,7 +876,28 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(
     }
   }
        
-
+// write back directly without lds reorder 
+// using vec_bf16_2 = __attribute__((__vector_size__(2 * sizeof(uint16_t)))) unsigned short;
+//     uint16_t valueArray[2];  
+//     for(int m_tile = 0; m_tile < WARP_M / mfma_m; m_tile++){
+//         float weight_value = weight_value_arr[m_tile];
+//         //将warpN的64进行二次拆分，一次是marlin level的32，一次是mmac level的16
+//         for(int min_tile_n = 0; min_tile_n < WARP_N / marlin_warp_n; min_tile_n++){
+//           int token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_tile * mfma_m + row_id, int(sorted_token_lens - 1))];
+//           if(token_index < size_m * top_k){
+//             for (int j = 0; j < 4; j++) {
+//               for(int n_tile = 0; n_tile < marlin_warp_n / mfma_n; n_tile++){
+//                 valueArray[n_tile] = (f32_to_f16<Element>((C_reg[0][m_tile * ((WARP_N/marlin_warp_n) * (marlin_warp_n / mfma_n)) + min_tile_n * (marlin_warp_n / mfma_n) + n_tile][j]) * weight_value ));
+//                 }
+//                 *reinterpret_cast<vec_bf16_2*>(g_output + token_index * real_size_n //row offset
+//                                                       + warp_n_id * WARP_N //warp level offset 64 element perwarp 256 total
+//                                                       + min_tile_n * marlin_warp_n  // n iterator stride : 32
+//                                                       + col_id * (marlin_warp_n / mfma_n) //col offset npack=2 --> col_id x 2
+//                                                       + j * (marlin_warp_n / mfma_n) * 4 //col stride npack2 * 4 
+//                                                       ) = *reinterpret_cast<vec_bf16_2*>(valueArray);   
+//           }
+//         }}
+//    }        
 }
 
 
