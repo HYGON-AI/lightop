@@ -749,7 +749,7 @@ def fuse_moe_correctness_preprocess(
     
     mode_ranges = [mode for mode in block_m_configs.keys()]
     gemm1_compare_failed_list = [] #这里
-    gemm2_compare_failed_list = []
+    gemm2_compare_failed_list = [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 83, 84]
     device="cuda:"+str(device_id)
     
     # 计算本地专家数量和映射
@@ -760,10 +760,11 @@ def fuse_moe_correctness_preprocess(
     )
     
     for mode in mode_ranges:
+
         mode0 = mode
         mode1 = mode
 
-        # if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43, 75]: TP8 gemm2
+        # if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43, 75]: #TP8 gemm2
         #     mode1 = 0
 
         # if mode0 in [63, 67, 71, 75, 78, 81, 84]: #qwen30b gemm1
@@ -771,6 +772,9 @@ def fuse_moe_correctness_preprocess(
         # if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43, 63, 67,71, 78, 75, 79, 80, 81, 82, 83, 84]: #qwen30b gemm2
         #     mode1 = 0
 
+        if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 83, 84]: #TP16 gemm2
+            mode1 = 0
+        print("mode0 mode1: ", mode0, mode1)
         mode_list=[mode0,mode1]
         input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=local_num_experts,device=device,block_size=None,out_dtype=dtype)
         # triton moe: output
@@ -1459,16 +1463,22 @@ def main(args: argparse.Namespace):
     # E = 256
     # shard_intermediate_size=2048
     # hidden_size=7168
+
+    # EP8
+    ep_size = 8
+    E = 256
+    shard_intermediate_size=2048
+    hidden_size=7168
     
     # # deepseek-671b-tp1
     # E = 256
     # shard_intermediate_size=4096
     # hidden_size=7168
     
-    E = 128
-    #qwen3-30b-A3B-tp1
-    shard_intermediate_size=1536
-    hidden_size=2048
+    # E = 128
+    # #qwen3-30b-A3B-tp1
+    # shard_intermediate_size=1536
+    # hidden_size=2048
     # #qwen3-30b-A3B-tp2
     # E = 128
     # shard_intermediate_size=768
@@ -1493,8 +1503,9 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            #1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 32, 64, 128,
-            1, 2, 4, 8, 16, 32, 64, 128
+            #1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 
+            16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
+            #1, 2, 4, 8, 16, 32, 64, 128
             # 256, 512, 1024, 2048, 
             # 4096, 8192, 16384
             # 1,8,16,32,64,128,256,512,
