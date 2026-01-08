@@ -836,7 +836,7 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(
   }
 
   if(BLOCK_SIZE_K == WARP_K)
-  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN_Blocksizek32<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES,tail_k_process, Element>
+  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN_Blocksizek32_weight_bypass_lds<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES,tail_k_process, Element>
     (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx,bidy);
   else{
    MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES,tail_k_process, Element>
@@ -866,7 +866,7 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(
     for(int m_mfma_idx = 0; m_mfma_idx < warps_m_once; m_mfma_idx += write_out_m_size_once) {
         // const int32_t block_m_idx = min_tile_m * mfma_m/*WARP_M*/ + (m_mfma_idx + m_thread_idx + warp_id * m_num_threads)/*mfma_m*/;
         // const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + block_m_idx, int(sorted_token_lens - 1))];
-        const int32_t token_index = token_index_arr[(min_tile_m * mfma_m)/(m_num_threads*WARP_NUM)];
+        const int32_t token_index = token_index_arr[(min_tile_m * mfma_m + m_mfma_idx + m_thread_idx + warp_id * m_num_threads)/write_out_m_size_once];
         #pragma unroll
         for(int n_idx = 0; n_idx < BLOCK_SIZE_N; n_idx += n_num_threads*dwordx4_num_elements) {
             // const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx + warp_id * m_num_threads + m_thread_idx, int(sorted_token_lens - 1))];
@@ -1350,7 +1350,7 @@ void launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(const GemmParams3<T>& params) 
     gridDim.y = DIVIDE(real_size_n , BLOCK_SIZE_N); // n方向 16大小分块 数量为48
     gridDim.x = 1; // k方向
     
-    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K) * bytes_per_element, (warps_m_once * BLOCK_SIZE_N * bytes_per_element + warps_m_once*(warps_m_once/2)*2*bytes_per_element)/*padding*/);
+    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K) * bytes_per_element, (warps_m_once * BLOCK_SIZE_N * bytes_per_element + warps_m_once*(warps_m_once/2)*2*bytes_per_element)/*padding*/);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
 
     BOOL_SWITCH(((params.size_k % WARP_K)!=0),tail_k_process, [&] {
