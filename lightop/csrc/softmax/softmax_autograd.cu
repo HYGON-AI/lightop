@@ -121,7 +121,32 @@ public:
 };
 //新增代码
 
+template<typename scalar_t> 
+static __device__ inline void from_float(scalar_t &out ,float f){
+  if constexpr(!std::is_same<scalar_t, uint16_t>::value){
+    out=f;
+  }
+  else{
+    uint32_t u = *(uint32_t*)(&f);
+    // u += 0x7fff + ((u >> 16) & 1); 
+    u += 0x8000; 
+    out = u>>16;
+  }
+}
 
+template<typename scalar_t> 
+static __device__ inline float to_float(scalar_t in){
+  if constexpr(!std::is_same<scalar_t, uint16_t>::value){
+    return in;
+  }
+  else{
+    union{
+        uint32_t int32;
+        float    fp32;
+    } u = {uint32_t(in) << 16};
+    return u.fp32;
+  }
+}
     constexpr int WARP_SIZE = 64;
 
     template<typename T>
@@ -209,7 +234,7 @@ public:
             vec_reg = vec_input[tid]; 
             #pragma unroll
             for (int k = 0; k < VEC; ++k) {
-                local_max = fmaxf(local_max, static_cast<float>(vec_reg.val[k])); 
+                local_max = fmaxf(local_max, to_float(vec_reg.val[k])); 
             }
         }
         float global_max = blockReduceMax(local_max, shared_buf, BLOCK_SIZE);
@@ -219,7 +244,7 @@ public:
         if (tid < num_vecs) {
             #pragma unroll
             for (int k = 0; k < VEC; ++k) {
-                float val = static_cast<float>(vec_reg.val[k]);
+                float val = to_float(vec_reg.val[k]);
                 float res = __expf(val - global_max);
                 cached_exp[k] = res; 
                 local_sum += res;
@@ -232,7 +257,7 @@ public:
             VecType out_vec;
             #pragma unroll
             for (int k = 0; k < VEC; ++k) {
-                out_vec.val[k] = static_cast<scalar_t>(cached_exp[k] * inv_sum);
+                from_float(out_vec.val[k],cached_exp[k] * inv_sum);
             }
             vec_output[tid] = out_vec;
         }
@@ -282,7 +307,7 @@ Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim, con
                     stream
                  );
              } else if (input.scalar_type() == at::ScalarType::BFloat16) {
-                 using scalar_t = at::BFloat16;
+                 using scalar_t = uint16_t;
                  launch_softmax_opt_dispatch<scalar_t>(
                     static_cast<scalar_t*>(input.data_ptr()),
                     static_cast<scalar_t*>(output.data_ptr()),
