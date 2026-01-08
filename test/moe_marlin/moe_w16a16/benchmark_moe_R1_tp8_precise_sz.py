@@ -39,6 +39,8 @@ FP8_DTYPE = torch.float8_e4m3fnuz if current_platform.is_rocm(
 
 
 BLOCK_M_TOTAL = 80
+import os
+os.environ["TRITON_CACHE_DIR"] = f".triton/cache"
 
 def _try_parse_layer_index(layer_name: str) -> Optional[int]:
     # Typical: "model.layers.37.mlp.experts"

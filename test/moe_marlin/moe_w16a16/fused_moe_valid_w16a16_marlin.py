@@ -78,6 +78,11 @@ blockM_all_configs = {
     167: 16, 
     168: 32, 
     169: 16, 
+    170: 64,
+    171: 64,
+    172: 64,
+    173: 32,
+    174: 64,
     175: 32, 
     177: 64, 
     180: 32, 
@@ -234,6 +239,12 @@ def fused_moe_valid_w16a16_marlin(
     torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1)
 
     torch.cuda.synchronize()
+    
+    
+    # intermediate_cache2 = torch.ones_like(intermediate_cache2)
+    # w2_marlin = torch.ones_like(w2_marlin)
+    # w2_triton = torch.ones_like(w2_triton)
+    # topk_weights = torch.ones_like(topk_weights)
 
     moe_gemm_marlin_w16a16(intermediate_cache2, w2_marlin, intermediate_cache3, topk_weights, sorted_token_ids, 
                          expert_ids, num_tokens_post_padded, 1, config_marlin_1)
