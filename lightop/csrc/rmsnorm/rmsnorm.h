@@ -7,7 +7,7 @@ namespace native{
 constexpr int vec_size = 4;
 
 template <typename scalar_t>
-__global__ void GammaBackward(int M,int N,const scalar_t* dY,const scalar_t* X,const scalar_t* rstd,scalar_t* dg)
+__global__ void GammaBackward(int M,int N,const scalar_t* dY,const scalar_t* X,const float* rstd,scalar_t* dg)
 {
   using T_ACC = acc_type<scalar_t, true>;
   __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize+1];
@@ -17,7 +17,7 @@ __global__ void GammaBackward(int M,int N,const scalar_t* dY,const scalar_t* X,c
     for (int i = threadIdx.y; i < M; i += blockDim.y) {
       const int index = i * N + j;
       const T_ACC cmask_dY = dY[index];
-      dg_sum += static_cast<T_ACC>(dY[index]) * static_cast<T_ACC>(X[index]) * static_cast<T_ACC>(rstd[i]);
+      dg_sum += static_cast<T_ACC>(dY[index]) * static_cast<T_ACC>(X[index]) * rstd[i];
     }
   }
   g_shared[threadIdx.y][threadIdx.x] = dg_sum;
@@ -34,7 +34,7 @@ __global__ void GammaBackward(int M,int N,const scalar_t* dY,const scalar_t* X,c
 
 
 template <typename scalar_t,typename T_ACC>
-__global__ void g_backward_kernel_part_a(int M,int N,const scalar_t* dY,const scalar_t* X,const scalar_t* rstd,T_ACC* dg)
+__global__ void g_backward_kernel_part_a(int M,int N,const scalar_t* dY,const scalar_t* X,const float* rstd,T_ACC* dg)
 {
   __shared__ T_ACC g_shared[kColwiseReduceTileSize][kColwiseReduceTileSize+1];
   const int j = blockIdx.x * blockDim.x + threadIdx.x;
@@ -50,7 +50,7 @@ __global__ void g_backward_kernel_part_a(int M,int N,const scalar_t* dY,const sc
     for (int i = threadIdx.y ; i < col_block; i += blockDim.y) {
       const int i2=i+off;
       const int index = i2* N + j;
-      dg_sum += static_cast<T_ACC>(dY[index]) * static_cast<T_ACC>(X[index]) * static_cast<T_ACC>(rstd[i2]);
+      dg_sum += static_cast<T_ACC>(dY[index]) * static_cast<T_ACC>(X[index]) * rstd[i2];
     }
   }
   g_shared[threadIdx.y][threadIdx.x] = dg_sum;
@@ -77,7 +77,7 @@ __global__ void g_backward_kernel_part_b(const T_ACC* part_grad_gamma,scalar_t* 
 }
 
 template <typename scalar_t>
-void Gamma_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,scalar_t* rstd_data,scalar_t* dgamma_data)
+void Gamma_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,float* rstd_data,scalar_t* dgamma_data)
 {
     using T_ACC = acc_type<scalar_t, true>;
     auto stream = at::cuda::getCurrentCUDAStream();
@@ -132,7 +132,7 @@ void Gamma_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,scalar_t
   }\
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);\
   const T_ACC s = T_ACC(1) / static_cast<T_ACC>(N);\
-  T_ACC trstd = static_cast<T_ACC>(rstd[i]);\
+  float trstd = rstd[i];\
   if (threadIdx.x == 0) {\
     b = - sum1 * trstd * trstd * trstd * s;\
   }\
@@ -178,7 +178,7 @@ void Gamma_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,scalar_t
     }\
   }\
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);\
-  T_ACC trstd=static_cast<T_ACC>(rstd[i]);\
+  float trstd=rstd[i];\
   if (threadIdx.x == 0) {\
     const T_ACC s = T_ACC(1) / static_cast<T_ACC>(N);\
     b = - sum1 * trstd * trstd * trstd * s;\
@@ -214,7 +214,7 @@ void Gamma_Backward(int length,int N,scalar_t* dY_data,scalar_t* X_data,scalar_t
     }\
   }\
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);\
-  T_ACC trstd=static_cast<T_ACC>(rstd[i]);\
+  float trstd=rstd[i];\
   if (threadIdx.x == 0) {\
     const T_ACC s = T_ACC(1) / static_cast<T_ACC>(N);\
     b = - sum1 * trstd * trstd * trstd * s;\

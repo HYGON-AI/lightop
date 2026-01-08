@@ -9,7 +9,7 @@ namespace {
 
 
 template <typename scalar_t, int VEC=4>
-__global__ void rmsnorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* rstd, scalar_t* gamma,int cols,scalar_t eps)
+__global__ void rmsnorm_forward_kernel(scalar_t* input,scalar_t* ret,float* rstd, scalar_t* gamma,int cols,scalar_t eps)
 {
   int blockidx=blockIdx.x;
   int threadidx=threadIdx.x;
@@ -59,7 +59,7 @@ __global__ void rmsnorm_forward_kernel(scalar_t* input,scalar_t* ret,scalar_t* r
 }
 
 template <typename scalar_t, int VEC=4,int blocksize=512>
-__global__ void rmsnorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,scalar_t* rstd, scalar_t* gamma,int cols,scalar_t eps)
+__global__ void rmsnorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,float* rstd, scalar_t* gamma,int cols,scalar_t eps)
 {
   int blockidx=blockIdx.x;
   int threadidx=threadIdx.x;
@@ -134,7 +134,7 @@ std::tuple<Tensor,Tensor>rmsnorm_forward(const Tensor& self,const Tensor& weight
     const int rows=nelem/cols;
     Tensor ret = output_inplace? *(at::borrow_from_optional_tensor(output_inplace)):at::empty_like(self);
     Tensor rstd;
-    if(training)rstd = at::empty({rows},self.options());
+    if(training)rstd = at::empty({rows},self.options().dtype(at::ScalarType::Float));
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16, 
@@ -146,8 +146,8 @@ std::tuple<Tensor,Tensor>rmsnorm_forward(const Tensor& self,const Tensor& weight
         scalar_t* ret_data=ret.data_ptr<scalar_t>();
         scalar_t* weight_data=weight.data_ptr<scalar_t>();
         scalar_t  eps = ln_epsilon;
-        scalar_t* rstd_data=NULL;
-        if(training)rstd_data=rstd.data_ptr<scalar_t>();
+        float* rstd_data=NULL;
+        if(training)rstd_data=rstd.data_ptr<float>();
         if (cols % 16 == 0 && cols<=16384){
           if(cols<=128){
             rmsnorm_forward_kernel_fast<scalar_t,1,128><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
@@ -191,7 +191,7 @@ std::tuple<Tensor,Tensor>rmsnorm_forward(const Tensor& self,const Tensor& weight
 
 
 template <typename scalar_t,int VEC=4>
-__global__ void RMSNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* rstd, scalar_t* dX)
+__global__ void RMSNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const float* rstd, scalar_t* dX)
 {
   RMSNORMBACKWARD_VEC_2048
   if (j < tcol) {
@@ -204,7 +204,7 @@ __global__ void RMSNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const s
 }
 
 template <typename scalar_t,int VEC=4>
-__global__ void RMSNormBackward_kernel_vec_fast(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* rstd, scalar_t* dX)
+__global__ void RMSNormBackward_kernel_vec_fast(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const float* rstd, scalar_t* dX)
 {
   RMSNORMBACKWARD_VEC_2048
   if (j < tcol) {
@@ -217,7 +217,7 @@ __global__ void RMSNormBackward_kernel_vec_fast(int N,const scalar_t* dY,const s
 }
 
 template <typename scalar_t,int VEC=4>
-__global__ void RMSNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* rstd, scalar_t* dX)
+__global__ void RMSNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const float* rstd, scalar_t* dX)
 {
   RMSNORMBACKWARD_VEC_4096
   #pragma unroll
@@ -235,7 +235,7 @@ __global__ void RMSNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const s
 }
 
 template <typename scalar_t,int VEC=4>
-__global__ void RMSNormBackward_kernel_vec(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const scalar_t* rstd, scalar_t* dX)
+__global__ void RMSNormBackward_kernel_vec(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,const float* rstd, scalar_t* dX)
 {
   RMSNORMBACKWARD_VEC
   for(int off=j;off<tcol;off+=blockDim.x){
@@ -271,7 +271,7 @@ rmsnorm_backward(const Tensor& grad, const Tensor& X,const Tensor& rstd,const Te
     [&] {
       scalar_t* dY_data = pgrad->data_ptr<scalar_t>();
       scalar_t* X_data = X.data_ptr<scalar_t>();
-      scalar_t* rstd_data = rstd.data_ptr<scalar_t>();
+      float* rstd_data = rstd.data_ptr<float>();
       scalar_t* gamma_data = gamma.data_ptr<scalar_t>();
       scalar_t* dgamma_data = dgamma.data_ptr<scalar_t>();
       scalar_t* dX_data = dX.data_ptr<scalar_t>();
