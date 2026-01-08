@@ -15,6 +15,7 @@ import torch.nn.functional as F
 import vllm.envs as envs
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
+from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
 # from lmslim.layers.fused_moe.fuse_moe_int8 import moe_kernel_prepare_input
 from vllm import _custom_ops as ops
 # from test_int8_kernel import torch_w8a8_per_column_moe
@@ -181,7 +182,8 @@ def benchmark_config(
     gating_output = torch.randn(num_iters, num_tokens, num_experts, dtype=torch.float32)
     score = torch.randn((num_tokens, num_experts), device="cuda", dtype=torch.float32)
 
-    topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
+    # topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
+    topk_weights, topk_ids, _ = fused_topk(x, score, topk, True)
     # 先进行准确度测试
     # GEMM1_Peak,GEMM2_Peak,bandwith1,bandwith2 = fused_marlin_moe_valid(   
     fused_moe_valid_w16a16_marlin(                      
@@ -198,10 +200,10 @@ def benchmark_config(
 def run_moe_w16a16_perchannel_vaild():
     # m_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
     # m_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
-    m_list=[256,512,1024,2048,4096,8192,16384] #prefill
+    # m_list=[256,512,1024,2048,4096,8192,16384] #prefill
     # m_list=[144,160,176,192,208,224,240,240,256,288,320,]
     # m_list=[1, 2, 4, 8, 16, 32, 64, 128]
-    # m_list = [512]
+    m_list = [1024]
     # n_list_1=[512,]
     # k_list_1=[7168,]
     
@@ -243,13 +245,13 @@ def run_moe_w16a16_perchannel_vaild():
     # n_list_2=[2048]
     # k_list_2=[768]
     
-    ##qwen3-30b-A3B-tp2
-    E=128
-    topk=8
-    n_list_1=[768]
-    k_list_1=[2048]
-    n_list_2=[2048]
-    k_list_2=[384]
+    # ##qwen3-30b-A3B-tp2
+    # E=128
+    # topk=8
+    # n_list_1=[768]
+    # k_list_1=[2048]
+    # n_list_2=[2048]
+    # k_list_2=[384]
     
     # #qwen3-235b-A22B-tp8
     # E=128
@@ -267,13 +269,13 @@ def run_moe_w16a16_perchannel_vaild():
     # n_list_2=[6144]
     # k_list_2=[320]
     
-    # #qwen3-235b-A22B-tp16
-    # E=128
-    # topk=8
-    # n_list_1=[192]
-    # k_list_1=[4096]
-    # n_list_2=[4096]
-    # k_list_2=[96]
+    #qwen3-235b-A22B-tp16
+    E=128
+    topk=8
+    n_list_1=[192]
+    k_list_1=[4096]
+    n_list_2=[4096]
+    k_list_2=[96]
     
     # #qwen3-480b-A35B-tp16
     # E=160
@@ -295,7 +297,7 @@ def run_moe_w16a16_perchannel_vaild():
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
-    # mode_ranges = [mode for mode in blockM_all_configs.keys()]
+    mode_ranges = [mode for mode in blockM_all_configs.keys()]
     mode_ranges = [167]
     # compare_fail = [42,43,46,52,54,60]
     # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
@@ -314,7 +316,7 @@ def run_moe_w16a16_perchannel_vaild():
     for i in range(0,len(k_list_1),1):
         for m in m_list:
             for mode in mode_ranges:
-                mode_list=[mode,mode]
+                mode_list=[1000,171]
                 print("mode:{} m:{} n:{} k:{} ".format(mode_list, m,n_list_1[i],k_list_1[i]))
                 num_tokens = m
                 num_experts = E
