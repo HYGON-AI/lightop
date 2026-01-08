@@ -793,6 +793,8 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(
   int row_id = lane_id % 16;
   int col_id = lane_id / 16;
   const int warp_n_num = BLOCK_SIZE_N / WARP_N;
+  const int warp_m_num = WARP_NUM / warp_n_num;
+  const int warps_m_once = warp_m_num * mfma_m;
   int warp_n_id = warp_id % warp_n_num;
   int warp_m_id = warp_id / warp_n_num;
   constexpr int dwordx4_num_elements = 8;
@@ -802,6 +804,8 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(
   const int n_num_threads = 64 / m_num_threads;
   const int m_thread_idx = lane_id / n_num_threads;
   const int n_thread_idx = lane_id & (n_num_threads-1);
+  const int write_out_m_size_once = m_num_threads*WARP_NUM;    // layout: warp_numx1
+  const int stride_in_mfma = mfma_m / write_out_m_size_once;
 
   extern __shared__ uint8_t smem[]; // 声明lds信息
   Element* input_lds = (Element*)&(smem); // 输入lds首地址,首地址开始分配给input
@@ -818,28 +822,42 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(
   floatx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; 
 
   float weight_value_arr[WARP_M / mfma_m];
-  int token_index_arr[BLOCK_SIZE_M / (m_num_threads*WARP_NUM)];
-  #pragma unroll
-  for(int m_idx = 0; m_idx < BLOCK_SIZE_M/(m_num_threads*WARP_NUM); m_idx++) {
-    const int token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx*m_num_threads*WARP_NUM + warp_id * m_num_threads + m_thread_idx, int(sorted_token_lens - 1))];
-    token_index_arr[m_idx] = token_index;
+  int token_index_arr[BLOCK_SIZE_M / write_out_m_size_once];
+
+  if(stride_in_mfma == 0){
+    #pragma unroll // warp_m_num > 1 eg: warp_m_num = 2 m方向的warp一次可以产生2个mfma_m的数据，并且间隔WARP_M
+    for(int m_idx = 0; m_idx < BLOCK_SIZE_M/write_out_m_size_once; m_idx++) {
+      const int block_m_idx = m_idx * mfma_m + ((warp_id * m_num_threads + m_thread_idx) / mfma_m) * WARP_M + ((warp_id * m_num_threads + m_thread_idx) % mfma_m);
+      const int token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + block_m_idx, int(sorted_token_lens - 1))];
+      token_index_arr[m_idx] = token_index;
+    }
+  }else{
+    #pragma unroll // warp_m_num == 1
+    for(int m_idx = 0; m_idx < BLOCK_SIZE_M/mfma_m; m_idx++) {
+        #pragma unroll
+        for(int m_mfma_idx = 0; m_mfma_idx < mfma_m/write_out_m_size_once; m_mfma_idx++) {
+            const int block_m_idx = m_idx * mfma_m + m_mfma_idx * write_out_m_size_once + ((warp_id * m_num_threads + m_thread_idx) / mfma_m) * WARP_M + ((warp_id * m_num_threads + m_thread_idx) % mfma_m);
+            const int token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + block_m_idx, int(sorted_token_lens - 1))];
+            token_index_arr[m_idx * (mfma_m/write_out_m_size_once) + m_mfma_idx] = token_index;
+        }
+    }
   }
 
   #pragma unroll
   for(int idx = 0; idx < WARP_M / mfma_m; idx++){
       int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + warp_m_id * WARP_M + idx * mfma_m + row_id, int(sorted_token_lens - 1))];
       int token_index_safe = std::min(token_index, size_m * top_k-1);
-      weight_value_arr[idx] = topk_weights[token_index_safe] ;
+      weight_value_arr[idx] = topk_weights[token_index_safe];
   }
 
   if(BLOCK_SIZE_K == WARP_K)
-  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN_Blocksizek32<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES,tail_k_process, Element>
+  MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN_Blocksizek32_weight_bypass_lds<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES,tail_k_process, Element>
     (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx,bidy);
   else{
    MOE_W16A16_MARLIN_HIP_NT_prefill_kernel_DOWN<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES,tail_k_process, Element>
     (g_input, g_qweight, input_lds, qweight_lds, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_n, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx,bidy); 
   }
-    //save output to lds
+  //save output to lds
   #pragma unroll
   for(int min_tile_m = 0; min_tile_m < WARP_M / mfma_m; min_tile_m++){
     float weight_value = weight_value_arr[min_tile_m];
@@ -850,54 +868,30 @@ __global__ void __launch_bounds__(1024) MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(
         #pragma unroll
         for(int reg_id = 0; reg_id < 4; reg_id++){
           float value = C_reg[0][min_tile_m * ((WARP_N/marlin_warp_n) * (marlin_warp_n / mfma_n)) + min_tile_n * (marlin_warp_n / mfma_n) + n_tile][reg_id] * weight_value;
-          int index = warp_m_id * WARP_M * BLOCK_SIZE_N + min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * marlin_warp_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + 
-                        reg_id * (marlin_warp_n / mfma_n) * 4 + (lane_id / 16) * (marlin_warp_n / mfma_n) + n_tile + (min_tile_m * mfma_m + warp_m_id * WARP_M + (lane_id % 16))/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
+          int index = warp_m_id * mfma_m * BLOCK_SIZE_N + min_tile_n * marlin_warp_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + 
+                        reg_id * (marlin_warp_n / mfma_n) * 4 + (lane_id / 16) * (marlin_warp_n / mfma_n) + n_tile + (warp_m_id * mfma_m + (lane_id % 16))/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
           output_lds[index] = f32_to_f16<Element>(value);
         }
       }
     }
-  }
-  __syncthreads();
-  {
-
+    // 保证前面一个warp需要保存的数据内容都执行完毕
+    __syncthreads();
     using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
     #pragma unroll
-    for(int m_idx = 0; m_idx < BLOCK_SIZE_M; m_idx += m_num_threads*WARP_NUM) {
-      const int32_t token_index = token_index_arr[m_idx/(m_num_threads*WARP_NUM)];
-      #pragma unroll
-      for(int n_idx = 0; n_idx < BLOCK_SIZE_N; n_idx += n_num_threads*dwordx4_num_elements) {
-        // const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx + warp_id * m_num_threads + m_thread_idx, int(sorted_token_lens - 1))];
-        if(token_index < size_m * top_k) {
-          *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * real_size_n + n_idx + n_thread_idx*dwordx4_num_elements]) = 
-          *reinterpret_cast<vec_bf16_8*>(&output_lds[(m_idx + m_thread_idx + warp_id * m_num_threads) * BLOCK_SIZE_N 
-            + n_idx + n_thread_idx*dwordx4_num_elements + (m_idx + m_thread_idx + warp_id * m_num_threads)/2 * 2/*padding*/]);
+    for(int m_mfma_idx = 0; m_mfma_idx < warps_m_once; m_mfma_idx += write_out_m_size_once) {
+        const int32_t token_index = token_index_arr[min_tile_m * (warps_m_once/write_out_m_size_once) + (m_mfma_idx/write_out_m_size_once)];
+        #pragma unroll
+        for(int n_idx = 0; n_idx < BLOCK_SIZE_N; n_idx += n_num_threads*dwordx4_num_elements) {
+            if(token_index < size_m * top_k) {
+                *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * real_size_n + n_idx + n_thread_idx*dwordx4_num_elements]) = 
+                *reinterpret_cast<vec_bf16_8*>(&output_lds[(m_mfma_idx + m_thread_idx + warp_id * m_num_threads) * BLOCK_SIZE_N 
+                    + n_idx + n_thread_idx*dwordx4_num_elements + (m_mfma_idx + m_thread_idx + warp_id * m_num_threads)/2 * 2/*padding*/]);
+            }
         }
-      }
     }
-  }
-       
-// write back directly without lds reorder 
-// using vec_bf16_2 = __attribute__((__vector_size__(2 * sizeof(uint16_t)))) unsigned short;
-//     uint16_t valueArray[2];  
-//     for(int m_tile = 0; m_tile < WARP_M / mfma_m; m_tile++){
-//         float weight_value = weight_value_arr[m_tile];
-//         //将warpN的64进行二次拆分，一次是marlin level的32，一次是mmac level的16
-//         for(int min_tile_n = 0; min_tile_n < WARP_N / marlin_warp_n; min_tile_n++){
-//           int token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_tile * mfma_m + row_id, int(sorted_token_lens - 1))];
-//           if(token_index < size_m * top_k){
-//             for (int j = 0; j < 4; j++) {
-//               for(int n_tile = 0; n_tile < marlin_warp_n / mfma_n; n_tile++){
-//                 valueArray[n_tile] = (f32_to_f16<Element>((C_reg[0][m_tile * ((WARP_N/marlin_warp_n) * (marlin_warp_n / mfma_n)) + min_tile_n * (marlin_warp_n / mfma_n) + n_tile][j]) * weight_value ));
-//                 }
-//                 *reinterpret_cast<vec_bf16_2*>(g_output + token_index * real_size_n //row offset
-//                                                       + warp_n_id * WARP_N //warp level offset 64 element perwarp 256 total
-//                                                       + min_tile_n * marlin_warp_n  // n iterator stride : 32
-//                                                       + col_id * (marlin_warp_n / mfma_n) //col offset npack=2 --> col_id x 2
-//                                                       + j * (marlin_warp_n / mfma_n) * 4 //col stride npack2 * 4 
-//                                                       ) = *reinterpret_cast<vec_bf16_2*>(valueArray);   
-//           }
-//         }}
-//    }        
+    // __syncthreads();
+    lgkmcnt_wait_barrier(0);
+  }    
 }
 
 
@@ -1337,13 +1331,15 @@ void launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(const GemmParams3<T>& params) 
     blockDim.y = 1;
     blockDim.z = 1;
     constexpr int bytes_per_element = 2;
-    const int real_size_n = (params.size_n * params.size_kofb) / params.size_k;  
+    const int real_size_n = (params.size_n * params.size_kofb) / params.size_k;
+    const int mfma_m = 16;
+    const int warps_m_once = (BLOCK_SIZE_M / WARP_M) * mfma_m;  
 
     gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
     gridDim.y = DIVIDE(real_size_n , BLOCK_SIZE_N); // n方向 16大小分块 数量为48
     gridDim.x = 1; // k方向
-    
-    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K) * bytes_per_element, (BLOCK_SIZE_M * BLOCK_SIZE_N * bytes_per_element + BLOCK_SIZE_M*(BLOCK_SIZE_M/2)*2*bytes_per_element)/*padding*/);
+    // TODO: remove BLOCK_SIZE_N * WARP_K * (STAGES - 1);
+    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K * (STAGES - 1)) * bytes_per_element, (warps_m_once * BLOCK_SIZE_N * bytes_per_element + warps_m_once*(warps_m_once/2)*2*bytes_per_element)/*padding*/);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
 
     BOOL_SWITCH(((params.size_k % WARP_K)!=0),tail_k_process, [&] {
