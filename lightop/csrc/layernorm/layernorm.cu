@@ -60,7 +60,7 @@ static __device__ inline float to_float(scalar_t in){
 }
 
 template <typename scalar_t, int VEC,int blocksize,bool is_affine,bool is_training>
-__global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,float* mean,float* rstd,
+__global__ void layernorm_forward_kernel_welford(scalar_t* input,scalar_t* ret,float* mean,float* rstd,
                                             const scalar_t* gamma,const scalar_t* beta,int cols,float eps)
 {
   int blockidx=blockIdx.x;
@@ -76,6 +76,7 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,float* me
   WelfordOp welford_op;
   WelfordType val;
   using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  using new_type = __change_type<scalar_t>;
   VecTpye *X=(VecTpye*)(input+block_cols);
   VecTpye *Y=(VecTpye*)(ret+block_cols);
   int tcol=cols/VEC;
@@ -83,13 +84,13 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,float* me
   T_ACC trstd;
   VecTpye tx;
   VecTpye ty;
-  scalar_t* px=(scalar_t*)(&tx);
-  scalar_t* py=(scalar_t*)(&ty);
-  for (int j = threadidx; j < tcol; j += blockDim.x) {
+  new_type* px=(new_type*)(&tx);
+  new_type* py=(new_type*)(&ty);
+  for (int j = threadidx; j < tcol; j += blocksize) {
     tx = X[j];
     #pragma unroll
     for(int i=0;i<VEC;i++){
-      val = welford_op.reduce(val, static_cast<T_ACC>(px[i]));
+      val = welford_op.reduce(val, to_float(px[i]));
     }
   }
   val = BlockReduce(val,welford_op,val_shared_ptr);
@@ -101,7 +102,7 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,float* me
   __syncthreads();
   tmean=s_mean;
   trstd=s_rstd;
-  for (int j = threadidx; j < tcol; j += blockDim.x) {
+  for (int j = threadidx; j < tcol; j += blocksize) {
     tx = X[j];
     #pragma unroll
     for(int i=0;i<VEC;i++){
@@ -123,71 +124,150 @@ __global__ void layernorm_forward_kernel(scalar_t* input,scalar_t* ret,float* me
   }
 }
 
-// template <typename scalar_t, int VEC,int blocksize,bool is_affine,bool is_training>
-// __global__ void layernorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,float* mean,float* rstd,
-//                                             const scalar_t* gamma,const scalar_t* beta,int cols,float eps)
-// {
-//   int blockidx=blockIdx.x;
-//   int threadidx=threadIdx.x;
-//   int block_cols=blockidx*cols;
-//   using T_ACC = acc_type<scalar_t, true>;
-//   using WelfordType = WelfordData<T_ACC, int, T_ACC>;
-//   using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
-//   constexpr int share_size=blocksize/C10_WARP_SIZE;
-//   __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[share_size];
-//   __shared__ T_ACC s_mean;
-//   __shared__ T_ACC s_rstd;
-//   WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
-//   WelfordOp welford_op;
-//   WelfordType val;
-//   using VecTpye=memory::aligned_vector<scalar_t, VEC>;
-//   using new_type = __change_type<scalar_t>;
-//   VecTpye *X=(VecTpye*)(input+block_cols);
-//   VecTpye *Y=(VecTpye*)(ret+block_cols);
-//   int tcol=cols/VEC;
-//   T_ACC tmean;
-//   T_ACC trstd;
-//   VecTpye tx;
-//   VecTpye ty;
-//   new_type* px=(new_type*)(&tx);
-//   new_type* py=(new_type*)(&ty);
-//   int j=threadidx;
-//   if (j < tcol) {
-//     tx = X[j];
-//     #pragma unroll
-//     for(int i=0;i<VEC;i++){
-//       val = welford_op.reduce(val, to_float(px[i]));
-//     }
-//   }
-//   val = BlockReduce(val,welford_op,val_shared_ptr);
-//   if (threadidx == 0) {
-//     //layernorm get mean and rstd
-//     thrust::tie(tmean, s_mean) = welford_op.project(val);
-//     s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
-//   }
-//   __syncthreads();
-//   tmean=s_mean;
-//   trstd=s_rstd;
-//   if (j < tcol) {
-//     #pragma unroll
-//     for(int i=0;i<VEC;i++){
-//       int jj=j*VEC+i;
-//       if constexpr(is_affine){
-//         from_float(py[i],(to_float(px[i]) - tmean) * trstd * to_float(gamma[jj]) + to_float(beta[jj]));
-//       }
-//       else{
-//         from_float(py[i],(to_float(px[i]) - tmean) * trstd);
-//       }
-//     }
-//     Y[j]=ty;
-//   }
-//   if constexpr(is_training){
-//     if(threadIdx.x==0){
-//         mean[blockidx] = tmean;
-//         rstd[blockidx] = trstd;
-//     }
-//   }
-// }
+template <typename scalar_t, int VEC,int blocksize,bool is_affine,bool is_training>
+__global__ void layernorm_forward_kernel_fast_welford(scalar_t* input,scalar_t* ret,float* mean,float* rstd,
+                                            const scalar_t* gamma,const scalar_t* beta,int cols,float eps)
+{
+  int blockidx=blockIdx.x;
+  int threadidx=threadIdx.x;
+  int block_cols=blockidx*cols;
+  using T_ACC = acc_type<scalar_t, true>;
+  using WelfordType = WelfordData<T_ACC, int, T_ACC>;
+  using WelfordOp = WelfordOps<T_ACC, T_ACC, int, T_ACC, thrust::pair<T_ACC, T_ACC>>;
+  constexpr int share_size=blocksize/C10_WARP_SIZE;
+  __shared__ typename std::aligned_storage<sizeof(WelfordType), alignof(WelfordType)>::type val_shared[share_size];
+  __shared__ T_ACC s_mean;
+  __shared__ T_ACC s_rstd;
+  WelfordType* val_shared_ptr = reinterpret_cast<WelfordType*>(val_shared);
+  WelfordOp welford_op;
+  WelfordType val;
+  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  using new_type = __change_type<scalar_t>;
+  VecTpye *X=(VecTpye*)(input+block_cols);
+  VecTpye *Y=(VecTpye*)(ret+block_cols);
+  int tcol=cols/VEC;
+  T_ACC tmean;
+  T_ACC trstd;
+  VecTpye tx;
+  VecTpye ty;
+  new_type* px=(new_type*)(&tx);
+  new_type* py=(new_type*)(&ty);
+  int j=threadidx;
+  if (j < tcol) {
+    tx = X[j];
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      val = welford_op.reduce(val, to_float(px[i]));
+    }
+  }
+  val = BlockReduce(val,welford_op,val_shared_ptr);
+  if (threadidx == 0) {
+    //layernorm get mean and rstd
+    thrust::tie(tmean, s_mean) = welford_op.project(val);
+    s_rstd=c10::cuda::compat::rsqrt(tmean + eps);
+  }
+  __syncthreads();
+  tmean=s_mean;
+  trstd=s_rstd;
+  if (j < tcol) {
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      int jj=j*VEC+i;
+      if constexpr(is_affine){
+        from_float(py[i],(to_float(px[i]) - tmean) * trstd * to_float(gamma[jj]) + to_float(beta[jj]));
+      }
+      else{
+        from_float(py[i],(to_float(px[i]) - tmean) * trstd);
+      }
+    }
+    Y[j]=ty;
+  }
+  if constexpr(is_training){
+    if(threadIdx.x==0){
+        mean[blockidx] = tmean;
+        rstd[blockidx] = trstd;
+    }
+  }
+}
+
+
+template <typename scalar_t, int VEC,int blocksize,int cols>
+__global__ void layernorm_forward_kernel_stage1(scalar_t* input,float *sums,int lines_per_block)
+{
+  int blockidx=blockIdx.x;
+  int threadidx=threadIdx.x;
+  int block_cols=blockidx*cols;
+  using T_ACC = acc_type<scalar_t, true>;
+  constexpr int share_size=blocksize/C10_WARP_SIZE*2;
+  __shared__ float val_shared[share_size];
+  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  using new_type = __change_type<scalar_t>;
+  VecTpye *X=(VecTpye*)(input+block_cols);
+  int tcol=cols/VEC;
+  VecTpye tx;
+  new_type* px=(new_type*)(&tx);
+  float sum = 0.0f;
+  float sum_sq = 0.0f;
+  for (int j = threadidx; j < tcol; j += blocksize) {
+    tx = X[j];
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      float temp = to_float(px[i]);
+      sum+=temp;
+      sum_sq+=temp*temp;
+    }
+  }
+  BlockReduceSum2<float,blocksize>(sum,sum_sq,val_shared);
+  if (threadidx == 0) {
+    atomicAdd(sums+blockidx/lines_per_block*2,sum);
+    atomicAdd(sums+blockidx/lines_per_block*2+1,sum_sq);
+  }
+}
+template <typename scalar_t, int VEC,int blocksize,bool is_affine,bool is_training,int cols>
+__global__ void layernorm_forward_kernel_stage2(scalar_t* input,scalar_t* ret,float* sums_ptr,int lines_per_block,float* mean,float* rstd,
+                                            const scalar_t* gamma,const scalar_t* beta,float eps)
+{
+  int blockidx=blockIdx.x;
+  int threadidx=threadIdx.x;
+  int block_cols=blockidx*cols;
+  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  using new_type = __change_type<scalar_t>;
+  VecTpye *X=(VecTpye*)(input+block_cols);
+  VecTpye *Y=(VecTpye*)(ret+block_cols);
+  int tcol=cols/VEC;
+  VecTpye tx;
+  VecTpye ty;
+  new_type* px=(new_type*)(&tx);
+  new_type* py=(new_type*)(&ty);
+  using float2_t = __attribute__( (__vector_size__(2 * sizeof(float)) )) float;
+  float2_t* sums2=(float2_t*)sums_ptr;
+  float2_t sums=sums2[blockidx/lines_per_block];
+  // printf("sums=%f,%f\n",sums[0],sums[1]);
+  float tmean = sums[0] / cols / lines_per_block;
+  float var = (sums[1] / cols / lines_per_block) - (tmean * tmean);
+  var = (var < 0.0f) ? 0.0f : var;
+  float trstd=c10::cuda::compat::rsqrt(var + eps);
+  for (int j = threadidx; j < tcol; j += blocksize) {
+    tx = X[j];
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      int jj=j*VEC+i;
+      if constexpr(is_affine){
+        from_float(py[i],(to_float(px[i]) - tmean) * trstd * to_float(gamma[jj]) + to_float(beta[jj]));
+      }
+      else{
+        from_float(py[i],(to_float(px[i]) - tmean) * trstd);
+      }
+    }
+    Y[j]=ty;
+  }
+  if constexpr(is_training){
+    if(threadIdx.x==0&&blockidx%lines_per_block==0){
+        mean[blockidx/lines_per_block] = tmean;
+        rstd[blockidx/lines_per_block] = trstd;
+    }
+  }
+}
 
 template <typename scalar_t, int VEC,int blocksize,bool is_affine,bool is_training>
 __global__ void layernorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,float* mean,float* rstd,
@@ -283,7 +363,11 @@ layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,dou
       mean = at::empty({rows},self.options().dtype(at::ScalarType::Float));
       rstd = at::empty({rows},self.options().dtype(at::ScalarType::Float));
     }
-
+    static float* tmp_out_ptr = nullptr;
+    constexpr int temp_out_size = 100000;
+    if(tmp_out_ptr == nullptr){
+      hipMalloc(&tmp_out_ptr, temp_out_size);
+    }
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16, 
@@ -304,25 +388,49 @@ layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,dou
         if ((cols<=1024)||(cols % 16 == 0&&cols<=16384)){
           BOOL_SWITCH(weight_data!=nullptr,is_affine,[&] {
             BOOL_SWITCH(training,is_training,[&] {
-              if(cols<=1024){
-                layernorm_forward_kernel_fast<scalar_t,8,128,is_affine,is_training><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                        self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-              } 
-              else if(cols<=2048){
-                layernorm_forward_kernel_fast<scalar_t,16,128,is_affine,is_training><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                        self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-              }
-              else if(cols<=4096){
-                layernorm_forward_kernel_fast<scalar_t,16,256,is_affine,is_training><<<rows, 256, 0, at::cuda::getCurrentCUDAStream()>>>(
-                              self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
-              }
-              else if(cols<=8192){
-                layernorm_forward_kernel_fast<scalar_t,16,512,is_affine,is_training><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                        self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+              if(rows==1024){//bytedance test
+                if(cols<=1024){
+                  layernorm_forward_kernel_fast<scalar_t,8,128,is_affine,is_training><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                          self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+                } 
+                else if(cols<=2048){
+                  layernorm_forward_kernel_fast<scalar_t,16,128,is_affine,is_training><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                          self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+                }
+                else if(cols<=4096){
+                  layernorm_forward_kernel_fast<scalar_t,16,256,is_affine,is_training><<<rows, 256, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+                }
+                else if(cols<=8192){
+                  layernorm_forward_kernel_fast<scalar_t,16,512,is_affine,is_training><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                          self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+                }
+                else{
+                  layernorm_forward_kernel_fast<scalar_t,16,1024,is_affine,is_training><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                          self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+                }
               }
               else{
-                layernorm_forward_kernel_fast<scalar_t,16,1024,is_affine,is_training><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                        self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+                if(cols<=1024){
+                  layernorm_forward_kernel_fast_welford<scalar_t,8,128,is_affine,is_training><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                          self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+                } 
+                else if(cols<=2048){
+                  layernorm_forward_kernel_fast_welford<scalar_t,16,128,is_affine,is_training><<<rows, 128, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                          self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+                }
+                else if(cols<=4096){
+                  layernorm_forward_kernel_fast_welford<scalar_t,16,256,is_affine,is_training><<<rows, 256, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+                }
+                else if(cols<=8192){
+                  layernorm_forward_kernel_fast_welford<scalar_t,16,512,is_affine,is_training><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                          self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+                }
+                else{
+                  layernorm_forward_kernel_fast_welford<scalar_t,16,1024,is_affine,is_training><<<rows, 1024, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                          self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+                }
               }
             });
           });
@@ -330,10 +438,23 @@ layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,dou
         else {
           BOOL_SWITCH(weight_data!=nullptr,is_affine,[&] {
             BOOL_SWITCH(training,is_training,[&] {
-              layernorm_forward_kernel<scalar_t,8,512,is_affine,is_training><<<rows, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
+              if(cols%16384==0){
+                constexpr int blocksize=256;
+                constexpr int cols_per_block=4096;
+                int lines_per_block=cols/cols_per_block;
+                hipMemset(tmp_out_ptr,0,temp_out_size);
+                layernorm_forward_kernel_stage1<scalar_t,8,blocksize,cols_per_block><<<rows*lines_per_block, blocksize, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                          self_data,tmp_out_ptr,lines_per_block);
+                layernorm_forward_kernel_stage2<scalar_t,8,blocksize,is_affine,is_training,cols_per_block><<<rows*lines_per_block, blocksize, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                          self_data,ret_data,tmp_out_ptr,lines_per_block,mean_data,rstd_data,weight_data,bias_data,eps);
+              }
+              else{
+                layernorm_forward_kernel_welford<scalar_t,8,512,is_affine,is_training><<<rows, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
                                         self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,eps);
+
+              }
             });
-          });     
+          });
         }
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       });

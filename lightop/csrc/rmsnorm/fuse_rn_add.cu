@@ -311,7 +311,7 @@ template <typename scalar_t, typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_rn_add_kernel_train_2048(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retadd_data,scalar_t* rstd,scalar_t* gamma, int cols,scalar_t eps)
+__global__ void fused_rn_add_kernel_train_2048(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retadd_data,float* rstd,scalar_t* gamma, int cols,scalar_t eps)
 {
     __shared__ T_ACC val_shared[8];
     __shared__ T_ACC s_rstd;
@@ -374,7 +374,7 @@ __global__ void fused_rn_add_kernel_train_2048(scalar_t* input,scalar_t* residua
 
 
 template <typename scalar_t, int VEC = 4, typename T_ACC>
-__global__ void fused_rn_add_kernel_train_fast(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retadd_data,scalar_t* rstd,scalar_t* gamma, int cols,scalar_t eps)
+__global__ void fused_rn_add_kernel_train_fast(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retadd_data,float* rstd,scalar_t* gamma, int cols,scalar_t eps)
 {
     __shared__ T_ACC val_shared[8];
     __shared__ T_ACC s_rstd;
@@ -441,7 +441,7 @@ template <typename scalar_t, typename T_ACC>
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
 
-__global__ void fused_rn_add_kernel_train_4096(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retadd_data,scalar_t* rstd,scalar_t* gamma, int cols,scalar_t eps) {
+__global__ void fused_rn_add_kernel_train_4096(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retadd_data,float* rstd,scalar_t* gamma, int cols,scalar_t eps) {
         __shared__ T_ACC val_shared[8];      __shared__ T_ACC s_rstd;      T_ACC val = 0;      int i = blockIdx.x;      int j = threadIdx.x;      int tcol = cols / VEC;          using LoadT = memory::aligned_vector<scalar_t, VEC>;
 
 
@@ -508,7 +508,7 @@ template <typename scalar_t, typename T_ACC>
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
 
-__global__ void fused_rn_add_kernel_train(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retadd_data,scalar_t* rstd,scalar_t* gamma, int cols,scalar_t eps) {
+__global__ void fused_rn_add_kernel_train(scalar_t* input,scalar_t* residual,scalar_t* ret,scalar_t* retadd_data,float* rstd,scalar_t* gamma, int cols,scalar_t eps) {
         __shared__ T_ACC val_shared[8];
         __shared__ T_ACC s_rstd;
     
@@ -564,120 +564,6 @@ __global__ void fused_rn_add_kernel_train(scalar_t* input,scalar_t* residual,sca
         rstd[i] = trstd;
     }
 }
-
-// std::tuple<Tensor, Tensor, Tensor>
-// fused_rn_add_forward(const Tensor &self, const Tensor &other, const Tensor &weight, double rn_epsilon, bool training, bool inplace)
-// {
-//     AT_ASSERTM(self.sizes() == other.sizes(), "self must be the same size as other");
-//     AT_ASSERTM(self.is_cuda() && other.is_cuda(), "self and other must be on CUDA");
-//     const int cols = self.sizes().back();
-//     AT_ASSERT(cols >= 64, "cols must be >= 64");
-//     AT_ASSERT(cols % 4 == 0, "cols % 4 must be 0");
-
-//     const int nelem = self.numel();
-//     const int rows = nelem / cols;
-//     Tensor rstd;
-//     bool eval_inplace = training == false && inplace == true;
-//     if(eval_inplace)
-//     {
-//       Tensor retadd;
-//       auto stream = at::cuda::getCurrentCUDAStream();
-//       AT_DISPATCH_FLOATING_TYPES_AND2(
-//           at::ScalarType::Half,
-//           at::ScalarType::BFloat16,
-//           self.scalar_type(),
-//           "fused_rn_add_forward",
-//           [&]
-//           {
-//               using T_ACC = acc_type<scalar_t, true>;
-//               scalar_t eps = rn_epsilon;
-//               scalar_t *self_data = self.data_ptr<scalar_t>();
-//               scalar_t *other_data = other.data_ptr<scalar_t>();
-//               scalar_t *weight_data = weight.data_ptr<scalar_t>();
-
-//               if (cols <= 2048)
-//               {
-//                   fused_rn_add_kernel_val_2048_inplace<scalar_t, T_ACC><<<rows, get_layernorm_blocksize(cols / 4), 0, stream>>>(self_data, other_data, weight_data, cols, eps);
-
-//               }
-//               else if (cols <= 4096)
-//               {
-//                   fused_rn_add_kernel_val_4096_inplace<scalar_t, T_ACC><<<rows, get_layernorm_blocksize(cols / 4), 0, stream>>>(self_data, other_data, weight_data, cols, eps);
-//               }
-//               else
-//               {
-//                   fused_rn_add_kernel_val_inplace<scalar_t, T_ACC><<<rows, get_layernorm_blocksize(cols / 4), 0, stream>>>(self_data, other_data, weight_data, cols, eps);
-//               }
-//               C10_CUDA_KERNEL_LAUNCH_CHECK();
-//           });
-
-//       return std::tuple<Tensor, Tensor, Tensor>(self, retadd, rstd);
-//     }
-//     else
-//     {
-//       Tensor ret = at::empty_like(self);
-//       Tensor retadd;
-//       auto stream = at::cuda::getCurrentCUDAStream();
-//       AT_DISPATCH_FLOATING_TYPES_AND2(
-//           at::ScalarType::Half,
-//           at::ScalarType::BFloat16,
-//           self.scalar_type(),
-//           "fused_rn_add_forward",
-//           [&]
-//           {
-//               using T_ACC = acc_type<scalar_t, true>;
-//               scalar_t eps = rn_epsilon;
-//               scalar_t *self_data = self.data_ptr<scalar_t>();
-//               scalar_t *other_data = other.data_ptr<scalar_t>();
-//               scalar_t *ret_data = ret.data_ptr<scalar_t>();
-//               scalar_t *weight_data = weight.data_ptr<scalar_t>();
-
-//               if (training)
-//               {
-//                   retadd = at::empty({nelem * 2}, self.options());
-//                   rstd = at::empty({rows}, self.options());
-//                   scalar_t *retadd_data = retadd.data_ptr<scalar_t>();
-//                   scalar_t *rstd_data = rstd.data_ptr<scalar_t>();
-
-//                   if (cols <= 2048)
-//                   {
-//                       fused_rn_add_kernel_train_2048<scalar_t, T_ACC><<<rows, get_layernorm_blocksize(cols / 4), 0, stream>>>(self_data, other_data, ret_data,
-//                                                                                                                             retadd_data, rstd_data, weight_data, cols, eps);
-//                   }
-//                   else if (cols <= 4096)
-//                   {
-//                       fused_rn_add_kernel_train_4096<scalar_t, T_ACC><<<rows, 512, 0, stream>>>(self_data, other_data, ret_data,
-//                                                                                               retadd_data, rstd_data, weight_data, cols, eps);
-//                   }
-//                   else
-//                   {
-//                       fused_rn_add_kernel_train<scalar_t, T_ACC><<<rows, 512, 0, stream>>>(self_data, other_data, ret_data,
-//                                                                                           retadd_data, rstd_data, weight_data, cols, eps);
-//                   }
-//                   C10_CUDA_KERNEL_LAUNCH_CHECK();
-//               }
-//               else
-//               {
-//                   if (cols <= 2048)
-//                   {
-//                       fused_rn_add_kernel_val_2048<scalar_t, T_ACC><<<rows, get_layernorm_blocksize(cols / 4), 0, stream>>>(self_data, other_data, ret_data, weight_data, cols, eps);
-//                   }
-//                   else if (cols <= 4096)
-//                   {
-//                       fused_rn_add_kernel_val_4096<scalar_t, T_ACC><<<rows, 512, 0, stream>>>(self_data, other_data, ret_data, weight_data, cols, eps);
-//                   }
-//                   else
-//                   {
-//                       fused_rn_add_kernel_val<scalar_t, T_ACC><<<rows, 512, 0, stream>>>(self_data, other_data, ret_data, weight_data, cols, eps);
-//                   }
-//               }
-//               C10_CUDA_KERNEL_LAUNCH_CHECK();
-//           });
-
-//       return std::tuple<Tensor, Tensor, Tensor>(ret, retadd, rstd);
-//     }
-// }
-
 
 
 std::tuple<Tensor, Tensor, Tensor>
@@ -767,9 +653,9 @@ fused_rn_add_forward(const Tensor &self, const Tensor &other, const Tensor &weig
               if (training)
               {
                   retadd = at::empty({nelem * 2}, self.options());
-                  rstd = at::empty({rows}, self.options());
+                  rstd = at::empty({rows}, self.options().dtype(at::ScalarType::Float));
                   scalar_t *retadd_data = retadd.data_ptr<scalar_t>();
-                  scalar_t *rstd_data = rstd.data_ptr<scalar_t>();
+                  float *rstd_data = rstd.data_ptr<float>();
               if (cols % 16 == 0 && cols<=16384)
               {
                 if(cols<=1024){
@@ -841,7 +727,7 @@ fused_rn_add_forward(const Tensor &self, const Tensor &other, const Tensor &weig
 
 template <typename scalar_t, int VEC=4>
 __global__ void RMSNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,
-                                         const scalar_t* rstd, scalar_t* dX1,scalar_t* dX2)
+                                         const float* rstd, scalar_t* dX1,scalar_t* dX2)
 {
   RMSNORMBACKWARD_VEC_2048
   VecTpye tdx2;
@@ -859,7 +745,7 @@ __global__ void RMSNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const s
 
 template <typename scalar_t, int VEC=4>
 __global__ void RMSNormBackward_kernel_vec_fast(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,
-                                         const scalar_t* rstd, scalar_t* dX1,scalar_t* dX2)
+                                         const float* rstd, scalar_t* dX1,scalar_t* dX2)
 {
   RMSNORMBACKWARD_VEC_2048
   VecTpye tdx2;
@@ -877,7 +763,7 @@ __global__ void RMSNormBackward_kernel_vec_fast(int N,const scalar_t* dY,const s
 
 template <typename scalar_t>
 __global__ void RMSNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,
-                                         const scalar_t* rstd, scalar_t* dX1,scalar_t* dX2)
+                                         const float* rstd, scalar_t* dX1,scalar_t* dX2)
 {
   RMSNORMBACKWARD_VEC_4096
   VecTpye tdx2;
@@ -902,7 +788,7 @@ __global__ void RMSNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const s
 
 template <typename scalar_t>
 __global__ void RMSNormBackward_kernel_vec(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,
-                                         const scalar_t* rstd, scalar_t* dX1,scalar_t* dX2)
+                                         const float* rstd, scalar_t* dX1,scalar_t* dX2)
 {
   RMSNORMBACKWARD_VEC
   VecTpye tdx2;
@@ -942,7 +828,7 @@ fused_rn_add_backward(const Tensor& grad, const Tensor& X,const Tensor& rstd,con
     [&] {
       scalar_t* dY_data = pgrad->data_ptr<scalar_t>();
       scalar_t* X_data = X.data_ptr<scalar_t>();
-      scalar_t* rstd_data = rstd.data_ptr<scalar_t>();
+      float* rstd_data = rstd.data_ptr<float>();
       scalar_t* gamma_data = gamma.data_ptr<scalar_t>();
       scalar_t* dgamma_data = dgamma.data_ptr<scalar_t>();
       scalar_t* dX1_data = dX1.data_ptr<scalar_t>();

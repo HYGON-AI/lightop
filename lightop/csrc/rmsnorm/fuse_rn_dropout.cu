@@ -148,7 +148,7 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_rn_dropout_kernel_train_2048(scalar_t* input,scalar_t* ret,scalar_t* retdrop_data,scalar_t* rstd,scalar_t* gamma,
+__global__ void fused_rn_dropout_kernel_train_2048(scalar_t* input,scalar_t* ret,scalar_t* retdrop_data,float* rstd,scalar_t* gamma,
                                                    scalar_t* mask,int cols,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,int rand_offset)
 {
   __shared__ T_ACC val_shared[8];
@@ -202,7 +202,7 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_rn_dropout_kernel_train_4096(scalar_t* input,scalar_t* ret,scalar_t* retdrop_data,scalar_t* rstd,scalar_t* gamma,
+__global__ void fused_rn_dropout_kernel_train_4096(scalar_t* input,scalar_t* ret,scalar_t* retdrop_data,float* rstd,scalar_t* gamma,
                                                    scalar_t* mask,int cols,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,int rand_offset)
 {
   __shared__ T_ACC val_shared[8];
@@ -278,7 +278,7 @@ template <typename scalar_t,typename T_ACC>
 #if __CUDA_ARCH__ >= 350 || defined __HIP_PLATFORM_HCC__
 C10_LAUNCH_BOUNDS_2(512, 4)
 #endif
-__global__ void fused_rn_dropout_kernel_train(scalar_t* input,scalar_t* ret,scalar_t* retdrop_data,scalar_t* rstd,scalar_t* gamma,
+__global__ void fused_rn_dropout_kernel_train(scalar_t* input,scalar_t* ret,scalar_t* retdrop_data,float* rstd,scalar_t* gamma,
                                               scalar_t* mask,int cols,T_ACC p,scalar_t eps,PhiloxCudaState philox_args,int rand_offset)
 {
   __shared__ T_ACC val_shared[8];
@@ -361,9 +361,9 @@ fused_rn_dropout_forward(const Tensor& self,const Tensor&weight,double ln_epsilo
         if(training)
         {
           retdrop = at::empty({nelem*2},self.options());
-          rstd = at::empty({rows},self.options());
+          rstd = at::empty({rows},self.options().dtype(at::ScalarType::Float));
           scalar_t* retdrop_data=retdrop.data_ptr<scalar_t>();
-          scalar_t* rstd_data=rstd.data_ptr<scalar_t>();
+          float* rstd_data=rstd.data_ptr<float>();
           auto gen = get_generator_or_default<CUDAGeneratorImpl>(Generator(), cuda::detail::getDefaultCUDAGenerator());
           int rand_offset=at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor*
                                     at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
@@ -406,7 +406,7 @@ fused_rn_dropout_forward(const Tensor& self,const Tensor&weight,double ln_epsilo
 
 template <typename scalar_t>
 __global__ void RMSNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,
-                                         const scalar_t* rstd, scalar_t* dX,scalar_t* mask)
+                                         const float* rstd, scalar_t* dX,scalar_t* mask)
 {
   RMSNORMBACKWARD_VEC_2048
   VecTpye tmask;
@@ -423,7 +423,7 @@ __global__ void RMSNormBackward_kernel_vec_2048(int N,const scalar_t* dY,const s
 
 template <typename scalar_t>
 __global__ void RMSNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,
-                                         const scalar_t* rstd, scalar_t* dX,scalar_t* mask)
+                                         const float* rstd, scalar_t* dX,scalar_t* mask)
 {
   RMSNORMBACKWARD_VEC_4096
   VecTpye tmask;
@@ -448,7 +448,7 @@ __global__ void RMSNormBackward_kernel_vec_4096(int N,const scalar_t* dY,const s
 
 template <typename scalar_t>
 __global__ void RMSNormBackward_kernel_vec(int N,const scalar_t* dY,const scalar_t* X,const scalar_t* gamma,
-                                         const scalar_t* rstd, scalar_t* dX,scalar_t* mask)
+                                         const float* rstd, scalar_t* dX,scalar_t* mask)
 {
   RMSNORMBACKWARD_VEC
   VecTpye tmask;
@@ -486,7 +486,7 @@ fused_rn_dropout_backward(const Tensor& grad, const Tensor& X,const Tensor& rstd
     [&] {
       scalar_t* dY_data = pgrad->data_ptr<scalar_t>();
       scalar_t* X_data = X.data_ptr<scalar_t>();
-      scalar_t* rstd_data = rstd.data_ptr<scalar_t>();
+      float* rstd_data = rstd.data_ptr<float>();
       scalar_t* gamma_data = gamma.data_ptr<scalar_t>();
       scalar_t* dgamma_data = dgamma.data_ptr<scalar_t>();
       scalar_t* dX1_data = dX1.data_ptr<scalar_t>();
