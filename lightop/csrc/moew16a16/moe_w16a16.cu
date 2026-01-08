@@ -1338,8 +1338,8 @@ void launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill(const GemmParams3<T>& params) 
     gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
     gridDim.y = DIVIDE(real_size_n , BLOCK_SIZE_N); // n方向 16大小分块 数量为48
     gridDim.x = 1; // k方向
-    
-    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K) * bytes_per_element, (warps_m_once * BLOCK_SIZE_N * bytes_per_element + warps_m_once*(warps_m_once/2)*2*bytes_per_element)/*padding*/);
+    // TODO: remove BLOCK_SIZE_N * WARP_K * (STAGES - 1);
+    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K * (STAGES - 1)) * bytes_per_element, (warps_m_once * BLOCK_SIZE_N * bytes_per_element + warps_m_once*(warps_m_once/2)*2*bytes_per_element)/*padding*/);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
 
     BOOL_SWITCH(((params.size_k % WARP_K)!=0),tail_k_process, [&] {
