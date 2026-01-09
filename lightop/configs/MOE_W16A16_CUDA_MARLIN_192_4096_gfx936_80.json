@@ -35,9 +35,14 @@
             "MODE": 302,
             "DELTA": 1
         },
-        "64": {
+        "48": {
             "BLOCK_SIZE_M": 16,
             "MODE": 302,
+            "DELTA": 1
+        },
+        "64": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 305,
             "DELTA": 1
         },
         "96": {
@@ -53,6 +58,11 @@
         "256": {
             "BLOCK_SIZE_M": 16,
             "MODE": 305,
+            "DELTA": 1
+        },
+        "390": {
+            "BLOCK_SIZE_M": 64,
+            "MODE": 117,
             "DELTA": 1
         },
         "512": {
