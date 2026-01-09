@@ -595,52 +595,52 @@ static std::unordered_map<int, KernelFunc4<T>> make_kernel_maps_gemm1_prefill_ma
     return {
      //Stgage1_bypasslds test ensure acc normal
      //warpM=16 blockn256 4warp 1x4
-     {10, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 64, T>},
+     {10, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, T>},
      //warpM=16 blockn256 8warp 1x8
-     {11, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 64, T>},
+     {11, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, T>},
      //warpM=16 blockn128 4warp 1x4
-     {12, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<16, 128, 128, 16, 32, 64, T>},
+     {12, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, T>},
      
      //warpM=32 blockn256 8warp 1x8
-     {13, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 64, 32, 32, 32, T>},
+     {13, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 64, 32, 32, 32, T>},
      //warpM=32 blockn256 4warp 1x4
-     {14, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 64, 32, 32, 32, T>},
+     {14, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 64, 32, 32, 32, T>},
      //warpM=32 blockn256 8warp 2x4
-     {15, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 64, 32, 32, 32, T>},
+     {15, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 64, 32, 32, 32, T>},
      //warpM=32 blockn128 4warp 1x4
-     {15, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 64, 32, 32, 32, T>},
+     {15, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 64, 32, 32, 32, T>},
      //warpM=32 blockn128 8warp 2x4
-     {16, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<32, 128, 64, 32, 32, 32, T>},
+     {16, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<32, 128, 64, 32, 32, 32, T>},
 
      //warpM=64 blockn256 4warp 1x4
-     {17, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 64, 32, 32, 32, T>},
+     {17, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 64, 32, 32, 32, T>},
      //warpM=64 blockn256 8warp 1x8
-     {18, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 64, 32, 32, 32, T>},
+     {18, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 64, 32, 32, 32, T>},
      //warpM=64 blockn256 8warp 2x4
-     {19, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 64, 32, 32, 32, T>},
+     {19, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 64, 32, 32, 32, T>},
      //warpM=64 blockn256 8warp 4x2
-     {20, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 64, 32, 32, 32, T>},
+     {20, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 64, 32, 32, 32, T>},
      //warpM=64 blockn128 4warp 1x4
-     {21, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 64, 32, 32, 32, T>},
+     {21, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 64, 32, 32, 32, T>},
      //warpM=64 blockn128 8warp 2x4
-     {22, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 64, 32, 32, 32, T>},
+     {22, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 64, 32, 32, 32, T>},
      //warpM=64 blockn128 8warp 4x2
-     {23, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<64, 128, 64, 32, 32, 32, T>},
+     {23, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<64, 128, 64, 32, 32, 32, T>},
      
      //warpM=128 blockn256 4warp 1x4
-     {24, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 64, T>},
+     {24, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, T>},
      //warpM=128 blockn256 8warp 1x8
-     {25, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 64, T>},
+     {25, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, T>},
      //warpM=128 blockn256 8warp 2x4
-     {26, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 64, T>},
+     {26, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, T>},
      //warpM=128 blockn256 8warp 4x2
-     {27, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 64, T>},
+     {27, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, T>},
      //warpM=128 blockn128 4warp 1x4
-     {28, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 64, T>},
+     {28, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, T>},
      //warpM=128 blockn128 8warp 2x4
-     {30, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 64, T>},
+     {30, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, T>},
      //warpM=128 blockn128 8warp 4x2
-     {31, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_DOWN_prefill<128, 64, 128, 32, 32, 64, T>}, 
+     {31, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<128, 64, 128, 32, 32, 64, T>}, 
     
         // 4warp BLOCKN 64 
     //  {100, &kernel_launch_MOE_W16A16_MARLIN_HIP_NT_UP_prefill<16, 128, 128, 16, 32, 64, T>},
