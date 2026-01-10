@@ -1062,7 +1062,7 @@ void topk8GatingSoftmax_no_align(
     int my_search_expert_idx = -1; 
     int my_search_reg_idx = -1;   
 
-    // const bool row_is_active = finished ? !finished[thread_row] : true;
+    const bool row_is_active = finished ? !finished[thread_row] : true;
 
     const float* thread_row_ptr = input + thread_row * model_num_experts;
     const int thread_group_idx = threadIdx.x % THREADS_PER_ROW;
@@ -1415,7 +1415,7 @@ void topk_softmax(
 
     TORCH_CHECK(topk_weights.scalar_type() == at::ScalarType::Float, 
                 "topk_weights must be Float32 (float)");
-                
+
     const int num_experts = gating_output.size(-1);
     const int num_tokens = gating_output.numel() / num_experts;
     const int topk = topk_weights.size(-1);
