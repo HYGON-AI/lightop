@@ -48,15 +48,21 @@ def generate_cp_test_data(seq_len, seq_len_kv):
 
 if __name__ == "__main__":
     torch.manual_seed(0)
-
-    q_seq_len_list = [16,32,64,2048, 4096]
-    kv_seq_len_list = [4096, 8192, 16384, 32768, 65536, 131072]
+    #汇编
+    # q_seq_len_list =  [128,255,321,369,666,812,1024,4096]
+    # kv_seq_len_list = [4096,8192,11111,16384,32768, 65536,131072]
+    #cuda
+    q_seq_len_list =  [8,16,32,33,64,71,88,127]
+    kv_seq_len_list = [8,16,32,33,64,71,88,127,4096,8192,11111,16384,32768, 65536,131072]
+    
+    # q_seq_len_list =  [8]
+    # kv_seq_len_list = [4096,8192]
     head_num = 64
     head_dim = 128
     test_speed = True
     use_random = True
     disable_cp = True
-    q_k_dtype = torch.float16
+    q_k_dtype = torch.bfloat16
     results_data = []
     write_csv = test_speed
     print("Starting MQA Logits Benchmark...")
@@ -97,44 +103,36 @@ if __name__ == "__main__":
                 for _ in range(num_iterations):
                     _ = lightop.mqa_logits(Q, K, weights, ks, ke)
                 end_event.record()
-                
+                # pdb.set_trace()
                 torch.cuda.synchronize()
                 
                 total_time_ms = start_event.elapsed_time(end_event)
                 mean_time_ms = total_time_ms / num_iterations
                 elapsed_time_us = mean_time_ms * 1000
                 print(f" Avg Time: {elapsed_time_us:10.2f} us.")
-
-                # # ---Run Correctness Check ---
-                # ref_logits, ref_cost = ref_fp8_mqa_logits(Q, K, weights, ks, ke)
-                # lightop_logits = lightop.mqa_logits(Q, K, weights, ks, ke)
-                # # pdb.set_trace()
-                # ref_neginf_mask = (ref_logits == float('-inf'))
-                # neginf_mask = (lightop_logits == float('-inf'))
-                # assert torch.equal(neginf_mask, ref_neginf_mask), "Masks differ!"
-
-                # ref_logits = ref_logits.masked_fill(ref_neginf_mask, 0)
-                # lightop_logits = lightop_logits.masked_fill(neginf_mask, 0)
                 
-                # diff_max = (ref_logits - lightop_logits).abs().max()
-                
-                # assert torch.allclose(lightop_logits, ref_logits, rtol=1e-3, atol=1e-3), \
-                #      f"❌ Precision check failed! Max diff: {diff_max}"
+                ref_logits, ref_cost = ref_fp8_mqa_logits(Q, K, weights, ks, ke)
+                lightop_logits = lightop.mqa_logits(Q, K, weights, ks, ke)
+                # pdb.set_trace()
+                ref_neginf_mask = (ref_logits == float('-inf'))
+                neginf_mask = (lightop_logits == float('-inf'))
+                # pdb.set_trace()
+                assert torch.equal(neginf_mask, ref_neginf_mask), "Masks differ!"
 
-                # print(f" Precision OK (Max Err: {diff_max:.2e})")
+                ref_logits = ref_logits.masked_fill(ref_neginf_mask, 0)
+                lightop_logits = lightop_logits.masked_fill(neginf_mask, 0)
                 
-                results_data.append({
-                    "Q Seq Len": q_seq_len,
-                    "KV Seq Len": kv_seq_len,
-                    "Head Num": head_num,
-                    "Head Dim": head_dim,
-                    "Time (us)": round(elapsed_time_us, 2)
-                })
+                diff_max = (ref_logits - lightop_logits).abs().max()
+              
+                assert torch.allclose(lightop_logits, ref_logits, rtol=1e-3, atol=1e-3), \
+                     f"❌ Precision check failed! Max diff: {diff_max}"
+
+                print(f"✅ Precision OK (Max Err: {diff_max:.2e})")
 
             else:
                 ref_logits, ref_cost = ref_fp8_mqa_logits(Q, K, weights, ks, ke)
                 lightop_logits = lightop.mqa_logits(Q, K, weights, ks, ke)
-                
+                # pdb.set_trace()
                 ref_neginf_mask = (ref_logits == float('-inf'))
                 neginf_mask = (lightop_logits == float('-inf'))
                 
@@ -148,7 +146,7 @@ if __name__ == "__main__":
                 assert torch.allclose(lightop_logits, ref_logits, rtol=1e-3, atol=1e-3), \
                      f"❌ Precision check failed! Max diff: {diff_max}"
 
-                print(f" Precision OK (Max Err: {diff_max:.2e})")
+                print(f"✅ Precision OK (Max Err: {diff_max:.2e})")
 
 
     if write_csv:

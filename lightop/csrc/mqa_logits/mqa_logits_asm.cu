@@ -268,7 +268,17 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch(
     __shared__ scalar_t A_Seme[2][16 * 128 + 16 * 4];
     __shared__ uint32_t boundary_Seme[BlOCK_M];
     __shared__ float W_Seme[2][BlOCK_M];
-    //  __shared__ float C_Seme[BlOCK_M][BLOCK_N+1];
+    
+    // Split-K
+    const int num_split = gridDim.z;
+    const int split_idx = blockIdx.z;
+    const int heads_per_split = (num_heads + num_split - 1) / num_split;
+    const int start_h = split_idx * heads_per_split;
+    const int end_h = (start_h + heads_per_split) < num_heads ? (start_h + heads_per_split) : num_heads;
+
+    // 如果此 block 没有分到 work，直接退出
+    if (start_h >= end_h) return;
+
     // 后面有同步
     if (tid < BlOCK_M) {
         if constexpr (is_align_m) {
@@ -282,14 +292,14 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch(
         }
     }
 
-    if (M > 0) {
-        const int ke_max_idx_in_block = blockIdx_y * BlOCK_M + BlOCK_M - 1;
-        const int clamped_ke_idx = (ke_max_idx_in_block < M) ? ke_max_idx_in_block : (M - 1);
+    // if (num_split == 1) {
+    //     const int ke_max_idx_in_block = blockIdx_y * BlOCK_M + BlOCK_M - 1;
+    //     const int clamped_ke_idx = (ke_max_idx_in_block < M) ? ke_max_idx_in_block : (M - 1);
+    //     if (blockIdx_x * BLOCK_N >= KE[clamped_ke_idx]) {
+    //         return;
+    //     }
+    // }
 
-        if (blockIdx_x * BLOCK_N >= KE[clamped_ke_idx]) {
-            return;
-        }
-    }
     floatx4 C_reg_out = {0.0, 0.0, 0.0, 0.0};
     half4x8 A_reg;
     half4x8 B_reg;
@@ -310,24 +320,28 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch(
     const int stg_row = lane % 16 + blockIdx_y * BlOCK_M;
     const int stg_col = lane / 16 + warp_idx * 16 + blockIdx_x * BLOCK_N;
 
-    // TODO buffer_load
+
     /* B转置了 */
     loadtileB2reg<scalar_t, is_align_n>(B_reg, B_data, ldg_col_B, ldg_row_B, head_dim, N);
+
+
+    ldg_col_A += start_h * 128;
 
     // A->reg
     if (ldg_row_A < M) {
         FETCH_HALF8(A_reg_move[0]) = FETCH_HALF8(A_data[ldg_row_A * K + ldg_col_A]);
     }
-    // A_reg to lds
+    
     FETCH_HALF8(A_Seme[0][sts_row_A * 132 + sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
     if constexpr (is_align_m) {
         if (tid < 16) {
-            W_Seme[0][tid] = Weights_data[stg_row * num_heads];
+            // 
+            W_Seme[0][tid] = Weights_data[stg_row * num_heads + start_h];
         }
     } else {
         if (tid < 16) {
             if (stg_row < M) {
-                W_Seme[0][tid] = Weights_data[stg_row * num_heads];
+                W_Seme[0][tid] = Weights_data[stg_row * num_heads + start_h];
             } else {
                 W_Seme[0][tid] = 0.f;
             }
@@ -336,7 +350,11 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch(
     __syncthreads();
     ldg_col_A += 128; // 滑动到下一个head;
 
-    for (int i = 0; i < num_heads; i++) {
+
+    const int num_iters = end_h - start_h;
+    for (int iter = 0; iter < num_iters; iter++) {
+        int i = start_h + iter;
+        
         int offset;
         if constexpr (is_align_m) {
             offset = (ldg_row_A * K + ldg_col_A) * 2;
@@ -347,57 +365,95 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch(
                 offset = -1; // 越界取0
             }
         }
-        bool is_load = (i + 1 < num_heads);
+        
+        bool is_load = (iter + 1 < num_iters); 
         cp_async4_vgpr(reinterpret_cast<intx4*>(&A_reg_move[0]), A_data, offset, is_load);
 
         floatx4 C_reg = {0.0, 0.0, 0.0, 0.0};
         asm volatile("s_waitcnt lgkmcnt(0)");
-        FETCH_HALF4(A_reg.data[0]) = FETCH_HALF4(A_Seme[i % 2][lds_row_A * 132 + lds_col_A + 0 * 16]);
+        
+        const int buf_idx = iter % 2;
+        
+        FETCH_HALF4(A_reg.data[0]) = FETCH_HALF4(A_Seme[buf_idx][lds_row_A * 132 + lds_col_A + 0 * 16]);
         for (int k = 0; k < 7; k++) {
-            FETCH_HALF4(A_reg.data[k + 1]) = FETCH_HALF4(
-                A_Seme[i % 2][lds_row_A * 132 + lds_col_A + (k + 1) * 16]);
+            FETCH_HALF4(A_reg.data[k + 1]) = FETCH_HALF4(A_Seme[buf_idx][lds_row_A * 132 + lds_col_A + (k + 1) * 16]);
             builtin_amdgcn_mmac<is_half>(A_reg.data[k], B_reg.data[k], C_reg);
         }
         builtin_amdgcn_mmac<is_half>(A_reg.data[7], B_reg.data[7], C_reg);
 
         // asm volatile("s_waitcnt lgkmcnt(0)");
-        float w = W_Seme[i % 2][lane % 16];
+        float w = W_Seme[buf_idx][lane % 16];
         for (int j = 0; j < 4; j++) {
             C_reg[j] = fmaxf(C_reg[j], 0.0f);
             C_reg_out[j] += C_reg[j] * w;
         }
         //  __syncthreads();
-        if (i + 1 < num_heads) {
+        if (iter + 1 < num_iters) {
             if (tid < 16) {
+                const int next_head_idx = i + 1;
+                const int next_buf_idx = 1 - buf_idx;
                 if constexpr(is_align_m) {
-                    W_Seme[1 - i % 2][tid] = Weights_data[stg_row * num_heads + (i + 1)];
+                    W_Seme[next_buf_idx][tid] = Weights_data[stg_row * num_heads + next_head_idx];
                 } else {
                     if (stg_row < M) {
-                        W_Seme[1 - i % 2][tid] = Weights_data[stg_row * num_heads + (i + 1)];
+                        W_Seme[next_buf_idx][tid] = Weights_data[stg_row * num_heads + next_head_idx];
                     } else {
-                        W_Seme[1 - i % 2][tid] = 0.0f;
+                        W_Seme[next_buf_idx][tid] = 0.0f;
                     }
                 }
             }
             asm volatile("s_waitcnt vmcnt(0)");
-            FETCH_HALF8(A_Seme[1 - i % 2][sts_row_A * 132 + sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
+            FETCH_HALF8(A_Seme[1 - buf_idx][sts_row_A * 132 + sts_col_A]) = FETCH_HALF8(A_reg_move[0]);
             ldg_col_A += 128;
         }
         asm volatile("s_barrier");
     }
     const int boundary = boundary_Seme[lane % 16];
+    
+
+    bool use_atomic = (num_split > 1);
+    constexpr float neg_inf = -std::numeric_limits<float>::infinity();
+
     if (stg_row < M) {
-        if (stg_col < boundary && stg_col < N) {
-            D_data[stg_row * N + stg_col] = C_reg_out[0];
+        if (stg_col < N) {
+            if (stg_col < boundary) {
+                if(use_atomic) atomicAdd(&D_data[stg_row * N + stg_col], C_reg_out[0]);
+                else D_data[stg_row * N + stg_col] = C_reg_out[0];
+            } else {
+                if ( split_idx == 0) {
+                    D_data[stg_row * N + stg_col] = neg_inf;
+                }
+            }
         }
-        if (stg_col + 4 < boundary && stg_col + 4 < N) {
-            D_data[stg_row * N + stg_col + 4] = C_reg_out[1];
+        if (stg_col + 4 < N) {
+            if (stg_col + 4 < boundary) {
+                if(use_atomic) atomicAdd(&D_data[stg_row * N + stg_col + 4], C_reg_out[1]);
+                else D_data[stg_row * N + stg_col + 4] = C_reg_out[1];
+            } else {
+                if (split_idx == 0) {
+                    D_data[stg_row * N + stg_col + 4] = neg_inf;
+                }
+            }
         }
-        if (stg_col + 8 < boundary && stg_col + 8 < N) {
-            D_data[stg_row * N + stg_col + 8] = C_reg_out[2];
+        if (stg_col + 8 < N) {
+            if (stg_col + 8 < boundary) {
+                if(use_atomic) atomicAdd(&D_data[stg_row * N + stg_col + 8], C_reg_out[2]);
+                else D_data[stg_row * N + stg_col + 8] = C_reg_out[2];
+            } else {
+                if (split_idx == 0) {
+                    D_data[stg_row * N + stg_col + 8] = neg_inf;
+                }
+            }
         }
-        if (stg_col + 12 < boundary && stg_col + 12 < N) {
-            D_data[stg_row * N + stg_col + 12] = C_reg_out[3];
+        if (stg_col + 12 < N) {
+            if (stg_col + 12 < boundary) {
+                if(use_atomic) atomicAdd(&D_data[stg_row * N + stg_col + 12], C_reg_out[3]);
+                else D_data[stg_row * N + stg_col + 12] = C_reg_out[3];
+            } else {
+                if (!use_atomic || split_idx == 0) {
+                    D_data[stg_row * N + stg_col + 12] = neg_inf;
+                }
+            }
         }
     }
 }
@@ -1071,15 +1127,20 @@ torch::Tensor mqa_logits(
     bool clean_logits = true) {
 
     const int M = q_seq_len;
-    // const int K = head_dim;
     const int N = kv_seq_len;
+    auto qtype = Q.scalar_type();
+    auto ktype = K.scalar_type();
+    if (!((qtype == torch::kHalf && ktype == torch::kHalf) || (qtype == torch::kBFloat16 && ktype == torch::kBFloat16))) {
+        TORCH_CHECK(false, "Q和K的类型必须同时为FP16或同时为BF16!");
+    }
+    auto Weightstype = Weights.scalar_type();
+    if(Weightstype != torch::kFloat32){
+         TORCH_CHECK(false, "Weights的数据类型必须为fp32!");
+    }
+    
     if (M >= 128) {
         torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
-        auto qtype = Q.scalar_type();
-        auto ktype = K.scalar_type();
-        if (!((qtype == torch::kHalf && ktype == torch::kHalf) || (qtype == torch::kBFloat16 && ktype == torch::kBFloat16))) {
-            TORCH_CHECK(false, "Q和K的类型必须同时为FP16或同时为BF16!");
-        }
+    
         const bool use_fp16 = (qtype == torch::kHalf);
         // 将维度对齐到128的整数倍
         const int q_seq_len_aligned = (q_seq_len + 127) / 128 * 128;
@@ -1104,12 +1165,11 @@ torch::Tensor mqa_logits(
         }
         return D.slice(0, 0, q_seq_len).slice(1, 0, kv_seq_len);
     } else {
-        torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
-        torch::Tensor D = torch::full({q_seq_len, kv_seq_len}, -std::numeric_limits<float>::infinity(), options);
+        torch::Tensor D;
         Input_Type_SWITCH(Q.scalar_type(), [&] {
             auto* q_ptr = reinterpret_cast<scalar_t*>(Q.data_ptr());
             auto* k_ptr = reinterpret_cast<scalar_t*>(K.data_ptr());
-            auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
+            //auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
             auto* w_ptr = reinterpret_cast<float*>(Weights.data_ptr());
             auto* ks_ptr = reinterpret_cast<uint32_t*>(KS.data_ptr());
             auto* ke_ptr = reinterpret_cast<uint32_t*>(KE.data_ptr());
@@ -1122,11 +1182,15 @@ torch::Tensor mqa_logits(
                 uint32_t* KE,
                 const int q_seq_len,
                 const int kv_seq_len);
-            auto launch_kernel = [&](kernel_t kernel_to_launch, dim3 grid, dim3 block) {
+            auto launch_kernel = [&](kernel_t kernel_to_launch, dim3 grid, dim3 block,float *d_ptr_local) {
                 kernel_to_launch<<<grid, block>>>(
-                    q_ptr, k_ptr, d_ptr, w_ptr, ks_ptr, ke_ptr, q_seq_len, kv_seq_len);
+                    q_ptr, k_ptr, d_ptr_local, w_ptr, ks_ptr, ke_ptr, q_seq_len, kv_seq_len);
             };
             if (N > 8192) {
+                torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
+                D = torch::full({q_seq_len, kv_seq_len}, -std::numeric_limits<float>::infinity(), options);
+                //D刚申请的空间
+                auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
                 const int blockx = (N + 127) / 128;
                 const int blocky = (M + 15) / 16;
                 dim3 threadsPerBlock(512);
@@ -1136,44 +1200,54 @@ torch::Tensor mqa_logits(
                 if (is_align_m) {
                     if (is_align_n) {
                         kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, 64, 128, 16, 128, 128, true, true>;
-                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock,d_ptr);
                     } else {
                         kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, 64, 128, 16, 128, 128, true, false>;
-                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock,d_ptr);
                     }
 
                 } else {
                     if (is_align_n) {
                         kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, 64, 128, 16, 128, 128, false, true>;
-                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock,d_ptr);
                     } else {
                         kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, 64, 128, 16, 128, 128, false, false>;
-                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock,d_ptr);
                     }
                 }
-
             } else {
+                //加了split_k 初始化为0
+                torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
+                D = torch::full({q_seq_len, kv_seq_len}, 0, options);
+                auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
                 const int blockx = DIV(N, 64);
                 const int blocky = DIV(M, 16);
                 dim3 threadsPerBlock(256);
                 dim3 numBlock(blockx, blocky);
                 bool is_align_m = (M % 16 == 0);
                 bool is_align_n = (N % 64 == 0);
-                if (is_align_m) {
+
+                int split_k = 4; 
+                if (M <= 32 && N <= 128) {
+                     split_k = 16; 
+                }
+                dim3 grid(blockx, blocky, split_k);
+
+                 if (is_align_m) {
                     if (is_align_n) {
                         kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, 64, 128, 16, 128, 64, true, true>;
-                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                        launch_kernel(kernel_ptr, grid, threadsPerBlock,d_ptr);
                     } else {
                         kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, 64, 128, 16, 128, 64, true, false>;
-                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                        launch_kernel(kernel_ptr, grid, threadsPerBlock,d_ptr);
                     }
                 } else {
                     if (is_align_n) {
                         kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, 64, 128, 16, 128, 64, false, true>;
-                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                        launch_kernel(kernel_ptr, grid, threadsPerBlock,d_ptr);
                     } else {
                         kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, 64, 128, 16, 128, 64, false, false>;
-                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock);
+                        launch_kernel(kernel_ptr, grid, threadsPerBlock,d_ptr);
                     }
                 }
             }
