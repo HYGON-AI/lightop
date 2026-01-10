@@ -1062,7 +1062,7 @@ void topk8GatingSoftmax_no_align(
     int my_search_expert_idx = -1; 
     int my_search_reg_idx = -1;   
 
-    const bool row_is_active = finished ? !finished[thread_row] : true;
+    // const bool row_is_active = finished ? !finished[thread_row] : true;
 
     const float* thread_row_ptr = input + thread_row * model_num_experts;
     const int thread_group_idx = threadIdx.x % THREADS_PER_ROW;
@@ -1279,8 +1279,9 @@ void topk8GatingSoftmax_no_align(
         if(thread_group_idx < 8){
             top_vals *= final_scale;
 
-            const bool node_uses_expert = top_indices >= start_expert && top_indices < end_expert;
-            top_indices = node_uses_expert ? (top_indices - start_expert) : NUM_EXPERTS;
+            const bool node_uses_expert = top_indices >= start_expert && top_indices < model_num_experts;
+            // 修复后
+            top_indices = node_uses_expert ? (top_indices - start_expert) : model_num_experts;
 
             const int base_idx = 8 * thread_row + thread_group_idx;
             
@@ -1411,6 +1412,10 @@ void topk_softmax(
     torch::Tensor& gating_output,
     bool Is_renormalize = false)               // [num_tokens, num_experts]
 {
+
+    TORCH_CHECK(topk_weights.scalar_type() == at::ScalarType::Float, 
+                "topk_weights must be Float32 (float)");
+                
     const int num_experts = gating_output.size(-1);
     const int num_tokens = gating_output.numel() / num_experts;
     const int topk = topk_weights.size(-1);
