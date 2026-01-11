@@ -279,7 +279,7 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
   if (T >= 1024) {
       // grid_opt = std::max(1, (int)num_tokens / (T / 256));
       int num_sms = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
-      grid_opt = num_sms * 25;
+      grid_opt = num_sms * 35;
   }
 
   dim3 grid(grid_opt); 
