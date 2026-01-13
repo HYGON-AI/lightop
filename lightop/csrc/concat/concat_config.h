@@ -96,5 +96,34 @@ static std::unordered_map<int, KernelFunc> kernel_maps_decode = {
     {6, [](const GemmParams<bhalf_t>& p) { launch_concat_decode<16, 8, 1024, 4, bhalf_t>(p); }},
 };
 
+
+using KernelFunc2 = std::function<void(const GemmParams<uint8_t>&)>;
+static std::unordered_map<int, KernelFunc2> kernel_maps_prefill_fp8 = {
+    {0, [](const GemmParams<uint8_t>& p) { launch_concat_prefill<16, 8, 1024, 4, uint8_t>(p); }},
+    {1, [](const GemmParams<uint8_t>& p) { launch_concat_prefill<8, 1, 1024, 1, uint8_t>(p); }},
+    {2, [](const GemmParams<uint8_t>& p) { launch_concat_prefill<8, 1, 1024, 2, uint8_t>(p); }},
+    {3, [](const GemmParams<uint8_t>& p) { launch_concat_prefill<8, 1, 1024, 4, uint8_t>(p); }},    
+    {4, [](const GemmParams<uint8_t>& p) { launch_concat_prefill<16, 1, 1024, 1, uint8_t>(p); }},
+    {5, [](const GemmParams<uint8_t>& p) { launch_concat_prefill<16, 1, 1024, 2, uint8_t>(p); }},
+    {6, [](const GemmParams<uint8_t>& p) { launch_concat_prefill<16, 8, 1024, 4, uint8_t>(p); }},
+    {7, [](const GemmParams<uint8_t>& p) { launch_concat_prefill<32, 1, 1024, 1, uint8_t>(p); }},
+    {8, [](const GemmParams<uint8_t>& p) { launch_concat_prefill<32, 1, 1024, 1, uint8_t>(p); }},
+    {9, [](const GemmParams<uint8_t>& p) { launch_concat_prefill<32, 1, 1024, 1, uint8_t>(p); }},
+    {10, [](const GemmParams<uint8_t>& p) { launch_concat_prefill<16, 2, 1024, 1, uint8_t>(p); }},
+    {11, [](const GemmParams<uint8_t>& p) { launch_concat_prefill<16, 2, 1024, 1, uint8_t>(p); }},
+    {12, [](const GemmParams<uint8_t>& p) { launch_concat_prefill<16, 2, 1024, 1, uint8_t>(p); }},
+
+};
+
+static std::unordered_map<int, KernelFunc2> kernel_maps_decode_fp8 = {
+    {0, [](const GemmParams<uint8_t>& p) { launch_concat_decode<4, 8, 1024, 4, uint8_t>(p); }},
+    {1, [](const GemmParams<uint8_t>& p) { launch_concat_decode<8, 1, 1024, 1, uint8_t>(p); }},
+    {2, [](const GemmParams<uint8_t>& p) { launch_concat_decode<8, 1, 1024, 2, uint8_t>(p); }},
+    {3, [](const GemmParams<uint8_t>& p) { launch_concat_decode<8, 1, 1024, 4, uint8_t>(p); }},    
+    {4, [](const GemmParams<uint8_t>& p) { launch_concat_decode<16, 1, 1024, 1, uint8_t>(p); }},
+    {5, [](const GemmParams<uint8_t>& p) { launch_concat_decode<16, 1, 1024, 2, uint8_t>(p); }},
+    {6, [](const GemmParams<uint8_t>& p) { launch_concat_decode<16, 8, 1024, 4, uint8_t>(p); }},
+};
+
 }
 }
