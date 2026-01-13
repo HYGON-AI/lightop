@@ -174,33 +174,21 @@ __global__ void act_and_mul_quant_kernel_opt1_ep(
     const int32_t expert_num,
     const int32_t *tokens_per_expert
     ) {
-    int32_t token_idx = blockIdx.x;
+    int32_t token_idx = blockIdx.x * T_dim + blockIdx.y;
     int32_t num_total_tokens = num_tokens;
 
     constexpr int share_size = block_size / C10_WARP_SIZE;
     __shared__ float val_shared[share_size];
     __shared__ float s_token_scale; 
 
-    extern __shared__ int32_t s_tokens_per_expert[];
-    int32_t num = expert_num / 4;
-
-    if (tokens_per_expert != nullptr) {
-        if (threadIdx.x < num) {
-            reinterpret_cast<int4*>(s_tokens_per_expert)[threadIdx.x] = 
-                reinterpret_cast<const int4*>(tokens_per_expert)[threadIdx.x];
-        }
-    }
-    __syncthreads();
-
-    for(; token_idx < num_total_tokens ; token_idx += gridDim.x)
+    for(; token_idx < num_total_tokens ; token_idx += gridDim.y)
     {
         if (tokens_per_expert != nullptr) {
             const int32_t e = token_idx / T_dim; 
             const int32_t t = token_idx % T_dim; 
             
-            if (t >= s_tokens_per_expert[e]) {
-            // if (t >= tokens_per_expert[e]) {
-                continue; 
+            if (t >= tokens_per_expert[e]) {
+                break; 
             }
         }
 
@@ -275,17 +263,6 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
   int32_t d = H / 2;
   int32_t num_tokens = E * T; 
   
-  int32_t grid_opt = num_tokens;
-  if (T >= 1024) {
-      // grid_opt = std::max(1, (int)num_tokens / (T / 256));
-      int num_sms = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
-      grid_opt = num_sms * 35;
-  }
-
-  dim3 grid(grid_opt); 
-  // dim3 block(std::min(d, 1024));
-  size_t shared_mem_bytes = E * sizeof(int32_t);
-
   if (num_tokens == 0) {
     return;
   }
@@ -300,11 +277,12 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
 
   VLLM_DISPATCH_FLOATING_TYPES(
       input.scalar_type(), "act_and_mul_kernel_ep", [&] {
-        if(T >= 1024){
+        if(T >= 128){
+          dim3 grid(E, 128);
           if (0 == d % 8 && d <= 16384) {
             if (d <= 512) {
               act_and_mul_quant_kernel_opt1_ep<scalar_t, 2, true, 256>
-                  <<<grid, 256, shared_mem_bytes, stream>>>(num_tokens ,
+                  <<<grid, 256, 0, stream>>>(num_tokens ,
                                             out.data_ptr<int8_t>(),
                                             input.data_ptr<scalar_t>(),
                                             scales.data_ptr<float>(),
@@ -314,7 +292,7 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
                                             tokens_per_expert_ptr); 
             } else if (d <= 1024) {
               act_and_mul_quant_kernel_opt1_ep<scalar_t, 8, true, 128>
-                  <<<grid, 128, shared_mem_bytes, stream>>>(num_tokens ,
+                  <<<grid, 128, 0, stream>>>(num_tokens ,
                                             out.data_ptr<int8_t>(),
                                             input.data_ptr<scalar_t>(),
                                             scales.data_ptr<float>(),
@@ -323,40 +301,18 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
                                             E, 
                                             tokens_per_expert_ptr); 
             } else if (d <= 2048) {
-              if((E == 8 && T >= 4096) || (E == 16 && T >= 2048)){
-                act_and_mul_quant_kernel_opt1_ep<scalar_t, 32, true, 64>
-                    <<<grid, 64, shared_mem_bytes, stream>>>(num_tokens ,
-                                              out.data_ptr<int8_t>(),
-                                              input.data_ptr<scalar_t>(),
-                                              scales.data_ptr<float>(),
-                                              d,
-                                              T,
-                                              E,
-                                              tokens_per_expert_ptr); 
-              }else if((E == 8 && T < 4096) || (E == 16 && T < 2048)){
-                act_and_mul_quant_kernel_opt1_ep<scalar_t, 16, true, 128>
-                    <<<grid, 128, shared_mem_bytes, stream>>>(num_tokens ,
-                                              out.data_ptr<int8_t>(),
-                                              input.data_ptr<scalar_t>(),
-                                              scales.data_ptr<float>(),
-                                              d,
-                                              T,
-                                              E,
-                                              tokens_per_expert_ptr); 
-              }else{
-                act_and_mul_quant_kernel_opt1_ep<scalar_t, 8, true, 256>
-                    <<<grid, 256, shared_mem_bytes, stream>>>(num_tokens ,
-                                              out.data_ptr<int8_t>(),
-                                              input.data_ptr<scalar_t>(),
-                                              scales.data_ptr<float>(),
-                                              d,
-                                              T,
-                                              E,
-                                              tokens_per_expert_ptr);
-              }
+              act_and_mul_quant_kernel_opt1_ep<scalar_t, 8, true, 256>
+                  <<<grid, 256, 0, stream>>>(num_tokens ,
+                                            out.data_ptr<int8_t>(),
+                                            input.data_ptr<scalar_t>(),
+                                            scales.data_ptr<float>(),
+                                            d,
+                                            T,
+                                            E,
+                                            tokens_per_expert_ptr); 
             } else if (d <= 4096) {
               act_and_mul_quant_kernel_opt1_ep<scalar_t, 8, true, 512>
-                  <<<grid, 512, shared_mem_bytes, stream>>>(num_tokens ,
+                  <<<grid, 512, 0, stream>>>(num_tokens ,
                                             out.data_ptr<int8_t>(),
                                             input.data_ptr<scalar_t>(),
                                             scales.data_ptr<float>(),
@@ -366,7 +322,7 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
                                             tokens_per_expert_ptr); 
             } else if (d <= 8192) {
               act_and_mul_quant_kernel_opt1_ep<scalar_t, 8, true, 1024>
-                  <<<grid, 1024, shared_mem_bytes, stream>>>(num_tokens ,
+                  <<<grid, 1024, 0, stream>>>(num_tokens ,
                                               out.data_ptr<int8_t>(),
                                               input.data_ptr<scalar_t>(),
                                               scales.data_ptr<float>(),
@@ -376,7 +332,7 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
                                               tokens_per_expert_ptr); 
             } else {
               act_and_mul_quant_kernel_opt1_ep<scalar_t, 16, true, 1024>
-                  <<<grid, 1024, shared_mem_bytes, stream>>>(num_tokens ,
+                  <<<grid, 1024, 0, stream>>>(num_tokens ,
                                               out.data_ptr<int8_t>(),
                                               input.data_ptr<scalar_t>(),
                                               scales.data_ptr<float>(),
@@ -389,6 +345,8 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
             printf("ERROR:fuse_silu_mul_quant_ep.cu don't support this size.\n"); 
           } 
         }else{
+          int grid_opt = num_tokens;
+          dim3 grid(grid_opt);
           if (0 == d % 8 && d <= 16384) {
             if (d <= 512) {
               act_and_mul_quant_kernel_opt1_one_ep<scalar_t, 2, true, 256>
@@ -453,6 +411,7 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
       });
 }
 
+
 // void mul_and_silu_opt(torch::Tensor& out,    // [..., d]
 //                   torch::Tensor& input)  // [..., 2 * d]
 // {
@@ -475,3 +434,4 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
 
 }
 }
+
