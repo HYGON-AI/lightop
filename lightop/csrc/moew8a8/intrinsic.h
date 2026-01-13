@@ -436,6 +436,20 @@ static __device__ inline uint16_t f32_to_bf16(float f){
 
 }
 
+// 通用的 f32 转换函数模板
+template<typename OutputType>
+__device__ inline OutputType f32_to_output(float f) {
+    if constexpr (std::is_same<OutputType, bhalf_t>::value) {
+        uint16_t bf16_val = f32_to_bf16(f);
+        return *reinterpret_cast<bhalf_t*>(&bf16_val);
+    } else if constexpr (std::is_same<OutputType, half>::value) {
+        return __float2half(f);
+    } else {
+        // 默认情况，直接转换
+        return static_cast<OutputType>(f);
+    }
+}
+
 //f32转bf16
 // to simplify f32 -> bf16 conversion, filter some branch
 // inline __HOST_DEVICE__ bhalf_t inlineasm_float2bfloat16_nonan(const float f) {

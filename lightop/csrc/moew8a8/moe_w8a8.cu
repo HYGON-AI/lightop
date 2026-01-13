@@ -184,7 +184,8 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_HIP_NT_PREFILL_UP
 }
 
 template<
-  typename Element, 
+  typename Element,
+  typename OutputType,
   uint16_t WARP_NUM,
   uint16_t BLOCK_SIZE_M, 
   uint16_t BLOCK_SIZE_N, 
@@ -198,7 +199,7 @@ template<
 __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PREFILL_UP(
   const Element* __restrict__ input,
   const Element* __restrict__ qweight,
-  bhalf_t* __restrict__ output,
+  OutputType* __restrict__ output,
   float* __restrict__ input_scale,
   float* __restrict__ weight_scale,
   const float* __restrict__ topk_weights,
@@ -237,7 +238,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PRE
   
   auto g_input = input;
   auto g_input_scale = input_scale; // 配置全局显存信息
-  bhalf_t* g_output;
+  OutputType* g_output;
 
   g_output = output + output_offset;
 
@@ -278,7 +279,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PRE
   extern __shared__ Element smem[];                                    // 声明lds信息
   Element* input_lds = (Element*)&(smem);                              // 输入lds首地址,首地址开始分配给input
   Element* qweight_lds = input_lds + STAGES * (BLOCK_SIZE_M * WARP_K); // 按照最简单的方式分块
-  bhalf_t* output_lds = (bhalf_t*)&(smem);                             // 重复使用lds,留给output_lds
+  OutputType* output_lds = (OutputType*)&(smem);                       // 重复使用lds,留给output_lds
   const int *sorted_token_ids_offset = sorted_token_ids;
 
   union_vec<Element, 8> A_reg[WARP_M / mfma_m * STAGES][WARP_K/mfma_k]; 
@@ -309,7 +310,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PRE
         float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
         float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
         int index = warp_m_id * WARP_M * BLOCK_SIZE_N + min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + warp_m_id * WARP_M+ (lane_id % 16) )/2 * 2/*padding*/;
-        output_lds[index] = f32_to_bf16(value);
+        output_lds[index] = f32_to_output<OutputType>(value);
       }
     }
   }
@@ -489,7 +490,8 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_HIP_NT_PREFILL_DO
 }
 
 template<
-  typename Element, 
+  typename Element,
+  typename OutputType,
   uint16_t WARP_NUM,
   uint16_t BLOCK_SIZE_M, 
   uint16_t BLOCK_SIZE_N, 
@@ -503,7 +505,7 @@ template<
 __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PREFILL_DOWN(
   const Element* __restrict__ input,
   const Element* __restrict__ qweight,
-  bhalf_t* __restrict__ output,
+  OutputType* __restrict__ output,
   float* __restrict__ input_scale,
   float* __restrict__ weight_scale,
   const float* __restrict__ topk_weights,
@@ -542,7 +544,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PRE
   
   auto g_input = input;
   auto g_input_scale = input_scale; // 配置全局显存信息
-  bhalf_t* g_output;
+  OutputType* g_output;
 
   g_output = output + output_offset;
 
@@ -583,7 +585,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PRE
   extern __shared__ Element smem[]; // 声明lds信息
   Element* input_lds = (Element*)&(smem); // 输入lds首地址,首地址开始分配给input
   Element* qweight_lds = input_lds + STAGES * (BLOCK_SIZE_M * WARP_K); // 按照最简单的方式分块
-  bhalf_t* output_lds = (bhalf_t*)&(smem); // 重复使用lds,留给output_lds
+  OutputType* output_lds = (OutputType*)&(smem); // 重复使用lds,留给output_lds
 
   const int *sorted_token_ids_offset = sorted_token_ids;
 
@@ -617,7 +619,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PRE
         float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
         float value = C_reg[0][min_tile_m * (WARP_N/mfma_n) + min_tile_n][reg_id] * weight_dot_a_scale_value * b_scale[0];
         int index = warp_m_id * WARP_M * BLOCK_SIZE_N + min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + warp_m_id * WARP_M + (lane_id % 16))/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
-        output_lds[index] = f32_to_bf16(value);
+        output_lds[index] = f32_to_output<OutputType>(value);
       }
     }
   }
@@ -816,7 +818,8 @@ __global__ void __launch_bounds__(1024) moe_w8a8_gemm1_deeepgemm(
 // weight重排
 
 template<
-  typename Element, 
+  typename Element,
+  typename OutputType,
   uint16_t WARP_NUM,
   uint16_t BLOCK_SIZE_M, 
   uint16_t BLOCK_SIZE_N, 
@@ -832,7 +835,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
   //const Element* __restrict__ input,
   const Element* input,
   const Element* __restrict__ qweight,
-  bhalf_t* __restrict__ output,
+  OutputType* __restrict__ output,
   float* __restrict__ input_scale,
   float* __restrict__ weight_scale,
   const float* __restrict__ topk_weights,
@@ -873,7 +876,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
   
   auto g_input = input;
   auto g_input_scale = input_scale; // 配置全局显存信息
-  bhalf_t* g_output;
+  OutputType* g_output;
   g_output = output + output_offset;
 
   if(expert_id == -1){ //EP算法处理 epxert_id为-1 写回0
@@ -914,7 +917,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
   extern __shared__ Element smem[]; // 声明lds信息
   Element* input_lds = (Element*)&(smem); // decode这里没用
   Element* qweight_lds = input_lds; // decode这里没用
-  bhalf_t* output_lds = (bhalf_t*)&(smem); // 重复使用lds,留给output_lds
+  OutputType* output_lds = (OutputType*)&(smem); // 重复使用lds,留给output_lds
   const int *sorted_token_ids_offset = sorted_token_ids;
 
   // union_vec<Element, 8> A_reg[WARP_M / mfma_m * STAGES][WARP_K/mfma_k]; 
@@ -954,7 +957,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
           float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
           float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
           int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + (lane_id % 16) )/2 * 2/*padding*/;
-          output_lds[index] = f32_to_bf16(value);
+          output_lds[index] = f32_to_output<OutputType>(value);
           // #if defined(__gfx938__)
           // output_lds[index] = __builtin_hcu_cvt_bf16_f32(value, false, false); //fp32->bf16 精度有问题
           // #endif
@@ -1184,7 +1187,8 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_HIP_NT_DECODE_UP(
 // 不固定block weight重排
 
 template<
-  typename Element, 
+  typename Element,
+  typename OutputType,
   uint16_t WARP_NUM,
   uint16_t BLOCK_SIZE_M, 
   uint16_t BLOCK_SIZE_N, 
@@ -1199,7 +1203,7 @@ template<
 __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_DOWN(
   const Element* __restrict__ input,
   const Element* __restrict__ qweight,
-  bhalf_t* __restrict__ output,
+  OutputType* __restrict__ output,
   float* __restrict__ input_scale,
   float* __restrict__ weight_scale,
   const float* __restrict__ topk_weights,
@@ -1240,7 +1244,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
   
   auto g_input = input;
   auto g_input_scale = input_scale; // 配置全局显存信息
-  bhalf_t* g_output;
+  OutputType* g_output;
   g_output = output + output_offset;
 
   if(expert_id == -1){ //EP算法处理 epxert_id为-1 写回0
@@ -1281,7 +1285,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
   extern __shared__ Element smem[]; // 声明lds信息
   Element* input_lds = (Element*)&(smem); // decode这里没用
   Element* qweight_lds = input_lds; // decode这里没用
-  bhalf_t* output_lds = (bhalf_t*)&(smem); // 重复使用lds,留给output_lds
+  OutputType* output_lds = (OutputType*)&(smem); // 重复使用lds,留给output_lds
 
   const int *sorted_token_ids_offset = sorted_token_ids;
 
@@ -1323,7 +1327,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
           float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
           float value = C_reg[0][min_tile_m * (WARP_N/mfma_n) + min_tile_n][reg_id] * weight_dot_a_scale_value * b_scale[0];
           int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + (lane_id % 16))/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
-          output_lds[index] = f32_to_bf16(value);
+          output_lds[index] = f32_to_output<OutputType>(value);
           // #if defined(__gfx938__)
           // output_lds[index] = __builtin_hcu_cvt_bf16_f32(value, false, false); //fp32->bf16
           // #endif
@@ -1572,8 +1576,8 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_HIP_NT_DECODE_DOW
 
 // launch_gemm1
 // 在GemmParams结构体后添加
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_w8a8_first_stage_prefill(const GemmParams<T>& params) {
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T, typename OutputType>
+void launch_moe_w8a8_first_stage_prefill(const GemmParams<T, OutputType>& params) {
     const int STAGES = BLOCK_SIZE_K/WARP_K;
     const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
     const bool mul_topk_weight = false;
@@ -1601,7 +1605,7 @@ void launch_moe_w8a8_first_stage_prefill(const GemmParams<T>& params) {
           GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
           params.ptr_A, 
           params.ptr_B0, 
-          params.ptr_C, 
+          (bhalf_t*)params.ptr_C, 
           params.ptr_A_scale, 
           params.ptr_B_scale,  
           params.topk_weights,
@@ -1620,11 +1624,11 @@ void launch_moe_w8a8_first_stage_prefill(const GemmParams<T>& params) {
           params.top_k,
           params.delta);
     }else{
-        MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PREFILL_UP<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+        MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PREFILL_UP<char, OutputType, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
           GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
           params.ptr_A, 
           params.ptr_B0, 
-          params.ptr_C, 
+          (OutputType*)params.ptr_C, 
           params.ptr_A_scale, 
           params.ptr_B_scale,  
           params.topk_weights,
@@ -1653,8 +1657,8 @@ void launch_moe_w8a8_first_stage_prefill(const GemmParams<T>& params) {
 
 // launch_gemm1
 // 在GemmParams结构体后添加
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
-void launch_moe_w8a8_second_stage_prefill(const GemmParams<T>& params) {
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T, typename OutputType>
+void launch_moe_w8a8_second_stage_prefill(const GemmParams<T, OutputType>& params) {
     const int STAGES = BLOCK_SIZE_K/WARP_K;
     const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
     const bool mul_topk_weight = true;
@@ -1694,7 +1698,7 @@ void launch_moe_w8a8_second_stage_prefill(const GemmParams<T>& params) {
         GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
         params.ptr_A, 
         params.ptr_B0, 
-        params.ptr_C, 
+        (bhalf_t*)params.ptr_C, 
         params.ptr_A_scale, 
         params.ptr_B_scale,  
         params.topk_weights,
@@ -1718,11 +1722,11 @@ void launch_moe_w8a8_second_stage_prefill(const GemmParams<T>& params) {
             printf("CUDA error in gemm2: %s\n", cudaGetErrorString(err));
         }
     }else{
-      MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PREFILL_DOWN<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+      MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_PREFILL_DOWN<char, OutputType, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
         GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
         params.ptr_A, 
         params.ptr_B0, 
-        params.ptr_C, 
+        (OutputType*)params.ptr_C, 
         params.ptr_A_scale, 
         params.ptr_B_scale,  
         params.topk_weights,
@@ -1750,8 +1754,8 @@ void launch_moe_w8a8_second_stage_prefill(const GemmParams<T>& params) {
 
 // launch_gemm1_decode
 // warp在n和k方向排列
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int STAGES, typename T>
-void launch_moe_w8a8_first_stage_decode(const GemmParams<T>& params) {
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int STAGES, typename T, typename OutputType>
+void launch_moe_w8a8_first_stage_decode(const GemmParams<T, OutputType>& params) {
     //constexpr int STAGES = 2;
     constexpr int WARP_NUM = (BLOCK_SIZE_N / WARP_N) * (BLOCK_SIZE_K / WARP_K);
     const bool mul_topk_weight = false;
@@ -1777,7 +1781,7 @@ void launch_moe_w8a8_first_stage_decode(const GemmParams<T>& params) {
         GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
         params.ptr_A, 
         params.ptr_B0, 
-        params.ptr_C, 
+        (bhalf_t*)params.ptr_C, 
         params.ptr_A_scale, 
         params.ptr_B_scale,  
         params.topk_weights,
@@ -1806,11 +1810,11 @@ void launch_moe_w8a8_first_stage_decode(const GemmParams<T>& params) {
       gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
       gridDim.x = 1; // k方向
 
-      MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_UP<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+      MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_UP<char, OutputType, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
       GROUP_N, GROUP_K, STAGES, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
       params.ptr_A, 
       params.ptr_B0, 
-      params.ptr_C, 
+      (OutputType*)params.ptr_C, 
       params.ptr_A_scale, 
       params.ptr_B_scale,  
       params.topk_weights,
@@ -1837,8 +1841,8 @@ void launch_moe_w8a8_first_stage_decode(const GemmParams<T>& params) {
 }
 
 // launch_gemm2_decode
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int STAGES, typename T>
-void launch_moe_w8a8_second_stage_decode(const GemmParams<T>& params) {
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int STAGES, typename T, typename OutputType>
+void launch_moe_w8a8_second_stage_decode(const GemmParams<T, OutputType>& params) {
     //const int STAGES = 2;
     const int WARP_NUM = (BLOCK_SIZE_N / WARP_N) * (BLOCK_SIZE_K / WARP_K);
     const bool mul_topk_weight = true;
@@ -1869,7 +1873,7 @@ void launch_moe_w8a8_second_stage_decode(const GemmParams<T>& params) {
         GROUP_N, GROUP_K, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
         params.ptr_A, 
         params.ptr_B0, 
-        params.ptr_C, 
+        (bhalf_t*)params.ptr_C, 
         params.ptr_A_scale, 
         params.ptr_B_scale,  
         params.topk_weights,
@@ -1895,11 +1899,11 @@ void launch_moe_w8a8_second_stage_decode(const GemmParams<T>& params) {
         //   gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
 
         gridDim.z = std::min(params.size_m * params.top_k, DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M)); // m方向
-        MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_DOWN<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+        MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DECODE_DOWN<char, OutputType, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
         GROUP_N, GROUP_K, STAGES, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
         params.ptr_A, 
         params.ptr_B0, 
-        params.ptr_C, 
+        (OutputType*)params.ptr_C, 
         params.ptr_A_scale, 
         params.ptr_B_scale,  
         params.topk_weights,
@@ -1979,7 +1983,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
         
 
-        GemmParams<char> params_in(
+        GemmParams<char, bhalf_t> params_in(
           (const char*)input.data_ptr<int8_t>(), 
           (const char*)b_qweight.data_ptr<int8_t>(), 
           (bhalf_t*)output_alias.data_ptr(),
@@ -2028,7 +2032,7 @@ torch::Tensor moe_gemm_w8a8(torch::Tensor input,
         int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
           
         // 使用int8类型处理
-        GemmParams<char> params_in(
+        GemmParams<char, bhalf_t> params_in(
           (const char*)input.data_ptr<int8_t>(), 
           (const char*)b_qweight.data_ptr<int8_t>(), 
           (bhalf_t*)output_alias.data_ptr(),
@@ -2129,100 +2133,205 @@ torch::Tensor moe_gemm_marlin_w8a8(torch::Tensor input,
     int num_pad = 0;
 
     if (input.scalar_type() == at::ScalarType::Char){
-      if(first_stage){
-     
-        int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
-        GemmParams<char> params_in(
-          (const char*)input.data_ptr<int8_t>(), 
-          (const char*)b_qweight.data_ptr<int8_t>(), 
-          (bhalf_t*)output_alias.data_ptr(),
-          (float*)a_scale.data_ptr(), 
-          (float*)b_scale.data_ptr(),  
-          topk_weights_ptr,
-          sorted_token_ids.data_ptr<int32_t>(),
-          expert_ids.data_ptr<int32_t>(), 
-          num_pad, //num_tokens_post_pad[0].item<int>(), //这里获取值 会造成device->host的拷贝和一部分空泡
-          num_tokens_post_pad.data_ptr<int32_t>(),
-          size_m,
-          size_n,
-          size_k,
-          stride_asm,
-          stride_ask,
-          stride_bse,
-          stride_bsn,
-          stride_bsk,
-          EM,
-          top_k,
-          delta,
-          is_marlin
-        );
+      // 根据output类型分发到不同的模板实例
+      if (output.scalar_type() == at::ScalarType::BFloat16) {
+        // BFloat16 类型
+        if(first_stage){
+       
+          int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
+          GemmParams<char, bhalf_t> params_in(
+            (const char*)input.data_ptr<int8_t>(), 
+            (const char*)b_qweight.data_ptr<int8_t>(), 
+            (bhalf_t*)output_alias.data_ptr(),
+            (float*)a_scale.data_ptr(), 
+            (float*)b_scale.data_ptr(),  
+            topk_weights_ptr,
+            sorted_token_ids.data_ptr<int32_t>(),
+            expert_ids.data_ptr<int32_t>(), 
+            num_pad, //num_tokens_post_pad[0].item<int>(), //这里获取值 会造成device->host的拷贝和一部分空泡
+            num_tokens_post_pad.data_ptr<int32_t>(),
+            size_m,
+            size_n,
+            size_k,
+            stride_asm,
+            stride_ask,
+            stride_bse,
+            stride_bsn,
+            stride_bsk,
+            EM,
+            top_k,
+            delta,
+            is_marlin
+          );
 
-        if(mode >= 500){
-          auto it = kernel_maps_gemm1_prefill.find(mode);
-          if (it != kernel_maps_gemm1_prefill.end()) {
-              it->second(params_in);
-          } else {
-              printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_w8a8_first_stage_prefill<16, 64, 128, 16, 16, 64>(params_in);
+          if(mode >= 500){
+            // 使用 kernel_maps
+            auto kernel_maps = get_kernel_maps_marlin_gemm1_prefill<bhalf_t>();
+            auto it = kernel_maps.find(mode);
+            if (it != kernel_maps.end()) {
+                it->second(params_in);
+            } else {
+                printf("No matching kernel configuration found for mode %d, using default settings \n", mode);
+                launch_moe_w8a8_first_stage_prefill<16, 64, 128, 16, 16, 64, char, bhalf_t>(params_in);
+            }
+          }else{ //decode 
+            auto kernel_maps = get_kernel_maps_marlin_gemm1_decode<bhalf_t>();
+            auto it = kernel_maps.find(mode);
+            if (it != kernel_maps.end()) {
+                it->second(params_in);
+            } else {
+                printf("No matching kernel configuration found for mode %d, using default settings \n", mode);
+                launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 64, 2, char, bhalf_t>(params_in);
+            }
           }
-        }else{ //decode 
-          auto it = kernel_maps_gemm1_decode.find(mode);
-          if (it != kernel_maps_gemm1_decode.end()) {
-              it->second(params_in);
-          } else {
-              printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 64, 2>(params_in);
+        }else{ //gemm2
+          int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
+            
+          // 使用int8类型处理
+          GemmParams<char, bhalf_t> params_in(
+            (const char*)input.data_ptr<int8_t>(), 
+            (const char*)b_qweight.data_ptr<int8_t>(), 
+            (bhalf_t*)output_alias.data_ptr(),
+            (float*)a_scale.data_ptr(), 
+            (float*)b_scale.data_ptr(),  
+            topk_weights_ptr,
+            sorted_token_ids.data_ptr<int32_t>(),
+            expert_ids.data_ptr<int32_t>(), 
+            num_pad, //num_tokens_post_pad[0].item<int>(),
+            num_tokens_post_pad.data_ptr<int32_t>(),
+            size_m,
+            size_n,
+            size_k,
+            stride_asm,
+            stride_ask,
+            stride_bse,
+            stride_bsn,
+            stride_bsk,
+            EM,
+            top_k,
+            delta,
+            is_marlin
+          );
+
+          if(mode >= 500){
+            auto kernel_maps = get_kernel_maps_marlin_gemm2_prefill<bhalf_t>();
+            auto it = kernel_maps.find(mode);
+            if (it != kernel_maps.end()) {
+                it->second(params_in);
+            } else {
+                printf("No matching kernel configuration found for mode %d, using default settings \n", mode);
+                launch_moe_w8a8_second_stage_prefill<16, 64, 128, 16, 16, 64, char, bhalf_t>(params_in);
+            }
+          }else{
+            auto kernel_maps = get_kernel_maps_marlin_gemm2_decode<bhalf_t>();
+            auto it = kernel_maps.find(mode);
+            if (it != kernel_maps.end()) {
+                it->second(params_in);
+            } else {
+                printf("No matching kernel configuration found for mode %d, using default settings \n", mode);
+                launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 64, 2, char, bhalf_t>(params_in);
+            }
           }
         }
-        
-      }else{ //gemm2
-        int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
-          
-        // 使用int8类型处理
-        GemmParams<char> params_in(
-          (const char*)input.data_ptr<int8_t>(), 
-          (const char*)b_qweight.data_ptr<int8_t>(), 
-          (bhalf_t*)output_alias.data_ptr(),
-          (float*)a_scale.data_ptr(), 
-          (float*)b_scale.data_ptr(),  
-          topk_weights_ptr,
-          sorted_token_ids.data_ptr<int32_t>(),
-          expert_ids.data_ptr<int32_t>(), 
-          num_pad, //num_tokens_post_pad[0].item<int>(),
-          num_tokens_post_pad.data_ptr<int32_t>(),
-          size_m,
-          size_n,
-          size_k,
-          stride_asm,
-          stride_ask,
-          stride_bse,
-          stride_bsn,
-          stride_bsk,
-          EM,
-          top_k,
-          delta,
-          is_marlin
-        );
+      } else if (output.scalar_type() == at::ScalarType::Half) {
+        // Float16 类型
+        if(first_stage){
+       
+          int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
+          GemmParams<char, half> params_in(
+            (const char*)input.data_ptr<int8_t>(), 
+            (const char*)b_qweight.data_ptr<int8_t>(), 
+            (half*)output_alias.data_ptr(),
+            (float*)a_scale.data_ptr(), 
+            (float*)b_scale.data_ptr(),  
+            topk_weights_ptr,
+            sorted_token_ids.data_ptr<int32_t>(),
+            expert_ids.data_ptr<int32_t>(), 
+            num_pad,
+            num_tokens_post_pad.data_ptr<int32_t>(),
+            size_m,
+            size_n,
+            size_k,
+            stride_asm,
+            stride_ask,
+            stride_bse,
+            stride_bsn,
+            stride_bsk,
+            EM,
+            top_k,
+            delta,
+            is_marlin
+          );
 
-        if(mode >= 500){
-          auto it = kernel_maps_gemm2_prefill.find(mode);
-          if (it != kernel_maps_gemm2_prefill.end()) {
-              it->second(params_in);
-          } else {
-              printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_w8a8_second_stage_prefill<16, 64, 128, 16, 16, 64>(params_in);
+          if(mode >= 500){
+            auto kernel_maps = get_kernel_maps_marlin_gemm1_prefill<half>();
+            auto it = kernel_maps.find(mode);
+            if (it != kernel_maps.end()) {
+                it->second(params_in);
+            } else {
+                printf("No matching kernel configuration found for mode %d, using default settings \n", mode);
+                launch_moe_w8a8_first_stage_prefill<16, 64, 128, 16, 16, 64, char, half>(params_in);
+            }
+          }else{ //decode 
+            auto kernel_maps = get_kernel_maps_marlin_gemm1_decode<half>();
+            auto it = kernel_maps.find(mode);
+            if (it != kernel_maps.end()) {
+                it->second(params_in);
+            } else {
+                printf("No matching kernel configuration found for mode %d, using default settings \n", mode);
+                launch_moe_w8a8_first_stage_decode<16, 32, 128, 16, 16, 64, 2, char, half>(params_in);
+            }
           }
-        }else
-        {
-          auto it = kernel_maps_gemm2_decode.find(mode);
-          if (it != kernel_maps_gemm2_decode.end()) {
-              it->second(params_in);
-          } else {
-              printf("No matching kernel configuration found, using default settings \n");
-              launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 64, 2>(params_in);
-          }
+        }else{ //gemm2
+          int64_t EM = sorted_token_ids.size(0); // 一维线性化的token id
+          // 使用int8类型处理
+          GemmParams<char, half> params_in(
+            (const char*)input.data_ptr<int8_t>(), 
+            (const char*)b_qweight.data_ptr<int8_t>(), 
+            (half*)output_alias.data_ptr(),
+            (float*)a_scale.data_ptr(), 
+            (float*)b_scale.data_ptr(),  
+            topk_weights_ptr,
+            sorted_token_ids.data_ptr<int32_t>(),
+            expert_ids.data_ptr<int32_t>(), 
+            num_pad,
+            num_tokens_post_pad.data_ptr<int32_t>(),
+            size_m,
+            size_n,
+            size_k,
+            stride_asm,
+            stride_ask,
+            stride_bse,
+            stride_bsn,
+            stride_bsk,
+            EM,
+            top_k,
+            delta,
+            is_marlin
+          );
 
+          if(mode >= 500){
+            auto kernel_maps = get_kernel_maps_marlin_gemm2_prefill<half>();
+            auto it = kernel_maps.find(mode);
+            if (it != kernel_maps.end()) {
+                it->second(params_in);
+            } else {
+                printf("No matching kernel configuration found for mode %d, using default settings \n", mode);
+                launch_moe_w8a8_second_stage_prefill<16, 64, 128, 16, 16, 64, char, half>(params_in);
+            }
+          }else{
+            auto kernel_maps = get_kernel_maps_marlin_gemm2_decode<half>();
+            auto it = kernel_maps.find(mode);
+            if (it != kernel_maps.end()) {
+                it->second(params_in);
+            } else {
+                printf("No matching kernel configuration found for mode %d, using default settings \n", mode);
+                launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 64, 2, char, half>(params_in);
+            }
+          }
         }
+      } else {
+        TORCH_CHECK(false, "moe_w8a8_gemm output只支持bfloat16或float16类型");
       }
     } else {
       TORCH_CHECK(false, "moe_w8a8_gemm only supports int8");
@@ -2233,4 +2342,3 @@ torch::Tensor moe_gemm_marlin_w8a8(torch::Tensor input,
 
 }
 }
-
