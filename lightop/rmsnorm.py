@@ -194,11 +194,12 @@ def fused_rms_norm_rope_contiguous(
     return
 
 
-def fuse_rmsnorm_rope_quant_gfx938(
+def fuse_rmsnorm_rope_quant_qkv(
     positions: torch.Tensor,
     q_c: torch.Tensor,
     q_pe: torch.Tensor,
     q_quant: torch.Tensor,
+    q_scale: torch.Tensor,
     k_pe: torch.Tensor,
     kv_c: torch.Tensor,
     kv_c_normed: torch.Tensor,
@@ -211,7 +212,7 @@ def fuse_rmsnorm_rope_quant_gfx938(
     is_neox_style: bool = False,
     epsilon: float = 1e-5,    
 )->None:
-    op.fuse_rmsnorm_rope_quant_gfx938(positions, q_c, q_pe, q_quant.view(torch.uint8), k_pe, kv_c, kv_c_normed, weight, cos_sin_cache, slot_mapping, kv_cache.view(torch.uint8), kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon)
+    op.fuse_rmsnorm_rope_quant_qkv(positions, q_c, q_pe, q_quant.view(torch.uint8), q_scale, k_pe, kv_c, kv_c_normed, weight, cos_sin_cache, slot_mapping, kv_cache.view(torch.uint8), kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon)
     return
 
 def fuse_fill_rms_x2_concat(
