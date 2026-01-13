@@ -1450,9 +1450,9 @@ def main(args: argparse.Namespace):
     # hidden_size=7168
     
     # # deepseek-r1-tp8
-    # E = 256
-    # shard_intermediate_size=512
-    # hidden_size=7168
+    E = 256
+    shard_intermediate_size=512
+    hidden_size=7168
     
     # ## deepseek-671b-tp4
     # E = 256
@@ -1465,10 +1465,10 @@ def main(args: argparse.Namespace):
     # hidden_size=7168
 
     # EP8
-    ep_size = 8
-    E = 256
-    shard_intermediate_size=2048
-    hidden_size=7168
+    # ep_size = 8
+    # E = 256
+    # shard_intermediate_size=2048
+    # hidden_size=7168
     
     # # deepseek-671b-tp1
     # E = 256
@@ -1504,7 +1504,8 @@ def main(args: argparse.Namespace):
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             #1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 
-            16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
+            #16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
+            400, 440, 480
             #1, 2, 4, 8, 16, 32, 64, 128
             # 256, 512, 1024, 2048, 
             # 4096, 8192, 16384
