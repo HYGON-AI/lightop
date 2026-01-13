@@ -623,7 +623,8 @@ def test_single_gemm_performance_accuracy(
     gemm_type: str,  # "gemm1" or "gemm2"
     is_first_stage: bool,
     per_channel_quant: bool = True,
-    compute_type: tl.dtype = tl.bfloat16
+    compute_type: tl.dtype = tl.bfloat16,
+    out_dtype: Type[torch.dtype] = torch.bfloat16
 ) -> Tuple[float, bool]:
     """
     测试单个GEMM的性能和精度
@@ -637,8 +638,8 @@ def test_single_gemm_performance_accuracy(
     else:  # gemm2
         output_shape = (input_tensor.shape[0] // 8, 8, weight.shape[1])
     
-    output_cuda = torch.zeros(output_shape, device=input_tensor.device, dtype=input_tensor.dtype)
-    output_triton = torch.zeros(output_shape, device=input_tensor.device, dtype=input_tensor.dtype)
+    output_cuda = torch.zeros(output_shape, device=input_tensor.device, dtype=out_dtype)
+    output_triton = torch.zeros(output_shape, device=input_tensor.device, dtype=out_dtype)
     
     # 准备输入量化
     qinput, qa_scale = moe_kernel_prepare_input(
@@ -724,7 +725,8 @@ def test_single_gemm_performance_accuracy(
         None,   # block_shape
         False   # use_nn_moe
     )
-    
+    # import pdb
+    # pdb.set_trace()
     # 精度验证：对比CUDA输出和Triton输出
     accuracy_passed = torch.allclose(output_cuda, output_triton, rtol=1e-2, atol=1e-2)
     if not accuracy_passed:
@@ -883,18 +885,21 @@ def test_moe_performance_accuracy(
     # 测试GEMM1
     gemm1_time, gemm1_accuracy = test_single_gemm_performance_accuracy(
         input_data, w1_marlin, weight1, weight1_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
-        num_tokens_post_padded, topk, cuda_config1, triton_config1, "gemm1", True, per_channel_quant, compute_type
+        num_tokens_post_padded, topk, cuda_config1, triton_config1, "gemm1", True, per_channel_quant, compute_type, out_dtype
     )
     
     # 执行CUDA GEMM1获取中间结果
-    intermediate_cache1 = torch.zeros((m, topk, n1), device=input_data.device, dtype=input_data.dtype)
+    intermediate_cache1 = torch.zeros((m, topk, n1), device=input_data.device, dtype=out_dtype)
     moe_gemm_marlin_w8a8(qinput1, w1_marlin, intermediate_cache1, qa1_scale, weight1_scale,
                   None, sorted_token_ids, expert_ids, num_tokens_post_padded, topk, cuda_config1)
     
-    # 执行激活函数
-    intermediate_cache2 = torch.empty((m * topk, n1 // 2), device=input_data.device, dtype=input_data.dtype)
-    torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1.view(-1, n1))
-    
+    # 执行激活函数 
+    # intermediate_cache2 = torch.empty((m * topk, n1 // 2), device=input_data.device, dtype=out_dtype)
+    # torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1.view(-1, n1))  #这里fp16 计算会溢出
+
+    # intermediate_cache2 = intermediate_cache1.view(-1, n1)[:, :n1 // 2]
+
+    intermediate_cache2 = torch.randn((m * topk, n1 // 2), device=input_data.device, dtype=out_dtype)
     # 准备第二阶段的输入
     qinput2, qa2_scale = moe_kernel_prepare_input(
         A=intermediate_cache2,
@@ -909,11 +914,12 @@ def test_moe_performance_accuracy(
         block_shape=None
     )
     
+    # import pdb; pdb.set_trace()
 
     # 测试GEMM2
     gemm2_time, gemm2_accuracy = test_single_gemm_performance_accuracy(
         intermediate_cache2, w2_marlin, weight2, weight2_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
-        num_tokens_post_padded, 1, cuda_config2, triton_config2, "gemm2", False, per_channel_quant, compute_type
+        num_tokens_post_padded, 1, cuda_config2, triton_config2, "gemm2", False, per_channel_quant, compute_type, out_dtype
     )
     
     # 整体精度验证已在单个GEMM测试中完成
@@ -1046,7 +1052,7 @@ def test_moe_debug(
     
     
     # 执行CUDA GEMM1获取中间结果
-    intermediate_cache1 = torch.zeros((m, topk, n1), device=input_data.device, dtype=input_data.dtype)
+    intermediate_cache1 = torch.zeros((m, topk, n1), device=input_data.device, dtype=out_dtype)
 
     # gemm1验证
     for i in range(85):
@@ -1055,11 +1061,11 @@ def test_moe_debug(
         print(f"run {i} start")
         torch.cuda.synchronize()
         moe_gemm_marlin_w8a8(qinput1, w1_marlin, intermediate_cache1, qa1_scale, weight1_scale,
-                    None, sorted_token_ids, expert_ids, num_tokens_post_padded, topk, cuda_config1)
+                  None, sorted_token_ids, expert_ids, num_tokens_post_padded, topk, cuda_config1)
         torch.cuda.synchronize()
         print(f"run {i} end")
 
-    intermediate_cache2 = torch.empty((m * topk, n1 // 2), device=input_data.device, dtype=input_data.dtype)
+    intermediate_cache2 = torch.empty((m * topk, n1 // 2), device=input_data.device, dtype=out_dtype)
     torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1.view(-1, n1))
     
     # 准备第二阶段的输入
@@ -1078,7 +1084,7 @@ def test_moe_debug(
 
     # gemm2验证
     output_shape = (intermediate_cache2.shape[0] // 8, 8, weight2.shape[1])
-    output_cuda = torch.zeros(output_shape, device=intermediate_cache2.device, dtype=intermediate_cache2.dtype)
+    output_cuda = torch.zeros(output_shape, device=intermediate_cache2.device, dtype=out_dtype)
     # geemm2
     for i in range(85):
         cuda_config1['MODE'] = i
