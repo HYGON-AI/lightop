@@ -37,7 +37,7 @@ def test_concat_Acc_prefill(shape_pair, dim):
     # print("result_lightop",result_lightop)
     assert torch.allclose(result, result_lightop, rtol=1e-5, atol=1e-5), "result_lightop Mismatch Triton error"
     assert torch.allclose(expected, result_lightop, rtol=1e-5, atol=1e-5), "result_lightop Mismatch torch error"
-    print("prefill 精度验证通过")
+    print("prefill_16bit 精度验证通过")
 
 def test_concat_Acc_decode(shape_pair, dim):
 
@@ -67,7 +67,7 @@ def test_concat_Acc_decode(shape_pair, dim):
     result = concat_helper_decode(x, y, dim=dim)
     assert torch.allclose(result, expected, rtol=1e-5, atol=1e-5), "Mismatch"
 
-    print("decode 精度正常")
+    print("decode_16bit 精度正常")
 
 
 
@@ -281,6 +281,157 @@ def benchmark_decode(M, N, provider, dim):
     return (ms*1000), (max_ms*1000), (min_ms*1000)
 
 
+
+
+def test_concat_Acc_prefill_8bit(shape_pair, dim):
+
+    torch.manual_seed(1)
+    shape1, shape2 = shape_pair
+    M = shape1[0]
+    N = shape1[1]
+    x_sizes = [M, N, 128]
+    x_strides = [N//8 * 2048, 256, 1]
+    x_max_index = N//8 * 2048 * M
+    x_required_length = x_max_index
+    x_data = torch.arange(x_required_length,device='cuda').to(torch.uint8)  
+    x = torch.as_strided(x_data, size=x_sizes, stride=x_strides)
+
+    
+    y_sizes = [M, N, 64]
+    y_strides = [576, 0, 1]
+    y_max_index = 576 * M
+    y_required_length = y_max_index
+    y_data = torch.arange(y_required_length,device='cuda').to(torch.uint8)  
+    y = torch.as_strided(y_data, size=y_sizes, stride=y_strides)
+    
+    expected = torch.cat([x,y], dim=dim)
+    # result = concat_prefill_helper_Triton(x, y, dim=dim)
+    result_lightop = lightop_concat_prefill_helper(x, y, dim=dim)
+    assert torch.allclose(expected, result_lightop, rtol=1e-5, atol=1e-5), "result_lightop Mismatch torch error"
+    print("prefill_8bit  精度验证通过")
+
+def test_concat_Acc_decode_8bit(shape_pair, dim):
+
+    torch.manual_seed(1)
+    shape1, shape2 = shape_pair
+    M = shape1[0]
+    N = shape1[1]
+    x_sizes = [M, N, 512]
+    x_strides = [512, 512*M, 1]
+    x_max_index = M * N * 512
+    x_required_length = x_max_index
+    x_data = torch.arange(x_required_length,device='cuda').to(torch.uint8)  
+    x = torch.as_strided(x_data, size=x_sizes, stride=x_strides)
+    # print("形状:", x.shape)      
+    # print("步幅:", x.stride())  
+    y_sizes = [M, N, 64]
+    y_strides = [1536*(N//8), 192, 1]
+    y_max_index = 1536*(N//8) * M
+    y_required_length = y_max_index
+    y_data = torch.arange(y_required_length,device='cuda').to(torch.uint8)  
+    y = torch.as_strided(y_data, size=y_sizes, stride=y_strides)
+    # print("形状:", y.shape)     
+    # print("步幅:", y.stride())   
+    
+    # print("x",x) 
+    # print("y",y)
+    expected = torch.cat([x,y], dim=dim)
+    result = concat_helper_decode(x, y, dim=dim)
+    assert torch.allclose(result, expected, rtol=1e-5, atol=1e-5), "Mismatch"
+
+    print("decode_8bit 精度正常")
+
+configs_8bit = []
+configs_8bit.append(
+    triton.testing.Benchmark(
+        x_names=['M','N'],
+        x_vals=[(1024,8),(2048,8),(3072,8),(4096,8),(6144,8),(8192,8),\
+                (1024,16),(2048,16),(3072,16),(4096,16),(6144,16),(8192,16),\
+                    (1024,32),(2048,32),(3072,32),(4096,32),(6144,32),(8192,32)
+                    ],
+        x_log=True,
+        line_arg='provider',
+        line_vals=['triton', 'torch', 'lightop'],
+        line_names=['Triton', 'Torch','Lightop'],
+        styles=[('blue', '-'), ('green', '-'), ('yellow', '-')],
+        ylabel='s',
+        plot_name='concat-dim2',
+        args={"dim":2},
+    ),
+)
+
+
+configs_decode_8bit = []
+configs_decode_8bit.append(
+    triton.testing.Benchmark(
+        x_names=['M','N'],
+        x_vals=[(4,8),(8,8),(16,8),(32,8),(64,8),(96,8),(128,8),(256,8),(512,8),(768,8),(767,8),(765,8),(766,8), \
+                (4,16),(8,16),(16,16),(32,16),(64,16),(96,16),(128,16),(256,16),(512,16),(768,16),(767,16),(765,16),(766,16), \
+                (4,32),(8,32),(16,32),(32,32),(64,32),(96,32),(128,32),(256,32),(512,32),(768,32),(767,32),(765,32),(766,32)],
+        x_log=True,
+        line_arg='provider',
+        line_vals=['lightop', 'torch'],
+        line_names=['Lightop', 'Torch'],
+        styles=[('blue', '-'), ('green', '-')],
+        ylabel='s',
+        plot_name='concat-dim2',
+        args={"dim":2},
+    ),
+)
+
+@triton.testing.perf_report(configs_8bit)
+def benchmark_prefill_8bit(M, N, provider, dim):
+
+    x_sizes = [M, N, 128]
+    x_strides = [N//8 * 2048, 256, 1]
+    x_max_index = N//8 * 2048 * M
+    x_required_length = x_max_index
+    x_data = torch.arange(x_required_length,device='cuda').to(torch.uint8)  
+    x = torch.as_strided(x_data, size=x_sizes, stride=x_strides)
+    
+    y_sizes = [M, N, 64]
+    y_strides = [576, 0, 1]
+    y_max_index = 576 * M
+    y_required_length = y_max_index
+    y_data = torch.arange(y_required_length,device='cuda').to(torch.uint8)  
+    y = torch.as_strided(y_data, size=y_sizes, stride=y_strides)
+  
+    quantiles = [0.5, 0.2, 0.8]
+    if provider == 'torch':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.cat([x,y],dim=dim), quantiles=quantiles)
+    if provider == 'triton':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: concat_prefill_helper_Triton(x, y,dim=dim), quantiles=quantiles)
+    if provider == 'lightop':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: lightop_concat_prefill_helper(x, y,dim=dim), quantiles=quantiles)
+    return (ms*1000), (max_ms*1000), (min_ms*1000)
+
+@triton.testing.perf_report(configs_decode_8bit)
+def benchmark_decode_8bit(M, N, provider, dim):
+
+    x_sizes = [M, N, 512]
+    x_strides = [512, 512*M, 1]
+    x_max_index = M * N * 512
+    x_required_length = x_max_index
+    x_data = torch.arange(x_required_length,device='cuda').to(torch.uint8)  
+    x = torch.as_strided(x_data, size=x_sizes, stride=x_strides)
+
+    
+    y_sizes = [M, N, 64]
+    y_strides = [1536*(N//8), 192, 1]
+    y_max_index = 1536*(N//8) * M
+    y_required_length = y_max_index 
+    y_data = torch.arange(y_required_length,device='cuda').to(torch.uint8)  
+    y = torch.as_strided(y_data, size=y_sizes, stride=y_strides)
+ 
+
+    quantiles = [0.5, 0.2, 0.8]
+    if provider == 'torch':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.cat([x,y],dim=dim), quantiles=quantiles)
+    if provider == 'lightop':
+        ms, min_ms, max_ms = triton.testing.do_bench(lambda: concat_helper_decode(x, y,dim=dim), quantiles=quantiles)
+    return (ms*1000), (max_ms*1000), (min_ms*1000)
+
+
 if __name__ == '__main__':
     benchmark_prefill.run(save_path="./triton_test",print_data=True)
     test_concat_Acc_prefill(((1024, 8, 128), (1024, 8, 64)),  2)  
@@ -313,5 +464,38 @@ if __name__ == '__main__':
     test_concat_Acc_decode(((765, 16, 512), (765, 16, 64)),  2)
     test_concat_Acc_decode(((766, 16, 512), (766, 16, 64)),  2)
     test_concat_Acc_decode(((765, 32, 512), (765, 32, 64)),  2)
-    test_concat_Acc_decode(((767, 32, 512), (767, 32, 64)),  2)    
+    test_concat_Acc_decode(((767, 32, 512), (767, 32, 64)),  2)
+
+    benchmark_prefill_8bit.run(save_path="./triton_test",print_data=True)
+    test_concat_Acc_prefill_8bit(((1024, 8, 128), (1024, 8, 64)),  2)  
+    test_concat_Acc_prefill_8bit(((2048, 8, 128), (2048, 8, 64)),  2)  
+    test_concat_Acc_prefill_8bit(((4096, 8, 128), (4096, 8, 64)),  2)  
+    test_concat_Acc_prefill_8bit(((8192, 8, 128), (8192, 8, 64)),  2)
+    test_concat_Acc_prefill_8bit(((1024, 16, 128), (1024, 16, 64)),  2)  
+    test_concat_Acc_prefill_8bit(((2048, 16, 128), (2048, 16, 64)),  2)  
+    test_concat_Acc_prefill_8bit(((4096, 16, 128), (4096, 16, 64)),  2)  
+    test_concat_Acc_prefill_8bit(((8192, 16, 128), (8192, 16, 64)),  2)  
+    test_concat_Acc_prefill_8bit(((1024, 32, 128), (1024, 32, 64)),  2)  
+    test_concat_Acc_prefill_8bit(((2048, 32, 128), (2048, 32, 64)),  2)  
+    test_concat_Acc_prefill_8bit(((4096, 32, 128), (4096, 32, 64)),  2)  
+    test_concat_Acc_prefill_8bit(((8192, 32, 128), (8192, 32, 64)),  2)
+
+    benchmark_decode_8bit.run(save_path="./cat_triton_test",print_data=True)
+    test_concat_Acc_decode_8bit(((16, 8, 512), (16, 8, 64)),  2)
+    test_concat_Acc_decode_8bit(((32, 8, 512), (32, 8, 64)),  2)
+    test_concat_Acc_decode_8bit(((128, 8, 512), (128, 8, 64)),  2)
+    test_concat_Acc_decode_8bit(((768, 8, 512), (768, 8, 64)),  2)    
+    test_concat_Acc_decode_8bit(((32, 16, 512), (32, 16, 64)),  2)
+    test_concat_Acc_decode_8bit(((32, 32, 512), (32, 32, 64)),  2)
+    test_concat_Acc_decode_8bit(((768, 32, 512), (768, 32, 64)),  2)
+    test_concat_Acc_decode_8bit(((128, 32, 512), (128, 32, 64)),  2)
+    test_concat_Acc_decode_8bit(((512, 32, 512), (512, 32, 64)),  2)
+
+    test_concat_Acc_decode_8bit(((765, 8, 512), (765, 8, 64)),  2)
+    test_concat_Acc_decode_8bit(((766, 8, 512), (766, 8, 64)),  2)
+    test_concat_Acc_decode_8bit(((767, 8, 512), (767, 8, 64)),  2)
+    test_concat_Acc_decode_8bit(((765, 16, 512), (765, 16, 64)),  2)
+    test_concat_Acc_decode_8bit(((766, 16, 512), (766, 16, 64)),  2)
+    test_concat_Acc_decode_8bit(((765, 32, 512), (765, 32, 64)),  2)
+    test_concat_Acc_decode_8bit(((767, 32, 512), (767, 32, 64)),  2)     
     

@@ -70,8 +70,9 @@ __global__ void __launch_bounds__(1024) concat_prefill_kernel(
   int warp_id_vec = tid / 64; 
   int warp_id = __builtin_amdgcn_readfirstlane(warp_id_vec); 
   int total_blockidx_num_A = block_num_A /per_block_A;  
-if(bidx < total_blockidx_num_A){ 
-  int theradnum_need_by_one_A_section = a_section_num / 8; 
+  int ele_num_perthread = 16 / sizeof(Element);
+  if(bidx < total_blockidx_num_A){ 
+  int theradnum_need_by_one_A_section = a_section_num / ele_num_perthread; 
   int num_warp_need_one_section = 0;
   int num_section_perwarp = 0;
   int total_num_section_perblock = 16;
@@ -83,8 +84,8 @@ if(bidx < total_blockidx_num_A){
     total_num_section_perblock = num_section_perwarp * WARP_NUM;
   }
   if(num_section_perwarp > 0 ){
-    int tid_insection_A = tid % 16;
-    int tid_section_num_A = tid / 16; 
+    int tid_insection_A = tid % theradnum_need_by_one_A_section;
+    int tid_section_num_A = tid / theradnum_need_by_one_A_section; 
     int itr = (per_block_A / total_num_section_perblock) ==0 ? 1 : (per_block_A / total_num_section_perblock);
     for(int init=0; init< itr ; init++){
       int sectiond = init * total_num_section_perblock + tid_section_num_A ;
@@ -94,7 +95,7 @@ if(bidx < total_blockidx_num_A){
           int M_idx =  sub_offset / N;
           int N_idx =  sub_offset % N;
           auto input_A_ptr_block_start = ginput_A + M_idx * stride_am +  N_idx * stride_an;
-          int threadindex_offset = tid_insection_A * 8;
+          int threadindex_offset = tid_insection_A * ele_num_perthread;
           if( threadindex_offset < a_section_num){
             vec_bf16_8 val_A  =  *(vec_bf16_8*)(input_A_ptr_block_start + threadindex_offset);
             *reinterpret_cast<vec_bf16_8*>(output_ptr_block_start_base + threadindex_offset) = val_A;
@@ -108,11 +109,11 @@ if(bidx < total_blockidx_num_A){
 }
 else{ 
     if(warp_id ==0){
+      int theradnum_need_by_one_B_section = b_section_num / ele_num_perthread; 
       int total_blockidx_num_B = block_num_B / per_block_B; 
-      int tid_insection_B = tid % 8; 
-      int tid_section_num_B = tid / 8;
-      int theradnum_need_by_one_B_section = 64 / (b_section_num / 8);
-      int total_num_section_perblock =  theradnum_need_by_one_B_section  * 1;
+      int tid_insection_B = tid % theradnum_need_by_one_B_section; 
+      int tid_section_num_B = tid / theradnum_need_by_one_B_section; 
+      int total_num_section_perblock =  64 / (b_section_num / ele_num_perthread)  * 1;
       int itr = (per_block_B / total_num_section_perblock) ==0 ? 1 : (per_block_B / total_num_section_perblock);  
       for(int init=0; init< itr ; init++){
         int sectiond = init * total_num_section_perblock + tid_section_num_B ;
@@ -120,7 +121,7 @@ else{
         if(sub_offset_B <= block_num_B - 1){
             auto output_ptr_block_start_base = goutput + sub_offset_B * c_section_num * N + a_section_num;
             auto input_B_ptr_block_start = ginput_B + sub_offset_B * stride_bm;
-            int threadindex_offset = tid_insection_B * 8;
+            int threadindex_offset = tid_insection_B * ele_num_perthread;
             if( threadindex_offset < b_section_num){
               vec_bf16_8 val_B  =  *(vec_bf16_8*)(input_B_ptr_block_start + threadindex_offset);
               for(int i=0;i<N;i++)
@@ -162,13 +163,18 @@ __global__ void __launch_bounds__(1024) concat_decode_kernel(
   auto ginput_A = const_cast<Element*>(input_A);
   auto ginput_B =  const_cast<Element*>(input_B);
   auto goutput = const_cast<Element*>(output);
+
   int tid = threadIdx.x;
   int warp_id_vec = tid / 64; 
   int warp_id = __builtin_amdgcn_readfirstlane(warp_id_vec); 
+  
   int total_blockidx_num_A = block_num_A /per_block_A;
-
-if(bidx < total_blockidx_num_A){ 
-  int theradnum_need_by_one_A_section = a_section_num / 8; //64
+  int ele_num_perthread = 16 / sizeof(Element);
+//处理A写回的线程块 
+if(bidx < total_blockidx_num_A){
+  
+  int theradnum_need_by_one_A_section = a_section_num / ele_num_perthread; 
+  
   int num_warp_need_one_section = 0;
   int num_section_perwarp = 0;
   int total_num_section_perblock = 0;
@@ -182,30 +188,29 @@ if(bidx < total_blockidx_num_A){
     total_num_section_perblock = num_section_perwarp * WARP_NUM;
   }
 
-
-  // if(num_section_perwarp > 0 ){
-  // if(num_section_perwarp > 0 ){
-  //   int tid_insection_A = tid % theradnum_need_by_one_A_section;
-  //   int tid_section_num_A = tid / theradnum_need_by_one_A_section; 
-  //   int itr = (per_block_A / total_num_section_perblock) ==0 ? 1 : (per_block_A / total_num_section_perblock);
-  //   for(int init=0; init< itr ; init++){
-  //     int sectiond = init * total_num_section_perblock + tid_section_num_A ;
-  //     int sub_offset = bidx * per_block_A + sectiond;
-  //     if(sub_offset <= block_num_A - 1){
-  //         auto output_ptr_block_start_base = goutput + sub_offset * c_section_num;
-  //         int M_idx =  sub_offset / N;
-  //         int N_idx =  sub_offset % N;
-  //         auto input_A_ptr_block_start = ginput_A + M_idx * stride_am +  N_idx * stride_an;
-  //         int threadindex_offset = tid_insection_A * 8;
-  //         if( threadindex_offset < a_section_num){
-  //           vec_bf16_8 val_A  =  *(vec_bf16_8*)(input_A_ptr_block_start + threadindex_offset);
-  //           *reinterpret_cast<vec_bf16_8*>(output_ptr_block_start_base + threadindex_offset) = val_A;
-  //         }
-  //     }
-  //   }
-  // }
-  // else 
-  if (num_warp_need_one_section > 0 ){
+  if(num_section_perwarp > 0 ){
+    int tid_insection_A = tid % theradnum_need_by_one_A_section;
+    int tid_section_num_A = tid / theradnum_need_by_one_A_section;
+    int itr = (per_block_A / total_num_section_perblock) ==0 ? 1 : (per_block_A / total_num_section_perblock);
+    
+    for(int init=0; init< itr ; init++){
+      int sectiond = init * total_num_section_perblock + tid_section_num_A ;
+      int sub_offset = bidx * per_block_A + sectiond;
+      if(sub_offset <= block_num_A - 1){
+          auto output_ptr_block_start_base = goutput + sub_offset * c_section_num;
+          int M_idx =  sub_offset / N;
+          int N_idx =  sub_offset % N;
+          auto input_A_ptr_block_start = ginput_A + M_idx * stride_am +  N_idx * stride_an;
+          int threadindex_offset = tid_insection_A * ele_num_perthread;
+          if( threadindex_offset < a_section_num){
+            vec_bf16_8 val_A  =  *(vec_bf16_8*)(input_A_ptr_block_start + threadindex_offset);
+            *reinterpret_cast<vec_bf16_8*>(output_ptr_block_start_base + threadindex_offset) = val_A;
+          }
+      }
+    }
+  }
+   
+  else if (num_warp_need_one_section > 0 ){
 
     int tid_insection_A = tid % theradnum_need_by_one_A_section;
 
@@ -213,7 +218,7 @@ if(bidx < total_blockidx_num_A){
     
     int itr = (per_block_A / total_num_section_perblock) ==0 ? 1 : (per_block_A / total_num_section_perblock);
     for(int init=0; init< itr ; init++){
-      //设计为只迭代一次
+     
       int sectiond = init * total_num_section_perblock + tid_section_num_A ;
 
       int sub_offset = bidx * per_block_A + sectiond;
@@ -238,10 +243,13 @@ if(bidx < total_blockidx_num_A){
     return ;
   }
 }
+//处理B写回的线程块
 else{ 
+ 
     if(warp_id ==0){
-      int theradnum_need_by_one_B_section = b_section_num / 8; 
-
+      
+      int theradnum_need_by_one_B_section = b_section_num / ele_num_perthread; 
+      
       int total_blockidx_num_B = block_num_B / per_block_B;
 
       int tid_insection_B = tid % theradnum_need_by_one_B_section;
@@ -263,7 +271,7 @@ else{
             int M_idx =  sub_offset_B / N;
             int N_idx =  sub_offset_B % N; 
             auto input_B_ptr_block_start = ginput_B + M_idx * stride_bm + N_idx *stride_bn;
-            int threadindex_offset = tid_insection_B * 8;
+            int threadindex_offset = tid_insection_B * ele_num_perthread;
             if( threadindex_offset < b_section_num){
               vec_bf16_8 val_B  =  *(vec_bf16_8*)(input_B_ptr_block_start + threadindex_offset);
                 *reinterpret_cast<vec_bf16_8*>(output_ptr_block_start_base + threadindex_offset) = val_B ;
@@ -289,7 +297,7 @@ void launch_concat_decode(const GemmParams<T>& params) {
     constexpr int lds_size = 0;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     int block_num_A = params.M * params.N;
-    concat_decode_kernel<bhalf_t, WARP_NUM, per_block_A, per_block_B,Blcoksize><<<gridDim, blockDim, lds_size, stream>>>(
+    concat_decode_kernel<T, WARP_NUM, per_block_A, per_block_B,Blcoksize><<<gridDim, blockDim, lds_size, stream>>>(
       params.input_A, 
       params.input_B, 
       params.ptr_C, 
@@ -334,7 +342,7 @@ void launch_concat_prefill(const GemmParams<T>& params) {
     constexpr int lds_size = 0;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     int block_num_A = params.M * params.N;
-    concat_prefill_kernel<bhalf_t, WARP_NUM, per_block_A, per_block_B,Blcoksize><<<gridDim, blockDim, lds_size, stream>>>(
+    concat_prefill_kernel<T, WARP_NUM, per_block_A, per_block_B,Blcoksize><<<gridDim, blockDim, lds_size, stream>>>(
       params.input_A, 
       params.input_B, 
       params.ptr_C, 
@@ -369,17 +377,17 @@ torch::Tensor ds_concat(
   ){
     if(input_A.dim()==3 && input_B.dim()==3 && output.dim()==3 ){
       int64_t M = input_A.size(0);
-      int64_t N = input_A.size(1); 
-      int a_section_num = input_A.size(2); 
-      int b_section_num = input_B.size(2); 
-      int c_section_num = output.size(2);  
+      int64_t N = input_A.size(1);
+      int a_section_num = input_A.size(2);
+      int b_section_num = input_B.size(2);
+      int c_section_num = output.size(2);
       const int stride_am = input_A.stride(0); 
       const int stride_an = input_A.stride(1); 
       const int stride_ak = input_A.stride(2); 
       const int stride_bm = input_B.stride(0); 
       const int stride_bn = input_B.stride(1); 
       const int stride_bk = input_B.stride(2); 
-
+      if (input_A.scalar_type() == at::ScalarType::BFloat16){
         GemmParams<bhalf_t> params_in(
           (bhalf_t*)input_A.data_ptr(), 
           (bhalf_t*)input_B.data_ptr(), 
@@ -415,6 +423,44 @@ torch::Tensor ds_concat(
               launch_concat_prefill<16, 8, 1024, 1, bhalf_t>(params_in);
           }
         }
+      }
+      else{
+        GemmParams<uint8_t> params_in(
+          (uint8_t*)input_A.data_ptr(), 
+          (uint8_t*)input_B.data_ptr(), 
+          (uint8_t*)output.data_ptr(),
+          M,
+          N,
+          a_section_num,
+          b_section_num,
+          c_section_num,
+          stride_am,
+          stride_an,
+          stride_ak,
+          stride_bm,
+          stride_bn,
+          stride_bk
+        );
+        if(M < 1024){
+          auto it = kernel_maps_decode_fp8.find(mode);
+          if (it != kernel_maps_decode_fp8.end()) {
+            it->second(params_in);
+          } 
+          else {
+              printf("No matching kernel configuration found, using default settings \n");
+              launch_concat_decode<4, 8, 1024, 4, uint8_t>(params_in);
+          }
+        }else{ 
+          auto it = kernel_maps_prefill_fp8.find(mode);
+          if (it != kernel_maps_prefill_fp8.end()) {
+            it->second(params_in);
+          } 
+          else {
+              printf("No matching kernel configuration found, using default settings \n");
+              launch_concat_prefill<16, 8, 1024, 1, uint8_t>(params_in);
+          }
+        }        
+      }
     }
     else{
       printf("input tensor must be dim 3\n");
