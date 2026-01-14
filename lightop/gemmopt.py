@@ -587,3 +587,12 @@ def paged_mqa_logits(
         max_context_len,
         clean_logits)
     return logits
+
+def fused_bmm(q_nope: torch.Tensor,
+              w_uv: torch.Tensor,
+              output: torch.Tensor,
+              a_scale: torch.Tensor,
+              b_scale: torch.Tensor,
+              bias: Optional[torch.Tensor] = None,
+              mode: int = 0) -> torch.Tensor:
+    return op.fused_bmm(q_nope, w_uv, output, a_scale, b_scale, bias, mode)
