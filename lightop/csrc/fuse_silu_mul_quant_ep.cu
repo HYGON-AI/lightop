@@ -163,6 +163,103 @@ __global__ void act_and_mul_quant_kernel_opt1_one_ep(
 }
 
 template <typename scalar_t, int VEC,
+          bool act_first, int block_size, int MAX_LOOPS> 
+__global__ void act_and_mul_quant_kernel_opt1_one_ep_loop(
+    int32_t num_tokens,                 
+    int8_t* __restrict__ out,
+    const scalar_t* __restrict__ input,
+    float* __restrict__ scales,
+    const int d,
+    const int32_t T,
+    const int32_t *tokens_per_expert,
+    const int loop_count 
+    ) {
+    
+    int32_t token_idx = blockIdx.x;
+
+    const int32_t e = token_idx / T; 
+    const int32_t t = token_idx % T;
+    
+    if (tokens_per_expert != nullptr && t >= tokens_per_expert[e]) {
+        return; 
+    }
+
+    constexpr int share_size = block_size / C10_WARP_SIZE;
+    __shared__ float val_shared[share_size];
+    
+    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+    using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
+
+    float r_y_cache[MAX_LOOPS][VEC];
+
+    const int64_t base_input_offset = (int64_t)token_idx * 2 * d;
+    const int64_t base_output_offset = (int64_t)token_idx * d;
+    
+    const int stride = block_size * VEC;
+
+    float row_max = 0.f;
+
+    #pragma unroll
+    for(int l = 0; l < MAX_LOOPS; ++l) {
+        if (l < loop_count) {
+            int current_col_idx = l * stride + threadIdx.x * VEC;
+
+            if (current_col_idx < d) {
+                const scalar_t* x1_ptr = input + base_input_offset + current_col_idx;
+                const scalar_t* x2_ptr = input + base_input_offset + d + current_col_idx;
+
+                VecType x1_vec = *(reinterpret_cast<const VecType*>(x1_ptr));
+                VecType x2_vec = *(reinterpret_cast<const VecType*>(x2_ptr));
+                
+                scalar_t* r_x1 = reinterpret_cast<scalar_t*>(&x1_vec);
+                scalar_t* r_x2 = reinterpret_cast<scalar_t*>(&x2_vec);
+
+                #pragma unroll
+                for (int i = 0; i < VEC; i++) {
+                    float val = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
+                    
+                    r_y_cache[l][i] = val; 
+                    
+                    row_max = fmaxf(row_max, fabsf(val));
+                }
+            }
+        }
+    }
+
+    row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
+    
+    __shared__ float s_token_scale; 
+    if(threadIdx.x == 0){
+        float scale = row_max;
+        s_token_scale = scale;  
+        scales[token_idx] = s_token_scale / 127.f;  
+    }
+    __syncthreads();
+
+    float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
+
+    #pragma unroll
+    for(int l = 0; l < MAX_LOOPS; ++l) {
+        if (l < loop_count) {
+            int current_col_idx = l * stride + threadIdx.x * VEC;
+            
+            if (current_col_idx < d) {
+                int8_t* out_ptr = out + base_output_offset + current_col_idx;
+                int8_t out_vec[VEC];
+
+                #pragma unroll
+                for(int i = 0; i < VEC; i++){
+                    float val = r_y_cache[l][i]; 
+                    out_vec[i] = float_to_int8_rn(val * inv_s);
+                }
+                
+                *(reinterpret_cast<VecInt8Type*>(out_ptr)) = *(reinterpret_cast<VecInt8Type*>(out_vec));
+            }
+        }
+    }
+}
+
+template <typename scalar_t, int VEC,
           bool act_first, int block_size>
 __global__ void act_and_mul_quant_kernel_opt1_ep(
     int32_t num_tokens,
@@ -248,6 +345,113 @@ __global__ void act_and_mul_quant_kernel_opt1_ep(
     } // 结束 Grid-Stride Loop
 }
 
+template <typename scalar_t, int VEC,
+          bool act_first, int block_size, int MAX_LOOPS>
+__global__ void act_and_mul_quant_kernel_opt1_ep_loop(
+    int32_t num_tokens,
+    int8_t* __restrict__ out,
+    const scalar_t* __restrict__ input,
+    float* __restrict__ scales,
+    const int d,
+    const int32_t T_dim, 
+    const int32_t expert_num,
+    const int32_t *tokens_per_expert,
+    const int loop_count 
+    ) {
+    
+
+    int32_t token_idx = blockIdx.x * T_dim + blockIdx.y;
+    int32_t num_total_tokens = num_tokens;
+
+    constexpr int share_size = block_size / C10_WARP_SIZE;
+    __shared__ float val_shared[share_size];
+    __shared__ float s_token_scale; 
+
+    float r_y_cache[MAX_LOOPS][VEC];
+
+    for(; token_idx < num_total_tokens ; token_idx += gridDim.y)
+    {
+        
+        if (tokens_per_expert != nullptr) {
+            const int32_t e = token_idx / T_dim; 
+            const int32_t t = token_idx % T_dim; 
+            
+            if (t >= tokens_per_expert[e]) {
+                break; 
+            }
+        }
+
+        using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+        using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
+
+        const int64_t base_input_offset = (int64_t)token_idx * 2 * d;
+        const int64_t base_output_offset = (int64_t)token_idx * d;
+        
+        const int stride = block_size * VEC;
+        float row_max = 0.f;
+
+        #pragma unroll
+        for(int l = 0; l < MAX_LOOPS; ++l) {
+            if (l < loop_count) {
+                int current_col_idx = l * stride + threadIdx.x * VEC;
+
+                if (current_col_idx < d) {
+                    const scalar_t* x1_ptr = input + base_input_offset + current_col_idx;
+                    const scalar_t* x2_ptr = input + base_input_offset + d + current_col_idx;
+
+                    VecType x1_vec = *(reinterpret_cast<const VecType*>(x1_ptr));
+                    VecType x2_vec = *(reinterpret_cast<const VecType*>(x2_ptr));
+                    
+                    scalar_t* r_x1 = reinterpret_cast<scalar_t*>(&x1_vec);
+                    scalar_t* r_x2 = reinterpret_cast<scalar_t*>(&x2_vec);
+
+                    #pragma unroll
+                    for (int i = 0; i < VEC; i++) {
+                        float val = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
+                        
+                        r_y_cache[l][i] = val; 
+                        
+                        row_max = fmaxf(row_max, fabsf(val));
+                    }
+                }
+            }
+        }
+
+        row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
+        
+        if(threadIdx.x == 0){
+            float scale = row_max;
+            s_token_scale = scale; 
+            scales[token_idx] = s_token_scale / 127.f;  
+        }
+        __syncthreads(); 
+
+        float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
+
+        #pragma unroll
+        for(int l = 0; l < MAX_LOOPS; ++l) {
+            if (l < loop_count) {
+                int current_col_idx = l * stride + threadIdx.x * VEC;
+                
+                if (current_col_idx < d) {
+                    int8_t* out_ptr = out + base_output_offset + current_col_idx;
+                    int8_t out_vec[VEC];
+
+                    #pragma unroll
+                    for(int i = 0; i < VEC; i++){
+                        float val = r_y_cache[l][i]; 
+                        out_vec[i] = float_to_int8_rn(val * inv_s);
+                    }
+                    
+                    // 向量化写回
+                    *(reinterpret_cast<VecInt8Type*>(out_ptr)) = *(reinterpret_cast<VecInt8Type*>(out_vec));
+                }
+            }
+        }
+
+    } // 结束 Grid-Stride Loop
+}
+
 void fuse_silu_mul_quant_ep(torch::Tensor& input, 
                                  torch::Tensor& out, 
                                  torch::Tensor& scales, 
@@ -279,7 +483,6 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
       input.scalar_type(), "act_and_mul_kernel_ep", [&] {
         if(T >= 128){
           dim3 grid(E, 128);
-          if (0 == d % 8 && d <= 16384) {
             if (d <= 512) {
               act_and_mul_quant_kernel_opt1_ep<scalar_t, 2, true, 256>
                   <<<grid, 256, 0, stream>>>(num_tokens ,
@@ -330,7 +533,7 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
                                               T, 
                                               E,
                                               tokens_per_expert_ptr); 
-            } else {
+            } else if (d <= 16384) {
               act_and_mul_quant_kernel_opt1_ep<scalar_t, 16, true, 1024>
                   <<<grid, 1024, 0, stream>>>(num_tokens ,
                                               out.data_ptr<int8_t>(),
@@ -340,14 +543,36 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
                                               T, 
                                               E,
                                               tokens_per_expert_ptr); 
+            } else if (d <= 32768) {
+              act_and_mul_quant_kernel_opt1_ep<scalar_t, 32, true, 1024>
+                  <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),
+                                              input.data_ptr<scalar_t>(),
+                                              scales.data_ptr<float>(),
+                                              d,
+                                              T, 
+                                              E,
+                                              tokens_per_expert_ptr); 
+            } else {
+              const int MAX_LOOPS = 2;
+              int loop_count = (d + 32768 - 1) / 32768;
+              if (loop_count > MAX_LOOPS) {
+                printf("fuse_silu_mul_quant.cu don't support this size");
+              }
+              act_and_mul_quant_kernel_opt1_ep_loop<scalar_t, 16, true, 1024, MAX_LOOPS>
+                  <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),
+                                              input.data_ptr<scalar_t>(),
+                                              scales.data_ptr<float>(),
+                                              d,
+                                              T, 
+                                              E,
+                                              tokens_per_expert_ptr, loop_count); 
             }
-          } else {
-            printf("ERROR:fuse_silu_mul_quant_ep.cu don't support this size.\n"); 
-          } 
+     
         }else{
           int grid_opt = num_tokens;
           dim3 grid(grid_opt);
-          if (0 == d % 8 && d <= 16384) {
             if (d <= 512) {
               act_and_mul_quant_kernel_opt1_one_ep<scalar_t, 2, true, 256>
                   <<<grid, 256, 0, stream>>>(num_tokens ,
@@ -393,7 +618,7 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
                                               d,
                                               T, 
                                               tokens_per_expert_ptr); 
-            } else {
+            } else if (d <= 16384) {
               act_and_mul_quant_kernel_opt1_one_ep<scalar_t, 16, true, 1024>
                   <<<grid, 1024, 0, stream>>>(num_tokens ,
                                               out.data_ptr<int8_t>(),
@@ -402,10 +627,32 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
                                               d,
                                               T, 
                                               tokens_per_expert_ptr); 
+            } else if (d <= 32768) {
+              act_and_mul_quant_kernel_opt1_one_ep<scalar_t, 32, true, 1024>
+                  <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),
+                                              input.data_ptr<scalar_t>(),
+                                              scales.data_ptr<float>(),
+                                              d,
+                                              T, 
+                                              tokens_per_expert_ptr); 
+            } else {
+              const int MAX_LOOPS = 2;
+              int loop_count = (d + 32768 - 1) / 32768;
+              if (loop_count > MAX_LOOPS) {
+                printf("fuse_silu_mul_quant.cu don't support this size");
+              }
+              act_and_mul_quant_kernel_opt1_one_ep_loop<scalar_t, 16, true, 1024, MAX_LOOPS>
+                  <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),
+                                              input.data_ptr<scalar_t>(),
+                                              scales.data_ptr<float>(),
+                                              d,
+                                              T, 
+                                              tokens_per_expert_ptr,
+                                              loop_count); 
             }
-          } else {
-            printf("ERROR:fuse_silu_mul_quant_ep.cu don't support this size.\n"); 
-          } 
+
         }
 
       });
