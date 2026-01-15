@@ -218,7 +218,6 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
     const int batch_size = q_nope.size(0); 
     const int n_size = q_nope.size(1);
     const int p_size = q_nope.size(2);
-    // const int mode = 500;
     const int l_size = w_uv.size(1);
     const int stride_asn = a_scale.stride(0);
     const int stride_asb = a_scale.stride(1);
@@ -226,7 +225,7 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
     const int stride_bsn = b_scale.stride(0);
     const int stride_bsl = b_scale.stride(1);
     const int stride_bsk = b_scale.stride(2);
-    
+
     torch::Tensor output_alias = output.alias();
 
     if (q_nope.scalar_type() == at::ScalarType::Char){
@@ -250,21 +249,17 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
           stride_bsl,
           stride_bsk
         );
-
-        launch_fused_bmm_decode<16, 64, 128, 16, 16, 64>(params_in);
-        // {
-        //   auto it = kernel_maps_fused_bmm.find(mode);
-        //   if (it != kernel_maps_fused_bmm.end()) {
-        //       it->second(params_in);
-        //   } else {
-        //       printf("No matching kernel configuration found, using default settings \n");
-        //       launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 64, 2>(params_in);
-        //   }
-
-        // }
+      
+        auto it = kernel_maps_fused_bmm.find(mode);
+        if (it != kernel_maps_fused_bmm.end()) {
+            it->second(params_in);
+        } else {
+            printf("No matching kernel configuration found, using default settings \n");
+            launch_fused_bmm_decode<16, 64, 128, 16, 16, 64, char>(params_in);
+        }
 
     } else {
-      TORCH_CHECK(false, "moe_w8a8_gemm only supports int8");
+      TORCH_CHECK(false, "fused_bmm only supports int8");
     }
 
     return output;
