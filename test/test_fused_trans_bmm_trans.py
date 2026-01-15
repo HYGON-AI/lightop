@@ -103,6 +103,76 @@ def fused_bmm_trans_impl_int8(input: torch.Tensor,                              
         print(f"kernel 精度检查合格.")
     return True
 
+def fused_bmm_trans_impl_int8_benchmark(input: torch.Tensor,                              # b，n, p
+                                        w_uk: torch.Tensor,                             # n, l, p
+                                        input_scale: Optional[torch.Tensor] = None,     # n, b, 1
+                                        w_uk_scale: Optional[torch.Tensor] = None,      # n, l, 1
+                                        bias: Optional[torch.Tensor] = None,            # b, l
+                                        config: Optional[Dict[str, Any]] = None,
+                                        mode: Optional[List[int]]=None):
+
+    # 用实际 shape 申请输出空间，避免依赖 zeros_like
+    b, n, p = input.shape
+    _, l, _ = w_uk.shape
+    cuda_output = torch.empty((b, n, l), dtype=torch.bfloat16, device=input.device)
+    
+    warm_up_num = 10
+    for i in range(warm_up_num):
+        fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, mode)
+        torch.cuda.synchronize()
+    
+    fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, mode)
+    torch.cuda.synchronize()
+    
+    quantiles = [0.5, 0.2, 0.8]
+    avg_ms, min_ms, max_ms = triton.testing.do_bench(lambda: fused_bmm(input, 
+                                                                       w_uk, 
+                                                                       cuda_output, 
+                                                                       input_scale, 
+                                                                       w_uk_scale, 
+                                                                       bias, 
+                                                                       mode), quantiles=quantiles)
+    fused_bmm_kernel_time_us = avg_ms * 1000
+    # 计算peak和bw
+    # 对于每个 n，执行 [b, p] @ [l, p].T = [b, l] 的 GEMM
+    # 每个 GEMM 的 FLOPS = b * p * l * 2 (乘加算两次操作)
+    # 总共有 n 个这样的 GEMM，所以总 peak = n * b * p * l * 2
+    peak = n * b * p * l * 2
+    
+    # 计算数据传输量（字节）
+    # input: [b, n, p] int8
+    input_bytes = b * n * p * 1
+    # w_uk: [n, l, p] int8
+    w_uk_bytes = n * l * p * 1
+    # input_scale: [n, b, 1] float32
+    input_scale_bytes = n * b * 1 * 4
+    # w_uk_scale: [n, l, 1] float32
+    w_uk_scale_bytes = n * l * 1 * 4
+    # cuda_output: [b, n, l] bfloat16
+    output_bytes = b * n * l * 2
+    # bias (如果存在): [b, l] bfloat16
+    bias_bytes = b * l * 2 if bias is not None else 0
+    
+    total_bytes = input_bytes + w_uk_bytes + input_scale_bytes + w_uk_scale_bytes + output_bytes + bias_bytes
+    total_gb = total_bytes / 1024 / 1024 / 1024  # GB
+    
+    # avg_ms 是毫秒，转换为秒
+    time_sec = avg_ms / 1000
+    tflops = (peak / time_sec) / 1e12
+    bw = total_gb / time_sec
+    
+    results = {
+        'B': b,
+        'N': n,
+        'L': l,
+        'P': p,
+        'GEMM_Time_us': fused_bmm_kernel_time_us,
+        'GEMM_TFlops': tflops,
+        'GEMM_GB/s': bw,
+    }
+    
+    return results
+
 def _fused_bmm_helper(batch: int,
                         N: int,
                         P: int,
@@ -162,7 +232,6 @@ def run_trans_bmm_trans_vaild():
     # #exclude_modes = [13] # nk 4096 192 gemm2<16
 
     #mode_ranges = [3]
-
     
     for i in range(0,len(p_list),1):
         for batch_size in batch_list:
@@ -176,10 +245,67 @@ def run_trans_bmm_trans_vaild():
                      
     print("gemm1_compare_failed_list: ", gemm1_compare_failed_list)
     print("gemm2_compare_failed_list: ", gemm2_compare_failed_list)
+     
+    
+def run_benchmark_trans_bmm_trans():
+    # batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
+    # batch_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
+    # batch_list=[256,512,1024,2048,4096,8192,16384] #prefill
+    # batch_list=[144,160,176,192,208,224,240,240,256,288,320,]
+    batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
+    # batch_list = [16384]
+    
+    ##deepseek-671b-tp8
+    n_list=[16]
+    p_list=[128]
+    l_list=[512]
+    
+    out_dtype=torch.bfloat16
+    # out_dtype = torch.float16
+
+
+    # configs=BlockSizeMConfigGen()
+    best_config = None
+    triton_json_dir="./cache/moe/"
+    os.makedirs(triton_json_dir, exist_ok=True)
+    
+    device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
+
+    # mode_ranges = [i for i in range(len(blockM_configs))]
+    # mode_ranges = [mode for mode in blockM_configs.keys()]
+    mode_ranges = [0]
+    # compare_fail = [42,43,46,52,54,60]
+    # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
+    # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
+    #deepseek-471b-tp16
+
+    # # decode corrtnese
+    # mode_ranges = [i for i in range(len(blockM_configs_decode))]
+    # exclude_modes = [13, 32, 33, 34, 35]
+    # #mode_ranges = [3,4,6,8,10,12,14]
+    # #exclude_modes = [13] # nk 4096 192 gemm2<16
+
+    #mode_ranges = [3]
+
+    results_list = []
+    for i in range(0,len(p_list),1):
+        for batch_size in batch_list:
+            for mode in mode_ranges:
+
+                print("mode:{} batch:{} n:{} p:{} l:{} ".format(mode, batch_size, n_list[i],p_list[i],l_list[i]))
+                input, w_uk_t, input_scale, w_uk_t_scale=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i])
+                # triton moe: output
+                result=fused_bmm_trans_impl_int8_benchmark(input, w_uk_t, input_scale, w_uk_t_scale, bias=None, mode=mode)
+                results_list.append(result)
+                
+    output_file = "fused_bmm_benchmark.xlsx"
+    df = pd.DataFrame(results_list)
+    df.to_excel(output_file, index=False)                  
             
 def main():
     # run_tuning()
-    run_trans_bmm_trans_vaild()
+    # run_trans_bmm_trans_vaild()
+    run_benchmark_trans_bmm_trans()
 
 if __name__ == "__main__":
     main()
