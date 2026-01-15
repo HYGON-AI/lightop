@@ -32,13 +32,13 @@ def batch_rocblas_scaled_mm(a: torch.Tensor,        # [n, b, p]
                             scale_a: torch.Tensor,  # [n, b, 1] 
                             scale_b: torch.Tensor,  # [n, l, 1]
                             out_dtype: torch.dtype = torch.bfloat16,
-                            bias: Optional[torch.Tensor] = None) -> torch.Tensor: # [b, l]
-    #scale_a.shape=[b,m,1]   fp32
-    #scale_b.shape=[b,n,1]   fp32
-    #a.shape=[b,m,k]         int8
-    #b.shape=[b,n,k]         int8
-    #output.shape=[b,m,n]    bf16/fp16
-    #bias [b,n]              bf16/fp16
+                            bias: Optional[torch.Tensor] = None) -> torch.Tensor: # [n, l]
+    #scale_a.shape=[n,b,1]   fp32
+    #scale_b.shape=[n,l,1]   fp32
+    #a.shape=[n,b,p]         int8
+    #b.shape=[n,l,p]         int8
+    #output.shape=[n,b,l]    bf16/fp16
+    #bias [n,l]              bf16/fp16
 
     batch_size = a.shape[0]
     output = torch.empty(batch_size, a.shape[1], b.shape[1], dtype=out_dtype)
@@ -58,7 +58,7 @@ def fused_bmm_trans_impl_int8(input: torch.Tensor,                              
                                 w_uk: torch.Tensor,                             # n, l, p
                                 input_scale: Optional[torch.Tensor] = None,     # n, b, 1
                                 w_uk_scale: Optional[torch.Tensor] = None,      # n, l, 1
-                                bias: Optional[torch.Tensor] = None,            # b, l
+                                bias: Optional[torch.Tensor] = None,            # n, l
                                 config: Optional[Dict[str, Any]] = None,
                                 mode: Optional[List[int]]=None):
     
@@ -81,7 +81,7 @@ def fused_bmm_trans_impl_int8(input: torch.Tensor,                              
     fused_torch_output = batch_rocblas_scaled_mm(torch_input, torch_uk, torch_input_scale, torch_w_uk_scale, out_dtype=torch.bfloat16, bias=torch_bias)   # [n, b, l]
     torch_output = fused_torch_output.transpose(0,1).contiguous() # [b, n, l]
     cuda_output = torch.zeros_like(torch_output, dtype=torch.bfloat16)
-    
+
     # 验证lightop kernel
     # torch.set_printoptions(profile="full") 
     # print("w_ukw_uk: ", w_uk[0,:15,:64])
@@ -93,6 +93,7 @@ def fused_bmm_trans_impl_int8(input: torch.Tensor,                              
     if not (torch.allclose(torch_output, cuda_output, rtol=1e-2, atol=1e-2, equal_nan=True)):
         print(f"kernel 精度检查不合格!!!")
         mode_status = False
+        
         # torch.set_printoptions(profile="full")  
         # ftriton = open('cuda_output.txt', 'w')   
         # print(f'cuda_output: {cuda_output}', file=ftriton)
@@ -186,15 +187,16 @@ def _fused_bmm_helper(batch: int,
     # Test for a cutlass kernel with per-token activation quantization
     # and per-output channel weight quantization.
     torch.manual_seed(0)
-    input = torch.randint(-128, 127, (batch, N, P), device=device, dtype=torch.int8)  # [b, n, p]
-    # w_uk_t = torch.randint(-128, 127, (N, P ,L), device=device, dtype=torch.int8)    # [n, p, l]
-    w_uk = torch.randint(-128, 127, (N, L, P), device=device, dtype=torch.int8)       # [n, l, p]
-    input_scale = (torch.randn((N, batch ,1), device=device,                          # [n, b, 1]
+    input = torch.randint(-128, 127, (batch, N, P), device=device, dtype=torch.int8)      # [b, n, p]
+    # w_uk_t = torch.randint(-128, 127, (N, P ,L), device=device, dtype=torch.int8)       # [n, p, l]
+    w_uk = torch.randint(-128, 127, (N, L, P), device=device, dtype=torch.int8)           # [n, l, p]
+    input_scale = (torch.randn((N, batch ,1), device=device,                              # [n, b, 1]
                            dtype=torch.float32))
-    w_uk_scale = (torch.randn((N, L, 1), device=device,                             # [n, l, 1]
-                           dtype=torch.float32))   
+    w_uk_scale = (torch.randn((N, L, 1), device=device,                                   # [n, l, 1]
+                           dtype=torch.float32))
+    bias = torch.randn((N, L), device=device, dtype=torch.bfloat16)                       # [n, l]
     
-    return input, w_uk, input_scale, w_uk_scale
+    return input, w_uk, input_scale, w_uk_scale, bias
 
 def run_trans_bmm_trans_vaild():
     
@@ -217,16 +219,17 @@ def run_trans_bmm_trans_vaild():
     # mode_ranges = [i for i in range(len(blockM_configs))]
     # mode_ranges = [mode for mode in blockM_configs.keys()]
     # mode_ranges = [0,1,2,3,4,5,6,7,8,9]
-    mode_ranges = [0,1,2]
+    # mode_ranges = [0,1,2]
+    mode_ranges = [0]
     
     for i in range(0,len(p_list),1):
         for batch_size in batch_list:
             for mode in mode_ranges:
 
                 print("mode:{} batch:{} n:{} p:{} l:{} ".format(mode, batch_size, n_list[i],p_list[i],l_list[i]))
-                input, w_uk_t, input_scale, w_uk_t_scale=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i])
+                input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i])
                 # triton moe: output
-                status=fused_bmm_trans_impl_int8(input, w_uk_t, input_scale, w_uk_t_scale, bias=None, mode=mode)
+                status=fused_bmm_trans_impl_int8(input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode)
                 if not status:
                     fused_bmm_compare_failed_list.append(mode)
                      
@@ -261,9 +264,9 @@ def run_benchmark_trans_bmm_trans():
             for mode in mode_ranges:
 
                 print("mode:{} batch:{} n:{} p:{} l:{} ".format(mode, batch_size, n_list[i],p_list[i],l_list[i]))
-                input, w_uk_t, input_scale, w_uk_t_scale=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i])
+                input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i])
                 # triton moe: output
-                result=fused_bmm_trans_impl_int8_benchmark(input, w_uk_t, input_scale, w_uk_t_scale, bias=None, mode=mode)
+                result=fused_bmm_trans_impl_int8_benchmark(input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode)
                 results_list.append(result)
                 
     output_file = "fused_bmm_benchmark.xlsx"

@@ -16,7 +16,7 @@ struct GemmParams {
                bhalf_t* ptr_output,
                float* ptr_a_scale,
                float* ptr_b_scale,
-               const bhalf_t* ptr_bias,
+               bhalf_t* ptr_bias,
                uint32_t batch_size,
                uint32_t n_size, 
                uint32_t p_size,
@@ -26,7 +26,8 @@ struct GemmParams {
                uint32_t stride_ask,
                uint32_t stride_bsn,
                uint32_t stride_bsl,
-               uint32_t stride_bsk
+               uint32_t stride_bsk,
+               bool has_bias
             )
         : ptr_q_nope(ptr_q_nope),
           ptr_w_uv(ptr_w_uv),
@@ -43,7 +44,8 @@ struct GemmParams {
           stride_ask(stride_ask),
           stride_bsn(stride_bsn),
           stride_bsl(stride_bsl),
-          stride_bsk(stride_bsk)
+          stride_bsk(stride_bsk),
+          has_bias(has_bias)
          {}
 
     const T* ptr_q_nope;               // input q_nope
@@ -51,7 +53,7 @@ struct GemmParams {
     bhalf_t* ptr_output;               // output
     float* ptr_a_scale;                // input scale a_scale
     float* ptr_b_scale;                // weight scale b_scale
-    const bhalf_t* ptr_bias;           // bias
+    bhalf_t* ptr_bias;           // bias
     uint32_t batch_size;               // batch size
     uint32_t n_size;                   // output size n
     uint32_t p_size;                   // input size p
@@ -62,6 +64,7 @@ struct GemmParams {
     uint32_t stride_bsn;               // weight scale stride bsn
     uint32_t stride_bsl;               // weight scale stride bsk
     uint32_t stride_bsk;               // weight scale stride bsk
+    bool has_bias;                     // has bias
 };
 
 ///////////////////////////////////////////////////////////////////////launch_moe_function///////////////////////////////////////////////////////////////////////////////////////
@@ -72,8 +75,6 @@ void launch_fused_bmm_decode(const GemmParams<T>& params);
 ///////////////////////////////////////////////////////////////////////kernel_config///////////////////////////////////////////////////////////////////////////////////////
 // 创建kernel映射
 using KernelFunc = std::function<void(const GemmParams<char>&)>;
-
-using KernelFuncFp8 = std::function<void(const GemmParams<uint8_t>&)>;
 
 static std::unordered_map<int, KernelFunc> kernel_maps_fused_bmm = {
     ///////////////////////////////////////////////////////N_warp////////////////////////////////////////////////
