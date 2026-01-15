@@ -22,8 +22,7 @@ from lightop import fused_bmm
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
 
-gemm1_compare_failed_list = []
-gemm2_compare_failed_list = []
+fused_bmm_compare_failed_list = []
 
 def to_int8(tensor: torch.Tensor):
     return torch.round(tensor.clamp(min=-128, max=127)).to(dtype=torch.int8)
@@ -89,19 +88,23 @@ def fused_bmm_trans_impl_int8(input: torch.Tensor,                              
     fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, mode)
     torch.cuda.synchronize()
     
+    mode_status = True
+    
     if not (torch.allclose(torch_output, cuda_output, rtol=1e-2, atol=1e-2, equal_nan=True)):
         print(f"kernel 精度检查不合格!!!")
-        
-        torch.set_printoptions(profile="full")  
-        ftriton = open('cuda_output.txt', 'w')   
-        print(f'cuda_output: {cuda_output}', file=ftriton)
-        ftriton.close
-        ftorch = open('bench_output.txt', 'w')   
-        print(f'bench_output: {torch_output}', file=ftorch)
-        ftorch.close
+        mode_status = False
+        # torch.set_printoptions(profile="full")  
+        # ftriton = open('cuda_output.txt', 'w')   
+        # print(f'cuda_output: {cuda_output}', file=ftriton)
+        # ftriton.close
+        # ftorch = open('bench_output.txt', 'w')   
+        # print(f'bench_output: {torch_output}', file=ftorch)
+        # ftorch.close
     else:
         print(f"kernel 精度检查合格.")
-    return True
+        mode_status = True
+        
+    return mode_status
 
 def fused_bmm_trans_impl_int8_benchmark(input: torch.Tensor,                              # b，n, p
                                         w_uk: torch.Tensor,                             # n, l, p
@@ -194,13 +197,9 @@ def _fused_bmm_helper(batch: int,
     return input, w_uk, input_scale, w_uk_scale
 
 def run_trans_bmm_trans_vaild():
-    # batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
-    # batch_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
-    # batch_list=[256,512,1024,2048,4096,8192,16384] #prefill
-    # batch_list=[144,160,176,192,208,224,240,240,256,288,320,]
-    batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
-    # batch_list = [16384]
     
+    # batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
+    batch_list=[32]
     ##deepseek-671b-tp8
     n_list=[16]
     p_list=[128]
@@ -209,8 +208,6 @@ def run_trans_bmm_trans_vaild():
     out_dtype=torch.bfloat16
     # out_dtype = torch.float16
 
-
-    # configs=BlockSizeMConfigGen()
     best_config = None
     triton_json_dir="./cache/moe/"
     os.makedirs(triton_json_dir, exist_ok=True)
@@ -219,19 +216,8 @@ def run_trans_bmm_trans_vaild():
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
     # mode_ranges = [mode for mode in blockM_configs.keys()]
-    mode_ranges = [0]
-    # compare_fail = [42,43,46,52,54,60]
-    # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
-    # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
-    #deepseek-471b-tp16
-
-    # # decode corrtnese
-    # mode_ranges = [i for i in range(len(blockM_configs_decode))]
-    # exclude_modes = [13, 32, 33, 34, 35]
-    # #mode_ranges = [3,4,6,8,10,12,14]
-    # #exclude_modes = [13] # nk 4096 192 gemm2<16
-
-    #mode_ranges = [3]
+    # mode_ranges = [0,1,2,3,4,5,6,7,8,9]
+    mode_ranges = [0,1,2]
     
     for i in range(0,len(p_list),1):
         for batch_size in batch_list:
@@ -240,18 +226,14 @@ def run_trans_bmm_trans_vaild():
                 print("mode:{} batch:{} n:{} p:{} l:{} ".format(mode, batch_size, n_list[i],p_list[i],l_list[i]))
                 input, w_uk_t, input_scale, w_uk_t_scale=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i])
                 # triton moe: output
-                output=fused_bmm_trans_impl_int8(input, w_uk_t, input_scale, w_uk_t_scale, bias=None, mode=mode)
-
+                status=fused_bmm_trans_impl_int8(input, w_uk_t, input_scale, w_uk_t_scale, bias=None, mode=mode)
+                if not status:
+                    fused_bmm_compare_failed_list.append(mode)
                      
-    print("gemm1_compare_failed_list: ", gemm1_compare_failed_list)
-    print("gemm2_compare_failed_list: ", gemm2_compare_failed_list)
+    print("fused_bmm_compare_failed_list: ", fused_bmm_compare_failed_list)
      
     
 def run_benchmark_trans_bmm_trans():
-    # batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384,32768]
-    # batch_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
-    # batch_list=[256,512,1024,2048,4096,8192,16384] #prefill
-    # batch_list=[144,160,176,192,208,224,240,240,256,288,320,]
     batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
     # batch_list = [16384]
     
@@ -271,21 +253,7 @@ def run_benchmark_trans_bmm_trans():
     
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
-    # mode_ranges = [i for i in range(len(blockM_configs))]
-    # mode_ranges = [mode for mode in blockM_configs.keys()]
     mode_ranges = [0]
-    # compare_fail = [42,43,46,52,54,60]
-    # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
-    # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
-    #deepseek-471b-tp16
-
-    # # decode corrtnese
-    # mode_ranges = [i for i in range(len(blockM_configs_decode))]
-    # exclude_modes = [13, 32, 33, 34, 35]
-    # #mode_ranges = [3,4,6,8,10,12,14]
-    # #exclude_modes = [13] # nk 4096 192 gemm2<16
-
-    #mode_ranges = [3]
 
     results_list = []
     for i in range(0,len(p_list),1):
@@ -304,8 +272,8 @@ def run_benchmark_trans_bmm_trans():
             
 def main():
     # run_tuning()
-    # run_trans_bmm_trans_vaild()
-    run_benchmark_trans_bmm_trans()
+    run_trans_bmm_trans_vaild()
+    # run_benchmark_trans_bmm_trans()
 
 if __name__ == "__main__":
     main()
