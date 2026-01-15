@@ -66,7 +66,7 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   int bidz = blockIdx.z; // pid_batch: n_size
 
   constexpr int STAGES = BLOCK_SIZE_K/WARP_K; 
-  const int w_uv_offset = bidz * p_size * l_size + bidy * p_size;
+  const int w_uv_offset = bidz * p_size * l_size + bidy * BLOCK_SIZE_N * p_size;
   const uint32_t output_offset = bidz * l_size + bidy * BLOCK_SIZE_N;
   const int size_k = p_size;
   const int size_m = batch_size;
@@ -167,13 +167,9 @@ void launch_fused_bmm_decode(const GemmParams<T>& params) {
     blockDim.y = 1;
     blockDim.z = 1;
 
-    // printf("launch_moe_w8a8_first_stage_prefill: %d, %d, %d, %d, %d, %d\n", BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K);
-    // printf("moe_w8a8_gemm_second_stage_kernel_prefill: %d, %d, %d, %d, %d, %d, %d, %d\n", params.size_m, params.size_n, params.size_k, params.stride_asm, params.stride_ask, params.stride_bse, params.stride_bsn, params.stride_bsk);
-    // block swizzle 效果提升不是很明显 需要tuning验证
     gridDim.x = DIVIDE(params.batch_size, BLOCK_SIZE_M); // m方向
     gridDim.y = DIVIDE(params.l_size, BLOCK_SIZE_N); // n方向
     gridDim.z = params.n_size; // batch方向
-    printf("gridDim.x: %d, gridDim.y: %d, gridDim.z: %d\n", gridDim.x, gridDim.y, gridDim.z);
 
     const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K), BLOCK_SIZE_M * BLOCK_SIZE_N * 2);
     const int shared_mem_size = lds_size;
@@ -230,11 +226,7 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
     const int stride_bsn = b_scale.stride(0);
     const int stride_bsl = b_scale.stride(1);
     const int stride_bsk = b_scale.stride(2);
-    printf("w_uv.size(0): %d, w_uv.size(1): %d, w_uv.size(2): %d\n", w_uv.size(0), w_uv.size(1), w_uv.size(2));
-    printf("batch_size: %d, n_size: %d, p_size: %d, l_size: %d\n", batch_size, n_size, p_size, l_size);
-    printf("q_nope: %p, w_uv: %p\n", q_nope.data_ptr(), w_uv.data_ptr());
-    printf("a_scale: %p, b_scale: %p\n", a_scale.data_ptr(), b_scale.data_ptr());
-    printf("stride_asn: %d, stride_asb: %d, stride_ask: %d, stride_bsn: %d, stride_bsl: %d, stride_bsk: %d\n", stride_asn, stride_asb, stride_ask, stride_bsn, stride_bsl, stride_bsk);
+    
     torch::Tensor output_alias = output.alias();
 
     if (q_nope.scalar_type() == at::ScalarType::Char){

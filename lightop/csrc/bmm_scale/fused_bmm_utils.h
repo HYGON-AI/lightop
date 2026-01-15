@@ -14,33 +14,6 @@
 namespace at{
 namespace native{
 
-
-// A矩阵buffer_load读                                                                                          
-#define buffer_load_lds_tile_pad_sorted_token(WARP_NUM, N_row_len, WARP_M, WARP_K, Element, global_ptr, lds_ptr, global_offset, lds_stage_offset, max_M_len, warp_id, lane_id,\
-                                                vec_size, per_phase, max_phase)\
-{\
-    int bytes_per_Element = 1;\
-    int Element_per_dword = 4/bytes_per_Element;\
-    int thread_num_n = WARP_K*bytes_per_Element/4;\
-    int thread_num_m = 64/thread_num_n;\
-    int lane_M_idx = lane_id / thread_num_n;\ 
-    int lane_N_idx = lane_id % thread_num_n;\
-    const int lds_load_num = (WARP_M*WARP_K*bytes_per_Element) / (4*64);\
-    for(int load = 0,warp_loop = warp_id; load < lds_load_num/WARP_NUM; warp_loop += WARP_NUM, ++load) {\
-        int block_row = warp_loop * thread_num_m + lane_M_idx;\
-        int sorted_token_idx = sorted_token_ids_offset[std::min(bidx * BLOCK_M + block_row, int(sorted_token_lens - 1))];\
-        int g_row = (std::min(sorted_token_idx / top_k,  max_n_len_offset - 1)); \
-        int phase = (block_row/per_phase) % max_phase; \
-        int g_col = lane_N_idx; \
-        int vec_size_dword = vec_size / Element_per_dword; \
-        int g_col_swizzle = ((g_col/vec_size_dword) ^ phase) * vec_size_dword + (g_col%vec_size_dword); \
-        int gsOffset   = global_offset/Element_per_dword;\
-        int gvOffset   = g_row * N_row_len/Element_per_dword + g_col_swizzle;\
-        int lds_offset = lds_stage_offset/Element_per_dword + warp_loop * 64;\
-        builtin_buffer_load_dword_lds(lds_ptr, global_ptr, lds_offset, gsOffset, gvOffset);\
-    }\
-}
-
 // A矩阵buffer_load读                                                                                          
 #define buffer_load_lds_tile_q_nope(WARP_NUM, n_size, N_row_len, BLOCK_M, WARP_K, Element, global_ptr, lds_ptr, global_offset, lds_stage_offset, max_M_len, warp_id, lane_id,\
     vec_size, per_phase, max_phase)\
@@ -71,36 +44,11 @@ namespace native{
 }
 
 // B矩阵buffer_load读                                                                                          
-#define buffer_load_lds_tile_pad_weight(WARP_NUM, N_row_len, WARP_M, WARP_K, Element, global_ptr, lds_ptr, global_offset, lds_stage_offset, max_M_len, warp_id, lane_id,\
-                                                vec_size, per_phase, max_phase)\
-{\
-    int bytes_per_Element = 1;\
-    int Element_per_dword = 4/bytes_per_Element;\
-    int thread_num_n = WARP_K*bytes_per_Element/4;\
-    int thread_num_m = 64/thread_num_n;\
-    int lane_M_idx = lane_id / thread_num_n;\ 
-    int lane_N_idx = lane_id % thread_num_n;\
-    const int lds_load_num = (WARP_M*WARP_K*bytes_per_Element) / (4*64);\  
-    for(int load = 0,warp_loop = warp_id; load < lds_load_num/WARP_NUM; warp_loop += WARP_NUM, ++load) {\
-        int block_row = warp_loop * thread_num_m + lane_M_idx;\
-        int g_row = block_row; \
-        int phase = (block_row/per_phase) % max_phase; \
-        int g_col = lane_N_idx; \
-        int vec_size_dword = vec_size / Element_per_dword; \
-        int g_col_swizzle = ((g_col/vec_size_dword) ^ phase) * vec_size_dword + (g_col%vec_size_dword); \
-        int gsOffset   = global_offset/Element_per_dword;\
-        int gvOffset   = g_row * N_row_len/Element_per_dword + g_col_swizzle;\
-        int lds_offset = lds_stage_offset/Element_per_dword + warp_loop * 64;\
-        builtin_buffer_load_dword_lds(lds_ptr, global_ptr, lds_offset, gsOffset, gvOffset);\
-    }\
-}
-
-// B矩阵buffer_load读                                                                                          
 #define buffer_load_lds_tile_w_uv(WARP_NUM, N_row_len, BLOCK_N, WARP_K, Element, global_ptr, lds_ptr, global_offset, lds_stage_offset, warp_id, lane_id,\
     vec_size, per_phase, max_phase)\
 {\
     int bytes_per_element = 1;\
-    const int element_num_per_thread = 4/*buffer_load_dword => 1 dword: 4 bytes*/; \
+    const int element_num_per_thread = 4/*buffer_load_dword => 1 dword: 4 bytes*/;\
     int element_per_dword = element_num_per_thread/bytes_per_element;\
     int thread_num_n = WARP_K*bytes_per_element/element_num_per_thread;\
     int thread_num_m = 64/thread_num_n;\
@@ -112,7 +60,7 @@ namespace native{
         int g_row = block_row; \
         int phase = (block_row/per_phase) % max_phase; \
         int g_col = lane_N_idx; \
-        int vec_size_dword = vec_size / element_per_dword; \
+        int vec_size_dword = (vec_size * bytes_per_element) / element_per_dword; \
         int g_col_swizzle = ((g_col/vec_size_dword) ^ phase) * vec_size_dword + (g_col%vec_size_dword); \
         int gsOffset   = global_offset/element_per_dword;\
         int gvOffset   = g_row * N_row_len * bytes_per_element/element_per_dword + g_col_swizzle;\
@@ -127,67 +75,6 @@ for(int m_idx = 0; m_idx < M / 16; m_idx ++){\
     inline_ds_read2_b32_no_wait(lds_v8i8, precompute_offset[m_idx * (WARP_K/MFMA_K) + n_idx] + lds_stage_offset_loop, reg[loop * (M / 16) + m_idx][n_idx].int2_array[0], 1);\
 }\
 }
-
-
-template <uint16_t BLOCK_M,
-          uint16_t BLOCK_N
-          >
-struct Scheduler {
-public:
-    int bidx;
-    int bidy;
-    int size_m_topk;
-    int n_blocks;       // n方向的block数目 N/block_n
-    int current_idx;    // 当前处理的block索引 blockIdx.x +
-    int num_tokens_pad;
-    const int32_t* __restrict__ sorted_token_ids;
-
-public:
-    // 构造函数，根据定义的变量进行初始化
-    __device__ Scheduler(int _bidx, int _bidy, int _size_m_topk, int _n_blocks, int _current_idx, int _num_tokens_pad, const int32_t* __restrict__ _sorted_token_ids)
-        : bidx(_bidx),
-          bidy(_bidy),
-          size_m_topk(_size_m_topk),
-          n_blocks(_n_blocks),
-          current_idx(_current_idx),
-          num_tokens_pad(_num_tokens_pad),
-          sorted_token_ids(_sorted_token_ids)
-    {}
-
- 
-    __device__ bool get_next_block() {
-        get_swizzled_block_idx();
-
-        if(sorted_token_ids[bidx * BLOCK_M] >= size_m_topk || bidx * BLOCK_M >= num_tokens_pad) 
-            return false;
-        
-        return true;  // 找到有效tile
-    }
-
-  
-    __device__ int get_bidx() const {
-        return bidx;
-    }
-
-  
-    __device__ int get_bidy() const {
-        return bidy;
-    }
-  
-    __device__ void get_swizzled_block_idx() {
-        bidx = current_idx / n_blocks;
-        bidy = current_idx % n_blocks;
-        // todo block swizlle
-        // bidx = current_idx % n_blocks;
-        // bidy = current_idx / n_blocks;
-    }
-
- 
-    __device__ void advance() {
-        current_idx += gridDim.x;  // 跳过gridDim.x个索引，实现不同block的任务交错
-    }
-};
-
 
 template<
     int A_prefetch_level, 

@@ -63,18 +63,32 @@ def fused_bmm_trans_impl_int8(input: torch.Tensor,                              
                                 config: Optional[Dict[str, Any]] = None,
                                 mode: Optional[List[int]]=None):
     
-    input = torch.ones_like(input)
-    w_uk = torch.ones_like(w_uk)
-    input_scale = torch.ones_like(input_scale)
-    w_uk_scale = torch.ones_like(w_uk_scale)
+    # input = torch.ones_like(input)
+    # w_uk的shape是[n,l,p]，第0,1维保持不变，第2维从0-p-1增长
+    # w_uk = torch.arange(w_uk.shape[2], dtype=w_uk.dtype, device=w_uk.device).view(1, 1, -1).expand_as(w_uk)
+    # w_uk = torch.ones_like(w_uk)*2
+    # input_scale = torch.ones_like(input_scale)
+    # w_uk_scale = torch.ones_like(w_uk_scale)
 
-    torch_input = input.transpose(0,1).contiguous()  # [b, n, p] -> [n, b, p]
+    inputc_clone = input.clone()
+    torch_input = inputc_clone.transpose(0,1).contiguous()  # [b, n, p] -> [n, b, p]
+    torch_uk = w_uk.clone()
+    torch_input_scale = input_scale.clone()
+    torch_w_uk_scale = w_uk_scale.clone()
+    torch_bias = bias.clone() if bias is not None else None
+    
+    
     # fused_bmm_output 应该是 [n, b, l] 的形状
-    fused_torch_output = batch_rocblas_scaled_mm(torch_input, w_uk, input_scale, w_uk_scale, out_dtype=torch.bfloat16, bias=bias)   # [n, b, l]
+    fused_torch_output = batch_rocblas_scaled_mm(torch_input, torch_uk, torch_input_scale, torch_w_uk_scale, out_dtype=torch.bfloat16, bias=torch_bias)   # [n, b, l]
     torch_output = fused_torch_output.transpose(0,1).contiguous() # [b, n, l]
     cuda_output = torch.zeros_like(torch_output, dtype=torch.bfloat16)
+    
+    # 验证lightop kernel
+    # torch.set_printoptions(profile="full") 
+    # print("w_ukw_uk: ", w_uk[0,:15,:64])
     fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, mode)
     torch.cuda.synchronize()
+    
     if not (torch.allclose(torch_output, cuda_output, rtol=1e-2, atol=1e-2, equal_nan=True)):
         print(f"kernel 精度检查不合格!!!")
         
@@ -114,7 +128,7 @@ def run_trans_bmm_trans_vaild():
     # batch_list=[1, 8, 16, 32, 33, 64, 65, 128] #decode
     # batch_list=[256,512,1024,2048,4096,8192,16384] #prefill
     # batch_list=[144,160,176,192,208,224,240,240,256,288,320,]
-    batch_list=[32,]
+    batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
     # batch_list = [16384]
     
     ##deepseek-671b-tp8
