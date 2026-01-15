@@ -86,6 +86,65 @@ __global__ void act_and_mul_kernel(
   }
 }
 
+template <typename scalar_t, 
+          bool act_first, int block_size>
+__global__ void act_and_mul_quant_kernel_opt1_ep_gernel(
+    int64_t num_tokens,
+    int8_t* __restrict__ out,
+    const scalar_t* __restrict__ input,
+    float* __restrict__ scales,
+    const int d,
+    const int32_t T_dim, 
+    const int32_t expert_num,
+    const int32_t *tokens_per_expert
+    ) {
+    int64_t token_idx = blockIdx.x * T_dim + blockIdx.y;
+    const int64_t num_total_tokens = num_tokens;
+
+    constexpr int share_size = block_size / C10_WARP_SIZE;
+    __shared__ float shared_mem[share_size];
+    __shared__ float s_token_scale; 
+
+    for(; token_idx < num_total_tokens ; token_idx += gridDim.y){
+        if (tokens_per_expert != nullptr) {
+            const int32_t e = token_idx / T_dim; 
+            const int32_t t = token_idx % T_dim; 
+            
+            if (t >= tokens_per_expert[e]) {
+                break; 
+            }
+        }
+
+        const int64_t input_offset = token_idx * 2 * d;
+        const int64_t output_offset = token_idx * d;
+
+        float row_max = 0.0f;
+        for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+            const scalar_t x = VLLM_LDG(&input[input_offset + idx]);
+            const scalar_t y = VLLM_LDG(&input[input_offset + d + idx]);
+            scalar_t val = compute<scalar_t, act_first>(x, y);
+            row_max = fmaxf(row_max, fabsf(static_cast<float>(val)));
+        }
+        row_max = BlockReduceMax_ROW<float,block_size>(row_max, shared_mem);
+        float scale = 0.0f; 
+        if (threadIdx.x == 0) {
+            scale = row_max;
+            s_token_scale = scale;  
+            scales[token_idx] = s_token_scale / 127.f; 
+        }
+        __syncthreads(); 
+
+        float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
+
+        for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+            const scalar_t x = VLLM_LDG(&input[input_offset + idx]);
+            const scalar_t y = VLLM_LDG(&input[input_offset + d + idx]);
+            float val = static_cast<float>(compute<scalar_t, act_first>(x, y));
+            int8_t q_val = float_to_int8_rn(val * inv_s);
+            out[output_offset + idx] = static_cast<int8_t>(q_val);
+        }
+    }
+}
 
 template <typename scalar_t, int VEC,
           bool act_first, int block_size>
@@ -163,106 +222,9 @@ __global__ void act_and_mul_quant_kernel_opt1_one_ep(
 }
 
 template <typename scalar_t, int VEC,
-          bool act_first, int block_size, int MAX_LOOPS> 
-__global__ void act_and_mul_quant_kernel_opt1_one_ep_loop(
-    int32_t num_tokens,                 
-    int8_t* __restrict__ out,
-    const scalar_t* __restrict__ input,
-    float* __restrict__ scales,
-    const int d,
-    const int32_t T,
-    const int32_t *tokens_per_expert,
-    const int loop_count 
-    ) {
-    
-    int32_t token_idx = blockIdx.x;
-
-    const int32_t e = token_idx / T; 
-    const int32_t t = token_idx % T;
-    
-    if (tokens_per_expert != nullptr && t >= tokens_per_expert[e]) {
-        return; 
-    }
-
-    constexpr int share_size = block_size / C10_WARP_SIZE;
-    __shared__ float val_shared[share_size];
-    
-    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
-    using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
-
-    float r_y_cache[MAX_LOOPS][VEC];
-
-    const int64_t base_input_offset = (int64_t)token_idx * 2 * d;
-    const int64_t base_output_offset = (int64_t)token_idx * d;
-    
-    const int stride = block_size * VEC;
-
-    float row_max = 0.f;
-
-    #pragma unroll
-    for(int l = 0; l < MAX_LOOPS; ++l) {
-        if (l < loop_count) {
-            int current_col_idx = l * stride + threadIdx.x * VEC;
-
-            if (current_col_idx < d) {
-                const scalar_t* x1_ptr = input + base_input_offset + current_col_idx;
-                const scalar_t* x2_ptr = input + base_input_offset + d + current_col_idx;
-
-                VecType x1_vec = *(reinterpret_cast<const VecType*>(x1_ptr));
-                VecType x2_vec = *(reinterpret_cast<const VecType*>(x2_ptr));
-                
-                scalar_t* r_x1 = reinterpret_cast<scalar_t*>(&x1_vec);
-                scalar_t* r_x2 = reinterpret_cast<scalar_t*>(&x2_vec);
-
-                #pragma unroll
-                for (int i = 0; i < VEC; i++) {
-                    float val = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
-                    
-                    r_y_cache[l][i] = val; 
-                    
-                    row_max = fmaxf(row_max, fabsf(val));
-                }
-            }
-        }
-    }
-
-    row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
-    
-    __shared__ float s_token_scale; 
-    if(threadIdx.x == 0){
-        float scale = row_max;
-        s_token_scale = scale;  
-        scales[token_idx] = s_token_scale / 127.f;  
-    }
-    __syncthreads();
-
-    float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
-
-    #pragma unroll
-    for(int l = 0; l < MAX_LOOPS; ++l) {
-        if (l < loop_count) {
-            int current_col_idx = l * stride + threadIdx.x * VEC;
-            
-            if (current_col_idx < d) {
-                int8_t* out_ptr = out + base_output_offset + current_col_idx;
-                int8_t out_vec[VEC];
-
-                #pragma unroll
-                for(int i = 0; i < VEC; i++){
-                    float val = r_y_cache[l][i]; 
-                    out_vec[i] = float_to_int8_rn(val * inv_s);
-                }
-                
-                *(reinterpret_cast<VecInt8Type*>(out_ptr)) = *(reinterpret_cast<VecInt8Type*>(out_vec));
-            }
-        }
-    }
-}
-
-template <typename scalar_t, int VEC,
           bool act_first, int block_size>
 __global__ void act_and_mul_quant_kernel_opt1_ep(
-    int32_t num_tokens,
+    int64_t num_tokens,
     int8_t* __restrict__ out,
     const scalar_t* __restrict__ input,
     float* __restrict__ scales,
@@ -271,8 +233,8 @@ __global__ void act_and_mul_quant_kernel_opt1_ep(
     const int32_t expert_num,
     const int32_t *tokens_per_expert
     ) {
-    int32_t token_idx = blockIdx.x * T_dim + blockIdx.y;
-    int32_t num_total_tokens = num_tokens;
+    int64_t token_idx = blockIdx.x * T_dim + blockIdx.y;
+    int64_t num_total_tokens = num_tokens;
 
     constexpr int share_size = block_size / C10_WARP_SIZE;
     __shared__ float val_shared[share_size];
@@ -294,8 +256,8 @@ __global__ void act_and_mul_quant_kernel_opt1_ep(
 
         int idx = threadIdx.x * VEC;
         int tidx = threadIdx.x;
-        const int32_t x_index = token_idx * 2 * d + idx;
-        const int32_t y_index = token_idx * d + idx;
+        const int64_t x_index = token_idx * 2 * d + idx;
+        const int64_t y_index = token_idx * d + idx;
         
         VecType* x1 = (VecType*)(input + x_index);
         VecType* x2 = (VecType*)(input + x_index + d);
@@ -345,112 +307,6 @@ __global__ void act_and_mul_quant_kernel_opt1_ep(
     } // 结束 Grid-Stride Loop
 }
 
-template <typename scalar_t, int VEC,
-          bool act_first, int block_size, int MAX_LOOPS>
-__global__ void act_and_mul_quant_kernel_opt1_ep_loop(
-    int32_t num_tokens,
-    int8_t* __restrict__ out,
-    const scalar_t* __restrict__ input,
-    float* __restrict__ scales,
-    const int d,
-    const int32_t T_dim, 
-    const int32_t expert_num,
-    const int32_t *tokens_per_expert,
-    const int loop_count 
-    ) {
-    
-
-    int32_t token_idx = blockIdx.x * T_dim + blockIdx.y;
-    int32_t num_total_tokens = num_tokens;
-
-    constexpr int share_size = block_size / C10_WARP_SIZE;
-    __shared__ float val_shared[share_size];
-    __shared__ float s_token_scale; 
-
-    float r_y_cache[MAX_LOOPS][VEC];
-
-    for(; token_idx < num_total_tokens ; token_idx += gridDim.y)
-    {
-        
-        if (tokens_per_expert != nullptr) {
-            const int32_t e = token_idx / T_dim; 
-            const int32_t t = token_idx % T_dim; 
-            
-            if (t >= tokens_per_expert[e]) {
-                break; 
-            }
-        }
-
-        using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
-        using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
-
-        const int64_t base_input_offset = (int64_t)token_idx * 2 * d;
-        const int64_t base_output_offset = (int64_t)token_idx * d;
-        
-        const int stride = block_size * VEC;
-        float row_max = 0.f;
-
-        #pragma unroll
-        for(int l = 0; l < MAX_LOOPS; ++l) {
-            if (l < loop_count) {
-                int current_col_idx = l * stride + threadIdx.x * VEC;
-
-                if (current_col_idx < d) {
-                    const scalar_t* x1_ptr = input + base_input_offset + current_col_idx;
-                    const scalar_t* x2_ptr = input + base_input_offset + d + current_col_idx;
-
-                    VecType x1_vec = *(reinterpret_cast<const VecType*>(x1_ptr));
-                    VecType x2_vec = *(reinterpret_cast<const VecType*>(x2_ptr));
-                    
-                    scalar_t* r_x1 = reinterpret_cast<scalar_t*>(&x1_vec);
-                    scalar_t* r_x2 = reinterpret_cast<scalar_t*>(&x2_vec);
-
-                    #pragma unroll
-                    for (int i = 0; i < VEC; i++) {
-                        float val = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
-                        
-                        r_y_cache[l][i] = val; 
-                        
-                        row_max = fmaxf(row_max, fabsf(val));
-                    }
-                }
-            }
-        }
-
-        row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
-        
-        if(threadIdx.x == 0){
-            float scale = row_max;
-            s_token_scale = scale; 
-            scales[token_idx] = s_token_scale / 127.f;  
-        }
-        __syncthreads(); 
-
-        float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
-
-        #pragma unroll
-        for(int l = 0; l < MAX_LOOPS; ++l) {
-            if (l < loop_count) {
-                int current_col_idx = l * stride + threadIdx.x * VEC;
-                
-                if (current_col_idx < d) {
-                    int8_t* out_ptr = out + base_output_offset + current_col_idx;
-                    int8_t out_vec[VEC];
-
-                    #pragma unroll
-                    for(int i = 0; i < VEC; i++){
-                        float val = r_y_cache[l][i]; 
-                        out_vec[i] = float_to_int8_rn(val * inv_s);
-                    }
-                    
-                    // 向量化写回
-                    *(reinterpret_cast<VecInt8Type*>(out_ptr)) = *(reinterpret_cast<VecInt8Type*>(out_vec));
-                }
-            }
-        }
-
-    } // 结束 Grid-Stride Loop
-}
 
 void fuse_silu_mul_quant_ep(torch::Tensor& input, 
                                  torch::Tensor& out, 
@@ -481,11 +337,50 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
 
   VLLM_DISPATCH_FLOATING_TYPES(
       input.scalar_type(), "act_and_mul_kernel_ep", [&] {
-        if(T >= 128){
-          dim3 grid(E, 128);
-            if (d <= 512) {
-              act_and_mul_quant_kernel_opt1_ep<scalar_t, 2, true, 256>
-                  <<<grid, 256, 0, stream>>>(num_tokens ,
+        dim3 grid(E, 128);
+        if (d <= 512) {
+            act_and_mul_quant_kernel_opt1_ep<scalar_t, 2, true, 256>
+                <<<grid, 256, 0, stream>>>(num_tokens ,
+                                        out.data_ptr<int8_t>(),
+                                        input.data_ptr<scalar_t>(),
+                                        scales.data_ptr<float>(),
+                                        d,
+                                        T, 
+                                        E,
+                                        tokens_per_expert_ptr); 
+        } else if (d <= 1024) {
+            act_and_mul_quant_kernel_opt1_ep<scalar_t, 8, true, 128>
+                <<<grid, 128, 0, stream>>>(num_tokens ,
+                                        out.data_ptr<int8_t>(),
+                                        input.data_ptr<scalar_t>(),
+                                        scales.data_ptr<float>(),
+                                        d,
+                                        T,
+                                        E, 
+                                        tokens_per_expert_ptr); 
+        } else if (d <= 2048) {
+            act_and_mul_quant_kernel_opt1_ep<scalar_t, 8, true, 256>
+                <<<grid, 256, 0, stream>>>(num_tokens ,
+                                        out.data_ptr<int8_t>(),
+                                        input.data_ptr<scalar_t>(),
+                                        scales.data_ptr<float>(),
+                                        d,
+                                        T,
+                                        E,
+                                        tokens_per_expert_ptr); 
+        } else if (d <= 4096) {
+            act_and_mul_quant_kernel_opt1_ep<scalar_t, 8, true, 512>
+                <<<grid, 512, 0, stream>>>(num_tokens ,
+                                        out.data_ptr<int8_t>(),
+                                        input.data_ptr<scalar_t>(),
+                                        scales.data_ptr<float>(),
+                                        d,
+                                        T,
+                                        E,
+                                        tokens_per_expert_ptr); 
+        } else if (d <= 8192) {
+            act_and_mul_quant_kernel_opt1_ep<scalar_t, 8, true, 1024>
+                <<<grid, 1024, 0, stream>>>(num_tokens ,
                                             out.data_ptr<int8_t>(),
                                             input.data_ptr<scalar_t>(),
                                             scales.data_ptr<float>(),
@@ -493,168 +388,37 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input,
                                             T, 
                                             E,
                                             tokens_per_expert_ptr); 
-            } else if (d <= 1024) {
-              act_and_mul_quant_kernel_opt1_ep<scalar_t, 8, true, 128>
-                  <<<grid, 128, 0, stream>>>(num_tokens ,
-                                            out.data_ptr<int8_t>(),
-                                            input.data_ptr<scalar_t>(),
-                                            scales.data_ptr<float>(),
-                                            d,
-                                            T,
-                                            E, 
-                                            tokens_per_expert_ptr); 
-            } else if (d <= 2048) {
-              act_and_mul_quant_kernel_opt1_ep<scalar_t, 8, true, 256>
-                  <<<grid, 256, 0, stream>>>(num_tokens ,
-                                            out.data_ptr<int8_t>(),
-                                            input.data_ptr<scalar_t>(),
-                                            scales.data_ptr<float>(),
-                                            d,
-                                            T,
-                                            E,
-                                            tokens_per_expert_ptr); 
-            } else if (d <= 4096) {
-              act_and_mul_quant_kernel_opt1_ep<scalar_t, 8, true, 512>
-                  <<<grid, 512, 0, stream>>>(num_tokens ,
-                                            out.data_ptr<int8_t>(),
-                                            input.data_ptr<scalar_t>(),
-                                            scales.data_ptr<float>(),
-                                            d,
-                                            T,
-                                            E,
-                                            tokens_per_expert_ptr); 
-            } else if (d <= 8192) {
-              act_and_mul_quant_kernel_opt1_ep<scalar_t, 8, true, 1024>
-                  <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                              out.data_ptr<int8_t>(),
-                                              input.data_ptr<scalar_t>(),
-                                              scales.data_ptr<float>(),
-                                              d,
-                                              T, 
-                                              E,
-                                              tokens_per_expert_ptr); 
-            } else if (d <= 16384) {
-              act_and_mul_quant_kernel_opt1_ep<scalar_t, 16, true, 1024>
-                  <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                              out.data_ptr<int8_t>(),
-                                              input.data_ptr<scalar_t>(),
-                                              scales.data_ptr<float>(),
-                                              d,
-                                              T, 
-                                              E,
-                                              tokens_per_expert_ptr); 
-            } else if (d <= 32768) {
-              act_and_mul_quant_kernel_opt1_ep<scalar_t, 32, true, 1024>
-                  <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                              out.data_ptr<int8_t>(),
-                                              input.data_ptr<scalar_t>(),
-                                              scales.data_ptr<float>(),
-                                              d,
-                                              T, 
-                                              E,
-                                              tokens_per_expert_ptr); 
-            } else {
-              const int MAX_LOOPS = 2;
-              int loop_count = (d + 32768 - 1) / 32768;
-              if (loop_count > MAX_LOOPS) {
-                printf("fuse_silu_mul_quant.cu don't support this size");
-              }
-              act_and_mul_quant_kernel_opt1_ep_loop<scalar_t, 16, true, 1024, MAX_LOOPS>
-                  <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                              out.data_ptr<int8_t>(),
-                                              input.data_ptr<scalar_t>(),
-                                              scales.data_ptr<float>(),
-                                              d,
-                                              T, 
-                                              E,
-                                              tokens_per_expert_ptr, loop_count); 
-            }
-     
-        }else{
-          int grid_opt = num_tokens;
-          dim3 grid(grid_opt);
-            if (d <= 512) {
-              act_and_mul_quant_kernel_opt1_one_ep<scalar_t, 2, true, 256>
-                  <<<grid, 256, 0, stream>>>(num_tokens ,
+        } else if (d <= 16384) {
+            act_and_mul_quant_kernel_opt1_ep<scalar_t, 16, true, 1024>
+                <<<grid, 1024, 0, stream>>>(num_tokens ,
                                             out.data_ptr<int8_t>(),
                                             input.data_ptr<scalar_t>(),
                                             scales.data_ptr<float>(),
                                             d,
                                             T, 
+                                            E,
                                             tokens_per_expert_ptr); 
-            } else if (d <= 1024) {
-              act_and_mul_quant_kernel_opt1_one_ep<scalar_t, 8, true, 128>
-                  <<<grid, 128, 0, stream>>>(num_tokens ,
+        } else if (d <= 32768) {
+            act_and_mul_quant_kernel_opt1_ep<scalar_t, 32, true, 1024>
+                <<<grid, 1024, 0, stream>>>(num_tokens ,
                                             out.data_ptr<int8_t>(),
                                             input.data_ptr<scalar_t>(),
                                             scales.data_ptr<float>(),
                                             d,
                                             T, 
+                                            E,
                                             tokens_per_expert_ptr); 
-            } else if (d <= 2048) {
-              act_and_mul_quant_kernel_opt1_one_ep<scalar_t, 8, true, 256>
-                  <<<grid, 256, 0, stream>>>(num_tokens ,
+        } else {
+            act_and_mul_quant_kernel_opt1_ep_gernel<scalar_t, true, 1024>
+                <<<grid, 1024, 0, stream>>>(num_tokens ,
                                             out.data_ptr<int8_t>(),
                                             input.data_ptr<scalar_t>(),
                                             scales.data_ptr<float>(),
                                             d,
-                                            T,
+                                            T, 
+                                            E,
                                             tokens_per_expert_ptr); 
-            } else if (d <= 4096) {
-              act_and_mul_quant_kernel_opt1_one_ep<scalar_t, 8, true, 512>
-                  <<<grid, 512, 0, stream>>>(num_tokens ,
-                                            out.data_ptr<int8_t>(),
-                                            input.data_ptr<scalar_t>(),
-                                            scales.data_ptr<float>(),
-                                            d,
-                                            T,
-                                            tokens_per_expert_ptr); 
-            } else if (d <= 8192) {
-              act_and_mul_quant_kernel_opt1_one_ep<scalar_t, 8, true, 1024>
-                  <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                              out.data_ptr<int8_t>(),
-                                              input.data_ptr<scalar_t>(),
-                                              scales.data_ptr<float>(),
-                                              d,
-                                              T, 
-                                              tokens_per_expert_ptr); 
-            } else if (d <= 16384) {
-              act_and_mul_quant_kernel_opt1_one_ep<scalar_t, 16, true, 1024>
-                  <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                              out.data_ptr<int8_t>(),
-                                              input.data_ptr<scalar_t>(),
-                                              scales.data_ptr<float>(),
-                                              d,
-                                              T, 
-                                              tokens_per_expert_ptr); 
-            } else if (d <= 32768) {
-              act_and_mul_quant_kernel_opt1_one_ep<scalar_t, 32, true, 1024>
-                  <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                              out.data_ptr<int8_t>(),
-                                              input.data_ptr<scalar_t>(),
-                                              scales.data_ptr<float>(),
-                                              d,
-                                              T, 
-                                              tokens_per_expert_ptr); 
-            } else {
-              const int MAX_LOOPS = 2;
-              int loop_count = (d + 32768 - 1) / 32768;
-              if (loop_count > MAX_LOOPS) {
-                printf("fuse_silu_mul_quant.cu don't support this size");
-              }
-              act_and_mul_quant_kernel_opt1_one_ep_loop<scalar_t, 16, true, 1024, MAX_LOOPS>
-                  <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                              out.data_ptr<int8_t>(),
-                                              input.data_ptr<scalar_t>(),
-                                              scales.data_ptr<float>(),
-                                              d,
-                                              T, 
-                                              tokens_per_expert_ptr,
-                                              loop_count); 
-            }
-
         }
-
       });
 }
 

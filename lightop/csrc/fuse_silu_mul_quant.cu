@@ -70,6 +70,7 @@ __device__ __forceinline__ scalar_t compute(const scalar_t& x,
                                             const scalar_t& y) {
   return act_first ? silu_kernel(x) * y : x * silu_kernel(y);
 }
+
 // Activation and gating kernel template.
 template <typename scalar_t, 
           bool act_first>
@@ -85,6 +86,54 @@ __global__ void act_and_mul_kernel(
     out[token_idx * d + idx] = compute<scalar_t, act_first>(x, y);
   }
 }
+
+template <typename scalar_t, 
+          bool act_first, int block_size>
+__global__ void act_and_mul_kernel_quant(
+    int64_t num_tokens,
+    int8_t* __restrict__ out,          // [..., d]
+    const scalar_t* __restrict__ input,  // [..., 2, d]
+    float* __restrict__ scales,
+    const int d,
+    const int topK,
+    int32_t *num_local_tokens_tensor
+    ) {
+  const int64_t token_idx = blockIdx.x;
+  const int64_t input_offset = token_idx * 2 * d;
+  const int64_t output_offset = token_idx * d;
+
+  constexpr int share_size = block_size / C10_WARP_SIZE;
+  __shared__ float shared_mem[share_size];
+
+  float row_max = 0.0f;
+  for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+    const scalar_t x = VLLM_LDG(&input[input_offset + idx]);
+    const scalar_t y = VLLM_LDG(&input[input_offset + d + idx]);
+    scalar_t val = compute<scalar_t, act_first>(x, y);
+    row_max = fmaxf(row_max, fabsf(static_cast<float>(val)));
+  }
+  row_max = BlockReduceMax_ROW<float,block_size>(row_max, shared_mem);
+  __shared__ float s_token_scale; 
+  float scale = 0.0f; 
+  if (threadIdx.x == 0) {
+      scale = row_max;
+      s_token_scale = scale;  
+      scales[token_idx] = s_token_scale / 127.f; 
+  }
+  __syncthreads(); 
+
+  float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
+
+  for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+    const scalar_t x = VLLM_LDG(&input[input_offset + idx]);
+    const scalar_t y = VLLM_LDG(&input[input_offset + d + idx]);
+    float val = static_cast<float>(compute<scalar_t, act_first>(x, y));
+    int8_t q_val = float_to_int8_rn(val * inv_s);
+    out[output_offset + idx] = static_cast<int8_t>(q_val);
+  }
+}
+
+
 
 template <typename scalar_t, int VEC,
           bool act_first, int block_size>
@@ -163,110 +212,60 @@ __global__ void act_and_mul_quant_kernel_opt1(
   }
 }
 
-template <typename scalar_t, int VEC,
-          bool act_first, int block_size, int MAX_LOOPS> 
-__global__ void act_and_mul_quant_kernel_opt1_loop(
+template <typename scalar_t, 
+          bool act_first, int block_size>
+__global__ void act_and_mul_quant_kernel_opt1_gernel(
     int64_t num_tokens,
     int8_t* __restrict__ out,          // [..., d]
     const scalar_t* __restrict__ input,  // [..., 2, d]
     float* __restrict__ scales,
     const int d,
     const int topK,
-    int32_t *num_local_tokens_tensor,
-    const int loop_count 
+    int32_t *num_local_tokens_tensor
     ) {
-
-  int64_t token_idx = blockIdx.x;
+  int64_t token_idx= blockIdx.x;
   int num_local_tokens = num_tokens;
-
   if(num_local_tokens_tensor != nullptr){
-    if(num_local_tokens >= num_local_tokens_tensor[0] * topK) 
-        num_local_tokens = num_local_tokens_tensor[0] * topK;
-    if(token_idx >= num_local_tokens) return;
+    if(num_local_tokens >= num_local_tokens_tensor[0] * topK) num_local_tokens =  num_local_tokens_tensor[0] * topK;
+    if(token_idx >= num_local_tokens)  return;
   }
 
-  // Grid Stride Loop (处理多个 Token)
-  for(; token_idx < num_local_tokens; token_idx += gridDim.x){
+  for(; token_idx < num_local_tokens ;token_idx += gridDim.x){
+    const int64_t input_offset = token_idx * 2 * d;
+    const int64_t output_offset = token_idx * d;
 
     constexpr int share_size = block_size / C10_WARP_SIZE;
-    __shared__ float val_shared[share_size];
+    __shared__ float shared_mem[share_size];
 
-    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
-    using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
-
-    float r_y_cache[MAX_LOOPS][VEC]; 
-
-    const int64_t base_input_offset = token_idx * 2 * d;
-    const int64_t base_output_offset = token_idx * d;
-    
-    const int stride = block_size * VEC; 
-
-    float row_max = 0.f;
-
-    #pragma unroll
-    for(int l = 0; l < MAX_LOOPS; ++l) {
-        if (l < loop_count) {
-            int current_col_idx = l * stride + threadIdx.x * VEC;
-            
-            if (current_col_idx < d) {
-                const scalar_t* addr_x1 = input + base_input_offset + current_col_idx;
-                const scalar_t* addr_x2 = input + base_input_offset + d + current_col_idx;
-
-                VecType r_x1_vec;
-                VecType r_x2_vec;
-                
-                r_x1_vec = *(const VecType*)addr_x1;
-                r_x2_vec = *(const VecType*)addr_x2;
-                
-                const scalar_t* r_x1 = (const scalar_t*)&r_x1_vec;
-                const scalar_t* r_x2 = (const scalar_t*)&r_x2_vec;
-
-                #pragma unroll
-                for (int i = 0; i < VEC; i++) {
-                    float val = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
-                    
-                    r_y_cache[l][i] = val; 
-                    row_max = fmaxf(row_max, fabsf(val));
-                }
-            }
-        }
+    float row_max = 0.0f;
+    for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+      const scalar_t x = VLLM_LDG(&input[input_offset + idx]);
+      const scalar_t y = VLLM_LDG(&input[input_offset + d + idx]);
+      scalar_t val = compute<scalar_t, act_first>(x, y);
+      row_max = fmaxf(row_max, fabsf(static_cast<float>(val)));
     }
-
-    row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
-    
+    row_max = BlockReduceMax_ROW<float,block_size>(row_max, shared_mem);
     __shared__ float s_token_scale; 
-    if(threadIdx.x == 0){
-        float scale = row_max;
+    float scale = 0.0f; 
+    if (threadIdx.x == 0) {
+        scale = row_max;
         s_token_scale = scale;  
         scales[token_idx] = s_token_scale / 127.f; 
     }
-    __syncthreads();
+    __syncthreads(); 
 
     float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
 
-    #pragma unroll
-    for(int l = 0; l < MAX_LOOPS; ++l) {
-        if (l < loop_count) {
-            int current_col_idx = l * stride + threadIdx.x * VEC;
-            
-            if (current_col_idx < d) {
-                int8_t* addr_out = out + base_output_offset + current_col_idx;
-                int8_t out_vec_arr[VEC];
-
-                #pragma unroll
-                for(int i = 0; i < VEC; i++){
-                    // 【关键】直接从寄存器读取缓存值，不再访问 Global Memory
-                    float val = r_y_cache[l][i]; 
-                    out_vec_arr[i] = float_to_int8_rn(val * inv_s);
-                }
-                
-                // 向量化写入 Global Memory
-                *(VecInt8Type*)addr_out = *(VecInt8Type*)out_vec_arr;
-            }
-        }
+    for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+      const scalar_t x = VLLM_LDG(&input[input_offset + idx]);
+      const scalar_t y = VLLM_LDG(&input[input_offset + d + idx]);
+      float val = static_cast<float>(compute<scalar_t, act_first>(x, y));
+      int8_t q_val = float_to_int8_rn(val * inv_s);
+      out[output_offset + idx] = static_cast<int8_t>(q_val);
     }
   }
 }
+
 
 template <typename scalar_t, int VEC,
           bool act_first, int block_size>
@@ -340,104 +339,60 @@ __global__ void act_and_mul_quant_kernel_opt1_new(
     }
 }
 
-template <typename scalar_t, int VEC,
-          bool act_first, int block_size, int MAX_LOOPS> 
-__global__ void act_and_mul_quant_kernel_opt1_new_loop(
+template <typename scalar_t, 
+          bool act_first, int block_size>
+__global__ void act_and_mul_quant_kernel_opt1_new_gernel(
     int64_t num_tokens,
     int8_t* __restrict__ out,          // [..., d]
     const scalar_t* __restrict__ input,  // [..., 2, d]
     float* __restrict__ scales,
     const int d,
-    int32_t *expert_ids,
-    const int loop_count 
+    int32_t *expert_ids
     ) {
-
-    int64_t token_idx = blockIdx.x;
-    
+      
+    int64_t token_idx= blockIdx.x;
     if(expert_ids != nullptr){
       if(expert_ids[token_idx] == -1)  return;
     }
-    
-    if (token_idx >= num_tokens) return;
+
+    const int64_t input_offset = token_idx * 2 * d;
+    const int64_t output_offset = token_idx * d;
 
     constexpr int share_size = block_size / C10_WARP_SIZE;
-    __shared__ float val_shared[share_size];
-    
-    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
-    using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
+    __shared__ float shared_mem[share_size];
 
-    float r_y_cache[MAX_LOOPS][VEC];
-
-    const int64_t base_input_offset = token_idx * 2 * d;
-    const int64_t base_output_offset = token_idx * d;
-    
-    const int stride = block_size * VEC;
-
-    float row_max = 0.f;
-
-    #pragma unroll
-    for(int l = 0; l < MAX_LOOPS; ++l) {
-        if (l < loop_count) {
-            int current_col_idx = l * stride + threadIdx.x * VEC;
-
-            if (current_col_idx < d) {
-                const scalar_t* x1_ptr = input + base_input_offset + current_col_idx;
-                const scalar_t* x2_ptr = input + base_input_offset + d + current_col_idx;
-
-                VecType x1_vec = *(reinterpret_cast<const VecType*>(x1_ptr));
-                VecType x2_vec = *(reinterpret_cast<const VecType*>(x2_ptr));
-                
-                scalar_t* r_x1 = reinterpret_cast<scalar_t*>(&x1_vec);
-                scalar_t* r_x2 = reinterpret_cast<scalar_t*>(&x2_vec);
-
-                #pragma unroll
-                for (int i = 0; i < VEC; i++) {
-                    float val = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
-                    
-                    r_y_cache[l][i] = val; 
-                  
-                    row_max = fmaxf(row_max, fabsf(val));
-                }
-            }
-        }
+    float row_max = 0.0f;
+    for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+      const scalar_t x = VLLM_LDG(&input[input_offset + idx]);
+      const scalar_t y = VLLM_LDG(&input[input_offset + d + idx]);
+      scalar_t val = compute<scalar_t, act_first>(x, y);
+      row_max = fmaxf(row_max, fabsf(static_cast<float>(val)));
     }
-
-    row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
-    
+    row_max = BlockReduceMax_ROW<float,block_size>(row_max, shared_mem);
     __shared__ float s_token_scale; 
-    if(threadIdx.x == 0){
-        float scale = row_max;
+    float scale = 0.0f; 
+    if (threadIdx.x == 0) {
+        scale = row_max;
         s_token_scale = scale;  
-        scales[token_idx] = s_token_scale / 127.f;  
+        scales[token_idx] = s_token_scale / 127.f; 
     }
-    __syncthreads();
+    __syncthreads(); 
 
     float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
 
-    #pragma unroll
-    for(int l = 0; l < MAX_LOOPS; ++l) {
-        if (l < loop_count) {
-            int current_col_idx = l * stride + threadIdx.x * VEC;
-            
-            if (current_col_idx < d) {
-                int8_t* out_ptr = out + base_output_offset + current_col_idx;
-                int8_t out_vec[VEC];
-
-                #pragma unroll
-                for(int i = 0; i < VEC; i++){
-                    float val = r_y_cache[l][i]; 
-                    out_vec[i] = float_to_int8_rn(val * inv_s);
-                }
-                
-                *(reinterpret_cast<VecInt8Type*>(out_ptr)) = *(reinterpret_cast<VecInt8Type*>(out_vec));
-            }
-        }
+    for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+      const scalar_t x = VLLM_LDG(&input[input_offset + idx]);
+      const scalar_t y = VLLM_LDG(&input[input_offset + d + idx]);
+      float val = static_cast<float>(compute<scalar_t, act_first>(x, y));
+      int8_t q_val = float_to_int8_rn(val * inv_s);
+      out[output_offset + idx] = static_cast<int8_t>(q_val);
     }
+  
 }
 
 template <typename scalar_t, int VEC,
           bool act_first, int block_size>
-__global__ void act_and_mul_quant_kernel_opt1_8192(
+__global__ void act_and_mul_quant_kernel_opt1_one(
     int64_t num_tokens,
     int8_t* __restrict__ out,          // [..., d]
     const scalar_t* __restrict__ input,  // [..., 2, d]
@@ -509,100 +464,50 @@ __global__ void act_and_mul_quant_kernel_opt1_8192(
   // }
 }
 
-
-template <typename scalar_t, int VEC,
-          bool act_first, int block_size, int MAX_LOOPS>
-__global__ void act_and_mul_quant_kernel_opt1_8192_loop(
+template <typename scalar_t, 
+          bool act_first, int block_size>
+__global__ void act_and_mul_quant_kernel_opt1_one_gernel(
     int64_t num_tokens,
     int8_t* __restrict__ out,          // [..., d]
     const scalar_t* __restrict__ input,  // [..., 2, d]
     float* __restrict__ scales,
     const int d,
     const int topK,
-    int32_t *num_local_tokens_tensor,
-    const int loop_count 
+    int32_t *num_local_tokens_tensor
     ) {
-    
-   int64_t token_idx = blockIdx.x;
-   
-   if(num_local_tokens_tensor != nullptr){
-     if(token_idx >= num_local_tokens_tensor[0] * topK)  return;
-   }
+  const int64_t token_idx = blockIdx.x;
+  const int64_t input_offset = token_idx * 2 * d;
+  const int64_t output_offset = token_idx * d;
 
-   constexpr int share_size = block_size / C10_WARP_SIZE;
-   __shared__ float val_shared[share_size];
-   
-   using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
-   using VecInt8Type = at::native::memory::aligned_vector<int8_t, VEC>;
+  constexpr int share_size = block_size / C10_WARP_SIZE;
+  __shared__ float shared_mem[share_size];
 
-   float r_y_cache[MAX_LOOPS][VEC];
+  float row_max = 0.0f;
+  for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+    const scalar_t x = VLLM_LDG(&input[input_offset + idx]);
+    const scalar_t y = VLLM_LDG(&input[input_offset + d + idx]);
+    scalar_t val = compute<scalar_t, act_first>(x, y);
+    row_max = fmaxf(row_max, fabsf(static_cast<float>(val)));
+  }
+  row_max = BlockReduceMax_ROW<float,block_size>(row_max, shared_mem);
+  __shared__ float s_token_scale; 
+  float scale = 0.0f; 
+  if (threadIdx.x == 0) {
+      scale = row_max;
+      s_token_scale = scale;  
+      scales[token_idx] = s_token_scale / 127.f; 
+  }
+  __syncthreads(); 
 
-   const int64_t base_input_offset = token_idx * 2 * d;
-   const int64_t base_output_offset = token_idx * d;
-   
-   const int stride = block_size * VEC;
+  float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
 
-   float row_max = 0.f;
-
-   #pragma unroll
-   for(int l = 0; l < MAX_LOOPS; ++l) {
-       if (l < loop_count) {
-           int current_col_idx = l * stride + threadIdx.x * VEC;
-
-           if (current_col_idx < d) {
-               const scalar_t* x1_ptr = input + base_input_offset + current_col_idx;
-               const scalar_t* x2_ptr = input + base_input_offset + d + current_col_idx;
-
-               VecType x1_vec = *(reinterpret_cast<const VecType*>(x1_ptr));
-               VecType x2_vec = *(reinterpret_cast<const VecType*>(x2_ptr));
-               
-               scalar_t* r_x1 = reinterpret_cast<scalar_t*>(&x1_vec);
-               scalar_t* r_x2 = reinterpret_cast<scalar_t*>(&x2_vec);
-
-               #pragma unroll
-               for (int i = 0; i < VEC; i++) {
-                   float val = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
-                  
-                   r_y_cache[l][i] = val; 
-                   
-                   row_max = fmaxf(row_max, fabsf(val));
-               }
-           }
-       }
-   }
-
-   row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
-   
-   __shared__ float s_token_scale; 
-   if(threadIdx.x == 0){
-       float scale = row_max;
-       s_token_scale = scale;  
-       scales[token_idx] = s_token_scale / 127.f;  
-   }
-   __syncthreads();
-
-   float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
-
-   #pragma unroll
-   for(int l = 0; l < MAX_LOOPS; ++l) {
-       if (l < loop_count) {
-           int current_col_idx = l * stride + threadIdx.x * VEC;
-           
-           if (current_col_idx < d) {
-               int8_t* out_ptr = out + base_output_offset + current_col_idx;
-               int8_t out_vec[VEC];
-
-               #pragma unroll
-               for(int i = 0; i < VEC; i++){
-                   float val = r_y_cache[l][i]; 
-                   out_vec[i] = float_to_int8_rn(val * inv_s);
-               }
-               
-               // 向量化写回
-               *(reinterpret_cast<VecInt8Type*>(out_ptr)) = *(reinterpret_cast<VecInt8Type*>(out_vec));
-           }
-       }
-   }
+  for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
+    const scalar_t x = VLLM_LDG(&input[input_offset + idx]);
+    const scalar_t y = VLLM_LDG(&input[input_offset + d + idx]);
+    float val = static_cast<float>(compute<scalar_t, act_first>(x, y));
+    int8_t q_val = float_to_int8_rn(val * inv_s);
+    out[output_offset + idx] = static_cast<int8_t>(q_val);
+  }
 }
 
 template <typename scalar_t, int VEC,
@@ -792,136 +697,174 @@ void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& out, torch::Tensor
                                             scales.data_ptr<float>(),d, 
                                             expert_ids.has_value() ? expert_ids->data_ptr<int32_t>() : nullptr);    
           } else{
-            const int MAX_LOOPS = 2;
-            int loop_count = (d + 32768 - 1) / 32768;
-            if (loop_count > MAX_LOOPS) {
-              printf("fuse_silu_mul_quant.cu don't support this size");
-            }
-            act_and_mul_quant_kernel_opt1_new_loop<scalar_t, 32, true, 1024, MAX_LOOPS> 
+            act_and_mul_quant_kernel_opt1_new_gernel<scalar_t, true, 1024>
                 <<<grid, 1024, 0, stream>>>(num_tokens ,
                                             out.data_ptr<int8_t>(),          
                                             input.data_ptr<scalar_t>(),     
                                             scales.data_ptr<float>(),d, 
-                                            expert_ids.has_value() ? expert_ids->data_ptr<int32_t>() : nullptr, loop_count);  
+                                            expert_ids.has_value() ? expert_ids->data_ptr<int32_t>() : nullptr);  
           }                                                                
  
       }
       else{
-      if(num_tokens < 8192 && expert_m == -1){                                       
-          if (d <= 512) {                                                      
-            act_and_mul_quant_kernel_opt1_8192<scalar_t, 2, true, 256> 
-                <<<grid, 256, 0, stream>>>(num_tokens ,                  
-                                           out.data_ptr<int8_t>(),           
-                                           input.data_ptr<scalar_t>(), 
-                                           scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
-          } else if (d <= 1024) {                                              
-            act_and_mul_quant_kernel_opt1_8192<scalar_t, 8, true, 128> 
-                <<<grid, 128, 0, stream>>>(num_tokens ,
-                                           out.data_ptr<int8_t>(),           
-                                           input.data_ptr<scalar_t>(), 
-                                           scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
-          } else if (d <= 2048) {                                              
-            act_and_mul_quant_kernel_opt1_8192<scalar_t, 8, true, 256> 
-                <<<grid, 256, 0, stream>>>(num_tokens ,
-                                           out.data_ptr<int8_t>(),           
-                                           input.data_ptr<scalar_t>(), 
-                                           scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
-          } else if (d <= 4096) {                                              
-            act_and_mul_quant_kernel_opt1_8192<scalar_t, 8, true, 512> 
-                <<<grid, 512, 0, stream>>>(num_tokens ,
-                                           out.data_ptr<int8_t>(),           
-                                           input.data_ptr<scalar_t>(),      
-                                           scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
-          } else if (d <= 8192) {                                                             
-            act_and_mul_quant_kernel_opt1_8192<scalar_t, 8, true, 1024> 
-                <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                            out.data_ptr<int8_t>(),          
-                                            input.data_ptr<scalar_t>(),     
-                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);
-                                                
-          } else if (d <= 16384) {                                                             
-            act_and_mul_quant_kernel_opt1_8192<scalar_t, 16, true, 1024> 
-                <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                            out.data_ptr<int8_t>(),          
-                                            input.data_ptr<scalar_t>(),     
-                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
-          } else if (d <= 32768) {                                                             
-            act_and_mul_quant_kernel_opt1_8192<scalar_t, 32, true, 1024> 
-                <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                            out.data_ptr<int8_t>(),          
-                                            input.data_ptr<scalar_t>(),     
-                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
-          } else{
-            const int MAX_LOOPS = 2;
-            int loop_count = (d + 32768 - 1) / 32768;
-            if (loop_count > MAX_LOOPS) {
-              printf("fuse_silu_mul_quant.cu don't support this size");
-            }
-              act_and_mul_quant_kernel_opt1_8192_loop<scalar_t, 32, true, 1024, MAX_LOOPS> 
-                <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                            out.data_ptr<int8_t>(),          
-                                            input.data_ptr<scalar_t>(),     
-                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, loop_count); 
-          }                                                                    
+        if(num_local_tokens_tensor.has_value()){
+          if(num_tokens < 8192 && expert_m == -1){                                       
+              if (d <= 512) {                                                      
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 2, true, 256> 
+                    <<<grid, 256, 0, stream>>>(num_tokens ,                  
+                                              out.data_ptr<int8_t>(),           
+                                              input.data_ptr<scalar_t>(), 
+                                              scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
+              } else if (d <= 1024) {                                              
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 8, true, 128> 
+                    <<<grid, 128, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),           
+                                              input.data_ptr<scalar_t>(), 
+                                              scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
+              } else if (d <= 2048) {                                              
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 8, true, 256> 
+                    <<<grid, 256, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),           
+                                              input.data_ptr<scalar_t>(), 
+                                              scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
+              } else if (d <= 4096) {                                              
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 8, true, 512> 
+                    <<<grid, 512, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),           
+                                              input.data_ptr<scalar_t>(),      
+                                              scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
+              } else if (d <= 8192) {                                                             
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 8, true, 1024> 
+                    <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                                out.data_ptr<int8_t>(),          
+                                                input.data_ptr<scalar_t>(),     
+                                                scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);
+                                                    
+              } else if (d <= 16384) {                                                             
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 16, true, 1024> 
+                    <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                                out.data_ptr<int8_t>(),          
+                                                input.data_ptr<scalar_t>(),     
+                                                scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
+              } else if (d <= 32768) {                                                             
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 32, true, 1024> 
+                    <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                                out.data_ptr<int8_t>(),          
+                                                input.data_ptr<scalar_t>(),     
+                                                scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
+              } else{
+                act_and_mul_quant_kernel_opt1_one_gernel<scalar_t, true, 1024>
+                    <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                                out.data_ptr<int8_t>(),          
+                                                input.data_ptr<scalar_t>(),     
+                                                scales.data_ptr<float>(), d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr); 
+              }                                                                    
 
-      }                                                                     
-        else{                                       
-          if (d <= 512) {                                                      
-            act_and_mul_quant_kernel_opt1<scalar_t, 2, true, 256> 
-                <<<grid, 256, 0, stream>>>(num_tokens ,
-                                           out.data_ptr<int8_t>(),           
-                                           input.data_ptr<scalar_t>(), 
-                                           scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
-          } else if (d <= 1024) {                                              
-            act_and_mul_quant_kernel_opt1<scalar_t, 8, true, 128> 
-                <<<grid, 128, 0, stream>>>(num_tokens ,
-                                           out.data_ptr<int8_t>(),           
-                                           input.data_ptr<scalar_t>(), 
-                                           scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
-          } else if (d <= 2048) {                                              
-            act_and_mul_quant_kernel_opt1<scalar_t, 8, true, 256> 
-                <<<grid, 256, 0, stream>>>(num_tokens ,
-                                           out.data_ptr<int8_t>(),           
-                                           input.data_ptr<scalar_t>(), 
-                                           scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
-          } else if (d <= 4096) {                                              
-            act_and_mul_quant_kernel_opt1<scalar_t, 8, true, 512> 
-                <<<grid, 512, 0, stream>>>(num_tokens ,
-                                           out.data_ptr<int8_t>(),           
-                                           input.data_ptr<scalar_t>(),      
-                                           scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
-          } else if (d <= 8192) {                                                             
-            act_and_mul_quant_kernel_opt1<scalar_t, 8, true, 1024> 
-                <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                            out.data_ptr<int8_t>(),          
-                                            input.data_ptr<scalar_t>(),     
-                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);
-                                                
-          } else if (d <= 16384) {                                                             
-            act_and_mul_quant_kernel_opt1<scalar_t, 16, true, 1024> 
-                <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                            out.data_ptr<int8_t>(),          
-                                            input.data_ptr<scalar_t>(),     
-                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
-          } else if (d <= 32768) {                                                             
-            act_and_mul_quant_kernel_opt1<scalar_t, 32, true, 1024> 
-                <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                            out.data_ptr<int8_t>(),          
-                                            input.data_ptr<scalar_t>(),     
-                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
-          } else{
-            const int MAX_LOOPS = 2;
-            int loop_count = (d + 32768 - 1) / 32768;
-            if (loop_count > MAX_LOOPS) {
-              printf("fuse_silu_mul_quant.cu don't support this size");
-            }
-            act_and_mul_quant_kernel_opt1_loop<scalar_t, 32, true, 1024, MAX_LOOPS> 
-                <<<grid, 1024, 0, stream>>>(num_tokens ,
-                                            out.data_ptr<int8_t>(),          
-                                            input.data_ptr<scalar_t>(),     
-                                            scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, loop_count);  
           }                                                                     
-        }
+            else{                                       
+              if (d <= 512) {                                                      
+                act_and_mul_quant_kernel_opt1<scalar_t, 2, true, 256> 
+                    <<<grid, 256, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),           
+                                              input.data_ptr<scalar_t>(), 
+                                              scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
+              } else if (d <= 1024) {                                              
+                act_and_mul_quant_kernel_opt1<scalar_t, 8, true, 128> 
+                    <<<grid, 128, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),           
+                                              input.data_ptr<scalar_t>(), 
+                                              scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
+              } else if (d <= 2048) {                                              
+                act_and_mul_quant_kernel_opt1<scalar_t, 8, true, 256> 
+                    <<<grid, 256, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),           
+                                              input.data_ptr<scalar_t>(), 
+                                              scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
+              } else if (d <= 4096) {                                              
+                act_and_mul_quant_kernel_opt1<scalar_t, 8, true, 512> 
+                    <<<grid, 512, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),           
+                                              input.data_ptr<scalar_t>(),      
+                                              scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
+              } else if (d <= 8192) {                                                             
+                act_and_mul_quant_kernel_opt1<scalar_t, 8, true, 1024> 
+                    <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                                out.data_ptr<int8_t>(),          
+                                                input.data_ptr<scalar_t>(),     
+                                                scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);
+                                                    
+              } else if (d <= 16384) {                                                             
+                act_and_mul_quant_kernel_opt1<scalar_t, 16, true, 1024> 
+                    <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                                out.data_ptr<int8_t>(),          
+                                                input.data_ptr<scalar_t>(),     
+                                                scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
+              } else if (d <= 32768) {                                                             
+                act_and_mul_quant_kernel_opt1<scalar_t, 32, true, 1024> 
+                    <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                                out.data_ptr<int8_t>(),          
+                                                input.data_ptr<scalar_t>(),     
+                                                scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
+              } else{
+                act_and_mul_quant_kernel_opt1_gernel<scalar_t, true, 1024>
+                    <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                                out.data_ptr<int8_t>(),          
+                                                input.data_ptr<scalar_t>(),     
+                                                scales.data_ptr<float>(), d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
+              }                                                                     
+            }
+          }else{
+              if (d <= 512) {                                                      
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 2, true, 256> 
+                    <<<grid, 256, 0, stream>>>(num_tokens ,                  
+                                              out.data_ptr<int8_t>(),           
+                                              input.data_ptr<scalar_t>(), 
+                                              scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
+              } else if (d <= 1024) {                                              
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 8, true, 128> 
+                    <<<grid, 128, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),           
+                                              input.data_ptr<scalar_t>(), 
+                                              scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
+              } else if (d <= 2048) {                                              
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 8, true, 256> 
+                    <<<grid, 256, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),           
+                                              input.data_ptr<scalar_t>(), 
+                                              scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
+              } else if (d <= 4096) {                                              
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 8, true, 512> 
+                    <<<grid, 512, 0, stream>>>(num_tokens ,
+                                              out.data_ptr<int8_t>(),           
+                                              input.data_ptr<scalar_t>(),      
+                                              scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
+              } else if (d <= 8192) {                                                             
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 8, true, 1024> 
+                    <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                                out.data_ptr<int8_t>(),          
+                                                input.data_ptr<scalar_t>(),     
+                                                scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);
+                                                    
+              } else if (d <= 16384) {                                                             
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 16, true, 1024> 
+                    <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                                out.data_ptr<int8_t>(),          
+                                                input.data_ptr<scalar_t>(),     
+                                                scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
+              } else if (d <= 32768) {                                                             
+                act_and_mul_quant_kernel_opt1_one<scalar_t, 32, true, 1024> 
+                    <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                                out.data_ptr<int8_t>(),          
+                                                input.data_ptr<scalar_t>(),     
+                                                scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
+              } else{
+                act_and_mul_quant_kernel_opt1_one_gernel<scalar_t, true, 1024>
+                    <<<grid, 1024, 0, stream>>>(num_tokens ,
+                                                out.data_ptr<int8_t>(),          
+                                                input.data_ptr<scalar_t>(),     
+                                                scales.data_ptr<float>(), d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr); 
+              } 
+          }
       }
       });
 }
