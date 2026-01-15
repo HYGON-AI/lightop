@@ -40,15 +40,14 @@ template<
   uint16_t BLOCK_SIZE_K, 
   uint16_t WARP_M, 
   uint16_t WARP_N, 
-  uint16_t WARP_K, 
-  bool BIAS> 
+  uint16_t WARP_K> 
 __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   const Element* __restrict__ q_nope, // [batch, n, p]
   const Element* __restrict__ w_uv,   // [n, p, l]
   bhalf_t* __restrict__ output,       // [batch, n, l]
   float* __restrict__ a_scale,        // [n, batch, 1]
   float* __restrict__ b_scale,        // [n, l, 1]
-  const bhalf_t* __restrict__ bias,   // [batch, l]
+  bhalf_t* __restrict__ bias,         // [batch, l]
   uint32_t batch_size,
   uint32_t n_size, 
   uint32_t p_size,
@@ -58,7 +57,8 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   uint32_t stride_ask,
   uint32_t stride_bsn,
   uint32_t stride_bsl,
-  uint32_t stride_bsk
+  uint32_t stride_bsk,
+  bool has_bias
 ) {
 
   int bidx = blockIdx.x; // pid_m
@@ -103,6 +103,7 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   float *a_scale_ptr_arr[WARP_M / mfma_m];
   float *a_scale_ptr = a_scale + bidz * stride_asn + bidx * BLOCK_SIZE_M * stride_asb + warp_m_id * WARP_M;
   float *b_scale_ptr = b_scale + bidz * stride_bsn + bidy * BLOCK_SIZE_N * stride_bsl + warp_n_id * WARP_N;
+  bhalf_t *bias_ptr = bias + bidz * l_size + bidy * BLOCK_SIZE_N + warp_n_id * WARP_N;
 
   #pragma unroll
   for(int idx = 0; idx < WARP_M / mfma_m; idx++){
@@ -116,8 +117,10 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   }
 
   //save output to lds
+  #pragma unroll
   for(int min_tile_m = 0; min_tile_m < WARP_M / mfma_m; min_tile_m++){
     float *a_scale = a_scale_ptr_arr[min_tile_m];
+    #pragma unroll
     for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
       #pragma unroll
       for(int reg_id = 0; reg_id < 4; reg_id++){
@@ -125,7 +128,12 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
         float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
         int index = (warp_m_id * WARP_M + min_tile_m * mfma_m + (lane_id & 15 )) * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N 
             + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + warp_m_id * WARP_M+ (lane_id % 16) )/2 * 2/*padding*/;
-        output_lds[index] = f32_to_bf16(value);
+        bhalf_t acc_scale_value = f32_to_bf16(value);
+        if (has_bias){
+          bhalf_t bias_value = bias_ptr[min_tile_n * mfma_n + col_id + reg_id * 4];
+          acc_scale_value = acc_scale_value + bias_value;
+        }
+        output_lds[index] = acc_scale_value;
       }
     }
   }
@@ -175,7 +183,7 @@ void launch_fused_bmm_decode(const GemmParams<T>& params) {
     const int shared_mem_size = lds_size;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
-    FUSED_BMM_I8_DECODE<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, BIAS>
+    FUSED_BMM_I8_DECODE<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K>
       <<<gridDim, blockDim, shared_mem_size, stream>>>(
           params.ptr_q_nope, 
           params.ptr_w_uv, 
@@ -192,7 +200,8 @@ void launch_fused_bmm_decode(const GemmParams<T>& params) {
           params.stride_ask,
           params.stride_bsn,
           params.stride_bsl,
-          params.stride_bsk
+          params.stride_bsk,
+          params.has_bias
           );
     
     auto err = cudaGetLastError();
@@ -228,6 +237,13 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
 
     torch::Tensor output_alias = output.alias();
 
+    bhalf_t* bias_ptr = nullptr; // 第一阶段这里为null
+    bool has_bias = false;
+    if (bias.has_value()){
+      bias_ptr = (bhalf_t*)bias.value().data_ptr();
+      has_bias = true;
+    }
+
     if (q_nope.scalar_type() == at::ScalarType::Char){
      
         GemmParams<char> params_in(
@@ -236,8 +252,7 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
           (bhalf_t*)output_alias.data_ptr(),
           (float*)a_scale.data_ptr(), 
           (float*)b_scale.data_ptr(),  
-          // (const bhalf_t*)bias.data_ptr<bhalf_t>(),
-          nullptr,
+          bias_ptr,
           batch_size,
           n_size,
           p_size,
@@ -247,7 +262,8 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
           stride_ask,
           stride_bsn,
           stride_bsl,
-          stride_bsk
+          stride_bsk,
+          has_bias
         );
       
         auto it = kernel_maps_fused_bmm.find(mode);
