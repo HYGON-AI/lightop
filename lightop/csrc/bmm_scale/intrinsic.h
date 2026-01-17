@@ -436,6 +436,79 @@ static __device__ inline uint16_t f32_to_bf16(float f){
 
 }
 
+inline __device__ uint8_t float_to_fp8e4m3(float f) {
+    // ===== 常量定义 =====
+    // FP8 E4M3最大值: 1087 << 20
+    // 1087 = 2^(4+1) - 1 + 2^4 = 31 + 16 = 47? 等等，这里需要重新计算
+    // 实际上是基于指数和尾数的位模式
+    constexpr uint32_t fp8_max = UINT32_C(1087) << 20;
+    
+    // 非正规化数处理掩码
+    constexpr uint32_t denorm_mask = UINT32_C(141) << 23;
+    
+    // ===== 步骤1: 提取float的位表示 =====
+    uint32_t f_bits = c10::detail::fp32_to_bits(f);
+    uint8_t result = 0u;
+    
+    // ===== 步骤2: 提取符号位并移除 =====
+    const uint32_t sign = f_bits & UINT32_C(0x80000000);
+    f_bits ^= sign;
+    
+    // ===== 步骤3: 处理不同数值范围 =====
+    
+    // 3a. 溢出处理
+    if (f_bits >= fp8_max) {
+      result = 0x7f;  // 01111111 (NaN/最大值)
+    } else {
+      
+      // 3b. 非正规化数处理
+      if (f_bits < (UINT32_C(121) << 23)) {
+        f_bits = c10::detail::fp32_to_bits(
+          c10::detail::fp32_from_bits(f_bits) + 
+          c10::detail::fp32_from_bits(denorm_mask)
+        );
+        result = static_cast<uint8_t>(f_bits - denorm_mask);
+      
+      // 3c. 正规化数处理
+      } else {
+        // 检查尾数第20位是否为1（对应FP8 E4M3 3位尾数的LSB）
+        uint8_t mant_odd = (f_bits >> 20) & 1;
+        
+        // 指数偏置调整: FP32偏置127 → FP8 E4M3偏置7
+        // 调整量 = 7 - 127 = -120
+        f_bits += ((uint32_t)(7 - 127) << 23) + 0x7FFFF;
+        
+        // 应用奇数舍入
+        f_bits += mant_odd;
+        
+        // 右移20位得到8位结果
+        result = static_cast<uint8_t>(f_bits >> 20);
+      }
+    }
+    
+    // ===== 步骤4: 加上符号位 =====
+    result |= static_cast<uint8_t>(sign >> 24);
+    
+    return result;
+  }
+
+inline __device__ uint32_t float_to_fp8e4m3_x4(float a, float b, float c, float d)
+{
+  #if defined(__gfx938__)
+    int32_t res;
+    res = __builtin_hcu_cvt_pk_fp8_f32(a, b, res, false);
+    res = __builtin_hcu_cvt_pk_fp8_f32(c, d, res, true);
+    return res;
+  #else
+    int32_t out;
+    reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e4m3(a);
+    reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e4m3(b);
+    reinterpret_cast<uint8_t*>(&out)[2] = float_to_fp8e4m3(c);
+    reinterpret_cast<uint8_t*>(&out)[3] = float_to_fp8e4m3(d);
+    return out;
+  #endif
+}
+
 //f32转bf16
 // to simplify f32 -> bf16 conversion, filter some branch
 // inline __HOST_DEVICE__ bhalf_t inlineasm_float2bfloat16_nonan(const float f) {

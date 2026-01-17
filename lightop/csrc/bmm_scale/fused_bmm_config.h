@@ -13,7 +13,7 @@ template <typename T>
 struct GemmParams {
     GemmParams(const T* ptr_q_nope,
                const T* ptr_w_uv,
-               bhalf_t* ptr_output,
+               unsigned char* ptr_output,
                float* ptr_a_scale,
                float* ptr_b_scale,
                bhalf_t* ptr_bias,
@@ -21,6 +21,12 @@ struct GemmParams {
                uint32_t n_size, 
                uint32_t p_size,
                uint32_t l_size,
+               uint32_t stride_ab,
+               uint32_t stride_an,
+               uint32_t stride_ap,
+               uint32_t stride_bn,
+               uint32_t stride_bl,
+               uint32_t stride_bp,
                uint32_t stride_asn,
                uint32_t stride_asb,
                uint32_t stride_ask,
@@ -39,6 +45,12 @@ struct GemmParams {
           n_size(n_size),
           p_size(p_size),
           l_size(l_size),
+          stride_ab(stride_ab),
+          stride_an(stride_an),
+          stride_ap(stride_ap),
+          stride_bn(stride_bn),
+          stride_bl(stride_bl),
+          stride_bp(stride_bp),
           stride_asn(stride_asn),
           stride_asb(stride_asb),
           stride_ask(stride_ask),
@@ -50,14 +62,20 @@ struct GemmParams {
 
     const T* ptr_q_nope;               // input q_nope
     const T* ptr_w_uv;                 // weight w_uv
-    bhalf_t* ptr_output;               // output
+    unsigned char* ptr_output;         // output
     float* ptr_a_scale;                // input scale a_scale
     float* ptr_b_scale;                // weight scale b_scale
-    bhalf_t* ptr_bias;           // bias
+    bhalf_t* ptr_bias;                 // bias
     uint32_t batch_size;               // batch size
     uint32_t n_size;                   // output size n
     uint32_t p_size;                   // input size p
     uint32_t l_size;                   // input size l
+    uint32_t stride_ab;                // input stride ab   
+    uint32_t stride_an;                // input stride an
+    uint32_t stride_ap;                // input stride ap
+    uint32_t stride_bn;                // weight stride bn
+    uint32_t stride_bl;                // weight stride bl
+    uint32_t stride_bp;                // weight stride bp
     uint32_t stride_asn;               // input scale stride asm
     uint32_t stride_asb;               // input scale stride ask
     uint32_t stride_ask;               // weight scale stride bse
