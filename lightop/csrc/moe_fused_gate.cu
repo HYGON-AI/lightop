@@ -79,6 +79,8 @@ __device__ void moe_fused_gate_impl(
   int group_row = tidx / params.THREADS_PER_ROW; 
   int thread_row = blockIdx.x * params.ROWS_PER_CTA + group_row;
 
+   int topk_routed = topk - n_share_experts_fusion;
+
   if (thread_row >= num_rows) {
     return;
   }
@@ -101,6 +103,7 @@ __device__ void moe_fused_gate_impl(
    row_chunk[kk]=1.0f/(1.0f + __expf(-static_cast<float>(in[kk])));
    scores_chunk[kk]=static_cast<float>(b[kk])+row_chunk[kk];
   }
+
 
   /////////////////////// 线程组计算top2 ///////////////////////////// 
   // int my_local_start_id = first_elt_read_by_thread;
@@ -176,7 +179,7 @@ __device__ void moe_fused_gate_impl(
   float my_stored_prob = 0.0f;
   int my_stored_idx = 0;
   float output_sum = 0.0f;
-  {
+  if(topk_routed > 0){
     constexpr int k_idx=0;
     float local_max = max_val_group;
     int local_idx = max_val_group_idx;
@@ -204,7 +207,7 @@ __device__ void moe_fused_gate_impl(
      max_val_group = Negative_inf; 
     }
   }
-  {
+  if(topk_routed > 1){
     constexpr int k_idx=1;
     float local_max;
     int local_idx; 
@@ -238,7 +241,7 @@ __device__ void moe_fused_gate_impl(
      scores_chunk[winner_offset] = Negative_inf;
     }
   }
-  for (int k_idx = 2; k_idx < topk; ++k_idx) {
+  for (int k_idx = 2; k_idx < topk_routed; ++k_idx) {
     float local_max = Negative_inf;
     int local_idx = first_elt_read_by_thread; 
     for (int ii = 0; ii < params.VPT; ++ii) {
@@ -274,6 +277,16 @@ __device__ void moe_fused_gate_impl(
     }
    }
   }
+  //共享专家逻辑
+   if (n_share_experts_fusion > 0 && thread_group_idx >= topk_routed && thread_group_idx < topk) {
+      // 共享专家ID从 NUM_EXPERTS 开始递增
+      int share_offset = thread_group_idx - topk_routed;
+      my_stored_idx = params.NUM_EXPERTS + share_offset;
+      // 共享专家权重 = 常规路由之和 / Scaling routed_scaling_factor
+      my_stored_prob = output_sum / static_cast<float>(routed_scaling_factor);
+  }
+  // 路由专家: stored_prob / output_sum -> 归一化权重
+  // 共享专家: (output_sum / scale) / output_sum -> 1 / scale (固定权重)
   if (thread_group_idx < topk) {
     int const idx = topk * thread_row + thread_group_idx;
     output_ptr[idx] = my_stored_prob /output_sum;
