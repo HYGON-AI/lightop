@@ -117,7 +117,10 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
       a_scale_ptr_arr[idx] = a_scale_ptr + std::min(a_scale_offset,  batch_size - 1) * stride_asb; //计算M方向的偏移
   }
 
-  { 
+  if constexpr(STAGES == 1){
+    batch_gemm_stage_one_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
+      (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
+  }else{
     batch_gemm_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
       (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
   }
@@ -186,7 +189,7 @@ void launch_fused_bmm_decode(const GemmParams<T>& params) {
     blockDim.x = WARP_NUM*64;
     blockDim.y = 1;
     blockDim.z = 1;
-
+    printf("BLOCK_SIZE_M: %d, BLOCK_SIZE_N: %d, BLOCK_SIZE_K: %d, WARP_M: %d, WARP_N: %d, WARP_K: %d\n", BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K);
     gridDim.x = DIVIDE(params.batch_size, BLOCK_SIZE_M); // m方向
     gridDim.y = DIVIDE(params.l_size, BLOCK_SIZE_N); // n方向
     gridDim.z = params.n_size; // batch方向
