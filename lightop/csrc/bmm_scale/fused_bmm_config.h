@@ -110,6 +110,20 @@ static std::unordered_map<int, KernelFunc> kernel_maps_fused_bmm = {
     // 8warp warp_k=64
     {8, [](const GemmParams<char>& p) { launch_fused_bmm_decode<16, 128, 64, 16, 16, 32, char>(p); }},
     {9, [](const GemmParams<char>& p) { launch_fused_bmm_decode<16, 256, 64, 16, 32, 32, char>(p); }},
+    // 4warp warp_k=64, warp_k=block_k
+    {10, [](const GemmParams<char>& p) { launch_fused_bmm_decode<16, 64,  64, 16, 16, 64, char>(p); }},
+    {11, [](const GemmParams<char>& p) { launch_fused_bmm_decode<16, 128, 64, 16, 32, 64, char>(p); }},
+    {12, [](const GemmParams<char>& p) { launch_fused_bmm_decode<16, 256, 64, 16, 64, 64, char>(p); }},
+    // 8warp warp_k=64, warp_k=block_k
+    {13, [](const GemmParams<char>& p) { launch_fused_bmm_decode<16, 128, 64, 16, 16, 64, char>(p); }},
+    {14, [](const GemmParams<char>& p) { launch_fused_bmm_decode<16, 256, 64, 16, 32, 64, char>(p); }},
+    // 4warp warp_k=64, warp_k=block_k
+    {15, [](const GemmParams<char>& p) { launch_fused_bmm_decode<16, 64,  32, 16, 16, 32, char>(p); }},
+    {16, [](const GemmParams<char>& p) { launch_fused_bmm_decode<16, 128, 32, 16, 32, 32, char>(p); }},
+    {17, [](const GemmParams<char>& p) { launch_fused_bmm_decode<16, 256, 32, 16, 64, 32, char>(p); }},
+    // 8warp warp_k=64, warp_k=block_k
+    {18, [](const GemmParams<char>& p) { launch_fused_bmm_decode<16, 128, 32, 16, 16, 32, char>(p); }},
+    {19, [](const GemmParams<char>& p) { launch_fused_bmm_decode<16, 256, 32, 16, 32, 32, char>(p); }},
 };
 
 }
