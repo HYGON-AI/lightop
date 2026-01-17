@@ -67,7 +67,7 @@ def fused_bmm_trans_impl_int8(input: torch.Tensor,                              
     # input = torch.ones_like(input)
     # w_uk的shape是[n,l,p]，第0,1维保持不变，第2维从0-p-1增长
     # w_uk = torch.arange(w_uk.shape[2], dtype=w_uk.dtype, device=w_uk.device).view(1, 1, -1).expand_as(w_uk)
-    # w_uk = torch.ones_like(w_uk)*2
+    # w_uk = torch.ones_like(w_uk)
     # input_scale = torch.ones_like(input_scale)
     # w_uk_scale = torch.ones_like(w_uk_scale)
 
@@ -124,9 +124,9 @@ def fused_bmm_trans_impl_int8(input: torch.Tensor,                              
 
 def torch_benchmark_transpose_bmm_transpose_bf16(decode_q_nope: torch.Tensor,
                                                  w_uk_t: torch.Tensor) -> torch.Tensor:
-    # decode_q_nope.shape = [b, n, p]
-    # w_uk.shape = [n, p, l]
-    # return: [b, n, l]
+    # decode_q_nope.shape = [b, n, p] bf16
+    # w_uk.shape = [n, p, l] bf16
+    # return: [b, n, l] bf16
     decode_q_nope = decode_q_nope.transpose(0,1)  # [b, n, p] -> [n, b, p]
     decode_ql_nope = torch.bmm(decode_q_nope, w_uk_t)  # [n, b, l]
     decode_ql_nope = decode_ql_nope.transpose(0,1)  # [b, n, l]
@@ -269,7 +269,7 @@ def run_trans_bmm_trans_vaild():
     # mode_ranges = [i for i in range(len(blockM_configs))]
     # mode_ranges = [mode for mode in blockM_configs.keys()]
     # mode_ranges = [0,1,2,3,4,5,6,7,8,9]
-    # mode_ranges = [0,1,2]
+    # mode_ranges = [10,11,12,13,14,15,16,17,18,19]
     mode_ranges = [0]
     
     for i in range(0,len(p_list),1):
@@ -306,7 +306,7 @@ def run_benchmark_trans_bmm_trans():
     
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
-    mode_ranges = [0]
+    mode_ranges = [0] # mode best config: [0,3,]
 
     results_list = []
     for i in range(0,len(p_list),1):
@@ -325,8 +325,8 @@ def run_benchmark_trans_bmm_trans():
             
 def main():
     # run_tuning()
-    # run_trans_bmm_trans_vaild()
-    run_benchmark_trans_bmm_trans()
+    run_trans_bmm_trans_vaild()
+    # run_benchmark_trans_bmm_trans()
 
 if __name__ == "__main__":
     main()
