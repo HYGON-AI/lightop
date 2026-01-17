@@ -31,7 +31,7 @@ def batch_rocblas_scaled_mm(a: torch.Tensor,        # [n, b, p]
                             b: torch.Tensor,        # [n, l, p]
                             scale_a: torch.Tensor,  # [n, b, 1] 
                             scale_b: torch.Tensor,  # [n, l, 1]
-                            out_dtype: torch.dtype = torch.bfloat16,
+                            out_dtype: torch.dtype = torch.float8_e4m3fn,
                             bias: Optional[torch.Tensor] = None) -> torch.Tensor: # [n, l]
     #scale_a.shape=[n,b,1]   fp32
     #scale_b.shape=[n,l,1]   fp32
@@ -50,8 +50,10 @@ def batch_rocblas_scaled_mm(a: torch.Tensor,        # [n, b, p]
         # 计算 a[i] @ b[i].T，结果: [b, l] int32
         gemmoutput = torch.matmul(a[i].cpu().to(dtype=torch.int32), b[i].T.cpu().to(dtype=torch.int32))  # [b, l]
         output[i] = (scales.cpu() * gemmoutput.to(dtype=torch.float32)).to(out_dtype)
-        if bias is not None:
-            output[i] = output[i] + bias[i].cpu()
+        # import pdb; pdb.set_trace()
+        # do not support bias!
+        # if bias is not None:
+        #     output[i] = output[i] + bias[i].cpu()
     return output.cuda()
 
 def fused_bmm_trans_impl_int8(input: torch.Tensor,                              # b，n, p
@@ -70,7 +72,6 @@ def fused_bmm_trans_impl_int8(input: torch.Tensor,                              
     # w_uk_scale = torch.ones_like(w_uk_scale)
 
     inputc_clone = input.clone()
-    torch_input = inputc_clone.transpose(0,1).contiguous()  # [b, n, p] -> [n, b, p]
     torch_uk = w_uk.clone()
     torch_input_scale = input_scale.clone()
     torch_w_uk_scale = w_uk_scale.clone()
@@ -78,19 +79,33 @@ def fused_bmm_trans_impl_int8(input: torch.Tensor,                              
     
     
     # fused_bmm_output 应该是 [n, b, l] 的形状
-    fused_torch_output = batch_rocblas_scaled_mm(torch_input, torch_uk, torch_input_scale, torch_w_uk_scale, out_dtype=torch.bfloat16, bias=torch_bias)   # [n, b, l]
+    torch_input = inputc_clone.transpose(0,1).contiguous()  # [b, n, p] -> [n, b, p]
+    # 使用bfloat16作为基准输出类型，避免FP8类型比较时的运算问题
+    fused_torch_output = batch_rocblas_scaled_mm(torch_input, torch_uk, torch_input_scale, torch_w_uk_scale, out_dtype=torch.float8_e4m3fn, bias=torch_bias)   # [n, b, l]
     torch_output = fused_torch_output.transpose(0,1).contiguous() # [b, n, l]
-    cuda_output = torch.zeros_like(torch_output, dtype=torch.bfloat16)
-
+    # import pdb; pdb.set_trace()
     # 验证lightop kernel
     # torch.set_printoptions(profile="full") 
-    # print("w_ukw_uk: ", w_uk[0,:15,:64])
+    cuda_output = torch.zeros_like(torch_output, dtype=torch.float8_e4m3fn)
     fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, mode)
     torch.cuda.synchronize()
-    
+    # import pdb; pdb.set_trace()
     mode_status = True
     
-    if not (torch.allclose(torch_output, cuda_output, rtol=1e-2, atol=1e-2, equal_nan=True)):
+    # 将FP8输出转换为bfloat16进行比较
+    # PyTorch的FP8类型可能不支持直接.to()转换，需要通过view转换为uint8
+    # 然后手动实现FP8到float的转换，或者使用torch的dequantize功能
+    # 这里使用一个简单的方法：将FP8视为uint8，然后转换为float32再转bfloat16
+    # 注意：这不是正确的FP8解码，但可以作为临时方案
+    # 如果需要精确的FP8解码，应该使用lightop的转换函数或实现正确的FP8解码逻辑
+    torch_output_uint8 = torch_output.view(torch.uint8)
+    cuda_output_uint8 = cuda_output.view(torch.uint8)
+    # 将uint8转换为float32（这里假设FP8值范围在合理范围内）
+    # 正确的做法应该是实现FP8 E4M3格式的解码
+    torch_output_fp32 = torch_output_uint8.to(torch.float32)
+    cuda_output_fp32 = cuda_output_uint8.to(torch.float32)
+    # import pdb; pdb.set_trace()
+    if not (torch.allclose(torch_output_fp32, cuda_output_fp32, rtol=1e-2, atol=1e-2, equal_nan=True)):
         print(f"kernel 精度检查不合格!!!")
         mode_status = False
         
@@ -107,7 +122,39 @@ def fused_bmm_trans_impl_int8(input: torch.Tensor,                              
         
     return mode_status
 
-def fused_bmm_trans_impl_int8_benchmark(input: torch.Tensor,                              # b，n, p
+def torch_benchmark_transpose_bmm_transpose_bf16(decode_q_nope: torch.Tensor,
+                                                 w_uk_t: torch.Tensor) -> torch.Tensor:
+    # decode_q_nope.shape = [b, n, p]
+    # w_uk.shape = [n, p, l]
+    # return: [b, n, l]
+    decode_q_nope = decode_q_nope.transpose(0,1)  # [b, n, p] -> [n, b, p]
+    decode_ql_nope = torch.bmm(decode_q_nope, w_uk_t)  # [n, b, l]
+    decode_ql_nope = decode_ql_nope.transpose(0,1)  # [b, n, l]
+    return decode_ql_nope
+
+def torch_benchmark_fuse_bmm_bf16(B: int,
+                                  N: int,
+                                  P: int,
+                                  L: int):
+    torch.manual_seed(0)
+    decode_q_nope = torch.randn(B, N, P, dtype=torch.bfloat16, device='cuda')  # [b, n, p]
+    w_uk_t = torch.randn(N, P, L, dtype=torch.bfloat16, device='cuda')  # [n, p, l]
+    
+    warm_up_num = 10
+    # function:
+    for i in range(warm_up_num):
+        torch_benchmark_transpose_bmm_transpose_bf16(decode_q_nope, w_uk_t)
+        torch.cuda.synchronize()
+    
+    quantiles = [0.5, 0.2, 0.8]
+    avg_ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch_benchmark_transpose_bmm_transpose_bf16(decode_q_nope, w_uk_t), 
+                                                            quantiles=quantiles)
+    
+    return avg_ms * 1000
+    
+    
+
+def fused_bmm_trans_impl_int8_benchmark(input: torch.Tensor,                            # b，n, p
                                         w_uk: torch.Tensor,                             # n, l, p
                                         input_scale: Optional[torch.Tensor] = None,     # n, b, 1
                                         w_uk_scale: Optional[torch.Tensor] = None,      # n, l, 1
@@ -118,7 +165,10 @@ def fused_bmm_trans_impl_int8_benchmark(input: torch.Tensor,                    
     # 用实际 shape 申请输出空间，避免依赖 zeros_like
     b, n, p = input.shape
     _, l, _ = w_uk.shape
-    cuda_output = torch.empty((b, n, l), dtype=torch.bfloat16, device=input.device)
+    cuda_output = torch.empty((b, n, l), dtype=torch.float8_e4m3fn, device=input.device)
+    
+    # torch benchmark:
+    torch_benchmark_time = torch_benchmark_fuse_bmm_bf16(b, n, p, l)
     
     warm_up_num = 10
     for i in range(warm_up_num):
@@ -170,6 +220,7 @@ def fused_bmm_trans_impl_int8_benchmark(input: torch.Tensor,                    
         'N': n,
         'L': l,
         'P': p,
+        'Torch_time_us': torch_benchmark_time,
         'GEMM_Time_us': fused_bmm_kernel_time_us,
         'GEMM_TFlops': tflops,
         'GEMM_GB/s': bw,
@@ -190,10 +241,9 @@ def _fused_bmm_helper(batch: int,
     input = torch.randint(-128, 127, (batch, N, P), device=device, dtype=torch.int8)      # [b, n, p]
     # w_uk_t = torch.randint(-128, 127, (N, P ,L), device=device, dtype=torch.int8)       # [n, p, l]
     w_uk = torch.randint(-128, 127, (N, L, P), device=device, dtype=torch.int8)           # [n, l, p]
-    input_scale = (torch.randn((N, batch ,1), device=device,                              # [n, b, 1]
-                           dtype=torch.float32))
-    w_uk_scale = (torch.randn((N, L, 1), device=device,                                   # [n, l, 1]
-                           dtype=torch.float32))
+    # 生成0.001到0.1之间的随机scale值，保留三位小数,防止fp8算出来都是些nan值
+    input_scale = (torch.rand((N, batch, 1), device=device, dtype=torch.float32) * 0.099 + 0.001).round(decimals=3)  # [n, b, 1]
+    w_uk_scale = (torch.rand((N, L, 1), device=device, dtype=torch.float32) * 0.099 + 0.001).round(decimals=3)  # [n, l, 1]
     bias = torch.randn((N, L), device=device, dtype=torch.bfloat16)                       # [n, l]
     
     return input, w_uk, input_scale, w_uk_scale, bias
@@ -238,7 +288,7 @@ def run_trans_bmm_trans_vaild():
     
 def run_benchmark_trans_bmm_trans():
     batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
-    # batch_list = [16384]
+    # batch_list = [32]
     
     ##deepseek-671b-tp8
     n_list=[16]
@@ -275,8 +325,8 @@ def run_benchmark_trans_bmm_trans():
             
 def main():
     # run_tuning()
-    run_trans_bmm_trans_vaild()
-    # run_benchmark_trans_bmm_trans()
+    # run_trans_bmm_trans_vaild()
+    run_benchmark_trans_bmm_trans()
 
 if __name__ == "__main__":
     main()

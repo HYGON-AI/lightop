@@ -100,12 +100,13 @@ __forceinline__ __device__ void  batch_gemm_impl(
     int warp_id, 
     int batch_size,
     int n_size,
+    int p_size,
     int seqlen_A_stride, // size_k: 128
     int seqlen_B_stride, // size_k: 128
     const int bidx,
     const int bidz) {
 
-    const int size_k = seqlen_A_stride;
+    const int size_k = p_size;
     int lane_id = threadIdx.x & 63; // thread_id
     int row_id = lane_id % 16;
     int col_id = lane_id / 16;

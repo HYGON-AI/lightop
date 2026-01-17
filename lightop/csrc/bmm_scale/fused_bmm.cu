@@ -44,7 +44,7 @@ template<
 __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   const Element* __restrict__ q_nope, // [batch, n, p]
   const Element* __restrict__ w_uv,   // [n, p, l]
-  bhalf_t* __restrict__ output,       // [batch, n, l]
+  unsigned char* __restrict__ output, // [batch, n, l]
   float* __restrict__ a_scale,        // [n, batch, 1]
   float* __restrict__ b_scale,        // [n, l, 1]
   bhalf_t* __restrict__ bias,         // [batch, l]
@@ -52,6 +52,12 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   uint32_t n_size, 
   uint32_t p_size,
   uint32_t l_size,
+  uint32_t stride_ab,
+  uint32_t stride_an,
+  uint32_t stride_ap,
+  uint32_t stride_bn,
+  uint32_t stride_bl,
+  uint32_t stride_bp,
   uint32_t stride_asn,
   uint32_t stride_asb,
   uint32_t stride_ask,
@@ -66,7 +72,7 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   int bidz = blockIdx.z; // pid_batch: n_size
 
   constexpr int STAGES = BLOCK_SIZE_K/WARP_K; 
-  const int w_uv_offset = bidz * p_size * l_size + bidy * BLOCK_SIZE_N * p_size;
+  const int w_uv_offset = bidz * stride_bl * l_size + bidy * BLOCK_SIZE_N * stride_bl;
   const uint32_t output_offset = bidz * l_size + bidy * BLOCK_SIZE_N;
   const int size_k = p_size;
   const int size_m = batch_size;
@@ -74,7 +80,7 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   const int nl_size = n_size * l_size;
 
   auto g_input = q_nope;
-  bhalf_t* g_output;
+  unsigned char* g_output;
 
   g_output = output + output_offset;
 
@@ -93,7 +99,7 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   extern __shared__ Element smem[];                                    // 声明lds信息
   Element* input_lds = (Element*)&(smem);                              // 输入lds首地址,首地址开始分配给input
   Element* w_uv_lds = input_lds + STAGES * (BLOCK_SIZE_M * WARP_K);    // 按照最简单的方式分块
-  bhalf_t* output_lds = (bhalf_t*)&(smem);                             // 重复使用lds,留给output_lds
+  uint8_t* output_lds = (uint8_t*)&(smem);                             // 重复使用lds,留给output_lds
 
   union_vec<Element, 8> A_reg[WARP_M / mfma_m * STAGES][WARP_K/mfma_k]; 
   union_vec<Element, 8> B_reg[WARP_N / mfma_n][WARP_K/mfma_k];
@@ -103,7 +109,7 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   float *a_scale_ptr_arr[WARP_M / mfma_m];
   float *a_scale_ptr = a_scale + bidz * stride_asn + bidx * BLOCK_SIZE_M * stride_asb + warp_m_id * WARP_M;
   float *b_scale_ptr = b_scale + bidz * stride_bsn + bidy * BLOCK_SIZE_N * stride_bsl + warp_n_id * WARP_N;
-  bhalf_t *bias_ptr = bias + bidz * l_size + bidy * BLOCK_SIZE_N + warp_n_id * WARP_N;
+  // bhalf_t *bias_ptr = bias + bidz * l_size + bidy * BLOCK_SIZE_N + warp_n_id * WARP_N;
 
   #pragma unroll
   for(int idx = 0; idx < WARP_M / mfma_m; idx++){
@@ -113,9 +119,11 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
 
   { 
     batch_gemm_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
-      (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, p_size, bidx, bidz);
+      (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
   }
 
+  floatx4 scale_valuex4 = {0.0f, 0.0f, 0.0f, 0.0f};
+  uint32_t float8x4_value;
   //save output to lds
   #pragma unroll
   for(int min_tile_m = 0; min_tile_m < WARP_M / mfma_m; min_tile_m++){
@@ -125,15 +133,20 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
       #pragma unroll
       for(int reg_id = 0; reg_id < 4; reg_id++){
         float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
-        float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
+        scale_valuex4[reg_id] = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
+      }
+      float8x4_value = float_to_fp8e4m3_x4(scale_valuex4[0], scale_valuex4[1], scale_valuex4[2], scale_valuex4[3]);
+      #pragma unroll
+      for(int reg_id = 0; reg_id < 4; reg_id++){
+        float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
         int index = (warp_m_id * WARP_M + min_tile_m * mfma_m + (lane_id & 15 )) * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N 
-            + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + warp_m_id * WARP_M+ (lane_id % 16) )/2 * 2/*padding*/;
-        bhalf_t acc_scale_value = f32_to_bf16(value);
-        if (has_bias){
-          bhalf_t bias_value = bias_ptr[min_tile_n * mfma_n + col_id + reg_id * 4];
-          acc_scale_value = acc_scale_value + bias_value;
-        }
-        output_lds[index] = acc_scale_value;
+            + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + warp_m_id * WARP_M + (lane_id % 16) )/2 * 4/*padding*/;
+        // bhalf_t acc_scale_value = f32_to_bf16(value);
+        // if (has_bias){
+        //   bhalf_t bias_value = bias_ptr[min_tile_n * mfma_n + col_id + reg_id * 4];
+        //   acc_scale_value = acc_scale_value + bias_value;
+        // }
+        output_lds[index] = reinterpret_cast<uint8_t*>(&float8x4_value)[reg_id];
       }
     }
   }
@@ -143,17 +156,16 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   {
     // 最大化利用dwordx4 通用
     const int tid = threadIdx.x;
-    constexpr int N_thread = BLOCK_SIZE_N / 8;  //N方向需要的线程数 使用dwordx4即8个bf16
-    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    constexpr int N_thread = BLOCK_SIZE_N / 16;  //N方向需要的线程数 使用dwordx4即8个bf16
+    using vec16_fp8 = __attribute__((__vector_size__(16 * sizeof(char)))) char;
     int m_idx = threadIdx.x / N_thread;  
     int n_idx = threadIdx.x % N_thread;  
     for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
       const int32_t batch_index = (bidx * BLOCK_SIZE_M + m_idx);
 
       if(batch_index < batch_size) {
-        *reinterpret_cast<vec_bf16_8*>(&g_output[batch_index * nl_size + n_idx * 8]) = 
-        //*reinterpret_cast<vec_bf16_8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 8]);
-        *reinterpret_cast<vec_bf16_8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 8 + m_idx/2 * 2/*padding*/]);
+        *reinterpret_cast<vec16_fp8*>(&g_output[batch_index * nl_size + n_idx * 16]) = 
+        *reinterpret_cast<vec16_fp8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 16 + m_idx/2 * 4/*padding*/]);
       }
     } 
   }      
@@ -179,7 +191,7 @@ void launch_fused_bmm_decode(const GemmParams<T>& params) {
     gridDim.y = DIVIDE(params.l_size, BLOCK_SIZE_N); // n方向
     gridDim.z = params.n_size; // batch方向
 
-    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K), BLOCK_SIZE_M * BLOCK_SIZE_N * 2);
+    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K), BLOCK_SIZE_M * BLOCK_SIZE_N);
     const int shared_mem_size = lds_size;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
@@ -195,6 +207,12 @@ void launch_fused_bmm_decode(const GemmParams<T>& params) {
           params.n_size,
           params.p_size,
           params.l_size,
+          params.stride_ab,
+          params.stride_an,
+          params.stride_ap,
+          params.stride_bn,
+          params.stride_bl,
+          params.stride_bp,
           params.stride_asn,
           params.stride_asb,
           params.stride_ask,
@@ -228,6 +246,12 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
     const int n_size = q_nope.size(1);
     const int p_size = q_nope.size(2);
     const int l_size = w_uv.size(1);
+    const int stride_ab = q_nope.stride(0);
+    const int stride_an = q_nope.stride(1);
+    const int stride_ap = q_nope.stride(2);
+    const int stride_bn = w_uv.stride(0);
+    const int stride_bl = w_uv.stride(1);
+    const int stride_bp = w_uv.stride(2);
     const int stride_asn = a_scale.stride(0);
     const int stride_asb = a_scale.stride(1);
     const int stride_ask = a_scale.stride(2);;
@@ -249,7 +273,7 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
         GemmParams<char> params_in(
           (const char*)q_nope.data_ptr<int8_t>(), 
           (const char*)w_uv.data_ptr<int8_t>(), 
-          (bhalf_t*)output_alias.data_ptr(),
+          (unsigned char*)output_alias.data_ptr(),
           (float*)a_scale.data_ptr(), 
           (float*)b_scale.data_ptr(),  
           bias_ptr,
@@ -257,6 +281,12 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
           n_size,
           p_size,
           l_size,
+          stride_ab,
+          stride_an,
+          stride_ap,
+          stride_bn,
+          stride_bl,
+          stride_bp,
           stride_asn,
           stride_asb,
           stride_ask,
