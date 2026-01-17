@@ -96,6 +96,15 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   const int warp_n_num = BLOCK_SIZE_N / WARP_N;
   int warp_n_id = warp_id % warp_n_num;
   int warp_m_id = warp_id / warp_n_num;
+
+  constexpr int dwordx4_num_elements = 16;
+  constexpr int N_thread = BLOCK_SIZE_N / dwordx4_num_elements;  //N方向需要的线程数 使用dwordx4即16个fp8
+  // const int m_num_threads = std::max(64 / N_thread, 1);
+  const int m_num_threads = 64 / N_thread; // 要求BLOCK_SIZE_N <= 512
+  const int n_num_threads = 64 / m_num_threads;
+  const int m_thread_idx = lane_id / n_num_threads;
+  const int n_thread_idx = lane_id & (n_num_threads-1);
+
   extern __shared__ Element smem[];                                    // 声明lds信息
   Element* input_lds = (Element*)&(smem);                              // 输入lds首地址,首地址开始分配给input
   Element* w_uv_lds = input_lds + STAGES * (BLOCK_SIZE_M * WARP_K);    // 按照最简单的方式分块
@@ -156,22 +165,43 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
 
   __syncthreads();
 
-  {
-    // 最大化利用dwordx4 通用
-    const int tid = threadIdx.x;
-    constexpr int N_thread = BLOCK_SIZE_N / 16;  //N方向需要的线程数 使用dwordx4即8个bf16
-    using vec16_fp8 = __attribute__((__vector_size__(16 * sizeof(char)))) char;
-    int m_idx = threadIdx.x / N_thread;  
-    int n_idx = threadIdx.x % N_thread;  
-    for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
-      const int32_t batch_index = (bidx * BLOCK_SIZE_M + m_idx);
+  // {
+  //   // 最大化利用dwordx4 通用
+  //   const int tid = threadIdx.x;
+  //   constexpr int N_thread = BLOCK_SIZE_N / 16;  //N方向需要的线程数 使用dwordx4即8个bf16
+  //   using vec16_fp8 = __attribute__((__vector_size__(16 * sizeof(char)))) char;
+  //   int m_idx = threadIdx.x / N_thread;  
+  //   int n_idx = threadIdx.x % N_thread;  
+  //   for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
+  //     const int32_t batch_index = (bidx * BLOCK_SIZE_M + m_idx);
 
-      if(batch_index < batch_size) {
-        *reinterpret_cast<vec16_fp8*>(&g_output[batch_index * nl_size + n_idx * 16]) = 
-        *reinterpret_cast<vec16_fp8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 16 + m_idx/2 * 4/*padding*/]);
+  //     if(batch_index < batch_size) {
+  //       *reinterpret_cast<vec16_fp8*>(&g_output[batch_index * nl_size + n_idx * 16]) = 
+  //       *reinterpret_cast<vec16_fp8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 16 + m_idx/2 * 4/*padding*/]);
+  //     }
+  //   } 
+  // }  
+  
+  {
+    const int m_pos_in_block = m_thread_idx + warp_id * m_num_threads;
+    using vec16_fp8 = __attribute__((__vector_size__(16 * sizeof(char)))) char;
+    #pragma unroll
+    for(int m_idx = 0; m_idx < BLOCK_SIZE_M; m_idx += m_num_threads*WARP_NUM) {
+      const int m_lds_idx = m_idx + m_pos_in_block;
+      if(m_lds_idx < BLOCK_SIZE_M) {
+        const int32_t batch_index = (bidx * BLOCK_SIZE_M + m_pos_in_block);
+        if(batch_index < batch_size) {
+          #pragma unroll
+          for(int n_idx = 0; n_idx < BLOCK_SIZE_N; n_idx += n_num_threads*dwordx4_num_elements) {
+            *reinterpret_cast<vec16_fp8*>(&g_output[batch_index * nl_size + n_idx + n_thread_idx * dwordx4_num_elements]) = 
+            *reinterpret_cast<vec16_fp8*>(&output_lds[(m_idx + m_thread_idx + warp_id * m_num_threads) * BLOCK_SIZE_N 
+              + n_idx + n_thread_idx*dwordx4_num_elements + (m_idx + m_thread_idx + warp_id * m_num_threads)/2 * 4/*padding*/]);
+          }
+        }
       }
-    } 
-  }      
+    }
+  }
+
 }
 
 
@@ -189,13 +219,15 @@ void launch_fused_bmm_decode(const GemmParams<T>& params) {
     blockDim.x = WARP_NUM*64;
     blockDim.y = 1;
     blockDim.z = 1;
-    printf("BLOCK_SIZE_M: %d, BLOCK_SIZE_N: %d, BLOCK_SIZE_K: %d, WARP_M: %d, WARP_N: %d, WARP_K: %d\n", BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K);
+    // printf("BLOCK_SIZE_M: %d, BLOCK_SIZE_N: %d, BLOCK_SIZE_K: %d, WARP_M: %d, WARP_N: %d, WARP_K: %d\n", BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K);
     gridDim.x = DIVIDE(params.batch_size, BLOCK_SIZE_M); // m方向
     gridDim.y = DIVIDE(params.l_size, BLOCK_SIZE_N); // n方向
     gridDim.z = params.n_size; // batch方向
+    // printf("gridDim.x: %d, gridDim.y: %d, gridDim.z: %d\n", gridDim.x, gridDim.y, gridDim.z);
 
     const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K), BLOCK_SIZE_M * BLOCK_SIZE_N);
     const int shared_mem_size = lds_size;
+    // printf("shared_mem_size: %d\n", shared_mem_size);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
     FUSED_BMM_I8_DECODE<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K>
