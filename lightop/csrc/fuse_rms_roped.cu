@@ -22,6 +22,7 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include "reduce.h"
+#include <type_traits> 
 
 template <typename T, int N>
 struct alignas(sizeof(T) * N) Vector {
@@ -31,6 +32,20 @@ template <typename Element, size_t len>
 struct vec {
     using type = __attribute__((__vector_size__(len * sizeof(Element)))) Element;
 };
+
+#define DISPATCH_BOOL(VAL, NAME, ...) \
+  if (VAL) {                          \
+    constexpr bool NAME = true;       \
+    __VA_ARGS__();                    \
+  } else {                            \
+    constexpr bool NAME = false;      \
+    __VA_ARGS__();                    \
+  }
+
+
+template <int N> using IntConst = std::integral_constant<int, N>;
+#define IV(N) IntConst<N>() 
+
 namespace at{
 namespace native{
 
@@ -634,45 +649,345 @@ __global__ void rms_rotary_embedding_kernel_pipeline(
     }
 }
 
+template<typename T, int WIDTH>
+__device__ __forceinline__ T WarpReduceSum_Local(T val) {
+    #pragma unroll
+    for (int mask = WIDTH / 2; mask > 0; mask >>=1) {
+        val += __shfl_xor(val, mask);
+    }
+    return val;
+}
+template <typename T_ACC, typename scalar_t, int VEC_SIZE, bool HAS_RESIDUAL>
+__device__ __forceinline__ T_ACC apply_residual_and_calc_sq(
+    scalar_t* r_data_low,     
+    scalar_t* r_data_high,   
+    scalar_t* res_head_ptr,   
+    int offset_low,            
+    int offset_high            
+) {
+    using LoadT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
+    if constexpr (HAS_RESIDUAL) {
+        scalar_t r_res_low[VEC_SIZE];
+        scalar_t r_res_high[VEC_SIZE];
+        *(LoadT*)r_res_low = *(LoadT*)(res_head_ptr + offset_low);
+        *(LoadT*)r_res_high = *(LoadT*)(res_head_ptr + offset_high);
 
-//融合rms+rope
+        #pragma unroll
+        for (int i = 0; i < VEC_SIZE; ++i) {
+            r_res_low[i] = r_res_low[i] + r_data_low[i];
+            r_res_high[i] = r_res_high[i] + r_data_high[i];
+            r_data_low[i] = r_res_low[i];
+            r_data_high[i] = r_res_high[i];
+        }
+        *(LoadT*)(res_head_ptr + offset_low) = *(LoadT*)r_res_low;
+        *(LoadT*)(res_head_ptr + offset_high) = *(LoadT*)r_res_high;
+    }
+
+    T_ACC local_sum_sq = 0;
+    #pragma unroll VEC_SIZE
+    for (int i = 0; i < VEC_SIZE; ++i) {
+        T_ACC low = static_cast<T_ACC>(r_data_low[i]);
+        T_ACC high = static_cast<T_ACC>(r_data_high[i]);
+        local_sum_sq += low * low;
+        local_sum_sq += high * high;
+    }
+
+    return local_sum_sq;
+}
+
+
+template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX,int VEC_SIZE, int THEAD_PER_HEAD>
+__global__ void opt_rms_rope_qwen3(
+    const int64_t* __restrict__ positions,
+    scalar_t* __restrict__ query,      
+    scalar_t* __restrict__ key,        
+    const scalar_t* __restrict__ cos_sin_cache,
+    const int rot_dim,
+    const int64_t query_stride,         
+    const int64_t key_stride,           
+    const int64_t head_stride_q,       
+    const int64_t head_stride_k,      
+    scalar_t* gamma_q,
+    scalar_t* gamma_k,
+    scalar_t* residual_q,
+    scalar_t* residual_k,
+    scalar_t eps,
+    int num_tokens,
+    const int num_heads,
+    const int num_kv_heads,
+    const int threads_per_token, 
+    const int tokens_per_block   
+) 
+{
+    
+    extern __shared__ char smem_buffer[];
+    scalar_t* s_cos_sin_base = reinterpret_cast<scalar_t*>(smem_buffer);
+
+    constexpr int HEAD_SIZE = 128;
+    constexpr int HALF_ROT = 64; 
+
+    const int tid = threadIdx.x;
+
+    const int local_token_idx = tid / threads_per_token;
+    const int lane = tid % threads_per_token;
+
+
+    if (local_token_idx >= tokens_per_block) return;
+
+    const int global_token_idx = blockIdx.x * tokens_per_block + local_token_idx;
+    if (global_token_idx >= num_tokens) return;
+
+
+    scalar_t* my_s_cos_sin = s_cos_sin_base + local_token_idx * HEAD_SIZE;
+    const int64_t pos = positions[global_token_idx];
+
+    for (int i = lane; i < HEAD_SIZE; i += threads_per_token) {
+        my_s_cos_sin[i] = cos_sin_cache[pos * HEAD_SIZE + i];
+    }
+
+    __syncthreads(); 
+
+    const int q_boundary = num_heads * THEAD_PER_HEAD;
+    if(lane < q_boundary){
+        const int q_head_idx = lane / THEAD_PER_HEAD;
+        const int q_lane_in_head = lane % THEAD_PER_HEAD;
+        
+        scalar_t* q_head_ptr = query + global_token_idx * query_stride + q_head_idx * head_stride_q;
+        scalar_t* res_q_head_ptr = HAS_RESIDUAL ? (residual_q + global_token_idx * query_stride + q_head_idx * head_stride_q) : nullptr;
+        
+        using LoadT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
+        scalar_t r_q_low[VEC_SIZE];
+        scalar_t r_q_high[VEC_SIZE];
+
+        int offset_low = q_lane_in_head * VEC_SIZE;
+        int offset_high = HALF_ROT + q_lane_in_head * VEC_SIZE;
+
+        *(LoadT*)r_q_low = *(LoadT*)(q_head_ptr + offset_low);
+        *(LoadT*)r_q_high = *(LoadT*)(q_head_ptr + offset_high);
+
+        T_ACC sum_sq = apply_residual_and_calc_sq<T_ACC, scalar_t, VEC_SIZE, HAS_RESIDUAL>(
+            r_q_low, r_q_high, res_q_head_ptr, offset_low, offset_high
+        );
+    
+        sum_sq = WarpReduceSum_Local<T_ACC,THEAD_PER_HEAD>(sum_sq);
+        T_ACC inv_rms = c10::cuda::compat::rsqrt(sum_sq / HEAD_SIZE + static_cast<T_ACC>(eps));
+        
+        const scalar_t* cache_ptr = my_s_cos_sin; 
+       
+        if constexpr (IS_NEOX) {
+            scalar_t r_cos_low[VEC_SIZE], r_sin_low[VEC_SIZE];
+            *(LoadT*)r_cos_low = *(LoadT*)(cache_ptr + offset_low);
+            *(LoadT*)r_sin_low = *(LoadT*)(cache_ptr + rot_dim/2 + offset_low); 
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; ++i) {
+                r_q_low[i] = static_cast<T_ACC>(r_q_low[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_low + i]);
+                r_q_high[i] = static_cast<T_ACC>(r_q_high[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_high + i]);
+                
+                scalar_t q_l = r_q_low[i];
+                scalar_t q_h = r_q_high[i];
+                scalar_t c = r_cos_low[i];
+                scalar_t s = r_sin_low[i];
+
+                r_q_low[i]  = q_l * c - q_h * s;
+                r_q_high[i] = q_l * s + q_h * c;
+            }
+        } else {
+            using LoadCacheT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE / 2>;
+            scalar_t c_low[VEC_SIZE / 2], s_low[VEC_SIZE / 2];
+            scalar_t c_high[VEC_SIZE / 2], s_high[VEC_SIZE / 2];
+            int cache_offset_low = offset_low / 2;
+            int cache_offset_high = offset_high / 2;
+            *(LoadCacheT*)c_low = *(LoadCacheT*)(cache_ptr + cache_offset_low);
+            *(LoadCacheT*)s_low = *(LoadCacheT*)(cache_ptr + rot_dim/2 + cache_offset_low);
+            *(LoadCacheT*)c_high = *(LoadCacheT*)(cache_ptr + cache_offset_high);
+            *(LoadCacheT*)s_high = *(LoadCacheT*)(cache_ptr + rot_dim/2 + cache_offset_high);
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; i+=2) {
+                int c_idx = i / 2; 
+                r_q_low[i]   = static_cast<T_ACC>(r_q_low[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_low + i]);
+                r_q_low[i+1] = static_cast<T_ACC>(r_q_low[i+1]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_low + i + 1]);
+                scalar_t q0 = r_q_low[i]; scalar_t q1 = r_q_low[i+1];
+                scalar_t c = c_low[c_idx]; scalar_t s = s_low[c_idx];
+                r_q_low[i]   = q0 * c - q1 * s;
+                r_q_low[i+1] = q1 * c + q0 * s;
+
+                r_q_high[i]   = static_cast<T_ACC>(r_q_high[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_high + i]);
+                r_q_high[i+1] = static_cast<T_ACC>(r_q_high[i+1]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_high + i + 1]);
+                scalar_t qh0 = r_q_high[i]; scalar_t qh1 = r_q_high[i+1];
+                scalar_t ch = c_high[c_idx]; scalar_t sh = s_high[c_idx];
+                r_q_high[i]   = qh0 * ch - qh1 * sh;
+                r_q_high[i+1] = qh1 * ch + qh0 * sh;
+            }
+        }
+        *(LoadT*)(q_head_ptr + offset_low) = *(LoadT*)r_q_low;
+        *(LoadT*)(q_head_ptr + offset_high) = *(LoadT*)r_q_high;
+    }
+
+   
+    const int total_threads_needed = (num_heads + num_kv_heads) * THEAD_PER_HEAD;
+    
+    if (lane >= q_boundary && lane < total_threads_needed && key != nullptr) {
+        const int k_lane_abs = lane - q_boundary;
+        const int kv_head_idx = k_lane_abs / THEAD_PER_HEAD; 
+        const int k_lane_in_head = k_lane_abs % THEAD_PER_HEAD;
+    
+        
+        scalar_t* k_head_ptr = key + global_token_idx * key_stride + kv_head_idx * head_stride_k;
+        scalar_t* res_k_head_ptr = HAS_RESIDUAL ? (residual_k + global_token_idx * key_stride + kv_head_idx * head_stride_k) : nullptr; 
+
+        using LoadTK = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
+        scalar_t r_k_low[VEC_SIZE];
+        scalar_t r_k_high[VEC_SIZE];
+        
+        int offset_low = k_lane_in_head * VEC_SIZE;          
+        int offset_high = HALF_ROT + k_lane_in_head * VEC_SIZE; 
+        
+        *(LoadTK*)r_k_low = *(LoadTK*)(k_head_ptr + offset_low);
+        *(LoadTK*)r_k_high = *(LoadTK*)(k_head_ptr + offset_high);
+        
+        T_ACC sum_sq_k = apply_residual_and_calc_sq<T_ACC, scalar_t, VEC_SIZE, HAS_RESIDUAL>(
+            r_k_low, r_k_high, res_k_head_ptr, offset_low, offset_high
+        );
+        
+        sum_sq_k = WarpReduceSum_Local<T_ACC,THEAD_PER_HEAD>(sum_sq_k);
+        T_ACC inv_rms_k = c10::cuda::compat::rsqrt(sum_sq_k / HEAD_SIZE + static_cast<T_ACC>(eps));
+        
+        const scalar_t* cache_ptr_k = my_s_cos_sin; 
+        
+        if constexpr (IS_NEOX) {
+            scalar_t r_cos_low[VEC_SIZE], r_sin_low[VEC_SIZE];
+            scalar_t r_gamma_k_low[VEC_SIZE], r_gamma_k_high[VEC_SIZE];
+
+            *(LoadTK*)r_cos_low = *(LoadTK*)(cache_ptr_k + offset_low);
+            *(LoadTK*)r_sin_low = *(LoadTK*)(cache_ptr_k + rot_dim/2 + offset_low);
+            *(LoadTK*)r_gamma_k_low = *(LoadTK*)(gamma_k + offset_low);
+            *(LoadTK*)r_gamma_k_high = *(LoadTK*)(gamma_k + offset_high);
+
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; ++i) {
+                r_k_low[i] = static_cast<T_ACC>(r_k_low[i]) * inv_rms_k * static_cast<T_ACC>(r_gamma_k_low[i]);
+                r_k_high[i] = static_cast<T_ACC>(r_k_high[i]) * inv_rms_k * static_cast<T_ACC>(r_gamma_k_high[i ]);
+                
+                scalar_t k_l = r_k_low[i];
+                scalar_t k_h = r_k_high[i];
+                scalar_t c = r_cos_low[i];
+                scalar_t s = r_sin_low[i];
+                
+                r_k_low[i] = k_l * c - k_h * s;
+                r_k_high[i] = k_l * s + k_h * c;
+            }
+        } else {
+            // Non-NEOX logic
+            using LoadCacheTK = at::native::memory::aligned_vector<scalar_t, VEC_SIZE / 2>;
+            scalar_t r_cos_low[VEC_SIZE / 2], r_sin_low[VEC_SIZE / 2];
+            scalar_t r_cos_high[VEC_SIZE / 2], r_sin_high[VEC_SIZE / 2];
+            int cache_offset_low = offset_low / 2;
+            int cache_offset_high = offset_high / 2;
+            *(LoadCacheTK*)r_cos_low = *(LoadCacheTK*)(cache_ptr_k + cache_offset_low);
+            *(LoadCacheTK*)r_sin_low = *(LoadCacheTK*)(cache_ptr_k + rot_dim/2 + cache_offset_low);
+            *(LoadCacheTK*)r_cos_high = *(LoadCacheTK*)(cache_ptr_k + cache_offset_high);
+            *(LoadCacheTK*)r_sin_high = *(LoadCacheTK*)(cache_ptr_k + rot_dim/2 + cache_offset_high);
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; i+=2) {
+                int c_idx = i / 2;
+                r_k_low[i]   = static_cast<T_ACC>(r_k_low[i]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_low + i]);
+                r_k_low[i+1] = static_cast<T_ACC>(r_k_low[i+1]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_low + i+1]);
+                scalar_t k0 = r_k_low[i]; scalar_t k1 = r_k_low[i+1];
+                scalar_t c = r_cos_low[c_idx]; scalar_t s = r_sin_low[c_idx];
+                r_k_low[i]   = k0 * c - k1 * s;
+                r_k_low[i+1] = k1 * c + k0 * s;
+
+                r_k_high[i]   = static_cast<T_ACC>(r_k_high[i]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_high + i]);
+                r_k_high[i+1] = static_cast<T_ACC>(r_k_high[i+1]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_high + i+1]);
+                scalar_t kh0 = r_k_high[i]; scalar_t kh1 = r_k_high[i+1];
+                scalar_t ch = r_cos_high[c_idx]; scalar_t sh = r_sin_high[c_idx];
+                r_k_high[i]   = kh0 * ch - kh1 * sh;
+                r_k_high[i+1] = kh1 * ch + kh0 * sh;
+            }
+        }
+        *(LoadTK*)(k_head_ptr + offset_low) = *(LoadTK*)r_k_low;
+        *(LoadTK*)(k_head_ptr + offset_high) = *(LoadTK*)r_k_high;
+    } 
+}
+
+
+template <typename T_ACC, typename scalar_t>
+void launch_opt_rms_rope(
+    const int64_t* positions,
+    scalar_t* query,
+    scalar_t* key,
+    const scalar_t* cos_sin_cache,
+    int rot_dim,
+    int64_t query_stride,
+    int64_t key_stride,
+    int64_t head_stride_q,
+    int64_t head_stride_k,
+    scalar_t* gamma_q,
+    scalar_t* gamma_k,
+    scalar_t* residual_q_ptr, 
+    scalar_t* residual_k_ptr,
+    scalar_t eps,
+    int num_tokens,
+    bool is_neox,
+    const int num_heads,
+    const int num_kv_heads,
+    cudaStream_t stream
+) {
+
+        bool has_residual = (residual_q_ptr != nullptr && residual_k_ptr != nullptr);
+
+        constexpr int THREAD_PER_ROW = 8;
+        constexpr int VEC = 8;
+        int threads_per_token = (num_heads + num_kv_heads) * THREAD_PER_ROW;
+        int target_block_size = 256; 
+        int tokens_per_block = target_block_size / threads_per_token;
+        if (tokens_per_block < 1) tokens_per_block = 1;
+        
+        int actual_block_size = tokens_per_block * threads_per_token;
+        int grid_size = (num_tokens + tokens_per_block - 1) / tokens_per_block;
+        
+        size_t smem_size = tokens_per_block * 128 * sizeof(scalar_t);
+
+        DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
+            DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
+                opt_rms_rope_qwen3<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,VEC,THREAD_PER_ROW>
+                    <<<grid_size, actual_block_size, smem_size, stream>>>(
+                    positions, query, key, cos_sin_cache, rot_dim, 
+                    query_stride, key_stride, head_stride_q, head_stride_k, 
+                    gamma_q, gamma_k, 
+                    residual_q_ptr, residual_k_ptr, 
+                    eps, num_tokens, num_heads, num_kv_heads,
+                    threads_per_token, tokens_per_block
+                );
+            });
+        });
+}
+
 void rms_rotary_embedding_fuse(
-    Tensor& positions,  // [batch_size, seq_len] or [num_tokens]
-    Tensor& query,  // [batch_size, seq_len, num_heads_size] or
-                           // [num_tokens, num_heads_size] or
-                           // [batch_size, seq_len, num_heads, head_size] or
-                           // [num_tokens, num_heads, head_size]
+    Tensor& positions, 
+    Tensor& query, 
     Tensor& key,
-    // null or
-    // [batch_size, seq_len, num_kv_heads_size] or
-    // [num_tokens, num_kv_heads_size] or
-    // [batch_size, seq_len, num_heads, head_size] or
-    // [num_tokens, num_heads, head_size]
     int64_t head_size,
-    Tensor& cos_sin_cache,  // [max_position, rot_dim]
+    Tensor& cos_sin_cache, 
     bool is_neox, 
-    Tensor weight_q,  // [hidden_size]
-    Tensor weight_k,  // [hidden_size]
+    Tensor weight_q, 
+    Tensor weight_k, 
     std::optional<Tensor> residual_q,
     std::optional<Tensor> residual_k,
     double epsilon) {
-    int64_t num_tokens = positions.numel();
-    int positions_ndim = positions.dim();
-  TORCH_CHECK(
-      positions_ndim == 1 || positions_ndim == 2,
-      "positions must have shape [num_tokens] or [batch_size, seq_len]");
+
+  int64_t num_tokens = positions.numel();
+  int positions_ndim = positions.dim();
+  TORCH_CHECK(positions_ndim == 1 || positions_ndim == 2,
+              "positions must have shape [num_tokens] or [batch_size, seq_len]");
+  
   if (positions_ndim == 1) {
-    TORCH_CHECK(query.size(0) == positions.size(0) &&
-                    (key.size(0) == positions.size(0)),
+    TORCH_CHECK(query.size(0) == positions.size(0) && (key.size(0) == positions.size(0)),
                 "query, key and positions must have the same number of tokens");
-  }
-  if (positions_ndim == 2) {
-    TORCH_CHECK(
-        query.size(0) == positions.size(0) &&
-            (key.size(0) == positions.size(0)) &&
-            query.size(1) == positions.size(1) &&
-            (key.size(1) == positions.size(1)),
-        "query, key and positions must have the same batch_size and seq_len");
+  } else {
+    TORCH_CHECK(query.size(0) == positions.size(0) && (key.size(0) == positions.size(0)) &&
+                query.size(1) == positions.size(1) && (key.size(1) == positions.size(1)),
+                "query, key and positions must have the same batch_size and seq_len");
   }
 
   int query_hidden_size = query.numel() / num_tokens;
@@ -685,1794 +1000,155 @@ void rms_rotary_embedding_fuse(
   int num_kv_heads = key_hidden_size / head_size;
   TORCH_CHECK(num_heads % num_kv_heads == 0);
 
-
   int rot_dim = cos_sin_cache.size(1);
   TORCH_CHECK(rot_dim <= 512);
+  
   int seq_dim_idx = positions_ndim - 1;
- 
   int64_t query_stride = query.stride(seq_dim_idx);
   int64_t key_stride = key.stride(seq_dim_idx);
-
   int query_ndim = query.dim();
-  int64_t head_stride =
-      (query_ndim == positions_ndim + 2) ? query.stride(-2) : head_size;
+  int64_t head_stride = (query_ndim == positions_ndim + 2) ? query.stride(-2) : head_size;
       
   const at::cuda::OptionalCUDAGuard device_guard(device_of(query));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-  int qk_mul=num_heads/num_kv_heads;
-   AT_DISPATCH_FLOATING_TYPES_AND2(
+
+  bool has_residual = residual_q.has_value() && residual_k.has_value();
+  int qk_ratio = num_heads / num_kv_heads;
+  bool is_allign_qk = (num_heads % num_kv_heads == 0) && (num_heads >= 1);
+
+
+  auto* pos_ptr = positions.data_ptr<int64_t>(); 
+  bool qwen3 =  (head_size == 128 && (num_heads + num_kv_heads) <= 128 && rot_dim == 128);
+
+  AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16, 
-      query.scalar_type(), "rotary_embedding", [&] {
-    using T_ACC = at::acc_type<scalar_t, true>;
-  int rot_dim = cos_sin_cache.size(1);
+      query.scalar_type(), "fuse_rms_rotary_embedding", [&] {
+        using T_ACC = at::acc_type<scalar_t, true>;
+        //qwne3 opt
+         if (qwen3) {
+                scalar_t* res_q_ptr = residual_q.has_value() ? residual_q->data_ptr<scalar_t>() : nullptr;
+                scalar_t* res_k_ptr = residual_k.has_value() ? residual_k->data_ptr<scalar_t>() : nullptr;
+                launch_opt_rms_rope<T_ACC, scalar_t>(
+                    positions.data_ptr<int64_t>(),
+                    query.data_ptr<scalar_t>(),
+                    key.data_ptr<scalar_t>(),
+                    cos_sin_cache.data_ptr<scalar_t>(),
+                    rot_dim,
+                    query_stride,
+                    key_stride,
+                    head_stride,
+                    head_stride,
+                    weight_q.data_ptr<scalar_t>(),
+                    weight_k.data_ptr<scalar_t>(),
+                    res_q_ptr,
+                    res_k_ptr,
+                    static_cast<scalar_t>(epsilon),
+                    (int)num_tokens,
+                    is_neox,
+                    num_heads,
+                    num_kv_heads,
+                    stream
+                );
+                return;
+        }
 
-  const int q_k_size_multiple = num_heads / num_kv_heads;
-  bool is_allign_qk = (num_heads % num_kv_heads == 0)  && (num_heads >= 1);
-    if (head_size == 128 && is_allign_qk && num_kv_heads%4 == 0) {
-        constexpr int num_warp = 4;
-        constexpr int block_size = 256;
-        constexpr int vec_size_q = 2;
-        dim3 grid(num_tokens);
-        dim3 block(64 * num_warp);
-        
-      #define LAUNCH_ROTARY_KERNEL_128(IS_NEOX,RESIDUAL, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL) \
-        rms_rotary_embedding_kernel<T_ACC,scalar_t, IS_NEOX, RESIDUAL, block_size, \
-                                          vec_size_q, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL, num_warp><<<grid, block, 0, stream>>>( \
-            positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(), \
-            key.data_ptr<scalar_t>(), \
-            cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
-            head_stride, num_heads, num_kv_heads, head_size,num_tokens,weight_q.data_ptr<scalar_t>(),weight_k.data_ptr<scalar_t>(),residual_q.has_value()?residual_q->data_ptr<scalar_t>():nullptr,residual_k.has_value()?residual_k->data_ptr<scalar_t>():nullptr,epsilon);
-        
-            if(residual_q.has_value() && residual_k.has_value()){
+        auto* wq_ptr = weight_q.data_ptr<scalar_t>();
+        auto* wk_ptr = weight_k.data_ptr<scalar_t>();
+        auto* res_q_ptr = residual_q.has_value() ? residual_q->data_ptr<scalar_t>() : nullptr;
+        auto* res_k_ptr = residual_k.has_value() ? residual_k->data_ptr<scalar_t>() : nullptr;
 
-                    if(num_heads/num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 128, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 128, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 128, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 128, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 128, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 128, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 128, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 128, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 128, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 128, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 128, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 128, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }else{
-
-                    if(num_heads/num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 128, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 128, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 128, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 128, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 128, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 128, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 128, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 128, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 128, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 128, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 128, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 128, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }   
+   
+        auto launch_kernel = [&](auto kernel_tag, auto vec_size_c, auto block_size_c, auto num_warp_c, auto rot_dim_c) {
             
-            
-    }else if (head_size == 128 && is_allign_qk && num_kv_heads % 2 == 0) {
-        constexpr int num_warp = 2;
-        constexpr int block_size = 128;
+            constexpr int VEC_SIZE = decltype(vec_size_c)::value;
+            constexpr int BLOCK_SIZE = decltype(block_size_c)::value;
+            constexpr int NUM_WARP = decltype(num_warp_c)::value;
+            constexpr int ROT_DIM = decltype(rot_dim_c)::value;
 
-        constexpr int vec_size_q = 2;
-        dim3 grid(num_tokens);
-        dim3 block(64 * num_warp);
-      #define LAUNCH_ROTARY_KERNEL_128(IS_NEOX,RESIDUAL, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL) \
-        rms_rotary_embedding_kernel<T_ACC,scalar_t, IS_NEOX, RESIDUAL, block_size, \
-                                          vec_size_q, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL, num_warp><<<grid, block, 0, stream>>>( \
-            positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(), \
-            key.data_ptr<scalar_t>(), \
-            cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
-            head_stride, num_heads, num_kv_heads, head_size,num_tokens,weight_q.data_ptr<scalar_t>(),weight_k.data_ptr<scalar_t>(),residual_q.has_value()?residual_q->data_ptr<scalar_t>():nullptr,residual_k.has_value()?residual_k->data_ptr<scalar_t>():nullptr,epsilon);
-        
-            if(residual_q.has_value() && residual_k.has_value()){
+            DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
+                DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
+                   
+                    auto run = [&](auto qk_mul_c) {
+                         constexpr int QK_MUL = decltype(qk_mul_c)::value;
 
-                    if(num_heads / num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 128, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 128, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 128, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 128, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 128, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 128, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 128, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 128, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 128, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 128, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 128, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 128, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }else{
-                    if(num_heads/num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 128, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 128, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 128, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 128, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 128, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 128, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 128, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 128, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 128, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 128, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 128, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 128, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }   
-            
-    }else if (head_size == 128 && is_allign_qk && num_heads % 3 == 0 && num_kv_heads == 1) {
-        constexpr int num_warp = 4;
-        constexpr int block_size = num_warp * 64;
+                         dim3 grid(num_tokens);
+                         dim3 block(BLOCK_SIZE); 
 
-        constexpr int vec_size_q = 2;
-        dim3 grid(num_tokens);
-        dim3 block(64 * num_warp);
-      #define LAUNCH_ROTARY_KERNEL_128_pipeline(IS_NEOX,RESIDUAL, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL) \
-        rms_rotary_embedding_kernel_pipeline<T_ACC,scalar_t, IS_NEOX, RESIDUAL, block_size, \
-                                          vec_size_q, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL, num_warp><<<grid, block, 0, stream>>>( \
-            positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(), \
-            key.data_ptr<scalar_t>(), \
-            cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
-            head_stride, num_heads, num_kv_heads, head_size,num_tokens,weight_q.data_ptr<scalar_t>(),weight_k.data_ptr<scalar_t>(),residual_q.has_value()?residual_q->data_ptr<scalar_t>():nullptr,residual_k.has_value()?residual_k->data_ptr<scalar_t>():nullptr,epsilon);
-        
-            if(residual_q.has_value() && residual_k.has_value()){
+                         if constexpr (std::is_same_v<decltype(kernel_tag), std::integral_constant<int, 0>>) {
+                             rms_rotary_embedding_kernel<T_ACC, scalar_t, IS_NEOX_CONST, HAS_RESIDUAL_CONST, 
+                                 /*BLOCK_SIZE*/ BLOCK_SIZE,
+                                 /*VEC_SIZE_Q*/ VEC_SIZE, 
+                                 /*VEC_SIZE_K*/ VEC_SIZE, 
+                                 /*ROT_DIM*/ ROT_DIM, 
+                                 /*QK_MUL*/ QK_MUL, 
+                                 /*NUM_WARP*/ NUM_WARP>
+                                 <<<grid, block, 0, stream>>>(
+                                     positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
+                                     key.data_ptr<scalar_t>(), cos_sin_cache.data_ptr<scalar_t>(),
+                                     rot_dim, query_stride, key_stride, head_stride,
+                                     num_heads, num_kv_heads, head_size, num_tokens,
+                                     weight_q.data_ptr<scalar_t>(), weight_k.data_ptr<scalar_t>(),
+                                     res_q_ptr, res_k_ptr,
+                                     epsilon
+                                 );
+                         } else {
+                             rms_rotary_embedding_kernel_pipeline<T_ACC, scalar_t, IS_NEOX_CONST, HAS_RESIDUAL_CONST, 
+                                 BLOCK_SIZE, VEC_SIZE, VEC_SIZE, ROT_DIM, QK_MUL, NUM_WARP>
+                                 <<<grid, block, 0, stream>>>(
+                                     positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
+                                     key.data_ptr<scalar_t>(), cos_sin_cache.data_ptr<scalar_t>(),
+                                     rot_dim, query_stride, key_stride, head_stride,
+                                     num_heads, num_kv_heads, head_size, num_tokens,
+                                     weight_q.data_ptr<scalar_t>(), weight_k.data_ptr<scalar_t>(),
+                                     res_q_ptr, res_k_ptr, 
+                                     epsilon
+                                 );
+                         }
+                    };
+                    
+    
+                    switch (qk_ratio) {
+                        case 2: run(IV(2)); break;
+                        case 4: run(IV(4)); break;
+                        default: run(IV(8)); break; 
+                    }
+                });
+            });
+        };
 
-                    if(num_heads / num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 1, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 1, 128, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 2, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 2, 128, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 4, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 4, 128, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 8, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 8, 128, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 1, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 1, 128, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 2, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 2, 128, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 4, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 4, 128, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 8, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 8, 128, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 1, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 1, 128, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 2, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 2, 128, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 4, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 4, 128, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 8, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 8, 128, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }else{
-                    if(num_heads/num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 1, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 1, 128, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 2, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 2, 128, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 4, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 4, 128, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 8, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 8, 128, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 1, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 1, 128, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 2, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 2, 128, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 4, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 4, 128, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 8, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 8, 128, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 1, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 1, 128, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 2, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 2, 128, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 4, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 4, 128, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 8, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 8, 128, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }   
-            
-    }else if (head_size == 128 && is_allign_qk && num_heads % 2 ==0) {
-        constexpr int num_warp = 3;
-        constexpr int block_size = num_warp * 64;
+        auto USE_NORMAL_KERNEL = std::integral_constant<int, 0>{};
+        auto USE_PIPELINE_KERNEL = std::integral_constant<int, 1>{};
 
-        constexpr int vec_size_q = 2;
-        dim3 grid(num_tokens);
-        dim3 block(64 * num_warp);
-      #define LAUNCH_ROTARY_KERNEL_128_pipeline(IS_NEOX,RESIDUAL, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL) \
-        rms_rotary_embedding_kernel_pipeline<T_ACC,scalar_t, IS_NEOX, RESIDUAL, block_size, \
-                                          vec_size_q, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL, num_warp><<<grid, block, 0, stream>>>( \
-            positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(), \
-            key.data_ptr<scalar_t>(), \
-            cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
-            head_stride, num_heads, num_kv_heads, head_size,num_tokens,weight_q.data_ptr<scalar_t>(),weight_k.data_ptr<scalar_t>(),residual_q.has_value()?residual_q->data_ptr<scalar_t>():nullptr,residual_k.has_value()?residual_k->data_ptr<scalar_t>():nullptr,epsilon);
-        
-            if(residual_q.has_value() && residual_k.has_value()){
-
-                    if(num_heads / num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 1, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 1, 128, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 2, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 2, 128, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 4, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 4, 128, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 8, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 8, 128, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 1, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 1, 128, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 2, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 2, 128, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 4, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 4, 128, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 8, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 8, 128, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 1, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 1, 128, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 2, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 2, 128, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 4, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 4, 128, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 8, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 8, 128, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }else{
-                    if(num_heads/num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 1, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 1, 128, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 2, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 2, 128, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 4, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 4, 128, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 8, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 8, 128, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 1, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 1, 128, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 2, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 2, 128, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 4, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 4, 128, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 8, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 8, 128, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 1, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 1, 128, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 2, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 2, 128, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 4, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 4, 128, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 8, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 8, 128, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }   
-            
-    }else if (head_size == 128 && is_allign_qk && num_heads==1 && num_kv_heads == 1) {
-        constexpr int num_warp = 2;
-        constexpr int block_size = num_warp * 64;
-
-        constexpr int vec_size_q = 2;
-        dim3 grid(num_tokens);
-        dim3 block(64 * num_warp);
-      #define LAUNCH_ROTARY_KERNEL_128_pipeline(IS_NEOX,RESIDUAL, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL) \
-        rms_rotary_embedding_kernel_pipeline<T_ACC,scalar_t, IS_NEOX, RESIDUAL, block_size, \
-                                          vec_size_q, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL, num_warp><<<grid, block, 0, stream>>>( \
-            positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(), \
-            key.data_ptr<scalar_t>(), \
-            cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
-            head_stride, num_heads, num_kv_heads, head_size,num_tokens,weight_q.data_ptr<scalar_t>(),weight_k.data_ptr<scalar_t>(),residual_q.has_value()?residual_q->data_ptr<scalar_t>():nullptr,residual_k.has_value()?residual_k->data_ptr<scalar_t>():nullptr,epsilon);
-        
-            if(residual_q.has_value() && residual_k.has_value()){
-
-                    if(num_heads / num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 1, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 1, 128, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 2, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 2, 128, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 4, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 4, 128, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 8, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 8, 128, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 1, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 1, 128, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 2, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 2, 128, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 4, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 4, 128, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 8, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 8, 128, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 1, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 1, 128, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 2, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 2, 128, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 4, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 4, 128, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,true, 8, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,true, 8, 128, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }else{
-                    if(num_heads/num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 1, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 1, 128, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 2, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 2, 128, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 4, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 4, 128, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 8, 128, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 8, 128, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 1, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 1, 128, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 2, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 2, 128, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 4, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 4, 128, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 8, 128, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 8, 128, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 1, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 1, 128, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 2, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 2, 128, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 4, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 4, 128, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(true,false, 8, 128, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128_pipeline(false,false, 8, 128, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }   
-            
-    }else if (head_size == 256 && is_allign_qk && num_kv_heads %4 ==0) {
-        constexpr int num_warp = 4;
-        constexpr int block_size = 64*num_warp;
-        constexpr int vec_size_q = 4;
-        dim3 grid(num_tokens);
-        dim3 block(64 * num_warp);
-        
-      #define LAUNCH_ROTARY_KERNEL_128(IS_NEOX,RESIDUAL, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL) \
-        rms_rotary_embedding_kernel<T_ACC,scalar_t, IS_NEOX, RESIDUAL, block_size, \
-                                          vec_size_q, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL, num_warp><<<grid, block, 0, stream>>>( \
-            positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(), \
-            key.data_ptr<scalar_t>(), \
-            cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
-            head_stride, num_heads, num_kv_heads, head_size,num_tokens,weight_q.data_ptr<scalar_t>(),weight_k.data_ptr<scalar_t>(),residual_q.has_value()?residual_q->data_ptr<scalar_t>():nullptr,residual_k.has_value()?residual_k->data_ptr<scalar_t>():nullptr,epsilon);
-        
-            if(residual_q.has_value() && residual_k.has_value()){
-                    if(num_heads/num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 256, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 256, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 256, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 256, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 256, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 256, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 256, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 256, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 256, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 256, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 256, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 256, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 256, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 256, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 256, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 256, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 256, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 256, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 256, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 256, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 256, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 256, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 256, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 256, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }else{
-                    if(num_heads/num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 256, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 256, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 256, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 256, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 256, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 256, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 256, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 256, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 256, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 256, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 256, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 256, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 256, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 256, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 256, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 256, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 256, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 256, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 256, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 256, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 256, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 256, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 256, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 256, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }   
-            
-    }else if (head_size == 512 && is_allign_qk) {
-        constexpr int num_warp = 2;
-        constexpr int block_size = 64 * 2;
-        constexpr int vec_size_q = 8;
-        dim3 grid(num_tokens);
-        dim3 block(64 * 2);
-      #define LAUNCH_ROTARY_KERNEL_128(IS_NEOX,RESIDUAL, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL) \
-        rms_rotary_embedding_kernel<T_ACC,scalar_t, IS_NEOX, RESIDUAL, block_size, \
-                                          vec_size_q, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL, num_warp><<<grid, block, 0, stream>>>( \
-            positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(), \
-            key.data_ptr<scalar_t>(), \
-            cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
-            head_stride, num_heads, num_kv_heads, head_size,num_tokens,weight_q.data_ptr<scalar_t>(),weight_k.data_ptr<scalar_t>(),residual_q.has_value()?residual_q->data_ptr<scalar_t>():nullptr,residual_k.has_value()?residual_k->data_ptr<scalar_t>():nullptr,epsilon);
-        
-            if(residual_q.has_value() && residual_k.has_value()){
-                    if(num_heads/num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 512, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 512, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 512, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 512, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 512, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 512, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 512, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 512, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 512, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 512, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 512, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 512, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 512, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 512, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 512, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 512, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 512, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 512, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 512, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 512, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 512, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 512, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 512, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 512, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }else{
-
-                    if(num_heads/num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 512, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 512, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 512, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 512, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 512, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 512, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 512, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 512, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 512, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 512, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 512, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 512, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 512, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 512, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 512, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 512, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 512, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 512, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 512, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 512, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 512, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 512, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 512, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 512, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }   
-            
-    }else if (head_size == 64 && is_allign_qk) {
-        constexpr int num_warp = 2;
-        constexpr int block_size = 128;
-        constexpr int vec_size_q = 1;
-        dim3 grid(num_tokens);
-        dim3 block(64 * num_warp);
-        
-      #define LAUNCH_ROTARY_KERNEL_128(IS_NEOX,RESIDUAL, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL) \
-        rms_rotary_embedding_kernel<T_ACC,scalar_t, IS_NEOX, RESIDUAL, block_size, \
-                                          vec_size_q, VEC_SIZE_K, ROT_DIM_VAL, NUM_QK_MUL, num_warp><<<grid, block, 0, stream>>>( \
-            positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(), \
-            key.data_ptr<scalar_t>(), \
-            cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
-            head_stride, num_heads, num_kv_heads, head_size,num_tokens,weight_q.data_ptr<scalar_t>(),weight_k.data_ptr<scalar_t>(),residual_q.has_value()?residual_q->data_ptr<scalar_t>():nullptr,residual_k.has_value()?residual_k->data_ptr<scalar_t>():nullptr,epsilon);
-        
-            if(residual_q.has_value() && residual_k.has_value()){
-
-                    if(num_heads/num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 64, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 64, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 64, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 64, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 64, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 64, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 64, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 64, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 64, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 64, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 64, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 64, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 64, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 64, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 64, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 64, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 1, 64, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 1, 64, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 2, 64, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 2, 64, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 4, 64, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 4, 64, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,true, 8, 64, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,true, 8, 64, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }else{
-
-                    if(num_heads/num_kv_heads==2){
-                            switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 64, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 64, 2);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 64, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 64, 2);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 64, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 64, 2);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 64, 2);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 64, 2);
-                            }
-                        } break;
-                        }
-                    }else if(num_heads/num_kv_heads==4){
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 64, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 64, 4);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 64, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 64, 4);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 64, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 64, 4);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 64, 4);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 64, 4);
-                            }
-                        } break;
-                        }
-                    }else{
-                        switch (vec_size_q) {
-                        case 1:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 1, 64, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 1, 64, 8);
-                            }
-                        }  break;
-                        case 2:
-                        {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 2, 64, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 2, 64, 8);
-                            }
-                        }  break;
-                        case 4: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 4, 64, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 4, 64, 8);
-                            }
-                        } break;
-                        default: {
-                            if(is_neox){
-                                LAUNCH_ROTARY_KERNEL_128(true,false, 8, 64, 8);
-                            }else{
-                                LAUNCH_ROTARY_KERNEL_128(false,false, 8, 64, 8);
-                            }
-                        } break;
-                        }
-                    }
-            }   
-    }
-
-  }
-);
+    
+        if (head_size == 128 && is_allign_qk) {
+            if (num_kv_heads % 4 == 0) {
+                // kernel_tag, vec_size, block_size, num_warp, rot_dim
+                launch_kernel(USE_NORMAL_KERNEL, IV(2), IV(256), IV(4), IV(128));
+            } 
+            else if (num_kv_heads % 2 == 0) {
+                launch_kernel(USE_NORMAL_KERNEL, IV(2), IV(128), IV(2), IV(128));
+            }
+            else if (num_heads % 3 == 0 && num_kv_heads == 1) {
+                launch_kernel(USE_PIPELINE_KERNEL, IV(2), IV(256), IV(4), IV(128)); // 4*64=256
+            }
+            else if (num_heads % 2 == 0) {
+                launch_kernel(USE_PIPELINE_KERNEL, IV(2), IV(192), IV(3), IV(128)); // 3*64=192
+            }
+            else if (num_heads == 1 && num_kv_heads == 1) {
+                launch_kernel(USE_PIPELINE_KERNEL, IV(2), IV(128), IV(2), IV(128)); // 2*64=128
+            }
+        } 
+        else if (head_size == 256 && is_allign_qk && num_kv_heads % 4 == 0) {
+            launch_kernel(USE_NORMAL_KERNEL, IV(4), IV(256), IV(4), IV(256)); // 64*4=256
+        }
+        else if (head_size == 512 && is_allign_qk) {
+            launch_kernel(USE_NORMAL_KERNEL, IV(8), IV(128), IV(2), IV(512)); // 64*2=128
+        }
+        else if (head_size == 64 && is_allign_qk) {
+            launch_kernel(USE_NORMAL_KERNEL, IV(1), IV(128), IV(2), IV(64));
+        }
+  });
 }
 }
 }

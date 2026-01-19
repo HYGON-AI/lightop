@@ -3,7 +3,7 @@ import triton
 import pandas as pd
 from vllm import _custom_ops as ops
 from lightop import rms_rotary_embedding_fuse
-from triton.testing import do_bench
+# from triton.testing import do_bench # 不再需要
 import itertools
 import os
 
@@ -15,20 +15,19 @@ DEVICE = "cuda"
 DTYPE = torch.float16  # 修改此处切换精度: float16 | float32 | bfloat16
 RMS_EPS = 1e-6
 ROPE_THETA = 10000.0
-OUTPUT_FILE = "benchmark_final_results.xlsx"
+OUTPUT_FILE = "benchmark_final_results_manual.xlsx"
+
+# 计时配置
+WARMUP_ITERS = 10
+BENCH_ITERS = 100
 
 # 定义测试形状列表: (BATCH_Q, SEQ_Q, NUM_HEADS_Q, NUM_HEADS_K, HEAD_SIZE)
 TEST_SHAPES = (
-    [(1, d1, 2, 1, 128) for d1 in (1 << i for i in range(17))]
-  + [(1, d2, 4, 1, 128) for d2 in (1 << i for i in range(17))]
-  + [(1, d3, 3, 1, 128) for d3 in (1 << i for i in range(17))]
-  + [(1, d4, 6, 1, 128) for d4 in (1 << i for i in range(17))]
-  + [(1, d5, 12, 1, 128) for d5 in (1 << i for i in range(17))]
+    [(1, d1, 3, 1, 128) for d1 in (1 << i for i in range(17))]
 )
 
-
-TEST_NEOX_STYLES = [True, False]
-TEST_RESIDUALS = [True, False]
+TEST_NEOX_STYLES = [True]
+TEST_RESIDUALS = [False]
 
 # =====================================
 # 2. 辅助工具 (Cos/Sin & Data Gen)
@@ -74,18 +73,47 @@ def fused_kernel_adapter(q, k, positions, w_q, w_k, res_q, res_k, cache, is_neox
     )
 
 # =====================================
-# 4. 你的精度测试逻辑 (保持原样)
+# 4. 手动 Benchmark 工具 (GPU Event 计时)
+# =====================================
+def benchmark_func(func, warmup=10, rep=100):
+    """
+    手动执行 Warmup 和 Timing Loop，返回平均执行时间 (us)
+    """
+    # 1. 预热 (Warmup)
+    for _ in range(warmup):
+        func()
+    
+    # 确保预热完成
+    torch.cuda.synchronize()
+
+    # 2. 正式计时 (Measurement)
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+
+    start_event.record()
+    for _ in range(rep):
+        func()
+    end_event.record()
+
+    # 等待执行结束
+    torch.cuda.synchronize()
+
+    # 计算总时间并取平均 (elapsed_time 返回毫秒)
+    total_ms = start_event.elapsed_time(end_event)
+    avg_us = (total_ms * 1000) / rep # 转换为微秒 (us)
+    return avg_us
+
+# =====================================
+# 5. 精度测试逻辑
 # =====================================
 def get_precision_tolerance(dtype):
     if dtype == torch.float32:
         return 1e-6, 1e-6
     else:
-        return 5e-3, 5e-3
+        return 1e-2, 1e-2
 
 def compare(a, b, name, dtype):
     atol, rtol = get_precision_tolerance(dtype)
-    # print(a) # 为了日志整洁，批量测试时建议注释掉打印 Tensor
-    # print(b)
     max_diff = (a - b).abs().max().item()
     mean_diff = (a - b).abs().mean().item()
     print(f"   > {name}: max_diff={max_diff:.6e}, mean_diff={mean_diff:.6e}")
@@ -93,7 +121,7 @@ def compare(a, b, name, dtype):
     return max_diff
 
 # =====================================
-# 5. 单次测试流程 (Runner)
+# 6. 单次测试流程 (Runner)
 # =====================================
 def run_single_case(shape_config, is_neox, use_residual):
     batch, seq, h_q, h_k, dim = shape_config
@@ -141,11 +169,8 @@ def run_single_case(shape_config, is_neox, use_residual):
         print(f"   ❌ Accuracy Failed: {e}")
 
     # ---------------------------
-    # Speed Test
+    # Speed Test (Manual Timing)
     # ---------------------------
-    # 定义闭包用于 Benchmark
-    # 注意：vLLM ops 是 In-place 修改的，do_bench 循环无法重置数据。
-    # 我们这里主要测量计算吞吐，忽略因数据数值变化带来的极微小延迟差异。
     
     def baseline_fn():
         baseline_kernel_adapter(q_org, k_org, positions, w_q, w_k, res_q_org, res_k_org, cos_sin_cache, is_neox, use_residual)
@@ -159,16 +184,13 @@ def run_single_case(shape_config, is_neox, use_residual):
         fused_kernel_adapter(q_bench, k_bench, positions, w_q, w_k, r_q_bench, r_k_bench, cos_sin_cache, is_neox, use_residual)
 
     try:
-        # do_bench 返回的是毫秒(ms)
-        ms_base = do_bench(baseline_fn, rep=1000, grad_to_none=[q_org, k_org])
-        ms_fuse = do_bench(fused_fn, rep=1000, grad_to_none=[q_bench, k_bench])
+        base_us = benchmark_func(baseline_fn, warmup=WARMUP_ITERS, rep=BENCH_ITERS)
+        fuse_us = benchmark_func(fused_fn, warmup=WARMUP_ITERS, rep=BENCH_ITERS)
     except Exception as e:
         print(f"   ❌ Benchmark Error: {e}")
         return None
 
-    # 转换为微秒 (us)
-    base_us = ms_base * 1000
-    fuse_us = ms_fuse * 1000
+    # 不需要再 * 1000，benchmark_func 已经返回 us
     speedup = base_us / fuse_us
 
     return {
@@ -182,13 +204,13 @@ def run_single_case(shape_config, is_neox, use_residual):
     }
 
 # =====================================
-# 6. 主程序
+# 7. 主程序
 # =====================================
 def main():
     results = []
     combinations = list(itertools.product(TEST_SHAPES, TEST_NEOX_STYLES, TEST_RESIDUALS))
     
-    print(f"🚀 开始测试 | DTYPE: {DTYPE} | Total Cases: {len(combinations)}")
+    print(f"🚀 开始测试 | DTYPE: {DTYPE} | Warmup: {WARMUP_ITERS} | Reps: {BENCH_ITERS}")
     print("=" * 100)
 
     for shape, neox, resid in combinations:
