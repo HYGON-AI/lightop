@@ -87,6 +87,7 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   constexpr int mfma_m = 16;
   constexpr int mfma_n = 16;
   constexpr int mfma_k = 32;
+  constexpr int mfma_kpack = 32*2;
 
   int warp_id_vec = threadIdx.x / 64;                                  //warp id in a block
   int warp_id = __builtin_amdgcn_readfirstlane(warp_id_vec);           // 用于对warp id直接进行广播，不同一个block中的每个线程都去计算threadIdx.x / 64
@@ -110,8 +111,8 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   Element* w_uv_lds = input_lds + STAGES * (BLOCK_SIZE_M * WARP_K);    // 按照最简单的方式分块
   uint8_t* output_lds = (uint8_t*)&(smem);                             // 重复使用lds,留给output_lds
 
-  union_vec<Element, 8> A_reg[WARP_M / mfma_m * STAGES][WARP_K/mfma_k]; 
-  union_vec<Element, 8> B_reg[WARP_N / mfma_n][WARP_K/mfma_k];
+  union_vec<Element, 16> A_reg[WARP_M / mfma_m * STAGES][WARP_K/mfma_kpack]; 
+  union_vec<Element, 16> B_reg[WARP_N / mfma_n][WARP_K/mfma_kpack];
 
   auto g_w_uv = w_uv + w_uv_offset;
   intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0};                 // [4][2]  每个warp在n方向重复两次 tileN = 16*2
