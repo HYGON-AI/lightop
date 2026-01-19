@@ -211,7 +211,7 @@ def moe_gemm_marlin_w16a16(
                     config: Dict[str, Any],
                     is_ep:bool = False) -> torch.Tensor:
     mode = config['MODE']
-    delta = config['DELTA']
+    delta = config.get('DELTA', 1)
 
     if mode < 1000:
         op.moe_gemm_w16a16(input, b_qweight, output,  topk_weights,
