@@ -129,6 +129,22 @@ __forceinline__  __device__ void  inline_ds_read2_b32_no_wait(VEC *shared_addr, 
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//封装ds_read_b128
+template<typename VEC, typename dwordx4>
+__forceinline__  __device__ void  inline_ds_read_b128_no_wait(VEC *shared_addr, const int &lds_offset, dwordx4& reg_val) {
+  int ldsAddr = reinterpret_cast<size_t>(shared_addr) + lds_offset * 4;
+//   __builtin_amdgcn_sched_barrier(0);
+  asm volatile(
+      "ds_read_b128 %0, %1\n"
+      : "=v"(reg_val)
+      : "v"(ldsAddr)
+      :);
+//   __builtin_amdgcn_sched_barrier(0);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 //封装lgkmcnt wait
 #define lgkmcnt_wait_barrier(X)\
 __builtin_amdgcn_sched_barrier(0);\
