@@ -49,6 +49,7 @@ std::tuple <Tensor, Tensor> fuse_bias_dropout_add_backward(const Tensor &grad,co
 Tensor fuse_groupnorm_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,bool training);
 Tensor fuse_celu_gn_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,double alpha,bool training);
 Tensor fuse_gn_silu_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,bool training);
+Tensor fused_bmm(torch::Tensor q_nope, torch::Tensor w_uv, torch::Tensor output, torch::Tensor a_scale, torch::Tensor b_scale, std::optional<torch::Tensor> bias, int mode);
 Tensor sum_opt(const Tensor& x,int dim);
 Tensor mean_opt(const Tensor& x,int dim);
 std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k,int dim,bool sorted);
@@ -297,6 +298,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rotary_positional_embedding_backward", &at::native::RoPE_backward_gpu, "rotary positional embedding backward for gpu");
   m.def("FusedBiasSwiGLU_forward", &at::native::FusedBiasSwiGLU_forward_gpu, "fused bias SwiGLU forward for gpu");
   m.def("FusedBiasSwiGLU_backward", &at::native::FusedBiasSwiGLU_backward_gpu, "fused bias SwiGLU backward for gpu");
+  m.def("fused_bmm", &at::native::fused_bmm, "fused transepose bmm transpose");
   m.def("bias_dropout_add_forward", &at::native::fuse_bias_dropout_add_forward, "fuse_bias_dropout_add forward");
   m.def("bias_dropout_add_backward", &at::native::fuse_bias_dropout_add_backward, "fuse_bias_dropout_add backward");
   m.def("groupnorm_forward_autograd", &at::native::fuse_groupnorm_forward_autograd, "groupnorm forward");
