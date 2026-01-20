@@ -117,8 +117,8 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0};                 // [4][2]  每个warp在n方向重复两次 tileN = 16*2
   float a_scale_arr[WARP_M / mfma_m];
   float b_scale_arr[(WARP_N / mfma_n) * 4];
-  float *a_scale_ptr = a_scale + bidz * stride_asn + bidx * BLOCK_SIZE_M * stride_asb + warp_m_id * WARP_M;
-  float *b_scale_ptr = b_scale + bidz * stride_bsn + bidy * BLOCK_SIZE_N * stride_bsl + warp_n_id * WARP_N;
+  float *a_scale_ptr = (a_scale + bidx * BLOCK_SIZE_M * stride_asb + warp_m_id * WARP_M);
+  float *b_scale_ptr = (b_scale + bidy * BLOCK_SIZE_N * stride_bsl + warp_n_id * WARP_N);
   // bhalf_t *bias_ptr = bias + bidz * l_size + bidy * BLOCK_SIZE_N + warp_n_id * WARP_N;
 
   #pragma unroll
@@ -280,14 +280,14 @@ void launch_fused_bmm_decode(const GemmParams<T>& params) {
 torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
                         torch::Tensor w_uv,                      // [n, l, p]
                         torch::Tensor output,                    // [b, n, l]
-                        torch::Tensor a_scale,                   // [n, b, 1]
-                        torch::Tensor b_scale,                   // [n, l, 1]
+                        torch::Tensor a_scale,                   // [1, b, 1]
+                        torch::Tensor b_scale,                   // [1, l, 1]
                         std::optional<torch::Tensor> bias,       // [b, l]
                         int mode
   ) {
     const int batch_size = q_nope.size(0); 
     const int n_size = q_nope.size(1);
-    const int p_size = q_nope.size(2);
+    const int p_size = w_uv.size(2);
     const int l_size = w_uv.size(1);
     const int stride_ab = q_nope.stride(0);
     const int stride_an = q_nope.stride(1);
@@ -297,7 +297,7 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
     const int stride_bp = w_uv.stride(2);
     const int stride_asn = a_scale.stride(0);
     const int stride_asb = a_scale.stride(1);
-    const int stride_ask = a_scale.stride(2);;
+    const int stride_ask = a_scale.stride(2);
     const int stride_bsn = b_scale.stride(0);
     const int stride_bsl = b_scale.stride(1);
     const int stride_bsk = b_scale.stride(2);
