@@ -115,7 +115,8 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
 
   auto g_w_uv = w_uv + w_uv_offset;
   intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0};                 // [4][2]  每个warp在n方向重复两次 tileN = 16*2
-  float *a_scale_ptr_arr[WARP_M / mfma_m];
+  float a_scale_arr[WARP_M / mfma_m];
+  float b_scale_arr[(WARP_N / mfma_n) * 4];
   float *a_scale_ptr = a_scale + bidz * stride_asn + bidx * BLOCK_SIZE_M * stride_asb + warp_m_id * WARP_M;
   float *b_scale_ptr = b_scale + bidz * stride_bsn + bidy * BLOCK_SIZE_N * stride_bsl + warp_n_id * WARP_N;
   // bhalf_t *bias_ptr = bias + bidz * l_size + bidy * BLOCK_SIZE_N + warp_n_id * WARP_N;
@@ -123,7 +124,15 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   #pragma unroll
   for(int idx = 0; idx < WARP_M / mfma_m; idx++){
       uint32_t a_scale_offset = warp_m_id * WARP_M + idx * mfma_m + row_id;
-      a_scale_ptr_arr[idx] = a_scale_ptr + std::min(a_scale_offset,  batch_size - 1) * stride_asb; //计算M方向的偏移
+      a_scale_arr[idx] = *(a_scale_ptr + std::min(a_scale_offset,  batch_size - 1) * stride_asb); //计算M方向的偏移
+  }
+
+  #pragma unroll
+  for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
+    #pragma unroll
+    for(int reg_id = 0; reg_id < 4; reg_id++){
+      b_scale_arr[min_tile_n * 4 + reg_id] = *(b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4);
+    }
   }
 
   if constexpr(STAGES == 1){
@@ -139,18 +148,17 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   //save output to lds
   #pragma unroll
   for(int min_tile_m = 0; min_tile_m < WARP_M / mfma_m; min_tile_m++){
-    float *a_scale = a_scale_ptr_arr[min_tile_m];
+    float a_scale = a_scale_arr[min_tile_m];
     #pragma unroll
     for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
       #pragma unroll
       for(int reg_id = 0; reg_id < 4; reg_id++){
-        float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
-        scale_valuex4[reg_id] = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
+        float b_scale = b_scale_arr[min_tile_n * 4 + reg_id];
+        scale_valuex4[reg_id] = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale * b_scale;
       }
       float8x4_value = float_to_fp8e4m3_x4(scale_valuex4[0], scale_valuex4[1], scale_valuex4[2], scale_valuex4[3]);
       #pragma unroll
       for(int reg_id = 0; reg_id < 4; reg_id++){
-        float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
         int index = (warp_m_id * WARP_M + min_tile_m * mfma_m + (lane_id & 15 )) * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N 
             + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + warp_m_id * WARP_M + (lane_id % 16) )/2 * 4/*padding*/;
         // bhalf_t acc_scale_value = f32_to_bf16(value);
