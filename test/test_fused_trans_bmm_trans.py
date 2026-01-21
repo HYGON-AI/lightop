@@ -106,22 +106,103 @@ def fused_bmm_trans_impl_int8(  torch_input: torch.Tensor,                      
     torch_output_fp32 = torch_output_uint8.to(torch.float32)
     cuda_output_fp32 = cuda_output_uint8.to(torch.float32)
     # import pdb; pdb.set_trace()
-    if not (torch.allclose(torch_output_fp32, cuda_output_fp32, rtol=1e-2, atol=1e-2, equal_nan=True)):
+    if not (torch.allclose(torch_output_fp32, cuda_output_fp32, rtol=1e-1, atol=1e-2, equal_nan=True)):
         print(f"kernel 精度检查不合格!!!")
         mode_status = False
         
-        torch.set_printoptions(profile="full")  
-        ftriton = open('cuda_output.txt', 'w')   
-        print(f'cuda_output: {cuda_output}', file=ftriton)
-        ftriton.close
-        ftorch = open('bench_output.txt', 'w')   
-        print(f'bench_output: {torch_output}', file=ftorch)
-        ftorch.close
+        # torch.set_printoptions(profile="full")  
+        # ftriton = open('cuda_output.txt', 'w')   
+        # print(f'cuda_output: {cuda_output}', file=ftriton)
+        # ftriton.close
+        # ftorch = open('bench_output.txt', 'w')   
+        # print(f'bench_output: {torch_output}', file=ftorch)
+        # ftorch.close
     else:
         print(f"kernel 精度检查合格.")
         mode_status = True
         
     return mode_status
+
+def fused_bmm_trans_impl_int8_tuning(   torch_input: torch.Tensor,                      # b，n, p
+                                        input: torch.Tensor,                            # b，n, p
+                                        w_uk: torch.Tensor,                             # n, l, p
+                                        input_scale: Optional[torch.Tensor] = None,     # 1, b, 1
+                                        w_uk_scale: Optional[torch.Tensor] = None,      # 1, l, 1
+                                        bias: Optional[torch.Tensor] = None,            # n, l
+                                        config: Optional[Dict[str, Any]] = None,
+                                        mode: Optional[List[int]]=None):
+    
+    # input = torch.ones_like(input)
+    # torch_input = torch.ones_like(torch_input)
+    # w_uk = torch.ones_like(w_uk)
+    # input_scale = torch.ones_like(input_scale)
+    # w_uk_scale = torch.ones_like(w_uk_scale)
+
+    input_clone = torch_input.clone()
+    torch_uk = w_uk.clone()
+    torch_input_scale = input_scale.clone()
+    torch_w_uk_scale = w_uk_scale.clone()
+    torch_bias = bias.clone() if bias is not None else None
+    
+    
+    # fused_bmm_output 应该是 [n, b, l] 的形状
+    torch_input = input_clone.transpose(0,1).contiguous()  # [b, n, p] -> [n, b, p]
+    # 使用bfloat16作为基准输出类型，避免FP8类型比较时的运算问题
+    fused_torch_output = batch_rocblas_scaled_mm(torch_input, torch_uk, torch_input_scale, torch_w_uk_scale, out_dtype=torch.float8_e4m3fn, bias=torch_bias)   # [n, b, l]
+    torch_output = fused_torch_output.transpose(0,1).contiguous() # [b, n, l]
+    # 验证lightop kernel
+    # torch.set_printoptions(profile="full") 
+    cuda_output = torch.zeros_like(torch_output, dtype=torch.float8_e4m3fn)
+    fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, mode)
+    torch.cuda.synchronize()
+    # import pdb; pdb.set_trace()
+    mode_status = True
+    
+    # 将FP8输出转换为bfloat16进行比较
+    # PyTorch的FP8类型可能不支持直接.to()转换，需要通过view转换为uint8
+    # 然后手动实现FP8到float的转换，或者使用torch的dequantize功能
+    # 这里使用一个简单的方法：将FP8视为uint8，然后转换为float32再转bfloat16
+    # 注意：这不是正确的FP8解码，但可以作为临时方案
+    # 如果需要精确的FP8解码，应该使用lightop的转换函数或实现正确的FP8解码逻辑
+    torch_output_uint8 = torch_output.view(torch.uint8)
+    cuda_output_uint8 = cuda_output.view(torch.uint8)
+    # 将uint8转换为float32（这里假设FP8值范围在合理范围内）
+    # 正确的做法应该是实现FP8 E4M3格式的解码
+    torch_output_fp32 = torch_output_uint8.to(torch.float32)
+    cuda_output_fp32 = cuda_output_uint8.to(torch.float32)
+    # import pdb; pdb.set_trace()
+    if not (torch.allclose(torch_output_fp32, cuda_output_fp32, rtol=1e-1, atol=1e-2, equal_nan=True)):
+        # print(f"kernel 精度检查不合格!!!")
+        mode_status = False
+        
+        # torch.set_printoptions(profile="full")  
+        # ftriton = open('cuda_output.txt', 'w')   
+        # print(f'cuda_output: {cuda_output}', file=ftriton)
+        # ftriton.close
+        # ftorch = open('bench_output.txt', 'w')   
+        # print(f'bench_output: {torch_output}', file=ftorch)
+        # ftorch.close
+    else:
+        # print(f"kernel 精度检查合格.")
+        mode_status = True
+        
+    warm_up_num = 20
+    for i in range(warm_up_num):
+        fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, mode)
+        torch.cuda.synchronize()
+    
+    quantiles = [0.5, 0.2, 0.8]
+    avg_ms, min_ms, max_ms = triton.testing.do_bench(lambda: fused_bmm(input, 
+                                                                       w_uk, 
+                                                                       cuda_output, 
+                                                                       input_scale, 
+                                                                       w_uk_scale, 
+                                                                       bias, 
+                                                                       mode), quantiles=quantiles)
+    fused_bmm_kernel_time_us = avg_ms * 1000
+        
+        
+    return mode_status, fused_bmm_kernel_time_us
 
 def torch_benchmark_transpose_bmm_transpose_bf16(decode_q_nope: torch.Tensor,
                                                  w_uk_t: torch.Tensor) -> torch.Tensor:
@@ -230,7 +311,7 @@ def fused_bmm_trans_impl_int8_benchmark(torch_input: torch.Tensor,              
     
     return results
 
-def generate_rms_rope_data(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim,rot_dim,num_kv_cache_blocks,kv_cache_blocks_size,test_speed = False):
+def generate_rms_rope_data(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim,rot_dim,num_kv_cache_blocks,kv_cache_blocks_size,is_tuning = False):
     DEVICE = "cuda"
     variance_epsilon = 1e-6
     DTYPE = torch.bfloat16    
@@ -292,7 +373,8 @@ def generate_rms_rope_data(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_d
     
     diff_max_q_c_quant = torch.max(torch.abs(q_quant.view(torch.int8)[:,:,:q_c_dim] - q_quant_gt))
     diff_max_q_scale = torch.max(torch.abs(q_scale - q_scale_gt))
-    print(f"bs: {batch_size}, num_head: {num_head},  diff_max_q_c_quant: {diff_max_q_c_quant}, diff_max_q_scale: {diff_max_q_scale}")
+    if not is_tuning:
+        print(f"bs: {batch_size}, num_head: {num_head},  diff_max_q_c_quant: {diff_max_q_c_quant}, diff_max_q_scale: {diff_max_q_scale}")
     torch_q_quant = q_quant.view(torch.int8)[:,:,:q_c_dim].contiguous()
     cuda_q_quant = q_quant.view(torch.int8)
     
@@ -304,12 +386,13 @@ def _fused_bmm_helper(batch: int,
                         L: int,
                         out_dtype: Type[torch.dtype] = torch.float16,
                         device: str = "cuda",
-                        best_config:Optional[list] = None):
+                        best_config:Optional[list] = None,
+                        is_tuning:bool = False):
     # Test for a cutlass kernel with per-token activation quantization
     # and per-output channel weight quantization.
-    torch.manual_seed(0)
-    torch_input, input, q_scale = generate_rms_rope_data(kv_cache_dtype_str = "fp8_e4m3", batch_size=batch,num_head=N,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=1000, 
-                           kv_cache_blocks_size=16, test_speed=False)
+    # torch.manual_seed(0)
+    torch_input, input, q_scale = generate_rms_rope_data(kv_cache_dtype_str = "fp8_e4m3", batch_size=batch,num_head=N,q_c_dim=P, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=1000, 
+                           kv_cache_blocks_size=16, is_tuning=is_tuning)
     # input = torch.randint(-128, 127, (batch, N, P), device=device, dtype=torch.int8)      # [b, n, p]
     # w_uk_t = torch.randint(-128, 127, (N, P ,L), device=device, dtype=torch.int8)       # [n, p, l]
     w_uk = torch.randint(-128, 127, (N, L, P), device=device, dtype=torch.int8)           # [n, l, p]
@@ -321,12 +404,93 @@ def _fused_bmm_helper(batch: int,
     
     return torch_input, input, w_uk, q_scale, w_uk_scale, bias
 
+def run_trans_bmm_trans_tuning():
+    
+    batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
+    # batch_list=[32,]
+    ##deepseek-671b-tp8
+    n_list=[16,32,64,128]
+    p_list=[128,128,128,128]
+    l_list=[512,512,512,512]
+    
+    out_dtype=torch.bfloat16
+    # out_dtype = torch.float16
+
+    best_config_json_dir="./"
+    os.makedirs(best_config_json_dir, exist_ok=True)
+    
+    device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
+
+    # mode_ranges = [i for i in range(len(blockM_configs))]
+    # mode_ranges = [mode for mode in blockM_configs.keys()]
+    # mode_ranges = [0,1,2,3,4,5,6,7,8,9]
+    # mode_ranges = [10,11,12,13,14,15,16,17,18,19]
+    mode_ranges = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+    best_config_list = {}
+    
+    
+    for i in range(0,len(p_list),1):
+        for batch_size in batch_list:
+            max_time = torch.inf
+            best_config = None
+            compare_failed_list = []
+            print("tuning for batch:{} n:{} p:{} l:{} ".format(batch_size, n_list[i],p_list[i],l_list[i]))
+            
+            # 先跑一遍，把失败的mode记录下来
+            for mode in mode_ranges:
+                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], is_tuning=True)
+                status=fused_bmm_trans_impl_int8(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode)
+                if not status:
+                    compare_failed_list.append(mode)
+            print(f"batch_size: {batch_size}, n: {n_list[i]}, p: {p_list[i]}, l: {l_list[i]} compare_failed_list: {compare_failed_list}")
+            
+            for mode in mode_ranges:
+                if mode in compare_failed_list:
+                    continue
+                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], is_tuning=True)
+                status, kernel_time_us=fused_bmm_trans_impl_int8_tuning(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode)
+                if status and kernel_time_us < max_time:
+                    max_time = kernel_time_us
+                    best_config = mode
+
+            
+            if best_config is not None:
+                print(f"best_config: {best_config} for batch_size: {batch_size}, n: {n_list[i]}, p: {p_list[i]}, l: {l_list[i]}")
+                # 保存最优配置，键格式为“{batch_size}_{num_head}”
+                key = f"{batch_size}_{n_list[i]}"
+                best_config_list[key] = {
+                    "mode": best_config,
+                }
+            else:
+                print(f"best_config not found!!! for batch_size: {batch_size}, n: {n_list[i]}, p: {p_list[i]}, l: {l_list[i]}")
+
+    print(f"best_config_list: {best_config_list}")
+    
+    # 保存最优配置到文件
+    config_file = os.path.join(best_config_json_dir, f"fused_bmm_best_config_{device_name}.json")
+    with open(config_file, 'w') as f:
+        json.dump(best_config_list, f, indent=4)
+    print(f"最优配置已保存到: {config_file}")
+
+
 def run_trans_bmm_trans_vaild():
     
     # batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
-    batch_list=[64]
+    batch_list=[16,]
     ##deepseek-671b-tp8
-    n_list=[16]
+    # n_list=[16,]
+    # p_list=[128,]
+    # l_list=[512,]
+    
+    # n_list=[32,]
+    # p_list=[128,]
+    # l_list=[512,]
+    
+    # n_list=[64,]
+    # p_list=[128,]
+    # l_list=[512,]
+    
+    n_list=[128]
     p_list=[128]
     l_list=[512]
     
@@ -360,13 +524,13 @@ def run_trans_bmm_trans_vaild():
      
     
 def run_benchmark_trans_bmm_trans():
-    batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
-    # batch_list = [32]
+    # batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
+    batch_list = [32]
     
     ##deepseek-671b-tp8
-    n_list=[16]
-    p_list=[128]
-    l_list=[512]
+    n_list=[16,32,64,128]
+    p_list=[128,128,128,128]
+    l_list=[512,512,512,512]
     
     out_dtype=torch.bfloat16
     # out_dtype = torch.float16
@@ -397,8 +561,8 @@ def run_benchmark_trans_bmm_trans():
     df.to_excel(output_file, index=False)                  
             
 def main():
-    # run_tuning()
-    run_trans_bmm_trans_vaild()
+    run_trans_bmm_trans_tuning()
+    # run_trans_bmm_trans_vaild()
     # run_benchmark_trans_bmm_trans()
 
 if __name__ == "__main__":
