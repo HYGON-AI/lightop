@@ -40,7 +40,8 @@ template<
   uint16_t BLOCK_SIZE_K, 
   uint16_t WARP_M, 
   uint16_t WARP_N, 
-  uint16_t WARP_K> 
+  uint16_t WARP_K,
+  bool LDS_BYPASS> 
 __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   const Element* __restrict__ q_nope, // [batch, n, p]
   const Element* __restrict__ w_uv,   // [n, p, l]
@@ -112,7 +113,7 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   uint8_t* output_lds = (uint8_t*)&(smem);                             // 重复使用lds,留给output_lds
 
   union_vec<Element, 16> A_reg[WARP_M / mfma_m * STAGES][WARP_K/mfma_kpack]; 
-  union_vec<Element, 16> B_reg[WARP_N / mfma_n][WARP_K/mfma_kpack];
+  union_vec<Element, 16> B_reg[WARP_N / mfma_n * (1+LDS_BYPASS)][WARP_K/mfma_kpack]; // only support STAGES==1/2
 
   auto g_w_uv = w_uv + w_uv_offset;
   intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0};                 // [4][2]  每个warp在n方向重复两次 tileN = 16*2
@@ -136,13 +137,24 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
     }
   }
 
-  if constexpr(STAGES == 1){
-    batch_gemm_stage_one_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
-      (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
+  if constexpr(LDS_BYPASS){
+    if constexpr(STAGES == 1){
+      batch_gemm_stage_one_lds_bypass_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
+        (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
+    }else{
+      batch_gemm_lds_bypass_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
+        (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
+    }
   }else{
-    batch_gemm_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
-      (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
+    if constexpr(STAGES == 1){
+      batch_gemm_stage_one_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
+        (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
+    }else{
+      batch_gemm_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
+        (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
+    }
   }
+
 
   floatx4 scale_valuex4 = {0.0f, 0.0f, 0.0f, 0.0f};
   uint32_t float8x4_value;
@@ -216,7 +228,7 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
 
 // launch_gemm1
 // 在GemmParams结构体后添加
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T, bool LDS_BYPASS>
 void launch_fused_bmm_decode(const GemmParams<T>& params) {
     const int STAGES = BLOCK_SIZE_K/WARP_K;
     const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
@@ -233,13 +245,13 @@ void launch_fused_bmm_decode(const GemmParams<T>& params) {
     gridDim.y = DIVIDE(params.l_size, BLOCK_SIZE_N); // n方向
     gridDim.z = params.n_size; // batch方向
     // printf("gridDim.x: %d, gridDim.y: %d, gridDim.z: %d\n", gridDim.x, gridDim.y, gridDim.z);
-
-    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K), BLOCK_SIZE_M * BLOCK_SIZE_N);
+    const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + (1-LDS_BYPASS)*BLOCK_SIZE_N * WARP_K), BLOCK_SIZE_M * BLOCK_SIZE_N + BLOCK_SIZE_M * BLOCK_SIZE_M/2 * 4/*padding*/);
+    // const int lds_size = std::max(STAGES * (BLOCK_SIZE_M * WARP_K + BLOCK_SIZE_N * WARP_K), BLOCK_SIZE_M * BLOCK_SIZE_N);
     const int shared_mem_size = lds_size;
     // printf("shared_mem_size: %d\n", shared_mem_size);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
-    FUSED_BMM_I8_DECODE<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K>
+    FUSED_BMM_I8_DECODE<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, LDS_BYPASS>
       <<<gridDim, blockDim, shared_mem_size, stream>>>(
           params.ptr_q_nope, 
           params.ptr_w_uv, 
@@ -345,7 +357,7 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
             it->second(params_in);
         } else {
             printf("No matching kernel configuration found, using default settings \n");
-            launch_fused_bmm_decode<16, 64, 128, 16, 16, 64, char>(params_in);
+            launch_fused_bmm_decode<16, 64, 128, 16, 16, 64, char, false>(params_in);
         }
 
     } else {
