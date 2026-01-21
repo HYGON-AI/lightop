@@ -535,6 +535,16 @@ def run_benchmark_trans_bmm_trans():
     out_dtype=torch.bfloat16
     # out_dtype = torch.float16
 
+    best_config_dict = {}
+    best_config_json_dir="./"
+    os.makedirs(best_config_json_dir, exist_ok=True)
+    device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
+    config_file = os.path.join(best_config_json_dir, f"fused_bmm_best_config_{device_name}.json")
+    if not os.path.exists(config_file):
+        print(f"best_config_file not found: {config_file}")
+        return
+    with open(config_file, 'r') as f:
+        best_config_dict = json.load(f)
 
     # configs=BlockSizeMConfigGen()
     best_config = None
@@ -548,22 +558,26 @@ def run_benchmark_trans_bmm_trans():
     results_list = []
     for i in range(0,len(p_list),1):
         for batch_size in batch_list:
-            for mode in mode_ranges:
-
-                print("mode:{} batch:{} n:{} p:{} l:{} ".format(mode, batch_size, n_list[i],p_list[i],l_list[i]))
-                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i])
-                # triton moe: output
-                result=fused_bmm_trans_impl_int8_benchmark(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode)
-                results_list.append(result)
+            # for mode in mode_ranges:
+            best_config_dict_key = f"{batch_size}_{n_list[i]}"
+            mode = best_config_dict[best_config_dict_key]["mode"]
+            if mode is None:
+                print(f"best_config not found for batch_size: {batch_size}, n: {n_list[i]}")
+                continue
+            print("mode:{} batch:{} n:{} p:{} l:{} ".format(mode, batch_size, n_list[i],p_list[i],l_list[i]))
+            torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i])
+            # triton moe: output
+            result=fused_bmm_trans_impl_int8_benchmark(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode)
+            results_list.append(result)
                 
     output_file = "fused_bmm_benchmark.xlsx"
     df = pd.DataFrame(results_list)
     df.to_excel(output_file, index=False)                  
             
 def main():
-    run_trans_bmm_trans_tuning()
+    # run_trans_bmm_trans_tuning()
     # run_trans_bmm_trans_vaild()
-    # run_benchmark_trans_bmm_trans()
+    run_benchmark_trans_bmm_trans()
 
 if __name__ == "__main__":
     main()
