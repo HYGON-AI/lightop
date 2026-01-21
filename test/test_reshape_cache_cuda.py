@@ -2,35 +2,58 @@ import torch
 import random
 from lightop import reshape_and_cache_cuda
 from vllm import _custom_ops as ops
-from triton.testing import do_bench
 from openpyxl import Workbook
 
+# -----------------------------------------------------------
+# 辅助函数：手动计时
+# -----------------------------------------------------------
+def benchmark_manual(func, warmup=10, rep=100):
+    # 预热
+    for _ in range(warmup):
+        func()
+    torch.cuda.synchronize()
+
+    # 正式计时
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+
+    start_event.record()
+    for _ in range(rep):
+        func()
+    end_event.record()
+    torch.cuda.synchronize()
+
+    # elapsed_time 返回的是毫秒(ms)
+    total_ms = start_event.elapsed_time(end_event)
+    avg_us = (total_ms / rep) * 1000.0
+    return avg_us
 
 # -----------------------------------------------------------
 # 生成输入
+# 修改：固定 num_heads=4, head_size=128
 # -----------------------------------------------------------
-def make_inputs(T, mode="tp4", dtype=torch.float16):
+def make_inputs(T, num_heads=4, head_size=128, dtype=torch.float16):
     device = "cuda"
-    head_size = 128
     block_size = 64
     num_blocks = 25088
 
-    if mode == "tp4":
-        num_heads = 1
-        T_min = 1
-    else:
-        num_heads = 2
-        T_min = 1
+    # 这里的 T_min 保持为 1
+    T_min = 1
 
+    # 生成 Key 和 Value
+    # Shape: [num_tokens, num_heads, head_size]
     key = torch.randn(T, num_heads, head_size, device=device, dtype=dtype) * 0.1
     value = torch.randn_like(key)
 
+    # 生成 Slot Mapping
     slot_mapping = torch.arange(T_min, T_min + T, device=device)
 
+    # 随机设置一些 invalid slot (-1)
     invalid_cnt = max(1, T // 50)
     rand_idx = torch.randperm(T)[:invalid_cnt]
     slot_mapping[rand_idx] = -1
 
+    # KV Cache 显存分配
     key_cache = torch.zeros(
         num_blocks, num_heads, block_size, head_size,
         device=device, dtype=dtype
@@ -40,6 +63,7 @@ def make_inputs(T, mode="tp4", dtype=torch.float16):
         device=device, dtype=dtype
     )
 
+    # 复制一份用于 Custom Kernel 对比
     key_cache2 = key_cache.clone()
     value_cache2 = value_cache.clone()
 
@@ -57,62 +81,74 @@ def make_inputs(T, mode="tp4", dtype=torch.float16):
 
 
 # -----------------------------------------------------------
-# 测试主流程：每种模式 sweep
+# 测试主流程
 # -----------------------------------------------------------
-def run_sweep(mode):
-    print(f"\n======= Running sweep for mode={mode} =======")
-
+def run_sweep(sheet_name="Benchmark"):
+    print(f"\n======= Running sweep: {sheet_name} =======")
+    
     # -----------------------------------------------------
-    # token sweep: 32→1008 (+128)，然后 1024→Tmax (+1000)
+    # 修改：指定具体的 Token 列表
     # -----------------------------------------------------
-    Ts = []
+    Ts = [8,16,32, 64,88, 128, 256, 356,420, 512, 1024, 2048, 4096, 8192, 16384,32768,41000]
+    # Ts = [256]
+    
+    # 固定参数
+    FIXED_NUM_HEADS = 1
+    FIXED_HEAD_DIM = 128
+    DTYPE_SIZE = 2 
 
-    # part1: 32 → 1008 每次 +128（停在1024前）
-    T = 32
-    while T < 1024:
-        Ts.append(T)
-        T += 128
-
-    # part2: 1024 开始，每次 +1000
-    T = 1024
-    T_max = 12800 if mode == "tp4" else 41000
-
-    while T <= T_max:
-        Ts.append(T)
-        T += 1000
-
-    print("Token sweep:", Ts)
+    print(f"Token list: {Ts}")
+    print(f"Params: Heads={FIXED_NUM_HEADS}, HeadDim={FIXED_HEAD_DIM}")
+    print("Settings: Warmup=10, Rep=100")
 
     # -----------------------------------------------------
     # 创建 sheet
     # -----------------------------------------------------
-    ws = wb.create_sheet(f"{mode}")
+    ws = wb.create_sheet(sheet_name)
 
-    # 列标题
+    # 列标题 (增加带宽数据)
     ws.append([
         "Token",
         "NumHeads",
         "HeadSize",
         "BlockSize",
         "InvalidCnt",
-        "vLLM Time (ms)",
-        "Custom Time (ms)",
+        "vLLM Time (us)",
+        "Custom Time (us)",
         "Speedup (vLLM / Custom)",
+        "vLLM BW (GB/s)",   # New
+        "Custom BW (GB/s)", # New
         "Accuracy Pass"
     ])
+
+    # -----------------------------------------------------
+    # 打印 Console 表头
+    # -----------------------------------------------------
+    # 定义表头格式
+    header_fmt = "{:<8} {:<10} {:<12} {:<12} {:<10} {:<12} {:<12} {:<8}"
+    row_fmt    = "{:<8} {:<10} {:<12.3f} {:<12.3f} {:<10.2f} {:<12.2f} {:<12.2f} {:<8}"
+    
+    print("-" * 100)
+    print(header_fmt.format("Token", "Invalid", "vLLM(us)", "Custom(us)", "Speedup", "vLLM(GB/s)", "Cus(GB/s)", "Result"))
+    print("-" * 100)
+
+    #用于存储所有用例的加速比
+    speedups = [] 
 
     # -----------------------------------------------------
     # sweep loop
     # -----------------------------------------------------
     for T in Ts:
-        print(f"\n--- T = {T} ---")
-
         (key, value,
          key_cache, value_cache,
          key_cache2, value_cache2,
          slot_mapping,
          k_scale, v_scale,
-         head_size, block_size, num_heads) = make_inputs(T, mode=mode)
+         head_size, block_size, num_heads) = make_inputs(
+             T, 
+             num_heads=FIXED_NUM_HEADS, 
+             head_size=FIXED_HEAD_DIM
+        )
 
         invalid_cnt = (slot_mapping < 0).sum().item()
 
@@ -143,27 +179,46 @@ def run_sweep(mode):
         # ---------------------
         # 精度检查
         # ---------------------
+        # 先运行一次填充数据，确保功能正确
         run_vllm()
         run_custom()
 
         diff_key = (key_cache - key_cache2).abs().max().item()
         diff_value = (value_cache - value_cache2).abs().max().item()
+        # import pdb
+        # pdb.set_trace()
         acc_pass = (diff_key < 1e-3 and diff_value < 1e-3)
+        res_str = "PASS" if acc_pass else "FAIL"
 
-        print(f"Accuracy Key diff = {diff_key}")
-        print(f"Accuracy Value diff = {diff_value}")
-        print("PASS" if acc_pass else "FAIL")
-
-        # ---------------------
-        # 性能测试（do_bench）
-        # ---------------------
-        time_vllm = do_bench(lambda: run_vllm())
-        time_custom = do_bench(lambda: run_custom())
+   
+        time_vllm = benchmark_manual(run_vllm, warmup=10, rep=1000)
+        # time_vllm = benchmark_manual(run_vllm, warmup=10, rep=1000)
+        time_custom = benchmark_manual(run_custom, warmup=10, rep=1000)
+        # time_custom = benchmark_manual(run_custom, warmup=10, rep=1000)
+        
         speedup = time_vllm / time_custom if time_custom > 0 else 0
+        speedups.append(speedup) # 记录加速比
 
-        print(f"vLLM:   {time_vllm:.3f} ms")
-        print(f"Custom: {time_custom:.3f} ms")
-        print(f"Speedup: {speedup:.2f}x")
+        # ---------------------
+        # 带宽计算
+        # ---------------------
+        # Memory Traffic:
+        # Read Key (T, H, D) + Read Value (T, H, D)
+        # Write Cache Key (T, H, D) + Write Cache Value (T, H, D)
+        # Total Elements = 4 * T * H * D
+        # Total Bytes = Total Elements * 2 bytes (float16)
+        total_bytes = 4 * T * num_heads * head_size * DTYPE_SIZE
+        
+        # GB/s = (Bytes / 1e9) / (us / 1e6)
+        bw_vllm = (total_bytes / 1e9) / (time_vllm / 1e6)
+        bw_custom = (total_bytes / 1e9) / (time_custom / 1e6)
+
+        # ---------------------
+        # 打印一行简略表格信息
+        # ---------------------
+        print(row_fmt.format(
+            T, invalid_cnt, time_vllm, time_custom, speedup, bw_vllm, bw_custom, res_str
+        ))
 
         # ---------------------
         # 写入 Excel
@@ -177,22 +232,45 @@ def run_sweep(mode):
             time_vllm,
             time_custom,
             speedup,
-            "PASS" if acc_pass else "FAIL"
+            bw_vllm,
+            bw_custom,
+            res_str
         ])
 
+    # -----------------------------------------------------
+    # 计算并打印平均加速比
+    # -----------------------------------------------------
+    if speedups:
+        avg_speedup = sum(speedups) / len(speedups)
+        print("-" * 100)
+        print(f"Average Speedup across {len(speedups)} test cases: {avg_speedup:.4f}x")
+        print("-" * 100)
+
+        # 写入 Excel 汇总行 (在 Speedup 列对应的位置写入平均值)
+        # 对应列索引：
+        # A: Token, B: NumHeads, C: HeadSize, D: BlockSize, E: InvalidCnt
+        # F: vLLM Time, G: Custom Time, H: Speedup (第8列)
+        ws.append([]) # 空行
+        ws.append([
+            "AVERAGE", # Token 列
+            "", "", "", "", "", "", # 占位
+            avg_speedup, # Speedup 列
+            "", "", ""
+        ])
 
 # ======================================================
-# 入口：执行所有 sweep 并写 Excel
+# 入口：执行测试并写 Excel
 # ======================================================
 if __name__ == "__main__":
     wb = Workbook()
 
-    run_sweep("tp4")
-    run_sweep("tp2")
+    # 执行指定配置的 Sweep
+    run_sweep("H4_D128")
 
     # 删除默认 sheet
-    wb.remove(wb["Sheet"])
+    if "Sheet" in wb.sheetnames:
+        wb.remove(wb["Sheet"])
 
-    fname = "reshape_and_cache_bench.xlsx"
+    fname = "reshape_and_cache_bench_fixed.xlsx"
     wb.save(fname)
     print(f"\nExcel saved => {fname}")
