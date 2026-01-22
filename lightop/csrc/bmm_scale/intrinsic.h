@@ -129,6 +129,22 @@ __forceinline__  __device__ void  inline_ds_read2_b32_no_wait(VEC *shared_addr, 
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+//封装ds_read_b128
+template<typename VEC, typename dwordx4>
+__forceinline__  __device__ void  inline_ds_read_b128_no_wait(VEC *shared_addr, const int &lds_offset, dwordx4& reg_val) {
+  int ldsAddr = reinterpret_cast<size_t>(shared_addr) + lds_offset * 4;
+//   __builtin_amdgcn_sched_barrier(0);
+  asm volatile(
+      "ds_read_b128 %0, %1\n"
+      : "=v"(reg_val)
+      : "v"(ldsAddr)
+      :);
+//   __builtin_amdgcn_sched_barrier(0);
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 //封装lgkmcnt wait
 #define lgkmcnt_wait_barrier(X)\
 __builtin_amdgcn_sched_barrier(0);\
@@ -181,20 +197,16 @@ __forceinline__ __device__ void builtin_buffer_load_dword_lds(src_type *const sh
 }
 
 // buferr_load_reg
-template<typename T>	
-__forceinline__ __device__ intx4 builtin_amdgcn_buffer_load_reg_dwordx4(const T* ptr, const int vindex, const int offset){ // const int offset
-  intx4 rsrc;
-  *(uint64_t*)&rsrc = reinterpret_cast<uint64_t>(ptr); //res[0]放首地址信息
-  rsrc[1] += 0x40800000;
-  rsrc[2] = 0x80000000;
-  rsrc[3] = 0x00020000;
-
-  rsrc = __builtin_amdgcn_buffer_load_dwordx4(rsrc, vindex, offset, false, false); // vindx -> sgpr offser->sgpr
-
-//   asm volatile("buffer_load_dwordx4 %0,%1,%2,0, offen offset:0 \n"
-//     : "=v"(rsrc), "+v"(offset), "+s"(rsrc));
-
-  return rsrc;
+__forceinline__ __device__ intx4 builtin_buffer_load_dwordx4_reg(const typename vec<uint,4>::type rsrc, const int vindex, const int offset){ // const int offset
+    //   intx4 rsrc;
+    //   *(uint64_t*)&rsrc = reinterpret_cast<uint64_t>(ptr); //res[0]放首地址信息
+    //   rsrc[1] += 0x40800000;
+    //   rsrc[2] = 0x80000000;
+    //   rsrc[3] = 0x00020000;
+      intx4 res;
+      res = __builtin_amdgcn_buffer_load_dwordx4(rsrc, vindex, offset, false, false); // vindx -> sgpr offser->sgpr
+    
+      return res;
 }
 
 // buferr_load_reg
