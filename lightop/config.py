@@ -736,3 +736,106 @@ def get_moe_cuda_config_w16a16(
             "BLOCK_SIZE_M": 16,
         }
     return gemm1_config, gemm2_config, status
+
+@functools.lru_cache(maxsize=1024)
+def get_batched_gemm_w8a8_config(
+    M: int,
+    N: int,
+    K: int,
+) -> Optional[dict[int, Any]]:
+    """
+    Load a GEMM configuration using the standardized M_LEQ_x/M_GEQ_y/any format.
+
+    Args:
+        M: M dimension of the GEMM
+        N: N dimension of the GEMM
+        K: K dimension of the GEMM
+
+    Returns:
+        Dictionary with the config params,
+        bool indicating if the config is tuned.(True if tuned, False otherwise)
+    """
+    # Input validation
+    assert M >= 0, "M must be positive."
+    assert N > 0, "N must be positive when provided."
+    assert K > 0, "K must be positive when provided."
+
+    def _load_config_file(
+        cache_dict: dict,
+        cache_key: str,
+        fpath: str,
+        config_key: str,
+        fpath_should_exist: bool = False,
+    ) -> bool:
+        """
+        Helper function to load a config file and cache it.
+        """
+        if os.path.exists(fpath):
+            with open(fpath, "r") as file:
+                config = json.load(file)
+            cache_dict[cache_key][config_key] = config
+            return True
+        elif fpath_should_exist:
+            # raise AssertionError(f"Required config file doesn't exist: {fpath}")
+            return False
+        return False
+    
+    if not hasattr(get_batched_gemm_w8a8_config, "_config_cache"):
+        get_batched_gemm_w8a8_config._config_cache = {}
+
+    gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
+    cu_number = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
+    cache_key = f"BATCHED_GEMM_W8A8_{N}_{K}"
+    nk_key = f"{N}_{K}_{gfx_version.upper()}_CU{cu_number}"
+    filename = f"BATCHED_GEMM_W8A8_{N}_{K}_{gfx_version.upper()}_CU{cu_number}.json"
+    config_file_path = os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), "configs", filename)
+
+    if cache_key not in get_batched_gemm_w8a8_config._config_cache:
+        get_batched_gemm_w8a8_config._config_cache[cache_key] = {}
+
+        # Load default config (must exist)
+        fpath = config_file_path
+        _load_config_file(
+            get_batched_gemm_w8a8_config._config_cache,
+            cache_key,
+            fpath,
+            nk_key,
+            fpath_should_exist=True,
+        )
+
+    config_dict_key = None
+
+    if N is not None and K is not None:
+        if nk_key not in get_batched_gemm_w8a8_config._config_cache[cache_key]:
+            # load specialized config
+            config_dict_key = None
+        else:
+            config_dict_key = nk_key
+
+    best_batch_gemm_config = {}
+    status = True
+
+    if config_dict_key is not None:
+        config_dict = get_batched_gemm_w8a8_config._config_cache[cache_key][config_dict_key]
+        int_keys = [int(key) for key in config_dict.keys()]
+        greater_numbers = [num for num in int_keys if num >= M]
+        batch_size = min(greater_numbers) if greater_numbers else None
+        best_batch_gemm_config = config_dict[f"{batch_size}"] if f"{batch_size}" in config_dict else {}
+        # 如果config没有，找到最接近的token数
+        if not best_batch_gemm_config:
+            min_diff = float('inf')
+            closest_batch_size = None
+            for bs in int_keys:
+                diff = abs(bs - M)
+                if diff < min_diff:
+                    min_diff = diff
+                    closest_batch_size = bs
+            best_batch_gemm_config = config_dict[f"{closest_batch_size}"] if f"{closest_batch_size}" in config_dict else {}
+        status = True
+    else:
+        best_batch_gemm_config = {'MODE': 0}
+        status = False
+        
+    return best_batch_gemm_config, status
+        
