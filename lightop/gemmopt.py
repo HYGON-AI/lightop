@@ -594,5 +594,6 @@ def fused_bmm(q_nope: torch.Tensor,                        # [batch_size, num_he
               a_scale: torch.Tensor,                       # [num_head, batch_size, 1], fp32
               b_scale: torch.Tensor,                       # [num_head, l_size, 1], fp32
               bias: Optional[torch.Tensor] = None,         # [num_head, l_size], None
-              mode: int = 0) -> torch.Tensor:
+              config: Optional[Dict[str, Any]] = {"MODE": 0}) -> torch.Tensor:
+    mode = config['MODE']
     return op.fused_bmm(q_nope, w_uv, output, a_scale, b_scale, bias, mode)

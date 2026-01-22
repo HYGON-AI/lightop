@@ -18,7 +18,7 @@ from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
 from vllm import _custom_ops as ops
 # from test_int8_kernel import torch_w8a8_per_column_moe
 # import _custom_ops as ops
-from lightop import fused_bmm, fuse_rmsnorm_rope_quant_qkv
+from lightop import fused_bmm, fuse_rmsnorm_rope_quant_qkv, get_batched_gemm_w8a8_config
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
 
@@ -64,7 +64,6 @@ def fused_bmm_trans_impl_int8(  torch_input: torch.Tensor,                      
                                 input_scale: Optional[torch.Tensor] = None,     # 1, b, 1
                                 w_uk_scale: Optional[torch.Tensor] = None,      # 1, l, 1
                                 bias: Optional[torch.Tensor] = None,            # n, l
-                                config: Optional[Dict[str, Any]] = None,
                                 mode: Optional[List[int]]=None):
     
     # input = torch.ones_like(input)
@@ -79,6 +78,7 @@ def fused_bmm_trans_impl_int8(  torch_input: torch.Tensor,                      
     torch_w_uk_scale = w_uk_scale.clone()
     torch_bias = bias.clone() if bias is not None else None
     
+    config = {"MODE": mode}
     
     # fused_bmm_output 应该是 [n, b, l] 的形状
     torch_input = input_clone.transpose(0,1).contiguous()  # [b, n, p] -> [n, b, p]
@@ -88,7 +88,7 @@ def fused_bmm_trans_impl_int8(  torch_input: torch.Tensor,                      
     # 验证lightop kernel
     # torch.set_printoptions(profile="full") 
     cuda_output = torch.zeros_like(torch_output, dtype=torch.float8_e4m3fn)
-    fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, mode)
+    fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, config)
     torch.cuda.synchronize()
     # import pdb; pdb.set_trace()
     mode_status = True
@@ -129,7 +129,6 @@ def fused_bmm_trans_impl_int8_tuning(   torch_input: torch.Tensor,              
                                         input_scale: Optional[torch.Tensor] = None,     # 1, b, 1
                                         w_uk_scale: Optional[torch.Tensor] = None,      # 1, l, 1
                                         bias: Optional[torch.Tensor] = None,            # n, l
-                                        config: Optional[Dict[str, Any]] = None,
                                         mode: Optional[List[int]]=None):
     
     # input = torch.ones_like(input)
@@ -144,6 +143,7 @@ def fused_bmm_trans_impl_int8_tuning(   torch_input: torch.Tensor,              
     torch_w_uk_scale = w_uk_scale.clone()
     torch_bias = bias.clone() if bias is not None else None
     
+    config = {"MODE": mode}
     
     # fused_bmm_output 应该是 [n, b, l] 的形状
     torch_input = input_clone.transpose(0,1).contiguous()  # [b, n, p] -> [n, b, p]
@@ -153,7 +153,7 @@ def fused_bmm_trans_impl_int8_tuning(   torch_input: torch.Tensor,              
     # 验证lightop kernel
     # torch.set_printoptions(profile="full") 
     cuda_output = torch.zeros_like(torch_output, dtype=torch.float8_e4m3fn)
-    fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, mode)
+    fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, config)
     torch.cuda.synchronize()
     # import pdb; pdb.set_trace()
     mode_status = True
@@ -188,7 +188,7 @@ def fused_bmm_trans_impl_int8_tuning(   torch_input: torch.Tensor,              
         
     warm_up_num = 20
     for i in range(warm_up_num):
-        fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, mode)
+        fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, config)
         torch.cuda.synchronize()
     
     quantiles = [0.5, 0.2, 0.8]
@@ -198,7 +198,7 @@ def fused_bmm_trans_impl_int8_tuning(   torch_input: torch.Tensor,              
                                                                        input_scale, 
                                                                        w_uk_scale, 
                                                                        bias, 
-                                                                       mode), quantiles=quantiles)
+                                                                       config), quantiles=quantiles)
     fused_bmm_kernel_time_us = avg_ms * 1000
         
         
@@ -236,30 +236,67 @@ def torch_benchmark_fuse_bmm_bf16(B: int,
     
     
 
-def fused_bmm_trans_impl_int8_benchmark(torch_input: torch.Tensor,                            # b，n, p
+def fused_bmm_trans_impl_int8_benchmark(torch_input: torch.Tensor,                      # b，n, p
                                         input: torch.Tensor,                            # b，n, p
                                         w_uk: torch.Tensor,                             # n, l, p
                                         input_scale: Optional[torch.Tensor] = None,     # n, b, 1
                                         w_uk_scale: Optional[torch.Tensor] = None,      # n, l, 1
-                                        bias: Optional[torch.Tensor] = None,            # b, l
-                                        config: Optional[Dict[str, Any]] = None,
-                                        mode: Optional[List[int]]=None):
+                                        bias: Optional[torch.Tensor] = None):           # b, l
 
     # 用实际 shape 申请输出空间，避免依赖 zeros_like
-    b, n, p = input.shape
+    b, n, p = torch_input.shape
     _, l, _ = w_uk.shape
     cuda_output = torch.empty((b, n, l), dtype=torch.float8_e4m3fn, device=input.device)
     
     # torch benchmark:
     torch_benchmark_time = torch_benchmark_fuse_bmm_bf16(b, n, p, l)
     
-    warm_up_num = 10
-    for i in range(warm_up_num):
-        fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, mode)
-        torch.cuda.synchronize()
+    input_clone = torch_input.clone()
+    torch_uk = w_uk.clone()
+    torch_input_scale = input_scale.clone()
+    torch_w_uk_scale = w_uk_scale.clone()
+    torch_bias = bias.clone() if bias is not None else None
     
-    fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, mode)
+    # fused_bmm_output 应该是 [n, b, l] 的形状
+    torch_input = input_clone.transpose(0,1).contiguous()  # [b, n, p] -> [n, b, p]
+    # 使用bfloat16作为基准输出类型，避免FP8类型比较时的运算问题
+    fused_torch_output = batch_rocblas_scaled_mm(torch_input, torch_uk, torch_input_scale, torch_w_uk_scale, out_dtype=torch.float8_e4m3fn, bias=torch_bias)   # [n, b, l]
+    torch_output = fused_torch_output.transpose(0,1).contiguous() # [b, n, l]
+    
+    
+    # 验证lightop kernel
+    config, status = get_batched_gemm_w8a8_config(b, n, p)
+    print(f"config: {config}, status: {status}")
+    # torch.set_printoptions(profile="full") 
+    cuda_output = torch.zeros_like(torch_output, dtype=torch.float8_e4m3fn)
+    fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, config)
     torch.cuda.synchronize()
+    mode_status = True
+    
+    # 将FP8输出转换为bfloat16进行比较
+    # PyTorch的FP8类型可能不支持直接.to()转换，需要通过view转换为uint8
+    # 然后手动实现FP8到float的转换，或者使用torch的dequantize功能
+    # 这里使用一个简单的方法：将FP8视为uint8，然后转换为float32再转bfloat16
+    # 注意：这不是正确的FP8解码，但可以作为临时方案
+    # 如果需要精确的FP8解码，应该使用lightop的转换函数或实现正确的FP8解码逻辑
+    torch_output_uint8 = torch_output.view(torch.uint8)
+    cuda_output_uint8 = cuda_output.view(torch.uint8)
+    # 将uint8转换为float32（这里假设FP8值范围在合理范围内）
+    # 正确的做法应该是实现FP8 E4M3格式的解码
+    torch_output_fp32 = torch_output_uint8.to(torch.float32)
+    cuda_output_fp32 = cuda_output_uint8.to(torch.float32)
+    # import pdb; pdb.set_trace()
+    if not (torch.allclose(torch_output_fp32, cuda_output_fp32, rtol=1e-1, atol=1e-2, equal_nan=True)):
+        # print(f"kernel 精度检查不合格!!!")
+        mode_status = False
+    else:
+        # print(f"kernel 精度检查合格.")
+        mode_status = True
+    
+    warm_up_num = 15
+    for i in range(warm_up_num):
+        fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, config)
+        torch.cuda.synchronize()
     
     quantiles = [0.5, 0.2, 0.8]
     avg_ms, min_ms, max_ms = triton.testing.do_bench(lambda: fused_bmm(input, 
@@ -268,7 +305,7 @@ def fused_bmm_trans_impl_int8_benchmark(torch_input: torch.Tensor,              
                                                                        input_scale, 
                                                                        w_uk_scale, 
                                                                        bias, 
-                                                                       mode), quantiles=quantiles)
+                                                                       config), quantiles=quantiles)
     fused_bmm_kernel_time_us = avg_ms * 1000
     # 计算peak和bw
     # 对于每个 n，执行 [b, p] @ [l, p].T = [b, l] 的 GEMM
@@ -303,6 +340,7 @@ def fused_bmm_trans_impl_int8_benchmark(torch_input: torch.Tensor,              
         'N': n,
         'L': l,
         'P': p,
+        'Passed': mode_status,
         'Torch_time_us': torch_benchmark_time,
         'GEMM_Time_us': fused_bmm_kernel_time_us,
         'GEMM_TFlops': tflops,
@@ -419,17 +457,19 @@ def run_trans_bmm_trans_tuning():
     best_config_json_dir="./"
     os.makedirs(best_config_json_dir, exist_ok=True)
     
-    device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
+    gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
+    cu_number = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
     # mode_ranges = [mode for mode in blockM_configs.keys()]
     # mode_ranges = [0,1,2,3,4,5,6,7,8,9]
     # mode_ranges = [10,11,12,13,14,15,16,17,18,19]
-    mode_ranges = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
-    best_config_list = {}
+    mode_ranges = [0,1,2,3,4,10,11,12,13,14,50,51,52,53,54,60,61,62,63,64]
+    
     
     
     for i in range(0,len(p_list),1):
+        best_config_list = {}
         for batch_size in batch_list:
             max_time = torch.inf
             best_config = None
@@ -457,30 +497,31 @@ def run_trans_bmm_trans_tuning():
             if best_config is not None:
                 print(f"best_config: {best_config} for batch_size: {batch_size}, n: {n_list[i]}, p: {p_list[i]}, l: {l_list[i]}")
                 # 保存最优配置，键格式为“{batch_size}_{num_head}”
-                key = f"{batch_size}_{n_list[i]}"
+                key = f"{batch_size}"
                 best_config_list[key] = {
-                    "mode": best_config,
+                    "MODE": best_config,
                 }
             else:
                 print(f"best_config not found!!! for batch_size: {batch_size}, n: {n_list[i]}, p: {p_list[i]}, l: {l_list[i]}")
+        
+        print(f"best_config_list: {best_config_list}")
+        filename = f"BATCHED_GEMM_W8A8_{n_list[i]}_{p_list[i]}_{gfx_version.upper()}_CU{cu_number}.json"
 
-    print(f"best_config_list: {best_config_list}")
-    
-    # 保存最优配置到文件
-    config_file = os.path.join(best_config_json_dir, f"fused_bmm_best_config_{device_name}.json")
-    with open(config_file, 'w') as f:
-        json.dump(best_config_list, f, indent=4)
-    print(f"最优配置已保存到: {config_file}")
+        # 保存最优配置到文件
+        config_file = os.path.join(best_config_json_dir, filename)
+        with open(config_file, 'w') as f:
+            json.dump(best_config_list, f, indent=4)
+        print(f"最优配置已保存到: {config_file}")
 
 
 def run_trans_bmm_trans_vaild():
     
     # batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
-    batch_list=[16,]
+    batch_list=[32,]
     ##deepseek-671b-tp8
-    # n_list=[16,]
-    # p_list=[128,]
-    # l_list=[512,]
+    n_list=[16,]
+    p_list=[128,]
+    l_list=[512,]
     
     # n_list=[32,]
     # p_list=[128,]
@@ -490,9 +531,9 @@ def run_trans_bmm_trans_vaild():
     # p_list=[128,]
     # l_list=[512,]
     
-    n_list=[128]
-    p_list=[128]
-    l_list=[512]
+    # n_list=[128]
+    # p_list=[128]
+    # l_list=[512]
     
     out_dtype=torch.bfloat16
     # out_dtype = torch.float16
@@ -507,7 +548,7 @@ def run_trans_bmm_trans_vaild():
     # mode_ranges = [mode for mode in blockM_configs.keys()]
     # mode_ranges = [0,1,2,3,4,5,6,7,8,9]
     # mode_ranges = [10,11,12,13,14,15,16,17,18,19]
-    mode_ranges = [0]
+    mode_ranges = [0,1,2,3,4,10,11,12,13,14,50,51,52,53,54,60,61,62,63,64]
     
     for i in range(0,len(p_list),1):
         for batch_size in batch_list:
@@ -524,8 +565,8 @@ def run_trans_bmm_trans_vaild():
      
     
 def run_benchmark_trans_bmm_trans():
-    # batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
-    batch_list = [32]
+    batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
+    # batch_list = [32]
     
     ##deepseek-671b-tp8
     n_list=[16,32,64,128]
@@ -535,50 +576,42 @@ def run_benchmark_trans_bmm_trans():
     out_dtype=torch.bfloat16
     # out_dtype = torch.float16
 
-    best_config_dict = {}
-    best_config_json_dir="./"
-    os.makedirs(best_config_json_dir, exist_ok=True)
-    device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
-    config_file = os.path.join(best_config_json_dir, f"fused_bmm_best_config_{device_name}.json")
-    if not os.path.exists(config_file):
-        print(f"best_config_file not found: {config_file}")
-        return
-    with open(config_file, 'r') as f:
-        best_config_dict = json.load(f)
-
-    # configs=BlockSizeMConfigGen()
-    best_config = None
-    triton_json_dir="./cache/moe/"
-    os.makedirs(triton_json_dir, exist_ok=True)
-    
-    device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
-
-    mode_ranges = [0] # mode best config: [0,3,]
-
     results_list = []
     for i in range(0,len(p_list),1):
         for batch_size in batch_list:
             # for mode in mode_ranges:
-            best_config_dict_key = f"{batch_size}_{n_list[i]}"
-            mode = best_config_dict[best_config_dict_key]["mode"]
-            if mode is None:
-                print(f"best_config not found for batch_size: {batch_size}, n: {n_list[i]}")
-                continue
-            print("mode:{} batch:{} n:{} p:{} l:{} ".format(mode, batch_size, n_list[i],p_list[i],l_list[i]))
             torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i])
             # triton moe: output
-            result=fused_bmm_trans_impl_int8_benchmark(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode)
+            result=fused_bmm_trans_impl_int8_benchmark(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias)
             results_list.append(result)
                 
     output_file = "fused_bmm_benchmark.xlsx"
     df = pd.DataFrame(results_list)
     df.to_excel(output_file, index=False)                  
             
-def main():
-    # run_trans_bmm_trans_tuning()
-    # run_trans_bmm_trans_vaild()
-    run_benchmark_trans_bmm_trans()
+def main(mode: str = "debug"):
+    """
+    mode 支持三种：
+      - "tune"      : 跑 kernel tuning，生成/更新最优 config json
+      - "debug"     : 做精度校验
+      - "benchmark" : 使用最优 config 跑性能 benchmark
+    """
+    if mode == "tune":
+        run_trans_bmm_trans_tuning()
+    elif mode == "debug":
+        run_trans_bmm_trans_vaild()
+    elif mode == "benchmark":
+        run_benchmark_trans_bmm_trans()
+    else:
+        print(f"未知模式: {mode}，请使用 'tune' / 'debug' / 'benchmark'")
+
 
 if __name__ == "__main__":
-    main()
-    # HIP_VISIBLE_DEVICES=1 python3 test_fused_trans_bmm_trans.py
+    import sys
+    # 命令行：python test_fused_trans_bmm_trans.py [tune|debug|benchmark]
+    cli_mode = sys.argv[1] if len(sys.argv) > 1 else "debug"
+    main(cli_mode)
+    # 示例：
+    #   HIP_VISIBLE_DEVICES=1 python3 test_fused_trans_bmm_trans.py tune
+    #   HIP_VISIBLE_DEVICES=1 python3 test_fused_trans_bmm_trans.py debug
+    #   HIP_VISIBLE_DEVICES=1 python3 test_fused_trans_bmm_trans.py benchmark
