@@ -114,7 +114,10 @@ Tensor moe_marlin_w4a16(torch::Tensor& a,
                         bool is_k_full,
                         bool use_atomic_add,
                         bool use_fp32_reduce,
-                        bool is_zp_float
+                        bool is_zp_float,
+                        int64_t thread_n=-1, 
+                        int64_t thread_k=-1,
+                        int64_t blocks_per_cu=1
                         );
 Tensor awq_marlin_repack(torch::Tensor& b_q_weight, int64_t size_k, int64_t size_n, int64_t num_bits);
 Tensor moe_marlin_w4a8(
