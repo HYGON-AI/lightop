@@ -127,8 +127,8 @@ void marlin_mm_impl(const void* A, const void* B, void* C, void* s_zp,
     return;
   }
   
-  // deepseek TP8 GEMM2
-  if(prob_k==256 && prob_n==7168){
+  // deepseek TP8 gemm2
+  if(prob_k==256 && prob_n==7168 ){
     switch(moe_block_size / 16) {
       case 1: // 16-256-64
         MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 1, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
@@ -175,175 +175,54 @@ void marlin_mm_impl(const void* A, const void* B, void* C, void* s_zp,
     
     return;
   }
-  
-  // X-256-64
-  if(thread_n==256 && thread_k == 64){
+
+  // deepseek TP1
+  if((prob_k==7168 && prob_n==4096) or (prob_k==2048 && prob_n==7168) ){
     switch(moe_block_size / 16) {
       case 1: // 16-256-64
-        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_256_128_reduce<scalar_t, 256, 1, 16, 4, 2, 4><<<sms*blocks_per_cu, 256, 20000, stream>>>(
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 1, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-            prob_n, prob_k, locks); 
+            prob_n, prob_k, locks);    
         break;
+
       case 2: // 32-256-64
-        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_256_128_reduce<scalar_t, 256, 2, 16, 4, 2, 4><<<sms*blocks_per_cu, 256, 20000, stream>>>(
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 2, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-            prob_n, prob_k, locks); 
+            prob_n, prob_k, locks);    
         break;
-      case 3: // 48-256-64
-        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_256_128_reduce<scalar_t, 256, 3, 16, 4, 2, 4><<<sms*blocks_per_cu, 256, 20000, stream>>>(
+
+      case 3: // 48-512-32
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 3, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-            prob_n, prob_k, locks); 
+            prob_n, prob_k, locks);         
         break;
-      case 4: // 64-256-64
-        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_256_128_reduce<scalar_t, 256, 4, 16, 4, 2, 4><<<sms*blocks_per_cu, 256, 20000, stream>>>(
+      case 4: // 64-512-32
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 4, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
             A_ptr, B_ptr, C_ptr, s_zp_ptr,
             sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
             topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-            prob_n, prob_k, locks); 
+            prob_n, prob_k, locks);          
         break;
+      case 5: // 80-512-32
+        MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 5, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
+            A_ptr, B_ptr, C_ptr, s_zp_ptr,
+            sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
+            topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
+            prob_n, prob_k, locks);          
+        break;
+
       default:
-        printf("lightop-moe-w4a16 X-256-64 config only support moe_block_size = 16、32、48、64 四个值, 当前值: %d \n", moe_block_size);
+        printf("仅支持 moe_block_size = 16、32、48、64、80 四个值, 当前值: %d \n", moe_block_size);
         break;
-    }
-  }else if(thread_n==512 && thread_k == 32){  // X=512-32
-    switch(moe_block_size / 16) {
-        case 1: // 16-256-64
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 1, 32, 2, 2, 4><<<sms*blocks_per_cu, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks);         
-          break;
-        case 2: // 32-256-64
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 2, 32, 2, 2, 4><<<sms*blocks_per_cu, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks);         
-          break;
-        case 3: // 48-256-64
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 3, 32, 2, 2, 4><<<sms*blocks_per_cu, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks);         
-          break;
-        case 4: // 64-256-64
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 4, 32, 2, 2, 4><<<sms*blocks_per_cu, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks);         
-          break;
-        case 5: // 80-256-64
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 5, 32, 2, 2, 4><<<sms*blocks_per_cu, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks);         
-          break;
-        default:
-          printf("lightop-moe-w4a16 X-512-32 config only support moe_block_size = 16、32、48、64、80, cur: %d \n", moe_block_size);
-          break;
-    }
-  }else{  // deepseek TP8 gemm1 gemm2
-    // deepseek gemm1
-    if(prob_k==7168 && prob_n==4096){
-      switch(moe_block_size / 16) {
-        case 1: // 16-256-64
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_256_128_reduce<scalar_t, 256, 1, 16, 4, 2, 4><<<sms*3, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks); 
-          break;
-
-        case 2: // 32-256-64
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_256_128_reduce<scalar_t, 256, 2, 16, 4, 2, 4><<<sms*3, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks); 
-          break;
-
-        case 3: // 48-512-32
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 3, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks);         
-          break;
-        case 4: // 64-512-32
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 4, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks);          
-          break;
-        case 5: // 80-512-32
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 5, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks);          
-          break;
-        default:
-          printf("仅支持 moe_block_size = 16、32、48、64、80 四个值, 当前值: %d \n", moe_block_size);
-          break;
-      };
-    }else if(prob_k==2048 && prob_n==7168){ //  deepseek gemm2
-      switch(moe_block_size / 16) {
-        case 1: // 16-256-64
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 1, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks);    
-          break;
-
-        case 2: // 32-256-64
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 2, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks);    
-          break;
-
-        case 3: // 48-512-32
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 3, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks);         
-          break;
-        case 4: // 64-512-32
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 4, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks);          
-          break;
-        case 5: // 80-512-32
-          MOE_W4A16_f16_PERCHANNEL_HIP_NT_marlin_512_32_reduce<scalar_t, 256, 5, 32, 2, 2, 4><<<sms*3, 256, 20000, stream>>>(
-              A_ptr, B_ptr, C_ptr, s_zp_ptr,
-              sorted_token_ids_ptr, expert_ids_ptr, num_tokens_past_padded_ptr,
-              topk_weights_ptr, top_k, mul_topk_weights, num_groups, prob_m,
-              prob_n, prob_k, locks);          
-          break;
-
-        default:
-          printf("仅支持 moe_block_size = 16、32、48、64、80 四个值, 当前值: %d \n", moe_block_size);
-          break;
-      };      
-    }else{
-      TORCH_CHECK(0, "No tuning available for lightop-moe-w4a16 at the current size!!!");  // 
-    }
+    }; 
+    
+    return;
   }
 
 }
