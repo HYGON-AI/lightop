@@ -301,8 +301,8 @@ namespace marlin_moe_w4a16{
 
       block_id = par_id;
       expert_id = expert_ids_ptr[block_id];
-  
-      B_expert_off = expert_id * prob_n * prob_k / (pack_factor * 4);
+
+      B_expert_off = (static_cast<int64_t>(expert_id) * prob_n * prob_k) / (pack_factor * 4);
       scales_zeros_offset_int4 += (expert_id - old_expert_id) * scales_expert_stride;
       scales_zeros_offset_int4 += (expert_id - old_expert_id) * zp_expert_stride;
       
@@ -557,13 +557,8 @@ namespace marlin_moe_w4a16{
 
         // load [128, 128](fp16)-》 [8, 64](int4)
         for (int i = 0; i < b_sh_wr_iters; i++) {
-          // 移动到0号线程的起始地址
-          int b_global_idx = 16 * (B_idx_int[i] + B_expert_off);
-
-          // buffer_load_dwordx4 嵌入汇编
-          cp_async4_vgpr(&frag_b_quant[pipe][i], &B[0], b_global_idx);
-          // 直接load到寄存器上
-          // frag_b_quant[pipe][i] = reinterpret_cast<const I4*>(B)[b_global_idx / 16];
+          int b_global_idx = B_idx_int[i] + B_expert_off;
+          cp_async4_vgpr_s128(&frag_b_quant[pipe][i], &B[0], b_global_idx);
 
           // 移动到下一个数据块上
           B_idx_int[i] += b_gl_rd_delta_o;

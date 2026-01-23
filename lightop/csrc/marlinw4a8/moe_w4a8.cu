@@ -53,7 +53,6 @@ void marlin_mm_bf16_per_channel(
   const int32_t* expert_ids_ptr = (const int32_t*)expert_ids;
   const int32_t* num_tokens_past_padded_ptr = (const int32_t*)num_tokens_past_padded;
 
-
   const float* topk_weights_ptr;
   if(mul_topk_weights){
     topk_weights_ptr = (const float*)topk_weights.value().data_ptr();
