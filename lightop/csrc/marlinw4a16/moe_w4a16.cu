@@ -225,6 +225,8 @@ void marlin_mm_impl(const void* A, const void* B, void* C, void* s_zp,
     return;
   }
 
+  TORCH_CHECK(0, "lightop-moe-w4a16 Not adapted to the current size!!!"); 
+
 }
 
 }
