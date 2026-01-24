@@ -588,12 +588,36 @@ def paged_mqa_logits(
         clean_logits)
     return logits
 
-def fused_bmm(q_nope: torch.Tensor,                        # [batch_size, num_head, p_size], int8
-              w_uv: torch.Tensor,                          # [num_head, l_size, p_size], int8
-              output: torch.Tensor,                        # [batch_size, num_head, l_size], fp8
-              a_scale: torch.Tensor,                       # [num_head, batch_size, 1], fp32
-              b_scale: torch.Tensor,                       # [num_head, l_size, 1], fp32
-              bias: Optional[torch.Tensor] = None,         # [num_head, l_size], None
+def fused_bmm(x: torch.Tensor,                                       # [batch_size, num_head, p_size], int8
+              w: torch.Tensor,                                       # [num_head, l_size, p_size], int8
+              x_scale: torch.Tensor,                                 # [num_head, batch_size, 1], fp32
+              w_scale: torch.Tensor,                                 # [num_head, l_size, 1], fp32
+              bias: Optional[torch.Tensor] = None,                   # [num_head, l_size], None
+              dtype: Optional[torch.dtype] = torch.float8_e4m3fn,    # fp8
+              output: Optional[torch.Tensor] = None,                 # [batch_size, num_head, l_size], fp8
+              transpose_bm: Optional[bool] = False,
+              transpose_bm_in: Optional[bool] = False,
               config: Optional[Dict[str, Any]] = {"MODE": 0}) -> torch.Tensor:
+    """
+    Computes batched 8 bit matrix multiplication Y[i] = X[i] @ W[i]^T with active activation quantization.
+    X is quantized to INT8 during computation using per-token grouped quantization.
+    W is pre-quantized INT8 with per-batch-element scaling.
+
+    Args:
+        x (torch.Tensor): Higher precision input batch with shape (B, M, K) or (M, B, K) if transpose_bm_in=True.
+            Quantized to INT8 on-the-fly during GEMM.
+        w (torch.Tensor): Pre-quantized INT8 weight batch with shape (B, N, K), internally transposed.
+        x_scale (torch.Tensor): Per-batch scale for x with shape (n,b,1).
+        w_scale (torch.Tensor): Per-batch scale for w with shape (n,l,1).
+        bias (Optional[torch.Tensor]): Bias batch with shape (n,l).
+        dtype (Optional[torch.dtype]): Output datatype (float8_e4m3fn or float8_e5m2).
+        output (Optional[torch.Tensor]): Pre-allocated output tensor with shape (B, M, N) or (M, B, N) if transpose_bm=True.
+        transpose_bm (Optional[bool]): Transpose batch and M dimensions in output.
+        transpose_bm_in (Optional[bool]): Transpose batch and M dimensions in input.
+        config (Optional[dict]): Kernel tuning parameters eg: {"MODE": 0}.
+
+    Returns:
+        torch.Tensor: Output batch with shape (B, M, N) or (M, B, N) if transpose_bm=True.
+    """
     mode = config['MODE']
-    return op.fused_bmm(q_nope, w_uv, output, a_scale, b_scale, bias, mode)
+    return op.fused_bmm(x, w, output, x_scale, w_scale, bias, dtype, transpose_bm, transpose_bm_in, mode)

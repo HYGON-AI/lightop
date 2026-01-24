@@ -27,6 +27,9 @@ struct GemmParams {
                uint32_t stride_bn,
                uint32_t stride_bl,
                uint32_t stride_bp,
+               uint32_t stride_ob,
+               uint32_t stride_on,
+               uint32_t stride_ol,
                uint32_t stride_asn,
                uint32_t stride_asb,
                uint32_t stride_ask,
@@ -51,6 +54,9 @@ struct GemmParams {
           stride_bn(stride_bn),
           stride_bl(stride_bl),
           stride_bp(stride_bp),
+          stride_ob(stride_ob),
+          stride_on(stride_on),
+          stride_ol(stride_ol),
           stride_asn(stride_asn),
           stride_asb(stride_asb),
           stride_ask(stride_ask),
@@ -76,6 +82,9 @@ struct GemmParams {
     uint32_t stride_bn;                // weight stride bn
     uint32_t stride_bl;                // weight stride bl
     uint32_t stride_bp;                // weight stride bp
+    uint32_t stride_ob;                // output stride ob
+    uint32_t stride_on;                // output stride on
+    uint32_t stride_ol;                // output stride ol
     uint32_t stride_asn;               // input scale stride asm
     uint32_t stride_asb;               // input scale stride ask
     uint32_t stride_ask;               // weight scale stride bse
