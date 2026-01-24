@@ -49,7 +49,7 @@ std::tuple <Tensor, Tensor> fuse_bias_dropout_add_backward(const Tensor &grad,co
 Tensor fuse_groupnorm_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,bool training);
 Tensor fuse_celu_gn_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,double alpha,bool training);
 Tensor fuse_gn_silu_forward_autograd(const Tensor& x,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double eps,bool training);
-Tensor fused_bmm(torch::Tensor q_nope, torch::Tensor w_uv, torch::Tensor output, torch::Tensor a_scale, torch::Tensor b_scale, std::optional<torch::Tensor> bias, int mode);
+Tensor fused_bmm(torch::Tensor x, torch::Tensor w, torch::Tensor output, torch::Tensor x_scale, torch::Tensor w_scale, std::optional<torch::Tensor> bias, torch::Dtype dtype, bool transpose_bm, bool transpose_bm_in, int mode);
 Tensor sum_opt(const Tensor& x,int dim);
 Tensor mean_opt(const Tensor& x,int dim);
 std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k,int dim,bool sorted);

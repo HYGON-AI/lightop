@@ -25,14 +25,13 @@ namespace native{
     int thread_num_m = 64/thread_num_n;\
     int lane_M_idx = lane_id / thread_num_n;\ 
     int lane_N_idx = lane_id % thread_num_n;\
-    int np_size = n_size * N_row_len * bytes_per_element;\
     const int lds_load_num = (BLOCK_M*WARP_K*bytes_per_element) / (bytes_per_element*element_per_dword*64);\
     if(WARP_NUM > lds_load_num){ \
         if(warp_id < lds_load_num){ \
             int block_row = warp_id * thread_num_m + lane_M_idx;\
             int block_offset = block_row + bidx * BLOCK_M;\
             int g_row = std::min(block_offset, max_M_len - 1);\
-            int g_offset = g_row * np_size + bidz * N_row_len * bytes_per_element;\
+            int g_offset = g_row * stride_ab + bidz * N_row_len * bytes_per_element;\
             int phase = (block_row/per_phase) % max_phase; \
             int g_col = lane_N_idx; \
             int vec_size_dword = vec_size / element_per_dword; \
@@ -47,7 +46,7 @@ namespace native{
             int block_row = warp_loop * thread_num_m + lane_M_idx;\
             int block_offset = block_row + bidx * BLOCK_M;\
             int g_row = std::min(block_offset, max_M_len - 1);\
-            int g_offset = g_row * np_size + bidz * N_row_len * bytes_per_element;\
+            int g_offset = g_row * stride_ab + bidz * N_row_len * bytes_per_element;\
             int phase = (block_row/per_phase) % max_phase; \
             int g_col = lane_N_idx; \
             int vec_size_dword = vec_size / element_per_dword; \
@@ -140,6 +139,7 @@ __forceinline__ __device__ void  batch_gemm_impl(
     int batch_size,
     int n_size,
     int p_size,
+    int stride_ab,
     int seqlen_A_stride, // size_k: 128
     int seqlen_B_stride, // size_k: 128
     const int bidx,
@@ -393,6 +393,7 @@ __forceinline__ __device__ void  batch_gemm_stage_one_impl(
     int batch_size,
     int n_size,
     int p_size,
+    int stride_ab,
     int seqlen_A_stride, // size_k: 128
     int seqlen_B_stride, // size_k: 128
     const int bidx,
@@ -555,6 +556,7 @@ __forceinline__ __device__ void  batch_gemm_lds_bypass_impl(
     int batch_size,
     int n_size,
     int p_size,
+    int stride_ab,
     int seqlen_A_stride, // size_k: 128
     int seqlen_B_stride, // size_k: 128
     const int bidx,
@@ -794,6 +796,7 @@ __forceinline__ __device__ void  batch_gemm_stage_one_lds_bypass_impl(
     int batch_size,
     int n_size,
     int p_size,
+    int stride_ab,
     int seqlen_A_stride, // size_k: 128
     int seqlen_B_stride, // size_k: 128
     const int bidx,

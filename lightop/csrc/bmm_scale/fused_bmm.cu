@@ -60,6 +60,9 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   uint32_t stride_bn,
   uint32_t stride_bl,
   uint32_t stride_bp,
+  uint32_t stride_ob,
+  uint32_t stride_on,
+  uint32_t stride_ol,
   uint32_t stride_asn,
   uint32_t stride_asb,
   uint32_t stride_ask,
@@ -75,11 +78,10 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
 
   constexpr int STAGES = BLOCK_SIZE_K/WARP_K; 
   const int w_uv_offset = bidz * stride_bl * l_size + bidy * BLOCK_SIZE_N * stride_bl;
-  const uint32_t output_offset = bidz * l_size + bidy * BLOCK_SIZE_N;
+  const uint32_t output_offset = bidz * stride_on + bidy * BLOCK_SIZE_N;
   const int size_k = p_size;
   const int size_m = batch_size;
   const int size_n = l_size;
-  const int nl_size = n_size * l_size;
 
   auto g_input = q_nope;
   unsigned char* g_output;
@@ -141,18 +143,18 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   if constexpr(LDS_BYPASS){
     if constexpr(STAGES == 1){
       batch_gemm_stage_one_lds_bypass_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element, ElementAccum>
-        (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
+        (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_ab, stride_an, stride_bl, bidx, bidz);
     }else{
       batch_gemm_lds_bypass_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element, ElementAccum>
-        (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
+        (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_ab, stride_an, stride_bl, bidx, bidz);
     }
   }else{
     if constexpr(STAGES == 1){
       batch_gemm_stage_one_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element, ElementAccum>
-        (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
+        (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_ab, stride_an, stride_bl, bidx, bidz);
     }else{
       batch_gemm_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element, ElementAccum>
-        (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
+        (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_ab, stride_an, stride_bl, bidx, bidz);
     }
   }
 
@@ -197,7 +199,7 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   //     const int32_t batch_index = (bidx * BLOCK_SIZE_M + m_idx);
 
   //     if(batch_index < batch_size) {
-  //       *reinterpret_cast<vec16_fp8*>(&g_output[batch_index * nl_size + n_idx * 16]) = 
+  //       *reinterpret_cast<vec16_fp8*>(&g_output[batch_index * stride_ob + n_idx * 16]) = 
   //       *reinterpret_cast<vec16_fp8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 16 + m_idx/2 * 4/*padding*/]);
   //     }
   //   } 
@@ -214,7 +216,7 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
         if(batch_index < batch_size) {
           #pragma unroll
           for(int n_idx = 0; n_idx < BLOCK_SIZE_N; n_idx += n_num_threads*dwordx4_num_elements) {
-            *reinterpret_cast<vec16_fp8*>(&g_output[batch_index * nl_size + n_idx + n_thread_idx * dwordx4_num_elements]) = 
+            *reinterpret_cast<vec16_fp8*>(&g_output[batch_index * stride_ob + n_idx + n_thread_idx * dwordx4_num_elements]) = 
             *reinterpret_cast<vec16_fp8*>(&output_lds[(m_idx + m_thread_idx + warp_id * m_num_threads) * BLOCK_SIZE_N 
               + n_idx + n_thread_idx*dwordx4_num_elements + (m_idx + m_thread_idx + warp_id * m_num_threads)/2 * 4/*padding*/]);
           }
@@ -269,6 +271,9 @@ void launch_fused_bmm_decode(const GemmParams<T>& params) {
           params.stride_bn,
           params.stride_bl,
           params.stride_bp,
+          params.stride_ob,
+          params.stride_on,
+          params.stride_ol,
           params.stride_asn,
           params.stride_asb,
           params.stride_ask,
@@ -296,24 +301,42 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
                         torch::Tensor a_scale,                   // [1, b, 1]
                         torch::Tensor b_scale,                   // [1, l, 1]
                         std::optional<torch::Tensor> bias,       // [b, l]
+                        at::ScalarType dtype,                   // fp8_e4m3fn or fp8_e5m2
+                        bool transpose_bm,
+                        bool transpose_bm_in,
                         int mode
   ) {
-    const int batch_size = q_nope.size(0); 
-    const int n_size = q_nope.size(1);
+    int batch_size = q_nope.size(0); 
+    int n_size = q_nope.size(1);
     const int p_size = w_uv.size(2);
     const int l_size = w_uv.size(1);
-    const int stride_ab = q_nope.stride(0);
-    const int stride_an = q_nope.stride(1);
+    int stride_ab = q_nope.stride(0);
+    int stride_an = q_nope.stride(1);
     const int stride_ap = q_nope.stride(2);
     const int stride_bn = w_uv.stride(0);
     const int stride_bl = w_uv.stride(1);
     const int stride_bp = w_uv.stride(2);
+    int stride_ob = output.stride(0);
+    int stride_on = output.stride(1);
+    const int stride_ol = output.stride(2);
     const int stride_asn = a_scale.stride(0);
     const int stride_asb = a_scale.stride(1);
     const int stride_ask = a_scale.stride(2);
     const int stride_bsn = b_scale.stride(0);
     const int stride_bsl = b_scale.stride(1);
     const int stride_bsk = b_scale.stride(2);
+
+    if (transpose_bm_in){
+      batch_size = q_nope.size(1);
+      n_size = q_nope.size(0);
+      stride_ab = q_nope.stride(1);
+      stride_an = q_nope.stride(0);
+    }
+
+    if (transpose_bm){
+      stride_ob = output.stride(1);
+      stride_on = output.stride(0);
+    }
 
     torch::Tensor output_alias = output.alias();
 
@@ -343,6 +366,9 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
           stride_bn,
           stride_bl,
           stride_bp,
+          stride_ob,
+          stride_on,
+          stride_ol,
           stride_asn,
           stride_asb,
           stride_ask,
@@ -379,6 +405,9 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
         stride_bn,
         stride_bl,
         stride_bp,
+        stride_ob,
+        stride_on,
+        stride_ol,
         stride_asn,
         stride_asb,
         stride_ask,
