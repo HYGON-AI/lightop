@@ -33,7 +33,8 @@ namespace native {
   }()
   
 template<
-  typename Element, 
+  typename Element,
+  typename ElementAccum, 
   uint16_t WARP_NUM,
   uint16_t BLOCK_SIZE_M, 
   uint16_t BLOCK_SIZE_N, 
@@ -107,16 +108,16 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   const int m_thread_idx = lane_id / n_num_threads;
   const int n_thread_idx = lane_id & (n_num_threads-1);
 
-  extern __shared__ Element smem[];                                    // 声明lds信息
-  Element* input_lds = (Element*)&(smem);                              // 输入lds首地址,首地址开始分配给input
+  extern __shared__ unsigned char smem[];                              // 声明lds信息（统一用 u8，避免 char/uchar 重定义）
+  Element* input_lds = reinterpret_cast<Element*>(smem);               // 输入lds首地址,首地址开始分配给input
   Element* w_uv_lds = input_lds + STAGES * (BLOCK_SIZE_M * WARP_K);    // 按照最简单的方式分块
-  uint8_t* output_lds = (uint8_t*)&(smem);                             // 重复使用lds,留给output_lds
+  uint8_t* output_lds = reinterpret_cast<uint8_t*>(smem);              // 重复使用lds,留给output_lds
 
   union_vec<Element, 16> A_reg[WARP_M / mfma_m * STAGES][WARP_K/mfma_kpack]; 
   union_vec<Element, 16> B_reg[WARP_N / mfma_n * (1+LDS_BYPASS)][WARP_K/mfma_kpack]; // only support STAGES==1/2
 
   auto g_w_uv = w_uv + w_uv_offset;
-  intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0};                 // [4][2]  每个warp在n方向重复两次 tileN = 16*2
+  union_vec<ElementAccum, 4> C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0};
   float a_scale_arr[WARP_M / mfma_m];
   float b_scale_arr[(WARP_N / mfma_n) * 4];
   float *a_scale_ptr = (a_scale + bidx * BLOCK_SIZE_M * stride_asb + warp_m_id * WARP_M);
@@ -139,22 +140,21 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
 
   if constexpr(LDS_BYPASS){
     if constexpr(STAGES == 1){
-      batch_gemm_stage_one_lds_bypass_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
+      batch_gemm_stage_one_lds_bypass_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element, ElementAccum>
         (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
     }else{
-      batch_gemm_lds_bypass_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
+      batch_gemm_lds_bypass_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element, ElementAccum>
         (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
     }
   }else{
     if constexpr(STAGES == 1){
-      batch_gemm_stage_one_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
+      batch_gemm_stage_one_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element, ElementAccum>
         (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
     }else{
-      batch_gemm_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element>
+      batch_gemm_impl<0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, Element, ElementAccum>
         (g_input, g_w_uv, input_lds, w_uv_lds, A_reg, B_reg, C_reg, warp_id, batch_size, n_size, p_size, stride_an, stride_bl, bidx, bidz);
     }
   }
-
 
   floatx4 scale_valuex4 = {0.0f, 0.0f, 0.0f, 0.0f};
   uint32_t float8x4_value;
@@ -167,7 +167,7 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
       #pragma unroll
       for(int reg_id = 0; reg_id < 4; reg_id++){
         float b_scale = b_scale_arr[min_tile_n * 4 + reg_id];
-        scale_valuex4[reg_id] = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale * b_scale;
+        scale_valuex4[reg_id] = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n].scalar_array[reg_id] * a_scale * b_scale;
       }
       float8x4_value = float_to_fp8e4m3_x4(scale_valuex4[0], scale_valuex4[1], scale_valuex4[2], scale_valuex4[3]);
       #pragma unroll
@@ -228,7 +228,7 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
 
 // launch_gemm1
 // 在GemmParams结构体后添加
-template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T, bool LDS_BYPASS>
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T, typename U, bool LDS_BYPASS>
 void launch_fused_bmm_decode(const GemmParams<T>& params) {
     const int STAGES = BLOCK_SIZE_K/WARP_K;
     const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
@@ -251,7 +251,7 @@ void launch_fused_bmm_decode(const GemmParams<T>& params) {
     // printf("shared_mem_size: %d\n", shared_mem_size);
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
-    FUSED_BMM_I8_DECODE<char, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, LDS_BYPASS>
+    FUSED_BMM_I8_DECODE<T, U, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, LDS_BYPASS>
       <<<gridDim, blockDim, shared_mem_size, stream>>>(
           params.ptr_q_nope, 
           params.ptr_w_uv, 
@@ -352,16 +352,51 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
           has_bias
         );
       
-        auto it = kernel_maps_fused_bmm.find(mode);
-        if (it != kernel_maps_fused_bmm.end()) {
+        auto it = kernel_maps_batched_gemm_int8.find(mode);
+        if (it != kernel_maps_batched_gemm_int8.end()) {
             it->second(params_in);
         } else {
             printf("No matching kernel configuration found, using default settings \n");
-            launch_fused_bmm_decode<16, 64, 128, 16, 16, 64, char, false>(params_in);
+            launch_fused_bmm_decode<16, 64, 128, 16, 16, 64, char, int, false>(params_in);
         }
 
-    } else {
-      TORCH_CHECK(false, "fused_bmm only supports int8");
+    } else if (q_nope.scalar_type() == at::kFloat8_e4m3fn) {
+      GemmParams<fp8_t> params_in(
+        (const fp8_t*)q_nope.data_ptr<fp8_t>(), 
+        (const fp8_t*)w_uv.data_ptr<fp8_t>(), 
+        (unsigned char*)output_alias.data_ptr(),
+        (float*)a_scale.data_ptr(), 
+        (float*)b_scale.data_ptr(),  
+        bias_ptr,
+        batch_size,
+        n_size,
+        p_size,
+        l_size,
+        stride_ab,
+        stride_an,
+        stride_ap,
+        stride_bn,
+        stride_bl,
+        stride_bp,
+        stride_asn,
+        stride_asb,
+        stride_ask,
+        stride_bsn,
+        stride_bsl,
+        stride_bsk,
+        has_bias
+      );
+    
+      auto it = kernel_maps_batched_gemm_fp8.find(mode);
+      if (it != kernel_maps_batched_gemm_fp8.end()) {
+          it->second(params_in);
+      } else {
+          printf("No matching kernel configuration found, using default settings \n");
+          launch_fused_bmm_decode<16, 64, 128, 16, 16, 64, fp8_t, float, false>(params_in);
+      }
+    }
+     else {
+      TORCH_CHECK(false, "fused_bmm only supports int8 or fp8");
     }
 
     return output;
