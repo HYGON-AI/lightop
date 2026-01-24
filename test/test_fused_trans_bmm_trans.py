@@ -31,8 +31,8 @@ def to_int8(tensor: torch.Tensor):
 
 def batch_rocblas_scaled_mm(a: torch.Tensor,        # [n, b, p]
                             b: torch.Tensor,        # [n, l, p]
-                            scale_a: torch.Tensor,  # [1, b, 1] 
-                            scale_b: torch.Tensor,  # [1, l, 1]
+                            scale_a: torch.Tensor,  # [n, b, 1] 
+                            scale_b: torch.Tensor,  # [n, l, 1]
                             out_dtype: torch.dtype = torch.float8_e4m3fn,
                             bias: Optional[torch.Tensor] = None) -> torch.Tensor: # [n, l]
     #scale_a.shape=[1,b,1]   fp32
@@ -46,7 +46,7 @@ def batch_rocblas_scaled_mm(a: torch.Tensor,        # [n, b, p]
     output = torch.empty(batch_size, a.shape[1], b.shape[1], dtype=out_dtype)
     
     for i in range(batch_size):
-        scales = scale_a[0] * scale_b[0].T   # [b, l]
+        scales = scale_a[i] * scale_b[i].T   # [1, b, l]
         # 使用 torch 实现 int8 矩阵乘法，输出 int32
         # a[i]: [b, p] int8, b[i]: [l, p] int8
         # 计算 a[i] @ b[i].T，结果: [b, l] int32
@@ -61,8 +61,8 @@ def batch_rocblas_scaled_mm(a: torch.Tensor,        # [n, b, p]
 def fused_bmm_trans_impl_int8(  torch_input: torch.Tensor,                      # b，n, p
                                 input: torch.Tensor,                            # b，n, p
                                 w_uk: torch.Tensor,                             # n, l, p
-                                input_scale: Optional[torch.Tensor] = None,     # 1, b, 1
-                                w_uk_scale: Optional[torch.Tensor] = None,      # 1, l, 1
+                                input_scale: Optional[torch.Tensor] = None,     # n, b, 1
+                                w_uk_scale: Optional[torch.Tensor] = None,      # n, l, 1
                                 bias: Optional[torch.Tensor] = None,            # n, l
                                 mode: Optional[List[int]]=None):
     
@@ -422,6 +422,7 @@ def _fused_bmm_helper(batch: int,
                         N: int,
                         P: int,
                         L: int,
+                        in_dtype: Type[torch.dtype] = torch.float8_e4m3fn,
                         out_dtype: Type[torch.dtype] = torch.float16,
                         device: str = "cuda",
                         best_config:Optional[list] = None,
@@ -435,10 +436,13 @@ def _fused_bmm_helper(batch: int,
     # w_uk_t = torch.randint(-128, 127, (N, P ,L), device=device, dtype=torch.int8)       # [n, p, l]
     w_uk = torch.randint(-128, 127, (N, L, P), device=device, dtype=torch.int8)           # [n, l, p]
     # 生成0.001到0.1之间的随机scale值，保留三位小数,防止fp8算出来都是些nan值
-    # input_scale = (torch.rand((N, batch, 1), device=device, dtype=torch.float32) * 0.099 + 0.001).round(decimals=3)  # [n, b, 1]
-    # w_uk_scale = (torch.rand((1, L, 1), device=device, dtype=torch.float32) * 0.099 + 0.001).round(decimals=3)  # [n, l, 1]
-    w_uk_scale = (torch.rand((1, L, 1), device=device, dtype=torch.float32) * 0.099 + 0.001).round(decimals=3)  # [n, l, 1]
+    q_scale = (torch.rand((N, batch, 1), device=device, dtype=torch.float32) * 0.099 + 0.001).round(decimals=3)  # [n, b, 1]
+    w_uk_scale = (torch.rand((N, L, 1), device=device, dtype=torch.float32) * 0.099 + 0.001).round(decimals=3)  # [n, l, 1]
     bias = torch.randn((N, L), device=device, dtype=torch.bfloat16)                       # [n, l]
+    
+    torch_input = torch_input.float().to(in_dtype)
+    input = input.float().to(in_dtype)
+    w_uk = w_uk.float().to(in_dtype)
     
     return torch_input, input, w_uk, q_scale, w_uk_scale, bias
 
@@ -478,7 +482,7 @@ def run_trans_bmm_trans_tuning():
             
             # 先跑一遍，把失败的mode记录下来
             for mode in mode_ranges:
-                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], is_tuning=True)
+                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], in_dtype=torch.float8_e4m3fn, is_tuning=True)
                 status=fused_bmm_trans_impl_int8(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode)
                 if not status:
                     compare_failed_list.append(mode)
@@ -555,7 +559,7 @@ def run_trans_bmm_trans_vaild():
             for mode in mode_ranges:
 
                 print("mode:{} batch:{} n:{} p:{} l:{} ".format(mode, batch_size, n_list[i],p_list[i],l_list[i]))
-                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i])
+                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], in_dtype=torch.float8_e4m3fn)
                 # triton moe: output
                 status=fused_bmm_trans_impl_int8(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode)
                 if not status:
@@ -580,7 +584,7 @@ def run_benchmark_trans_bmm_trans():
     for i in range(0,len(p_list),1):
         for batch_size in batch_list:
             # for mode in mode_ranges:
-            torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i])
+            torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], in_dtype=torch.float8_e4m3fn)
             # triton moe: output
             result=fused_bmm_trans_impl_int8_benchmark(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias)
             results_list.append(result)
