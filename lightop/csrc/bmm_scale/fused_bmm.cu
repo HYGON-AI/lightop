@@ -120,8 +120,8 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   union_vec<ElementAccum, 4> C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0};
   float a_scale_arr[WARP_M / mfma_m];
   float b_scale_arr[(WARP_N / mfma_n) * 4];
-  float *a_scale_ptr = (a_scale + bidx * BLOCK_SIZE_M * stride_asb + warp_m_id * WARP_M);
-  float *b_scale_ptr = (b_scale + bidy * BLOCK_SIZE_N * stride_bsl + warp_n_id * WARP_N);
+  float *a_scale_ptr = (a_scale + bidz * stride_asn + bidx * BLOCK_SIZE_M * stride_asb + warp_m_id * WARP_M);
+  float *b_scale_ptr = (b_scale + bidz * stride_bsn + bidy * BLOCK_SIZE_N * stride_bsl + warp_n_id * WARP_N);
   // bhalf_t *bias_ptr = bias + bidz * l_size + bidy * BLOCK_SIZE_N + warp_n_id * WARP_N;
 
   #pragma unroll
@@ -325,7 +325,7 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
     }
 
     if (q_nope.scalar_type() == at::ScalarType::Char){
-     
+
         GemmParams<char> params_in(
           (const char*)q_nope.data_ptr<int8_t>(), 
           (const char*)w_uv.data_ptr<int8_t>(), 
@@ -361,9 +361,10 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
         }
 
     } else if (q_nope.scalar_type() == at::kFloat8_e4m3fn) {
+
       GemmParams<fp8_t> params_in(
-        (const fp8_t*)q_nope.data_ptr<fp8_t>(), 
-        (const fp8_t*)w_uv.data_ptr<fp8_t>(), 
+        reinterpret_cast<const fp8_t*>(q_nope.data_ptr()),
+        reinterpret_cast<const fp8_t*>(w_uv.data_ptr()),
         (unsigned char*)output_alias.data_ptr(),
         (float*)a_scale.data_ptr(), 
         (float*)b_scale.data_ptr(),  
