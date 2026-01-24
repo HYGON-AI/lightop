@@ -25,14 +25,13 @@ namespace native{
     int thread_num_m = 64/thread_num_n;\
     int lane_M_idx = lane_id / thread_num_n;\ 
     int lane_N_idx = lane_id % thread_num_n;\
-    int np_size = n_size * N_row_len * bytes_per_element;\
     const int lds_load_num = (BLOCK_M*WARP_K*bytes_per_element) / (bytes_per_element*element_per_dword*64);\
     if(WARP_NUM > lds_load_num){ \
         if(warp_id < lds_load_num){ \
             int block_row = warp_id * thread_num_m + lane_M_idx;\
             int block_offset = block_row + bidx * BLOCK_M;\
             int g_row = std::min(block_offset, max_M_len - 1);\
-            int g_offset = g_row * np_size + bidz * N_row_len * bytes_per_element;\
+            int g_offset = g_row * stride_ab + bidz * N_row_len * bytes_per_element;\
             int phase = (block_row/per_phase) % max_phase; \
             int g_col = lane_N_idx; \
             int vec_size_dword = vec_size / element_per_dword; \
@@ -47,7 +46,7 @@ namespace native{
             int block_row = warp_loop * thread_num_m + lane_M_idx;\
             int block_offset = block_row + bidx * BLOCK_M;\
             int g_row = std::min(block_offset, max_M_len - 1);\
-            int g_offset = g_row * np_size + bidz * N_row_len * bytes_per_element;\
+            int g_offset = g_row * stride_ab + bidz * N_row_len * bytes_per_element;\
             int phase = (block_row/per_phase) % max_phase; \
             int g_col = lane_N_idx; \
             int vec_size_dword = vec_size / element_per_dword; \
@@ -127,7 +126,7 @@ template<
     int WARP_K,  
     int STAGES,  
     typename Element, 
-    typename ElementAccum = int32_t>                                                                                                            
+    typename ElementAccum>                                                                                                            
 __forceinline__ __device__ void  batch_gemm_impl(
     const Element* q_nope, 
     const Element* w_uv, 
@@ -135,11 +134,12 @@ __forceinline__ __device__ void  batch_gemm_impl(
     Element* B_lds,
     union_vec<Element,16> A_reg[][WARP_K/64], 
     union_vec<Element,16> B_reg[][WARP_K/64], 
-    intx4 C_reg[][(WARP_M/16)*(WARP_N/16)],
+    union_vec<ElementAccum, 4> C_reg[][(WARP_M/16)*(WARP_N/16)],
     int warp_id, 
     int batch_size,
     int n_size,
     int p_size,
+    int stride_ab,
     int seqlen_A_stride, // size_k: 128
     int seqlen_B_stride, // size_k: 128
     const int bidx,
@@ -283,10 +283,10 @@ __forceinline__ __device__ void  batch_gemm_impl(
                 for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) {
                     #pragma unroll
                     for(int min_tile_n=0; min_tile_n<(WARP_N/MFMA_N); min_tile_n++) {
-                        C_reg[0][min_tile_m*(WARP_N / MFMA_N) + min_tile_n] = mmac<Element>(
+                        mmac<Element, ElementAccum>(
                             *(typename vec<Element, 8>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].int2_array[kpack2]), 
                             *(typename vec<Element, 8>::type*)(&B_reg[min_tile_n][min_tile_k].int2_array[kpack2]), 
-                            C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n]);        
+                            *(typename vec<ElementAccum, 4>::type*)(&C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n].scalar_array[0]));        
                     }
                 }
             }
@@ -320,10 +320,10 @@ __forceinline__ __device__ void  batch_gemm_impl(
                 for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
                     #pragma unroll
                     for(int min_tile_n=0; min_tile_n < (WARP_N/MFMA_N); min_tile_n++) {
-                        C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n] = mmac<Element>(
+                        mmac<Element, ElementAccum>(
                             *(typename vec<Element, 8>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].int2_array[kpack2]), 
                             *(typename vec<Element, 8>::type*)(&B_reg[min_tile_n][min_tile_k].int2_array[kpack2]), 
-                            C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n]); 
+                            *(typename vec<ElementAccum, 4>::type*)(&C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n].scalar_array[0])); 
                     }
                 }
             }
@@ -355,10 +355,10 @@ __forceinline__ __device__ void  batch_gemm_impl(
             for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
                 #pragma unroll
                 for(int min_tile_n=0; min_tile_n < (WARP_N/MFMA_N); min_tile_n++) {
-                    C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n] = mmac<Element>(
+                    mmac<Element, ElementAccum>(
                         *(typename vec<Element, 8>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].int2_array[kpack2]), 
                         *(typename vec<Element, 8>::type*)(&B_reg[min_tile_n][min_tile_k].int2_array[kpack2]), 
-                        C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n]); 
+                        *(typename vec<ElementAccum, 4>::type*)(&C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n].scalar_array[0])); 
                 }
             }
         }
@@ -380,7 +380,7 @@ template<
     int WARP_K,  
     int STAGES,  
     typename Element, 
-    typename ElementAccum = int32_t>                                                                                                            
+    typename ElementAccum>                                                                                                            
 __forceinline__ __device__ void  batch_gemm_stage_one_impl(
     const Element* q_nope, 
     const Element* w_uv, 
@@ -388,11 +388,12 @@ __forceinline__ __device__ void  batch_gemm_stage_one_impl(
     Element* B_lds,
     union_vec<Element,16> A_reg[][WARP_K/64], 
     union_vec<Element,16> B_reg[][WARP_K/64], 
-    intx4 C_reg[][(WARP_M/16)*(WARP_N/16)],
+    union_vec<ElementAccum, 4> C_reg[][(WARP_M/16)*(WARP_N/16)],
     int warp_id, 
     int batch_size,
     int n_size,
     int p_size,
+    int stride_ab,
     int seqlen_A_stride, // size_k: 128
     int seqlen_B_stride, // size_k: 128
     const int bidx,
@@ -514,10 +515,10 @@ __forceinline__ __device__ void  batch_gemm_stage_one_impl(
                 for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
                     #pragma unroll
                     for(int min_tile_n=0; min_tile_n<(WARP_N/MFMA_N); min_tile_n++) {
-                        C_reg[0][min_tile_m*(WARP_N / MFMA_N) + min_tile_n] = mmac<Element>(
+                        mmac<Element, ElementAccum>(
                             *(typename vec<Element, 8>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].int2_array[kpack2]), 
                             *(typename vec<Element, 8>::type*)(&B_reg[min_tile_n][min_tile_k].int2_array[kpack2]), 
-                            C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n]);        
+                            *(typename vec<ElementAccum, 4>::type*)(&C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n].scalar_array[0]));        
                     }
                 }
             }
@@ -542,7 +543,7 @@ template<
     int WARP_K,  
     int STAGES,  
     typename Element, 
-    typename ElementAccum = int32_t>                                                                                                            
+    typename ElementAccum>                                                                                                            
 __forceinline__ __device__ void  batch_gemm_lds_bypass_impl(
     const Element* q_nope, 
     const Element* w_uv, 
@@ -550,11 +551,12 @@ __forceinline__ __device__ void  batch_gemm_lds_bypass_impl(
     Element* B_lds,
     union_vec<Element,16> A_reg[][WARP_K/64], 
     union_vec<Element,16> B_reg[][WARP_K/64], 
-    intx4 C_reg[][(WARP_M/16)*(WARP_N/16)],
+    union_vec<ElementAccum, 4> C_reg[][(WARP_M/16)*(WARP_N/16)],
     int warp_id, 
     int batch_size,
     int n_size,
     int p_size,
+    int stride_ab,
     int seqlen_A_stride, // size_k: 128
     int seqlen_B_stride, // size_k: 128
     const int bidx,
@@ -690,10 +692,10 @@ __forceinline__ __device__ void  batch_gemm_lds_bypass_impl(
                 for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) {
                     #pragma unroll
                     for(int min_tile_n=0; min_tile_n<(WARP_N/MFMA_N); min_tile_n++) {
-                        C_reg[0][min_tile_m*(WARP_N / MFMA_N) + min_tile_n] = mmac<Element>(
+                        mmac<Element, ElementAccum>(
                             *(typename vec<Element, 8>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].int2_array[kpack2]), 
                             *(typename vec<Element, 8>::type*)(&B_reg[stage_id_reg_A * (WARP_N/MFMA_N) + min_tile_n][min_tile_k].int2_array[kpack2]), 
-                            C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n]);        
+                            *(typename vec<ElementAccum, 4>::type*)(&C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n].scalar_array[0]));        
                     }
                 }
             }
@@ -724,10 +726,10 @@ __forceinline__ __device__ void  batch_gemm_lds_bypass_impl(
                 for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
                     #pragma unroll
                     for(int min_tile_n=0; min_tile_n < (WARP_N/MFMA_N); min_tile_n++) {
-                        C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n] = mmac<Element>(
+                        mmac<Element, ElementAccum>(
                             *(typename vec<Element, 8>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].int2_array[kpack2]), 
                             *(typename vec<Element, 8>::type*)(&B_reg[stage_id_reg_A * (WARP_N/MFMA_N) + min_tile_n][min_tile_k].int2_array[kpack2]), 
-                            C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n]); 
+                            *(typename vec<ElementAccum, 4>::type*)(&C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n].scalar_array[0])); 
                     }
                 }
             }
@@ -756,10 +758,10 @@ __forceinline__ __device__ void  batch_gemm_lds_bypass_impl(
             for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
                 #pragma unroll
                 for(int min_tile_n=0; min_tile_n < (WARP_N/MFMA_N); min_tile_n++) {
-                    C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n] = mmac<Element>(
+                    mmac<Element, ElementAccum>(
                         *(typename vec<Element, 8>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].int2_array[kpack2]), 
                         *(typename vec<Element, 8>::type*)(&B_reg[stage_id_reg_A * (WARP_N/MFMA_N) + min_tile_n][min_tile_k].int2_array[kpack2]), 
-                        C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n]); 
+                        *(typename vec<ElementAccum, 4>::type*)(&C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n].scalar_array[0])); 
                 }
             }
         }
@@ -781,7 +783,7 @@ template<
     int WARP_K,  
     int STAGES,  
     typename Element, 
-    typename ElementAccum = int32_t>                                                                                                            
+    typename ElementAccum>                                                                                                            
 __forceinline__ __device__ void  batch_gemm_stage_one_lds_bypass_impl(
     const Element* q_nope, 
     const Element* w_uv, 
@@ -789,11 +791,12 @@ __forceinline__ __device__ void  batch_gemm_stage_one_lds_bypass_impl(
     Element* B_lds,
     union_vec<Element,16> A_reg[][WARP_K/64], 
     union_vec<Element,16> B_reg[][WARP_K/64], 
-    intx4 C_reg[][(WARP_M/16)*(WARP_N/16)],
+    union_vec<ElementAccum, 4> C_reg[][(WARP_M/16)*(WARP_N/16)],
     int warp_id, 
     int batch_size,
     int n_size,
     int p_size,
+    int stride_ab,
     int seqlen_A_stride, // size_k: 128
     int seqlen_B_stride, // size_k: 128
     const int bidx,
@@ -898,10 +901,10 @@ __forceinline__ __device__ void  batch_gemm_stage_one_lds_bypass_impl(
                 for(int min_tile_m=0; min_tile_m<(WARP_M/MFMA_M); min_tile_m++) { 
                     #pragma unroll
                     for(int min_tile_n=0; min_tile_n<(WARP_N/MFMA_N); min_tile_n++) {
-                        C_reg[0][min_tile_m*(WARP_N / MFMA_N) + min_tile_n] = mmac<Element>(
+                        mmac<Element, ElementAccum>(
                             *(typename vec<Element, 8>::type*)(&A_reg[stage_id_reg_A * (WARP_M/MFMA_M) + min_tile_m][min_tile_k].int2_array[kpack2]), 
                             *(typename vec<Element, 8>::type*)(&B_reg[min_tile_n][min_tile_k].int2_array[kpack2]), 
-                            C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n]);        
+                            *(typename vec<ElementAccum, 4>::type*)(&C_reg[0][min_tile_m*(WARP_N/MFMA_N) + min_tile_n].scalar_array[0]));        
                     }
                 }
             }
