@@ -9,7 +9,7 @@ using Float16 = half;
 using Int32 = int;
 using Int16 = unsigned short;
 using Float32 = float;
-using f8_t = uint8_t;
+using fp8_t = uint8_t;
 
 using half2_t = __attribute__((__vector_size__(2 * sizeof(_Float16)))) _Float16;
 using half4_t = __attribute__((__vector_size__(4 * sizeof(_Float16)))) _Float16;
@@ -245,107 +245,137 @@ inline __device__ constexpr int ceil_div(int const& a, int const& b) {
     return (a + b - 1) / b;
 }
 
-template<class Element>
-__device__ typename vec<float, 4>::type mmac(const typename vec<Element, 4>::type &v1, const typename vec<Element, 4>::type &v2, const typename vec<float, 4>::type &v3)
-{
-    floatx4 v4f;
-    #if defined(__gfx936__) || defined(__gfx928__)
-        v4f = __builtin_amdgcn_mmac_f32_16x16x16f16(v1, v2, v3);
-    #elif defined(__gfx938__)
-        v4f =__builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(v1, v2, v3, false, false);
-    #endif
-    return v4f;
-}
+// template<class Element>
+// __device__ typename vec<float, 4>::type mmac(const typename vec<Element, 4>::type &v1, const typename vec<Element, 4>::type &v2, const typename vec<float, 4>::type &v3)
+// {
+//     floatx4 v4f;
+//     #if defined(__gfx936__) || defined(__gfx928__)
+//         v4f = __builtin_amdgcn_mmac_f32_16x16x16f16(v1, v2, v3);
+//     #elif defined(__gfx938__)
+//         v4f = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(v1, v2, v3, false, false);
+//     #endif
+//     return v4f;
+// }
 
-template<class Element>
-__device__ typename vec<int, 4>::type mmac(const typename vec<Element, 8>::type &v1, const typename vec<Element, 8>::type &v2, const typename vec<int, 4>::type &v3)
+template<class Element, class ElementAccum>
+__device__ void mmac(const typename vec<Element, 8>::type &v1, const typename vec<Element, 8>::type &v2, typename vec<ElementAccum, 4>::type &v3)
 {
     auto a = reinterpret_cast<const long*>(&v1);
     auto b = reinterpret_cast<const long*>(&v2);
-    intx4 v4i;
-    // __builtin_amdgcn_sched_barrier(0);
+
     #if defined(__gfx936__) || defined(__gfx928__)
-        v4i = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
+        v3 = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
     #elif defined(__gfx938__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
-        v4i =__builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
+        v3 = __builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
     #endif
-    // __builtin_amdgcn_sched_barrier(0);
-    return v4i;
 }
 
-template<class Element>
-__device__ typename vec<int, 4>::type mmac_int8(const typename vec<Element, 8>::type &v1, const typename vec<Element, 8>::type &v2, typename vec<int, 4>::type &v3)
+// int8 mmac
+template<>
+__device__ void mmac<int8_t, int32_t>(const typename vec<int8_t, 8>::type &v1, const typename vec<int8_t, 8>::type &v2, typename vec<int32_t, 4>::type &v3)
 {
+
+    #if defined(__gfx936__) || defined(__gfx928__)
+        auto a = reinterpret_cast<const long*>(&v1);
+        auto b = reinterpret_cast<const long*>(&v2);
+        v3 = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
+    #elif defined(__gfx938__)
+        const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
+        const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
+        v3 = __builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
+    #endif
+}
+
+// fp8 mmac
+template<>
+__device__ void mmac<fp8_t, float>(const typename vec<fp8_t, 8>::type &v1, const typename vec<fp8_t, 8>::type &v2, typename vec<float, 4>::type &v3)
+{
+
+    #if defined(__gfx936__) || defined(__gfx928__)
+        v3 = v3;
+    #elif defined(__gfx938__)
+        const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
+        const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
+        v3 = __builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(A, B, v3, false, false);  // fp8->e4m3 bf8->e5m2
+    #else
+        v3 = v3;
+    #endif
+
+}
+
+// template<class Element>
+// __device__ typename vec<int, 4>::type mmac_int8(const typename vec<Element, 8>::type &v1, const typename vec<Element, 8>::type &v2, typename vec<int, 4>::type &v3)
+// {
     
-    auto a = reinterpret_cast<const long*>(&v1);
-    auto b = reinterpret_cast<const long*>(&v2);
-    #if defined(__gfx936__) || defined(__gfx928__)
-    __builtin_amdgcn_sched_barrier(0);
-    asm volatile(
-        "v_mmac_i32_16x16x32_i8 %0, %1, %2, %0 \n"
-        : "+v"(v3)
-        : "v"(*a), "v"(*b)
-      );
-    __builtin_amdgcn_sched_barrier(0);
-    #elif defined(__gfx938__)
-        const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
-        const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
-        v3 =__builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
-    #endif
-    return v3;
-}
+//     auto a = reinterpret_cast<const long*>(&v1);
+//     auto b = reinterpret_cast<const long*>(&v2);
+//     #if defined(__gfx936__) || defined(__gfx928__)
+//     __builtin_amdgcn_sched_barrier(0);
+//     asm volatile(
+//         "v_mmac_i32_16x16x32_i8 %0, %1, %2, %0 \n"
+//         : "+v"(v3)
+//         : "v"(*a), "v"(*b)
+//       );
+//     __builtin_amdgcn_sched_barrier(0);
+//     #elif defined(__gfx938__)
+//         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
+//         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
+//         v3 =__builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
+//     #endif
+//     return v3;
+// }
 
-template<class Element>
-__device__ typename vec<float, 4>::type mmac_fp8(const typename vec<Element, 8>::type &v1, const typename vec<Element, 8>::type &v2, typename vec<float, 4>::type &v3)
-{
-    #if defined(__gfx936__) || defined(__gfx928__)
-        return v3;
-    #elif defined(__gfx938__)
-        const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
-        const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
-        v3 =__builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(A, B, v3, false, false);  //fp8->e4m3 bf8->e5m2
-    #endif
-    return v3;
-}
+// template<class Element>
+// __device__ typename vec<float, 4>::type mmac_fp8(const typename vec<Element, 8>::type &v1, const typename vec<Element, 8>::type &v2, typename vec<float, 4>::type &v3)
+// {
+//     #if defined(__gfx936__) || defined(__gfx928__)
+//         return v3;
+//     #elif defined(__gfx938__)
+//         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
+//         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
+//         v3 =__builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(A, B, v3, false, false);  //fp8->e4m3 bf8->e5m2
+//     #endif
+//     return v3;
+// }
 
-template<>
-__device__ typename vec<float, 4>::type mmac<half>(const typename vec<half, 4>::type &v1, const typename vec<half, 4>::type &v2, const typename vec<float, 4>::type &v3)
-{
-    floatx4 v4f;
-    #if defined(__gfx936__) || defined(__gfx928__)
-        v4f = __builtin_amdgcn_mmac_f32_16x16x16f16(v1, v2, v3);
-    #endif
-    return v4f;
+// template<>
+// __device__ typename vec<float, 4>::type mmac<half>(const typename vec<half, 4>::type &v1, const typename vec<half, 4>::type &v2, const typename vec<float, 4>::type &v3)
+// {
+//     floatx4 v4f;
+//     #if defined(__gfx936__) || defined(__gfx928__)
+//         v4f = __builtin_amdgcn_mmac_f32_16x16x16f16(v1, v2, v3);
+//     #endif
+//     return v4f;
 
-}
+// }
 
-template<>
-__device__ typename vec<int, 4>::type mmac<int8_t>(const typename vec<int8_t, 8>::type &v1, const typename vec<int8_t, 8>::type &v2, const typename vec<int, 4>::type &v3)
-{
-    auto a = reinterpret_cast<const long*>(&v1);
-    auto b = reinterpret_cast<const long*>(&v2);
-    intx4 v4i;
-    #if defined(__gfx936__) || defined(__gfx928__)
-        v4i = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
-    #elif defined(__gfx938__)
-        const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
-        const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
-        v4i =__builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
-    #endif
-    return v4i;
-}
+// template<>
+// __device__ typename vec<int, 4>::type mmac<int8_t>(const typename vec<int8_t, 8>::type &v1, const typename vec<int8_t, 8>::type &v2, const typename vec<int, 4>::type &v3)
+// {
+//     auto a = reinterpret_cast<const long*>(&v1);
+//     auto b = reinterpret_cast<const long*>(&v2);
+//     intx4 v4i;
+//     #if defined(__gfx936__) || defined(__gfx928__)
+//         v4i = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
+//     #elif defined(__gfx938__)
+//         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
+//         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
+//         v4i =__builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
+//     #endif
+//     return v4i;
+// }
 
-template<>
-__device__ typename vec<float, 4>::type mmac<bhalf_t>(const typename vec<bhalf_t, 4>::type &v1, const typename vec<bhalf_t, 4>::type &v2, const typename vec<float, 4>::type &v3)
-{
-    floatx4 v4f;
-    #if defined(__gfx936__) || defined(__gfx928__)
-        v4f = __builtin_amdgcn_mmac_f32_16x16x16bf16(v1, v2, v3);
-    #endif
-    return v4f;
-}
+// template<>
+// __device__ typename vec<float, 4>::type mmac<bhalf_t>(const typename vec<bhalf_t, 4>::type &v1, const typename vec<bhalf_t, 4>::type &v2, const typename vec<float, 4>::type &v3)
+// {
+//     floatx4 v4f;
+//     #if defined(__gfx936__) || defined(__gfx928__)
+//         v4f = __builtin_amdgcn_mmac_f32_16x16x16bf16(v1, v2, v3);
+//     #endif
+//     return v4f;
+// }
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 //float和e4m3互转
 #if !defined(__NVCC__)
