@@ -748,7 +748,7 @@ def fuse_moe_correctness_preprocess(
     ) -> tuple[dict[str, int], float]:
     
     mode_ranges = [mode for mode in block_m_configs.keys()]
-    gemm1_compare_failed_list = [] #这里
+    gemm1_compare_failed_list = [63, 67, 71, 75, 78, 81, 84] #这里
     gemm2_compare_failed_list = [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 83, 84]
     device="cuda:"+str(device_id)
     
@@ -769,8 +769,12 @@ def fuse_moe_correctness_preprocess(
 
         # if mode0 in [63, 67, 71, 75, 78, 81, 84]: #qwen30b gemm1
         #     mode0 = 0
+
         # if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43, 63, 67,71, 78, 75, 79, 80, 81, 82, 83, 84]: #qwen30b gemm2
         #     mode1 = 0
+
+        if mode0 in [63, 67, 71, 75, 78, 81, 84]: #LING gemm1
+            mode0 = 0
 
         if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 83, 84]: #TP16 gemm2
             mode1 = 0
@@ -1444,15 +1448,20 @@ def main(args: argparse.Namespace):
     # hidden_size=4096
     # topk = 4
 
+    # 百灵模型
+    E = 256
+    shard_intermediate_size=512
+    hidden_size=8192
+
     # # deepseek-r1-tp16
     # E = 256
     # shard_intermediate_size=256
     # hidden_size=7168
     
     # # deepseek-r1-tp8
-    E = 256
-    shard_intermediate_size=512
-    hidden_size=7168
+    # E = 256
+    # shard_intermediate_size=512
+    # hidden_size=7168
     
     # ## deepseek-671b-tp4
     # E = 256
@@ -1503,9 +1512,11 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            #1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 
-            #16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            400, 440, 480
+            #15, 16, 32, 64, 128
+            #16, 32, 64, 128, 
+            #256, 512, 1024, 2048, 
+            4096, 6144, 8192, 16384
+            # 400, 440, 480
             #1, 2, 4, 8, 16, 32, 64, 128
             # 256, 512, 1024, 2048, 
             # 4096, 8192, 16384
