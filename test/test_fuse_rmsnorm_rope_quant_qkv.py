@@ -5,7 +5,9 @@ from lightop import fuse_rmsnorm_rope_quant_qkv
 from lightop import fused_rms_norm_contiguous
 import pdb
 from lightop import op
-
+import torch
+import triton
+import triton.language as tl
 # 设置随机种子以确保可复现性
 torch.manual_seed(40)
 
@@ -47,16 +49,64 @@ def _create_mla_cache(
                        device=device)
 
 
-def per_token_quant_int8(x):
-    x = x.float()
-    absmax = torch.amax(abs(x), dim=(1, 2), keepdim=True)
-    scale_x = absmax / 127
-    inv_s = torch.where(absmax == 0.0, torch.zeros_like(absmax), 127 / absmax)
-    x_q = x * inv_s 
-    x_q = torch.round(x_q).to(torch.int8)  # 使用银行家舍入（round half to even）
-    scale_x = scale_x.squeeze()
+@triton.jit
+def _per_token_quant_fp8(
+    x_ptr,
+    xq_ptr,
+    scale_ptr,
+    stride_x,
+    stride_xq,
+    N,
+    BLOCK: tl.constexpr,
+    fp8_min,
+    fp8_max
+):
+    row_id = tl.program_id(0)
+
+    cols = tl.arange(0, BLOCK)
+    mask = cols < N
+
+    x = tl.load(x_ptr + row_id * stride_x + cols, mask=mask,
+                other=0.0).to(tl.float32)
+    absmax = tl.maximum(tl.max(tl.abs(x)), 1e-10)
+    scale_x = absmax / fp8_max
+    x_q = tl.clamp(x / scale_x, min=fp8_min, max=fp8_max).to(xq_ptr.dtype.element_ty)
+    tl.store(xq_ptr + row_id * stride_xq + cols, x_q, mask=mask)
+    tl.store(scale_ptr + row_id, scale_x)
+
+def per_token_quant_fp8_triton(x):
+    """XSL验证代码版本 - Triton实现"""
+    M = x.numel() // x.shape[-1]
+    N = x.shape[-1]
+    x_q = torch.empty_like(x, device=x.device, dtype=torch.float8_e4m3fn)
+    scales = torch.empty(x.shape[:-1] + (1, ),
+                         device=x.device,
+                         dtype=torch.float32)
+    BLOCK = triton.next_power_of_2(N)
+    # heuristics for number of warps
+    num_warps = min(max(BLOCK // 256, 1), 8)
+    finfo = torch.finfo(x_q.dtype)
     # pdb.set_trace()
-    return x_q, scale_x
+    fp8_min = finfo.min
+    fp8_max = finfo.max
+    #assert x.is_contiguous()
+    _per_token_quant_fp8[(M, )](
+        x,
+        x_q,
+        scales,
+        stride_x=x.stride(-2),
+        stride_xq=x_q.stride(-2),
+        N=N,
+        BLOCK=BLOCK,
+        num_warps=num_warps,
+        num_stages=1,
+        fp8_min=fp8_min,
+        fp8_max=fp8_max
+    )
+    return x_q, scales
+
+
+
 
 
 def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim,rot_dim,num_kv_cache_blocks,kv_cache_blocks_size,test_speed = False):
@@ -78,18 +128,18 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
     kv_cache_scale = 1.0
     # rope(Q)的相关tensor创建
     q_tensor = torch.randn(batch_size, num_head,q_c_dim + rot_dim, dtype=DTYPE, device=DEVICE)
-    q_quant_gt = torch.empty_like(q_tensor[:,:,:q_c_dim], dtype=torch.int8, device=DEVICE)
+    q_quant_gt = torch.empty_like(q_tensor[:,:,:q_c_dim], dtype=KV_CACHE_DTYPE, device=DEVICE)
     q_quant = torch.empty_like(q_tensor, dtype=KV_CACHE_DTYPE, device=DEVICE)
     cos_sin_cache = _compute_cos_sin_cache(max_position,base,rot_dim, device=DEVICE)
     if cos_sin_cache.dtype != DTYPE:
         cos_sin_cache = cos_sin_cache.to(DTYPE)
-    positions = torch.randint(0,max_position, (batch_size,), device=DEVICE)
+    positions = torch.randperm(max_position, device=DEVICE)[:batch_size]
     q_c = q_tensor[...,:q_c_dim]
     q_pe = q_tensor[...,q_c_dim:]
     q_pe_no_fuse = q_pe.clone()
     q_pe_ori = q_pe.clone()
-    q_scale = torch.empty(batch_size, dtype=torch.float32, device=DEVICE)
-    q_scale_gt = torch.empty(batch_size, dtype=torch.float32, device=DEVICE)
+    q_scale = torch.empty((batch_size, num_head, 1), dtype=torch.float32, device=DEVICE)
+    q_scale_gt = torch.empty((batch_size, num_head, 1), dtype=torch.float32, device=DEVICE)
     # rope(K)的相关tensor创建
     k_tensor = torch.randn(batch_size, kv_c_dim + rot_dim, dtype=DTYPE, device=DEVICE)
     k_pe = k_tensor[...,kv_c_dim:]
@@ -105,7 +155,7 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
     kv_cache_no_fuse = kv_cache.clone()
     kv_scale_tensor = torch.tensor(1., dtype=torch.float32, device=DEVICE)
     total_slots = num_kv_cache_blocks * kv_cache_blocks_size
-    slot_mapping = torch.randint(0, total_slots, (batch_size,), device=DEVICE)
+    slot_mapping = torch.randperm(total_slots, device=DEVICE)[:batch_size]
 
     if KV_CACHE_DTYPE == torch.float16:
         kv_cache = kv_cache.half()
@@ -124,7 +174,7 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
             cache_dtype = "auto"
         # ops.concat_and_cache_mla(kv_c_no_fuse_out, k_pe_no_fuse, kv_cache_no_fuse, slot_mapping, cache_dtype, kv_scale_tensor)
         # q_quant_gt[:] = q_tensor[:,:,:q_c_dim].to(KV_CACHE_DTYPE)
-        q_quant_gt[:], q_scale_gt[:] = per_token_quant_int8(q_tensor[:,:,:q_c_dim])
+        q_quant_gt[:], q_scale_gt[:] = per_token_quant_fp8_triton(q_tensor[:,:,:q_c_dim])
         kv_cache_no_fuse.view(-1, 576)[slot_mapping, :kv_c_dim] = kv_c_no_fuse_out.to(KV_CACHE_DTYPE).view(torch.uint8)
         kv_cache_no_fuse.view(-1, 576)[slot_mapping, kv_c_dim:] = k_pe_no_fuse.to(KV_CACHE_DTYPE).view(torch.uint8)
         # pdb.set_trace()
@@ -144,16 +194,19 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
         kv_cache = kv_cache.view(-1, 576).view(KV_CACHE_DTYPE).float()[slot_mapping[:],:]
         kv_cache_no_fuse = kv_cache_no_fuse.view(-1, 576).view(KV_CACHE_DTYPE).float()[slot_mapping[:],:]
         diff_max_kv_cache = torch.abs(kv_cache - kv_cache_no_fuse).max()
-        diff_max_q_c_quant = torch.max(torch.abs(q_quant.view(torch.int8)[:,:,:q_c_dim] - q_quant_gt))
+        # 这里view(torch.uint8)是因为q_quant和q_quant_gt是为了方便比较最后一个bit。 ±1的误差是允许的
+        diff_max_q_c_quant = torch.max(torch.abs(q_quant[:,:,:q_c_dim].float() - q_quant_gt.float()))
+        # pdb.set_trace()
         diff_max_q_pe_quant = torch.max(torch.abs(q_quant.float()[:,:,q_c_dim:] - q_pe_no_fuse.to(KV_CACHE_DTYPE).float()))
         diff_max_q_scale = torch.max(torch.abs(q_scale - q_scale_gt))
-        print(f"bs: {batch_size}, num_head: {num_head},  diff_max_k_pe: {diff_max_k_pe}, diff_max_kv_c: {diff_max_kv_c}, diff_max_kv_cache: {diff_max_kv_cache}, diff_max_q_pe_quant: {diff_max_q_pe_quant}, diff_max_q_c_quant: {diff_max_q_c_quant}, diff_max_q_scale: {diff_max_q_scale}")
-        # print(torch.where(torch.abs(q_quant.view(torch.int8)[:,:,:q_c_dim] - q_quant_gt)>=1))
-        ### temp
-        # print(f"python: q_c_bf16_gt: {q_tensor[9,3,64]}, scale_gt: {q_scale_gt[9]}, q_quant_gt: {q_quant_gt[9,3,64]}, (q_c_bf16_g/scale_gt): {(q_tensor[9,3,64]/q_scale_gt[9])}, (q_c_bf16_g/scale): {(q_tensor[9,3,64]/q_scale[9])}, q_quant: {q_quant.view(torch.int8)[9,3,64]}")
-        ### temp
-        # print(f"kv_no_fuse_temp: {kv_no_fuse_temp}")
-        # print(f"kv_fuse_temp: {kv_fuse_temp}")
+        assert diff_max_k_pe < 1e-6
+        assert diff_max_kv_c < 1e-6
+        assert diff_max_kv_cache <= 1
+        assert diff_max_q_pe_quant < 1e-6
+        assert diff_max_q_c_quant <= 32
+        assert diff_max_q_scale < 1e-6
+        # print(f"bs: {batch_size}, num_head: {num_head},  diff_max_k_pe: {diff_max_k_pe}, diff_max_kv_c: {diff_max_kv_c}, diff_max_kv_cache: {diff_max_kv_cache}, diff_max_q_pe_quant: {diff_max_q_pe_quant}, diff_max_q_c_quant: {diff_max_q_c_quant}, diff_max_q_scale: {diff_max_q_scale}")
+        print(f"fuse_rmsnorm_rope_quant_qkv bs: {batch_size}, num_head: {num_head} passed")
 
         # pdb.set_trace()
 
@@ -162,7 +215,7 @@ if __name__ == "__main__":
     # rms_rope_single_test(kv_cache_dtype_str = "fp8_e5m2",batch_size=32,num_head=128,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=1000, kv_cache_blocks_size=16, test_speed=True)
     for bs in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]:
        for num_head in [16, 32, 64, 128]:
-        rms_rope_single_test(kv_cache_dtype_str = "fp8_e4m3", batch_size=bs,num_head=128,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=1000, kv_cache_blocks_size=16, test_speed=False)
+        rms_rope_single_test(kv_cache_dtype_str = "fp8_e4m3", batch_size=bs,num_head=128,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=10000, kv_cache_blocks_size=16, test_speed=False)
 
 
 

@@ -153,6 +153,38 @@ inline __device__ uint32_t float_to_fp8e5m2_x4(float a, float b, float c, float 
 }
 
 
+inline __device__ uint16_t float_to_fp8e4m3_x2(float a, float b)
+{
+  #if defined(__gfx938__)
+    // 对于ROCm，可能需要使用不同的内置函数或组合现有函数
+    int32_t temp;
+    temp = __builtin_hcu_cvt_pk_fp8_f32(a, b, temp, false);
+    return static_cast<uint16_t>(temp & 0xFFFF);
+  #else
+    uint16_t out;
+    reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e4m3(a);
+    reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e4m3(b);
+    return out;
+  #endif
+}
+
+
+inline __device__ uint16_t float_to_fp8e5m2_x2(float a, float b)
+{
+  #if defined(__gfx938__)
+    // 对于ROCm，可能需要使用不同的内置函数或组合现有函数
+    int32_t temp;
+    temp = __builtin_hcu_cvt_pk_bf8_f32(a, b, temp, false);
+    return static_cast<uint16_t>(temp & 0xFFFF);
+  #else
+    uint16_t out;
+    reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e5m2(a);
+    reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e5m2(b);
+    return out;
+  #endif
+}
+
+
   
 
 template <typename T,int reducesize=C10_WARP_SIZE>
@@ -215,6 +247,10 @@ static inline __device__ int8_t float_to_int8_rn(float x) {
   }
 
 
+static inline __device__ float clamp(float x, float min, float max) {
+  return fmaxf(fminf(x, max), min);
+}
+
 
 template <typename scalar_t,typename T_ACC, int Vec=8, int num_warp_per_block=4, int rot_dim=64,
 int kv_c_dim=512>
@@ -222,7 +258,7 @@ __global__ void rmsnorm_rope_quant_qkv_kernel(
     scalar_t* __restrict__ input_q_c,  // [bs, num_head, q_c_dim]
     scalar_t* __restrict__ input_q_pe,  // [bs, num_head, q_c_dim + rot_dim]
     uint8_t* __restrict__ output_q_quant,  // [bs, num_head, q_c_dim + rot_dim]
-    float* __restrict__ output_q_scale,  // [bs]
+    float* __restrict__ output_q_scale,  // [bs, num_head]
     scalar_t* __restrict__ input_k,  // [bs, kv_c_dim + rot_dim]
     scalar_t* __restrict__ input_kv_c,  // [bs, kv_c_dim]
     scalar_t* __restrict__ output_kv_c_normed,  // [bs, kv_c_dim]
@@ -450,67 +486,58 @@ __global__ void rmsnorm_rope_quant_qkv_kernel(
     } 
     else  // 对q_c进行量化
     {
-      // constexpr int num_head_per_warp = (C10_WARP_SIZE * Vec) / q_c_dim;
-      __shared__ T_ACC val_shared[num_warp_per_block];
-      constexpr int num_head_per_warp = 4;  // 每个warp处理的head数，这里定为4
-      constexpr int num_head_per_block = num_head_per_warp * num_warp_per_block;  // 每个block处理的head数
-      const int block_per_token = (num_head + num_head_per_block - 1) / num_head_per_block;  // 每个token需要block的数量，向上取整
-      using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;  // 定义高对齐加载类型，便于一次性加载Vec个元素
-      using OutputT = at::native::memory::aligned_vector<int8_t, Vec>; // 定义高对齐存储类型，便于一次性存储Vec个元素
-      const int laneid = threadIdx.x % C10_WARP_SIZE;  // 当前线程在线程束中的索引
-      const int warpid = threadIdx.x / C10_WARP_SIZE;  // 当前线程处于warp的编号
-      const int thread_per_head = q_c_dim / Vec; // 一个head处理需要的线程数
+      constexpr int VecQC = 2;
+      constexpr int num_head_per_block = 4;
+      const int block_per_token = num_head / 4; // 假设num_head = 128, 则block_per_token = 32
+      using LoadT = at::native::memory::aligned_vector<scalar_t, VecQC>;
+      using OutputT = at::native::memory::aligned_vector<uint8_t, VecQC>;
+      const int laneid = threadIdx.x % C10_WARP_SIZE;
+      const int warpid = threadIdx.x / C10_WARP_SIZE;
       const int block_idx = (blockIdx.x - q_grid_x - k_grid_x - k_rms_grid_x);
       const int token_idx = block_idx / block_per_token; // 当前线程在第几个token
       if (token_idx >= bs) return;  // 超过batch尺寸直接退出
-      const int head_block_idx = block_idx % block_per_token; // 当前block在token中的head block编号
-      const int head_start = head_block_idx * num_head_per_block; // 当前block所负责head的起始编号
-      const int lane_of_head = laneid / thread_per_head; // 当前lane属于head内的第几个小分区
-      const int head_in_block = warpid * num_head_per_warp + lane_of_head; // 当前block内的第几个head
-      const int head_offset_in_token = head_start + head_in_block; // 当前token下的第几个head（全局head编号）
-      const int element_in_head = (threadIdx.x % thread_per_head)*Vec; // 当前线程在head内处理数据的起始位置
-      const int q_c_block_offset = head_offset_in_token * (q_stride_head) + element_in_head;
-      const int q_c_offset = token_idx * num_head * (q_stride_head) + q_c_block_offset; // q_c数据实际偏移量
-      const int q_c_max_offset = (token_idx + 1 ) * num_head * (q_stride_head);
-      scalar_t* q_c_ptr = input_q_c + q_c_offset; // 当前线程要处理的q_c数据指针
-      int8_t* q_quant_c_ptr = (int8_t*)(output_q_quant + q_c_offset); // 当前线程要写入的量化输出指针
-      scalar_t input_vec[Vec]; // 要加载的q_c数据局部缓存
-      scalar_t input_vec_max[Vec]; // 要加载的q_c数据局部缓存
-
-      int8_t output_vec[Vec]; // 量化结果局部缓存
-      if(head_offset_in_token >= num_head) return; // 如果分配到的head超过实际数，直接返回
-      *(LoadT*)(input_vec) = *(LoadT*)(q_c_ptr); // 一次性加载Vec个数到input_vec
-      
-      float max_abs_value = 0.0f;
-      // 统计token内的最大值
-      for(int ii = q_c_offset - head_start*q_stride_head; ii < q_c_max_offset; ii += num_head_per_block*q_stride_head)
+      const int head_block_idx = block_idx % block_per_token; // 当前block在token中的第几个block
+      const int head_start = head_block_idx * num_head_per_block + warpid; // 当前warp在token所负责head编号
+      const int thread_offset = laneid * VecQC; // 当前线程在head内处理数据的起始位置
+      const int head_offset = head_start * q_stride_head;
+      const int all_offset = token_idx * num_head * q_stride_head + head_offset + thread_offset;
+      scalar_t* q_c_ptr = input_q_c + all_offset;
+      uint8_t* q_quant_c_ptr = output_q_quant + all_offset;
+      scalar_t input_vec[VecQC];
+      float output_vec_float[VecQC];
+      uint8_t output_vec[VecQC];
+      if(head_start >= num_head) return;
+      *(LoadT*)(input_vec) = *(LoadT*)(q_c_ptr);
+      float max_abs_value = 1e-10f;
+      max_abs_value = fmaxf(max_abs_value, fabs(static_cast<T_ACC>(input_vec[0])));
+      max_abs_value = fmaxf(max_abs_value, fabs(static_cast<T_ACC>(input_vec[1])));
+      max_abs_value = WarpReduceMax_ROW<T_ACC,C10_WARP_SIZE>(max_abs_value);
+      float fp8_max = kv_dtype == 1 ? 448.0f : 57344.0f;
+      float scale_x = max_abs_value / fp8_max;
+      scale_x = __shfl(scale_x, 0);
+      output_vec_float[0] = clamp(input_vec[0] / scale_x, -fp8_max, fp8_max);
+      output_vec_float[1] = clamp(input_vec[1] / scale_x, -fp8_max, fp8_max);
+      if(kv_dtype == 0) // fp8_e5m2
       {
-        *(LoadT*)(input_vec_max) = *(LoadT*)(input_q_c + ii);
-        #pragma unroll
-        for(int jj = 0; jj < Vec; jj++)
-        {
-          max_abs_value = fmaxf(max_abs_value, fabs(static_cast<T_ACC>(input_vec_max[jj])));
-        }
+        // output_vec[0] = float_to_fp8e5m2(output_vec_float[0]);
+        // output_vec[1] = float_to_fp8e5m2(output_vec_float[1]);
+        *(uint16_t*)output_vec = float_to_fp8e5m2_x2(output_vec_float[0], output_vec_float[1]);
       }
-      max_abs_value = BlockReduceMax_ROW<T_ACC,num_warp_per_block*64>(max_abs_value, val_shared);
-      __shared__ float max_abs_value_lds; 
-      float scale = 0.0f;
-      if(threadIdx.x == 0)
+      else
       {
-        max_abs_value_lds = max_abs_value;
+        // output_vec[0] = float_to_fp8e4m3(output_vec_float[0]);
+        // output_vec[1] = float_to_fp8e4m3(output_vec_float[1]);
+        *(uint16_t*)output_vec = float_to_fp8e4m3_x2(output_vec_float[0], output_vec_float[1]);
       }
-      __syncthreads();
-      max_abs_value = max_abs_value_lds;
-      float inv_s = (max_abs_value == 0.f) ? 0.f : 127.f / max_abs_value;
-      #pragma unroll
-      for(int ii = 0; ii < Vec; ii++)
-      {
-        output_vec[ii] = float_to_int8_rn(static_cast<float>(input_vec[ii]) * inv_s);
-      }
-      constexpr float qmax = 127.0f;
-      constexpr float min_scale = 1.19209e-07f;
-      if(q_c_block_offset == 0) output_q_scale[token_idx] = fmaxf(max_abs_value / qmax, min_scale);
       *(OutputT*)q_quant_c_ptr = *(OutputT*)output_vec;
+      if(thread_offset==0)
+      {
+        output_q_scale[token_idx*num_head + head_start] = scale_x;
+      }
+
+
+
+
     }
   }
 
@@ -545,8 +572,11 @@ __global__ void rmsnorm_rope_quant_qkv_kernel(
     constexpr int num_head_per_block = num_head_per_warp * num_warp_per_block;  // 8 * 4 = 32
     const int block_per_token = (num_head + num_head_per_block - 1) / num_head_per_block;  // 向上取整
     const int q_grid_x = block_per_token * bs;  // 4 * bs
-    const int q_c_grid_x = q_grid_x*2;
+    // const int q_c_grid_x = q_grid_x*2;
     const int block_x = num_warp_per_block * C10_WARP_SIZE;  // 128
+    // Quant(Q_C)    VecQC = 2, 一个warp处理一个head，一个block处理4个head。 一个token需要 num_head / 4 个block。总共需要 bs * num_head / 4 个block
+    const int q_c_grid_x = bs * num_head / 4;
+    
     // 计算ROPE(K)grid和block尺寸
     constexpr int kv_c_dim = 512;
     constexpr int k_stride_head = kv_c_dim + rot_dim;
@@ -585,8 +615,11 @@ __global__ void rmsnorm_rope_quant_qkv_kernel(
     if(kv_cache_dtype_str == "fp8_e5m2"){
       kv_dtype = 0;
     }
-    else{    // fp8_e4m3
+    else if(kv_cache_dtype_str == "fp8_e4m3"){    // fp8_e4m3
       kv_dtype = 1;
+    }
+    else{
+      TORCH_CHECK(false, "kv_cache_dtype_str must be fp8_e4m3 or fp8_e5m2");
     }
 
 
