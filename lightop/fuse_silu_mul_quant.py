@@ -60,9 +60,9 @@ def fuse_silu_mul_fp8_quant(input: torch.Tensor,
 
     if output is None:
         if fp8type==0:
-            output = torch.empty(E, T, d, dtype=torch.float8_e4m3fn, device=input.device)
+            output = torch.empty(leading, d, dtype=torch.float8_e4m3fn, device=input.device)
         else:
-            output = torch.empty(E, T, d, dtype=torch.float8_e5m2, device=input.device)
+            output = torch.empty(leading, d, dtype=torch.float8_e5m2, device=input.device)
     if scales is None:
         scales = torch.empty((leading, 1),
                             device=input.device,
