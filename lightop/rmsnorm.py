@@ -164,6 +164,26 @@ def rms_norm_dynamic_per_token_quant(
                                                     residual, update_input)
     return output, scales
 
+def rms_norm_per_token_fp8_quant(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    epsilon: float = 1e-5,
+    fp8type: int = 0,
+    residual: Optional[torch.Tensor] = None,
+    update_input: bool = False
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if fp8type == 0:
+        output = torch.empty(input.shape,device=input.device,dtype=torch.float8_e4m3fn)
+    else:
+        output = torch.empty(input.shape,device=input.device,dtype=torch.float8_e5m2)
+    scales = torch.empty((input.numel() // input.shape[-1], 1),
+                        device=input.device,
+                        dtype=torch.float32)
+
+    op.rms_norm_fp8_quant(output.view(torch.uint8), input, weight, scales, epsilon,
+                          residual, update_input, fp8type)
+    return output, scales
+
 def fused_rms_norm_contiguous(
     out: torch.Tensor,
     input: torch.Tensor,
