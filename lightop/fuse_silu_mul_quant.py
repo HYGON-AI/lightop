@@ -46,3 +46,50 @@ def fuse_silu_mul_quant_ep(input: torch.Tensor,
 
     op.fuse_silu_mul_quant_ep(input, output, scales, tokens_per_expert, num_local_tokens_tensor, topk, expect_m)
     return output, scales
+
+def fuse_silu_mul_fp8_quant(input: torch.Tensor, 
+                        fp8type:int=0, #floate4m3 = 0, floate5m2 = 1 
+                        num_local_tokens_tensor: Optional[torch.Tensor] = None,
+                        topk:int=1,
+                        expect_m:int=-1,
+                        output: Optional[torch.Tensor] = None,
+                        scales: Optional[torch.Tensor] = None,
+                        expert_ids: Optional[torch.Tensor] = None) -> tuple[torch.Tensor, torch.Tensor]:
+    leading, d2 = input.shape          # d2 == 2*d
+    d = d2 // 2
+
+    if output is None:
+        if fp8type==0:
+            output = torch.empty(E, T, d, dtype=torch.float8_e4m3fn, device=input.device)
+        else:
+            output = torch.empty(E, T, d, dtype=torch.float8_e5m2, device=input.device)
+    if scales is None:
+        scales = torch.empty((leading, 1),
+                            device=input.device,
+                            dtype=torch.float32)
+
+    op.fuse_silu_mul_fp8_quant(input, output.view(torch.uint8), scales, fp8type, num_local_tokens_tensor, topk, expect_m, expert_ids)
+    return output, scales
+
+def fuse_silu_mul_fp8_quant_ep(input: torch.Tensor,
+                        fp8type:int=0, #floate4m3 = 0, floate5m2 = 1 
+                        tokens_per_expert: Optional[torch.Tensor] = None,
+                        num_local_tokens_tensor: Optional[torch.Tensor] = None,
+                        topk:int=1,
+                        expect_m:int=-1) -> tuple[torch.Tensor, torch.Tensor]:
+    if input.dim() != 3:
+        raise ValueError(f"Input tensor must be 3-dimensional [E, T, H], but got shape {input.shape}")
+
+    E, T, H = input.shape
+    d = H // 2
+
+    if fp8type==0:
+        output = torch.empty(E, T, d, dtype=torch.float8_e4m3fn, device=input.device)
+    else:
+        output = torch.empty(E, T, d, dtype=torch.float8_e5m2, device=input.device)
+    scales = torch.empty((E, T, 1),
+                        device=input.device,
+                        dtype=torch.float32)
+
+    op.fuse_silu_mul_fp8_quant_ep(input, output.view(torch.uint8), scales, fp8type, tokens_per_expert, num_local_tokens_tensor, topk, expect_m)
+    return output, scales
