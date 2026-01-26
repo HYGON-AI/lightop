@@ -512,6 +512,9 @@ void reshape_and_cache_cuda(
               key_cache.size(2) == value_cache.size(3) &&
               key_cache.size(3) == value_cache.size(2),
               "key/value cache dimension mismatch");
+              
+  key = key.is_contiguous() ? key : key.contiguous();
+  value = value.is_contiguous() ? value : value.contiguous();
 
   int num_tokens = slot_mapping.size(0);
   int num_heads  = key.size(1);
@@ -520,7 +523,7 @@ void reshape_and_cache_cuda(
   const int  numel = num_heads*head_size;
   int key_stride   = key.stride(0);
   int value_stride = value.stride(0);
-
+  
   auto launch_kernel_opt = [&](auto vec_constant) {
 
       constexpr int VEC = decltype(vec_constant)::value;

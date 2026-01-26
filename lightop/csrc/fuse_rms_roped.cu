@@ -989,6 +989,8 @@ void rms_rotary_embedding_fuse(
                 query.size(1) == positions.size(1) && (key.size(1) == positions.size(1)),
                 "query, key and positions must have the same batch_size and seq_len");
   }
+  key = key.is_contiguous() ? key : key.contiguous();
+  query = query.is_contiguous() ? query : query.contiguous();
 
   int query_hidden_size = query.numel() / num_tokens;
   int key_hidden_size = key.numel() / num_tokens;
