@@ -64,6 +64,9 @@ def fused_bmm_trans_impl_int8(  torch_input: torch.Tensor,                      
                                 input_scale: Optional[torch.Tensor] = None,     # n, b, 1
                                 w_uk_scale: Optional[torch.Tensor] = None,      # n, l, 1
                                 bias: Optional[torch.Tensor] = None,            # n, l
+                                dtype: Optional[torch.dtype] = torch.float8_e4m3fn,
+                                transpose_bm: Optional[bool] = False,
+                                transpose_bm_in: Optional[bool] = False,
                                 mode: Optional[List[int]]=None):
     
     # input = torch.ones_like(input)
@@ -81,14 +84,20 @@ def fused_bmm_trans_impl_int8(  torch_input: torch.Tensor,                      
     config = {"MODE": mode}
     
     # fused_bmm_output 应该是 [n, b, l] 的形状
-    torch_input = input_clone.transpose(0,1).contiguous()  # [b, n, p] -> [n, b, p]
+    if not transpose_bm_in:
+        torch_input = input_clone.transpose(0,1).contiguous()  # [b, n, p] -> [n, b, p]
+    else:
+        torch_input = input_clone.contiguous()  # [b, n, p] -> [b, n, p]
     # 使用bfloat16作为基准输出类型，避免FP8类型比较时的运算问题
-    fused_torch_output = batch_rocblas_scaled_mm(torch_input, torch_uk, torch_input_scale, torch_w_uk_scale, out_dtype=torch.float8_e4m3fn, bias=torch_bias)   # [n, b, l]
-    torch_output = fused_torch_output.transpose(0,1).contiguous() # [b, n, l]
+    fused_torch_output = batch_rocblas_scaled_mm(torch_input, torch_uk, torch_input_scale, torch_w_uk_scale, out_dtype=dtype, bias=torch_bias)   # [n, b, l]
+    if not transpose_bm:
+        torch_output = fused_torch_output.transpose(0,1).contiguous() # [b, n, l]
+    else:
+        torch_output = fused_torch_output.contiguous() # [n, b, l]
     # 验证lightop kernel
     # torch.set_printoptions(profile="full") 
-    cuda_output = torch.zeros_like(torch_output, dtype=torch.float8_e4m3fn)
-    fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, config)
+    cuda_output = torch.zeros_like(torch_output, dtype=dtype)
+    fused_bmm(input, w_uk, input_scale, w_uk_scale, bias, dtype, cuda_output, transpose_bm, transpose_bm_in, config)
     torch.cuda.synchronize()
     # import pdb; pdb.set_trace()
     mode_status = True
@@ -129,7 +138,10 @@ def fused_bmm_trans_impl_int8_tuning(   torch_input: torch.Tensor,              
                                         input_scale: Optional[torch.Tensor] = None,     # 1, b, 1
                                         w_uk_scale: Optional[torch.Tensor] = None,      # 1, l, 1
                                         bias: Optional[torch.Tensor] = None,            # n, l
-                                        mode: Optional[List[int]]=None):
+                                        mode: Optional[List[int]]=None,
+                                        dtype: Optional[torch.dtype] = torch.float8_e4m3fn,
+                                        transpose_bm: Optional[bool] = False,
+                                        transpose_bm_in: Optional[bool] = False):
     
     # input = torch.ones_like(input)
     # torch_input = torch.ones_like(torch_input)
@@ -146,14 +158,20 @@ def fused_bmm_trans_impl_int8_tuning(   torch_input: torch.Tensor,              
     config = {"MODE": mode}
     
     # fused_bmm_output 应该是 [n, b, l] 的形状
-    torch_input = input_clone.transpose(0,1).contiguous()  # [b, n, p] -> [n, b, p]
+    if not transpose_bm_in:
+        torch_input = input_clone.transpose(0,1).contiguous()  # [b, n, p] -> [n, b, p]
+    else:
+        torch_input = input_clone.contiguous()  # [b, n, p] -> [b, n, p]
     # 使用bfloat16作为基准输出类型，避免FP8类型比较时的运算问题
-    fused_torch_output = batch_rocblas_scaled_mm(torch_input, torch_uk, torch_input_scale, torch_w_uk_scale, out_dtype=torch.float8_e4m3fn, bias=torch_bias)   # [n, b, l]
-    torch_output = fused_torch_output.transpose(0,1).contiguous() # [b, n, l]
+    fused_torch_output = batch_rocblas_scaled_mm(torch_input, torch_uk, torch_input_scale, torch_w_uk_scale, out_dtype=dtype, bias=torch_bias)   # [n, b, l]
+    if not transpose_bm:
+        torch_output = fused_torch_output.transpose(0,1).contiguous() # [b, n, l]
+    else:
+        torch_output = fused_torch_output.contiguous() # [n, b, l]
     # 验证lightop kernel
     # torch.set_printoptions(profile="full") 
-    cuda_output = torch.zeros_like(torch_output, dtype=torch.float8_e4m3fn)
-    fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, config)
+    cuda_output = torch.zeros_like(torch_output, dtype=dtype)
+    fused_bmm(input, w_uk, torch_input_scale, torch_w_uk_scale, torch_bias, dtype, cuda_output, transpose_bm, transpose_bm_in, config)
     torch.cuda.synchronize()
     # import pdb; pdb.set_trace()
     mode_status = True
@@ -188,16 +206,19 @@ def fused_bmm_trans_impl_int8_tuning(   torch_input: torch.Tensor,              
         
     warm_up_num = 20
     for i in range(warm_up_num):
-        fused_bmm(input, w_uk, cuda_output, input_scale, w_uk_scale, bias, config)
+        fused_bmm(input, w_uk, torch_input_scale, torch_w_uk_scale, torch_bias, dtype, cuda_output, transpose_bm, transpose_bm_in, config)
         torch.cuda.synchronize()
     
     quantiles = [0.5, 0.2, 0.8]
     avg_ms, min_ms, max_ms = triton.testing.do_bench(lambda: fused_bmm(input, 
                                                                        w_uk, 
+                                                                       torch_input_scale, 
+                                                                       torch_w_uk_scale, 
+                                                                       torch_bias, 
+                                                                       dtype, 
                                                                        cuda_output, 
-                                                                       input_scale, 
-                                                                       w_uk_scale, 
-                                                                       bias, 
+                                                                       transpose_bm, 
+                                                                       transpose_bm_in, 
                                                                        config), quantiles=quantiles)
     fused_bmm_kernel_time_us = avg_ms * 1000
         
@@ -478,8 +499,10 @@ def run_trans_bmm_trans_tuning():
     p_list=[128,128,128,128]
     l_list=[512,512,512,512]
     
-    out_dtype=torch.bfloat16
+    out_dtype=torch.float8_e4m3fn
     # out_dtype = torch.float16
+    transpose_bm = False
+    transpose_bm_in = False
 
     best_config_json_dir="./"
     os.makedirs(best_config_json_dir, exist_ok=True)
@@ -505,8 +528,8 @@ def run_trans_bmm_trans_tuning():
             
             # 先跑一遍，把失败的mode记录下来
             for mode in mode_ranges:
-                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], in_dtype=torch.float8_e4m3fn, is_tuning=True)
-                status=fused_bmm_trans_impl_int8(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode)
+                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], in_dtype=out_dtype, is_tuning=True, transpose_bm=transpose_bm, transpose_bm_in=transpose_bm_in)
+                status=fused_bmm_trans_impl_int8(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode, transpose_bm=transpose_bm, transpose_bm_in=transpose_bm_in)
                 if not status:
                     compare_failed_list.append(mode)
             print(f"batch_size: {batch_size}, n: {n_list[i]}, p: {p_list[i]}, l: {l_list[i]} compare_failed_list: {compare_failed_list}")
@@ -514,8 +537,8 @@ def run_trans_bmm_trans_tuning():
             for mode in mode_ranges:
                 if mode in compare_failed_list:
                     continue
-                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], is_tuning=True)
-                status, kernel_time_us=fused_bmm_trans_impl_int8_tuning(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode)
+                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], is_tuning=True, transpose_bm=transpose_bm, transpose_bm_in=transpose_bm_in)
+                status, kernel_time_us=fused_bmm_trans_impl_int8_tuning(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode, transpose_bm=transpose_bm, transpose_bm_in=transpose_bm_in)
                 if status and kernel_time_us < max_time:
                     max_time = kernel_time_us
                     best_config = mode
@@ -562,8 +585,10 @@ def run_trans_bmm_trans_vaild():
     # p_list=[128]
     # l_list=[512]
     
-    out_dtype=torch.bfloat16
+    out_dtype=torch.float8_e4m3fn
     # out_dtype = torch.float16
+    transpose_bm = False
+    transpose_bm_in = False
 
     best_config = None
     triton_json_dir="./cache/moe/"
@@ -582,9 +607,9 @@ def run_trans_bmm_trans_vaild():
             for mode in mode_ranges:
 
                 print("mode:{} batch:{} n:{} p:{} l:{} ".format(mode, batch_size, n_list[i],p_list[i],l_list[i]))
-                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], in_dtype=torch.float8_e4m3fn)
+                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], in_dtype=out_dtype, transpose_bm=transpose_bm, transpose_bm_in=transpose_bm_in)
                 # triton moe: output
-                status=fused_bmm_trans_impl_int8(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode)
+                status=fused_bmm_trans_impl_int8(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode, transpose_bm=transpose_bm, transpose_bm_in=transpose_bm_in)
                 if not status:
                     fused_bmm_compare_failed_list.append(mode)
                      
