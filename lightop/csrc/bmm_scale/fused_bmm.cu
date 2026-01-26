@@ -63,8 +63,8 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_I8_DECODE(
   uint32_t stride_ob,
   uint32_t stride_on,
   uint32_t stride_ol,
-  uint32_t stride_asn,
   uint32_t stride_asb,
+  uint32_t stride_asn,
   uint32_t stride_ask,
   uint32_t stride_bsn,
   uint32_t stride_bsl,
@@ -274,8 +274,8 @@ void launch_fused_bmm_decode(const GemmParams<T>& params) {
           params.stride_ob,
           params.stride_on,
           params.stride_ol,
-          params.stride_asn,
           params.stride_asb,
+          params.stride_asn,
           params.stride_ask,
           params.stride_bsn,
           params.stride_bsl,
@@ -319,8 +319,8 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
     int stride_ob = output.stride(0);
     int stride_on = output.stride(1);
     const int stride_ol = output.stride(2);
-    const int stride_asn = a_scale.stride(0);
-    const int stride_asb = a_scale.stride(1);
+    int stride_asb = a_scale.stride(0);
+    int stride_asn = a_scale.stride(1);
     const int stride_ask = a_scale.stride(2);
     const int stride_bsn = b_scale.stride(0);
     const int stride_bsl = b_scale.stride(1);
@@ -331,6 +331,8 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
       n_size = q_nope.size(0);
       stride_ab = q_nope.stride(1);
       stride_an = q_nope.stride(0);
+      stride_asb = a_scale.stride(1);
+      stride_asn = a_scale.stride(0);
     }
 
     if (transpose_bm){
@@ -369,8 +371,8 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
           stride_ob,
           stride_on,
           stride_ol,
-          stride_asn,
           stride_asb,
+          stride_asn,
           stride_ask,
           stride_bsn,
           stride_bsl,
@@ -408,8 +410,8 @@ torch::Tensor fused_bmm(torch::Tensor q_nope,                    // [b, n, p]
         stride_ob,
         stride_on,
         stride_ol,
-        stride_asn,
         stride_asb,
+        stride_asn,
         stride_ask,
         stride_bsn,
         stride_bsl,

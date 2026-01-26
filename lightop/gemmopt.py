@@ -714,5 +714,37 @@ def fused_bmm(x: torch.Tensor,                                       # [batch_si
     Returns:
         torch.Tensor: Output batch with shape (B, M, N) or (M, B, N) if transpose_bm=True.
     """
+    
+    # Check constraints.
+    if not transpose_bm_in:
+        batch_size = x.shape[0]
+        num_head = x.shape[1]
+    else:
+        num_head = x.shape[0]
+        batch_size = x.shape[1]
+    L = w.shape[1]
+
+    assert num_head == w.shape[0], "Incompatible num_head dimensions!!!"
+
+    assert dtype in [
+        torch.float8_e4m3fn,
+        torch.float8_e5m2,
+    ], f"Output dtype {dtype} is currently not supported in fused_bmm"
+
+    if output is None:
+        if transpose_bm:
+            output = torch.empty((num_head, batch_size, L), dtype=dtype, device=x.device)
+        else:
+            output = torch.empty((batch_size, num_head, L), dtype=dtype, device=x.device)
+    else:
+        if transpose_bm:
+            assert (
+                output.shape[0] == num_head and output.shape[1] == batch_size and output.shape[2] == L
+            ), "Output dimension error"
+        else:
+            assert (
+                output.shape[0] == batch_size and output.shape[1] == num_head and output.shape[2] == L
+            ), "Output dimension error"
+    
     mode = config['MODE']
     return op.fused_bmm(x, w, output, x_scale, w_scale, bias, dtype, transpose_bm, transpose_bm_in, mode)
