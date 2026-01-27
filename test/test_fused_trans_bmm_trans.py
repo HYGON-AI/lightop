@@ -481,19 +481,24 @@ def fused_bmm_trans_impl_int8_benchmark(torch_input: torch.Tensor,              
     # 总共有 n 个这样的 GEMM，所以总 peak = n * b * p * l * 2
     peak = n * b * p * l * 2
     
+    output_size_bytes = torch.finfo(cuda_output.dtype).bits // 8
+    input_size_bytes = torch.finfo(input.dtype).bits // 8
+    scale_size_bytes = torch.finfo(input_scale.dtype).bits // 8
+    bias_size_bytes = torch.finfo(bias.dtype).bits // 8
+    
     # 计算数据传输量（字节）
     # input: [b, n, p] int8
-    input_bytes = b * n * p * 1
+    input_bytes = b * n * p * input_size_bytes
     # w_uk: [n, l, p] int8
-    w_uk_bytes = n * l * p * 1
+    w_uk_bytes = n * l * p * input_size_bytes
     # input_scale: [n, b, 1] float32
-    input_scale_bytes = n * b * 1 * 4
+    input_scale_bytes = n * b * 1 * scale_size_bytes
     # w_uk_scale: [n, l, 1] float32
-    w_uk_scale_bytes = n * l * 1 * 4
+    w_uk_scale_bytes = n * l * 1 * scale_size_bytes
     # cuda_output: [b, n, l] bfloat16
-    output_bytes = b * n * l * 2
+    output_bytes = b * n * l * output_size_bytes
     # bias (如果存在): [b, l] bfloat16
-    bias_bytes = b * l * 2 if bias is not None else 0
+    bias_bytes = b * l * bias_size_bytes if bias is not None else 0
     
     total_bytes = input_bytes + w_uk_bytes + input_scale_bytes + w_uk_scale_bytes + output_bytes + bias_bytes
     total_gb = total_bytes / 1024 / 1024 / 1024  # GB
@@ -509,12 +514,12 @@ def fused_bmm_trans_impl_int8_benchmark(torch_input: torch.Tensor,              
         'L': l,
         'P': p,
         'Passed': mode_status,
-        'Torch_time_us': torch_benchmark_time,
+        'Torch_bf16_bmm_time_us': torch_benchmark_time,
         'Q_quant_time_us': q_quant_time,
-        'GEMM_Time_us': fused_bmm_kernel_time_us,
-        'q_quant+fused_bmm_time_us': q_quant_time + fused_bmm_kernel_time_us,
-        'GEMM_TFlops': tflops,
-        'GEMM_GB/s': bw,
+        'Fused_fp8_bmm_Time_us': fused_bmm_kernel_time_us,
+        'Q_quant+Fused_fp8_bmm_Time_us': q_quant_time + fused_bmm_kernel_time_us,
+        'Fused_fp8_bmm_TFlops': tflops,
+        'Fused_fp8_bmm_GB/s': bw,
     }
     
     return results
