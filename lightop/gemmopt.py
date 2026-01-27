@@ -685,7 +685,7 @@ def paged_mqa_logits(
 
 def fused_bmm(x: torch.Tensor,                                       # [batch_size, num_head, p_size], int8
               w: torch.Tensor,                                       # [num_head, l_size, p_size], int8
-              x_scale: torch.Tensor,                                 # [num_head, batch_size, 1], fp32
+              x_scale: torch.Tensor,                                 # [batch_size, num_head, 1], fp32
               w_scale: torch.Tensor,                                 # [num_head, l_size, 1], fp32
               bias: Optional[torch.Tensor] = None,                   # [num_head, l_size], None
               dtype: Optional[torch.dtype] = torch.float8_e4m3fn,    # fp8
@@ -702,9 +702,9 @@ def fused_bmm(x: torch.Tensor,                                       # [batch_si
         x (torch.Tensor): Higher precision input batch with shape (B, M, K) or (M, B, K) if transpose_bm_in=True.
             Quantized to INT8 on-the-fly during GEMM.
         w (torch.Tensor): Pre-quantized INT8 weight batch with shape (B, N, K), internally transposed.
-        x_scale (torch.Tensor): Per-batch scale for x with shape (n,b,1).
-        w_scale (torch.Tensor): Per-batch scale for w with shape (n,l,1).
-        bias (Optional[torch.Tensor]): Bias batch with shape (n,l).
+        x_scale (torch.Tensor): Per-batch scale for x with shape (B, M, 1) or (M, B, 1) if transpose_bm_in=True.
+        w_scale (torch.Tensor): Per-batch scale for w with shape (B,N,1).
+        bias (Optional[torch.Tensor]): Bias batch with shape (B,N).
         dtype (Optional[torch.dtype]): Output datatype (float8_e4m3fn or float8_e5m2).
         output (Optional[torch.Tensor]): Pre-allocated output tensor with shape (B, M, N) or (M, B, N) if transpose_bm=True.
         transpose_bm (Optional[bool]): Transpose batch and M dimensions in output.
