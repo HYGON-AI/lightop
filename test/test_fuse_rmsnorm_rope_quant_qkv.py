@@ -70,22 +70,23 @@ def _per_token_quant_fp8(
                 other=0.0).to(tl.float32)
     absmax = tl.maximum(tl.max(tl.abs(x)), 1e-10)
     scale_x = absmax / fp8_max
-    x_q = tl.clamp(x / scale_x, min=fp8_min, max=fp8_max).to(xq_ptr.dtype.element_ty)
+    x_q = tl.clamp(x / scale_x, min=fp8_min, max=fp8_max)
     tl.store(xq_ptr + row_id * stride_xq + cols, x_q, mask=mask)
     tl.store(scale_ptr + row_id, scale_x)
 
-def per_token_quant_fp8_triton(x):
+def per_token_quant_fp8_triton(x,dtype):
     """XSL验证代码版本 - Triton实现"""
     M = x.numel() // x.shape[-1]
     N = x.shape[-1]
-    x_q = torch.empty_like(x, device=x.device, dtype=torch.float8_e4m3fn)
+    # x_q = torch.empty_like(x, device=x.device, dtype=torch.float8_e4m3fn)
+    x_q = torch.empty_like(x, device=x.device, dtype=torch.float)
     scales = torch.empty(x.shape[:-1] + (1, ),
                          device=x.device,
                          dtype=torch.float32)
     BLOCK = triton.next_power_of_2(N)
     # heuristics for number of warps
     num_warps = min(max(BLOCK // 256, 1), 8)
-    finfo = torch.finfo(x_q.dtype)
+    finfo = torch.finfo(dtype)
     # pdb.set_trace()
     fp8_min = finfo.min
     fp8_max = finfo.max
@@ -103,13 +104,13 @@ def per_token_quant_fp8_triton(x):
         fp8_min=fp8_min,
         fp8_max=fp8_max
     )
-    return x_q, scales
+    return x_q.to(dtype), scales
 
 
 
 
 
-def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim,rot_dim,num_kv_cache_blocks,kv_cache_blocks_size,test_speed = False):
+def rms_rope_single_test(kv_cache_dtype_str,k_head_stride,batch_size,num_head,q_c_dim,kv_c_dim,rot_dim,num_kv_cache_blocks,kv_cache_blocks_size,test_speed = False):
     DEVICE = "cuda"
     variance_epsilon = 1e-6
     DTYPE = torch.bfloat16    
@@ -141,10 +142,10 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
     q_scale = torch.empty((batch_size, num_head, 1), dtype=torch.float32, device=DEVICE)
     q_scale_gt = torch.empty((batch_size, num_head, 1), dtype=torch.float32, device=DEVICE)
     # rope(K)的相关tensor创建
-    k_tensor = torch.randn(batch_size, kv_c_dim + rot_dim, dtype=DTYPE, device=DEVICE)
-    k_pe = k_tensor[...,kv_c_dim:]
+    k_tensor = torch.randn(batch_size, k_head_stride, dtype=DTYPE, device=DEVICE)
+    k_pe = k_tensor[..., k_head_stride -rot_dim:]
     k_pe_no_fuse = k_pe.clone()
-    kv_c = k_tensor[...,:kv_c_dim]
+    kv_c = k_tensor[..., k_head_stride - (kv_c_dim+rot_dim):k_head_stride - rot_dim]
     kv_c_normed = torch.empty(kv_c.shape, dtype=DTYPE, device=DEVICE)
     weight = torch.randn(kv_c_dim, dtype=DTYPE, device=DEVICE)
     kv_c_no_fuse = kv_c.clone()
@@ -174,7 +175,7 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
             cache_dtype = "auto"
         # ops.concat_and_cache_mla(kv_c_no_fuse_out, k_pe_no_fuse, kv_cache_no_fuse, slot_mapping, cache_dtype, kv_scale_tensor)
         # q_quant_gt[:] = q_tensor[:,:,:q_c_dim].to(KV_CACHE_DTYPE)
-        q_quant_gt[:], q_scale_gt[:] = per_token_quant_fp8_triton(q_tensor[:,:,:q_c_dim])
+        q_quant_gt[:], q_scale_gt[:] = per_token_quant_fp8_triton(q_tensor[:,:,:q_c_dim],KV_CACHE_DTYPE)
         kv_cache_no_fuse.view(-1, 576)[slot_mapping, :kv_c_dim] = kv_c_no_fuse_out.to(KV_CACHE_DTYPE).view(torch.uint8)
         kv_cache_no_fuse.view(-1, 576)[slot_mapping, kv_c_dim:] = k_pe_no_fuse.to(KV_CACHE_DTYPE).view(torch.uint8)
         # pdb.set_trace()
@@ -205,8 +206,8 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
         assert diff_max_q_pe_quant < 1e-6
         assert diff_max_q_c_quant <= 32
         assert diff_max_q_scale < 1e-6
-        # print(f"bs: {batch_size}, num_head: {num_head},  diff_max_k_pe: {diff_max_k_pe}, diff_max_kv_c: {diff_max_kv_c}, diff_max_kv_cache: {diff_max_kv_cache}, diff_max_q_pe_quant: {diff_max_q_pe_quant}, diff_max_q_c_quant: {diff_max_q_c_quant}, diff_max_q_scale: {diff_max_q_scale}")
-        print(f"fuse_rmsnorm_rope_quant_qkv bs: {batch_size}, num_head: {num_head} passed")
+        print(f"bs: {batch_size}, num_head: {num_head},  diff_max_k_pe: {diff_max_k_pe}, diff_max_kv_c: {diff_max_kv_c}, diff_max_kv_cache: {diff_max_kv_cache}, diff_max_q_pe_quant: {diff_max_q_pe_quant}, diff_max_q_c_quant: {diff_max_q_c_quant}, diff_max_q_scale: {diff_max_q_scale}")
+        # print(f"fuse_rmsnorm_rope_quant_qkv bs: {batch_size}, num_head: {num_head} passed")
 
         # pdb.set_trace()
 
@@ -215,7 +216,7 @@ if __name__ == "__main__":
     # rms_rope_single_test(kv_cache_dtype_str = "fp8_e5m2",batch_size=32,num_head=128,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=1000, kv_cache_blocks_size=16, test_speed=True)
     for bs in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]:
        for num_head in [16, 32, 64, 128]:
-        rms_rope_single_test(kv_cache_dtype_str = "fp8_e4m3", batch_size=bs,num_head=128,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=10000, kv_cache_blocks_size=16, test_speed=False)
+        rms_rope_single_test(kv_cache_dtype_str = "fp8_e4m3", k_head_stride=576,batch_size=bs,num_head=128,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=10000, kv_cache_blocks_size=16, test_speed=False)
 
 
 
