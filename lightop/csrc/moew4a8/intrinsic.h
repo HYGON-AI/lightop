@@ -295,7 +295,7 @@ __forceinline__ __device__ void buffer_load_lds_dwordx4(const T* ptr, T* lds_ptr
     //     0 //auxilariy 影响不是很大
     // );
   int smem_offset = __builtin_amdgcn_readfirstlane(cvta_to_shared(dst_ptr));
-  #if defined(__gfx936__)
+  #if (defined(__gfx936__) || defined(__gfx938__))
     __builtin_amdgcn_sched_barrier(0);
     asm volatile(
         "s_mov_b32 m0, %1 \n\t"
@@ -319,7 +319,7 @@ __device__ inline void amdgcn_buffer_load_dwordx4_lds(void* smem_ptr, const T* g
   global_addr[3] = 0x00020000; // 0000 0000 0000 0010 0000 0000 0000 0000
   //  000
 //   int offset_s = offset_s;
-    #if defined(__gfx936__)
+  #if (defined(__gfx936__) || defined(__gfx938__))
   __builtin_amdgcn_sched_barrier(0);
   asm volatile(
       "s_mov_b32 m0, %1 \n\t"
@@ -440,8 +440,10 @@ template<class Element>
 __device__ typename vec<float, 4>::type mmac(const typename vec<Element, 4>::type &v1, const typename vec<Element, 4>::type &v2, const typename vec<float, 4>::type &v3)
 {
     floatx4 v4f;
-    #if defined(__gfx936__) || defined(__gfx928__)
+    #if (defined(__gfx936__) || defined(__gfx928__))
         v4f = __builtin_amdgcn_mmac_f32_16x16x16f16(v1, v2, v3);
+    #elif defined(__gfx938__)
+        v4f = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(v1, v2, v3,false,false);
     #endif
     return v4f;
 }
@@ -455,6 +457,10 @@ __device__ typename vec<int, 4>::type mmac(const typename vec<Element, 8>::type 
     __builtin_amdgcn_sched_barrier(0);
     #if defined(__gfx936__) || defined(__gfx928__)
         v4i = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
+    #elif defined(__gfx938__)
+        const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
+        const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
+        v4i =__builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
     #endif
     __builtin_amdgcn_sched_barrier(0);
     return v4i;
@@ -466,7 +472,7 @@ __device__ typename vec<int, 4>::type mmac_int8(const typename vec<Element, 8>::
     
     auto a = reinterpret_cast<const long*>(&v1);
     auto b = reinterpret_cast<const long*>(&v2);
-    #if defined(__gfx936__) || defined(__gfx928__)
+    #if (defined(__gfx936__) || defined(__gfx928__)|| defined(__gfx938__))
     __builtin_amdgcn_sched_barrier(0);
     asm volatile(
         "v_mmac_i32_16x16x32_i8 %0, %1, %2, %0 \n"
@@ -484,7 +490,7 @@ __device__ typename vec<int, 4>::type mmac2_asm_snop1(const typename vec<Element
 {
     auto a = reinterpret_cast<const long*>(&v1);
     auto b = reinterpret_cast<const long*>(v2);
-    #if defined(__gfx936__) || defined(__gfx928__)
+    #if (defined(__gfx936__) || defined(__gfx928__)|| defined(__gfx938__))
     __builtin_amdgcn_sched_barrier(0);
     asm volatile(
         "\n s_nop 1 \n v_mmac_i32_16x16x32_i8 %0, %1, %2, %0 \n"
@@ -502,7 +508,7 @@ __device__ typename vec<int, 4>::type mmac2_asm(const typename vec<Element, 8>::
 {
     auto a = reinterpret_cast<const long*>(&v1);
     auto b = reinterpret_cast<const long*>(v2);
-    #if defined(__gfx936__) || defined(__gfx928__)
+    #if (defined(__gfx936__) || defined(__gfx928__) || defined(__gfx938__))
     __builtin_amdgcn_sched_barrier(0);
     asm volatile(
         "\n v_mmac_i32_16x16x32_i8 %0, %1, %2, %0 \n"
@@ -534,6 +540,10 @@ __device__ typename vec<int, 4>::type mmac2(const typename vec<Element, 8>::type
     intx4 v4i;
     #if defined(__gfx936__) || defined(__gfx928__)
         v4i = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
+    #elif defined(__gfx938__)
+        const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
+        const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
+        v4i =__builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
     #endif
     return v4i;
 }
@@ -541,8 +551,10 @@ template<>
 __device__ typename vec<float, 4>::type mmac<half>(const typename vec<half, 4>::type &v1, const typename vec<half, 4>::type &v2, const typename vec<float, 4>::type &v3)
 {
     floatx4 v4f;
-    #if defined(__gfx936__) || defined(__gfx928__)
+    #if (defined(__gfx936__) || defined(__gfx928__))
         v4f = __builtin_amdgcn_mmac_f32_16x16x16f16(v1, v2, v3);
+    #elif defined(__gfx938__)
+        v4f = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(v1, v2, v3,false,false);
     #endif
     return v4f;
 
@@ -556,6 +568,10 @@ __device__ typename vec<int, 4>::type mmac<int8_t>(const typename vec<int8_t, 8>
     intx4 v4i;
     #if defined(__gfx936__) || defined(__gfx928__)
         v4i = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
+    #elif defined(__gfx938__)
+        const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
+        const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
+        v4i =__builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
     #endif
     return v4i;
 }
@@ -564,8 +580,10 @@ template<>
 __device__ typename vec<float, 4>::type mmac<bhalf_t>(const typename vec<bhalf_t, 4>::type &v1, const typename vec<bhalf_t, 4>::type &v2, const typename vec<float, 4>::type &v3)
 {
     floatx4 v4f;
-    #if defined(__gfx936__) || defined(__gfx928__)
+    #if (defined(__gfx936__) || defined(__gfx928__)) 
         v4f = __builtin_amdgcn_mmac_f32_16x16x16bf16(v1, v2, v3);
+    #elif defined(__gfx938__)
+        v4f = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(v1, v2, v3,false,false);
     #endif
     return v4f;
 }
