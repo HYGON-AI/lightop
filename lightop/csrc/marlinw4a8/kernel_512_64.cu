@@ -7,7 +7,7 @@ namespace marlin_moe_w4a8{
     采用顺序分割 条带方式
   */
 // 仅在 BW gfx 936 上才编译实际算子
-#ifdef __gfx936__
+#if defined(__gfx936__) || defined(__gfx938__)
   template <
           const int threads,          // number of threads in a threadblock
           const int thread_m_blocks,  // number of 16x16 blocks in the m
@@ -731,7 +731,7 @@ namespace marlin_moe_w4a8{
     int* locks,             // 用于 全局归约的信号控制
     int4* C_tmp             // 用于 全局归约的 缓冲区
   ) {
-  
+    printf("当前架构 未 适配 moe w4a8 算子");
   }
 #endif
 
