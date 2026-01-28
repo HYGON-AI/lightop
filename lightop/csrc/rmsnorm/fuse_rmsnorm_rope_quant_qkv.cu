@@ -555,15 +555,6 @@ __global__ void rmsnorm_rope_quant_qkv_kernel(
     constexpr int q_c_dim = 128;
     constexpr int rot_dim = 64;
     const int q_stride_head = q_pe.stride(1);
-    TORCH_CHECK(q_c.dim() == 3, "q_c must be 3D tensor [bs, num_head, q_c_dim]");
-    TORCH_CHECK(q_pe.dim() == 3, "q_pe must be 3D tensor [bs, num_head, rot_dim]");
-    TORCH_CHECK(q_quant.dim() == 3, "q_quant must be 3D tensor [bs, num_head, q_c_dim + rot_dim]");
-    TORCH_CHECK(q_stride_head == q_c_dim+rot_dim, "q_stride_head must be q_c_dim + rot_dim");
-    TORCH_CHECK(q_pe.size(2) ==  rot_dim, "q_pe.size(2) must be rot_dim");
-    TORCH_CHECK(cos_sin_cache.dim() == 2, "cos_sin_cache must be 2D tensor [max_position, rot_dim]");
-    TORCH_CHECK(cos_sin_cache.size(1) == rot_dim, "cos_sin_cache.size(1) must equal rot_dim");
-    TORCH_CHECK(q_scale.scalar_type() == at::ScalarType::Float, "q_scale must be float tensor");
-    const int temp1= 0;
     // 计算ROPE(Q)grid和block尺寸
     // constexpr int num_warp_per_block = 4;
     constexpr int num_warp_per_block = 4;
@@ -579,47 +570,26 @@ __global__ void rmsnorm_rope_quant_qkv_kernel(
     
     // 计算ROPE(K)grid和block尺寸
     constexpr int kv_c_dim = 512;
-    constexpr int k_stride_head = kv_c_dim + rot_dim;
-    TORCH_CHECK(k_pe.dim() == 2, "k_pe must be 2D tensor [bs, kv_c_dim + rot_dim]");
-    TORCH_CHECK(k_pe.size(1) ==  rot_dim, "k_pe.size(1) must be rot_dim");
-    TORCH_CHECK(k_pe.size(0) == bs, "k_pe.size(0) must be bs");
-    TORCH_CHECK(k_pe.stride(0) == kv_c_dim + rot_dim, "k_pe.stride(0) must be kv_c_dim + rot_dim");
-    TORCH_CHECK(kv_c_normed.dim() == 2, "kv_c_normed must be 2D tensor [bs, kv_c_dim]");
-    TORCH_CHECK(kv_c_normed.size(1) == kv_c_dim, "kv_c_normed.size(1) must be kv_c_dim");
-    TORCH_CHECK(kv_c_normed.size(0) == bs, "kv_c_normed.size(0) must be bs");
-    TORCH_CHECK(kv_c_normed.stride(0) == kv_c_dim, "kv_c_normed.stride(0) must be kv_c_dim");
+    const int k_stride_head = k_pe.stride(0);
     constexpr int element_per_warp = C10_WARP_SIZE * Vec;
     constexpr int k_token_per_warp = element_per_warp / (rot_dim);  // 8
     constexpr int k_token_per_block = k_token_per_warp * num_warp_per_block; // 32
     const int k_grid_x = (bs + k_token_per_block - 1) / k_token_per_block; // (32 + 32 - 1) / 32 = 1
     
     // 计算RMS(K)grid和block尺寸
-    TORCH_CHECK(kv_c.dim() == 2, "kv_c must be 2D tensor [bs, kv_c_dim + rot_dim]");
-    TORCH_CHECK(kv_c.size(1) == kv_c_dim, "kv_c.size(1) must be kv_c_dim");
-    TORCH_CHECK(kv_c.size(0) == bs, "kv_c.size(0) must be bs");
-    TORCH_CHECK(kv_c.stride(0) == kv_c_dim + rot_dim, "kv_c.stride(0) must be kv_c_dim + rot_dim");
     constexpr int k_rms_token_per_warp = element_per_warp / (kv_c_dim);// 1
     constexpr int k_rms_token_per_block = k_rms_token_per_warp * num_warp_per_block; // 4
     const int k_rms_grid_x = (bs + k_rms_token_per_block - 1) / k_rms_token_per_block; // (32 + 32 - 1) / 32 = 1
     // 检查KV_CACHE相关参数
-    TORCH_CHECK(slot_mapping.dim() == 1, "slot_mapping must be 1D tensor [bs]");
-    TORCH_CHECK(slot_mapping.size(0) == bs, "slot_mapping.size(0) must be bs");
-    TORCH_CHECK(kv_cache.dim() == 3, "kv_cache must be 3D tensor [num_kv_cache_blocks, kv_cache_blocks_size, kv_c_dim + rot_dim]");
-    TORCH_CHECK(kv_cache.size(2) == kv_c_dim + rot_dim, "kv_cache.size(2) must be kv_c_dim + rot_dim");
     const int num_kv_cache_blocks = kv_cache.size(0);
     const int kv_cache_blocks_size = kv_cache.size(1);
     const int max_slot_id = num_kv_cache_blocks * kv_cache_blocks_size;
-    TORCH_CHECK(kv_cache_dtype_str == "fp8_e4m3" || kv_cache_dtype_str == "fp8_e5m2", "kv_cache_dtype_str must be fp8_e4m3 or fp8_e5m2");
-    TORCH_CHECK(kv_cache_scale == 1.0f, "kv_cache_scale must be 1.0");
     int kv_dtype = -1;
     if(kv_cache_dtype_str == "fp8_e5m2"){
       kv_dtype = 0;
     }
     else if(kv_cache_dtype_str == "fp8_e4m3"){    // fp8_e4m3
       kv_dtype = 1;
-    }
-    else{
-      TORCH_CHECK(false, "kv_cache_dtype_str must be fp8_e4m3 or fp8_e5m2");
     }
 
 

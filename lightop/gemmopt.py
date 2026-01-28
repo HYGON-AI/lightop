@@ -748,3 +748,101 @@ def fused_bmm(x: torch.Tensor,                                       # [batch_si
     
     mode = config['MODE']
     return op.fused_bmm(x, w, output, x_scale, w_scale, bias, dtype, transpose_bm, transpose_bm_in, mode)
+
+
+def validate_fuse_rmsnorm_rope_quant_qkv_args(positions, q_c, q_pe, q_quant, q_scale, k_pe, kv_c, kv_c_normed,
+                                               weight, cos_sin_cache, slot_mapping, kv_cache,
+                                               kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon):
+    """
+    Validate arguments for fuse_rmsnorm_rope_quant_qkv function
+    """
+    # Constants
+    q_c_dim = 128
+    rot_dim = 64
+    kv_c_dim = 512
+    k_stride_head = k_pe.stride(0)
+
+    # Get basic dimensions
+    bs = q_pe.size(0)
+    num_head = q_pe.size(1)
+    q_stride_head = q_pe.stride(1)
+
+    # Validate q_c
+    assert q_c.dim() == 3, "q_c must be 3D tensor [bs, num_head, q_c_dim]"
+    assert q_c.size(0) == bs, f"q_c.size(0) must be {bs}"
+    assert q_c.size(1) == num_head, f"q_c.size(1) must be {num_head}"
+    assert q_c.size(2) == q_c_dim, f"q_c.size(2) must be {q_c_dim}"
+
+    # Validate q_pe
+    assert q_pe.dim() == 3, "q_pe must be 3D tensor [bs, num_head, rot_dim]"
+    assert q_pe.size(0) == bs, f"q_pe.size(0) must be {bs}"
+    assert q_pe.size(1) == num_head, f"q_pe.size(1) must be {num_head}"
+    assert q_pe.size(2) == rot_dim, f"q_pe.size(2) must be {rot_dim}"
+
+    # Validate q_quant
+    assert q_quant.dim() == 3, "q_quant must be 3D tensor [bs, num_head, q_c_dim + rot_dim]"
+    assert q_quant.size(0) == bs, f"q_quant.size(0) must be {bs}"
+    assert q_quant.size(1) == num_head, f"q_quant.size(1) must be {num_head}"
+    assert q_quant.size(2) == q_c_dim + rot_dim, f"q_quant.size(2) must be {q_c_dim + rot_dim}"
+
+    # Validate stride
+    assert q_stride_head == q_c_dim + rot_dim, "q_stride_head must be q_c_dim + rot_dim"
+
+    # Validate cos_sin_cache
+    assert cos_sin_cache.dim() == 2, "cos_sin_cache must be 2D tensor [max_position, rot_dim]"
+    assert cos_sin_cache.size(1) == rot_dim, "cos_sin_cache.size(1) must equal rot_dim"
+
+    # Validate q_scale
+    assert q_scale.dtype == torch.float32, "q_scale must be float tensor"
+
+    # Validate k_pe
+    assert k_pe.dim() == 2, "k_pe must be 2D tensor [bs, k_stride_head]"
+    assert k_pe.size(0) == bs, f"k_pe.size(0) must be {bs}"
+    assert k_pe.size(1) == rot_dim, f"k_pe.size(1) must be {rot_dim}"
+
+    # Validate kv_c_normed
+    assert kv_c_normed.dim() == 2, "kv_c_normed must be 2D tensor [bs, kv_c_dim]"
+    assert kv_c_normed.size(0) == bs, f"kv_c_normed.size(0) must be {bs}"
+    assert kv_c_normed.size(1) == kv_c_dim, f"kv_c_normed.size(1) must be {kv_c_dim}"
+    assert kv_c_normed.stride(0) == kv_c_dim, "kv_c_normed.stride(0) must be kv_c_dim"
+
+    # Validate kv_c
+    assert kv_c.dim() == 2, "kv_c must be 2D tensor [bs, kv_c_dim + rot_dim]"
+    assert kv_c.size(0) == bs, f"kv_c.size(0) must be {bs}"
+    assert kv_c.size(1) == kv_c_dim, f"kv_c.size(1) must be {kv_c_dim}"
+    assert kv_c.stride(0) == k_stride_head, "kv_c.stride(0) must equal k_pe.stride(0)"
+
+    # Validate slot_mapping
+    assert slot_mapping.dim() == 1, "slot_mapping must be 1D tensor [bs]"
+    assert slot_mapping.size(0) == bs, f"slot_mapping.size(0) must be {bs}"
+
+    # Validate kv_cache
+    assert kv_cache.dim() == 3, "kv_cache must be 3D tensor [num_kv_cache_blocks, kv_cache_blocks_size, kv_c_dim + rot_dim]"
+    assert kv_cache.size(2) == kv_c_dim + rot_dim, f"kv_cache.size(2) must be {kv_c_dim + rot_dim}"
+
+    # Validate kv_cache_dtype_str
+    assert kv_cache_dtype_str in ["fp8_e4m3", "fp8_e5m2"], "kv_cache_dtype_str must be fp8_e4m3 or fp8_e5m2"
+
+    # Validate kv_cache_scale
+    assert kv_cache_scale == 1.0, "kv_cache_scale must be 1.0"
+
+
+def fuse_rmsnorm_rope_quant_qkv(positions, q_c, q_pe, q_quant, q_scale, k_pe, kv_c, kv_c_normed,
+                               weight, cos_sin_cache, slot_mapping, kv_cache,
+                               kv_cache_dtype_str, kv_cache_scale=1.0, is_neox_style=False, epsilon=1e-6):
+    """
+    Python wrapper for fuse_rmsnorm_rope_quant_qkv with input validation
+    """
+    # Validate inputs
+    validate_fuse_rmsnorm_rope_quant_qkv_args(
+        positions, q_c, q_pe, q_quant, q_scale, k_pe, kv_c, kv_c_normed,
+        weight, cos_sin_cache, slot_mapping, kv_cache,
+        kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon
+    )
+
+    # Call the C++ function
+    return op.fuse_rmsnorm_rope_quant_qkv(
+        positions, q_c, q_pe, q_quant, q_scale, k_pe, kv_c, kv_c_normed,
+        weight, cos_sin_cache, slot_mapping, kv_cache,
+        kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon
+    )
