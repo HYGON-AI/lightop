@@ -542,7 +542,7 @@ __device__ typename vec<int, 4>::type mmac2(const typename vec<Element, 8>::type
         v4i = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
     #elif defined(__gfx938__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
-        const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
+        const intx2 B = *(reinterpret_cast<const intx2 *>(v2));
         v4i =__builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
     #endif
     return v4i;
