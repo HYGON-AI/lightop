@@ -157,7 +157,7 @@ def moe_gemm_marlin_w4a8(
                     config: Dict[str, Any],
                     is_ep:bool = False) -> torch.Tensor:
     mode = config['MODE']
-    delta = config['DELTA']
+    delta = config.get('DELTA', 1)
 
     if mode < 500: # 手写算子实现
         op.moe_gemm_w4a8(input, b_qweight, output, a_scale, b_scale, topk_weights,
