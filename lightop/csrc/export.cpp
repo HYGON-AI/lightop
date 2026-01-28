@@ -258,6 +258,10 @@ void destindex_dequantize_int8_cuda(const torch::Tensor& input, const torch::Ten
 std::vector<at::Tensor> kimi_k2_moe_fused_gate(at::Tensor &input, at::Tensor &bias, int64_t topk,bool renormalize, double routed_scaling_factor,bool apply_routed_scaling_factor_on_output); 
 void fuse_rms_mrope_cuda(Tensor &q, Tensor &k, const Tensor &cos, const Tensor &sin, const std::vector<int>& mrope_section, int head_size, int rotary_dim,bool is_interleaved,Tensor weight_q,Tensor weight_k,c10::optional<Tensor> residual_q,c10::optional<Tensor> residual_k,double epsilon);
 void ep_gather(torch::Tensor& a,torch::Tensor& topk_ids,torch::Tensor& topk_weights,torch::Tensor& inv_perm,torch::optional<torch::Tensor> expert_map,torch::Tensor& output);
+torch::Tensor backward_polyfill_cuda(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,torch::Tensor grad_output,torch::Tensor grad_vertices,int width,int height,float inv_smoothness,int mode);
+std::vector<torch::Tensor> forward_polyfill_cuda(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,int width,int height,float inv_smoothness,int mode);
+torch::Tensor backward_polyfill_lightop(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,torch::Tensor grad_output,torch::Tensor grad_vertices,int width,int height,float inv_smoothness,int mode);
+std::vector<torch::Tensor> forward_polyfill_lightop(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,int width,int height,float inv_smoothness,int mode);
 }
 }
 
@@ -434,5 +438,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("kimi_k2_moe_fused_gate", &at::native::kimi_k2_moe_fused_gate, "kimi_k2_moe_fused_gate");
   m.def("fuse_rms_mrope_cuda", &at::native::fuse_rms_mrope_cuda,"fuse_rms_mrope_cuda");
   m.def("ep_gather", &at::native::ep_gather, "ep_gather");
+  m.def("backward_polyfill_cuda", &at::native::backward_polyfill_cuda, "backward_polyfill_cuda");
+  m.def("forward_polyfill_cuda", &at::native::forward_polyfill_cuda, "forward_polyfill_cuda");
+  m.def("forward_polyfill_lightop", &at::native::forward_polyfill_lightop, "forward_polyfill_lightop");
+  m.def("backward_polyfill_lightop", &at::native::backward_polyfill_lightop, "backward_polyfill_lightop");
 }
 

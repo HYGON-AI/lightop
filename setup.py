@@ -472,7 +472,8 @@ def get_extensions():
                glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
                glob.glob('./lightop/csrc/marlinw4fp8/*.cu') +\
                glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu') +\
-               glob.glob('./lightop/csrc/mqa_logits/*.cu') + glob.glob('./lightop/csrc/paged_mqa_logits/*.cu')+ glob.glob('./lightop/csrc/bmm_scale/*.cu')
+               glob.glob('./lightop/csrc/mqa_logits/*.cu') + glob.glob('./lightop/csrc/paged_mqa_logits/*.cu')+ glob.glob('./lightop/csrc/bmm_scale/*.cu') + \
+               glob.glob('./lightop/csrc/polyfill/*.cu')
 
     miopen_files = glob.glob('./lightop/csrc/miopen/*.cpp') + \
                    glob.glob('./lightop/csrc/miopen/fusion_mode/*.cpp') + glob.glob('./lightop/csrc/miopen/graph/*.cpp') + glob.glob('./lightop/csrc/miopen/op/*.cpp')
