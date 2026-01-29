@@ -729,6 +729,7 @@ def fused_bmm(x: torch.Tensor,                                       # [batch_si
     assert dtype in [
         torch.float8_e4m3fn,
         torch.float8_e5m2,
+        torch.bfloat16,
     ], f"Output dtype {dtype} is currently not supported in fused_bmm"
 
     if output is None:
