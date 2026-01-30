@@ -688,8 +688,8 @@ def fused_bmm(x: torch.Tensor,                                       # [batch_si
               x_scale: torch.Tensor,                                 # [batch_size, num_head, 1], fp32
               w_scale: torch.Tensor,                                 # [num_head, l_size, 1], fp32
               bias: Optional[torch.Tensor] = None,                   # [num_head, l_size], None
-              dtype: Optional[torch.dtype] = torch.float8_e4m3fn,    # fp8
-              output: Optional[torch.Tensor] = None,                 # [batch_size, num_head, l_size], fp8
+              dtype: Optional[torch.dtype] = torch.float8_e4m3fn,    # output dtype: fp8 or bf16
+              output: Optional[torch.Tensor] = None,                 # [batch_size, num_head, l_size], fp8 or bf16
               transpose_bm: Optional[bool] = False,
               transpose_bm_in: Optional[bool] = False,
               config: Optional[Dict[str, Any]] = {"MODE": 0}) -> torch.Tensor:
@@ -705,7 +705,7 @@ def fused_bmm(x: torch.Tensor,                                       # [batch_si
         x_scale (torch.Tensor): Per-batch scale for x with shape (B, M, 1) or (M, B, 1) if transpose_bm_in=True.
         w_scale (torch.Tensor): Per-batch scale for w with shape (B,N,1).
         bias (Optional[torch.Tensor]): Bias batch with shape (B,N).
-        dtype (Optional[torch.dtype]): Output datatype (float8_e4m3fn or float8_e5m2).
+        dtype (Optional[torch.dtype]): Output datatype (float8_e4m3fn or bf16).
         output (Optional[torch.Tensor]): Pre-allocated output tensor with shape (B, M, N) or (M, B, N) if transpose_bm=True.
         transpose_bm (Optional[bool]): Transpose batch and M dimensions in output.
         transpose_bm_in (Optional[bool]): Transpose batch and M dimensions in input.
