@@ -813,7 +813,7 @@ __global__ void ms_deformable_col2im_gpu_kernel_3d_grid(
     scalar_t* __restrict__ grad_value, 
     scalar_t* __restrict__ grad_sampling_loc,
     scalar_t* __restrict__ grad_attn_weight) {
-#if defined(__gfx936__)
+#if __has_builtin(__builtin_hcu_global_atomic_fadd_f32_x4)
     const int CH_V4 = 8; // channels=32 / 4
     extern __shared__ char smem[];
     int* s_level_start = (int*)smem;
