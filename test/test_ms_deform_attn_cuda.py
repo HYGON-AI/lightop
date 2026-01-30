@@ -178,7 +178,7 @@ def benchmark_gpu_timing_and_correctness(num_runs=50):
         sampling_locations.detach().cpu(),
         attention_weights.detach().cpu())
 
-    print(f"前向输出匹配: {'✓' if torch.allclose(gpu_output, pytorch_output, rtol=1e-2, atol=1e-2) else '✗'}")
+    print(f"前向输出匹配: {'✓' if torch.allclose(gpu_output, pytorch_output, rtol=1e-4, atol=1e-4) else '✗'}")
 
     # ==================== 反向正确性对比 ====================
     grad_value = torch.zeros_like(value)
@@ -210,7 +210,7 @@ def benchmark_gpu_timing_and_correctness(num_runs=50):
         diff = grad.cpu() - grad_ref
         max_err = diff.abs().max().item()
         mean_err = diff.abs().mean().item()
-        ok = torch.allclose(grad.cpu(), grad_ref, rtol=1e-2, atol=1e-2)
+        ok = torch.allclose(grad.cpu(), grad_ref, rtol=1e-4, atol=1e-4)
         print(f"{name}: {'✓' if ok else '✗'} "
               f"(max_err={max_err:.3e}, mean_err={mean_err:.3e})")
         return ok
