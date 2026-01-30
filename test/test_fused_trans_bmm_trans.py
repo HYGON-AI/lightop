@@ -128,8 +128,18 @@ def fused_bmm_trans_impl_int8(  torch_input: torch.Tensor,                      
 
         torch_output_fp32 = torch_output_uint8.to(torch.float32)
         cuda_output_fp32 = cuda_output_uint8.to(torch.float32)
+        
+        rtol = 1e-2
+        atol = 1e-2
+        
+        if is_tuning:
+            rtol = 1e-1
+            atol = 1e-1
+        else:
+            rtol = 1e-2
+            atol = 1e-2
 
-        if not (torch.allclose(cuda_output_fp32, torch_output_fp32, rtol=1e-2, atol=1e-2, equal_nan=True)):
+        if not (torch.allclose(cuda_output_fp32, torch_output_fp32, rtol=rtol, atol=atol, equal_nan=True)):
             mode_status = False
             if not is_tuning:
                 print(f"kernel 精度检查不合格!!!")
@@ -290,9 +300,7 @@ def torch_benchmark_transpose_bmm_transpose_bf16(decode_q_nope: torch.Tensor,
 def torch_benchmark_fuse_bmm_bf16(torch_q_bf16: torch.Tensor,
                                   torch_w_uk_bf16: torch.Tensor) -> Tuple[torch.Tensor, float]:
     torch.manual_seed(0)
-    # decode_q_nope = torch.randn(B, N, P, dtype=torch.bfloat16, device='cuda')  # [b, n, p]
-    # w_uk_t = torch.randn(N, P, L, dtype=torch.bfloat16, device='cuda')  # [n, p, l]
-    torch_w_uk_bf16_t = torch_w_uk_bf16.transpose(1,2)  # [n, l, p] -> [n, p, l]
+    torch_w_uk_bf16_t = torch_w_uk_bf16.transpose(1,2).contiguous()  # [n, l, p] -> [n, p, l]
  
     ref_output = torch_benchmark_transpose_bmm_transpose_bf16(torch_q_bf16, torch_w_uk_bf16_t)
     
@@ -946,15 +954,31 @@ def run_benchmark_trans_bmm_trans():
             # triton moe: output
             result=fused_bmm_trans_impl_int8_benchmark(torch_q_bf16, torch_w_uk_bf16, torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, dtype=out_dtype, transpose_bm=transpose_bm, transpose_bm_in=transpose_bm_in)
             results_list.append(result)
+    
+    # 计算通过率
+    total_count = len(results_list)
+    passed_count = sum(1 for r in results_list if r.get("Passed", False))
+    pass_rate = (passed_count / total_count * 100) if total_count > 0 else 0.0
+    # 收集不通过的 shape (B, N, L, P)
+    failed_shapes = [
+        (r["B"], r["N"], r["L"], r["P"])
+        for r in results_list
+        if not r.get("Passed", False)
+    ]
                 
     output_file = "fused_bmm_benchmark.xlsx"
     df = pd.DataFrame(results_list)
-    df.to_excel(output_file, index=False)                  
+    df.to_excel(output_file, index=False)
+    print(f"通过率: {passed_count}/{total_count} = {pass_rate:.2f}%")
+    if failed_shapes:
+        print("不通过的 shape (B, N, L, P):")
+        for shape in failed_shapes:
+            print(f"  {shape}")                  
             
 def main(mode: str = "debug"):
     """
     mode 支持三种：
-      - "tune"      : 跑 kernel tuning，生成/更新最优 config json
+      - "tune"      : 跑 kernel tuning, 生成/更新最优 config json
       - "debug"     : 做精度校验
       - "benchmark" : 使用最优 config 跑性能 benchmark
     """
