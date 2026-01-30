@@ -1782,111 +1782,146 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
               }
             });
       }
-    } else if (hidden_size == 2048){    /* qwen-30b */
-      int gridy = num_tokens;
-      if(num_local_tokens.has_value() && input.scalar_type() == at::ScalarType::BFloat16){
-          if(expect_m > 0){
+    } else if (hidden_size == 2048 || hidden_size == 4096 || hidden_size == 8192){   
+      #define DISPATCH_HIDDEN_SIZE(HIDDEN_SIZE_VAL, ...)       \
+            switch (HIDDEN_SIZE_VAL) {                             \
+              case 2048: {                                         \
+                constexpr int CONST_HIDDEN_SIZE = 2048;            \
+                constexpr int CONST_X_DIM = 2;                     \
+                __VA_ARGS__();                                     \
+                break;                                             \
+              }                                                    \
+              case 4096: {                                         \
+                constexpr int CONST_HIDDEN_SIZE = 4096;            \
+                constexpr int CONST_X_DIM = 4;                     \
+                __VA_ARGS__();                                     \
+                break;                                             \
+              }                                                    \
+              case 8192: {                                         \
+                constexpr int CONST_HIDDEN_SIZE = 8192;            \
+                constexpr int CONST_X_DIM = 8;                     \
+                __VA_ARGS__();                                     \
+                break;                                             \
+              }                                                    \
+              default:                                             \
+                TORCH_CHECK(false, "Unsupported hidden_size: ", HIDDEN_SIZE_VAL); \
+            }
+    int gridy = num_tokens;
+    if(num_local_tokens.has_value() && input.scalar_type() == at::ScalarType::BFloat16){
+        if(expect_m > 0){
             gridy = expect_m;
-          }else{
+        }else{
             if(num_tokens >= 2048 && num_tokens < 4096){
-              gridy /= 2; 
-            } else if(num_tokens >= 4096)
-            { 
+                gridy /= 2; 
+            } else if(num_tokens >= 4096) { 
                gridy /= 4;
             }
-          }
-      }
-      const int x_dim = 2;
-      dim3 Grid(x_dim, gridy);
-      const int block_size = 128;
-      const int VEC_SIZE = 8;
-      const int hiddenSize = 2048;
-      if (num_tokens <= 512) {
+        }
+    }
+
+  
+    const int block_size = 128;
+    const int VEC_SIZE = 8;
+ 
+    if (num_tokens <= 512) {
         AT_DISPATCH_FLOATING_TYPES_AND2(
             at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
             "moe_sum_kernel_reg", [&] {
-              if (input.scalar_type() == at::ScalarType::BFloat16) {
-                if(expert_mask.has_value() || num_local_tokens.has_value()){
-                  moe_sum_kernel_reg_bf16_add_bias<
-                    scalar_t, 8, VEC_SIZE, hiddenSize / VEC_SIZE, x_dim * block_size,
-                    block_size, true><<<Grid, block_size, 0, stream>>>(
-                    output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                    bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-                    factor,
-                    expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                            : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr,num_tokens);
-                }else{
-                  if(bias.has_value()){
-                    moe_sum_kernel_reg_bf16_add_bias_opt<
-                    scalar_t, 8, VEC_SIZE, hiddenSize, x_dim * block_size,
-                    block_size, true><<<Grid, block_size, 0, stream>>>(
-                    output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                    bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-                    factor,num_tokens);
-                  }else{
-                    moe_sum_kernel_reg_bf16_add_bias_opt<
-                    scalar_t, 8, VEC_SIZE, hiddenSize, x_dim * block_size,
-                    block_size, false><<<Grid, block_size, 0, stream>>>(
-                    output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                    bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-                    factor,num_tokens);
-                  }
-                }
-              } else {
-                moe_sum_kernel_reg<scalar_t, 8, VEC_SIZE, hiddenSize / VEC_SIZE,
-                                   x_dim * block_size, block_size, false>
-                    <<<Grid, block_size, 0, stream>>>(
-                        output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                        bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-                        1.0 / factor,
-                        expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                                : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr);
-              }
+                
+                DISPATCH_HIDDEN_SIZE(hidden_size, [&] {
+                    dim3 Grid(CONST_X_DIM, gridy);
+                    if (input.scalar_type() == at::ScalarType::BFloat16) {
+                        if(expert_mask.has_value() || num_local_tokens.has_value()){
+                             moe_sum_kernel_reg_bf16_add_bias<
+                                scalar_t, 8, VEC_SIZE, 
+                                CONST_HIDDEN_SIZE / VEC_SIZE, 
+                                CONST_X_DIM * block_size,    
+                                block_size, true><<<Grid, block_size, 0, stream>>>(
+                                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                                factor,
+                                expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr, 
+                                num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr,
+                                num_tokens);
+                        } else {
+                            if(bias.has_value()){
+                                moe_sum_kernel_reg_bf16_add_bias_opt<
+                                scalar_t, 8, VEC_SIZE, CONST_HIDDEN_SIZE, CONST_X_DIM * block_size,
+                                block_size, true><<<Grid, block_size, 0, stream>>>(
+                                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                                factor, num_tokens);
+                            } else {
+                                moe_sum_kernel_reg_bf16_add_bias_opt<
+                                scalar_t, 8, VEC_SIZE, CONST_HIDDEN_SIZE, CONST_X_DIM * block_size,
+                                block_size, false><<<Grid, block_size, 0, stream>>>(
+                                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                                factor, num_tokens);
+                            }
+                        }
+                    } else {
+                        moe_sum_kernel_reg<scalar_t, 8, VEC_SIZE, 
+                                           CONST_HIDDEN_SIZE / VEC_SIZE, 
+                                           CONST_X_DIM * block_size,    
+                                           block_size, false>
+                            <<<Grid, block_size, 0, stream>>>(
+                                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                                1.0 / factor,
+                                expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr, 
+                                num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr);
+                    }
+                }); 
             });
-      } else {
+    } else {
         AT_DISPATCH_FLOATING_TYPES_AND2(
             at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
             "moe_sum_kernel_shared_mem", [&] {
-              if (input.scalar_type() == at::ScalarType::BFloat16) {
-                  if(expert_mask.has_value() || num_local_tokens.has_value()){
-                  moe_sum_kernel_reg_bf16_add_bias<
-                    scalar_t, 8, VEC_SIZE, hiddenSize / VEC_SIZE, x_dim * block_size,
-                    block_size, true><<<Grid, block_size, 0, stream>>>(
-                    output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                    bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-                    factor,
-                    expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                            : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr,num_tokens);
-                }else{
-                  if(bias.has_value()){
-                    moe_sum_kernel_reg_bf16_add_bias_opt<
-                    scalar_t, 8, VEC_SIZE, hiddenSize, x_dim * block_size,
-                    block_size, true><<<Grid, block_size, 0, stream>>>(
-                    output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                    bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-                    factor,num_tokens);
-                  }else{
-                    moe_sum_kernel_reg_bf16_add_bias_opt<
-                    scalar_t, 8, VEC_SIZE, hiddenSize, x_dim * block_size,
-                    block_size, false><<<Grid, block_size, 0, stream>>>(
-                    output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                    bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-                    factor,num_tokens);
-                  }
-                }
-              } else {
-                moe_sum_kernel_shared_mem<scalar_t, 8, VEC_SIZE,
-                                          hiddenSize / VEC_SIZE, x_dim * block_size,
-                                          block_size, false>
-                    <<<Grid, block_size, 0, stream>>>(
-                        output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                        bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
-                        1.0 / factor,
-                        expert_mask.has_value() ? expert_mask->data_ptr<bool>()
-                                                : nullptr, num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr);
-              }
+                 DISPATCH_HIDDEN_SIZE(hidden_size, [&] {
+                    dim3 Grid(CONST_X_DIM, gridy);
+                    
+                    if (input.scalar_type() == at::ScalarType::BFloat16) {
+                         if(expert_mask.has_value() || num_local_tokens.has_value()){
+                            moe_sum_kernel_reg_bf16_add_bias<
+                            scalar_t, 8, VEC_SIZE, CONST_HIDDEN_SIZE / VEC_SIZE, CONST_X_DIM * block_size,
+                            block_size, true><<<Grid, block_size, 0, stream>>>(
+                            output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                            bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                            factor,
+                            expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr,
+                            num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr,num_tokens);
+                        } else {
+                            if(bias.has_value()){
+                                moe_sum_kernel_reg_bf16_add_bias_opt<
+                                scalar_t, 8, VEC_SIZE, CONST_HIDDEN_SIZE, CONST_X_DIM * block_size,
+                                block_size, true><<<Grid, block_size, 0, stream>>>(
+                                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                                factor,num_tokens);
+                            } else {
+                                moe_sum_kernel_reg_bf16_add_bias_opt<
+                                scalar_t, 8, VEC_SIZE, CONST_HIDDEN_SIZE, CONST_X_DIM * block_size,
+                                block_size, false><<<Grid, block_size, 0, stream>>>(
+                                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                                factor,num_tokens);
+                            }
+                        }
+                    } else {
+                        moe_sum_kernel_shared_mem<scalar_t, 8, VEC_SIZE,
+                                                  CONST_HIDDEN_SIZE / VEC_SIZE, CONST_X_DIM * block_size,
+                                                  block_size, false>
+                            <<<Grid, block_size, 0, stream>>>(
+                                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                                bias.has_value() ? bias->data_ptr<scalar_t>() : nullptr,
+                                1.0 / factor,
+                                expert_mask.has_value() ? expert_mask->data_ptr<bool>() : nullptr,
+                                num_local_tokens.has_value() ? num_local_tokens->data_ptr<int32_t>() : nullptr);
+                    }
+                 });
             });
-      }
+    }       
     }else {
       AT_DISPATCH_FLOATING_TYPES_AND2(
           at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),

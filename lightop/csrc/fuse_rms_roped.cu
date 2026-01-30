@@ -909,8 +909,169 @@ __global__ void opt_rms_rope_qwen3(
         *(LoadTK*)(k_head_ptr + offset_high) = *(LoadTK*)r_k_high;
     } 
 }
+template <typename T_ACC, typename scalar_t, int VEC_SIZE, bool HAS_RESIDUAL>
+__device__ __forceinline__ T_ACC apply_residual_and_calc_sq_4vec(
+    scalar_t* v0, scalar_t* v1, scalar_t* v2, scalar_t* v3,
+    scalar_t* res_ptr, int o0, int o1, int o2, int o3) {
+    T_ACC local_sum = 0;
+    #pragma unroll
+    for (int i = 0; i < VEC_SIZE; ++i) {
+        if constexpr (HAS_RESIDUAL) {
+            v0[i] += res_ptr[o0 + i];
+            v1[i] += res_ptr[o1 + i];
+            v2[i] += res_ptr[o2 + i];
+            v3[i] += res_ptr[o3 + i];
+        }
+        local_sum += static_cast<T_ACC>(v0[i]) * static_cast<T_ACC>(v0[i]);
+        local_sum += static_cast<T_ACC>(v1[i]) * static_cast<T_ACC>(v1[i]);
+        local_sum += static_cast<T_ACC>(v2[i]) * static_cast<T_ACC>(v2[i]);
+        local_sum += static_cast<T_ACC>(v3[i]) * static_cast<T_ACC>(v3[i]);
+    }
+    return local_sum;
+}
+template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX, int VEC_SIZE, int THEAD_PER_HEAD>
+__global__ void opt_rms_rope_qwen3_rotDim64(
+    const int64_t* __restrict__ positions,
+    scalar_t* __restrict__ query,      
+    scalar_t* __restrict__ key,        
+    const scalar_t* __restrict__ cos_sin_cache,
+    const int rot_dim,                 
+    const int64_t query_stride,          
+    const int64_t key_stride,            
+    const int64_t head_stride_q,        
+    const int64_t head_stride_k,       
+    const scalar_t* __restrict__ gamma_q,
+    const scalar_t* __restrict__ gamma_k,
+    scalar_t* __restrict__ residual_q,
+    scalar_t* __restrict__ residual_k,
+    const scalar_t eps,
+    const int num_tokens,
+    const int num_heads,
+    const int num_kv_heads,
+    const int threads_per_token, 
+    const int tokens_per_block   
+) 
+{
+    extern __shared__ char smem_buffer[];
+    scalar_t* s_cos_sin_base = reinterpret_cast<scalar_t*>(smem_buffer);
+
+    constexpr int HEAD_SIZE = 128;
+    const int tid = threadIdx.x;
+    const int local_token_idx = tid / threads_per_token;
+    const int lane = tid % threads_per_token;
+
+    if (local_token_idx >= tokens_per_block) return;
+
+    const int global_token_idx = blockIdx.x * tokens_per_block + local_token_idx;
+    if (global_token_idx >= num_tokens) return;
+
+   
+    scalar_t* my_s_cos_sin = s_cos_sin_base + local_token_idx * rot_dim;
+    const int64_t pos = positions[global_token_idx];
 
 
+    for (int i = lane; i < rot_dim; i += threads_per_token) {
+        my_s_cos_sin[i] = cos_sin_cache[pos * rot_dim + i];
+    }
+    __syncthreads(); 
+
+    const int q_boundary = num_heads * THEAD_PER_HEAD;
+    const int total_threads = (num_heads + num_kv_heads) * THEAD_PER_HEAD;
+
+    if (lane < total_threads) {
+        const bool is_query = lane < q_boundary;
+        const int head_idx = is_query ? (lane / THEAD_PER_HEAD) : ((lane - q_boundary) / THEAD_PER_HEAD);
+        const int lane_in_head = is_query ? (lane % THEAD_PER_HEAD) : ((lane - q_boundary) % THEAD_PER_HEAD);
+        
+        scalar_t* head_ptr = is_query ? 
+            (query + global_token_idx * query_stride + head_idx * head_stride_q) :
+            (key + global_token_idx * key_stride + head_idx * head_stride_k);
+        
+        scalar_t* res_head_ptr = HAS_RESIDUAL ? (is_query ? 
+            (residual_q + global_token_idx * query_stride + head_idx * head_stride_q) :
+            (residual_k + global_token_idx * key_stride + head_idx * head_stride_k)) : nullptr;
+
+        const scalar_t* gamma_ptr = is_query ? gamma_q : gamma_k;
+
+        //隔32个load 4个，对齐rope
+        int o0 = lane_in_head * VEC_SIZE; 
+        int o1 = o0 + 32;                 
+        int o2 = o0 + 64;                 
+        int o3 = o0 + 96;                 
+
+        using LoadT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
+        scalar_t v0[VEC_SIZE], v1[VEC_SIZE], v2[VEC_SIZE], v3[VEC_SIZE];
+
+        *(LoadT*)v0 = *(LoadT*)(head_ptr + o0);
+        *(LoadT*)v1 = *(LoadT*)(head_ptr + o1);
+        *(LoadT*)v2 = *(LoadT*)(head_ptr + o2);
+        *(LoadT*)v3 = *(LoadT*)(head_ptr + o3);
+
+  
+        T_ACC sum_sq = apply_residual_and_calc_sq_4vec<T_ACC, scalar_t, VEC_SIZE, HAS_RESIDUAL>(
+            v0, v1, v2, v3, res_head_ptr, o0, o1, o2, o3
+        );
+        sum_sq = WarpReduceSum_Local<T_ACC, THEAD_PER_HEAD>(sum_sq);
+        T_ACC inv_rms = c10::cuda::compat::rsqrt(sum_sq / HEAD_SIZE + static_cast<T_ACC>(eps));
+
+        if constexpr (IS_NEOX) {
+            scalar_t r_cos[VEC_SIZE], r_sin[VEC_SIZE];
+            *(LoadT*)r_cos = *(LoadT*)(my_s_cos_sin + o0);
+            *(LoadT*)r_sin = *(LoadT*)(my_s_cos_sin + 32 + o0);
+
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; ++i) {
+                T_ACC s0 = static_cast<T_ACC>(v0[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i]);
+                T_ACC s1 = static_cast<T_ACC>(v1[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i]);
+                T_ACC s2 = static_cast<T_ACC>(v2[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o2 + i]);
+                T_ACC s3 = static_cast<T_ACC>(v3[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o3 + i]);
+
+                v0[i] = s0 * r_cos[i] - s1 * r_sin[i];
+                v1[i] = s0 * r_sin[i] + s1 * r_cos[i];
+                v2[i] = s2;
+                v3[i] = s3;
+            }
+        } else {
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; i+=2) {
+            
+                int idx_c0 = (o0 + i) / 2;
+                int idx_c1 = (o0 + i + 1) / 2;
+                
+                scalar_t cos0 = my_s_cos_sin[idx_c0];
+                scalar_t sin0 = my_s_cos_sin[32 + idx_c0];
+                
+
+                T_ACC s0_0 = static_cast<T_ACC>(v0[i])   * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i]);
+                T_ACC s0_1 = static_cast<T_ACC>(v0[i+1]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i + 1]);
+                
+                v0[i]   = s0_0 * cos0 - s0_1 * sin0;
+                v0[i+1] = s0_1 * cos0 + s0_0 * sin0;
+
+    
+                int idx_c_v1 = (o1 + i) / 2;
+                scalar_t cos1 = my_s_cos_sin[idx_c_v1];
+                scalar_t sin1 = my_s_cos_sin[32 + idx_c_v1];
+
+                T_ACC s1_0 = static_cast<T_ACC>(v1[i])   * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i]);
+                T_ACC s1_1 = static_cast<T_ACC>(v1[i+1]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i + 1]);
+
+                v1[i]   = s1_0 * cos1 - s1_1 * sin1;
+                v1[i+1] = s1_1 * cos1 + s1_0 * sin1;
+            }
+            
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; ++i) {
+                v2[i] = static_cast<T_ACC>(v2[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o2 + i]);
+                v3[i] = static_cast<T_ACC>(v3[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o3 + i]);
+            }
+        }
+        *(LoadT*)(head_ptr + o0) = *(LoadT*)v0;
+        *(LoadT*)(head_ptr + o1) = *(LoadT*)v1;
+        *(LoadT*)(head_ptr + o2) = *(LoadT*)v2;
+        *(LoadT*)(head_ptr + o3) = *(LoadT*)v3;
+    }
+}
 template <typename T_ACC, typename scalar_t>
 void launch_opt_rms_rope(
     const int64_t* positions,
@@ -939,28 +1100,45 @@ void launch_opt_rms_rope(
         constexpr int THREAD_PER_ROW = 8;
         constexpr int VEC = 8;
         int threads_per_token = (num_heads + num_kv_heads) * THREAD_PER_ROW;
-        int target_block_size = 256; 
+        int target_block_size = 512; 
         int tokens_per_block = target_block_size / threads_per_token;
         if (tokens_per_block < 1) tokens_per_block = 1;
         
         int actual_block_size = tokens_per_block * threads_per_token;
         int grid_size = (num_tokens + tokens_per_block - 1) / tokens_per_block;
-        
+        if(rot_dim == 128){
         size_t smem_size = tokens_per_block * 128 * sizeof(scalar_t);
-
-        DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
-            DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
-                opt_rms_rope_qwen3<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,VEC,THREAD_PER_ROW>
-                    <<<grid_size, actual_block_size, smem_size, stream>>>(
-                    positions, query, key, cos_sin_cache, rot_dim, 
-                    query_stride, key_stride, head_stride_q, head_stride_k, 
-                    gamma_q, gamma_k, 
-                    residual_q_ptr, residual_k_ptr, 
-                    eps, num_tokens, num_heads, num_kv_heads,
-                    threads_per_token, tokens_per_block
-                );
+            DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
+                DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
+                    opt_rms_rope_qwen3<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,VEC,THREAD_PER_ROW>
+                        <<<grid_size, actual_block_size, smem_size, stream>>>(
+                        positions, query, key, cos_sin_cache, rot_dim, 
+                        query_stride, key_stride, head_stride_q, head_stride_k, 
+                        gamma_q, gamma_k, 
+                        residual_q_ptr, residual_k_ptr, 
+                        eps, num_tokens, num_heads, num_kv_heads,
+                        threads_per_token, tokens_per_block
+                    );
+                });
             });
-        });
+        }else if(rot_dim == 64){
+            size_t smem_size = tokens_per_block * 64 * sizeof(scalar_t);
+            DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
+                DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
+                    opt_rms_rope_qwen3_rotDim64<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,4,THREAD_PER_ROW>
+                        <<<grid_size, actual_block_size, smem_size, stream>>>(
+                        positions, query, key, cos_sin_cache, rot_dim, 
+                        query_stride, key_stride, head_stride_q, head_stride_k, 
+                        gamma_q, gamma_k, 
+                        residual_q_ptr, residual_k_ptr, 
+                        eps, num_tokens, num_heads, num_kv_heads,
+                        threads_per_token, tokens_per_block
+                    );
+                });
+            });
+        }else{
+            return;
+        }
 }
 
 void rms_rotary_embedding_fuse(
@@ -989,9 +1167,6 @@ void rms_rotary_embedding_fuse(
                 query.size(1) == positions.size(1) && (key.size(1) == positions.size(1)),
                 "query, key and positions must have the same batch_size and seq_len");
   }
-  key = key.is_contiguous() ? key : key.contiguous();
-  query = query.is_contiguous() ? query : query.contiguous();
-
   int query_hidden_size = query.numel() / num_tokens;
   int key_hidden_size = key.numel() / num_tokens;
 
@@ -1020,7 +1195,7 @@ void rms_rotary_embedding_fuse(
 
 
   auto* pos_ptr = positions.data_ptr<int64_t>(); 
-  bool qwen3 =  (head_size == 128 && (num_heads + num_kv_heads) <= 128 && rot_dim == 128);
+  bool qwen3 =  (head_size == 128 && (num_heads + num_kv_heads) <= 128 && (rot_dim == 128 ||  rot_dim == 64));
 
   AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
