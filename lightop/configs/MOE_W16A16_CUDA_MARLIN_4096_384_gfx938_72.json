@@ -3,7 +3,7 @@
         "1": {
             "BLOCK_SIZE_M": 16,
             "MODE": 304,
-            "DELTA": 2
+            "DELTA": 1
         },
         "2": {
             "BLOCK_SIZE_M": 16,

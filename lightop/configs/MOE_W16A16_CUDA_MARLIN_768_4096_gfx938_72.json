@@ -1,8 +1,8 @@
 {
     "768_4096": {
         "1": {
-            "BLOCK_SIZE_M": 32,
-            "MODE": 115,
+            "BLOCK_SIZE_M": 16,
+            "MODE": 300,
             "DELTA": 1
         },
         "2": {
