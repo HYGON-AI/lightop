@@ -60,7 +60,7 @@ from .permute_unpermute import groupgemm_permute, groupgemm_unpermute, fuse_grou
 from .moe_align_sum import moe_sum, moe_align_block_size
 from .batch_linear_assignment import batch_linear_assignment
 from .fill_zeros import fill_zeros
-from .fuse_rmsnorm_rope import rms_rotary_embedding_fuse
+from .fuse_rmsnorm_rope import rms_rotary_embedding_fuse, rms_rotary_embedding_fuse_with_kv_store
 from .reshape_and_cache_cuda import reshape_and_cache_cuda
 from .fuse_rms_mrope_cuda import fuse_rms_mrope_cuda
 from .wan_quant import destindex_copy_quantize_int8_cuda, destindex_dequantize_int8_cuda

@@ -54,3 +54,57 @@ def rms_rotary_embedding_fuse(
     )
     
     return query, key
+
+def rms_rotary_embedding_fuse_with_kv_store(
+    positions: torch.Tensor,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    v: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    page_size: int,
+    k_buffer: torch.Tensor,
+    v_buffer: torch.Tensor,
+    kv_cache_loc: torch.Tensor,
+    is_neox: bool,
+    weight_q: torch.Tensor,
+    weight_k: torch.Tensor,
+    residual_q: Optional[torch.Tensor],
+    residual_k: Optional[torch.Tensor],
+    epsilon: float = 1e-5
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+
+    # print("rms_rotary_embedding_fuse_with_kv_store")
+    # print("positions", positions.shape)
+    # print("query", query.shape)
+    # print("key", key.shape)
+    # print("v", v.shape)
+    # print("cos_sin_cache", cos_sin_cache.shape)
+    # print("page_size", page_size)
+    # print("k_buffer", k_buffer.shape)
+    # print("v_buffer", v_buffer.shape)
+    # print("kv_cache_loc", kv_cache_loc.shape)
+    # print("is_neox", is_neox)
+    # print("interleave", not(is_neox))
+    # print("weight_q", weight_q.shape)
+    # print("weight_k", weight_k.shape)
+    # print("residual_q", residual_q.shape if residual_q is not None else None)
+    # print("residual_k", residual_k.shape if residual_k is not None else None)
+    # print("epsilon", epsilon)
+    op.rms_rotary_embedding_fuse_with_kv_store(
+        positions,
+        query,
+        key,
+        v,
+        cos_sin_cache,
+        page_size,
+        k_buffer,
+        v_buffer,
+        kv_cache_loc,
+        not(is_neox),
+        weight_q,
+        weight_k,
+        residual_q,
+        residual_k,
+        epsilon
+    )
+    return query, key
