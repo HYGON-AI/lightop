@@ -61,6 +61,7 @@ def rms_rotary_embedding_fuse_with_kv_store(
     key: torch.Tensor,
     v: torch.Tensor,
     cos_sin_cache: torch.Tensor,
+    head_dim: int,
     page_size: int,
     k_buffer: torch.Tensor,
     v_buffer: torch.Tensor,
@@ -68,34 +69,36 @@ def rms_rotary_embedding_fuse_with_kv_store(
     is_neox: bool,
     weight_q: torch.Tensor,
     weight_k: torch.Tensor,
+    output_dtype: torch.dtype,
     residual_q: Optional[torch.Tensor],
     residual_k: Optional[torch.Tensor],
+    k_scale: Optional[float],
+    v_scale: Optional[float],
     epsilon: float = 1e-5
-) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    # 当 v_buffer 为 fp8 (uint8) 时，kernel 会将 q 转为 fp8 写入 q_rope_out，需预先分配
+    use_fp8_cache = (v_buffer.dtype == torch.uint8)
+    q_rope_out = None
+    k_rope_out = None
+    v_rope_out = None
+    if use_fp8_cache:
+        q_rope_out = torch.empty(
+            query.shape, dtype=torch.uint8, device=query.device
+        ).contiguous()
+        k_rope_out = torch.empty(
+            key.shape, dtype=torch.uint8, device=key.device
+        ).contiguous()
+        v_rope_out = torch.empty(
+            v.shape, dtype=torch.uint8, device=v.device
+        ).contiguous()
 
-    # print("rms_rotary_embedding_fuse_with_kv_store")
-    # print("positions", positions.shape)
-    # print("query", query.shape)
-    # print("key", key.shape)
-    # print("v", v.shape)
-    # print("cos_sin_cache", cos_sin_cache.shape)
-    # print("page_size", page_size)
-    # print("k_buffer", k_buffer.shape)
-    # print("v_buffer", v_buffer.shape)
-    # print("kv_cache_loc", kv_cache_loc.shape)
-    # print("is_neox", is_neox)
-    # print("interleave", not(is_neox))
-    # print("weight_q", weight_q.shape)
-    # print("weight_k", weight_k.shape)
-    # print("residual_q", residual_q.shape if residual_q is not None else None)
-    # print("residual_k", residual_k.shape if residual_k is not None else None)
-    # print("epsilon", epsilon)
     op.rms_rotary_embedding_fuse_with_kv_store(
         positions,
         query,
         key,
         v,
         cos_sin_cache,
+        head_dim,
         page_size,
         k_buffer,
         v_buffer,
@@ -103,8 +106,18 @@ def rms_rotary_embedding_fuse_with_kv_store(
         not(is_neox),
         weight_q,
         weight_k,
+        output_dtype,
         residual_q,
         residual_k,
+        k_scale,
+        v_scale,
+        q_rope_out,
+        k_rope_out,
+        v_rope_out,
         epsilon
     )
-    return query, key
+    # fp8 时返回 q 的 fp8 结果 (q_rope_out)，否则返回原地修改后的 query
+    q_out = q_rope_out if use_fp8_cache else query
+    k_out = k_rope_out if use_fp8_cache else key
+    v_out = v_rope_out if use_fp8_cache else v
+    return q_out, k_out, v_out

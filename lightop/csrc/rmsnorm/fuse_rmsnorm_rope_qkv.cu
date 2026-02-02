@@ -51,6 +51,27 @@
     __VA_ARGS__                                                      \
   }
 
+#define DISPATCH_DTYPE_SET(kv_dtype, CACHE_T_CONST, ...) \
+  if (kv_dtype == at::ScalarType::BFloat16 || kv_dtype == at::ScalarType::Half) {                                    \
+    constexpr int CACHE_T_CONST = 0;                    \
+    __VA_ARGS__                                                      \
+  } else if (kv_dtype == at::ScalarType::Float8_e4m3fn) {                                                           \
+    constexpr bool CACHE_T_CONST = 1;                   \
+    __VA_ARGS__                                                      \
+  } else {                                      \
+    constexpr bool CACHE_T_CONST = 2;                   \
+    __VA_ARGS__                                                      \
+  }
+
+#define DISPATCH_HAS_SCALE(has_scale, HAS_SCALE_CONST, ...) \
+  if (has_scale) { \
+    constexpr bool HAS_SCALE_CONST = true; \
+    __VA_ARGS__ \
+  } else { \
+    constexpr bool HAS_SCALE_CONST = false; \
+    __VA_ARGS__ \
+  }
+
 #define DISPATCH_rotary_dim(rotary_dim, ROTARY_DIM_CONST, ...) \
   switch (rotary_dim) { \
     case 64: { \
@@ -148,6 +169,122 @@ asm volatile(\
   :);\
 __builtin_amdgcn_sched_barrier(0);
 
+inline __device__ uint8_t float_to_fp8e4m3(float f) {
+  constexpr uint32_t fp32_inf = UINT32_C(255) << 23;
+  constexpr uint32_t fp8_max = UINT32_C(143) << 23;
+  constexpr uint32_t denorm_mask = UINT32_C(134) << 23;
+  uint32_t f_bits = c10::detail::fp32_to_bits(f);
+  uint8_t result = 0u;
+  const uint32_t sign = f_bits & UINT32_C(0x80000000);
+  f_bits ^= sign;
+  if (f_bits >= fp8_max) {
+    result = f_bits > fp32_inf ? UINT8_C(0x7F) : UINT8_C(0x7C);
+  } else {
+    if (f_bits < (UINT32_C(113) << 23)) {
+      f_bits = c10::detail::fp32_to_bits(c10::detail::fp32_from_bits(f_bits)
+               + c10::detail::fp32_from_bits(denorm_mask));
+      result = static_cast<uint8_t>(f_bits - denorm_mask);
+    } else {
+      uint32_t mant_odd = (f_bits >> 21) & 1;
+      f_bits += ((uint32_t)(15 - 127) << 23) + 0xFFFFF;
+      f_bits += mant_odd;
+      result = static_cast<uint8_t>(f_bits >> 21);
+    }
+  }
+  result |= static_cast<uint8_t>(sign >> 24);
+  return result;
+}
+
+inline __device__ uint16_t float_to_fp8e4m3_x2(float a, float b)
+{
+  #if defined(__gfx938__)
+    // 对于ROCm，可能需要使用不同的内置函数或组合现有函数
+    int32_t temp;
+    temp = __builtin_hcu_cvt_pk_fp8_f32(a, b, temp, false);
+    return static_cast<uint16_t>(temp & 0xFFFF);
+  #else
+    uint16_t out;
+    reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e4m3(a);
+    reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e4m3(b);
+    return out;
+  #endif
+}
+
+inline __device__ uint32_t float_to_fp8e4m3_x4(float a, float b, float c, float d)
+{
+  #if defined(__gfx938__)
+    int32_t res;
+    res = __builtin_hcu_cvt_pk_fp8_f32(a, b, res, false);
+    res = __builtin_hcu_cvt_pk_fp8_f32(c, d, res, true);
+    return res;
+  #else
+    int32_t out;
+    reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e4m3(a);
+    reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e4m3(b);
+    reinterpret_cast<uint8_t*>(&out)[2] = float_to_fp8e4m3(c);
+    reinterpret_cast<uint8_t*>(&out)[3] = float_to_fp8e4m3(d);
+    return out;
+  #endif
+}
+
+inline __device__ uint8_t float_to_fp8e5m2(float f) {
+  constexpr uint32_t fp32_inf = UINT32_C(255) << 23;
+  constexpr uint32_t fp8_max = UINT32_C(143) << 23;
+  constexpr uint32_t denorm_mask = UINT32_C(134) << 23;
+  uint32_t f_bits = c10::detail::fp32_to_bits(f);
+  uint8_t result = 0u;
+  const uint32_t sign = f_bits & UINT32_C(0x80000000);
+  f_bits ^= sign;
+  if (f_bits >= fp8_max) {
+    result = f_bits > fp32_inf ? UINT8_C(0x7F) : UINT8_C(0x7C);
+  } else {
+    if (f_bits < (UINT32_C(113) << 23)) {
+      f_bits = c10::detail::fp32_to_bits(c10::detail::fp32_from_bits(f_bits)
+               + c10::detail::fp32_from_bits(denorm_mask));
+      result = static_cast<uint8_t>(f_bits - denorm_mask);
+    } else {
+      uint32_t mant_odd = (f_bits >> 21) & 1;
+      f_bits += ((uint32_t)(15 - 127) << 23) + 0xFFFFF;
+      f_bits += mant_odd;
+      result = static_cast<uint8_t>(f_bits >> 21);
+    }
+  }
+  result |= static_cast<uint8_t>(sign >> 24);
+  return result;
+}
+
+inline __device__ uint32_t float_to_fp8e5m2_x4(float a, float b, float c, float d)
+{
+  #if defined(__gfx938__)
+    int32_t res;
+    res = __builtin_hcu_cvt_pk_bf8_f32(a, b, res, false);
+    res = __builtin_hcu_cvt_pk_bf8_f32(c, d, res, true);
+    return res;
+  #else
+    int32_t out;
+    reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e5m2(a);
+    reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e5m2(b);
+    reinterpret_cast<uint8_t*>(&out)[2] = float_to_fp8e5m2(c);
+    reinterpret_cast<uint8_t*>(&out)[3] = float_to_fp8e5m2(d);
+    return out;
+  #endif
+}
+
+inline __device__ uint16_t float_to_fp8e5m2_x2(float a, float b)
+{
+  #if defined(__gfx938__)
+    // 对于ROCm，可能需要使用不同的内置函数或组合现有函数
+    int32_t temp;
+    temp = __builtin_hcu_cvt_pk_fp8_f32(a, b, temp, false);
+    return static_cast<uint16_t>(temp & 0xFFFF);
+  #else
+    uint16_t out;
+    reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e4m3(a);
+    reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e4m3(b);
+    return out;
+  #endif
+}
+
 namespace at {
 namespace native {
 
@@ -211,12 +348,46 @@ __inline__ __device__ void apply_rmsnorm_residual(
   }
 }
 
-
-
-
 //分 kernel head_dim = rot_dim 与 head_dim < rot_dim
 
-template <typename T_ACC, typename scalar_t, bool INTERLEAVE, bool Residual, int NUM_HEAD_V_WARP, int NUM_HEAD_Q_WARP, int NUM_HEAD_K_WARP, int HEAD_DIM_CONST, int ROTARY_DIM_CONST, bool IS_EQUAL_HEAD_DIM_ROTARY_DIM, int VEC_SIZE, int VEC_SIZE_V>
+template<int VEC_SIZE_V, int CACHE_T_CONST>
+__inline__ __device__ void convert_v_vec_to_uint8_t(float* v_vec_data_float, uint8_t* v_vec_data_uint8) {
+  if constexpr (VEC_SIZE_V % 4 == 0) {
+    #pragma unroll
+    for (int i = 0; i < VEC_SIZE_V / 4; ++i) {
+      if constexpr (CACHE_T_CONST == 1) {
+        ((uint32_t*)v_vec_data_uint8)[i] = float_to_fp8e4m3_x4(v_vec_data_float[i * 4], v_vec_data_float[i * 4 + 1], v_vec_data_float[i * 4 + 2], v_vec_data_float[i * 4 + 3]);
+      } else {
+        ((uint32_t*)v_vec_data_uint8)[i] = float_to_fp8e5m2_x4(v_vec_data_float[i * 4], v_vec_data_float[i * 4 + 1], v_vec_data_float[i * 4 + 2], v_vec_data_float[i * 4 + 3]);
+      }
+    }
+  } else if constexpr (VEC_SIZE_V % 2 == 0) {
+    #pragma unroll
+    for (int i = 0; i < VEC_SIZE_V / 2; ++i) {
+      if constexpr (CACHE_T_CONST == 1) {
+        ((uint16_t*)v_vec_data_uint8)[i] = float_to_fp8e4m3_x2(v_vec_data_float[i * 2], v_vec_data_float[i * 2 + 1]);
+      } else {
+        ((uint16_t*)v_vec_data_uint8)[i] = float_to_fp8e5m2_x2(v_vec_data_float[i * 2], v_vec_data_float[i * 2 + 1]);
+      }
+    }
+  } else {
+    #pragma unroll
+    for (int i = 0; i < VEC_SIZE_V; ++i) {
+      if constexpr (CACHE_T_CONST == 1) {
+        v_vec_data_uint8[i] = float_to_fp8e4m3(v_vec_data_float[i]);
+      } else {
+        v_vec_data_uint8[i] = float_to_fp8e5m2(v_vec_data_float[i]);
+      }
+    }
+  }
+}
+
+
+template <typename T_ACC, typename scalar_t, typename cache_t, bool INTERLEAVE, bool Residual, 
+         int NUM_HEAD_V_WARP, int NUM_HEAD_Q_WARP, int NUM_HEAD_K_WARP, int HEAD_DIM_CONST, 
+         int ROTARY_DIM_CONST, bool IS_EQUAL_HEAD_DIM_ROTARY_DIM,  int CACHE_T_CONST, 
+         bool IS_HAVE_K_SCALE, bool IS_HAVE_V_SCALE, 
+         int VEC_SIZE, int VEC_SIZE_V>
 __global__ void rms_rotary_embedding_kernel_pipeline_with_kv_store(
     const int64_t* __restrict__ pos_ids,
     scalar_t* __restrict__ q,  // [B * S, num_q_head, head_dim]
@@ -228,11 +399,21 @@ __global__ void rms_rotary_embedding_kernel_pipeline_with_kv_store(
     scalar_t* Residual_q,  //[B * S, num_q_head, head_dim]
     scalar_t* Residual_k,  //[B* S, num_kv_head, head_dim]
     //[num_blocks, kv_head_num, page_size, head_dim]
-    scalar_t* k_buffer,
-    scalar_t* v_buffer,
-    //如果scalar_t是bf16, 而 Cache是 fp8， 是不是需要量化
+    cache_t* k_buffer,
+    cache_t* v_buffer,
+    cache_t* q_rope_out,  // [B*S, num_q_head, head_dim], fp8 时存 q 的 fp8 结果；非 fp8 可为 nullptr
+    size_t q_rope_out_stride_n,
+    size_t q_rope_out_stride_h,
+    cache_t* k_rope_out,  // [B*S, num_k_head, head_dim], fp8 时存 k 的 fp8 结果；非 fp8 可为 nullptr
+    size_t k_rope_out_stride_n,
+    size_t k_rope_out_stride_h,
+    cache_t* v_rope_out,  // [B*S, num_v_head, head_dim], fp8 时存 v 的 fp8 结果；非 fp8 可为 nullptr
+    size_t v_rope_out_stride_n,
+    size_t v_rope_out_stride_h,
     const int64_t* __restrict__ kv_cache_loc,
     scalar_t* __restrict__ cos_sin_cache,   // [MAX_TOKEN, rotary_dim]
+    float k_scale,
+    float v_scale,
     int page_size,
     uint32_t num_seq,
     uint32_t num_q_head,
@@ -253,15 +434,14 @@ __global__ void rms_rotary_embedding_kernel_pipeline_with_kv_store(
 ) 
 {
     using vec_scalar_t_qk = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
+    using vec_uint8_t_qk = at::native::memory::aligned_vector<uint8_t, VEC_SIZE>;
     using vec_scalar_t_v = at::native::memory::aligned_vector<scalar_t, VEC_SIZE_V>;
-
+    using vec_scalar_t_float_v = at::native::memory::aligned_vector<float, VEC_SIZE_V>;
+    using vec_uint8_t_v = at::native::memory::aligned_vector<uint8_t, VEC_SIZE_V>;
     const int token_idx = blockIdx.x;
     const int tid = threadIdx.x;
     const int warp_id = __builtin_amdgcn_readfirstlane(tid >> 6);
     const int lane_id = tid & 63; 
-    // constexpr int q_get_lane_id = 64 * NUM_HEAD_Q_WARP - 1;
-    // constexpr int k_get_lane_id = 64 * NUM_HEAD_K_WARP - 1;
-    // constexpr int v_get_lane_id = 64 * NUM_HEAD_V_WARP - 1;
     const int token_idx_in_cache = kv_cache_loc[token_idx];
     const int cache_block_idx = token_idx_in_cache  / page_size;
     const int cache_block_offset = token_idx_in_cache % page_size;
@@ -279,7 +459,27 @@ __global__ void rms_rotary_embedding_kernel_pipeline_with_kv_store(
             const int v_global_offset = v_offset + v_head_idx * v_stride_h;
             const int v_cache_global_offset = v_cache_offset + v_head_idx * v_buffer_stride_h;
             v_vec_data = *(reinterpret_cast<vec_scalar_t_v*>(v + v_global_offset + lane_id * VEC_SIZE_V));
-            *(reinterpret_cast<vec_scalar_t_v*>(v_buffer + v_cache_global_offset + lane_id * VEC_SIZE_V)) = v_vec_data;
+            if constexpr (CACHE_T_CONST) {
+              uint8_t v_vec_data_uint8[VEC_SIZE_V];
+              float v_vec_data_float[VEC_SIZE_V];
+              scalar_t* v_vec_ptr = reinterpret_cast<scalar_t*>(&v_vec_data);
+              if constexpr (IS_HAVE_V_SCALE) {
+                #pragma unroll
+                for (int i = 0;i < VEC_SIZE_V; ++i)
+                    v_vec_data_float[i] = static_cast<float>(v_vec_ptr[i]) / v_scale;
+              } else {
+                  #pragma unroll
+                  for (int i = 0;i < VEC_SIZE_V; ++i)
+                    v_vec_data_float[i] = static_cast<float>(v_vec_ptr[i]);
+              }
+              //转为uint8_t类型，存到v_buffer中
+              convert_v_vec_to_uint8_t<VEC_SIZE_V, CACHE_T_CONST>(v_vec_data_float, v_vec_data_uint8);
+              *(reinterpret_cast<vec_uint8_t_v*>(v_buffer + v_cache_global_offset + lane_id * VEC_SIZE_V)) = *(reinterpret_cast<vec_uint8_t_v*>(v_vec_data_uint8));
+              const int v_rope_out_offset = token_idx * v_rope_out_stride_n + v_head_idx * v_rope_out_stride_h + lane_id * VEC_SIZE_V;
+              *(reinterpret_cast<vec_uint8_t_v*>(v_rope_out + v_rope_out_offset)) = *(reinterpret_cast<vec_uint8_t_v*>(v_vec_data_uint8));
+            } else {
+              *(reinterpret_cast<vec_scalar_t_v*>(v_buffer + v_cache_global_offset + lane_id * VEC_SIZE_V)) = v_vec_data;
+            }
         }
           asm volatile("s_barrier");// 其他warp同步
     } else {
@@ -328,8 +528,20 @@ __global__ void rms_rotary_embedding_kernel_pipeline_with_kv_store(
                 } else {
                     *reinterpret_cast<vec_scalar_t_qk*>(q_data) = *reinterpret_cast<vec_scalar_t_qk*>(q_vec);
                 }
+                if constexpr (CACHE_T_CONST) {
+                  uint8_t q_data_uint8[VEC_SIZE];
+                  float q_data_float[VEC_SIZE];
+                  #pragma unroll
+                  for (int i = 0; i < VEC_SIZE; ++i) {
+                    q_data_float[i] = static_cast<float>(q_data[i]);
+                  }
+                  convert_v_vec_to_uint8_t<VEC_SIZE, CACHE_T_CONST>(q_data_float, q_data_uint8);
+                  const int q_rope_out_offset = token_idx * q_rope_out_stride_n + (q_head_idx + warp_id) * q_rope_out_stride_h + lane_id * VEC_SIZE;
+                  *(reinterpret_cast<vec_uint8_t_qk*>(q_rope_out + q_rope_out_offset)) = *(reinterpret_cast<vec_uint8_t_qk*>(q_data_uint8));
+                } else {
                 *(reinterpret_cast<vec_scalar_t_qk*>(q_ptr + lane_id * VEC_SIZE)) = *(reinterpret_cast<vec_scalar_t_qk*>(q_data));
             }
+          }
         } else {
             const int k_local_warp_id = warp_id - NUM_HEAD_Q_WARP;
             const int k_offset = token_idx * k_stride_n;
@@ -360,22 +572,45 @@ __global__ void rms_rotary_embedding_kernel_pipeline_with_kv_store(
               } else {
                 *reinterpret_cast<vec_scalar_t_qk*>(k_data) = *reinterpret_cast<vec_scalar_t_qk*>(k_vec);
               }
-              *(reinterpret_cast<vec_scalar_t_qk*>(k_ptr + lane_id * VEC_SIZE)) = *(reinterpret_cast<vec_scalar_t_qk*>(k_data));
-              const int k_cache_global_offset = k_cache_offset + (k_head_idx + k_local_warp_id) * k_buffer_stride_h;
-              *(reinterpret_cast<vec_scalar_t_qk*>(k_buffer + k_cache_global_offset + lane_id * VEC_SIZE)) = *(reinterpret_cast<vec_scalar_t_qk*>(k_data));
+              if constexpr (CACHE_T_CONST) {
+                uint8_t k_data_uint8[VEC_SIZE];
+                float k_data_float[VEC_SIZE];
+                #pragma unroll
+                for (int i = 0; i < VEC_SIZE; ++i) {
+                  k_data_float[i] = static_cast<float>(k_data[i]);
+                }
+                convert_v_vec_to_uint8_t<VEC_SIZE, CACHE_T_CONST>(k_data_float, k_data_uint8);
+                const int k_rope_out_offset = token_idx * k_rope_out_stride_n + (k_head_idx + k_local_warp_id) * k_rope_out_stride_h + lane_id * VEC_SIZE;
+                *(reinterpret_cast<vec_uint8_t_qk*>(k_rope_out + k_rope_out_offset)) = *(reinterpret_cast<vec_uint8_t_qk*>(k_data_uint8));
+                const int k_cache_global_offset = k_cache_offset + (k_head_idx + k_local_warp_id) * k_buffer_stride_h + lane_id * VEC_SIZE;
+                *(reinterpret_cast<vec_uint8_t_qk*>(k_buffer + k_cache_global_offset)) = *(reinterpret_cast<vec_uint8_t_qk*>(k_data_uint8));
+              } else {
+                *(reinterpret_cast<vec_scalar_t_qk*>(k_ptr + lane_id * VEC_SIZE)) = *(reinterpret_cast<vec_scalar_t_qk*>(k_data));
+                const int k_cache_global_offset = k_cache_offset + (k_head_idx + k_local_warp_id) * k_buffer_stride_h;
+                *(reinterpret_cast<vec_scalar_t_qk*>(k_buffer + k_cache_global_offset + lane_id * VEC_SIZE)) = *(reinterpret_cast<vec_scalar_t_qk*>(k_data));
             }
         }
+      }
     }
     return;
 }
 
-template<typename T_ACC, typename scalar_t>
+template<typename T_ACC, typename scalar_t,  typename cache_t, int CACHE_T_CONST, bool IS_HAVE_K_SCALE, bool IS_HAVE_V_SCALE>
 void FuseRmsRopeWithKvStore(
     scalar_t* q,
     scalar_t* k,
     scalar_t* v,
-    scalar_t* k_buffer,
-    scalar_t* v_buffer,
+    cache_t* k_buffer,
+    cache_t* v_buffer,
+    cache_t* q_rope_out,  // fp8 时存 q 的 fp8 结果；非 fp8 可为 nullptr
+    size_t q_rope_out_stride_n,
+    size_t q_rope_out_stride_h,
+    cache_t* k_rope_out,
+    size_t k_rope_out_stride_n,
+    size_t k_rope_out_stride_h,
+    cache_t* v_rope_out,
+    size_t v_rope_out_stride_n,
+    size_t v_rope_out_stride_h,
     scalar_t* cos_sin_cache,
     int64_t* positions,
     int64_t* kv_cache_loc,
@@ -383,6 +618,8 @@ void FuseRmsRopeWithKvStore(
     scalar_t* weight_k,
     scalar_t* residual_q,
     scalar_t* residual_k,
+    float k_scale,
+    float v_scale,
     int bs,
     int num_qo_heads,
     int num_kv_heads,
@@ -422,9 +659,9 @@ void FuseRmsRopeWithKvStore(
                 printf("vec_size: %d, vec_size_v: %d\n", vec_size, vec_size_v);
 
                 //[TODO] 根据model 中的shape进行config调整
-                constexpr uint32_t NUM_HEAD_V_WARP = 4;
+                constexpr uint32_t NUM_HEAD_V_WARP = 1;
                 constexpr uint32_t NUM_HEAD_K_WARP = 1;
-                constexpr uint32_t NUM_HEAD_Q_WARP = 3;
+                constexpr uint32_t NUM_HEAD_Q_WARP = 2;
                 
                 dim3 nblks(bs);
                 dim3 nthrs((NUM_HEAD_V_WARP + NUM_HEAD_Q_WARP + NUM_HEAD_K_WARP) * 64);
@@ -432,6 +669,7 @@ void FuseRmsRopeWithKvStore(
                 rms_rotary_embedding_kernel_pipeline_with_kv_store<
                     T_ACC,
                     scalar_t,
+                    cache_t,
                     INTERLEAVE_CONST, 
                     HAS_RESIDUAL_CONST,
                     NUM_HEAD_V_WARP,
@@ -440,8 +678,12 @@ void FuseRmsRopeWithKvStore(
                     HEAD_DIM_CONST, 
                     ROTARY_DIM_CONST, 
                     IS_EQUAL_HEAD_DIM_ROTARY_DIM,
+                    CACHE_T_CONST,
+                    IS_HAVE_K_SCALE,
+                    IS_HAVE_V_SCALE,
                     vec_size, vec_size_v><<<nblks, nthrs, 0, stream>>>(positions, q, k, v, weight_q, weight_k, residual_q, residual_k, 
-                                    k_buffer, v_buffer, kv_cache_loc, cos_sin_cache, page_size, bs, num_qo_heads, num_kv_heads, 
+                                    k_buffer, v_buffer, q_rope_out, q_rope_out_stride_n, q_rope_out_stride_h, k_rope_out, k_rope_out_stride_n, k_rope_out_stride_h, v_rope_out, v_rope_out_stride_n, v_rope_out_stride_h,
+                                    kv_cache_loc, cos_sin_cache, k_scale, v_scale, page_size, bs, num_qo_heads, num_kv_heads, 
                                     q_stride_n, q_stride_h, k_stride_n, k_stride_h, v_stride_n, v_stride_h, 
                                     k_buffer_stride_n, k_buffer_stride_h, k_buffer_stride_p, v_buffer_stride_n, v_buffer_stride_h, v_buffer_stride_p, eps);
                     });
@@ -459,6 +701,7 @@ void rms_rotary_embedding_fuse_with_kv_store (
     Tensor& key,    // [B * S, K, D]
     Tensor& v,      // [B * S, V, D]
     Tensor& cos_sin_cache,   //[MAX_TOKEN, ROT_DIM]
+    int head_dim,
     int page_size,
     Tensor& k_buffer,        //[NUM_BLOCKS, KV_HEAD_NUM, PAGE_SIZE, HEAD_DIM]
     Tensor& v_buffer,        //[NUM_BLOCKS, KV_HEAD_NUM, PAGE_SIZE, HEAD_DIM]
@@ -466,8 +709,14 @@ void rms_rotary_embedding_fuse_with_kv_store (
     bool interleave,
     Tensor& weight_q,         //[HEAD_DIM]
     Tensor& weight_k,         //[HEAD_DIM]
+    torch::Dtype output_dtype,
     std::optional<Tensor>& residual_q,       //[B*S, H, D]
     std::optional<Tensor>& residual_k,       //[B*S, K, D]
+    std::optional<float>& k_scale,
+    std::optional<float>& v_scale,
+    std::optional<Tensor>& q_rope_out,       //[B*S, H, D] fp8 时必传，存 q 的 fp8 结果 (uint8)
+    std::optional<Tensor>& k_rope_out,       //[B*S, K, D] fp8 时必传，存 k 的 fp8 结果 (uint8)
+    std::optional<Tensor>& v_rope_out,       //[B*S, V, D] fp8 时必传，存 v 的 fp8 结果 (uint8)
     float epsilon) {
         CHECK_CONTIGUOUS(query);
         CHECK_CONTIGUOUS(key);
@@ -479,16 +728,26 @@ void rms_rotary_embedding_fuse_with_kv_store (
         CHECK_CONTIGUOUS(kv_cache_loc);
         CHECK_CONTIGUOUS(weight_q);
         CHECK_CONTIGUOUS(weight_k);
-        TORCH_CHECK(query.dim() == 3, "query must have shape [B * S, H, D]");
-        TORCH_CHECK(key.dim() == 3, "key must have shape [B * S, K, D]");
-        TORCH_CHECK(v.dim() == 3, "v must have shape [B * S, V, D]");
+        // TORCH_CHECK(query.dim() == 3 || query.dim() == 4, "query must have shape [B * S, H, D] or [B, S, H, D]");
+        // TORCH_CHECK(key.dim() == 3 || key.dim() == 4, "key must have shape [B * S, K, D] or [B, S, K, D]");
+        // TORCH_CHECK(v.dim() == 3 || v.dim() == 4, "v must have shape [B * S, V, D] or [B, S, V, D]");
         TORCH_CHECK(cos_sin_cache.dim() == 2, "cos_sin_cache must have shape [MAX_TOKEN, ROT_DIM]");
-        TORCH_CHECK(positions.dim() == 1, "positions must have shape [MAX_TOKEN]");
+        TORCH_CHECK(positions.dim() == 1 || positions.dim() == 2 , "positions must have shape [NUM_TOKENS] || [B, S]");
         TORCH_CHECK(k_buffer.dim() == 4, "k_buffer must have shape [NUM_BLOCKS, KV_HEAD_NUM, PAGE_SIZE, HEAD_DIM]");
         TORCH_CHECK(v_buffer.dim() == 4, "v_buffer must have shape [NUM_BLOCKS, KV_HEAD_NUM, PAGE_SIZE, HEAD_DIM]");
         TORCH_CHECK(kv_cache_loc.dim() == 1, "kv_cache_loc must have shape [MAX_TOKEN]");
+        if (v_buffer.scalar_type() == at::ScalarType::Byte) {
+            TORCH_CHECK(q_rope_out.has_value() && q_rope_out->defined(),
+                "q_rope_out must be provided when v_buffer is fp8 (uint8)");
+            TORCH_CHECK(q_rope_out->scalar_type() == at::ScalarType::Byte && q_rope_out->sizes() == query.sizes(),
+                "q_rope_out must be uint8 and have same shape as query [B*S, H, D]");
+        }
         //TORCH_CHECK(key.shape[-1] == v.shape[-1], "key and v head_dim must have the same shape");
-        int head_dim_v = v.size(2);
+        int64_t bs = positions.numel();   // [B * S]
+        int head_dim_v = v_buffer.size(-1);
+        int query_hidden_size = query.numel() / bs;  // (HEADQ * HEAD_DIM)
+        int key_hidden_size = key.numel() / bs;     // (HEADK * HEAD_DIM)
+
         size_t k_buffer_stride_n = k_buffer.stride(0);
         size_t k_buffer_stride_h = k_buffer.stride(1);
         size_t k_buffer_stride_p = k_buffer.stride(2);
@@ -496,36 +755,51 @@ void rms_rotary_embedding_fuse_with_kv_store (
         size_t v_buffer_stride_h = v_buffer.stride(1);
         size_t v_buffer_stride_p = v_buffer.stride(2);
 
-        size_t v_stride_n = v.stride(0);
-        size_t v_stride_h = v.stride(1);
-
-        CHECK_EQ(query.size(0), key.size(0));
-        CHECK_EQ(query.size(2), key.size(2));
         unsigned int rotary_dim = cos_sin_cache.size(1);
-        unsigned int num_qo_heads = query.size(1);
-        unsigned int num_kv_heads = key.size(1);
-        unsigned int head_dim = query.size(2);
-        unsigned int bs = query.size(0);
+        unsigned int num_qo_heads = query_hidden_size / head_dim;  
+        unsigned int num_kv_heads = key_hidden_size / head_dim;
 
-        size_t q_stride_n = query.stride(0);
-        size_t q_stride_h = query.stride(1);
-        size_t k_stride_n = key.stride(0);
-        size_t k_stride_h = key.stride(1);
+        size_t v_stride_n = head_dim_v * num_kv_heads;
+        size_t v_stride_h = head_dim_v;
+        size_t q_stride_n = head_dim * num_qo_heads;
+        size_t q_stride_h = head_dim;
+        size_t k_stride_n = head_dim * num_kv_heads;
+        size_t k_stride_h = head_dim;
 
         // printf("bs: %d, num_qo_heads: %d, num_kv_heads: %d, head_dim: %d, rotary_dim: %d, head_dim_v: %d, page_size: %d, q_stride_n: %zu, q_stride_h: %zu, k_stride_n: %zu, k_stride_h: %zu, v_stride_n: %zu, v_stride_h: %zu, k_buffer_stride_n: %zu, k_buffer_stride_h: %zu, k_buffer_stride_p: %zu, v_buffer_stride_n: %zu, v_buffer_stride_h: %zu, v_buffer_stride_p: %zu\n", 
         //     bs, num_qo_heads, num_kv_heads, head_dim, rotary_dim, head_dim_v, page_size, q_stride_n, q_stride_h, k_stride_n, k_stride_h, v_stride_n, v_stride_h, k_buffer_stride_n, k_buffer_stride_h, k_buffer_stride_p, v_buffer_stride_n, v_buffer_stride_h, v_buffer_stride_p);
-
-        AT_DISPATCH_FLOATING_TYPES_AND2(
+        // constexpr bool CACHE_T_CONST = 1;
+        DISPATCH_DTYPE_SET(v_buffer.scalar_type(), CACHE_T_CONST, {
+          AT_DISPATCH_FLOATING_TYPES_AND2(
             at::ScalarType::Half,
             at::ScalarType::BFloat16,
             query.scalar_type(), "", [&] {
                 using T_ACC = at::acc_type<scalar_t, true>; // float;
-                FuseRmsRopeWithKvStore<T_ACC, scalar_t>(
+                using cache_t = std::conditional_t<CACHE_T_CONST, uint8_t, scalar_t>;
+                cache_t* q_rope_out_ptr = CACHE_T_CONST ? q_rope_out->data_ptr<cache_t>() : nullptr;
+                size_t q_rope_out_sn = CACHE_T_CONST ?  (head_dim * num_qo_heads) : 0;
+                size_t q_rope_out_sh = CACHE_T_CONST ? head_dim : 0;
+                cache_t* k_rope_out_ptr = CACHE_T_CONST ? k_rope_out->data_ptr<cache_t>() : nullptr;
+                size_t k_rope_out_sn = CACHE_T_CONST ?  (head_dim * num_kv_heads) : 0;
+                size_t k_rope_out_sh = CACHE_T_CONST ? head_dim : 0;
+                cache_t* v_rope_out_ptr = CACHE_T_CONST ? v_rope_out->data_ptr<cache_t>() : nullptr;
+                size_t v_rope_out_sn = CACHE_T_CONST ? head_dim_v * num_kv_heads : 0;
+                size_t v_rope_out_sh = CACHE_T_CONST ? head_dim_v : 0;
+                FuseRmsRopeWithKvStore<T_ACC, scalar_t, cache_t, CACHE_T_CONST, false, false>(
                     query.data_ptr<scalar_t>(),
                     key.data_ptr<scalar_t>(),
                     v.data_ptr<scalar_t>(),
-                    k_buffer.data_ptr<scalar_t>(),
-                    v_buffer.data_ptr<scalar_t>(),
+                    k_buffer.data_ptr<cache_t>(),
+                    v_buffer.data_ptr<cache_t>(),
+                    q_rope_out_ptr,
+                    q_rope_out_sn,
+                    q_rope_out_sh,
+                    k_rope_out_ptr,
+                    k_rope_out_sn,
+                    k_rope_out_sh,
+                    v_rope_out_ptr,
+                    v_rope_out_sn,
+                    v_rope_out_sh,
                     cos_sin_cache.data_ptr<scalar_t>(),
                     positions.data_ptr<int64_t>(),
                     kv_cache_loc.data_ptr<int64_t>(),
@@ -533,6 +807,8 @@ void rms_rotary_embedding_fuse_with_kv_store (
                     weight_k.data_ptr<scalar_t>(),
                     residual_q.has_value() ? residual_q->data_ptr<scalar_t>() : nullptr,
                     residual_k.has_value() ? residual_k->data_ptr<scalar_t>() : nullptr,
+                    k_scale.has_value() ? k_scale.value() : 1.0,
+                    v_scale.has_value() ? v_scale.value() : 1.0,
                     bs, 
                     num_qo_heads,
                     num_kv_heads,
@@ -556,6 +832,7 @@ void rms_rotary_embedding_fuse_with_kv_store (
                     epsilon
                 );
         });
+      });
     }
 
 }
