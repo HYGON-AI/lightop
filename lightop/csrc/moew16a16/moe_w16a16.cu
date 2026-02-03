@@ -1010,7 +1010,7 @@ void launch_MOE_W16A16_MARLIN_HIP_NN_DOWN_decode(const GemmParams3<T>& params) {
     blockDim.z = 1;
     
     //规定BLOCKSIZE_N固定位256
-    gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M),params.size_m*params.top_k); // m方向
+    gridDim.z = std::min(DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M),params.size_m*params.top_k*params.delta); // m方向
     gridDim.y = DIVIDE(params.size_n , 16 * BLOCK_SIZE_N); // n方向
     gridDim.x = 1; // k方向
 

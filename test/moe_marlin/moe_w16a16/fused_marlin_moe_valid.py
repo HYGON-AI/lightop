@@ -1026,9 +1026,18 @@ def get_triton_config(E: int,
     # 尝试获取对应的字典，如果不存在则使用默认字典
     target_dict = globals().get(dict_name)
     if target_dict is None:
-        # 如果找不到对应的字典，回退到默认字典
-        target_dict = None
-        print(f"triton_opt_configs_{dict_suffix} not found")
+        # print(f"triton_opt_configs_{dict_suffix} not found, using default config")
+        default = {
+            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_N": 64,
+            "BLOCK_SIZE_K": 128,
+            "GROUP_SIZE_M": 1,
+            "num_warps": 4,
+            "num_stages": 2,
+        }
+        if use_nn_moe:
+            default["num_ldmatrixes"] = 1
+        return default
     
     # 将字典的键转换为整数并排序
     num_tokens_range = sorted([int(k) for k in target_dict.keys()])
@@ -1050,7 +1059,22 @@ def get_triton_config(E: int,
             if distance < min_distance:
                 min_distance = distance
                 matched_key = key
-    
+
+    # 若 matched_key 仍为 None（如字典为空），返回默认 config
+    if matched_key is None:
+        # print(f"triton_opt_configs_{dict_suffix}: no matching key for num_tokens={num_tokens}, using default config")
+        default = {
+            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_N": 64,
+            "BLOCK_SIZE_K": 128,
+            "GROUP_SIZE_M": 1,
+            "num_warps": 4,
+            "num_stages": 2,
+        }
+        if use_nn_moe:
+            default["num_ldmatrixes"] = 1
+        return default
+
     # 返回对应的配置值
     return target_dict[str(matched_key)]
 
