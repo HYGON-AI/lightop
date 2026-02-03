@@ -1083,12 +1083,6 @@ void _mqa_logits_128x128x32_TN_impl(
     hipFunctionArgs.cu_seq_len_k_start = KS;
     hipFunctionArgs.cu_seq_len_k_end = KE;
     hipFunctionArgs.num_heads = num_heads;
-    unsigned char* ptr = (unsigned char*)&hipFunctionArgs;
-    for(int i = 0xA0; i < 0xB4; i++) {
-        printf("%02X ", ptr[i]);
-        if((i - 0xA0 + 1) % 16 == 0) printf("\n");
-    }
-    printf("\n");
     const char* LIGHTOP_ASM_DIR = std::getenv("LIGHTOP_ASM_DIR");
     auto co_file_path = std::string(LIGHTOP_ASM_DIR) + "mqa_logits/test_mqa_logits.co";
     static hipModule_t Module = nullptr; // 静态模块句柄，只加载一次
