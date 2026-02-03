@@ -42,6 +42,7 @@ struct hipFunctionArgs_mqa_logits{
   unsigned int pad;
   uint32_t* cu_seq_len_k_start;
   uint32_t* cu_seq_len_k_end;
+  unsigned int num_heads;
 };
 
     
