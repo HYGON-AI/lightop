@@ -19,16 +19,23 @@ RMS_EPS = 1e-4
 ROPE_THETA = 10000.0
 PAGE_SIZE = 16
 
-# 定义测试形状: (BATCH, SEQ, NUM_HEADS_Q, NUM_HEADS_KV, HEAD_DIM, ROTARY_DIM)
+# 定义测试形状: (BATCH, SEQ, NUM_HEADS_Q, NUM_HEADS_KV, HEAD_DIM, ROTARY_DIM) 或带 HEAD_DIM_V 的 7 元组
 TEST_SHAPES = [
     (1, 6, 8, 1, 128, 64),
     # (2, 1024, 4, 4, 256, 128),
     # (2, 1024, 4, 4, 512, 128),
 ]
+# q/k/v 为 2 维时的形状: q=[b*s, h_q*head_dim], k=[b*s, h_k*head_dim], v=[b*s, h_k*head_dim_v], k/v_buffer 仍 4 维
+TEST_SHAPES_2D = [
+    (2, 16, 4, 4, 128, 64),       # head_dim_v 默认 = head_dim
+    (2, 16, 4, 4, 128, 64, 128),  # 显式 head_dim_v
+]
 TEST_NEOX_STYLES = [True]
 TEST_RESIDUALS = [True]
 # v_buffer 为 fp8 (uint8) 的精度验证
 TEST_V_BUFFER_FP8 = [False, True]
+# 是否测试 2D q/k/v（flattened last two dims）
+TEST_USE_2D_QKV = [False, True]
 
 # 性能测试配置
 WARMUP_ITERS = 10
@@ -48,28 +55,38 @@ def build_cos_sin_cache(max_position, dim, base=10000.0, dtype=torch.float32, de
     return torch.cat([cos, sin], dim=-1).contiguous()
 
 
-def get_tensors_kv_store(batch, seq, h_q, h_k, dim, device, dtype, page_size, generate_residual, use_v_buffer_fp8=False):
-    """生成 rms_rotary_embedding_fuse_with_kv_store 所需张量。q/k/v 为 [num_tokens, num_heads, head_dim]。"""
+def get_tensors_kv_store(batch, seq, h_q, h_k, dim, device, dtype, page_size, generate_residual, use_v_buffer_fp8=False, use_2d_qkv=False, head_dim_v=None):
+    """生成 rms_rotary_embedding_fuse_with_kv_store 所需张量。
+    3D: q/k/v 为 [num_tokens, num_heads, head_dim]；
+    2D: q=[num_tokens, h_q*head_dim], k=[num_tokens, h_k*head_dim], v=[num_tokens, h_k*head_dim_v]，k_buffer/v_buffer 仍 4 维。
+    """
     num_tokens = batch * seq
     num_blocks = max(1, (num_tokens + page_size - 1) // page_size)
+    dim_v = head_dim_v if head_dim_v is not None else dim
 
-    q = torch.randn(num_tokens, h_q, dim, device=device, dtype=dtype).contiguous()
-    k = torch.randn(num_tokens, h_k, dim, device=device, dtype=dtype).contiguous()
-    v = torch.randn(num_tokens, h_k, dim, device=device, dtype=dtype).contiguous()
+    if use_2d_qkv:
+        q = torch.randn(num_tokens, h_q * dim, device=device, dtype=dtype).contiguous()
+        k = torch.randn(num_tokens, h_k * dim, device=device, dtype=dtype).contiguous()
+        v = torch.randn(num_tokens, h_k * dim_v, device=device, dtype=dtype).contiguous()
+        res_q = torch.randn(num_tokens, h_q * dim, device=device, dtype=dtype).contiguous() if generate_residual else None
+        res_k = torch.randn(num_tokens, h_k * dim, device=device, dtype=dtype).contiguous() if generate_residual else None
+    else:
+        q = torch.randn(num_tokens, h_q, dim, device=device, dtype=dtype).contiguous()
+        k = torch.randn(num_tokens, h_k, dim, device=device, dtype=dtype).contiguous()
+        v = torch.randn(num_tokens, h_k, dim_v, device=device, dtype=dtype).contiguous()
+        res_q = torch.randn(num_tokens, h_q, dim, device=device, dtype=dtype).contiguous() if generate_residual else None
+        res_k = torch.randn(num_tokens, h_k, dim, device=device, dtype=dtype).contiguous() if generate_residual else None
 
     positions = torch.arange(num_tokens, device=device, dtype=torch.int64).contiguous()
     weight_q = torch.ones(dim, device=device, dtype=dtype).contiguous()
     weight_k = torch.ones(dim, device=device, dtype=dtype).contiguous()
 
-    res_q = torch.randn(num_tokens, h_q, dim, device=device, dtype=dtype).contiguous() if generate_residual else None
-    res_k = torch.randn(num_tokens, h_k, dim, device=device, dtype=dtype).contiguous() if generate_residual else None
-
     if use_v_buffer_fp8:
-        k_buffer = torch.zeros(num_blocks, h_k, page_size, dim, device=device, dtype=torch.uint8).contiguous()
-        v_buffer = torch.zeros(num_blocks, h_k, page_size, dim, device=device, dtype=torch.uint8).contiguous()
+        k_buffer = torch.zeros(num_blocks, h_k, page_size, dim, device=device, dtype=torch.float8_e4m3fn).contiguous()
+        v_buffer = torch.zeros(num_blocks, h_k, page_size, dim_v, device=device, dtype=torch.float8_e4m3fn).contiguous()
     else:
         k_buffer = torch.zeros(num_blocks, h_k, page_size, dim, device=device, dtype=dtype).contiguous()
-        v_buffer = torch.zeros(num_blocks, h_k, page_size, dim, device=device, dtype=dtype).contiguous()
+        v_buffer = torch.zeros(num_blocks, h_k, page_size, dim_v, device=device, dtype=dtype).contiguous()
     kv_cache_loc = torch.arange(num_tokens, device=device, dtype=torch.int64).contiguous()
 
     return q, k, v, positions, weight_q, weight_k, res_q, res_k, k_buffer, v_buffer, kv_cache_loc, num_tokens
@@ -243,13 +260,29 @@ def benchmark_func(func, warmup=10, rep=100):
 # =====================================
 # 5. 单次测试流程
 # =====================================
-def run_single_case(shape_config, is_neox, use_residual, use_v_buffer_fp8=False):
-    batch, seq, h_q, h_k, dim, rotary_dim = shape_config
+def run_single_case(shape_config, is_neox, use_residual, use_v_buffer_fp8=False, use_2d_qkv=False):
+    if len(shape_config) == 7:
+        batch, seq, h_q, h_k, dim, rotary_dim, head_dim_v = shape_config
+    else:
+        batch, seq, h_q, h_k, dim, rotary_dim = shape_config
+        head_dim_v = dim
     num_tokens = batch * seq
 
     q_org, k_org, v_org, positions, w_q, w_k, res_q_org, res_k_org, k_buf_org, v_buf_org, kv_cache_loc, num_tokens = get_tensors_kv_store(
-        batch, seq, h_q, h_k, dim, DEVICE, DTYPE, PAGE_SIZE, use_residual, use_v_buffer_fp8=use_v_buffer_fp8
+        batch, seq, h_q, h_k, dim, DEVICE, DTYPE, PAGE_SIZE, use_residual,
+        use_v_buffer_fp8=use_v_buffer_fp8, use_2d_qkv=use_2d_qkv,
+        head_dim_v=head_dim_v if use_2d_qkv else None,
     )
+
+    # 2D q/k/v 时 reshape 为 3D，供 baseline/fused（均按 3D）使用；k_buffer/v_buffer 保持 4 维
+    if use_2d_qkv:
+        q_org = q_org.view(num_tokens, h_q, dim)
+        k_org = k_org.view(num_tokens, h_k, dim)
+        v_org = v_org.view(num_tokens, h_k, head_dim_v)
+        if res_q_org is not None:
+            res_q_org = res_q_org.view(num_tokens, h_q, dim)
+        if res_k_org is not None:
+            res_k_org = res_k_org.view(num_tokens, h_k, dim)
 
     max_pos = num_tokens
     cos_sin_cache = build_cos_sin_cache(max_pos, rotary_dim, ROPE_THETA, torch.float32, DEVICE)
@@ -260,7 +293,7 @@ def run_single_case(shape_config, is_neox, use_residual, use_v_buffer_fp8=False)
     # ---------------------------
     # Accuracy Test
     # ---------------------------
-    print(f"🧪 Checking: Shape={shape_config}, Neox={is_neox}, Res={use_residual}, V_buffer_fp8={use_v_buffer_fp8}")
+    print(f"🧪 Checking: Shape={shape_config}, Neox={is_neox}, Res={use_residual}, V_buffer_fp8={use_v_buffer_fp8}, Use_2D_QKV={use_2d_qkv}")
 
     q_ref = q_org.clone()
     k_ref = k_org.clone()
@@ -353,7 +386,7 @@ def run_single_case(shape_config, is_neox, use_residual, use_v_buffer_fp8=False)
 
     return {
         "Batch": batch, "Seq": seq, "H_Q": h_q, "H_K": h_k, "Dim": dim, "RotDim": rotary_dim,
-        "Neox": is_neox, "Resid": use_residual, "V_buffer_fp8": use_v_buffer_fp8,
+        "Neox": is_neox, "Resid": use_residual, "V_buffer_fp8": use_v_buffer_fp8, "Use_2D_QKV": use_2d_qkv,
         "Status": status,
         "Max_Diff": max_diff_record,
         "Base(us)": round(base_us, 2) if base_us is not None else None,
@@ -371,15 +404,18 @@ def main():
         return
 
     results = []
-    combinations = list(itertools.product(TEST_SHAPES, TEST_NEOX_STYLES, TEST_RESIDUALS, TEST_V_BUFFER_FP8))
+    # 3D 用 TEST_SHAPES；2D q/k/v 用 TEST_SHAPES_2D
+    combinations = list(itertools.product(TEST_NEOX_STYLES, TEST_RESIDUALS, TEST_V_BUFFER_FP8, TEST_USE_2D_QKV))
 
     print(f"🚀 rms_rotary_embedding_fuse_with_kv_store 测试 | DTYPE: {DTYPE} | Warmup: {WARMUP_ITERS} | Reps: {BENCH_ITERS}")
     print("=" * 80)
 
-    for shape, neox, resid, v_fp8 in combinations:
-        res = run_single_case(shape, neox, resid, use_v_buffer_fp8=v_fp8)
-        results.append(res)
-        print("-" * 50)
+    for neox, resid, v_fp8, use_2d in combinations:
+        shapes = TEST_SHAPES_2D if use_2d else TEST_SHAPES
+        for shape in shapes:
+            res = run_single_case(shape, neox, resid, use_v_buffer_fp8=v_fp8, use_2d_qkv=use_2d)
+            results.append(res)
+            print("-" * 50)
 
     print("\n" + "=" * 80)
     fail = [r for r in results if r["Status"] == "Fail"]
@@ -399,8 +435,9 @@ def main():
             fuse_us = r.get("Fuse(us)")
             sp = r.get("Speedup")
             fp8_tag = " [fp8]" if r.get("V_buffer_fp8") else ""
+            qkv2d_tag = " [2D QKV]" if r.get("Use_2D_QKV") else ""
             if base_us is not None and fuse_us is not None and sp is not None:
-                print(f"   Shape({b},{s},{hq},{hk},{d},{rd}){fp8_tag}: Base={base_us}us, Fuse={fuse_us}us, Speedup={sp}x")
+                print(f"   Shape({b},{s},{hq},{hk},{d},{rd}){fp8_tag}{qkv2d_tag}: Base={base_us}us, Fuse={fuse_us}us, Speedup={sp}x")
     print("=" * 80)
 
 

@@ -77,19 +77,19 @@ def rms_rotary_embedding_fuse_with_kv_store(
     epsilon: float = 1e-5
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     # 当 v_buffer 为 fp8 (uint8) 时，kernel 会将 q 转为 fp8 写入 q_rope_out，需预先分配
-    use_fp8_cache = (v_buffer.dtype == torch.uint8)
+    use_fp8_cache = (v_buffer.dtype == torch.float8_e4m3fn or v_buffer.dtype == torch.float8_e5m2)
     q_rope_out = None
     k_rope_out = None
     v_rope_out = None
     if use_fp8_cache:
         q_rope_out = torch.empty(
-            query.shape, dtype=torch.uint8, device=query.device
+            query.shape, dtype=v_buffer.dtype, device=query.device
         ).contiguous()
         k_rope_out = torch.empty(
-            key.shape, dtype=torch.uint8, device=key.device
+            key.shape, dtype=v_buffer.dtype, device=key.device
         ).contiguous()
         v_rope_out = torch.empty(
-            v.shape, dtype=torch.uint8, device=v.device
+            v.shape, dtype=v_buffer.dtype, device=v.device
         ).contiguous()
 
     op.rms_rotary_embedding_fuse_with_kv_store(
