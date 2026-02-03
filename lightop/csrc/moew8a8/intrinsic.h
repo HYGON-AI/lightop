@@ -264,6 +264,19 @@ __device__ typename vec<int, 4>::type mmac(const typename vec<Element, 8>::type 
 }
 
 template<class Element>
+__device__ typename vec<float, 4>::type mmac(const typename vec<Element, 8>::type &v1, const typename vec<Element, 8>::type &v2, typename vec<float, 4>::type &v3)
+{
+    #if defined(__gfx936__) || defined(__gfx928__)
+        return v3;
+    #elif defined(__gfx938__)
+        const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
+        const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
+        v3 =__builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(A, B, v3, false, false);  //fp8->e4m3 bf8->e5m2
+    #endif
+    return v3;
+}
+
+template<class Element>
 __device__ typename vec<int, 4>::type mmac_int8(const typename vec<Element, 8>::type &v1, const typename vec<Element, 8>::type &v2, typename vec<int, 4>::type &v3)
 {
     
