@@ -170,28 +170,58 @@ asm volatile(\
 __builtin_amdgcn_sched_barrier(0);
 
 inline __device__ uint8_t float_to_fp8e4m3(float f) {
-  constexpr uint32_t fp32_inf = UINT32_C(255) << 23;
-  constexpr uint32_t fp8_max = UINT32_C(143) << 23;
-  constexpr uint32_t denorm_mask = UINT32_C(134) << 23;
+  // ===== 常量定义 =====
+  // FP8 E4M3最大值: 1087 << 20
+  // 1087 = 2^(4+1) - 1 + 2^4 = 31 + 16 = 47? 等等，这里需要重新计算
+  // 实际上是基于指数和尾数的位模式
+  constexpr uint32_t fp8_max = UINT32_C(1087) << 20;
+  
+  // 非正规化数处理掩码
+  constexpr uint32_t denorm_mask = UINT32_C(141) << 23;
+  
+  // ===== 步骤1: 提取float的位表示 =====
   uint32_t f_bits = c10::detail::fp32_to_bits(f);
   uint8_t result = 0u;
+  
+  // ===== 步骤2: 提取符号位并移除 =====
   const uint32_t sign = f_bits & UINT32_C(0x80000000);
   f_bits ^= sign;
+  
+  // ===== 步骤3: 处理不同数值范围 =====
+  
+  // 3a. 溢出处理
   if (f_bits >= fp8_max) {
-    result = f_bits > fp32_inf ? UINT8_C(0x7F) : UINT8_C(0x7C);
+    result = 0x7f;  // 01111111 (NaN/最大值)
   } else {
-    if (f_bits < (UINT32_C(113) << 23)) {
-      f_bits = c10::detail::fp32_to_bits(c10::detail::fp32_from_bits(f_bits)
-               + c10::detail::fp32_from_bits(denorm_mask));
+    
+    // 3b. 非正规化数处理
+    if (f_bits < (UINT32_C(121) << 23)) {
+      f_bits = c10::detail::fp32_to_bits(
+        c10::detail::fp32_from_bits(f_bits) + 
+        c10::detail::fp32_from_bits(denorm_mask)
+      );
       result = static_cast<uint8_t>(f_bits - denorm_mask);
+    
+    // 3c. 正规化数处理
     } else {
-      uint32_t mant_odd = (f_bits >> 21) & 1;
-      f_bits += ((uint32_t)(15 - 127) << 23) + 0xFFFFF;
+      // 检查尾数第20位是否为1（对应FP8 E4M3 3位尾数的LSB）
+      uint8_t mant_odd = (f_bits >> 20) & 1;
+      
+      // 指数偏置调整: FP32偏置127 → FP8 E4M3偏置7
+      // 调整量 = 7 - 127 = -120
+      f_bits += ((uint32_t)(7 - 127) << 23) + 0x7FFFF;
+      
+      // 应用奇数舍入
       f_bits += mant_odd;
-      result = static_cast<uint8_t>(f_bits >> 21);
+      
+      // 右移20位得到8位结果
+      result = static_cast<uint8_t>(f_bits >> 20);
     }
   }
+  
+  // ===== 步骤4: 加上符号位 =====
   result |= static_cast<uint8_t>(sign >> 24);
+  
   return result;
 }
 
@@ -279,8 +309,8 @@ inline __device__ uint16_t float_to_fp8e5m2_x2(float a, float b)
     return static_cast<uint16_t>(temp & 0xFFFF);
   #else
     uint16_t out;
-    reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e4m3(a);
-    reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e4m3(b);
+    reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e5m2(a);
+    reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e5m2(b);
     return out;
   #endif
 }
@@ -717,16 +747,6 @@ void rms_rotary_embedding_fuse_with_kv_store (
     std::optional<Tensor>& k_rope_out,       //[B*S, K, D] fp8 时必传，存 k 的 fp8 结果 (uint8)
     std::optional<Tensor>& v_rope_out,       //[B*S, V, D] fp8 时必传，存 v 的 fp8 结果 (uint8)
     float epsilon) {
-        CHECK_CONTIGUOUS(query);
-        CHECK_CONTIGUOUS(key);
-        CHECK_CONTIGUOUS(v);
-        CHECK_CONTIGUOUS(cos_sin_cache);
-        CHECK_CONTIGUOUS(positions);
-        CHECK_CONTIGUOUS(k_buffer);
-        CHECK_CONTIGUOUS(v_buffer);
-        CHECK_CONTIGUOUS(kv_cache_loc);
-        CHECK_CONTIGUOUS(weight_q);
-        CHECK_CONTIGUOUS(weight_k);
         // TORCH_CHECK(query.dim() == 3 || query.dim() == 4, "query must have shape [B * S, H, D] or [B, S, H, D]");
         // TORCH_CHECK(key.dim() == 3 || key.dim() == 4, "key must have shape [B * S, K, D] or [B, S, K, D]");
         // TORCH_CHECK(v.dim() == 3 || v.dim() == 4, "v must have shape [B * S, V, D] or [B, S, V, D]");

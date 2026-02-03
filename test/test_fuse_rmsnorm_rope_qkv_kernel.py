@@ -71,23 +71,23 @@ def get_tensors_kv_store(batch, seq, h_q, h_k, dim, device, dtype, page_size, ge
         res_q = torch.randn(num_tokens, h_q * dim, device=device, dtype=dtype).contiguous() if generate_residual else None
         res_k = torch.randn(num_tokens, h_k * dim, device=device, dtype=dtype).contiguous() if generate_residual else None
     else:
-        q = torch.randn(num_tokens, h_q, dim, device=device, dtype=dtype).contiguous()
-        k = torch.randn(num_tokens, h_k, dim, device=device, dtype=dtype).contiguous()
-        v = torch.randn(num_tokens, h_k, dim_v, device=device, dtype=dtype).contiguous()
-        res_q = torch.randn(num_tokens, h_q, dim, device=device, dtype=dtype).contiguous() if generate_residual else None
-        res_k = torch.randn(num_tokens, h_k, dim, device=device, dtype=dtype).contiguous() if generate_residual else None
+        q = torch.randn(num_tokens, h_q, dim, device=device, dtype=dtype)
+        k = torch.randn(num_tokens, h_k, dim, device=device, dtype=dtype)
+        v = torch.randn(num_tokens, h_k, dim_v, device=device, dtype=dtype)
+        res_q = torch.randn(num_tokens, h_q, dim, device=device, dtype=dtype) if generate_residual else None
+        res_k = torch.randn(num_tokens, h_k, dim, device=device, dtype=dtype)if generate_residual else None
 
-    positions = torch.arange(num_tokens, device=device, dtype=torch.int64).contiguous()
-    weight_q = torch.ones(dim, device=device, dtype=dtype).contiguous()
-    weight_k = torch.ones(dim, device=device, dtype=dtype).contiguous()
+    positions = torch.arange(num_tokens, device=device, dtype=torch.int64)
+    weight_q = torch.ones(dim, device=device, dtype=dtype)
+    weight_k = torch.ones(dim, device=device, dtype=dtype)
 
     if use_v_buffer_fp8:
-        k_buffer = torch.zeros(num_blocks, h_k, page_size, dim, device=device, dtype=torch.float8_e4m3fn).contiguous()
-        v_buffer = torch.zeros(num_blocks, h_k, page_size, dim_v, device=device, dtype=torch.float8_e4m3fn).contiguous()
+        k_buffer = torch.zeros(num_blocks, h_k, page_size, dim, device=device, dtype=torch.float8_e4m3fn)
+        v_buffer = torch.zeros(num_blocks, h_k, page_size, dim_v, device=device, dtype=torch.float8_e4m3fn)
     else:
-        k_buffer = torch.zeros(num_blocks, h_k, page_size, dim, device=device, dtype=dtype).contiguous()
-        v_buffer = torch.zeros(num_blocks, h_k, page_size, dim_v, device=device, dtype=dtype).contiguous()
-    kv_cache_loc = torch.arange(num_tokens, device=device, dtype=torch.int64).contiguous()
+        k_buffer = torch.zeros(num_blocks, h_k, page_size, dim, device=device, dtype=dtype)
+        v_buffer = torch.zeros(num_blocks, h_k, page_size, dim_v, device=device, dtype=dtype)
+    kv_cache_loc = torch.arange(num_tokens, device=device, dtype=torch.int64)
 
     return q, k, v, positions, weight_q, weight_k, res_q, res_k, k_buffer, v_buffer, kv_cache_loc, num_tokens
 
@@ -120,8 +120,8 @@ def baseline_kernel_adapter(q, k, v, positions, w_q, w_k, res_q, res_k, k_buffer
         blk = int(kv_cache_loc[t].item()) // page_size
         off = int(kv_cache_loc[t].item()) % page_size
         if use_v_buffer_fp8:
-            k_buffer[blk, :, off, :] = _quantize_to_fp8_e4m3(k[t, :, :])
-            v_buffer[blk, :, off, :] = _quantize_to_fp8_e4m3(v[t, :, :])
+            k_buffer[blk, :, off, :] = (k[t, :, :].to(torch.float8_e4m3fn)).view(torch.uint8)
+            v_buffer[blk, :, off, :] = (v[t, :, :].to(torch.float8_e4m3fn)).view(torch.uint8)
         else:
             k_buffer[blk, :, off, :] = k[t, :, :].clone()
             v_buffer[blk, :, off, :] = v[t, :, :].clone()
@@ -139,7 +139,7 @@ def fused_kernel_adapter(q, k, v, positions, w_q, w_k, res_q, res_k, k_buffer, v
         v_scale=1.0 if use_v_buffer_fp8 else None,
         epsilon=RMS_EPS,
     )
-    return (q_out, k_out, v_out) if use_v_buffer_fp8 else (q, k, v)
+    return q_out, k_out, v_out
 
 
 # =====================================
@@ -198,7 +198,8 @@ def dequantize_fp8_e4m3_to_float(x_fp8):
 def compare_fp8_tensor(tensor_fp8, ref, name, atol=0.25, rtol=0.1):
     """校验 fp8 张量：反量化后与 ref 比较，使用 fp8 放宽容差。"""
     dec = dequantize_fp8_e4m3_to_float(tensor_fp8)
-    ref_f = ref.float() if ref.dtype != torch.float32 else ref
+    ref_f = ref.to(torch.float8_e4m3fn).float() if ref.dtype != torch.float32 else ref
+    # ref_f = ref.float() if ref.dtype != torch.float32 else ref
     max_diff = (dec - ref_f).abs().max().item()
     assert torch.allclose(dec, ref_f, atol=atol, rtol=rtol), f"{name} fp8 mismatch! max_diff={max_diff:.6e}"
     print(f"   > {name}_fp8: max_diff={max_diff:.6e} (atol={atol}, rtol={rtol})")
@@ -213,7 +214,7 @@ def compare_k_buffer_fp8(k_buffer_uint8, k_ref, kv_cache_loc, page_size, num_tok
         blk = int(kv_cache_loc[t].item()) // page_size
         off = int(kv_cache_loc[t].item()) % page_size
         slot = k_dequant[blk, :, off, :]
-        ref = k_ref[t, :, :].float()
+        ref = k_ref[t, :, :].to(torch.float8_e4m3fn).float()
         d = (slot - ref).abs().max().item()
         max_diff = max(max_diff, d)
         assert torch.allclose(slot, ref, atol=atol, rtol=rtol), f"k_buffer_fp8 token {t} mismatch! max_diff={d:.6e}"
@@ -229,7 +230,7 @@ def compare_v_buffer_fp8(v_buffer_uint8, v_ref, kv_cache_loc, page_size, num_tok
         blk = int(kv_cache_loc[t].item()) // page_size
         off = int(kv_cache_loc[t].item()) % page_size
         slot = v_dequant[blk, :, off, :]
-        ref = v_ref[t, :, :].float()
+        ref = v_ref[t, :, :].to(torch.float8_e4m3fn).float()
         d = (slot - ref).abs().max().item()
         max_diff = max(max_diff, d)
         assert torch.allclose(slot, ref, atol=atol, rtol=rtol), f"v_buffer_fp8 token {t} mismatch! max_diff={d:.6e}"
