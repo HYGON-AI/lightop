@@ -102,7 +102,7 @@ __global__ void moe_align_block_size_kernel_opt_fused_small_size(
   BlockScan(temp_storage).ExclusiveScan(
       my_padded_count,      
       exclusive_prefix_sum,  
-      0,                    
+      0,                     
       scan_op                
   );
   // 总和等于最后一个线程的排他和+自己padd的值
@@ -216,7 +216,7 @@ __global__ void moe_align_block_size_kernel_opt_fused_cub(
   BlockScan(temp_storage).ExclusiveScan(
       my_padded_count,      
       exclusive_prefix_sum,  
-      0,                    
+      0,                     
       scan_op                
   );
   // 总和等于最后一个线程的排他和+自己padd的值
@@ -871,7 +871,7 @@ moe_sum_kernel(scalar_t *__restrict__ out,         // [..., d]
       x += input[token_idx * TOPK * d + k * d + idx];
     }
     if (bias == nullptr) {
-      out[token_idx * d + idx] = x;
+      out[token_idx * d + idx] = x * factor;
     } else {
       if (Is_bf16) {
         out[token_idx * d + idx] = x * factor + bias[token_idx * d + idx];
@@ -914,6 +914,9 @@ __global__ void moe_sum_kernel_reg(scalar_t *__restrict__ out,
           }
         }
         if (bias == nullptr) {
+          for (int i = 0; i < VEC_SIZE; i++) {
+             sum_vec.val[i] = sum_vec.val[i] * factor;
+          }
           out_base_ptr[current_idx] = sum_vec;
         } else {
           VecType *bias_base_ptr =
@@ -947,6 +950,9 @@ __global__ void moe_sum_kernel_reg(scalar_t *__restrict__ out,
           }
         }
         if (bias == nullptr) {
+          for (int i = 0; i < VEC_SIZE; i++) {
+             sum_vec.val[i] = sum_vec.val[i] * factor;
+          }
           out_base_ptr[current_idx] = sum_vec;
         } else {
           VecType *bias_base_ptr =
@@ -1024,7 +1030,13 @@ __global__ void moe_sum_kernel_reg_bf16_add_bias(
           }
           out_base_ptr[current_idx] = sum_vec_rounded;
         } else {
-          out_base_ptr[current_idx] = sum_vec_rounded;
+          VecType temp_mul_rounded;
+#pragma unroll
+          for (int i = 0; i < VEC_SIZE; i++) {
+            temp_mul_rounded.val[i] = static_cast<scalar_t>(
+                static_cast<float>(sum_vec_rounded.val[i]) * factor);
+          }
+          out_base_ptr[current_idx] = temp_mul_rounded;
         }
       }
     }
@@ -1071,7 +1083,13 @@ __global__ void moe_sum_kernel_reg_bf16_add_bias(
           }
           out_base_ptr[current_idx] = sum_vec_rounded;
         } else {
-          out_base_ptr[current_idx] = sum_vec_rounded;
+          VecType temp_mul_rounded;
+#pragma unroll
+          for (int i = 0; i < VEC_SIZE; i++) {
+            temp_mul_rounded.val[i] = static_cast<scalar_t>(
+                static_cast<float>(sum_vec_rounded.val[i]) * factor);
+          }
+          out_base_ptr[current_idx] = temp_mul_rounded;
         }
       }
     }
@@ -1136,6 +1154,11 @@ __global__ void moe_sum_kernel_reg_bf16_add_bias_opt(
                     result_vec.val[i]  = static_cast<scalar_t>(static_cast<float>(result_vec.val[i]) * factor);
                     result_vec.val[i] = static_cast<scalar_t>(static_cast<float>(result_vec.val[i]) + static_cast<float>(b_val.val[i]));
                 }
+            } else {
+                #pragma unroll VEC_SIZE
+                for (int i = 0; i < VEC_SIZE; ++i) {
+                    result_vec.val[i]  = static_cast<scalar_t>(static_cast<float>(result_vec.val[i]) * factor);
+                }
             }
             out_base[vec_idx] = result_vec;
         }
@@ -1183,6 +1206,9 @@ __global__ void moe_sum_kernel_shared_mem(scalar_t *__restrict__ out,
           }
         }
         if (bias == nullptr) {
+          for (int i = 0; i < VEC_SIZE; i++) {
+             sum_vec.val[i] = sum_vec.val[i] * factor;
+          }
           out_base_ptr[current_idx] = sum_vec;
         } else {
           VecType *bias_base_ptr =
@@ -1225,6 +1251,9 @@ __global__ void moe_sum_kernel_shared_mem(scalar_t *__restrict__ out,
           }
         }
         if (bias == nullptr) {
+          for (int i = 0; i < VEC_SIZE; i++) {
+             sum_vec.val[i] = sum_vec.val[i] * factor;
+          }
           out_base_ptr[current_idx] = sum_vec;
         } else {
           VecType *bias_base_ptr =
@@ -1246,80 +1275,7 @@ __global__ void moe_sum_kernel_shared_mem(scalar_t *__restrict__ out,
     }
   }
 }
-template <typename scalar_t, int TOPK, bool Is_bf16>
-__global__ void
-moe_sum_kernel_bf16(scalar_t *__restrict__ out,         // [..., d]
-               const scalar_t *__restrict__ input, // [..., topk, d]
-               const int d, scalar_t *__restrict__ bias, float factor,bool *expert_mask) {
-  const int64_t token_idx = blockIdx.x;
-  for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
-    double x = 0;
-#pragma unroll
-    for (int k = 0; k < TOPK; ++k) {
-      if(expert_mask[token_idx * TOPK + k]){
-          x += static_cast<double>(input[token_idx * TOPK * d + k * d + idx]);
-      }
-    }
-    out[token_idx * d + idx] = static_cast<scalar_t>(x);
-  }
-}
-template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
-          int total_threads_per_token, int TILE_WIDTH, bool Is_bf16>
-__global__ void
-moe_sum_kernel_shared_mem_rounding(scalar_t *__restrict__ out,
-                                   const scalar_t *__restrict__ input,
-                                   scalar_t *__restrict__ bias) {
-  using VecType = Vector<scalar_t, VEC_SIZE>;
-  __shared__ VecType tile[TOPK][TILE_WIDTH];
-  const int token_idx = blockIdx.y;
-  const VecType *input_base_ptr =
-      reinterpret_cast<const VecType *>(input) + token_idx * TOPK * d_vec;
-  VecType *out_base_ptr = reinterpret_cast<VecType *>(out) + token_idx * d_vec;
 
-  const int tid_in_block = threadIdx.x;
-
-  for (int tile_start_idx = blockIdx.x * TILE_WIDTH; tile_start_idx < d_vec;
-       tile_start_idx += total_threads_per_token) {
-
-    const int current_idx = tile_start_idx + tid_in_block;
-    if (current_idx < d_vec) {
-#pragma unroll
-      for (int k = 0; k < TOPK; ++k) {
-        tile[k][tid_in_block] = input_base_ptr[k * d_vec + current_idx];
-      }
-    }
-    __syncthreads();
-    if (current_idx < d_vec) {
-      VecType sum_vec = tile[0][tid_in_block];
-#pragma unroll
-      for (int k = 1; k < TOPK; ++k) {
-        VecType current_vec = tile[k][tid_in_block];
-#pragma unroll
-        for (int i = 0; i < 8; i++) {
-          sum_vec.val[i] += current_vec.val[i];
-        }
-      }
-      if (bias == nullptr) {
-        out_base_ptr[current_idx] = sum_vec;
-      } else {
-        VecType *bias_base_ptr =
-            reinterpret_cast<VecType *>(bias) + token_idx * d_vec;
-        VecType bias_val = bias_base_ptr[current_idx];
-        if (Is_bf16) {
-          for (int i = 0; i < VEC_SIZE; i++) {
-            sum_vec.val[i] = sum_vec.val[i] * 2.5f + bias_val.val[i];
-          }
-        } else {
-          for (int i = 0; i < VEC_SIZE; i++) {
-            sum_vec.val[i] = sum_vec.val[i] + bias_val.val[i] * 2.5f;
-          }
-        }
-        out_base_ptr[current_idx] = sum_vec;
-      }
-    }
-    __syncthreads();
-  }
-}
 template <typename scalar_t>
 __global__ void moe_align_block_size_small_batch_expert_kernel(
     const scalar_t *__restrict__ topk_ids,
@@ -1404,7 +1360,7 @@ __global__ void moe_align_block_size_small_batch_expert_kernel(
 }
 #define DISPATCH_MOE_ALIGN_KERNEL(TEMPLATE_CAPACITY) \
     if (topk_ids.numel() <= TEMPLATE_CAPACITY) { \
-          /* 小size*/ \
+         /* 小size*/ \
         threads = TEMPLATE_CAPACITY; \
         if (Is_EP) { \
             moe_align_block_size_kernel_opt_fused_small_size<scalar_t, TEMPLATE_CAPACITY, 8, true, TEMPLATE_CAPACITY><<< \
@@ -1436,12 +1392,12 @@ __global__ void moe_align_block_size_small_batch_expert_kernel(
         auto align_kernel = moe_align_block_size_kernel_opt_fused_cub<scalar_t, TEMPLATE_CAPACITY, 8, TEMPLATE_CAPACITY>; \
         size_t shared_mem_size = (num_experts + 1) * sizeof(int32_t); \
             if (topk_ids.numel() <= 256) {   \
-                  threads = 128;                                      \
+                 threads = 128;                                       \
               } else if (topk_ids.numel() <= 512) {                   \
-                  threads = 256;                                      \
+                 threads = 256;                                       \
               } else if (topk_ids.numel() <= 1024){                   \
                  threads = 512;                                        \
-              }else{                                                    \
+              }else{                                                   \
                  threads = 1024;                                        \
               }                                                         \
         if(threads <  TEMPLATE_CAPACITY) threads = TEMPLATE_CAPACITY; \
@@ -1464,7 +1420,7 @@ __global__ void moe_align_block_size_small_batch_expert_kernel(
         torch::Tensor cumsum_buffer = torch::zeros({TEMPLATE_CAPACITY + 2}, options_int); \
         size_t num_warps = CEILDIV(padded_num_experts, experts_per_warp); \
         size_t shared_mem_size = num_experts * sizeof(int32_t); \
-        /* num_expert > 512 ?*/                                              \
+        /* num_expert > 512 ?*/                                             \
         threads = 512; \
         int num_blocks = std::min(80*2,(topk_ids.numel() + threads - 1) / threads); \
         /*torch::Tensor global_count = torch::zeros({1}, options_int); */ \
@@ -1580,7 +1536,7 @@ void moe_align_block_size(
                     padded_num_experts, experts_per_warp, block_size,
                     topk_ids.numel(), cumsum_buffer.data_ptr<int32_t>(),
                     expert_map.has_value() ? expert_map->data_ptr<int32_t>()
-                                         : nullptr);
+                                             : nullptr);
 
                 const int block_threads = std::min(256, (int)threads);
                 const int num_blocks =
@@ -1784,26 +1740,26 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
       }
     } else if (hidden_size == 2048 || hidden_size == 4096 || hidden_size == 8192){   
       #define DISPATCH_HIDDEN_SIZE(HIDDEN_SIZE_VAL, ...)       \
-            switch (HIDDEN_SIZE_VAL) {                             \
-              case 2048: {                                         \
-                constexpr int CONST_HIDDEN_SIZE = 2048;            \
-                constexpr int CONST_X_DIM = 2;                     \
-                __VA_ARGS__();                                     \
-                break;                                             \
-              }                                                    \
-              case 4096: {                                         \
-                constexpr int CONST_HIDDEN_SIZE = 4096;            \
-                constexpr int CONST_X_DIM = 4;                     \
-                __VA_ARGS__();                                     \
-                break;                                             \
-              }                                                    \
-              case 8192: {                                         \
-                constexpr int CONST_HIDDEN_SIZE = 8192;            \
-                constexpr int CONST_X_DIM = 8;                     \
-                __VA_ARGS__();                                     \
-                break;                                             \
-              }                                                    \
-              default:                                             \
+            switch (HIDDEN_SIZE_VAL) {                         \
+              case 2048: {                                     \
+                constexpr int CONST_HIDDEN_SIZE = 2048;        \
+                constexpr int CONST_X_DIM = 2;                 \
+                __VA_ARGS__();                                 \
+                break;                                         \
+              }                                                \
+              case 4096: {                                     \
+                constexpr int CONST_HIDDEN_SIZE = 4096;        \
+                constexpr int CONST_X_DIM = 4;                 \
+                __VA_ARGS__();                                 \
+                break;                                         \
+              }                                                \
+              case 8192: {                                     \
+                constexpr int CONST_HIDDEN_SIZE = 8192;        \
+                constexpr int CONST_X_DIM = 8;                 \
+                __VA_ARGS__();                                 \
+                break;                                         \
+              }                                                \
+              default:                                         \
                 TORCH_CHECK(false, "Unsupported hidden_size: ", HIDDEN_SIZE_VAL); \
             }
     int gridy = num_tokens;
@@ -1921,7 +1877,7 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
                     }
                  });
             });
-    }       
+    }        
     }else {
       AT_DISPATCH_FLOATING_TYPES_AND2(
           at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
