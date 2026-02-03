@@ -214,6 +214,59 @@ blockM_all_configs = {
     1002: 32,
 }
 
+@triton.jit
+def _per_token_quant_fp8(
+    x_ptr,
+    xq_ptr,
+    scale_ptr,
+    stride_x,
+    stride_xq,
+    N,
+    BLOCK: tl.constexpr,
+    fp8_min,
+    fp8_max
+):
+    row_id = tl.program_id(0)
+
+    cols = tl.arange(0, BLOCK)
+    mask = cols < N
+
+    x = tl.load(x_ptr + row_id * stride_x + cols, mask=mask,
+                other=0.0).to(tl.float32)
+    absmax = tl.maximum(tl.max(tl.abs(x)), 1e-10)
+    scale_x = absmax / fp8_max
+    x_q = tl.clamp(x / scale_x, min=fp8_min, max=fp8_max).to(xq_ptr.dtype.element_ty)
+    tl.store(xq_ptr + row_id * stride_xq + cols, x_q, mask=mask)
+    tl.store(scale_ptr + row_id, scale_x)
+
+def per_token_quant_fp8(x):
+    M = x.numel() // x.shape[-1]
+    N = x.shape[-1]
+    x_q = torch.empty_like(x, device=x.device, dtype=torch.float8_e4m3fn)
+    scales = torch.empty(x.shape[:-1] + (1, ),
+                         device=x.device,
+                         dtype=torch.float32)
+    BLOCK = triton.next_power_of_2(N)
+    # heuristics for number of warps
+    num_warps = min(max(BLOCK // 256, 1), 8)
+    finfo = torch.finfo(x_q.dtype)
+    fp8_min = finfo.min
+    fp8_max = finfo.max
+    #assert x.is_contiguous()
+    _per_token_quant_fp8[(M, )](
+        x,
+        x_q,
+        scales,
+        stride_x=x.stride(-2),
+        stride_xq=x_q.stride(-2),
+        N=N,
+        BLOCK=BLOCK,
+        num_warps=num_warps,
+        num_stages=1,
+        fp8_min=fp8_min,
+        fp8_max=fp8_max
+    )
+    return x_q, scales
 
 @triton.jit
 def fused_moe_kernel(
@@ -358,7 +411,8 @@ def fused_moe_kernel(
             else:
                 if use_fp8_w8a8:
                     # acc used to enable fp8_fast_accum
-                    accumulator = tl.dot(a, b, acc=accumulator)
+                    #accumulator = tl.dot(a, b, acc=accumulator)
+                    accumulator += tl.dot(a, b)
                 else:
                     accumulator += tl.dot(a, b)
         else:
@@ -414,7 +468,6 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
     assert topk_weights is not None or not mul_routed_weight
     assert topk_weights is None or topk_weights.stride(1) == 1
     assert sorted_token_ids.stride(0) == 1
-    assert use_int8_w8a8 is True
     
     M = A.shape[0]
     num_tokens = M * top_k
@@ -551,6 +604,8 @@ def moe_kernel_prepare_input(
             _, block_k = block_shape[0], block_shape[1]
             A, A_scale = per_token_group_quant_int8(A, block_k)
             assert triton.cdiv(A.shape[-1], block_k) == A_scale.shape[-1]
+    elif use_fp8_w8a8:
+        A, A_scale = per_token_quant_fp8(A)
     elif use_int8_w8a16 or use_int4_w4a16:
         assert B_scale is not None
         assert block_shape is None or block_shape[0] == 0
@@ -605,6 +660,8 @@ def get_w8a8moe_json(E: int, m: int, n1: int, n2: int, k: int):
 
 def test_single_gemm_performance_accuracy(
     input_tensor: torch.Tensor,
+    qinput: torch.Tensor,
+    qa_scale: torch.Tensor,
     w_marlin: torch.Tensor,
     weight: torch.Tensor,
     weight_scale: torch.Tensor,
@@ -629,36 +686,21 @@ def test_single_gemm_performance_accuracy(
     """
     # 准备输出张量
     if gemm_type == "gemm1":
-        output_shape = (input_tensor.shape[0], top_k, weight.shape[1])
+        output_shape = (qinput.shape[0], top_k, weight.shape[1])
     else:  # gemm2
-        output_shape = (input_tensor.shape[0] // 8, 8, weight.shape[1])
+        output_shape = (qinput.shape[0] // 8, 8, weight.shape[1])
     
-    output_cuda = torch.zeros(output_shape, device=input_tensor.device, dtype=input_tensor.dtype)
-    output_triton = torch.zeros(output_shape, device=input_tensor.device, dtype=input_tensor.dtype)
+    output_cuda = torch.zeros(output_shape, device=qinput.device, dtype=torch.bfloat16)
+    output_triton = torch.zeros(output_shape, device=qinput.device, dtype=torch.bfloat16)
     
-    # 准备输入量化
-    qinput, qa_scale = moe_kernel_prepare_input(
-        A=input_tensor,
-        B=weight,
-        A_scale=None,
-        B_scale=weight_scale,
-        use_fp8_w8a8=False,
-        use_int8_w8a8=True,
-        use_int8_w8a16=False,
-        use_int4_w4a16=False,
-        per_channel_quant=per_channel_quant,
-        block_shape=None
-    )
-    qinput = qinput.float().to(torch.float8_e4m3fn)
-    weight = weight.float().to(torch.float8_e4m3fn)
 
     # qinput = torch.ones_like(qinput)
     # weight = torch.ones_like(weight)
     # w_marlin = torch.ones_like(w_marlin)
     # qa_scale = torch.ones_like(qa_scale)
     # weight_scale = torch.ones_like(weight_scale)
-
-    
+    # topk_weights = torch.ones_like(topk_weights)
+    #   
     # CUDA实现性能测试
     def run_cuda_gemm():
         moe_gemm_marlin_w8a8_fp8(
@@ -721,8 +763,8 @@ def test_single_gemm_performance_accuracy(
         top_k if is_first_stage else 1,
         cuda_config,
         compute_type,
-        False,  # use_fp8_w8a8
-        True,   # use_int8_w8a8
+        True,  # use_fp8_w8a8
+        False,   # use_int8_w8a8
         False,  # use_int8_w8a16
         False,  # use_int4_w4a16
         per_channel_quant,
@@ -733,10 +775,25 @@ def test_single_gemm_performance_accuracy(
     # 精度验证：对比CUDA输出和Triton输出
     accuracy_passed = torch.allclose(output_cuda, output_triton, rtol=1e-2, atol=1e-2)
 
-    # import pdb
-    # pdb.set_trace()
 
     if not accuracy_passed:
+        diff = torch.abs(output_cuda - output_triton)
+        topk_diff, topk_idx = torch.topk(diff.flatten(), k=5)
+        indices = [tuple(x) for x in torch.unravel_index(topk_idx, output_cuda.shape)]
+        print("前5个最大差异:")
+        for i in range(5):
+            idx = tuple(ix[i].item() for ix in indices)
+            val_cuda = output_cuda[idx].item()
+            val_triton = output_triton[idx].item()
+            abs_diff = abs(val_cuda - val_triton)
+            # 避免除零
+            if abs(val_cuda) > 1e-6:
+                rel_diff = abs_diff / abs(val_cuda)
+            else:
+                rel_diff = float('inf')
+            print(f"Index: {idx}, output_cuda: {val_cuda}, output_triton: {val_triton}, diff: {topk_diff[i].item()}, abs_err: {abs_diff}, rel_err: {rel_diff}")
+        import pdb
+        pdb.set_trace()
         if is_first_stage:
             gemm1_compare_failed_list.append(cuda_config.get('MODE', -1))
         else:
@@ -755,8 +812,10 @@ def _fused_moe_helper(
     input_data = (torch.randn((m, k), device=device) * 5).to(dtype=out_dtype)
     # weight1 = to_int8(torch.randn((E, n, k), device=device) * 5)
     # weight2 = to_int8(torch.randn((E, n2, k2), device=device) * 5)
-    weight1 = torch.randint(-128, 127, (E,n ,k), device=device, dtype=torch.int8)
-    weight2 = torch.randint(-128, 127, (E,n2 ,k2), device=device, dtype=torch.int8)
+    # 这里生产fp32的数据，确保数值范围在fp8表示内，即[-448, 448]
+    fp8_min, fp8_max = -448, 448  # e4m3fn格式的可表示范围（约略）
+    weight1 = (torch.rand(E, n, k, device=device, dtype=torch.float32) / 10)
+    weight2 = (torch.rand(E, n2, k2, device=device, dtype=torch.float32) / 10)
 
     #weight1 = torch.ones_like(weight1)
 
@@ -779,14 +838,32 @@ def _fused_moe_helper(
     w1_marlin_list = []
     for i in range(weight1.shape[0]):
         w1_marlin_in = w8a8_2_marlin_weight(weight1[i])
-        w1_marlin_list.append(w1_marlin_in)
+        # 转换为float32以便stack操作（Float8_e4m3fn不支持stack）
+        w1_marlin_list.append(w1_marlin_in.float() if w1_marlin_in.dtype == torch.float8_e4m3fn else w1_marlin_in)
     w1_marlin = torch.stack(w1_marlin_list, dim=0)
+ 
 
     w2_marlin_list = []
     for i in range(weight2.shape[0]):
         w2_marlin_in = w8a8_2_marlin_weight(weight2[i])
-        w2_marlin_list.append(w2_marlin_in)
+        # 转换为float32以便stack操作（Float8_e4m3fn不支持stack）
+        w2_marlin_list.append(w2_marlin_in.float() if w2_marlin_in.dtype == torch.float8_e4m3fn else w2_marlin_in)
     w2_marlin = torch.stack(w2_marlin_list, dim=0)
+    
+    def fp32_to_fp8_e4m3fn(t: torch.Tensor) -> torch.Tensor:
+        """更合理的FP32到Float8_e4m3fn转换，使用最近值而不是简单舍弃尾数"""
+        # torch.float8_e4m3fn的数值范围约[-448, 448]
+        fp8_min, fp8_max = -448.0, 448.0
+        t_clamped = t.clamp(min=fp8_min, max=fp8_max)
+        # 保证不会下溢到0
+        # 转换前到float16再转fp8可能提升精度（float8实现本身通常通过float16做rounding）
+        t_fp16 = t_clamped.to(torch.float16)
+        return t_fp16.to(torch.float8_e4m3fn)
+    
+    weight1 = fp32_to_fp8_e4m3fn(weight1)
+    weight2 = fp32_to_fp8_e4m3fn(weight2)
+    w1_marlin = fp32_to_fp8_e4m3fn(w1_marlin)
+    w2_marlin = fp32_to_fp8_e4m3fn(w2_marlin)
     
     #return input_data, weight1, weight2, weight1_scale, weight2_scale, topk_weights, topk_ids
     return input_data, w1_marlin, w2_marlin, weight1, weight2, weight1_scale, weight2_scale, topk_weights, topk_ids
@@ -879,28 +956,25 @@ def test_moe_performance_accuracy(
         B=weight1,
         A_scale=None,
         B_scale=weight1_scale,
-        use_fp8_w8a8=False,
-        use_int8_w8a8=True,
+        use_fp8_w8a8=True,
+        use_int8_w8a8=False,
         use_int8_w8a16=False,
         use_int4_w4a16=False,
         per_channel_quant=per_channel_quant,
         block_shape=None
     )
-    w1_marlin = w1_marlin.float().to(torch.float8_e4m3fn)
 
     # 测试GEMM1
     gemm1_time, gemm1_accuracy = test_single_gemm_performance_accuracy(
-        input_data, w1_marlin, weight1, weight1_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
+        input_data, qinput1, qa1_scale, w1_marlin, weight1, weight1_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
         num_tokens_post_padded, topk, cuda_config1, triton_config1, "gemm1", True, per_channel_quant, compute_type
     )
 
-    qinput1 = qinput1.float().to(torch.float8_e4m3fn)
     
     # 执行CUDA GEMM1获取中间结果
     intermediate_cache1 = torch.zeros((m, topk, n1), device=input_data.device, dtype=input_data.dtype)
     moe_gemm_marlin_w8a8_fp8(qinput1, w1_marlin, intermediate_cache1, qa1_scale, weight1_scale,
                   None, sorted_token_ids, expert_ids, num_tokens_post_padded, topk, cuda_config1)
-    
     # 执行激活函数
     intermediate_cache2 = torch.empty((m * topk, n1 // 2), device=input_data.device, dtype=input_data.dtype)
     torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1.view(-1, n1))
@@ -911,20 +985,25 @@ def test_moe_performance_accuracy(
         B=weight2,
         A_scale=None,
         B_scale=weight2_scale,
-        use_fp8_w8a8=False,
-        use_int8_w8a8=True,
+        use_fp8_w8a8=True,
+        use_int8_w8a8=False,
         use_int8_w8a16=False,
         use_int4_w4a16=False,
         per_channel_quant=per_channel_quant,
         block_shape=None
     )
-    w2_marlin = w2_marlin.float().to(torch.float8_e4m3fn)
+
     # 测试GEMM2
     gemm2_time, gemm2_accuracy = test_single_gemm_performance_accuracy(
-        intermediate_cache2, w2_marlin, weight2, weight2_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
+        intermediate_cache2, qinput2, qa2_scale, w2_marlin, weight2, weight2_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
         num_tokens_post_padded, 1, cuda_config2, triton_config2, "gemm2", False, per_channel_quant, compute_type
     )
     
+    # gemm2
+    # moe_gemm_marlin_w8a8_fp8(qinput2, w2_marlin, intermediate_cache2, qa2_scale, weight2_scale,
+    #               None, sorted_token_ids, expert_ids, num_tokens_post_padded, 1, cuda_config2)
+
+    # triton 完整的流程 gemm1 + silu_and_mul + gemm2
     # 整体精度验证已在单个GEMM测试中完成
     # 这里我们基于单个GEMM的结果来判断整体精度
     overall_accuracy = gemm1_accuracy and gemm2_accuracy
@@ -1252,8 +1331,8 @@ def main():
     
     # 创建DataFrame并保存结果
     df = pd.DataFrame(all_results)
-    #df.to_excel(args.output_file, index=False)
-    df.to_csv('results_asm.csv', index=False)
+    df.to_excel(args.output_file, index=False)
+    #df.to_csv('results_asm.csv', index=False)
     
     print(f"\n测试完成！结果已保存到 {args.output_file}")
     print(f"GEMM1精度失败的配置: {gemm1_compare_failed_list}")
