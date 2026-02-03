@@ -1082,7 +1082,13 @@ void _mqa_logits_128x128x32_TN_impl(
     hipFunctionArgs.use_fp16 = use_fp16;
     hipFunctionArgs.cu_seq_len_k_start = KS;
     hipFunctionArgs.cu_seq_len_k_end = KE;
-
+    hipFunctionArgs.num_heads = num_heads;
+    unsigned char* ptr = (unsigned char*)&hipFunctionArgs;
+    for(int i = 0xA0; i < 0xB4; i++) {
+        printf("%02X ", ptr[i]);
+        if((i - 0xA0 + 1) % 16 == 0) printf("\n");
+    }
+    printf("\n");
     const char* LIGHTOP_ASM_DIR = std::getenv("LIGHTOP_ASM_DIR");
     auto co_file_path = std::string(LIGHTOP_ASM_DIR) + "mqa_logits/test_mqa_logits.co";
     static hipModule_t Module = nullptr; // 静态模块句柄，只加载一次
@@ -1113,6 +1119,27 @@ void _mqa_logits_128x128x32_TN_impl(
 
     return;
 }
+
+#define NUM_HEAD_SWITCH(num_heads, ...)          \
+  [&] {                                          \
+    if (num_heads == 8) {                        \
+      constexpr static int NumHeads = 8;         \
+      return __VA_ARGS__();                      \
+    } else if (num_heads == 16) {                \
+      constexpr static int NumHeads = 16;        \
+      return __VA_ARGS__();                      \
+    } else if (num_heads == 32) {                \
+      constexpr static int NumHeads = 32;        \
+      return __VA_ARGS__();                      \
+    } else if (num_heads == 64) {                \
+      constexpr static int NumHeads = 64;        \
+      return __VA_ARGS__();                      \
+    } else {                                     \
+      constexpr static int NumHeads = 128;       \
+      return __VA_ARGS__();                      \
+    }                                            \
+  }()
+
 
 torch::Tensor mqa_logits(
     torch::Tensor& Q,
@@ -1186,71 +1213,76 @@ torch::Tensor mqa_logits(
                 kernel_to_launch<<<grid, block>>>(
                     q_ptr, k_ptr, d_ptr_local, w_ptr, ks_ptr, ke_ptr, q_seq_len, kv_seq_len);
             };
-            if (N > 8192) {
-                torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
-                D = torch::full({q_seq_len, kv_seq_len}, -std::numeric_limits<float>::infinity(), options);
-                //D刚申请的空间
-                auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
-                const int blockx = (N + 127) / 128;
-                const int blocky = (M + 15) / 16;
-                dim3 threadsPerBlock(512);
-                bool is_align_m = (M % 16 == 0);
-                bool is_align_n = (N % 127 == 0);
-                dim3 numBlock(blockx, blocky);
-                if (is_align_m) {
-                    if (is_align_n) {
-                        kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, 64, 128, 16, 128, 128, true, true>;
-                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock,d_ptr);
+            NUM_HEAD_SWITCH(num_heads,[&] {
+                if (N > 8192) {
+                    torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
+                    D = torch::full({q_seq_len, kv_seq_len}, -std::numeric_limits<float>::infinity(), options);
+                    //D刚申请的空间
+                    auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
+                    const int blockx = (N + 127) / 128;
+                    const int blocky = (M + 15) / 16;
+                    dim3 threadsPerBlock(512);
+                    bool is_align_m = (M % 16 == 0);
+                    bool is_align_n = (N % 127 == 0);
+                    dim3 numBlock(blockx, blocky);
+                    if (is_align_m) {
+                        if (is_align_n) {
+                            kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, NumHeads, 128, 16, 128, 128, true, true>;
+                            launch_kernel(kernel_ptr, numBlock, threadsPerBlock,d_ptr);
+                        } else {
+                            kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, NumHeads, 128, 16, 128, 128, true, false>;
+                            launch_kernel(kernel_ptr, numBlock, threadsPerBlock,d_ptr);
+                        }
+    
                     } else {
-                        kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, 64, 128, 16, 128, 128, true, false>;
-                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock,d_ptr);
-                    }
-
-                } else {
-                    if (is_align_n) {
-                        kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, 64, 128, 16, 128, 128, false, true>;
-                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock,d_ptr);
-                    } else {
-                        kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, 64, 128, 16, 128, 128, false, false>;
-                        launch_kernel(kernel_ptr, numBlock, threadsPerBlock,d_ptr);
-                    }
-                }
-            } else {
-                //加了split_k 初始化为0
-                torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
-                D = torch::full({q_seq_len, kv_seq_len}, 0, options);
-                auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
-                const int blockx = DIV(N, 64);
-                const int blocky = DIV(M, 16);
-                dim3 threadsPerBlock(256);
-                dim3 numBlock(blockx, blocky);
-                bool is_align_m = (M % 16 == 0);
-                bool is_align_n = (N % 64 == 0);
-
-                int split_k = 4; 
-                if (M <= 32 && N <= 128) {
-                     split_k = 16; 
-                }
-                dim3 grid(blockx, blocky, split_k);
-
-                 if (is_align_m) {
-                    if (is_align_n) {
-                        kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, 64, 128, 16, 128, 64, true, true>;
-                        launch_kernel(kernel_ptr, grid, threadsPerBlock,d_ptr);
-                    } else {
-                        kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, 64, 128, 16, 128, 64, true, false>;
-                        launch_kernel(kernel_ptr, grid, threadsPerBlock,d_ptr);
+                        if (is_align_n) {
+                            kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, NumHeads, 128, 16, 128, 128, false, true>;
+                            launch_kernel(kernel_ptr, numBlock, threadsPerBlock,d_ptr);
+                        } else {
+                            kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, NumHeads, 128, 16, 128, 128, false, false>;
+                            launch_kernel(kernel_ptr, numBlock, threadsPerBlock,d_ptr);
+                        }
                     }
                 } else {
-                    if (is_align_n) {
-                        kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, 64, 128, 16, 128, 64, false, true>;
-                        launch_kernel(kernel_ptr, grid, threadsPerBlock,d_ptr);
+                    //加了split_k 初始化为0
+                    torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
+                    D = torch::full({q_seq_len, kv_seq_len}, 0, options);
+                    auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
+                    const int blockx = DIV(N, 64);
+                    const int blocky = DIV(M, 16);
+                    dim3 threadsPerBlock(256);
+                    dim3 numBlock(blockx, blocky);
+                    bool is_align_m = (M % 16 == 0);
+                    bool is_align_n = (N % 64 == 0);
+    
+                    int split_k = 4; 
+                    if (M <= 32 && N <= 128) {
+                         split_k = 16; 
+                    }
+                    if (NumHeads == 8){
+                        split_k = 1;
+                    }
+                    dim3 grid(blockx, blocky, split_k);
+    
+                     if (is_align_m) {
+                        if (is_align_n) {
+                            kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, NumHeads, 128, 16, 128, 64, true, true>;
+                            launch_kernel(kernel_ptr, grid, threadsPerBlock,d_ptr);
+                        } else {
+                            kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, NumHeads, 128, 16, 128, 64, true, false>;
+                            launch_kernel(kernel_ptr, grid, threadsPerBlock,d_ptr);
+                        }
                     } else {
-                        kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, 64, 128, 16, 128, 64, false, false>;
-                        launch_kernel(kernel_ptr, grid, threadsPerBlock,d_ptr);
+                        if (is_align_n) {
+                            kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, NumHeads, 128, 16, 128, 64, false, true>;
+                            launch_kernel(kernel_ptr, grid, threadsPerBlock,d_ptr);
+                        } else {
+                            kernel_t kernel_ptr = _mqa_logits_16x128x64_TN_impl_with_weight_prefetch<scalar_t, NumHeads, 128, 16, 128, 64, false, false>;
+                            launch_kernel(kernel_ptr, grid, threadsPerBlock,d_ptr);
+                        }
                     }
                 }
-            }
+            });
         });
         return D;
     }

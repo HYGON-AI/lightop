@@ -673,9 +673,9 @@ def mqa_logits(Q: torch.Tensor, K: torch.Tensor, Weights: torch.Tensor, ks:torch
     q_seq_len, num_heads, head_dim = Q.shape
     kv_seq_len = K.shape[0]
     clean_logit = True
-    # pdb.set_trace()
+    assert num_heads in [8, 16, 32,64, 128], "num_heads only support [8,16,32,64,128]"
+    assert head_dim == 128, "head_dim only support 128"
     outs = op.mqa_logits(Q, K, Weights, ks, ke, q_seq_len, kv_seq_len, num_heads, head_dim,clean_logit)
-    # outs = torch.nn.functional.linear(Q.view(q_seq_len*num_heads, head_dim), K)
     return outs
 
 def get_paged_mqa_logits_metadata(
