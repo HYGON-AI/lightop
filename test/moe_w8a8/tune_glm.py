@@ -748,7 +748,7 @@ def fuse_moe_correctness_preprocess(
     ) -> tuple[dict[str, int], float]:
     
     mode_ranges = [mode for mode in block_m_configs.keys()]
-    gemm1_compare_failed_list = [] #这里
+    gemm1_compare_failed_list = [63, 67, 71, 75, 78, 81, 84] #这里
     gemm2_compare_failed_list = [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 83, 84]
     device="cuda:"+str(device_id)
     
@@ -767,10 +767,13 @@ def fuse_moe_correctness_preprocess(
         # if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43, 75]: #TP8 gemm2
         #     mode1 = 0
 
-        # if mode0 in [63, 67, 71, 75, 78, 81, 84]: #qwen30b gemm1
-        #     mode0 = 0
+        if mode0 in [63, 67, 71, 75, 78, 81, 84]: #qwen30b gemm1
+            mode0 = 0
         # if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43, 63, 67,71, 78, 75, 79, 80, 81, 82, 83, 84]: #qwen30b gemm2
         #     mode1 = 0
+
+        # if mode0 in [63]: #qwen30b gemm1
+        #     mode0 = 0
 
         if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 83, 84]: #TP16 gemm2
             mode1 = 0
@@ -1436,7 +1439,31 @@ def main(args: argparse.Namespace):
     topk = 8
     ep_size = 1
 
+    # 腾讯微信算子
+    # qwen-235B-22B-w8a8-tp4 
+    E = 128
+    shard_intermediate_size=768
+    hidden_size=4096
 
+    # qwen-235B-22B-w8a8-tp8 todo
+    # E = 16
+    # shard_intermediate_size=3072
+    # hidden_size=4096
+
+    #qwen-30B-A3B-FP8
+    # E = 128
+    # shard_intermediate_size=1536
+    # hidden_size=2048
+
+    # MINMAX-M2-TP2
+    # E = 256
+    # shard_intermediate_size=1536
+    # hidden_size=3072
+
+    # MINMAX-M2-TP4
+    # E = 256
+    # shard_intermediate_size=768
+    # hidden_size=3072
 
     # # 字节算子测试
     # E = 64
@@ -1466,11 +1493,11 @@ def main(args: argparse.Namespace):
 
     # GLM4.6-W8A8
     # [384, 5120]  [5120, 192]
-    ep_size = 1
-    topk = 1
-    E = 160
-    shard_intermediate_size=384
-    hidden_size=5120
+    # ep_size = 1
+    # topk = 1
+    # E = 160
+    # shard_intermediate_size=384
+    # hidden_size=5120
     
     # EP8
     # ep_size = 8
@@ -1510,7 +1537,8 @@ def main(args: argparse.Namespace):
 
     if args.batch_size is None:
         batch_sizes = [
-            1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
+            #1, 2, 
+            4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             #1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 
             #16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             #1, 2, 4, 8, 16, 32, 64, 128
