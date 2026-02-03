@@ -44,7 +44,7 @@ from .lossrnnt import RNNTLoss
 from .scaled_masked_softmax import FusedScaleMaskSoftmax,FusedScaleMaskSoftmaxDropout,AttnMaskType
 from .groupnorm import GroupNorm ,CeluGN,GNSilu
 from .reduce import sum, mean,topk
-from .gemmopt import gemm, gemm_w4a16, w4tow16,gemm_w8a16_fp8,fp8_to_16,moe_gemm_w8a8, moe_gemm_marlin_w8a8, moe_gemm_marlin_w8a8_fp8, gemm_w8a8_smooth, moe_marlin_w4a16, awq_marlin_repack, gemm_w8a8_asm, gemm_w8a8_wgrad_asm, \
+from .gemmopt import gemm, gemm_w4a16, w4tow16,gemm_w8a16_fp8,fp8_to_16,moe_gemm_w8a8, moe_gemm_marlin_w8a8, moe_gemm_marlin_w8a8_fp8, moe_gemm_marlin_w8a8_blockwise_fp8, gemm_w8a8_smooth, moe_marlin_w4a16, awq_marlin_repack, gemm_w8a8_asm, gemm_w8a8_wgrad_asm, \
       gemm_w8a8_xgrad_asm, moe_gemm_w4a8, moe_gemm_marlin_w4a8, groupgemm, moe_groupgemm_w4a8, moe_groupgemm_marlin_w4a8, awq_marlin_repack_w4a8, m_grouped_w4a8_gemm_nt_masked, grougemm_w8a8_pertensor_asm, m_grouped_w8a8_gemm_nt_masked, \
       m_grouped_w8a8_gemm_nt_contig_asm, mqa_logits,moe_gemm_marlin_w16a16,moe_gemm_w16a16,m_grouped_bf16_gemm_nt_masked,m_grouped_w16a16_gemm_nt_contig_asm,m_grouped_w8a8_gemm_nt_nopad_contig_asm, \
       grougemm_bf16_fp16, m_grouped_fp8_gemm_nt_masked, fused_bmm
@@ -53,7 +53,7 @@ from .fuse_silu_mul_quant import fuse_silu_mul_quant, fuse_silu_mul_quant_ep, fu
 from .ds_cat import ds_cat
 from .blockwise_scaling import blockwise_scaled_cast_transpose
 from .config import get_moe_cuda_config, get_moe_cuda_marlin_config, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8, get_moe_cuda_marlin_config_w16a16, \
-      get_moe_cuda_config_w16a16, get_moe_groupgemm_config_w4a8, get_moe_groupgemm_marlin_config_w4a8,get_batched_gemm_w8a8_config
+      get_moe_cuda_config_w16a16, get_moe_groupgemm_config_w4a8, get_moe_groupgemm_marlin_config_w4a8
 from .config_smooth_gemm import gemm_w8a8_smooth_config
 from .config_deepgemm import gemm_w8a8_deepgemm_masked_config
 from .permute_unpermute import groupgemm_permute, groupgemm_unpermute, fuse_groupgemm_permute_quant
