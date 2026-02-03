@@ -656,7 +656,6 @@ void FuseRmsRopeWithKvStore(
                 constexpr uint32_t vec_size = (bytes_per_vec < vec_size_qk) ? bytes_per_vec : vec_size_qk;
                 constexpr int vec_size_v_dim = HEAD_DIM_V_CONST / 64;
                 constexpr uint32_t vec_size_v = (bytes_per_vec < vec_size_v_dim) ? bytes_per_vec : vec_size_v_dim;
-                printf("vec_size: %d, vec_size_v: %d\n", vec_size, vec_size_v);
 
                 //[TODO] 根据model 中的shape进行config调整
                 constexpr uint32_t NUM_HEAD_V_WARP = 1;
@@ -736,11 +735,9 @@ void rms_rotary_embedding_fuse_with_kv_store (
         TORCH_CHECK(k_buffer.dim() == 4, "k_buffer must have shape [NUM_BLOCKS, KV_HEAD_NUM, PAGE_SIZE, HEAD_DIM]");
         TORCH_CHECK(v_buffer.dim() == 4, "v_buffer must have shape [NUM_BLOCKS, KV_HEAD_NUM, PAGE_SIZE, HEAD_DIM]");
         TORCH_CHECK(kv_cache_loc.dim() == 1, "kv_cache_loc must have shape [MAX_TOKEN]");
-        if (v_buffer.scalar_type() == at::ScalarType::Byte) {
+        if (v_buffer.scalar_type() == at::ScalarType::Byte || v_buffer.scalar_type() == at::ScalarType::Float8_e4m3fn || v_buffer.scalar_type() == at::ScalarType::Float8_e5m2) {
             TORCH_CHECK(q_rope_out.has_value() && q_rope_out->defined(),
                 "q_rope_out must be provided when v_buffer is fp8 (uint8)");
-            TORCH_CHECK(q_rope_out->scalar_type() == at::ScalarType::Byte && q_rope_out->sizes() == query.sizes(),
-                "q_rope_out must be uint8 and have same shape as query [B*S, H, D]");
         }
         //TORCH_CHECK(key.shape[-1] == v.shape[-1], "key and v head_dim must have the same shape");
         int64_t bs = positions.numel();   // [B * S]
@@ -776,21 +773,21 @@ void rms_rotary_embedding_fuse_with_kv_store (
             query.scalar_type(), "", [&] {
                 using T_ACC = at::acc_type<scalar_t, true>; // float;
                 using cache_t = std::conditional_t<CACHE_T_CONST, uint8_t, scalar_t>;
-                cache_t* q_rope_out_ptr = CACHE_T_CONST ? q_rope_out->data_ptr<cache_t>() : nullptr;
+                cache_t* q_rope_out_ptr = CACHE_T_CONST ? reinterpret_cast<cache_t*>(q_rope_out->data_ptr()) : nullptr;
                 size_t q_rope_out_sn = CACHE_T_CONST ?  (head_dim * num_qo_heads) : 0;
                 size_t q_rope_out_sh = CACHE_T_CONST ? head_dim : 0;
-                cache_t* k_rope_out_ptr = CACHE_T_CONST ? k_rope_out->data_ptr<cache_t>() : nullptr;
+                cache_t* k_rope_out_ptr = CACHE_T_CONST ? reinterpret_cast<cache_t*>(k_rope_out->data_ptr()) : nullptr;
                 size_t k_rope_out_sn = CACHE_T_CONST ?  (head_dim * num_kv_heads) : 0;
                 size_t k_rope_out_sh = CACHE_T_CONST ? head_dim : 0;
-                cache_t* v_rope_out_ptr = CACHE_T_CONST ? v_rope_out->data_ptr<cache_t>() : nullptr;
+                cache_t* v_rope_out_ptr = CACHE_T_CONST ? reinterpret_cast<cache_t*>(v_rope_out->data_ptr()) : nullptr;
                 size_t v_rope_out_sn = CACHE_T_CONST ? head_dim_v * num_kv_heads : 0;
                 size_t v_rope_out_sh = CACHE_T_CONST ? head_dim_v : 0;
                 FuseRmsRopeWithKvStore<T_ACC, scalar_t, cache_t, CACHE_T_CONST, false, false>(
                     query.data_ptr<scalar_t>(),
                     key.data_ptr<scalar_t>(),
                     v.data_ptr<scalar_t>(),
-                    k_buffer.data_ptr<cache_t>(),
-                    v_buffer.data_ptr<cache_t>(),
+                    reinterpret_cast<cache_t*>(k_buffer.data_ptr()),
+                    reinterpret_cast<cache_t*>(v_buffer.data_ptr()),
                     q_rope_out_ptr,
                     q_rope_out_sn,
                     q_rope_out_sh,
