@@ -479,7 +479,7 @@ __global__ void rms_rotary_embedding_kernel_pipeline_with_kv_store(
     if (warp_id >= NUM_HEAD_Q_WARP + NUM_HEAD_K_WARP) {
         const int v_local_warp_id = warp_id - (NUM_HEAD_Q_WARP + NUM_HEAD_K_WARP);
         const int v_offset = token_idx * v_stride_n;
-        const int v_cache_offset = cache_block_idx * v_buffer_stride_n + cache_block_offset * v_buffer_stride_p;
+        const int v_cache_offset = cache_block_idx * v_buffer_stride_n + cache_block_offset;
 
         #pragma unroll
         for (int iter = 0; iter < num_kv_head; iter += NUM_HEAD_V_WARP) {
@@ -489,10 +489,10 @@ __global__ void rms_rotary_embedding_kernel_pipeline_with_kv_store(
             const int v_global_offset = v_offset + v_head_idx * v_stride_h;
             const int v_cache_global_offset = v_cache_offset + v_head_idx * v_buffer_stride_h;
             v_vec_data = *(reinterpret_cast<vec_scalar_t_v*>(v + v_global_offset + lane_id * VEC_SIZE_V));
+            scalar_t* v_vec_ptr = reinterpret_cast<scalar_t*>(&v_vec_data);
             if constexpr (CACHE_T_CONST) {
               uint8_t v_vec_data_uint8[VEC_SIZE_V];
               float v_vec_data_float[VEC_SIZE_V];
-              scalar_t* v_vec_ptr = reinterpret_cast<scalar_t*>(&v_vec_data);
               if constexpr (IS_HAVE_V_SCALE) {
                 #pragma unroll
                 for (int i = 0;i < VEC_SIZE_V; ++i)
@@ -504,11 +504,19 @@ __global__ void rms_rotary_embedding_kernel_pipeline_with_kv_store(
               }
               //转为uint8_t类型，存到v_buffer中
               convert_v_vec_to_uint8_t<VEC_SIZE_V, CACHE_T_CONST>(v_vec_data_float, v_vec_data_uint8);
-              *(reinterpret_cast<vec_uint8_t_v*>(v_buffer + v_cache_global_offset + lane_id * VEC_SIZE_V)) = *(reinterpret_cast<vec_uint8_t_v*>(v_vec_data_uint8));
+              const int v_cache_global_offset = v_cache_offset + v_head_idx * v_buffer_stride_h + (lane_id * VEC_SIZE_V * v_buffer_stride_p);
+              #pragma unroll
+              for (int i = 0; i < VEC_SIZE_V; ++i) {
+                ((uint8_t*)v_buffer)[v_cache_global_offset + i * v_buffer_stride_p] = v_vec_data_uint8[i];
+              }
               const int v_rope_out_offset = token_idx * v_rope_out_stride_n + v_head_idx * v_rope_out_stride_h + lane_id * VEC_SIZE_V;
               *(reinterpret_cast<vec_uint8_t_v*>(v_rope_out + v_rope_out_offset)) = *(reinterpret_cast<vec_uint8_t_v*>(v_vec_data_uint8));
             } else {
-              *(reinterpret_cast<vec_scalar_t_v*>(v_buffer + v_cache_global_offset + lane_id * VEC_SIZE_V)) = v_vec_data;
+              const int v_cache_global_offset = v_cache_offset + v_head_idx * v_buffer_stride_h + (lane_id * VEC_SIZE_V * v_buffer_stride_p);
+              #pragma unroll
+              for (int i = 0; i < VEC_SIZE_V; ++i) {
+                ((scalar_t*)v_buffer)[v_cache_global_offset + i * v_buffer_stride_p] = v_vec_ptr[i];
+              }
             }
         }
           asm volatile("s_barrier");// 其他warp同步
@@ -733,7 +741,7 @@ void rms_rotary_embedding_fuse_with_kv_store (
     int head_dim,
     int page_size,
     Tensor& k_buffer,        //[NUM_BLOCKS, KV_HEAD_NUM, PAGE_SIZE, HEAD_DIM]
-    Tensor& v_buffer,        //[NUM_BLOCKS, KV_HEAD_NUM, PAGE_SIZE, HEAD_DIM]
+    Tensor& v_buffer,        //[NUM_BLOCKS, KV_HEAD_NUM,  HEAD_DIM, PAGE_SIZE]
     Tensor& kv_cache_loc,    //[B * S]
     bool interleave,
     Tensor& weight_q,         //[HEAD_DIM]
@@ -761,7 +769,7 @@ void rms_rotary_embedding_fuse_with_kv_store (
         }
         //TORCH_CHECK(key.shape[-1] == v.shape[-1], "key and v head_dim must have the same shape");
         int64_t bs = positions.numel();   // [B * S]
-        int head_dim_v = v_buffer.size(-1);
+        int head_dim_v = v_buffer.size(-2);
         int query_hidden_size = query.numel() / bs;  // (HEADQ * HEAD_DIM)
         int key_hidden_size = key.numel() / bs;     // (HEADK * HEAD_DIM)
 
@@ -771,7 +779,9 @@ void rms_rotary_embedding_fuse_with_kv_store (
         size_t v_buffer_stride_n = v_buffer.stride(0);
         size_t v_buffer_stride_h = v_buffer.stride(1);
         size_t v_buffer_stride_p = v_buffer.stride(2);
-
+        // printf("v_buffer_stride_n: %zu, v_buffer_stride_h: %zu, v_buffer_stride_p: %zu\n", v_buffer_stride_n, v_buffer_stride_h, v_buffer_stride_p);
+        // printf("head_dim_v: %d", head_dim_v);
+        
         unsigned int rotary_dim = cos_sin_cache.size(1);
         unsigned int num_qo_heads = query_hidden_size / head_dim;  
         unsigned int num_kv_heads = key_hidden_size / head_dim;
