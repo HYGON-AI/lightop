@@ -15,23 +15,19 @@ from lightop import  rms_rotary_embedding_fuse_with_kv_store
 torch.manual_seed(0)
 DEVICE = "cuda"
 DTYPE = torch.bfloat16  # float16 | float32 | bfloat16
-RMS_EPS = 1e-4
+RMS_EPS = 1e-6
 ROPE_THETA = 10000.0
-PAGE_SIZE = 16
+PAGE_SIZE = 64
 
 # 定义测试形状: (BATCH, SEQ, NUM_HEADS_Q, NUM_HEADS_KV, HEAD_DIM, ROTARY_DIM) 或带 HEAD_DIM_V 的 7 元组
-TEST_SHAPES = [
-    (1, 6, 8, 1, 128, 64),
-    # (2, 1024, 4, 4, 256, 128),
-    # (2, 1024, 4, 4, 512, 128),
-]
+TEST_SHAPES = [(1, d1, 8, 1, 128, 64) for d1 in (1 << i for i in range(1, 10))]
 # q/k/v 为 2 维时的形状: q=[b*s, h_q*head_dim], k=[b*s, h_k*head_dim], v=[b*s, h_k*head_dim_v], k/v_buffer 仍 4 维
 TEST_SHAPES_2D = [
     (2, 16, 4, 4, 128, 64),       # head_dim_v 默认 = head_dim
     (2, 16, 4, 4, 128, 64, 128),  # 显式 head_dim_v
 ]
 TEST_NEOX_STYLES = [True]
-TEST_RESIDUALS = [True]
+TEST_RESIDUALS = [False]
 # v_buffer 为 fp8 (uint8) 的精度验证
 TEST_V_BUFFER_FP8 = [False, True]
 # 是否测试 2D q/k/v（flattened last two dims）
@@ -58,7 +54,8 @@ def build_cos_sin_cache(max_position, dim, base=10000.0, dtype=torch.float32, de
 def get_tensors_kv_store(batch, seq, h_q, h_k, dim, device, dtype, page_size, generate_residual, use_v_buffer_fp8=False, use_2d_qkv=False, head_dim_v=None):
     """生成 rms_rotary_embedding_fuse_with_kv_store 所需张量。
     3D: q/k/v 为 [num_tokens, num_heads, head_dim]；
-    2D: q=[num_tokens, h_q*head_dim], k=[num_tokens, h_k*head_dim], v=[num_tokens, h_k*head_dim_v]，k_buffer/v_buffer 仍 4 维。
+    2D: q=[num_tokens, h_q*head_dim], k=[num_tokens, h_k*head_dim], v=[num_tokens, h_k*head_dim_v]。
+    k_buffer shape=[num_blocks, kv_heads, page_size, head_dim]；v_buffer shape=[num_blocks, kv_heads, head_dim_v, page_size]。
     """
     num_tokens = batch * seq
     num_blocks = max(1, (num_tokens + page_size - 1) // page_size)
@@ -83,10 +80,10 @@ def get_tensors_kv_store(batch, seq, h_q, h_k, dim, device, dtype, page_size, ge
 
     if use_v_buffer_fp8:
         k_buffer = torch.zeros(num_blocks, h_k, page_size, dim, device=device, dtype=torch.float8_e4m3fn)
-        v_buffer = torch.zeros(num_blocks, h_k, page_size, dim_v, device=device, dtype=torch.float8_e4m3fn)
+        v_buffer = torch.zeros(num_blocks, h_k, dim_v, page_size, device=device, dtype=torch.float8_e4m3fn)
     else:
         k_buffer = torch.zeros(num_blocks, h_k, page_size, dim, device=device, dtype=dtype)
-        v_buffer = torch.zeros(num_blocks, h_k, page_size, dim_v, device=device, dtype=dtype)
+        v_buffer = torch.zeros(num_blocks, h_k, dim_v, page_size, device=device, dtype=dtype)
     kv_cache_loc = torch.arange(num_tokens, device=device, dtype=torch.int64)
 
     return q, k, v, positions, weight_q, weight_k, res_q, res_k, k_buffer, v_buffer, kv_cache_loc, num_tokens
@@ -121,10 +118,10 @@ def baseline_kernel_adapter(q, k, v, positions, w_q, w_k, res_q, res_k, k_buffer
         off = int(kv_cache_loc[t].item()) % page_size
         if use_v_buffer_fp8:
             k_buffer[blk, :, off, :] = (k[t, :, :].to(torch.float8_e4m3fn)).view(torch.uint8)
-            v_buffer[blk, :, off, :] = (v[t, :, :].to(torch.float8_e4m3fn)).view(torch.uint8)
+            v_buffer[blk, :, :, off] = (v[t, :, :].to(torch.float8_e4m3fn)).view(torch.uint8)
         else:
             k_buffer[blk, :, off, :] = k[t, :, :].clone()
-            v_buffer[blk, :, off, :] = v[t, :, :].clone()
+            v_buffer[blk, :, :, off] = v[t, :, :].clone()
 
 
 def fused_kernel_adapter(q, k, v, positions, w_q, w_k, res_q, res_k, k_buffer, v_buffer, kv_cache_loc, page_size, cache, is_neox, use_res, use_v_buffer_fp8=False):
@@ -161,12 +158,13 @@ def compare(a, b, name, dtype):
 
 
 def compare_v_buffer(v_buffer, v, kv_cache_loc, page_size, num_tokens, dtype):
+    """v_buffer shape [num_blocks, kv_heads, head_dim_v, page_size]，slot = v_buffer[blk, :, :, off]。"""
     atol, rtol = get_precision_tolerance(dtype)
     max_diff = 0.0
     for t in range(num_tokens):
         blk = int(kv_cache_loc[t].item()) // page_size
         off = int(kv_cache_loc[t].item()) % page_size
-        slot = v_buffer[blk, :, off, :]
+        slot = v_buffer[blk, :, :, off]
         ref = v[t, :, :]
         d = (slot - ref).abs().max().item()
         max_diff = max(max_diff, d)
@@ -223,13 +221,13 @@ def compare_k_buffer_fp8(k_buffer_uint8, k_ref, kv_cache_loc, page_size, num_tok
 
 
 def compare_v_buffer_fp8(v_buffer_uint8, v_ref, kv_cache_loc, page_size, num_tokens, atol=0.25, rtol=0.1):
-    """校验 fp8 v_buffer：反量化后与 v_ref 逐 slot 比较，使用 fp8 放宽容差。"""
+    """校验 fp8 v_buffer：反量化后与 v_ref 逐 slot 比较。v_buffer shape [num_blocks, kv_heads, head_dim_v, page_size]。"""
     v_dequant = dequantize_fp8_e4m3_to_float(v_buffer_uint8)
     max_diff = 0.0
     for t in range(num_tokens):
         blk = int(kv_cache_loc[t].item()) // page_size
         off = int(kv_cache_loc[t].item()) % page_size
-        slot = v_dequant[blk, :, off, :]
+        slot = v_dequant[blk, :, :, off]
         ref = v_ref[t, :, :].to(torch.float8_e4m3fn).float()
         d = (slot - ref).abs().max().item()
         max_diff = max(max_diff, d)
@@ -345,6 +343,12 @@ def run_single_case(shape_config, is_neox, use_residual, use_v_buffer_fp8=False,
             diff_q = compare(q_out, q_ref, "q", DTYPE)
             assert q_out.isfinite().all(), "q_buffer 存在 NaN/Inf"
             max_diff_record = max(max_diff_record, diff_q)
+            diff_k = compare(k_out, k_ref, "k", DTYPE)
+            assert k_out.isfinite().all(), "k_buffer 存在 NaN/Inf"
+            max_diff_record = max(max_diff_record, diff_k)
+            diff_v = compare(v_out, v_org, "v", DTYPE)
+            assert v_out.isfinite().all(), "v_buffer 存在 NaN/Inf"
+            max_diff_record = max(max_diff_record, diff_v)
             diff_k = compare_k_buffer(k_buf_tgt, k_ref, kv_cache_loc, PAGE_SIZE, num_tokens, DTYPE)
             assert k_buf_tgt.isfinite().all(), "v_buffer 存在 NaN/Inf"
             max_diff_record = max(max_diff_record, diff_k)
