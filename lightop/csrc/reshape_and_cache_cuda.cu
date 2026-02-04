@@ -34,31 +34,106 @@ enum class Fp8KVCacheDataType {
   kAuto = 0,
   kFp8E4M3 = 1,
   kFp8E5M2 = 2,
-  kInt8 = 3,
 };
 
-static inline __device__ uint8_t float_to_int8(float x, const float scale) {
-  int8_t fx = roundf(std::max(-128.f, std::min(127.f, x / scale)));
-  uint8_t res = fx + 128;
+static inline __device__ uint8_t float_to_fp8_e4m3(float f) {
+  constexpr uint32_t fp8_max = UINT32_C(1087) << 20;
+  constexpr uint32_t denorm_mask = UINT32_C(141) << 23;
+  uint32_t f_bits = c10::detail::fp32_to_bits(f);
+  uint8_t result = 0u;
+  const uint32_t sign = f_bits & UINT32_C(0x80000000);
+  f_bits ^= sign;
+  if (f_bits >= fp8_max) {
+    result = 0x7f;
+  } else {
+    if (f_bits < (UINT32_C(121) << 23)) {
+      f_bits =
+        c10::detail::fp32_to_bits(c10::detail::fp32_from_bits(f_bits) + c10::detail::fp32_from_bits(denorm_mask));
+      result = static_cast<uint8_t>(f_bits - denorm_mask);
+    } else {
+      uint8_t mant_odd = (f_bits >> 20) & 1;
+      f_bits += ((uint32_t)(7 - 127) << 23) + 0x7FFFF;
+      f_bits += mant_odd;
+      result = static_cast<uint8_t>(f_bits >> 20);
+    }
+  }
 
-  return res;
+  result |= static_cast<uint8_t>(sign >> 24);
+  return result;
 }
 
-// Define custom FP32 vector data types.
-struct Float4_ {
-  float2 x;
-  float2 y;
-};
-
-// int8x4 -> float4
-template <typename float4, typename uint32_t>
-__inline__ __device__ float4 scaled_vec_conversion_int8(
-    const uint32_t& a, const float scale) {
-  Float4_ tmp = float_to_int8(a, scale);
-  float4 res = make_float4(tmp.x.x, tmp.x.y, tmp.y.x, tmp.y.y);
-  return res;
+static inline __device__ uint8_t float_to_fp8_e5m2(float f) {
+  constexpr uint32_t fp32_inf = UINT32_C(255) << 23;
+  constexpr uint32_t fp8_max = UINT32_C(143) << 23;
+  constexpr uint32_t denorm_mask = UINT32_C(134) << 23;
+  uint32_t f_bits = c10::detail::fp32_to_bits(f);
+  uint8_t result = 0u;
+  const uint32_t sign = f_bits & UINT32_C(0x80000000);
+  f_bits ^= sign;
+  if (f_bits >= fp8_max) {
+    result = f_bits > fp32_inf ? UINT8_C(0x7F) : UINT8_C(0x7C);
+  } else {
+    if (f_bits < (UINT32_C(113) << 23)) {
+      f_bits = c10::detail::fp32_to_bits(c10::detail::fp32_from_bits(f_bits)
+               + c10::detail::fp32_from_bits(denorm_mask));
+      result = static_cast<uint8_t>(f_bits - denorm_mask);
+    } else {
+      uint32_t mant_odd = (f_bits >> 21) & 1;
+      f_bits += ((uint32_t)(15 - 127) << 23) + 0xFFFFF;
+      f_bits += mant_odd;
+      result = static_cast<uint8_t>(f_bits >> 21);
+    }
+  }
+  result |= static_cast<uint8_t>(sign >> 24);
+  return result;
 }
 
+template <bool is_e4m3>
+static __device__ uint8_t to_f8_from_f32(float v1) {
+  
+#if (defined(__gfx938__) )
+  union fp8x4{
+    int int32;
+    uint8_t  u8x4[4];
+  };
+  fp8x4 val;
+  val.int32=0;
+  if constexpr(is_e4m3){
+    val.int32 = __builtin_hcu_cvt_pk_fp8_f32(v1,v1,val.int32,false);
+  }
+  else{
+    val.int32 = __builtin_hcu_cvt_pk_bf8_f32(v1,v1,val.int32,false);
+  }
+  return val.u8x4[0];
+#else
+  if constexpr(is_e4m3){
+    return float_to_fp8_e4m3(v1);
+  }
+  else{
+    return float_to_fp8_e5m2(v1);
+  }
+#endif
+}
+
+template<typename scalar_t> 
+static __device__ inline float to_float(scalar_t in){
+  if constexpr(std::is_same<scalar_t, _Float16>::value||std::is_same<scalar_t, float>::value){
+    return in;
+  }
+  else{
+    union{
+        uint32_t int32;
+        float    fp32;
+    } u = {uint32_t(in) << 16};
+    return u.fp32;
+  }
+}
+
+template<typename scalar_t,bool is_e4m3> 
+static __device__ inline float to_fp8(scalar_t in,float scale){
+  float v = to_float<scalar_t>(in)/scale;
+  return to_f8_from_f32<is_e4m3>(v);
+}
  // The following macro is used to dispatch the conversion function based on
   // the data type of the key and value cache. The FN is a macro that calls a
   // function with template<typename scalar_t, typename cache_t,
@@ -68,9 +143,9 @@ __inline__ __device__ float4 scaled_vec_conversion_int8(
       if (SRC_DTYPE == at::ScalarType::Float) {                                \
         FN(float, float, Fp8KVCacheDataType::kAuto);                     \
       } else if (SRC_DTYPE == at::ScalarType::Half) {                          \
-        FN(uint16_t, uint16_t, Fp8KVCacheDataType::kAuto);               \
+        FN(_Float16, _Float16, Fp8KVCacheDataType::kAuto);               \
       } else if (SRC_DTYPE == at::ScalarType::BFloat16) {                      \
-        FN(__nv_bfloat16, __nv_bfloat16, Fp8KVCacheDataType::kAuto);     \
+        FN(uint16_t, uint16_t, Fp8KVCacheDataType::kAuto);     \
       } else {                                                             \
         TORCH_CHECK(false, "Unsupported input type of kv cache: ", SRC_DTYPE); \
       }                                                                        \
@@ -79,9 +154,9 @@ __inline__ __device__ float4 scaled_vec_conversion_int8(
         if (SRC_DTYPE == at::ScalarType::Float) {                              \
           FN(float, uint8_t, Fp8KVCacheDataType::kFp8E4M3);              \
         } else if (SRC_DTYPE == at::ScalarType::Half) {                        \
-          FN(uint16_t, uint8_t, Fp8KVCacheDataType::kFp8E4M3);           \
+          FN(_Float16, uint8_t, Fp8KVCacheDataType::kFp8E4M3);           \
         } else if (SRC_DTYPE == at::ScalarType::BFloat16) {                    \
-          FN(__nv_bfloat16, uint8_t, Fp8KVCacheDataType::kFp8E4M3);      \
+          FN(uint16_t, uint8_t, Fp8KVCacheDataType::kFp8E4M3);      \
         } else {                                                             \
           TORCH_CHECK(false,                                                   \
                       "Unsupported input type of kv cache: ", SRC_DTYPE);      \
@@ -90,9 +165,9 @@ __inline__ __device__ float4 scaled_vec_conversion_int8(
         if (SRC_DTYPE == at::ScalarType::Float) {                              \
           FN(float, uint8_t, Fp8KVCacheDataType::kFp8E5M2);              \
         } else if (SRC_DTYPE == at::ScalarType::Half) {                        \
-          FN(uint16_t, uint8_t, Fp8KVCacheDataType::kFp8E5M2);           \
+          FN(_Float16, uint8_t, Fp8KVCacheDataType::kFp8E5M2);           \
         } else if (SRC_DTYPE == at::ScalarType::BFloat16) {                    \
-          FN(__nv_bfloat16, uint8_t, Fp8KVCacheDataType::kFp8E5M2);      \
+          FN(uint16_t, uint8_t, Fp8KVCacheDataType::kFp8E5M2);      \
         } else {                                                             \
           TORCH_CHECK(false,                                                   \
                       "Unsupported input type of kv cache: ", SRC_DTYPE);      \
@@ -146,20 +221,11 @@ __global__ void reshape_and_cache_kernel_vllm(
       if constexpr (kv_dt == Fp8KVCacheDataType::kAuto) {
         key_cache[tgt_key_idx] = tgt_key;
         value_cache[tgt_value_idx] = tgt_value;
-      } else if constexpr (kv_dt == Fp8KVCacheDataType::kInt8) {
-        key_cache[tgt_key_idx] =
-            scaled_vec_conversion_int8<cache_t, scalar_t>(tgt_key, 
-                                                            *k_scale);
-        value_cache[tgt_value_idx] =
-            scaled_vec_conversion_int8<cache_t, scalar_t>(tgt_value, 
-                                                            *v_scale);
+      } else {
+        constexpr bool is_e4m3 = (kv_dt == Fp8KVCacheDataType::kFp8E4M3);
+        key_cache[tgt_key_idx] = to_fp8<scalar_t,is_e4m3>(tgt_key, *k_scale);
+        value_cache[tgt_value_idx] = to_fp8<scalar_t, is_e4m3>(tgt_value, *v_scale);
       } 
-      // else {
-      //   key_cache[tgt_key_idx] =
-      //       scaled_convert<cache_t, scalar_t, kv_dt>(tgt_key, *k_scale);
-      //   value_cache[tgt_value_idx] =
-      //       scaled_convert<cache_t, scalar_t, kv_dt>(tgt_value, *v_scale);
-      // }
     }
 }
 
@@ -205,52 +271,39 @@ __global__ void reshape_and_cache_kernel_cuda(
     *(LoadT*)key_vec = *(LoadT*)(key+src_key_idx);
     *(LoadT*)value_vec = *(LoadT*)(value+src_value_idx);
 
-      if constexpr (kv_dt == Fp8KVCacheDataType::kAuto) {
+    if constexpr (kv_dt == Fp8KVCacheDataType::kAuto) {
 
-          const int head_idx  = (index) / head_size;    
-          const int head_offset = (index) % head_size; 
-          int tgt_value_idx = 
-            block_idx  * num_heads * head_size * block_size +
-            head_idx * head_size * block_size + head_offset * block_size +
-            block_offset;
-          #pragma unroll
-          for(int i=0;i<VEC;i++)
-          {
-            // const int head_idx  = (index + i) / head_size;    
-            // const int head_offset = (index + i) % head_size; 
-            //   const int64_t tgt_value_idx = 
-            // block_idx  * num_heads * head_size * block_size +
-            // head_idx * head_size * block_size + head_offset * block_size +
-            // block_offset;
-            value_cache[tgt_value_idx + i * block_size] = value_vec[i];
-          }
-          *(LoadT*)(key_cache+tgt_key_idx)=*(LoadT*)key_vec;
-
-          } else if constexpr (kv_dt == Fp8KVCacheDataType::kInt8) {
-            #pragma unroll
-            for(int i=0; i < VEC; i++)
-            {
-
-
-              const int head_idx  = (index + i) / head_size;    
-              const int head_offset = (index + i) % head_size; 
-                const int64_t tgt_key_idx = 
-              block_idx * num_heads * block_size * head_size +
-              head_idx * block_size * head_size + block_offset * head_size +
-              head_offset;
-                const int64_t tgt_value_idx = 
-              block_idx  * num_heads * head_size * block_size +
-              head_idx * head_size * block_size + head_offset * block_size +
-              block_offset;
-
-              key_cache[tgt_key_idx] =
-                  scaled_vec_conversion_int8<cache_t, scalar_t>(key_vec[i], 
-                                                                  *k_scale);
-              value_cache[tgt_value_idx] =
-                  scaled_vec_conversion_int8<cache_t, scalar_t>(value_vec[i], 
-                                                                  *v_scale);
-            }
-          } 
+      const int head_idx  = (index) / head_size;    
+      const int head_offset = (index) % head_size; 
+      int tgt_value_idx = 
+        block_idx  * num_heads * head_size * block_size +
+        head_idx * head_size * block_size + head_offset * block_size +
+        block_offset;
+      #pragma unroll
+      for(int i=0;i<VEC;i++)
+      {
+        value_cache[tgt_value_idx + i * block_size] = value_vec[i];
+      }
+      *(LoadT*)(key_cache+tgt_key_idx)=*(LoadT*)key_vec;
+    } else  {
+      #pragma unroll
+      for(int i=0; i < VEC; i++)
+      {
+        const int head_idx  = (index + i) / head_size;    
+        const int head_offset = (index + i) % head_size; 
+          const int64_t tgt_key_idx = 
+        block_idx * num_heads * block_size * head_size +
+        head_idx * block_size * head_size + block_offset * head_size +
+        head_offset;
+          const int64_t tgt_value_idx = 
+        block_idx  * num_heads * head_size * block_size +
+        head_idx * head_size * block_size + head_offset * block_size +
+        block_offset;
+        constexpr bool is_e4m3 = (kv_dt == Fp8KVCacheDataType::kFp8E4M3);
+        key_cache[tgt_key_idx] = to_fp8<scalar_t,is_e4m3>(key_vec[i], *k_scale);
+        value_cache[tgt_value_idx] = to_fp8<scalar_t, is_e4m3>(value_vec[i], *v_scale);
+      }
+    } 
   
 }
 
@@ -300,52 +353,39 @@ __global__ void reshape_and_cache_kernel_cuda_special(
     *(LoadT*)value_vec = *(LoadT*)(value+src_value_idx);
 
       if constexpr (kv_dt == Fp8KVCacheDataType::kAuto) {
+        const int head_idx  = (index) / head_size;    
+        const int head_offset = (index) % head_size; 
+        int tgt_value_idx = 
+          block_idx  * num_heads * head_size * block_size +
+          head_idx * head_size * block_size + head_offset * block_size +
+          block_offset;
+        #pragma unroll
+        for(int i=0;i<VEC;i++)
+        {
+          value_cache[tgt_value_idx + i * block_size] = value_vec[i];
+        }
+        *(LoadT*)(key_cache+tgt_key_idx)=*(LoadT*)key_vec;
 
-          const int head_idx  = (index) / head_size;    
-          const int head_offset = (index) % head_size; 
-          int tgt_value_idx = 
-            block_idx  * num_heads * head_size * block_size +
-            head_idx * head_size * block_size + head_offset * block_size +
-            block_offset;
-          #pragma unroll
-          for(int i=0;i<VEC;i++)
-          {
-            // const int head_idx  = (index + i) / head_size;    
-            // const int head_offset = (index + i) % head_size; 
-            //   const int64_t tgt_value_idx = 
-            // block_idx  * num_heads * head_size * block_size +
-            // head_idx * head_size * block_size + head_offset * block_size +
-            // block_offset;
-            value_cache[tgt_value_idx + i * block_size] = value_vec[i];
-          }
-          *(LoadT*)(key_cache+tgt_key_idx)=*(LoadT*)key_vec;
+      } else{
+        #pragma unroll
+        for(int i=0; i < VEC; i++)
+        {
+          const int head_idx  = (index + i) / head_size;    
+          const int head_offset = (index + i) % head_size; 
 
-          } else if constexpr (kv_dt == Fp8KVCacheDataType::kInt8) {
-            #pragma unroll
-            for(int i=0; i < VEC; i++)
-            {
-
-
-              const int head_idx  = (index + i) / head_size;    
-              const int head_offset = (index + i) % head_size; 
-
-                const int64_t tgt_key_idx = 
-              block_idx * num_heads * block_size * head_size +
-              head_idx * block_size * head_size + block_offset * head_size +
-              head_offset;
-                const int64_t tgt_value_idx = 
-              block_idx  * num_heads * head_size * block_size +
-              head_idx * head_size * block_size + head_offset * block_size +
-              block_offset;
-
-              key_cache[tgt_key_idx] =
-                  scaled_vec_conversion_int8<cache_t, scalar_t>(key_vec[i], 
-                                                                  *k_scale);
-              value_cache[tgt_value_idx] =
-                  scaled_vec_conversion_int8<cache_t, scalar_t>(value_vec[i], 
-                                                                  *v_scale);
-            }
-          } 
+            const int64_t tgt_key_idx = 
+          block_idx * num_heads * block_size * head_size +
+          head_idx * block_size * head_size + block_offset * head_size +
+          head_offset;
+            const int64_t tgt_value_idx = 
+          block_idx  * num_heads * head_size * block_size +
+          head_idx * head_size * block_size + head_offset * block_size +
+          block_offset;
+          constexpr bool is_e4m3 = (kv_dt == Fp8KVCacheDataType::kFp8E4M3);
+          key_cache[tgt_key_idx] = to_fp8<scalar_t,is_e4m3>(key_vec[i], *k_scale);
+          value_cache[tgt_value_idx] = to_fp8<scalar_t, is_e4m3>(value_vec[i], *v_scale);
+        }
+      } 
   
 }
 
@@ -395,6 +435,7 @@ __global__ void opt_reshape_and_cache_kernel(
 
     const int head_idx = idx / head_size;
     const int head_offset = idx % head_size;
+    constexpr bool is_e4m3 = (kv_dt == Fp8KVCacheDataType::kFp8E4M3);
     //key
     {
         const int64_t tgt_key_idx = 
@@ -405,10 +446,10 @@ __global__ void opt_reshape_and_cache_kernel(
         cache_t k_temp[VEC];
         if constexpr (kv_dt == Fp8KVCacheDataType::kAuto) {
             *(StoreT*)(key_cache + tgt_key_idx) = *(StoreT*)k_local;
-        } else if constexpr (kv_dt == Fp8KVCacheDataType::kInt8) {
+        } else {
             #pragma unroll
             for(int i=0; i<VEC; ++i) {
-                k_temp[i] = scaled_vec_conversion_int8<cache_t, scalar_t>(k_local[i], *k_scale);
+                k_temp[i] = to_fp8<scalar_t,is_e4m3>(k_local[i], *k_scale);
             }
             *(StoreT*)(key_cache + tgt_key_idx) = *(StoreT*)k_temp;
         }
@@ -424,8 +465,8 @@ __global__ void opt_reshape_and_cache_kernel(
         for (int i = 0; i < VEC; ++i) {
             if constexpr (kv_dt == Fp8KVCacheDataType::kAuto) {
                 value_cache[tgt_val_base + i * block_size] = v_local[i];
-            } else if constexpr (kv_dt == Fp8KVCacheDataType::kInt8) {
-                value_cache[tgt_val_base + i * block_size] = scaled_vec_conversion_int8<cache_t, scalar_t>(v_local[i], *v_scale);
+            } else  {
+                value_cache[tgt_val_base + i * block_size] = to_fp8<scalar_t, is_e4m3>(v_local[i], *v_scale);
             }
         }
     }   
@@ -512,7 +553,8 @@ void reshape_and_cache_cuda(
               key_cache.size(2) == value_cache.size(3) &&
               key_cache.size(3) == value_cache.size(2),
               "key/value cache dimension mismatch");
-              
+  TORCH_CHECK(kv_cache_dtype=="auto" || kv_cache_dtype=="fp8" 
+             ||kv_cache_dtype=="fp8_e4m3"||kv_cache_dtype=="fp8_e5m2");
   key = key.is_contiguous() ? key : key.contiguous();
   value = value.is_contiguous() ? value : value.contiguous();
 
