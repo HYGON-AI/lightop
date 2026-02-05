@@ -502,7 +502,8 @@ def fused_bmm_trans_impl_int8_benchmark(torch_q_bf16: torch.Tensor,
     _, l, _ = w_uk.shape
     
     #input量化前后，kernel耗时比较
-    q_quant_time = fuse_rmsnorm_rope_quant_q_benchmark("fp8_e4m3", b, n, p)
+    # q_quant_time = fuse_rmsnorm_rope_quant_q_benchmark("fp8_e4m3", b, n, p)
+    q_quant_time = 0.0
     
     # torch benchmark:
     ref_output, torch_benchmark_time = torch_benchmark_fuse_bmm_bf16(torch_q_bf16, torch_w_uk_bf16)
@@ -760,44 +761,21 @@ def _fused_bmm_helper(batch: int,
     # Test for a cutlass kernel with per-token activation quantization
     # and per-output channel weight quantization.
     torch.manual_seed(0)
-    torch_input, input, q_scale, torch_q_bf16 = generate_rms_rope_data(kv_cache_dtype_str = "fp8_e4m3", batch_size=batch,num_head=N,q_c_dim=P, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=1000, 
-                           kv_cache_blocks_size=16, is_tuning=is_tuning)
-    if transpose_bm_in:
-        input = input.transpose(0,1).contiguous()      # [n, b, p]
-        torch_input = torch_input.transpose(0,1).contiguous()
-        q_scale = q_scale.transpose(0,1).contiguous()
-    else:
-        input = input      # [n, b, p]
-        torch_input = torch_input
-        q_scale = q_scale
-    # w_uk_t = torch.randint(-128, 127, (N, P ,L), device=device, dtype=torch.int8)       # [n, p, l]
+
+    torch_input_bf16 = torch.randn((batch, N, P), device=device, dtype=torch.bfloat16)           # [b, n, p]
     torch_w_uk_bf16 = torch.randn((N, L, P), device=device, dtype=torch.bfloat16)           # [n, l, p]
+    q_quant, q_scale = per_token_quant_fp8(torch_input_bf16)
     w_uk, w_uk_scale = per_token_quant_fp8(torch_w_uk_bf16)
-    # 生成0.001到0.1之间的随机scale值，保留三位小数,防止fp8算出来都是些nan值
-    # q_scale = (torch.rand((N, batch, 1), device=device, dtype=torch.float32) * 0.099 + 0.001).round(decimals=3)  # [n, b, 1]
-    # w_uk_scale = (torch.rand((N, L, 1), device=device, dtype=torch.float32) * 0.099 + 0.001).round(decimals=3)  # [n, l, 1]
-    # bias = torch.randn((N, L), device=device, dtype=torch.bfloat16)                       # [n, l]
     bias = None
 
-    # if is_tuning:
-    #     if transpose_bm_in:
-    #         input = torch.randint(-128, 127, (N, batch, P), device=device, dtype=torch.int8)      # [n, b, p]
-    #         torch_input = input.clone()
-    #         q_scale = (torch.rand((N, batch, 1), device=device, dtype=torch.float32) * 0.099 + 0.001).round(decimals=3)  # [n, b, 1]
-    #     else:
-    #         input = torch.randint(-128, 127, (batch, N, P), device=device, dtype=torch.int8)      # [n, b, p]
-    #         torch_input = input.clone()
-    #         q_scale = (torch.rand((batch, N, 1), device=device, dtype=torch.float32) * 0.099 + 0.001).round(decimals=3)  # [n, b, 1]
-    #     # w_uk_t = torch.randint(-128, 127, (N, P ,L), device=device, dtype=torch.int8)       # [n, p, l]
-    #     w_uk = torch.randint(-128, 127, (N, L, P), device=device, dtype=torch.int8)           # [n, l, p]
-    #     # 生成0.001到0.1之间的随机scale值，保留三位小数,防止fp8算出来都是些nan值
-    #     w_uk_scale = (torch.rand((N, L, 1), device=device, dtype=torch.float32) * 0.099 + 0.001).round(decimals=3)  # [n, l, 1]
+    if transpose_bm_in:
+        q_quant = q_quant.transpose(0,1).contiguous()      # [n, b, p]
+        q_scale = q_scale.transpose(0,1).contiguous()
+    else:
+        q_quant = q_quant      
+        q_scale = q_scale
 
-    #     torch_input = torch_input.float().to(in_dtype)
-    #     input = input.float().to(in_dtype)
-    #     w_uk = w_uk.float().to(in_dtype)
-
-    return torch_input, input, w_uk, q_scale, w_uk_scale, bias, torch_q_bf16, torch_w_uk_bf16
+    return q_quant.clone().contiguous(), q_quant, w_uk, q_scale, w_uk_scale, bias, torch_input_bf16, torch_w_uk_bf16
 
 def run_trans_bmm_trans_tuning():
     
@@ -805,13 +783,15 @@ def run_trans_bmm_trans_tuning():
     # batch_list=[32,]
     ##deepseek-671b-tp8
     n_list=[16,32,64,128]
-    p_list=[128,128,128,128]
-    l_list=[512,512,512,512]
+    # p_list=[128,128,128,128]
+    # l_list=[512,512,512,512]
+    p_list=[512,512,512,512]
+    l_list=[128,128,128,128]
     
     in_dtype=torch.float8_e4m3fn
     # in_dtype=torch.int8
-    # out_dtype = torch.bfloat16
-    out_dtype = torch.float8_e4m3fn
+    out_dtype = torch.bfloat16
+    # out_dtype = torch.float8_e4m3fn
     transpose_bm = False
     transpose_bm_in = False
     is_tuning = False
@@ -826,9 +806,9 @@ def run_trans_bmm_trans_tuning():
     # mode_ranges = [mode for mode in blockM_configs.keys()]
     # mode_ranges = [0,1,2,3,4,5,6,7,8,9]
     # mode_ranges = [10,11,12,13,14,15,16,17,18,19]
-    mode_ranges = [0,1,2,3,4,10,11,12,13,14,50,51,52,53,54,60,61,62,63,64]
+    # mode_ranges = [0,1,2,3,4,10,11,12,13,14,50,51,52,53,54,60,61,62,63,64]
     
-    
+    mode_ranges = [0,1,3,10,11,13,50,51,53,60,61,63]
     
     for i in range(0,len(p_list),1):
         best_config_list = {}
@@ -840,6 +820,7 @@ def run_trans_bmm_trans_tuning():
             
             # 先跑一遍，把失败的mode记录下来
             for mode in mode_ranges:
+                print(f"tuning for batch:{batch_size} n:{n_list[i]} p:{p_list[i]} l:{l_list[i]} mode:{mode} ")
                 torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias, _, _ =_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], in_dtype=in_dtype, is_tuning=is_tuning, transpose_bm=transpose_bm, transpose_bm_in=transpose_bm_in)
                 status=fused_bmm_trans_impl_int8(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode, transpose_bm=transpose_bm, transpose_bm_in=transpose_bm_in, is_tuning=True, dtype=out_dtype)
                 if not status:
@@ -881,9 +862,9 @@ def run_trans_bmm_trans_vaild():
     # batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
     batch_list=[32,]
     ##deepseek-671b-tp8
-    n_list=[16,]
-    p_list=[128,]
-    l_list=[512,]
+    # n_list=[16,]
+    # p_list=[128,]
+    # l_list=[512,]
     
     # n_list=[32,]
     # p_list=[128,]
@@ -896,10 +877,14 @@ def run_trans_bmm_trans_vaild():
     # n_list=[128]
     # p_list=[128]
     # l_list=[512]
+
+    n_list=[16,]
+    p_list=[512,]
+    l_list=[128,]
     
     in_dtype=torch.float8_e4m3fn
-    # out_dtype = torch.bfloat16
-    out_dtype = torch.float8_e4m3fn
+    out_dtype = torch.bfloat16
+    # out_dtype = torch.float8_e4m3fn
     transpose_bm = False
     transpose_bm_in = False
 
@@ -936,13 +921,15 @@ def run_benchmark_trans_bmm_trans():
     
     ##deepseek-671b-tp8
     n_list=[16,32,64,128]
-    p_list=[128,128,128,128]
-    l_list=[512,512,512,512]
+    # p_list=[128,128,128,128]
+    # l_list=[512,512,512,512]
+    p_list=[512,512,512,512]
+    l_list=[128,128,128,128]
     
     in_dtype=torch.float8_e4m3fn
     # in_dtype=torch.int8
-    # out_dtype = torch.bfloat16
-    out_dtype = torch.float8_e4m3fn
+    out_dtype = torch.bfloat16
+    # out_dtype = torch.float8_e4m3fn
     transpose_bm = False
     transpose_bm_in = False
 
