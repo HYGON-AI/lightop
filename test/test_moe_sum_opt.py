@@ -24,7 +24,7 @@ def _test_helper(m: int,
     output_ops = torch.zeros((m, hidden_size), device=device, dtype=out_dtype)
     output_triton = torch.zeros((m, hidden_size), device=device, dtype=out_dtype)
     output_torch = torch.zeros((m, hidden_size), device=device, dtype=out_dtype)
-    factor = 2.5
+    factor = 1.0
     
     output_pytorch_ref = torch.zeros_like(output_ops)
     moe_sum_reduce_torch_compile(input, output_pytorch_ref)
