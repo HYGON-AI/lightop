@@ -14,7 +14,33 @@ void fused_rms_norm_contiguous(torch::Tensor& out, torch::Tensor& input, torch::
 void fused_rms_norm_rope_contiguous(torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon);
 void fuse_rmsnorm_rope_quant_qkv(torch::Tensor& positions, torch::Tensor& q_c, torch::Tensor& q_pe, torch::Tensor& q_quant, torch::Tensor& q_scale, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon);
 void fuse_fill_rms_x2_concat(torch::Tensor& hidden_states_fuse, torch::Tensor& positions, torch::Tensor& inputs_embeds, torch::Tensor& previous_hidden_states, torch::Tensor& weight_inputs_embeds, torch::Tensor& weight_previous_hidden_states, float epsilon);
-void rms_rotary_embedding_fuse_with_kv_store(torch::Tensor& positions, torch::Tensor& query, torch::Tensor& key, torch::Tensor& v, torch::Tensor& cos_sin_cache, int head_dim, int page_size, torch::Tensor& k_buffer, torch::Tensor& v_buffer, Tensor& kv_cache_loc, bool interleave, Tensor& weight_q, Tensor& weight_k, torch::Dtype output_dtype, std::optional<Tensor>& residual_q, std::optional<Tensor>& residual_k, std::optional<float>& k_scale, std::optional<float>& v_scale, std::optional<Tensor>& q_rope_out, std::optional<Tensor>& k_rope_out, std::optional<Tensor>& v_rope_out,  float epsilon);
+//void rms_rotary_embedding_fuse_with_kv_store(torch::Tensor& positions, torch::Tensor& query, torch::Tensor& key, torch::Tensor& v, torch::Tensor& cos_sin_cache, int head_dim, int page_size, torch::Tensor& k_buffer, torch::Tensor& v_buffer, Tensor& kv_cache_loc, bool interleave, Tensor& weight_q, Tensor& weight_k, torch::Dtype output_dtype, std::optional<Tensor>& residual_q, std::optional<Tensor>& residual_k, std::optional<float>& k_scale, std::optional<float>& v_scale, std::optional<Tensor>& q_rope_out, std::optional<Tensor>& k_rope_out, std::optional<Tensor>& v_rope_out,  float epsilon);
+//void rms_rotary_embedding_fuse_with_kv_store(torch::Tensor& positions, torch::Tensor& query, torch::Tensor& key, torch::Tensor& v, int64_t head_size, torch::Tensor& cos_sin_cache, bool is_neox, torch::Tensor& weight_q, torch::Tensor& weight_k, std::optional<Tensor>& residual_q, std::optional<Tensor>& residual_k, torch::Tensor& k_buffer, torch::Tensor& v_buffer, torch::Tensor& kv_cache_loc, torch::Tensor& q_rope_out, torch::Tensor& k_rope_out, torch::Tensor& v_rope_out, int page_size, double epsilon, bool use_fp8_e4m3);
+void rms_rotary_embedding_fuse_with_kv_store(
+    Tensor& positions, 
+    Tensor& query, 
+    Tensor& key,
+    //////////////
+    Tensor& v,
+    //////////////
+    int64_t head_size,
+    Tensor& cos_sin_cache, 
+    bool is_neox, 
+    Tensor& weight_q, 
+    Tensor& weight_k, 
+    std::optional<Tensor>& residual_q,
+    std::optional<Tensor>& residual_k,
+    ///////////////////////////////////////////////////
+    Tensor& k_buffer,
+    Tensor& v_buffer,
+    Tensor& kv_cache_loc,
+    Tensor& q_rope_out,
+    Tensor& k_rope_out,
+    Tensor& v_rope_out,
+    int page_size,
+    /////////////////////////////////////////////////
+    double epsilon,
+    bool use_fp8_e4m3);
 Tensor fuse_rn_dropout_forward_autograd(const Tensor& x,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_bias_forward_autograd(const Tensor& x,const Tensor& y,const Tensor &bias, const Tensor& weight,double eps,double rate,bool training);

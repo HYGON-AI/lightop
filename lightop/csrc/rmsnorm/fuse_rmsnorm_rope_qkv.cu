@@ -1,3 +1,4 @@
+
 #include <limits>
 #include <stdint.h>
 #include <ATen/Dispatch.h>
@@ -21,211 +22,66 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include "reduce.h"
-#include <type_traits>
-#include <algorithm>
-#include <sstream>
-
-// [TODO] 后续改用buffer_load_dwordx{x}
-#define BUFFER_LOAD_DWORDX_GLUE(a, b)  a##b
-#define BUFFER_LOAD_DWORDX_N(n)        BUFFER_LOAD_DWORDX_GLUE(buffer_load_dwordx, n)
-#define BUFFER_LOAD_DWORDX_STRIFY(x)   #x
-#define BUFFER_LOAD_DWORDX_STR(n)      BUFFER_LOAD_DWORDX_STRIFY(BUFFER_LOAD_DWORDX_N(n))
-#define CHECK_CONTIGUOUS(x) TORCH_CHECK(x.is_contiguous(), #x " must be contiguous")
-#define CHECK_EQ(a, b) TORCH_CHECK((a) == (b), "CHECK_EQ(" #a ", " #b ") failed. ", a, " vs ", b)
-
-#define DISPATCH_INTERLEAVE(interleave, INTERLEAVE_CONST, ...) \
-  if (interleave) {                                      \
-    constexpr bool INTERLEAVE_CONST = true;                        \
-    __VA_ARGS__                                          \
-  } else {                                               \
-    constexpr bool INTERLEAVE_CONST = false;                       \
-    __VA_ARGS__                                          \
-  }
-
-#define DISPATCH_HAS_RESIDUAL(has_residual, HAS_RESIDUAL_CONST, ...) \
-  if (has_residual) {                                              \
-    constexpr bool HAS_RESIDUAL_CONST = true;                                \
-    __VA_ARGS__                                                      \
-  } else {                                                         \
-    constexpr bool HAS_RESIDUAL_CONST = false;                               \
-    __VA_ARGS__                                                      \
-  }
-
-#define DISPATCH_DTYPE_SET(kv_dtype, CACHE_T_CONST, ...) \
-  if (kv_dtype == at::ScalarType::BFloat16 || kv_dtype == at::ScalarType::Half) {                                    \
-    constexpr int CACHE_T_CONST = 0;                    \
-    __VA_ARGS__                                                      \
-  } else if (kv_dtype == at::ScalarType::Float8_e4m3fn) {                                                           \
-    constexpr bool CACHE_T_CONST = 1;                   \
-    __VA_ARGS__                                                      \
-  } else {                                      \
-    constexpr bool CACHE_T_CONST = 2;                   \
-    __VA_ARGS__                                                      \
-  }
-
-#define DISPATCH_HAS_SCALE(has_scale, HAS_SCALE_CONST, ...) \
-  if (has_scale) { \
-    constexpr bool HAS_SCALE_CONST = true; \
-    __VA_ARGS__ \
-  } else { \
-    constexpr bool HAS_SCALE_CONST = false; \
-    __VA_ARGS__ \
-  }
-
-#define DISPATCH_rotary_dim(rotary_dim, ROTARY_DIM_CONST, ...) \
-  switch (rotary_dim) { \
-    case 64: { \
-      constexpr int ROTARY_DIM_CONST = 64; \
-      __VA_ARGS__ \
-      break; \
-    } \
-    case 128: { \
-      constexpr int ROTARY_DIM_CONST = 128; \
-      __VA_ARGS__ \
-      break; \
-    } \
-    case 256: { \
-      constexpr int ROTARY_DIM_CONST = 256; \
-      __VA_ARGS__ \
-      break; \
-    } \
-    case 512: { \
-      constexpr int ROTARY_DIM_CONST = 512; \
-      __VA_ARGS__ \
-      break; \
-    } \
-    default: { \
-      std::ostringstream err_msg; \
-      err_msg << "Unsupported rotary_dim: " << rotary_dim; \
-      printf("%s\n", err_msg.str().c_str()); \
-    } \
-  }
-
-#define DISPATCH_head_dim(head_dim, HEAD_DIM_CONST,...) \
-  switch (head_dim) { \
-      case 64: { \
-        constexpr int HEAD_DIM_CONST = 64; \
-        __VA_ARGS__ \
-        break; \
-      } \
-      case 128: { \
-        constexpr int HEAD_DIM_CONST = 128; \
-        __VA_ARGS__ \
-        break; \
-      } \
-      case 256: { \
-        constexpr int HEAD_DIM_CONST = 256; \
-        __VA_ARGS__ \
-        break; \
-      } \
-      case 512: { \
-        constexpr int HEAD_DIM_CONST = 512; \
-        __VA_ARGS__ \
-        break; \
-      } \
-      default: { \
-        std::ostringstream err_msg; \
-        err_msg << "Unsupported head_dim: " << head_dim; \
-        printf("%s\n", err_msg.str().c_str()); \
-      } \
-    }
-
-#define DISPATCH_head_dim_v(head_dim_v, HEAD_DIM_V_CONST,...) \
-switch (head_dim_v) { \
-  case 64: { \
-    constexpr int HEAD_DIM_V_CONST = 64; \
-    __VA_ARGS__ \
-    break; \
-  } \
-  case 128: { \
-    constexpr int HEAD_DIM_V_CONST = 128; \
-    __VA_ARGS__ \
-    break; \
-  } \
-  case 256: { \
-    constexpr int HEAD_DIM_V_CONST = 256; \
-    __VA_ARGS__ \
-    break; \
-  } \
-  case 512: { \
-    constexpr int HEAD_DIM_V_CONST = 512; \
-    __VA_ARGS__ \
-    break; \
-  } \
-  default: { \
-    std::ostringstream err_msg; \
-    err_msg << "Unsupported head_dim_v: " << head_dim_v; \
-    printf("%s\n", err_msg.str().c_str()); \
-  } \
-}
-
-
-#define lgkmcnt_wait_barrier(X)\
-__builtin_amdgcn_sched_barrier(0);\
-asm volatile(\
-  "s_waitcnt lgkmcnt(%0)\n\t"\
-  "s_barrier\n"\
-  :: "I"(X)\
-  :);\
-__builtin_amdgcn_sched_barrier(0);
+#include <type_traits> 
 
 inline __device__ uint8_t float_to_fp8e4m3(float f) {
-  // ===== 常量定义 =====
-  // FP8 E4M3最大值: 1087 << 20
-  // 1087 = 2^(4+1) - 1 + 2^4 = 31 + 16 = 47? 等等，这里需要重新计算
-  // 实际上是基于指数和尾数的位模式
-  constexpr uint32_t fp8_max = UINT32_C(1087) << 20;
-  
-  // 非正规化数处理掩码
-  constexpr uint32_t denorm_mask = UINT32_C(141) << 23;
-  
-  // ===== 步骤1: 提取float的位表示 =====
-  uint32_t f_bits = c10::detail::fp32_to_bits(f);
-  uint8_t result = 0u;
-  
-  // ===== 步骤2: 提取符号位并移除 =====
-  const uint32_t sign = f_bits & UINT32_C(0x80000000);
-  f_bits ^= sign;
-  
-  // ===== 步骤3: 处理不同数值范围 =====
-  
-  // 3a. 溢出处理
-  if (f_bits >= fp8_max) {
-    result = 0x7f;  // 01111111 (NaN/最大值)
-  } else {
+    // ===== 常量定义 =====
+    // FP8 E4M3最大值: 1087 << 20
+    // 1087 = 2^(4+1) - 1 + 2^4 = 31 + 16 = 47? 等等，这里需要重新计算
+    // 实际上是基于指数和尾数的位模式
+    constexpr uint32_t fp8_max = UINT32_C(1087) << 20;
     
-    // 3b. 非正规化数处理
-    if (f_bits < (UINT32_C(121) << 23)) {
-      f_bits = c10::detail::fp32_to_bits(
-        c10::detail::fp32_from_bits(f_bits) + 
-        c10::detail::fp32_from_bits(denorm_mask)
-      );
-      result = static_cast<uint8_t>(f_bits - denorm_mask);
+    // 非正规化数处理掩码
+    constexpr uint32_t denorm_mask = UINT32_C(141) << 23;
     
-    // 3c. 正规化数处理
+    // ===== 步骤1: 提取float的位表示 =====
+    uint32_t f_bits = c10::detail::fp32_to_bits(f);
+    uint8_t result = 0u;
+    
+    // ===== 步骤2: 提取符号位并移除 =====
+    const uint32_t sign = f_bits & UINT32_C(0x80000000);
+    f_bits ^= sign;
+    
+    // ===== 步骤3: 处理不同数值范围 =====
+    
+    // 3a. 溢出处理
+    if (f_bits >= fp8_max) {
+      result = 0x7f;  // 01111111 (NaN/最大值)
     } else {
-      // 检查尾数第20位是否为1（对应FP8 E4M3 3位尾数的LSB）
-      uint8_t mant_odd = (f_bits >> 20) & 1;
       
-      // 指数偏置调整: FP32偏置127 → FP8 E4M3偏置7
-      // 调整量 = 7 - 127 = -120
-      f_bits += ((uint32_t)(7 - 127) << 23) + 0x7FFFF;
+      // 3b. 非正规化数处理
+      if (f_bits < (UINT32_C(121) << 23)) {
+        f_bits = c10::detail::fp32_to_bits(
+          c10::detail::fp32_from_bits(f_bits) + 
+          c10::detail::fp32_from_bits(denorm_mask)
+        );
+        result = static_cast<uint8_t>(f_bits - denorm_mask);
       
-      // 应用奇数舍入
-      f_bits += mant_odd;
-      
-      // 右移20位得到8位结果
-      result = static_cast<uint8_t>(f_bits >> 20);
+      // 3c. 正规化数处理
+      } else {
+        // 检查尾数第20位是否为1（对应FP8 E4M3 3位尾数的LSB）
+        uint8_t mant_odd = (f_bits >> 20) & 1;
+        
+        // 指数偏置调整: FP32偏置127 → FP8 E4M3偏置7
+        // 调整量 = 7 - 127 = -120
+        f_bits += ((uint32_t)(7 - 127) << 23) + 0x7FFFF;
+        
+        // 应用奇数舍入
+        f_bits += mant_odd;
+        
+        // 右移20位得到8位结果
+        result = static_cast<uint8_t>(f_bits >> 20);
+      }
     }
+    
+    // ===== 步骤4: 加上符号位 =====
+    result |= static_cast<uint8_t>(sign >> 24);
+    
+    return result;
   }
-  
-  // ===== 步骤4: 加上符号位 =====
-  result |= static_cast<uint8_t>(sign >> 24);
-  
-  return result;
-}
 
-inline __device__ uint16_t float_to_fp8e4m3_x2(float a, float b)
+
+  inline __device__ uint16_t float_to_fp8e4m3_x2(float a, float b)
 {
   #if defined(__gfx938__)
     // 对于ROCm，可能需要使用不同的内置函数或组合现有函数
@@ -315,85 +171,20 @@ inline __device__ uint16_t float_to_fp8e5m2_x2(float a, float b)
   #endif
 }
 
-namespace at {
-namespace native {
-
-template <typename T,int reducesize=64>
-__inline__ __device__ T WarpReduceSum_NEW(T val) {
-#pragma unroll
-    for (int offset = reducesize/2; offset > 0; offset >>= 1) 
-        val += WARP_SHFL_DOWN(val, offset);
-    return val;
-}
-
-// 每个 warp 独立处理一个 head：tdim = head_dim/VEC，tid 为 lane_id (0~63)
-template<typename T_ACC, typename scalar_t, int VEC, int NUM_WARP, bool HAS_RESIDUAL>
-__inline__ __device__ void apply_rmsnorm_residual(
-    scalar_t* input,
-    scalar_t* gamma,
-    scalar_t* residual,
-    int head_dim,
-    T_ACC eps,
-    scalar_t* intput_vec
-) {
-  using LoadT = at::native::memory::aligned_vector<scalar_t, VEC>;
-  __shared__ T_ACC s_rstd[NUM_WARP];
-  T_ACC val = 0;
-  const int lane_id = threadIdx.x & 63;
-  const int warp_id = threadIdx.x >> 6;
-  const int tdim = head_dim / VEC;  // 每个 head 仅 head_dim 个元素，参与线程数 = head_dim/VEC
-  T_ACC trstd;
-  int64_t idx = (int64_t)lane_id * VEC;
-  scalar_t residual_vec[VEC];
-  if (lane_id < tdim) {
-    *(LoadT*)intput_vec = *(LoadT*)(input + idx);
-    if constexpr (HAS_RESIDUAL) {
-      *(LoadT*)residual_vec = *(LoadT*)(residual + idx);
-    }
+template<int VEC_SIZE, int CACHE_T_CONST>
+__inline__ __device__ void convert_vec_to_uint8_t(float* v_vec_data_float, uint8_t* v_vec_data_uint8) {
+  if constexpr (VEC_SIZE % 4 == 0) {
     #pragma unroll
-    for (int ii = 0; ii < VEC; ii++) {
-      if constexpr (HAS_RESIDUAL) {
-        residual_vec[ii] += intput_vec[ii];
-        val += static_cast<T_ACC>(residual_vec[ii]) * static_cast<T_ACC>(residual_vec[ii]);
-      } else {
-        val += static_cast<T_ACC>(intput_vec[ii]) * static_cast<T_ACC>(intput_vec[ii]);
-      }
-    }
-  }
-  val = WarpReduceSum_NEW<T_ACC>(val);
-  if (lane_id == 0)
-    s_rstd[warp_id] = c10::cuda::compat::rsqrt(val / head_dim + eps);
-  __syncthreads();
-  trstd = s_rstd[warp_id];
-  if (lane_id < tdim) {
-    #pragma unroll
-    for (int ii = 0; ii < VEC; ++ii) {
-      int jj = (lane_id * VEC + ii) % head_dim;
-      if constexpr (HAS_RESIDUAL) {
-        intput_vec[ii] = static_cast<T_ACC>(residual_vec[ii]) * trstd * static_cast<T_ACC>(gamma[jj]);
-      } else {
-        intput_vec[ii] = static_cast<T_ACC>(intput_vec[ii]) * trstd * static_cast<T_ACC>(gamma[jj]);
-      }
-    }
-  }
-}
-
-//分 kernel head_dim = rot_dim 与 head_dim < rot_dim
-
-template<int VEC_SIZE_V, int CACHE_T_CONST>
-__inline__ __device__ void convert_v_vec_to_uint8_t(float* v_vec_data_float, uint8_t* v_vec_data_uint8) {
-  if constexpr (VEC_SIZE_V % 4 == 0) {
-    #pragma unroll
-    for (int i = 0; i < VEC_SIZE_V / 4; ++i) {
+    for (int i = 0; i < VEC_SIZE / 4; ++i) {
       if constexpr (CACHE_T_CONST == 1) {
         ((uint32_t*)v_vec_data_uint8)[i] = float_to_fp8e4m3_x4(v_vec_data_float[i * 4], v_vec_data_float[i * 4 + 1], v_vec_data_float[i * 4 + 2], v_vec_data_float[i * 4 + 3]);
       } else {
         ((uint32_t*)v_vec_data_uint8)[i] = float_to_fp8e5m2_x4(v_vec_data_float[i * 4], v_vec_data_float[i * 4 + 1], v_vec_data_float[i * 4 + 2], v_vec_data_float[i * 4 + 3]);
       }
     }
-  } else if constexpr (VEC_SIZE_V % 2 == 0) {
+  } else if constexpr (VEC_SIZE % 2 == 0) {
     #pragma unroll
-    for (int i = 0; i < VEC_SIZE_V / 2; ++i) {
+    for (int i = 0; i < VEC_SIZE / 2; ++i) {
       if constexpr (CACHE_T_CONST == 1) {
         ((uint16_t*)v_vec_data_uint8)[i] = float_to_fp8e4m3_x2(v_vec_data_float[i * 2], v_vec_data_float[i * 2 + 1]);
       } else {
@@ -402,7 +193,7 @@ __inline__ __device__ void convert_v_vec_to_uint8_t(float* v_vec_data_float, uin
     }
   } else {
     #pragma unroll
-    for (int i = 0; i < VEC_SIZE_V; ++i) {
+    for (int i = 0; i < VEC_SIZE; ++i) {
       if constexpr (CACHE_T_CONST == 1) {
         v_vec_data_uint8[i] = float_to_fp8e4m3(v_vec_data_float[i]);
       } else {
@@ -413,454 +204,1514 @@ __inline__ __device__ void convert_v_vec_to_uint8_t(float* v_vec_data_float, uin
 }
 
 
-template <typename T_ACC, typename scalar_t, typename cache_t, bool INTERLEAVE, bool Residual, 
-         int NUM_HEAD_V_WARP, int NUM_HEAD_Q_WARP, int NUM_HEAD_K_WARP, int HEAD_DIM_CONST, 
-         int ROTARY_DIM_CONST, bool IS_EQUAL_HEAD_DIM_ROTARY_DIM,  int CACHE_T_CONST, 
-         bool IS_HAVE_K_SCALE, bool IS_HAVE_V_SCALE, 
-         int VEC_SIZE, int VEC_SIZE_V>
-__global__ void rms_rotary_embedding_kernel_pipeline_with_kv_store(
-    const int64_t* __restrict__ pos_ids,
-    scalar_t* __restrict__ q,  // [B * S, num_q_head, head_dim]
-    scalar_t* __restrict__ k,
-    scalar_t* __restrict__ v,  // [B * S, num_kv_head, head_dim]
-    //rms arg
-    scalar_t* gamm_q,     //[head_dim]
-    scalar_t* gamm_k,     //[head_dim]
-    scalar_t* Residual_q,  //[B * S, num_q_head, head_dim]
-    scalar_t* Residual_k,  //[B* S, num_kv_head, head_dim]
-    //[num_blocks, kv_head_num, page_size, head_dim]
-    cache_t* k_buffer,
-    cache_t* v_buffer,
-    cache_t* q_rope_out,  // [B*S, num_q_head, head_dim], fp8 时存 q 的 fp8 结果；非 fp8 可为 nullptr
-    size_t q_rope_out_stride_n,
-    size_t q_rope_out_stride_h,
-    cache_t* k_rope_out,  // [B*S, num_k_head, head_dim], fp8 时存 k 的 fp8 结果；非 fp8 可为 nullptr
-    size_t k_rope_out_stride_n,
-    size_t k_rope_out_stride_h,
-    cache_t* v_rope_out,  // [B*S, num_v_head, head_dim], fp8 时存 v 的 fp8 结果；非 fp8 可为 nullptr
-    size_t v_rope_out_stride_n,
-    size_t v_rope_out_stride_h,
-    const int64_t* __restrict__ kv_cache_loc,
-    scalar_t* __restrict__ cos_sin_cache,   // [MAX_TOKEN, rotary_dim]
-    float k_scale,
-    float v_scale,
-    int page_size,
-    uint32_t num_seq,
-    uint32_t num_q_head,
-    uint32_t num_kv_head,
-    size_t q_stride_n,
-    size_t q_stride_h,
-    size_t k_stride_n,
-    size_t k_stride_h,
-    size_t v_stride_n,
-    size_t v_stride_h,
-    size_t k_buffer_stride_n,
-    size_t k_buffer_stride_h,
-    size_t k_buffer_stride_p,
-    size_t v_buffer_stride_n,
-    size_t v_buffer_stride_h,
-    size_t v_buffer_stride_p,
-    float eps
-) 
-{
-    using vec_scalar_t_qk = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
-    using vec_uint8_t_qk = at::native::memory::aligned_vector<uint8_t, VEC_SIZE>;
-    using vec_scalar_t_v = at::native::memory::aligned_vector<scalar_t, VEC_SIZE_V>;
-    using vec_scalar_t_float_v = at::native::memory::aligned_vector<float, VEC_SIZE_V>;
-    using vec_uint8_t_v = at::native::memory::aligned_vector<uint8_t, VEC_SIZE_V>;
-    const int token_idx = blockIdx.x;
-    const int tid = threadIdx.x;
-    const int warp_id = __builtin_amdgcn_readfirstlane(tid >> 6);
-    const int lane_id = tid & 63; 
-    const int token_idx_in_cache = kv_cache_loc[token_idx];
-    const int cache_block_idx = token_idx_in_cache  / page_size;
-    const int cache_block_offset = token_idx_in_cache % page_size;
+template <typename T, int N>
+struct alignas(sizeof(T) * N) Vector {
+    T val[N];
+};
+template <typename Element, size_t len>
+struct vec {
+    using type = __attribute__((__vector_size__(len * sizeof(Element)))) Element;
+};
 
-    if (warp_id >= NUM_HEAD_Q_WARP + NUM_HEAD_K_WARP) {
-        const int v_local_warp_id = warp_id - (NUM_HEAD_Q_WARP + NUM_HEAD_K_WARP);
-        const int v_offset = token_idx * v_stride_n;
-        const int v_cache_offset = cache_block_idx * v_buffer_stride_n + cache_block_offset;
+#define DISPATCH_BOOL(VAL, NAME, ...) \
+  if (VAL) {                          \
+    constexpr bool NAME = true;       \
+    __VA_ARGS__();                    \
+  } else {                            \
+    constexpr bool NAME = false;      \
+    __VA_ARGS__();                    \
+  }
 
-        #pragma unroll
-        for (int iter = 0; iter < num_kv_head; iter += NUM_HEAD_V_WARP) {
-            int v_head_idx = iter + v_local_warp_id;
-            if (v_head_idx >= num_kv_head) break;
-            vec_scalar_t_v v_vec_data;
-            const int v_global_offset = v_offset + v_head_idx * v_stride_h;
-            const int v_cache_global_offset = v_cache_offset + v_head_idx * v_buffer_stride_h;
-            v_vec_data = *(reinterpret_cast<vec_scalar_t_v*>(v + v_global_offset + lane_id * VEC_SIZE_V));
-            scalar_t* v_vec_ptr = reinterpret_cast<scalar_t*>(&v_vec_data);
-            if constexpr (CACHE_T_CONST) {
-              uint8_t v_vec_data_uint8[VEC_SIZE_V];
-              float v_vec_data_float[VEC_SIZE_V];
-              if constexpr (IS_HAVE_V_SCALE) {
-                #pragma unroll
-                for (int i = 0;i < VEC_SIZE_V; ++i)
-                    v_vec_data_float[i] = static_cast<float>(v_vec_ptr[i]) / v_scale;
-              } else {
-                  #pragma unroll
-                  for (int i = 0;i < VEC_SIZE_V; ++i)
-                    v_vec_data_float[i] = static_cast<float>(v_vec_ptr[i]);
-              }
-              //转为uint8_t类型，存到v_buffer中
-              convert_v_vec_to_uint8_t<VEC_SIZE_V, CACHE_T_CONST>(v_vec_data_float, v_vec_data_uint8);
-              const int v_cache_global_offset = v_cache_offset + v_head_idx * v_buffer_stride_h + (lane_id * VEC_SIZE_V * v_buffer_stride_p);
-              #pragma unroll
-              for (int i = 0; i < VEC_SIZE_V; ++i) {
-                ((uint8_t*)v_buffer)[v_cache_global_offset + i * v_buffer_stride_p] = v_vec_data_uint8[i];
-              }
-              const int v_rope_out_offset = token_idx * v_rope_out_stride_n + v_head_idx * v_rope_out_stride_h + lane_id * VEC_SIZE_V;
-              *(reinterpret_cast<vec_uint8_t_v*>(v_rope_out + v_rope_out_offset)) = *(reinterpret_cast<vec_uint8_t_v*>(v_vec_data_uint8));
-            } else {
-              const int v_cache_global_offset = v_cache_offset + v_head_idx * v_buffer_stride_h + (lane_id * VEC_SIZE_V * v_buffer_stride_p);
-              #pragma unroll
-              for (int i = 0; i < VEC_SIZE_V; ++i) {
-                ((scalar_t*)v_buffer)[v_cache_global_offset + i * v_buffer_stride_p] = v_vec_ptr[i];
-              }
-            }
-        }
-          asm volatile("s_barrier");// 其他warp同步
-    } else {
-        // asm volatile("s_barrier");
-        //处理Q, K
-        const int pos = pos_ids[token_idx];
-        scalar_t cos[VEC_SIZE], sin[VEC_SIZE];
-        constexpr int half_rotary_dim = ROTARY_DIM_CONST >> 1;
-        if (lane_id * VEC_SIZE < ROTARY_DIM_CONST) {
-            constexpr int sin_offset = ROTARY_DIM_CONST >> 1;
-            int vec_idx;
-            if constexpr (INTERLEAVE)
-                vec_idx = (lane_id * VEC_SIZE) >> 1;
-            else 
-                vec_idx = (lane_id * VEC_SIZE) % half_rotary_dim;
-            *(reinterpret_cast<vec_scalar_t_qk*>(cos)) = *(reinterpret_cast<vec_scalar_t_qk*>(cos_sin_cache + pos * ROTARY_DIM_CONST + vec_idx));
-            *(reinterpret_cast<vec_scalar_t_qk*>(sin)) = *(reinterpret_cast<vec_scalar_t_qk*>(cos_sin_cache + pos * ROTARY_DIM_CONST + sin_offset + vec_idx));
-        }
 
-        if (warp_id < NUM_HEAD_Q_WARP) {
-            const int q_offset = token_idx * q_stride_n;
-            __shared__ scalar_t q_rms_smem[ROTARY_DIM_CONST * NUM_HEAD_Q_WARP];
-            for (int q_head_idx = 0; q_head_idx < num_q_head; q_head_idx += NUM_HEAD_Q_WARP) {
-                if (q_head_idx + warp_id >= num_q_head) {
-                  asm volatile("s_barrier");
-                  break;
-                }
-                // 每个 warp 处理一个 head：warp_id 对应 head (q_head_idx + warp_id)
-                scalar_t* q_ptr = q + q_offset + (q_head_idx + warp_id) * q_stride_h;
-                scalar_t q_vec[VEC_SIZE];
-                scalar_t q_data[VEC_SIZE];
-                scalar_t* residual_q_ptr = nullptr;
-                if constexpr (Residual) {
-                    residual_q_ptr = Residual_q + q_offset + (q_head_idx + warp_id) * q_stride_h;
-                }
-                apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE, NUM_HEAD_Q_WARP, Residual>(q_ptr, gamm_q, residual_q_ptr, HEAD_DIM_CONST, eps, q_vec);
-                if (lane_id * VEC_SIZE < ROTARY_DIM_CONST) 
-                    *(reinterpret_cast<vec_scalar_t_qk*>(q_rms_smem + warp_id * ROTARY_DIM_CONST + lane_id * VEC_SIZE)) = *(reinterpret_cast<vec_scalar_t_qk*>(q_vec));
-                lgkmcnt_wait_barrier(0);
-                if (lane_id * VEC_SIZE < ROTARY_DIM_CONST) {
-                    int sign = lane_id * VEC_SIZE < half_rotary_dim ? -1 : 1;
-                    #pragma unroll
-                    for (int i = 0; i < VEC_SIZE; ++i) {
-                        q_data[i] = q_vec[i] * cos[i] + sign * q_rms_smem[warp_id * ROTARY_DIM_CONST + lane_id * VEC_SIZE + i - sign * half_rotary_dim] * sin[i];
-                    }
-                } else {
-                    *reinterpret_cast<vec_scalar_t_qk*>(q_data) = *reinterpret_cast<vec_scalar_t_qk*>(q_vec);
-                }
-                if constexpr (CACHE_T_CONST) {
-                  uint8_t q_data_uint8[VEC_SIZE];
-                  float q_data_float[VEC_SIZE];
-                  #pragma unroll
-                  for (int i = 0; i < VEC_SIZE; ++i) {
-                    q_data_float[i] = static_cast<float>(q_data[i]);
-                  }
-                  convert_v_vec_to_uint8_t<VEC_SIZE, CACHE_T_CONST>(q_data_float, q_data_uint8);
-                  const int q_rope_out_offset = token_idx * q_rope_out_stride_n + (q_head_idx + warp_id) * q_rope_out_stride_h + lane_id * VEC_SIZE;
-                  *(reinterpret_cast<vec_uint8_t_qk*>(q_rope_out + q_rope_out_offset)) = *(reinterpret_cast<vec_uint8_t_qk*>(q_data_uint8));
-                } else {
-                *(reinterpret_cast<vec_scalar_t_qk*>(q_ptr + lane_id * VEC_SIZE)) = *(reinterpret_cast<vec_scalar_t_qk*>(q_data));
-            }
-          }
-        } else {
-            const int k_local_warp_id = warp_id - NUM_HEAD_Q_WARP;
-            const int k_offset = token_idx * k_stride_n;
-            const int k_cache_offset = cache_block_idx * k_buffer_stride_n + cache_block_offset * k_buffer_stride_p;
-            __shared__ scalar_t k_rms_smem[ROTARY_DIM_CONST * NUM_HEAD_K_WARP];
-            for (int k_head_idx = 0; k_head_idx < num_kv_head; k_head_idx += NUM_HEAD_K_WARP) {
-              if (k_head_idx + k_local_warp_id >= num_kv_head) {
-                asm volatile("s_barrier");
-                break;
-              }
-              scalar_t* k_ptr = k + k_offset + (k_head_idx + k_local_warp_id) * k_stride_h;
-              scalar_t k_vec[VEC_SIZE];
-              scalar_t k_data[VEC_SIZE];
-              scalar_t* residual_k_ptr = nullptr;
-              if constexpr (Residual) {
-                residual_k_ptr = Residual_k + k_offset + (k_head_idx + k_local_warp_id) * k_stride_h;
-              }
-              apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE, NUM_HEAD_Q_WARP, Residual>(k_ptr, gamm_k, residual_k_ptr, HEAD_DIM_CONST, eps, k_vec);
-              if (lane_id * VEC_SIZE < ROTARY_DIM_CONST) 
-                *(reinterpret_cast<vec_scalar_t_qk*>(k_rms_smem + k_local_warp_id * ROTARY_DIM_CONST + lane_id * VEC_SIZE)) = *(reinterpret_cast<vec_scalar_t_qk*>(k_vec));
-              lgkmcnt_wait_barrier(0);
-              if (lane_id * VEC_SIZE < ROTARY_DIM_CONST) {
-                int sign = lane_id * VEC_SIZE < half_rotary_dim ? -1 : 1;
-                #pragma unroll
-                for (int i = 0; i < VEC_SIZE; ++i) {
-                  k_data[i] = k_vec[i] * cos[i] + sign * k_rms_smem[k_local_warp_id * ROTARY_DIM_CONST + lane_id * VEC_SIZE + i - sign * half_rotary_dim] * sin[i];
-                }
-              } else {
-                *reinterpret_cast<vec_scalar_t_qk*>(k_data) = *reinterpret_cast<vec_scalar_t_qk*>(k_vec);
-              }
-              if constexpr (CACHE_T_CONST) {
-                uint8_t k_data_uint8[VEC_SIZE];
-                float k_data_float[VEC_SIZE];
-                #pragma unroll
-                for (int i = 0; i < VEC_SIZE; ++i) {
-                  k_data_float[i] = static_cast<float>(k_data[i]);
-                }
-                convert_v_vec_to_uint8_t<VEC_SIZE, CACHE_T_CONST>(k_data_float, k_data_uint8);
-                const int k_rope_out_offset = token_idx * k_rope_out_stride_n + (k_head_idx + k_local_warp_id) * k_rope_out_stride_h + lane_id * VEC_SIZE;
-                *(reinterpret_cast<vec_uint8_t_qk*>(k_rope_out + k_rope_out_offset)) = *(reinterpret_cast<vec_uint8_t_qk*>(k_data_uint8));
-                const int k_cache_global_offset = k_cache_offset + (k_head_idx + k_local_warp_id) * k_buffer_stride_h + lane_id * VEC_SIZE;
-                *(reinterpret_cast<vec_uint8_t_qk*>(k_buffer + k_cache_global_offset)) = *(reinterpret_cast<vec_uint8_t_qk*>(k_data_uint8));
-              } else {
-                *(reinterpret_cast<vec_scalar_t_qk*>(k_ptr + lane_id * VEC_SIZE)) = *(reinterpret_cast<vec_scalar_t_qk*>(k_data));
-                const int k_cache_global_offset = k_cache_offset + (k_head_idx + k_local_warp_id) * k_buffer_stride_h;
-                *(reinterpret_cast<vec_scalar_t_qk*>(k_buffer + k_cache_global_offset + lane_id * VEC_SIZE)) = *(reinterpret_cast<vec_scalar_t_qk*>(k_data));
-            }
-        }
-      }
-    }
-    return;
+template <int N> using IntConst = std::integral_constant<int, N>;
+#define IV(N) IntConst<N>() 
+
+namespace at{
+namespace native{
+
+template <typename T,int reducesize=C10_WARP_SIZE>
+__inline__ __device__ T WarpReduceSum_NEW(T val) {
+#pragma unroll
+  for (int offset = reducesize/2; offset > 0; offset >>= 1) {
+    val += WARP_SHFL_DOWN(val, offset);
+  }
+  return val;
 }
 
-template<typename T_ACC, typename scalar_t,  typename cache_t, int CACHE_T_CONST, bool IS_HAVE_K_SCALE, bool IS_HAVE_V_SCALE>
-void FuseRmsRopeWithKvStore(
-    scalar_t* q,
-    scalar_t* k,
-    scalar_t* v,
-    cache_t* k_buffer,
-    cache_t* v_buffer,
-    cache_t* q_rope_out,  // fp8 时存 q 的 fp8 结果；非 fp8 可为 nullptr
-    size_t q_rope_out_stride_n,
-    size_t q_rope_out_stride_h,
-    cache_t* k_rope_out,
-    size_t k_rope_out_stride_n,
-    size_t k_rope_out_stride_h,
-    cache_t* v_rope_out,
-    size_t v_rope_out_stride_n,
-    size_t v_rope_out_stride_h,
-    scalar_t* cos_sin_cache,
-    int64_t* positions,
-    int64_t* kv_cache_loc,
-    scalar_t* weight_q,
-    scalar_t* weight_k,
+template <typename T,int block_size=512>
+__inline__ __device__ T BlockReduceSum_NEW(T val, T* shared) {
+  constexpr int share_size=block_size/C10_WARP_SIZE;
+  val = WarpReduceSum_NEW<T>(val);
+  if constexpr(block_size==C10_WARP_SIZE)
+  {
+    return val;
+  }
+  else{
+    const int lid = threadIdx.x % C10_WARP_SIZE;
+    const int wid = threadIdx.x / C10_WARP_SIZE;
+    if (lid == 0&&wid<share_size) {
+      shared[wid] = val;
+    }
+    __syncthreads();
+    if (wid == 0&&lid<share_size) {
+      val = WarpReduceSum_NEW<T,share_size>(shared[lid]);
+    }
+    return val;
+  }
+}
+
+
+template <typename T_ACC, typename scalar_t,int Vec=4,int block_size=512, int NUM_QK_MUL, int num_warp, bool pipeline, bool is_q>
+inline __device__ void apply_rmsnorm(scalar_t* input,scalar_t* gamma, int cols,T_ACC eps, scalar_t* intput_vec)
+{
+    constexpr int share_size=block_size/64;
+    __shared__ T_ACC val_shared[share_size];
+    __shared__ T_ACC s_rstd[num_warp];
+    T_ACC val=0;
+    int tid;
+    int i=blockIdx.x;
+    if(pipeline && is_q){
+        tid=threadIdx.x-64;
+    }else{
+        tid=threadIdx.x;
+    }
+    int tcol=cols * num_warp/Vec;
+    using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
+    T_ACC trstd;
+    int64_t idx =tid;
+    idx*=Vec;
+    if (tid < tcol) {
+        *(LoadT*)intput_vec = *(LoadT*)(input+idx);
+        #pragma unroll
+        for (int ii = 0; ii < Vec; ii++) {
+            val += static_cast<T_ACC>(intput_vec[ii])*static_cast<T_ACC>(intput_vec[ii]);
+        }
+    }
+
+    int tid_in_land = tid % 64;
+    int land = tid / 64;
+    val = WarpReduceSum_NEW<T_ACC>(val);
+    // __syncthreads();
+    if (tid_in_land == 0) s_rstd[land]=c10::cuda::compat::rsqrt(val/cols + eps);
+     __syncthreads();
+    trstd=s_rstd[land];
+    if (tid < tcol) {
+        #pragma unroll
+        for(int ii=0;ii<Vec;ii++){
+            int jj=(tid*Vec+ii)%cols;
+            intput_vec[ii] = static_cast<T_ACC>(intput_vec[ii]) *trstd* static_cast<T_ACC>(gamma[jj]);
+        }
+        // *(LoadT*)(input+idx)=*(LoadT*)intput_vec;
+    }
+}
+
+template <typename T_ACC, typename scalar_t,int Vec=4,int block_size=512, int num_warp, bool pipeline, bool is_q>
+inline __device__ void apply_rmsnorm_residual(scalar_t* input,scalar_t* gamma,scalar_t* residual,int cols,T_ACC eps, scalar_t* intput_vec)
+{
+    constexpr int share_size=block_size/64;
+    __shared__ T_ACC val_shared[share_size];
+    __shared__ T_ACC s_rstd[num_warp];
+    T_ACC val=0;
+    int tid;
+    int i=blockIdx.x;
+    if(pipeline && is_q){
+        tid=threadIdx.x-64;
+    }else{
+        tid=threadIdx.x;
+    }
+    
+    int tcol=cols * num_warp /Vec;
+    using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
+    scalar_t residual_vec[Vec];
+    T_ACC trstd;
+    int64_t idx = tid;
+    idx*=Vec;
+    if (tid < tcol) {
+        *(LoadT*)intput_vec = *(LoadT*)(input+idx);
+        *(LoadT*)residual_vec = *(LoadT*)(residual+idx);
+        #pragma unroll
+        for (int ii = 0; ii < Vec; ii++) {
+        residual_vec[ii]+=intput_vec[ii];
+        val += static_cast<T_ACC>(residual_vec[ii])*static_cast<T_ACC>(residual_vec[ii]);
+        }
+    }
+
+    int tid_in_land = tid % 64;
+    int land = tid / 64;
+    val = WarpReduceSum_NEW<T_ACC>(val);
+    // __syncthreads();
+    if (tid_in_land == 0) s_rstd[land]=c10::cuda::compat::rsqrt(val/cols + eps);
+    __syncthreads();
+    trstd=s_rstd[land];
+  
+    if (tid < tcol) {
+        #pragma unroll
+        for(int ii=0;ii<Vec;ii++){
+        int jj=(tid*Vec+ii)%cols;
+        intput_vec[ii] = static_cast<T_ACC>(residual_vec[ii]) *trstd* static_cast<T_ACC>(gamma[jj]);
+        }
+    }
+}
+
+
+//fuse rms_rope
+template <typename T_ACC, typename scalar_t, bool IS_NEOX, bool RESIDUAL, int block_size,
+          int VEC_SIZE_Q, int VEC_SIZE_K, int Rot_dim, int NUM_QK_MUL, int num_warp>
+__global__ void rms_rotary_embedding_kernel(
+    const int64_t* __restrict__ positions,      // [batch_size, seq_len] or [num_tokens]
+    scalar_t* __restrict__ query,              // [batch_size, seq_len, num_heads, head_size] or [num_tokens, num_heads, head_size]
+    scalar_t* __restrict__ key,                // nullptr or [batch_size, seq_len, num_kv_heads, head_size] or [num_tokens, num_kv_heads, head_size]
+    const scalar_t* __restrict__ cos_sin_cache,  // [max_position, 2, rot_dim / 2]
+    const int rot_dim, const int64_t query_stride, const int64_t key_stride,
+    const int64_t head_stride, const int num_heads, const int num_kv_heads,
+    const int head_size, const int num_tokens, scalar_t* gamma_q, scalar_t* gamma_k, scalar_t* residual_q, scalar_t* residual_k, scalar_t eps) {
+    const int token_idx = blockIdx.x;
+    const int tid = threadIdx.x;
+    int land = tid / 64;
+    int stride = land * Rot_dim;
+    if (token_idx >= num_tokens) {
+        return;
+    }
+    const int idx_q = tid * VEC_SIZE_Q;
+    const int idx_k = tid * VEC_SIZE_K;
+    using LoadT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE_K>;
+    int64_t pos = positions[token_idx];
+    const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+    const int embed_dim = rot_dim / 2;
+    const int num_heads_size = num_heads * head_size ;
+    const int num_kv_heads_size = num_kv_heads * head_size;
+
+    using vector_q = Vector<scalar_t, VEC_SIZE_Q>;
+    using vector_k = Vector<scalar_t, VEC_SIZE_K>;
+    __shared__ scalar_t cos_sin_seme[Rot_dim];
+
+    if(tid < 64){
+        for(int i=0; i<VEC_SIZE_Q; i++)
+        {
+            cos_sin_seme[idx_q + i] = cache_ptr[idx_q + i];
+        }
+    }
+    
+    __syncthreads();
+  
+    if constexpr(IS_NEOX) {  // gpt-neox style
+
+        for (int head_idx = 0; head_idx < num_heads / num_warp; head_idx ++) {
+                scalar_t* q_ptr = query + blockIdx.x * query_stride + head_idx * head_stride * num_warp ;
+                scalar_t q_vec[VEC_SIZE_Q];
+                scalar_t q_data[VEC_SIZE_Q];
+                if constexpr (RESIDUAL){
+                    scalar_t* residual_q_ptr = residual_q + blockIdx.x * query_stride + head_idx * head_stride * num_warp;
+                    apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_Q, block_size, num_warp, false, true>(q_ptr, gamma_q, residual_q_ptr, head_size, eps, q_vec);
+                }else{
+                    apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_Q, block_size, NUM_QK_MUL, num_warp, false, true>(q_ptr, gamma_q, head_size, eps, q_vec);
+                }
+                int sign = idx_q % rot_dim >= embed_dim ? 1 : -1;
+                __shared__ scalar_t q_smem[Rot_dim * num_warp];
+                #pragma unroll
+                for (int i = 0; i < VEC_SIZE_Q; i++) {
+                    q_smem[idx_q + i] = q_vec[i];
+                }
+                __syncthreads();
+                if (num_warp == 1)
+                {
+                    land = 0;
+                }
+                #pragma unroll
+                for (int i = 0; i < VEC_SIZE_Q; i++) {
+                    if(sign == -1){
+                        q_data[i] = (q_vec[i] * cos_sin_seme[(idx_q + i) % Rot_dim] - q_smem[(idx_q + i + embed_dim) % head_size + stride ] * cos_sin_seme[(idx_q + i + embed_dim) % head_size]);
+                    }else{
+                        q_data[i] = (q_vec[i] * cos_sin_seme[(idx_q + i - embed_dim) % Rot_dim] + q_smem[(idx_q + i - embed_dim) % head_size + stride] * cos_sin_seme[(idx_q + i) % Rot_dim ]);
+                    }
+                }
+
+                *(LoadT*)(q_ptr + idx_q)=*(LoadT*)q_data;
+            }
+        if (key != nullptr) {
+            for (int head_idx = 0; head_idx < num_kv_heads / num_warp; head_idx ++) {
+                scalar_t* k_ptr = key + blockIdx.x * key_stride + head_idx * head_stride * num_warp;
+                
+                scalar_t k_vec[VEC_SIZE_K];
+                scalar_t k_data[VEC_SIZE_K];
+                if constexpr (RESIDUAL)
+                {
+                    scalar_t* residual_k_ptr = residual_k + blockIdx.x * key_stride + head_idx * head_stride * num_warp; ;
+                    apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, num_warp, false, false>(k_ptr, gamma_k, residual_k_ptr, head_size, eps, k_vec);
+                }else{
+                    apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, num_warp, false, false>(k_ptr, gamma_k, head_size, eps, k_vec);
+                }
+                int sign = idx_k % rot_dim >= embed_dim ? 1 : -1;
+                __shared__ scalar_t k_smem[Rot_dim * num_warp];
+                #pragma unroll
+                for (int i = 0; i < VEC_SIZE_K; i++) {
+                    k_smem[idx_k + i] = k_vec[i];
+                }
+                __syncthreads();
+                if constexpr (num_warp==1)
+                {
+                    land = 0;
+                }
+                #pragma unroll
+                for (int i = 0; i < VEC_SIZE_K; i++) {
+                    if(sign == -1){
+                        k_data[i] = (k_vec[i] * cos_sin_seme[(idx_k + i) % Rot_dim] - k_smem[(idx_k + i + embed_dim) % rot_dim + stride] * cos_sin_seme[(idx_k + i + embed_dim) % rot_dim]);
+                    }else{
+                        k_data[i] = (k_vec[i] * cos_sin_seme[(idx_k + i - embed_dim) % Rot_dim] + k_smem[(idx_k + i - embed_dim)%rot_dim + stride] * cos_sin_seme[(idx_k + i) % Rot_dim ]);
+                    }
+                }
+                *(LoadT*)(k_ptr + idx_k)=*(LoadT*)k_data;
+            }
+        }
+    } 
+    else {  // gpt-j style
+            if constexpr(VEC_SIZE_Q == 1){
+                for (int head_idx = 0; head_idx < num_heads / num_warp; head_idx ++) {
+                    scalar_t* q_ptr = query + blockIdx.x * query_stride + head_idx * head_stride * num_warp;
+                    scalar_t q_vec[VEC_SIZE_Q];
+                    scalar_t q_data[VEC_SIZE_Q];
+                    if constexpr (RESIDUAL){
+                        scalar_t* residual_q_ptr = residual_q + blockIdx.x * query_stride + head_idx * head_stride * num_warp;
+                        apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, num_warp, false, true>(q_ptr, gamma_q, residual_q_ptr, head_size, eps, q_vec);
+                    }else{
+                        apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, num_warp, false, true>(q_ptr, gamma_q, head_size, eps, q_vec);
+                    }
+                    __shared__ scalar_t q_smem[Rot_dim * num_warp];
+                    q_smem[tid] = q_vec[0];
+                    __syncthreads();
+                    if(tid % 2 ==0)
+                    {
+                        q_data[0] = (q_vec[0] * cos_sin_seme[tid%rot_dim / 2] - q_smem[tid + 1] * cos_sin_seme[(tid%rot_dim / 2 + embed_dim) % rot_dim]);
+                    }
+                    else{
+                        q_data[0] = (q_vec[0] * cos_sin_seme[tid%rot_dim / 2] + q_smem[tid - 1] * cos_sin_seme[(tid%rot_dim / 2 + embed_dim) % rot_dim]);
+                    }
+                    
+                    *(LoadT*)(q_ptr + idx_q)=*(LoadT*)q_data;
+                }
+            }else{
+                for (int head_idx = 0; head_idx < num_heads / num_warp; head_idx ++) {
+                    scalar_t* q_ptr = query + blockIdx.x * query_stride + head_idx * head_stride * num_warp;
+                    scalar_t q_vec[VEC_SIZE_Q];
+                    scalar_t q_data[VEC_SIZE_Q];
+                    if constexpr (RESIDUAL){
+                        scalar_t* residual_q_ptr = residual_q + blockIdx.x * query_stride + head_idx * head_stride * num_warp;
+                        apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, num_warp, false, true>(q_ptr, gamma_q, residual_q_ptr, head_size, eps, q_vec);
+                    }else{
+                        apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, num_warp, false, true>(q_ptr, gamma_q, head_size, eps, q_vec);
+                    }
+                    __shared__ scalar_t q_smem[Rot_dim * num_warp];
+                    #pragma unroll
+                    for(int i = 0;i < VEC_SIZE_K; i++)
+                    {
+                        q_smem[idx_q + i] = q_vec[i];
+                    }
+                    
+                    __syncthreads();
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE_Q; i++) {
+                        if((idx_q + i) % 2 == 0)
+                        {
+                            q_data[i] = (q_vec[i] * cos_sin_seme[(idx_q + i) % rot_dim / 2] - q_smem[(idx_q + i + 1)%rot_dim + stride] * cos_sin_seme[((idx_q + i) % rot_dim / 2 + embed_dim)]);
+                        }
+                        else{
+                            q_data[i] = (q_vec[i] * cos_sin_seme[(idx_q + i - 1)%rot_dim / 2] + q_smem[(idx_q + i - 1)%rot_dim + stride] * cos_sin_seme[((idx_q + i -1)%rot_dim / 2 + embed_dim)]);
+                        }
+                    }
+                    *(LoadT*)(q_ptr + idx_q)=*(LoadT*)q_data;
+
+                }
+            }
+        if (key != nullptr) {
+            if constexpr(VEC_SIZE_K == 1){
+
+                for (int head_idx = 0; head_idx < num_kv_heads / num_warp; head_idx ++) {
+                    scalar_t* k_ptr = key + blockIdx.x * key_stride + head_idx * head_stride * num_warp;
+                    scalar_t k_vec[VEC_SIZE_K];
+                    scalar_t k_data[VEC_SIZE_K];
+                    if constexpr (RESIDUAL)
+                    {
+                        scalar_t* residual_k_ptr = residual_k + blockIdx.x * key_stride + head_idx * head_stride * num_warp;
+                        apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, num_warp, false, false>(k_ptr, gamma_k, residual_k_ptr, head_size, eps, k_vec);
+                    }else{
+                        apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, num_warp, false, false>(k_ptr, gamma_k, head_size, eps, k_vec);
+                    }
+                    __shared__ scalar_t k_smem[Rot_dim * num_warp];
+                    k_smem[tid] = k_vec[0];
+                    __syncthreads();
+                    if(tid % 2 ==0)
+                    {
+                        k_data[0] = (k_vec[0] * cos_sin_seme[tid % rot_dim / 2] - k_smem[tid + 1] * cos_sin_seme[(tid % rot_dim / 2 + embed_dim) % rot_dim]);
+                    }
+                    else{
+                        k_data[0] = (k_vec[0] * cos_sin_seme[tid % rot_dim / 2] + k_smem[tid - 1] * cos_sin_seme[(tid % rot_dim / 2 + embed_dim) % rot_dim]);
+                    }
+                    *(LoadT*)(k_ptr + idx_k)=*(LoadT*)k_data;
+
+                }
+            }else{
+                for (int head_idx = 0; head_idx < num_kv_heads / num_warp; head_idx ++) {
+                    scalar_t* k_ptr = key + blockIdx.x * num_kv_heads_size + head_idx * head_stride * num_warp;
+                    scalar_t k_vec[VEC_SIZE_K];
+                    scalar_t k_data[VEC_SIZE_K];
+                    if constexpr (RESIDUAL)
+                    {
+                        scalar_t* residual_k_ptr = residual_k + blockIdx.x * num_kv_heads_size + head_idx * head_stride * num_warp;
+                        apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, num_warp, false, false>(k_ptr, gamma_k, residual_k_ptr, head_size, eps, k_vec);
+                    }else{
+                        apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, num_warp, false, false>(k_ptr, gamma_k, head_size, eps, k_vec);
+                    }
+                    __shared__ scalar_t k_smem[Rot_dim * num_warp];
+                    #pragma unroll
+                    for(int i = 0;i < VEC_SIZE_K; i++)
+                    {
+                        k_smem[idx_k + i] = k_vec[i];
+                    }
+                    
+                    __syncthreads();
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE_K; i++) {
+                        if((idx_k + i) % 2 == 0)
+                        {
+                            k_data[i] = (k_vec[i] * cos_sin_seme[(idx_k + i) % rot_dim / 2] - k_smem[(idx_k + i + 1) % rot_dim + stride] * cos_sin_seme[((idx_k + i) % rot_dim / 2 + embed_dim)]);
+                        }
+                        else{
+                            k_data[i] = (k_vec[i] * cos_sin_seme[(idx_k + i - 1)%rot_dim / 2] + k_smem[(idx_k + i - 1) % rot_dim + stride] * cos_sin_seme[((idx_k + i -1) % rot_dim / 2 + embed_dim)]);
+                        }
+                    }
+                    *(LoadT*)(k_ptr + idx_k)=*(LoadT*)k_data;
+
+                }
+            }
+        }
+    }
+}
+
+//fuse rms_rope
+template <typename T_ACC, typename scalar_t, bool IS_NEOX, bool RESIDUAL, int block_size,
+          int VEC_SIZE_Q, int VEC_SIZE_K, int Rot_dim, int NUM_QK_MUL, int num_warp>
+__global__ void rms_rotary_embedding_kernel_pipeline(
+    const int64_t* __restrict__ positions,      // [batch_size, seq_len] or [num_tokens]
+    scalar_t* __restrict__ query,              // [batch_size, seq_len, num_heads, head_size] or [num_tokens, num_heads, head_size]
+    scalar_t* __restrict__ key,                // nullptr or [batch_size, seq_len, num_kv_heads, head_size] or [num_tokens, num_kv_heads, head_size]
+    const scalar_t* __restrict__ cos_sin_cache,  // [max_position, 2, rot_dim / 2]
+    const int rot_dim, const int64_t query_stride, const int64_t key_stride,
+    const int64_t head_stride, const int num_heads, const int num_kv_heads,
+    const int head_size, const int num_tokens, scalar_t* gamma_q, scalar_t* gamma_k, scalar_t* residual_q, scalar_t* residual_k, scalar_t eps) {
+    const int token_idx = blockIdx.x;
+    const int tid = threadIdx.x;
+    if (token_idx >= num_tokens) {
+        return;
+    }
+    
+    
+    using LoadT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE_K>;
+    int64_t pos = positions[token_idx];
+    const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
+
+    const int embed_dim = rot_dim / 2;
+    const int num_heads_size = num_heads * head_size ;
+    const int num_kv_heads_size = num_kv_heads * head_size;
+
+    using vector_q = Vector<scalar_t, VEC_SIZE_Q>;
+    using vector_k = Vector<scalar_t, VEC_SIZE_K>;
+    __shared__ scalar_t cos_sin_seme[Rot_dim];
+    int idx_k; 
+    if(tid < 64){
+        idx_k = tid * VEC_SIZE_K;
+        for(int i=0; i<VEC_SIZE_Q; i++)
+        {
+            cos_sin_seme[idx_k + i] = cache_ptr[idx_k + i];
+        }
+    }
+    
+    __syncthreads();
+    constexpr  int num_warp_q = num_warp-1;
+    if constexpr(IS_NEOX) {  // gpt-neox style
+        if(tid>=64)
+        {
+            int land = (tid-64) / 64;
+            int stride = land * Rot_dim;
+            const int idx_q = (tid-64) * VEC_SIZE_Q;
+            for (int head_idx = 0; head_idx < num_heads / num_warp_q; head_idx ++) {
+                    scalar_t* q_ptr = query + blockIdx.x * query_stride + head_idx * head_stride * num_warp_q ;
+                    scalar_t q_vec[VEC_SIZE_Q];
+                    scalar_t q_data[VEC_SIZE_Q];
+                    if constexpr (RESIDUAL){
+                        scalar_t* residual_q_ptr = residual_q + blockIdx.x * query_stride + head_idx * head_stride * num_warp_q;
+                        apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_Q, block_size, num_warp_q, true, true>(q_ptr, gamma_q, residual_q_ptr, head_size, eps, q_vec);
+                    }else{
+                        apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_Q, block_size, NUM_QK_MUL, num_warp_q, true, true>(q_ptr, gamma_q, head_size, eps, q_vec);
+                    }
+                    int sign = idx_q % rot_dim >= embed_dim ? 1 : -1;
+                    __shared__ scalar_t q_smem[Rot_dim * num_warp_q];
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE_Q; i++) {
+                        q_smem[idx_q + i] = q_vec[i];
+                    }
+                    __syncthreads();
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE_Q; i++) {
+                        if(sign == -1){
+                            q_data[i] = (q_vec[i] * cos_sin_seme[(idx_q + i) % Rot_dim] - q_smem[(idx_q + i + embed_dim) % head_size + stride] * cos_sin_seme[(idx_q + i + embed_dim) % head_size]);
+                        }else{
+                            q_data[i] = (q_vec[i] * cos_sin_seme[(idx_q + i - embed_dim) % Rot_dim] + q_smem[(idx_q + i - embed_dim) % head_size+ stride] * cos_sin_seme[(idx_q + i) % Rot_dim ]);
+                        }
+                    }
+
+                    *(LoadT*)(q_ptr + idx_q)=*(LoadT*)q_data;
+                }
+        }else{
+                if (key != nullptr) {
+                    scalar_t* k_ptr = key + blockIdx.x * key_stride;
+                    
+                    scalar_t k_vec[VEC_SIZE_K];
+                    scalar_t k_data[VEC_SIZE_K];
+                    if constexpr (RESIDUAL)
+                    {
+                        scalar_t* residual_k_ptr = residual_k + blockIdx.x * key_stride;
+                        apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, 1, true, false>(k_ptr, gamma_k, residual_k_ptr, head_size, eps, k_vec);
+                    }else{
+                        apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, 1, true, false>(k_ptr, gamma_k, head_size, eps, k_vec);
+                    }
+                    int sign = idx_k % rot_dim >= embed_dim ? 1 : -1;
+                    __shared__ scalar_t k_smem[Rot_dim];
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE_K; i++) {
+                        k_smem[idx_k + i] = k_vec[i];
+                    }
+                    __syncthreads();
+                    
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE_K; i++) {
+                        if(sign == -1){
+                            k_data[i] = (k_vec[i] * cos_sin_seme[(idx_k + i) % Rot_dim] - k_smem[(idx_k + i + embed_dim) % rot_dim] * cos_sin_seme[(idx_k + i + embed_dim) % rot_dim]);
+                        }else{
+                            k_data[i] = (k_vec[i] * cos_sin_seme[(idx_k + i - embed_dim) % Rot_dim] + k_smem[(idx_k + i - embed_dim)%rot_dim] * cos_sin_seme[(idx_k + i) % Rot_dim ]);
+                        }
+                    }
+                    *(LoadT*)(k_ptr + idx_k)=*(LoadT*)k_data;
+                
+            }
+        }
+        
+        
+    } else {  // gpt-j style
+            if(tid >= 64){
+                int land = (tid-64) / 64;
+                int stride = land * Rot_dim;
+                const int idx_q = (tid-64) * VEC_SIZE_Q;
+                    if constexpr(VEC_SIZE_Q == 1){
+                        for (int head_idx = 0; head_idx < num_heads / num_warp_q; head_idx ++) {
+                            scalar_t* q_ptr = query + blockIdx.x * query_stride + head_idx * head_stride * num_warp_q;
+                            scalar_t q_vec[VEC_SIZE_Q];
+                            scalar_t q_data[VEC_SIZE_Q];
+                            if constexpr (RESIDUAL){
+                                scalar_t* residual_q_ptr = residual_q + blockIdx.x * query_stride + head_idx * head_stride * num_warp_q;
+                                apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, num_warp_q, true, true>(q_ptr, gamma_q, residual_q_ptr, head_size, eps, q_vec);
+                            }else{
+                                apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, num_warp_q, true, true>(q_ptr, gamma_q, head_size, eps, q_vec);
+                            }
+                            __shared__ scalar_t q_smem[Rot_dim * num_warp_q];
+                            q_smem[tid] = q_vec[0];
+                            __syncthreads();
+                            if(tid % 2 ==0)
+                            {
+                                q_data[0] = (q_vec[0] * cos_sin_seme[tid%rot_dim / 2] - q_smem[tid + 1] * cos_sin_seme[(tid%rot_dim / 2 + embed_dim) % rot_dim]);
+                            }
+                            else{
+                                q_data[0] = (q_vec[0] * cos_sin_seme[tid%rot_dim / 2] + q_smem[tid - 1] * cos_sin_seme[(tid%rot_dim / 2 + embed_dim) % rot_dim]);
+                            }
+                            
+                            *(LoadT*)(q_ptr + idx_q)=*(LoadT*)q_data;
+                        }
+                }else{
+                    for (int head_idx = 0; head_idx < num_heads / num_warp_q; head_idx ++) {
+                            scalar_t* q_ptr = query + blockIdx.x * query_stride + head_idx * head_stride * num_warp_q;
+                            scalar_t q_vec[VEC_SIZE_Q];
+                            scalar_t q_data[VEC_SIZE_Q];
+                            if constexpr (RESIDUAL){
+                                scalar_t* residual_q_ptr = residual_q + blockIdx.x * query_stride + head_idx * head_stride * num_warp_q;
+                                apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, num_warp_q, true, true>(q_ptr, gamma_q, residual_q_ptr, head_size, eps, q_vec);
+                            }else{
+                                apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, num_warp_q, true, true>(q_ptr, gamma_q, head_size, eps, q_vec);
+                            }
+                            __shared__ scalar_t q_smem[Rot_dim * num_warp_q];
+                            #pragma unroll
+                            for(int i = 0;i < VEC_SIZE_K; i++)
+                            {
+                                q_smem[idx_q + i] = q_vec[i];
+                            }
+                            
+                            __syncthreads();
+                            #pragma unroll
+                            for (int i = 0; i < VEC_SIZE_Q; i++) {
+                                if((idx_q + i) % 2 == 0)
+                                {
+                                    q_data[i] = (q_vec[i] * cos_sin_seme[(idx_q + i) % rot_dim / 2] - q_smem[(idx_q + i + 1)%rot_dim + stride] * cos_sin_seme[((idx_q + i) % rot_dim / 2 + embed_dim)]);
+                                }
+                                else{
+                                    q_data[i] = (q_vec[i] * cos_sin_seme[(idx_q + i - 1)%rot_dim / 2] + q_smem[(idx_q + i - 1)%rot_dim + stride] * cos_sin_seme[((idx_q + i -1)%rot_dim / 2 + embed_dim)]);
+                                }
+                            }
+                            *(LoadT*)(q_ptr + idx_q)=*(LoadT*)q_data;
+
+                    }
+                }
+            }else{
+                if (key != nullptr) {
+                if constexpr(VEC_SIZE_K == 1){
+
+              
+                        scalar_t* k_ptr = key + blockIdx.x * key_stride;
+                        scalar_t k_vec[VEC_SIZE_K];
+                        scalar_t k_data[VEC_SIZE_K];
+                        if constexpr (RESIDUAL)
+                        {
+                            scalar_t* residual_k_ptr = residual_k + blockIdx.x * key_stride;
+                            apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, 1, true, false>(k_ptr, gamma_k, residual_k_ptr, head_size, eps, k_vec);
+                        }else{
+                            apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, 1, true, false>(k_ptr, gamma_k, head_size, eps, k_vec);
+                        }
+                        __shared__ scalar_t k_smem[Rot_dim];
+                        k_smem[tid] = k_vec[0];
+                        __syncthreads();
+                        if(tid % 2 ==0)
+                        {
+                            k_data[0] = (k_vec[0] * cos_sin_seme[tid % rot_dim / 2] - k_smem[tid + 1] * cos_sin_seme[(tid % rot_dim / 2 + embed_dim) % rot_dim]);
+                        }
+                        else{
+                            k_data[0] = (k_vec[0] * cos_sin_seme[tid % rot_dim / 2] + k_smem[tid - 1] * cos_sin_seme[(tid % rot_dim / 2 + embed_dim) % rot_dim]);
+                        }
+                        *(LoadT*)(k_ptr + idx_k)=*(LoadT*)k_data;
+
+                    
+                }else{
+        
+                        scalar_t* k_ptr = key + blockIdx.x * num_kv_heads_size;
+                        scalar_t k_vec[VEC_SIZE_K];
+                        scalar_t k_data[VEC_SIZE_K];
+                        if constexpr (RESIDUAL)
+                        {
+                            scalar_t* residual_k_ptr = residual_k + blockIdx.x * num_kv_heads_size;
+                            apply_rmsnorm_residual<T_ACC, scalar_t, VEC_SIZE_K, block_size, 1, true, false>(k_ptr, gamma_k, residual_k_ptr, head_size, eps, k_vec);
+                        }else{
+                            apply_rmsnorm<T_ACC, scalar_t, VEC_SIZE_K, block_size, NUM_QK_MUL, 1, true, false>(k_ptr, gamma_k, head_size, eps, k_vec);
+                        }
+                        __shared__ scalar_t k_smem[Rot_dim];
+                        #pragma unroll
+                        for(int i = 0;i < VEC_SIZE_K; i++)
+                        {
+                            k_smem[idx_k + i] = k_vec[i];
+                        }
+                        
+                        __syncthreads();
+                        #pragma unroll
+                        for (int i = 0; i < VEC_SIZE_K; i++) {
+                            if((idx_k + i) % 2 == 0)
+                            {
+                                k_data[i] = (k_vec[i] * cos_sin_seme[(idx_k + i) % rot_dim / 2] - k_smem[(idx_k + i + 1) % rot_dim] * cos_sin_seme[((idx_k + i) % rot_dim / 2 + embed_dim)]);
+                            }
+                            else{
+                                k_data[i] = (k_vec[i] * cos_sin_seme[(idx_k + i - 1)%rot_dim / 2] + k_smem[(idx_k + i - 1) % rot_dim] * cos_sin_seme[((idx_k + i -1) % rot_dim / 2 + embed_dim)]);
+                            }
+                        }
+                        *(LoadT*)(k_ptr + idx_k)=*(LoadT*)k_data;
+
+                
+                }
+            }
+            }
+            
+        
+    }
+}
+
+template<typename T, int WIDTH>
+__device__ __forceinline__ T WarpReduceSum_Local(T val) {
+    #pragma unroll
+    for (int mask = WIDTH / 2; mask > 0; mask >>=1) {
+        val += __shfl_xor(val, mask);
+    }
+    return val;
+}
+template <typename T_ACC, typename scalar_t, int VEC_SIZE, bool HAS_RESIDUAL>
+__device__ __forceinline__ T_ACC apply_residual_and_calc_sq(
+    scalar_t* r_data_low,     
+    scalar_t* r_data_high,   
+    scalar_t* res_head_ptr,   
+    int offset_low,            
+    int offset_high            
+) {
+    using LoadT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
+    if constexpr (HAS_RESIDUAL) {
+        scalar_t r_res_low[VEC_SIZE];
+        scalar_t r_res_high[VEC_SIZE];
+        *(LoadT*)r_res_low = *(LoadT*)(res_head_ptr + offset_low);
+        *(LoadT*)r_res_high = *(LoadT*)(res_head_ptr + offset_high);
+
+        #pragma unroll
+        for (int i = 0; i < VEC_SIZE; ++i) {
+            r_res_low[i] = r_res_low[i] + r_data_low[i];
+            r_res_high[i] = r_res_high[i] + r_data_high[i];
+            r_data_low[i] = r_res_low[i];
+            r_data_high[i] = r_res_high[i];
+        }
+        *(LoadT*)(res_head_ptr + offset_low) = *(LoadT*)r_res_low;
+        *(LoadT*)(res_head_ptr + offset_high) = *(LoadT*)r_res_high;
+    }
+
+    T_ACC local_sum_sq = 0;
+    #pragma unroll VEC_SIZE
+    for (int i = 0; i < VEC_SIZE; ++i) {
+        T_ACC low = static_cast<T_ACC>(r_data_low[i]);
+        T_ACC high = static_cast<T_ACC>(r_data_high[i]);
+        local_sum_sq += low * low;
+        local_sum_sq += high * high;
+    }
+
+    return local_sum_sq;
+}
+
+//8, 8 每个head有8个thread, 每个thread处理8个元素
+template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX,int VEC_SIZE, int THEAD_PER_HEAD>
+__global__ void opt_rms_rope_qwen3(
+    const int64_t* __restrict__ positions,
+    scalar_t* __restrict__ query,      
+    scalar_t* __restrict__ key,   
+    scalar_t* __restrict__ v,      
+    const scalar_t* __restrict__ cos_sin_cache,
+    uint8_t* __restrict__ k_buffer,
+    uint8_t* __restrict__ v_buffer,
+    int64_t* __restrict__ kv_cache_loc,
+    uint8_t* __restrict__ q_rope_out,
+    uint8_t* __restrict__ k_rope_out,
+    uint8_t* __restrict__ v_rope_out,
+    int page_size,
+    const int rot_dim,
+    const int64_t query_stride,         
+    const int64_t key_stride,           
+    const int64_t v_stride,
+    const int64_t head_stride_q,       
+    const int64_t head_stride_k,      
+    const int k_buffer_stride_n,
+    const int k_buffer_stride_h,
+    const int k_buffer_stride_p,
+    const int v_buffer_stride_n,
+    const int v_buffer_stride_h,
+    const int v_buffer_stride_p,
+    scalar_t* gamma_q,
+    scalar_t* gamma_k,
     scalar_t* residual_q,
     scalar_t* residual_k,
-    float k_scale,
-    float v_scale,
-    int bs,
-    int num_qo_heads,
-    int num_kv_heads,
-    int rotary_dim,
-    int head_dim,
-    int head_dim_v,
+    scalar_t eps,
+    int num_tokens,
+    const int num_heads,
+    const int num_kv_heads,
+    const int threads_per_token, 
+    const int tokens_per_block,
+    const int cache_fp8_type
+) 
+{
+    
+    extern __shared__ char smem_buffer[];
+    scalar_t* s_cos_sin_base = reinterpret_cast<scalar_t*>(smem_buffer);
+
+    constexpr int HEAD_SIZE = 128;
+    constexpr int HALF_ROT = 64; 
+
+    const int tid = threadIdx.x;
+
+    const int local_token_idx = tid / threads_per_token;
+    const int lane = tid % threads_per_token;
+
+
+    if (local_token_idx >= tokens_per_block) return;
+
+    const int global_token_idx = blockIdx.x * tokens_per_block + local_token_idx;
+    if (global_token_idx >= num_tokens) return;
+
+
+    scalar_t* my_s_cos_sin = s_cos_sin_base + local_token_idx * HEAD_SIZE;  //当前token的cos_sin_cache
+    const int64_t pos = positions[global_token_idx];
+
+    for (int i = lane; i < HEAD_SIZE; i += threads_per_token) {
+        my_s_cos_sin[i] = cos_sin_cache[pos * HEAD_SIZE + i];
+    }
+
+    __syncthreads(); 
+
+    const int q_boundary = num_heads * THEAD_PER_HEAD;
+    if(lane < q_boundary){
+        const int q_head_idx = lane / THEAD_PER_HEAD;
+        const int q_lane_in_head = lane % THEAD_PER_HEAD;
+        ///////////////////////////////////////////////////////
+        uint8_t* q_rope_out_ptr = q_rope_out + global_token_idx * query_stride + q_head_idx * head_stride_q;
+        ///////////////////////////////////////////////////////
+        scalar_t* q_head_ptr = query + global_token_idx * query_stride + q_head_idx * head_stride_q;
+        scalar_t* res_q_head_ptr = HAS_RESIDUAL ? (residual_q + global_token_idx * query_stride + q_head_idx * head_stride_q) : nullptr;
+        
+        using LoadT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
+        using LoadT8 = at::native::memory::aligned_vector<uint8_t, VEC_SIZE>;
+        /***** */
+        float f_q_low[VEC_SIZE];
+        float f_q_high[VEC_SIZE];
+        uint8_t u8_q_low[VEC_SIZE];
+        uint8_t u8_q_high[VEC_SIZE];
+        /***** */
+        scalar_t r_q_low[VEC_SIZE];
+        scalar_t r_q_high[VEC_SIZE];
+
+        int offset_low = q_lane_in_head * VEC_SIZE;
+        int offset_high = HALF_ROT + q_lane_in_head * VEC_SIZE;
+        
+        *(LoadT*)r_q_low = *(LoadT*)(q_head_ptr + offset_low);
+        *(LoadT*)r_q_high = *(LoadT*)(q_head_ptr + offset_high);
+
+        T_ACC sum_sq = apply_residual_and_calc_sq<T_ACC, scalar_t, VEC_SIZE, HAS_RESIDUAL>(
+            r_q_low, r_q_high, res_q_head_ptr, offset_low, offset_high
+        );
+    
+        sum_sq = WarpReduceSum_Local<T_ACC,THEAD_PER_HEAD>(sum_sq);
+        T_ACC inv_rms = c10::cuda::compat::rsqrt(sum_sq / HEAD_SIZE + static_cast<T_ACC>(eps));
+        
+        const scalar_t* cache_ptr = my_s_cos_sin; 
+       
+        if constexpr (IS_NEOX) {
+            scalar_t r_cos_low[VEC_SIZE], r_sin_low[VEC_SIZE];
+            *(LoadT*)r_cos_low = *(LoadT*)(cache_ptr + offset_low);
+            *(LoadT*)r_sin_low = *(LoadT*)(cache_ptr + rot_dim/2 + offset_low); 
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; ++i) {
+                r_q_low[i] = static_cast<T_ACC>(r_q_low[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_low + i]);
+                r_q_high[i] = static_cast<T_ACC>(r_q_high[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_high + i]);
+                
+                scalar_t q_l = r_q_low[i];
+                scalar_t q_h = r_q_high[i];
+                scalar_t c = r_cos_low[i];
+                scalar_t s = r_sin_low[i];
+
+                r_q_low[i]  = q_l * c - q_h * s;
+                r_q_high[i] = q_l * s + q_h * c;
+            }
+        } else {
+            using LoadCacheT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE / 2>;
+            scalar_t c_low[VEC_SIZE / 2], s_low[VEC_SIZE / 2];
+            scalar_t c_high[VEC_SIZE / 2], s_high[VEC_SIZE / 2];
+            int cache_offset_low = offset_low / 2;
+            int cache_offset_high = offset_high / 2;
+            *(LoadCacheT*)c_low = *(LoadCacheT*)(cache_ptr + cache_offset_low);
+            *(LoadCacheT*)s_low = *(LoadCacheT*)(cache_ptr + rot_dim/2 + cache_offset_low);
+            *(LoadCacheT*)c_high = *(LoadCacheT*)(cache_ptr + cache_offset_high);
+            *(LoadCacheT*)s_high = *(LoadCacheT*)(cache_ptr + rot_dim/2 + cache_offset_high);
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; i+=2) {
+                int c_idx = i / 2; 
+                r_q_low[i]   = static_cast<T_ACC>(r_q_low[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_low + i]);
+                r_q_low[i+1] = static_cast<T_ACC>(r_q_low[i+1]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_low + i + 1]);
+                scalar_t q0 = r_q_low[i]; scalar_t q1 = r_q_low[i+1];
+                scalar_t c = c_low[c_idx]; scalar_t s = s_low[c_idx];
+                r_q_low[i]   = q0 * c - q1 * s;
+                r_q_low[i+1] = q1 * c + q0 * s;
+
+                r_q_high[i]   = static_cast<T_ACC>(r_q_high[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_high + i]);
+                r_q_high[i+1] = static_cast<T_ACC>(r_q_high[i+1]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_high + i + 1]);
+                scalar_t qh0 = r_q_high[i]; scalar_t qh1 = r_q_high[i+1];
+                scalar_t ch = c_high[c_idx]; scalar_t sh = s_high[c_idx];
+                r_q_high[i]   = qh0 * ch - qh1 * sh;
+                r_q_high[i+1] = qh1 * ch + qh0 * sh;
+            }
+        }
+        *(LoadT*)(q_head_ptr + offset_low) = *(LoadT*)r_q_low;
+        *(LoadT*)(q_head_ptr + offset_high) = *(LoadT*)r_q_high;
+
+        //进行类型转换
+        #pragma unroll
+        for(int i=0; i<VEC_SIZE; ++i) {
+          f_q_low[i] = static_cast<float>(r_q_low[i]);
+          f_q_high[i] = static_cast<float>(r_q_high[i]);
+        }
+        if (cache_fp8_type == 1) {
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f_q_low, u8_q_low);
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f_q_high, u8_q_high);
+        } else {
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f_q_low, u8_q_low);
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f_q_high, u8_q_high);
+        }
+        *(LoadT8*)(q_rope_out_ptr + offset_low) = *(LoadT8*)u8_q_low;
+        *(LoadT8*)(q_rope_out_ptr + offset_high) = *(LoadT8*)u8_q_high;
+    }
+
+   
+    const int total_threads_needed_kv = (num_heads + num_kv_heads) * THEAD_PER_HEAD;
+    const int total_threads = total_threads_needed_kv + (num_kv_heads * THEAD_PER_HEAD);
+    const int64_t cache_loc = kv_cache_loc[global_token_idx];
+    const int loc_id = cache_loc / page_size;
+    const int loc_offset = cache_loc % page_size;
+
+    if (lane >= q_boundary && lane < total_threads_needed_kv && key != nullptr) {
+        const int k_lane_abs = lane - q_boundary;
+        const int kv_head_idx = k_lane_abs / THEAD_PER_HEAD; 
+        const int k_lane_in_head = k_lane_abs % THEAD_PER_HEAD;
+    
+        uint8_t* k_rope_out_ptr = k_rope_out + global_token_idx * key_stride + kv_head_idx * head_stride_k;
+        uint8_t* k_buffer_ptr = k_buffer + loc_id * k_buffer_stride_n + kv_head_idx * k_buffer_stride_h + loc_offset * k_buffer_stride_p;
+
+        scalar_t* k_head_ptr = key + global_token_idx * key_stride + kv_head_idx * head_stride_k;
+        scalar_t* res_k_head_ptr = HAS_RESIDUAL ? (residual_k + global_token_idx * key_stride + kv_head_idx * head_stride_k) : nullptr; 
+
+        using LoadTK = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
+        using LoadTK8 = at::native::memory::aligned_vector<uint8_t, VEC_SIZE>;
+
+        float f_k_low[VEC_SIZE];
+        float f_k_high[VEC_SIZE];
+        uint8_t u8_k_low[VEC_SIZE];
+        uint8_t u8_k_high[VEC_SIZE];
+        scalar_t r_k_low[VEC_SIZE];
+        scalar_t r_k_high[VEC_SIZE];
+        
+        int offset_low = k_lane_in_head * VEC_SIZE;          
+        int offset_high = HALF_ROT + k_lane_in_head * VEC_SIZE; 
+        
+        *(LoadTK*)r_k_low = *(LoadTK*)(k_head_ptr + offset_low);
+        *(LoadTK*)r_k_high = *(LoadTK*)(k_head_ptr + offset_high);
+        
+        T_ACC sum_sq_k = apply_residual_and_calc_sq<T_ACC, scalar_t, VEC_SIZE, HAS_RESIDUAL>(
+            r_k_low, r_k_high, res_k_head_ptr, offset_low, offset_high
+        );
+        
+        sum_sq_k = WarpReduceSum_Local<T_ACC,THEAD_PER_HEAD>(sum_sq_k);
+        T_ACC inv_rms_k = c10::cuda::compat::rsqrt(sum_sq_k / HEAD_SIZE + static_cast<T_ACC>(eps));
+        
+        const scalar_t* cache_ptr_k = my_s_cos_sin; 
+        
+        if constexpr (IS_NEOX) {
+            scalar_t r_cos_low[VEC_SIZE], r_sin_low[VEC_SIZE];
+            scalar_t r_gamma_k_low[VEC_SIZE], r_gamma_k_high[VEC_SIZE];
+
+            *(LoadTK*)r_cos_low = *(LoadTK*)(cache_ptr_k + offset_low);
+            *(LoadTK*)r_sin_low = *(LoadTK*)(cache_ptr_k + rot_dim/2 + offset_low);
+            *(LoadTK*)r_gamma_k_low = *(LoadTK*)(gamma_k + offset_low);
+            *(LoadTK*)r_gamma_k_high = *(LoadTK*)(gamma_k + offset_high);
+
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; ++i) {
+                r_k_low[i] = static_cast<T_ACC>(r_k_low[i]) * inv_rms_k * static_cast<T_ACC>(r_gamma_k_low[i]);
+                r_k_high[i] = static_cast<T_ACC>(r_k_high[i]) * inv_rms_k * static_cast<T_ACC>(r_gamma_k_high[i]);
+                
+                scalar_t k_l = r_k_low[i];
+                scalar_t k_h = r_k_high[i];
+                scalar_t c = r_cos_low[i];
+                scalar_t s = r_sin_low[i];
+                
+                r_k_low[i] = k_l * c - k_h * s;
+                r_k_high[i] = k_l * s + k_h * c;
+            }
+        } else {
+            // Non-NEOX logic
+            using LoadCacheTK = at::native::memory::aligned_vector<scalar_t, VEC_SIZE / 2>;
+            scalar_t r_cos_low[VEC_SIZE / 2], r_sin_low[VEC_SIZE / 2];
+            scalar_t r_cos_high[VEC_SIZE / 2], r_sin_high[VEC_SIZE / 2];
+            int cache_offset_low = offset_low / 2;
+            int cache_offset_high = offset_high / 2;
+            *(LoadCacheTK*)r_cos_low = *(LoadCacheTK*)(cache_ptr_k + cache_offset_low);
+            *(LoadCacheTK*)r_sin_low = *(LoadCacheTK*)(cache_ptr_k + rot_dim/2 + cache_offset_low);
+            *(LoadCacheTK*)r_cos_high = *(LoadCacheTK*)(cache_ptr_k + cache_offset_high);
+            *(LoadCacheTK*)r_sin_high = *(LoadCacheTK*)(cache_ptr_k + rot_dim/2 + cache_offset_high);
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; i+=2) {
+                int c_idx = i / 2;
+                r_k_low[i]   = static_cast<T_ACC>(r_k_low[i]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_low + i]);
+                r_k_low[i+1] = static_cast<T_ACC>(r_k_low[i+1]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_low + i+1]);
+                scalar_t k0 = r_k_low[i]; scalar_t k1 = r_k_low[i+1];
+                scalar_t c = r_cos_low[c_idx]; scalar_t s = r_sin_low[c_idx];
+                r_k_low[i]   = k0 * c - k1 * s;
+                r_k_low[i+1] = k1 * c + k0 * s;
+
+                r_k_high[i]   = static_cast<T_ACC>(r_k_high[i]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_high + i]);
+                r_k_high[i+1] = static_cast<T_ACC>(r_k_high[i+1]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_high + i+1]);
+                scalar_t kh0 = r_k_high[i]; scalar_t kh1 = r_k_high[i+1];
+                scalar_t ch = r_cos_high[c_idx]; scalar_t sh = r_sin_high[c_idx];
+                r_k_high[i]   = kh0 * ch - kh1 * sh;
+                r_k_high[i+1] = kh1 * ch + kh0 * sh;
+            }
+        }
+        *(LoadTK*)(k_head_ptr + offset_low) = *(LoadTK*)r_k_low;
+        *(LoadTK*)(k_head_ptr + offset_high) = *(LoadTK*)r_k_high;
+
+        #pragma unroll
+        for(int i=0; i<VEC_SIZE; ++i) {
+          f_k_low[i] = static_cast<float>(r_k_low[i]);
+          f_k_high[i] = static_cast<float>(r_k_high[i]);
+        }
+        if (cache_fp8_type == 1) {
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f_k_low, u8_k_low);
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f_k_high, u8_k_high);
+        } else {
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f_k_low, u8_k_low);
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f_k_high, u8_k_high);
+        }
+        *(LoadTK8*)(k_rope_out_ptr + offset_low) = *(LoadTK8*)u8_k_low;
+        *(LoadTK8*)(k_rope_out_ptr + offset_high) = *(LoadTK8*)u8_k_high;
+        
+        *(LoadTK8*)(k_buffer_ptr + offset_low) = *(LoadTK8*)u8_k_low;
+        *(LoadTK8*)(k_buffer_ptr + offset_high) = *(LoadTK8*)u8_k_low;
+    } 
+
+    if (lane >= total_threads_needed_kv && lane < total_threads && v != nullptr) {
+        const int v_lane_abs = lane - total_threads_needed_kv;
+        const int v_head_idx = v_lane_abs / THEAD_PER_HEAD;
+        const int v_lane_in_head = v_lane_abs % THEAD_PER_HEAD;
+        uint8_t* v_rope_out_ptr = v_rope_out + global_token_idx * v_stride + v_head_idx * head_stride_k;
+        uint8_t* v_buffer_ptr = v_buffer + loc_id * v_buffer_stride_n + v_head_idx * v_buffer_stride_h + loc_offset;
+
+        scalar_t* v_head_ptr = v + global_token_idx * v_stride + v_head_idx * head_stride_k;
+        using LoadTK = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
+        using LoadTK8 = at::native::memory::aligned_vector<uint8_t, VEC_SIZE>;
+        float f_v_low[VEC_SIZE];
+        float f_v_high[VEC_SIZE];
+        uint8_t u8_v_low[VEC_SIZE];
+        uint8_t u8_v_high[VEC_SIZE];
+        scalar_t r_v_low[VEC_SIZE];
+        scalar_t r_v_high[VEC_SIZE];
+
+        int offset_low = v_lane_in_head * VEC_SIZE;
+        int offset_high = HALF_ROT + v_lane_in_head * VEC_SIZE;
+        *(LoadTK*)r_v_low = *(LoadTK*)(v_head_ptr + offset_low);
+        *(LoadTK*)r_v_high = *(LoadTK*)(v_head_ptr + offset_high);
+
+        #pragma unroll
+        for(int i=0; i<VEC_SIZE; ++i) {
+          f_v_low[i] = static_cast<float>(r_v_low[i]);
+          f_v_high[i] = static_cast<float>(r_v_high[i]);
+        }
+        if (cache_fp8_type == 1) {
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f_v_low, u8_v_low);
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f_v_high, u8_v_high);
+        } else {
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f_v_low, u8_v_low);
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f_v_high, u8_v_high);
+        }
+        
+        *(LoadTK8*)(v_buffer_ptr + offset_low) = *(LoadTK8*)u8_v_low;
+        *(LoadTK8*)(v_buffer_ptr + offset_high) = *(LoadTK8*)u8_v_high;
+
+        #pragma unroll
+        for (int i = 0; i < VEC_SIZE; ++i) {
+          v_buffer_ptr[offset_low * v_buffer_stride_p + i * v_buffer_stride_p] = u8_v_low[i];
+          v_buffer_ptr[offset_high * v_buffer_stride_p + i * v_buffer_stride_p] = u8_v_high[i];
+        }
+    }
+
+}
+template <typename T_ACC, typename scalar_t, int VEC_SIZE, bool HAS_RESIDUAL>
+__device__ __forceinline__ T_ACC apply_residual_and_calc_sq_4vec(
+    scalar_t* v0, scalar_t* v1, scalar_t* v2, scalar_t* v3,
+    scalar_t* res_ptr, int o0, int o1, int o2, int o3) {
+    T_ACC local_sum = 0;
+    #pragma unroll
+    for (int i = 0; i < VEC_SIZE; ++i) {
+        if constexpr (HAS_RESIDUAL) {
+            v0[i] += res_ptr[o0 + i];
+            v1[i] += res_ptr[o1 + i];
+            v2[i] += res_ptr[o2 + i];
+            v3[i] += res_ptr[o3 + i];
+        }
+        local_sum += static_cast<T_ACC>(v0[i]) * static_cast<T_ACC>(v0[i]);
+        local_sum += static_cast<T_ACC>(v1[i]) * static_cast<T_ACC>(v1[i]);
+        local_sum += static_cast<T_ACC>(v2[i]) * static_cast<T_ACC>(v2[i]);
+        local_sum += static_cast<T_ACC>(v3[i]) * static_cast<T_ACC>(v3[i]);
+    }
+    return local_sum;
+}
+template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX, int VEC_SIZE, int THEAD_PER_HEAD>
+__global__ void opt_rms_rope_qwen3_rotDim64(
+    const int64_t* __restrict__ positions,
+    scalar_t* __restrict__ query,      
+    scalar_t* __restrict__ key,      
+    scalar_t* __restrict__ v,      
+    const scalar_t* __restrict__ cos_sin_cache,
+    uint8_t* __restrict__ k_buffer,
+    uint8_t* __restrict__ v_buffer,
+    int64_t* __restrict__ kv_cache_loc,
+    uint8_t* __restrict__ q_rope_out,
+    uint8_t* __restrict__ k_rope_out,
+    uint8_t* __restrict__ v_rope_out,
     int page_size,
-    int q_stride_n,
-    int q_stride_h,
-    int k_stride_n,
-    int k_stride_h,
-    int v_stride_n,
-    int v_stride_h,
+    const int rot_dim,                 
+    const int64_t query_stride,          
+    const int64_t key_stride,            
+    const int64_t v_stride,
+    const int64_t head_stride_q,        
+    const int64_t head_stride_k,     
+    const int k_buffer_stride_n,
+    const int k_buffer_stride_h,
+    const int k_buffer_stride_p,
+    const int v_buffer_stride_n,
+    const int v_buffer_stride_h,
+    const int v_buffer_stride_p,
+    const scalar_t* __restrict__ gamma_q,
+    const scalar_t* __restrict__ gamma_k,
+    scalar_t* __restrict__ residual_q,
+    scalar_t* __restrict__ residual_k,
+    const scalar_t eps,
+    const int num_tokens,
+    const int num_heads,
+    const int num_kv_heads,
+    const int threads_per_token, 
+    const int tokens_per_block,
+    const int cache_fp8_type
+) 
+{
+    extern __shared__ char smem_buffer[];
+    scalar_t* s_cos_sin_base = reinterpret_cast<scalar_t*>(smem_buffer);
+
+    constexpr int HEAD_SIZE = 128;
+    const int tid = threadIdx.x;
+    
+    const int local_token_idx = tid / threads_per_token;
+    const int lane = tid % threads_per_token;
+
+    if (local_token_idx >= tokens_per_block) return;
+
+    const int global_token_idx = blockIdx.x * tokens_per_block + local_token_idx;
+    if (global_token_idx >= num_tokens) return;
+
+   
+    scalar_t* my_s_cos_sin = s_cos_sin_base + local_token_idx * rot_dim;
+    const int64_t pos = positions[global_token_idx];
+
+
+    for (int i = lane; i < rot_dim; i += threads_per_token) {
+        my_s_cos_sin[i] = cos_sin_cache[pos * rot_dim + i];
+    }
+    __syncthreads(); 
+
+    const int q_boundary = num_heads * THEAD_PER_HEAD;
+    const int total_threads_need_kv = (num_heads + num_kv_heads) * THEAD_PER_HEAD;
+    const int total_threads = total_threads_need_kv + (num_kv_heads * THEAD_PER_HEAD);
+    const int cache_loc = kv_cache_loc[global_token_idx];
+    const int loc_id = cache_loc / page_size;
+    const int loc_offset = cache_loc % page_size;
+    if (lane < total_threads_need_kv) {
+        const bool is_query = lane < q_boundary;
+        const int head_idx = is_query ? (lane / THEAD_PER_HEAD) : ((lane - q_boundary) / THEAD_PER_HEAD);
+        const int lane_in_head = is_query ? (lane % THEAD_PER_HEAD) : ((lane - q_boundary) % THEAD_PER_HEAD);
+        
+        uint8_t* rope_out_ptr = is_query ?
+                (q_rope_out + global_token_idx * query_stride + head_idx * head_stride_q) :
+                (k_rope_out + global_token_idx * key_stride + head_idx * head_stride_k);
+
+        scalar_t* head_ptr = is_query ? 
+            (query + global_token_idx * query_stride + head_idx * head_stride_q) :
+            (key + global_token_idx * key_stride + head_idx * head_stride_k);
+        
+        scalar_t* res_head_ptr = HAS_RESIDUAL ? (is_query ? 
+            (residual_q + global_token_idx * query_stride + head_idx * head_stride_q) :
+            (residual_k + global_token_idx * key_stride + head_idx * head_stride_k)) : nullptr;
+
+        const scalar_t* gamma_ptr = is_query ? gamma_q : gamma_k;
+
+        //隔32个load 4个，对齐rope
+        int o0 = lane_in_head * VEC_SIZE; 
+        int o1 = o0 + 32;                 
+        int o2 = o0 + 64;                 
+        int o3 = o0 + 96;                 
+
+        using LoadT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
+        using LoadT8 = at::native::memory::aligned_vector<uint8_t, VEC_SIZE>;
+        scalar_t v0[VEC_SIZE], v1[VEC_SIZE], v2[VEC_SIZE], v3[VEC_SIZE];
+        float f0[VEC_SIZE], f1[VEC_SIZE], f2[VEC_SIZE], f3[VEC_SIZE];
+        uint8_t u8_0[VEC_SIZE], u8_1[VEC_SIZE], u8_2[VEC_SIZE], u8_3[VEC_SIZE];
+
+        *(LoadT*)v0 = *(LoadT*)(head_ptr + o0);
+        *(LoadT*)v1 = *(LoadT*)(head_ptr + o1);
+        *(LoadT*)v2 = *(LoadT*)(head_ptr + o2);
+        *(LoadT*)v3 = *(LoadT*)(head_ptr + o3);
+  
+        T_ACC sum_sq = apply_residual_and_calc_sq_4vec<T_ACC, scalar_t, VEC_SIZE, HAS_RESIDUAL>(
+            v0, v1, v2, v3, res_head_ptr, o0, o1, o2, o3
+        );
+        sum_sq = WarpReduceSum_Local<T_ACC, THEAD_PER_HEAD>(sum_sq);
+        T_ACC inv_rms = c10::cuda::compat::rsqrt(sum_sq / HEAD_SIZE + static_cast<T_ACC>(eps));
+
+        if constexpr (IS_NEOX) {
+            scalar_t r_cos[VEC_SIZE], r_sin[VEC_SIZE];
+            *(LoadT*)r_cos = *(LoadT*)(my_s_cos_sin + o0);
+            *(LoadT*)r_sin = *(LoadT*)(my_s_cos_sin + 32 + o0);
+
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; ++i) {
+                T_ACC s0 = static_cast<T_ACC>(v0[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i]);
+                T_ACC s1 = static_cast<T_ACC>(v1[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i]);
+                T_ACC s2 = static_cast<T_ACC>(v2[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o2 + i]);
+                T_ACC s3 = static_cast<T_ACC>(v3[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o3 + i]);
+
+                v0[i] = s0 * r_cos[i] - s1 * r_sin[i];
+                v1[i] = s0 * r_sin[i] + s1 * r_cos[i];
+                v2[i] = s2;
+                v3[i] = s3;
+            }
+        } else {
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; i+=2) {
+            
+                int idx_c0 = (o0 + i) / 2;
+                int idx_c1 = (o0 + i + 1) / 2;
+                
+                scalar_t cos0 = my_s_cos_sin[idx_c0];
+                scalar_t sin0 = my_s_cos_sin[32 + idx_c0];
+                
+
+                T_ACC s0_0 = static_cast<T_ACC>(v0[i])   * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i]);
+                T_ACC s0_1 = static_cast<T_ACC>(v0[i+1]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i + 1]);
+                
+                v0[i]   = s0_0 * cos0 - s0_1 * sin0;
+                v0[i+1] = s0_1 * cos0 + s0_0 * sin0;
+
+    
+                int idx_c_v1 = (o1 + i) / 2;
+                scalar_t cos1 = my_s_cos_sin[idx_c_v1];
+                scalar_t sin1 = my_s_cos_sin[32 + idx_c_v1];
+
+                T_ACC s1_0 = static_cast<T_ACC>(v1[i])   * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i]);
+                T_ACC s1_1 = static_cast<T_ACC>(v1[i+1]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i + 1]);
+
+                v1[i]   = s1_0 * cos1 - s1_1 * sin1;
+                v1[i+1] = s1_1 * cos1 + s1_0 * sin1;
+            }
+            
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; ++i) {
+                v2[i] = static_cast<T_ACC>(v2[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o2 + i]);
+                v3[i] = static_cast<T_ACC>(v3[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o3 + i]);
+            }
+        }
+        *(LoadT*)(head_ptr + o0) = *(LoadT*)v0;
+        *(LoadT*)(head_ptr + o1) = *(LoadT*)v1;
+        *(LoadT*)(head_ptr + o2) = *(LoadT*)v2;
+        *(LoadT*)(head_ptr + o3) = *(LoadT*)v3;
+
+        #pragma unroll
+        for(int i=0; i<VEC_SIZE; ++i) {
+          f0[i] = static_cast<float>(v0[i]);
+          f1[i] = static_cast<float>(v1[i]);
+          f2[i] = static_cast<float>(v2[i]);
+          f3[i] = static_cast<float>(v3[i]);
+        }
+        if (cache_fp8_type == 1) {
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f0, u8_0);
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f1, u8_1);
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f2, u8_2);
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f3, u8_3);
+        } else {
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f0, u8_0);
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f1, u8_1);
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f2, u8_2);
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f3, u8_3);
+        }
+        *(LoadT8*)(rope_out_ptr + o0) = *(LoadT8*)u8_0;
+        *(LoadT8*)(rope_out_ptr + o1) = *(LoadT8*)u8_1;
+        *(LoadT8*)(rope_out_ptr + o2) = *(LoadT8*)u8_2;
+        *(LoadT8*)(rope_out_ptr + o3) = *(LoadT8*)u8_3;
+
+        if (!is_query) {
+          const int k_buffer_offset = loc_id * k_buffer_stride_n + head_idx * k_buffer_stride_h + loc_offset * k_buffer_stride_p;
+          *(LoadT8*)(k_buffer + k_buffer_offset + o0) = *(LoadT8*)u8_0;
+          *(LoadT8*)(k_buffer + k_buffer_offset + o1) = *(LoadT8*)u8_1;
+          *(LoadT8*)(k_buffer + k_buffer_offset + o2) = *(LoadT8*)u8_2;
+          *(LoadT8*)(k_buffer + k_buffer_offset + o3) = *(LoadT8*)u8_3;
+        }
+    } 
+    if (lane >= total_threads_need_kv && lane < total_threads && v != nullptr) {
+        const int v_lane_abs = lane - total_threads_need_kv;
+        const int head_idx =  (v_lane_abs / THEAD_PER_HEAD);
+        const int lane_in_head = (v_lane_abs % THEAD_PER_HEAD);
+
+        uint8_t* v_rope_out_ptr = v_rope_out + global_token_idx * v_stride + head_idx * head_stride_k;
+        uint8_t* v_buffer_ptr = v_buffer + loc_id * v_buffer_stride_n + head_idx * v_buffer_stride_h + loc_offset;
+
+        scalar_t* v_head_ptr = v + global_token_idx * v_stride + head_idx * head_stride_k;
+        using LoadT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
+        using LoadTK8 = at::native::memory::aligned_vector<uint8_t, VEC_SIZE>;
+        
+        int o0 = lane_in_head * VEC_SIZE; 
+        int o1 = o0 + 32;                 
+        int o2 = o0 + 64;                 
+        int o3 = o0 + 96;      
+
+        scalar_t v0[VEC_SIZE], v1[VEC_SIZE], v2[VEC_SIZE], v3[VEC_SIZE];
+        float f0[VEC_SIZE], f1[VEC_SIZE], f2[VEC_SIZE], f3[VEC_SIZE];
+        uint8_t u8_0[VEC_SIZE], u8_1[VEC_SIZE], u8_2[VEC_SIZE], u8_3[VEC_SIZE];
+
+        *(LoadT*)v0 = *(LoadT*)(v_head_ptr + o0);
+        *(LoadT*)v1 = *(LoadT*)(v_head_ptr + o1);
+        *(LoadT*)v2 = *(LoadT*)(v_head_ptr + o2);
+        *(LoadT*)v3 = *(LoadT*)(v_head_ptr + o3);
+
+        #pragma unroll
+        for(int i=0; i<VEC_SIZE; ++i) {
+          f0[i] = static_cast<float>(v0[i]);
+          f1[i] = static_cast<float>(v1[i]);
+          f2[i] = static_cast<float>(v2[i]);
+          f3[i] = static_cast<float>(v3[i]);
+        }
+        if (cache_fp8_type == 1) {
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f0, u8_0);
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f1, u8_1);
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f2, u8_2);
+          convert_vec_to_uint8_t<VEC_SIZE, 1>(f3, u8_3);
+        } else {
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f0, u8_0);
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f1, u8_1);
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f2, u8_2);
+          convert_vec_to_uint8_t<VEC_SIZE, 0>(f3, u8_3);
+        }
+        *(LoadTK8*)(v_rope_out_ptr + o0) = *(LoadTK8*)u8_0;
+        *(LoadTK8*)(v_rope_out_ptr + o1) = *(LoadTK8*)u8_1;
+        *(LoadTK8*)(v_rope_out_ptr + o2) = *(LoadTK8*)u8_2;
+        *(LoadTK8*)(v_rope_out_ptr + o3) = *(LoadTK8*)u8_3;
+
+        #pragma unroll
+        for(int i=0; i<VEC_SIZE; ++i) {
+          v_buffer_ptr[o0 * v_buffer_stride_p + i * v_buffer_stride_p] = u8_0[i];
+          v_buffer_ptr[o1 * v_buffer_stride_p + i * v_buffer_stride_p] = u8_1[i];
+          v_buffer_ptr[o2 * v_buffer_stride_p + i * v_buffer_stride_p] = u8_2[i];
+          v_buffer_ptr[o3 * v_buffer_stride_p + i * v_buffer_stride_p] = u8_3[i];
+        }
+    }
+}
+
+template <typename T_ACC, typename scalar_t>
+void launch_opt_rms_rope(
+    const int64_t* positions,
+    scalar_t* query,
+    scalar_t* key,
+    scalar_t* v,
+    const scalar_t* cos_sin_cache,
+    uint8_t* k_buffer,
+    uint8_t* v_buffer,
+    int64_t* kv_cache_loc,
+    uint8_t* q_rope_out,
+    uint8_t* k_rope_out,
+    uint8_t* v_rope_out,
+    int page_size,
+    int rot_dim,
+    int64_t query_stride,
+    int64_t key_stride,
+    int64_t v_stride,
+    int64_t head_stride_q,
+    int64_t head_stride_k,
     int k_buffer_stride_n,
     int k_buffer_stride_h,
     int k_buffer_stride_p,
     int v_buffer_stride_n,
     int v_buffer_stride_h,
     int v_buffer_stride_p,
-    bool interleave,
-    float eps
+    scalar_t* gamma_q,
+    scalar_t* gamma_k,
+    scalar_t* residual_q_ptr, 
+    scalar_t* residual_k_ptr,
+    scalar_t eps,
+    int num_tokens,
+    bool is_neox,
+    const int num_heads,
+    const int num_kv_heads,
+    int cache_fp8_type,
+    cudaStream_t stream
 ) {
-    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    // bool has_residual = residual_q.has_value() && residual_k.has_value();
-    bool has_residual = residual_q != nullptr && residual_k != nullptr;
-    DISPATCH_HAS_RESIDUAL(has_residual, HAS_RESIDUAL_CONST, {
-        DISPATCH_INTERLEAVE(interleave, INTERLEAVE_CONST, {
-            DISPATCH_rotary_dim(rotary_dim, ROTARY_DIM_CONST, {
-                DISPATCH_head_dim_v(head_dim_v, HEAD_DIM_V_CONST, {
-                    DISPATCH_head_dim(head_dim, HEAD_DIM_CONST, {
-                constexpr bool IS_EQUAL_HEAD_DIM_ROTARY_DIM = HEAD_DIM_CONST == ROTARY_DIM_CONST;
-                constexpr int bytes_per_vec = 16 / sizeof(scalar_t);
-                constexpr int vec_size_qk = HEAD_DIM_CONST / 64;
-                constexpr uint32_t vec_size = (bytes_per_vec < vec_size_qk) ? bytes_per_vec : vec_size_qk;
-                constexpr int vec_size_v_dim = HEAD_DIM_V_CONST / 64;
-                constexpr uint32_t vec_size_v = (bytes_per_vec < vec_size_v_dim) ? bytes_per_vec : vec_size_v_dim;
 
-                //[TODO] 根据model 中的shape进行config调整
-                constexpr uint32_t NUM_HEAD_V_WARP = 1;
-                constexpr uint32_t NUM_HEAD_K_WARP = 1;
-                constexpr uint32_t NUM_HEAD_Q_WARP = 2;
-                
-                dim3 nblks(bs);
-                dim3 nthrs((NUM_HEAD_V_WARP + NUM_HEAD_Q_WARP + NUM_HEAD_K_WARP) * 64);
+        bool has_residual = (residual_q_ptr != nullptr && residual_k_ptr != nullptr);
 
-                rms_rotary_embedding_kernel_pipeline_with_kv_store<
-                    T_ACC,
-                    scalar_t,
-                    cache_t,
-                    INTERLEAVE_CONST, 
-                    HAS_RESIDUAL_CONST,
-                    NUM_HEAD_V_WARP,
-                    NUM_HEAD_Q_WARP,
-                    NUM_HEAD_K_WARP,
-                    HEAD_DIM_CONST, 
-                    ROTARY_DIM_CONST, 
-                    IS_EQUAL_HEAD_DIM_ROTARY_DIM,
-                    CACHE_T_CONST,
-                    IS_HAVE_K_SCALE,
-                    IS_HAVE_V_SCALE,
-                    vec_size, vec_size_v><<<nblks, nthrs, 0, stream>>>(positions, q, k, v, weight_q, weight_k, residual_q, residual_k, 
-                                    k_buffer, v_buffer, q_rope_out, q_rope_out_stride_n, q_rope_out_stride_h, k_rope_out, k_rope_out_stride_n, k_rope_out_stride_h, v_rope_out, v_rope_out_stride_n, v_rope_out_stride_h,
-                                    kv_cache_loc, cos_sin_cache, k_scale, v_scale, page_size, bs, num_qo_heads, num_kv_heads, 
-                                    q_stride_n, q_stride_h, k_stride_n, k_stride_h, v_stride_n, v_stride_h, 
-                                    k_buffer_stride_n, k_buffer_stride_h, k_buffer_stride_p, v_buffer_stride_n, v_buffer_stride_h, v_buffer_stride_p, eps);
-                    });
+        constexpr int THREAD_PER_ROW = 8;
+        constexpr int VEC = 8;
+        int threads_per_token = (num_heads + num_kv_heads + num_kv_heads) * THREAD_PER_ROW;
+        int target_block_size = 512; 
+        int tokens_per_block = target_block_size / threads_per_token;
+
+        if (tokens_per_block < 1) tokens_per_block = 1;
+        
+        int actual_block_size = tokens_per_block * threads_per_token;
+        int grid_size = (num_tokens + tokens_per_block - 1) / tokens_per_block;
+        if(rot_dim == 128){
+        size_t smem_size = tokens_per_block * 128 * sizeof(scalar_t);
+            DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
+                DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
+                    opt_rms_rope_qwen3<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,VEC,THREAD_PER_ROW>
+                        <<<grid_size, actual_block_size, smem_size, stream>>>(
+                        positions, query, key, v, cos_sin_cache, k_buffer, v_buffer, kv_cache_loc, q_rope_out, k_rope_out, v_rope_out,
+                        page_size, rot_dim, 
+                        query_stride, key_stride, v_stride, head_stride_q, head_stride_k, 
+                        k_buffer_stride_n, k_buffer_stride_h, k_buffer_stride_p,
+                        v_buffer_stride_n, v_buffer_stride_h, v_buffer_stride_p,
+                        gamma_q, gamma_k, 
+                        residual_q_ptr, residual_k_ptr, 
+                        eps, num_tokens, num_heads, num_kv_heads,
+                        threads_per_token, tokens_per_block, cache_fp8_type
+                    );
                 });
             });
-        });
-    });
+        }else if(rot_dim == 64){
+            size_t smem_size = tokens_per_block * 64 * sizeof(scalar_t);
+            DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
+                DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
+                    opt_rms_rope_qwen3_rotDim64<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,4,THREAD_PER_ROW>
+                        <<<grid_size, actual_block_size, smem_size, stream>>>(
+                        positions, query, key, v,cos_sin_cache, k_buffer, v_buffer, kv_cache_loc, q_rope_out, k_rope_out, v_rope_out,
+                        page_size, rot_dim, 
+                        query_stride, key_stride, v_stride, head_stride_q, head_stride_k, 
+                        k_buffer_stride_n, k_buffer_stride_h, k_buffer_stride_p,
+                        v_buffer_stride_n, v_buffer_stride_h, v_buffer_stride_p,
+                        gamma_q, gamma_k, 
+                        residual_q_ptr, residual_k_ptr, 
+                        eps, num_tokens, num_heads, num_kv_heads,
+                        threads_per_token, tokens_per_block, cache_fp8_type
+                    );
+                });
+            });
+        }else{
+            return;
+        }
 }
 
-
-
-void rms_rotary_embedding_fuse_with_kv_store (
-    Tensor& positions,       //[MAX_TOKEN]
-    Tensor& query,  // [B * S, H, D]
-    Tensor& key,    // [B * S, K, D]
-    Tensor& v,      // [B * S, V, D]
-    Tensor& cos_sin_cache,   //[MAX_TOKEN, ROT_DIM]
-    int head_dim,
+void rms_rotary_embedding_fuse_with_kv_store(
+    Tensor& positions, 
+    Tensor& query, 
+    Tensor& key,
+    //////////////
+    Tensor& v,
+    //////////////
+    int64_t head_size,
+    Tensor& cos_sin_cache, 
+    bool is_neox, 
+    Tensor& weight_q, 
+    Tensor& weight_k, 
+    std::optional<Tensor>& residual_q,
+    std::optional<Tensor>& residual_k,
+    ///////////////////////////////////////////////////
+    Tensor& k_buffer,
+    Tensor& v_buffer,
+    Tensor& kv_cache_loc,
+    Tensor& q_rope_out,
+    Tensor& k_rope_out,
+    Tensor& v_rope_out,
     int page_size,
-    Tensor& k_buffer,        //[NUM_BLOCKS, KV_HEAD_NUM, PAGE_SIZE, HEAD_DIM]
-    Tensor& v_buffer,        //[NUM_BLOCKS, KV_HEAD_NUM,  HEAD_DIM, PAGE_SIZE]
-    Tensor& kv_cache_loc,    //[B * S]
-    bool interleave,
-    Tensor& weight_q,         //[HEAD_DIM]
-    Tensor& weight_k,         //[HEAD_DIM]
-    torch::Dtype output_dtype,
-    std::optional<Tensor>& residual_q,       //[B*S, H, D]
-    std::optional<Tensor>& residual_k,       //[B*S, K, D]
-    std::optional<float>& k_scale,
-    std::optional<float>& v_scale,
-    std::optional<Tensor>& q_rope_out,       //[B*S, H, D] fp8 时必传，存 q 的 fp8 结果 (uint8)
-    std::optional<Tensor>& k_rope_out,       //[B*S, K, D] fp8 时必传，存 k 的 fp8 结果 (uint8)
-    std::optional<Tensor>& v_rope_out,       //[B*S, V, D] fp8 时必传，存 v 的 fp8 结果 (uint8)
-    float epsilon) {
-        // TORCH_CHECK(query.dim() == 3 || query.dim() == 4, "query must have shape [B * S, H, D] or [B, S, H, D]");
-        // TORCH_CHECK(key.dim() == 3 || key.dim() == 4, "key must have shape [B * S, K, D] or [B, S, K, D]");
-        // TORCH_CHECK(v.dim() == 3 || v.dim() == 4, "v must have shape [B * S, V, D] or [B, S, V, D]");
-        TORCH_CHECK(cos_sin_cache.dim() == 2, "cos_sin_cache must have shape [MAX_TOKEN, ROT_DIM]");
-        TORCH_CHECK(positions.dim() == 1 || positions.dim() == 2 , "positions must have shape [NUM_TOKENS] || [B, S]");
-        TORCH_CHECK(k_buffer.dim() == 4, "k_buffer must have shape [NUM_BLOCKS, KV_HEAD_NUM, PAGE_SIZE, HEAD_DIM]");
-        TORCH_CHECK(v_buffer.dim() == 4, "v_buffer must have shape [NUM_BLOCKS, KV_HEAD_NUM, PAGE_SIZE, HEAD_DIM]");
-        TORCH_CHECK(kv_cache_loc.dim() == 1, "kv_cache_loc must have shape [MAX_TOKEN]");
-        if (v_buffer.scalar_type() == at::ScalarType::Byte || v_buffer.scalar_type() == at::ScalarType::Float8_e4m3fn || v_buffer.scalar_type() == at::ScalarType::Float8_e5m2) {
-            TORCH_CHECK(q_rope_out.has_value() && q_rope_out->defined(),
-                "q_rope_out must be provided when v_buffer is fp8 (uint8)");
-        }
-        //TORCH_CHECK(key.shape[-1] == v.shape[-1], "key and v head_dim must have the same shape");
-        int64_t bs = positions.numel();   // [B * S]
-        int head_dim_v = v_buffer.size(-2);
-        int query_hidden_size = query.numel() / bs;  // (HEADQ * HEAD_DIM)
-        int key_hidden_size = key.numel() / bs;     // (HEADK * HEAD_DIM)
+    /////////////////////////////////////////////////
+    double epsilon,
+    bool use_fp8_e4m3) {
 
-        size_t k_buffer_stride_n = k_buffer.stride(0);
-        size_t k_buffer_stride_h = k_buffer.stride(1);
-        size_t k_buffer_stride_p = k_buffer.stride(2);
-        size_t v_buffer_stride_n = v_buffer.stride(0);
-        size_t v_buffer_stride_h = v_buffer.stride(1);
-        size_t v_buffer_stride_p = v_buffer.stride(2);
-        // printf("v_buffer_stride_n: %zu, v_buffer_stride_h: %zu, v_buffer_stride_p: %zu\n", v_buffer_stride_n, v_buffer_stride_h, v_buffer_stride_p);
-        // printf("head_dim_v: %d", head_dim_v);
-        
-        unsigned int rotary_dim = cos_sin_cache.size(1);
-        unsigned int num_qo_heads = query_hidden_size / head_dim;  
-        unsigned int num_kv_heads = key_hidden_size / head_dim;
+  const double eps_val = epsilon;
+  int64_t num_tokens = positions.numel();
+  int positions_ndim = positions.dim();
+  TORCH_CHECK(positions_ndim == 1 || positions_ndim == 2,
+              "positions must have shape [num_tokens] or [batch_size, seq_len]");
+  std::cout << "v.dim(): " << v.dim() << std::endl;
+  std::cout << "key.dim(): " << key.dim() << std::endl;
+  std::cout << "query.dim(): " << query.dim() << std::endl;
+  TORCH_CHECK(v.dim() == key.dim() && v.dim() == query.dim(), "v, key and query must have the same shape");
+  TORCH_CHECK(v_buffer.size(-2) == head_size, "v must have the same head_size as query and key");
+  if (positions_ndim == 1) {
+    TORCH_CHECK(query.size(0) == positions.size(0) && (key.size(0) == positions.size(0)),
+                "query, key and positions must have the same number of tokens");
+  } else {
+    TORCH_CHECK(query.size(0) == positions.size(0) && (key.size(0) == positions.size(0)) &&
+                query.size(1) == positions.size(1) && (key.size(1) == positions.size(1)),
+                "query, key and positions must have the same batch_size and seq_len");
+  }
+  int query_hidden_size = query.numel() / num_tokens;
+  int key_hidden_size = key.numel() / num_tokens;
 
-        size_t v_stride_n = head_dim_v * num_kv_heads;
-        size_t v_stride_h = head_dim_v;
-        size_t q_stride_n = head_dim * num_qo_heads;
-        size_t q_stride_h = head_dim;
-        size_t k_stride_n = head_dim * num_kv_heads;
-        size_t k_stride_h = head_dim;
+  TORCH_CHECK(query_hidden_size % head_size == 0);
+  TORCH_CHECK(key_hidden_size % head_size == 0);
 
-        // printf("bs: %d, num_qo_heads: %d, num_kv_heads: %d, head_dim: %d, rotary_dim: %d, head_dim_v: %d, page_size: %d, q_stride_n: %zu, q_stride_h: %zu, k_stride_n: %zu, k_stride_h: %zu, v_stride_n: %zu, v_stride_h: %zu, k_buffer_stride_n: %zu, k_buffer_stride_h: %zu, k_buffer_stride_p: %zu, v_buffer_stride_n: %zu, v_buffer_stride_h: %zu, v_buffer_stride_p: %zu\n", 
-        //     bs, num_qo_heads, num_kv_heads, head_dim, rotary_dim, head_dim_v, page_size, q_stride_n, q_stride_h, k_stride_n, k_stride_h, v_stride_n, v_stride_h, k_buffer_stride_n, k_buffer_stride_h, k_buffer_stride_p, v_buffer_stride_n, v_buffer_stride_h, v_buffer_stride_p);
-        // constexpr bool CACHE_T_CONST = 1;
-        DISPATCH_DTYPE_SET(v_buffer.scalar_type(), CACHE_T_CONST, {
-          AT_DISPATCH_FLOATING_TYPES_AND2(
-            at::ScalarType::Half,
-            at::ScalarType::BFloat16,
-            query.scalar_type(), "", [&] {
-                using T_ACC = at::acc_type<scalar_t, true>; // float;
-                using cache_t = std::conditional_t<CACHE_T_CONST, uint8_t, scalar_t>;
-                cache_t* q_rope_out_ptr = CACHE_T_CONST ? reinterpret_cast<cache_t*>(q_rope_out->data_ptr()) : nullptr;
-                size_t q_rope_out_sn = CACHE_T_CONST ?  (head_dim * num_qo_heads) : 0;
-                size_t q_rope_out_sh = CACHE_T_CONST ? head_dim : 0;
-                cache_t* k_rope_out_ptr = CACHE_T_CONST ? reinterpret_cast<cache_t*>(k_rope_out->data_ptr()) : nullptr;
-                size_t k_rope_out_sn = CACHE_T_CONST ?  (head_dim * num_kv_heads) : 0;
-                size_t k_rope_out_sh = CACHE_T_CONST ? head_dim : 0;
-                cache_t* v_rope_out_ptr = CACHE_T_CONST ? reinterpret_cast<cache_t*>(v_rope_out->data_ptr()) : nullptr;
-                size_t v_rope_out_sn = CACHE_T_CONST ? head_dim_v * num_kv_heads : 0;
-                size_t v_rope_out_sh = CACHE_T_CONST ? head_dim_v : 0;
-                FuseRmsRopeWithKvStore<T_ACC, scalar_t, cache_t, CACHE_T_CONST, false, false>(
+  int num_heads = query_hidden_size / head_size;
+  int num_kv_heads = key_hidden_size / head_size;
+  TORCH_CHECK(num_heads % num_kv_heads == 0);
+
+  int rot_dim = cos_sin_cache.size(1);
+  TORCH_CHECK(rot_dim <= 512);
+  
+  int seq_dim_idx = positions_ndim - 1;
+  int64_t query_stride = query.stride(seq_dim_idx);
+  int64_t key_stride = key.stride(seq_dim_idx);
+  int query_ndim = query.dim();
+  int64_t head_stride = (query_ndim == positions_ndim + 2) ? query.stride(-2) : head_size;
+      
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(query));
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+  bool has_residual = residual_q.has_value() && residual_k.has_value();
+  int qk_ratio = num_heads / num_kv_heads;
+  bool is_allign_qk = (num_heads % num_kv_heads == 0) && (num_heads >= 1);
+
+  /////////////////////////////////////////////////////////
+  int k_buffer_stride_n = k_buffer.stride(0);
+  int k_buffer_stride_h = k_buffer.stride(1);
+  int k_buffer_stride_p = k_buffer.stride(2);
+  int v_buffer_stride_n = v_buffer.stride(0);
+  int v_buffer_stride_h = v_buffer.stride(1);
+  int v_buffer_stride_p = v_buffer.stride(2);
+  
+  int v_stride = v.stride(seq_dim_idx);
+  /////////////////////////////////////////////////////////
+
+  auto* pos_ptr = positions.data_ptr<int64_t>(); 
+  bool qwen3 =  (head_size == 128 && (num_heads + num_kv_heads) <= 128 && (rot_dim == 128 ||  rot_dim == 64));
+  int cache_fp8_type = use_fp8_e4m3 ? 1 : 0;
+
+  AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16, 
+      query.scalar_type(), "fuse_rms_rotary_embedding", [&] {
+        using T_ACC = at::acc_type<scalar_t, true>;
+        //qwne3 opt
+         if (qwen3) {
+                scalar_t* res_q_ptr = residual_q.has_value() ? residual_q->data_ptr<scalar_t>() : nullptr;
+                scalar_t* res_k_ptr = residual_k.has_value() ? residual_k->data_ptr<scalar_t>() : nullptr;
+                launch_opt_rms_rope<T_ACC, scalar_t>(
+                    positions.data_ptr<int64_t>(),
                     query.data_ptr<scalar_t>(),
                     key.data_ptr<scalar_t>(),
                     v.data_ptr<scalar_t>(),
-                    reinterpret_cast<cache_t*>(k_buffer.data_ptr()),
-                    reinterpret_cast<cache_t*>(v_buffer.data_ptr()),
-                    q_rope_out_ptr,
-                    q_rope_out_sn,
-                    q_rope_out_sh,
-                    k_rope_out_ptr,
-                    k_rope_out_sn,
-                    k_rope_out_sh,
-                    v_rope_out_ptr,
-                    v_rope_out_sn,
-                    v_rope_out_sh,
                     cos_sin_cache.data_ptr<scalar_t>(),
-                    positions.data_ptr<int64_t>(),
+                    reinterpret_cast<uint8_t*>(k_buffer.data_ptr()),
+                    reinterpret_cast<uint8_t*>(v_buffer.data_ptr()),
                     kv_cache_loc.data_ptr<int64_t>(),
-                    weight_q.data_ptr<scalar_t>(),
-                    weight_k.data_ptr<scalar_t>(),
-                    residual_q.has_value() ? residual_q->data_ptr<scalar_t>() : nullptr,
-                    residual_k.has_value() ? residual_k->data_ptr<scalar_t>() : nullptr,
-                    k_scale.has_value() ? k_scale.value() : 1.0,
-                    v_scale.has_value() ? v_scale.value() : 1.0,
-                    bs, 
-                    num_qo_heads,
-                    num_kv_heads,
-                    rotary_dim,
-                    head_dim,
-                    head_dim_v,
+                    reinterpret_cast<uint8_t*>(q_rope_out.data_ptr()),
+                    reinterpret_cast<uint8_t*>(k_rope_out.data_ptr()),
+                    reinterpret_cast<uint8_t*>(v_rope_out.data_ptr()),
                     page_size,
-                    q_stride_n,
-                    q_stride_h,
-                    k_stride_n,
-                    k_stride_h,
-                    v_stride_n,
-                    v_stride_h,
+                    rot_dim,
+                    query_stride,
+                    key_stride,
+                    v_stride,
+                    head_stride,
+                    head_stride,
                     k_buffer_stride_n,
                     k_buffer_stride_h,
                     k_buffer_stride_p,
                     v_buffer_stride_n,
                     v_buffer_stride_h,
                     v_buffer_stride_p,
-                    interleave,
-                    epsilon
+                    weight_q.data_ptr<scalar_t>(),
+                    weight_k.data_ptr<scalar_t>(),
+                    res_q_ptr,
+                    res_k_ptr,
+                    static_cast<scalar_t>(eps_val),
+                    (int)num_tokens,
+                    is_neox,
+                    num_heads,
+                    num_kv_heads,
+                    cache_fp8_type,
+                    stream
                 );
-        });
-      });
-    }
-
+                return;
+        } else {
+          printf("not supported  and head_size must = 128, rot_dim must = 128 or 64\n");
+          return;
+        }
+  });
+}
 }
 }
