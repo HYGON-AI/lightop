@@ -65,12 +65,26 @@ struct half4x16 {
             return __VA_ARGS__();              \
         }                                      \
     }()
+template <bool is_half = true>
+inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& reg_b, floatx4& reg_c) {
+#if defined(__gfx936__) || defined(__gfx928__)
+    if constexpr (is_half)
+        reg_c = __builtin_amdgcn_mmac_f32_16x16x16f16(reg_a, reg_b, reg_c);
+    else
+        reg_c = __builtin_amdgcn_mmac_f32_16x16x16bf16(*(v4bh*)&reg_a, *(v4bh*)&reg_b, reg_c);
 
+#elif defined(__gfx938__)
+    if constexpr (is_half)
+        reg_c = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(reg_a, reg_b, reg_c, false, false); 
+    else
+        reg_c = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(*(v4bh*)&reg_a, *(v4bh*)&reg_b, reg_c, false, false);
+#endif
+}
 template <uint32_t kNextN, uint32_t kNumWarps>
 __global__ __launch_bounds__(kNumWarps * 64, 1) void clean_logits(
     const uint32_t seq_len,
     const uint32_t seq_len_kv,
-    const uint64_t stride_kv,
+    const uint32_t stride_kv,
     const uint32_t* cu_seq_len_k_start,
     const uint32_t* cu_seq_len_k_end,
     float* logits) {
@@ -111,11 +125,11 @@ __global__ __launch_bounds__(kNumWarps * 64, 1) void clean_logits(
     }
 }
 
-template <uint32_t kNextN, uint32_t kNumWarps>
+template <uint32_t kNumWarps>
 __global__ __launch_bounds__(kNumWarps * 64, 1) void clean_logits_padding(
     const uint32_t seq_len,
     const uint32_t seq_len_kv,
-    const uint64_t stride_kv,
+    const uint32_t stride_kv,
     const uint32_t* cu_seq_len_k_start,
     const uint32_t* cu_seq_len_k_end,
     float* logits,
@@ -126,12 +140,14 @@ __global__ __launch_bounds__(kNumWarps * 64, 1) void clean_logits_padding(
     const uint32_t tid = threadIdx.x;
     for (uint32_t i = blockIdx.x; i < seq_len_padding; i += gridDim.x) {
 
-        const uint32_t row_group = i / kNextN;
+        const uint32_t row_group = i;
         const bool is_over_boundry = row_group >= seq_len;
-        const uint32_t ks = is_over_boundry ? 0 : cu_seq_len_k_start[row_group];
-        // 越界从0-seq_len_kv
-        const uint32_t ke = is_over_boundry ? 0 : (cu_seq_len_k_end[row_group] - kNextN + (i % kNextN) + 1);
+        uint32_t ks = is_over_boundry ? 0 : cu_seq_len_k_start[row_group];
+        const uint32_t ke = is_over_boundry ? 0  : cu_seq_len_k_end[row_group];
         const uint64_t row_base_addr = i * stride_kv;
+        if (ks > seq_len_kv) {
+            ks = seq_len_kv;
+        }
 
         for (uint32_t j = tid; j < ks; j += num_threads_per_block) {
             logits[row_base_addr + j] = neg_inf;
@@ -165,17 +181,6 @@ __global__ __launch_bounds__(kNumWarps * 64, 1) void clean_logits_padding(
         }
     }
 }
-
-template <bool is_half = true>
-inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& reg_b, floatx4& reg_c) {
-#if defined(__gfx936__) || defined(__gfx928__)
-    if constexpr (is_half)
-        reg_c = __builtin_amdgcn_mmac_f32_16x16x16f16(reg_a, reg_b, reg_c);
-    else
-        reg_c = __builtin_amdgcn_mmac_f32_16x16x16bf16(*(v4bh*)&reg_a, *(v4bh*)&reg_b, reg_c);
-#endif
-}
-
 template<typename scalar_t, bool is_align_n>
 inline __device__ void
 loadtileB2reg(half4x8 &B_reg, scalar_t *B_data, const int row, const int col, const int head_dim, const int max_rows) {
@@ -1167,7 +1172,7 @@ torch::Tensor mqa_logits(
         const int q_seq_len_aligned = (q_seq_len + 127) / 128 * 128;
         const int kv_seq_len_aligned = (kv_seq_len + 127) / 128 * 128;
         torch::Tensor D = torch::empty({q_seq_len_aligned, kv_seq_len_aligned}, options);
-
+        
         _mqa_logits_128x128x32_TN_impl(
             reinterpret_cast<half_t*>(K.data_ptr()),
             reinterpret_cast<half_t*>(Q.data_ptr()),
@@ -1178,7 +1183,7 @@ torch::Tensor mqa_logits(
             q_seq_len, kv_seq_len, q_seq_len_aligned, kv_seq_len_aligned, num_heads,
             head_dim, use_fp16);
         if (true) {
-            clean_logits_padding<1, 4><<<DIV(M, 4), 256>>>(
+            clean_logits_padding<4><<<DIV(M, 4), 256>>>(
                 q_seq_len, kv_seq_len_aligned, kv_seq_len_aligned,
                 reinterpret_cast<uint32_t*>(KS.data_ptr()),
                 reinterpret_cast<uint32_t*>(KE.data_ptr()),
@@ -1227,7 +1232,6 @@ torch::Tensor mqa_logits(
                             kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, NumHeads, 128, 16, 128, 128, true, false>;
                             launch_kernel(kernel_ptr, numBlock, threadsPerBlock,d_ptr);
                         }
-    
                     } else {
                         if (is_align_n) {
                             kernel_t kernel_ptr = _mqa_logits_16x128x128_TN_impl<scalar_t, NumHeads, 128, 16, 128, 128, false, true>;
