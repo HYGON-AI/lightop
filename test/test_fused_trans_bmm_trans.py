@@ -783,8 +783,10 @@ def run_trans_bmm_trans_tuning():
     # batch_list=[32,]
     ##deepseek-671b-tp8
     n_list=[16,32,64,128]
+    # bmm1
     # p_list=[128,128,128,128]
     # l_list=[512,512,512,512]
+    # bmm2
     p_list=[512,512,512,512]
     l_list=[128,128,128,128]
     
@@ -802,12 +804,12 @@ def run_trans_bmm_trans_tuning():
     gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
     cu_number = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 
-    # mode_ranges = [i for i in range(len(blockM_configs))]
-    # mode_ranges = [mode for mode in blockM_configs.keys()]
     # mode_ranges = [0,1,2,3,4,5,6,7,8,9]
     # mode_ranges = [10,11,12,13,14,15,16,17,18,19]
-    # mode_ranges = [0,1,2,3,4,10,11,12,13,14,50,51,52,53,54,60,61,62,63,64]
     
+    # bmm1
+    # mode_ranges = [0,1,2,3,4,10,11,12,13,14,50,51,52,53,54,60,61,62,63,64]
+    # bmm2
     mode_ranges = [0,1,3,10,11,13,50,51,53,60,61,63]
     
     for i in range(0,len(p_list),1):
@@ -862,6 +864,7 @@ def run_trans_bmm_trans_vaild():
     # batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
     batch_list=[32,]
     ##deepseek-671b-tp8
+    # bmm1
     # n_list=[16,]
     # p_list=[128,]
     # l_list=[512,]
@@ -878,9 +881,22 @@ def run_trans_bmm_trans_vaild():
     # p_list=[128]
     # l_list=[512]
 
+    # bmm2
     n_list=[16,]
     p_list=[512,]
     l_list=[128,]
+    
+    # n_list=[32,]
+    # p_list=[512,]
+    # l_list=[128,]
+    
+    # n_list=[64,]
+    # p_list=[512,]
+    # l_list=[128,]
+    
+    # n_list=[128]
+    # p_list=[512]
+    # l_list=[128]
     
     in_dtype=torch.float8_e4m3fn
     out_dtype = torch.bfloat16
@@ -921,8 +937,10 @@ def run_benchmark_trans_bmm_trans():
     
     ##deepseek-671b-tp8
     n_list=[16,32,64,128]
+    # bmm1
     # p_list=[128,128,128,128]
     # l_list=[512,512,512,512]
+    # bmm2
     p_list=[512,512,512,512]
     l_list=[128,128,128,128]
     
