@@ -388,7 +388,7 @@ void _moe_marlin_w8a8_fp8_TN_impl(
     first_stage = false;
   }
 
-  int num_pad = num_tokens_post_pad[0].item<int>();
+  //int num_pad = num_tokens_post_pad[0].item<int>();
   int sorted_token_lens = sorted_token_ids.size(0);
 
   /* grid sizes */
@@ -402,7 +402,8 @@ void _moe_marlin_w8a8_fp8_TN_impl(
   size_t globalWorkSize[3] = {1, 1, 1};
   globalWorkSize[0] = DIVIDE(size_n, BLOCKN);;
   globalWorkSize[1] = 1;
-  globalWorkSize[2] = std::min(DIVIDE(sorted_token_lens, BLOCKM), DIVIDE(num_pad, BLOCKM));
+  //globalWorkSize[2] = std::min(DIVIDE(sorted_token_lens, BLOCKM), DIVIDE(num_pad, BLOCKM));
+  globalWorkSize[2] = DIVIDE(sorted_token_lens, BLOCKM);
 
   HipFunctionFP8Args<OutputType> hipFunctionArgs;
   hipFunctionArgs.numWorkGroups0 = globalWorkSize[0];
