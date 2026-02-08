@@ -1606,9 +1606,7 @@ void rms_rotary_embedding_fuse_with_kv_store(
   int positions_ndim = positions.dim();
   TORCH_CHECK(positions_ndim == 1 || positions_ndim == 2,
               "positions must have shape [num_tokens] or [batch_size, seq_len]");
-  std::cout << "v.dim(): " << v.dim() << std::endl;
-  std::cout << "key.dim(): " << key.dim() << std::endl;
-  std::cout << "query.dim(): " << query.dim() << std::endl;
+
   TORCH_CHECK(v.dim() == key.dim() && v.dim() == query.dim(), "v, key and query must have the same shape");
   TORCH_CHECK(v_buffer.size(-2) == head_size, "v must have the same head_size as query and key");
   if (positions_ndim == 1) {
