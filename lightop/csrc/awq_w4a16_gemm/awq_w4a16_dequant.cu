@@ -76,7 +76,7 @@ void gemm_awq_w4a16_dequant(Tensor& ret, const Tensor& weight,const Tensor& scal
     const int NumBlocks = (N+NumWarps-1)/NumWarps;
     auto out_dtype = ret.scalar_type();
     Output_Type_SWITCH(out_dtype,[&] {
-        awq_w4a16_dequant_marlin_kernel<scalar_t><<<NumBlocks, NumWarps*C10_WARP_SIZE>>>((scalar_t*)ret.data_ptr(),
+        awq_w4a16_dequant_marlin_kernel<scalar_t><<<NumBlocks, NumWarps*C10_WARP_SIZE, 0, stream>>>((scalar_t*)ret.data_ptr(),
         (int32_t*)weight.data_ptr(),(int32_t*)scales_zeros.data_ptr(),N,K,MarlinTileK,G);
     });
 }
