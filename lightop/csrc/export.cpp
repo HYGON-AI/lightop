@@ -82,6 +82,8 @@ Tensor mean_opt(const Tensor& x,int dim);
 std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k,int dim,bool sorted);
 Tensor gemm_opt(const Tensor& x,const Tensor& y);
 Tensor gemm_w4_a16(const Tensor& x,const Tensor& y,const Tensor& scale_m,const Tensor& zero_m);
+void gemm_awq_w4a16(Tensor& ret,const Tensor& x,const Tensor& y,const Tensor& scales_zeros,int num_n_warps, int num_k_warps, int n_per_warp,int k_per_warp,int splitk,bool use_marlin);
+void gemm_awq_w4a16_dequant(Tensor& ret,const Tensor& weight,const Tensor& scales_zeros,bool use_marlin);
 Tensor w4_to_w16(const Tensor& x,const Tensor& scale_m,const Tensor& zero_m);
 Tensor gemm_w8_a16_fp8_colmajor(const Tensor& x,const Tensor& y,const Tensor& scale,int warps,int n_per_block,int splitk);
 void fp8to16(Tensor &ret, const Tensor &x,const Tensor& scale);
@@ -348,6 +350,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("topk_opt", &at::native::topk_opt, "topk_opt");
   m.def("gemm_opt", &at::native::gemm_opt, "gemm_opt");
   m.def("gemm_w4_a16", &at::native::gemm_w4_a16, "gemm_w4_a16");
+  m.def("gemm_awq_w4a16", &at::native::gemm_awq_w4a16, "gemm_awq_w4a16");
+  m.def("gemm_awq_w4a16_dequant", &at::native::gemm_awq_w4a16_dequant, "gemm_awq_w4a16_dequant");
   m.def("w4_to_w16", &at::native::w4_to_w16, "w4_to_w16");
   m.def("gemm_w8_a16_fp8_colmajor", &at::native::gemm_w8_a16_fp8_colmajor, "gemm_w8_a16_fp8_colmajor");
   m.def("fp8to16", &at::native::fp8to16, "fp8to16");

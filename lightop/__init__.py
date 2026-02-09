@@ -48,6 +48,7 @@ from .gemmopt import gemm, gemm_w4a16, w4tow16,gemm_w8a16_fp8,fp8_to_16,moe_gemm
       gemm_w8a8_xgrad_asm, moe_gemm_w4a8, moe_gemm_marlin_w4a8, groupgemm, moe_groupgemm_w4a8, moe_groupgemm_marlin_w4a8, awq_marlin_repack_w4a8, m_grouped_w4a8_gemm_nt_masked, grougemm_w8a8_pertensor_asm, m_grouped_w8a8_gemm_nt_masked, \
       m_grouped_w8a8_gemm_nt_contig_asm, mqa_logits,moe_gemm_marlin_w16a16,moe_gemm_w16a16,m_grouped_bf16_gemm_nt_masked,m_grouped_w16a16_gemm_nt_contig_asm,m_grouped_w8a8_gemm_nt_nopad_contig_asm, \
       grougemm_bf16_fp16, m_grouped_fp8_gemm_nt_masked, fused_bmm
+from .gemmopt import gemm_awq_w4a16_marlin, gemm_awq_w4a16_marlin_dequant, awq_gemm_marlin_weight_repack
 from .moe_fused_gate import moe_fused_gate
 from .fuse_silu_mul_quant import fuse_silu_mul_quant, fuse_silu_mul_quant_ep, fuse_silu_and_mul, fuse_silu_mul_fp8_quant, fuse_silu_mul_fp8_quant_ep
 from .ds_cat import ds_cat
