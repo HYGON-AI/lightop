@@ -7,6 +7,7 @@ import os
 import math
 from .config_smooth_gemm import gemm_w8a8_smooth_config
 from .config_deepgemm import gemm_w8a8_deepgemm_masked_config
+from .config import get_awq_w4a16_gemm_marlin_config
 
 
 @functools.lru_cache(maxsize=128)
@@ -872,3 +873,63 @@ def fuse_rmsnorm_rope_quant_qkv(positions, q_c, q_pe, q_quant, q_scale, k_pe, kv
         weight, cos_sin_cache, slot_mapping, kv_cache,
         kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon
     )
+
+import torch.nn.functional as F
+def gemm_awq_w4a16_marlin(a, b, scales_zeros):
+    # assert use_marlin is True, "暂时只支持marlin版"
+    M = a.shape[0]
+    N = scales_zeros.shape[0]
+    K = a.shape[1]
+    G = K // scales_zeros.shape[1]
+    MarlinTileK = 256 if K % 256 == 0 else 128
+    assert N == b.shape[1]/(MarlinTileK/8), "Marlin权重shape异常"
+    assert a.dtype == torch.float16, "输入tensor必须是float16"
+    assert K%256 == 0 or K%128 == 0, "K必须是256或128的倍数"
+    ret = torch.empty((M, N), device=a.device, dtype=a.dtype)
+    use_marlin = True
+    if M <=16:
+        config = get_awq_w4a16_gemm_marlin_config(M,N,K)
+        assert config is not None, f"Unsupported shape: M={M}, N={N}, K={K}"
+        num_n_warps, num_k_warps, n_per_warp, k_per_warp, splitk = config
+        # import pdb; pdb.set_trace()
+        op.gemm_awq_w4a16(ret, a, b, scales_zeros, num_n_warps, num_k_warps, n_per_warp, k_per_warp, splitk, use_marlin)
+    elif M <= 64:
+        config = get_awq_w4a16_gemm_marlin_config(16,N,K)
+        assert config is not None, f"Unsupported shape: M={M}, N={N}, K={K}"
+        num_n_warps, num_k_warps, n_per_warp, k_per_warp, splitk = config
+        for start_idx in range(0, M, 16):
+            end_idx = min(start_idx + 16, M)
+            op.gemm_awq_w4a16(ret[start_idx:end_idx], a[start_idx:end_idx], b, scales_zeros, num_n_warps, num_k_warps, n_per_warp, k_per_warp, splitk, use_marlin)
+    else:
+        weight_dequant_fp16 = torch.empty((N, K), device=a.device, dtype=torch.float16)
+        op.gemm_awq_w4a16_dequant(weight_dequant_fp16, b, scales_zeros, use_marlin)
+        ret = F.linear(a,weight_dequant_fp16)
+    return ret
+
+
+def gemm_awq_w4a16_marlin_dequant(ret, weight, scales_zeros, use_marlin):
+    assert use_marlin is True, "暂时只支持marlin版"
+    op.gemm_awq_w4a16_dequant(ret, weight, scales_zeros, use_marlin)
+    return ret
+
+
+def awq_gemm_marlin_weight_repack(weight_trans, N, K):
+    if K % 256 == 0:
+        marlin_tile_k = 256
+        weight_marlin = weight_trans.T
+        K_quant = K//8
+        K_tile = marlin_tile_k // 8
+        weight_marlin = weight_marlin.reshape(K_quant // K_tile, K_tile, N)
+        weight_marlin = weight_marlin.transpose(1, 2)
+        weight_marlin = weight_marlin.reshape(K_quant//K_tile, N*K_tile)
+    elif K % 128 == 0:
+        marlin_tile_k = 128
+        weight_marlin = weight_trans.T
+        K_quant = K//8
+        K_tile = marlin_tile_k // 8
+        weight_marlin = weight_marlin.reshape(K_quant // K_tile, K_tile, N)
+        weight_marlin = weight_marlin.transpose(1, 2)
+        weight_marlin = weight_marlin.reshape(K_quant//K_tile, N*K_tile)
+    else:
+        raise ValueError(f"K {K} not supported")
+    return weight_marlin
