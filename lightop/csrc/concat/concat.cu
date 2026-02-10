@@ -424,6 +424,43 @@ torch::Tensor ds_concat(
           }
         }
       }
+      else if (input_A.scalar_type() == at::ScalarType::Half){
+        GemmParams<half> params_in(
+          (half*)input_A.data_ptr(), 
+          (half*)input_B.data_ptr(), 
+          (half*)output.data_ptr(),
+          M,
+          N,
+          a_section_num,
+          b_section_num,
+          c_section_num,
+          stride_am,
+          stride_an,
+          stride_ak,
+          stride_bm,
+          stride_bn,
+          stride_bk
+        );
+        if(M < 1024){
+          auto it = kernel_maps_decode_half.find(mode);
+          if (it != kernel_maps_decode_half.end()) {
+            it->second(params_in);
+          } 
+          else {
+              printf("No matching kernel configuration found, using default settings \n");
+              launch_concat_decode<4, 8, 1024, 4, half>(params_in);
+          }
+        }else{ 
+          auto it = kernel_maps_prefill_half.find(mode);
+          if (it != kernel_maps_prefill_half.end()) {
+            it->second(params_in);
+          } 
+          else {
+              printf("No matching kernel configuration found, using default settings \n");
+              launch_concat_prefill<16, 8, 1024, 1, half>(params_in);
+          }
+        }        
+      }
       else{
         GemmParams<uint8_t> params_in(
           (uint8_t*)input_A.data_ptr(), 
