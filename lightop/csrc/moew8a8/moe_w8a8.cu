@@ -928,13 +928,23 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
   auto g_qweight = qweight + qweight_offset;
   auto g_weight_scale = weight_scale + weight_scale_offset; // 配置weight的scale信息 todo 这里n_loop=0没有计算偏移
   intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; // [4][2]  每个warp在n方向重复两次 tileN = 16*2
-  float *a_scale_ptr_arr[WARP_M / mfma_m];
+  float a_scale_ptr_arr[WARP_M / mfma_m];
+  //float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id*WARP_N;
+  int token_offset[WARP_M / mfma_m];
   float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id*WARP_N;
+  float b_scale_arr[WARP_N / mfma_n][4];
+  for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
+    for(int ii = 0; ii < 4; ii++  )
+      b_scale_arr[min_tile_n][ii] = *(b_scale_ptr + min_tile_n * mfma_n + col_id + ii * 4);
+  }
 
   #pragma unroll
   for(int idx = 0; idx < WARP_M / mfma_m; idx++){
+      // int sorted_token_offset = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + idx * mfma_m + row_id, int(sorted_token_lens - 1))];
+      // a_scale_ptr_arr[idx] = input_scale + std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm; //计算M方向的偏移
       int sorted_token_offset = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + idx * mfma_m + row_id, int(sorted_token_lens - 1))];
-      a_scale_ptr_arr[idx] = input_scale + std::min(sorted_token_offset / top_k,  size_m - 1) * stride_asm; //计算M方向的偏移
+      token_offset[idx] = std::min(sorted_token_offset / top_k, size_m - 1);
+      a_scale_ptr_arr[idx] = *(input_scale + token_offset[idx] * stride_asm); //计算M方向的偏移
   }
   { 
     //gemm_nt_first_stage_decode
@@ -942,7 +952,8 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
     // (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
 
     gemm_nt_marlin_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
-    (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
+    (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, 
+      size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, token_offset, sorted_token_lens, expert_id, bidx);
   }
 
   // save output to lds 
@@ -950,12 +961,13 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
   if(warp_k_id == 0 || warp_k_num == 1)
   {
     for(int min_tile_m = 0; min_tile_m < WARP_M / mfma_m; min_tile_m++){
-      float *a_scale = a_scale_ptr_arr[min_tile_m];
+      float a_scale = a_scale_ptr_arr[min_tile_m];
       for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
         #pragma unroll
         for(int reg_id = 0; reg_id < 4; reg_id++){
-          float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
-          float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
+          // float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
+          // float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
+          float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale * b_scale_arr[min_tile_n][reg_id];
           int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + (lane_id % 16) )/2 * 2/*padding*/;
           output_lds[index] = f32_to_output<OutputType>(value);
           // #if defined(__gfx938__)
@@ -1299,19 +1311,26 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
   intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; // [4][2]  每个warp在n方向重复两次 tileN = 16*2
   float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id*WARP_N;
   float weight_dot_a_scale[WARP_M / mfma_m];
+  int token_offset[WARP_M / mfma_m];
 
   #pragma unroll
   for(int idx = 0; idx < WARP_M / mfma_m; idx++){
+      // int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M+ idx * mfma_m + row_id, int(sorted_token_lens - 1))];
+      // int token_index_safe = std::min(token_index, size_m * top_k-1);
+      // float input_scale_value = *(input_scale + token_index_safe * stride_asm); //计算M方向的偏移
+      // weight_dot_a_scale[idx] = topk_weights[token_index_safe] * input_scale_value;
+
       int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M+ idx * mfma_m + row_id, int(sorted_token_lens - 1))];
-      int token_index_safe = std::min(token_index, size_m * top_k-1);
-      float input_scale_value = *(input_scale + token_index_safe * stride_asm); //计算M方向的偏移
-      weight_dot_a_scale[idx] = topk_weights[token_index_safe] * input_scale_value;
+      token_offset[idx] = std::min(token_index, size_m * top_k-1);
+      float input_scale_value = *(input_scale + token_offset[idx] * stride_asm); //计算M方向的偏移
+      weight_dot_a_scale[idx] = topk_weights[token_offset[idx]] * input_scale_value;
   }
   
 
   
   gemm_nt_marlin_decode<false, 0, 0, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K, STAGES, GROUP_N, GROUP_K, Element>
-  (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, sorted_token_ids_offset, sorted_token_lens, expert_id, bidx);
+  (g_input, g_qweight, input_lds, qweight_lds, g_input_scale, g_weight_scale, size_m, A_reg, B_reg, C_reg, warp_id, size_k, size_k, 
+    stride_asm, stride_ask, stride_bse, stride_bsn, stride_bsk, top_k, token_offset, sorted_token_lens, expert_id, bidx);
   
 #if 1
   //save output to lds 
