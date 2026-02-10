@@ -929,14 +929,8 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
   auto g_weight_scale = weight_scale + weight_scale_offset; // 配置weight的scale信息 todo 这里n_loop=0没有计算偏移
   intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; // [4][2]  每个warp在n方向重复两次 tileN = 16*2
   float a_scale_ptr_arr[WARP_M / mfma_m];
-  //float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id*WARP_N;
-  int token_offset[WARP_M / mfma_m];
   float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id*WARP_N;
-  float b_scale_arr[WARP_N / mfma_n][4];
-  for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
-    for(int ii = 0; ii < 4; ii++  )
-      b_scale_arr[min_tile_n][ii] = *(b_scale_ptr + min_tile_n * mfma_n + col_id + ii * 4);
-  }
+  int token_offset[WARP_M / mfma_m];
 
   #pragma unroll
   for(int idx = 0; idx < WARP_M / mfma_m; idx++){
@@ -965,9 +959,8 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
       for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
         #pragma unroll
         for(int reg_id = 0; reg_id < 4; reg_id++){
-          // float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
-          // float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale[0] * b_scale[0];
-          float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale * b_scale_arr[min_tile_n][reg_id];
+          float b_scale = *(b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4);
+          float value = C_reg[0][min_tile_m * WARP_N/mfma_n + min_tile_n][reg_id] * a_scale * b_scale;
           int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (lane_id & 15 ) * BLOCK_SIZE_N + reg_id * 4 + lane_id / 16 + (min_tile_m * mfma_m + (lane_id % 16) )/2 * 2/*padding*/;
           output_lds[index] = f32_to_output<OutputType>(value);
           // #if defined(__gfx938__)
