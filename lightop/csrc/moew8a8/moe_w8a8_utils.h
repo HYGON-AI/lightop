@@ -1495,7 +1495,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_decode(
     int scale_B_stride_n,
     int scale_B_stride_k,
     int top_k, // 8
-    const int* sorted_token_ids_offset,
+    int sorted_token_ids_offset[],
     int sorted_token_lens,
     const int32_t expert_id,
     const int bidx) {
@@ -1536,8 +1536,9 @@ __forceinline__ __device__ void  gemm_nt_marlin_decode(
 
     #pragma unroll
     for(int m_tile = 0; m_tile < WARP_M / MFMA_M; m_tile++){
-        int sorted_token_idx = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
-        g_row_A[m_tile] = (std::min(sorted_token_idx / top_k,  max_n_len_offset - 1)) * size_k + col_id * 16;
+        // int sorted_token_idx = sorted_token_ids_offset[std::min(bidx * BLOCK_M + m_tile * MFMA_M + row_id, int(sorted_token_lens - 1))];
+        // g_row_A[m_tile] = (std::min(sorted_token_idx / top_k,  max_n_len_offset - 1)) * size_k + col_id * 16;
+        g_row_A[m_tile] = (sorted_token_ids_offset[m_tile]) * size_k + col_id * 16;
     }
 
     #pragma unroll
