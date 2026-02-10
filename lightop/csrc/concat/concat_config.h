@@ -2,6 +2,7 @@
 #include <unordered_map>
 #include <functional>
 #include "hip/hip_bf16.h"  
+#include "hip/hip_fp16.h"
 namespace at {
 namespace native {
 ///////////////////////////////////////////////////////////////////////Gemm params///////////////////////////////////////////////////////////////////////////////////////
@@ -59,7 +60,7 @@ struct GemmParams {
 ///////////////////////////////////////////////////////////////////////launch_function///////////////////////////////////////////////////////////////////////////////////////
 
 using bhalf_t = __hip_bfloat16;
-
+using half  = __half;
 template<int per_block_A, int per_block_B, int Blcoksize,int WARP_NUM, typename T>
 void launch_concat_prefill(const GemmParams<T>& params);
 
@@ -96,6 +97,35 @@ static std::unordered_map<int, KernelFunc> kernel_maps_decode = {
     {6, [](const GemmParams<bhalf_t>& p) { launch_concat_decode<16, 8, 1024, 4, bhalf_t>(p); }},
 };
 
+
+
+using KernelFunc3 = std::function<void(const GemmParams<half>&)>;
+static std::unordered_map<int, KernelFunc3> kernel_maps_prefill_half = {
+    {0, [](const GemmParams<half>& p) { launch_concat_prefill<16, 8, 1024, 4, half>(p); }},
+    {1, [](const GemmParams<half>& p) { launch_concat_prefill<8, 1, 1024, 1, half>(p); }},
+    {2, [](const GemmParams<half>& p) { launch_concat_prefill<8, 1, 1024, 2, half>(p); }},
+    {3, [](const GemmParams<half>& p) { launch_concat_prefill<8, 1, 1024, 4, half>(p); }},    
+    {4, [](const GemmParams<half>& p) { launch_concat_prefill<16, 1, 1024, 1, half>(p); }},
+    {5, [](const GemmParams<half>& p) { launch_concat_prefill<16, 1, 1024, 2, half>(p); }},
+    {6, [](const GemmParams<half>& p) { launch_concat_prefill<16, 8, 1024, 4, half>(p); }},
+    {7, [](const GemmParams<half>& p) { launch_concat_prefill<32, 1, 1024, 1, half>(p); }},
+    {8, [](const GemmParams<half>& p) { launch_concat_prefill<32, 1, 1024, 1, half>(p); }},
+    {9, [](const GemmParams<half>& p) { launch_concat_prefill<32, 1, 1024, 1, half>(p); }},
+    {10, [](const GemmParams<half>& p) { launch_concat_prefill<16, 2, 1024, 1, half>(p); }},
+    {11, [](const GemmParams<half>& p) { launch_concat_prefill<16, 2, 1024, 1, half>(p); }},
+    {12, [](const GemmParams<half>& p) { launch_concat_prefill<16, 2, 1024, 1, half>(p); }},
+
+};
+
+static std::unordered_map<int, KernelFunc3> kernel_maps_decode_half = {
+    {0, [](const GemmParams<half>& p) { launch_concat_decode<4, 8, 1024, 4, half>(p); }},
+    {1, [](const GemmParams<half>& p) { launch_concat_decode<8, 1, 1024, 1, half>(p); }},
+    {2, [](const GemmParams<half>& p) { launch_concat_decode<8, 1, 1024, 2, half>(p); }},
+    {3, [](const GemmParams<half>& p) { launch_concat_decode<8, 1, 1024, 4, half>(p); }},    
+    {4, [](const GemmParams<half>& p) { launch_concat_decode<16, 1, 1024, 1, half>(p); }},
+    {5, [](const GemmParams<half>& p) { launch_concat_decode<16, 1, 1024, 2, half>(p); }},
+    {6, [](const GemmParams<half>& p) { launch_concat_decode<16, 8, 1024, 4, half>(p); }},
+};
 
 using KernelFunc2 = std::function<void(const GemmParams<uint8_t>&)>;
 static std::unordered_map<int, KernelFunc2> kernel_maps_prefill_fp8 = {
