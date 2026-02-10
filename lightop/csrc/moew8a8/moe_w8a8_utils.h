@@ -2009,7 +2009,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_blockwise_decode(
         //  --------------------------------------------- load mmac ---------------------------------- //
         int i = 0;
         if constexpr (STAGE == 4){ //TODO: STAGE为4 尾处理有四种可能方式 需要size_k来确定loop次数，size_k如果为动态传入会有寄存器溢出 目前写死解决 
-            constexpr int epilogue_tile =  ( 8192/BLOCK_K - (STAGE - 1)) % STAGE; //( size_k/stage_offset - STAGE - 1) % STAGE;        
+            constexpr int epilogue_tile =  ( 7168/BLOCK_K - (STAGE - 1)) % STAGE; //( size_k/stage_offset - STAGE - 1) % STAGE;        
        
             #pragma unroll
             for(; i < epilogue_tile; i++){

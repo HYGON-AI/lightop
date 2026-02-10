@@ -344,8 +344,7 @@ def fused_moe_kernel(
     num_tokens_post_padded = tl.load(num_tokens_post_padded_ptr)
     if pid_m * BLOCK_SIZE_M >= num_tokens_post_padded:
         return
-    offs_token_id = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M).to(
-        tl.int64)
+    offs_token_id = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M).to(tl.int64)
     offs_token = tl.load(sorted_token_ids_ptr + offs_token_id)
     token_mask = offs_token < num_valid_tokens
 
@@ -580,7 +579,7 @@ def determine_expert_map(
 
 # Torch参考实现已移除，现在使用Triton作为参考实现进行精度验证
 
-
+from lmslim.layers.gemm.fp8_utils import per_token_group_quant_fp8
 def moe_kernel_prepare_input(
     A: torch.Tensor,
     B: torch.Tensor,
@@ -935,7 +934,7 @@ def test_moe_performance_accuracy(
         try:
             is_ep = True if ep_size > 1 else False
             cuda_config1, cuda_config2, status = get_moe_cuda_marlin_config(
-                E, m, n1, k1, n2, k2, topk, device_name, num_cus, compute_type, is_ep, ep_size,
+                E, m, n1, k1, n2, k2, topk, device_name, num_cus, compute_type, is_ep, ep_size, blockwise=True
             )
         except Exception as e:
             print(f"Warning: get_moe_cuda_config failed: {e}")
@@ -1106,7 +1105,7 @@ def test_moe_debug(
         num_cus = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
         try:
             cuda_config1, cuda_config2, status = get_moe_cuda_marlin_config(
-                E, m, n1, k1, n2, k2, topk, device_name, num_cus, compute_type
+                E, m, n1, k1, n2, k2, topk, device_name, num_cus, compute_type, False, 0,  blockwise=True
             )
         except Exception as e:
             print(f"Warning: get_moe_cuda_config failed: {e}")
@@ -1232,17 +1231,17 @@ def main():
     parser = argparse.ArgumentParser(description='MOE GEMM性能和精度测试脚本')
     
     # 添加参数
-    parser.add_argument('--E', type=str, default='[256, 256, 256, 256, 256, 128, 128]', 
+    parser.add_argument('--E', type=str, default='[256, 256]', 
                         help='专家数量,如 "[256]"')
-    parser.add_argument('--ep_size', type=str, default='[1, 1, 1, 1, 1, 1, 1]', 
+    parser.add_argument('--ep_size', type=str, default='[1, 1]', 
                         help='专家并行的大小,如 "[1]"')
-    parser.add_argument('--n1-list', type=str, required=False, default='[256, 512, 1024, 2048, 4096, 1536, 768]',
+    parser.add_argument('--n1-list', type=str, required=False, default='[512, 1024]',
                        help='N1参数列表，如 "[256]"')
-    parser.add_argument('--n2-list', type=str, required=False, default='[7168, 7168, 7168, 7168, 7168, 2048, 2048]',
+    parser.add_argument('--n2-list', type=str, required=False, default='[7168, 7168]',
                        help='N2参数列表，如 "[7168]"')
-    parser.add_argument('--k-list', type=str, required=False, default='[128, 256, 512, 1024, 2048, 768, 384]',
+    parser.add_argument('--k-list', type=str, required=False, default='[256, 512]',
                        help='K2参数列表，如 "[128]"')
-    parser.add_argument('--m-list', type=str, default='[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024,2048,4096,8192,16384]',
+    parser.add_argument('--m-list', type=str, default='[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32,64,128,256,512,1024]',
                        help='M参数列表，如 "[32,128,512,1024]"')
     parser.add_argument('--topk', type=int, default=8, 
                        help='topk参数')
@@ -1251,7 +1250,7 @@ def main():
                        help='输出数据类型')
     parser.add_argument('--use-channel-wise', action='store_true', default=False,
                        help='使用channel-wise量化')
-    parser.add_argument('--output-file', type=str, default='moe_w8a8_gemm_channel_marlin_wise.xlsx',
+    parser.add_argument('--output-file', type=str, default='moe_w8a8_gemm_marlin_blockwise_wise.xlsx',
                        help='输出Excel文件名')
     parser.add_argument('--debug', type=int, default=0, 
                        help='是否启动debug模式')
