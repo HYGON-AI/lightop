@@ -45,11 +45,7 @@ __global__ void rmsnorm_forward_kernel(scalar_t* input,scalar_t* ret,float* rstd
     #pragma unroll
     for(int i=0;i<VEC;i++){
       int jj=j*VEC+i;
-      py[i]=static_cast<T_ACC>(px[i]) * static_cast<T_ACC>(gamma[jj]);
-    }
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      py[i]*=trstd;
+      py[i]=static_cast<T_ACC>(px[i]) * static_cast<T_ACC>(gamma[jj])*trstd;
     }
     Y[j]=ty;
   }
@@ -73,37 +69,23 @@ __global__ void rmsnorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,float*
   VecTpye *X=(VecTpye*)(input+block_cols);
   VecTpye *Y=(VecTpye*)(ret+block_cols);
   int tcol=cols/VEC;
-  scalar_t trstd;
+  T_ACC trstd;
   VecTpye tx;
   VecTpye ty;
   scalar_t* px=(scalar_t*)(&tx);
   scalar_t* py=(scalar_t*)(&ty);
   int j=threadidx;
-  if constexpr (VEC==1){
+  T_ACC val=0;
+  if (j < tcol) {
     tx = X[j];
-    scalar_t square=0;
-    if (j < tcol) {
-      square=px[0]*px[0];
-    }
-    square = BlockReduceSum<T_ACC,sharesize>(static_cast<T_ACC>(square),val_shared)/cols;
-    // if(threadIdx.x==0)printf("%d,%f\n",blockIdx.x,(float)square);
-    if (threadidx == 0) {
-      s_rstd=c10::cuda::compat::rsqrt(square + static_cast<T_ACC>(eps));
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      val += static_cast<T_ACC>(px[i])*static_cast<T_ACC>(px[i]);
     }
   }
-  else{
-    T_ACC val=0;
-    if (j < tcol) {
-      tx = X[j];
-      #pragma unroll
-      for(int i=0;i<VEC;i++){
-        val += static_cast<T_ACC>(px[i])*static_cast<T_ACC>(px[i]);
-      }
-    }
-    val = BlockReduceSum<T_ACC,sharesize>(val,val_shared);
-    if (threadidx == 0) {
-      s_rstd=c10::cuda::compat::rsqrt(val/cols + static_cast<T_ACC>(eps));
-    }
+  val = BlockReduceSum<T_ACC,sharesize>(val,val_shared);
+  if (threadidx == 0) {
+    s_rstd=c10::cuda::compat::rsqrt(val/cols + static_cast<T_ACC>(eps));
   }
   __syncthreads();
   trstd=s_rstd;
@@ -112,11 +94,7 @@ __global__ void rmsnorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,float*
     #pragma unroll
     for(int i=0;i<VEC;i++){
       int jj=j*VEC+i;
-      py[i]=static_cast<T_ACC>(px[i]) * static_cast<T_ACC>(gamma[jj]);
-    }
-    #pragma unroll
-    for(int i=0;i<VEC;i++){
-      py[i]*=trstd;
+      py[i]=static_cast<T_ACC>(px[i]) * static_cast<T_ACC>(gamma[jj])*trstd;
     }
     Y[j]=ty;
   }
