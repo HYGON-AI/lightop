@@ -651,5 +651,377 @@ void ep_gather(
         }
     );
 }
+
+template <typename scalar_t, int BLOCK_SIZE, int MAX_K>
+__global__ void quant_scatter_smooth_opt_kernel(
+    const scalar_t *__restrict__ input,
+    const int64_t *__restrict__ topk_ids,
+    const int32_t *__restrict__ expert_map,
+    int32_t *__restrict__ expert_offsets,
+    int8_t *__restrict__ aq_out,
+    float *__restrict__ aq_scale_out,
+    int32_t *__restrict__ inv_perm,
+    int32_t *__restrict__ m_indices,
+    const float *__restrict__ smooth_scale, 
+    int num_tokens, int K, int num_experts,
+    int hidden_size, bool has_expert_map) {
+
+    int64_t token_idx = blockIdx.x;
+    if (token_idx >= num_tokens) return;
+
+    int tid = threadIdx.x;
+    int lane_id = tid % WARP_SIZE;
+    int warp_id = tid / WARP_SIZE;
+    int num_warps = BLOCK_SIZE / WARP_SIZE;
+
+    __shared__ int s_expert_ids[MAX_K];
+    __shared__ int64_t s_dest_rows[MAX_K];
+    __shared__ bool s_valid[MAX_K];
+    __shared__ float s_warp_maxs[32]; 
+    __shared__ float s_current_inv_scale; 
+    __shared__ bool s_any_valid;
+    
+    if (tid == 0) s_any_valid = false;
+    __syncthreads();
+    
+    if (tid < K) {
+        int expert_id = (int)topk_ids[token_idx * K + tid];
+        bool is_valid = true;
+        if (has_expert_map) {
+            int mapped_id = expert_map[expert_id];
+            if (mapped_id == -1) is_valid = false;
+            else expert_id = mapped_id;
+        }
+        s_valid[tid] = is_valid;
+        s_expert_ids[tid] = expert_id;
+        if (is_valid) {
+            s_any_valid = true;
+            int64_t dest_row = atomicAdd(&expert_offsets[expert_id], 1);
+            s_dest_rows[tid] = dest_row;
+            int64_t row_idx = token_idx * K + tid;
+            inv_perm[row_idx] = (int32_t)dest_row;
+            if (m_indices) m_indices[dest_row] = expert_id;
+        } else {
+            inv_perm[token_idx * K + tid] = -1;
+        }
+    }
+    __syncthreads(); 
+
+    if(!s_any_valid) return;
+
+    constexpr int ELEMENTS_PER_VEC = 16;
+    using VecType = AlignedVector<scalar_t, ELEMENTS_PER_VEC>;
+    using OutType = AlignedVector<int8_t, ELEMENTS_PER_VEC>; 
+    using SmoothVecType = AlignedVector<float, ELEMENTS_PER_VEC>;
+
+    int64_t input_base_offset = token_idx * hidden_size;
+
+    #pragma unroll 1 
+    for (int k = 0; k < MAX_K; ++k) {
+        if (k >= K) break; 
+        bool is_active = s_valid[k];
+        if(!is_active) continue;
+        
+        int expert = s_expert_ids[k];
+        float local_max_abs = 0.0f; 
+        for (int col_idx = tid * ELEMENTS_PER_VEC; col_idx < hidden_size; col_idx += BLOCK_SIZE * ELEMENTS_PER_VEC) {
+            VecType curr_input_vec = *reinterpret_cast<const VecType*>(input + input_base_offset + col_idx);
+            const float* smooth_ptr = smooth_scale + (int64_t)expert * hidden_size + col_idx;
+            SmoothVecType curr_smooth = *reinterpret_cast<const SmoothVecType*>(smooth_ptr);
+
+            #pragma unroll
+            for (int e = 0; e < ELEMENTS_PER_VEC; ++e) {
+                float val = static_cast<float>(curr_input_vec[e]);
+                float smoothed = val * curr_smooth[e];
+                local_max_abs = fmaxf(local_max_abs, fabsf(smoothed));
+            }
+        }
+
+        local_max_abs = warpReduceMax<float, WARP_SIZE>(local_max_abs);
+        if (lane_id == 0) s_warp_maxs[warp_id] = local_max_abs;
+        __syncthreads(); 
+
+        if (warp_id == 0) {
+            float block_val = (tid < num_warps) ? s_warp_maxs[tid] : 0.0f;
+            block_val = warpReduceMax<float, WARP_SIZE>(block_val); 
+            if (tid == 0) {
+                float max_val = block_val;
+                max_val = fmaxf(max_val, 1e-6f); // 防止除0
+                float inv_scale = 127.0f / max_val;
+                float final_scale = max_val / 127.0f; 
+                aq_scale_out[s_dest_rows[k]] = final_scale; 
+                s_current_inv_scale = inv_scale;
+            }
+        }
+        __syncthreads(); 
+     
+        float inv_scale = s_current_inv_scale; 
+        
+        for (int col_idx = tid * ELEMENTS_PER_VEC; col_idx < hidden_size; col_idx += BLOCK_SIZE * ELEMENTS_PER_VEC) {
+            VecType curr_input_vec = *reinterpret_cast<const VecType*>(input + input_base_offset + col_idx);
+            const float* smooth_ptr = smooth_scale + (int64_t)expert * hidden_size + col_idx;
+            SmoothVecType curr_smooth = *reinterpret_cast<const SmoothVecType*>(smooth_ptr);
+            
+            int8_t packed_vals[ELEMENTS_PER_VEC];
+            #pragma unroll
+            for (int e = 0; e < ELEMENTS_PER_VEC; ++e) {
+                float val = static_cast<float>(curr_input_vec[e]);
+                float smoothed = val * curr_smooth[e]; 
+                packed_vals[e] = float_to_int8_rn_fused(smoothed * inv_scale);
+            }
+            
+            int64_t dst_offset = s_dest_rows[k] * hidden_size + col_idx;
+            *reinterpret_cast<OutType*>(aq_out + dst_offset) = *reinterpret_cast<OutType*>(packed_vals);
+        }
+    }
+}
+
+
+template <typename scalar_t, int BLOCK_SIZE, int VEC_SIZE>
+__global__ void __launch_bounds__(BLOCK_SIZE) quant_scatter_smooth_low_reg_kernel(
+    const scalar_t *__restrict__ input,
+    const int64_t *__restrict__ topk_ids,
+    const int32_t *__restrict__ expert_map,
+    int32_t *__restrict__ expert_offsets,
+    int8_t *__restrict__ aq_out,
+    float *__restrict__ aq_scale_out,
+    int32_t *__restrict__ inv_perm,
+    int32_t *__restrict__ m_indices,
+    const float *__restrict__ smooth_scale, 
+    int num_tokens, int K, int hidden_size, bool has_expert_map) {
+
+
+    int64_t token_idx = blockIdx.x*2;
+    if (token_idx >= num_tokens) return;
+
+    int tid = threadIdx.x;
+    int lane_id = tid % WARP_SIZE;
+    int warp_id = tid / WARP_SIZE;
+
+
+    __shared__ float s_warp_maxs[32]; 
+    __shared__ float s_block_scale; 
+    __shared__ int64_t s_dest_row;
+
+
+    float r_input[VEC_SIZE];
+    int idx = tid * VEC_SIZE;
+    for(int ii = 0; ii < 2; ii++){
+        token_idx += ii;
+        if (token_idx >= num_tokens) break;
+        int64_t input_base_offset = token_idx * hidden_size;
+        using VecType = AlignedVector<scalar_t, VEC_SIZE>;
+        const VecType* in_ptr = reinterpret_cast<const VecType*>(input + input_base_offset + idx);
+        VecType in_val;
+    
+        bool is_load = true;
+
+        for(int k=0; k<K; ++k) {
+            int expert_id = (int)topk_ids[token_idx * K + k];
+            
+            if (has_expert_map) {
+                int mapped = expert_map[expert_id];
+                if (mapped == -1) {
+                    continue; 
+                }
+                expert_id = mapped;
+            }
+
+            if(is_load){
+                in_val = *in_ptr;
+                #pragma unroll
+                for(int i=0; i<VEC_SIZE; ++i) {
+                    r_input[i] = static_cast<float>(in_val.val[i]);
+                }
+                is_load = false;
+            }
+
+            if (tid == 0) {
+                int32_t dr = atomicAdd(&expert_offsets[expert_id], 1);
+                s_dest_row = dr;
+                inv_perm[token_idx * K + k] = dr;
+                if (m_indices) m_indices[dr] = expert_id;
+            }
+            __syncthreads(); 
+            
+            int64_t dest_row = s_dest_row;
+            
+            float local_max = 0.0f;
+            float r_smooth[VEC_SIZE]; 
+
+            const float* smooth_ptr = smooth_scale + (int64_t)expert_id * hidden_size + idx;
+            using SmoothVec = AlignedVector<float, VEC_SIZE>;
+            const SmoothVec* s_vec_ptr = reinterpret_cast<const SmoothVec*>(smooth_ptr);
+            *reinterpret_cast<SmoothVec *>(r_smooth) = *s_vec_ptr; 
+
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; ++i) {
+                float val = r_input[i] * r_smooth[i];
+                local_max = fmaxf(local_max, fabsf(val));
+            }
+
+            #pragma unroll
+            for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
+                local_max = fmaxf(local_max, __shfl_down( local_max, offset));
+            }
+            
+            if (lane_id == 0) {
+                s_warp_maxs[warp_id] = local_max;
+            }
+            __syncthreads(); 
+
+            if (warp_id == 0) {
+                float block_max = (tid < (BLOCK_SIZE / WARP_SIZE)) ? s_warp_maxs[tid] : 0.0f;
+                #pragma unroll
+                for (int offset = WARP_SIZE / 2; offset > 0; offset /= 2) {
+                    block_max = fmaxf(block_max, __shfl_down( block_max, offset));
+                }
+                
+                if (tid == 0) {
+                    block_max = fmaxf(block_max, 1e-6f);
+                    float scale = block_max / 127.0f;
+                    aq_scale_out[dest_row] = scale;
+                    s_block_scale = 127.0f / block_max; 
+                }
+            }
+            __syncthreads(); 
+            
+            float inv_scale = s_block_scale;
+
+            int8_t out_buf[VEC_SIZE];
+            #pragma unroll
+            for(int i=0; i<VEC_SIZE; ++i) {
+                float val = r_input[i] * r_smooth[i];
+                out_buf[i] = float_to_int8_rn_fused(val * inv_scale);
+            }
+            int64_t dst_offset = dest_row * hidden_size + idx;
+            using OutVec = AlignedVector<int8_t, VEC_SIZE>;
+            *reinterpret_cast<OutVec*>(aq_out + dst_offset) = *reinterpret_cast<OutVec*>(out_buf);
+        }
+    }
+}
+
+void ep_fused_smooth_quant_scatter(
+    torch::Tensor input, 
+    torch::Tensor topk_ids,
+    torch::optional<torch::Tensor> expert_map_opt,
+    torch::Tensor expert_offsets,
+    torch::Tensor smooth_scale,
+    torch::Tensor aq_out, 
+    torch::Tensor aq_scale_out,
+    torch::Tensor m_indices, 
+    torch::Tensor inv_perm,
+    int local_num_experts, int alignment) {
+
+  int num_tokens = input.size(0);
+  int hidden_size = input.size(1);
+  int K = topk_ids.size(1);
+
+  TORCH_CHECK(smooth_scale.scalar_type() == at::ScalarType::Float, "Smooth scale must be float32");
+  TORCH_CHECK(K == 4 || K == 8, "TopK must be 4 or 8");
+
+  auto input_tensor = input.expect_contiguous();
+  const int32_t *expert_map_ptr = nullptr;
+  bool has_expert_map = false;
+  if (expert_map_opt.has_value()) {
+    expert_map_ptr = expert_map_opt.value().data_ptr<int32_t>();
+    has_expert_map = true;
+  }
+
+  int32_t *expert_offsets_ptr = expert_offsets.data_ptr<int32_t>();
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  
+  constexpr int VEC_SIZE = 16; 
+  size_t shmem_size = 0;
+
+  AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
+      "ep_fused_smooth_quant_scatter", [&] {
+
+        if (hidden_size == 1024) {
+            constexpr int CURR_BLOCK_SIZE = 64;
+            dim3 grid((num_tokens + 1) / 2);
+            dim3 block(CURR_BLOCK_SIZE);
+            quant_scatter_smooth_low_reg_kernel<scalar_t, CURR_BLOCK_SIZE, VEC_SIZE>
+                <<<grid, block, shmem_size, stream>>>(
+                    input_tensor->data_ptr<scalar_t>(), topk_ids.data_ptr<int64_t>(),
+                    expert_map_ptr, expert_offsets_ptr, 
+                    aq_out.data_ptr<int8_t>(), aq_scale_out.data_ptr<float>(),
+                    inv_perm.data_ptr<int32_t>(), m_indices.data_ptr<int32_t>(),
+                    smooth_scale.data_ptr<float>(), num_tokens, K, hidden_size, has_expert_map);
+        } else if (hidden_size == 2048) {
+            constexpr int CURR_BLOCK_SIZE = 128;
+            dim3 grid((num_tokens + 1) / 2);
+            dim3 block(CURR_BLOCK_SIZE);
+            quant_scatter_smooth_low_reg_kernel<scalar_t, CURR_BLOCK_SIZE, VEC_SIZE>
+                <<<grid, block, shmem_size, stream>>>(
+                    input_tensor->data_ptr<scalar_t>(), topk_ids.data_ptr<int64_t>(),
+                    expert_map_ptr, expert_offsets_ptr, 
+                    aq_out.data_ptr<int8_t>(), aq_scale_out.data_ptr<float>(),
+                    inv_perm.data_ptr<int32_t>(), m_indices.data_ptr<int32_t>(),
+                    smooth_scale.data_ptr<float>(), num_tokens, K, hidden_size, has_expert_map);
+        } else if (hidden_size == 4096) {
+            constexpr int CURR_BLOCK_SIZE = 256;
+            dim3 grid((num_tokens + 1) / 2);
+            dim3 block(CURR_BLOCK_SIZE);
+            quant_scatter_smooth_low_reg_kernel<scalar_t, CURR_BLOCK_SIZE, VEC_SIZE>
+                <<<grid, block, shmem_size, stream>>>(
+                    input_tensor->data_ptr<scalar_t>(), topk_ids.data_ptr<int64_t>(),
+                    expert_map_ptr, expert_offsets_ptr, 
+                    aq_out.data_ptr<int8_t>(), aq_scale_out.data_ptr<float>(),
+                    inv_perm.data_ptr<int32_t>(), m_indices.data_ptr<int32_t>(),
+                    smooth_scale.data_ptr<float>(), num_tokens, K, hidden_size, has_expert_map);
+        } else if (hidden_size == 7168) {
+            constexpr int CURR_BLOCK_SIZE = 448;
+            dim3 grid((num_tokens + 1) / 2);
+            dim3 block(CURR_BLOCK_SIZE);
+            quant_scatter_smooth_low_reg_kernel<scalar_t, CURR_BLOCK_SIZE, VEC_SIZE>
+                <<<grid, block, shmem_size, stream>>>(
+                    input_tensor->data_ptr<scalar_t>(), topk_ids.data_ptr<int64_t>(),
+                    expert_map_ptr, expert_offsets_ptr, 
+                    aq_out.data_ptr<int8_t>(), aq_scale_out.data_ptr<float>(),
+                    inv_perm.data_ptr<int32_t>(), m_indices.data_ptr<int32_t>(),
+                    smooth_scale.data_ptr<float>(), num_tokens, K, hidden_size, has_expert_map);
+        } else if (hidden_size == 8192) {
+            constexpr int CURR_BLOCK_SIZE = 512;
+            dim3 grid((num_tokens + 1) / 2);
+            dim3 block(CURR_BLOCK_SIZE);
+            quant_scatter_smooth_low_reg_kernel<scalar_t, CURR_BLOCK_SIZE, VEC_SIZE>
+                <<<grid, block, shmem_size, stream>>>(
+                    input_tensor->data_ptr<scalar_t>(), topk_ids.data_ptr<int64_t>(),
+                    expert_map_ptr, expert_offsets_ptr, 
+                    aq_out.data_ptr<int8_t>(), aq_scale_out.data_ptr<float>(),
+                    inv_perm.data_ptr<int32_t>(), m_indices.data_ptr<int32_t>(),
+                    smooth_scale.data_ptr<float>(), num_tokens, K, hidden_size, has_expert_map);
+        } else if (hidden_size == 16384) {
+            constexpr int CURR_BLOCK_SIZE = 1024;
+            dim3 grid((num_tokens + 1) / 2);
+            dim3 block(CURR_BLOCK_SIZE);
+            quant_scatter_smooth_low_reg_kernel<scalar_t, CURR_BLOCK_SIZE, VEC_SIZE>
+                <<<grid, block, shmem_size, stream>>>(
+                    input_tensor->data_ptr<scalar_t>(), topk_ids.data_ptr<int64_t>(),
+                    expert_map_ptr, expert_offsets_ptr, 
+                    aq_out.data_ptr<int8_t>(), aq_scale_out.data_ptr<float>(),
+                    inv_perm.data_ptr<int32_t>(), m_indices.data_ptr<int32_t>(),
+                    smooth_scale.data_ptr<float>(), num_tokens, K, hidden_size, has_expert_map);
+        } else {
+            constexpr int FALLBACK_BLOCK_SIZE = 256;
+            dim3 grid(num_tokens);
+            dim3 block(FALLBACK_BLOCK_SIZE);
+            if (K <= 8) {
+                 quant_scatter_smooth_opt_kernel<scalar_t, FALLBACK_BLOCK_SIZE, 8>
+                <<<grid, block, shmem_size, stream>>>(
+                    input_tensor->data_ptr<scalar_t>(), topk_ids.data_ptr<int64_t>(),
+                    expert_map_ptr, expert_offsets_ptr, 
+                    aq_out.data_ptr<int8_t>(), aq_scale_out.data_ptr<float>(),
+                    inv_perm.data_ptr<int32_t>(), m_indices.data_ptr<int32_t>(),
+                    smooth_scale.data_ptr<float>(), num_tokens, K, local_num_experts, hidden_size, has_expert_map);
+            } else {
+                
+            }
+        }
+      });
+}
+
 } // namespace native
 } // namespace at
