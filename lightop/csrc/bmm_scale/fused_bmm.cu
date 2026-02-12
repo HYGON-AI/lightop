@@ -122,21 +122,22 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_B8_B8_PERCHANNEL_HIP_NT_DECODE
   union_vec<ElementAccum, 4> C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0};
   float a_scale_arr[WARP_M / mfma_m];
   float b_scale_arr[(WARP_N / mfma_n) * 4];
-  float *a_scale_ptr = (a_scale + bidz * stride_asn + bidx * BLOCK_SIZE_M * stride_asb + warp_m_id * WARP_M);
-  float *b_scale_ptr = (b_scale + bidz * stride_bsn + bidy * BLOCK_SIZE_N * stride_bsl + warp_n_id * WARP_N);
+  float *a_scale_ptr = (a_scale + bidz * stride_asn);
+  float *b_scale_ptr = (b_scale + bidz * stride_bsn);
   // bhalf_t *bias_ptr = bias + bidz * l_size + bidy * BLOCK_SIZE_N + warp_n_id * WARP_N;
 
   #pragma unroll
   for(int idx = 0; idx < WARP_M / mfma_m; idx++){
-      uint32_t a_scale_offset = warp_m_id * WARP_M + idx * mfma_m + row_id;
-      a_scale_arr[idx] = *(a_scale_ptr + std::min(a_scale_offset,  batch_size - 1) * stride_asb); //计算M方向的偏移
+    uint32_t a_scale_offset = bidx * BLOCK_SIZE_M + warp_m_id * WARP_M + idx * mfma_m + row_id;
+    a_scale_arr[idx] = *(a_scale_ptr + std::min(a_scale_offset,  batch_size - 1) * stride_asb); //计算M方向的偏移
   }
 
   #pragma unroll
   for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
     #pragma unroll
     for(int reg_id = 0; reg_id < 4; reg_id++){
-      b_scale_arr[min_tile_n * 4 + reg_id] = *(b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4);
+      uint32_t b_scale_offset = bidy * BLOCK_SIZE_N + warp_n_id * WARP_N + min_tile_n * mfma_n + col_id + reg_id * 4;
+      b_scale_arr[min_tile_n * 4 + reg_id] = *(b_scale_ptr + std::min(b_scale_offset,  l_size - 1) * stride_bsl);
     }
   }
 
@@ -241,9 +242,9 @@ template<
   bool LDS_BYPASS> 
 __global__ void __launch_bounds__(1024) FUSED_BMM_B8_B16_PERCHANNEL_HIP_NT_DECODE(
   const Element* __restrict__ q_nope, // [batch, n, p]
-  const Element* __restrict__ w_uv,   // [n, p, l]
+  const Element* __restrict__ w_uv,   // [n, l, p]
   bhalf_t* __restrict__ output,       // [batch, n, l]
-  float* __restrict__ a_scale,        // [n, batch, 1]
+  float* __restrict__ a_scale,        // [batch, n, 1]
   float* __restrict__ b_scale,        // [n, l, 1]
   bhalf_t* __restrict__ bias,         // [batch, l]
   uint32_t batch_size,
@@ -318,21 +319,22 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_B8_B16_PERCHANNEL_HIP_NT_DECOD
   union_vec<ElementAccum, 4> C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0};
   float a_scale_arr[WARP_M / mfma_m];
   float b_scale_arr[(WARP_N / mfma_n) * 4];
-  float *a_scale_ptr = (a_scale + bidz * stride_asn + bidx * BLOCK_SIZE_M * stride_asb + warp_m_id * WARP_M);
-  float *b_scale_ptr = (b_scale + bidz * stride_bsn + bidy * BLOCK_SIZE_N * stride_bsl + warp_n_id * WARP_N);
+  float *a_scale_ptr = (a_scale + bidz * stride_asn);
+  float *b_scale_ptr = (b_scale + bidz * stride_bsn);
   // bhalf_t *bias_ptr = bias + bidz * l_size + bidy * BLOCK_SIZE_N + warp_n_id * WARP_N;
 
   #pragma unroll
   for(int idx = 0; idx < WARP_M / mfma_m; idx++){
-      uint32_t a_scale_offset = warp_m_id * WARP_M + idx * mfma_m + row_id;
-      a_scale_arr[idx] = *(a_scale_ptr + std::min(a_scale_offset,  batch_size - 1) * stride_asb); //计算M方向的偏移
+    uint32_t a_scale_offset = bidx * BLOCK_SIZE_M + warp_m_id * WARP_M + idx * mfma_m + row_id;
+    a_scale_arr[idx] = *(a_scale_ptr + std::min(a_scale_offset,  batch_size - 1) * stride_asb); //计算M方向的偏移
   }
 
   #pragma unroll
   for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
     #pragma unroll
     for(int reg_id = 0; reg_id < 4; reg_id++){
-      b_scale_arr[min_tile_n * 4 + reg_id] = *(b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4);
+      uint32_t b_scale_offset = bidy * BLOCK_SIZE_N + warp_n_id * WARP_N + min_tile_n * mfma_n + col_id + reg_id * 4;
+      b_scale_arr[min_tile_n * 4 + reg_id] = *(b_scale_ptr + std::min(b_scale_offset,  l_size - 1) * stride_bsl);
     }
   }
 
@@ -385,23 +387,6 @@ __global__ void __launch_bounds__(1024) FUSED_BMM_B8_B16_PERCHANNEL_HIP_NT_DECOD
   }
 
   __syncthreads();
-
-  // {
-  //   // 最大化利用dwordx4 通用
-  //   const int tid = threadIdx.x;
-  //   constexpr int N_thread = BLOCK_SIZE_N / 16;  //N方向需要的线程数 使用dwordx4即8个bf16
-  //   using vec16_fp8 = __attribute__((__vector_size__(16 * sizeof(char)))) char;
-  //   int m_idx = threadIdx.x / N_thread;  
-  //   int n_idx = threadIdx.x % N_thread;  
-  //   for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
-  //     const int32_t batch_index = (bidx * BLOCK_SIZE_M + m_idx);
-
-  //     if(batch_index < batch_size) {
-  //       *reinterpret_cast<vec16_fp8*>(&g_output[batch_index * stride_ob + n_idx * 16]) = 
-  //       *reinterpret_cast<vec16_fp8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 16 + m_idx/2 * 4/*padding*/]);
-  //     }
-  //   } 
-  // }  
   
   {
     const int m_pos_in_block = m_thread_idx + warp_id * m_num_threads;
