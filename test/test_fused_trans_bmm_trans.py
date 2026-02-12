@@ -560,6 +560,19 @@ def fused_bmm_trans_impl_int8_benchmark(torch_q_bf16: torch.Tensor,
     else:
         print(f"kernel 精度检查不合格!!!")
         mode_status = False
+
+    if dtype == torch.bfloat16:
+        if not (torch.allclose(cuda_output, torch_output, rtol=1e-2, atol=1e-2, equal_nan=True)):
+            print(f"torch check kernel 精度检查不合格!!!")
+            # torch.set_printoptions(profile="full")  
+            # ftriton = open('cuda_output.txt', 'w')   
+            # print(f'cuda_output: {cuda_output}', file=ftriton)
+            # ftriton.close
+            # ftorch = open('bench_output.txt', 'w')   
+            # print(f'bench_output: {torch_output}', file=ftorch)
+            # ftorch.close
+        else:
+            print(f"torch check kernel 精度检查合格.")
     
     warm_up_num = 15
     for i in range(warm_up_num):
@@ -627,70 +640,6 @@ def fused_bmm_trans_impl_int8_benchmark(torch_q_bf16: torch.Tensor,
     }
     
     return results
-
-def generate_rms_rope_data(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim,rot_dim,num_kv_cache_blocks,kv_cache_blocks_size,is_tuning = False):
-    DEVICE = "cuda"
-    variance_epsilon = 1e-6
-    DTYPE = torch.bfloat16    
-    is_neox_style = False
-    max_position = 163840
-    base = 1e4
-    dtype_mapping = {
-        "fp8_e4m3": torch.float8_e4m3fn,
-        "fp8_e5m2": torch.float8_e5m2,
-        "fp16": torch.float16,
-        "bf16": torch.bfloat16
-    }
-    KV_CACHE_DTYPE = dtype_mapping.get(kv_cache_dtype_str)
-    if KV_CACHE_DTYPE is None:
-        raise ValueError(f"Unsupported kv_cache_dtype_str: {kv_cache_dtype_str}")
-    kv_cache_scale = 1.0
-    # rope(Q)的相关tensor创建
-    q_tensor = torch.randn(batch_size, num_head,q_c_dim + rot_dim, dtype=DTYPE, device=DEVICE)
-    q_quant_gt = torch.empty_like(q_tensor[:,:,:q_c_dim], dtype=KV_CACHE_DTYPE, device=DEVICE)
-    q_quant = torch.empty_like(q_tensor, dtype=KV_CACHE_DTYPE, device=DEVICE)
-    cos_sin_cache = _compute_cos_sin_cache(max_position,base,rot_dim, device=DEVICE)
-    if cos_sin_cache.dtype != DTYPE:
-        cos_sin_cache = cos_sin_cache.to(DTYPE)
-    positions = torch.randperm(max_position, device=DEVICE)[:batch_size]
-    q_c = q_tensor[...,:q_c_dim]
-    q_pe = q_tensor[...,q_c_dim:]
-    q_pe_no_fuse = q_pe.clone()
-    q_pe_ori = q_pe.clone()
-    q_scale = torch.empty((batch_size, num_head, 1), dtype=torch.float32, device=DEVICE)
-    q_scale_gt = torch.empty((batch_size, num_head, 1), dtype=torch.float32, device=DEVICE)
-    # rope(K)的相关tensor创建
-    k_tensor = torch.randn(batch_size, kv_c_dim + rot_dim, dtype=DTYPE, device=DEVICE)
-    k_pe = k_tensor[...,kv_c_dim:]
-    k_pe_no_fuse = k_pe.clone()
-    kv_c = k_tensor[...,:kv_c_dim]
-    kv_c_normed = torch.empty(kv_c.shape, dtype=DTYPE, device=DEVICE)
-    weight = torch.randn(kv_c_dim, dtype=DTYPE, device=DEVICE)
-    kv_c_no_fuse = kv_c.clone()
-    kv_c_no_fuse_out = torch.empty_like(kv_c_no_fuse).contiguous()
-    # kv_cache相关
-    kv_cache = _create_mla_cache(num_kv_cache_blocks, kv_cache_blocks_size, kv_c_dim+rot_dim, DTYPE,
-                                  kv_cache_dtype_str, DEVICE)
-    kv_cache_no_fuse = kv_cache.clone()
-    kv_scale_tensor = torch.tensor(1., dtype=torch.float32, device=DEVICE)
-    total_slots = num_kv_cache_blocks * kv_cache_blocks_size
-    slot_mapping = torch.randperm(total_slots, device=DEVICE)[:batch_size]
-
-    if KV_CACHE_DTYPE == torch.float16:
-        kv_cache = kv_cache.half()
-        kv_cache_no_fuse = kv_cache_no_fuse.half()
-    elif KV_CACHE_DTYPE == torch.bfloat16:
-        kv_cache = kv_cache.bfloat16()
-        kv_cache_no_fuse = kv_cache_no_fuse.bfloat16()
-
-
-    fuse_rmsnorm_rope_quant_qkv(positions,q_c,q_pe,q_quant,q_scale,k_pe,kv_c,kv_c_normed,weight,cos_sin_cache,slot_mapping,kv_cache,kv_cache_dtype_str,kv_cache_scale,is_neox_style,variance_epsilon)
-
-    torch_q_quant = q_quant.view(torch.float8_e4m3fn)[:,:,:q_c_dim].contiguous()
-    cuda_q_quant = q_quant.view(torch.float8_e4m3fn)[:,:,:q_c_dim]
-    torch_q_bf16 = q_tensor.view(torch.bfloat16)[:,:,:q_c_dim].contiguous()
-
-    return torch_q_quant, cuda_q_quant, q_scale, torch_q_bf16
 
 @triton.jit
 def _per_token_quant_fp8(
@@ -766,6 +715,10 @@ def _fused_bmm_helper(batch: int,
     torch_w_uk_bf16 = torch.randn((N, L, P), device=device, dtype=torch.bfloat16)           # [n, l, p]
     q_quant, q_scale = per_token_quant_fp8(torch_input_bf16)
     w_uk, w_uk_scale = per_token_quant_fp8(torch_w_uk_bf16)
+    # print(f"before w_uk_scale.shape: {w_uk_scale.shape}, w_uk_scale.stride: {w_uk_scale.stride()}")
+    # # import pdb; pdb.set_trace()
+    # w_uk_scale = w_uk_scale.reshape(N, 1, L).permute(0, 2, 1)
+    # print(f"after w_uk_scale.shape: {w_uk_scale.shape}, w_uk_scale.stride: {w_uk_scale.stride()}")
     bias = None
 
     if transpose_bm_in:
@@ -861,8 +814,8 @@ def run_trans_bmm_trans_tuning():
 
 def run_trans_bmm_trans_vaild():
     
-    # batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
-    batch_list=[32,]
+    # batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
+    batch_list=[24,]
     ##deepseek-671b-tp8
     # bmm1
     # n_list=[16,]
@@ -932,11 +885,12 @@ def run_trans_bmm_trans_vaild():
      
     
 def run_benchmark_trans_bmm_trans():
-    batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,32]
+    batch_list=[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32]
     # batch_list = [32]
     
     ##deepseek-671b-tp8
-    n_list=[16,32,64,128]
+    # n_list=[16,32,64,128]
+    n_list=[16,16,16,16]
     # bmm1
     # p_list=[128,128,128,128]
     # l_list=[512,512,512,512]
