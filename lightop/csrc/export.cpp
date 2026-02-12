@@ -292,7 +292,6 @@ torch::Tensor backward_polyfill_cuda(torch::Tensor vertices,torch::Tensor output
 std::vector<torch::Tensor> forward_polyfill_cuda(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,int width,int height,float inv_smoothness,int mode);
 torch::Tensor backward_polyfill_lightop(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,torch::Tensor grad_output,torch::Tensor grad_vertices,int width,int height,float inv_smoothness,int mode);
 std::vector<torch::Tensor> forward_polyfill_lightop(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,int width,int height,float inv_smoothness,int mode);
-<<<<<<< Updated upstream
 void ep_fused_smooth_quant_scatter(
     torch::Tensor input, 
     torch::Tensor topk_ids,
@@ -304,9 +303,7 @@ void ep_fused_smooth_quant_scatter(
     torch::Tensor m_indices, 
     torch::Tensor inv_perm,
     int local_num_experts, int alignment); 
-=======
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale);
->>>>>>> Stashed changes
 }
 }
 
@@ -491,10 +488,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("forward_polyfill_cuda", &at::native::forward_polyfill_cuda, "forward_polyfill_cuda");
   m.def("forward_polyfill_lightop", &at::native::forward_polyfill_lightop, "forward_polyfill_lightop");
   m.def("backward_polyfill_lightop", &at::native::backward_polyfill_lightop, "backward_polyfill_lightop");
-<<<<<<< Updated upstream
   m.def("ep_fused_smooth_quant_scatter", &at::native::ep_fused_smooth_quant_scatter, "ep_fused_smooth_quant_scatter");
-=======
   m.def("per_token_dynamic_quant_int8", &at::native::per_token_dynamic_quant_int8, "per_token_dynamic_quant_int8");
->>>>>>> Stashed changes
 }
 
