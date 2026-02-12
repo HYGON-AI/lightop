@@ -624,6 +624,11 @@ void ep_gather(
                 threads_per_block = 128;
                 grid_x = 7;
             }
+
+            if(num_tokens >= 256 && num_tokens <= 512 && hidden_size == 4096) {
+                threads_per_block = 128;
+                grid_x = 4;
+            };
             // if (grid_y > 65535) grid_y = 65535;
             dim3 block(threads_per_block);
             dim3 grid(grid_x, grid_y);
