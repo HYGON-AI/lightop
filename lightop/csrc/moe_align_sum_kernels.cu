@@ -1108,11 +1108,11 @@ __global__ void moe_sum_kernel_reg_bf16_add_bias_opt(
     float factor,
     int num_tokens) {
 
-    int token_idx = blockIdx.y;
+    int64_t token_idx = blockIdx.y;
     if (token_idx >= num_tokens) return;
 
-    const int token_offset_input = token_idx * TOPK * d_vec;
-    const int token_offset_out   = token_idx * d_vec;
+    const int64_t token_offset_input = token_idx * TOPK * d_vec;
+    const int64_t token_offset_out   = token_idx * d_vec;
     using VecType = Vector<scalar_t, VEC_SIZE>;
 
     const VecType* input_base = reinterpret_cast<const VecType*>(input + token_offset_input);
@@ -1570,7 +1570,7 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
   dim3 block(std::min(hidden_size, 1024));
   const at::cuda::OptionalCUDAGuard device_guard(device_of(output));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-
+  input = input.is_contiguous() ? input : input.contiguous();
   switch (topk) {
   case 2:
     AT_DISPATCH_FLOATING_TYPES_AND2(
