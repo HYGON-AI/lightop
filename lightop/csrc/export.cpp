@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "paged_mqa_logits/paged_mqa_logits.h"
+#include "sampling/sampling.h"
 
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace at {  namespace native {
@@ -490,5 +491,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("backward_polyfill_lightop", &at::native::backward_polyfill_lightop, "backward_polyfill_lightop");
   m.def("ep_fused_smooth_quant_scatter", &at::native::ep_fused_smooth_quant_scatter, "ep_fused_smooth_quant_scatter");
   m.def("per_token_dynamic_quant_int8", &at::native::per_token_dynamic_quant_int8, "per_token_dynamic_quant_int8");
+  m.def("top_k_sampling_from_probs", &lightop::sampling::top_k_sampling_from_probs, "top_k_sampling_from_probs");
+  m.def("top_p_sampling_from_probs", &lightop::sampling::top_p_sampling_from_probs, "top_p_sampling_from_probs");
+  m.def("top_k_top_p_sampling_from_probs", &lightop::sampling::top_k_top_p_sampling_from_probs, "top_k_top_p_sampling_from_probs");
 }
 
