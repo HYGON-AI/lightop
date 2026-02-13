@@ -82,7 +82,6 @@ def int8_quant_opt(input: torch.Tensor, smoothscale: torch.Tensor):
     opt_scales = torch.empty(input.shape[:-1], device=input.device, dtype=torch.float32)
     
     op.per_token_dynamic_quant_int8(opt_out, input, opt_scales, smoothscale)
-    # opt_out, opt_scales = op.per_token_quant_int8(input, num_local_tokens_tensor)
     return opt_out, opt_scales
 
 # ------------------ 正确性 ------------------
@@ -113,9 +112,6 @@ def check_correctness_once(num_tokens: int, hidden_sizes: int, rtol=1e-2, atol=1
     out_opt = out_opt[:m]
     scales_opt = scales_opt[:m]
 
-    # print(f"scales_max_abs={(scales_init - scales_opt).abs().max().item():.4e}")
-    # print(f"out_max_abs={(out_init - out_opt).abs().max().item():.4e}")
-
     if not torch.allclose(scales_init, scales_opt, rtol=1e-2, atol=1e-2):#lj
         diff = (scales_init - scales_opt).abs()
         max_abs = diff.max().item()
@@ -129,7 +125,6 @@ def check_correctness_once(num_tokens: int, hidden_sizes: int, rtol=1e-2, atol=1
         print("out_opt_shape:",out_opt.shape)
         raise AssertionError(f"out_max_abs={max_abs:.4e}")
 
-    
 def run_correctness_suite():
     # torch.manual_seed(23)
     numtokens_list = [2**item for item in range(1, 18)] 
@@ -214,7 +209,7 @@ def benchmark(shape, provider, warmup=10):
     
     m = num_tokens 
     num_local_tokens = [m]
-    num_local_tokens_tensor = torch.tensor(num_local_tokens,device=device,dtype=torch.int32)
+    # num_local_tokens_tensor = torch.tensor(num_local_tokens,device=device,dtype=torch.int32)
 
     smoothscale = torch.ones(
         hidden_sizes,
@@ -288,8 +283,7 @@ def benchmark(shape, provider, warmup=10):
     print(f"IO Byte           : {io_bytes:,} B ({io_bytes/(1024**2):.2f} MB)")
     print(f"Memory BW (GB/s)  : avg={mem_bw:.2f} | max={mem_bw_max:.2f} | min={mem_bw_min:.2f}")
 
-    # 返回延迟（用于绘图），带宽可通过打印查看
-    # return mem_bw, mem_bw_max, mem_bw_min
+    # 返回延迟
     return 1000 * ms, 1000 * max_ms, 1000 * min_ms
 
 # ------------------ 入口 ------------------
