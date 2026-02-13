@@ -748,8 +748,12 @@ def fuse_moe_correctness_preprocess(
     ) -> tuple[dict[str, int], float]:
     
     mode_ranges = [mode for mode in block_m_configs.keys()]
-    gemm1_compare_failed_list = [63, 67, 71, 75, 78, 81, 84] #这里
-    gemm2_compare_failed_list = [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 83, 84]
+    init_gemm1_compare_failed_list = [16,17,18,19,20,21,22,23,24,25,28,29,30,31,44,45,46,47,56,57,63, 67, 71, 75, 78, 81, 84,506,511,513,569,1000,1001,1002]
+    init_gemm2_compare_failed_list = [16,17,18,19,20,21,22,23,24,25,28,29,30,31,44,45,46,47,56,57,32, 33, 34, 35, 36, 37, 38, 39, 
+    40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 
+    83, 84,506,511,513,569,1000,1001,1002]
+    gemm1_compare_failed_list = [m for m in init_gemm1_compare_failed_list] #这里
+    gemm2_compare_failed_list = [m for m in init_gemm2_compare_failed_list]
     device="cuda:"+str(device_id)
     
     # 计算本地专家数量和映射
@@ -767,16 +771,16 @@ def fuse_moe_correctness_preprocess(
         # if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43, 75]: #TP8 gemm2
         #     mode1 = 0
 
-        if mode0 in [63, 67, 71, 75, 78, 81, 84]: #qwen30b gemm1
-            mode0 = 0
+        if mode0 in init_gemm1_compare_failed_list: #qwen30b gemm1
+            mode0 = 0 if mode0 < 500 else 500
         # if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43, 63, 67,71, 78, 75, 79, 80, 81, 82, 83, 84]: #qwen30b gemm2
         #     mode1 = 0
 
         # if mode0 in [63]: #qwen30b gemm1
         #     mode0 = 0
 
-        if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 83, 84]: #TP16 gemm2
-            mode1 = 0
+        if mode1 in init_gemm2_compare_failed_list: #TP16 gemm2
+            mode1 = 0 if mode1 < 500 else 500
         print("mode0 mode1: ", mode0, mode1)
         mode_list=[mode0,mode1]
         input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=local_num_experts,device=device,block_size=None,out_dtype=dtype)
@@ -1439,11 +1443,11 @@ def main(args: argparse.Namespace):
     topk = 8
     ep_size = 1
 
-    # 腾讯微信算子
-    # qwen-235B-22B-w8a8-tp4 
-    E = 128
-    shard_intermediate_size=768
-    hidden_size=4096
+    # # 腾讯微信算子
+    # # qwen-235B-22B-w8a8-tp4 
+    # E = 128
+    # shard_intermediate_size=768
+    # hidden_size=4096
 
     # qwen-235B-22B-w8a8-tp8 todo
     # E = 16
@@ -1493,11 +1497,11 @@ def main(args: argparse.Namespace):
 
     # GLM4.6-W8A8
     # [384, 5120]  [5120, 192]
-    # ep_size = 1
-    # topk = 1
-    # E = 160
-    # shard_intermediate_size=384
-    # hidden_size=5120
+    ep_size = 1
+    topk = 1
+    E = 160
+    shard_intermediate_size=384
+    hidden_size=5120
     
     # EP8
     # ep_size = 8
@@ -1537,8 +1541,9 @@ def main(args: argparse.Namespace):
 
     if args.batch_size is None:
         batch_sizes = [
-            #1, 2, 
-            4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
+            # 1, 2, 
+            # 4, 8, 16, 32, 64, 128,
+             256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             #1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 
             #16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             #1, 2, 4, 8, 16, 32, 64, 128
@@ -1706,4 +1711,4 @@ if __name__ == "__main__":
 
     main(args)
     # benchmark_config_profile(49152, 256, 256, 7168, 8, torch.bfloat16, use_fp8_w8a8=False, use_int8_w8a16=False, use_int8_w8a8=True, num_iters=10, block_quant_shape=[128,128])
-    # HIP_VISIBLE_DEVICES=3 python moe_w8a8/benchmark_moe_int8_marlin.py --num-gpus 1 --benchmark
+    # HIP_VISIBLE_DEVICES=3 python tune_glm.py --num-gpus 1 --tune
