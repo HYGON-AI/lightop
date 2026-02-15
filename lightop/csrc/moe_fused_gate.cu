@@ -5,7 +5,16 @@
 #include <cfloat>
 #include <type_traits>
 #include <hip/hip_bf16.h>
-
+#if defined(__gfx938__)
+  constexpr float LOG2_E_VAL = 1.44269504089f; 
+  __device__ inline float exp_func(float x) {
+      return __builtin_amdgcn_exp2f(x * LOG2_E_VAL);
+  }
+#else
+  __device__ inline float exp_func(float x) {
+      return __expf(x);
+  }
+#endif
 
 namespace at {
 namespace native {
@@ -49,11 +58,9 @@ public:
    }
 };
 
-
 // Fixed constants common to both dynamic and static template versions:
 static constexpr int WARPS_PER_CTA = 1;
-// 现在约束的是 per-thread VPT
-static constexpr int MAX_VPT = 32; // maximum VPT we support, > params.VPT = (num_expert / num_expert_group) / 4
+static constexpr int MAX_VPT = 32; 
 
 // Create an alias for Array using AlignedArray
 template <typename T, int N>
@@ -100,7 +107,7 @@ __device__ void moe_fused_gate_impl(
   vectype in = *((vectype*)(thread_read_ptr));
   vectype_bias b = *((vectype_bias*)(bias_thread_read_ptr));
   for(int kk =0; kk < 8; kk++){
-   row_chunk[kk]=1.0f/(1.0f + __expf(-static_cast<float>(in[kk])));
+   row_chunk[kk]=1.0f/(1.0f + exp_func(-static_cast<float>(in[kk])));
    scores_chunk[kk]=static_cast<float>(b[kk])+row_chunk[kk];
   }
 
@@ -338,7 +345,7 @@ __device__ void moe_fused_gate_impl_expert_384(
 
   #pragma unroll
   for(int kk = 0; kk < VPT_Capacity; kk++){
-      row_chunk[kk] = 1.0f/(1.0f + __expf(-static_cast<float>(in[kk])));
+      row_chunk[kk] = 1.0f/(1.0f + exp_func(-static_cast<float>(in[kk])));
       scores_chunk[kk] = static_cast<float>(b[kk]) + row_chunk[kk];
   }
 
@@ -539,12 +546,141 @@ struct KernelParams {
  static constexpr int WARPS_PER_CTA = WARPS_PER_CTA_;
 };
 
+// 智普优化
+template <typename T, typename T_bias, typename Params, int VPT_LOCAL>
+__global__ void moe_fused_gate_kernel_expert160_topk8(
+  void* input,
+  void* bias,
+  float* output_ptr,
+  int32_t* indices_ptr,
+  int64_t num_rows,
+  int64_t n_share_experts_fusion,
+  double routed_scaling_factor,
+  Params params) 
+{
+  constexpr float Negative_inf = -FLT_MAX;
+  constexpr int NUM_EXPERTS = 160;
+
+  int tidx = threadIdx.x;
+  int group_row = tidx / params.THREADS_PER_ROW; 
+  int thread_row = blockIdx.x * params.ROWS_PER_CTA + group_row;
+  
+  if (thread_row >= num_rows) {
+      return;
+  }
+
+  auto* input_ptr = reinterpret_cast<T*>(input);
+  auto* bias_ptr = reinterpret_cast<T_bias*>(bias);
+  
+  auto* thread_row_input = input_ptr + thread_row * NUM_EXPERTS;
+  auto* thread_row_bias = bias_ptr; 
+
+  int thread_group_idx = tidx % params.THREADS_PER_ROW;
+  int start_col = thread_group_idx * VPT_LOCAL;
+
+  float scores_chunk[VPT_LOCAL];
+  float row_chunk[VPT_LOCAL];
+
+ 
+  constexpr int EFFECTIVE_THREADS = NUM_EXPERTS / VPT_LOCAL;
+  
+  if (thread_group_idx < EFFECTIVE_THREADS) {
+      using VecT = AlignedArray<T, VPT_LOCAL>;
+      using VecBias = AlignedArray<T_bias, VPT_LOCAL>;
+
+      VecT input_vec = *reinterpret_cast<VecT*>(thread_row_input + start_col);
+      VecBias bias_vec = *reinterpret_cast<VecBias*>(thread_row_bias + start_col);
+
+      #pragma unroll
+      for(int i=0; i < VPT_LOCAL; ++i) {
+          float in = static_cast<float>(input_vec[i]);
+          float b = static_cast<float>(bias_vec[i]);
+          float prob = 1.0f / (1.0f + exp_func(-in)); 
+          row_chunk[i] = prob; 
+          scores_chunk[i] = b + prob; 
+      }
+  } else {
+      #pragma unroll
+      for(int i=0; i < VPT_LOCAL; ++i) {
+          scores_chunk[i] = Negative_inf;
+          row_chunk[i] = 0.0f; 
+      }
+  }
+
+  float my_stored_prob = 0.0f;
+  int my_stored_idx = 0;
+  float output_sum = 0.0f;
+  
+  int topk_routed = 8 - n_share_experts_fusion;
+
+
+  #pragma unroll
+  for (int k = 0; k < 8; ++k) {
+    float local_max = Negative_inf;
+    int local_idx = -1; 
+  
+    #pragma unroll
+    for (int i = 0; i < VPT_LOCAL; ++i) {
+      if (scores_chunk[i] > local_max) {
+        local_max = scores_chunk[i];
+        local_idx = start_col + i;
+      }
+    }
+
+    float global_max_val = local_max;
+    int global_best_expert_id = local_idx;
+
+    #pragma unroll
+    for (int mask = params.THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
+        float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(global_max_val, mask, params.THREADS_PER_ROW);
+        int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert_id, mask, params.THREADS_PER_ROW);
+        if (other_max > global_max_val) {
+            global_max_val = other_max;
+            global_best_expert_id = other_expert;
+        } 
+    }
+    int winner_thread = global_best_expert_id / VPT_LOCAL;
+    int winner_offset = global_best_expert_id % VPT_LOCAL;
+    
+    float best_prob_val = 0.0f;
+  
+    if (thread_group_idx == winner_thread) {
+       scores_chunk[winner_offset] = Negative_inf;
+       best_prob_val = row_chunk[winner_offset];
+    }
+    
+    float best_prob = VLLM_SHFL_BCAST_SYNC_WIDTH(best_prob_val, winner_thread, params.THREADS_PER_ROW);
+
+    if (k < topk_routed) {
+        output_sum += best_prob;
+    }
+
+    if (thread_group_idx == k) {
+      my_stored_prob = best_prob;
+      my_stored_idx = global_best_expert_id;
+    }
+  }
+
+  // 共享专家逻辑
+  if (n_share_experts_fusion > 0 && thread_group_idx >= topk_routed && thread_group_idx < 8) {
+      int share_offset = thread_group_idx - topk_routed;
+      my_stored_idx = NUM_EXPERTS + share_offset; 
+      my_stored_prob = output_sum / static_cast<float>(routed_scaling_factor);
+  }
+
+  if (thread_group_idx < 8) { // 只前8个线程写回结果
+    int const out_idx = 8 * thread_row + thread_group_idx;
+    output_ptr[out_idx] = my_stored_prob / output_sum;
+    indices_ptr[out_idx] = my_stored_idx;
+  }
+}
+
 template <
    typename T,
    typename T_bias, 
-   int VPT, //VPT_PER_THREAD 32/4 = 8
+   int VPT, 
    int NUM_EXPERTS,
-   int THREADS_PER_ROW, //THREADS_PER_ROW_NEW
+   int THREADS_PER_ROW, 
    int ROWS_PER_WARP,
    int ROWS_PER_CTA,
    int WARPS_PER_CTA>
@@ -572,7 +708,7 @@ __global__ void moe_fused_gate_kernel(
           routed_scaling_factor,
           params);
   } else {
-      moe_fused_gate_impl<T, T_bias, decltype(params)>(
+    moe_fused_gate_impl<T, T_bias, decltype(params)>(
           input,
           bias,
           output_ptr,
@@ -589,7 +725,7 @@ __global__ void moe_fused_gate_kernel(
 // Macro to compute compile-time constants and launch the kernel.
 #define LAUNCH_MOE_GATE_CONFIG(T, T_bias, EXPERTS, EXPERT_GROUP) \
  do {               \
-   /* 优化之前是一个线程一个gourp,opt后四个线程一个gourp*/ \
+   constexpr int N_WARP = 2;\
    constexpr int VPT_PER_GROUP = (EXPERTS) / (EXPERT_GROUP);    \
    constexpr int VPT_PER_THREAD = VPT_PER_GROUP / 4;      \
    /* threads per row 变成了之前的四倍*/ \
@@ -597,19 +733,42 @@ __global__ void moe_fused_gate_kernel(
    constexpr int ROWS_PER_WARP = ((THREADS_PER_ROW_NEW) <= WARP_SIZE) ? (WARP_SIZE / (THREADS_PER_ROW_NEW)) : 1; \
    constexpr int ROWS_PER_CTA = WARPS_PER_CTA * ROWS_PER_WARP; \
    moe_fused_gate_kernel<T, T_bias, VPT_PER_THREAD, EXPERTS, THREADS_PER_ROW_NEW, ROWS_PER_WARP, ROWS_PER_CTA, WARPS_PER_CTA> \
-      <<<num_blocks, block_dim, 0, stream>>>( \
-        input.data_ptr(),          \
-        bias.data_ptr(),          \
-        output.data_ptr<float>(),        \
-        indices.data_ptr<int32_t>(),      \
-        num_rows,              \
-        topk_group,            \
-        topk,                \
-        n_share_experts_fusion,        \
-        routed_scaling_factor);        \
+     <<<num_blocks, block_dim, 0, stream>>>( \
+       input.data_ptr(),          \
+       bias.data_ptr(),          \
+       output.data_ptr<float>(),        \
+       indices.data_ptr<int32_t>(),      \
+       num_rows,              \
+       topk_group,            \
+       topk,                \
+       n_share_experts_fusion,        \
+       routed_scaling_factor);        \
    dispatched = true;              \
  } while (0)
 
+ #define LAUNCH_MOE_GATE_E160_NE1(T, T_bias, THREADS_PER_ROW_VAL, VPT_VAL, N_WARP_VAL) \
+ do { \
+   constexpr int N_WARP = N_WARP_VAL; \
+   constexpr int THREADS_PER_ROW = THREADS_PER_ROW_VAL; \
+   constexpr int VPT = VPT_VAL; \
+   constexpr int EXPERTS = 160; \
+   constexpr int ROWS_PER_WARP = WARP_SIZE / THREADS_PER_ROW; \
+   constexpr int ROWS_PER_CTA = N_WARP * ROWS_PER_WARP; \
+   dim3 block_dim_spec(WARP_SIZE*N_WARP); \
+   int64_t num_blocks_spec = (num_rows + ROWS_PER_CTA - 1) / ROWS_PER_CTA; \
+   KernelParams<VPT, EXPERTS, THREADS_PER_ROW, ROWS_PER_WARP, ROWS_PER_CTA, N_WARP> params_spec; \
+   moe_fused_gate_kernel_expert160_topk8<T, T_bias, decltype(params_spec), VPT> \
+     <<<num_blocks_spec, block_dim_spec, 0, stream>>>( \
+       input.data_ptr(),          \
+       bias.data_ptr(),          \
+       output.data_ptr<float>(),        \
+       indices.data_ptr<int32_t>(),       \
+       num_rows,              \
+       n_share_experts_fusion,        \
+       routed_scaling_factor, \
+       params_spec);        \
+   dispatched = true; \
+ } while (0)
 
 struct KernelParamsDynamic {
  int VPT;
@@ -666,7 +825,6 @@ std::vector<torch::Tensor> moe_fused_gate(
  auto output = torch::empty({num_rows, topk}, options);
  auto indices = torch::empty({num_rows, topk}, options.dtype(torch::kInt32));
 
-//之前是一个线程一个group，现在改为4个线程一个gourp
  int64_t threads_per_row = num_expert_group * 4;
 
  int64_t rows_per_warp = std::max<int64_t>(1, WARP_SIZE / threads_per_row);
@@ -675,29 +833,33 @@ std::vector<torch::Tensor> moe_fused_gate(
  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
  dim3 block_dim(WARP_SIZE, WARPS_PER_CTA); // This is correct for the new thread_row calculation
 
- // Check 2: Ensure that num_experts is divisible by num_expert_group. (this also means num_expert_group is power of 2)
- TORCH_CHECK(
-     num_experts % num_expert_group == 0,
-     "num_experts must be divisible by num_expert_group, but got ",
-     num_experts,
-     " / ",
-     num_expert_group);
-
  int computed_vpt = num_experts / num_expert_group;
- 
- //四个线程一个gourep
  int computed_vpt_per_thread = computed_vpt / 4;
- TORCH_CHECK(
-     computed_vpt_per_thread <= MAX_VPT,
-     "Per thread experts: (num_experts / num_expert_group / 4) = (",
-     computed_vpt_per_thread,
-     ") exceeds the maximum supported (",
-     MAX_VPT,
-     ")");
 
-
- // Dispatch to templated kernel for known compile-time configurations.
+ //智普优化
  bool dispatched = false;
+ if (num_experts == 160 && topk == 8 && num_expert_group == 1 && topk_group == 1) {
+    if (input.scalar_type() == at::kBFloat16) {
+        if (bias.scalar_type() == at::kFloat) {
+            LAUNCH_MOE_GATE_E160_NE1(__nv_bfloat16, float, 32, 8, 2);
+        } else if (bias.scalar_type() == at::kBFloat16) {
+            LAUNCH_MOE_GATE_E160_NE1(__nv_bfloat16, __nv_bfloat16, 32, 8, 2);
+        }
+    } else if (input.scalar_type() == at::kHalf) {
+         if (bias.scalar_type() == at::kHalf) {
+            LAUNCH_MOE_GATE_E160_NE1(half, half, 32, 8, 2);
+         }
+    } else if (input.scalar_type() == at::kFloat) {
+         if (bias.scalar_type() == at::kFloat) {
+            if (num_rows < 512) {
+                LAUNCH_MOE_GATE_E160_NE1(float, float, 64, 4, 1);
+            } else {
+                LAUNCH_MOE_GATE_E160_NE1(float, float, 32, 8, 2);
+            }
+         }
+    }
+    return {output, indices};
+ }
 
  if (input.scalar_type() == at::kBFloat16) {
    if (bias.scalar_type() == at::kFloat) {
