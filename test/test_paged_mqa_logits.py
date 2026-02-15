@@ -87,8 +87,7 @@ def ref_fp8_paged_mqa_logits(q: torch.Tensor, kv_cache: torch.Tensor,
             logits[i * next_n:(i + 1) * next_n, block_rk * block_size: (block_rk + 1) * block_size] = torch.where(k_offsets[None, :] <= q_offsets[:, None], s, float('-inf'))
     return logits
 
-def test_paged_mqa_logits():
-    print('Testing FP8 Paged MQA Logits:')
+def test_paged_mqa_logits(use_fp8 = True):
     max_model_len = 111 * 1000
     for batch_size, next_n in [(64, 1), (64, 2), (128, 1)]:
         for heads, index_dim in [(64, 128)]:
@@ -112,36 +111,75 @@ def test_paged_mqa_logits():
                         block_tables[i][j] = block_idx_pool[counter]
                         counter += 1
 
-                # q_fp8 = q.to(torch.float8_e4m3fn)
-                # kv_cache_fp8 = kv_cache_cast_to_fp8(kv_cache)
-                schedule_metadata = gemmopt.get_paged_mqa_logits_metadata(context_lens, blocksize, 80)
+                device_props = torch.cuda.get_device_properties(0)
+                device_name = device_props.gcnArchName.split(':')[0] if hasattr(device_props, 'gcnArchName') else device_props.name
+                num_cus = device_props.multi_processor_count
+
+                schedule_metadata = gemmopt.get_paged_mqa_logits_metadata(context_lens, blocksize, num_cus)
                 torch.cuda.synchronize()
-                logits = gemmopt.paged_mqa_logits(q, kv_cache, weights, context_lens, block_tables, schedule_metadata, max_model_len, clean_logits=True)
-                torch.cuda.synchronize()
 
-                ref_logits = ref_fp8_paged_mqa_logits(q, kv_cache, weights, context_lens, block_tables, max_model_len)
+                if 'gfx938' in device_name and use_fp8:
+                    print('Testing FP8 Paged MQA Logits:')
+                    q_fp8 = q.to(torch.float8_e4m3fn)
+                    kv_cache_fp8 = kv_cache_cast_to_fp8(kv_cache)
 
-                positions = torch.arange(max_model_len, device='cuda').unsqueeze(0).expand(batch_size * next_n, -1)
-                row_indices = torch.arange(batch_size * next_n, device='cuda') // next_n
-                next_n_offset = torch.arange(batch_size * next_n, device='cuda') % next_n
-                ref_neginf_mask = ~(positions <= (context_lens[row_indices] - next_n + next_n_offset).unsqueeze(1))
+                    logits = gemmopt.paged_mqa_logits(
+                        q_fp8, kv_cache_fp8, weights, context_lens, block_tables, schedule_metadata, max_model_len, clean_logits=True)
+                    torch.cuda.synchronize()
 
-                neginf_mask = (logits == float('-inf'))
-                assert torch.equal(neginf_mask, ref_neginf_mask)
+                    ref_logits = ref_fp8_paged_mqa_logits(q, kv_cache, weights, context_lens, block_tables, max_model_len)
 
-                logits = logits.masked_fill(neginf_mask, 0)
-                ref_logits = ref_logits.masked_fill(ref_neginf_mask, 0)
-                check = torch.allclose(logits, ref_logits, rtol=1e-3, atol=1e-3)
-                if not check:
-                    print("all close failed...")
+                    positions = torch.arange(max_model_len, device='cuda').unsqueeze(0).expand(batch_size * next_n, -1)
+                    row_indices = torch.arange(batch_size * next_n, device='cuda') // next_n
+                    next_n_offset = torch.arange(batch_size * next_n, device='cuda') % next_n
+                    ref_neginf_mask = ~(positions <= (context_lens[row_indices] - next_n + next_n_offset).unsqueeze(1))
+
+                    neginf_mask = (logits == float('-inf'))
+                    assert torch.equal(neginf_mask, ref_neginf_mask)
+
+                    logits = logits.masked_fill(neginf_mask, 0)
+                    ref_logits = ref_logits.masked_fill(ref_neginf_mask, 0)
+
+                    diff = calc_diff(logits, ref_logits)
+                    assert diff < 1e-3, f'{diff=}, not pass'
+
                 else:
-                    print("all close passed...")
+                    print('Testing BF16 Paged MQA Logits:')
+                    q_bf16 = q
+                    kv_cache_bf16 = kv_cache
+
+                    logits = gemmopt.paged_mqa_logits(
+                        q_bf16, kv_cache_bf16, weights, context_lens, block_tables, schedule_metadata, max_model_len, clean_logits=True)
+                    torch.cuda.synchronize()
+
+                    ref_logits = ref_fp8_paged_mqa_logits(q_bf16, kv_cache_bf16, weights, context_lens, block_tables, max_model_len)
+
+                    positions = torch.arange(max_model_len, device='cuda').unsqueeze(0).expand(batch_size * next_n, -1)
+                    row_indices = torch.arange(batch_size * next_n, device='cuda') // next_n
+                    next_n_offset = torch.arange(batch_size * next_n, device='cuda') % next_n
+                    ref_neginf_mask = ~(positions <= (context_lens[row_indices] - next_n + next_n_offset).unsqueeze(1))
+
+                    neginf_mask = (logits == float('-inf'))
+                    assert torch.equal(neginf_mask, ref_neginf_mask)
+
+                    logits = logits.masked_fill(neginf_mask, 0)
+                    ref_logits = ref_logits.masked_fill(ref_neginf_mask, 0)
+
+                    check = torch.allclose(logits, ref_logits, rtol=1e-3, atol=1e-3)
+                    if not check:
+                        print("all close failed...")
+                    else:
+                        print("all close passed...")
 
                 sum_lens = sum(context_lens.to(torch.int64))
                 tflops = 2 * sum_lens * next_n * heads * index_dim / 1e12
                 input_bytes = count_bytes(q, weights, context_lens) + sum_lens * (index_dim + 4) + (sum_lens / blocksize) * 4
                 output_bytes = sum_lens * next_n * 4
-                t = bench_kineto(lambda: gemmopt.paged_mqa_logits(q, kv_cache, weights, context_lens, block_tables, schedule_metadata, max_model_len, clean_logits=False))
+                t = bench_kineto(lambda: gemmopt.paged_mqa_logits(
+                    q_fp8 if 'gfx938' in device_name and use_fp8 else q_bf16,
+                    kv_cache_fp8 if 'gfx938' in device_name and use_fp8 else kv_cache_bf16,
+                    weights, context_lens, block_tables, schedule_metadata, max_model_len, clean_logits=False
+                ))
                 clean_bytes = (batch_size * next_n * max_model_len - neginf_mask.sum().item()) * 4 + count_bytes(context_lens)
                 print(f' > BSZ={batch_size:3}, NextN={next_n:1}, H={heads:2}, D={index_dim:2}, L={avg_kv:6}: '
                       f'{tflops / t:4.0f} TFLOPS, {t * 1e6:3.0f} us, '
@@ -152,4 +190,5 @@ def test_paged_mqa_logits():
 
 
 if __name__ == '__main__':
-    test_paged_mqa_logits()
+    test_paged_mqa_logits(use_fp8=True)
+    test_paged_mqa_logits(use_fp8=False)
