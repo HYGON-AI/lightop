@@ -158,6 +158,50 @@ __device__ __forceinline__ void cp_async4(float* smem_ptr, uintx4 global_addr, c
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+
+//bypass
+template<typename src_type=int8_t, typename dst_type=float, const int dword_count=4, const int auxilariy=0>
+__forceinline__ __device__ void builtin_buffer_load_dword_lds4(src_type *const shared_addr, const typename vec<uint,4>::type rsrc, const int &lds_offset, const int gvOffset_s, const int &gvOffset_v) {
+    constexpr int bytes_per_element = sizeof(dst_type);
+    dst_type *ptr = reinterpret_cast<dst_type*>(shared_addr) + lds_offset;
+    __builtin_amdgcn_raw_buffer_load_lds(
+        rsrc,
+        (__attribute__((address_space(3))) int*)ptr,
+        dword_count * 4, // dword读取
+        gvOffset_v * bytes_per_element,
+        gvOffset_s * bytes_per_element,
+        0, /* immediate offset, instruction offset */
+        auxilariy /* auxilariy data| bit 0: glc, bit 1: slc, bit 2: dlc, bit 3: cache swizzle */
+    );
+}
+
+#define buffer_load_lds_tile_pad_sorted_token_dword_lds4(topk, sorted_token_ids_offset, sorted_token_lens, bidx, WARP_NUM, N_row_len, BLOCK_M, WARP_K, Element, global_ptr, lds_ptr, global_offset, lds_stage_offset, max_M_len, warp_id, lane_id)\
+{\
+    int bytes_per_Element = 1;\
+    const int bytes_num_per_dword = 4;\
+    const int bytes_num_per_dwordx4 = 16;\
+    int thread_num_n = WARP_K * bytes_per_Element / bytes_num_per_dwordx4;\
+    int thread_num_m = 64/thread_num_n;\
+    int lane_M_idx = lane_id / thread_num_n;\ 
+    int lane_N_idx = lane_id % thread_num_n;\
+    const int lds_load_num = (BLOCK_M * WARP_K * bytes_per_Element) / (bytes_num_per_dwordx4 * 64);\
+    if(warp_id < lds_load_num){\
+        for(int load = 0,warp_loop = warp_id; load < std::max(1,lds_load_num/WARP_NUM); warp_loop += WARP_NUM, ++load) {\
+            int block_row = warp_loop * thread_num_m + lane_M_idx;\
+            int sorted_token_idx = sorted_token_ids_offset[std::min(bidx * BLOCK_M + block_row, int(sorted_token_lens - 1))];\
+            int g_row = (std::min(sorted_token_idx / topk,  max_M_len - 1)); \
+            int g_col = lane_N_idx; \
+            int gsOffset   = global_offset/bytes_num_per_dword;\
+            int gvOffset   = g_row * N_row_len/bytes_num_per_dword + g_col * (bytes_num_per_dwordx4 / bytes_num_per_dword);\
+            int lds_offset = lds_stage_offset/bytes_num_per_dword + warp_loop * 64 * (bytes_num_per_dwordx4 / bytes_num_per_dword);\
+            builtin_buffer_load_dword_lds4(lds_ptr, global_ptr, lds_offset, gsOffset, gvOffset);\
+        }\
+    }\
+}
+
+
+
+
 //封装buffer_load_dword
 template<typename src_type=int8_t, typename dst_type=float, const int dword_count=1, const int auxilariy=0>
 __forceinline__ __device__ void builtin_buffer_load_dword_lds(src_type *const shared_addr, const typename vec<uint,4>::type rsrc, const int &lds_offset, const int gvOffset_s, const int &gvOffset_v) {

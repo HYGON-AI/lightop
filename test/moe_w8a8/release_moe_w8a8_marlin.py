@@ -887,6 +887,21 @@ def test_moe_performance_accuracy(
         input_data, w1_marlin, weight1, weight1_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
         num_tokens_post_padded, topk, cuda_config1, triton_config1, "gemm1", True, per_channel_quant, compute_type, out_dtype
     )
+
+    #tune
+    # min_time1 = gemm1_time
+    # min_mode1 = cuda_config1['MODE']
+    # for mode in range(85,95):
+    #     cuda_config1['MODE'] = mode
+    #     gemm1_time, gemm1_accuracy = test_single_gemm_performance_accuracy(
+    #         input_data, w1_marlin, weight1, weight1_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
+    #         num_tokens_post_padded, topk, cuda_config1, triton_config1, "gemm1", True, per_channel_quant, compute_type, out_dtype
+    #     )
+    #     print(f"mode: {mode} gemm1_time: {gemm1_time} gemm1_acc: {gemm1_accuracy}")
+    #     if gemm1_time < min_time1:
+    #         min_time1 = gemm1_time
+    #         min_mode1 = mode
+    # print(f"gemm1 best time: {min_time1} mode: {min_mode1}")
     
     # 执行CUDA GEMM1获取中间结果
     intermediate_cache1 = torch.zeros((m, topk, n1), device=input_data.device, dtype=out_dtype)
@@ -921,6 +936,21 @@ def test_moe_performance_accuracy(
         intermediate_cache2, w2_marlin, weight2, weight2_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
         num_tokens_post_padded, 1, cuda_config2, triton_config2, "gemm2", False, per_channel_quant, compute_type, out_dtype
     )
+
+    # min_time = gemm2_time
+    # min_mode = cuda_config2['MODE']
+    # for mode in range(85,95):
+    #     cuda_config2['MODE'] = mode
+    #     gemm2_time, gemm2_accuracy = test_single_gemm_performance_accuracy(
+    #         intermediate_cache2, w2_marlin, weight2, weight2_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
+    #         num_tokens_post_padded, 1, cuda_config2, triton_config2, "gemm2", False, per_channel_quant, compute_type, out_dtype
+    #     )
+    #     print(f"mode: {mode} gemm2_time: {gemm2_time} gemm2_acc: {gemm2_accuracy}")
+    #     if gemm2_time < min_time:
+    #         min_time = gemm2_time
+    #         min_mode = mode
+    # print(f"gemm2 best time: {min_time} mode: {min_mode}")
+
     
     # 整体精度验证已在单个GEMM测试中完成
     # 这里我们基于单个GEMM的结果来判断整体精度
@@ -1053,17 +1083,19 @@ def test_moe_debug(
     
     # 执行CUDA GEMM1获取中间结果
     intermediate_cache1 = torch.zeros((m, topk, n1), device=input_data.device, dtype=out_dtype)
+    moe_gemm_marlin_w8a8(qinput1, w1_marlin, intermediate_cache1, qa1_scale, weight1_scale,
+                  None, sorted_token_ids, expert_ids, num_tokens_post_padded, topk, cuda_config1)
 
     # gemm1验证
-    for i in range(85):
-        cuda_config1['MODE'] = i
+    # for i in range(85):
+    #     cuda_config1['MODE'] = i
 
-        print(f"run {i} start")
-        torch.cuda.synchronize()
-        moe_gemm_marlin_w8a8(qinput1, w1_marlin, intermediate_cache1, qa1_scale, weight1_scale,
-                  None, sorted_token_ids, expert_ids, num_tokens_post_padded, topk, cuda_config1)
-        torch.cuda.synchronize()
-        print(f"run {i} end")
+    #     print(f"run {i} start")
+    #     torch.cuda.synchronize()
+    #     moe_gemm_marlin_w8a8(qinput1, w1_marlin, intermediate_cache1, qa1_scale, weight1_scale,
+    #               None, sorted_token_ids, expert_ids, num_tokens_post_padded, topk, cuda_config1)
+    #     torch.cuda.synchronize()
+    #     print(f"run {i} end")
 
     intermediate_cache2 = torch.empty((m * topk, n1 // 2), device=input_data.device, dtype=out_dtype)
     torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1.view(-1, n1))
@@ -1086,14 +1118,14 @@ def test_moe_debug(
     output_shape = (intermediate_cache2.shape[0] // 8, 8, weight2.shape[1])
     output_cuda = torch.zeros(output_shape, device=intermediate_cache2.device, dtype=out_dtype)
     # geemm2
-    for i in range(85):
+    for i in range(85,95):
         cuda_config1['MODE'] = i
 
         # if i in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43, 75]: #TP8
         #     continue
 
-        if i in [36, 37, 38, 39, 40,41,42,43, 75]: #30b TP2 TP1 
-            continue
+        # if i in [36, 37, 38, 39, 40,41,42,43, 75]: #30b TP2 TP1 
+        #     continue
 
         print(f"gemm2 run {i} start")
         torch.cuda.synchronize()
