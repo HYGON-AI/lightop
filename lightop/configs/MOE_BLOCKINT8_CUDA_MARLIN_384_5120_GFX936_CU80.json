@@ -2,42 +2,42 @@
     "384_5120": {
         "1": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 76,
+            "MODE": 62,
             "DELTA": 1
         },
         "2": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 62,
+            "MODE": 77,
             "DELTA": 1
         },
         "4": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 8,
+            "MODE": 83,
             "DELTA": 1
         },
         "8": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 39,
+            "MODE": 73,
             "DELTA": 1
         },
         "16": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 39,
+            "MODE": 60,
             "DELTA": 1
         },
         "32": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 7,
+            "MODE": 26,
             "DELTA": 1
         },
         "64": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 37,
+            "MODE": 62,
             "DELTA": 1
         },
         "128": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 29,
+            "MODE": 37,
             "DELTA": 1
         },
         "256": {
