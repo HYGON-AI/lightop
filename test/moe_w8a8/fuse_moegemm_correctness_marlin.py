@@ -534,6 +534,15 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
         )
 
     out_cuda = torch.zeros_like(C)
+    # print("A",A.shape)
+    # print("B",B.shape)
+    # print("B_marlin",B_marlin.shape)
+    # print("out_cuda",out_cuda.shape)
+    # print("A_scale",A_scale.shape)
+    # print("B_scale",B_scale.shape)
+    # print("sorted_token_ids",sorted_token_ids.shape)
+    # print("expert_ids",expert_ids.shape)
+    # print("num_tokens_post_padded",num_tokens_post_padded.shape)
     moe_gemm_marlin_w8a8(A, 
                         B_marlin, 
                         out_cuda,
@@ -962,6 +971,14 @@ def run_perchannel_marlin_vaild():
     # k_list_1=[4096]
     # n_list_2=[4096]
     # k_list_2=[192]
+
+    #glm4.7-355b-tp8
+    E=160
+    topk=8
+    n_list_1=[384]
+    k_list_1=[5120]
+    n_list_2=[5120]
+    k_list_2=[192]
     
     # ##zijie
     # E=64
