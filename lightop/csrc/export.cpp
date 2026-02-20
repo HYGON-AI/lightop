@@ -305,6 +305,8 @@ void ep_fused_smooth_quant_scatter(
     torch::Tensor inv_perm,
     int local_num_experts, int alignment); 
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale);
+void rms_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,double epsilon);
+void fused_add_rms_norm_opt(torch::Tensor& input,torch::Tensor& residual, torch::Tensor& weight,double epsilon); 
 }
 }
 
@@ -493,6 +495,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("per_token_dynamic_quant_int8", &at::native::per_token_dynamic_quant_int8, "per_token_dynamic_quant_int8");
   m.def("top_k_sampling_from_probs", &lightop::sampling::top_k_sampling_from_probs, "top_k_sampling_from_probs");
   m.def("top_p_sampling_from_probs", &lightop::sampling::top_p_sampling_from_probs, "top_p_sampling_from_probs");
-  m.def("top_k_top_p_sampling_from_probs", &lightop::sampling::top_k_top_p_sampling_from_probs, "top_k_top_p_sampling_from_probs");
+  m.def("rms_norm_opt", &at::native::rms_norm_opt, "rms_norm_opt");
+  m.def("fused_add_rms_norm_opt", &at::native::fused_add_rms_norm_opt, "fused_add_rms_norm_opt");
 }
 
