@@ -617,7 +617,7 @@ __global__ void moe_fused_gate_kernel_expert160_topk8(
   #pragma unroll
   for (int k = 0; k < 8; ++k) {
     float local_max = Negative_inf;
-    int local_idx = -1; 
+    int local_idx = (thread_group_idx < EFFECTIVE_THREADS) ? start_col : 0;
   
     #pragma unroll
     for (int i = 0; i < VPT_LOCAL; ++i) {
@@ -632,12 +632,12 @@ __global__ void moe_fused_gate_kernel_expert160_topk8(
 
     #pragma unroll
     for (int mask = params.THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
-        float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(global_max_val, mask, params.THREADS_PER_ROW);
-        int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert_id, mask, params.THREADS_PER_ROW);
-        if (other_max > global_max_val) {
+      float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(global_max_val, mask, params.THREADS_PER_ROW);
+      int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert_id, mask, params.THREADS_PER_ROW);
+      if (other_max > global_max_val || (other_max == global_max_val && other_expert < global_best_expert_id)) {
             global_max_val = other_max;
             global_best_expert_id = other_expert;
-        } 
+      }
     }
     int winner_thread = global_best_expert_id / VPT_LOCAL;
     int winner_offset = global_best_expert_id % VPT_LOCAL;
