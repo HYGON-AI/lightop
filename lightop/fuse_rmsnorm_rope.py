@@ -142,14 +142,6 @@ def rms_rotary_embedding_fuse_with_kv_store(
             epsilon,
             not (use_fp8_e4m3)
         )
-        # v_rope_out = v.to(torch.float).to(v_buffer.dtype)
-        # if v.dim() == 2:
-        #     vc = v_rope_out.view(v_rope_out.size(0), v_buffer.shape[1], -1)
-        # else:
-        #     vc = v_rope_out
-        # loc_id = kv_cache_loc // page_size
-        # loc_offset = kv_cache_loc % page_size
-        # v_buffer[loc_id,:,:,loc_offset] = vc
     return q_rope_out, k_rope_out, v_rope_out
 
 def rms_rotary_embedding_fuse_with_kv_store_fake(
