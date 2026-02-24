@@ -1,4 +1,3 @@
-
 #include <torch/all.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -166,7 +165,10 @@ __launch_bounds__(TPB) __global__ void moeTopK(
             output[idx] = result_kvp.value;
             indices[idx] = should_process_row ? (expert - start_expert) : num_experts;
             assert(indices[idx] >= 0);
-            source_rows[idx] = k_idx * num_rows + block_row;
+            
+            if (source_rows != nullptr) {
+                source_rows[idx] = k_idx * num_rows + block_row;
+            }
         }
         __syncthreads();
     }
@@ -355,7 +357,10 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
             output[idx] = max_val;
             topk_sum  += max_val;  // 写入 Top-K 的概率值。
             indices[idx] = should_process_row ? (expert - start_expert) : NUM_EXPERTS;  // 如果应处理，则写入相对索引；否则写入一个无效索引。
-            source_rows[idx] = k_idx * num_rows + thread_row;  // 记录这个结果对应的原始行索引。
+            
+            if (source_rows != nullptr) {
+                source_rows[idx] = k_idx * num_rows + thread_row;  // 记录这个结果对应的原始行索引。
+            }
         }
 
        // 最后，如果还有下一次迭代要运行，我们清除当前拥有最大值的线程中的该值。
@@ -578,12 +583,14 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
         *reinterpret_cast<float4*>(&output[base_idx]) = *reinterpret_cast<float4*>(&top_vals[0]);
       
 
-        int source_rows_temp[4];
-        source_rows_temp[0] = 0 * num_rows + thread_row;
-        source_rows_temp[1] = 1 * num_rows + thread_row;
-        source_rows_temp[2] = 2 * num_rows + thread_row;
-        source_rows_temp[3] = 3 * num_rows + thread_row;
-        *reinterpret_cast<int4*>(&source_rows[base_idx]) = *reinterpret_cast<int4*>(&source_rows_temp[0]);
+        if (source_rows != nullptr) {
+            int source_rows_temp[4];
+            source_rows_temp[0] = 0 * num_rows + thread_row;
+            source_rows_temp[1] = 1 * num_rows + thread_row;
+            source_rows_temp[2] = 2 * num_rows + thread_row;
+            source_rows_temp[3] = 3 * num_rows + thread_row;
+            *reinterpret_cast<int4*>(&source_rows[base_idx]) = *reinterpret_cast<int4*>(&source_rows_temp[0]);
+        }
 
         // if constexpr (std::is_same_v<IndType, int>) {
         //     *reinterpret_cast<int4*>(&indices[base_idx]) = *reinterpret_cast<int4*>(&top_indices[0]);
@@ -754,12 +761,14 @@ void topk2GatingSoftmax_opt(const float* input, const bool* finished, float* out
         const int base_idx = k * thread_row;
         // Use float2 for vectorized write of 2 floats
         *reinterpret_cast<float2*>(&output[base_idx]) = *reinterpret_cast<float2*>(&top_vals[0]);
-    
-        int source_rows_temp[2];
-        source_rows_temp[0] = 0 * num_rows + thread_row;
-        source_rows_temp[1] = 1 * num_rows + thread_row;
-        // Use int2 for vectorized write of 2 ints
-        *reinterpret_cast<int2*>(&source_rows[base_idx]) = *reinterpret_cast<int2*>(&source_rows_temp[0]);
+
+        if (source_rows != nullptr) {
+            int source_rows_temp[2];
+            source_rows_temp[0] = 0 * num_rows + thread_row;
+            source_rows_temp[1] = 1 * num_rows + thread_row;
+            // Use int2 for vectorized write of 2 ints
+            *reinterpret_cast<int2*>(&source_rows[base_idx]) = *reinterpret_cast<int2*>(&source_rows_temp[0]);
+        }
 
         if constexpr (std::is_same_v<IndType, int>) {
             // Use int2 for vectorized write if IndType is int
@@ -1017,7 +1026,10 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
             const int base_idx = 8 * thread_row + thread_group_idx;
             indices[base_idx] = top_indices;
             output[base_idx] = top_vals;
-            source_rows[base_idx] = thread_group_idx * num_rows + thread_row;
+            
+            if (source_rows != nullptr) {
+                source_rows[base_idx] = thread_group_idx * num_rows + thread_row;
+            }
         }
     }
 }
@@ -1289,7 +1301,10 @@ void topk8GatingSoftmax_no_align(
             
             indices[base_idx] = top_indices;
             output[base_idx] = top_vals; 
-            source_rows[base_idx] = thread_group_idx * num_rows + thread_row;
+            
+            if (source_rows != nullptr) {
+                source_rows[base_idx] = thread_group_idx * num_rows + thread_row;
+            }
         }
     }
 }
@@ -1488,7 +1503,9 @@ void topkGatingSoftmax_opt(const float* input, const bool* finished, float* outp
             const int base_idx = topk * thread_row + thread_group_idx;
             indices[base_idx] = top_indices;
             output[base_idx] = top_vals;
-            source_rows[base_idx] = thread_group_idx * num_rows + thread_row;
+            if (source_rows != nullptr) {
+                source_rows[base_idx] = thread_group_idx * num_rows + thread_row;
+            }
         }
     }
 }
@@ -1607,10 +1624,11 @@ void topkGatingSoftmaxKernelLauncher(
         launch_kernel(std::false_type{});
     }
 }
+
 void topk_softmax(
     torch::Tensor& topk_weights,                // [num_tokens, topk]
     torch::Tensor& topk_indices,                // [num_tokens, topk]
-    torch::Tensor& token_expert_indices,        // [num_tokens, topk]
+    torch::optional<torch::Tensor>& token_expert_indices, // [num_tokens, topk]
     torch::Tensor& gating_output,
     bool Is_renormalize = false)               // [num_tokens, num_experts]
 {
@@ -1630,13 +1648,19 @@ void topk_softmax(
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     torch::Tensor softmax_workspace = torch::empty({workspace_size}, gating_output.options());
    
+    
+    int* token_expert_indices_ptr = nullptr;
+    if (token_expert_indices.has_value() && token_expert_indices.value().defined()) {
+        token_expert_indices_ptr = token_expert_indices.value().data_ptr<int>();
+    }
+
     if(topk_indices.scalar_type() == at::ScalarType::Int)
     {
        topkGatingSoftmaxKernelLauncher(
             gating_output.data_ptr<float>(),
             topk_weights.data_ptr<float>(),
             topk_indices.data_ptr<int>(),
-            token_expert_indices.data_ptr<int>(),
+            token_expert_indices_ptr, 
             softmax_workspace.data_ptr<float>(),
             num_tokens,
             num_experts,
@@ -1650,7 +1674,7 @@ void topk_softmax(
             gating_output.data_ptr<float>(),
             topk_weights.data_ptr<float>(),
             topk_indices.data_ptr<uint32_t>(),
-            token_expert_indices.data_ptr<int>(),
+            token_expert_indices_ptr, 
             softmax_workspace.data_ptr<float>(),
             num_tokens,
             num_experts,
@@ -1664,7 +1688,7 @@ void topk_softmax(
             gating_output.data_ptr<float>(),
             topk_weights.data_ptr<float>(),
             topk_indices.data_ptr<int64_t>(),
-            token_expert_indices.data_ptr<int>(),
+            token_expert_indices_ptr, 
             softmax_workspace.data_ptr<float>(),
             num_tokens,
             num_experts,
@@ -1675,6 +1699,5 @@ void topk_softmax(
  
 }
 
-} // namespace moe
-} // namespace vllm
-
+} // namespace native
+} // namespace at
