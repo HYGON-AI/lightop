@@ -876,7 +876,7 @@ __device__ __forceinline__ T_ACC apply_residual_and_calc_sq(
 
 //8, 8 每个head有8个thread, 每个thread处理8个元素
 template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX,int VEC_SIZE, int THEAD_PER_HEAD>
-__global__ void opt_rms_rope_qwen3(
+__global__ void opt_rms_rope_qwen3_with_qkv(
     const int64_t* __restrict__ positions,
     scalar_t* __restrict__ query,      
     scalar_t* __restrict__ key,   
@@ -1156,19 +1156,21 @@ __global__ void opt_rms_rope_qwen3(
         *(LoadTK8*)(k_rope_out_ptr + offset_high) = *(LoadTK8*)u8_k_high;
         
         *(LoadTK8*)(k_buffer_ptr + offset_low) = *(LoadTK8*)u8_k_low;
-        *(LoadTK8*)(k_buffer_ptr + offset_high) = *(LoadTK8*)u8_k_low;
+        *(LoadTK8*)(k_buffer_ptr + offset_high) = *(LoadTK8*)u8_k_high;
     } 
 
     if (lane >= total_threads_needed_kv && lane < total_threads && v != nullptr) {
         const int v_lane_abs = lane - total_threads_needed_kv;
         const int v_head_idx = v_lane_abs / THEAD_PER_HEAD;
         const int v_lane_in_head = v_lane_abs % THEAD_PER_HEAD;
+
         uint8_t* v_rope_out_ptr = v_rope_out + global_token_idx * v_stride + v_head_idx * head_stride_k;
         uint8_t* v_buffer_ptr = v_buffer + loc_id * v_buffer_stride_n + v_head_idx * v_buffer_stride_h + loc_offset;
 
         scalar_t* v_head_ptr = v + global_token_idx * v_stride + v_head_idx * head_stride_k;
         using LoadTK = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
         using LoadTK8 = at::native::memory::aligned_vector<uint8_t, VEC_SIZE>;
+
         float f_v_low[VEC_SIZE];
         float f_v_high[VEC_SIZE];
         uint8_t u8_v_low[VEC_SIZE];
@@ -1178,6 +1180,7 @@ __global__ void opt_rms_rope_qwen3(
 
         int offset_low = v_lane_in_head * VEC_SIZE;
         int offset_high = HALF_ROT + v_lane_in_head * VEC_SIZE;
+
         *(LoadTK*)r_v_low = *(LoadTK*)(v_head_ptr + offset_low);
         *(LoadTK*)r_v_high = *(LoadTK*)(v_head_ptr + offset_high);
 
@@ -1194,8 +1197,8 @@ __global__ void opt_rms_rope_qwen3(
           convert_vec_to_uint8_t<VEC_SIZE, 0>(f_v_high, u8_v_high);
         }
         
-        *(LoadTK8*)(v_buffer_ptr + offset_low) = *(LoadTK8*)u8_v_low;
-        *(LoadTK8*)(v_buffer_ptr + offset_high) = *(LoadTK8*)u8_v_high;
+        *(LoadTK8*)(v_rope_out_ptr + offset_low) = *(LoadTK8*)u8_v_low;
+        *(LoadTK8*)(v_rope_out_ptr + offset_high) = *(LoadTK8*)u8_v_high;
 
         #pragma unroll
         for (int i = 0; i < VEC_SIZE; ++i) {
@@ -1226,7 +1229,7 @@ __device__ __forceinline__ T_ACC apply_residual_and_calc_sq_4vec(
     return local_sum;
 }
 template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX, int VEC_SIZE, int THEAD_PER_HEAD>
-__global__ void opt_rms_rope_qwen3_rotDim64(
+__global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
     const int64_t* __restrict__ positions,
     scalar_t* __restrict__ query,      
     scalar_t* __restrict__ key,      
@@ -1538,7 +1541,7 @@ void launch_opt_rms_rope(
         size_t smem_size = tokens_per_block * 128 * sizeof(scalar_t);
             DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
                 DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
-                    opt_rms_rope_qwen3<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,VEC,THREAD_PER_ROW>
+                    opt_rms_rope_qwen3_with_qkv<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,VEC,THREAD_PER_ROW>
                         <<<grid_size, actual_block_size, smem_size, stream>>>(
                         positions, query, key, v, cos_sin_cache, k_buffer, v_buffer, kv_cache_loc, q_rope_out, k_rope_out, v_rope_out,
                         page_size, rot_dim, 
@@ -1556,7 +1559,7 @@ void launch_opt_rms_rope(
             size_t smem_size = tokens_per_block * 64 * sizeof(scalar_t);
             DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
                 DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
-                    opt_rms_rope_qwen3_rotDim64<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,4,THREAD_PER_ROW>
+                    opt_rms_rope_qwen3_rotDim64_with_qkv<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,4,THREAD_PER_ROW>
                         <<<grid_size, actual_block_size, smem_size, stream>>>(
                         positions, query, key, v,cos_sin_cache, k_buffer, v_buffer, kv_cache_loc, q_rope_out, k_rope_out, v_rope_out,
                         page_size, rot_dim, 
@@ -1663,7 +1666,6 @@ void rms_rotary_embedding_fuse_with_kv_store(
       at::ScalarType::BFloat16, 
       query.scalar_type(), "fuse_rms_rotary_embedding", [&] {
         using T_ACC = at::acc_type<scalar_t, true>;
-        //qwne3 opt
          if (qwen3) {
                 scalar_t* res_q_ptr = residual_q.has_value() ? residual_q->data_ptr<scalar_t>() : nullptr;
                 scalar_t* res_k_ptr = residual_k.has_value() ? residual_k->data_ptr<scalar_t>() : nullptr;
