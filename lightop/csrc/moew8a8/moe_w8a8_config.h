@@ -1611,10 +1611,10 @@ static std::unordered_map<int, KernelFuncMarlin<OutputType>> get_kernel_maps_mar
         {90, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_bypass<16, 128, 64, 16, 32, 64, 2, char, OutputType>(p); }},
         {91, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_bypass<16, 512, 64, 16, 32, 64, 2, char, OutputType>(p); }},
 
-        {92, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_bypass<16, 128, 64, 16, 128, 64, 2, char, OutputType>(p); }},
-        {93, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_bypass<16, 256, 64, 16, 128, 64, 2, char, OutputType>(p); }},
-        {94, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_bypass<16, 512, 64, 16, 128, 64, 2, char, OutputType>(p); }},
-        {95, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_bypass<16, 1024, 64, 16, 128, 64, 2, char, OutputType>(p); }},
+        {92, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_bypass<16, 64, 64, 16, 64, 64, 2, char, OutputType>(p); }},
+        {93, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_bypass<16, 128, 64, 16, 64, 64, 2, char, OutputType>(p); }},
+        {94, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_bypass<16, 256, 64, 16, 64, 64, 2, char, OutputType>(p); }},
+        {95, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_bypass<16, 512, 64, 16, 64, 64, 2, char, OutputType>(p); }},
 
     };
 }
@@ -1740,10 +1740,10 @@ static std::unordered_map<int, KernelFuncMarlin<OutputType>> get_kernel_maps_mar
         {90, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_bypass<16, 128, 64, 16, 32, 64, 2, char, OutputType>(p); }},
         {91, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_bypass<16, 512, 64, 16, 32, 64, 2, char, OutputType>(p); }},
 
-        {92, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_bypass<16, 128, 64, 16, 128, 64, 2, char, OutputType>(p); }},
-        {93, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_bypass<16, 256, 64, 16, 128, 64, 2, char, OutputType>(p); }},
-        {94, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_bypass<16, 512, 64, 16, 128, 64, 2, char, OutputType>(p); }},
-        {95, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_bypass<16, 1024, 64, 16, 128, 64, 2, char, OutputType>(p); }},
+        {92, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_bypass<16, 64, 64, 16, 64, 64, 2, char, OutputType>(p); }},
+        {93, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_bypass<16, 128, 64, 16, 64, 64, 2, char, OutputType>(p); }},
+        {94, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_bypass<16, 256, 64, 16, 64, 64, 2, char, OutputType>(p); }},
+        {95, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_bypass<16, 512, 64, 16, 64, 64, 2, char, OutputType>(p); }},
 
     };
 }
