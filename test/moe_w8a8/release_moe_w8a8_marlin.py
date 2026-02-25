@@ -31,7 +31,7 @@ device_name = 'gfx938'
 
 
 
-seed = 0
+seed = 2223
 random.seed(seed)
 np.random.seed(seed)
 torch.manual_seed(seed)
@@ -891,17 +891,19 @@ def test_moe_performance_accuracy(
     #tune
     # min_time1 = gemm1_time
     # min_mode1 = cuda_config1['MODE']
-    # for mode in range(85,95):
+    # src_time = gemm1_time
+    # src_mode = min_mode1
+    # for mode in range(0,96):
     #     cuda_config1['MODE'] = mode
     #     gemm1_time, gemm1_accuracy = test_single_gemm_performance_accuracy(
     #         input_data, w1_marlin, weight1, weight1_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
     #         num_tokens_post_padded, topk, cuda_config1, triton_config1, "gemm1", True, per_channel_quant, compute_type, out_dtype
     #     )
     #     print(f"mode: {mode} gemm1_time: {gemm1_time} gemm1_acc: {gemm1_accuracy}")
-    #     if gemm1_time < min_time1:
+    #     if gemm1_time < min_time1 and gemm1_time > 20:
     #         min_time1 = gemm1_time
     #         min_mode1 = mode
-    # print(f"gemm1 best time: {min_time1} mode: {min_mode1}")
+    # print(f"M {m} gemm1 best time: {min_time1} mode: {min_mode1} src_mode: {src_mode} src_time: {src_time}")
     
     # 执行CUDA GEMM1获取中间结果
     intermediate_cache1 = torch.zeros((m, topk, n1), device=input_data.device, dtype=out_dtype)
@@ -939,7 +941,10 @@ def test_moe_performance_accuracy(
 
     # min_time = gemm2_time
     # min_mode = cuda_config2['MODE']
-    # for mode in range(85,95):
+    # src_time = gemm2_time
+    # src_mode = min_mode
+    # test_list = list(range(0,16)) + [48,49,50,65,66,69,70,90]
+    # for mode in test_list:
     #     cuda_config2['MODE'] = mode
     #     gemm2_time, gemm2_accuracy = test_single_gemm_performance_accuracy(
     #         intermediate_cache2, w2_marlin, weight2, weight2_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
@@ -949,7 +954,7 @@ def test_moe_performance_accuracy(
     #     if gemm2_time < min_time:
     #         min_time = gemm2_time
     #         min_mode = mode
-    # print(f"gemm2 best time: {min_time} mode: {min_mode}")
+    # print(f"gemm2 best time: {min_time} mode: {min_mode} src_mode: {src_mode} src_time: {src_time}")
 
     
     # 整体精度验证已在单个GEMM测试中完成
