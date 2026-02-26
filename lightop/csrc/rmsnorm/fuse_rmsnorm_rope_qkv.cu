@@ -894,7 +894,10 @@ __global__ void opt_rms_rope_qwen3_with_qkv(
     const int64_t key_stride,           
     const int64_t v_stride,
     const int64_t head_stride_q,       
-    const int64_t head_stride_k,      
+    const int64_t head_stride_k,  
+    const int q_rope_out_stride_n,    
+    const int q_rope_out_stride_h,
+    const int q_rope_out_stride_p,
     const int k_buffer_stride_n,
     const int k_buffer_stride_h,
     const int k_buffer_stride_p,
@@ -947,7 +950,7 @@ __global__ void opt_rms_rope_qwen3_with_qkv(
         const int q_head_idx = lane / THEAD_PER_HEAD;
         const int q_lane_in_head = lane % THEAD_PER_HEAD;
         ///////////////////////////////////////////////////////
-        uint8_t* q_rope_out_ptr = q_rope_out + global_token_idx * query_stride + q_head_idx * head_stride_q;
+        uint8_t* q_rope_out_ptr = q_rope_out + global_token_idx * q_rope_out_stride_n + q_head_idx * q_rope_out_stride_h;
         ///////////////////////////////////////////////////////
         scalar_t* q_head_ptr = query + global_token_idx * query_stride + q_head_idx * head_stride_q;
         scalar_t* res_q_head_ptr = HAS_RESIDUAL ? (residual_q + global_token_idx * query_stride + q_head_idx * head_stride_q) : nullptr;
@@ -1023,8 +1026,8 @@ __global__ void opt_rms_rope_qwen3_with_qkv(
                 r_q_high[i+1] = qh1 * ch + qh0 * sh;
             }
         }
-        *(LoadT*)(q_head_ptr + offset_low) = *(LoadT*)r_q_low;
-        *(LoadT*)(q_head_ptr + offset_high) = *(LoadT*)r_q_high;
+        // *(LoadT*)(q_head_ptr + offset_low) = *(LoadT*)r_q_low;
+        // *(LoadT*)(q_head_ptr + offset_high) = *(LoadT*)r_q_high;
 
         //进行类型转换
         #pragma unroll
@@ -1137,8 +1140,8 @@ __global__ void opt_rms_rope_qwen3_with_qkv(
                 r_k_high[i+1] = kh1 * ch + kh0 * sh;
             }
         }
-        *(LoadTK*)(k_head_ptr + offset_low) = *(LoadTK*)r_k_low;
-        *(LoadTK*)(k_head_ptr + offset_high) = *(LoadTK*)r_k_high;
+        // *(LoadTK*)(k_head_ptr + offset_low) = *(LoadTK*)r_k_low;
+        // *(LoadTK*)(k_head_ptr + offset_high) = *(LoadTK*)r_k_high;
 
         #pragma unroll
         for(int i=0; i<VEC_SIZE; ++i) {
@@ -1247,7 +1250,10 @@ __global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
     const int64_t key_stride,            
     const int64_t v_stride,
     const int64_t head_stride_q,        
-    const int64_t head_stride_k,     
+    const int64_t head_stride_k,  
+    const int q_rope_out_stride_n,
+    const int q_rope_out_stride_h,
+    const int q_rope_out_stride_p,
     const int k_buffer_stride_n,
     const int k_buffer_stride_h,
     const int k_buffer_stride_p,
@@ -1303,7 +1309,7 @@ __global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
         const int lane_in_head = is_query ? (lane % THEAD_PER_HEAD) : ((lane - q_boundary) % THEAD_PER_HEAD);
         
         uint8_t* rope_out_ptr = is_query ?
-                (q_rope_out + global_token_idx * query_stride + head_idx * head_stride_q) :
+                (q_rope_out + global_token_idx * q_rope_out_stride_n + head_idx * q_rope_out_stride_h) :
                 (k_rope_out + global_token_idx * key_stride + head_idx * head_stride_k);
 
         scalar_t* head_ptr = is_query ? 
@@ -1391,10 +1397,10 @@ __global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
                 v3[i] = static_cast<T_ACC>(v3[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o3 + i]);
             }
         }
-        *(LoadT*)(head_ptr + o0) = *(LoadT*)v0;
-        *(LoadT*)(head_ptr + o1) = *(LoadT*)v1;
-        *(LoadT*)(head_ptr + o2) = *(LoadT*)v2;
-        *(LoadT*)(head_ptr + o3) = *(LoadT*)v3;
+        // *(LoadT*)(head_ptr + o0) = *(LoadT*)v0;
+        // *(LoadT*)(head_ptr + o1) = *(LoadT*)v1;
+        // *(LoadT*)(head_ptr + o2) = *(LoadT*)v2;
+        // *(LoadT*)(head_ptr + o3) = *(LoadT*)v3;
 
         #pragma unroll
         for(int i=0; i<VEC_SIZE; ++i) {
@@ -1506,6 +1512,9 @@ void launch_opt_rms_rope(
     int64_t v_stride,
     int64_t head_stride_q,
     int64_t head_stride_k,
+    int q_rope_out_stride_n,
+    int q_rope_out_stride_h,
+    int q_rope_out_stride_p,
     int k_buffer_stride_n,
     int k_buffer_stride_h,
     int k_buffer_stride_p,
@@ -1546,6 +1555,7 @@ void launch_opt_rms_rope(
                         positions, query, key, v, cos_sin_cache, k_buffer, v_buffer, kv_cache_loc, q_rope_out, k_rope_out, v_rope_out,
                         page_size, rot_dim, 
                         query_stride, key_stride, v_stride, head_stride_q, head_stride_k, 
+                        q_rope_out_stride_n, q_rope_out_stride_h, q_rope_out_stride_p,
                         k_buffer_stride_n, k_buffer_stride_h, k_buffer_stride_p,
                         v_buffer_stride_n, v_buffer_stride_h, v_buffer_stride_p,
                         gamma_q, gamma_k, 
@@ -1564,6 +1574,7 @@ void launch_opt_rms_rope(
                         positions, query, key, v,cos_sin_cache, k_buffer, v_buffer, kv_cache_loc, q_rope_out, k_rope_out, v_rope_out,
                         page_size, rot_dim, 
                         query_stride, key_stride, v_stride, head_stride_q, head_stride_k, 
+                        q_rope_out_stride_n, q_rope_out_stride_h, q_rope_out_stride_p,
                         k_buffer_stride_n, k_buffer_stride_h, k_buffer_stride_p,
                         v_buffer_stride_n, v_buffer_stride_h, v_buffer_stride_p,
                         gamma_q, gamma_k, 
@@ -1647,6 +1658,9 @@ void rms_rotary_embedding_fuse_with_kv_store(
   bool is_allign_qk = (num_heads % num_kv_heads == 0) && (num_heads >= 1);
 
   /////////////////////////////////////////////////////////
+  int q_rope_out_stride_n = q_rope_out.stride(0);
+  int q_rope_out_stride_h = q_rope_out.stride(1);
+  int q_rope_out_stride_p = q_rope_out.stride(2);
   int k_buffer_stride_n = k_buffer.stride(0);
   int k_buffer_stride_h = k_buffer.stride(1);
   int k_buffer_stride_p = k_buffer.stride(2);
@@ -1688,6 +1702,9 @@ void rms_rotary_embedding_fuse_with_kv_store(
                     v_stride,
                     head_stride,
                     head_stride,
+                    q_rope_out_stride_n,
+                    q_rope_out_stride_h,
+                    q_rope_out_stride_p,
                     k_buffer_stride_n,
                     k_buffer_stride_h,
                     k_buffer_stride_p,
