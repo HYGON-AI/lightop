@@ -77,10 +77,13 @@ def rms_rotary_embedding_fuse_with_kv_store(
     epsilon: float = 1e-5
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     # 与 query/key 相同 layout，这样 kernel 用 query 的 stride 写 q_rope_out 时布局一致（支持 query 非连续）
-    q_rope_out = torch.empty_strided(
-        tuple(query.shape), tuple(query.stride()),
-        dtype=v_buffer.dtype, device=query.device
-    )
+    # q_rope_out = torch.empty_strided(
+    #     tuple(query.shape), tuple(query.stride()),
+    #     dtype=v_buffer.dtype, device=query.device
+    # )
+    dims = query.dim()
+    heads = query.shape[dims - 1] // head_dim if dims == 2 else query.shape[dims - 2]
+    q_rope_out = torch.empty((query.shape[0], heads, head_dim), dtype=v_buffer.dtype, device=query.device).contiguous()
     k_rope_out = torch.empty_strided(
         tuple(key.shape), tuple(key.stride()),
         dtype=v_buffer.dtype, device=key.device
@@ -181,8 +184,9 @@ def rms_rotary_embedding_fuse_with_kv_store_fake(
         residual_k,
         epsilon
     )
-    
-    q = query.to(v_buffer.dtype)
+    dims = query.dim()
+    heads = query.shape[dims - 1] // head_dim if dims == 2 else query.shape[dims - 2]
+    q = query.to(v_buffer.dtype).view(-1, heads, head_dim).contiguous()
     k = key.to(v_buffer.dtype)
     v = v.to(v_buffer.dtype)
     
