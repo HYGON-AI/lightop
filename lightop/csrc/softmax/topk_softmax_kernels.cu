@@ -725,7 +725,7 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     static_assert(NUM_EXPERTS == (NUM_EXPERTS & -NUM_EXPERTS), "NUM_EXPERTS must be power of 2");
     static_assert(BYTES_PER_LDG == (BYTES_PER_LDG & -BYTES_PER_LDG), "BYTES_PER_LDG must be power of 2");
 
-    static constexpr int ELTS_PER_LDG = BYTES_PER_LDG / sizeof(input_t); // [修改点: 动态计算 ELTS_PER_LDG]
+    static constexpr int ELTS_PER_LDG = BYTES_PER_LDG / sizeof(input_t); 
     static constexpr int ELTS_PER_ROW = NUM_EXPERTS;
     static constexpr int THREADS_PER_ROW = ELTS_PER_ROW / VPT;
     static constexpr int LDG_PER_THREAD = VPT / ELTS_PER_LDG;
@@ -748,9 +748,6 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     float max_val;
     int expert;
  
-    int my_search_expert_idx = -1; 
-    int my_search_reg_idx = -1;
-    
     const bool row_is_active = finished ? !finished[thread_row] : true;
 
     const input_t* thread_row_ptr = input + thread_row * ELTS_PER_ROW;
@@ -776,15 +773,13 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
 
     float thread_max = -FLT_MAX;
     int thread_max_idx = -1;
+#pragma unroll
     for(int i = 0; i < VPT; ++i) {
         if (row_chunk[i] > thread_max) {
             thread_max = row_chunk[i];
             int ldg_idx = i / ELTS_PER_LDG;
             int elt_idx_in_ldg = i % ELTS_PER_LDG;
             thread_max_idx = first_elt_read_by_thread + ldg_idx * (THREADS_PER_ROW * ELTS_PER_LDG) + elt_idx_in_ldg;
-        
-            my_search_reg_idx = i;
-            my_search_expert_idx = thread_max_idx;
         }
     }
 
@@ -823,39 +818,44 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     float top_vals = 0.f;
     IndType top_indices = IndType(0);
 
-    
     #define FIND_AND_REDUCE_MAX(k_val, k_expert) \
     do { \
         k_val = -FLT_MAX; \
         k_expert = -1; \
-        my_search_reg_idx = -1;  \
-        int current_col_base = first_elt_read_by_thread; \
-       for (int ldg = 0; ldg < LDG_PER_THREAD; ++ldg) { \
+        _Pragma("unroll") \
+        for (int ldg = 0; ldg < LDG_PER_THREAD; ++ldg) { \
+            _Pragma("unroll") \
             for (int ii = 0; ii < ELTS_PER_LDG; ++ii) { \
                 float val = row_chunk[ldg * ELTS_PER_LDG + ii]; \
                 if (val > k_val) { \
                     k_val = val; \
-                    k_expert = current_col_base + ii; \
-                    my_search_reg_idx = ldg * ELTS_PER_LDG + ii;  \
+                    k_expert = first_elt_read_by_thread + ldg * THREADS_PER_ROW * ELTS_PER_LDG + ii; \
                 } \
             } \
-            current_col_base += THREADS_PER_ROW * ELTS_PER_LDG; \
         } \
-        my_search_expert_idx = k_expert; \
         _Pragma("unroll") \
         for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2) { \
             float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(k_val, mask, THREADS_PER_ROW); \
             int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(k_expert, mask, THREADS_PER_ROW); \
-            bool swap = (other_max > k_val);  \
+            bool swap = (other_max > k_val); \
             k_val = swap ? other_max : k_val; \
             k_expert = swap ? other_expert : k_expert; \
         } \
     } while(0)
 
-    #define ERASE_MAX(k_expert) \
-        if (k_expert == my_search_expert_idx) { \
-            row_chunk[my_search_reg_idx] = -FLT_MAX; \
-        }
+    #define ERASE_MAX(k_expert_to_erase) \
+    do { \
+        _Pragma("unroll") \
+        for (int ldg = 0; ldg < LDG_PER_THREAD; ++ldg) { \
+            _Pragma("unroll") \
+            for (int ii = 0; ii < ELTS_PER_LDG; ++ii) { \
+                int col_idx = first_elt_read_by_thread + ldg * THREADS_PER_ROW * ELTS_PER_LDG + ii; \
+                if (col_idx == k_expert_to_erase) { \
+                    row_chunk[ldg * ELTS_PER_LDG + ii] = -FLT_MAX; \
+                } \
+            } \
+        } \
+    } while(0)
 
     {
         constexpr int i = 0;
@@ -1523,7 +1523,7 @@ void topkGatingSoftmaxKernelLauncher(
                 break;
             /* qwen 30b*/
             case 128: {
-                LAUNCH_SOFTMAX(128, 1); 
+                LAUNCH_SOFTMAX(128, 2); 
                 break;
             }
             case 160:                         //160使用256的模板
