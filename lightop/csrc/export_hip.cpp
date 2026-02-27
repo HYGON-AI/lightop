@@ -307,6 +307,11 @@ void ep_fused_smooth_quant_scatter(
     torch::Tensor inv_perm,
     int local_num_experts, int alignment); 
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale);
+void rms_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,double epsilon);
+void fused_add_rms_norm_opt(torch::Tensor& input,torch::Tensor& residual, torch::Tensor& weight,double epsilon); 
+void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
+void gelu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
+void gelu_tanh_and_mul_opt(torch::Tensor& out,torch::Tensor& input); 
 }
 }
 

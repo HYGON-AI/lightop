@@ -122,11 +122,11 @@ void _moe_marlin_w8a8_TN_impl(
   globalWorkSize[2] = DIVIDE(sorted_token_lens, BLOCKM);
 
   HipFunctionArgs<OutputType> hipFunctionArgs;
-  hipFunctionArgs.numWorkGroups0 = globalWorkSize[0];
-  hipFunctionArgs.numWorkGroups1 = globalWorkSize[2];
-  hipFunctionArgs.ptr_C = static_cast<OutputType*>(output.data_ptr());
-  hipFunctionArgs.ptr_A = b_qweight.data_ptr<int8_t>();
-  hipFunctionArgs.ptr_B0 = input.data_ptr<int8_t>();
+  hipFunctionArgs.numWorkGroups0 = globalWorkSize[0]; // N方向的block数
+  hipFunctionArgs.numWorkGroups1 = globalWorkSize[2]; // M方向的block数
+  hipFunctionArgs.ptr_C = static_cast<OutputType*>(output.data_ptr()); // 输出c矩阵
+  hipFunctionArgs.ptr_A = b_qweight.data_ptr<int8_t>(); // 权重B矩阵
+  hipFunctionArgs.ptr_B0 = input.data_ptr<int8_t>(); // 输入a矩阵
   hipFunctionArgs.ptr_A_scale = b_scale.data_ptr<float>();
   hipFunctionArgs.ptr_B_scale = a_scale.data_ptr<float>();
   hipFunctionArgs.topk_weights = topk_weights_ptr;
