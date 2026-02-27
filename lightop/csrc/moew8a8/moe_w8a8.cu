@@ -1510,9 +1510,10 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_BYP
       token_offset[idx] = std::min(sorted_token_offset / top_k, size_m - 1);
       a_scale_ptr_arr[idx] = *(input_scale + token_offset[idx] * stride_asm); //计算M方向的偏移
   }
-  
 
-  
+
+  if(bidy*BLOCK_SIZE_N + warp_n_id * WARP_N < size_n){
+
   gemm_nt_marlin_bypass<Element, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K>
   (g_input, g_qweight, input_lds, qweight_lds, A_reg, B_reg, C_reg, sorted_token_ids_offset, sorted_token_lens, warp_id, size_m,
     size_m, size_n, size_k, top_k, bidx);
@@ -1539,6 +1540,8 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_BYP
       }
     }
   }
+
+} // n方向判断是否越界
   __syncthreads();
 
   {
@@ -1549,7 +1552,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_BYP
     using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
     int m_idx = threadIdx.x / N_thread;  // tid / 4 = 0-32
     int n_idx = threadIdx.x % N_thread;  // tid % 4 = 0-3
-    for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
+    for(; m_idx < BLOCK_SIZE_M && bidy*BLOCK_SIZE_N + n_idx * 8 < size_n; m_idx += (WARP_NUM*64) / N_thread) {
       const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
 
       if(token_index < size_m * top_k) {
@@ -1662,7 +1665,8 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_BYP
   }
   
 
-  
+  if(bidy*BLOCK_SIZE_N + warp_n_id * WARP_N < size_n){
+
   gemm_nt_marlin_bypass<Element, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K>
   (g_input, g_qweight, input_lds, qweight_lds, A_reg, B_reg, C_reg, sorted_token_ids_offset, sorted_token_lens, warp_id, size_m,
     size_m, size_n, size_k, top_k, bidx);
@@ -1689,6 +1693,8 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_BYP
       }
     }
   }
+
+  } // n方向判断是否越界
   __syncthreads();
 
   {
@@ -1699,7 +1705,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_BYP
     using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
     int m_idx = threadIdx.x / N_thread;  // tid / 4 = 0-32
     int n_idx = threadIdx.x % N_thread;  // tid % 4 = 0-3
-    for(; m_idx < BLOCK_SIZE_M; m_idx += (WARP_NUM*64) / N_thread) {
+    for(; m_idx < BLOCK_SIZE_M && bidy*BLOCK_SIZE_N + n_idx * 8 < size_n; m_idx += (WARP_NUM*64) / N_thread) {
       const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
 
       if(token_index < size_m * top_k) {
@@ -2269,7 +2275,7 @@ void launch_moe_w8a8_first_stage_bypass(const GemmParams<T, OutputType>& params)
     int loop = lds_size_m / 2;
     int padding = (loop - 1) * 2 * loop; //累加求和公式推导
     const int lds_size = std::max(BLOCK_SIZE_M * WARP_K, lds_size_m * BLOCK_SIZE_N * bytes_per_element +  padding * bytes_per_element );
-    // const int lds_size = BLOCK_SIZE_M * BLOCK_SIZE_N * (BLOCK_SIZE_K / WARP_K) * 4;
+    //const int lds_size = BLOCK_SIZE_M * BLOCK_SIZE_N * 4;
     const int shared_mem_size = lds_size;
     const hipStream_t stream = at::cuda::getCurrentHIPStream();
     
