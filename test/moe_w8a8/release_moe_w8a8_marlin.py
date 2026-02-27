@@ -861,6 +861,11 @@ def test_moe_performance_accuracy(
         'DELTA': 1
     }
     
+    cuda_config1['BLOCK_SIZE_M'] = 128
+    cuda_config2['BLOCK_SIZE_M'] = 128
+    cuda_config1['MODE'] = 1000
+    cuda_config2['MODE'] = 1000
+    import pdb; pdb.set_trace()
     # 准备MOE对齐
     sorted_token_ids, expert_ids, num_tokens_post_padded = (
         moe_align_block_size(topk_ids, cuda_config1['BLOCK_SIZE_M'], local_num_experts, expert_map)
@@ -893,7 +898,7 @@ def test_moe_performance_accuracy(
     # min_mode1 = cuda_config1['MODE']
     # src_time = gemm1_time
     # src_mode = min_mode1
-    # for mode in range(0,96):
+    # for mode in [1000]:
     #     cuda_config1['MODE'] = mode
     #     gemm1_time, gemm1_accuracy = test_single_gemm_performance_accuracy(
     #         input_data, w1_marlin, weight1, weight1_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,

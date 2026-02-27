@@ -753,10 +753,10 @@ def fuse_moe_correctness_preprocess(
     # 40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 85,86,87,88,89,90,91,92,93,94,95,
     # 83, 84,506,511,513,569,1000,1001,1002]
 
-    init_gemm1_compare_failed_list = [506,511,513,569,1000,1001,1002]
+    init_gemm1_compare_failed_list = [63, 67, 71, 75, 78,81,84, 506,511,513, 543, 544, 569, 536, 546, 1000, 1001, 1002]
     init_gemm2_compare_failed_list = [16,17,18,19,20,21,22,23,24,25,28,29,30,31,44,45,46,47,56,57,32, 33, 34, 35, 36, 37, 38, 39, 
     40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82,
-    83, 84,506,511,513,569,1000,1001,1002]
+    83, 84,506,511,513,569, 1000, 1001, 1002]
 
     gemm1_compare_failed_list = [m for m in init_gemm1_compare_failed_list] #这里
     gemm2_compare_failed_list = [m for m in init_gemm2_compare_failed_list]
@@ -1503,11 +1503,18 @@ def main(args: argparse.Namespace):
 
     # GLM4.6-W8A8
     # [384, 5120]  [5120, 192]
+    # ep_size = 1
+    # topk = 8
+    # E = 160
+    # shard_intermediate_size=384
+    # hidden_size=5120
+
+    #qwen3-coder=-480b
     ep_size = 1
-    topk = 1
+    topk = 8
     E = 160
-    shard_intermediate_size=384
-    hidden_size=5120
+    shard_intermediate_size=640
+    hidden_size=6144
     
     # EP8
     # ep_size = 8
@@ -1547,8 +1554,10 @@ def main(args: argparse.Namespace):
 
     if args.batch_size is None:
         batch_sizes = [
-            1, 2, 4, 8, 16, 32, 64, 128,
-            # 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
+            #1, 2, 4, 8, 16, 
+            #32, 64, 128,
+            #256, 512, 1024, 
+            2048, 4096, 6144, 8192
             #1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 
             #16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
             #1, 2, 4, 8, 16, 32, 64, 128
