@@ -875,7 +875,7 @@ __device__ __forceinline__ T_ACC apply_residual_and_calc_sq(
 }
 
 //8, 8 每个head有8个thread, 每个thread处理8个元素
-template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX,int VEC_SIZE, int THEAD_PER_HEAD>
+template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX,int VEC_SIZE, int THEAD_PER_HEAD, bool HAS_NORM>
 __global__ void opt_rms_rope_qwen3_with_qkv(
     const int64_t* __restrict__ positions,
     scalar_t* __restrict__ query,      
@@ -972,13 +972,16 @@ __global__ void opt_rms_rope_qwen3_with_qkv(
         *(LoadT*)r_q_low = *(LoadT*)(q_head_ptr + offset_low);
         *(LoadT*)r_q_high = *(LoadT*)(q_head_ptr + offset_high);
 
-        T_ACC sum_sq = apply_residual_and_calc_sq<T_ACC, scalar_t, VEC_SIZE, HAS_RESIDUAL>(
-            r_q_low, r_q_high, res_q_head_ptr, offset_low, offset_high
-        );
-    
-        sum_sq = WarpReduceSum_Local<T_ACC,THEAD_PER_HEAD>(sum_sq);
-        T_ACC inv_rms = c10::cuda::compat::rsqrt(sum_sq / HEAD_SIZE + static_cast<T_ACC>(eps));
+        T_ACC inv_rms = 1.0;
+        T_ACC sum_sq = 0.0;
+        if constexpr (HAS_NORM) {
+            sum_sq = apply_residual_and_calc_sq<T_ACC, scalar_t, VEC_SIZE, HAS_RESIDUAL>(
+                r_q_low, r_q_high, res_q_head_ptr, offset_low, offset_high
+            );
         
+            sum_sq = WarpReduceSum_Local<T_ACC,THEAD_PER_HEAD>(sum_sq);
+            inv_rms = c10::cuda::compat::rsqrt(sum_sq / HEAD_SIZE + static_cast<T_ACC>(eps));
+        }
         const scalar_t* cache_ptr = my_s_cos_sin; 
        
         if constexpr (IS_NEOX) {
@@ -987,8 +990,10 @@ __global__ void opt_rms_rope_qwen3_with_qkv(
             *(LoadT*)r_sin_low = *(LoadT*)(cache_ptr + rot_dim/2 + offset_low); 
             #pragma unroll
             for(int i=0; i<VEC_SIZE; ++i) {
-                r_q_low[i] = static_cast<T_ACC>(r_q_low[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_low + i]);
-                r_q_high[i] = static_cast<T_ACC>(r_q_high[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_high + i]);
+                if constexpr (HAS_NORM) {
+                    r_q_low[i] = static_cast<T_ACC>(r_q_low[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_low + i]);
+                    r_q_high[i] = static_cast<T_ACC>(r_q_high[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_high + i]);
+                }
                 
                 scalar_t q_l = r_q_low[i];
                 scalar_t q_h = r_q_high[i];
@@ -1011,15 +1016,17 @@ __global__ void opt_rms_rope_qwen3_with_qkv(
             #pragma unroll
             for(int i=0; i<VEC_SIZE; i+=2) {
                 int c_idx = i / 2; 
-                r_q_low[i]   = static_cast<T_ACC>(r_q_low[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_low + i]);
-                r_q_low[i+1] = static_cast<T_ACC>(r_q_low[i+1]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_low + i + 1]);
+                if constexpr (HAS_NORM) {
+                    r_q_low[i]   = static_cast<T_ACC>(r_q_low[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_low + i]);
+                    r_q_low[i+1] = static_cast<T_ACC>(r_q_low[i+1]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_low + i + 1]);
+                    r_q_high[i]   = static_cast<T_ACC>(r_q_high[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_high + i]);
+                    r_q_high[i+1] = static_cast<T_ACC>(r_q_high[i+1]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_high + i + 1]);
+                }
                 scalar_t q0 = r_q_low[i]; scalar_t q1 = r_q_low[i+1];
                 scalar_t c = c_low[c_idx]; scalar_t s = s_low[c_idx];
                 r_q_low[i]   = q0 * c - q1 * s;
                 r_q_low[i+1] = q1 * c + q0 * s;
 
-                r_q_high[i]   = static_cast<T_ACC>(r_q_high[i]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_high + i]);
-                r_q_high[i+1] = static_cast<T_ACC>(r_q_high[i+1]) * inv_rms * static_cast<T_ACC>(gamma_q[offset_high + i + 1]);
                 scalar_t qh0 = r_q_high[i]; scalar_t qh1 = r_q_high[i+1];
                 scalar_t ch = c_high[c_idx]; scalar_t sh = s_high[c_idx];
                 r_q_high[i]   = qh0 * ch - qh1 * sh;
@@ -1079,30 +1086,33 @@ __global__ void opt_rms_rope_qwen3_with_qkv(
         
         *(LoadTK*)r_k_low = *(LoadTK*)(k_head_ptr + offset_low);
         *(LoadTK*)r_k_high = *(LoadTK*)(k_head_ptr + offset_high);
-        
-        T_ACC sum_sq_k = apply_residual_and_calc_sq<T_ACC, scalar_t, VEC_SIZE, HAS_RESIDUAL>(
-            r_k_low, r_k_high, res_k_head_ptr, offset_low, offset_high
-        );
-        
-        sum_sq_k = WarpReduceSum_Local<T_ACC,THEAD_PER_HEAD>(sum_sq_k);
-        T_ACC inv_rms_k = c10::cuda::compat::rsqrt(sum_sq_k / HEAD_SIZE + static_cast<T_ACC>(eps));
-        
+        T_ACC inv_rms_k = 1.0;
+        T_ACC sum_sq_k = 0.0;
+        if constexpr (HAS_NORM) {
+            sum_sq_k = apply_residual_and_calc_sq<T_ACC, scalar_t, VEC_SIZE, HAS_RESIDUAL>(
+                r_k_low, r_k_high, res_k_head_ptr, offset_low, offset_high
+            );
+            
+            sum_sq_k = WarpReduceSum_Local<T_ACC,THEAD_PER_HEAD>(sum_sq_k);
+            inv_rms_k = c10::cuda::compat::rsqrt(sum_sq_k / HEAD_SIZE + static_cast<T_ACC>(eps));
+        }
         const scalar_t* cache_ptr_k = my_s_cos_sin; 
         
         if constexpr (IS_NEOX) {
             scalar_t r_cos_low[VEC_SIZE], r_sin_low[VEC_SIZE];
-            scalar_t r_gamma_k_low[VEC_SIZE], r_gamma_k_high[VEC_SIZE];
+            // scalar_t r_gamma_k_low[VEC_SIZE], r_gamma_k_high[VEC_SIZE];
 
             *(LoadTK*)r_cos_low = *(LoadTK*)(cache_ptr_k + offset_low);
             *(LoadTK*)r_sin_low = *(LoadTK*)(cache_ptr_k + rot_dim/2 + offset_low);
-            *(LoadTK*)r_gamma_k_low = *(LoadTK*)(gamma_k + offset_low);
-            *(LoadTK*)r_gamma_k_high = *(LoadTK*)(gamma_k + offset_high);
+            // *(LoadTK*)r_gamma_k_low = *(LoadTK*)(gamma_k + offset_low);
+            // *(LoadTK*)r_gamma_k_high = *(LoadTK*)(gamma_k + offset_high);
 
             #pragma unroll
             for(int i=0; i<VEC_SIZE; ++i) {
-                r_k_low[i] = static_cast<T_ACC>(r_k_low[i]) * inv_rms_k * static_cast<T_ACC>(r_gamma_k_low[i]);
-                r_k_high[i] = static_cast<T_ACC>(r_k_high[i]) * inv_rms_k * static_cast<T_ACC>(r_gamma_k_high[i]);
-                
+                if constexpr (HAS_NORM) {
+                    r_k_low[i] = static_cast<T_ACC>(r_k_low[i]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_low + i]);
+                    r_k_high[i] = static_cast<T_ACC>(r_k_high[i]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_high + i]);
+                }
                 scalar_t k_l = r_k_low[i];
                 scalar_t k_h = r_k_high[i];
                 scalar_t c = r_cos_low[i];
@@ -1125,15 +1135,17 @@ __global__ void opt_rms_rope_qwen3_with_qkv(
             #pragma unroll
             for(int i=0; i<VEC_SIZE; i+=2) {
                 int c_idx = i / 2;
-                r_k_low[i]   = static_cast<T_ACC>(r_k_low[i]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_low + i]);
-                r_k_low[i+1] = static_cast<T_ACC>(r_k_low[i+1]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_low + i+1]);
+                if constexpr (HAS_NORM) {
+                    r_k_low[i]   = static_cast<T_ACC>(r_k_low[i]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_low + i]);
+                    r_k_low[i+1] = static_cast<T_ACC>(r_k_low[i+1]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_low + i+1]);
+                    r_k_high[i]   = static_cast<T_ACC>(r_k_high[i]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_high + i]);
+                    r_k_high[i+1] = static_cast<T_ACC>(r_k_high[i+1]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_high + i+1]);
+                }
                 scalar_t k0 = r_k_low[i]; scalar_t k1 = r_k_low[i+1];
                 scalar_t c = r_cos_low[c_idx]; scalar_t s = r_sin_low[c_idx];
                 r_k_low[i]   = k0 * c - k1 * s;
                 r_k_low[i+1] = k1 * c + k0 * s;
 
-                r_k_high[i]   = static_cast<T_ACC>(r_k_high[i]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_high + i]);
-                r_k_high[i+1] = static_cast<T_ACC>(r_k_high[i+1]) * inv_rms_k * static_cast<T_ACC>(gamma_k[offset_high + i+1]);
                 scalar_t kh0 = r_k_high[i]; scalar_t kh1 = r_k_high[i+1];
                 scalar_t ch = r_cos_high[c_idx]; scalar_t sh = r_sin_high[c_idx];
                 r_k_high[i]   = kh0 * ch - kh1 * sh;
@@ -1231,7 +1243,7 @@ __device__ __forceinline__ T_ACC apply_residual_and_calc_sq_4vec(
     }
     return local_sum;
 }
-template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX, int VEC_SIZE, int THEAD_PER_HEAD>
+template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX, int VEC_SIZE, int THEAD_PER_HEAD, bool HAS_NORM>
 __global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
     const int64_t* __restrict__ positions,
     scalar_t* __restrict__ query,      
@@ -1338,13 +1350,15 @@ __global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
         *(LoadT*)v1 = *(LoadT*)(head_ptr + o1);
         *(LoadT*)v2 = *(LoadT*)(head_ptr + o2);
         *(LoadT*)v3 = *(LoadT*)(head_ptr + o3);
-  
-        T_ACC sum_sq = apply_residual_and_calc_sq_4vec<T_ACC, scalar_t, VEC_SIZE, HAS_RESIDUAL>(
-            v0, v1, v2, v3, res_head_ptr, o0, o1, o2, o3
-        );
-        sum_sq = WarpReduceSum_Local<T_ACC, THEAD_PER_HEAD>(sum_sq);
-        T_ACC inv_rms = c10::cuda::compat::rsqrt(sum_sq / HEAD_SIZE + static_cast<T_ACC>(eps));
-
+        T_ACC inv_rms = 1.0;
+        T_ACC sum_sq = 0.0;
+        if constexpr (HAS_NORM) {
+            sum_sq = apply_residual_and_calc_sq_4vec<T_ACC, scalar_t, VEC_SIZE, HAS_RESIDUAL>(
+                v0, v1, v2, v3, res_head_ptr, o0, o1, o2, o3
+            );
+            sum_sq = WarpReduceSum_Local<T_ACC, THEAD_PER_HEAD>(sum_sq);
+            inv_rms = c10::cuda::compat::rsqrt(sum_sq / HEAD_SIZE + static_cast<T_ACC>(eps));
+        }
         if constexpr (IS_NEOX) {
             scalar_t r_cos[VEC_SIZE], r_sin[VEC_SIZE];
             *(LoadT*)r_cos = *(LoadT*)(my_s_cos_sin + o0);
@@ -1352,11 +1366,13 @@ __global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
 
             #pragma unroll
             for(int i=0; i<VEC_SIZE; ++i) {
-                T_ACC s0 = static_cast<T_ACC>(v0[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i]);
-                T_ACC s1 = static_cast<T_ACC>(v1[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i]);
-                T_ACC s2 = static_cast<T_ACC>(v2[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o2 + i]);
-                T_ACC s3 = static_cast<T_ACC>(v3[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o3 + i]);
-
+                T_ACC s0 = static_cast<T_ACC>(v0[i]), s1 = static_cast<T_ACC>(v1[i]), s2 = static_cast<T_ACC>(v2[i]), s3 = static_cast<T_ACC>(v3[i]);
+                if constexpr (HAS_NORM) {
+                    s0 = static_cast<T_ACC>(v0[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i]);
+                    s1 = static_cast<T_ACC>(v1[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i]);
+                    s2 = static_cast<T_ACC>(v2[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o2 + i]);
+                    s3 = static_cast<T_ACC>(v3[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o3 + i]);
+                }
                 v0[i] = s0 * r_cos[i] - s1 * r_sin[i];
                 v1[i] = s0 * r_sin[i] + s1 * r_cos[i];
                 v2[i] = s2;
@@ -1371,21 +1387,19 @@ __global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
                 
                 scalar_t cos0 = my_s_cos_sin[idx_c0];
                 scalar_t sin0 = my_s_cos_sin[32 + idx_c0];
-                
-
-                T_ACC s0_0 = static_cast<T_ACC>(v0[i])   * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i]);
-                T_ACC s0_1 = static_cast<T_ACC>(v0[i+1]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i + 1]);
-                
+                T_ACC s0_0 = static_cast<T_ACC>(v0[i]), s0_1 = static_cast<T_ACC>(v0[i+1]), s1_0 = static_cast<T_ACC>(v1[i]), s1_1 = static_cast<T_ACC>(v1[i+1]);
+                if constexpr (HAS_NORM) {
+                    s0_0 = static_cast<T_ACC>(v0[i])   * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i]);
+                    s0_1 = static_cast<T_ACC>(v0[i+1]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i + 1]);
+                    s1_0 = static_cast<T_ACC>(v1[i])   * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i]);
+                    s1_1 = static_cast<T_ACC>(v1[i+1]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i + 1]);
+                }
                 v0[i]   = s0_0 * cos0 - s0_1 * sin0;
                 v0[i+1] = s0_1 * cos0 + s0_0 * sin0;
 
-    
                 int idx_c_v1 = (o1 + i) / 2;
                 scalar_t cos1 = my_s_cos_sin[idx_c_v1];
                 scalar_t sin1 = my_s_cos_sin[32 + idx_c_v1];
-
-                T_ACC s1_0 = static_cast<T_ACC>(v1[i])   * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i]);
-                T_ACC s1_1 = static_cast<T_ACC>(v1[i+1]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i + 1]);
 
                 v1[i]   = s1_0 * cos1 - s1_1 * sin1;
                 v1[i+1] = s1_1 * cos1 + s1_0 * sin1;
@@ -1393,8 +1407,13 @@ __global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
             
             #pragma unroll
             for(int i=0; i<VEC_SIZE; ++i) {
-                v2[i] = static_cast<T_ACC>(v2[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o2 + i]);
-                v3[i] = static_cast<T_ACC>(v3[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o3 + i]);
+                if constexpr (HAS_NORM) {
+                    v2[i] = static_cast<T_ACC>(v2[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o2 + i]);
+                    v3[i] = static_cast<T_ACC>(v3[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o3 + i]);
+                } else {
+                    v2[i] = static_cast<T_ACC>(v2[i]);
+                    v3[i] = static_cast<T_ACC>(v3[i]);
+                }
             }
         }
         // *(LoadT*)(head_ptr + o0) = *(LoadT*)v0;
@@ -1535,6 +1554,7 @@ void launch_opt_rms_rope(
 ) {
 
         bool has_residual = (residual_q_ptr != nullptr && residual_k_ptr != nullptr);
+        bool has_norm = (gamma_q != nullptr && gamma_k != nullptr);
 
         constexpr int THREAD_PER_ROW = 8;
         constexpr int VEC = 8;
@@ -1548,9 +1568,10 @@ void launch_opt_rms_rope(
         int grid_size = (num_tokens + tokens_per_block - 1) / tokens_per_block;
         if(rot_dim == 128){
         size_t smem_size = tokens_per_block * 128 * sizeof(scalar_t);
+        DISPATCH_BOOL(has_norm, HAS_NORM_CONST, [&] {
             DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
                 DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
-                    opt_rms_rope_qwen3_with_qkv<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,VEC,THREAD_PER_ROW>
+                    opt_rms_rope_qwen3_with_qkv<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,VEC,THREAD_PER_ROW, HAS_NORM_CONST>
                         <<<grid_size, actual_block_size, smem_size, stream>>>(
                         positions, query, key, v, cos_sin_cache, k_buffer, v_buffer, kv_cache_loc, q_rope_out, k_rope_out, v_rope_out,
                         page_size, rot_dim, 
@@ -1565,11 +1586,13 @@ void launch_opt_rms_rope(
                     );
                 });
             });
+        });
         }else if(rot_dim == 64){
             size_t smem_size = tokens_per_block * 64 * sizeof(scalar_t);
+            DISPATCH_BOOL(has_norm, HAS_NORM_CONST, [&] {
             DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
                 DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
-                    opt_rms_rope_qwen3_rotDim64_with_qkv<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,4,THREAD_PER_ROW>
+                    opt_rms_rope_qwen3_rotDim64_with_qkv<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,4,THREAD_PER_ROW, HAS_NORM_CONST>
                         <<<grid_size, actual_block_size, smem_size, stream>>>(
                         positions, query, key, v,cos_sin_cache, k_buffer, v_buffer, kv_cache_loc, q_rope_out, k_rope_out, v_rope_out,
                         page_size, rot_dim, 
@@ -1584,6 +1607,7 @@ void launch_opt_rms_rope(
                     );
                 });
             });
+        });
         }else{
             return;
         }
@@ -1599,8 +1623,8 @@ void rms_rotary_embedding_fuse_with_kv_store(
     int64_t head_size,
     Tensor& cos_sin_cache, 
     bool is_neox, 
-    Tensor& weight_q, 
-    Tensor& weight_k, 
+    std::optional<Tensor>& weight_q, 
+    std::optional<Tensor>& weight_k, 
     std::optional<Tensor>& residual_q,
     std::optional<Tensor>& residual_k,
     ///////////////////////////////////////////////////
@@ -1654,6 +1678,7 @@ void rms_rotary_embedding_fuse_with_kv_store(
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   bool has_residual = residual_q.has_value() && residual_k.has_value();
+  bool has_norm = weight_q.has_value() && weight_k.has_value();
   int qk_ratio = num_heads / num_kv_heads;
   bool is_allign_qk = (num_heads % num_kv_heads == 0) && (num_heads >= 1);
 
@@ -1683,6 +1708,8 @@ void rms_rotary_embedding_fuse_with_kv_store(
          if (qwen3) {
                 scalar_t* res_q_ptr = residual_q.has_value() ? residual_q->data_ptr<scalar_t>() : nullptr;
                 scalar_t* res_k_ptr = residual_k.has_value() ? residual_k->data_ptr<scalar_t>() : nullptr;
+                scalar_t* wq_ptr = weight_q.has_value() ? weight_q->data_ptr<scalar_t>() : nullptr;
+                scalar_t* wk_ptr = weight_k.has_value() ? weight_k->data_ptr<scalar_t>() : nullptr;
                 launch_opt_rms_rope<T_ACC, scalar_t>(
                     positions.data_ptr<int64_t>(),
                     query.data_ptr<scalar_t>(),
@@ -1711,8 +1738,8 @@ void rms_rotary_embedding_fuse_with_kv_store(
                     v_buffer_stride_n,
                     v_buffer_stride_h,
                     v_buffer_stride_p,
-                    weight_q.data_ptr<scalar_t>(),
-                    weight_k.data_ptr<scalar_t>(),
+                    wq_ptr,
+                    wk_ptr,
                     res_q_ptr,
                     res_k_ptr,
                     static_cast<scalar_t>(eps_val),
