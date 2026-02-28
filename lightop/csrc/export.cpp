@@ -276,7 +276,7 @@ void mha_norm_rope_qkv_inplace_cuda(at::Tensor qkv, c10::optional<at::Tensor> ga
 void cross_norm_rope_q_kv_inplace_cuda(at::Tensor q,at::Tensor kv,  c10::optional<at::Tensor> gamma_q, c10::optional<at::Tensor> beta_q,c10::optional<at::Tensor> gamma_k,c10::optional<at::Tensor> beta_k, at::Tensor cos,  at::Tensor sin,  double eps);
 torch::Tensor box_cost(const torch::Tensor &pred, const torch::Tensor &target, const torch::Tensor &inst_weights, const torch::Tensor &dim_weights, const float cost_weight); 
 torch::Tensor encode_reg_t(const torch::Tensor &input, const torch::Tensor &lengths); 
-Tensor mqa_logits(torch::Tensor &Q, torch::Tensor &K, torch::Tensor &Weights, torch::Tensor &KS, torch::Tensor &KE, int seq_len, int kv_seq_len, int num_heads, int head_dim,bool clean_logits = true);
+Tensor mqa_logits(torch::Tensor &Q, torch::Tensor &K, torch::Tensor &Weights, torch::Tensor &KS, torch::Tensor &KE, int seq_len, int kv_seq_len, int num_heads, int head_dim,const torch::optional<torch::Tensor> &KV_scale =  torch::nullopt, bool clean_logits = true);
 std::vector<torch::Tensor> batch_linear_assignment(torch::Tensor cost);
 void fill_zeros(Tensor &out, int bs, int hidden_size);
 void rms_rotary_embedding_fuse(Tensor &positions,Tensor &query,Tensor &key,int64_t head_size,Tensor &cos_sin_cache, bool is_neox,Tensor weight_q,Tensor weight_k,c10::optional<Tensor> residual_q,c10::optional<Tensor> residual_k,double epsilon);
@@ -477,7 +477,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("cross_norm_rope_q_kv_inplace_cuda", &at::native::cross_norm_rope_q_kv_inplace_cuda,"cross_norm_rope_q_kv_inplace_cuda");
   m.def("box_cost", &at::native::box_cost, "box_cost");
   m.def("encode_reg_t", &at::native::encode_reg_t, "encode_reg_t");
-  m.def("mqa_logits", &at::native::mqa_logits, "mqa_logits");
+  m.def("mqa_logits", &at::native::mqa_logits, "mqa_logits",
+      py::arg("Q"),
+      py::arg("K"),
+      py::arg("Weights"),
+      py::arg("KS"),
+      py::arg("KE"),
+      py::arg("seq_len"),
+      py::arg("kv_seq_len"),
+      py::arg("num_heads"),
+      py::arg("head_dim"),
+      py::arg("KV_scale") = torch::nullopt, 
+      py::arg("clean_logits") = true);
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
   m.def("paged_mqa_logits", &lightop::deep_gemm::paged_mqa_logits,"paged_mqa_logits");
   m.def("batch_linear_assignment", &at::native::batch_linear_assignment, "batch_linear_assignment");

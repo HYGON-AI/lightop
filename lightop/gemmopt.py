@@ -670,13 +670,22 @@ def groupgemm(a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor, trans
     outs = op.groupgemm(a, b, batch_sizes, trans_b)
     return outs
 
-def mqa_logits(Q: torch.Tensor, K: torch.Tensor, Weights: torch.Tensor, ks:torch.Tensor, ke:torch.Tensor) -> torch.Tensor:
+def mqa_logits(
+    Q: torch.Tensor, 
+    K: torch.Tensor, 
+    Weights: torch.Tensor, 
+    ks: torch.Tensor, 
+    ke: torch.Tensor, 
+    kv_scale: Optional[torch.Tensor] = None,
+    clean_logit: bool = True 
+) -> torch.Tensor:
     q_seq_len, num_heads, head_dim = Q.shape
     kv_seq_len = K.shape[0]
-    clean_logit = True
-    assert num_heads in [8, 16, 32,64, 128], "num_heads only support [8,16,32,64,128]"
-    assert head_dim == 128, "head_dim only support 128"
-    outs = op.mqa_logits(Q, K, Weights, ks, ke, q_seq_len, kv_seq_len, num_heads, head_dim,clean_logit)
+    outs = op.mqa_logits(
+        Q, K, Weights, ks, ke, 
+        q_seq_len, kv_seq_len, num_heads, head_dim, 
+        kv_scale, clean_logit
+    )
     return outs
 
 def get_paged_mqa_logits_metadata(
