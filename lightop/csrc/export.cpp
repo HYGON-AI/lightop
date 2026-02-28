@@ -310,6 +310,7 @@ void fused_add_rms_norm_opt(torch::Tensor& input,torch::Tensor& residual, torch:
 void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_tanh_and_mul_opt(torch::Tensor& out,torch::Tensor& input); 
+torch::Tensor reshape_to_float(torch::Tensor input, int64_t vocab_size);
 }
 }
 
@@ -504,5 +505,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("silu_and_mul_opt", &at::native::silu_and_mul_opt, "silu_and_mul_opt");
   m.def("gelu_and_mul_opt", &at::native::gelu_and_mul_opt, "gelu_and_mul_opt");
   m.def("gelu_tanh_and_mul_opt", &at::native::gelu_tanh_and_mul_opt, "gelu_tanh_and_mul_opt");
+  m.def("reshape_to_float", &at::native::reshape_to_float, "reshape_to_float");
 }
 
