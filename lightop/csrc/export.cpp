@@ -27,8 +27,8 @@ void rms_rotary_embedding_fuse_with_kv_store(
     int64_t head_size,
     Tensor& cos_sin_cache, 
     bool is_neox, 
-    Tensor& weight_q, 
-    Tensor& weight_k, 
+    std::optional<Tensor>& weight_q, 
+    std::optional<Tensor>& weight_k, 
     std::optional<Tensor>& residual_q,
     std::optional<Tensor>& residual_k,
     ///////////////////////////////////////////////////
