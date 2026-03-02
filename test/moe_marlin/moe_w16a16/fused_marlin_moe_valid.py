@@ -12,7 +12,7 @@ from vllm.model_executor.layers.fused_moe.fused_moe import moe_align_block_size
 
 from lmslim.layers.gemm.int8_utils import (
    per_token_group_quant_int8, per_token_quant_int8)
-from vllm.model_executor.layers.fused_moe.fused_moe import fused_moe
+# from vllm.model_executor.layers.fused_moe.fused_moe import fused_moe
 from triton_w16a16 import invoke_fused_moe_kernel_w16a16
 import triton
 import triton.language as tl
@@ -1175,7 +1175,6 @@ def fused_marlin_moe_valid(
     # triton 算子始终使用 block_m=16 测试
     sorted_token_ids_triton, expert_ids_triton, num_tokens_post_padded_triton = moe_align_block_size(topk_ids, 16, global_num_experts)
     sorted_token_ids_triton_opt, expert_ids_triton_opt, num_tokens_post_padded_triton_opt = moe_align_block_size(topk_ids, opt_config["BLOCK_SIZE_M"], global_num_experts)
-
     # [M*topk, N] [32*8, 256]
     intermediate_cache2 = torch.empty(
         (M * topk_ids.shape[1], N),
