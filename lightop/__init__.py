@@ -28,6 +28,7 @@ from .utils import gfx, LIGHTOP_ROOT_DIR, LIGHTOP_ASM_DIR
 from .rmsnorm import RMSNorm, RMSNormTorch, RMSNormDropout, RMSNormAddDropout, RMSNormAddDropoutBias, RMSNormAdd,rmsnorm_forward,rmsnorm_backward,rms_norm_dynamic_per_token_quant,fused_rms_norm_contiguous,fused_rms_norm_rope_contiguous,rms_norm_per_token_fp8_quant
 from .rmsnorm import fuse_rmsnorm_rope_quant_qkv
 from .rmsnorm import fuse_fill_rms_x2_concat
+from .grid_sample import GridSample, grid_sample_forward, grid_sample_backward
 from .layernorm import LayerNorm, LnDropout, LnAddDropout, LnAddDropoutBias, LnDropPath, AddLn
 from .droppath import DropPath
 from .fuse_bias_swiglu import FuseBiasSwiGLU
