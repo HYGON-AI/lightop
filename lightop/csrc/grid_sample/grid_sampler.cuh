@@ -254,30 +254,11 @@ void safe_add_2d(scalar_t *data, int h, int w,
                  const index_t NC_offset,
                  const index_t memory_span) {
   if (within_bounds_2d(h, w, H, W)) {
-    // fastAtomicAdd(data,  // input data
-    //               NC_offset + h * sH + w * sW, // grad_input offset: NC_offset + h * sH + w * sW
-    //               memory_span, // grad_input numel: N * C * H_in * W_in 没有使用
-    //               delta,
-    //               true);
-#if __has_builtin(__builtin_hcu_global_atomic_fadd_f32)
-    // 
-    if constexpr (sizeof(scalar_t) == sizeof(float)) {
-      __builtin_hcu_global_atomic_fadd_f32(data + NC_offset + h * sH + w * sW, delta);
-    } else {
-      fastAtomicAdd(data,  // input data
-                    NC_offset + h * sH + w * sW, // grad_input offset: NC_offset + h * sH + w * sW
-                    memory_span, // grad_input numel: N * C * H_in * W_in 没有使用
-                    delta,
-                    true);
-    }
-#else
-    // 标准 HIP/ROCm 回退：使用 atomicAdd（支持 float 和 double）
     fastAtomicAdd(data,  // input data
                   NC_offset + h * sH + w * sW, // grad_input offset: NC_offset + h * sH + w * sW
                   memory_span, // grad_input numel: N * C * H_in * W_in 没有使用
                   delta,
                   true);
-#endif
   }
 }
 
