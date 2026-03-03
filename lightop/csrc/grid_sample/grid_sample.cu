@@ -171,7 +171,7 @@ template <typename scalar_t, typename index_t>
 // including batch * channel offset (NC_offset).
 
 template <typename scalar_t, typename index_t>
-C10_LAUNCH_BOUNDS_1(256)
+C10_LAUNCH_BOUNDS_1(512)
 __global__ void grid_sampler_2d_backward_kernel(
     const index_t nthreads,
     TensorInfo<const scalar_t, index_t> grad_output,  // N C H_out, W_out, grad_output.shape: [N, C, H_out, W_out] 作为输出
@@ -214,11 +214,27 @@ __global__ void grid_sampler_2d_backward_kernel(
       gInp_sW = grad_input.strides[3];
     }
     index_t gGrid_sW = grad_grid.strides[2];
+    const index_t w_out = blockIdx.x * blockDim.x + threadIdx.x;
+    const index_t h_out = blockIdx.y * blockDim.y + threadIdx.y;
+    // int h_out = (blockIdx.y * blockDim.y + threadIdx.y);
+    // int n = blockIdx.z;
 
-    CUDA_KERNEL_LOOP_TYPE(index, nthreads, index_t) {  // index: block_id + thread_id range < nthreads
-      const index_t w = index % out_W;
-      const index_t h = (index / out_W) % out_H;
-      const index_t n = index / (out_H * out_W);
+    // CUDA_KERNEL_LOOP_TYPE(index, nthreads, index_t) 
+    // for(int w = 0; w < out_W; w += blockDim.x){
+    //   for(int h = 0; h < out_H; h += blockDim.y){
+
+    //   }
+    // }
+    if(w_out < out_W && h_out < out_H){  
+
+      // index: block_id + thread_id range < nthreads
+      // const index_t w = index % out_W;
+      // const index_t h = (index / out_W) % out_H;
+      // const index_t n = index / (out_H * out_W);
+      const index_t w = (blockIdx.x * blockDim.x + threadIdx.x) % out_W;
+      const index_t h = (blockIdx.y * blockDim.y + threadIdx.y) % out_H;
+      const index_t n = blockIdx.z;
+      const index_t index = n * out_H * out_W + h * out_W + w;
       const auto grid_offset = n * grid_sN + h * grid_sH + w * grid_sW; // grid: [N, H_out, W_out, 2]
 
       // get the corresponding input x, y coordinates from grid
@@ -477,24 +493,35 @@ __global__ void grid_sampler_2d_backward_kernel(
   constexpr int vec = 2;
 
   int64_t count = N * H * W;
-  printf("count: %lld\n", count);
-  printf("N: %lld\n", N);
-  printf("H: %lld\n", H);
-  printf("W: %lld\n", W);
-  printf("input_requires_grad: %d\n", input_requires_grad);
-  printf("grad_output: %lld\n", grad_output.numel());
-  printf("input: %lld\n", input.numel());
-  printf("grid: %lld\n", grid.numel());
-  printf("grad_grid: %lld\n", grad_grid.numel());
-  printf("GET_BLOCKS(count, 256): %d\n", GET_BLOCKS(count, 256));
+  // printf("count: %lld\n", count);
+  // printf("N: %lld\n", N);
+  // printf("H: %lld\n", H);
+  // printf("W: %lld\n", W);
+  // printf("input_requires_grad: %d\n", input_requires_grad);
+  // printf("grad_output: %lld\n", grad_output.numel());
+  // printf("input: %lld\n", input.numel());
+  // printf("grid: %lld\n", grid.numel());
+  // printf("grad_grid: %lld\n", grad_grid.numel());
+  // printf("GET_BLOCKS(count, 256): %d\n", GET_BLOCKS(count, 256));
+
+  constexpr int BLOCK_X = 16;
+  constexpr int BLOCK_Y = 16;
+  dim3 block_dims(BLOCK_X, BLOCK_Y);
+  dim3 grid_dims((W + BLOCK_X - 1) / BLOCK_X, (H + BLOCK_Y - 1) / BLOCK_Y, N);
+  // printf("block_dims: %d, %d\n", BLOCK_X, BLOCK_Y);
+  // printf("grid_dims: %d, %d, %d\n", N, H, W);
+  // printf("GET_BLOCKS(count, 256): %d\n", GET_BLOCKS(count, 256));
+
+
   if (count > 0) {
     AT_DISPATCH_FLOATING_TYPES_AND2(
       ScalarType::Half, ScalarType::BFloat16,
       input.scalar_type(), "grid_sampler_2d_backward_cuda", [&] {
       if (canUse32BitIndexMath(input) && canUse32BitIndexMath(grid) &&
           canUse32BitIndexMath(grad_output)) {
+            // printf("aaaaaaaaaaaaaaaa\n");
         grid_sampler_2d_backward_kernel<scalar_t>
-          <<<GET_BLOCKS(count, 256), 256, 0, at::cuda::getCurrentCUDAStream()>>>(
+          <<<grid_dims, block_dims, 0, at::cuda::getCurrentCUDAStream()>>>(
             static_cast<int>(count),
             getTensorInfo<const scalar_t, int>(grad_output), // N C H W, grad_output.shape: [N, C, H_out, W_out] 作为输出
             getTensorInfo<const scalar_t, int>(input),       // N C H_in W_in
