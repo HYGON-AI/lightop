@@ -311,6 +311,25 @@ void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_tanh_and_mul_opt(torch::Tensor& out,torch::Tensor& input); 
 torch::Tensor reshape_to_float(torch::Tensor input, int64_t vocab_size);
+torch::Tensor add_int8(const torch::Tensor& a, const torch::Tensor& b, bool saturate=true);
+torch::Tensor sub_int8(const torch::Tensor& a, const torch::Tensor& b, bool saturate=true);
+std::tuple<torch::Tensor, torch::Tensor> pack_padded_sequence_custom(
+    const torch::Tensor& input,
+    const torch::Tensor& lengths,
+    bool batch_first);
+torch::Tensor fake_quantize_per_tensor_affine_custom(
+    const torch::Tensor& input,
+    float scale,
+    int64_t zero_point,
+    int64_t quant_min,
+    int64_t quant_max);
+torch::Tensor fake_quantize_per_channel_affine_custom(
+    const torch::Tensor& input,
+    const torch::Tensor& scale,
+    const torch::Tensor& zero_point,
+    int64_t axis,
+    int64_t quant_min,
+    int64_t quant_max);
 }
 }
 
@@ -517,5 +536,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gelu_and_mul_opt", &at::native::gelu_and_mul_opt, "gelu_and_mul_opt");
   m.def("gelu_tanh_and_mul_opt", &at::native::gelu_tanh_and_mul_opt, "gelu_tanh_and_mul_opt");
   m.def("reshape_to_float", &at::native::reshape_to_float, "reshape_to_float");
+  m.def("add_int8", &at::native::add_int8, "add_int8", py::arg("a"), py::arg("b"), py::arg("saturate") = true);
+  m.def("sub_int8", &at::native::sub_int8, "sub_int8", py::arg("a"), py::arg("b"), py::arg("saturate") = true);
+  m.def("pack_padded_sequence_custom", &at::native::pack_padded_sequence_custom, "pack_padded_sequence_custom");
+  m.def("fake_quantize_per_tensor_affine_custom", &at::native::fake_quantize_per_tensor_affine_custom, "fake_quantize_per_tensor_affine_custom");
+  m.def("fake_quantize_per_channel_affine_custom", &at::native::fake_quantize_per_channel_affine_custom, "fake_quantize_per_channel_affine_custom");
 }
 
