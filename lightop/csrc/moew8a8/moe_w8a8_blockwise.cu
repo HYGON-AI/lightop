@@ -62,6 +62,7 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_FP8_BLOCKWISE_MARLIN_HIP_NT_DEC
   uint32_t size_n, 
   uint32_t size_k, 
   uint32_t stride_asm,
+  .
   uint32_t stride_ask,
   uint32_t stride_bse,
   uint32_t stride_bsn, 
