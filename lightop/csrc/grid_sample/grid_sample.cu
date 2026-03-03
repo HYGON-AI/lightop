@@ -214,106 +214,109 @@ __global__ void grid_sampler_2d_backward_kernel(
       gInp_sW = grad_input.strides[3];
     }
     index_t gGrid_sW = grad_grid.strides[2];
-    const index_t w_out = blockIdx.x * blockDim.x + threadIdx.x;
+    constexpr int VEC_W = 4;  // W方向向量化：每个线程处理4个相邻的w位置
+    const index_t w_base = (blockIdx.x * blockDim.x + threadIdx.x) * VEC_W;
     const index_t h_out = blockIdx.y * blockDim.y + threadIdx.y;
-    // int h_out = (blockIdx.y * blockDim.y + threadIdx.y);
-    // int n = blockIdx.z;
+    const index_t n = blockIdx.z;
 
-    // CUDA_KERNEL_LOOP_TYPE(index, nthreads, index_t) 
-    // for(int w = 0; w < out_W; w += blockDim.x){
-    //   for(int h = 0; h < out_H; h += blockDim.y){
+    if (h_out < out_H) {
+      // 向量化加载 grid：相邻 VEC_W 个 w 时用 float4 x2 加载 (x0,y0,...,x3,y3)
+      scalar_t x_arr[4] = {0}, y_arr[4] = {0};
+      const bool can_vec_grid = (w_base + 3 < out_W && grid_sW == 2 && grid_sCoor == 1 &&
+                                 sizeof(scalar_t) == sizeof(float));
+      if (can_vec_grid) {
+        const float4 *grid_ptr = reinterpret_cast<const float4*>(
+            grid.data + n * grid_sN + h_out * grid_sH + w_base * grid_sW);
+        const float4 g0 = grid_ptr[0];
+        const float4 g1 = grid_ptr[1];
+        x_arr[0] = static_cast<scalar_t>(g0.x);  y_arr[0] = static_cast<scalar_t>(g0.y);
+        x_arr[1] = static_cast<scalar_t>(g0.z);  y_arr[1] = static_cast<scalar_t>(g0.w);
+        x_arr[2] = static_cast<scalar_t>(g1.x);  y_arr[2] = static_cast<scalar_t>(g1.y);
+        x_arr[3] = static_cast<scalar_t>(g1.z);  y_arr[3] = static_cast<scalar_t>(g1.w);
+      }
 
-    //   }
-    // }
-    if(w_out < out_W && h_out < out_H){  
+      for (int v = 0; v < VEC_W; ++v) {
+        const index_t w = w_base + v;
+        if (w >= out_W) break;
 
-      // index: block_id + thread_id range < nthreads
-      // const index_t w = index % out_W;
-      // const index_t h = (index / out_W) % out_H;
-      // const index_t n = index / (out_H * out_W);
-      const index_t w = (blockIdx.x * blockDim.x + threadIdx.x) % out_W;
-      const index_t h = (blockIdx.y * blockDim.y + threadIdx.y) % out_H;
-      const index_t n = blockIdx.z;
-      const index_t index = n * out_H * out_W + h * out_W + w;
-      const auto grid_offset = n * grid_sN + h * grid_sH + w * grid_sW; // grid: [N, H_out, W_out, 2]
+        const index_t index = n * out_H * out_W + h_out * out_W + w;
+        const auto grid_offset = n * grid_sN + h_out * grid_sH + w * grid_sW;
 
-      // get the corresponding input x, y coordinates from grid
-      scalar_t x = grid.data[grid_offset];              // 这是归一化之后的x坐标，范围是[-1, 1]
-      scalar_t y = grid.data[grid_offset + grid_sCoor]; // 这是归一化之后的y坐标，范围是[-1, 1]
-
-      // multipliers for gradients on ix and iy
-      scalar_t gix_mult, giy_mult;
-      scalar_t ix = grid_sampler_compute_source_index_set_grad(x, inp_W, padding_mode, align_corners, &gix_mult); // input空间的中x坐标，浮点
-      scalar_t iy = grid_sampler_compute_source_index_set_grad(y, inp_H, padding_mode, align_corners, &giy_mult); // input空间的中y坐标，浮点
-
-      if (interpolation_mode == GridSamplerInterpolation::Bilinear) {
-        // get NE, NW, SE, SW pixel values from (x, y) 针对输入空间中的x, y坐标，找到对应的4个像素点
-        index_t ix_nw = static_cast<index_t>(std::floor(ix)); // 左上角
-        index_t iy_nw = static_cast<index_t>(std::floor(iy)); // 左上角
-        index_t ix_ne = ix_nw + 1; // 右上角
-        index_t iy_ne = iy_nw;     // 右上角
-        index_t ix_sw = ix_nw;     // 左下角
-        index_t iy_sw = iy_nw + 1; // 左下角
-        index_t ix_se = ix_nw + 1; // 右下角
-        index_t iy_se = iy_nw + 1; // 右下角
-
-        // get surfaces to each neighbor:
-        scalar_t nw = (ix_se - ix)    * (iy_se - iy);
-        scalar_t ne = (ix    - ix_sw) * (iy_sw - iy);
-        scalar_t sw = (ix_ne - ix)    * (iy    - iy_ne);
-        scalar_t se = (ix    - ix_nw) * (iy    - iy_nw);
-
-        bool in_nw = within_bounds_2d(iy_nw, ix_nw, inp_H, inp_W);
-        bool in_ne = within_bounds_2d(iy_ne, ix_ne, inp_H, inp_W);
-        bool in_sw = within_bounds_2d(iy_sw, ix_sw, inp_H, inp_W);
-        bool in_se = within_bounds_2d(iy_se, ix_se, inp_H, inp_W);
-
-        scalar_t gix = static_cast<scalar_t>(0), giy = static_cast<scalar_t>(0);
-        const scalar_t *gOut_ptr_NCHW = grad_output.data + n * gOut_sN + h * gOut_sH + w * gOut_sW; // 偏移到grad_output C通道的首地址
-        index_t NC_offset = n * gInp_sN; // 偏移到grad_input C的首地址
-        const scalar_t *inp_ptr_NC = input.data + n * inp_sN; // 偏移到input C的首地址
-        for (index_t c = 0; c < C; ++c, inp_ptr_NC += inp_sC, NC_offset += gInp_sC, gOut_ptr_NCHW += gOut_sC) {
-          const scalar_t gOut = *gOut_ptr_NCHW;
-
-          if (input_requires_grad) {
-            // calculate and set grad_input. See Note [Passing pointer and offset to fastAtomicAdd].
-            // 在input空间中，计算每个像素的梯度，并累加到grad_input中
-            safe_add_2d(grad_input.data, iy_nw, ix_nw, gInp_sH, gInp_sW, inp_H, inp_W, nw * gOut, NC_offset, grad_input_memory_span); // 左上角
-            safe_add_2d(grad_input.data, iy_ne, ix_ne, gInp_sH, gInp_sW, inp_H, inp_W, ne * gOut, NC_offset, grad_input_memory_span); // 右上角
-            safe_add_2d(grad_input.data, iy_sw, ix_sw, gInp_sH, gInp_sW, inp_H, inp_W, sw * gOut, NC_offset, grad_input_memory_span); // 左下角
-            safe_add_2d(grad_input.data, iy_se, ix_se, gInp_sH, gInp_sW, inp_H, inp_W, se * gOut, NC_offset, grad_input_memory_span); // 右下角
-          }
-
-          // calculate grad_grid for channel c
-          if (in_nw) {
-            scalar_t nw_val = inp_ptr_NC[iy_nw * inp_sH + ix_nw * inp_sW];
-            gix -= nw_val * (iy_se - iy) * gOut;
-            giy -= nw_val * (ix_se - ix) * gOut;
-          }
-          if (in_ne) {
-            scalar_t ne_val = inp_ptr_NC[iy_ne * inp_sH + ix_ne * inp_sW];
-            gix += ne_val * (iy_sw - iy) * gOut;
-            giy -= ne_val * (ix - ix_sw) * gOut;
-          }
-          if (in_sw) {
-            scalar_t sw_val = inp_ptr_NC[iy_sw * inp_sH + ix_sw * inp_sW];
-            gix -= sw_val * (iy - iy_ne) * gOut;
-            giy += sw_val * (ix_ne - ix) * gOut;
-          }
-          if (in_se) {
-            scalar_t se_val = inp_ptr_NC[iy_se * inp_sH + ix_se * inp_sW];
-            gix += se_val * (iy - iy_nw) * gOut;
-            giy += se_val * (ix - ix_nw) * gOut;
-          }
+        scalar_t x, y;
+        if (can_vec_grid) {
+          x = x_arr[v];
+          y = y_arr[v];
+        } else {
+          x = grid.data[grid_offset];
+          y = grid.data[grid_offset + grid_sCoor];
         }
 
-        // assuming grad_grid is contiguous
-        // thus we can
-        //   1. use index with gGrid_sW to directly compute gGrid_ptr_NHW
-        //   2. directly assign to gGrid_ptr_NHW[0], gGrid_ptr_NHW[1]
-        scalar_t *gGrid_ptr_NHW = grad_grid.data + index * gGrid_sW; // [N, H_out, W_out, 2] 偏移到[:,:,:,2]的首地址
-        gGrid_ptr_NHW[0] = gix_mult * gix; // gix_mult:是ix对x的梯度
-        gGrid_ptr_NHW[1] = giy_mult * giy; // giy_mult:是iy对y的梯度
+        // multipliers for gradients on ix and iy
+        scalar_t gix_mult, giy_mult;
+        scalar_t ix = grid_sampler_compute_source_index_set_grad(x, inp_W, padding_mode, align_corners, &gix_mult);
+        scalar_t iy = grid_sampler_compute_source_index_set_grad(y, inp_H, padding_mode, align_corners, &giy_mult);
+
+        if (interpolation_mode == GridSamplerInterpolation::Bilinear) {
+          index_t ix_nw = static_cast<index_t>(std::floor(ix));
+          index_t iy_nw = static_cast<index_t>(std::floor(iy));
+          index_t ix_ne = ix_nw + 1;
+          index_t iy_ne = iy_nw;
+          index_t ix_sw = ix_nw;
+          index_t iy_sw = iy_nw + 1;
+          index_t ix_se = ix_nw + 1;
+          index_t iy_se = iy_nw + 1;
+
+          scalar_t nw = (ix_se - ix)    * (iy_se - iy);
+          scalar_t ne = (ix    - ix_sw) * (iy_sw - iy);
+          scalar_t sw = (ix_ne - ix)    * (iy    - iy_ne);
+          scalar_t se = (ix    - ix_nw) * (iy    - iy_nw);
+
+          bool in_nw = within_bounds_2d(iy_nw, ix_nw, inp_H, inp_W);
+          bool in_ne = within_bounds_2d(iy_ne, ix_ne, inp_H, inp_W);
+          bool in_sw = within_bounds_2d(iy_sw, ix_sw, inp_H, inp_W);
+          bool in_se = within_bounds_2d(iy_se, ix_se, inp_H, inp_W);
+
+          scalar_t gix = static_cast<scalar_t>(0), giy = static_cast<scalar_t>(0);
+          const scalar_t *gOut_ptr_NCHW = grad_output.data + n * gOut_sN + h_out * gOut_sH + w * gOut_sW;
+          index_t NC_offset = n * gInp_sN;
+          const scalar_t *inp_ptr_NC = input.data + n * inp_sN;
+
+          for (index_t c = 0; c < C; ++c, inp_ptr_NC += inp_sC, NC_offset += gInp_sC, gOut_ptr_NCHW += gOut_sC) {
+            const scalar_t gOut = *gOut_ptr_NCHW;
+
+            if (input_requires_grad) {
+              safe_add_2d(grad_input.data, iy_nw, ix_nw, gInp_sH, gInp_sW, inp_H, inp_W, nw * gOut, NC_offset, grad_input_memory_span);
+              safe_add_2d(grad_input.data, iy_ne, ix_ne, gInp_sH, gInp_sW, inp_H, inp_W, ne * gOut, NC_offset, grad_input_memory_span);
+              safe_add_2d(grad_input.data, iy_sw, ix_sw, gInp_sH, gInp_sW, inp_H, inp_W, sw * gOut, NC_offset, grad_input_memory_span);
+              safe_add_2d(grad_input.data, iy_se, ix_se, gInp_sH, gInp_sW, inp_H, inp_W, se * gOut, NC_offset, grad_input_memory_span);
+            }
+
+            if (in_nw) {
+              scalar_t nw_val = inp_ptr_NC[iy_nw * inp_sH + ix_nw * inp_sW];
+              gix -= nw_val * (iy_se - iy) * gOut;
+              giy -= nw_val * (ix_se - ix) * gOut;
+            }
+            if (in_ne) {
+              scalar_t ne_val = inp_ptr_NC[iy_ne * inp_sH + ix_ne * inp_sW];
+              gix += ne_val * (iy_sw - iy) * gOut;
+              giy -= ne_val * (ix - ix_sw) * gOut;
+            }
+            if (in_sw) {
+              scalar_t sw_val = inp_ptr_NC[iy_sw * inp_sH + ix_sw * inp_sW];
+              gix -= sw_val * (iy - iy_ne) * gOut;
+              giy += sw_val * (ix_ne - ix) * gOut;
+            }
+            if (in_se) {
+              scalar_t se_val = inp_ptr_NC[iy_se * inp_sH + ix_se * inp_sW];
+              gix += se_val * (iy - iy_nw) * gOut;
+              giy += se_val * (ix - ix_nw) * gOut;
+            }
+          }
+
+          scalar_t *gGrid_ptr_NHW = grad_grid.data + index * gGrid_sW;
+          gGrid_ptr_NHW[0] = gix_mult * gix;
+          gGrid_ptr_NHW[1] = giy_mult * giy;
+        }
       } 
       // else if (interpolation_mode == GridSamplerInterpolation::Nearest) {
       //   if (input_requires_grad) {
@@ -490,28 +493,13 @@ __global__ void grid_sampler_2d_backward_kernel(
   // the tensor to hold the gradient can markedly increase performance. (`grid` gradient
   // is always computed.)
   auto input_requires_grad = output_mask[0];
-  constexpr int vec = 2;
-
   int64_t count = N * H * W;
-  // printf("count: %lld\n", count);
-  // printf("N: %lld\n", N);
-  // printf("H: %lld\n", H);
-  // printf("W: %lld\n", W);
-  // printf("input_requires_grad: %d\n", input_requires_grad);
-  // printf("grad_output: %lld\n", grad_output.numel());
-  // printf("input: %lld\n", input.numel());
-  // printf("grid: %lld\n", grid.numel());
-  // printf("grad_grid: %lld\n", grad_grid.numel());
-  // printf("GET_BLOCKS(count, 256): %d\n", GET_BLOCKS(count, 256));
-
+  constexpr int VEC_W = 4;  // W方向向量化：每线程处理4个w位置
   constexpr int BLOCK_X = 16;
   constexpr int BLOCK_Y = 16;
+  // 每线程处理 VEC_W 个w，故 x 方向 block 数减半
   dim3 block_dims(BLOCK_X, BLOCK_Y);
-  dim3 grid_dims((W + BLOCK_X - 1) / BLOCK_X, (H + BLOCK_Y - 1) / BLOCK_Y, N);
-  // printf("block_dims: %d, %d\n", BLOCK_X, BLOCK_Y);
-  // printf("grid_dims: %d, %d, %d\n", N, H, W);
-  // printf("GET_BLOCKS(count, 256): %d\n", GET_BLOCKS(count, 256));
-
+  dim3 grid_dims((W + VEC_W * BLOCK_X - 1) / (VEC_W * BLOCK_X), (H + BLOCK_Y - 1) / BLOCK_Y, N);
 
   if (count > 0) {
     AT_DISPATCH_FLOATING_TYPES_AND2(
