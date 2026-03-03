@@ -252,9 +252,9 @@ void safe_add_2d(scalar_t *data, int h, int w,
                  const index_t NC_offset,
                  const index_t memory_span) {
   if (within_bounds_2d(h, w, H, W)) {
-    fastAtomicAdd(data,
-                  NC_offset + h * sH + w * sW,
-                  memory_span,
+    fastAtomicAdd(data,  // input data
+                  NC_offset + h * sH + w * sW, // grad_input offset: NC_offset + h * sH + w * sW
+                  memory_span, // grad_input numel: N * C * H_in * W_in 没有使用
                   delta,
                   true);
   }

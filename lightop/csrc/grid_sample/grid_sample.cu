@@ -174,11 +174,11 @@ template <typename scalar_t, typename index_t>
 C10_LAUNCH_BOUNDS_1(256)
 __global__ void grid_sampler_2d_backward_kernel(
     const index_t nthreads,
-    TensorInfo<const scalar_t, index_t> grad_output,
-    TensorInfo<const scalar_t, index_t> input,
-    TensorInfo<const scalar_t, index_t> grid,
-    TensorInfo<scalar_t, index_t> grad_input,  // initialized to zeros (or unused if input_requires_grad is false)
-    TensorInfo<scalar_t, index_t> grad_grid,   // initialized to empty
+    TensorInfo<const scalar_t, index_t> grad_output,  // N C H_out, W_out, grad_output.shape: [N, C, H_out, W_out] 作为输出
+    TensorInfo<const scalar_t, index_t> input,        // N C H_in, W_in, input.shape: [N, C, H_in, W_in] 作为输入
+    TensorInfo<const scalar_t, index_t> grid,         // N H_out, W_out 2, grid.shape: [N, H_out, W_out, 2] 作为输入
+    TensorInfo<scalar_t, index_t> grad_input,         // N C H_in, W_in, grad_input.shape: [N, C, H_in, W_in] 作为输出，初始化为0（或如果input_requires_grad为false则不使用）
+    TensorInfo<scalar_t, index_t> grad_grid,          // N H_out, W_out 2, grad_grid.shape: [N, H_out, W_out, 2] 作为输出，初始化为空
     const GridSamplerInterpolation interpolation_mode,
     const GridSamplerPadding padding_mode,
     bool align_corners,
@@ -215,31 +215,31 @@ __global__ void grid_sampler_2d_backward_kernel(
     }
     index_t gGrid_sW = grad_grid.strides[2];
 
-    CUDA_KERNEL_LOOP_TYPE(index, nthreads, index_t) {
+    CUDA_KERNEL_LOOP_TYPE(index, nthreads, index_t) {  // index: block_id + thread_id range < nthreads
       const index_t w = index % out_W;
       const index_t h = (index / out_W) % out_H;
       const index_t n = index / (out_H * out_W);
-      const auto grid_offset = n * grid_sN + h * grid_sH + w * grid_sW;
+      const auto grid_offset = n * grid_sN + h * grid_sH + w * grid_sW; // grid: [N, H_out, W_out, 2]
 
       // get the corresponding input x, y coordinates from grid
-      scalar_t x = grid.data[grid_offset];
-      scalar_t y = grid.data[grid_offset + grid_sCoor];
+      scalar_t x = grid.data[grid_offset];              // 这是归一化之后的x坐标，范围是[-1, 1]
+      scalar_t y = grid.data[grid_offset + grid_sCoor]; // 这是归一化之后的y坐标，范围是[-1, 1]
 
       // multipliers for gradients on ix and iy
       scalar_t gix_mult, giy_mult;
-      scalar_t ix = grid_sampler_compute_source_index_set_grad(x, inp_W, padding_mode, align_corners, &gix_mult);
-      scalar_t iy = grid_sampler_compute_source_index_set_grad(y, inp_H, padding_mode, align_corners, &giy_mult);
+      scalar_t ix = grid_sampler_compute_source_index_set_grad(x, inp_W, padding_mode, align_corners, &gix_mult); // input空间的中x坐标，浮点
+      scalar_t iy = grid_sampler_compute_source_index_set_grad(y, inp_H, padding_mode, align_corners, &giy_mult); // input空间的中y坐标，浮点
 
       if (interpolation_mode == GridSamplerInterpolation::Bilinear) {
-        // get NE, NW, SE, SW pixel values from (x, y)
-        index_t ix_nw = static_cast<index_t>(std::floor(ix));
-        index_t iy_nw = static_cast<index_t>(std::floor(iy));
-        index_t ix_ne = ix_nw + 1;
-        index_t iy_ne = iy_nw;
-        index_t ix_sw = ix_nw;
-        index_t iy_sw = iy_nw + 1;
-        index_t ix_se = ix_nw + 1;
-        index_t iy_se = iy_nw + 1;
+        // get NE, NW, SE, SW pixel values from (x, y) 针对输入空间中的x, y坐标，找到对应的4个像素点
+        index_t ix_nw = static_cast<index_t>(std::floor(ix)); // 左上角
+        index_t iy_nw = static_cast<index_t>(std::floor(iy)); // 左上角
+        index_t ix_ne = ix_nw + 1; // 右上角
+        index_t iy_ne = iy_nw;     // 右上角
+        index_t ix_sw = ix_nw;     // 左下角
+        index_t iy_sw = iy_nw + 1; // 左下角
+        index_t ix_se = ix_nw + 1; // 右下角
+        index_t iy_se = iy_nw + 1; // 右下角
 
         // get surfaces to each neighbor:
         scalar_t nw = (ix_se - ix)    * (iy_se - iy);
@@ -247,38 +247,44 @@ __global__ void grid_sampler_2d_backward_kernel(
         scalar_t sw = (ix_ne - ix)    * (iy    - iy_ne);
         scalar_t se = (ix    - ix_nw) * (iy    - iy_nw);
 
+        bool in_nw = within_bounds_2d(iy_nw, ix_nw, inp_H, inp_W);
+        bool in_ne = within_bounds_2d(iy_ne, ix_ne, inp_H, inp_W);
+        bool in_sw = within_bounds_2d(iy_sw, ix_sw, inp_H, inp_W);
+        bool in_se = within_bounds_2d(iy_se, ix_se, inp_H, inp_W);
+
         scalar_t gix = static_cast<scalar_t>(0), giy = static_cast<scalar_t>(0);
-        const scalar_t *gOut_ptr_NCHW = grad_output.data + n * gOut_sN + h * gOut_sH + w * gOut_sW;
-        index_t NC_offset = n * gInp_sN;
-        const scalar_t *inp_ptr_NC = input.data + n * inp_sN;
+        const scalar_t *gOut_ptr_NCHW = grad_output.data + n * gOut_sN + h * gOut_sH + w * gOut_sW; // 偏移到grad_output C通道的首地址
+        index_t NC_offset = n * gInp_sN; // 偏移到grad_input C的首地址
+        const scalar_t *inp_ptr_NC = input.data + n * inp_sN; // 偏移到input C的首地址
         for (index_t c = 0; c < C; ++c, inp_ptr_NC += inp_sC, NC_offset += gInp_sC, gOut_ptr_NCHW += gOut_sC) {
           const scalar_t gOut = *gOut_ptr_NCHW;
 
           if (input_requires_grad) {
             // calculate and set grad_input. See Note [Passing pointer and offset to fastAtomicAdd].
-            safe_add_2d(grad_input.data, iy_nw, ix_nw, gInp_sH, gInp_sW, inp_H, inp_W, nw * gOut, NC_offset, grad_input_memory_span);
-            safe_add_2d(grad_input.data, iy_ne, ix_ne, gInp_sH, gInp_sW, inp_H, inp_W, ne * gOut, NC_offset, grad_input_memory_span);
-            safe_add_2d(grad_input.data, iy_sw, ix_sw, gInp_sH, gInp_sW, inp_H, inp_W, sw * gOut, NC_offset, grad_input_memory_span);
-            safe_add_2d(grad_input.data, iy_se, ix_se, gInp_sH, gInp_sW, inp_H, inp_W, se * gOut, NC_offset, grad_input_memory_span);
+            // 在input空间中，计算每个像素的梯度，并累加到grad_input中
+            safe_add_2d(grad_input.data, iy_nw, ix_nw, gInp_sH, gInp_sW, inp_H, inp_W, nw * gOut, NC_offset, grad_input_memory_span); // 左上角
+            safe_add_2d(grad_input.data, iy_ne, ix_ne, gInp_sH, gInp_sW, inp_H, inp_W, ne * gOut, NC_offset, grad_input_memory_span); // 右上角
+            safe_add_2d(grad_input.data, iy_sw, ix_sw, gInp_sH, gInp_sW, inp_H, inp_W, sw * gOut, NC_offset, grad_input_memory_span); // 左下角
+            safe_add_2d(grad_input.data, iy_se, ix_se, gInp_sH, gInp_sW, inp_H, inp_W, se * gOut, NC_offset, grad_input_memory_span); // 右下角
           }
 
-          // calculate grad_grid
-          if (within_bounds_2d(iy_nw, ix_nw, inp_H, inp_W)) {
+          // calculate grad_grid for channel c
+          if (in_nw) {
             scalar_t nw_val = inp_ptr_NC[iy_nw * inp_sH + ix_nw * inp_sW];
             gix -= nw_val * (iy_se - iy) * gOut;
             giy -= nw_val * (ix_se - ix) * gOut;
           }
-          if (within_bounds_2d(iy_ne, ix_ne, inp_H, inp_W)) {
+          if (in_ne) {
             scalar_t ne_val = inp_ptr_NC[iy_ne * inp_sH + ix_ne * inp_sW];
             gix += ne_val * (iy_sw - iy) * gOut;
             giy -= ne_val * (ix - ix_sw) * gOut;
           }
-          if (within_bounds_2d(iy_sw, ix_sw, inp_H, inp_W)) {
+          if (in_sw) {
             scalar_t sw_val = inp_ptr_NC[iy_sw * inp_sH + ix_sw * inp_sW];
             gix -= sw_val * (iy - iy_ne) * gOut;
             giy += sw_val * (ix_ne - ix) * gOut;
           }
-          if (within_bounds_2d(iy_se, ix_se, inp_H, inp_W)) {
+          if (in_se) {
             scalar_t se_val = inp_ptr_NC[iy_se * inp_sH + ix_se * inp_sW];
             gix += se_val * (iy - iy_nw) * gOut;
             giy += se_val * (ix - ix_nw) * gOut;
@@ -289,9 +295,9 @@ __global__ void grid_sampler_2d_backward_kernel(
         // thus we can
         //   1. use index with gGrid_sW to directly compute gGrid_ptr_NHW
         //   2. directly assign to gGrid_ptr_NHW[0], gGrid_ptr_NHW[1]
-        scalar_t *gGrid_ptr_NHW = grad_grid.data + index * gGrid_sW;
-        gGrid_ptr_NHW[0] = gix_mult * gix;
-        gGrid_ptr_NHW[1] = giy_mult * giy;
+        scalar_t *gGrid_ptr_NHW = grad_grid.data + index * gGrid_sW; // [N, H_out, W_out, 2] 偏移到[:,:,:,2]的首地址
+        gGrid_ptr_NHW[0] = gix_mult * gix; // gix_mult:是ix对x的梯度
+        gGrid_ptr_NHW[1] = giy_mult * giy; // giy_mult:是iy对y的梯度
       } 
       // else if (interpolation_mode == GridSamplerInterpolation::Nearest) {
       //   if (input_requires_grad) {
@@ -461,15 +467,26 @@ __global__ void grid_sampler_2d_backward_kernel(
   // Nondeterministic because of atomicAdd usage
   globalContext().alertNotDeterministic("grid_sampler_2d_backward_cuda");
   auto N = input.size(0);
-  auto H = grid.size(1);
-  auto W = grid.size(2);
+  auto H = grid.size(1); // output H
+  auto W = grid.size(2); // output W
 
   // If `input` gradient is not required, we skip computing it -- not needing to create
   // the tensor to hold the gradient can markedly increase performance. (`grid` gradient
   // is always computed.)
   auto input_requires_grad = output_mask[0];
+  constexpr int vec = 2;
 
   int64_t count = N * H * W;
+  printf("count: %lld\n", count);
+  printf("N: %lld\n", N);
+  printf("H: %lld\n", H);
+  printf("W: %lld\n", W);
+  printf("input_requires_grad: %d\n", input_requires_grad);
+  printf("grad_output: %lld\n", grad_output.numel());
+  printf("input: %lld\n", input.numel());
+  printf("grid: %lld\n", grid.numel());
+  printf("grad_grid: %lld\n", grad_grid.numel());
+  printf("GET_BLOCKS(count, 256): %d\n", GET_BLOCKS(count, 256));
   if (count > 0) {
     AT_DISPATCH_FLOATING_TYPES_AND2(
       ScalarType::Half, ScalarType::BFloat16,
@@ -479,11 +496,11 @@ __global__ void grid_sampler_2d_backward_kernel(
         grid_sampler_2d_backward_kernel<scalar_t>
           <<<GET_BLOCKS(count, 256), 256, 0, at::cuda::getCurrentCUDAStream()>>>(
             static_cast<int>(count),
-            getTensorInfo<const scalar_t, int>(grad_output),
-            getTensorInfo<const scalar_t, int>(input),
-            getTensorInfo<const scalar_t, int>(grid),
+            getTensorInfo<const scalar_t, int>(grad_output), // N C H W, grad_output.shape: [N, C, H_out, W_out] 作为输出
+            getTensorInfo<const scalar_t, int>(input),       // N C H_in W_in
+            getTensorInfo<const scalar_t, int>(grid),        // N H_out W_out 2 
             input_requires_grad ? getTensorInfo<scalar_t, int>(grad_input) : TensorInfo<scalar_t, int>(),
-            getTensorInfo<scalar_t, int>(grad_grid),
+            getTensorInfo<scalar_t, int>(grad_grid),         // N H_out W_out 2 作为输出
             static_cast<GridSamplerInterpolation>(interpolation_mode),
             static_cast<GridSamplerPadding>(padding_mode),
             align_corners,

@@ -11,6 +11,7 @@ __pycache__/*
 lightop/csrc/hip_*.cpp
 lightop/csrc/hip_*.h
 lightop/csrc/*_hip.h
+lightop/csrc/*_hip.cpp
 lightop/csrc/groupnorm/*_hip.h
 *.egg-info/*
 lightop/csrc/*/*_hip.h
