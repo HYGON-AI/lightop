@@ -14,6 +14,9 @@ std::tuple<Tensor,Tensor>rmsnorm_backward(const Tensor& grad, const Tensor& X,co
 void fused_rms_norm_contiguous(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight, double epsilon);
 void fused_rms_norm_rope_contiguous(torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon);
 void fuse_rmsnorm_rope_quant_qkv(torch::Tensor& positions, torch::Tensor& q_c, torch::Tensor& q_pe, torch::Tensor& q_quant, torch::Tensor& q_scale, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon);
+Tensor grid_sample_forward_autograd(const Tensor& input, const Tensor& grid, int64_t interpolation_mode, int64_t padding_mode, bool align_corners);
+Tensor grid_sample_forward(const Tensor& input, const Tensor& grid, int64_t interpolation_mode, int64_t padding_mode, bool align_corners);
+std::tuple<Tensor,Tensor> grid_sample_backward(const Tensor& grad_output, const Tensor& input, const Tensor& grid, int64_t interpolation_mode, int64_t padding_mode, bool align_corners, std::array<bool, 2> output_mask);
 void fuse_fill_rms_x2_concat(torch::Tensor& hidden_states_fuse, torch::Tensor& positions, torch::Tensor& inputs_embeds, torch::Tensor& previous_hidden_states, torch::Tensor& weight_inputs_embeds, torch::Tensor& weight_previous_hidden_states, float epsilon);
 //void rms_rotary_embedding_fuse_with_kv_store(torch::Tensor& positions, torch::Tensor& query, torch::Tensor& key, torch::Tensor& v, torch::Tensor& cos_sin_cache, int head_dim, int page_size, torch::Tensor& k_buffer, torch::Tensor& v_buffer, Tensor& kv_cache_loc, bool interleave, Tensor& weight_q, Tensor& weight_k, torch::Dtype output_dtype, std::optional<Tensor>& residual_q, std::optional<Tensor>& residual_k, std::optional<float>& k_scale, std::optional<float>& v_scale, std::optional<Tensor>& q_rope_out, std::optional<Tensor>& k_rope_out, std::optional<Tensor>& v_rope_out,  float epsilon);
 //void rms_rotary_embedding_fuse_with_kv_store(torch::Tensor& positions, torch::Tensor& query, torch::Tensor& key, torch::Tensor& v, int64_t head_size, torch::Tensor& cos_sin_cache, bool is_neox, torch::Tensor& weight_q, torch::Tensor& weight_k, std::optional<Tensor>& residual_q, std::optional<Tensor>& residual_k, torch::Tensor& k_buffer, torch::Tensor& v_buffer, torch::Tensor& kv_cache_loc, torch::Tensor& q_rope_out, torch::Tensor& k_rope_out, torch::Tensor& v_rope_out, int page_size, double epsilon, bool use_fp8_e4m3);
@@ -352,6 +355,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("fused_rms_norm_contiguous", &at::native::fused_rms_norm_contiguous, "fused_rms_norm_contiguous");
   m.def("fused_rms_norm_rope_contiguous", &at::native::fused_rms_norm_rope_contiguous, "fused_rms_norm_rope_contiguous");
   m.def("fuse_rmsnorm_rope_quant_qkv", &at::native::fuse_rmsnorm_rope_quant_qkv, "fuse_rmsnorm_rope_quant_qkv");
+  m.def("grid_sample_forward_autograd", &at::native::grid_sample_forward_autograd, "grid_sample forward autograd");
+  m.def("grid_sample_forward", &at::native::grid_sample_forward, "grid_sample forward");
+  m.def("grid_sample_backward", &at::native::grid_sample_backward, "grid_sample backward");
   m.def("rms_rotary_embedding_fuse_with_kv_store", &at::native::rms_rotary_embedding_fuse_with_kv_store, "rms_rotary_embedding_fuse_with_kv_store");
   m.def("fuse_fill_rms_x2_concat", &at::native::fuse_fill_rms_x2_concat, "fuse_fill_rms_x2_concat");
   m.def("rn_dropout_forward_autograd", &at::native::fuse_rn_dropout_forward_autograd, "fused_rn_dropout forward");
