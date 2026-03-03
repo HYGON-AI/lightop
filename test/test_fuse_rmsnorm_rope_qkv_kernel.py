@@ -1,3 +1,7 @@
+import os
+import statistics
+import sys
+import time
 import torch
 import itertools
 from lightop import (
@@ -11,10 +15,21 @@ DTYPE = torch.bfloat16
 RMS_EPS = 1e-6
 ROPE_THETA = 10000.0
 PAGE_SIZE = 64
-TEST_SHAPES = [(1, 800, 8, 1, 128, 64)]
+TEST_SHAPES = [(128, 1, 8, 1, 128, 128), (128, 1, 8, 1, 128, 64)]
 TEST_NEOX = [True]
 TEST_RESIDUALS = [False, True]
 TEST_V_FP8 = [True]
+
+# 性能测试：更多 shape，便于评估不同规模
+PERF_SHAPES = [
+    (128, 1, 8, 1, 128, 128),
+    (128, 1, 8, 1, 128, 64),
+    (256, 1, 8, 1, 128, 128),
+    (512, 1, 8, 1, 128, 128),
+    (1024, 1, 8, 1, 128, 128),
+]
+PERF_WARMUP = 10
+PERF_REPEAT = 100
 
 def get_precision_tolerance(dtype):
     if dtype == torch.float32:
@@ -191,6 +206,71 @@ def run_one_2d(shape, is_neox, use_residual, use_fp8):
     cmp(v_buf_tgt, v_buf_ref, "v_buf_2d")
 
 
+def run_benchmark(shape, is_neox, use_residual, use_fp8, warmup=PERF_WARMUP, repeat=PERF_REPEAT):
+    """对 rms_rotary_embedding_fuse_with_kv_store 做性能测试，返回 (mean_ms, std_ms, num_tokens)。"""
+    batch, seq, h_q, h_k, dim, rot_dim = shape
+    num_tokens = batch * seq
+    q, k, v, positions, w_q, w_k, res_q, res_k, k_buf, v_buf, kv_loc, _ = get_tensors(
+        batch, seq, h_q, h_k, dim, PAGE_SIZE, use_residual, use_fp8
+    )
+    cos_sin = build_cos_sin_cache(num_tokens, rot_dim, ROPE_THETA, torch.float32, DEVICE)
+    if DTYPE != torch.float32:
+        cos_sin = cos_sin.to(DTYPE)
+    cos_sin = cos_sin.contiguous()
+
+    def run_once():
+        q_t, k_t, v_t = q.clone(), k.clone(), v.clone()
+        k_buf_t = torch.zeros_like(k_buf)
+        v_buf_t = torch.zeros_like(v_buf)
+        r_q = res_q.clone() if use_residual else None
+        r_k = res_k.clone() if use_residual else None
+        rms_rotary_embedding_fuse_with_kv_store(
+            positions, q_t, k_t, v_t, cos_sin, head_dim=dim, page_size=PAGE_SIZE,
+            k_buffer=k_buf_t, v_buffer=v_buf_t, kv_cache_loc=kv_loc, is_neox=is_neox,
+            weight_q=w_q, weight_k=w_k, output_dtype=DTYPE, residual_q=r_q, residual_k=r_k,
+            k_scale=1.0 if use_fp8 else None, v_scale=1.0 if use_fp8 else None, epsilon=RMS_EPS,
+        )
+
+    # warmup
+    for _ in range(warmup):
+        run_once()
+    torch.cuda.synchronize()
+
+    # timed
+    times = []
+    for _ in range(repeat):
+        start = time.perf_counter()
+        run_once()
+        torch.cuda.synchronize()
+        times.append((time.perf_counter() - start) * 1000.0)
+
+    mean_ms = statistics.mean(times)
+    std_ms = statistics.stdev(times) if len(times) > 1 else 0.0
+    return mean_ms, std_ms, num_tokens
+
+
+def run_perf_tests():
+    """运行性能测试并打印表格。"""
+    if not torch.cuda.is_available():
+        print("SKIP perf: no CUDA")
+        return
+    print("fuse_rmsnorm_rope_qkv kernel performance (real kernel)")
+    print("  warmup=%d, repeat=%d" % (PERF_WARMUP, PERF_REPEAT))
+    print("-" * 90)
+    print(f"{'shape':<45} {'mean(ms)':>10} {'std(ms)':>10} {'tokens/s':>12}")
+    print("-" * 90)
+    for shape in PERF_SHAPES:
+        batch, seq, h_q, h_k, dim, rot_dim = shape
+        mean_ms, std_ms, num_tokens = run_benchmark(
+            shape, is_neox=True, use_residual=False, use_fp8=True,
+            warmup=PERF_WARMUP, repeat=PERF_REPEAT,
+        )
+        tokens_per_sec = num_tokens / (mean_ms * 1e-3) if mean_ms > 0 else 0
+        shape_str = str(shape)
+        print(f"{shape_str:<45} {mean_ms:>10.3f} {std_ms:>10.3f} {tokens_per_sec:>12.0f}")
+    print("-" * 90)
+
+
 def main():
     if not torch.cuda.is_available():
         print("SKIP: no CUDA")
@@ -207,4 +287,5 @@ def main():
 
 
 if __name__ == "__main__":
+    run_perf_tests()
     main()

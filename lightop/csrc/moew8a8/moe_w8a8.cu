@@ -1415,6 +1415,310 @@ __global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_DEC
   
 }
 
+///////////////////////////////////////bypass//////////////////////////////////////////
+template<
+  typename Element,
+  typename OutputType,
+  uint16_t WARP_NUM,
+  uint16_t BLOCK_SIZE_M, 
+  uint16_t BLOCK_SIZE_N, 
+  uint16_t BLOCK_SIZE_K, 
+  uint16_t WARP_M, 
+  uint16_t WARP_N, 
+  uint16_t WARP_K, 
+  uint16_t GROUP_N,
+  uint16_t GROUP_K,
+  int STAGES,
+  bool mul_topk_weight> // true
+__global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_BYPASS_UP(
+  const Element* __restrict__ input,
+  const Element* __restrict__ qweight,
+  OutputType* __restrict__ output,
+  float* __restrict__ input_scale,
+  float* __restrict__ weight_scale,
+  const float* __restrict__ topk_weights,
+  const int32_t* __restrict__ sorted_token_ids,
+  const int32_t* __restrict__ expert_ids,
+  const int32_t* __restrict__ num_tokens_post_pad,
+  uint32_t size_m,
+  uint32_t size_n, 
+  uint32_t size_k, 
+  uint32_t stride_asm,
+  uint32_t stride_ask,
+  uint32_t stride_bse,
+  uint32_t stride_bsn, 
+  uint32_t stride_bsk,
+  uint32_t sorted_token_lens,
+  uint32_t top_k,
+  uint32_t delta 
+) {
+  const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
+  const int bidy = blockIdx.y; // pid_n
+  const int bidz = blockIdx.x; // pid_k 
+
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
+  const int32_t delta_bidx = bidx;
+  const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
+  const uint64_t expert_offset = ((uint64_t)size_n) * size_k * expert_id; // 这个是对应专家的weight偏移
+  const uint64_t qweight_offset = expert_offset + bidy * 64 * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
+  const uint32_t output_offset = bidy * BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
+  const uint64_t weight_scale_offset = stride_bse * stride_bsn * expert_id + bidy * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
+  
+  auto g_input = input;
+  auto g_input_scale = input_scale; // 配置全局显存信息
+  OutputType* g_output;
+  g_output = output + output_offset;
+
+  if(expert_id == -1){ //EP算法处理 epxert_id为-1 写回0
+    return;
+  }  
+
+  constexpr int mfma_m = 16;
+  constexpr int mfma_n = 16;
+  constexpr int mfma_k = 32;
+
+  int warp_id_vec = threadIdx.x / 64; //warp id in a block
+  int warp_id = __builtin_amdgcn_readfirstlane(warp_id_vec); // 用于对warp id直接进行广播，不同一个block中的每个线程都去计算threadIdx.x / 64
+  int lane_id = threadIdx.x & 63; // thread_id
+  int row_id = lane_id % 16;
+  int col_id = lane_id / 16;
+
+  constexpr int warp_n_num = BLOCK_SIZE_N / WARP_N;
+  int warp_n_id = (warp_id) % warp_n_num;
+  int warp_m_id = (warp_id) / warp_n_num;
+
+  extern __shared__ Element smem[]; // 声明lds信息
+  Element* input_lds = (Element*)&(smem); // decode这里没用
+  Element* qweight_lds = input_lds; // decode这里没用
+  OutputType* output_lds = (OutputType*)&(smem); // 重复使用lds,留给output_lds
+
+  const int *sorted_token_ids_offset = sorted_token_ids;
+  union_vec<Element, WARP_K / 4> A_reg[WARP_M / mfma_m]; 
+  union_vec<Element, WARP_K / 4> B_reg[WARP_N / mfma_n];
+
+  auto g_qweight = qweight + qweight_offset;
+  auto g_weight_scale = weight_scale + weight_scale_offset; // 配置weight的scale信息 todo 这里n_loop=0没有计算偏移
+  intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; // [4][2]  每个warp在n方向重复两次 tileN = 16*2
+  float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id*WARP_N;
+  float a_scale_ptr_arr[WARP_M / mfma_m];
+  int token_offset[WARP_M / mfma_m];
+
+  #pragma unroll
+  for(int idx = 0; idx < WARP_M / mfma_m; idx++){
+      int sorted_token_offset = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + idx * mfma_m + row_id, int(sorted_token_lens - 1))];
+      token_offset[idx] = std::min(sorted_token_offset / top_k, size_m - 1);
+      a_scale_ptr_arr[idx] = *(input_scale + token_offset[idx] * stride_asm); //计算M方向的偏移
+  }
+
+
+  if(bidy*BLOCK_SIZE_N + warp_n_id * WARP_N < size_n){
+
+  gemm_nt_marlin_bypass<Element, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K>
+  (g_input, g_qweight, input_lds, qweight_lds, A_reg, B_reg, C_reg, sorted_token_ids_offset, sorted_token_lens, warp_id, size_m,
+    size_m, size_n, size_k, top_k, bidx);
+  
+  //save output to lds 
+  {
+    #pragma unroll
+    for(int min_tile_m = 0; min_tile_m < WARP_M / mfma_m; min_tile_m++){
+      float a_scale = a_scale_ptr_arr[min_tile_m];
+      #pragma unroll
+      for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
+        #pragma unroll
+        for(int reg_id = 0; reg_id < 4; reg_id++){
+          float b_scale = *(b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4);
+          float value = C_reg[0][min_tile_m * (WARP_N/mfma_n) + min_tile_n][reg_id] * a_scale * b_scale;
+          int m_offset = warp_m_id * WARP_M + min_tile_m * mfma_m + row_id;
+          //int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (row_id ) * BLOCK_SIZE_N + reg_id * 4 + col_id + (min_tile_m * mfma_m + (lane_id % 16))/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
+          int index =  m_offset * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + reg_id * 4 + col_id + (m_offset)/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
+          output_lds[index] = f32_to_output<OutputType>(value);
+          // #if defined(__gfx938__)
+          // output_lds[index] = __builtin_hcu_cvt_bf16_f32(value, false, false); //fp32->bf16
+          // #endif
+        }
+      }
+    }
+  }
+
+} // n方向判断是否越界
+  __syncthreads();
+
+  {
+
+    // 最大化利用dwordx4 通用
+    const int tid = threadIdx.x;
+    constexpr int N_thread = BLOCK_SIZE_N / 8;  //N方向需要的线程数 使用dwordx4即8个bf16
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    int m_idx = threadIdx.x / N_thread;  // tid / 4 = 0-32
+    int n_idx = threadIdx.x % N_thread;  // tid % 4 = 0-3
+    for(; m_idx < BLOCK_SIZE_M && bidy*BLOCK_SIZE_N + n_idx * 8 < size_n; m_idx += (WARP_NUM*64) / N_thread) {
+      const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
+
+      if(token_index < size_m * top_k) {
+        *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * size_n + n_idx * 8]) = 
+        //*reinterpret_cast<vec_bf16_8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 8]);
+        *reinterpret_cast<vec_bf16_8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 8 + m_idx/2 * 2/*padding*/]);
+      }
+    } 
+  }     
+  
+}
+
+
+
+template<
+  typename Element,
+  typename OutputType,
+  uint16_t WARP_NUM,
+  uint16_t BLOCK_SIZE_M, 
+  uint16_t BLOCK_SIZE_N, 
+  uint16_t BLOCK_SIZE_K, 
+  uint16_t WARP_M, 
+  uint16_t WARP_N, 
+  uint16_t WARP_K, 
+  uint16_t GROUP_N,
+  uint16_t GROUP_K,
+  int STAGES,
+  bool mul_topk_weight> // true
+__global__ void __launch_bounds__(1024) MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_BYPASS_DOWN(
+  const Element* __restrict__ input,
+  const Element* __restrict__ qweight,
+  OutputType* __restrict__ output,
+  float* __restrict__ input_scale,
+  float* __restrict__ weight_scale,
+  const float* __restrict__ topk_weights,
+  const int32_t* __restrict__ sorted_token_ids,
+  const int32_t* __restrict__ expert_ids,
+  const int32_t* __restrict__ num_tokens_post_pad,
+  uint32_t size_m,
+  uint32_t size_n, 
+  uint32_t size_k, 
+  uint32_t stride_asm,
+  uint32_t stride_ask,
+  uint32_t stride_bse,
+  uint32_t stride_bsn, 
+  uint32_t stride_bsk,
+  uint32_t sorted_token_lens,
+  uint32_t top_k,
+  uint32_t delta 
+) {
+  const int bidx = blockIdx.z; // 分别在三个方向上都有block pid_m m方向分块,可以理解为按照专家或者专家对应的token来并行
+  const int bidy = blockIdx.y; // pid_n
+  const int bidz = blockIdx.x; // pid_k 
+
+  if (sorted_token_ids[bidx * BLOCK_SIZE_M] >= size_m*top_k || bidx * BLOCK_SIZE_M >= num_tokens_post_pad[0]) return; // 对于无效的block,直接返回,num_tokens_post_pad[0]=10144
+  const uint32_t input_offset = bidz * BLOCK_SIZE_K; //输入k方向分块的位置
+  const int32_t delta_bidx = bidx / delta;
+  const int32_t expert_id = expert_ids[delta_bidx]; // 专家的索引
+  const uint64_t expert_offset = ((uint64_t)size_n) * size_k * expert_id; // 这个是对应专家的weight偏移
+  const uint64_t qweight_offset = expert_offset + bidy * 64 * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
+  const uint32_t output_offset = bidy * BLOCK_SIZE_N; // 计算之后是mxn,这应该是计算输出n方向的位置
+
+  const uint64_t weight_scale_offset = stride_bse * stride_bsn * expert_id + bidy * BLOCK_SIZE_N; // 具体偏移到对应专家的weight的某一个小的分块
+  
+  auto g_input = input;
+  auto g_input_scale = input_scale; // 配置全局显存信息
+  OutputType* g_output;
+  g_output = output + output_offset;
+
+  if(expert_id == -1){ //EP算法处理 epxert_id为-1 写回0
+    return;
+  }  
+
+  constexpr int mfma_m = 16;
+  constexpr int mfma_n = 16;
+  constexpr int mfma_k = 32;
+
+  int warp_id_vec = threadIdx.x / 64; //warp id in a block
+  int warp_id = __builtin_amdgcn_readfirstlane(warp_id_vec); // 用于对warp id直接进行广播，不同一个block中的每个线程都去计算threadIdx.x / 64
+  int lane_id = threadIdx.x & 63; // thread_id
+  int row_id = lane_id % 16;
+  int col_id = lane_id / 16;
+
+  constexpr int warp_n_num = BLOCK_SIZE_N / WARP_N;
+  int warp_n_id = (warp_id) % warp_n_num;
+  int warp_m_id = (warp_id) / warp_n_num;
+
+  extern __shared__ Element smem[]; // 声明lds信息
+  Element* input_lds = (Element*)&(smem); // decode这里没用
+  Element* qweight_lds = input_lds; // decode这里没用
+  OutputType* output_lds = (OutputType*)&(smem); // 重复使用lds,留给output_lds
+
+  const int *sorted_token_ids_offset = sorted_token_ids;
+  union_vec<Element, WARP_K / 4> A_reg[WARP_M / mfma_m]; 
+  union_vec<Element, WARP_K / 4> B_reg[WARP_N / mfma_n];
+
+  auto g_qweight = qweight + qweight_offset;
+  auto g_weight_scale = weight_scale + weight_scale_offset; // 配置weight的scale信息 todo 这里n_loop=0没有计算偏移
+  intx4 C_reg[1][(WARP_M/16)*(WARP_N/16)] = {0,0,0,0}; // [4][2]  每个warp在n方向重复两次 tileN = 16*2
+  float *b_scale_ptr = weight_scale + weight_scale_offset + warp_n_id*WARP_N;
+  float weight_dot_a_scale[WARP_M / mfma_m];
+  int token_offset[WARP_M / mfma_m];
+
+  #pragma unroll
+  for(int idx = 0; idx < WARP_M / mfma_m; idx++){
+      int token_index = sorted_token_ids_offset[std::min(bidx * BLOCK_SIZE_M + warp_m_id * WARP_M + idx * mfma_m + row_id, int(sorted_token_lens - 1))];
+      token_offset[idx] = std::min(token_index, size_m * top_k-1);
+      float input_scale_value = *(input_scale + token_offset[idx] * stride_asm); //计算M方向的偏移
+      weight_dot_a_scale[idx] = topk_weights[token_offset[idx]] * input_scale_value;
+  }
+  
+
+  if(bidy*BLOCK_SIZE_N + warp_n_id * WARP_N < size_n){
+
+  gemm_nt_marlin_bypass<Element, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K>
+  (g_input, g_qweight, input_lds, qweight_lds, A_reg, B_reg, C_reg, sorted_token_ids_offset, sorted_token_lens, warp_id, size_m,
+    size_m, size_n, size_k, top_k, bidx);
+  
+  //save output to lds 
+  {
+    #pragma unroll
+    for(int min_tile_m = 0; min_tile_m < WARP_M / mfma_m; min_tile_m++){
+      float weight_dot_a_scale_value = weight_dot_a_scale[min_tile_m];
+      #pragma unroll
+      for(int min_tile_n = 0; min_tile_n < WARP_N / mfma_n; min_tile_n++){
+        #pragma unroll
+        for(int reg_id = 0; reg_id < 4; reg_id++){
+          float *b_scale = b_scale_ptr + min_tile_n * mfma_n + col_id + reg_id * 4;
+          float value = C_reg[0][min_tile_m * (WARP_N/mfma_n) + min_tile_n][reg_id] * weight_dot_a_scale_value * b_scale[0];
+          int m_offset = warp_m_id * WARP_M + min_tile_m * mfma_m + row_id;
+          //int index = min_tile_m * mfma_m * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + (row_id ) * BLOCK_SIZE_N + reg_id * 4 + col_id + (min_tile_m * mfma_m + (lane_id % 16))/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
+          int index =  m_offset * BLOCK_SIZE_N + min_tile_n * mfma_n + warp_n_id * WARP_N + reg_id * 4 + col_id + (m_offset)/2 * 2/*padding*/;// + (lane_id & 15 )/2 * 2/*padding*/
+          output_lds[index] = f32_to_output<OutputType>(value);
+          // #if defined(__gfx938__)
+          // output_lds[index] = __builtin_hcu_cvt_bf16_f32(value, false, false); //fp32->bf16
+          // #endif
+        }
+      }
+    }
+  }
+
+  } // n方向判断是否越界
+  __syncthreads();
+
+  {
+
+    // 最大化利用dwordx4 通用
+    const int tid = threadIdx.x;
+    constexpr int N_thread = BLOCK_SIZE_N / 8;  //N方向需要的线程数 使用dwordx4即8个bf16
+    using vec_bf16_8 = __attribute__((__vector_size__(8 * sizeof(uint16_t)))) unsigned short;
+    int m_idx = threadIdx.x / N_thread;  // tid / 4 = 0-32
+    int n_idx = threadIdx.x % N_thread;  // tid % 4 = 0-3
+    for(; m_idx < BLOCK_SIZE_M && bidy*BLOCK_SIZE_N + n_idx * 8 < size_n; m_idx += (WARP_NUM*64) / N_thread) {
+      const int32_t token_index = sorted_token_ids[std::min(bidx * BLOCK_SIZE_M + m_idx, int(sorted_token_lens - 1))];
+
+      if(token_index < size_m * top_k) {
+        *reinterpret_cast<vec_bf16_8*>(&g_output[token_index * size_n + n_idx * 8]) = 
+        //*reinterpret_cast<vec_bf16_8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 8]);
+        *reinterpret_cast<vec_bf16_8*>(&output_lds[m_idx * BLOCK_SIZE_N + n_idx * 8 + m_idx/2 * 2/*padding*/]);
+      }
+    } 
+  }     
+  
+}
+
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template<
@@ -1944,6 +2248,135 @@ void launch_moe_w8a8_second_stage_decode(const GemmParams<T, OutputType>& params
       }
 }
 
+// launch bypass
+
+// launch_gemm2_decode
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int STAGES, typename T, typename OutputType>
+void launch_moe_w8a8_first_stage_bypass(const GemmParams<T, OutputType>& params) {
+    //const int STAGES = 2;
+    const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
+    const bool mul_topk_weight = false;
+    constexpr int GROUP_N = 1;
+    constexpr int GROUP_K = 1;
+    dim3 blockDim, gridDim;
+    blockDim.x = WARP_NUM*64;
+    blockDim.y = 1;
+    blockDim.z = 1;
+
+   
+    gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
+    gridDim.x = 1; // k方向
+
+
+    const int bytes_per_element = 2;
+    //int lds_size_m = BLOCK_SIZE_M / WARP_M * 16;
+    int lds_size_m = BLOCK_SIZE_M;
+    int loop = lds_size_m / 2;
+    int padding = (loop - 1) * 2 * loop; //累加求和公式推导
+    const int lds_size = std::max(BLOCK_SIZE_M * WARP_K, lds_size_m * BLOCK_SIZE_N * bytes_per_element +  padding * bytes_per_element );
+    //const int lds_size = BLOCK_SIZE_M * BLOCK_SIZE_N * 4;
+    const int shared_mem_size = lds_size;
+    const hipStream_t stream = at::cuda::getCurrentHIPStream();
+    
+    {
+        gridDim.z = std::min(params.size_m * params.top_k, DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M)); // m方向
+        
+        MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_BYPASS_UP<char, OutputType, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+        GROUP_N, GROUP_K, STAGES, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
+        params.ptr_A, 
+        params.ptr_B0, 
+        (OutputType*)params.ptr_C, 
+        params.ptr_A_scale, 
+        params.ptr_B_scale,  
+        params.topk_weights,
+        params.sorted_token_ids,
+        params.expert_ids, 
+        params.num_tokens_post_pad_ptr,
+        params.size_m,
+        params.size_n,
+        params.size_k,
+        params.stride_asm,
+        params.stride_ask,
+        params.stride_bse,
+        params.stride_bsn,
+        params.stride_bsk,
+        params.sorted_token_lens,
+        params.top_k,
+        params.delta);
+
+    }
+
+    auto err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA error in gemm2: %s\n", cudaGetErrorString(err));
+    }
+}
+
+
+// launch_gemm2_decode
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int STAGES, typename T, typename OutputType>
+void launch_moe_w8a8_second_stage_bypass(const GemmParams<T, OutputType>& params) {
+    //const int STAGES = 2;
+    const int WARP_NUM = (BLOCK_SIZE_M / WARP_M) * (BLOCK_SIZE_N / WARP_N);
+    const bool mul_topk_weight = true;
+    constexpr int GROUP_N = 1;
+    constexpr int GROUP_K = 1;
+    dim3 blockDim, gridDim;
+    blockDim.x = WARP_NUM*64;
+    blockDim.y = 1;
+    blockDim.z = 1;
+
+   
+    gridDim.z = DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M); // m方向
+    gridDim.y = DIVIDE(params.size_n, BLOCK_SIZE_N); // n方向
+    gridDim.x = 1; // k方向
+
+
+    const int bytes_per_element = 2;
+    //int lds_size_m = BLOCK_SIZE_M / WARP_M * 16;
+    int lds_size_m = BLOCK_SIZE_M;
+    int loop = lds_size_m / 2;
+    int padding = (loop - 1) * 2 * loop; //累加求和公式推导
+    const int lds_size = std::max(BLOCK_SIZE_M * WARP_K, lds_size_m * BLOCK_SIZE_N * bytes_per_element +  padding * bytes_per_element );
+    // const int lds_size = BLOCK_SIZE_M * BLOCK_SIZE_N * (BLOCK_SIZE_K / WARP_K) * 4;
+    const int shared_mem_size = lds_size;
+    const hipStream_t stream = at::cuda::getCurrentHIPStream();
+    
+    {
+        gridDim.z = std::min(params.size_m * params.top_k, DIVIDE(params.sorted_token_lens, BLOCK_SIZE_M)); // m方向
+        
+        MOE_W8A8_I8_PERCHANNEL_MARLIN_HIP_NT_BYPASS_DOWN<char, OutputType, WARP_NUM, BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, WARP_M, WARP_N, WARP_K,
+        GROUP_N, GROUP_K, STAGES, mul_topk_weight><<<gridDim, blockDim, shared_mem_size, stream>>>(
+        params.ptr_A, 
+        params.ptr_B0, 
+        (OutputType*)params.ptr_C, 
+        params.ptr_A_scale, 
+        params.ptr_B_scale,  
+        params.topk_weights,
+        params.sorted_token_ids,
+        params.expert_ids, 
+        params.num_tokens_post_pad_ptr,
+        params.size_m,
+        params.size_n,
+        params.size_k,
+        params.stride_asm,
+        params.stride_ask,
+        params.stride_bse,
+        params.stride_bsn,
+        params.stride_bsk,
+        params.sorted_token_lens,
+        params.top_k,
+        params.delta);
+
+    }
+
+    auto err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("CUDA error in gemm2: %s\n", cudaGetErrorString(err));
+    }
+}
+
 // 模板抽象
 // BLOCK_MNK: [16, 128, 128]
 // WARP_MNK: [16, 32, 64]
@@ -2224,7 +2657,8 @@ torch::Tensor moe_gemm_marlin_w8a8(torch::Tensor input,
             delta,
             is_marlin
           );
-
+          //launch_moe_w8a8_second_stage_bypass<16, 32, 64, 16, 32, 64, 2, char, bhalf_t>(params_in);
+          // int aaa = 2;
           if(mode >= 500){
             auto kernel_maps = get_kernel_maps_marlin_gemm2_prefill<bhalf_t>();
             auto it = kernel_maps.find(mode);
@@ -2244,6 +2678,7 @@ torch::Tensor moe_gemm_marlin_w8a8(torch::Tensor input,
                 launch_moe_w8a8_second_stage_decode<16, 32, 128, 16, 16, 64, 2, char, bhalf_t>(params_in);
             }
           }
+
         }
       } else if (output.scalar_type() == at::ScalarType::Half) {
         // Float16 类型

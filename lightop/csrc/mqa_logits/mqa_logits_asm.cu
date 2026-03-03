@@ -29,6 +29,7 @@
 #include <c10/cuda/CUDAGuard.h>
 #include "aiter_hip_common.h"
 
+#define fp8 uint8_t
 using half_t = __half;
 using half2_t = __attribute__((__vector_size__(2 * sizeof(_Float16)))) _Float16;
 using half4_t = __attribute__((__vector_size__(4 * sizeof(_Float16)))) _Float16;
@@ -39,6 +40,8 @@ using floatx2 = __attribute__((__vector_size__(2 * sizeof(float)))) float;
 using v4bh = __attribute__((__vector_size__(4 * sizeof(short)))) short;
 using intx4 = __attribute__((__vector_size__(4 * sizeof(int)))) int;
 using intx2 = __attribute__((__vector_size__(2 * sizeof(int)))) int;
+using fp8x16 = __attribute__( (__vector_size__(16 * sizeof(fp8)) )) fp8;
+using fp8x8 = __attribute__( (__vector_size__(8 * sizeof(fp8)) )) fp8;
 
 #define FETCH_HALF8(pointer) (reinterpret_cast<half8_t*>(&(pointer))[0])
 #define FETCH_HALF4(pointer) (reinterpret_cast<half4_t*>(&(pointer))[0])
@@ -80,6 +83,20 @@ inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& 
         reg_c = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(*(v4bh*)&reg_a, *(v4bh*)&reg_b, reg_c, false, false);
 #endif
 }
+
+template <bool is_e4m3 = true>
+inline __device__ void builtin_amdgcn_mmac_fp8(const intx2& reg_a, const intx2& reg_b, floatx4& reg_c) {
+    #if defined(__gfx936__) || defined(__gfx928__)
+        return;
+    #elif defined(__gfx938__)
+        if constexpr (is_e4m3){
+            reg_c =__builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(reg_a, reg_b, reg_c, false, false); 
+        }else{
+            reg_c =__builtin_hcu_mmac_f32_16x16x32_bf8_bf8_lit_lts(reg_a, reg_b, reg_c, false, false); 
+        }
+    #endif
+}
+
 template <uint32_t kNextN, uint32_t kNumWarps>
 __global__ __launch_bounds__(kNumWarps * 64, 1) void clean_logits(
     const uint32_t seq_len,
@@ -201,7 +218,29 @@ loadtileB2reg(half4x8 &B_reg, scalar_t *B_data, const int row, const int col, co
         }
     }
 }
-
+//FP8 Loadtile B
+template<typename scalar_t, bool is_align_n>
+inline __device__ void
+loadtileB2reg_fp8(intx2 B_reg[4], scalar_t *B_data, const int row, const int col, const int head_dim, const int max_rows) {
+    uint64_t* B_ptr = (uint64_t*)B_reg;
+    if constexpr(is_align_n) {
+#pragma unroll 4
+        for (int i = 0; i < 4; i++) {
+            //load 8个
+            B_ptr[i] = *(uint64_t*)(&B_data[row * head_dim + col + i * 32]);
+        }
+    } else {
+        if (row >= max_rows) {
+            for (int i = 0; i < 4; i++) {
+                B_ptr[i] = 0;
+            }
+        } else {
+            for (int i = 0; i < 4; i++) {
+                B_ptr[i] = *(uint64_t*)(&B_data[row * head_dim + col + i * 32]);
+            }
+        }
+    }
+}
 template <typename scalar_t>
 __device__ __forceinline__ void cp_async4_vgpr(intx4* dst_vgpr, const scalar_t* glob_ptr, int offset_v, bool pred) {
     if (pred) {
@@ -241,6 +280,408 @@ __device__ __forceinline__ void cp_async2_vgpr(intx2* dst_vgpr, const scalar_t* 
             "+v"(offset_v), "+s"(global_addr));
 
         *reinterpret_cast<intx2*>(dst_vgpr) = res;
+    }
+}
+/*fp8, KV_scale_data*/
+template <int num_heads, int head_dim, int BlOCK_M, int BLOCK_K, int BLOCK_N, bool is_align_m, bool is_align_n>
+__global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch_fp8(
+    fp8* A_data,
+    fp8* B_data,
+    float* D_data,
+    float* Weights_data,
+    uint32_t* KS,
+    uint32_t* KE,
+    const int q_seq_len,
+    const int kv_seq_len,
+    const float* KV_scale_data) {
+    
+    const int M = q_seq_len;
+    const int N = kv_seq_len;
+    const int K = head_dim * num_heads;
+    const int blockIdx_x = blockIdx.x; 
+    const int blockIdx_y = blockIdx.y; 
+    const int tid = threadIdx.x;
+    const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
+    const int lane = tid % C10_WARP_SIZE;
+    
+    __align__(16) __shared__ fp8 A_Seme[2][16 * 136];
+    __shared__ uint32_t boundary_Seme[BlOCK_M];
+    __shared__ float W_Seme[2][BlOCK_M];
+    
+    // Split-K
+    const int num_split = gridDim.z;
+    const int split_idx = blockIdx.z;
+    const int heads_per_split = (num_heads + num_split - 1) / num_split;
+    const int start_h = split_idx * heads_per_split;
+    const int end_h = (start_h + heads_per_split) < num_heads ? (start_h + heads_per_split) : num_heads;
+
+    if (start_h >= end_h) return;
+
+    if (tid < BlOCK_M) {
+        if constexpr (is_align_m) {
+            boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+        } else {
+            if (blockIdx_y * BlOCK_M + tid < M) {
+                boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+            } else {
+                boundary_Seme[tid] = 0;
+            }
+        }
+    }
+
+    floatx4 C_reg_out = {0.0, 0.0, 0.0, 0.0};
+   
+    intx2 B_reg[4];
+    intx2 A_reg_move = {0, 0};
+
+    int ldg_row_A = blockIdx_y * BlOCK_M + (tid / 16);
+    int ldg_col_A = (tid % 16) * 8;
+
+    int ldg_row_B = (lane / 16) * 8;  
+    int ldg_col_B = blockIdx_x * BLOCK_N + warp_idx * 16 + (lane % 16);
+    
+    int lds_row_A = (lane % 16);
+    int lds_col_A = (lane / 16) * 8;  
+    int sts_row_A = (tid / 16);
+    int sts_col_A = (tid % 16) * 8;
+    //不变
+    const int stg_row = lane % 16 + blockIdx_y * BlOCK_M;
+    const int stg_col = lane / 16 + warp_idx * 16 + blockIdx_x * BLOCK_N;
+    //加载scale
+    float scale0 = 1.0f, scale1 = 1.0f, scale2 = 1.0f, scale3 = 1.0f;
+    if (KV_scale_data != nullptr) {
+        if (stg_col < N) scale0 = KV_scale_data[stg_col];
+        if (stg_col + 4 < N) scale1 = KV_scale_data[stg_col + 4];
+        if (stg_col + 8 < N) scale2 = KV_scale_data[stg_col + 8];
+        if (stg_col + 12 < N) scale3 = KV_scale_data[stg_col + 12];
+    }
+
+    loadtileB2reg_fp8<fp8, is_align_n>(B_reg, B_data, ldg_col_B, ldg_row_B, head_dim, N);
+
+    ldg_col_A += start_h * 128;
+
+   // A->reg
+    if (ldg_row_A < M) {
+        *(uint64_t*)&A_reg_move = *(uint64_t*)&A_data[ldg_row_A * K + ldg_col_A];
+    }
+    
+    *(uint64_t*)&A_Seme[0][sts_row_A * 136 + sts_col_A] = *(uint64_t*)&A_reg_move;
+    if constexpr (is_align_m) {
+        if (tid < 16) {
+            W_Seme[0][tid] = Weights_data[stg_row * num_heads + start_h];
+        }
+    } else {
+        if (tid < 16) {
+            if (stg_row < M) {
+                W_Seme[0][tid] = Weights_data[stg_row * num_heads + start_h];
+            } else {
+                W_Seme[0][tid] = 0.f;
+            }
+        }
+    }
+    __syncthreads();
+    ldg_col_A += 128; // 滑动到下一个head;
+
+    const int num_iters = end_h - start_h;
+    for (int iter = 0; iter < num_iters; iter++) {
+        int i = start_h + iter;
+        
+        int offset;
+        if constexpr (is_align_m) {
+            offset = (ldg_row_A * K + ldg_col_A) * 1; // 1 byte 
+        } else {
+            if (ldg_row_A < M) {
+                offset = (ldg_row_A * K + ldg_col_A) * 1;
+            } else {
+                offset = -1; 
+            }
+        }
+        
+        bool is_load = (iter + 1 < num_iters); 
+        cp_async2_vgpr(&A_reg_move, A_data, offset, is_load); 
+
+        floatx4 C_reg = {0.0, 0.0, 0.0, 0.0};
+        asm volatile("s_waitcnt lgkmcnt(0)");
+        
+        const int buf_idx = iter % 2;
+        
+        intx2 A_reg[4];
+        //mma
+        for (int k = 0; k < 4; k++) {
+            A_reg[k] = *(intx2*)&A_Seme[buf_idx][lds_row_A * 136 + lds_col_A + k * 32];
+            builtin_amdgcn_mmac_fp8(A_reg[k], B_reg[k], C_reg); 
+        }
+
+        float w = W_Seme[buf_idx][lane % 16];
+        
+        // relu 和 w
+        C_reg[0] = fmaxf(C_reg[0], 0.0f); C_reg_out[0] += C_reg[0] * w;
+        C_reg[1] = fmaxf(C_reg[1], 0.0f); C_reg_out[1] += C_reg[1] * w;
+        C_reg[2] = fmaxf(C_reg[2], 0.0f); C_reg_out[2] += C_reg[2] * w;
+        C_reg[3] = fmaxf(C_reg[3], 0.0f); C_reg_out[3] += C_reg[3] * w;
+
+        if (iter + 1 < num_iters) {
+            if (tid < 16) {
+                const int next_head_idx = i + 1;
+                const int next_buf_idx = 1 - buf_idx;
+                if constexpr(is_align_m) {
+                    W_Seme[next_buf_idx][tid] = Weights_data[stg_row * num_heads + next_head_idx];
+                } else {
+                    if (stg_row < M) {
+                        W_Seme[next_buf_idx][tid] = Weights_data[stg_row * num_heads + next_head_idx];
+                    } else {
+                        W_Seme[next_buf_idx][tid] = 0.0f;
+                    }
+                }
+            }
+            asm volatile("s_waitcnt vmcnt(0)");
+            *(uint64_t*)&A_Seme[1 - buf_idx][sts_row_A * 136 + sts_col_A] = *(uint64_t*)&A_reg_move;
+            ldg_col_A += 128;
+        }
+        asm volatile("s_barrier");
+    }
+    
+    // 在最终写回结果前，进行反量化
+    C_reg_out[0] *= scale0;
+    C_reg_out[1] *= scale1;
+    C_reg_out[2] *= scale2;
+    C_reg_out[3] *= scale3;
+
+    const int boundary = boundary_Seme[lane % 16];
+    bool use_atomic = (num_split > 1);
+    constexpr float neg_inf = -std::numeric_limits<float>::infinity();
+
+    if (stg_row < M) {
+        if (stg_col < N) {
+            if (stg_col < boundary) {
+                if(use_atomic) atomicAdd(&D_data[stg_row * N + stg_col], C_reg_out[0]);
+                else D_data[stg_row * N + stg_col] = C_reg_out[0];
+            } else {
+                if ( split_idx == 0) {
+                    D_data[stg_row * N + stg_col] = neg_inf;
+                }
+            }
+        }
+        if (stg_col + 4 < N) {
+            if (stg_col + 4 < boundary) {
+                if(use_atomic) atomicAdd(&D_data[stg_row * N + stg_col + 4], C_reg_out[1]);
+                else D_data[stg_row * N + stg_col + 4] = C_reg_out[1];
+            } else {
+                if (split_idx == 0) {
+                    D_data[stg_row * N + stg_col + 4] = neg_inf;
+                }
+            }
+        }
+        if (stg_col + 8 < N) {
+            if (stg_col + 8 < boundary) {
+                if(use_atomic) atomicAdd(&D_data[stg_row * N + stg_col + 8], C_reg_out[2]);
+                else D_data[stg_row * N + stg_col + 8] = C_reg_out[2];
+            } else {
+                if (split_idx == 0) {
+                    D_data[stg_row * N + stg_col + 8] = neg_inf;
+                }
+            }
+        }
+        if (stg_col + 12 < N) {
+            if (stg_col + 12 < boundary) {
+                if(use_atomic) atomicAdd(&D_data[stg_row * N + stg_col + 12], C_reg_out[3]);
+                else D_data[stg_row * N + stg_col + 12] = C_reg_out[3];
+            } else {
+                if (!use_atomic || split_idx == 0) {
+                    D_data[stg_row * N + stg_col + 12] = neg_inf;
+                }
+            }
+        }
+    }
+}
+
+template <int num_heads, int head_dim, int BlOCK_M, int BLOCK_K, int BLOCK_N, bool is_align_m, bool is_align_n>
+__global__ void _mqa_logits_16x128x128_TN_impl_fp8(
+    fp8* A_data,
+    fp8* B_data,
+    float* D_data,
+    float* Weights_data,
+    uint32_t* KS,
+    uint32_t* KE,
+    const int q_seq_len,
+    const int kv_seq_len,
+    const float* KV_scale_data) {
+    
+    const int M = q_seq_len;
+    const int N = kv_seq_len;
+    const int K = head_dim * num_heads;
+    const int blockIdx_x = blockIdx.x; 
+    const int blockIdx_y = blockIdx.y; 
+    const int tid = threadIdx.x;
+    const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
+    const int lane = tid % C10_WARP_SIZE;
+    
+    __align__(16) __shared__ fp8 A_Seme[2][16 * 136];
+    __shared__ uint32_t boundary_Seme[BlOCK_M];
+    __shared__ float W_Seme[2][BlOCK_M];
+    
+    if (tid < BlOCK_M) {
+        if constexpr (is_align_m) {
+            boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+        } else {
+            if (blockIdx_y * BlOCK_M + tid < M) {
+                boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+            } else {
+                boundary_Seme[tid] = 0; // 越界行对应的边界设为 0
+            }
+        }
+    }
+
+    /* block mask */
+    if (M > 0) {
+        const int ke_max_idx_in_block = blockIdx_y * BlOCK_M + BlOCK_M - 1;
+        const int clamped_ke_idx = (ke_max_idx_in_block < M) ? ke_max_idx_in_block : (M - 1);
+        if (blockIdx_x * BLOCK_N >= KE[clamped_ke_idx]) {
+            return;
+        }
+    }
+
+    floatx4 C_reg_out = {0.0, 0.0, 0.0, 0.0};
+    intx2 B_reg[4];
+    intx2 A_reg_move = {0, 0};
+
+    // 512线程load,用256就行了，因为tilea没变
+    const bool participate_A = (tid < 256);
+    int ldg_row_A = 0;
+    int ldg_col_A = 0;
+    if (participate_A) {
+        ldg_row_A = blockIdx_y * BlOCK_M + (tid / 16);
+        ldg_col_A = (tid % 16) * 8;
+    }
+
+    int ldg_row_B = (lane / 16) * 8;  
+    int ldg_col_B = blockIdx_x * BLOCK_N + warp_idx * 16 + (lane % 16);
+    
+    int lds_row_A = (lane % 16);
+    int lds_col_A = (lane / 16) * 8;  
+    
+    int sts_row_A = 0;
+    int sts_col_A = 0;
+    if (participate_A) {
+        sts_row_A = (tid / 16);
+        sts_col_A = (tid % 16) * 8;
+    }
+    
+    const int stg_row = lane % 16 + blockIdx_y * BlOCK_M;
+    const int stg_col = lane / 16 + warp_idx * 16 + blockIdx_x * BLOCK_N;
+
+    float scale0 = 1.0f, scale1 = 1.0f, scale2 = 1.0f, scale3 = 1.0f;
+    if (KV_scale_data != nullptr) {
+        if (stg_col < N) scale0 = KV_scale_data[stg_col];
+        if (stg_col + 4 < N) scale1 = KV_scale_data[stg_col + 4];
+        if (stg_col + 8 < N) scale2 = KV_scale_data[stg_col + 8];
+        if (stg_col + 12 < N) scale3 = KV_scale_data[stg_col + 12];
+    }
+
+    loadtileB2reg_fp8<fp8, is_align_n>(B_reg, B_data, ldg_col_B, ldg_row_B, head_dim, N);
+
+    if (participate_A) {
+        if (ldg_row_A < M) {
+            *(uint64_t*)&A_reg_move = *(uint64_t*)&A_data[ldg_row_A * K + ldg_col_A];
+        }
+        *(uint64_t*)&A_Seme[0][sts_row_A * 136 + sts_col_A] = *(uint64_t*)&A_reg_move;
+    }
+
+    if (tid < BlOCK_M) {
+        if constexpr (is_align_m) {
+            W_Seme[0][tid] = Weights_data[stg_row * num_heads];
+        } else {
+            if (stg_row < M) {
+                W_Seme[0][tid] = Weights_data[stg_row * num_heads];
+            } else {
+                W_Seme[0][tid] = 0.f;
+            }
+        }
+    }
+    __syncthreads();
+    if (participate_A) ldg_col_A += 128; 
+
+    for (int i = 0; i < num_heads; i++) {
+        __syncthreads();
+        asm volatile("s_barrier");
+
+        bool is_load_next = (i + 1 < num_heads);
+        
+        if (participate_A) {
+            int offset_bytes = -1;
+            if constexpr (is_align_m) {
+                offset_bytes = (ldg_row_A * K + ldg_col_A); 
+            } else {
+                if (ldg_row_A < M) {
+                    offset_bytes = (ldg_row_A * K + ldg_col_A);
+                }
+            }
+            cp_async2_vgpr(&A_reg_move, A_data, offset_bytes, is_load_next);
+        }
+
+        floatx4 C_reg = {0.0, 0.0, 0.0, 0.0};
+        asm volatile("s_waitcnt lgkmcnt(0)");
+        
+        intx2 A_reg[4];
+        for (int k = 0; k < 4; k++) {
+            A_reg[k] = *(intx2*)&A_Seme[i % 2][lds_row_A * 136 + lds_col_A + k * 32];
+            builtin_amdgcn_mmac_fp8(A_reg[k], B_reg[k], C_reg); // mmac FP8 16x16x32
+        }
+
+        float w = W_Seme[i % 2][lane % 16];
+        
+        C_reg[0] = fmaxf(C_reg[0], 0.0f); C_reg_out[0] += C_reg[0] * w;
+        C_reg[1] = fmaxf(C_reg[1], 0.0f); C_reg_out[1] += C_reg[1] * w;
+        C_reg[2] = fmaxf(C_reg[2], 0.0f); C_reg_out[2] += C_reg[2] * w;
+        C_reg[3] = fmaxf(C_reg[3], 0.0f); C_reg_out[3] += C_reg[3] * w;
+
+        if (is_load_next) {
+            if (tid < 16) {
+                if constexpr (is_align_m) {
+                    W_Seme[1 - i % 2][tid] = Weights_data[stg_row * num_heads + (i + 1)];
+                } else {
+                    if (stg_row < M) {
+                        W_Seme[1 - i % 2][tid] = Weights_data[stg_row * num_heads + (i + 1)];
+                    } else {
+                        W_Seme[1 - i % 2][tid] = 0.f;
+                    }
+                }
+            }
+            asm volatile("s_waitcnt vmcnt(0)");
+            if (participate_A) {
+                *(uint64_t*)&A_Seme[1 - i % 2][sts_row_A * 136 + sts_col_A] = *(uint64_t*)&A_reg_move;
+                ldg_col_A += 128;
+            }
+        }
+    }
+    
+    C_reg_out[0] *= scale0;
+    C_reg_out[1] *= scale1;
+    C_reg_out[2] *= scale2;
+    C_reg_out[3] *= scale3;
+
+    const int boundary = boundary_Seme[lane % 16];
+    
+    if (stg_row < M) {
+        if (stg_col + 12 < boundary && stg_col + 12 < N) {
+            D_data[stg_row * N + stg_col] = C_reg_out[0];
+            D_data[stg_row * N + stg_col + 4] = C_reg_out[1];
+            D_data[stg_row * N + stg_col + 8] = C_reg_out[2];
+            D_data[stg_row * N + stg_col + 12] = C_reg_out[3];
+        } else {
+            if (stg_col < boundary && stg_col < N) {
+                D_data[stg_row * N + stg_col] = C_reg_out[0];
+                if (stg_col + 4 < boundary && stg_col + 4 < N) {
+                    D_data[stg_row * N + stg_col + 4] = C_reg_out[1];
+                    if (stg_col + 8 < boundary && stg_col + 8 < N) {
+                        D_data[stg_row * N + stg_col + 8] = C_reg_out[2];
+                        if (stg_col + 12 < boundary && stg_col + 12 < N) {
+                            D_data[stg_row * N + stg_col + 12] = C_reg_out[3];
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1150,14 +1591,17 @@ torch::Tensor mqa_logits(
     int kv_seq_len,
     int num_heads,
     int head_dim,
+    const torch::optional<torch::Tensor> &KV_scale =  torch::nullopt,
     bool clean_logits = true) {
 
     const int M = q_seq_len;
     const int N = kv_seq_len;
     auto qtype = Q.scalar_type();
     auto ktype = K.scalar_type();
-    if (!((qtype == torch::kHalf && ktype == torch::kHalf) || (qtype == torch::kBFloat16 && ktype == torch::kBFloat16))) {
-        TORCH_CHECK(false, "Q和K的类型必须同时为FP16或同时为BF16!");
+    if (!((qtype == torch::kHalf && ktype == torch::kHalf) || 
+          (qtype == torch::kBFloat16 && ktype == torch::kBFloat16) || 
+          (qtype == torch::kFloat8_e4m3fn && ktype == torch::kFloat8_e4m3fn))) {
+            TORCH_CHECK(false, "Q和K的类型必须同时为FP16、同时为BF16, 或同时为FP8_E4M3!");
     }
     auto Weightstype = Weights.scalar_type();
     if(Weightstype != torch::kFloat32){
@@ -1191,6 +1635,100 @@ torch::Tensor mqa_logits(
         }
         return D.slice(0, 0, q_seq_len).slice(1, 0, kv_seq_len);
     } else {
+        //fp8
+        if (qtype == torch::kFloat8_e4m3fn) {
+            torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
+            
+            torch::Tensor D;
+            if (N > 8192) {
+                D = torch::full({q_seq_len, kv_seq_len}, -std::numeric_limits<float>::infinity(), options);
+            } else {
+                D = torch::full({q_seq_len, kv_seq_len}, 0, options);
+            }
+            
+            auto* q_ptr = reinterpret_cast<fp8*>(Q.data_ptr());
+            auto* k_ptr = reinterpret_cast<fp8*>(K.data_ptr());
+            auto* w_ptr = reinterpret_cast<float*>(Weights.data_ptr());
+            auto* ks_ptr = reinterpret_cast<uint32_t*>(KS.data_ptr());
+            auto* ke_ptr = reinterpret_cast<uint32_t*>(KE.data_ptr());
+            const float* kv_scale_ptr = KV_scale.has_value() ? KV_scale.value().data_ptr<float>() : nullptr;
+            auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
+
+            NUM_HEAD_SWITCH(num_heads, [&] {
+                if (N > 8192) {
+                    const int blockx = (N + 127) / 128;
+                    const int blocky = (M + 15) / 16;
+                    dim3 threadsPerBlock(512);
+                    bool is_align_m = (M % 16 == 0);
+                    bool is_align_n = (N % 127 == 0);
+                    dim3 numBlock(blockx, blocky);
+
+                    using kernel_fp8_t = void (*)(
+                        fp8* A_data, fp8* B_data, float* D_data, float* Weights_data,
+                        uint32_t* KS, uint32_t* KE, const int q_seq_len, const int kv_seq_len, const float* KV_scale_data);
+                    
+                    auto launch_fp8 = [&](kernel_fp8_t kernel_to_launch) {
+                        kernel_to_launch<<<numBlock, threadsPerBlock>>>(
+                            q_ptr, k_ptr, d_ptr, w_ptr, ks_ptr, ke_ptr, q_seq_len, kv_seq_len, kv_scale_ptr);
+                    };
+
+                    if (is_align_m) {
+                        if (is_align_n) {
+                            launch_fp8(_mqa_logits_16x128x128_TN_impl_fp8<NumHeads, 128, 16, 128, 128, true, true>);
+                        } else {
+                            launch_fp8(_mqa_logits_16x128x128_TN_impl_fp8<NumHeads, 128, 16, 128, 128, true, false>);
+                        }
+                    } else {
+                        if (is_align_n) {
+                            launch_fp8(_mqa_logits_16x128x128_TN_impl_fp8<NumHeads, 128, 16, 128, 128, false, true>);
+                        } else {
+                            launch_fp8(_mqa_logits_16x128x128_TN_impl_fp8<NumHeads, 128, 16, 128, 128, false, false>);
+                        }
+                    }
+                } else {
+                    const int blockx = DIV(N, 64);
+                    const int blocky = DIV(M, 16);
+                    dim3 threadsPerBlock(256);
+                    dim3 numBlock(blockx, blocky);
+                    bool is_align_m = (M % 16 == 0);
+                    bool is_align_n = (N % 64 == 0);
+
+                    int split_k = 4; 
+                    if (M <= 32 && N <= 128) {
+                         split_k = 16; 
+                    }
+                    if (NumHeads < 32){
+                        split_k = 2;
+                    }
+                    dim3 grid(blockx, blocky, split_k);
+
+                    using kernel_fp8_t = void (*)(
+                        fp8* A_data, fp8* B_data, float* D_data, float* Weights_data,
+                        uint32_t* KS, uint32_t* KE, const int q_seq_len, const int kv_seq_len, const float* KV_scale_data);
+                    
+                    auto launch_fp8 = [&](kernel_fp8_t kernel_to_launch) {
+                        kernel_to_launch<<<grid, threadsPerBlock>>>(
+                            q_ptr, k_ptr, d_ptr, w_ptr, ks_ptr, ke_ptr, q_seq_len, kv_seq_len, kv_scale_ptr);
+                    };
+
+                    if (is_align_m) {
+                        if (is_align_n) {
+                            launch_fp8(_mqa_logits_16x128x64_TN_impl_with_weight_prefetch_fp8<NumHeads, 128, 16, 128, 64, true, true>);
+                        } else {
+                            launch_fp8(_mqa_logits_16x128x64_TN_impl_with_weight_prefetch_fp8<NumHeads, 128, 16, 128, 64, true, false>);
+                        }
+                    } else {
+                        if (is_align_n) {
+                            launch_fp8(_mqa_logits_16x128x64_TN_impl_with_weight_prefetch_fp8<NumHeads, 128, 16, 128, 64, false, true>);
+                        } else {
+                            launch_fp8(_mqa_logits_16x128x64_TN_impl_with_weight_prefetch_fp8<NumHeads, 128, 16, 128, 64, false, false>);
+                        }
+                    }
+                }
+            });
+            return D;
+        }
+        //fp16/bf16
         torch::Tensor D;
         Input_Type_SWITCH(Q.scalar_type(), [&] {
             auto* q_ptr = reinterpret_cast<scalar_t*>(Q.data_ptr());
@@ -1257,8 +1795,8 @@ torch::Tensor mqa_logits(
                     if (M <= 32 && N <= 128) {
                          split_k = 16; 
                     }
-                    if (NumHeads == 8){
-                        split_k = 1;
+                    if (NumHeads < 32){
+                        split_k = 2;
                     }
                     dim3 grid(blockx, blocky, split_k);
     

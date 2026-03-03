@@ -1,9 +1,21 @@
 import torch
-#from lightop import op
+# from lightop import op
 from . import op
 import numbers
 import torch.nn as nn
 from typing import List, Optional, Tuple
+
+def fused_add_rms_norm(
+        x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor,
+        variance_epsilon: float) -> tuple[torch.Tensor, torch.Tensor]:
+    op.fused_add_rms_norm_opt(
+        x,
+        residual,
+        weight,
+        variance_epsilon,
+    )
+    return x, residual
+
 
 def rmsnorm_forward(x,weight,output=None,eps:float = 1e-5,training:bool=True):
     return op.rmsnorm_forward(x,weight,output,eps,training)

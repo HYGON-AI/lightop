@@ -1478,4 +1478,4 @@ if __name__ == "__main__":
 
     main(args)
     # benchmark_config_profile(49152, 256, 256, 7168, 8, torch.bfloat16, use_fp8_w8a8=False, use_int8_w8a16=False, use_int8_w8a8=True, num_iters=10, block_quant_shape=[128,128])
-    # HIP_VISIBLE_DEVICES=3 python moe_w8a8/benchmark_moe_int8.py --num-gpus 1 --benchmark
+    # HIP_VISIBLE_DEVICES=3 python tune_glm_single.py --num-gpus 1 --tune

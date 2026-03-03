@@ -1169,12 +1169,7 @@ void rms_rotary_embedding_fuse(
   }
   int query_hidden_size = query.numel() / num_tokens;
   int key_hidden_size = key.numel() / num_tokens;
-  if (!query.is_contiguous()) {
-      query = query.contiguous();
-  }
-  if (!key.is_contiguous()) {
-      key = key.contiguous();
-  }
+
   TORCH_CHECK(query_hidden_size % head_size == 0);
   TORCH_CHECK(key_hidden_size % head_size == 0);
 

@@ -76,8 +76,8 @@
             "DELTA": 1
         },
         "1536": {
-            "BLOCK_SIZE_M": 32,
-            "MODE": 168,
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
             "DELTA": 1
         },
         "2048": {
