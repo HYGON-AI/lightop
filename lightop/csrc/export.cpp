@@ -311,6 +311,11 @@ void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_tanh_and_mul_opt(torch::Tensor& out,torch::Tensor& input); 
 torch::Tensor reshape_to_float(torch::Tensor input, int64_t vocab_size);
+
+//------------------------------------------------- bilinear_upsample ---------------------------------------//
+torch::Tensor bilinear_upsample(const torch::Tensor& x, const std::vector<int64_t>& output_size);
+torch::Tensor bilinear_upsample_backward(const torch::Tensor& grad_output, const std::vector<int64_t>& input_size);
+//------------------------------------------------- bilinear_upsample ---------------------------------------//
 }
 }
 
@@ -390,6 +395,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gemm_w8a8_smooth_asm", &at::native::gemm_w8a8_smooth_asm, "gemm_w8a8_smooth_asm");
   m.def("moe_w16a16_asm", &at::native::moe_w16a16_asm, "moe_w16a16_asm");
   m.def("moe_marlin_w16a16_asm", &at::native::moe_marlin_w16a16_asm, "moe_marlin_w16a16_asm");
+  m.def("bilinear_upsample", &at::native::bilinear_upsample, "bilinear_upsample");
+  m.def("bilinear_upsample_backward", &at::native::bilinear_upsample_backward, "bilinear_upsample_backward");
 #ifdef USE_MIOPEN
   m.def("miopen_conv_bias", &at::native::miopen_fused_conv_bias_forward, "fused_conv_bias forward");
   m.def("miopen_conv_bias_add", &at::native::miopen_fused_conv_bias_add_forward, "fused_conv_bias_add forward");
