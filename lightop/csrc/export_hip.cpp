@@ -239,7 +239,7 @@ void store_kv_cache(torch::Tensor packed_qkv,torch::Tensor& K_cache,torch::Tenso
 void store_kv_cache_paged(const torch::Tensor& key, const torch::Tensor& value,torch::Tensor& K_cache, torch::Tensor& V_cache,const torch::Tensor& q_lens, const torch::Tensor& accum_q_lens,
                           const torch::Tensor& cache_lens, const torch::Tensor& block_table,const torch::Tensor& k_scale, const torch::Tensor& v_scale,const std::string& kv_cache_dtype_str);
 
-void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::Tensor& token_expert_indices,torch::Tensor& gating_output,  bool Is_renormalize = false);
+void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::optional<torch::Tensor>& token_expert_indices,torch::Tensor& gating_output,  bool Is_renormalize = false);
 void rotary_embedding_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox);    
 void rotary_embedding_deepseek_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox, std::optional<torch::Tensor> offsets);
 void moe_align_block_size(
@@ -307,6 +307,16 @@ void ep_fused_smooth_quant_scatter(
     torch::Tensor inv_perm,
     int local_num_experts, int alignment); 
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale);
+void rms_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,double epsilon);
+void fused_add_rms_norm_opt(torch::Tensor& input,torch::Tensor& residual, torch::Tensor& weight,double epsilon); 
+void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
+void gelu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
+void gelu_tanh_and_mul_opt(torch::Tensor& out,torch::Tensor& input); 
+
+//------------------------------------------------- bilinear_upsample ---------------------------------------//
+torch::Tensor bilinear_upsample(const torch::Tensor& x, const std::vector<int64_t>& output_size);
+torch::Tensor bilinear_upsample_backward(const torch::Tensor& grad_output, const std::vector<int64_t>& input_size);
+//------------------------------------------------- bilinear_upsample ---------------------------------------//
 }
 }
 
@@ -386,6 +396,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gemm_w8a8_smooth_asm", &at::native::gemm_w8a8_smooth_asm, "gemm_w8a8_smooth_asm");
   m.def("moe_w16a16_asm", &at::native::moe_w16a16_asm, "moe_w16a16_asm");
   m.def("moe_marlin_w16a16_asm", &at::native::moe_marlin_w16a16_asm, "moe_marlin_w16a16_asm");
+  m.def("bilinear_upsample", &at::native::bilinear_upsample, "bilinear_upsample");
+  m.def("bilinear_upsample_backward", &at::native::bilinear_upsample_backward, "bilinear_upsample_backward");
 #ifdef USE_MIOPEN
   m.def("miopen_conv_bias", &at::native::miopen_fused_conv_bias_forward, "fused_conv_bias forward");
   m.def("miopen_conv_bias_add", &at::native::miopen_fused_conv_bias_add_forward, "fused_conv_bias_add forward");
@@ -496,5 +508,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("top_k_sampling_from_probs", &lightop::sampling::top_k_sampling_from_probs, "top_k_sampling_from_probs");
   m.def("top_p_sampling_from_probs", &lightop::sampling::top_p_sampling_from_probs, "top_p_sampling_from_probs");
   m.def("top_k_top_p_sampling_from_probs", &lightop::sampling::top_k_top_p_sampling_from_probs, "top_k_top_p_sampling_from_probs");
+  m.def("rms_norm_opt", &at::native::rms_norm_opt, "rms_norm_opt");
+  m.def("fused_add_rms_norm_opt", &at::native::fused_add_rms_norm_opt, "fused_add_rms_norm_opt");
+  m.def("silu_and_mul_opt", &at::native::silu_and_mul_opt, "silu_and_mul_opt");
+  m.def("gelu_and_mul_opt", &at::native::gelu_and_mul_opt, "gelu_and_mul_opt");
+  m.def("gelu_tanh_and_mul_opt", &at::native::gelu_tanh_and_mul_opt, "gelu_tanh_and_mul_opt");
 }
 
