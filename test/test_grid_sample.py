@@ -83,9 +83,103 @@ def get_model(mode='bilinear', padding_mode='zeros', align_corners=False):
     return torch_grid_sample, fuse_grid_sample
 
 
+def _get_interp_padding_map():
+    interp_map = {'bilinear': INTERP_BILINEAR, 'nearest': INTERP_NEAREST, 'bicubic': INTERP_BICUBIC}
+    padding_map = {'zeros': PADDING_ZEROS, 'border': PADDING_BORDER, 'reflection': PADDING_REFLECTION}
+    return interp_map, padding_map
+
+
+def test_speed_forward(batchsize, channels, h_in, w_in, h_out=None, w_out=None,
+                       repeat_num=100,
+                       mode='bilinear', padding_mode='zeros', align_corners=False):
+    """仅测试前向：速度对比 + 输出正确性对比"""
+    h_out = h_out or h_in
+    w_out = w_out or w_in
+
+    print(f"===== 前向对比 | fp32, N={batchsize}, C={channels}, {h_in}x{w_in} -> {h_out}x{w_out} =====")
+
+    x1, x2, grid1, grid2, grad = get_data(
+        batchsize, channels, h_in, w_in, h_out, w_out, align_corners=align_corners
+    )
+    f1, f2 = get_model(mode=mode, padding_mode=padding_mode, align_corners=align_corners)
+    interp_map, padding_map = _get_interp_padding_map()
+
+    # torch 参考
+    y1 = f1(x1, grid1)
+    torch.cuda.synchronize()
+    start_time = time.time()
+    for i in range(repeat_num):
+        y1 = f1(x1, grid1)
+    torch.cuda.synchronize()
+    torch_time = (time.time() - start_time) * 1000 / repeat_num
+    print('torch_grid_sample (forward)', 'average time:', torch_time, 'ms')
+
+    # lightop fuse
+    y2 = f2(x2, grid2, interp_map[mode], padding_map[padding_mode], align_corners)
+    torch.cuda.synchronize()
+    start_time = time.time()
+    for i in range(repeat_num):
+        y2 = f2(x2, grid2, interp_map[mode], padding_map[padding_mode], align_corners)
+    torch.cuda.synchronize()
+    fuse_time = (time.time() - start_time) * 1000 / repeat_num
+    print('fuse_grid_sample (forward)', 'average time:', fuse_time, 'ms')
+
+    print('output allclose:', allclose(y1, y2, rtol=1e-05, atol=1e-05))
+    print()
+
+
+def test_speed_backward(batchsize, channels, h_in, w_in, h_out=None, w_out=None,
+                        repeat_num=100,
+                        mode='bilinear', padding_mode='zeros', align_corners=False):
+    """仅测试反向：速度对比 + 梯度正确性对比"""
+    h_out = h_out or h_in
+    w_out = w_out or w_in
+
+    print(f"===== 反向对比 | fp32, N={batchsize}, C={channels}, {h_in}x{w_in} -> {h_out}x{w_out} =====")
+
+    x1, x2, grid1, grid2, grad = get_data(
+        batchsize, channels, h_in, w_in, h_out, w_out, align_corners=align_corners
+    )
+    f1, f2 = get_model(mode=mode, padding_mode=padding_mode, align_corners=align_corners)
+    interp_map, padding_map = _get_interp_padding_map()
+
+    # torch 参考：先 forward 一次得到 y1，再 backward
+    y1 = f1(x1, grid1)
+    y1.backward(grad)
+    torch.cuda.synchronize()
+    start_time = time.time()
+    for i in range(repeat_num):
+        x1.grad = None
+        grid1.grad = None
+        y1 = f1(x1, grid1)
+        y1.backward(grad)
+    torch.cuda.synchronize()
+    torch_time = (time.time() - start_time) * 1000 / repeat_num
+    print('torch_grid_sample (backward)', 'average time:', torch_time, 'ms')
+
+    # lightop fuse
+    y2 = f2(x2, grid2, interp_map[mode], padding_map[padding_mode], align_corners)
+    y2.backward(grad)
+    torch.cuda.synchronize()
+    start_time = time.time()
+    for i in range(repeat_num):
+        x2.grad = None
+        grid2.grad = None
+        y2 = f2(x2, grid2, interp_map[mode], padding_map[padding_mode], align_corners)
+        y2.backward(grad)
+    torch.cuda.synchronize()
+    fuse_time = (time.time() - start_time) * 1000 / repeat_num
+    print('fuse_grid_sample (backward)', 'average time:', fuse_time, 'ms')
+
+    print('x.grad allclose:', allclose(x1.grad, x2.grad, rtol=1e-05, atol=1e-05))
+    print('grid.grad allclose:', allclose(grid1.grad, grid2.grad, rtol=1e-05, atol=1e-05))
+    print()
+
+
 def test_speed(batchsize, channels, h_in, w_in, h_out=None, w_out=None,
                repeat_num=100,
                mode='bilinear', padding_mode='zeros', align_corners=False):
+    """前向+反向整体耗时测试 + 全量正确性对比"""
     h_out = h_out or h_in
     w_out = w_out or w_in
 
@@ -95,6 +189,7 @@ def test_speed(batchsize, channels, h_in, w_in, h_out=None, w_out=None,
         batchsize, channels, h_in, w_in, h_out, w_out, align_corners=align_corners
     )
     f1, f2 = get_model(mode=mode, padding_mode=padding_mode, align_corners=align_corners)
+    interp_map, padding_map = _get_interp_padding_map()
 
     # torch 参考
     y1 = f1(x1, grid1)
@@ -107,14 +202,10 @@ def test_speed(batchsize, channels, h_in, w_in, h_out=None, w_out=None,
         y1 = f1(x1, grid1)
         y1.backward(grad)
     torch.cuda.synchronize()
-    end_time = time.time()
-    torch_time = (end_time - start_time) * 1000 / repeat_num
+    torch_time = (time.time() - start_time) * 1000 / repeat_num
     print('torch_grid_sample', 'average time is', torch_time, 'ms')
 
     # lightop fuse
-    interp_map = {'bilinear': INTERP_BILINEAR, 'nearest': INTERP_NEAREST, 'bicubic': INTERP_BICUBIC}
-    padding_map = {'zeros': PADDING_ZEROS, 'border': PADDING_BORDER, 'reflection': PADDING_REFLECTION}
-
     y2 = f2(x2, grid2, interp_map[mode], padding_map[padding_mode], align_corners)
     y2.backward(grad)
     torch.cuda.synchronize()
@@ -125,8 +216,7 @@ def test_speed(batchsize, channels, h_in, w_in, h_out=None, w_out=None,
         y2 = f2(x2, grid2, interp_map[mode], padding_map[padding_mode], align_corners)
         y2.backward(grad)
     torch.cuda.synchronize()
-    end_time = time.time()
-    fuse_time = (end_time - start_time) * 1000 / repeat_num
+    fuse_time = (time.time() - start_time) * 1000 / repeat_num
     print('fuse_grid_sample', 'average time is', fuse_time, 'ms')
 
     # 误差检查
@@ -167,12 +257,21 @@ if __name__ == "__main__":
     batchsize, channels = 48, 64
     h_in, w_in = 32, 64
     h_out, w_out = 128, 248
-    
 
-    # 耗时测试
-    test_speed(batchsize, channels, h_in, w_in, h_out, w_out,
-               repeat_num=100,
-               mode='bilinear', padding_mode='zeros', align_corners=True)
+    # 前向对比（速度 + 输出正确性）
+    test_speed_forward(batchsize, channels, h_in, w_in, h_out, w_out,
+                      repeat_num=100,
+                      mode='bilinear', padding_mode='zeros', align_corners=True)
+
+    # 反向对比（速度 + 梯度正确性）
+    test_speed_backward(batchsize, channels, h_in, w_in, h_out, w_out,
+                       repeat_num=100,
+                       mode='bilinear', padding_mode='zeros', align_corners=True)
+
+    # 前向+反向整体耗时（可选）
+    # test_speed(batchsize, channels, h_in, w_in, h_out, w_out,
+    #            repeat_num=100,
+    #            mode='bilinear', padding_mode='zeros', align_corners=True)
 
     # 性能分析 (按需取消注释)
     # test_profile(batchsize, channels, h_in, w_in, h_out, w_out,

@@ -35,7 +35,7 @@ namespace native {
 
 template <typename scalar_t, typename index_t>
   C10_LAUNCH_BOUNDS_1(256)
-  __global__ void grid_sampler_2d_kernel(
+  __global__ void grid_sampler_2d_impl_kernel(
       const index_t nthreads,
       TensorInfo<const scalar_t, index_t> input,
       TensorInfo<const scalar_t, index_t> grid,
@@ -171,8 +171,8 @@ template <typename scalar_t, typename index_t>
 // including batch * channel offset (NC_offset).
 
 template <typename scalar_t, typename index_t>
-C10_LAUNCH_BOUNDS_1(512)
-__global__ void grid_sampler_2d_backward_kernel(
+C10_LAUNCH_BOUNDS_1(1024)
+__global__ void grid_sampler_2d_backward_impl_kernel(
     const index_t nthreads,
     TensorInfo<const scalar_t, index_t> grad_output,  // N C H_out, W_out, grad_output.shape: [N, C, H_out, W_out] 作为输出
     TensorInfo<const scalar_t, index_t> input,        // N C H_in, W_in, input.shape: [N, C, H_in, W_in] 作为输入
@@ -235,6 +235,7 @@ __global__ void grid_sampler_2d_backward_kernel(
         x_arr[3] = static_cast<scalar_t>(g1.z);  y_arr[3] = static_cast<scalar_t>(g1.w);
       }
 
+      #pragma unroll
       for (int v = 0; v < VEC_W; ++v) {
         const index_t w = w_base + v;
         if (w >= out_W) break;
@@ -447,7 +448,7 @@ __global__ void grid_sampler_2d_backward_kernel(
       input.scalar_type(), "grid_sampler_2d_cuda", [&] {
       if (canUse32BitIndexMath(input) && canUse32BitIndexMath(grid) &&
           canUse32BitIndexMath(output)) {
-        grid_sampler_2d_kernel<scalar_t>
+        grid_sampler_2d_impl_kernel<scalar_t>
           <<<GET_BLOCKS(count, 256), 256, 0, at::cuda::getCurrentCUDAStream()>>>(
             static_cast<int>(count),
             getTensorInfo<const scalar_t, int>(input),
@@ -458,7 +459,7 @@ __global__ void grid_sampler_2d_backward_kernel(
             align_corners);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       } else {
-        grid_sampler_2d_kernel<scalar_t>
+        grid_sampler_2d_impl_kernel<scalar_t>
           <<<GET_BLOCKS(count, 256), 256, 0, at::cuda::getCurrentCUDAStream()>>>(
             count,
             getTensorInfo<const scalar_t, int64_t>(input),
@@ -495,8 +496,8 @@ __global__ void grid_sampler_2d_backward_kernel(
   auto input_requires_grad = output_mask[0];
   int64_t count = N * H * W;
   constexpr int VEC_W = 4;  // W方向向量化：每线程处理4个w位置
-  constexpr int BLOCK_X = 16;
-  constexpr int BLOCK_Y = 16;
+  constexpr int BLOCK_X = 8;
+  constexpr int BLOCK_Y = 64;
   // 每线程处理 VEC_W 个w，故 x 方向 block 数减半
   dim3 block_dims(BLOCK_X, BLOCK_Y);
   dim3 grid_dims((W + VEC_W * BLOCK_X - 1) / (VEC_W * BLOCK_X), (H + BLOCK_Y - 1) / BLOCK_Y, N);
@@ -507,8 +508,7 @@ __global__ void grid_sampler_2d_backward_kernel(
       input.scalar_type(), "grid_sampler_2d_backward_cuda", [&] {
       if (canUse32BitIndexMath(input) && canUse32BitIndexMath(grid) &&
           canUse32BitIndexMath(grad_output)) {
-            // printf("aaaaaaaaaaaaaaaa\n");
-        grid_sampler_2d_backward_kernel<scalar_t>
+        grid_sampler_2d_backward_impl_kernel<scalar_t>
           <<<grid_dims, block_dims, 0, at::cuda::getCurrentCUDAStream()>>>(
             static_cast<int>(count),
             getTensorInfo<const scalar_t, int>(grad_output), // N C H W, grad_output.shape: [N, C, H_out, W_out] 作为输出
@@ -523,7 +523,7 @@ __global__ void grid_sampler_2d_backward_kernel(
             input_requires_grad);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
       } else {
-        grid_sampler_2d_backward_kernel<scalar_t>
+        grid_sampler_2d_backward_impl_kernel<scalar_t>
           <<<GET_BLOCKS(count, 256), 256, 0, at::cuda::getCurrentCUDAStream()>>>(
             count,
             getTensorInfo<const scalar_t, int64_t>(grad_output),
