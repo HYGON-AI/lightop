@@ -311,7 +311,6 @@ void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_tanh_and_mul_opt(torch::Tensor& out,torch::Tensor& input); 
 torch::Tensor reshape_to_float(torch::Tensor input, int64_t vocab_size);
-<<<<<<< HEAD
 torch::Tensor add_int8(const torch::Tensor& a, const torch::Tensor& b, bool saturate=true);
 torch::Tensor sub_int8(const torch::Tensor& a, const torch::Tensor& b, bool saturate=true);
 std::tuple<torch::Tensor, torch::Tensor> pack_padded_sequence_custom(
@@ -331,13 +330,11 @@ torch::Tensor fake_quantize_per_channel_affine_custom(
     int64_t axis,
     int64_t quant_min,
     int64_t quant_max);
-=======
 
 //------------------------------------------------- bilinear_upsample ---------------------------------------//
 torch::Tensor bilinear_upsample(const torch::Tensor& x, const std::vector<int64_t>& output_size);
 torch::Tensor bilinear_upsample_backward(const torch::Tensor& grad_output, const std::vector<int64_t>& input_size);
 //------------------------------------------------- bilinear_upsample ---------------------------------------//
->>>>>>> lightop-dev
 }
 }
 
