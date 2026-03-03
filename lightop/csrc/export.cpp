@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "paged_mqa_logits/paged_mqa_logits.h"
+#include "sampling/sampling.h"
 
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace at {  namespace native {
@@ -26,8 +27,8 @@ void rms_rotary_embedding_fuse_with_kv_store(
     int64_t head_size,
     Tensor& cos_sin_cache, 
     bool is_neox, 
-    Tensor& weight_q, 
-    Tensor& weight_k, 
+    std::optional<Tensor>& weight_q, 
+    std::optional<Tensor>& weight_k, 
     std::optional<Tensor>& residual_q,
     std::optional<Tensor>& residual_k,
     ///////////////////////////////////////////////////
@@ -236,7 +237,7 @@ void store_kv_cache(torch::Tensor packed_qkv,torch::Tensor& K_cache,torch::Tenso
 void store_kv_cache_paged(const torch::Tensor& key, const torch::Tensor& value,torch::Tensor& K_cache, torch::Tensor& V_cache,const torch::Tensor& q_lens, const torch::Tensor& accum_q_lens,
                           const torch::Tensor& cache_lens, const torch::Tensor& block_table,const torch::Tensor& k_scale, const torch::Tensor& v_scale,const std::string& kv_cache_dtype_str);
 
-void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::Tensor& token_expert_indices,torch::Tensor& gating_output,  bool Is_renormalize = false);
+void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::optional<torch::Tensor>& token_expert_indices,torch::Tensor& gating_output,  bool Is_renormalize = false);
 void rotary_embedding_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox);    
 void rotary_embedding_deepseek_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox, std::optional<torch::Tensor> offsets);
 void moe_align_block_size(
@@ -275,7 +276,7 @@ void mha_norm_rope_qkv_inplace_cuda(at::Tensor qkv, c10::optional<at::Tensor> ga
 void cross_norm_rope_q_kv_inplace_cuda(at::Tensor q,at::Tensor kv,  c10::optional<at::Tensor> gamma_q, c10::optional<at::Tensor> beta_q,c10::optional<at::Tensor> gamma_k,c10::optional<at::Tensor> beta_k, at::Tensor cos,  at::Tensor sin,  double eps);
 torch::Tensor box_cost(const torch::Tensor &pred, const torch::Tensor &target, const torch::Tensor &inst_weights, const torch::Tensor &dim_weights, const float cost_weight); 
 torch::Tensor encode_reg_t(const torch::Tensor &input, const torch::Tensor &lengths); 
-Tensor mqa_logits(torch::Tensor &Q, torch::Tensor &K, torch::Tensor &Weights, torch::Tensor &KS, torch::Tensor &KE, int seq_len, int kv_seq_len, int num_heads, int head_dim,bool clean_logits = true);
+Tensor mqa_logits(torch::Tensor &Q, torch::Tensor &K, torch::Tensor &Weights, torch::Tensor &KS, torch::Tensor &KE, int seq_len, int kv_seq_len, int num_heads, int head_dim,const torch::optional<torch::Tensor> &KV_scale =  torch::nullopt, bool clean_logits = true);
 std::vector<torch::Tensor> batch_linear_assignment(torch::Tensor cost);
 void fill_zeros(Tensor &out, int bs, int hidden_size);
 void rms_rotary_embedding_fuse(Tensor &positions,Tensor &query,Tensor &key,int64_t head_size,Tensor &cos_sin_cache, bool is_neox,Tensor weight_q,Tensor weight_k,c10::optional<Tensor> residual_q,c10::optional<Tensor> residual_k,double epsilon);
@@ -304,6 +305,12 @@ void ep_fused_smooth_quant_scatter(
     torch::Tensor inv_perm,
     int local_num_experts, int alignment); 
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale);
+void rms_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,double epsilon);
+void fused_add_rms_norm_opt(torch::Tensor& input,torch::Tensor& residual, torch::Tensor& weight,double epsilon); 
+void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
+void gelu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
+void gelu_tanh_and_mul_opt(torch::Tensor& out,torch::Tensor& input); 
+torch::Tensor reshape_to_float(torch::Tensor input, int64_t vocab_size);
 }
 }
 
@@ -470,7 +477,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("cross_norm_rope_q_kv_inplace_cuda", &at::native::cross_norm_rope_q_kv_inplace_cuda,"cross_norm_rope_q_kv_inplace_cuda");
   m.def("box_cost", &at::native::box_cost, "box_cost");
   m.def("encode_reg_t", &at::native::encode_reg_t, "encode_reg_t");
-  m.def("mqa_logits", &at::native::mqa_logits, "mqa_logits");
+  m.def("mqa_logits", &at::native::mqa_logits, "mqa_logits",
+      py::arg("Q"),
+      py::arg("K"),
+      py::arg("Weights"),
+      py::arg("KS"),
+      py::arg("KE"),
+      py::arg("seq_len"),
+      py::arg("kv_seq_len"),
+      py::arg("num_heads"),
+      py::arg("head_dim"),
+      py::arg("KV_scale") = torch::nullopt, 
+      py::arg("clean_logits") = true);
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
   m.def("paged_mqa_logits", &lightop::deep_gemm::paged_mqa_logits,"paged_mqa_logits");
   m.def("batch_linear_assignment", &at::native::batch_linear_assignment, "batch_linear_assignment");
@@ -490,5 +508,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("backward_polyfill_lightop", &at::native::backward_polyfill_lightop, "backward_polyfill_lightop");
   m.def("ep_fused_smooth_quant_scatter", &at::native::ep_fused_smooth_quant_scatter, "ep_fused_smooth_quant_scatter");
   m.def("per_token_dynamic_quant_int8", &at::native::per_token_dynamic_quant_int8, "per_token_dynamic_quant_int8");
+  m.def("top_k_sampling_from_probs", &lightop::sampling::top_k_sampling_from_probs, "top_k_sampling_from_probs");
+  m.def("top_p_sampling_from_probs", &lightop::sampling::top_p_sampling_from_probs, "top_p_sampling_from_probs");
+  m.def("top_k_top_p_sampling_from_probs", &lightop::sampling::top_k_top_p_sampling_from_probs, "top_k_top_p_sampling_from_probs");
+  m.def("rms_norm_opt", &at::native::rms_norm_opt, "rms_norm_opt");
+  m.def("fused_add_rms_norm_opt", &at::native::fused_add_rms_norm_opt, "fused_add_rms_norm_opt");
+  m.def("silu_and_mul_opt", &at::native::silu_and_mul_opt, "silu_and_mul_opt");
+  m.def("gelu_and_mul_opt", &at::native::gelu_and_mul_opt, "gelu_and_mul_opt");
+  m.def("gelu_tanh_and_mul_opt", &at::native::gelu_tanh_and_mul_opt, "gelu_tanh_and_mul_opt");
+  m.def("reshape_to_float", &at::native::reshape_to_float, "reshape_to_float");
 }
 

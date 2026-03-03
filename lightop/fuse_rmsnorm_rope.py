@@ -67,8 +67,8 @@ def rms_rotary_embedding_fuse_with_kv_store(
     v_buffer: torch.Tensor,
     kv_cache_loc: torch.Tensor,
     is_neox: bool,
-    weight_q: torch.Tensor,
-    weight_k: torch.Tensor,
+    weight_q: Optional[torch.Tensor],
+    weight_k: Optional[torch.Tensor],
     output_dtype: torch.dtype,
     residual_q: Optional[torch.Tensor],
     residual_k: Optional[torch.Tensor],
@@ -77,10 +77,13 @@ def rms_rotary_embedding_fuse_with_kv_store(
     epsilon: float = 1e-5
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     # 与 query/key 相同 layout，这样 kernel 用 query 的 stride 写 q_rope_out 时布局一致（支持 query 非连续）
-    q_rope_out = torch.empty_strided(
-        tuple(query.shape), tuple(query.stride()),
-        dtype=v_buffer.dtype, device=query.device
-    )
+    # q_rope_out = torch.empty_strided(
+    #     tuple(query.shape), tuple(query.stride()),
+    #     dtype=v_buffer.dtype, device=query.device
+    # )
+    dims = query.dim()
+    heads = query.shape[dims - 1] // head_dim if dims == 2 else query.shape[dims - 2]
+    q_rope_out = torch.empty((query.shape[0], heads, head_dim), dtype=v_buffer.dtype, device=query.device).contiguous()
     k_rope_out = torch.empty_strided(
         tuple(key.shape), tuple(key.stride()),
         dtype=v_buffer.dtype, device=key.device
@@ -142,14 +145,6 @@ def rms_rotary_embedding_fuse_with_kv_store(
             epsilon,
             not (use_fp8_e4m3)
         )
-        # v_rope_out = v.to(torch.float).to(v_buffer.dtype)
-        # if v.dim() == 2:
-        #     vc = v_rope_out.view(v_rope_out.size(0), v_buffer.shape[1], -1)
-        # else:
-        #     vc = v_rope_out
-        # loc_id = kv_cache_loc // page_size
-        # loc_offset = kv_cache_loc % page_size
-        # v_buffer[loc_id,:,:,loc_offset] = vc
     return q_rope_out, k_rope_out, v_rope_out
 
 def rms_rotary_embedding_fuse_with_kv_store_fake(
@@ -189,8 +184,9 @@ def rms_rotary_embedding_fuse_with_kv_store_fake(
         residual_k,
         epsilon
     )
-    
-    q = query.to(v_buffer.dtype)
+    dims = query.dim()
+    heads = query.shape[dims - 1] // head_dim if dims == 2 else query.shape[dims - 2]
+    q = query.to(v_buffer.dtype).view(-1, heads, head_dim).contiguous()
     k = key.to(v_buffer.dtype)
     v = v.to(v_buffer.dtype)
     

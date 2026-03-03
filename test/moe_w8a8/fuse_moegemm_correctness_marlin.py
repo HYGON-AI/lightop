@@ -168,6 +168,167 @@ blockM_configs_decode = {
     43: 16
 }
 
+blockM_all_configs = {
+    #decode
+    0: 16,   # 索引0对应M=16
+    1: 16,   # 索引1对应M=32
+    2: 16,   # 索引2对应M=64
+    3: 16,   # 索引3对应M=16
+    4: 16,   # 索引4对应M=32
+    5: 16,   # 索引5对应M=64
+    6: 16,   # 索引6对应M=16
+    7: 16,   # 索引7对应M=32
+    8: 16,   # 索引8对应M=64
+    9: 16,   # 索引9对应M=32
+    10: 16,  # 索引10对应M=64
+    11: 16,  # 索引11对应M=32
+    12: 16,  # 索引12对应M=64
+    13: 16,  # 索引13对应M=64
+    14: 16,  # 索引14对应M=32
+    15: 16,  # 索引15对应M=32
+    16: 16,  # 索引16对应M=64
+    17: 16,  # 索引17对应M=64
+    18: 16,  # 索引18对应M=32
+    19: 16,  # 索引19对应M=64
+    20: 16,
+    21: 16,
+    22: 16,
+    23: 16,
+    24: 16,
+    25: 16,
+    26: 16,
+    27: 16,
+    28: 16,
+    29: 16,
+    30: 16,
+    31: 16,
+    32: 16,
+    33: 16,
+    34: 16,
+    35: 16,
+    36: 16,
+    37: 16,
+    38: 16,
+    39: 16,
+    40: 16,
+    41: 16,
+    42: 16,
+    43: 16,
+    44: 16,
+    45: 16,
+    46: 16,
+    47: 16,
+    48: 16,
+    49: 16,
+    50: 16,
+    51: 16,
+    52: 16,
+    53: 16,
+    54: 16,
+    55: 16,
+    56: 16,
+    57: 16,
+    58: 16,
+    59: 16,
+    60: 16,61: 16,62: 16,63: 16,64: 16,65: 16,66: 16,67: 16,68: 16,
+    69: 16,70: 16,71: 16,72: 16,73: 16,74: 16,75: 16,76: 16,77: 16,
+    78: 16,79: 16,80: 16,81: 16,82: 16,83: 16, 
+    84: 16,
+
+    #bypass
+    85:16, 86:16, 87:16, 88:16, 89:16, 90:16,
+    91:16, 92:16, 93:16, 94:16, 95:16,
+
+    # prefill
+    500 : 16,
+    501 : 32,
+    502 : 64,
+    503 : 16,
+    504 : 32,
+    506 : 16,
+    509 : 32,
+    510: 64,
+    511: 32,
+    513: 64,
+    514: 32,
+    515: 32,
+    516: 64,
+    517: 64,
+    518: 32,
+    519: 64,
+    520: 32,
+    521: 64,
+    522: 64,
+    523: 64,
+    524: 128,
+    525: 128,
+    526: 16,
+    527: 32,
+    528: 16,
+    529: 16,
+    530: 16,
+    531: 32,
+    532: 32,
+    533: 32,
+    535: 64,
+    536: 64,
+    539: 32,
+    540: 64,
+    541: 32,
+    542: 64,
+    543: 32,
+    544: 64,
+    545: 64,
+    546: 64,
+    547: 64,
+    548: 64,
+    549: 128,
+    550: 16,
+    551: 32,
+    552: 64,
+    553: 16,
+    554: 32,
+    556: 16,
+    559: 32,
+    560: 64,
+    561: 32,
+    563: 64,
+    
+    564: 16,
+    565: 32,
+    566: 64,
+    567: 16,
+    568: 32,
+    569: 16,
+    570: 32,
+    571: 64,
+    574: 32,
+    575: 32,
+    576: 64,
+    577: 64,
+    578: 32,
+    579: 64,
+    580: 32,
+    581: 64,
+    582: 64,
+    583: 64,
+    584: 128,
+    585: 128,
+    586: 16,
+    587: 32,
+    588: 16,
+    589: 16,
+    590: 16,
+    591: 32,
+    592: 32,
+    593: 32,
+    594: 64,
+    595: 64,
+    1000: 128,
+    1001: 64,
+    1002: 32,
+}
+
 def moe_kernel_prepare_input(
     A: torch.Tensor,
     B: torch.Tensor,
@@ -534,6 +695,15 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
         )
 
     out_cuda = torch.zeros_like(C)
+    # print("A",A.shape)
+    # print("B",B.shape)
+    # print("B_marlin",B_marlin.shape)
+    # print("out_cuda",out_cuda.shape)
+    # print("A_scale",A_scale.shape)
+    # print("B_scale",B_scale.shape)
+    # print("sorted_token_ids",sorted_token_ids.shape)
+    # print("expert_ids",expert_ids.shape)
+    # print("num_tokens_post_padded",num_tokens_post_padded.shape)
     moe_gemm_marlin_w8a8(A, 
                         B_marlin, 
                         out_cuda,
@@ -695,20 +865,27 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
         # config['BLOCK_SIZE_M'] = blockM_configs[mode0]
         config1 = {}
         config2 = {}
-        if 1:
-            config1['BLOCK_SIZE_M'] = blockM_configs[mode0]
-            config1['MODE']         = mode0
-            config1['DELTA']        = 1
-            config2['BLOCK_SIZE_M'] = blockM_configs[mode1]
-            config2['MODE']         = mode1
-            config2['DELTA']        = int(blockM_configs[mode0]/blockM_configs[mode1])
-        else:
-            config1['BLOCK_SIZE_M'] = blockM_configs_decode[mode0]
-            config1['MODE']         = mode0
-            config1['DELTA']        = 1
-            config2['BLOCK_SIZE_M'] = blockM_configs_decode[mode1]
-            config2['MODE']         = mode1
-            config2['DELTA']        = int(blockM_configs[mode0]/blockM_configs[mode1])
+        config1['BLOCK_SIZE_M'] = blockM_all_configs[mode0]
+        config1['MODE']         = mode0
+        config1['DELTA']        = 1
+        config2['BLOCK_SIZE_M'] = blockM_all_configs[mode1]
+        config2['MODE']         = mode1
+        config2['DELTA']        = int(blockM_all_configs[mode0]/blockM_all_configs[mode1])
+       
+        # if 1:
+        #     config1['BLOCK_SIZE_M'] = blockM_all_configs[mode0]
+        #     config1['MODE']         = mode0
+        #     config1['DELTA']        = 1
+        #     config2['BLOCK_SIZE_M'] = blockM_all_configs[mode1]
+        #     config2['MODE']         = mode1
+        #     config2['DELTA']        = int(blockM_all_configs[mode0]/blockM_all_configs[mode1])
+        # else:
+        #     config1['BLOCK_SIZE_M'] = blockM_all_configs[mode0]
+        #     config1['MODE']         = mode0
+        #     config1['DELTA']        = 1
+        #     config2['BLOCK_SIZE_M'] = blockM_all_configs[mode1]
+        #     config2['MODE']         = mode1
+        #     config2['DELTA']        = int(blockM_all_configs[mode0]/blockM_all_configs[mode1])
             
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config1['BLOCK_SIZE_M'],
@@ -907,13 +1084,13 @@ def run_perchannel_marlin_vaild():
     # m_list=[256]
     # m_list = [16384]
     
-    #deepseek-671b-tp16
-    E=256
-    topk=8
-    n_list_1=[256]
-    k_list_1=[7168]
-    n_list_2=[7168]
-    k_list_2=[128]
+    # #deepseek-671b-tp16
+    # E=256
+    # topk=8
+    # n_list_1=[256]
+    # k_list_1=[7168]
+    # n_list_2=[7168]
+    # k_list_2=[128]
     
     # #deepseek-671b-tp8
     # E=256
@@ -962,6 +1139,14 @@ def run_perchannel_marlin_vaild():
     # k_list_1=[4096]
     # n_list_2=[4096]
     # k_list_2=[192]
+
+    #glm4.7-355b-tp8
+    E=160
+    topk=8
+    n_list_1=[384]
+    k_list_1=[5120]
+    n_list_2=[5120]
+    k_list_2=[192]
     
     # ##zijie
     # E=64
@@ -983,8 +1168,8 @@ def run_perchannel_marlin_vaild():
     device_name=torch.cuda.get_device_properties('cuda').name.replace(" ","_")
 
     # mode_ranges = [i for i in range(len(blockM_configs))]
-    mode_ranges = [mode for mode in blockM_configs.keys()]
-    # mode_ranges = [68]
+    # mode_ranges = [mode for mode in blockM_configs.keys()]
+    mode_ranges = [1000]
     # compare_fail = [42,43,46,52,54,60]
     # compare_fail = [64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
     # compare_fail = [6,11,13,42,43,46,52,54,60,64,66,67,69,70,71,77,78,79,80,81,82,83,84,85,94]
