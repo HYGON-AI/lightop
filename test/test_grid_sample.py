@@ -73,16 +73,12 @@ def get_data(batchsize=48, channels=64, h_in=32, w_in=64, h_out=None, w_out=None
     return x1, x2, grid1, grid2, grad
 
 
-def get_model(mode='bilinear', padding_mode='zeros', align_corners=False, use_half=False):
+def get_model(mode='bilinear', padding_mode='zeros', align_corners=False):
     """返回 (torch 参考, lightop fuse)"""
     torch_grid_sample = GridSampleTorch(
         mode=mode, padding_mode=padding_mode, align_corners=align_corners
     ).cuda()
     fuse_grid_sample = GridSample().cuda()
-
-    if use_half:
-        torch_grid_sample = torch_grid_sample.half()
-        fuse_grid_sample = fuse_grid_sample.half()
 
     return torch_grid_sample, fuse_grid_sample
 
@@ -98,7 +94,7 @@ def test_speed(batchsize, channels, h_in, w_in, h_out=None, w_out=None,
     x1, x2, grid1, grid2, grad = get_data(
         batchsize, channels, h_in, w_in, h_out, w_out, align_corners=align_corners
     )
-    f1, f2 = get_model(mode=mode, padding_mode=padding_mode, align_corners=align_corners, use_half=use_half)
+    f1, f2 = get_model(mode=mode, padding_mode=padding_mode, align_corners=align_corners)
 
     # torch 参考
     y1 = f1(x1, grid1)
