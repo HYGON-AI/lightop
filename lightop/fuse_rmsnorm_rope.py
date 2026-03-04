@@ -157,6 +157,7 @@ def split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant(
     weight_q: Optional[torch.Tensor],
     weight_k: Optional[torch.Tensor],
     output_dtype: torch.dtype,
+    kv_cache_dtype: torch.dtype,
     residual_q: Optional[torch.Tensor],
     residual_k: Optional[torch.Tensor],
     k_scale: Optional[float],
@@ -167,8 +168,10 @@ def split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant(
     key_rope_out = torch.empty((qkv.shape[0], kv_size), dtype=qkv.dtype, device=qkv.device)
     v_rope_out = torch.empty((qkv.shape[0], kv_size), dtype=qkv.dtype, device=qkv.device)
 
-    use_fp8_cache = (kv_cache_loc != None) and (k_buffer.dtype == torch.float8_e4m3fn or k_buffer.dtype == torch.float8_e5m2)
-    use_fp8_e4m3 = use_fp8_cache and (k_buffer.dtype == torch.float8_e4m3fn)
+    # use_fp8_cache = (kv_cache_loc != None) and (k_buffer.dtype == torch.float8_e4m3fn or k_buffer.dtype == torch.float8_e5m2)
+    # use_fp8_e4m3 = use_fp8_cache and (k_buffer.dtype == torch.float8_e4m3fn)
+    use_fp8_cache = (kv_cache_loc != None) and (kv_cache_dtype == torch.float8_e4m3fn or kv_cache_dtype == torch.float8_e5m2)
+    use_fp8_e4m3 = use_fp8_cache and (kv_cache_dtype == torch.float8_e4m3fn)
     op.split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
         positions,
         qkv,

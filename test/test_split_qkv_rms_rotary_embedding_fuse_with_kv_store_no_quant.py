@@ -49,13 +49,16 @@ def dequant_fp8(x):
     """fp8 buffer 反量化为 float 便于与 ref 比较。"""
     if x.dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
         return x.float()
+    if x.dtype == torch.uint8:
+        # 存的是 fp8 字节，按 float8_e5m2 解释后转 float（与 kernel/ref 一致）
+        return x.view(torch.float8_e5m2).float()
     return x
 
 
 def compare_fp8_tensor(a, b, name, atol=0.25, rtol=0.1):
-    """比较 fp8 张量（反量化后）。"""
-    a_f = dequant_fp8(a)
-    b_f = dequant_fp8(b)
+    """比较 fp8 张量（反量化后转 float）。"""
+    a_f = dequant_fp8(a).float()
+    b_f = dequant_fp8(b).float()
     max_diff = (a_f - b_f).abs().max().item()
     print(f"   > {name}_fp8: max_diff={max_diff:.6e}")
     assert torch.allclose(a_f, b_f, atol=atol, rtol=rtol), f"{name} fp8 mismatch!"
@@ -90,8 +93,8 @@ def get_tensors_split_qkv(batch, seq, h_q, h_k, dim, page_size, use_residual, us
     w_q = torch.randn(dim, device=DEVICE, dtype=DTYPE)
     w_k = torch.randn(dim, device=DEVICE, dtype=DTYPE)
     if use_kv_cache and use_fp8_cache:
-        k_buf = torch.zeros(num_blocks, h_k, page_size, dim, device=DEVICE, dtype=torch.float8_e5m2)
-        v_buf = torch.zeros(num_blocks, h_k, dim, page_size, device=DEVICE, dtype=torch.float8_e5m2)
+        k_buf = torch.zeros(num_blocks, h_k, page_size, dim, device=DEVICE, dtype=torch.uint8)
+        v_buf = torch.zeros(num_blocks, h_k, dim, page_size, device=DEVICE, dtype=torch.uint8)
     else:
         k_buf = torch.zeros(num_blocks, h_k, page_size, dim, device=DEVICE, dtype=DTYPE)
         v_buf = torch.zeros(num_blocks, h_k, dim, page_size, device=DEVICE, dtype=DTYPE)
@@ -112,6 +115,9 @@ def ref_no_quant_2d(positions, q, k, v, cos_sin, head_dim, page_size, k_buf, v_b
         k_3d = k.reshape(num_tokens, -1, head_dim)
         v_3d = v.reshape(num_tokens, -1, head_dim)
         if use_fp8_cache:
+            if k_buf.dtype == torch.uint8:
+                k_buf = k_buf.view(torch.float8_e5m2)
+                v_buf = v_buf.view(torch.float8_e5m2)
             k_buf[loc_id, :, loc_offset, :] = k_3d.to(torch.float8_e5m2)
             v_buf[loc_id, :, :, loc_offset] = v_3d.to(torch.float8_e5m2)
         else:
@@ -166,13 +172,16 @@ def run_one(shape, is_neox, use_residual, use_fp8_cache=False, use_kv_cache=True
         weight_q=w_q,
         weight_k=w_k,
         output_dtype=DTYPE,
+        kv_cache_dtype=torch.float8_e5m2 if use_fp8_cache else DTYPE,
         residual_q=r_q_tgt,
         residual_k=r_k_tgt,
         k_scale=None,
         v_scale=None,
         epsilon=RMS_EPS,
     )
-
+    if use_fp8_cache and k_buf_tgt.dtype == torch.uint8:
+        k_buf_tgt = k_buf_tgt.view(torch.float8_e5m2)
+        v_buf_tgt = v_buf_tgt.view(torch.float8_e5m2)
     def cmp(a, b, name):
         compare_tensor(a, b, name, DTYPE)
 
