@@ -355,7 +355,13 @@ torch::Tensor fake_quantize_per_channel_affine_custom(
     int64_t axis,
     int64_t quant_min,
     int64_t quant_max);
-
+torch::Tensor awq_w4a16_dequant_trans(
+    torch::Tensor _weight, 
+    torch::Tensor _scaling_factors, 
+    torch::Tensor _zeros, 
+    int IC, 
+    int OC, 
+    int group_size);
 //------------------------------------------------- bilinear_upsample ---------------------------------------//
 torch::Tensor bilinear_upsample(const torch::Tensor& x, const std::vector<int64_t>& output_size);
 torch::Tensor bilinear_upsample_backward(const torch::Tensor& grad_output, const std::vector<int64_t>& input_size);
@@ -577,5 +583,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("pack_padded_sequence_custom", &at::native::pack_padded_sequence_custom, "pack_padded_sequence_custom");
   m.def("fake_quantize_per_tensor_affine_custom", &at::native::fake_quantize_per_tensor_affine_custom, "fake_quantize_per_tensor_affine_custom");
   m.def("fake_quantize_per_channel_affine_custom", &at::native::fake_quantize_per_channel_affine_custom, "fake_quantize_per_channel_affine_custom");
+  m.def("awq_w4a16_dequant_trans",
+          &at::native::awq_w4a16_dequant_trans, 
+          py::arg("_weight"), 
+          py::arg("_scaling_factors"), 
+          py::arg("_zeros"), 
+          py::arg("IC"), 
+          py::arg("OC"), 
+          py::arg("group_size")); 
 }
 
