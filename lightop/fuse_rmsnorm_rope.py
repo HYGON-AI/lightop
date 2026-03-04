@@ -76,11 +76,6 @@ def rms_rotary_embedding_fuse_with_kv_store(
     v_scale: Optional[float],
     epsilon: float = 1e-5
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    # 与 query/key 相同 layout，这样 kernel 用 query 的 stride 写 q_rope_out 时布局一致（支持 query 非连续）
-    # q_rope_out = torch.empty_strided(
-    #     tuple(query.shape), tuple(query.stride()),
-    #     dtype=v_buffer.dtype, device=query.device
-    # )
     dims = query.dim()
     heads = query.shape[dims - 1] // head_dim if dims == 2 else query.shape[dims - 2]
     q_rope_out = torch.empty((query.shape[0], heads, head_dim), dtype=v_buffer.dtype, device=query.device).contiguous()
@@ -147,6 +142,57 @@ def rms_rotary_embedding_fuse_with_kv_store(
         )
     return q_rope_out, k_rope_out, v_rope_out
 
+def split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant(
+    positions: torch.Tensor,
+    qkv: torch.Tensor,
+    q_size: int,
+    kv_size: int,
+    cos_sin_cache: torch.Tensor,
+    head_dim: int,
+    page_size: int,
+    k_buffer: torch.Tensor,
+    v_buffer: torch.Tensor,
+    kv_cache_loc: Optional[torch.Tensor],
+    is_neox: bool,
+    weight_q: Optional[torch.Tensor],
+    weight_k: Optional[torch.Tensor],
+    output_dtype: torch.dtype,
+    residual_q: Optional[torch.Tensor],
+    residual_k: Optional[torch.Tensor],
+    k_scale: Optional[float],
+    v_scale: Optional[float],
+    epsilon: float = 1e-5
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    query_rope_out = torch.empty((qkv.shape[0], q_size), dtype=qkv.dtype, device=qkv.device)
+    key_rope_out = torch.empty((qkv.shape[0], kv_size), dtype=qkv.dtype, device=qkv.device)
+    v_rope_out = torch.empty((qkv.shape[0], kv_size), dtype=qkv.dtype, device=qkv.device)
+
+    use_fp8_cache = (kv_cache_loc != None) and (k_buffer.dtype == torch.float8_e4m3fn or k_buffer.dtype == torch.float8_e5m2)
+    use_fp8_e4m3 = use_fp8_cache and (k_buffer.dtype == torch.float8_e4m3fn)
+    op.split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
+        positions,
+        qkv,
+        q_size,
+        kv_size,
+        head_dim,
+        cos_sin_cache,
+        is_neox,
+        weight_q,
+        weight_k,
+        residual_q,
+        residual_k,
+        k_buffer,
+        v_buffer,
+        kv_cache_loc,
+        query_rope_out,
+        key_rope_out,
+        v_rope_out,
+        page_size,
+        epsilon,
+        use_fp8_e4m3,
+        use_fp8_cache
+    )
+    return query_rope_out, key_rope_out, v_rope_out
 def rms_rotary_embedding_fuse_with_kv_store_fake(
     positions: torch.Tensor,
     query: torch.Tensor,

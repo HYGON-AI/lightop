@@ -45,6 +45,28 @@ void rms_rotary_embedding_fuse_with_kv_store(
     /////////////////////////////////////////////////
     double epsilon,
     bool use_fp8_e4m3);
+void split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
+    Tensor& positions,
+    Tensor& qkv,
+    int64_t q_size,
+    int64_t kv_size,
+    int64_t head_size,
+    Tensor& cos_sin_cache,
+    bool is_neox,
+    std::optional<Tensor>& weight_q,
+    std::optional<Tensor>& weight_k,
+    std::optional<Tensor>& residual_q,
+    std::optional<Tensor>& residual_k,
+    Tensor& k_buffer,
+    Tensor& v_buffer,
+    std::optional<Tensor>& kv_cache_loc,
+    Tensor& q_rope_out,
+    Tensor& k_rope_out,
+    Tensor& v_rope_out,
+    int page_size,
+    double epsilon,
+    bool use_fp8_e4m3,
+    bool use_fp8_cache);
 Tensor fuse_rn_dropout_forward_autograd(const Tensor& x,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_bias_forward_autograd(const Tensor& x,const Tensor& y,const Tensor &bias, const Tensor& weight,double eps,double rate,bool training);
@@ -359,6 +381,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("grid_sample_forward", &at::native::grid_sample_forward, "grid_sample forward");
   m.def("grid_sample_backward", &at::native::grid_sample_backward, "grid_sample backward");
   m.def("rms_rotary_embedding_fuse_with_kv_store", &at::native::rms_rotary_embedding_fuse_with_kv_store, "rms_rotary_embedding_fuse_with_kv_store");
+  m.def("split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant", &at::native::split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant, "split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant");
   m.def("fuse_fill_rms_x2_concat", &at::native::fuse_fill_rms_x2_concat, "fuse_fill_rms_x2_concat");
   m.def("rn_dropout_forward_autograd", &at::native::fuse_rn_dropout_forward_autograd, "fused_rn_dropout forward");
   m.def("rn_add_forward_autograd", &at::native::fuse_rn_add_forward_autograd, "fused_rn_add forward");
