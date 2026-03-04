@@ -498,10 +498,10 @@ class BenchmarkWorker:
 
 def main(args: argparse.Namespace):
     
-    #qwen3-30b-A3B-tp2
-    num_experts = 128
-    shard_intermediate_size=768
-    hidden_size=2048
+    # #qwen3-30b-A3B-tp2
+    # num_experts = 128
+    # shard_intermediate_size=768
+    # hidden_size=2048
     
     # # #qwen3-235b-A22B-tp8
     # num_experts = 128
@@ -522,6 +522,11 @@ def main(args: argparse.Namespace):
     # num_experts = 160
     # shard_intermediate_size=320
     # hidden_size=6144
+    
+    # glm4.5v-tp4
+    num_experts = 128
+    shard_intermediate_size=704
+    hidden_size=4096
     
     topk = 8
     renormalize=True

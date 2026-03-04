@@ -1522,10 +1522,10 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=320
     # hidden_size=6144
 
-    #qwen3-235b-A22B-tp2
-    E = 128
-    shard_intermediate_size=1536
-    hidden_size=4096
+    # #qwen3-235b-A22B-tp2
+    # E = 128
+    # shard_intermediate_size=1536
+    # hidden_size=4096
 
     # # #qwen3-235b-A22B-tp8
     # E = 128
@@ -1541,6 +1541,11 @@ def main(args: argparse.Namespace):
     # E = 16
     # shard_intermediate_size=4096
     # hidden_size=7168
+    
+    # glm4.5v-tp4
+    E = 128
+    shard_intermediate_size=704
+    hidden_size=4096
 
     if args.batch_size is None:
         batch_sizes = [
