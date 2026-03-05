@@ -985,7 +985,7 @@ __global__ void moe_sum_kernel_reg_bf16_add_bias(
     token_num = std::min(token_num,num_local_tokens[0]);
   }
   using VecType = Vector<scalar_t, VEC_SIZE>;
-  for(;token_idx < token_num; token_idx += gridDim.y){
+  for(token_idx = blockIdx.y;token_idx < token_num; token_idx += gridDim.y){
       const VecType *input_base_ptr =
       reinterpret_cast<const VecType *>(input) + token_idx * TOPK * d_vec;
   VecType *out_base_ptr = reinterpret_cast<VecType *>(out) + token_idx * d_vec;
@@ -1109,60 +1109,60 @@ __global__ void moe_sum_kernel_reg_bf16_add_bias_opt(
     int num_tokens) {
 
     int64_t token_idx = blockIdx.y;
-    if (token_idx >= num_tokens) return;
-
-    const int64_t token_offset_input = token_idx * TOPK * d_vec;
-    const int64_t token_offset_out   = token_idx * d_vec;
     using VecType = Vector<scalar_t, VEC_SIZE>;
+    for(;token_idx < num_tokens; token_idx += gridDim.y){
+          const int64_t token_offset_input = token_idx * TOPK * d_vec;
+          const int64_t token_offset_out   = token_idx * d_vec;
+         
+          const VecType* input_base = reinterpret_cast<const VecType*>(input + token_offset_input);
+          VecType* out_base = reinterpret_cast<VecType*>(out + token_offset_out);
+          
+          const VecType* bias_base = nullptr;
+          if constexpr (HasBias) {
+              bias_base = reinterpret_cast<const VecType*>(bias + token_offset_out);
+          }
 
-    const VecType* input_base = reinterpret_cast<const VecType*>(input + token_offset_input);
-    VecType* out_base = reinterpret_cast<VecType*>(out + token_offset_out);
-    
-    //提前取bias
-    const VecType* bias_base = nullptr;
-    if constexpr (HasBias) {
-        bias_base = reinterpret_cast<const VecType*>(bias + token_offset_out);
-    }
+          const int tid = threadIdx.x;
+          const int num_vectors = d_vec / VEC_SIZE;
+          for (int tile_idx = blockIdx.x * TILE_WIDTH; tile_idx < num_vectors; tile_idx += total_threads_per_token) {
+              const int vec_idx = tile_idx + tid;
+              
+              if (vec_idx < num_vectors) { 
+                  float acc[VEC_SIZE] = {0.0f};
 
-    const int tid = threadIdx.x;
-    const int num_vectors = d_vec / VEC_SIZE;
-    for (int tile_idx = blockIdx.x * TILE_WIDTH; tile_idx < num_vectors; tile_idx += total_threads_per_token) {
-        const int vec_idx = tile_idx + tid;
-        
-        if (vec_idx < num_vectors) { 
-            float acc[VEC_SIZE] = {0.0f};
+                  #pragma unroll VEC_SIZE
+                  for (int k = 0; k < TOPK; ++k) {
+                    int input_vec_idx = k * num_vectors + vec_idx;
+                    VecType loaded_vec = input_base[input_vec_idx];
+                    #pragma unroll VEC_SIZE
+                    for (int i = 0; i < VEC_SIZE; ++i) {
+                        acc[i] += static_cast<float>(loaded_vec.val[i]);
+                    }
+                  }
 
-            #pragma unroll VEC_SIZE
-            for (int k = 0; k < TOPK; ++k) {
-              int input_vec_idx = k * num_vectors + vec_idx;
-              VecType loaded_vec = input_base[input_vec_idx];
-              #pragma unroll VEC_SIZE
-              for (int i = 0; i < VEC_SIZE; ++i) {
-                  acc[i] += static_cast<float>(loaded_vec.val[i]);
+                  VecType result_vec;
+                  #pragma unroll VEC_SIZE
+                  for(int i = 0; i < VEC_SIZE; i++){
+                      result_vec.val[i] = static_cast<scalar_t>(acc[i]);
+                  }
+                  if constexpr (HasBias) {
+                      VecType b_val = bias_base[vec_idx];
+                      #pragma unroll VEC_SIZE
+                      for (int i = 0; i < VEC_SIZE; ++i) {
+                          result_vec.val[i]  = static_cast<scalar_t>(static_cast<float>(result_vec.val[i]) * factor);
+                          result_vec.val[i] = static_cast<scalar_t>(static_cast<float>(result_vec.val[i]) + static_cast<float>(b_val.val[i]));
+                      }
+                  } else {
+                      #pragma unroll VEC_SIZE
+                      for (int i = 0; i < VEC_SIZE; ++i) {
+                          result_vec.val[i]  = static_cast<scalar_t>(static_cast<float>(result_vec.val[i]) * factor);
+                      }
+                  }
+                  out_base[vec_idx] = result_vec;
               }
-            }
-
-            VecType result_vec;
-            #pragma unroll VEC_SIZE
-            for(int i = 0; i < VEC_SIZE; i++){
-                result_vec.val[i] = static_cast<scalar_t>(acc[i]);
-            }
-            if constexpr (HasBias) {
-                VecType b_val = bias_base[vec_idx];
-                #pragma unroll VEC_SIZE
-                for (int i = 0; i < VEC_SIZE; ++i) {
-                    result_vec.val[i]  = static_cast<scalar_t>(static_cast<float>(result_vec.val[i]) * factor);
-                    result_vec.val[i] = static_cast<scalar_t>(static_cast<float>(result_vec.val[i]) + static_cast<float>(b_val.val[i]));
-                }
-            } else {
-                #pragma unroll VEC_SIZE
-                for (int i = 0; i < VEC_SIZE; ++i) {
-                    result_vec.val[i]  = static_cast<scalar_t>(static_cast<float>(result_vec.val[i]) * factor);
-                }
-            }
-            out_base[vec_idx] = result_vec;
-        }
+          }
     }
+    
 }
 template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
           int total_threads_per_token, int TILE_WIDTH, bool Is_bf16>
@@ -1775,10 +1775,9 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
         }
     }
 
-  
+    if(num_tokens == 288) gridy = 256;
     const int block_size = 128;
     const int VEC_SIZE = 8;
- 
     if (num_tokens <= 512) {
         AT_DISPATCH_FLOATING_TYPES_AND2(
             at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
