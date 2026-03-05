@@ -1562,7 +1562,16 @@ void _mqa_logits_128x128x32_TN_impl(
 
 #define NUM_HEAD_SWITCH(num_heads, ...)          \
   [&] {                                          \
-    if (num_heads == 8) {                        \
+    if (num_heads == 1) {                        \
+      constexpr static int NumHeads = 1;         \
+      return __VA_ARGS__();                      \
+    } else if (num_heads == 2) {                 \
+      constexpr static int NumHeads = 2;         \
+      return __VA_ARGS__();                      \
+    } else if (num_heads == 4) {                 \
+      constexpr static int NumHeads = 4;         \
+      return __VA_ARGS__();                      \
+    } else if (num_heads == 8) {                 \
       constexpr static int NumHeads = 8;         \
       return __VA_ARGS__();                      \
     } else if (num_heads == 16) {                \
@@ -1608,7 +1617,7 @@ torch::Tensor mqa_logits(
          TORCH_CHECK(false, "Weights的数据类型必须为fp32!");
     }
     
-    if (M >= 128) {
+    if (M >= 128 && qtype != torch::kFloat8_e4m3fn) {
         torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
     
         const bool use_fp16 = (qtype == torch::kHalf);
@@ -1660,7 +1669,7 @@ torch::Tensor mqa_logits(
                     const int blocky = (M + 15) / 16;
                     dim3 threadsPerBlock(512);
                     bool is_align_m = (M % 16 == 0);
-                    bool is_align_n = (N % 127 == 0);
+                    bool is_align_n = (N % 128 == 0);
                     dim3 numBlock(blockx, blocky);
 
                     using kernel_fp8_t = void (*)(
@@ -1693,13 +1702,14 @@ torch::Tensor mqa_logits(
                     bool is_align_m = (M % 16 == 0);
                     bool is_align_n = (N % 64 == 0);
 
-                    int split_k = 4; 
-                    if (M <= 32 && N <= 128) {
-                         split_k = 16; 
+                    int split_k = 2; 
+                    if (M <= 32 && N <= 128 && NumHeads >= 32) {
+                        split_k = 16; 
                     }
-                    if (NumHeads < 32){
-                        split_k = 2;
+                    if (M <= 32 && N <= 128 && NumHeads < 8){
+                        split_k = 1;
                     }
+
                     dim3 grid(blockx, blocky, split_k);
 
                     using kernel_fp8_t = void (*)(
@@ -1791,12 +1801,12 @@ torch::Tensor mqa_logits(
                     bool is_align_m = (M % 16 == 0);
                     bool is_align_n = (N % 64 == 0);
     
-                    int split_k = 4; 
-                    if (M <= 32 && N <= 128) {
-                         split_k = 16; 
+                    int split_k = 2; 
+                    if (M <= 32 && N <= 128 && NumHeads >= 32) {
+                        split_k = 16; 
                     }
-                    if (NumHeads < 32){
-                        split_k = 2;
+                    if (M <= 32 && N <= 128 && NumHeads < 8){
+                        split_k = 1;
                     }
                     dim3 grid(blockx, blocky, split_k);
     

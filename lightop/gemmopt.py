@@ -681,7 +681,7 @@ def mqa_logits(
 ) -> torch.Tensor:
     q_seq_len, num_heads, head_dim = Q.shape
     kv_seq_len = K.shape[0]
-    assert num_heads in [8, 16, 32,64, 128], "num_heads only support [8,16,32,64,128]"
+    assert num_heads in [1,2,4,8, 16, 32,64, 128], "num_heads only support  [1,2,4,8, 16, 32,64, 128]"
     assert head_dim == 128, "head_dim only support 128"
     outs = op.mqa_logits(
         Q, K, Weights, ks, ke, 
