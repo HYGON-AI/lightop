@@ -12,7 +12,31 @@
   #include <hipcub/hipcub.hpp>
 #endif
 
-
+template<typename scalar_t> 
+static __device__ inline float to_float(scalar_t in){
+  if constexpr(!std::is_same<scalar_t, uint16_t>::value){
+    return in;
+  }
+  else{
+    union{
+        uint32_t int32;
+        float    fp32;
+    } u = {uint32_t(in) << 16};
+    return u.fp32;
+  }
+}
+template<typename scalar_t> 
+static __device__ inline void from_float(scalar_t &out ,float f){
+  if constexpr(!std::is_same<scalar_t, uint16_t>::value){
+    out=f;
+  }
+  else{
+    uint32_t u = *(uint32_t*)(&f);
+    // u += 0x7fff + ((u >> 16) & 1); 
+    u += 0x8000; 
+    out = u>>16;
+  }
+}
 namespace vllm {
 
 // TODO(woosuk): Further optimize this kernel.
@@ -173,78 +197,83 @@ __inline__ __device__ T BlockReduceSum_NEW(T val, T* shared) {
 }
 
 template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512>
-__global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scalar_t* gamma,int cols,T_ACC eps)
+__global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scalar_t* gamma,int cols,T_ACC eps, int num_tokens)
 {
   constexpr int share_size=block_size/C10_WARP_SIZE;
   __shared__ T_ACC val_shared[share_size];
   __shared__ T_ACC s_rstd;
-  T_ACC val=0;
+  using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
   int i=blockIdx.x;
   int j=threadIdx.x;
-  int tcol=cols/Vec;
-  using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
-  scalar_t intput_vec[Vec];
-  scalar_t residual_vec[Vec];
-  T_ACC trstd;
-  int64_t idx = i * tcol + j;
-  idx*=Vec;
-  if (j < tcol) {
-    *(LoadT*)intput_vec = *(LoadT*)(input+idx);
-    *(LoadT*)residual_vec = *(LoadT*)(residual+idx);
-    #pragma unroll
-    for (int ii = 0; ii < Vec; ii++) {
-      residual_vec[ii]+=intput_vec[ii];
-      val += static_cast<T_ACC>(residual_vec[ii])*static_cast<T_ACC>(residual_vec[ii]);
-    }
-  }
-  val = BlockReduceSum_NEW<T_ACC,block_size>(val,val_shared);
-  if (j == 0) s_rstd=c10::cuda::compat::rsqrt(val/cols + eps);
-  __syncthreads();
-  trstd=s_rstd;
-  if (j < tcol) {
-    #pragma unroll
-    for(int ii=0;ii<Vec;ii++){
-      int jj=j*Vec+ii;
-      intput_vec[ii] = static_cast<T_ACC>(residual_vec[ii]) *trstd* static_cast<T_ACC>(gamma[jj]);
-    }
-    *(LoadT*)(residual+idx)=*(LoadT*)residual_vec;
-    *(LoadT*)(input+idx)=*(LoadT*)intput_vec;
+  for(; i < num_tokens; i += gridDim.x){
+        T_ACC val=0;
+        int tcol=cols/Vec;
+        scalar_t intput_vec[Vec];
+        scalar_t residual_vec[Vec];
+        T_ACC trstd;
+        int64_t idx = i * tcol + j;
+        idx*=Vec;
+        if (j < tcol) {
+          *(LoadT*)intput_vec = *(LoadT*)(input+idx);
+          *(LoadT*)residual_vec = *(LoadT*)(residual+idx);
+          #pragma unroll
+          for (int ii = 0; ii < Vec; ii++) {
+            residual_vec[ii]+=intput_vec[ii];
+            val += to_float(residual_vec[ii])*to_float(residual_vec[ii]);
+          }
+        }
+        val = BlockReduceSum_NEW<T_ACC,block_size>(val,val_shared);
+        if (j == 0) s_rstd=c10::cuda::compat::rsqrt(val/cols + eps);
+        __syncthreads();
+        trstd=s_rstd;
+        if (j < tcol) {
+          #pragma unroll
+          for(int ii=0;ii<Vec;ii++){
+            int jj=j*Vec+ii;
+            from_float<scalar_t>(intput_vec[ii] ,to_float(residual_vec[ii]) *trstd* to_float(gamma[jj]));
+          }
+          *(LoadT*)(residual+idx)=*(LoadT*)residual_vec;
+          *(LoadT*)(input+idx)=*(LoadT*)intput_vec;
+        }
   }
 }
 
 template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512>
-__global__ void fused_rms_kernel_opt(scalar_t* input,scalar_t* output,scalar_t* gamma,int cols,T_ACC eps)
+__global__ void fused_rms_kernel_opt(scalar_t* input,scalar_t* output,scalar_t* gamma,int cols,T_ACC eps,int num_tokens)
 {
   constexpr int share_size=block_size/C10_WARP_SIZE;
   __shared__ T_ACC val_shared[share_size];
   __shared__ T_ACC s_rstd;
-  T_ACC val=0;
+
   int i=blockIdx.x;
   int j=threadIdx.x;
-  int tcol=cols/Vec;
-  using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
-  scalar_t intput_vec[Vec];
-  T_ACC trstd;
-  int64_t idx = i * tcol + j;
-  idx*=Vec;
-  if (j < tcol) {
-    *(LoadT*)intput_vec = *(LoadT*)(input+idx);
-    #pragma unroll
-    for (int ii = 0; ii < Vec; ii++) {
-      val += static_cast<T_ACC>(intput_vec[ii])*static_cast<T_ACC>(intput_vec[ii]);
-    }
-  }
-  val = BlockReduceSum_NEW<T_ACC,block_size>(val,val_shared);
-  if (j == 0) s_rstd=c10::cuda::compat::rsqrt(val/cols + eps);
-  __syncthreads();
-  trstd=s_rstd;
-  if (j < tcol) {
-    #pragma unroll
-    for(int ii=0;ii<Vec;ii++){
-      int jj=j*Vec+ii;
-      intput_vec[ii] = static_cast<T_ACC>(intput_vec[ii]) *trstd* static_cast<T_ACC>(gamma[jj]);
-    }
-    *(LoadT*)(output+idx)=*(LoadT*)intput_vec;
+  for(; i < num_tokens; i += gridDim.x){
+      T_ACC val=0;
+      int tcol=cols/Vec;
+      using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
+      scalar_t intput_vec[Vec];
+      T_ACC trstd;
+      int64_t idx = i * tcol + j;
+      idx*=Vec;
+      if (j < tcol) {
+        *(LoadT*)intput_vec = *(LoadT*)(input+idx);
+        #pragma unroll
+        for (int ii = 0; ii < Vec; ii++) {
+          val += static_cast<T_ACC>(intput_vec[ii])*static_cast<T_ACC>(intput_vec[ii]);
+        }
+      }
+      val = BlockReduceSum_NEW<T_ACC,block_size>(val,val_shared);
+      if (j == 0) s_rstd=c10::cuda::compat::rsqrt(val/cols + eps);
+      __syncthreads();
+      trstd=s_rstd;
+      if (j < tcol) {
+        #pragma unroll
+        for(int ii=0;ii<Vec;ii++){
+          int jj=j*Vec+ii;
+          intput_vec[ii] = static_cast<T_ACC>(intput_vec[ii]) *trstd* static_cast<T_ACC>(gamma[jj]);
+        }
+        *(LoadT*)(output+idx)=*(LoadT*)intput_vec;
+      }
   }
 }
 
@@ -254,6 +283,8 @@ void rms_norm_opt(torch::Tensor& out,     // [..., hidden_size]
               double epsilon) {
   int hidden_size = input.size(-1);
   int num_tokens = input.numel() / hidden_size;
+  int grid = num_tokens;
+  if(num_tokens == 288) grid = 256;
   const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   auto inp_ptr = reinterpret_cast<std::uintptr_t>(input.data_ptr());
@@ -272,24 +303,19 @@ void rms_norm_opt(torch::Tensor& out,     // [..., hidden_size]
       scalar_t* out_data   =  out.expect_contiguous()->data_ptr<scalar_t>();
       scalar_t* weight_data= weight.expect_contiguous()->data_ptr<scalar_t>();
       if (hidden_size<=1024){
-          fused_rms_kernel_opt<scalar_t,T_ACC,8,128><<<num_tokens,  128, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps);
+          fused_rms_kernel_opt<scalar_t,T_ACC,8,128><<<grid,  128, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
       }
       else if(hidden_size<=2048){
-          fused_rms_kernel_opt<scalar_t,T_ACC,8,256><<<num_tokens,  256, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps);
+          fused_rms_kernel_opt<scalar_t,T_ACC,8,256><<<grid,  256, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
       }
       else if(hidden_size<=4096){
-          if(num_tokens>1200){
-            fused_rms_kernel_opt<scalar_t,T_ACC,8,512><<<num_tokens,  512, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps);
-          }
-          else{
-            fused_rms_kernel_opt<scalar_t,T_ACC,4,1024><<<num_tokens,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps);
-          }
+           fused_rms_kernel_opt<scalar_t,T_ACC,8,512><<<grid,  512, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
       }
       else if(hidden_size<=8192){
-           fused_rms_kernel_opt<scalar_t,T_ACC,8,1024><<<num_tokens,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps);
+           fused_rms_kernel_opt<scalar_t,T_ACC,8,1024><<<grid,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
       }
       else{
-          fused_rms_kernel_opt<scalar_t,T_ACC,16,1024><<<num_tokens,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps);
+          fused_rms_kernel_opt<scalar_t,T_ACC,16,1024><<<grid,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
       } 
     });
   }
@@ -326,6 +352,8 @@ void fused_add_rms_norm_opt(torch::Tensor& input,     // [..., hidden_size]
                         double epsilon) {
   int hidden_size = input.size(-1);
   int num_tokens = input.numel() / hidden_size;
+  int grid = num_tokens;
+  if(num_tokens == 288) grid = 256;
   const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   auto inp_ptr = reinterpret_cast<std::uintptr_t>(input.data_ptr());
@@ -345,24 +373,25 @@ void fused_add_rms_norm_opt(torch::Tensor& input,     // [..., hidden_size]
         scalar_t* other_data = residual.expect_contiguous()->data_ptr<scalar_t>();
         scalar_t* weight_data= weight.expect_contiguous()->data_ptr<scalar_t>();
         if (hidden_size<=1024){
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,128><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,128><<<grid,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
         }
         else if(hidden_size<=2048){
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,256><<<grid,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
         }
         else if(hidden_size<=4096){
-            if(num_tokens>1200){
-              fused_add_rms_kernel_opt<scalar_t,T_ACC,8,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps);
-            }
-            else{
-              fused_add_rms_kernel_opt<scalar_t,T_ACC,4,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps);
-            }
+            // if(num_tokens>1200){
+            //   fused_add_rms_kernel_opt<scalar_t,T_ACC,8,512><<<grid,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
+            // }
+            // else{
+            //   fused_add_rms_kernel_opt<scalar_t,T_ACC,4,1024><<<grid,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
+            // }
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,512><<<grid,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
         }
         else if(hidden_size<=8192){
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,1024><<<grid,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
         }
         else{
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,16,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,16,1024><<<grid,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
         } 
       });
   }
