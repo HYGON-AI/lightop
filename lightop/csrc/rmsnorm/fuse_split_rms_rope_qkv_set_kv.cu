@@ -1036,6 +1036,7 @@ __global__ void split_opt_rms_rope_qwen3_with_qkv(
     int loc_offset = 0;
     if constexpr (HAS_CACHE) {
         const int64_t cache_loc = kv_cache_loc[global_token_idx];
+        if (cache_loc < 0) return;
         loc_id = cache_loc / page_size;
         loc_offset = cache_loc % page_size;
     }
@@ -1312,6 +1313,7 @@ __global__ void split_opt_rms_rope_qwen3_rotDim64_with_qkv(
     int loc_offset = 0;
     if constexpr (HAS_CACHE) {
         const int cache_loc = kv_cache_loc[global_token_idx];
+        if (cache_loc < 0) return;
         loc_id = cache_loc / page_size;
         loc_offset = cache_loc % page_size;
     }

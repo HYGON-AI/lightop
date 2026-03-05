@@ -19,11 +19,11 @@ PAGE_SIZE = 64
 
 # (batch, seq, h_q, h_k, head_dim, rot_dim)
 TEST_SHAPES = [
-    (128, 1, 8, 1, 128, 128),
-    (128, 1, 8, 1, 128, 64),
-    (64, 1, 4, 1, 128, 128),
+    (8, 32, 12, 1, 128, 128),
+    (8, 32, 12, 1, 128, 64),
+    (8, 32, 12, 1, 128, 128),
 ]
-TEST_NEOX = [True]
+TEST_NEOX = [False]
 TEST_RESIDUALS = [False, True]
 # cache 为 fp8 时 k_buffer 为 fp8，v_buffer 为 bf16
 TEST_FP8_CACHE = [False, True]
