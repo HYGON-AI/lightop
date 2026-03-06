@@ -546,9 +546,9 @@ struct KernelParams {
  static constexpr int WARPS_PER_CTA = WARPS_PER_CTA_;
 };
 
-// 智普优化
-template <typename T, typename T_bias, typename Params, int VPT_LOCAL>
-__global__ void moe_fused_gate_kernel_expert160_topk8(
+// 智谱优化  topk=8, num_expert_group=1
+template <typename T, typename T_bias, typename Params, int VPT_LOCAL, int NUM_EXPERTS>
+__global__ void moe_fused_gate_kernel_topk8_gourp1(
   void* input,
   void* bias,
   float* output_ptr,
@@ -559,7 +559,6 @@ __global__ void moe_fused_gate_kernel_expert160_topk8(
   Params params) 
 {
   constexpr float Negative_inf = -FLT_MAX;
-  constexpr int NUM_EXPERTS = 160;
 
   int tidx = threadIdx.x;
   int group_row = tidx / params.THREADS_PER_ROW; 
@@ -581,7 +580,6 @@ __global__ void moe_fused_gate_kernel_expert160_topk8(
   float scores_chunk[VPT_LOCAL];
   float row_chunk[VPT_LOCAL];
 
- 
   constexpr int EFFECTIVE_THREADS = NUM_EXPERTS / VPT_LOCAL;
   
   if (thread_group_idx < EFFECTIVE_THREADS) {
@@ -612,7 +610,6 @@ __global__ void moe_fused_gate_kernel_expert160_topk8(
   float output_sum = 0.0f;
   
   int topk_routed = 8 - n_share_experts_fusion;
-
 
   #pragma unroll
   for (int k = 0; k < 8; ++k) {
@@ -694,7 +691,7 @@ __global__ void moe_fused_gate_kernel(
    int64_t topk,
    int64_t n_share_experts_fusion,
    double routed_scaling_factor) {
-  KernelParams<VPT, NUM_EXPERTS, THREADS_PER_ROW, ROWS_PER_WARP, ROWS_PER_CTA, WARPS_PER_CTA> params;
+ KernelParams<VPT, NUM_EXPERTS, THREADS_PER_ROW, ROWS_PER_WARP, ROWS_PER_CTA, WARPS_PER_CTA> params;
     if (NUM_EXPERTS == 384) {
       moe_fused_gate_impl_expert_384<T, T_bias, decltype(params), VPT>(
           input,
@@ -746,18 +743,18 @@ __global__ void moe_fused_gate_kernel(
    dispatched = true;              \
  } while (0)
 
- #define LAUNCH_MOE_GATE_E160_NE1(T, T_bias, THREADS_PER_ROW_VAL, VPT_VAL, N_WARP_VAL) \
+ #define LAUNCH_MOE_GATE_OPT_NE1(T, T_bias, EXPERTS_VAL, THREADS_PER_ROW_VAL, VPT_VAL, N_WARP_VAL) \
  do { \
    constexpr int N_WARP = N_WARP_VAL; \
    constexpr int THREADS_PER_ROW = THREADS_PER_ROW_VAL; \
    constexpr int VPT = VPT_VAL; \
-   constexpr int EXPERTS = 160; \
+   constexpr int EXPERTS = EXPERTS_VAL; \
    constexpr int ROWS_PER_WARP = WARP_SIZE / THREADS_PER_ROW; \
    constexpr int ROWS_PER_CTA = N_WARP * ROWS_PER_WARP; \
    dim3 block_dim_spec(WARP_SIZE*N_WARP); \
    int64_t num_blocks_spec = (num_rows + ROWS_PER_CTA - 1) / ROWS_PER_CTA; \
    KernelParams<VPT, EXPERTS, THREADS_PER_ROW, ROWS_PER_WARP, ROWS_PER_CTA, N_WARP> params_spec; \
-   moe_fused_gate_kernel_expert160_topk8<T, T_bias, decltype(params_spec), VPT> \
+   moe_fused_gate_kernel_topk8_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS> \
      <<<num_blocks_spec, block_dim_spec, 0, stream>>>( \
        input.data_ptr(),          \
        bias.data_ptr(),          \
@@ -836,29 +833,51 @@ std::vector<torch::Tensor> moe_fused_gate(
  int computed_vpt = num_experts / num_expert_group;
  int computed_vpt_per_thread = computed_vpt / 4;
 
- //智普优化
+ //智谱优化 
  bool dispatched = false;
- if (num_experts == 160 && topk == 8 && num_expert_group == 1 && topk_group == 1) {
-    if (input.scalar_type() == at::kBFloat16) {
-        if (bias.scalar_type() == at::kFloat) {
-            LAUNCH_MOE_GATE_E160_NE1(__nv_bfloat16, float, 32, 8, 2);
-        } else if (bias.scalar_type() == at::kBFloat16) {
-            LAUNCH_MOE_GATE_E160_NE1(__nv_bfloat16, __nv_bfloat16, 32, 8, 2);
-        }
-    } else if (input.scalar_type() == at::kHalf) {
-         if (bias.scalar_type() == at::kHalf) {
-            LAUNCH_MOE_GATE_E160_NE1(half, half, 32, 8, 2);
-         }
-    } else if (input.scalar_type() == at::kFloat) {
-         if (bias.scalar_type() == at::kFloat) {
-            if (num_rows < 512) {
-                LAUNCH_MOE_GATE_E160_NE1(float, float, 64, 4, 1);
-            } else {
-                LAUNCH_MOE_GATE_E160_NE1(float, float, 32, 8, 2);
+ if (topk == 8 && num_expert_group == 1 && topk_group == 1) {
+    if (num_experts == 160) {
+        if (input.scalar_type() == at::kBFloat16) {
+            if (bias.scalar_type() == at::kFloat) {
+                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, float, 160, 32, 8, 2);
+            } else if (bias.scalar_type() == at::kBFloat16) {
+                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, __nv_bfloat16, 160, 32, 8, 2);
             }
-         }
+        } else if (input.scalar_type() == at::kHalf) {
+             if (bias.scalar_type() == at::kHalf) {
+                LAUNCH_MOE_GATE_OPT_NE1(half, half, 160, 32, 8, 2);
+             }
+        } else if (input.scalar_type() == at::kFloat) {
+             if (bias.scalar_type() == at::kFloat) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 160, 64, 4, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 160, 32, 8, 2);
+                }
+             }
+        }
+    } else if (num_experts == 256) {
+        if (input.scalar_type() == at::kBFloat16) {
+            if (bias.scalar_type() == at::kFloat) {
+                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, float, 256, 32, 8, 2);
+            } else if (bias.scalar_type() == at::kBFloat16) {
+                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, __nv_bfloat16, 256, 32, 8, 2);
+            }
+        } else if (input.scalar_type() == at::kHalf) {
+             if (bias.scalar_type() == at::kHalf) {
+                LAUNCH_MOE_GATE_OPT_NE1(half, half, 256, 32, 8, 2);
+             }
+        } else if (input.scalar_type() == at::kFloat) {
+             if (bias.scalar_type() == at::kFloat) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 256, 64, 4, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 256, 32, 8, 2);
+                }
+             }
+        }
     }
-    return {output, indices};
+    if (dispatched) return {output, indices};
  }
 
  if (input.scalar_type() == at::kBFloat16) {
