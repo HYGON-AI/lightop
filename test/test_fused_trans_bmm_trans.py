@@ -16,8 +16,7 @@ import vllm.envs as envs
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
 from vllm import _custom_ops as ops
-# from test_int8_kernel import torch_w8a8_per_column_moe
-# import _custom_ops as ops
+from lmslim.layers.gemm.int8_utils import per_token_quant_int8
 from lightop import fused_bmm, fuse_rmsnorm_rope_quant_qkv, get_batched_gemm_w8a8_config, fused_rms_norm_rope_contiguous
 
 from test_fuse_rmsnorm_rope_quant_qkv import _compute_cos_sin_cache, _create_mla_cache
@@ -598,7 +597,13 @@ def fused_bmm_trans_impl_int8_benchmark(torch_q_bf16: torch.Tensor,
     peak = n * b * p * l * 2
     
     output_size_bytes = torch.finfo(cuda_output.dtype).bits // 8
-    input_size_bytes = torch.finfo(input.dtype).bits // 8
+    if input.dtype == torch.int8:
+        input_size_bytes = torch.iinfo(input.dtype).bits // 8
+        w_uk_size_bytes = torch.iinfo(w_uk.dtype).bits // 8
+    elif input.dtype == torch.float8_e4m3fn or input.dtype == torch.float8_e5m2:
+        input_size_bytes = torch.finfo(input.dtype).bits // 8
+        w_uk_size_bytes = torch.finfo(w_uk.dtype).bits // 8
+    
     scale_size_bytes = torch.finfo(input_scale.dtype).bits // 8
     if bias is not None:
         bias_size_bytes = torch.finfo(bias.dtype).bits // 8
@@ -713,8 +718,12 @@ def _fused_bmm_helper(batch: int,
 
     torch_input_bf16 = torch.randn((batch, N, P), device=device, dtype=torch.bfloat16)           # [b, n, p]
     torch_w_uk_bf16 = torch.randn((N, L, P), device=device, dtype=torch.bfloat16)           # [n, l, p]
-    q_quant, q_scale = per_token_quant_fp8(torch_input_bf16)
-    w_uk, w_uk_scale = per_token_quant_fp8(torch_w_uk_bf16)
+    if in_dtype == torch.float8_e4m3fn or in_dtype == torch.float8_e5m2:
+        q_quant, q_scale = per_token_quant_fp8(torch_input_bf16)
+        w_uk, w_uk_scale = per_token_quant_fp8(torch_w_uk_bf16)
+    elif in_dtype == torch.int8:
+        q_quant, q_scale = per_token_quant_int8(torch_input_bf16)
+        w_uk, w_uk_scale = per_token_quant_int8(torch_w_uk_bf16)
     # print(f"before w_uk_scale.shape: {w_uk_scale.shape}, w_uk_scale.stride: {w_uk_scale.stride()}")
     # # import pdb; pdb.set_trace()
     # w_uk_scale = w_uk_scale.reshape(N, 1, L).permute(0, 2, 1)
@@ -898,8 +907,8 @@ def run_benchmark_trans_bmm_trans():
     p_list=[512,512,512,512]
     l_list=[128,128,128,128]
     
-    in_dtype=torch.float8_e4m3fn
-    # in_dtype=torch.int8
+    # in_dtype=torch.float8_e4m3fn
+    in_dtype=torch.int8
     out_dtype = torch.bfloat16
     # out_dtype = torch.float8_e4m3fn
     transpose_bm = False
