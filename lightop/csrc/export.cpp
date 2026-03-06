@@ -366,6 +366,13 @@ torch::Tensor awq_w4a16_dequant_trans(
 torch::Tensor bilinear_upsample(const torch::Tensor& x, const std::vector<int64_t>& output_size);
 torch::Tensor bilinear_upsample_backward(const torch::Tensor& grad_output, const std::vector<int64_t>& input_size);
 //------------------------------------------------- bilinear_upsample ---------------------------------------//
+std::vector<torch::Tensor> ds_fused_qkv_cast_fp8(
+  torch::Tensor q,
+  torch::Tensor kv_nope, 
+  torch::Tensor k_pe,   
+  int64_t qk_nope_head_dim, 
+  int64_t v_head_dim
+);
 }
 }
 
@@ -591,5 +598,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("IC"), 
           py::arg("OC"), 
           py::arg("group_size")); 
+ m.def("ds_fused_qkv_cast_fp8", &at::native::ds_fused_qkv_cast_fp8, "ds_fused_qkv_cast_fp8");                 
 }
 
