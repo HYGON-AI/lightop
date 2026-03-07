@@ -275,7 +275,7 @@ __global__ void paged_mqa_logits(const Element* q,
 
     auto gW = weights + next_q_idx * kNextN * kNumHeads + next_n * kNumHeads;
     auto smem_weight = reinterpret_cast<float *>(smem_kv_block);
-    if (warp_idx == 0) {
+    if (warp_idx == 0 && lane_idx < kNumHeads) {
         smem_weight[lane_idx] = gW[lane_idx];
     }
 
@@ -593,7 +593,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
 
     auto gW = weights + next_q_idx * kNextN * kNumHeads + next_n * kNumHeads;
     auto smem_weight = reinterpret_cast<float *>(smem_kv_block);
-    if (warp_idx == 0) {
+    if (warp_idx == 0 && lane_idx < kNumHeads) {
         smem_weight[lane_idx] = gW[lane_idx];
     }
 

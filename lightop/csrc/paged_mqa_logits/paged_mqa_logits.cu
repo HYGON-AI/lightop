@@ -28,6 +28,49 @@ namespace deep_gemm {
         default: LIGHTOP_HOST_UNREACHABLE("unsupported aligned batch size\n"); \
     }
 
+#define DISPATCH_NEXT_N(next_n, NEXT_N, ...)                        \
+    [&]() {                                                         \
+        if (next_n == 1) {                                          \
+            constexpr int NEXT_N = 1;                               \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        } else if (next_n == 2) {                                   \
+            constexpr int NEXT_N = 2;                               \
+            grid.x *= next_n;                                       \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        }                                                           \
+        LIGHTOP_HOST_UNREACHABLE("unsupported next_n size\n");      \
+    }()
+
+#define DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, ...)               \
+    [&]() {                                                         \
+        if (num_heads == 32) {                                      \
+            constexpr int NUM_HEADS = 32;                           \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        } else if (num_heads == 64) {                               \
+            constexpr int NUM_HEADS = 64;                           \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        }                                                           \
+        LIGHTOP_HOST_UNREACHABLE("unsupported head size\n");        \
+    }()
+
+#define DISPATCH_FP8_TYPES(scalar_type, FP8_TYPE, ...)              \
+    [&]() {                                                         \
+        if (scalar_type == at::ScalarType::Float8_e4m3fn) {         \
+            using FP8_TYPE = at::Float8_e4m3fn;                     \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        } else if (scalar_type == at::ScalarType::Float8_e5m2) {    \
+            using FP8_TYPE = at::Float8_e5m2;                       \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        }                                                           \
+        LIGHTOP_HOST_UNREACHABLE("unsupported fp8 type\n");         \
+    }()
+
 int get_sms_info() {
     int device_id = 0;
     if (hipGetDevice(&device_id) != hipSuccess) {
@@ -210,109 +253,46 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     const bool use_fp8_kv = (kv_cache_scales.defined() && kv_cache_scales.numel() > 0);
 
     if (!use_fp8_kv) {
-        if (next_n == 1) {
-            AT_DISPATCH_FLOATING_TYPES_AND2(
+        AT_DISPATCH_FLOATING_TYPES_AND2(
                 at::ScalarType::Half,
                 at::ScalarType::BFloat16,
                 q.scalar_type(),
-                "paged_mqa_next_n_1",
+                "paged_mqa_float16",
                 ([&] {
-                    paged_mqa_logits<scalar_t, 1, 64, 128, 64, split_kv, 4><<<grid, block, smem_size, 0>>>(
-                        reinterpret_cast<scalar_t*>(q.data_ptr()),
-                        reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
-                        weights.data_ptr<float>(), batch_size,
-                        num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
-                        block_table_stride, context_lens.data_ptr<int32_t>(),
-                        logits.data_ptr<float>(),
-                        block_table.data_ptr<int32_t>(),
-                        schedule_meta.data_ptr<int32_t>());
+                    DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
+                        DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
+                            paged_mqa_logits<scalar_t, NEXT_N, NUM_HEADS, 128, 64, split_kv, 4><<<grid, block, smem_size
+                            , 0>>>(
+                                reinterpret_cast<scalar_t*>(q.data_ptr()),
+                                reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
+                                weights.data_ptr<float>(), batch_size,
+                                num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
+                                block_table_stride, context_lens.data_ptr<int32_t>(),
+                                logits.data_ptr<float>(),
+                                block_table.data_ptr<int32_t>(),
+                                schedule_meta.data_ptr<int32_t>());
+                        });
+                    });
                 })
             );
-        } else if (next_n == 2) {
-            AT_DISPATCH_FLOATING_TYPES_AND2(
-                at::ScalarType::Half,
-                at::ScalarType::BFloat16,
-                q.scalar_type(),
-                "paged_mqa_next_n_2",
-                ([&] {
-                    grid.x *= next_n;
-                    paged_mqa_logits<scalar_t, 2, 64, 128, 64, split_kv, 4><<<grid, block, smem_size, 0>>>(
-                        reinterpret_cast<scalar_t*>(q.data_ptr()),
-                        reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
-                        weights.data_ptr<float>(), batch_size,
-                        num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
-                        block_table_stride, context_lens.data_ptr<int32_t>(),
-                        logits.data_ptr<float>(),
+    } else {
+        LIGHTOP_HOST_ASSERT(num_heads == 64);
+        DISPATCH_FP8_TYPES(q.scalar_type(), FP8_TYPE, [&] {
+            DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
+                DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
+                    paged_mqa_logits_fp8<FP8_TYPE, NEXT_N, NUM_HEADS, 128, 64, split_kv, 4><<<grid, block,
+                    smem_size, 0>>>(
+                        reinterpret_cast<FP8_TYPE*>(q.data_ptr()),
+                        reinterpret_cast<FP8_TYPE*>(kv_cache.data_ptr()),
+                        kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
+                        batch_size, num_kv_blocks, kv_cache_stride_bytes,
+                        aligned_max_context_len, block_table_stride,
+                        context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
                         block_table.data_ptr<int32_t>(),
                         schedule_meta.data_ptr<int32_t>());
-                })
-            );
-        } else {
-            LIGHTOP_HOST_UNREACHABLE("unsupported next n\n");
-        }
-
-    }else {
-        switch (q.scalar_type()) {
-        case at::ScalarType::Float8_e4m3fn: {
-            using scalar_t = at::Float8_e4m3fn;
-            if (next_n == 1) {
-                paged_mqa_logits_fp8<scalar_t, 1, 64, 128, 64, split_kv, 4><<<grid, block, smem_size, 0>>>(
-                    reinterpret_cast<scalar_t*>(q.data_ptr()),
-                    reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
-                    kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
-                    batch_size, num_kv_blocks, kv_cache_stride_bytes,
-                    aligned_max_context_len, block_table_stride,
-                    context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
-                    block_table.data_ptr<int32_t>(),
-                    schedule_meta.data_ptr<int32_t>());
-            } else {
-                grid.x *= next_n;
-                paged_mqa_logits_fp8<scalar_t, 2, 64, 128, 64, split_kv, 4>
-                    <<<grid, block, smem_size, 0>>>(
-                    reinterpret_cast<scalar_t*>(q.data_ptr()),
-                    reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
-                    kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
-                    batch_size, num_kv_blocks, kv_cache_stride_bytes,
-                    aligned_max_context_len, block_table_stride,
-                    context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
-                    block_table.data_ptr<int32_t>(),
-                    schedule_meta.data_ptr<int32_t>());
-            }
-            break;
-        }
-
-        case at::ScalarType::Float8_e5m2: {
-            using scalar_t = at::Float8_e5m2;
-            if (next_n == 1) {
-                paged_mqa_logits_fp8<scalar_t, 1, 64, 128, 64, split_kv, 4>
-                    <<<grid, block, smem_size, 0>>>(
-                    reinterpret_cast<scalar_t*>(q.data_ptr()),
-                    reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
-                    kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
-                    batch_size, num_kv_blocks, kv_cache_stride_bytes,
-                    aligned_max_context_len, block_table_stride,
-                    context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
-                    block_table.data_ptr<int32_t>(),
-                    schedule_meta.data_ptr<int32_t>());
-            } else {
-                grid.x *= next_n;
-                paged_mqa_logits_fp8<scalar_t, 2, 64, 128, 64, split_kv, 4>
-                    <<<grid, block, smem_size, 0>>>(
-                    reinterpret_cast<scalar_t*>(q.data_ptr()),
-                    reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
-                    kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
-                    batch_size, num_kv_blocks, kv_cache_stride_bytes,
-                    aligned_max_context_len, block_table_stride,
-                    context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
-                    block_table.data_ptr<int32_t>(),
-                    schedule_meta.data_ptr<int32_t>());
-            }
-            break;
-        }
-
-        default:
-            LIGHTOP_HOST_UNREACHABLE("fp8 kv requires fp8 q");
-        }
+                });
+            });
+        });
       }
 
     hipError_t result = hipGetLastError();
