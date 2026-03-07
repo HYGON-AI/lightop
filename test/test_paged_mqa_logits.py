@@ -90,7 +90,7 @@ def ref_fp8_paged_mqa_logits(q: torch.Tensor, kv_cache: torch.Tensor,
 def test_paged_mqa_logits(use_fp8 = True):
     max_model_len = 111 * 1000
     for batch_size, next_n in [(64, 1), (64, 2), (128, 1)]:
-        for heads, index_dim in [(64, 128)]:
+        for heads, index_dim in [(32, 128), (64, 128)]:
             for avg_kv in (8192, 32768):
                 num_blocks, blocksize = max_model_len * 3, 64
 
@@ -119,6 +119,9 @@ def test_paged_mqa_logits(use_fp8 = True):
                 torch.cuda.synchronize()
 
                 if 'gfx938' in device_name and use_fp8:
+                    if heads == 32:
+                        print("num_heads == 32 is not supported under FP8 now.")
+                        continue
                     print('Testing FP8 Paged MQA Logits:')
                     q_fp8 = q.to(torch.float8_e4m3fn)
                     kv_cache_fp8 = kv_cache_cast_to_fp8(kv_cache)
@@ -165,11 +168,7 @@ def test_paged_mqa_logits(use_fp8 = True):
                     logits = logits.masked_fill(neginf_mask, 0)
                     ref_logits = ref_logits.masked_fill(ref_neginf_mask, 0)
 
-                    check = torch.allclose(logits, ref_logits, rtol=1e-3, atol=1e-3)
-                    if not check:
-                        print("all close failed...")
-                    else:
-                        print("all close passed...")
+                    assert torch.allclose(logits, ref_logits, rtol=1e-3, atol=1e-3)
 
                 sum_lens = sum(context_lens.to(torch.int64))
                 tflops = 2 * sum_lens * next_n * heads * index_dim / 1e12
