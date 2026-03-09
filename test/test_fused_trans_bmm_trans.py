@@ -752,8 +752,8 @@ def run_trans_bmm_trans_tuning():
     p_list=[512,512,512,512]
     l_list=[128,128,128,128]
     
-    in_dtype=torch.float8_e4m3fn
-    # in_dtype=torch.int8
+    # in_dtype=torch.float8_e4m3fn
+    in_dtype=torch.int8
     out_dtype = torch.bfloat16
     # out_dtype = torch.float8_e4m3fn
     transpose_bm = False
@@ -794,7 +794,7 @@ def run_trans_bmm_trans_tuning():
             for mode in mode_ranges:
                 if mode in compare_failed_list:
                     continue
-                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias, _, _ =_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], is_tuning=True, transpose_bm=transpose_bm, transpose_bm_in=transpose_bm_in)
+                torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias, _, _ =_fused_bmm_helper(batch_size, n_list[i], p_list[i], l_list[i], in_dtype=in_dtype, is_tuning=True, transpose_bm=transpose_bm, transpose_bm_in=transpose_bm_in)
                 status, kernel_time_us=fused_bmm_trans_impl_int8_tuning(torch_input, input, w_uk_t, input_scale, w_uk_t_scale, bias=bias, mode=mode, transpose_bm=transpose_bm, transpose_bm_in=transpose_bm_in, dtype=out_dtype)
                 if status and kernel_time_us < max_time:
                     max_time = kernel_time_us
