@@ -861,10 +861,6 @@ def test_moe_performance_accuracy(
         'DELTA': 1
     }
     
-    cuda_config1['BLOCK_SIZE_M'] = 128
-    cuda_config2['BLOCK_SIZE_M'] = 128
-    cuda_config1['MODE'] = 1000
-    cuda_config2['MODE'] = 1000
     # 准备MOE对齐
     sorted_token_ids, expert_ids, num_tokens_post_padded = (
         moe_align_block_size(topk_ids, cuda_config1['BLOCK_SIZE_M'], local_num_experts, expert_map)
