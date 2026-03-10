@@ -11,8 +11,14 @@ from setuptools.command.build_ext import build_ext
 from pkg_resources import packaging  # type: ignore[attr-defined]
 from get_version import get_version, get_dtk_version
 
+def _get_pytorch_version_int():
+    version=torch.__version__.split('.') # '2.9.0'
+    return int(version[0])*100+int(version[1])*10+int(version[2])
+
 dtk_version = get_dtk_version(ROCM_HOME)
 gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
+torch_version = _get_pytorch_version_int()
+
 
 def _find_rocm_home() -> Optional[str]:
     rocm_home = os.environ.get('ROCM_HOME') or os.environ.get('ROCM_PATH')
@@ -232,6 +238,7 @@ def _write_ninja_file_and_compile_objects(sources: List[str], objects, cflags, p
         verbose,
         error_prefix='Error compiling objects for extension')
 
+min_supported_cpython = "0x03090000"  # Python 3.9 hexcode
 
 class BuildReleaseExtension(BuildExtension):
     def __init__(self, *args, **kwargs) -> None:
@@ -249,17 +256,47 @@ class BuildReleaseExtension(BuildExtension):
                     cuda_ext = True
                     break
             extension = next(extension_iter, None)
-        for extension in self.extensions:
-            if isinstance(extension.extra_compile_args, dict):
-                for ext in ['cxx', 'nvcc']:
-                    if ext not in extension.extra_compile_args:
-                        extension.extra_compile_args[ext] = []
-            self._add_compile_flag(extension, '-DTORCH_API_INCLUDE_EXTENSION_H')
-            for name in ["COMPILER_TYPE", "STDLIB", "BUILD_ABI"]:
-                val = getattr(torch._C, f"_PYBIND11_{name}")
-                self._add_compile_flag(extension, f'-DPYBIND11_{name}="{val}"')
-            self._define_torch_extension_name(extension)
-            self._add_gnu_cpp_abi_flag(extension)
+
+        if torch_version < 290:
+            for extension in self.extensions:
+                if isinstance(extension.extra_compile_args, dict):
+                    for ext in ['cxx', 'nvcc']:
+                        if ext not in extension.extra_compile_args:
+                            extension.extra_compile_args[ext] = []
+                self._add_compile_flag(extension, '-DTORCH_API_INCLUDE_EXTENSION_H')
+                for name in ["COMPILER_TYPE", "STDLIB", "BUILD_ABI"]:
+                    val = getattr(torch._C, f"_PYBIND11_{name}")
+                    self._add_compile_flag(extension, f'-DPYBIND11_{name}="{val}"')
+                self._define_torch_extension_name(extension)
+                self._add_gnu_cpp_abi_flag(extension)
+            self.compiler.src_extensions += ['.cu', '.cuh', '.hip']
+        else:
+            # 从这里开始，使用与PyTorch 2.9.1完全一致的逻辑
+            IS_HIP_EXTENSION = True  # 根据你的实际情况设置
+            IS_WINDOWS = False  # 根据你的实际情况设置
+            
+            for extension in self.extensions:
+                # 注意：这里增加了'sycl'支持，与2.9.1一致
+                if isinstance(extension.extra_compile_args, dict):
+                    for ext in ['cxx', 'nvcc', 'sycl']:
+                        if ext not in extension.extra_compile_args:
+                            extension.extra_compile_args[ext] = []
+
+                self._add_compile_flag(extension, '-DTORCH_API_INCLUDE_EXTENSION_H')
+
+                # HIP扩展处理（根据你的需要保留或删除）
+                if IS_HIP_EXTENSION:
+                    self._hipify_compile_flags(extension)
+
+                # Python有限API支持（根据你的需要保留或删除）
+                if extension.py_limited_api:
+                    # 你需要定义min_supported_cpython变量
+                    # 例如：min_supported_cpython = '0x03070000'  # Python 3.7
+                    self._add_compile_flag(extension, f'-DPy_LIMITED_API={min_supported_cpython}')
+                
+                self._define_torch_extension_name(extension)
+                # 注意：这里移除了 _add_gnu_cpp_abi_flag 调用
+        
         self.compiler.src_extensions += ['.cu', '.cuh', '.hip']
 
         def append_std17_if_no_std_present(cflags) -> None:
@@ -531,7 +568,11 @@ def get_extensions():
     )
     
     extensions.append(ext_ops)
-    if dtk_version >= 25042: #  调试时建议关闭
+    _config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lightop', 'build_config.py')
+    with open(_config_path) as _f:
+        _cfg = {}
+        exec(_f.read(), _cfg)
+    if _cfg.get('BUILD_MIOPEN', False) and  dtk_version >= 25042: #  调试时建议关闭
         extensions.append(ext_miopen)
     return extensions
 
