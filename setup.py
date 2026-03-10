@@ -272,7 +272,7 @@ class BuildReleaseExtension(BuildExtension):
             self.compiler.src_extensions += ['.cu', '.cuh', '.hip']
         else:
             # 从这里开始，使用与PyTorch 2.9.1完全一致的逻辑
-            IS_HIP_EXTENSION = True  # 根据你的实际情况设置
+            #IS_HIP_EXTENSION = True  # 根据你的实际情况设置
             IS_WINDOWS = False  # 根据你的实际情况设置
             
             for extension in self.extensions:
@@ -285,7 +285,7 @@ class BuildReleaseExtension(BuildExtension):
                 self._add_compile_flag(extension, '-DTORCH_API_INCLUDE_EXTENSION_H')
 
                 # HIP扩展处理（根据你的需要保留或删除）
-                if IS_HIP_EXTENSION:
+                if True: #IS_HIP_EXTENSION:
                     self._hipify_compile_flags(extension)
 
                 # Python有限API支持（根据你的需要保留或删除）
