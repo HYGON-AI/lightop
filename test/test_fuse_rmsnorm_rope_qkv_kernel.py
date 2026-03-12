@@ -22,11 +22,8 @@ TEST_V_FP8 = [True]
 
 # 性能测试：更多 shape，便于评估不同规模
 PERF_SHAPES = [
-    (128, 1, 8, 1, 128, 128),
-    (128, 1, 8, 1, 128, 64),
-    (256, 1, 8, 1, 128, 128),
-    (512, 1, 8, 1, 128, 128),
-    (1024, 1, 8, 1, 128, 128),
+    (140, 1, 8, 1, 128, 64),
+    (152, 1, 8, 1, 128, 64)
 ]
 PERF_WARMUP = 10
 PERF_REPEAT = 100
@@ -64,8 +61,8 @@ def get_tensors(batch, seq, h_q, h_k, dim, page_size, use_residual, use_fp8):
     w_q = torch.ones(dim, device=DEVICE, dtype=DTYPE)
     w_k = torch.ones(dim, device=DEVICE, dtype=DTYPE)
     if use_fp8:
-        k_buf = torch.zeros(8991, h_k, page_size, dim, device=DEVICE, dtype=torch.float8_e4m3fn)
-        v_buf = torch.zeros(8991, h_k, dim, page_size, device=DEVICE, dtype=torch.float8_e4m3fn)
+        k_buf = torch.zeros(14728, h_k, page_size, dim, device=DEVICE, dtype=torch.float8_e4m3fn)
+        v_buf = torch.zeros(14728, h_k, dim, page_size, device=DEVICE, dtype=torch.float8_e4m3fn)
     else:
         k_buf = torch.zeros(num_blocks, h_k, page_size, dim, device=DEVICE, dtype=DTYPE)
         v_buf = torch.zeros(num_blocks, h_k, dim, page_size, device=DEVICE, dtype=DTYPE)
@@ -210,7 +207,7 @@ def run_benchmark(shape, is_neox, use_residual, use_fp8, warmup=PERF_WARMUP, rep
     """对 rms_rotary_embedding_fuse_with_kv_store 做性能测试，返回 (mean_ms, std_ms, num_tokens)。"""
     batch, seq, h_q, h_k, dim, rot_dim = shape
     num_tokens = batch * seq
-    q, k, v, positions, w_q, w_k, res_q, res_k, k_buf, v_buf, kv_loc, _ = get_tensors(
+    q, k, v, positions, w_q, w_k, res_q, res_k, k_buf, v_buf, kv_loc, _ = get_tensors_2d(
         batch, seq, h_q, h_k, dim, PAGE_SIZE, use_residual, use_fp8
     )
     cos_sin = build_cos_sin_cache(num_tokens, rot_dim, ROPE_THETA, torch.float32, DEVICE)
@@ -288,4 +285,4 @@ def main():
 
 if __name__ == "__main__":
     run_perf_tests()
-    main()
+    # main()

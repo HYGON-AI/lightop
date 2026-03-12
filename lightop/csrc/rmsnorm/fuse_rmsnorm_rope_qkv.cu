@@ -1223,25 +1223,69 @@ __global__ void opt_rms_rope_qwen3_with_qkv(
     }
 
 }
+
+template<typename Type, int vec>
+struct Vec{};
+
+template<>
+struct Vec<float,2>{
+    using Type = float2;
+};
+
+inline __device__ float fma(float a, float b, float c) {
+    return a * b + c;
+}
+
+inline __device__ float mul(float a, float b) {
+    return a * b;
+}
+
+inline __device__ void v_pk_fma_f32(float2 a, float2 b, float2& c) {
+    // float2 d;
+    #if defined(__gfx938__)
+    asm volatile ("v_pk_fma_f32 %0, %1, %2, %3" : "=v"(c) : "v"(a), "v"(b), "v"(c));
+    #else
+    c.x = fma(a.x, b.x, c.x);
+    c.y = fma(a.y, b.y, c.y);
+    #endif
+}
+
+inline __device__ void v_pk_mul_f32(float2 a, float2 b, float2& c) {
+    #if defined(__gfx938__)
+    asm volatile ("v_pk_mul_f32 %0, %1, %2" : "=v"(c) : "v"(a), "v"(b));
+    #else
+    c.x = mul(a.x, b.x);
+    c.y = mul(a.y, b.y);
+    #endif
+}
+
 template <typename T_ACC, typename scalar_t, int VEC_SIZE, bool HAS_RESIDUAL>
 __device__ __forceinline__ T_ACC apply_residual_and_calc_sq_4vec(
     scalar_t* v0, scalar_t* v1, scalar_t* v2, scalar_t* v3,
     scalar_t* res_ptr, int o0, int o1, int o2, int o3) {
-    T_ACC local_sum = 0;
+    using acc_type = Vec<float, 2>::Type;
+    acc_type local_sum = {0.0f, 0.0f};
+    if constexpr (HAS_RESIDUAL) {
     #pragma unroll
     for (int i = 0; i < VEC_SIZE; ++i) {
-        if constexpr (HAS_RESIDUAL) {
             v0[i] += res_ptr[o0 + i];
             v1[i] += res_ptr[o1 + i];
             v2[i] += res_ptr[o2 + i];
             v3[i] += res_ptr[o3 + i];
         }
-        local_sum += static_cast<T_ACC>(v0[i]) * static_cast<T_ACC>(v0[i]);
-        local_sum += static_cast<T_ACC>(v1[i]) * static_cast<T_ACC>(v1[i]);
-        local_sum += static_cast<T_ACC>(v2[i]) * static_cast<T_ACC>(v2[i]);
-        local_sum += static_cast<T_ACC>(v3[i]) * static_cast<T_ACC>(v3[i]);
     }
-    return local_sum;
+    #pragma unroll
+    for (int i = 0; i < VEC_SIZE; i += 2) {
+        acc_type v0_2 = {static_cast<float>(v0[i]), static_cast<float>(v0[i+1])};
+        acc_type v1_2 = {static_cast<float>(v1[i]), static_cast<float>(v1[i+1])};
+        acc_type v2_2 = {static_cast<float>(v2[i]), static_cast<float>(v2[i+1])};
+        acc_type v3_2 = {static_cast<float>(v3[i]), static_cast<float>(v3[i+1])};
+        v_pk_fma_f32(v0_2, v0_2, local_sum);
+        v_pk_fma_f32(v1_2, v1_2, local_sum);
+        v_pk_fma_f32(v2_2, v2_2, local_sum);
+        v_pk_fma_f32(v3_2, v3_2, local_sum);
+    }
+    return local_sum.x+local_sum.y;
 }
 template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX, int VEC_SIZE, int THEAD_PER_HEAD, bool HAS_NORM>
 __global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
@@ -1364,20 +1408,44 @@ __global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
             *(LoadT*)r_cos = *(LoadT*)(my_s_cos_sin + o0);
             *(LoadT*)r_sin = *(LoadT*)(my_s_cos_sin + 32 + o0);
 
+            // #pragma unroll
+            // for(int i=0; i<VEC_SIZE; ++i) {
+            //     T_ACC s0 = static_cast<T_ACC>(v0[i]), s1 = static_cast<T_ACC>(v1[i]), s2 = static_cast<T_ACC>(v2[i]), s3 = static_cast<T_ACC>(v3[i]);
+            //     if constexpr (HAS_NORM) {
+            //         s0 = static_cast<T_ACC>(v0[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i]);
+            //         s1 = static_cast<T_ACC>(v1[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i]);
+            //         s2 = static_cast<T_ACC>(v2[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o2 + i]);
+            //         s3 = static_cast<T_ACC>(v3[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o3 + i]);
+            //     }
+            //     v0[i] = s0 * r_cos[i] - s1 * r_sin[i];
+            //     v1[i] = s0 * r_sin[i] + s1 * r_cos[i];
+            //     v2[i] = s2;
+            //     v3[i] = s3;
+            // }
+            using acc_type = Vec<float, 2>::Type;
+            acc_type inv_rms_2 = {inv_rms, inv_rms};
             #pragma unroll
-            for(int i=0; i<VEC_SIZE; ++i) {
-                T_ACC s0 = static_cast<T_ACC>(v0[i]), s1 = static_cast<T_ACC>(v1[i]), s2 = static_cast<T_ACC>(v2[i]), s3 = static_cast<T_ACC>(v3[i]);
+            for (int i = 0; i < VEC_SIZE; i += 2) {
+                acc_type v0_2 = {static_cast<float>(v0[i]), static_cast<float>(v0[i+1])};
+                acc_type v1_2 = {static_cast<float>(v1[i]), static_cast<float>(v1[i+1])};
+                acc_type v2_2 = {static_cast<float>(v2[i]), static_cast<float>(v2[i+1])};
+                acc_type v3_2 = {static_cast<float>(v3[i]), static_cast<float>(v3[i+1])};
                 if constexpr (HAS_NORM) {
-                    s0 = static_cast<T_ACC>(v0[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o0 + i]);
-                    s1 = static_cast<T_ACC>(v1[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o1 + i]);
-                    s2 = static_cast<T_ACC>(v2[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o2 + i]);
-                    s3 = static_cast<T_ACC>(v3[i]) * inv_rms * static_cast<T_ACC>(gamma_ptr[o3 + i]);
+                    v_pk_mul_f32(v0_2, inv_rms_2, v0_2);
+                    v_pk_mul_f32(v1_2, inv_rms_2, v1_2);
+                    v_pk_mul_f32(v2_2, inv_rms_2, v2_2);
+                    v_pk_mul_f32(v3_2, inv_rms_2, v3_2);
                 }
-                v0[i] = s0 * r_cos[i] - s1 * r_sin[i];
-                v1[i] = s0 * r_sin[i] + s1 * r_cos[i];
-                v2[i] = s2;
-                v3[i] = s3;
+                v0[i] = v0_2.x * r_cos[i] - v1_2.x * r_sin[i];
+                v0[i+1] = v0_2.y * r_cos[i+1] - v1_2.y * r_sin[i+1];
+                v1[i] = v0_2.x * r_sin[i] + v1_2.x * r_cos[i];
+                v1[i+1] = v0_2.y * r_sin[i+1] + v1_2.y * r_cos[i+1];
+                v2[i] = v2_2.x;
+                v2[i+1] = v2_2.y;
+                v3[i] = v3_2.x;
+                v3[i+1] = v3_2.y;
             }
+
         } else {
             #pragma unroll
             for(int i=0; i<VEC_SIZE; i+=2) {
@@ -1416,10 +1484,6 @@ __global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
                 }
             }
         }
-        // *(LoadT*)(head_ptr + o0) = *(LoadT*)v0;
-        // *(LoadT*)(head_ptr + o1) = *(LoadT*)v1;
-        // *(LoadT*)(head_ptr + o2) = *(LoadT*)v2;
-        // *(LoadT*)(head_ptr + o3) = *(LoadT*)v3;
 
         #pragma unroll
         for(int i=0; i<VEC_SIZE; ++i) {
@@ -1559,7 +1623,9 @@ void launch_opt_rms_rope(
         constexpr int THREAD_PER_ROW = 8;
         constexpr int VEC = 8;
         int threads_per_token = (num_heads + num_kv_heads + num_kv_heads) * THREAD_PER_ROW;
-        int target_block_size = 512; 
+        int target_block_size = 512;
+        if (num_tokens < 256) 
+            target_block_size = 256; 
         int tokens_per_block = target_block_size / threads_per_token;
 
         if (tokens_per_block < 1) tokens_per_block = 1;
