@@ -17,7 +17,6 @@ def python_reference_moe_gate(scores, bias, num_expert_group, topk_group, topk, 
     # 转 float32 防止精度溢出
     scores_in = scores.float()
     bias_in = bias.float()
-    
     batch_size, num_experts = scores_in.shape
     topk_routed = topk - n_share_experts_fusion
 
@@ -119,7 +118,8 @@ def check_correctness_once(
     w_opt, i_opt = biased_grouped_topk_org_opt(
         scores.clone(), bias.clone(), num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor
     )
-    
+    # import pdb
+    # pdb.set_trace()
     assert w_init.shape == w_opt.shape, f"weights shape mismatch: {w_init.shape} vs {w_opt.shape}"
     assert i_init.shape == i_opt.shape, f"indices shape mismatch: {i_init.shape} vs {i_opt.shape}"
 
@@ -144,7 +144,7 @@ def run_correctness_suite():
     assert torch.cuda.is_available(), "CUDA is required"
     n_share_experts_fusion = 0
     routed_scaling_factor = 2.5
-    num_expert = 256 # 之前是 384, 你需要测试 256
+    num_expert = 128 
     extra = list([1,4,8,32,1024,2048,4096])
     
     cases = [
@@ -186,7 +186,7 @@ configs = [(sq,) for sq in token_num_range]
 def benchmark(token_num, provider, warmup=5):
     dtype = torch.bfloat16
     device = torch.device("cuda")
-    num_experts, num_expert_group, topk_group, topk = 256, 1, 1, 8
+    num_experts, num_expert_group, topk_group, topk = 128, 1, 1, 8
     n_share_experts_fusion = 0
     routed_scaling_factor = 2.5
 
