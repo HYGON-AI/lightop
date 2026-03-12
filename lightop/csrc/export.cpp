@@ -373,6 +373,31 @@ std::vector<torch::Tensor> ds_fused_qkv_cast_fp8(
   int64_t qk_nope_head_dim, 
   int64_t v_head_dim
 );
+void gather_convert_fp8_cache(
+    torch::Tensor const& src_cache,    
+    torch::Tensor const& dst,          
+    torch::Tensor const& block_table,  
+    torch::Tensor const& cu_seq_lens,  
+    int64_t batch_size,
+    double scale,                      
+    const std::string& kv_cache_dtype, 
+std::optional<torch::Tensor> seq_starts = std::nullopt);
+void fused_rms_norm_rope_int8quant_contiguous(
+    torch::Tensor& positions, 
+    torch::Tensor& q_pe, 
+    torch::Tensor& k_pe, 
+    torch::Tensor& kv_c, 
+    torch::Tensor& kv_c_normed,      
+    torch::Tensor& kv_c_normed_int8, 
+    torch::Tensor& kv_c_normed_scale, 
+    torch::Tensor& weight, 
+    torch::Tensor& cos_sin_cache, 
+    torch::Tensor& slot_mapping, 
+    torch::Tensor& kv_cache, 
+    std::string& kv_cache_dtype_str, 
+    float kv_cache_scale, 
+    bool is_neox_style, 
+    float epsilon);
 }
 }
 
@@ -598,6 +623,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("IC"), 
           py::arg("OC"), 
           py::arg("group_size")); 
- m.def("ds_fused_qkv_cast_fp8", &at::native::ds_fused_qkv_cast_fp8, "ds_fused_qkv_cast_fp8");                 
+ m.def("ds_fused_qkv_cast_fp8", &at::native::ds_fused_qkv_cast_fp8, "ds_fused_qkv_cast_fp8");    
+ m.def("gather_convert_fp8_cache", &at::native::gather_convert_fp8_cache, "gather_convert_fp8_cache");    
+ m.def("fused_rms_norm_rope_int8quant_contiguous", &at::native::fused_rms_norm_rope_int8quant_contiguous, "fused_rms_norm_rope_int8quant_contiguous");    
 }
 
