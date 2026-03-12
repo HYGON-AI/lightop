@@ -25,6 +25,15 @@ namespace deep_gemm {
         DISPATCH_ALIGNED_BATCH(128, SMS_VAL) \
         DISPATCH_ALIGNED_BATCH(192, SMS_VAL) \
         DISPATCH_ALIGNED_BATCH(256, SMS_VAL) \
+        DISPATCH_ALIGNED_BATCH(320, SMS_VAL) \
+        DISPATCH_ALIGNED_BATCH(384, SMS_VAL) \
+        DISPATCH_ALIGNED_BATCH(448, SMS_VAL) \
+        DISPATCH_ALIGNED_BATCH(512, SMS_VAL) \
+        DISPATCH_ALIGNED_BATCH(768, SMS_VAL) \
+        DISPATCH_ALIGNED_BATCH(1024, SMS_VAL) \
+        DISPATCH_ALIGNED_BATCH(2048, SMS_VAL) \
+        DISPATCH_ALIGNED_BATCH(4096, SMS_VAL) \
+        DISPATCH_ALIGNED_BATCH(8192, SMS_VAL) \
         default: LIGHTOP_HOST_UNREACHABLE("unsupported aligned batch size\n"); \
     }
 
@@ -276,7 +285,6 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                 })
             );
     } else {
-        LIGHTOP_HOST_ASSERT(num_heads == 64);
         DISPATCH_FP8_TYPES(q.scalar_type(), FP8_TYPE, [&] {
             DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
                 DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
