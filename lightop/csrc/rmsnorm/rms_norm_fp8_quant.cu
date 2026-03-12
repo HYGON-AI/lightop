@@ -288,80 +288,82 @@ struct min_scaling_factor<int8_t> {
     }
 
 template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec=4,int block_size=512, bool inpit_update=false>
-__global__ void rms_norm_fp8_quant_(scalar_t* input,scalar_t* residual,scalar_t* gamma,int32_t const cols,float const eps,scalar_out_t* out,float* scales, int stride, int fp8type)
+__global__ void rms_norm_fp8_quant_(scalar_t* input,scalar_t* residual,scalar_t* gamma,int32_t const cols,float const eps,scalar_out_t* out,float* scales, int stride, int fp8type, int num_tokens)
 {
   constexpr int share_size=block_size/C10_WARP_SIZE;
   __shared__ T_ACC val_shared[share_size];
   __shared__ T_ACC s_rstd;
-  T_ACC val = 0;
   int bid = blockIdx.x;
   int tid = threadIdx.x;
   int tcol = cols / Vec;
   using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
   using LoadT_out = at::native::memory::aligned_vector<scalar_out_t, Vec>;
-  scalar_t intput_vec[Vec];
-  T_ACC trstd;
-  int64_t idx = bid * tcol + tid;
-  idx *= Vec;
-  int64_t index = bid * stride + tid * Vec;
-  if (tid < tcol) {
-    *(LoadT*)intput_vec = *(LoadT*)(input+index);
-      #pragma unroll
-      for (int ii = 0; ii < Vec; ii++) {
-          val += static_cast<T_ACC>(intput_vec[ii])*static_cast<T_ACC>(intput_vec[ii]);
-      }
-  }
-  val = BlockReduceSum_ROW<T_ACC,block_size>(val, val_shared);
-  if (tid == 0) s_rstd=c10::cuda::compat::rsqrt(val / cols + eps);
-  __syncthreads();
-  trstd=s_rstd;
-
-  float block_absmax_val_maybe = 0.f;
-  scalar_t elem[Vec];
-  if (tid < tcol) {
-      #pragma unroll
-      for(int ii = 0;ii < Vec;ii++){
-        int jj=tid * Vec + ii;
-        elem[ii] = static_cast<T_ACC>(intput_vec[ii]) * trstd * static_cast<T_ACC>(gamma[jj]);
-        block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(elem[ii]));
-      }      
-  }
-  block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe, val_shared);
-  __shared__ float s_token_scale;
-
-  float fp8type_max_v;     
-  float min_scaling;    
-  
-  if (fp8type == 0) { // E4M3
-      fp8type_max_v = quant_type_max_v<c10::Float8_e4m3fn>; 
-      min_scaling = min_scaling_factor<c10::Float8_e4m3fn>::val();
-  } else { // E5M2
-      fp8type_max_v = quant_type_max_v<c10::Float8_e5m2>;   
-      min_scaling = min_scaling_factor<c10::Float8_e5m2>::val();
-  }
-  float scale = 0.0f;
-  if(tid == 0){
-      scale = fmaxf(block_absmax_val_maybe / fp8type_max_v, min_scaling); 
-      s_token_scale = scale; 
-      scales[bid] = scale; 
-  }
-  __syncthreads();
-
-  float inv_s = 1.0f / s_token_scale;
-
-  scalar_out_t out_vec[Vec];
-  int loop = Vec / 4;
-  if (tid < tcol) {
-    #pragma unroll
-    for(int ii = 0;ii < loop;ii++){
-      if(fp8type==0)
-          ((uint32_t*)out_vec)[ii] = float_to_fp8e4m3_x4(elem[ii*4] * inv_s, elem[ii*4 + 1] * inv_s, elem[ii*4 + 2] * inv_s, elem[ii*4 + 3] * inv_s);
-      else
-          ((uint32_t*)out_vec)[ii] = float_to_fp8e5m2_x4(elem[ii*4] * inv_s, elem[ii*4 + 1] * inv_s, elem[ii*4 + 2] * inv_s, elem[ii*4 + 3] * inv_s);
+  for(; bid < num_tokens; bid += gridDim.x){
+    scalar_t intput_vec[Vec];
+    T_ACC val = 0;
+    T_ACC trstd;
+    int64_t idx = bid * tcol + tid;
+    idx *= Vec;
+    int64_t index = bid * stride + tid * Vec;
+    if (tid < tcol) {
+      *(LoadT*)intput_vec = *(LoadT*)(input+index);
+        #pragma unroll
+        for (int ii = 0; ii < Vec; ii++) {
+            val += static_cast<T_ACC>(intput_vec[ii])*static_cast<T_ACC>(intput_vec[ii]);
+        }
     }
-    *(LoadT_out*)(out+idx) =*(LoadT_out*)out_vec;
-    if constexpr (inpit_update){
-      *(LoadT*)(input+index)=*(LoadT*)elem;
+    val = BlockReduceSum_ROW<T_ACC,block_size>(val, val_shared);
+    if (tid == 0) s_rstd=c10::cuda::compat::rsqrt(val / cols + eps);
+    __syncthreads();
+    trstd=s_rstd;
+
+    float block_absmax_val_maybe = 0.f;
+    scalar_t elem[Vec];
+    if (tid < tcol) {
+        #pragma unroll
+        for(int ii = 0;ii < Vec;ii++){
+          int jj=tid * Vec + ii;
+          elem[ii] = static_cast<T_ACC>(intput_vec[ii]) * trstd * static_cast<T_ACC>(gamma[jj]);
+          block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(elem[ii]));
+        }      
+    }
+    block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe, val_shared);
+    __shared__ float s_token_scale;
+
+    float fp8type_max_v;     
+    float min_scaling;    
+    
+    if (fp8type == 0) { // E4M3
+        fp8type_max_v = quant_type_max_v<c10::Float8_e4m3fn>; 
+        min_scaling = min_scaling_factor<c10::Float8_e4m3fn>::val();
+    } else { // E5M2
+        fp8type_max_v = quant_type_max_v<c10::Float8_e5m2>;   
+        min_scaling = min_scaling_factor<c10::Float8_e5m2>::val();
+    }
+    float scale = 0.0f;
+    if(tid == 0){
+        scale = fmaxf(block_absmax_val_maybe / fp8type_max_v, min_scaling); 
+        s_token_scale = scale; 
+        scales[bid] = scale; 
+    }
+    __syncthreads();
+
+    float inv_s = 1.0f / s_token_scale;
+
+    scalar_out_t out_vec[Vec];
+    int loop = Vec / 4;
+    if (tid < tcol) {
+      #pragma unroll
+      for(int ii = 0;ii < loop;ii++){
+        if(fp8type==0)
+            ((uint32_t*)out_vec)[ii] = float_to_fp8e4m3_x4(elem[ii*4] * inv_s, elem[ii*4 + 1] * inv_s, elem[ii*4 + 2] * inv_s, elem[ii*4 + 3] * inv_s);
+        else
+            ((uint32_t*)out_vec)[ii] = float_to_fp8e5m2_x4(elem[ii*4] * inv_s, elem[ii*4 + 1] * inv_s, elem[ii*4 + 2] * inv_s, elem[ii*4 + 3] * inv_s);
+      }
+      *(LoadT_out*)(out+idx) =*(LoadT_out*)out_vec;
+      if constexpr (inpit_update){
+        *(LoadT*)(input+index)=*(LoadT*)elem;
+      }
     }
   }
 }
@@ -596,7 +598,7 @@ void fuse_rms_norm_fp8_quant(
   int stride;
 
   int grid_opt = num_tokens;
-  if(num_tokens==140) grid_opt = 128;
+  if (num_tokens >= 137 && num_tokens <= 144) grid_opt = 128;
 
   if(input_ndim > 1){
     stride = input.stride(-2);
@@ -625,76 +627,76 @@ void fuse_rms_norm_fp8_quant(
         if(residual_flag){
           if (hidden_size <= 512){
               if(num_tokens <= 1024){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,64,true><<<num_tokens,  64, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,64,true><<<grid_opt,  64, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
               else if(num_tokens <= 3072){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,128,true><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,128,true><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
               else{
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,64,true><<<num_tokens,  64, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,64,true><<<grid_opt,  64, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
                   
               
                   }
             else if (hidden_size <= 1024){
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,128,true><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,128,true><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
                   }
             else if(hidden_size <= 2048){
               if(num_tokens < 1000){
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,256,true><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,256,true><<<grid_opt,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
                   }
               else if(num_tokens < 8000){
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,128,true><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,128,true><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
             }  
               else{
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,256,true><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,256,true><<<grid_opt,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
               
             }
             else if(hidden_size <= 4096){
                 if(num_tokens == 512){
-                    rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,1024,true><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                    rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,1024,true><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
                 else{
-                    rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,512,true><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                    rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,512,true><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
             }
             else if(hidden_size <= 8192){
                   rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,1024,true><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
           }
             else{
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,1024,true><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,1024,true><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
           }
 
         }else{
              if (hidden_size <= 512){
-                rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,128,true><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,128,true><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
           }
           else if (hidden_size <= 1024){
-                rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,128,true><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,128,true><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
           }
             else if(hidden_size <= 2048){
                 if(num_tokens >= 1024){
-                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,512,true><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,512,true><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
                 else{
-                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,256,true><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,256,true><<<grid_opt,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
                       }              
 
             }
             else if(hidden_size <= 4096){
                 if(num_tokens == 512){
-                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,1024,true><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,1024,true><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
                 }
                 else{
-                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,512,true><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,512,true><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
             }
             else if(hidden_size <= 8192){
-                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,1024,true><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,1024,true><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
             }
             else{
-                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,16,1024,true><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,16,1024,true><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
             }
         }
         
@@ -723,87 +725,87 @@ void fuse_rms_norm_fp8_quant(
         if(residual_flag){
           if (hidden_size <= 512){
               if(num_tokens <= 1024){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,64,false><<<num_tokens,  64, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,64,false><<<grid_opt,  64, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
               else if(num_tokens < 4096){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,128,false><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,128,false><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
               else{
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,64,false><<<num_tokens,  64, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,64,false><<<grid_opt,  64, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
               
                   }
             else if (hidden_size <= 1024){
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,128,false><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,128,false><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
                   }
             else if(hidden_size <= 2048){
               if(num_tokens < 512){
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,256,false><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,256,false><<<grid_opt,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
                   } 
               else{
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,128,false><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,128,false><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
               
             }
             else if(hidden_size <= 4096){
                 if(num_tokens == 512){
-                    rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,1024,false><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                    rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
                 else{
-                    rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,512,false><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                    rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,512,false><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
             }
             else if(hidden_size <= 8192){
               if(num_tokens <= 4){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,512,false><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,512,false><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
               else if(num_tokens < 64){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,1024,false><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
               else if(num_tokens < 290){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,512,false><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,512,false><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
               else if(num_tokens < 2000){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,1024,false><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
               else{
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,512,false><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,512,false><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
                   
           }
             else{
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,1024,false><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
           }
 
         }else{
              if (hidden_size <= 512){
-                rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,128,false><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,128,false><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
           }
           else if (hidden_size <= 1024){
-                rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,128,false><<<num_tokens,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,128,false><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
           }
             else if(hidden_size <= 2048){
                 if(num_tokens >= 1024){
-                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,512,false><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,512,false><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
                 else{
-                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,256,false><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,256,false><<<grid_opt,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
                       }              
 
             }
             else if(hidden_size <= 4096){
                 if(num_tokens == 512){
-                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,1024,false><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
                 }
                 else{
-                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,512,false><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,512,false><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
             }
             else if(hidden_size <= 8192){
-                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,1024,false><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
             }
             else{
-                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,16,1024,false><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
+                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,16,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
             }
         }
         
