@@ -132,6 +132,13 @@ void launch_moe_w8a8_fp8_first_stage_decode(const GemmParams<T>& params);
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int STAGES, typename T>
 void launch_moe_w8a8_fp8_second_stage_decode(const GemmParams<T>& params);
 
+
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int STAGES, typename T>
+void launch_moe_w8a8_fp8_first_stage_bypass_decode(const GemmParams<T>& params);
+
+template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, int STAGES, typename T>
+void launch_moe_w8a8_fp8_second_stage_bypass_decode(const GemmParams<T>& params);
+
 // blockwise 函数声明
 template<int BLOCK_SIZE_M, int BLOCK_SIZE_N, int BLOCK_SIZE_K, int WARP_M, int WARP_N, int WARP_K, typename T>
 void launch_moe_w8a8_blockwise_first_stage_prefill(const GemmParams<T>& params);
@@ -1117,6 +1124,25 @@ static std::unordered_map<int, KernelFuncFp8> kernel_maps_gemm1_fp8_decode = {
     {82, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_decode<16, 32, 128, 16, 32, 128, 4, uint8_t>(p); }},
     {83, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_decode<16, 32, 256, 16, 32, 128, 4, uint8_t>(p); }},
     {84, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_decode<16, 32, 512, 16, 32, 128, 4, uint8_t>(p); }},
+
+    {85, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_bypass_decode<16, 16, 64, 16, 16, 64, 2, uint8_t>(p); }},
+    {86, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_bypass_decode<16, 32, 64, 16, 16, 64, 2, uint8_t>(p); }},
+    {87, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_bypass_decode<16, 64, 64, 16, 16, 64, 2, uint8_t>(p); }},
+    {88, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_bypass_decode<16, 128, 64, 16, 16, 64, 2, uint8_t>(p); }},
+
+    {88, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_bypass_decode<16, 32, 64, 16, 32, 64, 2, uint8_t>(p); }},
+    {89, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_bypass_decode<16, 64, 64, 16, 32, 64, 2, uint8_t>(p); }},
+    {90, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_bypass_decode<16, 128, 64, 16, 32, 64, 2, uint8_t>(p); }},
+    {91, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_bypass_decode<16, 512, 64, 16, 32, 64, 2, uint8_t>(p); }},
+
+    {92, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_bypass_decode<16, 64, 64, 16, 64, 64, 2, uint8_t>(p); }},
+    {93, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_bypass_decode<16, 128, 64, 16, 64, 64, 2, uint8_t>(p); }},
+    {94, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_bypass_decode<16, 256, 64, 16, 64, 64, 2, uint8_t>(p); }},
+    {95, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_bypass_decode<16, 512, 64, 16, 64, 64, 2, uint8_t>(p); }},
+
+    {96, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_decode<32, 32, 1024, 32, 32, 64, 2, uint8_t>(p); }}, //8提升明显
+    {97, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_first_stage_decode<32, 32, 2048, 32, 32, 256, 2, uint8_t>(p); }},
+    
     
 };
 
@@ -1225,10 +1251,26 @@ static std::unordered_map<int, KernelFuncFp8> kernel_maps_gemm2_fp8_decode = {
     {81, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_decode<16, 512, 64, 16, 64, 64, 4, uint8_t>(p); }},
     {82, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_decode<16, 512, 64, 16, 32, 64, 4, uint8_t>(p); }},
     {83, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_decode<16, 256, 64, 16, 16, 64, 4, uint8_t>(p); }},
+    {84, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_decode<16, 128, 64, 16, 128, 64, 4, uint8_t>(p); }},
 
-    {84, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_decode<16, 128, 64, 16, 128, 64, 4, uint8_t>(p); }}
+    {85, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_bypass_decode<16, 16, 64, 16, 16, 64, 2, uint8_t>(p); }},
+    {86, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_bypass_decode<16, 32, 64, 16, 16, 64, 2, uint8_t>(p); }},
+    {87, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_bypass_decode<16, 64, 64, 16, 16, 64, 2, uint8_t>(p); }},
+    {88, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_bypass_decode<16, 128, 64, 16, 16, 64, 2, uint8_t>(p); }},
+
+    {88, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_bypass_decode<16, 32, 64, 16, 32, 64, 2, uint8_t>(p); }},
+    {89, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_bypass_decode<16, 64, 64, 16, 32, 64, 2, uint8_t>(p); }},
+    {90, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_bypass_decode<16, 128, 64, 16, 32, 64, 2, uint8_t>(p); }},
+    {91, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_bypass_decode<16, 512, 64, 16, 32, 64, 2, uint8_t>(p); }},
+
+    {92, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_bypass_decode<16, 64, 64, 16, 64, 64, 2, uint8_t>(p); }},
+    {93, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_bypass_decode<16, 128, 64, 16, 64, 64, 2, uint8_t>(p); }},
+    {94, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_bypass_decode<16, 256, 64, 16, 64, 64, 2, uint8_t>(p); }},
+    {95, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_bypass_decode<16, 512, 64, 16, 64, 64, 2, uint8_t>(p); }},
+
+    {96, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_decode<32, 128, 128, 32, 64, 128, 2, uint8_t>(p); }},
+    {97, [](const GemmParams<uint8_t>& p) { launch_moe_w8a8_fp8_second_stage_decode<32, 256, 128, 32, 64, 128, 2, uint8_t>(p); }},
 };
-
 ///////////////////////////////////////////////////////////////////////marlin_config（支持OutputType）///////////////////////////////////////////////////////////////////////////////////////
 
 // Marlin kernel function types with OutputType support
@@ -1616,6 +1658,9 @@ static std::unordered_map<int, KernelFuncMarlin<OutputType>> get_kernel_maps_mar
         {94, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_bypass<16, 256, 64, 16, 64, 64, 2, char, OutputType>(p); }},
         {95, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_bypass<16, 512, 64, 16, 64, 64, 2, char, OutputType>(p); }},
 
+        {96, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_decode<32, 32, 1024, 32, 32, 64, 2, char, OutputType>(p); }}, //8提升明显
+        {97, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_first_stage_decode<32, 32, 2048, 32, 32, 256, 2, char, OutputType>(p); }},
+
     };
 }
 
@@ -1744,6 +1789,9 @@ static std::unordered_map<int, KernelFuncMarlin<OutputType>> get_kernel_maps_mar
         {93, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_bypass<16, 128, 64, 16, 64, 64, 2, char, OutputType>(p); }},
         {94, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_bypass<16, 256, 64, 16, 64, 64, 2, char, OutputType>(p); }},
         {95, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_bypass<16, 512, 64, 16, 64, 64, 2, char, OutputType>(p); }},
+
+        {96, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_decode<32, 128, 128, 32, 64, 128, 2, char, OutputType>(p); }},
+        {97, [](const GemmParams<char, OutputType>& p) { launch_moe_w8a8_second_stage_decode<32, 256, 128, 32, 64, 128, 2, char, OutputType>(p); }},
 
     };
 }
