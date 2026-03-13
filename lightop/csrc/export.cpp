@@ -398,6 +398,10 @@ void fused_rms_norm_rope_int8quant_contiguous(
     float kv_cache_scale, 
     bool is_neox_style, 
     float epsilon);
+void per_token_quant_fp8(
+    torch::Tensor& out,          // [..., hidden_size]
+    torch::Tensor const& input,  // [..., hidden_size]
+    torch::Tensor& scales);
 }
 }
 
@@ -626,5 +630,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("ds_fused_qkv_cast_fp8", &at::native::ds_fused_qkv_cast_fp8, "ds_fused_qkv_cast_fp8");    
  m.def("gather_convert_fp8_cache", &at::native::gather_convert_fp8_cache, "gather_convert_fp8_cache");    
  m.def("fused_rms_norm_rope_int8quant_contiguous", &at::native::fused_rms_norm_rope_int8quant_contiguous, "fused_rms_norm_rope_int8quant_contiguous");    
+ m.def("per_token_quant_fp8", &at::native::per_token_quant_fp8, "per_token_quant_fp8");    
 }
 
