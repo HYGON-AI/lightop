@@ -971,6 +971,22 @@ def test_moe_performance_accuracy(
     )
 
     
+    # min_time1 = gemm1_time
+    # min_mode1 = cuda_config1['MODE']
+    # src_time = gemm1_time
+    # src_mode = min_mode1
+    # for mode in [96,97]:
+    #     cuda_config1['MODE'] = int(mode)
+    #     gemm1_time, gemm1_accuracy = test_single_gemm_performance_accuracy(
+    #         input_data, qinput1, qa1_scale, w1_marlin, weight1, weight1_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
+    #         num_tokens_post_padded, topk, cuda_config1, triton_config1, "gemm1", True, per_channel_quant, compute_type
+    #     )
+    #     print(f"mode: {mode} gemm1_time: {gemm1_time} gemm1_acc: {gemm1_accuracy}")
+    #     if gemm1_time < min_time1 and gemm1_time > 20:
+    #         min_time1 = gemm1_time
+    #         min_mode1 = mode
+    # print(f"M {m} gemm1 best time: {min_time1} mode: {min_mode1} src_mode: {src_mode} src_time: {src_time}")
+    
     # 执行CUDA GEMM1获取中间结果
     intermediate_cache1 = torch.zeros((m, topk, n1), device=input_data.device, dtype=input_data.dtype)
     moe_gemm_marlin_w8a8_fp8(qinput1, w1_marlin, intermediate_cache1, qa1_scale, weight1_scale,
@@ -999,6 +1015,23 @@ def test_moe_performance_accuracy(
         num_tokens_post_padded, 1, cuda_config2, triton_config2, "gemm2", False, per_channel_quant, compute_type
     )
     
+
+    # min_time = gemm2_time
+    # min_mode = cuda_config2['MODE']
+    # src_time = gemm2_time
+    # src_mode = min_mode
+    # for mode in [96,97]:
+    #     cuda_config2['MODE'] = int(mode)
+    #     gemm2_time, gemm2_accuracy = test_single_gemm_performance_accuracy(
+    #         intermediate_cache2, qinput2, qa2_scale, w2_marlin, weight2, weight2_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
+    #         num_tokens_post_padded, 1, cuda_config2, triton_config2, "gemm2", False, per_channel_quant, compute_type
+    #     )
+    #     print(f"mode: {mode} gemm2_time: {gemm2_time} gemm2_acc: {gemm2_accuracy}")
+    #     if gemm2_time < min_time:
+    #         min_time = gemm2_time
+    #         min_mode = mode
+    # print(f"gemm2 best time: {min_time} mode: {min_mode} src_mode: {src_mode} src_time: {src_time}")
+
     # gemm2
     # moe_gemm_marlin_w8a8_fp8(qinput2, w2_marlin, intermediate_cache2, qa2_scale, weight2_scale,
     #               None, sorted_token_ids, expert_ids, num_tokens_post_padded, 1, cuda_config2)
@@ -1308,26 +1341,37 @@ def main():
         
         for m in m_list:
             print(f"  测试 M={m}")
-            try:
-                # 调用测试
-                result = test_moe_performance_accuracy(
-                    m, n1, k1, n2, k2, topk, E, ep_size, ep_rank, out_dtype, per_channel_quant
-                )
-                all_results.append(result)
+
+            # 调用测试
+            result = test_moe_performance_accuracy(
+                m, n1, k1, n2, k2, topk, E, ep_size, ep_rank, out_dtype, per_channel_quant
+            )
+            all_results.append(result)
+            
+            print(f"    GEMM1耗时: {result['GEMM1_Time_us']:.2f}us, 精度: {'通过' if result['GEMM1_Accuracy_Pass'] else '失败'}")
+            print(f"    GEMM2耗时: {result['GEMM2_Time_us']:.2f}us, 精度: {'通过' if result['GEMM2_Accuracy_Pass'] else '失败'}")
+            print(f"    总耗时: {result['Total_Time_us']:.2f}us, 整体精度: {'通过' if result['Overall_Accuracy_Pass'] else '失败'}")
+
+            # try:
+            #     # 调用测试
+            #     result = test_moe_performance_accuracy(
+            #         m, n1, k1, n2, k2, topk, E, ep_size, ep_rank, out_dtype, per_channel_quant
+            #     )
+            #     all_results.append(result)
                 
-                print(f"    GEMM1耗时: {result['GEMM1_Time_us']:.2f}us, 精度: {'通过' if result['GEMM1_Accuracy_Pass'] else '失败'}")
-                print(f"    GEMM2耗时: {result['GEMM2_Time_us']:.2f}us, 精度: {'通过' if result['GEMM2_Accuracy_Pass'] else '失败'}")
-                print(f"    总耗时: {result['Total_Time_us']:.2f}us, 整体精度: {'通过' if result['Overall_Accuracy_Pass'] else '失败'}")
+            #     print(f"    GEMM1耗时: {result['GEMM1_Time_us']:.2f}us, 精度: {'通过' if result['GEMM1_Accuracy_Pass'] else '失败'}")
+            #     print(f"    GEMM2耗时: {result['GEMM2_Time_us']:.2f}us, 精度: {'通过' if result['GEMM2_Accuracy_Pass'] else '失败'}")
+            #     print(f"    总耗时: {result['Total_Time_us']:.2f}us, 整体精度: {'通过' if result['Overall_Accuracy_Pass'] else '失败'}")
                 
-            except Exception as e:
-                print(f"    测试失败: {str(e)}")
-                # 添加失败的结果
-                all_results.append({
-                    'M': m, 'N1': n1, 'K1': k1, 'N2': n2, 'K2': k2, 'E': E, 'TopK': topk,
-                    'GEMM1_Time_us': -1, 'GEMM2_Time_us': -1, 'Total_Time_us': -1,
-                    'GEMM1_Accuracy_Pass': False, 'GEMM2_Accuracy_Pass': False,
-                    'Overall_Accuracy_Pass': False
-                })
+            # except Exception as e:
+            #     print(f"    测试失败: {str(e)}")
+            #     # 添加失败的结果
+            #     all_results.append({
+            #         'M': m, 'N1': n1, 'K1': k1, 'N2': n2, 'K2': k2, 'E': E, 'TopK': topk,
+            #         'GEMM1_Time_us': -1, 'GEMM2_Time_us': -1, 'Total_Time_us': -1,
+            #         'GEMM1_Accuracy_Pass': False, 'GEMM2_Accuracy_Pass': False,
+            #         'Overall_Accuracy_Pass': False
+            #     })
     
     # 创建DataFrame并保存结果
     df = pd.DataFrame(all_results)
