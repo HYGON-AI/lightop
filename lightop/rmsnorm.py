@@ -196,6 +196,34 @@ def rms_norm_per_token_fp8_quant(
                           residual, update_input, fp8type)
     return output, scales
 
+def rms_norm_per_token_quant(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    epsilon: float = 1e-5,
+    dtype: torch.dtype = torch.int8,
+    residual: Optional[torch.Tensor] = None,
+    update_input: bool = False
+) -> Tuple[torch.Tensor, torch.Tensor]:
+  
+    output = torch.empty(input.shape, device=input.device, dtype=dtype)
+    scales = torch.empty((input.numel() // input.shape[-1], 1),
+                         device=input.device,
+                         dtype=torch.float32)
+
+    if dtype == torch.int8:
+        op.rms_norm_dynamic_per_token_quant(output, input, weight,
+                                            scales, epsilon,
+                                            residual, update_input)
+    elif dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+        fp8type = 0 if dtype == torch.float8_e4m3fn else 1
+        op.rms_norm_fp8_quant(output.view(torch.uint8), input, weight, 
+                              scales, epsilon,
+                              residual, update_input, fp8type)
+    else:
+        raise ValueError(f"Unsupported dtype: {dtype}. Supported dtypes are torch.int8, torch.float8_e4m3fn, torch.float8_e5m2")
+
+    return output, scales
+
 def fused_rms_norm_contiguous(
     out: torch.Tensor,
     input: torch.Tensor,
