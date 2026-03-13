@@ -119,9 +119,6 @@ def test_paged_mqa_logits(use_fp8 = True):
                 torch.cuda.synchronize()
 
                 if 'gfx938' in device_name and use_fp8:
-                    if heads == 32:
-                        print("num_heads == 32 is not supported under FP8 now.")
-                        continue
                     print('Testing FP8 Paged MQA Logits:')
                     q_fp8 = q.to(torch.float8_e4m3fn)
                     kv_cache_fp8 = kv_cache_cast_to_fp8(kv_cache)

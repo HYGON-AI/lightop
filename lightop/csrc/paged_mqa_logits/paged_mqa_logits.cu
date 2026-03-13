@@ -15,7 +15,7 @@ namespace deep_gemm {
 #define USE_CLEAN_LOGITS 0
 #define DISPATCH_ALIGNED_BATCH(ALIGNED_BATCH, SMS) \
     case ALIGNED_BATCH: \
-        paged_mqa_logits_metadata<ALIGNED_BATCH, split_kv, SMS><<<grid, block, smem_size, 0>>>( \
+        paged_mqa_logits_metadata<ALIGNED_BATCH, split_kv, SMS><<<grid, block, smem_size, stream>>>( \
             batch_size, context_lens.data_ptr<int>(), schedule_metadata.data_ptr<int>()); \
         break;
 
@@ -132,6 +132,7 @@ torch::Tensor get_paged_mqa_logits_metadata(const torch::Tensor& context_lens, i
     // Dispatch implementation
     dim3 grid = {1, 1, 1};
     dim3 block = {WARP_SIZE_GPU, 1, 1};
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     switch (sms) {
         case 128:  DISPATCH_SMS(128)  break;
@@ -261,6 +262,8 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
 
     const bool use_fp8_kv = (kv_cache_scales.defined() && kv_cache_scales.numel() > 0);
 
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
     if (!use_fp8_kv) {
         AT_DISPATCH_FLOATING_TYPES_AND2(
                 at::ScalarType::Half,
@@ -271,7 +274,7 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                     DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
                         DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
                             paged_mqa_logits<scalar_t, NEXT_N, NUM_HEADS, 128, 64, split_kv, 4><<<grid, block, smem_size
-                            , 0>>>(
+                            , stream>>>(
                                 reinterpret_cast<scalar_t*>(q.data_ptr()),
                                 reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
                                 weights.data_ptr<float>(), batch_size,
@@ -289,7 +292,7 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
             DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
                 DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
                     paged_mqa_logits_fp8<FP8_TYPE, NEXT_N, NUM_HEADS, 128, 64, split_kv, 4><<<grid, block,
-                    smem_size, 0>>>(
+                    smem_size, stream>>>(
                         reinterpret_cast<FP8_TYPE*>(q.data_ptr()),
                         reinterpret_cast<FP8_TYPE*>(kv_cache.data_ptr()),
                         kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
