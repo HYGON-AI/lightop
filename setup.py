@@ -269,7 +269,6 @@ class BuildReleaseExtension(BuildExtension):
                     self._add_compile_flag(extension, f'-DPYBIND11_{name}="{val}"')
                 self._define_torch_extension_name(extension)
                 self._add_gnu_cpp_abi_flag(extension)
-            self.compiler.src_extensions += ['.cu', '.cuh', '.hip']
         else:
             # 从这里开始，使用与PyTorch 2.9.1完全一致的逻辑
             #IS_HIP_EXTENSION = True  # 根据你的实际情况设置
@@ -609,4 +608,3 @@ setup(
          "torch",
      ],
 )
-

@@ -893,7 +893,7 @@ def test_moe_performance_accuracy(
     # min_mode1 = cuda_config1['MODE']
     # src_time = gemm1_time
     # src_mode = min_mode1
-    # for mode in [1000]:
+    # for mode in range(90, 96):
     #     cuda_config1['MODE'] = mode
     #     gemm1_time, gemm1_accuracy = test_single_gemm_performance_accuracy(
     #         input_data, w1_marlin, weight1, weight1_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
@@ -944,7 +944,7 @@ def test_moe_performance_accuracy(
     # src_time = gemm2_time
     # src_mode = min_mode
     # test_list = list(range(0,16)) + [48,49,50,65,66,69,70,90]
-    # for mode in test_list:
+    # for mode in range(90, 96):
     #     cuda_config2['MODE'] = mode
     #     gemm2_time, gemm2_accuracy = test_single_gemm_performance_accuracy(
     #         intermediate_cache2, w2_marlin, weight2, weight2_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
