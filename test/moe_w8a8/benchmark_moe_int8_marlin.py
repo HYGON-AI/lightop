@@ -1449,17 +1449,17 @@ def main(args: argparse.Namespace):
     # topk = 4
 
     # 百灵模型
-    # E = 256
-    # shard_intermediate_size=512
-    # hidden_size=8192
+    E = 256
+    shard_intermediate_size=512
+    hidden_size=8192
 
     # E = 256
     # shard_intermediate_size=1024
     # hidden_size=8192
 
-    E = 256
-    shard_intermediate_size=4096
-    hidden_size=8192
+    # E = 256
+    # shard_intermediate_size=4096
+    # hidden_size=8192
 
     # # deepseek-r1-tp16
     # E = 256
@@ -1519,7 +1519,8 @@ def main(args: argparse.Namespace):
 
     if args.batch_size is None:
         batch_sizes = [
-            1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192
+            #1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192
+            142, 152
             #15, 16, 32, 64, 128
             #16, 32, 64, 128, 
             #256, 512, 1024, 2048, 

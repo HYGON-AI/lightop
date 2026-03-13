@@ -95,6 +95,11 @@
             "MODE": 57,
             "DELTA": 1
         },
+        "152": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 57,
+            "DELTA": 1
+        },
         "256": {
             "BLOCK_SIZE_M": 16,
             "MODE": 57,
