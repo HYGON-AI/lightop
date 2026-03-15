@@ -748,8 +748,12 @@ def fuse_moe_correctness_preprocess(
     ) -> tuple[dict[str, int], float]:
     
     mode_ranges = [mode for mode in block_m_configs.keys()]
-    gemm1_compare_failed_list = [63, 67, 71, 75, 78, 81, 84] #这里
-    gemm2_compare_failed_list = [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 83, 84]
+    gemm1_list = [63, 66, 67, 71, 75, 78, 81, 84]
+    gemm1_compare_failed_list = [m for m in gemm1_list] #这里
+    #gemm2_compare_failed_list = [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 83, 84]
+    gemm2_list = [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,72,73, 74,
+    75,76,77, 78, 79, 80, 81, 82, 83, 84] # glm 256 6144
+    gemm2_compare_failed_list = [m for m in gemm2_list]
     device="cuda:"+str(device_id)
     
     # 计算本地专家数量和映射
@@ -773,10 +777,10 @@ def fuse_moe_correctness_preprocess(
         # if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43, 63, 67,71, 78, 75, 79, 80, 81, 82, 83, 84]: #qwen30b gemm2
         #     mode1 = 0
 
-        if mode0 in [63, 67, 71, 75, 78, 81, 84]: #LING gemm1
+        if mode0 in gemm1_list: #LING gemm1
             mode0 = 0
 
-        if mode1 in [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 83, 84]: #TP16 gemm2
+        if mode1 in gemm2_list: #TP16 gemm2
             mode1 = 0
         print("mode0 mode1: ", mode0, mode1)
         mode_list=[mode0,mode1]
@@ -1449,9 +1453,9 @@ def main(args: argparse.Namespace):
     # topk = 4
 
     # 百灵模型
-    E = 256
-    shard_intermediate_size=512
-    hidden_size=8192
+    # E = 256
+    # shard_intermediate_size=512
+    # hidden_size=8192
 
     # E = 256
     # shard_intermediate_size=1024
@@ -1517,10 +1521,16 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=4096
     # hidden_size=7168
 
+    # glm
+    E = 256
+    shard_intermediate_size=256
+    hidden_size=6144
+
+
     if args.batch_size is None:
         batch_sizes = [
-            #1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192
-            142, 152
+            #1, 
+            2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192
             #15, 16, 32, 64, 128
             #16, 32, 64, 128, 
             #256, 512, 1024, 2048, 
