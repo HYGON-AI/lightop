@@ -1616,6 +1616,7 @@ torch::Tensor mqa_logits(
     if(Weightstype != torch::kFloat32){
          TORCH_CHECK(false, "Weights的数据类型必须为fp32!");
     }
+    const  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     
     if (M >= 128 && qtype != torch::kFloat8_e4m3fn) {
         torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
@@ -1636,7 +1637,7 @@ torch::Tensor mqa_logits(
             q_seq_len, kv_seq_len, q_seq_len_aligned, kv_seq_len_aligned, num_heads,
             head_dim, use_fp16);
         if (true) {
-            clean_logits_padding<4><<<DIV(M, 4), 256>>>(
+            clean_logits_padding<4><<<DIV(M, 4), 256,0,stream>>>(
                 q_seq_len, kv_seq_len_aligned, kv_seq_len_aligned,
                 reinterpret_cast<uint32_t*>(KS.data_ptr()),
                 reinterpret_cast<uint32_t*>(KE.data_ptr()),
@@ -1677,7 +1678,7 @@ torch::Tensor mqa_logits(
                         uint32_t* KS, uint32_t* KE, const int q_seq_len, const int kv_seq_len, const float* KV_scale_data);
                     
                     auto launch_fp8 = [&](kernel_fp8_t kernel_to_launch) {
-                        kernel_to_launch<<<numBlock, threadsPerBlock>>>(
+                        kernel_to_launch<<<numBlock, threadsPerBlock,0,stream>>>(
                             q_ptr, k_ptr, d_ptr, w_ptr, ks_ptr, ke_ptr, q_seq_len, kv_seq_len, kv_scale_ptr);
                     };
 
@@ -1717,7 +1718,7 @@ torch::Tensor mqa_logits(
                         uint32_t* KS, uint32_t* KE, const int q_seq_len, const int kv_seq_len, const float* KV_scale_data);
                     
                     auto launch_fp8 = [&](kernel_fp8_t kernel_to_launch) {
-                        kernel_to_launch<<<grid, threadsPerBlock>>>(
+                        kernel_to_launch<<<grid, threadsPerBlock,0,stream>>>(
                             q_ptr, k_ptr, d_ptr, w_ptr, ks_ptr, ke_ptr, q_seq_len, kv_seq_len, kv_scale_ptr);
                     };
 
@@ -1757,7 +1758,7 @@ torch::Tensor mqa_logits(
                 const int q_seq_len,
                 const int kv_seq_len);
             auto launch_kernel = [&](kernel_t kernel_to_launch, dim3 grid, dim3 block,float *d_ptr_local) {
-                kernel_to_launch<<<grid, block>>>(
+                kernel_to_launch<<<grid, block,0,stream>>>(
                     q_ptr, k_ptr, d_ptr_local, w_ptr, ks_ptr, ke_ptr, q_seq_len, kv_seq_len);
             };
             NUM_HEAD_SWITCH(num_heads,[&] {
