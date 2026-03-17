@@ -580,6 +580,12 @@ def _get_pytorch_version():
         return f"{os.environ['PYTORCH_VERSION']}"
     return torch.__version__
 
+
+pytorch_dep = 'torch'
+if os.getenv('PYTORCH_VERSION'):
+    pytorch_dep += "==" + os.getenv('PYTORCH_VERSION')
+
+
 setup(
     name='lightop',
     version=get_version(ROCM_HOME),
@@ -605,6 +611,6 @@ setup(
     },
     zip_safe=False,
     install_requires=[
-         "torch",
+         pytorch_dep,
      ],
 )
