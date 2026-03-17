@@ -723,11 +723,13 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
         for (uint32_t k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
 
             auto fetch_lds_kv = (base_fetch_lds_KV + k_block * BLOCK_KV * K_TILE) * sizeof(uint8_t);
+            /* To walk around occasionally compute error
             if (warp_idx == 0) {
                 WAIT_VMCNT_LDS(Stages);
             } else {
                 WAIT_VMCNT_LDS(Stages - 1);  
-            }
+            } */
+            WAIT_VMCNT_LDS(Stages - 1);
 
             // pre-fetch KV from smem
             int ldsAddr = reinterpret_cast<size_t>(&smem_kv_block[fetch_lds_kv]) ;
