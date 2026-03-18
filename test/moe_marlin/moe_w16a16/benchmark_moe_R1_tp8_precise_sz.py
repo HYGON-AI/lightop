@@ -523,10 +523,40 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=320
     # hidden_size=6144
     
-    # glm4.5v-tp4
-    num_experts = 128
-    shard_intermediate_size=704
+    # # glm4.5v-tp4
+    # num_experts = 128
+    # shard_intermediate_size=704
+    # hidden_size=4096
+    
+    # # qwen3.5-35b-a3b-tp1
+    # num_experts = 256
+    # shard_intermediate_size=1024
+    # hidden_size=2048
+    
+    # # qwen3.5-35b-a3b-tp2
+    # num_experts = 256
+    # shard_intermediate_size=512
+    # hidden_size=2048
+    
+    # # qwen3.5-122b-a10b-tp2
+    # num_experts = 256
+    # shard_intermediate_size=1024
+    # hidden_size=3072
+    
+    # # qwen3.5-122b-a10b-tp8
+    # num_experts = 256
+    # shard_intermediate_size=256
+    # hidden_size=3072
+    
+    # qwen3.5-397b-a17b-tp8
+    num_experts = 512
+    shard_intermediate_size=256
     hidden_size=4096
+    
+    # # qwen3.5-397b-a17b-tp16
+    # num_experts = 512
+    # shard_intermediate_size=128
+    # hidden_size=4096
     
     topk = 8
     renormalize=True
