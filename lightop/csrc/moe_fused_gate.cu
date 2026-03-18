@@ -836,10 +836,29 @@ std::vector<torch::Tensor> moe_fused_gate(
  //智谱优化 
  bool dispatched = false;
  if (topk == 8 && num_expert_group == 1 && topk_group == 1) {
-    TORCH_CHECK(num_experts == 128 || num_experts == 160 || num_experts == 256, 
-                "Zhipu optimization (topk=8, expert_group=1) only supports 128, 160, or 256 experts. Got ", num_experts);
-    
-    if (num_experts == 160) {
+    TORCH_CHECK(num_experts == 128 || num_experts == 160 || num_experts == 256 || num_experts == 384, 
+                "(topk=8, expert_group=1) only supports 128, 160, 256, or 384 experts. Got ", num_experts);
+    if (num_experts == 384) {
+        if (input.scalar_type() == at::kBFloat16) {
+            if (bias.scalar_type() == at::kFloat) {
+                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, float, 384, 64, 8, 2);
+            } else if (bias.scalar_type() == at::kBFloat16) {
+                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, __nv_bfloat16, 384, 64, 8, 2);
+            }
+        } else if (input.scalar_type() == at::kHalf) {
+             if (bias.scalar_type() == at::kHalf) {
+                LAUNCH_MOE_GATE_OPT_NE1(half, half, 384, 64, 8, 2);
+             }
+        } else if (input.scalar_type() == at::kFloat) {
+             if (bias.scalar_type() == at::kFloat) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 384, 64, 8, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 384, 64, 8, 2);
+                }
+             }
+        }
+    } else if (num_experts == 160) {
         if (input.scalar_type() == at::kBFloat16) {
             if (bias.scalar_type() == at::kFloat) {
                 LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, float, 160, 32, 8, 2);
