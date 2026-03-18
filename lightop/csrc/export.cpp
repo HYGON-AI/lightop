@@ -402,6 +402,19 @@ void per_token_quant_fp8(
     torch::Tensor& out,          // [..., hidden_size]
     torch::Tensor const& input,  // [..., hidden_size]
     torch::Tensor& scales);
+void rms_norm_smooth_per_token_dynamic_quant(
+  Tensor &out,            
+  Tensor& input,                
+  std::optional<Tensor> weight,  
+  const Tensor& smooth_scale,    
+  Tensor scales,                
+  double epsilon,
+  std::optional<Tensor> residual,
+  std::optional<Tensor> after_norm,    
+  std::optional<Tensor> after_residual,
+  bool update_input,               
+  bool update_res                   
+);
 }
 }
 
@@ -631,5 +644,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("gather_convert_fp8_cache", &at::native::gather_convert_fp8_cache, "gather_convert_fp8_cache");    
  m.def("fused_rms_norm_rope_int8quant_contiguous", &at::native::fused_rms_norm_rope_int8quant_contiguous, "fused_rms_norm_rope_int8quant_contiguous");    
  m.def("per_token_quant_fp8", &at::native::per_token_quant_fp8, "per_token_quant_fp8");    
+ m.def("rms_norm_smooth_per_token_dynamic_quant", &at::native::rms_norm_smooth_per_token_dynamic_quant, "rms_norm_smooth_per_token_dynamic_quant");    
 }
 
