@@ -127,3 +127,29 @@ def fuse_silu_mul_per_token_quant(input: torch.Tensor,
         raise ValueError(f"Unsupported dtype: {actual_dtype}. Supported dtypes are torch.int8, torch.float8_e4m3fn, torch.float8_e5m2")
 
     return output, scales
+
+def moe_swiglu_dynamic_quant(
+    scatter_tokens: torch.Tensor, 
+    smooth: torch.Tensor, 
+    experts_tokens_count: torch.Tensor,
+    experts_tokens_start: torch.Tensor,
+    beta: float = 1.0  
+):
+    
+    leading, d2 = scatter_tokens.shape 
+    d = d2 // 2
+    
+    output = torch.empty((leading, d), dtype=torch.int8, device=scatter_tokens.device)
+    scales = torch.empty((leading, 1), dtype=torch.float32, device=scatter_tokens.device)
+    
+    op.moe_swiglu_dynamic_quant(
+        scatter_tokens, 
+        smooth, 
+        experts_tokens_count, 
+        experts_tokens_start, 
+        output, 
+        scales,
+        beta  
+    )
+    
+    return output, scales
