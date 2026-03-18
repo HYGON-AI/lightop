@@ -415,6 +415,7 @@ void rms_norm_smooth_per_token_dynamic_quant(
   bool update_input,               
   bool update_res                   
 );
+void moe_swiglu_dynamic_quant(torch::Tensor& scatter_tokens, torch::Tensor& smooth, torch::Tensor& experts_tokens_count, torch::Tensor& experts_tokens_start, torch::Tensor& output, torch::Tensor& scales, float beta);
 }
 }
 
@@ -644,6 +645,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("gather_convert_fp8_cache", &at::native::gather_convert_fp8_cache, "gather_convert_fp8_cache");    
  m.def("fused_rms_norm_rope_int8quant_contiguous", &at::native::fused_rms_norm_rope_int8quant_contiguous, "fused_rms_norm_rope_int8quant_contiguous");    
  m.def("per_token_quant_fp8", &at::native::per_token_quant_fp8, "per_token_quant_fp8");    
- m.def("rms_norm_smooth_per_token_dynamic_quant", &at::native::rms_norm_smooth_per_token_dynamic_quant, "rms_norm_smooth_per_token_dynamic_quant");    
+ m.def("rms_norm_smooth_per_token_dynamic_quant", &at::native::rms_norm_smooth_per_token_dynamic_quant, "rms_norm_smooth_per_token_dynamic_quant");   
+ m.def("moe_swiglu_dynamic_quant", &at::native::moe_swiglu_dynamic_quant, "moe_swiglu_dynamic_quant");  
 }
 
