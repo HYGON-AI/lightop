@@ -63,263 +63,278 @@ static inline __device__ int8_t float_to_int8_rn(float x) {
 
 
 template <typename scalar_t, typename scalar_weight_t, typename scalar_out_t, typename T_ACC, bool has_weight, int Vec=4, int block_size=512, bool write_norm=false>
-__global__ void rms_norm_smooth_per_token_dynamic_quant_(scalar_t* input, scalar_t* residual, scalar_weight_t* gamma, float* smooth_scale, int32_t const cols, float const eps, scalar_out_t* out, float* scales, scalar_t* after_norm, int stride)
+__global__ void rms_norm_smooth_per_token_dynamic_quant_(scalar_t* input, scalar_t* residual, scalar_weight_t* gamma, float* smooth_scale, int32_t const cols, float const eps, scalar_out_t* out, float* scales, scalar_t* after_norm, int stride, int num_tokens)
 {
   constexpr int share_size=block_size/C10_WARP_SIZE;
   __shared__ T_ACC val_shared[share_size];
   __shared__ T_ACC s_rstd;
-  T_ACC val = 0;
-  int bid = blockIdx.x;
+  __shared__ float s_token_scale;
+  
   int tid = threadIdx.x;
   int tcol = cols / Vec;
   using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
   using LoadT_out = at::native::memory::aligned_vector<scalar_out_t, Vec>;
-  scalar_t intput_vec[Vec];
-  T_ACC trstd;
-  int64_t idx = bid * tcol + tid;
-  idx *= Vec;
-  int64_t index = bid * stride + tid * Vec;
-  if (tid < tcol) {
-    *(LoadT*)intput_vec = *(LoadT*)(input+index);
-      #pragma unroll
-      for (int ii = 0; ii < Vec; ii++) {
-          val += static_cast<T_ACC>(intput_vec[ii])*static_cast<T_ACC>(intput_vec[ii]);
-      }
-  }
-  val = BlockReduceSum_ROW<T_ACC,block_size>(val, val_shared);
-  if (tid == 0) s_rstd=c10::cuda::compat::rsqrt(val / cols + eps);
-  __syncthreads();
-  trstd=s_rstd;
+  for (int bid = blockIdx.x; bid < num_tokens; bid += gridDim.x) {
+      T_ACC val = 0;
+      T_ACC trstd;
+      int64_t idx = bid * tcol + tid;
+      idx *= Vec;
+      int64_t index = bid * stride + tid * Vec;
+      scalar_t intput_vec[Vec];
 
-  float block_absmax_val_maybe = 0.f;
-  scalar_t elem[Vec];
-  if (tid < tcol) {
-      #pragma unroll
-      for(int ii = 0;ii < Vec;ii++){
-        int jj=tid * Vec + ii;
-        
-        T_ACC weight_val = has_weight ? static_cast<T_ACC>(gamma[jj]) : static_cast<T_ACC>(1.0f);
-        
-        elem[ii] = static_cast<T_ACC>(intput_vec[ii]) * trstd * weight_val * static_cast<T_ACC>(smooth_scale[jj]);
-        block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(elem[ii]));
-      }      
-  }
-  block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe, val_shared);
-  __shared__ float s_token_scale; 
-  float scale = 0.0f;    
-  if(tid == 0)
-  {
-     scale = block_absmax_val_maybe;
-     s_token_scale = scale; 
-  }
-  __syncthreads();
-  float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
+      if (tid < tcol) {
+        *(LoadT*)intput_vec = *(LoadT*)(input+index);
+          #pragma unroll
+          for (int ii = 0; ii < Vec; ii++) {
+              val += static_cast<T_ACC>(intput_vec[ii])*static_cast<T_ACC>(intput_vec[ii]);
+          }
+      }
+      val = BlockReduceSum_ROW<T_ACC,block_size>(val, val_shared);
+      if (tid == 0) s_rstd=c10::cuda::compat::rsqrt(val / cols + eps);
+      __syncthreads();
+      trstd=s_rstd;
 
-  scalar_out_t out_vec[Vec];
-  if (tid < tcol) {
-    #pragma unroll
-    for(int ii = 0;ii < Vec;ii++){
-        int jj = tid * Vec + ii;
-        out_vec[ii] = float_to_int8_rn(elem[ii] * inv_s);
+      float block_absmax_val_maybe = 0.f;
+      scalar_t elem[Vec];
+      if (tid < tcol) {
+          #pragma unroll
+          for(int ii = 0;ii < Vec;ii++){
+            int jj=tid * Vec + ii;
+            
+            T_ACC weight_val = has_weight ? static_cast<T_ACC>(gamma[jj]) : static_cast<T_ACC>(1.0f);
+            
+            elem[ii] = static_cast<T_ACC>(intput_vec[ii]) * trstd * weight_val * static_cast<T_ACC>(smooth_scale[jj]);
+            block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(elem[ii]));
+          }      
       }
-      constexpr float qmax = 127.0f;
-      constexpr float min_scale = 1.19209e-07f;
-      *(LoadT_out*)(out+idx) =*(LoadT_out*)out_vec;
+      block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe, val_shared);
       
-      if constexpr (write_norm) {
-        *(LoadT*)(after_norm+index)=*(LoadT*)elem;
+      float scale = 0.0f;    
+      if(tid == 0)
+      {
+         scale = block_absmax_val_maybe;
+         s_token_scale = scale; 
       }
-      
-      if(tid==0)scales[blockIdx.x] = fmaxf(scale / qmax, min_scale);
+      __syncthreads();
+      float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
+
+      scalar_out_t out_vec[Vec];
+      if (tid < tcol) {
+        #pragma unroll
+        for(int ii = 0;ii < Vec;ii++){
+            out_vec[ii] = float_to_int8_rn(elem[ii] * inv_s);
+          }
+          constexpr float qmax = 127.0f;
+          constexpr float min_scale = 1.19209e-07f;
+          *(LoadT_out*)(out+idx) =*(LoadT_out*)out_vec;
+          
+          if constexpr (write_norm) {
+            *(LoadT*)(after_norm+index)=*(LoadT*)elem;
+          }
+          
+          if(tid==0)scales[bid] = fmaxf(scale / qmax, min_scale);
+      }
+      __syncthreads();
   }
 }
 
 template <typename scalar_t, typename scalar_weight_t, typename scalar_out_t, typename T_ACC, bool has_weight, int Vec, int block_size, bool write_norm=false>
-__global__ void rms_norm_smooth_per_token_dynamic_quant_loop(scalar_t* input, scalar_t* residual, scalar_weight_t* gamma, float* smooth_scale, int32_t const cols, float const eps, scalar_out_t* out, float* scales, scalar_t* after_norm, int stride)
+__global__ void rms_norm_smooth_per_token_dynamic_quant_loop(scalar_t* input, scalar_t* residual, scalar_weight_t* gamma, float* smooth_scale, int32_t const cols, float const eps, scalar_out_t* out, float* scales, scalar_t* after_norm, int stride, int num_tokens)
 {
   constexpr int share_size=block_size / C10_WARP_SIZE;
   __shared__ T_ACC val_shared[share_size];
   __shared__ T_ACC s_rstd;
-  T_ACC val = 0.0f;
-  int bid = blockIdx.x;
-  int tid = threadIdx.x;
-  T_ACC trstd;
-  int64_t rows = bid * stride;
-
-  for(int i = tid;i < cols;i += block_size)
-  {
-    val += static_cast<T_ACC>(input[rows + i])*static_cast<T_ACC>(input[rows + i]);
-  }
-  val = BlockReduceSum_ROW<T_ACC,block_size>(val, val_shared);
-  if (tid == 0) s_rstd = c10::cuda::compat::rsqrt(val / cols + eps);
-  __syncthreads();
-  trstd = s_rstd;
-  float block_absmax_val_maybe = 0.0f;
-  for(int i = tid;i < cols;i += block_size){
-    T_ACC weight_val = has_weight ? static_cast<T_ACC>(gamma[i]) : static_cast<T_ACC>(1.0f);
-    block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(static_cast<T_ACC>(input[i + rows]) * trstd * weight_val * static_cast<T_ACC>(smooth_scale[i])));
-  }
-  block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe,val_shared);
-
   __shared__ float s_token_scale; 
-  float scale = 0.0f;
-  if(tid == 0)
-  {
-      scale = block_absmax_val_maybe;
-    constexpr float qmax = 127.0f;
-    constexpr float min_scale = 1.19209e-07f;
-    s_token_scale = scale;
-    scales[blockIdx.x] = fmaxf(scale / qmax, min_scale); 
-  }
-  __syncthreads();
-  float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
-  for(int i = tid; i < cols; i += block_size)
-  {
-    T_ACC weight_val = has_weight ? static_cast<T_ACC>(gamma[i]) : static_cast<T_ACC>(1.0f);
-    T_ACC sm_val = static_cast<T_ACC>(input[rows + i]) *trstd* weight_val * static_cast<T_ACC>(smooth_scale[i]);
-    out[rows + i] = float_to_int8_rn(sm_val * inv_s);
-    if constexpr (write_norm) {
-        after_norm[rows + i] = static_cast<scalar_t>(sm_val);
-    }
+
+  int tid = threadIdx.x;
+  
+  for (int bid = blockIdx.x; bid < num_tokens; bid += gridDim.x) {
+      T_ACC val = 0.0f;
+      T_ACC trstd;
+      int64_t rows = bid * stride;
+
+      for(int i = tid;i < cols;i += block_size)
+      {
+        val += static_cast<T_ACC>(input[rows + i])*static_cast<T_ACC>(input[rows + i]);
+      }
+      val = BlockReduceSum_ROW<T_ACC,block_size>(val, val_shared);
+      if (tid == 0) s_rstd = c10::cuda::compat::rsqrt(val / cols + eps);
+      __syncthreads();
+      trstd = s_rstd;
+      float block_absmax_val_maybe = 0.0f;
+      for(int i = tid;i < cols;i += block_size){
+        T_ACC weight_val = has_weight ? static_cast<T_ACC>(gamma[i]) : static_cast<T_ACC>(1.0f);
+        block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(static_cast<T_ACC>(input[i + rows]) * trstd * weight_val * static_cast<T_ACC>(smooth_scale[i])));
+      }
+      block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe,val_shared);
+
+      float scale = 0.0f;
+      if(tid == 0)
+      {
+          scale = block_absmax_val_maybe;
+        constexpr float qmax = 127.0f;
+        constexpr float min_scale = 1.19209e-07f;
+        s_token_scale = scale;
+        scales[bid] = fmaxf(scale / qmax, min_scale); 
+      }
+      __syncthreads();
+      float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
+      for(int i = tid; i < cols; i += block_size)
+      {
+        T_ACC weight_val = has_weight ? static_cast<T_ACC>(gamma[i]) : static_cast<T_ACC>(1.0f);
+        T_ACC sm_val = static_cast<T_ACC>(input[rows + i]) *trstd* weight_val * static_cast<T_ACC>(smooth_scale[i]);
+        out[rows + i] = float_to_int8_rn(sm_val * inv_s);
+        if constexpr (write_norm) {
+            after_norm[rows + i] = static_cast<scalar_t>(sm_val);
+        }
+      }
+      __syncthreads();
   }
 }
 
 
 template <typename scalar_t, typename scalar_weight_t, typename scalar_out_t, typename T_ACC, bool has_weight, int Vec=4, int block_size=512, bool write_norm=false, bool write_res=true>
-__global__ void rms_norm_smooth_per_token_dynamic_quant_residual(scalar_t* input, scalar_t* residual, scalar_weight_t* gamma, float* smooth_scale, int cols, float const eps, scalar_out_t* out, float* scales, scalar_t* after_norm, int stride, scalar_t* residual_out)
+__global__ void rms_norm_smooth_per_token_dynamic_quant_residual(scalar_t* input, scalar_t* residual, scalar_weight_t* gamma, float* smooth_scale, int cols, float const eps, scalar_out_t* out, float* scales, scalar_t* after_norm, int stride, scalar_t* residual_out, int num_tokens)
 {
   constexpr int share_size=block_size/C10_WARP_SIZE;
   __shared__ T_ACC val_shared[share_size];
   __shared__ T_ACC s_rstd;
-  T_ACC val = 0;
-  int bid = blockIdx.x;
+  __shared__ float s_token_scale; 
+
   int tid = threadIdx.x;
   int tcol = cols / Vec;
   using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
   using LoadT_out = at::native::memory::aligned_vector<scalar_out_t, Vec>;
-  scalar_t intput_vec[Vec];
-  scalar_t residual_vec[Vec];
-  T_ACC trstd;
-  int64_t idx = bid * tcol + tid;
-  idx *= Vec;
-  if (tid < tcol) {
-    *(LoadT*)intput_vec = *(LoadT*)(input+idx);
-      *(LoadT*)residual_vec = *(LoadT*)(residual+idx);
+  
+  for (int bid = blockIdx.x; bid < num_tokens; bid += gridDim.x) {
+      T_ACC val = 0;
+      scalar_t intput_vec[Vec];
+      scalar_t residual_vec[Vec];
+      T_ACC trstd;
+      int64_t idx = bid * tcol + tid;
+      idx *= Vec;
+      if (tid < tcol) {
+        *(LoadT*)intput_vec = *(LoadT*)(input+idx);
+          *(LoadT*)residual_vec = *(LoadT*)(residual+idx);
 
-      #pragma unroll
-      for (int ii = 0; ii < Vec; ii++) {
-         residual_vec[ii] += (intput_vec[ii]);  
-          val += static_cast<T_ACC>(residual_vec[ii])*static_cast<T_ACC>(residual_vec[ii]);
+          #pragma unroll
+          for (int ii = 0; ii < Vec; ii++) {
+             residual_vec[ii] += (intput_vec[ii]);  
+              val += static_cast<T_ACC>(residual_vec[ii])*static_cast<T_ACC>(residual_vec[ii]);
+          }
       }
-  }
 
-  val = BlockReduceSum_ROW<T_ACC,block_size>(val, val_shared);
-  if (tid == 0) s_rstd=c10::cuda::compat::rsqrt(val / cols + eps);
-  __syncthreads();
-  trstd=s_rstd;
+      val = BlockReduceSum_ROW<T_ACC,block_size>(val, val_shared);
+      if (tid == 0) s_rstd=c10::cuda::compat::rsqrt(val / cols + eps);
+      __syncthreads();
+      trstd=s_rstd;
 
-  float block_absmax_val_maybe = 0.f;
-  scalar_t elem[Vec];
-  if (tid < tcol) {
+      float block_absmax_val_maybe = 0.f;
+      scalar_t elem[Vec];
+      if (tid < tcol) {
+          #pragma unroll
+          for(int ii = 0;ii < Vec;ii++){
+            int jj=tid * Vec + ii;
+            T_ACC weight_val = has_weight ? static_cast<T_ACC>(gamma[jj]) : static_cast<T_ACC>(1.0f);
+            elem[ii] = static_cast<T_ACC>(residual_vec[ii]) * trstd * weight_val * static_cast<T_ACC>(smooth_scale[jj]);
+            block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(elem[ii]));
+          }      
+      }
+      block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe, val_shared);
+      float scale = 0.0f;    
+      if(tid == 0)
+      {
+          scale = block_absmax_val_maybe ;
+        s_token_scale = scale;
+      }
+      __syncthreads();
+      float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
+      scalar_out_t out_vec[Vec];
+      if (tid < tcol) {
       #pragma unroll
       for(int ii = 0;ii < Vec;ii++){
-        int jj=tid * Vec + ii;
-        T_ACC weight_val = has_weight ? static_cast<T_ACC>(gamma[jj]) : static_cast<T_ACC>(1.0f);
-        elem[ii] = static_cast<T_ACC>(residual_vec[ii]) * trstd * weight_val * static_cast<T_ACC>(smooth_scale[jj]);
-        block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(elem[ii]));
-      }      
-  }
-  block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe, val_shared);
-    __shared__ float s_token_scale; 
-  float scale = 0.0f;    
-  if(tid == 0)
-  {
-      scale = block_absmax_val_maybe ;
-    s_token_scale = scale;
-  }
-  __syncthreads();
-  float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
-  scalar_out_t out_vec[Vec];
-  if (tid < tcol) {
-  #pragma unroll
-  for(int ii = 0;ii < Vec;ii++){
-      int jj = tid * Vec + ii;
-      out_vec[ii] = float_to_int8_rn(elem[ii] * inv_s);
-    }
-  constexpr float qmax = 127.0f;
-  constexpr float min_scale = 1.19209e-07f;  
-  
-  if(tid==0)scales[blockIdx.x] = fmaxf(scale / qmax, min_scale);
-    if constexpr (write_res) {
-        *(LoadT*)(residual_out+idx) = *(LoadT*)residual_vec;
-    }
-    
-    *(LoadT_out*)(out+idx) =*(LoadT_out*)out_vec;
+          out_vec[ii] = float_to_int8_rn(elem[ii] * inv_s);
+        }
+      constexpr float qmax = 127.0f;
+      constexpr float min_scale = 1.19209e-07f;  
+      
+      if(tid==0)scales[bid] = fmaxf(scale / qmax, min_scale);
+        if constexpr (write_res) {
+            *(LoadT*)(residual_out+idx) = *(LoadT*)residual_vec;
+        }
+        
+        *(LoadT_out*)(out+idx) =*(LoadT_out*)out_vec;
 
-  if constexpr (write_norm) {
-    *(LoadT*)(after_norm+idx)=*(LoadT*)elem;  
+      if constexpr (write_norm) {
+        *(LoadT*)(after_norm+idx)=*(LoadT*)elem;  
+      }
+      }  
+      __syncthreads();
   }
-  }  
 }
 
 template <typename scalar_t, typename scalar_weight_t, typename scalar_out_t, typename T_ACC, bool has_weight, int Vec=1, int block_size=512, bool write_norm=false, bool write_res=true>
-__global__ void rms_norm_smooth_per_token_dynamic_quant_residual_loop(scalar_t* input, scalar_t* residual, scalar_weight_t* gamma, float* smooth_scale, int cols, float const eps, scalar_out_t* out, float* scales, scalar_t* after_norm, int stride, scalar_t* residual_out)
+__global__ void rms_norm_smooth_per_token_dynamic_quant_residual_loop(scalar_t* input, scalar_t* residual, scalar_weight_t* gamma, float* smooth_scale, int cols, float const eps, scalar_out_t* out, float* scales, scalar_t* after_norm, int stride, scalar_t* residual_out, int num_tokens)
 {
   constexpr int share_size = block_size / C10_WARP_SIZE;
   __shared__ T_ACC val_shared[share_size];
   __shared__ T_ACC s_rstd;
-  T_ACC val = 0.0f;
-  int bid = blockIdx.x;
-  int tid = threadIdx.x;
-  T_ACC trstd;
-  int64_t rows = bid * cols;
-
-  for(int i = tid;i < cols;i += block_size)
-  {
-    float x = static_cast<T_ACC>(residual[rows + i]) + static_cast<T_ACC>(input[rows + i]);
-        val += x * x;
-  }
-    
-  val = BlockReduceSum_ROW<T_ACC,block_size>(val, val_shared);
-  if (tid == 0) s_rstd=c10::cuda::compat::rsqrt(val / cols + eps);
-  __syncthreads();
-  trstd = s_rstd;
-  float block_absmax_val_maybe = 0.0f;
-
-  for(int i = tid;i < cols;i += block_size){
-    T_ACC x = static_cast<T_ACC>(residual[i + rows]) + static_cast<T_ACC>(input[i + rows]);
-    T_ACC weight_val = has_weight ? static_cast<T_ACC>(gamma[i]) : static_cast<T_ACC>(1.0f);
-    block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(static_cast<T_ACC>(static_cast<T_ACC>(x * trstd) * weight_val) * static_cast<T_ACC>(smooth_scale[i])));
-  }
-
-  block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe, val_shared);
-
   __shared__ float s_token_scale; 
-   float scale = 0.0f;
-  if(tid == 0)
-  {
-      scale = block_absmax_val_maybe;
-    constexpr float qmax = 127.0f;
-    constexpr float min_scale = 1.19209e-07f;
-    s_token_scale = scale;
-    scales[blockIdx.x] = fmaxf(scale / qmax, min_scale);
-  }
-   __syncthreads();
-  float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
-  for(int i = tid;i < cols;i += block_size)
-  {
-    T_ACC weight_val = has_weight ? static_cast<T_ACC>(gamma[i]) : static_cast<T_ACC>(1.0f);
-    T_ACC res_val = static_cast<T_ACC>(residual[rows + i]) + static_cast<T_ACC>(input[rows + i]);
 
-    if constexpr (write_res) {
-        residual_out[rows + i] = res_val;
-    }
-    
-    T_ACC sm_val = res_val * trstd * weight_val * static_cast<T_ACC>(smooth_scale[i]);
-    out[rows + i] = float_to_int8_rn(sm_val * inv_s);
-    if constexpr (write_norm) {
-        after_norm[rows + i] = static_cast<scalar_t>(sm_val);
-    }
+  int tid = threadIdx.x;
+  
+  for (int bid = blockIdx.x; bid < num_tokens; bid += gridDim.x) {
+      T_ACC val = 0.0f;
+      T_ACC trstd;
+      int64_t rows = bid * cols;
+
+      for(int i = tid;i < cols;i += block_size)
+      {
+        float x = static_cast<T_ACC>(residual[rows + i]) + static_cast<T_ACC>(input[rows + i]);
+            val += x * x;
+      }
+        
+      val = BlockReduceSum_ROW<T_ACC,block_size>(val, val_shared);
+      if (tid == 0) s_rstd=c10::cuda::compat::rsqrt(val / cols + eps);
+      __syncthreads();
+      trstd = s_rstd;
+      float block_absmax_val_maybe = 0.0f;
+
+      for(int i = tid;i < cols;i += block_size){
+        T_ACC x = static_cast<T_ACC>(residual[i + rows]) + static_cast<T_ACC>(input[i + rows]);
+        T_ACC weight_val = has_weight ? static_cast<T_ACC>(gamma[i]) : static_cast<T_ACC>(1.0f);
+        block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(static_cast<T_ACC>(static_cast<T_ACC>(x * trstd) * weight_val) * static_cast<T_ACC>(smooth_scale[i])));
+      }
+
+      block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe, val_shared);
+
+       float scale = 0.0f;
+      if(tid == 0)
+      {
+          scale = block_absmax_val_maybe;
+        constexpr float qmax = 127.0f;
+        constexpr float min_scale = 1.19209e-07f;
+        s_token_scale = scale;
+        scales[bid] = fmaxf(scale / qmax, min_scale);
+      }
+       __syncthreads();
+      float inv_s = (s_token_scale == 0.f) ? 0.f : 127.f / s_token_scale;
+      for(int i = tid;i < cols;i += block_size)
+      {
+        T_ACC weight_val = has_weight ? static_cast<T_ACC>(gamma[i]) : static_cast<T_ACC>(1.0f);
+        T_ACC res_val = static_cast<T_ACC>(residual[rows + i]) + static_cast<T_ACC>(input[rows + i]);
+
+        if constexpr (write_res) {
+            residual_out[rows + i] = res_val;
+        }
+        
+        T_ACC sm_val = res_val * trstd * weight_val * static_cast<T_ACC>(smooth_scale[i]);
+        out[rows + i] = float_to_int8_rn(sm_val * inv_s);
+        if constexpr (write_norm) {
+            after_norm[rows + i] = static_cast<scalar_t>(sm_val);
+        }
+      }
+      __syncthreads();
   }
 }
 
@@ -391,27 +406,44 @@ void rms_norm_smooth_per_token_dynamic_quant_impl(
   int stride = (input.dim() > 1) ? input.stride(-2) : input.stride(-1);
   bool is_aligned = (hidden_size % 16 == 0) && (hidden_size <= 8192) && ptrs_are_aligned;
 
+  int sm_count = at::cuda::getCurrentDeviceProperties()->multiProcessorCount;
+  int target_blocks = num_tokens;
+  if(!after_residual.has_value() && !after_norm.has_value()){
+    if(num_tokens == 352) target_blocks = 320;
+    if(num_tokens == 512) target_blocks = 480;
+    if(num_tokens == 1024 || num_tokens == 1152) target_blocks = 1040;
+  }
+  if(after_residual.has_value()){
+     if(num_tokens == 352) target_blocks = 320;
+     if(num_tokens == 416) target_blocks = 320;
+     if(num_tokens >= 480 && num_tokens <= 512)  target_blocks = 480;
+     if(num_tokens >= 640 && num_tokens <= 896)  target_blocks = 640;
+  }
+  if(after_norm.has_value()){
+    if(num_tokens == 1024 || num_tokens == 1152 || num_tokens == 1408) target_blocks = 1040;
+  }
+  
 
 #define LAUNCH_ALIGNED(VEC, THREADS, WRITE_FLAG) \
   if (residual_flag) { \
       if (write_res) { \
-          rms_norm_smooth_per_token_dynamic_quant_residual<scalar_in_t, scalar_weight_t, scalar_out_t, T_ACC, has_weight, VEC, THREADS, WRITE_FLAG, true><<<num_tokens, THREADS, 0, stream>>>(self_data, other_data, weight_data, smooth_data, hidden_size, epsilon, out_data, scaless, after_norm_data, stride, residual_out_data); \
+          rms_norm_smooth_per_token_dynamic_quant_residual<scalar_in_t, scalar_weight_t, scalar_out_t, T_ACC, has_weight, VEC, THREADS, WRITE_FLAG, true><<<target_blocks, THREADS, 0, stream>>>(self_data, other_data, weight_data, smooth_data, hidden_size, epsilon, out_data, scaless, after_norm_data, stride, residual_out_data, num_tokens); \
       } else { \
-          rms_norm_smooth_per_token_dynamic_quant_residual<scalar_in_t, scalar_weight_t, scalar_out_t, T_ACC, has_weight, VEC, THREADS, WRITE_FLAG, false><<<num_tokens, THREADS, 0, stream>>>(self_data, other_data, weight_data, smooth_data, hidden_size, epsilon, out_data, scaless, after_norm_data, stride, residual_out_data); \
+          rms_norm_smooth_per_token_dynamic_quant_residual<scalar_in_t, scalar_weight_t, scalar_out_t, T_ACC, has_weight, VEC, THREADS, WRITE_FLAG, false><<<target_blocks, THREADS, 0, stream>>>(self_data, other_data, weight_data, smooth_data, hidden_size, epsilon, out_data, scaless, after_norm_data, stride, residual_out_data, num_tokens); \
       } \
   } else { \
-      rms_norm_smooth_per_token_dynamic_quant_<scalar_in_t, scalar_weight_t, scalar_out_t, T_ACC, has_weight, VEC, THREADS, WRITE_FLAG><<<num_tokens, THREADS, 0, stream>>>(self_data, other_data, weight_data, smooth_data, hidden_size, epsilon, out_data, scaless, after_norm_data, stride); \
+      rms_norm_smooth_per_token_dynamic_quant_<scalar_in_t, scalar_weight_t, scalar_out_t, T_ACC, has_weight, VEC, THREADS, WRITE_FLAG><<<target_blocks, THREADS, 0, stream>>>(self_data, other_data, weight_data, smooth_data, hidden_size, epsilon, out_data, scaless, after_norm_data, stride, num_tokens); \
   }
 
 #define LAUNCH_LOOP(VEC, THREADS, WRITE_FLAG) \
   if (residual_flag) { \
       if (write_res) { \
-          rms_norm_smooth_per_token_dynamic_quant_residual_loop<scalar_in_t, scalar_weight_t, scalar_out_t, T_ACC, has_weight, VEC, THREADS, WRITE_FLAG, true><<<num_tokens, THREADS, 0, stream>>>(self_data, other_data, weight_data, smooth_data, hidden_size, epsilon, out_data, scaless, after_norm_data, stride, residual_out_data); \
+          rms_norm_smooth_per_token_dynamic_quant_residual_loop<scalar_in_t, scalar_weight_t, scalar_out_t, T_ACC, has_weight, VEC, THREADS, WRITE_FLAG, true><<<target_blocks, THREADS, 0, stream>>>(self_data, other_data, weight_data, smooth_data, hidden_size, epsilon, out_data, scaless, after_norm_data, stride, residual_out_data, num_tokens); \
       } else { \
-          rms_norm_smooth_per_token_dynamic_quant_residual_loop<scalar_in_t, scalar_weight_t, scalar_out_t, T_ACC, has_weight, VEC, THREADS, WRITE_FLAG, false><<<num_tokens, THREADS, 0, stream>>>(self_data, other_data, weight_data, smooth_data, hidden_size, epsilon, out_data, scaless, after_norm_data, stride, residual_out_data); \
+          rms_norm_smooth_per_token_dynamic_quant_residual_loop<scalar_in_t, scalar_weight_t, scalar_out_t, T_ACC, has_weight, VEC, THREADS, WRITE_FLAG, false><<<target_blocks, THREADS, 0, stream>>>(self_data, other_data, weight_data, smooth_data, hidden_size, epsilon, out_data, scaless, after_norm_data, stride, residual_out_data, num_tokens); \
       } \
   } else { \
-      rms_norm_smooth_per_token_dynamic_quant_loop<scalar_in_t, scalar_weight_t, scalar_out_t, T_ACC, has_weight, VEC, THREADS, WRITE_FLAG><<<num_tokens, THREADS, 0, stream>>>(self_data, other_data, weight_data, smooth_data, hidden_size, epsilon, out_data, scaless, after_norm_data, stride); \
+      rms_norm_smooth_per_token_dynamic_quant_loop<scalar_in_t, scalar_weight_t, scalar_out_t, T_ACC, has_weight, VEC, THREADS, WRITE_FLAG><<<target_blocks, THREADS, 0, stream>>>(self_data, other_data, weight_data, smooth_data, hidden_size, epsilon, out_data, scaless, after_norm_data, stride, num_tokens); \
   }
 
   AT_DISPATCH_INTEGRAL_TYPES(out.scalar_type(), "fused_add_rms_norm_smooth_kernel_out_type", [&] {
@@ -420,65 +452,50 @@ void rms_norm_smooth_per_token_dynamic_quant_impl(
 
     if (is_aligned) {
       if (write_norm) {
-        if (hidden_size <= 512) {
-          if (num_tokens > 1024 && num_tokens <= 3072) { LAUNCH_ALIGNED(4, 128, true); }
-          else { LAUNCH_ALIGNED(8, 64, true); }
-        }
+        if (hidden_size <= 512) { LAUNCH_ALIGNED(8, 64, true); }
         else if (hidden_size <= 1024) { LAUNCH_ALIGNED(8, 128, true); }
-        else if (hidden_size <= 2048) {
-          if (num_tokens >= 1000 && num_tokens < 8000) { LAUNCH_ALIGNED(16, 128, true); }
-          else { LAUNCH_ALIGNED(8, 256, true); }
-        }
-        else if (hidden_size <= 4096) {
-          if (num_tokens == 512) { LAUNCH_ALIGNED(4, 1024, true); }
-          else { LAUNCH_ALIGNED(8, 512, true); }
-        }
-        else if (hidden_size <= 8192) { LAUNCH_ALIGNED(8, 1024, true); }
-        else { LAUNCH_ALIGNED(16, 1024, true); } 
+        else if (hidden_size <= 2048) { LAUNCH_ALIGNED(8, 256, true); }
+        else if (hidden_size <= 4096) { 
+          if(num_tokens == 512 || num_tokens == 1152) {
+              LAUNCH_ALIGNED(4, 1024, true);
+          }else{
+              LAUNCH_ALIGNED(16, 256, true);
+          }
+         }
+        else { LAUNCH_ALIGNED(8, 1024, true); } 
       } 
       else {
-        if (hidden_size <= 512) {
-          if (num_tokens > 1024 && num_tokens < 4096) { LAUNCH_ALIGNED(4, 128, false); }
-          else { LAUNCH_ALIGNED(8, 64, false); }
-        }
+        if (hidden_size <= 512) { LAUNCH_ALIGNED(8, 64, false); }
         else if (hidden_size <= 1024) { LAUNCH_ALIGNED(8, 128, false); }
-        else if (hidden_size <= 2048) {
-          if (num_tokens < 512) { LAUNCH_ALIGNED(8, 256, false); }
-          else { LAUNCH_ALIGNED(16, 128, false); }
-        }
+        else if (hidden_size <= 2048) { LAUNCH_ALIGNED(8, 256, false); }
         else if (hidden_size <= 4096) {
-          if (num_tokens == 512) { LAUNCH_ALIGNED(4, 1024, false); }
-          else { LAUNCH_ALIGNED(16, 256, false); }
-        }
-        else if (hidden_size <= 8192) {
-          if ((num_tokens > 4 && num_tokens < 64) || (num_tokens >= 290 && num_tokens < 2000)) { LAUNCH_ALIGNED(8, 1024, false); }
-          else { LAUNCH_ALIGNED(16, 512, false); }
-        }
-        else { LAUNCH_ALIGNED(16, 1024, false); } 
+            if(num_tokens == 512 || num_tokens == 1152) {
+                LAUNCH_ALIGNED(4, 1024, false);
+            }else{
+                LAUNCH_ALIGNED(16, 256, false);
+            }
+         }
+        else { LAUNCH_ALIGNED(8, 1024, false); } 
       }
     } 
     else {
       if (write_norm) {
-        if (hidden_size <= 1024) { LAUNCH_LOOP(1, 256, true); }
-        else if (hidden_size <= 2048) {
-          if (num_tokens >= 1024) { LAUNCH_LOOP(1, 512, true); }
-          else { LAUNCH_LOOP(1, 256, true); }
-        }
-        else if (hidden_size <= 4096) {
-          if (num_tokens > 1200) { LAUNCH_LOOP(1, 512, true); }
-          else { LAUNCH_LOOP(1, 1024, true); }
-        }
+        if (hidden_size <= 512) { LAUNCH_LOOP(1, 64, true); }
+        else if (hidden_size <= 1024) { LAUNCH_LOOP(1, 128, true); }
+        else if (hidden_size <= 2048) { LAUNCH_LOOP(1, 256, true); }
+        else if (hidden_size <= 4096) { 
+           if(num_tokens == 512 || num_tokens == 1152) {
+              LAUNCH_ALIGNED(4, 1024, true);
+            }else{
+              LAUNCH_ALIGNED(16, 256, true);
+            }
+         }
         else { LAUNCH_LOOP(1, 1024, true); }
       } else {
-        if (hidden_size <= 1024) { LAUNCH_LOOP(1, 256, false); }
-        else if (hidden_size <= 2048) {
-          if (num_tokens >= 1024) { LAUNCH_LOOP(1, 512, false); }
-          else { LAUNCH_LOOP(1, 256, false); }
-        }
-        else if (hidden_size <= 4096) {
-          if (num_tokens > 1200) { LAUNCH_LOOP(1, 512, false); }
-          else { LAUNCH_LOOP(1, 1024, false); }
-        }
+        if (hidden_size <= 512) { LAUNCH_LOOP(1, 64, false); }
+        else if (hidden_size <= 1024) { LAUNCH_LOOP(1, 128, false); }
+        else if (hidden_size <= 2048) { LAUNCH_LOOP(1, 256, false); }
+        else if (hidden_size <= 4096) { LAUNCH_LOOP(1, 512, false); }
         else { LAUNCH_LOOP(1, 1024, false); }
       }
     }
