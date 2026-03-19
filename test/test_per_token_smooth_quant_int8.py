@@ -1,6 +1,7 @@
 import torch
 from lightop import op
 from typing import Optional
+import pandas as pd
 
 
 def smooth_per_token_dynamic_quant(
@@ -261,23 +262,21 @@ def test_and_benchmark(num_tokens: int, hidden_sizes: int, config: dict, warmup=
 
 def run_suite():
     torch.manual_seed(23)
-    numtokens_list = [2**item for item in range(1, 16)] 
-    # numtokens_list = [32, 40, 48, 56, 64, 72, 80, 88, 96, 112,120,128,
-    #                 144, 160, 176, 192, 208, 224, 240, 256,
-    #                 288, 320, 352, 384, 416, 448, 480, 512,640,768, 896,1024,1152,1280,1408,1536,1536, 1792, 1920, 2048,
-    #                 2176, 2304, 2432, 2560, 2688, 2816, 2944, 3072,
-    #                 3200,3328,3456,3584,3712,3840,3968,4096,4096,6144, 8192, 10240, 12288, 14336, 16384, 184332,20480,
-    #                 22528,24576,26624,28672]  
+    numtokens_list = [
+        32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 144, 160, 176, 192, 
+        208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 640, 768, 896, 
+        1024, 1152, 1280, 1408, 1536, 1664, 1792, 1920, 2048, 2176, 2304, 2432, 
+        2560, 2688, 2816, 2944, 3072, 3200, 3328, 3456, 3584, 3712, 3840, 3968, 
+        4096, 6144, 8192, 10240, 12288, 14336, 16384, 18432, 20480, 22528, 24576, 
+        26624, 28672, 32768
+    ]
 
     hiddensizes_list = [4096]
     
     configs = [
         {"name": "Base",         "has_res": False, "has_after_norm": False, "has_after_res": False, "up_input": False, "up_res": False},
-        {"name": "UpInput",      "has_res": False, "has_after_norm": False, "has_after_res": False, "up_input": True,  "up_res": False},
-        {"name": "Res(In-place)","has_res": True,  "has_after_norm": False, "has_after_res": False, "up_input": False, "up_res": True},
         {"name": "Res(AfterRes)","has_res": True,  "has_after_norm": False, "has_after_res": True,  "up_input": False, "up_res": False},
         {"name": "AfterNorm",    "has_res": False, "has_after_norm": True,  "has_after_res": False, "up_input": False, "up_res": False},
-        {"name": "AllFeatures",  "has_res": True,  "has_after_norm": True,  "has_after_res": True,  "up_input": False, "up_res": False},
     ]
 
     print("======================================== 测试情形说明 (Legend) ========================================")
@@ -292,6 +291,9 @@ def run_suite():
     print(f"| {'Shape (N, H)':<15} | {'Scenario':<14} | {'Correct':<8} | {'Ref (us)':<10} | {'Opt (us)':<10} | {'Speedup':<8} | {'BW (GB/s)':<9} |")
     print("-" * 105)
 
+    # 存储结果的列表
+    results_data = []
+
     for config in configs:
         for hidden_size in hiddensizes_list:
             for num_tokens in numtokens_list:
@@ -303,13 +305,35 @@ def run_suite():
                     num_tokens, hidden_size, config, warmup=10, rep=100
                 )
                 
+                # 整理当前行的数据以便保存到 Excel
+                row_data = {
+                    "Shape": shape_str,
+                    "Num Tokens": num_tokens,
+                    "Hidden Size": hidden_size,
+                    "Scenario": scen_str,
+                    "Correct": "Yes" if passed else "No",
+                    "Ref (us)": round(ref_us, 2) if passed else None,
+                    "Opt (us)": round(opt_us, 2) if passed else None,
+                    "Speedup": round(ref_us / opt_us, 2) if (passed and opt_us > 0) else None,
+                    "BW (GB/s)": round(bw_gbs, 2) if passed else None,
+                    "Error Message": "" if passed else msg
+                }
+                results_data.append(row_data)
+
                 if passed:
-                    speedup = f"{ref_us / opt_us:.2f}x" if opt_us > 0 else "N/A"
-                    print(f"| {shape_str:<15} | {scen_str:<14} | {'✔':<8} | {ref_us:<10.1f} | {opt_us:<10.1f} | {speedup:<8} | {bw_gbs:<9.1f} |")
+                    speedup_str = f"{ref_us / opt_us:.2f}x" if opt_us > 0 else "N/A"
+                    print(f"| {shape_str:<15} | {scen_str:<14} | {'✔':<8} | {ref_us:<10.1f} | {opt_us:<10.1f} | {speedup_str:<8} | {bw_gbs:<9.1f} |")
                 else:
                     print(f"| {shape_str:<15} | {scen_str:<14} | {'✘':<8} | {msg[:35]:<43} |")
 
         print("-" * 105)
+
+    # 将结果保存为 Excel 文件
+    df = pd.DataFrame(results_data)
+    excel_filename = "benchmark_results.xlsx"
+    df.to_excel(excel_filename, index=False)
+    print(f"\n✅ 测试完毕！结果已成功保存到 {excel_filename}")
+
 
 if __name__ == "__main__":
     run_suite()
