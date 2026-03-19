@@ -602,6 +602,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("clean_logits") = true);
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
   m.def("paged_mqa_logits", &lightop::deep_gemm::paged_mqa_logits,"paged_mqa_logits");
+  m.def("paged_mqa_logits_with_raw_tokens", &lightop::deep_gemm::paged_mqa_logits_with_raw_tokens,"paged_mqa_logits_with_raw_tokens");
   m.def("batch_linear_assignment", &at::native::batch_linear_assignment, "batch_linear_assignment");
   m.def("fill_zeros", &at::native::fill_zeros,"fill_zeros");
   m.def("rms_rotary_embedding_fuse", &at::native::rms_rotary_embedding_fuse,"rms_rotary_embedding_fuse");
