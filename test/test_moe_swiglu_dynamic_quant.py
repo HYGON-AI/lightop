@@ -2,12 +2,10 @@
 import torch
 import time
 import numpy as np
+from triton.testing import do_bench  # <-- 引入 do_bench
 
 import lightop
-from lightop import miopen_moe_swiglu_dynamic_quant
 from lightop import moe_swiglu_dynamic_quant
-# 既然参考实现已经用 torch.chunk 和 silu 替代了，fuse_silu_and_mul 就不强制需要了，但保留导入防报错
-from lightop import fuse_silu_and_mul 
 
 
 def smooth_per_token_dynamic_quant(
@@ -41,8 +39,7 @@ def smooth_per_token_dynamic_quant(
     per_token_scale = per_token_max * max_dtype_val
 
     # [num_tokens, hidden_size], quantized
-    # quant_tokens_fp32 = torch.mul(smooth_scale, per_token_scale).clamp(-max_dtype_val, max_dtype_val)
-    quant_tokens_fp32 = torch.mul(smoothed_input, per_token_scale).clamp(-max_dtype_val, max_dtype_val) #lj
+    quant_tokens_fp32 = torch.mul(smoothed_input, per_token_scale).clamp(-max_dtype_val, max_dtype_val)
     if dst_torch_dtype == torch.int8:
         quant_tokens_fp32 = quant_tokens_fp32.round()
 
@@ -126,7 +123,7 @@ def get_moe_swiglu_data(hidden_size, num_tokens, world_size, rank, num_shared_ex
     return scatter_tokens, smooth, experts_tokens_count, exports_tokens_start
 
 
-def test_dual_performance(hidden_size, num_tokens, world_size, rank, num_shared_experts, dp_size, sp_size,
+def test_correctness_and_performance(hidden_size, num_tokens, world_size, rank, num_shared_experts, dp_size, sp_size,
                                      num_experts, topk, ep_size, use_half=False):
     
     scatter_tokens, smooth, experts_tokens_count, exports_tokens_start = get_moe_swiglu_data(
@@ -138,7 +135,7 @@ def test_dual_performance(hidden_size, num_tokens, world_size, rank, num_shared_
         return
 
     # --- 1. 正确性校验 ---
-    # PyTorch 纯计算 Baseline (修正了维度问题)
+    # PyTorch 纯计算 Baseline
     y_ref, s_ref = ref_moe_swiglu_dynamic_quant(
         scatter_tokens, smooth, experts_tokens_count, exports_tokens_start, torch.int8
     )
@@ -148,35 +145,19 @@ def test_dual_performance(hidden_size, num_tokens, world_size, rank, num_shared_
         scatter_tokens, smooth, experts_tokens_count, exports_tokens_start, 1.0
     )
 
-    # 注意：s_target 可能需要 squeeze() 才能与 s_ref 形状完全对齐，视你底层 C++ 实现而定
-    # 如果遇到 s_target 是 [N, 1] 报错，可以改成 s_target.view_as(s_ref)
     out_diff = torch.abs(y_ref.float() - y_target.float()).max().item()
     scale_diff = torch.abs(s_ref.view(-1) - s_target.view(-1)).max().item()
 
-    # --- 2. 性能测试 ---
-    num_iters = 10
+    # --- 2. 性能测试 (使用 do_bench) ---
+    # do_bench 自动处理 warmup 和多次执行，返回值为 ms (毫秒)
+    ms_t = do_bench(lambda: moe_swiglu_dynamic_quant(
+        scatter_tokens, smooth, experts_tokens_count, exports_tokens_start, 1.0
+    ))
     
-    # Warmup
-    for _ in range(3):
-        miopen_moe_swiglu_dynamic_quant(scatter_tokens, smooth, experts_tokens_count, exports_tokens_start, 1.0)
-        moe_swiglu_dynamic_quant(scatter_tokens, smooth, experts_tokens_count, exports_tokens_start, 1.0)
-    torch.cuda.synchronize()
+    # 转换为 us (微秒) 以匹配你后续的单位计算
+    avg_t_target = ms_t * 1000.0
 
-    # Benchmark MiOpen
-    t1_start = time.time()
-    for _ in range(num_iters):
-        miopen_moe_swiglu_dynamic_quant(scatter_tokens, smooth, experts_tokens_count, exports_tokens_start, 1.0)
-    torch.cuda.synchronize()
-    avg_t1 = (time.time() - t1_start) * 1_000_000 / num_iters
-
-    # Benchmark Custom
-    t2_start = time.time()
-    for _ in range(num_iters):
-        moe_swiglu_dynamic_quant(scatter_tokens, smooth, experts_tokens_count, exports_tokens_start, 1.0)
-    torch.cuda.synchronize()
-    avg_t2 = (time.time() - t2_start) * 1_000_000 / num_iters
-
-    # --- 3. 带宽、吞吐量与加速比计算 ---
+    # --- 3. 带宽与吞吐量计算 ---
     local_experts = num_experts // ep_size
     local_tokens = scatter_tokens.size(0)
     
@@ -184,29 +165,17 @@ def test_dual_performance(hidden_size, num_tokens, world_size, rank, num_shared_
     bytes_write = (local_tokens * hidden_size * 1) + (local_tokens * 4)
     total_bytes = bytes_read + bytes_write
     
-    # 防止时间为0导致除零错误
-    avg_t1_s = max(avg_t1 / 1_000_000, 1e-9)
-    avg_t2_s = max(avg_t2 / 1_000_000, 1e-9)
+    avg_t_target_s = max(avg_t_target / 1_000_000, 1e-9)
     
-    # 计算内存带宽 (GB/s)
-    bw_ref = (total_bytes / 1e9) / avg_t1_s
-    bw_target = (total_bytes / 1e9) / avg_t2_s
-
-    # 计算 Token 吞吐量 (KTokens/s)
-    thr_ref = (local_tokens / 1000) / avg_t1_s
-    thr_target = (local_tokens / 1000) / avg_t2_s
-
-    # 计算加速比 (Speedup)
-    speedup = avg_t1 / max(avg_t2, 1e-9)
+    # 计算 Target 内存带宽 (GB/s)
+    bw_target = (total_bytes / 1e9) / avg_t_target_s
 
     # 判定
-    status = "PASS" if out_diff <= 1 and scale_diff < 1e-4 else "FAIL"
+    status = "\033[92mPASS\033[0m" if out_diff <= 1 and scale_diff < 1e-2 else "\033[91mFAIL\033[0m"
     
-    # 打印排版微调
+    # 打印排版
     print(f"Tokens:{num_tokens:<5} | Local:{local_tokens:<5} | "
-          f"MiOpen: {avg_t1:>6.2f}us, {bw_ref:>6.1f} GB/s | "
-          f"Target: {avg_t2:>6.2f}us, {bw_target:>6.1f} GB/s | "
-          f"Speedup: \033[1;32m{speedup:>4.2f}x\033[0m | "
+          f"Target: {avg_t_target:>6.2f}us, {bw_target:>6.1f} GB/s | "
           f"Diff:{out_diff:.0f}/{scale_diff:.1e} | [{status}]")
 
 
@@ -221,13 +190,14 @@ if __name__ == '__main__':
         3200, 3328, 3456, 3584, 3712, 3840, 3968, 4096,
         6144, 8192, 10240, 12288, 14336, 16384, 18432, 20480,
         22528, 24576, 26624, 28672, 32768, 
-        # 65536, 131072
+        # 32768
+        # 65536, 131072, 262144, 524288, 1048576, 2097152
     ]
     
-    # 把 hidden_size 变成一个列表，想测多少个就加多少个
-    HIDDEN_SIZE_LIST = [1024]
+    # HIDDEN_SIZE_LIST = [1024, 2048, 4096, 8192]
+    HIDDEN_SIZE_LIST = [1024,2048]
 
-    print(f"{'='*35} MoE SwiGLU 双算子性能与精度对齐测试 {'='*35}")
+    print(f"{'='*35} MoE SwiGLU 自定义算子精度对齐与测速 {'='*35}")
     
     config = {
         "world_size": 8,
@@ -245,7 +215,7 @@ if __name__ == '__main__':
         print(f"\n[{'#'*20} Testing hidden_size = {hs} {'#'*20}]")
         # 内层循环遍历 tokens
         for t in NUM_TOKENS_LIST:
-            test_dual_performance(
+            test_correctness_and_performance(
                 hidden_size=hs,  # 传入当前的 hidden_size
                 num_tokens=t,
                 world_size=config["world_size"],
