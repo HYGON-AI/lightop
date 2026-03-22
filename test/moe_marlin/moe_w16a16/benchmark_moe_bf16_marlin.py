@@ -1542,15 +1542,25 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=4096
     # hidden_size=7168
     
+    # # glm4.5v-tp2
+    # E = 128
+    # shard_intermediate_size=1408
+    # hidden_size=4096
+    
     # # glm4.5v-tp4
     # E = 128
     # shard_intermediate_size=704
     # hidden_size=4096
-    
-    # qwen3.5-35b-a3b-tp1
+
+    # glm5-tp16
     E = 256
-    shard_intermediate_size=1024
-    hidden_size=2048
+    shard_intermediate_size=256
+    hidden_size=6144
+    
+    # # qwen3.5-35b-a3b-tp1
+    # E = 256
+    # shard_intermediate_size=1024
+    # hidden_size=2048
     
     # # qwen3.5-35b-a3b-tp2
     # E = 256
