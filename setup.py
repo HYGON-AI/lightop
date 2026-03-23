@@ -46,7 +46,8 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
                 return ['-fno-gpu-rdc']
     dtk_ver = int(str(dtk_version)[:4])  # dtk命名问题25042和2604  取前四位比较
     if dtk_ver >= 2604:  # dtk>=26042 can support gfx938
-        archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
+        #archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
+        archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx928;gfx936;gfx938') # 对应kme bw nmz
     else:
         archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
@@ -189,7 +190,8 @@ def _write_ninja_file(path, cflags, post_cflags, cuda_cflags, cuda_post_cflags, 
 
 
 def _get_num_workers(verbose: bool) -> Optional[int]:
-    max_jobs = os.environ.get('MAX_JOBS')
+    max_jobs = os.environ.get('MAX_JOBS') #设置编译的线程数
+    #max_jobs = '32'
     if max_jobs is not None and max_jobs.isdigit():
         if verbose:
             print(f'Using envvar MAX_JOBS ({max_jobs}) as the number of workers...')

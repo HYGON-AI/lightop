@@ -1090,6 +1090,7 @@ def test_moe_debug(
     intermediate_cache1 = torch.zeros((m, topk, n1), device=input_data.device, dtype=out_dtype)
     moe_gemm_marlin_w8a8(qinput1, w1_marlin, intermediate_cache1, qa1_scale, weight1_scale,
                   None, sorted_token_ids, expert_ids, num_tokens_post_padded, topk, cuda_config1)
+    return 0
 
     # gemm1验证
     # for i in range(85):
