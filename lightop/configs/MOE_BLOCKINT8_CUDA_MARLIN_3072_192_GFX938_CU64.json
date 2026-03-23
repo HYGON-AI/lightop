@@ -2,22 +2,22 @@
     "3072_192": {
         "1": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 8,
+            "MODE": 12,
             "DELTA": 1
         },
         "2": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 70,
+            "MODE": 10,
             "DELTA": 1
         },
         "4": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 70,
+            "MODE": 12,
             "DELTA": 1
         },
         "8": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 10,
+            "MODE": 8,
             "DELTA": 1
         },
         "16": {
@@ -42,7 +42,7 @@
         },
         "256": {
             "BLOCK_SIZE_M": 16,
-            "MODE": 12,
+            "MODE": 94,
             "DELTA": 1
         },
         "512": {
@@ -53,7 +53,7 @@
         "1024": {
             "BLOCK_SIZE_M": 16,
             "MODE": 94,
-            "DELTA": 2
+            "DELTA": 4
         },
         "2048": {
             "BLOCK_SIZE_M": 16,

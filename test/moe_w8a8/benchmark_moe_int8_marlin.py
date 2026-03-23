@@ -748,11 +748,16 @@ def fuse_moe_correctness_preprocess(
     ) -> tuple[dict[str, int], float]:
     
     mode_ranges = [mode for mode in block_m_configs.keys()]
-    gemm1_list = [63, 66, 67, 71, 75, 78, 81, 84]
+    #gemm1_list = [63, 66, 67, 71, 75, 78, 81, 84]
+    gemm1_list = [63, 67, 71, 75, 78,81,84, 506,511,513, 543, 544, 569, 536, 546] # n=384 1000, 1001, 1002
     gemm1_compare_failed_list = [m for m in gemm1_list] #这里
-    #gemm2_compare_failed_list = [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 67, 68, 71,72,73, 78, 75, 79, 80, 81, 82, 83, 84]
-    gemm2_list = [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,72,73, 74,
-    75,76,77, 78, 79, 80, 81, 82, 83, 84] # glm 256 6144
+    #gemm2_list = [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59] 
+    gemm2_list = [16,17,18,19,20,21,22,23,24,25,28,29,30,31,44,45,46,47,56,57,32, 33, 34, 35, 36, 37, 38, 39, 
+    40,41,42,43,58,59,506,511,513,569, 1000, 1001, 1002] #k=192
+    gemm2_list_256 = list(range(60, 85))
+    gemm2_list.extend(gemm2_list_256)
+    # gemm2_list = [32, 33, 34, 35, 36, 37, 38, 39, 40,41,42,43,58,59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71,72,73, 74,
+    # 75,76,77, 78, 79, 80, 81, 82, 83, 84] # glm 256 6144
     gemm2_compare_failed_list = [m for m in gemm2_list]
     device="cuda:"+str(device_id)
     
@@ -1522,15 +1527,29 @@ def main(args: argparse.Namespace):
     # hidden_size=7168
 
     # glm
-    E = 256
-    shard_intermediate_size=256
-    hidden_size=6144
+    # E = 256
+    # shard_intermediate_size=256
+    # hidden_size=6144
 
+    # qwen3.5-122b
+    # E = 256
+    # shard_intermediate_size=2048
+    # hidden_size=3072
+
+    # qwen3.5-122b-tp4
+    # E = 256
+    # shard_intermediate_size=1024
+    # hidden_size=2048
+
+    # minmaxm2.5
+    E = 256
+    shard_intermediate_size=384
+    hidden_size=3072
 
     if args.batch_size is None:
         batch_sizes = [
-            #1, 
-            2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192
+            #1, 2, 4, 
+            8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192
             #15, 16, 32, 64, 128
             #16, 32, 64, 128, 
             #256, 512, 1024, 2048, 
