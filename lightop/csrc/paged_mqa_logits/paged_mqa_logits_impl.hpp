@@ -544,25 +544,19 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
 
     auto* smem_kv_block = reinterpret_cast<uint8_t*>(smem_buffer);
 
-    auto scheduler = PagedMQALogitsScheduler<BLOCK_KV, 1>(batch_size, blockIdx.x / kNextN, context_lens, schedule_meta);
     const auto next_n = kNextN != 1 ? blockIdx.x % kNextN : 0;
 
-    // Initialize `q_idx` outside `[0, batch_size)` to indicate it was none
-    int q_idx = batch_size, kv_idx, num_kv;
-    int next_q_idx, next_kv_idx, next_num_kv;
-    int context_len, next_context_len;
-    bool fetched_next_task;
+    int q_idx = blockIdx.y;
+    int kv_idx = blockIdx.x / kNextN;
+    int context_len = context_lens[q_idx];
+    int num_kv = ceil_div(context_len, BLOCK_KV);
 
-    // Prefetch the first Q
-    fetched_next_task =
-             scheduler.fetch_next_task(next_q_idx, next_kv_idx, next_num_kv, next_context_len);
-
-    if (!fetched_next_task) {
+    if (kv_idx >= num_kv) {
         return;
     }
 
-    // fetch Q && Q weights...
-    auto gQ = q + next_q_idx * kNextN * kNumHeads * kHeadDim + next_n * kNumHeads * kHeadDim;
+    // fetch Q && Q weights
+    auto gQ = q + q_idx * kNextN * kNumHeads * kHeadDim + next_n * kNumHeads * kHeadDim;
     constexpr int kAlignmentQ = 16 / sizeof(uint8_t);
 
     constexpr int fetch_q_cnt = kNumHeads * kHeadDim / kNumWarps / WARP_SIZE_GPU / kAlignmentQ;
@@ -591,7 +585,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     }
     __syncthreads();
 
-    auto gW = weights + next_q_idx * kNextN * kNumHeads + next_n * kNumHeads;
+    auto gW = weights + q_idx * kNextN * kNumHeads + next_n * kNumHeads;
     auto smem_weight = reinterpret_cast<float *>(smem_kv_block);
     if (warp_idx == 0 && lane_idx < kNumHeads) {
         smem_weight[lane_idx] = gW[lane_idx];
@@ -609,11 +603,6 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     }
     __syncthreads();
 
-    q_idx = next_q_idx;
-    kv_idx = next_kv_idx;
-    num_kv = next_num_kv;
-    context_len = next_context_len;
-
     // fetch kv block idx
     uint32_t kv_block_idx;
 
@@ -621,7 +610,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     kv_block_idx = kv_idx < num_kv ? *(block_table + block_table_offset) : 0;
 
     // fetch kv block
-    auto gKv = kv_block + kv_block_idx * BLOCK_KV * (kHeadDim+4);
+    auto gKv = kv_block + kv_block_idx * BLOCK_KV * (kHeadDim + 4);
     constexpr int kAlignmentKV = 16 / sizeof(uint8_t);
     constexpr int fetch_kv_block_cnt = BLOCK_KV * K_TILE / kNumWarps / WARP_SIZE_GPU / kAlignmentKV;
     constexpr int fetch_kv_block_stride = kNumWarps * WARP_SIZE_GPU / (K_TILE / kAlignmentKV) * kHeadDim;
@@ -680,7 +669,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     glob_kv_scale_desc[1] = (long) 0x20000 << 32 | 0xFFFFFFFE;
     auto *src_scale = reinterpret_cast<v4i *>(glob_kv_scale_desc);
     auto inner_warp_offset = lane_idx * sizeof(float);
-    if (warp_idx==0){
+    if (warp_idx == 0) {
           __builtin_amdgcn_raw_buffer_load_lds(*src_scale,
                                           // Cast address type to which compiler can recognize as lds type.
                                           *(__attribute__((address_space(3))) int**) (&smem_kv_scales),
@@ -695,178 +684,23 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
 
     float kv_scale;
 
-    while (scheduler.fetch_next_task(next_q_idx, next_kv_idx, next_num_kv, next_context_len)) {
-        // fetch next kv block idx
-        block_table_offset = next_q_idx * block_table_stride + next_kv_idx;
-
-        s_kv_block_idx = 0;
-        if (next_kv_idx < num_kv) {
-            const auto* block_id_ptr = block_table + block_table_offset;
-            asm volatile("s_load_dword %1, %0, 0x0\n\t"
-                "s_waitcnt lgkmcnt(0)\n\t":
-                "+s"(block_id_ptr),
-                "=s"(s_kv_block_idx));
-        }
-        gKv = kv_block + s_kv_block_idx * BLOCK_KV * (kHeadDim+4);
-        gKv_scales = kv_block_scales + s_kv_block_idx * kv_scale_stride;
-      
-        glob_kv_desc[0] = *reinterpret_cast<const long *>(&gKv);
-        glob_kv_desc[0] = glob_kv_desc[0] | stride << 48;
-        glob_kv_desc[1] = (long) 0x20000 << 32 | 0xFFFFFFFE;
-        src = reinterpret_cast<v4i *>(glob_kv_desc);
-
-        // Calculate logits KV block offset in advance
-        auto base_logits_offset = q_idx * kNextN * logits_stride;
-        auto base_seq_kv_offset = kv_idx * BLOCK_KV;
-
-        #pragma unroll
-        for (uint32_t k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
-
-            auto fetch_lds_kv = (base_fetch_lds_KV + k_block * BLOCK_KV * K_TILE) * sizeof(uint8_t);
-            /* To walk around occasionally compute error
-            if (warp_idx == 0) {
-                WAIT_VMCNT_LDS(Stages);
-            } else {
-                WAIT_VMCNT_LDS(Stages - 1);  
-            } */
-            WAIT_VMCNT_LDS(Stages - 1);
-
-            // pre-fetch KV from smem
-            int ldsAddr = reinterpret_cast<size_t>(&smem_kv_block[fetch_lds_kv]) ;
-            __builtin_amdgcn_sched_barrier(0);
-            asm volatile(
-                "\n ds_read_b128 %0 ,%1\n\t"
-                "s_waitcnt lgkmcnt(0) \n\t"
-                "s_barrier \n\t"
-                : "=v"(reg_kv_operand)
-                : "v"(ldsAddr)
-                :);
-            __builtin_amdgcn_sched_barrier(0);
-
-            auto smem_kv_stage = smem_kv_block + k_block * BLOCK_KV * K_TILE + warp_idx * kAlignmentKV * WARP_SIZE_GPU;
-            #pragma unroll
-            for (int j = 0; j < fetch_kv_block_cnt; ++j) {
-                auto inner_warp_offset =
-                        (t_id % 4 * kAlignmentKV + t_id / 4 * kHeadDim + k_block * K_TILE) * sizeof(uint8_t);
-                #if defined(__gfx938__)
-                __builtin_amdgcn_raw_buffer_load_lds(*src,
-                                                     // Cast address type to which compiler can recognize as lds type.
-                                                     *(__attribute__((address_space(3))) int**) (&smem_kv_stage),
-                                                     DIRECT_LDS_WORDx4,
-                                                     inner_warp_offset,
-                                                     0,
-                                                     0,
-                                                     0);
-                #endif
-            }
-
-            #pragma unroll
-            for (int i = 0; i < kHeadDim / Q_TILE; ++i) {
-                builtin_fp8_mmac<is_e4m3>(reg_kv_operand.front, reg_q_operand[i][k_block].front, acc[i]);
-                builtin_fp8_mmac<is_e4m3>(reg_kv_operand.rear, reg_q_operand[i][k_block].rear, acc[i]);
-            }
-        }
-
-        int ldsaddr_kv_scale = reinterpret_cast<size_t>(&smem_kv_scales[logits_t_offset]);
-        asm volatile(
-            "ds_read_b32 %0 ,%1"
-            : "=v"(kv_scale)
-            : "v"(ldsaddr_kv_scale)
-            :);
-        
-        const auto& transform = [&](const uint32_t& j, const uint32_t& k, const float& f) {
-            return fmaxf(f, 0) * reg_weights[j * 4 + k];
-        };
-
-        float sum = 0.0f;
-        // Intra-thread reduction
-        for (int j = 0; j < kNumHeads / Q_TILE; ++j) {
-            for (int k = 0; k < 4; ++k) {
-                sum += transform(j, k, acc[j][k]);
-            }
-        }
-        
-        asm volatile("s_waitcnt lgkmcnt(0); s_barrier");
-
-        #if defined(__gfx938__)
-        glob_kv_scale_desc[0] = *reinterpret_cast<const long *>(&gKv_scales);
-        glob_kv_scale_desc[0] = glob_kv_scale_desc[0] | stride_scale << 48;
-        glob_kv_scale_desc[1] = (long) 0x20000 << 32 | 0xFFFFFFFE;
-        auto *src_scale = reinterpret_cast<v4i *>(glob_kv_scale_desc);
-        auto inner_warp_offset = lane_idx* sizeof(float);
-        if (warp_idx==0){
-              __builtin_amdgcn_raw_buffer_load_lds(*src_scale,
-                                              // Cast address type to which compiler can recognize as lds type.
-                                              *(__attribute__((address_space(3))) int**) (&smem_kv_scales),
-                                              DIRECT_LDS_WORD,
-                                              inner_warp_offset,
-                                              0,
-                                              0,
-                                              0);
-
-        }
-        #endif
-
-        sum *= kv_scale;
-
-        // Inter-thread reduction
-        #pragma unroll
-        for (uint32_t shfl_idx = 16, j = 0; j < 2; ++j, shfl_idx = shfl_idx << 1) {
-            sum += __shfl_down_sync(0xffffffffffffffff, sum, shfl_idx);
-        }
-
-        // Store into the global memory
-        auto seq_kv_offset = base_seq_kv_offset + logits_t_offset;
-        if (lane_idx < 16 && seq_kv_offset < context_len - (kNextN - next_n) + 1) {
-            logits[base_logits_offset + next_n * logits_stride + seq_kv_offset] = sum;
-        }
-
-        // Prefetch next Q when current Q changes
-        if (q_idx != next_q_idx) {
-            if (scheduler.exist_q_idx(next_q_idx)) {
-                gQ = q + next_q_idx * kNextN * kNumHeads * kHeadDim + next_n * kNumHeads * kHeadDim;
-                #pragma unroll
-                for (int i = 0; i < heads_cnt; ++i) {
-                    #pragma unroll
-                    for (int j = 0; j < K_BLOCK_MAX; ++j) {
-                        auto offset = (base_fetch_lds_Q + i * Q_TILE * kHeadDim + j * K_TILE) * sizeof(uint8_t);
-                        reg_q_operand[i][j] = *reinterpret_cast<const f8x16_t *>(&gQ[offset]);
-                    }
-                }
-
-                gW = weights + next_q_idx * kNextN * kNumHeads + next_n * kNumHeads;
-                // pre-fetch weights
-                #pragma unroll
-                for (int j = 0; j < kNumHeads / Q_TILE; ++j) {
-                    #pragma unroll
-                    for (int k = 0; k < 4; ++k) {
-                        reg_weights[j * 4 + k] = gW[j * 16 + k * 4 + lane_idx / 16];
-                    }
-                }
-            }
-
-            __syncthreads();
-        }
-
-        // Fetch next task, reload idx to launch next mmac
-        q_idx = next_q_idx;
-        kv_idx = next_kv_idx;
-        num_kv = next_num_kv;
-        context_len = next_context_len;
-
-        CLEAR_ACC(acc, kHeadDim / Q_TILE);
-    }
-
-    // Calculate logits KV block offset in advance
-    auto base_logits_offset = q_idx * kNextN * logits_stride;
-    auto base_seq_kv_offset = kv_idx * BLOCK_KV;
-
-    #pragma unroll
+#pragma unroll
     for (uint32_t k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
+
         auto fetch_lds_kv = (base_fetch_lds_KV + k_block * BLOCK_KV * K_TILE) * sizeof(uint8_t);
-        WAIT_VMCNT_LDS(0);
+        WAIT_VMCNT_LDS(Stages - k_block - 1);
+
         // pre-fetch KV from smem
-        reg_kv_operand = *reinterpret_cast<f8x16_t *>(&smem_kv_block[fetch_lds_kv]);
+        int ldsAddr = reinterpret_cast<size_t>(&smem_kv_block[fetch_lds_kv]) ;
+        __builtin_amdgcn_sched_barrier(0);
+        asm volatile(
+            "\n ds_read_b128 %0 ,%1\n\t"
+            "s_waitcnt lgkmcnt(0) \n\t"
+            "s_barrier \n\t"
+            : "=v"(reg_kv_operand)
+            : "v"(ldsAddr)
+            :);
+        __builtin_amdgcn_sched_barrier(0);
 
         #pragma unroll
         for (int i = 0; i < kHeadDim / Q_TILE; ++i) {
@@ -874,6 +708,10 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
             builtin_fp8_mmac<is_e4m3>(reg_kv_operand.rear, reg_q_operand[i][k_block].rear, acc[i]);
         }
     }
+
+    // Calculate logits KV block offset in advance
+    auto base_logits_offset = q_idx * kNextN * logits_stride;
+    auto base_seq_kv_offset = kv_idx * BLOCK_KV;
 
     int ldsaddr_kv_scale = reinterpret_cast<size_t>(&smem_kv_scales[logits_t_offset]);
     asm volatile(
@@ -885,24 +723,26 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     const auto& transform = [&](const uint32_t& j, const uint32_t& k, const float& f) {
         return fmaxf(f, 0) * reg_weights[j * 4 + k];
     };
-   
 
     float sum = 0.0f;
     // Intra-thread reduction
-    for (int j = 0; j < kNumHeads / 16; ++j) {
+    for (int j = 0; j < kNumHeads / Q_TILE; ++j) {
         for (int k = 0; k < 4; ++k) {
             sum += transform(j, k, acc[j][k]);
         }
     }
+
     asm volatile("s_waitcnt lgkmcnt(0); s_barrier");
 
     sum *= kv_scale;
 
     // Inter-thread reduction
+    #pragma unroll
     for (uint32_t shfl_idx = 16, j = 0; j < 2; ++j, shfl_idx = shfl_idx << 1) {
         sum += __shfl_down_sync(0xffffffffffffffff, sum, shfl_idx);
     }
 
+    // Store into the global memory
     auto seq_kv_offset = base_seq_kv_offset + logits_t_offset;
     if (lane_idx < 16 && seq_kv_offset < context_len - (kNextN - next_n) + 1) {
         logits[base_logits_offset + next_n * logits_stride + seq_kv_offset] = sum;

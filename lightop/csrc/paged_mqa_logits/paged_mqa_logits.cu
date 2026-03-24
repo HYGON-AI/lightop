@@ -150,6 +150,26 @@ torch::Tensor get_paged_mqa_logits_metadata(const torch::Tensor& context_lens, i
     return schedule_metadata;
 }
 
+uint32_t plan_kv_chunks(const torch::Tensor& context_lens, int batch_size, int block_kv) {
+    int total_chunks = 0;
+    auto* lens_ptr = context_lens.data_ptr<int>();
+
+    if (lens_ptr == nullptr || batch_size <= 0) {
+        return -1;
+    }
+
+    int max_chunk_size = 0;
+    for (auto i = 0; i < batch_size; ++i) {
+        int cur_chunk = ceil_div(lens_ptr[i], block_kv);
+        if (cur_chunk > max_chunk_size) {
+            max_chunk_size = cur_chunk;
+        }
+        total_chunks += cur_chunk;
+
+    }
+    return max_chunk_size;
+}
+
 torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                                const torch::Tensor& fused_kv_cache,
                                const torch::Tensor& weights,
@@ -262,15 +282,14 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
 
     const int smem_size = smem_q_pipe_size + smem_kv_pipe_size;
 
-    // Dispatch implementation
-    dim3 grid = {BW_SMS, 1, 1};
-    dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
-
     const bool use_fp8_kv = (kv_cache_scales.defined() && kv_cache_scales.numel() > 0);
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     if (!use_fp8_kv) {
+        dim3 grid = {BW_SMS, 1, 1};
+        dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
+
         AT_DISPATCH_FLOATING_TYPES_AND2(
                 at::ScalarType::Half,
                 at::ScalarType::BFloat16,
@@ -294,6 +313,16 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                 })
             );
     } else {
+        auto max_chunk_size = plan_kv_chunks(context_lens, batch_size, block_kv);
+        if (max_chunk_size == -1) {
+            printf("invalid seq_len or batch_size settings.\n");
+            return logits;
+        }
+
+        // Dispatch implementation
+        dim3 grid = {max_chunk_size, (uint32_t)batch_size, 1};
+        dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
+
         DISPATCH_FP8_TYPES(q.scalar_type(), FP8_TYPE, [&] {
             DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
                 DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
@@ -449,15 +478,14 @@ torch::Tensor paged_mqa_logits_with_raw_tokens(const torch::Tensor& q,
 
     const int smem_size = smem_q_pipe_size + smem_kv_pipe_size;
 
-    // Dispatch implementation
-    dim3 grid = {BW_SMS, 1, 1};
-    dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
-
     const bool use_fp8_kv = (kv_cache_scales.defined() && kv_cache_scales.numel() > 0);
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     if (!use_fp8_kv) {
+        dim3 grid = {BW_SMS, 1, 1};
+        dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
+
         AT_DISPATCH_FLOATING_TYPES_AND2(
                 at::ScalarType::Half,
                 at::ScalarType::BFloat16,
@@ -481,6 +509,16 @@ torch::Tensor paged_mqa_logits_with_raw_tokens(const torch::Tensor& q,
                 })
             );
     } else {
+        auto max_chunk_size = plan_kv_chunks(context_lens, batch_size, block_kv);
+        if (max_chunk_size == -1) {
+            printf("invalid seq_len or batch_size settings.\n");
+            return logits;
+        }
+
+        // Dispatch implementation
+        dim3 grid = {max_chunk_size, (uint32_t)batch_size, 1};
+        dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
+
         DISPATCH_FP8_TYPES(q.scalar_type(), FP8_TYPE, [&] {
             DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
                 DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {

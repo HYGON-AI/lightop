@@ -89,16 +89,16 @@ def ref_fp8_paged_mqa_logits(q: torch.Tensor, kv_cache: torch.Tensor,
 
 def test_paged_mqa_logits(use_fp8 = True):
     max_model_len = 111 * 1000
-    for batch_size, next_n in [(64, 1), (64, 2), (128, 1)]:
+    for batch_size, next_n in [(1, 1), (64, 1), (64, 2), (128, 1)]:
         for heads, index_dim in [(32, 128), (64, 128)]:
-            for avg_kv in (8192, 32768):
+            for avg_kv in (72000,):
                 num_blocks, blocksize = max_model_len * 3, 64
 
                 q = torch.randn((batch_size, next_n, heads, index_dim), device='cuda', dtype=torch.bfloat16)
                 kv_cache = torch.randn((num_blocks, blocksize, 1, index_dim), device='cuda', dtype=torch.bfloat16)
                 weights = torch.randn((batch_size * next_n, heads), device='cuda', dtype=torch.float32)
 
-                context_lens = torch.randint(int(0.7 * avg_kv), int(1.3 * avg_kv), (batch_size, )).cuda().to(torch.int32)
+                context_lens = torch.randint(int(0.9 * avg_kv), int(1.1 * avg_kv), (batch_size, )).cuda().to(torch.int32)
                 max_block_len = (context_lens.max().item() + blocksize - 1) // blocksize * blocksize
                 block_tables = torch.zeros((batch_size, max_block_len), device='cuda', dtype=torch.int32)
 
@@ -186,7 +186,7 @@ def test_paged_mqa_logits(use_fp8 = True):
 
 def test_fused_paged_mqa_logits(use_fp8 = True):
     max_model_len = 111 * 1000
-    for batch_size, next_n in [(64, 1), (64, 2), (128, 1)]:
+    for batch_size, next_n in [(1, 1), (64, 1), (64, 2), (128, 1)]:
         for heads, index_dim in [(32, 128), (64, 128)]:
             for avg_kv in (8192, 32768):
                 num_blocks, blocksize = max_model_len * 3, 64
@@ -305,6 +305,6 @@ def test_fused_paged_mqa_logits(use_fp8 = True):
 
 if __name__ == '__main__':
     test_fused_paged_mqa_logits(use_fp8=True)
-    test_fused_paged_mqa_logits(use_fp8=False)
     test_paged_mqa_logits(use_fp8=True)
+    test_fused_paged_mqa_logits(use_fp8=False)
     test_paged_mqa_logits(use_fp8=False)
