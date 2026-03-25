@@ -416,33 +416,22 @@ void rms_norm_smooth_per_token_dynamic_quant(
   bool update_res                   
 );
 void moe_swiglu_dynamic_quant(torch::Tensor& scatter_tokens, torch::Tensor& smooth, torch::Tensor& experts_tokens_count, torch::Tensor& experts_tokens_start, torch::Tensor& output, torch::Tensor& scales, float beta);
-void fuse_qkv_head_rms_norm(
-    torch::Tensor& token_data, 
-    torch::Tensor& q_weight,    
-    torch::Tensor& k_weight,     
-    int q_head_num,
-    int kv_head_num,
-    int qk_head_dim,
-    double epsilon);
 void per_token_group_quant_fp8(
     torch::Tensor& out,        
-    torch::Tensor const& input, 
+    torch::Tensor  input, 
     torch::Tensor& scales,
     int group_size,            
     float eps = 1e-5f,         
     bool use_ue8m0 = false);    
-    void top_k_per_row_prefill(const torch::Tensor& logits,
+void top_k_per_row_prefill(const torch::Tensor& logits,
         const torch::Tensor& rowStarts,
         const torch::Tensor& rowEnds, torch::Tensor& indices,
         int64_t numRows, int64_t stride0, int64_t stride1,
         int64_t topK);
-    void top_k_per_row_decode(const torch::Tensor& logits, int64_t next_n,
+void top_k_per_row_decode(const torch::Tensor& logits, int64_t next_n,
         const torch::Tensor& seqLens, torch::Tensor& indices,
         int64_t numRows, int64_t stride0, int64_t stride1,
         int64_t topK); 
-        
-        
-    
 }
 }
 
@@ -675,7 +664,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("per_token_quant_fp8", &at::native::per_token_quant_fp8, "per_token_quant_fp8");    
  m.def("rms_norm_smooth_per_token_dynamic_quant", &at::native::rms_norm_smooth_per_token_dynamic_quant, "rms_norm_smooth_per_token_dynamic_quant");   
  m.def("moe_swiglu_dynamic_quant", &at::native::moe_swiglu_dynamic_quant, "moe_swiglu_dynamic_quant");  
- m.def("fuse_qkv_head_rms_norm", &at::native::fuse_qkv_head_rms_norm, "fuse_qkv_head_rms_norm");  
  m.def("per_token_group_quant_fp8", &at::native::per_token_group_quant_fp8, "per_token_group_quant_fp8");  
  m.def("top_k_per_row_prefill", &at::native::top_k_per_row_prefill, "top_k_per_row_prefill");  
  m.def("top_k_per_row_decode", &at::native::top_k_per_row_decode, "top_k_per_row_decode");  
