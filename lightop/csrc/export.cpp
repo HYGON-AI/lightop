@@ -441,6 +441,14 @@ torch::Tensor convert_req_index_to_global_index(
     bool HAS_PREFILL_WORKSPACE,
     std::optional<torch::Tensor> prefill_workspace_request_ids,
     std::optional<torch::Tensor> prefill_workspace_starts);
+void fuse_qkv_head_rms_norm(
+    torch::Tensor& token_data,   
+    torch::Tensor& q_weight,     
+    torch::Tensor& k_weight,    
+    int q_head_num,
+    int kv_head_num,
+    int qk_head_dim,
+    double epsilon); 
 }
 }
 
@@ -676,6 +684,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("per_token_group_quant_fp8", &at::native::per_token_group_quant_fp8, "per_token_group_quant_fp8");  
  m.def("top_k_per_row_prefill", &at::native::top_k_per_row_prefill, "top_k_per_row_prefill");  
  m.def("top_k_per_row_decode", &at::native::top_k_per_row_decode, "top_k_per_row_decode");  
- m.def("convert_req_index_to_global_index", &at::native::convert_req_index_to_global_index, "convert_req_index_to_global_index");  
+ m.def("convert_req_index_to_global_index", &at::native::convert_req_index_to_global_index, "convert_req_index_to_global_index");
+ m.def("fuse_qkv_head_rms_norm", &at::native::fuse_qkv_head_rms_norm, "fuse_qkv_head_rms_norm");
 }
 
