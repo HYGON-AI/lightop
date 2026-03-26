@@ -432,6 +432,15 @@ void top_k_per_row_decode(const torch::Tensor& logits, int64_t next_n,
         const torch::Tensor& seqLens, torch::Tensor& indices,
         int64_t numRows, int64_t stride0, int64_t stride1,
         int64_t topK); 
+torch::Tensor convert_req_index_to_global_index(
+    torch::Tensor req_id,
+    torch::Tensor block_table,
+    torch::Tensor token_indices,
+    int BLOCK_SIZE,
+    int NUM_TOPK_TOKENS,
+    bool HAS_PREFILL_WORKSPACE,
+    std::optional<torch::Tensor> prefill_workspace_request_ids,
+    std::optional<torch::Tensor> prefill_workspace_starts);
 }
 }
 
@@ -667,5 +676,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("per_token_group_quant_fp8", &at::native::per_token_group_quant_fp8, "per_token_group_quant_fp8");  
  m.def("top_k_per_row_prefill", &at::native::top_k_per_row_prefill, "top_k_per_row_prefill");  
  m.def("top_k_per_row_decode", &at::native::top_k_per_row_decode, "top_k_per_row_decode");  
+ m.def("convert_req_index_to_global_index", &at::native::convert_req_index_to_global_index, "convert_req_index_to_global_index");  
 }
 
