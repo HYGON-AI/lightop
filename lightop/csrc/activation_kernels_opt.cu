@@ -124,6 +124,39 @@ __global__ void act_and_mul_kernel_opt3(
   }
 }
 
+template <typename scalar_t, scalar_t (*ACT_FN)(const scalar_t&), int VEC,
+          bool act_first>
+__global__ void act_and_mul_kernel_opt4(
+    scalar_t* __restrict__ out,          
+    const scalar_t* __restrict__ input,  
+    const int d) {
+  using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+  
+  const int64_t token_idx = blockIdx.y;
+  int64_t idx = (blockIdx.x * blockDim.x + threadIdx.x) * VEC;
+  int64_t stride = gridDim.x * blockDim.x * VEC;
+
+  for (; idx < d; idx += stride) {
+    const int64_t x_index = token_idx * 2 * d + idx;
+    const int64_t y_index = token_idx * d + idx; 
+
+    VecType* x1 = (VecType*)(input + x_index);
+    VecType* x2 = (VecType*)(input + x_index + d);
+    VecType* y = (VecType*)(out + y_index);
+
+    scalar_t r_x1[VEC];
+    scalar_t r_x2[VEC];
+    scalar_t r_y[VEC];
+    *(VecType*)r_x1 = *x1;
+    *(VecType*)r_x2 = *x2;
+#pragma unroll
+    for (int i = 0; i < VEC; i++) {
+      r_y[i] = ACT_FN(r_x1[i]) * r_x2[i];
+    }
+    *y = *(VecType*)r_y;
+  }
+}
+
 template <typename T>
 __device__ __forceinline__ T silu_kernel(const T& x) {
   constexpr float LOG2E = 1.44269504088896340736f;
@@ -168,7 +201,7 @@ __device__ __forceinline__ T gelu_tanh_kernel(const T& x) {
       at::ScalarType::Half,                                                    \
       at::ScalarType::BFloat16,                                                \
       input.scalar_type(), "act_and_mul_kernel", [&] {                         \
-        if (0 == d % 8 && d <= 32768) {                                                      \
+        if (0 == d % 8 && d <= 32768) {                                        \
           if (d <= 512) {                                                      \
             act_and_mul_kernel_opt1<scalar_t, KERNEL<scalar_t>, 2, ACT_FIRST>  \
                 <<<grid, 256, 0, stream>>>(out.data_ptr<scalar_t>(),           \
@@ -186,18 +219,22 @@ __device__ __forceinline__ T gelu_tanh_kernel(const T& x) {
                 <<<grid, 512, 0, stream>>>(out.data_ptr<scalar_t>(),           \
                                            input.data_ptr<scalar_t>(), d);     \
           } else {                                                             \
-            int64_t total_elements = num_tokens * d;                           \
-            constexpr int VEC = 8;                                             \
-            constexpr int threads_per_block = 1024;                             \
-            int64_t elements_per_block = threads_per_block * VEC;              \
-            int64_t blocks = (total_elements + elements_per_block - 1) / elements_per_block; \
-            dim3 grid(std::min((int64_t)65535, blocks));;           \
-            dim3 block(threads_per_block);                                \
-                                                                               \
-            act_and_mul_kernel_opt3<scalar_t, KERNEL<scalar_t>, VEC, ACT_FIRST>\
-                <<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(), \
-                                                       input.data_ptr<scalar_t>(), \
-                                                       total_elements, d);     \
+            if constexpr (std::is_same<scalar_t, at::BFloat16>::value || std::is_same<scalar_t, at::Half>::value) {\
+              constexpr int VEC = 8;                                           \
+              constexpr int threads_per_block = 512;                          \
+              int64_t elements_per_block = threads_per_block * VEC;            \
+              int64_t blocks_x = (d + elements_per_block - 1) / elements_per_block; \
+              dim3 grid(blocks_x, num_tokens);                            \
+              dim3 block(threads_per_block);                              \
+              act_and_mul_kernel_opt4<scalar_t, KERNEL<scalar_t>, VEC, ACT_FIRST> \
+                  <<<grid, block, 0, stream>>>(out.data_ptr<scalar_t>(),\
+                                                         input.data_ptr<scalar_t>(),\
+                                                         d);                   \
+            } else {                                                           \
+              act_and_mul_kernel_opt2<scalar_t, KERNEL<scalar_t>, 16, ACT_FIRST>\
+                  <<<grid, 1024, 0, stream>>>(out.data_ptr<scalar_t>(),        \
+                                              input.data_ptr<scalar_t>(), d);  \
+            }                                                                  \
           }                                                                    \
         } else {                                                               \
           act_and_mul_kernel<scalar_t, KERNEL<scalar_t>, ACT_FIRST>            \
