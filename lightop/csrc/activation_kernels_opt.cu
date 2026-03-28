@@ -9,6 +9,8 @@
 namespace at {
 namespace native {
 
+using bfloat16 = at::BFloat16;
+
 template <typename scalar_t, scalar_t (*ACT_FN)(const scalar_t&),
           bool act_first>
 __device__ __forceinline__ scalar_t compute(const scalar_t& x,
@@ -159,10 +161,30 @@ __global__ void act_and_mul_kernel_opt4(
 
 template <typename T>
 __device__ __forceinline__ T silu_kernel(const T& x) {
-  // return (T)(((float)x) / (1.0f + __expf((float)-x)));
+  float x_float = (float)x;
+  constexpr float LOG2E = 1.44269504088896340736f;
+  return (T)(x_float / (1.0f + __builtin_amdgcn_exp2f(-x_float * LOG2E)));
+}
+
+template <>
+__device__ __forceinline__ bfloat16 silu_kernel<bfloat16>(const bfloat16& x) {
+  #if defined(__gfx938__)
+  short x_short = reinterpret_cast<const short&>(x);
+  float x_f32 = __builtin_hcu_cvt_f32_bf16(x_short, false, 0, false);
+  #else
+  float x_f32 = (float)x;
+  #endif
 
   constexpr float LOG2E = 1.44269504088896340736f;
-  return (T)(((float)x) / (1.0f + __builtin_amdgcn_exp2f(-((float)x) * LOG2E)));
+  float silu_f32 = (x_f32 / (1.0f + __builtin_amdgcn_exp2f(-x_f32 * LOG2E)));
+  // printf("in");
+  #if defined(__gfx938__)
+  short silu_short = __builtin_hcu_cvt_bf16_f32(silu_f32, false, false);
+  return *(bfloat16*)&silu_short;
+  #else
+  return (bfloat16)silu_f32;
+  #endif
+
 }
 
 
