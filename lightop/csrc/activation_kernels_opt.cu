@@ -159,9 +159,12 @@ __global__ void act_and_mul_kernel_opt4(
 
 template <typename T>
 __device__ __forceinline__ T silu_kernel(const T& x) {
+  // return (T)(((float)x) / (1.0f + __expf((float)-x)));
+
   constexpr float LOG2E = 1.44269504088896340736f;
   return (T)(((float)x) / (1.0f + __builtin_amdgcn_exp2f(-((float)x) * LOG2E)));
 }
+
 
 template <typename T>
 __device__ __forceinline__ T gelu_kernel(const T& x) {
@@ -219,7 +222,7 @@ __device__ __forceinline__ T gelu_tanh_kernel(const T& x) {
                 <<<grid, 512, 0, stream>>>(out.data_ptr<scalar_t>(),           \
                                            input.data_ptr<scalar_t>(), d);     \
           } else {                                                             \
-            if constexpr (std::is_same<scalar_t, at::BFloat16>::value || std::is_same<scalar_t, at::Half>::value) {\
+            if (num_tokens <= 1024){\
               constexpr int VEC = 8;                                           \
               constexpr int threads_per_block = 512;                          \
               int64_t elements_per_block = threads_per_block * VEC;            \
@@ -231,7 +234,7 @@ __device__ __forceinline__ T gelu_tanh_kernel(const T& x) {
                                                          input.data_ptr<scalar_t>(),\
                                                          d);                   \
             } else {                                                           \
-              act_and_mul_kernel_opt2<scalar_t, KERNEL<scalar_t>, 16, ACT_FIRST>\
+              act_and_mul_kernel_opt2<scalar_t, KERNEL<scalar_t>, 8, ACT_FIRST>\
                   <<<grid, 1024, 0, stream>>>(out.data_ptr<scalar_t>(),        \
                                               input.data_ptr<scalar_t>(), d);  \
             }                                                                  \
