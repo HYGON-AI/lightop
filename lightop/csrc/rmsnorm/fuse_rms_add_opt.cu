@@ -12,6 +12,10 @@
   #include <hipcub/hipcub.hpp>
 #endif
 
+#ifdef TORCH_VERSION_OVER_290
+#define C10_WARP_SIZE C10_WARP_SIZE_STATIC
+#endif
+
 template<typename scalar_t> 
 static __device__ inline float to_float(scalar_t in){
   if constexpr(!std::is_same<scalar_t, uint16_t>::value){
