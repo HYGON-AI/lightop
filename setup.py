@@ -121,6 +121,16 @@ def _join_rocm_home(*paths) -> str:
         raise EnvironmentError('ROCM_HOME environment variable is not set. ')
     return os.path.join(ROCM_HOME, *paths)
 
+def get_rocm_version():
+    version_str = torch.version.hip
+    if version_str is None:
+        return None
+    parts = [int(x) for x in version_str.split('.')]
+    version = parts[0] * 10000 + parts[1] * 100 + int((str(parts[2])[:2]) if len(parts) > 2 else 0)
+    # version = parts[0] * 10000 + parts[1] * 100
+    return version
+
+ROCM_VERSION = get_rocm_version()
 
 def _write_ninja_file(path, cflags, post_cflags, cuda_cflags, cuda_post_cflags, sources,
                       objects, ldflags, library_target, with_cuda) -> None:
@@ -284,6 +294,7 @@ class BuildReleaseExtension(BuildExtension):
                             extension.extra_compile_args[ext] = []
 
                 self._add_compile_flag(extension, '-DTORCH_API_INCLUDE_EXTENSION_H')
+                self._add_compile_flag(extension, f'-DROCM_VERSION={ROCM_VERSION}')
 
                 # HIP扩展处理（根据你的需要保留或删除）
                 if True: #IS_HIP_EXTENSION:
@@ -501,6 +512,8 @@ def get_extensions():
     extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas','-w'], 'nvcc': ['-O3','-ldl', '-lrocblas','-w','-mllvm -enable-num-vgprs-512=true', '-DHIP_ENABLE_WARP_SYNC_BUILTINS']}
     if torch_version_over110():
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_110')
+    if torch_version == 290:
+        extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_290')
     op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + \
                glob.glob('./lightop/csrc/layernorm/*.cu') + glob.glob('./lightop/csrc/loss/*.cu') + \
                glob.glob('./lightop/csrc/scaledmask/*.cu') + glob.glob('./lightop/csrc/groupnorm/*.cu') + \

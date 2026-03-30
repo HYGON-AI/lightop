@@ -14,6 +14,10 @@
 #include <c10/cuda/CUDAMathCompat.h>
 #include <torch/autograd.h>
 #include <THC/THCDeviceUtils.cuh>
+
+#ifdef TORCH_VERSION_OVER_290
+#define C10_WARP_SIZE C10_WARP_SIZE_STATIC
+#endif
 namespace at{
 namespace native{
 

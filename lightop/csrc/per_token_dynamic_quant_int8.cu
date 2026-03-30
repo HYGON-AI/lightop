@@ -8,6 +8,11 @@
 #include <cmath>
 // #include "reduce.h"
 
+
+#ifdef TORCH_VERSION_OVER_290
+#define C10_WARP_SIZE C10_WARP_SIZE_STATIC
+#endif
+
 namespace at {
 namespace native {
 #define VLLM_DISPATCH_CASE_FLOATING_TYPES(...)         \

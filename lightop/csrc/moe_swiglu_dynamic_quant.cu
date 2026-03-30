@@ -9,6 +9,11 @@
 // #include "cuda_compat.h"
 // #include "../dispatch_utils.h"
 
+
+#ifdef TORCH_VERSION_OVER_290
+#define C10_WARP_SIZE C10_WARP_SIZE_STATIC
+#endif
+
 namespace at {
 namespace native {
 

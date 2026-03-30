@@ -11,6 +11,11 @@
   #include <hipcub/hipcub.hpp>
 #endif
 
+
+#ifdef TORCH_VERSION_OVER_290
+#define C10_WARP_SIZE C10_WARP_SIZE_STATIC
+#endif
+
 #define CEILDIV(x, y) (((x) + (y) - 1) / (y))
 template <typename T, int N> struct alignas(sizeof(T) * N) Vector {
   T val[N];
