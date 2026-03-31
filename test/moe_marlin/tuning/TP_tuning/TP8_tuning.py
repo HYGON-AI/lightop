@@ -30,11 +30,10 @@ from fused_marlin_moe_valid import fused_marlin_moe_valid
 from fused_marlin_moe import fused_marlin_moe
 import openpyxl
 from openpyxl import Workbook  # 显式导入Workbook
-from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
-
+#from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
+from vllm.model_executor.layers.fused_moe.router.fused_topk_router import fused_topk
 from vllm.platforms import current_platform
-from vllm.utils import FlexibleArgumentParser
-from vllm.scalar_type import scalar_types
+
 
 FP8_DTYPE = torch.float8_e4m3fnuz if current_platform.is_rocm(
 ) else torch.float8_e4m3fn
@@ -602,7 +601,7 @@ if __name__ == "__main__":
     set_random_seed(seed=0)
     
     num_experts = 256
-    hidden_size = 7168
+    hidden_size = 6144
     top_k = 8
 
     # for tp_sizes in [1, 2, 4, 8]:
@@ -633,7 +632,7 @@ if __name__ == "__main__":
         # 用于保存性能数据
         prof_results = []
 
-        for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]:
+        for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144]:
         # for num_tokens in [6144]:
         # for num_tokens in [1, 2, 4, 8, 16, 32]:
         # for num_tokens in [32]:
