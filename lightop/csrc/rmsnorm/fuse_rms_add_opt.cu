@@ -44,7 +44,7 @@ static __device__ inline void from_float(scalar_t &out ,float f){
 namespace vllm {
 
 // TODO(woosuk): Further optimize this kernel.
-template <typename scalar_t>
+template <typename scalar_t, bool IS_GEMMA = false>
 __global__ void rms_norm_kernel(
     scalar_t* __restrict__ out,           // [..., hidden_size]
     const scalar_t* __restrict__ input,   // [..., hidden_size]
@@ -69,8 +69,11 @@ __global__ void rms_norm_kernel(
 
   for (int idx = threadIdx.x; idx < hidden_size; idx += blockDim.x) {
     float x = (float)input[blockIdx.x * hidden_size + idx];
+    float w = (float)weight[idx];
+    if constexpr (IS_GEMMA) { w += 1.0f; }
+    
     out[blockIdx.x * hidden_size + idx] =
-        ((scalar_t)(x * s_variance)) * weight[idx];
+        ((scalar_t)(x * s_variance)) * ((scalar_t)w);
   }
 }
 
@@ -79,7 +82,7 @@ __global__ void rms_norm_kernel(
    Additional optimizations we can make in this case are
    packed and vectorized operations, which help with the
    memory latency bottleneck. */
-template <typename scalar_t, int width>
+template <typename scalar_t, int width, bool IS_GEMMA = false>
 __global__ std::enable_if_t<(width > 0) && _typeConvert<scalar_t>::exists>
 fused_add_rms_norm_kernel(
     scalar_t* __restrict__ input,         // [..., hidden_size]
@@ -124,7 +127,19 @@ fused_add_rms_norm_kernel(
     int id = blockIdx.x * vec_hidden_size + idx;
     _f16Vec<scalar_t, width> temp = residual_v[id];
     temp *= s_variance;
-    temp *= weight_v[idx];
+    
+    _f16Vec<scalar_t, width> w_vec = weight_v[idx];
+    if constexpr (IS_GEMMA) {
+        scalar_t* w_scalars = reinterpret_cast<scalar_t*>(&w_vec);
+        #pragma unroll
+        for (int i = 0; i < width; ++i) {
+            float w_f = (float)w_scalars[i];
+            w_f += 1.0f;
+            w_scalars[i] = (scalar_t)w_f;
+        }
+    }
+    temp *= w_vec;
+    
     input_v[id] = temp;
   }
 }
@@ -132,7 +147,7 @@ fused_add_rms_norm_kernel(
 /* Generic fused_add_rms_norm_kernel
    The width field is not used here but necessary for other specializations.
  */
-template <typename scalar_t, int width>
+template <typename scalar_t, int width, bool IS_GEMMA = false>
 __global__ std::enable_if_t<(width == 0) || !_typeConvert<scalar_t>::exists>
 fused_add_rms_norm_kernel(
     scalar_t* __restrict__ input,         // [..., hidden_size]
@@ -161,8 +176,11 @@ fused_add_rms_norm_kernel(
 
   for (int idx = threadIdx.x; idx < hidden_size; idx += blockDim.x) {
     float x = (float)residual[blockIdx.x * hidden_size + idx];
+    float w = (float)weight[idx];
+    if constexpr (IS_GEMMA) { w += 1.0f; }
+    
     input[blockIdx.x * hidden_size + idx] =
-        ((scalar_t)(x * s_variance)) * weight[idx];
+        ((scalar_t)(x * s_variance)) * ((scalar_t)w);
   }
 }
 
@@ -200,7 +218,7 @@ __inline__ __device__ T BlockReduceSum_NEW(T val, T* shared) {
   }
 }
 
-template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512>
+template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512, bool IS_GEMMA=false>
 __global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scalar_t* gamma,int cols,T_ACC eps, int num_tokens)
 {
   constexpr int share_size=block_size/C10_WARP_SIZE;
@@ -234,7 +252,9 @@ __global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scal
           #pragma unroll
           for(int ii=0;ii<Vec;ii++){
             int jj=j*Vec+ii;
-            from_float<scalar_t>(intput_vec[ii] ,to_float(residual_vec[ii]) *trstd* to_float(gamma[jj]));
+            T_ACC w_val = to_float(gamma[jj]);
+            if constexpr (IS_GEMMA) { w_val += 1.0f; }
+            from_float<scalar_t>(intput_vec[ii] ,to_float(residual_vec[ii]) * trstd * w_val);
           }
           *(LoadT*)(residual+idx)=*(LoadT*)residual_vec;
           *(LoadT*)(input+idx)=*(LoadT*)intput_vec;
@@ -242,7 +262,7 @@ __global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scal
   }
 }
 
-template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512>
+template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512, bool IS_GEMMA=false>
 __global__ void fused_rms_kernel_opt(scalar_t* input,scalar_t* output,scalar_t* gamma,int cols,T_ACC eps,int num_tokens)
 {
   constexpr int share_size=block_size/C10_WARP_SIZE;
@@ -274,14 +294,17 @@ __global__ void fused_rms_kernel_opt(scalar_t* input,scalar_t* output,scalar_t* 
         #pragma unroll
         for(int ii=0;ii<Vec;ii++){
           int jj=j*Vec+ii;
-          intput_vec[ii] = static_cast<T_ACC>(intput_vec[ii]) *trstd* static_cast<T_ACC>(gamma[jj]);
+          T_ACC w_val = static_cast<T_ACC>(gamma[jj]);
+          if constexpr (IS_GEMMA) { w_val += 1.0f; }
+          intput_vec[ii] = static_cast<T_ACC>(intput_vec[ii]) * trstd * w_val;
         }
         *(LoadT*)(output+idx)=*(LoadT*)intput_vec;
       }
   }
 }
 
-void rms_norm_opt(torch::Tensor& out,     // [..., hidden_size]
+template<bool IS_GEMMA>
+void rms_norm_opt_impl(torch::Tensor& out,    // [..., hidden_size]
               torch::Tensor& input,   // [..., hidden_size]
               torch::Tensor& weight,  // [hidden_size]
               double epsilon) {
@@ -307,19 +330,19 @@ void rms_norm_opt(torch::Tensor& out,     // [..., hidden_size]
       scalar_t* out_data   =  out.expect_contiguous()->data_ptr<scalar_t>();
       scalar_t* weight_data= weight.expect_contiguous()->data_ptr<scalar_t>();
       if (hidden_size<=1024){
-          fused_rms_kernel_opt<scalar_t,T_ACC,8,128><<<grid,  128, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
+          fused_rms_kernel_opt<scalar_t,T_ACC,8,128, IS_GEMMA><<<grid,  128, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
       }
       else if(hidden_size<=2048){
-          fused_rms_kernel_opt<scalar_t,T_ACC,8,256><<<grid,  256, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
+          fused_rms_kernel_opt<scalar_t,T_ACC,8,256, IS_GEMMA><<<grid,  256, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
       }
       else if(hidden_size<=4096){
-           fused_rms_kernel_opt<scalar_t,T_ACC,8,512><<<grid,  512, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
+           fused_rms_kernel_opt<scalar_t,T_ACC,8,512, IS_GEMMA><<<grid,  512, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
       }
       else if(hidden_size<=8192){
-           fused_rms_kernel_opt<scalar_t,T_ACC,8,1024><<<grid,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
+           fused_rms_kernel_opt<scalar_t,T_ACC,8,1024, IS_GEMMA><<<grid,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
       }
       else{
-          fused_rms_kernel_opt<scalar_t,T_ACC,16,1024><<<grid,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
+          fused_rms_kernel_opt<scalar_t,T_ACC,16,1024, IS_GEMMA><<<grid,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
       } 
     });
   }
@@ -330,18 +353,27 @@ void rms_norm_opt(torch::Tensor& out,     // [..., hidden_size]
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half,
         at::ScalarType::BFloat16,input.scalar_type(), "rms_norm_kernel", [&] {
-      vllm::rms_norm_kernel<scalar_t><<<grid, block, 0, stream>>>(
+      vllm::rms_norm_kernel<scalar_t, IS_GEMMA><<<grid, block, 0, stream>>>(
           out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
           weight.data_ptr<scalar_t>(), epsilon, num_tokens, hidden_size);
     });
   }
 }
 
-#define LAUNCH_FUSED_ADD_RMS_NORM(width)                                       \
+void rms_norm_opt(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight, double epsilon) {
+    rms_norm_opt_impl<false>(out, input, weight, epsilon);
+}
+
+void gemma_rmsnorm(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight, double epsilon) {
+    rms_norm_opt_impl<true>(out, input, weight, epsilon);
+}
+
+
+#define LAUNCH_FUSED_ADD_RMS_NORM(width, is_gemma)                             \
      AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half,                     \
         at::ScalarType::BFloat16,                                              \
       input.scalar_type(), "fused_add_rms_norm_kernel", [&] {                  \
-        vllm::fused_add_rms_norm_kernel<scalar_t, width>                       \
+        vllm::fused_add_rms_norm_kernel<scalar_t, width, is_gemma>             \
             <<<grid, block, 0, stream>>>(input.data_ptr<scalar_t>(),           \
                                          residual.data_ptr<scalar_t>(),        \
                                          weight.data_ptr<scalar_t>(), epsilon, \
@@ -349,8 +381,8 @@ void rms_norm_opt(torch::Tensor& out,     // [..., hidden_size]
       });
 
 
-
-void fused_add_rms_norm_opt(torch::Tensor& input,     // [..., hidden_size]
+template<bool IS_GEMMA>
+void fused_add_rms_norm_opt_impl(torch::Tensor& input,     // [..., hidden_size]
                         torch::Tensor& residual,  // [..., hidden_size]
                         torch::Tensor& weight,    // [hidden_size]
                         double epsilon) {
@@ -377,25 +409,19 @@ void fused_add_rms_norm_opt(torch::Tensor& input,     // [..., hidden_size]
         scalar_t* other_data = residual.expect_contiguous()->data_ptr<scalar_t>();
         scalar_t* weight_data= weight.expect_contiguous()->data_ptr<scalar_t>();
         if (hidden_size<=1024){
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,128><<<grid,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,128, IS_GEMMA><<<grid,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
         }
         else if(hidden_size<=2048){
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,256><<<grid,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,256, IS_GEMMA><<<grid,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
         }
         else if(hidden_size<=4096){
-            // if(num_tokens>1200){
-            //   fused_add_rms_kernel_opt<scalar_t,T_ACC,8,512><<<grid,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
-            // }
-            // else{
-            //   fused_add_rms_kernel_opt<scalar_t,T_ACC,4,1024><<<grid,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
-            // }
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,512><<<grid,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,512, IS_GEMMA><<<grid,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
         }
         else if(hidden_size<=8192){
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,1024><<<grid,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,1024, IS_GEMMA><<<grid,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
         }
         else{
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,16,1024><<<grid,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,16,1024, IS_GEMMA><<<grid,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
         } 
       });
   }
@@ -407,20 +433,21 @@ void fused_add_rms_norm_opt(torch::Tensor& input,     // [..., hidden_size]
       hiding on global mem ops. */
     const int max_block_size = (num_tokens < 256) ? 1024 : 256;
     dim3 block(std::min(hidden_size, max_block_size));
-    /*If the tensor types are FP16/BF16, try to use the optimized kernel
-      with packed + vectorized ops.
-      Max optimization is achieved with a width-8 vector of FP16/BF16s
-      since we can load at most 128 bits at once in a global memory op.
-      However, this requires each tensor's data to be aligned to 16
-      bytes.
-    */
 
     if (ptrs_are_aligned && hidden_size % 8 == 0) {
-      LAUNCH_FUSED_ADD_RMS_NORM(8);
+      LAUNCH_FUSED_ADD_RMS_NORM(8, IS_GEMMA);
     } else {
-      LAUNCH_FUSED_ADD_RMS_NORM(0);
+      LAUNCH_FUSED_ADD_RMS_NORM(0, IS_GEMMA);
     }
   }
+}
+
+void fused_add_rms_norm_opt(torch::Tensor& input, torch::Tensor& residual, torch::Tensor& weight, double epsilon) {
+    fused_add_rms_norm_opt_impl<false>(input, residual, weight, epsilon);
+}
+
+void gemma_fused_add_rmsnorm(torch::Tensor& input, torch::Tensor& residual, torch::Tensor& weight, double epsilon) {
+    fused_add_rms_norm_opt_impl<true>(input, residual, weight, epsilon);
 }
 
 }
