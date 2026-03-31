@@ -16,7 +16,28 @@ def fused_add_rms_norm(
     )
     return x, residual
 
-
+def gemma_fused_add_rmsnorm(
+        x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor,
+        variance_epsilon: float) -> tuple[torch.Tensor, torch.Tensor]:
+    op.gemma_fused_add_rmsnorm(
+        x,
+        residual,
+        weight,
+        variance_epsilon,
+    )
+    return x, residual
+def gemma_rmsnorm(
+        x: torch.Tensor, weight: torch.Tensor,
+        variance_epsilon: float, out: torch.Tensor = None) -> torch.Tensor:
+    if out is None:
+        out = x  
+    op.gemma_rmsnorm(
+        out,
+        x,
+        weight,
+        variance_epsilon,
+    )
+    return out
 def rmsnorm_forward(x,weight,output=None,eps:float = 1e-5,training:bool=True):
     return op.rmsnorm_forward(x,weight,output,eps,training)
 

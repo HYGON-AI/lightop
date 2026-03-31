@@ -449,6 +449,8 @@ void fuse_qkv_head_rms_norm(
     int kv_head_num,
     int qk_head_dim,
     double epsilon); 
+void gemma_fused_add_rmsnorm(torch::Tensor& input, torch::Tensor& residual, torch::Tensor& weight, double epsilon);
+void gemma_rmsnorm(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight, double epsilon);
 }
 }
 
@@ -686,5 +688,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("top_k_per_row_decode", &at::native::top_k_per_row_decode, "top_k_per_row_decode");  
  m.def("convert_req_index_to_global_index", &at::native::convert_req_index_to_global_index, "convert_req_index_to_global_index");
  m.def("fuse_qkv_head_rms_norm", &at::native::fuse_qkv_head_rms_norm, "fuse_qkv_head_rms_norm");
+ m.def("gemma_fused_add_rmsnorm", &at::native::gemma_fused_add_rmsnorm, "gemma_fused_add_rmsnorm");
+ m.def("gemma_rmsnorm", &at::native::gemma_rmsnorm, "gemma_rmsnorm");
 }
 
