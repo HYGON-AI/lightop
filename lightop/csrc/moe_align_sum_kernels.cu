@@ -1761,12 +1761,18 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
               });
             });
       }
-    } else if (hidden_size == 2048 || hidden_size == 4096 || hidden_size == 8192){   
+    } else if (hidden_size == 2048 || hidden_size == 3072 || hidden_size == 4096 || hidden_size == 8192){   
       #define DISPATCH_HIDDEN_SIZE(HIDDEN_SIZE_VAL, ...)       \
             switch (HIDDEN_SIZE_VAL) {                         \
               case 2048: {                                     \
                 constexpr int CONST_HIDDEN_SIZE = 2048;        \
                 constexpr int CONST_X_DIM = 2;                 \
+                __VA_ARGS__();                                 \
+                break;                                         \
+              }                                                \
+              case 3072: {                                     \
+                constexpr int CONST_HIDDEN_SIZE = 3072;        \
+                constexpr int CONST_X_DIM = 3;                 \
                 __VA_ARGS__();                                 \
                 break;                                         \
               }                                                \
