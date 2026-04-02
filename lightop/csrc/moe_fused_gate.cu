@@ -631,7 +631,7 @@ __global__ void moe_fused_gate_kernel_topk8_gourp1(
     for (int mask = params.THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
       float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(global_max_val, mask, params.THREADS_PER_ROW);
       int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert_id, mask, params.THREADS_PER_ROW);
-      if (other_max > global_max_val || (other_max == global_max_val && other_expert < global_best_expert_id)) {
+      if (other_max > global_max_val) {
             global_max_val = other_max;
             global_best_expert_id = other_expert;
       }

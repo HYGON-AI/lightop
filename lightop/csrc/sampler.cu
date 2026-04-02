@@ -212,56 +212,48 @@ __device__ bool processHistogramStep(
   // Reads the value of the starting position in the smemOutput array
   int lastValue = smemFoundTopKValues[0];
 
-  for (int round = 0; round < kNumBins / kNumThreadsPerBlock; round++) {
-    // Read the values from SMEM.
-    int idx = threadIdx.x + kNumThreadsPerBlock * round;
-    int binCount{0};
-    binCount = smemFinal.histo.data[idx];
+  constexpr int kItemsPerThread = kNumBins / kNumThreadsPerBlock;
+  int binData[kItemsPerThread];
 
-    // Make sure each thread has read its value.
-    __syncthreads();
+#pragma unroll
+  for (int i = 0; i < kItemsPerThread; ++i) {
+    binData[i] = smemFinal.histo.data[threadIdx.x * kItemsPerThread + i];
+  }
 
-    // Compute the prefix sum.
-    int prefixSum{0}, totalSum{0};
-    #ifndef USE_ROCM
-      using Scan = cub::BlockScan<int, kNumThreadsPerBlock>;
-    #else
-      using Scan = hipcub::BlockScan<int, kNumThreadsPerBlock>;
-    #endif
-    Scan(smemFinal.histo.scan).ExclusiveSum(binCount, prefixSum, totalSum);
+  int prefixSums[kItemsPerThread];
+  int totalSum{0};
+  #ifndef USE_ROCM
+    using Scan = cub::BlockScan<int, kNumThreadsPerBlock>;
+  #else
+    using Scan = hipcub::BlockScan<int, kNumThreadsPerBlock>;
+  #endif
+  Scan(smemFinal.histo.scan).ExclusiveSum(binData, prefixSums, totalSum);
 
-    // Update the histogram with the prefix sums.
-    prefixSum += lastValue;
-    totalSum += lastValue;
-    smemFinal.histo.data[idx] = prefixSum;
+#pragma unroll
+  for (int i = 0; i < kItemsPerThread; ++i) {
+    prefixSums[i] += lastValue;
+    smemFinal.histo.data[threadIdx.x * kItemsPerThread + i] = prefixSums[i];
+  }
 
-    // Make sure the data is in shared memory.
-    __syncthreads();
+  __syncthreads();
 
-    // Find the last valid bin.
-    bool foundThreshold = false;
-    if (prefixSum < topK) {
-      int nextPrefixSum = threadIdx.x == kNumThreadsPerBlock - 1
-                              ? totalSum
+#pragma unroll
+  for (int i = 0; i < kItemsPerThread; ++i) {
+    int idx = threadIdx.x * kItemsPerThread + i;
+    int pSum = prefixSums[i];
+
+    if (pSum < topK) {
+      int nextPrefixSum = (idx == kNumBins - 1) 
+                              ? (totalSum + lastValue) 
                               : smemFinal.histo.data[idx + 1];
 
       if (nextPrefixSum >= topK) {
         smemThresholdBinIdx[0] = idx;
-        smemFinalBinSize[0] = nextPrefixSum - prefixSum;
-        foundThreshold = true;
+        smemFinalBinSize[0] = nextPrefixSum - pSum;
       }
     }
-
-    // Early exit: if any thread found the threshold, we can skip remaining
-    // rounds
-    if (__syncthreads_or(foundThreshold)) {
-      break;
-    }
-
-    lastValue = totalSum;
   }
-
-  // Make sure the data is in shared memory.
+ 
   __syncthreads();
 
   // The threshold bin.
@@ -341,7 +333,7 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
                                      int rowStart, int rowEnd, int* outIndices,
                                      float* outLogits, int stride1, int topK) {
   // The number of slots for the final pass.
-  static constexpr int kNumFinalItems = 2048;
+  static constexpr int kNumFinalItems = 2048+512;
   // The number of elements per thread for the final sort.
   static constexpr int kNumFinalItemsPerThread =
       kNumFinalItems / kNumThreadsPerBlock;
@@ -531,7 +523,7 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
         auto logit = smemFinal.items.logits[i];
         for (int j = 0; j < smemFinalDstIdx[0]; j++) {
           auto otherLogit = smemFinal.items.logits[j];
-          if (logit < otherLogit || (logit == otherLogit && i < j)) {
+          if (logit < otherLogit) {
             outIndex++;
           }
         }
@@ -690,7 +682,7 @@ void top_k_per_row_prefill(const torch::Tensor& logits,
                            int64_t numRows, int64_t stride0, int64_t stride1,
                            int64_t topK) {
   constexpr int kSortingAlgorithmThreshold = 12288;
-  constexpr int kNumThreadsPerBlock = 512;
+  constexpr int kNumThreadsPerBlock = 1024;
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   topKPerRowPrefill<kNumThreadsPerBlock, false>
       <<<numRows, kNumThreadsPerBlock, topK * sizeof(int32_t), stream>>>(
