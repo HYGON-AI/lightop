@@ -8,7 +8,8 @@
 #include <ATen/AccumulateType.h>
 #include <THC/THCDeviceUtils.cuh>
 #include <ATen/Dispatch.h>
-
+#include "hip/hip_fp16.h"
+#include "hip/hip_bf16.h"
 #define CEILDIV(x, y) (((x) + (y) - 1) / (y))
 template <typename T, int N> struct alignas(sizeof(T) * N) Vector {
   T val[N];
@@ -20,13 +21,13 @@ template <typename T, int N> struct alignas(sizeof(T) * N) Vector {
   #include <hipcub/hipcub.hpp>
 #endif
 
-
 #ifdef TORCH_VERSION_OVER_290
 #define C10_WARP_SIZE C10_WARP_SIZE_STATIC
 #endif
-
 namespace at{
 namespace native{
+
+using bhalf_t = __hip_bfloat16;
 
 #define VLLM_DISPATCH_FLOATING_TYPES(TYPE, NAME, ...) \
 AT_DISPATCH_SWITCH(TYPE, NAME, VLLM_DISPATCH_CASE_FLOATING_TYPES(__VA_ARGS__))
@@ -140,6 +141,43 @@ AT_DISPATCH_SWITCH(TYPE, NAME, VLLM_DISPATCH_CASE_FLOATING_TYPES(__VA_ARGS__))
     #endif
   }
   
+  inline __device__ float float_to_bf16_to_float(float f) {
+    #if defined(__gfx938__)
+        // AMD gfx938 原生硬件 bf16 转换（最优）
+        return float(bhalf_t(f));
+    #else
+        // 通用架构：你提供的软件实现
+        uint32_t u = *(uint32_t*)(&f);
+        u += 0x7fff + ((u >> 16) & 1);
+        uint32_t bf16_u = u >> 16;
+        uint32_t fp32_u = bf16_u << 16;
+        return *(float*)(&fp32_u);
+    #endif
+    }
+
+  // 主函数：4 x float → bf16 → float → fp8e4m3 → 打包 uint32_t
+inline __device__ uint32_t float_to_bhalf_to_fp8e4m3_x4(float a, float b, float c, float d)
+{
+    // 统一先做 bf16 中介转换
+    float a_bf = float_to_bf16_to_float(a);
+    float b_bf = float_to_bf16_to_float(b);
+    float c_bf = float_to_bf16_to_float(c);
+    float d_bf = float_to_bf16_to_float(d);
+
+    #if defined(__gfx938__)
+      int32_t res;
+      res = __builtin_hcu_cvt_pk_fp8_f32(a_bf, b_bf, res, false);
+      res = __builtin_hcu_cvt_pk_fp8_f32(c_bf, d_bf, res, true);
+      return (uint32_t)res;
+    #else
+      int32_t out = 0;
+      reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e4m3(a_bf);
+      reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e4m3(b_bf);
+      reinterpret_cast<uint8_t*>(&out)[2] = float_to_fp8e4m3(c_bf);
+      reinterpret_cast<uint8_t*>(&out)[3] = float_to_fp8e4m3(d_bf);
+      return (uint32_t)out;
+    #endif
+}
   
   
   inline __device__ uint32_t float_to_fp8e5m2_x4(float a, float b, float c, float d)
@@ -158,6 +196,37 @@ AT_DISPATCH_SWITCH(TYPE, NAME, VLLM_DISPATCH_CASE_FLOATING_TYPES(__VA_ARGS__))
       return out;
     #endif
   }
+
+
+
+
+
+// 主函数：4 x float → bf16 → float → fp8e5m2 → 打包 uint32_t
+inline __device__ uint32_t float_to_bhalf_to_fp8e5m2_x4(float a, float b, float c, float d)
+{
+    // 统一流程：所有输入先执行 float → bf16 → float
+    float a_bf = float_to_bf16_to_float(a);
+    float b_bf = float_to_bf16_to_float(b);
+    float c_bf = float_to_bf16_to_float(c);
+    float d_bf = float_to_bf16_to_float(d);
+
+#if defined(__gfx938__)
+    // gfx938 硬件批量转换 + 打包 fp8e5m2
+    int32_t res;
+    res = __builtin_hcu_cvt_pk_bf8_f32(a_bf, b_bf, res, false);
+    res = __builtin_hcu_cvt_pk_bf8_f32(c_bf, d_bf, res, true);
+    return (uint32_t)res;
+#else
+    // 通用架构：逐个转 fp8e5m2 并按字节打包
+    int32_t out = 0;
+    reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e5m2(a_bf);
+    reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e5m2(b_bf);
+    reinterpret_cast<uint8_t*>(&out)[2] = float_to_fp8e5m2(c_bf);
+    reinterpret_cast<uint8_t*>(&out)[3] = float_to_fp8e5m2(d_bf);
+    return (uint32_t)out;
+#endif
+}
+
 
 
 template <typename T,int reducesize=C10_WARP_SIZE>
@@ -332,13 +401,13 @@ __global__ void rms_rope_kernel(
         }
         if(kv_dtype == 0)
         {
-          ((uint32_t*)output_vec)[0] = float_to_fp8e5m2_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
-          ((uint32_t*)output_vec)[1] = float_to_fp8e5m2_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
+          ((uint32_t*)output_vec)[0] = float_to_bhalf_to_fp8e5m2_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
+          ((uint32_t*)output_vec)[1] = float_to_bhalf_to_fp8e5m2_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
         }
         else
         {
-          ((uint32_t*)output_vec)[0] = float_to_fp8e4m3_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
-          ((uint32_t*)output_vec)[1] = float_to_fp8e4m3_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
+          ((uint32_t*)output_vec)[0] = float_to_bhalf_to_fp8e4m3_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
+          ((uint32_t*)output_vec)[1] = float_to_bhalf_to_fp8e4m3_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
         }
         uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset + 512;
         *(OutputT*)output_ptr = *(OutputT*)output_vec;
@@ -417,13 +486,13 @@ __global__ void rms_rope_kernel(
         }
         if(kv_dtype == 0)
         {
-          ((uint32_t*)output_vec)[0] = float_to_fp8e5m2_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
-          ((uint32_t*)output_vec)[1] = float_to_fp8e5m2_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
+          ((uint32_t*)output_vec)[0] = float_to_bhalf_to_fp8e5m2_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
+          ((uint32_t*)output_vec)[1] = float_to_bhalf_to_fp8e5m2_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
         }
         else
         {
-          ((uint32_t*)output_vec)[0] = float_to_fp8e4m3_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
-          ((uint32_t*)output_vec)[1] = float_to_fp8e4m3_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
+          ((uint32_t*)output_vec)[0] = float_to_bhalf_to_fp8e4m3_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
+          ((uint32_t*)output_vec)[1] = float_to_bhalf_to_fp8e4m3_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
         }
         uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset;
         *(OutputT*)output_ptr = *(OutputT*)output_vec;
