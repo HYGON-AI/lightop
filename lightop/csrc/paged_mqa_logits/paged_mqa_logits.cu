@@ -150,22 +150,27 @@ torch::Tensor get_paged_mqa_logits_metadata(const torch::Tensor& context_lens, i
     return schedule_metadata;
 }
 
-uint32_t plan_kv_chunks(const torch::Tensor& context_lens, int batch_size, int block_kv) {
+int plan_kv_chunks(const torch::Tensor& context_lens, int batch_size, int block_kv) {
     int total_chunks = 0;
     auto* lens_ptr = context_lens.data_ptr<int>();
 
     if (lens_ptr == nullptr || batch_size <= 0) {
+        printf("Error! context length ptr or batch size: %p, %d\n", lens_ptr, batch_size);
         return -1;
     }
 
-    int max_chunk_size = 0;
+    int max_chunk_size = -1;
     for (auto i = 0; i < batch_size; ++i) {
         int cur_chunk = ceil_div(lens_ptr[i], block_kv);
         if (cur_chunk > max_chunk_size) {
             max_chunk_size = cur_chunk;
         }
         total_chunks += cur_chunk;
+    }
 
+    if (max_chunk_size == 0) {
+        printf("invalid context length, max_kv_chunk_size = 0\n");
+        return -1;
     }
     return max_chunk_size;
 }
@@ -313,14 +318,14 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                 })
             );
     } else {
-        auto max_chunk_size = plan_kv_chunks(context_lens, batch_size, block_kv);
+        int max_chunk_size = plan_kv_chunks(context_lens, batch_size, block_kv);
         if (max_chunk_size == -1) {
             printf("invalid seq_len or batch_size settings.\n");
             return logits;
         }
 
         // Dispatch implementation
-        dim3 grid = {max_chunk_size, (uint32_t)batch_size, 1};
+        dim3 grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
         dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
 
         DISPATCH_FP8_TYPES(q.scalar_type(), FP8_TYPE, [&] {
@@ -509,14 +514,14 @@ torch::Tensor paged_mqa_logits_with_raw_tokens(const torch::Tensor& q,
                 })
             );
     } else {
-        auto max_chunk_size = plan_kv_chunks(context_lens, batch_size, block_kv);
+        int max_chunk_size = plan_kv_chunks(context_lens, batch_size, block_kv);
         if (max_chunk_size == -1) {
             printf("invalid seq_len or batch_size settings.\n");
             return logits;
         }
 
         // Dispatch implementation
-        dim3 grid = {max_chunk_size, (uint32_t)batch_size, 1};
+        dim3 grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
         dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
 
         DISPATCH_FP8_TYPES(q.scalar_type(), FP8_TYPE, [&] {
