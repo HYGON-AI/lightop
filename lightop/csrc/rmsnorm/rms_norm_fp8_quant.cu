@@ -193,64 +193,6 @@ struct min_scaling_factor<int8_t> {
     }
     return result;
 }
-  // lj
-
-    // inline __device__ uint8_t float_to_fp8e4m3(float f) {
-    // // ===== 常量定义 =====
-    // // FP8 E4M3最大值: 1087 << 20
-    // // 1087 = 2^(4+1) - 1 + 2^4 = 31 + 16 = 47? 等等，这里需要重新计算
-    // // 实际上是基于指数和尾数的位模式
-    // constexpr uint32_t fp8_max = UINT32_C(1087) << 20;
-
-    // // 非正规化数处理掩码
-    // constexpr uint32_t denorm_mask = UINT32_C(141) << 23;
-
-    // // ===== 步骤1: 提取float的位表示 =====
-    // uint32_t f_bits = c10::detail::fp32_to_bits(f);
-    // uint8_t result = 0u;
-
-    // // ===== 步骤2: 提取符号位并移除 =====
-    // const uint32_t sign = f_bits & UINT32_C(0x80000000);
-    // f_bits ^= sign;
-
-    // // ===== 步骤3: 处理不同数值范围 =====
-
-    // // 3a. 溢出处理
-    // if (f_bits >= fp8_max) {
-    //     result = 0x7f;  // 01111111 (NaN/最大值)
-    // } else {
-        
-    //     // 3b. 非正规化数处理
-    //     if (f_bits < (UINT32_C(121) << 23)) {
-    //     f_bits = c10::detail::fp32_to_bits(
-    //         c10::detail::fp32_from_bits(f_bits) + 
-    //         c10::detail::fp32_from_bits(denorm_mask)
-    //     );
-    //     result = static_cast<uint8_t>(f_bits - denorm_mask);
-        
-    //     // 3c. 正规化数处理
-    //     } else {
-    //     // 检查尾数第20位是否为1（对应FP8 E4M3 3位尾数的LSB）
-    //     uint8_t mant_odd = (f_bits >> 20) & 1;
-        
-    //     // 指数偏置调整: FP32偏置127 → FP8 E4M3偏置7
-    //     // 调整量 = 7 - 127 = -120
-    //     f_bits += ((uint32_t)(7 - 127) << 23) + 0x7FFFF;
-        
-    //     // 应用奇数舍入
-    //     f_bits += mant_odd;
-        
-    //     // 右移20位得到8位结果
-    //     result = static_cast<uint8_t>(f_bits >> 20);
-    //     }
-    // }
-
-    // // ===== 步骤4: 加上符号位 =====
-    // result |= static_cast<uint8_t>(sign >> 24);
-
-    // return result;
-    // }
-//lj
 
     inline __device__ uint32_t float_to_fp8e4m3_x4(float a, float b, float c, float d)
     {
@@ -287,7 +229,7 @@ struct min_scaling_factor<int8_t> {
     #endif
     }
 
-template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec=4,int block_size=512, bool inpit_update=false>
+template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec=4,int block_size=512, bool inpit_update=false, bool IS_GEMMA=false>
 __global__ void rms_norm_fp8_quant_(scalar_t* input,scalar_t* residual,scalar_t* gamma,int32_t const cols,float const eps,scalar_out_t* out,float* scales, int stride, int fp8type, int num_tokens)
 {
   constexpr int share_size=block_size/C10_WARP_SIZE;
@@ -323,7 +265,9 @@ __global__ void rms_norm_fp8_quant_(scalar_t* input,scalar_t* residual,scalar_t*
         #pragma unroll
         for(int ii = 0;ii < Vec;ii++){
           int jj=tid * Vec + ii;
-          elem[ii] = static_cast<T_ACC>(intput_vec[ii]) * trstd * static_cast<T_ACC>(gamma[jj]);
+          T_ACC w_val = static_cast<T_ACC>(gamma[jj]);
+          if constexpr (IS_GEMMA) { w_val += static_cast<T_ACC>(1.0f); }
+          elem[ii] = static_cast<T_ACC>(intput_vec[ii]) * trstd * w_val;
           block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(elem[ii]));
         }      
     }
@@ -368,7 +312,7 @@ __global__ void rms_norm_fp8_quant_(scalar_t* input,scalar_t* residual,scalar_t*
   }
 }
 
-template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec,int block_size>
+template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec,int block_size, bool IS_GEMMA=false>
 __global__ void rms_norm_fp8_quant_loop(scalar_t* input,scalar_t* residual,scalar_t* gamma,int32_t const cols,float const eps, scalar_out_t* out,float* scales, int stride, int fp8type)
 {
   constexpr int share_size=block_size / C10_WARP_SIZE;
@@ -390,7 +334,9 @@ __global__ void rms_norm_fp8_quant_loop(scalar_t* input,scalar_t* residual,scala
   trstd = s_rstd;
   float block_absmax_val_maybe = 0.0f;
   for(int i = tid;i < cols;i += block_size){
-    block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(static_cast<T_ACC>(input[i + rows]) * trstd * static_cast<T_ACC>(gamma[i])));
+    T_ACC w_val = static_cast<T_ACC>(gamma[i]);
+    if constexpr (IS_GEMMA) { w_val += static_cast<T_ACC>(1.0f); }
+    block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(static_cast<T_ACC>(input[i + rows]) * trstd * w_val));
   }
   block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe,val_shared);
 
@@ -418,13 +364,15 @@ __global__ void rms_norm_fp8_quant_loop(scalar_t* input,scalar_t* residual,scala
   scalar_out_t out_vec[Vec];
   for(int i = tid; i < cols; i += block_size)
   {
-    out[rows + i] = float_to_fp8e4m3(static_cast<T_ACC>(input[rows + i]) *trstd* static_cast<T_ACC>(gamma[i]) * inv_s);
-    input[rows + i] = static_cast<T_ACC>(input[rows + i]) *trstd* static_cast<T_ACC>(gamma[i]);
+    T_ACC w_val = static_cast<T_ACC>(gamma[i]);
+    if constexpr (IS_GEMMA) { w_val += static_cast<T_ACC>(1.0f); }
+    out[rows + i] = float_to_fp8e4m3(static_cast<T_ACC>(input[rows + i]) *trstd * w_val * inv_s);
+    input[rows + i] = static_cast<T_ACC>(input[rows + i]) *trstd * w_val;
   }
 }
 
 
-template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec=4,int block_size=512,bool inpit_update=false>
+template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec=4,int block_size=512,bool inpit_update=false, bool IS_GEMMA=false>
 __global__ void rms_norm_fp8_quant_residual(scalar_t* input,scalar_t* residual,scalar_t* gamma,int cols,float const eps, scalar_out_t* out,float* scales, int stride, int fp8type, int num_tokens)
 {
   constexpr int share_size=block_size/C10_WARP_SIZE;
@@ -466,7 +414,9 @@ __global__ void rms_norm_fp8_quant_residual(scalar_t* input,scalar_t* residual,s
         #pragma unroll
         for(int ii = 0;ii < Vec;ii++){
           int jj=tid * Vec + ii;
-          elem[ii] = static_cast<T_ACC>(residual_vec[ii]) * trstd * static_cast<T_ACC>(gamma[jj]);
+          T_ACC w_val = static_cast<T_ACC>(gamma[jj]);
+          if constexpr (IS_GEMMA) { w_val += static_cast<T_ACC>(1.0f); }
+          elem[ii] = static_cast<T_ACC>(residual_vec[ii]) * trstd * w_val;
           block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(elem[ii]));
         }      
     }
@@ -514,7 +464,7 @@ __global__ void rms_norm_fp8_quant_residual(scalar_t* input,scalar_t* residual,s
 }
 
 
-template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec=1,int block_size=512>
+template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec=1,int block_size=512, bool IS_GEMMA=false>
 __global__ void rms_norm_fp8_quant_residual_loop(scalar_t* input,scalar_t* residual,scalar_t* gamma,int cols,float const eps, scalar_out_t* out,float* scales, int stride, int fp8type)
 {
   constexpr int share_size = block_size / C10_WARP_SIZE;
@@ -540,7 +490,9 @@ __global__ void rms_norm_fp8_quant_residual_loop(scalar_t* input,scalar_t* resid
 
   for(int i = tid;i < cols;i += block_size){
     T_ACC x = static_cast<T_ACC>(residual[i + rows]) + static_cast<T_ACC>(input[i + rows]);
-    block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(static_cast<T_ACC>(static_cast<T_ACC>(x * trstd) * gamma[i])));
+    T_ACC w_val = static_cast<T_ACC>(gamma[i]);
+    if constexpr (IS_GEMMA) { w_val += static_cast<T_ACC>(1.0f); }
+    block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(static_cast<T_ACC>(static_cast<T_ACC>(x * trstd) * w_val)));
   }
 
   block_absmax_val_maybe = BlockReduceMax_ROW<T_ACC,block_size>(block_absmax_val_maybe, val_shared);
@@ -569,15 +521,17 @@ __global__ void rms_norm_fp8_quant_residual_loop(scalar_t* input,scalar_t* resid
   scalar_out_t out_vec[Vec];
   for(int i = tid;i < cols;i += block_size)
   {
+    T_ACC w_val = static_cast<T_ACC>(gamma[i]);
+    if constexpr (IS_GEMMA) { w_val += static_cast<T_ACC>(1.0f); }
     residual[rows + i] = static_cast<T_ACC>(residual[i + rows]) + static_cast<T_ACC>(input[i + rows]);
-    out[rows + i] = float_to_fp8e4m3(static_cast<T_ACC>(residual[rows + i] ) * trstd * static_cast<T_ACC>(gamma[i]) * inv_s);
-    input[rows + i] = static_cast<T_ACC>(residual[rows + i]) *trstd* static_cast<T_ACC>(gamma[i]);
+    out[rows + i] = float_to_fp8e4m3(static_cast<T_ACC>(residual[rows + i] ) * trstd * w_val * inv_s);
+    input[rows + i] = static_cast<T_ACC>(residual[rows + i]) *trstd* w_val;
   }
 
 }
 
 
-template <typename scalar_in_t>
+template <typename scalar_in_t, bool IS_GEMMA>
 void fuse_rms_norm_fp8_quant(
   torch::Tensor& out,           // [..., hidden_size]
   torch::Tensor& input,   // [..., hidden_size]
@@ -595,297 +549,93 @@ void fuse_rms_norm_fp8_quant(
   auto wt_ptr = reinterpret_cast<std::uintptr_t>(weight.data_ptr());
   bool ptrs_are_aligned = inp_ptr % 16 == 0 && wt_ptr % 16 == 0;
   int input_ndim = input.dim();
-  int stride;
+  
+  int stride = (input_ndim > 1) ? input.stride(-2) : input.stride(-1);
 
   int grid_opt = num_tokens;
   if (num_tokens >= 137 && num_tokens <= 144) grid_opt = 128;
 
-  if(input_ndim > 1){
-    stride = input.stride(-2);
-  }else{
-    stride = input.stride(-1);
+  using T_ACC = at::acc_type<scalar_in_t, true>;
+  scalar_in_t* self_data = input.data_ptr<scalar_in_t>();
+  scalar_in_t* other_data = nullptr;
+  bool residual_flag = false;
+  if(residual.has_value()){
+    residual_flag = true;
+    other_data = residual->data_ptr<scalar_in_t>();
   }
-  if(hidden_size%16 == 0 && hidden_size <= 8192 && ptrs_are_aligned && input_flag){
-        using T_ACC = at::acc_type<scalar_in_t, true>;
-        
-        scalar_in_t* self_data = input.data_ptr<scalar_in_t>();
-        scalar_in_t* other_data = nullptr;
-        bool residual_flag = false;
-        if(residual.has_value()){
-          residual_flag = true;
-          other_data = residual->data_ptr<scalar_in_t>();
-        }
-        scalar_in_t* weight_data = weight.data_ptr<scalar_in_t>();
+  scalar_in_t* weight_data = weight.data_ptr<scalar_in_t>();
+  float* scaless = scales.data_ptr<float>();
 
-        AT_DISPATCH_INTEGRAL_TYPES(
-          out.scalar_type(),  
-          "fused_add_rms_norm_kernel_out_type",
-          [&] {
-             using scalar_out_t = scalar_t;
-        scalar_out_t* out_data = out.data_ptr<scalar_out_t>();
-        float* scaless = scales.data_ptr<float>();
-        if(residual_flag){
-          if (hidden_size <= 512){
-              if(num_tokens <= 1024){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,64,true><<<grid_opt,  64, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-              else if(num_tokens <= 3072){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,128,true><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-              else{
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,64,true><<<grid_opt,  64, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-                  
+  if(hidden_size % 16 == 0 && hidden_size <= 16384 && ptrs_are_aligned) {
+      AT_DISPATCH_INTEGRAL_TYPES(out.scalar_type(), "fused_add_rms_norm_kernel_out_type", [&] {
+          using scalar_out_t = scalar_t;
+          scalar_out_t* out_data = out.data_ptr<scalar_out_t>();
+
+          auto dispatch_input_update = [&](auto input_update_tag) {
+              constexpr bool update_input = decltype(input_update_tag)::value;
+              constexpr int Vec = 16; 
               
+              if (residual_flag) {
+                  if (hidden_size <= 1024) {
+                      rms_norm_fp8_quant_residual<scalar_in_t, scalar_out_t, T_ACC, Vec, 64, update_input, IS_GEMMA><<<grid_opt, 64, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type, num_tokens);
+                  } else if (hidden_size <= 2048) {
+                      rms_norm_fp8_quant_residual<scalar_in_t, scalar_out_t, T_ACC, Vec, 128, update_input, IS_GEMMA><<<grid_opt, 128, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type, num_tokens);
+                  } else if (hidden_size <= 4096) {
+                      rms_norm_fp8_quant_residual<scalar_in_t, scalar_out_t, T_ACC, Vec, 256, update_input, IS_GEMMA><<<grid_opt, 256, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type, num_tokens);
+                  } else if (hidden_size <= 8192) {
+                      rms_norm_fp8_quant_residual<scalar_in_t, scalar_out_t, T_ACC, Vec, 512, update_input, IS_GEMMA><<<grid_opt, 512, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type, num_tokens);
+                  } else { // <= 16384
+                      rms_norm_fp8_quant_residual<scalar_in_t, scalar_out_t, T_ACC, Vec, 1024, update_input, IS_GEMMA><<<grid_opt, 1024, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type, num_tokens);
                   }
-            else if (hidden_size <= 1024){
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,128,true><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+              } else {
+                  if (hidden_size <= 1024) {
+                      rms_norm_fp8_quant_<scalar_in_t, scalar_out_t, T_ACC, Vec, 64, update_input, IS_GEMMA><<<grid_opt, 64, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type, num_tokens);
+                  } else if (hidden_size <= 2048) {
+                      rms_norm_fp8_quant_<scalar_in_t, scalar_out_t, T_ACC, Vec, 128, update_input, IS_GEMMA><<<grid_opt, 128, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type, num_tokens);
+                  } else if (hidden_size <= 4096) {
+                      rms_norm_fp8_quant_<scalar_in_t, scalar_out_t, T_ACC, Vec, 256, update_input, IS_GEMMA><<<grid_opt, 256, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type, num_tokens);
+                  } else if (hidden_size <= 8192) {
+                      rms_norm_fp8_quant_<scalar_in_t, scalar_out_t, T_ACC, Vec, 512, update_input, IS_GEMMA><<<grid_opt, 512, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type, num_tokens);
+                  } else { // <= 16384
+                      rms_norm_fp8_quant_<scalar_in_t, scalar_out_t, T_ACC, Vec, 1024, update_input, IS_GEMMA><<<grid_opt, 1024, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type, num_tokens);
                   }
-            else if(hidden_size <= 2048){
-              if(num_tokens < 1000){
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,256,true><<<grid_opt,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-                  }
-              else if(num_tokens < 8000){
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,128,true><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-            }  
-              else{
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,256,true><<<grid_opt,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
               }
-              
-            }
-            else if(hidden_size <= 4096){
-                if(num_tokens == 512){
-                    rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,1024,true><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-                else{
-                    rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,512,true><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-            }
-            else if(hidden_size <= 8192){
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,1024,true><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-          }
-            else{
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,1024,true><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-          }
+          };
 
-        }else{
-             if (hidden_size <= 512){
-                rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,128,true><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+          if (input_flag) {
+              dispatch_input_update(std::true_type{});
+          } else {
+              dispatch_input_update(std::false_type{});
           }
-          else if (hidden_size <= 1024){
-                rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,128,true><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-          }
-            else if(hidden_size <= 2048){
-                if(num_tokens >= 1024){
-                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,512,true><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-                else{
-                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,256,true><<<grid_opt,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-                      }              
-
-            }
-            else if(hidden_size <= 4096){
-                if(num_tokens == 512){
-                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,1024,true><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-                }
-                else{
-                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,512,true><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-            }
-            else if(hidden_size <= 8192){
-                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,1024,true><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-            }
-            else{
-                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,16,1024,true><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-            }
-        }
-        
       });
+  } else {
+      AT_DISPATCH_INTEGRAL_TYPES(out.scalar_type(), "fused_add_rms_norm_kernel_out_type", [&] {
+          using scalar_out_t = scalar_t;
+          scalar_out_t* out_data = out.data_ptr<scalar_out_t>();
 
-  }
-  else  if(hidden_size%16 == 0 && hidden_size <= 8192 && ptrs_are_aligned && input_flag==false){
-        using T_ACC = at::acc_type<scalar_in_t, true>;
-        
-        scalar_in_t* self_data = input.data_ptr<scalar_in_t>();
-        scalar_in_t* other_data = nullptr;
-        bool residual_flag = false;
-        if(residual.has_value()){
-          residual_flag = true;
-          other_data = residual->data_ptr<scalar_in_t>();
-        }
-        scalar_in_t* weight_data = weight.data_ptr<scalar_in_t>();
-
-        AT_DISPATCH_INTEGRAL_TYPES(
-          out.scalar_type(),  
-          "fused_add_rms_norm_kernel_out_type",
-          [&] {
-             using scalar_out_t = scalar_t;
-        scalar_out_t* out_data = out.data_ptr<scalar_out_t>();
-        float* scaless = scales.data_ptr<float>();
-        if(residual_flag){
-          if (hidden_size <= 512){
-              if(num_tokens <= 1024){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,64,false><<<grid_opt,  64, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+          if (residual_flag) {
+              if (hidden_size <= 1024) {
+                  rms_norm_fp8_quant_residual_loop<scalar_in_t, scalar_out_t, T_ACC, 1, 256, IS_GEMMA><<<num_tokens, 256, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type);
+              } else if (hidden_size <= 4096) {
+                  rms_norm_fp8_quant_residual_loop<scalar_in_t, scalar_out_t, T_ACC, 1, 512, IS_GEMMA><<<num_tokens, 512, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type);
+              } else {
+                  rms_norm_fp8_quant_residual_loop<scalar_in_t, scalar_out_t, T_ACC, 1, 1024, IS_GEMMA><<<num_tokens, 1024, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type);
               }
-              else if(num_tokens < 4096){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,128,false><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
+          } else {
+              if (hidden_size <= 1024) {
+                  rms_norm_fp8_quant_loop<scalar_in_t, scalar_out_t, T_ACC, 1, 256, IS_GEMMA><<<num_tokens, 256, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type);
+              } else if (hidden_size <= 4096) {
+                  rms_norm_fp8_quant_loop<scalar_in_t, scalar_out_t, T_ACC, 1, 512, IS_GEMMA><<<num_tokens, 512, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type);
+              } else {
+                  rms_norm_fp8_quant_loop<scalar_in_t, scalar_out_t, T_ACC, 1, 1024, IS_GEMMA><<<num_tokens, 1024, 0, stream>>>(self_data, other_data, weight_data, hidden_size, epsilon, out_data, scaless, stride, fp8type);
               }
-              else{
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,64,false><<<grid_opt,  64, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-              
-                  }
-            else if (hidden_size <= 1024){
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,128,false><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-                  }
-            else if(hidden_size <= 2048){
-              if(num_tokens < 512){
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,256,false><<<grid_opt,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-                  } 
-              else{
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,128,false><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-              
-            }
-            else if(hidden_size <= 4096){
-                if(num_tokens == 512){
-                    rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,4,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-                else{
-                    rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,512,false><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-            }
-            else if(hidden_size <= 8192){
-              if(num_tokens <= 4){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,512,false><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-              else if(num_tokens < 64){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-              else if(num_tokens < 290){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,512,false><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-              else if(num_tokens < 2000){
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,8,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-              else{
-                rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,512,false><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-                  
           }
-            else{
-                  rms_norm_fp8_quant_residual<scalar_in_t,scalar_out_t,T_ACC,16,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-          }
-
-        }else{
-             if (hidden_size <= 512){
-                rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,128,false><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-          }
-          else if (hidden_size <= 1024){
-                rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,128,false><<<grid_opt,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-          }
-            else if(hidden_size <= 2048){
-                if(num_tokens >= 1024){
-                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,512,false><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-                else{
-                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,256,false><<<grid_opt,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-                      }              
-
-            }
-            else if(hidden_size <= 4096){
-                if(num_tokens == 512){
-                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,4,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-                }
-                else{
-                    rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,512,false><<<grid_opt,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-              }
-            }
-            else if(hidden_size <= 8192){
-                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,8,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-            }
-            else{
-                  rms_norm_fp8_quant_<scalar_in_t,scalar_t,T_ACC,16,1024,false><<<grid_opt,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type,num_tokens);
-            }
-        }
-        
-      });
-
-  }
-  else{
-        using T_ACC = at::acc_type<scalar_in_t, true>;
-        scalar_in_t* self_data = input.data_ptr<scalar_in_t>();
-        scalar_in_t* other_data = nullptr;
-        bool residual_flag = false;
-        if(residual.has_value()){
-          residual_flag = true;
-          other_data = residual->data_ptr<scalar_in_t>();
-        }
-        scalar_in_t* weight_data = weight.data_ptr<scalar_in_t>();
-        float* scaless = scales.data_ptr<float>();
-        AT_DISPATCH_INTEGRAL_TYPES(
-          out.scalar_type(),  // scalar_out_t 跟 output 对应
-          "fused_add_rms_norm_kernel_out_type",
-          [&] {
-          scalar_t* out_data = out.data_ptr<scalar_t>();
-        if(residual_flag){
-            if (hidden_size <= 1024){
-                rms_norm_fp8_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
-            }
-            else if(hidden_size <= 2048){
-              if(num_tokens >= 1024){
-                  rms_norm_fp8_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
-              }
-              else{
-                  rms_norm_fp8_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
-              }  
-              
-            }
-            else if(hidden_size <= 4096){
-              if(num_tokens > 1200){
-                  rms_norm_fp8_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
-                  
-              }
-              else{
-                  rms_norm_fp8_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
-              }
-            }
-            else {
-                rms_norm_fp8_quant_residual_loop<scalar_in_t,scalar_t,T_ACC,1,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
-            }
-
-        }else{
-            if (hidden_size <= 1024){
-                rms_norm_fp8_quant_loop<scalar_in_t,scalar_t,T_ACC,1,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
-            }
-            else if(hidden_size <= 2048){
-                if(num_tokens >= 1024){
-                    rms_norm_fp8_quant_loop<scalar_in_t,scalar_t,T_ACC,1,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
-                }
-                else{
-                    rms_norm_fp8_quant_loop<scalar_in_t,scalar_t,T_ACC,1,256><<<num_tokens,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
-                }                      
-
-            }
-            else if(hidden_size <= 4096){
-                if(num_tokens > 1200){
-                    rms_norm_fp8_quant_loop<scalar_in_t,scalar_t,T_ACC,1,512><<<num_tokens,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
-                  }
-                else{
-                    rms_norm_fp8_quant_loop<scalar_in_t,scalar_t,T_ACC,1,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
-                }
-            }
-            else{
-                  rms_norm_fp8_quant_loop<scalar_in_t,scalar_t,T_ACC,1,1024><<<num_tokens,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,epsilon,out_data,scaless,stride,fp8type);
-            }
-        }
-
       });
   }
-    }
+}
 
-
-void rms_norm_fp8_quant(
+template <bool IS_GEMMA>
+void rms_norm_fp8_quant_impl(
   Tensor &out,
   Tensor& input,
   const Tensor& weight,
@@ -900,7 +650,21 @@ void rms_norm_fp8_quant(
     input.scalar_type(),
     "fused_add_rms_norm_fp8_quant_kernel",
     [&] {
-      fuse_rms_norm_fp8_quant<scalar_t>(out,input,weight,scales,epsilon,residual,update_input,fp8type);
+      fuse_rms_norm_fp8_quant<scalar_t, IS_GEMMA>(out,input,weight,scales,epsilon,residual,update_input,fp8type);
     });
 }
+
+void rms_norm_fp8_quant(
+  Tensor &out, Tensor& input, const Tensor& weight, Tensor scales, 
+  double epsilon, std::optional<Tensor> residual, bool update_input, int fp8type
+) {
+    rms_norm_fp8_quant_impl<false>(out, input, weight, scales, epsilon, residual, update_input, fp8type);
+}
+void gemma_rms_norm_fp8_quant(
+  Tensor &out, Tensor& input, const Tensor& weight, Tensor scales, 
+  double epsilon, std::optional<Tensor> residual, bool update_input, int fp8type
+) {
+    rms_norm_fp8_quant_impl<true>(out, input, weight, scales, epsilon, residual, update_input, fp8type);
+}
+
 }}
