@@ -836,12 +836,12 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
                 int global_col = blockIdx_x * BLOCK_N + c;
                 if (global_row < M) {
                     if (is_align_n && global_col + 3 < N) {
-                        *(floatx4*)(&D_data[global_row * N + global_col]) = neg_infx4;
+                        *(floatx4*)(&D_data[(int64_t)global_row * N + global_col]) = neg_infx4;
                     } else {
                         #pragma unroll
                         for (int k = 0; k < 4; ++k) {
                             if (global_col + k < N) {
-                                D_data[global_row * N + global_col + k] = neg_inf;
+                                D_data[(int64_t)global_row * N + global_col + k] = neg_inf;
                             }
                         }
                     }
@@ -879,13 +879,13 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
     loadtileB2reg_fp8<fp8, is_align_n>(B_reg[1], B_data, ldg_col_B[1], ldg_row_B, head_dim, N);
 
     if (ldg_row_A < M) {
-        A_reg_move = *(intx4*)&A_data[ldg_row_A * K + ldg_col_A];
+        A_reg_move = *(intx4*)&A_data[(int64_t)ldg_row_A * K + ldg_col_A];
     }
     *(intx4*)&smem.A_Seme[0][sts_row_A * 136 + sts_col_A] = A_reg_move;
     ldg_col_A += 128; 
 
     if (1 < num_heads) {
-        int offset_bytes = (ldg_row_A < M) ? (ldg_row_A * K + ldg_col_A) : -1;
+        int64_t offset_bytes = (ldg_row_A < M) ? ((int64_t)ldg_row_A * K + ldg_col_A) : -1;
         cp_async4_vgpr(&A_reg_move, A_data, offset_bytes, true);
     }
 
@@ -894,7 +894,7 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
         int c = tid % 8;
         if (c < num_heads) {
             int w_row = blockIdx_y * BlOCK_M + r;
-            W_Seme_Cache[0][r][c] = (w_row < M) ? Weights_data[w_row * num_heads + c] : 0.f;
+            W_Seme_Cache[0][r][c] = (w_row < M) ? Weights_data[(int64_t)w_row * num_heads + c] : 0.f;
         }
     }
 
@@ -908,7 +908,7 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
                 int c = tid % 8;
                 if (next_i + c < num_heads) {
                     int w_row = blockIdx_y * BlOCK_M + r;
-                    W_Seme_Cache[next_buf][r][c] = (w_row < M) ? Weights_data[w_row * num_heads + next_i + c] : 0.f;
+                    W_Seme_Cache[next_buf][r][c] = (w_row < M) ? Weights_data[(int64_t)w_row * num_heads + next_i + c] : 0.f;
                 }
             }
         }
@@ -954,7 +954,7 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
             *(intx4*)&smem.A_Seme[1 - i % 2][sts_row_A * 136 + sts_col_A] = A_reg_move;
             ldg_col_A += 128;
             if (i + 2 < num_heads) {
-                int offset_bytes = (ldg_row_A < M) ? (ldg_row_A * K + ldg_col_A) : -1;
+                int64_t offset_bytes = (ldg_row_A < M) ? ((int64_t)ldg_row_A * K + ldg_col_A) : -1;
                 cp_async4_vgpr(&A_reg_move, A_data, offset_bytes, true);
             }
         }
@@ -1017,12 +1017,12 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
             }
             int boundary = boundary_Seme[e_row_0];
             if (global_col + 3 < boundary && is_align_n) {
-                *(floatx4*)(&D_data[global_row_0 * N + global_col]) = val;
+                *(floatx4*)(&D_data[(int64_t)global_row_0 * N + global_col]) = val;
             } else {
                 #pragma unroll
                 for(int k = 0; k < 4; ++k) {
-                    if (global_col + k < boundary) D_data[global_row_0 * N + global_col + k] = val[k];
-                    else if (global_col + k < N) D_data[global_row_0 * N + global_col + k] = neg_inf;
+                    if (global_col + k < boundary) D_data[(int64_t)global_row_0 * N + global_col + k] = val[k];
+                    else if (global_col + k < N) D_data[(int64_t)global_row_0 * N + global_col + k] = neg_inf;
                 }
             }
         }
@@ -1045,12 +1045,12 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
             }
             int boundary = boundary_Seme[e_row_1];
             if (global_col + 3 < boundary && is_align_n) {
-                *(floatx4*)(&D_data[global_row_1 * N + global_col]) = val;
+                *(floatx4*)(&D_data[(int64_t)global_row_1 * N + global_col]) = val;
             } else {
                 #pragma unroll
                 for(int k = 0; k < 4; ++k) {
-                    if (global_col + k < boundary) D_data[global_row_1 * N + global_col + k] = val[k];
-                    else if (global_col + k < N) D_data[global_row_1 * N + global_col + k] = neg_inf;
+                    if (global_col + k < boundary) D_data[(int64_t)global_row_1 * N + global_col + k] = val[k];
+                    else if (global_col + k < N) D_data[(int64_t)global_row_1 * N + global_col + k] = neg_inf;
                 }
             }
         }
@@ -1111,12 +1111,12 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
             }
             int boundary = boundary_Seme[e_row_0];
             if (global_col + 3 < boundary && is_align_n) {
-                *(floatx4*)(&D_data[global_row_0 * N + global_col]) = val;
+                *(floatx4*)(&D_data[(int64_t)global_row_0 * N + global_col]) = val;
             } else {
                 #pragma unroll
                 for(int k = 0; k < 4; ++k) {
-                    if (global_col + k < boundary) D_data[global_row_0 * N + global_col + k] = val[k];
-                    else if (global_col + k < N) D_data[global_row_0 * N + global_col + k] = neg_inf;
+                    if (global_col + k < boundary) D_data[(int64_t)global_row_0 * N + global_col + k] = val[k];
+                    else if (global_col + k < N) D_data[(int64_t)global_row_0 * N + global_col + k] = neg_inf;
                 }
             }
         }
@@ -1139,12 +1139,12 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
             }
             int boundary = boundary_Seme[e_row_1];
             if (global_col + 3 < boundary && is_align_n) {
-                *(floatx4*)(&D_data[global_row_1 * N + global_col]) = val;
+                *(floatx4*)(&D_data[(int64_t)global_row_1 * N + global_col]) = val;
             } else {
                 #pragma unroll
                 for(int k = 0; k < 4; ++k) {
-                    if (global_col + k < boundary) D_data[global_row_1 * N + global_col + k] = val[k];
-                    else if (global_col + k < N) D_data[global_row_1 * N + global_col + k] = neg_inf;
+                    if (global_col + k < boundary) D_data[(int64_t)global_row_1 * N + global_col + k] = val[k];
+                    else if (global_col + k < N) D_data[(int64_t)global_row_1 * N + global_col + k] = neg_inf;
                 }
             }
         }
@@ -2123,8 +2123,8 @@ torch::Tensor mqa_logits(
     int num_heads,
     int head_dim,
     const torch::optional<torch::Tensor> &KV_scale =  torch::nullopt,
-    bool clean_logits = true) {
-
+    bool clean_logits = true,
+    const torch::optional<torch::Tensor> &D_out = torch::nullopt) { // 增加可选参数 D_out
     const int M = q_seq_len;
     const int N = kv_seq_len;
     auto qtype = Q.scalar_type();
@@ -2139,7 +2139,25 @@ torch::Tensor mqa_logits(
          TORCH_CHECK(false, "Weights的数据类型必须为fp32!");
     }
     const  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-    
+       TORCH_CHECK(N >= 0, "kv_seq_len 必须大于等于 0!");
+    TORCH_CHECK(M >= 0, "q_seq_len 必须大于等于 0!");
+
+    if (KV_scale.has_value() && KV_scale.value().defined()) {
+        auto kv_scale_tensor = KV_scale.value();
+        
+        // 1. 检查连续性：避免 slice/transpose 导致的步长非 1 问题
+        TORCH_CHECK(kv_scale_tensor.is_contiguous(), "KV_scale 必须是连续的 (contiguous)!");
+        
+        // 2. 检查长度：防止底层按 N 越界读取
+        TORCH_CHECK(kv_scale_tensor.numel() >= N, "KV_scale 的元素数量必须大于等于 kv_seq_len!");
+        
+        // 3. 检查 16 字节对齐：这是 *(floatx4*) 向量化读取的硬件强制要求
+        uintptr_t ptr_address = reinterpret_cast<uintptr_t>(kv_scale_tensor.data_ptr<float>());
+        TORCH_CHECK(ptr_address % 16 == 0, 
+                    "KV_scale 的首地址必须是 16 字节对齐的，以防止底层 floatx4 读取引发段错误!");
+    }
+    bool has_d_out = D_out.has_value() && D_out.value().defined();
+
     if (M >= 128 && qtype != torch::kFloat8_e4m3fn) {
         torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
     
@@ -2147,7 +2165,15 @@ torch::Tensor mqa_logits(
         // 将维度对齐到128的整数倍
         const int q_seq_len_aligned = (q_seq_len + 127) / 128 * 128;
         const int kv_seq_len_aligned = (kv_seq_len + 127) / 128 * 128;
-        torch::Tensor D = torch::empty({q_seq_len_aligned, kv_seq_len_aligned}, options);
+        
+        torch::Tensor D;
+        if (has_d_out) {
+            D = D_out.value();
+            TORCH_CHECK(D.size(0) >= q_seq_len_aligned && D.size(1) >= kv_seq_len_aligned,
+                        "传入的D_out大小不足，ASM kernel要求分配按128对齐的大小(q_seq_len_aligned, kv_seq_len_aligned)");
+        } else {
+            D = torch::empty({q_seq_len_aligned, kv_seq_len_aligned}, options);
+        }
         
         _mqa_logits_128x128x32_TN_impl(
             reinterpret_cast<half_t*>(K.data_ptr()),
@@ -2158,7 +2184,7 @@ torch::Tensor mqa_logits(
             reinterpret_cast<uint32_t*>(KE.data_ptr()),
             q_seq_len, kv_seq_len, q_seq_len_aligned, kv_seq_len_aligned, num_heads,
             head_dim, use_fp16);
-        if (true) {
+        if (clean_logits) {
             clean_logits_padding<4><<<DIV(M, 4), 256,0,stream>>>(
                 q_seq_len, kv_seq_len_aligned, kv_seq_len_aligned,
                 reinterpret_cast<uint32_t*>(KS.data_ptr()),
@@ -2172,11 +2198,18 @@ torch::Tensor mqa_logits(
             torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
             
             torch::Tensor D;
-            if ((M >= 64 && N >= 1024) || N > 8192) {
-                D = torch::empty({q_seq_len, kv_seq_len}, options);
-               // D = torch::full({q_seq_len, kv_seq_len}, -std::numeric_limits<float>::infinity(), options);
+            bool is_large_fp8 = ((M >= 64 && N >= 1024) || N > 8192);
+            if (has_d_out) {
+                D = D_out.value();
+                if (!is_large_fp8) {
+                    D.zero_(); 
+                }
             } else {
-                D = torch::full({q_seq_len, kv_seq_len}, 0, options);
+                if (is_large_fp8) {
+                    D = torch::empty({q_seq_len, kv_seq_len}, options);
+                } else {
+                    D = torch::full({q_seq_len, kv_seq_len}, 0, options);
+                }
             }
             
             auto* q_ptr = reinterpret_cast<fp8*>(Q.data_ptr());
@@ -2188,7 +2221,7 @@ torch::Tensor mqa_logits(
             auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
 
             NUM_HEAD_SWITCH(num_heads, [&] {
-                if ((M >= 64 && N >= 1024) || N > 8192) {
+                if (is_large_fp8) {
                     int current_block_m = (M >= 256) ? 32 : 16;
                     const int blockx = (N + 127) / 128;
                     const int blocky = (M + current_block_m - 1) / current_block_m;
@@ -2280,6 +2313,10 @@ torch::Tensor mqa_logits(
         }
         //fp16/bf16
         torch::Tensor D;
+        if (has_d_out) {
+            D = D_out.value(); 
+        }
+
         Input_Type_SWITCH(Q.scalar_type(), [&] {
             auto* q_ptr = reinterpret_cast<scalar_t*>(Q.data_ptr());
             auto* k_ptr = reinterpret_cast<scalar_t*>(K.data_ptr());
@@ -2303,8 +2340,11 @@ torch::Tensor mqa_logits(
             NUM_HEAD_SWITCH(num_heads,[&] {
                 if (N > 8192) {
                     torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
-                    D = torch::full({q_seq_len, kv_seq_len}, -std::numeric_limits<float>::infinity(), options);
-                    //D刚申请的空间
+                    if (!D.defined()) { 
+                        D = torch::full({q_seq_len, kv_seq_len}, -std::numeric_limits<float>::infinity(), options);
+                    } else {
+                        D.fill_(-std::numeric_limits<float>::infinity());
+                    }
                     auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
                     const int blockx = (N + 127) / 128;
                     const int blocky = (M + 15) / 16;
@@ -2331,7 +2371,11 @@ torch::Tensor mqa_logits(
                     }
                 } else {
                     torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
-                    D = torch::full({q_seq_len, kv_seq_len}, 0, options);
+                    if (!D.defined()) { 
+                        D = torch::full({q_seq_len, kv_seq_len}, 0, options);
+                    } else {
+                        D.zero_(); 
+                    }
                     auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
                     const int blockx = DIV(N, 64);
                     const int blocky = DIV(M, 16);
