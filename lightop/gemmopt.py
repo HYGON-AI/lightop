@@ -677,18 +677,22 @@ def mqa_logits(
     ks: torch.Tensor, 
     ke: torch.Tensor, 
     kv_scale: Optional[torch.Tensor] = None,
-    clean_logit: bool = True 
+    clean_logit: bool = True,
+    D_out: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     q_seq_len, num_heads, head_dim = Q.shape
     kv_seq_len = K.shape[0]
-    assert num_heads in [1,2,4,8, 16, 32,64, 128], "num_heads only support  [1,2,4,8, 16, 32,64, 128]"
+    
+    assert num_heads in [1, 2, 4, 8, 16, 32, 64, 128], "num_heads only support [1, 2, 4, 8, 16, 32, 64, 128]"
     assert head_dim == 128, "head_dim only support 128"
+    
     outs = op.mqa_logits(
         Q, K, Weights, ks, ke, 
         q_seq_len, kv_seq_len, num_heads, head_dim, 
-        kv_scale, clean_logit
+        kv_scale, clean_logit, D_out
     )
     return outs
+
 
 def get_paged_mqa_logits_metadata(
         context_lens: torch.Tensor,
