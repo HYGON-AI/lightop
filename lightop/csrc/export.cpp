@@ -301,7 +301,19 @@ void mha_norm_rope_qkv_inplace_cuda(at::Tensor qkv, c10::optional<at::Tensor> ga
 void cross_norm_rope_q_kv_inplace_cuda(at::Tensor q,at::Tensor kv,  c10::optional<at::Tensor> gamma_q, c10::optional<at::Tensor> beta_q,c10::optional<at::Tensor> gamma_k,c10::optional<at::Tensor> beta_k, at::Tensor cos,  at::Tensor sin,  double eps);
 torch::Tensor box_cost(const torch::Tensor &pred, const torch::Tensor &target, const torch::Tensor &inst_weights, const torch::Tensor &dim_weights, const float cost_weight); 
 torch::Tensor encode_reg_t(const torch::Tensor &input, const torch::Tensor &lengths); 
-Tensor mqa_logits(torch::Tensor &Q, torch::Tensor &K, torch::Tensor &Weights, torch::Tensor &KS, torch::Tensor &KE, int seq_len, int kv_seq_len, int num_heads, int head_dim,const torch::optional<torch::Tensor> &KV_scale =  torch::nullopt, bool clean_logits = true);
+torch::Tensor mqa_logits(
+    torch::Tensor& Q,
+    torch::Tensor& K,
+    torch::Tensor& Weights,
+    torch::Tensor& KS,
+    torch::Tensor& KE,
+    int q_seq_len,
+    int kv_seq_len,
+    int num_heads,
+    int head_dim,
+    const torch::optional<torch::Tensor> &KV_scale =  torch::nullopt,
+    bool clean_logits = true,
+    const torch::optional<torch::Tensor> &D_out = torch::nullopt);
 std::vector<torch::Tensor> batch_linear_assignment(torch::Tensor cost);
 void fill_zeros(Tensor &out, int bs, int hidden_size);
 void rms_rotary_embedding_fuse(Tensor &positions,Tensor &query,Tensor &key,int64_t head_size,Tensor &cos_sin_cache, bool is_neox,Tensor weight_q,Tensor weight_k,c10::optional<Tensor> residual_q,c10::optional<Tensor> residual_k,double epsilon);
@@ -451,6 +463,10 @@ void fuse_qkv_head_rms_norm(
     double epsilon); 
 void gemma_fused_add_rmsnorm(torch::Tensor& input, torch::Tensor& residual, torch::Tensor& weight, double epsilon);
 void gemma_rmsnorm(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight, double epsilon);
+void gemma_rms_norm_fp8_quant(
+  Tensor &out, Tensor& input, const Tensor& weight, Tensor scales, 
+  double epsilon, std::optional<Tensor> residual, bool update_input, int fp8type
+);  
 }
 }
 
@@ -634,7 +650,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("num_heads"),
       py::arg("head_dim"),
       py::arg("KV_scale") = torch::nullopt, 
-      py::arg("clean_logits") = true);
+      py::arg("clean_logits") = true,
+      py::arg("D_out") = torch::nullopt);
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
   m.def("paged_mqa_logits", &lightop::deep_gemm::paged_mqa_logits,"paged_mqa_logits");
   m.def("paged_mqa_logits_with_raw_tokens", &lightop::deep_gemm::paged_mqa_logits_with_raw_tokens,"paged_mqa_logits_with_raw_tokens");
@@ -690,5 +707,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("fuse_qkv_head_rms_norm", &at::native::fuse_qkv_head_rms_norm, "fuse_qkv_head_rms_norm");
  m.def("gemma_fused_add_rmsnorm", &at::native::gemma_fused_add_rmsnorm, "gemma_fused_add_rmsnorm");
  m.def("gemma_rmsnorm", &at::native::gemma_rmsnorm, "gemma_rmsnorm");
+ m.def("gemma_rms_norm_fp8_quant", &at::native::gemma_rms_norm_fp8_quant, "gemma_rms_norm_fp8_quant");
 }
 
