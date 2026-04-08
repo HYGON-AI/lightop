@@ -467,6 +467,19 @@ void gemma_rms_norm_fp8_quant(
   Tensor &out, Tensor& input, const Tensor& weight, Tensor scales, 
   double epsilon, std::optional<Tensor> residual, bool update_input, int fp8type
 );  
+void fast_topk_transform_interface(
+    const at::Tensor& score,
+    const at::Tensor& lengths,
+    at::Tensor& dst_page_table,
+    const at::Tensor& src_page_table,
+    const at::Tensor& cu_seqlens_q,
+    std::optional<at::Tensor> row_starts_opt);
+void fast_topk_transform_ragged_interface(
+    const at::Tensor& score,
+    const at::Tensor& lengths,
+    at::Tensor& topk_indices_ragged,
+    const at::Tensor& topk_indices_offset,
+    std::optional<at::Tensor> row_starts_opt);
 }
 }
 
@@ -708,5 +721,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("gemma_fused_add_rmsnorm", &at::native::gemma_fused_add_rmsnorm, "gemma_fused_add_rmsnorm");
  m.def("gemma_rmsnorm", &at::native::gemma_rmsnorm, "gemma_rmsnorm");
  m.def("gemma_rms_norm_fp8_quant", &at::native::gemma_rms_norm_fp8_quant, "gemma_rms_norm_fp8_quant");
+ m.def("fast_topk_transform_interface", &at::native::fast_topk_transform_interface, "fast_topk_transform_interface");
+ m.def("fast_topk_transform_ragged_interface", &at::native::fast_topk_transform_ragged_interface, "fast_topk_transform_ragged_interface");   
 }
 
