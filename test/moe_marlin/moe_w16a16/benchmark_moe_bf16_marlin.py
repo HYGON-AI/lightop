@@ -1552,10 +1552,10 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=704
     # hidden_size=4096
 
-    # glm5-tp16
-    E = 256
-    shard_intermediate_size=256
-    hidden_size=6144
+    # # glm5-tp16
+    # E = 256
+    # shard_intermediate_size=256
+    # hidden_size=6144
     
     # # qwen3.5-35b-a3b-tp1
     # E = 256
@@ -1565,6 +1565,11 @@ def main(args: argparse.Namespace):
     # # qwen3.5-35b-a3b-tp2
     # E = 256
     # shard_intermediate_size=512
+    # hidden_size=2048
+    
+    # # qwen3.5-35b-a3b-tp4
+    # E = 256
+    # shard_intermediate_size=256
     # hidden_size=2048
     
     # # qwen3.5-122b-a10b-tp2
@@ -1586,6 +1591,11 @@ def main(args: argparse.Namespace):
     # E = 512
     # shard_intermediate_size=128
     # hidden_size=4096
+    
+    # step3.5-flash-tp8-ep1
+    E = 288
+    shard_intermediate_size=320
+    hidden_size=4096
 
     if args.batch_size is None:
         batch_sizes = [
