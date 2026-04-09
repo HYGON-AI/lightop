@@ -106,12 +106,12 @@ int get_sms_info() {
     } 
     else if (arch.rfind("gfx938", 0) == 0 && num_cus == 64) {
         sms = 128;
-    } 
+    }
     else if (arch.rfind("gfx938", 0) == 0 && num_cus == 72) {
         sms = 144;
-    } 
+    }
     else {
-        std::cerr << "Unsupported device config: " << arch 
+        std::cerr << "Unsupported device config: " << arch
                   << ", CU=" << num_cus << std::endl;
         throw std::runtime_error("Unsupported device configuration");
     }
@@ -148,31 +148,6 @@ torch::Tensor get_paged_mqa_logits_metadata(const torch::Tensor& context_lens, i
     }
 
     return schedule_metadata;
-}
-
-int plan_kv_chunks(const torch::Tensor& context_lens, int batch_size, int block_kv) {
-    int total_chunks = 0;
-    auto* lens_ptr = context_lens.data_ptr<int>();
-
-    if (lens_ptr == nullptr || batch_size <= 0) {
-        printf("Error! context length ptr or batch size: %p, %d\n", lens_ptr, batch_size);
-        return -1;
-    }
-
-    int max_chunk_size = -1;
-    for (auto i = 0; i < batch_size; ++i) {
-        int cur_chunk = ceil_div(lens_ptr[i], block_kv);
-        if (cur_chunk > max_chunk_size) {
-            max_chunk_size = cur_chunk;
-        }
-        total_chunks += cur_chunk;
-    }
-
-    if (max_chunk_size == 0) {
-        printf("invalid context length, max_kv_chunk_size = 0\n");
-        return -1;
-    }
-    return max_chunk_size;
 }
 
 torch::Tensor paged_mqa_logits(const torch::Tensor& q,
@@ -318,7 +293,10 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                 })
             );
     } else {
-        int max_chunk_size = plan_kv_chunks(context_lens, batch_size, block_kv);
+        int max_seq_len = max_block_len * block_kv;
+        max_seq_len = min(max_seq_len, num_kv_blocks * block_kv / batch_size_next_n);
+        max_seq_len = min(max_seq_len, max_context_len);
+        int max_chunk_size = ceil_div(max_seq_len, block_kv);
         if (max_chunk_size == -1) {
             printf("invalid seq_len or batch_size settings.\n");
             return logits;
@@ -514,7 +492,10 @@ torch::Tensor paged_mqa_logits_with_raw_tokens(const torch::Tensor& q,
                 })
             );
     } else {
-        int max_chunk_size = plan_kv_chunks(context_lens, batch_size, block_kv);
+        int max_seq_len = max_block_len * block_kv;
+        max_seq_len = min(max_seq_len, num_kv_blocks * block_kv / decode_len);
+        max_seq_len = min(max_seq_len, max_context_len);
+        int max_chunk_size = ceil_div(max_seq_len, block_kv);
         if (max_chunk_size == -1) {
             printf("invalid seq_len or batch_size settings.\n");
             return logits;
