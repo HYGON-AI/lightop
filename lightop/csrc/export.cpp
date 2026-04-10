@@ -480,6 +480,26 @@ void fast_topk_transform_ragged_interface(
     at::Tensor& topk_indices_ragged,
     const at::Tensor& topk_indices_offset,
     std::optional<at::Tensor> row_starts_opt);
+void fuse_act_quant_and_store_index_k_cache(
+    torch::Tensor input,      
+    torch::Tensor buf,     
+    torch::Tensor loc,    
+    int page_size,
+    float eps = 1e-5f,         
+    bool use_ue8m0 = false,
+    bool is_e4m3 = true); 
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> fuse_qk_quant_and_store_index_k_cache(
+    torch::Tensor q_input,        // [num_tokens, q_hidden_size]
+    torch::Tensor k_input,        // [num_tokens, k_hidden_size]
+    torch::Tensor k_buf,          // The destination Paged Cache Buffer (uint8)
+    torch::Tensor k_loc,          // [num_tokens] the cache block indices (int64)
+    int page_size,
+    c10::optional<torch::Tensor> weights_in_opt = c10::nullopt,
+    float q_scale_factor = 1.0f,  
+    float k_scale_factor = 1.0f,  
+    float eps = 1e-5f,        
+    bool use_ue8m0 = false,
+    bool is_e4m3 = true);          
 }
 }
 
@@ -723,5 +743,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("gemma_rms_norm_fp8_quant", &at::native::gemma_rms_norm_fp8_quant, "gemma_rms_norm_fp8_quant");
  m.def("fast_topk_transform_interface", &at::native::fast_topk_transform_interface, "fast_topk_transform_interface");
  m.def("fast_topk_transform_ragged_interface", &at::native::fast_topk_transform_ragged_interface, "fast_topk_transform_ragged_interface");   
+ m.def("fuse_act_quant_and_store_index_k_cache", &at::native::fuse_act_quant_and_store_index_k_cache, "fuse_act_quant_and_store_index_k_cache");
+ m.def("fuse_qk_quant_and_store_index_k_cache", &at::native::fuse_qk_quant_and_store_index_k_cache, "fuse_qk_quant_and_store_index_k_cache");
 }
 
