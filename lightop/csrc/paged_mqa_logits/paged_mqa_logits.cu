@@ -264,44 +264,70 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
 
     const bool use_fp8_kv = (kv_cache_scales.defined() && kv_cache_scales.numel() > 0);
 
+    int max_seq_len = max_block_len * block_kv;
+    max_seq_len = min(max_seq_len, num_kv_blocks * block_kv / batch_size);
+    max_seq_len = min(max_seq_len, max_context_len);
+    int max_chunk_size = ceil_div(max_seq_len, block_kv);
+
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     if (!use_fp8_kv) {
-        dim3 grid = {BW_SMS, 1, 1};
-        dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
+        dim3 grid, block;
 
-        AT_DISPATCH_FLOATING_TYPES_AND2(
-                at::ScalarType::Half,
-                at::ScalarType::BFloat16,
-                q.scalar_type(),
-                "paged_mqa_float16",
-                ([&] {
-                    DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
-                        DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
-                            paged_mqa_logits<scalar_t, NEXT_N, NUM_HEADS, 128, 64, split_kv, 4><<<grid, block, smem_size
-                            , stream>>>(
-                                reinterpret_cast<scalar_t*>(q.data_ptr()),
-                                reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
-                                weights.data_ptr<float>(), batch_size,
-                                num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
-                                block_table_stride, context_lens.data_ptr<int32_t>(),
-                                logits.data_ptr<float>(),
-                                block_table.data_ptr<int32_t>(),
-                                schedule_meta.data_ptr<int32_t>());
+        if (batch_size <= 32) {
+            grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
+            block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
+
+            AT_DISPATCH_FLOATING_TYPES_AND2(
+                    at::ScalarType::Half,
+                    at::ScalarType::BFloat16,
+                    q.scalar_type(),
+                    "paged_mqa_float16",
+                    ([&] {
+                        DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
+                            DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
+                                paged_mqa_logits<scalar_t, NEXT_N, NUM_HEADS, 128, 64, split_kv, 4><<<grid, block, smem_size
+                                , stream>>>(
+                                    reinterpret_cast<scalar_t*>(q.data_ptr()),
+                                    reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
+                                    weights.data_ptr<float>(), batch_size,
+                                    num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
+                                    block_table_stride, context_lens.data_ptr<int32_t>(),
+                                    logits.data_ptr<float>(),
+                                    block_table.data_ptr<int32_t>(),
+                                    schedule_meta.data_ptr<int32_t>());
+                            });
                         });
-                    });
-                })
+                    })
             );
-    } else {
-        int max_seq_len = max_block_len * block_kv;
-        max_seq_len = min(max_seq_len, num_kv_blocks * block_kv / batch_size_next_n);
-        max_seq_len = min(max_seq_len, max_context_len);
-        int max_chunk_size = ceil_div(max_seq_len, block_kv);
-        if (max_chunk_size == -1) {
-            printf("invalid seq_len or batch_size settings.\n");
-            return logits;
-        }
+        } else {
+            grid = {BW_SMS, 1, 1};
+            block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
 
+            AT_DISPATCH_FLOATING_TYPES_AND2(
+                    at::ScalarType::Half,
+                    at::ScalarType::BFloat16,
+                    q.scalar_type(),
+                    "paged_mqa_float16_scheduler",
+                    ([&] {
+                        DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
+                            DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
+                                paged_mqa_logits_persistent_schedule<scalar_t, NEXT_N, NUM_HEADS, 128, 64, split_kv, 4><<<grid, block, smem_size
+                                , stream>>>(
+                                    reinterpret_cast<scalar_t*>(q.data_ptr()),
+                                    reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
+                                    weights.data_ptr<float>(), batch_size,
+                                    num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
+                                    block_table_stride, context_lens.data_ptr<int32_t>(),
+                                    logits.data_ptr<float>(),
+                                    block_table.data_ptr<int32_t>(),
+                                    schedule_meta.data_ptr<int32_t>());
+                            });
+                        });
+                    })
+            );
+        }
+    } else {
         // Dispatch implementation
         dim3 grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
         dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
@@ -322,7 +348,7 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                 });
             });
         });
-      }
+    }
 
     hipError_t result = hipGetLastError();
     if (result != hipSuccess) {
@@ -463,44 +489,70 @@ torch::Tensor paged_mqa_logits_with_raw_tokens(const torch::Tensor& q,
 
     const bool use_fp8_kv = (kv_cache_scales.defined() && kv_cache_scales.numel() > 0);
 
+    int max_seq_len = max_block_len * block_kv;
+    max_seq_len = min(max_seq_len, num_kv_blocks * block_kv / batch_size);
+    max_seq_len = min(max_seq_len, max_context_len);
+    int max_chunk_size = ceil_div(max_seq_len, block_kv);
+
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     if (!use_fp8_kv) {
-        dim3 grid = {BW_SMS, 1, 1};
-        dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
+        dim3 grid, block;
 
-        AT_DISPATCH_FLOATING_TYPES_AND2(
-                at::ScalarType::Half,
-                at::ScalarType::BFloat16,
-                q.scalar_type(),
-                "paged_mqa_float16",
-                ([&] {
-                    DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
-                        DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
-                            paged_mqa_logits<scalar_t, NEXT_N, NUM_HEADS, 128, 64, split_kv, 4><<<grid, block, smem_size
-                            , stream>>>(
-                                reinterpret_cast<scalar_t*>(q.data_ptr()),
-                                reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
-                                weights.data_ptr<float>(), batch_size,
-                                num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
-                                block_table_stride, context_lens.data_ptr<int32_t>(),
-                                logits.data_ptr<float>(),
-                                block_table.data_ptr<int32_t>(),
-                                schedule_meta.data_ptr<int32_t>());
+        if (batch_size <= 32) {
+            grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
+            block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
+
+            AT_DISPATCH_FLOATING_TYPES_AND2(
+                    at::ScalarType::Half,
+                    at::ScalarType::BFloat16,
+                    q.scalar_type(),
+                    "paged_mqa_float16",
+                    ([&] {
+                        DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
+                            DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
+                                paged_mqa_logits<scalar_t, NEXT_N, NUM_HEADS, 128, 64, split_kv, 4><<<grid, block, smem_size
+                                , stream>>>(
+                                    reinterpret_cast<scalar_t*>(q.data_ptr()),
+                                    reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
+                                    weights.data_ptr<float>(), batch_size,
+                                    num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
+                                    block_table_stride, context_lens.data_ptr<int32_t>(),
+                                    logits.data_ptr<float>(),
+                                    block_table.data_ptr<int32_t>(),
+                                    schedule_meta.data_ptr<int32_t>());
+                            });
                         });
-                    });
-                })
+                    })
             );
-    } else {
-        int max_seq_len = max_block_len * block_kv;
-        max_seq_len = min(max_seq_len, num_kv_blocks * block_kv / decode_len);
-        max_seq_len = min(max_seq_len, max_context_len);
-        int max_chunk_size = ceil_div(max_seq_len, block_kv);
-        if (max_chunk_size == -1) {
-            printf("invalid seq_len or batch_size settings.\n");
-            return logits;
-        }
+        } else {
+            grid = {BW_SMS, 1, 1};
+            block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
 
+            AT_DISPATCH_FLOATING_TYPES_AND2(
+                    at::ScalarType::Half,
+                    at::ScalarType::BFloat16,
+                    q.scalar_type(),
+                    "paged_mqa_float16_scheduler",
+                    ([&] {
+                        DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
+                            DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
+                                paged_mqa_logits_persistent_schedule<scalar_t, NEXT_N, NUM_HEADS, 128, 64, split_kv, 4><<<grid, block, smem_size
+                                , stream>>>(
+                                    reinterpret_cast<scalar_t*>(q.data_ptr()),
+                                    reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
+                                    weights.data_ptr<float>(), batch_size,
+                                    num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
+                                    block_table_stride, context_lens.data_ptr<int32_t>(),
+                                    logits.data_ptr<float>(),
+                                    block_table.data_ptr<int32_t>(),
+                                    schedule_meta.data_ptr<int32_t>());
+                            });
+                        });
+                    })
+            );
+        }
+    } else {
         // Dispatch implementation
         dim3 grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
         dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
@@ -521,7 +573,7 @@ torch::Tensor paged_mqa_logits_with_raw_tokens(const torch::Tensor& q,
                 });
             });
         });
-      }
+    }
 
     hipError_t result = hipGetLastError();
     if (result != hipSuccess) {

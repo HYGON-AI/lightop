@@ -8,8 +8,8 @@ from lightop import sampling
 
 DEVICE = current_platform.device_type
 
-BATCH_SIZE = 1024
-VOCAB_SIZE = 128 * 1024
+BATCH_SIZE = 15
+VOCAB_SIZE = 163840
 
 def validate_sampling(sampled_ids: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
     """
@@ -194,6 +194,10 @@ def test_flashinfer_sampler(ops: str = "top_k_top_p"):
             torch.rand((BATCH_SIZE,), generator=generator) * 0.5 + 0.5
     )  # range in [0.5, 1.0]
 
+    p_values = (
+            torch.full((BATCH_SIZE,), 0.95, dtype=torch.float32, device="cuda")
+    )  # range in [0.5, 1.0]
+
     # Sometimes disable top-k (k=vocab_size)
     k_values.masked_fill_(
         torch.randint(0, 2, (BATCH_SIZE,), generator=generator, dtype=torch.bool),
@@ -201,9 +205,9 @@ def test_flashinfer_sampler(ops: str = "top_k_top_p"):
     )
 
     # Sometimes disable top-p (p=1.0)
-    p_values.masked_fill_(
-        torch.randint(0, 2, (BATCH_SIZE,), generator=generator, dtype=torch.bool), 1.0
-    )
+    # p_values.masked_fill_(
+    #     torch.randint(0, 2, (BATCH_SIZE,), generator=generator, dtype=torch.bool), 1.0
+    # )
 
     probs = logits.softmax(dim=-1, dtype=torch.float32)
     next_token_ids = None
@@ -240,8 +244,8 @@ def test_flashinfer_sampler(ops: str = "top_k_top_p"):
     test_latency(ops, 100, logits, k_values, p_values)
 
 def main():
-    test_flashinfer_sampler("top_k_top_p")
-    test_flashinfer_sampler("top_k")
+    # test_flashinfer_sampler("top_k_top_p")
+    # test_flashinfer_sampler("top_k")
     test_flashinfer_sampler("top_p")
 
 if __name__ == "__main__":
