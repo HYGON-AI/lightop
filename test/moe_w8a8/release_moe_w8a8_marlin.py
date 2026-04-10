@@ -901,11 +901,15 @@ def test_moe_performance_accuracy(
     # min_mode1 = cuda_config1['MODE']
     # src_time = gemm1_time
     # src_mode = min_mode1
-    # for mode in range(0, 96):
+    # for mode in [1000]: #range(0, 96):
     #     cuda_config1['MODE'] = mode
+    #     cuda_config1['BLOCK_SIZE_M'] = 128
+    #     sorted_token_ids1, expert_ids1, num_tokens_post_padded1 = (
+    #         moe_align_block_size(topk_ids, cuda_config1['BLOCK_SIZE_M'], local_num_experts, expert_map)
+    #     )
     #     gemm1_time, gemm1_accuracy = test_single_gemm_performance_accuracy(
-    #         input_data, w1_marlin, weight1, weight1_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
-    #         num_tokens_post_padded, topk, cuda_config1, triton_config1, "gemm1", True, per_channel_quant, compute_type, out_dtype
+    #         input_data, w1_marlin, weight1, weight1_scale, topk_ids, topk_weights, sorted_token_ids1, expert_ids1,
+    #         num_tokens_post_padded1, topk, cuda_config1, triton_config1, "gemm1", True, per_channel_quant, compute_type, out_dtype
     #     )
     #     print(f"mode: {mode} gemm1_time: {gemm1_time} gemm1_acc: {gemm1_accuracy}")
     #     if gemm1_time < min_time1 and gemm1_time > 20:
