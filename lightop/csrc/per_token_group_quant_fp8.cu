@@ -406,5 +406,434 @@ void per_token_group_quant_fp8(
         }
     );
 }
+
+template <typename scalar_t, int THREADS_PER_GROUP, bool is_e4m3>
+__global__ void fused_store_index_k_cache_small_kernel(
+    const scalar_t* __restrict__ input,       
+    uint8_t* __restrict__ buf_ptr,           
+    const int64_t* __restrict__ loc_ptr,      
+    const int hidden_size,
+    const int page_size,
+    const int64_t buf_numel_per_page,      
+    const int64_t s_offset_nbytes_in_page,    
+    const float eps,
+    const bool use_ue8m0,
+    const int64_t num_tokens) {
+
+    constexpr int VEC = 16;
+    int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+    
+    int global_token_id = global_tid / THREADS_PER_GROUP;
+    int lane_in_group = global_tid % THREADS_PER_GROUP;
+
+    if (global_token_id >= num_tokens) return;
+
+
+    int64_t loc = loc_ptr[global_token_id];
+    int64_t page_idx = loc / page_size;
+    int64_t token_offset = loc % page_size;
+
+    uint8_t* out_k_ptr = buf_ptr + page_idx * buf_numel_per_page + token_offset * hidden_size;
+    
+    float* out_s_ptr = reinterpret_cast<float*>(buf_ptr + page_idx * buf_numel_per_page + s_offset_nbytes_in_page) + token_offset;
+
+    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+    using VecFp8Type = at::native::memory::aligned_vector<uint8_t, VEC>;
+
+    int64_t idx = (int64_t)global_token_id * hidden_size + lane_in_group * VEC;
+
+    scalar_t input_vec[VEC];
+    *(VecType*)input_vec = *(VecType*)(input + idx);
+
+    float input_float_vec[VEC];
+    float max_val = 0.f;
+    
+    #pragma unroll
+    for (int ii = 0; ii < VEC; ii++) {
+        input_float_vec[ii] = static_cast<float>(input_vec[ii]);
+        max_val = fmaxf(max_val, fabsf(input_float_vec[ii]));
+    }
+
+    max_val = WarpGroupReduceMax<THREADS_PER_GROUP>(max_val);
+
+    constexpr float FP8_MAX_VAL = is_e4m3 ? 448.0f : 57344.0f;
+    max_val = fmaxf(max_val, eps);
+    float scale_raw = max_val / FP8_MAX_VAL;
+    
+    float s_group_scale;
+    if (use_ue8m0) {
+        s_group_scale = exp2f(ceilf(log2f(scale_raw)));
+    } else {
+        s_group_scale = scale_raw;
+    }
+    if (lane_in_group == 0) {
+        *out_s_ptr = s_group_scale;
+    }
+
+    float inv_s = (s_group_scale == 0.f) ? 0.f : 1.0f / s_group_scale;
+    uint8_t out_vec[VEC];
+    
+    #pragma unroll
+    for(int ii = 0; ii < VEC; ii+=4){
+        uint32_t packed;
+        if constexpr (is_e4m3) {
+            packed = float_to_fp8e4m3_x4(
+                input_float_vec[ii] * inv_s, input_float_vec[ii+1] * inv_s,
+                input_float_vec[ii+2] * inv_s, input_float_vec[ii+3] * inv_s);
+        } else {
+            packed = float_to_fp8e5m2_x4(
+                input_float_vec[ii] * inv_s, input_float_vec[ii+1] * inv_s,
+                input_float_vec[ii+2] * inv_s, input_float_vec[ii+3] * inv_s);
+        }
+        *(uint32_t*)(&out_vec[ii]) = packed;
+    }
+    *(VecFp8Type*)(out_k_ptr + lane_in_group * VEC) = *(VecFp8Type*)out_vec;
+}
+
+void fuse_act_quant_and_store_index_k_cache(
+    torch::Tensor input,     
+    torch::Tensor buf,        
+    torch::Tensor loc,         
+    int page_size,
+    float eps = 1e-5f,         
+    bool use_ue8m0 = false,
+    bool is_e4m3 = true)       
+{
+    input = input.is_contiguous() ? input : input.contiguous();
+    loc = loc.is_contiguous() ? loc : loc.contiguous();
+    
+    
+    TORCH_CHECK(loc.scalar_type() == torch::kInt64, "loc tensor must be int64 to align with Triton");
+
+    int const hidden_size = input.size(-1);
+    int64_t num_tokens = input.numel() / hidden_size;
+    
+    TORCH_CHECK(hidden_size <= 16384, "hidden_size exceeds 16384");
+    TORCH_CHECK(hidden_size >= 16 && hidden_size % 16 == 0, "hidden_size must be multiple of 16");
+
+    int64_t s_offset_nbytes_in_page = page_size * hidden_size; 
+    int64_t buf_numel_per_page = page_size * hidden_size + page_size * sizeof(float);
+
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    auto buf_ptr = reinterpret_cast<uint8_t*>(buf.data_ptr());
+    
+    auto loc_ptr = loc.data_ptr<int64_t>();
+
+    VLLM_DISPATCH_FLOATING_TYPES(
+        input.scalar_type(), "fused_store_index_k_cache_small_kernel", [&] {
+            int threads_per_group = hidden_size / 16;
+            constexpr int BLOCK_SIZE = 256; 
+            int groups_per_block = BLOCK_SIZE / threads_per_group;
+            int num_blocks = (num_tokens + groups_per_block - 1) / groups_per_block;
+
+            #define LAUNCH_SMALL_FUSED_KERNEL(THREADS, IS_E4M3_BOOL)                       \
+                fused_store_index_k_cache_small_kernel<scalar_t, THREADS, IS_E4M3_BOOL>    \
+                    <<<num_blocks, BLOCK_SIZE, 0, stream>>>(                               \
+                        input.data_ptr<scalar_t>(), buf_ptr, loc_ptr,                      \
+                        hidden_size, page_size, buf_numel_per_page,                        \
+                        s_offset_nbytes_in_page, eps, use_ue8m0, num_tokens)
+
+            if (is_e4m3) {
+                if (threads_per_group == 1) { LAUNCH_SMALL_FUSED_KERNEL(1, true); }
+                else if (threads_per_group == 2) { LAUNCH_SMALL_FUSED_KERNEL(2, true); }
+                else if (threads_per_group == 4) { LAUNCH_SMALL_FUSED_KERNEL(4, true); }
+                else if (threads_per_group == 8) { LAUNCH_SMALL_FUSED_KERNEL(8, true); }
+                else if (threads_per_group == 16) { LAUNCH_SMALL_FUSED_KERNEL(16, true); }
+                else if (threads_per_group == 32) { LAUNCH_SMALL_FUSED_KERNEL(32, true); }
+            } else {
+                if (threads_per_group == 1) { LAUNCH_SMALL_FUSED_KERNEL(1, false); }
+                else if (threads_per_group == 2) { LAUNCH_SMALL_FUSED_KERNEL(2, false); }
+                else if (threads_per_group == 4) { LAUNCH_SMALL_FUSED_KERNEL(4, false); }
+                else if (threads_per_group == 8) { LAUNCH_SMALL_FUSED_KERNEL(8, false); }
+                else if (threads_per_group == 16) { LAUNCH_SMALL_FUSED_KERNEL(16, false); }
+                else if (threads_per_group == 32) { LAUNCH_SMALL_FUSED_KERNEL(32, false); }
+            }
+        }
+    );
+}
+
+__inline__ __device__ float DynamicWarpGroupReduceMax(float val, int threads_per_group) {
+    #pragma unroll 1
+    for (int mask = threads_per_group / 2; mask > 0; mask >>= 1) {
+        val = fmaxf(val, __shfl_xor(val, mask));
+    }
+    return val;
+}
+
+template <typename scalar_t, bool is_e4m3>
+__global__ void fused_qk_quant_weight_mul_and_store_index_k_cache(
+    const scalar_t* __restrict__ q_input,     // [num_tokens, q_hidden_size]
+    uint8_t* __restrict__ q_out,              // [num_tokens, q_hidden_size]
+    float* __restrict__ q_scale_out,          // [num_tokens]
+    const scalar_t* __restrict__ weights_in,  // [num_tokens, num_heads] 
+    scalar_t* __restrict__ weights_out,       // [num_tokens, num_heads]
+    const float q_scale_factor,             
+    const float k_scale_factor,              
+    const int num_heads,
+    const int q_hidden_size,
+    const int q_threads_per_group,
+    const scalar_t* __restrict__ k_input,     
+    uint8_t* __restrict__ k_buf_ptr,          
+    const int64_t* __restrict__ k_loc_ptr,  
+    const int k_hidden_size,
+    const int k_threads_per_group,
+    const int page_size,
+    const int64_t buf_numel_per_page,
+    const int64_t s_offset_nbytes_in_page,
+    const float eps,
+    const bool use_ue8m0,
+    const int64_t num_tokens,
+    const int q_blocks                     
+) {
+    constexpr int VEC = 16;
+    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+    using VecFp8Type = at::native::memory::aligned_vector<uint8_t, VEC>;
+
+    if (blockIdx.x < q_blocks) {
+        int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+        int global_token_id = global_tid / q_threads_per_group;
+        int lane_in_group = global_tid % q_threads_per_group;
+
+        if (global_token_id >= num_tokens) return;
+
+        int64_t idx = (int64_t)global_token_id * q_hidden_size + lane_in_group * VEC;
+
+        scalar_t input_vec[VEC];
+        *(VecType*)input_vec = *(VecType*)(q_input + idx);
+
+        float input_float_vec[VEC];
+        float max_val = 0.f;
+        
+        #pragma unroll
+        for (int ii = 0; ii < VEC; ii++) {
+            input_float_vec[ii] = static_cast<float>(input_vec[ii]) * q_scale_factor;
+            max_val = fmaxf(max_val, fabsf(input_float_vec[ii]));
+        }
+
+        max_val = DynamicWarpGroupReduceMax(max_val, q_threads_per_group);
+
+        constexpr float FP8_MAX_VAL = is_e4m3 ? 448.0f : 57344.0f;
+        max_val = fmaxf(max_val, eps);
+        float scale_raw = max_val / FP8_MAX_VAL;
+        
+        float s_group_scale;
+        if (use_ue8m0) {
+            s_group_scale = exp2f(ceilf(log2f(scale_raw)));
+        } else {
+            s_group_scale = scale_raw;
+        }
+
+        if (lane_in_group == 0) {
+            q_scale_out[global_token_id] = s_group_scale;
+        }
+
+        if (weights_in != nullptr && weights_out != nullptr) {
+            for (int i = lane_in_group; i < num_heads; i += q_threads_per_group) {
+                float w = static_cast<float>(weights_in[global_token_id * num_heads + i]);
+                weights_out[global_token_id * num_heads + i] = static_cast<scalar_t>(w * s_group_scale);
+            }
+        }
+
+        float inv_s = (s_group_scale == 0.f) ? 0.f : 1.0f / s_group_scale;
+        uint8_t out_vec[VEC];
+        
+        #pragma unroll
+        for(int ii = 0; ii < VEC; ii+=4){
+            uint32_t packed;
+            if constexpr (is_e4m3) {
+                packed = float_to_fp8e4m3_x4(
+                    input_float_vec[ii] * inv_s, input_float_vec[ii+1] * inv_s,
+                    input_float_vec[ii+2] * inv_s, input_float_vec[ii+3] * inv_s);
+            } else {
+                packed = float_to_fp8e5m2_x4(
+                    input_float_vec[ii] * inv_s, input_float_vec[ii+1] * inv_s,
+                    input_float_vec[ii+2] * inv_s, input_float_vec[ii+3] * inv_s);
+            }
+            *(uint32_t*)(&out_vec[ii]) = packed;
+        }
+        *(VecFp8Type*)(q_out + idx) = *(VecFp8Type*)out_vec;
+
+    } else {
+        int k_block_idx = blockIdx.x - q_blocks; 
+        int global_tid = k_block_idx * blockDim.x + threadIdx.x;
+        int global_token_id = global_tid / k_threads_per_group;
+        int lane_in_group = global_tid % k_threads_per_group;
+
+        if (global_token_id >= num_tokens) return;
+
+    
+        int64_t loc = k_loc_ptr[global_token_id];
+        int64_t page_idx = loc / page_size;
+        int64_t token_offset = loc % page_size;
+
+        uint8_t* out_k_ptr = k_buf_ptr + page_idx * buf_numel_per_page + token_offset * k_hidden_size;
+        float* out_s_ptr = reinterpret_cast<float*>(k_buf_ptr + page_idx * buf_numel_per_page + s_offset_nbytes_in_page) + token_offset;
+
+        int64_t idx = (int64_t)global_token_id * k_hidden_size + lane_in_group * VEC;
+
+        scalar_t input_vec[VEC];
+        *(VecType*)input_vec = *(VecType*)(k_input + idx);
+
+        float input_float_vec[VEC];
+        float max_val = 0.f;
+        
+        #pragma unroll
+        for (int ii = 0; ii < VEC; ii++) {
+            input_float_vec[ii] = static_cast<float>(input_vec[ii]) * k_scale_factor;
+            max_val = fmaxf(max_val, fabsf(input_float_vec[ii]));
+        }
+
+        max_val = DynamicWarpGroupReduceMax(max_val, k_threads_per_group);
+
+        constexpr float FP8_MAX_VAL = is_e4m3 ? 448.0f : 57344.0f;
+        max_val = fmaxf(max_val, eps);
+        float scale_raw = max_val / FP8_MAX_VAL;
+        
+        float s_group_scale;
+        if (use_ue8m0) {
+            s_group_scale = exp2f(ceilf(log2f(scale_raw)));
+        } else {
+            s_group_scale = scale_raw;
+        }
+
+        if (lane_in_group == 0) {
+            *out_s_ptr = s_group_scale;
+        }
+
+        float inv_s = (s_group_scale == 0.f) ? 0.f : 1.0f / s_group_scale;
+        uint8_t out_vec[VEC];
+        
+        #pragma unroll
+        for(int ii = 0; ii < VEC; ii+=4){
+            uint32_t packed;
+            if constexpr (is_e4m3) {
+                packed = float_to_fp8e4m3_x4(
+                    input_float_vec[ii] * inv_s, input_float_vec[ii+1] * inv_s,
+                    input_float_vec[ii+2] * inv_s, input_float_vec[ii+3] * inv_s);
+            } else {
+                packed = float_to_fp8e5m2_x4(
+                    input_float_vec[ii] * inv_s, input_float_vec[ii+1] * inv_s,
+                    input_float_vec[ii+2] * inv_s, input_float_vec[ii+3] * inv_s);
+            }
+            *(uint32_t*)(&out_vec[ii]) = packed;
+        }
+        *(VecFp8Type*)(out_k_ptr + lane_in_group * VEC) = *(VecFp8Type*)out_vec;
+    }
+}
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> fuse_qk_quant_and_store_index_k_cache(
+    torch::Tensor q_input,       
+    torch::Tensor k_input,       
+    torch::Tensor k_buf,         
+    torch::Tensor k_loc,         
+    int page_size,
+    c10::optional<torch::Tensor> weights_in_opt = c10::nullopt,
+    float q_scale_factor = 1.0f,  
+    float k_scale_factor = 1.0f,  
+    float eps = 1e-5f,        
+    bool use_ue8m0 = false,
+    bool is_e4m3 = true)      
+{
+    
+    q_input = q_input.is_contiguous() ? q_input : q_input.contiguous();
+    k_input = k_input.is_contiguous() ? k_input : k_input.contiguous();
+    k_loc = k_loc.is_contiguous() ? k_loc : k_loc.contiguous();
+    
+    TORCH_CHECK(k_loc.scalar_type() == torch::kInt64, "loc tensor must be int64");
+    TORCH_CHECK(q_input.scalar_type() == k_input.scalar_type(), "Q and K input must have the same precision");
+
+    int64_t const num_tokens = q_input.size(0);
+    int const q_hidden_size = q_input.size(-1);
+    int const k_hidden_size = k_input.size(-1);
+
+    TORCH_CHECK(q_hidden_size <= 1024 && k_hidden_size <= 1024, "This fused kernel currently targets small chunks (<=1024 hidden_size).");
+    TORCH_CHECK(q_hidden_size >= 16 && q_hidden_size % 16 == 0, "q_hidden_size must be multiple of 16");
+    TORCH_CHECK(k_hidden_size >= 16 && k_hidden_size % 16 == 0, "k_hidden_size must be multiple of 16");
+
+    bool has_weights = weights_in_opt.has_value() && weights_in_opt.value().defined();
+    int num_heads = 0;
+    torch::Tensor weights_in, weights_out;
+
+    if (has_weights) {
+        weights_in = weights_in_opt.value().contiguous();
+        num_heads = weights_in.size(-1);
+        weights_out = torch::empty_like(weights_in); 
+    } else {
+        weights_out = torch::empty({0}, q_input.options());
+    }
+
+    auto q_out = torch::empty_like(q_input, q_input.options().dtype(torch::kFloat8_e4m3fn));
+    auto q_scale_out = torch::empty({num_tokens}, q_input.options().dtype(torch::kFloat32));
+
+    int64_t s_offset_nbytes_in_page = page_size * k_hidden_size; 
+    int64_t buf_numel_per_page = page_size * k_hidden_size + page_size * sizeof(float);
+
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    
+    int q_threads_per_group = q_hidden_size / 16;
+    int k_threads_per_group = k_hidden_size / 16;
+    
+    constexpr int BLOCK_SIZE = 256; 
+    
+    int q_groups_per_block = BLOCK_SIZE / q_threads_per_group;
+    int k_groups_per_block = BLOCK_SIZE / k_threads_per_group;
+    
+    int q_blocks = (num_tokens + q_groups_per_block - 1) / q_groups_per_block;
+    int k_blocks = (num_tokens + k_groups_per_block - 1) / k_groups_per_block;
+
+    int total_blocks = q_blocks + k_blocks;
+
+    VLLM_DISPATCH_FLOATING_TYPES(
+        q_input.scalar_type(), "fused_qk_block_partition_kernel", [&] {
+            
+            scalar_t* w_in_ptr = has_weights ? weights_in.data_ptr<scalar_t>() : nullptr;
+            scalar_t* w_out_ptr = has_weights ? weights_out.data_ptr<scalar_t>() : nullptr;
+
+            if (is_e4m3) {
+                fused_qk_block_partition_kernel<scalar_t, true>
+                    <<<total_blocks, BLOCK_SIZE, 0, stream>>>(
+                        q_input.data_ptr<scalar_t>(),
+                        reinterpret_cast<uint8_t*>(q_out.data_ptr()),
+                        q_scale_out.data_ptr<float>(),
+                        w_in_ptr, w_out_ptr, 
+                        q_scale_factor, k_scale_factor,  
+                        num_heads, q_hidden_size, q_threads_per_group,
+                        
+                        k_input.data_ptr<scalar_t>(),
+                        reinterpret_cast<uint8_t*>(k_buf.data_ptr()),
+                        k_loc.data_ptr<int64_t>(),
+                        k_hidden_size, k_threads_per_group,
+                        page_size, buf_numel_per_page, s_offset_nbytes_in_page,
+                        
+                        eps, use_ue8m0, num_tokens, q_blocks
+                    );
+            } else {
+                fused_qk_block_partition_kernel<scalar_t, false>
+                    <<<total_blocks, BLOCK_SIZE, 0, stream>>>(
+                        q_input.data_ptr<scalar_t>(),
+                        reinterpret_cast<uint8_t*>(q_out.data_ptr()),
+                        q_scale_out.data_ptr<float>(),
+                        w_in_ptr, w_out_ptr, 
+                        q_scale_factor, k_scale_factor, 
+                        num_heads, q_hidden_size, q_threads_per_group,
+                        
+                        k_input.data_ptr<scalar_t>(),
+                        reinterpret_cast<uint8_t*>(k_buf.data_ptr()),
+                        k_loc.data_ptr<int64_t>(),
+                        k_hidden_size, k_threads_per_group,
+                        page_size, buf_numel_per_page, s_offset_nbytes_in_page,
+                        
+                        eps, use_ue8m0, num_tokens, q_blocks
+                    );
+            }
+        }
+    );
+    if (has_weights) {
+        return std::make_tuple(q_out, q_scale_out, weights_out.unsqueeze(-1));
+    } else {
+        return std::make_tuple(q_out, q_scale_out, weights_out);
+    }
+}
+
 } // namespace native
 } // namespace at
