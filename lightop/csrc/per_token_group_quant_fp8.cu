@@ -784,13 +784,13 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> fuse_qk_quant_and_store_
     int total_blocks = q_blocks + k_blocks;
 
     VLLM_DISPATCH_FLOATING_TYPES(
-        q_input.scalar_type(), "fused_qk_block_partition_kernel", [&] {
+        q_input.scalar_type(), "fused_qk_quant_weight_mul_and_store_index_k_cache", [&] {
             
             scalar_t* w_in_ptr = has_weights ? weights_in.data_ptr<scalar_t>() : nullptr;
             scalar_t* w_out_ptr = has_weights ? weights_out.data_ptr<scalar_t>() : nullptr;
 
             if (is_e4m3) {
-                fused_qk_block_partition_kernel<scalar_t, true>
+                fused_qk_quant_weight_mul_and_store_index_k_cache<scalar_t, true>
                     <<<total_blocks, BLOCK_SIZE, 0, stream>>>(
                         q_input.data_ptr<scalar_t>(),
                         reinterpret_cast<uint8_t*>(q_out.data_ptr()),
@@ -808,7 +808,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> fuse_qk_quant_and_store_
                         eps, use_ue8m0, num_tokens, q_blocks
                     );
             } else {
-                fused_qk_block_partition_kernel<scalar_t, false>
+                fused_qk_quant_weight_mul_and_store_index_k_cache<scalar_t, false>
                     <<<total_blocks, BLOCK_SIZE, 0, stream>>>(
                         q_input.data_ptr<scalar_t>(),
                         reinterpret_cast<uint8_t*>(q_out.data_ptr()),
