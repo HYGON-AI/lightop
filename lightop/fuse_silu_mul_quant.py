@@ -153,3 +153,9 @@ def moe_swiglu_dynamic_quant(
     )
     
     return output, scales
+
+def relu2(input: torch.Tensor) -> torch.Tensor:
+    output = torch.empty_like(input)
+    
+    op.relu2_opt(output, input)
+    return output
