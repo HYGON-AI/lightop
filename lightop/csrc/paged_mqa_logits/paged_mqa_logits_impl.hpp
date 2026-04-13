@@ -356,23 +356,6 @@ __global__ void paged_mqa_logits(const Element* q,
             :);
         __builtin_amdgcn_sched_barrier(0);
 
-        auto smem_kv_stage = smem_kv_block + k_block * BLOCK_KV * K_TILE + warp_idx * kAlignmentKV * WARP_SIZE_GPU;
-        #pragma unroll
-        for (int j = 0; j < fetch_kv_block_cnt; ++j) {
-            auto inner_warp_offset =
-                    (t_id % 4 * kAlignmentKV + t_id / 4 * kHeadDim + k_block * K_TILE) * sizeof(__fp16);
-            #if defined(__gfx936__) || defined(__gfx938__)
-            __builtin_amdgcn_raw_buffer_load_lds(*src,
-                                                 // Cast address type to which compiler can recognize as lds type.
-                                                 *(__attribute__((address_space(3))) int**) (&smem_kv_stage),
-                                                 DIRECT_LDS_WORDx4,
-                                                 inner_warp_offset,
-                                                 0,
-                                                 0,
-                                                 0);
-            #endif
-        }
-
         #pragma unroll
         for (int i = 0; i < kHeadDim / Q_TILE; ++i) {
             builtin_b16_mmac<is_half>(reg_kv_operand.front, reg_q_operand[i][k_block].front, acc[i]);
