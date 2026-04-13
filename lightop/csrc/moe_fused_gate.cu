@@ -546,9 +546,8 @@ struct KernelParams {
  static constexpr int WARPS_PER_CTA = WARPS_PER_CTA_;
 };
 
-// 智谱优化  topk=8, num_expert_group=1
-template <typename T, typename T_bias, typename Params, int VPT_LOCAL, int NUM_EXPERTS>
-__global__ void moe_fused_gate_kernel_topk8_gourp1(
+template <typename T, typename T_bias, typename Params, int VPT_LOCAL, int NUM_EXPERTS, int TOPK>
+__global__ void moe_fused_gate_kernel_gourp1(
   void* input,
   void* bias,
   float* output_ptr,
@@ -609,10 +608,10 @@ __global__ void moe_fused_gate_kernel_topk8_gourp1(
   int my_stored_idx = 0;
   float output_sum = 0.0f;
   
-  int topk_routed = 8 - n_share_experts_fusion;
+  int topk_routed = TOPK - n_share_experts_fusion;
 
   #pragma unroll
-  for (int k = 0; k < 8; ++k) {
+  for (int k = 0; k < TOPK; ++k) {
     float local_max = Negative_inf;
     int local_idx = (thread_group_idx < EFFECTIVE_THREADS) ? start_col : 0;
   
@@ -658,15 +657,14 @@ __global__ void moe_fused_gate_kernel_topk8_gourp1(
     }
   }
 
-  // 共享专家逻辑
-  if (n_share_experts_fusion > 0 && thread_group_idx >= topk_routed && thread_group_idx < 8) {
+  if (n_share_experts_fusion > 0 && thread_group_idx >= topk_routed && thread_group_idx < TOPK) {
       int share_offset = thread_group_idx - topk_routed;
       my_stored_idx = NUM_EXPERTS + share_offset; 
       my_stored_prob = output_sum / static_cast<float>(routed_scaling_factor);
   }
 
-  if (thread_group_idx < 8) { // 只前8个线程写回结果
-    int const out_idx = 8 * thread_row + thread_group_idx;
+  if (thread_group_idx < TOPK) { 
+    int const out_idx = TOPK * thread_row + thread_group_idx;
     output_ptr[out_idx] = my_stored_prob / output_sum;
     indices_ptr[out_idx] = my_stored_idx;
   }
@@ -754,16 +752,29 @@ __global__ void moe_fused_gate_kernel(
    dim3 block_dim_spec(WARP_SIZE*N_WARP); \
    int64_t num_blocks_spec = (num_rows + ROWS_PER_CTA - 1) / ROWS_PER_CTA; \
    KernelParams<VPT, EXPERTS, THREADS_PER_ROW, ROWS_PER_WARP, ROWS_PER_CTA, N_WARP> params_spec; \
-   moe_fused_gate_kernel_topk8_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS> \
-     <<<num_blocks_spec, block_dim_spec, 0, stream>>>( \
-       input.data_ptr(),          \
-       bias.data_ptr(),          \
-       output.data_ptr<float>(),        \
-       indices.data_ptr<int32_t>(),       \
-       num_rows,              \
-       n_share_experts_fusion,        \
-       routed_scaling_factor, \
-       params_spec);        \
+   if (topk == 8) { \
+       moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 8> \
+         <<<num_blocks_spec, block_dim_spec, 0, stream>>>( \
+           input.data_ptr(),          \
+           bias.data_ptr(),          \
+           output.data_ptr<float>(),        \
+           indices.data_ptr<int32_t>(),       \
+           num_rows,              \
+           n_share_experts_fusion,        \
+           routed_scaling_factor, \
+           params_spec);        \
+   } else if (topk == 22) { \
+       moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 22> \
+         <<<num_blocks_spec, block_dim_spec, 0, stream>>>( \
+           input.data_ptr(),          \
+           bias.data_ptr(),          \
+           output.data_ptr<float>(),        \
+           indices.data_ptr<int32_t>(),       \
+           num_rows,              \
+           n_share_experts_fusion,        \
+           routed_scaling_factor, \
+           params_spec);        \
+   } \
    dispatched = true; \
  } while (0)
 
@@ -833,12 +844,33 @@ std::vector<torch::Tensor> moe_fused_gate(
  int computed_vpt = num_experts / num_expert_group;
  int computed_vpt_per_thread = computed_vpt / 4;
 
- //智谱优化 
+
  bool dispatched = false;
- if (topk == 8 && num_expert_group == 1 && topk_group == 1) {
-    TORCH_CHECK(num_experts == 128 || num_experts == 160 || num_experts == 256 || num_experts == 384, 
-                "(topk=8, expert_group=1) only supports 128, 160, 256, or 384 experts. Got ", num_experts);
-    if (num_experts == 384) {
+ if ((topk == 8 || topk == 22) && num_expert_group == 1 && topk_group == 1) {
+    TORCH_CHECK(num_experts == 128 || num_experts == 160 || num_experts == 256 || num_experts == 384 || num_experts == 512, 
+                "(topk=8 or 22, expert_group=1) only supports 128, 160, 256, 384, or 512 experts. Got ", num_experts);
+    //Nemotron E 512 TopK 22
+    if (num_experts == 512) {
+        if (input.scalar_type() == at::kBFloat16) {
+            if (bias.scalar_type() == at::kFloat) {
+                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, float, 512, 64, 8, 2);
+            } else if (bias.scalar_type() == at::kBFloat16) {
+                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, __nv_bfloat16, 512, 64, 8, 2);
+            }
+        } else if (input.scalar_type() == at::kHalf) {
+             if (bias.scalar_type() == at::kHalf) {
+                LAUNCH_MOE_GATE_OPT_NE1(half, half, 512, 64, 8, 2);
+             }
+        } else if (input.scalar_type() == at::kFloat) {
+             if (bias.scalar_type() == at::kFloat) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 512, 64, 8, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 512, 64, 8, 2);
+                }
+             }
+        }
+    } else if (num_experts == 384) {
         if (input.scalar_type() == at::kBFloat16) {
             if (bias.scalar_type() == at::kFloat) {
                 LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, float, 384, 64, 8, 2);
