@@ -37,6 +37,52 @@ class LayerNorm(torch.nn.Module):
     def extra_repr(self):
         return f'eps={round(self.eps,5):0.5f}'
 
+class LayerNormMixedFp32Weight(torch.nn.Module):
+    """LayerNorm：激活为 input_dtype（Half/BFloat16），weight/bias 始终为 float32（独立 CUDA 实现）。"""
+
+    def __init__(
+        self,
+        normalized_shape: int,
+        eps: float = 1e-5,
+        elementwise_affine: bool = True,
+        bias: bool = True,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+        self.eps = eps
+        self.elementwise_affine = elementwise_affine
+        param_kwargs = {"device": device, "dtype": torch.float32}
+        if self.elementwise_affine:
+            self.weight = torch.nn.Parameter(torch.empty(normalized_shape, **param_kwargs))
+            if bias:
+                self.bias = torch.nn.Parameter(torch.empty(normalized_shape, **param_kwargs))
+            else:
+                self.register_parameter("bias", None)
+        else:
+            self.register_parameter("weight", None)
+            self.register_parameter("bias", None)
+        # 若指定，则在 forward 中将 x cast 到该 dtype（应为 Half 或 BFloat16）。
+        self._act_dtype = dtype
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        if self.elementwise_affine:
+            torch.nn.init.ones_(self.weight)
+            if self.bias is not None:
+                torch.nn.init.zeros_(self.bias)
+
+    def forward(self, x):
+        if self._act_dtype is not None and x.dtype != self._act_dtype:
+            x = x.to(self._act_dtype)
+        return op.layernorm_mixed_fp32_params_forward_autograd(
+            x, self.weight, self.bias, self.eps, self.training
+        )
+
+    def extra_repr(self):
+        return f"eps={round(self.eps, 5):0.5f}, act_dtype={self._act_dtype}"
+
+
 class AddLn(torch.nn.Module):
     def __init__(self,normalized_shape:int,eps: float = 1e-5,device=None, dtype=None ):
         super(AddLn,self).__init__()
