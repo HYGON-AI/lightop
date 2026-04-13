@@ -562,14 +562,13 @@ __inline__ __device__ float DynamicWarpGroupReduceMax(float val, int threads_per
 
 template <typename scalar_t, bool is_e4m3>
 __global__ void fused_qk_quant_weight_mul_and_store_index_k_cache(
-    const scalar_t* __restrict__ q_input,     // [num_tokens, q_hidden_size]
-    uint8_t* __restrict__ q_out,              // [num_tokens, q_hidden_size]
-    float* __restrict__ q_scale_out,          // [num_tokens]
-    const scalar_t* __restrict__ weights_in,  // [num_tokens, num_heads] 
-    scalar_t* __restrict__ weights_out,       // [num_tokens, num_heads]
+    const scalar_t* __restrict__ q_input,     // [num_q_elements, q_hidden_size]
+    uint8_t* __restrict__ q_out,              // [num_q_elements, q_hidden_size]
+    float* __restrict__ q_scale_out,          // [num_q_elements]
+    const scalar_t* __restrict__ weights_in,  // [num_q_elements] 
+    scalar_t* __restrict__ weights_out,       // [num_q_elements]
     const float q_scale_factor,             
     const float k_scale_factor,              
-    const int num_heads,
     const int q_hidden_size,
     const int q_threads_per_group,
     const scalar_t* __restrict__ k_input,     
@@ -582,7 +581,8 @@ __global__ void fused_qk_quant_weight_mul_and_store_index_k_cache(
     const int64_t s_offset_nbytes_in_page,
     const float eps,
     const bool use_ue8m0,
-    const int64_t num_tokens,
+    const int64_t num_q_elements, 
+    const int64_t num_tokens,     
     const int q_blocks                     
 ) {
     constexpr int VEC = 16;
@@ -591,12 +591,12 @@ __global__ void fused_qk_quant_weight_mul_and_store_index_k_cache(
 
     if (blockIdx.x < q_blocks) {
         int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
-        int global_token_id = global_tid / q_threads_per_group;
+        int global_q_id = global_tid / q_threads_per_group;
         int lane_in_group = global_tid % q_threads_per_group;
 
-        if (global_token_id >= num_tokens) return;
+        if (global_q_id >= num_q_elements) return;
 
-        int64_t idx = (int64_t)global_token_id * q_hidden_size + lane_in_group * VEC;
+        int64_t idx = (int64_t)global_q_id * q_hidden_size + lane_in_group * VEC;
 
         scalar_t input_vec[VEC];
         *(VecType*)input_vec = *(VecType*)(q_input + idx);
@@ -616,21 +616,13 @@ __global__ void fused_qk_quant_weight_mul_and_store_index_k_cache(
         max_val = fmaxf(max_val, eps);
         float scale_raw = max_val / FP8_MAX_VAL;
         
-        float s_group_scale;
-        if (use_ue8m0) {
-            s_group_scale = exp2f(ceilf(log2f(scale_raw)));
-        } else {
-            s_group_scale = scale_raw;
-        }
+        float s_group_scale = use_ue8m0 ? exp2f(ceilf(log2f(scale_raw))) : scale_raw;
 
         if (lane_in_group == 0) {
-            q_scale_out[global_token_id] = s_group_scale;
-        }
-
-        if (weights_in != nullptr && weights_out != nullptr) {
-            for (int i = lane_in_group; i < num_heads; i += q_threads_per_group) {
-                float w = static_cast<float>(weights_in[global_token_id * num_heads + i]);
-                weights_out[global_token_id * num_heads + i] = static_cast<scalar_t>(w * s_group_scale);
+            q_scale_out[global_q_id] = s_group_scale;
+            if (weights_in != nullptr && weights_out != nullptr) {
+                float w = static_cast<float>(weights_in[global_q_id]);
+                weights_out[global_q_id] = static_cast<scalar_t>(w * s_group_scale);
             }
         }
 
@@ -652,7 +644,6 @@ __global__ void fused_qk_quant_weight_mul_and_store_index_k_cache(
             *(uint32_t*)(&out_vec[ii]) = packed;
         }
         *(VecFp8Type*)(q_out + idx) = *(VecFp8Type*)out_vec;
-
     } else {
         int k_block_idx = blockIdx.x - q_blocks; 
         int global_tid = k_block_idx * blockDim.x + threadIdx.x;
@@ -660,7 +651,6 @@ __global__ void fused_qk_quant_weight_mul_and_store_index_k_cache(
         int lane_in_group = global_tid % k_threads_per_group;
 
         if (global_token_id >= num_tokens) return;
-
     
         int64_t loc = k_loc_ptr[global_token_id];
         int64_t page_idx = loc / page_size;
@@ -689,12 +679,7 @@ __global__ void fused_qk_quant_weight_mul_and_store_index_k_cache(
         max_val = fmaxf(max_val, eps);
         float scale_raw = max_val / FP8_MAX_VAL;
         
-        float s_group_scale;
-        if (use_ue8m0) {
-            s_group_scale = exp2f(ceilf(log2f(scale_raw)));
-        } else {
-            s_group_scale = scale_raw;
-        }
+        float s_group_scale = use_ue8m0 ? exp2f(ceilf(log2f(scale_raw))) : scale_raw;
 
         if (lane_in_group == 0) {
             *out_s_ptr = s_group_scale;
@@ -734,7 +719,6 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> fuse_qk_quant_and_store_
     bool use_ue8m0 = false,
     bool is_e4m3 = true)      
 {
-    
     q_input = q_input.is_contiguous() ? q_input : q_input.contiguous();
     k_input = k_input.is_contiguous() ? k_input : k_input.contiguous();
     k_loc = k_loc.is_contiguous() ? k_loc : k_loc.contiguous();
@@ -742,28 +726,35 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> fuse_qk_quant_and_store_
     TORCH_CHECK(k_loc.scalar_type() == torch::kInt64, "loc tensor must be int64");
     TORCH_CHECK(q_input.scalar_type() == k_input.scalar_type(), "Q and K input must have the same precision");
 
-    int64_t const num_tokens = q_input.size(0);
     int const q_hidden_size = q_input.size(-1);
     int const k_hidden_size = k_input.size(-1);
+    
+   
+    int64_t const num_tokens = k_loc.size(0); 
+    int64_t const num_q_elements = q_input.numel() / q_hidden_size; 
+
+ 
+    TORCH_CHECK(k_input.numel() / k_hidden_size == num_tokens, "当前内核的 K-Cache 写入逻辑仅支持单 Head 的 K 向量。");
 
     TORCH_CHECK(q_hidden_size <= 1024 && k_hidden_size <= 1024, "This fused kernel currently targets small chunks (<=1024 hidden_size).");
     TORCH_CHECK(q_hidden_size >= 16 && q_hidden_size % 16 == 0, "q_hidden_size must be multiple of 16");
     TORCH_CHECK(k_hidden_size >= 16 && k_hidden_size % 16 == 0, "k_hidden_size must be multiple of 16");
 
     bool has_weights = weights_in_opt.has_value() && weights_in_opt.value().defined();
-    int num_heads = 0;
     torch::Tensor weights_in, weights_out;
 
     if (has_weights) {
         weights_in = weights_in_opt.value().contiguous();
-        num_heads = weights_in.size(-1);
         weights_out = torch::empty_like(weights_in); 
     } else {
         weights_out = torch::empty({0}, q_input.options());
     }
+    
+    auto q_sizes = q_input.sizes().vec();
+    q_sizes.back() = 1;
 
     auto q_out = torch::empty_like(q_input, q_input.options().dtype(torch::kFloat8_e4m3fn));
-    auto q_scale_out = torch::empty({num_tokens}, q_input.options().dtype(torch::kFloat32));
+    auto q_scale_out = torch::empty(q_sizes, q_input.options().dtype(torch::kFloat32));
 
     int64_t s_offset_nbytes_in_page = page_size * k_hidden_size; 
     int64_t buf_numel_per_page = page_size * k_hidden_size + page_size * sizeof(float);
@@ -778,7 +769,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> fuse_qk_quant_and_store_
     int q_groups_per_block = BLOCK_SIZE / q_threads_per_group;
     int k_groups_per_block = BLOCK_SIZE / k_threads_per_group;
     
-    int q_blocks = (num_tokens + q_groups_per_block - 1) / q_groups_per_block;
+    int q_blocks = (num_q_elements + q_groups_per_block - 1) / q_groups_per_block;
     int k_blocks = (num_tokens + k_groups_per_block - 1) / k_groups_per_block;
 
     int total_blocks = q_blocks + k_blocks;
@@ -797,15 +788,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> fuse_qk_quant_and_store_
                         q_scale_out.data_ptr<float>(),
                         w_in_ptr, w_out_ptr, 
                         q_scale_factor, k_scale_factor,  
-                        num_heads, q_hidden_size, q_threads_per_group,
-                        
+                        q_hidden_size, q_threads_per_group, 
                         k_input.data_ptr<scalar_t>(),
                         reinterpret_cast<uint8_t*>(k_buf.data_ptr()),
                         k_loc.data_ptr<int64_t>(),
                         k_hidden_size, k_threads_per_group,
                         page_size, buf_numel_per_page, s_offset_nbytes_in_page,
                         
-                        eps, use_ue8m0, num_tokens, q_blocks
+                        eps, use_ue8m0, num_q_elements, num_tokens, q_blocks
                     );
             } else {
                 fused_qk_quant_weight_mul_and_store_index_k_cache<scalar_t, false>
@@ -815,19 +805,19 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> fuse_qk_quant_and_store_
                         q_scale_out.data_ptr<float>(),
                         w_in_ptr, w_out_ptr, 
                         q_scale_factor, k_scale_factor, 
-                        num_heads, q_hidden_size, q_threads_per_group,
-                        
+                        q_hidden_size, q_threads_per_group, 
                         k_input.data_ptr<scalar_t>(),
                         reinterpret_cast<uint8_t*>(k_buf.data_ptr()),
                         k_loc.data_ptr<int64_t>(),
                         k_hidden_size, k_threads_per_group,
                         page_size, buf_numel_per_page, s_offset_nbytes_in_page,
                         
-                        eps, use_ue8m0, num_tokens, q_blocks
+                        eps, use_ue8m0, num_q_elements, num_tokens, q_blocks
                     );
             }
         }
     );
+    
     if (has_weights) {
         return std::make_tuple(q_out, q_scale_out, weights_out.unsqueeze(-1));
     } else {
