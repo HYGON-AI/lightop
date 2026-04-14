@@ -724,28 +724,6 @@ def paged_mqa_logits(
         clean_logits)
     return logits
 
-def paged_mqa_logits_with_raw_tokens(
-        q: torch.Tensor,
-        fused_kv_cache: torch.Tensor,
-        weights: torch.Tensor,
-        context_lens: torch.Tensor,
-        block_table: torch.Tensor,
-        schedule_meta: torch.Tensor,
-        batch_size: int,
-        max_context_len: int,
-        clean_logits: bool = True) -> torch.Tensor:
-    logits = op.paged_mqa_logits_with_raw_tokens(
-        q,
-        fused_kv_cache,
-        weights,
-        context_lens,
-        block_table,
-        schedule_meta,
-        batch_size,
-        max_context_len,
-        clean_logits)
-    return logits
-
 def fused_bmm(x: torch.Tensor,                                       # [batch_size, num_head, p_size], int8
               w: torch.Tensor,                                       # [num_head, l_size, p_size], int8
               x_scale: torch.Tensor,                                 # [batch_size, num_head, 1], fp32
