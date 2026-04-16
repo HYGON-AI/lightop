@@ -469,6 +469,13 @@ void gemma_rms_norm_fp8_quant(
   Tensor &out, Tensor& input, const Tensor& weight, Tensor scales, 
   double epsilon, std::optional<Tensor> residual, bool update_input, int fp8type
 );  
+void cp_gather_and_upconvert_fp8_kv_cache(
+    torch::Tensor const& src_cache,         // [NUM_BLOCKS, BLOCK_SIZE, 656]
+    torch::Tensor const& dst,               // [TOT_TOKENS, 576]
+    torch::Tensor const& block_table,       // [BATCH, BLOCK_INDICES]
+    torch::Tensor const& seq_lens,          // [BATCH]
+    torch::Tensor const& workspace_starts,  // [BATCH]
+    int64_t batch_size); 
 void fast_topk_transform_interface(
     const at::Tensor& score,
     const at::Tensor& lengths,
@@ -515,7 +522,7 @@ void fuse_layernorm_rotary_embedding(
     std::optional<at::Tensor> bias_k,   
     std::optional<at::Tensor> residual_q,
     std::optional<at::Tensor> residual_k,
-    double epsilon);             
+    double epsilon);    
 }
 }
 
@@ -760,7 +767,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("gemma_rmsnorm", &at::native::gemma_rmsnorm, "gemma_rmsnorm");
  m.def("gemma_rms_norm_fp8_quant", &at::native::gemma_rms_norm_fp8_quant, "gemma_rms_norm_fp8_quant");
  m.def("fast_topk_transform_interface", &at::native::fast_topk_transform_interface, "fast_topk_transform_interface");
- m.def("fast_topk_transform_ragged_interface", &at::native::fast_topk_transform_ragged_interface, "fast_topk_transform_ragged_interface");     
+ m.def("fast_topk_transform_ragged_interface", &at::native::fast_topk_transform_ragged_interface, "fast_topk_transform_ragged_interface");   
+ m.def("cp_gather_and_upconvert_fp8_kv_cache", &at::native::cp_gather_and_upconvert_fp8_kv_cache, "cp_gather_and_upconvert_fp8_kv_cache");   
  m.def("fuse_act_quant_and_store_index_k_cache", &at::native::fuse_act_quant_and_store_index_k_cache, "fuse_act_quant_and_store_index_k_cache");
  m.def("fuse_qk_quant_and_store_index_k_cache", &at::native::fuse_qk_quant_and_store_index_k_cache, "fuse_qk_quant_and_store_index_k_cache");
  m.def("fuse_layernorm_rotary_embedding", &at::native::fuse_layernorm_rotary_embedding, "fuse_layernorm_rotary_embedding");
