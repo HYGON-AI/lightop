@@ -1512,6 +1512,11 @@ def main(args: argparse.Namespace):
     # shard_intermediate_size=768
     # hidden_size=2048
 
+    #qwen3-30b-A3B-tp4
+    E = 128
+    shard_intermediate_size=384
+    hidden_size=2048
+
     # #qwen3-480b-tp8
     # E = 160
     # shard_intermediate_size=640
@@ -1593,9 +1598,9 @@ def main(args: argparse.Namespace):
     # hidden_size=4096
     
     # step3.5-flash-tp8-ep1
-    E = 288
-    shard_intermediate_size=320
-    hidden_size=4096
+    #E = 288
+    #shard_intermediate_size=320
+    #hidden_size=4096
 
     if args.batch_size is None:
         batch_sizes = [
