@@ -174,7 +174,7 @@ def run_single_benchmark(M, H, K, E, ALIGNMENT, device):
 
     # 1. 数据准备 (输入为 FP16/BF16)
     x = torch.randn((M, H), dtype=torch.bfloat16, device=device)
-    topk_ids = torch.randint(0, E, (M, K), dtype=torch.int32, device=device)
+    topk_ids = torch.randint(0, E, (M, K), dtype=torch.int64, device=device)
     expert_map = None
 
     expert_counts = count_expert_num_tokens(topk_ids, E).to(device)
