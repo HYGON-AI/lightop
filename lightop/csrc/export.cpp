@@ -522,7 +522,18 @@ void fuse_layernorm_rotary_embedding(
     std::optional<at::Tensor> bias_k,   
     std::optional<at::Tensor> residual_q,
     std::optional<at::Tensor> residual_k,
-    double epsilon);    
+    double epsilon);   
+std::vector<at::Tensor> fuse_norm_rope_quant_fp8(
+    at::Tensor positions, 
+    at::Tensor query, 
+    at::Tensor key,
+    int64_t head_size, 
+    at::Tensor cos_sin_cache, 
+    bool is_neox, 
+    bool is_rmsnorm,
+    std::optional<at::Tensor> weight_k, 
+    std::optional<at::Tensor> bias_k,   
+    double epsilon);      
 }
 }
 
@@ -772,5 +783,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("fuse_act_quant_and_store_index_k_cache", &at::native::fuse_act_quant_and_store_index_k_cache, "fuse_act_quant_and_store_index_k_cache");
  m.def("fuse_qk_quant_and_store_index_k_cache", &at::native::fuse_qk_quant_and_store_index_k_cache, "fuse_qk_quant_and_store_index_k_cache");
  m.def("fuse_layernorm_rotary_embedding", &at::native::fuse_layernorm_rotary_embedding, "fuse_layernorm_rotary_embedding");
+ m.def("fuse_norm_rope_quant_fp8", &at::native::fuse_norm_rope_quant_fp8, "fuse_norm_rope_quant_fp8");
 }
 
