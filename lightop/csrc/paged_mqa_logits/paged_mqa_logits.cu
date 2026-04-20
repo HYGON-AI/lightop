@@ -12,7 +12,8 @@
 namespace lightop {
 namespace deep_gemm {
 
-#define USE_CLEAN_LOGITS 0
+#define USE_CLEAN_LOGITS 1
+
 #define DISPATCH_ALIGNED_BATCH(ALIGNED_BATCH, SMS) \
     case ALIGNED_BATCH: \
         paged_mqa_logits_metadata<ALIGNED_BATCH, split_kv, SMS><<<grid, block, smem_size, stream>>>( \
@@ -155,28 +156,35 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                                const torch::Tensor& weights,
                                const torch::Tensor& context_lens,
                                const torch::Tensor& block_table,
-                               const torch::Tensor& schedule_meta,
+                               std::optional<torch::Tensor>& schedule_meta,
                                const int& max_context_len,
                                const bool& clean_logits) {
     // Declare these variables explicitly to avoid mis-binding in kernel launch lambdas
     int batch_size, next_n, num_heads, head_dim;
     int num_kv_blocks, block_kv, num_heads_kv, head_dim_with_sf;
+    bool use_meta = schedule_meta.has_value();
+
     std::tie(batch_size, next_n, num_heads, head_dim) = get_shape<4>(q);
     std::tie(num_kv_blocks, block_kv, num_heads_kv, head_dim_with_sf) = get_shape<4>(fused_kv_cache);
     const auto& [batch_size_] = get_shape<1>(context_lens);
     const auto& [batch_size_next_n, num_heads_] = get_shape<2>(weights);
     const auto& [batch_size__, max_block_len] = get_shape<2>(block_table);
-    const auto& [schedule_meta_size, meta_info_size] = get_shape<2>(schedule_meta);
     const auto& num_sms = device_runtime->get_num_sms();
     const auto& kv_cache_stride_bytes = fused_kv_cache.stride(0);
     const auto& block_table_stride = block_table.stride(0);
 
-    unsigned int BW_SMS = get_sms_info();
+    if (use_meta) {
+        unsigned int BW_SMS = get_sms_info();
+        auto& schedule_meta_ = schedule_meta.value();
+        const auto& [schedule_meta_size, meta_info_size] = get_shape<2>(schedule_meta_);
+        LIGHTOP_HOST_ASSERT(schedule_meta_.is_contiguous());
+        LIGHTOP_HOST_ASSERT(schedule_meta_size == BW_SMS + 1 and meta_info_size == 2);
+        LIGHTOP_HOST_ASSERT(schedule_meta_.scalar_type() == torch::kInt32);
+    }
 
     LIGHTOP_HOST_ASSERT(batch_size == batch_size_ and batch_size == batch_size__);
     LIGHTOP_HOST_ASSERT(batch_size_next_n == batch_size * next_n);
     LIGHTOP_HOST_ASSERT(num_heads == num_heads_ and num_heads_kv == 1);
-    LIGHTOP_HOST_ASSERT(schedule_meta_size == BW_SMS + 1 and meta_info_size == 2);
 
     LIGHTOP_HOST_ASSERT(next_n == 1 or next_n == 2);
     LIGHTOP_HOST_ASSERT(block_kv == 64);
@@ -189,12 +197,10 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     LIGHTOP_HOST_ASSERT(weights.is_contiguous());
     LIGHTOP_HOST_ASSERT(context_lens.is_contiguous());
     LIGHTOP_HOST_ASSERT(block_table.stride(1) == 1);
-    LIGHTOP_HOST_ASSERT(schedule_meta.is_contiguous());
 
     LIGHTOP_HOST_ASSERT(weights.scalar_type() == torch::kFloat);
     LIGHTOP_HOST_ASSERT(context_lens.scalar_type() == torch::kInt32);
     LIGHTOP_HOST_ASSERT(block_table.scalar_type() == torch::kInt32);
-    LIGHTOP_HOST_ASSERT(schedule_meta.scalar_type() == torch::kInt32);
 
     torch::Tensor kv_cache_scales;
     torch::Tensor kv_cache;
@@ -264,19 +270,15 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
 
     const bool use_fp8_kv = (kv_cache_scales.defined() && kv_cache_scales.numel() > 0);
 
-    int max_seq_len = max_block_len * block_kv;
-    max_seq_len = min(max_seq_len, num_kv_blocks * block_kv / batch_size);
-    max_seq_len = min(max_seq_len, max_context_len);
-    int max_chunk_size = ceil_div(max_seq_len, block_kv);
+    int max_chunk_size = ceil_div(max_context_len, block_kv);
+
+    // Dispatch implementation
+    dim3 grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
+    dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
     if (!use_fp8_kv) {
-        dim3 grid, block;
-
-        grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
-        block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
-
         AT_DISPATCH_FLOATING_TYPES_AND2(
                 at::ScalarType::Half,
                 at::ScalarType::BFloat16,
@@ -285,8 +287,8 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                 ([&] {
                     DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
                         DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
-                            paged_mqa_logits<scalar_t, NEXT_N, NUM_HEADS, 128, 64, split_kv, 4><<<grid, block, smem_size
-                            , stream>>>(
+                            paged_mqa_logits<scalar_t, NEXT_N, NUM_HEADS, 128, 64, split_kv,
+                            num_math_warp_groups><<<grid, block, smem_size, stream>>>(
                                 reinterpret_cast<scalar_t*>(q.data_ptr()),
                                 reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
                                 weights.data_ptr<float>(), batch_size,
@@ -294,51 +296,33 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                                 block_table_stride, context_lens.data_ptr<int32_t>(),
                                 logits.data_ptr<float>(),
                                 block_table.data_ptr<int32_t>(),
-                                schedule_meta.data_ptr<int32_t>());
+                                use_meta ? schedule_meta.value().data_ptr<int32_t>() : nullptr);
                         });
                     });
                 })
         );
     } else {
-        // Dispatch implementation
-        dim3 grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
-        dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
-
         DISPATCH_FP8_TYPES(q.scalar_type(), FP8_TYPE, [&] {
-            DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
-                DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
-                    paged_mqa_logits_fp8<FP8_TYPE, NEXT_N, NUM_HEADS, 128, 64, split_kv, 4><<<grid, block,
-                    smem_size, stream>>>(
-                        reinterpret_cast<FP8_TYPE*>(q.data_ptr()),
-                        reinterpret_cast<FP8_TYPE*>(kv_cache.data_ptr()),
-                        kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
-                        batch_size, num_kv_blocks, kv_cache_stride_bytes,
-                        aligned_max_context_len, block_table_stride,
-                        context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
-                        block_table.data_ptr<int32_t>(),
-                        schedule_meta.data_ptr<int32_t>());
-                });
-            });
-        });
+               DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
+                   DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
+                       paged_mqa_logits_fp8<FP8_TYPE, NEXT_N, NUM_HEADS, 128, 64, split_kv,
+                       num_math_warp_groups><<<grid, block,smem_size, stream>>>(
+                           reinterpret_cast<FP8_TYPE*>(q.data_ptr()),
+                           reinterpret_cast<FP8_TYPE*>(kv_cache.data_ptr()),
+                           kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
+                           batch_size, num_kv_blocks, kv_cache_stride_bytes,
+                           aligned_max_context_len, block_table_stride,
+                           context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
+                           block_table.data_ptr<int32_t>(),
+                           use_meta ? schedule_meta.value().data_ptr<int32_t>() : nullptr);
+                       });
+                   });
+               });
     }
 
     hipError_t result = hipGetLastError();
     if (result != hipSuccess) {
         printf("launch compute logits kernel error: %d\n", (int)result);
-    }
-
-    if (clean_logits) {
-        #if USE_CLEAN_LOGITS
-        if (next_n == 1) {
-            internal_clean_logits<1, 4><<<ceil_div(batch_size * next_n, 4), 256>>>(
-            batch_size * next_n, max_context_len, aligned_max_context_len, nullptr, context_lens.data_ptr<int32_t>(), logits.data_ptr<float>());
-        } else if (next_n == 2) {
-            internal_clean_logits<2, 4><<<ceil_div(batch_size * next_n, 4), 256>>>(
-            batch_size * next_n, max_context_len, aligned_max_context_len, nullptr, context_lens.data_ptr<int32_t>(), logits.data_ptr<float>());
-        } else {
-            LIGHTOP_HOST_UNREACHABLE("unsupported next n\n");
-        }
-        #endif
     }
 
     return logits;

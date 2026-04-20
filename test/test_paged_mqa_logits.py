@@ -91,7 +91,7 @@ def test_paged_mqa_logits(use_fp8 = True):
     max_model_len = 111 * 1000
     for batch_size, next_n in [(1, 1), (64, 1), (64, 2), (128, 1)]:
         for heads, index_dim in [(32, 128), (64, 128)]:
-            for avg_kv in (72000,):
+            for avg_kv in (4096, 72000,):
                 num_blocks, blocksize = max_model_len * 3, 64
 
                 q = torch.randn((batch_size, next_n, heads, index_dim), device='cuda', dtype=torch.bfloat16)
@@ -115,7 +115,8 @@ def test_paged_mqa_logits(use_fp8 = True):
                 device_name = device_props.gcnArchName.split(':')[0] if hasattr(device_props, 'gcnArchName') else device_props.name
                 num_cus = device_props.multi_processor_count
 
-                schedule_metadata = gemmopt.get_paged_mqa_logits_metadata(context_lens, blocksize, num_cus)
+                # schedule_metadata = gemmopt.get_paged_mqa_logits_metadata(context_lens, blocksize, num_cus)
+                schedule_metadata = None
                 torch.cuda.synchronize()
 
                 if 'gfx938' in device_name and use_fp8:

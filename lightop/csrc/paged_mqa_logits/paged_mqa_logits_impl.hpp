@@ -234,7 +234,14 @@ __global__ void paged_mqa_logits(const Element* q,
     int context_len = context_lens[q_idx];
     int num_kv = ceil_div(context_len, BLOCK_KV);
 
+    // Calculate logits KV block offset in advance
+    auto base_logits_offset = q_idx * kNextN * logits_stride + next_n * logits_stride;
+    auto base_seq_kv_offset = kv_idx * BLOCK_KV;
+
     if (kv_idx >= num_kv) {
+        if (warp_idx == 0) {
+            logits[base_logits_offset + base_seq_kv_offset + lane_idx] = -INFINITY;
+        }
         return;
     }
 
@@ -335,10 +342,6 @@ __global__ void paged_mqa_logits(const Element* q,
     const int logits_t_offset = warp_idx * 16 + lane_idx % 16;
     uint32_t s_kv_block_idx;
 
-    // Calculate logits KV block offset in advance
-    auto base_logits_offset = q_idx * kNextN * logits_stride;
-    auto base_seq_kv_offset = kv_idx * BLOCK_KV;
-
     #pragma unroll
     for (uint32_t k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
         auto fetch_lds_kv = base_fetch_lds_KV + k_block * BLOCK_KV * K_TILE;
@@ -381,8 +384,12 @@ __global__ void paged_mqa_logits(const Element* q,
     }
 
     auto seq_kv_offset = base_seq_kv_offset + logits_t_offset;
-    if (lane_idx < 16 && seq_kv_offset < context_len - (kNextN - next_n) + 1) {
-        logits[base_logits_offset + next_n * logits_stride + seq_kv_offset] = sum;
+    if (lane_idx < 16) {
+        if (seq_kv_offset < context_len - (kNextN - next_n) + 1) {
+            logits[base_logits_offset + seq_kv_offset] = sum;
+        } else {
+            logits[base_logits_offset + seq_kv_offset] = -INFINITY;
+        }
     }
 }
 
@@ -742,7 +749,14 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     int context_len = context_lens[q_idx];
     int num_kv = ceil_div(context_len, BLOCK_KV);
 
+    // Calculate logits KV block offset in advance
+    auto base_logits_offset = q_idx * kNextN * logits_stride + next_n * logits_stride;
+    auto base_seq_kv_offset = kv_idx * BLOCK_KV;
+
     if (kv_idx >= num_kv) {
+        if (warp_idx == 0) {
+            logits[base_logits_offset + base_seq_kv_offset + lane_idx] = -INFINITY;
+        }
         return;
     }
 
@@ -900,10 +914,6 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
         }
     }
 
-    // Calculate logits KV block offset in advance
-    auto base_logits_offset = q_idx * kNextN * logits_stride;
-    auto base_seq_kv_offset = kv_idx * BLOCK_KV;
-
     int ldsaddr_kv_scale = reinterpret_cast<size_t>(&smem_kv_scales[logits_t_offset]);
     asm volatile(
         "ds_read_b32 %0 ,%1"
@@ -935,47 +945,11 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
 
     // Store into the global memory
     auto seq_kv_offset = base_seq_kv_offset + logits_t_offset;
-    if (lane_idx < 16 && seq_kv_offset < context_len - (kNextN - next_n) + 1) {
-        logits[base_logits_offset + next_n * logits_stride + seq_kv_offset] = sum;
-    }
-}
-
-template<int kNextN, int kNumWarps>
-__global__ __launch_bounds__(kNumWarps * 64, 1)
-void internal_clean_logits(const int seq_len, const int seq_len_kv, const uint64_t stride_kv,
-                           const int* cu_seq_len_k_start, const int* cu_seq_len_k_end, float* logits) {
-    const float neg_inf = -std::numeric_limits<float>::infinity();
-    const fp32x4 neg_infx4 = {neg_inf, neg_inf, neg_inf, neg_inf};
-    const fp32x2 neg_infx2 = {neg_inf, neg_inf};
-
-    const int num_threads_per_block = kNumWarps * 64;
-    const int tid = threadIdx.x;
-
-    for (int i = blockIdx.x; i < seq_len; i += gridDim.x) {
-        const int row_group = i / kNextN;
-        const int ks = (cu_seq_len_k_start == nullptr) ? 0 : cu_seq_len_k_start[row_group];
-        const int ke = cu_seq_len_k_end[row_group] - kNextN + (i % kNextN) + 1;
-        const uint64_t row_base_addr = i * stride_kv;
-        for (int j = tid; j < ks; j += num_threads_per_block) {
-            logits[row_base_addr + j] = neg_inf;
-        }
-        const int num_elements_to_clean = seq_len_kv - ke;
-        if (ke % 4 == 0 && num_elements_to_clean % 4 == 0) {
-            const int num_f4_chunks = num_elements_to_clean / 4;
-            fp32x4* start_ptr_f4 = reinterpret_cast<fp32x4*>(&logits[row_base_addr + ke]);
-            for (int j_f4 = tid; j_f4 < num_f4_chunks; j_f4 += num_threads_per_block) {
-                start_ptr_f4[j_f4] = neg_infx4;
-            }
-        } else if (ke % 2 == 0 && num_elements_to_clean % 2 == 0) {
-            const int num_f2_chunks = num_elements_to_clean / 2;
-            fp32x2* start_ptr_f2 = reinterpret_cast<fp32x2*>(&logits[row_base_addr + ke]);
-            for (int j_f2 = tid; j_f2 < num_f2_chunks; j_f2 += num_threads_per_block) {
-                start_ptr_f2[j_f2] = neg_infx2;
-            }
+    if (lane_idx < 16) {
+        if (seq_kv_offset < context_len - (kNextN - next_n) + 1) {
+            logits[base_logits_offset + seq_kv_offset] = sum;
         } else {
-            for (int j = ke + tid; j < seq_len_kv; j += num_threads_per_block) {
-                logits[row_base_addr + j] = neg_inf;
-            }
+            logits[base_logits_offset + seq_kv_offset] = -INFINITY;
         }
     }
 }
