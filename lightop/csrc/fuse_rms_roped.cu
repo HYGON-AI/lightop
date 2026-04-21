@@ -1,4 +1,3 @@
-
 #include <limits>
 #include <stdint.h>
 #include <ATen/Dispatch.h>
@@ -22,7 +21,8 @@
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include "reduce.h"
-#include <type_traits> 
+#include <type_traits>
+#include <tuple> 
 
 template <typename T, int N>
 struct alignas(sizeof(T) * N) Vector {
@@ -995,9 +995,9 @@ __global__ void opt_rms_rope_qwen3_rotDim64(
 
         //隔32个load 4个，对齐rope
         int o0 = lane_in_head * VEC_SIZE; 
-        int o1 = o0 + 32;                 
-        int o2 = o0 + 64;                 
-        int o3 = o0 + 96;                 
+        int o1 = o0 + 32;                
+        int o2 = o0 + 64;                
+        int o3 = o0 + 96;                
 
         using LoadT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
         scalar_t v0[VEC_SIZE], v1[VEC_SIZE], v2[VEC_SIZE], v3[VEC_SIZE];
@@ -1179,11 +1179,26 @@ void rms_rotary_embedding_fuse(
 
   int rot_dim = cos_sin_cache.size(1);
   TORCH_CHECK(rot_dim <= 512);
-  
+  int query_ndim = query.dim();
+  int key_ndim = key.dim();
+  bool q_inner_contig = (query.stride(-1) == 1);
+  if (query_ndim == positions_ndim + 2) {
+      q_inner_contig = q_inner_contig && (query.stride(-2) == head_size);
+  }
+  bool k_inner_contig = (key.stride(-1) == 1);
+  if (key_ndim == positions_ndim + 2) {
+      k_inner_contig = k_inner_contig && (key.stride(-2) == head_size);
+  }
+
+  if (!q_inner_contig) {
+      query = query.contiguous();
+  }
+  if (!k_inner_contig) {
+      key = key.contiguous();
+  }
   int seq_dim_idx = positions_ndim - 1;
   int64_t query_stride = query.stride(seq_dim_idx);
   int64_t key_stride = key.stride(seq_dim_idx);
-  int query_ndim = query.dim();
   int64_t head_stride = (query_ndim == positions_ndim + 2) ? query.stride(-2) : head_size;
       
   const at::cuda::OptionalCUDAGuard device_guard(device_of(query));
@@ -1327,5 +1342,212 @@ void rms_rotary_embedding_fuse(
         }
   });
 }
+std::tuple<Tensor, Tensor, Tensor> qkv_split_rms_rotary_embedding_fuse(
+    Tensor& positions, 
+    Tensor& qkv, 
+    int64_t q_size,
+    int64_t kv_size,
+    int64_t head_size,
+    Tensor& cos_sin_cache, 
+    bool is_neox, 
+    Tensor weight_q, 
+    Tensor weight_k, 
+    std::optional<Tensor> residual_q,
+    std::optional<Tensor> residual_k,
+    double epsilon) {
+
+  TORCH_CHECK(qkv.size(-1) == q_size + 2 * kv_size, "qkv last dimension size mismatch");
+
+  Tensor query = qkv.narrow(-1, 0, q_size);
+  Tensor key = qkv.narrow(-1, q_size, kv_size);
+  Tensor value = qkv.narrow(-1, q_size + kv_size, kv_size);
+
+  int64_t num_tokens = positions.numel();
+  int positions_ndim = positions.dim();
+  TORCH_CHECK(positions_ndim == 1 || positions_ndim == 2,
+              "positions must have shape [num_tokens] or [batch_size, seq_len]");
+  
+  if (positions_ndim == 1) {
+    TORCH_CHECK(qkv.size(0) == positions.size(0),
+                "qkv and positions must have the same number of tokens");
+  } else {
+    TORCH_CHECK(qkv.size(0) == positions.size(0) && qkv.size(1) == positions.size(1),
+                "qkv and positions must have the same batch_size and seq_len");
+  }
+  
+  TORCH_CHECK(q_size % head_size == 0);
+  TORCH_CHECK(kv_size % head_size == 0);
+
+  int num_heads = q_size / head_size;
+  int num_kv_heads = kv_size / head_size;
+  TORCH_CHECK(num_heads % num_kv_heads == 0);
+
+  int rot_dim = cos_sin_cache.size(1);
+  TORCH_CHECK(rot_dim <= 512);
+  
+  int query_ndim = query.dim();
+  int key_ndim = key.dim();
+  bool q_inner_contig = (query.stride(-1) == 1);
+  if (query_ndim == positions_ndim + 2) {
+      q_inner_contig = q_inner_contig && (query.stride(-2) == head_size);
+  }
+  bool k_inner_contig = (key.stride(-1) == 1);
+  if (key_ndim == positions_ndim + 2) {
+      k_inner_contig = k_inner_contig && (key.stride(-2) == head_size);
+  }
+
+  if (!q_inner_contig) {
+      query = query.contiguous();
+  }
+  if (!k_inner_contig) {
+      key = key.contiguous();
+  }
+
+  int seq_dim_idx = positions_ndim - 1;
+  int64_t query_stride = query.stride(seq_dim_idx);
+  int64_t key_stride = key.stride(seq_dim_idx);
+  int64_t head_stride = (query_ndim == positions_ndim + 2) ? query.stride(-2) : head_size;
+      
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(query));
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+  bool has_residual = residual_q.has_value() && residual_k.has_value();
+  int qk_ratio = num_heads / num_kv_heads;
+  bool is_allign_qk = (num_heads % num_kv_heads == 0) && (num_heads >= 1);
+
+
+  auto* pos_ptr = positions.data_ptr<int64_t>(); 
+  bool qwen3 =  (head_size == 128 && (num_heads + num_kv_heads) <= 128 && (rot_dim == 128 ||  rot_dim == 64));
+
+  AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16, 
+      query.scalar_type(), "qkv_split_rms_rotary_embedding_fuse", [&] {
+        using T_ACC = at::acc_type<scalar_t, true>;
+         if (qwen3) {
+                scalar_t* res_q_ptr = residual_q.has_value() ? residual_q->data_ptr<scalar_t>() : nullptr;
+                scalar_t* res_k_ptr = residual_k.has_value() ? residual_k->data_ptr<scalar_t>() : nullptr;
+                launch_opt_rms_rope<T_ACC, scalar_t>(
+                    positions.data_ptr<int64_t>(),
+                    query.data_ptr<scalar_t>(),
+                    key.data_ptr<scalar_t>(),
+                    cos_sin_cache.data_ptr<scalar_t>(),
+                    rot_dim,
+                    query_stride,
+                    key_stride,
+                    head_stride,
+                    head_stride,
+                    weight_q.data_ptr<scalar_t>(),
+                    weight_k.data_ptr<scalar_t>(),
+                    res_q_ptr,
+                    res_k_ptr,
+                    static_cast<scalar_t>(epsilon),
+                    (int)num_tokens,
+                    is_neox,
+                    num_heads,
+                    num_kv_heads,
+                    stream
+                );
+                return;
+        }
+
+        auto* wq_ptr = weight_q.data_ptr<scalar_t>();
+        auto* wk_ptr = weight_k.data_ptr<scalar_t>();
+        auto* res_q_ptr = residual_q.has_value() ? residual_q->data_ptr<scalar_t>() : nullptr;
+        auto* res_k_ptr = residual_k.has_value() ? residual_k->data_ptr<scalar_t>() : nullptr;
+
+   
+        auto launch_kernel = [&](auto kernel_tag, auto vec_size_c, auto block_size_c, auto num_warp_c, auto rot_dim_c) {
+            
+            constexpr int VEC_SIZE = decltype(vec_size_c)::value;
+            constexpr int BLOCK_SIZE = decltype(block_size_c)::value;
+            constexpr int NUM_WARP = decltype(num_warp_c)::value;
+            constexpr int ROT_DIM = decltype(rot_dim_c)::value;
+
+            DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
+                DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
+                   
+                    auto run = [&](auto qk_mul_c) {
+                         constexpr int QK_MUL = decltype(qk_mul_c)::value;
+
+                         dim3 grid(num_tokens);
+                         dim3 block(BLOCK_SIZE); 
+
+                         if constexpr (std::is_same_v<decltype(kernel_tag), std::integral_constant<int, 0>>) {
+                             rms_rotary_embedding_kernel<T_ACC, scalar_t, IS_NEOX_CONST, HAS_RESIDUAL_CONST, 
+                                 /*BLOCK_SIZE*/ BLOCK_SIZE,
+                                 /*VEC_SIZE_Q*/ VEC_SIZE, 
+                                 /*VEC_SIZE_K*/ VEC_SIZE, 
+                                 /*ROT_DIM*/ ROT_DIM, 
+                                 /*QK_MUL*/ QK_MUL, 
+                                 /*NUM_WARP*/ NUM_WARP>
+                                 <<<grid, block, 0, stream>>>(
+                                     positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
+                                     key.data_ptr<scalar_t>(), cos_sin_cache.data_ptr<scalar_t>(),
+                                     rot_dim, query_stride, key_stride, head_stride,
+                                     num_heads, num_kv_heads, head_size, num_tokens,
+                                     weight_q.data_ptr<scalar_t>(), weight_k.data_ptr<scalar_t>(),
+                                     res_q_ptr, res_k_ptr,
+                                     epsilon
+                                 );
+                         } else {
+                             rms_rotary_embedding_kernel_pipeline<T_ACC, scalar_t, IS_NEOX_CONST, HAS_RESIDUAL_CONST, 
+                                 BLOCK_SIZE, VEC_SIZE, VEC_SIZE, ROT_DIM, QK_MUL, NUM_WARP>
+                                 <<<grid, block, 0, stream>>>(
+                                     positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
+                                     key.data_ptr<scalar_t>(), cos_sin_cache.data_ptr<scalar_t>(),
+                                     rot_dim, query_stride, key_stride, head_stride,
+                                     num_heads, num_kv_heads, head_size, num_tokens,
+                                     weight_q.data_ptr<scalar_t>(), weight_k.data_ptr<scalar_t>(),
+                                     res_q_ptr, res_k_ptr, 
+                                     epsilon
+                                 );
+                         }
+                    };
+                    
+    
+                    switch (qk_ratio) {
+                        case 2: run(IV(2)); break;
+                        case 4: run(IV(4)); break;
+                        default: run(IV(8)); break; 
+                    }
+                });
+            });
+        };
+
+        auto USE_NORMAL_KERNEL = std::integral_constant<int, 0>{};
+        auto USE_PIPELINE_KERNEL = std::integral_constant<int, 1>{};
+
+    
+        if (head_size == 128 && is_allign_qk) {
+            if (num_kv_heads % 4 == 0) {
+                launch_kernel(USE_NORMAL_KERNEL, IV(2), IV(256), IV(4), IV(128));
+            } 
+            else if (num_kv_heads % 2 == 0) {
+                launch_kernel(USE_NORMAL_KERNEL, IV(2), IV(128), IV(2), IV(128));
+            }
+            else if (num_heads % 3 == 0 && num_kv_heads == 1) {
+                launch_kernel(USE_PIPELINE_KERNEL, IV(2), IV(256), IV(4), IV(128)); // 4*64=256
+            }
+            else if (num_heads % 2 == 0) {
+                launch_kernel(USE_PIPELINE_KERNEL, IV(2), IV(192), IV(3), IV(128)); // 3*64=192
+            }
+            else if (num_heads == 1 && num_kv_heads == 1) {
+                launch_kernel(USE_PIPELINE_KERNEL, IV(2), IV(128), IV(2), IV(128)); // 2*64=128
+            }
+        } 
+        else if (head_size == 256 && is_allign_qk && num_kv_heads % 4 == 0) {
+            launch_kernel(USE_NORMAL_KERNEL, IV(4), IV(256), IV(4), IV(256)); // 64*4=256
+        }
+        else if (head_size == 512 && is_allign_qk) {
+            launch_kernel(USE_NORMAL_KERNEL, IV(8), IV(128), IV(2), IV(512)); // 64*2=128
+        }
+        else if (head_size == 64 && is_allign_qk) {
+            launch_kernel(USE_NORMAL_KERNEL, IV(1), IV(128), IV(2), IV(64));
+        }
+  });
+  return std::make_tuple(query, key, value);
+}
+
 }
 }
