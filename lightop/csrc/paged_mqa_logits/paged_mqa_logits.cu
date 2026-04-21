@@ -264,13 +264,16 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     constexpr int aligned_smem_weight_size_per_stage = 0;
     constexpr int smem_q_pipe_size = num_q_stages * (smem_q_size_per_stage + aligned_smem_weight_size_per_stage);
 
-    const int smem_kv_pipe_size = num_kv_stages * (smem_kv_size_per_stage);
+    // for fp8: prefetch_seq_kv_stage = 2, k_tile = 64;
+    // for fp16: prefetch_seq_kv_stage = 1, k_tile = 32;
+    // smem_per_warp = prefetch_seq_kv_stage * head_dim * seq_kv_tile(16) * sizeof(T) = 32 * head_dim
+    const int smem_kv_pipe_size = num_kv_stages * num_math_warp_groups * 32 * head_dim;
 
     const int smem_size = smem_q_pipe_size + smem_kv_pipe_size;
 
     const bool use_fp8_kv = (kv_cache_scales.defined() && kv_cache_scales.numel() > 0);
 
-    int max_chunk_size = ceil_div(max_context_len, block_kv);
+    int max_chunk_size = ceil_div(max_context_len, block_kv * num_math_warp_groups);
 
     // Dispatch implementation
     dim3 grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
