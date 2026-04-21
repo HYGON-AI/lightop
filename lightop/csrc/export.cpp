@@ -559,6 +559,27 @@ std::vector<at::Tensor> fuse_norm_rope_quant_fp8(
     std::optional<at::Tensor> weight_k, 
     std::optional<at::Tensor> bias_k,   
     double epsilon);      
+void fused_quantize_and_store_mla_kv_cache(
+    torch::Tensor k_nope,  
+    torch::Tensor k_rope,    
+    torch::Tensor kv_buffer, 
+    torch::Tensor loc,        
+    const std::string& fp8_dtype = "fp8_e4m3",
+    float eps = 1e-5f
+);
+std::tuple<Tensor, Tensor, Tensor> qkv_split_rms_rotary_embedding_fuse(
+    Tensor& positions, 
+    Tensor& qkv, 
+    int64_t q_size,
+    int64_t kv_size,
+    int64_t head_size,
+    Tensor& cos_sin_cache, 
+    bool is_neox, 
+    Tensor weight_q, 
+    Tensor weight_k, 
+    std::optional<Tensor> residual_q,
+    std::optional<Tensor> residual_k,
+    double epsilon); 
 }
 }
 
@@ -810,5 +831,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("fuse_qk_quant_and_store_index_k_cache", &at::native::fuse_qk_quant_and_store_index_k_cache, "fuse_qk_quant_and_store_index_k_cache");
  m.def("fuse_layernorm_rotary_embedding", &at::native::fuse_layernorm_rotary_embedding, "fuse_layernorm_rotary_embedding");
  m.def("fuse_norm_rope_quant_fp8", &at::native::fuse_norm_rope_quant_fp8, "fuse_norm_rope_quant_fp8");
+ m.def("fused_quantize_and_store_mla_kv_cache", &at::native::fused_quantize_and_store_mla_kv_cache, "fused_quantize_and_store_mla_kv_cache");
+ m.def("qkv_split_rms_rotary_embedding_fuse", &at::native::qkv_split_rms_rotary_embedding_fuse, "qkv_split_rms_rotary_embedding_fuse");
 }
 
