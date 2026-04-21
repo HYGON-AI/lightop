@@ -158,6 +158,30 @@ __global__ void act_and_mul_kernel_opt4(
     *y = *(VecType*)r_y;
   }
 }
+template<typename scalar_t> 
+static __device__ inline void from_float(scalar_t &out ,float f){
+  if constexpr(!std::is_same<scalar_t, uint16_t>::value){
+    out=f;
+  }
+  else{
+    uint32_t u = *(uint32_t*)(&f);
+    u += 0x8000; 
+    out = u>>16;
+  }
+}
+template<typename scalar_t> 
+static __device__ inline float to_float(scalar_t in){
+  if constexpr(!std::is_same<scalar_t, uint16_t>::value){
+    return in;
+  }
+  else{
+    union{
+        uint32_t int32;
+        float    fp32;
+    } u = {uint32_t(in) << 16};
+    return u.fp32;
+  }
+}
 
 template <typename T>
 __device__ __forceinline__ T silu_kernel(const T& x) {
@@ -168,24 +192,40 @@ __device__ __forceinline__ T silu_kernel(const T& x) {
 
 template <>
 __device__ __forceinline__ bfloat16 silu_kernel<bfloat16>(const bfloat16& x) {
-  #if defined(__gfx938__)
-  short x_short = reinterpret_cast<const short&>(x);
-  float x_f32 = __builtin_hcu_cvt_f32_bf16(x_short, false, 0, false);
-  #else
-  float x_f32 = (float)x;
-  #endif
-
+  float x_f32 = to_float(x);
   constexpr float LOG2E = 1.44269504088896340736f;
   float silu_f32 = (x_f32 / (1.0f + __builtin_amdgcn_exp2f(-x_f32 * LOG2E)));
-  // printf("in");
-  #if defined(__gfx938__)
-  short silu_short = __builtin_hcu_cvt_bf16_f32(silu_f32, false, false);
-  return *(bfloat16*)&silu_short;
-  #else
-  return (bfloat16)silu_f32;
-  #endif
-
+  bfloat16 out_u16;
+  from_float(out_u16, silu_f32);
+  return out_u16;
 }
+// template <>
+// __device__ __forceinline__ bfloat16 silu_kernel<bfloat16>(const bfloat16& x) {
+//   float x_f32 = to_float(x);
+//   float silu_f32 = (x_f32 / (1.0f + __expf(-x_f32)));
+//   bfloat16 out_u16;
+//   from_float(out_u16, silu_f32);
+//   return out_u16;
+// }
+// template <>
+// __device__ __forceinline__ bfloat16 silu_kernel<bfloat16>(const bfloat16& x) {
+//   #if defined(__gfx938__)
+//   short x_short = reinterpret_cast<const short&>(x);
+//   float x_f32 = __builtin_hcu_cvt_f32_bf16(x_short, false, 0, false);
+//   #else
+//   float x_f32 = (float)x;
+//   #endif
+
+//   constexpr float LOG2E = 1.44269504088896340736f;
+//   float silu_f32 = (x_f32 / (1.0f + __builtin_amdgcn_exp2f(-x_f32 * LOG2E)));
+//   // printf("in");
+//   #if defined(__gfx938__)
+//   short silu_short = __builtin_hcu_cvt_bf16_f32(silu_f32, false, false);
+//   return *(bfloat16*)&silu_short;
+//   #else
+//   return (bfloat16)silu_f32;
+//   #endif
+// }
 
 
 template <typename T>
