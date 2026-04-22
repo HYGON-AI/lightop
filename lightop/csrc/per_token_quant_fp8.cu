@@ -53,10 +53,8 @@ inline __device__ uint8_t float_to_fp8e4m3(float f) {
   constexpr uint32_t fp8_max = UINT32_C(1087) << 20;
   constexpr uint32_t denorm_mask = UINT32_C(141) << 23;
   
-
   uint32_t f_bits = c10::detail::fp32_to_bits(f);
   uint8_t result = 0u;
-  
  
   const uint32_t sign = f_bits & UINT32_C(0x80000000);
   f_bits ^= sign;
@@ -64,7 +62,6 @@ inline __device__ uint8_t float_to_fp8e4m3(float f) {
   if (f_bits >= fp8_max) {
     result = 0x7f;  
   } else {
-
     if (f_bits < (UINT32_C(121) << 23)) {
       f_bits = c10::detail::fp32_to_bits(
         c10::detail::fp32_from_bits(f_bits) + 
@@ -231,6 +228,47 @@ __global__ void per_token_quant_fp8_kernel(
         *(VecFp8Type*)(output+idx) = *(VecFp8Type*)out_vec;
     }
 }
+template <typename scalar_t, int block_size, bool is_e4m3>
+__global__ void per_token_quant_fp8_kernel_general(
+    const scalar_t* __restrict__ input, uint8_t* __restrict__ output,
+    float* scale_out, const int hidden_size) {
+
+    int bid = blockIdx.x;  
+    int tid = threadIdx.x;
+    
+    constexpr int share_size = block_size / C10_WARP_SIZE;
+    __shared__ float val_shared[share_size];
+    
+    int64_t row_offset = (int64_t)bid * hidden_size;
+    const scalar_t* row_in = input + row_offset;
+    uint8_t* row_out = output + row_offset;
+
+    float row_max = 0.f;
+    for (int i = tid; i < hidden_size; i += block_size) {
+        row_max = fmaxf(row_max, fabs(static_cast<float>(row_in[i])));
+    }
+
+    row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
+    __shared__ float s_token_scale;
+    
+    constexpr float FP8_MAX_VAL = is_e4m3 ? 448.0f : 57344.0f;
+
+    if (tid == 0) {
+        s_token_scale = row_max;  
+        scale_out[bid] = s_token_scale / FP8_MAX_VAL;
+    }
+    __syncthreads();
+
+    float inv_s = (s_token_scale == 0.f) ? 0.f : FP8_MAX_VAL / s_token_scale;
+    for (int i = tid; i < hidden_size; i += block_size) {
+        float val = static_cast<float>(row_in[i]) * inv_s;
+        if constexpr (is_e4m3) {
+            row_out[i] = float_to_fp8e4m3(val);
+        } else {
+            row_out[i] = float_to_fp8e5m2(val);
+        }
+    }
+}
 
 void per_token_quant_fp8(
     torch::Tensor& out,         
@@ -247,40 +285,54 @@ void per_token_quant_fp8(
 
     int const hidden_size = input.size(-1);
     int64_t num_tokens = input.numel() / hidden_size;
-    TORCH_CHECK(hidden_size <= 16384, "hidden_size (", hidden_size, ") exceeds maximum supported size of 16384");
-    TORCH_CHECK(hidden_size % 16 == 0, "hidden_size (", hidden_size, ") must be a multiple of 16 for vectorized memory access");
 
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     auto inp_ptr = reinterpret_cast<std::uintptr_t>(input.data_ptr());
-    bool ptrs_are_aligned = inp_ptr % 16 == 0;
+    auto out_ptr_addr = reinterpret_cast<std::uintptr_t>(out.data_ptr());
+    bool ptrs_are_aligned = (inp_ptr % 16 == 0) && (out_ptr_addr % 16 == 0);
+    bool can_vectorize = (hidden_size % 16 == 0) && ptrs_are_aligned;
     
     auto out_ptr = reinterpret_cast<uint8_t*>(out.data_ptr());
 
-    #define LAUNCH_FP8_KERNEL(VEC_SIZE, BLOCK_SIZE, IS_E4M3_BOOL)                     \
+    #define LAUNCH_FP8_KERNEL(VEC_SIZE, BLOCK_SIZE, IS_E4M3_BOOL)                   \
         per_token_quant_fp8_kernel<scalar_t, float, VEC_SIZE, BLOCK_SIZE, IS_E4M3_BOOL> \
             <<<num_tokens, BLOCK_SIZE, 0, stream>>>(                                    \
                 input.data_ptr<scalar_t>(), out_ptr, scales.data_ptr<float>(),          \
                 hidden_size)
 
+    #define LAUNCH_FP8_KERNEL_GENERAL(BLOCK_SIZE, IS_E4M3_BOOL)                     \
+        per_token_quant_fp8_kernel_general<scalar_t, BLOCK_SIZE, IS_E4M3_BOOL>          \
+            <<<num_tokens, BLOCK_SIZE, 0, stream>>>(                                    \
+                input.data_ptr<scalar_t>(), out_ptr, scales.data_ptr<float>(),          \
+                hidden_size)
+
     #define DISPATCH_FP8_KERNEL_SIZE(IS_E4M3_BOOL)               \
-        if (hidden_size <= 64) {                                 \
-            LAUNCH_FP8_KERNEL(1, 64, IS_E4M3_BOOL);              \
-        } else if (hidden_size <= 128) {                         \
-            LAUNCH_FP8_KERNEL(2, 64, IS_E4M3_BOOL);              \
-        } else if (hidden_size <= 256) {                         \
-            LAUNCH_FP8_KERNEL(4, 64, IS_E4M3_BOOL);              \
-        } else if (hidden_size <= 512) {                         \
-            LAUNCH_FP8_KERNEL(4, 128, IS_E4M3_BOOL);             \
-        } else if (hidden_size <= 1024) {                        \
-            LAUNCH_FP8_KERNEL(8, 128, IS_E4M3_BOOL);             \
-        } else if (hidden_size <= 2048) {                        \
-            LAUNCH_FP8_KERNEL(16, 128, IS_E4M3_BOOL);            \
-        } else if (hidden_size <= 4096) {                        \
-            LAUNCH_FP8_KERNEL(16, 256, IS_E4M3_BOOL);            \
-        } else if (hidden_size <= 8192) {                        \
-            LAUNCH_FP8_KERNEL(16, 512, IS_E4M3_BOOL);            \
-        }else if (hidden_size <= 16384) {                        \
-            LAUNCH_FP8_KERNEL(16, 1024, IS_E4M3_BOOL);           \
+        if (can_vectorize) {                                     \
+            if (hidden_size <= 64) {                             \
+                LAUNCH_FP8_KERNEL(1, 64, IS_E4M3_BOOL);          \
+            } else if (hidden_size <= 128) {                     \
+                LAUNCH_FP8_KERNEL(2, 64, IS_E4M3_BOOL);          \
+            } else if (hidden_size <= 256) {                     \
+                LAUNCH_FP8_KERNEL(4, 64, IS_E4M3_BOOL);          \
+            } else if (hidden_size <= 512) {                     \
+                LAUNCH_FP8_KERNEL(4, 128, IS_E4M3_BOOL);         \
+            } else if (hidden_size <= 1024) {                    \
+                LAUNCH_FP8_KERNEL(8, 128, IS_E4M3_BOOL);         \
+            } else if (hidden_size <= 2048) {                    \
+                LAUNCH_FP8_KERNEL(16, 128, IS_E4M3_BOOL);        \
+            } else if (hidden_size <= 4096) {                    \
+                LAUNCH_FP8_KERNEL(16, 256, IS_E4M3_BOOL);        \
+            } else if (hidden_size <= 8192) {                    \
+                LAUNCH_FP8_KERNEL(16, 512, IS_E4M3_BOOL);        \
+            } else if (hidden_size <= 16384) {                   \
+                LAUNCH_FP8_KERNEL(16, 1024, IS_E4M3_BOOL);       \
+            } else if (hidden_size <= 32768) {                   \
+                LAUNCH_FP8_KERNEL(32, 1024, IS_E4M3_BOOL);       \
+            } else {                                             \
+                LAUNCH_FP8_KERNEL_GENERAL(1024, IS_E4M3_BOOL);   \
+            }                                                    \
+        } else {                                                 \
+            LAUNCH_FP8_KERNEL_GENERAL(1024, IS_E4M3_BOOL);       \
         }
 
       VLLM_DISPATCH_FLOATING_TYPES(
