@@ -161,7 +161,11 @@ def gammarms_rotary_embedding_fuse_with_kv_store(
     residual_k: Optional[torch.Tensor],
     k_scale: Optional[float],
     v_scale: Optional[float],
-    epsilon: float = 1e-5
+    epsilon: float = 1e-5,
+    mrope_section_t: int = 0,
+    mrope_section_h: int = 0,
+    mrope_section_w: int = 0,
+    is_interleaved: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     dims = query.dim()
     heads = query.shape[dims - 1] // head_dim if dims == 2 else query.shape[dims - 2]
@@ -175,7 +179,7 @@ def gammarms_rotary_embedding_fuse_with_kv_store(
         dtype=v_buffer.dtype, device=v.device
     )
     use_fp8_e4m3 = v_buffer.dtype != torch.float8_e4m3fn and v_buffer.dtype != torch.float8_e5m2
-    if (head_dim > 128 or use_fp8_e4m3):
+    if (head_dim > 256 or use_fp8_e4m3):
         op.rms_rotary_embedding_fuse(
             positions,
             query,
@@ -206,7 +210,7 @@ def gammarms_rotary_embedding_fuse_with_kv_store(
         v_buffer[loc_id,:,:,loc_offset] = vc
     else:
         op.gammarms_rotary_embedding_fuse_with_kv_store(
-            positions,
+            positions.contiguous(),
             query,
             key,
             v,
@@ -225,7 +229,11 @@ def gammarms_rotary_embedding_fuse_with_kv_store(
             v_rope_out,
             page_size,
             epsilon,
-            not (use_fp8_e4m3)
+            not (use_fp8_e4m3),
+            mrope_section_t,
+            mrope_section_h,
+            mrope_section_w,
+            is_interleaved
         )
     return q_rope_out, k_rope_out, v_rope_out
 

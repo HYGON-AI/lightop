@@ -69,7 +69,11 @@ void gammarms_rotary_embedding_fuse_with_kv_store(
     int page_size,
     /////////////////////////////////////////////////
     double epsilon,
-    bool use_fp8_e4m3);
+    bool use_fp8_e4m3,
+    int mrope_section_t,
+    int mrope_section_h,
+    int mrope_section_w,
+    bool is_interleaved);
 void split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
     Tensor& positions,
     Tensor& qkv,
