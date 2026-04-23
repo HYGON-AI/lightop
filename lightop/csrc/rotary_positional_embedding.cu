@@ -804,8 +804,8 @@ void rotary_embedding_fuse(
   int rot_dim = cos_sin_cache.size(1);
 
   const int q_k_size_multiple = num_heads / num_kv_heads;
-  bool is_allign_qk = (num_heads % num_kv_heads == 0) && (num_heads % 2 == 0) && (num_heads >= 8) && (q_k_size_multiple <= 8);
-
+  bool is_allign_qk = (num_heads % num_kv_heads == 0) && (num_heads % 2 == 0) 
+                        && (num_heads >= 8) && ((q_k_size_multiple <= 8) || (q_k_size_multiple == 10));
   
     if (head_size == 64 && is_allign_qk) {
         constexpr int num_tokens_per_block = 2;
@@ -903,6 +903,12 @@ void rotary_embedding_fuse(
                     }else{
                          LAUNCH_ROTARY_KERNEL_64(false,8, 8, 4, 64);
                     }
+        } else if (q_k_size_multiple == 10) {
+               if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_128(true,8, 8, 4, 64);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_128(false,8, 8, 4, 64);
+                }
         }
  
     } else if (head_size == 128 && is_allign_qk) {
@@ -978,9 +984,9 @@ void rotary_embedding_fuse(
                 } break;
                 default:{
                      if(is_neox){
-                          LAUNCH_ROTARY_KERNEL_128(true,8, 8, 8, 128);
+                          LAUNCH_ROTARY_KERNEL_128(true,1, 64, 1, 128);
                     }else{
-                          LAUNCH_ROTARY_KERNEL_128(false,8, 8, 8, 128);
+                          LAUNCH_ROTARY_KERNEL_128(false,1, 64, 1, 128);
                     }
                 }  break; // Fallback
             }
@@ -1007,7 +1013,14 @@ void rotary_embedding_fuse(
                     }else{
                           LAUNCH_ROTARY_KERNEL_128(false,8, 8, 8, 128);
                 }
+        } else if (q_k_size_multiple == 10) {
+               if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_128(true,4, 16, 4, 128);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_128(false,4, 16, 4, 128);
+                }
         }
+
     } else if (head_size == 256 && is_allign_qk) {
         constexpr int num_tokens_per_block = 2;
         constexpr int total_thread_per_tokens = 64;
@@ -1082,6 +1095,12 @@ void rotary_embedding_fuse(
                     }else{
                           LAUNCH_ROTARY_KERNEL_256(false,4, 16, 8, 256);
                     }
+        } else if (q_k_size_multiple == 10) {
+               if(is_neox){
+                          LAUNCH_ROTARY_KERNEL_128(true,8, 8, 16, 256);
+                    }else{
+                          LAUNCH_ROTARY_KERNEL_128(false,8, 8, 16, 256);
+                }
         }
     } else { 
     
