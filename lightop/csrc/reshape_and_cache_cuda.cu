@@ -554,21 +554,14 @@ void reshape_and_cache_cuda(
               key_cache.size(3) == value_cache.size(2),
               "key/value cache dimension mismatch");
   TORCH_CHECK(kv_cache_dtype=="auto" || kv_cache_dtype=="fp8" 
-              ||kv_cache_dtype=="fp8_e4m3"||kv_cache_dtype=="fp8_e5m2");
+             ||kv_cache_dtype=="fp8_e4m3"||kv_cache_dtype=="fp8_e5m2");
+  key = key.is_contiguous() ? key : key.contiguous();
+  value = value.is_contiguous() ? value : value.contiguous();
 
   int num_tokens = slot_mapping.size(0);
   int num_heads  = key.size(1);
   int head_size  = key.size(2);
-  
-  bool k_inner_contig = (key.stride(2) == 1 && key.stride(1) == head_size);
-  bool v_inner_contig = (value.stride(2) == 1 && value.stride(1) == head_size);
-  if (!k_inner_contig) {
-      key = key.contiguous();
-  }
-  if (!v_inner_contig) {
-      value = value.contiguous();
-  }
-  int block_size = key_cache.size(2);   
+  int block_size = key_cache.size(2);   // k layout: [num_blocks, num_heads, block_size, head_size]
   const int  numel = num_heads*head_size;
   int key_stride   = key.stride(0);
   int value_stride = value.stride(0);
