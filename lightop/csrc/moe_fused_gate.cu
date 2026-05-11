@@ -847,8 +847,8 @@ std::vector<torch::Tensor> moe_fused_gate(
 
  bool dispatched = false;
  if ((topk == 8 || topk == 22) && num_expert_group == 1 && topk_group == 1) {
-    TORCH_CHECK(num_experts == 128 || num_experts == 160 || num_experts == 256 || num_experts == 384 || num_experts == 512, 
-                "(topk=8 or 22, expert_group=1) only supports 128, 160, 256, 384, or 512 experts. Got ", num_experts);
+    TORCH_CHECK(num_experts == 128 || num_experts == 160 || num_experts == 256 || num_experts == 288 || num_experts == 384 || num_experts == 512, 
+                "(topk=8 or 22, expert_group=1) only supports 128, 160, 256, 288, 384, or 512 experts. Got ", num_experts);
     //Nemotron E 512 TopK 22
     if (num_experts == 512) {
         if (input.scalar_type() == at::kBFloat16) {
@@ -890,23 +890,23 @@ std::vector<torch::Tensor> moe_fused_gate(
                 }
              }
         }
-    } else if (num_experts == 160) {
+    } else if (num_experts == 288) {
         if (input.scalar_type() == at::kBFloat16) {
             if (bias.scalar_type() == at::kFloat) {
-                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, float, 160, 32, 8, 2);
+                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, float, 288, 64, 8, 2);
             } else if (bias.scalar_type() == at::kBFloat16) {
-                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, __nv_bfloat16, 160, 32, 8, 2);
+                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, __nv_bfloat16, 288, 64, 8, 2);
             }
         } else if (input.scalar_type() == at::kHalf) {
              if (bias.scalar_type() == at::kHalf) {
-                LAUNCH_MOE_GATE_OPT_NE1(half, half, 160, 32, 8, 2);
+                LAUNCH_MOE_GATE_OPT_NE1(half, half, 288, 64, 8, 2);
              }
         } else if (input.scalar_type() == at::kFloat) {
              if (bias.scalar_type() == at::kFloat) {
                 if (num_rows < 512) {
-                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 160, 64, 4, 1);
+                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 288, 64, 8, 1);
                 } else {
-                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 160, 32, 8, 2);
+                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 288, 64, 8, 2);
                 }
              }
         }
@@ -927,6 +927,26 @@ std::vector<torch::Tensor> moe_fused_gate(
                     LAUNCH_MOE_GATE_OPT_NE1(float, float, 256, 64, 4, 1);
                 } else {
                     LAUNCH_MOE_GATE_OPT_NE1(float, float, 256, 32, 8, 2);
+                }
+             }
+        }
+    } else if (num_experts == 160) {
+        if (input.scalar_type() == at::kBFloat16) {
+            if (bias.scalar_type() == at::kFloat) {
+                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, float, 160, 32, 8, 2);
+            } else if (bias.scalar_type() == at::kBFloat16) {
+                LAUNCH_MOE_GATE_OPT_NE1(__nv_bfloat16, __nv_bfloat16, 160, 32, 8, 2);
+            }
+        } else if (input.scalar_type() == at::kHalf) {
+             if (bias.scalar_type() == at::kHalf) {
+                LAUNCH_MOE_GATE_OPT_NE1(half, half, 160, 32, 8, 2);
+             }
+        } else if (input.scalar_type() == at::kFloat) {
+             if (bias.scalar_type() == at::kFloat) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 160, 64, 4, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, float, 160, 32, 8, 2);
                 }
              }
         }
