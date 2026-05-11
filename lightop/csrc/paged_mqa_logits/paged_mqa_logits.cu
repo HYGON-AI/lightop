@@ -111,7 +111,9 @@ int get_sms_info() {
     else if (arch.rfind("gfx938", 0) == 0 && num_cus == 72) {
         sms = 144;
     }
-    else {
+    else if (arch.rfind("gfx928", 0) == 0 && num_cus == 120) {
+        sms = 240;
+    } else {
         std::cerr << "Unsupported device config: " << arch
                   << ", CU=" << num_cus << std::endl;
         throw std::runtime_error("Unsupported device configuration");
@@ -145,6 +147,7 @@ torch::Tensor get_paged_mqa_logits_metadata(const torch::Tensor& context_lens, i
         case 128:  DISPATCH_SMS(128)  break;
         case 144:  DISPATCH_SMS(144)  break;
         case 320: DISPATCH_SMS(320) break;
+        case 240: DISPATCH_SMS(240) break;
         default: LIGHTOP_HOST_UNREACHABLE("unsupported SMS value\n");
     }
 
