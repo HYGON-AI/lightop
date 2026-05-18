@@ -584,6 +584,15 @@ std::tuple<Tensor, Tensor, Tensor> qkv_split_rms_rotary_embedding_fuse(
     std::optional<Tensor> residual_q,
     std::optional<Tensor> residual_k,
     double epsilon); 
+void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
+    Tensor& q,
+    const Tensor& kv,
+    Tensor& k_cache,
+    const Tensor& slot_mapping,
+    const Tensor& position_ids,
+    const Tensor& cos_sin_cache,
+    double eps,
+    int64_t cache_block_size);
 }
 }
 
@@ -837,5 +846,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("fuse_norm_rope_quant_fp8", &at::native::fuse_norm_rope_quant_fp8, "fuse_norm_rope_quant_fp8");
  m.def("fused_quantize_and_store_mla_kv_cache", &at::native::fused_quantize_and_store_mla_kv_cache, "fused_quantize_and_store_mla_kv_cache");
  m.def("qkv_split_rms_rotary_embedding_fuse", &at::native::qkv_split_rms_rotary_embedding_fuse, "qkv_split_rms_rotary_embedding_fuse");
+ m.def("fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert", &at::native::fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert, "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert");
 }
-
