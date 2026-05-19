@@ -584,6 +584,32 @@ std::tuple<Tensor, Tensor, Tensor> qkv_split_rms_rotary_embedding_fuse(
     std::optional<Tensor> residual_q,
     std::optional<Tensor> residual_k,
     double epsilon); 
+std::tuple<Tensor, Tensor, Tensor> gemma_qkv_split_rms_rotary_embedding_fuse(
+    Tensor& positions, Tensor& qkv, int64_t q_size, int64_t kv_size,
+    int64_t head_size, Tensor& cos_sin_cache, bool is_neox, Tensor weight_q,
+    Tensor weight_k, std::optional<Tensor> residual_q,
+    std::optional<Tensor> residual_k, double epsilon); 
+void layer_norm_fwd_1pass_opt(
+    torch::Tensor& X,
+    torch::Tensor& Y,
+    torch::Tensor& W,
+    torch::Tensor& B,
+    torch::Tensor& Z,
+    torch::Tensor& Mean,
+    torch::Tensor& Rstd,
+    int64_t stride_x_row,
+    int64_t stride_y_row,
+    int64_t stride_z_row,
+    int64_t M,
+    int64_t N,
+    double eps,
+    int64_t BLOCK_N,
+    int64_t ROWS_PER_BLOCK,
+    bool HAS_BIAS,
+    bool HAS_Z,
+    bool NORM_BEFORE_GATE,
+    bool IS_RMS_NORM,
+    const std::string& ACTIVATION);
 }
 }
 
@@ -837,5 +863,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("fuse_norm_rope_quant_fp8", &at::native::fuse_norm_rope_quant_fp8, "fuse_norm_rope_quant_fp8");
  m.def("fused_quantize_and_store_mla_kv_cache", &at::native::fused_quantize_and_store_mla_kv_cache, "fused_quantize_and_store_mla_kv_cache");
  m.def("qkv_split_rms_rotary_embedding_fuse", &at::native::qkv_split_rms_rotary_embedding_fuse, "qkv_split_rms_rotary_embedding_fuse");
+ m.def("gemma_qkv_split_rms_rotary_embedding_fuse", &at::native::gemma_qkv_split_rms_rotary_embedding_fuse, "gemma_qkv_split_rms_rotary_embedding_fuse");
+ m.def("layer_norm_fwd_1pass_opt", &at::native::layer_norm_fwd_1pass_opt, "layer_norm_fwd_1pass_opt");
 }
 
