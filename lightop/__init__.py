@@ -18,11 +18,7 @@ def get_dtk_version(ROCM_HOME):
     return dtk_version
 
 dtk_version = get_dtk_version(ROCM_HOME) #动态获取运行时的dtk版本
-from . import build_config
-if build_config.BUILD_MIOPEN and dtk_version >= 25042:
-    op = importlib.import_module('.op_core_miopen', __name__)   #包含core+miopen
-else:
-    op = importlib.import_module('.op', __name__)         #只包含core
+op = importlib.import_module('.op', __name__)
 
 
 from .utils import gfx, LIGHTOP_ROOT_DIR, LIGHTOP_ASM_DIR
@@ -75,13 +71,3 @@ try:
 except ImportError:
     pass
 
-if dtk_version >= 25042:
-    from .miopen.miopen_mha import miopen_scaled_dot_product_attention
-    from .miopen.miopen_conv_fusion import miopen_conv_bias, miopen_conv_bias_add, miopen_conv_bias_relu, miopen_conv_bias_add_relu, miopenConvBias, miopenConvBiasAdd, miopenConvBiasRelu, miopenConvBiasAddRelu
-    from .miopen.miopen_groupnorm import miopen_groupnorm, miopen_add_groupnorm, miopenGroupNorm
-    from .miopen.miopen_layernorm import miopen_layernorm, miopen_add_layernorm, miopen_skip_layernorm, miopenLayerNorm
-    from .miopen.miopen_moe import miopen_moe_gather, miopen_moe_scatter_dynamic_quant, miopen_moe_swiglu_dynamic_quant
-    from .miopen.miopen_rms import miopen_add_rms_norm_dynamic_quant, miopen_head_rms_norm, miopen_rms_norm_dynamic_quant_without_residual
-    from .miopen.miopen_gemm_bias import miopen_gemm_bias
-    from .miopen.miopen_transform_tensor import miopen_transform_tensor
-    from .miopen.miopen_fused_adam import miopen_adamw
