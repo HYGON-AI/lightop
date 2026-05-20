@@ -507,11 +507,6 @@ def get_extensions():
                glob.glob('./lightop/csrc/polyfill/*.cu') + glob.glob('./lightop/csrc/awq_w4a16_gemm/*.cu') + \
                glob.glob('./lightop/csrc/sampling/*.cu')
 
-    miopen_files = glob.glob('./lightop/csrc/miopen/*.cpp') + \
-                   glob.glob('./lightop/csrc/miopen/fusion_mode/*.cpp') + glob.glob('./lightop/csrc/miopen/graph/*.cpp') + glob.glob('./lightop/csrc/miopen/op/*.cpp')
-
-               
-
     extension = CUDAExtension
     # 添加marlinw4a16目录的包含路径
     include_dirs.append(os.path.abspath('./lightop/csrc/'))
@@ -525,7 +520,6 @@ def get_extensions():
     include_dirs.append(os.path.abspath('./lightop/csrc/batchnorm/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/loss/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/scaledmask/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/miopen/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/softmax/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/moew8a8/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/storeKvcache/'))
@@ -543,7 +537,7 @@ def get_extensions():
     include_dirs.append(rocm_home+'/rocrand/include')
     include_dirs.append(os.path.abspath('./lightop/csrc/mqa_logits/'))
     
-    # 1) 不含 miopen 的核心库：lightop.op 
+    # 核心库：lightop.op
     ext_ops = extension(
         name="lightop.op",
         sources=op_files,
@@ -551,18 +545,7 @@ def get_extensions():
         define_macros=define_macros,
         extra_compile_args=extra_compile_args)
 
-    # 2) 含 miopen + op 的库：lightop.op_miopen（在宏中开启接口）
-    ext_miopen = extension(
-        name="lightop.op_core_miopen",
-        sources=op_files + miopen_files,
-        include_dirs=include_dirs,
-        define_macros=define_macros + [("USE_MIOPEN", "1")],
-        extra_compile_args=extra_compile_args
-    )
-    
     extensions.append(ext_ops)
-    # if dtk_version >= 25042: #  调试时建议关闭
-    #     extensions.append(ext_miopen)
     return extensions
 
 def _get_pytorch_version():
