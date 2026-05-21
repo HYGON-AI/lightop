@@ -909,6 +909,14 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     auto base_logits_offset = q_idx * kNextN * logits_stride + next_n * logits_stride;
     auto base_seq_kv_offset = kv_idx * BLOCK_KV;
 
+    if (start_kv_idx >= num_kv) {
+        uint32_t fill_offset = base_logits_offset + base_seq_kv_offset + lane_idx;
+        if (base_seq_kv_offset + lane_idx < logits_stride) {
+            logits[fill_offset] = -INFINITY;
+        }
+        return;
+    }
+
     // fetch Q && Q weights
     auto gQ = q + q_idx * kNextN * kNumHeads * kHeadDim + next_n * kNumHeads * kHeadDim;
     constexpr int kAlignmentQ = 16 / sizeof(uint8_t);

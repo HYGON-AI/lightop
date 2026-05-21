@@ -258,28 +258,6 @@ void blockwise_scaled_cast_transpose(const Tensor& input,std::optional<Tensor> o
                                     std::optional<Tensor> output_t,std::optional<Tensor> scale_inv_t,std::optional<Tensor> noop,
                                     const int block_len,const int block_scaling_dim,const bool rowwise,const bool columnwise,
                                     const float epsilon,const bool pow2_scale,const bool all_gather_usage, at::ScalarType out_dtype);
-#ifdef USE_MIOPEN
-Tensor miopen_fused_conv_bias_forward(const Tensor &x, const Tensor &weight, const Tensor &bias, const std::vector<int64_t> &pads, const std::vector<int64_t> &strides, const std::vector<int64_t> &dilations);
-Tensor miopen_fused_conv_bias_add_forward(const Tensor &x, const Tensor &weight, const Tensor &bias, const Tensor &add, const std::vector<int64_t> &pads, const std::vector<int64_t> &strides, const std::vector<int64_t> &dilations);
-Tensor miopen_fused_conv_bias_add_relu_forward(const Tensor &x, const Tensor &weight, const Tensor &bias, const Tensor &add, const std::vector<int64_t> &pads, const std::vector<int64_t> &strides, const std::vector<int64_t> &dilations);
-Tensor miopen_fused_conv_bias_relu_forward(const Tensor &x, const Tensor &weight, const Tensor &bias, const std::vector<int64_t> &pads, const std::vector<int64_t> &strides, const std::vector<int64_t> &dilations);
-std::vector<Tensor> miopen_add_rms_norm_dynamic_quant(const Tensor &x, const Tensor &x2, const Tensor &weight, const Tensor &smoothScale, const float epsilon);
-std::vector<Tensor> miopen_rms_norm_dynamic_quant_without_residual(const Tensor &x, const Tensor &weight, const Tensor &smoothScale, const float epsilon);
-Tensor miopen_head_rms_norm(const Tensor &x, const Tensor &weight, const float epsilon, const int norm_head_start, const int norm_head_end, const int norm_head_num);
-std::vector<Tensor> miopen_groupnorm(const Tensor &x, const Tensor &weight, const Tensor &bias, const int num_groups, const float epsilon, const int mode);
-// std::vector<Tensor> miopen_groupnorm_backward(const Tensor &x, const Tensor &dy, const Tensor &weight, const Tensor &mean, const Tensor &rstd, const int num_groups, const float epsilon, const int mode);
-std::vector<Tensor> miopen_add_groupnorm(const Tensor &x1, const Tensor &x2, const Tensor &weight, const Tensor &bias, const int num_groups, const float epsilon, const int mode);
-std::vector<Tensor> miopen_layernorm(const Tensor &x, const Tensor &weight, const Tensor &bias, const float epsilon, const int normalized_dim, const int mode);
-std::vector<Tensor> miopen_add_layernorm(const Tensor &x1, const Tensor &x2, const Tensor &weight, const Tensor &bias, const float epsilon, const int normalized_dim, const int mode);
-std::vector<Tensor> miopen_skip_layernorm(const Tensor &x1, const Tensor &x2, const Tensor &weight, const Tensor &bias, const float epsilon, const int normalized_dim, const int mode);
-std::vector<Tensor> miopen_moe_scatter_dynamic_quant(const Tensor &hidden, const Tensor &selected_experts, const Tensor &moe_weights, const Tensor &smooth, Tensor& out_scatter_tokens, Tensor& out_scatter_per_token_scale, Tensor& out_scatter_tokens_offset, Tensor& out_experts_token_count, Tensor& out_experts_token_start, const int expert_start_idx, const int expert_end_idx, const int num_shared_experts, const int num_tokens_offset, const int num_tokens_per_rank, const int num_tokens);
-std::vector<Tensor> miopen_moe_swiglu_dynamic_quant(const Tensor &scatter_tokens, const Tensor &smooth_scale, const Tensor &experts_tokens_count, const Tensor &exports_tokens_start, const float beta);
-Tensor miopen_moe_gather(const Tensor &scatter_tokens, const Tensor &token_offset, const int real_scatter_tokens, const int num_tokens, const int hidden_size, const int topk, const int num_shared_experts);
-Tensor miopen_scaled_dot_product_attention(const Tensor &query, const Tensor &key, const Tensor &value, const std::optional<Tensor> &attn_mask_, const double droprate, const bool is_causal, std::optional<double> scale, const bool enable_gqa, const bool is_training);
-Tensor miopen_gemm_bias(const Tensor &input_a, const Tensor &input_b, const Tensor &bias);
-Tensor miopen_transform_tensor(const Tensor &input, const int transpose_mode, const float alpha, const float beta);
-void miopen_fused_adam(Tensor& params, const Tensor& grads, Tensor& exp_avgs, Tensor& exp_avg_sqs, c10::optional<Tensor>& max_exp_avg_sqs, Tensor& state_steps, const float lr, const float beta1, const float beta2, const float weight_decay, const float eps, const bool amsgrad, const bool maximize, const c10::optional<Tensor>& grad_scale, const c10::optional<Tensor>& found_inf);
-#endif
 
 void rms_norm_dynamic_per_token_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input);
 void rms_norm_fp8_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input, int fp8type);
@@ -584,6 +562,32 @@ std::tuple<Tensor, Tensor, Tensor> qkv_split_rms_rotary_embedding_fuse(
     std::optional<Tensor> residual_q,
     std::optional<Tensor> residual_k,
     double epsilon); 
+std::tuple<Tensor, Tensor, Tensor> gemma_qkv_split_rms_rotary_embedding_fuse(
+    Tensor& positions, Tensor& qkv, int64_t q_size, int64_t kv_size,
+    int64_t head_size, Tensor& cos_sin_cache, bool is_neox, Tensor weight_q,
+    Tensor weight_k, std::optional<Tensor> residual_q,
+    std::optional<Tensor> residual_k, double epsilon); 
+void layer_norm_fwd_1pass_opt(
+    torch::Tensor& X,
+    torch::Tensor& Y,
+    torch::Tensor& W,
+    torch::Tensor& B,
+    torch::Tensor& Z,
+    torch::Tensor& Mean,
+    torch::Tensor& Rstd,
+    int64_t stride_x_row,
+    int64_t stride_y_row,
+    int64_t stride_z_row,
+    int64_t M,
+    int64_t N,
+    double eps,
+    int64_t BLOCK_N,
+    int64_t ROWS_PER_BLOCK,
+    bool HAS_BIAS,
+    bool HAS_Z,
+    bool NORM_BEFORE_GATE,
+    bool IS_RMS_NORM,
+    const std::string& ACTIVATION);
 void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
     Tensor& q,
     const Tensor& kv,
@@ -681,28 +685,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("moe_marlin_w16a16_asm", &at::native::moe_marlin_w16a16_asm, "moe_marlin_w16a16_asm");
   m.def("bilinear_upsample", &at::native::bilinear_upsample, "bilinear_upsample");
   m.def("bilinear_upsample_backward", &at::native::bilinear_upsample_backward, "bilinear_upsample_backward");
-#ifdef USE_MIOPEN
-  m.def("miopen_conv_bias", &at::native::miopen_fused_conv_bias_forward, "fused_conv_bias forward");
-  m.def("miopen_conv_bias_add", &at::native::miopen_fused_conv_bias_add_forward, "fused_conv_bias_add forward");
-  m.def("miopen_conv_bias_relu", &at::native::miopen_fused_conv_bias_relu_forward, "fused_conv_bias_relu forward");
-  m.def("miopen_conv_bias_add_relu", &at::native::miopen_fused_conv_bias_add_relu_forward, "miopen_fused_conv_bias_add_relu_forward");
-  m.def("miopen_add_rms_norm_dynamic_quant", &at::native::miopen_add_rms_norm_dynamic_quant, "fused add rms morm dynamic quant");
-  m.def("miopen_rms_norm_dynamic_quant_without_residual", &at::native::miopen_rms_norm_dynamic_quant_without_residual, "rms_norm_dynamic_quant_without_residual");
-  m.def("miopen_head_rms_norm", &at::native::miopen_head_rms_norm, "head_rms_norm");
-  m.def("miopen_groupnorm", &at::native::miopen_groupnorm, "groupnorm");
-  // m.def("miopen_groupnorm_backward", &at::native::miopen_groupnorm_backward, "groupnorm_backward");
-  m.def("miopen_add_groupnorm", &at::native::miopen_add_groupnorm, "add_groupnorm");
-  m.def("miopen_layernorm", &at::native::miopen_layernorm, "layernorm");
-  m.def("miopen_add_layernorm", &at::native::miopen_add_layernorm, "add_layernorm");
-  m.def("miopen_skip_layernorm", &at::native::miopen_skip_layernorm,"skip_layernorm");
-  m.def("miopen_moe_scatter_dynamic_quant", &at::native::miopen_moe_scatter_dynamic_quant, "moe_scatter_dynamic_quant");
-  m.def("miopen_moe_swiglu_dynamic_quant", &at::native::miopen_moe_swiglu_dynamic_quant, "moe_swiglu_dynamic_quant");
-  m.def("miopen_moe_gather", &at::native::miopen_moe_gather, "moe_gather");
-  m.def("miopen_scaled_dot_product_attention", &at::native::miopen_scaled_dot_product_attention, "miopen_scaled_dot_product_attention");
-  m.def("miopen_gemm_bias", &at::native::miopen_gemm_bias, "miopen_gemm_bias");
-  m.def("miopen_transform_tensor", &at::native::miopen_transform_tensor, "miopen_transform_tensor");
-  m.def("miopen_fused_adam", &at::native::miopen_fused_adam, "miopen_fused_adam");
-#endif
   m.def("store_kv_cache", &at::native::store_kv_cache, "store_kv_cache");
   m.def("store_kv_cache_paged", &at::native::store_kv_cache_paged, "store_kv_cache_paged");
   m.def("topk_softmax", &at::native::topk_softmax, "topk_softmax");
@@ -846,5 +828,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("fuse_norm_rope_quant_fp8", &at::native::fuse_norm_rope_quant_fp8, "fuse_norm_rope_quant_fp8");
  m.def("fused_quantize_and_store_mla_kv_cache", &at::native::fused_quantize_and_store_mla_kv_cache, "fused_quantize_and_store_mla_kv_cache");
  m.def("qkv_split_rms_rotary_embedding_fuse", &at::native::qkv_split_rms_rotary_embedding_fuse, "qkv_split_rms_rotary_embedding_fuse");
+ m.def("gemma_qkv_split_rms_rotary_embedding_fuse", &at::native::gemma_qkv_split_rms_rotary_embedding_fuse, "gemma_qkv_split_rms_rotary_embedding_fuse");
+ m.def("layer_norm_fwd_1pass_opt", &at::native::layer_norm_fwd_1pass_opt, "layer_norm_fwd_1pass_opt");
  m.def("fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert", &at::native::fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert, "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert");
 }
