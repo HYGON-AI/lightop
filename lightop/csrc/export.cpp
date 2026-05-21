@@ -588,6 +588,15 @@ void layer_norm_fwd_1pass_opt(
     bool NORM_BEFORE_GATE,
     bool IS_RMS_NORM,
     const std::string& ACTIVATION);
+void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
+    Tensor& q,
+    const Tensor& kv,
+    Tensor& k_cache,
+    const Tensor& slot_mapping,
+    const Tensor& position_ids,
+    const Tensor& cos_sin_cache,
+    double eps,
+    int64_t cache_block_size);
 }
 }
 
@@ -821,5 +830,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("qkv_split_rms_rotary_embedding_fuse", &at::native::qkv_split_rms_rotary_embedding_fuse, "qkv_split_rms_rotary_embedding_fuse");
  m.def("gemma_qkv_split_rms_rotary_embedding_fuse", &at::native::gemma_qkv_split_rms_rotary_embedding_fuse, "gemma_qkv_split_rms_rotary_embedding_fuse");
  m.def("layer_norm_fwd_1pass_opt", &at::native::layer_norm_fwd_1pass_opt, "layer_norm_fwd_1pass_opt");
+ m.def("fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert", &at::native::fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert, "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert");
 }
-
