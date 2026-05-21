@@ -2849,6 +2849,10 @@ void gammarms_rotary_embedding_fuse_with_kv_store(
       v_ndim == 2 || v_ndim == 3,
       "v must be 2D or 3D");
 
+  query = query.is_contiguous() ? query : query.contiguous();
+  key = key.is_contiguous() ? key : key.contiguous();
+  v = v.is_contiguous() ? v : v.contiguous();
+
   // token 维始终是第 0 维
   int64_t query_stride = query.stride(0);
   int64_t key_stride = key.stride(0);
