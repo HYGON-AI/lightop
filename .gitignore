@@ -38,3 +38,4 @@ run.sh
 **/*.log
 **/*.txt
 test/**/*.json
+*.csv
