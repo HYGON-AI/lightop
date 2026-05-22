@@ -571,9 +571,9 @@ void layer_norm_fwd_1pass_opt(
     torch::Tensor& X,
     torch::Tensor& Y,
     torch::Tensor& W,
-    torch::Tensor& B,
-    torch::Tensor& Z,
-    torch::Tensor& Mean,
+    std::optional<torch::Tensor> B,
+    std::optional<torch::Tensor> Z,
+    std::optional<torch::Tensor> Mean,
     torch::Tensor& Rstd,
     int64_t stride_x_row,
     int64_t stride_y_row,
@@ -829,6 +829,27 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("fused_quantize_and_store_mla_kv_cache", &at::native::fused_quantize_and_store_mla_kv_cache, "fused_quantize_and_store_mla_kv_cache");
  m.def("qkv_split_rms_rotary_embedding_fuse", &at::native::qkv_split_rms_rotary_embedding_fuse, "qkv_split_rms_rotary_embedding_fuse");
  m.def("gemma_qkv_split_rms_rotary_embedding_fuse", &at::native::gemma_qkv_split_rms_rotary_embedding_fuse, "gemma_qkv_split_rms_rotary_embedding_fuse");
- m.def("layer_norm_fwd_1pass_opt", &at::native::layer_norm_fwd_1pass_opt, "layer_norm_fwd_1pass_opt");
+ m.def("layer_norm_fwd_1pass_opt", &at::native::layer_norm_fwd_1pass_opt,
+       "layer_norm_fwd_1pass_opt",
+       py::arg("X"),
+       py::arg("Y"),
+       py::arg("W"),
+       py::arg("B"),
+       py::arg("Z"),
+       py::arg("Mean"),
+       py::arg("Rstd"),
+       py::arg("stride_x_row"),
+       py::arg("stride_y_row"),
+       py::arg("stride_z_row"),
+       py::arg("M"),
+       py::arg("N"),
+       py::arg("eps"),
+       py::arg("BLOCK_N"),
+       py::arg("ROWS_PER_BLOCK"),
+       py::arg("HAS_BIAS"),
+       py::arg("HAS_Z"),
+       py::arg("NORM_BEFORE_GATE"),
+       py::arg("IS_RMS_NORM"),
+       py::arg("ACTIVATION"));
  m.def("fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert", &at::native::fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert, "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert");
 }

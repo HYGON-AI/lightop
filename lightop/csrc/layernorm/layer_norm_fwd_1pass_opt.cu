@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cmath>
+#include <optional>
 #include <string>
 #include <type_traits>
 
@@ -1180,9 +1181,9 @@ void layer_norm_fwd_1pass_opt(
     torch::Tensor& X,
     torch::Tensor& Y,
     torch::Tensor& W,
-    torch::Tensor& B,
-    torch::Tensor& Z,
-    torch::Tensor& Mean,
+    std::optional<torch::Tensor> B_opt,
+    std::optional<torch::Tensor> Z_opt,
+    std::optional<torch::Tensor> Mean_opt,
     torch::Tensor& Rstd,
     int64_t stride_x_row,
     int64_t stride_y_row,
@@ -1206,6 +1207,10 @@ void layer_norm_fwd_1pass_opt(
   if (M == 0) {
     return;
   }
+
+  torch::Tensor B = B_opt.has_value() ? *B_opt : torch::Tensor();
+  torch::Tensor Z = Z_opt.has_value() ? *Z_opt : torch::Tensor();
+  torch::Tensor Mean = Mean_opt.has_value() ? *Mean_opt : torch::Tensor();
 
   ln1p_check_tensor(X, "X");
   ln1p_check_tensor(Y, "Y");
