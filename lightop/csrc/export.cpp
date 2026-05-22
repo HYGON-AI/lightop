@@ -351,6 +351,11 @@ void ep_fused_smooth_quant_scatter(
     int local_num_experts, int alignment); 
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale);
 void rms_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,double epsilon);
+void rms_norm_no_weight(
+    torch::optional<torch::Tensor>& out,
+    torch::Tensor& input,
+    torch::optional<torch::Tensor>& weight,
+    double epsilon);
 void fused_add_rms_norm_opt(torch::Tensor& input,torch::Tensor& residual, torch::Tensor& weight,double epsilon); 
 void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
@@ -786,6 +791,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("top_p_sampling_from_probs", &lightop::sampling::top_p_sampling_from_probs, "top_p_sampling_from_probs");
   m.def("top_k_top_p_sampling_from_probs", &lightop::sampling::top_k_top_p_sampling_from_probs, "top_k_top_p_sampling_from_probs");
   m.def("rms_norm_opt", &at::native::rms_norm_opt, "rms_norm_opt");
+  m.def("rms_norm_no_weight", &at::native::rms_norm_no_weight, "rms_norm_no_weight");
   m.def("fused_add_rms_norm_opt", &at::native::fused_add_rms_norm_opt, "fused_add_rms_norm_opt");
   m.def("silu_and_mul_opt", &at::native::silu_and_mul_opt, "silu_and_mul_opt");
   m.def("gelu_and_mul_opt", &at::native::gelu_and_mul_opt, "gelu_and_mul_opt");
