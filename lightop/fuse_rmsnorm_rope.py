@@ -167,17 +167,33 @@ def gammarms_rotary_embedding_fuse_with_kv_store(
     mrope_section_w: int = 0,
     is_interleaved: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor]:
+    if positions.dim() == 1:
+        positions = torch.stack([positions, positions, positions], dim=0).contiguous()
+    elif positions.dim() == 2:
+        if positions.shape[0] == 3:
+            positions = positions.contiguous()
+        elif positions.shape[0] == 1:
+            positions = positions.expand(3, -1).contiguous()
+        else:
+            raise RuntimeError(f"Unsupported positions shape for gammarms_rotary_embedding_fuse_with_kv_store: {positions.shape}")
+    else:
+        raise RuntimeError(f"Unsupported positions dim for gammarms_rotary_embedding_fuse_with_kv_store: {positions.dim()}")
+
+    query = query.contiguous()
+    key = key.contiguous()
+    v = v.contiguous()
+    kv_cache_loc = kv_cache_loc.contiguous()
+
     dims = query.dim()
     heads = query.shape[dims - 1] // head_dim if dims == 2 else query.shape[dims - 2]
     q_rope_out = torch.empty((query.shape[0], heads, head_dim), dtype=v_buffer.dtype, device=query.device).contiguous()
-    k_rope_out = torch.empty_strided(
-        tuple(key.shape), tuple(key.stride()),
-        dtype=v_buffer.dtype, device=key.device
-    )
-    v_rope_out = torch.empty_strided(
-        tuple(v.shape), tuple(v.stride()),
-        dtype=v_buffer.dtype, device=v.device
-    )
+    k_rope_out = torch.empty(tuple(key.shape), dtype=v_buffer.dtype, device=key.device).contiguous()
+    v_rope_out = torch.empty(tuple(v.shape), dtype=v_buffer.dtype, device=v.device).contiguous()
+
+    rot_dim = cos_sin_cache.shape[1]
+    if mrope_section_t == 0 and mrope_section_h == 0 and mrope_section_w == 0:
+        mrope_section_t = rot_dim // 2
+
     use_fp8_e4m3 = v_buffer.dtype != torch.float8_e4m3fn and v_buffer.dtype != torch.float8_e5m2
     if (head_dim > 256 or use_fp8_e4m3):
         op.rms_rotary_embedding_fuse(
@@ -193,16 +209,16 @@ def gammarms_rotary_embedding_fuse_with_kv_store(
             residual_k,
             epsilon
         )
-        
+
         q_rope_out = query.to(v_buffer.dtype)
         k_rope_out = key.to(v_buffer.dtype)
         v_rope_out = v.to(v_buffer.dtype)
-        
+
         loc_id = kv_cache_loc // page_size
         loc_offset = kv_cache_loc % page_size
         if k.dim() == 2:
-            kv = q_rope_out.view(k_rope_out.size(0), k_buffer.shape[1], -1)
-            vc = k_rope_out.view(v_rope_out.size(0), v_buffer.shape[1], -1)
+            kv = k_rope_out.view(k_rope_out.size(0), k_buffer.shape[1], -1)
+            vc = v_rope_out.view(v_rope_out.size(0), v_buffer.shape[1], -1)
         else:
             kv = k_rope_out
             vc = v_rope_out
@@ -210,7 +226,7 @@ def gammarms_rotary_embedding_fuse_with_kv_store(
         v_buffer[loc_id,:,:,loc_offset] = vc
     else:
         op.gammarms_rotary_embedding_fuse_with_kv_store(
-            positions.contiguous(),
+            positions,
             query,
             key,
             v,
