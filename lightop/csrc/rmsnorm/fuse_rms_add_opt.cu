@@ -5,6 +5,9 @@
 #include <c10/cuda/CUDAMathCompat.h>
 #include <ATen/AccumulateType.h>
 #include <THC/THCDeviceUtils.cuh>
+#include <algorithm>
+#include <cstdint>
+#include <type_traits>
 
 #ifndef USE_ROCM
   #include <cub/cub.cuh>
@@ -16,7 +19,7 @@
 #define C10_WARP_SIZE C10_WARP_SIZE_STATIC
 #endif
 
-template<typename scalar_t> 
+template<typename scalar_t>
 static __device__ inline float to_float(scalar_t in){
   if constexpr(!std::is_same<scalar_t, uint16_t>::value){
     return in;
@@ -29,18 +32,20 @@ static __device__ inline float to_float(scalar_t in){
     return u.fp32;
   }
 }
-template<typename scalar_t> 
+
+template<typename scalar_t>
 static __device__ inline void from_float(scalar_t &out ,float f){
   if constexpr(!std::is_same<scalar_t, uint16_t>::value){
     out=f;
   }
   else{
     uint32_t u = *(uint32_t*)(&f);
-    // u += 0x7fff + ((u >> 16) & 1); 
-    u += 0x8000; 
+    // u += 0x7fff + ((u >> 16) & 1);
+    u += 0x8000;
     out = u>>16;
   }
 }
+
 namespace vllm {
 
 // TODO(woosuk): Further optimize this kernel.
@@ -57,7 +62,7 @@ __global__ void rms_norm_kernel(
     const float x = (float)input[blockIdx.x * hidden_size + idx];
     variance += x * x;
   }
-  
+
   using BlockReduce = cub::BlockReduce<float, 1024>;
   __shared__ typename BlockReduce::TempStorage reduceStore;
   variance = BlockReduce(reduceStore).Reduce(variance, cub::Sum{}, blockDim.x);
@@ -71,12 +76,44 @@ __global__ void rms_norm_kernel(
     float x = (float)input[blockIdx.x * hidden_size + idx];
     float w = (float)weight[idx];
     if constexpr (IS_GEMMA) { w += 1.0f; }
-    
+
     out[blockIdx.x * hidden_size + idx] =
         ((scalar_t)(x * s_variance)) * ((scalar_t)w);
   }
 }
 
+template <typename scalar_t, bool HAS_WEIGHT = false>
+__global__ void rms_norm_optional_weight_kernel(
+    scalar_t* out,                         // [..., hidden_size], may alias input
+    const scalar_t* input,                 // [..., hidden_size]
+    const scalar_t* __restrict__ weight,   // [hidden_size] or nullptr
+    const float epsilon, const int num_tokens, const int hidden_size) {
+  __shared__ float s_variance;
+  float variance = 0.0f;
+  const int base = blockIdx.x * hidden_size;
+
+  for (int idx = threadIdx.x; idx < hidden_size; idx += blockDim.x) {
+    const float x = (float)input[base + idx];
+    variance += x * x;
+  }
+
+  using BlockReduce = cub::BlockReduce<float, 1024>;
+  __shared__ typename BlockReduce::TempStorage reduceStore;
+  variance = BlockReduce(reduceStore).Reduce(variance, cub::Sum{}, blockDim.x);
+
+  if (threadIdx.x == 0) {
+    s_variance = rsqrtf(variance / hidden_size + epsilon);
+  }
+  __syncthreads();
+
+  for (int idx = threadIdx.x; idx < hidden_size; idx += blockDim.x) {
+    float y = (float)input[base + idx] * s_variance;
+    if constexpr (HAS_WEIGHT) {
+      y *= (float)weight[idx];
+    }
+    out[base + idx] = (scalar_t)y;
+  }
+}
 
 /* Function specialization in the case of FP16/BF16 tensors.
    Additional optimizations we can make in this case are
@@ -127,7 +164,7 @@ fused_add_rms_norm_kernel(
     int id = blockIdx.x * vec_hidden_size + idx;
     _f16Vec<scalar_t, width> temp = residual_v[id];
     temp *= s_variance;
-    
+
     _f16Vec<scalar_t, width> w_vec = weight_v[idx];
     if constexpr (IS_GEMMA) {
         scalar_t* w_scalars = reinterpret_cast<scalar_t*>(&w_vec);
@@ -139,7 +176,7 @@ fused_add_rms_norm_kernel(
         }
     }
     temp *= w_vec;
-    
+
     input_v[id] = temp;
   }
 }
@@ -178,15 +215,17 @@ fused_add_rms_norm_kernel(
     float x = (float)residual[blockIdx.x * hidden_size + idx];
     float w = (float)weight[idx];
     if constexpr (IS_GEMMA) { w += 1.0f; }
-    
+
     input[blockIdx.x * hidden_size + idx] =
         ((scalar_t)(x * s_variance)) * ((scalar_t)w);
   }
 }
 
 }  // namespace vllm
+
 namespace at{
 namespace native{
+
 template <typename T,int reducesize=C10_WARP_SIZE>
 __inline__ __device__ T WarpReduceSum_NEW(T val) {
 #pragma unroll
@@ -303,6 +342,91 @@ __global__ void fused_rms_kernel_opt(scalar_t* input,scalar_t* output,scalar_t* 
   }
 }
 
+template <typename scalar_t, typename T_ACC, int Vec=4, int block_size=512,
+          bool HAS_WEIGHT=false>
+__global__ void rms_kernel_opt_optional_weight(
+    const scalar_t* input,
+    scalar_t* output,
+    const scalar_t* gamma,
+    int cols,
+    T_ACC eps,
+    int num_tokens) {
+  constexpr int share_size=block_size/C10_WARP_SIZE;
+  __shared__ T_ACC val_shared[share_size];
+  __shared__ T_ACC s_rstd;
+  using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
+
+  int i=blockIdx.x;
+  int j=threadIdx.x;
+  const int tcol=cols/Vec;
+
+  for(; i < num_tokens; i += gridDim.x){
+      T_ACC val=0;
+      scalar_t input_vec[Vec];
+      int64_t idx = i * tcol + j;
+      idx*=Vec;
+
+      if (j < tcol) {
+        *(LoadT*)input_vec = *(const LoadT*)(input+idx);
+        #pragma unroll
+        for (int ii = 0; ii < Vec; ii++) {
+          const T_ACC x = static_cast<T_ACC>(to_float(input_vec[ii]));
+          val += x * x;
+        }
+      }
+
+      val = BlockReduceSum_NEW<T_ACC,block_size>(val,val_shared);
+      if (j == 0) s_rstd=c10::cuda::compat::rsqrt(val/cols + eps);
+      __syncthreads();
+
+      const T_ACC trstd=s_rstd;
+      if (j < tcol) {
+        #pragma unroll
+        for(int ii=0;ii<Vec;ii++){
+          const int jj=j*Vec+ii;
+          T_ACC y = static_cast<T_ACC>(to_float(input_vec[ii])) * trstd;
+          if constexpr (HAS_WEIGHT) {
+            y *= static_cast<T_ACC>(to_float(gamma[jj]));
+          }
+          from_float<scalar_t>(input_vec[ii], static_cast<float>(y));
+        }
+        *(LoadT*)(output+idx)=*(LoadT*)input_vec;
+      }
+  }
+}
+
+template <bool HAS_WEIGHT, typename scalar_t, typename T_ACC>
+static inline void launch_rms_kernel_opt_optional_weight(
+    const scalar_t* input_data,
+    scalar_t* out_data,
+    const scalar_t* weight_data,
+    int hidden_size,
+    T_ACC eps,
+    int num_tokens,
+    int grid,
+    cudaStream_t stream) {
+  if (hidden_size<=1024){
+      rms_kernel_opt_optional_weight<scalar_t,T_ACC,8,128,HAS_WEIGHT><<<grid, 128, 0, stream>>>(
+          input_data,out_data,weight_data,hidden_size,eps,num_tokens);
+  }
+  else if(hidden_size<=2048){
+      rms_kernel_opt_optional_weight<scalar_t,T_ACC,8,256,HAS_WEIGHT><<<grid, 256, 0, stream>>>(
+          input_data,out_data,weight_data,hidden_size,eps,num_tokens);
+  }
+  else if(hidden_size<=4096){
+      rms_kernel_opt_optional_weight<scalar_t,T_ACC,8,512,HAS_WEIGHT><<<grid, 512, 0, stream>>>(
+          input_data,out_data,weight_data,hidden_size,eps,num_tokens);
+  }
+  else if(hidden_size<=8192){
+      rms_kernel_opt_optional_weight<scalar_t,T_ACC,8,1024,HAS_WEIGHT><<<grid, 1024, 0, stream>>>(
+          input_data,out_data,weight_data,hidden_size,eps,num_tokens);
+  }
+  else{
+      rms_kernel_opt_optional_weight<scalar_t,T_ACC,16,1024,HAS_WEIGHT><<<grid, 1024, 0, stream>>>(
+          input_data,out_data,weight_data,hidden_size,eps,num_tokens);
+  }
+}
+
 template<bool IS_GEMMA>
 void rms_norm_opt_impl(torch::Tensor& out,    // [..., hidden_size]
               torch::Tensor& input,   // [..., hidden_size]
@@ -343,13 +467,13 @@ void rms_norm_opt_impl(torch::Tensor& out,    // [..., hidden_size]
       }
       else{
           fused_rms_kernel_opt<scalar_t,T_ACC,16,1024, IS_GEMMA><<<grid,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
-      } 
+      }
     });
   }
   else{
     dim3 grid(num_tokens);
     dim3 block(std::min(hidden_size, 1024));
-  
+
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half,
         at::ScalarType::BFloat16,input.scalar_type(), "rms_norm_kernel", [&] {
@@ -366,6 +490,100 @@ void rms_norm_opt(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weigh
 
 void gemma_rmsnorm(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight, double epsilon) {
     rms_norm_opt_impl<true>(out, input, weight, epsilon);
+}
+
+void rms_norm_no_weight(
+    torch::optional<torch::Tensor>& out,
+    torch::Tensor& input,
+    torch::optional<torch::Tensor>& weight,
+    double epsilon) {
+  TORCH_CHECK(input.dim() > 0, "input must have at least 1 dimension");
+  TORCH_CHECK(input.is_cuda(), "input must be a CUDA tensor");
+  TORCH_CHECK(input.is_contiguous(), "input must be contiguous");
+
+  const bool has_out = out.has_value() && out.value().defined();
+  const bool has_weight = weight.has_value() && weight.value().defined();
+
+  torch::Tensor output = has_out ? out.value() : input;
+
+  TORCH_CHECK(output.is_cuda(), "out must be a CUDA tensor");
+  TORCH_CHECK(output.is_contiguous(), "out must be contiguous");
+  TORCH_CHECK(output.scalar_type() == input.scalar_type(),
+              "out dtype must match input dtype");
+  TORCH_CHECK(output.sizes() == input.sizes(),
+              "out shape must match input shape");
+
+  torch::Tensor weight_tensor;
+  if (has_weight) {
+    weight_tensor = weight.value();
+    TORCH_CHECK(weight_tensor.is_cuda(), "weight must be a CUDA tensor");
+    TORCH_CHECK(weight_tensor.is_contiguous(), "weight must be contiguous");
+    TORCH_CHECK(weight_tensor.scalar_type() == input.scalar_type(),
+                "weight dtype must match input dtype");
+    TORCH_CHECK(weight_tensor.numel() == input.size(-1),
+                "weight numel must equal hidden_size");
+  }
+
+  const int hidden_size = input.size(-1);
+  const int num_tokens = input.numel() / hidden_size;
+  int grid = num_tokens;
+  if(num_tokens == 288) grid = 256;
+
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+  auto inp_ptr = reinterpret_cast<std::uintptr_t>(input.data_ptr());
+  auto out_ptr = reinterpret_cast<std::uintptr_t>(output.data_ptr());
+  bool ptrs_are_aligned = inp_ptr % 16 == 0 && out_ptr % 16 == 0;
+  if (has_weight) {
+    auto wt_ptr = reinterpret_cast<std::uintptr_t>(weight_tensor.data_ptr());
+    ptrs_are_aligned = ptrs_are_aligned && wt_ptr % 16 == 0;
+  }
+
+  if(hidden_size%16==0&&hidden_size<=16384&&ptrs_are_aligned){
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      input.scalar_type(),
+      "rms_norm_no_weight_opt",
+      [&] {
+        using T_ACC = at::acc_type<scalar_t, true>;
+        T_ACC eps = epsilon;
+        const scalar_t* self_data = input.expect_contiguous()->data_ptr<scalar_t>();
+        scalar_t* out_data = output.expect_contiguous()->data_ptr<scalar_t>();
+        const scalar_t* weight_data =
+            has_weight ? weight_tensor.expect_contiguous()->data_ptr<scalar_t>() : nullptr;
+
+        if (has_weight) {
+          launch_rms_kernel_opt_optional_weight<true, scalar_t, T_ACC>(
+              self_data, out_data, weight_data, hidden_size, eps, num_tokens, grid, stream);
+        } else {
+          launch_rms_kernel_opt_optional_weight<false, scalar_t, T_ACC>(
+              self_data, out_data, nullptr, hidden_size, eps, num_tokens, grid, stream);
+        }
+      });
+  }
+  else{
+    dim3 grid_dim(num_tokens);
+    dim3 block(std::min(hidden_size, 1024));
+
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+        at::ScalarType::Half,
+        at::ScalarType::BFloat16,input.scalar_type(), "rms_norm_no_weight", [&] {
+      scalar_t* out_data = output.data_ptr<scalar_t>();
+      const scalar_t* input_data = input.data_ptr<scalar_t>();
+      const scalar_t* weight_data =
+          has_weight ? weight_tensor.data_ptr<scalar_t>() : nullptr;
+
+      if (has_weight) {
+        vllm::rms_norm_optional_weight_kernel<scalar_t, true><<<grid_dim, block, 0, stream>>>(
+            out_data, input_data, weight_data, epsilon, num_tokens, hidden_size);
+      } else {
+        vllm::rms_norm_optional_weight_kernel<scalar_t, false><<<grid_dim, block, 0, stream>>>(
+            out_data, input_data, nullptr, epsilon, num_tokens, hidden_size);
+      }
+    });
+  }
 }
 
 
@@ -422,7 +640,7 @@ void fused_add_rms_norm_opt_impl(torch::Tensor& input,     // [..., hidden_size]
         }
         else{
             fused_add_rms_kernel_opt<scalar_t,T_ACC,16,1024, IS_GEMMA><<<grid,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
-        } 
+        }
       });
   }
   else{
