@@ -602,6 +602,10 @@ void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
     const Tensor& cos_sin_cache,
     double eps,
     int64_t cache_block_size);
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize_nope_fp8_rope_bf16_pack(
+    torch::Tensor k_bf16,
+    float eps
+);
 }
 }
 
@@ -858,4 +862,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
        py::arg("IS_RMS_NORM"),
        py::arg("ACTIVATION"));
  m.def("fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert", &at::native::fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert, "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert");
+ m.def("quantize_nope_fp8_rope_bf16_pack", &at::native::quantize_nope_fp8_rope_bf16_pack, "quantize_nope_fp8_rope_bf16_pack");
 }
