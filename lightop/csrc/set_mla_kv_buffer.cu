@@ -286,5 +286,160 @@ void fused_quantize_and_store_mla_kv_cache(
     );
 }
 
+template <typename scalar_t>
+__global__ void quantize_nope_fp8_rope_bf16_pack_kernel(
+    const scalar_t* __restrict__ k_bf16,
+    uint8_t* __restrict__ k_nope_fp8,
+    scalar_t* __restrict__ k_rope_bf16,
+    uint8_t* __restrict__ scale_k_nope,
+    const int64_t k_bf16_stride_0,
+    const int64_t k_nope_fp8_stride_0,
+    const int64_t k_rope_bf16_stride_0,
+    const int64_t scale_stride_0,
+    const float eps,
+    const int num_tokens,
+    const int nope_blocks
+) {
+    constexpr int VEC = 16;
+    constexpr int GROUP_SIZE = 64;
+    constexpr int NUM_GROUPS = 7;          // 448 / 64
+    constexpr int GROUP_THREADS = GROUP_SIZE / VEC;   // 4
+    constexpr int NOPE_THREADS = NUM_GROUPS * GROUP_THREADS;  // 28
+    constexpr int ROPE_THREADS = 8;
+    constexpr int ROPE_VEC = 8;
+    constexpr int DIM_NOPE = 448;
+    constexpr float FP8_MAX_VAL = 448.0f;
+
+    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+    using Fp8VecType = at::native::memory::aligned_vector<uint8_t, VEC>;
+    using RopeVecType = at::native::memory::aligned_vector<scalar_t, ROPE_VEC>;
+
+    if (blockIdx.x < nope_blocks) {
+        int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+        int token_idx = global_tid / NOPE_THREADS;
+        int lane_id = global_tid % NOPE_THREADS;
+
+        if (token_idx >= num_tokens) return;
+
+        int group_id = lane_id / GROUP_THREADS;
+        int lane_in_group = lane_id % GROUP_THREADS;
+        int elem_offset = group_id * GROUP_SIZE + lane_in_group * VEC;
+
+        scalar_t input_vec[VEC];
+        *(VecType*)input_vec = *(VecType*)(k_bf16 + token_idx * k_bf16_stride_0 + elem_offset);
+
+        float input_float_vec[VEC];
+        float max_val = 0.f;
+        #pragma unroll
+        for (int i = 0; i < VEC; i++) {
+            input_float_vec[i] = static_cast<float>(input_vec[i]);
+            max_val = fmaxf(max_val, fabsf(input_float_vec[i]));
+        }
+
+        #pragma unroll
+        for (int mask = 2; mask > 0; mask >>= 1) {
+            max_val = fmaxf(max_val, SHFL_XOR(max_val, mask));
+        }
+
+        max_val = fmaxf(max_val, eps);
+        float scale = max_val / FP8_MAX_VAL;
+
+        int exp;
+        float mant = frexpf(scale, &exp);
+        int exp_ceil = (mant > 0.5f) ? exp : exp - 1;
+        float inv_scale = scalbnf(1.0f, -exp_ceil);
+
+        if (lane_in_group == 0) {
+            scale_k_nope[token_idx * scale_stride_0 + group_id] = (uint8_t)(exp_ceil + 127);
+        }
+
+        uint8_t out_vec[VEC];
+        #pragma unroll
+        for (int i = 0; i < VEC; i += 4) {
+            uint32_t packed = float_to_fp8e4m3_x4(
+                input_float_vec[i] * inv_scale, input_float_vec[i+1] * inv_scale,
+                input_float_vec[i+2] * inv_scale, input_float_vec[i+3] * inv_scale);
+            *(uint32_t*)(&out_vec[i]) = packed;
+        }
+
+        int64_t out_offset = token_idx * k_nope_fp8_stride_0 + elem_offset;
+        *(Fp8VecType*)(k_nope_fp8 + out_offset) = *(Fp8VecType*)out_vec;
+
+    } else {
+        int rope_block_idx = blockIdx.x - nope_blocks;
+        int global_tid = rope_block_idx * blockDim.x + threadIdx.x;
+        int token_idx = global_tid / ROPE_THREADS;
+        int lane_id = global_tid % ROPE_THREADS;
+
+        if (token_idx >= num_tokens) return;
+
+        int rope_offset = DIM_NOPE + lane_id * ROPE_VEC;
+
+        RopeVecType rope_val = *(RopeVecType*)(k_bf16 + token_idx * k_bf16_stride_0 + rope_offset);
+        *(RopeVecType*)(k_rope_bf16 + token_idx * k_rope_bf16_stride_0 + lane_id * ROPE_VEC) = rope_val;
+    }
+}
+
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize_nope_fp8_rope_bf16_pack(
+    torch::Tensor k_bf16,
+    float eps
+) {
+    constexpr int DIM_NOPE = 448;
+    constexpr int DIM_ROPE = 64;
+    constexpr int TOTAL_DIM = 512;
+    constexpr int GROUP_SIZE = 64;
+    constexpr int NUM_GROUPS = DIM_NOPE / GROUP_SIZE;
+    constexpr int VEC = 16;
+    constexpr int NOPE_THREADS_PER_TOKEN = NUM_GROUPS * (GROUP_SIZE / VEC);
+    constexpr int ROPE_THREADS_PER_TOKEN = 8;
+    constexpr int THREADS_PER_BLOCK = 128;
+
+    TORCH_CHECK(k_bf16.dim() == 2, "k_bf16 must be 2D, got ", k_bf16.dim(), "D");
+    TORCH_CHECK(k_bf16.size(1) >= TOTAL_DIM,
+        "k_bf16 last dim must be >= 512, got ", k_bf16.size(1));
+    TORCH_CHECK(k_bf16.scalar_type() == torch::kBFloat16,
+        "k_bf16 must be bfloat16, got ", k_bf16.scalar_type());
+
+    k_bf16 = k_bf16.contiguous();
+    int num_tokens = (int)k_bf16.size(0);
+
+    auto k_nope_fp8 = torch::empty({num_tokens, DIM_NOPE},
+        torch::TensorOptions().dtype(torch::kUInt8).device(k_bf16.device()));
+    auto k_rope_bf16 = torch::empty({num_tokens, DIM_ROPE},
+        torch::TensorOptions().dtype(torch::kBFloat16).device(k_bf16.device()));
+    auto scale_k_nope = torch::empty({num_tokens, NUM_GROUPS},
+        torch::TensorOptions().dtype(torch::kUInt8).device(k_bf16.device()));
+
+    int nope_threads = num_tokens * NOPE_THREADS_PER_TOKEN;
+    int nope_blocks = CEIL_DIV(nope_threads, THREADS_PER_BLOCK);
+    int rope_threads = num_tokens * ROPE_THREADS_PER_TOKEN;
+    int rope_blocks = CEIL_DIV(rope_threads, THREADS_PER_BLOCK);
+    int total_blocks = nope_blocks + rope_blocks;
+
+    if (total_blocks > 0) {
+        const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+        VLLM_DISPATCH_FLOATING_TYPES(
+            k_bf16.scalar_type(), "quantize_nope_fp8_rope_bf16_pack_kernel", [&] {
+                quantize_nope_fp8_rope_bf16_pack_kernel<scalar_t>
+                    <<<total_blocks, THREADS_PER_BLOCK, 0, stream>>>(
+                        k_bf16.data_ptr<scalar_t>(),
+                        k_nope_fp8.data_ptr<uint8_t>(),
+                        k_rope_bf16.data_ptr<scalar_t>(),
+                        scale_k_nope.data_ptr<uint8_t>(),
+                        k_bf16.stride(0),
+                        k_nope_fp8.stride(0),
+                        k_rope_bf16.stride(0),
+                        scale_k_nope.stride(0),
+                        eps,
+                        num_tokens,
+                        nope_blocks
+                    );
+            }
+        );
+    }
+
+    return std::make_tuple(k_nope_fp8, k_rope_bf16, scale_k_nope);
+}
+
 } // namespace native
 } // namespace at
