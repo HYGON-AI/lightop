@@ -144,7 +144,7 @@ def run_correctness_suite():
     assert torch.cuda.is_available(), "CUDA is required"
     n_share_experts_fusion = 0
     routed_scaling_factor = 2.5
-    num_expert = 288 
+    num_expert = 192 
     extra = list([1,4,8,32,1024,2048,4096])
     
     cases = [
@@ -186,7 +186,7 @@ configs = [(sq,) for sq in token_num_range]
 def benchmark(token_num, provider, warmup=5):
     dtype = torch.bfloat16
     device = torch.device("cuda")
-    num_experts, num_expert_group, topk_group, topk = 288, 1, 1, 8
+    num_experts, num_expert_group, topk_group, topk = 192, 1, 1, 8
     n_share_experts_fusion = 0
     routed_scaling_factor = 2.5
 
