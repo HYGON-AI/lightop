@@ -284,19 +284,20 @@ __device__ void moe_fused_gate_impl(
     }
    }
   }
-  //共享专家逻辑
    if (n_share_experts_fusion > 0 && thread_group_idx >= topk_routed && thread_group_idx < topk) {
-      // 共享专家ID从 NUM_EXPERTS 开始递增
       int share_offset = thread_group_idx - topk_routed;
       my_stored_idx = params.NUM_EXPERTS + share_offset;
-      // 共享专家权重 = 常规路由之和 / Scaling routed_scaling_factor
-      my_stored_prob = output_sum / static_cast<float>(routed_scaling_factor);
+      my_stored_prob = output_sum / (routed_scaling_factor > 0.0
+          ? static_cast<float>(routed_scaling_factor)
+          : 1.0f);
   }
-  // 路由专家: stored_prob / output_sum -> 归一化权重
-  // 共享专家: (output_sum / scale) / output_sum -> 1 / scale (固定权重)
+ 
   if (thread_group_idx < topk) {
     int const idx = topk * thread_row + thread_group_idx;
-    output_ptr[idx] = my_stored_prob /output_sum;
+    float route_scale = routed_scaling_factor > 0.0
+        ? static_cast<float>(routed_scaling_factor)
+        : 1.0f;
+    output_ptr[idx] = (my_stored_prob / output_sum) * route_scale;
     indices_ptr[idx] = my_stored_idx;
   }
 }
@@ -531,7 +532,10 @@ __device__ void moe_fused_gate_impl_expert_384(
   }
   if (thread_group_idx < topk) {
     int const idx = topk * thread_row + thread_group_idx;
-    output_ptr[idx] = my_stored_prob /output_sum;
+    float route_scale = routed_scaling_factor > 0.0
+        ? static_cast<float>(routed_scaling_factor)
+        : 1.0f;
+    output_ptr[idx] = (my_stored_prob / output_sum) * route_scale;
     indices_ptr[idx] = my_stored_idx;
   }
 }
@@ -660,12 +664,17 @@ __global__ void moe_fused_gate_kernel_gourp1(
   if (n_share_experts_fusion > 0 && thread_group_idx >= topk_routed && thread_group_idx < TOPK) {
       int share_offset = thread_group_idx - topk_routed;
       my_stored_idx = NUM_EXPERTS + share_offset; 
-      my_stored_prob = output_sum / static_cast<float>(routed_scaling_factor);
+      my_stored_prob = output_sum / (routed_scaling_factor > 0.0
+          ? static_cast<float>(routed_scaling_factor)
+          : 1.0f);
   }
 
   if (thread_group_idx < TOPK) { 
     int const out_idx = TOPK * thread_row + thread_group_idx;
-    output_ptr[out_idx] = my_stored_prob / output_sum;
+    float route_scale = routed_scaling_factor > 0.0
+        ? static_cast<float>(routed_scaling_factor)
+        : 1.0f;
+    output_ptr[out_idx] = (my_stored_prob / output_sum) * route_scale;
     indices_ptr[out_idx] = my_stored_idx;
   }
 }
@@ -868,6 +877,18 @@ std::vector<torch::Tensor> moe_fused_gate(
                 } else {
                     LAUNCH_MOE_GATE_OPT_NE1(float, float, 512, 64, 8, 2);
                 }
+             } else if (bias.scalar_type() == at::kBFloat16) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 512, 64, 8, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 512, 64, 8, 2);
+                }
+             } else if (bias.scalar_type() == at::kHalf) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 512, 64, 8, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 512, 64, 8, 2);
+                }
              }
         }
     } else if (num_experts == 384) {
@@ -887,6 +908,18 @@ std::vector<torch::Tensor> moe_fused_gate(
                     LAUNCH_MOE_GATE_OPT_NE1(float, float, 384, 64, 8, 1);
                 } else {
                     LAUNCH_MOE_GATE_OPT_NE1(float, float, 384, 64, 8, 2);
+                }
+             } else if (bias.scalar_type() == at::kBFloat16) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 384, 64, 8, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 384, 64, 8, 2);
+                }
+             } else if (bias.scalar_type() == at::kHalf) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 384, 64, 8, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 384, 64, 8, 2);
                 }
              }
         }
@@ -908,6 +941,18 @@ std::vector<torch::Tensor> moe_fused_gate(
                 } else {
                     LAUNCH_MOE_GATE_OPT_NE1(float, float, 288, 64, 8, 2);
                 }
+             } else if (bias.scalar_type() == at::kBFloat16) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 288, 64, 8, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 288, 64, 8, 2);
+                }
+             } else if (bias.scalar_type() == at::kHalf) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 288, 64, 8, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 288, 64, 8, 2);
+                }
              }
         }
     } else if (num_experts == 256) {
@@ -927,6 +972,18 @@ std::vector<torch::Tensor> moe_fused_gate(
                     LAUNCH_MOE_GATE_OPT_NE1(float, float, 256, 64, 4, 1);
                 } else {
                     LAUNCH_MOE_GATE_OPT_NE1(float, float, 256, 32, 8, 2);
+                }
+             } else if (bias.scalar_type() == at::kBFloat16) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 256, 64, 4, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 256, 32, 8, 2);
+                }
+             } else if (bias.scalar_type() == at::kHalf) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 256, 64, 4, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 256, 32, 8, 2);
                 }
              }
         }
@@ -948,6 +1005,18 @@ std::vector<torch::Tensor> moe_fused_gate(
                 } else {
                     LAUNCH_MOE_GATE_OPT_NE1(float, float, 192, 32, 8, 2);
                 }
+             } else if (bias.scalar_type() == at::kBFloat16) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 192, 64, 4, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 192, 32, 8, 2);
+                }
+             } else if (bias.scalar_type() == at::kHalf) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 192, 64, 4, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 192, 32, 8, 2);
+                }
              }
         }
     } else if (num_experts == 160) {
@@ -968,6 +1037,18 @@ std::vector<torch::Tensor> moe_fused_gate(
                 } else {
                     LAUNCH_MOE_GATE_OPT_NE1(float, float, 160, 32, 8, 2);
                 }
+             } else if (bias.scalar_type() == at::kBFloat16) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 160, 64, 4, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 160, 32, 8, 2);
+                }
+             } else if (bias.scalar_type() == at::kHalf) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 160, 64, 4, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 160, 32, 8, 2);
+                }
              }
         }
     } else if (num_experts == 128) {
@@ -987,6 +1068,18 @@ std::vector<torch::Tensor> moe_fused_gate(
                     LAUNCH_MOE_GATE_OPT_NE1(float, float, 128, 64, 2, 1);
                 } else {
                     LAUNCH_MOE_GATE_OPT_NE1(float, float, 128, 32, 4, 2);
+                }
+             } else if (bias.scalar_type() == at::kBFloat16) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 128, 64, 2, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, __nv_bfloat16, 128, 32, 4, 2);
+                }
+             } else if (bias.scalar_type() == at::kHalf) {
+                if (num_rows < 512) {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 128, 64, 2, 1);
+                } else {
+                    LAUNCH_MOE_GATE_OPT_NE1(float, half, 128, 32, 4, 2);
                 }
              }
         }
@@ -1169,6 +1262,32 @@ std::vector<torch::Tensor> moe_fused_gate(
    } else if (input.scalar_type() == at::kFloat) {
     if (bias.scalar_type() == at::kFloat) {
      moe_fused_gate_kernel_dynamic<float, float><<<num_blocks, block_dim, 0, stream>>>(
+       input.data_ptr(),
+       bias.data_ptr(),
+       output.data_ptr<float>(),
+       indices.data_ptr<int32_t>(),
+       num_rows,
+       num_experts,
+       num_expert_group,
+       topk_group,
+       topk,
+       n_share_experts_fusion,
+       routed_scaling_factor);
+    } else if (bias.scalar_type() == at::kBFloat16) {
+     moe_fused_gate_kernel_dynamic<float, __nv_bfloat16><<<num_blocks, block_dim, 0, stream>>>(
+       input.data_ptr(),
+       bias.data_ptr(),
+       output.data_ptr<float>(),
+       indices.data_ptr<int32_t>(),
+       num_rows,
+       num_experts,
+       num_expert_group,
+       topk_group,
+       topk,
+       n_share_experts_fusion,
+       routed_scaling_factor);
+    } else if (bias.scalar_type() == at::kHalf) {
+     moe_fused_gate_kernel_dynamic<float, half><<<num_blocks, block_dim, 0, stream>>>(
        input.data_ptr(),
        bias.data_ptr(),
        output.data_ptr<float>(),
