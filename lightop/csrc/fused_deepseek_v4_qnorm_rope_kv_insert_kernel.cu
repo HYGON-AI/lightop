@@ -7,9 +7,8 @@
  *   - KV side: GPT-J RoPE on last ROPE_DIM + UE8M0 FP8 quant on NoPE + paged
  *              cache insert
  *
- * Structured after `applyMLARopeAndAssignQKVKernelGeneration` in
- * TensorRT-LLM's mlaKernels.cu: one kernel, one grid, with head-slot
- * dispatch choosing Q vs KV work per warp.  The per-warp RMSNorm/RoPE
+ * Structured as one kernel with a block-specialized grid: Q blocks and KV
+ * blocks are scheduled in separate grid regions.  The per-warp RMSNorm/RoPE
  * skeleton is adapted from vllm-deepseek_v4's existing
  * `fusedQKNormRopeKernel` (csrc/fused_qknorm_rope_kernel.cu).
  *
@@ -337,29 +336,43 @@ __device__ __forceinline__ float warpSum(float val) {
 // Kernel
 // ────────────────────────────────────────────────────────────────────────────
 //
-// Grid: 1D, gridDim.x = ceil(num_tokens_full * (num_heads_q + 1) /
-// warps_per_block) Block: blockDim.x = 256 threads (8 warps per block) Each
-// warp handles one (token, head_slot) pair. head_slot < num_heads_q          →
-// Q branch (RMSNorm + RoPE, in place) head_slot == num_heads_q         → KV
-// branch (RoPE + UE8M0 quant + insert)
+// Grid: 1D block-specialized: [0, q_blocks) are Q-only blocks and
+// [q_blocks, gridDim.x) are KV-only blocks.  Block: 256 threads = 8 warps.
+// Q blocks: each warp handles one (token, q_head) pair.
+// KV blocks: each warp handles one token.
 //
 // With DP padding, q/kv/position_ids can have more rows than slot_mapping.
 // The Q branch covers all `num_tokens_full` rows (downstream attention uses
 // them).  The KV branch only inserts the first `num_tokens_insert` tokens
 // (= slot_mapping length) into the paged cache.
 //
-template <typename scalar_t_in>
+template <typename weight_t>
+__device__ __forceinline__ float loadWeightAsFloat(
+    weight_t const* __restrict__ weight, int const idx) {
+  if constexpr (std::is_same_v<weight_t, float>) {
+    return weight[idx];
+  } else {
+    using WeightConverter = lightop::deepseek_v4::TypeConvert<weight_t>;
+    typename WeightConverter::scalar_type const* typed_weight =
+        reinterpret_cast<typename WeightConverter::scalar_type const*>(weight);
+    return WeightConverter::convert(typed_weight[idx]);
+  }
+}
+
+template <typename scalar_t_in, typename slot_t, typename weight_t>
 __global__ void fusedDeepseekV4QNormRopeKVRopeQuantInsertKernel(
     scalar_t_in* __restrict__ q_inout,         // [N, H, 512] bf16, in place
     scalar_t_in const* __restrict__ kv_in,     // [N, 512] bf16
+    weight_t const* __restrict__ kv_norm_weight,
     uint8_t* __restrict__ k_cache,             // [num_blocks, block_stride]
-    int64_t const* __restrict__ slot_mapping,  // [num_tokens_insert] i64
+    slot_t const* __restrict__ slot_mapping,   // [num_tokens_insert] i32/i64
     int64_t const* __restrict__ position_ids,  // [N] i64
     float const* __restrict__ cos_sin_cache,   // [max_pos, 64] fp32
     float const eps,
     int const num_tokens_full,    // = q.size(0) = kv.size(0)
     int const num_tokens_insert,  // = slot_mapping.size(0), ≤ num_tokens_full
     int const num_heads_q,        // H
+    int64_t const kv_stride_token,
     int const cache_block_size,   // tokens per paged-cache block
     int const kv_block_stride) {  // bytes per paged-cache block
 #if (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ < 800) && !defined(USE_ROCM)
@@ -377,19 +390,32 @@ __global__ void fusedDeepseekV4QNormRopeKVRopeQuantInsertKernel(
     // }
 
 
-    int const warpsPerBlock = blockDim.x / 32;
-    int const warpId = threadIdx.x / 32;
-    int const laneId = threadIdx.x % 32;
-    int const globalWarpIdx = blockIdx.x * warpsPerBlock + warpId;
+    constexpr int warpsPerBlock = 8;
+    int const warpId = threadIdx.x >> 5;
+    int const laneId = threadIdx.x & 31;
+    int64_t const q_warps =
+        static_cast<int64_t>(num_tokens_full) * num_heads_q;
+    int const q_blocks =
+        static_cast<int>((q_warps + warpsPerBlock - 1) / warpsPerBlock);
+    bool const isKV = blockIdx.x >= q_blocks;
 
-    int const total_slots_per_token = num_heads_q + 1;
-    int const tokenIdx = globalWarpIdx / total_slots_per_token;
-    int const slotIdx = globalWarpIdx % total_slots_per_token;
-    if (tokenIdx >= num_tokens_full) return;
-
-    bool const isKV = (slotIdx == num_heads_q);
-    // KV branch: skip DP-padded tokens (no slot reserved for them).
-    if (isKV && tokenIdx >= num_tokens_insert) return;
+    int tokenIdx;
+    int slotIdx;
+    if (isKV) {
+      int64_t const kvWarpIdx =
+          (static_cast<int64_t>(blockIdx.x) - q_blocks) * warpsPerBlock +
+          warpId;
+      if (kvWarpIdx >= num_tokens_insert) return;
+      tokenIdx = static_cast<int>(kvWarpIdx);
+      slotIdx = num_heads_q;
+    } else {
+      int64_t const qWarpIdx =
+          static_cast<int64_t>(blockIdx.x) * warpsPerBlock + warpId;
+      if (qWarpIdx >= q_warps) return;
+      tokenIdx = static_cast<int>(qWarpIdx / num_heads_q);
+      slotIdx = static_cast<int>(qWarpIdx - static_cast<int64_t>(tokenIdx) *
+                                             num_heads_q);
+    }
 
     // PDL: wait for predecessor kernel (upstream q/kv producer) to signal
     // before touching any global memory.  No-op when PDL is not enabled on
@@ -408,7 +434,8 @@ __global__ void fusedDeepseekV4QNormRopeKVRopeQuantInsertKernel(
 
     scalar_t_in const* src_ptr;
     if (isKV) {
-      src_ptr = kv_in + static_cast<int64_t>(tokenIdx) * kHeadDim + dim_base;
+      src_ptr = kv_in + static_cast<int64_t>(tokenIdx) * kv_stride_token +
+                dim_base;
     } else {
       int64_t const q_row_offset =
           (static_cast<int64_t>(tokenIdx) * num_heads_q + slotIdx) * kHeadDim +
@@ -444,7 +471,7 @@ __global__ void fusedDeepseekV4QNormRopeKVRopeQuantInsertKernel(
     // ── Q branch: RMSNorm with no weight (has_weight=False) ─────────────────
     // Variance + rsqrt + multiply all in fp32, no intermediate bf16 round.
     // The downstream bf16 round only happens at the final store.
-    if (!isKV) {
+    if (!isKV || kv_norm_weight != nullptr) {
 #pragma unroll
       for (int i = 0; i < kElemsPerLane; i++) {
         sumOfSquares += elements[i] * elements[i];
@@ -452,9 +479,19 @@ __global__ void fusedDeepseekV4QNormRopeKVRopeQuantInsertKernel(
       sumOfSquares = warpSum<float>(sumOfSquares);
       float const rms_rcp =
           rsqrtf(sumOfSquares / static_cast<float>(kHeadDim) + eps);
+      if (!isKV) {
 #pragma unroll
-      for (int i = 0; i < kElemsPerLane; i++) {
-        elements[i] = elements[i] * rms_rcp;
+        for (int i = 0; i < kElemsPerLane; i++) {
+          elements[i] = elements[i] * rms_rcp;
+        }
+      } else {
+#pragma unroll
+        for (int i = 0; i < kElemsPerLane; i++) {
+          float const weight =
+              loadWeightAsFloat(kv_norm_weight, dim_base + i);
+          elements[i] = elements[i] * rms_rcp * weight;
+          elements[i] = Converter::convert(Converter::convert(elements[i]));
+        }
       }
     }
 
@@ -616,20 +653,184 @@ __global__ void fusedDeepseekV4QNormRopeKVRopeQuantInsertKernel(
 // ────────────────────────────────────────────────────────────────────────────
 // Launch wrapper
 // ────────────────────────────────────────────────────────────────────────────
-template <typename scalar_t_in>
+template <typename scalar_t_in, typename weight_t>
+__global__ void fusedDeepseekV4QNormRopeKVRopeKernel(
+    scalar_t_in* __restrict__ q_inout,
+    scalar_t_in* __restrict__ kv_inout,
+    weight_t const* __restrict__ kv_norm_weight,
+    int64_t const* __restrict__ position_ids,
+    float const* __restrict__ cos_sin_cache,
+    float const eps,
+    int const num_tokens,
+    int const num_heads_q,
+    int64_t const kv_stride_token) {
+#if (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ < 800) && !defined(USE_ROCM)
+  if constexpr (std::is_same_v<scalar_t_in, c10::BFloat16>) {
+    return;
+  } else {
+#endif
+    using Converter = lightop::deepseek_v4::TypeConvert<scalar_t_in>;
+
+    constexpr int warpsPerBlock = 8;
+    int const warpId = threadIdx.x >> 5;
+    int const laneId = threadIdx.x & 31;
+    int64_t const q_warps = static_cast<int64_t>(num_tokens) * num_heads_q;
+    int const q_blocks =
+        static_cast<int>((q_warps + warpsPerBlock - 1) / warpsPerBlock);
+    bool const isKV = blockIdx.x >= q_blocks;
+
+    int tokenIdx;
+    int slotIdx;
+    if (isKV) {
+      int64_t const kvWarpIdx =
+          (static_cast<int64_t>(blockIdx.x) - q_blocks) * warpsPerBlock +
+          warpId;
+      if (kvWarpIdx >= num_tokens) return;
+      tokenIdx = static_cast<int>(kvWarpIdx);
+      slotIdx = num_heads_q;
+    } else {
+      int64_t const qWarpIdx =
+          static_cast<int64_t>(blockIdx.x) * warpsPerBlock + warpId;
+      if (qWarpIdx >= q_warps) return;
+      tokenIdx = static_cast<int>(qWarpIdx / num_heads_q);
+      slotIdx = static_cast<int>(qWarpIdx - static_cast<int64_t>(tokenIdx) *
+                                             num_heads_q);
+    }
+    int const dim_base = laneId * kElemsPerLane;
+
+    scalar_t_in const* src_ptr;
+    if (isKV) {
+      src_ptr = kv_inout + static_cast<int64_t>(tokenIdx) * kv_stride_token +
+                dim_base;
+    } else {
+      src_ptr =
+          q_inout +
+          (static_cast<int64_t>(tokenIdx) * num_heads_q + slotIdx) * kHeadDim +
+          dim_base;
+    }
+
+    float elements[kElemsPerLane];
+    float sumOfSquares = 0.0f;
+
+    uint4 v0 = *reinterpret_cast<uint4 const*>(src_ptr);
+    uint4 v1 = *reinterpret_cast<uint4 const*>(src_ptr + 8);
+
+    {
+      typename Converter::packed_type const* p0 =
+          reinterpret_cast<typename Converter::packed_type const*>(&v0);
+      typename Converter::packed_type const* p1 =
+          reinterpret_cast<typename Converter::packed_type const*>(&v1);
+#pragma unroll
+      for (int i = 0; i < 4; i++) {
+        float2 f2 = Converter::convert(p0[i]);
+        elements[2 * i] = f2.x;
+        elements[2 * i + 1] = f2.y;
+      }
+#pragma unroll
+      for (int i = 0; i < 4; i++) {
+        float2 f2 = Converter::convert(p1[i]);
+        elements[8 + 2 * i] = f2.x;
+        elements[8 + 2 * i + 1] = f2.y;
+      }
+    }
+
+    if (!isKV || kv_norm_weight != nullptr) {
+#pragma unroll
+      for (int i = 0; i < kElemsPerLane; i++) {
+        sumOfSquares += elements[i] * elements[i];
+      }
+      sumOfSquares = warpSum<float>(sumOfSquares);
+      float const rms_rcp =
+          rsqrtf(sumOfSquares / static_cast<float>(kHeadDim) + eps);
+      if (!isKV) {
+#pragma unroll
+        for (int i = 0; i < kElemsPerLane; i++) {
+          elements[i] = elements[i] * rms_rcp;
+        }
+      } else {
+#pragma unroll
+        for (int i = 0; i < kElemsPerLane; i++) {
+          float const weight =
+              loadWeightAsFloat(kv_norm_weight, dim_base + i);
+          elements[i] = elements[i] * rms_rcp * weight;
+          elements[i] = Converter::convert(Converter::convert(elements[i]));
+        }
+      }
+    }
+
+    bool const is_rope_lane = dim_base >= kNopeDim;
+    if (is_rope_lane) {
+      int64_t const pos = position_ids[tokenIdx];
+      constexpr int kHalfRope = kRopeDim / 2;
+      float const* cos_ptr = cos_sin_cache + pos * kRopeDim;
+      float const* sin_ptr = cos_ptr + kHalfRope;
+
+      int const rope_local_base = dim_base - kNopeDim;
+#pragma unroll
+      for (int p = 0; p < kElemsPerLane / 2; p++) {
+        int const pair_dim = rope_local_base + 2 * p;
+        int const half_idx = pair_dim / 2;
+        float const cos_v = VLLM_LDG(cos_ptr + half_idx);
+        float const sin_v = VLLM_LDG(sin_ptr + half_idx);
+        float const x_even = elements[2 * p];
+        float const x_odd = elements[2 * p + 1];
+        elements[2 * p] = x_even * cos_v - x_odd * sin_v;
+        elements[2 * p + 1] = x_even * sin_v + x_odd * cos_v;
+      }
+    }
+
+    uint4 out0, out1;
+    typename Converter::packed_type* po0 =
+        reinterpret_cast<typename Converter::packed_type*>(&out0);
+    typename Converter::packed_type* po1 =
+        reinterpret_cast<typename Converter::packed_type*>(&out1);
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+      po0[i] =
+          Converter::convert(make_float2(elements[2 * i], elements[2 * i + 1]));
+    }
+#pragma unroll
+    for (int i = 0; i < 4; i++) {
+      po1[i] = Converter::convert(
+          make_float2(elements[8 + 2 * i], elements[8 + 2 * i + 1]));
+    }
+
+    scalar_t_in* dst;
+    if (isKV) {
+      dst = kv_inout + static_cast<int64_t>(tokenIdx) * kv_stride_token +
+            dim_base;
+    } else {
+      dst =
+          q_inout +
+          (static_cast<int64_t>(tokenIdx) * num_heads_q + slotIdx) * kHeadDim +
+          dim_base;
+    }
+    *reinterpret_cast<uint4*>(dst) = out0;
+    *reinterpret_cast<uint4*>(dst + 8) = out1;
+#if (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ < 800) && !defined(USE_ROCM)
+  }
+#endif
+}
+
+template <typename scalar_t_in, typename slot_t, typename weight_t>
 void launchFusedDeepseekV4QNormRopeKVRopeQuantInsert(
     scalar_t_in* q_inout, scalar_t_in const* kv_in, uint8_t* k_cache,
-    int64_t const* slot_mapping, int64_t const* position_ids,
-    float const* cos_sin_cache, float const eps, int const num_tokens_full,
-    int const num_tokens_insert, int const num_heads_q,
-    int const cache_block_size, int const kv_block_stride,
-    cudaStream_t stream) {
+    slot_t const* slot_mapping, weight_t const* kv_norm_weight,
+    int64_t const* position_ids, float const* cos_sin_cache, float const eps,
+    int const num_tokens_full, int const num_tokens_insert,
+    int const num_heads_q, int64_t const kv_stride_token,
+    int const cache_block_size,
+    int const kv_block_stride, cudaStream_t stream) {
   constexpr int kBlockSize = 256;
   constexpr int kWarpsPerBlock = kBlockSize / 32;
-  int64_t const total_warps =
-      static_cast<int64_t>(num_tokens_full) * (num_heads_q + 1);
-  int const grid =
-      static_cast<int>((total_warps + kWarpsPerBlock - 1) / kWarpsPerBlock);
+  int64_t const q_warps =
+      static_cast<int64_t>(num_tokens_full) * num_heads_q;
+  int64_t const kv_warps = static_cast<int64_t>(num_tokens_insert);
+  int const q_blocks =
+      static_cast<int>((q_warps + kWarpsPerBlock - 1) / kWarpsPerBlock);
+  int const kv_blocks =
+      static_cast<int>((kv_warps + kWarpsPerBlock - 1) / kWarpsPerBlock);
+  int const grid = q_blocks + kv_blocks;
 
   // PDL: enable programmatic stream serialization whenever the hardware
   // supports it (SM90+).  On pre-Hopper GPUs the attribute is unavailable,
@@ -657,19 +858,53 @@ void launchFusedDeepseekV4QNormRopeKVRopeQuantInsert(
   config.numAttrs = (sm_version >= 90) ? 1 : 0;
 
   cudaLaunchKernelEx(
-      &config, fusedDeepseekV4QNormRopeKVRopeQuantInsertKernel<scalar_t_in>,
-      q_inout, kv_in, k_cache, slot_mapping, position_ids, cos_sin_cache, eps,
-      num_tokens_full, num_tokens_insert, num_heads_q, cache_block_size,
-      kv_block_stride);
+      &config,
+      fusedDeepseekV4QNormRopeKVRopeQuantInsertKernel<scalar_t_in, slot_t,
+                                                       weight_t>,
+      q_inout, kv_in, kv_norm_weight, k_cache, slot_mapping, position_ids,
+      cos_sin_cache, eps, num_tokens_full, num_tokens_insert, num_heads_q,
+      kv_stride_token, cache_block_size, kv_block_stride);
 #else
   // ROCm: use standard kernel launch syntax (no PDL/stream serialization)
   // clang-format off
-  fusedDeepseekV4QNormRopeKVRopeQuantInsertKernel<scalar_t_in>
+  fusedDeepseekV4QNormRopeKVRopeQuantInsertKernel<scalar_t_in, slot_t, weight_t>
       <<<grid, kBlockSize, 0, stream>>>(
-          q_inout, kv_in, k_cache, slot_mapping, position_ids, cos_sin_cache,
-          eps, num_tokens_full, num_tokens_insert, num_heads_q,
-          cache_block_size, kv_block_stride);
+          q_inout, kv_in, kv_norm_weight, k_cache, slot_mapping, position_ids,
+          cos_sin_cache, eps, num_tokens_full, num_tokens_insert, num_heads_q,
+          kv_stride_token, cache_block_size, kv_block_stride);
 #endif
+}
+
+template <typename scalar_t_in, typename weight_t>
+void launchFusedDeepseekV4QNormRopeKVRope(
+    scalar_t_in* q_inout, scalar_t_in* kv_inout,
+    weight_t const* kv_norm_weight, int64_t const* position_ids,
+    float const* cos_sin_cache, float const eps, int const num_tokens,
+    int const num_heads_q, int64_t const kv_stride_token,
+    cudaStream_t stream) {
+  constexpr int kBlockSize = 256;
+  constexpr int kWarpsPerBlock = kBlockSize / 32;
+  int64_t const q_warps = static_cast<int64_t>(num_tokens) * num_heads_q;
+  int64_t const kv_warps = static_cast<int64_t>(num_tokens);
+  int const q_blocks =
+      static_cast<int>((q_warps + kWarpsPerBlock - 1) / kWarpsPerBlock);
+  int const kv_blocks =
+      static_cast<int>((kv_warps + kWarpsPerBlock - 1) / kWarpsPerBlock);
+  int const grid = q_blocks + kv_blocks;
+
+#ifndef USE_ROCM
+  static int const sm_version = getSMVersion();
+  TORCH_CHECK(
+      sm_version >= 80,
+      "fused_deepseek_v4_qnorm_rope_kv_rope requires sm_80+ "
+      "(Ampere or newer); got sm_",
+      sm_version);
+#endif
+
+  fusedDeepseekV4QNormRopeKVRopeKernel<scalar_t_in, weight_t>
+      <<<grid, kBlockSize, 0, stream>>>(
+          q_inout, kv_inout, kv_norm_weight, position_ids, cos_sin_cache, eps,
+          num_tokens, num_heads_q, kv_stride_token);
 }
 
 }  // namespace deepseek_v4_fused_ops
@@ -681,25 +916,39 @@ void launchFusedDeepseekV4QNormRopeKVRopeQuantInsert(
 namespace at {
 namespace native {
 
-void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
+template <typename slot_t>
+void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_impl(
     Tensor& q,                    // [N, H, 512] bf16, in place
     Tensor const& kv,             // [N, 512] bf16 (read-only)
+    Tensor const* kv_norm_weight,
     Tensor& k_cache,              // [num_blocks, block_bytes] uint8
-    Tensor const& slot_mapping,   // [N] int64
+    Tensor const& slot_mapping,   // [N] int32/int64
     Tensor const& position_ids,   // [N] int64
     Tensor const& cos_sin_cache,  // [max_pos, rope_dim] bf16
-    double eps, int64_t cache_block_size) {
+    double eps, int64_t cache_block_size, at::ScalarType slot_dtype,
+    char const* slot_dtype_name) {
   TORCH_CHECK(q.is_cuda() && q.is_contiguous(), "q must be contiguous CUDA");
-  TORCH_CHECK(kv.is_cuda() && kv.is_contiguous(), "kv must be contiguous CUDA");
+  TORCH_CHECK(kv.is_cuda(), "kv must be CUDA");
   TORCH_CHECK(k_cache.is_cuda(), "k_cache must be CUDA");
-  TORCH_CHECK(slot_mapping.is_cuda() && slot_mapping.dtype() == at::kLong,
-              "slot_mapping must be int64 CUDA");
+  TORCH_CHECK(slot_mapping.is_cuda() && slot_mapping.dtype() == slot_dtype,
+              "slot_mapping must be ", slot_dtype_name, " CUDA");
   TORCH_CHECK(position_ids.is_cuda() && position_ids.dtype() == at::kLong,
               "position_ids must be int64 CUDA");
   TORCH_CHECK(cos_sin_cache.is_cuda(), "cos_sin_cache must be CUDA");
   TORCH_CHECK(q.dim() == 3 && q.size(2) == 512, "q shape [N, H, 512]");
   TORCH_CHECK(kv.dim() == 2 && kv.size(1) == 512, "kv shape [N, 512]");
+  TORCH_CHECK(kv.stride(1) == 1, "kv last dim must be contiguous");
+  TORCH_CHECK(kv.size(0) <= 1 || kv.stride(0) >= 512,
+              "kv row stride must cover 512 elements");
+  TORCH_CHECK(kv.size(0) <= 1 || kv.stride(0) % 8 == 0,
+              "kv row stride must be 16-byte aligned for vectorized load");
   TORCH_CHECK(q.dtype() == kv.dtype(), "q and kv dtype must match");
+  if (kv_norm_weight != nullptr) {
+    TORCH_CHECK(kv_norm_weight->is_cuda() && kv_norm_weight->is_contiguous(),
+                "kv_norm_weight must be contiguous CUDA");
+    TORCH_CHECK(kv_norm_weight->dim() == 1 && kv_norm_weight->size(0) == 512,
+                "kv_norm_weight shape [512]");
+  }
   TORCH_CHECK(k_cache.dtype() == at::kByte, "k_cache must be uint8");
   TORCH_CHECK(cos_sin_cache.dim() == 2 && cos_sin_cache.size(1) == 64,
               "cos_sin_cache shape [max_pos, 64]");
@@ -717,6 +966,7 @@ void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
   TORCH_CHECK(num_tokens_insert <= num_tokens_full,
               "slot_mapping must not exceed q row count");
   int const num_heads_q = static_cast<int>(q.size(1));
+  int64_t const kv_stride_token = kv.stride(0);
   int const cache_block_size_i = static_cast<int>(cache_block_size);
   int const kv_block_stride = static_cast<int>(k_cache.stride(0));
 
@@ -726,17 +976,244 @@ void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
   VLLM_DISPATCH_HALF_TYPES(
       q.scalar_type(), "fused_deepseek_v4_qnorm_rope_kv_insert", [&] {
         using qkv_scalar_t = scalar_t;
-        vllm::deepseek_v4_fused_ops::
-            launchFusedDeepseekV4QNormRopeKVRopeQuantInsert<qkv_scalar_t>(
-                reinterpret_cast<qkv_scalar_t*>(q.data_ptr()),
-                reinterpret_cast<qkv_scalar_t const*>(kv.data_ptr()),
-                reinterpret_cast<uint8_t*>(k_cache.data_ptr()),
-                reinterpret_cast<int64_t const*>(slot_mapping.data_ptr()),
-                reinterpret_cast<int64_t const*>(position_ids.data_ptr()),
-                cos_sin_cache.data_ptr<float>(), static_cast<float>(eps),
-                num_tokens_full, num_tokens_insert, num_heads_q,
-                cache_block_size_i, kv_block_stride, stream);
+        if (kv_norm_weight == nullptr) {
+          vllm::deepseek_v4_fused_ops::
+              launchFusedDeepseekV4QNormRopeKVRopeQuantInsert<
+                  qkv_scalar_t, slot_t, qkv_scalar_t>(
+                  reinterpret_cast<qkv_scalar_t*>(q.data_ptr()),
+                  reinterpret_cast<qkv_scalar_t const*>(kv.data_ptr()),
+                  reinterpret_cast<uint8_t*>(k_cache.data_ptr()),
+                  reinterpret_cast<slot_t const*>(slot_mapping.data_ptr()),
+                  nullptr,
+                  reinterpret_cast<int64_t const*>(position_ids.data_ptr()),
+                  cos_sin_cache.data_ptr<float>(), static_cast<float>(eps),
+                  num_tokens_full, num_tokens_insert, num_heads_q,
+                  kv_stride_token, cache_block_size_i, kv_block_stride,
+                  stream);
+        } else {
+          AT_DISPATCH_SWITCH(
+              kv_norm_weight->scalar_type(), "kv_norm_weight",
+              AT_DISPATCH_CASE(at::ScalarType::Float, [&] {
+                using weight_scalar_t = scalar_t;
+                vllm::deepseek_v4_fused_ops::
+                    launchFusedDeepseekV4QNormRopeKVRopeQuantInsert<
+                        qkv_scalar_t, slot_t, weight_scalar_t>(
+                        reinterpret_cast<qkv_scalar_t*>(q.data_ptr()),
+                        reinterpret_cast<qkv_scalar_t const*>(kv.data_ptr()),
+                        reinterpret_cast<uint8_t*>(k_cache.data_ptr()),
+                        reinterpret_cast<slot_t const*>(slot_mapping.data_ptr()),
+                        reinterpret_cast<weight_scalar_t const*>(
+                            kv_norm_weight->data_ptr()),
+                        reinterpret_cast<int64_t const*>(
+                            position_ids.data_ptr()),
+                        cos_sin_cache.data_ptr<float>(), static_cast<float>(eps),
+                        num_tokens_full, num_tokens_insert, num_heads_q,
+                        kv_stride_token, cache_block_size_i, kv_block_stride,
+                        stream);
+              })
+              AT_DISPATCH_CASE(at::ScalarType::Half, [&] {
+                using weight_scalar_t = scalar_t;
+                vllm::deepseek_v4_fused_ops::
+                    launchFusedDeepseekV4QNormRopeKVRopeQuantInsert<
+                        qkv_scalar_t, slot_t, weight_scalar_t>(
+                        reinterpret_cast<qkv_scalar_t*>(q.data_ptr()),
+                        reinterpret_cast<qkv_scalar_t const*>(kv.data_ptr()),
+                        reinterpret_cast<uint8_t*>(k_cache.data_ptr()),
+                        reinterpret_cast<slot_t const*>(slot_mapping.data_ptr()),
+                        reinterpret_cast<weight_scalar_t const*>(
+                            kv_norm_weight->data_ptr()),
+                        reinterpret_cast<int64_t const*>(
+                            position_ids.data_ptr()),
+                        cos_sin_cache.data_ptr<float>(), static_cast<float>(eps),
+                        num_tokens_full, num_tokens_insert, num_heads_q,
+                        kv_stride_token, cache_block_size_i, kv_block_stride,
+                        stream);
+              })
+              AT_DISPATCH_CASE(at::ScalarType::BFloat16, [&] {
+                using weight_scalar_t = scalar_t;
+                vllm::deepseek_v4_fused_ops::
+                    launchFusedDeepseekV4QNormRopeKVRopeQuantInsert<
+                        qkv_scalar_t, slot_t, weight_scalar_t>(
+                        reinterpret_cast<qkv_scalar_t*>(q.data_ptr()),
+                        reinterpret_cast<qkv_scalar_t const*>(kv.data_ptr()),
+                        reinterpret_cast<uint8_t*>(k_cache.data_ptr()),
+                        reinterpret_cast<slot_t const*>(slot_mapping.data_ptr()),
+                        reinterpret_cast<weight_scalar_t const*>(
+                            kv_norm_weight->data_ptr()),
+                        reinterpret_cast<int64_t const*>(
+                            position_ids.data_ptr()),
+                        cos_sin_cache.data_ptr<float>(), static_cast<float>(eps),
+                        num_tokens_full, num_tokens_insert, num_heads_q,
+                        kv_stride_token, cache_block_size_i, kv_block_stride,
+                        stream);
+              }));
+        }
       });
+}
+void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
+    Tensor& q,
+    Tensor const& kv,
+    Tensor& k_cache,
+    Tensor const& slot_mapping,
+    Tensor const& position_ids,
+    Tensor const& cos_sin_cache,
+    double eps,
+    int64_t cache_block_size) {
+  fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_impl<int64_t>(
+      q, kv, nullptr, k_cache, slot_mapping, position_ids, cos_sin_cache, eps,
+      cache_block_size, at::kLong, "int64");
+}
+
+void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_int32(
+    Tensor& q,
+    Tensor const& kv,
+    Tensor& k_cache,
+    Tensor const& slot_mapping,
+    Tensor const& position_ids,
+    Tensor const& cos_sin_cache,
+    double eps,
+    int64_t cache_block_size) {
+  fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_impl<int32_t>(
+      q, kv, nullptr, k_cache, slot_mapping, position_ids, cos_sin_cache, eps,
+      cache_block_size, at::kInt, "int32");
+}
+
+void fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32(
+    Tensor& q,
+    Tensor const& kv,
+    Tensor const& kv_norm_weight,
+    Tensor& k_cache,
+    Tensor const& slot_mapping,
+    Tensor const& position_ids,
+    Tensor const& cos_sin_cache,
+    double eps,
+    int64_t cache_block_size) {
+  fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_impl<int32_t>(
+      q, kv, &kv_norm_weight, k_cache, slot_mapping, position_ids,
+      cos_sin_cache, eps, cache_block_size, at::kInt, "int32");
+}
+
+void fused_deepseek_v4_qnorm_rope_kv_rope_impl(
+    Tensor& q,
+    Tensor& kv,
+    Tensor const* kv_norm_weight,
+    Tensor const& position_ids,
+    Tensor const& cos_sin_cache,
+    double eps) {
+  TORCH_CHECK(q.is_cuda() && q.is_contiguous(), "q must be contiguous CUDA");
+  TORCH_CHECK(kv.is_cuda(), "kv must be CUDA");
+  TORCH_CHECK(position_ids.is_cuda() && position_ids.dtype() == at::kLong,
+              "position_ids must be int64 CUDA");
+  TORCH_CHECK(cos_sin_cache.is_cuda(), "cos_sin_cache must be CUDA");
+  TORCH_CHECK(q.dim() == 3 && q.size(2) == 512, "q shape [N, H, 512]");
+  TORCH_CHECK(kv.dim() == 2 && kv.size(1) == 512, "kv shape [N, 512]");
+  TORCH_CHECK(kv.stride(1) == 1, "kv last dim must be contiguous");
+  TORCH_CHECK(kv.size(0) <= 1 || kv.stride(0) >= 512,
+              "kv row stride must cover 512 elements");
+  TORCH_CHECK(kv.size(0) <= 1 || kv.stride(0) % 8 == 0,
+              "kv row stride must be 16-byte aligned for vectorized load");
+  TORCH_CHECK(q.dtype() == kv.dtype(), "q and kv dtype must match");
+  if (kv_norm_weight != nullptr) {
+    TORCH_CHECK(kv_norm_weight->is_cuda() && kv_norm_weight->is_contiguous(),
+                "kv_norm_weight must be contiguous CUDA");
+    TORCH_CHECK(kv_norm_weight->dim() == 1 && kv_norm_weight->size(0) == 512,
+                "kv_norm_weight shape [512]");
+  }
+  TORCH_CHECK(cos_sin_cache.dim() == 2 && cos_sin_cache.size(1) == 64,
+              "cos_sin_cache shape [max_pos, 64]");
+  TORCH_CHECK(cos_sin_cache.dtype() == at::kFloat,
+              "cos_sin_cache must be float32");
+
+  int const num_tokens = static_cast<int>(q.size(0));
+  TORCH_CHECK(static_cast<int>(kv.size(0)) == num_tokens &&
+                  static_cast<int>(position_ids.size(0)) == num_tokens,
+              "q/kv/position_ids row counts must match");
+  int const num_heads_q = static_cast<int>(q.size(1));
+  int64_t const kv_stride_token = kv.stride(0);
+
+  at::cuda::OptionalCUDAGuard device_guard(device_of(q));
+  auto stream = at::cuda::getCurrentCUDAStream();
+
+  VLLM_DISPATCH_HALF_TYPES(
+      q.scalar_type(), "fused_deepseek_v4_qnorm_rope_kv_rope", [&] {
+        using qkv_scalar_t = scalar_t;
+        if (kv_norm_weight == nullptr) {
+          vllm::deepseek_v4_fused_ops::launchFusedDeepseekV4QNormRopeKVRope<
+              qkv_scalar_t, qkv_scalar_t>(
+              reinterpret_cast<qkv_scalar_t*>(q.data_ptr()),
+              reinterpret_cast<qkv_scalar_t*>(kv.data_ptr()),
+              nullptr,
+              reinterpret_cast<int64_t const*>(position_ids.data_ptr()),
+              cos_sin_cache.data_ptr<float>(), static_cast<float>(eps),
+              num_tokens, num_heads_q, kv_stride_token, stream);
+        } else {
+          AT_DISPATCH_SWITCH(
+              kv_norm_weight->scalar_type(), "kv_norm_weight",
+              AT_DISPATCH_CASE(at::ScalarType::Float, [&] {
+                using weight_scalar_t = scalar_t;
+                vllm::deepseek_v4_fused_ops::
+                    launchFusedDeepseekV4QNormRopeKVRope<
+                        qkv_scalar_t, weight_scalar_t>(
+                        reinterpret_cast<qkv_scalar_t*>(q.data_ptr()),
+                        reinterpret_cast<qkv_scalar_t*>(kv.data_ptr()),
+                        reinterpret_cast<weight_scalar_t const*>(
+                            kv_norm_weight->data_ptr()),
+                        reinterpret_cast<int64_t const*>(
+                            position_ids.data_ptr()),
+                        cos_sin_cache.data_ptr<float>(), static_cast<float>(eps),
+                        num_tokens, num_heads_q, kv_stride_token, stream);
+              })
+              AT_DISPATCH_CASE(at::ScalarType::Half, [&] {
+                using weight_scalar_t = scalar_t;
+                vllm::deepseek_v4_fused_ops::
+                    launchFusedDeepseekV4QNormRopeKVRope<
+                        qkv_scalar_t, weight_scalar_t>(
+                        reinterpret_cast<qkv_scalar_t*>(q.data_ptr()),
+                        reinterpret_cast<qkv_scalar_t*>(kv.data_ptr()),
+                        reinterpret_cast<weight_scalar_t const*>(
+                            kv_norm_weight->data_ptr()),
+                        reinterpret_cast<int64_t const*>(
+                            position_ids.data_ptr()),
+                        cos_sin_cache.data_ptr<float>(), static_cast<float>(eps),
+                        num_tokens, num_heads_q, kv_stride_token, stream);
+              })
+              AT_DISPATCH_CASE(at::ScalarType::BFloat16, [&] {
+                using weight_scalar_t = scalar_t;
+                vllm::deepseek_v4_fused_ops::
+                    launchFusedDeepseekV4QNormRopeKVRope<
+                        qkv_scalar_t, weight_scalar_t>(
+                        reinterpret_cast<qkv_scalar_t*>(q.data_ptr()),
+                        reinterpret_cast<qkv_scalar_t*>(kv.data_ptr()),
+                        reinterpret_cast<weight_scalar_t const*>(
+                            kv_norm_weight->data_ptr()),
+                        reinterpret_cast<int64_t const*>(
+                            position_ids.data_ptr()),
+                        cos_sin_cache.data_ptr<float>(), static_cast<float>(eps),
+                        num_tokens, num_heads_q, kv_stride_token, stream);
+              }));
+        }
+      });
+}
+
+void fused_deepseek_v4_qnorm_rope_kv_rope(
+    Tensor& q,
+    Tensor& kv,
+    Tensor const& position_ids,
+    Tensor const& cos_sin_cache,
+    double eps) {
+  fused_deepseek_v4_qnorm_rope_kv_rope_impl(
+      q, kv, nullptr, position_ids, cos_sin_cache, eps);
+}
+
+void fused_deepseek_v4_qnorm_rope_kvnorm_rope(
+    Tensor& q,
+    Tensor& kv,
+    Tensor const& kv_norm_weight,
+    Tensor const& position_ids,
+    Tensor const& cos_sin_cache,
+    double eps) {
+  fused_deepseek_v4_qnorm_rope_kv_rope_impl(
+      q, kv, &kv_norm_weight, position_ids, cos_sin_cache, eps);
 }
 
 }  // namespace native

@@ -605,7 +605,39 @@ void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize_nope_fp8_rope_bf16_pack(
     torch::Tensor k_bf16,
     float eps
-);
+);    
+void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_int32(
+    Tensor& q,
+    const Tensor& kv,
+    Tensor& k_cache,
+    const Tensor& slot_mapping,
+    const Tensor& position_ids,
+    const Tensor& cos_sin_cache,
+    double eps,
+    int64_t cache_block_size);
+void fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32(
+    Tensor& q,
+    const Tensor& kv,
+    const Tensor& kv_norm_weight,
+    Tensor& k_cache,
+    const Tensor& slot_mapping,
+    const Tensor& position_ids,
+    const Tensor& cos_sin_cache,
+    double eps,
+    int64_t cache_block_size);
+void fused_deepseek_v4_qnorm_rope_kv_rope(
+    Tensor& q,
+    Tensor& kv,
+    const Tensor& position_ids,
+    const Tensor& cos_sin_cache,
+    double eps);
+void fused_deepseek_v4_qnorm_rope_kvnorm_rope(
+    Tensor& q,
+    Tensor& kv,
+    const Tensor& kv_norm_weight,
+    const Tensor& position_ids,
+    const Tensor& cos_sin_cache,
+    double eps);
 }
 }
 
@@ -863,4 +895,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
        py::arg("ACTIVATION"));
  m.def("fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert", &at::native::fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert, "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert");
  m.def("quantize_nope_fp8_rope_bf16_pack", &at::native::quantize_nope_fp8_rope_bf16_pack, "quantize_nope_fp8_rope_bf16_pack");
+ m.def("fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_int32", &at::native::fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_int32, "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_int32");
+ m.def("fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32", &at::native::fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32, "fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32");
+ m.def("fused_deepseek_v4_qnorm_rope_kv_rope", &at::native::fused_deepseek_v4_qnorm_rope_kv_rope, "fused_deepseek_v4_qnorm_rope_kv_rope");
+ m.def("fused_deepseek_v4_qnorm_rope_kvnorm_rope", &at::native::fused_deepseek_v4_qnorm_rope_kvnorm_rope, "fused_deepseek_v4_qnorm_rope_kvnorm_rope");
 }
