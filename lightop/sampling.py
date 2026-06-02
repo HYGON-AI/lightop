@@ -36,6 +36,9 @@ def top_k_sampling_from_probs(
         seed: Optional[int] = None,
         offset: Optional[int] = None,
 ) -> torch.Tensor:
+    if top_k is None:
+        raise ValueError("top_k is None.")
+
     if check_nan:
         if torch.any(torch.isnan(probs)):
             raise ValueError("Input probs contains NaN.")
@@ -83,6 +86,9 @@ def top_p_sampling_from_probs(
         seed: Optional[int] = None,
         offset: Optional[int] = None,
 ) -> torch.Tensor:
+    if top_p is None:
+        raise ValueError("top_p is None.")
+
     if check_nan:
         if torch.any(torch.isnan(probs)):
             raise ValueError("Input probs contains NaN.")
@@ -133,6 +139,15 @@ def top_k_top_p_sampling_from_probs(
 ) -> torch.Tensor:
     device = probs.device
     probs = probs.float()
+
+    if top_k is None and top_p is None:
+        raise ValueError("top_k and top_p both invalid.")
+
+    if top_k is None:
+        return top_p_sampling_from_probs(probs, top_p, indices, deterministic, generator, check_nan, seed, offset)
+
+    if top_p is None:
+        return top_k_sampling_from_probs(probs, top_k, indices, deterministic, generator, check_nan, seed, offset)
 
     batch_size = indices.size(0) if indices is not None else probs.size(0)
     out_dtype = indices.dtype if indices is not None else torch.int32

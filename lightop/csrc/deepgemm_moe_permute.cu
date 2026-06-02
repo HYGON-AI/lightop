@@ -25,6 +25,109 @@ static inline __device__ int8_t float_to_int8_rn_fused(float x) {
   return static_cast<int8_t>(val);
 }
 
+static inline __device__ uint32_t fp32_to_bits_lightop(float f) {
+  union {
+    float f;
+    uint32_t u;
+  } v;
+  v.f = f;
+  return v.u;
+}
+
+static inline __device__ float fp32_from_bits_lightop(uint32_t u) {
+  union {
+    float f;
+    uint32_t u;
+  } v;
+  v.u = u;
+  return v.f;
+}
+
+inline __device__ uint8_t float_to_fp8e4m3_lightop(float f) {
+  constexpr uint32_t fp8_max = UINT32_C(1087) << 20;
+  constexpr uint32_t denorm_mask = UINT32_C(141) << 23;
+  uint32_t f_bits = fp32_to_bits_lightop(f);
+  uint8_t result = 0u;
+  const uint32_t sign = f_bits & UINT32_C(0x80000000);
+  f_bits ^= sign;
+
+  if (f_bits >= fp8_max) {
+    result = 0x7f;
+  } else if (f_bits < (UINT32_C(121) << 23)) {
+    f_bits = fp32_to_bits_lightop(fp32_from_bits_lightop(f_bits) +
+                                  fp32_from_bits_lightop(denorm_mask));
+    result = static_cast<uint8_t>(f_bits - denorm_mask);
+  } else {
+    uint8_t mant_odd = (f_bits >> 20) & 1;
+    f_bits += ((uint32_t)(7 - 127) << 23) + 0x7FFFF;
+    f_bits += mant_odd;
+    result = static_cast<uint8_t>(f_bits >> 20);
+  }
+
+  result |= static_cast<uint8_t>(sign >> 24);
+  return result;
+}
+
+inline __device__ uint8_t float_to_fp8e5m2_lightop(float f) {
+  constexpr uint32_t fp32_inf = UINT32_C(255) << 23;
+  constexpr uint32_t fp8_max = UINT32_C(143) << 23;
+  constexpr uint32_t denorm_mask = UINT32_C(134) << 23;
+  uint32_t f_bits = fp32_to_bits_lightop(f);
+  uint8_t result = 0u;
+  const uint32_t sign = f_bits & UINT32_C(0x80000000);
+  f_bits ^= sign;
+
+  if (f_bits >= fp8_max) {
+    result = f_bits > fp32_inf ? UINT8_C(0x7F) : UINT8_C(0x7C);
+  } else if (f_bits < (UINT32_C(113) << 23)) {
+    f_bits = fp32_to_bits_lightop(fp32_from_bits_lightop(f_bits) +
+                                  fp32_from_bits_lightop(denorm_mask));
+    result = static_cast<uint8_t>(f_bits - denorm_mask);
+  } else {
+    uint32_t mant_odd = (f_bits >> 21) & 1;
+    f_bits += ((uint32_t)(15 - 127) << 23) + 0xFFFFF;
+    f_bits += mant_odd;
+    result = static_cast<uint8_t>(f_bits >> 21);
+  }
+
+  result |= static_cast<uint8_t>(sign >> 24);
+  return result;
+}
+
+inline __device__ uint32_t float_to_fp8e4m3_x4_lightop(float a, float b,
+                                                       float c, float d) {
+#if defined(__gfx938__)
+  int32_t res;
+  res = __builtin_hcu_cvt_pk_fp8_f32(a, b, res, false);
+  res = __builtin_hcu_cvt_pk_fp8_f32(c, d, res, true);
+  return res;
+#else
+  uint32_t out;
+  reinterpret_cast<uint8_t *>(&out)[0] = float_to_fp8e4m3_lightop(a);
+  reinterpret_cast<uint8_t *>(&out)[1] = float_to_fp8e4m3_lightop(b);
+  reinterpret_cast<uint8_t *>(&out)[2] = float_to_fp8e4m3_lightop(c);
+  reinterpret_cast<uint8_t *>(&out)[3] = float_to_fp8e4m3_lightop(d);
+  return out;
+#endif
+}
+
+inline __device__ uint32_t float_to_fp8e5m2_x4_lightop(float a, float b,
+                                                       float c, float d) {
+#if defined(__gfx938__)
+  int32_t res;
+  res = __builtin_hcu_cvt_pk_bf8_f32(a, b, res, false);
+  res = __builtin_hcu_cvt_pk_bf8_f32(c, d, res, true);
+  return res;
+#else
+  uint32_t out;
+  reinterpret_cast<uint8_t *>(&out)[0] = float_to_fp8e5m2_lightop(a);
+  reinterpret_cast<uint8_t *>(&out)[1] = float_to_fp8e5m2_lightop(b);
+  reinterpret_cast<uint8_t *>(&out)[2] = float_to_fp8e5m2_lightop(c);
+  reinterpret_cast<uint8_t *>(&out)[3] = float_to_fp8e5m2_lightop(d);
+  return out;
+#endif
+}
+
 template <typename T, int Num_threads>
 __inline__ __device__ T warpReduceMax(T val) {
 #pragma unroll
@@ -57,6 +160,38 @@ ep_scan_kernel(const int32_t *__restrict__ num_tokens_per_expert,
 
   if (tid < num_experts) {
     expert_counters[tid] = start_offset;
+  }
+}
+
+template <int CUB_BLOCK_THREADS, bool FILL_PADDED_WITH_EXPERT>
+__global__ void ep_scan_fill_m_indices_kernel(
+    const int32_t *__restrict__ num_tokens_per_expert,
+    int32_t *__restrict__ expert_counters, int32_t *__restrict__ m_indices,
+    int num_experts, int alignment) {
+  int tid = threadIdx.x;
+  int32_t count = 0;
+  if (tid < num_experts) {
+    count = num_tokens_per_expert[tid];
+  }
+
+  int32_t padded_count = 0;
+  if (tid < num_experts) {
+    padded_count = (count + alignment - 1) & ~(alignment - 1);
+  }
+
+  typedef cub::BlockScan<int32_t, CUB_BLOCK_THREADS> BlockScan;
+  __shared__ typename BlockScan::TempStorage temp_storage;
+
+  int32_t start_offset = 0;
+  cub::Sum scan_op;
+  BlockScan(temp_storage).ExclusiveScan(padded_count, start_offset, 0, scan_op);
+
+  if (tid < num_experts) {
+    expert_counters[tid] = start_offset;
+    int32_t fill_value = FILL_PADDED_WITH_EXPERT ? tid : -1;
+    for (int32_t i = 0; i < padded_count; ++i) {
+      m_indices[start_offset + i] = fill_value;
+    }
   }
 }
 
@@ -96,9 +231,9 @@ __launch_bounds__(BLOCK_SIZE) __global__ void quant_scatter_opt_kernel(
 
     if (tid < K) {
       int expert_id = (int)topk_ids[token_idx * K + tid]; 
-      bool is_valid = true;
+      bool is_valid = expert_id >= 0 && expert_id < num_experts;
 
-      if (has_expert_map) {
+      if (is_valid && has_expert_map) {
         int mapped_id = expert_map[expert_id];
         if (mapped_id == -1)
           is_valid = false;
@@ -246,31 +381,37 @@ __launch_bounds__(1024) __global__
         int lane_id = tid % SCATTER_THREADS_PER_GROUP;
 
         if (lane_id == 0) {
+            bool is_valid = k_idx < K;
             int64_t row_idx = token_idx * K + k_idx;
-            int expert_id = (int)topk_ids[row_idx]; 
+            int expert_id = -1;
 
-            bool is_valid = true;
+            if (is_valid) {
+                expert_id = (int)topk_ids[row_idx];
+                is_valid = expert_id >= 0 && expert_id < num_experts;
+            }
 
-            if (has_expert_map) {
-            int mapped_id = expert_map[expert_id];
-            if (mapped_id == -1)
-                is_valid = false;
-            else
-                expert_id = mapped_id;
+            if (is_valid && has_expert_map) {
+                int mapped_id = expert_map[expert_id];
+                if (mapped_id == -1)
+                    is_valid = false;
+                else
+                    expert_id = mapped_id;
             }
 
             is_valid_shared[k_idx] = is_valid;
 
-            if (is_valid) {
-            int dest_row = atomicAdd(&expert_counters[expert_id], 1);
-            dest_row_shared[k_idx] = dest_row;
-            inv_perm[row_idx] = dest_row;
-            if (m_indices != nullptr) {
-                m_indices[dest_row] = expert_id;
-            }
-            aq_scale_out[dest_row] = aq_scale[token_idx];
-            } else {
-            inv_perm[row_idx] = -1;
+            if (k_idx < K) {
+                if (is_valid) {
+                    int dest_row = atomicAdd(&expert_counters[expert_id], 1);
+                    dest_row_shared[k_idx] = dest_row;
+                    inv_perm[row_idx] = dest_row;
+                    if (m_indices != nullptr) {
+                        m_indices[dest_row] = expert_id;
+                    }
+                    aq_scale_out[dest_row] = aq_scale[token_idx];
+                } else {
+                    inv_perm[row_idx] = -1;
+                }
             }
         }
 
@@ -343,9 +484,9 @@ __launch_bounds__(1024) __global__ void ep_scatter_kernel_1024_opt(
       if (lane_id == 0) {
           int64_t row_idx = global_token_idx * K + group_id;
           int expert_id = (int)topk_ids[row_idx];
-          bool is_valid = true;
+          bool is_valid = expert_id >= 0 && expert_id < num_experts;
 
-          if (has_expert_map) {
+          if (is_valid && has_expert_map) {
               int mapped_id = expert_map[expert_id];
               if (mapped_id == -1) is_valid = false;
               else expert_id = mapped_id;
@@ -379,6 +520,188 @@ __launch_bounds__(1024) __global__ void ep_scatter_kernel_1024_opt(
              *reinterpret_cast<float4*>(dst_ptr_base + v * 16) = val;
           }
     }
+}
+
+template <typename topk_t, int BLOCK_THREADS>
+__launch_bounds__(BLOCK_THREADS) __global__ void ep_build_m_indices_kernel(
+    const topk_t *__restrict__ topk_ids, int32_t *__restrict__ m_indices,
+    int64_t topk_numel, int64_t total_elements, int num_experts,
+    int alignment) {
+  __shared__ int32_t counts[1024];
+  __shared__ int32_t starts[1024];
+
+  const int tid = threadIdx.x;
+  for (int expert = tid; expert < num_experts; expert += blockDim.x) {
+    counts[expert] = 0;
+  }
+  __syncthreads();
+
+  for (int64_t idx = tid; idx < topk_numel; idx += blockDim.x) {
+    int expert = static_cast<int>(topk_ids[idx]);
+    if (expert >= 0 && expert < num_experts) {
+      atomicAdd(&counts[expert], 1);
+    }
+  }
+  __syncthreads();
+
+  int32_t padded_count = 0;
+  if (tid < num_experts) {
+    const int32_t count = counts[tid];
+    padded_count = ((count + alignment - 1) / alignment) * alignment;
+  }
+
+  typedef cub::BlockScan<int32_t, BLOCK_THREADS> BlockScan;
+  __shared__ typename BlockScan::TempStorage temp_storage;
+  int32_t start = 0;
+  cub::Sum scan_op;
+  BlockScan(temp_storage).ExclusiveScan(padded_count, start, 0, scan_op);
+
+  if (tid < num_experts) {
+    starts[tid] = start;
+  }
+  __syncthreads();
+
+  for (int64_t idx = tid; idx < total_elements; idx += blockDim.x) {
+    m_indices[idx] = -1;
+  }
+  __syncthreads();
+
+  for (int expert = 0; expert < num_experts; ++expert) {
+    const int32_t count = counts[expert];
+    const int32_t start_offset = starts[expert];
+    for (int32_t offset = tid; offset < count; offset += blockDim.x) {
+      const int64_t dst = static_cast<int64_t>(start_offset) + offset;
+      if (dst < total_elements) {
+        m_indices[dst] = expert;
+      }
+    }
+  }
+}
+
+template <typename scalar_t, int BLOCK_SIZE, int SCATTER_THREADS_PER_GROUP,
+          int SCATTER_MAX_K>
+__launch_bounds__(BLOCK_SIZE) __global__ void ep_fp8_quant_scatter_kernel(
+    const scalar_t *__restrict__ input, const int64_t *__restrict__ topk_ids,
+    const int32_t *__restrict__ expert_map,
+    int32_t *__restrict__ expert_counters, uint8_t *__restrict__ aq_out,
+    float *__restrict__ aq_scale_out, int32_t *__restrict__ inv_perm,
+    int32_t *__restrict__ m_indices, int num_tokens, int K, int num_experts,
+    int hidden_size, int fp8type, bool has_expert_map) {
+  constexpr int NUM_WARPS = BLOCK_SIZE / WARP_SIZE;
+  extern __shared__ __align__(16) uint8_t shmem_fp8[];
+
+  __shared__ float warp_maxs[NUM_WARPS];
+  __shared__ float s_scale;
+  __shared__ bool s_any_valid;
+  __shared__ int dest_row_shared[SCATTER_MAX_K];
+  __shared__ bool is_valid_shared[SCATTER_MAX_K];
+
+  int tid = threadIdx.x;
+  int lane_id = tid % WARP_SIZE;
+  int warp_id = tid / WARP_SIZE;
+
+  for (int64_t token_idx = blockIdx.x; token_idx < num_tokens;
+       token_idx += gridDim.x) {
+    if (tid == 0) {
+      s_any_valid = false;
+    }
+    __syncthreads();
+
+    int group_id = tid / SCATTER_THREADS_PER_GROUP;
+    int group_lane = tid % SCATTER_THREADS_PER_GROUP;
+
+    if (group_lane == 0) {
+      bool is_valid = group_id < K;
+      int64_t row_idx = token_idx * K + group_id;
+      int expert_id = -1;
+
+      if (is_valid) {
+        expert_id = static_cast<int>(topk_ids[row_idx]);
+        is_valid = expert_id >= 0 && expert_id < num_experts;
+      }
+
+      if (is_valid && has_expert_map) {
+        int mapped_id = expert_map[expert_id];
+        if (mapped_id < 0 || mapped_id >= num_experts) {
+          is_valid = false;
+        } else {
+          expert_id = mapped_id;
+        }
+      }
+
+      is_valid_shared[group_id] = is_valid;
+      if (group_id < K) {
+        if (is_valid) {
+          s_any_valid = true;
+          int dest_row = atomicAdd(&expert_counters[expert_id], 1);
+          dest_row_shared[group_id] = dest_row;
+          inv_perm[row_idx] = dest_row;
+          m_indices[dest_row] = expert_id;
+        } else {
+          inv_perm[row_idx] = -1;
+        }
+      }
+    }
+    __syncthreads();
+
+    if (!s_any_valid) {
+      continue;
+    }
+
+    const scalar_t *input_row = input + token_idx * hidden_size;
+    float local_max_abs = 0.0f;
+    for (int i = tid; i < hidden_size; i += BLOCK_SIZE) {
+      local_max_abs =
+          fmaxf(local_max_abs, fabsf(static_cast<float>(input_row[i])));
+    }
+
+    local_max_abs = warpReduceMax<float, WARP_SIZE>(local_max_abs);
+    if (lane_id == 0) {
+      warp_maxs[warp_id] = local_max_abs;
+    }
+    __syncthreads();
+
+    if (warp_id == 0) {
+      float block_max = (tid < NUM_WARPS) ? warp_maxs[tid] : 0.0f;
+      block_max = warpReduceMax<float, NUM_WARPS>(block_max);
+      if (tid == 0) {
+        const float fp8_max = (fp8type == 0) ? 448.0f : 57344.0f;
+        const float min_scale = 1.0f / (fp8_max * 512.0f);
+        s_scale = fmaxf(block_max / fp8_max, min_scale);
+      }
+    }
+    __syncthreads();
+
+    float inv_scale = 1.0f / s_scale;
+    for (int i = tid * 4; i < hidden_size; i += BLOCK_SIZE * 4) {
+      float v0 = static_cast<float>(input_row[i]) * inv_scale;
+      float v1 = static_cast<float>(input_row[i + 1]) * inv_scale;
+      float v2 = static_cast<float>(input_row[i + 2]) * inv_scale;
+      float v3 = static_cast<float>(input_row[i + 3]) * inv_scale;
+      uint32_t packed =
+          (fp8type == 0)
+              ? float_to_fp8e4m3_x4_lightop(v0, v1, v2, v3)
+              : float_to_fp8e5m2_x4_lightop(v0, v1, v2, v3);
+      *reinterpret_cast<uint32_t *>(shmem_fp8 + i) = packed;
+    }
+    __syncthreads();
+
+    if (is_valid_shared[group_id]) {
+      int dest_row = dest_row_shared[group_id];
+      uint8_t *dst_ptr =
+          aq_out + static_cast<int64_t>(dest_row) * hidden_size;
+      if (group_lane == 0) {
+        aq_scale_out[dest_row] = s_scale;
+      }
+      int H_vec = hidden_size / 16;
+      int4 *dst_vec_global = reinterpret_cast<int4 *>(dst_ptr);
+      const int4 *src_vec_shmem = reinterpret_cast<const int4 *>(shmem_fp8);
+      for (int v = group_lane; v < H_vec; v += SCATTER_THREADS_PER_GROUP) {
+        dst_vec_global[v] = src_vec_shmem[v];
+      }
+    }
+    __syncthreads();
+  }
 }
 
 void ep_fused_quant_scatter(torch::Tensor input, // fp16 or bf16
@@ -437,6 +760,115 @@ void ep_fused_quant_scatter(torch::Tensor input, // fp16 or bf16
   }
 }
 
+void ep_build_m_indices(torch::Tensor topk_ids, torch::Tensor m_indices,
+                        int local_num_experts, int alignment) {
+  if (topk_ids.numel() == 0 || m_indices.numel() == 0) {
+    return;
+  }
+
+  TORCH_CHECK(topk_ids.is_contiguous(),
+              "ep_build_m_indices expects contiguous topk_ids");
+  TORCH_CHECK(m_indices.is_contiguous(),
+              "ep_build_m_indices expects contiguous m_indices");
+  TORCH_CHECK(topk_ids.scalar_type() == at::ScalarType::Long ||
+                  topk_ids.scalar_type() == at::ScalarType::Int,
+              "ep_build_m_indices expects int32 or int64 topk_ids");
+  TORCH_CHECK(m_indices.scalar_type() == at::ScalarType::Int,
+              "ep_build_m_indices expects int32 m_indices");
+  TORCH_CHECK(local_num_experts > 0 && local_num_experts <= 1024,
+              "ep_build_m_indices supports 1 to 1024 experts");
+  TORCH_CHECK(alignment > 0, "ep_build_m_indices expects positive alignment");
+
+  constexpr int BLOCK_THREADS = 1024;
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  AT_DISPATCH_INTEGRAL_TYPES(topk_ids.scalar_type(), "ep_build_m_indices", [&] {
+    ep_build_m_indices_kernel<scalar_t, BLOCK_THREADS>
+        <<<1, BLOCK_THREADS, 0, stream>>>(
+            topk_ids.data_ptr<scalar_t>(), m_indices.data_ptr<int32_t>(),
+            topk_ids.numel(), m_indices.numel(), local_num_experts,
+            alignment);
+  });
+}
+
+void ep_fused_fp8_quant_scatter(torch::Tensor input, torch::Tensor topk_ids,
+                                torch::optional<torch::Tensor> expert_map_opt,
+                                torch::Tensor expert_num_tokens,
+                                torch::Tensor aq_out,
+                                torch::Tensor aq_scale_out,
+                                torch::Tensor m_indices,
+                                torch::Tensor inv_perm,
+                                int local_num_experts, int alignment,
+                                int fp8type, bool fill_padded_m_indices) {
+  int num_tokens = input.size(0);
+  int hidden_size = input.size(1);
+  int K = topk_ids.size(1);
+
+  if (num_tokens == 0) {
+    return;
+  }
+
+  TORCH_CHECK(input.dim() == 2 && aq_out.dim() == 2,
+              "ep_fused_fp8_quant_scatter expects 2D tensors");
+  TORCH_CHECK(input.is_contiguous() && aq_out.is_contiguous(),
+              "ep_fused_fp8_quant_scatter expects contiguous tensors");
+  TORCH_CHECK(aq_out.element_size() == 1,
+              "ep_fused_fp8_quant_scatter expects one-byte fp8 output");
+  TORCH_CHECK(aq_scale_out.scalar_type() == at::ScalarType::Float,
+              "ep_fused_fp8_quant_scatter expects fp32 output scales");
+  TORCH_CHECK(topk_ids.scalar_type() == at::ScalarType::Long,
+              "ep_fused_fp8_quant_scatter expects int64 topk_ids");
+  TORCH_CHECK(expert_num_tokens.scalar_type() == at::ScalarType::Int &&
+                  inv_perm.scalar_type() == at::ScalarType::Int &&
+                  m_indices.scalar_type() == at::ScalarType::Int,
+              "ep_fused_fp8_quant_scatter expects int32 index tensors");
+  TORCH_CHECK(hidden_size % 16 == 0,
+              "ep_fused_fp8_quant_scatter hidden size must be divisible by 16");
+  TORCH_CHECK(K <= 8, "ep_fused_fp8_quant_scatter supports topk <= 8");
+  TORCH_CHECK(fp8type == 0 || fp8type == 1,
+              "ep_fused_fp8_quant_scatter fp8type must be 0(e4m3) or 1(e5m2)");
+
+  const int32_t *expert_map_ptr = nullptr;
+  bool has_expert_map = false;
+  if (expert_map_opt.has_value()) {
+    expert_map_ptr = expert_map_opt.value().data_ptr<int32_t>();
+    has_expert_map = true;
+  }
+
+  int32_t *expert_counters_ptr = expert_num_tokens.data_ptr<int32_t>();
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+  if (fill_padded_m_indices) {
+    ep_scan_fill_m_indices_kernel<256, true><<<1, 256, 0, stream>>>(
+        expert_counters_ptr, expert_counters_ptr, m_indices.data_ptr<int32_t>(),
+        local_num_experts, alignment);
+  } else {
+    ep_scan_fill_m_indices_kernel<256, false><<<1, 256, 0, stream>>>(
+        expert_counters_ptr, expert_counters_ptr, m_indices.data_ptr<int32_t>(),
+        local_num_experts, alignment);
+  }
+
+  constexpr int BLOCK_SIZE = 1024;
+  constexpr int SCATTER_THREADS_PER_GROUP = 128;
+  constexpr int SCATTER_MAX_K = 8;
+  dim3 grid(num_tokens);
+  dim3 block(BLOCK_SIZE);
+  size_t shmem_size = hidden_size * sizeof(uint8_t);
+
+  AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
+      "ep_fused_fp8_quant_scatter", [&] {
+        ep_fp8_quant_scatter_kernel<scalar_t, BLOCK_SIZE,
+                                    SCATTER_THREADS_PER_GROUP, SCATTER_MAX_K>
+            <<<grid, block, shmem_size, stream>>>(
+                input.data_ptr<scalar_t>(), topk_ids.data_ptr<int64_t>(),
+                expert_map_ptr, expert_counters_ptr,
+                reinterpret_cast<uint8_t *>(aq_out.data_ptr()),
+                aq_scale_out.data_ptr<float>(), inv_perm.data_ptr<int32_t>(),
+                m_indices.data_ptr<int32_t>(), num_tokens, K,
+                local_num_experts, hidden_size, fp8type, has_expert_map);
+      });
+}
+
 template <typename scalar_t, int K_MAX>
 __global__ void ep_gather_kernel(
     const scalar_t* __restrict__ input_tensor,    
@@ -463,9 +895,12 @@ __global__ void ep_gather_kernel(
         float acc[VEC_SIZE] = {0.0f};
         #pragma unroll
         for (int k = 0; k < K_MAX; ++k) {
+             if (k >= topk_num) {
+                 continue;
+             }
              size_t flat_idx = static_cast<size_t>(token_idx) * topk_num + k;
              int expert_id = topk_ids[flat_idx];
-             if (has_expert_map) {
+             if (has_expert_map && expert_id >= 0) {
                  expert_id = expert_map[expert_id];
              }
              int src_idx = src_indices[flat_idx];
@@ -507,6 +942,34 @@ void ep_scatter(torch::Tensor aq, torch::Tensor aq_scale,
   int HS = (aq_scale.dim() > 1) ? aq_scale.size(1) : 1;
   int K = topk_ids.size(1);
 
+  if (num_tokens == 0) {
+    return;
+  }
+
+  TORCH_CHECK(aq.dim() == 2, "ep_scatter expects aq to be 2D");
+  TORCH_CHECK(aq_out.dim() == 2, "ep_scatter expects aq_out to be 2D");
+  TORCH_CHECK(aq.element_size() == 1 && aq_out.element_size() == 1,
+              "ep_scatter expects one-byte activation tensors");
+  TORCH_CHECK(aq.is_contiguous() && aq_out.is_contiguous(),
+              "ep_scatter expects contiguous activation tensors");
+  TORCH_CHECK(aq_scale.scalar_type() == at::ScalarType::Float &&
+                  aq_scale_out.scalar_type() == at::ScalarType::Float,
+              "ep_scatter expects fp32 scale tensors");
+  TORCH_CHECK(aq_scale.is_contiguous() && aq_scale_out.is_contiguous(),
+              "ep_scatter expects contiguous scale tensors");
+  TORCH_CHECK(HS == 1,
+              "ep_scatter expects one fp32 scale per token");
+  TORCH_CHECK(topk_ids.scalar_type() == at::ScalarType::Long,
+              "ep_scatter expects int64 topk_ids");
+  TORCH_CHECK(expert_num_tokens.scalar_type() == at::ScalarType::Int,
+              "ep_scatter expects int32 expert_num_tokens");
+  TORCH_CHECK(inv_perm.scalar_type() == at::ScalarType::Int &&
+                  m_indices.scalar_type() == at::ScalarType::Int,
+              "ep_scatter expects int32 index tensors");
+  TORCH_CHECK(H % 16 == 0,
+              "ep_scatter hidden size must be divisible by 16");
+  TORCH_CHECK(K <= 8, "ep_scatter supports topk <= 8");
+
   const int32_t *expert_map_ptr = nullptr;
   bool has_expert_map = false;
 
@@ -516,68 +979,65 @@ void ep_scatter(torch::Tensor aq, torch::Tensor aq_scale,
   }
 
   int32_t *expert_counters_ptr = expert_num_tokens.data_ptr<int32_t>();
+  const int8_t *aq_ptr = reinterpret_cast<const int8_t *>(aq.data_ptr());
+  int8_t *aq_out_ptr = reinterpret_cast<int8_t *>(aq_out.data_ptr());
+  float *aq_scale_ptr = aq_scale.data_ptr<float>();
+  float *aq_scale_out_ptr = aq_scale_out.data_ptr<float>();
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
   // Scan
   {
     dim3 grid(1);
     dim3 block(256);
     constexpr int CUB_BLOCK_THREADS = 256;
-    ep_scan_kernel<CUB_BLOCK_THREADS><<<grid, block>>>(
-        expert_counters_ptr, expert_counters_ptr, local_num_experts, alignment);
+    ep_scan_fill_m_indices_kernel<CUB_BLOCK_THREADS, false>
+        <<<grid, block, 0, stream>>>(
+            expert_counters_ptr, expert_counters_ptr,
+            m_indices.data_ptr<int32_t>(), local_num_experts, alignment);
   }
 
   // Scatter
   {
     if(num_tokens <= 4096){
             constexpr int SCATTER_MAX_K = 8;
+            using scale_t = float;
             int threads = 1024;
             int blocks = (num_tokens + 1) / 2;
             dim3 grid(blocks);
             dim3 block(threads);
-            auto aq_tensor = aq.expect_contiguous();
-            AT_DISPATCH_SWITCH(
-                aq.scalar_type(), "ep_scatter",
-                AT_DISPATCH_CASE(at::ScalarType::Char, [&] {
-                using data_t = int8_t;
-                using scale_t = float;
-                size_t shmem_size = 2 * (H / 16) * sizeof(float4);
+            size_t shmem_size = 2 * (H / 16) * sizeof(float4);
             ep_scatter_kernel_1024_opt<scale_t, SCATTER_MAX_K>
-                <<<grid, block, shmem_size, at::cuda::getCurrentCUDAStream()>>>(
-                aq_tensor->data_ptr<int8_t>(), 
-                aq_scale.data_ptr<scale_t>(),
+                <<<grid, block, shmem_size, stream>>>(
+                aq_ptr,
+                aq_scale_ptr,
                 topk_ids.data_ptr<int64_t>(), //data_ptr<int64_t>()
                 expert_map_ptr, 
                 expert_counters_ptr,
-                aq_out.data_ptr<int8_t>(), 
-                aq_scale_out.data_ptr<scale_t>(),
+                aq_out_ptr,
+                aq_scale_out_ptr,
                 inv_perm.data_ptr<int32_t>(), 
                 m_indices.data_ptr<int32_t>(),
                 num_tokens, K, local_num_experts, H, has_expert_map);
-                }));
     }else{
         constexpr int SCATTER_THREADS_PER_GROUP = 128;
         constexpr int SCATTER_MAX_K = 8;
+        using data_t = int8_t;
+        using scale_t = float;
         int threads = SCATTER_THREADS_PER_GROUP * SCATTER_MAX_K;
         int blocks = num_tokens;
 
         dim3 grid(blocks);
         dim3 block(threads);
-        auto aq_tensor = aq.expect_contiguous();
 
-        AT_DISPATCH_SWITCH(
-            aq.scalar_type(), "ep_scatter",
-            AT_DISPATCH_CASE(at::ScalarType::Char, [&] {
-            using data_t = int8_t;
-            using scale_t = float;
-            size_t shmem_size = H * sizeof(data_t);
-            ep_scatter_kernel<data_t, scale_t, SCATTER_THREADS_PER_GROUP,
-                                SCATTER_MAX_K><<<grid, block, shmem_size>>>(
-                aq_tensor->data_ptr<data_t>(), aq_scale.data_ptr<scale_t>(),
+        size_t shmem_size = H * sizeof(data_t);
+        ep_scatter_kernel<data_t, scale_t, SCATTER_THREADS_PER_GROUP,
+                            SCATTER_MAX_K><<<grid, block, shmem_size, stream>>>(
+                aq_ptr, aq_scale_ptr,
                 topk_ids.data_ptr<int64_t>(), //data_ptr<int64_t>()
                 expert_map_ptr, expert_counters_ptr,
-                aq_out.data_ptr<data_t>(), aq_scale_out.data_ptr<scale_t>(),
+                aq_out_ptr, aq_scale_out_ptr,
                 inv_perm.data_ptr<int32_t>(), m_indices.data_ptr<int32_t>(),
                 num_tokens, K, local_num_experts, H, HS, has_expert_map);
-            }));
     }
   }
 }
@@ -691,8 +1151,8 @@ __global__ void quant_scatter_smooth_opt_kernel(
     
     if (tid < K) {
         int expert_id = (int)topk_ids[token_idx * K + tid];
-        bool is_valid = true;
-        if (has_expert_map) {
+        bool is_valid = expert_id >= 0 && expert_id < num_experts;
+        if (is_valid && has_expert_map) {
             int mapped_id = expert_map[expert_id];
             if (mapped_id == -1) is_valid = false;
             else expert_id = mapped_id;
@@ -823,6 +1283,9 @@ __global__ void __launch_bounds__(BLOCK_SIZE) quant_scatter_smooth_low_reg_kerne
 
         for(int k=0; k<K; ++k) {
             int expert_id = (int)topk_ids[token_idx * K + k];
+            if (expert_id < 0) {
+                continue;
+            }
             
             if (has_expert_map) {
                 int mapped = expert_map[expert_id];

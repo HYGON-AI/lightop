@@ -508,7 +508,7 @@ void fuse_act_quant_and_store_index_k_cache(
     int page_size,
     float eps = 1e-5f,         
     bool use_ue8m0 = false,
-    bool is_e4m3 = true); 
+    bool is_e4m3 = true);   
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> fuse_qk_quant_and_store_index_k_cache(
     torch::Tensor q_input,        // [num_tokens, q_hidden_size]
     torch::Tensor k_input,        // [num_tokens, k_hidden_size]
@@ -605,7 +605,14 @@ void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert(
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize_nope_fp8_rope_bf16_pack(
     torch::Tensor k_bf16,
     float eps
-);    
+); 
+void quantize_nope_fp8_rope_bf16_pack_store(
+    torch::Tensor k_bf16,
+    torch::Tensor buf,
+    torch::Tensor loc,
+    int page_size,
+    float eps
+);   
 void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_int32(
     Tensor& q,
     const Tensor& kv,
@@ -638,6 +645,9 @@ void fused_deepseek_v4_qnorm_rope_kvnorm_rope(
     const Tensor& position_ids,
     const Tensor& cos_sin_cache,
     double eps);
+void ep_build_m_indices(torch::Tensor topk_ids,torch::Tensor m_indices,int local_num_experts,int alignment);
+void topk_ids_postprocess(torch::Tensor topk_ids, torch::optional<torch::Tensor> logical_to_physical_map, torch::optional<torch::Tensor> num_token_non_padded);
+void ep_fused_fp8_quant_scatter(torch::Tensor input,torch::Tensor topk_ids,torch::optional<torch::Tensor> expert_map_opt,torch::Tensor expert_num_tokens,torch::Tensor aq_out,torch::Tensor aq_scale_out,torch::Tensor m_indices,torch::Tensor inv_perm, int local_num_experts,int alignment,int fp8type,bool fill_padded_m_indices);
 }
 }
 
@@ -899,4 +909,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32", &at::native::fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32, "fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32");
  m.def("fused_deepseek_v4_qnorm_rope_kv_rope", &at::native::fused_deepseek_v4_qnorm_rope_kv_rope, "fused_deepseek_v4_qnorm_rope_kv_rope");
  m.def("fused_deepseek_v4_qnorm_rope_kvnorm_rope", &at::native::fused_deepseek_v4_qnorm_rope_kvnorm_rope, "fused_deepseek_v4_qnorm_rope_kvnorm_rope");
+ m.def("ep_build_m_indices", &at::native::ep_build_m_indices,"ep_build_m_indices");
+ m.def("ep_fused_fp8_quant_scatter", &at::native::ep_fused_fp8_quant_scatter,"ep_fused_fp8_quant_scatter");
+ m.def("quantize_nope_fp8_rope_bf16_pack_store", &at::native::quantize_nope_fp8_rope_bf16_pack_store, "quantize_nope_fp8_rope_bf16_pack_store");
+m.def("topk_ids_postprocess",&at::native::topk_ids_postprocess,"topk_ids_postprocess");
 }

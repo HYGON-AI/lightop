@@ -24,7 +24,7 @@ op = importlib.import_module('.op', __name__)
 from .utils import gfx, LIGHTOP_ROOT_DIR, LIGHTOP_ASM_DIR
 from .rmsnorm import RMSNorm, RMSNormTorch, RMSNormDropout, RMSNormAddDropout, RMSNormAddDropoutBias, RMSNormAdd,rmsnorm_forward,rmsnorm_backward,rms_norm_dynamic_per_token_quant,fused_rms_norm_contiguous,fused_rms_norm_rope_contiguous,rms_norm_per_token_fp8_quant
 from .rmsnorm import fuse_rmsnorm_rope_quant_qkv,fused_add_rms_norm,gemma_fused_add_rmsnorm,gemma_rmsnorm,gemma_rms_norm_per_token_fp8_quant
-from .rmsnorm import fuse_fill_rms_x2_concat
+from .rmsnorm import fuse_fill_rms_x2_concat,rms_norm_per_token_quant
 from .grid_sample import GridSample, grid_sample_forward, grid_sample_backward
 from .layernorm import LayerNorm, LayerNormMixedFp32Weight, LnDropout, LnAddDropout, LnAddDropoutBias, LnDropPath, AddLn
 from .droppath import DropPath
@@ -48,7 +48,7 @@ from .gemmopt import gemm, gemm_w4a16, w4tow16,gemm_w8a16_fp8,fp8_to_16,moe_gemm
       grougemm_bf16_fp16, m_grouped_fp8_gemm_nt_masked, fused_bmm
 from .gemmopt import gemm_awq_w4a16_marlin, gemm_awq_w4a16_marlin_dequant, awq_gemm_marlin_weight_repack
 from .moe_fused_gate import moe_fused_gate
-from .fuse_silu_mul_quant import fuse_silu_mul_quant, fuse_silu_mul_quant_ep, fuse_silu_and_mul, fuse_silu_mul_fp8_quant, fuse_silu_mul_fp8_quant_ep, moe_swiglu_dynamic_quant, relu2
+from .fuse_silu_mul_quant import fuse_silu_mul_quant, fuse_silu_mul_quant_ep, fuse_silu_and_mul, fuse_silu_mul_fp8_quant, fuse_silu_mul_fp8_quant_ep, moe_swiglu_dynamic_quant, relu2,fuse_silu_mul_per_token_quant
 from .ds_cat import ds_cat
 from .blockwise_scaling import blockwise_scaled_cast_transpose
 from .config import get_moe_cuda_config, get_moe_cuda_marlin_config, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8, get_moe_cuda_marlin_config_w16a16, \
