@@ -302,9 +302,9 @@ __global__ void quantize_nope_fp8_rope_bf16_pack_kernel(
 ) {
     constexpr int VEC = 16;
     constexpr int GROUP_SIZE = 64;
-    constexpr int NUM_GROUPS = 7;          // 448 / 64
-    constexpr int GROUP_THREADS = GROUP_SIZE / VEC;   // 4
-    constexpr int NOPE_THREADS = NUM_GROUPS * GROUP_THREADS;  // 28
+    constexpr int NUM_GROUPS = 7;
+    constexpr int GROUP_THREADS = GROUP_SIZE / VEC;
+    constexpr int NOPE_THREADS = NUM_GROUPS * GROUP_THREADS;
     constexpr int ROPE_THREADS = 8;
     constexpr int ROPE_VEC = 8;
     constexpr int DIM_NOPE = 448;
@@ -380,6 +380,117 @@ __global__ void quantize_nope_fp8_rope_bf16_pack_kernel(
     }
 }
 
+template <typename scalar_t, typename index_t>
+__global__ void quantize_nope_fp8_rope_bf16_pack_store_kernel(
+    const scalar_t* __restrict__ k_bf16,
+    uint8_t* __restrict__ buf,
+    const index_t* __restrict__ loc,
+    const int64_t k_bf16_stride_0,
+    const int64_t buf_stride_0,
+    const int page_size,
+    const float eps,
+    const int num_tokens,
+    const int nope_blocks
+) {
+    constexpr int VEC = 16;
+    constexpr int GROUP_SIZE = 64;
+    constexpr int NUM_GROUPS = 7;
+    constexpr int GROUP_THREADS = GROUP_SIZE / VEC;
+    constexpr int NOPE_THREADS = NUM_GROUPS * GROUP_THREADS;
+    constexpr int ROPE_THREADS = 8;
+    constexpr int ROPE_VEC = 8;
+    constexpr int DIM_NOPE = 448;
+    constexpr int DIM_ROPE = 64;
+    constexpr int NUM_NOPE_ROPE_BYTES_PER_TOKEN = DIM_NOPE + DIM_ROPE * 2;
+    constexpr int PADDED_SCALE_ELEMS_PER_TOKEN = NUM_GROUPS + 1;
+    constexpr float FP8_MAX_VAL = 448.0f;
+
+    using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+    using Fp8VecType = at::native::memory::aligned_vector<uint8_t, VEC>;
+    using RopeVecType = at::native::memory::aligned_vector<scalar_t, ROPE_VEC>;
+
+    if (blockIdx.x < nope_blocks) {
+        int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+        int token_idx = global_tid / NOPE_THREADS;
+        int lane_id = global_tid % NOPE_THREADS;
+
+        if (token_idx >= num_tokens) return;
+
+        int group_id = lane_id / GROUP_THREADS;
+        int lane_in_group = lane_id % GROUP_THREADS;
+        int elem_offset = group_id * GROUP_SIZE + lane_in_group * VEC;
+
+        int64_t cache_loc = static_cast<int64_t>(loc[token_idx]);
+        int64_t page_idx = cache_loc / page_size;
+        int64_t token_offset = cache_loc % page_size;
+        uint8_t* page_base = buf + page_idx * buf_stride_0;
+        uint8_t* token_base =
+            page_base + token_offset * NUM_NOPE_ROPE_BYTES_PER_TOKEN;
+
+        scalar_t input_vec[VEC];
+        *(VecType*)input_vec = *(VecType*)(k_bf16 + token_idx * k_bf16_stride_0 + elem_offset);
+
+        float input_float_vec[VEC];
+        float max_val = 0.f;
+        #pragma unroll
+        for (int i = 0; i < VEC; i++) {
+            input_float_vec[i] = static_cast<float>(input_vec[i]);
+            max_val = fmaxf(max_val, fabsf(input_float_vec[i]));
+        }
+
+        #pragma unroll
+        for (int mask = 2; mask > 0; mask >>= 1) {
+            max_val = fmaxf(max_val, SHFL_XOR(max_val, mask));
+        }
+
+        max_val = fmaxf(max_val, eps);
+        float scale = max_val / FP8_MAX_VAL;
+
+        int exp;
+        float mant = frexpf(scale, &exp);
+        int exp_ceil = (mant > 0.5f) ? exp : exp - 1;
+        float inv_scale = scalbnf(1.0f, -exp_ceil);
+
+        uint8_t* scale_base =
+            page_base + page_size * NUM_NOPE_ROPE_BYTES_PER_TOKEN +
+            token_offset * PADDED_SCALE_ELEMS_PER_TOKEN;
+        if (lane_in_group == 0) {
+            scale_base[group_id] = (uint8_t)(exp_ceil + 127);
+            if (group_id == 0) {
+                scale_base[NUM_GROUPS] = 0;
+            }
+        }
+
+        uint8_t out_vec[VEC];
+        #pragma unroll
+        for (int i = 0; i < VEC; i += 4) {
+            uint32_t packed = float_to_fp8e4m3_x4(
+                input_float_vec[i] * inv_scale, input_float_vec[i+1] * inv_scale,
+                input_float_vec[i+2] * inv_scale, input_float_vec[i+3] * inv_scale);
+            *(uint32_t*)(&out_vec[i]) = packed;
+        }
+        *(Fp8VecType*)(token_base + elem_offset) = *(Fp8VecType*)out_vec;
+    } else {
+        int rope_block_idx = blockIdx.x - nope_blocks;
+        int global_tid = rope_block_idx * blockDim.x + threadIdx.x;
+        int token_idx = global_tid / ROPE_THREADS;
+        int lane_id = global_tid % ROPE_THREADS;
+
+        if (token_idx >= num_tokens) return;
+
+        int64_t cache_loc = static_cast<int64_t>(loc[token_idx]);
+        int64_t page_idx = cache_loc / page_size;
+        int64_t token_offset = cache_loc % page_size;
+        uint8_t* token_base =
+            buf + page_idx * buf_stride_0 +
+            token_offset * NUM_NOPE_ROPE_BYTES_PER_TOKEN;
+
+        int rope_offset = DIM_NOPE + lane_id * ROPE_VEC;
+        RopeVecType rope_val = *(RopeVecType*)(k_bf16 + token_idx * k_bf16_stride_0 + rope_offset);
+        *(RopeVecType*)(token_base + DIM_NOPE + lane_id * ROPE_VEC * sizeof(scalar_t)) = rope_val;
+    }
+}
+
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize_nope_fp8_rope_bf16_pack(
     torch::Tensor k_bf16,
     float eps
@@ -439,6 +550,93 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> quantize_nope_fp8_rope_b
     }
 
     return std::make_tuple(k_nope_fp8, k_rope_bf16, scale_k_nope);
+}
+
+template <typename index_t>
+void launch_quantize_nope_fp8_rope_bf16_pack_store(
+    torch::Tensor k_bf16,
+    torch::Tensor buf,
+    torch::Tensor loc,
+    int page_size,
+    float eps
+) {
+    constexpr int DIM_NOPE = 448;
+    constexpr int DIM_ROPE = 64;
+    constexpr int TOTAL_DIM = 512;
+    constexpr int GROUP_SIZE = 64;
+    constexpr int NUM_GROUPS = DIM_NOPE / GROUP_SIZE;
+    constexpr int VEC = 16;
+    constexpr int NOPE_THREADS_PER_TOKEN = NUM_GROUPS * (GROUP_SIZE / VEC);
+    constexpr int ROPE_THREADS_PER_TOKEN = 8;
+    constexpr int THREADS_PER_BLOCK = 128;
+
+    int num_tokens = (int)loc.size(0);
+    int nope_threads = num_tokens * NOPE_THREADS_PER_TOKEN;
+    int nope_blocks = CEIL_DIV(nope_threads, THREADS_PER_BLOCK);
+    int rope_threads = num_tokens * ROPE_THREADS_PER_TOKEN;
+    int rope_blocks = CEIL_DIV(rope_threads, THREADS_PER_BLOCK);
+    int total_blocks = nope_blocks + rope_blocks;
+    if (total_blocks == 0) return;
+
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    VLLM_DISPATCH_FLOATING_TYPES(
+        k_bf16.scalar_type(), "quantize_nope_fp8_rope_bf16_pack_store_kernel", [&] {
+            quantize_nope_fp8_rope_bf16_pack_store_kernel<scalar_t, index_t>
+                <<<total_blocks, THREADS_PER_BLOCK, 0, stream>>>(
+                    k_bf16.data_ptr<scalar_t>(),
+                    buf.data_ptr<uint8_t>(),
+                    loc.data_ptr<index_t>(),
+                    k_bf16.stride(0),
+                    buf.stride(0),
+                    page_size,
+                    eps,
+                    num_tokens,
+                    nope_blocks
+                );
+        }
+    );
+}
+
+void quantize_nope_fp8_rope_bf16_pack_store(
+    torch::Tensor k_bf16,
+    torch::Tensor buf,
+    torch::Tensor loc,
+    int page_size,
+    float eps
+) {
+    constexpr int TOTAL_DIM = 512;
+    constexpr int NUM_NOPE_ROPE_BYTES_PER_TOKEN = 448 + 64 * 2;
+    constexpr int PADDED_SCALE_ELEMS_PER_TOKEN = 8;
+
+    TORCH_CHECK(k_bf16.dim() == 2, "k_bf16 must be 2D, got ", k_bf16.dim(), "D");
+    TORCH_CHECK(k_bf16.size(1) >= TOTAL_DIM,
+        "k_bf16 last dim must be >= 512, got ", k_bf16.size(1));
+    TORCH_CHECK(k_bf16.scalar_type() == torch::kBFloat16,
+        "k_bf16 must be bfloat16, got ", k_bf16.scalar_type());
+    TORCH_CHECK(buf.dim() == 2, "buf must be 2D, got ", buf.dim(), "D");
+    TORCH_CHECK(buf.scalar_type() == torch::kUInt8,
+        "buf must be uint8, got ", buf.scalar_type());
+    TORCH_CHECK(buf.is_contiguous(),
+        "buf must be contiguous because it is written in-place");
+    TORCH_CHECK(loc.dim() == 1, "loc must be 1D, got ", loc.dim(), "D");
+    TORCH_CHECK(loc.scalar_type() == torch::kInt64 || loc.scalar_type() == torch::kInt32,
+        "loc must be int64 or int32, got ", loc.scalar_type());
+    TORCH_CHECK(page_size > 0, "page_size must be positive");
+    TORCH_CHECK(buf.size(1) >= page_size * (NUM_NOPE_ROPE_BYTES_PER_TOKEN + PADDED_SCALE_ELEMS_PER_TOKEN),
+        "buf page is too small for DeepSeek V4 packed K cache");
+    TORCH_CHECK(k_bf16.size(0) == loc.size(0),
+        "k_bf16 token count must match loc length");
+
+    k_bf16 = k_bf16.contiguous();
+    loc = loc.contiguous();
+
+    if (loc.scalar_type() == torch::kInt64) {
+        launch_quantize_nope_fp8_rope_bf16_pack_store<int64_t>(
+            k_bf16, buf, loc, page_size, eps);
+    } else {
+        launch_quantize_nope_fp8_rope_bf16_pack_store<int32_t>(
+            k_bf16, buf, loc, page_size, eps);
+    }
 }
 
 } // namespace native
