@@ -244,8 +244,8 @@ def test_flashinfer_sampler(ops: str = "top_k_top_p"):
     test_latency(ops, 100, logits, k_values, p_values)
 
 def main():
-    # test_flashinfer_sampler("top_k_top_p")
-    # test_flashinfer_sampler("top_k")
+    test_flashinfer_sampler("top_k_top_p")
+    test_flashinfer_sampler("top_k")
     test_flashinfer_sampler("top_p")
 
 if __name__ == "__main__":
