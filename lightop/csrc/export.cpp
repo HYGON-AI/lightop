@@ -365,9 +365,9 @@ void ep_fused_smooth_quant_scatter(
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale);
 void rms_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,double epsilon);
 void rms_norm_no_weight(
-    torch::optional<torch::Tensor>& out,
+    torch::optional<torch::Tensor> out,
     torch::Tensor& input,
-    torch::optional<torch::Tensor>& weight,
+    torch::optional<torch::Tensor> weight,
     double epsilon);
 void fused_add_rms_norm_opt(torch::Tensor& input,torch::Tensor& residual, torch::Tensor& weight,double epsilon); 
 void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
@@ -662,6 +662,7 @@ void ep_build_m_indices(torch::Tensor topk_ids,torch::Tensor m_indices,int local
 void topk_ids_postprocess(torch::Tensor topk_ids, torch::optional<torch::Tensor> logical_to_physical_map, torch::optional<torch::Tensor> num_token_non_padded);
 torch::Tensor dpskv4_hc_head_fused(torch::Tensor mixes, torch::Tensor x, torch::Tensor hc_scale, torch::Tensor hc_base, double hc_eps);
 void ep_fused_fp8_quant_scatter(torch::Tensor input,torch::Tensor topk_ids,torch::optional<torch::Tensor> expert_map_opt,torch::Tensor expert_num_tokens,torch::Tensor aq_out,torch::Tensor aq_scale_out,torch::Tensor m_indices,torch::Tensor inv_perm, int local_num_experts,int alignment,int fp8type,bool fill_padded_m_indices);
+std::vector<Tensor> moe_fused_gate_sqrtsoftplus(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 }
 }
 
@@ -943,4 +944,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
        py::arg("page_size"),
        py::arg("seq_len_delta"),
        py::arg("use_swa"));
+m.def("moe_fused_gate_sqrtsoftplus",&at::native::moe_fused_gate_sqrtsoftplus,"moe_fused_gate_sqrtsoftplus");       
 }
