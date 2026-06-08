@@ -257,133 +257,6 @@ __global__ void moe_align_block_size_kernel_opt_fused_cub(
     }
   }
 }
-template <typename scalar_t, int smem_size, int TOPK>
-__global__ void moe_align_block_size_kernel_opt_fused(
-    const scalar_t *__restrict__ topk_ids,
-    int32_t *__restrict__ sorted_token_ids, int32_t *__restrict__ expert_ids,
-    int32_t *__restrict__ total_tokens_post_pad, int32_t num_experts,
-    int32_t padded_num_experts, int32_t experts_per_warp, int32_t block_size,
-    size_t numel, int32_t *__restrict__ expert_map,
-    bool *__restrict__ expert_mask, int32_t *__restrict__ num_local_tokens,bool Is_EP,int32_t sorted_token_ids_len,bool Is_fuse_fill) {
-   const int topk_numel = numel;
-  if (num_local_tokens != nullptr) {
-    if (num_local_tokens[0] == 0) {
-      return;
-    } else {
-      numel = num_local_tokens[0] * TOPK;
-    }
-  }
-  const size_t tid = threadIdx.x;
-  const size_t stride = blockDim.x;
-
-   if(Is_fuse_fill){
-      for (int i = tid; i < sorted_token_ids_len; i += stride) {
-         sorted_token_ids[i] = topk_numel;
-    }
-  }
-  __shared__ int32_t shared_counts[smem_size + 1];
-  int32_t *cumsum = shared_counts;
-
-  const int warp_id = threadIdx.x / WARP_SIZE;
-  const int lane_id = threadIdx.x % WARP_SIZE;
-  const int my_expert_start = warp_id * experts_per_warp;
-  
-
-  for (int i = tid; i <= num_experts; i += stride) {
-    shared_counts[i] = 0;
-  }
-
-  __syncthreads();
-
-  for (size_t i = tid; i < numel; i += stride) {
-    int expert_id = topk_ids[i];
-    //EP
-    if(Is_EP){
-        if(expert_map[expert_id] != -1){
-           atomicAdd(&shared_counts[expert_id], 1);
-           if(expert_mask)  expert_mask[i] = true;
-        }else{
-           if(expert_mask)  expert_mask[i] = false;
-        }
-    }else{
-        atomicAdd(&shared_counts[expert_id], 1);
-        if (expert_mask) {
-          if (expert_map && expert_map[expert_id] == -1) {
-            expert_mask[i] = false;
-          } else {
-            expert_mask[i] = true;
-          }
-        }
-    }
-  }
-
-  __syncthreads();
-
-  if (threadIdx.x < num_experts) {
-    int expert_count = shared_counts[threadIdx.x];
-    shared_counts[threadIdx.x] = CEILDIV(expert_count, block_size) * block_size;
-  }
-  __syncthreads();
-
-  int offset = 1;
-  for (int d = num_experts / 2; d > 0; d >>= 1) {
-    if (tid < d) {
-      int ai = offset * (2 * tid + 1) - 1;
-      int bi = offset * (2 * tid + 2) - 1;
-      shared_counts[bi] += shared_counts[ai];
-    }
-    offset *= 2;
-    __syncthreads();
-  }
-  if (tid == 0)
-    *total_tokens_post_pad = shared_counts[num_experts - 1];
-  if (tid == 0) {
-    shared_counts[num_experts - 1] = 0;
-  }
-  __syncthreads();
-
-  // 下扫
-  for (int d = 1; d < num_experts; d *= 2) {
-    offset >>= 1;
-    if (tid < d) {
-      int ai = offset * (2 * tid + 1) - 1;
-      int bi = offset * (2 * tid + 2) - 1;
-      // bi的值要传给ai
-      // ai的值要和bi相加
-      int v = shared_counts[ai];
-      shared_counts[ai] = shared_counts[bi];
-      shared_counts[bi] += v;
-    }
-    __syncthreads();
-  }
-
-  if (tid == 0)
-    shared_counts[num_experts] = *total_tokens_post_pad;
-  __syncthreads();
-  if (threadIdx.x < num_experts) {
-    for (int i = shared_counts[threadIdx.x]; i < shared_counts[threadIdx.x + 1];
-         i += block_size) {
-      if (expert_map != nullptr) {
-        expert_ids[i / block_size] = expert_map[threadIdx.x];
-      } else {
-        expert_ids[i / block_size] = threadIdx.x;
-      }
-    }
-  }
-  __syncthreads();
-  for (size_t i = tid; i < numel; i += stride) {
-    int32_t expert_id = topk_ids[i];
-    if(Is_EP){
-        if(expert_map[expert_id] != -1){
-             int32_t rank_post_pad = atomicAdd(&shared_counts[expert_id], 1);
-             sorted_token_ids[rank_post_pad] = i;
-        }
-    }else{
-        int32_t rank_post_pad = atomicAdd(&shared_counts[expert_id], 1);
-        sorted_token_ids[rank_post_pad] = i;
-    }
-  }
-}
 template <typename scalar_t, int seme_size, int TOPK, int CUB_BLOCK_THREADS>
 __global__ void moe_align_block_size_kernel_opt_cub(
     const scalar_t *__restrict__ topk_ids,
@@ -511,121 +384,6 @@ __global__ void moe_align_block_size_kernel_opt_cub(
     }
 }
 
-template <typename scalar_t, int seme_size, int TOPK>
-__global__ void moe_align_block_size_kernel_opt(
-    const scalar_t *__restrict__ topk_ids,
-    int32_t *__restrict__ sorted_token_ids, int32_t *__restrict__ expert_ids,
-    int32_t *__restrict__ total_tokens_post_pad, int32_t num_experts,
-    int32_t padded_num_experts, int32_t experts_per_warp, int32_t block_size,
-    size_t numel, int32_t *__restrict__ cumsum,
-    int32_t *__restrict__ expert_map, bool *__restrict__ expert_mask,
-    int32_t *__restrict__ num_local_tokens,bool Is_EP,int32_t sorted_token_ids_len,bool Is_fuse_fill) {
-   const int topk_numel = numel;
-  if (num_local_tokens != nullptr) {
-    if (num_local_tokens[0] == 0) {
-      return;
-    } else {
-      numel = num_local_tokens[0] * TOPK;
-    }
-  }
-
-  __shared__ int32_t shared_counts[seme_size + 1];
-
-  const int warp_id = threadIdx.x / WARP_SIZE;
-  const int lane_id = threadIdx.x % WARP_SIZE;
-  const int my_expert_start = warp_id * experts_per_warp;
-  const size_t tid = threadIdx.x;
-  const size_t stride = blockDim.x;
-     if(Is_fuse_fill){
-      for (int i = tid; i < sorted_token_ids_len; i += stride) {
-         sorted_token_ids[i] = topk_numel;
-    }
-  }
-  for (int i = tid; i <= num_experts; i += stride) {
-    shared_counts[i] = 0;
-  }
-
-  __syncthreads();
-
-  for (size_t i = tid; i < numel; i += stride) {
-    int expert_id = topk_ids[i];
-    //EP
-    if(Is_EP){
-        if(expert_map[expert_id] != -1){
-           atomicAdd(&shared_counts[expert_id], 1);
-           if(expert_mask)  expert_mask[i] = true;
-        }else{
-           if(expert_mask)  expert_mask[i] = false;
-        }
-    }else{
-        atomicAdd(&shared_counts[expert_id], 1);
-        if (expert_mask) {
-          if (expert_map && expert_map[expert_id] == -1) {
-            expert_mask[i] = false;
-          } else {
-            expert_mask[i] = true;
-          }
-        }
-    }
-  }
-  __syncthreads();
-
-  if (threadIdx.x < num_experts) {
-    int expert_count = shared_counts[threadIdx.x];
-    shared_counts[threadIdx.x] = CEILDIV(expert_count, block_size) * block_size;
-  }
-  __syncthreads();
-
-  int offset = 1;
-  for (int d = num_experts / 2; d > 0; d >>= 1) {
-    if (tid < d) {
-      int ai = offset * (2 * tid + 1) - 1;
-      int bi = offset * (2 * tid + 2) - 1;
-      shared_counts[bi] += shared_counts[ai];
-    }
-    offset *= 2;
-    __syncthreads();
-  }
-  if (tid == 0)
-    *total_tokens_post_pad = shared_counts[num_experts - 1];
-
-  if (tid == 0) {
-    shared_counts[num_experts - 1] = 0;
-  }
-  __syncthreads();
-
-  for (int d = 1; d < num_experts; d *= 2) {
-    offset >>= 1;
-    if (tid < d) {
-      int ai = offset * (2 * tid + 1) - 1;
-      int bi = offset * (2 * tid + 2) - 1;
-
-      int v = shared_counts[ai];
-      shared_counts[ai] = shared_counts[bi];
-      shared_counts[bi] += v;
-    }
-    __syncthreads();
-  }
-
-  if (tid == 0)
-    shared_counts[num_experts] = *total_tokens_post_pad;
-  __syncthreads();
-  if (threadIdx.x < num_experts) {
-    for (int i = shared_counts[threadIdx.x]; i < shared_counts[threadIdx.x + 1];
-         i += block_size) {
-      if (expert_map != nullptr) {
-        expert_ids[i / block_size] = expert_map[threadIdx.x];
-      } else {
-        expert_ids[i / block_size] = threadIdx.x;
-      }
-    }
-  }
-
-  if (tid < 64) {
-    *reinterpret_cast<int4 *>(&cumsum[tid * 4]) =
-        *reinterpret_cast<int4 *>(&shared_counts[tid * 4]);
-  }
-}
 
 template <typename scalar_t>
 __global__ void moe_align_block_size_kernel(
@@ -783,79 +541,6 @@ __global__ void count_and_sort_expert_tokens_kernel_EP(
     }
   }
 }
-// taken from
-// https://github.com/sgl-project/sglang/commit/ded9fcd09a43d5e7d5bb31a2bc3e9fc21bf65d2a
-template <typename scalar_t>
-__global__ void sgl_ep_moe_align_block_size_kernel(
-    scalar_t *__restrict__ topk_ids, int32_t *sorted_token_ids,
-    int32_t *expert_ids, int32_t *total_tokens_post_pad, int32_t num_experts,
-    int32_t block_size, size_t numel, int32_t *cumsum, int32_t start_expert,
-    int32_t end_expert) {
-  __shared__ int32_t shared_counts[32][8];
-  __shared__ int32_t local_offsets[256];
-
-  const int warp_id = threadIdx.x / 32;
-  const int lane_id = threadIdx.x % 32;
-  const int experts_per_warp = 8;
-  const int my_expert_start = warp_id * experts_per_warp;
-
-  for (int i = 0; i < experts_per_warp; ++i) {
-    if (my_expert_start + i < num_experts) {
-      shared_counts[warp_id][i] = 0;
-    }
-  }
-
-  const size_t tokens_per_thread = CEILDIV(numel, blockDim.x);
-  const size_t start_idx = threadIdx.x * tokens_per_thread;
-
-  for (int i = start_idx; i < numel && i < start_idx + tokens_per_thread; ++i) {
-    int expert_id = topk_ids[i];
-    if (expert_id >= start_expert && expert_id < end_expert) {
-      expert_id -= start_expert;
-      int warp_idx = expert_id / experts_per_warp;
-      int expert_offset = expert_id % experts_per_warp;
-      atomicAdd(&shared_counts[warp_idx][expert_offset], 1);
-    }
-  }
-
-  __syncthreads();
-
-  if (threadIdx.x == 0) {
-    cumsum[0] = 0;
-    for (int i = 1; i <= num_experts; ++i) {
-      int expert_count = 0;
-      int warp_idx = (i - 1) / experts_per_warp;
-      int expert_offset = (i - 1) % experts_per_warp;
-      expert_count = shared_counts[warp_idx][expert_offset];
-
-      cumsum[i] =
-          cumsum[i - 1] + CEILDIV(expert_count, block_size) * block_size;
-    }
-    *total_tokens_post_pad = cumsum[num_experts];
-  }
-
-  __syncthreads();
-
-  if (threadIdx.x < num_experts) {
-    for (int i = cumsum[threadIdx.x]; i < cumsum[threadIdx.x + 1];
-         i += block_size) {
-      expert_ids[i / block_size] = threadIdx.x;
-    }
-    local_offsets[threadIdx.x] = cumsum[threadIdx.x];
-  }
-
-  __syncthreads();
-
-  for (int i = start_idx; i < numel && i < start_idx + tokens_per_thread; ++i) {
-    int32_t expert_id = topk_ids[i];
-    if (expert_id >= start_expert && expert_id < end_expert) {
-      expert_id -= start_expert;
-      int32_t rank_post_pad = atomicAdd(&local_offsets[expert_id], 1);
-      sorted_token_ids[rank_post_pad] = i;
-    }
-  }
-}
-
 template <typename scalar_t, int TOPK, bool Is_bf16>
 __global__ void
 moe_sum_kernel(scalar_t *__restrict__ out,         // [..., d]
@@ -881,6 +566,42 @@ moe_sum_kernel(scalar_t *__restrict__ out,         // [..., d]
     }
   }
 }
+
+template <typename scalar_t, int TOPK, int VEC_SIZE, int D_VEC,
+          int total_threads_per_token, int TILE_WIDTH>
+__global__ void moe_sum_kernel_reg_bf16_no_bias_vec(
+    scalar_t *__restrict__ out, const scalar_t *__restrict__ input,
+    float factor, int num_tokens) {
+  using VecType = Vector<scalar_t, VEC_SIZE>;
+  for (int64_t token_idx = blockIdx.y; token_idx < num_tokens;
+       token_idx += gridDim.y) {
+    const VecType *input_base =
+        reinterpret_cast<const VecType *>(input) + token_idx * TOPK * D_VEC;
+    VecType *out_base = reinterpret_cast<VecType *>(out) + token_idx * D_VEC;
+
+    const int tid = threadIdx.x;
+    for (int vec_idx = blockIdx.x * TILE_WIDTH + tid; vec_idx < D_VEC;
+         vec_idx += total_threads_per_token) {
+      float acc[VEC_SIZE] = {0.0f};
+#pragma unroll
+      for (int k = 0; k < TOPK; ++k) {
+        VecType loaded_vec = input_base[k * D_VEC + vec_idx];
+#pragma unroll
+        for (int i = 0; i < VEC_SIZE; ++i) {
+          acc[i] += static_cast<float>(loaded_vec.val[i]);
+        }
+      }
+
+      VecType result_vec;
+#pragma unroll
+      for (int i = 0; i < VEC_SIZE; ++i) {
+        result_vec.val[i] = static_cast<scalar_t>(acc[i] * factor);
+      }
+      out_base[vec_idx] = result_vec;
+    }
+  }
+}
+
 template <typename scalar_t, int TOPK, int VEC_SIZE, int d_vec,
           int total_threads_per_token, int TILE_WIDTH, bool Is_bf16>
 __global__ void moe_sum_kernel_reg(scalar_t *__restrict__ out,
@@ -1570,6 +1291,43 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
   const at::cuda::OptionalCUDAGuard device_guard(device_of(output));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   input = input.is_contiguous() ? input : input.contiguous();
+
+  if (input.scalar_type() == at::ScalarType::BFloat16 && hidden_size == 6144 &&
+      !bias.has_value() && !expert_mask.has_value() &&
+      !num_local_tokens.has_value() &&
+      (topk == 8 || topk == 9 || topk == 10)) {
+    constexpr int block_size = 128;
+    constexpr int VEC_SIZE = 8;
+    constexpr int CONST_HIDDEN_SIZE = 6144;
+    constexpr int CONST_X_DIM = 6;
+    constexpr int D_VEC = CONST_HIDDEN_SIZE / VEC_SIZE;
+    dim3 Grid(CONST_X_DIM, num_tokens);
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+        at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
+        "moe_sum_kernel_reg_bf16_no_bias_vec", [&] {
+          if (topk == 8) {
+            moe_sum_kernel_reg_bf16_no_bias_vec<
+                scalar_t, 8, VEC_SIZE, D_VEC, CONST_X_DIM * block_size,
+                block_size><<<Grid, block_size, 0, stream>>>(
+                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                factor, num_tokens);
+          } else if (topk == 9) {
+            moe_sum_kernel_reg_bf16_no_bias_vec<
+                scalar_t, 9, VEC_SIZE, D_VEC, CONST_X_DIM * block_size,
+                block_size><<<Grid, block_size, 0, stream>>>(
+                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                factor, num_tokens);
+          } else {
+            moe_sum_kernel_reg_bf16_no_bias_vec<
+                scalar_t, 10, VEC_SIZE, D_VEC, CONST_X_DIM * block_size,
+                block_size><<<Grid, block_size, 0, stream>>>(
+                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
+                factor, num_tokens);
+          }
+        });
+    return;
+  }
+
   switch (topk) {
   case 2:
     AT_DISPATCH_FLOATING_TYPES_AND2(

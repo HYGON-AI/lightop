@@ -82,11 +82,11 @@ __global__ void rms_norm_kernel(
   }
 }
 
-template <typename scalar_t, bool HAS_WEIGHT = false>
+template <typename scalar_t, typename weight_t, bool HAS_WEIGHT = false>
 __global__ void rms_norm_optional_weight_kernel(
     scalar_t* out,                         // [..., hidden_size], may alias input
     const scalar_t* input,                 // [..., hidden_size]
-    const scalar_t* __restrict__ weight,   // [hidden_size] or nullptr
+    const weight_t* __restrict__ weight,   // [hidden_size] or nullptr
     const float epsilon, const int num_tokens, const int hidden_size) {
   __shared__ float s_variance;
   float variance = 0.0f;
@@ -342,12 +342,12 @@ __global__ void fused_rms_kernel_opt(scalar_t* input,scalar_t* output,scalar_t* 
   }
 }
 
-template <typename scalar_t, typename T_ACC, int Vec=4, int block_size=512,
+template <typename scalar_t, typename weight_t, typename T_ACC, int Vec=4, int block_size=512,
           bool HAS_WEIGHT=false>
 __global__ void rms_kernel_opt_optional_weight(
     const scalar_t* input,
     scalar_t* output,
-    const scalar_t* gamma,
+    const weight_t* gamma,
     int cols,
     T_ACC eps,
     int num_tokens) {
@@ -395,34 +395,34 @@ __global__ void rms_kernel_opt_optional_weight(
   }
 }
 
-template <bool HAS_WEIGHT, typename scalar_t, typename T_ACC>
+template <bool HAS_WEIGHT, typename scalar_t, typename weight_t, typename T_ACC>
 static inline void launch_rms_kernel_opt_optional_weight(
     const scalar_t* input_data,
     scalar_t* out_data,
-    const scalar_t* weight_data,
+    const weight_t* weight_data,
     int hidden_size,
     T_ACC eps,
     int num_tokens,
     int grid,
     cudaStream_t stream) {
   if (hidden_size<=1024){
-      rms_kernel_opt_optional_weight<scalar_t,T_ACC,8,128,HAS_WEIGHT><<<grid, 128, 0, stream>>>(
+      rms_kernel_opt_optional_weight<scalar_t,weight_t,T_ACC,8,128,HAS_WEIGHT><<<grid, 128, 0, stream>>>(
           input_data,out_data,weight_data,hidden_size,eps,num_tokens);
   }
   else if(hidden_size<=2048){
-      rms_kernel_opt_optional_weight<scalar_t,T_ACC,8,256,HAS_WEIGHT><<<grid, 256, 0, stream>>>(
+      rms_kernel_opt_optional_weight<scalar_t,weight_t,T_ACC,8,256,HAS_WEIGHT><<<grid, 256, 0, stream>>>(
           input_data,out_data,weight_data,hidden_size,eps,num_tokens);
   }
   else if(hidden_size<=4096){
-      rms_kernel_opt_optional_weight<scalar_t,T_ACC,8,512,HAS_WEIGHT><<<grid, 512, 0, stream>>>(
+      rms_kernel_opt_optional_weight<scalar_t,weight_t,T_ACC,8,512,HAS_WEIGHT><<<grid, 512, 0, stream>>>(
           input_data,out_data,weight_data,hidden_size,eps,num_tokens);
   }
   else if(hidden_size<=8192){
-      rms_kernel_opt_optional_weight<scalar_t,T_ACC,8,1024,HAS_WEIGHT><<<grid, 1024, 0, stream>>>(
+      rms_kernel_opt_optional_weight<scalar_t,weight_t,T_ACC,8,1024,HAS_WEIGHT><<<grid, 1024, 0, stream>>>(
           input_data,out_data,weight_data,hidden_size,eps,num_tokens);
   }
   else{
-      rms_kernel_opt_optional_weight<scalar_t,T_ACC,16,1024,HAS_WEIGHT><<<grid, 1024, 0, stream>>>(
+      rms_kernel_opt_optional_weight<scalar_t,weight_t,T_ACC,16,1024,HAS_WEIGHT><<<grid, 1024, 0, stream>>>(
           input_data,out_data,weight_data,hidden_size,eps,num_tokens);
   }
 }
@@ -493,9 +493,9 @@ void gemma_rmsnorm(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weig
 }
 
 void rms_norm_no_weight(
-    torch::optional<torch::Tensor>& out,
+    torch::optional<torch::Tensor> out,
     torch::Tensor& input,
-    torch::optional<torch::Tensor>& weight,
+    torch::optional<torch::Tensor> weight,
     double epsilon) {
   TORCH_CHECK(input.dim() > 0, "input must have at least 1 dimension");
   TORCH_CHECK(input.is_cuda(), "input must be a CUDA tensor");
@@ -518,8 +518,6 @@ void rms_norm_no_weight(
     weight_tensor = weight.value();
     TORCH_CHECK(weight_tensor.is_cuda(), "weight must be a CUDA tensor");
     TORCH_CHECK(weight_tensor.is_contiguous(), "weight must be contiguous");
-    TORCH_CHECK(weight_tensor.scalar_type() == input.scalar_type(),
-                "weight dtype must match input dtype");
     TORCH_CHECK(weight_tensor.numel() == input.size(-1),
                 "weight numel must equal hidden_size");
   }
@@ -547,18 +545,27 @@ void rms_norm_no_weight(
       input.scalar_type(),
       "rms_norm_no_weight_opt",
       [&] {
-        using T_ACC = at::acc_type<scalar_t, true>;
+        using input_t = scalar_t;
+        using T_ACC = at::acc_type<input_t, true>;
         T_ACC eps = epsilon;
-        const scalar_t* self_data = input.expect_contiguous()->data_ptr<scalar_t>();
-        scalar_t* out_data = output.expect_contiguous()->data_ptr<scalar_t>();
-        const scalar_t* weight_data =
-            has_weight ? weight_tensor.expect_contiguous()->data_ptr<scalar_t>() : nullptr;
+        const input_t* self_data = input.expect_contiguous()->data_ptr<input_t>();
+        input_t* out_data = output.expect_contiguous()->data_ptr<input_t>();
 
         if (has_weight) {
-          launch_rms_kernel_opt_optional_weight<true, scalar_t, T_ACC>(
-              self_data, out_data, weight_data, hidden_size, eps, num_tokens, grid, stream);
+          AT_DISPATCH_FLOATING_TYPES_AND2(
+            at::ScalarType::Half,
+            at::ScalarType::BFloat16,
+            weight_tensor.scalar_type(),
+            "rms_norm_no_weight_opt_weight",
+            [&] {
+              using weight_t = scalar_t;
+              const weight_t* weight_data =
+                  weight_tensor.expect_contiguous()->data_ptr<weight_t>();
+              launch_rms_kernel_opt_optional_weight<true, input_t, weight_t, T_ACC>(
+                  self_data, out_data, weight_data, hidden_size, eps, num_tokens, grid, stream);
+            });
         } else {
-          launch_rms_kernel_opt_optional_weight<false, scalar_t, T_ACC>(
+          launch_rms_kernel_opt_optional_weight<false, input_t, input_t, T_ACC>(
               self_data, out_data, nullptr, hidden_size, eps, num_tokens, grid, stream);
         }
       });
@@ -570,16 +577,26 @@ void rms_norm_no_weight(
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half,
         at::ScalarType::BFloat16,input.scalar_type(), "rms_norm_no_weight", [&] {
-      scalar_t* out_data = output.data_ptr<scalar_t>();
-      const scalar_t* input_data = input.data_ptr<scalar_t>();
-      const scalar_t* weight_data =
-          has_weight ? weight_tensor.data_ptr<scalar_t>() : nullptr;
+      using input_t = scalar_t;
+      input_t* out_data = output.data_ptr<input_t>();
+      const input_t* input_data = input.data_ptr<input_t>();
 
       if (has_weight) {
-        vllm::rms_norm_optional_weight_kernel<scalar_t, true><<<grid_dim, block, 0, stream>>>(
-            out_data, input_data, weight_data, epsilon, num_tokens, hidden_size);
+        AT_DISPATCH_FLOATING_TYPES_AND2(
+          at::ScalarType::Half,
+          at::ScalarType::BFloat16,
+          weight_tensor.scalar_type(),
+          "rms_norm_no_weight_weight",
+          [&] {
+            using weight_t = scalar_t;
+            const weight_t* weight_data = weight_tensor.data_ptr<weight_t>();
+            vllm::rms_norm_optional_weight_kernel<input_t, weight_t, true>
+                <<<grid_dim, block, 0, stream>>>(
+                    out_data, input_data, weight_data, epsilon, num_tokens, hidden_size);
+          });
       } else {
-        vllm::rms_norm_optional_weight_kernel<scalar_t, false><<<grid_dim, block, 0, stream>>>(
+        vllm::rms_norm_optional_weight_kernel<input_t, input_t, false>
+            <<<grid_dim, block, 0, stream>>>(
             out_data, input_data, nullptr, epsilon, num_tokens, hidden_size);
       }
     });
