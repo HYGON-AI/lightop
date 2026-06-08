@@ -5,9 +5,22 @@
 
 #include "paged_mqa_logits/paged_mqa_logits.h"
 #include "sampling/sampling.h"
-
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace at {  namespace native {
+void fused_metadata_kernel_general_launcher(
+    Tensor seq_lens,
+    Tensor req_to_token,
+    Tensor req_pool_indices,
+    Tensor cache_seqlens_int32,
+    Tensor cu_seqlens_k,
+    Tensor page_table,
+    const c10::optional<Tensor>& swa_page_table,
+    const c10::optional<Tensor>& full_to_swa_mapping,
+    int64_t B,
+    int64_t max_seq_pages,
+    int64_t page_size,
+    int64_t seq_len_delta,
+    bool    use_swa);
 Tensor rmsnorm_forward_autograd(const Tensor& x,const Tensor& weight,double eps,bool training);
 std::tuple<Tensor,Tensor>rmsnorm_forward(const Tensor& self,const Tensor& weight,c10::optional<Tensor>& output_inplace,double eps,bool training);
 std::tuple<Tensor,Tensor>rmsnorm_backward(const Tensor& grad, const Tensor& X,const Tensor& rstd,const Tensor& gamma);
@@ -352,9 +365,9 @@ void ep_fused_smooth_quant_scatter(
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale);
 void rms_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,double epsilon);
 void rms_norm_no_weight(
-    torch::optional<torch::Tensor>& out,
+    torch::optional<torch::Tensor> out,
     torch::Tensor& input,
-    torch::optional<torch::Tensor>& weight,
+    torch::optional<torch::Tensor> weight,
     double epsilon);
 void fused_add_rms_norm_opt(torch::Tensor& input,torch::Tensor& residual, torch::Tensor& weight,double epsilon); 
 void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
@@ -647,7 +660,9 @@ void fused_deepseek_v4_qnorm_rope_kvnorm_rope(
     double eps);
 void ep_build_m_indices(torch::Tensor topk_ids,torch::Tensor m_indices,int local_num_experts,int alignment);
 void topk_ids_postprocess(torch::Tensor topk_ids, torch::optional<torch::Tensor> logical_to_physical_map, torch::optional<torch::Tensor> num_token_non_padded);
+torch::Tensor dpskv4_hc_head_fused(torch::Tensor mixes, torch::Tensor x, torch::Tensor hc_scale, torch::Tensor hc_base, double hc_eps);
 void ep_fused_fp8_quant_scatter(torch::Tensor input,torch::Tensor topk_ids,torch::optional<torch::Tensor> expert_map_opt,torch::Tensor expert_num_tokens,torch::Tensor aq_out,torch::Tensor aq_scale_out,torch::Tensor m_indices,torch::Tensor inv_perm, int local_num_experts,int alignment,int fp8type,bool fill_padded_m_indices);
+std::vector<Tensor> moe_fused_gate_sqrtsoftplus(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 }
 }
 
@@ -912,5 +927,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("ep_build_m_indices", &at::native::ep_build_m_indices,"ep_build_m_indices");
  m.def("ep_fused_fp8_quant_scatter", &at::native::ep_fused_fp8_quant_scatter,"ep_fused_fp8_quant_scatter");
  m.def("quantize_nope_fp8_rope_bf16_pack_store", &at::native::quantize_nope_fp8_rope_bf16_pack_store, "quantize_nope_fp8_rope_bf16_pack_store");
-m.def("topk_ids_postprocess",&at::native::topk_ids_postprocess,"topk_ids_postprocess");
+ m.def("topk_ids_postprocess",&at::native::topk_ids_postprocess,"topk_ids_postprocess");
+ m.def("dpskv4_hc_head_fused", &at::native::dpskv4_hc_head_fused, "dpskv4_hc_head_fused");
+ m.def("fused_metadata_kernel_general", &at::native::fused_metadata_kernel_general_launcher,
+       "fused_metadata_kernel_general",
+       py::arg("seq_lens"),
+       py::arg("req_to_token"),
+       py::arg("req_pool_indices"),
+       py::arg("cache_seqlens_int32"),
+       py::arg("cu_seqlens_k"),
+       py::arg("page_table"),
+       py::arg("swa_page_table") = torch::nullopt,
+       py::arg("full_to_swa_mapping") = torch::nullopt,
+       py::arg("B"),
+       py::arg("max_seq_pages"),
+       py::arg("page_size"),
+       py::arg("seq_len_delta"),
+       py::arg("use_swa"));
+m.def("moe_fused_gate_sqrtsoftplus",&at::native::moe_fused_gate_sqrtsoftplus,"moe_fused_gate_sqrtsoftplus");       
 }
