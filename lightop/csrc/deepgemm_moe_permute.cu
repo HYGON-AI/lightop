@@ -385,18 +385,28 @@ __launch_bounds__(1024) __global__
             int64_t row_idx = token_idx * K + k_idx;
             int expert_id = -1;
 
-            if (is_valid) {
-                expert_id = (int)topk_ids[row_idx];
-                is_valid = expert_id >= 0 && expert_id < num_experts;
-            }
+           if (is_valid) {
+              int global_expert_id = static_cast<int>(topk_ids[row_idx]);
 
-            if (is_valid && has_expert_map) {
-                int mapped_id = expert_map[expert_id];
-                if (mapped_id == -1)
+              if (has_expert_map) {
+                if (global_expert_id < 0) {
+                  is_valid = false;
+                } else {
+                  int mapped_id = expert_map[global_expert_id];
+                  if (mapped_id < 0 || mapped_id >= num_experts) {
                     is_valid = false;
-                else
+                  } else {
                     expert_id = mapped_id;
-            }
+                  }
+                }
+              } else {
+                if (global_expert_id < 0 || global_expert_id >= num_experts) {
+                  is_valid = false;
+                } else {
+                  expert_id = global_expert_id;
+                }
+              }
+          }
 
             is_valid_shared[k_idx] = is_valid;
 
@@ -483,13 +493,28 @@ __launch_bounds__(1024) __global__ void ep_scatter_kernel_1024_opt(
   if (group_id < K) {
       if (lane_id == 0) {
           int64_t row_idx = global_token_idx * K + group_id;
-          int expert_id = (int)topk_ids[row_idx];
-          bool is_valid = expert_id >= 0 && expert_id < num_experts;
+          int global_expert_id = static_cast<int>(topk_ids[row_idx]);
+          int expert_id = -1;
+          bool is_valid = true;
 
-          if (is_valid && has_expert_map) {
-              int mapped_id = expert_map[expert_id];
-              if (mapped_id == -1) is_valid = false;
-              else expert_id = mapped_id;
+          if (has_expert_map) {
+              if (global_expert_id < 0) {
+                  is_valid = false;
+              } else {
+                  int mapped_id = expert_map[global_expert_id];
+
+                  if (mapped_id < 0 || mapped_id >= num_experts) {
+                      is_valid = false;
+                  } else {
+                      expert_id = mapped_id;
+                  }
+              }
+          } else {
+              if (global_expert_id < 0 || global_expert_id >= num_experts) {
+                  is_valid = false;
+              } else {
+                  expert_id = global_expert_id;
+              }
           }
 
           if (is_valid) {
