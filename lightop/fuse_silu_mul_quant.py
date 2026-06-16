@@ -5,7 +5,24 @@ import torch.nn as nn
 from . import op
 from typing import Optional, Tuple
 
-def fuse_silu_and_mul(input: torch.Tensor,output: torch.Tensor) -> None:
+def fuse_silu_and_mul_ep(input: torch.Tensor,
+                         output: torch.Tensor,
+                         mask_m: torch.Tensor,
+                         expect_m: int = -1) -> None:
+    """Run masked EP SiLU-and-mul.
+
+    mask_m contains one valid-token count per expert.
+    expect_m controls the expected number of launched blocks per expert.
+    """
+    op.fuse_silu_and_mul_ep(input, output, mask_m, expect_m)
+
+def fuse_silu_and_mul(input: torch.Tensor,
+                      output: torch.Tensor,
+                      mask_m: Optional[torch.Tensor] = None,
+                      expect_m: int = -1) -> None:
+    if mask_m is not None:
+        fuse_silu_and_mul_ep(input, output, mask_m, expect_m)
+        return
     op.fuse_silu_and_mul(input, output)
 
 def fuse_silu_mul_quant(input: torch.Tensor, 

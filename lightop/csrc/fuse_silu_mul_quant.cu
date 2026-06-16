@@ -891,8 +891,16 @@ void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& out, torch::Tensor
 
 template <typename T>
 __device__ __forceinline__ T silu_kernel_opt(const T& x) {
-  // x * sigmoid(x)
-  return (T)(((float)x) / (1.0f + __expf((float)-x)));
+  constexpr float LOG2E = 1.44269504088896340736f;
+  float xf = static_cast<float>(x);
+
+#ifdef USE_ROCM
+  float exp_val = __builtin_amdgcn_exp2f(-xf * LOG2E);
+#else
+  float exp_val = __expf(-xf);
+#endif
+
+  return static_cast<T>(xf / (1.0f + exp_val));
 }
 
 template <typename scalar_t>
@@ -991,6 +999,136 @@ __global__ void silu_and_mul_opt3(scalar_t * __restrict__ output, const scalar_t
         *y = *(VecType*)r_y;
     }
     return;
+}
+
+template <typename scalar_t, int VEC>
+__global__ void silu_and_mul_ep_kernel(
+    scalar_t* __restrict__ output,
+    const scalar_t* __restrict__ input,
+    const int32_t* __restrict__ mask_m,
+    int64_t d,
+    int64_t tokens_per_expert) {
+  using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+
+  const int64_t expert_idx = blockIdx.x;
+  for (int64_t token_in_expert = blockIdx.y;
+       token_in_expert < tokens_per_expert;
+       token_in_expert += gridDim.y) {
+    if (token_in_expert >= mask_m[expert_idx]) {
+      break;
+    }
+
+    const int64_t token_idx =
+        expert_idx * tokens_per_expert + token_in_expert;
+    for (int64_t idx = static_cast<int64_t>(threadIdx.x) * VEC; idx < d;
+         idx += static_cast<int64_t>(blockDim.x) * VEC) {
+      const int64_t input_offset = token_idx * 2 * d + idx;
+      const int64_t output_offset = token_idx * d + idx;
+      const VecType* x1 =
+          reinterpret_cast<const VecType*>(input + input_offset);
+      const VecType* x2 =
+          reinterpret_cast<const VecType*>(input + input_offset + d);
+      VecType* y = reinterpret_cast<VecType*>(output + output_offset);
+      scalar_t r_x1[VEC];
+      scalar_t r_x2[VEC];
+      scalar_t r_y[VEC];
+      *reinterpret_cast<VecType*>(r_x1) = *x1;
+      *reinterpret_cast<VecType*>(r_x2) = *x2;
+#pragma unroll
+      for (int i = 0; i < VEC; ++i) {
+        r_y[i] = silu_kernel_opt(r_x1[i]) * r_x2[i];
+      }
+      *y = *reinterpret_cast<VecType*>(r_y);
+    }
+  }
+}
+
+template <typename scalar_t>
+void launch_silu_and_mul_ep(
+    torch::Tensor& input,
+    torch::Tensor& out,
+    const torch::Tensor& mask_m,
+    int64_t d,
+    int64_t tokens_per_expert,
+    dim3 grid,
+    cudaStream_t stream) {
+  const int32_t* mask_ptr = mask_m.data_ptr<int32_t>();
+  if (d % 8 == 0 && d <= 8192) {
+    int block_size = 1024;
+    if (d <= 1024) {
+      block_size = 128;
+    } else if (d <= 2048) {
+      block_size = 256;
+    } else if (d <= 4096) {
+      block_size = 512;
+    }
+    silu_and_mul_ep_kernel<scalar_t, 8>
+        <<<grid, block_size, 0, stream>>>(
+            out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(), mask_ptr,
+            d, tokens_per_expert);
+  } else if (d % 2 == 0 && d <= 512) {
+    silu_and_mul_ep_kernel<scalar_t, 2>
+        <<<grid, 256, 0, stream>>>(
+            out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(), mask_ptr,
+            d, tokens_per_expert);
+  } else {
+    const int block_size =
+        static_cast<int>(std::min<int64_t>(d, 1024));
+    silu_and_mul_ep_kernel<scalar_t, 1>
+        <<<grid, block_size, 0, stream>>>(
+            out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(), mask_ptr,
+            d, tokens_per_expert);
+  }
+}
+
+void fuse_silu_and_mul_ep(torch::Tensor& input,
+                          torch::Tensor& out,
+                          const torch::Tensor& mask_m,
+                          int expect_m) {
+  TORCH_CHECK(input.is_cuda(), "input must be a CUDA tensor");
+  TORCH_CHECK(out.is_cuda(), "out must be a CUDA tensor");
+  TORCH_CHECK(mask_m.is_cuda(), "mask_m must be a CUDA tensor");
+  TORCH_CHECK(input.device() == out.device() &&
+                  input.device() == mask_m.device(),
+              "input, out and mask_m must be on the same device");
+  TORCH_CHECK(input.is_contiguous(), "input must be contiguous");
+  TORCH_CHECK(out.is_contiguous(), "out must be contiguous");
+  TORCH_CHECK(mask_m.is_contiguous(), "mask_m must be contiguous");
+  TORCH_CHECK(input.dim() == 3, "input must be shaped [E, M, 2 * D]");
+  TORCH_CHECK(out.dim() == 3, "out must be shaped [E, M, D]");
+  TORCH_CHECK(input.size(-1) % 2 == 0,
+              "input's last dimension must be even");
+  TORCH_CHECK(input.scalar_type() == out.scalar_type(),
+              "input and out must have the same dtype");
+
+  const int64_t num_experts = input.size(0);
+  const int64_t tokens_per_expert = input.size(1);
+  const int64_t d = input.size(-1) / 2;
+  TORCH_CHECK(out.size(0) == num_experts &&
+                  out.size(1) == tokens_per_expert && out.size(2) == d,
+              "out must be shaped [E, M, D]");
+  TORCH_CHECK(mask_m.dim() == 1 && mask_m.numel() == num_experts,
+              "mask_m must be shaped [expert_nums]");
+  TORCH_CHECK(mask_m.scalar_type() == at::ScalarType::Int,
+              "mask_m must have torch.int32 dtype");
+  if (num_experts == 0 || tokens_per_expert == 0 || d == 0) {
+    return;
+  }
+
+  const int64_t expected_blocks =
+      expect_m > 0 ? int64_t(expect_m) : tokens_per_expert;
+  const int grid_y = static_cast<int>(
+      std::max<int64_t>(1, std::min(tokens_per_expert, expected_blocks)));
+  const dim3 grid(static_cast<uint32_t>(num_experts),
+                  static_cast<uint32_t>(grid_y));
+
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  VLLM_DISPATCH_FLOATING_TYPES(
+      input.scalar_type(), "fuse_silu_and_mul_ep", [&] {
+        launch_silu_and_mul_ep<scalar_t>(
+            input, out, mask_m, d, tokens_per_expert, grid, stream);
+      });
 }
 
 void fuse_silu_and_mul(torch::Tensor& input, torch::Tensor& out)
