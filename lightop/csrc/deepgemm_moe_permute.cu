@@ -13,6 +13,8 @@
 namespace at {
 namespace native {
 
+constexpr int EP_SCAN_MAX_EXPERTS = 1024;
+
 template <typename T, int N> struct alignas(sizeof(T) * N) AlignedVector {
   T val[N];
   __device__ inline T &operator[](int i) { return val[i]; }
@@ -552,8 +554,8 @@ __launch_bounds__(BLOCK_THREADS) __global__ void ep_build_m_indices_kernel(
     const topk_t *__restrict__ topk_ids, int32_t *__restrict__ m_indices,
     int64_t topk_numel, int64_t total_elements, int num_experts,
     int alignment) {
-  __shared__ int32_t counts[1024];
-  __shared__ int32_t starts[1024];
+  __shared__ int32_t counts[EP_SCAN_MAX_EXPERTS];
+  __shared__ int32_t starts[EP_SCAN_MAX_EXPERTS];
 
   const int tid = threadIdx.x;
   for (int expert = tid; expert < num_experts; expert += blockDim.x) {
@@ -743,6 +745,8 @@ void ep_fused_quant_scatter(torch::Tensor input, // fp16 or bf16
 
   TORCH_CHECK(hidden_size % 16 == 0,
               "Hidden size must be divisible by 16 for int4 copy");
+  TORCH_CHECK(local_num_experts > 0 && local_num_experts <= EP_SCAN_MAX_EXPERTS,
+              "ep_fused_quant_scatter supports 1 to 1024 experts");
 
   auto input_tensor = input.expect_contiguous();
   const int32_t *expert_map_ptr = nullptr;
@@ -757,7 +761,8 @@ void ep_fused_quant_scatter(torch::Tensor input, // fp16 or bf16
 
   // scan
   {
-    ep_scan_kernel<256><<<1, 256, 0, stream>>>(
+    ep_scan_kernel<EP_SCAN_MAX_EXPERTS>
+        <<<1, EP_SCAN_MAX_EXPERTS, 0, stream>>>(
         expert_counters_ptr, expert_counters_ptr, local_num_experts, alignment);
   }
   // scatter
@@ -800,11 +805,11 @@ void ep_build_m_indices(torch::Tensor topk_ids, torch::Tensor m_indices,
               "ep_build_m_indices expects int32 or int64 topk_ids");
   TORCH_CHECK(m_indices.scalar_type() == at::ScalarType::Int,
               "ep_build_m_indices expects int32 m_indices");
-  TORCH_CHECK(local_num_experts > 0 && local_num_experts <= 1024,
+  TORCH_CHECK(local_num_experts > 0 && local_num_experts <= EP_SCAN_MAX_EXPERTS,
               "ep_build_m_indices supports 1 to 1024 experts");
   TORCH_CHECK(alignment > 0, "ep_build_m_indices expects positive alignment");
 
-  constexpr int BLOCK_THREADS = 1024;
+  constexpr int BLOCK_THREADS = EP_SCAN_MAX_EXPERTS;
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   AT_DISPATCH_INTEGRAL_TYPES(topk_ids.scalar_type(), "ep_build_m_indices", [&] {
     ep_build_m_indices_kernel<scalar_t, BLOCK_THREADS>
@@ -851,6 +856,8 @@ void ep_fused_fp8_quant_scatter(torch::Tensor input, torch::Tensor topk_ids,
   TORCH_CHECK(K <= 8, "ep_fused_fp8_quant_scatter supports topk <= 8");
   TORCH_CHECK(fp8type == 0 || fp8type == 1,
               "ep_fused_fp8_quant_scatter fp8type must be 0(e4m3) or 1(e5m2)");
+  TORCH_CHECK(local_num_experts > 0 && local_num_experts <= EP_SCAN_MAX_EXPERTS,
+              "ep_fused_fp8_quant_scatter supports 1 to 1024 experts");
 
   const int32_t *expert_map_ptr = nullptr;
   bool has_expert_map = false;
@@ -863,11 +870,13 @@ void ep_fused_fp8_quant_scatter(torch::Tensor input, torch::Tensor topk_ids,
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
   if (fill_padded_m_indices) {
-    ep_scan_fill_m_indices_kernel<256, true><<<1, 256, 0, stream>>>(
+    ep_scan_fill_m_indices_kernel<EP_SCAN_MAX_EXPERTS, true>
+        <<<1, EP_SCAN_MAX_EXPERTS, 0, stream>>>(
         expert_counters_ptr, expert_counters_ptr, m_indices.data_ptr<int32_t>(),
         local_num_experts, alignment);
   } else {
-    ep_scan_fill_m_indices_kernel<256, false><<<1, 256, 0, stream>>>(
+    ep_scan_fill_m_indices_kernel<EP_SCAN_MAX_EXPERTS, false>
+        <<<1, EP_SCAN_MAX_EXPERTS, 0, stream>>>(
         expert_counters_ptr, expert_counters_ptr, m_indices.data_ptr<int32_t>(),
         local_num_experts, alignment);
   }
@@ -994,6 +1003,8 @@ void ep_scatter(torch::Tensor aq, torch::Tensor aq_scale,
   TORCH_CHECK(H % 16 == 0,
               "ep_scatter hidden size must be divisible by 16");
   TORCH_CHECK(K <= 8, "ep_scatter supports topk <= 8");
+  TORCH_CHECK(local_num_experts > 0 && local_num_experts <= EP_SCAN_MAX_EXPERTS,
+              "ep_scatter supports 1 to 1024 experts");
 
   const int32_t *expert_map_ptr = nullptr;
   bool has_expert_map = false;
@@ -1013,8 +1024,8 @@ void ep_scatter(torch::Tensor aq, torch::Tensor aq_scale,
   // Scan
   {
     dim3 grid(1);
-    dim3 block(256);
-    constexpr int CUB_BLOCK_THREADS = 256;
+    dim3 block(EP_SCAN_MAX_EXPERTS);
+    constexpr int CUB_BLOCK_THREADS = EP_SCAN_MAX_EXPERTS;
     ep_scan_fill_m_indices_kernel<CUB_BLOCK_THREADS, false>
         <<<grid, block, 0, stream>>>(
             expert_counters_ptr, expert_counters_ptr,
