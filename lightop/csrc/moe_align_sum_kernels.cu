@@ -5,6 +5,8 @@
 #include <ATen/ATen.h>
 #include <ATen/cuda/Atomic.cuh>
 #include <cub/block/block_scan.cuh>
+#include <cstdint>
+#include <type_traits>
 #define WARP_SIZE 1
 
 #define CEILDIV(x, y) (((x) + (y) - 1) / (y))
@@ -567,12 +569,39 @@ moe_sum_kernel(scalar_t *__restrict__ out,         // [..., d]
   }
 }
 
-template <typename scalar_t, int TOPK, int VEC_SIZE, int D_VEC,
+template <typename scalar_t>
+static __device__ inline void moe_sum_from_float(scalar_t &out, float f) {
+  if constexpr (!std::is_same<scalar_t, uint16_t>::value) {
+    out = f;
+  } else {
+    union {
+      float fp32;
+      uint32_t int32;
+    } u = {f};
+    u.int32 += 0x7fff + ((u.int32 >> 16) & 1);
+    out = u.int32 >> 16;
+  }
+}
+ 
+template <typename scalar_t>
+static __device__ inline float moe_sum_to_float(scalar_t in) {
+  if constexpr (!std::is_same<scalar_t, uint16_t>::value) {
+    return in;
+  } else {
+    union {
+      uint32_t int32;
+      float fp32;
+    } u = {uint32_t(in) << 16};
+    return u.fp32;
+  }
+}
+
+template <int TOPK, int VEC_SIZE, int D_VEC,
           int total_threads_per_token, int TILE_WIDTH>
 __global__ void moe_sum_kernel_reg_bf16_no_bias_vec(
-    scalar_t *__restrict__ out, const scalar_t *__restrict__ input,
+    uint16_t *__restrict__ out, const uint16_t *__restrict__ input,
     float factor, int num_tokens) {
-  using VecType = Vector<scalar_t, VEC_SIZE>;
+  using VecType = Vector<uint16_t, VEC_SIZE>;
   for (int64_t token_idx = blockIdx.y; token_idx < num_tokens;
        token_idx += gridDim.y) {
     const VecType *input_base =
@@ -588,14 +617,14 @@ __global__ void moe_sum_kernel_reg_bf16_no_bias_vec(
         VecType loaded_vec = input_base[k * D_VEC + vec_idx];
 #pragma unroll
         for (int i = 0; i < VEC_SIZE; ++i) {
-          acc[i] += static_cast<float>(loaded_vec.val[i]);
+          acc[i] += moe_sum_to_float(loaded_vec.val[i]);
         }
       }
 
       VecType result_vec;
 #pragma unroll
       for (int i = 0; i < VEC_SIZE; ++i) {
-        result_vec.val[i] = static_cast<scalar_t>(acc[i] * factor);
+        moe_sum_from_float(result_vec.val[i], acc[i] * factor);
       }
       out_base[vec_idx] = result_vec;
     }
@@ -1292,41 +1321,68 @@ void moe_sum(torch::Tensor &input,  // [num_tokens, topk, hidden_size]
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   input = input.is_contiguous() ? input : input.contiguous();
 
-  if (input.scalar_type() == at::ScalarType::BFloat16 && hidden_size == 6144 &&
+#define DISPATCH_BF16_NO_BIAS_VEC(HIDDEN_SIZE_VAL, X_DIM_VAL)                \
+  do {                                                                       \
+    constexpr int block_size = 128;                                          \
+    constexpr int VEC_SIZE = 8;                                              \
+    constexpr int CONST_HIDDEN_SIZE = HIDDEN_SIZE_VAL;                       \
+    constexpr int CONST_X_DIM = X_DIM_VAL;                                   \
+    constexpr int D_VEC = CONST_HIDDEN_SIZE / VEC_SIZE;                      \
+    dim3 Grid(CONST_X_DIM, num_tokens);                                      \
+    auto *out_ptr = reinterpret_cast<uint16_t *>(                            \
+        output.data_ptr<at::BFloat16>());                                    \
+    const auto *input_ptr = reinterpret_cast<const uint16_t *>(              \
+        input.data_ptr<at::BFloat16>());                                     \
+    if (topk == 8) {                                                         \
+      moe_sum_kernel_reg_bf16_no_bias_vec<                                   \
+          8, VEC_SIZE, D_VEC, CONST_X_DIM * block_size, block_size>          \
+          <<<Grid, block_size, 0, stream>>>(out_ptr, input_ptr, factor,      \
+                                            num_tokens);                     \
+    } else if (topk == 9) {                                                  \
+      moe_sum_kernel_reg_bf16_no_bias_vec<                                   \
+          9, VEC_SIZE, D_VEC, CONST_X_DIM * block_size, block_size>          \
+          <<<Grid, block_size, 0, stream>>>(out_ptr, input_ptr, factor,      \
+                                            num_tokens);                     \
+    } else {                                                                 \
+      moe_sum_kernel_reg_bf16_no_bias_vec<                                   \
+          10, VEC_SIZE, D_VEC, CONST_X_DIM * block_size, block_size>         \
+          <<<Grid, block_size, 0, stream>>>(out_ptr, input_ptr, factor,      \
+                                            num_tokens);                     \
+    }                                                                        \
+  } while (0)
+
+  if (input.scalar_type() == at::ScalarType::BFloat16 &&
       !bias.has_value() && !expert_mask.has_value() &&
       !num_local_tokens.has_value() &&
       (topk == 8 || topk == 9 || topk == 10)) {
-    constexpr int block_size = 128;
-    constexpr int VEC_SIZE = 8;
-    constexpr int CONST_HIDDEN_SIZE = 6144;
-    constexpr int CONST_X_DIM = 6;
-    constexpr int D_VEC = CONST_HIDDEN_SIZE / VEC_SIZE;
-    dim3 Grid(CONST_X_DIM, num_tokens);
-    AT_DISPATCH_FLOATING_TYPES_AND2(
-        at::ScalarType::Half, at::ScalarType::BFloat16, input.scalar_type(),
-        "moe_sum_kernel_reg_bf16_no_bias_vec", [&] {
-          if (topk == 8) {
-            moe_sum_kernel_reg_bf16_no_bias_vec<
-                scalar_t, 8, VEC_SIZE, D_VEC, CONST_X_DIM * block_size,
-                block_size><<<Grid, block_size, 0, stream>>>(
-                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                factor, num_tokens);
-          } else if (topk == 9) {
-            moe_sum_kernel_reg_bf16_no_bias_vec<
-                scalar_t, 9, VEC_SIZE, D_VEC, CONST_X_DIM * block_size,
-                block_size><<<Grid, block_size, 0, stream>>>(
-                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                factor, num_tokens);
-          } else {
-            moe_sum_kernel_reg_bf16_no_bias_vec<
-                scalar_t, 10, VEC_SIZE, D_VEC, CONST_X_DIM * block_size,
-                block_size><<<Grid, block_size, 0, stream>>>(
-                output.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-                factor, num_tokens);
-          }
-        });
-    return;
+    switch (hidden_size) {
+    case 2048:
+      DISPATCH_BF16_NO_BIAS_VEC(2048, 2);
+      return;
+    case 3072:
+      DISPATCH_BF16_NO_BIAS_VEC(3072, 3);
+      return;
+    case 4096:
+      DISPATCH_BF16_NO_BIAS_VEC(4096, 4);
+      return;
+    case 5120:
+      DISPATCH_BF16_NO_BIAS_VEC(5120, 5);
+      return;
+    case 6144:
+      DISPATCH_BF16_NO_BIAS_VEC(6144, 6);
+      return;
+    case 7168:
+      DISPATCH_BF16_NO_BIAS_VEC(7168, 7);
+      return;
+    case 8192:
+      DISPATCH_BF16_NO_BIAS_VEC(8192, 8);
+      return;
+    default:
+      break;
+    }
   }
+
+#undef DISPATCH_BF16_NO_BIAS_VEC
 
   switch (topk) {
   case 2:
