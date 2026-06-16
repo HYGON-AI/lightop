@@ -310,6 +310,7 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::
 void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids) ;
 void fuse_silu_mul_fp8_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m);
 void fuse_silu_and_mul(torch::Tensor& input, torch::Tensor& out);
+void fuse_silu_and_mul_ep(torch::Tensor& input, torch::Tensor& out, const torch::Tensor& mask_m, int expect_m);
 void moe_sum(torch::Tensor &input,
              torch::Tensor &output, 
              const torch::optional<torch::Tensor> &bias = torch::nullopt ,
@@ -945,4 +946,5 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
        py::arg("seq_len_delta"),
        py::arg("use_swa"));
 m.def("moe_fused_gate_sqrtsoftplus",&at::native::moe_fused_gate_sqrtsoftplus,"moe_fused_gate_sqrtsoftplus");       
+m.def("fuse_silu_and_mul_ep",&at::native::fuse_silu_and_mul_ep,"fuse_silu_and_mul_ep");       
 }
