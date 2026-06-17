@@ -671,9 +671,10 @@ __global__ void moe_fused_gate_kernel_gourp1(
 
   if (thread_group_idx < TOPK) { 
     int const out_idx = TOPK * thread_row + thread_group_idx;
-    float route_scale = routed_scaling_factor > 0.0
-        ? static_cast<float>(routed_scaling_factor)
-        : 1.0f;
+    float route_scale = 1.0;
+    if constexpr(NUM_EXPERTS == 192) {  // 192 hy3缩放，其他专家数不缩放
+        route_scale = static_cast<float>(routed_scaling_factor); 
+    }
     output_ptr[out_idx] = (my_stored_prob / output_sum) * route_scale;
     indices_ptr[out_idx] = my_stored_idx;
   }
