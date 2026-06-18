@@ -73,6 +73,20 @@ namespace native {
 
 namespace softmax_kernel {
 
+inline bool use_lastdim_smallsize_fwd(ScalarType dtype, int64_t dim_size,
+                                      int half_threshold, int float_threshold) {
+    return (dtype == ScalarType::Float && dim_size < float_threshold) ||
+           ((dtype == ScalarType::Half || dtype == ScalarType::BFloat16) &&
+            dim_size <= half_threshold);
+}
+
+inline bool use_lastdim_smallsize_bwd(ScalarType dtype, int64_t dim_size,
+                                      int half_threshold, int float_threshold) {
+    return (dtype == ScalarType::Float && dim_size <= float_threshold) ||
+           ((dtype == ScalarType::Half || dtype == ScalarType::BFloat16) &&
+            dim_size <= half_threshold);
+}
+
 template<bool is_log_softmax>
 void fuse_softmax_lastdim_fwd(const Tensor &input, const Tensor& output, const bool &half_to_float,
                               const int64_t &outer_size, const int64_t &dim_size, const int64_t &inner_size,
@@ -84,8 +98,8 @@ void fuse_softmax_lastdim_fwd(const Tensor &input, const Tensor& output, const b
             int half_threshold = 2048;
             int float_threshold = 2048;
 
-            if ((input.scalar_type() == ScalarType::Float && dim_size < float_threshold) || 
-                (input.scalar_type() == ScalarType::Half && dim_size <= half_threshold)) {
+            if (use_lastdim_smallsize_fwd(input.scalar_type(), dim_size,
+                                          half_threshold, float_threshold)) {
                 auto output_ptr = output.data_ptr<scalar_t>();
                 auto input_ptr = input.data_ptr<scalar_t>();
                 softmax_lastdim::softmax_lastdim_smallsize_forward<scalar_t, scalar_t, accscalar_t, is_log_softmax>(
@@ -192,8 +206,8 @@ void fuse_softmax_lastdim_bwd(const Tensor &grad_input, const Tensor &grad, cons
             int half_threshold = 1024;
             int float_threshold = 1024;
 
-            if ((grad_input.scalar_type() == ScalarType::Float && dim_size <= float_threshold) || 
-                (grad_input.scalar_type() == ScalarType::Half && dim_size <= half_threshold)) {
+            if (use_lastdim_smallsize_bwd(grad_input.scalar_type(), dim_size,
+                                          half_threshold, float_threshold)) {
                 auto grad_input_ptr = grad_input.data_ptr<scalar_t>();
                 auto grad_ptr = grad.data_ptr<scalar_t>();
                 auto output_ptr = output.data_ptr<scalar_t>();

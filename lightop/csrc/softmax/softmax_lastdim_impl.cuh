@@ -122,8 +122,8 @@ __global__ void softmax_warp_forward(output_t *dst, const input_t *src, int oute
     }
 
     // compute online softmax
-    const auto online_softmax_updater = softmax_op::OnlineSoftmaxUpdate<input_t, acc_t>();
-    const auto online_softmax_combine_updater = softmax_op::OnlineSoftmaxCombineUpdate<input_t, acc_t>();
+    const auto online_softmax_updater = softmax_op::OnlineSoftmaxUpdate<acc_t, acc_t>();
+    const auto online_softmax_combine_updater = softmax_op::OnlineSoftmaxCombineUpdate<acc_t, acc_t>();
 
     acc_t max_value[WARP_BATCH];
     acc_t sum_value[WARP_BATCH] = { 0.0f };
@@ -480,7 +480,7 @@ __global__ void softmax_block_forward(output_t *output, const input_t *input, in
     //// 1.执行warp reduce
     acc_t thread_max = at::numeric_limits<acc_t>::lowest();
     acc_t thread_sum = static_cast<acc_t>(0);
-    const auto online_softmax_updater = softmax_op::OnlineSoftmaxUpdate<input_t, acc_t>();
+    const auto online_softmax_updater = softmax_op::OnlineSoftmaxUpdate<acc_t, acc_t>();
     softmax_warp_online_reduce<ILP, input_t, acc_t>(input, element_count, 
                                                     online_softmax_updater, thread_max, thread_sum);
 
@@ -491,7 +491,7 @@ __global__ void softmax_block_forward(output_t *output, const input_t *input, in
     auto sdata_sum = sdata + block_size;
     acc_t block_max = at::numeric_limits<acc_t>::lowest();
     acc_t block_sum = static_cast<acc_t>(0);
-    const auto online_softmax_combine_updater = softmax_op::OnlineSoftmaxCombineUpdate<input_t, acc_t>();
+    const auto online_softmax_combine_updater = softmax_op::OnlineSoftmaxCombineUpdate<acc_t, acc_t>();
     if constexpr(using_smem_blockreduce) {
         softmax_block_online_reduce_v1<acc_t>(
             sdata_max, thread_max, sdata_sum, thread_sum, online_softmax_combine_updater,
