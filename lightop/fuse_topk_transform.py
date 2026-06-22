@@ -2,6 +2,23 @@ from typing import Optional
 from lightop import op
 import torch
 
+def topk_transform_512(
+    scores: torch.Tensor,
+    seq_lens: torch.Tensor,
+    page_tables: torch.Tensor,
+    out_page_indices: torch.Tensor,
+    page_size: int,
+    out_raw_indices: Optional[torch.Tensor] = None,
+) -> None:
+    op.topk_transform_512(
+        scores,
+        seq_lens,
+        page_tables,
+        out_page_indices,
+        page_size,
+        out_raw_indices,
+    )
+
 def fast_topk_transform_fused(
     score: torch.Tensor,
     lengths: torch.Tensor,
