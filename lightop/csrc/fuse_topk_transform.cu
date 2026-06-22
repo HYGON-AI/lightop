@@ -338,12 +338,14 @@ __device__ bool processHistogramStep(
 
 template <int kNumThreadsPerBlock, int kNumBins, bool useRadixSort,
           bool multipleBlocksPerRow = false, bool mergeBlocks = false,
+          int kMaxTopK = 2048,
           typename TransformFunc>
 static __device__ void topKPerRowJob(const int* indices, const float* logits,
                                      int rowStart, int rowEnd, int* outIndices,
                                      float* outLogits, int stride1, int topK,
-                                     TransformFunc transform_func) {
-  static constexpr int kNumFinalItems = 2048 + 512;
+                                     TransformFunc transform_func,
+                                     int* outRawIndices = nullptr) {
+  static constexpr int kNumFinalItems = kMaxTopK + 512;
   static constexpr int kNumFinalItemsPerThread = kNumFinalItems / kNumThreadsPerBlock;
   
 #ifndef USE_ROCM
@@ -385,6 +387,9 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
   if (rowLen <= topK) {
     vectorized_write<int, int>(threadIdx.x, kNumThreadsPerBlock, outIndices, rowLen, [&](int rowIt) {
       int raw_idx = multipleBlocksPerRow ? rowIt + rowStart : rowIt;
+      if (outRawIndices != nullptr) {
+        outRawIndices[rowIt] = raw_idx;
+      }
       return transform_func(raw_idx);
     });
 
@@ -399,6 +404,11 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
       vectorized_write<int, int>(threadIdx.x, kNumThreadsPerBlock, outIndices + rowLen, fillLen, [&](int /*i*/) {
         return -1;
       });
+      if (outRawIndices != nullptr) {
+        vectorized_write<int, int>(threadIdx.x, kNumThreadsPerBlock, outRawIndices + rowLen, fillLen, [&](int /*i*/) {
+          return -1;
+        });
+      }
       if constexpr (multipleBlocksPerRow) {
         vectorized_write<float, int>(threadIdx.x, kNumThreadsPerBlock, outLogits + rowLen, fillLen, [&](int /*i*/) {
           return -FLT_MAX;
@@ -407,6 +417,14 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
     }
     return;
   }
+
+  // The final transform reads every entry in smemOutput. Keep unwritten slots
+  // deterministic so an unexpected ranking gap cannot turn stale shared-memory
+  // contents into an arbitrary global-memory address.
+  vectorized_write<int, int>(
+      threadIdx.x, kNumThreadsPerBlock, smemOutput, topK, [&](int /*i*/) {
+        return -1;
+      });
 
   if (threadIdx.x == 0) {
     smemFinalDstIdx[0] = 0;
@@ -472,9 +490,14 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
       for (int i = threadIdx.x; i < smemFinalDstIdx[0]; i += kNumThreadsPerBlock) {
         int outIndex = 0;
         auto logit = smemFinal.items.logits[i];
+        auto logitKey = convert_to_uint32(logit);
         for (int j = 0; j < smemFinalDstIdx[0]; j++) {
           auto otherLogit = smemFinal.items.logits[j];
-          if (logit < otherLogit || (logit == otherLogit && i > j)) outIndex++;
+          auto otherLogitKey = convert_to_uint32(otherLogit);
+          // Compare total-order integer keys instead of floats. Floating-point
+          // comparisons do not order NaNs, which can assign several candidates
+          // the same outIndex and leave holes in smemOutput.
+          if (logitKey > otherLogitKey || (logitKey == otherLogitKey && i > j)) outIndex++;
         }
         if (outIndex + baseIdx < topK) {
           smemOutput[outIndex + baseIdx] = smemFinal.items.indices[i];
@@ -492,6 +515,15 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
       return smemOutput[i]; 
     } else {
       int raw_idx = (stride1 == 1) ? smemOutput[i] : smemOutput[i] - rowStart;
+      if (raw_idx < 0 || raw_idx >= rowLen) {
+        if (outRawIndices != nullptr) {
+          outRawIndices[i] = -1;
+        }
+        return -1;
+      }
+      if (outRawIndices != nullptr) {
+        outRawIndices[i] = raw_idx;
+      }
       return transform_func(raw_idx); 
     }
   });
@@ -590,6 +622,59 @@ void fused_topk_transform_ragged_kernel(
       nullptr, logits, rowStart, rowEnd, outIndices, nullptr, 1, topK, transform_func);
 }
 
+template <int kNumThreadsPerBlock, bool useRadixSort>
+__global__ __launch_bounds__(kNumThreadsPerBlock)
+void topk_transform_512_kernel_lightop(
+    FastTopKParams params,
+    const int32_t* __restrict__ page_table,
+    int32_t* __restrict__ page_indices,
+    int32_t* __restrict__ raw_indices,
+    int64_t page_table_stride,
+    int64_t page_table_size,
+    int64_t score_width,
+    uint32_t page_bits) {
+  constexpr int kTopK = 512;
+  const int bid = blockIdx.x;
+  const int64_t page_capacity = page_table_size * (int64_t{1} << page_bits);
+  const int64_t max_length = score_width < page_capacity ? score_width : page_capacity;
+  const int raw_length = params.lengths[bid];
+  const int length =
+      raw_length <= 0 ? 0 : static_cast<int>(raw_length < max_length ? raw_length : max_length);
+  int32_t* out_page_indices = page_indices + bid * kTopK;
+  int32_t* out_raw_indices =
+      raw_indices == nullptr ? nullptr : raw_indices + bid * kTopK;
+  const float* logits = params.input + bid * params.input_stride;
+  const int32_t* page_table_row = page_table + bid * page_table_stride;
+  const uint32_t page_mask = (1u << page_bits) - 1u;
+
+  auto transform_func = [&](int raw_idx) {
+    const uint32_t page_idx = static_cast<uint32_t>(raw_idx) >> page_bits;
+    if (page_idx >= static_cast<uint64_t>(page_table_size)) {
+      return -1;
+    }
+    const int32_t physical_page = page_table_row[page_idx];
+    if (physical_page < 0) {
+      return -1;
+    }
+    const uint32_t transformed =
+        (static_cast<uint32_t>(physical_page) << page_bits) |
+        (static_cast<uint32_t>(raw_idx) & page_mask);
+    return static_cast<int32_t>(transformed);
+  };
+  topKPerRowJob<
+      kNumThreadsPerBlock, 2048, useRadixSort, false, false, kTopK>(
+      nullptr,
+      logits,
+      0,
+      length,
+      out_page_indices,
+      nullptr,
+      1,
+      kTopK,
+      transform_func,
+      out_raw_indices);
+}
+
 } // namespace
 
 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
@@ -686,6 +771,89 @@ void fast_topk_transform_interface(
 
   const auto result = cudaGetLastError();
   TORCH_CHECK(result == cudaSuccess, "topk kernel failed:", ::cudaGetErrorString(result));
+}
+
+void topk_transform_512(
+    const at::Tensor& scores,
+    const at::Tensor& seq_lens,
+    const at::Tensor& page_tables,
+    at::Tensor& out_page_indices,
+    int64_t page_size,
+    std::optional<at::Tensor> out_raw_indices_opt) {
+  CHECK_CUDA(scores);
+  CHECK_CUDA(seq_lens);
+  CHECK_CUDA(page_tables);
+  CHECK_CUDA(out_page_indices);
+  if (out_raw_indices_opt.has_value()) CHECK_CUDA(out_raw_indices_opt.value());
+
+  constexpr int kTopK = 512;
+  const auto batch_size = scores.size(0);
+  TORCH_CHECK(scores.scalar_type() == at::kFloat, "scores must be float32");
+  TORCH_CHECK(seq_lens.scalar_type() == at::kInt, "seq_lens must be int32");
+  TORCH_CHECK(page_tables.scalar_type() == at::kInt, "page_tables must be int32");
+  TORCH_CHECK(out_page_indices.scalar_type() == at::kInt, "out_page_indices must be int32");
+  TORCH_CHECK(scores.dim() == 2 && scores.stride(1) == 1, "scores must be a 2D row-contiguous tensor");
+  TORCH_CHECK(seq_lens.dim() == 1 && seq_lens.is_contiguous(), "seq_lens must be contiguous and 1D");
+  TORCH_CHECK(seq_lens.size(0) == batch_size, "seq_lens batch size mismatch");
+  TORCH_CHECK(page_tables.dim() == 2 && page_tables.stride(1) == 1, "page_tables must be a 2D row-contiguous tensor");
+  TORCH_CHECK(page_tables.size(0) == batch_size, "page_tables batch size mismatch");
+  TORCH_CHECK(seq_lens.device() == scores.device(), "seq_lens must be on the same device as scores");
+  TORCH_CHECK(page_tables.device() == scores.device(), "page_tables must be on the same device as scores");
+  TORCH_CHECK(out_page_indices.device() == scores.device(), "out_page_indices must be on the same device as scores");
+  TORCH_CHECK(
+      out_page_indices.dim() == 2 && out_page_indices.is_contiguous() &&
+          out_page_indices.size(0) == batch_size && out_page_indices.size(1) == kTopK,
+      "out_page_indices must be contiguous with shape [batch_size, 512]");
+  TORCH_CHECK(page_size > 0 && (page_size & (page_size - 1)) == 0, "page_size must be a positive power of two");
+
+  int32_t* out_raw_indices = nullptr;
+  if (out_raw_indices_opt.has_value()) {
+    auto& raw_indices = out_raw_indices_opt.value();
+    TORCH_CHECK(raw_indices.scalar_type() == at::kInt, "out_raw_indices must be int32");
+    TORCH_CHECK(raw_indices.device() == scores.device(), "out_raw_indices must be on the same device as scores");
+    TORCH_CHECK(
+        raw_indices.dim() == 2 && raw_indices.is_contiguous() &&
+            raw_indices.sizes() == out_page_indices.sizes(),
+        "out_raw_indices must be contiguous with shape [batch_size, 512]");
+    out_raw_indices = raw_indices.data_ptr<int32_t>();
+  }
+
+  if (batch_size == 0) return;
+
+  auto params = get_params(scores, seq_lens);
+  const auto stream = at::cuda::getCurrentCUDAStream().stream();
+  const auto grid = dim3{static_cast<uint32_t>(batch_size)};
+  const auto block = dim3{kThreadsPerBlock};
+  const auto dynamic_smem = static_cast<size_t>(kTopK) * sizeof(int32_t);
+  const auto page_bits = static_cast<uint32_t>(__builtin_ctzll(static_cast<unsigned long long>(page_size)));
+  const bool use_radix = scores.size(1) > 2000000;
+
+  if (use_radix) {
+    setup_kernel_smem_once<topk_transform_512_kernel_lightop<kThreadsPerBlock, true>>(dynamic_smem);
+    topk_transform_512_kernel_lightop<kThreadsPerBlock, true><<<grid, block, dynamic_smem, stream>>>(
+        params,
+        page_tables.data_ptr<int32_t>(),
+        out_page_indices.data_ptr<int32_t>(),
+        out_raw_indices,
+        page_tables.stride(0),
+        page_tables.size(1),
+        scores.size(1),
+        page_bits);
+  } else {
+    setup_kernel_smem_once<topk_transform_512_kernel_lightop<kThreadsPerBlock, false>>(dynamic_smem);
+    topk_transform_512_kernel_lightop<kThreadsPerBlock, false><<<grid, block, dynamic_smem, stream>>>(
+        params,
+        page_tables.data_ptr<int32_t>(),
+        out_page_indices.data_ptr<int32_t>(),
+        out_raw_indices,
+        page_tables.stride(0),
+        page_tables.size(1),
+        scores.size(1),
+        page_bits);
+  }
+
+  const auto result = cudaGetLastError();
+  TORCH_CHECK(result == cudaSuccess, "topk_transform_512 kernel failed:", ::cudaGetErrorString(result));
 }
 
 void fast_topk_transform_ragged_interface(
