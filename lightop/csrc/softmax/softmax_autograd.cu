@@ -132,8 +132,7 @@ static __device__ inline void from_float(scalar_t &out ,float f){
   }
   else{
     uint32_t u = *(uint32_t*)(&f);
-    // u += 0x7fff + ((u >> 16) & 1); 
-    u += 0x8000; 
+    u += 0x7fff + ((u >> 16) & 1);
     out = u>>16;
   }
 }
@@ -149,6 +148,31 @@ static __device__ inline float to_float(scalar_t in){
         float    fp32;
     } u = {uint32_t(in) << 16};
     return u.fp32;
+  }
+}
+template<typename scalar_t>
+static __device__ __forceinline__ void from_float_large(scalar_t &out, float f) {
+  if constexpr (std::is_same<scalar_t, uint16_t>::value) {
+#if defined(__gfx938__)
+    out = static_cast<uint16_t>(__builtin_hcu_cvt_bf16_f32(f, false, false));
+#else
+    from_float(out, f);
+#endif
+  } else {
+    out = f;
+  }
+}
+
+template<typename scalar_t>
+static __device__ __forceinline__ float to_float_large(scalar_t in) {
+  if constexpr (std::is_same<scalar_t, uint16_t>::value) {
+#if defined(__gfx938__)
+    return __builtin_hcu_cvt_f32_bf16(static_cast<short>(in), false, 0, false);
+#else
+    return to_float(in);
+#endif
+  } else {
+    return in;
   }
 }
     constexpr int WARP_SIZE = 64;
@@ -254,20 +278,18 @@ __global__ void softmax_fused_kernel(
                      if (global_offset + k < cols) {
                          loaded_vecs[i].val[k] = input[row * cols + global_offset + k];
                      } else {
-                         loaded_vecs[i].val[k] = static_cast<scalar_t>(-std::numeric_limits<float>::infinity());
+                         from_float_large(loaded_vecs[i].val[k], -std::numeric_limits<float>::infinity());
                      }
                  }
              }
         }
     }
-
-   
     float local_max = -FLT_MAX;
     #pragma unroll
     for(int i = 0; i < VEC_NUM_PER_THREAD; ++i) {
         #pragma unroll
         for(int k = 0; k < VEC_SIZE; ++k) {
-            float val = to_float(loaded_vecs[i].val[k]);
+            float val = to_float_large(loaded_vecs[i].val[k]);
             local_max = fmaxf(local_max, val);
         }
     }
@@ -294,10 +316,10 @@ __global__ void softmax_fused_kernel(
     for(int i = 0; i < VEC_NUM_PER_THREAD; ++i) {
         #pragma unroll
         for(int k = 0; k < VEC_SIZE; ++k) {
-            float val = to_float(loaded_vecs[i].val[k]);
+            float val = to_float_large(loaded_vecs[i].val[k]);
             float res = __expf(val - final_global_max);
             local_sum += res;
-            from_float(loaded_vecs[i].val[k], res); 
+            from_float_large(loaded_vecs[i].val[k], res);
         }
     }
     
@@ -323,9 +345,9 @@ __global__ void softmax_fused_kernel(
         VecType out_vec;
         #pragma unroll
         for(int k = 0; k < VEC_SIZE; ++k) {
-            float val_exp = to_float(loaded_vecs[i].val[k]); 
+            float val_exp = to_float_large(loaded_vecs[i].val[k]);
             float res = val_exp * inv_global_sum;
-            from_float(out_vec.val[k], res);
+            from_float_large(out_vec.val[k], res);
         }
         
         if (threadIdx.x + i * BLOCK_SIZE < elem_per_block / VEC_SIZE) {
@@ -387,7 +409,7 @@ __global__ void softmax_fused_kernel_block_align(
     for(int i = 0; i < VEC_NUM_PER_THREAD; ++i) {
         #pragma unroll
         for(int k = 0; k < VEC_SIZE; ++k) {
-            float val = to_float(loaded_vecs[i].val[k]);
+            float val = to_float_large(loaded_vecs[i].val[k]);
             local_max = fmaxf(local_max, val);
         }
     }
@@ -415,10 +437,10 @@ __global__ void softmax_fused_kernel_block_align(
     for(int i = 0; i < VEC_NUM_PER_THREAD; ++i) {
         #pragma unroll
         for(int k = 0; k < VEC_SIZE; ++k) {
-            float val = to_float(loaded_vecs[i].val[k]);
+            float val = to_float_large(loaded_vecs[i].val[k]);
             float res = __expf(val - final_global_max);
             local_sum += res;
-            from_float(loaded_vecs[i].val[k], res); 
+            from_float_large(loaded_vecs[i].val[k], res);
         }
     }
     
@@ -449,9 +471,9 @@ __global__ void softmax_fused_kernel_block_align(
         VecType out_vec;
         #pragma unroll
         for(int k = 0; k < VEC_SIZE; ++k) {
-            float val_exp = to_float(loaded_vecs[i].val[k]); 
+            float val_exp = to_float_large(loaded_vecs[i].val[k]);
             float res = val_exp * inv_global_sum;
-            from_float(out_vec.val[k], res);
+            from_float_large(out_vec.val[k], res);
         }
         
         if (threadIdx.x + i * BLOCK_SIZE < elem_per_block / VEC_SIZE) {
@@ -565,6 +587,29 @@ void launch_softmax_lager_dispatch_opt(
   
 }
 
+template<typename T>
+void launch_softmax_large_dispatch(
+    T* input, T* output,
+    float* global_max,
+    float* global_sum,
+    int* sync_counters,
+    int rows, int cols, cudaStream_t stream
+) {
+    constexpr int VEC_SIZE = (sizeof(T) == 4) ? 4 : 8;
+    constexpr int BLOCK_SIZE = 256;
+    constexpr int VEC_NUM_PER_THREAD = 8;
+    constexpr int elem_per_block = BLOCK_SIZE * VEC_SIZE * VEC_NUM_PER_THREAD;
+
+    launch_softmax_lager_dispatch_opt<
+        T, VEC_SIZE, BLOCK_SIZE, VEC_NUM_PER_THREAD, elem_per_block>(
+            input,
+            output,
+            global_max,
+            global_sum,
+            sync_counters,
+            rows, cols, stream);
+}
+
 Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim, const bool half_to_float, const bool training) {
     if(training) {
         auto result = fuseSoftmaxFunction::apply(input, dim, half_to_float);
@@ -587,7 +632,6 @@ Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim, con
         int vec_size_conf = (element_size == 4) ? 4 : 8;
 
         if (cols > 16384 && cols % vec_size_conf == 0 && is_supported_type) {
-          
              auto output = at::empty_like(input_);
     
              auto stream = at::cuda::getCurrentCUDAStream().stream();
@@ -604,38 +648,47 @@ Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim, con
              float* d_sum = global_sum.data_ptr<float>();
              int* d_counters = sync_counters.data_ptr<int>();
              
-             AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, input_.scalar_type(), "softmax_hip_opt_large", [&] {
-                 using scalar_t = scalar_t;
-
-                 constexpr int VEC_SIZE = (sizeof(scalar_t) == 4) ? 4 : 8; 
-                 constexpr int BLOCK_SIZE = 256; 
-                 constexpr int VEC_NUM_PER_THREAD = 8; 
-                 constexpr int elem_per_block = BLOCK_SIZE * VEC_SIZE * VEC_NUM_PER_THREAD;
-
-                 launch_softmax_lager_dispatch_opt<scalar_t,VEC_SIZE,BLOCK_SIZE,VEC_NUM_PER_THREAD,elem_per_block>(
-                     static_cast<scalar_t*>(input_.data_ptr()),
-                     static_cast<scalar_t*>(output.data_ptr()),
+             if (input_.scalar_type() == at::ScalarType::BFloat16) {
+                 launch_softmax_large_dispatch<uint16_t>(
+                     static_cast<uint16_t*>(input_.data_ptr()),
+                     static_cast<uint16_t*>(output.data_ptr()),
                      d_max,
                      d_sum,
                      d_counters,
-                     rows, cols, stream
-                 );
-             });
+                     rows, cols, stream);
+             } else {
+                 AT_DISPATCH_FLOATING_TYPES_AND(at::ScalarType::Half, input_.scalar_type(), "softmax_hip_opt_large", [&] {
+                     launch_softmax_large_dispatch<scalar_t>(
+                         static_cast<scalar_t*>(input_.data_ptr()),
+                         static_cast<scalar_t*>(output.data_ptr()),
+                         d_max,
+                         d_sum,
+                         d_counters,
+                         rows, cols, stream);
+                 });
+             }
              return output;
         }else if(cols <= 16384 && is_supported_type && cols % 8 == 0){
              auto output = at::empty_like(input_);
              auto stream = at::cuda::getCurrentCUDAStream().stream();
-             
-             AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, input_.scalar_type(), "softmax_hip_opt_small", [&] {
-                 using scalar_t = scalar_t;
-                 launch_softmax_opt_dispatch<scalar_t>(
-                    static_cast<scalar_t*>(input_.data_ptr()),
-                    static_cast<scalar_t*>(output.data_ptr()),
+
+             if (input_.scalar_type() == at::ScalarType::BFloat16) {
+                 launch_softmax_opt_dispatch<uint16_t>(
+                    static_cast<uint16_t*>(input_.data_ptr()),
+                    static_cast<uint16_t*>(output.data_ptr()),
                     rows,
                     cols,
-                    stream
-                  );
-             });
+                    stream);
+             } else {
+                 AT_DISPATCH_FLOATING_TYPES_AND(at::ScalarType::Half, input_.scalar_type(), "softmax_hip_opt_small", [&] {
+                     launch_softmax_opt_dispatch<scalar_t>(
+                        static_cast<scalar_t*>(input_.data_ptr()),
+                        static_cast<scalar_t*>(output.data_ptr()),
+                        rows,
+                        cols,
+                        stream);
+                 });
+             }
              return output;                       
         } 
         else {
