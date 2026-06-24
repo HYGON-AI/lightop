@@ -65,7 +65,7 @@ from .reshape_and_cache_cuda import reshape_and_cache_cuda
 from .fuse_rms_mrope_cuda import fuse_rms_mrope_cuda
 from .wan_quant import destindex_copy_quantize_int8_cuda, destindex_dequantize_int8_cuda
 from .upsample import bilinear_upsample, bilinear_upsample_backward
-from .fuse_topk_transform import fast_topk_transform_fused,fast_topk_transform_ragged_fused,topk_transform_512
+from .fuse_topk_transform import fast_topk_transform_fused,fast_topk_transform_ragged_fused,topk_transform_512,topk_transform_1024
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401
     __version__, __dcu_version__ = version, dcu_version

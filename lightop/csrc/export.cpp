@@ -671,6 +671,13 @@ void topk_transform_512(
     at::Tensor& out_page_indices,
     int64_t page_size,
     std::optional<at::Tensor> out_raw_indices_opt);
+void topk_transform_1024(
+    const at::Tensor& scores,
+    const at::Tensor& seq_lens,
+    const at::Tensor& page_tables,
+    at::Tensor& out_page_indices,
+    int64_t page_size,
+    std::optional<at::Tensor> out_raw_indices_opt);
 }
 }
 
@@ -964,4 +971,14 @@ m.def(
      py::arg("out_page_indices"),
      py::arg("page_size"),
      py::arg("out_raw_indices") = py::none());       
+m.def(
+     "topk_transform_1024",
+     &at::native::topk_transform_1024,
+     "DeepSeek V4 fused topk-1024 and page-table transform",
+     py::arg("scores"),
+     py::arg("seq_lens"),
+     py::arg("page_tables"),
+     py::arg("out_page_indices"),
+     py::arg("page_size"),
+     py::arg("out_raw_indices") = py::none());
 }
