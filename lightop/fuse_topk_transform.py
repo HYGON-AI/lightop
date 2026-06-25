@@ -10,14 +10,27 @@ def topk_transform_512(
     page_size: int,
     out_raw_indices: Optional[torch.Tensor] = None,
 ) -> None:
-    op.topk_transform_512(
-        scores,
-        seq_lens,
-        page_tables,
-        out_page_indices,
-        page_size,
-        out_raw_indices,
-    )
+    topk = out_page_indices.shape[1]
+    if topk == 512:
+        op.topk_transform_512(
+            scores,
+            seq_lens,
+            page_tables,
+            out_page_indices,
+            page_size,
+            out_raw_indices,
+        )
+    elif topk == 1024:
+        op.topk_transform_1024(
+            scores,
+            seq_lens,
+            page_tables,
+            out_page_indices,
+            page_size,
+            out_raw_indices,
+        )
+    else:
+        raise ValueError(f"unsupported topk={topk}; expected 512 or 1024")
 
 def topk_transform_1024(
     scores: torch.Tensor,
