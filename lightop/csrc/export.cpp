@@ -659,6 +659,26 @@ void fused_deepseek_v4_qnorm_rope_kvnorm_rope(
     const Tensor& position_ids,
     const Tensor& cos_sin_cache,
     double eps);
+void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp(
+    Tensor& q,
+    const Tensor& kv,
+    Tensor& k_cache,
+    const Tensor& slot_mapping,
+    const Tensor& q_position_ids,
+    const Tensor& kv_position_ids,
+    const Tensor& cos_sin_cache,
+    double eps,
+    int64_t cache_block_size);
+void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp_int32(
+    Tensor& q,
+    const Tensor& kv,
+    Tensor& k_cache,
+    const Tensor& slot_mapping,
+    const Tensor& q_position_ids,
+    const Tensor& kv_position_ids,
+    const Tensor& cos_sin_cache,
+    double eps,
+    int64_t cache_block_size);
 void ep_build_m_indices(torch::Tensor topk_ids,torch::Tensor m_indices,int local_num_experts,int alignment);
 void topk_ids_postprocess(torch::Tensor topk_ids, torch::optional<torch::Tensor> logical_to_physical_map, torch::optional<torch::Tensor> num_token_non_padded);
 torch::Tensor dpskv4_hc_head_fused(torch::Tensor mixes, torch::Tensor x, torch::Tensor hc_scale, torch::Tensor hc_base, double hc_eps);
@@ -947,6 +967,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32", &at::native::fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32, "fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32");
  m.def("fused_deepseek_v4_qnorm_rope_kv_rope", &at::native::fused_deepseek_v4_qnorm_rope_kv_rope, "fused_deepseek_v4_qnorm_rope_kv_rope");
  m.def("fused_deepseek_v4_qnorm_rope_kvnorm_rope", &at::native::fused_deepseek_v4_qnorm_rope_kvnorm_rope, "fused_deepseek_v4_qnorm_rope_kvnorm_rope");
+ m.def("fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp", &at::native::fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp, "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp");
+ m.def("fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp_int32", &at::native::fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp_int32, "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp_int32");
  m.def("ep_build_m_indices", &at::native::ep_build_m_indices,"ep_build_m_indices");
  m.def("ep_fused_fp8_quant_scatter", &at::native::ep_fused_fp8_quant_scatter,"ep_fused_fp8_quant_scatter");
  m.def("quantize_nope_fp8_rope_bf16_pack_store", &at::native::quantize_nope_fp8_rope_bf16_pack_store, "quantize_nope_fp8_rope_bf16_pack_store");
