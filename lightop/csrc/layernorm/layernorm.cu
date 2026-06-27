@@ -269,6 +269,87 @@ __global__ void layernorm_forward_kernel_stage2(scalar_t* input,scalar_t* ret,fl
   }
 }
 
+template <typename scalar_t, int VEC,int blocksize,bool is_affine,bool is_training,int cols>
+__global__ void layernorm_forward_kernel_stage_fused(scalar_t* input,scalar_t* ret,float* sums_ptr,int* sync_counters,
+                                            int lines_per_block,float* mean,float* rstd,
+                                            const scalar_t* gamma,const scalar_t* beta,float eps)
+{
+  int blockidx=blockIdx.x;
+  int threadidx=threadIdx.x;
+  int row=blockidx/lines_per_block;
+  int line=blockidx%lines_per_block;
+  int block_cols=blockidx*cols;
+  using VecTpye=memory::aligned_vector<scalar_t, VEC>;
+  using new_type = __change_type<scalar_t>;
+  constexpr int share_size=blocksize/C10_WARP_SIZE*2;
+  constexpr int vecs_per_thread=cols/(VEC*blocksize);
+  __shared__ float val_shared[share_size];
+  VecTpye *X=(VecTpye*)(input+block_cols);
+  VecTpye *Y=(VecTpye*)(ret+block_cols);
+  VecTpye x_cache[vecs_per_thread];
+  float sum = 0.0f;
+  float sum_sq = 0.0f;
+
+  #pragma unroll
+  for(int cache_idx=0; cache_idx<vecs_per_thread; ++cache_idx){
+    int j=threadidx+cache_idx*blocksize;
+    VecTpye tx=X[j];
+    x_cache[cache_idx]=tx;
+    new_type* px=(new_type*)(&tx);
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      float temp = to_float(px[i]);
+      sum+=temp;
+      sum_sq+=temp*temp;
+    }
+  }
+
+  BlockReduceSum2<float,blocksize>(sum,sum_sq,val_shared);
+  if(threadidx==0){
+    atomicAdd(sums_ptr+row*2,sum);
+    atomicAdd(sums_ptr+row*2+1,sum_sq);
+    __threadfence();
+    atomicAdd(sync_counters+row,1);
+    while(atomicAdd(sync_counters+row,0) < lines_per_block);
+  }
+  __syncthreads();
+
+  using float2_t = __attribute__( (__vector_size__(2 * sizeof(float)) )) float;
+  float2_t* sums2=(float2_t*)sums_ptr;
+  float2_t sums=sums2[row];
+  float inv_cols = 1.0f / (cols * lines_per_block);
+  float tmean = sums[0] * inv_cols;
+  float var = sums[1] * inv_cols - (tmean * tmean);
+  var = (var < 0.0f) ? 0.0f : var;
+  float trstd=c10::cuda::compat::rsqrt(var + eps);
+
+  #pragma unroll
+  for(int cache_idx=0; cache_idx<vecs_per_thread; ++cache_idx){
+    int j=threadidx+cache_idx*blocksize;
+    VecTpye tx=x_cache[cache_idx];
+    VecTpye ty;
+    new_type* px=(new_type*)(&tx);
+    new_type* py=(new_type*)(&ty);
+    #pragma unroll
+    for(int i=0;i<VEC;i++){
+      int jj=line*cols+j*VEC+i;
+      if constexpr(is_affine){
+        from_float(py[i],(to_float(px[i]) - tmean) * trstd * to_float(gamma[jj]) + to_float(beta[jj]));
+      }
+      else{
+        from_float(py[i],(to_float(px[i]) - tmean) * trstd);
+      }
+    }
+    Y[j]=ty;
+  }
+  if constexpr(is_training){
+    if(threadIdx.x==0&&line==0){
+        mean[row] = tmean;
+        rstd[row] = trstd;
+    }
+  }
+}
+
 template <typename scalar_t, int VEC,int blocksize,bool is_affine,bool is_training>
 __global__ void layernorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,float* mean,float* rstd,
                                             const scalar_t* gamma,const scalar_t* beta,int cols,float eps)
@@ -364,9 +445,13 @@ layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,dou
       rstd = at::empty({rows},self.options().dtype(at::ScalarType::Float));
     }
     static float* tmp_out_ptr = nullptr;
+    static int* sync_counter_ptr = nullptr;
     constexpr int temp_out_size = 100000;
     if(tmp_out_ptr == nullptr){
       hipMalloc(&tmp_out_ptr, temp_out_size);
+    }
+    if(sync_counter_ptr == nullptr){
+      hipMalloc(&sync_counter_ptr, temp_out_size);
     }
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
@@ -443,10 +528,9 @@ layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,dou
                 constexpr int cols_per_block=4096;
                 int lines_per_block=cols/cols_per_block;
                 hipMemset(tmp_out_ptr,0,temp_out_size);
-                layernorm_forward_kernel_stage1<scalar_t,8,blocksize,cols_per_block><<<rows*lines_per_block, blocksize, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                          self_data,tmp_out_ptr,lines_per_block);
-                layernorm_forward_kernel_stage2<scalar_t,8,blocksize,is_affine,is_training,cols_per_block><<<rows*lines_per_block, blocksize, 0, at::cuda::getCurrentCUDAStream()>>>(
-                                          self_data,ret_data,tmp_out_ptr,lines_per_block,mean_data,rstd_data,weight_data,bias_data,eps);
+                hipMemset(sync_counter_ptr,0,temp_out_size);
+                layernorm_forward_kernel_stage_fused<scalar_t,8,blocksize,is_affine,is_training,cols_per_block><<<rows*lines_per_block, blocksize, 0, at::cuda::getCurrentCUDAStream()>>>(
+                                          self_data,ret_data,tmp_out_ptr,sync_counter_ptr,lines_per_block,mean_data,rstd_data,weight_data,bias_data,eps);
               }
               else{
                 layernorm_forward_kernel_welford<scalar_t,8,512,is_affine,is_training><<<rows, 512, 0, at::cuda::getCurrentCUDAStream()>>>(
