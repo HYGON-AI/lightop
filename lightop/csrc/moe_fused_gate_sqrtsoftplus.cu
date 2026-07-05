@@ -70,7 +70,13 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
     float routed_scaling_factor,
     bool apply_routed_scaling_factor_on_output) {
   constexpr float NEG_INF = -FLT_MAX;
+  static_assert(NUM_EXPERTS % VPT_LOCAL == 0,
+                "NUM_EXPERTS must be divisible by VPT_LOCAL");
   constexpr int EFFECTIVE_THREADS = NUM_EXPERTS / VPT_LOCAL;
+  static_assert(EFFECTIVE_THREADS <= Params::THREADS_PER_ROW,
+                "THREADS_PER_ROW does not cover all experts");
+  static_assert(Params::THREADS_PER_ROW <= WARP_SIZE,
+                "one token must fit in a single wave");
 
   const int tidx = threadIdx.x;
   const int group_row = tidx / Params::THREADS_PER_ROW;
@@ -171,10 +177,11 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
   }
 }
 
-#define LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, THREADS_PER_ROW_VAL, VPT_VAL, N_WARP_VAL) \
+#define LAUNCH_SQRTSOFTPLUS_GATE(                                                \
+    TOPK_VAL, NUM_EXPERTS_VAL, THREADS_PER_ROW_VAL, VPT_VAL, N_WARP_VAL)          \
   do {                                                                              \
     constexpr int TOPK_C = TOPK_VAL;                                                \
-    constexpr int NUM_EXPERTS_C = 256;                                              \
+    constexpr int NUM_EXPERTS_C = NUM_EXPERTS_VAL;                                  \
     constexpr int THREADS_PER_ROW_C = THREADS_PER_ROW_VAL;                          \
     constexpr int VPT_C = VPT_VAL;                                                  \
     constexpr int N_WARP_C = N_WARP_VAL;                                            \
@@ -197,10 +204,16 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
 
 #define DISPATCH_TOPK(TOPK_VAL)                                                     \
   case TOPK_VAL:                                                                    \
-    if (num_rows < 512) {                                                           \
-      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 64, 4, 1);                                 \
+    if (num_experts == 256 && num_rows < 512) {                                     \
+      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 256, 64, 4, 1);                            \
+    } else if (num_experts == 256) {                                                \
+      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 256, 32, 8, 2);                            \
+    } else if (num_rows < 512) {                                                    \
+      /* Match the tuned 384-expert group-1 layout in moe_fused_gate.cu:            \
+       * one token per wave, eight contiguous FP32 values per active lane. */       \
+      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 384, 64, 8, 1);                            \
     } else {                                                                        \
-      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 32, 8, 2);                                 \
+      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 384, 64, 8, 2);                            \
     }                                                                               \
     break
 
@@ -226,9 +239,10 @@ std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus(
   TORCH_CHECK(bias.is_contiguous(), "bias must be contiguous");
   TORCH_CHECK(input.size(1) == bias.size(0),
               "input and bias must have the same num_experts");
-  TORCH_CHECK(input.size(1) == 256,
-              "moe_fused_gate_sqrtsoftplus currently supports 256 experts, got ",
-              input.size(1));
+  const int64_t num_experts = input.size(1);
+  TORCH_CHECK(num_experts == 256 || num_experts == 384,
+              "moe_fused_gate_sqrtsoftplus supports 256 or 384 experts, got ",
+              num_experts);
   TORCH_CHECK(topk > 0 && topk <= MAX_TOPK,
               "topk must be in [1, ", MAX_TOPK, "], got ", topk);
   TORCH_CHECK(num_fused_shared_experts >= 0 &&
