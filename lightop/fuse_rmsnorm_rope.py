@@ -110,8 +110,8 @@ def rms_rotary_embedding_fuse_with_kv_store(
         loc_id = kv_cache_loc // page_size
         loc_offset = kv_cache_loc % page_size
         if key.dim() == 2:
-            kv = k_rope_out.view(k_rope_out.size(0), k_buffer.shape[1], -1)
-            vc = v_rope_out.view(v_rope_out.size(0), v_buffer.shape[1], -1)
+            kv = q_rope_out.view(k_rope_out.size(0), k_buffer.shape[1], -1)
+            vc = k_rope_out.view(v_rope_out.size(0), v_buffer.shape[1], -1)
         else:
             kv = k_rope_out
             vc = v_rope_out
@@ -426,3 +426,73 @@ def gammarms_rotary_embedding_fuse_with_kv_store_fake(
     v_buffer[loc_id, :, :, loc_offset] = vc
 
     return q, k, v
+
+def mimo_v2_split_rope_vscale_kv_store(
+    positions: torch.Tensor,
+    qkv: torch.Tensor,
+    q_size: int,
+    k_size: int,
+    v_size: int,
+    cos_sin_cache: torch.Tensor,
+    head_dim: int,
+    v_head_dim: int,
+    k_buffer: torch.Tensor,
+    v_buffer: torch.Tensor,
+    kv_cache_loc: Optional[torch.Tensor],
+    is_neox: bool,
+    value_scale: float,
+    kv_cache_dtype: Optional[torch.dtype] = None,
+    k_scale: Optional[float] = None,
+    v_cache_scale: Optional[float] = None,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Split MIMO v2 QKV, apply RoPE to Q/K, scale V, and write MHA KV cache."""
+    qkv = qkv.contiguous()
+    positions = positions.contiguous()
+    cos_sin_cache = cos_sin_cache.contiguous()
+    if kv_cache_loc is not None:
+        kv_cache_loc = kv_cache_loc.contiguous()
+
+    q_out = torch.empty((qkv.shape[0], q_size), dtype=qkv.dtype, device=qkv.device)
+    k_out = torch.empty((qkv.shape[0], k_size), dtype=qkv.dtype, device=qkv.device)
+    v_out = torch.empty((qkv.shape[0], v_size), dtype=qkv.dtype, device=qkv.device)
+
+    if kv_cache_dtype is None:
+        kv_cache_dtype = k_buffer.dtype
+
+    fp8_dtypes = (torch.float8_e4m3fn, torch.float8_e5m2)
+    use_fp8_cache = (
+        kv_cache_loc is not None
+        and (kv_cache_dtype in fp8_dtypes or k_buffer.dtype in fp8_dtypes)
+    )
+    use_fp8_e4m3 = kv_cache_dtype == torch.float8_e4m3fn
+
+    if kv_cache_loc is not None and not use_fp8_cache:
+        if k_buffer.dtype != qkv.dtype or v_buffer.dtype != qkv.dtype:
+            raise RuntimeError(
+                "mimo_v2_split_rope_vscale_kv_store expects bf16/fp16 cache "
+                "buffers to have the same dtype as qkv unless kv_cache_dtype is fp8"
+            )
+
+    op.mimo_v2_split_rope_vscale_kv_store(
+        positions,
+        qkv,
+        q_size,
+        k_size,
+        v_size,
+        head_dim,
+        v_head_dim,
+        cos_sin_cache,
+        is_neox,
+        k_buffer,
+        v_buffer,
+        kv_cache_loc,
+        q_out,
+        k_out,
+        v_out,
+        float(value_scale),
+        None if k_scale is None else float(k_scale),
+        None if v_cache_scale is None else float(v_cache_scale),
+        use_fp8_e4m3,
+        use_fp8_cache,
+    )
+    return q_out, k_out, v_out
