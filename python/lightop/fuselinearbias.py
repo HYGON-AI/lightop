@@ -8,11 +8,12 @@ from . import op
 from torch.nn.parameter import Parameter
 from torch import Tensor
 from torch.nn import init
+from .utils import resource_path
 # import numpy as np
 
-os.environ['ROCBLAS_TENSILE_GBF_LIBPATH'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'librarygemmbiasf')
-os.environ['ROCBLAS_TENSILE_GDBB_LIBPATH'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'librarygemmdbiasb')
-libpath=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib/')
+os.environ['ROCBLAS_TENSILE_GBF_LIBPATH'] = resource_path('librarygemmbiasf')
+os.environ['ROCBLAS_TENSILE_GDBB_LIBPATH'] = resource_path('librarygemmdbiasb')
+libpath=resource_path('lib') + os.sep
 assert_line='wrong envirenment! please execute \"export LD_LIBRARY_PATH='+libpath +':$LD_LIBRARY_PATH\" and write this line to ~/.bashrc'
 assert libpath in os.environ['LD_LIBRARY_PATH'] , assert_line
 
