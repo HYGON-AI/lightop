@@ -37,8 +37,21 @@ def get_gfx():
 
 gfx = get_gfx()
 LIGHTOP_ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-# LIGHTOP_ROOT_DIR = os.path.abspath(f"{this_dir}/../../")
-LIGHTOP_ASM_DIR = f"{LIGHTOP_ROOT_DIR}/hsa/{gfx}/"
+
+
+def resource_path(*parts):
+    """Resolve resources from an installed package or a source checkout."""
+    package_path = os.path.join(LIGHTOP_ROOT_DIR, *parts)
+    if os.path.exists(package_path):
+        return package_path
+    repo_root = os.path.abspath(os.path.join(LIGHTOP_ROOT_DIR, os.pardir, os.pardir))
+    repo_path = os.path.join(repo_root, *parts)
+    if os.path.exists(repo_path):
+        return repo_path
+    return os.path.join(repo_root, "third_party", *parts)
+
+
+LIGHTOP_ASM_DIR = resource_path("hsa", gfx)
 os.environ["LIGHTOP_GPU_TARGET"] = gfx
 os.environ["LIGHTOP_ASM_DIR"] = LIGHTOP_ASM_DIR
 # print(f"[lightop] LIGHTOP_ASM_DIR={LIGHTOP_ASM_DIR}")

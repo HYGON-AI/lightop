@@ -36,7 +36,7 @@ def _make_version_file(version, sha, abi, dtk, torch_version, branch):
 
     print("dcu_version")
     print(dcu_version)
-    version_path = ROOT_DIR / "lightop" / "version.py"
+    version_path = ROOT_DIR / "python" / "lightop" / "version.py"
     with open(version_path, "w") as f:
         f.write(f"version = '{version}'\n")
         f.write(f"git_hash = '{sha}'\n")

@@ -4,6 +4,8 @@ import os
 import json
 import torch
 
+from .utils import resource_path
+
 # Adapted from: https://github.com/sgl-project/sglang/pull/2628
 def get_config_file_name(E: int,
                          N: int,
@@ -53,8 +55,7 @@ def get_moe_cuda_config(
     else:
         gemm1_file_name = f"MOE_BLOCKINT8_CUDA_EP{ep_size}_{N1}_{K1}_{gfx_version.upper()}_CU{num_cus}.json"
         
-    gemm1_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
+    gemm1_config_file_path = resource_path("configs", gemm1_file_name)
     
     try:
         with open(gemm1_config_file_path, 'r') as file:
@@ -81,8 +82,7 @@ def get_moe_cuda_config(
         gemm1_config = {}
     
     gemm2_file_name = f"MOE_BLOCKINT8_CUDA_{N2}_{K2}_{gfx_version.upper()}_CU{num_cus}.json"
-    gemm2_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
+    gemm2_config_file_path = resource_path("configs", gemm2_file_name)    
     try:
         with open(gemm2_config_file_path, 'r') as file:
             config_infos = json.load(file)
@@ -166,8 +166,7 @@ def get_moe_cuda_marlin_config(
     else:
         gemm1_file_name = f"MOE_BLOCKINT8_CUDA_MARLIN_EP{ep_size}_{N1}_{K1}_{gfx_version.upper()}_CU{num_cus}.json"
         
-    gemm1_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
+    gemm1_config_file_path = resource_path("configs", gemm1_file_name)
     
     try:
         with open(gemm1_config_file_path, 'r') as file:
@@ -198,8 +197,7 @@ def get_moe_cuda_marlin_config(
     else:
         gemm2_file_name = f"MOE_BLOCKINT8_CUDA_MARLIN_{N2}_{K2}_{gfx_version.upper()}_CU{num_cus}.json"
 
-    gemm2_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
+    gemm2_config_file_path = resource_path("configs", gemm2_file_name)    
     try:
         with open(gemm2_config_file_path, 'r') as file:
             config_infos = json.load(file)
@@ -272,8 +270,7 @@ def get_moe_cuda_config_w4a8(
     # First look up if an optimized configuration is available in the configs
     # directory
     gemm1_file_name = f"MOE_BLOCKINT4_CUDA_{N1}_{K1}_{device_name}_{num_cus}.json"
-    gemm1_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
+    gemm1_config_file_path = resource_path("configs", gemm1_file_name)
     
     try:
         with open(gemm1_config_file_path, 'r') as file:
@@ -300,8 +297,7 @@ def get_moe_cuda_config_w4a8(
         gemm1_config = {}
     
     gemm2_file_name = f"MOE_BLOCKINT4_CUDA_{N2}_{K2}_{device_name}_{num_cus}.json"
-    gemm2_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
+    gemm2_config_file_path = resource_path("configs", gemm2_file_name)    
     try:
         with open(gemm2_config_file_path, 'r') as file:
             config_infos = json.load(file)
@@ -385,8 +381,7 @@ def get_moe_cuda_marlin_config_w4a8(
     if is_ep:
         gemm1_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_EP{ep_size}_{N1}_{K1}_{device_name}_{num_cus}.json"
 
-    gemm1_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
+    gemm1_config_file_path = resource_path("configs", gemm1_file_name)
     
     try:
         with open(gemm1_config_file_path, 'r') as file:
@@ -416,8 +411,7 @@ def get_moe_cuda_marlin_config_w4a8(
     if is_ep:
         gemm2_file_name = f"MOE_BLOCKINT4_CUDA_MARLIN_EP{ep_size}_{N2}_{K2}_{device_name}_{num_cus}.json"
 
-    gemm2_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
+    gemm2_config_file_path = resource_path("configs", gemm2_file_name)    
     try:
         with open(gemm2_config_file_path, 'r') as file:
             config_infos = json.load(file)
@@ -502,8 +496,7 @@ def get_moe_cuda_marlin_config_w4a16(
     if is_ep:
         gemm1_file_name = f"MOE_W4A16_CUDA_MARLIN_EP{ep_size}_{N1}_{K1}_{device_name}_{num_cus}.json"
 
-    gemm1_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
+    gemm1_config_file_path = resource_path("configs", gemm1_file_name)
     
     try:
         with open(gemm1_config_file_path, 'r') as file:
@@ -533,8 +526,7 @@ def get_moe_cuda_marlin_config_w4a16(
     if is_ep:
         gemm2_file_name = f"MOE_W4A16_CUDA_MARLIN_EP{ep_size}_{N2}_{K2}_{device_name}_{num_cus}.json"
 
-    gemm2_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
+    gemm2_config_file_path = resource_path("configs", gemm2_file_name)    
     try:
         with open(gemm2_config_file_path, 'r') as file:
             config_infos = json.load(file)
@@ -688,8 +680,7 @@ def get_moe_cuda_marlin_config_w16a16(
     gemm1_file_name = f"MOE_W16A16_CUDA_MARLIN_{N1}_{K1}_{device_name}_{num_cus}.json"
     if is_ep:
         gemm1_file_name = f"MOE_W16A16_CUDA_EP{ep_size}_{N1}_{K1}_{device_name}_{num_cus}.json"
-    gemm1_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
+    gemm1_config_file_path = resource_path("configs", gemm1_file_name)
     
     try:
         with open(gemm1_config_file_path, 'r') as file:
@@ -718,8 +709,7 @@ def get_moe_cuda_marlin_config_w16a16(
     gemm2_file_name = f"MOE_W16A16_CUDA_MARLIN_{N2}_{K2}_{device_name}_{num_cus}.json"
     if is_ep:
         gemm2_file_name = f"MOE_W16A16_CUDA_EP{ep_size}_{N2}_{K2}_{device_name}_{num_cus}.json"
-    gemm2_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
+    gemm2_config_file_path = resource_path("configs", gemm2_file_name)    
     try:
         with open(gemm2_config_file_path, 'r') as file:
             config_infos = json.load(file)
@@ -791,8 +781,7 @@ def get_moe_cuda_config_w16a16(
     gemm1_file_name = f"MOE_W16A16_CUDA_{N1}_{K1}_{device_name}_{num_cus}.json"
     if is_ep:
         gemm1_file_name = f"MOE_W16A16_CUDA_EP{ep_size}_{N1}_{K1}_{device_name}_{num_cus}.json"
-    gemm1_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm1_file_name)
+    gemm1_config_file_path = resource_path("configs", gemm1_file_name)
     
     try:
         with open(gemm1_config_file_path, 'r') as file:
@@ -821,8 +810,7 @@ def get_moe_cuda_config_w16a16(
     gemm2_file_name = f"MOE_W16A16_CUDA_{N2}_{K2}_{device_name}_{num_cus}.json"
     if is_ep:
         gemm2_file_name = f"MOE_W16A16_CUDA_EP{ep_size}_{N2}_{K2}_{device_name}_{num_cus}.json"
-    gemm2_config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", gemm2_file_name)    
+    gemm2_config_file_path = resource_path("configs", gemm2_file_name)    
     try:
         with open(gemm2_config_file_path, 'r') as file:
             config_infos = json.load(file)
@@ -912,8 +900,7 @@ def get_batched_gemm_w8a8_config(
     cache_key = f"BATCHED_GEMM_W8A8_{N}_{K}"
     nk_key = f"{N}_{K}_{gfx_version.upper()}_CU{cu_number}"
     filename = f"BATCHED_GEMM_W8A8_{N}_{K}_{gfx_version.upper()}_CU{cu_number}.json"
-    config_file_path = os.path.join(
-        os.path.dirname(os.path.realpath(__file__)), "configs", filename)
+    config_file_path = resource_path("configs", filename)
 
     if cache_key not in get_batched_gemm_w8a8_config._config_cache:
         get_batched_gemm_w8a8_config._config_cache[cache_key] = {}
