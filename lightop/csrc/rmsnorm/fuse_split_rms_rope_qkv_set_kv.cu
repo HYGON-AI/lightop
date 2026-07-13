@@ -1,5 +1,6 @@
 
 #include <limits>
+#include <algorithm>
 #include <stdint.h>
 #include <ATen/Dispatch.h>
 #include <ATen/ATen.h>
@@ -1813,6 +1814,758 @@ void split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
           return;
         }
   });
+}
+
+template <typename scalar_t>
+__device__ __forceinline__ void mimo_v2_apply_rope_pair_inplace(
+    scalar_t* __restrict__ head_ptr,
+    const scalar_t* __restrict__ cache_ptr,
+    int pair_idx,
+    int rot_dim,
+    bool is_neox,
+    int& idx0,
+    int& idx1,
+    float& out0,
+    float& out1) {
+  if (is_neox) {
+    const int half = rot_dim / 2;
+    idx0 = pair_idx;
+    idx1 = pair_idx + half;
+    const float x0 = static_cast<float>(head_ptr[idx0]);
+    const float x1 = static_cast<float>(head_ptr[idx1]);
+    const float c = static_cast<float>(cache_ptr[pair_idx]);
+    const float s = static_cast<float>(cache_ptr[half + pair_idx]);
+    out0 = x0 * c - x1 * s;
+    out1 = x1 * c + x0 * s;
+  } else {
+    const int half = rot_dim / 2;
+    idx0 = pair_idx * 2;
+    idx1 = idx0 + 1;
+    const float x0 = static_cast<float>(head_ptr[idx0]);
+    const float x1 = static_cast<float>(head_ptr[idx1]);
+    const float c = static_cast<float>(cache_ptr[pair_idx]);
+    const float s = static_cast<float>(cache_ptr[half + pair_idx]);
+    out0 = x0 * c - x1 * s;
+    out1 = x1 * c + x0 * s;
+  }
+  head_ptr[idx0] = static_cast<scalar_t>(out0);
+  head_ptr[idx1] = static_cast<scalar_t>(out1);
+}
+
+__device__ __forceinline__ uint8_t mimo_v2_float_to_fp8(
+    float value,
+    bool use_fp8_e4m3) {
+  return use_fp8_e4m3 ? float_to_fp8e4m3(value) : float_to_fp8e5m2(value);
+}
+
+__device__ __forceinline__ uint32_t mimo_v2_float_to_fp8e4m3_x4(
+    float a,
+    float b,
+    float c,
+    float d) {
+#if defined(__gfx938__)
+  int32_t out = 0;
+  out = __builtin_hcu_cvt_pk_fp8_f32(a, b, out, false);
+  out = __builtin_hcu_cvt_pk_fp8_f32(c, d, out, true);
+  return static_cast<uint32_t>(out);
+#else
+  uint32_t out = 0;
+  reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e4m3(a);
+  reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e4m3(b);
+  reinterpret_cast<uint8_t*>(&out)[2] = float_to_fp8e4m3(c);
+  reinterpret_cast<uint8_t*>(&out)[3] = float_to_fp8e4m3(d);
+  return out;
+#endif
+}
+
+__device__ __forceinline__ uint32_t mimo_v2_float_to_fp8e5m2_x4(
+    float a,
+    float b,
+    float c,
+    float d) {
+#if defined(__gfx938__)
+  int32_t out = 0;
+  out = __builtin_hcu_cvt_pk_bf8_f32(a, b, out, false);
+  out = __builtin_hcu_cvt_pk_bf8_f32(c, d, out, true);
+  return static_cast<uint32_t>(out);
+#else
+  uint32_t out = 0;
+  reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e5m2(a);
+  reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e5m2(b);
+  reinterpret_cast<uint8_t*>(&out)[2] = float_to_fp8e5m2(c);
+  reinterpret_cast<uint8_t*>(&out)[3] = float_to_fp8e5m2(d);
+  return out;
+#endif
+}
+
+__device__ __forceinline__ uint32_t mimo_v2_float_to_fp8_x4(
+    float a,
+    float b,
+    float c,
+    float d,
+    bool use_fp8_e4m3) {
+  return use_fp8_e4m3
+             ? mimo_v2_float_to_fp8e4m3_x4(a, b, c, d)
+             : mimo_v2_float_to_fp8e5m2_x4(a, b, c, d);
+}
+
+template <int VEC>
+__device__ __forceinline__ void mimo_v2_store_fp8_vec(
+    uint8_t* __restrict__ ptr,
+    int64_t stride,
+    const float (&vals)[VEC],
+    float inv_scale,
+    bool use_fp8_e4m3) {
+  static_assert(VEC % 4 == 0, "fp8 packed store expects multiples of 4");
+  if (stride == 1) {
+#pragma unroll
+    for (int i = 0; i < VEC; i += 4) {
+      reinterpret_cast<uint32_t*>(ptr + i)[0] = mimo_v2_float_to_fp8_x4(
+          vals[i] * inv_scale,
+          vals[i + 1] * inv_scale,
+          vals[i + 2] * inv_scale,
+          vals[i + 3] * inv_scale,
+          use_fp8_e4m3);
+    }
+  } else {
+#pragma unroll
+    for (int i = 0; i < VEC; ++i) {
+      ptr[i * stride] = mimo_v2_float_to_fp8(vals[i] * inv_scale, use_fp8_e4m3);
+    }
+  }
+}
+
+template <typename cache_t, typename scalar_t, int VEC>
+__device__ __forceinline__ void mimo_v2_store_cache_vec(
+    cache_t* __restrict__ ptr,
+    int64_t stride,
+    const scalar_t (&vals)[VEC]) {
+  if (stride == 1) {
+    using StoreT = at::native::memory::aligned_vector<cache_t, VEC>;
+    cache_t out[VEC];
+#pragma unroll
+    for (int i = 0; i < VEC; ++i) {
+      out[i] = static_cast<cache_t>(vals[i]);
+    }
+    *reinterpret_cast<StoreT*>(ptr) = *reinterpret_cast<StoreT*>(out);
+  } else {
+#pragma unroll
+    for (int i = 0; i < VEC; ++i) {
+      ptr[i * stride] = static_cast<cache_t>(vals[i]);
+    }
+  }
+}
+
+template <typename scalar_t, typename cache_t, typename index_t, bool USE_FP8_CACHE>
+__global__ void mimo_v2_split_rope_vscale_kv_store_kernel(
+    const int64_t* __restrict__ positions,
+    scalar_t* __restrict__ qkv,
+    const scalar_t* __restrict__ cos_sin_cache,
+    cache_t* __restrict__ k_buffer,
+    cache_t* __restrict__ v_buffer,
+    const index_t* __restrict__ kv_cache_loc,
+    int64_t num_tokens,
+    int64_t q_size,
+    int64_t k_size,
+    int64_t qkv_stride,
+    int64_t k_buffer_stride_n,
+    int64_t k_buffer_stride_h,
+    int64_t k_buffer_stride_d,
+    int64_t v_buffer_stride_n,
+    int64_t v_buffer_stride_h,
+    int64_t v_buffer_stride_d,
+    int head_size,
+    int v_head_size,
+    int rot_dim,
+    int num_q_heads,
+    int num_kv_heads,
+    int q_threads_per_head,
+    int k_threads_per_head,
+    int k_tail_threads_per_head,
+    int v_threads_per_head,
+    int q_units_per_block,
+    int k_units_per_block,
+    int v_units_per_block,
+    int64_t q_block_count,
+    int64_t k_block_count,
+    float value_scale,
+    float k_cache_scale,
+    float v_cache_scale,
+    bool has_k_cache_scale,
+    bool has_v_cache_scale,
+    bool is_neox,
+    bool has_cache,
+    bool use_fp8_e4m3) {
+  constexpr int VEC = 16 / sizeof(scalar_t);
+  using LoadT = at::native::memory::aligned_vector<scalar_t, VEC>;
+
+  const int tid = threadIdx.x;
+  const int half_rot = rot_dim / 2;
+  int64_t segment_block_idx = static_cast<int64_t>(blockIdx.x);
+
+  if (segment_block_idx < q_block_count) {
+    const int unit_lane = tid / q_threads_per_head;
+    if (unit_lane >= q_units_per_block) {
+      return;
+    }
+    const int lane_in_head = tid - unit_lane * q_threads_per_head;
+    const int64_t unit_idx =
+        segment_block_idx * q_units_per_block + unit_lane;
+    const int64_t total_units = num_tokens * static_cast<int64_t>(num_q_heads);
+    if (unit_idx >= total_units) {
+      return;
+    }
+    const int64_t token_idx = unit_idx / num_q_heads;
+    const int head_idx = static_cast<int>(unit_idx - token_idx * num_q_heads);
+    const int64_t pos = positions[token_idx];
+    const scalar_t* token_cos_sin = cos_sin_cache + pos * rot_dim;
+    scalar_t* q_head_ptr =
+        qkv + token_idx * qkv_stride + head_idx * head_size;
+
+    if (is_neox) {
+      const int offset_low = lane_in_head * VEC;
+      const int offset_high = half_rot + offset_low;
+      scalar_t q_low[VEC], q_high[VEC], cos_v[VEC], sin_v[VEC];
+      *reinterpret_cast<LoadT*>(q_low) =
+          *reinterpret_cast<LoadT*>(q_head_ptr + offset_low);
+      *reinterpret_cast<LoadT*>(q_high) =
+          *reinterpret_cast<LoadT*>(q_head_ptr + offset_high);
+      *reinterpret_cast<LoadT*>(cos_v) =
+          *reinterpret_cast<const LoadT*>(token_cos_sin + offset_low);
+      *reinterpret_cast<LoadT*>(sin_v) =
+          *reinterpret_cast<const LoadT*>(token_cos_sin + half_rot + offset_low);
+#pragma unroll
+      for (int i = 0; i < VEC; ++i) {
+        const float x0 = static_cast<float>(q_low[i]);
+        const float x1 = static_cast<float>(q_high[i]);
+        const float c = static_cast<float>(cos_v[i]);
+        const float s = static_cast<float>(sin_v[i]);
+        q_low[i] = static_cast<scalar_t>(x0 * c - x1 * s);
+        q_high[i] = static_cast<scalar_t>(x1 * c + x0 * s);
+      }
+      *reinterpret_cast<LoadT*>(q_head_ptr + offset_low) =
+          *reinterpret_cast<LoadT*>(q_low);
+      *reinterpret_cast<LoadT*>(q_head_ptr + offset_high) =
+          *reinterpret_cast<LoadT*>(q_high);
+    } else {
+      const int offset = lane_in_head * VEC;
+      const int pair_base = offset / 2;
+      using CacheLoadT = at::native::memory::aligned_vector<scalar_t, VEC / 2>;
+      scalar_t q_vals[VEC], cos_v[VEC / 2], sin_v[VEC / 2];
+      *reinterpret_cast<LoadT*>(q_vals) =
+          *reinterpret_cast<LoadT*>(q_head_ptr + offset);
+      *reinterpret_cast<CacheLoadT*>(cos_v) =
+          *reinterpret_cast<const CacheLoadT*>(token_cos_sin + pair_base);
+      *reinterpret_cast<CacheLoadT*>(sin_v) =
+          *reinterpret_cast<const CacheLoadT*>(token_cos_sin + half_rot + pair_base);
+#pragma unroll
+      for (int i = 0; i < VEC; i += 2) {
+        const int cache_idx = i / 2;
+        const float x0 = static_cast<float>(q_vals[i]);
+        const float x1 = static_cast<float>(q_vals[i + 1]);
+        const float c = static_cast<float>(cos_v[cache_idx]);
+        const float s = static_cast<float>(sin_v[cache_idx]);
+        q_vals[i] = static_cast<scalar_t>(x0 * c - x1 * s);
+        q_vals[i + 1] = static_cast<scalar_t>(x1 * c + x0 * s);
+      }
+      *reinterpret_cast<LoadT*>(q_head_ptr + offset) =
+          *reinterpret_cast<LoadT*>(q_vals);
+    }
+    return;
+  }
+
+  segment_block_idx -= q_block_count;
+  if (segment_block_idx < k_block_count) {
+    const int unit_lane = tid / k_threads_per_head;
+    if (unit_lane >= k_units_per_block) {
+      return;
+    }
+    const int lane_in_head = tid - unit_lane * k_threads_per_head;
+    const int64_t unit_idx =
+        segment_block_idx * k_units_per_block + unit_lane;
+    const int64_t total_units = num_tokens * static_cast<int64_t>(num_kv_heads);
+    if (unit_idx >= total_units) {
+      return;
+    }
+    const int64_t token_idx = unit_idx / num_kv_heads;
+    const int head_idx = static_cast<int>(unit_idx - token_idx * num_kv_heads);
+    const int64_t pos = positions[token_idx];
+    const scalar_t* token_cos_sin = cos_sin_cache + pos * rot_dim;
+    scalar_t* k_head_ptr =
+        qkv + token_idx * qkv_stride + q_size + head_idx * head_size;
+
+    index_t cache_loc = 0;
+    bool write_cache = has_cache;
+    if (has_cache) {
+      cache_loc = kv_cache_loc[token_idx];
+      write_cache = cache_loc >= 0;
+    }
+    const float inv_k_cache_scale =
+        has_k_cache_scale ? 1.0f / k_cache_scale : 1.0f;
+    const int64_t k_base_offset =
+        static_cast<int64_t>(cache_loc) * k_buffer_stride_n +
+        head_idx * k_buffer_stride_h;
+
+    if (lane_in_head < q_threads_per_head) {
+      if (is_neox) {
+        const int offset_low = lane_in_head * VEC;
+        const int offset_high = half_rot + offset_low;
+        scalar_t k_low[VEC], k_high[VEC], cos_v[VEC], sin_v[VEC];
+        float k_low_f[VEC], k_high_f[VEC];
+        *reinterpret_cast<LoadT*>(k_low) =
+            *reinterpret_cast<LoadT*>(k_head_ptr + offset_low);
+        *reinterpret_cast<LoadT*>(k_high) =
+            *reinterpret_cast<LoadT*>(k_head_ptr + offset_high);
+        *reinterpret_cast<LoadT*>(cos_v) =
+            *reinterpret_cast<const LoadT*>(token_cos_sin + offset_low);
+        *reinterpret_cast<LoadT*>(sin_v) =
+            *reinterpret_cast<const LoadT*>(token_cos_sin + half_rot + offset_low);
+#pragma unroll
+        for (int i = 0; i < VEC; ++i) {
+          const float x0 = static_cast<float>(k_low[i]);
+          const float x1 = static_cast<float>(k_high[i]);
+          const float c = static_cast<float>(cos_v[i]);
+          const float s = static_cast<float>(sin_v[i]);
+          k_low_f[i] = x0 * c - x1 * s;
+          k_high_f[i] = x1 * c + x0 * s;
+          k_low[i] = static_cast<scalar_t>(k_low_f[i]);
+          k_high[i] = static_cast<scalar_t>(k_high_f[i]);
+        }
+        *reinterpret_cast<LoadT*>(k_head_ptr + offset_low) =
+            *reinterpret_cast<LoadT*>(k_low);
+        *reinterpret_cast<LoadT*>(k_head_ptr + offset_high) =
+            *reinterpret_cast<LoadT*>(k_high);
+
+        if (write_cache) {
+          if constexpr (USE_FP8_CACHE) {
+            mimo_v2_store_fp8_vec<VEC>(
+                reinterpret_cast<uint8_t*>(k_buffer) + k_base_offset +
+                    offset_low * k_buffer_stride_d,
+                k_buffer_stride_d, k_low_f, inv_k_cache_scale, use_fp8_e4m3);
+            mimo_v2_store_fp8_vec<VEC>(
+                reinterpret_cast<uint8_t*>(k_buffer) + k_base_offset +
+                    offset_high * k_buffer_stride_d,
+                k_buffer_stride_d, k_high_f, inv_k_cache_scale, use_fp8_e4m3);
+          } else {
+            mimo_v2_store_cache_vec<cache_t, scalar_t, VEC>(
+                k_buffer + k_base_offset + offset_low * k_buffer_stride_d,
+                k_buffer_stride_d, k_low);
+            mimo_v2_store_cache_vec<cache_t, scalar_t, VEC>(
+                k_buffer + k_base_offset + offset_high * k_buffer_stride_d,
+                k_buffer_stride_d, k_high);
+          }
+        }
+      } else {
+        const int offset = lane_in_head * VEC;
+        const int pair_base = offset / 2;
+        using CacheLoadT = at::native::memory::aligned_vector<scalar_t, VEC / 2>;
+        scalar_t k_vals[VEC], cos_v[VEC / 2], sin_v[VEC / 2];
+        float k_vals_f[VEC];
+        *reinterpret_cast<LoadT*>(k_vals) =
+            *reinterpret_cast<LoadT*>(k_head_ptr + offset);
+        *reinterpret_cast<CacheLoadT*>(cos_v) =
+            *reinterpret_cast<const CacheLoadT*>(token_cos_sin + pair_base);
+        *reinterpret_cast<CacheLoadT*>(sin_v) =
+            *reinterpret_cast<const CacheLoadT*>(token_cos_sin + half_rot + pair_base);
+#pragma unroll
+        for (int i = 0; i < VEC; i += 2) {
+          const int cache_idx = i / 2;
+          const float x0 = static_cast<float>(k_vals[i]);
+          const float x1 = static_cast<float>(k_vals[i + 1]);
+          const float c = static_cast<float>(cos_v[cache_idx]);
+          const float s = static_cast<float>(sin_v[cache_idx]);
+          k_vals_f[i] = x0 * c - x1 * s;
+          k_vals_f[i + 1] = x1 * c + x0 * s;
+          k_vals[i] = static_cast<scalar_t>(k_vals_f[i]);
+          k_vals[i + 1] = static_cast<scalar_t>(k_vals_f[i + 1]);
+        }
+        *reinterpret_cast<LoadT*>(k_head_ptr + offset) =
+            *reinterpret_cast<LoadT*>(k_vals);
+
+        if (write_cache) {
+          if constexpr (USE_FP8_CACHE) {
+            mimo_v2_store_fp8_vec<VEC>(
+                reinterpret_cast<uint8_t*>(k_buffer) + k_base_offset +
+                    offset * k_buffer_stride_d,
+                k_buffer_stride_d, k_vals_f, inv_k_cache_scale, use_fp8_e4m3);
+          } else {
+            mimo_v2_store_cache_vec<cache_t, scalar_t, VEC>(
+                k_buffer + k_base_offset + offset * k_buffer_stride_d,
+                k_buffer_stride_d, k_vals);
+          }
+        }
+      }
+    }
+
+    if (lane_in_head < k_tail_threads_per_head) {
+      const int dim_offset = rot_dim + lane_in_head * VEC;
+      scalar_t k_tail[VEC];
+      *reinterpret_cast<LoadT*>(k_tail) =
+          *reinterpret_cast<LoadT*>(k_head_ptr + dim_offset);
+      if (write_cache) {
+        if constexpr (USE_FP8_CACHE) {
+          float k_tail_f[VEC];
+#pragma unroll
+          for (int i = 0; i < VEC; ++i) {
+            k_tail_f[i] = static_cast<float>(k_tail[i]);
+          }
+          mimo_v2_store_fp8_vec<VEC>(
+              reinterpret_cast<uint8_t*>(k_buffer) + k_base_offset +
+                  dim_offset * k_buffer_stride_d,
+              k_buffer_stride_d, k_tail_f, inv_k_cache_scale, use_fp8_e4m3);
+        } else {
+          mimo_v2_store_cache_vec<cache_t, scalar_t, VEC>(
+              k_buffer + k_base_offset + dim_offset * k_buffer_stride_d,
+              k_buffer_stride_d, k_tail);
+        }
+      }
+    }
+    return;
+  }
+
+  segment_block_idx -= k_block_count;
+  const int unit_lane = tid / v_threads_per_head;
+  if (unit_lane >= v_units_per_block) {
+    return;
+  }
+  const int lane_in_head = tid - unit_lane * v_threads_per_head;
+  const int64_t unit_idx = segment_block_idx * v_units_per_block + unit_lane;
+  const int64_t total_units = num_tokens * static_cast<int64_t>(num_kv_heads);
+  if (unit_idx >= total_units) {
+    return;
+  }
+  const int64_t token_idx = unit_idx / num_kv_heads;
+  const int head_idx = static_cast<int>(unit_idx - token_idx * num_kv_heads);
+
+  index_t cache_loc = 0;
+  bool write_cache = has_cache;
+  if (has_cache) {
+    cache_loc = kv_cache_loc[token_idx];
+    write_cache = cache_loc >= 0;
+  }
+  const float inv_v_cache_scale =
+      has_v_cache_scale ? 1.0f / v_cache_scale : 1.0f;
+
+  const int dim_offset = lane_in_head * VEC;
+  scalar_t* v_head_ptr =
+      qkv + token_idx * qkv_stride + q_size + k_size +
+      head_idx * v_head_size;
+  scalar_t v_vals[VEC];
+  float v_vals_f[VEC];
+  *reinterpret_cast<LoadT*>(v_vals) =
+      *reinterpret_cast<LoadT*>(v_head_ptr + dim_offset);
+#pragma unroll
+  for (int i = 0; i < VEC; ++i) {
+    v_vals_f[i] = static_cast<float>(v_vals[i]) * value_scale;
+    v_vals[i] = static_cast<scalar_t>(v_vals_f[i]);
+  }
+  *reinterpret_cast<LoadT*>(v_head_ptr + dim_offset) =
+      *reinterpret_cast<LoadT*>(v_vals);
+
+  if (write_cache) {
+    const int64_t v_base_offset =
+        static_cast<int64_t>(cache_loc) * v_buffer_stride_n +
+        head_idx * v_buffer_stride_h + dim_offset * v_buffer_stride_d;
+    if constexpr (USE_FP8_CACHE) {
+      mimo_v2_store_fp8_vec<VEC>(
+          reinterpret_cast<uint8_t*>(v_buffer) + v_base_offset,
+          v_buffer_stride_d, v_vals_f, inv_v_cache_scale, use_fp8_e4m3);
+    } else {
+      mimo_v2_store_cache_vec<cache_t, scalar_t, VEC>(
+          v_buffer + v_base_offset, v_buffer_stride_d, v_vals);
+    }
+  }
+}
+
+template <typename scalar_t, typename cache_t, typename index_t, bool USE_FP8_CACHE>
+void launch_mimo_v2_split_rope_vscale_kv_store(
+    Tensor& positions,
+    Tensor& qkv,
+    Tensor& cos_sin_cache,
+    Tensor& k_buffer,
+    Tensor& v_buffer,
+    std::optional<Tensor>& kv_cache_loc,
+    int64_t q_size,
+    int64_t k_size,
+    int64_t v_size,
+    int64_t head_size,
+    int64_t v_head_size,
+    double value_scale,
+    std::optional<double>& k_cache_scale,
+    std::optional<double>& v_cache_scale,
+    bool is_neox,
+    bool use_fp8_e4m3,
+    cudaStream_t stream) {
+  const int64_t num_tokens = qkv.size(0);
+  const int num_q_heads = static_cast<int>(q_size / head_size);
+  const int num_kv_heads = static_cast<int>(v_size / v_head_size);
+  const int rot_dim = static_cast<int>(cos_sin_cache.size(1));
+  constexpr int VEC = 16 / sizeof(scalar_t);
+  TORCH_CHECK(head_size % VEC == 0, "head_size must be 128-bit vector aligned");
+  TORCH_CHECK(v_head_size % VEC == 0,
+              "v_head_size must be 128-bit vector aligned");
+  TORCH_CHECK(rot_dim > 0 && rot_dim <= head_size,
+              "rotary dim must be in (0, head_size]");
+  TORCH_CHECK(rot_dim % 2 == 0, "rotary dim must be even");
+  TORCH_CHECK((head_size - rot_dim) % VEC == 0,
+              "unrotated K tail must be 128-bit vector aligned");
+  TORCH_CHECK(!is_neox || (rot_dim / 2) % VEC == 0,
+              "neox rotary half dimension must be 128-bit vector aligned");
+  TORCH_CHECK(is_neox || rot_dim % VEC == 0,
+              "rotary dim must be 128-bit vector aligned");
+
+  const int q_threads_per_head =
+      is_neox ? static_cast<int>((rot_dim / 2) / VEC)
+              : static_cast<int>(rot_dim / VEC);
+  const int k_tail_threads_per_head =
+      static_cast<int>((head_size - rot_dim) / VEC);
+  const int k_threads_per_head =
+      std::max(q_threads_per_head, k_tail_threads_per_head);
+  const int v_threads_per_head = static_cast<int>(v_head_size / VEC);
+  TORCH_CHECK(q_threads_per_head > 0 && k_threads_per_head > 0 &&
+                  v_threads_per_head > 0,
+              "mimo_v2 fused prepare thread allocation is empty");
+
+  constexpr int threads = 256;
+  const int q_units_per_block = std::max(1, threads / q_threads_per_head);
+  const int k_units_per_block = std::max(1, threads / k_threads_per_head);
+  const int v_units_per_block = std::max(1, threads / v_threads_per_head);
+  const auto ceil_div = [](int64_t value, int64_t divisor) -> int64_t {
+    return (value + divisor - 1) / divisor;
+  };
+  const int64_t q_total_units =
+      num_tokens * static_cast<int64_t>(num_q_heads);
+  const int64_t kv_total_units =
+      num_tokens * static_cast<int64_t>(num_kv_heads);
+  const int64_t q_block_count =
+      ceil_div(q_total_units, static_cast<int64_t>(q_units_per_block));
+  const int64_t k_block_count =
+      ceil_div(kv_total_units, static_cast<int64_t>(k_units_per_block));
+  const int64_t v_block_count =
+      ceil_div(kv_total_units, static_cast<int64_t>(v_units_per_block));
+  const int64_t total_blocks = q_block_count + k_block_count + v_block_count;
+  if (total_blocks == 0) {
+    return;
+  }
+  TORCH_CHECK(total_blocks <= std::numeric_limits<int>::max(),
+              "mimo_v2 fused prepare grid is too large");
+  const int blocks = static_cast<int>(total_blocks);
+
+  const bool has_cache = kv_cache_loc.has_value();
+  const index_t* loc_ptr =
+      has_cache ? kv_cache_loc->data_ptr<index_t>() : nullptr;
+
+  cache_t* k_buf_ptr = nullptr;
+  cache_t* v_buf_ptr = nullptr;
+  int64_t k_stride_n = 0;
+  int64_t k_stride_h = 0;
+  int64_t k_stride_d = 0;
+  int64_t v_stride_n = 0;
+  int64_t v_stride_h = 0;
+  int64_t v_stride_d = 0;
+  if (has_cache) {
+    k_buf_ptr = reinterpret_cast<cache_t*>(k_buffer.data_ptr());
+    v_buf_ptr = reinterpret_cast<cache_t*>(v_buffer.data_ptr());
+    k_stride_n = k_buffer.stride(0);
+    k_stride_h = k_buffer.stride(1);
+    k_stride_d = k_buffer.stride(2);
+    v_stride_n = v_buffer.stride(0);
+    v_stride_h = v_buffer.stride(1);
+    v_stride_d = v_buffer.stride(2);
+  }
+
+  mimo_v2_split_rope_vscale_kv_store_kernel<scalar_t, cache_t, index_t, USE_FP8_CACHE>
+      <<<blocks, threads, 0, stream>>>(
+          positions.data_ptr<int64_t>(),
+          qkv.data_ptr<scalar_t>(),
+          cos_sin_cache.data_ptr<scalar_t>(),
+          k_buf_ptr,
+          v_buf_ptr,
+          loc_ptr,
+          num_tokens,
+          q_size,
+          k_size,
+          qkv.stride(0),
+          k_stride_n,
+          k_stride_h,
+          k_stride_d,
+          v_stride_n,
+          v_stride_h,
+          v_stride_d,
+          static_cast<int>(head_size),
+          static_cast<int>(v_head_size),
+          rot_dim,
+          num_q_heads,
+          num_kv_heads,
+          q_threads_per_head,
+          k_threads_per_head,
+          k_tail_threads_per_head,
+          v_threads_per_head,
+          q_units_per_block,
+          k_units_per_block,
+          v_units_per_block,
+          q_block_count,
+          k_block_count,
+          static_cast<float>(value_scale),
+          static_cast<float>(k_cache_scale.value_or(1.0)),
+          static_cast<float>(v_cache_scale.value_or(1.0)),
+          k_cache_scale.has_value(),
+          v_cache_scale.has_value(),
+          is_neox,
+          has_cache,
+          use_fp8_e4m3);
+}
+
+void mimo_v2_split_rope_vscale_kv_store(
+    Tensor& positions,
+    Tensor& qkv,
+    int64_t q_size,
+    int64_t k_size,
+    int64_t v_size,
+    int64_t head_size,
+    int64_t v_head_size,
+    Tensor& cos_sin_cache,
+    bool is_neox,
+    Tensor& k_buffer,
+    Tensor& v_buffer,
+    std::optional<Tensor>& kv_cache_loc,
+    Tensor& q_out,
+    Tensor& k_out,
+    Tensor& v_out,
+    double value_scale,
+    std::optional<double>& k_cache_scale,
+    std::optional<double>& v_cache_scale,
+    bool use_fp8_e4m3,
+    bool use_fp8_cache) {
+  TORCH_CHECK(qkv.dim() == 2, "qkv must be [num_tokens, q_size + k_size + v_size]");
+  TORCH_CHECK(positions.dim() == 1, "positions must be a contiguous 1-D tensor");
+  TORCH_CHECK(qkv.size(1) == q_size + k_size + v_size, "qkv last dimension mismatch");
+  TORCH_CHECK(q_out.dim() == 2 && q_out.size(0) == qkv.size(0) &&
+                  q_out.size(1) == q_size,
+              "q_out shape mismatch");
+  TORCH_CHECK(k_out.dim() == 2 && k_out.size(0) == qkv.size(0) &&
+                  k_out.size(1) == k_size,
+              "k_out shape mismatch");
+  TORCH_CHECK(v_out.dim() == 2 && v_out.size(0) == qkv.size(0) &&
+                  v_out.size(1) == v_size,
+              "v_out shape mismatch");
+  TORCH_CHECK(q_size % head_size == 0, "q_size must be divisible by head_size");
+  TORCH_CHECK(k_size % head_size == 0, "k_size must be divisible by head_size");
+  TORCH_CHECK(v_size % v_head_size == 0, "v_size must be divisible by v_head_size");
+  TORCH_CHECK(k_size / head_size == v_size / v_head_size,
+              "K and V must have the same number of KV heads");
+  TORCH_CHECK(cos_sin_cache.dim() == 2, "cos_sin_cache must be 2-D");
+  TORCH_CHECK(cos_sin_cache.size(1) <= head_size,
+              "rotary dim must be <= head_size");
+  TORCH_CHECK(cos_sin_cache.size(1) % 2 == 0, "rotary dim must be even");
+  if (kv_cache_loc.has_value()) {
+    TORCH_CHECK(k_buffer.dim() == 3 && v_buffer.dim() == 3,
+                "mimo_v2 fused kv_store expects normal MHA buffers [slots, heads, dim]");
+    TORCH_CHECK(k_buffer.size(1) == k_size / head_size &&
+                    k_buffer.size(2) == head_size,
+                "k_buffer shape mismatch");
+    TORCH_CHECK(v_buffer.size(1) == v_size / v_head_size &&
+                    v_buffer.size(2) == v_head_size,
+                "v_buffer shape mismatch");
+  }
+
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(qkv));
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  const size_t elem_size = qkv.element_size();
+  const char* qkv_base = reinterpret_cast<const char*>(qkv.data_ptr());
+  const bool outputs_alias_qkv =
+      reinterpret_cast<const char*>(q_out.data_ptr()) == qkv_base &&
+      reinterpret_cast<const char*>(k_out.data_ptr()) ==
+          qkv_base + q_size * elem_size &&
+      reinterpret_cast<const char*>(v_out.data_ptr()) ==
+          qkv_base + (q_size + k_size) * elem_size;
+  TORCH_CHECK(outputs_alias_qkv,
+              "mimo_v2 fused prepare expects q_out/k_out/v_out to alias qkv.split");
+  TORCH_CHECK(q_out.stride(0) == qkv.stride(0) && q_out.stride(1) == 1 &&
+                  k_out.stride(0) == qkv.stride(0) && k_out.stride(1) == 1 &&
+                  v_out.stride(0) == qkv.stride(0) && v_out.stride(1) == 1,
+              "mimo_v2 fused prepare expects q_out/k_out/v_out split strides");
+
+  AT_DISPATCH_SWITCH(
+      qkv.scalar_type(),
+      "mimo_v2_split_rope_vscale_kv_store",
+      AT_DISPATCH_CASE(at::ScalarType::Half, [&] {
+        if (use_fp8_cache && kv_cache_loc.has_value()) {
+          if (kv_cache_loc->scalar_type() == at::ScalarType::Long) {
+            launch_mimo_v2_split_rope_vscale_kv_store<scalar_t, uint8_t, int64_t, true>(
+                positions, qkv, cos_sin_cache, k_buffer, v_buffer, kv_cache_loc,
+                q_size, k_size, v_size, head_size, v_head_size,
+                value_scale, k_cache_scale, v_cache_scale, is_neox, use_fp8_e4m3, stream);
+          } else {
+            TORCH_CHECK(kv_cache_loc->scalar_type() == at::ScalarType::Int,
+                        "kv_cache_loc must be int64 or int32");
+            launch_mimo_v2_split_rope_vscale_kv_store<scalar_t, uint8_t, int32_t, true>(
+                positions, qkv, cos_sin_cache, k_buffer, v_buffer, kv_cache_loc,
+                q_size, k_size, v_size, head_size, v_head_size,
+                value_scale, k_cache_scale, v_cache_scale, is_neox, use_fp8_e4m3, stream);
+          }
+        } else {
+          TORCH_CHECK(!kv_cache_loc.has_value() || k_buffer.scalar_type() == qkv.scalar_type(),
+                      "non-fp8 k_buffer dtype must match qkv dtype");
+          TORCH_CHECK(!kv_cache_loc.has_value() || v_buffer.scalar_type() == qkv.scalar_type(),
+                      "non-fp8 v_buffer dtype must match qkv dtype");
+          if (kv_cache_loc.has_value() &&
+              kv_cache_loc->scalar_type() == at::ScalarType::Int) {
+            launch_mimo_v2_split_rope_vscale_kv_store<scalar_t, scalar_t, int32_t, false>(
+                positions, qkv, cos_sin_cache, k_buffer, v_buffer, kv_cache_loc,
+                q_size, k_size, v_size, head_size, v_head_size,
+                value_scale, k_cache_scale, v_cache_scale, is_neox, use_fp8_e4m3, stream);
+          } else {
+            if (kv_cache_loc.has_value()) {
+              TORCH_CHECK(kv_cache_loc->scalar_type() == at::ScalarType::Long,
+                          "kv_cache_loc must be int64 or int32");
+            }
+            launch_mimo_v2_split_rope_vscale_kv_store<scalar_t, scalar_t, int64_t, false>(
+                positions, qkv, cos_sin_cache, k_buffer, v_buffer, kv_cache_loc,
+                q_size, k_size, v_size, head_size, v_head_size,
+                value_scale, k_cache_scale, v_cache_scale, is_neox, use_fp8_e4m3, stream);
+          }
+        }
+      })
+      AT_DISPATCH_CASE(at::ScalarType::BFloat16, [&] {
+        if (use_fp8_cache && kv_cache_loc.has_value()) {
+          if (kv_cache_loc->scalar_type() == at::ScalarType::Long) {
+            launch_mimo_v2_split_rope_vscale_kv_store<scalar_t, uint8_t, int64_t, true>(
+                positions, qkv, cos_sin_cache, k_buffer, v_buffer, kv_cache_loc,
+                q_size, k_size, v_size, head_size, v_head_size,
+                value_scale, k_cache_scale, v_cache_scale, is_neox, use_fp8_e4m3, stream);
+          } else {
+            TORCH_CHECK(kv_cache_loc->scalar_type() == at::ScalarType::Int,
+                        "kv_cache_loc must be int64 or int32");
+            launch_mimo_v2_split_rope_vscale_kv_store<scalar_t, uint8_t, int32_t, true>(
+                positions, qkv, cos_sin_cache, k_buffer, v_buffer, kv_cache_loc,
+                q_size, k_size, v_size, head_size, v_head_size,
+                value_scale, k_cache_scale, v_cache_scale, is_neox, use_fp8_e4m3, stream);
+          }
+        } else {
+          TORCH_CHECK(!kv_cache_loc.has_value() || k_buffer.scalar_type() == qkv.scalar_type(),
+                      "non-fp8 k_buffer dtype must match qkv dtype");
+          TORCH_CHECK(!kv_cache_loc.has_value() || v_buffer.scalar_type() == qkv.scalar_type(),
+                      "non-fp8 v_buffer dtype must match qkv dtype");
+          if (kv_cache_loc.has_value() &&
+              kv_cache_loc->scalar_type() == at::ScalarType::Int) {
+            launch_mimo_v2_split_rope_vscale_kv_store<scalar_t, scalar_t, int32_t, false>(
+                positions, qkv, cos_sin_cache, k_buffer, v_buffer, kv_cache_loc,
+                q_size, k_size, v_size, head_size, v_head_size,
+                value_scale, k_cache_scale, v_cache_scale, is_neox, use_fp8_e4m3, stream);
+          } else {
+            if (kv_cache_loc.has_value()) {
+              TORCH_CHECK(kv_cache_loc->scalar_type() == at::ScalarType::Long,
+                          "kv_cache_loc must be int64 or int32");
+            }
+            launch_mimo_v2_split_rope_vscale_kv_store<scalar_t, scalar_t, int64_t, false>(
+                positions, qkv, cos_sin_cache, k_buffer, v_buffer, kv_cache_loc,
+                q_size, k_size, v_size, head_size, v_head_size,
+                value_scale, k_cache_scale, v_cache_scale, is_neox, use_fp8_e4m3, stream);
+          }
+        }
+      }));
+
 }
 }
 }

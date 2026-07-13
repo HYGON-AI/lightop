@@ -61,7 +61,11 @@ namespace deep_gemm {
 
 #define DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, ...)               \
     [&]() {                                                         \
-        if (num_heads == 32) {                                      \
+        if (num_heads == 16) {                                      \
+            constexpr int NUM_HEADS = 16;                           \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        } else if (num_heads == 32) {                               \
             constexpr int NUM_HEADS = 32;                           \
             __VA_ARGS__();                                          \
             return;                                                 \
@@ -71,6 +75,32 @@ namespace deep_gemm {
             return;                                                 \
         }                                                           \
         LIGHTOP_HOST_UNREACHABLE("unsupported head size\n");        \
+    }()
+
+#define DISPATCH_BLOCK_KV(block_kv, BLOCK_KV, ...)                  \
+    [&]() {                                                         \
+        if (block_kv == 4) {                                        \
+            constexpr int BLOCK_KV = 4;                             \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        } else if (block_kv == 8) {                                 \
+            constexpr int BLOCK_KV = 8;                             \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        } else if (block_kv == 16) {                                \
+            constexpr int BLOCK_KV = 16;                            \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        } else if (block_kv == 32) {                                \
+            constexpr int BLOCK_KV = 32;                            \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        } else if (block_kv == 64) {                                \
+            constexpr int BLOCK_KV = 64;                            \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        }                                                           \
+        LIGHTOP_HOST_UNREACHABLE("unsupported block_kv size\n");    \
     }()
 
 #define DISPATCH_FP8_TYPES(scalar_type, FP8_TYPE, ...)              \
@@ -125,12 +155,10 @@ torch::Tensor get_paged_mqa_logits_metadata(const torch::Tensor& context_lens, i
     const auto& [batch_size] = get_shape<1>(context_lens);
     LIGHTOP_HOST_ASSERT(context_lens.scalar_type() == torch::kInt32);
     LIGHTOP_HOST_ASSERT(context_lens.is_contiguous());
-    LIGHTOP_HOST_ASSERT(block_kv == 64);
     LIGHTOP_HOST_ASSERT(device_runtime->get_num_sms() == num_sms);
 
     constexpr int num_math_warpgroups = 4;
     const int aligned_batch_size = align(batch_size, 64);
-    constexpr int split_kv = 64 * num_math_warpgroups;
 
     int sms = get_sms_info();
     auto schedule_metadata = torch::empty({sms + 1, 2}, context_lens.options());
@@ -143,13 +171,16 @@ torch::Tensor get_paged_mqa_logits_metadata(const torch::Tensor& context_lens, i
     dim3 block = {WARP_SIZE_GPU, 1, 1};
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-    switch (sms) {
-        case 128:  DISPATCH_SMS(128)  break;
-        case 144:  DISPATCH_SMS(144)  break;
-        case 320: DISPATCH_SMS(320) break;
-        case 240: DISPATCH_SMS(240) break;
-        default: LIGHTOP_HOST_UNREACHABLE("unsupported SMS value\n");
-    }
+    DISPATCH_BLOCK_KV(block_kv, BLOCK_KV, [&] {
+        constexpr int split_kv = BLOCK_KV * num_math_warpgroups;
+        switch (sms) {
+            case 128:  DISPATCH_SMS(128)  break;
+            case 144:  DISPATCH_SMS(144)  break;
+            case 320: DISPATCH_SMS(320) break;
+            case 240: DISPATCH_SMS(240) break;
+            default: LIGHTOP_HOST_UNREACHABLE("unsupported SMS value\n");
+        }
+    });
 
     return schedule_metadata;
 }
@@ -190,7 +221,7 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     LIGHTOP_HOST_ASSERT(num_heads == num_heads_ and num_heads_kv == 1);
 
     LIGHTOP_HOST_ASSERT(next_n == 1 or next_n == 2);
-    LIGHTOP_HOST_ASSERT(block_kv == 64);
+    LIGHTOP_HOST_ASSERT(block_kv == 4 or block_kv == 8 or block_kv == 16 or block_kv == 32 or block_kv == 64);
 
     LIGHTOP_HOST_ASSERT(q.is_contiguous());
     LIGHTOP_HOST_ASSERT(kv_cache_stride_bytes % sizeof(float) == 0);
@@ -240,10 +271,15 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
         smem_kv_size_per_stage = block_kv * head_dim * static_cast<int>(kv_cache.element_size());
     }
 
-    // Allocate output
     constexpr int num_math_warp_groups = 4;
-    const auto& aligned_max_context_len = align(max_context_len, block_kv);
+    constexpr int mmac_row_tile = 16;
 
+    const bool use_fp8_kv = (kv_cache_scales.defined() && kv_cache_scales.numel() > 0);
+    const int tokens_per_warp = block_kv < mmac_row_tile ? 64 : block_kv;
+    const int logits_alignment = tokens_per_warp * num_math_warp_groups;
+    const auto& aligned_max_context_len = block_kv < mmac_row_tile ? align(max_context_len, logits_alignment) : align(max_context_len, block_kv);
+
+    // Allocate output
     torch::Tensor logits;
     if (clean_logits) {
         #if USE_CLEAN_LOGITS
@@ -257,9 +293,6 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     }
     logits = logits.slice(-1, 0, max_context_len);
 
-    // constexpr int split_kv = num_math_warp_groups * block_kv;
-    constexpr int split_kv = 4 * 64;
-
     // Calculate shared memory size
     constexpr int num_q_stages = 1, num_kv_stages = 1;
 
@@ -271,16 +304,19 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     // for fp16: prefetch_seq_kv_stage = 1, k_tile = 32;
     // smem_per_warp = prefetch_seq_kv_stage * head_dim * seq_kv_tile(16) * sizeof(T) = 32 * head_dim
     const int smem_kv_pipe_size = num_kv_stages * num_math_warp_groups * 32 * head_dim;
+    const int smem_q_cache_size = num_heads * head_dim * static_cast<int>(q.element_size());
+    const int smem_weight_cache_size = num_heads * static_cast<int>(sizeof(float));
+    const int smem_scale_cache_size = use_fp8_kv ? num_math_warp_groups * 64 * static_cast<int>(sizeof(float)) : 0;
+    const int smem_cache_size = smem_q_cache_size + smem_weight_cache_size + smem_scale_cache_size;
 
-    const int smem_size = smem_q_pipe_size + smem_kv_pipe_size;
+    const int smem_size = smem_q_pipe_size + (block_kv < 16 ? (smem_kv_pipe_size > smem_cache_size ? smem_kv_pipe_size : smem_cache_size)
+                                                             : smem_kv_pipe_size);
 
-    const bool use_fp8_kv = (kv_cache_scales.defined() && kv_cache_scales.numel() > 0);
-
-    int max_chunk_size = ceil_div(max_context_len, block_kv * num_math_warp_groups);
+    int max_chunk_size = ceil_div(max_context_len, tokens_per_warp * num_math_warp_groups);
 
     // Dispatch implementation
     dim3 grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
-    dim3 block = {num_math_warp_groups * WARP_SIZE_GPU, 1, 1};
+    dim3 block = {(uint32_t)(num_math_warp_groups * WARP_SIZE_GPU), 1, 1};
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
@@ -291,39 +327,71 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                 q.scalar_type(),
                 "paged_mqa_float16",
                 ([&] {
-                    DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
-                        DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
-                            paged_mqa_logits<scalar_t, NEXT_N, NUM_HEADS, 128, 64, split_kv,
-                            num_math_warp_groups><<<grid, block, smem_size, stream>>>(
-                                reinterpret_cast<scalar_t*>(q.data_ptr()),
-                                reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
-                                weights.data_ptr<float>(), batch_size,
-                                num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
-                                block_table_stride, context_lens.data_ptr<int32_t>(),
-                                logits.data_ptr<float>(),
-                                block_table.data_ptr<int32_t>(),
-                                use_meta ? schedule_meta.value().data_ptr<int32_t>() : nullptr);
+                    DISPATCH_BLOCK_KV(block_kv, BLOCK_KV, [&] {
+                        DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
+                            DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
+                                if constexpr (BLOCK_KV < 16) {
+                                    paged_mqa_logits_small_block<scalar_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV, 64,
+                                    num_math_warp_groups><<<grid, block, smem_size, stream>>>(
+                                        reinterpret_cast<scalar_t*>(q.data_ptr()),
+                                        reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
+                                        weights.data_ptr<float>(), batch_size,
+                                        num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
+                                        block_table_stride, context_lens.data_ptr<int32_t>(),
+                                        logits.data_ptr<float>(),
+                                        block_table.data_ptr<int32_t>(),
+                                        use_meta ? schedule_meta.value().data_ptr<int32_t>() : nullptr);
+                                } else {
+                                    constexpr int split_kv = BLOCK_KV * 4;
+                                    paged_mqa_logits<scalar_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV, split_kv,
+                                    4><<<grid, block, smem_size, stream>>>(
+                                        reinterpret_cast<scalar_t*>(q.data_ptr()),
+                                        reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
+                                        weights.data_ptr<float>(), batch_size,
+                                        num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
+                                        block_table_stride, context_lens.data_ptr<int32_t>(),
+                                        logits.data_ptr<float>(),
+                                        block_table.data_ptr<int32_t>(),
+                                        use_meta ? schedule_meta.value().data_ptr<int32_t>() : nullptr);
+                                }
+                            });
                         });
                     });
                 })
         );
     } else {
         DISPATCH_FP8_TYPES(q.scalar_type(), FP8_TYPE, [&] {
-               DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
-                   DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
-                       paged_mqa_logits_fp8<FP8_TYPE, NEXT_N, NUM_HEADS, 128, 64, split_kv,
-                       num_math_warp_groups><<<grid, block,smem_size, stream>>>(
-                           reinterpret_cast<FP8_TYPE*>(q.data_ptr()),
-                           reinterpret_cast<FP8_TYPE*>(kv_cache.data_ptr()),
-                           kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
-                           batch_size, num_kv_blocks, kv_cache_stride_bytes,
-                           aligned_max_context_len, block_table_stride,
-                           context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
-                           block_table.data_ptr<int32_t>(),
-                           use_meta ? schedule_meta.value().data_ptr<int32_t>() : nullptr);
+               DISPATCH_BLOCK_KV(block_kv, BLOCK_KV, [&] {
+                   DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
+                        DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
+                           if constexpr (BLOCK_KV < 16) {
+                               paged_mqa_logits_fp8_small_block<FP8_TYPE, NEXT_N, NUM_HEADS, 128, BLOCK_KV, 64,
+                               num_math_warp_groups><<<grid, block,smem_size, stream>>>(
+                                   reinterpret_cast<FP8_TYPE*>(q.data_ptr()),
+                                   reinterpret_cast<FP8_TYPE*>(kv_cache.data_ptr()),
+                                   kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
+                                   batch_size, num_kv_blocks, kv_cache_stride_bytes,
+                                   aligned_max_context_len, block_table_stride,
+                                   context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
+                                   block_table.data_ptr<int32_t>(),
+                                   use_meta ? schedule_meta.value().data_ptr<int32_t>() : nullptr);
+                           } else {
+                               constexpr int split_kv = BLOCK_KV * 4;
+                               paged_mqa_logits_fp8<FP8_TYPE, NEXT_N, NUM_HEADS, 128, BLOCK_KV, split_kv,
+                               4><<<grid, block,smem_size, stream>>>(
+                                   reinterpret_cast<FP8_TYPE*>(q.data_ptr()),
+                                   reinterpret_cast<FP8_TYPE*>(kv_cache.data_ptr()),
+                                   kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
+                                   batch_size, num_kv_blocks, kv_cache_stride_bytes,
+                                   aligned_max_context_len, block_table_stride,
+                                   context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
+                                   block_table.data_ptr<int32_t>(),
+                                   use_meta ? schedule_meta.value().data_ptr<int32_t>() : nullptr);
+                           }
                        });
                    });
                });
+        });
     }
 
     hipError_t result = hipGetLastError();
