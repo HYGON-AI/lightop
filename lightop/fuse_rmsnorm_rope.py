@@ -452,10 +452,6 @@ def mimo_v2_split_rope_vscale_kv_store(
     if kv_cache_loc is not None:
         kv_cache_loc = kv_cache_loc.contiguous()
 
-    q_out = torch.empty((qkv.shape[0], q_size), dtype=qkv.dtype, device=qkv.device)
-    k_out = torch.empty((qkv.shape[0], k_size), dtype=qkv.dtype, device=qkv.device)
-    v_out = torch.empty((qkv.shape[0], v_size), dtype=qkv.dtype, device=qkv.device)
-
     if kv_cache_dtype is None:
         kv_cache_dtype = k_buffer.dtype
 
@@ -473,6 +469,7 @@ def mimo_v2_split_rope_vscale_kv_store(
                 "buffers to have the same dtype as qkv unless kv_cache_dtype is fp8"
             )
 
+    q_out, k_out, v_out = qkv.split([q_size, k_size, v_size], dim=-1)
     op.mimo_v2_split_rope_vscale_kv_store(
         positions,
         qkv,

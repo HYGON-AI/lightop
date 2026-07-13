@@ -726,7 +726,7 @@ void mimo_v2_split_rope_vscale_kv_store(
     std::optional<double>& k_cache_scale,
     std::optional<double>& v_cache_scale,
     bool use_fp8_e4m3,
-    bool use_fp8_cache);    
+    bool use_fp8_cache);
 }
 }
 
