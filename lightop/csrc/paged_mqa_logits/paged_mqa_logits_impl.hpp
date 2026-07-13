@@ -456,7 +456,7 @@ __global__ void paged_mqa_logits(const Element* q,
             #endif
 
             #pragma unroll
-            for (int i = 0; i < kHeadDim / Q_TILE; ++i) {
+            for (int i = 0; i < heads_cnt; ++i) {
                 builtin_b16_mmac<is_half>(reg_kv_operand.front, reg_q_operand[i][k_block].front, acc[i][kv_iter]);
                 builtin_b16_mmac<is_half>(reg_kv_operand.rear, reg_q_operand[i][k_block].rear, acc[i][kv_iter]);
             }
@@ -511,7 +511,7 @@ __global__ void paged_mqa_logits(const Element* q,
             __builtin_amdgcn_sched_barrier(0);
 
             #pragma unroll
-            for (int i = 0; i < kHeadDim / Q_TILE; ++i) {
+            for (int i = 0; i < Q_ITER; ++i) {
                 builtin_b16_mmac<is_half>(reg_kv_operand.front, reg_q_operand[i][k_block].front, acc[i][kv_iter]);
                 builtin_b16_mmac<is_half>(reg_kv_operand.rear, reg_q_operand[i][k_block].rear, acc[i][kv_iter]);
             }
@@ -584,6 +584,7 @@ __global__ void paged_mqa_logits_persistent_schedule(const Element* q,
 
     static constexpr int K_TILE = 32;
     static constexpr int Q_TILE = 16;
+    static constexpr int Q_ITER = kNumHeads / Q_TILE;
     static constexpr int Stages = kHeadDim / K_TILE;
 
     extern __shared__ __align__(kSwizzleAlignment) uint8_t smem_buffer[];
@@ -769,7 +770,7 @@ __global__ void paged_mqa_logits_persistent_schedule(const Element* q,
             }
 
             #pragma unroll
-            for (int i = 0; i < kHeadDim / Q_TILE; ++i) {
+            for (int i = 0; i < Q_ITER; ++i) {
                 builtin_b16_mmac<is_half>(reg_kv_operand.front, reg_q_operand[i][k_block].front, acc[i]);
                 builtin_b16_mmac<is_half>(reg_kv_operand.rear, reg_q_operand[i][k_block].rear, acc[i]);
             }
@@ -848,7 +849,7 @@ __global__ void paged_mqa_logits_persistent_schedule(const Element* q,
         reg_kv_operand = *reinterpret_cast<f16x8_t *>(&smem_kv_block[fetch_lds_kv]);
 
         #pragma unroll
-        for (int i = 0; i < kHeadDim / Q_TILE; ++i) {
+        for (int i = 0; i < heads_cnt; ++i) {
             builtin_b16_mmac<is_half>(reg_kv_operand.front, reg_q_operand[i][k_block].front, acc[i]);
             builtin_b16_mmac<is_half>(reg_kv_operand.rear, reg_q_operand[i][k_block].rear, acc[i]);
         }
@@ -936,13 +937,16 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     // fetch Q && Q weights
     auto gQ = q + q_idx * kNextN * kNumHeads * kHeadDim + next_n * kNumHeads * kHeadDim;
     constexpr int kAlignmentQ = 16 / sizeof(uint8_t);
-    constexpr int fetch_q_cnt = kNumHeads * kHeadDim / kNumWarps / WARP_SIZE_GPU / kAlignmentQ;
+    constexpr int fetch_q_cnt = constexpr_ceil_div(kNumHeads * kHeadDim,
+                                                   kNumWarps * WARP_SIZE_GPU * kAlignmentQ);
     constexpr int fetch_q_stride = kAlignmentQ * kNumWarps * WARP_SIZE_GPU;
 
     #pragma unroll
     for (int i = 0; i < fetch_q_cnt; ++i) {
         auto pos = t_id * kAlignmentQ + i * fetch_q_stride;
-        *reinterpret_cast<f8x16_t *>(&smem_kv_block[pos]) = *reinterpret_cast<const f8x16_t *>(&gQ[pos]);
+        if (pos + kAlignmentQ <= kNumHeads * kHeadDim) {
+            *reinterpret_cast<f8x16_t *>(&smem_kv_block[pos]) = *reinterpret_cast<const f8x16_t *>(&gQ[pos]);
+        }
     }
 
     auto gW = weights + q_idx * kNextN * kNumHeads + next_n * kNumHeads;
@@ -1081,7 +1085,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
             buffer_load_lds_x4(src, smem_ptr, inner_warp_offset);
 
             #pragma unroll
-            for (int i = 0; i < kHeadDim / Q_TILE; ++i) {
+            for (int i = 0; i < Q_ITER; ++i) {
                 builtin_fp8_mmac<is_e4m3>(reg_kv_operand.front, reg_q_operand[i][k_block].front, acc[i][kv_iter]);
                 builtin_fp8_mmac<is_e4m3>(reg_kv_operand.rear, reg_q_operand[i][k_block].rear, acc[i][kv_iter]);
             }
@@ -1131,7 +1135,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
             __builtin_amdgcn_sched_barrier(0);
 
             #pragma unroll
-            for (int i = 0; i < kHeadDim / Q_TILE; ++i) {
+            for (int i = 0; i < Q_ITER; ++i) {
                 builtin_fp8_mmac<is_e4m3>(reg_kv_operand.front, reg_q_operand[i][k_block].front, acc[i][kv_iter]);
                 builtin_fp8_mmac<is_e4m3>(reg_kv_operand.rear, reg_q_operand[i][k_block].rear, acc[i][kv_iter]);
             }
@@ -1404,7 +1408,7 @@ __global__ void paged_mqa_logits_small_block(const Element* q,
             __builtin_amdgcn_sched_barrier(0);
 
             #pragma unroll
-            for (int i = 0; i < kHeadDim / Q_TILE; ++i) {
+            for (int i = 0; i < Q_ITER; ++i) {
                 builtin_b16_mmac<is_half>(reg_kv_operand.front, reg_q_operand[i][k_block].front, acc[i][kv_iter]);
                 builtin_b16_mmac<is_half>(reg_kv_operand.rear, reg_q_operand[i][k_block].rear, acc[i][kv_iter]);
             }
@@ -1762,7 +1766,7 @@ __global__ void paged_mqa_logits_fp8_small_block(const Element* q,
         #pragma unroll
         for (uint32_t k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
             #pragma unroll
-            for (int i = 0; i < kHeadDim / Q_TILE; ++i) {
+            for (int i = 0; i < Q_ITER; ++i) {
                 builtin_fp8_mmac<is_e4m3>(reg_kv_operand[k_block].front, reg_q_operand[i][k_block].front, acc[i][kv_iter]);
                 builtin_fp8_mmac<is_e4m3>(reg_kv_operand[k_block].rear, reg_q_operand[i][k_block].rear, acc[i][kv_iter]);
             }
