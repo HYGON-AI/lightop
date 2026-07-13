@@ -61,7 +61,11 @@ namespace deep_gemm {
 
 #define DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, ...)               \
     [&]() {                                                         \
-        if (num_heads == 32) {                                      \
+        if (num_heads == 16) {                                      \
+            constexpr int NUM_HEADS = 16;                           \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        } else if (num_heads == 32) {                               \
             constexpr int NUM_HEADS = 32;                           \
             __VA_ARGS__();                                          \
             return;                                                 \
