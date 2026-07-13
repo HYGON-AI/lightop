@@ -87,8 +87,8 @@ def main() -> None:
 
     repo_root = args.repo_root.resolve()
     outputs = {
-        "lightop_python_api.txt": public_python_api(repo_root / "lightop"),
-        "lightop_op_symbols.txt": extension_symbols(repo_root / "lightop" / "csrc"),
+        "lightop_python_api.txt": public_python_api(repo_root / "python" / "lightop"),
+        "lightop_op_symbols.txt": extension_symbols(repo_root / "csrc"),
         "lmslim_required_lightop_api.txt": lmslim_requirements(args.lmslim_root.resolve()),
     }
     for filename, items in outputs.items():
