@@ -706,6 +706,27 @@ void lightop_dcu_alloc_extend_kernel(
     Tensor out_indices,
     int64_t bs,
     int64_t page_size);
+void mimo_v2_split_rope_vscale_kv_store(
+    Tensor& positions,
+    Tensor& qkv,
+    int64_t q_size,
+    int64_t k_size,
+    int64_t v_size,
+    int64_t head_size,
+    int64_t v_head_size,
+    Tensor& cos_sin_cache,
+    bool is_neox,
+    Tensor& k_buffer,
+    Tensor& v_buffer,
+    std::optional<Tensor>& kv_cache_loc,
+    Tensor& q_out,
+    Tensor& k_out,
+    Tensor& v_out,
+    double value_scale,
+    std::optional<double>& k_cache_scale,
+    std::optional<double>& v_cache_scale,
+    bool use_fp8_e4m3,
+    bool use_fp8_cache);
 }
 }
 
@@ -1019,5 +1040,6 @@ m.def("dcu_alloc_extend_kernel", &at::native::lightop_dcu_alloc_extend_kernel,
        py::arg("free_page_ptr"),
        py::arg("out_indices"),
        py::arg("bs"),
-       py::arg("page_size"));     
+       py::arg("page_size"));
+m.def("mimo_v2_split_rope_vscale_kv_store", &at::native::mimo_v2_split_rope_vscale_kv_store, "mimo_v2_split_rope_vscale_kv_store");            
 }

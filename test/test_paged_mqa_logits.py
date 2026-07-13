@@ -90,7 +90,7 @@ def ref_fp8_paged_mqa_logits(q: torch.Tensor, kv_cache: torch.Tensor,
 def test_paged_mqa_logits(use_fp8 = True):
     max_model_len = 111 * 1000
     for batch_size, next_n in [(1, 1), (64, 1), (64, 2), (128, 1)]:
-        for heads, index_dim in [(32, 128), (64, 128)]:
+        for heads, index_dim in [(16, 128), (32, 128), (64, 128)]:
             for avg_kv in (4096, 72000,):
                 num_blocks, blocksize = max_model_len * 3, 64
 
