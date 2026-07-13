@@ -8,10 +8,12 @@ from lightop import mimo_v2_split_rope_vscale_kv_store
 DEVICE = "cuda"
 DTYPE = torch.bfloat16
 HEAD_DIM = 192
+ROTARY_DIM = 128
 V_HEAD_DIM = 128
 NUM_Q_HEADS = 4
 NUM_KV_HEADS = 2
-NUM_TOKENS = 128
+CHUNK_SIZE = 16384
+NUM_TOKENS = CHUNK_SIZE
 VALUE_SCALE = 0.5
 K_CACHE_SCALE = 0.75
 V_CACHE_SCALE = 0.625
@@ -29,17 +31,21 @@ def build_cos_sin_cache(max_pos, dim, base=1000000.0):
 
 def apply_rope_ref(x, positions, cos_sin_cache, is_neox=True):
     x = x.float()
+    rotary_dim = cos_sin_cache.shape[-1]
+    x_rot = x[..., :rotary_dim]
+    x_tail = x[..., rotary_dim:]
     cos_sin = cos_sin_cache[positions].float()
-    cos = cos_sin[:, : HEAD_DIM // 2].unsqueeze(1)
-    sin = cos_sin[:, HEAD_DIM // 2 :].unsqueeze(1)
+    cos = cos_sin[:, : rotary_dim // 2].unsqueeze(1)
+    sin = cos_sin[:, rotary_dim // 2 :].unsqueeze(1)
     if is_neox:
-        x1, x2 = torch.chunk(x, 2, dim=-1)
-        out = torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)
+        x1, x2 = torch.chunk(x_rot, 2, dim=-1)
+        out_rot = torch.cat([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)
     else:
-        x1 = x[..., ::2]
-        x2 = x[..., 1::2]
-        out = torch.stack([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)
-        out = out.flatten(-2)
+        x1 = x_rot[..., ::2]
+        x2 = x_rot[..., 1::2]
+        out_rot = torch.stack([x1 * cos - x2 * sin, x2 * cos + x1 * sin], dim=-1)
+        out_rot = out_rot.flatten(-2)
+    out = torch.cat([out_rot, x_tail], dim=-1)
     return out.to(DTYPE)
 
 
@@ -87,7 +93,7 @@ def run_case(use_fp8_cache: bool, loc_dtype: torch.dtype):
         NUM_TOKENS, q_size + k_size + v_size, device=DEVICE, dtype=DTYPE
     )
     positions = torch.arange(NUM_TOKENS, device=DEVICE, dtype=torch.int64)
-    cos_sin_cache = build_cos_sin_cache(NUM_TOKENS, HEAD_DIM).contiguous()
+    cos_sin_cache = build_cos_sin_cache(NUM_TOKENS, ROTARY_DIM).contiguous()
     cache_loc = torch.arange(NUM_TOKENS, device=DEVICE, dtype=loc_dtype)
 
     if use_fp8_cache:
@@ -108,9 +114,15 @@ def run_case(use_fp8_cache: bool, loc_dtype: torch.dtype):
         kv_cache_dtype = DTYPE
 
     q, k, v = qkv.split([q_size, k_size, v_size], dim=-1)
-    q_ref = apply_rope_ref(q.view(NUM_TOKENS, NUM_Q_HEADS, HEAD_DIM), positions, cos_sin_cache)
-    k_ref = apply_rope_ref(k.view(NUM_TOKENS, NUM_KV_HEADS, HEAD_DIM), positions, cos_sin_cache)
-    v_ref = (v.view(NUM_TOKENS, NUM_KV_HEADS, V_HEAD_DIM).float() * VALUE_SCALE).to(DTYPE)
+    q_ref = apply_rope_ref(
+        q.view(NUM_TOKENS, NUM_Q_HEADS, HEAD_DIM), positions, cos_sin_cache
+    )
+    k_ref = apply_rope_ref(
+        k.view(NUM_TOKENS, NUM_KV_HEADS, HEAD_DIM), positions, cos_sin_cache
+    )
+    v_ref = (
+        v.view(NUM_TOKENS, NUM_KV_HEADS, V_HEAD_DIM).float() * VALUE_SCALE
+    ).to(DTYPE)
 
     q_out, k_out, v_out = mimo_v2_split_rope_vscale_kv_store(
         positions,
@@ -182,7 +194,7 @@ def benchmark():
         NUM_TOKENS, q_size + k_size + v_size, device=DEVICE, dtype=DTYPE
     )
     positions = torch.arange(NUM_TOKENS, device=DEVICE, dtype=torch.int64)
-    cos_sin_cache = build_cos_sin_cache(NUM_TOKENS, HEAD_DIM).contiguous()
+    cos_sin_cache = build_cos_sin_cache(NUM_TOKENS, ROTARY_DIM).contiguous()
     cache_loc = torch.arange(NUM_TOKENS, device=DEVICE, dtype=torch.int64)
     k_buffer = torch.zeros(
         NUM_TOKENS + 8, NUM_KV_HEADS, HEAD_DIM, device=DEVICE, dtype=DTYPE
@@ -205,9 +217,20 @@ def benchmark():
         )
     torch.cuda.synchronize()
     mean_us = (time.perf_counter() - start) * 1e6 / 100
-    bytes_touched = NUM_TOKENS * (q_size + k_size + v_size) * qkv.element_size() * 2
+    qkv_rw_bytes = NUM_TOKENS * (q_size + k_size + v_size) * qkv.element_size() * 2
+    cache_write_bytes = NUM_TOKENS * (k_size + v_size) * k_buffer.element_size()
+    rope_cache_read_bytes = (
+        NUM_TOKENS
+        * (NUM_Q_HEADS + NUM_KV_HEADS)
+        * ROTARY_DIM
+        * cos_sin_cache.element_size()
+    )
+    bytes_touched = qkv_rw_bytes + cache_write_bytes + rope_cache_read_bytes
     bandwidth_gbs = bytes_touched / (mean_us * 1e-6) / 1e9
-    print(f"benchmark mean_us={mean_us:.3f}, effective_bandwidth={bandwidth_gbs:.3f} GB/s")
+    print(
+        f"benchmark chunk_size={CHUNK_SIZE}, mean_us={mean_us:.3f}, "
+        f"effective_bandwidth={bandwidth_gbs:.3f} GB/s"
+    )
 
 
 def main():
