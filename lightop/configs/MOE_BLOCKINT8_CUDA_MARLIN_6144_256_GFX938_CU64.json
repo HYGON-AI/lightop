@@ -53,7 +53,7 @@
         "1024": {
             "BLOCK_SIZE_M": 16,
             "MODE": 94,
-            "DELTA": 1
+            "DELTA": 8
         },
         "2048": {
             "BLOCK_SIZE_M": 16,
