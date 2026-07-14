@@ -13,6 +13,7 @@ from torch.utils.benchmark import Measurement as TMeasurement
 from tqdm import tqdm
 
 import vllm._custom_ops as ops
+from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.model_executor.layers.layernorm import RMSNorm
 from lightop import rms_norm_per_token_fp8_quant
 
@@ -293,8 +294,16 @@ def check_accuracy(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: Optional[
         return max_diff, mean_diff, rel_err
 
 
+def create_rms_norm(hidden_size: int, eps: float,
+                    dtype: torch.dtype) -> RMSNorm:
+    """Create vLLM RMSNorm inside the required config context."""
+    with set_current_vllm_config(VllmConfig()):
+        layer = RMSNorm(hidden_size, eps).to(dtype=dtype, device="cuda")
+    return layer
+
+
 def bench(params: bench_params_t, label: str, sub_label: str):
-    layer = RMSNorm(params.hidden_size, 1e-6).to(dtype=params.dtype, device="cuda")
+    layer = create_rms_norm(params.hidden_size, 1e-6, params.dtype)
     layer.weight.data.normal_(mean=1.0, std=0.1)
 
     scale = 1 / params.hidden_size
