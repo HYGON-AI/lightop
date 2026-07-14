@@ -5,17 +5,15 @@ import triton.language as tl
 from tqdm import trange
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import vllm._custom_ops as vllm_ops
-from vllm.model_executor.layers.fused_moe.fused_moe import (
-    fused_moe_kernel_gptq_awq,
-)
 from lightop.moe import moe_align_block_size
-from vllm.model_executor.layers.quantization.utils.quant_utils import (
-    quantize_weights,
-)
-from vllm.scalar_type import scalar_types
-# import marlin  # 确保导入了 marlin 包
-# import lightop  # 确保导入了 marlin 包
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # → lightop/test
+from common.scalar_type import scalar_types
+from common.quant_utils import quantize_weights
+from common.fused_moe_kernel_gptq_awq import fused_moe_kernel_gptq_awq
+
+# import lightop
 from marlin_quant import awq_marlin_quantize
 
 global_group_size = 64

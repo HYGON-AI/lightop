@@ -6,16 +6,7 @@ import os
 import json
 import triton
 from vllm import _custom_ops as ops
-try:
-    from vllm.utils import W8a8GetCacheJSON
-except ImportError:
-    import sys
-    from pathlib import Path
-
-    _test_root = Path(__file__).resolve().parent.parent
-    if str(_test_root) not in sys.path:
-        sys.path.insert(0, str(_test_root))
-    from common.w8a8_cache_json import W8a8GetCacheJSON
+from common.w8a8_cache_json import W8a8GetCacheJSON
 
 from lightop.gemm_ops import (
     gemm_w8a8_smooth,

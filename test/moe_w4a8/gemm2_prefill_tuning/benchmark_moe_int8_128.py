@@ -24,7 +24,10 @@ from fuse_moegemm import grouped_topk, blockM_gemm2_prefill_configs, gemm2_kerne
 from fused_moe_cuda import fused_moe_impl
 from fused_moe_cuda_valid import fused_moe_impl_valid
 
-from lmslim.layers.gemm.int8_utils import per_token_group_quant_int8, per_token_quant_int8
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 import math
 import torch.nn.functional as F
 import pandas as pd

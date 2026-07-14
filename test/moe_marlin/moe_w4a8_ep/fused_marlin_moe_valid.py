@@ -7,11 +7,13 @@ import pdb
 import torch
 import lightop
 
-import vllm._custom_ops as ops
-from vllm.model_executor.layers.fused_moe.fused_moe import moe_align_block_size
+from lightop import op
+from lightop import moe_align_block_size
 
-from lightop.moe import (
-   per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 
 from triton_w4a8 import invoke_fused_moe_kernel_w4a8
 import triton
@@ -21,8 +23,7 @@ from marlin_quant import unpack_int8_to_int4
 
 from lightop.moe import moe_gemm_marlin_w4a8, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8
 
-from vllm.platforms import current_platform
-device_name = current_platform.get_device_name().replace(" ", "_")
+device_name = torch.cuda.get_device_properties(torch.cuda.current_device()).name
 num_cus= torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 
 def fused_marlin_moe_valid(
@@ -147,7 +148,7 @@ def fused_marlin_moe_valid(
     torch.cuda.synchronize()
 
     # 激活函数
-    torch.ops._C.silu_and_mul(triton_gemm2_a, triton_gemm1_output)
+    op.silu_and_mul_opt(triton_gemm2_a, triton_gemm1_output)
 
     # 准备gemm2 需要的 A和A-scale 
     # [M*topk, N] [32*8, 256]

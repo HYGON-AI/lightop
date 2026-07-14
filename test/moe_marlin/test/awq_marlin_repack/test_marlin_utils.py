@@ -3,11 +3,11 @@ import torch
 from typing import List, Optional, Tuple
 import pandas as pd
 
-from vllm.platforms import current_platform
-from vllm.scalar_type import ScalarType, scalar_types
-
-from vllm.model_executor.layers.quantization.utils.quant_utils import (
-    awq_pack, quantize_weights)
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # → lightop/test
+from common.scalar_type import scalar_types
+from common.quant_utils import awq_pack, quantize_weights
 
 from marlin_quant import get_weight_perm, marlin_weights
 
@@ -40,26 +40,6 @@ def write_numpy_to_excel(data, file_path):
 
 def rand_data(shape, dtype=torch.float16):
     return torch.randn(shape, dtype=dtype, device="cuda")
-
-def query_marlin_supported_quant_types(has_zp: bool,
-                                       device_capability: Optional[int] = None
-                                       ):
-    if device_capability is None:
-        capability_tuple = current_platform.get_device_capability()
-        device_capability = (-1 if capability_tuple is None else
-                             capability_tuple.to_int())
-
-    if device_capability < 80:
-        return []
-
-    if has_zp:
-        # AWQ style, unsigned + runtime zero-point
-        return [scalar_types.uint4, scalar_types.uint8]
-    else:
-        # GPTQ style, unsigned + symmetric bias
-        # TODO: once fp8_marlin is merged into "gptq_marlin" we should be able
-        #  to add `scalar_types.float8_e4m3fn` here
-        return [scalar_types.uint4b8, scalar_types.uint8b128]
 
 @pytest.mark.parametrize("size_k", [7168, 256]) # 128
 @pytest.mark.parametrize("size_n", [512, 7168]) # 128
