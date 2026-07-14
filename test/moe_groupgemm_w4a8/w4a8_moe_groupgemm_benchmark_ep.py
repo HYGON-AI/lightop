@@ -6,7 +6,6 @@ import json
 import os
 import math
 from typing import Any, Callable, Dict, List, Optional, Tuple,Type,Any
-from vllm import _custom_ops as ops
 import torch
 import triton
 import itertools
@@ -16,12 +15,13 @@ import triton.language as tl
 import torch.nn.functional as F
 import ast  
 import torch.multiprocessing as mp
-from lmslim.layers.gemm.int8_utils import (
-    per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 import argparse
 
-from vllm.platforms import current_platform
-device_name = current_platform.get_device_name().replace(" ", "_")
+device_name = torch.cuda.get_device_properties(torch.cuda.current_device()).name
 num_cus= torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 
 def to_int8(tensor: torch.Tensor):

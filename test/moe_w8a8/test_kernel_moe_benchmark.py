@@ -10,7 +10,7 @@ import torch
 import triton
 import triton.language as tl
 from lightop._lmslim_native import envs as lsenvs
-from lightop._lmslim_native.vllm_compat.w8a8_get_cache_json import W8a8GetCacheJSON
+from common.w8a8_cache_json import W8a8GetCacheJSON
 import torch.nn.functional as F
 import ast  
 
@@ -25,8 +25,8 @@ if use_lightop:
     except ImportError:
         backend = None
         moe_gemm_decode_prof = None
-from lightop.moe import (
-    moe_align_block_size,
+from lightop.moe import moe_align_block_size
+from lightop.quant import (
     per_token_group_quant_int8,
     per_token_quant_int8,
 )

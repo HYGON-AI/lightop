@@ -4,17 +4,10 @@ import triton
 import pandas as pd
 import math
 from typing import Any, Callable, Dict, List, Optional, Tuple,Type,Any
-from vllm import _custom_ops as ops
 import torch
 from lightop.gemm_ops import m_grouped_bf16_gemm_nt_masked
 import ast  
 import argparse
-
-from vllm.platforms import current_platform
-device_name = current_platform.get_device_name().replace(" ", "_")
-num_cus= torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
-
-
 
 def native_bf16_perChannel_batch_matmul(q_a1_all, weight13, output_dtype):
 

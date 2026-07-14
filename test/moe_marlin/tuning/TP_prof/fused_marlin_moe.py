@@ -9,8 +9,10 @@ import lightop
 import vllm._custom_ops as ops
 from vllm.model_executor.layers.fused_moe.fused_moe import moe_align_block_size
 
-from lightop.moe import (
-   per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 
 from lightop.moe import moe_gemm_marlin_w4a8,moe_gemm_w4a8, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8
 

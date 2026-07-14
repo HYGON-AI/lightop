@@ -8,8 +8,10 @@ import pdb
 import torch
 import lightop
 
-from lmslim.layers.gemm.int8_utils import (
-   per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 
 from w4a8_moe_groupgemm_marlin_correctness import native_w8a8_per_token_matmul, unpack_int8_to_int4
 import torch.nn.functional as F

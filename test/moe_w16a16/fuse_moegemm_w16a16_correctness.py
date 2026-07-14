@@ -20,8 +20,10 @@ from vllm import _custom_ops as ops
 # from test_int8_kernel import torch_w8a8_per_column_moe
 # import _custom_ops as ops
 from lightop.moe import moe_gemm_w8a8
-from lmslim.layers.gemm.int8_utils import (
-    per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 
 from fused_moe_w16a16_utility import fused_moe_w16a16_valid, blockM_all_configs
 

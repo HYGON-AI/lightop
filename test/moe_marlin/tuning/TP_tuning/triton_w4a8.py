@@ -9,11 +9,13 @@ from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
 import torch
 import triton
 import triton.language as tl
-from vllm.utils import W8a8GetCacheJSON
+from common.w8a8_cache_json import W8a8GetCacheJSON
 
 
-from lightop.moe import (
-   per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 
 def to_int8(tensor: torch.Tensor):
     return torch.round(tensor.clamp(min=-128,max=127)).to(dtype=torch.int8)

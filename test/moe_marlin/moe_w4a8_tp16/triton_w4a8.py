@@ -2,21 +2,19 @@ import functools
 import json
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple
-import vllm.envs as envs
-from vllm import _custom_ops as ops
-from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
-    moe_align_block_size)
 import torch
 import triton
 import triton.language as tl
 from lightop._lmslim_native import envs as lsenvs
-from vllm.utils import W8a8GetCacheJSON
+from common.w8a8_cache_json import W8a8GetCacheJSON
 
 use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 device_name = lsenvs.LMSLIM_GPU_NAME
 
-from lightop.moe import (
-   per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 
 def to_int8(tensor: torch.Tensor):
     return torch.round(tensor.clamp(min=-128,max=127)).to(dtype=torch.int8)

@@ -2,13 +2,6 @@ import pytest
 import torch
 from typing import List, Optional, Tuple
 import pandas as pd
-
-from vllm.platforms import current_platform
-from vllm.scalar_type import ScalarType, scalar_types
-
-from vllm.model_executor.layers.quantization.utils.quant_utils import (
-    awq_pack, quantize_weights)
-
 from marlin_quant import  unpack_int8_to_int4, w4a8_2_marlin_weight 
 
 import lightop

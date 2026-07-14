@@ -16,8 +16,10 @@ import triton.language as tl
 import torch.nn.functional as F
 import ast  
 import torch.multiprocessing as mp
-from lmslim.layers.gemm.int8_utils import (
-    per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 import argparse
 from w4a8_moe_groupgemm_marlin_quant import w4a8_2_marlin_weight  # pyright: ignore[reportMissingImports]
 

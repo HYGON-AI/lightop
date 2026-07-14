@@ -10,8 +10,10 @@ from typing import Any, Dict, List, Tuple, TypedDict
 import vllm._custom_ops as ops
 from vllm.model_executor.layers.fused_moe.fused_moe import moe_align_block_size
 
-from lmslim.layers.gemm.int8_utils import (
-   per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 
 from w4a8_moe_groupgemm_marlin_correctness import native_w8a8_per_token_matmul, unpack_int8_to_int4
 import torch.nn.functional as F

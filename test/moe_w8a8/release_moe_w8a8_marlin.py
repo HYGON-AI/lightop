@@ -11,10 +11,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 import triton
 import triton.language as tl
 # import lmslim.envs as lsenvs
-from lightop._lmslim_native.vllm_compat.w8a8_get_cache_json import W8a8GetCacheJSON
+from common.w8a8_cache_json import W8a8GetCacheJSON
 import torch.nn.functional as F
-from lightop.moe import (
-    moe_align_block_size,
+from lightop.moe import moe_align_block_size
+from lightop.quant import (
     per_token_group_quant_int8,
     per_token_quant_int8,
 )

@@ -5,18 +5,18 @@ from typing import Optional
 
 import torch
 import lightop
-import marlin
 
-import vllm._custom_ops as ops
-from vllm.model_executor.layers.fused_moe.fused_moe import moe_align_block_size
+from lightop import op
+from lightop import moe_align_block_size
 
-from lightop.moe import (
-   per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 
 from lightop.moe import moe_gemm_marlin_w4a8,moe_gemm_w4a8, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8
 
-from vllm.platforms import current_platform
-device_name = current_platform.get_device_name().replace(" ", "_")
+device_name = torch.cuda.get_device_properties(torch.cuda.current_device()).name
 num_cus= torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 import triton
 import triton.language as tl
@@ -115,7 +115,7 @@ def fused_marlin_moe(
     end_event.synchronize()
     gemm1_time_us = start_event.elapsed_time(end_event) * 1000
     # 激活函数
-    torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1)
+    op.silu_and_mul_opt(intermediate_cache2, intermediate_cache1)
 
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
