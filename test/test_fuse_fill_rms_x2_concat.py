@@ -1,9 +1,8 @@
 
 
 import torch
-from vllm import _custom_ops as vllm_ops
 from triton.testing import do_bench 
-from lightop.norm import fuse_fill_rms_x2_concat
+from lightop.norm import fuse_fill_rms_x2_concat, rms_norm_opt
 import pdb
 
 
@@ -17,8 +16,8 @@ import pdb
 def no_fuse_opt(positions, inputs_embeds, previous_hidden_states, weight_inputs_embeds, weight_previous_hidden_states, epsilon):
     inputs_embeds[positions == 0] = 0
     # pdb.set_trace()
-    vllm_ops.rms_norm_opt(inputs_embeds, inputs_embeds, weight_inputs_embeds, epsilon)
-    vllm_ops.rms_norm_opt(previous_hidden_states, previous_hidden_states, weight_previous_hidden_states, epsilon)
+    rms_norm_opt(inputs_embeds, inputs_embeds, weight_inputs_embeds, epsilon)
+    rms_norm_opt(previous_hidden_states, previous_hidden_states, weight_previous_hidden_states, epsilon)
     hidden_states = torch.cat([inputs_embeds, previous_hidden_states], dim=-1)
     return hidden_states
 

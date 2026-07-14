@@ -51,14 +51,22 @@ def python_reference_moe_gate(scores, bias, num_expert_group, topk_group, topk, 
         # 当 num_expert_group == 1 时，直接跳过组竞争逻辑
         masked_selection_scores = selection_scores
 
+    # lightop group1 kernel: only NUM_EXPERTS==192 applies routed_scaling_factor
+    # (hy3). Other group1 expert counts keep route_scale=1. Multi-group CUDA
+    # always multiplies by routed_scaling_factor.
+    if num_expert_group > 1 or num_experts == 192:
+        route_scale = float(routed_scaling_factor) if routed_scaling_factor > 0 else 1.0
+    else:
+        route_scale = 1.0
+
     # 5. 全局 TopK (基于 Selection Score)
     if topk_routed > 0:
         _, final_indices = torch.topk(masked_selection_scores, k=topk_routed, dim=-1) # [Batch, TopK_Routed]
         
-        # 6. 取值并归一化 (基于 Probs)
+        # 6. 取值、归一化，再乘 route_scale（对齐 lightop）
         final_probs = torch.gather(probs, 1, final_indices)
         sum_probs = final_probs.sum(dim=1, keepdim=True) + 1e-20
-        final_weights = (final_probs / sum_probs) * routed_scaling_factor
+        final_weights = (final_probs / sum_probs) * route_scale
     else:
         final_indices = torch.empty((batch_size, 0), dtype=torch.long, device=scores.device)
         final_weights = torch.empty((batch_size, 0), dtype=torch.float32, device=scores.device)
@@ -70,9 +78,12 @@ def python_reference_moe_gate(scores, bias, num_expert_group, topk_group, topk, 
         share_indices = torch.arange(num_experts, num_experts + n_share_experts_fusion, device=scores.device, dtype=torch.long)
         share_indices = share_indices.unsqueeze(0).expand(batch_size, -1)
         
-        # CUDA 中共享专家的中间权重先除以 factor，写回时再乘以 factor，最终为 1.0。
-        share_weights = torch.ones(
+        # CUDA: stored_prob = output_sum / rsf, then (stored_prob / output_sum) * route_scale
+        # => (1 / rsf) * route_scale
+        share_base = (1.0 / routed_scaling_factor) if routed_scaling_factor > 0 else 1.0
+        share_weights = torch.full(
             (batch_size, n_share_experts_fusion),
+            share_base * route_scale,
             device=scores.device,
             dtype=torch.float32,
         )

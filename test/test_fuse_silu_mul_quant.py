@@ -1,12 +1,12 @@
 import torch
 import triton
 from vllm import _custom_ops as vllm_ops
-from lightop.activation import fuse_silu_mul_quant
+from lightop.activation import fuse_silu_mul_quant, silu_and_mul_opt
 from typing import Optional
 
 # ------------------ 接口 ------------------
 def fuse_silu_mul_quant_init(output: torch.Tensor, input: torch.Tensor):
-    torch.ops._C.silu_and_mul_opt(output, input)
+    silu_and_mul_opt(output, input)
     ref_out, ref_scales, _= vllm_ops.scaled_int8_quant(output)
     return ref_out, ref_scales
 

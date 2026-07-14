@@ -3,9 +3,10 @@ import triton
 import triton.language as tl
 import pandas as pd
 import matplotlib.pyplot as plt
-from vllm.platforms import current_platform
+from vllm.config import VllmConfig, set_current_vllm_config
+from vllm.utils.torch_utils import set_random_seed
 from vllm.model_executor.layers.rotary_embedding import DeepseekScalingRotaryEmbedding
-from lightop import op
+from lightop.attention import rotary_embedding_deepseek_fuse
 import time 
 
 @triton.jit
@@ -55,7 +56,7 @@ def triton_call(q, rotary_dim, cos_sin):
 # ------------------------------------------------------------------
 if __name__ == '__main__':
     device = torch.device("cuda:0")
-    current_platform.seed_everything(0)
+    set_random_seed(0)
     torch.set_default_device("cuda:0")
 
     base = 10000
@@ -71,10 +72,11 @@ if __name__ == '__main__':
     batch_sizes = [512,504,496,488,480,472,464,456,448,440,432,424,416,408,400,392,384,376,368,360,352,344,336,328,320,312,304,296,288,280,272,264,256,248,240,232,224,216,208,200,192,184,176,168,160,152,144,136,128,120,112,104,96,88,80,72,64,56,48,40,32,24,16,8,4,2,1]
     num_heads_list = [128, 64, 32, 16, 8]
 
-    rot = DeepseekScalingRotaryEmbedding(
-        head_size, rotary_dim, max_position, base, is_neox_style,
-        scaling_factor, DTYPE, reference=False
-    ).to(device)
+    with set_current_vllm_config(VllmConfig()):
+        rot = DeepseekScalingRotaryEmbedding(
+            head_size, rotary_dim, max_position, base, is_neox_style,
+            scaling_factor, DTYPE,
+        ).to(device)
     cos_sin_cache = rot._compute_cos_sin_cache() #[max_position*scaling_factor,rotary_dim]
     if cos_sin_cache.dtype != DTYPE:
         cos_sin_cache = cos_sin_cache.to(DTYPE)
@@ -107,7 +109,7 @@ if __name__ == '__main__':
             q_lightop = q_orig.clone()
             k_lightop = k_orig.clone()
             
-            op.rotary_embedding_deepseek_fuse(positions, q_lightop, k_lightop, head_size, cos_sin_cache, is_neox_style, offsets)
+            rotary_embedding_deepseek_fuse(positions, q_lightop, k_lightop, head_size, cos_sin_cache, is_neox_style, offsets)
             
             is_correct = torch.allclose(q_triton, q_lightop, atol=ATOL) and torch.allclose(k_triton, k_lightop, atol=ATOL)
             correctness_status = " Pass" if is_correct else " Fail"
@@ -132,12 +134,12 @@ if __name__ == '__main__':
             q_lightop_bench = q_orig.clone()
             k_lightop_bench = k_orig.clone()
             for _ in range(warmup_runs):
-                op.rotary_embedding_deepseek_fuse(positions, q_lightop_bench, k_lightop_bench, head_size, cos_sin_cache, is_neox_style, offsets)
+                rotary_embedding_deepseek_fuse(positions, q_lightop_bench, k_lightop_bench, head_size, cos_sin_cache, is_neox_style, offsets)
             torch.cuda.synchronize()
 
             start_time = time.time()
             for _ in range(test_runs):
-                op.rotary_embedding_deepseek_fuse(positions, q_lightop_bench, k_lightop_bench, head_size, cos_sin_cache, is_neox_style, offsets)
+                rotary_embedding_deepseek_fuse(positions, q_lightop_bench, k_lightop_bench, head_size, cos_sin_cache, is_neox_style, offsets)
             torch.cuda.synchronize()
             lightop_avg_time = (time.time() - start_time) / test_runs
             lightop_us = lightop_avg_time * 1_000_000

@@ -80,7 +80,7 @@ def moe_align_block_size(
     - The padding ensures that the total number of tokens is now divisible
         by block_size for proper block matrix operations.
     """
-    local_num_experts = num_experts // ep_size
+    local_num_experts = num_experts // ep_size if is_EP else num_experts
     if num_token:
         if num_token < block_size:
             max_num_tokens_padded = min(topk_ids.numel() * block_size, topk_ids.numel() + local_num_experts * (block_size - 1))

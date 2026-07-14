@@ -13,6 +13,7 @@ import triton.language as tl
 import pandas as pd
 
 import vllm._custom_ops as ops
+from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.model_executor.layers.layernorm import RMSNorm
 
 # 引入您指定的 gemma 专用算子
@@ -221,8 +222,16 @@ def check_accuracy(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: Optional[
         return scale_max_diff, scale_rel_err, out_max_diff, out_rel_err
 
 
+def create_rms_norm(hidden_size: int, eps: float,
+                    dtype: torch.dtype) -> RMSNorm:
+    """Create vLLM RMSNorm inside the required config context."""
+    with set_current_vllm_config(VllmConfig()):
+        layer = RMSNorm(hidden_size, eps).to(dtype=dtype, device="cuda")
+    return layer
+
+
 def bench(params: bench_params_t):
-    layer = RMSNorm(params.hidden_size, 1e-6).to(dtype=params.dtype, device="cuda")
+    layer = create_rms_norm(params.hidden_size, 1e-6, params.dtype)
     layer.weight.data.normal_(mean=1.0, std=0.1)
 
     scale = 1 / params.hidden_size

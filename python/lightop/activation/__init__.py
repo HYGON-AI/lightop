@@ -9,6 +9,8 @@ from .existing import (
     FuseBiasGelu,
     FuseBiasSwiGLU,
     GNSilu,
+    gelu_and_mul_opt,
+    gelu_tanh_and_mul_opt,
     LnAddDropout,
     LnAddDropoutBias,
     LnDropPath,
@@ -22,6 +24,7 @@ from .existing import (
     fuse_silu_mul_quant,
     fuse_silu_mul_quant_ep,
     relu2,
+    silu_and_mul_opt,
 )
 
 _NATIVE_APIS = {"lm_fuse_silu_mul_quant"}
@@ -49,6 +52,8 @@ __all__ = [
     "FuseBiasGelu",
     "FuseBiasSwiGLU",
     "GNSilu",
+    "gelu_and_mul_opt",
+    "gelu_tanh_and_mul_opt",
     "lm_fuse_silu_mul_quant",
     "LnAddDropout",
     "LnAddDropoutBias",
@@ -56,4 +61,5 @@ __all__ = [
     "LnDropPath",
     "relu2",
     "ReluDropout",
+    "silu_and_mul_opt",
 ]
