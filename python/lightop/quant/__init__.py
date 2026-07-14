@@ -6,6 +6,7 @@ from .fp8 import fp8_to_16, per_token_group_quant_fp8, per_token_quant_fp8
 from .int8 import (
     destindex_copy_quantize_int8_cuda,
     destindex_dequantize_int8_cuda,
+    per_token_quant_int8,
 )
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "fp8_to_16",
     "per_token_group_quant_fp8",
     "per_token_quant_fp8",
+    "per_token_quant_int8",
     "w4tow16",
 ]
