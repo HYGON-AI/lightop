@@ -1,6 +1,7 @@
 import torch
 import lightop
 import time
+from lightop.quant import w4tow16
 
 acc=True
 acc=False
@@ -12,7 +13,7 @@ def test(m,n,k):
     scale=torch.rand(n).cuda().half()*0.1
     zero=torch.rand(n).cuda().half()
     b_w4=torch.randint(4294967296,[n,k//8]).cuda().to(torch.uint32)
-    b=lightop.w4tow16(b_w4,scale,zero)
+    b=w4tow16(b_w4,scale,zero)
 
     if acc:
         repeat_num = 1
