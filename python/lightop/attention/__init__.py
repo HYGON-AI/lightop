@@ -18,7 +18,12 @@ from .softmax import (
     FuseLogSoftmax,
     FuseSoftmax,
 )
-from .rope import RotaryEmbedding, apply_rotary_pos_emb_index_fused, fuse_rms_mrope_cuda
+from .rope import (
+    RotaryEmbedding,
+    apply_rotary_pos_emb_index_fused,
+    fuse_rms_mrope_cuda,
+    rotary_embedding_deepseek_fuse,
+)
 
 __all__ = [
     "FusedScaleMaskSoftmax",
@@ -37,5 +42,6 @@ __all__ = [
     "rms_rotary_embedding_fuse_with_kv_store",
     "rms_rotary_embedding_fuse_with_kv_store_fake",
     "RotaryEmbedding",
+    "rotary_embedding_deepseek_fuse",
     "split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant",
 ]

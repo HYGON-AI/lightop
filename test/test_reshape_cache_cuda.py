@@ -32,6 +32,20 @@ def benchmark_manual(func, warmup=10, rep=100):
 # 生成输入
 # 修改：固定 num_heads=4, head_size=128
 # -----------------------------------------------------------
+def vllm_key_cache_to_lightop(key_cache_vllm: torch.Tensor) -> torch.Tensor:
+    """Convert vLLM key layout to lightop for accuracy compare.
+
+    vLLM:    [num_blocks, num_heads, head_size/x, block_size, x]
+    lightop: [num_blocks, num_heads, block_size, head_size]
+    """
+    nb, nh, hdx, bs, x = key_cache_vllm.shape
+    return (
+        key_cache_vllm.permute(0, 1, 3, 2, 4)
+        .contiguous()
+        .view(nb, nh, bs, hdx * x)
+    )
+
+
 def make_inputs(T, num_heads=4, head_size=128, dtype=torch.float16):
     device = "cuda"
     block_size = 64
@@ -53,27 +67,40 @@ def make_inputs(T, num_heads=4, head_size=128, dtype=torch.float16):
     rand_idx = torch.randperm(T)[:invalid_cnt]
     slot_mapping[rand_idx] = -1
 
-    # KV Cache 显存分配
-    key_cache = torch.zeros(
-        num_blocks, num_heads, block_size, head_size,
+    # vLLM key cache layout:
+    #   [num_blocks, num_heads, head_size/x, block_size, x]
+    # where x = 16 // element_size (fp16/bf16 -> 8, fp32 -> 4)
+    x = 16 // torch.tensor([], dtype=dtype).element_size()
+    assert head_size % x == 0, f"head_size={head_size} not divisible by x={x}"
+
+    key_cache_vllm = torch.zeros(
+        num_blocks, num_heads, head_size // x, block_size, x,
         device=device, dtype=dtype
     )
-    value_cache = torch.zeros(
+    value_cache_vllm = torch.zeros(
         num_blocks, num_heads, head_size, block_size,
         device=device, dtype=dtype
     )
 
-    # 复制一份用于 Custom Kernel 对比
-    key_cache2 = key_cache.clone()
-    value_cache2 = value_cache.clone()
+    # lightop key/value cache layout:
+    #   key:   [num_blocks, num_heads, block_size, head_size]
+    #   value: [num_blocks, num_heads, head_size, block_size]
+    key_cache_lightop = torch.zeros(
+        num_blocks, num_heads, block_size, head_size,
+        device=device, dtype=dtype
+    )
+    value_cache_lightop = torch.zeros(
+        num_blocks, num_heads, head_size, block_size,
+        device=device, dtype=dtype
+    )
 
     k_scale = torch.tensor([1.0], device=device)
     v_scale = torch.tensor([1.0], device=device)
 
     return (
         key, value,
-        key_cache, value_cache,
-        key_cache2, value_cache2,
+        key_cache_vllm, value_cache_vllm,
+        key_cache_lightop, value_cache_lightop,
         slot_mapping,
         k_scale, v_scale,
         head_size, block_size, num_heads
@@ -156,7 +183,7 @@ def run_sweep(sheet_name="Benchmark"):
         # vLLM kernel
         # ---------------------
         def run_vllm():
-            ops.reshape_and_cache_cuda(
+            ops.reshape_and_cache(
                 key, value,
                 key_cache, value_cache,
                 slot_mapping,
@@ -183,10 +210,10 @@ def run_sweep(sheet_name="Benchmark"):
         run_vllm()
         run_custom()
 
-        diff_key = (key_cache - key_cache2).abs().max().item()
+        # vLLM key is 5D; convert to lightop 4D before compare
+        key_cache_cmp = vllm_key_cache_to_lightop(key_cache)
+        diff_key = (key_cache_cmp - key_cache2).abs().max().item()
         diff_value = (value_cache - value_cache2).abs().max().item()
-        # import pdb
-        # pdb.set_trace()
         acc_pass = (diff_key < 1e-3 and diff_value < 1e-3)
         res_str = "PASS" if acc_pass else "FAIL"
 

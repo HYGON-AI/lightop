@@ -9,14 +9,14 @@ import pdb
 import vllm._custom_ops as vllm_ops
 from vllm.model_executor.layers.fused_moe.fused_moe import (
     fused_moe_kernel_gptq_awq,
-    moe_align_block_size,
 )
+from lightop.moe import moe_align_block_size
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
     quantize_weights,
 )
 from vllm.scalar_type import scalar_types
 # import marlin  # 确保导入了 marlin 包
-import lightop  # 确保导入了 marlin 包
+# import lightop  # 确保导入了 marlin 包
 from marlin_quant import awq_marlin_quantize
 
 global_group_size = 64
@@ -171,6 +171,7 @@ def run_moe_triton_gemm(inputs, weight, topk_ids, bit):
             "BLOCK_SIZE_N": 32,
             "BLOCK_SIZE_K": 64,
             "GROUP_SIZE_M": 1,
+            "SPLIT_K": 1,
             "num_warps": 4,
             "num_stages": 1,
         }
@@ -180,6 +181,7 @@ def run_moe_triton_gemm(inputs, weight, topk_ids, bit):
             "BLOCK_SIZE_N": 64,
             "BLOCK_SIZE_K": 32,
             "GROUP_SIZE_M": 8,
+            "SPLIT_K": 1,
         }
 
     sorted_token_ids, expert_ids, num_tokens_post_padded = \
