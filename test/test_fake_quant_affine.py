@@ -7,8 +7,13 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 WARMUP_ITER = 100
 TEST_ITER = 1000
 SEED = 42
-RTOL = 1e-5
-ATOL = 1e-8
+# float32 can be near bit-exact; float16 needs looser bounds (ULP ~1e-3..1e-2).
+RTOL = {torch.float32: 1e-5, torch.float16: 1e-2, torch.bfloat16: 1.6e-2}
+ATOL = {torch.float32: 1e-8, torch.float16: 1e-2, torch.bfloat16: 1.6e-2}
+
+
+def _tol(dtype):
+    return RTOL.get(dtype, 1e-2), ATOL.get(dtype, 1e-2)
 
 def get_kernel_time_ms(start_event, end_event):
     start_event.synchronize()
@@ -61,7 +66,8 @@ def validate_consistency_tensor():
             input_tensor, scale, zero_point, quant_min, quant_max
         )
 
-        is_close = torch.allclose(custom_out, torch_out, rtol=RTOL, atol=ATOL)
+        rtol, atol = _tol(input_tensor.dtype)
+        is_close = torch.allclose(custom_out, torch_out, rtol=rtol, atol=atol)
         if is_close:
             print(f"用例 {idx+1}/{len(test_cases)}: ✅ 一致 (shape={shape})")
         else:
@@ -100,13 +106,17 @@ def validate_consistency_channel():
             input_tensor, scale, zero_point, axis, qmin, qmax
         )
 
-        is_close = torch.allclose(custom_out, torch_out, rtol=RTOL, atol=ATOL)
+        rtol, atol = _tol(input_tensor.dtype)
+        is_close = torch.allclose(custom_out, torch_out, rtol=rtol, atol=atol)
         if is_close:
             print(f"用例 {idx+1}/{len(test_cases)}: ✅ 一致 (shape={shape}, axis={axis})")
         else:
             diff = torch.abs(custom_out - torch_out)
             max_diff = diff.max().item()
-            print(f"用例 {idx+1}/{len(test_cases)}: ❌ 不一致！最大误差={max_diff:.6f} (shape={shape})")
+            print(
+                f"用例 {idx+1}/{len(test_cases)}: ❌ 不一致！"
+                f"最大误差={max_diff:.6f} (shape={shape}, axis={axis}, atol={atol}, rtol={rtol})"
+            )
             raise AssertionError(f"一致性验证失败（用例 {idx+1}）")
     
     print("=== channel 用例一致性验证通过！===")

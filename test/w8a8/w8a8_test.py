@@ -8,7 +8,17 @@ import json
 import triton
 from vllm import _custom_ops as ops
 from lmslim.layers.gemm.int8_utils import per_token_quant_int8
-from vllm.utils import W8a8GetCacheJSON
+try:
+    from vllm.utils import W8a8GetCacheJSON
+except ImportError:
+    import sys
+    from pathlib import Path
+
+    _test_root = Path(__file__).resolve().parent.parent
+    if str(_test_root) not in sys.path:
+        sys.path.insert(0, str(_test_root))
+    from common.w8a8_cache_json import W8a8GetCacheJSON
+
 from lightop import gemm_w8a8_smooth
 
 
@@ -258,7 +268,10 @@ def main(n_list, k_list ,excel_name="output.xlsx"):
     bs=[]
     _m=[]
     _k=[]
-    name=torch.cuda.get_device_properties('cuda').name.replace(" ", "_")
+    arch_name = torch.cuda.get_device_properties("cuda").gcnArchName.split(':')[0]
+    arch_cu = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
+    name =arch_name+'_'+str(arch_cu)+'cu'
+    # name=torch.cuda.get_device_properties('cuda').name.replace(" ", "_")
     for i in range(0,len(k_list),1):      
         cache_json_file=f"{triton_json_dir}/W8A8_{n_list[i]}_{k_list[i]}_{name}.json"
         configs_dict=get_triton_cache(cache_json_file,n_list[i],k_list[i])
