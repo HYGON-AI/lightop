@@ -2,7 +2,7 @@
 
 from .affine import w4tow16
 from .blockwise import blockwise_scaled_cast_transpose
-from .fp8 import fp8_to_16
+from .fp8 import fp8_to_16, per_token_group_quant_fp8
 from .int8 import (
     destindex_copy_quantize_int8_cuda,
     destindex_dequantize_int8_cuda,
@@ -13,5 +13,6 @@ __all__ = [
     "destindex_copy_quantize_int8_cuda",
     "destindex_dequantize_int8_cuda",
     "fp8_to_16",
+    "per_token_group_quant_fp8",
     "w4tow16",
 ]
