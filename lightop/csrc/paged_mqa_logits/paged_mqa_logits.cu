@@ -273,11 +273,12 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
 
     constexpr int num_math_warp_groups = 4;
     constexpr int mmac_row_tile = 16;
+    constexpr int kTokensPerWarp = 64;
+    constexpr int kTokensPerCta = kTokensPerWarp * num_math_warp_groups;
 
     const bool use_fp8_kv = (kv_cache_scales.defined() && kv_cache_scales.numel() > 0);
-    const int tokens_per_warp = block_kv < mmac_row_tile ? 64 : block_kv;
-    const int logits_alignment = tokens_per_warp * num_math_warp_groups;
-    const auto& aligned_max_context_len = block_kv < mmac_row_tile ? align(max_context_len, logits_alignment) : align(max_context_len, block_kv);
+    const int aligned_max_context_len = block_kv < mmac_row_tile ?
+        align(max_context_len, kTokensPerCta) : align(max_context_len, block_kv);
 
     // Allocate output
     torch::Tensor logits;
@@ -312,7 +313,7 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     const int smem_size = smem_q_pipe_size + (block_kv < 16 ? (smem_kv_pipe_size > smem_cache_size ? smem_kv_pipe_size : smem_cache_size)
                                                              : smem_kv_pipe_size);
 
-    int max_chunk_size = ceil_div(max_context_len, tokens_per_warp * num_math_warp_groups);
+    const int max_chunk_size = ceil_div(max_context_len, kTokensPerCta);
 
     // Dispatch implementation
     dim3 grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
@@ -331,8 +332,9 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                         DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
                             DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
                                 if constexpr (BLOCK_KV < 16) {
-                                    paged_mqa_logits_small_block<scalar_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV, 64,
-                                    num_math_warp_groups><<<grid, block, smem_size, stream>>>(
+                                    paged_mqa_logits_small_block<
+                                        scalar_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV,
+                                        kTokensPerWarp, num_math_warp_groups><<<grid, block, smem_size, stream>>>(
                                         reinterpret_cast<scalar_t*>(q.data_ptr()),
                                         reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
                                         weights.data_ptr<float>(), batch_size,
@@ -343,8 +345,9 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                                         use_meta ? schedule_meta.value().data_ptr<int32_t>() : nullptr);
                                 } else {
                                     constexpr int split_kv = BLOCK_KV * 4;
-                                    paged_mqa_logits<scalar_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV, split_kv,
-                                    4><<<grid, block, smem_size, stream>>>(
+                                    paged_mqa_logits<
+                                        scalar_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV, split_kv,
+                                        num_math_warp_groups, kTokensPerWarp><<<grid, block, smem_size, stream>>>(
                                         reinterpret_cast<scalar_t*>(q.data_ptr()),
                                         reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
                                         weights.data_ptr<float>(), batch_size,
@@ -365,8 +368,9 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                    DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
                         DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
                            if constexpr (BLOCK_KV < 16) {
-                               paged_mqa_logits_fp8_small_block<FP8_TYPE, NEXT_N, NUM_HEADS, 128, BLOCK_KV, 64,
-                               num_math_warp_groups><<<grid, block,smem_size, stream>>>(
+                               paged_mqa_logits_fp8_small_block<
+                                   FP8_TYPE, NEXT_N, NUM_HEADS, 128, BLOCK_KV,
+                                   kTokensPerWarp, num_math_warp_groups><<<grid, block,smem_size, stream>>>(
                                    reinterpret_cast<FP8_TYPE*>(q.data_ptr()),
                                    reinterpret_cast<FP8_TYPE*>(kv_cache.data_ptr()),
                                    kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
@@ -377,8 +381,9 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                                    use_meta ? schedule_meta.value().data_ptr<int32_t>() : nullptr);
                            } else {
                                constexpr int split_kv = BLOCK_KV * 4;
-                               paged_mqa_logits_fp8<FP8_TYPE, NEXT_N, NUM_HEADS, 128, BLOCK_KV, split_kv,
-                               4><<<grid, block,smem_size, stream>>>(
+                               paged_mqa_logits_fp8<
+                                   FP8_TYPE, NEXT_N, NUM_HEADS, 128, BLOCK_KV, split_kv,
+                                   num_math_warp_groups, kTokensPerWarp><<<grid, block,smem_size, stream>>>(
                                    reinterpret_cast<FP8_TYPE*>(q.data_ptr()),
                                    reinterpret_cast<FP8_TYPE*>(kv_cache.data_ptr()),
                                    kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),

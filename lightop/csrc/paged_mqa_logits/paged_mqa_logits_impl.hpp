@@ -229,7 +229,8 @@ struct PagedMQALogitsScheduler {
 
 template <typename Element, int kNextN = 1, int kNumHeads = 64,
           int kHeadDim = 128, int BLOCK_KV = 64,
-          int kBatchSplit, int kNumWarps = 4>
+          int kBatchSplit, int kNumWarps = 4,
+          int kTokensPerWarp = BLOCK_KV>
 __attribute__((amdgpu_flat_work_group_size(1, 512)))
 __global__ void paged_mqa_logits(const Element* q,
                                  const Element* kv_block,
@@ -253,9 +254,13 @@ __global__ void paged_mqa_logits(const Element* q,
     static constexpr int Q_TILE = 16;
     static constexpr int KV_TILE = 16;
     static constexpr int Q_ITER = kNumHeads / Q_TILE;
-    static constexpr int KV_ITER = BLOCK_KV / KV_TILE;
+    static constexpr int KV_ITER = kTokensPerWarp / KV_TILE;
+    static constexpr int PAGES_PER_WARP = kTokensPerWarp / BLOCK_KV;
     static constexpr int Stages = kHeadDim / K_TILE;
     LIGHTOP_STATIC_ASSERT(BLOCK_KV == 16 || BLOCK_KV == 32 || BLOCK_KV == 64, "Invalid BLOCK_KV");
+    LIGHTOP_STATIC_ASSERT(kTokensPerWarp % BLOCK_KV == 0 &&
+                          kTokensPerWarp <= WARP_SIZE_GPU,
+                          "Invalid tokens per warp");
 
     extern __shared__ __align__(kSwizzleAlignment) uint8_t smem_buffer[];
 
@@ -266,8 +271,8 @@ __global__ void paged_mqa_logits(const Element* q,
     const auto next_n = kNextN != 1 ? blockIdx.x % kNextN : 0;
 
     int q_idx = blockIdx.y;
-    int start_kv_idx = blockIdx.x / kNextN * kNumWarps;
-    int kv_idx = start_kv_idx + warp_idx;
+    int start_kv_idx = blockIdx.x / kNextN * kNumWarps * PAGES_PER_WARP;
+    int kv_idx = start_kv_idx + warp_idx * PAGES_PER_WARP;
     int context_len = context_lens[q_idx];
     int num_kv = ceil_div(context_len, BLOCK_KV);
 
@@ -277,7 +282,7 @@ __global__ void paged_mqa_logits(const Element* q,
 
     if (start_kv_idx >= num_kv) {
         uint32_t fill_offset = base_logits_offset + base_seq_kv_offset + lane_idx;
-        if (lane_idx < BLOCK_KV && base_seq_kv_offset + lane_idx < logits_stride) {
+        if (lane_idx < kTokensPerWarp && base_seq_kv_offset + lane_idx < logits_stride) {
             logits[fill_offset] = -INFINITY;
         }
         return;
@@ -296,10 +301,12 @@ __global__ void paged_mqa_logits(const Element* q,
     }
 
     // fetch kv block idx
-    int kv_block_idx;
-
+    int kv_block_idx[PAGES_PER_WARP];
     uint64_t block_table_offset = q_idx * block_table_stride + kv_idx;
-    kv_block_idx = kv_idx < num_kv ? *(block_table + block_table_offset) : -1;
+    #pragma unroll
+    for (int i = 0; i < PAGES_PER_WARP; ++i) {
+        kv_block_idx[i] = kv_idx + i < num_kv ? block_table[block_table_offset + i] : -1;
+    }
 
     constexpr int heads_cnt = kNumHeads / Q_TILE;
     constexpr int K_BLOCK_MAX = kHeadDim / K_TILE;
@@ -370,24 +377,15 @@ __global__ void paged_mqa_logits(const Element* q,
     // shared data loading complete, invalid warps return in advance
     if (kv_idx >= num_kv) {
         uint32_t fill_offset = base_logits_offset + base_seq_kv_offset + lane_idx;
-        if (lane_idx < BLOCK_KV && base_seq_kv_offset + lane_idx < logits_stride) {
+        if (lane_idx < kTokensPerWarp && base_seq_kv_offset + lane_idx < logits_stride) {
             logits[fill_offset] = -INFINITY;
         }
         return;
     }
 
     // fetch kv block
-    auto gKv = kv_block_idx != -1 ? kv_block + (int64_t)kv_block_idx * BLOCK_KV * kHeadDim : kv_block;
     constexpr int kAlignmentKV = 16 / sizeof(Element);
-
-    long glob_kv_desc[2];
-
-    glob_kv_desc[0] = *reinterpret_cast<const long *>(&gKv);
-    // Use offset enable mode, it's unnecessary to set stride args.
-    long stride = 0x0;
-    glob_kv_desc[0] = glob_kv_desc[0] | stride << 48;
-    glob_kv_desc[1] = (long) 0x20000 << 32 | 0xFFFFFFFE;
-    auto *src = reinterpret_cast<v4i *>(glob_kv_desc);
+    constexpr long stride = 0x0;
 
     constexpr int prefetch_kv_stage = 1;
     constexpr int smem_kv_block_per_warp = prefetch_kv_stage * KV_TILE * kHeadDim;
@@ -396,12 +394,22 @@ __global__ void paged_mqa_logits(const Element* q,
 
     #pragma unroll
     for (int i = 0; i < prefetch_kv_stage; ++i) {
-        auto glob_stage_offset = i * KV_TILE * kHeadDim;
+        const int page_delta = i * KV_TILE / BLOCK_KV;
+        const int row_in_page = i * KV_TILE % BLOCK_KV;
+        const int current_block_idx = kv_block_idx[page_delta];
+        auto gKv = current_block_idx != -1 ?
+            kv_block + (int64_t)current_block_idx * BLOCK_KV * kHeadDim : kv_block;
+        long glob_kv_desc[2];
+        glob_kv_desc[0] = *reinterpret_cast<const long *>(&gKv);
+        glob_kv_desc[0] = glob_kv_desc[0] | stride << 48;
+        glob_kv_desc[1] = (long) 0x20000 << 32 | 0xFFFFFFFE;
+        auto *src = reinterpret_cast<v4i *>(glob_kv_desc);
+        auto glob_stage_offset = row_in_page * kHeadDim;
         auto smem_per_stage = smem_warp_kv_start + glob_stage_offset;
         #pragma unroll
         for (int j = 0; j < Stages; ++j) {
             auto smem_ptr = smem_per_stage + j * KV_TILE * K_TILE;
-            int inner_warp_offset = kv_block_idx != -1 ? (glob_stage_offset +
+            int inner_warp_offset = current_block_idx != -1 ? (glob_stage_offset +
                 lane_idx % 4 * kAlignmentKV + lane_idx / 4 * kHeadDim + j * K_TILE) * sizeof(__fp16) : -1;
             #if defined(__gfx928__)
             *reinterpret_cast<fp16x8*>(smem_ptr + lane_idx * kAlignmentKV) = *reinterpret_cast<const fp16x8*>(gKv + inner_warp_offset / 2);
@@ -423,7 +431,18 @@ __global__ void paged_mqa_logits(const Element* q,
 
     #pragma unroll
     for (uint32_t kv_iter = 0; kv_iter < KV_ITER - prefetch_kv_stage; ++kv_iter) {
-        auto glob_stage_offset = (kv_iter + prefetch_kv_stage) * KV_TILE * kHeadDim;
+        const uint32_t load_kv_iter = kv_iter + prefetch_kv_stage;
+        const int page_delta = load_kv_iter * KV_TILE / BLOCK_KV;
+        const int row_in_page = load_kv_iter * KV_TILE % BLOCK_KV;
+        const int current_block_idx = kv_block_idx[page_delta];
+        auto gKv = current_block_idx != -1 ?
+            kv_block + (int64_t)current_block_idx * BLOCK_KV * kHeadDim : kv_block;
+        long glob_kv_desc[2];
+        glob_kv_desc[0] = *reinterpret_cast<const long *>(&gKv);
+        glob_kv_desc[0] = glob_kv_desc[0] | stride << 48;
+        glob_kv_desc[1] = (long) 0x20000 << 32 | 0xFFFFFFFE;
+        auto *src = reinterpret_cast<v4i *>(glob_kv_desc);
+        auto glob_stage_offset = row_in_page * kHeadDim;
         auto smem_per_stage = smem_warp_kv_start + kv_iter % prefetch_kv_stage * KV_TILE * kHeadDim;
         #pragma unroll
         for (uint32_t k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
@@ -447,7 +466,7 @@ __global__ void paged_mqa_logits(const Element* q,
             __builtin_amdgcn_sched_barrier(0);
 
             auto smem_ptr = smem_per_stage + k_block * KV_TILE * K_TILE;
-            int inner_warp_offset = kv_block_idx != -1 ? (glob_stage_offset +
+            int inner_warp_offset = current_block_idx != -1 ? (glob_stage_offset +
                 lane_idx % 4 * kAlignmentKV + lane_idx / 4 * kHeadDim + k_block * K_TILE) * sizeof(__fp16) : -1;
             #if defined(__gfx928__)
             *reinterpret_cast<fp16x8*>(smem_ptr + lane_idx * kAlignmentKV) = *reinterpret_cast<const fp16x8*>(gKv + inner_warp_offset / 2);
@@ -543,19 +562,20 @@ __global__ void paged_mqa_logits(const Element* q,
     if (lane_idx < 16) {
         #pragma unroll
         for (int i = 0; i < KV_ITER; ++i) {
-            smem_write_back[warp_idx * BLOCK_KV + i * KV_TILE + lane_idx % 16] = sum_result[i];
+            smem_write_back[warp_idx * kTokensPerWarp + i * KV_TILE + lane_idx % 16] = sum_result[i];
         }
     }
     __syncthreads();
 
-    float permuted_result = lane_idx < BLOCK_KV ?
-        smem_write_back[warp_idx * BLOCK_KV + lane_idx] : 0.0f;
+    float permuted_result = lane_idx < kTokensPerWarp ?
+        smem_write_back[warp_idx * kTokensPerWarp + lane_idx] : 0.0f;
 
     // Store into the global memory
     auto seq_kv_offset = base_seq_kv_offset + lane_idx;
-    if (lane_idx < BLOCK_KV && seq_kv_offset < context_len - (kNextN - next_n) + 1) {
+    if (lane_idx < kTokensPerWarp &&
+        seq_kv_offset < context_len - (kNextN - next_n) + 1) {
         logits[base_logits_offset + seq_kv_offset] = permuted_result;
-    } else if (lane_idx < BLOCK_KV) {
+    } else if (lane_idx < kTokensPerWarp && seq_kv_offset < logits_stride) {
         logits[base_logits_offset + seq_kv_offset] = -INFINITY;
     }
 }
@@ -879,7 +899,8 @@ __global__ void paged_mqa_logits_persistent_schedule(const Element* q,
 
 template <typename Element, int kNextN = 1, int kNumHeads = 64,
           int kHeadDim = 128, int BLOCK_KV = 64,
-          int kBatchSplit, int kNumWarps = 4>
+          int kBatchSplit, int kNumWarps = 4,
+          int kTokensPerWarp = BLOCK_KV>
 __attribute__((amdgpu_flat_work_group_size(1, 512)))
 __global__ void paged_mqa_logits_fp8(const Element* q,
                                      const Element* kv_block,
@@ -904,9 +925,13 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     static constexpr int Q_TILE = 16;
     static constexpr int KV_TILE = 16;
     static constexpr int Q_ITER = kNumHeads / Q_TILE;
-    static constexpr int KV_ITER = BLOCK_KV / KV_TILE;
+    static constexpr int KV_ITER = kTokensPerWarp / KV_TILE;
+    static constexpr int PAGES_PER_WARP = kTokensPerWarp / BLOCK_KV;
     static constexpr int Stages = kHeadDim / K_TILE;
     LIGHTOP_STATIC_ASSERT(BLOCK_KV == 16 || BLOCK_KV == 32 || BLOCK_KV == 64, "Invalid BLOCK_KV");
+    LIGHTOP_STATIC_ASSERT(kTokensPerWarp % BLOCK_KV == 0 &&
+                          kTokensPerWarp <= WARP_SIZE_GPU,
+                          "Invalid tokens per warp");
 
     extern __shared__ __align__(kSwizzleAlignment) uint8_t smem_buffer[];
 
@@ -917,8 +942,8 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     const auto next_n = kNextN != 1 ? blockIdx.x % kNextN : 0;
 
     int q_idx = blockIdx.y;
-    int start_kv_idx = blockIdx.x / kNextN * kNumWarps;
-    int kv_idx = start_kv_idx + warp_idx;
+    int start_kv_idx = blockIdx.x / kNextN * kNumWarps * PAGES_PER_WARP;
+    int kv_idx = start_kv_idx + warp_idx * PAGES_PER_WARP;
     int context_len = context_lens[q_idx];
     int num_kv = ceil_div(context_len, BLOCK_KV);
 
@@ -928,7 +953,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
 
     if (start_kv_idx >= num_kv) {
         uint32_t fill_offset = base_logits_offset + base_seq_kv_offset + lane_idx;
-        if (lane_idx < BLOCK_KV && base_seq_kv_offset + lane_idx < logits_stride) {
+        if (lane_idx < kTokensPerWarp && base_seq_kv_offset + lane_idx < logits_stride) {
             logits[fill_offset] = -INFINITY;
         }
         return;
@@ -956,20 +981,26 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     }
 
     // fetch kv block idx
-    int kv_block_idx;
-
+    int kv_block_idx[PAGES_PER_WARP];
     uint64_t block_table_offset = q_idx * block_table_stride + kv_idx;
-    kv_block_idx = kv_idx < num_kv ? *(block_table + block_table_offset) : -1;
+    #pragma unroll
+    for (int i = 0; i < PAGES_PER_WARP; ++i) {
+        kv_block_idx[i] = kv_idx + i < num_kv ? block_table[block_table_offset + i] : -1;
+    }
 
     // fetch kv block scales
     const int kv_scale_stride = kv_cache_stride_bytes / sizeof(float);
-    auto gKv_scales = kv_block_idx != -1 ? kv_block_scales + kv_block_idx * kv_scale_stride : kv_block_scales;
-
     auto* smem_kv_scales = reinterpret_cast<float*>(smem_kv_block + kNumHeads * kHeadDim + kNumHeads * sizeof(float));
-    if (kv_block_idx != -1 && lane_idx < BLOCK_KV) {
-        smem_kv_scales[t_id] = gKv_scales[lane_idx];
-    } else {
-        smem_kv_scales[t_id] = 0.0f;
+    if (lane_idx < kTokensPerWarp) {
+        const int lane_page_delta = lane_idx / BLOCK_KV;
+        const int lane_row_in_page = lane_idx % BLOCK_KV;
+        const int lane_block_idx = kv_block_idx[lane_page_delta];
+        if (lane_block_idx != -1) {
+            auto gKv_scales = kv_block_scales + lane_block_idx * kv_scale_stride;
+            smem_kv_scales[warp_idx * kTokensPerWarp + lane_idx] = gKv_scales[lane_row_in_page];
+        } else {
+            smem_kv_scales[warp_idx * kTokensPerWarp + lane_idx] = 0.0f;
+        }
     }
 
     constexpr int heads_cnt = kNumHeads / Q_TILE;
@@ -1000,7 +1031,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
 
     // pre-fetch kv_scale
     float kv_scale[KV_ITER];
-    const int logits_t_offset = warp_idx * 64 + lane_idx % 16;
+    const int logits_t_offset = warp_idx * kTokensPerWarp + lane_idx % 16;
     #pragma unroll
     for (int i = 0; i < KV_ITER; ++i) {
         kv_scale[i] = smem_kv_scales[logits_t_offset + i * 16];
@@ -1011,24 +1042,15 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     // shared data loading complete, invalid warps return in advance
     if (kv_idx >= num_kv) {
         uint32_t fill_offset = base_logits_offset + base_seq_kv_offset + lane_idx;
-        if (lane_idx < BLOCK_KV && base_seq_kv_offset + lane_idx < logits_stride) {
+        if (lane_idx < kTokensPerWarp && base_seq_kv_offset + lane_idx < logits_stride) {
             logits[fill_offset] = -INFINITY;
         }
         return;
     }
 
     // fetch kv block
-    auto gKv = kv_block_idx != -1 ? kv_block + (int64_t)kv_block_idx * BLOCK_KV * (kHeadDim + 4) : kv_block;
     constexpr int kAlignmentKV = 16 / sizeof(uint8_t);
-
-    long glob_kv_desc[2];
-
-    glob_kv_desc[0] = *reinterpret_cast<const long *>(&gKv);
-    // Use offset enable mode, it's unnecessary to set stride args.
-    long stride = 0x0;
-    glob_kv_desc[0] = glob_kv_desc[0] | stride << 48;
-    glob_kv_desc[1] = (long) 0x20000 << 32 | 0xFFFFFFFE;
-    auto *src = reinterpret_cast<v4i *>(glob_kv_desc);
+    constexpr long stride = 0x0;
 
     constexpr int prefetch_kv_stage = KV_ITER >= 2 ? 2 : 1;
     constexpr int smem_kv_block_per_warp = prefetch_kv_stage * KV_TILE * kHeadDim;
@@ -1037,12 +1059,22 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
 
     #pragma unroll
     for (int i = 0; i < prefetch_kv_stage; ++i) {
-        auto glob_stage_offset = i * KV_TILE * kHeadDim;
-        auto smem_per_stage = smem_warp_kv_start + glob_stage_offset;
+        const int page_delta = i * KV_TILE / BLOCK_KV;
+        const int row_in_page = i * KV_TILE % BLOCK_KV;
+        const int current_block_idx = kv_block_idx[page_delta];
+        auto gKv = current_block_idx != -1 ?
+            kv_block + (int64_t)current_block_idx * BLOCK_KV * (kHeadDim + 4) : kv_block;
+        long glob_kv_desc[2];
+        glob_kv_desc[0] = *reinterpret_cast<const long *>(&gKv);
+        glob_kv_desc[0] = glob_kv_desc[0] | stride << 48;
+        glob_kv_desc[1] = (long) 0x20000 << 32 | 0xFFFFFFFE;
+        auto *src = reinterpret_cast<v4i *>(glob_kv_desc);
+        auto glob_stage_offset = row_in_page * kHeadDim;
+        auto smem_per_stage = smem_warp_kv_start + i * KV_TILE * kHeadDim;
         #pragma unroll
         for (int j = 0; j < Stages; ++j) {
             auto smem_ptr = smem_per_stage + j * KV_TILE * K_TILE;
-            auto inner_warp_offset = kv_block_idx != -1 ? glob_stage_offset +
+            auto inner_warp_offset = current_block_idx != -1 ? glob_stage_offset +
                 lane_idx % 4 * kAlignmentKV + lane_idx / 4 * kHeadDim + j * K_TILE : -1;
             buffer_load_lds_x4(src, smem_ptr, inner_warp_offset);
         }
@@ -1060,7 +1092,18 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
 
     #pragma unroll
     for (uint32_t kv_iter = 0; kv_iter < KV_ITER - prefetch_kv_stage; ++kv_iter) {
-        auto glob_stage_offset = (kv_iter + prefetch_kv_stage) * KV_TILE * kHeadDim;
+        const uint32_t load_kv_iter = kv_iter + prefetch_kv_stage;
+        const int page_delta = load_kv_iter * KV_TILE / BLOCK_KV;
+        const int row_in_page = load_kv_iter * KV_TILE % BLOCK_KV;
+        const int current_block_idx = kv_block_idx[page_delta];
+        auto gKv = current_block_idx != -1 ?
+            kv_block + (int64_t)current_block_idx * BLOCK_KV * (kHeadDim + 4) : kv_block;
+        long glob_kv_desc[2];
+        glob_kv_desc[0] = *reinterpret_cast<const long *>(&gKv);
+        glob_kv_desc[0] = glob_kv_desc[0] | stride << 48;
+        glob_kv_desc[1] = (long) 0x20000 << 32 | 0xFFFFFFFE;
+        auto *src = reinterpret_cast<v4i *>(glob_kv_desc);
+        auto glob_stage_offset = row_in_page * kHeadDim;
         auto smem_per_stage = smem_warp_kv_start + kv_iter % prefetch_kv_stage * KV_TILE * kHeadDim;
         #pragma unroll
         for (uint32_t k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
@@ -1080,7 +1123,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
             __builtin_amdgcn_sched_barrier(0);
 
             auto smem_ptr = smem_per_stage + k_block * KV_TILE * K_TILE;
-            int inner_warp_offset = kv_block_idx != -1 ? glob_stage_offset +
+            int inner_warp_offset = current_block_idx != -1 ? glob_stage_offset +
                 lane_idx % 4 * kAlignmentKV + lane_idx / 4 * kHeadDim + k_block * K_TILE : -1;
             buffer_load_lds_x4(src, smem_ptr, inner_warp_offset);
 
@@ -1169,26 +1212,27 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     if (lane_idx < 16) {
         #pragma unroll
         for (int i = 0; i < KV_ITER; ++i) {
-            smem_write_back[warp_idx * BLOCK_KV + i * KV_TILE + lane_idx % 16] = sum_result[i];
+            smem_write_back[warp_idx * kTokensPerWarp + i * KV_TILE + lane_idx % 16] = sum_result[i];
         }
     }
     __syncthreads();
 
-    float permuted_result = lane_idx < BLOCK_KV ?
-        smem_write_back[warp_idx * BLOCK_KV + lane_idx] : 0.0f;
+    float permuted_result = lane_idx < kTokensPerWarp ?
+        smem_write_back[warp_idx * kTokensPerWarp + lane_idx] : 0.0f;
 
     // Store into the global memory
     auto seq_kv_offset = base_seq_kv_offset + lane_idx;
-    if (lane_idx < BLOCK_KV && seq_kv_offset < context_len - (kNextN - next_n) + 1) {
+    if (lane_idx < kTokensPerWarp &&
+        seq_kv_offset < context_len - (kNextN - next_n) + 1) {
         logits[base_logits_offset + seq_kv_offset] = permuted_result;
-    } else if (lane_idx < BLOCK_KV) {
+    } else if (lane_idx < kTokensPerWarp && seq_kv_offset < logits_stride) {
         logits[base_logits_offset + seq_kv_offset] = -INFINITY;
     }
 }
 
 template <typename Element, int kNextN = 1, int kNumHeads = 64,
           int kHeadDim = 128, int BLOCK_KV = 4,
-          int kPackedKv = 64, int kNumWarps = 4>
+          int kTokensPerWarp = 64, int kNumWarps = 4>
 __attribute__((amdgpu_flat_work_group_size(1, 512)))
 __global__ void paged_mqa_logits_small_block(const Element* q,
                                              const Element* kv_block,
@@ -1212,12 +1256,12 @@ __global__ void paged_mqa_logits_small_block(const Element* q,
     static constexpr int Q_TILE = 16;
     static constexpr int KV_TILE = 16;
     static constexpr int Q_ITER = kNumHeads / Q_TILE;
-    static constexpr int KV_ITER = kPackedKv / KV_TILE;
-    static constexpr int PAGES_PER_WARP = kPackedKv / BLOCK_KV;
+    static constexpr int KV_ITER = kTokensPerWarp / KV_TILE;
+    static constexpr int PAGES_PER_WARP = kTokensPerWarp / BLOCK_KV;
     static constexpr int SUBPAGES_PER_TILE = KV_TILE / BLOCK_KV;
     static constexpr int Stages = kHeadDim / K_TILE;
     LIGHTOP_STATIC_ASSERT((BLOCK_KV == 4 || BLOCK_KV == 8) &&
-                          kPackedKv == 64, "Invalid small BLOCK_KV");
+                          kTokensPerWarp == 64, "Invalid small BLOCK_KV");
 
     extern __shared__ __align__(kSwizzleAlignment) uint8_t smem_buffer[];
 
@@ -1454,7 +1498,7 @@ __global__ void paged_mqa_logits_small_block(const Element* q,
 
 template <typename Element, int kNextN = 1, int kNumHeads = 64,
           int kHeadDim = 128, int BLOCK_KV = 4,
-          int kPackedKv = 64, int kNumWarps = 4>
+          int kTokensPerWarp = 64, int kNumWarps = 4>
 __attribute__((amdgpu_flat_work_group_size(1, 512)))
 __global__ void paged_mqa_logits_fp8_small_block(const Element* q,
                                                 const Element* kv_block,
@@ -1479,12 +1523,12 @@ __global__ void paged_mqa_logits_fp8_small_block(const Element* q,
     static constexpr int Q_TILE = 16;
     static constexpr int KV_TILE = 16;
     static constexpr int Q_ITER = kNumHeads / Q_TILE;
-    static constexpr int KV_ITER = kPackedKv / KV_TILE;
-    static constexpr int PAGES_PER_WARP = kPackedKv / BLOCK_KV;
+    static constexpr int KV_ITER = kTokensPerWarp / KV_TILE;
+    static constexpr int PAGES_PER_WARP = kTokensPerWarp / BLOCK_KV;
     static constexpr int SUBPAGES_PER_TILE = KV_TILE / BLOCK_KV;
     static constexpr int Stages = kHeadDim / K_TILE;
     LIGHTOP_STATIC_ASSERT((BLOCK_KV == 4 || BLOCK_KV == 8) &&
-                          kPackedKv == 64, "Invalid small BLOCK_KV");
+                          kTokensPerWarp == 64, "Invalid small BLOCK_KV");
 
     extern __shared__ __align__(kSwizzleAlignment) uint8_t smem_buffer[];
 
@@ -1506,7 +1550,7 @@ __global__ void paged_mqa_logits_fp8_small_block(const Element* q,
 
     if (start_kv_idx >= num_kv) {
         #pragma unroll
-        for (int offset = 0; offset < kPackedKv; offset += WARP_SIZE_GPU) {
+        for (int offset = 0; offset < kTokensPerWarp; offset += WARP_SIZE_GPU) {
             auto seq_kv_offset = base_seq_kv_offset + offset + lane_idx;
             if (seq_kv_offset < logits_stride) {
                 logits[base_logits_offset + seq_kv_offset] = -INFINITY;
@@ -1561,12 +1605,12 @@ __global__ void paged_mqa_logits_fp8_small_block(const Element* q,
     const int lane_row_in_page = lane_idx - lane_page_delta * BLOCK_KV;
     if (full_warp) {
         auto gKv_scales = kv_block_scales + kv_block_idx[lane_page_delta] * kv_scale_stride;
-        smem_kv_scales[warp_idx * kPackedKv + lane_idx] = gKv_scales[lane_row_in_page];
+        smem_kv_scales[warp_idx * kTokensPerWarp + lane_idx] = gKv_scales[lane_row_in_page];
     } else if (lane_page_delta < PAGES_PER_WARP && kv_block_idx[lane_page_delta] != -1) {
         auto gKv_scales = kv_block_scales + kv_block_idx[lane_page_delta] * kv_scale_stride;
-        smem_kv_scales[warp_idx * kPackedKv + lane_idx] = gKv_scales[lane_row_in_page];
+        smem_kv_scales[warp_idx * kTokensPerWarp + lane_idx] = gKv_scales[lane_row_in_page];
     } else {
-        smem_kv_scales[warp_idx * kPackedKv + lane_idx] = 0.0f;
+        smem_kv_scales[warp_idx * kTokensPerWarp + lane_idx] = 0.0f;
     }
 
     constexpr int heads_cnt = kNumHeads / Q_TILE;
@@ -1595,7 +1639,7 @@ __global__ void paged_mqa_logits_fp8_small_block(const Element* q,
     }
 
     float kv_scale[KV_ITER];
-    const int logits_t_offset = warp_idx * kPackedKv + lane_idx % KV_TILE;
+    const int logits_t_offset = warp_idx * kTokensPerWarp + lane_idx % KV_TILE;
     #pragma unroll
     for (int i = 0; i < KV_ITER; ++i) {
         kv_scale[i] = smem_kv_scales[logits_t_offset + i * KV_TILE];
@@ -1605,7 +1649,7 @@ __global__ void paged_mqa_logits_fp8_small_block(const Element* q,
 
     if (warp_kv_idx >= num_kv) {
         #pragma unroll
-        for (int offset = 0; offset < kPackedKv; offset += WARP_SIZE_GPU) {
+        for (int offset = 0; offset < kTokensPerWarp; offset += WARP_SIZE_GPU) {
             auto seq_kv_offset = base_seq_kv_offset + offset + lane_idx;
             if (seq_kv_offset < logits_stride) {
                 logits[base_logits_offset + seq_kv_offset] = -INFINITY;
@@ -1751,8 +1795,7 @@ __global__ void paged_mqa_logits_fp8_small_block(const Element* q,
         }
 
         if (kv_iter + 1 < KV_ITER) {
-            constexpr uint32_t prefetch_distance = prefetch_kv_stage;
-            const uint32_t load_kv_iter = kv_iter + prefetch_distance;
+            const uint32_t load_kv_iter = kv_iter + prefetch_kv_stage;
             const uint32_t load_stage = kv_iter % prefetch_kv_stage;
             if (load_kv_iter < KV_ITER) {
                 if (full_warp) {
