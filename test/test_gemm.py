@@ -1,5 +1,5 @@
 import torch
-import lightop
+from lightop import gemm_ops
 import time
 from lightop.quant import w4tow16
 
@@ -38,13 +38,13 @@ def test(m,n,k):
 
     if not acc:
         for i in range(5):
-            d2=lightop.gemm_w4a16(a,b_w4.t(),scale,zero)
+            d2=gemm_ops.gemm_w4a16(a,b_w4.t(),scale,zero)
 
     torch.cuda.synchronize()
     start_time = time.time()
 
     for i in range(repeat_num):
-        d2=lightop.gemm_w4a16(a,b_w4.t(),scale,zero)
+        d2=gemm_ops.gemm_w4a16(a,b_w4.t(),scale,zero)
 
     torch.cuda.synchronize()
     end_time = time.time()

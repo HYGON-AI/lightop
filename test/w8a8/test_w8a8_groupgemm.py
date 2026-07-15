@@ -5,7 +5,7 @@ from typing import Optional, Type
 import pandas as pd
 import os
 import json
-from lightop import grougemm_w8a8_pertensor_asm
+from lightop.gemm_ops import grougemm_w8a8_pertensor_asm
 import torch
 import random
 
@@ -161,4 +161,3 @@ if __name__ == "__main__":
             print("精度检查不合格！！！") 
         else:
             print("精度检查合格！！！")
-

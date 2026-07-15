@@ -5,7 +5,10 @@ from typing import Optional, Type
 import pandas as pd
 import os
 import json
-from lightop import m_grouped_w8a8_gemm_nt_contig_asm,m_grouped_w8a8_gemm_nt_nopad_contig_asm
+from lightop.gemm_ops import (
+    m_grouped_w8a8_gemm_nt_contig_asm,
+    m_grouped_w8a8_gemm_nt_nopad_contig_asm,
+)
 import torch
 import random
 import triton
@@ -178,4 +181,3 @@ def test_m_grouped_gemm_contiguous(warmup_iters=10, test_iters=100, acc_check=Tr
 
 
 test_m_grouped_gemm_contiguous(acc_check=True)
-

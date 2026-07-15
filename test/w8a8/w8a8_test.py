@@ -9,7 +9,7 @@ import triton
 from vllm import _custom_ops as ops
 from lmslim.layers.gemm.int8_utils import per_token_quant_int8
 from vllm.utils import W8a8GetCacheJSON
-from lightop import gemm_w8a8_smooth
+from lightop.gemm_ops import gemm_w8a8_smooth
 
 
 def to_int8(tensor: torch.Tensor):
@@ -369,4 +369,3 @@ if __name__ == "__main__":
     n_list = [7168, 8192, 1280, 8192,]
     k_list = [8192, 3584, 8192, 1024, ]
     main(n_list, k_list, excel_name='llama3.3_70b_tp8.xlsx')
-
