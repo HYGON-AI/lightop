@@ -1,5 +1,7 @@
 """Public GEMM and Grouped GEMM APIs."""
 
+from importlib import import_module
+
 from .core import fused_bmm, gemm
 from .grouped import (
     grougemm_bf16_fp16,
@@ -12,15 +14,6 @@ from .grouped import (
     m_grouped_w8a8_gemm_nt_contig_asm,
     m_grouped_w8a8_gemm_nt_masked,
     m_grouped_w8a8_gemm_nt_nopad_contig_asm,
-)
-from .native import (
-    BlockSize,
-    hipblaslt_w8a8_blockwise_gemm,
-    hipblaslt_w8a8_channelwise_gemm,
-    hipblaslt_w8a8_gemm,
-    rocblas_scaled_mm_nn,
-    triton_int8_gemm_helper,
-    triton_scaled_mm,
 )
 from .quantized import (
     awq_gemm_marlin_weight_repack,
@@ -35,6 +28,24 @@ from .quantized import (
     gemm_w8a8_wgrad_asm,
     gemm_w8a8_xgrad_asm,
 )
+
+_NATIVE_APIS = {
+    "BlockSize",
+    "hipblaslt_w8a8_blockwise_gemm",
+    "hipblaslt_w8a8_channelwise_gemm",
+    "hipblaslt_w8a8_gemm",
+    "rocblas_scaled_mm_nn",
+    "triton_int8_gemm_helper",
+    "triton_scaled_mm",
+}
+
+
+def __getattr__(name):
+    if name not in _NATIVE_APIS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(f"{__name__}.native"), name)
+    globals()[name] = value
+    return value
 
 __all__ = [
     "awq_gemm_marlin_weight_repack",
