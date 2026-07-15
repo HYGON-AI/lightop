@@ -1,0 +1,12 @@
+测试时间：2026-07-15
+测试环境：ZZ[NMZ][26] / luoyao-lightop-lmslim-dev / BW1100(gfx938)
+构建命令：MAX_JOBS=16 python setup.py build
+构建结果：成功（Git SHA 08ce7af，PyTorch 2.10.0，DTK 2604，LightOp 0.6.0+das.dtk2604）
+
+norm 验收命令：python test/run_norm_tests.py
+norm 验收结果：28 passed in 14.96s
+norm 覆盖：22 个既有 API、公开清单、lm_faster_rmsquant 绑定/签名/数值/scale/input 与 residual 原地语义。
+
+activation 验收命令：python test/run_activation_tests.py
+activation 验收结果：27 passed in 14.78s
+activation 覆盖：19 个既有 API、公开清单、lm_fuse_silu_mul_quant 绑定/签名、FP16/BF16、多 shape、INT8 数值与 scale。
