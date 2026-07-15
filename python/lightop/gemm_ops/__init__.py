@@ -17,6 +17,7 @@ from .native import (
     BlockSize,
     hipblaslt_w8a8_blockwise_gemm,
     hipblaslt_w8a8_gemm,
+    rocblas_scaled_mm_nn,
 )
 from .quantized import (
     awq_gemm_marlin_weight_repack,
@@ -58,4 +59,5 @@ __all__ = [
     "m_grouped_w8a8_gemm_nt_contig_asm",
     "m_grouped_w8a8_gemm_nt_masked",
     "m_grouped_w8a8_gemm_nt_nopad_contig_asm",
+    "rocblas_scaled_mm_nn",
 ]
