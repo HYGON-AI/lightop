@@ -81,31 +81,27 @@ def run_streamed(name: str, command: Sequence[str], env: dict[str, str]) -> bool
 
 def print_case_inventory(
     category: str,
-    test_files: Sequence[str],
-    pending_test_files: Sequence[tuple[str, str]],
+    pytest_test_files: Sequence[str],
+    script_test_files: Sequence[str],
 ) -> None:
-    print(f"lightop.{category} runnable test files ({len(test_files)}):")
-    for path in test_files:
-        print(f"  RUN      {path}")
+    print(f"lightop.{category} pytest files ({len(pytest_test_files)}):")
+    for path in pytest_test_files:
+        print(f"  PYTEST   {path}")
 
-    print(
-        f"lightop.{category} legacy files needing entry cleanup "
-        f"({len(pending_test_files)}):"
-    )
-    for path, reason in pending_test_files:
-        print(f"  PENDING  {path} -- {reason}")
-
+    print(f"lightop.{category} standalone Python test files ({len(script_test_files)}):")
+    for path in script_test_files:
+        print(f"  PYTHON   {path}")
 
 def run_category(
     category: str,
-    test_files: Sequence[str],
-    pending_test_files: Sequence[tuple[str, str]] = (),
+    pytest_test_files: Sequence[str],
+    script_test_files: Sequence[str] = (),
 ) -> int:
     args = parse_args(category)
     env = os.environ.copy()
 
     if args.list_cases:
-        print_case_inventory(category, test_files, pending_test_files)
+        print_case_inventory(category, pytest_test_files, script_test_files)
         return 0
 
     if args.build:
@@ -125,20 +121,37 @@ def run_category(
     )
     print(f"Using LightOp build: {build_dir}")
 
-    command = [
-        sys.executable,
-        "-m",
-        "pytest",
-        "-q",
-        "-rs",
-        *[str(ROOT / path) for path in test_files],
-    ]
-    passed = run_streamed(f"lightop.{category} all cases", command, env)
-    print(f"\n{'=' * 78}\n{category.upper()} TEST SUMMARY\n{'=' * 78}")
-    print(f"{'PASS' if passed else 'FAIL'}  lightop.{category} all cases")
-    if pending_test_files:
-        print(
-            f"PENDING  {len(pending_test_files)} legacy files need standardized "
-            "test entry points (use --list-cases for details)"
+    results: list[tuple[str, bool]] = []
+    if pytest_test_files:
+        command = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-rs",
+            *[str(ROOT / path) for path in pytest_test_files],
+        ]
+        results.append(
+            (
+                "pytest acceptance cases",
+                run_streamed(f"lightop.{category} pytest cases", command, env),
+            )
         )
+
+    for path in script_test_files:
+        results.append(
+            (
+                path,
+                run_streamed(
+                    f"lightop.{category} {path}",
+                    [sys.executable, str(ROOT / path)],
+                    env,
+                ),
+            )
+        )
+
+    passed = all(result for _, result in results)
+    print(f"\n{'=' * 78}\n{category.upper()} TEST SUMMARY\n{'=' * 78}")
+    for name, result in results:
+        print(f"{'PASS' if result else 'FAIL'}  {name}")
     return 0 if passed else 1
