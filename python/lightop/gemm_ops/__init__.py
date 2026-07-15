@@ -13,6 +13,7 @@ from .grouped import (
     m_grouped_w8a8_gemm_nt_masked,
     m_grouped_w8a8_gemm_nt_nopad_contig_asm,
 )
+from .native import BlockSize, hipblaslt_w8a8_blockwise_gemm
 from .quantized import (
     awq_gemm_marlin_weight_repack,
     awq_marlin_repack,
@@ -44,6 +45,7 @@ __all__ = [
     "grougemm_bf16_fp16",
     "grougemm_w8a8_pertensor_asm",
     "groupgemm",
+    "hipblaslt_w8a8_blockwise_gemm",
     "m_grouped_bf16_gemm_nt_masked",
     "m_grouped_fp8_gemm_nt_masked",
     "m_grouped_w16a16_gemm_nt_contig_asm",
