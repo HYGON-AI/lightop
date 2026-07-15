@@ -18,6 +18,7 @@ from .native import (
     hipblaslt_w8a8_blockwise_gemm,
     hipblaslt_w8a8_gemm,
     rocblas_scaled_mm_nn,
+    triton_int8_gemm_helper,
     triton_scaled_mm,
 )
 from .quantized import (
@@ -61,5 +62,6 @@ __all__ = [
     "m_grouped_w8a8_gemm_nt_masked",
     "m_grouped_w8a8_gemm_nt_nopad_contig_asm",
     "rocblas_scaled_mm_nn",
+    "triton_int8_gemm_helper",
     "triton_scaled_mm",
 ]
