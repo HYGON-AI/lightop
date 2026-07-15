@@ -10,3 +10,10 @@ norm 覆盖：22 个既有 API、公开清单、lm_faster_rmsquant 绑定/签名
 activation 验收命令：python test/run_activation_tests.py
 activation 验收结果：27 passed in 14.78s
 activation 覆盖：19 个既有 API、公开清单、lm_fuse_silu_mul_quant 绑定/签名、FP16/BF16、多 shape、INT8 数值与 scale。
+
+分类接口回归（2026-07-15）：
+- 将 35 个既有测试文件中的公开调用切换为 lightop.norm / lightop.activation；底层 lightop.op 实现测试保持不变。
+- AST 全目录扫描：未发现 norm/activation 已分类算子仍从 lightop 或 lightop.droppath 导入。
+- 语法检查：35 个修改文件全部通过 python -m py_compile。
+- norm 统一回归：28 passed in 15.59s。
+- activation 统一回归：27 passed in 16.02s。

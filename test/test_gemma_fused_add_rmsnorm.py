@@ -1,6 +1,6 @@
 import torch
 from typing import Optional, Tuple, Union
-from lightop import gemma_fused_add_rmsnorm 
+from lightop.norm import gemma_fused_add_rmsnorm
 
 def calc_metrics(a: torch.Tensor, b: torch.Tensor, name: str = "tensor"):
     a = a.float().detach().cpu()

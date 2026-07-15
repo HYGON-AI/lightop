@@ -3,7 +3,7 @@
 import torch
 from vllm import _custom_ops as vllm_ops
 from triton.testing import do_bench 
-from lightop import fuse_fill_rms_x2_concat
+from lightop.norm import fuse_fill_rms_x2_concat
 import pdb
 
 

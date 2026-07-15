@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import time
 import torch.nn.functional as F
-from lightop import GNSilu
+from lightop.activation import GNSilu
 
 
 class Torch_GNSilu(torch.nn.Module):

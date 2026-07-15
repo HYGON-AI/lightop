@@ -1,7 +1,7 @@
 import torch
 import triton
 from vllm import _custom_ops as vllm_ops
-from lightop import fuse_silu_mul_quant
+from lightop.activation import fuse_silu_mul_quant
 from typing import Optional
 
 # ------------------ 接口 ------------------

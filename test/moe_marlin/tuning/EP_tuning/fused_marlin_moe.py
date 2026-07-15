@@ -20,7 +20,8 @@ import triton.language as tl
 from marlin_quant import unpack_int8_to_int4
 
 from lightop import moe_gemm_marlin_w4a8, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8
-from lightop import get_moe_cuda_marlin_config_w4a8, moe_gemm_marlin_w4a8, fuse_silu_mul_quant
+from lightop import get_moe_cuda_marlin_config_w4a8, moe_gemm_marlin_w4a8
+from lightop.activation import fuse_silu_mul_quant
 from lightop import op as op
 
 from vllm.platforms import current_platform

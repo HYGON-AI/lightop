@@ -1,6 +1,6 @@
 import torch
 import triton
-from lightop import fuse_silu_and_mul
+from lightop.activation import fuse_silu_and_mul
 import torch.nn.functional as F
 import time
 

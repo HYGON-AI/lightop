@@ -2,7 +2,7 @@ import torch
 import triton
 from vllm import _custom_ops as vllm_ops
 # [确保 lightop 已正确安装]
-from lightop import fuse_silu_mul_quant_ep
+from lightop.activation import fuse_silu_mul_quant_ep
 from typing import Optional
 
 # ------------------ 接口 ------------------
@@ -169,4 +169,3 @@ if __name__ == "__main__":
     run_correctness_suite()
     print(f"Running Performance Benchmarks (EP opt Only) for {len(FIXED_TOKENS_MAP)} cases...")
     benchmark.run(print_data=True, warmup=100)
-

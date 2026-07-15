@@ -2,7 +2,7 @@ import torch
 # from vllm import _custom_ops as vllm_ops
 from triton.testing import do_bench
 from lightop import fuse_rmsnorm_rope_quant_qkv
-from lightop import fused_rms_norm_contiguous
+from lightop.norm import fused_rms_norm_contiguous
 import pdb
 from lightop import op
 import torch
@@ -217,6 +217,5 @@ if __name__ == "__main__":
     for bs in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]:
        for num_head in [16, 32, 64, 128]:
         rms_rope_single_test(kv_cache_dtype_str = "fp8_e4m3", k_head_stride=576,batch_size=bs,num_head=128,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=10000, kv_cache_blocks_size=16, test_speed=False)
-
 
 

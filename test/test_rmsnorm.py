@@ -2,13 +2,13 @@ import torch
 import torch.nn as nn
 import time
 import torch.nn.functional as F
-from lightop import RMSNormTorch
+from lightop.norm import RMSNormTorch
 from torch.autograd import Function
 from torch import Tensor
 
-from lightop import RMSNorm
+from lightop.norm import RMSNorm
 
-# from lightop import rmsnorm_forward,rmsnorm_backward
+# from lightop.norm import rmsnorm_forward, rmsnorm_backward
 
 # class RMSNormFunction(Function):
 #     @staticmethod
