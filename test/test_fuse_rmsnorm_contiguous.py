@@ -1,7 +1,7 @@
 import torch
 from vllm import _custom_ops as vllm_ops
 from triton.testing import do_bench 
-from lightop import fused_rms_norm_contiguous
+from lightop.norm import fused_rms_norm_contiguous
 
 def init(out: torch.Tensor, x: torch.Tensor, weight: torch.Tensor, epsilon: float):
     """基准函数：直接在（连续的）输入上运行 op。"""

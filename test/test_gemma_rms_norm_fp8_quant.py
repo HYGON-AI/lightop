@@ -16,7 +16,7 @@ import vllm._custom_ops as ops
 from vllm.model_executor.layers.layernorm import RMSNorm
 
 # 引入您指定的 gemma 专用算子
-from lightop import gemma_rms_norm_per_token_fp8_quant
+from lightop.norm import gemma_rms_norm_per_token_fp8_quant
 
 
 # =========================================================================

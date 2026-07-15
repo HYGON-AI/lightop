@@ -2,7 +2,7 @@ import torch
 import time
 import os
 import torch.nn.functional as F
-from lightop import LnAddDropoutBias
+from lightop.activation import LnAddDropoutBias
 
 
 class Torch_LnAddDropoutBias(torch.nn.Module):

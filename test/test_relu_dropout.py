@@ -5,7 +5,7 @@ import copy
 from torch.autograd import Variable
 import torch.nn.functional as F
 
-from lightop import ReluDropout
+from lightop.activation import ReluDropout
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 

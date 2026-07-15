@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import time
 import torch.nn.functional as F
-from lightop import GroupNorm
+from lightop.norm import GroupNorm
 
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
