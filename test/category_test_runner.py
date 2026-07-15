@@ -33,6 +33,11 @@ def parse_args(category: str) -> argparse.Namespace:
         default=16,
         help="MAX_JOBS used with --build (default: 16)",
     )
+    parser.add_argument(
+        "--list-cases",
+        action="store_true",
+        help="list runnable and pending legacy cases without building or testing",
+    )
     return parser.parse_args()
 
 
@@ -74,9 +79,34 @@ def run_streamed(name: str, command: Sequence[str], env: dict[str, str]) -> bool
     return return_code == 0
 
 
-def run_category(category: str, test_files: Sequence[str]) -> int:
+def print_case_inventory(
+    category: str,
+    test_files: Sequence[str],
+    pending_test_files: Sequence[tuple[str, str]],
+) -> None:
+    print(f"lightop.{category} runnable test files ({len(test_files)}):")
+    for path in test_files:
+        print(f"  RUN      {path}")
+
+    print(
+        f"lightop.{category} legacy files needing entry cleanup "
+        f"({len(pending_test_files)}):"
+    )
+    for path, reason in pending_test_files:
+        print(f"  PENDING  {path} -- {reason}")
+
+
+def run_category(
+    category: str,
+    test_files: Sequence[str],
+    pending_test_files: Sequence[tuple[str, str]] = (),
+) -> int:
     args = parse_args(category)
     env = os.environ.copy()
+
+    if args.list_cases:
+        print_case_inventory(category, test_files, pending_test_files)
+        return 0
 
     if args.build:
         build_env = env.copy()
@@ -106,4 +136,9 @@ def run_category(category: str, test_files: Sequence[str]) -> int:
     passed = run_streamed(f"lightop.{category} all cases", command, env)
     print(f"\n{'=' * 78}\n{category.upper()} TEST SUMMARY\n{'=' * 78}")
     print(f"{'PASS' if passed else 'FAIL'}  lightop.{category} all cases")
+    if pending_test_files:
+        print(
+            f"PENDING  {len(pending_test_files)} legacy files need standardized "
+            "test entry points (use --list-cases for details)"
+        )
     return 0 if passed else 1
