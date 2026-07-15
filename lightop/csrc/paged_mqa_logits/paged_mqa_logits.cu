@@ -238,9 +238,7 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
 
     torch::Tensor kv_cache_scales;
     torch::Tensor kv_cache;
-    int smem_kv_size_per_stage = 0;
     bool is_fp8 = (q.scalar_type() == torch::kFloat8_e4m3fn || q.scalar_type() == torch::kFloat8_e5m2);
-    bool is_fp16 = (q.scalar_type() == torch::kFloat16 || q.scalar_type() == torch::kBFloat16);
 
     if (is_fp8) {
         LIGHTOP_HOST_ASSERT(head_dim_with_sf == head_dim + static_cast<int>(sizeof(float)));
@@ -259,16 +257,15 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
             {kv_cache_stride_bytes / static_cast<int>(sizeof(float)), 1},
             torch::TensorOptions().dtype(torch::kFloat32)
         );
-        smem_kv_size_per_stage = block_kv * head_dim * static_cast<int>(kv_cache.element_size()) + block_kv * sizeof(float);
     } else {
-        LIGHTOP_HOST_ASSERT(fused_kv_cache.scalar_type() == torch::kFloat16 || fused_kv_cache.scalar_type() == torch::kBFloat16);
+        LIGHTOP_HOST_ASSERT(fused_kv_cache.scalar_type() == torch::kFloat16 ||
+                            fused_kv_cache.scalar_type() == torch::kBFloat16);
         kv_cache = torch::from_blob(
             fused_kv_cache.data_ptr(),
             {num_kv_blocks, block_kv, head_dim},
             {kv_cache_stride_bytes, head_dim, 1},
             torch::TensorOptions().dtype(torch::kFloat16)
         );
-        smem_kv_size_per_stage = block_kv * head_dim * static_cast<int>(kv_cache.element_size());
     }
 
     constexpr int num_math_warp_groups = 4;
@@ -310,8 +307,9 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     const int smem_scale_cache_size = use_fp8_kv ? num_math_warp_groups * 64 * static_cast<int>(sizeof(float)) : 0;
     const int smem_cache_size = smem_q_cache_size + smem_weight_cache_size + smem_scale_cache_size;
 
-    const int smem_size = smem_q_pipe_size + (block_kv < 16 ? (smem_kv_pipe_size > smem_cache_size ? smem_kv_pipe_size : smem_cache_size)
-                                                             : smem_kv_pipe_size);
+    const int smem_size = smem_q_pipe_size +
+        (block_kv < 16 ? (smem_kv_pipe_size > smem_cache_size ? smem_kv_pipe_size : smem_cache_size)
+                       : smem_kv_pipe_size);
 
     const int max_chunk_size = ceil_div(max_context_len, kTokensPerCta);
 
