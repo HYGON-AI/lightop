@@ -1,0 +1,5 @@
+测试时间：2026-07-15
+测试环境：luoyao-qwen35b-a3b-int8-env
+测试命令：pytest -q test/test_gemm_ops_hipblaslt_w8a8_channelwise_gemm.py
+测试结果：3 passed in 16.09s
+覆盖内容：公开接口直接绑定、FP16/BF16 批量 GEMM、逐行/逐通道 scale、bias 和 PyTorch 数值对比。

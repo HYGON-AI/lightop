@@ -16,6 +16,7 @@ from .grouped import (
 from .native import (
     BlockSize,
     hipblaslt_w8a8_blockwise_gemm,
+    hipblaslt_w8a8_channelwise_gemm,
     hipblaslt_w8a8_gemm,
     rocblas_scaled_mm_nn,
     triton_int8_gemm_helper,
@@ -53,6 +54,7 @@ __all__ = [
     "grougemm_w8a8_pertensor_asm",
     "groupgemm",
     "hipblaslt_w8a8_blockwise_gemm",
+    "hipblaslt_w8a8_channelwise_gemm",
     "hipblaslt_w8a8_gemm",
     "m_grouped_bf16_gemm_nt_masked",
     "m_grouped_fp8_gemm_nt_masked",
