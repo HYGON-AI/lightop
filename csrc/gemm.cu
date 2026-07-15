@@ -25,6 +25,9 @@ inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& 
     #if defined(__gfx936__) || defined(__gfx928__)
         if constexpr (is_half)reg_c=__builtin_amdgcn_mmac_f32_16x16x16f16(reg_a,reg_b,reg_c);
         else reg_c=__builtin_amdgcn_mmac_f32_16x16x16bf16(*(v4bh*)&reg_a,*(v4bh*)&reg_b,reg_c);
+    #elif defined(__gfx938__)
+        if constexpr (is_half) reg_c = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(reg_a, reg_b, reg_c, false, false);
+        else reg_c = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(*(v4bh*)&reg_a, *(v4bh*)&reg_b, reg_c, false, false);
     #endif
 }
 
