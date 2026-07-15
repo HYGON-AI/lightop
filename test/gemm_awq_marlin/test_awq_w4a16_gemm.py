@@ -13,6 +13,7 @@ import lmslimquant
 import re
 import pdb
 import lightop
+from lightop import gemm_ops
 import triton
 from datetime import datetime
 torch.manual_seed(42)
@@ -77,7 +78,7 @@ def data_gen(M,N,K,G,use_random, dtype, use_marlin=False):
     awqworkspacesize = awqsingleton.awqworkshapcesize
     ret = torch.empty((M, N), device=a.device, dtype=a.dtype)
     work_space = torch.empty((110*1024*1024), device=a.device, dtype=torch.float32)
-    weight_marlin = lightop.awq_gemm_marlin_weight_repack(weight_trans, N, K)
+    weight_marlin = gemm_ops.awq_gemm_marlin_weight_repack(weight_trans, N, K)
 
 
 
@@ -250,7 +251,7 @@ def sing_test_dequant(N,K, G, dtype, test_speed, use_random, use_marlin):
     ref = data_dict['dqweight_out']
     ret = torch.empty((N,K), device=ref.device, dtype=ref.dtype)
     weight_quant = data_dict['weight_trans'] if not use_marlin else data_dict['weight_marlin']
-    lightop.gemm_awq_w4a16_marlin_dequant(ret, weight_quant, data_dict['scales_zeros'], use_marlin)
+    gemm_ops.gemm_awq_w4a16_marlin_dequant(ret, weight_quant, data_dict['scales_zeros'], use_marlin)
     preceis_ori = torch.allclose(ref, ret, rtol=1e-03, atol=1e-2)
     # pdb.set_trace()
     if preceis_ori:
@@ -259,9 +260,9 @@ def sing_test_dequant(N,K, G, dtype, test_speed, use_random, use_marlin):
         print(f"N={N}, K={K}, G={G}, dtype={dtype}, use_random={use_random}, use_marlin={use_marlin} 不正确")
     if test_speed:
         for i in range(10):
-            lightop.gemm_awq_w4a16_marlin_dequant(ret, weight_quant, data_dict['scales_zeros'], use_marlin)
+            gemm_ops.gemm_awq_w4a16_marlin_dequant(ret, weight_quant, data_dict['scales_zeros'], use_marlin)
         torch.cuda.synchronize()
-        marlin_dequant_time = triton.testing.do_bench(lambda:lightop.gemm_awq_w4a16_marlin_dequant(ret, weight_quant, data_dict['scales_zeros'], use_marlin),quantiles=None, return_mode="mean")*1000
+        marlin_dequant_time = triton.testing.do_bench(lambda:gemm_ops.gemm_awq_w4a16_marlin_dequant(ret, weight_quant, data_dict['scales_zeros'], use_marlin),quantiles=None, return_mode="mean")*1000
         marlin_data_bytes = ret.element_size() * ret.nelement() + weight_quant.element_size() * weight_quant.nelement() + data_dict['scales_zeros'].element_size() * data_dict['scales_zeros'].nelement()
         data_bytes_gb = marlin_data_bytes / (2**30)
         marlin_bandwidth = data_bytes_gb / (marlin_dequant_time/1000/1000)
@@ -296,7 +297,7 @@ def single_test(M,N,K, G, test_speed, use_random, dtype, use_marlin):
         out_awq = ops.awq_gemm(data_dict['a'],data_dict['weight_trans'],data_dict['scales_zeros'],data_dict['M'],data_dict['N'],data_dict['K'],data_dict['group_size'],0,
                                     data_dict['awqworkspace'],
                                     data_dict['awqworkspacesize'])
-        out_lightop = lightop.gemm_awq_w4a16_marlin(data_dict['a'], weight_quant, data_dict['scales_zeros'])
+        out_lightop = gemm_ops.gemm_awq_w4a16_marlin(data_dict['a'], weight_quant, data_dict['scales_zeros'])
     torch.cuda.synchronize()
     # out_lightop = data_dict['ret']
     # out_lightop = lightop.gemm_awq_w4a16(data_dict['a'],data_dict['weight_trans'],data_dict['scales_zeros'])
@@ -327,7 +328,7 @@ def single_test(M,N,K, G, test_speed, use_random, dtype, use_marlin):
         fp16_data_bytes_gb = fp16_data_bytes / (2**30)
         fp16_bandwidth = fp16_data_bytes_gb / (fp16_elapsed_time/1000/1000)
         preceis_ori = tensor_vs(out_de_fp16, out_awq, M,N,K,G, use_random, dtype, use_marlin=use_marlin, mode="no_print") and tensor_vs(out_de_fp16, out_lightop, M,N,K,G, use_random, dtype, use_marlin=use_marlin, mode="no_print")
-        lightop_elapsed_time = triton.testing.do_bench(lambda:lightop.gemm_awq_w4a16_marlin(data_dict['a'], weight_quant, data_dict['scales_zeros']),quantiles=None, return_mode="mean")*1000
+        lightop_elapsed_time = triton.testing.do_bench(lambda:gemm_ops.gemm_awq_w4a16_marlin(data_dict['a'], weight_quant, data_dict['scales_zeros']),quantiles=None, return_mode="mean")*1000
         lightop_bandwidth = awq_data_bytes_gb / (lightop_elapsed_time/1000/1000)
 
         result.update({
@@ -852,4 +853,3 @@ def multi_deal():
 if __name__ == "__main__":
     # single_deal()
     multi_deal()
-

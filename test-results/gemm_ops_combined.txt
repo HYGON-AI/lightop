@@ -1,0 +1,8 @@
+测试时间：2026-07-15
+测试环境：luoyao-qwen35b-a3b-int8-env
+测试命令：pytest -q test/test_gemm_ops_*.py
+测试结果：39 passed, 1 skipped in 16.55s
+跳过说明：BW151 当前无可用 hipBLASLt FP8 blockwise 算法；测试会在支持该算法的设备上执行数值校验。
+覆盖内容：23 个既有 LightOp GEMM/Grouped GEMM 兼容接口、6 个 LMSlim 原生接口的导出/签名及可用后端数值测试。
+
+同时将既有 W4A16、W8A16、W8A8、AWQ、Grouped GEMM 与 fused BMM 测试改为从 lightop.gemm_ops 导入分类接口。

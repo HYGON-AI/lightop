@@ -1,5 +1,5 @@
 import torch
-import lightop
+from lightop import gemm_ops
 import time
 from lightop.quant import fp8_to_16
 
@@ -30,11 +30,11 @@ def test(m,n,k,warps,nperblock,splitk):
         fc1_espl = end_time - start_time
 
         for i in range(5):
-            out=lightop.gemm_w8a16_fp8(a,b.t(),scale,warps,nperblock,splitk)
+            out=gemm_ops.gemm_w8a16_fp8(a,b.t(),scale,warps,nperblock,splitk)
         torch.cuda.synchronize()
         start_time = time.time()
         for i in range(repeat_num):
-            out=lightop.gemm_w8a16_fp8(a,b.t(),scale,warps,nperblock,splitk)
+            out=gemm_ops.gemm_w8a16_fp8(a,b.t(),scale,warps,nperblock,splitk)
         torch.cuda.synchronize()
         end_time = time.time()
         fc2_espl = end_time - start_time
@@ -43,7 +43,7 @@ def test(m,n,k,warps,nperblock,splitk):
     
     else:
         outref=torch.mm(a,bh.t())
-        out=lightop.gemm_w8a16_fp8(a,b.t(),scale,warps,nperblock,splitk)
+        out=gemm_ops.gemm_w8a16_fp8(a,b.t(),scale,warps,nperblock,splitk)
         print(out)
         print(outref)
         

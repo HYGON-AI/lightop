@@ -5,6 +5,7 @@ import lmslimquant
 from lmslim import quant_ops 
 from typing import Optional
 import lightop
+from lightop import gemm_ops
 
 import torch
 import triton
@@ -89,7 +90,7 @@ def q_gemm_w8a8_smooth(a: torch.Tensor,   #input
                         out_dtype: torch.dtype = torch.bfloat16) -> torch.Tensor:  
     
      a_quant, scale_a_quant = per_token_quant_int8(a)
-     lightop.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype)
+     gemm_ops.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype)
 
 def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_quant=True, warmup_iters=10, test_iters=100):
     """
@@ -108,10 +109,10 @@ def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_qua
         if include_quant:
             # 包含量化的测试
             a_quant, scale_a_quant = per_token_quant_int8(a)
-            _ = lightop.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype)
+            _ = gemm_ops.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype)
         else:
             # 不包含量化的测试
-            _ = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
+            _ = gemm_ops.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
     
     # 同步GPU
     torch.cuda.synchronize()
@@ -123,7 +124,7 @@ def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_qua
         elapsed_time = triton.testing.do_bench(lambda:q_gemm_w8a8_smooth(a, b, scale_b, bias, out_dtype),quantiles=None, return_mode="mean")*1000
     else:
         # 不包含量化的测试
-        elapsed_time = triton.testing.do_bench(lambda:lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype),quantiles=None, return_mode="mean")*1000
+        elapsed_time = triton.testing.do_bench(lambda:gemm_ops.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype),quantiles=None, return_mode="mean")*1000
     
     test_type = "包含量化" if include_quant else "不包含量化"
     print(f"w8a8算子速度测试结果 ({test_type}) - M{m}xN{n}xK{k}, 平均耗时: {elapsed_time:.2f} us")
@@ -170,7 +171,7 @@ def main(m, n, k, use_random=True, use_bias=False, out_dtype=torch.bfloat16, use
     
     out = _rocblas_scaled_mm(a,b.contiguous().reshape(k,-1),scale_a,scale_b,out_dtype,bias)
     print("rocblas out.shape:",out.shape)
-    status, out_w8a8 = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
+    status, out_w8a8 = gemm_ops.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype)
 
     if status is False:
         print("gemm_w8a8_smooth 执行失败，错误码:", status)
@@ -265,5 +266,4 @@ if __name__ == "__main__":
     
     df = pd.DataFrame({'m':excel_m_list,'n':excel_n_list,'k':excel_k_list,'lightop_gemm_smooth': excel_time_list,'lightop_gemm_smooth+q': excel_timeq_list})
     df.to_excel('lightop_gemm_smooth.xlsx', index=False)
-
 
