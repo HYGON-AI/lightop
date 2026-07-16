@@ -1,8 +1,15 @@
 """MoE kernel configuration APIs."""
 
-from ..config import get_moe_cuda_config, get_moe_cuda_marlin_config
+from ..config import (
+    get_moe_cuda_config,
+    get_moe_cuda_config_w4a8,
+    get_moe_cuda_marlin_config,
+    get_moe_cuda_marlin_config_w4a8,
+)
 
 __all__ = [
     "get_moe_cuda_config",
+    "get_moe_cuda_config_w4a8",
     "get_moe_cuda_marlin_config",
+    "get_moe_cuda_marlin_config_w4a8",
 ]
