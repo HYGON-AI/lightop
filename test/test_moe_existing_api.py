@@ -81,6 +81,23 @@ OTHER_MOE_MARLIN_APIS = [
 ]
 
 
+LMSLIM_REQUIRED_MOE_APIS = [
+    "get_moe_cuda_config",
+    "get_moe_cuda_config_w4a8",
+    "get_moe_cuda_marlin_config",
+    "get_moe_cuda_marlin_config_w4a8",
+    "get_moe_groupgemm_config_w4a8",
+    "get_moe_groupgemm_marlin_config_w4a8",
+    "moe_gemm_marlin_w4a8",
+    "moe_gemm_marlin_w8a8",
+    "moe_gemm_marlin_w8a8_fp8",
+    "moe_gemm_w4a8",
+    "moe_gemm_w8a8",
+    "moe_groupgemm_marlin_w4a8",
+    "moe_groupgemm_w4a8",
+]
+
+
 PERMUTATION_APIS = [
     "fuse_groupgemm_permute_quant",
     "groupgemm_permute",
@@ -165,6 +182,11 @@ def test_other_existing_moe_apis_are_direct_reexports():
 def test_category_only_config_api_is_exported():
     for name in CATEGORY_ONLY_CONFIG_APIS:
         assert getattr(lightop.moe, name) is getattr(lightop.moe.config, name)
+
+
+def test_lmslim_required_moe_apis_are_available_from_category():
+    for name in LMSLIM_REQUIRED_MOE_APIS:
+        assert getattr(lightop.moe, name) is getattr(lightop, name)
 
 
 def test_moe_public_api_inventory():
