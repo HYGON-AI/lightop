@@ -1,10 +1,11 @@
-import triton
-import triton.language as tl
-import torch
+import os
+import math
 from functools import reduce
+
 import pytest
 import torch
-import math
+import triton
+import triton.language as tl
 from lightop import ds_cat
 
 def test_concat_Acc_prefill(shape_pair, dim):
@@ -433,31 +434,36 @@ def benchmark_decode_8bit(M, N, provider, dim):
 
 
 if __name__ == '__main__':
-    benchmark_prefill.run(save_path="./triton_test",print_data=True)
-    test_concat_Acc_prefill(((1024, 8, 128), (1024, 8, 64)),  2)  
-    test_concat_Acc_prefill(((2048, 8, 128), (2048, 8, 64)),  2)  
-    test_concat_Acc_prefill(((4096, 8, 128), (4096, 8, 64)),  2)  
-    test_concat_Acc_prefill(((8192, 8, 128), (8192, 8, 64)),  2)
-    test_concat_Acc_prefill(((1024, 16, 128), (1024, 16, 64)),  2)  
-    test_concat_Acc_prefill(((2048, 16, 128), (2048, 16, 64)),  2)  
-    test_concat_Acc_prefill(((4096, 16, 128), (4096, 16, 64)),  2)  
-    test_concat_Acc_prefill(((8192, 16, 128), (8192, 16, 64)),  2)  
-    test_concat_Acc_prefill(((1024, 32, 128), (1024, 32, 64)),  2)  
-    test_concat_Acc_prefill(((2048, 32, 128), (2048, 32, 64)),  2)  
-    test_concat_Acc_prefill(((4096, 32, 128), (4096, 32, 64)),  2)  
-    test_concat_Acc_prefill(((8192, 32, 128), (8192, 32, 64)),  2)
+    # Triton benchmark.run() writes PNG/CSV to save_path but does not create the directories.
+    PREFILL_SAVE_PATH = "./triton_test"
+    DECODE_SAVE_PATH = "./cat_triton_test"
+    os.makedirs(PREFILL_SAVE_PATH, exist_ok=True)
+    os.makedirs(DECODE_SAVE_PATH, exist_ok=True)
 
-    benchmark_decode.run(save_path="./cat_triton_test",print_data=True)
+    # Prefill accuracy first so a later plot save issue cannot skip functional checks.
+    test_concat_Acc_prefill(((1024, 8, 128), (1024, 8, 64)),  2)
+    test_concat_Acc_prefill(((2048, 8, 128), (2048, 8, 64)),  2)
+    test_concat_Acc_prefill(((4096, 8, 128), (4096, 8, 64)),  2)
+    test_concat_Acc_prefill(((8192, 8, 128), (8192, 8, 64)),  2)
+    test_concat_Acc_prefill(((1024, 16, 128), (1024, 16, 64)),  2)
+    test_concat_Acc_prefill(((2048, 16, 128), (2048, 16, 64)),  2)
+    test_concat_Acc_prefill(((4096, 16, 128), (4096, 16, 64)),  2)
+    test_concat_Acc_prefill(((8192, 16, 128), (8192, 16, 64)),  2)
+    test_concat_Acc_prefill(((1024, 32, 128), (1024, 32, 64)),  2)
+    test_concat_Acc_prefill(((2048, 32, 128), (2048, 32, 64)),  2)
+    test_concat_Acc_prefill(((4096, 32, 128), (4096, 32, 64)),  2)
+    test_concat_Acc_prefill(((8192, 32, 128), (8192, 32, 64)),  2)
+    benchmark_prefill.run(save_path=PREFILL_SAVE_PATH, print_data=True)
+
     test_concat_Acc_decode(((16, 8, 512), (16, 8, 64)),  2)
     test_concat_Acc_decode(((32, 8, 512), (32, 8, 64)),  2)
     test_concat_Acc_decode(((128, 8, 512), (128, 8, 64)),  2)
-    test_concat_Acc_decode(((768, 8, 512), (768, 8, 64)),  2)    
+    test_concat_Acc_decode(((768, 8, 512), (768, 8, 64)),  2)
     test_concat_Acc_decode(((32, 16, 512), (32, 16, 64)),  2)
     test_concat_Acc_decode(((32, 32, 512), (32, 32, 64)),  2)
     test_concat_Acc_decode(((768, 32, 512), (768, 32, 64)),  2)
     test_concat_Acc_decode(((128, 32, 512), (128, 32, 64)),  2)
     test_concat_Acc_decode(((512, 32, 512), (512, 32, 64)),  2)
-
     test_concat_Acc_decode(((765, 8, 512), (765, 8, 64)),  2)
     test_concat_Acc_decode(((766, 8, 512), (766, 8, 64)),  2)
     test_concat_Acc_decode(((767, 8, 512), (767, 8, 64)),  2)
@@ -465,37 +471,36 @@ if __name__ == '__main__':
     test_concat_Acc_decode(((766, 16, 512), (766, 16, 64)),  2)
     test_concat_Acc_decode(((765, 32, 512), (765, 32, 64)),  2)
     test_concat_Acc_decode(((767, 32, 512), (767, 32, 64)),  2)
+    benchmark_decode.run(save_path=DECODE_SAVE_PATH, print_data=True)
 
-    benchmark_prefill_8bit.run(save_path="./triton_test",print_data=True)
-    test_concat_Acc_prefill_8bit(((1024, 8, 128), (1024, 8, 64)),  2)  
-    test_concat_Acc_prefill_8bit(((2048, 8, 128), (2048, 8, 64)),  2)  
-    test_concat_Acc_prefill_8bit(((4096, 8, 128), (4096, 8, 64)),  2)  
+    test_concat_Acc_prefill_8bit(((1024, 8, 128), (1024, 8, 64)),  2)
+    test_concat_Acc_prefill_8bit(((2048, 8, 128), (2048, 8, 64)),  2)
+    test_concat_Acc_prefill_8bit(((4096, 8, 128), (4096, 8, 64)),  2)
     test_concat_Acc_prefill_8bit(((8192, 8, 128), (8192, 8, 64)),  2)
-    test_concat_Acc_prefill_8bit(((1024, 16, 128), (1024, 16, 64)),  2)  
-    test_concat_Acc_prefill_8bit(((2048, 16, 128), (2048, 16, 64)),  2)  
-    test_concat_Acc_prefill_8bit(((4096, 16, 128), (4096, 16, 64)),  2)  
-    test_concat_Acc_prefill_8bit(((8192, 16, 128), (8192, 16, 64)),  2)  
-    test_concat_Acc_prefill_8bit(((1024, 32, 128), (1024, 32, 64)),  2)  
-    test_concat_Acc_prefill_8bit(((2048, 32, 128), (2048, 32, 64)),  2)  
-    test_concat_Acc_prefill_8bit(((4096, 32, 128), (4096, 32, 64)),  2)  
+    test_concat_Acc_prefill_8bit(((1024, 16, 128), (1024, 16, 64)),  2)
+    test_concat_Acc_prefill_8bit(((2048, 16, 128), (2048, 16, 64)),  2)
+    test_concat_Acc_prefill_8bit(((4096, 16, 128), (4096, 16, 64)),  2)
+    test_concat_Acc_prefill_8bit(((8192, 16, 128), (8192, 16, 64)),  2)
+    test_concat_Acc_prefill_8bit(((1024, 32, 128), (1024, 32, 64)),  2)
+    test_concat_Acc_prefill_8bit(((2048, 32, 128), (2048, 32, 64)),  2)
+    test_concat_Acc_prefill_8bit(((4096, 32, 128), (4096, 32, 64)),  2)
     test_concat_Acc_prefill_8bit(((8192, 32, 128), (8192, 32, 64)),  2)
+    benchmark_prefill_8bit.run(save_path=PREFILL_SAVE_PATH, print_data=True)
 
-    benchmark_decode_8bit.run(save_path="./cat_triton_test",print_data=True)
     test_concat_Acc_decode_8bit(((16, 8, 512), (16, 8, 64)),  2)
     test_concat_Acc_decode_8bit(((32, 8, 512), (32, 8, 64)),  2)
     test_concat_Acc_decode_8bit(((128, 8, 512), (128, 8, 64)),  2)
-    test_concat_Acc_decode_8bit(((768, 8, 512), (768, 8, 64)),  2)    
+    test_concat_Acc_decode_8bit(((768, 8, 512), (768, 8, 64)),  2)
     test_concat_Acc_decode_8bit(((32, 16, 512), (32, 16, 64)),  2)
     test_concat_Acc_decode_8bit(((32, 32, 512), (32, 32, 64)),  2)
     test_concat_Acc_decode_8bit(((768, 32, 512), (768, 32, 64)),  2)
     test_concat_Acc_decode_8bit(((128, 32, 512), (128, 32, 64)),  2)
     test_concat_Acc_decode_8bit(((512, 32, 512), (512, 32, 64)),  2)
-
     test_concat_Acc_decode_8bit(((765, 8, 512), (765, 8, 64)),  2)
     test_concat_Acc_decode_8bit(((766, 8, 512), (766, 8, 64)),  2)
     test_concat_Acc_decode_8bit(((767, 8, 512), (767, 8, 64)),  2)
     test_concat_Acc_decode_8bit(((765, 16, 512), (765, 16, 64)),  2)
     test_concat_Acc_decode_8bit(((766, 16, 512), (766, 16, 64)),  2)
     test_concat_Acc_decode_8bit(((765, 32, 512), (765, 32, 64)),  2)
-    test_concat_Acc_decode_8bit(((767, 32, 512), (767, 32, 64)),  2)     
-    
+    test_concat_Acc_decode_8bit(((767, 32, 512), (767, 32, 64)),  2)
+    benchmark_decode_8bit.run(save_path=DECODE_SAVE_PATH, print_data=True)
