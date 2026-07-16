@@ -43,6 +43,22 @@ W4A8_MARLIN_APIS = [
 ]
 
 
+GROUPGEMM_CONFIG_APIS = [
+    "get_moe_groupgemm_config_w4a8",
+    "get_moe_groupgemm_marlin_config_w4a8",
+]
+
+
+GROUPGEMM_APIS = [
+    "moe_groupgemm_w4a8",
+]
+
+
+GROUPGEMM_MARLIN_APIS = [
+    "moe_groupgemm_marlin_w4a8",
+]
+
+
 PERMUTATION_APIS = [
     "fuse_groupgemm_permute_quant",
     "groupgemm_permute",
@@ -98,6 +114,19 @@ def test_w4a8_apis_are_direct_reexports():
             assert categorized is getattr(lightop, name)
 
 
+def test_groupgemm_apis_are_direct_reexports():
+    modules = {
+        lightop.moe.config: GROUPGEMM_CONFIG_APIS,
+        lightop.moe.gemm: GROUPGEMM_APIS,
+        lightop.moe.marlin: GROUPGEMM_MARLIN_APIS,
+    }
+    for module, names in modules.items():
+        for name in names:
+            categorized = getattr(lightop.moe, name)
+            assert categorized is getattr(module, name)
+            assert categorized is getattr(lightop, name)
+
+
 def test_moe_public_api_inventory():
     expected = (
         ROUTING_APIS
@@ -108,5 +137,8 @@ def test_moe_public_api_inventory():
         + W4A8_CONFIG_APIS
         + W4A8_GEMM_APIS
         + W4A8_MARLIN_APIS
+        + GROUPGEMM_CONFIG_APIS
+        + GROUPGEMM_APIS
+        + GROUPGEMM_MARLIN_APIS
     )
     assert set(lightop.moe.__all__) == set(expected)
