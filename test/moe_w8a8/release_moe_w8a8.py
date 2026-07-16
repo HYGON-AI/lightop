@@ -10,6 +10,7 @@ import ast
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 import vllm.envs as envs
 from vllm import _custom_ops as ops
+from lightop import op
 try:
     from lightop import moe_align_block_size
 except ImportError:
@@ -695,7 +696,7 @@ def test_moe_performance_accuracy(
     
     # 执行激活函数
     intermediate_cache2 = torch.empty((m * topk, n1 // 2), device=input_data.device, dtype=input_data.dtype)
-    torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1.view(-1, n1))
+    op.silu_and_mul_opt(intermediate_cache2, intermediate_cache1.view(-1, n1))
     
     # 准备第二阶段的输入
     qinput2, qa2_scale = moe_kernel_prepare_input(
