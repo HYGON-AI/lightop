@@ -1,8 +1,8 @@
 import torch
 import triton
 import pandas as pd
-from vllm import _custom_ops as ops
-from lightop import rms_rotary_embedding_fuse
+from vllm import _custom_ops as vllm_ops
+from lightop import op, rms_rotary_embedding_fuse
 import itertools
 import os
 
@@ -52,12 +52,12 @@ def get_tensors(b_q, s_q, h_q, h_k, head_size, device, dtype, generate_residual)
 
 def baseline_kernel_adapter(q, k, positions, w_q, w_k, res_q, res_k, cache, is_neox, use_res, rot_dim):
     if use_res:
-        ops.fused_add_rms_norm_opt(q, res_q, w_q, RMS_EPS)
-        ops.fused_add_rms_norm_opt(k, res_k, w_k, RMS_EPS)
+        op.fused_add_rms_norm_opt(q, res_q, w_q, RMS_EPS)
+        op.fused_add_rms_norm_opt(k, res_k, w_k, RMS_EPS)
     else:
-        ops.rms_norm_opt(q, q, w_q, RMS_EPS)
-        ops.rms_norm_opt(k, k, w_k, RMS_EPS)
-    ops.rotary_embedding(positions, q, k, w_q.shape[-1], cache, is_neox)
+        op.rms_norm_opt(q, q, w_q, RMS_EPS)
+        op.rms_norm_opt(k, k, w_k, RMS_EPS)
+    vllm_ops.rotary_embedding(positions, q, k, w_q.shape[-1], cache, is_neox)
   
 
 def fused_kernel_adapter(q, k, positions, w_q, w_k, res_q, res_k, cache, is_neox, use_res, head_size):

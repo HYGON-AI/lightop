@@ -10,12 +10,25 @@ import ast
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 import vllm.envs as envs
 from vllm import _custom_ops as ops
-from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
-    moe_align_block_size)
+from lightop import op
+try:
+    from lightop import moe_align_block_size
+except ImportError:
+    from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
+        moe_align_block_size)
 import triton
 import triton.language as tl
 import lmslim.envs as lsenvs
-from vllm.utils import W8a8GetCacheJSON
+try:
+    from vllm.utils import W8a8GetCacheJSON
+except ImportError:
+    import sys
+    from pathlib import Path
+
+    _test_root = Path(__file__).resolve().parent.parent
+    if str(_test_root) not in sys.path:
+        sys.path.insert(0, str(_test_root))
+    from common.w8a8_cache_json import W8a8GetCacheJSON
 import torch.nn.functional as F
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)
@@ -683,7 +696,7 @@ def test_moe_performance_accuracy(
     
     # 执行激活函数
     intermediate_cache2 = torch.empty((m * topk, n1 // 2), device=input_data.device, dtype=input_data.dtype)
-    torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1.view(-1, n1))
+    op.silu_and_mul_opt(intermediate_cache2, intermediate_cache1.view(-1, n1))
     
     # 准备第二阶段的输入
     qinput2, qa2_scale = moe_kernel_prepare_input(

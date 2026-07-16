@@ -197,6 +197,82 @@ def rms_norm_dynamic_per_token_quant(
                                                     residual, update_input)
     return output, scales
 
+
+def rms_norm_dynamic_per_token_quant_sglang(
+    input: torch.Tensor,
+    weight: torch.Tensor,
+    epsilon: float,
+    quant_dtype: torch.dtype = torch.int8,
+    residual: Optional[torch.Tensor] = None,
+    update_input: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """RMSNorm + per-token INT8 quant with SGLang-compatible numerics.
+
+    This is intentionally a separate API from the historical LightOp kernel.
+    In particular, quantization observes the BF16/FP16-rounded RMSNorm output,
+    and uses ``max(absmax, 1e-10) / 127`` as the returned scale.
+    """
+    if quant_dtype != torch.int8:
+        raise ValueError(f"Only torch.int8 is supported, got {quant_dtype}")
+
+    output = torch.empty_like(input, dtype=torch.int8)
+    scales = torch.empty(
+        (input.numel() // input.shape[-1], 1),
+        device=input.device,
+        dtype=torch.float32,
+    )
+    op.rms_norm_dynamic_per_token_quant_sglang(
+        output,
+        input,
+        weight,
+        scales,
+        epsilon,
+        residual,
+        update_input,
+    )
+    return output, scales
+
+
+def mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang(
+    packed_input: torch.Tensor,
+    q_weight: torch.Tensor,
+    kv_weight: torch.Tensor,
+    q_epsilon: float,
+    kv_epsilon: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Normalize packed MLA q/kv segments and dynamically quantize q.
+
+    packed_input has layout [q_lora, kv_lora, q_rope]. The q and kv
+    segments are normalized in place with their own weights and epsilons. The
+    q_rope tail is untouched. Quantization observes the activation-dtype
+    rounded q RMSNorm output and returns SGLang-compatible INT8 values/scales.
+    """
+    if packed_input.dim() != 2:
+        raise ValueError("packed_input must be a 2D tensor")
+
+    num_tokens = packed_input.shape[0]
+    q_output = torch.empty(
+        (num_tokens, q_weight.numel()),
+        device=packed_input.device,
+        dtype=torch.int8,
+    )
+    q_scales = torch.empty(
+        (num_tokens, 1),
+        device=packed_input.device,
+        dtype=torch.float32,
+    )
+    op.mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang(
+        q_output,
+        packed_input,
+        q_weight,
+        kv_weight,
+        q_scales,
+        q_epsilon,
+        kv_epsilon,
+    )
+    return q_output, q_scales
+
+
 def rms_norm_per_token_fp8_quant(
     input: torch.Tensor,
     weight: torch.Tensor,
