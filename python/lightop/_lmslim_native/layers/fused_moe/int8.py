@@ -6,22 +6,22 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # from vllm import _custom_ops as ops
 # from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
 #     moe_align_block_size)
-from lmslim.vllm_compat.moe_align_block_size import moe_align_block_size
+from ...vllm_compat.moe_align_block_size import moe_align_block_size
 import torch
 import triton
 import triton.language as tl
-import lmslim.envs as lsenvs
+from ... import envs as lsenvs
 # from vllm.utils import W8a8GetCacheJSON
-from lmslim.vllm_compat.W8a8GetCacheJSON import W8a8GetCacheJSON
+from ...vllm_compat.w8a8_get_cache_json import W8a8GetCacheJSON
 
 use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 device_name = lsenvs.LMSLIM_GPU_NAME
 if use_lightop:
     from lightop import moe_gemm_w8a8,get_moe_cuda_config,fuse_silu_mul_quant
     from lightop import op as op
-from lmslim.layers.gemm.int8_utils import (
+from ..gemm.int8_utils import (
    per_token_group_quant_int8, per_token_quant_int8)
-from lmslim.layers.gemm.fp8_utils import per_token_quant_fp8,per_token_group_quant_fp8
+from ..gemm.fp8_utils import per_token_quant_fp8,per_token_group_quant_fp8
 # @torch.compile
 # def moe_sum_reduce_torch_compile(x, out, routed_scaling_factor):
 #     torch.sum(x, dim=1, out=out)
