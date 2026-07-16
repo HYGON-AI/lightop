@@ -59,6 +59,28 @@ GROUPGEMM_MARLIN_APIS = [
 ]
 
 
+OTHER_MOE_CONFIG_APIS = [
+    "get_moe_cuda_config_w16a16",
+    "get_moe_cuda_marlin_config_w16a16",
+]
+
+
+CATEGORY_ONLY_CONFIG_APIS = [
+    "get_moe_cuda_marlin_config_w4a16",
+]
+
+
+OTHER_MOE_GEMM_APIS = [
+    "moe_gemm_w16a16",
+]
+
+
+OTHER_MOE_MARLIN_APIS = [
+    "moe_gemm_marlin_w16a16",
+    "moe_marlin_w4a16",
+]
+
+
 PERMUTATION_APIS = [
     "fuse_groupgemm_permute_quant",
     "groupgemm_permute",
@@ -127,6 +149,24 @@ def test_groupgemm_apis_are_direct_reexports():
             assert categorized is getattr(lightop, name)
 
 
+def test_other_existing_moe_apis_are_direct_reexports():
+    modules = {
+        lightop.moe.config: OTHER_MOE_CONFIG_APIS,
+        lightop.moe.gemm: OTHER_MOE_GEMM_APIS,
+        lightop.moe.marlin: OTHER_MOE_MARLIN_APIS,
+    }
+    for module, names in modules.items():
+        for name in names:
+            categorized = getattr(lightop.moe, name)
+            assert categorized is getattr(module, name)
+            assert categorized is getattr(lightop, name)
+
+
+def test_category_only_config_api_is_exported():
+    for name in CATEGORY_ONLY_CONFIG_APIS:
+        assert getattr(lightop.moe, name) is getattr(lightop.moe.config, name)
+
+
 def test_moe_public_api_inventory():
     expected = (
         ROUTING_APIS
@@ -140,5 +180,9 @@ def test_moe_public_api_inventory():
         + GROUPGEMM_CONFIG_APIS
         + GROUPGEMM_APIS
         + GROUPGEMM_MARLIN_APIS
+        + OTHER_MOE_CONFIG_APIS
+        + CATEGORY_ONLY_CONFIG_APIS
+        + OTHER_MOE_GEMM_APIS
+        + OTHER_MOE_MARLIN_APIS
     )
     assert set(lightop.moe.__all__) == set(expected)
