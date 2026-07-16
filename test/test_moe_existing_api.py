@@ -105,6 +105,12 @@ LMSLIM_MIGRATED_INT8_APIS = [
 ]
 
 
+LMSLIM_MIGRATED_W4A8_APIS = [
+    "fused_experts_impl_w4a8",
+    "fused_experts_impl_w4a8_marlin",
+]
+
+
 PERMUTATION_APIS = [
     "fuse_groupgemm_permute_quant",
     "groupgemm_permute",
@@ -204,6 +210,14 @@ def test_lmslim_int8_implementations_are_source_migrated():
         assert "lightop._lmslim_native.layers.fused_moe" in categorized.__module__
 
 
+def test_lmslim_w4a8_implementations_are_source_migrated():
+    native = __import__("lightop.moe.native", fromlist=["dummy"])
+    for name in LMSLIM_MIGRATED_W4A8_APIS:
+        categorized = getattr(lightop.moe, name)
+        assert categorized is getattr(native, name)
+        assert "lightop._lmslim_native.layers.fused_moe" in categorized.__module__
+
+
 def test_moe_public_api_inventory():
     expected = (
         ROUTING_APIS
@@ -222,5 +236,6 @@ def test_moe_public_api_inventory():
         + OTHER_MOE_GEMM_APIS
         + OTHER_MOE_MARLIN_APIS
         + LMSLIM_MIGRATED_INT8_APIS
+        + LMSLIM_MIGRATED_W4A8_APIS
     )
     assert set(lightop.moe.__all__) == set(expected)

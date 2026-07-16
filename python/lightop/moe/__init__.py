@@ -44,6 +44,8 @@ _LMSLIM_NATIVE_APIS = {
     "fused_experts_impl_fp8_marlin",
     "fused_experts_impl_int8",
     "fused_experts_impl_int8_marlin",
+    "fused_experts_impl_w4a8",
+    "fused_experts_impl_w4a8_marlin",
 }
 
 
@@ -59,6 +61,8 @@ __all__ = [
     "fused_experts_impl_fp8_marlin",
     "fused_experts_impl_int8",
     "fused_experts_impl_int8_marlin",
+    "fused_experts_impl_w4a8",
+    "fused_experts_impl_w4a8_marlin",
     "fuse_groupgemm_permute_quant",
     "get_moe_cuda_config",
     "get_moe_cuda_config_w16a16",
