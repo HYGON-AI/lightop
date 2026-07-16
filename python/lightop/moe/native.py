@@ -11,6 +11,10 @@ from .._lmslim_native.layers.fused_moe.w4a8 import fused_experts_impl_w4a8
 from .._lmslim_native.layers.fused_moe.w4a8_marlin import (
     fused_experts_impl_w4a8_marlin,
 )
+from .._lmslim_native.layers.groupgemm.w4a8 import (
+    groupgemm_impl_w4a8,
+    groupgemm_impl_w4a8_marlin,
+)
 
 __all__ = [
     "fused_experts_impl_fp8_marlin",
@@ -18,4 +22,6 @@ __all__ = [
     "fused_experts_impl_int8_marlin",
     "fused_experts_impl_w4a8",
     "fused_experts_impl_w4a8_marlin",
+    "groupgemm_impl_w4a8",
+    "groupgemm_impl_w4a8_marlin",
 ]
