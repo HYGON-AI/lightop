@@ -1,5 +1,7 @@
 """Mixture-of-Experts APIs."""
 
+from importlib import import_module
+
 from .config import (
     get_moe_cuda_config,
     get_moe_cuda_config_w16a16,
@@ -38,7 +40,25 @@ from .routing import (
     moe_sum,
 )
 
+_LMSLIM_NATIVE_APIS = {
+    "fused_experts_impl_fp8_marlin",
+    "fused_experts_impl_int8",
+    "fused_experts_impl_int8_marlin",
+}
+
+
+def __getattr__(name):
+    if name not in _LMSLIM_NATIVE_APIS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(f"{__name__}.native"), name)
+    globals()[name] = value
+    return value
+
+
 __all__ = [
+    "fused_experts_impl_fp8_marlin",
+    "fused_experts_impl_int8",
+    "fused_experts_impl_int8_marlin",
     "fuse_groupgemm_permute_quant",
     "get_moe_cuda_config",
     "get_moe_cuda_config_w16a16",
