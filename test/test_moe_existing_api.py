@@ -117,6 +117,19 @@ LMSLIM_MIGRATED_GROUPGEMM_APIS = [
 ]
 
 
+LMSLIM_MIGRATED_W4A16_APIS = [
+    "fused_experts_impl_int4",
+    "fused_experts_impl_w4a16",
+    "fused_experts_w4a16",
+]
+
+
+LMSLIM_OPTIONAL_INT4_CUDA_APIS = [
+    "fused_experts_cuda",
+    "fused_experts_impl_cuda",
+]
+
+
 PERMUTATION_APIS = [
     "fuse_groupgemm_permute_quant",
     "groupgemm_permute",
@@ -232,6 +245,22 @@ def test_lmslim_groupgemm_implementations_are_source_migrated():
         assert "lightop._lmslim_native.layers.groupgemm" in categorized.__module__
 
 
+def test_lmslim_w4a16_implementations_are_source_migrated():
+    native = __import__("lightop.moe.native", fromlist=["dummy"])
+    for name in LMSLIM_MIGRATED_W4A16_APIS:
+        categorized = getattr(lightop.moe, name)
+        assert categorized is getattr(native, name)
+        assert "lightop._lmslim_native.layers.fused_moe" in categorized.__module__
+
+
+def test_optional_int4_cuda_interfaces_are_lazy_callables():
+    native = __import__("lightop.moe.native", fromlist=["dummy"])
+    for name in LMSLIM_OPTIONAL_INT4_CUDA_APIS:
+        categorized = getattr(lightop.moe, name)
+        assert categorized is getattr(native, name)
+        assert callable(categorized)
+
+
 def test_moe_public_api_inventory():
     expected = (
         ROUTING_APIS
@@ -252,5 +281,7 @@ def test_moe_public_api_inventory():
         + LMSLIM_MIGRATED_INT8_APIS
         + LMSLIM_MIGRATED_W4A8_APIS
         + LMSLIM_MIGRATED_GROUPGEMM_APIS
+        + LMSLIM_MIGRATED_W4A16_APIS
+        + LMSLIM_OPTIONAL_INT4_CUDA_APIS
     )
     assert set(lightop.moe.__all__) == set(expected)

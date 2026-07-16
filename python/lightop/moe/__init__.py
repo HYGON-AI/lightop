@@ -41,11 +41,16 @@ from .routing import (
 )
 
 _LMSLIM_NATIVE_APIS = {
+    "fused_experts_cuda",
     "fused_experts_impl_fp8_marlin",
+    "fused_experts_impl_cuda",
+    "fused_experts_impl_int4",
     "fused_experts_impl_int8",
     "fused_experts_impl_int8_marlin",
+    "fused_experts_impl_w4a16",
     "fused_experts_impl_w4a8",
     "fused_experts_impl_w4a8_marlin",
+    "fused_experts_w4a16",
     "groupgemm_impl_w4a8",
     "groupgemm_impl_w4a8_marlin",
 }
@@ -60,11 +65,16 @@ def __getattr__(name):
 
 
 __all__ = [
+    "fused_experts_cuda",
     "fused_experts_impl_fp8_marlin",
+    "fused_experts_impl_cuda",
+    "fused_experts_impl_int4",
     "fused_experts_impl_int8",
     "fused_experts_impl_int8_marlin",
+    "fused_experts_impl_w4a16",
     "fused_experts_impl_w4a8",
     "fused_experts_impl_w4a8_marlin",
+    "fused_experts_w4a16",
     "groupgemm_impl_w4a8",
     "groupgemm_impl_w4a8_marlin",
     "fuse_groupgemm_permute_quant",
