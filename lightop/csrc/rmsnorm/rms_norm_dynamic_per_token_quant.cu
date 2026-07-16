@@ -627,4 +627,561 @@ void rms_norm_dynamic_per_token_quant(
       rms_norm_dynamic_per_token_quant_<scalar_t>(out,input,weight,scales,epsilon,residual,update_input);
     });
 }
+
+
+// SGLang W8A8-compatible variant.  Keep this separate from the historical
+// interface above: its quantization contract intentionally matches
+// lmslim.layers.gemm.int8_utils.per_token_quant_int8 used by SGLang W8A8.
+template <typename scalar_t, int Vec, int block_size,
+          bool has_residual, bool update_input>
+__global__ void rms_norm_dynamic_per_token_quant_sglang_kernel(
+    int8_t* out,
+    scalar_t* input,
+    scalar_t* residual,
+    const scalar_t* gamma,
+    int32_t cols,
+    float eps,
+    float* scales) {
+  using T_ACC = at::acc_type<scalar_t, true>;
+  using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
+  using StoreT = at::native::memory::aligned_vector<int8_t, Vec>;
+  constexpr int share_size = block_size / C10_WARP_SIZE;
+  constexpr float qmax = 127.0f;
+  constexpr float min_absmax = 1.0e-10f;
+
+  __shared__ T_ACC reduce_shared[share_size];
+  __shared__ T_ACC row_rstd;
+  __shared__ float row_absmax;
+
+  const int row = blockIdx.x;
+  const int tid = threadIdx.x;
+  const int vec_cols = cols / Vec;
+  const int64_t offset = static_cast<int64_t>(row) * cols + tid * Vec;
+  const bool active = tid < vec_cols;
+
+  alignas(16) scalar_t input_vec[Vec];
+  alignas(16) scalar_t residual_vec[Vec];
+  T_ACC norm_input[Vec];
+  T_ACC square_sum = 0.0f;
+  if (active) {
+    *reinterpret_cast<LoadT*>(input_vec) =
+        *reinterpret_cast<const LoadT*>(input + offset);
+    if constexpr (has_residual) {
+      *reinterpret_cast<LoadT*>(residual_vec) =
+          *reinterpret_cast<const LoadT*>(residual + offset);
+    }
+#pragma unroll
+    for (int i = 0; i < Vec; ++i) {
+      T_ACC value = static_cast<T_ACC>(input_vec[i]);
+      if constexpr (has_residual) {
+        // Native RMSNorm adds BF16/FP16 operands in FP32 and computes the
+        // variance from this unrounded sum.  Cast only when writing residual.
+        value += static_cast<T_ACC>(residual_vec[i]);
+      }
+      norm_input[i] = value;
+      square_sum += value * value;
+    }
+  }
+
+  square_sum =
+      BlockReduceSum_ROW<T_ACC, block_size>(square_sum, reduce_shared);
+  if (tid == 0) {
+    row_rstd = c10::cuda::compat::rsqrt(square_sum / cols + eps);
+  }
+  __syncthreads();
+
+  alignas(16) scalar_t normalized[Vec];
+  float local_absmax = 0.0f;
+  if (active) {
+#pragma unroll
+    for (int i = 0; i < Vec; ++i) {
+      const int col = tid * Vec + i;
+      // Match the existing path's FP32 RMSNorm math followed by its final
+      // cast to the activation dtype.  Quantization observes that rounded
+      // activation, not the unrounded FP32 product.
+      normalized[i] = static_cast<scalar_t>(
+          norm_input[i] * row_rstd * static_cast<T_ACC>(gamma[col]));
+      local_absmax =
+          fmaxf(local_absmax, fabsf(static_cast<float>(normalized[i])));
+    }
+  }
+
+  local_absmax =
+      BlockReduceMax_ROW<T_ACC, block_size>(local_absmax, reduce_shared);
+  if (tid == 0) {
+    row_absmax = fmaxf(local_absmax, min_absmax);
+    scales[row] = row_absmax / qmax;
+  }
+  __syncthreads();
+
+  if (active) {
+    alignas(8) int8_t quantized[Vec];
+    const float inv_scale = qmax / row_absmax;
+#pragma unroll
+    for (int i = 0; i < Vec; ++i) {
+      quantized[i] = float_to_int8_rn(
+          static_cast<float>(normalized[i]) * inv_scale);
+      if constexpr (has_residual) {
+        residual_vec[i] = static_cast<scalar_t>(norm_input[i]);
+      }
+    }
+    *reinterpret_cast<StoreT*>(out + offset) =
+        *reinterpret_cast<const StoreT*>(quantized);
+    if constexpr (update_input) {
+      *reinterpret_cast<LoadT*>(input + offset) =
+          *reinterpret_cast<const LoadT*>(normalized);
+    }
+    if constexpr (has_residual) {
+      *reinterpret_cast<LoadT*>(residual + offset) =
+          *reinterpret_cast<const LoadT*>(residual_vec);
+    }
+  }
+}
+
+
+template <typename scalar_t, int Vec, int block_size>
+void launch_rms_norm_dynamic_per_token_quant_sglang(
+    int8_t* out,
+    scalar_t* input,
+    scalar_t* residual,
+    const scalar_t* gamma,
+    int num_tokens,
+    int hidden_size,
+    float epsilon,
+    float* scales,
+    bool has_residual,
+    bool update_input,
+    cudaStream_t stream) {
+#define LAUNCH_SGLANG_RMS_QUANT(HAS_RESIDUAL, UPDATE_INPUT)                  \
+  rms_norm_dynamic_per_token_quant_sglang_kernel<                           \
+      scalar_t, Vec, block_size, HAS_RESIDUAL, UPDATE_INPUT>                \
+      <<<num_tokens, block_size, 0, stream>>>(                              \
+          out, input, residual, gamma, hidden_size, epsilon, scales)
+
+  if (has_residual) {
+    if (update_input) {
+      LAUNCH_SGLANG_RMS_QUANT(true, true);
+    } else {
+      LAUNCH_SGLANG_RMS_QUANT(true, false);
+    }
+  } else if (update_input) {
+    LAUNCH_SGLANG_RMS_QUANT(false, true);
+  } else {
+    LAUNCH_SGLANG_RMS_QUANT(false, false);
+  }
+#undef LAUNCH_SGLANG_RMS_QUANT
+}
+
+
+static bool tensors_overlap(const Tensor& a, const Tensor& b) {
+  if (a.device() != b.device() || a.numel() == 0 || b.numel() == 0) {
+    return false;
+  }
+  const auto a_begin = reinterpret_cast<uintptr_t>(a.data_ptr());
+  const auto b_begin = reinterpret_cast<uintptr_t>(b.data_ptr());
+  const auto a_end = a_begin + a.numel() * a.element_size();
+  const auto b_end = b_begin + b.numel() * b.element_size();
+  return a_begin < b_end && b_begin < a_end;
+}
+
+
+void rms_norm_dynamic_per_token_quant_sglang(
+    Tensor& out,
+    Tensor& input,
+    const Tensor& weight,
+    Tensor scales,
+    double epsilon,
+    std::optional<Tensor> residual,
+    bool update_input) {
+  TORCH_CHECK(input.is_cuda(), "input must be on a GPU");
+  TORCH_CHECK(input.dim() == 2, "input must be a 2D tensor");
+  TORCH_CHECK(input.is_contiguous(), "input must be contiguous");
+  TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
+  TORCH_CHECK(out.is_contiguous(), "out must be contiguous");
+  TORCH_CHECK(scales.is_contiguous(), "scales must be contiguous");
+  TORCH_CHECK(weight.device() == input.device(),
+              "weight must be on input.device");
+  TORCH_CHECK(out.device() == input.device(),
+              "out must be on input.device");
+  TORCH_CHECK(scales.device() == input.device(),
+              "scales must be on input.device");
+  TORCH_CHECK(
+      input.scalar_type() == at::ScalarType::Half ||
+          input.scalar_type() == at::ScalarType::BFloat16,
+      "input must be FP16 or BF16");
+  TORCH_CHECK(weight.scalar_type() == input.scalar_type(),
+              "weight dtype must match input dtype");
+  TORCH_CHECK(out.scalar_type() == at::ScalarType::Char,
+              "out must have dtype torch.int8");
+  TORCH_CHECK(scales.scalar_type() == at::ScalarType::Float,
+              "scales must have dtype torch.float32");
+  TORCH_CHECK(std::isfinite(epsilon) && epsilon > 0.0,
+              "epsilon must be finite and positive");
+
+  const int hidden_size = input.size(1);
+  const int num_tokens = input.size(0);
+  TORCH_CHECK(hidden_size > 0 && hidden_size <= 8192 && hidden_size % 16 == 0,
+              "hidden size must be divisible by 16 and in (0, 8192]");
+  TORCH_CHECK(weight.dim() == 1 && weight.size(0) == hidden_size,
+              "weight must have shape [hidden_size]");
+  TORCH_CHECK(out.sizes() == input.sizes(), "out shape must match input");
+  TORCH_CHECK(scales.dim() == 2 && scales.size(0) == num_tokens &&
+                  scales.size(1) == 1,
+              "scales must have shape [num_tokens, 1]");
+  TORCH_CHECK(reinterpret_cast<uintptr_t>(input.data_ptr()) % 16 == 0,
+              "input must be 16-byte aligned");
+  TORCH_CHECK(reinterpret_cast<uintptr_t>(weight.data_ptr()) % 16 == 0,
+              "weight must be 16-byte aligned");
+  TORCH_CHECK(reinterpret_cast<uintptr_t>(out.data_ptr()) % 8 == 0,
+              "out must be 8-byte aligned");
+  TORCH_CHECK(!tensors_overlap(input, weight),
+              "input and weight must not overlap");
+  TORCH_CHECK(!tensors_overlap(input, out),
+              "input and out must not overlap");
+  TORCH_CHECK(!tensors_overlap(input, scales),
+              "input and scales must not overlap");
+  TORCH_CHECK(!tensors_overlap(weight, out),
+              "weight and out must not overlap");
+  TORCH_CHECK(!tensors_overlap(weight, scales),
+              "weight and scales must not overlap");
+  TORCH_CHECK(!tensors_overlap(out, scales),
+              "out and scales must not overlap");
+
+  bool has_residual = residual.has_value();
+  if (has_residual) {
+    TORCH_CHECK(residual->sizes() == input.sizes(),
+                "residual shape must match input");
+    TORCH_CHECK(residual->scalar_type() == input.scalar_type(),
+                "residual dtype must match input dtype");
+    TORCH_CHECK(residual->is_contiguous(), "residual must be contiguous");
+    TORCH_CHECK(residual->device() == input.device(),
+                "residual must be on input.device");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(residual->data_ptr()) % 16 == 0,
+                "residual must be 16-byte aligned");
+    TORCH_CHECK(!tensors_overlap(input, *residual),
+                "input and residual must not overlap");
+    TORCH_CHECK(!tensors_overlap(weight, *residual),
+                "weight and residual must not overlap");
+    TORCH_CHECK(!tensors_overlap(out, *residual),
+                "out and residual must not overlap");
+    TORCH_CHECK(!tensors_overlap(scales, *residual),
+                "scales and residual must not overlap");
+  }
+  if (num_tokens == 0) {
+    return;
+  }
+
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      input.scalar_type(),
+      "rms_norm_dynamic_per_token_quant_sglang",
+      [&] {
+        auto* input_ptr = input.data_ptr<scalar_t>();
+        auto* residual_ptr =
+            has_residual ? residual->data_ptr<scalar_t>() : nullptr;
+        const auto* weight_ptr = weight.data_ptr<scalar_t>();
+        auto* out_ptr = out.data_ptr<int8_t>();
+        auto* scales_ptr = scales.data_ptr<float>();
+        if (hidden_size <= 512) {
+          launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 64>(
+              out_ptr, input_ptr, residual_ptr, weight_ptr, num_tokens,
+              hidden_size, static_cast<float>(epsilon), scales_ptr,
+              has_residual, update_input, stream);
+        } else if (hidden_size <= 1024) {
+          launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 128>(
+              out_ptr, input_ptr, residual_ptr, weight_ptr, num_tokens,
+              hidden_size, static_cast<float>(epsilon), scales_ptr,
+              has_residual, update_input, stream);
+        } else if (hidden_size <= 2048) {
+          launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 256>(
+              out_ptr, input_ptr, residual_ptr, weight_ptr, num_tokens,
+              hidden_size, static_cast<float>(epsilon), scales_ptr,
+              has_residual, update_input, stream);
+        } else if (hidden_size <= 4096) {
+          launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 512>(
+              out_ptr, input_ptr, residual_ptr, weight_ptr, num_tokens,
+              hidden_size, static_cast<float>(epsilon), scales_ptr,
+              has_residual, update_input, stream);
+        } else {
+          launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 1024>(
+              out_ptr, input_ptr, residual_ptr, weight_ptr, num_tokens,
+              hidden_size, static_cast<float>(epsilon), scales_ptr,
+              has_residual, update_input, stream);
+        }
+      });
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+
+// GLM/DeepSeek MLA emits [q_lora, kv_lora, q_rope] in one contiguous A
+// projection. q_lora and kv_lora need independent RMSNorms, while only
+// q_lora is dynamically quantized for the W8A8 q_b projection. Keeping the
+// two segment blocks in one launch removes both native RMSNorm chains without
+// materializing contiguous copies of the sliced views.
+template <typename scalar_t, int Vec, int block_size>
+__global__ void mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang_kernel(
+    int8_t* q_out,
+    scalar_t* packed_input,
+    const scalar_t* q_gamma,
+    const scalar_t* kv_gamma,
+    int32_t num_tokens,
+    int32_t row_stride,
+    int32_t q_cols,
+    int32_t kv_cols,
+    float q_eps,
+    float kv_eps,
+    float* q_scales) {
+  using T_ACC = at::acc_type<scalar_t, true>;
+  using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
+  using StoreT = at::native::memory::aligned_vector<int8_t, Vec>;
+  constexpr int share_size = block_size / C10_WARP_SIZE;
+  constexpr float qmax = 127.0f;
+  constexpr float min_absmax = 1.0e-10f;
+
+  __shared__ T_ACC reduce_shared[share_size];
+  __shared__ T_ACC row_rstd;
+  __shared__ float row_absmax;
+
+  // This branch is uniform for each block. The first num_tokens blocks own
+  // q_lora; the second num_tokens blocks own kv_lora.
+  const bool is_q = blockIdx.x < num_tokens;
+  const int row = is_q ? blockIdx.x : blockIdx.x - num_tokens;
+  const int cols = is_q ? q_cols : kv_cols;
+  const int segment_offset = is_q ? 0 : q_cols;
+  const scalar_t* gamma = is_q ? q_gamma : kv_gamma;
+  const float eps = is_q ? q_eps : kv_eps;
+  const int tid = threadIdx.x;
+  const int vec_cols = cols / Vec;
+  const bool active = tid < vec_cols;
+  const int64_t packed_offset =
+      static_cast<int64_t>(row) * row_stride + segment_offset + tid * Vec;
+
+  alignas(16) scalar_t input_vec[Vec];
+  T_ACC norm_input[Vec];
+  T_ACC square_sum = 0.0f;
+  if (active) {
+    *reinterpret_cast<LoadT*>(input_vec) =
+        *reinterpret_cast<const LoadT*>(packed_input + packed_offset);
+#pragma unroll
+    for (int i = 0; i < Vec; ++i) {
+      norm_input[i] = static_cast<T_ACC>(input_vec[i]);
+      square_sum += norm_input[i] * norm_input[i];
+    }
+  }
+
+  square_sum =
+      BlockReduceSum_ROW<T_ACC, block_size>(square_sum, reduce_shared);
+  if (tid == 0) {
+    row_rstd = c10::cuda::compat::rsqrt(square_sum / cols + eps);
+  }
+  __syncthreads();
+
+  alignas(16) scalar_t normalized[Vec];
+  float local_absmax = 0.0f;
+  if (active) {
+#pragma unroll
+    for (int i = 0; i < Vec; ++i) {
+      const int col = tid * Vec + i;
+      // Match SGLang's native path: FP32 RMS math, then activation-dtype
+      // rounding. Dynamic quantization observes this rounded value.
+      normalized[i] = static_cast<scalar_t>(
+          norm_input[i] * row_rstd * static_cast<T_ACC>(gamma[col]));
+      if (is_q) {
+        local_absmax =
+            fmaxf(local_absmax, fabsf(static_cast<float>(normalized[i])));
+      }
+    }
+  }
+
+  if (is_q) {
+    local_absmax =
+        BlockReduceMax_ROW<T_ACC, block_size>(local_absmax, reduce_shared);
+    if (tid == 0) {
+      row_absmax = fmaxf(local_absmax, min_absmax);
+      q_scales[row] = row_absmax / qmax;
+    }
+    __syncthreads();
+
+    if (active) {
+      alignas(8) int8_t quantized[Vec];
+      const float inv_scale = qmax / row_absmax;
+#pragma unroll
+      for (int i = 0; i < Vec; ++i) {
+        quantized[i] = float_to_int8_rn(
+            static_cast<float>(normalized[i]) * inv_scale);
+      }
+      const int64_t q_output_offset =
+          static_cast<int64_t>(row) * q_cols + tid * Vec;
+      *reinterpret_cast<StoreT*>(q_out + q_output_offset) =
+          *reinterpret_cast<const StoreT*>(quantized);
+    }
+  }
+
+  if (active) {
+    *reinterpret_cast<LoadT*>(packed_input + packed_offset) =
+        *reinterpret_cast<const LoadT*>(normalized);
+  }
+}
+
+
+template <typename scalar_t, int Vec, int block_size>
+void launch_mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang(
+    int8_t* q_out,
+    scalar_t* packed_input,
+    const scalar_t* q_gamma,
+    const scalar_t* kv_gamma,
+    int num_tokens,
+    int row_stride,
+    int q_cols,
+    int kv_cols,
+    float q_epsilon,
+    float kv_epsilon,
+    float* q_scales,
+    cudaStream_t stream) {
+  mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang_kernel<
+      scalar_t, Vec, block_size>
+      <<<num_tokens * 2, block_size, 0, stream>>>(
+          q_out, packed_input, q_gamma, kv_gamma, num_tokens, row_stride,
+          q_cols, kv_cols, q_epsilon, kv_epsilon, q_scales);
+}
+
+
+void mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang(
+    Tensor& q_out,
+    Tensor& packed_input,
+    const Tensor& q_weight,
+    const Tensor& kv_weight,
+    Tensor q_scales,
+    double q_epsilon,
+    double kv_epsilon) {
+  TORCH_CHECK(packed_input.is_cuda(), "packed_input must be on a GPU");
+  TORCH_CHECK(packed_input.dim() == 2, "packed_input must be a 2D tensor");
+  TORCH_CHECK(packed_input.is_contiguous(),
+              "packed_input must be contiguous");
+  TORCH_CHECK(q_weight.is_contiguous(), "q_weight must be contiguous");
+  TORCH_CHECK(kv_weight.is_contiguous(), "kv_weight must be contiguous");
+  TORCH_CHECK(q_out.is_contiguous(), "q_out must be contiguous");
+  TORCH_CHECK(q_scales.is_contiguous(), "q_scales must be contiguous");
+  TORCH_CHECK(q_weight.device() == packed_input.device(),
+              "q_weight must be on packed_input.device");
+  TORCH_CHECK(kv_weight.device() == packed_input.device(),
+              "kv_weight must be on packed_input.device");
+  TORCH_CHECK(q_out.device() == packed_input.device(),
+              "q_out must be on packed_input.device");
+  TORCH_CHECK(q_scales.device() == packed_input.device(),
+              "q_scales must be on packed_input.device");
+  TORCH_CHECK(
+      packed_input.scalar_type() == at::ScalarType::Half ||
+          packed_input.scalar_type() == at::ScalarType::BFloat16,
+      "packed_input must be FP16 or BF16");
+  TORCH_CHECK(q_weight.scalar_type() == packed_input.scalar_type(),
+              "q_weight dtype must match packed_input dtype");
+  TORCH_CHECK(kv_weight.scalar_type() == packed_input.scalar_type(),
+              "kv_weight dtype must match packed_input dtype");
+  TORCH_CHECK(q_out.scalar_type() == at::ScalarType::Char,
+              "q_out must have dtype torch.int8");
+  TORCH_CHECK(q_scales.scalar_type() == at::ScalarType::Float,
+              "q_scales must have dtype torch.float32");
+  TORCH_CHECK(std::isfinite(q_epsilon) && q_epsilon > 0.0,
+              "q_epsilon must be finite and positive");
+  TORCH_CHECK(std::isfinite(kv_epsilon) && kv_epsilon > 0.0,
+              "kv_epsilon must be finite and positive");
+
+  const int num_tokens = packed_input.size(0);
+  const int row_stride = packed_input.size(1);
+  TORCH_CHECK(q_weight.dim() == 1, "q_weight must be a 1D tensor");
+  TORCH_CHECK(kv_weight.dim() == 1, "kv_weight must be a 1D tensor");
+  const int q_cols = q_weight.size(0);
+  const int kv_cols = kv_weight.size(0);
+  TORCH_CHECK(q_cols > 0 && q_cols <= 8192 && q_cols % 16 == 0,
+              "q hidden size must be divisible by 16 and in (0, 8192]");
+  TORCH_CHECK(kv_cols > 0 && kv_cols <= 8192 && kv_cols % 16 == 0,
+              "kv hidden size must be divisible by 16 and in (0, 8192]");
+  TORCH_CHECK(q_cols + kv_cols <= row_stride,
+              "packed_input does not contain both q and kv segments");
+  TORCH_CHECK(row_stride % 8 == 0,
+              "packed_input row stride must preserve 16-byte alignment");
+  TORCH_CHECK(q_out.dim() == 2 && q_out.size(0) == num_tokens &&
+                  q_out.size(1) == q_cols,
+              "q_out must have shape [num_tokens, q_hidden_size]");
+  TORCH_CHECK(q_scales.dim() == 2 && q_scales.size(0) == num_tokens &&
+                  q_scales.size(1) == 1,
+              "q_scales must have shape [num_tokens, 1]");
+  TORCH_CHECK(
+      reinterpret_cast<uintptr_t>(packed_input.data_ptr()) % 16 == 0,
+      "packed_input must be 16-byte aligned");
+  TORCH_CHECK(reinterpret_cast<uintptr_t>(q_weight.data_ptr()) % 16 == 0,
+              "q_weight must be 16-byte aligned");
+  TORCH_CHECK(reinterpret_cast<uintptr_t>(kv_weight.data_ptr()) % 16 == 0,
+              "kv_weight must be 16-byte aligned");
+  TORCH_CHECK(reinterpret_cast<uintptr_t>(q_out.data_ptr()) % 8 == 0,
+              "q_out must be 8-byte aligned");
+  TORCH_CHECK(!tensors_overlap(packed_input, q_weight),
+              "packed_input and q_weight must not overlap");
+  TORCH_CHECK(!tensors_overlap(packed_input, kv_weight),
+              "packed_input and kv_weight must not overlap");
+  TORCH_CHECK(!tensors_overlap(packed_input, q_out),
+              "packed_input and q_out must not overlap");
+  TORCH_CHECK(!tensors_overlap(packed_input, q_scales),
+              "packed_input and q_scales must not overlap");
+  TORCH_CHECK(!tensors_overlap(q_weight, kv_weight),
+              "q_weight and kv_weight must not overlap");
+  TORCH_CHECK(!tensors_overlap(q_out, q_scales),
+              "q_out and q_scales must not overlap");
+  if (num_tokens == 0) {
+    return;
+  }
+
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(packed_input));
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  const int max_cols = q_cols > kv_cols ? q_cols : kv_cols;
+  AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      packed_input.scalar_type(),
+      "mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang",
+      [&] {
+        auto* packed_ptr = packed_input.data_ptr<scalar_t>();
+        const auto* q_weight_ptr = q_weight.data_ptr<scalar_t>();
+        const auto* kv_weight_ptr = kv_weight.data_ptr<scalar_t>();
+        auto* q_out_ptr = q_out.data_ptr<int8_t>();
+        auto* scales_ptr = q_scales.data_ptr<float>();
+        if (max_cols <= 512) {
+          launch_mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang<
+              scalar_t, 8, 64>(
+              q_out_ptr, packed_ptr, q_weight_ptr, kv_weight_ptr, num_tokens,
+              row_stride, q_cols, kv_cols, static_cast<float>(q_epsilon),
+              static_cast<float>(kv_epsilon), scales_ptr, stream);
+        } else if (max_cols <= 1024) {
+          launch_mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang<
+              scalar_t, 8, 128>(
+              q_out_ptr, packed_ptr, q_weight_ptr, kv_weight_ptr, num_tokens,
+              row_stride, q_cols, kv_cols, static_cast<float>(q_epsilon),
+              static_cast<float>(kv_epsilon), scales_ptr, stream);
+        } else if (max_cols <= 2048) {
+          launch_mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang<
+              scalar_t, 8, 256>(
+              q_out_ptr, packed_ptr, q_weight_ptr, kv_weight_ptr, num_tokens,
+              row_stride, q_cols, kv_cols, static_cast<float>(q_epsilon),
+              static_cast<float>(kv_epsilon), scales_ptr, stream);
+        } else if (max_cols <= 4096) {
+          launch_mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang<
+              scalar_t, 8, 512>(
+              q_out_ptr, packed_ptr, q_weight_ptr, kv_weight_ptr, num_tokens,
+              row_stride, q_cols, kv_cols, static_cast<float>(q_epsilon),
+              static_cast<float>(kv_epsilon), scales_ptr, stream);
+        } else {
+          launch_mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang<
+              scalar_t, 8, 1024>(
+              q_out_ptr, packed_ptr, q_weight_ptr, kv_weight_ptr, num_tokens,
+              row_stride, q_cols, kv_cols, static_cast<float>(q_epsilon),
+              static_cast<float>(kv_epsilon), scales_ptr, stream);
+        }
+      });
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 }}

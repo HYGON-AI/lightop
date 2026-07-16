@@ -4,12 +4,6 @@ import triton.language as tl
 from triton.testing import do_bench
 from typing import Optional, List
 
-try:
-    from vllm import _custom_ops as ops
-except ImportError:
-    print("Warning: vllm not installed. Baseline RMSNorm will fall back to PyTorch implementation (slower).")
-    ops = None
-
 try: 
     import lightop
     from lightop import op
@@ -236,14 +230,14 @@ def compare_and_bench(
     k_fused = k.clone()
     res_q_fused = residual_q.clone() if use_residual else None
     res_k_fused = residual_k.clone() if use_residual else None
-    if ops is not None:
+    if op is not None:
         if use_residual:
-            # vllm fused ops modify residual in-place
-            ops.fused_add_rms_norm_opt(q_rms, res_q_rms.view(num_tokens*n_q_heads, head_size), weight_q, 1e-6)
-            ops.fused_add_rms_norm_opt(k_rms, res_k_rms.view(num_tokens*n_kv_heads, head_size), weight_k, 1e-6)
+            # lightop fused ops modify residual in-place
+            op.fused_add_rms_norm_opt(q_rms, res_q_rms.view(num_tokens*n_q_heads, head_size), weight_q, 1e-6)
+            op.fused_add_rms_norm_opt(k_rms, res_k_rms.view(num_tokens*n_kv_heads, head_size), weight_k, 1e-6)
         else:
-            ops.rms_norm_opt(q_rms, q_rms, weight_q, 1e-6)
-            ops.rms_norm_opt(k_rms, k_rms, weight_k, 1e-6)
+            op.rms_norm_opt(q_rms, q_rms, weight_q, 1e-6)
+            op.rms_norm_opt(k_rms, k_rms, weight_k, 1e-6)
     import pdb
     # pdb.set_trace()
     q_triton = q_rms.view(num_tokens, n_q_heads * head_size)
@@ -285,13 +279,13 @@ def compare_and_bench(
         k_rms_in = k_in.view(num_tokens * n_kv_heads, head_size)
 
         # 3. RMSNorm (Using _opt ops to match correctness check)
-        if ops is not None:
+        if op is not None:
             if use_residual:
-                ops.fused_add_rms_norm_opt(q_rms_in, res_q_in.view(num_tokens*n_q_heads, head_size), weight_q, 1e-6)
-                ops.fused_add_rms_norm_opt(k_rms_in, res_k_in.view(num_tokens*n_kv_heads, head_size), weight_k, 1e-6)
+                op.fused_add_rms_norm_opt(q_rms_in, res_q_in.view(num_tokens*n_q_heads, head_size), weight_q, 1e-6)
+                op.fused_add_rms_norm_opt(k_rms_in, res_k_in.view(num_tokens*n_kv_heads, head_size), weight_k, 1e-6)
             else:
-                ops.rms_norm_opt(q_rms_in, q_rms_in, weight_q, 1e-6)
-                ops.rms_norm_opt(k_rms_in, k_rms_in, weight_k, 1e-6)
+                op.rms_norm_opt(q_rms_in, q_rms_in, weight_q, 1e-6)
+                op.rms_norm_opt(k_rms_in, k_rms_in, weight_k, 1e-6)
         
         # 4. View back
         q_triton_in = q_rms_in.view(num_tokens, n_q_heads * head_size)

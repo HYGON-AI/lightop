@@ -45,6 +45,36 @@ def fuse_silu_mul_quant(input: torch.Tensor,
     op.fuse_silu_mul_quant(input, output, scales, num_local_tokens_tensor, topk, expect_m, expert_ids)
     return output, scales
 
+def fuse_silu_mul_clamp_quant(
+    input: torch.Tensor,
+    limit: float,
+    output: Optional[torch.Tensor] = None,
+    scales: Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Fused GLM SwiGLU clamp, BF16 activation, and per-token INT8 quant."""
+    if input.dim() != 2 or input.shape[-1] % 2 != 0:
+        raise ValueError(
+            "input must be a 2D tensor with shape [tokens, 2 * hidden]"
+        )
+    if not input.is_contiguous():
+        raise ValueError("input must be contiguous")
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+
+    tokens, doubled_hidden = input.shape
+    hidden = doubled_hidden // 2
+    if output is None:
+        output = torch.empty(
+            (tokens, hidden), dtype=torch.int8, device=input.device
+        )
+    if scales is None:
+        scales = torch.empty(
+            (tokens, 1), dtype=torch.float32, device=input.device
+        )
+    op.fuse_silu_mul_clamp_quant(input, output, scales, float(limit))
+    return output, scales
+
+
 def fuse_silu_mul_quant_ep(input: torch.Tensor, 
                         tokens_per_expert: Optional[torch.Tensor] = None,
                         num_local_tokens_tensor: Optional[torch.Tensor] = None,

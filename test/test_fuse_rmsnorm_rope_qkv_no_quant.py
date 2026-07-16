@@ -4,9 +4,13 @@ Kernel 条件：head_size=128, (num_heads+num_kv_heads)<=128, rot_dim in (128, 6
 """
 import itertools
 import torch
-from lightop import (
-    rms_rotary_embedding_fuse_with_kv_store_no_quant,
-)
+try:
+    from lightop import rms_rotary_embedding_fuse_with_kv_store_no_quant
+except ImportError:
+    # Older / installed lightop only exports the unified entry.
+    from lightop import (
+        rms_rotary_embedding_fuse_with_kv_store as rms_rotary_embedding_fuse_with_kv_store_no_quant,
+    )
 from lightop import op as lightop_op
 
 torch.manual_seed(0)
