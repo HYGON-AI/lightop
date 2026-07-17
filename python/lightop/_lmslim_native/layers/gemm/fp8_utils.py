@@ -16,7 +16,7 @@ from ... import envs as lsenvs
 
 use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 if use_lightop:
-    from lightop import op as op
+    from .... import op
 # logger = init_logger(__name__)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

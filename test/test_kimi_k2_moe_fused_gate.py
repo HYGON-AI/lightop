@@ -3,12 +3,7 @@ import time
 import pandas as pd
 from typing import Optional
 
-# 尝试导入你的库
-try:
-    from lightop import op
-except ImportError:
-    print("错误: 无法导入 lightop。请确保库已正确安装或在 PYTHONPATH 中。")
-    exit(1)
+from lightop.moe import kimi_k2_moe_fused_gate
 
 # ==========================================
 # 1. 用户提供的 Python Reference 实现
@@ -86,7 +81,7 @@ def run_test_case(batch_size, topk=8, num_experts=384):
     )
 
     # 2. 运行 Custom Op (CUDA)
-    cuda_weights, cuda_ids = op.kimi_k2_moe_fused_gate(
+    cuda_weights, cuda_ids = kimi_k2_moe_fused_gate(
         input_tensor, 
         bias, 
         topk, 
@@ -157,7 +152,7 @@ def run_test_case(batch_size, topk=8, num_experts=384):
 
     # 预热
     for _ in range(warmup_steps):
-        _ = op.kimi_k2_moe_fused_gate(
+        _ = kimi_k2_moe_fused_gate(
             input_tensor, bias, topk, renormalize, routed_scaling_factor, apply_scale
         )
     torch.cuda.synchronize()
@@ -168,7 +163,7 @@ def run_test_case(batch_size, topk=8, num_experts=384):
 
     start_event.record()
     for _ in range(test_steps):
-        _ = op.kimi_k2_moe_fused_gate(
+        _ = kimi_k2_moe_fused_gate(
             input_tensor, bias, topk, renormalize, routed_scaling_factor, apply_scale
         )
     end_event.record()

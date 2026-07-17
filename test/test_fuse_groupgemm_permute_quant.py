@@ -10,7 +10,7 @@ import time
 from vllm import _custom_ops as vllm_ops
 
 
-from lightop import fuse_groupgemm_permute_quant
+from lightop.moe import fuse_groupgemm_permute_quant
 
 _cuda_available = True
 # seed = 1234

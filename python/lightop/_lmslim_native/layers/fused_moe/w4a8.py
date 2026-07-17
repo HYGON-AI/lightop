@@ -19,7 +19,7 @@ device_name = lsenvs.LMSLIM_GPU_NAME
 num_cus = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 if use_lightop:
     from lightop import moe_gemm_w4a8,get_moe_cuda_config,get_moe_cuda_config_w4a8, fuse_silu_mul_quant
-    from lightop import op as op
+    from .... import op
 from ..gemm.int8_utils import per_token_quant_int8
 import torch.nn.functional as F
 

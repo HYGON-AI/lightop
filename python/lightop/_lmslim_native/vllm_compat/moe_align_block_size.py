@@ -90,7 +90,7 @@ def moe_align_block_size(
     num_tokens_post_pad = torch.empty((1), dtype=torch.int32, device=topk_ids.device)
 
     if use_lightop:
-        from lightop import op
+        from ... import op
         op.moe_align_block_size(
             topk_ids,
             num_experts,

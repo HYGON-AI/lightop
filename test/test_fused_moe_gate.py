@@ -1,7 +1,7 @@
 import torch
 import triton
 from vllm import _custom_ops as vllm_ops
-from lightop import op as ops
+from lightop.moe import moe_fused_gate
 import pdb
 
 
@@ -11,7 +11,7 @@ def python_reference_moe_gate(scores, bias, num_expert_group, topk_group, topk, 
     逻辑特点：
     1. Selection Score = Sigmoid(Input) + Bias
     2. Weight Value    = Sigmoid(Input)
-    3. Output          = Normalize(Weight Value of TopK Experts)
+    3. Output          = Normalize(Weight Value of TopK Experts) * routed_scaling_factor
     4. 支持共享专家(Shared Experts)逻辑
     """
     # 转 float32 防止精度溢出
@@ -58,7 +58,7 @@ def python_reference_moe_gate(scores, bias, num_expert_group, topk_group, topk, 
         # 6. 取值并归一化 (基于 Probs)
         final_probs = torch.gather(probs, 1, final_indices)
         sum_probs = final_probs.sum(dim=1, keepdim=True) + 1e-20
-        final_weights = final_probs / sum_probs
+        final_weights = (final_probs / sum_probs) * routed_scaling_factor
     else:
         final_indices = torch.empty((batch_size, 0), dtype=torch.long, device=scores.device)
         final_weights = torch.empty((batch_size, 0), dtype=torch.float32, device=scores.device)
@@ -70,8 +70,12 @@ def python_reference_moe_gate(scores, bias, num_expert_group, topk_group, topk, 
         share_indices = torch.arange(num_experts, num_experts + n_share_experts_fusion, device=scores.device, dtype=torch.long)
         share_indices = share_indices.unsqueeze(0).expand(batch_size, -1)
         
-        # 共享专家权重 = (output_sum / routed_scaling_factor) / output_sum = 1.0 / routed_scaling_factor
-        share_weights = torch.full((batch_size, n_share_experts_fusion), 1.0 / routed_scaling_factor, device=scores.device, dtype=torch.float32)
+        # CUDA 中共享专家的中间权重先除以 factor，写回时再乘以 factor，最终为 1.0。
+        share_weights = torch.ones(
+            (batch_size, n_share_experts_fusion),
+            device=scores.device,
+            dtype=torch.float32,
+        )
         
         # 拼接到结果中
         final_indices = torch.cat([final_indices, share_indices], dim=-1)
@@ -90,7 +94,7 @@ def biased_grouped_topk_org_init(scores, bias, num_expert_group, topk_group, top
     return vllm_ops.moe_fused_gate(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
 
 def biased_grouped_topk_org_opt(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor):
-    return ops.moe_fused_gate(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
+    return moe_fused_gate(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
 
 # -------------------------------
 # 正确性验证 (仅 bf16)

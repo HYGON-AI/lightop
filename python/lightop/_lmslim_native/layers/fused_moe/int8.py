@@ -18,7 +18,7 @@ use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 device_name = lsenvs.LMSLIM_GPU_NAME
 if use_lightop:
     from lightop import moe_gemm_w8a8,get_moe_cuda_config,fuse_silu_mul_quant
-    from lightop import op as op
+    from .... import op
 from ..gemm.int8_utils import (
    per_token_group_quant_int8, per_token_quant_int8)
 from ..gemm.fp8_utils import per_token_quant_fp8,per_token_group_quant_fp8

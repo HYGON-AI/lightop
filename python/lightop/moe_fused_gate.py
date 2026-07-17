@@ -8,6 +8,24 @@ def moe_fused_gate(x, bias, num_expert_group, topk_group, topk, n_share_experts_
     return op.moe_fused_gate(x, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
 
 
+def kimi_k2_moe_fused_gate(
+    x,
+    bias,
+    topk,
+    renormalize=True,
+    routed_scaling_factor=1.0,
+    apply_routed_scaling_factor_on_output=False,
+):
+    return op.kimi_k2_moe_fused_gate(
+        x,
+        bias,
+        topk,
+        renormalize,
+        routed_scaling_factor,
+        apply_routed_scaling_factor_on_output,
+    )
+
+
 def moe_fused_gate_sqrtsoftplus(
     x,
     bias,
