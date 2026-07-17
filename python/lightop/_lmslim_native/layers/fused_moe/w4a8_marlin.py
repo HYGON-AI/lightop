@@ -20,7 +20,7 @@ from ..gemm.int8_utils import per_token_quant_int8
 # from ...vllm_compat.fused_moe_cache import get_moe_cache
 if use_lightop:
     from lightop import get_moe_cuda_marlin_config_w4a8, moe_gemm_marlin_w4a8, fuse_silu_mul_quant
-    from lightop import op as op
+    from .... import op
 
 # @torch.compile
 # def moe_sum_reduce_torch_compile(x, out, routed_scaling_factor):

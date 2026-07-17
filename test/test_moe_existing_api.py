@@ -138,6 +138,7 @@ PERMUTATION_APIS = [
 
 
 ROUTING_APIS = [
+    "kimi_k2_moe_fused_gate",
     "moe_align_block_size",
     "moe_fused_gate",
     "moe_fused_gate_sqrtsoftplus",
@@ -145,11 +146,27 @@ ROUTING_APIS = [
 ]
 
 
-def test_routing_apis_are_direct_reexports():
+LEGACY_TOP_LEVEL_ROUTING_APIS = [
+    "moe_fused_gate",
+    "moe_fused_gate_sqrtsoftplus",
+    "moe_sum",
+]
+
+
+def test_routing_apis_are_categorized_exports():
     for name in ROUTING_APIS:
         categorized = getattr(lightop.moe, name)
         assert categorized is getattr(lightop.moe.routing, name)
+
+    for name in LEGACY_TOP_LEVEL_ROUTING_APIS:
+        categorized = getattr(lightop.moe, name)
         assert categorized is getattr(lightop, name)
+
+
+def test_moe_align_uses_migrated_lmslim_implementation():
+    assert lightop.moe.moe_align_block_size.__module__ == (
+        "lightop._lmslim_native.vllm_compat.moe_align_block_size"
+    )
 
 
 def test_permutation_apis_are_direct_reexports():

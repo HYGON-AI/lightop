@@ -11,14 +11,18 @@ def moe_sum(
     output: torch.Tensor,
     bias: Optional[torch.Tensor] = None,
     expert_mask: Optional[torch.Tensor] = None,
-    factor: float = 1.0
+    num_local_tokens: Optional[torch.Tensor] = None,
+    factor: float = 1.0,
+    expect_m: int = -1,
 ) -> None:
     op.moe_sum(
         input,
         output,
         bias,
         expert_mask,
-        factor
+        num_local_tokens,
+        factor,
+        expect_m,
     )
 
 def moe_align_block_size(
@@ -110,4 +114,3 @@ def moe_align_block_size(
                                  expert_ids, num_tokens_post_pad,expert_map,expert_mask,local_num_tokens,is_EP);
     
     return sorted_ids, expert_ids, num_tokens_post_pad
-    

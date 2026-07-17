@@ -34,6 +34,7 @@ from .permutation import (
     groupgemm_unpermute,
 )
 from .routing import (
+    kimi_k2_moe_fused_gate,
     moe_align_block_size,
     moe_fused_gate,
     moe_fused_gate_sqrtsoftplus,
@@ -77,6 +78,7 @@ __all__ = [
     "fused_experts_w4a16",
     "groupgemm_impl_w4a8",
     "groupgemm_impl_w4a8_marlin",
+    "kimi_k2_moe_fused_gate",
     "fuse_groupgemm_permute_quant",
     "get_moe_cuda_config",
     "get_moe_cuda_config_w16a16",

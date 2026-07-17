@@ -21,7 +21,7 @@ arch_cu = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_pr
 
 if use_lightop:
     from lightop import moe_gemm_w4a8,get_moe_cuda_config,get_moe_cuda_config_w4a8, fuse_silu_mul_quant
-    from lightop import op as op
+    from .... import op
 
 # @torch.compile
 # def moe_sum_reduce_torch_compile(x, out, routed_scaling_factor):
