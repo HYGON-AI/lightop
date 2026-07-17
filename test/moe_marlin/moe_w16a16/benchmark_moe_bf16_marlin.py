@@ -21,7 +21,7 @@ from fuse_moegemm_marlin import fused_moe_impl, fused_moe_first_stage_tune, fuse
                             grouped_topk, blockM_all_configs
 from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
 # from test_ori_fuse_moe import fused_moe_impl
-from lmslim.layers.gemm.int8_utils import (
+from lightop.moe import (
     per_token_group_quant_int8, per_token_quant_int8)
 import math
 import torch.nn.functional as F
