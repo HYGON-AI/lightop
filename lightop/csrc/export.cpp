@@ -506,6 +506,15 @@ void cp_gather_and_upconvert_fp8_kv_cache(
     torch::Tensor const& seq_lens,          // [BATCH]
     torch::Tensor const& workspace_starts,  // [BATCH]
     int64_t batch_size); 
+void prefill_gather_and_upconvert_fp8_kv_cache(
+    torch::Tensor const& src_cache,
+    torch::Tensor const& page_table_flat,
+    torch::Tensor const& kv_dst);
+void decode_gather_and_up_convert(
+    torch::Tensor const& src_cache,
+    torch::Tensor const& token_ids,
+    torch::Tensor const& dst,
+    torch::Tensor const& valid_lengths);
 void fast_topk_transform_interface(
     const at::Tensor& score,
     const at::Tensor& lengths,
@@ -961,6 +970,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("fast_topk_transform_interface", &at::native::fast_topk_transform_interface, "fast_topk_transform_interface");
  m.def("fast_topk_transform_ragged_interface", &at::native::fast_topk_transform_ragged_interface, "fast_topk_transform_ragged_interface");   
  m.def("cp_gather_and_upconvert_fp8_kv_cache", &at::native::cp_gather_and_upconvert_fp8_kv_cache, "cp_gather_and_upconvert_fp8_kv_cache");   
+ m.def("prefill_gather_and_upconvert_fp8_kv_cache", &at::native::prefill_gather_and_upconvert_fp8_kv_cache, "prefill_gather_and_upconvert_fp8_kv_cache");
+ m.def("decode_gather_and_up_convert", &at::native::decode_gather_and_up_convert, "decode_gather_and_up_convert");
  m.def("fuse_act_quant_and_store_index_k_cache", &at::native::fuse_act_quant_and_store_index_k_cache, "fuse_act_quant_and_store_index_k_cache");
  m.def("fuse_qk_quant_and_store_index_k_cache", &at::native::fuse_qk_quant_and_store_index_k_cache, "fuse_qk_quant_and_store_index_k_cache");
  m.def("fuse_layernorm_rotary_embedding", &at::native::fuse_layernorm_rotary_embedding, "fuse_layernorm_rotary_embedding");
