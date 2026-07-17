@@ -12,7 +12,7 @@ import triton.language as tl
 from vllm.utils import W8a8GetCacheJSON
 
 
-from lmslim.layers.gemm.int8_utils import (
+from lightop.moe import (
    per_token_group_quant_int8, per_token_quant_int8)
 
 def to_int8(tensor: torch.Tensor):

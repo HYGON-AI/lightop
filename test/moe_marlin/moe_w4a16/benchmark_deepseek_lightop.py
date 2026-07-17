@@ -121,7 +121,7 @@ def run_moe_marlin(inputs, weight, topk_ids, bit):
     def run():
         # output = torch.empty((num_tokens * top_k, n), device=inputs.device, dtype=inputs.dtype)
         # output.zero_()
-        return lightop.moe_marlin_w4a16(
+        return lightop.moe.moe_marlin_w4a16(
                                             inputs, 
                                             None, 
                                             qweight, 

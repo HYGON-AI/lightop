@@ -20,9 +20,9 @@ from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
 from vllm import _custom_ops as ops
 # from test_int8_kernel import torch_w8a8_per_column_moe
 # import _custom_ops as ops
-from lightop import moe_gemm_w8a8
+from lightop.moe import moe_gemm_w8a8
 from marlin_quant import w16a16_marlin_weight
-from lmslim.layers.gemm.int8_utils import (
+from lightop.moe import (
     per_token_group_quant_int8, per_token_quant_int8)
 
 from fused_moe_valid_w16a16_marlin import fused_moe_valid_w16a16_marlin, blockM_all_configs

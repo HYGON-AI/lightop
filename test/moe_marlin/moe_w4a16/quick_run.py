@@ -120,7 +120,7 @@ def run_moe_marlin(inputs, weight, topk_weights, topk_ids, bit):
     workspace = torch.zeros((sms * 3, ), dtype=torch.int, device=device)
     # pdb.set_trace()
     def run():
-        return lightop.moe_marlin_w4a16(
+        return lightop.moe.moe_marlin_w4a16(
                                             inputs.to(torch.bfloat16), 
                                             # inputs,
                                             None, 

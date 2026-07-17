@@ -1,6 +1,6 @@
 import torch
 import time
-from lmslim import quant_ops 
+from lightop._lmslim_native.quantize import quant_ops
 from typing import Optional, Type, Any, Callable, Dict, List, Tuple
 import pandas as pd
 import os
@@ -19,7 +19,7 @@ import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm import _custom_ops as ops
 # import _custom_ops as ops
-from lightop import moe_gemm_w8a8, get_moe_cuda_config, moe_gemm_marlin_w16a16
+from lightop.moe import moe_gemm_w8a8, get_moe_cuda_config, moe_gemm_marlin_w16a16
 from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
@@ -32,7 +32,7 @@ logger = init_logger(__name__)
 device_name = current_platform.get_device_name().replace(" ", "_")
 num_cus= torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 
-from lmslim.layers.gemm.int8_utils import (
+from lightop.moe import (
    per_token_group_quant_int8, per_token_quant_int8)
 def moe_kernel_prepare_input(
     A: torch.Tensor,
