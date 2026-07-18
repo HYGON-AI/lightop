@@ -23,6 +23,7 @@ EXISTING_ATTENTION_APIS = [
     "rms_rotary_embedding_fuse_with_kv_store",
     "rms_rotary_embedding_fuse_with_kv_store_fake",
     "RotaryEmbedding",
+    "split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant",
 ]
 
 

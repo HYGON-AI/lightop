@@ -7,7 +7,7 @@ Kernel 条件：head_size=128, (num_heads+num_kv_heads)<=128, rot_dim in (128, 6
 """
 import itertools
 import torch
-from lightop import split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant
+from lightop.attention import split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant
 from lightop import op as lightop_op
 
 torch.manual_seed(0)
