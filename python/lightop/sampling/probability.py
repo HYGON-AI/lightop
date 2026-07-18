@@ -1,7 +1,7 @@
 import torch
 import functools
 from typing import Optional, Tuple, Union
-from . import op
+from .. import op
 
 @functools.cache
 def get_default_generators(device: torch.device):
