@@ -2,7 +2,7 @@ import time
 
 import torch
 
-from lightop import mimo_v2_split_rope_vscale_kv_store
+from lightop.attention import mimo_v2_split_rope_vscale_kv_store
 
 
 DEVICE = "cuda"
