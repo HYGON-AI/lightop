@@ -7,6 +7,7 @@ import lightop.attention
 
 
 EXISTING_ATTENTION_APIS = [
+    "FusedScaleMaskSoftmax",
     "apply_rotary_pos_emb_index_fused",
     "fuse_rms_mrope_cuda",
     "fuse_rmsnorm_rope_quant_qkv",
