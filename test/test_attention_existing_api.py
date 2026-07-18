@@ -10,6 +10,7 @@ EXISTING_ATTENTION_APIS = [
     "apply_rotary_pos_emb_index_fused",
     "fuse_rms_mrope_cuda",
     "fuse_rmsnorm_rope_quant_qkv",
+    "fused_rms_norm_rope_contiguous",
 ]
 
 
