@@ -2,7 +2,8 @@
 import torch
 import time
 import copy
-from lightop import FuseSoftmax, FuseLogSoftmax
+from lightop import FuseSoftmax
+from lightop.attention import FuseLogSoftmax
 from torch.autograd import Variable
 import numpy as np
 import torch.nn as nn
