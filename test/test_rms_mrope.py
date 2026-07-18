@@ -3,6 +3,9 @@ import triton
 import triton.language as tl
 from triton.testing import do_bench
 from typing import Optional, List
+from lightop.attention import (
+    fuse_rms_mrope_cuda as categorized_fuse_rms_mrope_cuda,
+)
 
 try:
     from vllm import _custom_ops as ops
@@ -236,7 +239,7 @@ def compare_and_bench(
     k_fused = k.clone()
     res_q_fused = residual_q.clone() if use_residual else None
     res_k_fused = residual_k.clone() if use_residual else None
-    if ops is not None:
+    if ops is not None and hasattr(ops, "rms_norm_opt"):
         if use_residual:
             # vllm fused ops modify residual in-place
             ops.fused_add_rms_norm_opt(q_rms, res_q_rms.view(num_tokens*n_q_heads, head_size), weight_q, 1e-6)
@@ -244,13 +247,21 @@ def compare_and_bench(
         else:
             ops.rms_norm_opt(q_rms, q_rms, weight_q, 1e-6)
             ops.rms_norm_opt(k_rms, k_rms, weight_k, 1e-6)
+    else:
+        if use_residual:
+            q_rms.add_(res_q_rms.view_as(q_rms))
+            k_rms.add_(res_k_rms.view_as(k_rms))
+            res_q_rms.copy_(q_rms.view_as(res_q_rms))
+            res_k_rms.copy_(k_rms.view_as(res_k_rms))
+        q_rms.copy_(q_rms * torch.rsqrt(q_rms.float().square().mean(-1, keepdim=True) + 1e-6).to(dtype) * weight_q)
+        k_rms.copy_(k_rms * torch.rsqrt(k_rms.float().square().mean(-1, keepdim=True) + 1e-6).to(dtype) * weight_k)
     import pdb
     # pdb.set_trace()
     q_triton = q_rms.view(num_tokens, n_q_heads * head_size)
     k_triton = k_rms.view(num_tokens, n_kv_heads * head_size)
     triton_mrope(q_triton, k_triton, cos, sin, mrope_section, head_size, rotary_dim, interleaved)
     
-    fuse_rms_mrope_cuda(q_fused, k_fused, cos, sin, list(mrope_section), head_size, rotary_dim,
+    categorized_fuse_rms_mrope_cuda(q_fused, k_fused, cos, sin, list(mrope_section), head_size, rotary_dim,
                     interleaved, weight_q, weight_k, res_q_fused, res_k_fused)
     torch.cuda.synchronize()
 
@@ -285,13 +296,19 @@ def compare_and_bench(
         k_rms_in = k_in.view(num_tokens * n_kv_heads, head_size)
 
         # 3. RMSNorm (Using _opt ops to match correctness check)
-        if ops is not None:
+        if ops is not None and hasattr(ops, "rms_norm_opt"):
             if use_residual:
                 ops.fused_add_rms_norm_opt(q_rms_in, res_q_in.view(num_tokens*n_q_heads, head_size), weight_q, 1e-6)
                 ops.fused_add_rms_norm_opt(k_rms_in, res_k_in.view(num_tokens*n_kv_heads, head_size), weight_k, 1e-6)
             else:
                 ops.rms_norm_opt(q_rms_in, q_rms_in, weight_q, 1e-6)
                 ops.rms_norm_opt(k_rms_in, k_rms_in, weight_k, 1e-6)
+        else:
+            if use_residual:
+                q_rms_in.add_(res_q_in.view_as(q_rms_in))
+                k_rms_in.add_(res_k_in.view_as(k_rms_in))
+            q_rms_in.copy_(q_rms_in * torch.rsqrt(q_rms_in.float().square().mean(-1, keepdim=True) + 1e-6).to(dtype) * weight_q)
+            k_rms_in.copy_(k_rms_in * torch.rsqrt(k_rms_in.float().square().mean(-1, keepdim=True) + 1e-6).to(dtype) * weight_k)
         
         # 4. View back
         q_triton_in = q_rms_in.view(num_tokens, n_q_heads * head_size)
@@ -308,7 +325,7 @@ def compare_and_bench(
         res_k_fused_in = residual_k.clone() if use_residual else None
 
         # 2. Fused Kernel
-        fuse_rms_mrope_cuda(q_fused_in, k_fused_in, cos, sin, list(mrope_section), head_size, rotary_dim,
+        categorized_fuse_rms_mrope_cuda(q_fused_in, k_fused_in, cos, sin, list(mrope_section), head_size, rotary_dim,
                         interleaved, weight_q, weight_k, res_q_fused_in, res_k_fused_in, 1e-6)
 
     # Warmup manually once
