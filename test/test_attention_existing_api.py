@@ -16,6 +16,7 @@ EXISTING_ATTENTION_APIS = [
     "fuse_rmsnorm_rope_quant_qkv",
     "fused_rms_norm_rope_contiguous",
     "gammarms_rotary_embedding_fuse_with_kv_store",
+    "gammarms_rotary_embedding_fuse_with_kv_store_fake",
 ]
 
 
