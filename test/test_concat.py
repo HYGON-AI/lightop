@@ -5,7 +5,7 @@ from functools import reduce
 import pytest
 import torch
 import math
-from lightop import ds_cat
+from lightop.tensor import ds_cat
 
 def test_concat_Acc_prefill(shape_pair, dim):
 
