@@ -20,6 +20,7 @@ EXISTING_ATTENTION_APIS = [
     "mimo_v2_split_rope_vscale_kv_store",
     "mqa_logits",
     "rms_rotary_embedding_fuse",
+    "rms_rotary_embedding_fuse_with_kv_store",
 ]
 
 
