@@ -19,6 +19,7 @@ EXISTING_ATTENTION_APIS = [
     "gammarms_rotary_embedding_fuse_with_kv_store_fake",
     "mimo_v2_split_rope_vscale_kv_store",
     "mqa_logits",
+    "rms_rotary_embedding_fuse",
 ]
 
 

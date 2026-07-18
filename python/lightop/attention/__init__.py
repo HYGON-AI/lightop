@@ -7,6 +7,7 @@ from .qkv import (
     gammarms_rotary_embedding_fuse_with_kv_store,
     gammarms_rotary_embedding_fuse_with_kv_store_fake,
     mimo_v2_split_rope_vscale_kv_store,
+    rms_rotary_embedding_fuse,
 )
 from .softmax import (
     FusedScaleMaskSoftmax,
@@ -29,4 +30,5 @@ __all__ = [
     "gammarms_rotary_embedding_fuse_with_kv_store_fake",
     "mimo_v2_split_rope_vscale_kv_store",
     "mqa_logits",
+    "rms_rotary_embedding_fuse",
 ]

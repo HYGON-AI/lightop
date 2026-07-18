@@ -2,7 +2,7 @@ import torch
 import triton
 import pandas as pd
 from vllm import _custom_ops as ops
-from lightop import rms_rotary_embedding_fuse
+from lightop.attention import rms_rotary_embedding_fuse
 import itertools
 import os
 
@@ -51,12 +51,21 @@ def get_tensors(b_q, s_q, h_q, h_k, head_size, device, dtype, generate_residual)
     return q, k, positions, weight_q, weight_k, res_q, res_k
 
 def baseline_kernel_adapter(q, k, positions, w_q, w_k, res_q, res_k, cache, is_neox, use_res, rot_dim):
-    if use_res:
-        ops.fused_add_rms_norm_opt(q, res_q, w_q, RMS_EPS)
-        ops.fused_add_rms_norm_opt(k, res_k, w_k, RMS_EPS)
+    if hasattr(ops, "rms_norm_opt"):
+        if use_res:
+            ops.fused_add_rms_norm_opt(q, res_q, w_q, RMS_EPS)
+            ops.fused_add_rms_norm_opt(k, res_k, w_k, RMS_EPS)
+        else:
+            ops.rms_norm_opt(q, q, w_q, RMS_EPS)
+            ops.rms_norm_opt(k, k, w_k, RMS_EPS)
     else:
-        ops.rms_norm_opt(q, q, w_q, RMS_EPS)
-        ops.rms_norm_opt(k, k, w_k, RMS_EPS)
+        if use_res:
+            q.add_(res_q)
+            k.add_(res_k)
+            res_q.copy_(q)
+            res_k.copy_(k)
+        q.copy_(q * torch.rsqrt(q.float().square().mean(-1, keepdim=True) + RMS_EPS).to(q.dtype) * w_q)
+        k.copy_(k * torch.rsqrt(k.float().square().mean(-1, keepdim=True) + RMS_EPS).to(k.dtype) * w_k)
     ops.rotary_embedding(positions, q, k, w_q.shape[-1], cache, is_neox)
   
 
