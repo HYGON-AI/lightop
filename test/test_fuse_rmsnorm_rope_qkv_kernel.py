@@ -4,8 +4,10 @@ import sys
 import time
 import torch
 import itertools
-from lightop import rms_rotary_embedding_fuse_with_kv_store_fake
-from lightop.attention import rms_rotary_embedding_fuse_with_kv_store
+from lightop.attention import (
+    rms_rotary_embedding_fuse_with_kv_store,
+    rms_rotary_embedding_fuse_with_kv_store_fake,
+)
 
 torch.manual_seed(0)
 DEVICE = "cuda"
