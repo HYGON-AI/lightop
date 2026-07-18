@@ -1,6 +1,10 @@
 """Attention APIs."""
 
-from .qkv import fuse_rmsnorm_rope_quant_qkv, fused_rms_norm_rope_contiguous
+from .qkv import (
+    fuse_rmsnorm_rope_quant_qkv,
+    fused_rms_norm_rope_contiguous,
+    gammarms_rotary_embedding_fuse_with_kv_store,
+)
 from .softmax import (
     FusedScaleMaskSoftmax,
     FusedScaleMaskSoftmaxDropout,
@@ -18,4 +22,5 @@ __all__ = [
     "fuse_rms_mrope_cuda",
     "fuse_rmsnorm_rope_quant_qkv",
     "fused_rms_norm_rope_contiguous",
+    "gammarms_rotary_embedding_fuse_with_kv_store",
 ]
