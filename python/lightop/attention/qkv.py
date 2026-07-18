@@ -7,6 +7,7 @@ from ..fuse_rmsnorm_rope import (
     rms_rotary_embedding_fuse,
     rms_rotary_embedding_fuse_with_kv_store,
     rms_rotary_embedding_fuse_with_kv_store_fake,
+    split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant,
 )
 from ..rmsnorm import (
     fuse_rmsnorm_rope_quant_qkv,
@@ -20,6 +21,7 @@ __all__ = [
     "rms_rotary_embedding_fuse",
     "rms_rotary_embedding_fuse_with_kv_store",
     "rms_rotary_embedding_fuse_with_kv_store_fake",
+    "split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant",
     "fuse_rmsnorm_rope_quant_qkv",
     "fused_rms_norm_rope_contiguous",
 ]
