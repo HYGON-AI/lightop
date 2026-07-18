@@ -1,8 +1,10 @@
 """Attention APIs."""
 
+from .qkv import fuse_rmsnorm_rope_quant_qkv
 from .rope import apply_rotary_pos_emb_index_fused, fuse_rms_mrope_cuda
 
 __all__ = [
     "apply_rotary_pos_emb_index_fused",
     "fuse_rms_mrope_cuda",
+    "fuse_rmsnorm_rope_quant_qkv",
 ]
