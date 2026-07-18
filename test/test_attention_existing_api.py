@@ -17,6 +17,7 @@ EXISTING_ATTENTION_APIS = [
     "fused_rms_norm_rope_contiguous",
     "gammarms_rotary_embedding_fuse_with_kv_store",
     "gammarms_rotary_embedding_fuse_with_kv_store_fake",
+    "mimo_v2_split_rope_vscale_kv_store",
 ]
 
 
