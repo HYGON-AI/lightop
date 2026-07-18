@@ -1,5 +1,6 @@
 """Attention APIs."""
 
+from .mqa import mqa_logits
 from .qkv import (
     fuse_rmsnorm_rope_quant_qkv,
     fused_rms_norm_rope_contiguous,
@@ -27,4 +28,5 @@ __all__ = [
     "gammarms_rotary_embedding_fuse_with_kv_store",
     "gammarms_rotary_embedding_fuse_with_kv_store_fake",
     "mimo_v2_split_rope_vscale_kv_store",
+    "mqa_logits",
 ]
