@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import time
-from lightop import GridSample
+from lightop.vision import GridSample
 
 
 # PyTorch grid_sample 的 mode/padding_mode 字符串与 lightop 枚举的映射

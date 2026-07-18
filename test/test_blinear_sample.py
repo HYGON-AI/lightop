@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""对比 torch nn.Upsample(bilinear) 与 lightop.bilinear_upsample 的精度、速度和带宽。
+"""对比 torch nn.Upsample(bilinear) 与 bilinear_upsample 的精度、速度和带宽。
 结果同时打印到终端并保存为 Excel 文件。
 """
 import os
@@ -9,7 +9,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
-import lightop
+from lightop.vision import bilinear_upsample, bilinear_upsample_backward
 
 # ============================================================
 #  测试用例：(dtype, N, C, H_in, W_in, scale_factor)
@@ -44,12 +44,12 @@ class _LightopBilinearUpsample(torch.autograd.Function):
     def forward(ctx, x, output_size):
         ctx.save_for_backward(torch.tensor(list(x.shape), dtype=torch.long))
         ctx.output_size = list(output_size)
-        return lightop.bilinear_upsample(x, output_size)
+        return bilinear_upsample(x, output_size)
 
     @staticmethod
     def backward(ctx, grad_output):
         (input_size_t,) = ctx.saved_tensors
-        grad_input = lightop.bilinear_upsample_backward(
+        grad_input = bilinear_upsample_backward(
             grad_output.contiguous(),
             input_size_t.tolist(),
         )
@@ -129,7 +129,7 @@ def check_accuracy(x, H_out, W_out):
     torch_up = nn.Upsample(size=(H_out, W_out), mode="bilinear", align_corners=False)
     fwd_ok = torch.allclose(
         torch_up(x).float(),
-        lightop.bilinear_upsample(x, [H_out, W_out]).float(),
+        bilinear_upsample(x, [H_out, W_out]).float(),
         rtol=RTOL, atol=ATOL
     )
     grad_out = torch.ones(x.shape[0], x.shape[1], H_out, W_out,
@@ -251,7 +251,7 @@ if __name__ == "__main__":
         # 计时
         ms_t_fwd = bench_fn(lambda: torch_up(x), WARMUP, REPEAT)
         ms_t_bwd = bench_backward(torch_up, x, grad_out, WARMUP, REPEAT)
-        ms_l_fwd = bench_fn(lambda: lightop.bilinear_upsample(x, [H_out, W_out]), WARMUP, REPEAT)
+        ms_l_fwd = bench_fn(lambda: bilinear_upsample(x, [H_out, W_out]), WARMUP, REPEAT)
         ms_l_bwd = bench_backward(lambda xi: lightop_upsample(xi, [H_out, W_out]),
                                   x, grad_out, WARMUP, REPEAT)
 
