@@ -1,7 +1,7 @@
 import torch
 from vllm import _custom_ops as vllm_ops
 from triton.testing import do_bench 
-from lightop import fused_rms_norm_rope_contiguous
+from lightop.attention import fused_rms_norm_rope_contiguous
 from lightop.norm import fused_rms_norm_contiguous
 import pdb
 from lightop import op
