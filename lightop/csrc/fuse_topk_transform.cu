@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 
 #ifndef USE_ROCM
@@ -674,6 +675,132 @@ void topk_transform_kernel_lightop(
       out_raw_indices);
 }
 
+constexpr int kKPoolSize = 16;
+constexpr int kKPoolGroupTopK = 128;
+constexpr int kKPoolTokenTopK = kKPoolSize * kKPoolGroupTopK;
+constexpr int kKPoolOutputCols = kKPoolTokenTopK + kKPoolSize - 1;
+
+__device__ __forceinline__ int32_t transform_kpool_token_index(
+    int raw_idx,
+    const int32_t* page_table,
+    int64_t page_table_stride,
+    int64_t page_table_rows,
+    int64_t page_table_cols,
+    int page_row,
+    int32_t ragged_offset) {
+  if (raw_idx < 0) return -1;
+  if (page_table) {
+    if (page_row < 0 || page_row >= page_table_rows ||
+        raw_idx >= page_table_cols) return -1;
+    return page_table[
+        static_cast<int64_t>(page_row) * page_table_stride + raw_idx];
+  }
+  return static_cast<int32_t>(raw_idx + ragged_offset);
+}
+
+__global__ __launch_bounds__(kThreadsPerBlock)
+void fused_kpool_topk_transform_kernel(
+    FastTopKParams params,
+    int32_t* __restrict__ output,
+    const int32_t* __restrict__ seq_lens,
+    const int32_t* __restrict__ page_table,
+    const int32_t* __restrict__ topk_indices_offset,
+    const int32_t* __restrict__ page_table_row_index,
+    int64_t output_stride,
+    int64_t page_table_stride,
+    int64_t page_table_rows,
+    int64_t page_table_cols,
+    int score_cols,
+    int rows) {
+  const int bid = blockIdx.x;
+  int32_t* out_row = output + static_cast<int64_t>(bid) * output_stride;
+
+  if (bid >= rows) {
+    vectorized_write<int32_t, int>(
+        threadIdx.x,
+        kThreadsPerBlock,
+        out_row,
+        kKPoolOutputCols,
+        [] __device__(int) { return -1; });
+    return;
+  }
+
+  int row_start = params.row_starts ? params.row_starts[bid] : 0;
+  row_start = row_start < 0 ? 0 : row_start;
+  const int max_length = score_cols > row_start ? score_cols - row_start : 0;
+  int length = params.lengths[bid];
+  length = length < 0 ? 0 : (length < max_length ? length : max_length);
+  const int row_end = row_start + length;
+  const float* logits =
+      params.input + static_cast<int64_t>(bid) * params.input_stride;
+
+  __shared__ int32_t selected_groups[kKPoolGroupTopK];
+  if (length <= kKPoolGroupTopK) {
+    vectorized_write<int32_t, int>(
+        threadIdx.x,
+        kThreadsPerBlock,
+        selected_groups,
+        kKPoolGroupTopK,
+        [length] __device__(int i) { return i < length ? i : -1; });
+  } else {
+    auto identity = [] __device__(int raw_idx) { return raw_idx; };
+    topKPerRowJob<
+        kThreadsPerBlock,
+        2048,
+        false,
+        false,
+        false,
+        512>(
+        nullptr,
+        logits,
+        row_start,
+        row_end,
+        selected_groups,
+        nullptr,
+        1,
+        kKPoolGroupTopK,
+        identity);
+  }
+  __syncthreads();
+
+  const int history_groups =
+      length < kKPoolGroupTopK ? length : kKPoolGroupTopK;
+  const int history_len = history_groups * kKPoolSize;
+  const int tail_count = seq_lens[bid] & (kKPoolSize - 1);
+  const int tail_start = length * kKPoolSize;
+  const int page_row = page_table_row_index ? page_table_row_index[bid] : bid;
+  const int32_t ragged_offset =
+      topk_indices_offset ? topk_indices_offset[bid] : 0;
+  const int32_t* selected_groups_ptr = selected_groups;
+
+  vectorized_write<int32_t, int>(
+      threadIdx.x,
+      kThreadsPerBlock,
+      out_row,
+      kKPoolOutputCols,
+      [=] __device__(int col) {
+        int raw_idx = -1;
+        if (col < history_len) {
+          const int group_rank = col / kKPoolSize;
+          const int group_offset = col & (kKPoolSize - 1);
+          raw_idx =
+              selected_groups_ptr[group_rank] * kKPoolSize + group_offset;
+        } else {
+          const int tail_offset = col - history_len;
+          if (tail_offset >= 0 && tail_offset < tail_count) {
+            raw_idx = tail_start + tail_offset;
+          }
+        }
+        return transform_kpool_token_index(
+            raw_idx,
+            page_table,
+            page_table_stride,
+            page_table_rows,
+            page_table_cols,
+            page_row,
+            ragged_offset);
+      });
+}
 } // namespace
 
 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
@@ -879,6 +1006,147 @@ void topk_transform_1024(
       scores, seq_lens, page_tables, out_page_indices, page_size, out_raw_indices_opt, "topk_transform_1024");
 }
 
+void fast_kpool_topk_transform_interface(
+    const at::Tensor& score,
+    const at::Tensor& lengths,
+    at::Tensor& output,
+    int64_t pool_size,
+    const at::Tensor& seq_lens,
+    std::optional<at::Tensor> page_table_opt,
+    std::optional<at::Tensor> topk_indices_offset_opt,
+    std::optional<at::Tensor> row_starts_opt,
+    std::optional<at::Tensor> page_table_row_index_opt) {
+  CHECK_CUDA(score);
+  CHECK_CUDA(lengths);
+  CHECK_CUDA(output);
+  CHECK_CUDA(seq_lens);
+  if (page_table_opt.has_value()) CHECK_CUDA(page_table_opt.value());
+  if (topk_indices_offset_opt.has_value()) {
+    CHECK_CUDA(topk_indices_offset_opt.value());
+  }
+  if (row_starts_opt.has_value()) CHECK_CUDA(row_starts_opt.value());
+  if (page_table_row_index_opt.has_value()) {
+    CHECK_CUDA(page_table_row_index_opt.value());
+  }
+
+  const int64_t rows = score.size(0);
+  TORCH_CHECK(pool_size == kKPoolSize, "kpool fused topk requires pool_size=16");
+  TORCH_CHECK(score.scalar_type() == at::kFloat, "score must be float32");
+  TORCH_CHECK(
+      score.dim() == 2 && score.stride(1) == 1,
+      "score must be a 2D row-contiguous tensor");
+  TORCH_CHECK(
+      score.size(1) <=
+          std::numeric_limits<int>::max() / kKPoolSize,
+      "score is too wide for the kpool fused topk kernel");
+  TORCH_CHECK(
+      lengths.scalar_type() == at::kInt && lengths.dim() == 1 &&
+          lengths.is_contiguous() && lengths.size(0) == rows,
+      "lengths must be contiguous int32 with shape [score.size(0)]");
+  TORCH_CHECK(
+      seq_lens.scalar_type() == at::kInt && seq_lens.dim() == 1 &&
+          seq_lens.is_contiguous() && seq_lens.size(0) == rows,
+      "seq_lens must be contiguous int32 with shape [score.size(0)]");
+  TORCH_CHECK(
+      output.scalar_type() == at::kInt && output.dim() == 2 &&
+          output.is_contiguous() && output.size(0) >= rows &&
+          output.size(1) == kKPoolOutputCols,
+      "output must be contiguous int32 with shape [out_rows, 2063]");
+  TORCH_CHECK(
+      output.device() == score.device() && lengths.device() == score.device() &&
+          seq_lens.device() == score.device(),
+      "score, lengths, seq_lens, and output must be on the same device");
+  TORCH_CHECK(
+      !(page_table_opt.has_value() && topk_indices_offset_opt.has_value()),
+      "page_table and topk_indices_offset are mutually exclusive");
+
+  const int32_t* page_table = nullptr;
+  int64_t page_table_stride = 0;
+  int64_t page_table_rows = 0;
+  int64_t page_table_cols = 0;
+  if (page_table_opt.has_value()) {
+    const auto& tensor = page_table_opt.value();
+    TORCH_CHECK(
+        tensor.scalar_type() == at::kInt && tensor.dim() == 2 &&
+            tensor.stride(1) == 1,
+        "page_table must be row-contiguous int32 and 2D");
+    TORCH_CHECK(tensor.device() == score.device(), "page_table device mismatch");
+    if (!page_table_row_index_opt.has_value()) {
+      TORCH_CHECK(
+          tensor.size(0) >= rows,
+          "page_table needs one row per score row without page_table_row_index");
+    }
+    page_table = tensor.data_ptr<int32_t>();
+    page_table_stride = tensor.stride(0);
+    page_table_rows = tensor.size(0);
+    page_table_cols = tensor.size(1);
+  }
+
+  const int32_t* topk_indices_offset = nullptr;
+  if (topk_indices_offset_opt.has_value()) {
+    const auto& tensor = topk_indices_offset_opt.value();
+    TORCH_CHECK(
+        tensor.scalar_type() == at::kInt && tensor.dim() == 1 &&
+            tensor.is_contiguous() && tensor.size(0) == rows,
+        "topk_indices_offset must be contiguous int32 with shape [score.size(0)]");
+    TORCH_CHECK(
+        tensor.device() == score.device(),
+        "topk_indices_offset device mismatch");
+    topk_indices_offset = tensor.data_ptr<int32_t>();
+  }
+
+  const int32_t* page_table_row_index = nullptr;
+  if (page_table_row_index_opt.has_value()) {
+    const auto& tensor = page_table_row_index_opt.value();
+    TORCH_CHECK(page_table != nullptr, "page_table_row_index requires page_table");
+    TORCH_CHECK(
+        tensor.scalar_type() == at::kInt && tensor.dim() == 1 &&
+            tensor.is_contiguous() && tensor.size(0) == rows,
+        "page_table_row_index must be contiguous int32 with shape [score.size(0)]");
+    TORCH_CHECK(
+        tensor.device() == score.device(),
+        "page_table_row_index device mismatch");
+    page_table_row_index = tensor.data_ptr<int32_t>();
+  }
+
+  if (row_starts_opt.has_value()) {
+    const auto& tensor = row_starts_opt.value();
+    TORCH_CHECK(
+        tensor.scalar_type() == at::kInt && tensor.dim() == 1 &&
+            tensor.is_contiguous() && tensor.size(0) == rows,
+        "row_starts must be contiguous int32 with shape [score.size(0)]");
+    TORCH_CHECK(tensor.device() == score.device(), "row_starts device mismatch");
+  }
+
+  const int64_t out_rows = output.size(0);
+  if (out_rows == 0) return;
+
+  const auto params = get_params(score, lengths, row_starts_opt);
+  const auto stream = at::cuda::getCurrentCUDAStream().stream();
+  const auto grid = dim3{static_cast<uint32_t>(out_rows)};
+  const auto block = dim3{kThreadsPerBlock};
+  constexpr size_t dynamic_smem = kKPoolGroupTopK * sizeof(int32_t);
+
+  fused_kpool_topk_transform_kernel<<<grid, block, dynamic_smem, stream>>>(
+      params,
+      output.data_ptr<int32_t>(),
+      seq_lens.data_ptr<int32_t>(),
+      page_table,
+      topk_indices_offset,
+      page_table_row_index,
+      output.stride(0),
+      page_table_stride,
+      page_table_rows,
+      page_table_cols,
+      static_cast<int>(score.size(1)),
+      static_cast<int>(rows));
+
+  const auto result = cudaGetLastError();
+  TORCH_CHECK(
+      result == cudaSuccess,
+      "fused kpool topk transform kernel failed:",
+      ::cudaGetErrorString(result));
+}
 void fast_topk_transform_ragged_interface(
     const at::Tensor& score,
     const at::Tensor& lengths,

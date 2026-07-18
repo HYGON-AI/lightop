@@ -121,3 +121,47 @@ def fast_topk_transform_ragged_fused(
         score, lengths, topk_indices_ragged, topk_indices_offset, row_starts
     )
     return topk_indices_ragged
+
+
+def fast_kpool_topk_transform_fused(
+    score: torch.Tensor,
+    lengths: torch.Tensor,
+    pool_size: int,
+    topk: int,
+    page_table: Optional[torch.Tensor] = None,
+    topk_indices_offset: Optional[torch.Tensor] = None,
+    row_starts: Optional[torch.Tensor] = None,
+    seq_lens: Optional[torch.Tensor] = None,
+    out_rows: Optional[int] = None,
+    page_table_row_index: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Fuse pooled TopK, token expansion, index mapping, and tail append."""
+    if pool_size != 16 or topk != 2048:
+        raise ValueError(
+            "fast_kpool_topk_transform_fused requires pool_size=16 and topk=2048"
+        )
+    if seq_lens is None:
+        raise ValueError("seq_lens is required for the kpool tail")
+    if page_table is not None and topk_indices_offset is not None:
+        raise ValueError("page_table and topk_indices_offset are mutually exclusive")
+    if topk_indices_offset is not None and topk_indices_offset.ndim == 2:
+        topk_indices_offset = topk_indices_offset.squeeze(1)
+
+    output_rows = score.shape[0] if out_rows is None else out_rows
+    output = torch.empty(
+        (output_rows, topk + pool_size - 1),
+        dtype=torch.int32,
+        device=score.device,
+    )
+    op.fast_kpool_topk_transform_interface(
+        score,
+        lengths,
+        output,
+        pool_size,
+        seq_lens,
+        page_table,
+        topk_indices_offset,
+        row_starts,
+        page_table_row_index,
+    )
+    return output

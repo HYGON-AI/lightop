@@ -528,6 +528,16 @@ void fast_topk_transform_ragged_interface(
     at::Tensor& topk_indices_ragged,
     const at::Tensor& topk_indices_offset,
     std::optional<at::Tensor> row_starts_opt);
+void fast_kpool_topk_transform_interface(
+    const at::Tensor& score,
+    const at::Tensor& lengths,
+    at::Tensor& output,
+    int64_t pool_size,
+    const at::Tensor& seq_lens,
+    std::optional<at::Tensor> page_table_opt,
+    std::optional<at::Tensor> topk_indices_offset_opt,
+    std::optional<at::Tensor> row_starts_opt,
+    std::optional<at::Tensor> page_table_row_index_opt);
 void fuse_act_quant_and_store_index_k_cache(
     torch::Tensor input,      
     torch::Tensor buf,     
@@ -969,6 +979,19 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("gemma_rms_norm_fp8_quant", &at::native::gemma_rms_norm_fp8_quant, "gemma_rms_norm_fp8_quant");
  m.def("fast_topk_transform_interface", &at::native::fast_topk_transform_interface, "fast_topk_transform_interface");
  m.def("fast_topk_transform_ragged_interface", &at::native::fast_topk_transform_ragged_interface, "fast_topk_transform_ragged_interface");   
+ m.def(
+     "fast_kpool_topk_transform_interface",
+     &at::native::fast_kpool_topk_transform_interface,
+     "Fused kpool topk, token expansion, index transform, and tail append",
+     py::arg("score"),
+     py::arg("lengths"),
+     py::arg("output"),
+     py::arg("pool_size"),
+     py::arg("seq_lens"),
+     py::arg("page_table") = py::none(),
+     py::arg("topk_indices_offset") = py::none(),
+     py::arg("row_starts") = py::none(),
+     py::arg("page_table_row_index") = py::none());
  m.def("cp_gather_and_upconvert_fp8_kv_cache", &at::native::cp_gather_and_upconvert_fp8_kv_cache, "cp_gather_and_upconvert_fp8_kv_cache");   
  m.def("prefill_gather_and_upconvert_fp8_kv_cache", &at::native::prefill_gather_and_upconvert_fp8_kv_cache, "prefill_gather_and_upconvert_fp8_kv_cache");
  m.def("decode_gather_and_up_convert", &at::native::decode_gather_and_up_convert, "decode_gather_and_up_convert");
