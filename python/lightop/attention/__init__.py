@@ -9,6 +9,7 @@ from .qkv import (
     mimo_v2_split_rope_vscale_kv_store,
     rms_rotary_embedding_fuse,
     rms_rotary_embedding_fuse_with_kv_store,
+    rms_rotary_embedding_fuse_with_kv_store_fake,
 )
 from .softmax import (
     FusedScaleMaskSoftmax,
@@ -33,4 +34,5 @@ __all__ = [
     "mqa_logits",
     "rms_rotary_embedding_fuse",
     "rms_rotary_embedding_fuse_with_kv_store",
+    "rms_rotary_embedding_fuse_with_kv_store_fake",
 ]
