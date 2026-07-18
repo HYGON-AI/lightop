@@ -1,6 +1,6 @@
 import torch
 import random
-from lightop import reshape_and_cache_cuda
+from lightop.kvcache import reshape_and_cache_cuda
 from vllm import _custom_ops as ops
 from openpyxl import Workbook
 
