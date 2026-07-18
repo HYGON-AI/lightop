@@ -2,7 +2,12 @@
 
 from ..fuse_rms_mrope_cuda import fuse_rms_mrope_cuda
 from ..fuse_rotary_positional_embedding import (
+    RotaryEmbedding,
     apply_rotary_pos_emb_index_fused,
 )
 
-__all__ = ["apply_rotary_pos_emb_index_fused", "fuse_rms_mrope_cuda"]
+__all__ = [
+    "RotaryEmbedding",
+    "apply_rotary_pos_emb_index_fused",
+    "fuse_rms_mrope_cuda",
+]
