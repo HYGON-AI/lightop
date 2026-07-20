@@ -22,6 +22,19 @@ CATEGORIES = [
     "vision",
 ]
 PRIMARY_OVERRIDES = {"per_token_quant_int8": "quant"}
+ROOT_COMPATIBILITY_APIS = {
+    "test_quant_blockwise_scaled_cast_transpose_api.py": (
+        "blockwise_scaled_cast_transpose"
+    ),
+    "test_quant_destindex_copy_quantize_int8_cuda.py": (
+        "destindex_copy_quantize_int8_cuda"
+    ),
+    "test_quant_destindex_dequantize_int8_cuda.py": (
+        "destindex_dequantize_int8_cuda"
+    ),
+    "test_quant_fp8_to_16.py": "fp8_to_16",
+    "test_quant_w4tow16.py": "w4tow16",
+}
 
 
 def _categorized_api_owners():
@@ -45,7 +58,11 @@ def test_migrated_tests_use_categorized_operator_imports():
     owners = _categorized_api_owners()
     violations = []
     for path in TEST_ROOT.rglob("*.py"):
-        if path.name.endswith("_existing_api.py") or path == Path(__file__):
+        if (
+            path.name.endswith("_existing_api.py")
+            or path.name in ROOT_COMPATIBILITY_APIS
+            or path == Path(__file__)
+        ):
             continue
         try:
             tree = ast.parse(
@@ -86,3 +103,35 @@ def test_migrated_tests_use_categorized_operator_imports():
     assert not violations, "root LightOp operator imports remain: " + ", ".join(
         violations
     )
+
+
+def _attribute_path(node):
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return tuple(reversed(parts))
+    return ()
+
+
+def test_root_compatibility_checks_compare_category_and_root_exports():
+    for filename, api_name in ROOT_COMPATIBILITY_APIS.items():
+        path = TEST_ROOT / filename
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        attribute_paths = {
+            _attribute_path(node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+        }
+        assert ("lightop", "quant", api_name) in attribute_paths
+        assert ("lightop", api_name) in attribute_paths
+
+        category_imports = sum(
+            alias.name == "lightop.quant"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        )
+        assert category_imports == 1
