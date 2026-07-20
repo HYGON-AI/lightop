@@ -6,15 +6,11 @@ import json
 import os
 import math
 from typing import Any, Callable, Dict, List, Optional, Tuple,Type,Any
-import vllm.envs as envs
-from vllm import _custom_ops as ops
-from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
-    moe_align_block_size)
 import torch
 import triton
 import triton.language as tl
-import lmslim.envs as lsenvs
-from vllm.utils import W8a8GetCacheJSON
+from lightop._lmslim_native import envs as lsenvs
+from lightop._lmslim_native.vllm_compat.w8a8_get_cache_json import W8a8GetCacheJSON
 import torch.nn.functional as F
 import ast  
 
@@ -23,10 +19,17 @@ device_name = lsenvs.LMSLIM_GPU_NAME
 
 if use_lightop:
     from lightop import moe_gemm_w8a8,get_moe_cuda_config
-    from moe_w8a8_prefill_gemm import backend
-    from grouped_gemm import moe_gemm_decode_prof
-from lmslim.layers.gemm.int8_utils import (
-   per_token_group_quant_int8, per_token_quant_int8)
+    try:
+        from moe_w8a8_prefill_gemm import backend
+        from grouped_gemm import moe_gemm_decode_prof
+    except ImportError:
+        backend = None
+        moe_gemm_decode_prof = None
+from lightop.moe import (
+    moe_align_block_size,
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 
 import argparse
 
@@ -555,7 +558,7 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
     top_k_num = topk_ids.shape[1]
     # We execute the fused_moe kernel in chunks to circumvent this issue:
     # https://github.com/vllm-project/vllm/issues/5938
-    CHUNK_SIZE = envs.VLLM_FUSED_MOE_CHUNK_SIZE
+    CHUNK_SIZE = lsenvs.LMSLIM_FUSED_MOE_CHUNK_SIZE
     M = min(num_tokens, CHUNK_SIZE)
     # We can reuse the memory between these because by the time we need
     # cache3, we're done with cache1
@@ -856,7 +859,7 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
     top_k_num = topk_ids.shape[1]
     # We execute the fused_moe kernel in chunks to circumvent this issue:
     # https://github.com/vllm-project/vllm/issues/5938
-    CHUNK_SIZE = envs.VLLM_FUSED_MOE_CHUNK_SIZE
+    CHUNK_SIZE = lsenvs.LMSLIM_FUSED_MOE_CHUNK_SIZE
     M = min(num_tokens, CHUNK_SIZE)
     # We can reuse the memory between these because by the time we need
     # cache3, we're done with cache1

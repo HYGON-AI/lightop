@@ -131,6 +131,10 @@ def prepare_package(spec: str | None, output: Path, python: str) -> Path | None:
 
 def package_environment(package_root: Path | None) -> dict[str, str]:
     env = os.environ.copy()
+    # Operator migration tests must not auto-load environment-provided vLLM
+    # plugins. Older vllm_hcu releases import the removed lmslim package and
+    # can otherwise make an isolated LightOp package fail during collection.
+    env["VLLM_PLUGINS"] = ""
     if package_root is None:
         env.pop("PYTHONPATH", None)
         return env

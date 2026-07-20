@@ -1,15 +1,21 @@
 
 import torch
 import time
-from lmslim import quant_ops
-from lmslim import quant_ops as ops
+from lightop._lmslim_native.quantize import quant_ops
+from lightop._lmslim_native.quantize import quant_ops as ops
 from typing import Optional, Type
 import os
 import pandas as pd
 import json
 import torch.nn.functional as F
-from lmslim.quantize.utils.awq_gemm_get_best_template import AWQ_W4A16_config_cuda
-import lmslimquant
+from lightop._lmslim_native.quantize.utils.awq_gemm_get_best_template import (
+    AWQ_W4A16_config_cuda,
+)
+try:
+    import lmslimquant
+except ModuleNotFoundError:
+    print("SKIP: optional lmslimquant baseline extension is not installed")
+    raise SystemExit(0)
 import re
 import pdb
 import lightop
