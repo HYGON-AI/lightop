@@ -110,8 +110,8 @@ def rms_rotary_embedding_fuse_with_kv_store(
         loc_id = kv_cache_loc // page_size
         loc_offset = kv_cache_loc % page_size
         if key.dim() == 2:
-            kv = q_rope_out.view(k_rope_out.size(0), k_buffer.shape[1], -1)
-            vc = k_rope_out.view(v_rope_out.size(0), v_buffer.shape[1], -1)
+            kv = k_rope_out.view(k_rope_out.size(0), k_buffer.shape[1], -1)
+            vc = v_rope_out.view(v_rope_out.size(0), v_buffer.shape[1], -1)
         else:
             kv = k_rope_out
             vc = v_rope_out

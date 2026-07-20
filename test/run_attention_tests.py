@@ -12,6 +12,7 @@ SCRIPT_TEST_FILES = [
     "test/test_rotary_positional_embedding.py",
     "test/test_rms_mrope.py",
     "test/test_fuse_rmsnorm_rope_quant_qkv.py",
+    "test/test_fuse_rmsnorm_rope_qkv_no_quant.py",
     "test/test_fuse_rmsnorm_rope_contiguous.py",
     "test/test_scaled_masked_softmax.py",
     "test/test_scaled_masked_softmax_dropout.py",
