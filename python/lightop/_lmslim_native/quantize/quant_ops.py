@@ -1,4 +1,16 @@
-import lmslimquant
+from importlib import import_module
+
+
+class _LazyLmslimQuant:
+    """Load the optional legacy native extension only when an API needs it."""
+
+    def __getattr__(self, name):
+        module = import_module("lmslimquant")
+        globals()["lmslimquant"] = module
+        return getattr(module, name)
+
+
+lmslimquant = _LazyLmslimQuant()
 import torch
 import torch.nn.functional as F
 from typing import Optional, List
@@ -281,7 +293,15 @@ def _rocblas_scaled_mm_tn(a: torch.Tensor,   #input
     #a.shape=[m,k]
     #b.shape=[k,n]
     scales= scale_a * scale_b.T
-    gemmoutput=lmslimquant.rocblas_gemm_int8(a,b,True)
+    try:
+        gemmoutput = lmslimquant.rocblas_gemm_int8(a, b, True)
+    except ModuleNotFoundError as exc:
+        if exc.name != "lmslimquant":
+            raise
+        try:
+            gemmoutput = torch._int_mm(a, b)
+        except RuntimeError:
+            gemmoutput = torch.matmul(a.to(torch.float32), b.to(torch.float32))
     output=(scales*gemmoutput.to(dtype=torch.float32)).to(out_dtype)
 
     if bias is not None:
@@ -301,7 +321,15 @@ def _rocblas_scaled_mm_nn(a: torch.Tensor,   #input
     #a.shape=[m,k]
     #b.shape=[k,n]
     scales= scale_a * scale_b.T
-    gemmoutput=lmslimquant.rocblas_gemm_int8(a,b,False)
+    try:
+        gemmoutput = lmslimquant.rocblas_gemm_int8(a, b, False)
+    except ModuleNotFoundError as exc:
+        if exc.name != "lmslimquant":
+            raise
+        try:
+            gemmoutput = torch._int_mm(a, b)
+        except RuntimeError:
+            gemmoutput = torch.matmul(a.to(torch.float32), b.to(torch.float32))
     output=(scales*gemmoutput.to(dtype=torch.float32)).to(out_dtype)
 
     if bias is not None:

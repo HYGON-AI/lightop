@@ -8,17 +8,16 @@ import math
 import argparse
 import ast
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
-import vllm.envs as envs
-from vllm import _custom_ops as ops
-from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
-    moe_align_block_size)
 import triton
 import triton.language as tl
 # import lmslim.envs as lsenvs
-from vllm.utils import W8a8GetCacheJSON
+from lightop._lmslim_native.vllm_compat.w8a8_get_cache_json import W8a8GetCacheJSON
 import torch.nn.functional as F
-from lmslim.layers.gemm.int8_utils import (
-    per_token_group_quant_int8, per_token_quant_int8)
+from lightop.moe import (
+    moe_align_block_size,
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 from w8a8_quant import w8a8_2_marlin_weight
 import random
 import numpy as np

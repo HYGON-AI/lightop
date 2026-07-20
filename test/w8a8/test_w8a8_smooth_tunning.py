@@ -1,8 +1,7 @@
 import torch
 from lightop import op
 import time
-import lmslimquant
-from lmslim import quant_ops 
+from lightop.gemm_ops import rocblas_scaled_mm_nn
 from typing import Optional
 import lightop
 
@@ -80,7 +79,7 @@ def _rocblas_scaled_mm(a: torch.Tensor,   #input
                             scale_b: torch.Tensor,
                             out_dtype: torch.dtype,
                             bias: Optional[torch.Tensor] = None) -> torch.Tensor:
-    return quant_ops.rocblas_scaled_mm_nn(a,b,scale_a,scale_b,out_dtype,bias)
+    return rocblas_scaled_mm_nn(a,b,scale_a,scale_b,out_dtype,bias)
 
 
 def q_gemm_w8a8_smooth(a,   #input

@@ -41,6 +41,30 @@ def test_lightop_package_has_no_lmslim_python_imports():
     assert not violations, "external lmslim imports remain: " + ", ".join(violations)
 
 
+def test_after_operator_manifest_has_no_lmslim_python_imports():
+    manifest = TEST_ROOT.parents[0] / "tools" / "operator_tests" / "after_cases.txt"
+    violations = []
+    for item in manifest.read_text(encoding="utf-8").splitlines():
+        name = item.strip()
+        if not name or name.startswith("#"):
+            continue
+        path = TEST_ROOT.parents[0] / name
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module and (
+                node.module == "lmslim" or node.module.startswith("lmslim.")
+            ):
+                violations.append(f"{name}:{node.lineno}")
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "lmslim" or alias.name.startswith("lmslim."):
+                        violations.append(f"{name}:{node.lineno}")
+
+    assert not violations, "after-manifest lmslim imports remain: " + ", ".join(
+        violations
+    )
+
+
 def test_moe_category_tests_do_not_import_top_level_op():
     violations = []
     for filename in MOE_CATEGORY_TESTS:

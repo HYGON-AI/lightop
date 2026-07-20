@@ -12,11 +12,7 @@ import triton.language as tl
 import pandas as pd
 import math
 import torch.nn.functional as F
-import vllm.envs as envs
-from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
-    moe_align_block_size)
-from vllm import _custom_ops as ops
-from lmslim.layers.gemm.int8_utils import per_token_quant_int8
+from lightop.quant import per_token_quant_int8
 from lightop import fuse_rmsnorm_rope_quant_qkv, get_batched_gemm_w8a8_config, fused_rms_norm_rope_contiguous
 from lightop.gemm_ops import fused_bmm
 
