@@ -3,7 +3,7 @@ import time
 from typing import Optional, Type
 import pandas as pd
 import os
-from lightop import grougemm_bf16_fp16
+from lightop.gemm_ops import grougemm_bf16_fp16
 import torch
 import random
 
