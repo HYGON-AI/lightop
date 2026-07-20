@@ -17,8 +17,8 @@ from w4a8_moe_groupgemm_marlin_correctness import native_w8a8_per_token_matmul, 
 import torch.nn.functional as F
 import itertools
 
-from lightop import moe_groupgemm_marlin_w4a8
-from lightop import get_moe_groupgemm_marlin_config_w4a8
+from lightop.moe import moe_groupgemm_marlin_w4a8
+from lightop.moe import get_moe_groupgemm_marlin_config_w4a8
 
 from vllm.platforms import current_platform
 device_name = current_platform.get_device_name().replace(" ", "_")

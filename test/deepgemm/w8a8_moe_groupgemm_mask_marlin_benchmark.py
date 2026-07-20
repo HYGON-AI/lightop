@@ -6,9 +6,9 @@ import math
 from typing import Any, Callable, Dict, List, Optional, Tuple,Type,Any
 from vllm import _custom_ops as ops
 import torch
-from lightop import moe_groupgemm_marlin_w4a8
-from lightop import m_grouped_w8a8_gemm_nt_masked
-from lightop import get_moe_groupgemm_marlin_config_w4a8
+from lightop.moe import moe_groupgemm_marlin_w4a8
+from lightop.gemm_ops import m_grouped_w8a8_gemm_nt_masked
+from lightop.moe import get_moe_groupgemm_marlin_config_w4a8
 import ast  
 from lmslim.layers.gemm.int8_utils import (
     per_token_group_quant_int8, per_token_quant_int8)

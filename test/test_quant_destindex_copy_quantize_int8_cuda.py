@@ -4,11 +4,12 @@ import torch
 
 import lightop
 import lightop.quant
+import lightop.quant
 
 
 def test_destindex_copy_quantize_int8_cuda_export_and_smoke() -> None:
     category_api = lightop.quant.destindex_copy_quantize_int8_cuda
-    assert category_api is lightop.destindex_copy_quantize_int8_cuda
+    assert category_api is lightop.quant.destindex_copy_quantize_int8_cuda
     assert "destindex_copy_quantize_int8_cuda" in lightop.quant.__all__
 
     torch.manual_seed(0)

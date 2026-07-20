@@ -32,7 +32,7 @@ blockM_configs_decode = {i: 16 for i in range(44)}
 M_THRESHOLD = 128
 
 if use_lightop:
-    from lightop import moe_gemm_marlin_w8a8, get_moe_cuda_marlin_config
+    from lightop.moe import moe_gemm_marlin_w8a8, get_moe_cuda_marlin_config
     try:
         from moe_w8a8_prefill_gemm import backend
         from grouped_gemm import moe_gemm_decode_prof

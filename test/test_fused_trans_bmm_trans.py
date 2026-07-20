@@ -13,7 +13,8 @@ import pandas as pd
 import math
 import torch.nn.functional as F
 from lightop.quant import per_token_quant_int8
-from lightop import fuse_rmsnorm_rope_quant_qkv, get_batched_gemm_w8a8_config, fused_rms_norm_rope_contiguous
+from lightop import get_batched_gemm_w8a8_config
+from lightop.attention import fuse_rmsnorm_rope_quant_qkv, fused_rms_norm_rope_contiguous
 from lightop.gemm_ops import fused_bmm
 
 from test_fuse_rmsnorm_rope_quant_qkv import _compute_cos_sin_cache, _create_mla_cache

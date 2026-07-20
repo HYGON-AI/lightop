@@ -4,7 +4,7 @@ import math
 from typing import Any, Callable, Dict, List, Optional, Tuple,Type,Any
 from vllm import _custom_ops as ops
 import torch
-from lightop import m_grouped_fp8_gemm_nt_masked
+from lightop.gemm_ops import m_grouped_fp8_gemm_nt_masked
 from lmslim.layers.gemm.int8_utils import per_token_quant_int8
 import argparse
 from deepgemm_groupgemm_marlin_quant import weight8bit_nt_kpack2_marlin  # pyright: ignore[reportMissingImports]

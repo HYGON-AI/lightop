@@ -4,11 +4,12 @@ import torch
 
 import lightop
 import lightop.quant
+import lightop.quant
 
 
 def test_w4tow16_export_and_unpack_reference() -> None:
     category_api = lightop.quant.w4tow16
-    assert category_api is lightop.w4tow16
+    assert category_api is lightop.quant.w4tow16
     assert "w4tow16" in lightop.quant.__all__
 
     packed = torch.tensor(
