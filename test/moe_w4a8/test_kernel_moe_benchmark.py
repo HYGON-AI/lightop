@@ -18,7 +18,7 @@ use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 device_name = lsenvs.LMSLIM_GPU_NAME
 
 if True or use_lightop:
-    from lightop import moe_gemm_w4a8,get_moe_cuda_config,get_moe_cuda_config_w4a8
+    from lightop.moe import moe_gemm_w4a8, get_moe_cuda_config, get_moe_cuda_config_w4a8
     try:
         from moe_w8a8_prefill_gemm import backend
         from grouped_gemm import moe_gemm_decode_prof

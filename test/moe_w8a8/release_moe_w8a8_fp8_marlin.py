@@ -33,7 +33,7 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 
 if use_lightop:
-    from lightop import moe_gemm_marlin_w8a8_fp8, get_moe_cuda_marlin_config
+    from lightop.moe import moe_gemm_marlin_w8a8_fp8, get_moe_cuda_marlin_config
     try:
         from moe_w8a8_prefill_gemm import backend
         from grouped_gemm import moe_gemm_decode_prof

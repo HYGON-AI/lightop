@@ -9,7 +9,7 @@ import math
 from typing import Any, Callable, Dict, List, Optional, Tuple,Type,Any
 from vllm import _custom_ops as ops
 import torch
-from lightop import m_grouped_w4a8_gemm_nt_masked
+from lightop.gemm_ops import m_grouped_w4a8_gemm_nt_masked
 import ast  
 from lmslim.layers.gemm.int8_utils import per_token_quant_int8
 from w4a8_moe_groupgemm_marlin_quant import w4a8_2_marlin_weight  # pyright: ignore[reportMissingImports]

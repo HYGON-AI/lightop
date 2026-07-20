@@ -4,7 +4,7 @@ from typing import Optional, Type
 import pandas as pd
 import os
 import json
-from lightop import m_grouped_w16a16_gemm_nt_contig_asm
+from lightop.gemm_ops import m_grouped_w16a16_gemm_nt_contig_asm
 import torch
 import random
 

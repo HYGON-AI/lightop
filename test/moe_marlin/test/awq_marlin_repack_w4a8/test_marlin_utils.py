@@ -12,6 +12,7 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 from marlin_quant import  unpack_int8_to_int4, w4a8_2_marlin_weight 
 
 import lightop
+import lightop.gemm_ops
 
 @pytest.mark.parametrize("size_batch", [256])  # 可扩展其他batch值（如128）
 @pytest.mark.parametrize("size_k, size_n", [
@@ -47,7 +48,7 @@ def test_awq_marlin_repack_w4a8(size_batch, size_k, size_n):
     
     # 4. 调用CUDA算子（直接传参数化的size_batch、size_k、size_n）
     try:
-        lightop.awq_marlin_repack_w4a8(
+        lightop.gemm_ops.awq_marlin_repack_w4a8(
             native_weight, 
             cuda_output,
             size_batch, 
@@ -89,7 +90,7 @@ if __name__ == "__main__":
     
     cuda_output = torch.zeros((size_batch, size_k // 32, size_n * 32 // 8), device="cuda:0", dtype=torch.int32)
     # ======================== cuda 算子权重处理 ===========================
-    lightop.awq_marlin_repack_w4a8(
+    lightop.gemm_ops.awq_marlin_repack_w4a8(
                                             native_weight, 
                                             cuda_output,
                                             size_batch, 

@@ -12,6 +12,7 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 from marlin_quant import get_weight_perm, marlin_weights
 
 import lightop
+import lightop.gemm_ops
 
 MARLIN_K_CHUNKS = [128]
 MARLIN_N_CHUNKS = [64, 256]
@@ -90,7 +91,7 @@ def test_awq_marlin_repack_uint4(size_k, size_n, group_size):
                                   weight_perm)
 
     # Run Marlin repack GPU kernel
-    marlin_q_w_2 = lightop.awq_marlin_repack(
+    marlin_q_w_2 = lightop.gemm_ops.awq_marlin_repack(
         q_w_awq,
         size_k,
         size_n,

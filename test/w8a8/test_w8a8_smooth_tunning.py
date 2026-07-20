@@ -4,6 +4,7 @@ import time
 from lightop.gemm_ops import rocblas_scaled_mm_nn
 from typing import Optional
 import lightop
+import lightop.gemm_ops
 
 import torch
 import triton
@@ -91,7 +92,7 @@ def q_gemm_w8a8_smooth(a,   #input
                         tunning_slide_block) -> torch.Tensor:  
     
      a_quant, scale_a_quant = per_token_quant_int8(a)
-     lightop.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype,isTunning_slide_block,tunning_slide_block)
+     lightop.gemm_ops.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype,isTunning_slide_block,tunning_slide_block)
 
 
 def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_quant=True, warmup_iters=10, test_iters=100, isTunning_slide_block=False, tunning_slide_block=0):
@@ -111,10 +112,10 @@ def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_qua
         if include_quant:
             # 包含量化的测试
             a_quant, scale_a_quant = per_token_quant_int8(a)
-            _ = lightop.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype, isTunning_slide_block=isTunning_slide_block, tunning_slide_block=tunning_slide_block)
+            _ = lightop.gemm_ops.gemm_w8a8_smooth(a_quant,b,scale_a_quant,scale_b,bias,out_dtype, isTunning_slide_block=isTunning_slide_block, tunning_slide_block=tunning_slide_block)
         else:
             # 不包含量化的测试
-            _ = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype, isTunning_slide_block=isTunning_slide_block, tunning_slide_block=tunning_slide_block)
+            _ = lightop.gemm_ops.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype, isTunning_slide_block=isTunning_slide_block, tunning_slide_block=tunning_slide_block)
     
     # 同步GPU
     torch.cuda.synchronize()
@@ -126,7 +127,7 @@ def benchmark_w8a8_operator(a, b, scale_a, scale_b, bias, out_dtype, include_qua
         elapsed_time = triton.testing.do_bench(lambda:q_gemm_w8a8_smooth(a, b, scale_b, bias, out_dtype, isTunning_slide_block, tunning_slide_block),quantiles=None, return_mode="mean")*1000
     else:
         # 不包含量化的测试
-        elapsed_time = triton.testing.do_bench(lambda:lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype, isTunning_slide_block, tunning_slide_block),quantiles=None, return_mode="mean")*1000
+        elapsed_time = triton.testing.do_bench(lambda:lightop.gemm_ops.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype, isTunning_slide_block, tunning_slide_block),quantiles=None, return_mode="mean")*1000
     
     test_type = "包含量化" if include_quant else "不包含量化"
     print(f"w8a8算子速度测试结果 ({test_type}) - M{m}xN{n}xK{k}, 平均耗时: {elapsed_time:.2f} us")
@@ -173,7 +174,7 @@ def main(m, n, k, use_random=True, use_bias=False, out_dtype=torch.bfloat16, use
     
     out = _rocblas_scaled_mm(a,b.contiguous().reshape(k,-1),scale_a,scale_b,out_dtype,bias)
     print("rocblas out.shape:",out.shape)
-    status, out_w8a8 = lightop.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype, isTunning_slide_block=isTunning_slide_block, tunning_slide_block=tunning_slide_block)
+    status, out_w8a8 = lightop.gemm_ops.gemm_w8a8_smooth(a,b,scale_a,scale_b,bias,out_dtype, isTunning_slide_block=isTunning_slide_block, tunning_slide_block=tunning_slide_block)
 
     if status is False:
         print("gemm_w8a8_smooth 执行失败，错误码:", status)

@@ -4,11 +4,12 @@ import torch
 
 import lightop
 import lightop.quant
+import lightop.quant
 
 
 def test_fp8_to_16_export_and_block_scale_reference() -> None:
     category_api = lightop.quant.fp8_to_16
-    assert category_api is lightop.fp8_to_16
+    assert category_api is lightop.quant.fp8_to_16
     assert "fp8_to_16" in lightop.quant.__all__
 
     torch.manual_seed(2)
