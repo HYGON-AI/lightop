@@ -13,6 +13,7 @@ from .config import (
     get_moe_groupgemm_config_w4a8,
     get_moe_groupgemm_marlin_config_w4a8,
 )
+from .expert_parallel import ep_build_m_indices, ep_gather, ep_scatter
 from .gemm import (
     moe_gemm_w16a16,
     moe_gemm_w4a8,
@@ -40,6 +41,8 @@ from .routing import (
     moe_fused_gate,
     moe_fused_gate_sqrtsoftplus,
     moe_sum,
+    topk_ids_postprocess,
+    topk_softmax,
 )
 
 _LMSLIM_NATIVE_APIS = {
@@ -69,6 +72,9 @@ def __getattr__(name):
 
 
 __all__ = [
+    "ep_build_m_indices",
+    "ep_gather",
+    "ep_scatter",
     "fused_experts_cuda",
     "fused_experts_impl_fp8_marlin",
     "fused_experts_impl_cuda",
@@ -112,4 +118,6 @@ __all__ = [
     "moe_sum",
     "per_token_group_quant_int8",
     "per_token_quant_int8",
+    "topk_ids_postprocess",
+    "topk_softmax",
 ]

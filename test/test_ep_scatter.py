@@ -9,7 +9,7 @@ import csv
 import os
 import pdb
 try:
-    from lightop import op
+    from lightop.moe import ep_scatter
     HAS_LIGHTOP = True
 except ImportError:
     print("警告: 未找到 lightop 库。将仅运行 Triton 实现，无法运行 CUDA 内核。")
@@ -330,7 +330,7 @@ def run_single_benchmark(M, H, K, E, ALIGNMENT, device):
 
     if HAS_LIGHTOP:
         kernel_counters = expert_counts.clone()
-        op.ep_scatter(
+        ep_scatter(
             x_int8, x_scales,
             topk_ids, expert_map,
             kernel_counters, 
@@ -430,7 +430,7 @@ def run_single_benchmark(M, H, K, E, ALIGNMENT, device):
     if HAS_LIGHTOP:
         counters_list = [expert_counts.clone() for _ in range(REP)]
         for _ in range(WARMUP):
-             op.ep_scatter(
+             ep_scatter(
                 x_int8, x_scales, topk_ids, expert_map, expert_counts.clone(),
                 bench_aq_out, bench_scale_out, bench_m_indices, bench_inv_perm,
                 E, ALIGNMENT
@@ -439,7 +439,7 @@ def run_single_benchmark(M, H, K, E, ALIGNMENT, device):
 
         start_event.record()
         for i in range(REP):
-            op.ep_scatter(
+            ep_scatter(
                 x_int8, x_scales, topk_ids, expert_map, counters_list[i],
                 bench_aq_out, bench_scale_out, bench_m_indices, bench_inv_perm,
                 E, ALIGNMENT
