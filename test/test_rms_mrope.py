@@ -2,7 +2,6 @@ import torch
 import triton
 import triton.language as tl
 from triton.testing import do_bench
-from typing import Optional, List
 from lightop.attention import (
     fuse_rms_mrope_cuda as categorized_fuse_rms_mrope_cuda,
 )
@@ -13,12 +12,6 @@ except ImportError:
     print("Warning: vllm not installed. Baseline RMSNorm will fall back to PyTorch implementation (slower).")
     ops = None
 
-try: 
-    import lightop
-    from lightop import op
-except ImportError:
-    print("Error: lightop not installed. Cannot run fused kernel.")
-    op = None
 torch.manual_seed(0)
 # ---------------- Triton mRoPE kernel ----------------
 @triton.jit
@@ -159,27 +152,6 @@ def triton_mrope(q, k, cos, sin, mrope_section, head_size, rotary_dim, interleav
     return q, k
 
 
-def fuse_rms_mrope_cuda(
-    q: torch.Tensor,
-    k: torch.Tensor,
-    cos: torch.Tensor,
-    sin: torch.Tensor,
-    mrope_section: List[int],
-    head_size: int,
-    rotary_dim: int,
-    mrope_interleaved: bool,
-    weight_q: torch.Tensor,
-    weight_k: torch.Tensor,
-    residual_q: Optional[torch.Tensor],
-    residual_k: Optional[torch.Tensor],
-    epsilon: float = 1e-5,
-) -> tuple[torch.Tensor, torch.Tensor]:
-
-    op.fuse_rms_mrope_cuda(
-        q, k, cos, sin, mrope_section, head_size, rotary_dim, mrope_interleaved,
-        weight_q, weight_k, residual_q, residual_k, epsilon
-    )
-    return q, k
 
 
 def compare_and_bench(
