@@ -7,6 +7,10 @@ import torch
 from .. import op as lightop_native
 from ..gemmopt import fp8_to_16
 
+quantize_nope_fp8_rope_bf16_pack = (
+    lightop_native.quantize_nope_fp8_rope_bf16_pack
+)
+
 
 def per_token_group_quant_fp8(
     x: torch.Tensor,
@@ -56,4 +60,9 @@ def per_token_quant_fp8(x):
     return x_q, scales
 
 
-__all__ = ["fp8_to_16", "per_token_group_quant_fp8", "per_token_quant_fp8"]
+__all__ = [
+    "fp8_to_16",
+    "per_token_group_quant_fp8",
+    "per_token_quant_fp8",
+    "quantize_nope_fp8_rope_bf16_pack",
+]
