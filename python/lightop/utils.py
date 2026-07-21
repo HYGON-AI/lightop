@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2024-2025, Advanced Micro Devices, Inc. All rights reserved.
 import functools
-import os
-import re
+import os 
 import subprocess
+from pathlib import Path
 
 
 def adb_shell(cmd):
@@ -51,7 +51,7 @@ def resource_path(*parts):
     return os.path.join(repo_root, "third_party", *parts)
 
 
-LIGHTOP_ASM_DIR = resource_path("hsa", gfx)
+LIGHTOP_ASM_DIR = os.fspath(resource_path("hsa", gfx)).rstrip("/\\") + os.sep
 os.environ["LIGHTOP_GPU_TARGET"] = gfx
 os.environ["LIGHTOP_ASM_DIR"] = LIGHTOP_ASM_DIR
 # print(f"[lightop] LIGHTOP_ASM_DIR={LIGHTOP_ASM_DIR}")
