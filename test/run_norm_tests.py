@@ -6,6 +6,7 @@ from category_test_runner import run_category
 
 RUNNABLE_TEST_FILES = [
     "test/test_norm_existing_api.py",
+    "test/test_native_categorized_norm_remaining_api.py",
     "test/test_norm_lm_faster_rmsquant.py",
 ]
 
@@ -19,6 +20,7 @@ SCRIPT_TEST_FILES = [
     "test/test_groupnorm.py",
     "test/test_layernorm.py",
     "test/test_layernorm_mixed_fp32_weight.py",
+    "test/test_layer_norm_fwd_1pass.py",
     "test/test_rms_norm_dynamic_per_token_quant.py",
     "test/test_rms_norm_fp8_quant.py",
     "test/test_rmsnorm.py",

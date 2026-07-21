@@ -25,6 +25,9 @@ from ..rmsnorm import (
 
 rms_norm_opt = lightop_native.rms_norm_opt
 fused_add_rms_norm_opt = lightop_native.fused_add_rms_norm_opt
+layer_norm_fwd_1pass_opt = lightop_native.layer_norm_fwd_1pass_opt
+rms_norm_no_weight = lightop_native.rms_norm_no_weight
+rmsnorm_forward_autograd = lightop_native.rmsnorm_forward_autograd
 
 __all__ = [
     "AddLn",
@@ -39,13 +42,16 @@ __all__ = [
     "GroupNorm",
     "LayerNorm",
     "LayerNormMixedFp32Weight",
+    "layer_norm_fwd_1pass_opt",
     "rms_norm_dynamic_per_token_quant",
+    "rms_norm_no_weight",
     "rms_norm_per_token_fp8_quant",
     "rms_norm_opt",
     "rms_norm_per_token_quant",
     "RMSNorm",
     "rmsnorm_backward",
     "rmsnorm_forward",
+    "rmsnorm_forward_autograd",
     "RMSNormAdd",
     "RMSNormAddDropout",
     "RMSNormAddDropoutBias",
