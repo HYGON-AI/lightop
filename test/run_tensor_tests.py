@@ -12,6 +12,7 @@ PYTEST_TEST_FILES = [
 SCRIPT_TEST_FILES = [
     "test/test_concat.py",
     "test/test_fill_zeros.py",
+    "test/test_reshape_to_float32.py",
     "test/test_sum.py",
 ]
 
