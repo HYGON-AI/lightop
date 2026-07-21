@@ -4,6 +4,7 @@ import pytest
 import torch
 
 import lightop
+from lightop import op as lightop_native
 import lightop.kvcache
 
 
@@ -13,14 +14,28 @@ EXISTING_KVCACHE_APIS = [
     "reshape_and_cache_cuda",
 ]
 
+NATIVE_KVCACHE_APIS = [
+    "fuse_act_quant_and_store_index_k_cache",
+    "fuse_qk_quant_and_store_index_k_cache",
+    "fused_quantize_and_store_mla_kv_cache",
+    "quantize_nope_fp8_rope_bf16_pack_store",
+]
+
 
 @pytest.mark.parametrize("name", EXISTING_KVCACHE_APIS)
 def test_existing_kvcache_api_is_direct_reexport(name):
     assert getattr(lightop.kvcache, name) is getattr(lightop, name)
 
 
+@pytest.mark.parametrize("name", NATIVE_KVCACHE_APIS)
+def test_native_kvcache_api_is_direct_binding(name):
+    assert getattr(lightop.kvcache, name) is getattr(lightop_native, name)
+
+
 def test_kvcache_public_api_inventory():
-    assert set(lightop.kvcache.__all__) == set(EXISTING_KVCACHE_APIS)
+    assert set(lightop.kvcache.__all__) == set(
+        EXISTING_KVCACHE_APIS + NATIVE_KVCACHE_APIS
+    )
 
 
 def test_dcu_alloc_extend_kernel_page_mapping():
