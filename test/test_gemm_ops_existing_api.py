@@ -1,5 +1,7 @@
 """Compatibility checks for existing LightOp GEMM category exports."""
 
+from importlib import import_module
+
 import pytest
 
 import lightop
@@ -40,3 +42,13 @@ def test_existing_gemm_api_is_direct_reexport(name: str) -> None:
 def test_importing_gemm_ops_does_not_shadow_top_level_gemm() -> None:
     assert callable(lightop.gemm)
     assert lightop.gemm_ops.gemm is lightop.gemm
+
+
+def test_removed_gemm_subpackage_cannot_shadow_top_level_function() -> None:
+    public_gemm = lightop.gemm
+
+    with pytest.raises(ModuleNotFoundError):
+        import_module("lightop.gemm")
+
+    assert lightop.gemm is public_gemm
+    assert callable(lightop.gemm)
