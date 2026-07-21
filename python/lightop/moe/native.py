@@ -20,10 +20,6 @@ from .._lmslim_native.layers.groupgemm.w4a8 import (
     groupgemm_impl_w4a8,
     groupgemm_impl_w4a8_marlin,
 )
-from .._lmslim_native.layers.gemm.int8_utils import (
-    per_token_group_quant_int8,
-    per_token_quant_int8,
-)
 
 
 def fused_experts_cuda(*args, **kwargs):
@@ -57,6 +53,4 @@ __all__ = [
     "fused_experts_w4a16",
     "groupgemm_impl_w4a8",
     "groupgemm_impl_w4a8_marlin",
-    "per_token_group_quant_int8",
-    "per_token_quant_int8",
 ]
