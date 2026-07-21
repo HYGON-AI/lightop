@@ -6,6 +6,7 @@ from category_test_runner import run_category
 
 RUNNABLE_TEST_FILES = [
     "test/test_moe_existing_api.py",
+    "test/test_native_categorized_moe_api.py",
     "test/test_moe_fused_gate_sqrtsoftplus.py",
     "test/test_fuse_groupgemm_permute_quant.py",
 ]
@@ -15,6 +16,9 @@ SCRIPT_TEST_FILES = [
     "test/test_moe_align_block_size.py",
     "test/test_moe_sum_opt.py",
     "test/test_fused_moe_gate.py",
+    "test/test_ep_gather.py",
+    "test/test_ep_scatter.py",
+    "test/test_softmax_topk.py",
 ]
 
 

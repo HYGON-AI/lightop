@@ -7,7 +7,7 @@ import os
 import pdb
 # 尝试导入自定义算子
 try:
-    from lightop import op
+    from lightop.moe import ep_gather
     # print("[INFO] Successfully imported lightop")
 except ImportError:
     print("[ERROR] Failed to import lightop. Please ensure the CUDA extension is installed.")
@@ -163,7 +163,7 @@ def run_single_benchmark(M, H, K, E, dtype, device, csv_writer):
     # 正确性验证 (只打印简略结果)
     # -------------------------------------------------------------------------
     triton_ep_gather(a, topk_ids, topk_weights, inv_perm, expert_map, out_triton)
-    op.ep_gather(a, topk_ids, topk_weights, inv_perm, expert_map, out_custom)
+    ep_gather(a, topk_ids, topk_weights, inv_perm, expert_map, out_custom)
     torch.cuda.synchronize()
 
     passed = False
@@ -192,12 +192,12 @@ def run_single_benchmark(M, H, K, E, dtype, device, csv_writer):
 
     # 2. Custom Op Benchmark
     for _ in range(n_warmup):
-        op.ep_gather(a, topk_ids, topk_weights, inv_perm, expert_map, out_custom)
+        ep_gather(a, topk_ids, topk_weights, inv_perm, expert_map, out_custom)
     torch.cuda.synchronize()
 
     start_event.record()
     for _ in range(n_repeat):
-        op.ep_gather(a, topk_ids, topk_weights, inv_perm, expert_map, out_custom)
+        ep_gather(a, topk_ids, topk_weights, inv_perm, expert_map, out_custom)
     end_event.record()
     torch.cuda.synchronize()
     custom_time_ms = start_event.elapsed_time(end_event) / n_repeat

@@ -10,6 +10,10 @@ from ..moe_fused_gate import (
 )
 
 
+topk_ids_postprocess = op.topk_ids_postprocess
+topk_softmax = op.topk_softmax
+
+
 def moe_align_block_size_out(
     topk_ids,
     num_experts,
@@ -43,4 +47,6 @@ __all__ = [
     "moe_fused_gate",
     "moe_fused_gate_sqrtsoftplus",
     "moe_sum",
+    "topk_ids_postprocess",
+    "topk_softmax",
 ]
