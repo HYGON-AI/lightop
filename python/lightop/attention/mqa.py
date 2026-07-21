@@ -1,5 +1,13 @@
 """Direct bindings for existing LightOp MQA APIs."""
 
-from ..gemmopt import mqa_logits
+from ..gemmopt import (
+    get_paged_mqa_logits_metadata,
+    mqa_logits,
+    paged_mqa_logits,
+)
 
-__all__ = ["mqa_logits"]
+__all__ = [
+    "get_paged_mqa_logits_metadata",
+    "mqa_logits",
+    "paged_mqa_logits",
+]

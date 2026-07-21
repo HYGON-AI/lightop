@@ -3,6 +3,8 @@
 import pytest
 
 import lightop
+from lightop import gemmopt
+from lightop import op as lightop_native
 import lightop.attention
 
 
@@ -26,11 +28,45 @@ EXISTING_ATTENTION_APIS = [
     "split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant",
 ]
 
+PREEXISTING_CATEGORY_ONLY_APIS = [
+    "rotary_embedding_deepseek_fuse",
+]
+
+NEW_ATTENTION_APIS = [
+    "fuse_layernorm_rotary_embedding",
+    "fused_deepseek_v4_qnorm_rope_kvnorm_rope",
+    "fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32",
+    "get_paged_mqa_logits_metadata",
+    "paged_mqa_logits",
+]
+
 
 @pytest.mark.parametrize("name", EXISTING_ATTENTION_APIS)
 def test_existing_attention_api_is_direct_reexport(name):
     assert getattr(lightop.attention, name) is getattr(lightop, name)
 
 
+def test_preexisting_native_attention_api_is_direct_binding():
+    assert lightop.attention.rotary_embedding_deepseek_fuse is (
+        lightop_native.rotary_embedding_deepseek_fuse
+    )
+
+
+@pytest.mark.parametrize(
+    "name", ["get_paged_mqa_logits_metadata", "paged_mqa_logits"]
+)
+def test_paged_mqa_api_reuses_existing_wrapper(name):
+    assert getattr(lightop.attention, name) is getattr(gemmopt, name)
+
+
+@pytest.mark.parametrize("name", NEW_ATTENTION_APIS[:3])
+def test_new_native_attention_api_is_direct_binding(name):
+    assert getattr(lightop.attention, name) is getattr(lightop_native, name)
+
+
 def test_attention_public_api_inventory():
-    assert set(lightop.attention.__all__) == set(EXISTING_ATTENTION_APIS)
+    assert set(lightop.attention.__all__) == set(
+        EXISTING_ATTENTION_APIS
+        + PREEXISTING_CATEGORY_ONLY_APIS
+        + NEW_ATTENTION_APIS
+    )

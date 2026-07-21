@@ -40,6 +40,7 @@ ROOT_COMPATIBILITY_APIS = {
 NATIVE_OPERATOR_REFERENCE_TESTS = {
     "test_fuse_rmsnorm_rope_qkv_no_quant.py",
     "test_native_categorized_attention_api.py",
+    "test_native_categorized_attention_remaining_api.py",
     "test_native_categorized_moe_api.py",
     "test_native_categorized_norm_activation_api.py",
     "test_per_token_group_quant_fp8_api_alignment.py",

@@ -6,6 +6,7 @@ from category_test_runner import run_category
 
 RUNNABLE_TEST_FILES = [
     "test/test_attention_existing_api.py",
+    "test/test_native_categorized_attention_remaining_api.py",
 ]
 
 SCRIPT_TEST_FILES = [
