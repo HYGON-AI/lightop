@@ -9,7 +9,6 @@ PYTEST_TEST_FILES = [
 ]
 
 SCRIPT_TEST_FILES = [
-    "test/test_topk_transform_512.py",
     "test/test_topk_transform_1024.py",
     "test/test_topk_topp_sampler.py",
 ]

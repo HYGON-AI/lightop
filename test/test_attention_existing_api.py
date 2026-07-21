@@ -14,6 +14,8 @@ EXISTING_ATTENTION_APIS = [
     "FuseLogSoftmax",
     "FuseSoftmax",
     "apply_rotary_pos_emb_index_fused",
+    "fast_topk_transform_fused",
+    "fast_topk_transform_ragged_fused",
     "fuse_rms_mrope_cuda",
     "fuse_rmsnorm_rope_quant_qkv",
     "fused_rms_norm_rope_contiguous",
@@ -26,6 +28,7 @@ EXISTING_ATTENTION_APIS = [
     "rms_rotary_embedding_fuse_with_kv_store_fake",
     "RotaryEmbedding",
     "split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant",
+    "topk_transform_512",
 ]
 
 PREEXISTING_CATEGORY_ONLY_APIS = [
