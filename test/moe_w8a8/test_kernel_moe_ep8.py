@@ -2,7 +2,7 @@ import torch
 import pytest
 from typing import Optional
 import triton.language as tl
-from lightop._lmslim_native import envs as lsenvs
+from lightop import envs as lsenvs
 from common.w8a8_cache_json import W8a8GetCacheJSON
 from lightop.moe import moe_align_block_size
 from release_moe_w8a8_marlin import test_single_gemm_performance_accuracy, moe_kernel_prepare_input, _fused_moe_helper

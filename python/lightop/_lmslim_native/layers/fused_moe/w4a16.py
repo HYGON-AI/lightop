@@ -13,7 +13,7 @@ import triton
 #     moe_align_block_size)
 from ...vllm_compat.moe_align_block_size import moe_align_block_size
 # from vllm import _custom_ops as ops
-from ... import envs as lsenvs
+from lightop import envs as lsenvs
 use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 
 arch_name = torch.cuda.get_device_properties("cuda").gcnArchName.split(':')[0]

@@ -2,7 +2,7 @@ import os
 # from vllm import _custom_ops as ops
 import torch
 import torch.nn.functional as F
-from ... import envs as lsenvs
+from lightop import envs as lsenvs
 use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 device_name = lsenvs.LMSLIM_GPU_NAME
 num_cus= torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count

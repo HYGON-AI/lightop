@@ -7,7 +7,7 @@ import logging
 
 import torch
 
-from .. import envs as lsenvs
+from lightop import envs as lsenvs
 
 logger = logging.getLogger(__name__)
 

@@ -15,7 +15,7 @@ import torch
 import torch.nn.functional as F
 from typing import Optional, List
 from ..layers.gemm.int8_utils import matmul_int8
-from .. import envs as lsenvs
+from lightop import envs as lsenvs
 # from vllm.utils.torch_utils import direct_register_custom_op
 from ..vllm_compat.direct_register_custom_op import direct_register_custom_op
 
