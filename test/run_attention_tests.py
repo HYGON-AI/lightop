@@ -7,6 +7,7 @@ from category_test_runner import run_category
 RUNNABLE_TEST_FILES = [
     "test/test_attention_existing_api.py",
     "test/test_native_categorized_attention_remaining_api.py",
+    "test/test_sparse_attention_transform_api.py",
 ]
 
 SCRIPT_TEST_FILES = [
@@ -24,6 +25,7 @@ SCRIPT_TEST_FILES = [
     "test/mqa_logits/test_mqa_logits.py",
     "test/test_fused_rms_rope.py",
     "test/test_split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant.py",
+    "test/test_topk_transform_512.py",
 ]
 
 

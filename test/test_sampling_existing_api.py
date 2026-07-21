@@ -8,11 +8,8 @@ import lightop.sampling
 
 
 CATEGORIZED_SAMPLING_APIS = [
-    "fast_topk_transform_fused",
-    "fast_topk_transform_ragged_fused",
     "topk",
     "topk_transform_1024",
-    "topk_transform_512",
 ]
 
 LEGACY_PROBABILITY_APIS = [

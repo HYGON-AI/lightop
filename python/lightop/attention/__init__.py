@@ -19,6 +19,11 @@ from .qkv import (
     rms_rotary_embedding_fuse_with_kv_store_fake,
     split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant,
 )
+from .sparse import (
+    fast_topk_transform_fused,
+    fast_topk_transform_ragged_fused,
+    topk_transform_512,
+)
 from .softmax import (
     FusedScaleMaskSoftmax,
     FusedScaleMaskSoftmaxDropout,
@@ -38,6 +43,8 @@ __all__ = [
     "FuseLogSoftmax",
     "FuseSoftmax",
     "apply_rotary_pos_emb_index_fused",
+    "fast_topk_transform_fused",
+    "fast_topk_transform_ragged_fused",
     "fuse_layernorm_rotary_embedding",
     "fuse_rms_mrope_cuda",
     "fuse_rmsnorm_rope_quant_qkv",
@@ -56,4 +63,5 @@ __all__ = [
     "RotaryEmbedding",
     "rotary_embedding_deepseek_fuse",
     "split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant",
+    "topk_transform_512",
 ]
