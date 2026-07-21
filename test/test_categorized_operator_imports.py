@@ -37,7 +37,16 @@ ROOT_COMPATIBILITY_APIS = {
 }
 
 
+NATIVE_OPERATOR_REFERENCE_TESTS = {
+    "test_fuse_rmsnorm_rope_qkv_no_quant.py",
+    "test_per_token_group_quant_fp8_api_alignment.py",
+    "test_quant_per_token_group_quant_fp8.py",
+    "test_quant_per_token_quant_fp8.py",
+    "test_split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant.py",
+}
 def _categorized_api_owners():
+
+
     owners = defaultdict(list)
     for category in CATEGORIES:
         path = PACKAGE_ROOT / category / "__init__.py"
@@ -80,6 +89,16 @@ def test_migrated_tests_use_categorized_operator_imports():
             )
             for node in ast.walk(tree)
         )
+        op_aliases = {
+            alias.asname or "op"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module == "lightop"
+            for alias in node.names
+            if alias.name == "op"
+        }
+        allows_native_reference = (
+            path.name in NATIVE_OPERATOR_REFERENCE_TESTS
+        )
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module == "lightop":
                 for alias in node.names:
@@ -99,8 +118,33 @@ def test_migrated_tests_use_categorized_operator_imports():
                     f"{path.relative_to(TEST_ROOT)}:{node.lineno}:"
                     f"lightop.{node.attr}->{owners[node.attr]}"
                 )
+            elif (
+                not allows_native_reference
+                and isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in op_aliases
+                and node.attr in owners
+            ):
+                violations.append(
+                    f"{path.relative_to(TEST_ROOT)}:{node.lineno}:"
+                    f"{node.value.id}.{node.attr}->{owners[node.attr]}"
+                )
+            elif (
+                not allows_native_reference
+                and imports_lightop
+                and isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Attribute)
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "lightop"
+                and node.value.attr == "op"
+                and node.attr in owners
+            ):
+                violations.append(
+                    f"{path.relative_to(TEST_ROOT)}:{node.lineno}:"
+                    f"lightop.op.{node.attr}->{owners[node.attr]}"
+                )
 
-    assert not violations, "root LightOp operator imports remain: " + ", ".join(
+    assert not violations, "uncategorized LightOp operator calls remain: " + ", ".join(
         violations
     )
 

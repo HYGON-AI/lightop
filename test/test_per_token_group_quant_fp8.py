@@ -2,7 +2,7 @@ import torch
 import triton
 import triton.language as tl
 import time
-from lightop import op
+from lightop.quant import per_token_group_quant_fp8
 
 @triton.jit
 def _per_token_group_quant_fp8(
@@ -91,9 +91,9 @@ def benchmark_and_verify():
         triton_q, triton_s = triton_per_token_group_quant_fp8(x, group_size, eps, use_ue8m0)
         
         # Custom Op (LightOp)
-        custom_q = torch.empty_like(x, dtype=torch.float8_e4m3fn)
-        custom_s = torch.empty((num_tokens, headdim // group_size), device='cuda', dtype=torch.float32)
-        op.per_token_group_quant_fp8(custom_q, x, custom_s, group_size, eps, use_ue8m0)
+        custom_q, custom_s = per_token_group_quant_fp8(
+            x, group_size, eps=eps
+        )
         
         # 对比 (Scale 要求误差很小, FP8 可以通过查看 uint8 值是否一致或者只差 1 ULP)
         scale_match = torch.allclose(triton_s, custom_s, atol=1e-5, rtol=1e-5)
@@ -117,12 +117,12 @@ def benchmark_and_verify():
 
         # 3. 性能测试 - LightOp
         for _ in range(warmup_iters):
-            op.per_token_group_quant_fp8(custom_q, x, custom_s, group_size, eps, use_ue8m0)
+            per_token_group_quant_fp8(x, group_size, eps=eps)
         torch.cuda.synchronize()
         
         start_time = time.perf_counter()
         for _ in range(bench_iters):
-            op.per_token_group_quant_fp8(custom_q, x, custom_s, group_size, eps, use_ue8m0)
+            per_token_group_quant_fp8(x, group_size, eps=eps)
         torch.cuda.synchronize()
         custom_us = (time.perf_counter() - start_time) * 1e6 / bench_iters
 
