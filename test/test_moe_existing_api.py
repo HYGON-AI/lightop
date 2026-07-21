@@ -3,6 +3,7 @@
 import lightop
 import lightop.moe
 import lightop.moe.config
+import lightop.moe.expert_parallel
 import lightop.moe.gemm
 import lightop.moe.marlin
 import lightop.moe.permutation
@@ -104,11 +105,6 @@ LMSLIM_MIGRATED_INT8_APIS = [
     "fused_experts_impl_int8_marlin",
 ]
 
-LMSLIM_MIGRATED_INT8_UTIL_APIS = [
-    "per_token_group_quant_int8",
-    "per_token_quant_int8",
-]
-
 
 LMSLIM_MIGRATED_W4A8_APIS = [
     "fused_experts_impl_w4a8",
@@ -149,6 +145,15 @@ ROUTING_APIS = [
     "moe_fused_gate",
     "moe_fused_gate_sqrtsoftplus",
     "moe_sum",
+    "topk_ids_postprocess",
+    "topk_softmax",
+]
+
+
+EXPERT_PARALLEL_APIS = [
+    "ep_build_m_indices",
+    "ep_gather",
+    "ep_scatter",
 ]
 
 
@@ -167,6 +172,12 @@ def test_routing_apis_are_categorized_exports():
     for name in LEGACY_TOP_LEVEL_ROUTING_APIS:
         categorized = getattr(lightop.moe, name)
         assert categorized is getattr(lightop, name)
+
+
+def test_expert_parallel_apis_are_categorized_exports():
+    for name in EXPERT_PARALLEL_APIS:
+        categorized = getattr(lightop.moe, name)
+        assert categorized is getattr(lightop.moe.expert_parallel, name)
 
 
 def test_moe_align_uses_migrated_lmslim_implementation():
@@ -260,16 +271,6 @@ def test_lmslim_w4a8_implementations_are_source_migrated():
         assert "lightop._lmslim_native.layers.fused_moe" in categorized.__module__
 
 
-def test_lmslim_int8_utilities_are_source_migrated():
-    native = __import__("lightop.moe.native", fromlist=["dummy"])
-    for name in LMSLIM_MIGRATED_INT8_UTIL_APIS:
-        categorized = getattr(lightop.moe, name)
-        assert categorized is getattr(native, name)
-        assert categorized.__module__ == (
-            "lightop._lmslim_native.layers.gemm.int8_utils"
-        )
-
-
 def test_lmslim_groupgemm_implementations_are_source_migrated():
     native = __import__("lightop.moe.native", fromlist=["dummy"])
     for name in LMSLIM_MIGRATED_GROUPGEMM_APIS:
@@ -297,6 +298,7 @@ def test_optional_int4_cuda_interfaces_are_lazy_callables():
 def test_moe_public_api_inventory():
     expected = (
         ROUTING_APIS
+        + EXPERT_PARALLEL_APIS
         + PERMUTATION_APIS
         + W8A8_CONFIG_APIS
         + W8A8_GEMM_APIS
@@ -312,7 +314,6 @@ def test_moe_public_api_inventory():
         + OTHER_MOE_GEMM_APIS
         + OTHER_MOE_MARLIN_APIS
         + LMSLIM_MIGRATED_INT8_APIS
-        + LMSLIM_MIGRATED_INT8_UTIL_APIS
         + LMSLIM_MIGRATED_W4A8_APIS
         + LMSLIM_MIGRATED_GROUPGEMM_APIS
         + LMSLIM_MIGRATED_W4A16_APIS

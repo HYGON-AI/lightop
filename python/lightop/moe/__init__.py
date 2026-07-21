@@ -58,8 +58,6 @@ _LMSLIM_NATIVE_APIS = {
     "fused_experts_w4a16",
     "groupgemm_impl_w4a8",
     "groupgemm_impl_w4a8_marlin",
-    "per_token_group_quant_int8",
-    "per_token_quant_int8",
 }
 
 
@@ -116,8 +114,6 @@ __all__ = [
     "moe_groupgemm_w4a8",
     "moe_marlin_w4a16",
     "moe_sum",
-    "per_token_group_quant_int8",
-    "per_token_quant_int8",
     "topk_ids_postprocess",
     "topk_softmax",
 ]
