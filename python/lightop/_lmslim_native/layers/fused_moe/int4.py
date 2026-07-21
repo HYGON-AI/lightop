@@ -15,7 +15,7 @@ import triton.language as tl
 #     moe_align_block_size)
 from ...vllm_compat.moe_align_block_size import moe_align_block_size
 from ...vllm_compat.fused_moe_cache import get_moe_cache
-from ... import envs as lsenvs
+from lightop import envs as lsenvs
 # from vllm.platforms import current_platform
 # from vllm_hcu.platforms import HCUPlatform as current_platform
 # logger = init_logger(__name__)

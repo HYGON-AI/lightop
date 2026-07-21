@@ -9,7 +9,7 @@ import torch
 import triton
 import triton.language as tl
 from triton.language.extra import libdevice
-from ... import envs as lsenvs
+from lightop import envs as lsenvs
 
 use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 device_name = lsenvs.LMSLIM_GPU_NAME

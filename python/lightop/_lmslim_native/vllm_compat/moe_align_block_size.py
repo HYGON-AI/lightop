@@ -3,7 +3,7 @@
 
 import torch
 import triton
-from .. import envs as lsenvs
+from lightop import envs as lsenvs
 use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 
 def round_up(x: int, y: int) -> int:

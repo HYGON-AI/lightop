@@ -10,7 +10,7 @@ from ...vllm_compat.moe_align_block_size import moe_align_block_size
 import torch
 import triton
 import triton.language as tl
-from ... import envs as lsenvs
+from lightop import envs as lsenvs
 # from vllm.utils import W8a8GetCacheJSON
 from ...vllm_compat.w8a8_get_cache_json import W8a8GetCacheJSON
 

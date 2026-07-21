@@ -9,7 +9,7 @@ import torch
 import triton
 import triton.language as tl
 from triton.language.extra import libdevice
-from ... import envs as lsenvs
+from lightop import envs as lsenvs
 # from vllm.platforms import current_platform
 # from vllm_hcu.platforms import HCUPlatform as current_platform
 # from vllm.logger import init_logger

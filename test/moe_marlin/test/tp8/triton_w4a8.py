@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import torch
 import triton
 import triton.language as tl
-from lightop._lmslim_native import envs as lsenvs
+from lightop import envs as lsenvs
 from common.w8a8_cache_json import W8a8GetCacheJSON
 
 use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
