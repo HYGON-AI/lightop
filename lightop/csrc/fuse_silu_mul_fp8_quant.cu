@@ -4,6 +4,7 @@
 #include <ATen/native/cuda/MemoryAccess.cuh>
 
 #include <cmath>
+#include <cstdlib>
 #include "reduce.h"
 
 // #include "cuda_compat.h"
@@ -231,26 +232,30 @@ __device__ __forceinline__ scalar_t compute(const scalar_t& x,
 // }
 
 template <typename scalar_t, bool act_first>
+__device__ __forceinline__ float compute_with_swiglu_limit_f(
+    const scalar_t& x,
+    const scalar_t& y,
+    const float limit) {
+  // Clamp + SiLU in float with branchless fmin/fmax to cut divergence and
+  // avoid bf16 round-trips that inflate the limit-path overhead.
+  float gate = act_first ? static_cast<float>(x) : static_cast<float>(y);
+  float up = act_first ? static_cast<float>(y) : static_cast<float>(x);
+  gate = fminf(gate, limit);
+  up = fminf(fmaxf(up, -limit), limit);
+  constexpr float LOG2E = 1.44269504088896340736f;
+  // rcpf + exp2f: fewer VALU than gate/(1+exp2) on gfx938 (PMC VALU-heavy).
+  const float silu =
+      gate * __builtin_amdgcn_rcpf(1.0f + __builtin_amdgcn_exp2f(-gate * LOG2E));
+  return silu * up;
+}
+
+template <typename scalar_t, bool act_first>
 __device__ __forceinline__ scalar_t compute_with_swiglu_limit(
     const scalar_t& x,
     const scalar_t& y,
     const float limit) {
-  const scalar_t gate = act_first ? x : y;
-  const scalar_t up = act_first ? y : x;
-
-  // 只进行一次 float -> scalar_t 转换
-  const scalar_t limit_t = static_cast<scalar_t>(limit);
-  const scalar_t neg_limit_t = -limit_t;
-
-  const scalar_t gate_clamped =
-      gate > limit_t ? limit_t : gate;
-
-  const scalar_t up_clamped =
-      up < neg_limit_t
-          ? neg_limit_t
-          : (up > limit_t ? limit_t : up);
-
-  return silu_kernel(gate_clamped) * up_clamped;
+  return static_cast<scalar_t>(
+      compute_with_swiglu_limit_f<scalar_t, act_first>(x, y, limit));
 }
 
 template <typename scalar_t, int VEC,
@@ -1071,7 +1076,8 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_one_with_limit(
       *(VecType*)r_x2 = *x2;
       #pragma unroll
       for (int i = 0; i < VEC; i++) {
-        r_y[i] = static_cast<float>(compute_with_swiglu_limit<scalar_t, act_first>(r_x1[i], r_x2[i], limit));
+        r_y[i] = compute_with_swiglu_limit_f<scalar_t, act_first>(
+            r_x1[i], r_x2[i], limit);
       }
     }
     float row_max = 0.f;
@@ -1118,6 +1124,482 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_one_with_limit(
           *y =*(VecInt8Type*)out_vec;
       }   
 
+}
+
+template <typename scalar_t, int VEC, bool act_first, int block_size, int nchunks>
+__global__ void act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked(
+    int64_t num_tokens,
+    const int fp8type,
+    uint8_t* __restrict__ out,
+    const scalar_t* __restrict__ input,
+    float* __restrict__ scales,
+    const int d,
+    const int topK,
+    int32_t *num_local_tokens_tensor,
+    const float limit
+    ) {
+  // One-pass chunked path for exact-cover shapes (e.g. d=3072 with
+  // VEC=8,block=128,nchunks=3 or d=6144 with VEC=16,block=128,nchunks=3).
+  // Raises occupancy vs oversized one-shot blocks with idle lanes.
+  const int64_t token_idx = blockIdx.x;
+  if (num_local_tokens_tensor != nullptr) {
+    if (token_idx >= num_local_tokens_tensor[0] * topK) return;
+  }
+
+  constexpr int share_size = block_size / C10_WARP_SIZE;
+  __shared__ float val_shared[share_size];
+  using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+  using VecInt8Type = at::native::memory::aligned_vector<uint8_t, VEC>;
+
+  const int tidx = threadIdx.x;
+  const int64_t token_in = token_idx * 2 * static_cast<int64_t>(d);
+  const int64_t token_out = token_idx * static_cast<int64_t>(d);
+
+  float r_y[nchunks][VEC];
+  float row_max = 0.f;
+
+  #pragma unroll
+  for (int c = 0; c < nchunks; ++c) {
+    const int idx = (tidx + c * block_size) * VEC;
+    if (idx < d) {
+      scalar_t r_x1[VEC];
+      scalar_t r_x2[VEC];
+      *reinterpret_cast<VecType*>(r_x1) =
+          *reinterpret_cast<const VecType*>(input + token_in + idx);
+      *reinterpret_cast<VecType*>(r_x2) =
+          *reinterpret_cast<const VecType*>(input + token_in + d + idx);
+      #pragma unroll
+      for (int i = 0; i < VEC; ++i) {
+        r_y[c][i] = compute_with_swiglu_limit_f<scalar_t, act_first>(
+            r_x1[i], r_x2[i], limit);
+        row_max = fmaxf(row_max, fabsf(r_y[c][i]));
+      }
+    }
+  }
+
+  row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
+  __shared__ float s_token_scale;
+  float fp8type_max_v;
+  float min_scaling;
+  if (fp8type == 0) {
+    fp8type_max_v = quant_type_max_v<c10::Float8_e4m3fn>;
+    min_scaling = min_scaling_factor<c10::Float8_e4m3fn>::val();
+  } else {
+    fp8type_max_v = quant_type_max_v<c10::Float8_e5m2>;
+    min_scaling = min_scaling_factor<c10::Float8_e5m2>::val();
+  }
+  if (tidx == 0) {
+    const float scale = fmaxf(row_max / fp8type_max_v, min_scaling);
+    s_token_scale = scale;
+    scales[token_idx] = scale;
+  }
+  __syncthreads();
+  const float inv_s = 1.0f / s_token_scale;
+
+  #pragma unroll
+  for (int c = 0; c < nchunks; ++c) {
+    const int idx = (tidx + c * block_size) * VEC;
+    if (idx < d) {
+      uint8_t out_vec[VEC];
+      constexpr int loop = VEC / 4;
+      #pragma unroll
+      for (int ii = 0; ii < loop; ++ii) {
+        if (fp8type == 0) {
+          ((uint32_t*)out_vec)[ii] = float_to_fp8e4m3_x4(
+              r_y[c][ii * 4] * inv_s,
+              r_y[c][ii * 4 + 1] * inv_s,
+              r_y[c][ii * 4 + 2] * inv_s,
+              r_y[c][ii * 4 + 3] * inv_s);
+        } else {
+          ((uint32_t*)out_vec)[ii] = float_to_fp8e5m2_x4(
+              r_y[c][ii * 4] * inv_s,
+              r_y[c][ii * 4 + 1] * inv_s,
+              r_y[c][ii * 4 + 2] * inv_s,
+              r_y[c][ii * 4 + 3] * inv_s);
+        }
+      }
+      *reinterpret_cast<VecInt8Type*>(out + token_out + idx) =
+          *reinterpret_cast<VecInt8Type*>(out_vec);
+    }
+  }
+}
+
+// Exact-cover specialization: block_size * VEC * nchunks == d (or >=d when
+// CheckBounds). Drops per-chunk bounds checks when Exact, freezes e4m3fn.
+template <typename scalar_t, int VEC, bool act_first, int block_size, int nchunks,
+          bool CheckBounds = false>
+__global__ void act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3(
+    int64_t num_tokens,
+    uint8_t* __restrict__ out,
+    const scalar_t* __restrict__ input,
+    float* __restrict__ scales,
+    const int d,
+    const int topK,
+    int32_t *num_local_tokens_tensor,
+    const float limit
+    ) {
+  static_assert(VEC >= 4 && (VEC % 4) == 0, "VEC must be multiple of 4");
+  static_assert((block_size * VEC * nchunks) > 0, "invalid exact cover");
+  (void)num_tokens;
+  const int64_t token_idx = blockIdx.x;
+  if (num_local_tokens_tensor != nullptr) {
+    if (token_idx >= num_local_tokens_tensor[0] * topK) return;
+  }
+
+  constexpr int share_size = block_size / C10_WARP_SIZE;
+  __shared__ float val_shared[share_size];
+  using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+  using VecInt8Type = at::native::memory::aligned_vector<uint8_t, VEC>;
+
+  const int tidx = threadIdx.x;
+  const int64_t token_in = token_idx * 2 * static_cast<int64_t>(d);
+  const int64_t token_out = token_idx * static_cast<int64_t>(d);
+  const scalar_t* __restrict__ gate_base = input + token_in;
+  const scalar_t* __restrict__ up_base = input + token_in + d;
+
+  // Keep SiLU*up in float registers. Simple chunk loop (no software pipe):
+  // PMC shows arch_vgpr~96; cutting live temps helps occupancy.
+  float r_y[nchunks][VEC];
+  float row_max = 0.f;
+
+  #pragma unroll
+  for (int c = 0; c < nchunks; ++c) {
+    const int idx = (tidx + c * block_size) * VEC;
+    if constexpr (CheckBounds) {
+      if (idx >= d) continue;
+    }
+    scalar_t r_x1[VEC];
+    scalar_t r_x2[VEC];
+    *reinterpret_cast<VecType*>(r_x1) =
+        *reinterpret_cast<const VecType*>(gate_base + idx);
+    *reinterpret_cast<VecType*>(r_x2) =
+        *reinterpret_cast<const VecType*>(up_base + idx);
+    #pragma unroll
+    for (int i = 0; i < VEC; ++i) {
+      r_y[c][i] = compute_with_swiglu_limit_f<scalar_t, act_first>(
+          r_x1[i], r_x2[i], limit);
+      row_max = fmaxf(row_max, fabsf(r_y[c][i]));
+    }
+  }
+
+  row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
+  __shared__ float s_token_scale;
+  const float fp8type_max_v =
+      static_cast<float>(quant_type_max_v<c10::Float8_e4m3fn>);
+  if (tidx == 0) {
+    const float scale = fmaxf(
+        row_max / fp8type_max_v,
+        min_scaling_factor<c10::Float8_e4m3fn>::val());
+    s_token_scale = scale;
+    scales[token_idx] = scale;
+  }
+  __syncthreads();
+  const float inv_s = 1.0f / s_token_scale;
+
+  #pragma unroll
+  for (int c = 0; c < nchunks; ++c) {
+    const int idx = (tidx + c * block_size) * VEC;
+    if constexpr (CheckBounds) {
+      if (idx >= d) continue;
+    }
+    uint8_t out_vec[VEC];
+    constexpr int loop = VEC / 4;
+    #pragma unroll
+    for (int ii = 0; ii < loop; ++ii) {
+      ((uint32_t*)out_vec)[ii] = float_to_fp8e4m3_x4(
+          r_y[c][ii * 4] * inv_s,
+          r_y[c][ii * 4 + 1] * inv_s,
+          r_y[c][ii * 4 + 2] * inv_s,
+          r_y[c][ii * 4 + 3] * inv_s);
+    }
+    *reinterpret_cast<VecInt8Type*>(out + token_out + idx) =
+        *reinterpret_cast<VecInt8Type*>(out_vec);
+  }
+}
+
+// Two-pass exact cover: pass1 absmax only, pass2 recompute+quant.
+// Keeps only one chunk live -> much lower VGPR / higher occupancy.
+// Worth it when one-pass is occupancy-bound (PMC: arch_vgpr~96).
+template <typename scalar_t, int VEC, bool act_first, int block_size, int nchunks>
+__global__ void
+#if defined(__gfx938__)
+__launch_bounds__(64, 8)
+#endif
+act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3_twopass(
+    int64_t num_tokens,
+    uint8_t* __restrict__ out,
+    const scalar_t* __restrict__ input,
+    float* __restrict__ scales,
+    const int d,
+    const int topK,
+    int32_t *num_local_tokens_tensor,
+    const float limit
+    ) {
+  static_assert(VEC >= 4 && (VEC % 4) == 0, "VEC must be multiple of 4");
+  (void)num_tokens;
+  const int64_t token_idx = blockIdx.x;
+  if (num_local_tokens_tensor != nullptr) {
+    if (token_idx >= num_local_tokens_tensor[0] * topK) return;
+  }
+
+  constexpr int share_size = block_size / C10_WARP_SIZE;
+  __shared__ float val_shared[share_size];
+  using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+  using VecInt8Type = at::native::memory::aligned_vector<uint8_t, VEC>;
+
+  const int tidx = threadIdx.x;
+  const int64_t token_in = token_idx * 2 * static_cast<int64_t>(d);
+  const int64_t token_out = token_idx * static_cast<int64_t>(d);
+  const scalar_t* __restrict__ gate_base = input + token_in;
+  const scalar_t* __restrict__ up_base = input + token_in + d;
+
+  float row_max = 0.f;
+  #pragma unroll
+  for (int c = 0; c < nchunks; ++c) {
+    const int idx = (tidx + c * block_size) * VEC;
+    scalar_t r_x1[VEC];
+    scalar_t r_x2[VEC];
+    *reinterpret_cast<VecType*>(r_x1) =
+        *reinterpret_cast<const VecType*>(gate_base + idx);
+    *reinterpret_cast<VecType*>(r_x2) =
+        *reinterpret_cast<const VecType*>(up_base + idx);
+    #pragma unroll
+    for (int i = 0; i < VEC; ++i) {
+      const float y = compute_with_swiglu_limit_f<scalar_t, act_first>(
+          r_x1[i], r_x2[i], limit);
+      row_max = fmaxf(row_max, fabsf(y));
+    }
+  }
+
+  row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
+  __shared__ float s_token_scale;
+  const float fp8type_max_v =
+      static_cast<float>(quant_type_max_v<c10::Float8_e4m3fn>);
+  if (tidx == 0) {
+    const float scale = fmaxf(
+        row_max / fp8type_max_v,
+        min_scaling_factor<c10::Float8_e4m3fn>::val());
+    s_token_scale = scale;
+    scales[token_idx] = scale;
+  }
+  __syncthreads();
+  const float inv_s = 1.0f / s_token_scale;
+
+  #pragma unroll
+  for (int c = 0; c < nchunks; ++c) {
+    const int idx = (tidx + c * block_size) * VEC;
+    scalar_t r_x1[VEC];
+    scalar_t r_x2[VEC];
+    *reinterpret_cast<VecType*>(r_x1) =
+        *reinterpret_cast<const VecType*>(gate_base + idx);
+    *reinterpret_cast<VecType*>(r_x2) =
+        *reinterpret_cast<const VecType*>(up_base + idx);
+    float r_y[VEC];
+    #pragma unroll
+    for (int i = 0; i < VEC; ++i) {
+      r_y[i] = compute_with_swiglu_limit_f<scalar_t, act_first>(
+          r_x1[i], r_x2[i], limit);
+    }
+    uint8_t out_vec[VEC];
+    constexpr int loop = VEC / 4;
+    #pragma unroll
+    for (int ii = 0; ii < loop; ++ii) {
+      ((uint32_t*)out_vec)[ii] = float_to_fp8e4m3_x4(
+          r_y[ii * 4] * inv_s,
+          r_y[ii * 4 + 1] * inv_s,
+          r_y[ii * 4 + 2] * inv_s,
+          r_y[ii * 4 + 3] * inv_s);
+    }
+    *reinterpret_cast<VecInt8Type*>(out + token_out + idx) =
+        *reinterpret_cast<VecInt8Type*>(out_vec);
+  }
+}
+
+// Single-warp exact cover (block==warp): no block barrier for scale broadcast.
+template <typename scalar_t, int VEC, bool act_first, int nchunks>
+__global__ void act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3_warp(
+    int64_t num_tokens,
+    uint8_t* __restrict__ out,
+    const scalar_t* __restrict__ input,
+    float* __restrict__ scales,
+    const int d,
+    const int topK,
+    int32_t *num_local_tokens_tensor,
+    const float limit
+    ) {
+  constexpr int block_size = C10_WARP_SIZE;
+  static_assert(VEC >= 4 && (VEC % 4) == 0, "VEC must be multiple of 4");
+  (void)num_tokens;
+  const int64_t token_idx = blockIdx.x;
+  if (num_local_tokens_tensor != nullptr) {
+    if (token_idx >= num_local_tokens_tensor[0] * topK) return;
+  }
+
+  using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+  using VecInt8Type = at::native::memory::aligned_vector<uint8_t, VEC>;
+
+  const int tidx = threadIdx.x;
+  const int64_t token_in = token_idx * 2 * static_cast<int64_t>(d);
+  const int64_t token_out = token_idx * static_cast<int64_t>(d);
+  const scalar_t* __restrict__ gate_base = input + token_in;
+  const scalar_t* __restrict__ up_base = input + token_in + d;
+
+  float r_y[nchunks][VEC];
+  float row_max = 0.f;
+
+  scalar_t r_x1[VEC];
+  scalar_t r_x2[VEC];
+  *reinterpret_cast<VecType*>(r_x1) =
+      *reinterpret_cast<const VecType*>(gate_base + tidx * VEC);
+  *reinterpret_cast<VecType*>(r_x2) =
+      *reinterpret_cast<const VecType*>(up_base + tidx * VEC);
+
+  #pragma unroll
+  for (int c = 0; c < nchunks; ++c) {
+    scalar_t n_x1[VEC];
+    scalar_t n_x2[VEC];
+    if constexpr (nchunks > 1) {
+      if (c + 1 < nchunks) {
+        const int nidx = (tidx + (c + 1) * block_size) * VEC;
+        *reinterpret_cast<VecType*>(n_x1) =
+            *reinterpret_cast<const VecType*>(gate_base + nidx);
+        *reinterpret_cast<VecType*>(n_x2) =
+            *reinterpret_cast<const VecType*>(up_base + nidx);
+      }
+    }
+    #pragma unroll
+    for (int i = 0; i < VEC; ++i) {
+      r_y[c][i] = compute_with_swiglu_limit_f<scalar_t, act_first>(
+          r_x1[i], r_x2[i], limit);
+      row_max = fmaxf(row_max, fabsf(r_y[c][i]));
+    }
+    if constexpr (nchunks > 1) {
+      if (c + 1 < nchunks) {
+        #pragma unroll
+        for (int i = 0; i < VEC; ++i) {
+          r_x1[i] = n_x1[i];
+          r_x2[i] = n_x2[i];
+        }
+      }
+    }
+  }
+
+  row_max = WarpReduceMax_ROW<float>(row_max);
+  // Only lane 0 holds the full warp max; broadcast it.
+  row_max = __shfl(row_max, 0);
+  const float fp8type_max_v =
+      static_cast<float>(quant_type_max_v<c10::Float8_e4m3fn>);
+  const float scale = fmaxf(
+      row_max / fp8type_max_v,
+      min_scaling_factor<c10::Float8_e4m3fn>::val());
+  if (tidx == 0) {
+    scales[token_idx] = scale;
+  }
+  const float inv_s = 1.0f / scale;
+
+  #pragma unroll
+  for (int c = 0; c < nchunks; ++c) {
+    const int idx = (tidx + c * block_size) * VEC;
+    uint8_t out_vec[VEC];
+    constexpr int loop = VEC / 4;
+    #pragma unroll
+    for (int ii = 0; ii < loop; ++ii) {
+      ((uint32_t*)out_vec)[ii] = float_to_fp8e4m3_x4(
+          r_y[c][ii * 4] * inv_s,
+          r_y[c][ii * 4 + 1] * inv_s,
+          r_y[c][ii * 4 + 2] * inv_s,
+          r_y[c][ii * 4 + 3] * inv_s);
+    }
+    *reinterpret_cast<VecInt8Type*>(out + token_out + idx) =
+        *reinterpret_cast<VecInt8Type*>(out_vec);
+  }
+}
+
+// Lower-VGPR twin: pack SiLU*up into bf16 registers to raise occupancy.
+template <typename scalar_t, int VEC, bool act_first, int block_size, int nchunks>
+__global__ void
+#if defined(__gfx938__)
+__launch_bounds__(64, 8)
+#endif
+act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3_bf16pack(
+    int64_t num_tokens,
+    uint8_t* __restrict__ out,
+    const scalar_t* __restrict__ input,
+    float* __restrict__ scales,
+    const int d,
+    const int topK,
+    int32_t *num_local_tokens_tensor,
+    const float limit
+    ) {
+  static_assert(VEC >= 4 && (VEC % 4) == 0, "VEC must be multiple of 4");
+  (void)num_tokens;
+  const int64_t token_idx = blockIdx.x;
+  if (num_local_tokens_tensor != nullptr) {
+    if (token_idx >= num_local_tokens_tensor[0] * topK) return;
+  }
+
+  constexpr int share_size = block_size / C10_WARP_SIZE;
+  __shared__ float val_shared[share_size];
+  using VecType = at::native::memory::aligned_vector<scalar_t, VEC>;
+  using VecInt8Type = at::native::memory::aligned_vector<uint8_t, VEC>;
+
+  const int tidx = threadIdx.x;
+  const int64_t token_in = token_idx * 2 * static_cast<int64_t>(d);
+  const int64_t token_out = token_idx * static_cast<int64_t>(d);
+  const scalar_t* __restrict__ gate_base = input + token_in;
+  const scalar_t* __restrict__ up_base = input + token_in + d;
+
+  __hip_bfloat16 r_y[nchunks][VEC];
+  float row_max = 0.f;
+
+  #pragma unroll
+  for (int c = 0; c < nchunks; ++c) {
+    const int idx = (tidx + c * block_size) * VEC;
+    scalar_t r_x1[VEC];
+    scalar_t r_x2[VEC];
+    *reinterpret_cast<VecType*>(r_x1) =
+        *reinterpret_cast<const VecType*>(gate_base + idx);
+    *reinterpret_cast<VecType*>(r_x2) =
+        *reinterpret_cast<const VecType*>(up_base + idx);
+    #pragma unroll
+    for (int i = 0; i < VEC; ++i) {
+      const float y = compute_with_swiglu_limit_f<scalar_t, act_first>(
+          r_x1[i], r_x2[i], limit);
+      r_y[c][i] = __float2bfloat16(y);
+      row_max = fmaxf(row_max, fabsf(y));
+    }
+  }
+
+  row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
+  __shared__ float s_token_scale;
+  const float fp8type_max_v =
+      static_cast<float>(quant_type_max_v<c10::Float8_e4m3fn>);
+  if (tidx == 0) {
+    const float scale = fmaxf(
+        row_max / fp8type_max_v,
+        min_scaling_factor<c10::Float8_e4m3fn>::val());
+    s_token_scale = scale;
+    scales[token_idx] = scale;
+  }
+  __syncthreads();
+  const float inv_s = 1.0f / s_token_scale;
+
+  #pragma unroll
+  for (int c = 0; c < nchunks; ++c) {
+    const int idx = (tidx + c * block_size) * VEC;
+    uint8_t out_vec[VEC];
+    constexpr int loop = VEC / 4;
+    #pragma unroll
+    for (int ii = 0; ii < loop; ++ii) {
+      ((uint32_t*)out_vec)[ii] = float_to_fp8e4m3_x4(
+          __bfloat162float(r_y[c][ii * 4]) * inv_s,
+          __bfloat162float(r_y[c][ii * 4 + 1]) * inv_s,
+          __bfloat162float(r_y[c][ii * 4 + 2]) * inv_s,
+          __bfloat162float(r_y[c][ii * 4 + 3]) * inv_s);
+    }
+    *reinterpret_cast<VecInt8Type*>(out + token_out + idx) =
+        *reinterpret_cast<VecInt8Type*>(out_vec);
+  }
 }
 
 template <typename scalar_t, bool act_first, int block_size>
@@ -1687,7 +2169,123 @@ static void fuse_silu_mul_fp8_quant_with_limit(torch::Tensor& input, torch::Tens
               }                                                                     
             }
         }else{
-              if (d <= 512) {                                                      
+              // Target workload: input [tokens, 6144] => d=3072.
+              // Sweep on BW1100: VEC16/block64/nchunks3 (geom0) is best for
+              // large N and within launch-floor noise for small N (incl. 256/512).
+              // Optional override LIGHTOP_SILU_FP8_LIMIT_GEOM=0..4 for A/B.
+              if (d == 3072) {
+            if (fp8type == 0) {
+              int geom = 0;
+              if (const char* env = std::getenv("LIGHTOP_SILU_FP8_LIMIT_GEOM")) {
+                geom = std::atoi(env);
+              }
+              if (geom == 1) {
+                act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3<
+                    scalar_t, 8, true, 128, 3>
+                        <<<grid, 128, 0, stream>>>(num_tokens ,
+                                                  out.data_ptr<uint8_t>(),
+                                                  input.data_ptr<scalar_t>(),
+                                                  scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, limit);
+              } else if (geom == 2) {
+                act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3<
+                    scalar_t, 8, true, 256, 2, true>
+                        <<<grid, 256, 0, stream>>>(num_tokens ,
+                                                  out.data_ptr<uint8_t>(),
+                                                  input.data_ptr<scalar_t>(),
+                                                  scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, limit);
+              } else if (geom == 3) {
+                act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3<
+                    scalar_t, 8, true, 512, 1, true>
+                        <<<grid, 512, 0, stream>>>(num_tokens ,
+                                                  out.data_ptr<uint8_t>(),
+                                                  input.data_ptr<scalar_t>(),
+                                                  scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, limit);
+              } else if (geom == 4) {
+                act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3<
+                    scalar_t, 16, true, 128, 2, true>
+                        <<<grid, 128, 0, stream>>>(num_tokens ,
+                                                  out.data_ptr<uint8_t>(),
+                                                  input.data_ptr<scalar_t>(),
+                                                  scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, limit);
+              } else {
+                act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3<
+                    scalar_t, 16, true, 64, 3>
+                        <<<grid, 64, 0, stream>>>(num_tokens ,
+                                                  out.data_ptr<uint8_t>(),
+                                                  input.data_ptr<scalar_t>(),
+                                                  scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, limit);
+              }
+            } else {
+              act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked<
+                  scalar_t, 16, true, 64, 3>
+                      <<<grid, 64, 0, stream>>>(num_tokens ,
+                                                fp8type,
+                                                out.data_ptr<uint8_t>(),
+                                                input.data_ptr<scalar_t>(),
+                                                scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, limit);
+            }
+              } else if (d == 2048) {
+            // d=2048: same conclusion — geom0 (VEC16/64/2) for all batch sizes.
+            if (fp8type == 0) {
+              int geom = 0;
+              if (const char* env = std::getenv("LIGHTOP_SILU_FP8_LIMIT_GEOM")) {
+                geom = std::atoi(env);
+              }
+              if (geom == 1) {
+                act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3<
+                    scalar_t, 8, true, 128, 2>
+                        <<<grid, 128, 0, stream>>>(num_tokens ,
+                                                  out.data_ptr<uint8_t>(),
+                                                  input.data_ptr<scalar_t>(),
+                                                  scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, limit);
+              } else if (geom == 2) {
+                act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3<
+                    scalar_t, 8, true, 256, 1>
+                        <<<grid, 256, 0, stream>>>(num_tokens ,
+                                                  out.data_ptr<uint8_t>(),
+                                                  input.data_ptr<scalar_t>(),
+                                                  scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, limit);
+              } else if (geom == 3) {
+                act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3<
+                    scalar_t, 8, true, 256, 1>
+                        <<<grid, 256, 0, stream>>>(num_tokens ,
+                                                  out.data_ptr<uint8_t>(),
+                                                  input.data_ptr<scalar_t>(),
+                                                  scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, limit);
+              } else if (geom == 4) {
+                act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3<
+                    scalar_t, 16, true, 128, 1>
+                        <<<grid, 128, 0, stream>>>(num_tokens ,
+                                                  out.data_ptr<uint8_t>(),
+                                                  input.data_ptr<scalar_t>(),
+                                                  scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, limit);
+              } else {
+                act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3<
+                    scalar_t, 16, true, 64, 2>
+                        <<<grid, 64, 0, stream>>>(num_tokens ,
+                                                  out.data_ptr<uint8_t>(),
+                                                  input.data_ptr<scalar_t>(),
+                                                  scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, limit);
+              }
+            } else {
+              act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked<
+                  scalar_t, 16, true, 64, 2>
+                      <<<grid, 64, 0, stream>>>(num_tokens ,
+                                                fp8type,
+                                                out.data_ptr<uint8_t>(),
+                                                input.data_ptr<scalar_t>(),
+                                                scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, limit);
+            }
+              } else if (d == 6144) {
+            // Keep prior specialization for 2*6144 inputs if needed.
+            act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked<
+                scalar_t, 16, true, 128, 3>
+                    <<<grid, 128, 0, stream>>>(num_tokens ,
+                                              fp8type,
+                                              out.data_ptr<uint8_t>(),
+                                              input.data_ptr<scalar_t>(),
+                                              scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr, limit);
+              } else if (d <= 512) {                                                      
             act_and_mul_fp8_quant_kernel_opt1_one_with_limit<scalar_t, 4, true, 128>
                     <<<grid, 128, 0, stream>>>(num_tokens ,
                                               fp8type,                  
