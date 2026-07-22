@@ -597,6 +597,13 @@ void fused_quantize_and_store_mla_kv_cache(
     const std::string& fp8_dtype = "fp8_e4m3",
     float eps = 1e-5f
 );
+void fused_concat_and_store_mla_kv_cache(
+    torch::Tensor k_nope,
+    torch::Tensor k_rope,
+    torch::Tensor kv_buffer,
+    torch::Tensor loc,
+    const std::string& fp8_dtype = "fp8_e4m3"
+);
 std::tuple<Tensor, Tensor, Tensor> qkv_split_rms_rotary_embedding_fuse(
     Tensor& positions, 
     Tensor& qkv, 
@@ -1007,6 +1014,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("fuse_layernorm_rotary_embedding", &at::native::fuse_layernorm_rotary_embedding, "fuse_layernorm_rotary_embedding");
  m.def("fuse_norm_rope_quant_fp8", &at::native::fuse_norm_rope_quant_fp8, "fuse_norm_rope_quant_fp8");
  m.def("fused_quantize_and_store_mla_kv_cache", &at::native::fused_quantize_and_store_mla_kv_cache, "fused_quantize_and_store_mla_kv_cache");
+ m.def("fused_concat_and_store_mla_kv_cache", &at::native::fused_concat_and_store_mla_kv_cache, "fused_concat_and_store_mla_kv_cache");
  m.def("qkv_split_rms_rotary_embedding_fuse", &at::native::qkv_split_rms_rotary_embedding_fuse, "qkv_split_rms_rotary_embedding_fuse");
  m.def("gemma_qkv_split_rms_rotary_embedding_fuse", &at::native::gemma_qkv_split_rms_rotary_embedding_fuse, "gemma_qkv_split_rms_rotary_embedding_fuse");
  m.def("layer_norm_fwd_1pass_opt", &at::native::layer_norm_fwd_1pass_opt,
