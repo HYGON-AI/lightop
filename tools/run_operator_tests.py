@@ -20,7 +20,7 @@ DEFAULT_FAILURE_PATTERNS = (
     r"Traceback \(most recent call last\):",
     r"AssertionError",
     r"(?im)^\s*(?:test\s+)?fail(?:ed)?\b",
-    r"(?i)\b\d+\s+failed(?:,|\s|$)",
+    r"(?i)\b[1-9]\d*\s+failed(?:,|\s|$)",
 )
 
 
