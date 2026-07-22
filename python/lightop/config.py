@@ -6,6 +6,12 @@ import torch
 
 from .utils import resource_path
 
+
+def get_w8a8_config_dir() -> str:
+    """Return the directory containing LightOp's packaged W8A8 configs."""
+    return resource_path("configs", "w8a8")
+
+
 # Adapted from: https://github.com/sgl-project/sglang/pull/2628
 def get_config_file_name(E: int,
                          N: int,
