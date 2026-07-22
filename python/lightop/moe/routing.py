@@ -25,6 +25,7 @@ def moe_align_block_size_out(
     expert_mask=None,
     num_local_tokens=None,
     is_ep=False,
+    is_fuse_fill=True,
 ):
     """Run expert alignment into caller-provided output tensors."""
     return op.moe_align_block_size(
@@ -38,6 +39,7 @@ def moe_align_block_size_out(
         expert_mask,
         num_local_tokens,
         is_ep,
+        is_fuse_fill,
     )
 
 __all__ = [
