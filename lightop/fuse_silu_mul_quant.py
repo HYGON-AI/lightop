@@ -101,7 +101,17 @@ def fuse_silu_mul_fp8_quant(input: torch.Tensor,
                         expect_m:int=-1,
                         output: Optional[torch.Tensor] = None,
                         scales: Optional[torch.Tensor] = None,
-                        expert_ids: Optional[torch.Tensor] = None) -> tuple[torch.Tensor, torch.Tensor]:
+                        expert_ids: Optional[torch.Tensor] = None,
+                        limit: Optional[float] = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run SwiGLU followed by per-token FP8 quantization.
+
+    When ``limit`` is provided, apply the DeepSeek V4 clamp in the input
+    dtype before activation: ``gate <= limit`` and ``-limit <= up <= limit``.
+    Leaving it as ``None`` preserves the original unclamped behavior.
+    """
+    if limit is not None and limit <= 0:
+        raise ValueError(f"limit must be positive when provided, but got {limit}")
+
     leading, d2 = input.shape          # d2 == 2*d
     d = d2 // 2
 
@@ -115,7 +125,17 @@ def fuse_silu_mul_fp8_quant(input: torch.Tensor,
                             device=input.device,
                             dtype=torch.float32)
 
-    op.fuse_silu_mul_fp8_quant(input, output.view(torch.uint8), scales, fp8type, num_local_tokens_tensor, topk, expect_m, expert_ids)
+    op.fuse_silu_mul_fp8_quant(
+        input,
+        output.view(torch.uint8),
+        scales,
+        fp8type,
+        num_local_tokens_tensor,
+        topk,
+        expect_m,
+        expert_ids,
+        -1.0 if limit is None else limit,
+    )
     return output, scales
 
 def fuse_silu_mul_fp8_quant_ep(input: torch.Tensor,
@@ -123,9 +143,18 @@ def fuse_silu_mul_fp8_quant_ep(input: torch.Tensor,
                         tokens_per_expert: Optional[torch.Tensor] = None,
                         num_local_tokens_tensor: Optional[torch.Tensor] = None,
                         topk:int=1,
-                        expect_m:int=-1) -> tuple[torch.Tensor, torch.Tensor]:
+                        expect_m:int=-1,
+                        limit: Optional[float] = None) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run EP SwiGLU followed by per-token FP8 quantization.
+
+    When ``limit`` is provided, apply the DeepSeek V4 clamp in the input
+    dtype before activation: ``gate <= limit`` and ``-limit <= up <= limit``.
+    Leaving it as ``None`` preserves the original unclamped behavior.
+    """
     if input.dim() != 3:
         raise ValueError(f"Input tensor must be 3-dimensional [E, T, H], but got shape {input.shape}")
+    if limit is not None and limit <= 0:
+        raise ValueError(f"limit must be positive when provided, but got {limit}")
 
     E, T, H = input.shape
     d = H // 2
@@ -138,7 +167,17 @@ def fuse_silu_mul_fp8_quant_ep(input: torch.Tensor,
                         device=input.device,
                         dtype=torch.float32)
 
-    op.fuse_silu_mul_fp8_quant_ep(input, output.view(torch.uint8), scales, fp8type, tokens_per_expert, num_local_tokens_tensor, topk, expect_m)
+    op.fuse_silu_mul_fp8_quant_ep(
+        input,
+        output.view(torch.uint8),
+        scales,
+        fp8type,
+        tokens_per_expert,
+        num_local_tokens_tensor,
+        topk,
+        expect_m,
+        -1.0 if limit is None else limit,
+    )
     return output, scales
 
 #通用接口
@@ -206,3 +245,4 @@ def relu2(input: torch.Tensor) -> torch.Tensor:
     
     op.relu2_opt(output, input)
     return output
+

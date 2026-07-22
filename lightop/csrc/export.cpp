@@ -311,8 +311,8 @@ std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, in
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids) ;
 void fuse_silu_mul_clamp_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit);
 void fuse_silu_mul_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m);
-void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids) ;
-void fuse_silu_mul_fp8_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m);
+void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids, float limit) ;
+void fuse_silu_mul_fp8_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m, float limit);
 void fuse_silu_and_mul(torch::Tensor& input, torch::Tensor& out);
 void fuse_silu_and_mul_ep(torch::Tensor& input, torch::Tensor& out, const torch::Tensor& mask_m, int expect_m);
 void moe_sum(torch::Tensor &input,
@@ -506,6 +506,21 @@ void cp_gather_and_upconvert_fp8_kv_cache(
     torch::Tensor const& seq_lens,          // [BATCH]
     torch::Tensor const& workspace_starts,  // [BATCH]
     int64_t batch_size); 
+void prefill_gather_and_upconvert_fp8_kv_cache(
+    torch::Tensor const& src_cache,
+    torch::Tensor const& page_table_flat,
+    torch::Tensor const& kv_dst);
+void decode_gather_and_up_convert(
+    torch::Tensor const& src_cache,
+    torch::Tensor const& token_ids,
+    torch::Tensor const& dst,
+    torch::Tensor const& valid_lengths);
+void decode_gather_and_up_convert_with_indices(
+    torch::Tensor const& src_cache,
+    torch::Tensor const& token_ids,
+    torch::Tensor const& dst,
+    torch::Tensor const& valid_lengths,
+    torch::Tensor const& compact_indices);
 void fast_topk_transform_interface(
     const at::Tensor& score,
     const at::Tensor& lengths,
@@ -519,6 +534,16 @@ void fast_topk_transform_ragged_interface(
     at::Tensor& topk_indices_ragged,
     const at::Tensor& topk_indices_offset,
     std::optional<at::Tensor> row_starts_opt);
+void fast_kpool_topk_transform_interface(
+    const at::Tensor& score,
+    const at::Tensor& lengths,
+    at::Tensor& output,
+    int64_t pool_size,
+    const at::Tensor& seq_lens,
+    std::optional<at::Tensor> page_table_opt,
+    std::optional<at::Tensor> topk_indices_offset_opt,
+    std::optional<at::Tensor> row_starts_opt,
+    std::optional<at::Tensor> page_table_row_index_opt);
 void fuse_act_quant_and_store_index_k_cache(
     torch::Tensor input,      
     torch::Tensor buf,     
@@ -960,7 +985,23 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("gemma_rms_norm_fp8_quant", &at::native::gemma_rms_norm_fp8_quant, "gemma_rms_norm_fp8_quant");
  m.def("fast_topk_transform_interface", &at::native::fast_topk_transform_interface, "fast_topk_transform_interface");
  m.def("fast_topk_transform_ragged_interface", &at::native::fast_topk_transform_ragged_interface, "fast_topk_transform_ragged_interface");   
+ m.def(
+     "fast_kpool_topk_transform_interface",
+     &at::native::fast_kpool_topk_transform_interface,
+     "Fused kpool topk, token expansion, index transform, and tail append",
+     py::arg("score"),
+     py::arg("lengths"),
+     py::arg("output"),
+     py::arg("pool_size"),
+     py::arg("seq_lens"),
+     py::arg("page_table") = py::none(),
+     py::arg("topk_indices_offset") = py::none(),
+     py::arg("row_starts") = py::none(),
+     py::arg("page_table_row_index") = py::none());
  m.def("cp_gather_and_upconvert_fp8_kv_cache", &at::native::cp_gather_and_upconvert_fp8_kv_cache, "cp_gather_and_upconvert_fp8_kv_cache");   
+ m.def("prefill_gather_and_upconvert_fp8_kv_cache", &at::native::prefill_gather_and_upconvert_fp8_kv_cache, "prefill_gather_and_upconvert_fp8_kv_cache");
+ m.def("decode_gather_and_up_convert", &at::native::decode_gather_and_up_convert, "decode_gather_and_up_convert");
+ m.def("decode_gather_and_up_convert_with_indices", &at::native::decode_gather_and_up_convert_with_indices, "decode_gather_and_up_convert_with_indices");
  m.def("fuse_act_quant_and_store_index_k_cache", &at::native::fuse_act_quant_and_store_index_k_cache, "fuse_act_quant_and_store_index_k_cache");
  m.def("fuse_qk_quant_and_store_index_k_cache", &at::native::fuse_qk_quant_and_store_index_k_cache, "fuse_qk_quant_and_store_index_k_cache");
  m.def("fuse_layernorm_rotary_embedding", &at::native::fuse_layernorm_rotary_embedding, "fuse_layernorm_rotary_embedding");
