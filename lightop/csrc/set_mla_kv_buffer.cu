@@ -597,6 +597,226 @@ void launch_quantize_nope_fp8_rope_bf16_pack_store(
     );
 }
 
+// MODE: 0=plain cast (bf16/fp16/fp32 -> bf16/fp16/fp32)
+//       1=fp8_e4m3 saturating cast (dst is uint8)
+//       2=fp8_e5m2 saturating cast (dst is uint8)
+template <typename src_t, typename dst_t, int MODE>
+__global__ void fused_concat_and_store_mla_kv_kernel(
+    const src_t* __restrict__ k_nope,
+    const src_t* __restrict__ k_rope,
+    dst_t* __restrict__ kv_buffer,
+    const int64_t* __restrict__ loc,
+    const int64_t buffer_stride,
+    const int64_t nope_stride,
+    const int64_t rope_stride,
+    const int nope_dim,
+    const int rope_dim,
+    const int num_tokens,
+    const int nope_blocks,
+    const int nope_threads_per_token,
+    const int rope_threads_per_token
+) {
+    constexpr int VEC = 8;
+    using SrcVec = at::native::memory::aligned_vector<src_t, VEC>;
+    using DstVec = at::native::memory::aligned_vector<dst_t, VEC>;
+
+    const src_t* src_base;
+    int lane_id;
+    int64_t token_loc;
+    int64_t dst_col_offset;
+    int64_t src_row_stride;
+
+    if (blockIdx.x < nope_blocks) {
+        int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+        int token_idx = global_tid / nope_threads_per_token;
+        lane_id = global_tid % nope_threads_per_token;
+        if (token_idx >= num_tokens) return;
+
+        token_loc = loc[token_idx];
+        src_base = k_nope + token_idx * nope_stride;
+        src_row_stride = nope_stride;
+        dst_col_offset = 0;
+    } else {
+        int rope_block_idx = blockIdx.x - nope_blocks;
+        int global_tid = rope_block_idx * blockDim.x + threadIdx.x;
+        int token_idx = global_tid / rope_threads_per_token;
+        lane_id = global_tid % rope_threads_per_token;
+        if (token_idx >= num_tokens) return;
+
+        token_loc = loc[token_idx];
+        src_base = k_rope + token_idx * rope_stride;
+        src_row_stride = rope_stride;
+        dst_col_offset = nope_dim;
+    }
+    (void)src_row_stride;
+
+    int elem_offset = lane_id * VEC;
+
+    src_t in_vec[VEC];
+    *(SrcVec*)in_vec = *(SrcVec*)(src_base + elem_offset);
+
+    dst_t out_vec[VEC];
+    if constexpr (MODE == 0) {
+        #pragma unroll
+        for (int i = 0; i < VEC; i++) {
+            out_vec[i] = static_cast<dst_t>(static_cast<float>(in_vec[i]));
+        }
+    } else {
+        float in_f[VEC];
+        #pragma unroll
+        for (int i = 0; i < VEC; i++) in_f[i] = static_cast<float>(in_vec[i]);
+
+        #pragma unroll
+        for (int i = 0; i < VEC; i += 4) {
+            uint32_t packed;
+            if constexpr (MODE == 1) {
+                packed = float_to_fp8e4m3_x4(
+                    in_f[i], in_f[i + 1], in_f[i + 2], in_f[i + 3]);
+            } else {
+                packed = float_to_fp8e5m2_x4(
+                    in_f[i], in_f[i + 1], in_f[i + 2], in_f[i + 3]);
+            }
+            *(uint32_t*)(reinterpret_cast<uint8_t*>(out_vec) + i) = packed;
+        }
+    }
+
+    *(DstVec*)(kv_buffer + token_loc * buffer_stride + dst_col_offset + elem_offset) =
+        *(DstVec*)out_vec;
+}
+
+template <typename src_t, typename dst_t, int MODE>
+static void launch_fused_concat_and_store_mla_kv_cache(
+    const torch::Tensor& k_nope,
+    const torch::Tensor& k_rope,
+    torch::Tensor& kv_buffer,
+    const torch::Tensor& loc
+) {
+    constexpr int VEC = 8;
+    constexpr int THREADS_PER_BLOCK = 128;
+
+    int num_tokens = (int)loc.size(0);
+    int nope_dim = (int)k_nope.size(-1);
+    int rope_dim = (int)k_rope.size(-1);
+
+    TORCH_CHECK(nope_dim % VEC == 0,
+        "nope_dim must be divisible by ", VEC, ", got ", nope_dim);
+    TORCH_CHECK(rope_dim % VEC == 0,
+        "rope_dim must be divisible by ", VEC, ", got ", rope_dim);
+
+    int nope_threads_per_token = nope_dim / VEC;
+    int rope_threads_per_token = rope_dim / VEC;
+    int nope_threads = num_tokens * nope_threads_per_token;
+    int rope_threads = num_tokens * rope_threads_per_token;
+    int nope_blocks = CEIL_DIV(nope_threads, THREADS_PER_BLOCK);
+    int rope_blocks = CEIL_DIV(rope_threads, THREADS_PER_BLOCK);
+    int total_blocks = nope_blocks + rope_blocks;
+    if (total_blocks == 0) return;
+
+    int64_t buffer_stride = kv_buffer.stride(0);
+    int64_t nope_stride = k_nope.stride(0);
+    int64_t rope_stride = k_rope.stride(0);
+
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    fused_concat_and_store_mla_kv_kernel<src_t, dst_t, MODE>
+        <<<total_blocks, THREADS_PER_BLOCK, 0, stream>>>(
+            k_nope.data_ptr<src_t>(),
+            k_rope.data_ptr<src_t>(),
+            reinterpret_cast<dst_t*>(kv_buffer.data_ptr()),
+            loc.data_ptr<int64_t>(),
+            buffer_stride,
+            nope_stride,
+            rope_stride,
+            nope_dim,
+            rope_dim,
+            num_tokens,
+            nope_blocks,
+            nope_threads_per_token,
+            rope_threads_per_token
+        );
+}
+
+template <typename src_t>
+static void dispatch_fused_concat_and_store_mla_kv_cache_dst(
+    const torch::Tensor& k_nope,
+    const torch::Tensor& k_rope,
+    torch::Tensor& kv_buffer,
+    const torch::Tensor& loc,
+    const std::string& fp8_dtype
+) {
+    auto dst_dtype = kv_buffer.scalar_type();
+    if (dst_dtype == torch::kBFloat16) {
+        launch_fused_concat_and_store_mla_kv_cache<src_t, at::BFloat16, 0>(
+            k_nope, k_rope, kv_buffer, loc);
+    } else if (dst_dtype == torch::kHalf) {
+        launch_fused_concat_and_store_mla_kv_cache<src_t, at::Half, 0>(
+            k_nope, k_rope, kv_buffer, loc);
+    } else if (dst_dtype == torch::kFloat) {
+        launch_fused_concat_and_store_mla_kv_cache<src_t, float, 0>(
+            k_nope, k_rope, kv_buffer, loc);
+    } else if (dst_dtype == torch::kUInt8) {
+        bool is_e4m3 = (fp8_dtype == "fp8_e4m3" || fp8_dtype == "fp8_e4m3fn" ||
+                        fp8_dtype == "fp8_e4m3fnuz");
+        if (is_e4m3) {
+            launch_fused_concat_and_store_mla_kv_cache<src_t, uint8_t, 1>(
+                k_nope, k_rope, kv_buffer, loc);
+        } else {
+            launch_fused_concat_and_store_mla_kv_cache<src_t, uint8_t, 2>(
+                k_nope, k_rope, kv_buffer, loc);
+        }
+    } else {
+        TORCH_CHECK(false,
+            "fused_concat_and_store_mla_kv_cache: unsupported kv_buffer dtype ",
+            dst_dtype);
+    }
+}
+
+void fused_concat_and_store_mla_kv_cache(
+    torch::Tensor k_nope,     // [num_tokens, (1,) nope_dim]
+    torch::Tensor k_rope,     // [num_tokens, (1,) rope_dim]
+    torch::Tensor kv_buffer,  // [total_slots, 1, nope_dim + rope_dim]
+    torch::Tensor loc,        // [num_tokens], int64
+    const std::string& fp8_dtype = "fp8_e4m3"
+) {
+    if (k_nope.dim() == 3) k_nope = k_nope.squeeze(1);
+    if (k_rope.dim() == 3) k_rope = k_rope.squeeze(1);
+
+    torch::Tensor kv_buffer_view = kv_buffer;
+    if (kv_buffer_view.dim() == 3) kv_buffer_view = kv_buffer_view.squeeze(1);
+
+    k_nope = k_nope.contiguous();
+    k_rope = k_rope.contiguous();
+    loc = loc.contiguous();
+
+    TORCH_CHECK(loc.scalar_type() == torch::kInt64,
+        "loc tensor must be Int64, got ", loc.scalar_type());
+    TORCH_CHECK(k_nope.scalar_type() == k_rope.scalar_type(),
+        "k_nope and k_rope must have the same dtype");
+    TORCH_CHECK(k_nope.size(0) == loc.size(0),
+        "num_tokens mismatch between k_nope and loc");
+    TORCH_CHECK(k_rope.size(0) == loc.size(0),
+        "num_tokens mismatch between k_rope and loc");
+    TORCH_CHECK(kv_buffer_view.size(-1) == k_nope.size(-1) + k_rope.size(-1),
+        "kv_buffer last dim (", kv_buffer_view.size(-1),
+        ") must equal nope_dim + rope_dim (",
+        k_nope.size(-1) + k_rope.size(-1), ")");
+
+    auto src_dtype = k_nope.scalar_type();
+    if (src_dtype == torch::kBFloat16) {
+        dispatch_fused_concat_and_store_mla_kv_cache_dst<at::BFloat16>(
+            k_nope, k_rope, kv_buffer_view, loc, fp8_dtype);
+    } else if (src_dtype == torch::kHalf) {
+        dispatch_fused_concat_and_store_mla_kv_cache_dst<at::Half>(
+            k_nope, k_rope, kv_buffer_view, loc, fp8_dtype);
+    } else if (src_dtype == torch::kFloat) {
+        dispatch_fused_concat_and_store_mla_kv_cache_dst<float>(
+            k_nope, k_rope, kv_buffer_view, loc, fp8_dtype);
+    } else {
+        TORCH_CHECK(false,
+            "fused_concat_and_store_mla_kv_cache: unsupported input dtype ",
+            src_dtype);
+    }
+}
+
 void quantize_nope_fp8_rope_bf16_pack_store(
     torch::Tensor k_bf16,
     torch::Tensor buf,
