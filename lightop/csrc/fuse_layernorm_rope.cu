@@ -186,13 +186,11 @@ __global__ void opt_layernorm_rope_split_kernel(
         if (i < head_dim) {
             #pragma unroll
             for(int j=0; j<VEC_SIZE; ++j) {
-                T_ACC n = (static_cast<T_ACC>(my_smem_head[i + j]) - mean) * inv_std;
                 if (do_layernorm) {
+                    T_ACC n = (static_cast<T_ACC>(my_smem_head[i + j]) - mean) * inv_std;
                     T_ACC g = gamma_ptr != nullptr ? static_cast<T_ACC>(gamma_ptr[i + j]) : static_cast<T_ACC>(1.0f);
                     T_ACC b = beta_ptr != nullptr ? static_cast<T_ACC>(beta_ptr[i + j]) : static_cast<T_ACC>(0.0f);
                     my_smem_head[i + j] = n * g + b;
-                } else {
-                    my_smem_head[i + j] = n;
                 }
             }
         }
