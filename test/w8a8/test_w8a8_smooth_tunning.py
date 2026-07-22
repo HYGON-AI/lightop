@@ -1,5 +1,4 @@
 import torch
-from lightop import op
 import time
 from lightop.gemm_ops import rocblas_scaled_mm_nn
 from typing import Optional
