@@ -5,7 +5,7 @@ import triton.language as tl
 from tqdm import trange
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from lightop.moe import moe_align_block_size
+from lightop.moe import moe_align_block_size, moe_marlin_w4a16
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # → lightop/test
@@ -119,7 +119,7 @@ def run_moe_marlin(inputs, weight, topk_ids, bit):
     def run():
         # output = torch.empty((num_tokens * top_k, n), device=inputs.device, dtype=inputs.dtype)
         # output.zero_()
-        return lightop.moe.moe_marlin_w4a16(
+        return moe_marlin_w4a16(
                                             inputs, 
                                             None, 
                                             qweight, 

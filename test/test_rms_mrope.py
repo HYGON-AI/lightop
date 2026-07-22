@@ -5,12 +5,7 @@ from triton.testing import do_bench
 from lightop.attention import (
     fuse_rms_mrope_cuda as categorized_fuse_rms_mrope_cuda,
 )
-
-try: 
-    import lightop
-except ImportError:
-    print("Error: lightop not installed. Cannot run fused kernel.")
-    op = None
+from lightop.norm import fused_add_rms_norm_opt, rms_norm_opt
 torch.manual_seed(0)
 # ---------------- Triton mRoPE kernel ----------------
 @triton.jit
@@ -212,11 +207,11 @@ def compare_and_bench(
     res_k_fused = residual_k.clone() if use_residual else None
     if use_residual:
         # lightop fused ops modify residual in-place
-        lightop.norm.fused_add_rms_norm_opt(q_rms, res_q_rms.view(num_tokens*n_q_heads, head_size), weight_q, 1e-6)
-        lightop.norm.fused_add_rms_norm_opt(k_rms, res_k_rms.view(num_tokens*n_kv_heads, head_size), weight_k, 1e-6)
+        fused_add_rms_norm_opt(q_rms, res_q_rms.view(num_tokens*n_q_heads, head_size), weight_q, 1e-6)
+        fused_add_rms_norm_opt(k_rms, res_k_rms.view(num_tokens*n_kv_heads, head_size), weight_k, 1e-6)
     else:
-        lightop.norm.rms_norm_opt(q_rms, q_rms, weight_q, 1e-6)
-        lightop.norm.rms_norm_opt(k_rms, k_rms, weight_k, 1e-6)
+        rms_norm_opt(q_rms, q_rms, weight_q, 1e-6)
+        rms_norm_opt(k_rms, k_rms, weight_k, 1e-6)
     import pdb
     # pdb.set_trace()
     q_triton = q_rms.view(num_tokens, n_q_heads * head_size)
@@ -259,11 +254,11 @@ def compare_and_bench(
 
         # 3. RMSNorm (Using _opt ops to match correctness check)
         if use_residual:
-            lightop.norm.fused_add_rms_norm_opt(q_rms_in, res_q_in.view(num_tokens*n_q_heads, head_size), weight_q, 1e-6)
-            lightop.norm.fused_add_rms_norm_opt(k_rms_in, res_k_in.view(num_tokens*n_kv_heads, head_size), weight_k, 1e-6)
+            fused_add_rms_norm_opt(q_rms_in, res_q_in.view(num_tokens*n_q_heads, head_size), weight_q, 1e-6)
+            fused_add_rms_norm_opt(k_rms_in, res_k_in.view(num_tokens*n_kv_heads, head_size), weight_k, 1e-6)
         else:
-            lightop.norm.rms_norm_opt(q_rms_in, q_rms_in, weight_q, 1e-6)
-            lightop.norm.rms_norm_opt(k_rms_in, k_rms_in, weight_k, 1e-6)
+            rms_norm_opt(q_rms_in, q_rms_in, weight_q, 1e-6)
+            rms_norm_opt(k_rms_in, k_rms_in, weight_k, 1e-6)
         
         # 4. View back
         q_triton_in = q_rms_in.view(num_tokens, n_q_heads * head_size)
