@@ -257,6 +257,197 @@ __inline__ __device__ T BlockReduceSum_NEW(T val, T* shared) {
   }
 }
 
+#ifdef USE_ROCM
+template <typename T, int width>
+__inline__ __device__ T SubWarpReduceSumWithWidth(T val) {
+#pragma unroll
+  for (int offset = width / 2; offset > 0; offset >>= 1) {
+    val += __shfl_down(val, offset, width);
+  }
+  return val;
+}
+
+template <typename scalar_t, typename T_ACC, int HiddenSize,
+          int ThreadsPerToken, int BlockSize=256, bool IS_GEMMA=false>
+__global__ void rms_kernel_small_hidden_multi_token(
+    scalar_t* input,
+    scalar_t* output,
+    scalar_t* gamma,
+    T_ACC eps,
+    int num_tokens) {
+  constexpr int Vec = 8;
+  constexpr int TokensPerBlock = BlockSize / ThreadsPerToken;
+  static_assert(HiddenSize == ThreadsPerToken * Vec);
+  static_assert(ThreadsPerToken <= C10_WARP_SIZE);
+  static_assert(C10_WARP_SIZE % ThreadsPerToken == 0);
+  static_assert(BlockSize % C10_WARP_SIZE == 0);
+
+  const int lane = threadIdx.x % ThreadsPerToken;
+  const int token_in_block = threadIdx.x / ThreadsPerToken;
+  const int token = blockIdx.x * TokensPerBlock + token_in_block;
+  const bool valid_token = token < num_tokens;
+  using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
+
+  scalar_t input_vec[Vec];
+  T_ACC sum = 0;
+  if (valid_token) {
+    const int64_t idx =
+        static_cast<int64_t>(token) * HiddenSize + lane * Vec;
+    *(LoadT*)input_vec = *(const LoadT*)(input + idx);
+#pragma unroll
+    for (int ii = 0; ii < Vec; ++ii) {
+      const T_ACC x = static_cast<T_ACC>(input_vec[ii]);
+      sum += x * x;
+    }
+  }
+
+  sum = SubWarpReduceSumWithWidth<T_ACC, ThreadsPerToken>(sum);
+  T_ACC rstd = 0;
+  if (lane == 0) {
+    rstd = c10::cuda::compat::rsqrt(sum / HiddenSize + eps);
+  }
+  rstd = __shfl(rstd, 0, ThreadsPerToken);
+
+  if (valid_token) {
+    scalar_t weight_vec[Vec];
+    *(LoadT*)weight_vec = *(const LoadT*)(gamma + lane * Vec);
+#pragma unroll
+    for (int ii = 0; ii < Vec; ++ii) {
+      T_ACC w_val = static_cast<T_ACC>(weight_vec[ii]);
+      if constexpr (IS_GEMMA) { w_val += 1.0f; }
+      input_vec[ii] =
+          static_cast<T_ACC>(input_vec[ii]) * rstd * w_val;
+    }
+    const int64_t idx =
+        static_cast<int64_t>(token) * HiddenSize + lane * Vec;
+    *(LoadT*)(output + idx) = *(LoadT*)input_vec;
+  }
+}
+
+template <typename scalar_t, typename T_ACC, int HiddenSize,
+          int ThreadsPerToken, int BlockSize=256, bool IS_GEMMA=false>
+__global__ void fused_add_rms_kernel_small_hidden_multi_token(
+    scalar_t* input,
+    scalar_t* residual,
+    scalar_t* gamma,
+    T_ACC eps,
+    int num_tokens) {
+  constexpr int Vec = 8;
+  constexpr int TokensPerBlock = BlockSize / ThreadsPerToken;
+  static_assert(HiddenSize == ThreadsPerToken * Vec);
+  static_assert(ThreadsPerToken <= C10_WARP_SIZE);
+  static_assert(C10_WARP_SIZE % ThreadsPerToken == 0);
+  static_assert(BlockSize % C10_WARP_SIZE == 0);
+
+  const int lane = threadIdx.x % ThreadsPerToken;
+  const int token_in_block = threadIdx.x / ThreadsPerToken;
+  const int token = blockIdx.x * TokensPerBlock + token_in_block;
+  const bool valid_token = token < num_tokens;
+  using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
+
+  scalar_t input_vec[Vec];
+  scalar_t residual_vec[Vec];
+  T_ACC sum = 0;
+  if (valid_token) {
+    const int64_t idx =
+        static_cast<int64_t>(token) * HiddenSize + lane * Vec;
+    *(LoadT*)input_vec = *(const LoadT*)(input + idx);
+    *(LoadT*)residual_vec = *(const LoadT*)(residual + idx);
+#pragma unroll
+    for (int ii = 0; ii < Vec; ++ii) {
+      residual_vec[ii] += input_vec[ii];
+      const T_ACC x = static_cast<T_ACC>(to_float(residual_vec[ii]));
+      sum += x * x;
+    }
+  }
+
+  sum = SubWarpReduceSumWithWidth<T_ACC, ThreadsPerToken>(sum);
+  T_ACC rstd = 0;
+  if (lane == 0) {
+    rstd = c10::cuda::compat::rsqrt(sum / HiddenSize + eps);
+  }
+  rstd = __shfl(rstd, 0, ThreadsPerToken);
+
+  if (valid_token) {
+    scalar_t weight_vec[Vec];
+    *(LoadT*)weight_vec = *(const LoadT*)(gamma + lane * Vec);
+#pragma unroll
+    for (int ii = 0; ii < Vec; ++ii) {
+      T_ACC w_val = static_cast<T_ACC>(to_float(weight_vec[ii]));
+      if constexpr (IS_GEMMA) { w_val += 1.0f; }
+      from_float<scalar_t>(
+          input_vec[ii], to_float(residual_vec[ii]) * rstd * w_val);
+    }
+    const int64_t idx =
+        static_cast<int64_t>(token) * HiddenSize + lane * Vec;
+    *(LoadT*)(residual + idx) = *(LoadT*)residual_vec;
+    *(LoadT*)(input + idx) = *(LoadT*)input_vec;
+  }
+}
+
+template <typename scalar_t, typename T_ACC, bool IS_GEMMA>
+static inline bool launch_rms_small_hidden_multi_token(
+    scalar_t* input,
+    scalar_t* output,
+    scalar_t* gamma,
+    int hidden_size,
+    T_ACC eps,
+    int num_tokens,
+    cudaStream_t stream) {
+  constexpr int BlockSize = 256;
+#define LAUNCH_SMALL_HIDDEN_RMS(HIDDEN_SIZE, THREADS_PER_TOKEN)               \
+  do {                                                                        \
+    constexpr int TokensPerBlock = BlockSize / THREADS_PER_TOKEN;             \
+    const int grid = (num_tokens + TokensPerBlock - 1) / TokensPerBlock;       \
+    rms_kernel_small_hidden_multi_token<                                      \
+        scalar_t, T_ACC, HIDDEN_SIZE, THREADS_PER_TOKEN, BlockSize,            \
+        IS_GEMMA><<<grid, BlockSize, 0, stream>>>(                             \
+        input, output, gamma, eps, num_tokens);                                \
+    return true;                                                              \
+  } while (0)
+
+  switch (hidden_size) {
+    case 512: LAUNCH_SMALL_HIDDEN_RMS(512, 64);
+    case 256: LAUNCH_SMALL_HIDDEN_RMS(256, 32);
+    case 128: LAUNCH_SMALL_HIDDEN_RMS(128, 16);
+    case 64: LAUNCH_SMALL_HIDDEN_RMS(64, 8);
+    default: return false;
+  }
+#undef LAUNCH_SMALL_HIDDEN_RMS
+}
+
+template <typename scalar_t, typename T_ACC, bool IS_GEMMA>
+static inline bool launch_fused_add_rms_small_hidden_multi_token(
+    scalar_t* input,
+    scalar_t* residual,
+    scalar_t* gamma,
+    int hidden_size,
+    T_ACC eps,
+    int num_tokens,
+    cudaStream_t stream) {
+  constexpr int BlockSize = 256;
+#define LAUNCH_SMALL_HIDDEN_FUSED_ADD_RMS(HIDDEN_SIZE, THREADS_PER_TOKEN)     \
+  do {                                                                        \
+    constexpr int TokensPerBlock = BlockSize / THREADS_PER_TOKEN;             \
+    const int grid = (num_tokens + TokensPerBlock - 1) / TokensPerBlock;       \
+    fused_add_rms_kernel_small_hidden_multi_token<                            \
+        scalar_t, T_ACC, HIDDEN_SIZE, THREADS_PER_TOKEN, BlockSize,            \
+        IS_GEMMA><<<grid, BlockSize, 0, stream>>>(                             \
+        input, residual, gamma, eps, num_tokens);                              \
+    return true;                                                              \
+  } while (0)
+
+  switch (hidden_size) {
+    case 512: LAUNCH_SMALL_HIDDEN_FUSED_ADD_RMS(512, 64);
+    case 256: LAUNCH_SMALL_HIDDEN_FUSED_ADD_RMS(256, 32);
+    case 128: LAUNCH_SMALL_HIDDEN_FUSED_ADD_RMS(128, 16);
+    case 64: LAUNCH_SMALL_HIDDEN_FUSED_ADD_RMS(64, 8);
+    default: return false;
+  }
+#undef LAUNCH_SMALL_HIDDEN_FUSED_ADD_RMS
+}
+#endif
+
 template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512, bool IS_GEMMA=false>
 __global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scalar_t* gamma,int cols,T_ACC eps, int num_tokens)
 {
@@ -439,8 +630,10 @@ void rms_norm_opt_impl(torch::Tensor& out,    // [..., hidden_size]
   const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   auto inp_ptr = reinterpret_cast<std::uintptr_t>(input.data_ptr());
+  auto out_ptr = reinterpret_cast<std::uintptr_t>(out.data_ptr());
   auto wt_ptr = reinterpret_cast<std::uintptr_t>(weight.data_ptr());
   bool ptrs_are_aligned =inp_ptr % 16 == 0  && wt_ptr % 16 == 0;
+  bool small_ptrs_are_aligned = ptrs_are_aligned && out_ptr % 16 == 0;
   if(hidden_size%16==0&&hidden_size<=16384&&ptrs_are_aligned){
   AT_DISPATCH_FLOATING_TYPES_AND2(
     at::ScalarType::Half,
@@ -453,6 +646,16 @@ void rms_norm_opt_impl(torch::Tensor& out,    // [..., hidden_size]
       scalar_t* self_data  = input.expect_contiguous()->data_ptr<scalar_t>();
       scalar_t* out_data   =  out.expect_contiguous()->data_ptr<scalar_t>();
       scalar_t* weight_data= weight.expect_contiguous()->data_ptr<scalar_t>();
+#ifdef USE_ROCM
+      if constexpr (!IS_GEMMA && sizeof(scalar_t) == 2) {
+        if (small_ptrs_are_aligned &&
+            launch_rms_small_hidden_multi_token<scalar_t, T_ACC, IS_GEMMA>(
+                self_data, out_data, weight_data, hidden_size, eps,
+                num_tokens, stream)) {
+          return;
+        }
+      }
+#endif
       if (hidden_size<=1024){
           fused_rms_kernel_opt<scalar_t,T_ACC,8,128, IS_GEMMA><<<grid,  128, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
       }
@@ -643,6 +846,16 @@ void fused_add_rms_norm_opt_impl(torch::Tensor& input,     // [..., hidden_size]
         scalar_t* self_data  = input.expect_contiguous()->data_ptr<scalar_t>();
         scalar_t* other_data = residual.expect_contiguous()->data_ptr<scalar_t>();
         scalar_t* weight_data= weight.expect_contiguous()->data_ptr<scalar_t>();
+#ifdef USE_ROCM
+        if constexpr (!IS_GEMMA && sizeof(scalar_t) == 2) {
+          if (launch_fused_add_rms_small_hidden_multi_token<
+                  scalar_t, T_ACC, IS_GEMMA>(
+                  self_data, other_data, weight_data, hidden_size, eps,
+                  num_tokens, stream)) {
+            return;
+          }
+        }
+#endif
         if (hidden_size<=1024){
             fused_add_rms_kernel_opt<scalar_t,T_ACC,8,128, IS_GEMMA><<<grid,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
         }
