@@ -675,10 +675,7 @@ void topk_transform_kernel_lightop(
       out_raw_indices);
 }
 
-constexpr int kKPoolSize = 16;
-constexpr int kKPoolGroupTopK = 128;
-constexpr int kKPoolTokenTopK = kKPoolSize * kKPoolGroupTopK;
-constexpr int kKPoolOutputCols = kKPoolTokenTopK + kKPoolSize - 1;
+constexpr int kKPoolTokenTopK = 2048;
 
 __device__ __forceinline__ int32_t transform_kpool_token_index(
     int raw_idx,
@@ -698,6 +695,7 @@ __device__ __forceinline__ int32_t transform_kpool_token_index(
   return static_cast<int32_t>(raw_idx + ragged_offset);
 }
 
+template <int kKPoolSize>
 __global__ __launch_bounds__(kThreadsPerBlock)
 void fused_kpool_topk_transform_kernel(
     FastTopKParams params,
@@ -712,6 +710,10 @@ void fused_kpool_topk_transform_kernel(
     int64_t page_table_cols,
     int score_cols,
     int rows) {
+  static_assert(kKPoolSize == 4 || kKPoolSize == 16);
+  constexpr int kKPoolGroupTopK = kKPoolTokenTopK / kKPoolSize;
+  constexpr int kKPoolOutputCols = kKPoolTokenTopK + kKPoolSize - 1;
+  constexpr int kKPoolSortSlots = kKPoolSize == 4 ? kKPoolGroupTopK : 1;
   const int bid = blockIdx.x;
   int32_t* out_row = output + static_cast<int64_t>(bid) * output_stride;
 
@@ -735,6 +737,8 @@ void fused_kpool_topk_transform_kernel(
       params.input + static_cast<int64_t>(bid) * params.input_stride;
 
   __shared__ int32_t selected_groups[kKPoolGroupTopK];
+  __shared__ uint32_t kpool_sort_keys[kKPoolSortSlots];
+  __shared__ int32_t kpool_sort_values[kKPoolSortSlots];
   if (length <= kKPoolGroupTopK) {
     vectorized_write<int32_t, int>(
         threadIdx.x,
@@ -765,8 +769,59 @@ void fused_kpool_topk_transform_kernel(
 
   const int history_groups =
       length < kKPoolGroupTopK ? length : kKPoolGroupTopK;
+  if constexpr (kKPoolSize == 4) {
+    // torch.topk returns selected groups in descending-score order.  Preserve
+    // that order for KPool4 because the paged FlashMLA decode reduction is
+    // numerically sensitive to the order of its sparse indices.
+    if (threadIdx.x < kKPoolGroupTopK) {
+      const int32_t group =
+          threadIdx.x < history_groups ? selected_groups[threadIdx.x] : -1;
+      kpool_sort_values[threadIdx.x] = group;
+      kpool_sort_keys[threadIdx.x] =
+          group >= 0 ? convert_to_uint32(logits[row_start + group])
+                     : UINT32_MAX;
+    }
+    __syncthreads();
+
+    // convert_to_uint32 maps larger floating-point scores to smaller integer
+    // keys, so an ascending bitonic sort produces descending score order.
+    // For equal scores, put larger group ids first; this matches torch.topk
+    // for the compact 16-column KPool4 decode rows used by the model.
+    for (int size = 2; size <= kKPoolGroupTopK; size <<= 1) {
+      for (int stride = size >> 1; stride > 0; stride >>= 1) {
+        if (threadIdx.x < kKPoolGroupTopK) {
+          const int peer = threadIdx.x ^ stride;
+          if (peer > threadIdx.x) {
+            const uint32_t lhs_key = kpool_sort_keys[threadIdx.x];
+            const uint32_t rhs_key = kpool_sort_keys[peer];
+            const int32_t lhs_value = kpool_sort_values[threadIdx.x];
+            const int32_t rhs_value = kpool_sort_values[peer];
+            const bool lhs_greater =
+                lhs_key > rhs_key ||
+                (lhs_key == rhs_key && lhs_value < rhs_value);
+            const bool lhs_less =
+                lhs_key < rhs_key ||
+                (lhs_key == rhs_key && lhs_value > rhs_value);
+            const bool ascending = (threadIdx.x & size) == 0;
+            if ((ascending && lhs_greater) || (!ascending && lhs_less)) {
+              kpool_sort_keys[threadIdx.x] = rhs_key;
+              kpool_sort_keys[peer] = lhs_key;
+              kpool_sort_values[threadIdx.x] = rhs_value;
+              kpool_sort_values[peer] = lhs_value;
+            }
+          }
+        }
+        __syncthreads();
+      }
+    }
+    if (threadIdx.x < history_groups) {
+      selected_groups[threadIdx.x] = kpool_sort_values[threadIdx.x];
+    }
+    __syncthreads();
+  }
+
   const int history_len = history_groups * kKPoolSize;
-  const int tail_count = seq_lens[bid] & (kKPoolSize - 1);
+  const int tail_count = seq_lens[bid] % kKPoolSize;
   const int tail_start = length * kKPoolSize;
   const int page_row = page_table_row_index ? page_table_row_index[bid] : bid;
   const int32_t ragged_offset =
@@ -782,7 +837,7 @@ void fused_kpool_topk_transform_kernel(
         int raw_idx = -1;
         if (col < history_len) {
           const int group_rank = col / kKPoolSize;
-          const int group_offset = col & (kKPoolSize - 1);
+          const int group_offset = col % kKPoolSize;
           raw_idx =
               selected_groups_ptr[group_rank] * kKPoolSize + group_offset;
         } else {
@@ -1030,14 +1085,15 @@ void fast_kpool_topk_transform_interface(
   }
 
   const int64_t rows = score.size(0);
-  TORCH_CHECK(pool_size == kKPoolSize, "kpool fused topk requires pool_size=16");
+  TORCH_CHECK(
+      pool_size == 4 || pool_size == 16,
+      "kpool fused topk requires pool_size=4 or 16");
   TORCH_CHECK(score.scalar_type() == at::kFloat, "score must be float32");
   TORCH_CHECK(
       score.dim() == 2 && score.stride(1) == 1,
       "score must be a 2D row-contiguous tensor");
   TORCH_CHECK(
-      score.size(1) <=
-          std::numeric_limits<int>::max() / kKPoolSize,
+      score.size(1) <= std::numeric_limits<int>::max() / pool_size,
       "score is too wide for the kpool fused topk kernel");
   TORCH_CHECK(
       lengths.scalar_type() == at::kInt && lengths.dim() == 1 &&
@@ -1050,8 +1106,9 @@ void fast_kpool_topk_transform_interface(
   TORCH_CHECK(
       output.scalar_type() == at::kInt && output.dim() == 2 &&
           output.is_contiguous() && output.size(0) >= rows &&
-          output.size(1) == kKPoolOutputCols,
-      "output must be contiguous int32 with shape [out_rows, 2063]");
+          output.size(1) == kKPoolTokenTopK + pool_size - 1,
+      "output must be contiguous int32 with shape "
+      "[out_rows, 2048 + pool_size - 1]");
   TORCH_CHECK(
       output.device() == score.device() && lengths.device() == score.device() &&
           seq_lens.device() == score.device(),
@@ -1125,21 +1182,27 @@ void fast_kpool_topk_transform_interface(
   const auto stream = at::cuda::getCurrentCUDAStream().stream();
   const auto grid = dim3{static_cast<uint32_t>(out_rows)};
   const auto block = dim3{kThreadsPerBlock};
-  constexpr size_t dynamic_smem = kKPoolGroupTopK * sizeof(int32_t);
-
-  fused_kpool_topk_transform_kernel<<<grid, block, dynamic_smem, stream>>>(
-      params,
-      output.data_ptr<int32_t>(),
-      seq_lens.data_ptr<int32_t>(),
-      page_table,
-      topk_indices_offset,
-      page_table_row_index,
-      output.stride(0),
-      page_table_stride,
-      page_table_rows,
-      page_table_cols,
-      static_cast<int>(score.size(1)),
-      static_cast<int>(rows));
+  if (pool_size == 4) {
+    constexpr size_t dynamic_smem =
+        (kKPoolTokenTopK / 4) * sizeof(int32_t);
+    fused_kpool_topk_transform_kernel<4>
+        <<<grid, block, dynamic_smem, stream>>>(
+            params, output.data_ptr<int32_t>(), seq_lens.data_ptr<int32_t>(),
+            page_table, topk_indices_offset, page_table_row_index,
+            output.stride(0), page_table_stride, page_table_rows,
+            page_table_cols, static_cast<int>(score.size(1)),
+            static_cast<int>(rows));
+  } else {
+    constexpr size_t dynamic_smem =
+        (kKPoolTokenTopK / 16) * sizeof(int32_t);
+    fused_kpool_topk_transform_kernel<16>
+        <<<grid, block, dynamic_smem, stream>>>(
+            params, output.data_ptr<int32_t>(), seq_lens.data_ptr<int32_t>(),
+            page_table, topk_indices_offset, page_table_row_index,
+            output.stride(0), page_table_stride, page_table_rows,
+            page_table_cols, static_cast<int>(score.size(1)),
+            static_cast<int>(rows));
+  }
 
   const auto result = cudaGetLastError();
   TORCH_CHECK(

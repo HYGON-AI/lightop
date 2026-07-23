@@ -825,16 +825,6 @@ __global__ void decode_gather_and_up_convert_with_indices_kernel(
             : -1;
     }
 
-    // In the graph-padded 300B KPool workspace, compact_indices is the
-    // authoritative sparse mask.  FlashMLA never reads dst slots whose index
-    // is -1, so avoid writing 1024 zero bytes for each padded slot.
-    if constexpr (!kCopyRope) {
-        if (!is_valid && gridDim.y == 48 &&
-            (width == 2048 || width == 2112)) {
-            return;
-        }
-    }
-
     __nv_bfloat16* dst_ptr =
         dst + (batch_id * width + token_offset) * kHeadDim;
     using PackedBF16Vec = Vector<uint32_t, kElementsPerLane / 2>;
