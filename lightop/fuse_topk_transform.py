@@ -136,9 +136,10 @@ def fast_kpool_topk_transform_fused(
     page_table_row_index: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """Fuse pooled TopK, token expansion, index mapping, and tail append."""
-    if pool_size != 16 or topk != 2048:
+    if pool_size not in (4, 16) or topk != 2048:
         raise ValueError(
-            "fast_kpool_topk_transform_fused requires pool_size=16 and topk=2048"
+            "fast_kpool_topk_transform_fused requires pool_size=4 or 16 "
+            "and topk=2048"
         )
     if seq_lens is None:
         raise ValueError("seq_lens is required for the kpool tail")
