@@ -713,7 +713,6 @@ void fused_kpool_topk_transform_kernel(
   static_assert(kKPoolSize == 4 || kKPoolSize == 16);
   constexpr int kKPoolGroupTopK = kKPoolTokenTopK / kKPoolSize;
   constexpr int kKPoolOutputCols = kKPoolTokenTopK + kKPoolSize - 1;
-  constexpr int kKPoolSortSlots = kKPoolSize == 4 ? kKPoolGroupTopK : 1;
   const int bid = blockIdx.x;
   int32_t* out_row = output + static_cast<int64_t>(bid) * output_stride;
 
@@ -737,8 +736,6 @@ void fused_kpool_topk_transform_kernel(
       params.input + static_cast<int64_t>(bid) * params.input_stride;
 
   __shared__ int32_t selected_groups[kKPoolGroupTopK];
-  __shared__ uint32_t kpool_sort_keys[kKPoolSortSlots];
-  __shared__ int32_t kpool_sort_values[kKPoolSortSlots];
   if (length <= kKPoolGroupTopK) {
     vectorized_write<int32_t, int>(
         threadIdx.x,
@@ -769,56 +766,6 @@ void fused_kpool_topk_transform_kernel(
 
   const int history_groups =
       length < kKPoolGroupTopK ? length : kKPoolGroupTopK;
-  if constexpr (kKPoolSize == 4) {
-    // torch.topk returns selected groups in descending-score order.  Preserve
-    // that order for KPool4 because the paged FlashMLA decode reduction is
-    // numerically sensitive to the order of its sparse indices.
-    if (threadIdx.x < kKPoolGroupTopK) {
-      const int32_t group =
-          threadIdx.x < history_groups ? selected_groups[threadIdx.x] : -1;
-      kpool_sort_values[threadIdx.x] = group;
-      kpool_sort_keys[threadIdx.x] =
-          group >= 0 ? convert_to_uint32(logits[row_start + group])
-                     : UINT32_MAX;
-    }
-    __syncthreads();
-
-    // convert_to_uint32 maps larger floating-point scores to smaller integer
-    // keys, so an ascending bitonic sort produces descending score order.
-    // For equal scores, put larger group ids first; this matches torch.topk
-    // for the compact 16-column KPool4 decode rows used by the model.
-    for (int size = 2; size <= kKPoolGroupTopK; size <<= 1) {
-      for (int stride = size >> 1; stride > 0; stride >>= 1) {
-        if (threadIdx.x < kKPoolGroupTopK) {
-          const int peer = threadIdx.x ^ stride;
-          if (peer > threadIdx.x) {
-            const uint32_t lhs_key = kpool_sort_keys[threadIdx.x];
-            const uint32_t rhs_key = kpool_sort_keys[peer];
-            const int32_t lhs_value = kpool_sort_values[threadIdx.x];
-            const int32_t rhs_value = kpool_sort_values[peer];
-            const bool lhs_greater =
-                lhs_key > rhs_key ||
-                (lhs_key == rhs_key && lhs_value < rhs_value);
-            const bool lhs_less =
-                lhs_key < rhs_key ||
-                (lhs_key == rhs_key && lhs_value > rhs_value);
-            const bool ascending = (threadIdx.x & size) == 0;
-            if ((ascending && lhs_greater) || (!ascending && lhs_less)) {
-              kpool_sort_keys[threadIdx.x] = rhs_key;
-              kpool_sort_keys[peer] = lhs_key;
-              kpool_sort_values[threadIdx.x] = rhs_value;
-              kpool_sort_values[peer] = lhs_value;
-            }
-          }
-        }
-        __syncthreads();
-      }
-    }
-    if (threadIdx.x < history_groups) {
-      selected_groups[threadIdx.x] = kpool_sort_values[threadIdx.x];
-    }
-    __syncthreads();
-  }
 
   const int history_len = history_groups * kKPoolSize;
   const int tail_count = seq_lens[bid] % kKPoolSize;
