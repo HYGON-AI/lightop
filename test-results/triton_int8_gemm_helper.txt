@@ -1,0 +1,5 @@
+测试时间：2026-07-15
+测试环境：luoyao-qwen35b-a3b-int8-env
+测试命令：pytest -q test/test_gemm_ops_triton_int8_gemm_helper.py
+测试结果：2 passed in 14.52s
+覆盖内容：公开接口直接绑定、完整签名、含 bias 的逐 token/逐通道 INT8 GEMM GPU 暖机调用。

@@ -16,10 +16,12 @@ from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
 import triton
 import triton.language as tl
 import lmslim.envs as lsenvs
-from vllm.utils import W8a8GetCacheJSON
+from common.w8a8_cache_json import W8a8GetCacheJSON
 import torch.nn.functional as F
-from lmslim.layers.gemm.int8_utils import (
-    per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 from lmslim.layers.gemm.fp8_utils import per_token_group_quant_fp8
 from w8a8_quant import w8a8_2_marlin_weight
 import random
@@ -35,7 +37,7 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 
 if use_lightop:
-    from lightop import moe_gemm_marlin_w8a8_fp8, moe_gemm_marlin_w8a8_blockwise_fp8, get_moe_cuda_marlin_config
+    from lightop.moe import moe_gemm_marlin_w8a8_fp8, moe_gemm_marlin_w8a8_blockwise_fp8, get_moe_cuda_marlin_config
     try:
         from moe_w8a8_prefill_gemm import backend
         from grouped_gemm import moe_gemm_decode_prof

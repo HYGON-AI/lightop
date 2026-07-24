@@ -1,6 +1,7 @@
 import torch
-import lightop
+from lightop import gemm_ops
 import time
+from lightop.quant import fp8_to_16
 
 torch.set_printoptions(precision=4,threshold=100000,linewidth=140,sci_mode=False)
 torch.random.manual_seed(0)
@@ -16,7 +17,7 @@ def test(m,n,k,warps,nperblock,splitk):
     scale=torch.rand([(n-1)//128+1,(k-1)//128+1]).cuda()
     bh = torch.empty(b.size(),dtype=type,device="cuda")
     # bh = (b.to(torch.float32) * scale.repeat_interleave(128, dim=0).repeat_interleave(128, dim=1)[:n, :k]).to(type)
-    lightop.fp8_to_16(bh,b,scale)
+    fp8_to_16(bh,b,scale)
     if not acc:
         for i in range(5):
             outref=torch.mm(a,bh.t())
@@ -29,11 +30,11 @@ def test(m,n,k,warps,nperblock,splitk):
         fc1_espl = end_time - start_time
 
         for i in range(5):
-            out=lightop.gemm_w8a16_fp8(a,b.t(),scale,warps,nperblock,splitk)
+            out=gemm_ops.gemm_w8a16_fp8(a,b.t(),scale,warps,nperblock,splitk)
         torch.cuda.synchronize()
         start_time = time.time()
         for i in range(repeat_num):
-            out=lightop.gemm_w8a16_fp8(a,b.t(),scale,warps,nperblock,splitk)
+            out=gemm_ops.gemm_w8a16_fp8(a,b.t(),scale,warps,nperblock,splitk)
         torch.cuda.synchronize()
         end_time = time.time()
         fc2_espl = end_time - start_time
@@ -42,7 +43,7 @@ def test(m,n,k,warps,nperblock,splitk):
     
     else:
         outref=torch.mm(a,bh.t())
-        out=lightop.gemm_w8a16_fp8(a,b.t(),scale,warps,nperblock,splitk)
+        out=gemm_ops.gemm_w8a16_fp8(a,b.t(),scale,warps,nperblock,splitk)
         print(out)
         print(outref)
         

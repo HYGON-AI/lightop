@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import time
 import torch.nn.functional as F
-from lightop import CeluGN
+from lightop.norm import CeluGN
 
 
 class Torch_CeluGN(torch.nn.Module):

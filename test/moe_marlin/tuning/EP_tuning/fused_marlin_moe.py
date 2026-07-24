@@ -7,25 +7,25 @@ import pdb
 import torch
 import lightop
 
-import vllm._custom_ops as ops
-from vllm.model_executor.layers.fused_moe.fused_moe import moe_align_block_size
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from lmslim.layers.gemm.int8_utils import (
-   per_token_group_quant_int8, per_token_quant_int8)
-
 from triton_w4a8 import invoke_fused_moe_kernel_w4a8
 import triton
 import triton.language as tl
 
 from marlin_quant import unpack_int8_to_int4
 
-from lightop import moe_gemm_marlin_w4a8, get_moe_cuda_config_w4a8, get_moe_cuda_marlin_config_w4a8
-from lightop import get_moe_cuda_marlin_config_w4a8, moe_gemm_marlin_w4a8, fuse_silu_mul_quant
-from lightop import op as op
+from lightop.moe import (
+    get_moe_cuda_config_w4a8,
+    get_moe_cuda_marlin_config_w4a8,
+    moe_align_block_size_out,
+    moe_gemm_marlin_w4a8,
+)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
+from lightop.activation import fuse_silu_mul_quant
 
-from vllm.platforms import current_platform
-device_name = current_platform.get_device_name().replace(" ", "_")
-num_cus= torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 
 # 应用 256 降到 32 的 moe_align 优化
 def moe_align_block_size_lightop_new(
@@ -76,7 +76,7 @@ def moe_align_block_size_lightop_new(
     # print(topk_ids)
     # print("local_num_tokens: ", local_num_tokens)    
     # assert False
-    op.moe_align_block_size(topk_ids, 
+    moe_align_block_size_out(topk_ids,
                             num_experts, 
                             block_size, 
                             sorted_ids,
@@ -128,7 +128,7 @@ def moe_align_block_size_lightop(
     num_tokens_post_pad = torch.zeros((1),
                                       dtype=torch.int32,
                                       device=topk_ids.device)    
-    op.moe_align_block_size(topk_ids, num_experts, block_size, sorted_ids,
+    moe_align_block_size_out(topk_ids, num_experts, block_size, sorted_ids,
                                  expert_ids, num_tokens_post_pad,expert_map, expert_mask, num_local_tokens, Is_EP=True)
 
     return sorted_ids, expert_ids, num_tokens_post_pad

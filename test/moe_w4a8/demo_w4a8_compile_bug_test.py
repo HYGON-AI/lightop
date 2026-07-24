@@ -14,7 +14,7 @@ from vllm import _custom_ops as ops
 import pdb
 from vllm.platforms import current_platform
 import triton.language as tl
-from lightop import moe_gemm_w4a8
+from lightop.moe import moe_gemm_w4a8
 from vllm.model_executor.layers.fused_moe.fused_moe import moe_kernel_prepare_input
 @triton.jit
 def _per_token_group_quant_int8(

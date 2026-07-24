@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 import time
 
 # 导入你的底层融合算子
-from lightop import op
+from lightop.kvcache import fuse_act_quant_and_store_index_k_cache
 
 # ==========================================
 # 环境变量 (确保代码可以正常运行)
@@ -249,7 +249,7 @@ def run_benchmark():
         _set_k_and_s_triton(buf_ref, loc_int64, k_fp8, k_scale, page_size)
         
         # Fused Operator
-        op.fuse_act_quant_and_store_index_k_cache(
+        fuse_act_quant_and_store_index_k_cache(
             key, 
             buf_fused, 
             loc_int64, 
@@ -301,12 +301,12 @@ def run_benchmark():
 
         # ---- 融合算子性能测试 ----
         for _ in range(warmup_iters):
-            op.fuse_act_quant_and_store_index_k_cache(key, buf_fused, loc_int64, page_size, 1e-5, False, True)
+            fuse_act_quant_and_store_index_k_cache(key, buf_fused, loc_int64, page_size, 1e-5, False, True)
             
         torch.cuda.synchronize()
         start_event.record()
         for _ in range(bench_iters):
-            op.fuse_act_quant_and_store_index_k_cache(key, buf_fused, loc_int64, page_size, 1e-5, False, True)
+            fuse_act_quant_and_store_index_k_cache(key, buf_fused, loc_int64, page_size, 1e-5, False, True)
         end_event.record()
         torch.cuda.synchronize()
         fused_time_us = start_event.elapsed_time(end_event) * 1000 / bench_iters

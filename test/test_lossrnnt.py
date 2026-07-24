@@ -3,9 +3,12 @@ import time
 
 import numpy as np
 import torch
-import torchaudio
+try:
+    import torchaudio
+except ModuleNotFoundError:
+    torchaudio = None
 
-from lightop import RNNTLoss as lightop_RNNTLoss
+from lightop.loss import RNNTLoss as lightop_RNNTLoss
 
 torch.set_printoptions(precision=10)
 
@@ -74,6 +77,9 @@ def single_op_test(repeat_num, transform, p, gt, p_len, gt_len, name='torch'):
 
 
 def test_compare_gpu(repeat_num=100, use_half=False, **args):
+    if torchaudio is None:
+        print("SKIP: torchaudio is not installed; RNNT correctness is covered by test_loss_existing_api.py")
+        return
     p, gt, p_len, gt_len = get_data_v2(use_cuda=True, use_half=use_half, **args)
     print('p shape ', p.shape, p.dtype, ' gt shape ', gt.shape)
     print('p_len ', p_len, p_len.shape)

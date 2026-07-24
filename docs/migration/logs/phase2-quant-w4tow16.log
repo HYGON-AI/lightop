@@ -1,0 +1,9 @@
+Focused category/unpack test
+============================
+1 passed in 15.73s
+
+Compatibility manifest check
+============================
+lightop_python_api.txt: 143 entries
+lightop_op_symbols.txt: 209 entries
+lmslim_required_lightop_api.txt: 22 entries

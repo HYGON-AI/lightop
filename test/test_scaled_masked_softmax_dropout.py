@@ -1,7 +1,8 @@
 import math
 import torch
 import time
-from lightop import FusedScaleMaskSoftmaxDropout,FusedScaleMaskSoftmax,AttnMaskType
+from lightop import AttnMaskType
+from lightop.attention import FusedScaleMaskSoftmax, FusedScaleMaskSoftmaxDropout
 
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):

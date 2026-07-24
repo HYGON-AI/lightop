@@ -3,12 +3,14 @@ from typing import List, Optional, Union
 import glob
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension, ROCM_HOME
 from setuptools import find_packages, setup
 from setuptools.command.build_ext import build_ext
-from pkg_resources import packaging  # type: ignore[attr-defined]
+from setuptools.command.build_py import build_py
+from packaging import version
 from get_version import get_version, get_dtk_version
 
 def _get_pytorch_version_int():
@@ -168,9 +170,9 @@ def _write_ninja_file(path, cflags, post_cflags, cuda_cflags, cuda_post_cflags, 
     if with_cuda:
         cuda_compile_rule = ['rule cuda_compile']
         nvcc_gendeps = ''
-        required_cuda_version = packaging.version.parse('10.2')
+        required_cuda_version = version.parse('10.2')
         has_cuda_version = torch.version.cuda is not None
-        if has_cuda_version and packaging.version.parse(torch.version.cuda) >= required_cuda_version:
+        if has_cuda_version and version.parse(torch.version.cuda) >= required_cuda_version:
             cuda_compile_rule.append('  depfile = $out.d')
             cuda_compile_rule.append('  deps = gcc')
         cuda_compile_rule.append(
@@ -341,9 +343,9 @@ class BuildReleaseExtension(BuildExtension):
                     extra_cc_cflags.remove('-Wall')
                 print("release mode")
             
-            marlin_w4a16_dir = os.path.abspath('./lightop/csrc/marlinw4a16/')
-            marlin_w4a8_dir = os.path.abspath('./lightop/csrc/marlinw4a8/')
-            marlin_w4fp8_dir = os.path.abspath('./lightop/csrc/marlinw4fp8/')  # 如果也需要特殊处理
+            marlin_w4a16_dir = os.path.abspath('./csrc/marlinw4a16/')
+            marlin_w4a8_dir = os.path.abspath('./csrc/marlinw4a8/')
+            marlin_w4fp8_dir = os.path.abspath('./csrc/marlinw4fp8/')  # 如果也需要特殊处理
 
             marlin_w4a16_sources = []
             marlin_w4a8_sources = []
@@ -514,49 +516,49 @@ def get_extensions():
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_110')
     if torch_version >= 290:
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_290')
-    op_files = glob.glob('./lightop/csrc/*.cu') + glob.glob('./lightop/csrc/*.cpp') + \
-               glob.glob('./lightop/csrc/layernorm/*.cu') + glob.glob('./lightop/csrc/loss/*.cu') + \
-               glob.glob('./lightop/csrc/scaledmask/*.cu') + glob.glob('./lightop/csrc/groupnorm/*.cu') + \
-               glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + \
-               glob.glob('./lightop/csrc/grid_sample/*.cu') + \
-               glob.glob('./lightop/csrc/softmax/*.cu') + \
-               glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + glob.glob('./lightop/csrc/moew16a16/*.cu') + \
-               glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
-               glob.glob('./lightop/csrc/marlinw4fp8/*.cu') +\
-               glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu') +\
-               glob.glob('./lightop/csrc/mqa_logits/*.cu') + glob.glob('./lightop/csrc/paged_mqa_logits/*.cu')+ glob.glob('./lightop/csrc/bmm_scale/*.cu') + \
-               glob.glob('./lightop/csrc/polyfill/*.cu') + glob.glob('./lightop/csrc/awq_w4a16_gemm/*.cu') + \
-               glob.glob('./lightop/csrc/sampling/*.cu')
+    op_files = glob.glob('./csrc/*.cu') + glob.glob('./csrc/*.cpp') + \
+               glob.glob('./csrc/layernorm/*.cu') + glob.glob('./csrc/loss/*.cu') + \
+               glob.glob('./csrc/scaledmask/*.cu') + glob.glob('./csrc/groupnorm/*.cu') + \
+               glob.glob('./csrc/rmsnorm/*.cu') + glob.glob('./csrc/batchnorm/*.cu') + \
+               glob.glob('./csrc/grid_sample/*.cu') + \
+               glob.glob('./csrc/softmax/*.cu') + \
+               glob.glob('./csrc/moew8a8/*.cu') + glob.glob('./csrc/asm_cu/*.cu') + glob.glob('./csrc/moew16a16/*.cu') + \
+               glob.glob('./csrc/moew4a8/*.cu') + glob.glob('./csrc/marlinw4a16/*.cu')+ glob.glob('./csrc/marlinw4a8/*.cu') +\
+               glob.glob('./csrc/marlinw4fp8/*.cu') +\
+               glob.glob('./csrc/blockwise_scaling/*.cu') + glob.glob('./csrc/storeKvcache/*.cu') + glob.glob('./csrc/concat/*.cu') +\
+               glob.glob('./csrc/mqa_logits/*.cu') + glob.glob('./csrc/paged_mqa_logits/*.cu')+ glob.glob('./csrc/bmm_scale/*.cu') + \
+               glob.glob('./csrc/polyfill/*.cu') + glob.glob('./csrc/awq_w4a16_gemm/*.cu') + \
+               glob.glob('./csrc/sampling/*.cu')
 
     extension = CUDAExtension
     # 添加marlinw4a16目录的包含路径
-    include_dirs.append(os.path.abspath('./lightop/csrc/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/marlinw4a16/'))  # 新增marlinw4a16的include路径
-    include_dirs.append(os.path.abspath('./lightop/csrc/marlinw4a8/'))  # 新增marlinw4a8的include路径
-    include_dirs.append(os.path.abspath('./lightop/csrc/marlinw4fp8/'))  # 新增marlinw4a8的include路径
-    include_dirs.append(os.path.abspath('./lightop/csrc/layernorm/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/groupnorm/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/rmsnorm/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/grid_sample/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/batchnorm/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/loss/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/scaledmask/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/softmax/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/moew8a8/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/storeKvcache/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/storeKvcache/attention/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/moew4a8/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/moew16a16/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/blockwise_scaling/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/concat/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/paged_mqa_logits/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/bmm_scale/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/awq_w4a16_gemm/'))
-    include_dirs.append(os.path.abspath('./lightop/csrc/sampling/'))
+    include_dirs.append(os.path.abspath('./csrc/'))
+    include_dirs.append(os.path.abspath('./csrc/marlinw4a16/'))  # 新增marlinw4a16的include路径
+    include_dirs.append(os.path.abspath('./csrc/marlinw4a8/'))  # 新增marlinw4a8的include路径
+    include_dirs.append(os.path.abspath('./csrc/marlinw4fp8/'))  # 新增marlinw4a8的include路径
+    include_dirs.append(os.path.abspath('./csrc/layernorm/'))
+    include_dirs.append(os.path.abspath('./csrc/groupnorm/'))
+    include_dirs.append(os.path.abspath('./csrc/rmsnorm/'))
+    include_dirs.append(os.path.abspath('./csrc/grid_sample/'))
+    include_dirs.append(os.path.abspath('./csrc/batchnorm/'))
+    include_dirs.append(os.path.abspath('./csrc/loss/'))
+    include_dirs.append(os.path.abspath('./csrc/scaledmask/'))
+    include_dirs.append(os.path.abspath('./csrc/softmax/'))
+    include_dirs.append(os.path.abspath('./csrc/moew8a8/'))
+    include_dirs.append(os.path.abspath('./csrc/storeKvcache/'))
+    include_dirs.append(os.path.abspath('./csrc/storeKvcache/attention/'))
+    include_dirs.append(os.path.abspath('./csrc/moew4a8/'))
+    include_dirs.append(os.path.abspath('./csrc/moew16a16/'))
+    include_dirs.append(os.path.abspath('./csrc/blockwise_scaling/'))
+    include_dirs.append(os.path.abspath('./csrc/concat/'))
+    include_dirs.append(os.path.abspath('./csrc/paged_mqa_logits/'))
+    include_dirs.append(os.path.abspath('./csrc/bmm_scale/'))
+    include_dirs.append(os.path.abspath('./csrc/awq_w4a16_gemm/'))
+    include_dirs.append(os.path.abspath('./csrc/sampling/'))
     rocm_home=_find_rocm_home()
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/rocrand/include')
-    include_dirs.append(os.path.abspath('./lightop/csrc/mqa_logits/'))
+    include_dirs.append(os.path.abspath('./csrc/mqa_logits/'))
     
     # 核心库：lightop.op
     ext_ops = extension(
@@ -579,13 +581,32 @@ pytorch_dep = 'torch'
 if os.getenv('PYTORCH_VERSION'):
     pytorch_dep += "==" + os.getenv('PYTORCH_VERSION')
 
+PACKAGE_RESOURCE_DIRS = {
+    "configs": "configs",
+    "hsa": "hsa",
+    "lib": "lib",
+    "third_party/librarygemmbiasf": "librarygemmbiasf",
+    "third_party/librarygemmdbiasb": "librarygemmdbiasb",
+}
+
+
+class BuildPyWithResources(build_py):
+    """Copy repository-level runtime resources into the installed package."""
+
+    def run(self):
+        super().run()
+        package_root = os.path.join(self.build_lib, "lightop")
+        for source, destination in PACKAGE_RESOURCE_DIRS.items():
+            shutil.copytree(source, os.path.join(package_root, destination), dirs_exist_ok=True)
+
 
 setup(
     name='lightop',
     version=get_version(ROCM_HOME),
     description='Torch Fast Operator Foundation',
     keywords='CV, NLP',
-    packages=find_packages(),
+    packages=find_packages(where="python"),
+    package_dir={"": "python"},
     include_package_data=False,
     package_data={
         'lightop': [
@@ -601,7 +622,8 @@ setup(
     },
     ext_modules=get_extensions(),
     cmdclass={
-        'build_ext': BuildReleaseExtension
+        'build_ext': BuildReleaseExtension,
+        'build_py': BuildPyWithResources,
     },
     zip_safe=False,
     install_requires=[

@@ -215,7 +215,7 @@ def ref_copy(kw):
 
 def test_correctness(**kw):
     """Compare CUDA vs Triton vs PyTorch reference."""
-    from lightop import fused_metadata_kernel_general as cuda_fn
+    from lightop.kvcache import fused_metadata_kernel_general as cuda_fn
 
     def clone_kw():
         return {k: (v.clone() if isinstance(v, torch.Tensor) else v) for k, v in kw.items()}
@@ -300,7 +300,7 @@ def main():
 
     torch.cuda.set_device(0)
     device = 'cuda'
-    from lightop import fused_metadata_kernel_general as cuda_fn
+    from lightop.kvcache import fused_metadata_kernel_general as cuda_fn
 
     test_configs = [
         # (B, num_reqs, max_seq_pages, page_size, seq_len_delta, use_swa)
