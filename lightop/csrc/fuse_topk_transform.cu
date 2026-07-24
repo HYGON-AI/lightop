@@ -34,6 +34,12 @@
 namespace {
 
 constexpr int kThreadsPerBlock = 1024;
+constexpr int kKPool4VgprItemsPerThread = 22;
+constexpr int kKPool4VgprMaxLength =
+    kThreadsPerBlock * kKPool4VgprItemsPerThread;
+constexpr int kKPool4VgprCandidateCapacity = 2048;
+constexpr size_t kKPool4VgprSmemBytes =
+    kKPool4VgprCandidateCapacity * sizeof(uint32_t);
 
 struct FastTopKParams {
   const float* __restrict__ input;         // [B, input_stride]
@@ -92,6 +98,192 @@ void setup_kernel_smem_once(size_t max_dynamic_smem) {
 __device__ __forceinline__ auto convert_to_uint32(float x) -> uint32_t {
   uint32_t bits = __float_as_uint(x);
   return (bits & 0x80000000) ? bits : ~bits & 0x7fffffff;
+}
+
+__device__ __forceinline__ uint32_t kpool_descending_key(float value) {
+  return ~convert_to_uint32(value);
+}
+
+template <int kItems>
+__device__ __forceinline__ void kpool_radix_count_2bit(
+    const uint32_t (&keys)[kItems],
+    uint32_t desired,
+    uint32_t mask,
+    int bit_pos,
+    int* __restrict__ histogram,
+    int (&counts)[4]) {
+  const int tid = threadIdx.x;
+  const int lane = tid % WARP_SIZE;
+  if (tid < 4) histogram[tid] = 0;
+  __syncthreads();
+
+  int wave_counts[4] = {0, 0, 0, 0};
+#pragma unroll
+  for (int item = 0; item < kItems; ++item) {
+    const uint32_t key = keys[item];
+    const bool matches = (key & mask) == desired;
+    const int digit = (key >> bit_pos) & 0x3;
+#pragma unroll
+    for (int candidate_digit = 0; candidate_digit < 4;
+         ++candidate_digit) {
+#ifdef USE_ROCM
+      const uint64_t votes =
+          __ballot(matches && digit == candidate_digit);
+#else
+      const uint64_t votes =
+          __ballot_sync(0xffffffff, matches && digit == candidate_digit);
+#endif
+      if (lane == 0) {
+        wave_counts[candidate_digit] += __popcll(votes);
+      }
+    }
+  }
+
+  if (lane == 0) {
+#pragma unroll
+    for (int digit = 0; digit < 4; ++digit) {
+      atomicAdd(&histogram[digit], wave_counts[digit]);
+    }
+  }
+  __syncthreads();
+#pragma unroll
+  for (int digit = 0; digit < 4; ++digit) {
+    counts[digit] = histogram[digit];
+  }
+  __syncthreads();
+}
+
+template <int kItems>
+__device__ __forceinline__ uint32_t kpool_radix_select_descending(
+    const uint32_t (&keys)[kItems],
+    int rank,
+    int* __restrict__ histogram) {
+  uint32_t desired = 0;
+  uint32_t mask = 0;
+
+#pragma unroll
+  for (int bit_pos = 30; bit_pos >= 0; bit_pos -= 2) {
+    int counts[4];
+    kpool_radix_count_2bit<kItems>(
+        keys, desired, mask, bit_pos, histogram, counts);
+#pragma unroll
+    for (int digit = 3; digit >= 0; --digit) {
+      if (counts[digit] >= rank) {
+        desired |= static_cast<uint32_t>(digit) << bit_pos;
+        mask |= uint32_t{0x3} << bit_pos;
+        break;
+      }
+      rank -= counts[digit];
+    }
+  }
+  return desired;
+}
+
+template <int K>
+__device__ void select_kpool_topk_vgpr(
+    const float* __restrict__ input,
+    int* __restrict__ indices,
+    int row_start,
+    int length,
+    uint32_t* __restrict__ candidate_workspace) {
+  static_assert(K == 512);
+  constexpr int kItems = kKPool4VgprItemsPerThread;
+  constexpr int kSampleItems = 4;
+  constexpr int kCompactItems = 2;
+  constexpr int kSampleRank = K / 2;
+
+  __shared__ int radix_histogram[4];
+  __shared__ int candidate_count;
+  __shared__ int sample_equal_count;
+  __shared__ int write_count;
+  __shared__ int tie_count;
+
+  const int tid = threadIdx.x;
+  uint32_t keys[kItems];
+#pragma unroll
+  for (int item = 0; item < kItems; ++item) {
+    const int idx = tid + item * kThreadsPerBlock;
+    keys[item] = idx < length
+        ? kpool_descending_key(input[row_start + idx])
+        : uint32_t{0};
+  }
+  uint32_t sample_keys[kSampleItems] = {
+      keys[0], keys[5], keys[10], keys[15]};
+  const uint32_t sample_threshold =
+      kpool_radix_select_descending<kSampleItems>(
+          sample_keys, kSampleRank, radix_histogram);
+
+  if (tid == 0) {
+    candidate_count = 0;
+    sample_equal_count = 0;
+  }
+  __syncthreads();
+  int local_sample_equals = 0;
+#pragma unroll
+  for (int item = 0; item < kItems; ++item) {
+    const int idx = tid + item * kThreadsPerBlock;
+    if (idx < length && keys[item] > sample_threshold) {
+      const int pos = atomicAdd(&candidate_count, 1);
+      if (pos < kKPool4VgprCandidateCapacity) {
+        candidate_workspace[pos] = keys[item];
+      }
+    } else if (idx < length && keys[item] == sample_threshold) {
+      ++local_sample_equals;
+    }
+  }
+  if (local_sample_equals != 0) {
+    atomicAdd(&sample_equal_count, local_sample_equals);
+  }
+  __syncthreads();
+
+  uint32_t kth_key;
+  const int compact_count = candidate_count;
+  if (compact_count >= K &&
+      compact_count <= kKPool4VgprCandidateCapacity) {
+    uint32_t compact_keys[kCompactItems];
+#pragma unroll
+    for (int item = 0; item < kCompactItems; ++item) {
+      const int pos = tid + item * kThreadsPerBlock;
+      compact_keys[item] =
+          pos < compact_count ? candidate_workspace[pos] : uint32_t{0};
+    }
+    kth_key = kpool_radix_select_descending<kCompactItems>(
+        compact_keys, K, radix_histogram);
+  } else if (
+      compact_count < K &&
+      compact_count + sample_equal_count >= K) {
+    kth_key = sample_threshold;
+  } else {
+    kth_key = kpool_radix_select_descending<kItems>(
+        keys, K, radix_histogram);
+  }
+
+  if (tid == 0) write_count = 0;
+  __syncthreads();
+#pragma unroll
+  for (int item = 0; item < kItems; ++item) {
+    const int idx = tid + item * kThreadsPerBlock;
+    if (idx < length && keys[item] > kth_key) {
+      indices[atomicAdd(&write_count, 1)] = idx;
+    }
+  }
+  __syncthreads();
+
+  const int better_count = write_count;
+  const int ties_needed = K - better_count;
+  if (tid == 0) tie_count = 0;
+  __syncthreads();
+#pragma unroll
+  for (int item = 0; item < kItems; ++item) {
+    const int idx = tid + item * kThreadsPerBlock;
+    if (idx < length && keys[item] == kth_key) {
+      const int tie_rank = atomicAdd(&tie_count, 1);
+      if (tie_rank < ties_needed) {
+        indices[better_count + tie_rank] = idx;
+      }
+    }
+  }
+  __syncthreads();
 }
 
 template <int step>
@@ -695,7 +887,7 @@ __device__ __forceinline__ int32_t transform_kpool_token_index(
   return static_cast<int32_t>(raw_idx + ragged_offset);
 }
 
-template <int kKPoolSize>
+template <int kKPoolSize, bool kUseRadixRefine = false>
 __global__ __launch_bounds__(kThreadsPerBlock)
 void fused_kpool_topk_transform_kernel(
     FastTopKParams params,
@@ -711,6 +903,7 @@ void fused_kpool_topk_transform_kernel(
     int score_cols,
     int rows) {
   static_assert(kKPoolSize == 4 || kKPoolSize == 16);
+  static_assert(!kUseRadixRefine || kKPoolSize == 4);
   constexpr int kKPoolGroupTopK = kKPoolTokenTopK / kKPoolSize;
   constexpr int kKPoolOutputCols = kKPoolTokenTopK + kKPoolSize - 1;
   const int bid = blockIdx.x;
@@ -736,6 +929,7 @@ void fused_kpool_topk_transform_kernel(
       params.input + static_cast<int64_t>(bid) * params.input_stride;
 
   __shared__ int32_t selected_groups[kKPoolGroupTopK];
+  extern __shared__ int32_t kpool_candidate_workspace[];
   if (length <= kKPoolGroupTopK) {
     vectorized_write<int32_t, int>(
         threadIdx.x,
@@ -744,29 +938,57 @@ void fused_kpool_topk_transform_kernel(
         kKPoolGroupTopK,
         [length] __device__(int i) { return i < length ? i : -1; });
   } else {
-    auto identity = [] __device__(int raw_idx) { return raw_idx; };
-    topKPerRowJob<
-        kThreadsPerBlock,
-        2048,
-        false,
-        false,
-        false,
-        512>(
-        nullptr,
-        logits,
-        row_start,
-        row_end,
-        selected_groups,
-        nullptr,
-        1,
-        kKPoolGroupTopK,
-        identity);
+    if constexpr (kUseRadixRefine) {
+      if (length <= kKPool4VgprMaxLength) {
+        select_kpool_topk_vgpr<kKPoolGroupTopK>(
+            logits,
+            selected_groups,
+            row_start,
+            length,
+            reinterpret_cast<uint32_t*>(kpool_candidate_workspace));
+      } else {
+        auto identity = [] __device__(int raw_idx) { return raw_idx; };
+        topKPerRowJob<
+            kThreadsPerBlock,
+            2048,
+            false,
+            false,
+            false,
+            512>(
+            nullptr,
+            logits,
+            row_start,
+            row_end,
+            selected_groups,
+            nullptr,
+            1,
+            kKPoolGroupTopK,
+            identity);
+      }
+    } else {
+      auto identity = [] __device__(int raw_idx) { return raw_idx; };
+      topKPerRowJob<
+          kThreadsPerBlock,
+          2048,
+          false,
+          false,
+          false,
+          512>(
+          nullptr,
+          logits,
+          row_start,
+          row_end,
+          selected_groups,
+          nullptr,
+          1,
+          kKPoolGroupTopK,
+          identity);
+    }
   }
   __syncthreads();
 
   const int history_groups =
       length < kKPoolGroupTopK ? length : kKPoolGroupTopK;
-
   const int history_len = history_groups * kKPoolSize;
   const int tail_count = seq_lens[bid] % kKPoolSize;
   const int tail_start = length * kKPoolSize;
@@ -1130,10 +1352,10 @@ void fast_kpool_topk_transform_interface(
   const auto grid = dim3{static_cast<uint32_t>(out_rows)};
   const auto block = dim3{kThreadsPerBlock};
   if (pool_size == 4) {
-    constexpr size_t dynamic_smem =
-        (kKPoolTokenTopK / 4) * sizeof(int32_t);
-    fused_kpool_topk_transform_kernel<4>
-        <<<grid, block, dynamic_smem, stream>>>(
+    setup_kernel_smem_once<fused_kpool_topk_transform_kernel<4, true>>(
+        kKPool4VgprSmemBytes);
+    fused_kpool_topk_transform_kernel<4, true>
+        <<<grid, block, kKPool4VgprSmemBytes, stream>>>(
             params, output.data_ptr<int32_t>(), seq_lens.data_ptr<int32_t>(),
             page_table, topk_indices_offset, page_table_row_index,
             output.stride(0), page_table_stride, page_table_rows,
