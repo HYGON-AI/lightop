@@ -143,7 +143,7 @@ AT_DISPATCH_SWITCH(TYPE, NAME, VLLM_DISPATCH_CASE_FLOATING_TYPES(__VA_ARGS__))
   
   inline __device__ float float_to_bf16_to_float(float f) {
     #if defined(__gfx938__)
-        // AMD gfx938 原生硬件 bf16 转换（最优）
+        // HCU gfx938 原生硬件 bf16 转换（最优）
         return float(bhalf_t(f));
     #else
         // 通用架构：你提供的软件实现

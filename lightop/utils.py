@@ -55,6 +55,6 @@ def get_CUs():
             if "compute unit" in line.lower():
                 return line.split(":")[-1].strip()
     except Exception as e:
-        raise RuntimeError(f"Get DCU CUS from rocminfo failed {str(e)}")
+        raise RuntimeError(f"Get HCU CUs from rocminfo failed {str(e)}")
 CUs = get_CUs()
 os.environ["LIGHTOP_GPU_CUS"] = CUs

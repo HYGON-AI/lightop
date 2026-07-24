@@ -111,7 +111,7 @@ std::tuple<Tensor,Tensor,Tensor,Tensor>
 layernorm_droppath_forward(const Tensor& self,const Tensor&weight,const Tensor& bias,double ln_epsilon, double keep_prob, bool scale_by_keep,bool training)
 {
   AT_ASSERTM(keep_prob >0.0f&&keep_prob<=1.0f, "keep_prob mast be between 0 and 1");
-  AT_ASSERTM(self.is_cuda(), "input must on dcu");
+  AT_ASSERTM(self.is_cuda(), "input must on HCU");
   const int batchsize = self.sizes().front();
   const int elem_per_batch=self.numel()/batchsize;
   AT_ASSERT(elem_per_batch%4==0,"element size per batch must be 4*interger");

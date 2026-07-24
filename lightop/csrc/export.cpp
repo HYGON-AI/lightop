@@ -727,7 +727,7 @@ void topk_transform_1024(
     at::Tensor& out_page_indices,
     int64_t page_size,
     std::optional<at::Tensor> out_raw_indices_opt);
-void lightop_dcu_alloc_extend_kernel(
+void lightop_hcu_alloc_extend_kernel(
     const Tensor pre_lens_ptr,
     const Tensor seq_lens_ptr,
     const Tensor last_loc_ptr,
@@ -1081,7 +1081,7 @@ m.def(
      py::arg("out_page_indices"),
      py::arg("page_size"),
      py::arg("out_raw_indices") = py::none());
-m.def("dcu_alloc_extend_kernel", &at::native::lightop_dcu_alloc_extend_kernel,
+m.def("hcu_alloc_extend_kernel", &at::native::lightop_hcu_alloc_extend_kernel,
        "Parallel paged KV alloc-extend kernel",
        py::arg("pre_lens_ptr"),
        py::arg("seq_lens_ptr"),
