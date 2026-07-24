@@ -74,10 +74,23 @@ from .fuse_topk_transform import (
     topk_transform_512,
     topk_transform_1024,
 )
-from .kvcacheio import dcu_alloc_extend_kernel
+from .kvcacheio import hcu_alloc_extend_kernel
 try:
-    from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401
-    __version__, __dcu_version__ = version, dcu_version
+    from .version import version, git_hash, git_branch, dtk, abi, torch_version, hcu_version  # noqa: F401
 except ImportError:
-    pass
+    try:
+        # Compatibility with version files generated before the HCU migration.
+        from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401
+    except ImportError:
+        pass
+    else:
+        hcu_version = dcu_version
+        __version__ = version
+        __hcu_version__ = hcu_version
+        __dcu_version__ = hcu_version
+else:
+    dcu_version = hcu_version
+    __version__ = version
+    __hcu_version__ = hcu_version
+    __dcu_version__ = hcu_version
 

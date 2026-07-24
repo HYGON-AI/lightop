@@ -200,7 +200,7 @@ std::tuple<Tensor,Tensor> fuse_bias_dropout_add_forward(const Tensor& self,const
     AT_ASSERTM(self.size(-1) == bias.size(-1) && other.size(-1) == bias.size(-1),
         "the dimension of bias and the last dimension of the input should be the same");
     AT_ASSERTM(p >=0.0f&&p<1.0f, "p mast be between 0 and 1");
-    AT_ASSERTM(self.is_cuda()&&bias.is_cuda()&&other.is_cuda(), "self and bias and other must on dcu");
+    AT_ASSERTM(self.is_cuda()&&bias.is_cuda()&&other.is_cuda(), "self and bias and other must on HCU");
     p=1-p;
    
     Tensor ret = at::empty_like(self);

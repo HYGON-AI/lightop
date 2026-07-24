@@ -3,7 +3,7 @@ import pandas as pd
 import time
 import os
 
-#给的基准代码，20000个顶点要用大约150kb的seme，DCU只有64KBseme可用，NUM_VERTICES大于8000，基准跑不通。lightop优化版本不会
+#给的基准代码，20000个顶点要用大约150kb的seme，HCU只有64KBseme可用，NUM_VERTICES大于8000，基准跑不通。lightop优化版本不会
 try:
     from lightop import op
     print("Successfully imported lightop.")

@@ -63,7 +63,7 @@ def compare_outputs(
 
     with torch.no_grad():
         out_native = module.forward_native(x1, residual1, post1)
-        out_dcu = module.forward_dcu(x2, residual2, post2)
+        out_hcu = module.forward_hcu(x2, residual2, post2)
 
     # 统一处理返回类型
     if isinstance(out_native, tuple):
@@ -71,10 +71,10 @@ def compare_outputs(
     else:
         native_x, native_residual = out_native, None
 
-    if isinstance(out_dcu, tuple):
-        dcu_x, dcu_residual = out_dcu
+    if isinstance(out_hcu, tuple):
+        hcu_x, hcu_residual = out_hcu
     else:
-        dcu_x, dcu_residual = out_dcu, None
+        hcu_x, hcu_residual = out_hcu, None
 
     print("=" * 80)
     print("dtype info:")
@@ -84,13 +84,13 @@ def compare_outputs(
     if post_residual_addition is not None:
         print(f"  post_residual dtype    : {post_residual_addition.dtype}")
     print(f"  native output dtype    : {native_x.dtype}")
-    print(f"  dcu output dtype       : {dcu_x.dtype}")
+    print(f"  hcu output dtype       : {hcu_x.dtype}")
 
-    calc_metrics(native_x, dcu_x, name="output_x")
+    calc_metrics(native_x, hcu_x, name="output_x")
 
-    if native_residual is not None and dcu_residual is not None:
-        calc_metrics(native_residual, dcu_residual, name="output_residual")
-    elif native_residual is None and dcu_residual is None:
+    if native_residual is not None and hcu_residual is not None:
+        calc_metrics(native_residual, hcu_residual, name="output_residual")
+    elif native_residual is None and hcu_residual is None:
         print("\n[output_residual]")
         print("  both are None")
     else:
@@ -110,13 +110,13 @@ class YourRMSNormClass(torch.nn.Module):
         self.weight = torch.nn.Parameter(torch.randn(hidden_size, dtype=torch.bfloat16))
         self.variance_epsilon = eps
 
-    def forward_dcu(
+    def forward_hcu(
         self,
         x: torch.Tensor,
         residual: Optional[torch.Tensor] = None,
         post_residual_addition: Optional[torch.Tensor] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
-        # 这里请替换成你的真实 forward_dcu
+        # 这里请替换成你的真实 forward_hcu
         orig_dtype = x.dtype
         if post_residual_addition is not None:
             residual = (residual + post_residual_addition)
