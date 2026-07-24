@@ -1,0 +1,134 @@
+{
+    "4096_512": {
+        "1": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 25,
+            "DELTA": 1
+        },
+        "2": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 8,
+            "DELTA": 1
+        },
+        "4": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 9,
+            "DELTA": 1
+        },
+        "8": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 30,
+            "DELTA": 1
+        },
+        "16": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 30,
+            "DELTA": 1
+        },
+        "32": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 57,
+            "DELTA": 1
+        },
+        "64": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 57,
+            "DELTA": 1
+        },
+        "128": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 57,
+            "DELTA": 1
+        },
+        "256": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 57,
+            "DELTA": 1
+        },
+        "512": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 94,
+            "DELTA": 2
+        },
+        "640": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 95,
+            "DELTA": 2
+        },
+        "768": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 95,
+            "DELTA": 2
+        },
+        "896": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 95,
+            "DELTA": 4
+        },
+        "1024": {
+            "BLOCK_SIZE_M": 16,
+            "MODE": 95,
+            "DELTA": 4
+        },
+        "1280": {
+            "BLOCK_SIZE_M": 64,
+            "MODE": 1001,
+            "DELTA": 1
+        },
+        "1664": {
+            "BLOCK_SIZE_M": 64,
+            "MODE": 1001,
+            "DELTA": 1
+        },
+        "2048": {
+            "BLOCK_SIZE_M": 64,
+            "MODE": 1001,
+            "DELTA": 2
+        },
+        "2560": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
+        },
+        "3072": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
+        },
+        "4096": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
+        },
+        "6144": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
+        },
+        "8192": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
+        },
+        "10240": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
+        },
+        "12288": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
+        },
+        "14336": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
+        },
+        "16384": {
+            "BLOCK_SIZE_M": 128,
+            "MODE": 1000,
+            "DELTA": 1
+        }
+    }
+}
