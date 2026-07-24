@@ -30,12 +30,12 @@ def _make_version_file(version, sha, abi, dtk, torch_version, branch):
     torch_version = '.'.join(torch_version.split('.')[:2])
     
     if os.getenv("USE_LONG_VERSION", "false").lower() in ["1", "true"]:
-        dcu_version = f"{version}+das1.1git{sha}.abi{abi}.dtk{dtk}.torch{torch_version}"
+        hcu_version = f"{version}+das1.1git{sha}.abi{abi}.dtk{dtk}.torch{torch_version}"
     else:
-        dcu_version = f"{version}+das.dtk{dtk}"
+        hcu_version = f"{version}+das.dtk{dtk}"
 
-    print("dcu_version")
-    print(dcu_version)
+    print("hcu_version")
+    print(hcu_version)
     version_path = ROOT_DIR / "lightop" / "version.py"
     with open(version_path, "w") as f:
         f.write(f"version = '{version}'\n")
@@ -44,8 +44,9 @@ def _make_version_file(version, sha, abi, dtk, torch_version, branch):
         f.write(f"abi = 'abi{abi}'\n")
         f.write(f"dtk = '{dtk}'\n")
         f.write(f"torch_version = '{torch_version}'\n")
-        f.write(f"dcu_version = '{dcu_version}'\n")
-    return dcu_version
+        f.write(f"hcu_version = '{hcu_version}'\n")
+        f.write(f"dcu_version = '{hcu_version}'\n")  # Compatibility alias.
+    return hcu_version
 
 def get_dtk_version(ROCM_HOME):
     dtk_version = _run_cmd(["cat", os.path.join(ROCM_HOME, '.info/rocm_version')])

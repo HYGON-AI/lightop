@@ -1,7 +1,7 @@
 from . import op
 
 
-def dcu_alloc_extend_kernel(
+def hcu_alloc_extend_kernel(
     pre_lens_ptr,
     seq_lens_ptr,
     last_loc_ptr,
@@ -10,7 +10,7 @@ def dcu_alloc_extend_kernel(
     bs: int,
     page_size: int,
 ):
-    return op.dcu_alloc_extend_kernel(
+    return op.hcu_alloc_extend_kernel(
         pre_lens_ptr,
         seq_lens_ptr,
         last_loc_ptr,
