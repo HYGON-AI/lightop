@@ -1,7 +1,6 @@
 import torch
-from vllm.scalar_type import ScalarType
-
-from vllm.model_executor.layers.quantization.utils.quant_utils import quantize_weights
+from common.scalar_type import ScalarType
+from common.quant_utils import quantize_weights
 
 import numpy as np
 import pandas as pd

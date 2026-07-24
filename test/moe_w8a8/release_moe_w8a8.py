@@ -10,28 +10,20 @@ import ast
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 import vllm.envs as envs
 from vllm import _custom_ops as ops
-from lightop import op
 try:
-    from lightop import moe_align_block_size
+    from lightop.moe import moe_align_block_size
 except ImportError:
     from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
         moe_align_block_size)
 import triton
 import triton.language as tl
 import lmslim.envs as lsenvs
-try:
-    from vllm.utils import W8a8GetCacheJSON
-except ImportError:
-    import sys
-    from pathlib import Path
-
-    _test_root = Path(__file__).resolve().parent.parent
-    if str(_test_root) not in sys.path:
-        sys.path.insert(0, str(_test_root))
-    from common.w8a8_cache_json import W8a8GetCacheJSON
+from common.w8a8_cache_json import W8a8GetCacheJSON
 import torch.nn.functional as F
-from lmslim.layers.gemm.int8_utils import (
-    per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 
 use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 device_name = lsenvs.LMSLIM_GPU_NAME
@@ -40,7 +32,7 @@ device_name = lsenvs.LMSLIM_GPU_NAME
 
 
 if use_lightop:
-    from lightop import moe_gemm_w8a8, get_moe_cuda_config
+    from lightop.moe import moe_gemm_w8a8, get_moe_cuda_config
     try:
         from moe_w8a8_prefill_gemm import backend
         from grouped_gemm import moe_gemm_decode_prof

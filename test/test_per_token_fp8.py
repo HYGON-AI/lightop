@@ -3,10 +3,7 @@ import triton
 import triton.language as tl
 import time
 
-try:
-    from lightop import op
-except ImportError:
-    print("警告: 无法导入 lightop.op，请确保您的 C++ 扩展已正确编译并安装。")
+from lightop.quant import per_token_quant_fp8
 
 
 @triton.jit
@@ -86,10 +83,7 @@ def run_benchmark():
         triton_q, triton_s = per_token_quant_fp8_triton(x)
         
         # Custom Op 运行
-        custom_q = torch.empty_like(x, device=x.device, dtype=torch.float8_e4m3fn)
-        custom_s = torch.empty((num_tokens, 1), device=x.device, dtype=torch.float32)
-        #out input scale
-        op.per_token_quant_fp8(custom_q, x, custom_s)
+        custom_q, custom_s = per_token_quant_fp8(x)
         
         # 验证 scales 差异
         scale_max_diff = torch.abs(triton_s - custom_s).max().item()
@@ -121,13 +115,13 @@ def run_benchmark():
         # ----------------------------------------------------------------------
         # 预热
         for _ in range(warmup_iters):
-            op.per_token_quant_fp8(custom_q, x, custom_s)
+            per_token_quant_fp8(x)
         torch.cuda.synchronize()
         
         # 计时
         start_time = time.perf_counter()
         for _ in range(test_iters):
-            op.per_token_quant_fp8(custom_q, x, custom_s)
+            per_token_quant_fp8(x)
         torch.cuda.synchronize()
         custom_time_us = (time.perf_counter() - start_time) * 1e6 / test_iters
 

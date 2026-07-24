@@ -19,7 +19,7 @@ import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm import _custom_ops as ops
 # import _custom_ops as ops
-from lightop import moe_gemm_w8a8, get_moe_cuda_config
+from lightop.moe import moe_gemm_w8a8, get_moe_cuda_config
 from vllm.model_executor.layers.fused_moe.fused_moe import moe_kernel_prepare_input
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
@@ -27,7 +27,7 @@ from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
 from triton_w4a8 import invoke_fused_moe_kernel_w4a8
 import pandas as pd
 
-from lightop import moe_gemm_w4a8
+from lightop.moe import moe_gemm_w4a8
 
 blockM_configs = {
     0 : 16,

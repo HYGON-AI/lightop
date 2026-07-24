@@ -2,7 +2,7 @@ import torch
 import time
 import torch.nn.functional as F
 from torch.autograd import Variable
-from lightop import AddDropout
+from lightop.activation import AddDropout
 
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):

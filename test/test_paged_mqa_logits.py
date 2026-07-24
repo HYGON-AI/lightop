@@ -1,6 +1,6 @@
 import torch
 import random
-from lightop import gemmopt
+from lightop.attention import paged_mqa_logits
 
 def generate_cp_test_data(seq_len, seq_len_kv):
     assert seq_len_kv % seq_len == 0 and seq_len % 2 == 0
@@ -123,7 +123,7 @@ def test_paged_mqa_logits(use_fp8 = True):
                     q_fp8 = q.to(torch.float8_e4m3fn)
                     kv_cache_fp8 = kv_cache_cast_to_fp8(kv_cache)
 
-                    logits = gemmopt.paged_mqa_logits(
+                    logits = paged_mqa_logits(
                         q_fp8, kv_cache_fp8, weights, context_lens, block_tables, schedule_metadata, max_model_len, clean_logits=True)
                     torch.cuda.synchronize()
 
@@ -151,7 +151,7 @@ def test_paged_mqa_logits(use_fp8 = True):
                     q_bf16 = q
                     kv_cache_bf16 = kv_cache
 
-                    logits = gemmopt.paged_mqa_logits(
+                    logits = paged_mqa_logits(
                         q_bf16, kv_cache_bf16, weights, context_lens, block_tables, schedule_metadata, max_model_len, clean_logits=True)
                     torch.cuda.synchronize()
 
@@ -174,7 +174,7 @@ def test_paged_mqa_logits(use_fp8 = True):
                 tflops = 2 * sum_lens * next_n * heads * index_dim / 1e12
                 input_bytes = count_bytes(q) / (2 if 'gfx938' in device_name and use_fp8 else 1) + count_bytes(weights, context_lens) + sum_lens * (index_dim * (1 if 'gfx938' in device_name and use_fp8 else 2) + (4 if 'gfx938' in device_name and use_fp8 else 0)) + (sum_lens / blocksize) * 4
                 output_bytes = batch_size * max_model_len * next_n * 4
-                t = bench_kineto(lambda: gemmopt.paged_mqa_logits(
+                t = bench_kineto(lambda: paged_mqa_logits(
                     q_fp8 if 'gfx938' in device_name and use_fp8 else q_bf16,
                     kv_cache_fp8 if 'gfx938' in device_name and use_fp8 else kv_cache_bf16,
                     weights, context_lens, block_tables, schedule_metadata, max_model_len, clean_logits=False

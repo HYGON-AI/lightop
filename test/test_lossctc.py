@@ -2,7 +2,7 @@ import os
 import time
 import torch
 
-from lightop import CTCLoss as lightop_CTCLoss
+from lightop.loss import CTCLoss as lightop_CTCLoss
 
 torch.set_printoptions(precision=10)
 torch.manual_seed(1472)

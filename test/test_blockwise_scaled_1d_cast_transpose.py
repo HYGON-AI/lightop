@@ -7,7 +7,7 @@ import torch
 import dataclasses
 from typing import Optional, Protocol, Tuple,Iterable, Union
 from torch.utils.cpp_extension import IS_HIP_EXTENSION
-from lightop import blockwise_scaled_cast_transpose
+from lightop.quant import blockwise_scaled_cast_transpose
 
 blockwise_fp8_block_len=128
 block_scaling_dim=1
@@ -656,4 +656,4 @@ if __name__ == "__main__":
 
    
        
-       
+

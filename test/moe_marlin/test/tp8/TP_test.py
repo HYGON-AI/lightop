@@ -12,9 +12,6 @@ torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 import triton
 from ray.experimental.tqdm_ray import tqdm
 from transformers import AutoConfig
-# from vllm.model_executor.layers.fused_moe.fused_moe import *
-# from fused_moe import *
-# from fused_moe_3 import *
 from typing import Optional
 import os
 import pandas as pd
@@ -28,14 +25,6 @@ from fused_marlin_moe_valid import fused_marlin_moe_valid
 
 import openpyxl
 from openpyxl import Workbook  # 显式导入Workbook
-from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
-
-from vllm.platforms import current_platform
-from vllm.utils import FlexibleArgumentParser
-from vllm.scalar_type import scalar_types
-
-FP8_DTYPE = torch.float8_e4m3fnuz if current_platform.is_rocm(
-) else torch.float8_e4m3fn
 
 is_print = True
 

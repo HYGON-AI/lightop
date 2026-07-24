@@ -8,7 +8,7 @@ from vllm import _custom_ops as ops
 import pdb
 # 尝试导入自定义算子，失败则使用 Mock
 try:
-    from lightop import op
+    from lightop.moe import topk_softmax
     print("✅ 成功导入 lightop.op")
 except (ImportError, AttributeError) as e:
     print(f"⚠️ 导入自定义算子失败: {e}")
@@ -106,7 +106,7 @@ class TestTopkSoftmax(unittest.TestCase):
         )
         
         # 运行自定义算子进行验证
-        op.topk_softmax(
+        topk_softmax(
             custom_topk_weights, custom_topk_indices,
             custom_token_expert_indices, gating_output, Is_renormalize)
         
@@ -152,7 +152,7 @@ class TestTopkSoftmax(unittest.TestCase):
         # 3. 性能测试：Custom 算子
         # 预热
         for _ in range(warmup_iters):
-            op.topk_softmax(
+            topk_softmax(
                 custom_topk_weights, custom_topk_indices,
                 custom_token_expert_indices, gating_output, Is_renormalize)
         torch.cuda.synchronize()
@@ -163,7 +163,7 @@ class TestTopkSoftmax(unittest.TestCase):
         
         start_event.record()
         for _ in range(test_iters):
-            op.topk_softmax(
+            topk_softmax(
                 custom_topk_weights, custom_topk_indices,
                 custom_token_expert_indices, gating_output, Is_renormalize)
         end_event.record()

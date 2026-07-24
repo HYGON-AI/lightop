@@ -1,0 +1,18 @@
+API export test
+===============
+.                                                                        [100%]
+1 passed in 2.11s
+
+Numerical reference test
+========================
+blockwise_scaling_exact_compact averange time is 0.13884100914001465 ms
+
+Compatibility manifest check
+============================
+lightop_python_api.txt: 143 entries
+lightop_op_symbols.txt: 209 entries
+lmslim_required_lightop_api.txt: 22 entries
+
+compileall
+==========
+passed

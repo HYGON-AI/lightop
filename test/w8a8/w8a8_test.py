@@ -1,25 +1,19 @@
 import torch
 import time
-from lmslim import quant_ops 
 from typing import Optional, Type
 import pandas as pd
 import os
 import json
 import triton
 from vllm import _custom_ops as ops
-from lmslim.layers.gemm.int8_utils import per_token_quant_int8
-try:
-    from vllm.utils import W8a8GetCacheJSON
-except ImportError:
-    import sys
-    from pathlib import Path
+from common.w8a8_cache_json import W8a8GetCacheJSON
 
-    _test_root = Path(__file__).resolve().parent.parent
-    if str(_test_root) not in sys.path:
-        sys.path.insert(0, str(_test_root))
-    from common.w8a8_cache_json import W8a8GetCacheJSON
-
-from lightop import gemm_w8a8_smooth
+from lightop.gemm_ops import (
+    gemm_w8a8_smooth,
+    rocblas_scaled_mm_nn,
+    triton_scaled_mm,
+)
+from lightop.quant import per_token_quant_int8
 
 
 def to_int8(tensor: torch.Tensor):
@@ -69,7 +63,7 @@ def _triton_scaled_mm(a: torch.Tensor,
                       out_dtype: torch.dtype,
                       bias: Optional[torch.Tensor] = None,
                       best_config:Optional[list] = None) -> torch.Tensor:
-    return quant_ops.triton_scaled_mm(a, b,scale_a,scale_b,out_dtype,bias,best_config)
+    return triton_scaled_mm(a, b,scale_a,scale_b,out_dtype,bias,best_config)
 
 def dq_triton_scaled_mm(a: torch.Tensor,
                       b: torch.Tensor,
@@ -81,7 +75,7 @@ def dq_triton_scaled_mm(a: torch.Tensor,
     
     x_q, x_scale = per_token_quant_int8(a)   
      
-    return quant_ops.triton_scaled_mm(x_q, b,x_scale,scale_b,out_dtype,bias,best_config)
+    return triton_scaled_mm(x_q, b,x_scale,scale_b,out_dtype,bias,best_config)
 
 
 def _rocblas_scaled_mm(a: torch.Tensor,   #input
@@ -90,7 +84,7 @@ def _rocblas_scaled_mm(a: torch.Tensor,   #input
                             scale_b: torch.Tensor,
                             out_dtype: torch.dtype,
                             bias: Optional[torch.Tensor] = None) -> torch.Tensor:
-    return quant_ops.rocblas_scaled_mm_nn(a,b,scale_a,scale_b,out_dtype,bias)
+    return rocblas_scaled_mm_nn(a,b,scale_a,scale_b,out_dtype,bias)
 
 def dq_rocblas_scaled_mm(a: torch.Tensor,   #input
                             b: torch.Tensor,  #weight
@@ -99,16 +93,7 @@ def dq_rocblas_scaled_mm(a: torch.Tensor,   #input
                             out_dtype: torch.dtype,
                             bias: Optional[torch.Tensor] = None) -> torch.Tensor:
     x_q, x_scale = per_token_quant_int8(a)    
-    return quant_ops.rocblas_scaled_mm_nn(x_q,b,x_scale,scale_b,out_dtype,bias)
-
-def _cutlass_scaled_mm(a: torch.Tensor,   #input
-                            b: torch.Tensor,  #weight
-                            scale_a: torch.Tensor,
-                            scale_b: torch.Tensor,
-                            bias: Optional[torch.Tensor] = None) -> torch.Tensor:
-    return quant_ops.cutlass_scaled_mm(a,b,scale_a,scale_b,bias)
-
-
+    return rocblas_scaled_mm_nn(x_q,b,x_scale,scale_b,out_dtype,bias)
 
 
 def _int8_gemm_helper(m: int,
@@ -193,18 +178,6 @@ def _int8_gemm_helper(m: int,
     # torch.cuda.synchronize()  
     # # print("rocblas_scaled_mm:{} us\n".format(elapsed_time4_gpu))   
     
-    # for i in range(100):
-    #     rocblas_sgemm16_out=quant_ops.rocblas_sgemm_fp16_nn(a_fp16,b_fp16,out_dtype,bias)
-
-    # elapsed_time5_gpu = triton.testing.do_bench(lambda:quant_ops.rocblas_sgemm_fp16_nn(a_fp16,b_fp16,out_dtype,bias),quantiles=None, return_mode="mean")*1000
-    # torch.cuda.synchronize()  
-    # # print("rocblas_sgemm16_time:{} us\n".format(elapsed_time5_gpu))
-    
-    # for i in range(100):
-    #     rocblas_sgemmint8_out=quant_ops.rocblas_sgemm_int8_nn(a,b,out_dtype,bias)
-    
-    # elapsed_time6_gpu= triton.testing.do_bench(lambda:quant_ops.rocblas_sgemm_int8_nn(a,b,out_dtype,bias),quantiles=None, return_mode="mean")*1000
-    # # print("rocblas_sgemm16_time:{} us\n".format(elapsed_time6_gpu))
     elapsed_time0_gpu = 0
     elapsed_time1_gpu = 0
     elapsed_time2_gpu = 0
@@ -382,4 +355,3 @@ if __name__ == "__main__":
     n_list = [7168, 8192, 1280, 8192,]
     k_list = [8192, 3584, 8192, 1024, ]
     main(n_list, k_list, excel_name='llama3.3_70b_tp8.xlsx')
-
