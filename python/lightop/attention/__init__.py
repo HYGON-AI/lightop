@@ -11,6 +11,7 @@ from .qkv import (
     fused_deepseek_v4_qnorm_rope_kvnorm_rope,
     fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32,
     fused_rms_norm_rope_contiguous,
+    gemma_qkv_split_rms_rotary_embedding_fuse,
     gammarms_rotary_embedding_fuse_with_kv_store,
     gammarms_rotary_embedding_fuse_with_kv_store_fake,
     mimo_v2_split_rope_vscale_kv_store,
@@ -20,8 +21,11 @@ from .qkv import (
     split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant,
 )
 from .sparse import (
+    convert_req_index_to_global_index,
     fast_topk_transform_fused,
     fast_topk_transform_ragged_fused,
+    top_k_per_row_decode,
+    top_k_per_row_prefill,
     topk_transform_512,
 )
 from .softmax import (
@@ -43,6 +47,7 @@ __all__ = [
     "FuseLogSoftmax",
     "FuseSoftmax",
     "apply_rotary_pos_emb_index_fused",
+    "convert_req_index_to_global_index",
     "fast_topk_transform_fused",
     "fast_topk_transform_ragged_fused",
     "fuse_layernorm_rotary_embedding",
@@ -51,6 +56,7 @@ __all__ = [
     "fused_deepseek_v4_qnorm_rope_kvnorm_rope",
     "fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32",
     "fused_rms_norm_rope_contiguous",
+    "gemma_qkv_split_rms_rotary_embedding_fuse",
     "get_paged_mqa_logits_metadata",
     "gammarms_rotary_embedding_fuse_with_kv_store",
     "gammarms_rotary_embedding_fuse_with_kv_store_fake",
@@ -63,5 +69,7 @@ __all__ = [
     "RotaryEmbedding",
     "rotary_embedding_deepseek_fuse",
     "split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant",
+    "top_k_per_row_decode",
+    "top_k_per_row_prefill",
     "topk_transform_512",
 ]
