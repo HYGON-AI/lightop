@@ -58,7 +58,7 @@ Tensor fused_drop_path_forward(const Tensor& self,const Tensor& ret, double p, b
 {
     if(p == 0||!training)return self;
     AT_ASSERTM(p >=0.0f&&p<1.0f, "p mast be between 0 and 1");
-    AT_ASSERTM(self.is_cuda(), "input must on dcu");
+    AT_ASSERTM(self.is_cuda(), "input must on HCU");
     const int batchsize=self.sizes().front();
     const int elem_per_batch=self.numel()/batchsize;
     AT_ASSERT(elem_per_batch%4==0,"element size per batch must be 4*interger");

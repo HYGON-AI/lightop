@@ -82,7 +82,7 @@ __global__ void lightop_alloc_extend_kernel(
 
 }  // namespace
 
-void lightop_dcu_alloc_extend_kernel(
+void lightop_hcu_alloc_extend_kernel(
     const at::Tensor pre_lens_ptr,
     const at::Tensor seq_lens_ptr,
     const at::Tensor last_loc_ptr,

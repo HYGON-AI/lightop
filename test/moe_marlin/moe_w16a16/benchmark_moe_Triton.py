@@ -266,7 +266,7 @@ def get_rocm_tuning_space(use_fp16, nn_moe: Optional[bool] = False):
     if nn_moe:
         param_ranges["num_ldmatrixes"] = [1]
     
-    # DCU currently does not support the following parameters
+    # HCU currently does not support the following parameters
     # if use_fp16:
     #     param_ranges["matrix_instr_nonkdim"] = matrix_instr_nonkdim_range
     #     param_ranges["kpack"] = kpack_range
@@ -356,7 +356,7 @@ def prune_rocm_configs(M, N, K, configs, is_fp16=True):
         BLOCK_SIZE_K = config.get("BLOCK_SIZE_K")
         num_warps = config.get("num_warps")
 
-        # DCU currently does not support matrix_instr_nonkdim param
+        # HCU currently does not support matrix_instr_nonkdim param
         # if is_fp16:
         #     matrix_instr_nonkdim = config.get("matrix_instr_nonkdim")
         #     if matrix_instr_nonkdim > mfma:
@@ -370,7 +370,7 @@ def prune_rocm_configs(M, N, K, configs, is_fp16=True):
         SPLIT_K = config.get("SPLIT_K", 1)
         GROUP_M = config.get("GROUP_SIZE_M")
 
-        # DCU currently does not support matrix_instr_nonkdim param
+        # HCU currently does not support matrix_instr_nonkdim param
         # if is_fp16:
         #     if (
         #         matrix_instr_nonkdim > BLOCK_SIZE_M
