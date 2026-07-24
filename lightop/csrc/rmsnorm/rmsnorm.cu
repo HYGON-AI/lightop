@@ -105,9 +105,9 @@ __global__ void rmsnorm_forward_kernel_fast(scalar_t* input,scalar_t* ret,float*
 
 std::tuple<Tensor,Tensor>rmsnorm_forward(const Tensor& self,const Tensor& weight,c10::optional<Tensor>& output_inplace,double ln_epsilon,bool training)
 {
-    AT_ASSERTM(self.is_cuda(), "x must on dcu");
+    AT_ASSERTM(self.is_cuda(), "x must on HCU");
     const int cols=self.sizes().back();
-    AT_ASSERT(cols>=64,"cols must >= 64");//torch layernorm don't support cols<=64 on dcu, so we too .
+    AT_ASSERT(cols>=64,"cols must >= 64");//torch layernorm don't support cols<=64 on HCU, so we too .
     const int nelem = self.numel();
     const int rows=nelem/cols;
     Tensor ret = output_inplace? *(at::borrow_from_optional_tensor(output_inplace)):at::empty_like(self);
