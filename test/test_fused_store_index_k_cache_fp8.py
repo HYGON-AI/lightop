@@ -13,7 +13,7 @@ from lightop import op
 # ==========================================
 _is_fp8_fnuz = False
 _is_hip = False
-_is_dcu = False
+_is_hcu = False
 
 # ==========================================
 # 用户提供的基准代码 (Triton Baseline)
@@ -165,7 +165,7 @@ def _set_k_and_s_triton(
     else:
         raise ValueError(f"index_k_scale must be 1D or 2D, got shape {index_k_scale.shape}")
         
-    if _is_hip and not _is_dcu:
+    if _is_hip and not _is_hcu:
         assert buf_numel_per_page == 1 * (128 + 4)
     else:
         assert buf_numel_per_page == 64 * (128 + 4)
@@ -174,7 +174,7 @@ def _set_k_and_s_triton(
     assert index_head_dim == 128
     assert scale_dim == 1
     
-    if _is_hip and not _is_dcu:
+    if _is_hip and not _is_hcu:
         assert page_size == 1
     else:
         assert page_size == 64
