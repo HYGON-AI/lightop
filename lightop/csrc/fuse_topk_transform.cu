@@ -31,6 +31,8 @@
   #define WARP_SIZE 64
 #endif
 
+namespace at {
+namespace native {
 namespace {
 
 constexpr int kThreadsPerBlock = 1024;
@@ -179,6 +181,84 @@ __device__ __forceinline__ uint32_t kpool_radix_select_descending(
   return desired;
 }
 
+template <int kItems>
+__device__ __forceinline__ uint32_t kpool_radix_select_descending_4bit(
+    const uint32_t (&keys)[kItems],
+    int rank,
+    int* __restrict__ histogram,
+    int* __restrict__ wave_histogram) {
+  constexpr int kRadix = 16;
+  constexpr int kNumWaves = kThreadsPerBlock / WARP_SIZE;
+  const int tid = threadIdx.x;
+  const int lane = tid % WARP_SIZE;
+  const int wave = tid / WARP_SIZE;
+  uint32_t desired = 0;
+  uint32_t mask = 0;
+
+#pragma unroll
+  for (int bit_pos = 28; bit_pos >= 0; bit_pos -= 4) {
+    int wave_count = 0;
+#pragma unroll
+    for (int item = 0; item < kItems; ++item) {
+      const uint32_t key = keys[item];
+      const bool matches = (key & mask) == desired;
+      const int digit = (key >> bit_pos) & 0xf;
+#ifdef USE_ROCM
+      const uint64_t active = __ballot(matches);
+      const uint64_t bit0 = __ballot(matches && (digit & 0x1));
+      const uint64_t bit1 = __ballot(matches && (digit & 0x2));
+      const uint64_t bit2 = __ballot(matches && (digit & 0x4));
+      const uint64_t bit3 = __ballot(matches && (digit & 0x8));
+#else
+      const uint64_t active = __ballot_sync(0xffffffff, matches);
+      const uint64_t bit0 =
+          __ballot_sync(0xffffffff, matches && (digit & 0x1));
+      const uint64_t bit1 =
+          __ballot_sync(0xffffffff, matches && (digit & 0x2));
+      const uint64_t bit2 =
+          __ballot_sync(0xffffffff, matches && (digit & 0x4));
+      const uint64_t bit3 =
+          __ballot_sync(0xffffffff, matches && (digit & 0x8));
+#endif
+      if (lane < kRadix) {
+        uint64_t votes = active;
+        votes &= (lane & 0x1) ? bit0 : ~bit0;
+        votes &= (lane & 0x2) ? bit1 : ~bit1;
+        votes &= (lane & 0x4) ? bit2 : ~bit2;
+        votes &= (lane & 0x8) ? bit3 : ~bit3;
+        wave_count += __popcll(votes);
+      }
+    }
+
+    if (lane < kRadix) {
+      wave_histogram[wave * kRadix + lane] = wave_count;
+    }
+    __syncthreads();
+
+    if (tid < kRadix) {
+      int total = 0;
+#pragma unroll
+      for (int wave_idx = 0; wave_idx < kNumWaves; ++wave_idx) {
+        total += wave_histogram[wave_idx * kRadix + tid];
+      }
+      histogram[tid] = total;
+    }
+    __syncthreads();
+
+#pragma unroll
+    for (int digit = kRadix - 1; digit >= 0; --digit) {
+      const int count = histogram[digit];
+      if (count >= rank) {
+        desired |= static_cast<uint32_t>(digit) << bit_pos;
+        mask |= uint32_t{0xf} << bit_pos;
+        break;
+      }
+      rank -= count;
+    }
+  }
+  return desired;
+}
+
 template <int K>
 __device__ void select_kpool_topk_vgpr(
     const float* __restrict__ input,
@@ -192,7 +272,9 @@ __device__ void select_kpool_topk_vgpr(
   constexpr int kCompactItems = 2;
   constexpr int kSampleRank = K / 2;
 
-  __shared__ int radix_histogram[4];
+  __shared__ int radix_histogram[16];
+  __shared__ int radix_wave_histogram[
+      (kThreadsPerBlock / WARP_SIZE) * 16];
   __shared__ int candidate_count;
   __shared__ int sample_equal_count;
   __shared__ int write_count;
@@ -210,8 +292,11 @@ __device__ void select_kpool_topk_vgpr(
   uint32_t sample_keys[kSampleItems] = {
       keys[0], keys[5], keys[10], keys[15]};
   const uint32_t sample_threshold =
-      kpool_radix_select_descending<kSampleItems>(
-          sample_keys, kSampleRank, radix_histogram);
+      kpool_radix_select_descending_4bit<kSampleItems>(
+          sample_keys,
+          kSampleRank,
+          radix_histogram,
+          radix_wave_histogram);
 
   if (tid == 0) {
     candidate_count = 0;
@@ -247,8 +332,8 @@ __device__ void select_kpool_topk_vgpr(
       compact_keys[item] =
           pos < compact_count ? candidate_workspace[pos] : uint32_t{0};
     }
-    kth_key = kpool_radix_select_descending<kCompactItems>(
-        compact_keys, K, radix_histogram);
+    kth_key = kpool_radix_select_descending_4bit<kCompactItems>(
+        compact_keys, K, radix_histogram, radix_wave_histogram);
   } else if (
       compact_count < K &&
       compact_count + sample_equal_count >= K) {
@@ -1028,9 +1113,6 @@ void fused_kpool_topk_transform_kernel(
 } // namespace
 
 #define CHECK_CUDA(x) TORCH_CHECK(x.is_cuda(), #x " must be a CUDA tensor")
-
-namespace at {  
-namespace native {
 
 void fast_topk_interface(
     const at::Tensor& score, at::Tensor& indices, const at::Tensor& lengths, std::optional<at::Tensor> row_starts_opt) {
