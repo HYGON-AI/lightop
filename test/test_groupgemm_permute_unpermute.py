@@ -22,7 +22,7 @@ fused_permute = moe_permute
 fused_unpermute = moe_unpermute
 fused_sort_chunks_by_index = moe_sort_chunks_by_index
 
-from lightop import groupgemm_permute, groupgemm_unpermute
+from lightop.moe import groupgemm_permute, groupgemm_unpermute
 
 _cuda_available = True
 seed = 1234

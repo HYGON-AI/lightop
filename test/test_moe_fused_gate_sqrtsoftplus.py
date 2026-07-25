@@ -1,6 +1,6 @@
 import torch
 
-from lightop import op
+from lightop.moe import moe_fused_gate_sqrtsoftplus
 
 
 def reference_moe_fused_gate_sqrtsoftplus(
@@ -63,7 +63,7 @@ def check_case(
         routed_scaling_factor,
         apply_routed_scaling_factor_on_output,
     )
-    opt_weights, opt_ids = op.moe_fused_gate_sqrtsoftplus(
+    opt_weights, opt_ids = moe_fused_gate_sqrtsoftplus(
         input,
         bias,
         topk,

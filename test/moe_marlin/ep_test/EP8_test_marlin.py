@@ -12,9 +12,6 @@ torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 import triton
 from ray.experimental.tqdm_ray import tqdm
 from transformers import AutoConfig
-# from vllm.model_executor.layers.fused_moe.fused_moe import *
-# from fused_moe import *
-# from fused_moe_3 import *
 from typing import Optional
 import os
 import pandas as pd
@@ -22,19 +19,7 @@ import triton
 import triton.language as tl
 from collections import defaultdict
 from marlin_quant import w4a8_2_marlin_weight
-# 引入适配后的 marlin fused_moe实现
-
 from fused_marlin_moe_valid import fused_marlin_moe_valid
-import openpyxl
-from openpyxl import Workbook  # 显式导入Workbook
-from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
-
-from vllm.platforms import current_platform
-from vllm.utils import FlexibleArgumentParser
-from vllm.scalar_type import scalar_types
-
-FP8_DTYPE = torch.float8_e4m3fnuz if current_platform.is_rocm(
-) else torch.float8_e4m3fn
 
 is_print = False
 # 将 NumPy 数组写入 Excel 文件

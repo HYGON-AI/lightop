@@ -2,7 +2,7 @@ import torch
 import time
 import os
 import torch.nn.functional as F
-from lightop import AddLn
+from lightop.norm import AddLn
 
 
 class TorchAddLn(torch.nn.Module):

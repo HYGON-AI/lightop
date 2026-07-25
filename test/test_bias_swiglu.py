@@ -1,6 +1,6 @@
 import torch
 import time
-from lightop import FuseBiasSwiGLU
+from lightop.activation import FuseBiasSwiGLU
 import torch.nn.functional as F
 
 

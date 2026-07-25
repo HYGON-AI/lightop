@@ -1,0 +1,29 @@
+[phase0] LightOp/lmslim compatibility baseline
+date: 2026-07-12
+container: luoyao-qwen35b-a3b-int8-env
+workspace: /workspace/projects/cuda-repo/lightop_limslim
+
+environment:
+  Python 3.10.12
+  PyTorch 2.10.0
+  HIP 6.3.26113
+  hipcc /opt/dtk/bin/hipcc
+  GPU available: true
+
+commands:
+  python tools/compat/generate_api_baseline.py --lmslim-root ../lmslim
+  python tools/compat/generate_api_baseline.py --lmslim-root ../lmslim --check
+  python -m py_compile tools/compat/generate_api_baseline.py
+  git diff --check
+
+results:
+  lightop_python_api.txt: 143 entries
+  lightop_op_symbols.txt: 209 entries
+  lmslim_required_lightop_api.txt: 22 entries
+  manifest check: PASS
+  py_compile: PASS
+  git diff --check: PASS
+
+notes:
+  lightop/csrc/allreduce_fuse is intentionally excluded.
+  lmslim test sources are excluded; only the published lmslim package is scanned.

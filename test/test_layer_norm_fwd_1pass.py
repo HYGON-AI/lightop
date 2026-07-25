@@ -10,7 +10,7 @@ import torch
 import triton
 import triton.language as tl
 
-from lightop import op
+from lightop.norm import layer_norm_fwd_1pass_opt
 
 
 QWEN35_397B = {
@@ -341,7 +341,7 @@ def launch_cuda(case: BenchCase, tensors: Dict[str, torch.Tensor], m: int, eps: 
     total_cols = case.groups * n
     block_n = next_power_of_2(n)
     rows_per_block = case.rows_per_block
-    op.layer_norm_fwd_1pass_opt(
+    layer_norm_fwd_1pass_opt(
         tensors["x"],
         tensors["y_cuda"],
         tensors["w"],

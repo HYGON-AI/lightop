@@ -1,6 +1,5 @@
 import torch
 import time
-from lmslim import quant_ops 
 from typing import Optional, Type
 import pandas as pd
 import os
@@ -8,7 +7,7 @@ import json
 import triton
 import triton.language as tl
 import pdb
-from lightop import op as ops
+from lightop.moe import moe_sum
 
 def moe_sum_reduce_torch_compile(x, out):
     torch.sum(x, dim=1, out=out)
@@ -45,7 +44,7 @@ def _test_helper(m: int,
       
     # --- 1. 精度检查 ---
     output_ops.zero_()
-    ops.moe_sum(input, output_ops, None, None, None, factor)
+    moe_sum(input, output_ops, factor=factor)
     torch.cuda.synchronize()
     # pdb.set_trace()
     if not (torch.allclose(output_ops, output_pytorch_ref, rtol=1e-2, atol=1e-2)):
@@ -55,7 +54,7 @@ def _test_helper(m: int,
 
     # --- 2. 预热 (10轮) ---
     for _ in range(10):
-        ops.moe_sum(input, output_ops, None, None, None, factor)
+        moe_sum(input, output_ops, factor=factor)
     torch.cuda.synchronize()
 
     # --- 3. 性能测试 (100轮) ---
@@ -64,7 +63,7 @@ def _test_helper(m: int,
 
     start_event.record()
     for _ in range(100):
-        ops.moe_sum(input, output_ops, None, None, None, factor)
+        moe_sum(input, output_ops, factor=factor)
     end_event.record()
     torch.cuda.synchronize()
 

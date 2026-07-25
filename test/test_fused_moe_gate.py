@@ -1,7 +1,7 @@
 import torch
 import triton
 from vllm import _custom_ops as vllm_ops
-from lightop import op as ops
+from lightop.moe import moe_fused_gate
 import pdb
 
 
@@ -11,7 +11,7 @@ def python_reference_moe_gate(scores, bias, num_expert_group, topk_group, topk, 
     逻辑特点：
     1. Selection Score = Sigmoid(Input) + Bias
     2. Weight Value    = Sigmoid(Input)
-    3. Output          = Normalize(Weight Value of TopK Experts)
+    3. Output          = Normalize(Weight Value of TopK Experts) * routed_scaling_factor
     4. 支持共享专家(Shared Experts)逻辑
     """
     # 转 float32 防止精度溢出
@@ -105,7 +105,7 @@ def biased_grouped_topk_org_init(scores, bias, num_expert_group, topk_group, top
     return vllm_ops.moe_fused_gate(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
 
 def biased_grouped_topk_org_opt(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor):
-    return ops.moe_fused_gate(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
+    return moe_fused_gate(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
 
 # -------------------------------
 # 正确性验证 (仅 bf16)

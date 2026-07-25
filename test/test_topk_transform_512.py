@@ -2,7 +2,7 @@ import time
 
 import torch
 
-from lightop import topk_transform_512
+from lightop.attention import topk_transform_512
 
 MAX_CONTEXT_LEN = 512 * 1024
 TOPK = 512

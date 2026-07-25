@@ -17,7 +17,7 @@ from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
 from lmslim.layers.fused_moe.fuse_moe_int8 import moe_kernel_prepare_input
 from vllm import _custom_ops as ops
 
-from lightop import moe_gemm_w4a8
+from lightop.moe import moe_gemm_w4a8
 
 
 gemm1_compare_failed_list = []

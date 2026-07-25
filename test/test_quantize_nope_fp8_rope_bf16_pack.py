@@ -9,7 +9,7 @@ import triton
 import triton.language as tl
 from dataclasses import dataclass
 from typing import Any
-from lightop import op
+from lightop.quant import quantize_nope_fp8_rope_bf16_pack
 
 fp8_dtype = torch.float8_e4m3fn
 
@@ -149,7 +149,7 @@ def quantize_nope_fp8_rope_bf16_pack_cpp(
     k_bf16: torch.Tensor, eps: float = 1e-8
 ) -> NopeFp8RopeBf16Pack:
     """Call the C++ implementation and wrap result in NopeFp8RopeBf16Pack."""
-    result = op.quantize_nope_fp8_rope_bf16_pack(k_bf16, eps)
+    result = quantize_nope_fp8_rope_bf16_pack(k_bf16, eps)
     k_nope_fp8_u8, k_rope_bf16, scale_k_nope = result
     # C++ returns k_nope_fp8 as uint8; view as fp8 for the dataclass
     k_nope_fp8 = k_nope_fp8_u8.view(fp8_dtype)

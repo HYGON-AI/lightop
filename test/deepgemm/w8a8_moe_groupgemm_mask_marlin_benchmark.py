@@ -4,19 +4,19 @@ import pandas as pd
 import random
 import math
 from typing import Any, Callable, Dict, List, Optional, Tuple,Type,Any
-from vllm import _custom_ops as ops
 import torch
-from lightop import moe_groupgemm_marlin_w4a8
-from lightop import m_grouped_w8a8_gemm_nt_masked
-from lightop import get_moe_groupgemm_marlin_config_w4a8
+from lightop.moe import moe_groupgemm_marlin_w4a8
+from lightop.gemm_ops import m_grouped_w8a8_gemm_nt_masked
+from lightop.moe import get_moe_groupgemm_marlin_config_w4a8
 import ast  
-from lmslim.layers.gemm.int8_utils import (
-    per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 import argparse
 from deepgemm_groupgemm_marlin_quant import weight8bit_nt_kpack2_marlin  # pyright: ignore[reportMissingImports]
 
-from vllm.platforms import current_platform
-device_name = current_platform.get_device_name().replace(" ", "_")
+device_name = torch.cuda.get_device_properties(torch.cuda.current_device()).name
 num_cus= torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 
 def to_int8(tensor: torch.Tensor):

@@ -13,15 +13,13 @@ import torch
 import triton
 from ray.experimental.tqdm_ray import tqdm
 from transformers import AutoConfig
-
-# from vllm.model_executor.layers.fused_moe.fused_moe import *
-from vllm.platforms import current_platform
-from vllm.utils import FlexibleArgumentParser
 from fuse_moegemm_marlin import fused_moe_impl, fused_moe_first_stage_tune, fused_moe_second_stage_tune, \
                             grouped_topk, blockM_all_configs
-from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
-# from test_ori_fuse_moe import fused_moe_impl
-from lmslim.layers.gemm.int8_utils import (
+
+from vllm.platforms import current_platform
+from vllm.model_executor.layers.fused_moe.router.fused_topk_router import fused_topk
+
+from lightop.quant import (
     per_token_group_quant_int8, per_token_quant_int8)
 import math
 import torch.nn.functional as F
@@ -1743,7 +1741,7 @@ def main(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    parser = FlexibleArgumentParser()
+    parser = argparse.ArgumentParser()
     parser.add_argument("--model",
                         type=str,
                         default="/public/opendas/DL_DATA/llm-models/deepseek-r1/DeepSeek-R1-INT8")

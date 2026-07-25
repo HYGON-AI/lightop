@@ -1,0 +1,8 @@
+LMSlim source comparison
+========================
+1 passed in 15.60s
+
+Input: FP16 [3, 257]
+Quantized output tolerance: rtol=0, atol=0
+Scale output tolerance: rtol=0, atol=0
+Signature comparison: identical

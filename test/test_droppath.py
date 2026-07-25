@@ -2,7 +2,7 @@ import torch
 import time
 import torch.nn.functional as F
 from torch.autograd import Variable
-from lightop.droppath import DropPath
+from lightop.activation import DropPath
 
 
 def drop_path(x, drop_prob: float = 0., training: bool = False, scale_by_keep: bool = True):

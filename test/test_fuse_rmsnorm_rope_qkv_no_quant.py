@@ -4,13 +4,7 @@ Kernel 条件：head_size=128, (num_heads+num_kv_heads)<=128, rot_dim in (128, 6
 """
 import itertools
 import torch
-try:
-    from lightop import rms_rotary_embedding_fuse_with_kv_store_no_quant
-except ImportError:
-    # Older / installed lightop only exports the unified entry.
-    from lightop import (
-        rms_rotary_embedding_fuse_with_kv_store as rms_rotary_embedding_fuse_with_kv_store_no_quant,
-    )
+from lightop.attention import rms_rotary_embedding_fuse_with_kv_store
 from lightop import op as lightop_op
 
 torch.manual_seed(0)
@@ -123,7 +117,7 @@ def run_one(shape, is_neox, use_residual):
     v_buf_tgt = torch.zeros_like(v_buf_org)
     r_q_tgt = res_q.clone() if use_residual else None
     r_k_tgt = res_k.clone() if use_residual else None
-    q_out, k_out, v_out = rms_rotary_embedding_fuse_with_kv_store_no_quant(
+    q_out, k_out, v_out = rms_rotary_embedding_fuse_with_kv_store(
         positions, q_tgt, k_tgt, v_tgt, cos_sin, head_dim=dim, page_size=PAGE_SIZE,
         k_buffer=k_buf_tgt, v_buffer=v_buf_tgt, kv_cache_loc=kv_loc, is_neox=is_neox,
         weight_q=w_q, weight_k=w_k, output_dtype=DTYPE, residual_q=r_q_tgt, residual_k=r_k_tgt,
@@ -181,7 +175,7 @@ def run_one_2d(shape, is_neox, use_residual):
     v_buf_tgt = torch.zeros_like(v_buf_org)
     r_q_tgt = res_q.clone() if use_residual else None
     r_k_tgt = res_k.clone() if use_residual else None
-    q_out, k_out, v_out = rms_rotary_embedding_fuse_with_kv_store_no_quant(
+    q_out, k_out, v_out = rms_rotary_embedding_fuse_with_kv_store(
         positions, q_tgt, k_tgt, v_tgt, cos_sin, head_dim=dim, page_size=PAGE_SIZE,
         k_buffer=k_buf_tgt, v_buffer=v_buf_tgt, kv_cache_loc=kv_loc, is_neox=is_neox,
         weight_q=w_q, weight_k=w_k, output_dtype=DTYPE, residual_q=r_q_tgt, residual_k=r_k_tgt,
