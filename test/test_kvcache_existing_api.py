@@ -9,7 +9,7 @@ import lightop.kvcache
 
 
 EXISTING_KVCACHE_APIS = [
-    "dcu_alloc_extend_kernel",
+    "hcu_alloc_extend_kernel",
     "fused_metadata_kernel_general",
     "reshape_and_cache_cuda",
 ]
@@ -38,7 +38,7 @@ def test_kvcache_public_api_inventory():
     )
 
 
-def test_dcu_alloc_extend_kernel_page_mapping():
+def test_hcu_alloc_extend_kernel_page_mapping():
     device = "cuda"
     pre_lens = torch.tensor([3, 4], dtype=torch.int64, device=device)
     seq_lens = torch.tensor([6, 7], dtype=torch.int64, device=device)
@@ -46,7 +46,7 @@ def test_dcu_alloc_extend_kernel_page_mapping():
     free_pages = torch.tensor([100, 101], dtype=torch.int64, device=device)
     output = torch.empty(6, dtype=torch.int64, device=device)
 
-    lightop.kvcache.dcu_alloc_extend_kernel(
+    lightop.kvcache.hcu_alloc_extend_kernel(
         pre_lens,
         seq_lens,
         last_locs,
