@@ -11,9 +11,6 @@ import torch
 import triton
 from ray.experimental.tqdm_ray import tqdm
 from transformers import AutoConfig
-# from vllm.model_executor.layers.fused_moe.fused_moe import *
-# from fused_moe import *
-# from fused_moe_3 import *
 from typing import Optional
 import os
 import pandas as pd
@@ -25,15 +22,6 @@ from marlin_quant import w4a8_2_marlin_weight
 # from fused_marlin_moe_chunk_size import fused_marlin_moe
 from fused_marlin_moe import fused_marlin_moe
 from fused_marlin_moe_valid import fused_marlin_moe_valid
-
-from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
-
-from vllm.platforms import current_platform
-from vllm.utils import FlexibleArgumentParser
-from vllm.scalar_type import scalar_types
-
-FP8_DTYPE = torch.float8_e4m3fnuz if current_platform.is_rocm(
-) else torch.float8_e4m3fn
 
 def grouped_topk(hidden_states: torch.Tensor,
                  gating_output: torch.Tensor,
@@ -279,7 +267,7 @@ def main(args: argparse.Namespace):
 
     ray.init(address=None,
                  ignore_reinit_error=True,
-                 num_gpus=1, local_mode = True) # local_mode = True用于debug
+                 num_gpus=1)
     num_gpus = int(ray.available_resources()["GPU"])
     workers = [BenchmarkWorker.remote(args.seed) for _ in range(num_gpus)]
 
@@ -314,7 +302,7 @@ def main(args: argparse.Namespace):
 
 
 if __name__ == "__main__":
-    parser = FlexibleArgumentParser()
+    parser = argparse.ArgumentParser()
     parser.add_argument("--model",
                         type=str,
                         default="./DeepSeek-R1-AWQ")

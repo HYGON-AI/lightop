@@ -2,7 +2,7 @@ import torch
 import time
 
 try:
-    from lightop import ds_cat
+    from lightop.tensor import ds_cat
     # 如果您打包后的模块名叫 lightop，这里导入您的实际算子
     from lightop import op
     HAS_LIGHTOP = True

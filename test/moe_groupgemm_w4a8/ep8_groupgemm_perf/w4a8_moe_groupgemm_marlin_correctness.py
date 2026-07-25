@@ -10,14 +10,16 @@ from vllm import _custom_ops as ops
 import torch
 import triton
 import itertools
-from lightop import moe_groupgemm_marlin_w4a8
-from lightop import get_moe_groupgemm_marlin_config_w4a8
+from lightop.moe import moe_groupgemm_marlin_w4a8
+from lightop.moe import get_moe_groupgemm_marlin_config_w4a8
 import triton.language as tl
 import torch.nn.functional as F
 import ast  
 import torch.multiprocessing as mp
-from lmslim.layers.gemm.int8_utils import (
-    per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 import argparse
 from w4a8_moe_groupgemm_marlin_quant import w4a8_2_marlin_weight  # pyright: ignore[reportMissingImports]
 

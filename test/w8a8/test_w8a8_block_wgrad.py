@@ -4,7 +4,7 @@ import torch
 import triton
 import triton.language as tl
 
-from lightop import gemm_w8a8_wgrad_asm
+from lightop.gemm_ops import gemm_w8a8_wgrad_asm
 
 
 @triton.jit

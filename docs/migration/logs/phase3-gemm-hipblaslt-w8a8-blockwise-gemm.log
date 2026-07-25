@@ -1,0 +1,7 @@
+Focused migration test
+======================
+1 passed, 1 skipped in 14.43s
+
+Direct native binding and signature: passed
+Numerical PyTorch comparison: skipped on BW151
+Backend reason: no suitable blockwise FP8 hipBLASLt algorithm for test shape

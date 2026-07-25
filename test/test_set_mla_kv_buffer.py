@@ -3,7 +3,7 @@ import triton
 import triton.language as tl
 import time
 
-from lightop import op
+from lightop.kvcache import fused_quantize_and_store_mla_kv_cache
 
 
 @triton.jit
@@ -155,7 +155,7 @@ def benchmark_and_verify():
         nope_u8, rope_u8 = quantize_k_cache_separate(k_nope, k_rope)
         set_mla_kv_buffer_triton(kv_buffer_triton, loc, nope_u8, rope_u8)
         
-        op.fused_quantize_and_store_mla_kv_cache(k_nope, k_rope, kv_buffer_cuda, loc, "fp8_e4m3", 1e-5)
+        fused_quantize_and_store_mla_kv_cache(k_nope, k_rope, kv_buffer_cuda, loc, "fp8_e4m3", 1e-5)
         
         diff = (kv_buffer_triton.float() - kv_buffer_cuda.float()).abs().max().item()
         acc_status = f"Pass (Diff: {diff})" if diff <= 1.0 else f"Fail (Diff: {diff})"
@@ -181,12 +181,12 @@ def benchmark_and_verify():
         # 4. 性能测试 (CUDA)
         # Warmup
         for _ in range(10):
-            op.fused_quantize_and_store_mla_kv_cache(k_nope, k_rope, kv_buffer_cuda, loc, "fp8_e4m3", 1e-5)
+            fused_quantize_and_store_mla_kv_cache(k_nope, k_rope, kv_buffer_cuda, loc, "fp8_e4m3", 1e-5)
         torch.cuda.synchronize()
 
         start_event.record()
         for _ in range(100):
-            op.fused_quantize_and_store_mla_kv_cache(k_nope, k_rope, kv_buffer_cuda, loc, "fp8_e4m3", 1e-5)
+            fused_quantize_and_store_mla_kv_cache(k_nope, k_rope, kv_buffer_cuda, loc, "fp8_e4m3", 1e-5)
         end_event.record()
         torch.cuda.synchronize()
         cuda_time_us = start_event.elapsed_time(end_event) * 1000.0 / 100.0

@@ -10,13 +10,13 @@ import vllm._custom_ops as vllm_ops
 from vllm.model_executor.layers.fused_moe.fused_moe import (
     fused_moe_kernel_gptq_awq,
 )
-from lightop import moe_align_block_size
+from lightop.moe import moe_align_block_size, moe_marlin_w4a16
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
     quantize_weights,
 )
 from vllm.scalar_type import scalar_types
 # import marlin  # 确保导入了 marlin 包
-import lightop  # 确保导入了 marlin 包
+# from lightop.moe import moe_marlin_w4a16
 from marlin_quant import awq_marlin_quantize
 
 global_group_size = 64
@@ -120,7 +120,7 @@ def run_moe_marlin(inputs, weight, topk_weights, topk_ids, bit):
     workspace = torch.zeros((sms * 3, ), dtype=torch.int, device=device)
     # pdb.set_trace()
     def run():
-        return lightop.moe_marlin_w4a16(
+        return moe_marlin_w4a16(
                                             inputs.to(torch.bfloat16), 
                                             # inputs,
                                             None, 

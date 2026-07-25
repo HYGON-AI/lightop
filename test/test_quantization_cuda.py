@@ -7,7 +7,7 @@ import numpy as np
 
 # 导入CUDA实现
 try:
-    from lightop import (
+    from lightop.quant import (
         destindex_copy_quantize_int8_cuda as cuda_quantize,
         destindex_dequantize_int8_cuda as cuda_dequantize
     )
@@ -439,4 +439,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -2,7 +2,7 @@ import torch
 import time
 import os
 import torch.nn.functional as F
-from lightop import RMSNormTorch,RMSNormAddDropoutBias
+from lightop.norm import RMSNormTorch, RMSNormAddDropoutBias
 
 
 class Torch_RNAddDropoutBias(torch.nn.Module):

@@ -1,6 +1,6 @@
 import torch
 import itertools
-from lightop import op
+from lightop.norm import fused_add_rms_norm_opt
 
 def torch_fused_add_rms_norm(input_tensor, residual_tensor, weight_tensor, eps):
     """
@@ -42,7 +42,7 @@ def run_test(num_tokens, hidden_size, dtype, eps=1e-5):
     ref_input, ref_residual = torch_fused_add_rms_norm(input_tensor, residual_tensor, weight_tensor, eps)
     
 
-    op.fused_add_rms_norm_opt(custom_input, custom_residual, weight_tensor, eps)
+    fused_add_rms_norm_opt(custom_input, custom_residual, weight_tensor, eps)
     
   
     if dtype == torch.bfloat16:
@@ -65,7 +65,7 @@ def run_test(num_tokens, hidden_size, dtype, eps=1e-5):
     
     # 预热 
     for _ in range(warmup_iters):
-        op.fused_add_rms_norm_opt(custom_input, custom_residual, weight_tensor, eps)
+        fused_add_rms_norm_opt(custom_input, custom_residual, weight_tensor, eps)
     torch.cuda.synchronize()
     
 
@@ -74,7 +74,7 @@ def run_test(num_tokens, hidden_size, dtype, eps=1e-5):
     
     start_event.record()
     for _ in range(test_iters):
-        op.fused_add_rms_norm_opt(custom_input, custom_residual, weight_tensor, eps)
+        fused_add_rms_norm_opt(custom_input, custom_residual, weight_tensor, eps)
     end_event.record()
     torch.cuda.synchronize()
 

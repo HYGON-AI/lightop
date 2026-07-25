@@ -1,5 +1,5 @@
 import torch
-from lightop import op
+from lightop.tensor import reshape_to_float
 
 def torch_baseline(x, vocab_size):
     reshaped = x.reshape(x.shape[0], -1)
@@ -58,7 +58,7 @@ def main():
 
     print("=== 1. 精度验证 ===")
     out_torch = torch_baseline(x, vocab_size)
-    out_lightop = op.reshape_to_float(x, vocab_size)
+    out_lightop = reshape_to_float(x, vocab_size)
 
     # 验证形状和数据类型
     assert out_lightop.shape == out_torch.shape, f"形状不匹配: {out_lightop.shape} vs {out_torch.shape}"
@@ -79,7 +79,7 @@ def main():
     print(f"PyTorch 原生实现: {torch_time:.2f} us")
 
     # 测自定义 CUDA 算子
-    lightop_time = benchmark(op.reshape_to_float, x, vocab_size)
+    lightop_time = benchmark(reshape_to_float, x, vocab_size)
     print(f"Lightop CUDA算子: {lightop_time:.2f} us")
 
     # 计算加速比

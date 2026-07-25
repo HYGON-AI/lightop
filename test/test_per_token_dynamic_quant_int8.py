@@ -2,8 +2,7 @@ import torch
 import triton
 import triton.language as tl
 from triton.language.extra import libdevice
-from lightop import op
-from typing import Optional
+from lightop.quant import per_token_dynamic_quant_int8
 
 @triton.jit
 def _per_token_dynamic_quant_int8_kernel(
@@ -78,12 +77,28 @@ def int8_quant_init(output: torch.Tensor, input: torch.Tensor,
     return ref_out, ref_scales
 
 def int8_quant_opt(input: torch.Tensor, smoothscale: torch.Tensor):
-    opt_out = torch.empty_like(input, device=input.device, dtype=torch.int8)
-    opt_scales = torch.empty(input.shape[:-1], device=input.device, dtype=torch.float32)
-    
-    op.per_token_dynamic_quant_int8(opt_out, input, opt_scales, smoothscale)
-    return opt_out, opt_scales
+    return per_token_dynamic_quant_int8(input, smoothscale)
 
+
+
+def test_per_token_dynamic_quant_int8_category_matches_triton() -> None:
+    torch.manual_seed(7)
+    input_tensor = torch.randn(
+        (4, 128), device="cuda", dtype=torch.bfloat16
+    )
+    smooth_scale = torch.rand(
+        (128,), device="cuda", dtype=torch.float32
+    ).contiguous()
+
+    expected_q, expected_scale = per_token_dynamic_quant_int8_triton(
+        input_tensor, smooth_scale
+    )
+    actual_q, actual_scale = per_token_dynamic_quant_int8(
+        input_tensor, smooth_scale
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(actual_q, expected_q, rtol=0, atol=0)
 # ------------------ 正确性 ------------------
 def check_correctness_once(num_tokens: int, hidden_sizes: int, rtol=1e-2, atol=1e-2):
     device = torch.device("cuda")

@@ -4,7 +4,7 @@ import sys
 import time
 import torch
 import itertools
-from lightop import (
+from lightop.attention import (
     rms_rotary_embedding_fuse_with_kv_store,
     rms_rotary_embedding_fuse_with_kv_store_fake,
 )

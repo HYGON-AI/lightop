@@ -14,7 +14,7 @@ import torch
 import triton
 import triton.language as tl
 import lmslim.envs as lsenvs
-from vllm.utils import W8a8GetCacheJSON
+from common.w8a8_cache_json import W8a8GetCacheJSON
 import torch.nn.functional as F
 import ast  
 
@@ -22,11 +22,13 @@ use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 device_name = lsenvs.LMSLIM_GPU_NAME
 
 if use_lightop:
-    from lightop import moe_gemm_w8a8,get_moe_cuda_config
+    from lightop.moe import moe_gemm_w8a8, get_moe_cuda_config
     from moe_w8a8_prefill_gemm import backend
     from grouped_gemm import moe_gemm_decode_prof
-from lmslim.layers.gemm.int8_utils import (
-   per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 
 import argparse
 

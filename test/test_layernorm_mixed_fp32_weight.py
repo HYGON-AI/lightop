@@ -2,7 +2,7 @@
 混合精度 LayerNorm 验证：激活为 Half / BFloat16，weight / bias 为 float32。
 
 参考实现：在 float32 上做 torch.nn.functional.layer_norm，再 cast 回输入 dtype，
-与 lightop.LayerNormMixedFp32Weight 对比前向、dx、dweight、dbias。
+与 lightop.norm.LayerNormMixedFp32Weight 对比前向、dx、dweight、dbias。
 """
 import time
 
@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lightop import LayerNormMixedFp32Weight
+from lightop.norm import LayerNormMixedFp32Weight
 
 # ------------------------------------------------------------------------------------
 # 1. 模块封装

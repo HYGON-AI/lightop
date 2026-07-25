@@ -1,10 +1,10 @@
 import torch
 from vllm import _custom_ops as vllm_ops
 from triton.testing import do_bench 
-from lightop import fused_rms_norm_rope_contiguous
-from lightop import fused_rms_norm_contiguous
+from lightop.attention import fused_rms_norm_rope_contiguous
+from lightop.attention import rotary_embedding_deepseek_fuse
+from lightop.norm import fused_rms_norm_contiguous
 import pdb
-from lightop import op
 from vllm import _custom_ops as ops
 
 
@@ -109,7 +109,7 @@ def rms_rope_single_test(kv_cache_dtype_str,batch_size,num_head,q_c_dim,kv_c_dim
     def run_fuse_opt():
         fused_rms_norm_rope_contiguous(positions,q_pe,k_pe,kv_c,kv_c_normed,weight,cos_sin_cache,slot_mapping,kv_cache,kv_cache_dtype_str,kv_cache_scale,is_neox_style,variance_epsilon)
     def run_no_fuse_opt():
-        op.rotary_embedding_deepseek_fuse(positions, q_pe_no_fuse, k_pe_no_fuse, rot_dim, cos_sin_cache, is_neox_style, None)
+        rotary_embedding_deepseek_fuse(positions, q_pe_no_fuse, k_pe_no_fuse, rot_dim, cos_sin_cache, is_neox_style, None)
         fused_rms_norm_contiguous(kv_c_no_fuse_out, kv_c_no_fuse, weight, variance_epsilon)
         cache_dtype = kv_cache_dtype_str
         if cache_dtype == "fp16" or cache_dtype == "bf16":
@@ -138,6 +138,5 @@ if __name__ == "__main__":
     # for bs in [2048,4096,8192,16384]:
     #    for num_head in [16,]:
     #     rms_rope_single_test(kv_cache_dtype_str = "bf16",batch_size=bs,num_head=num_head,q_c_dim=128, kv_c_dim=512, rot_dim=64, num_kv_cache_blocks=10000, kv_cache_blocks_size=64, k_bs_stride=2112, test_speed=False)
-
 
 

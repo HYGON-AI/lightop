@@ -23,7 +23,10 @@ from fuse_moegemm import grouped_topk, blockM_gemm2_prefill_configs, gemm2_kerne
 # 用于模型侧性能测试的文件
 from fused_moe_cuda import fused_moe_impl
 
-from lmslim.layers.gemm.int8_utils import per_token_group_quant_int8, per_token_quant_int8
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 import math
 import torch.nn.functional as F
 import pandas as pd

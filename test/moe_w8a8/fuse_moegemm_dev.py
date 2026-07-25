@@ -19,7 +19,7 @@ import vllm.envs as envs
 from vllm.logger import init_logger
 from vllm import _custom_ops as ops
 # import _custom_ops as ops
-from lightop import moe_gemm_w8a8, get_moe_cuda_config
+from lightop.moe import moe_gemm_w8a8, get_moe_cuda_config
 #from vllm.model_executor.layers.fused_moe.fused_moe import moe_kernel_prepare_input
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
@@ -33,8 +33,10 @@ device_name = current_platform.get_device_name().replace(" ", "_")
 num_cus= torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 
 
-from lmslim.layers.gemm.int8_utils import (
-   per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 def moe_kernel_prepare_input(
     A: torch.Tensor,
     B: torch.Tensor,
