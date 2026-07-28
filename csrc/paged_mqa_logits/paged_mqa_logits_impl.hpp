@@ -181,6 +181,26 @@ inline __device__ __forceinline__ void buffer_load_page_tile_lds(const Element* 
     __builtin_amdgcn_sched_barrier(0);
 }
 
+template <int kHeadDim, int kKvTile, int kKStage>
+inline __device__ __forceinline__ void buffer_load_page_k_stage_lds(const uint8_t* page, const int row_in_page,
+                                                                    const int k_stage, const int lane_idx,
+                                                                    const bool valid, uint8_t* smem_stage) {
+    constexpr int kAlignment = 16;
+    constexpr int kLoadsPerRow = kKStage / kAlignment;
+    LIGHTOP_STATIC_ASSERT(kKvTile * kLoadsPerRow == WARP_SIZE_GPU, "Invalid FP8 K-stage load shape");
+
+    const int tile_row = lane_idx / kLoadsPerRow;
+    const int tile_col = lane_idx % kLoadsPerRow * kAlignment;
+    const int page_linear = valid ? (row_in_page + tile_row) * kHeadDim + k_stage * kKStage + tile_col : -1;
+
+    long glob_kv_desc[2];
+    glob_kv_desc[0] = *reinterpret_cast<const long*>(&page);
+    glob_kv_desc[1] = (static_cast<long>(0x20000) << 32) | 0xFFFFFFFE;
+    auto* src = reinterpret_cast<v4i*>(glob_kv_desc);
+    buffer_load_lds_x4(src, smem_stage + tile_row * kKStage + tile_col, page_linear);
+    __builtin_amdgcn_sched_barrier(0);
+}
+
 template<bool is_half = true>
 inline __device__ void builtin_b16_mmac(const fp16x4& reg_a, const fp16x4& reg_b, fp32x4& reg_c) {
     #if defined(__gfx938__)
@@ -252,39 +272,32 @@ __global__ void paged_mqa_logits_metadata(const int batch_size,
     }
 }
 
-template <int kNextN = 1, int kNumHeads = 64,
-          int kHeadDim = 128, int BLOCK_KV = 64,
-          int kNumWarps = 4, int kTokensPerWarp = BLOCK_KV>
-// Keep raw FP8 tiles in LDS. H64 uses two stages so the next VMEM-to-LDS load can overlap conversion and MMAC.
-__attribute__((amdgpu_flat_work_group_size(1, 512)))
-__global__ void paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q,
-                                             const uint8_t* kv_block,
-                                             const float* kv_block_scales,
-                                             const float* weights,
-                                             const uint64_t kv_cache_stride_bytes,
-                                             const uint64_t logits_stride,
-                                             const uint64_t block_table_stride,
-                                             const int* context_lens,
-                                             float* logits,
-                                             const int* block_table) {
+template <int kNextN = 1, int kNumHeads = 32, int BLOCK_KV = 64, int kNumWarps = 4, int kTokensPerWarp = 64>
+__attribute__((amdgpu_flat_work_group_size(1, 512))) __global__ void
+paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q, const uint8_t* kv_block, const float* kv_block_scales,
+                             const float* weights, const uint64_t kv_cache_stride_bytes, const uint64_t logits_stride,
+                             const uint64_t block_table_stride, const int* context_lens, float* logits,
+                             const int* block_table) {
+    constexpr int kHeadDim = 128;
+    constexpr int K_TILE = 32;
+    constexpr int K_STAGE = 64;
+    constexpr int Q_TILE = 16;
+    constexpr int KV_TILE = 16;
+    constexpr int Q_ITER = kNumHeads / Q_TILE;
+    constexpr int K_BLOCK_MAX = kHeadDim / K_TILE;
+    constexpr int K_BLOCKS_PER_STAGE = K_STAGE / K_TILE;
+    constexpr int K_STAGE_ITER = kHeadDim / K_STAGE;
+    constexpr int KV_ITER = kTokensPerWarp / KV_TILE;
+    constexpr int kNumKStages = 2;
+    constexpr int kTokensPerCta = kTokensPerWarp * kNumWarps;
+    constexpr uint32_t kSwizzleAlignment = kHeadDim * 8;
+    LIGHTOP_STATIC_ASSERT(BLOCK_KV == 16 || BLOCK_KV == 32 || BLOCK_KV == 64, "Invalid BF16 Q + FP8 KV BLOCK_KV");
+    LIGHTOP_STATIC_ASSERT(kNumHeads == 16 || kNumHeads == 32 || kNumHeads == 64, "Invalid BF16 Q + FP8 KV heads");
+    LIGHTOP_STATIC_ASSERT(kTokensPerWarp == 64 && kNumWarps == 4, "Invalid BF16 Q + FP8 KV tiling");
+
     const int warp_idx = threadIdx.x / WARP_SIZE_GPU;
     const int lane_idx = threadIdx.x % WARP_SIZE_GPU;
     const int t_id = threadIdx.x;
-
-    static constexpr uint32_t kSwizzleAlignment = kHeadDim * 8;
-    static constexpr int K_TILE = 32;
-    static constexpr int Q_TILE = 16;
-    static constexpr int KV_TILE = 16;
-    static constexpr int Q_ITER = kNumHeads / Q_TILE;
-    static constexpr int K_BLOCK_MAX = kHeadDim / K_TILE;
-    static constexpr int KV_ITER = kTokensPerWarp / KV_TILE;
-    static constexpr int kNumKvStages = kNumHeads == 64 ? 2 : 1;
-    static constexpr int kTokensPerCta = kTokensPerWarp * kNumWarps;
-    LIGHTOP_STATIC_ASSERT(BLOCK_KV == 16 || BLOCK_KV == 32 || BLOCK_KV == 64,
-                          "Invalid BF16 Q + FP8 KV BLOCK_KV");
-    LIGHTOP_STATIC_ASSERT(kTokensPerWarp == 64 && kNumWarps == 4,
-                          "Invalid BF16 Q + FP8 KV tiling");
-
     extern __shared__ __align__(kSwizzleAlignment) uint8_t smem_buffer[];
     auto* smem_bf16 = reinterpret_cast<at::BFloat16*>(smem_buffer);
 
@@ -297,7 +310,7 @@ __global__ void paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q,
     const uint64_t base_logits_offset = q_idx * kNextN * logits_stride + next_n * logits_stride;
 
     if (cta_seq_kv_offset >= num_kv * BLOCK_KV) {
-        #pragma unroll
+#pragma unroll
         for (int i = t_id; i < kTokensPerCta; i += blockDim.x) {
             const int seq_kv_offset = cta_seq_kv_offset + i;
             if (seq_kv_offset < logits_stride) {
@@ -309,11 +322,9 @@ __global__ void paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q,
 
     const auto* gQ = q + q_idx * kNextN * kNumHeads * kHeadDim + next_n * kNumHeads * kHeadDim;
     constexpr int kAlignmentQ = 16 / sizeof(at::BFloat16);
-    constexpr int fetch_q_cnt = constexpr_ceil_div(kNumHeads * kHeadDim,
-                                                    kNumWarps * WARP_SIZE_GPU * kAlignmentQ);
+    constexpr int fetch_q_cnt = constexpr_ceil_div(kNumHeads * kHeadDim, kNumWarps * WARP_SIZE_GPU * kAlignmentQ);
     constexpr int fetch_q_stride = kAlignmentQ * kNumWarps * WARP_SIZE_GPU;
-
-    #pragma unroll
+#pragma unroll
     for (int i = 0; i < fetch_q_cnt; ++i) {
         const int pos = t_id * kAlignmentQ + i * fetch_q_stride;
         if (pos + kAlignmentQ <= kNumHeads * kHeadDim) {
@@ -321,20 +332,19 @@ __global__ void paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q,
         }
     }
 
-    f16x8_t reg_q_operand[Q_ITER][K_BLOCK_MAX];
-    const int base_fetch_lds_q = lane_idx % Q_TILE * kHeadDim + lane_idx / Q_TILE * kAlignmentQ;
-
     const auto* gW = weights + q_idx * kNextN * kNumHeads + next_n * kNumHeads;
     auto* smem_weight = reinterpret_cast<float*>(smem_bf16 + kNumHeads * kHeadDim);
+    f16x8_t reg_q_operand[Q_ITER][K_BLOCK_MAX];
+    const int base_fetch_lds_q = lane_idx % Q_TILE * kHeadDim + lane_idx / Q_TILE * kAlignmentQ;
     float reg_weights[Q_ITER * 4];
 
     if constexpr (kNumHeads >= KV_TILE * kNumWarps) {
         smem_weight = reinterpret_cast<float*>(smem_bf16);
         __syncthreads();
 
-        #pragma unroll
+#pragma unroll
         for (int i = 0; i < Q_ITER; ++i) {
-            #pragma unroll
+#pragma unroll
             for (int j = 0; j < K_BLOCK_MAX; ++j) {
                 const int offset = base_fetch_lds_q + i * Q_TILE * kHeadDim + j * K_TILE;
                 reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_bf16[offset]);
@@ -347,9 +357,9 @@ __global__ void paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q,
         }
         __syncthreads();
 
-        #pragma unroll
+#pragma unroll
         for (int j = 0; j < Q_ITER; ++j) {
-            #pragma unroll
+#pragma unroll
             for (int k = 0; k < 4; ++k) {
                 reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
             }
@@ -360,125 +370,177 @@ __global__ void paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q,
         }
         __syncthreads();
 
-        #pragma unroll
+#pragma unroll
         for (int i = 0; i < Q_ITER; ++i) {
-            #pragma unroll
+#pragma unroll
             for (int j = 0; j < K_BLOCK_MAX; ++j) {
                 const int offset = base_fetch_lds_q + i * Q_TILE * kHeadDim + j * K_TILE;
                 reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_bf16[offset]);
             }
         }
 
-        #pragma unroll
+#pragma unroll
         for (int j = 0; j < Q_ITER; ++j) {
-            #pragma unroll
+#pragma unroll
             for (int k = 0; k < 4; ++k) {
                 reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
             }
         }
     }
-
     __syncthreads();
 
-    constexpr int smem_kv_stage_size_per_warp = KV_TILE * kHeadDim;
-    constexpr int smem_kv_block_per_warp = kNumKvStages * smem_kv_stage_size_per_warp;
-    auto* smem_warp_kv_start = smem_buffer + warp_idx * smem_kv_block_per_warp;
+    constexpr int smem_k_stage_size_per_warp = KV_TILE * K_STAGE;
+    constexpr int smem_k_block_per_warp = kNumKStages * smem_k_stage_size_per_warp;
+    auto* smem_warp_kv_start = smem_buffer + warp_idx * smem_k_block_per_warp;
     const uint64_t block_table_offset = q_idx * block_table_stride;
     const int kv_scale_stride = kv_cache_stride_bytes / sizeof(float);
     float sum_result[KV_ITER] = {0.0f};
     float kv_scale[KV_ITER];
     int kv_block_idx[KV_ITER];
 
-    #pragma unroll
-    for (int kv_iter = 0; kv_iter < KV_ITER; ++kv_iter) {
-        const int cta_tile_idx = kv_iter * kNumWarps + warp_idx;
-        const int seq_kv_tile_offset = cta_seq_kv_offset + cta_tile_idx * KV_TILE;
-        const int page_idx = seq_kv_tile_offset / BLOCK_KV;
-        int block_idx = -1;
-        if (lane_idx == 0 && page_idx < num_kv) {
-            block_idx = block_table[block_table_offset + page_idx];
-        }
-        block_idx = __shfl_sync(0xffffffffffffffff, block_idx, 0);
-        kv_block_idx[kv_iter] = block_idx;
-        float scale = 0.0f;
-        if (lane_idx < KV_TILE && block_idx != -1) {
-            const auto* page_scales = kv_block_scales + static_cast<int64_t>(block_idx) * kv_scale_stride;
-            scale = page_scales[seq_kv_tile_offset % BLOCK_KV + lane_idx];
-        }
-        kv_scale[kv_iter] = __shfl_sync(0xffffffffffffffff, scale, lane_idx % KV_TILE);
-    }
-
-    const auto buffer_load_raw_tile = [&](const int kv_iter, const int smem_stage) {
-        const int cta_tile_idx = kv_iter * kNumWarps + warp_idx;
+    int lane_block_idx = -1;
+    if (lane_idx < KV_ITER) {
+        const int cta_tile_idx = lane_idx * kNumWarps + warp_idx;
         const int seq_kv_tile_offset = cta_seq_kv_offset + cta_tile_idx * KV_TILE;
         const int page_idx = seq_kv_tile_offset / BLOCK_KV;
         if (page_idx < num_kv) {
-            const int block_idx = kv_block_idx[kv_iter];
-            const auto* page = kv_block + static_cast<int64_t>(block_idx) * kv_cache_stride_bytes;
-            buffer_load_page_tile_lds<uint8_t, kHeadDim, KV_TILE>(
-                page, seq_kv_tile_offset % BLOCK_KV, lane_idx,
-                smem_warp_kv_start + smem_stage * smem_kv_stage_size_per_warp);
+            lane_block_idx = block_table[block_table_offset + page_idx];
         }
+    }
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile("s_waitcnt vmcnt(0)\n\t");
+    __builtin_amdgcn_sched_barrier(0);
+
+    const int scale_kv_iter = lane_idx / KV_TILE;
+    const int scale_block_shuffle_addr = scale_kv_iter * sizeof(int);
+    int scale_block_idx;
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile("ds_bpermute_b32 %0, %1, %2\n\t"
+                 "s_waitcnt lgkmcnt(0)\n\t"
+                 : "=v"(scale_block_idx)
+                 : "v"(scale_block_shuffle_addr), "v"(lane_block_idx)
+                 :);
+    __builtin_amdgcn_sched_barrier(0);
+
+    const int scale_cta_tile_idx = scale_kv_iter * kNumWarps + warp_idx;
+    const int scale_seq_kv_tile_offset = cta_seq_kv_offset + scale_cta_tile_idx * KV_TILE;
+    float lane_scale = 0.0f;
+    if (scale_block_idx != -1) {
+        const auto* page_scales = kv_block_scales + static_cast<int64_t>(scale_block_idx) * kv_scale_stride;
+        lane_scale = page_scales[scale_seq_kv_tile_offset % BLOCK_KV + lane_idx % KV_TILE];
+    }
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile("s_waitcnt vmcnt(0)\n\t");
+    __builtin_amdgcn_sched_barrier(0);
+
+#pragma unroll
+    for (int kv_iter = 0; kv_iter < KV_ITER; ++kv_iter) {
+        const int block_shuffle_addr = kv_iter * sizeof(int);
+        __builtin_amdgcn_sched_barrier(0);
+        asm volatile("ds_bpermute_b32 %0, %1, %2\n\t"
+                     "s_waitcnt lgkmcnt(0)\n\t"
+                     : "=v"(kv_block_idx[kv_iter])
+                     : "v"(block_shuffle_addr), "v"(lane_block_idx)
+                     :);
+        __builtin_amdgcn_sched_barrier(0);
+
+        const int scale_shuffle_addr = (kv_iter * KV_TILE + lane_idx % KV_TILE) * sizeof(float);
+        __builtin_amdgcn_sched_barrier(0);
+        asm volatile("ds_bpermute_b32 %0, %1, %2\n\t"
+                     "s_waitcnt lgkmcnt(0)\n\t"
+                     : "=v"(kv_scale[kv_iter])
+                     : "v"(scale_shuffle_addr), "v"(lane_scale)
+                     :);
+        __builtin_amdgcn_sched_barrier(0);
+    }
+
+    const auto buffer_load_raw_k_stage = [&](const int kv_iter, const int k_stage, const int smem_stage) {
+        const int cta_tile_idx = kv_iter * kNumWarps + warp_idx;
+        const int seq_kv_tile_offset = cta_seq_kv_offset + cta_tile_idx * KV_TILE;
+        const int page_idx = seq_kv_tile_offset / BLOCK_KV;
+        const int block_idx = kv_block_idx[kv_iter];
+        const bool valid = page_idx < num_kv && block_idx != -1;
+        const auto* page = valid ? kv_block + static_cast<int64_t>(block_idx) * kv_cache_stride_bytes : kv_block;
+        buffer_load_page_k_stage_lds<kHeadDim, KV_TILE, K_STAGE>(
+            page, seq_kv_tile_offset % BLOCK_KV, k_stage, lane_idx, valid,
+            smem_warp_kv_start + smem_stage * smem_k_stage_size_per_warp);
     };
 
-    buffer_load_raw_tile(0, 0);
-    const int base_fetch_lds_kv = lane_idx % KV_TILE * kHeadDim + lane_idx / KV_TILE * 8;
-    #pragma unroll
+    buffer_load_raw_k_stage(0, 0, 0);
+    buffer_load_raw_k_stage(0, 1, 1);
+    const int base_fetch_lds_kv = lane_idx % KV_TILE * K_STAGE + lane_idx / KV_TILE * 8;
+#pragma unroll
     for (int kv_iter = 0; kv_iter < KV_ITER; ++kv_iter) {
-        WAIT_VMCNT_LDS(0);
-
-        auto* smem_stage_start =
-            smem_warp_kv_start + (kv_iter % kNumKvStages) * smem_kv_stage_size_per_warp;
-        intx2 raw_kv_operand[K_BLOCK_MAX];
-        #pragma unroll
-        for (int k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
-            raw_kv_operand[k_block] = *reinterpret_cast<const intx2*>(
-                smem_stage_start + base_fetch_lds_kv + k_block * K_TILE);
-        }
-
-        if constexpr (kNumKvStages == 1) {
-            // Finish the HIP-C LDS reads before the next VMEM-to-LDS load overwrites this stage.
-            __builtin_amdgcn_sched_barrier(0);
-            asm volatile("s_waitcnt lgkmcnt(0)\n\t");
-            __builtin_amdgcn_sched_barrier(0);
-        }
-
-        if (kv_iter + 1 < KV_ITER) {
-            buffer_load_raw_tile(kv_iter + 1, (kv_iter + 1) % kNumKvStages);
-        }
-
         fp32x4 acc[Q_ITER];
         CLEAR_ACC(acc, Q_ITER);
-        #pragma unroll
-        for (int k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
-            const f16x8_t reg_kv_operand =
-                convert_fp8x8_e4m3fn_to_bf16_flush_subnormal(raw_kv_operand[k_block]);
-            #pragma unroll
-            for (int i = 0; i < Q_ITER; ++i) {
-                builtin_b16_mmac<false>(
-                    reg_kv_operand.front, reg_q_operand[i][k_block].front, acc[i]);
-                builtin_b16_mmac<false>(
-                    reg_kv_operand.rear, reg_q_operand[i][k_block].rear, acc[i]);
+
+#pragma unroll
+        for (int k_stage = 0; k_stage < K_STAGE_ITER; ++k_stage) {
+            const int linear_k_stage = kv_iter * K_STAGE_ITER + k_stage;
+            const int next_linear_k_stage = linear_k_stage + 1;
+            if (next_linear_k_stage < KV_ITER * K_STAGE_ITER) {
+                WAIT_VMCNT_LDS(1);
+            } else {
+                WAIT_VMCNT_LDS(0);
+            }
+
+            auto* smem_stage_start = smem_warp_kv_start + linear_k_stage % kNumKStages * smem_k_stage_size_per_warp;
+            const int lds_addr = reinterpret_cast<size_t>(smem_stage_start + base_fetch_lds_kv);
+            v4i raw_kv_words;
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("ds_read2_b64 %0, %1 offset1:4\n\t"
+                         "s_waitcnt lgkmcnt(0)\n\t"
+                         : "=v"(raw_kv_words)
+                         : "v"(lds_addr)
+                         :);
+            __builtin_amdgcn_sched_barrier(0);
+            const auto* raw_kv_operand = reinterpret_cast<const intx2*>(&raw_kv_words);
+
+            const int prefetch_linear_k_stage = linear_k_stage + kNumKStages;
+            if (prefetch_linear_k_stage < KV_ITER * K_STAGE_ITER) {
+                const int next_kv_iter = prefetch_linear_k_stage / K_STAGE_ITER;
+                const int next_k_stage = prefetch_linear_k_stage % K_STAGE_ITER;
+                buffer_load_raw_k_stage(next_kv_iter, next_k_stage, prefetch_linear_k_stage % kNumKStages);
+            }
+
+#pragma unroll
+            for (int k_block = 0; k_block < K_BLOCKS_PER_STAGE; ++k_block) {
+                const f16x8_t reg_kv_operand = convert_fp8x8_e4m3fn_to_bf16_flush_subnormal(raw_kv_operand[k_block]);
+                const int q_k_block = k_stage * K_BLOCKS_PER_STAGE + k_block;
+#pragma unroll
+                for (int i = 0; i < Q_ITER; ++i) {
+                    builtin_b16_mmac<false>(reg_kv_operand.front, reg_q_operand[i][q_k_block].front, acc[i]);
+                    builtin_b16_mmac<false>(reg_kv_operand.rear, reg_q_operand[i][q_k_block].rear, acc[i]);
+                }
             }
         }
 
         float sum = 0.0f;
-        #pragma unroll
+#pragma unroll
         for (int j = 0; j < Q_ITER; ++j) {
-            #pragma unroll
+#pragma unroll
             for (int k = 0; k < 4; ++k) {
                 sum += fmaxf(acc[j][k], 0.0f) * reg_weights[j * 4 + k];
             }
         }
         sum *= kv_scale[kv_iter];
-        #pragma unroll
+#pragma unroll
         for (uint32_t shfl_idx = 16; shfl_idx <= 32; shfl_idx <<= 1) {
-            sum += __shfl_down_sync(0xffffffffffffffff, sum, shfl_idx);
+            const uint32_t shuffle_addr = (lane_idx + shfl_idx) * sizeof(float);
+            float shuffled_sum;
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("ds_bpermute_b32 %0, %1, %2\n\t"
+                         "s_waitcnt lgkmcnt(0)\n\t"
+                         : "=v"(shuffled_sum)
+                         : "v"(shuffle_addr), "v"(sum)
+                         :);
+            __builtin_amdgcn_sched_barrier(0);
+            sum += shuffled_sum;
         }
         sum_result[kv_iter] = sum;
     }
 
-    #pragma unroll
+#pragma unroll
     for (int kv_iter = 0; kv_iter < KV_ITER; ++kv_iter) {
         const int cta_tile_idx = kv_iter * kNumWarps + warp_idx;
         const int seq_kv_tile_offset = cta_seq_kv_offset + cta_tile_idx * KV_TILE;
@@ -1055,92 +1117,81 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     }
 }
 
-template <int kNextN = 1, int kNumHeads = 64,
-          int kHeadDim = 128, int BLOCK_KV = 4,
-          int kTokensPerWarp = 64, int kNumWarps = 4>
-// Assemble each 16-row raw FP8 tile in LDS. H64 uses two stages to overlap the next tile load.
-__attribute__((amdgpu_flat_work_group_size(1, 512)))
-__global__ void paged_mqa_logits_bf16_fp8_kv_small_block(const at::BFloat16* q,
-                                                         const uint8_t* kv_block,
-                                                         const float* kv_block_scales,
-                                                         const float* weights,
-                                                         const uint64_t kv_cache_stride_bytes,
-                                                         const uint64_t logits_stride,
-                                                         const uint64_t block_table_stride,
-                                                         const int* context_lens,
-                                                         float* logits,
-                                                         const int* block_table) {
+template <int kNextN = 1, int kNumHeads = 32, int BLOCK_KV = 4, int kTokensPerWarp = 64, int kNumWarps = 4>
+__attribute__((amdgpu_flat_work_group_size(1, 512))) __global__ void
+paged_mqa_logits_bf16_fp8_kv_small_block(const at::BFloat16* q, const uint8_t* kv_block, const float* kv_block_scales,
+                                         const float* weights, const uint64_t kv_cache_stride_bytes,
+                                         const uint64_t logits_stride, const uint64_t block_table_stride,
+                                         const int* context_lens, float* logits, const int* block_table) {
+    extern __shared__ __align__(128 * 8) uint8_t smem_buffer[];
+
+    constexpr int kHeadDim = 128;
+    constexpr int K_TILE = 32;
+    constexpr int K_STAGE = 64;
+    constexpr int Q_TILE = 16;
+    constexpr int KV_TILE = 16;
+    constexpr int Q_ITER = kNumHeads / Q_TILE;
+    constexpr int K_BLOCKS_PER_STAGE = K_STAGE / K_TILE;
+    constexpr int K_STAGE_ITER = kHeadDim / K_STAGE;
+    constexpr int KV_ITER = kTokensPerWarp / KV_TILE;
+    constexpr int PAGES_PER_WARP = kTokensPerWarp / BLOCK_KV;
+    constexpr int SUBPAGES_PER_TILE = KV_TILE / BLOCK_KV;
+    constexpr int kNumKStages = 2;
+    constexpr int kTokensPerCta = kTokensPerWarp * kNumWarps;
+    constexpr uint32_t kSwizzleAlignment = kHeadDim * 8;
+    LIGHTOP_STATIC_ASSERT(BLOCK_KV == 4 || BLOCK_KV == 8, "Invalid BF16 Q + FP8 KV small-block K-stage pipeline");
+    LIGHTOP_STATIC_ASSERT(kNumHeads == 16 || kNumHeads == 32 || kNumHeads == 64, "Invalid BF16 Q + FP8 KV heads");
+    LIGHTOP_STATIC_ASSERT(kTokensPerWarp == 64 && kNumWarps == 4, "Invalid BF16 Q + FP8 KV tiling");
+
     const int warp_idx = threadIdx.x / WARP_SIZE_GPU;
     const int lane_idx = threadIdx.x % WARP_SIZE_GPU;
-
-    static constexpr uint32_t kSwizzleAlignment = kHeadDim * 8;
-    static constexpr int K_TILE = 32;
-    static constexpr int Q_TILE = 16;
-    static constexpr int KV_TILE = 16;
-    static constexpr int Q_ITER = kNumHeads / Q_TILE;
-    static constexpr int K_BLOCK_MAX = kHeadDim / K_TILE;
-    static constexpr int KV_ITER = kTokensPerWarp / KV_TILE;
-    static constexpr int PAGES_PER_WARP = kTokensPerWarp / BLOCK_KV;
-    static constexpr int SUBPAGES_PER_TILE = KV_TILE / BLOCK_KV;
-    static constexpr int kNumKvStages = kNumHeads == 64 ? 2 : 1;
-    LIGHTOP_STATIC_ASSERT((BLOCK_KV == 4 || BLOCK_KV == 8) && kTokensPerWarp == 64,
-                          "Invalid BF16 Q + FP8 KV small-block tiling");
-
-    extern __shared__ __align__(kSwizzleAlignment) uint8_t smem_buffer[];
+    const int t_id = threadIdx.x;
     auto* smem_bf16 = reinterpret_cast<at::BFloat16*>(smem_buffer);
 
     const int next_n = kNextN != 1 ? blockIdx.x % kNextN : 0;
     const int q_idx = blockIdx.y;
-    const int start_kv_idx = blockIdx.x / kNextN * kNumWarps * PAGES_PER_WARP;
-    const int warp_kv_idx = start_kv_idx + warp_idx * PAGES_PER_WARP;
+    const int cta_idx = blockIdx.x / kNextN;
+    const int start_page_idx = cta_idx * kNumWarps * PAGES_PER_WARP;
+    const int warp_page_idx = start_page_idx + warp_idx * PAGES_PER_WARP;
     const int context_len = context_lens[q_idx];
-    const int num_kv = ceil_div(context_len, BLOCK_KV);
+    const int num_pages = ceil_div(context_len, BLOCK_KV);
+    const int base_seq_kv_offset = warp_page_idx * BLOCK_KV;
     const uint64_t base_logits_offset = q_idx * kNextN * logits_stride + next_n * logits_stride;
-    const int base_seq_kv_offset = warp_kv_idx * BLOCK_KV;
 
-    if (start_kv_idx >= num_kv) {
-        const uint64_t fill_offset = base_logits_offset + base_seq_kv_offset + lane_idx;
-        if (base_seq_kv_offset + lane_idx < logits_stride) {
-            logits[fill_offset] = -INFINITY;
+    if (start_page_idx >= num_pages) {
+        const int seq_kv_offset = base_seq_kv_offset + lane_idx;
+        if (seq_kv_offset < logits_stride) {
+            logits[base_logits_offset + seq_kv_offset] = -INFINITY;
         }
         return;
     }
 
     const auto* gQ = q + q_idx * kNextN * kNumHeads * kHeadDim + next_n * kNumHeads * kHeadDim;
     constexpr int kAlignmentQ = 16 / sizeof(at::BFloat16);
-    constexpr int q_required_warps = constexpr_ceil_div(kNumHeads * kHeadDim,
-                                                        WARP_SIZE_GPU * kAlignmentQ);
-    constexpr int q_load_warps = q_required_warps < kNumWarps ? q_required_warps : kNumWarps;
-    constexpr int fetch_q_cnt = constexpr_ceil_div(kNumHeads * kHeadDim,
-                                                   q_load_warps * WARP_SIZE_GPU * kAlignmentQ);
-    constexpr int fetch_q_stride = kAlignmentQ * q_load_warps * WARP_SIZE_GPU;
-
-    if (warp_idx < q_load_warps) {
-        const int q_t_id = warp_idx * WARP_SIZE_GPU + lane_idx;
-        #pragma unroll
-        for (int i = 0; i < fetch_q_cnt; ++i) {
-            const int pos = q_t_id * kAlignmentQ + i * fetch_q_stride;
-            if (pos + kAlignmentQ <= kNumHeads * kHeadDim) {
-                *reinterpret_cast<f16x8_t*>(&smem_bf16[pos]) = *reinterpret_cast<const f16x8_t*>(&gQ[pos]);
-            }
+    constexpr int fetch_q_cnt = constexpr_ceil_div(kNumHeads * kHeadDim, kNumWarps * WARP_SIZE_GPU * kAlignmentQ);
+    constexpr int fetch_q_stride = kAlignmentQ * kNumWarps * WARP_SIZE_GPU;
+#pragma unroll
+    for (int i = 0; i < fetch_q_cnt; ++i) {
+        const int pos = t_id * kAlignmentQ + i * fetch_q_stride;
+        if (pos + kAlignmentQ <= kNumHeads * kHeadDim) {
+            *reinterpret_cast<f16x8_t*>(&smem_bf16[pos]) = *reinterpret_cast<const f16x8_t*>(&gQ[pos]);
         }
     }
 
-    f16x8_t reg_q_operand[Q_ITER][K_BLOCK_MAX];
-    const int base_fetch_lds_q = lane_idx % Q_TILE * kHeadDim + lane_idx / Q_TILE * kAlignmentQ;
-
     const auto* gW = weights + q_idx * kNextN * kNumHeads + next_n * kNumHeads;
     auto* smem_weight = reinterpret_cast<float*>(smem_bf16 + kNumHeads * kHeadDim);
+    f16x8_t reg_q_operand[Q_ITER][kHeadDim / K_TILE];
+    const int base_fetch_lds_q = lane_idx % Q_TILE * kHeadDim + lane_idx / Q_TILE * kAlignmentQ;
     float reg_weights[Q_ITER * 4];
 
     if constexpr (kNumHeads >= KV_TILE * kNumWarps) {
         smem_weight = reinterpret_cast<float*>(smem_bf16);
         __syncthreads();
 
-        #pragma unroll
+#pragma unroll
         for (int i = 0; i < Q_ITER; ++i) {
-            #pragma unroll
-            for (int j = 0; j < K_BLOCK_MAX; ++j) {
+#pragma unroll
+            for (int j = 0; j < kHeadDim / K_TILE; ++j) {
                 const int offset = base_fetch_lds_q + i * Q_TILE * kHeadDim + j * K_TILE;
                 reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_bf16[offset]);
             }
@@ -1152,9 +1203,9 @@ __global__ void paged_mqa_logits_bf16_fp8_kv_small_block(const at::BFloat16* q,
         }
         __syncthreads();
 
-        #pragma unroll
+#pragma unroll
         for (int j = 0; j < Q_ITER; ++j) {
-            #pragma unroll
+#pragma unroll
             for (int k = 0; k < 4; ++k) {
                 reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
             }
@@ -1165,160 +1216,284 @@ __global__ void paged_mqa_logits_bf16_fp8_kv_small_block(const at::BFloat16* q,
         }
         __syncthreads();
 
-        #pragma unroll
+#pragma unroll
         for (int i = 0; i < Q_ITER; ++i) {
-            #pragma unroll
-            for (int j = 0; j < K_BLOCK_MAX; ++j) {
+#pragma unroll
+            for (int j = 0; j < kHeadDim / K_TILE; ++j) {
                 const int offset = base_fetch_lds_q + i * Q_TILE * kHeadDim + j * K_TILE;
                 reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_bf16[offset]);
             }
         }
 
-        #pragma unroll
+#pragma unroll
         for (int j = 0; j < Q_ITER; ++j) {
-            #pragma unroll
+#pragma unroll
             for (int k = 0; k < 4; ++k) {
                 reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
             }
         }
     }
-
-    int kv_block_idx[PAGES_PER_WARP];
-    const uint64_t block_table_offset = q_idx * block_table_stride + warp_kv_idx;
-    #pragma unroll
-    for (int i = 0; i < PAGES_PER_WARP; ++i) {
-        kv_block_idx[i] = warp_kv_idx + i < num_kv ? block_table[block_table_offset + i] : -1;
-    }
-
     __syncthreads();
 
-    if (warp_kv_idx >= num_kv) {
-        const uint64_t fill_offset = base_logits_offset + base_seq_kv_offset + lane_idx;
-        if (base_seq_kv_offset + lane_idx < logits_stride) {
-            logits[fill_offset] = -INFINITY;
+    int lane_block_idx = -1;
+    if (lane_idx < PAGES_PER_WARP && warp_page_idx + lane_idx < num_pages) {
+        const uint64_t block_table_offset = q_idx * block_table_stride + warp_page_idx + lane_idx;
+        lane_block_idx = block_table[block_table_offset];
+    }
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile("s_waitcnt vmcnt(0)\n\t");
+    __builtin_amdgcn_sched_barrier(0);
+
+    int scale_block_idx;
+    const int page_source_lane = lane_idx / BLOCK_KV;
+    const int page_shuffle_addr = page_source_lane * sizeof(int);
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile("ds_bpermute_b32 %0, %1, %2\n\t"
+                 "s_waitcnt lgkmcnt(0)\n\t"
+                 : "=v"(scale_block_idx)
+                 : "v"(page_shuffle_addr), "v"(lane_block_idx)
+                 :);
+    __builtin_amdgcn_sched_barrier(0);
+
+    float lane_scale = 0.0f;
+    if (scale_block_idx != -1) {
+        const int kv_scale_stride = kv_cache_stride_bytes / sizeof(float);
+        const auto* page_scales = kv_block_scales + static_cast<int64_t>(scale_block_idx) * kv_scale_stride;
+        lane_scale = page_scales[lane_idx % BLOCK_KV];
+    }
+
+    int overlapped_prefetched_block_idx = -1;
+    if constexpr (kNumHeads != 32) {
+        constexpr int kLoadsPerRow = K_STAGE / 16;
+        const int tile_row = lane_idx / kLoadsPerRow;
+        const int page_delta = tile_row / BLOCK_KV;
+        const int block_shuffle_addr = page_delta * sizeof(int);
+        __builtin_amdgcn_sched_barrier(0);
+        asm volatile("ds_bpermute_b32 %0, %1, %2\n\t"
+                     "s_waitcnt lgkmcnt(0)\n\t"
+                     : "=v"(overlapped_prefetched_block_idx)
+                     : "v"(block_shuffle_addr), "v"(lane_block_idx)
+                     :);
+        __builtin_amdgcn_sched_barrier(0);
+
+        const int tile_col = lane_idx % kLoadsPerRow * 16;
+        const bool valid = overlapped_prefetched_block_idx != -1;
+        const auto* page =
+            valid ? kv_block + static_cast<int64_t>(overlapped_prefetched_block_idx) * kv_cache_stride_bytes : kv_block;
+        long glob_kv_desc[2];
+        glob_kv_desc[0] = *reinterpret_cast<const long*>(&page);
+        glob_kv_desc[1] = (static_cast<long>(0x20000) << 32) | 0xFFFFFFFE;
+        auto* src = reinterpret_cast<v4i*>(glob_kv_desc);
+        constexpr int kSmemStageBytes = KV_TILE * K_STAGE;
+        constexpr int kSmemWarpBytes = kNumKStages * kSmemStageBytes;
+        auto* smem_warp_kv_start = smem_buffer + warp_idx * kSmemWarpBytes;
+#pragma unroll
+        for (int k_stage = 0; k_stage < K_STAGE_ITER; ++k_stage) {
+            const int page_linear = valid ? tile_row % BLOCK_KV * kHeadDim + k_stage * K_STAGE + tile_col : -1;
+            auto* lds_ptr = smem_warp_kv_start + k_stage * kSmemStageBytes + tile_row * K_STAGE + tile_col;
+            buffer_load_lds_x4(src, lds_ptr, page_linear);
+            __builtin_amdgcn_sched_barrier(0);
+        }
+    }
+    __builtin_amdgcn_sched_barrier(0);
+    if constexpr (kNumHeads != 32) {
+        asm volatile("s_waitcnt vmcnt(2)\n\t");
+    } else {
+        asm volatile("s_waitcnt vmcnt(0)\n\t");
+    }
+    __builtin_amdgcn_sched_barrier(0);
+
+    float kv_scale[KV_ITER];
+    if constexpr (kNumHeads != 32) {
+        const int scale_lane = lane_idx % KV_TILE;
+        const int scale_shuffle_addr_0 = (0 * KV_TILE + scale_lane) * sizeof(float);
+        const int scale_shuffle_addr_1 = (1 * KV_TILE + scale_lane) * sizeof(float);
+        const int scale_shuffle_addr_2 = (2 * KV_TILE + scale_lane) * sizeof(float);
+        const int scale_shuffle_addr_3 = (3 * KV_TILE + scale_lane) * sizeof(float);
+        __builtin_amdgcn_sched_barrier(0);
+        asm volatile("ds_bpermute_b32 %0, %4, %8\n\t"
+                     "ds_bpermute_b32 %1, %5, %8\n\t"
+                     "ds_bpermute_b32 %2, %6, %8\n\t"
+                     "ds_bpermute_b32 %3, %7, %8\n\t"
+                     "s_waitcnt lgkmcnt(0)\n\t"
+                     : "=v"(kv_scale[0]), "=v"(kv_scale[1]), "=v"(kv_scale[2]), "=v"(kv_scale[3])
+                     : "v"(scale_shuffle_addr_0), "v"(scale_shuffle_addr_1), "v"(scale_shuffle_addr_2),
+                       "v"(scale_shuffle_addr_3), "v"(lane_scale)
+                     :);
+        __builtin_amdgcn_sched_barrier(0);
+    } else {
+#pragma unroll
+        for (int kv_iter = 0; kv_iter < KV_ITER; ++kv_iter) {
+            const int scale_source_lane = kv_iter * KV_TILE + lane_idx % KV_TILE;
+            const int scale_shuffle_addr = scale_source_lane * sizeof(float);
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("ds_bpermute_b32 %0, %1, %2\n\t"
+                         "s_waitcnt lgkmcnt(0)\n\t"
+                         : "=v"(kv_scale[kv_iter])
+                         : "v"(scale_shuffle_addr), "v"(lane_scale)
+                         :);
+            __builtin_amdgcn_sched_barrier(0);
+        }
+    }
+
+    if (warp_page_idx >= num_pages) {
+        const int seq_kv_offset = base_seq_kv_offset + lane_idx;
+        if (seq_kv_offset < logits_stride) {
+            logits[base_logits_offset + seq_kv_offset] = -INFINITY;
         }
         return;
     }
 
-    constexpr int smem_kv_stage_size_per_warp = KV_TILE * kHeadDim;
-    constexpr int smem_kv_block_per_warp = kNumKvStages * smem_kv_stage_size_per_warp;
-    auto* smem_warp_kv_start = smem_buffer + warp_idx * smem_kv_block_per_warp;
-    const int base_fetch_lds_kv = lane_idx % KV_TILE * kHeadDim + lane_idx / KV_TILE * 8;
-    const int kv_scale_stride = kv_cache_stride_bytes / sizeof(float);
-    float kv_scale[KV_ITER];
+    constexpr int smem_k_stage_size_per_warp = KV_TILE * K_STAGE;
+    constexpr int smem_k_block_per_warp = kNumKStages * smem_k_stage_size_per_warp;
+    auto* smem_warp_kv_start = smem_buffer + warp_idx * smem_k_block_per_warp;
 
-    #pragma unroll
-    for (int kv_iter = 0; kv_iter < KV_ITER; ++kv_iter) {
-        const int row_in_tile = lane_idx % KV_TILE;
-        const int page_delta = kv_iter * SUBPAGES_PER_TILE + row_in_tile / BLOCK_KV;
-        const int current_block_idx = kv_block_idx[page_delta];
-        float scale = 0.0f;
-        if (lane_idx < KV_TILE && current_block_idx != -1) {
-            const auto* page_scales =
-                kv_block_scales + static_cast<int64_t>(current_block_idx) * kv_scale_stride;
-            scale = page_scales[row_in_tile % BLOCK_KV];
-        }
-        kv_scale[kv_iter] = __shfl_sync(0xffffffffffffffff, scale, row_in_tile);
-    }
+    const auto get_raw_k_block_idx = [&](const int kv_iter) {
+        constexpr int kLoadsPerRow = K_STAGE / 16;
+        const int tile_row = lane_idx / kLoadsPerRow;
+        const int page_delta = kv_iter * SUBPAGES_PER_TILE + tile_row / BLOCK_KV;
+        const int block_shuffle_addr = page_delta * sizeof(int);
+        int current_block_idx;
+        __builtin_amdgcn_sched_barrier(0);
+        asm volatile("ds_bpermute_b32 %0, %1, %2\n\t"
+                     "s_waitcnt lgkmcnt(0)\n\t"
+                     : "=v"(current_block_idx)
+                     : "v"(block_shuffle_addr), "v"(lane_block_idx)
+                     :);
+        __builtin_amdgcn_sched_barrier(0);
+        return current_block_idx;
+    };
 
-    const auto buffer_load_raw_tile = [&](const int kv_iter, const int smem_stage) {
-        #pragma unroll
-        for (int subpage = 0; subpage < SUBPAGES_PER_TILE; ++subpage) {
-            const int page_delta = kv_iter * SUBPAGES_PER_TILE + subpage;
-            const int current_block_idx = page_delta < PAGES_PER_WARP ? kv_block_idx[page_delta] : -1;
-            const auto* page = current_block_idx != -1 ?
-                kv_block + static_cast<int64_t>(current_block_idx) * kv_cache_stride_bytes : kv_block;
+    const auto buffer_load_raw_k_stage = [&](const int kv_iter, const int k_stage, const int smem_stage,
+                                             const int current_block_idx) {
+        constexpr int kLoadsPerRow = K_STAGE / 16;
+        const int tile_row = lane_idx / kLoadsPerRow;
+        const int tile_col = lane_idx % kLoadsPerRow * 16;
+        const int page_delta = kv_iter * SUBPAGES_PER_TILE + tile_row / BLOCK_KV;
 
-            long glob_kv_desc[2];
-            glob_kv_desc[0] = *reinterpret_cast<const long*>(&page);
-            glob_kv_desc[1] = (static_cast<long>(0x20000) << 32) | 0xFFFFFFFE;
-            auto* src = reinterpret_cast<v4i*>(glob_kv_desc);
-
-            constexpr int kPageLoadBytes = BLOCK_KV == 4 ? 8 : 16;
-            const int page_linear = lane_idx * kPageLoadBytes;
-            const int inner_warp_offset = current_block_idx != -1 ? page_linear : -1;
-            auto* lds_ptr = smem_warp_kv_start + smem_stage * smem_kv_stage_size_per_warp +
-                subpage * BLOCK_KV * kHeadDim;
-            if constexpr (BLOCK_KV == 4) {
-                buffer_load_lds_x2(src, lds_ptr, inner_warp_offset);
-            } else {
-                buffer_load_lds_x4(src, lds_ptr, inner_warp_offset);
-            }
-        }
+        const bool valid = page_delta < PAGES_PER_WARP && current_block_idx != -1;
+        const auto* page =
+            valid ? kv_block + static_cast<int64_t>(current_block_idx) * kv_cache_stride_bytes : kv_block;
+        long glob_kv_desc[2];
+        glob_kv_desc[0] = *reinterpret_cast<const long*>(&page);
+        glob_kv_desc[1] = (static_cast<long>(0x20000) << 32) | 0xFFFFFFFE;
+        auto* src = reinterpret_cast<v4i*>(glob_kv_desc);
+        const int page_linear = valid ? tile_row % BLOCK_KV * kHeadDim + k_stage * K_STAGE + tile_col : -1;
+        auto* lds_ptr = smem_warp_kv_start + smem_stage * smem_k_stage_size_per_warp + tile_row * K_STAGE + tile_col;
+        buffer_load_lds_x4(src, lds_ptr, page_linear);
         __builtin_amdgcn_sched_barrier(0);
     };
 
-    buffer_load_raw_tile(0, 0);
-    float sum_result[KV_ITER] = {0.0f};
-    #pragma unroll
+    int prefetched_block_idx;
+    if constexpr (kNumHeads != 32) {
+        prefetched_block_idx = overlapped_prefetched_block_idx;
+    } else {
+        prefetched_block_idx = get_raw_k_block_idx(0);
+        buffer_load_raw_k_stage(0, 0, 0, prefetched_block_idx);
+        buffer_load_raw_k_stage(0, 1, 1, prefetched_block_idx);
+    }
+    const int base_fetch_lds_kv = lane_idx % KV_TILE * K_STAGE + lane_idx / KV_TILE * 8;
+    float sum_result[KV_ITER];
+    constexpr int kRawKSmemBytes = kNumWarps * kNumKStages * KV_TILE * K_STAGE;
+    auto* smem_pipeline_results = reinterpret_cast<float*>(smem_buffer + kRawKSmemBytes) + warp_idx * KV_ITER * KV_TILE;
+#pragma unroll
     for (int kv_iter = 0; kv_iter < KV_ITER; ++kv_iter) {
-        WAIT_VMCNT_LDS(0);
-
-        auto* smem_stage_start =
-            smem_warp_kv_start + (kv_iter % kNumKvStages) * smem_kv_stage_size_per_warp;
-        intx2 raw_kv_operand[K_BLOCK_MAX];
-        #pragma unroll
-        for (int k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
-            raw_kv_operand[k_block] = *reinterpret_cast<const intx2*>(
-                smem_stage_start + base_fetch_lds_kv + k_block * K_TILE);
-        }
-
-        if constexpr (kNumKvStages == 1) {
-            // Finish the HIP-C LDS reads before the next VMEM-to-LDS load overwrites this stage.
-            __builtin_amdgcn_sched_barrier(0);
-            asm volatile("s_waitcnt lgkmcnt(0)\n\t");
-            __builtin_amdgcn_sched_barrier(0);
-        }
-
-        if (kv_iter + 1 < KV_ITER) {
-            buffer_load_raw_tile(kv_iter + 1, (kv_iter + 1) % kNumKvStages);
-        }
-
         fp32x4 acc[Q_ITER];
         CLEAR_ACC(acc, Q_ITER);
-        #pragma unroll
-        for (int k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
-            const f16x8_t reg_kv_operand =
-                convert_fp8x8_e4m3fn_to_bf16_flush_subnormal(raw_kv_operand[k_block]);
-            #pragma unroll
-            for (int i = 0; i < Q_ITER; ++i) {
-                builtin_b16_mmac<false>(
-                    reg_kv_operand.front, reg_q_operand[i][k_block].front, acc[i]);
-                builtin_b16_mmac<false>(
-                    reg_kv_operand.rear, reg_q_operand[i][k_block].rear, acc[i]);
+
+#pragma unroll
+        for (int k_stage = 0; k_stage < K_STAGE_ITER; ++k_stage) {
+            const int linear_k_stage = kv_iter * K_STAGE_ITER + k_stage;
+            const int next_linear_k_stage = linear_k_stage + 1;
+            if (next_linear_k_stage < KV_ITER * K_STAGE_ITER) {
+                WAIT_VMCNT_LDS(1);
+            } else {
+                WAIT_VMCNT_LDS(0);
+            }
+
+            auto* smem_stage_start = smem_warp_kv_start + linear_k_stage % kNumKStages * smem_k_stage_size_per_warp;
+            const int lds_addr = reinterpret_cast<size_t>(smem_stage_start + base_fetch_lds_kv);
+            v4i raw_kv_words;
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("ds_read2_b64 %0, %1 offset1:4\n\t"
+                         "s_waitcnt lgkmcnt(0)\n\t"
+                         : "=v"(raw_kv_words)
+                         : "v"(lds_addr)
+                         :);
+            __builtin_amdgcn_sched_barrier(0);
+            const auto* raw_kv_operand = reinterpret_cast<const intx2*>(&raw_kv_words);
+
+            const int prefetch_linear_k_stage = linear_k_stage + kNumKStages;
+            if (prefetch_linear_k_stage < KV_ITER * K_STAGE_ITER) {
+                const int next_kv_iter = prefetch_linear_k_stage / K_STAGE_ITER;
+                const int next_k_stage = prefetch_linear_k_stage % K_STAGE_ITER;
+                if (next_k_stage == 0) {
+                    prefetched_block_idx = get_raw_k_block_idx(next_kv_iter);
+                }
+                buffer_load_raw_k_stage(next_kv_iter, next_k_stage, prefetch_linear_k_stage % kNumKStages,
+                                        prefetched_block_idx);
+            }
+
+#pragma unroll
+            for (int k_block = 0; k_block < K_BLOCKS_PER_STAGE; ++k_block) {
+                const f16x8_t reg_kv_operand = convert_fp8x8_e4m3fn_to_bf16_flush_subnormal(raw_kv_operand[k_block]);
+                const int q_k_block = k_stage * K_BLOCKS_PER_STAGE + k_block;
+#pragma unroll
+                for (int i = 0; i < Q_ITER; ++i) {
+                    builtin_b16_mmac<false>(reg_kv_operand.front, reg_q_operand[i][q_k_block].front, acc[i]);
+                    builtin_b16_mmac<false>(reg_kv_operand.rear, reg_q_operand[i][q_k_block].rear, acc[i]);
+                }
             }
         }
 
         float sum = 0.0f;
-        #pragma unroll
+#pragma unroll
         for (int j = 0; j < Q_ITER; ++j) {
-            #pragma unroll
+#pragma unroll
             for (int k = 0; k < 4; ++k) {
                 sum += fmaxf(acc[j][k], 0.0f) * reg_weights[j * 4 + k];
             }
         }
         sum *= kv_scale[kv_iter];
-        #pragma unroll
+#pragma unroll
         for (uint32_t shfl_idx = 16; shfl_idx <= 32; shfl_idx <<= 1) {
-            sum += __shfl_down_sync(0xffffffffffffffff, sum, shfl_idx);
+            const int shuffle_addr = (lane_idx + shfl_idx) * sizeof(float);
+            float shuffled_sum;
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("ds_bpermute_b32 %0, %1, %2\n\t"
+                         "s_waitcnt lgkmcnt(0)\n\t"
+                         : "=v"(shuffled_sum)
+                         : "v"(shuffle_addr), "v"(sum)
+                         :);
+            __builtin_amdgcn_sched_barrier(0);
+            sum += shuffled_sum;
         }
-        sum_result[kv_iter] = sum;
+        if constexpr (kNumHeads == 64) {
+            if (lane_idx < KV_TILE) {
+                smem_pipeline_results[kv_iter * KV_TILE + lane_idx] = sum;
+            }
+        } else {
+            sum_result[kv_iter] = sum;
+        }
     }
 
     auto* smem_write_back = reinterpret_cast<float*>(smem_warp_kv_start);
-    if (lane_idx < KV_TILE) {
-        #pragma unroll
-        for (int i = 0; i < KV_ITER; ++i) {
-            smem_write_back[i * KV_TILE + lane_idx] = sum_result[i];
+    if constexpr (kNumHeads == 64) {
+        smem_write_back = smem_pipeline_results;
+    } else {
+        if (lane_idx < KV_TILE) {
+#pragma unroll
+            for (int kv_iter = 0; kv_iter < KV_ITER; ++kv_iter) {
+                smem_write_back[kv_iter * KV_TILE + lane_idx] = sum_result[kv_iter];
+            }
         }
     }
     __syncthreads();
 
-    const float permuted_result = smem_write_back[lane_idx];
     const int seq_kv_offset = base_seq_kv_offset + lane_idx;
     if (seq_kv_offset < context_len - (kNextN - next_n) + 1) {
-        logits[base_logits_offset + seq_kv_offset] = permuted_result;
-    } else {
+        logits[base_logits_offset + seq_kv_offset] = smem_write_back[lane_idx];
+    } else if (seq_kv_offset < logits_stride) {
         logits[base_logits_offset + seq_kv_offset] = -INFINITY;
     }
 }
