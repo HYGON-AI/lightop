@@ -2,7 +2,7 @@ import torch
 import time
 import os
 import torch.nn.functional as F
-from lightop import LnDropout
+from lightop.activation import LnDropout
 
 
 class Torch_LnDropout(torch.nn.Module):

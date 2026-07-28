@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 from scipy.optimize import linear_sum_assignment
-from lightop import batch_linear_assignment
+from lightop.tensor import batch_linear_assignment
 import unittest
 import time
 

@@ -4,6 +4,7 @@ import triton
 import triton.testing
 from lightop import op
 import lightop
+from lightop.attention import mqa_logits
 import pdb
 import pandas as pd  # Added for Excel export
 import os            # Added for file path helper
@@ -121,9 +122,9 @@ if __name__ == "__main__":
                     
                 def run_lightop():
                     if is_fp8:
-                        return lightop.mqa_logits(q_in, k_in, weights, ks, ke, scale_in)
+                        return mqa_logits(q_in, k_in, weights, ks, ke, scale_in)
                     else:
-                        return lightop.mqa_logits(q_in, k_in, weights, ks, ke)
+                        return mqa_logits(q_in, k_in, weights, ks, ke)
                 
                 if test_speed:
                     for _ in range(10):

@@ -22,8 +22,10 @@ from fuse_moegemmgemmzc import fused_experts_impl_int8_preprocess, fused_moe_imp
 # from fuse_moegemm_dev import fused_moe_impl_test
 # from fuse_moegemm_correctness import _fused_moe_helper
 # from test_ori_fuse_moe import fused_moe_impl
-from lmslim.layers.gemm.int8_utils import (
-    per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 import math
 import torch.nn.functional as F
 import pandas as pd

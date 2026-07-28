@@ -2,7 +2,11 @@ import argparse
 import torch
 import torch.nn.functional as F
 import time
-from lightop import op
+from lightop.activation import (
+    gelu_and_mul_opt,
+    gelu_tanh_and_mul_opt,
+    silu_and_mul_opt,
+)
 from vllm import _custom_ops as vllm_ops
 
 def benchmark_op(func, output_tensor, input_tensor, warmup=10, runs=100):
@@ -39,13 +43,13 @@ def main():
 
     if args.act == "silu":
         baseline_func = torch.ops._C.silu_and_mul
-        custom_func = op.silu_and_mul_opt
+        custom_func = silu_and_mul_opt
     elif args.act == "gelu":
         baseline_func = torch.ops._C.gelu_and_mul
-        custom_func = op.gelu_and_mul_opt
+        custom_func = gelu_and_mul_opt
     elif args.act == "gelu_tanh":
         baseline_func = torch.ops._C.gelu_tanh_and_mul
-        custom_func = op.gelu_tanh_and_mul_opt
+        custom_func = gelu_tanh_and_mul_opt
 
   
     dtype = torch.bfloat16

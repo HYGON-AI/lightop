@@ -131,7 +131,7 @@ def biased_grouped_topk_org_init(scores, bias, num_expert_group, topk_group, top
     )
 
 def biased_grouped_topk_org_opt(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor):
-    return ops.moe_fused_gate(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
+    return moe_fused_gate(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
 
 # -------------------------------
 # 正确性验证 (仅 bf16)

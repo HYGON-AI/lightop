@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import time
-from lightop import LayerNorm
+from lightop.norm import LayerNorm
 
 # ------------------------------------------------------------------------------------
 # 1. 统一的模块封装

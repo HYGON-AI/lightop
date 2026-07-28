@@ -27,16 +27,6 @@ from marlin_quant import w4a8_2_marlin_weight
 from fused_marlin_moe import fused_marlin_moe
 from fused_marlin_moe_valid import fused_marlin_moe_valid
 
-from vllm.model_executor.layers.fused_moe.fused_moe import fused_topk
-
-from vllm.platforms import current_platform
-from vllm.utils import FlexibleArgumentParser
-from vllm.scalar_type import scalar_types
-
-FP8_DTYPE = torch.float8_e4m3fnuz if current_platform.is_rocm(
-) else torch.float8_e4m3fn
-
-
 BLOCK_M_TOTAL = 80
 
 def grouped_topk(hidden_states: torch.Tensor,
@@ -302,7 +292,7 @@ def main(args: argparse.Namespace):
         #     print(f"写入文件时出错: {e}")    
 
 if __name__ == "__main__":
-    parser = FlexibleArgumentParser()
+    parser = argparse.ArgumentParser()
     parser.add_argument("--model",
                         type=str,
                         default="./DeepSeek-R1-AWQ")

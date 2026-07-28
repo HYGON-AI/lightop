@@ -15,7 +15,7 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
 )
 from vllm.scalar_type import scalar_types
 # import marlin  # 确保导入了 marlin 包
-import lightop  # 确保导入了 marlin 包
+from lightop.moe import moe_marlin_w4a16
 from marlin_quant import awq_marlin_quantize
 
 global_group_size = 64
@@ -121,7 +121,7 @@ def run_moe_marlin(inputs, weight, topk_ids, bit):
     def run():
         # output = torch.empty((num_tokens * top_k, n), device=inputs.device, dtype=inputs.dtype)
         # output.zero_()
-        return lightop.moe_marlin_w4a16(
+        return moe_marlin_w4a16(
                                             inputs, 
                                             None, 
                                             qweight, 

@@ -2,9 +2,9 @@ import torch
 import pytest
 from typing import Optional
 import triton.language as tl
-import lmslim.envs as lsenvs
-from vllm.utils import W8a8GetCacheJSON
-from lightop import moe_align_block_size
+from lightop import envs as lsenvs
+from common.w8a8_cache_json import W8a8GetCacheJSON
+from lightop.moe import moe_align_block_size
 from release_moe_w8a8_marlin import test_single_gemm_performance_accuracy, moe_kernel_prepare_input, _fused_moe_helper
 import argparse
 import ast
@@ -32,7 +32,7 @@ blockM_configs_decode = {i: 16 for i in range(44)}
 M_THRESHOLD = 128
 
 if use_lightop:
-    from lightop import moe_gemm_marlin_w8a8, get_moe_cuda_marlin_config
+    from lightop.moe import moe_gemm_marlin_w8a8, get_moe_cuda_marlin_config
     try:
         from moe_w8a8_prefill_gemm import backend
         from grouped_gemm import moe_gemm_decode_prof
