@@ -1,0 +1,13 @@
+{
+    "7392_8129": {
+        "1": {
+            "BLOCK_SIZE_M": 16,
+            "BLOCK_SIZE_N": 64,
+            "BLOCK_SIZE_K": 128,
+            "GROUP_SIZE_M": 8,
+            "SPLIT_K": 8,
+            "num_stages": 2,
+            "num_warps": 4
+        }
+    }
+}

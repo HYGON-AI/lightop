@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 import os
-from lightop import FuseBiasGelu
+from lightop.activation import FuseBiasGelu
 import time
 import random
 
@@ -110,6 +110,5 @@ if __name__ == "__main__":
     test_speed(batchsize, seqs, cols,repeat_num=1000,use_half=False)
     #性能分析
     test_profile(batchsize, seqs, cols,repeat_num=100,use_half=False)
-
 
 

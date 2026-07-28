@@ -1,5 +1,5 @@
 import torch
-from lightop import groupgemm
+from lightop.gemm_ops import groupgemm
 import random
 
 # ------------------------------

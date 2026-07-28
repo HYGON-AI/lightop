@@ -2,7 +2,7 @@ import torch
 import time
 import pandas as pd
 from typing import Tuple
-from lightop import fill_zeros 
+from lightop.tensor import fill_zeros
 
 def test_correctness(shape: Tuple[int, int], dtype=torch.float32):
     print(f"\n[Correctness Test] shape={shape}, dtype={dtype}")

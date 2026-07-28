@@ -11,7 +11,7 @@ from triton_w16a16 import invoke_fused_moe_kernel_w16a16
 import triton
 import triton.language as tl
 
-from lightop import moe_gemm_marlin_w16a16, get_moe_cuda_marlin_config_w16a16
+from lightop.moe import moe_gemm_marlin_w16a16, get_moe_cuda_marlin_config_w16a16
 
 from vllm.platforms import current_platform
 device_name = current_platform.get_device_name().replace(" ", "_")

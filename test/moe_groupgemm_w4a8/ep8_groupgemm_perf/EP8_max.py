@@ -11,9 +11,6 @@ import torch
 torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 from ray.experimental.tqdm_ray import tqdm
 from transformers import AutoConfig
-# from vllm.model_executor.layers.fused_moe.fused_moe import *
-# from fused_moe import *
-# from fused_moe_3 import *
 from typing import Optional
 import os
 import pandas as pd
@@ -25,12 +22,6 @@ from w4a8_moe_groupgemm_marlin_quant import w4a8_2_marlin_weight
 
 from groupgemm_marlin_moe_valid import groupgemm_marlin_moe_valid
 from groupgemm_marlin_moe import groupgemm_marlin_moe
-
-
-from vllm.platforms import current_platform
-
-FP8_DTYPE = torch.float8_e4m3fnuz if current_platform.is_rocm(
-) else torch.float8_e4m3fn
 
 def determine_expert_map(
         ep_size: int, ep_rank: int,

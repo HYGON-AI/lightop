@@ -9,14 +9,16 @@ from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
 import torch
 import triton
 import triton.language as tl
-import lmslim.envs as lsenvs
-from vllm.utils import W8a8GetCacheJSON
+from lightop import envs as lsenvs
+from common.w8a8_cache_json import W8a8GetCacheJSON
 
 use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 device_name = lsenvs.LMSLIM_GPU_NAME
 
-from lmslim.layers.gemm.int8_utils import (
-   per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 
 def to_int8(tensor: torch.Tensor):
     return torch.round(tensor.clamp(min=-128,max=127)).to(dtype=torch.int8)

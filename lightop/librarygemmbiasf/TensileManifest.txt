@@ -1,4 +1,0 @@
-/home/guowei/gemm-bias/rocblas-dtk-22.04.2/build/release/Tensile/library/TensileLibrary.dat
-/home/guowei/gemm-bias/rocblas-dtk-22.04.2/build/release/Tensile/library/Kernels.so-000-gfx900.hsaco
-/home/guowei/gemm-bias/rocblas-dtk-22.04.2/build/release/Tensile/library/Kernels.so-000-gfx906.hsaco
-/home/guowei/gemm-bias/rocblas-dtk-22.04.2/build/release/Tensile/library/TensileLibrary_gfx906.co

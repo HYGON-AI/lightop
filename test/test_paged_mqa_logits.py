@@ -1,7 +1,7 @@
 import random
 
 import torch
-from lightop import gemmopt
+from lightop.attention import paged_mqa_logits
 
 
 def generate_cp_test_data(seq_len, seq_len_kv):
@@ -142,7 +142,7 @@ def test_paged_mqa_logits(use_fp8=False, use_mixed=False):
                     kv_cache_input = kv_cache
 
                 print(f'Testing {test_name} Paged MQA Logits:')
-                logits = gemmopt.paged_mqa_logits(
+                logits = paged_mqa_logits(
                     q_input, kv_cache_input, weights, context_lens, block_tables, schedule_metadata, max_model_len,
                     clean_logits=True
                 )
@@ -179,7 +179,7 @@ def test_paged_mqa_logits(use_fp8=False, use_mixed=False):
                 )
                 output_bytes = batch_size * max_model_len * next_n * 4
                 t = bench_kineto(
-                    lambda: gemmopt.paged_mqa_logits(
+                    lambda: paged_mqa_logits(
                         q_input, kv_cache_input, weights, context_lens, block_tables, schedule_metadata, max_model_len,
                         clean_logits=False
                     )
@@ -237,8 +237,9 @@ def test_paged_mqa_logits_int8():
         q, kv, scales, fused_cache, weights, context_lens, block_table, max_context_len = make_int8_case(
             block_kv, heads, next_n, 20260727 + case_idx
         )
-        output = gemmopt.paged_mqa_logits(q, fused_cache, weights, context_lens, block_table, None, max_context_len,
-                                          clean_logits=True)
+        output = paged_mqa_logits(
+            q, fused_cache, weights, context_lens, block_table, None, max_context_len, clean_logits=True
+        )
         reference = ref_paged_mqa_logits(
             q, kv, weights, context_lens, block_table, max_context_len, kv_scales=scales
         )

@@ -9,8 +9,10 @@ import lightop
 import vllm._custom_ops as ops
 from vllm.model_executor.layers.fused_moe.fused_moe import moe_align_block_size
 
-from lmslim.layers.gemm.int8_utils import (
-   per_token_group_quant_int8, per_token_quant_int8)
+from lightop.quant import (
+    per_token_group_quant_int8,
+    per_token_quant_int8,
+)
 from triton_w16a16_bench import invoke_fused_moe_kernel_w16a16
 
 from vllm.platforms import current_platform

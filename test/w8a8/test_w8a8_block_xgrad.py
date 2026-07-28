@@ -7,7 +7,7 @@ import triton.language as tl
 import pdb
 torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 
-from lightop import gemm_w8a8_xgrad_asm
+from lightop.gemm_ops import gemm_w8a8_xgrad_asm
 
 
 @triton.jit

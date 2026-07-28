@@ -1,0 +1,5 @@
+测试时间：2026-07-15
+测试环境：ZZ[NMZ][26] / luoyao-lightop-lmslim-dev / BW1100(gfx938)
+测试命令：pytest -q test/test_norm_lm_faster_rmsquant.py
+测试结果：5 passed in 15.71s
+覆盖内容：直接绑定和签名、3 组 hidden size 数值、INT8 scale、input 原地更新、residual 累加与原地更新。

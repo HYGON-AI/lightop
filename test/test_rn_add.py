@@ -2,7 +2,7 @@ import torch
 import time
 import os
 import torch.nn.functional as F
-from lightop import RMSNormTorch, RMSNormAdd
+from lightop.norm import RMSNormTorch, RMSNormAdd
 
 
 class Torch_RNAdd(torch.nn.Module):

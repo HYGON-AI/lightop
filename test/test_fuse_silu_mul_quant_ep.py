@@ -1,13 +1,14 @@
 import torch
 import triton
 from vllm import _custom_ops as vllm_ops
-from lightop import op, fuse_silu_mul_quant_ep
+# [确保 lightop 已正确安装]
+from lightop.activation import fuse_silu_mul_quant_ep, silu_and_mul_opt
 from typing import Optional
 
 # ------------------ 接口 ------------------
 def fuse_silu_mul_quant_init(output: torch.Tensor, input: torch.Tensor):
     # Baseline: lightop silu_and_mul + vLLM int8 quant
-    op.silu_and_mul_opt(output, input)
+    silu_and_mul_opt(output, input)
     ref_out, ref_scales, _ = vllm_ops.scaled_int8_quant(output)
     return ref_out, ref_scales
 
@@ -168,4 +169,3 @@ if __name__ == "__main__":
     run_correctness_suite()
     print(f"Running Performance Benchmarks (EP opt Only) for {len(FIXED_TOKENS_MAP)} cases...")
     benchmark.run(print_data=True, warmup=100)
-

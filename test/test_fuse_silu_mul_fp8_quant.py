@@ -16,7 +16,7 @@ try:
     import vllm._custom_ops as ops
     from vllm.config import VllmConfig, set_current_vllm_config
     from vllm.model_executor.layers.layernorm import RMSNorm
-    from lightop import rms_norm_per_token_fp8_quant
+    from lightop.norm import rms_norm_per_token_fp8_quant
 except ImportError:
     pass 
 

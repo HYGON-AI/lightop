@@ -5,14 +5,11 @@ import time
 import numpy as np
 import pandas as pd
 
-# 尝试从 lightop 库导入预编译的通用 moe_align_block_size 函数
-# 注意：你需要将编译好的库命名为 lightop 并确保它在 Python 的搜索路径中
 try:
-    from lightop import op as ops
-    moe_align_block_size = ops.moe_align_block_size
-    print("成功从 lightop 库导入 moe_align_block_size。")
+    from lightop.moe import moe_align_block_size
+    print("成功从 lightop.moe 导入 moe_align_block_size。")
 except ImportError:
-    print("警告：无法从 lightop 库导入 op。")
+    print("警告：无法从 lightop.moe 导入 moe_align_block_size。")
     print("请确保自定义算子已被正确编译和安装，并且当前 Python 环境可以访问它。")
     print("测试将无法运行 CUDA C++ 实现部分。")
     moe_align_block_size = None
@@ -151,23 +148,22 @@ def run_test():
         )
         num_local_tokens = [num_tokens]
         num_local_tokens_tensor = torch.tensor(num_local_tokens, device=device, dtype=torch.int32)
-        # CUDA 实现
-        total_tokens_post_pad_cuda = num_tokens_post_pad_py.item()
-        if total_tokens_post_pad_cuda == 0:
+        # lightop.moe 分类接口
+        if num_tokens_post_pad_py.item() == 0:
             sorted_token_ids_cuda = torch.tensor([], dtype=torch.int32, device=device)
             experts_ids_cuda = torch.tensor([], dtype=torch.int32, device=device)
             num_tokens_post_pad_tensor_cuda = torch.tensor([0], dtype=torch.int32, device=device)
         else:
-            sorted_token_ids_cuda = torch.full((total_tokens_post_pad_cuda,), -1, dtype=torch.int32, device=device)
-            num_blocks_cuda = total_tokens_post_pad_cuda // block_size
-            experts_ids_cuda = torch.full((num_blocks_cuda,), -1, dtype=torch.int32, device=device)
-            num_tokens_post_pad_tensor_cuda = torch.zeros(1, dtype=torch.int32, device=device)
-            
-            moe_align_block_size(
-                topk_ids, num_experts, block_size, sorted_token_ids_cuda,
-                experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map,None,num_local_tokens_tensor
+            sorted_alloc, experts_alloc, num_tokens_post_pad_tensor_cuda = moe_align_block_size(
+                topk_ids,
+                block_size,
+                num_experts,
+                expert_map=expert_map,
             )
             torch.cuda.synchronize()
+            valid_count = int(num_tokens_post_pad_tensor_cuda.item())
+            sorted_token_ids_cuda = sorted_alloc[:valid_count]
+            experts_ids_cuda = experts_alloc[: valid_count // block_size]
 
         # 验证结果
         pad_match = torch.equal(num_tokens_post_pad_py, num_tokens_post_pad_tensor_cuda)
@@ -206,19 +202,11 @@ def run_test():
         )
         total_tokens_post_pad = num_tokens_post_pad_py.item()
         
-        if total_tokens_post_pad > 0:
-            sorted_token_ids_cuda = torch.empty((total_tokens_post_pad,), dtype=torch.int32, device=device)
-            num_blocks = total_tokens_post_pad // block_size
-            experts_ids_cuda = torch.empty((num_blocks,), dtype=torch.int32, device=device)
-            num_tokens_post_pad_tensor_cuda = torch.empty(1, dtype=torch.int32, device=device)
-        num_local_tokens = [n_tokens]
-        num_local_tokens_tensor = torch.tensor(num_local_tokens, device=device, dtype=torch.int32)
         # 预热
         for _ in range(warmup_runs):
             if total_tokens_post_pad > 0:
                 moe_align_block_size(
-                    topk_ids, num_experts, block_size, sorted_token_ids_cuda,
-                     experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map,None,num_local_tokens_tensor
+                    topk_ids, block_size, num_experts, expert_map=expert_map
                 )
         torch.cuda.synchronize()
 
@@ -230,8 +218,7 @@ def run_test():
             start_event.record()
             for _ in range(test_runs):
                 moe_align_block_size(
-                    topk_ids, num_experts, block_size, sorted_token_ids_cuda,
-                    experts_ids_cuda, num_tokens_post_pad_tensor_cuda, expert_map,None,num_local_tokens_tensor
+                    topk_ids, block_size, num_experts, expert_map=expert_map
                 )
             end_event.record()
             torch.cuda.synchronize()
@@ -253,4 +240,3 @@ def run_test():
 
 if __name__ == "__main__":
     run_test()
-
