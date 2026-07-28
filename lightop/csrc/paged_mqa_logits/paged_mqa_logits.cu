@@ -1,5 +1,6 @@
 #include "paged_mqa_logits.h"
 #include "paged_mqa_logits_impl.hpp"
+#include "paged_mqa_logits_int8_impl.hpp"
 
 #include "hip/hip_runtime.h"
 #include "hip/hip_fp16.h"
@@ -240,26 +241,30 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     torch::Tensor kv_cache;
     const bool q_is_fp8 = q.scalar_type() == torch::kFloat8_e4m3fn || q.scalar_type() == torch::kFloat8_e5m2;
     const bool kv_is_fp8 = fused_kv_cache.scalar_type() == torch::kByte;
+    const bool q_is_int8 = q.scalar_type() == torch::kInt8;
+    const bool kv_is_int8 = fused_kv_cache.scalar_type() == torch::kInt8;
+    const bool kv_is_quantized = kv_is_fp8 || kv_is_int8;
 
-    if (kv_is_fp8) {
+    if (kv_is_quantized) {
         LIGHTOP_HOST_ASSERT(head_dim_with_sf == head_dim + static_cast<int>(sizeof(float)));
-        LIGHTOP_HOST_ASSERT(q_is_fp8 || q.scalar_type() == torch::kBFloat16);
-        // Derive FP8 values and SF tensor from KV cache
+        LIGHTOP_HOST_ASSERT(kv_is_int8 ? q_is_int8 : (q_is_fp8 || q.scalar_type() == torch::kBFloat16));
+        const auto kv_dtype = kv_is_int8 ? torch::kInt8 : torch::kFloat8_e4m3fn;
+
         kv_cache = torch::from_blob(
             fused_kv_cache.data_ptr(),
             {num_kv_blocks, block_kv, head_dim},
             {kv_cache_stride_bytes, head_dim, 1},
-            torch::TensorOptions().dtype(torch::kFloat8_e4m3fn)
+            torch::TensorOptions().dtype(kv_dtype)
         );
 
         kv_cache_scales = torch::from_blob(
-            fused_kv_cache.data_ptr<uint8_t>() + block_kv * head_dim,
+            reinterpret_cast<uint8_t*>(fused_kv_cache.data_ptr()) + block_kv * head_dim,
             {num_kv_blocks, block_kv},
             {kv_cache_stride_bytes / static_cast<int>(sizeof(float)), 1},
             torch::TensorOptions().dtype(torch::kFloat32)
         );
     } else {
-        LIGHTOP_HOST_ASSERT(!q_is_fp8);
+        LIGHTOP_HOST_ASSERT(!q_is_fp8 && !q_is_int8);
         LIGHTOP_HOST_ASSERT(fused_kv_cache.scalar_type() == torch::kFloat16 ||
                             fused_kv_cache.scalar_type() == torch::kBFloat16);
         kv_cache = torch::from_blob(
@@ -306,7 +311,8 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     const int smem_kv_pipe_size = num_kv_stages * num_math_warp_groups * 32 * head_dim;
     const int smem_q_cache_size = num_heads * head_dim * static_cast<int>(q.element_size());
     const int smem_weight_cache_size = num_heads * static_cast<int>(sizeof(float));
-    const int smem_scale_cache_size = q_is_fp8 ? num_math_warp_groups * 64 * static_cast<int>(sizeof(float)) : 0;
+    const int smem_scale_cache_size =
+        (q_is_fp8 || q_is_int8) ? num_math_warp_groups * 64 * static_cast<int>(sizeof(float)) : 0;
     const int smem_cache_size = smem_q_cache_size + smem_weight_cache_size + smem_scale_cache_size;
 
     const int smem_size = smem_q_pipe_size +
@@ -320,7 +326,7 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-    if (!kv_is_fp8) {
+    if (!kv_is_quantized) {
         AT_DISPATCH_FLOATING_TYPES_AND2(
                 at::ScalarType::Half,
                 at::ScalarType::BFloat16,
@@ -363,37 +369,60 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
         );
     } else if (use_bf16_q_fp8_kv) {
         const int bf16_fp8_num_kv_stages = num_heads == 64 ? 2 : 1;
-        const int bf16_fp8_raw_kv_smem_size =
-            bf16_fp8_num_kv_stages * num_math_warp_groups * mmac_row_tile * head_dim;
+        const int bf16_fp8_raw_kv_smem_size = bf16_fp8_num_kv_stages * num_math_warp_groups * mmac_row_tile * head_dim;
         const int bf16_fp8_q_smem_size = num_heads * head_dim * static_cast<int>(sizeof(at::BFloat16));
-        const int bf16_fp8_cache_smem_size = num_heads >= mmac_row_tile * num_math_warp_groups ?
-            bf16_fp8_q_smem_size : bf16_fp8_q_smem_size + smem_weight_cache_size;
-        const int bf16_fp8_smem_size = bf16_fp8_raw_kv_smem_size > bf16_fp8_cache_smem_size ?
-            bf16_fp8_raw_kv_smem_size : bf16_fp8_cache_smem_size;
+        const int bf16_fp8_cache_smem_size = num_heads >= mmac_row_tile * num_math_warp_groups
+                                                 ? bf16_fp8_q_smem_size
+                                                 : bf16_fp8_q_smem_size + smem_weight_cache_size;
+        const int bf16_fp8_smem_size =
+            bf16_fp8_raw_kv_smem_size > bf16_fp8_cache_smem_size ? bf16_fp8_raw_kv_smem_size : bf16_fp8_cache_smem_size;
 
         DISPATCH_BLOCK_KV(block_kv, BLOCK_KV, [&] {
             DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
                 DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
                     if constexpr (BLOCK_KV < 16) {
-                        paged_mqa_logits_bf16_fp8_kv_small_block<
-                            NEXT_N, NUM_HEADS, 128, BLOCK_KV,
-                            kTokensPerWarp, num_math_warp_groups><<<grid, block, bf16_fp8_smem_size, stream>>>(
-                            reinterpret_cast<at::BFloat16*>(q.data_ptr()),
-                            reinterpret_cast<uint8_t*>(kv_cache.data_ptr()),
-                            kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
-                            kv_cache_stride_bytes, aligned_max_context_len, block_table_stride,
-                            context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
-                            block_table.data_ptr<int32_t>());
+                        paged_mqa_logits_bf16_fp8_kv_small_block<NEXT_N, NUM_HEADS, BLOCK_KV,
+                                                                 kTokensPerWarp, num_math_warp_groups>
+                            <<<grid, block, bf16_fp8_smem_size, stream>>>(
+                                reinterpret_cast<at::BFloat16*>(q.data_ptr()),
+                                reinterpret_cast<uint8_t*>(kv_cache.data_ptr()), kv_cache_scales.data_ptr<float>(),
+                                weights.data_ptr<float>(), kv_cache_stride_bytes, aligned_max_context_len,
+                                block_table_stride, context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
+                                block_table.data_ptr<int32_t>());
                     } else {
-                        paged_mqa_logits_bf16_fp8_kv<
-                            NEXT_N, NUM_HEADS, 128, BLOCK_KV,
-                            num_math_warp_groups, kTokensPerWarp><<<grid, block, bf16_fp8_smem_size, stream>>>(
-                            reinterpret_cast<at::BFloat16*>(q.data_ptr()),
-                            reinterpret_cast<uint8_t*>(kv_cache.data_ptr()),
-                            kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
-                            kv_cache_stride_bytes, aligned_max_context_len, block_table_stride,
-                            context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
-                            block_table.data_ptr<int32_t>());
+                        paged_mqa_logits_bf16_fp8_kv<NEXT_N, NUM_HEADS, BLOCK_KV, num_math_warp_groups,
+                                                     kTokensPerWarp>
+                            <<<grid, block, bf16_fp8_smem_size, stream>>>(
+                                reinterpret_cast<at::BFloat16*>(q.data_ptr()),
+                                reinterpret_cast<uint8_t*>(kv_cache.data_ptr()), kv_cache_scales.data_ptr<float>(),
+                                weights.data_ptr<float>(), kv_cache_stride_bytes, aligned_max_context_len,
+                                block_table_stride, context_lens.data_ptr<int32_t>(), logits.data_ptr<float>(),
+                                block_table.data_ptr<int32_t>());
+                    }
+                });
+            });
+        });
+    } else if (kv_is_int8) {
+        DISPATCH_BLOCK_KV(block_kv, BLOCK_KV, [&] {
+            DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
+                DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
+                    if constexpr (BLOCK_KV < 16) {
+                        paged_mqa_logits_int8_small_block<
+                            int8_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV, kTokensPerWarp, num_math_warp_groups>
+                            <<<grid, block, smem_size, stream>>>(
+                                q.data_ptr<int8_t>(), kv_cache.data_ptr<int8_t>(), kv_cache_scales.data_ptr<float>(),
+                                weights.data_ptr<float>(), batch_size, num_kv_blocks, kv_cache_stride_bytes,
+                                aligned_max_context_len, block_table_stride, context_lens.data_ptr<int32_t>(),
+                                logits.data_ptr<float>(), block_table.data_ptr<int32_t>(), nullptr);
+                    } else {
+                        constexpr int split_kv = BLOCK_KV * num_math_warp_groups;
+                        paged_mqa_logits_int8<
+                            int8_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV, split_kv, num_math_warp_groups, kTokensPerWarp>
+                            <<<grid, block, smem_size, stream>>>(
+                                q.data_ptr<int8_t>(), kv_cache.data_ptr<int8_t>(), kv_cache_scales.data_ptr<float>(),
+                                weights.data_ptr<float>(), batch_size, num_kv_blocks, kv_cache_stride_bytes,
+                                aligned_max_context_len, block_table_stride, context_lens.data_ptr<int32_t>(),
+                                logits.data_ptr<float>(), block_table.data_ptr<int32_t>(), nullptr);
                     }
                 });
             });
