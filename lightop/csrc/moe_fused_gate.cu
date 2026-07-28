@@ -681,6 +681,319 @@ __global__ void moe_fused_gate_kernel_gourp1(
 }
 
 template <
+    typename T,
+    typename T_bias,
+    int TOPK,
+    int WARPS_PER_BLOCK,
+    int VPT_LOCAL,
+    bool CACHE_FIRST_TWO>
+__global__ void moe_fused_gate_kernel_254_group2(
+  void* input,
+  void* bias,
+  float* output_ptr,
+  int32_t* indices_ptr,
+  int64_t num_rows,
+  int64_t topk_group,
+  double routed_scaling_factor)
+{
+  constexpr int NUM_EXPERTS = 254;
+  constexpr int NUM_EXPERT_GROUPS = 2;
+  constexpr int EXPERTS_PER_GROUP = NUM_EXPERTS / NUM_EXPERT_GROUPS;
+  constexpr int THREADS_PER_GROUP =
+      (EXPERTS_PER_GROUP + VPT_LOCAL - 1) / VPT_LOCAL;
+  constexpr int THREADS_PER_ROW = NUM_EXPERT_GROUPS * THREADS_PER_GROUP;
+  constexpr int ROWS_PER_WARP = WARP_SIZE / THREADS_PER_ROW;
+  constexpr int ROWS_PER_BLOCK = WARPS_PER_BLOCK * ROWS_PER_WARP;
+  constexpr int SHARED_EXPERTS = 2;
+  constexpr int TOPK_ROUTED = TOPK - SHARED_EXPERTS;
+  constexpr float Negative_inf = -FLT_MAX;
+
+  const int tidx = threadIdx.x;
+  const int wave_in_block = tidx / WARP_SIZE;
+  const int lane_in_wave = tidx % WARP_SIZE;
+  const int row_in_wave = lane_in_wave / THREADS_PER_ROW;
+  const int lane = lane_in_wave % THREADS_PER_ROW;
+  const int row_in_block =
+      wave_in_block * ROWS_PER_WARP + row_in_wave;
+  const int thread_row = blockIdx.x * ROWS_PER_BLOCK + row_in_block;
+  if (thread_row >= num_rows) {
+    return;
+  }
+
+  const int expert_group = lane / THREADS_PER_GROUP;
+  const int lane_in_group = lane % THREADS_PER_GROUP;
+  const int group_start = expert_group * EXPERTS_PER_GROUP;
+  const int group_end = group_start + EXPERTS_PER_GROUP;
+  const int start_col = group_start + lane_in_group * VPT_LOCAL;
+
+  auto* input_ptr = reinterpret_cast<T*>(input);
+  auto* bias_ptr = reinterpret_cast<T_bias*>(bias);
+  auto* row_input = input_ptr + thread_row * NUM_EXPERTS;
+
+  float scores_chunk[VPT_LOCAL];
+  float row_chunk[VPT_LOCAL];
+  float local_top1 = Negative_inf;
+  float local_top2 = Negative_inf;
+  int local_top1_idx = start_col;
+  int local_top2_idx = start_col;
+
+  #pragma unroll
+  for (int i = 0; i < VPT_LOCAL; ++i) {
+    const int expert_idx = start_col + i;
+    if (expert_idx < group_end) {
+      const float prob =
+          1.0f / (1.0f + exp_func(-static_cast<float>(row_input[expert_idx])));
+      row_chunk[i] = prob;
+      scores_chunk[i] = prob + static_cast<float>(bias_ptr[expert_idx]);
+    } else {
+      row_chunk[i] = 0.0f;
+      scores_chunk[i] = Negative_inf;
+    }
+    const float score = scores_chunk[i];
+    if (score > local_top1) {
+      local_top2 = local_top1;
+      local_top1 = score;
+      if constexpr (CACHE_FIRST_TWO) {
+        local_top2_idx = local_top1_idx;
+        local_top1_idx = expert_idx;
+      }
+    } else if (score > local_top2) {
+      local_top2 = score;
+      if constexpr (CACHE_FIRST_TWO) {
+        local_top2_idx = expert_idx;
+      }
+    }
+  }
+
+  float group_top1 = local_top1;
+  float group_top2 = local_top2;
+  #pragma unroll
+  for (int mask = 1; mask < THREADS_PER_GROUP; mask <<= 1) {
+    const float other_top1 =
+        VLLM_SHFL_XOR_SYNC_WIDTH(group_top1, mask, THREADS_PER_GROUP);
+    const float other_top2 =
+        VLLM_SHFL_XOR_SYNC_WIDTH(group_top2, mask, THREADS_PER_GROUP);
+    const float old_top1 = group_top1;
+    group_top1 = fmaxf(old_top1, other_top1);
+    group_top2 =
+        fmaxf(fminf(old_top1, other_top1), fmaxf(group_top2, other_top2));
+  }
+
+  const float group_score = group_top1 + group_top2;
+  const float other_group_score =
+      VLLM_SHFL_XOR_SYNC_WIDTH(group_score, THREADS_PER_GROUP, THREADS_PER_ROW);
+  const bool group_selected =
+      topk_group == NUM_EXPERT_GROUPS ||
+      group_score > other_group_score ||
+      (group_score == other_group_score && expert_group == 0);
+
+  if (!group_selected) {
+    local_top1 = Negative_inf;
+    local_top2 = Negative_inf;
+    #pragma unroll
+    for (int i = 0; i < VPT_LOCAL; ++i) {
+      scores_chunk[i] = Negative_inf;
+    }
+  }
+
+  float my_stored_prob = 0.0f;
+  int my_stored_idx = 0;
+  float output_sum = 0.0f;
+
+  if constexpr (CACHE_FIRST_TWO) {
+    if constexpr (TOPK_ROUTED > 0) {
+      float global_max = local_top1;
+      int global_best_expert = local_top1_idx;
+      #pragma unroll
+      for (int mask = THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
+        const float other_max =
+            VLLM_SHFL_XOR_SYNC_WIDTH(global_max, mask, THREADS_PER_ROW);
+        const int other_expert =
+            VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert, mask, THREADS_PER_ROW);
+        if (other_max > global_max) {
+          global_max = other_max;
+          global_best_expert = other_expert;
+        }
+      }
+
+      const int winner_group = global_best_expert / EXPERTS_PER_GROUP;
+      const int winner_group_offset =
+          global_best_expert - winner_group * EXPERTS_PER_GROUP;
+      const int winner_lane =
+          winner_group * THREADS_PER_GROUP + winner_group_offset / VPT_LOCAL;
+      const int winner_offset = winner_group_offset % VPT_LOCAL;
+
+      float best_prob_value = 0.0f;
+      if (lane == winner_lane) {
+        best_prob_value = row_chunk[winner_offset];
+        scores_chunk[winner_offset] = Negative_inf;
+        local_top1 = Negative_inf;
+      }
+      const float best_prob = VLLM_SHFL_BCAST_SYNC_WIDTH(
+          best_prob_value, winner_lane, THREADS_PER_ROW);
+      output_sum += best_prob;
+
+      if (lane == 0) {
+        my_stored_prob = best_prob;
+        my_stored_idx = global_best_expert;
+      }
+    }
+
+    if constexpr (TOPK_ROUTED > 1) {
+      float global_max = local_top1 == Negative_inf ? local_top2 : local_top1;
+      int global_best_expert =
+          local_top1 == Negative_inf ? local_top2_idx : local_top1_idx;
+      #pragma unroll
+      for (int mask = THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
+        const float other_max =
+            VLLM_SHFL_XOR_SYNC_WIDTH(global_max, mask, THREADS_PER_ROW);
+        const int other_expert =
+            VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert, mask, THREADS_PER_ROW);
+        if (other_max > global_max) {
+          global_max = other_max;
+          global_best_expert = other_expert;
+        }
+      }
+
+      const int winner_group = global_best_expert / EXPERTS_PER_GROUP;
+      const int winner_group_offset =
+          global_best_expert - winner_group * EXPERTS_PER_GROUP;
+      const int winner_lane =
+          winner_group * THREADS_PER_GROUP + winner_group_offset / VPT_LOCAL;
+      const int winner_offset = winner_group_offset % VPT_LOCAL;
+
+      float best_prob_value = 0.0f;
+      if (lane == winner_lane) {
+        best_prob_value = row_chunk[winner_offset];
+        scores_chunk[winner_offset] = Negative_inf;
+      }
+      const float best_prob = VLLM_SHFL_BCAST_SYNC_WIDTH(
+          best_prob_value, winner_lane, THREADS_PER_ROW);
+      output_sum += best_prob;
+
+      if (lane == 1) {
+        my_stored_prob = best_prob;
+        my_stored_idx = global_best_expert;
+      }
+    }
+
+    #pragma unroll
+    for (int k = 2; k < TOPK_ROUTED; ++k) {
+      float local_max = Negative_inf;
+      int local_idx = start_col;
+      #pragma unroll
+      for (int i = 0; i < VPT_LOCAL; ++i) {
+        if (scores_chunk[i] > local_max) {
+          local_max = scores_chunk[i];
+          local_idx = start_col + i;
+        }
+      }
+
+      float global_max = local_max;
+      int global_best_expert = local_idx;
+      #pragma unroll
+      for (int mask = THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
+        const float other_max =
+            VLLM_SHFL_XOR_SYNC_WIDTH(global_max, mask, THREADS_PER_ROW);
+        const int other_expert =
+            VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert, mask, THREADS_PER_ROW);
+        if (other_max > global_max) {
+          global_max = other_max;
+          global_best_expert = other_expert;
+        }
+      }
+
+      const int winner_group = global_best_expert / EXPERTS_PER_GROUP;
+      const int winner_group_offset =
+          global_best_expert - winner_group * EXPERTS_PER_GROUP;
+      const int winner_lane =
+          winner_group * THREADS_PER_GROUP + winner_group_offset / VPT_LOCAL;
+      const int winner_offset = winner_group_offset % VPT_LOCAL;
+
+      float best_prob_value = 0.0f;
+      if (lane == winner_lane) {
+        best_prob_value = row_chunk[winner_offset];
+        scores_chunk[winner_offset] = Negative_inf;
+      }
+      const float best_prob = VLLM_SHFL_BCAST_SYNC_WIDTH(
+          best_prob_value, winner_lane, THREADS_PER_ROW);
+      output_sum += best_prob;
+
+      if (lane == k) {
+        my_stored_prob = best_prob;
+        my_stored_idx = global_best_expert;
+      }
+    }
+  } else {
+    #pragma unroll
+    for (int k = 0; k < TOPK_ROUTED; ++k) {
+      float local_max = Negative_inf;
+      int local_idx = start_col;
+      #pragma unroll
+      for (int i = 0; i < VPT_LOCAL; ++i) {
+        if (scores_chunk[i] > local_max) {
+          local_max = scores_chunk[i];
+          local_idx = start_col + i;
+        }
+      }
+
+      float global_max = local_max;
+      int global_best_expert = local_idx;
+      #pragma unroll
+      for (int mask = THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
+        const float other_max =
+            VLLM_SHFL_XOR_SYNC_WIDTH(global_max, mask, THREADS_PER_ROW);
+        const int other_expert =
+            VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert, mask, THREADS_PER_ROW);
+        if (other_max > global_max) {
+          global_max = other_max;
+          global_best_expert = other_expert;
+        }
+      }
+
+      const int winner_group = global_best_expert / EXPERTS_PER_GROUP;
+      const int winner_group_offset =
+          global_best_expert - winner_group * EXPERTS_PER_GROUP;
+      const int winner_lane =
+          winner_group * THREADS_PER_GROUP + winner_group_offset / VPT_LOCAL;
+      const int winner_offset = winner_group_offset % VPT_LOCAL;
+
+      float best_prob_value = 0.0f;
+      if (lane == winner_lane) {
+        best_prob_value = row_chunk[winner_offset];
+        scores_chunk[winner_offset] = Negative_inf;
+      }
+      const float best_prob = VLLM_SHFL_BCAST_SYNC_WIDTH(
+          best_prob_value, winner_lane, THREADS_PER_ROW);
+      output_sum += best_prob;
+
+      if (lane == k) {
+        my_stored_prob = best_prob;
+        my_stored_idx = global_best_expert;
+      }
+    }
+  }
+
+  if (lane >= TOPK_ROUTED && lane < TOPK) {
+    const int shared_offset = lane - TOPK_ROUTED;
+    const float share_scale = routed_scaling_factor > 0.0
+        ? static_cast<float>(routed_scaling_factor)
+        : 1.0f;
+    my_stored_prob = output_sum / share_scale;
+    my_stored_idx = NUM_EXPERTS + shared_offset;
+  }
+
+  if (lane < TOPK) {
+    const int out_idx = TOPK * thread_row + lane;
+    const float route_scale = routed_scaling_factor > 0.0
+        ? static_cast<float>(routed_scaling_factor)
+        : 1.0f;
+    output_ptr[out_idx] = (my_stored_prob / output_sum) * route_scale;
+    indices_ptr[out_idx] = my_stored_idx;
+  }
+}
+
+template <
    typename T,
    typename T_bias, 
    int VPT, 
@@ -762,8 +1075,41 @@ __global__ void moe_fused_gate_kernel(
    dim3 block_dim_spec(WARP_SIZE*N_WARP); \
    int64_t num_blocks_spec = (num_rows + ROWS_PER_CTA - 1) / ROWS_PER_CTA; \
    KernelParams<VPT, EXPERTS, THREADS_PER_ROW, ROWS_PER_WARP, ROWS_PER_CTA, N_WARP> params_spec; \
-   if (topk == 8) { \
-       moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 8> \
+    if (topk == 7) { \
+        moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 7> \
+          <<<num_blocks_spec, block_dim_spec, 0, stream>>>( \
+            input.data_ptr(),          \
+            bias.data_ptr(),          \
+            output.data_ptr<float>(),        \
+            indices.data_ptr<int32_t>(),       \
+            num_rows,              \
+            n_share_experts_fusion,        \
+            routed_scaling_factor, \
+            params_spec);        \
+    } else if (topk == 8) { \
+        moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 8> \
+          <<<num_blocks_spec, block_dim_spec, 0, stream>>>( \
+            input.data_ptr(),          \
+           bias.data_ptr(),          \
+           output.data_ptr<float>(),        \
+           indices.data_ptr<int32_t>(),       \
+           num_rows,              \
+            n_share_experts_fusion,        \
+            routed_scaling_factor, \
+            params_spec);        \
+    } else if (topk == 14) { \
+        moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 14> \
+          <<<num_blocks_spec, block_dim_spec, 0, stream>>>( \
+            input.data_ptr(),          \
+            bias.data_ptr(),          \
+            output.data_ptr<float>(),        \
+            indices.data_ptr<int32_t>(),       \
+            num_rows,              \
+            n_share_experts_fusion,        \
+            routed_scaling_factor, \
+            params_spec);        \
+    } else if (topk == 22) { \
+        moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 22> \
          <<<num_blocks_spec, block_dim_spec, 0, stream>>>( \
            input.data_ptr(),          \
            bias.data_ptr(),          \
@@ -773,17 +1119,45 @@ __global__ void moe_fused_gate_kernel(
            n_share_experts_fusion,        \
            routed_scaling_factor, \
            params_spec);        \
-   } else if (topk == 22) { \
-       moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 22> \
-         <<<num_blocks_spec, block_dim_spec, 0, stream>>>( \
-           input.data_ptr(),          \
-           bias.data_ptr(),          \
-           output.data_ptr<float>(),        \
-           indices.data_ptr<int32_t>(),       \
-           num_rows,              \
-           n_share_experts_fusion,        \
-           routed_scaling_factor, \
-           params_spec);        \
+   } \
+    dispatched = true; \
+  } while (0)
+
+ #define LAUNCH_MOE_GATE_254_GROUP2(T, T_bias, TOPK_VAL) \
+ do { \
+   constexpr int TOPK_C = TOPK_VAL; \
+   constexpr int WARPS_PER_BLOCK = 2; \
+   dim3 block_dim_spec(WARP_SIZE * WARPS_PER_BLOCK); \
+   if (num_rows < 512 || (TOPK_C == 7 && num_rows >= 8192)) { \
+     constexpr int VPT = 4; \
+     constexpr int ROWS_PER_BLOCK = WARPS_PER_BLOCK; \
+     int64_t num_blocks_spec = \
+         (num_rows + ROWS_PER_BLOCK - 1) / ROWS_PER_BLOCK; \
+     moe_fused_gate_kernel_254_group2< \
+         T, T_bias, TOPK_C, WARPS_PER_BLOCK, VPT, false> \
+       <<<num_blocks_spec, block_dim_spec, 0, stream>>>( \
+         input.data_ptr(), \
+         bias.data_ptr(), \
+         output.data_ptr<float>(), \
+         indices.data_ptr<int32_t>(), \
+         num_rows, \
+         topk_group, \
+         routed_scaling_factor); \
+   } else { \
+     constexpr int VPT = 8; \
+     constexpr int ROWS_PER_BLOCK = WARPS_PER_BLOCK * 2; \
+     int64_t num_blocks_spec = \
+         (num_rows + ROWS_PER_BLOCK - 1) / ROWS_PER_BLOCK; \
+     moe_fused_gate_kernel_254_group2< \
+         T, T_bias, TOPK_C, WARPS_PER_BLOCK, VPT, true> \
+       <<<num_blocks_spec, block_dim_spec, 0, stream>>>( \
+         input.data_ptr(), \
+         bias.data_ptr(), \
+         output.data_ptr<float>(), \
+         indices.data_ptr<int32_t>(), \
+         num_rows, \
+         topk_group, \
+         routed_scaling_factor); \
    } \
    dispatched = true; \
  } while (0)
@@ -856,9 +1230,67 @@ std::vector<torch::Tensor> moe_fused_gate(
 
 
  bool dispatched = false;
- if ((topk == 8 || topk == 22) && num_expert_group == 1 && topk_group == 1) {
+ if (num_experts == 254 && num_expert_group == 2 &&
+     (topk == 7 || topk == 14)) {
+    TORCH_CHECK(topk_group == 1 || topk_group == 2,
+                "254-expert group=2 configuration requires topk_group=1 or 2. Got ",
+                topk_group);
+    TORCH_CHECK(n_share_experts_fusion == 2,
+                "254-expert group=2 configuration requires 2 fused shared experts. Got ",
+                n_share_experts_fusion);
+
+    if (input.scalar_type() == at::kBFloat16) {
+      if (bias.scalar_type() == at::kFloat) {
+        if (topk == 7) {
+          LAUNCH_MOE_GATE_254_GROUP2(__nv_bfloat16, float, 7);
+        } else {
+          LAUNCH_MOE_GATE_254_GROUP2(__nv_bfloat16, float, 14);
+        }
+      } else if (bias.scalar_type() == at::kBFloat16) {
+        if (topk == 7) {
+          LAUNCH_MOE_GATE_254_GROUP2(__nv_bfloat16, __nv_bfloat16, 7);
+        } else {
+          LAUNCH_MOE_GATE_254_GROUP2(__nv_bfloat16, __nv_bfloat16, 14);
+        }
+      }
+    } else if (input.scalar_type() == at::kHalf) {
+      if (bias.scalar_type() == at::kHalf) {
+        if (topk == 7) {
+          LAUNCH_MOE_GATE_254_GROUP2(half, half, 7);
+        } else {
+          LAUNCH_MOE_GATE_254_GROUP2(half, half, 14);
+        }
+      }
+    } else if (input.scalar_type() == at::kFloat) {
+      if (bias.scalar_type() == at::kFloat) {
+        if (topk == 7) {
+          LAUNCH_MOE_GATE_254_GROUP2(float, float, 7);
+        } else {
+          LAUNCH_MOE_GATE_254_GROUP2(float, float, 14);
+        }
+      } else if (bias.scalar_type() == at::kBFloat16) {
+        if (topk == 7) {
+          LAUNCH_MOE_GATE_254_GROUP2(float, __nv_bfloat16, 7);
+        } else {
+          LAUNCH_MOE_GATE_254_GROUP2(float, __nv_bfloat16, 14);
+        }
+      } else if (bias.scalar_type() == at::kHalf) {
+        if (topk == 7) {
+          LAUNCH_MOE_GATE_254_GROUP2(float, half, 7);
+        } else {
+          LAUNCH_MOE_GATE_254_GROUP2(float, half, 14);
+        }
+      }
+    }
+    TORCH_CHECK(dispatched,
+                "Unsupported input/bias data type combination for 254-expert group=2 moe_fused_gate");
+    return {output, indices};
+ }
+
+ if ((topk == 7 || topk == 8 || topk == 14 || topk == 22) &&
+     num_expert_group == 1 && topk_group == 1) {
     TORCH_CHECK(num_experts == 128 || num_experts == 160 || num_experts == 192 || num_experts == 256 || num_experts == 288 || num_experts == 384 || num_experts == 512, 
-                "(topk=8 or 22, expert_group=1) only supports 128, 160, 192, 256, 288, 384, or 512 experts. Got ", num_experts);
+                "(topk=7, 8, 14, or 22, expert_group=1) only supports 128, 160, 192, 256, 288, 384, or 512 experts. Got ", num_experts);
     //Nemotron E 512 TopK 22
     if (num_experts == 512) {
         if (input.scalar_type() == at::kBFloat16) {
