@@ -19,7 +19,7 @@ namespace native {
  *   • 4× loop-unrolled bodies so the compiler schedules loads earlier.
  *   • int4 vectorised path for the page_size=1 (dense) case — 4× fewer loads.
  *   • Branchless divide-by-page_size when SHIFT≥0 is a template parameter.
- *   • __launch_bounds__ tuned for max occupancy on HCU (256 threads, 2 blocks/SM).
+ *   • __launch_bounds__ tuned for max occupancy on DCU (256 threads, 2 blocks/SM).
  *   • USE_SWA compiled out at no cost when not needed.
  *
  * Grid:   1D  — one block per batch row.
@@ -28,10 +28,16 @@ namespace native {
  * @tparam USE_SWA  Whether to build the SWA page table.
  * @tparam SHIFT    0 when page_size=1 (int4-vectorised fast path),
  *                  1 otherwise (general strided path).
- * @tparam index_t  Integer type for seq_lens and req_pool_indices
- *                  (int32_t or int64_t).
+ * @tparam index_t    Integer type for seq_lens (int32_t or int64_t).
+ * @tparam pool_idx_t Integer type for req_pool_indices (int32_t or int64_t).
+ * @tparam mapping_t  Integer type for full_to_swa_mapping (int32_t or int64_t).
  */
-template <bool USE_SWA, int SHIFT, typename index_t, typename pool_idx_t = index_t>
+template <
+    bool USE_SWA,
+    int SHIFT,
+    typename index_t,
+    typename pool_idx_t = index_t,
+    typename mapping_t = int32_t>
 __global__ __launch_bounds__(256, 2) void fused_metadata_kernel_general_v2(
     // ---- inputs -----------------------------------------------------------
     const index_t* __restrict__ seq_lens,
@@ -52,7 +58,7 @@ __global__ __launch_bounds__(256, 2) void fused_metadata_kernel_general_v2(
     int32_t* __restrict__ swa_page_table,
     int64_t                      swa_page_table_stride_0,
     int64_t                      swa_page_table_stride_1,
-    const int32_t* __restrict__ full_to_swa_mapping,
+    const mapping_t* __restrict__ full_to_swa_mapping,
     int64_t                      full_to_swa_mapping_stride_0,
     // ---- scalars ----------------------------------------------------------
     int    B,
@@ -206,7 +212,10 @@ __global__ __launch_bounds__(256, 2) void fused_metadata_kernel_general_v2(
 // ---------------------------------------------------------------------------
 // Host-side dispatch helper  (templated on index_t)
 // ---------------------------------------------------------------------------
-template <typename index_t, typename pool_idx_t = index_t>
+template <
+    typename index_t,
+    typename pool_idx_t = index_t,
+    typename mapping_t = int32_t>
 void fused_metadata_dispatch_impl(
     torch::Tensor& seq_lens,
     torch::Tensor& req_to_token,
@@ -237,7 +246,7 @@ void fused_metadata_dispatch_impl(
   auto ptr_swa_pt  = swa_page_table.has_value()
                          ? swa_page_table->data_ptr<int32_t>() : nullptr;
   auto ptr_swa_map = full_to_swa_mapping.has_value()
-                         ? full_to_swa_mapping->data_ptr<int32_t>() : nullptr;
+                         ? full_to_swa_mapping->data_ptr<mapping_t>() : nullptr;
 
   auto sl_s0   = seq_lens.stride(0);
   auto r2t_s0  = req_to_token.stride(0);
@@ -262,7 +271,7 @@ void fused_metadata_dispatch_impl(
     auto fts_s0 = static_cast<int64_t>(full_to_swa_mapping->stride(0));
 
     if (page_size <= 1) {
-      fused_metadata_kernel_general_v2<true, 0, index_t, pool_idx_t><<<grid, block, 0, stream>>>(
+      fused_metadata_kernel_general_v2<true, 0, index_t, pool_idx_t, mapping_t><<<grid, block, 0, stream>>>(
           ptr_seq_lens, static_cast<int32_t>(sl_s0),
           ptr_req2tok,  static_cast<int64_t>(r2t_s0), static_cast<int64_t>(r2t_s1),
           ptr_pool_idx, static_cast<int32_t>(pi_s0),
@@ -273,7 +282,7 @@ void fused_metadata_dispatch_impl(
           ptr_swa_map, fts_s0,
           B_i, P_i, ps_i, delta_i, shift);
     } else {
-      fused_metadata_kernel_general_v2<true, 1, index_t, pool_idx_t><<<grid, block, 0, stream>>>(
+      fused_metadata_kernel_general_v2<true, 1, index_t, pool_idx_t, mapping_t><<<grid, block, 0, stream>>>(
           ptr_seq_lens, static_cast<int32_t>(sl_s0),
           ptr_req2tok,  static_cast<int64_t>(r2t_s0), static_cast<int64_t>(r2t_s1),
           ptr_pool_idx, static_cast<int32_t>(pi_s0),
@@ -286,7 +295,7 @@ void fused_metadata_dispatch_impl(
     }
   } else {
     if (page_size <= 1) {
-      fused_metadata_kernel_general_v2<false, 0, index_t, pool_idx_t><<<grid, block, 0, stream>>>(
+      fused_metadata_kernel_general_v2<false, 0, index_t, pool_idx_t, mapping_t><<<grid, block, 0, stream>>>(
           ptr_seq_lens, static_cast<int32_t>(sl_s0),
           ptr_req2tok,  static_cast<int64_t>(r2t_s0), static_cast<int64_t>(r2t_s1),
           ptr_pool_idx, static_cast<int32_t>(pi_s0),
@@ -294,10 +303,10 @@ void fused_metadata_dispatch_impl(
           ptr_cu_seql, static_cast<int32_t>(cuseql_s0),
           ptr_page_tbl, static_cast<int64_t>(pt_s0), static_cast<int64_t>(pt_s1),
           static_cast<int32_t*>(nullptr), static_cast<int64_t>(0), static_cast<int64_t>(0),
-          static_cast<const int32_t*>(nullptr), static_cast<int64_t>(0),
+          static_cast<const mapping_t*>(nullptr), static_cast<int64_t>(0),
           B_i, P_i, ps_i, delta_i, shift);
     } else {
-      fused_metadata_kernel_general_v2<false, 1, index_t, pool_idx_t><<<grid, block, 0, stream>>>(
+      fused_metadata_kernel_general_v2<false, 1, index_t, pool_idx_t, mapping_t><<<grid, block, 0, stream>>>(
           ptr_seq_lens, static_cast<int32_t>(sl_s0),
           ptr_req2tok,  static_cast<int64_t>(r2t_s0), static_cast<int64_t>(r2t_s1),
           ptr_pool_idx, static_cast<int32_t>(pi_s0),
@@ -305,7 +314,7 @@ void fused_metadata_dispatch_impl(
           ptr_cu_seql, static_cast<int32_t>(cuseql_s0),
           ptr_page_tbl, static_cast<int64_t>(pt_s0), static_cast<int64_t>(pt_s1),
           static_cast<int32_t*>(nullptr), static_cast<int64_t>(0), static_cast<int64_t>(0),
-          static_cast<const int32_t*>(nullptr), static_cast<int64_t>(0),
+          static_cast<const mapping_t*>(nullptr), static_cast<int64_t>(0),
           B_i, P_i, ps_i, delta_i, shift);
     }
   }
@@ -336,6 +345,14 @@ void fused_metadata_kernel_general_launcher(
   TORCH_CHECK(cache_seqlens_int32.is_cuda());
   TORCH_CHECK(cu_seqlens_k.is_cuda());
   TORCH_CHECK(page_table.is_cuda());
+  TORCH_CHECK(
+      !full_to_swa_mapping.has_value() ||
+          full_to_swa_mapping->dtype() == torch::kInt32 ||
+          full_to_swa_mapping->dtype() == torch::kInt64,
+      "full_to_swa_mapping must have dtype int32 or int64, but got ",
+      full_to_swa_mapping.has_value()
+          ? c10::toString(full_to_swa_mapping->scalar_type())
+          : "undefined");
 
   int shift = 0;
   if (page_size > 1) {
@@ -346,32 +363,67 @@ void fused_metadata_kernel_general_launcher(
   // Dispatch to the correct type combination without .to() conversion.
   auto seq_dt = seq_lens.dtype();
   auto pool_dt = req_pool_indices.dtype();
+  const bool mapping_is_int64 =
+      full_to_swa_mapping.has_value() &&
+      full_to_swa_mapping->dtype() == torch::kInt64;
 
   if (seq_dt == torch::kInt64 && pool_dt == torch::kInt64) {
-    fused_metadata_dispatch_impl<int64_t>(
-        seq_lens, req_to_token, req_pool_indices,
-        cache_seqlens_int32, cu_seqlens_k, page_table,
-        swa_page_table, full_to_swa_mapping,
-        B, max_seq_pages, page_size, seq_len_delta, use_swa, shift, stream);
+    if (mapping_is_int64) {
+      fused_metadata_dispatch_impl<int64_t, int64_t, int64_t>(
+          seq_lens, req_to_token, req_pool_indices,
+          cache_seqlens_int32, cu_seqlens_k, page_table,
+          swa_page_table, full_to_swa_mapping,
+          B, max_seq_pages, page_size, seq_len_delta, use_swa, shift, stream);
+    } else {
+      fused_metadata_dispatch_impl<int64_t, int64_t, int32_t>(
+          seq_lens, req_to_token, req_pool_indices,
+          cache_seqlens_int32, cu_seqlens_k, page_table,
+          swa_page_table, full_to_swa_mapping,
+          B, max_seq_pages, page_size, seq_len_delta, use_swa, shift, stream);
+    }
   } else if (seq_dt == torch::kInt32 && pool_dt == torch::kInt32) {
-    fused_metadata_dispatch_impl<int32_t>(
-        seq_lens, req_to_token, req_pool_indices,
-        cache_seqlens_int32, cu_seqlens_k, page_table,
-        swa_page_table, full_to_swa_mapping,
-        B, max_seq_pages, page_size, seq_len_delta, use_swa, shift, stream);
+    if (mapping_is_int64) {
+      fused_metadata_dispatch_impl<int32_t, int32_t, int64_t>(
+          seq_lens, req_to_token, req_pool_indices,
+          cache_seqlens_int32, cu_seqlens_k, page_table,
+          swa_page_table, full_to_swa_mapping,
+          B, max_seq_pages, page_size, seq_len_delta, use_swa, shift, stream);
+    } else {
+      fused_metadata_dispatch_impl<int32_t, int32_t, int32_t>(
+          seq_lens, req_to_token, req_pool_indices,
+          cache_seqlens_int32, cu_seqlens_k, page_table,
+          swa_page_table, full_to_swa_mapping,
+          B, max_seq_pages, page_size, seq_len_delta, use_swa, shift, stream);
+    }
   } else if (seq_dt == torch::kInt32 && pool_dt == torch::kInt64) {
-    fused_metadata_dispatch_impl<int32_t, int64_t>(
-        seq_lens, req_to_token, req_pool_indices,
-        cache_seqlens_int32, cu_seqlens_k, page_table,
-        swa_page_table, full_to_swa_mapping,
-        B, max_seq_pages, page_size, seq_len_delta, use_swa, shift, stream);
+    if (mapping_is_int64) {
+      fused_metadata_dispatch_impl<int32_t, int64_t, int64_t>(
+          seq_lens, req_to_token, req_pool_indices,
+          cache_seqlens_int32, cu_seqlens_k, page_table,
+          swa_page_table, full_to_swa_mapping,
+          B, max_seq_pages, page_size, seq_len_delta, use_swa, shift, stream);
+    } else {
+      fused_metadata_dispatch_impl<int32_t, int64_t, int32_t>(
+          seq_lens, req_to_token, req_pool_indices,
+          cache_seqlens_int32, cu_seqlens_k, page_table,
+          swa_page_table, full_to_swa_mapping,
+          B, max_seq_pages, page_size, seq_len_delta, use_swa, shift, stream);
+    }
   } else {
     // seq_lens int64, req_pool_indices int32
-    fused_metadata_dispatch_impl<int64_t, int32_t>(
-        seq_lens, req_to_token, req_pool_indices,
-        cache_seqlens_int32, cu_seqlens_k, page_table,
-        swa_page_table, full_to_swa_mapping,
-        B, max_seq_pages, page_size, seq_len_delta, use_swa, shift, stream);
+    if (mapping_is_int64) {
+      fused_metadata_dispatch_impl<int64_t, int32_t, int64_t>(
+          seq_lens, req_to_token, req_pool_indices,
+          cache_seqlens_int32, cu_seqlens_k, page_table,
+          swa_page_table, full_to_swa_mapping,
+          B, max_seq_pages, page_size, seq_len_delta, use_swa, shift, stream);
+    } else {
+      fused_metadata_dispatch_impl<int64_t, int32_t, int32_t>(
+          seq_lens, req_to_token, req_pool_indices,
+          cache_seqlens_int32, cu_seqlens_k, page_table,
+          swa_page_table, full_to_swa_mapping,
+          B, max_seq_pages, page_size, seq_len_delta, use_swa, shift, stream);
+    }
   }
 }
 

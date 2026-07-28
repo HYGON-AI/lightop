@@ -75,6 +75,7 @@ def fused_metadata_kernel_general(
                            row.                                    [B, max_seq_pages] int32
         swa_page_table:    Optional output — SWA page ids.         [B, max_seq_pages] int32
         full_to_swa_mapping: Optional input — maps logical page → SWA slot.
+                             Supports int32 and int64.
         B:                 Number of sequences. If ``None`` inferred from
                            ``seq_lens.size(0)``.
         max_seq_pages:     Number of pages per sequence. If ``None``
