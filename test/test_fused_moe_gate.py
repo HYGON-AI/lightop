@@ -1,108 +1,134 @@
 import torch
 import triton
-from vllm import _custom_ops as vllm_ops
-from lightop.moe import moe_fused_gate
-import pdb
+from lightop import op as ops
 
 
-def python_reference_moe_gate(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion=0, routed_scaling_factor=1.0):
-    """
-    Python实现的 MoE Gating 逻辑，严格对应提供的 CUDA 代码。
-    逻辑特点：
-    1. Selection Score = Sigmoid(Input) + Bias
-    2. Weight Value    = Sigmoid(Input)
-    3. Output          = Normalize(Weight Value of TopK Experts) * routed_scaling_factor
-    4. 支持共享专家(Shared Experts)逻辑
-    """
-    # 转 float32 防止精度溢出
-    scores_in = scores.float()
-    bias_in = bias.float()
-    batch_size, num_experts = scores_in.shape
+def biased_grouped_topk_impl(
+    hidden_states: torch.Tensor,
+    gating_output: torch.Tensor,
+    correction_bias: torch.Tensor,
+    topk: int,
+    renormalize: bool,
+    num_expert_group: int = 0,
+    topk_group: int = 0,
+):
+    """Baseline grouped-topk implementation used by this unit test."""
+    assert hidden_states.shape[0] == gating_output.shape[0], (
+        "Number of tokens mismatch"
+    )
+
+    scores = gating_output.sigmoid()
+    num_token = scores.shape[0]
+    num_experts = scores.shape[1]
+    scores_for_choice = (
+        scores.view(num_token, -1) + correction_bias.unsqueeze(0)
+    )
+    group_scores = (
+        scores_for_choice.view(num_token, num_expert_group, -1)
+        .topk(2, dim=-1)[0]
+        .sum(dim=-1)
+    )
+    group_idx = torch.topk(
+        group_scores, k=topk_group, dim=-1, sorted=False
+    )[1]
+    group_mask = torch.zeros_like(group_scores)
+    group_mask.scatter_(1, group_idx, 1)
+    score_mask = (
+        group_mask.unsqueeze(-1)
+        .expand(
+            num_token,
+            num_expert_group,
+            num_experts // num_expert_group,
+        )
+        .reshape(num_token, -1)
+    )
+    tmp_scores = scores_for_choice.masked_fill(
+        ~score_mask.bool(), float("-inf")
+    )
+    _, topk_ids = torch.topk(
+        tmp_scores, k=topk, dim=-1, sorted=False
+    )
+    topk_weights = scores.gather(1, topk_ids)
+
+    if renormalize:
+        topk_weights = topk_weights / topk_weights.sum(
+            dim=-1, keepdim=True
+        )
+
+    return topk_weights.to(torch.float32), topk_ids.to(torch.int32)
+
+
+def requested_baseline_moe_gate(
+    scores,
+    bias,
+    num_expert_group,
+    topk_group,
+    topk,
+    n_share_experts_fusion=0,
+    routed_scaling_factor=1.0,
+):
+    """Add LightOP shared experts and scaling around the requested baseline."""
+    batch_size, num_experts = scores.shape
     topk_routed = topk - n_share_experts_fusion
+    routed_weights, routed_indices = biased_grouped_topk_impl(
+        hidden_states=scores,
+        gating_output=scores,
+        correction_bias=bias,
+        topk=topk_routed,
+        renormalize=True,
+        num_expert_group=num_expert_group,
+        topk_group=topk_group,
+    )
 
-    # 1. 计算 Sigmoid 和 排序分
-    probs = torch.sigmoid(scores_in) 
-    selection_scores = probs + bias_in
-
-    if num_expert_group > 1:
-        experts_per_group = num_experts // num_expert_group
-
-        # Reshape 为 [Batch, Group, ExpertPerGroup]
-        selection_reshaped = selection_scores.view(batch_size, num_expert_group, experts_per_group)
-
-        # 2. 组内 Top2 求和 (Group Score)
-        group_top2_values, _ = torch.topk(selection_reshaped, k=2, dim=-1)
-        group_scores = group_top2_values.sum(dim=-1) # [Batch, Group]
-
-        # 3. 选出 TopK Groups
-        _, top_group_indices = torch.topk(group_scores, k=topk_group, dim=-1) # [Batch, TopK_Group]
-
-        # 4. Mask 掉未选中的组
-        group_mask = torch.zeros((batch_size, num_expert_group), device=scores.device, dtype=torch.bool)
-        group_mask.scatter_(1, top_group_indices, True)
-        
-        # 扩展回 Expert 维度
-        expert_mask = group_mask.unsqueeze(-1).expand(-1, -1, experts_per_group).reshape(batch_size, num_experts)
-
-        # 未选中的专家分数为 -inf
-        masked_selection_scores = selection_scores.clone()
-        masked_selection_scores[~expert_mask] = float('-inf')
-    else:
-        # 当 num_expert_group == 1 时，直接跳过组竞争逻辑
-        masked_selection_scores = selection_scores
-
-    # lightop group1 kernel: only NUM_EXPERTS==192 applies routed_scaling_factor
-    # (hy3). Other group1 expert counts keep route_scale=1. Multi-group CUDA
-    # always multiplies by routed_scaling_factor.
     if num_expert_group > 1 or num_experts == 192:
-        route_scale = float(routed_scaling_factor) if routed_scaling_factor > 0 else 1.0
+        route_scale = (
+            float(routed_scaling_factor)
+            if routed_scaling_factor > 0
+            else 1.0
+        )
     else:
         route_scale = 1.0
+    routed_weights = routed_weights * route_scale
 
-    # 5. 全局 TopK (基于 Selection Score)
-    if topk_routed > 0:
-        _, final_indices = torch.topk(masked_selection_scores, k=topk_routed, dim=-1) # [Batch, TopK_Routed]
-        
-        # 6. 取值、归一化，再乘 route_scale（对齐 lightop）
-        final_probs = torch.gather(probs, 1, final_indices)
-        sum_probs = final_probs.sum(dim=1, keepdim=True) + 1e-20
-        final_weights = (final_probs / sum_probs) * route_scale
-    else:
-        final_indices = torch.empty((batch_size, 0), dtype=torch.long, device=scores.device)
-        final_weights = torch.empty((batch_size, 0), dtype=torch.float32, device=scores.device)
-        sum_probs = torch.zeros((batch_size, 1), dtype=torch.float32, device=scores.device)
+    if n_share_experts_fusion == 0:
+        return routed_weights, routed_indices
 
-    # 7. 共享专家逻辑
-    if n_share_experts_fusion > 0:
-        # 共享专家ID从 NUM_EXPERTS 开始递增
-        share_indices = torch.arange(num_experts, num_experts + n_share_experts_fusion, device=scores.device, dtype=torch.long)
-        share_indices = share_indices.unsqueeze(0).expand(batch_size, -1)
-        
-        # CUDA: stored_prob = output_sum / rsf, then (stored_prob / output_sum) * route_scale
-        # => (1 / rsf) * route_scale
-        share_base = (1.0 / routed_scaling_factor) if routed_scaling_factor > 0 else 1.0
-        share_weights = torch.full(
-            (batch_size, n_share_experts_fusion),
-            share_base * route_scale,
-            device=scores.device,
-            dtype=torch.float32,
-        )
-        
-        # 拼接到结果中
-        final_indices = torch.cat([final_indices, share_indices], dim=-1)
-        final_weights = torch.cat([final_weights, share_weights], dim=-1)
+    shared_indices = torch.arange(
+        num_experts,
+        num_experts + n_share_experts_fusion,
+        device=scores.device,
+        dtype=torch.int32,
+    ).unsqueeze(0).expand(batch_size, -1)
+    shared_base = (
+        1.0 / routed_scaling_factor
+        if routed_scaling_factor > 0
+        else 1.0
+    )
+    shared_weights = torch.full(
+        (batch_size, n_share_experts_fusion),
+        shared_base * route_scale,
+        device=scores.device,
+        dtype=torch.float32,
+    )
+    return (
+        torch.cat([routed_weights, shared_weights], dim=-1),
+        torch.cat([routed_indices, shared_indices], dim=-1),
+    )
 
-    return final_weights.to(scores.dtype), final_indices.to(torch.int32)
 
 # -------------------------------
 # 包一层，便于替换/调试
 # -------------------------------
 def biased_grouped_topk_org_init(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor):
-    num_experts = scores.shape[1]
-    # 当 group 都为 1 或者 expert 等于 384 时，直接调用 Python Reference
-    if (num_expert_group == 1 and topk_group == 1) or num_experts == 384:
-        return python_reference_moe_gate(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
-    return vllm_ops.moe_fused_gate(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
+    return requested_baseline_moe_gate(
+        scores,
+        bias,
+        num_expert_group,
+        topk_group,
+        topk,
+        n_share_experts_fusion,
+        routed_scaling_factor,
+    )
 
 def biased_grouped_topk_org_opt(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor):
     return moe_fused_gate(scores, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
@@ -119,7 +145,9 @@ def check_correctness_once(
     n_share_experts_fusion: int, 
     routed_scaling_factor: float,
     rtol=1e-6,
-    atol=1e-6
+    atol=1e-6,
+    perf_warmup=20,
+    perf_repeat=100,
 ):
     device = torch.device("cuda")
     dtype = torch.float32
@@ -138,6 +166,15 @@ def check_correctness_once(
     assert w_init.shape == w_opt.shape, f"weights shape mismatch: {w_init.shape} vs {w_opt.shape}"
     assert i_init.shape == i_opt.shape, f"indices shape mismatch: {i_init.shape} vs {i_opt.shape}"
 
+    # The requested baseline uses sorted=False. Compare (expert_id, weight)
+    # pairs after canonicalizing by expert ID so output ordering is irrelevant.
+    init_order = torch.argsort(i_init, dim=-1)
+    opt_order = torch.argsort(i_opt, dim=-1)
+    i_init = torch.gather(i_init, 1, init_order)
+    i_opt = torch.gather(i_opt, 1, opt_order)
+    w_init = torch.gather(w_init, 1, init_order)
+    w_opt = torch.gather(w_opt, 1, opt_order)
+
     if not torch.equal(i_init, i_opt):
         diff = (i_init != i_opt)
         n_diff = diff.sum().item()
@@ -146,28 +183,67 @@ def check_correctness_once(
             f"indices mismatch: {n_diff} elements differ. First few positions: {bad_pos}"
         )
 
+    max_abs = (w_init - w_opt).abs().max().item()
+    max_rel = ((w_init - w_opt).abs() / (w_opt.abs() + 1e-12)).max().item()
     if not torch.allclose(w_init, w_opt, rtol=rtol, atol=atol):
-        max_abs = (w_init - w_opt).abs().max().item()
-        max_rel = ((w_init - w_opt).abs() / (w_opt.abs() + 1e-12)).max().item()
         raise AssertionError(
             f"weights not close: max_abs={max_abs:.4e}, max_rel={max_rel:.4e}, "
             f"rtol={rtol}, atol={atol}"
         )
 
+    # Measure only the LightOP path after correctness has passed. CUDA events
+    # also work on ROCm and report average device elapsed time per invocation.
+    for _ in range(perf_warmup):
+        biased_grouped_topk_org_opt(
+            scores,
+            bias,
+            num_expert_group,
+            topk_group,
+            topk,
+            n_share_experts_fusion,
+            routed_scaling_factor,
+        )
+    torch.cuda.synchronize()
+    start_event = torch.cuda.Event(enable_timing=True)
+    end_event = torch.cuda.Event(enable_timing=True)
+    start_event.record()
+    for _ in range(perf_repeat):
+        biased_grouped_topk_org_opt(
+            scores,
+            bias,
+            num_expert_group,
+            topk_group,
+            topk,
+            n_share_experts_fusion,
+            routed_scaling_factor,
+        )
+    end_event.record()
+    end_event.synchronize()
+    latency_us = start_event.elapsed_time(end_event) * 1000.0 / perf_repeat
+    return max_abs, max_rel, latency_us
+
 def run_correctness_suite():
     torch.manual_seed(0)
     assert torch.cuda.is_available(), "CUDA is required"
-    n_share_experts_fusion = 0
     routed_scaling_factor = 2.5
-    num_expert = 192 
-    extra = list([1,4,8,32,1024,2048,4096])
-    
-    cases = [
-        (n, num_expert, 1, 1, 8, n_share_experts_fusion, routed_scaling_factor)
-        for n in list(extra)
+    token_sizes = [1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384]
+
+    routing_configs = [
+        # num_experts, num_expert_group, topk_group, topk, shared_experts
+        (128, 1, 1, 7, 1),
+        (128, 1, 1, 14, 1),
+        (254, 2, 1, 7, 2),
+        (254, 2, 1, 14, 2),
     ]
+
+    cases = [
+        (n, ne, ng, tg, tk, nshared, routed_scaling_factor)
+        for ne, ng, tg, tk, nshared in routing_configs
+        for n in token_sizes
+    ]
+    results = []
     for (token_num, ne, ng, tg, tk, nshar, rout) in cases:
-        check_correctness_once(
+        max_abs, max_rel, latency_us = check_correctness_once(
             token_num=token_num,
             num_experts=ne,
             num_expert_group=ng,
@@ -176,7 +252,20 @@ def run_correctness_suite():
             n_share_experts_fusion=nshar, 
             routed_scaling_factor=rout
         )
-    print(f"[Correctness] All bf16 tests passed ✅ (num_expert={num_expert})")
+        results.append(
+            (token_num, ne, ng, tg, tk, nshar, max_abs, max_rel, latency_us)
+        )
+        print(
+            f"[PASS] tokens={token_num:5d} experts={ne:3d} "
+            f"groups={ng} topk_group={tg} topk={tk:2d} shared={nshar} "
+            f"max_abs={max_abs:.4e} max_rel={max_rel:.4e} "
+            f"time_us={latency_us:.3f}"
+        )
+    print(
+        f"[Correctness] {len(results)}/{len(cases)} requested "
+        "moe_fused_gate cases passed; timing warmup=20 repeat=100"
+    )
+    return results
 
 # -------------------------------
 # 性能基准 (仅 bf16，支持 warmup)
@@ -236,4 +325,3 @@ def benchmark(token_num, provider, warmup=5):
 # -------------------------------
 if __name__ == "__main__":
     run_correctness_suite()
-    benchmark.run(print_data=True, warmup=10)
