@@ -50,28 +50,97 @@ def fuse_silu_mul_clamp_quant(
     limit: float,
     output: Optional[torch.Tensor] = None,
     scales: Optional[torch.Tensor] = None,
+    mask_m: Optional[torch.Tensor] = None,
+    expect_m: int = -1,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Fused GLM SwiGLU clamp, BF16 activation, and per-token INT8 quant."""
+    """Fused GLM SwiGLU clamp, activation, and per-token INT8 quant.
+
+    When ``mask_m`` is provided or ``expect_m != -1``, ``input`` uses the EP
+    layout ``[experts, tokens, 2 * hidden]`` and ``mask_m[e]`` gives the valid
+    token count for expert ``e``. ``expect_m`` controls the number of launched
+    blocks per expert.
+    """
+    if mask_m is not None or expect_m != -1:
+        if mask_m is None:
+            raise ValueError("mask_m is required when expect_m != -1")
+        return fuse_silu_mul_clamp_quant_ep(
+            input,
+            limit,
+            mask_m,
+            expect_m,
+            output,
+            scales,
+        )
+
     if input.dim() != 2 or input.shape[-1] % 2 != 0:
         raise ValueError(
-            "input must be a 2D tensor with shape [tokens, 2 * hidden]"
+            "input must have shape [tokens, 2 * hidden]"
         )
     if not input.is_contiguous():
         raise ValueError("input must be contiguous")
     if limit <= 0:
         raise ValueError("limit must be positive")
 
-    tokens, doubled_hidden = input.shape
+    doubled_hidden = input.shape[-1]
     hidden = doubled_hidden // 2
+    leading_shape = input.shape[:-1]
     if output is None:
         output = torch.empty(
-            (tokens, hidden), dtype=torch.int8, device=input.device
+            (*leading_shape, hidden), dtype=torch.int8, device=input.device
         )
     if scales is None:
         scales = torch.empty(
-            (tokens, 1), dtype=torch.float32, device=input.device
+            (*leading_shape, 1), dtype=torch.float32, device=input.device
         )
-    op.fuse_silu_mul_clamp_quant(input, output, scales, float(limit))
+    op.fuse_silu_mul_clamp_quant(
+        input,
+        output,
+        scales,
+        float(limit),
+    )
+    return output, scales
+
+
+def fuse_silu_mul_clamp_quant_ep(
+    input: torch.Tensor,
+    limit: float,
+    mask_m: torch.Tensor,
+    expect_m: int = -1,
+    output: Optional[torch.Tensor] = None,
+    scales: Optional[torch.Tensor] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run masked EP GLM SwiGLU clamp and per-token INT8 quantization."""
+    if input.dim() != 3 or input.shape[-1] % 2 != 0:
+        raise ValueError(
+            "input must have shape [experts, tokens, 2 * hidden]"
+        )
+    if not input.is_contiguous():
+        raise ValueError("input must be contiguous")
+    if limit <= 0:
+        raise ValueError("limit must be positive")
+
+    experts, tokens, doubled_hidden = input.shape
+    hidden = doubled_hidden // 2
+    if output is None:
+        output = torch.empty(
+            (experts, tokens, hidden),
+            dtype=torch.int8,
+            device=input.device,
+        )
+    if scales is None:
+        scales = torch.empty(
+            (experts, tokens, 1),
+            dtype=torch.float32,
+            device=input.device,
+        )
+    op.fuse_silu_mul_clamp_quant_ep(
+        input,
+        output,
+        scales,
+        float(limit),
+        mask_m,
+        expect_m,
+    )
     return output, scales
 
 
