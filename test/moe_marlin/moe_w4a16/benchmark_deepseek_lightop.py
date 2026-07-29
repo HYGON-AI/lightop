@@ -9,7 +9,7 @@ import vllm._custom_ops as vllm_ops
 from vllm.model_executor.layers.fused_moe.fused_moe import (
     fused_moe_kernel_gptq_awq,
 )
-from lightop import moe_align_block_size
+from lightop.moe import moe_align_block_size
 from vllm.model_executor.layers.quantization.utils.quant_utils import (
     quantize_weights,
 )
