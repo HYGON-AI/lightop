@@ -49,7 +49,9 @@ def vllm_key_cache_to_lightop(key_cache_vllm: torch.Tensor) -> torch.Tensor:
 def make_inputs(T, num_heads=4, head_size=128, dtype=torch.float16):
     device = "cuda"
     block_size = 64
-    num_blocks = 25088
+    # Keep enough cache blocks for the largest token case while avoiding the
+    # excessive allocation used by the legacy benchmark.
+    num_blocks = 4666
 
     # 这里的 T_min 保持为 1
     T_min = 1
@@ -120,7 +122,7 @@ def run_sweep(sheet_name="Benchmark"):
     # Ts = [256]
     
     # 固定参数
-    FIXED_NUM_HEADS = 1
+    FIXED_NUM_HEADS = 8
     FIXED_HEAD_DIM = 128
     DTYPE_SIZE = 2 
 
@@ -174,7 +176,8 @@ def run_sweep(sheet_name="Benchmark"):
          head_size, block_size, num_heads) = make_inputs(
              T, 
              num_heads=FIXED_NUM_HEADS, 
-             head_size=FIXED_HEAD_DIM
+             head_size=FIXED_HEAD_DIM,
+             dtype=torch.bfloat16
         )
 
         invalid_cnt = (slot_mapping < 0).sum().item()
