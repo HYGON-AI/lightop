@@ -472,6 +472,196 @@ __global__ void opt_reshape_and_cache_kernel(
     }   
 }
 
+// Large-token BF16 path for the native DCU cache layout:
+//   K: [block, head, slot, dim]
+//   V: [block, head, dim, slot]
+//
+// A workgroup stages a small input-token tile in LDS. When its slot mappings are
+// consecutive and remain in one cache block, threads read the LDS tile in the
+// transposed direction and write adjacent V-cache slots with 32-bit stores.
+// Arbitrary, padded, or block-crossing slot mappings retain a scalar scatter
+// fallback with exactly the same semantics.
+//
+// For the two-token / 4-KiB specialization, token 1 swaps adjacent 16-element
+// LDS segments. The global loads remain aligned Vec16 operations, while
+// transposed reads no longer address the same LDS bank as token 0.
+template <int kTokensPerBlock>
+__device__ __forceinline__ int value_tile_element(
+    const int local_token, const int element) {
+  if constexpr (kTokensPerBlock == 2) {
+    return element ^ (local_token << 4);
+  }
+  return element;
+}
+
+template <int kTokensPerBlock>
+__global__ void opt_reshape_and_cache_lds_h8_d128_bf16_kernel(
+    const uint16_t* __restrict__ key,
+    const uint16_t* __restrict__ value,
+    uint16_t* __restrict__ key_cache,
+    uint16_t* __restrict__ value_cache,
+    const int64_t* __restrict__ slot_mapping,
+    const int key_stride,
+    const int value_stride,
+    const int num_tokens) {
+  constexpr int kNumHeads = 8;
+  constexpr int kHeadSize = 128;
+  constexpr int kBlockSize = 64;
+  constexpr int kElementsPerToken = kNumHeads * kHeadSize;
+  constexpr int kLoadVec = 16;
+
+  __shared__ uint16_t value_tile[kTokensPerBlock][kElementsPerToken];
+  __shared__ int slot_tile[kTokensPerBlock];
+  __shared__ int contiguous_slots;
+
+  const int tid = threadIdx.x;
+  const int first_token = blockIdx.x * kTokensPerBlock;
+
+  if (tid < kTokensPerBlock) {
+    const int token_idx = first_token + tid;
+    slot_tile[tid] =
+        token_idx < num_tokens
+            ? static_cast<int>(slot_mapping[token_idx])
+            : -1;
+  }
+  __syncthreads();
+
+  using LoadVec = at::native::memory::aligned_vector<uint16_t, kLoadVec>;
+  constexpr int kTileLoadVectors =
+      kTokensPerBlock * kElementsPerToken / kLoadVec;
+  for (int load_index = tid; load_index < kTileLoadVectors;
+       load_index += blockDim.x) {
+    const int linear = load_index * kLoadVec;
+    const int local_token = linear / kElementsPerToken;
+    const int element = linear % kElementsPerToken;
+    const int token_idx = first_token + local_token;
+
+    uint16_t value_vec[kLoadVec];
+    uint16_t key_vec[kLoadVec];
+    if (token_idx < num_tokens) {
+      const int64_t value_src =
+          static_cast<int64_t>(token_idx) * value_stride + element;
+      *reinterpret_cast<LoadVec*>(value_vec) =
+          *reinterpret_cast<const LoadVec*>(value + value_src);
+      const int lds_element =
+          value_tile_element<kTokensPerBlock>(local_token, element);
+      *reinterpret_cast<LoadVec*>(
+          &value_tile[local_token][lds_element]) =
+          *reinterpret_cast<LoadVec*>(value_vec);
+
+      const int slot_idx = slot_tile[local_token];
+      if (slot_idx >= 0) {
+        const int64_t key_src =
+            static_cast<int64_t>(token_idx) * key_stride + element;
+        *reinterpret_cast<LoadVec*>(key_vec) =
+            *reinterpret_cast<const LoadVec*>(key + key_src);
+
+        const int head_idx = element / kHeadSize;
+        const int head_offset = element % kHeadSize;
+        const int block_idx = slot_idx / kBlockSize;
+        const int block_offset = slot_idx % kBlockSize;
+        const int64_t key_dst =
+            (static_cast<int64_t>(block_idx) * kNumHeads + head_idx) *
+                kBlockSize * kHeadSize +
+            block_offset * kHeadSize + head_offset;
+        *reinterpret_cast<LoadVec*>(key_cache + key_dst) =
+            *reinterpret_cast<LoadVec*>(key_vec);
+      }
+    }
+  }
+  __syncthreads();
+
+  if (tid == 0) {
+    const int first_slot = slot_tile[0];
+    int is_contiguous = first_slot >= 0;
+#pragma unroll
+    for (int token = 1; token < kTokensPerBlock; ++token) {
+      is_contiguous &= slot_tile[token] == first_slot + token;
+    }
+    if (is_contiguous) {
+      is_contiguous &=
+          first_slot / kBlockSize ==
+          (first_slot + kTokensPerBlock - 1) / kBlockSize;
+    }
+    contiguous_slots = is_contiguous;
+  }
+  __syncthreads();
+
+  for (int element = tid; element < kElementsPerToken;
+       element += blockDim.x) {
+    const int head_idx = element / kHeadSize;
+    const int head_offset = element % kHeadSize;
+
+    if (contiguous_slots) {
+      const int first_slot = slot_tile[0];
+      const int block_idx = first_slot / kBlockSize;
+      const int block_offset = first_slot % kBlockSize;
+      uint16_t* value_dst =
+          value_cache +
+          (static_cast<int64_t>(block_idx) * kNumHeads + head_idx) *
+              kHeadSize * kBlockSize +
+          head_offset * kBlockSize + block_offset;
+
+      if constexpr (kTokensPerBlock == 2) {
+        const uint32_t pair =
+            static_cast<uint32_t>(
+                value_tile[0][value_tile_element<2>(0, element)]) |
+            (static_cast<uint32_t>(
+                 value_tile[1][value_tile_element<2>(1, element)])
+             << 16);
+        // The first slot may be only two-byte aligned. The builtin preserves
+        // that alignment contract while allowing the backend to select the
+        // optimal four-byte global store.
+        __builtin_memcpy(value_dst, &pair, sizeof(pair));
+      } else {
+        using Store2 =
+            at::native::memory::aligned_vector<uint16_t, 2>;
+        int token = 0;
+        if (block_offset & 1) {
+          value_dst[0] =
+              value_tile[0][
+                  value_tile_element<kTokensPerBlock>(0, element)];
+          token = 1;
+        }
+        for (; token + 1 < kTokensPerBlock; token += 2) {
+          uint16_t pair[2] = {
+              value_tile[token][value_tile_element<kTokensPerBlock>(
+                  token, element)],
+              value_tile[token + 1][value_tile_element<kTokensPerBlock>(
+                  token + 1, element)],
+          };
+          *reinterpret_cast<Store2*>(value_dst + token) =
+              *reinterpret_cast<Store2*>(pair);
+        }
+        if (token < kTokensPerBlock) {
+          value_dst[token] =
+              value_tile[token][value_tile_element<kTokensPerBlock>(
+                  token, element)];
+        }
+      }
+    } else {
+#pragma unroll
+      for (int local_token = 0; local_token < kTokensPerBlock;
+           ++local_token) {
+        const int slot_idx = slot_tile[local_token];
+        if (slot_idx < 0) {
+          continue;
+        }
+        const int block_idx = slot_idx / kBlockSize;
+        const int block_offset = slot_idx % kBlockSize;
+        const int64_t value_dst =
+            (static_cast<int64_t>(block_idx) * kNumHeads + head_idx) *
+                kHeadSize * kBlockSize +
+            head_offset * kBlockSize + block_offset;
+        value_cache[value_dst] =
+            value_tile[local_token][
+                value_tile_element<kTokensPerBlock>(
+                    local_token, element)];
+      }
+    }
+  }
+}
+
 #define CALL_RESHAPE_AND_CACHE_CUDA(KV_T, CACHE_T, KV_DTYPE)               \
   reshape_and_cache_kernel_cuda<token_in_block, VEC, KV_T, CACHE_T, KV_DTYPE, head_sizes>             \
       <<<grid, block, 0, stream>>>(                                        \
@@ -565,7 +755,49 @@ void reshape_and_cache_cuda(
   const int  numel = num_heads*head_size;
   int key_stride   = key.stride(0);
   int value_stride = value.stride(0);
-  
+
+  const bool use_h8_d128_bf16_lds =
+      num_heads == 8 && head_size == 128 && block_size == 64 &&
+      key.scalar_type() == at::ScalarType::BFloat16 &&
+      key_cache.scalar_type() == at::ScalarType::BFloat16 &&
+      kv_cache_dtype == "auto";
+
+  // Decode-sized batches use one token per 128-thread workgroup. The resulting
+  // 2-KiB Value tile exposes enough workgroups to cover the 120-CU endpoint.
+  if (use_h8_d128_bf16_lds && num_tokens > 0 && num_tokens <= 128) {
+    constexpr int kTokensPerBlock = 1;
+    dim3 block(128);
+    dim3 grid((num_tokens + kTokensPerBlock - 1) / kTokensPerBlock);
+    const at::cuda::OptionalCUDAGuard device_guard(device_of(key));
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    opt_reshape_and_cache_lds_h8_d128_bf16_kernel<kTokensPerBlock>
+        <<<grid, block, 0, stream>>>(
+        reinterpret_cast<const uint16_t*>(key.data_ptr()),
+        reinterpret_cast<const uint16_t*>(value.data_ptr()),
+        reinterpret_cast<uint16_t*>(key_cache.data_ptr()),
+        reinterpret_cast<uint16_t*>(value_cache.data_ptr()),
+        slot_mapping.data_ptr<int64_t>(), key_stride, value_stride, num_tokens);
+    return;
+  }
+
+  // Larger batches amortize a two-token / 4-KiB tile while halving the number
+  // of workgroups and enabling packed stores for adjacent slot pairs.
+  if (use_h8_d128_bf16_lds && num_tokens > 128) {
+    constexpr int kTokensPerBlock = 2;
+    dim3 block(128);
+    dim3 grid((num_tokens + kTokensPerBlock - 1) / kTokensPerBlock);
+    const at::cuda::OptionalCUDAGuard device_guard(device_of(key));
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    opt_reshape_and_cache_lds_h8_d128_bf16_kernel<kTokensPerBlock>
+        <<<grid, block, 0, stream>>>(
+        reinterpret_cast<const uint16_t*>(key.data_ptr()),
+        reinterpret_cast<const uint16_t*>(value.data_ptr()),
+        reinterpret_cast<uint16_t*>(key_cache.data_ptr()),
+        reinterpret_cast<uint16_t*>(value_cache.data_ptr()),
+        slot_mapping.data_ptr<int64_t>(), key_stride, value_stride, num_tokens);
+    return;
+  }
+
   auto launch_kernel_opt = [&](auto vec_constant) {
 
       constexpr int VEC = decltype(vec_constant)::value;
@@ -580,10 +812,11 @@ void reshape_and_cache_cuda(
           target_block_size = 64;
       }else if(num_tokens < 4096){
         target_block_size = 128;
-      } else if(num_tokens < 8192){
+      } else if(num_tokens < 65536){
+          // A 256-thread workgroup keeps more independent blocks resident while
+          // the transposed Value-cache stores wait on memory. Larger token
+          // counts need more blocks, not more tokens packed into one block.
           target_block_size = 256;
-      }else if(num_tokens < 65536){
-          target_block_size = 512;
       }else{
           target_block_size = 1024;
       }
