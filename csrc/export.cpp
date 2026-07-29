@@ -310,6 +310,7 @@ std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, in
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids) ;
 void fuse_silu_mul_clamp_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit);
+void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, const torch::Tensor& mask_m, int expect_m);
 void fuse_silu_mul_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m);
 void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids, float limit) ;
 void fuse_silu_mul_fp8_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m, float limit);
@@ -887,6 +888,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("moe_fused_gate",&at::native::moe_fused_gate,"moe_fused_gate");
   m.def("fuse_silu_mul_quant",&at::native::fuse_silu_mul_quant,"fuse_silu_mul_quant");
   m.def("fuse_silu_mul_clamp_quant",&at::native::fuse_silu_mul_clamp_quant,"fuse_silu_mul_clamp_quant");
+  m.def(
+      "fuse_silu_mul_clamp_quant_ep",
+      &at::native::fuse_silu_mul_clamp_quant_ep,
+      "fuse_silu_mul_clamp_quant_ep",
+      py::arg("input"),
+      py::arg("output"),
+      py::arg("scales"),
+      py::arg("limit"),
+      py::arg("mask_m"),
+      py::arg("expect_m") = -1);
   m.def("fuse_silu_mul_quant_ep",&at::native::fuse_silu_mul_quant_ep,"fuse_silu_mul_quant_ep");
   m.def("fuse_silu_mul_fp8_quant",&at::native::fuse_silu_mul_fp8_quant,"fuse_silu_mul_fp8_quant");
   m.def("fuse_silu_mul_fp8_quant_ep",&at::native::fuse_silu_mul_fp8_quant_ep,"fuse_silu_mul_fp8_quant_ep");
