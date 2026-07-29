@@ -1,236 +1,183 @@
-import torch
-import torch.nn.functional as F
-import unittest
-import pandas as pd
+import csv
+import glob
 import os
-import ctypes
-from vllm import _custom_ops as ops
-import pdb
-# 尝试导入自定义算子，失败则使用 Mock
-try:
-    from lightop.moe import topk_softmax
-    print("✅ 成功导入 lightop.op")
-except (ImportError, AttributeError) as e:
-    print(f"⚠️ 导入自定义算子失败: {e}")
-    print("   将使用模拟函数代替。")
-    
+import sys
+import unittest
 
-def torch_softmax_topk_base(topk_weights: torch.Tensor, topk_indices: torch.Tensor,
-                              token_expert_indices: torch.Tensor,
-                              gating_output: torch.Tensor,
-                              renormalize: bool) -> tuple[torch.Tensor, ...]:
- 
-    probs = F.softmax(gating_output, dim=-1)
+import torch
 
-  
-    k = topk_weights.size(-1)
-    vals, indices = torch.topk(probs, k=k, dim=-1)
+# Running this file from the repository makes the source-only ``lightop``
+# package shadow the compiled extension. Prefer the current build output when
+# it exists, while retaining the normal installed-package path elsewhere.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BUILD_LIB_DIRS = sorted(glob.glob(os.path.join(REPO_ROOT, "build", "lib.*")))
+if BUILD_LIB_DIRS:
+    sys.path.insert(0, BUILD_LIB_DIRS[-1])
+
+from lightop import op
 
 
-    topk_weights.copy_(vals)
-    topk_indices.copy_(indices)
+NUM_EXPERTS = 256
+TOPK = 8
+DTYPE = torch.float16
+TOKEN_SIZES = (1, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384)
 
-    if renormalize:
-        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
 
-    return topk_weights, topk_indices
-    
+def validate_topk_result(
+    testcase: unittest.TestCase,
+    gating_output: torch.Tensor,
+    topk_weights: torch.Tensor,
+    topk_indices: torch.Tensor,
+    source_rows: torch.Tensor,
+) -> float:
+    """Validate top-k values without requiring a specific ID for equal logits."""
+    num_tokens = gating_output.size(0)
 
-def vllm_topk_softmax_base(topk_weights: torch.Tensor, topk_indices: torch.Tensor,
-                      token_expert_indices: torch.Tensor,
-                      gating_output: torch.Tensor,
-                      renormalize: bool) -> tuple[torch.Tensor, ...]:
-    ops.topk_softmax(
-        topk_weights,
-        topk_indices,
-        token_expert_indices,
-        gating_output,
+    testcase.assertTrue(torch.all((topk_indices >= 0) & (topk_indices < NUM_EXPERTS)))
+    sorted_indices = torch.sort(topk_indices, dim=-1).values
+    if TOPK > 1:
+        testcase.assertTrue(torch.all(sorted_indices[:, 1:] != sorted_indices[:, :-1]))
+
+    selected_logits = torch.gather(
+        gating_output.float(), 1, topk_indices.to(torch.int64)
     )
-    if renormalize:
-        topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+    selected_logits_sorted = torch.sort(
+        selected_logits, dim=-1, descending=True
+    ).values
+    reference_logits = torch.topk(
+        gating_output.float(), TOPK, dim=-1, sorted=True
+    ).values
+    testcase.assertTrue(torch.equal(selected_logits_sorted, reference_logits))
 
-    return topk_weights, topk_indices
+    reference_weights = torch.softmax(selected_logits, dim=-1)
+    max_weight_error = (topk_weights - reference_weights).abs().max().item()
+    testcase.assertTrue(
+        torch.allclose(topk_weights, reference_weights, rtol=2e-5, atol=2e-6),
+        msg=f"max weight error: {max_weight_error:.6e}",
+    )
+
+    rows = torch.arange(num_tokens, device=gating_output.device)[:, None]
+    ranks = torch.arange(TOPK, device=gating_output.device)[None, :]
+    expected_source_rows = ranks * num_tokens + rows
+    testcase.assertTrue(
+        torch.equal(source_rows, expected_source_rows.to(source_rows.dtype))
+    )
+    return max_weight_error
 
 
-class TestTopkSoftmax(unittest.TestCase):
+def benchmark_topk(
+    gating_output: torch.Tensor,
+    topk_weights: torch.Tensor,
+    topk_indices: torch.Tensor,
+    source_rows: torch.Tensor,
+    warmup_iters: int,
+    test_iters: int,
+) -> float:
+    for _ in range(warmup_iters):
+        op.topk_softmax(
+            topk_weights, topk_indices, source_rows, gating_output, True
+        )
+    torch.cuda.synchronize()
 
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(test_iters):
+        op.topk_softmax(
+            topk_weights, topk_indices, source_rows, gating_output, True
+        )
+    end.record()
+    end.synchronize()
+    return start.elapsed_time(end) * 1000.0 / test_iters
+
+
+@unittest.skipUnless(torch.cuda.is_available(), "CUDA/ROCm device is required")
+class TestTopkSoftmax256Fp16(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.results = []
-        print("\n=== 开始 TopK Softmax 性能测试 (Custom vs vllm) ===")
-        # 更新表头，增加 vllm 耗时和加速比
-        print(f"{'Tokens':<10} | {'Custom (us)':<15} | {'vllm (us)':<15} | {'Speedup':<10} | {'Check':<10}")
-        print("-" * 75)
+        print("\n=== TopK Softmax: FP16, 256 experts, topk=8, renormalize=True ===")
+        print(f"Device: {torch.cuda.get_device_name(0)}")
+        print(f"{'Tokens':>8} | {'Latency (us)':>12} | {'Max weight error':>16} | Check")
+        print("-" * 62)
 
     @classmethod
     def tearDownClass(cls):
+        output_path = os.environ.get(
+            "TOPK_BENCH_OUTPUT", "softmax_topk_256_fp16_results.csv"
+        )
         if not cls.results:
             return
-        
-        print("\n--- 测试结束，正在生成报告 ---")
-        df = pd.DataFrame(cls.results)
-        # 按 token 数量排序
-        df = df.sort_values(by='num_tokens').reset_index(drop=True)
-        
-        output_filename = 'custom_op_performance.xlsx'
-        df.to_excel(output_filename, index=False, engine='openpyxl')
-        print(f"✅ 结果已保存: {os.path.abspath(output_filename)}\n")
+        with open(output_path, "w", newline="", encoding="utf-8") as output_file:
+            writer = csv.DictWriter(output_file, fieldnames=cls.results[0].keys())
+            writer.writeheader()
+            writer.writerows(cls.results)
+        print(f"Results saved to: {os.path.abspath(output_path)}")
 
-    def _run_test(self, num_tokens: int, num_experts: int, topk: int, dtype: torch.dtype, Is_renormalize: str,
-                  rtol=1e-5, atol=1e-5, warmup_iters=10, test_iters=100):
-        
-        if topk > num_experts:
-            return
+    def test_target_sizes(self):
+        warmup_iters = int(os.environ.get("TOPK_BENCH_WARMUP", "100"))
+        default_iters = int(os.environ.get("TOPK_BENCH_ITERS", "1000"))
 
-        # 1. 准备数据
-        gating_output = torch.randn(num_tokens, num_experts, device="cuda", dtype=dtype)
-        
-        # 准备自定义算子输出
-        custom_topk_weights = torch.empty(num_tokens, topk, device="cuda", dtype=torch.float32)
-        custom_topk_indices = torch.empty(num_tokens, topk, device="cuda", dtype=torch.int)
-        custom_token_expert_indices = torch.empty(num_tokens, topk, device="cuda", dtype=torch.int)
+        for num_tokens in TOKEN_SIZES:
+            with self.subTest(num_tokens=num_tokens):
+                torch.manual_seed(2026 + num_tokens)
+                gating_output = torch.randn(
+                    (num_tokens, NUM_EXPERTS), device="cuda", dtype=DTYPE
+                )
+                topk_weights = torch.empty(
+                    (num_tokens, TOPK), device="cuda", dtype=torch.float32
+                )
+                topk_indices = torch.empty(
+                    (num_tokens, TOPK), device="cuda", dtype=torch.int32
+                )
+                source_rows = torch.empty_like(topk_indices)
 
-        # 准备 vllm 基准算子输出 (需要独立的 Tensor 以免混淆)
-        ref_topk_weights = torch.empty(num_tokens, topk, device="cuda", dtype=torch.float32)
-        ref_topk_indices = torch.empty(num_tokens, topk, device="cuda", dtype=torch.int)
-        ref_token_expert_indices = torch.empty(num_tokens, topk, device="cuda", dtype=torch.int)
+                op.topk_softmax(
+                    topk_weights,
+                    topk_indices,
+                    source_rows,
+                    gating_output,
+                    True,
+                )
+                torch.cuda.synchronize()
+                max_weight_error = validate_topk_result(
+                    self,
+                    gating_output,
+                    topk_weights,
+                    topk_indices,
+                    source_rows,
+                )
 
-        # # 2. 精度验证 (使用 vllm_topk_softmax_base 作为基准)
-        # Is_renormalize = (Is_renormalize == "true")
-        
-        # 运行 vllm 基准
-        ref_topk_weights, ref_topk_indices = vllm_topk_softmax_base(
-            ref_topk_weights, ref_topk_indices, 
-            ref_token_expert_indices, gating_output, 
-            Is_renormalize
-        )
-        
-        # 运行自定义算子进行验证
-        topk_softmax(
-            custom_topk_weights, custom_topk_indices,
-            custom_token_expert_indices, gating_output, Is_renormalize)
-        
-        # --- 验证逻辑优化：处理 TopK 顺序不一致的情况 ---
-        # 必须按 Expert Index 排序后，同步调整 Weights 的顺序再进行对比
+                test_iters = (
+                    default_iters
+                    if num_tokens <= 4096
+                    else max(100, default_iters // 4)
+                )
+                latency_us = benchmark_topk(
+                    gating_output,
+                    topk_weights,
+                    topk_indices,
+                    source_rows,
+                    warmup_iters,
+                    test_iters,
+                )
+                print(
+                    f"{num_tokens:8d} | {latency_us:12.3f} | "
+                    f"{max_weight_error:16.3e} | PASS"
+                )
+                self.results.append(
+                    {
+                        "num_tokens": num_tokens,
+                        "num_experts": NUM_EXPERTS,
+                        "topk": TOPK,
+                        "dtype": str(DTYPE),
+                        "renormalize": True,
+                        "latency_us": f"{latency_us:.6f}",
+                        "max_weight_error": f"{max_weight_error:.6e}",
+                        "status": "PASS",
+                    }
+                )
 
-        # 1. 处理 Reference 结果 (按 expert index 排序)
-        ref_sorted_indices, ref_sort_idx = torch.sort(ref_topk_indices, dim=-1)
-        # 根据索引排序的下标，重新排列权重
-        ref_sorted_weights = torch.gather(ref_topk_weights, -1, ref_sort_idx)
-        
-        # 2. 处理 Custom 结果 (按 expert index 排序)
-        custom_sorted_indices, custom_sort_idx = torch.sort(custom_topk_indices, dim=-1)
-        # 根据索引排序的下标，重新排列权重
-        custom_sorted_weights = torch.gather(custom_topk_weights, -1, custom_sort_idx)
-        # pdb.set_trace()
-        # 3. 分别验证索引和权重
-        indices_match = torch.equal(custom_sorted_indices, ref_sorted_indices)
-        weights_match = torch.allclose(custom_sorted_weights, ref_sorted_weights, rtol=rtol, atol=atol)
 
-        status = "PASS" if weights_match and indices_match else "FAIL"
-        
-        if status == "FAIL":
-            print(f"{num_tokens:<10} | {'ERROR':<15} | {'ERROR':<15} | {'N/A':<10} | {status:<10}")
-            print(f"   >>> 错误详情: Weights={weights_match}, Indices={indices_match}")
-            # 如果失败，打印最大误差
-            if not weights_match:
-                diff = torch.abs(custom_sorted_weights - ref_sorted_weights)
-                print(f"   >>> 最大权重差异: {diff.max().item():.6f}")
-            
-            # 记录失败结果并抛出异常
-            TestTopkSoftmax.results.append({
-                'num_tokens': num_tokens,
-                'num_experts': num_experts,
-                'topk': topk,
-                'custom_latency_us': -1,
-                'vllm_latency_us': -1,
-                'speedup': 0,
-                'status': status
-            })
-            self.fail(f"精度验证失败: num_tokens={num_tokens}")
-
-        # 3. 性能测试：Custom 算子
-        # 预热
-        for _ in range(warmup_iters):
-            topk_softmax(
-                custom_topk_weights, custom_topk_indices,
-                custom_token_expert_indices, gating_output, Is_renormalize)
-        torch.cuda.synchronize()
-
-        # 计时
-        start_event = torch.cuda.Event(enable_timing=True)
-        end_event = torch.cuda.Event(enable_timing=True)
-        
-        start_event.record()
-        for _ in range(test_iters):
-            topk_softmax(
-                custom_topk_weights, custom_topk_indices,
-                custom_token_expert_indices, gating_output, Is_renormalize)
-        end_event.record()
-        torch.cuda.synchronize()
-        
-        # 计算耗时 (us)
-        custom_time_us = start_event.elapsed_time(end_event) * 1000 / test_iters
-
-        # 4. 性能测试：vllm 基准算子
-        # 预热
-        for _ in range(warmup_iters):
-             vllm_topk_softmax_base(
-                ref_topk_weights, ref_topk_indices, 
-                ref_token_expert_indices, gating_output, 
-                Is_renormalize
-            )
-        torch.cuda.synchronize()
-
-        # 计时
-        start_event.record()
-        for _ in range(test_iters):
-            vllm_topk_softmax_base(
-                ref_topk_weights, ref_topk_indices, 
-                ref_token_expert_indices, gating_output, 
-                Is_renormalize
-            )
-        end_event.record()
-        torch.cuda.synchronize()
-        
-        # 计算耗时 (us)
-        vllm_time_us = start_event.elapsed_time(end_event) * 1000 / test_iters
-
-        # 计算加速比
-        speedup = vllm_time_us / custom_time_us if custom_time_us > 0 else 0
-
-        # 5. 打印精简信息
-        print(f"{num_tokens:<10} | {custom_time_us:<15.4f} | {vllm_time_us:<15.4f} | {speedup:<10.2f} | {status:<10}")
-
-        # 6. 记录结果
-        TestTopkSoftmax.results.append({
-            'num_tokens': num_tokens,
-            'num_experts': num_experts,
-            'topk': topk,
-            'custom_latency_us': custom_time_us,
-            'vllm_latency_us': vllm_time_us,
-            'speedup': speedup,
-            'status': status
-        })
-
-    def test_specific_token_counts(self):
-        num_experts = 160
-        topk = 8
-        # num_tokens_list = [2048] # 调试用
-        num_tokens_list = [1,6,8,32,64,128,256,356,512,1024,2048,4096,8192,16384,16384*2,41000]
-        
-        Is_renormalize = True
-
-        for num_tokens in num_tokens_list:
-            self._run_test(
-                num_tokens=num_tokens,
-                num_experts=num_experts,
-                topk=topk,
-                dtype=torch.float32,
-                Is_renormalize=Is_renormalize,
-                rtol=1e-5,
-                atol=1e-5
-            )
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

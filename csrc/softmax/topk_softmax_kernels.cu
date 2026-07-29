@@ -716,6 +716,148 @@ void topk2GatingSoftmax_opt(const input_t* input, const bool* finished, float* o
     }
 }
 
+__device__ __forceinline__ uint32_t topk_half_key(
+    uint16_t half_bits, int expert) {
+    const uint32_t ordered =
+        (half_bits & 0x8000u)
+            ? ((~static_cast<uint32_t>(half_bits)) & 0xffffu)
+            : (static_cast<uint32_t>(half_bits) ^ 0x8000u);
+    return (ordered << 16) | (0xffffu - static_cast<uint32_t>(expert));
+}
+
+__device__ __forceinline__ float topk_half_key_value(uint32_t key) {
+    const uint16_t ordered = static_cast<uint16_t>(key >> 16);
+    const uint16_t half_bits =
+        (ordered & 0x8000u)
+            ? static_cast<uint16_t>(ordered ^ 0x8000u)
+            : static_cast<uint16_t>(~ordered);
+    c10::Half value;
+    value.x = half_bits;
+    return static_cast<float>(value);
+}
+
+template <int DppCtrl>
+__device__ __forceinline__ uint32_t topk_mov_dpp(uint32_t value) {
+    return static_cast<uint32_t>(
+        __builtin_amdgcn_mov_dpp(
+            value, DppCtrl, 0xf, 0xf, true));
+}
+
+template <int kThreadsPerRow>
+__launch_bounds__(WARP_SIZE) __global__
+void topk8GatingSoftmax_256_half_packed(
+    const c10::Half* input,
+    const bool* finished,
+    float* output,
+    const int num_rows,
+    int* indices,
+    int* source_rows,
+    const int start_expert,
+    const int end_expert)
+{
+    constexpr int kExperts = 256;
+    constexpr int kTopK = 8;
+    constexpr int kValuesPerThread =
+        kExperts / kThreadsPerRow;
+    constexpr int kRowsPerWave = WARP_SIZE / kThreadsPerRow;
+
+    const int row_in_wave = threadIdx.x / kThreadsPerRow;
+    const int lane_in_row = threadIdx.x % kThreadsPerRow;
+    const int row = blockIdx.x * kRowsPerWave + row_in_wave;
+    if (row >= num_rows || (finished != nullptr && finished[row])) {
+        return;
+    }
+
+    const int first_expert = lane_in_row * kValuesPerThread;
+    const uint16_t* row_ptr = reinterpret_cast<const uint16_t*>(
+        input + static_cast<int64_t>(row) * kExperts);
+    uint16_t packed_values[kValuesPerThread];
+    using LoadType = AlignedArray<uint16_t, kValuesPerThread>;
+    *reinterpret_cast<LoadType*>(packed_values) =
+        *reinterpret_cast<const LoadType*>(row_ptr + first_expert);
+
+    uint32_t keys[kValuesPerThread];
+#pragma unroll
+    for (int i = 0; i < kValuesPerThread; ++i) {
+        keys[i] = topk_half_key(
+            packed_values[i], first_expert + i);
+    }
+
+    uint32_t stored_key = 0;
+    float row_max = -FLT_MAX;
+#pragma unroll
+    for (int rank = 0; rank < kTopK; ++rank) {
+        uint32_t winner_key = keys[0];
+#pragma unroll
+        for (int i = 1; i < kValuesPerThread; ++i) {
+            winner_key = keys[i] > winner_key ? keys[i] : winner_key;
+        }
+        uint32_t other_key = topk_mov_dpp<0xb1>(winner_key);
+        winner_key =
+            other_key > winner_key ? other_key : winner_key;
+        other_key = topk_mov_dpp<0x4e>(winner_key);
+        winner_key =
+            other_key > winner_key ? other_key : winner_key;
+        other_key = VLLM_SHFL_XOR_SYNC_WIDTH(
+            winner_key, 4, kThreadsPerRow);
+        winner_key =
+            other_key > winner_key ? other_key : winner_key;
+        other_key = topk_mov_dpp<0x128>(winner_key);
+        winner_key =
+            other_key > winner_key ? other_key : winner_key;
+        if constexpr (kThreadsPerRow > 16) {
+            other_key = VLLM_SHFL_XOR_SYNC_WIDTH(
+                winner_key, 16, kThreadsPerRow);
+            winner_key =
+                other_key > winner_key ? other_key : winner_key;
+        }
+
+        if (rank == 0) {
+            row_max = topk_half_key_value(winner_key);
+        }
+        if (lane_in_row == rank) {
+            stored_key = winner_key;
+        }
+        if (rank + 1 < kTopK) {
+#pragma unroll
+            for (int i = 0; i < kValuesPerThread; ++i) {
+                if (keys[i] == winner_key) {
+                    keys[i] = 0;
+                }
+            }
+        }
+    }
+
+    float value_exp = 0.0f;
+    if (lane_in_row < kTopK) {
+        value_exp =
+            EXP_FUNC(topk_half_key_value(stored_key) - row_max);
+    }
+    float topk_sum = value_exp;
+#pragma unroll
+    for (int mask = kTopK / 2; mask > 0; mask >>= 1) {
+        topk_sum +=
+            VLLM_SHFL_XOR_SYNC_WIDTH(topk_sum, mask, kThreadsPerRow);
+    }
+
+    if (lane_in_row < kTopK) {
+        int top_expert =
+            0xffff - static_cast<int>(stored_key & 0xffffu);
+        const bool node_uses_expert =
+            top_expert >= start_expert && top_expert < end_expert;
+        top_expert =
+            node_uses_expert ? top_expert - start_expert : kExperts;
+        const int output_offset = row * kTopK + lane_in_row;
+        output[output_offset] =
+            value_exp * (1.0f / (topk_sum + 1e-6f));
+        indices[output_offset] = top_expert;
+        if (source_rows != nullptr) {
+            source_rows[output_offset] =
+                lane_in_row * num_rows + row;
+        }
+    }
+}
+
 template <int VPT, int NUM_EXPERTS, int WARPS_PER_CTA, int BYTES_PER_LDG,bool Is_renormalize, typename IndType, typename input_t>
 __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     void topk8GatingSoftmax_opt(const input_t* input, const bool* finished, float* output, const int num_rows, IndType* indices,
@@ -788,7 +930,8 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
     {
         float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(thread_max, mask, THREADS_PER_ROW);
         int other_idx = VLLM_SHFL_XOR_SYNC_WIDTH(thread_max_idx, mask, THREADS_PER_ROW);
-        bool swap = (other_max > thread_max);
+        bool swap = (other_max > thread_max) ||
+                    (other_max == thread_max && other_idx < thread_max_idx);
         thread_max = swap ? other_max : thread_max;
         thread_max_idx = swap ? other_idx : thread_max_idx;
     }
@@ -837,7 +980,8 @@ __launch_bounds__(WARPS_PER_CTA* WARP_SIZE) __global__
         for (int mask = THREADS_PER_ROW / 2; mask > 0; mask /= 2) { \
             float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(k_val, mask, THREADS_PER_ROW); \
             int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(k_expert, mask, THREADS_PER_ROW); \
-            bool swap = (other_max > k_val); \
+            bool swap = (other_max > k_val) || \
+                        (other_max == k_val && other_expert < k_expert); \
             k_val = swap ? other_max : k_val; \
             k_expert = swap ? other_expert : k_expert; \
         } \
@@ -1476,6 +1620,23 @@ void topkGatingSoftmaxLauncherHelper(const input_t* input, const bool* finished,
         if(num_experts == 160){
             topk8GatingSoftmax_no_align<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG,Is_renormalize, IndType, input_t><<<num_blocks, block_dim, 0, stream>>>(
                     input, finished, output, num_rows, indices, source_row, start_expert, end_expert, num_experts);
+        }else if constexpr (
+            EXPERTS == 256 &&
+            WARPS_PER_TB == 1 &&
+            Is_renormalize &&
+            std::is_same_v<IndType, int> &&
+            std::is_same_v<input_t, c10::Half>) {
+            if (num_rows <= 512) {
+                topk8GatingSoftmax_256_half_packed<32><<<
+                    (num_rows + 1) / 2, WARP_SIZE, 0, stream>>>(
+                    input, finished, output, num_rows, indices, source_row,
+                    start_expert, end_expert);
+            } else {
+                topk8GatingSoftmax_256_half_packed<16><<<
+                    (num_rows + 3) / 4, WARP_SIZE, 0, stream>>>(
+                    input, finished, output, num_rows, indices, source_row,
+                    start_expert, end_expert);
+            }
         }else{
             topk8GatingSoftmax_opt<VPT, EXPERTS, WARPS_PER_TB, BYTES_PER_LDG,Is_renormalize, IndType, input_t><<<num_blocks, block_dim, 0, stream>>>(
                     input, finished, output, num_rows, indices, source_row, start_expert, end_expert);
