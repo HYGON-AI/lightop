@@ -41,10 +41,10 @@ batch_linear_assignment
 bilinear_upsample
 bilinear_upsample_backward
 blockwise_scaled_cast_transpose
-dcu_alloc_extend_kernel
 destindex_copy_quantize_int8_cuda
 destindex_dequantize_int8_cuda
 ds_cat
+fast_kpool_topk_transform_fused
 fast_topk_transform_fused
 fast_topk_transform_ragged_fused
 fill_zeros
@@ -55,6 +55,7 @@ fuse_rms_mrope_cuda
 fuse_rmsnorm_rope_quant_qkv
 fuse_silu_and_mul
 fuse_silu_and_mul_ep
+fuse_silu_mul_clamp_quant
 fuse_silu_mul_fp8_quant
 fuse_silu_mul_fp8_quant_ep
 fuse_silu_mul_per_token_quant
@@ -99,6 +100,7 @@ grougemm_w8a8_pertensor_asm
 groupgemm
 groupgemm_permute
 groupgemm_unpermute
+hcu_alloc_extend_kernel
 m_grouped_bf16_gemm_nt_masked
 m_grouped_fp8_gemm_nt_masked
 m_grouped_w16a16_gemm_nt_contig_asm
@@ -108,6 +110,7 @@ m_grouped_w8a8_gemm_nt_masked
 m_grouped_w8a8_gemm_nt_nopad_contig_asm
 mean
 mimo_v2_split_rope_vscale_kv_store
+mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang
 moe_align_block_size
 moe_fused_gate
 moe_fused_gate_sqrtsoftplus
@@ -128,6 +131,7 @@ mqa_logits
 relu2
 reshape_and_cache_cuda
 rms_norm_dynamic_per_token_quant
+rms_norm_dynamic_per_token_quant_sglang
 rms_norm_per_token_fp8_quant
 rms_norm_per_token_quant
 rms_rotary_embedding_fuse
