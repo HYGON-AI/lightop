@@ -4,8 +4,26 @@ import torch.nn as nn
 #from lightop import op
 from . import op
 
-def moe_fused_gate(x, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor):
-    return op.moe_fused_gate(x, bias, num_expert_group, topk_group, topk, n_share_experts_fusion, routed_scaling_factor)
+def moe_fused_gate(
+    x,
+    bias,
+    num_expert_group,
+    topk_group,
+    topk,
+    n_share_experts_fusion,
+    routed_scaling_factor,
+    apply_routed_scaling_factor_on_output=True,
+):
+    return op.moe_fused_gate(
+        x,
+        bias,
+        num_expert_group,
+        topk_group,
+        topk,
+        n_share_experts_fusion,
+        routed_scaling_factor,
+        apply_routed_scaling_factor_on_output,
+    )
 
 
 def kimi_k2_moe_fused_gate(

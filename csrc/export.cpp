@@ -306,7 +306,7 @@ torch::Tensor groupgemm_unpermute(const torch::Tensor& permuted_tokens, const to
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> fuse_groupgemm_permute_quant(const torch::Tensor& tokens, const torch::Tensor& routing_map, torch::Tensor& scales);
 //------------------------------------------------- groupgemm ---------------------------------------//
 
-std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor);
+std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids) ;
 void fuse_silu_mul_clamp_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit);
@@ -885,7 +885,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("groupgemm_permute",&at::native::groupgemm_permute,"groupgemm_permute");
   m.def("groupgemm_unpermute",&at::native::groupgemm_unpermute,"groupgemm_unpermute");
   m.def("fuse_groupgemm_permute_quant",&at::native::fuse_groupgemm_permute_quant,"fuse_groupgemm_permute_quant");
-  m.def("moe_fused_gate",&at::native::moe_fused_gate,"moe_fused_gate");
+  m.def(
+      "moe_fused_gate",
+      &at::native::moe_fused_gate,
+      "moe_fused_gate",
+      py::arg("input"),
+      py::arg("bias"),
+      py::arg("num_expert_group"),
+      py::arg("topk_group"),
+      py::arg("topk"),
+      py::arg("n_share_experts_fusion"),
+      py::arg("routed_scaling_factor"),
+      py::arg("apply_routed_scaling_factor_on_output") = true);
   m.def("fuse_silu_mul_quant",&at::native::fuse_silu_mul_quant,"fuse_silu_mul_quant");
   m.def("fuse_silu_mul_clamp_quant",&at::native::fuse_silu_mul_clamp_quant,"fuse_silu_mul_clamp_quant");
   m.def(

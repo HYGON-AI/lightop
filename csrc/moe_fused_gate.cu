@@ -79,6 +79,7 @@ __device__ void moe_fused_gate_impl(
   int topk,
   int n_share_experts_fusion,
   double routed_scaling_factor,
+  bool apply_routed_scaling_factor_on_output,
   Params params) 
 {
  
@@ -294,7 +295,8 @@ __device__ void moe_fused_gate_impl(
  
   if (thread_group_idx < topk) {
     int const idx = topk * thread_row + thread_group_idx;
-    float route_scale = routed_scaling_factor > 0.0
+    float route_scale = apply_routed_scaling_factor_on_output &&
+            routed_scaling_factor > 0.0
         ? static_cast<float>(routed_scaling_factor)
         : 1.0f;
     output_ptr[idx] = (my_stored_prob / output_sum) * route_scale;
@@ -312,6 +314,7 @@ __device__ void moe_fused_gate_impl_expert_384(
   int topk,
   int n_share_experts_fusion,
   double routed_scaling_factor,
+  bool apply_routed_scaling_factor_on_output,
   Params params) 
 {
   int tidx = threadIdx.x;
@@ -532,7 +535,8 @@ __device__ void moe_fused_gate_impl_expert_384(
   }
   if (thread_group_idx < topk) {
     int const idx = topk * thread_row + thread_group_idx;
-    float route_scale = routed_scaling_factor > 0.0
+    float route_scale = apply_routed_scaling_factor_on_output &&
+            routed_scaling_factor > 0.0
         ? static_cast<float>(routed_scaling_factor)
         : 1.0f;
     output_ptr[idx] = (my_stored_prob / output_sum) * route_scale;
@@ -559,6 +563,7 @@ __global__ void moe_fused_gate_kernel_gourp1(
   int64_t num_rows,
   int64_t n_share_experts_fusion,
   double routed_scaling_factor,
+  bool apply_routed_scaling_factor_on_output,
   Params params) 
 {
   constexpr float Negative_inf = -FLT_MAX;
@@ -673,7 +678,9 @@ __global__ void moe_fused_gate_kernel_gourp1(
     int const out_idx = TOPK * thread_row + thread_group_idx;
     float route_scale = 1.0;
     if constexpr(NUM_EXPERTS == 192) {  // 192 hy3缩放，其他专家数不缩放
+      if (apply_routed_scaling_factor_on_output) {
         route_scale = static_cast<float>(routed_scaling_factor); 
+      }
     }
     output_ptr[out_idx] = (my_stored_prob / output_sum) * route_scale;
     indices_ptr[out_idx] = my_stored_idx;
@@ -694,7 +701,8 @@ __global__ void moe_fused_gate_kernel_254_group2(
   int32_t* indices_ptr,
   int64_t num_rows,
   int64_t topk_group,
-  double routed_scaling_factor)
+  double routed_scaling_factor,
+  bool apply_routed_scaling_factor_on_output)
 {
   constexpr int NUM_EXPERTS = 254;
   constexpr int NUM_EXPERT_GROUPS = 2;
@@ -985,7 +993,8 @@ __global__ void moe_fused_gate_kernel_254_group2(
 
   if (lane < TOPK) {
     const int out_idx = TOPK * thread_row + lane;
-    const float route_scale = routed_scaling_factor > 0.0
+    const float route_scale = apply_routed_scaling_factor_on_output &&
+            routed_scaling_factor > 0.0
         ? static_cast<float>(routed_scaling_factor)
         : 1.0f;
     output_ptr[out_idx] = (my_stored_prob / output_sum) * route_scale;
@@ -1011,7 +1020,8 @@ __global__ void moe_fused_gate_kernel(
    int64_t topk_group,
    int64_t topk,
    int64_t n_share_experts_fusion,
-   double routed_scaling_factor) {
+   double routed_scaling_factor,
+   bool apply_routed_scaling_factor_on_output) {
  KernelParams<VPT, NUM_EXPERTS, THREADS_PER_ROW, ROWS_PER_WARP, ROWS_PER_CTA, WARPS_PER_CTA> params;
     if (NUM_EXPERTS == 384) {
       moe_fused_gate_impl_expert_384<T, T_bias, decltype(params), VPT>(
@@ -1024,6 +1034,7 @@ __global__ void moe_fused_gate_kernel(
           topk,
           n_share_experts_fusion,
           routed_scaling_factor,
+          apply_routed_scaling_factor_on_output,
           params);
   } else {
     moe_fused_gate_impl<T, T_bias, decltype(params)>(
@@ -1036,6 +1047,7 @@ __global__ void moe_fused_gate_kernel(
           topk,
           n_share_experts_fusion,
           routed_scaling_factor,
+          apply_routed_scaling_factor_on_output,
           params);
   }
 }
@@ -1060,7 +1072,8 @@ __global__ void moe_fused_gate_kernel(
        topk_group,            \
        topk,                \
        n_share_experts_fusion,        \
-       routed_scaling_factor);        \
+       routed_scaling_factor,         \
+       apply_routed_scaling_factor_on_output); \
    dispatched = true;              \
  } while (0)
 
@@ -1085,6 +1098,7 @@ __global__ void moe_fused_gate_kernel(
             num_rows,              \
             n_share_experts_fusion,        \
             routed_scaling_factor, \
+            apply_routed_scaling_factor_on_output, \
             params_spec);        \
     } else if (topk == 8) { \
         moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 8> \
@@ -1096,6 +1110,7 @@ __global__ void moe_fused_gate_kernel(
            num_rows,              \
             n_share_experts_fusion,        \
             routed_scaling_factor, \
+            apply_routed_scaling_factor_on_output, \
             params_spec);        \
     } else if (topk == 14) { \
         moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 14> \
@@ -1107,6 +1122,7 @@ __global__ void moe_fused_gate_kernel(
             num_rows,              \
             n_share_experts_fusion,        \
             routed_scaling_factor, \
+            apply_routed_scaling_factor_on_output, \
             params_spec);        \
     } else if (topk == 22) { \
         moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 22> \
@@ -1118,6 +1134,7 @@ __global__ void moe_fused_gate_kernel(
            num_rows,              \
            n_share_experts_fusion,        \
            routed_scaling_factor, \
+           apply_routed_scaling_factor_on_output, \
            params_spec);        \
    } \
     dispatched = true; \
@@ -1142,7 +1159,8 @@ __global__ void moe_fused_gate_kernel(
          indices.data_ptr<int32_t>(), \
          num_rows, \
          topk_group, \
-         routed_scaling_factor); \
+         routed_scaling_factor, \
+         apply_routed_scaling_factor_on_output); \
    } else { \
      constexpr int VPT = 8; \
      constexpr int ROWS_PER_BLOCK = WARPS_PER_BLOCK * 2; \
@@ -1157,7 +1175,8 @@ __global__ void moe_fused_gate_kernel(
          indices.data_ptr<int32_t>(), \
          num_rows, \
          topk_group, \
-         routed_scaling_factor); \
+         routed_scaling_factor, \
+         apply_routed_scaling_factor_on_output); \
    } \
    dispatched = true; \
  } while (0)
@@ -1183,7 +1202,8 @@ __global__ void moe_fused_gate_kernel_dynamic(
    int64_t topk_group,
    int64_t topk,
    int64_t n_share_experts_fusion,
-   double routed_scaling_factor) {
+   double routed_scaling_factor,
+   bool apply_routed_scaling_factor_on_output) {
  KernelParamsDynamic params;
  params.NUM_EXPERTS = num_experts;    // e.g, for deepseek v3, this is 256
  params.VPT = (num_experts / num_expert_group) / 4;
@@ -1201,6 +1221,7 @@ __global__ void moe_fused_gate_kernel_dynamic(
      topk,
      n_share_experts_fusion,
      routed_scaling_factor,
+     apply_routed_scaling_factor_on_output,
      params);
 }
 std::vector<torch::Tensor> moe_fused_gate(
@@ -1210,7 +1231,8 @@ std::vector<torch::Tensor> moe_fused_gate(
    int64_t topk_group,
    int64_t topk,
    int64_t n_share_experts_fusion,
-   double routed_scaling_factor) {
+   double routed_scaling_factor,
+   bool apply_routed_scaling_factor_on_output) {
  int64_t num_rows = input.size(0);
  int32_t num_experts = input.size(1);
  auto options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
@@ -1658,7 +1680,8 @@ std::vector<torch::Tensor> moe_fused_gate(
        topk_group,
        topk,
        n_share_experts_fusion,
-       routed_scaling_factor);
+       routed_scaling_factor,
+       apply_routed_scaling_factor_on_output);
     } else if (bias.scalar_type() == at::kBFloat16) {
      moe_fused_gate_kernel_dynamic<__nv_bfloat16, __nv_bfloat16><<<num_blocks, block_dim, 0, stream>>>(
        input.data_ptr(),
@@ -1671,7 +1694,8 @@ std::vector<torch::Tensor> moe_fused_gate(
        topk_group,
        topk,
        n_share_experts_fusion,
-       routed_scaling_factor);
+       routed_scaling_factor,
+       apply_routed_scaling_factor_on_output);
     } else {
      TORCH_CHECK(false, "Unsupported bias data type for bf16 input in moe_fused_gate");
     }
@@ -1688,7 +1712,8 @@ std::vector<torch::Tensor> moe_fused_gate(
        topk_group,
        topk,
        n_share_experts_fusion,
-       routed_scaling_factor);
+       routed_scaling_factor,
+       apply_routed_scaling_factor_on_output);
     } else {
       TORCH_CHECK(false, "Unsupported bias data type for fp16 input in moe_fused_gate");
     }
@@ -1705,7 +1730,8 @@ std::vector<torch::Tensor> moe_fused_gate(
        topk_group,
        topk,
        n_share_experts_fusion,
-       routed_scaling_factor);
+       routed_scaling_factor,
+       apply_routed_scaling_factor_on_output);
     } else if (bias.scalar_type() == at::kBFloat16) {
      moe_fused_gate_kernel_dynamic<float, __nv_bfloat16><<<num_blocks, block_dim, 0, stream>>>(
        input.data_ptr(),
@@ -1718,7 +1744,8 @@ std::vector<torch::Tensor> moe_fused_gate(
        topk_group,
        topk,
        n_share_experts_fusion,
-       routed_scaling_factor);
+       routed_scaling_factor,
+       apply_routed_scaling_factor_on_output);
     } else if (bias.scalar_type() == at::kHalf) {
      moe_fused_gate_kernel_dynamic<float, half><<<num_blocks, block_dim, 0, stream>>>(
        input.data_ptr(),
@@ -1731,7 +1758,8 @@ std::vector<torch::Tensor> moe_fused_gate(
        topk_group,
        topk,
        n_share_experts_fusion,
-       routed_scaling_factor);
+       routed_scaling_factor,
+       apply_routed_scaling_factor_on_output);
     } else {
      TORCH_CHECK(false, "Unsupported bias data type for fp32 input in moe_fused_gate");
     }
