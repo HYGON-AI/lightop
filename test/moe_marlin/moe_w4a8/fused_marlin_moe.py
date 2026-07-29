@@ -6,8 +6,8 @@ from typing import Optional
 import torch
 import lightop
 
-from lightop import op
-from lightop import moe_align_block_size
+from lightop.activation import silu_and_mul_opt
+from lightop.moe import moe_align_block_size
 
 from lightop.quant import (
     per_token_group_quant_int8,
@@ -115,7 +115,7 @@ def fused_marlin_moe(
     end_event.synchronize()
     gemm1_time_us = start_event.elapsed_time(end_event) * 1000
     # 激活函数
-    op.silu_and_mul_opt(intermediate_cache2, intermediate_cache1)
+    silu_and_mul_opt(intermediate_cache2, intermediate_cache1)
 
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
