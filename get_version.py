@@ -45,7 +45,6 @@ def _make_version_file(version, sha, abi, dtk, torch_version, branch):
         f.write(f"dtk = '{dtk}'\n")
         f.write(f"torch_version = '{torch_version}'\n")
         f.write(f"hcu_version = '{hcu_version}'\n")
-        f.write(f"dcu_version = '{hcu_version}'\n")  # Compatibility alias.
     return hcu_version
 
 def get_dtk_version(ROCM_HOME):

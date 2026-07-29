@@ -38,6 +38,11 @@ ROOT_COMPATIBILITY_APIS = {
 
 
 NATIVE_OPERATOR_REFERENCE_TESTS = {
+    "test_convert_req_index_to_global_index.py",
+    "test_fused_add_rms_norm_opt.py",
+    "test_rms_norm_opt.py",
+    "test_softmax_topk.py",
+    "test_topk.py",
     "test_fuse_rmsnorm_rope_qkv_no_quant.py",
     "test_native_categorized_attention_api.py",
     "test_native_categorized_attention_remaining_api.py",

@@ -25,7 +25,8 @@ cp_gather_and_upconvert_fp8_kv_cache
 create_gemmbias_handle
 create_gemmdbias_handle
 cross_norm_rope_q_kv_inplace_cuda
-dcu_alloc_extend_kernel
+decode_gather_and_up_convert
+decode_gather_and_up_convert_with_indices
 destindex_copy_quantize_int8_cuda
 destindex_dequantize_int8_cuda
 destroy_gemmbias_handle
@@ -43,6 +44,7 @@ ep_gather
 ep_scatter
 fake_quantize_per_channel_affine_custom
 fake_quantize_per_tensor_affine_custom
+fast_kpool_topk_transform_interface
 fast_topk_transform_interface
 fast_topk_transform_ragged_interface
 fill_zeros
@@ -60,12 +62,14 @@ fuse_rms_mrope_cuda
 fuse_rmsnorm_rope_quant_qkv
 fuse_silu_and_mul
 fuse_silu_and_mul_ep
+fuse_silu_mul_clamp_quant
 fuse_silu_mul_fp8_quant
 fuse_silu_mul_fp8_quant_ep
 fuse_silu_mul_quant
 fuse_silu_mul_quant_ep
 fused_add_rms_norm_opt
 fused_bmm
+fused_concat_and_store_mla_kv_cache
 fused_deepseek_v4_qnorm_rope_kv_rope
 fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert
 fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_int32
@@ -109,6 +113,7 @@ groupgemm
 groupgemm_permute
 groupgemm_unpermute
 groupnorm_forward_autograd
+hcu_alloc_extend_kernel
 kimi_k2_moe_fused_gate
 layer_norm_fwd_1pass_opt
 layernorm_droppath_forward_autograd
@@ -128,6 +133,7 @@ m_grouped_w8a8_gemm_nt_nopad_contig_asm
 mean_opt
 mha_norm_rope_qkv_inplace_cuda
 mimo_v2_split_rope_vscale_kv_store
+mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang
 moe_align_block_size
 moe_fused_gate
 moe_fused_gate_sqrtsoftplus
@@ -159,6 +165,7 @@ paged_mqa_logits
 per_token_dynamic_quant_int8
 per_token_group_quant_fp8
 per_token_quant_fp8
+prefill_gather_and_upconvert_fp8_kv_cache
 qkv_split_rms_rotary_embedding_fuse
 quantize_nope_fp8_rope_bf16_pack
 quantize_nope_fp8_rope_bf16_pack_store
@@ -168,6 +175,7 @@ relu_dropout_forward
 reshape_and_cache_cuda
 reshape_to_float
 rms_norm_dynamic_per_token_quant
+rms_norm_dynamic_per_token_quant_sglang
 rms_norm_fp8_quant
 rms_norm_no_weight
 rms_norm_opt
