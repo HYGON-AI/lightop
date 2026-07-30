@@ -771,14 +771,27 @@ static void dispatch_fused_concat_and_store_mla_kv_cache_dst(
 }
 
 void fused_concat_and_store_mla_kv_cache(
-    torch::Tensor k_nope,     // [num_tokens, (1,) nope_dim]
-    torch::Tensor k_rope,     // [num_tokens, (1,) rope_dim]
+    torch::Tensor k_nope,     // [..., nope_dim]
+    torch::Tensor k_rope,     // [..., rope_dim]
     torch::Tensor kv_buffer,  // [total_slots, 1, nope_dim + rope_dim]
     torch::Tensor loc,        // [num_tokens], int64
     const std::string& fp8_dtype = "fp8_e4m3"
 ) {
-    if (k_nope.dim() == 3) k_nope = k_nope.squeeze(1);
-    if (k_rope.dim() == 3) k_rope = k_rope.squeeze(1);
+    TORCH_CHECK(k_nope.dim() >= 2,
+        "k_nope must have at least 2 dimensions, got ", k_nope.dim());
+    TORCH_CHECK(k_rope.dim() >= 2,
+        "k_rope must have at least 2 dimensions, got ", k_rope.dim());
+
+    const int64_t nope_dim = k_nope.size(-1);
+    const int64_t rope_dim = k_rope.size(-1);
+    TORCH_CHECK(nope_dim > 0, "k_nope last dimension must be positive");
+    TORCH_CHECK(rope_dim > 0, "k_rope last dimension must be positive");
+
+    // Treat the last dimension as the feature dimension and collapse all
+    // leading dimensions into the token dimension. This accepts layouts such
+    // as [N, D], [N, 1, D], and [1, N, 1, D].
+    k_nope = k_nope.reshape({k_nope.numel() / nope_dim, nope_dim});
+    k_rope = k_rope.reshape({k_rope.numel() / rope_dim, rope_dim});
 
     torch::Tensor kv_buffer_view = kv_buffer;
     if (kv_buffer_view.dim() == 3) kv_buffer_view = kv_buffer_view.squeeze(1);
