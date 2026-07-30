@@ -182,6 +182,7 @@ __global__ void rms_rotary_embedding_kernel(
     scalar_t* __restrict__ query,              // [batch_size, seq_len, num_heads, head_size] or [num_tokens, num_heads, head_size]
     scalar_t* __restrict__ key,                // nullptr or [batch_size, seq_len, num_kv_heads, head_size] or [num_tokens, num_kv_heads, head_size]
     const scalar_t* __restrict__ cos_sin_cache,  // [max_position, 2, rot_dim / 2]
+    const int64_t max_position,
     const int rot_dim, const int64_t query_stride, const int64_t key_stride,
     const int64_t head_stride, const int num_heads, const int num_kv_heads,
     const int head_size, const int num_tokens, scalar_t* gamma_q, scalar_t* gamma_k, scalar_t* residual_q, scalar_t* residual_k, scalar_t eps) {
@@ -196,6 +197,9 @@ __global__ void rms_rotary_embedding_kernel(
     const int idx_k = tid * VEC_SIZE_K;
     using LoadT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE_K>;
     int64_t pos = positions[token_idx];
+    if (pos < 0 || pos >= max_position) {
+        return;
+    }
     const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
 
     const int embed_dim = rot_dim / 2;
@@ -416,6 +420,7 @@ __global__ void rms_rotary_embedding_kernel_pipeline(
     scalar_t* __restrict__ query,              // [batch_size, seq_len, num_heads, head_size] or [num_tokens, num_heads, head_size]
     scalar_t* __restrict__ key,                // nullptr or [batch_size, seq_len, num_kv_heads, head_size] or [num_tokens, num_kv_heads, head_size]
     const scalar_t* __restrict__ cos_sin_cache,  // [max_position, 2, rot_dim / 2]
+    const int64_t max_position,
     const int rot_dim, const int64_t query_stride, const int64_t key_stride,
     const int64_t head_stride, const int num_heads, const int num_kv_heads,
     const int head_size, const int num_tokens, scalar_t* gamma_q, scalar_t* gamma_k, scalar_t* residual_q, scalar_t* residual_k, scalar_t eps) {
@@ -428,6 +433,9 @@ __global__ void rms_rotary_embedding_kernel_pipeline(
     
     using LoadT = at::native::memory::aligned_vector<scalar_t, VEC_SIZE_K>;
     int64_t pos = positions[token_idx];
+    if (pos < 0 || pos >= max_position) {
+        return;
+    }
     const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
 
     const int embed_dim = rot_dim / 2;
@@ -702,6 +710,7 @@ __global__ void opt_rms_rope_qwen3(
     scalar_t* __restrict__ query,      
     scalar_t* __restrict__ key,        
     const scalar_t* __restrict__ cos_sin_cache,
+    const int64_t max_position,
     const int rot_dim,
     const int64_t query_stride,         
     const int64_t key_stride,           
@@ -731,21 +740,24 @@ __global__ void opt_rms_rope_qwen3(
     const int local_token_idx = tid / threads_per_token;
     const int lane = tid % threads_per_token;
 
-
-    if (local_token_idx >= tokens_per_block) return;
-
     const int global_token_idx = blockIdx.x * tokens_per_block + local_token_idx;
-    if (global_token_idx >= num_tokens) return;
+    const bool valid_token =
+        local_token_idx < tokens_per_block && global_token_idx < num_tokens;
 
-
-    scalar_t* my_s_cos_sin = s_cos_sin_base + local_token_idx * HEAD_SIZE;
-    const int64_t pos = positions[global_token_idx];
-
-    for (int i = lane; i < HEAD_SIZE; i += threads_per_token) {
-        my_s_cos_sin[i] = cos_sin_cache[pos * HEAD_SIZE + i];
+    scalar_t* my_s_cos_sin = nullptr;
+    bool valid_position = false;
+    if (valid_token) {
+        const int64_t pos = positions[global_token_idx];
+        valid_position = pos >= 0 && pos < max_position;
+        if (valid_position) {
+            my_s_cos_sin = s_cos_sin_base + local_token_idx * HEAD_SIZE;
+            for (int i = lane; i < HEAD_SIZE; i += threads_per_token) {
+                my_s_cos_sin[i] = cos_sin_cache[pos * HEAD_SIZE + i];
+            }
+        }
     }
-
-    __syncthreads(); 
+    __syncthreads();
+    if (!valid_token || !valid_position) return;
 
     const int q_boundary = num_heads * THEAD_PER_HEAD;
     if(lane < q_boundary){
@@ -935,6 +947,7 @@ __global__ void opt_rms_rope_qwen3_rotDim64(
     scalar_t* __restrict__ query,      
     scalar_t* __restrict__ key,        
     const scalar_t* __restrict__ cos_sin_cache,
+    const int64_t max_position,
     const int rot_dim,                 
     const int64_t query_stride,          
     const int64_t key_stride,            
@@ -960,20 +973,24 @@ __global__ void opt_rms_rope_qwen3_rotDim64(
     const int local_token_idx = tid / threads_per_token;
     const int lane = tid % threads_per_token;
 
-    if (local_token_idx >= tokens_per_block) return;
-
     const int global_token_idx = blockIdx.x * tokens_per_block + local_token_idx;
-    if (global_token_idx >= num_tokens) return;
+    const bool valid_token =
+        local_token_idx < tokens_per_block && global_token_idx < num_tokens;
 
-   
-    scalar_t* my_s_cos_sin = s_cos_sin_base + local_token_idx * rot_dim;
-    const int64_t pos = positions[global_token_idx];
-
-
-    for (int i = lane; i < rot_dim; i += threads_per_token) {
-        my_s_cos_sin[i] = cos_sin_cache[pos * rot_dim + i];
+    scalar_t* my_s_cos_sin = nullptr;
+    bool valid_position = false;
+    if (valid_token) {
+        const int64_t pos = positions[global_token_idx];
+        valid_position = pos >= 0 && pos < max_position;
+        if (valid_position) {
+            my_s_cos_sin = s_cos_sin_base + local_token_idx * rot_dim;
+            for (int i = lane; i < rot_dim; i += threads_per_token) {
+                my_s_cos_sin[i] = cos_sin_cache[pos * rot_dim + i];
+            }
+        }
     }
-    __syncthreads(); 
+    __syncthreads();
+    if (!valid_token || !valid_position) return;
 
     const int q_boundary = num_heads * THEAD_PER_HEAD;
     const int total_threads = (num_heads + num_kv_heads) * THEAD_PER_HEAD;
@@ -1078,6 +1095,7 @@ void launch_opt_rms_rope(
     scalar_t* query,
     scalar_t* key,
     const scalar_t* cos_sin_cache,
+    int64_t max_position,
     int rot_dim,
     int64_t query_stride,
     int64_t key_stride,
@@ -1112,7 +1130,8 @@ void launch_opt_rms_rope(
                 DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
                     opt_rms_rope_qwen3<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,VEC,THREAD_PER_ROW>
                         <<<grid_size, actual_block_size, smem_size, stream>>>(
-                        positions, query, key, cos_sin_cache, rot_dim, 
+                        positions, query, key, cos_sin_cache, max_position,
+                        rot_dim,
                         query_stride, key_stride, head_stride_q, head_stride_k, 
                         gamma_q, gamma_k, 
                         residual_q_ptr, residual_k_ptr, 
@@ -1127,7 +1146,8 @@ void launch_opt_rms_rope(
                 DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
                     opt_rms_rope_qwen3_rotDim64<T_ACC, scalar_t, HAS_RESIDUAL_CONST, IS_NEOX_CONST,4,THREAD_PER_ROW>
                         <<<grid_size, actual_block_size, smem_size, stream>>>(
-                        positions, query, key, cos_sin_cache, rot_dim, 
+                        positions, query, key, cos_sin_cache, max_position,
+                        rot_dim,
                         query_stride, key_stride, head_stride_q, head_stride_k, 
                         gamma_q, gamma_k, 
                         residual_q_ptr, residual_k_ptr, 
@@ -1139,6 +1159,7 @@ void launch_opt_rms_rope(
         }else{
             return;
         }
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 void rms_rotary_embedding_fuse(
@@ -1226,6 +1247,7 @@ void rms_rotary_embedding_fuse(
                     query.data_ptr<scalar_t>(),
                     key.data_ptr<scalar_t>(),
                     cos_sin_cache.data_ptr<scalar_t>(),
+                    cos_sin_cache.size(0),
                     rot_dim,
                     query_stride,
                     key_stride,
@@ -1278,6 +1300,7 @@ void rms_rotary_embedding_fuse(
                                  <<<grid, block, 0, stream>>>(
                                      positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
                                      key.data_ptr<scalar_t>(), cos_sin_cache.data_ptr<scalar_t>(),
+                                     cos_sin_cache.size(0),
                                      rot_dim, query_stride, key_stride, head_stride,
                                      num_heads, num_kv_heads, head_size, num_tokens,
                                      weight_q.data_ptr<scalar_t>(), weight_k.data_ptr<scalar_t>(),
@@ -1290,6 +1313,7 @@ void rms_rotary_embedding_fuse(
                                  <<<grid, block, 0, stream>>>(
                                      positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
                                      key.data_ptr<scalar_t>(), cos_sin_cache.data_ptr<scalar_t>(),
+                                     cos_sin_cache.size(0),
                                      rot_dim, query_stride, key_stride, head_stride,
                                      num_heads, num_kv_heads, head_size, num_tokens,
                                      weight_q.data_ptr<scalar_t>(), weight_k.data_ptr<scalar_t>(),
@@ -1432,6 +1456,7 @@ std::tuple<Tensor, Tensor, Tensor> qkv_split_rms_rotary_embedding_fuse(
                     query.data_ptr<scalar_t>(),
                     key.data_ptr<scalar_t>(),
                     cos_sin_cache.data_ptr<scalar_t>(),
+                    cos_sin_cache.size(0),
                     rot_dim,
                     query_stride,
                     key_stride,
@@ -1484,6 +1509,7 @@ std::tuple<Tensor, Tensor, Tensor> qkv_split_rms_rotary_embedding_fuse(
                                  <<<grid, block, 0, stream>>>(
                                      positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
                                      key.data_ptr<scalar_t>(), cos_sin_cache.data_ptr<scalar_t>(),
+                                     cos_sin_cache.size(0),
                                      rot_dim, query_stride, key_stride, head_stride,
                                      num_heads, num_kv_heads, head_size, num_tokens,
                                      weight_q.data_ptr<scalar_t>(), weight_k.data_ptr<scalar_t>(),
@@ -1496,6 +1522,7 @@ std::tuple<Tensor, Tensor, Tensor> qkv_split_rms_rotary_embedding_fuse(
                                  <<<grid, block, 0, stream>>>(
                                      positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
                                      key.data_ptr<scalar_t>(), cos_sin_cache.data_ptr<scalar_t>(),
+                                     cos_sin_cache.size(0),
                                      rot_dim, query_stride, key_stride, head_stride,
                                      num_heads, num_kv_heads, head_size, num_tokens,
                                      weight_q.data_ptr<scalar_t>(), weight_k.data_ptr<scalar_t>(),
