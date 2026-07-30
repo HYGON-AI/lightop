@@ -313,7 +313,7 @@ void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Ten
 void fuse_silu_mul_clamp_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit);
 void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, const torch::Tensor& mask_m, int expect_m);
 void fuse_silu_mul_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m);
-void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids, float limit) ;
+void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids, float limit = -1.0f) ;
 void fuse_silu_mul_fp8_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m, float limit);
 void fuse_silu_and_mul(torch::Tensor& input, torch::Tensor& out);
 void fuse_silu_and_mul_ep(torch::Tensor& input, torch::Tensor& out, const torch::Tensor& mask_m, int expect_m);
@@ -923,7 +923,19 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("mask_m"),
       py::arg("expect_m") = -1);
   m.def("fuse_silu_mul_quant_ep",&at::native::fuse_silu_mul_quant_ep,"fuse_silu_mul_quant_ep");
-  m.def("fuse_silu_mul_fp8_quant",&at::native::fuse_silu_mul_fp8_quant,"fuse_silu_mul_fp8_quant");
+  m.def(
+      "fuse_silu_mul_fp8_quant",
+      &at::native::fuse_silu_mul_fp8_quant,
+      "fuse_silu_mul_fp8_quant",
+      py::arg("input"),
+      py::arg("output"),
+      py::arg("scales"),
+      py::arg("fp8type"),
+      py::arg("num_local_tokens_tensor"),
+      py::arg("topK"),
+      py::arg("expert_m"),
+      py::arg("expert_ids"),
+      py::arg("limit") = -1.0f);
   m.def("fuse_silu_mul_fp8_quant_ep",&at::native::fuse_silu_mul_fp8_quant_ep,"fuse_silu_mul_fp8_quant_ep");
   m.def("fuse_silu_and_mul",&at::native::fuse_silu_and_mul,"fuse_silu_and_mul");
   m.def("ds_concat",&at::native::ds_concat,"ds_concat");

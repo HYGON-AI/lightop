@@ -1666,7 +1666,7 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_one_gernel_with_limit(
   }
 }
 
-void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids)
+static void fuse_silu_mul_fp8_quant_no_limit(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids)
 {
   int d = input.size(-1) / 2;                                                  
   int64_t num_tokens = input.numel() / input.size(-1);                         
@@ -2357,11 +2357,11 @@ void fuse_silu_mul_fp8_quant(
     int topK,
     int expert_m,
     torch::optional<torch::Tensor> &expert_ids,
-    float limit)
+    float limit = -1.0f)
 {
   TORCH_CHECK(
       limit == -1.0f || limit > 0.0f,
-      "limit must be None (encoded as -1.0) or a positive value");
+      "limit must be -1.0 (disabled) or a positive value");
 
   if (limit > 0.0f) {
     fuse_silu_mul_fp8_quant_with_limit(
@@ -2370,7 +2370,7 @@ void fuse_silu_mul_fp8_quant(
     return;
   }
 
-  fuse_silu_mul_fp8_quant(
+  fuse_silu_mul_fp8_quant_no_limit(
       input, out, scales, fp8type, num_local_tokens_tensor,
       topK, expert_m, expert_ids);
 }
