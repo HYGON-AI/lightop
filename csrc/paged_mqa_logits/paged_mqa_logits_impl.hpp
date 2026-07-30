@@ -52,6 +52,29 @@ typedef union
     };
 } f8x16_t;
 
+// H8 reuses a 16-row MMAC tile while keeping the LDS Q/weight caches compact.
+// Invalid rows never read LDS and enter MMAC/reduction as deterministic zero.
+template <int kNumHeads, int kQTile, typename Operand, typename Element>
+inline __device__ __forceinline__ Operand load_padded_q_operand(const Element* smem_q,
+                                                                const int offset,
+                                                                const int head_idx) {
+    if constexpr (kNumHeads < kQTile) {
+        if (head_idx >= kNumHeads) {
+            Operand zero = {};
+            return zero;
+        }
+    }
+    return *reinterpret_cast<const Operand*>(&smem_q[offset]);
+}
+
+template <int kNumHeads, int kQTile>
+inline __device__ __forceinline__ float load_padded_weight(const float* smem_weights, const int head_idx) {
+    if constexpr (kNumHeads < kQTile) {
+        return head_idx < kNumHeads ? smem_weights[head_idx] : 0.0f;
+    }
+    return smem_weights[head_idx];
+}
+
 inline __device__ __forceinline__ uint16_t fp8_e4m3fn_to_bf16_flush_subnormal(const uint8_t src) {
     const uint16_t sign = static_cast<uint16_t>(src & 0x80) << 8;
     const uint32_t magnitude = src & 0x7f;
@@ -283,7 +306,7 @@ paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q, const uint8_t* kv_block, con
     constexpr int K_STAGE = 64;
     constexpr int Q_TILE = 16;
     constexpr int KV_TILE = 16;
-    constexpr int Q_ITER = kNumHeads / Q_TILE;
+    constexpr int Q_ITER = constexpr_ceil_div(kNumHeads, Q_TILE);
     constexpr int K_BLOCK_MAX = kHeadDim / K_TILE;
     constexpr int K_BLOCKS_PER_STAGE = K_STAGE / K_TILE;
     constexpr int K_STAGE_ITER = kHeadDim / K_STAGE;
@@ -292,7 +315,8 @@ paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q, const uint8_t* kv_block, con
     constexpr int kTokensPerCta = kTokensPerWarp * kNumWarps;
     constexpr uint32_t kSwizzleAlignment = kHeadDim * 8;
     LIGHTOP_STATIC_ASSERT(BLOCK_KV == 16 || BLOCK_KV == 32 || BLOCK_KV == 64, "Invalid BF16 Q + FP8 KV BLOCK_KV");
-    LIGHTOP_STATIC_ASSERT(kNumHeads == 16 || kNumHeads == 32 || kNumHeads == 64, "Invalid BF16 Q + FP8 KV heads");
+    LIGHTOP_STATIC_ASSERT(kNumHeads == 8 || kNumHeads == 16 || kNumHeads == 32 || kNumHeads == 64,
+                          "Invalid BF16 Q + FP8 KV heads");
     LIGHTOP_STATIC_ASSERT(kTokensPerWarp == 64 && kNumWarps == 4, "Invalid BF16 Q + FP8 KV tiling");
 
     const int warp_idx = threadIdx.x / WARP_SIZE_GPU;
@@ -347,7 +371,12 @@ paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q, const uint8_t* kv_block, con
 #pragma unroll
             for (int j = 0; j < K_BLOCK_MAX; ++j) {
                 const int offset = base_fetch_lds_q + i * Q_TILE * kHeadDim + j * K_TILE;
-                reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_bf16[offset]);
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_q_operand[i][j] = load_padded_q_operand<kNumHeads, Q_TILE, f16x8_t>(
+                        smem_bf16, offset, i * Q_TILE + lane_idx % Q_TILE);
+                } else {
+                    reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_bf16[offset]);
+                }
             }
         }
 
@@ -361,7 +390,12 @@ paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q, const uint8_t* kv_block, con
         for (int j = 0; j < Q_ITER; ++j) {
 #pragma unroll
             for (int k = 0; k < 4; ++k) {
-                reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_weights[j * 4 + k] = load_padded_weight<kNumHeads, Q_TILE>(
+                        smem_weight, j * Q_TILE + k * 4 + lane_idx / Q_TILE);
+                } else {
+                    reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
+                }
             }
         }
     } else {
@@ -375,7 +409,12 @@ paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q, const uint8_t* kv_block, con
 #pragma unroll
             for (int j = 0; j < K_BLOCK_MAX; ++j) {
                 const int offset = base_fetch_lds_q + i * Q_TILE * kHeadDim + j * K_TILE;
-                reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_bf16[offset]);
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_q_operand[i][j] = load_padded_q_operand<kNumHeads, Q_TILE, f16x8_t>(
+                        smem_bf16, offset, i * Q_TILE + lane_idx % Q_TILE);
+                } else {
+                    reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_bf16[offset]);
+                }
             }
         }
 
@@ -383,7 +422,12 @@ paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q, const uint8_t* kv_block, con
         for (int j = 0; j < Q_ITER; ++j) {
 #pragma unroll
             for (int k = 0; k < 4; ++k) {
-                reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_weights[j * 4 + k] = load_padded_weight<kNumHeads, Q_TILE>(
+                        smem_weight, j * Q_TILE + k * 4 + lane_idx / Q_TILE);
+                } else {
+                    reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
+                }
             }
         }
     }
@@ -580,7 +624,7 @@ __global__ void paged_mqa_logits(const Element* q,
     static constexpr int K_TILE = 32;
     static constexpr int Q_TILE = 16;
     static constexpr int KV_TILE = 16;
-    static constexpr int Q_ITER = kNumHeads / Q_TILE;
+    static constexpr int Q_ITER = constexpr_ceil_div(kNumHeads, Q_TILE);
     static constexpr int K_BLOCK_MAX = kHeadDim / K_TILE;
     static constexpr int KV_ITER = kTokensPerWarp / KV_TILE;
     static constexpr int kTokensPerCta = kTokensPerWarp * kNumWarps;
@@ -640,7 +684,12 @@ __global__ void paged_mqa_logits(const Element* q,
             #pragma unroll
             for (int j = 0; j < K_BLOCK_MAX; ++j) {
                 const int offset = base_fetch_lds_Q + i * Q_TILE * kHeadDim + j * K_TILE;
-                reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_kv_block[offset]);
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_q_operand[i][j] = load_padded_q_operand<kNumHeads, Q_TILE, f16x8_t>(
+                        smem_kv_block, offset, i * Q_TILE + lane_idx % Q_TILE);
+                } else {
+                    reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_kv_block[offset]);
+                }
             }
         }
 
@@ -654,7 +703,12 @@ __global__ void paged_mqa_logits(const Element* q,
         for (int j = 0; j < Q_ITER; ++j) {
             #pragma unroll
             for (int k = 0; k < 4; ++k) {
-                reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_weights[j * 4 + k] = load_padded_weight<kNumHeads, Q_TILE>(
+                        smem_weight, j * Q_TILE + k * 4 + lane_idx / Q_TILE);
+                } else {
+                    reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
+                }
             }
         }
     } else {
@@ -668,7 +722,12 @@ __global__ void paged_mqa_logits(const Element* q,
             #pragma unroll
             for (int j = 0; j < K_BLOCK_MAX; ++j) {
                 const int offset = base_fetch_lds_Q + i * Q_TILE * kHeadDim + j * K_TILE;
-                reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_kv_block[offset]);
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_q_operand[i][j] = load_padded_q_operand<kNumHeads, Q_TILE, f16x8_t>(
+                        smem_kv_block, offset, i * Q_TILE + lane_idx % Q_TILE);
+                } else {
+                    reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_kv_block[offset]);
+                }
             }
         }
 
@@ -676,7 +735,12 @@ __global__ void paged_mqa_logits(const Element* q,
         for (int j = 0; j < Q_ITER; ++j) {
             #pragma unroll
             for (int k = 0; k < 4; ++k) {
-                reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_weights[j * 4 + k] = load_padded_weight<kNumHeads, Q_TILE>(
+                        smem_weight, j * Q_TILE + k * 4 + lane_idx / Q_TILE);
+                } else {
+                    reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
+                }
             }
         }
     }
@@ -811,7 +875,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
     static constexpr int K_TILE = 64;
     static constexpr int Q_TILE = 16;
     static constexpr int KV_TILE = 16;
-    static constexpr int Q_ITER = kNumHeads / Q_TILE;
+    static constexpr int Q_ITER = constexpr_ceil_div(kNumHeads, Q_TILE);
     static constexpr int KV_ITER = kTokensPerWarp / KV_TILE;
     static constexpr int PAGES_PER_WARP = kTokensPerWarp / BLOCK_KV;
     static constexpr int Stages = kHeadDim / K_TILE;
@@ -890,7 +954,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
         }
     }
 
-    constexpr int heads_cnt = kNumHeads / Q_TILE;
+    constexpr int heads_cnt = Q_ITER;
     constexpr int K_BLOCK_MAX = kHeadDim / K_TILE;
     f8x16_t reg_q_operand[heads_cnt][K_BLOCK_MAX];
 
@@ -902,17 +966,27 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
         #pragma unroll
         for (int j = 0; j < K_BLOCK_MAX; ++j) {
             auto offset = base_fetch_lds_Q + i * Q_TILE * kHeadDim + j * K_TILE;
-            reg_q_operand[i][j] = *reinterpret_cast<f8x16_t *>(&smem_kv_block[offset]);
+            if constexpr (kNumHeads < Q_TILE) {
+                reg_q_operand[i][j] = load_padded_q_operand<kNumHeads, Q_TILE, f8x16_t>(
+                    smem_kv_block, offset, i * Q_TILE + lane_idx % Q_TILE);
+            } else {
+                reg_q_operand[i][j] = *reinterpret_cast<f8x16_t*>(&smem_kv_block[offset]);
+            }
         }
     }
 
     // pre-fetch weights
     float reg_weights[heads_cnt * 4];
     #pragma unroll
-    for (int j = 0; j < kNumHeads / Q_TILE; ++j) {
+    for (int j = 0; j < Q_ITER; ++j) {
         #pragma unroll
         for (int k = 0; k < 4; ++k) {
-            reg_weights[j * 4 + k] = smem_weight[j * 16 + k * 4 + lane_idx / 16];
+            if constexpr (kNumHeads < Q_TILE) {
+                reg_weights[j * 4 + k] = load_padded_weight<kNumHeads, Q_TILE>(
+                    smem_weight, j * Q_TILE + k * 4 + lane_idx / Q_TILE);
+            } else {
+                reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
+            }
         }
     }
 
@@ -1027,7 +1101,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
 
                 auto& sum = sum_result[kv_iter];
                 // Intra-thread reduction
-                for (int j = 0; j < kNumHeads / Q_TILE; ++j) {
+                for (int j = 0; j < Q_ITER; ++j) {
                     for (int k = 0; k < 4; ++k) {
                         sum += transform(j, k, acc[j][kv_iter][k]);
                     }
@@ -1077,7 +1151,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q,
 
                 auto& sum = sum_result[kv_iter];
                 // Intra-thread reduction
-                for (int j = 0; j < kNumHeads / Q_TILE; ++j) {
+                for (int j = 0; j < Q_ITER; ++j) {
                     for (int k = 0; k < 4; ++k) {
                         sum += transform(j, k, acc[j][kv_iter][k]);
                     }
@@ -1130,7 +1204,7 @@ paged_mqa_logits_bf16_fp8_kv_small_block(const at::BFloat16* q, const uint8_t* k
     constexpr int K_STAGE = 64;
     constexpr int Q_TILE = 16;
     constexpr int KV_TILE = 16;
-    constexpr int Q_ITER = kNumHeads / Q_TILE;
+    constexpr int Q_ITER = constexpr_ceil_div(kNumHeads, Q_TILE);
     constexpr int K_BLOCKS_PER_STAGE = K_STAGE / K_TILE;
     constexpr int K_STAGE_ITER = kHeadDim / K_STAGE;
     constexpr int KV_ITER = kTokensPerWarp / KV_TILE;
@@ -1140,7 +1214,8 @@ paged_mqa_logits_bf16_fp8_kv_small_block(const at::BFloat16* q, const uint8_t* k
     constexpr int kTokensPerCta = kTokensPerWarp * kNumWarps;
     constexpr uint32_t kSwizzleAlignment = kHeadDim * 8;
     LIGHTOP_STATIC_ASSERT(BLOCK_KV == 4 || BLOCK_KV == 8, "Invalid BF16 Q + FP8 KV small-block K-stage pipeline");
-    LIGHTOP_STATIC_ASSERT(kNumHeads == 16 || kNumHeads == 32 || kNumHeads == 64, "Invalid BF16 Q + FP8 KV heads");
+    LIGHTOP_STATIC_ASSERT(kNumHeads == 8 || kNumHeads == 16 || kNumHeads == 32 || kNumHeads == 64,
+                          "Invalid BF16 Q + FP8 KV heads");
     LIGHTOP_STATIC_ASSERT(kTokensPerWarp == 64 && kNumWarps == 4, "Invalid BF16 Q + FP8 KV tiling");
 
     const int warp_idx = threadIdx.x / WARP_SIZE_GPU;
@@ -1193,7 +1268,12 @@ paged_mqa_logits_bf16_fp8_kv_small_block(const at::BFloat16* q, const uint8_t* k
 #pragma unroll
             for (int j = 0; j < kHeadDim / K_TILE; ++j) {
                 const int offset = base_fetch_lds_q + i * Q_TILE * kHeadDim + j * K_TILE;
-                reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_bf16[offset]);
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_q_operand[i][j] = load_padded_q_operand<kNumHeads, Q_TILE, f16x8_t>(
+                        smem_bf16, offset, i * Q_TILE + lane_idx % Q_TILE);
+                } else {
+                    reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_bf16[offset]);
+                }
             }
         }
 
@@ -1207,7 +1287,12 @@ paged_mqa_logits_bf16_fp8_kv_small_block(const at::BFloat16* q, const uint8_t* k
         for (int j = 0; j < Q_ITER; ++j) {
 #pragma unroll
             for (int k = 0; k < 4; ++k) {
-                reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_weights[j * 4 + k] = load_padded_weight<kNumHeads, Q_TILE>(
+                        smem_weight, j * Q_TILE + k * 4 + lane_idx / Q_TILE);
+                } else {
+                    reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
+                }
             }
         }
     } else {
@@ -1221,7 +1306,12 @@ paged_mqa_logits_bf16_fp8_kv_small_block(const at::BFloat16* q, const uint8_t* k
 #pragma unroll
             for (int j = 0; j < kHeadDim / K_TILE; ++j) {
                 const int offset = base_fetch_lds_q + i * Q_TILE * kHeadDim + j * K_TILE;
-                reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_bf16[offset]);
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_q_operand[i][j] = load_padded_q_operand<kNumHeads, Q_TILE, f16x8_t>(
+                        smem_bf16, offset, i * Q_TILE + lane_idx % Q_TILE);
+                } else {
+                    reg_q_operand[i][j] = *reinterpret_cast<f16x8_t*>(&smem_bf16[offset]);
+                }
             }
         }
 
@@ -1229,7 +1319,12 @@ paged_mqa_logits_bf16_fp8_kv_small_block(const at::BFloat16* q, const uint8_t* k
         for (int j = 0; j < Q_ITER; ++j) {
 #pragma unroll
             for (int k = 0; k < 4; ++k) {
-                reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_weights[j * 4 + k] = load_padded_weight<kNumHeads, Q_TILE>(
+                        smem_weight, j * Q_TILE + k * 4 + lane_idx / Q_TILE);
+                } else {
+                    reg_weights[j * 4 + k] = smem_weight[j * Q_TILE + k * 4 + lane_idx / Q_TILE];
+                }
             }
         }
     }
@@ -1523,7 +1618,7 @@ __global__ void paged_mqa_logits_small_block(const Element* q,
     static constexpr int K_TILE = 32;
     static constexpr int Q_TILE = 16;
     static constexpr int KV_TILE = 16;
-    static constexpr int Q_ITER = kNumHeads / Q_TILE;
+    static constexpr int Q_ITER = constexpr_ceil_div(kNumHeads, Q_TILE);
     static constexpr int KV_ITER = kTokensPerWarp / KV_TILE;
     static constexpr int PAGES_PER_WARP = kTokensPerWarp / BLOCK_KV;
     static constexpr int SUBPAGES_PER_TILE = KV_TILE / BLOCK_KV;
@@ -1576,7 +1671,7 @@ __global__ void paged_mqa_logits_small_block(const Element* q,
         }
     }
 
-    constexpr int heads_cnt = kNumHeads / Q_TILE;
+    constexpr int heads_cnt = Q_ITER;
     constexpr int K_BLOCK_MAX = kHeadDim / K_TILE;
     f16x8_t reg_q_operand[heads_cnt][K_BLOCK_MAX];
 
@@ -1595,7 +1690,12 @@ __global__ void paged_mqa_logits_small_block(const Element* q,
             #pragma unroll
             for (int j = 0; j < K_BLOCK_MAX; ++j) {
                 auto offset = base_fetch_lds_Q + i * Q_TILE * kHeadDim + j * K_TILE;
-                reg_q_operand[i][j] = *reinterpret_cast<f16x8_t *>(&smem_kv_block[offset]);
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_q_operand[i][j] = load_padded_q_operand<kNumHeads, Q_TILE, f16x8_t>(
+                        smem_kv_block, offset, i * Q_TILE + lane_idx % Q_TILE);
+                } else {
+                    reg_q_operand[i][j] = *reinterpret_cast<f16x8_t *>(&smem_kv_block[offset]);
+                }
             }
         }
 
@@ -1606,10 +1706,15 @@ __global__ void paged_mqa_logits_small_block(const Element* q,
         __syncthreads();
 
         #pragma unroll
-        for (int j = 0; j < kNumHeads / Q_TILE; ++j) {
+        for (int j = 0; j < Q_ITER; ++j) {
             #pragma unroll
             for (int k = 0; k < 4; ++k) {
-                reg_weights[j * 4 + k] = smem_weight[j * 16 + k * 4 + lane_idx / 16];
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_weights[j * 4 + k] = load_padded_weight<kNumHeads, Q_TILE>(
+                        smem_weight, j * Q_TILE + k * 4 + lane_idx / Q_TILE);
+                } else {
+                    reg_weights[j * 4 + k] = smem_weight[j * 16 + k * 4 + lane_idx / 16];
+                }
             }
         }
     } else {
@@ -1624,15 +1729,25 @@ __global__ void paged_mqa_logits_small_block(const Element* q,
             #pragma unroll
             for (int j = 0; j < K_BLOCK_MAX; ++j) {
                 auto offset = base_fetch_lds_Q + i * Q_TILE * kHeadDim + j * K_TILE;
-                reg_q_operand[i][j] = *reinterpret_cast<f16x8_t *>(&smem_kv_block[offset]);
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_q_operand[i][j] = load_padded_q_operand<kNumHeads, Q_TILE, f16x8_t>(
+                        smem_kv_block, offset, i * Q_TILE + lane_idx % Q_TILE);
+                } else {
+                    reg_q_operand[i][j] = *reinterpret_cast<f16x8_t *>(&smem_kv_block[offset]);
+                }
             }
         }
 
         #pragma unroll
-        for (int j = 0; j < kNumHeads / Q_TILE; ++j) {
+        for (int j = 0; j < Q_ITER; ++j) {
             #pragma unroll
             for (int k = 0; k < 4; ++k) {
-                reg_weights[j * 4 + k] = smem_weight[j * 16 + k * 4 + lane_idx / 16];
+                if constexpr (kNumHeads < Q_TILE) {
+                    reg_weights[j * 4 + k] = load_padded_weight<kNumHeads, Q_TILE>(
+                        smem_weight, j * Q_TILE + k * 4 + lane_idx / Q_TILE);
+                } else {
+                    reg_weights[j * 4 + k] = smem_weight[j * 16 + k * 4 + lane_idx / 16];
+                }
             }
         }
     }
@@ -1731,7 +1846,7 @@ __global__ void paged_mqa_logits_small_block(const Element* q,
                 };
 
                 auto& sum = sum_result[kv_iter];
-                for (int j = 0; j < kNumHeads / Q_TILE; ++j) {
+                for (int j = 0; j < Q_ITER; ++j) {
                     for (int k = 0; k < 4; ++k) {
                         sum += transform(j, k, acc[j][kv_iter][k]);
                     }
@@ -1790,7 +1905,7 @@ __global__ void paged_mqa_logits_fp8_small_block(const Element* q,
     static constexpr int K_TILE = 64;
     static constexpr int Q_TILE = 16;
     static constexpr int KV_TILE = 16;
-    static constexpr int Q_ITER = kNumHeads / Q_TILE;
+    static constexpr int Q_ITER = constexpr_ceil_div(kNumHeads, Q_TILE);
     static constexpr int KV_ITER = kTokensPerWarp / KV_TILE;
     static constexpr int PAGES_PER_WARP = kTokensPerWarp / BLOCK_KV;
     static constexpr int SUBPAGES_PER_TILE = KV_TILE / BLOCK_KV;
@@ -1881,7 +1996,7 @@ __global__ void paged_mqa_logits_fp8_small_block(const Element* q,
         smem_kv_scales[warp_idx * kTokensPerWarp + lane_idx] = 0.0f;
     }
 
-    constexpr int heads_cnt = kNumHeads / Q_TILE;
+    constexpr int heads_cnt = Q_ITER;
     constexpr int K_BLOCK_MAX = kHeadDim / K_TILE;
     f8x16_t reg_q_operand[heads_cnt][K_BLOCK_MAX];
 
@@ -1893,16 +2008,26 @@ __global__ void paged_mqa_logits_fp8_small_block(const Element* q,
         #pragma unroll
         for (int j = 0; j < K_BLOCK_MAX; ++j) {
             auto offset = base_fetch_lds_Q + i * Q_TILE * kHeadDim + j * K_TILE;
-            reg_q_operand[i][j] = *reinterpret_cast<f8x16_t *>(&smem_kv_block[offset]);
+            if constexpr (kNumHeads < Q_TILE) {
+                reg_q_operand[i][j] = load_padded_q_operand<kNumHeads, Q_TILE, f8x16_t>(
+                    smem_kv_block, offset, i * Q_TILE + lane_idx % Q_TILE);
+            } else {
+                reg_q_operand[i][j] = *reinterpret_cast<f8x16_t *>(&smem_kv_block[offset]);
+            }
         }
     }
 
     float reg_weights[heads_cnt * 4];
     #pragma unroll
-    for (int j = 0; j < kNumHeads / Q_TILE; ++j) {
+    for (int j = 0; j < Q_ITER; ++j) {
         #pragma unroll
         for (int k = 0; k < 4; ++k) {
-            reg_weights[j * 4 + k] = smem_weight[j * 16 + k * 4 + lane_idx / 16];
+            if constexpr (kNumHeads < Q_TILE) {
+                reg_weights[j * 4 + k] = load_padded_weight<kNumHeads, Q_TILE>(
+                    smem_weight, j * Q_TILE + k * 4 + lane_idx / Q_TILE);
+            } else {
+                reg_weights[j * 4 + k] = smem_weight[j * 16 + k * 4 + lane_idx / 16];
+            }
         }
     }
 
@@ -2088,7 +2213,7 @@ __global__ void paged_mqa_logits_fp8_small_block(const Element* q,
                 };
 
                 auto& sum = sum_result[kv_iter];
-                for (int j = 0; j < kNumHeads / Q_TILE; ++j) {
+                for (int j = 0; j < Q_ITER; ++j) {
                     for (int k = 0; k < 4; ++k) {
                         sum += transform(j, k, acc[j][kv_iter][k]);
                     }
