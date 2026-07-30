@@ -173,7 +173,7 @@ __forceinline__ __device__ void  gemm_nt_first_stage_w4a8_pipe(
     // B矩阵 改为int类型
     int32_t* B_lds_int32 = (int32_t*)B_lds;
 
-    // Ref triton swizzle: http://112.11.119.99:10068/dcutoolkit/deeplearing/triton/-/blob/triton-lang/include/triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td
+    // Reference: TritonGPU swizzled shared-memory layout.
     const int type_width_in_bit = 8;
     const int num_banks = 32;
     const int bank_bit_width = 32;

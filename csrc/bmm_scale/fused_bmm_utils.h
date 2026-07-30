@@ -162,7 +162,7 @@ __forceinline__ __device__ void  batch_gemm_impl(
     typename vec<Element,16>::type *B_lds_v16i8 = (typename vec<Element,16>::type *)(B_lds);
     typename vec<Element,16>::type *A_lds_v16i8 = (typename vec<Element,16>::type *)(A_lds);
 
-    // Ref triton swizzle: http://112.11.119.99:10068/dcutoolkit/deeplearing/triton/-/blob/triton-lang/include/triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td
+    // Reference: TritonGPU swizzled shared-memory layout.
     const int type_width_in_bit = 8;
     const int num_banks = 32;
     const int bank_bit_width = 32;
@@ -416,7 +416,7 @@ __forceinline__ __device__ void  batch_gemm_stage_one_impl(
     typename vec<Element,16>::type *B_lds_v16i8 = (typename vec<Element,16>::type *)(B_lds);
     typename vec<Element,16>::type *A_lds_v16i8 = (typename vec<Element,16>::type *)(A_lds);
 
-    // Ref triton swizzle: http://112.11.119.99:10068/dcutoolkit/deeplearing/triton/-/blob/triton-lang/include/triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td
+    // Reference: TritonGPU swizzled shared-memory layout.
     const int type_width_in_bit = 8;
     const int num_banks = 32;
     const int bank_bit_width = 32;
@@ -577,7 +577,7 @@ __forceinline__ __device__ void  batch_gemm_lds_bypass_impl(
     int precompute_A_lds_offset[(WARP_M/MFMA_M)*(WARP_K/MFMA_KPACK)]; 
     typename vec<Element,16>::type *A_lds_v16i8 = (typename vec<Element,16>::type *)(A_lds);
 
-    // Ref triton swizzle: http://112.11.119.99:10068/dcutoolkit/deeplearing/triton/-/blob/triton-lang/include/triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td
+    // Reference: TritonGPU swizzled shared-memory layout.
     const int type_width_in_bit = 8;
     const int num_banks = 32;
     const int bank_bit_width = 32;
@@ -817,7 +817,7 @@ __forceinline__ __device__ void  batch_gemm_stage_one_lds_bypass_impl(
     int precompute_A_lds_offset[(WARP_M/MFMA_M)*(WARP_K/MFMA_KPACK)]; 
     typename vec<Element,16>::type *A_lds_v16i8 = (typename vec<Element,16>::type *)(A_lds);
 
-    // Ref triton swizzle: http://112.11.119.99:10068/dcutoolkit/deeplearing/triton/-/blob/triton-lang/include/triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td
+    // Reference: TritonGPU swizzled shared-memory layout.
     const int type_width_in_bit = 8;
     const int num_banks = 32;
     const int bank_bit_width = 32;
