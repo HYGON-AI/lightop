@@ -307,6 +307,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> fuse_grou
 //------------------------------------------------- groupgemm ---------------------------------------//
 
 std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
+std::vector<Tensor> moe_fuse_gate_per_gourp_topk(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_per_group, int64_t num_pad_experts, int64_t num_shared_experts, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids) ;
 void fuse_silu_mul_clamp_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit);
@@ -895,6 +896,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("topk_group"),
       py::arg("topk"),
       py::arg("n_share_experts_fusion"),
+      py::arg("routed_scaling_factor"),
+      py::arg("apply_routed_scaling_factor_on_output") = true);
+  m.def(
+      "moe_fuse_gate_per_gourp_topk",
+      &at::native::moe_fuse_gate_per_gourp_topk,
+      "SparkV1 per-group top-k fused MoE gate",
+      py::arg("input"),
+      py::arg("bias"),
+      py::arg("num_expert_group"),
+      py::arg("topk_per_group"),
+      py::arg("num_pad_experts"),
+      py::arg("num_shared_experts"),
       py::arg("routed_scaling_factor"),
       py::arg("apply_routed_scaling_factor_on_output") = true);
   m.def("fuse_silu_mul_quant",&at::native::fuse_silu_mul_quant,"fuse_silu_mul_quant");
