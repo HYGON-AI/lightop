@@ -91,8 +91,8 @@ def ref_paged_mqa_logits(q: torch.Tensor, kv_cache: torch.Tensor, weights: torch
             logits[i * next_n:(i + 1) * next_n, block_rk * block_size: (block_rk + 1) * block_size] = torch.where(k_offsets[None, :] <= q_offsets[:, None], s, float('-inf'))
     return logits
 
-def test_paged_mqa_logits(use_fp8=False, use_mixed=False):
-    assert not (use_fp8 and use_mixed)
+def test_paged_mqa_logits(use_fp8=False, use_mixed=False, use_int8=False):
+    assert sum((use_fp8, use_mixed, use_int8)) <= 1
 
     device_props = torch.cuda.get_device_properties(0)
     device_name = (
@@ -102,33 +102,74 @@ def test_paged_mqa_logits(use_fp8=False, use_mixed=False):
         print(f'Skipping FP8 Paged MQA Logits on {device_name}')
         return
 
-    max_model_len = 111 * 1000
-    for batch_size, next_n in [(1, 1), (64, 1), (64, 2), (128, 1)]:
-        for heads, index_dim in [(16, 128), (32, 128), (64, 128)]:
-            for avg_kv in (4096, 72000,):
-                num_blocks, blocksize = max_model_len * 3, 64
+    max_model_len = 320 if use_int8 else 111 * 1000
+    batch_next_cases = [(2, 1), (2, 2)] if use_int8 else [(1, 1), (64, 1), (64, 2), (128, 1)]
+    avg_kv_values = (287,) if use_int8 else (4096, 72000)
+    block_sizes = (4, 8, 16, 32, 64) if use_int8 else (64,)
+    for batch_size, next_n in batch_next_cases:
+        for heads, index_dim in [(8, 128), (16, 128), (32, 128), (64, 128)]:
+            for avg_kv, blocksize in (
+                (avg_kv, blocksize)
+                for avg_kv in avg_kv_values
+                for blocksize in block_sizes
+            ):
+                if use_int8:
+                    context_lens = torch.tensor(
+                        [min(max_model_len, blocksize * 3 + 3), 287], device='cuda', dtype=torch.int32
+                    )
+                    page_counts = [ceil_div(int(context_len), blocksize) for context_len in context_lens]
+                    num_blocks = sum(page_counts) + 11
+                else:
+                    num_blocks = max_model_len * 3
 
-                q = torch.randn((batch_size, next_n, heads, index_dim), device='cuda', dtype=torch.bfloat16)
-                kv_cache = torch.randn((num_blocks, blocksize, 1, index_dim), device='cuda', dtype=torch.bfloat16)
+                if use_int8:
+                    q = torch.randint(
+                        -127, 128, (batch_size, next_n, heads, index_dim), device='cuda', dtype=torch.int8
+                    )
+                    kv_cache = torch.randint(
+                        -127, 128, (num_blocks, blocksize, 1, index_dim), device='cuda', dtype=torch.int8
+                    )
+                    kv_scales = torch.rand(
+                        (num_blocks, blocksize), device='cuda', dtype=torch.float32
+                    ) * 0.09 + 0.01
+                else:
+                    q = torch.randn(
+                        (batch_size, next_n, heads, index_dim), device='cuda', dtype=torch.bfloat16
+                    )
+                    kv_cache = torch.randn(
+                        (num_blocks, blocksize, 1, index_dim), device='cuda', dtype=torch.bfloat16
+                    )
+                    kv_scales = None
                 weights = torch.randn((batch_size * next_n, heads), device='cuda', dtype=torch.float32)
 
-                context_lens = torch.randint(int(0.9 * avg_kv), int(1.1 * avg_kv), (batch_size, )).cuda().to(torch.int32)
-                max_block_len = (context_lens.max().item() + blocksize - 1) // blocksize * blocksize
+                if not use_int8:
+                    context_lens = torch.randint(
+                        int(0.9 * avg_kv), int(1.1 * avg_kv), (batch_size,), device='cuda', dtype=torch.int32
+                    )
+                    page_counts = [ceil_div(int(context_len), blocksize) for context_len in context_lens]
+                max_block_len = (
+                    max(page_counts)
+                    if use_int8
+                    else (context_lens.max().item() + blocksize - 1) // blocksize * blocksize
+                )
                 block_tables = torch.zeros((batch_size, max_block_len), device='cuda', dtype=torch.int32)
 
                 counter = 0
                 block_idx_pool = list(range(num_blocks))
                 random.shuffle(block_idx_pool)
                 for i in range(batch_size):
-                    ctx_len = context_lens[i].item()
-                    for j in range(ceil_div(ctx_len, blocksize)):
+                    for j in range(page_counts[i]):
                         block_tables[i][j] = block_idx_pool[counter]
                         counter += 1
 
                 schedule_metadata = None
                 torch.cuda.synchronize()
 
-                if use_fp8:
+                if use_int8:
+                    test_name = 'INT8'
+                    q_input = q
+                    kv_cache_input = pack_int8_fused_cache(kv_cache, kv_scales)
+                elif use_fp8:
                     test_name = 'FP8'
                     q_input = q.to(torch.float8_e4m3fn)
                     kv_cache_input = kv_cache_cast_to_fp8(kv_cache)
@@ -149,7 +190,7 @@ def test_paged_mqa_logits(use_fp8=False, use_mixed=False):
                 torch.cuda.synchronize()
 
                 ref_logits = ref_paged_mqa_logits(
-                    q, kv_cache, weights, context_lens, block_tables, max_model_len
+                    q, kv_cache, weights, context_lens, block_tables, max_model_len, kv_scales=kv_scales
                 )
                 positions = torch.arange(max_model_len, device='cuda').unsqueeze(0).expand(batch_size * next_n, -1)
                 row_indices = torch.arange(batch_size * next_n, device='cuda') // next_n
@@ -162,7 +203,13 @@ def test_paged_mqa_logits(use_fp8=False, use_mixed=False):
 
                 logits = logits.masked_fill(neginf_mask, 0)
                 ref_logits = ref_logits.masked_fill(ref_neginf_mask, 0)
-                if use_fp8 or use_mixed:
+                if use_int8:
+                    assert torch.isfinite(logits).all()
+                    max_abs = (logits - ref_logits).abs().max()
+                    max_ref = ref_logits.abs().max()
+                    normalized_error = max_abs / max_ref.clamp_min(1.0)
+                    assert normalized_error < 2e-5, f'{max_abs=}, {normalized_error=}, not pass'
+                elif use_fp8 or use_mixed:
                     diff = calc_diff(logits, ref_logits)
                     tolerance = 1.1e-3 if batch_size == 1 else 1e-3
                     assert diff < tolerance, f'{diff=}, not pass'
@@ -171,7 +218,7 @@ def test_paged_mqa_logits(use_fp8=False, use_mixed=False):
 
                 sum_lens = sum(context_lens.to(torch.int64))
                 tflops = 2 * sum_lens * next_n * heads * index_dim / 1e12
-                quantized_kv = use_fp8 or use_mixed
+                quantized_kv = use_fp8 or use_mixed or use_int8
                 input_bytes = (
                     count_bytes(q_input, weights, context_lens)
                     + sum_lens * (index_dim * (1 if quantized_kv else 2) + (4 if quantized_kv else 0))
@@ -184,7 +231,8 @@ def test_paged_mqa_logits(use_fp8=False, use_mixed=False):
                         clean_logits=False
                     )
                 )
-                print(f' > BSZ={batch_size:3}, NextN={next_n:1}, H={heads:2}, D={index_dim:2}, L={avg_kv:6}: '
+                print(f' > BSZ={batch_size:3}, NextN={next_n:1}, H={heads:2}, D={index_dim:2}, '
+                      f'B={blocksize:2}, L={avg_kv:6}: '
                       f'{tflops / t:4.0f} TFLOPS, {t * 1e6:3.0f} us, '
                       f'{(input_bytes + output_bytes) / t / 1e9:4.0f} GB/s | ')
                 print()
@@ -201,79 +249,8 @@ def pack_int8_fused_cache(kv: torch.Tensor, scales: torch.Tensor) -> torch.Tenso
     return packed.view(num_blocks, block_kv, 1, head_dim + 4)
 
 
-def make_int8_case(block_kv: int, heads: int, next_n: int, seed: int):
-    torch.manual_seed(seed)
-    batch = 2
-    max_context_len = 320
-    context_lens = torch.tensor([min(max_context_len, block_kv * 3 + 3), 287], device='cuda', dtype=torch.int32)
-    max_pages = ceil_div(max_context_len, block_kv)
-    used_pages = sum(ceil_div(int(context_len), block_kv) for context_len in context_lens)
-    num_blocks = used_pages + 11
-    page_ids = torch.randperm(num_blocks, device='cuda', dtype=torch.int64)
-    block_table = torch.zeros((batch, max_pages), device='cuda', dtype=torch.int32)
-    page_cursor = 0
-    for batch_idx in range(batch):
-        page_count = ceil_div(int(context_lens[batch_idx]), block_kv)
-        block_table[batch_idx, :page_count] = page_ids[page_cursor:page_cursor + page_count].to(torch.int32)
-        page_cursor += page_count
-
-    q = torch.randint(-127, 128, (batch, next_n, heads, 128), device='cuda', dtype=torch.int8)
-    kv = torch.randint(-127, 128, (num_blocks, block_kv, 1, 128), device='cuda', dtype=torch.int8)
-    scales = torch.rand((num_blocks, block_kv), device='cuda', dtype=torch.float32) * 0.09 + 0.01
-    weights = torch.randn((batch * next_n, heads), device='cuda', dtype=torch.float32)
-    fused_cache = pack_int8_fused_cache(kv, scales)
-    return q, kv, scales, fused_cache, weights, context_lens, block_table, max_context_len
-
-
-def test_paged_mqa_logits_int8():
-    results = []
-    cases = (
-        (block_kv, heads, next_n)
-        for block_kv in (4, 8, 16, 32, 64)
-        for heads in (16, 32, 64)
-        for next_n in (1, 2)
-    )
-    for case_idx, (block_kv, heads, next_n) in enumerate(cases):
-        q, kv, scales, fused_cache, weights, context_lens, block_table, max_context_len = make_int8_case(
-            block_kv, heads, next_n, 20260727 + case_idx
-        )
-        output = paged_mqa_logits(
-            q, fused_cache, weights, context_lens, block_table, None, max_context_len, clean_logits=True
-        )
-        reference = ref_paged_mqa_logits(
-            q, kv, weights, context_lens, block_table, max_context_len, kv_scales=scales
-        )
-        torch.cuda.synchronize()
-
-        expected_inf_mask = torch.isneginf(reference)
-        mask_equal = torch.equal(torch.isneginf(output), expected_inf_mask)
-        valid = ~expected_inf_mask
-        finite = bool(torch.isfinite(output[valid]).all())
-        diff = (output[valid] - reference[valid]).abs()
-        max_abs = float(diff.max()) if diff.numel() else 0.0
-        max_ref = float(reference[valid].abs().max()) if diff.numel() else 0.0
-        normalized_error = max_abs / max(max_ref, 1.0)
-        passed = mask_equal and finite and normalized_error < 2e-5
-        result = {
-            'block_kv': block_kv,
-            'heads': heads,
-            'next_n': next_n,
-            'max_abs': max_abs,
-            'normalized_error': normalized_error,
-            'mask_equal': mask_equal,
-            'finite': finite,
-            'passed': passed,
-        }
-        print(result)
-        results.append(result)
-
-    passed = sum(result['passed'] for result in results)
-    print({'int8_summary': f'{passed}/{len(results)}'})
-    assert passed == len(results)
-
-
 if __name__ == '__main__':
     test_paged_mqa_logits()
     test_paged_mqa_logits(use_fp8=True)
     test_paged_mqa_logits(use_mixed=True)
-    test_paged_mqa_logits_int8()
+    test_paged_mqa_logits(use_int8=True)
