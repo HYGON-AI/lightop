@@ -6,8 +6,8 @@ from typing import Optional
 import torch
 import lightop
 
-from lightop import op
-from lightop import moe_align_block_size
+from lightop.activation import silu_and_mul_opt
+from lightop.moe import moe_align_block_size
 
 from lightop.quant import (
     per_token_group_quant_int8,
@@ -150,7 +150,7 @@ def fused_marlin_moe_valid(
     gemm1_falg = torch.allclose(intermediate_cache1, triton_gemm1_output, rtol=1e-3, atol=1e-3)
 
     # 激活函数
-    op.silu_and_mul_opt(intermediate_cache2, intermediate_cache1)
+    silu_and_mul_opt(intermediate_cache2, intermediate_cache1)
 
 
     # 准备gemm2 需要的 A和A-scale 

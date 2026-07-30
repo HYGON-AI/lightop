@@ -134,7 +134,7 @@ def fused_marlin_moe_valid(
     torch.cuda.synchronize()
 
     # 激活函数
-    op.silu_and_mul_opt(triton_gemm2_a, triton_gemm1_output)
+    silu_and_mul_opt(triton_gemm2_a, triton_gemm1_output)
 
     # 准备gemm2 需要的 A和A-scale 
     # [M*topk, N] [32*8, 256]

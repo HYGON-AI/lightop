@@ -173,7 +173,7 @@ __forceinline__ __device__ void  gemm_nt_first_stage(
     typename vec<Element,8>::type *B_lds_v8i8 = (typename vec<Element,8>::type *)(B_lds);
     typename vec<Element,8>::type *A_lds_v8i8 = (typename vec<Element,8>::type *)(A_lds);
 
-    // Ref triton swizzle: http://112.11.119.99:10068/dcutoolkit/deeplearing/triton/-/blob/triton-lang/include/triton/Dialect/TritonGPU/IR/TritonGPUAttrDefs.td
+    // Reference: TritonGPU swizzled shared-memory layout.
     const int type_width_in_bit = 8;
     const int num_banks = 32;
     const int bank_bit_width = 32;

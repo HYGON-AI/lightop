@@ -82,18 +82,8 @@ from .kvcacheio import hcu_alloc_extend_kernel
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, hcu_version  # noqa: F401
 except ImportError:
-    try:
-        # Compatibility with version files generated before the HCU migration.
-        from .version import version, git_hash, git_branch, dtk, abi, torch_version, dcu_version  # noqa: F401
-    except ImportError:
-        pass
-    else:
-        hcu_version = dcu_version
-        __version__ = version
-        __hcu_version__ = hcu_version
-        __dcu_version__ = hcu_version
+    pass
 else:
-    dcu_version = hcu_version
     __version__ = version
     __hcu_version__ = hcu_version
-    __dcu_version__ = hcu_version
+

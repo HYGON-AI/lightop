@@ -19,7 +19,7 @@ namespace native {
  *   • 4× loop-unrolled bodies so the compiler schedules loads earlier.
  *   • int4 vectorised path for the page_size=1 (dense) case — 4× fewer loads.
  *   • Branchless divide-by-page_size when SHIFT≥0 is a template parameter.
- *   • __launch_bounds__ tuned for max occupancy on DCU (256 threads, 2 blocks/SM).
+ *   • __launch_bounds__ tuned for max occupancy on HCU (256 threads, 2 blocks/SM).
  *   • USE_SWA compiled out at no cost when not needed.
  *
  * Grid:   1D  — one block per batch row.

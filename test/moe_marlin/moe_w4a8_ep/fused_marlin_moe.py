@@ -6,8 +6,8 @@ from typing import Optional
 import pdb
 import torch
 import lightop
-from lightop import op
-from lightop import moe_align_block_size
+from lightop.activation import silu_and_mul_opt
+from lightop.moe import moe_align_block_size
 
 from lightop.quant import (
     per_token_group_quant_int8,
@@ -115,7 +115,7 @@ def fused_marlin_moe(
     gemm1_time_us = start_event.elapsed_time(end_event) * 1000
 
     # 激活函数
-    op.silu_and_mul_opt(cuda_gemm2_a, cuda_gemm1_output)
+    silu_and_mul_opt(cuda_gemm2_a, cuda_gemm1_output)
 
     # 准备gemm2 需要的 A和A-scale 
     # [M*topk, N] [32*8, 256]

@@ -7,7 +7,7 @@ import pdb
 import torch
 import lightop
 from typing import Any, Dict, List, Tuple, TypedDict
-from lightop import moe_align_block_size
+from lightop.moe import moe_align_block_size
 
 from triton_w4a8 import invoke_fused_moe_kernel_w4a8
 import triton
