@@ -49,6 +49,7 @@ from .gemmopt import gemm, gemm_w4a16, w4tow16,gemm_w8a16_fp8,fp8_to_16,moe_gemm
       grougemm_bf16_fp16, m_grouped_fp8_gemm_nt_masked, fused_bmm
 from .gemmopt import gemm_awq_w4a16_marlin, gemm_awq_w4a16_marlin_dequant, awq_gemm_marlin_weight_repack
 from .moe_fused_gate import moe_fused_gate, moe_fused_gate_sqrtsoftplus
+from .moe_fuse_gate_per_gourp_topk import moe_fuse_gate_per_gourp_topk
 from .fuse_silu_mul_quant import fuse_silu_mul_quant, fuse_silu_mul_quant_ep, fuse_silu_and_mul, fuse_silu_mul_fp8_quant, fuse_silu_mul_fp8_quant_ep, moe_swiglu_dynamic_quant, relu2,fuse_silu_mul_per_token_quant,fuse_silu_and_mul_ep
 from .fuse_silu_mul_quant import (
     fuse_silu_mul_clamp_quant,
