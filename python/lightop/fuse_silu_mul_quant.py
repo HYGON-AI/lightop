@@ -5,6 +5,19 @@ import torch.nn as nn
 from . import op
 from typing import Optional, Tuple
 
+
+def _normalize_fp8_limit(limit: Optional[float]) -> float:
+    if limit is None:
+        return -1.0
+
+    normalized_limit = float(limit)
+    if normalized_limit != -1.0 and normalized_limit <= 0:
+        raise ValueError(
+            f"limit must be -1.0 (disabled) or positive, but got {limit}"
+        )
+    return normalized_limit
+
+
 def fuse_silu_and_mul_ep(input: torch.Tensor,
                          output: torch.Tensor,
                          mask_m: torch.Tensor,
@@ -179,10 +192,7 @@ def fuse_silu_mul_fp8_quant(input: torch.Tensor,
     The default ``-1.0`` disables the clamp. ``None`` remains accepted for
     backward compatibility and also disables the clamp.
     """
-    if limit is not None and limit != -1.0 and limit <= 0:
-        raise ValueError(
-            f"limit must be -1.0 (disabled) or positive, but got {limit}"
-        )
+    normalized_limit = _normalize_fp8_limit(limit)
 
     leading, d2 = input.shape          # d2 == 2*d
     d = d2 // 2
@@ -206,7 +216,7 @@ def fuse_silu_mul_fp8_quant(input: torch.Tensor,
         topk,
         expect_m,
         expert_ids,
-        -1.0 if limit is None else float(limit),
+        normalized_limit,
     )
     return output, scales
 
@@ -260,12 +270,14 @@ def fuse_silu_mul_per_token_quant(input: torch.Tensor,
                         expect_m: int = -1,
                         output: Optional[torch.Tensor] = None,
                         scales: Optional[torch.Tensor] = None,
-                        expert_ids: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+                        expert_ids: Optional[torch.Tensor] = None,
+                        limit: Optional[float] = -1.0) -> Tuple[torch.Tensor, torch.Tensor]:
 
     leading, d2 = input.shape          
     d = d2 // 2
 
     actual_dtype = output.dtype if output is not None else dtype
+    normalized_limit = _normalize_fp8_limit(limit)
 
     if output is None:
         output = torch.empty(leading, d, dtype=actual_dtype, device=input.device)
@@ -276,11 +288,23 @@ def fuse_silu_mul_per_token_quant(input: torch.Tensor,
                              dtype=torch.float32)
 
     if actual_dtype == torch.int8:
+        if normalized_limit != -1.0:
+            raise ValueError("limit is only supported for FP8 output")
         op.fuse_silu_mul_quant(input, output, scales, num_local_tokens_tensor, topk, expect_m, expert_ids)
     elif actual_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
         # fp8type: floate4m3 = 0, floate5m2 = 1 
         fp8type = 0 if actual_dtype == torch.float8_e4m3fn else 1
-        op.fuse_silu_mul_fp8_quant(input, output.view(torch.uint8), scales, fp8type, num_local_tokens_tensor, topk, expect_m, expert_ids)
+        op.fuse_silu_mul_fp8_quant(
+            input,
+            output.view(torch.uint8),
+            scales,
+            fp8type,
+            num_local_tokens_tensor,
+            topk,
+            expect_m,
+            expert_ids,
+            normalized_limit,
+        )
     else:
         raise ValueError(f"Unsupported dtype: {actual_dtype}. Supported dtypes are torch.int8, torch.float8_e4m3fn, torch.float8_e5m2")
 
