@@ -171,15 +171,18 @@ def fuse_silu_mul_fp8_quant(input: torch.Tensor,
                         output: Optional[torch.Tensor] = None,
                         scales: Optional[torch.Tensor] = None,
                         expert_ids: Optional[torch.Tensor] = None,
-                        limit: Optional[float] = None) -> tuple[torch.Tensor, torch.Tensor]:
+                        limit: Optional[float] = -1.0) -> tuple[torch.Tensor, torch.Tensor]:
     """Run SwiGLU followed by per-token FP8 quantization.
 
-    When ``limit`` is provided, apply the DeepSeek V4 clamp in the input
-    dtype before activation: ``gate <= limit`` and ``-limit <= up <= limit``.
-    Leaving it as ``None`` preserves the original unclamped behavior.
+    A positive ``limit`` applies the DeepSeek V4 clamp in the input dtype
+    before activation: ``gate <= limit`` and ``-limit <= up <= limit``.
+    The default ``-1.0`` disables the clamp. ``None`` remains accepted for
+    backward compatibility and also disables the clamp.
     """
-    if limit is not None and limit <= 0:
-        raise ValueError(f"limit must be positive when provided, but got {limit}")
+    if limit is not None and limit != -1.0 and limit <= 0:
+        raise ValueError(
+            f"limit must be -1.0 (disabled) or positive, but got {limit}"
+        )
 
     leading, d2 = input.shape          # d2 == 2*d
     d = d2 // 2
@@ -203,7 +206,7 @@ def fuse_silu_mul_fp8_quant(input: torch.Tensor,
         topk,
         expect_m,
         expert_ids,
-        -1.0 if limit is None else limit,
+        -1.0 if limit is None else float(limit),
     )
     return output, scales
 
