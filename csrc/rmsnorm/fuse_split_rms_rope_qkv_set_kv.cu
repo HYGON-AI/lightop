@@ -156,6 +156,32 @@ inline __device__ uint32_t float_to_fp8e5m2_x4(float a, float b, float c, float 
 #endif
 }
 
+template <bool IS_E4M3>
+inline __device__ uint8_t float_to_fp8_cache_scalar(float value)
+{
+#if defined(__gfx938__)
+    union {
+        int32_t packed;
+        uint8_t bytes[4];
+    } result;
+    result.packed = 0;
+    if constexpr (IS_E4M3) {
+        result.packed =
+            __builtin_hcu_cvt_pk_fp8_f32(value, value, result.packed, false);
+    } else {
+        result.packed =
+            __builtin_hcu_cvt_pk_bf8_f32(value, value, result.packed, false);
+    }
+    return result.bytes[0];
+#else
+    if constexpr (IS_E4M3) {
+        return float_to_fp8e4m3(value);
+    } else {
+        return float_to_fp8e5m2(value);
+    }
+#endif
+}
+
 inline __device__ uint16_t float_to_fp8e5m2_x2(float a, float b)
 {
 #if defined(__gfx938__)
@@ -875,7 +901,9 @@ __device__ __forceinline__ T_ACC apply_residual_and_calc_sq(
 }
 
 template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX, int VEC_SIZE, 
-         int THEAD_PER_HEAD, bool HAS_NORM, bool HAS_CACHE, bool USE_FP8_CACHE, typename CACHE_TYPE>
+         int THEAD_PER_HEAD, bool HAS_NORM, bool HAS_CACHE, bool USE_FP8_CACHE,
+         typename CACHE_TYPE, int NUM_HEADS_CONST = 0,
+         int NUM_KV_HEADS_CONST = 0>
 __global__ void split_opt_rms_rope_qwen3_with_qkv(
     const int64_t* __restrict__ positions,
     scalar_t* __restrict__ query,      
@@ -944,7 +972,9 @@ __global__ void split_opt_rms_rope_qwen3_with_qkv(
 
     __syncthreads(); 
 
-    const int q_boundary = num_heads * THEAD_PER_HEAD;
+    const int q_boundary =
+        (NUM_HEADS_CONST > 0 ? NUM_HEADS_CONST : num_heads) *
+        THEAD_PER_HEAD;
     if(lane < q_boundary){
         const int q_head_idx = lane / THEAD_PER_HEAD;
         const int q_lane_in_head = lane % THEAD_PER_HEAD;
@@ -1031,8 +1061,15 @@ __global__ void split_opt_rms_rope_qwen3_with_qkv(
     }
 
    
-    const int total_threads_needed_kv = (num_heads + num_kv_heads) * THEAD_PER_HEAD;
-    const int total_threads = total_threads_needed_kv + (num_kv_heads * THEAD_PER_HEAD);
+    const int effective_num_heads =
+        NUM_HEADS_CONST > 0 ? NUM_HEADS_CONST : num_heads;
+    const int effective_num_kv_heads =
+        NUM_KV_HEADS_CONST > 0 ? NUM_KV_HEADS_CONST : num_kv_heads;
+    const int total_threads_needed_kv =
+        (effective_num_heads + effective_num_kv_heads) * THEAD_PER_HEAD;
+    const int total_threads =
+        total_threads_needed_kv +
+        effective_num_kv_heads * THEAD_PER_HEAD;
     int loc_id = 0;
     int loc_offset = 0;
     if constexpr (HAS_CACHE) {
@@ -1531,6 +1568,232 @@ __global__ void split_opt_rms_rope_qwen3_rotDim64_with_qkv(
     }
 }
 
+template <typename scalar_t, typename cache_t, bool USE_E4M3>
+__global__ void store_split_qkv_cache_hy3_kernel(
+    const scalar_t* __restrict__ key,
+    const scalar_t* __restrict__ value,
+    cache_t* __restrict__ key_cache,
+    cache_t* __restrict__ value_cache,
+    const int64_t* __restrict__ slot_mapping,
+    int num_tokens,
+    int64_t cache_capacity,
+    int page_size,
+    int64_t key_stride,
+    int64_t value_stride,
+    int64_t k_stride_n,
+    int64_t k_stride_h,
+    int64_t k_stride_p,
+    int64_t v_stride_n,
+    int64_t v_stride_h,
+    int64_t v_stride_d) {
+    constexpr int NUM_KV_HEADS = 8;
+    constexpr int HEAD_SIZE = 128;
+    constexpr int PACK = 4;
+    constexpr int THREADS_PER_TOKEN = 64;
+    constexpr int TOKENS_PER_BLOCK = 4;
+    constexpr int GROUPS_PER_THREAD =
+        NUM_KV_HEADS * HEAD_SIZE / (THREADS_PER_TOKEN * PACK);
+
+    const int local_token = threadIdx.x / THREADS_PER_TOKEN;
+    const int lane = threadIdx.x % THREADS_PER_TOKEN;
+    const int token = blockIdx.x * TOKENS_PER_BLOCK + local_token;
+
+    __shared__ int64_t block_shared[TOKENS_PER_BLOCK];
+    __shared__ int64_t block_offset_shared[TOKENS_PER_BLOCK];
+    if (lane == 0) {
+        const int64_t slot = token < num_tokens ? slot_mapping[token] : -1;
+        if (slot >= 0 && slot < cache_capacity) {
+            block_shared[local_token] = slot / page_size;
+            block_offset_shared[local_token] = slot % page_size;
+        } else {
+            block_shared[local_token] = -1;
+            block_offset_shared[local_token] = 0;
+        }
+    }
+    __syncthreads();
+    if (token >= num_tokens || block_shared[local_token] < 0) {
+        return;
+    }
+
+    const int64_t block = block_shared[local_token];
+    const int64_t block_offset = block_offset_shared[local_token];
+    volatile uint8_t* key_store =
+        reinterpret_cast<volatile uint8_t*>(key_cache);
+    #pragma unroll
+    for (int group = 0; group < GROUPS_PER_THREAD; ++group) {
+        const int linear =
+            lane * PACK + group * THREADS_PER_TOKEN * PACK;
+        const int head = linear >> 7;
+        const int head_offset = linear & (HEAD_SIZE - 1);
+        const int64_t src_k =
+            static_cast<int64_t>(token) * key_stride + linear;
+        const int64_t src_v =
+            static_cast<int64_t>(token) * value_stride + linear;
+        const int64_t dst_k =
+            block * k_stride_n + static_cast<int64_t>(head) * k_stride_h +
+            block_offset * k_stride_p + head_offset;
+        const int64_t dst_v =
+            block * v_stride_n + static_cast<int64_t>(head) * v_stride_h +
+            static_cast<int64_t>(head_offset) * v_stride_d + block_offset;
+
+        using LoadT = at::native::memory::aligned_vector<scalar_t, PACK>;
+        scalar_t key_vec[PACK];
+        scalar_t value_vec[PACK];
+        float key_float[PACK];
+        float value_float[PACK];
+        uint8_t key_fp8[PACK];
+        uint8_t value_fp8[PACK];
+        *(LoadT*)key_vec = *(LoadT*)(key + src_k);
+        *(LoadT*)value_vec = *(LoadT*)(value + src_v);
+        #pragma unroll
+        for (int i = 0; i < PACK; ++i) {
+            key_float[i] = static_cast<float>(key_vec[i]);
+            value_float[i] = static_cast<float>(value_vec[i]);
+        }
+        convert_vec_to_uint8_t<PACK, USE_E4M3 ? 1 : 0>(
+            key_float, key_fp8);
+        convert_vec_to_uint8_t<PACK, USE_E4M3 ? 1 : 0>(
+            value_float, value_fp8);
+        #pragma unroll
+        for (int i = 0; i < PACK; ++i) {
+            key_store[dst_k + i] = key_fp8[i];
+            value_cache[dst_v + static_cast<int64_t>(i) * v_stride_d] =
+                value_fp8[i];
+        }
+    }
+}
+
+template <typename scalar_t, typename cache_t, bool USE_FP8_CACHE>
+__global__ void store_split_qkv_cache_kernel(
+    const scalar_t* __restrict__ key,
+    const scalar_t* __restrict__ value,
+    cache_t* __restrict__ key_cache,
+    cache_t* __restrict__ value_cache,
+    const int64_t* __restrict__ slot_mapping,
+    int num_tokens,
+    int64_t cache_capacity,
+    int page_size,
+    int num_heads,
+    int head_size,
+    int64_t key_stride,
+    int64_t value_stride,
+    int64_t k_stride_n,
+    int64_t k_stride_h,
+    int64_t k_stride_p,
+    int64_t k_stride_d,
+    int64_t v_stride_n,
+    int64_t v_stride_h,
+    int64_t v_stride_d,
+    int64_t v_stride_p,
+    bool use_e4m3) {
+    constexpr int PACK = 4;
+    constexpr int TOKENS_PER_BLOCK = 4;
+    const int threads_per_token = blockDim.x / TOKENS_PER_BLOCK;
+    const int local_token = threadIdx.x / threads_per_token;
+    if (local_token >= TOKENS_PER_BLOCK) {
+        return;
+    }
+
+    const int token = blockIdx.x * TOKENS_PER_BLOCK + local_token;
+    const int lane = threadIdx.x % threads_per_token;
+    __shared__ int64_t slot_shared[TOKENS_PER_BLOCK];
+    __shared__ int64_t block_shared[TOKENS_PER_BLOCK];
+    __shared__ int64_t block_offset_shared[TOKENS_PER_BLOCK];
+    if (lane == 0) {
+        const int64_t slot = token < num_tokens ? slot_mapping[token] : -1;
+        slot_shared[local_token] = slot;
+        if (slot >= 0 && slot < cache_capacity) {
+            block_shared[local_token] = slot / page_size;
+            block_offset_shared[local_token] = slot % page_size;
+        } else {
+            block_shared[local_token] = -1;
+            block_offset_shared[local_token] = 0;
+        }
+    }
+    __syncthreads();
+    if (token >= num_tokens || slot_shared[local_token] < 0) {
+        return;
+    }
+
+    const int64_t block = block_shared[local_token];
+    const int64_t block_offset = block_offset_shared[local_token];
+    const int elements_per_token = num_heads * head_size;
+    for (int linear = (threadIdx.x % threads_per_token) * PACK;
+         linear < elements_per_token;
+         linear += threads_per_token * PACK) {
+        const int head = linear / head_size;
+        const int head_offset = linear - head * head_size;
+        const int64_t src_k =
+            static_cast<int64_t>(token) * key_stride + linear;
+        const int64_t src_v =
+            static_cast<int64_t>(token) * value_stride + linear;
+        const int64_t dst_k =
+            block * k_stride_n + static_cast<int64_t>(head) * k_stride_h +
+            block_offset * k_stride_p + head_offset * k_stride_d;
+        const int64_t dst_v =
+            block * v_stride_n + static_cast<int64_t>(head) * v_stride_h +
+            head_offset * v_stride_d + block_offset * v_stride_p;
+
+        if constexpr (USE_FP8_CACHE) {
+            if (key_cache != nullptr) {
+                uint32_t packed_k = 0;
+                #pragma unroll
+                for (int i = 0; i < PACK; ++i) {
+                    const float value =
+                        static_cast<float>(key[src_k + i]);
+                    const uint8_t converted = use_e4m3
+                        ? float_to_fp8_cache_scalar<true>(value)
+                        : float_to_fp8_cache_scalar<false>(value);
+                    packed_k |=
+                        static_cast<uint32_t>(converted) << (i * 8);
+                }
+                volatile uint8_t* key_store =
+                    reinterpret_cast<volatile uint8_t*>(key_cache);
+                #pragma unroll
+                for (int i = 0; i < PACK; ++i) {
+                    key_store[dst_k + i * k_stride_d] =
+                        static_cast<uint8_t>(packed_k >> (i * 8));
+                }
+            }
+
+            if (value_cache != nullptr) {
+                uint32_t packed_v = 0;
+                #pragma unroll
+                for (int i = 0; i < PACK; ++i) {
+                    const float v_scalar =
+                        static_cast<float>(value[src_v + i]);
+                    const uint8_t converted = use_e4m3
+                        ? float_to_fp8_cache_scalar<true>(v_scalar)
+                        : float_to_fp8_cache_scalar<false>(v_scalar);
+                    packed_v |=
+                        static_cast<uint32_t>(converted) << (i * 8);
+                }
+                if (v_stride_d == 1) {
+                    *reinterpret_cast<uint32_t*>(
+                        reinterpret_cast<uint8_t*>(value_cache) + dst_v) =
+                        packed_v;
+                } else {
+                    #pragma unroll
+                    for (int i = 0; i < PACK; ++i) {
+                        value_cache[dst_v + i * v_stride_d] =
+                            static_cast<uint8_t>(packed_v >> (i * 8));
+                    }
+                }
+            }
+        } else {
+            #pragma unroll
+            for (int i = 0; i < PACK; ++i) {
+                if (key_cache != nullptr) {
+                    key_cache[dst_k + i * k_stride_d] = key[src_k + i];
+                }
+                if (value_cache != nullptr) {
+                    value_cache[dst_v + i * v_stride_d] = value[src_v + i];
+                }
+            }
+        }
+    }
+}
+
 template <typename T_ACC, typename scalar_t, typename CACHE_TYPE>
 void launch_opt_rms_rope(
     const int64_t* positions,
@@ -1553,18 +1816,22 @@ void launch_opt_rms_rope(
     int q_rope_out_stride_n,
     int k_rope_out_stride_n,
     int v_rope_out_stride_n,
-    int k_buffer_stride_n,
-    int k_buffer_stride_h,
-    int k_buffer_stride_p,
-    int v_buffer_stride_n,
-    int v_buffer_stride_h,
-    int v_buffer_stride_p,
+    int64_t k_buffer_stride_n,
+    int64_t k_buffer_stride_h,
+    int64_t k_buffer_stride_p,
+    int64_t k_buffer_stride_d,
+    int64_t v_buffer_stride_n,
+    int64_t v_buffer_stride_h,
+    int64_t v_buffer_stride_d,
+    int64_t v_buffer_stride_p,
     scalar_t* gamma_q,
     scalar_t* gamma_k,
     scalar_t* residual_q_ptr, 
     scalar_t* residual_k_ptr,
     scalar_t eps,
     int num_tokens,
+    int num_cache_tokens,
+    int64_t cache_capacity,
     bool is_neox,
     const int num_heads,
     const int num_kv_heads,
@@ -1577,6 +1844,56 @@ void launch_opt_rms_rope(
         bool has_norm = (gamma_q != nullptr && gamma_k != nullptr);
         bool has_cache = kv_cache_loc != nullptr;
 
+        const bool is_hy3_shape =
+            rot_dim == 128 && head_size == 128 &&
+            num_heads == 64 && num_kv_heads == 8;
+        if (is_hy3_shape) {
+            constexpr int HY3_THREAD_PER_ROW = 8;
+            constexpr int HY3_VEC = 8;
+            constexpr int HY3_THREADS_PER_TOKEN =
+                (64 + 8 + 8) * HY3_THREAD_PER_ROW;
+            constexpr int HY3_TOKENS_PER_BLOCK = 1;
+            const int hy3_grid_size = num_tokens;
+            const size_t hy3_smem_size = 128 * sizeof(scalar_t);
+            DISPATCH_BOOL(use_fp8_cache, USE_FP8_CACHE_CONST, [&] {
+                DISPATCH_BOOL(false, HAS_CACHE_CONST, [&] {
+                    DISPATCH_BOOL(has_norm, HAS_NORM_CONST, [&] {
+                        DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
+                            DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
+                                split_opt_rms_rope_qwen3_with_qkv<
+                                    T_ACC, scalar_t, HAS_RESIDUAL_CONST,
+                                    IS_NEOX_CONST, HY3_VEC,
+                                    HY3_THREAD_PER_ROW, HAS_NORM_CONST,
+                                    HAS_CACHE_CONST, USE_FP8_CACHE_CONST,
+                                    CACHE_TYPE, 64, 8>
+                                    <<<hy3_grid_size, HY3_THREADS_PER_TOKEN,
+                                       hy3_smem_size, stream>>>(
+                                        positions, query, key, v, cos_sin_cache,
+                                        k_buffer, v_buffer, kv_cache_loc,
+                                        q_rope_out, k_rope_out, v_rope_out,
+                                        page_size, rot_dim, qkv_stride, q_size,
+                                        kv_size, head_size,
+                                        q_rope_out_stride_n,
+                                        k_rope_out_stride_n,
+                                        v_rope_out_stride_n,
+                                        k_buffer_stride_n,
+                                        k_buffer_stride_h,
+                                        k_buffer_stride_p,
+                                        v_buffer_stride_n,
+                                        v_buffer_stride_h,
+                                        v_buffer_stride_p,
+                                        gamma_q, gamma_k,
+                                        residual_q_ptr, residual_k_ptr,
+                                        eps, num_tokens, num_heads, num_kv_heads,
+                                        HY3_THREADS_PER_TOKEN,
+                                        HY3_TOKENS_PER_BLOCK,
+                                        use_fp8_e4m3);
+                            });
+                        });
+                    });
+                });
+            });
+        } else {
         constexpr int THREAD_PER_ROW = 8;
         constexpr int VEC = 8;
         int threads_per_token = (num_heads + num_kv_heads + num_kv_heads) * THREAD_PER_ROW;
@@ -1590,7 +1907,7 @@ void launch_opt_rms_rope(
         if (rot_dim == 128) {
             size_t smem_size = tokens_per_block * 128 * sizeof(scalar_t);
             DISPATCH_BOOL(use_fp8_cache, USE_FP8_CACHE_CONST, [&] {
-                DISPATCH_BOOL(has_cache, HAS_CACHE_CONST, [&] {
+                DISPATCH_BOOL(false, HAS_CACHE_CONST, [&] {
                     DISPATCH_BOOL(has_norm, HAS_NORM_CONST, [&] {
                         DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
                             DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
@@ -1616,7 +1933,7 @@ void launch_opt_rms_rope(
         } else if (rot_dim == 64) {
             size_t smem_size = tokens_per_block * 64 * sizeof(scalar_t);
             DISPATCH_BOOL(use_fp8_cache, USE_FP8_CACHE_CONST, [&] {
-                DISPATCH_BOOL(has_cache, HAS_CACHE_CONST, [&] {
+                DISPATCH_BOOL(false, HAS_CACHE_CONST, [&] {
                     DISPATCH_BOOL(has_norm, HAS_NORM_CONST, [&] {
                         DISPATCH_BOOL(has_residual, HAS_RESIDUAL_CONST, [&] {
                             DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
@@ -1641,6 +1958,83 @@ void launch_opt_rms_rope(
             });
         } else {
             return;
+        }
+        }
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+
+        if (has_cache && num_cache_tokens > 0 &&
+            (k_buffer != nullptr || v_buffer != nullptr)) {
+            constexpr int STORE_VEC = 16;
+            constexpr int STORE_TOKENS_PER_BLOCK = 4;
+            const int store_threads =
+                num_kv_heads * static_cast<int>(head_size) / STORE_VEC *
+                STORE_TOKENS_PER_BLOCK;
+            const int store_blocks =
+                (num_cache_tokens + STORE_TOKENS_PER_BLOCK - 1) /
+                STORE_TOKENS_PER_BLOCK;
+            DISPATCH_BOOL(use_fp8_cache, USE_FP8_CACHE_CONST, [&] {
+                auto launch_generic_store = [&] {
+                    store_split_qkv_cache_kernel<
+                        scalar_t, CACHE_TYPE, USE_FP8_CACHE_CONST>
+                        <<<store_blocks, store_threads, 0, stream>>>(
+                            k_rope_out,
+                            v_rope_out,
+                            k_buffer,
+                            v_buffer,
+                            kv_cache_loc,
+                            num_cache_tokens,
+                            cache_capacity,
+                            page_size,
+                            num_kv_heads,
+                            static_cast<int>(head_size),
+                            k_rope_out_stride_n,
+                            v_rope_out_stride_n,
+                            k_buffer_stride_n,
+                            k_buffer_stride_h,
+                            k_buffer_stride_p,
+                            k_buffer_stride_d,
+                            v_buffer_stride_n,
+                            v_buffer_stride_h,
+                            v_buffer_stride_d,
+                            v_buffer_stride_p,
+                            use_fp8_e4m3);
+                };
+                if constexpr (USE_FP8_CACHE_CONST) {
+                    const bool use_hy3_store =
+                        num_kv_heads == 8 && head_size == 128 &&
+                        k_buffer != nullptr && v_buffer != nullptr &&
+                        k_buffer_stride_d == 1 && v_buffer_stride_p == 1;
+                    if (use_hy3_store) {
+                        DISPATCH_BOOL(use_fp8_e4m3, USE_E4M3_CONST, [&] {
+                            constexpr int HY3_STORE_THREADS = 64 * 4;
+                            store_split_qkv_cache_hy3_kernel<
+                                scalar_t, CACHE_TYPE, USE_E4M3_CONST>
+                                <<<store_blocks, HY3_STORE_THREADS, 0, stream>>>(
+                                    k_rope_out,
+                                    v_rope_out,
+                                    k_buffer,
+                                    v_buffer,
+                                    kv_cache_loc,
+                                    num_cache_tokens,
+                                    cache_capacity,
+                                    page_size,
+                                    k_rope_out_stride_n,
+                                    v_rope_out_stride_n,
+                                    k_buffer_stride_n,
+                                    k_buffer_stride_h,
+                                    k_buffer_stride_p,
+                                    v_buffer_stride_n,
+                                    v_buffer_stride_h,
+                                    v_buffer_stride_d);
+                        });
+                    } else {
+                        launch_generic_store();
+                    }
+                } else {
+                    launch_generic_store();
+                }
+            });
+            C10_CUDA_KERNEL_LAUNCH_CHECK();
         }
 }
 
@@ -1675,10 +2069,37 @@ void split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
   int positions_ndim = positions.dim();
   TORCH_CHECK(positions_ndim == 1 || positions_ndim == 2,
               "positions must have shape [num_tokens] or [batch_size, seq_len]");
+  TORCH_CHECK(qkv.dim() == 2 && qkv.size(0) == num_tokens,
+              "qkv and positions must contain the same number of tokens");
 
   int num_heads = q_size / head_size;
   int num_kv_heads = kv_size / head_size;
   TORCH_CHECK(num_heads % num_kv_heads == 0);
+
+  int num_cache_tokens = 0;
+  int64_t cache_capacity = 0;
+  if (kv_cache_loc.has_value()) {
+    TORCH_CHECK(kv_cache_loc->scalar_type() == at::ScalarType::Long &&
+                    kv_cache_loc->is_contiguous(),
+                "kv_cache_loc must be contiguous int64");
+    TORCH_CHECK(kv_cache_loc->numel() <= num_tokens &&
+                    kv_cache_loc->numel() <= std::numeric_limits<int>::max(),
+                "kv_cache_loc is too large");
+    TORCH_CHECK(k_buffer.dim() == 4 && v_buffer.dim() == 4,
+                "KV cache buffers must be four-dimensional");
+    TORCH_CHECK(k_buffer.size(0) == v_buffer.size(0) &&
+                    k_buffer.size(1) == v_buffer.size(1) &&
+                    k_buffer.size(2) == v_buffer.size(3) &&
+                    k_buffer.size(3) == v_buffer.size(2),
+                "expected K [blocks, heads, page, dim] and "
+                "V [blocks, heads, dim, page]");
+    TORCH_CHECK(k_buffer.size(1) == num_kv_heads &&
+                    k_buffer.size(3) == head_size,
+                "KV cache shape does not match kv_size/head_size");
+    page_size = static_cast<int>(k_buffer.size(2));
+    num_cache_tokens = static_cast<int>(kv_cache_loc->numel());
+    cache_capacity = k_buffer.size(0) * static_cast<int64_t>(page_size);
+  }
 
   int rot_dim = cos_sin_cache.size(1);
   TORCH_CHECK(rot_dim <= 512);
@@ -1694,20 +2115,24 @@ void split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
   int k_rope_out_stride_n = k_rope_out.stride(0);
   int v_rope_out_stride_n = v_rope_out.stride(0);
 
-  int k_buffer_stride_n = 0;
-  int k_buffer_stride_h = 0;
-  int k_buffer_stride_p = 0;
-  int v_buffer_stride_n = 0;
-  int v_buffer_stride_h = 0;
-  int v_buffer_stride_p = 0;
+  int64_t k_buffer_stride_n = 0;
+  int64_t k_buffer_stride_h = 0;
+  int64_t k_buffer_stride_p = 0;
+  int64_t k_buffer_stride_d = 0;
+  int64_t v_buffer_stride_n = 0;
+  int64_t v_buffer_stride_h = 0;
+  int64_t v_buffer_stride_d = 0;
+  int64_t v_buffer_stride_p = 0;
   if (kv_cache_loc.has_value()) {
     k_buffer_stride_n = k_buffer.stride(0);
     k_buffer_stride_h = k_buffer.stride(1);
     k_buffer_stride_p = k_buffer.stride(2);
+    k_buffer_stride_d = k_buffer.stride(3);
     v_buffer_stride_n = v_buffer.stride(0);
     v_buffer_stride_h = v_buffer.stride(1);
-    v_buffer_stride_p = v_buffer.stride(2);
-}
+    v_buffer_stride_d = v_buffer.stride(2);
+    v_buffer_stride_p = v_buffer.stride(3);
+  }
   /////////////////////////////////////////////////////////
   auto* pos_ptr = positions.data_ptr<int64_t>(); 
   bool qwen3 =  (head_size == 128 && (num_heads + num_kv_heads) <= 128 && (rot_dim == 128 ||  rot_dim == 64));
@@ -1750,8 +2175,10 @@ void split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
                         k_buffer_stride_n,
                         k_buffer_stride_h,
                         k_buffer_stride_p,
+                        k_buffer_stride_d,
                         v_buffer_stride_n,
                         v_buffer_stride_h,
+                        v_buffer_stride_d,
                         v_buffer_stride_p,
                         wq_ptr,
                         wk_ptr,
@@ -1759,6 +2186,8 @@ void split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
                         res_k_ptr,
                         static_cast<scalar_t>(eps_val),
                         (int)num_tokens,
+                        num_cache_tokens,
+                        cache_capacity,
                         is_neox,
                         num_heads,
                         num_kv_heads,
@@ -1791,8 +2220,10 @@ void split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
                         k_buffer_stride_n,
                         k_buffer_stride_h,
                         k_buffer_stride_p,
+                        k_buffer_stride_d,
                         v_buffer_stride_n,
                         v_buffer_stride_h,
+                        v_buffer_stride_d,
                         v_buffer_stride_p,
                         wq_ptr,
                         wk_ptr,
@@ -1800,6 +2231,8 @@ void split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
                         res_k_ptr,
                         static_cast<scalar_t>(eps_val),
                         (int)num_tokens,
+                        num_cache_tokens,
+                        cache_capacity,
                         is_neox,
                         num_heads,
                         num_kv_heads,
