@@ -1,10 +1,10 @@
 import torch
+import pytest
 import torch.nn.functional as F
 import triton
 import triton.testing
 from lightop import op
 import lightop
-from lightop.attention import mqa_logits
 import pdb
 import pandas as pd  # Added for Excel export
 import os            # Added for file path helper
@@ -21,6 +21,14 @@ def per_custom_dims_cast_to_fp8(x: torch.Tensor, dims: Tuple, use_ue8m0: bool) -
     sf = ceil_to_ue8m0(sf) if use_ue8m0 else sf
     x_scaled = (x * (1.0 / sf)).to(torch.float8_e4m3fn)
     return x_scaled, sf.squeeze()
+
+def quant_sym_i8(x: torch.Tensor, dim: int = -1) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Symmetric per-dim INT8 quantization: scale = amax/127, q = round(x/scale).clamp(-128, 127)."""
+    x_f = x.float()
+    amax = x_f.abs().amax(dim=dim, keepdim=True).clamp(min=1e-8)
+    scale = amax / 127.0
+    q = torch.round(x_f / scale).clamp(-128, 127).to(torch.int8)
+    return q, scale.squeeze(dim)
 
 def calc_diff(x: torch.Tensor, y: torch.Tensor):
     x, y = x.double(), y.double()
@@ -67,6 +75,134 @@ def generate_cp_test_data(seq_len, seq_len_kv):
     return ks, ke
 
 
+
+def _check_int8_signed_ks_ke(m, n, h, use_d_out=False):
+    torch.manual_seed(20260730 + m + n + h)
+    q = torch.randint(
+        -16,
+        17,
+        (m, h, 128),
+        device="cuda",
+        dtype=torch.int8,
+    )
+    k = torch.randint(
+        -16,
+        17,
+        (n, 128),
+        device="cuda",
+        dtype=torch.int8,
+    )
+    original_weights = torch.randn(
+        (m, h),
+        device="cuda",
+        dtype=torch.float32,
+    )
+    q_scale = (
+        torch.rand((m, h), device="cuda", dtype=torch.float32)
+        * 0.09
+        + 0.01
+    )
+    k_scale = (
+        torch.rand((n,), device="cuda", dtype=torch.float32)
+        * 0.09
+        + 0.01
+    ).contiguous()
+    weights_effective = original_weights * q_scale
+
+    rows = torch.arange(m, device="cuda", dtype=torch.int32)
+    ks = (rows % 9) - 3
+    ke = n - (rows % 13)
+    ke[::11] = -7
+    ke[1::17] = n + 9
+    ks[2::19] = n + 5
+
+    kwargs = {}
+    d_out = None
+    if use_d_out:
+        d_out = torch.full(
+            (m, n),
+            123.0,
+            device="cuda",
+            dtype=torch.float32,
+        )
+        kwargs["D_out"] = d_out
+
+    actual = lightop.mqa_logits(
+        q,
+        k,
+        weights_effective,
+        ks,
+        ke,
+        k_scale,
+        **kwargs,
+    )
+    torch.cuda.synchronize()
+
+    if use_d_out:
+        assert actual.data_ptr() == d_out.data_ptr()
+
+    score = torch.einsum(
+        "mhd,nd->hmn",
+        q.float(),
+        k.float(),
+    )
+    expected = (
+        score.relu()
+        * weights_effective.transpose(0, 1).unsqueeze(-1)
+    ).sum(dim=0)
+    expected = expected * k_scale.unsqueeze(0)
+
+    ks_clamped = ks.clamp(0, n)
+    ke_clamped = ke.clamp(0, n)
+    positions = torch.arange(
+        n,
+        device="cuda",
+        dtype=torch.int32,
+    ).unsqueeze(0)
+    valid = (
+        (positions >= ks_clamped.unsqueeze(1))
+        & (positions < ke_clamped.unsqueeze(1))
+    )
+    expected = expected.masked_fill(~valid, float("-inf"))
+
+    actual_mask = torch.isneginf(actual)
+    expected_mask = torch.isneginf(expected)
+    assert torch.equal(actual_mask, expected_mask)
+
+    actual_finite = actual.masked_fill(actual_mask, 0.0)
+    expected_finite = expected.masked_fill(expected_mask, 0.0)
+    assert torch.isfinite(actual_finite).all().item()
+
+    max_abs_error = (actual_finite - expected_finite).abs().max()
+    normalized_error = (
+        max_abs_error
+        / expected_finite.abs().max().clamp_min(1.0)
+    )
+    assert normalized_error < 2e-5, (
+        f"{m=}, {n=}, {h=}, "
+        f"{max_abs_error=}, {normalized_error=}"
+    )
+
+
+@pytest.mark.parametrize(
+    "m,n,h",
+    [
+        (16, 64, 8),
+        (17, 65, 32),
+        (64, 1024, 8),
+        (65, 1025, 8),
+        (256, 1024, 8),
+        (257, 1025, 8),
+    ],
+)
+def test_mqa_logits_int8_signed_ks_ke(m, n, h):
+    _check_int8_signed_ks_ke(m, n, h)
+
+
+def test_mqa_logits_int8_signed_ks_ke_d_out():
+    _check_int8_signed_ks_ke(17, 65, 32, use_d_out=True)
+
+
 if __name__ == "__main__":
     torch.manual_seed(0)
     #汇编
@@ -81,12 +217,13 @@ if __name__ == "__main__":
     test_speed = True
     use_random = True
     disable_cp = True
-    is_fp8 = True  
+    is_fp8 = False
+    is_int8 = True
     q_k_dtype = torch.bfloat16
     results_data = []
     write_csv = False
     print("Starting MQA Logits Benchmark...")
-    print(f"FP8 Mode: {is_fp8}")
+    print(f"FP8 Mode: {is_fp8}, INT8 Mode: {is_int8}")
     print(f"Q Seq Lens: {q_seq_len_list}")
     print(f"KV Seq Lens: {kv_seq_len_list}")
     print(f"Head Num: {head_num_list}, Head Dim: {head_dim}")
@@ -111,20 +248,32 @@ if __name__ == "__main__":
                 else:
                     ks, ke = generate_cp_test_data(q_seq_len, kv_seq_len)
                 
-                if is_fp8:
+                weights_in = weights
+                if is_int8:
+                    q_in, q_scale = quant_sym_i8(Q, dim=-1)          # q_scale [M, H]
+                    k_in, kv_scale = quant_sym_i8(K, dim=-1)         # kv_scale [N]
+                    weights_in = weights * q_scale                   # fuse Q_scale into Weights
+                    scale_in = kv_scale.contiguous()
+                    # float dequant reference (matches INT8 math)
+                    Q_ref = q_in.float() * q_scale.unsqueeze(-1)
+                    K_ref = k_in.float() * kv_scale.unsqueeze(-1)
+                    W_ref = weights
+                elif is_fp8:
                     q_in = Q.to(torch.float8_e4m3fn)
                     k_in, kv_scale = per_custom_dims_cast_to_fp8(K, (0, ), False)
                     scale_in = kv_scale
+                    Q_ref, K_ref, W_ref = Q, K, weights
                 else:
                     q_in = Q
                     k_in = K
                     scale_in = None
+                    Q_ref, K_ref, W_ref = Q, K, weights
                     
                 def run_lightop():
-                    if is_fp8:
-                        return mqa_logits(q_in, k_in, weights, ks, ke, scale_in)
+                    if is_fp8 or is_int8:
+                        return lightop.mqa_logits(q_in, k_in, weights_in, ks, ke, scale_in)
                     else:
-                        return mqa_logits(q_in, k_in, weights, ks, ke)
+                        return lightop.mqa_logits(q_in, k_in, weights_in, ks, ke)
                 
                 if test_speed:
                     for _ in range(10):
@@ -148,7 +297,7 @@ if __name__ == "__main__":
                     elapsed_time_us = mean_time_ms * 1000
                     print(f" Avg Time: {elapsed_time_us:10.2f} us.")
                     #精度
-                    ref_logits, ref_cost = ref_fp8_mqa_logits(Q, K, weights, ks, ke)
+                    ref_logits, ref_cost = ref_fp8_mqa_logits(Q_ref, K_ref, W_ref, ks, ke)
                     lightop_logits = run_lightop()
                     # pdb.set_trace()
                     ref_neginf_mask = (ref_logits == float('-inf'))
@@ -159,10 +308,11 @@ if __name__ == "__main__":
                     ref_logits = ref_logits.masked_fill(ref_neginf_mask, 0)
                     lightop_logits = lightop_logits.masked_fill(neginf_mask, 0)
                     
-                    if is_fp8:
+                    if is_fp8 or is_int8:
+                        mode = "INT8" if is_int8 else "FP8"
                         diff = calc_diff(lightop_logits, ref_logits)
-                        assert diff < 1e-3, f"❌ FP8 Precision check failed! Diff: {diff:.4e}"
-                        print(f"✅ FP8 Precision OK (Diff: {diff:.2e})")
+                        assert diff < 1e-3, f"❌ {mode} Precision check failed! Diff: {diff:.4e}"
+                        print(f"✅ {mode} Precision OK (Diff: {diff:.2e})")
                         error_val = diff.item()
                     else:
                         diff_max = (ref_logits - lightop_logits).abs().max()
@@ -177,11 +327,12 @@ if __name__ == "__main__":
                         "Head_Num": head_num,
                         "Head_Dim": head_dim,
                         "Is_FP8": is_fp8,
+                        "Is_INT8": is_int8,
                         "Avg_Time_us": elapsed_time_us,
-                        "Error_Val": error_val  # 此处根据 is_fp8 动态记录了 Diff 或 Max_Err
+                        "Error_Val": error_val  # 此处根据 is_fp8/is_int8 动态记录了 Diff 或 Max_Err
                     })
                 else:
-                    ref_logits, ref_cost = ref_fp8_mqa_logits(Q, K, weights, ks, ke)
+                    ref_logits, ref_cost = ref_fp8_mqa_logits(Q_ref, K_ref, W_ref, ks, ke)
                     lightop_logits = run_lightop()
                     # pdb.set_trace()
                     ref_neginf_mask = (ref_logits == float('-inf'))
@@ -192,10 +343,11 @@ if __name__ == "__main__":
                     ref_logits = ref_logits.masked_fill(ref_neginf_mask, 0)
                     lightop_logits = lightop_logits.masked_fill(neginf_mask, 0)
                     
-                    if is_fp8:
+                    if is_fp8 or is_int8:
+                        mode = "INT8" if is_int8 else "FP8"
                         diff = calc_diff(lightop_logits, ref_logits)
-                        assert diff < 1e-3, f"❌ FP8 Precision check failed! Diff: {diff:.4e}"
-                        print(f"✅ FP8 Precision OK (Diff: {diff:.2e})")
+                        assert diff < 1e-3, f"❌ {mode} Precision check failed! Diff: {diff:.4e}"
+                        print(f"✅ {mode} Precision OK (Diff: {diff:.2e})")
                     else:
                         diff_max = (ref_logits - lightop_logits).abs().max()
                         assert torch.allclose(lightop_logits, ref_logits, rtol=1e-3, atol=1e-3), \
