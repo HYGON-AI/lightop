@@ -65,8 +65,12 @@ def fuse_silu_mul_clamp_quant(
     scales: Optional[torch.Tensor] = None,
     mask_m: Optional[torch.Tensor] = None,
     expect_m: int = -1,
+    use_gelu: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Fused GLM SwiGLU clamp, activation, and per-token INT8 quant.
+    """Fused clamp + SiLU/GELU + mul + per-token INT8 quant.
+
+    When ``use_gelu`` is True, use GELU (PyTorch ``none`` / erf) instead of
+    SiLU. Default keeps the original SiLU path.
 
     When ``mask_m`` is provided or ``expect_m != -1``, ``input`` uses the EP
     layout ``[experts, tokens, 2 * hidden]`` and ``mask_m[e]`` gives the valid
@@ -83,6 +87,7 @@ def fuse_silu_mul_clamp_quant(
             expect_m,
             output,
             scales,
+            use_gelu=use_gelu,
         )
 
     if input.dim() != 2 or input.shape[-1] % 2 != 0:
@@ -110,6 +115,7 @@ def fuse_silu_mul_clamp_quant(
         output,
         scales,
         float(limit),
+        use_gelu,
     )
     return output, scales
 
@@ -121,8 +127,9 @@ def fuse_silu_mul_clamp_quant_ep(
     expect_m: int = -1,
     output: Optional[torch.Tensor] = None,
     scales: Optional[torch.Tensor] = None,
+    use_gelu: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run masked EP GLM SwiGLU clamp and per-token INT8 quantization."""
+    """Run masked EP clamp + SiLU/GELU + mul + per-token INT8 quantization."""
     if input.dim() != 3 or input.shape[-1] % 2 != 0:
         raise ValueError(
             "input must have shape [experts, tokens, 2 * hidden]"
@@ -153,6 +160,7 @@ def fuse_silu_mul_clamp_quant_ep(
         float(limit),
         mask_m,
         expect_m,
+        use_gelu,
     )
     return output, scales
 
