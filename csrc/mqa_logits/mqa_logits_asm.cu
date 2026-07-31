@@ -6,6 +6,7 @@
 #include <string>
 #include <sstream>
 #include <filesystem>
+#include <cstdint>
 
 #include "hip/hip_runtime.h"
 #include <hip/hip_hcc.h>
@@ -97,6 +98,17 @@ inline __device__ void builtin_amdgcn_mmac_fp8(const intx2& reg_a, const intx2& 
     #endif
 }
 
+inline __device__ void builtin_amdgcn_mmac_i8(const intx2& reg_a, const intx2& reg_b, intx4& reg_c) {
+#if defined(__gfx936__) || defined(__gfx928__)
+    auto a = reinterpret_cast<const long*>(&reg_a);
+    auto b = reinterpret_cast<const long*>(&reg_b);
+    reg_c = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, reg_c);
+#elif defined(__gfx938__)
+    reg_c = __builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(
+        reg_a, reg_b, reg_c, false, false, false);
+#endif
+}
+
 template <uint32_t kNextN, uint32_t kNumWarps>
 __global__ __launch_bounds__(kNumWarps * 64, 1) void clean_logits(
     const uint32_t seq_len,
@@ -140,6 +152,73 @@ __global__ __launch_bounds__(kNumWarps * 64, 1) void clean_logits(
             }
         }
     }
+}
+
+// One block per row (grid-stride over rows). Threads cooperatively write -inf to
+// [0, ks) and [ke, N). Vectorized stores are used when row and edge alignment
+// make them safe.
+template <int kNumWarps>
+__device__ __forceinline__ void clean_logits_mqa_core(
+    int M,
+    int N,
+    int stride_d,
+    const uint32_t* __restrict__ KS,
+    const uint32_t* __restrict__ KE,
+    float* __restrict__ D) {
+    using cl_floatx4 = float __attribute__((ext_vector_type(4)));
+    using cl_floatx2 = float __attribute__((ext_vector_type(2)));
+    const float neg_inf = -std::numeric_limits<float>::infinity();
+    const cl_floatx4 ninf4 = {neg_inf, neg_inf, neg_inf, neg_inf};
+    const cl_floatx2 ninf2 = {neg_inf, neg_inf};
+    constexpr int nthreads = kNumWarps * 64;
+    const int tid = threadIdx.x;
+
+    for (int row = blockIdx.x; row < M; row += gridDim.x) {
+        // KS/KE are torch::kInt tensors passed through uint32_t* containers.
+        // Interpret the 32-bit values as signed before clamping.
+        int ks = (KS == nullptr) ? 0 : static_cast<int>(KS[row]);
+        int ke = static_cast<int>(KE[row]);
+        ks = ks < 0 ? 0 : (ks > N ? N : ks);
+        ke = ke < 0 ? 0 : (ke > N ? N : ke);
+        const size_t base = static_cast<size_t>(row) * stride_d;
+
+        for (int j = tid; j < ks; j += nthreads) {
+            D[base + j] = neg_inf;
+        }
+
+        if (ke >= N) {
+            continue;
+        }
+        const int nclean = N - ke;
+        if ((N % 4 == 0) && (ke % 4 == 0)) {
+            cl_floatx4* p = reinterpret_cast<cl_floatx4*>(&D[base + ke]);
+            const int chunks = nclean / 4;
+            for (int c = tid; c < chunks; c += nthreads) {
+                p[c] = ninf4;
+            }
+        } else if ((N % 2 == 0) && (ke % 2 == 0)) {
+            cl_floatx2* p = reinterpret_cast<cl_floatx2*>(&D[base + ke]);
+            const int chunks = nclean / 2;
+            for (int c = tid; c < chunks; c += nthreads) {
+                p[c] = ninf2;
+            }
+        } else {
+            for (int j = ke + tid; j < N; j += nthreads) {
+                D[base + j] = neg_inf;
+            }
+        }
+    }
+}
+
+template <int kNumWarps>
+__global__ __launch_bounds__(kNumWarps * 64, 1) void clean_logits_mqa(
+    int M,
+    int N,
+    int stride_d,
+    const uint32_t* KS,
+    const uint32_t* KE,
+    float* D) {
+    clean_logits_mqa_core<kNumWarps>(M, N, stride_d, KS, KE, D);
 }
 
 template <uint32_t kNumWarps>
@@ -294,6 +373,875 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch_fp8(
     const int q_seq_len,
     const int kv_seq_len,
     const float* KV_scale_data) {
+
+    const int M = q_seq_len;
+    const int N = kv_seq_len;
+    const int K = head_dim * num_heads;
+    const int blockIdx_x = blockIdx.x;
+    const int blockIdx_y = blockIdx.y;
+    const int tid = threadIdx.x;
+    const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
+    const int lane = tid % C10_WARP_SIZE;
+
+    __align__(16) __shared__ fp8 A_Seme[2][16 * 136];
+    __shared__ uint32_t boundary_Seme[BlOCK_M];
+    __shared__ float W_Seme[2][BlOCK_M];
+
+    __shared__ float C_smem[BlOCK_M][BLOCK_N + 4];
+
+    // Split-K
+    const int num_split = gridDim.z;
+    const int split_idx = blockIdx.z;
+    const int heads_per_split = (num_heads + num_split - 1) / num_split;
+    const int start_h = split_idx * heads_per_split;
+    const int end_h = (start_h + heads_per_split) < num_heads ? (start_h + heads_per_split) : num_heads;
+
+    if (start_h >= end_h) return;
+
+    if (tid < BlOCK_M) {
+        if constexpr (is_align_m) {
+            boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+        } else {
+            if (blockIdx_y * BlOCK_M + tid < M) {
+                boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+            } else {
+                boundary_Seme[tid] = 0;
+            }
+        }
+    }
+
+    floatx4 C_reg_out = {0.0, 0.0, 0.0, 0.0};
+
+    intx2 B_reg[4];
+    intx2 A_reg_move = {0, 0};
+
+    int ldg_row_A = blockIdx_y * BlOCK_M + (tid / 16);
+    int ldg_col_A = (tid % 16) * 8;
+
+    int ldg_row_B = (lane / 16) * 8;
+    int ldg_col_B = blockIdx_x * BLOCK_N + warp_idx * 16 + (lane % 16);
+
+    int lds_row_A = (lane % 16);
+    int lds_col_A = (lane / 16) * 8;
+    int sts_row_A = (tid / 16);
+    int sts_col_A = (tid % 16) * 8;
+
+    const int stg_row = lane % 16 + blockIdx_y * BlOCK_M;
+    const int stg_col = lane / 16 + warp_idx * 16 + blockIdx_x * BLOCK_N;
+
+    float scale0 = 1.0f, scale1 = 1.0f, scale2 = 1.0f, scale3 = 1.0f;
+    if (KV_scale_data != nullptr) {
+        if (stg_col < N) scale0 = KV_scale_data[stg_col];
+        if (stg_col + 4 < N) scale1 = KV_scale_data[stg_col + 4];
+        if (stg_col + 8 < N) scale2 = KV_scale_data[stg_col + 8];
+        if (stg_col + 12 < N) scale3 = KV_scale_data[stg_col + 12];
+    }
+
+    loadtileB2reg_fp8<fp8, is_align_n>(B_reg, B_data, ldg_col_B, ldg_row_B, head_dim, N);
+
+    ldg_col_A += start_h * 128;
+
+   // A->reg
+    if (ldg_row_A < M) {
+        *(uint64_t*)&A_reg_move = *(uint64_t*)&A_data[ldg_row_A * K + ldg_col_A];
+    }
+
+    *(uint64_t*)&A_Seme[0][sts_row_A * 136 + sts_col_A] = *(uint64_t*)&A_reg_move;
+    if constexpr (is_align_m) {
+        if (tid < 16) {
+            W_Seme[0][tid] = Weights_data[stg_row * num_heads + start_h];
+        }
+    } else {
+        if (tid < 16) {
+            if (stg_row < M) {
+                W_Seme[0][tid] = Weights_data[stg_row * num_heads + start_h];
+            } else {
+                W_Seme[0][tid] = 0.f;
+            }
+        }
+    }
+    __syncthreads();
+    ldg_col_A += 128; // 滑动到下一个head;
+
+    const int num_iters = end_h - start_h;
+    for (int iter = 0; iter < num_iters; iter++) {
+        int i = start_h + iter;
+
+        int offset;
+        if constexpr (is_align_m) {
+            offset = (ldg_row_A * K + ldg_col_A) * 1;
+        } else {
+            if (ldg_row_A < M) {
+                offset = (ldg_row_A * K + ldg_col_A) * 1;
+            } else {
+                offset = -1;
+            }
+        }
+
+        bool is_load = (iter + 1 < num_iters);
+        cp_async2_vgpr(&A_reg_move, A_data, offset, is_load);
+
+        floatx4 C_reg = {0.0, 0.0, 0.0, 0.0};
+        asm volatile("s_waitcnt lgkmcnt(0)");
+
+        const int buf_idx = iter % 2;
+
+        intx2 A_reg[4];
+        //mma
+        for (int k = 0; k < 4; k++) {
+            A_reg[k] = *(intx2*)&A_Seme[buf_idx][lds_row_A * 136 + lds_col_A + k * 32];
+            builtin_amdgcn_mmac_fp8(A_reg[k], B_reg[k], C_reg);
+        }
+
+        float w = W_Seme[buf_idx][lane % 16];
+
+        // relu 和 w
+        C_reg[0] = fmaxf(C_reg[0], 0.0f); C_reg_out[0] += C_reg[0] * w;
+        C_reg[1] = fmaxf(C_reg[1], 0.0f); C_reg_out[1] += C_reg[1] * w;
+        C_reg[2] = fmaxf(C_reg[2], 0.0f); C_reg_out[2] += C_reg[2] * w;
+        C_reg[3] = fmaxf(C_reg[3], 0.0f); C_reg_out[3] += C_reg[3] * w;
+
+        if (iter + 1 < num_iters) {
+            if (tid < 16) {
+                const int next_head_idx = i + 1;
+                const int next_buf_idx = 1 - buf_idx;
+                if constexpr(is_align_m) {
+                    W_Seme[next_buf_idx][tid] = Weights_data[stg_row * num_heads + next_head_idx];
+                } else {
+                    if (stg_row < M) {
+                        W_Seme[next_buf_idx][tid] = Weights_data[stg_row * num_heads + next_head_idx];
+                    } else {
+                        W_Seme[next_buf_idx][tid] = 0.0f;
+                    }
+                }
+            }
+            asm volatile("s_waitcnt vmcnt(0)");
+            *(uint64_t*)&A_Seme[1 - buf_idx][sts_row_A * 136 + sts_col_A] = *(uint64_t*)&A_reg_move;
+            ldg_col_A += 128;
+        }
+        asm volatile("s_barrier");
+    }
+
+    // 反量化
+    C_reg_out[0] *= scale0;
+    C_reg_out[1] *= scale1;
+    C_reg_out[2] *= scale2;
+    C_reg_out[3] *= scale3;
+
+
+    int local_row = lane % 16;
+    int local_col = lane / 16 + warp_idx * 16;
+
+    C_smem[local_row][local_col]      = C_reg_out[0];
+    C_smem[local_row][local_col + 4]  = C_reg_out[1];
+    C_smem[local_row][local_col + 8]  = C_reg_out[2];
+    C_smem[local_row][local_col + 12] = C_reg_out[3];
+
+    __syncthreads();
+
+    bool use_atomic = (num_split > 1);
+    constexpr float neg_inf = -std::numeric_limits<float>::infinity();
+    const int total_elements = BlOCK_M * BLOCK_N;
+
+    for (int i = tid; i < total_elements; i += blockDim.x) {
+        int e_row = i / BLOCK_N;
+        int e_col = i % BLOCK_N;
+        int global_row = blockIdx_y * BlOCK_M + e_row;
+        int global_col = blockIdx_x * BLOCK_N + e_col;
+
+        if (global_row < M && global_col < N) {
+            int boundary = boundary_Seme[e_row];
+            if (global_col < boundary) {
+                float val = C_smem[e_row][e_col];
+                if (use_atomic) {
+                    atomicAdd(&D_data[global_row * N + global_col], val);
+                } else {
+                    D_data[global_row * N + global_col] = val;
+                }
+            } else {
+                if (!use_atomic || split_idx == 0) {
+                    D_data[global_row * N + global_col] = neg_inf;
+                }
+            }
+        }
+    }
+}
+
+template <int num_heads, int head_dim, int BlOCK_M, int BLOCK_K, int BLOCK_N, bool is_align_m, bool is_align_n>
+__global__ void _mqa_logits_16x128x128_TN_impl_fp8(
+    fp8* A_data,
+    fp8* B_data,
+    float* D_data,
+    float* Weights_data,
+    uint32_t* KS,
+    uint32_t* KE,
+    const int q_seq_len,
+    const int kv_seq_len,
+    const float* KV_scale_data) {
+
+    const int M = q_seq_len;
+    const int N = kv_seq_len;
+    const int K = head_dim * num_heads;
+    const int blockIdx_x = blockIdx.x;
+    const int blockIdx_y = blockIdx.y;
+    const int tid = threadIdx.x;
+
+    const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
+    const int lane = tid % C10_WARP_SIZE;
+
+    __align__(16) __shared__ fp8 A_Seme[2][16 * 136];
+    __shared__ uint32_t boundary_Seme[BlOCK_M];
+    __shared__ float W_Seme[2][BlOCK_M];
+
+    if (tid < BlOCK_M) {
+        if constexpr (is_align_m) {
+            boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+        } else {
+            if (blockIdx_y * BlOCK_M + tid < M) {
+                boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+            } else {
+                boundary_Seme[tid] = 0; // 越界行对应的边界设为 0
+            }
+        }
+    }
+
+    /* block mask */
+    if (M > 0) {
+        const int ke_max_idx_in_block = blockIdx_y * BlOCK_M + BlOCK_M - 1;
+        const int clamped_ke_idx = (ke_max_idx_in_block < M) ? ke_max_idx_in_block : (M - 1);
+        if (blockIdx_x * BLOCK_N >= KE[clamped_ke_idx]) {
+            const float neg_inf = -std::numeric_limits<float>::infinity();
+            const floatx4 neg_infx4 = {neg_inf, neg_inf, neg_inf, neg_inf};
+            const int total_vec4 = (BlOCK_M * BLOCK_N) / 4;
+            for (int i = tid; i < total_vec4; i += blockDim.x) {
+                int r = i / (BLOCK_N / 4);
+                int c = (i % (BLOCK_N / 4)) * 4;
+                int global_row = blockIdx_y * BlOCK_M + r;
+                int global_col = blockIdx_x * BLOCK_N + c;
+                if (global_row < M) {
+                    if (is_align_n && global_col + 3 < N) {
+                        *(floatx4*)(&D_data[global_row * N + global_col]) = neg_infx4;
+                    } else {
+                        #pragma unroll
+                        for (int k = 0; k < 4; ++k) {
+                            if (global_col + k < N) {
+                                D_data[global_row * N + global_col + k] = neg_inf;
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    floatx4 C_reg_out[2] = {{0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}};
+
+
+    intx2 A_reg_move = {0, 0};
+
+    int ldg_row_A = blockIdx_y * BlOCK_M + (tid / 16);
+    int ldg_col_A = (tid % 16) * 8;
+
+
+    int ldg_row_B = (lane / 16) * 8;
+    int ldg_col_B[2];
+    ldg_col_B[0] = blockIdx_x * BLOCK_N + warp_idx * 32 + (lane % 16);
+    ldg_col_B[1] = blockIdx_x * BLOCK_N + warp_idx * 32 + 16 + (lane % 16);
+
+    intx2 B_reg[2][4];
+
+    int lds_row_A = (lane % 16);
+    int lds_col_A = (lane / 16) * 8;
+
+    int sts_row_A = (tid / 16);
+    int sts_col_A = (tid % 16) * 8;
+
+
+    loadtileB2reg_fp8<fp8, is_align_n>(B_reg[0], B_data, ldg_col_B[0], ldg_row_B, head_dim, N);
+    loadtileB2reg_fp8<fp8, is_align_n>(B_reg[1], B_data, ldg_col_B[1], ldg_row_B, head_dim, N);
+
+
+    if (ldg_row_A < M) {
+        *(uint64_t*)&A_reg_move = *(uint64_t*)&A_data[ldg_row_A * K + ldg_col_A];
+    }
+    *(uint64_t*)&A_Seme[0][sts_row_A * 136 + sts_col_A] = *(uint64_t*)&A_reg_move;
+
+    if (tid < 16) {
+        int w_row = blockIdx_y * BlOCK_M + tid;
+        if constexpr (is_align_m) {
+            W_Seme[0][tid] = Weights_data[w_row * num_heads];
+        } else {
+            if (w_row < M) {
+                W_Seme[0][tid] = Weights_data[w_row * num_heads];
+            } else {
+                W_Seme[0][tid] = 0.f;
+            }
+        }
+    }
+    __syncthreads();
+    ldg_col_A += 128;
+
+    for (int i = 0; i < num_heads; i++) {
+        __syncthreads();
+        asm volatile("s_barrier");
+
+        bool is_load_next = (i + 1 < num_heads);
+
+        int offset_bytes = -1;
+        if constexpr (is_align_m) {
+            offset_bytes = (ldg_row_A * K + ldg_col_A);
+        } else {
+            if (ldg_row_A < M) {
+                offset_bytes = (ldg_row_A * K + ldg_col_A);
+            }
+        }
+
+
+        cp_async2_vgpr(&A_reg_move, A_data, offset_bytes, is_load_next);
+
+
+        float w_reg_next = 0.0f;
+        if (is_load_next) {
+            if (tid < 16) {
+                int w_row = blockIdx_y * BlOCK_M + tid;
+                if constexpr (is_align_m) {
+                    w_reg_next = Weights_data[w_row * num_heads + (i + 1)];
+                } else {
+                    w_reg_next = (w_row < M) ? Weights_data[w_row * num_heads + (i + 1)] : 0.0f;
+                }
+            }
+        }
+
+        floatx4 C_reg[2] = {{0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}};
+        asm volatile("s_waitcnt lgkmcnt(0)");
+
+        intx2 A_reg[4];
+        for (int k = 0; k < 4; k++) {
+            A_reg[k] = *(intx2*)&A_Seme[i % 2][lds_row_A * 136 + lds_col_A + k * 32];
+            builtin_amdgcn_mmac_fp8(A_reg[k], B_reg[0][k], C_reg[0]);
+            builtin_amdgcn_mmac_fp8(A_reg[k], B_reg[1][k], C_reg[1]);
+        }
+
+
+        float w = W_Seme[i % 2][lane % 16];
+
+
+        #pragma unroll
+        for(int g = 0; g < 2; ++g) {
+            C_reg_out[g][0] += fmaxf(C_reg[g][0], 0.0f) * w;
+            C_reg_out[g][1] += fmaxf(C_reg[g][1], 0.0f) * w;
+            C_reg_out[g][2] += fmaxf(C_reg[g][2], 0.0f) * w;
+            C_reg_out[g][3] += fmaxf(C_reg[g][3], 0.0f) * w;
+        }
+        if (is_load_next) {
+            asm volatile("s_waitcnt vmcnt(0)");
+
+            *(uint64_t*)&A_Seme[1 - i % 2][sts_row_A * 136 + sts_col_A] = *(uint64_t*)&A_reg_move;
+            ldg_col_A += 128;
+
+            if (tid < 16) {
+                W_Seme[1 - i % 2][tid] = w_reg_next;
+            }
+        }
+    }
+
+    float* C_smem_ptr = reinterpret_cast<float*>(A_Seme);
+    int local_row = lane % 16;
+
+
+    int local_col_0 = warp_idx * 32 + lane / 16;
+    int local_col_1 = warp_idx * 32 + 16 + lane / 16;
+
+    constexpr float neg_inf = -std::numeric_limits<float>::infinity();
+
+    if (warp_idx < 2) {
+        C_smem_ptr[local_row * 68 + local_col_0]      = C_reg_out[0][0];
+        C_smem_ptr[local_row * 68 + local_col_0 + 4]  = C_reg_out[0][1];
+        C_smem_ptr[local_row * 68 + local_col_0 + 8]  = C_reg_out[0][2];
+        C_smem_ptr[local_row * 68 + local_col_0 + 12] = C_reg_out[0][3];
+
+        C_smem_ptr[local_row * 68 + local_col_1]      = C_reg_out[1][0];
+        C_smem_ptr[local_row * 68 + local_col_1 + 4]  = C_reg_out[1][1];
+        C_smem_ptr[local_row * 68 + local_col_1 + 8]  = C_reg_out[1][2];
+        C_smem_ptr[local_row * 68 + local_col_1 + 12] = C_reg_out[1][3];
+    }
+
+    __syncthreads();
+
+    {
+        int e_row = tid / 16;
+        int e_col = (tid % 16) * 4;
+        int global_row = blockIdx_y * BlOCK_M + e_row;
+        int global_col = blockIdx_x * BLOCK_N + e_col; // Offset 0
+
+        if (global_row < M && global_col < N) {
+            floatx4 val = *(floatx4*)(&C_smem_ptr[e_row * 68 + e_col]);
+            if (KV_scale_data != nullptr) {
+                floatx4 scale;
+                if constexpr (is_align_n) scale = *(floatx4*)(&KV_scale_data[global_col]);
+                else {
+                    if (global_col + 3 < N) scale = *(floatx4*)(&KV_scale_data[global_col]);
+                    else {
+                        scale[0] = (global_col < N) ? KV_scale_data[global_col] : 1.0f;
+                        scale[1] = (global_col + 1 < N) ? KV_scale_data[global_col+1] : 1.0f;
+                        scale[2] = (global_col + 2 < N) ? KV_scale_data[global_col+2] : 1.0f;
+                        scale[3] = (global_col + 3 < N) ? KV_scale_data[global_col+3] : 1.0f;
+                    }
+                }
+                val[0] *= scale[0]; val[1] *= scale[1]; val[2] *= scale[2]; val[3] *= scale[3];
+            }
+            int boundary = boundary_Seme[e_row];
+            if (global_col + 3 < boundary && is_align_n) {
+                *(floatx4*)(&D_data[global_row * N + global_col]) = val;
+            } else {
+                #pragma unroll
+                for(int k = 0; k < 4; ++k) {
+                    if (global_col + k < boundary) D_data[global_row * N + global_col + k] = val[k];
+                    else if (global_col + k < N) D_data[global_row * N + global_col + k] = neg_inf;
+                }
+            }
+        }
+    }
+
+    __syncthreads();
+
+    if (warp_idx >= 2) {
+        int smem_col_0 = local_col_0 - 64;
+        int smem_col_1 = local_col_1 - 64;
+
+        C_smem_ptr[local_row * 68 + smem_col_0]      = C_reg_out[0][0];
+        C_smem_ptr[local_row * 68 + smem_col_0 + 4]  = C_reg_out[0][1];
+        C_smem_ptr[local_row * 68 + smem_col_0 + 8]  = C_reg_out[0][2];
+        C_smem_ptr[local_row * 68 + smem_col_0 + 12] = C_reg_out[0][3];
+
+        C_smem_ptr[local_row * 68 + smem_col_1]      = C_reg_out[1][0];
+        C_smem_ptr[local_row * 68 + smem_col_1 + 4]  = C_reg_out[1][1];
+        C_smem_ptr[local_row * 68 + smem_col_1 + 8]  = C_reg_out[1][2];
+        C_smem_ptr[local_row * 68 + smem_col_1 + 12] = C_reg_out[1][3];
+    }
+
+    __syncthreads();
+
+    {
+        int e_row = tid / 16;
+        int e_col = (tid % 16) * 4;
+        int global_row = blockIdx_y * BlOCK_M + e_row;
+        int global_col = blockIdx_x * BLOCK_N + e_col + 64; // Offset 64
+
+        if (global_row < M && global_col < N) {
+            floatx4 val = *(floatx4*)(&C_smem_ptr[e_row * 68 + e_col]);
+            if (KV_scale_data != nullptr) {
+                floatx4 scale;
+                if constexpr (is_align_n) scale = *(floatx4*)(&KV_scale_data[global_col]);
+                else {
+                    if (global_col + 3 < N) scale = *(floatx4*)(&KV_scale_data[global_col]);
+                    else {
+                        scale[0] = (global_col < N) ? KV_scale_data[global_col] : 1.0f;
+                        scale[1] = (global_col + 1 < N) ? KV_scale_data[global_col+1] : 1.0f;
+                        scale[2] = (global_col + 2 < N) ? KV_scale_data[global_col+2] : 1.0f;
+                        scale[3] = (global_col + 3 < N) ? KV_scale_data[global_col+3] : 1.0f;
+                    }
+                }
+                val[0] *= scale[0]; val[1] *= scale[1]; val[2] *= scale[2]; val[3] *= scale[3];
+            }
+            int boundary = boundary_Seme[e_row];
+            if (global_col + 3 < boundary && is_align_n) {
+                *(floatx4*)(&D_data[global_row * N + global_col]) = val;
+            } else {
+                #pragma unroll
+                for(int k = 0; k < 4; ++k) {
+                    if (global_col + k < boundary) D_data[global_row * N + global_col + k] = val[k];
+                    else if (global_col + k < N) D_data[global_row * N + global_col + k] = neg_inf;
+                }
+            }
+        }
+    }
+}
+
+template <int num_heads, int head_dim, int BlOCK_M, int BLOCK_K, int BLOCK_N, bool is_align_m, bool is_align_n>
+__global__ void _mqa_logits_32x128x128_TN_impl_fp8(
+    fp8* A_data,
+    fp8* B_data,
+    float* D_data,
+    float* Weights_data,
+    uint32_t* KS,
+    uint32_t* KE,
+    const int q_seq_len,
+    const int kv_seq_len,
+    const float* KV_scale_data) {
+
+    const int M = q_seq_len;
+    const int N = kv_seq_len;
+    const int K = head_dim * num_heads;
+    const int blockIdx_x = blockIdx.x;
+    const int blockIdx_y = blockIdx.y;
+    const int tid = threadIdx.x;
+
+    const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
+    const int lane = tid % C10_WARP_SIZE;
+
+    __align__(16) __shared__ union {
+        fp8 A_Seme[2][32 * 136];
+        float C_smem[32][68];
+    } smem;
+    __shared__ uint32_t boundary_Seme[BlOCK_M];
+    __shared__ float W_Seme_Cache[2][32][8];
+
+    if (tid < BlOCK_M) {
+        if constexpr (is_align_m) {
+            boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+        } else {
+            if (blockIdx_y * BlOCK_M + tid < M) {
+                boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
+            } else {
+                boundary_Seme[tid] = 0;
+            }
+        }
+    }
+
+    /* block mask */
+    if (M > 0) {
+        const int ke_max_idx_in_block = blockIdx_y * BlOCK_M + BlOCK_M - 1;
+        const int clamped_ke_idx = (ke_max_idx_in_block < M) ? ke_max_idx_in_block : (M - 1);
+        if (blockIdx_x * BLOCK_N >= KE[clamped_ke_idx]) {
+            constexpr float neg_inf = -std::numeric_limits<float>::infinity();
+            constexpr floatx4 neg_infx4 = {neg_inf, neg_inf, neg_inf, neg_inf};
+            const int total_vec4 = (BlOCK_M * BLOCK_N) / 4;
+            for (int i = tid; i < total_vec4; i += blockDim.x) {
+                int r = i / (BLOCK_N / 4);
+                int c = (i % (BLOCK_N / 4)) * 4;
+                int global_row = blockIdx_y * BlOCK_M + r;
+                int global_col = blockIdx_x * BLOCK_N + c;
+                if (global_row < M) {
+                    if (is_align_n && global_col + 3 < N) {
+                        *(floatx4*)(&D_data[(int64_t)global_row * N + global_col]) = neg_infx4;
+                    } else {
+                        #pragma unroll
+                        for (int k = 0; k < 4; ++k) {
+                            if (global_col + k < N) {
+                                D_data[(int64_t)global_row * N + global_col + k] = neg_inf;
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+    }
+
+    floatx4 C_reg_out[2][2];
+    C_reg_out[0][0] = {0.0, 0.0, 0.0, 0.0};
+    C_reg_out[0][1] = {0.0, 0.0, 0.0, 0.0};
+    C_reg_out[1][0] = {0.0, 0.0, 0.0, 0.0};
+    C_reg_out[1][1] = {0.0, 0.0, 0.0, 0.0};
+
+    intx4 A_reg_move = {0, 0, 0, 0};
+
+    int ldg_row_A = blockIdx_y * BlOCK_M + (tid / 8);
+    int ldg_col_A = (tid % 8) * 16;
+
+    int ldg_row_B = (lane / 16) * 8;
+    int ldg_col_B[2];
+    ldg_col_B[0] = blockIdx_x * BLOCK_N + warp_idx * 32 + (lane % 16);
+    ldg_col_B[1] = blockIdx_x * BLOCK_N + warp_idx * 32 + 16 + (lane % 16);
+
+    intx2 B_reg[2][4];
+
+    int lds_row_A = (lane % 16);
+    int lds_col_A = (lane / 16) * 8;
+
+    int sts_row_A = (tid / 8);
+    int sts_col_A = (tid % 8) * 16;
+
+    loadtileB2reg_fp8<fp8, is_align_n>(B_reg[0], B_data, ldg_col_B[0], ldg_row_B, head_dim, N);
+    loadtileB2reg_fp8<fp8, is_align_n>(B_reg[1], B_data, ldg_col_B[1], ldg_row_B, head_dim, N);
+
+    if (ldg_row_A < M) {
+        A_reg_move = *(intx4*)&A_data[(int64_t)ldg_row_A * K + ldg_col_A];
+    }
+    *(intx4*)&smem.A_Seme[0][sts_row_A * 136 + sts_col_A] = A_reg_move;
+    ldg_col_A += 128;
+
+    if (1 < num_heads) {
+        int64_t offset_bytes = (ldg_row_A < M) ? ((int64_t)ldg_row_A * K + ldg_col_A) : -1;
+        cp_async4_vgpr(&A_reg_move, A_data, offset_bytes, true);
+    }
+
+    if (tid < 256) {
+        int r = tid / 8;
+        int c = tid % 8;
+        if (c < num_heads) {
+            int w_row = blockIdx_y * BlOCK_M + r;
+            W_Seme_Cache[0][r][c] = (w_row < M) ? Weights_data[(int64_t)w_row * num_heads + c] : 0.f;
+        }
+    }
+
+    for (int i = 0; i < num_heads; i++) {
+        __syncthreads();
+        if (i % 8 == 0 && (i + 8) < num_heads) {
+            int next_buf = 1 - (i / 8) % 2;
+            int next_i = i + 8;
+            if (tid < 256) {
+                int r = tid / 8;
+                int c = tid % 8;
+                if (next_i + c < num_heads) {
+                    int w_row = blockIdx_y * BlOCK_M + r;
+                    W_Seme_Cache[next_buf][r][c] = (w_row < M) ? Weights_data[(int64_t)w_row * num_heads + next_i + c] : 0.f;
+                }
+            }
+        }
+
+        floatx4 C_reg[2][2];
+        for (int k = 0; k < 2; ++k) {
+            for (int j = 0; j < 2; ++j) {
+                C_reg[k][j] = {0.0, 0.0, 0.0, 0.0};
+            }
+        }
+
+        asm volatile("s_waitcnt lgkmcnt(0)");
+
+        intx2 A_reg[2][4];
+        for (int k = 0; k < 4; k++) {
+            A_reg[0][k] = *(intx2*)&smem.A_Seme[i % 2][lds_row_A * 136 + lds_col_A + k * 32];
+            A_reg[1][k] = *(intx2*)&smem.A_Seme[i % 2][(lds_row_A + 16) * 136 + lds_col_A + k * 32];
+
+            builtin_amdgcn_mmac_fp8(A_reg[0][k], B_reg[0][k], C_reg[0][0]);
+            builtin_amdgcn_mmac_fp8(A_reg[0][k], B_reg[1][k], C_reg[0][1]);
+            builtin_amdgcn_mmac_fp8(A_reg[1][k], B_reg[0][k], C_reg[1][0]);
+            builtin_amdgcn_mmac_fp8(A_reg[1][k], B_reg[1][k], C_reg[1][1]);
+        }
+        float w1 = W_Seme_Cache[(i / 8) % 2][lane % 16][i % 8];
+        float w2 = W_Seme_Cache[(i / 8) % 2][lane % 16 + 16][i % 8];
+
+        #pragma unroll
+        for(int g = 0; g < 2; ++g) {
+            C_reg_out[0][g][0] += fmaxf(C_reg[0][g][0], 0.0f) * w1;
+            C_reg_out[0][g][1] += fmaxf(C_reg[0][g][1], 0.0f) * w1;
+            C_reg_out[0][g][2] += fmaxf(C_reg[0][g][2], 0.0f) * w1;
+            C_reg_out[0][g][3] += fmaxf(C_reg[0][g][3], 0.0f) * w1;
+
+            C_reg_out[1][g][0] += fmaxf(C_reg[1][g][0], 0.0f) * w2;
+            C_reg_out[1][g][1] += fmaxf(C_reg[1][g][1], 0.0f) * w2;
+            C_reg_out[1][g][2] += fmaxf(C_reg[1][g][2], 0.0f) * w2;
+            C_reg_out[1][g][3] += fmaxf(C_reg[1][g][3], 0.0f) * w2;
+        }
+
+        if (i + 1 < num_heads) {
+            asm volatile("s_waitcnt vmcnt(0)");
+
+            *(intx4*)&smem.A_Seme[1 - i % 2][sts_row_A * 136 + sts_col_A] = A_reg_move;
+            ldg_col_A += 128;
+            if (i + 2 < num_heads) {
+                int64_t offset_bytes = (ldg_row_A < M) ? ((int64_t)ldg_row_A * K + ldg_col_A) : -1;
+                cp_async4_vgpr(&A_reg_move, A_data, offset_bytes, true);
+            }
+        }
+    }
+
+    int local_row = lane % 16;
+
+    int local_col_0 = warp_idx * 32 + lane / 16;
+    int local_col_1 = warp_idx * 32 + 16 + lane / 16;
+
+    constexpr float neg_inf = -std::numeric_limits<float>::infinity();
+
+    if (warp_idx < 2) {
+        smem.C_smem[local_row][local_col_0]      = C_reg_out[0][0][0];
+        smem.C_smem[local_row][local_col_0 + 4]  = C_reg_out[0][0][1];
+        smem.C_smem[local_row][local_col_0 + 8]  = C_reg_out[0][0][2];
+        smem.C_smem[local_row][local_col_0 + 12] = C_reg_out[0][0][3];
+
+        smem.C_smem[local_row][local_col_1]      = C_reg_out[0][1][0];
+        smem.C_smem[local_row][local_col_1 + 4]  = C_reg_out[0][1][1];
+        smem.C_smem[local_row][local_col_1 + 8]  = C_reg_out[0][1][2];
+        smem.C_smem[local_row][local_col_1 + 12] = C_reg_out[0][1][3];
+
+        smem.C_smem[local_row + 16][local_col_0]      = C_reg_out[1][0][0];
+        smem.C_smem[local_row + 16][local_col_0 + 4]  = C_reg_out[1][0][1];
+        smem.C_smem[local_row + 16][local_col_0 + 8]  = C_reg_out[1][0][2];
+        smem.C_smem[local_row + 16][local_col_0 + 12] = C_reg_out[1][0][3];
+
+        smem.C_smem[local_row + 16][local_col_1]      = C_reg_out[1][1][0];
+        smem.C_smem[local_row + 16][local_col_1 + 4]  = C_reg_out[1][1][1];
+        smem.C_smem[local_row + 16][local_col_1 + 8]  = C_reg_out[1][1][2];
+        smem.C_smem[local_row + 16][local_col_1 + 12] = C_reg_out[1][1][3];
+    }
+
+    __syncthreads();
+
+    {
+        int e_row_0 = tid / 16;
+        int e_row_1 = tid / 16 + 16;
+        int e_col = (tid % 16) * 4;
+        int global_row_0 = blockIdx_y * BlOCK_M + e_row_0;
+        int global_row_1 = blockIdx_y * BlOCK_M + e_row_1;
+        int global_col = blockIdx_x * BLOCK_N + e_col; // Offset 0
+
+        if (global_row_0 < M && global_col < N) {
+            floatx4 val = *(floatx4*)(&smem.C_smem[e_row_0][e_col]);
+            if (KV_scale_data != nullptr) {
+                floatx4 scale;
+                if constexpr (is_align_n) scale = *(floatx4*)(&KV_scale_data[global_col]);
+                else {
+                    if (global_col + 3 < N) scale = *(floatx4*)(&KV_scale_data[global_col]);
+                    else {
+                        scale[0] = (global_col < N) ? KV_scale_data[global_col] : 1.0f;
+                        scale[1] = (global_col + 1 < N) ? KV_scale_data[global_col+1] : 1.0f;
+                        scale[2] = (global_col + 2 < N) ? KV_scale_data[global_col+2] : 1.0f;
+                        scale[3] = (global_col + 3 < N) ? KV_scale_data[global_col+3] : 1.0f;
+                    }
+                }
+                val[0] *= scale[0]; val[1] *= scale[1]; val[2] *= scale[2]; val[3] *= scale[3];
+            }
+            int boundary = boundary_Seme[e_row_0];
+            if (global_col + 3 < boundary && is_align_n) {
+                *(floatx4*)(&D_data[(int64_t)global_row_0 * N + global_col]) = val;
+            } else {
+                #pragma unroll
+                for(int k = 0; k < 4; ++k) {
+                    if (global_col + k < boundary) D_data[(int64_t)global_row_0 * N + global_col + k] = val[k];
+                    else if (global_col + k < N) D_data[(int64_t)global_row_0 * N + global_col + k] = neg_inf;
+                }
+            }
+        }
+
+        if (global_row_1 < M && global_col < N) {
+            floatx4 val = *(floatx4*)(&smem.C_smem[e_row_1][e_col]);
+            if (KV_scale_data != nullptr) {
+                floatx4 scale;
+                if constexpr (is_align_n) scale = *(floatx4*)(&KV_scale_data[global_col]);
+                else {
+                    if (global_col + 3 < N) scale = *(floatx4*)(&KV_scale_data[global_col]);
+                    else {
+                        scale[0] = (global_col < N) ? KV_scale_data[global_col] : 1.0f;
+                        scale[1] = (global_col + 1 < N) ? KV_scale_data[global_col+1] : 1.0f;
+                        scale[2] = (global_col + 2 < N) ? KV_scale_data[global_col+2] : 1.0f;
+                        scale[3] = (global_col + 3 < N) ? KV_scale_data[global_col+3] : 1.0f;
+                    }
+                }
+                val[0] *= scale[0]; val[1] *= scale[1]; val[2] *= scale[2]; val[3] *= scale[3];
+            }
+            int boundary = boundary_Seme[e_row_1];
+            if (global_col + 3 < boundary && is_align_n) {
+                *(floatx4*)(&D_data[(int64_t)global_row_1 * N + global_col]) = val;
+            } else {
+                #pragma unroll
+                for(int k = 0; k < 4; ++k) {
+                    if (global_col + k < boundary) D_data[(int64_t)global_row_1 * N + global_col + k] = val[k];
+                    else if (global_col + k < N) D_data[(int64_t)global_row_1 * N + global_col + k] = neg_inf;
+                }
+            }
+        }
+    }
+
+    __syncthreads();
+
+    if (warp_idx >= 2) {
+        int smem_col_0 = local_col_0 - 64;
+        int smem_col_1 = local_col_1 - 64;
+
+        smem.C_smem[local_row][smem_col_0]      = C_reg_out[0][0][0];
+        smem.C_smem[local_row][smem_col_0 + 4]  = C_reg_out[0][0][1];
+        smem.C_smem[local_row][smem_col_0 + 8]  = C_reg_out[0][0][2];
+        smem.C_smem[local_row][smem_col_0 + 12] = C_reg_out[0][0][3];
+
+        smem.C_smem[local_row][smem_col_1]      = C_reg_out[0][1][0];
+        smem.C_smem[local_row][smem_col_1 + 4]  = C_reg_out[0][1][1];
+        smem.C_smem[local_row][smem_col_1 + 8]  = C_reg_out[0][1][2];
+        smem.C_smem[local_row][smem_col_1 + 12] = C_reg_out[0][1][3];
+
+        smem.C_smem[local_row + 16][smem_col_0]      = C_reg_out[1][0][0];
+        smem.C_smem[local_row + 16][smem_col_0 + 4]  = C_reg_out[1][0][1];
+        smem.C_smem[local_row + 16][smem_col_0 + 8]  = C_reg_out[1][0][2];
+        smem.C_smem[local_row + 16][smem_col_0 + 12] = C_reg_out[1][0][3];
+
+        smem.C_smem[local_row + 16][smem_col_1]      = C_reg_out[1][1][0];
+        smem.C_smem[local_row + 16][smem_col_1 + 4]  = C_reg_out[1][1][1];
+        smem.C_smem[local_row + 16][smem_col_1 + 8]  = C_reg_out[1][1][2];
+        smem.C_smem[local_row + 16][smem_col_1 + 12] = C_reg_out[1][1][3];
+    }
+
+    __syncthreads();
+
+    {
+        int e_row_0 = tid / 16;
+        int e_row_1 = tid / 16 + 16;
+        int e_col = (tid % 16) * 4;
+        int global_row_0 = blockIdx_y * BlOCK_M + e_row_0;
+        int global_row_1 = blockIdx_y * BlOCK_M + e_row_1;
+        int global_col = blockIdx_x * BLOCK_N + e_col + 64; // Offset 64
+
+        if (global_row_0 < M && global_col < N) {
+            floatx4 val = *(floatx4*)(&smem.C_smem[e_row_0][e_col]);
+            if (KV_scale_data != nullptr) {
+                floatx4 scale;
+                if constexpr (is_align_n) scale = *(floatx4*)(&KV_scale_data[global_col]);
+                else {
+                    if (global_col + 3 < N) scale = *(floatx4*)(&KV_scale_data[global_col]);
+                    else {
+                        scale[0] = (global_col < N) ? KV_scale_data[global_col] : 1.0f;
+                        scale[1] = (global_col + 1 < N) ? KV_scale_data[global_col+1] : 1.0f;
+                        scale[2] = (global_col + 2 < N) ? KV_scale_data[global_col+2] : 1.0f;
+                        scale[3] = (global_col + 3 < N) ? KV_scale_data[global_col+3] : 1.0f;
+                    }
+                }
+                val[0] *= scale[0]; val[1] *= scale[1]; val[2] *= scale[2]; val[3] *= scale[3];
+            }
+            int boundary = boundary_Seme[e_row_0];
+            if (global_col + 3 < boundary && is_align_n) {
+                *(floatx4*)(&D_data[(int64_t)global_row_0 * N + global_col]) = val;
+            } else {
+                #pragma unroll
+                for(int k = 0; k < 4; ++k) {
+                    if (global_col + k < boundary) D_data[(int64_t)global_row_0 * N + global_col + k] = val[k];
+                    else if (global_col + k < N) D_data[(int64_t)global_row_0 * N + global_col + k] = neg_inf;
+                }
+            }
+        }
+
+        if (global_row_1 < M && global_col < N) {
+            floatx4 val = *(floatx4*)(&smem.C_smem[e_row_1][e_col]);
+            if (KV_scale_data != nullptr) {
+                floatx4 scale;
+                if constexpr (is_align_n) scale = *(floatx4*)(&KV_scale_data[global_col]);
+                else {
+                    if (global_col + 3 < N) scale = *(floatx4*)(&KV_scale_data[global_col]);
+                    else {
+                        scale[0] = (global_col < N) ? KV_scale_data[global_col] : 1.0f;
+                        scale[1] = (global_col + 1 < N) ? KV_scale_data[global_col+1] : 1.0f;
+                        scale[2] = (global_col + 2 < N) ? KV_scale_data[global_col+2] : 1.0f;
+                        scale[3] = (global_col + 3 < N) ? KV_scale_data[global_col+3] : 1.0f;
+                    }
+                }
+                val[0] *= scale[0]; val[1] *= scale[1]; val[2] *= scale[2]; val[3] *= scale[3];
+            }
+            int boundary = boundary_Seme[e_row_1];
+            if (global_col + 3 < boundary && is_align_n) {
+                *(floatx4*)(&D_data[(int64_t)global_row_1 * N + global_col]) = val;
+            } else {
+                #pragma unroll
+                for(int k = 0; k < 4; ++k) {
+                    if (global_col + k < boundary) D_data[(int64_t)global_row_1 * N + global_col + k] = val[k];
+                    else if (global_col + k < N) D_data[(int64_t)global_row_1 * N + global_col + k] = neg_inf;
+                }
+            }
+        }
+    }
+}
+
+/*int8, KV_scale_data (gfx936 native i8 mmac)*/
+template <int num_heads, int head_dim, int BlOCK_M, int BLOCK_K, int BLOCK_N, bool is_align_m, bool is_align_n>
+__global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch_i8(
+    int8_t* A_data,
+    int8_t* B_data,
+    float* D_data,
+    float* Weights_data,
+    uint32_t* KS,
+    uint32_t* KE,
+    const int q_seq_len,
+    const int kv_seq_len,
+    const float* KV_scale_data) {
     
     const int M = q_seq_len;
     const int N = kv_seq_len;
@@ -304,7 +1252,7 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch_fp8(
     const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
     const int lane = tid % C10_WARP_SIZE;
     
-    __align__(16) __shared__ fp8 A_Seme[2][16 * 136];
+    __align__(16) __shared__ int8_t A_Seme[2][16 * 136];
     __shared__ uint32_t boundary_Seme[BlOCK_M];
     __shared__ float W_Seme[2][BlOCK_M];
     
@@ -358,7 +1306,7 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch_fp8(
         if (stg_col + 12 < N) scale3 = KV_scale_data[stg_col + 12];
     }
 
-    loadtileB2reg_fp8<fp8, is_align_n>(B_reg, B_data, ldg_col_B, ldg_row_B, head_dim, N);
+    loadtileB2reg_fp8<int8_t, is_align_n>(B_reg, B_data, ldg_col_B, ldg_row_B, head_dim, N);
 
     ldg_col_A += start_h * 128;
 
@@ -402,7 +1350,7 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch_fp8(
         bool is_load = (iter + 1 < num_iters); 
         cp_async2_vgpr(&A_reg_move, A_data, offset, is_load); 
 
-        floatx4 C_reg = {0.0, 0.0, 0.0, 0.0};
+        intx4 C_reg = {0, 0, 0, 0};
         asm volatile("s_waitcnt lgkmcnt(0)");
         
         const int buf_idx = iter % 2;
@@ -411,16 +1359,16 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch_fp8(
         //mma
         for (int k = 0; k < 4; k++) {
             A_reg[k] = *(intx2*)&A_Seme[buf_idx][lds_row_A * 136 + lds_col_A + k * 32];
-            builtin_amdgcn_mmac_fp8(A_reg[k], B_reg[k], C_reg); 
+            builtin_amdgcn_mmac_i8(A_reg[k], B_reg[k], C_reg);
         }
 
         float w = W_Seme[buf_idx][lane % 16];
         
         // relu 和 w
-        C_reg[0] = fmaxf(C_reg[0], 0.0f); C_reg_out[0] += C_reg[0] * w;
-        C_reg[1] = fmaxf(C_reg[1], 0.0f); C_reg_out[1] += C_reg[1] * w;
-        C_reg[2] = fmaxf(C_reg[2], 0.0f); C_reg_out[2] += C_reg[2] * w;
-        C_reg[3] = fmaxf(C_reg[3], 0.0f); C_reg_out[3] += C_reg[3] * w;
+        C_reg_out[0] += fmaxf((float)C_reg[0], 0.0f) * w;
+        C_reg_out[1] += fmaxf((float)C_reg[1], 0.0f) * w;
+        C_reg_out[2] += fmaxf((float)C_reg[2], 0.0f) * w;
+        C_reg_out[3] += fmaxf((float)C_reg[3], 0.0f) * w;
 
         if (iter + 1 < num_iters) {
             if (tid < 16) {
@@ -489,9 +1437,9 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch_fp8(
 }
 
 template <int num_heads, int head_dim, int BlOCK_M, int BLOCK_K, int BLOCK_N, bool is_align_m, bool is_align_n>
-__global__ void _mqa_logits_16x128x128_TN_impl_fp8(
-    fp8* A_data,
-    fp8* B_data,
+__global__ void _mqa_logits_16x128x128_TN_impl_i8(
+    int8_t* A_data,
+    int8_t* B_data,
     float* D_data,
     float* Weights_data,
     uint32_t* KS,
@@ -510,7 +1458,7 @@ __global__ void _mqa_logits_16x128x128_TN_impl_fp8(
     const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
     const int lane = tid % C10_WARP_SIZE;
     
-    __align__(16) __shared__ fp8 A_Seme[2][16 * 136];
+    __align__(16) __shared__ int8_t A_Seme[2][16 * 136];
     __shared__ uint32_t boundary_Seme[BlOCK_M];
     __shared__ float W_Seme[2][BlOCK_M];
 
@@ -526,35 +1474,7 @@ __global__ void _mqa_logits_16x128x128_TN_impl_fp8(
         }
     }
 
-    /* block mask */
-    if (M > 0) {
-        const int ke_max_idx_in_block = blockIdx_y * BlOCK_M + BlOCK_M - 1;
-        const int clamped_ke_idx = (ke_max_idx_in_block < M) ? ke_max_idx_in_block : (M - 1);
-        if (blockIdx_x * BLOCK_N >= KE[clamped_ke_idx]) {
-            const float neg_inf = -std::numeric_limits<float>::infinity();
-            const floatx4 neg_infx4 = {neg_inf, neg_inf, neg_inf, neg_inf};
-            const int total_vec4 = (BlOCK_M * BLOCK_N) / 4;
-            for (int i = tid; i < total_vec4; i += blockDim.x) {
-                int r = i / (BLOCK_N / 4);
-                int c = (i % (BLOCK_N / 4)) * 4;
-                int global_row = blockIdx_y * BlOCK_M + r;
-                int global_col = blockIdx_x * BLOCK_N + c;
-                if (global_row < M) {
-                    if (is_align_n && global_col + 3 < N) {
-                        *(floatx4*)(&D_data[global_row * N + global_col]) = neg_infx4;
-                    } else {
-                        #pragma unroll
-                        for (int k = 0; k < 4; ++k) {
-                            if (global_col + k < N) {
-                                D_data[global_row * N + global_col + k] = neg_inf;
-                            }
-                        }
-                    }
-                }
-            }
-            return;
-        }
-    }
+    /* KE is normalized and applied per row by clean_logits_mqa. */
     
     floatx4 C_reg_out[2] = {{0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}};
     
@@ -579,8 +1499,8 @@ __global__ void _mqa_logits_16x128x128_TN_impl_fp8(
     int sts_col_A = (tid % 16) * 8;
 
 
-    loadtileB2reg_fp8<fp8, is_align_n>(B_reg[0], B_data, ldg_col_B[0], ldg_row_B, head_dim, N);
-    loadtileB2reg_fp8<fp8, is_align_n>(B_reg[1], B_data, ldg_col_B[1], ldg_row_B, head_dim, N);
+    loadtileB2reg_fp8<int8_t, is_align_n>(B_reg[0], B_data, ldg_col_B[0], ldg_row_B, head_dim, N);
+    loadtileB2reg_fp8<int8_t, is_align_n>(B_reg[1], B_data, ldg_col_B[1], ldg_row_B, head_dim, N);
 
  
     if (ldg_row_A < M) {
@@ -634,14 +1554,14 @@ __global__ void _mqa_logits_16x128x128_TN_impl_fp8(
             }
         }
 
-        floatx4 C_reg[2] = {{0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}};
+        intx4 C_reg[2] = {{0, 0, 0, 0}, {0, 0, 0, 0}};
         asm volatile("s_waitcnt lgkmcnt(0)");
         
         intx2 A_reg[4];
         for (int k = 0; k < 4; k++) {
             A_reg[k] = *(intx2*)&A_Seme[i % 2][lds_row_A * 136 + lds_col_A + k * 32];
-            builtin_amdgcn_mmac_fp8(A_reg[k], B_reg[0][k], C_reg[0]); 
-            builtin_amdgcn_mmac_fp8(A_reg[k], B_reg[1][k], C_reg[1]); 
+            builtin_amdgcn_mmac_i8(A_reg[k], B_reg[0][k], C_reg[0]);
+            builtin_amdgcn_mmac_i8(A_reg[k], B_reg[1][k], C_reg[1]);
         }
 
 
@@ -650,10 +1570,10 @@ __global__ void _mqa_logits_16x128x128_TN_impl_fp8(
   
         #pragma unroll
         for(int g = 0; g < 2; ++g) {
-            C_reg_out[g][0] += fmaxf(C_reg[g][0], 0.0f) * w;
-            C_reg_out[g][1] += fmaxf(C_reg[g][1], 0.0f) * w;
-            C_reg_out[g][2] += fmaxf(C_reg[g][2], 0.0f) * w;
-            C_reg_out[g][3] += fmaxf(C_reg[g][3], 0.0f) * w;
+            C_reg_out[g][0] += fmaxf((float)C_reg[g][0], 0.0f) * w;
+            C_reg_out[g][1] += fmaxf((float)C_reg[g][1], 0.0f) * w;
+            C_reg_out[g][2] += fmaxf((float)C_reg[g][2], 0.0f) * w;
+            C_reg_out[g][3] += fmaxf((float)C_reg[g][3], 0.0f) * w;
         }
         if (is_load_next) {
             asm volatile("s_waitcnt vmcnt(0)");
@@ -781,9 +1701,9 @@ __global__ void _mqa_logits_16x128x128_TN_impl_fp8(
 }
 
 template <int num_heads, int head_dim, int BlOCK_M, int BLOCK_K, int BLOCK_N, bool is_align_m, bool is_align_n>
-__global__ void _mqa_logits_32x128x128_TN_impl_fp8(
-    fp8* A_data,
-    fp8* B_data,
+__global__ void _mqa_logits_32x128x128_TN_impl_i8(
+    int8_t* A_data,
+    int8_t* B_data,
     float* D_data,
     float* Weights_data,
     uint32_t* KS,
@@ -803,7 +1723,7 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
     const int lane = tid % C10_WARP_SIZE;
     
     __align__(16) __shared__ union {
-        fp8 A_Seme[2][32 * 136];
+        int8_t A_Seme[2][32 * 136];
         float C_smem[32][68];
     } smem;
     __shared__ uint32_t boundary_Seme[BlOCK_M];
@@ -821,35 +1741,7 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
         }
     }
 
-    /* block mask */
-    if (M > 0) {
-        const int ke_max_idx_in_block = blockIdx_y * BlOCK_M + BlOCK_M - 1;
-        const int clamped_ke_idx = (ke_max_idx_in_block < M) ? ke_max_idx_in_block : (M - 1);
-        if (blockIdx_x * BLOCK_N >= KE[clamped_ke_idx]) {
-            constexpr float neg_inf = -std::numeric_limits<float>::infinity();
-            constexpr floatx4 neg_infx4 = {neg_inf, neg_inf, neg_inf, neg_inf};
-            const int total_vec4 = (BlOCK_M * BLOCK_N) / 4;
-            for (int i = tid; i < total_vec4; i += blockDim.x) {
-                int r = i / (BLOCK_N / 4);
-                int c = (i % (BLOCK_N / 4)) * 4;
-                int global_row = blockIdx_y * BlOCK_M + r;
-                int global_col = blockIdx_x * BLOCK_N + c;
-                if (global_row < M) {
-                    if (is_align_n && global_col + 3 < N) {
-                        *(floatx4*)(&D_data[(int64_t)global_row * N + global_col]) = neg_infx4;
-                    } else {
-                        #pragma unroll
-                        for (int k = 0; k < 4; ++k) {
-                            if (global_col + k < N) {
-                                D_data[(int64_t)global_row * N + global_col + k] = neg_inf;
-                            }
-                        }
-                    }
-                }
-            }
-            return;
-        }
-    }
+    /* KE is normalized and applied per row by clean_logits_mqa. */
     
     floatx4 C_reg_out[2][2];
     C_reg_out[0][0] = {0.0, 0.0, 0.0, 0.0};
@@ -875,8 +1767,8 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
     int sts_row_A = (tid / 8);
     int sts_col_A = (tid % 8) * 16;
 
-    loadtileB2reg_fp8<fp8, is_align_n>(B_reg[0], B_data, ldg_col_B[0], ldg_row_B, head_dim, N);
-    loadtileB2reg_fp8<fp8, is_align_n>(B_reg[1], B_data, ldg_col_B[1], ldg_row_B, head_dim, N);
+    loadtileB2reg_fp8<int8_t, is_align_n>(B_reg[0], B_data, ldg_col_B[0], ldg_row_B, head_dim, N);
+    loadtileB2reg_fp8<int8_t, is_align_n>(B_reg[1], B_data, ldg_col_B[1], ldg_row_B, head_dim, N);
 
     if (ldg_row_A < M) {
         A_reg_move = *(intx4*)&A_data[(int64_t)ldg_row_A * K + ldg_col_A];
@@ -913,10 +1805,10 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
             }
         }
         
-        floatx4 C_reg[2][2];
+        intx4 C_reg[2][2];
         for (int k = 0; k < 2; ++k) {
             for (int j = 0; j < 2; ++j) {
-                C_reg[k][j] = {0.0, 0.0, 0.0, 0.0};
+                C_reg[k][j] = {0, 0, 0, 0};
             }
         }
         
@@ -927,25 +1819,25 @@ __global__ void _mqa_logits_32x128x128_TN_impl_fp8(
             A_reg[0][k] = *(intx2*)&smem.A_Seme[i % 2][lds_row_A * 136 + lds_col_A + k * 32];
             A_reg[1][k] = *(intx2*)&smem.A_Seme[i % 2][(lds_row_A + 16) * 136 + lds_col_A + k * 32];
             
-            builtin_amdgcn_mmac_fp8(A_reg[0][k], B_reg[0][k], C_reg[0][0]); 
-            builtin_amdgcn_mmac_fp8(A_reg[0][k], B_reg[1][k], C_reg[0][1]); 
-            builtin_amdgcn_mmac_fp8(A_reg[1][k], B_reg[0][k], C_reg[1][0]); 
-            builtin_amdgcn_mmac_fp8(A_reg[1][k], B_reg[1][k], C_reg[1][1]); 
+            builtin_amdgcn_mmac_i8(A_reg[0][k], B_reg[0][k], C_reg[0][0]);
+            builtin_amdgcn_mmac_i8(A_reg[0][k], B_reg[1][k], C_reg[0][1]);
+            builtin_amdgcn_mmac_i8(A_reg[1][k], B_reg[0][k], C_reg[1][0]);
+            builtin_amdgcn_mmac_i8(A_reg[1][k], B_reg[1][k], C_reg[1][1]);
         }
         float w1 = W_Seme_Cache[(i / 8) % 2][lane % 16][i % 8];
         float w2 = W_Seme_Cache[(i / 8) % 2][lane % 16 + 16][i % 8];
         
         #pragma unroll
         for(int g = 0; g < 2; ++g) {
-            C_reg_out[0][g][0] += fmaxf(C_reg[0][g][0], 0.0f) * w1;
-            C_reg_out[0][g][1] += fmaxf(C_reg[0][g][1], 0.0f) * w1;
-            C_reg_out[0][g][2] += fmaxf(C_reg[0][g][2], 0.0f) * w1;
-            C_reg_out[0][g][3] += fmaxf(C_reg[0][g][3], 0.0f) * w1;
+            C_reg_out[0][g][0] += fmaxf((float)C_reg[0][g][0], 0.0f) * w1;
+            C_reg_out[0][g][1] += fmaxf((float)C_reg[0][g][1], 0.0f) * w1;
+            C_reg_out[0][g][2] += fmaxf((float)C_reg[0][g][2], 0.0f) * w1;
+            C_reg_out[0][g][3] += fmaxf((float)C_reg[0][g][3], 0.0f) * w1;
 
-            C_reg_out[1][g][0] += fmaxf(C_reg[1][g][0], 0.0f) * w2;
-            C_reg_out[1][g][1] += fmaxf(C_reg[1][g][1], 0.0f) * w2;
-            C_reg_out[1][g][2] += fmaxf(C_reg[1][g][2], 0.0f) * w2;
-            C_reg_out[1][g][3] += fmaxf(C_reg[1][g][3], 0.0f) * w2;
+            C_reg_out[1][g][0] += fmaxf((float)C_reg[1][g][0], 0.0f) * w2;
+            C_reg_out[1][g][1] += fmaxf((float)C_reg[1][g][1], 0.0f) * w2;
+            C_reg_out[1][g][2] += fmaxf((float)C_reg[1][g][2], 0.0f) * w2;
+            C_reg_out[1][g][3] += fmaxf((float)C_reg[1][g][3], 0.0f) * w2;
         }
 
         if (i + 1 < num_heads) {
@@ -2131,9 +3023,12 @@ torch::Tensor mqa_logits(
     auto ktype = K.scalar_type();
     if (!((qtype == torch::kHalf && ktype == torch::kHalf) || 
           (qtype == torch::kBFloat16 && ktype == torch::kBFloat16) || 
-          (qtype == torch::kFloat8_e4m3fn && ktype == torch::kFloat8_e4m3fn))) {
-            TORCH_CHECK(false, "Q和K的类型必须同时为FP16、同时为BF16, 或同时为FP8_E4M3!");
+          (qtype == torch::kFloat8_e4m3fn && ktype == torch::kFloat8_e4m3fn) ||
+          (qtype == torch::kInt8 && ktype == torch::kInt8))) {
+            TORCH_CHECK(false, "Q和K的类型必须同时为FP16、同时为BF16、同时为FP8_E4M3, 或同时为INT8!");
     }
+    const bool is_fp8 = (qtype == torch::kFloat8_e4m3fn);
+    const bool is_i8 = (qtype == torch::kInt8);
     auto Weightstype = Weights.scalar_type();
     if(Weightstype != torch::kFloat32){
          TORCH_CHECK(false, "Weights的数据类型必须为fp32!");
@@ -2158,7 +3053,7 @@ torch::Tensor mqa_logits(
     }
     bool has_d_out = D_out.has_value() && D_out.value().defined();
 
-    if (M >= 128 && qtype != torch::kFloat8_e4m3fn) {
+    if (M >= 128 && !is_fp8 && !is_i8) {
         torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
     
         const bool use_fp16 = (qtype == torch::kHalf);
@@ -2194,7 +3089,7 @@ torch::Tensor mqa_logits(
         return D.slice(0, 0, q_seq_len).slice(1, 0, kv_seq_len);
     } else {
         //fp8
-        if (qtype == torch::kFloat8_e4m3fn) {
+        if (is_fp8) {
             torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
             
             torch::Tensor D;
@@ -2309,6 +3204,139 @@ torch::Tensor mqa_logits(
                     }
                 }
             });
+            return D;
+        }
+        //int8 (gfx936 native i8 mmac; Q_scale fused into Weights by caller)
+        if (is_i8) {
+            TORCH_CHECK(KV_scale.has_value() && KV_scale.value().defined(),
+                        "INT8 mqa_logits 必须提供 KV_scale!");
+            torch::TensorOptions options = torch::TensorOptions().dtype(torch::kFloat32).device(Q.device());
+
+            torch::Tensor D;
+            // The large INT8 kernels require a complete 128-column tile.
+            // Fall back to the stable 16x64 kernel for an unaligned N.
+            bool is_large_i8 =
+                (((M >= 64 && N >= 1024) || N > 8192) && (N % 128 == 0));
+            if (has_d_out) {
+                D = D_out.value();
+                if (!is_large_i8) {
+                    D.zero_();
+                }
+            } else {
+                if (is_large_i8) {
+                    D = torch::empty({q_seq_len, kv_seq_len}, options);
+                } else {
+                    D = torch::full({q_seq_len, kv_seq_len}, 0, options);
+                }
+            }
+
+            auto* q_ptr = reinterpret_cast<int8_t*>(Q.data_ptr());
+            auto* k_ptr = reinterpret_cast<int8_t*>(K.data_ptr());
+            auto* w_ptr = reinterpret_cast<float*>(Weights.data_ptr());
+            auto* ks_ptr = reinterpret_cast<uint32_t*>(KS.data_ptr());
+            auto* ke_ptr = reinterpret_cast<uint32_t*>(KE.data_ptr());
+            const float* kv_scale_ptr = KV_scale.value().data_ptr<float>();
+            auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
+
+            NUM_HEAD_SWITCH(num_heads, [&] {
+                if (is_large_i8) {
+                    int current_block_m = (M >= 256) ? 32 : 16;
+                    const int blockx = (N + 127) / 128;
+                    const int blocky = (M + current_block_m - 1) / current_block_m;
+                    dim3 threadsPerBlock(256);
+                    bool is_align_m = (M % current_block_m == 0);
+                    bool is_align_n = (N % 128 == 0);
+                    dim3 numBlock(blockx, blocky);
+
+                    using kernel_i8_t = void (*)(
+                        int8_t* A_data, int8_t* B_data, float* D_data, float* Weights_data,
+                        uint32_t* KS, uint32_t* KE, const int q_seq_len, const int kv_seq_len, const float* KV_scale_data);
+
+                    auto launch_i8 = [&](kernel_i8_t kernel_to_launch) {
+                        kernel_to_launch<<<numBlock, threadsPerBlock,0,stream>>>(
+                            q_ptr, k_ptr, d_ptr, w_ptr, ks_ptr, ke_ptr, q_seq_len, kv_seq_len, kv_scale_ptr);
+                    };
+
+                    if (M >= 256) {
+                        if (is_align_m) {
+                            if (is_align_n) {
+                                launch_i8(_mqa_logits_32x128x128_TN_impl_i8<NumHeads, 128, 32, 128, 128, true, true>);
+                            } else {
+                                launch_i8(_mqa_logits_32x128x128_TN_impl_i8<NumHeads, 128, 32, 128, 128, true, false>);
+                            }
+                        } else {
+                            if (is_align_n) {
+                                launch_i8(_mqa_logits_32x128x128_TN_impl_i8<NumHeads, 128, 32, 128, 128, false, true>);
+                            } else {
+                                launch_i8(_mqa_logits_32x128x128_TN_impl_i8<NumHeads, 128, 32, 128, 128, false, false>);
+                            }
+                        }
+                    } else {
+                        if (is_align_m) {
+                            if (is_align_n) {
+                                launch_i8(_mqa_logits_16x128x128_TN_impl_i8<NumHeads, 128, 16, 128, 128, true, true>);
+                            } else {
+                                launch_i8(_mqa_logits_16x128x128_TN_impl_i8<NumHeads, 128, 16, 128, 128, true, false>);
+                            }
+                        } else {
+                            if (is_align_n) {
+                                launch_i8(_mqa_logits_16x128x128_TN_impl_i8<NumHeads, 128, 16, 128, 128, false, true>);
+                            } else {
+                                launch_i8(_mqa_logits_16x128x128_TN_impl_i8<NumHeads, 128, 16, 128, 128, false, false>);
+                            }
+                        }
+                    }
+                } else {
+                    const int blockx = DIV(N, 64);
+                    const int blocky = DIV(M, 16);
+                    dim3 threadsPerBlock(256);
+                    bool is_align_m = (M % 16 == 0);
+                    bool is_align_n = (N % 64 == 0);
+
+                    int split_k = 4;
+                    if (M <= 32 && N <= 128) {
+                         split_k = 16;
+                    }
+                    if (NumHeads < 32){
+                        split_k = 2;
+                    }
+                    dim3 grid(blockx, blocky, split_k);
+
+                    using kernel_i8_t = void (*)(
+                        int8_t* A_data, int8_t* B_data, float* D_data, float* Weights_data,
+                        uint32_t* KS, uint32_t* KE, const int q_seq_len, const int kv_seq_len, const float* KV_scale_data);
+
+                    auto launch_i8 = [&](kernel_i8_t kernel_to_launch) {
+                        kernel_to_launch<<<grid, threadsPerBlock,0,stream>>>(
+                            q_ptr, k_ptr, d_ptr, w_ptr, ks_ptr, ke_ptr, q_seq_len, kv_seq_len, kv_scale_ptr);
+                    };
+
+                    if (is_align_m) {
+                        if (is_align_n) {
+                            launch_i8(_mqa_logits_16x128x64_TN_impl_with_weight_prefetch_i8<NumHeads, 128, 16, 128, 64, true, true>);
+                        } else {
+                            launch_i8(_mqa_logits_16x128x64_TN_impl_with_weight_prefetch_i8<NumHeads, 128, 16, 128, 64, true, false>);
+                        }
+                    } else {
+                        if (is_align_n) {
+                            launch_i8(_mqa_logits_16x128x64_TN_impl_with_weight_prefetch_i8<NumHeads, 128, 16, 128, 64, false, true>);
+                        } else {
+                            launch_i8(_mqa_logits_16x128x64_TN_impl_with_weight_prefetch_i8<NumHeads, 128, 16, 128, 64, false, false>);
+                        }
+                    }
+                }
+            });
+            if (clean_logits && M > 0) {
+                at::native::clean_logits_mqa<4>
+                    <<<DIV(M, 4), 256, 0, stream>>>(
+                        M,
+                        N,
+                        N,
+                        ks_ptr,
+                        ke_ptr,
+                        d_ptr);
+            }
+
             return D;
         }
         //fp16/bf16
