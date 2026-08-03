@@ -488,6 +488,60 @@ direct_register_custom_op(
     fake_impl = hipblaslt_gemm_channelwise_fake,
 )
 
+# KME/gfx928 int8_bf16_cw: same signature as channelwise; C/D keep out_dtype, compute=fp32.
+# transpose_flag: support NT only now (public API); wrapper accepts swapped TN like channelwise.
+# input_type: fp8/int8
+# output_type: fp16/bf16
+def hipblaslt_gemm_channelwise_kme_wrapper(
+        a : torch.Tensor,
+        b : torch.Tensor,
+        scale_a : torch.Tensor,
+        scale_b : torch.Tensor,
+        out_dtype : torch.dtype,
+        m : int,
+        n : int,
+        k : int,
+        batch : int,
+        transpose_flag : str,
+        bias: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+    if a.dtype == torch.int8:
+        alpha = torch.tensor(1, device='cpu', dtype=torch.int32)
+        beta = torch.tensor(0, device='cpu', dtype=torch.int32)
+    elif a.dtype == torch.float8_e4m3fn:
+        alpha = torch.tensor(1, device='cpu', dtype=torch.float32)
+        beta = torch.tensor(0, device='cpu', dtype=torch.float32)
+    else:
+        raise ValueError("Unsupported input dtype")
+    return lmslimquant.hipblaslt_gemm_channelwise_kme(
+            a, b, scale_a, scale_b, out_dtype, m, n, k, batch, transpose_flag, alpha, beta, bias)
+
+def hipblaslt_gemm_channelwise_kme_fake(
+        a : torch.Tensor,
+        b : torch.Tensor,
+        scale_a : torch.Tensor,
+        scale_b : torch.Tensor,
+        out_dtype : torch.dtype,
+        m : int,
+        n : int,
+        k : int,
+        batch : int,
+        transpose_flag : str,
+        bias: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+    assert a.shape[-2:] == (m, k)
+    assert b.shape[-2:] == (n, k)
+    assert a.is_contiguous() and b.is_contiguous()
+    return torch.empty((batch, n, m), dtype=out_dtype, device=a.device)
+
+direct_register_custom_op(
+    op_name = "hipblaslt_gemm_channelwise_kme",
+    op_func = hipblaslt_gemm_channelwise_kme_wrapper,
+    mutates_args = [],
+    target_lib = lmslim_lib,
+    fake_impl = hipblaslt_gemm_channelwise_kme_fake,
+)
+
 from enum import IntEnum
 class BlockSize(IntEnum):
     block_128x128 = 1
@@ -563,6 +617,28 @@ def hipblaslt_w8a8_channelwise_gemm(
     assert a.shape[-1] == b.shape[-1]
 
     res = torch.ops.lmslim.hipblaslt_gemm_channelwise(
+            b, a, scale_b, scale_a, out_dtype, n, m, k, b.shape[0] if b.dim() == 3 else 1, 'TN', bias)
+    return True, res
+
+def hipblaslt_w8a8_channelwise_gemm_kme(
+        a : torch.Tensor,
+        b : torch.Tensor,
+        scale_a : torch.Tensor,
+        scale_b : torch.Tensor,
+        m : int,
+        n : int,
+        k : int,
+        transpose_flag : str,
+        out_dtype : torch.dtype,
+        bias : Optional[torch.Tensor] = None) -> tuple[bool, torch.Tensor]:
+    assert transpose_flag == 'NT'
+    assert a.is_contiguous() and b.is_contiguous()
+    assert scale_a.dtype is torch.float32 and scale_b.dtype is torch.float32
+    assert out_dtype is torch.bfloat16 or out_dtype is torch.float16
+    assert bias is None or bias.dtype == out_dtype
+    assert a.shape[-1] == b.shape[-1]
+
+    res = torch.ops.lmslim.hipblaslt_gemm_channelwise_kme(
             b, a, scale_b, scale_a, out_dtype, n, m, k, b.shape[0] if b.dim() == 3 else 1, 'TN', bias)
     return True, res
 
