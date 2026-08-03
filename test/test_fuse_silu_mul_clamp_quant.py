@@ -8,11 +8,14 @@ from lightop import (
 )
 
 
-def _reference(input: torch.Tensor, limit: float):
+def _reference(input: torch.Tensor, limit: float, use_gelu: bool = False):
     hidden = input.shape[-1] // 2
     gate = input[..., :hidden].clamp(max=limit)
     up = input[..., hidden:].clamp(min=-limit, max=limit)
-    activated = F.silu(gate) * up
+    if use_gelu:
+        activated = F.gelu(gate, approximate="none") * up
+    else:
+        activated = F.silu(gate) * up
 
     absmax = activated.float().abs().amax(dim=-1, keepdim=True)
     absmax = absmax.clamp_min(1.0e-10)
@@ -24,7 +27,8 @@ def _reference(input: torch.Tensor, limit: float):
 
 @pytest.mark.parametrize("tokens", [1, 8])
 @pytest.mark.parametrize("hidden", [128, 768, 1536, 2048, 12288])
-def test_fuse_silu_mul_clamp_quant_glm_shapes(tokens, hidden):
+@pytest.mark.parametrize("use_gelu", [False, True])
+def test_fuse_silu_mul_clamp_quant_glm_shapes(tokens, hidden, use_gelu):
     torch.manual_seed(1234)
     limit = 10.0
     input = (
@@ -43,8 +47,10 @@ def test_fuse_silu_mul_clamp_quant_glm_shapes(tokens, hidden):
         dtype=input.dtype,
     )
 
-    actual_q, actual_scale = fuse_silu_mul_clamp_quant(input, limit)
-    expected_q, expected_scale = _reference(input, limit)
+    actual_q, actual_scale = fuse_silu_mul_clamp_quant(
+        input, limit, use_gelu=use_gelu
+    )
+    expected_q, expected_scale = _reference(input, limit, use_gelu=use_gelu)
 
     assert torch.max(
         torch.abs(actual_q.to(torch.int16) - expected_q.to(torch.int16))
@@ -70,7 +76,8 @@ def test_fuse_silu_mul_clamp_quant_zero_row_scale():
 
 @pytest.mark.parametrize("hidden", [128, 513, 1536])
 @pytest.mark.parametrize("expect_m", [-1, 1, 3, 32])
-def test_fuse_silu_mul_clamp_quant_ep_masked(hidden, expect_m):
+@pytest.mark.parametrize("use_gelu", [False, True])
+def test_fuse_silu_mul_clamp_quant_ep_masked(hidden, expect_m, use_gelu):
     torch.manual_seed(2026)
     experts, tokens = 4, 9
     limit = 10.0
@@ -87,15 +94,16 @@ def test_fuse_silu_mul_clamp_quant_ep_masked(hidden, expect_m):
     )
 
     actual_q, actual_scale = fuse_silu_mul_clamp_quant_ep(
-        input, limit, mask_m, expect_m
+        input, limit, mask_m, expect_m, use_gelu=use_gelu
     )
     dispatched_q, dispatched_scale = fuse_silu_mul_clamp_quant(
         input,
         limit,
         mask_m=mask_m,
         expect_m=expect_m,
+        use_gelu=use_gelu,
     )
-    expected_q, expected_scale = _reference(input, limit)
+    expected_q, expected_scale = _reference(input, limit, use_gelu=use_gelu)
     valid = (
         torch.arange(tokens, device="cuda").unsqueeze(0)
         < mask_m.unsqueeze(1)
