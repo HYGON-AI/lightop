@@ -2,6 +2,7 @@
 // #include "dispatch_utils.h"
 
 #include <torch/all.h>
+#include <cmath>
 #include <c10/cuda/CUDAGuard.h>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 #include <c10/cuda/CUDAMathCompat.h>
@@ -253,7 +254,7 @@ static inline __device__ float clamp(float x, float min, float max) {
 
 
 template <typename scalar_t,typename T_ACC, int Vec=8, int num_warp_per_block=4, int rot_dim=64,
-int kv_c_dim=512>
+int kv_c_dim=512, bool APPLY_CLAMP=false>
 __global__ void rmsnorm_rope_quant_qkv_kernel(
     scalar_t* __restrict__ input_q_c,  // [bs, num_head, q_c_dim]
     scalar_t* __restrict__ input_q_pe,  // [bs, num_head, q_c_dim + rot_dim]
@@ -277,6 +278,7 @@ __global__ void rmsnorm_rope_quant_qkv_kernel(
     const int k_rms_grid_x,
     const int bs,
     const float epsilon,
+    const float limit,
     const int kv_dtype,
     const int max_slot_id) 
   {
@@ -467,8 +469,12 @@ __global__ void rmsnorm_rope_quant_qkv_kernel(
       s_rstd = __shfl(s_rstd, 0);
       #pragma unroll
         for(int ii = 0; ii < Vec; ii+=1){
-          rms_list[ii] = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
-          input_vec[ii] = static_cast<scalar_t>(rms_list[ii]);
+          float normalized = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
+          if constexpr (APPLY_CLAMP) {
+            normalized = clamp(normalized, -limit, limit);
+          }
+          rms_list[ii] = normalized;
+          input_vec[ii] = static_cast<scalar_t>(normalized);
       }
       if (kv_dtype == 0) // fp8_e5m2
       {
@@ -545,7 +551,10 @@ __global__ void rmsnorm_rope_quant_qkv_kernel(
 
   void fuse_rmsnorm_rope_quant_qkv(torch::Tensor& positions, torch::Tensor& q_c, torch::Tensor& q_pe, torch::Tensor& q_quant, torch::Tensor& q_scale, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,
     torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, 
-    std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon) {
+    std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon, double limit) {
+    TORCH_CHECK(
+        limit == -1.0 || (std::isfinite(limit) && limit >= 0.0),
+        "limit must be -1 (disabled) or a finite non-negative value");
 
     
 
@@ -621,12 +630,23 @@ __global__ void rmsnorm_rope_quant_qkv_kernel(
         const scalar_t* cos_sin_cache_ptr = cos_sin_cache.data_ptr<scalar_t>();
         const int64_t* positions_ptr = positions.data_ptr<int64_t>();
         scalar_t* q_c_ptr = q_c.data_ptr<scalar_t>();
-        rmsnorm_rope_quant_qkv_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,
-        kv_c_dim><<<grid, block, 0, stream>>>(
-            q_c_ptr,q_pe_ptr,q_quant_ptr,q_scale_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,cos_sin_cache_ptr,
-            positions_ptr,slot_mapping_ptr,kv_cache_ptr,
-            kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
-            k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon, kv_dtype, max_slot_id);
+        if (limit < 0.0) {
+          rmsnorm_rope_quant_qkv_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,
+          kv_c_dim,false><<<grid, block, 0, stream>>>(
+              q_c_ptr,q_pe_ptr,q_quant_ptr,q_scale_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,cos_sin_cache_ptr,
+              positions_ptr,slot_mapping_ptr,kv_cache_ptr,
+              kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
+              k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon,
+              static_cast<float>(limit), kv_dtype, max_slot_id);
+        } else {
+          rmsnorm_rope_quant_qkv_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,
+          kv_c_dim,true><<<grid, block, 0, stream>>>(
+              q_c_ptr,q_pe_ptr,q_quant_ptr,q_scale_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,cos_sin_cache_ptr,
+              positions_ptr,slot_mapping_ptr,kv_cache_ptr,
+              kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
+              k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon,
+              static_cast<float>(limit), kv_dtype, max_slot_id);
+        }
 
       });
 

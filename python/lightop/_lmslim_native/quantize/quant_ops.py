@@ -786,7 +786,8 @@ def lo_rms_norm_dynamic_per_token_quant_real(
     epsilon: float,
     quant_dtype: torch.dtype,
     residual: Optional[torch.Tensor] = None,
-    update_input: Optional[bool] = True
+    update_input: Optional[bool] = True,
+    limit: float = -1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     output = torch.empty_like(input, device=input.device, dtype=quant_dtype)
     scales = torch.empty((input.numel() // input.shape[-1], 1),
@@ -794,7 +795,7 @@ def lo_rms_norm_dynamic_per_token_quant_real(
                         dtype=torch.float32)
     rms_norm_dynamic_per_token_quant(output, input, weight,
                                                scales, epsilon,
-                                               residual, update_input)
+                                               residual, update_input, limit)
     return output, scales
 
 def lo_rms_norm_dynamic_per_token_quant_fake(
@@ -803,7 +804,8 @@ def lo_rms_norm_dynamic_per_token_quant_fake(
     epsilon: float,
     quant_dtype: torch.dtype,
     residual: Optional[torch.Tensor] = None,
-    update_input: Optional[bool] = True
+    update_input: Optional[bool] = True,
+    limit: float = -1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Fake implementation for torch.compile"""
     output = torch.zeros_like(input, dtype=quant_dtype)
@@ -825,13 +827,15 @@ def lm_faster_rmsquant(input: torch.Tensor,
     epsilon: float,
     quant_dtype: torch.dtype,
     residual: Optional[torch.Tensor] = None,
-    update_input: Optional[bool] = True):
+    update_input: Optional[bool] = True,
+    limit: float = -1.0):
     i_q, _scales = torch.ops.lmslim.lo_rms_norm_dynamic_per_token_quant(input=input,
                                                                         weight=rms_weight,
                                                                         epsilon=epsilon,
                                                                         quant_dtype=quant_dtype,
                                                                         residual=residual,
-                                                                        update_input=update_input)
+                                                                        update_input=update_input,
+                                                                        limit=limit)
     return i_q, _scales
 
 def lo_lm_fuse_silu_mul_quant_real(input: torch.Tensor

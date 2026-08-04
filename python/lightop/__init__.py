@@ -24,7 +24,7 @@ op = importlib.import_module('.op', __name__)
 from .utils import gfx, LIGHTOP_ROOT_DIR, LIGHTOP_ASM_DIR
 from .rmsnorm import RMSNorm, RMSNormTorch, RMSNormDropout, RMSNormAddDropout, RMSNormAddDropoutBias, RMSNormAdd,rmsnorm_forward,rmsnorm_backward,rms_norm_dynamic_per_token_quant,fused_rms_norm_contiguous,fused_rms_norm_rope_contiguous,rms_norm_per_token_fp8_quant
 from .rmsnorm import mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang, rms_norm_dynamic_per_token_quant_sglang
-from .rmsnorm import fuse_rmsnorm_rope_quant_qkv,fused_add_rms_norm,gemma_fused_add_rmsnorm,gemma_rmsnorm,gemma_rms_norm_per_token_fp8_quant
+from .rmsnorm import fuse_rmsnorm_rope_quant_qkv,rms_norm,fused_add_rms_norm,gemma_fused_add_rmsnorm,gemma_rmsnorm,gemma_rms_norm_per_token_fp8_quant
 from .rmsnorm import fuse_fill_rms_x2_concat,rms_norm_per_token_quant
 from .grid_sample import GridSample, grid_sample_forward, grid_sample_backward
 from .layernorm import LayerNorm, LayerNormMixedFp32Weight, LnDropout, LnAddDropout, LnAddDropoutBias, LnDropPath, AddLn
