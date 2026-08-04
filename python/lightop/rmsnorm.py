@@ -5,14 +5,33 @@ import numbers
 import torch.nn as nn
 from typing import List, Optional, Tuple
 
+def rms_norm(
+        x: torch.Tensor, weight: torch.Tensor,
+        variance_epsilon: float,
+        out: Optional[torch.Tensor] = None,
+        limit: float = -1.0) -> torch.Tensor:
+    if out is None:
+        out = x
+    op.rms_norm_opt(
+        out,
+        x,
+        weight,
+        variance_epsilon,
+        limit,
+    )
+    return out
+
+
 def fused_add_rms_norm(
         x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor,
-        variance_epsilon: float) -> tuple[torch.Tensor, torch.Tensor]:
+        variance_epsilon: float,
+        limit: float = -1.0) -> tuple[torch.Tensor, torch.Tensor]:
     op.fused_add_rms_norm_opt(
         x,
         residual,
         weight,
         variance_epsilon,
+        limit,
     )
     return x, residual
 
@@ -185,7 +204,8 @@ def rms_norm_dynamic_per_token_quant(
     epsilon: float,
     quant_dtype: torch.dtype,
     residual: Optional[torch.Tensor] = None,
-    update_input: bool = True
+    update_input: bool = True,
+    limit: float = -1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     output = torch.empty(input.shape,device=input.device,dtype=quant_dtype)
     scales = torch.empty((input.numel() // input.shape[-1], 1),
@@ -194,7 +214,7 @@ def rms_norm_dynamic_per_token_quant(
 
     op.rms_norm_dynamic_per_token_quant(output, input, weight,
                                                     scales, epsilon,
-                                                    residual, update_input)
+                                                    residual, update_input, limit)
     return output, scales
 
 
@@ -319,7 +339,8 @@ def rms_norm_per_token_quant(
     epsilon: float = 1e-5,
     dtype: torch.dtype = torch.int8,
     residual: Optional[torch.Tensor] = None,
-    update_input: bool = False
+    update_input: bool = False,
+    limit: float = -1.0
 ) -> Tuple[torch.Tensor, torch.Tensor]:
   
     output = torch.empty(input.shape, device=input.device, dtype=dtype)
@@ -330,8 +351,10 @@ def rms_norm_per_token_quant(
     if dtype == torch.int8:
         op.rms_norm_dynamic_per_token_quant(output, input, weight,
                                             scales, epsilon,
-                                            residual, update_input)
+                                            residual, update_input, limit)
     elif dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
+        if limit != -1.0:
+            raise ValueError("limit is only supported when dtype is torch.int8")
         fp8type = 0 if dtype == torch.float8_e4m3fn else 1
         op.rms_norm_fp8_quant(output.view(torch.uint8), input, weight, 
                               scales, epsilon,
@@ -366,8 +389,9 @@ def fused_rms_norm_rope_contiguous(
     kv_cache_scale: float,
     is_neox_style: bool = False,
     epsilon: float = 1e-5,
+    limit: float = -1.0,
 ) -> None:
-    op.fused_rms_norm_rope_contiguous(positions, q_pe, k_pe, kv_c, kv_c_normed, weight, cos_sin_cache, slot_mapping, kv_cache, kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon)
+    op.fused_rms_norm_rope_contiguous(positions, q_pe, k_pe, kv_c, kv_c_normed, weight, cos_sin_cache, slot_mapping, kv_cache, kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon, limit)
     return
 
 
@@ -387,9 +411,10 @@ def fuse_rmsnorm_rope_quant_qkv(
     kv_cache_dtype_str: str,
     kv_cache_scale: float,
     is_neox_style: bool = False,
-    epsilon: float = 1e-5,    
+    epsilon: float = 1e-5,
+    limit: float = -1.0,
 )->None:
-    op.fuse_rmsnorm_rope_quant_qkv(positions, q_c, q_pe, q_quant.view(torch.uint8), q_scale, k_pe, kv_c, kv_c_normed, weight, cos_sin_cache, slot_mapping, kv_cache.view(torch.uint8), kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon)
+    op.fuse_rmsnorm_rope_quant_qkv(positions, q_c, q_pe, q_quant.view(torch.uint8), q_scale, k_pe, kv_c, kv_c_normed, weight, cos_sin_cache, slot_mapping, kv_cache.view(torch.uint8), kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon, limit)
     return
 
 def fuse_fill_rms_x2_concat(
