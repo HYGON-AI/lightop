@@ -794,7 +794,7 @@ def fused_bmm(x: torch.Tensor,                                       # [batch_si
 
 def validate_fuse_rmsnorm_rope_quant_qkv_args(positions, q_c, q_pe, q_quant, q_scale, k_pe, kv_c, kv_c_normed,
                                                weight, cos_sin_cache, slot_mapping, kv_cache,
-                                               kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon):
+                                               kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon, limit):
     """
     Validate arguments for fuse_rmsnorm_rope_quant_qkv function
     """
@@ -868,10 +868,14 @@ def validate_fuse_rmsnorm_rope_quant_qkv_args(positions, q_c, q_pe, q_quant, q_s
     # Validate kv_cache_scale
     assert kv_cache_scale == 1.0, "kv_cache_scale must be 1.0"
 
+    assert limit == -1.0 or (math.isfinite(limit) and limit >= 0.0), \
+        "limit must be -1 (disabled) or a finite non-negative value"
+
 
 def fuse_rmsnorm_rope_quant_qkv(positions, q_c, q_pe, q_quant, q_scale, k_pe, kv_c, kv_c_normed,
                                weight, cos_sin_cache, slot_mapping, kv_cache,
-                               kv_cache_dtype_str, kv_cache_scale=1.0, is_neox_style=False, epsilon=1e-6):
+                               kv_cache_dtype_str, kv_cache_scale=1.0, is_neox_style=False,
+                               epsilon=1e-6, limit=-1.0):
     """
     Python wrapper for fuse_rmsnorm_rope_quant_qkv with input validation
     """
@@ -879,14 +883,14 @@ def fuse_rmsnorm_rope_quant_qkv(positions, q_c, q_pe, q_quant, q_scale, k_pe, kv
     validate_fuse_rmsnorm_rope_quant_qkv_args(
         positions, q_c, q_pe, q_quant, q_scale, k_pe, kv_c, kv_c_normed,
         weight, cos_sin_cache, slot_mapping, kv_cache,
-        kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon
+        kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon, limit
     )
 
     # Call the C++ function
     return op.fuse_rmsnorm_rope_quant_qkv(
         positions, q_c, q_pe, q_quant, q_scale, k_pe, kv_c, kv_c_normed,
         weight, cos_sin_cache, slot_mapping, kv_cache,
-        kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon
+        kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon, limit
     )
 
 import torch.nn.functional as F

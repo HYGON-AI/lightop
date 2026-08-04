@@ -2,6 +2,7 @@
 // #include "dispatch_utils.h"
 
 #include <torch/all.h>
+#include <cmath>
 #include <c10/cuda/CUDAGuard.h>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 #include <c10/cuda/CUDAMathCompat.h>
@@ -28,6 +29,10 @@ namespace at{
 namespace native{
 
 using bhalf_t = __hip_bfloat16;
+
+static __device__ inline float clamp_rms_rope_value(float value, float limit) {
+  return fminf(fmaxf(value, -limit), limit);
+}
 
 #define VLLM_DISPATCH_FLOATING_TYPES(TYPE, NAME, ...) \
 AT_DISPATCH_SWITCH(TYPE, NAME, VLLM_DISPATCH_CASE_FLOATING_TYPES(__VA_ARGS__))
@@ -262,7 +267,7 @@ __inline__ __device__ T BlockReduceSum_NEW(T val, T* shared) {
 
 
 template <typename scalar_t,typename T_ACC, int Vec=8, int num_warp_per_block=4, int rot_dim=64,
-int kv_c_dim=512>
+int kv_c_dim=512, bool APPLY_CLAMP=false>
 __global__ void rms_rope_kernel(
     scalar_t* __restrict__ input_q,  // [bs, num_head, q_c_dim + rot_dim]
     scalar_t* __restrict__ input_k,  // [bs, kv_c_dim + rot_dim]
@@ -283,6 +288,7 @@ __global__ void rms_rope_kernel(
     const int k_rms_grid_x,
     const int bs,
     const float epsilon,
+    const float limit,
     const int kv_dtype,
     const int max_slot_id,
     const int k_bs_stride) 
@@ -481,8 +487,12 @@ __global__ void rms_rope_kernel(
       {
         #pragma unroll
         for(int ii = 0; ii < Vec; ii+=1){
-          float_vec[ii] = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
-          input_vec[ii] = static_cast<scalar_t>(float_vec[ii]);
+          float normalized = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
+          if constexpr (APPLY_CLAMP) {
+            normalized = clamp_rms_rope_value(normalized, limit);
+          }
+          float_vec[ii] = normalized;
+          input_vec[ii] = static_cast<scalar_t>(normalized);
         }
         if(kv_dtype == 0)
         {
@@ -500,7 +510,11 @@ __global__ void rms_rope_kernel(
       }
       else{
         for(int ii = 0; ii < Vec; ii+=1){
-          input_vec[ii] = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
+          T_ACC normalized = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
+          if constexpr (APPLY_CLAMP) {
+            normalized = clamp_rms_rope_value(static_cast<float>(normalized), limit);
+          }
+          input_vec[ii] = static_cast<scalar_t>(normalized);
         }
         scalar_t* output_ptr = (scalar_t*)kv_cache + kv_cache_offset;
         *(LoadT*)(output_ptr) = *(LoadT*)(input_vec);
@@ -513,7 +527,10 @@ __global__ void rms_rope_kernel(
 
   void fused_rms_norm_rope_contiguous(torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,
     torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, 
-    std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon) {
+    std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon, double limit) {
+    TORCH_CHECK(
+        limit == -1.0 || (std::isfinite(limit) && limit >= 0.0),
+        "limit must be -1 (disabled) or a finite non-negative value");
 
     // printf("hello fused_rms_norm_rope_contiguous\n");
     // 暂时只实现rope逻辑，rms norm逻辑后续添加
@@ -627,12 +644,23 @@ __global__ void rms_rope_kernel(
         const scalar_t* cos_sin_cache_ptr = cos_sin_cache.data_ptr<scalar_t>();
         const int64_t* positions_ptr = positions.data_ptr<int64_t>();
 
-        rms_rope_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,
-        kv_c_dim><<<grid, block, 0, stream>>>(
-            q_pe_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,cos_sin_cache_ptr,
-            positions_ptr,slot_mapping_ptr,kv_cache_ptr,
-            kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
-            k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon, kv_dtype, max_slot_id, k_bs_stride);
+        if (limit < 0.0) {
+          rms_rope_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,
+          kv_c_dim,false><<<grid, block, 0, stream>>>(
+              q_pe_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,cos_sin_cache_ptr,
+              positions_ptr,slot_mapping_ptr,kv_cache_ptr,
+              kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
+              k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon,
+              static_cast<float>(limit), kv_dtype, max_slot_id, k_bs_stride);
+        } else {
+          rms_rope_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,
+          kv_c_dim,true><<<grid, block, 0, stream>>>(
+              q_pe_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,cos_sin_cache_ptr,
+              positions_ptr,slot_mapping_ptr,kv_cache_ptr,
+              kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
+              k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon,
+              static_cast<float>(limit), kv_dtype, max_slot_id, k_bs_stride);
+        }
 
       });
 

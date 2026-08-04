@@ -7,6 +7,7 @@
 #include <THC/THCDeviceUtils.cuh>
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include <type_traits>
 
 #ifndef USE_ROCM
@@ -46,15 +47,20 @@ static __device__ inline void from_float(scalar_t &out ,float f){
   }
 }
 
+static __device__ inline float clamp_with_limit(float value, float limit) {
+  return fminf(fmaxf(value, -limit), limit);
+}
+
 namespace vllm {
 
 // TODO(woosuk): Further optimize this kernel.
-template <typename scalar_t, bool IS_GEMMA = false>
+template <typename scalar_t, bool IS_GEMMA = false, bool APPLY_CLAMP = false>
 __global__ void rms_norm_kernel(
     scalar_t* __restrict__ out,           // [..., hidden_size]
     const scalar_t* __restrict__ input,   // [..., hidden_size]
     const scalar_t* __restrict__ weight,  // [hidden_size]
-    const float epsilon, const int num_tokens, const int hidden_size) {
+    const float epsilon, const int num_tokens, const int hidden_size,
+    const float limit) {
   __shared__ float s_variance;
   float variance = 0.0f;
 
@@ -77,8 +83,12 @@ __global__ void rms_norm_kernel(
     float w = (float)weight[idx];
     if constexpr (IS_GEMMA) { w += 1.0f; }
 
-    out[blockIdx.x * hidden_size + idx] =
+    scalar_t normalized =
         ((scalar_t)(x * s_variance)) * ((scalar_t)w);
+    if constexpr (APPLY_CLAMP) {
+      normalized = (scalar_t)clamp_with_limit((float)normalized, limit);
+    }
+    out[blockIdx.x * hidden_size + idx] = normalized;
   }
 }
 
@@ -119,13 +129,14 @@ __global__ void rms_norm_optional_weight_kernel(
    Additional optimizations we can make in this case are
    packed and vectorized operations, which help with the
    memory latency bottleneck. */
-template <typename scalar_t, int width, bool IS_GEMMA = false>
+template <typename scalar_t, int width, bool IS_GEMMA = false, bool APPLY_CLAMP = false>
 __global__ std::enable_if_t<(width > 0) && _typeConvert<scalar_t>::exists>
 fused_add_rms_norm_kernel(
     scalar_t* __restrict__ input,         // [..., hidden_size]
     scalar_t* __restrict__ residual,      // [..., hidden_size]
     const scalar_t* __restrict__ weight,  // [hidden_size]
-    const float epsilon, const int num_tokens, const int hidden_size) {
+    const float epsilon, const int num_tokens, const int hidden_size,
+    const float limit) {
   // Sanity checks on our vector struct and type-punned pointer arithmetic
   static_assert(std::is_pod_v<_f16Vec<scalar_t, width>>);
   static_assert(sizeof(_f16Vec<scalar_t, width>) == sizeof(scalar_t) * width);
@@ -176,6 +187,15 @@ fused_add_rms_norm_kernel(
         }
     }
     temp *= w_vec;
+    if constexpr (APPLY_CLAMP) {
+      scalar_t* temp_scalars = reinterpret_cast<scalar_t*>(&temp);
+      #pragma unroll
+      for (int i = 0; i < width; ++i) {
+        from_float<scalar_t>(
+            temp_scalars[i],
+            clamp_with_limit(to_float(temp_scalars[i]), limit));
+      }
+    }
 
     input_v[id] = temp;
   }
@@ -184,13 +204,14 @@ fused_add_rms_norm_kernel(
 /* Generic fused_add_rms_norm_kernel
    The width field is not used here but necessary for other specializations.
  */
-template <typename scalar_t, int width, bool IS_GEMMA = false>
+template <typename scalar_t, int width, bool IS_GEMMA = false, bool APPLY_CLAMP = false>
 __global__ std::enable_if_t<(width == 0) || !_typeConvert<scalar_t>::exists>
 fused_add_rms_norm_kernel(
     scalar_t* __restrict__ input,         // [..., hidden_size]
     scalar_t* __restrict__ residual,      // [..., hidden_size]
     const scalar_t* __restrict__ weight,  // [hidden_size]
-    const float epsilon, const int num_tokens, const int hidden_size) {
+    const float epsilon, const int num_tokens, const int hidden_size,
+    const float limit) {
   __shared__ float s_variance;
   float variance = 0.0f;
 
@@ -216,8 +237,12 @@ fused_add_rms_norm_kernel(
     float w = (float)weight[idx];
     if constexpr (IS_GEMMA) { w += 1.0f; }
 
-    input[blockIdx.x * hidden_size + idx] =
+    scalar_t normalized =
         ((scalar_t)(x * s_variance)) * ((scalar_t)w);
+    if constexpr (APPLY_CLAMP) {
+      normalized = (scalar_t)clamp_with_limit((float)normalized, limit);
+    }
+    input[blockIdx.x * hidden_size + idx] = normalized;
   }
 }
 
@@ -268,13 +293,15 @@ __inline__ __device__ T SubWarpReduceSumWithWidth(T val) {
 }
 
 template <typename scalar_t, typename T_ACC, int HiddenSize,
-          int ThreadsPerToken, int BlockSize=256, bool IS_GEMMA=false>
+          int ThreadsPerToken, int BlockSize=256, bool IS_GEMMA=false,
+          bool APPLY_CLAMP=false>
 __global__ void rms_kernel_small_hidden_multi_token(
     scalar_t* input,
     scalar_t* output,
     scalar_t* gamma,
     T_ACC eps,
-    int num_tokens) {
+    int num_tokens,
+    T_ACC limit) {
   constexpr int Vec = 8;
   constexpr int TokensPerBlock = BlockSize / ThreadsPerToken;
   static_assert(HiddenSize == ThreadsPerToken * Vec);
@@ -315,8 +342,12 @@ __global__ void rms_kernel_small_hidden_multi_token(
     for (int ii = 0; ii < Vec; ++ii) {
       T_ACC w_val = static_cast<T_ACC>(weight_vec[ii]);
       if constexpr (IS_GEMMA) { w_val += 1.0f; }
-      input_vec[ii] =
+      T_ACC normalized =
           static_cast<T_ACC>(input_vec[ii]) * rstd * w_val;
+      if constexpr (APPLY_CLAMP) {
+        normalized = clamp_with_limit(normalized, limit);
+      }
+      input_vec[ii] = normalized;
     }
     const int64_t idx =
         static_cast<int64_t>(token) * HiddenSize + lane * Vec;
@@ -325,13 +356,15 @@ __global__ void rms_kernel_small_hidden_multi_token(
 }
 
 template <typename scalar_t, typename T_ACC, int HiddenSize,
-          int ThreadsPerToken, int BlockSize=256, bool IS_GEMMA=false>
+          int ThreadsPerToken, int BlockSize=256, bool IS_GEMMA=false,
+          bool APPLY_CLAMP=false>
 __global__ void fused_add_rms_kernel_small_hidden_multi_token(
     scalar_t* input,
     scalar_t* residual,
     scalar_t* gamma,
     T_ACC eps,
-    int num_tokens) {
+    int num_tokens,
+    T_ACC limit) {
   constexpr int Vec = 8;
   constexpr int TokensPerBlock = BlockSize / ThreadsPerToken;
   static_assert(HiddenSize == ThreadsPerToken * Vec);
@@ -375,8 +408,11 @@ __global__ void fused_add_rms_kernel_small_hidden_multi_token(
     for (int ii = 0; ii < Vec; ++ii) {
       T_ACC w_val = static_cast<T_ACC>(to_float(weight_vec[ii]));
       if constexpr (IS_GEMMA) { w_val += 1.0f; }
-      from_float<scalar_t>(
-          input_vec[ii], to_float(residual_vec[ii]) * rstd * w_val);
+      T_ACC normalized = to_float(residual_vec[ii]) * rstd * w_val;
+      if constexpr (APPLY_CLAMP) {
+        normalized = clamp_with_limit(normalized, limit);
+      }
+      from_float<scalar_t>(input_vec[ii], normalized);
     }
     const int64_t idx =
         static_cast<int64_t>(token) * HiddenSize + lane * Vec;
@@ -385,7 +421,7 @@ __global__ void fused_add_rms_kernel_small_hidden_multi_token(
   }
 }
 
-template <typename scalar_t, typename T_ACC, bool IS_GEMMA>
+template <typename scalar_t, typename T_ACC, bool IS_GEMMA, bool APPLY_CLAMP>
 static inline bool launch_rms_small_hidden_multi_token(
     scalar_t* input,
     scalar_t* output,
@@ -393,6 +429,7 @@ static inline bool launch_rms_small_hidden_multi_token(
     int hidden_size,
     T_ACC eps,
     int num_tokens,
+    T_ACC limit,
     cudaStream_t stream) {
   constexpr int BlockSize = 256;
 #define LAUNCH_SMALL_HIDDEN_RMS(HIDDEN_SIZE, THREADS_PER_TOKEN)               \
@@ -401,8 +438,8 @@ static inline bool launch_rms_small_hidden_multi_token(
     const int grid = (num_tokens + TokensPerBlock - 1) / TokensPerBlock;       \
     rms_kernel_small_hidden_multi_token<                                      \
         scalar_t, T_ACC, HIDDEN_SIZE, THREADS_PER_TOKEN, BlockSize,            \
-        IS_GEMMA><<<grid, BlockSize, 0, stream>>>(                             \
-        input, output, gamma, eps, num_tokens);                                \
+        IS_GEMMA, APPLY_CLAMP><<<grid, BlockSize, 0, stream>>>(                             \
+        input, output, gamma, eps, num_tokens, limit);                                \
     return true;                                                              \
   } while (0)
 
@@ -416,7 +453,7 @@ static inline bool launch_rms_small_hidden_multi_token(
 #undef LAUNCH_SMALL_HIDDEN_RMS
 }
 
-template <typename scalar_t, typename T_ACC, bool IS_GEMMA>
+template <typename scalar_t, typename T_ACC, bool IS_GEMMA, bool APPLY_CLAMP>
 static inline bool launch_fused_add_rms_small_hidden_multi_token(
     scalar_t* input,
     scalar_t* residual,
@@ -424,6 +461,7 @@ static inline bool launch_fused_add_rms_small_hidden_multi_token(
     int hidden_size,
     T_ACC eps,
     int num_tokens,
+    T_ACC limit,
     cudaStream_t stream) {
   constexpr int BlockSize = 256;
 #define LAUNCH_SMALL_HIDDEN_FUSED_ADD_RMS(HIDDEN_SIZE, THREADS_PER_TOKEN)     \
@@ -432,8 +470,8 @@ static inline bool launch_fused_add_rms_small_hidden_multi_token(
     const int grid = (num_tokens + TokensPerBlock - 1) / TokensPerBlock;       \
     fused_add_rms_kernel_small_hidden_multi_token<                            \
         scalar_t, T_ACC, HIDDEN_SIZE, THREADS_PER_TOKEN, BlockSize,            \
-        IS_GEMMA><<<grid, BlockSize, 0, stream>>>(                             \
-        input, residual, gamma, eps, num_tokens);                              \
+        IS_GEMMA, APPLY_CLAMP><<<grid, BlockSize, 0, stream>>>(                             \
+        input, residual, gamma, eps, num_tokens, limit);                              \
     return true;                                                              \
   } while (0)
 
@@ -448,8 +486,8 @@ static inline bool launch_fused_add_rms_small_hidden_multi_token(
 }
 #endif
 
-template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512, bool IS_GEMMA=false>
-__global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scalar_t* gamma,int cols,T_ACC eps, int num_tokens)
+template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512, bool IS_GEMMA=false, bool APPLY_CLAMP=false>
+__global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scalar_t* gamma,int cols,T_ACC eps, int num_tokens,T_ACC limit)
 {
   constexpr int share_size=block_size/C10_WARP_SIZE;
   __shared__ T_ACC val_shared[share_size];
@@ -484,7 +522,11 @@ __global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scal
             int jj=j*Vec+ii;
             T_ACC w_val = to_float(gamma[jj]);
             if constexpr (IS_GEMMA) { w_val += 1.0f; }
-            from_float<scalar_t>(intput_vec[ii] ,to_float(residual_vec[ii]) * trstd * w_val);
+            T_ACC normalized = to_float(residual_vec[ii]) * trstd * w_val;
+            if constexpr (APPLY_CLAMP) {
+              normalized = clamp_with_limit(normalized, limit);
+            }
+            from_float<scalar_t>(intput_vec[ii], normalized);
           }
           *(LoadT*)(residual+idx)=*(LoadT*)residual_vec;
           *(LoadT*)(input+idx)=*(LoadT*)intput_vec;
@@ -492,8 +534,8 @@ __global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scal
   }
 }
 
-template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512, bool IS_GEMMA=false>
-__global__ void fused_rms_kernel_opt(scalar_t* input,scalar_t* output,scalar_t* gamma,int cols,T_ACC eps,int num_tokens)
+template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512, bool IS_GEMMA=false, bool APPLY_CLAMP=false>
+__global__ void fused_rms_kernel_opt(scalar_t* input,scalar_t* output,scalar_t* gamma,int cols,T_ACC eps,int num_tokens,T_ACC limit)
 {
   constexpr int share_size=block_size/C10_WARP_SIZE;
   __shared__ T_ACC val_shared[share_size];
@@ -526,7 +568,11 @@ __global__ void fused_rms_kernel_opt(scalar_t* input,scalar_t* output,scalar_t* 
           int jj=j*Vec+ii;
           T_ACC w_val = static_cast<T_ACC>(gamma[jj]);
           if constexpr (IS_GEMMA) { w_val += 1.0f; }
-          intput_vec[ii] = static_cast<T_ACC>(intput_vec[ii]) * trstd * w_val;
+          T_ACC normalized = static_cast<T_ACC>(intput_vec[ii]) * trstd * w_val;
+          if constexpr (APPLY_CLAMP) {
+            normalized = clamp_with_limit(normalized, limit);
+          }
+          intput_vec[ii] = normalized;
         }
         *(LoadT*)(output+idx)=*(LoadT*)intput_vec;
       }
@@ -618,11 +664,15 @@ static inline void launch_rms_kernel_opt_optional_weight(
   }
 }
 
-template<bool IS_GEMMA>
+template<bool IS_GEMMA, bool APPLY_CLAMP>
 void rms_norm_opt_impl(torch::Tensor& out,    // [..., hidden_size]
               torch::Tensor& input,   // [..., hidden_size]
               torch::Tensor& weight,  // [hidden_size]
-              double epsilon) {
+              double epsilon,
+              double limit) {
+  TORCH_CHECK(
+      limit == -1.0 || (std::isfinite(limit) && limit >= 0.0),
+      "limit must be -1 (disabled) or a finite non-negative value");
   int hidden_size = input.size(-1);
   int num_tokens = input.numel() / hidden_size;
   int grid = num_tokens;
@@ -649,27 +699,27 @@ void rms_norm_opt_impl(torch::Tensor& out,    // [..., hidden_size]
 #ifdef USE_ROCM
       if constexpr (!IS_GEMMA && sizeof(scalar_t) == 2) {
         if (small_ptrs_are_aligned &&
-            launch_rms_small_hidden_multi_token<scalar_t, T_ACC, IS_GEMMA>(
+            launch_rms_small_hidden_multi_token<scalar_t, T_ACC, IS_GEMMA, APPLY_CLAMP>(
                 self_data, out_data, weight_data, hidden_size, eps,
-                num_tokens, stream)) {
+                num_tokens, static_cast<T_ACC>(limit), stream)) {
           return;
         }
       }
 #endif
       if (hidden_size<=1024){
-          fused_rms_kernel_opt<scalar_t,T_ACC,8,128, IS_GEMMA><<<grid,  128, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
+          fused_rms_kernel_opt<scalar_t,T_ACC,8,128, IS_GEMMA, APPLY_CLAMP><<<grid,  128, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
       }
       else if(hidden_size<=2048){
-          fused_rms_kernel_opt<scalar_t,T_ACC,8,256, IS_GEMMA><<<grid,  256, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
+          fused_rms_kernel_opt<scalar_t,T_ACC,8,256, IS_GEMMA, APPLY_CLAMP><<<grid,  256, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
       }
       else if(hidden_size<=4096){
-           fused_rms_kernel_opt<scalar_t,T_ACC,8,512, IS_GEMMA><<<grid,  512, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
+           fused_rms_kernel_opt<scalar_t,T_ACC,8,512, IS_GEMMA, APPLY_CLAMP><<<grid,  512, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
       }
       else if(hidden_size<=8192){
-           fused_rms_kernel_opt<scalar_t,T_ACC,8,1024, IS_GEMMA><<<grid,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
+           fused_rms_kernel_opt<scalar_t,T_ACC,8,1024, IS_GEMMA, APPLY_CLAMP><<<grid,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
       }
       else{
-          fused_rms_kernel_opt<scalar_t,T_ACC,16,1024, IS_GEMMA><<<grid,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens);
+          fused_rms_kernel_opt<scalar_t,T_ACC,16,1024, IS_GEMMA, APPLY_CLAMP><<<grid,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
       }
     });
   }
@@ -680,19 +730,24 @@ void rms_norm_opt_impl(torch::Tensor& out,    // [..., hidden_size]
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half,
         at::ScalarType::BFloat16,input.scalar_type(), "rms_norm_kernel", [&] {
-      vllm::rms_norm_kernel<scalar_t, IS_GEMMA><<<grid, block, 0, stream>>>(
+      vllm::rms_norm_kernel<scalar_t, IS_GEMMA, APPLY_CLAMP><<<grid, block, 0, stream>>>(
           out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
-          weight.data_ptr<scalar_t>(), epsilon, num_tokens, hidden_size);
+          weight.data_ptr<scalar_t>(), epsilon, num_tokens, hidden_size,
+          static_cast<float>(limit));
     });
   }
 }
 
-void rms_norm_opt(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight, double epsilon) {
-    rms_norm_opt_impl<false>(out, input, weight, epsilon);
+void rms_norm_opt(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight, double epsilon, double limit) {
+    if (limit < 0.0) {
+      rms_norm_opt_impl<false, false>(out, input, weight, epsilon, limit);
+    } else {
+      rms_norm_opt_impl<false, true>(out, input, weight, epsilon, limit);
+    }
 }
 
 void gemma_rmsnorm(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight, double epsilon) {
-    rms_norm_opt_impl<true>(out, input, weight, epsilon);
+    rms_norm_opt_impl<true, false>(out, input, weight, epsilon, -1.0);
 }
 
 void rms_norm_no_weight(
@@ -811,19 +866,23 @@ void rms_norm_no_weight(
      AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half,                     \
         at::ScalarType::BFloat16,                                              \
       input.scalar_type(), "fused_add_rms_norm_kernel", [&] {                  \
-        vllm::fused_add_rms_norm_kernel<scalar_t, width, is_gemma>             \
+        vllm::fused_add_rms_norm_kernel<scalar_t, width, is_gemma, APPLY_CLAMP>             \
             <<<grid, block, 0, stream>>>(input.data_ptr<scalar_t>(),           \
                                          residual.data_ptr<scalar_t>(),        \
                                          weight.data_ptr<scalar_t>(), epsilon, \
-                                         num_tokens, hidden_size);             \
+                                         num_tokens, hidden_size, limit);      \
       });
 
 
-template<bool IS_GEMMA>
+template<bool IS_GEMMA, bool APPLY_CLAMP>
 void fused_add_rms_norm_opt_impl(torch::Tensor& input,     // [..., hidden_size]
                         torch::Tensor& residual,  // [..., hidden_size]
                         torch::Tensor& weight,    // [hidden_size]
-                        double epsilon) {
+                        double epsilon,
+                        double limit) {
+  TORCH_CHECK(
+      limit == -1.0 || (std::isfinite(limit) && limit >= 0.0),
+      "limit must be -1 (disabled) or a finite non-negative value");
   int hidden_size = input.size(-1);
   int num_tokens = input.numel() / hidden_size;
   int grid = num_tokens;
@@ -849,27 +908,27 @@ void fused_add_rms_norm_opt_impl(torch::Tensor& input,     // [..., hidden_size]
 #ifdef USE_ROCM
         if constexpr (!IS_GEMMA && sizeof(scalar_t) == 2) {
           if (launch_fused_add_rms_small_hidden_multi_token<
-                  scalar_t, T_ACC, IS_GEMMA>(
+                  scalar_t, T_ACC, IS_GEMMA, APPLY_CLAMP>(
                   self_data, other_data, weight_data, hidden_size, eps,
-                  num_tokens, stream)) {
+                  num_tokens, static_cast<T_ACC>(limit), stream)) {
             return;
           }
         }
 #endif
         if (hidden_size<=1024){
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,128, IS_GEMMA><<<grid,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,128, IS_GEMMA, APPLY_CLAMP><<<grid,  128, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
         }
         else if(hidden_size<=2048){
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,256, IS_GEMMA><<<grid,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,256, IS_GEMMA, APPLY_CLAMP><<<grid,  256, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
         }
         else if(hidden_size<=4096){
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,512, IS_GEMMA><<<grid,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,512, IS_GEMMA, APPLY_CLAMP><<<grid,  512, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
         }
         else if(hidden_size<=8192){
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,1024, IS_GEMMA><<<grid,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,8,1024, IS_GEMMA, APPLY_CLAMP><<<grid,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
         }
         else{
-            fused_add_rms_kernel_opt<scalar_t,T_ACC,16,1024, IS_GEMMA><<<grid,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens);
+            fused_add_rms_kernel_opt<scalar_t,T_ACC,16,1024, IS_GEMMA, APPLY_CLAMP><<<grid,  1024, 0, stream>>>(self_data,other_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
         }
       });
   }
@@ -890,12 +949,18 @@ void fused_add_rms_norm_opt_impl(torch::Tensor& input,     // [..., hidden_size]
   }
 }
 
-void fused_add_rms_norm_opt(torch::Tensor& input, torch::Tensor& residual, torch::Tensor& weight, double epsilon) {
-    fused_add_rms_norm_opt_impl<false>(input, residual, weight, epsilon);
+void fused_add_rms_norm_opt(torch::Tensor& input, torch::Tensor& residual, torch::Tensor& weight, double epsilon, double limit) {
+    if (limit < 0.0) {
+      fused_add_rms_norm_opt_impl<false, false>(
+          input, residual, weight, epsilon, limit);
+    } else {
+      fused_add_rms_norm_opt_impl<false, true>(
+          input, residual, weight, epsilon, limit);
+    }
 }
 
 void gemma_fused_add_rmsnorm(torch::Tensor& input, torch::Tensor& residual, torch::Tensor& weight, double epsilon) {
-    fused_add_rms_norm_opt_impl<true>(input, residual, weight, epsilon);
+    fused_add_rms_norm_opt_impl<true, false>(input, residual, weight, epsilon, -1.0);
 }
 
 }
