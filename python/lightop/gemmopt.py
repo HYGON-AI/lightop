@@ -713,6 +713,11 @@ def paged_mqa_logits(
         schedule_meta: torch.Tensor,
         max_context_len: int,
         clean_logits: bool = True) -> torch.Tensor:
+    if (fused_kv_cache.dtype == torch.uint8
+        and q.dtype == torch.float8_e4m3fn):
+        arch = torch.cuda.get_device_properties(q.device).gcnArchName.split(":")[0]
+        if "gfx936" in arch:
+            q = q.to(torch.bfloat16)
     logits = op.paged_mqa_logits(
         q,
         fused_kv_cache,
