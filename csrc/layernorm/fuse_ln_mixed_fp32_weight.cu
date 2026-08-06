@@ -460,8 +460,8 @@ std::tuple<Tensor, Tensor, Tensor> mixed_layernorm_fp32_params_forward(
           mean_data = mean.data_ptr<float>();
           rstd_data = rstd.data_ptr<float>();
         }
-        const float* weight_data = weight.defined() ? weight.const_data_ptr<float>() : nullptr;
-        const float* bias_data = bias.defined() ? bias.const_data_ptr<float>() : nullptr;
+        const float* weight_data = weight.defined() ? weight.data_ptr<float>() : nullptr;
+        const float* bias_data = bias.defined() ? bias.data_ptr<float>() : nullptr;
         mixedln_fp32w_forward_cuda_dispatch<scalar_t>(
             rows, cols, training, self_data, ret_data, mean_data, rstd_data, weight_data, bias_data, eps,
             tmp_out_ptr, temp_out_size);

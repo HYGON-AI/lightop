@@ -462,8 +462,8 @@ layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,dou
         using T_ACC = acc_type<scalar_t, true>;
         scalar_t* self_data = self.data_ptr<scalar_t>();
         scalar_t* ret_data=ret.data_ptr<scalar_t>();
-        const scalar_t* weight_data = weight.defined() ? weight.const_data_ptr<scalar_t>() : nullptr;
-        const scalar_t* bias_data = bias.defined() ? bias.const_data_ptr<scalar_t>() : nullptr;
+        const scalar_t* weight_data = weight.defined() ? weight.data_ptr<scalar_t>() : nullptr;
+        const scalar_t* bias_data = bias.defined() ? bias.data_ptr<scalar_t>() : nullptr;
         float  eps = ln_epsilon;
         float* mean_data=NULL,*rstd_data=NULL;
         if(training){
