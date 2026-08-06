@@ -472,7 +472,7 @@ __global__ void opt_reshape_and_cache_kernel(
     }   
 }
 
-// Large-token BF16 path for the native DCU cache layout:
+// Large-token BF16 path for the native HCU cache layout:
 //   K: [block, head, slot, dim]
 //   V: [block, head, dim, slot]
 //
