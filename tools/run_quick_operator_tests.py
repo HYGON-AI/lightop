@@ -5,7 +5,7 @@ From /workspace/projects/cuda-repo/lightop_limslim/lightop_repo, run:
 
     python lightop/tools/run_quick_operator_tests.py
 
-Select one AMD/DTK GPU:
+Select one HCU/DTK device:
 
     ROCR_VISIBLE_DEVICES=0 python lightop/tools/run_quick_operator_tests.py
 
