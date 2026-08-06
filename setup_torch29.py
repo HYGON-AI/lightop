@@ -499,7 +499,6 @@ def get_extensions():
                glob.glob('./lightop/csrc/layernorm/*.cu') + glob.glob('./lightop/csrc/loss/*.cu') + \
                glob.glob('./lightop/csrc/scaledmask/*.cu') + glob.glob('./lightop/csrc/groupnorm/*.cu') + \
                glob.glob('./lightop/csrc/rmsnorm/*.cu') + glob.glob('./lightop/csrc/batchnorm/*.cu') + \
-               glob.glob('./lightop/csrc/grid_sample/*.cu') + \
                glob.glob('./lightop/csrc/softmax/*.cu') + \
                glob.glob('./lightop/csrc/moew8a8/*.cu') + glob.glob('./lightop/csrc/asm_cu/*.cu') + glob.glob('./lightop/csrc/moew16a16/*.cu') + \
                glob.glob('./lightop/csrc/moew4a8/*.cu') + glob.glob('./lightop/csrc/marlinw4a16/*.cu')+ glob.glob('./lightop/csrc/marlinw4a8/*.cu') +\
@@ -519,7 +518,6 @@ def get_extensions():
     include_dirs.append(os.path.abspath('./lightop/csrc/layernorm/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/groupnorm/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/rmsnorm/'))
-    
     include_dirs.append(os.path.abspath('./lightop/csrc/batchnorm/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/loss/'))
     include_dirs.append(os.path.abspath('./lightop/csrc/scaledmask/'))

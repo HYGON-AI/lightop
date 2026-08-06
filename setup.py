@@ -521,7 +521,6 @@ def get_extensions():
                glob.glob('./csrc/layernorm/*.cu') + glob.glob('./csrc/loss/*.cu') + \
                glob.glob('./csrc/scaledmask/*.cu') + glob.glob('./csrc/groupnorm/*.cu') + \
                glob.glob('./csrc/rmsnorm/*.cu') + glob.glob('./csrc/batchnorm/*.cu') + \
-               glob.glob('./csrc/grid_sample/*.cu') + \
                glob.glob('./csrc/softmax/*.cu') + \
                glob.glob('./csrc/moew8a8/*.cu') + glob.glob('./csrc/asm_cu/*.cu') + glob.glob('./csrc/moew16a16/*.cu') + \
                glob.glob('./csrc/moew4a8/*.cu') + glob.glob('./csrc/marlinw4a16/*.cu')+ glob.glob('./csrc/marlinw4a8/*.cu') +\
@@ -542,7 +541,6 @@ def get_extensions():
     include_dirs.append(os.path.abspath('./csrc/layernorm/'))
     include_dirs.append(os.path.abspath('./csrc/groupnorm/'))
     include_dirs.append(os.path.abspath('./csrc/rmsnorm/'))
-    
     include_dirs.append(os.path.abspath('./csrc/batchnorm/'))
     include_dirs.append(os.path.abspath('./csrc/loss/'))
     include_dirs.append(os.path.abspath('./csrc/scaledmask/'))
