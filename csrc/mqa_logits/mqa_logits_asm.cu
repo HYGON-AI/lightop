@@ -3378,7 +3378,7 @@ torch::Tensor mqa_logits(
                     const int blocky = (M + 15) / 16;
                     dim3 threadsPerBlock(512);
                     bool is_align_m = (M % 16 == 0);
-                    bool is_align_n = (N % 127 == 0);
+                    bool is_align_n = (N % 128 == 0);
                     dim3 numBlock(blockx, blocky);
                     if (is_align_m) {
                         if (is_align_n) {
