@@ -2422,8 +2422,8 @@ __global__ void mimo_v2_split_rope_vscale_kv_store_kernel(
     int64_t q_block_count,
     int64_t k_block_count,
     float value_scale,
-    float k_cache_scale,
-    float v_cache_scale,
+    const float* __restrict__ k_cache_scale,
+    const float* __restrict__ v_cache_scale,
     bool has_k_cache_scale,
     bool has_v_cache_scale,
     bool is_neox,
@@ -2534,7 +2534,7 @@ __global__ void mimo_v2_split_rope_vscale_kv_store_kernel(
       write_cache = cache_loc >= 0;
     }
     const float inv_k_cache_scale =
-        has_k_cache_scale ? 1.0f / k_cache_scale : 1.0f;
+        has_k_cache_scale ? 1.0f / k_cache_scale[0] : 1.0f;
     const int64_t k_base_offset =
         static_cast<int64_t>(cache_loc) * k_buffer_stride_n +
         head_idx * k_buffer_stride_h;
@@ -2676,9 +2676,10 @@ __global__ void mimo_v2_split_rope_vscale_kv_store_kernel(
     cache_loc = kv_cache_loc[token_idx];
     write_cache = cache_loc >= 0;
   }
+//   const float inv_v_cache_scale =
+//       has_v_cache_scale ? 1.0f / v_cache_scale : 1.0f;
   const float inv_v_cache_scale =
-      has_v_cache_scale ? 1.0f / v_cache_scale : 1.0f;
-
+      has_v_cache_scale ? 1.0f / v_cache_scale[0] : 1.0f;
   const int dim_offset = lane_in_head * VEC;
   scalar_t* v_head_ptr =
       qkv + token_idx * qkv_stride + q_size + k_size +
@@ -2724,8 +2725,8 @@ void launch_mimo_v2_split_rope_vscale_kv_store(
     int64_t head_size,
     int64_t v_head_size,
     double value_scale,
-    std::optional<double>& k_cache_scale,
-    std::optional<double>& v_cache_scale,
+    std::optional<Tensor>& k_cache_scale,
+    std::optional<Tensor>& v_cache_scale,
     bool is_neox,
     bool use_fp8_e4m3,
     cudaStream_t stream) {
@@ -2807,6 +2808,15 @@ void launch_mimo_v2_split_rope_vscale_kv_store(
     v_stride_d = v_buffer.stride(2);
   }
 
+  const float* k_cache_scale_ptr =
+    k_cache_scale.has_value()
+        ? k_cache_scale->data_ptr<float>()
+        : nullptr;
+  const float* v_cache_scale_ptr =
+    v_cache_scale.has_value()
+        ? v_cache_scale->data_ptr<float>()
+        : nullptr;
+
   mimo_v2_split_rope_vscale_kv_store_kernel<scalar_t, cache_t, index_t, USE_FP8_CACHE>
       <<<blocks, threads, 0, stream>>>(
           positions.data_ptr<int64_t>(),
@@ -2840,8 +2850,8 @@ void launch_mimo_v2_split_rope_vscale_kv_store(
           q_block_count,
           k_block_count,
           static_cast<float>(value_scale),
-          static_cast<float>(k_cache_scale.value_or(1.0)),
-          static_cast<float>(v_cache_scale.value_or(1.0)),
+          k_cache_scale_ptr,
+          v_cache_scale_ptr,
           k_cache_scale.has_value(),
           v_cache_scale.has_value(),
           is_neox,
@@ -2866,8 +2876,8 @@ void mimo_v2_split_rope_vscale_kv_store(
     Tensor& k_out,
     Tensor& v_out,
     double value_scale,
-    std::optional<double>& k_cache_scale,
-    std::optional<double>& v_cache_scale,
+    std::optional<Tensor>& k_cache_scale,
+    std::optional<Tensor>& v_cache_scale,
     bool use_fp8_e4m3,
     bool use_fp8_cache) {
   TORCH_CHECK(qkv.dim() == 2, "qkv must be [num_tokens, q_size + k_size + v_size]");
@@ -2890,7 +2900,28 @@ void mimo_v2_split_rope_vscale_kv_store(
   TORCH_CHECK(cos_sin_cache.dim() == 2, "cos_sin_cache must be 2-D");
   TORCH_CHECK(cos_sin_cache.size(1) <= head_size,
               "rotary dim must be <= head_size");
-  TORCH_CHECK(cos_sin_cache.size(1) % 2 == 0, "rotary dim must be even");
+  TORCH_CHECK(cos_sin_cache.size(1) % 2 == 0, "rotary dim must be even");    
+  const auto check_cache_scale =
+    [&](const std::optional<Tensor>& scale, const char* name) {
+      if (!scale.has_value()) {
+        return;
+    }
+    TORCH_CHECK(scale->defined(), name, " must be defined");
+    TORCH_CHECK(scale->is_cuda(),
+            name, " must be a CUDA/ROCm tensor");
+    TORCH_CHECK(scale->device() == qkv.device(),
+            name, " must be on the same device as qkv");
+    TORCH_CHECK(scale->scalar_type() == at::ScalarType::Float,
+            name, " must have float32 dtype");
+    TORCH_CHECK(scale->numel() == 1,
+            name, " must contain exactly one element");
+    TORCH_CHECK(scale->is_contiguous(),
+            name, " must be contiguous");
+    };
+
+  check_cache_scale(k_cache_scale, "k_cache_scale");
+  check_cache_scale(v_cache_scale, "v_cache_scale");
+
   if (kv_cache_loc.has_value()) {
     TORCH_CHECK(k_buffer.dim() == 3 && v_buffer.dim() == 3,
                 "mimo_v2 fused kv_store expects normal MHA buffers [slots, heads, dim]");
