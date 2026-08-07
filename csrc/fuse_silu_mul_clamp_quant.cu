@@ -49,31 +49,34 @@ __device__ __forceinline__ scalar_t swiglu_clamp_value(
   float gate_f = static_cast<float>(gate);
   float up_f = static_cast<float>(up);
 
-  // Match the native GLM path, including a cast after each operation:
-  // clamp(BF16) -> SiLU/GELU(BF16) -> multiply(BF16) -> dynamic INT8 quant.
+  if constexpr (use_gelu) {
+    // GELU(BF16) -> multiply(BF16) -> clamp(BF16) -> dynamic INT8 quant.
+    const scalar_t gate_value = static_cast<scalar_t>(gate_f);
+    const scalar_t up_value = static_cast<scalar_t>(up_f);
+    const float f = static_cast<float>(gate_value);
+    constexpr float ALPHA = M_SQRT1_2;
+    const scalar_t activated =
+        static_cast<scalar_t>(f * 0.5f * (1.0f + std::erf(f * ALPHA)));
+    const scalar_t multiplied =
+        static_cast<scalar_t>(activated * up_value);
+    float value = static_cast<float>(multiplied);
+    value = value < -limit ? -limit : (value > limit ? limit : value);
+    return static_cast<scalar_t>(value);
+  }
+  // clamp(BF16) -> SiLU(BF16) -> multiply(BF16) -> dynamic INT8 quant.
   gate_f = gate_f > limit ? limit : gate_f;
   up_f = up_f < -limit ? -limit : (up_f > limit ? limit : up_f);
   const scalar_t gate_clamped = static_cast<scalar_t>(gate_f);
   const scalar_t up_clamped = static_cast<scalar_t>(up_f);
-
-  scalar_t activated;
-  if constexpr (use_gelu) {
-    // Equivalent to PyTorch GELU with 'none' approximation.
-    // Keep aligned with activation_kernels_opt.cu::gelu_kernel.
-    const float f = (float)gate_clamped;
-    constexpr float ALPHA = M_SQRT1_2;
-    activated = (scalar_t)(f * 0.5f * (1.0f + std::erf(f * ALPHA)));
-  } else {
-    constexpr float log2e = 1.44269504088896340736f;
+  constexpr float log2e = 1.44269504088896340736f;
 #ifdef USE_ROCM
-    const float exp_value =
-        __builtin_amdgcn_exp2f(-static_cast<float>(gate_clamped) * log2e);
+  const float exp_value =
+      __builtin_amdgcn_exp2f(-static_cast<float>(gate_clamped) * log2e);
 #else
-    const float exp_value = __expf(-static_cast<float>(gate_clamped));
+  const float exp_value = __expf(-static_cast<float>(gate_clamped));
 #endif
-    activated = static_cast<scalar_t>(
-        static_cast<float>(gate_clamped) / (1.0f + exp_value));
-  }
+  const scalar_t activated = static_cast<scalar_t>(
+      static_cast<float>(gate_clamped) / (1.0f + exp_value));
   return static_cast<scalar_t>(activated * up_clamped);
 }
 

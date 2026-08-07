@@ -59,17 +59,22 @@ def torch_per_group_topk_reference(
     # keys are an internal kernel optimization and must not affect the baseline.
     probabilities = logits.sigmoid()
     choice_scores = probabilities + correction_bias.unsqueeze(0)
+    choice_scores = choice_scores.view(
+        num_tokens, num_expert_group, slots_per_group
+    )
     grouped_probabilities = probabilities.view(
         num_tokens, num_expert_group, slots_per_group
     )
 
     if num_pad_experts:
+        assert num_pad_experts % num_expert_group == 0
+        num_pad_experts_per_group = (
+            num_pad_experts // num_expert_group
+        )
         choice_scores = choice_scores.clone()
-        choice_scores[:, -num_pad_experts:] = float("-inf")
-
-    choice_scores = choice_scores.view(
-        num_tokens, num_expert_group, slots_per_group
-    )
+        choice_scores[..., -num_pad_experts_per_group:] = float(
+            "-inf"
+        )
     group_topk_ids = torch.topk(
         choice_scores,
         k=topk_per_group,
@@ -141,6 +146,7 @@ def assert_matches_reference(
     reference_weights,
     reference_ids,
     num_expert_slots,
+    num_expert_group,
     num_pad_experts,
     rtol,
     atol,
@@ -160,10 +166,14 @@ def assert_matches_reference(
         )
 
     if num_pad_experts:
-        first_pad_id = num_expert_slots - num_pad_experts
+        assert num_pad_experts % num_expert_group == 0
+        slots_per_group = num_expert_slots // num_expert_group
+        num_pad_experts_per_group = (
+            num_pad_experts // num_expert_group
+        )
+        first_pad_offset = slots_per_group - num_pad_experts_per_group
         selected_padding = (
-            (expert_ids >= first_pad_id)
-            & (expert_ids < num_expert_slots)
+            expert_ids.remainder(slots_per_group) >= first_pad_offset
         )
         if torch.any(selected_padding):
             raise AssertionError(
@@ -256,6 +266,7 @@ def run_case(
         reference_weights,
         reference_ids,
         num_expert_slots,
+        config["num_expert_group"],
         config["num_pad_experts"],
         rtol,
         atol,
@@ -326,6 +337,145 @@ def run_dtype_coverage():
     print(f"[Dtype] {count}/{len(CONFIGS) * len(dtype_pairs)} passed")
 
 
+def run_padding_layout_regression():
+    """The 300B checkpoint pads the last slot of each physical group."""
+    config = CONFIGS[1]
+    device = torch.device("cuda")
+    num_expert_slots = config["num_expert_slots"]
+    base_logits = torch.linspace(
+        -4.0,
+        4.0,
+        num_expert_slots,
+        device=device,
+        dtype=torch.float32,
+    ).unsqueeze(0)
+    # IDs 127 and 255 are padding. ID 254 is a real expert and must remain
+    # selectable; this distinguishes per-group padding from a global tail mask.
+    base_logits[0, 127] = 100.0
+    base_logits[0, 254] = 90.0
+    base_logits[0, 255] = 100.0
+
+    dtype_pairs = (
+        (torch.float32, torch.float32),
+        (torch.bfloat16, torch.float32),
+        (torch.bfloat16, torch.bfloat16),
+        (torch.float16, torch.float16),
+    )
+    for input_dtype, bias_dtype in dtype_pairs:
+        logits = base_logits.to(input_dtype)
+        correction_bias = torch.zeros(
+            num_expert_slots, device=device, dtype=bias_dtype
+        )
+        reference_weights, reference_ids = torch_per_group_topk_reference(
+            logits,
+            correction_bias,
+            config["num_expert_group"],
+            config["topk_per_group"],
+            config["num_pad_experts"],
+            0,
+            2.5,
+            True,
+        )
+        # Exercise the public wrapper's plugin-facing [T, G, slots] input.
+        weights, expert_ids = moe_fuse_gate_per_gourp_topk(
+            logits.view(1, config["num_expert_group"], -1),
+            correction_bias,
+            config["num_expert_group"],
+            config["topk_per_group"],
+            config["num_pad_experts"],
+            0,
+            2.5,
+            True,
+        )
+        tolerance_value = 1e-6 if input_dtype == torch.float32 else 1e-3
+        assert_matches_reference(
+            config["name"],
+            weights,
+            expert_ids,
+            reference_weights,
+            reference_ids,
+            num_expert_slots,
+            config["num_expert_group"],
+            config["num_pad_experts"],
+            tolerance_value,
+            tolerance_value,
+        )
+        assert not torch.any((expert_ids == 127) | (expert_ids == 255))
+        assert torch.any(expert_ids == 254)
+        print(
+            "[PASS][SparkV1-300B] per-group padding IDs 127/255 "
+            f"input={input_dtype} bias={bias_dtype}"
+        )
+
+
+def run_fp32_sigmoid_ordering_regression():
+    """FP32 sigmoid numerics must not change a near-tie expert choice."""
+    config = CONFIGS[1]
+    device = torch.device("cuda")
+    generator = torch.Generator(device="cpu").manual_seed(43)
+    logits = torch.randn(
+        (1, config["num_expert_slots"]),
+        generator=generator,
+        dtype=torch.float32,
+    ).to(device)
+    probabilities = logits.sigmoid()
+
+    # Build distinct adjacent FP32 target scores. The 7th/8th scores are one
+    # ULP apart, so an exp2 sigmoid approximation changes the selected expert.
+    value = torch.tensor(0.25, device=device, dtype=torch.float32)
+    infinity = torch.tensor(float("inf"), device=device, dtype=torch.float32)
+    target_values = []
+    for _ in range(128):
+        target_values.append(value)
+        value = torch.nextafter(torch.nextafter(value, infinity), infinity)
+    target_values = torch.stack(target_values)
+    target_scores = torch.cat(
+        (
+            target_values[
+                torch.randperm(128, generator=generator).to(device)
+            ],
+            target_values[
+                torch.randperm(128, generator=generator).to(device)
+            ],
+        )
+    )
+    correction_bias = (target_scores - probabilities[0]).contiguous()
+
+    reference_weights, reference_ids = torch_per_group_topk_reference(
+        logits,
+        correction_bias,
+        config["num_expert_group"],
+        config["topk_per_group"],
+        config["num_pad_experts"],
+        0,
+        2.5,
+        True,
+    )
+    weights, expert_ids = moe_fuse_gate_per_gourp_topk(
+        logits,
+        correction_bias,
+        config["num_expert_group"],
+        config["topk_per_group"],
+        config["num_pad_experts"],
+        0,
+        2.5,
+        True,
+    )
+    assert_matches_reference(
+        config["name"],
+        weights,
+        expert_ids,
+        reference_weights,
+        reference_ids,
+        config["num_expert_slots"],
+        config["num_expert_group"],
+        config["num_pad_experts"],
+        1e-6,
+        1e-6,
+    )
+    print("[PASS][SparkV1-300B] FP32 sigmoid near-tie ordering")
+
+
 def run_size_coverage():
     results = []
     for config in CONFIGS:
@@ -379,5 +529,7 @@ def run_size_coverage():
 if __name__ == "__main__":
     torch.manual_seed(0)
     assert torch.cuda.is_available(), "A CUDA/ROCm device is required"
+    run_padding_layout_regression()
+    run_fp32_sigmoid_ordering_regression()
     run_dtype_coverage()
     run_size_coverage()
