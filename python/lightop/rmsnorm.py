@@ -225,12 +225,18 @@ def rms_norm_dynamic_per_token_quant_sglang(
     quant_dtype: torch.dtype = torch.int8,
     residual: Optional[torch.Tensor] = None,
     update_input: bool = True,
+    limit: float = -1.0,
+    smooth_scale: Optional[torch.Tensor] = None,
+    norm_output: Optional[torch.Tensor] = None,
+    clamp_norm_output: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """RMSNorm + per-token INT8 quant with SGLang-compatible numerics.
 
     This is intentionally a separate API from the historical LightOp kernel.
     In particular, quantization observes the BF16/FP16-rounded RMSNorm output,
-    and uses ``max(absmax, 1e-10) / 127`` as the returned scale.
+    and uses ``max(absmax, 1e-10) / 127`` as the returned scale.  When
+    ``smooth_scale`` is provided the fused order is RMSNorm, optional clamp,
+    smooth multiplication, activation-dtype rounding, and INT8 quantization.
     """
     if quant_dtype != torch.int8:
         raise ValueError(f"Only torch.int8 is supported, got {quant_dtype}")
@@ -249,6 +255,10 @@ def rms_norm_dynamic_per_token_quant_sglang(
         epsilon,
         residual,
         update_input,
+        limit,
+        smooth_scale,
+        norm_output,
+        clamp_norm_output,
     )
     return output, scales
 
@@ -390,8 +400,29 @@ def fused_rms_norm_rope_contiguous(
     is_neox_style: bool = False,
     epsilon: float = 1e-5,
     limit: float = -1.0,
+    flashmla_fp8_layout: bool = False,
+    kv_quant_epsilon: float = 1e-6,
+    kv_smooth_scale: Optional[torch.Tensor] = None,
 ) -> None:
-    op.fused_rms_norm_rope_contiguous(positions, q_pe, k_pe, kv_c, kv_c_normed, weight, cos_sin_cache, slot_mapping, kv_cache, kv_cache_dtype_str, kv_cache_scale, is_neox_style, epsilon, limit)
+    op.fused_rms_norm_rope_contiguous(
+        positions,
+        q_pe,
+        k_pe,
+        kv_c,
+        kv_c_normed,
+        weight,
+        cos_sin_cache,
+        slot_mapping,
+        kv_cache,
+        kv_cache_dtype_str,
+        kv_cache_scale,
+        is_neox_style,
+        epsilon,
+        limit,
+        flashmla_fp8_layout,
+        kv_quant_epsilon,
+        kv_smooth_scale,
+    )
     return
 
 

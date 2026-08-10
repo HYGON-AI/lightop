@@ -22,7 +22,7 @@ TOKEN_SIZES = [
 
 CONFIGS = [
     {
-        "name": "SparkV1-30B",
+        "name": "single-group",
         "num_expert_slots": 128,
         "num_expert_group": 1,
         "topk_per_group": 7,
@@ -30,7 +30,7 @@ CONFIGS = [
         "shared_variants": (0, 1),
     },
     {
-        "name": "SparkV1-300B",
+        "name": "two-group",
         "num_expert_slots": 256,
         "num_expert_group": 2,
         "topk_per_group": 7,
@@ -114,12 +114,29 @@ def torch_per_group_topk_reference(
     if num_shared_experts == 0:
         return routed_weights, routed_ids.to(torch.int32)
 
-    shared_ids = torch.arange(
-        num_expert_slots,
-        num_expert_slots + num_shared_experts,
-        device=logits.device,
-        dtype=torch.int32,
-    ).view(1, -1).expand(num_tokens, -1)
+    if (
+        num_expert_group == 2
+        and num_pad_experts == num_shared_experts
+    ):
+        # The two shared experts occupy the last physical
+        # slot of each 128-slot group: IDs 127 and 255.
+        shared_ids = (
+            torch.arange(
+                1,
+                num_expert_group + 1,
+                device=logits.device,
+                dtype=torch.int32,
+            )
+            * slots_per_group
+            - 1
+        ).view(1, -1).expand(num_tokens, -1)
+    else:
+        shared_ids = torch.arange(
+            num_expert_slots,
+            num_expert_slots + num_shared_experts,
+            device=logits.device,
+            dtype=torch.int32,
+        ).view(1, -1).expand(num_tokens, -1)
     shared_weights = torch.ones(
         (num_tokens, num_shared_experts),
         device=logits.device,
@@ -148,6 +165,7 @@ def assert_matches_reference(
     num_expert_slots,
     num_expert_group,
     num_pad_experts,
+    num_shared_experts,
     rtol,
     atol,
 ):
@@ -175,6 +193,16 @@ def assert_matches_reference(
         selected_padding = (
             expert_ids.remainder(slots_per_group) >= first_pad_offset
         )
+        if (
+            num_expert_group == 2
+            and num_pad_experts == num_shared_experts
+        ):
+            shared_ids = torch.tensor(
+                [127, 255],
+                device=expert_ids.device,
+                dtype=expert_ids.dtype,
+            )
+            selected_padding &= ~torch.isin(expert_ids, shared_ids)
         if torch.any(selected_padding):
             raise AssertionError(
                 f"{model_name} selected a padding expert"
@@ -268,6 +296,7 @@ def run_case(
         num_expert_slots,
         config["num_expert_group"],
         config["num_pad_experts"],
+        num_shared_experts,
         rtol,
         atol,
     )
@@ -338,7 +367,7 @@ def run_dtype_coverage():
 
 
 def run_padding_layout_regression():
-    """The 300B checkpoint pads the last slot of each physical group."""
+    """The two-group layout pads the last slot of each physical group."""
     config = CONFIGS[1]
     device = torch.device("cuda")
     num_expert_slots = config["num_expert_slots"]
@@ -397,13 +426,14 @@ def run_padding_layout_regression():
             num_expert_slots,
             config["num_expert_group"],
             config["num_pad_experts"],
+            0,
             tolerance_value,
             tolerance_value,
         )
         assert not torch.any((expert_ids == 127) | (expert_ids == 255))
         assert torch.any(expert_ids == 254)
         print(
-            "[PASS][SparkV1-300B] per-group padding IDs 127/255 "
+            "[PASS][two-group] per-group padding IDs 127/255 "
             f"input={input_dtype} bias={bias_dtype}"
         )
 
@@ -470,10 +500,78 @@ def run_fp32_sigmoid_ordering_regression():
         config["num_expert_slots"],
         config["num_expert_group"],
         config["num_pad_experts"],
+        0,
         1e-6,
         1e-6,
     )
-    print("[PASS][SparkV1-300B] FP32 sigmoid near-tie ordering")
+    print("[PASS][two-group] FP32 sigmoid near-tie ordering")
+
+
+def run_shared_pad_layout_regression():
+    """The two-group shared experts must occupy physical IDs 127/255."""
+    config = CONFIGS[1]
+    device = torch.device("cuda")
+    logits = torch.randn(
+        (8, config["num_expert_slots"]),
+        device=device,
+        dtype=torch.float32,
+    )
+    correction_bias = torch.randn(
+        config["num_expert_slots"],
+        device=device,
+        dtype=torch.float32,
+    )
+    weights, expert_ids = moe_fuse_gate_per_gourp_topk(
+        logits,
+        correction_bias,
+        config["num_expert_group"],
+        config["topk_per_group"],
+        config["num_pad_experts"],
+        2,
+        2.5,
+        True,
+    )
+    assert torch.equal(
+        expert_ids[:, -2:],
+        torch.tensor([127, 255], device=device, dtype=torch.int32)
+        .view(1, 2)
+        .expand(8, 2),
+    )
+    assert torch.equal(weights[:, -2:], torch.ones_like(weights[:, -2:]))
+    assert not torch.any((expert_ids[:, :-2] == 127) | (expert_ids[:, :-2] == 255))
+    print("[PASS][two-group] shared experts use physical IDs 127/255")
+
+
+def run_single_group_shared_id_regression():
+    """The single-group layout has no in-group pad, so shared remains ID 128."""
+    config = CONFIGS[0]
+    device = torch.device("cuda")
+    logits = torch.randn(
+        (8, config["num_expert_slots"]),
+        device=device,
+        dtype=torch.float32,
+    )
+    correction_bias = torch.randn(
+        config["num_expert_slots"],
+        device=device,
+        dtype=torch.float32,
+    )
+    weights, expert_ids = moe_fuse_gate_per_gourp_topk(
+        logits,
+        correction_bias,
+        config["num_expert_group"],
+        config["topk_per_group"],
+        config["num_pad_experts"],
+        1,
+        1.0,
+        True,
+    )
+    assert torch.equal(
+        expert_ids[:, -1],
+        torch.full((8,), 128, device=device, dtype=torch.int32),
+    )
+    assert torch.equal(weights[:, -1], torch.ones_like(weights[:, -1]))
+    print("[PASS][single-group] shared expert remains physical ID 128")
 
 
 def run_size_coverage():
@@ -530,6 +628,8 @@ if __name__ == "__main__":
     torch.manual_seed(0)
     assert torch.cuda.is_available(), "A CUDA/ROCm device is required"
     run_padding_layout_regression()
+    run_shared_pad_layout_regression()
+    run_single_group_shared_id_regression()
     run_fp32_sigmoid_ordering_regression()
     run_dtype_coverage()
     run_size_coverage()
