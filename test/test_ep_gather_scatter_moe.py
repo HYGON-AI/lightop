@@ -11,7 +11,7 @@ ALIGNMENT = 16
 
 CONFIGS = (
     {
-        "name": "SparkV1-30B-routed",
+        "name": "single-group-routed",
         "num_experts": 128,
         "num_slots": 128,
         "num_groups": 1,
@@ -20,7 +20,7 @@ CONFIGS = (
         "num_shared_experts": 0,
     },
     {
-        "name": "SparkV1-30B-shared",
+        "name": "single-group-shared",
         "num_experts": 128,
         "num_slots": 128,
         "num_groups": 1,
@@ -29,7 +29,7 @@ CONFIGS = (
         "num_shared_experts": 1,
     },
     {
-        "name": "SparkV1-300B-routed",
+        "name": "two-group-routed",
         "num_experts": 254,
         "num_slots": 256,
         "num_groups": 2,
@@ -38,7 +38,7 @@ CONFIGS = (
         "num_shared_experts": 0,
     },
     {
-        "name": "SparkV1-300B-shared",
+        "name": "two-group-shared",
         "num_experts": 254,
         "num_slots": 256,
         "num_groups": 2,
@@ -137,23 +137,63 @@ def run_case(config, id_dtype, use_expert_map):
     ids = gate_ids.to(id_dtype).contiguous()
     num_experts = config["num_experts"]
 
-    # The map intentionally has routed-expert length only. It maps odd global
-    # expert IDs onto a smaller local expert set, exercising global IDs that are
-    # greater than local_num_experts. Shared IDs are out of map range.
+    # The map uses physical router slots. For the two-group layout, padding slots are
+    # 127/255 and physical expert 254 maps to logical routed expert 253.
     if use_expert_map:
         local_globals = torch.arange(
             1, num_experts, 2, dtype=torch.int64, device=DEVICE
         )
         local_num_experts = local_globals.numel()
-        expert_map = torch.full(
+        logical_to_local = torch.full(
             (num_experts,), -1, dtype=torch.int32, device=DEVICE
         )
-        expert_map[local_globals] = torch.arange(
+        logical_to_local[local_globals] = torch.arange(
             local_num_experts, dtype=torch.int32, device=DEVICE
         )
+        physical_to_logical = torch.arange(
+            config["num_slots"], dtype=torch.int64, device=DEVICE
+        )
+        if config["num_pad_experts"]:
+            physical_to_logical = torch.full(
+                (config["num_slots"],),
+                -1,
+                dtype=torch.int64,
+                device=DEVICE,
+            )
+            slots_per_group = config["num_slots"] // config["num_groups"]
+            real_per_group = (
+                slots_per_group
+                - config["num_pad_experts"] // config["num_groups"]
+            )
+            for group in range(config["num_groups"]):
+                physical_start = group * slots_per_group
+                logical_start = group * real_per_group
+                physical_to_logical[
+                    physical_start : physical_start + real_per_group
+                ] = torch.arange(
+                    logical_start,
+                    logical_start + real_per_group,
+                    dtype=torch.int64,
+                    device=DEVICE,
+                )
+        expert_map = torch.full(
+            (config["num_slots"],), -1, dtype=torch.int32, device=DEVICE
+        )
+        valid_physical = physical_to_logical >= 0
+        expert_map[valid_physical] = logical_to_local[
+            physical_to_logical[valid_physical]
+        ]
     else:
-        local_num_experts = num_experts
+        # Without a map, EP consumes physical slot IDs directly.
+        local_num_experts = config["num_slots"]
         expert_map = None
+
+    if not use_expert_map:
+        routed_k = config["num_groups"] * config["per_group_topk"]
+        _, routed_valid = resolve_local_ids(
+            ids[:, :routed_k], expert_map, local_num_experts
+        )
+        assert torch.all(routed_valid), "a routed physical expert was dropped"
 
     torch.manual_seed(1234)
     x = torch.randn(
@@ -251,7 +291,7 @@ def main():
         for id_dtype in (torch.int32, torch.int64):
             for use_expert_map in (False, True):
                 run_case(config, id_dtype, use_expert_map)
-    print("[PASS] all Spark EP scatter/INT8-quant-scatter/gather cases")
+    print("[PASS] all EP scatter/INT8-quant-scatter/gather cases")
 
 
 if __name__ == "__main__":

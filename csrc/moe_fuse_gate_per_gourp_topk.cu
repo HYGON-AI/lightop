@@ -330,8 +330,15 @@ __global__ void moe_fuse_gate_per_gourp_topk_kernel(
           NUM_EXPERT_GROUPS * kMoePerGroupRoutedTopk +
           lane_in_group;
       output[output_offset] = 1.0f;
-      indices[output_offset] =
-          NUM_EXPERT_SLOTS + lane_in_group;
+      if constexpr (
+          NUM_EXPERT_GROUPS == 2 &&
+          NUM_PAD_EXPERTS == NUM_SHARED_EXPERTS) {
+        indices[output_offset] =
+            (lane_in_group + 1) * kSlotsPerGroup - 1;
+      } else {
+        indices[output_offset] =
+            NUM_EXPERT_SLOTS + lane_in_group;
+      }
     }
   }
 }
