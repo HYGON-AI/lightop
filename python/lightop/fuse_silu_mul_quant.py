@@ -58,6 +58,25 @@ def fuse_silu_mul_quant(input: torch.Tensor,
     op.fuse_silu_mul_quant(input, output, scales, num_local_tokens_tensor, topk, expect_m, expert_ids)
     return output, scales
 
+
+def _validate_clamp_quant_smooth_scale(
+    input: torch.Tensor,
+    smooth_scale: Optional[torch.Tensor],
+    hidden: int,
+) -> None:
+    if smooth_scale is None:
+        return
+    if smooth_scale.shape != (hidden,):
+        raise ValueError(
+            f"smooth_scale must have shape ({hidden},), got {smooth_scale.shape}"
+        )
+    if smooth_scale.dtype != torch.float32:
+        raise ValueError("smooth_scale must have torch.float32 dtype")
+    if smooth_scale.device != input.device:
+        raise ValueError("input and smooth_scale must be on the same device")
+    if not smooth_scale.is_contiguous():
+        raise ValueError("smooth_scale must be contiguous")
+
 def fuse_silu_mul_clamp_quant(
     input: torch.Tensor,
     limit: float,
@@ -66,11 +85,15 @@ def fuse_silu_mul_clamp_quant(
     mask_m: Optional[torch.Tensor] = None,
     expect_m: int = -1,
     use_gelu: bool = False,
+    smooth_scale: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Fused clamp + SiLU/GELU + mul + per-token INT8 quant.
 
-    When ``use_gelu`` is True, use GELU (PyTorch ``none`` / erf) instead of
-    SiLU. Default keeps the original SiLU path.
+    When ``use_gelu`` is True, use GELU-compatible ordering:
+    GELU -> multiply -> clamp -> optional smooth -> INT8 quant. The default
+    SiLU path keeps the original ordering: clamp gate/up -> SiLU -> multiply
+    -> optional smooth -> INT8 quant. Smooth scaling is rounded in the input
+    dtype before dynamic quantization.
 
     When ``mask_m`` is provided or ``expect_m != -1``, ``input`` uses the EP
     layout ``[experts, tokens, 2 * hidden]`` and ``mask_m[e]`` gives the valid
@@ -88,6 +111,7 @@ def fuse_silu_mul_clamp_quant(
             output,
             scales,
             use_gelu=use_gelu,
+            smooth_scale=smooth_scale,
         )
 
     if input.dim() != 2 or input.shape[-1] % 2 != 0:
@@ -101,6 +125,7 @@ def fuse_silu_mul_clamp_quant(
 
     doubled_hidden = input.shape[-1]
     hidden = doubled_hidden // 2
+    _validate_clamp_quant_smooth_scale(input, smooth_scale, hidden)
     leading_shape = input.shape[:-1]
     if output is None:
         output = torch.empty(
@@ -116,6 +141,7 @@ def fuse_silu_mul_clamp_quant(
         scales,
         float(limit),
         use_gelu,
+        smooth_scale,
     )
     return output, scales
 
@@ -128,8 +154,9 @@ def fuse_silu_mul_clamp_quant_ep(
     output: Optional[torch.Tensor] = None,
     scales: Optional[torch.Tensor] = None,
     use_gelu: bool = False,
+    smooth_scale: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Run masked EP clamp + SiLU/GELU + mul + per-token INT8 quantization."""
+    """Run masked EP clamp + activation + optional smooth + INT8 quant."""
     if input.dim() != 3 or input.shape[-1] % 2 != 0:
         raise ValueError(
             "input must have shape [experts, tokens, 2 * hidden]"
@@ -141,6 +168,7 @@ def fuse_silu_mul_clamp_quant_ep(
 
     experts, tokens, doubled_hidden = input.shape
     hidden = doubled_hidden // 2
+    _validate_clamp_quant_smooth_scale(input, smooth_scale, hidden)
     if output is None:
         output = torch.empty(
             (experts, tokens, hidden),
@@ -161,6 +189,7 @@ def fuse_silu_mul_clamp_quant_ep(
         mask_m,
         expect_m,
         use_gelu,
+        smooth_scale,
     )
     return output, scales
 
@@ -349,4 +378,3 @@ def relu2(input: torch.Tensor) -> torch.Tensor:
     
     op.relu2_opt(output, input)
     return output
-
