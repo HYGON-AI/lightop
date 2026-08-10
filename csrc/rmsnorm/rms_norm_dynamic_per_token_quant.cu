@@ -678,15 +678,20 @@ void rms_norm_dynamic_per_token_quant(
 // interface above: its quantization contract intentionally matches
 // lmslim.layers.gemm.int8_utils.per_token_quant_int8 used by SGLang W8A8.
 template <typename scalar_t, int Vec, int block_size,
-          bool has_residual, bool update_input>
+          bool has_residual, bool update_input,
+          bool APPLY_CLAMP, bool APPLY_SMOOTH>
 __global__ void rms_norm_dynamic_per_token_quant_sglang_kernel(
     int8_t* out,
     scalar_t* input,
+    scalar_t* norm_out,
     scalar_t* residual,
     const scalar_t* gamma,
     int32_t cols,
     float eps,
-    float* scales) {
+    float* scales,
+    const float* smooth_scale,
+    float limit,
+    bool clamp_norm_output) {
   using T_ACC = at::acc_type<scalar_t, true>;
   using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
   using StoreT = at::native::memory::aligned_vector<int8_t, Vec>;
@@ -719,9 +724,9 @@ __global__ void rms_norm_dynamic_per_token_quant_sglang_kernel(
     for (int i = 0; i < Vec; ++i) {
       T_ACC value = static_cast<T_ACC>(input_vec[i]);
       if constexpr (has_residual) {
-        // Native RMSNorm adds BF16/FP16 operands in FP32 and computes the
-        // variance from this unrounded sum.  Cast only when writing residual.
         value += static_cast<T_ACC>(residual_vec[i]);
+        residual_vec[i] = static_cast<scalar_t>(value);
+        value = static_cast<T_ACC>(residual_vec[i]);
       }
       norm_input[i] = value;
       square_sum += value * value;
@@ -736,6 +741,8 @@ __global__ void rms_norm_dynamic_per_token_quant_sglang_kernel(
   __syncthreads();
 
   alignas(16) scalar_t normalized[Vec];
+  alignas(16) scalar_t clamped[Vec];
+  alignas(16) scalar_t quant_input[Vec];
   float local_absmax = 0.0f;
   if (active) {
 #pragma unroll
@@ -746,8 +753,20 @@ __global__ void rms_norm_dynamic_per_token_quant_sglang_kernel(
       // activation, not the unrounded FP32 product.
       normalized[i] = static_cast<scalar_t>(
           norm_input[i] * row_rstd * static_cast<T_ACC>(gamma[col]));
+      clamped[i] = normalized[i];
+      if constexpr (APPLY_CLAMP) {
+        clamped[i] = static_cast<scalar_t>(clamp_rms_quant_value(
+            static_cast<float>(clamped[i]), limit));
+      }
+      float quant_value = static_cast<float>(clamped[i]);
+      if constexpr (APPLY_SMOOTH) {
+        const scalar_t scale_value =
+            static_cast<scalar_t>(smooth_scale[col]);
+        quant_value *= static_cast<float>(scale_value);
+      }
+      quant_input[i] = static_cast<scalar_t>(quant_value);
       local_absmax =
-          fmaxf(local_absmax, fabsf(static_cast<float>(normalized[i])));
+          fmaxf(local_absmax, fabsf(static_cast<float>(quant_input[i])));
     }
   }
 
@@ -761,20 +780,23 @@ __global__ void rms_norm_dynamic_per_token_quant_sglang_kernel(
 
   if (active) {
     alignas(8) int8_t quantized[Vec];
+    alignas(16) scalar_t norm_output_vec[Vec];
     const float inv_scale = qmax / row_absmax;
 #pragma unroll
     for (int i = 0; i < Vec; ++i) {
       quantized[i] = float_to_int8_rn(
-          static_cast<float>(normalized[i]) * inv_scale);
-      if constexpr (has_residual) {
-        residual_vec[i] = static_cast<scalar_t>(norm_input[i]);
-      }
+          static_cast<float>(quant_input[i]) * inv_scale);
+      norm_output_vec[i] = clamp_norm_output ? clamped[i] : normalized[i];
     }
     *reinterpret_cast<StoreT*>(out + offset) =
         *reinterpret_cast<const StoreT*>(quantized);
+    if (norm_out != nullptr) {
+      *reinterpret_cast<LoadT*>(norm_out + offset) =
+          *reinterpret_cast<const LoadT*>(norm_output_vec);
+    }
     if constexpr (update_input) {
       *reinterpret_cast<LoadT*>(input + offset) =
-          *reinterpret_cast<const LoadT*>(normalized);
+          *reinterpret_cast<const LoadT*>(norm_output_vec);
     }
     if constexpr (has_residual) {
       *reinterpret_cast<LoadT*>(residual + offset) =
@@ -788,6 +810,7 @@ template <typename scalar_t, int Vec, int block_size>
 void launch_rms_norm_dynamic_per_token_quant_sglang(
     int8_t* out,
     scalar_t* input,
+    scalar_t* norm_out,
     scalar_t* residual,
     const scalar_t* gamma,
     int num_tokens,
@@ -796,24 +819,53 @@ void launch_rms_norm_dynamic_per_token_quant_sglang(
     float* scales,
     bool has_residual,
     bool update_input,
+    bool apply_clamp,
+    bool apply_smooth,
+    const float* smooth_scale,
+    float limit,
+    bool clamp_norm_output,
     cudaStream_t stream) {
-#define LAUNCH_SGLANG_RMS_QUANT(HAS_RESIDUAL, UPDATE_INPUT)                  \
+#define LAUNCH_SGLANG_RMS_QUANT(                                            \
+    HAS_RESIDUAL, UPDATE_INPUT, APPLY_CLAMP, APPLY_SMOOTH)                  \
   rms_norm_dynamic_per_token_quant_sglang_kernel<                           \
-      scalar_t, Vec, block_size, HAS_RESIDUAL, UPDATE_INPUT>                \
+      scalar_t, Vec, block_size, HAS_RESIDUAL, UPDATE_INPUT,                \
+      APPLY_CLAMP, APPLY_SMOOTH>                                            \
       <<<num_tokens, block_size, 0, stream>>>(                              \
-          out, input, residual, gamma, hidden_size, epsilon, scales)
+          out, input, norm_out, residual, gamma, hidden_size, epsilon,      \
+          scales, smooth_scale, limit, clamp_norm_output)
 
-  if (has_residual) {
-    if (update_input) {
-      LAUNCH_SGLANG_RMS_QUANT(true, true);
+#define DISPATCH_SGLANG_RMS_QUANT(APPLY_CLAMP, APPLY_SMOOTH)                \
+  do {                                                                      \
+    if (has_residual) {                                                     \
+      if (update_input) {                                                   \
+        LAUNCH_SGLANG_RMS_QUANT(                                            \
+            true, true, APPLY_CLAMP, APPLY_SMOOTH);                         \
+      } else {                                                              \
+        LAUNCH_SGLANG_RMS_QUANT(                                            \
+            true, false, APPLY_CLAMP, APPLY_SMOOTH);                        \
+      }                                                                     \
+    } else if (update_input) {                                              \
+      LAUNCH_SGLANG_RMS_QUANT(                                              \
+          false, true, APPLY_CLAMP, APPLY_SMOOTH);                          \
+    } else {                                                                \
+      LAUNCH_SGLANG_RMS_QUANT(                                              \
+          false, false, APPLY_CLAMP, APPLY_SMOOTH);                         \
+    }                                                                       \
+  } while (false)
+
+  if (apply_clamp) {
+    if (apply_smooth) {
+      DISPATCH_SGLANG_RMS_QUANT(true, true);
     } else {
-      LAUNCH_SGLANG_RMS_QUANT(true, false);
+      DISPATCH_SGLANG_RMS_QUANT(true, false);
     }
-  } else if (update_input) {
-    LAUNCH_SGLANG_RMS_QUANT(false, true);
+  } else if (apply_smooth) {
+    DISPATCH_SGLANG_RMS_QUANT(false, true);
   } else {
-    LAUNCH_SGLANG_RMS_QUANT(false, false);
+    DISPATCH_SGLANG_RMS_QUANT(false, false);
   }
+
+#undef DISPATCH_SGLANG_RMS_QUANT
 #undef LAUNCH_SGLANG_RMS_QUANT
 }
 
@@ -837,7 +889,11 @@ void rms_norm_dynamic_per_token_quant_sglang(
     Tensor scales,
     double epsilon,
     std::optional<Tensor> residual,
-    bool update_input) {
+    bool update_input,
+    double limit,
+    std::optional<Tensor> smooth_scale,
+    std::optional<Tensor> norm_output,
+    bool clamp_norm_output) {
   TORCH_CHECK(input.is_cuda(), "input must be on a GPU");
   TORCH_CHECK(input.dim() == 2, "input must be a 2D tensor");
   TORCH_CHECK(input.is_contiguous(), "input must be contiguous");
@@ -862,6 +918,9 @@ void rms_norm_dynamic_per_token_quant_sglang(
               "scales must have dtype torch.float32");
   TORCH_CHECK(std::isfinite(epsilon) && epsilon > 0.0,
               "epsilon must be finite and positive");
+  TORCH_CHECK(
+      limit == -1.0 || (std::isfinite(limit) && limit >= 0.0),
+      "limit must be -1 (disabled) or a finite non-negative value");
 
   const int hidden_size = input.size(1);
   const int num_tokens = input.size(0);
@@ -892,6 +951,55 @@ void rms_norm_dynamic_per_token_quant_sglang(
   TORCH_CHECK(!tensors_overlap(out, scales),
               "out and scales must not overlap");
 
+  bool has_smooth_scale = smooth_scale.has_value();
+  if (has_smooth_scale) {
+    TORCH_CHECK(smooth_scale->is_cuda(), "smooth_scale must be on a GPU");
+    TORCH_CHECK(smooth_scale->is_contiguous(),
+                "smooth_scale must be contiguous");
+    TORCH_CHECK(smooth_scale->device() == input.device(),
+                "smooth_scale must be on input.device");
+    TORCH_CHECK(smooth_scale->scalar_type() == at::ScalarType::Float,
+                "smooth_scale must have dtype torch.float32");
+    TORCH_CHECK(smooth_scale->dim() == 1 &&
+                    smooth_scale->size(0) == hidden_size,
+                "smooth_scale must have shape [hidden_size]");
+    TORCH_CHECK(!tensors_overlap(input, *smooth_scale),
+                "input and smooth_scale must not overlap");
+    TORCH_CHECK(!tensors_overlap(weight, *smooth_scale),
+                "weight and smooth_scale must not overlap");
+    TORCH_CHECK(!tensors_overlap(out, *smooth_scale),
+                "out and smooth_scale must not overlap");
+    TORCH_CHECK(!tensors_overlap(scales, *smooth_scale),
+                "scales and smooth_scale must not overlap");
+  }
+
+  bool has_norm_output = norm_output.has_value();
+  if (has_norm_output) {
+    TORCH_CHECK(norm_output->is_cuda(), "norm_output must be on a GPU");
+    TORCH_CHECK(norm_output->is_contiguous(),
+                "norm_output must be contiguous");
+    TORCH_CHECK(norm_output->device() == input.device(),
+                "norm_output must be on input.device");
+    TORCH_CHECK(norm_output->scalar_type() == input.scalar_type(),
+                "norm_output dtype must match input dtype");
+    TORCH_CHECK(norm_output->sizes() == input.sizes(),
+                "norm_output shape must match input");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(norm_output->data_ptr()) % 16 == 0,
+                "norm_output must be 16-byte aligned");
+    TORCH_CHECK(!tensors_overlap(input, *norm_output),
+                "input and norm_output must not overlap");
+    TORCH_CHECK(!tensors_overlap(weight, *norm_output),
+                "weight and norm_output must not overlap");
+    TORCH_CHECK(!tensors_overlap(out, *norm_output),
+                "out and norm_output must not overlap");
+    TORCH_CHECK(!tensors_overlap(scales, *norm_output),
+                "scales and norm_output must not overlap");
+    if (has_smooth_scale) {
+      TORCH_CHECK(!tensors_overlap(*smooth_scale, *norm_output),
+                  "smooth_scale and norm_output must not overlap");
+    }
+  }
+
   bool has_residual = residual.has_value();
   if (has_residual) {
     TORCH_CHECK(residual->sizes() == input.sizes(),
@@ -911,6 +1019,14 @@ void rms_norm_dynamic_per_token_quant_sglang(
                 "out and residual must not overlap");
     TORCH_CHECK(!tensors_overlap(scales, *residual),
                 "scales and residual must not overlap");
+    if (has_smooth_scale) {
+      TORCH_CHECK(!tensors_overlap(*smooth_scale, *residual),
+                  "smooth_scale and residual must not overlap");
+    }
+    if (has_norm_output) {
+      TORCH_CHECK(!tensors_overlap(*norm_output, *residual),
+                  "norm_output and residual must not overlap");
+    }
   }
   if (num_tokens == 0) {
     return;
@@ -928,33 +1044,54 @@ void rms_norm_dynamic_per_token_quant_sglang(
         auto* residual_ptr =
             has_residual ? residual->data_ptr<scalar_t>() : nullptr;
         const auto* weight_ptr = weight.data_ptr<scalar_t>();
+        const auto* smooth_scale_ptr = has_smooth_scale
+            ? smooth_scale->data_ptr<float>()
+            : nullptr;
+        auto* norm_output_ptr = has_norm_output
+            ? norm_output->data_ptr<scalar_t>()
+            : nullptr;
         auto* out_ptr = out.data_ptr<int8_t>();
         auto* scales_ptr = scales.data_ptr<float>();
         if (hidden_size <= 512) {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 64>(
-              out_ptr, input_ptr, residual_ptr, weight_ptr, num_tokens,
+              out_ptr, input_ptr, norm_output_ptr, residual_ptr, weight_ptr,
+              num_tokens,
               hidden_size, static_cast<float>(epsilon), scales_ptr,
-              has_residual, update_input, stream);
+              has_residual, update_input, limit >= 0.0, has_smooth_scale,
+              smooth_scale_ptr, static_cast<float>(limit), clamp_norm_output,
+              stream);
         } else if (hidden_size <= 1024) {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 128>(
-              out_ptr, input_ptr, residual_ptr, weight_ptr, num_tokens,
+              out_ptr, input_ptr, norm_output_ptr, residual_ptr, weight_ptr,
+              num_tokens,
               hidden_size, static_cast<float>(epsilon), scales_ptr,
-              has_residual, update_input, stream);
+              has_residual, update_input, limit >= 0.0, has_smooth_scale,
+              smooth_scale_ptr, static_cast<float>(limit), clamp_norm_output,
+              stream);
         } else if (hidden_size <= 2048) {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 256>(
-              out_ptr, input_ptr, residual_ptr, weight_ptr, num_tokens,
+              out_ptr, input_ptr, norm_output_ptr, residual_ptr, weight_ptr,
+              num_tokens,
               hidden_size, static_cast<float>(epsilon), scales_ptr,
-              has_residual, update_input, stream);
+              has_residual, update_input, limit >= 0.0, has_smooth_scale,
+              smooth_scale_ptr, static_cast<float>(limit), clamp_norm_output,
+              stream);
         } else if (hidden_size <= 4096) {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 512>(
-              out_ptr, input_ptr, residual_ptr, weight_ptr, num_tokens,
+              out_ptr, input_ptr, norm_output_ptr, residual_ptr, weight_ptr,
+              num_tokens,
               hidden_size, static_cast<float>(epsilon), scales_ptr,
-              has_residual, update_input, stream);
+              has_residual, update_input, limit >= 0.0, has_smooth_scale,
+              smooth_scale_ptr, static_cast<float>(limit), clamp_norm_output,
+              stream);
         } else {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 1024>(
-              out_ptr, input_ptr, residual_ptr, weight_ptr, num_tokens,
+              out_ptr, input_ptr, norm_output_ptr, residual_ptr, weight_ptr,
+              num_tokens,
               hidden_size, static_cast<float>(epsilon), scales_ptr,
-              has_residual, update_input, stream);
+              has_residual, update_input, limit >= 0.0, has_smooth_scale,
+              smooth_scale_ptr, static_cast<float>(limit), clamp_norm_output,
+              stream);
         }
       });
   C10_CUDA_KERNEL_LAUNCH_CHECK();

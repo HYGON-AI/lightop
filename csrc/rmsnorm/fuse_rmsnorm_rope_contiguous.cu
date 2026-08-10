@@ -2,7 +2,9 @@
 // #include "dispatch_utils.h"
 
 #include <torch/all.h>
+#include <cstdint>
 #include <cmath>
+#include <type_traits>
 #include <c10/cuda/CUDAGuard.h>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 #include <c10/cuda/CUDAMathCompat.h>
@@ -12,6 +14,11 @@
 #include "hip/hip_fp16.h"
 #include "hip/hip_bf16.h"
 #define CEILDIV(x, y) (((x) + (y) - 1) / (y))
+#if defined(USE_ROCM) && USE_ROCM
+#define RMS_ROPE_SHFL_XOR(val, mask) __shfl_xor(val, mask)
+#else
+#define RMS_ROPE_SHFL_XOR(val, mask) __shfl_xor_sync(__activemask(), val, mask)
+#endif
 template <typename T, int N> struct alignas(sizeof(T) * N) Vector {
   T val[N];
 };
@@ -267,13 +274,15 @@ __inline__ __device__ T BlockReduceSum_NEW(T val, T* shared) {
 
 
 template <typename scalar_t,typename T_ACC, int Vec=8, int num_warp_per_block=4, int rot_dim=64,
-int kv_c_dim=512, bool APPLY_CLAMP=false>
+int kv_c_dim=512, bool APPLY_CLAMP=false, bool FLASHMLA_FP8_LAYOUT=false,
+bool APPLY_SMOOTH=false>
 __global__ void rms_rope_kernel(
     scalar_t* __restrict__ input_q,  // [bs, num_head, q_c_dim + rot_dim]
     scalar_t* __restrict__ input_k,  // [bs, kv_c_dim + rot_dim]
     scalar_t* __restrict__ input_kv_c,  // [bs, kv_c_dim]
     scalar_t* __restrict__ output_kv_c_normed,  // [bs, kv_c_dim]
     scalar_t* __restrict__ weight,  // [kv_c_dim]
+    const float* __restrict__ kv_smooth_scale,
     const scalar_t* __restrict__ cos_sin_cache,  // [max_position, 2, rot_dim / 2]
     const int64_t* __restrict__ positions,  // [bs]
     const int64_t* __restrict__ slot_mapping,  // [bs]
@@ -291,7 +300,10 @@ __global__ void rms_rope_kernel(
     const float limit,
     const int kv_dtype,
     const int max_slot_id,
-    const int k_bs_stride) 
+    const int k_bs_stride,
+    const int64_t kv_cache_token_stride_bytes,
+    const float kv_quant_epsilon,
+    const bool is_neox_style)
   {
 
     if(blockIdx.x < q_grid_x){
@@ -328,20 +340,35 @@ __global__ void rms_rope_kernel(
       const int sin_index_in_cache = cos_index_in_cache + embed_dim;
       // 读取q_pe、cos、sin
       scalar_t input_vec[Vec];
-      scalar_t cos_vec[Vec/2];
-      scalar_t sin_vec[Vec/2];
+      scalar_t cos_vec[Vec];
+      scalar_t sin_vec[Vec];
       if(head_offset_in_token >= num_head) return;
       *(LoadT*)(input_vec) = *(LoadT*)(q_pe_ptr);
-      *(LoadTheta*)cos_vec = *(LoadTheta*)(cache_ptr + cos_index_in_cache);
-      *(LoadTheta*)sin_vec = *(LoadTheta*)(cache_ptr + sin_index_in_cache);
-      for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
-        scalar_t x = input_vec[ii];
-        scalar_t y = input_vec[ii+1];
-        scalar_t cos_val = cos_vec[rot_dim_idx];
-        scalar_t sin_val = sin_vec[rot_dim_idx];
-        input_vec[ii] = x * cos_val - y * sin_val;
-        input_vec[ii+1] = y * cos_val + x * sin_val;
-        rot_dim_idx += 1;
+      if (is_neox_style) {
+        const int theta_offset = element_in_head % embed_dim;
+        *(LoadT*)cos_vec = *(LoadT*)(cache_ptr + theta_offset);
+        *(LoadT*)sin_vec = *(LoadT*)(cache_ptr + embed_dim + theta_offset);
+        #pragma unroll
+        for (int ii = 0; ii < Vec; ++ii) {
+          const scalar_t x = input_vec[ii];
+          const scalar_t y = static_cast<scalar_t>(RMS_ROPE_SHFL_XOR(
+              static_cast<float>(x), thread_per_head / 2));
+          input_vec[ii] = element_in_head < embed_dim
+              ? x * cos_vec[ii] - y * sin_vec[ii]
+              : x * cos_vec[ii] + y * sin_vec[ii];
+        }
+      } else {
+        *(LoadTheta*)cos_vec = *(LoadTheta*)(cache_ptr + cos_index_in_cache);
+        *(LoadTheta*)sin_vec = *(LoadTheta*)(cache_ptr + sin_index_in_cache);
+        for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
+          scalar_t x = input_vec[ii];
+          scalar_t y = input_vec[ii+1];
+          scalar_t cos_val = cos_vec[rot_dim_idx];
+          scalar_t sin_val = sin_vec[rot_dim_idx];
+          input_vec[ii] = x * cos_val - y * sin_val;
+          input_vec[ii+1] = y * cos_val + x * sin_val;
+          rot_dim_idx += 1;
+        }
       }
       // 写回q_pe
       *(LoadT*)q_pe_ptr = *(LoadT*)input_vec;
@@ -379,31 +406,73 @@ __global__ void rms_rope_kernel(
 
 
 
-      const int64_t kv_cache_offset = slot * 576 + thread_offset_in_token;
+      const int64_t kv_cache_offset = FLASHMLA_FP8_LAYOUT
+          ? slot * kv_cache_token_stride_bytes
+          : slot * 576;
       // 读取q_pe、cos、sin
       scalar_t input_vec[Vec];
-      scalar_t cos_vec[Vec/2];
-      scalar_t sin_vec[Vec/2];
+      scalar_t cos_vec[Vec];
+      scalar_t sin_vec[Vec];
       uint8_t output_vec[Vec];
       float float_vec[Vec];
       *(LoadT*)(input_vec) = *(LoadT*)(k_pe_ptr);
-      *(LoadTheta*)cos_vec = *(LoadTheta*)(cache_ptr + cos_index_in_cache);
-      *(LoadTheta*)sin_vec = *(LoadTheta*)(cache_ptr + sin_index_in_cache);
+      if (is_neox_style) {
+        const int theta_offset = thread_offset_in_token % embed_dim;
+        *(LoadT*)cos_vec = *(LoadT*)(cache_ptr + theta_offset);
+        *(LoadT*)sin_vec = *(LoadT*)(cache_ptr + embed_dim + theta_offset);
+        #pragma unroll
+        for (int ii = 0; ii < Vec; ++ii) {
+          const scalar_t x = input_vec[ii];
+          const scalar_t y = static_cast<scalar_t>(RMS_ROPE_SHFL_XOR(
+              static_cast<float>(x), thread_per_head / 2));
+          input_vec[ii] = thread_offset_in_token < embed_dim
+              ? static_cast<scalar_t>(x * cos_vec[ii] - y * sin_vec[ii])
+              : static_cast<scalar_t>(x * cos_vec[ii] + y * sin_vec[ii]);
+        }
+      } else {
+        *(LoadTheta*)cos_vec = *(LoadTheta*)(cache_ptr + cos_index_in_cache);
+        *(LoadTheta*)sin_vec = *(LoadTheta*)(cache_ptr + sin_index_in_cache);
+      }
 
-      if (kv_dtype != 2) // fp8_e5m2 or fp8_e4m3
+      if constexpr (FLASHMLA_FP8_LAYOUT)
       {
-        for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
-          scalar_t x = input_vec[ii];
-          scalar_t y = input_vec[ii+1];
-          scalar_t cos_val = cos_vec[rot_dim_idx];
-          scalar_t sin_val = sin_vec[rot_dim_idx];
-          // output_vec[ii] = float_to_fp8e5m2(x * cos_val - y * sin_val);
-          // output_vec[ii+1] = float_to_fp8e5m2(y * cos_val + x * sin_val);
-          float_vec[ii] = x * cos_val - y * sin_val;
-          float_vec[ii+1] = y * cos_val + x * sin_val;
-          input_vec[ii] = static_cast<scalar_t>(float_vec[ii]);
-          input_vec[ii+1] = static_cast<scalar_t>(float_vec[ii+1]);
-          rot_dim_idx += 1;
+        if (!is_neox_style) {
+          for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
+            scalar_t x = input_vec[ii];
+            scalar_t y = input_vec[ii+1];
+            scalar_t cos_val = cos_vec[rot_dim_idx];
+            scalar_t sin_val = sin_vec[rot_dim_idx];
+            input_vec[ii] = static_cast<scalar_t>(x * cos_val - y * sin_val);
+            input_vec[ii+1] = static_cast<scalar_t>(y * cos_val + x * sin_val);
+            rot_dim_idx += 1;
+          }
+        }
+        constexpr int flashmla_rope_byte_offset = kv_c_dim + 4 * sizeof(float);
+        uint8_t* output_ptr = static_cast<uint8_t*>(kv_cache) +
+            kv_cache_offset + flashmla_rope_byte_offset +
+            thread_offset_in_token * sizeof(scalar_t);
+        *(LoadT*)output_ptr = *(LoadT*)input_vec;
+        *(LoadT*)(k_pe_ptr) = *(LoadT*)input_vec;
+      }
+      else if (kv_dtype != 2)
+      {
+        if (is_neox_style) {
+          #pragma unroll
+          for (int ii = 0; ii < Vec; ++ii) {
+            float_vec[ii] = static_cast<float>(input_vec[ii]);
+          }
+        } else {
+          for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
+            scalar_t x = input_vec[ii];
+            scalar_t y = input_vec[ii+1];
+            scalar_t cos_val = cos_vec[rot_dim_idx];
+            scalar_t sin_val = sin_vec[rot_dim_idx];
+            float_vec[ii] = x * cos_val - y * sin_val;
+            float_vec[ii+1] = y * cos_val + x * sin_val;
+            input_vec[ii] = static_cast<scalar_t>(float_vec[ii]);
+            input_vec[ii+1] = static_cast<scalar_t>(float_vec[ii+1]);
+            rot_dim_idx += 1;
+          }
         }
         if(kv_dtype == 0)
         {
@@ -415,21 +484,25 @@ __global__ void rms_rope_kernel(
           ((uint32_t*)output_vec)[0] = float_to_bhalf_to_fp8e4m3_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
           ((uint32_t*)output_vec)[1] = float_to_bhalf_to_fp8e4m3_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
         }
-        uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset + 512;
+        uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset +
+            thread_offset_in_token + 512;
         *(OutputT*)output_ptr = *(OutputT*)output_vec;
         *(LoadT*)(k_pe_ptr) = *(LoadT*)input_vec;
       }
       else{
-        for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
-          scalar_t x = input_vec[ii];
-          scalar_t y = input_vec[ii+1];
-          scalar_t cos_val = cos_vec[rot_dim_idx];
-          scalar_t sin_val = sin_vec[rot_dim_idx];
-          input_vec[ii] = static_cast<scalar_t>(x * cos_val - y * sin_val);
-          input_vec[ii+1] = static_cast<scalar_t>(y * cos_val + x * sin_val);
-          rot_dim_idx += 1;
+        if (!is_neox_style) {
+          for(int ii = 0, rot_dim_idx = 0; ii < Vec; ii+=2){
+            scalar_t x = input_vec[ii];
+            scalar_t y = input_vec[ii+1];
+            scalar_t cos_val = cos_vec[rot_dim_idx];
+            scalar_t sin_val = sin_vec[rot_dim_idx];
+            input_vec[ii] = static_cast<scalar_t>(x * cos_val - y * sin_val);
+            input_vec[ii+1] = static_cast<scalar_t>(y * cos_val + x * sin_val);
+            rot_dim_idx += 1;
+          }
         }
-        scalar_t* output_ptr = (scalar_t*)kv_cache + kv_cache_offset + 512;
+        scalar_t* output_ptr = static_cast<scalar_t*>(kv_cache) +
+            kv_cache_offset + thread_offset_in_token + 512;
         *(LoadT*)output_ptr = *(LoadT*)input_vec;
         *(LoadT*)(k_pe_ptr) = *(LoadT*)input_vec;
       }
@@ -460,7 +533,9 @@ __global__ void rms_rope_kernel(
       {
         return;
       }
-      const int64_t kv_cache_offset = slot * 576 + thread_offset_in_token;
+      const int64_t kv_cache_offset = FLASHMLA_FP8_LAYOUT
+          ? slot * kv_cache_token_stride_bytes
+          : slot * 576;
       const int64_t kv_c_normed_offset = token_id * kv_c_dim + thread_offset_in_token;
       scalar_t* kv_c_normed_ptr = output_kv_c_normed + kv_c_normed_offset;
       // 计算weight的offset
@@ -483,16 +558,90 @@ __global__ void rms_rope_kernel(
         s_rstd = c10::cuda::compat::rsqrt(val / kv_c_dim + epsilon);
       }
       s_rstd = __shfl(s_rstd, 0);
-      if (kv_dtype != 2) // fp8_e5m2 or fp8_e4m3
+      if constexpr (FLASHMLA_FP8_LAYOUT)
+      {
+        float group_max = 0.0f;
+        #pragma unroll
+        for(int ii = 0; ii < Vec; ii+=1){
+          float normalized = static_cast<T_ACC>(input_vec[ii]) * s_rstd *
+              static_cast<T_ACC>(weight_vec[ii]);
+          if constexpr (APPLY_SMOOTH) {
+            scalar_t rounded = static_cast<scalar_t>(normalized);
+            if constexpr (APPLY_CLAMP) {
+              rounded = static_cast<scalar_t>(clamp_rms_rope_value(
+                  static_cast<float>(rounded), limit));
+            }
+            const scalar_t smooth = static_cast<scalar_t>(
+                kv_smooth_scale[thread_offset_in_token + ii]);
+            input_vec[ii] = static_cast<scalar_t>(rounded * smooth);
+          } else {
+            if constexpr (APPLY_CLAMP) {
+              normalized = clamp_rms_rope_value(normalized, limit);
+            }
+            input_vec[ii] = static_cast<scalar_t>(normalized);
+          }
+          float_vec[ii] = static_cast<float>(input_vec[ii]);
+          group_max = fmaxf(group_max, fabsf(float_vec[ii]));
+        }
+        #pragma unroll
+        for (int mask = 8; mask > 0; mask >>= 1) {
+          group_max = fmaxf(group_max, RMS_ROPE_SHFL_XOR(group_max, mask));
+        }
+        constexpr int lanes_per_group = 128 / Vec;
+        const int group_id = laneid / lanes_per_group;
+        const int lane_in_group = laneid % lanes_per_group;
+        const float fp8_max = kv_dtype == 0 ? 57344.0f : 448.0f;
+        const float scale = fmaxf(group_max, kv_quant_epsilon) / fp8_max;
+        uint8_t* token_cache_ptr = static_cast<uint8_t*>(kv_cache) +
+            kv_cache_offset;
+        if (lane_in_group == 0) {
+          reinterpret_cast<float*>(token_cache_ptr + kv_c_dim)[group_id] = scale;
+        }
+        const float inv_scale = 1.0f / scale;
+        if(kv_dtype == 0)
+        {
+          ((uint32_t*)output_vec)[0] = float_to_fp8e5m2_x4(
+              float_vec[0] * inv_scale, float_vec[1] * inv_scale,
+              float_vec[2] * inv_scale, float_vec[3] * inv_scale);
+          ((uint32_t*)output_vec)[1] = float_to_fp8e5m2_x4(
+              float_vec[4] * inv_scale, float_vec[5] * inv_scale,
+              float_vec[6] * inv_scale, float_vec[7] * inv_scale);
+        }
+        else
+        {
+          ((uint32_t*)output_vec)[0] = float_to_fp8e4m3_x4(
+              float_vec[0] * inv_scale, float_vec[1] * inv_scale,
+              float_vec[2] * inv_scale, float_vec[3] * inv_scale);
+          ((uint32_t*)output_vec)[1] = float_to_fp8e4m3_x4(
+              float_vec[4] * inv_scale, float_vec[5] * inv_scale,
+              float_vec[6] * inv_scale, float_vec[7] * inv_scale);
+        }
+        *(OutputT*)(token_cache_ptr + thread_offset_in_token) =
+            *(OutputT*)output_vec;
+        *(LoadT*)kv_c_normed_ptr = *(LoadT*)input_vec;
+      }
+      else if (kv_dtype != 2)
       {
         #pragma unroll
         for(int ii = 0; ii < Vec; ii+=1){
           float normalized = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
-          if constexpr (APPLY_CLAMP) {
-            normalized = clamp_rms_rope_value(normalized, limit);
+          if constexpr (APPLY_SMOOTH) {
+            scalar_t rounded = static_cast<scalar_t>(normalized);
+            if constexpr (APPLY_CLAMP) {
+              rounded = static_cast<scalar_t>(clamp_rms_rope_value(
+                  static_cast<float>(rounded), limit));
+            }
+            const scalar_t smooth = static_cast<scalar_t>(
+                kv_smooth_scale[thread_offset_in_token + ii]);
+            input_vec[ii] = static_cast<scalar_t>(rounded * smooth);
+            float_vec[ii] = static_cast<float>(input_vec[ii]);
+          } else {
+            if constexpr (APPLY_CLAMP) {
+              normalized = clamp_rms_rope_value(normalized, limit);
+            }
+            float_vec[ii] = normalized;
+            input_vec[ii] = static_cast<scalar_t>(normalized);
           }
-          float_vec[ii] = normalized;
-          input_vec[ii] = static_cast<scalar_t>(normalized);
         }
         if(kv_dtype == 0)
         {
@@ -504,19 +653,32 @@ __global__ void rms_rope_kernel(
           ((uint32_t*)output_vec)[0] = float_to_bhalf_to_fp8e4m3_x4(float_vec[0], float_vec[1], float_vec[2], float_vec[3]);
           ((uint32_t*)output_vec)[1] = float_to_bhalf_to_fp8e4m3_x4(float_vec[4], float_vec[5], float_vec[6], float_vec[7]);
         }
-        uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset;
+        uint8_t* output_ptr = (uint8_t*)kv_cache + kv_cache_offset +
+            thread_offset_in_token;
         *(OutputT*)output_ptr = *(OutputT*)output_vec;
         *(LoadT*)kv_c_normed_ptr = *(LoadT*)input_vec;
       }
       else{
         for(int ii = 0; ii < Vec; ii+=1){
           T_ACC normalized = static_cast<T_ACC>(input_vec[ii]) * s_rstd * static_cast<T_ACC>(weight_vec[ii]);
-          if constexpr (APPLY_CLAMP) {
-            normalized = clamp_rms_rope_value(static_cast<float>(normalized), limit);
+          if constexpr (APPLY_SMOOTH) {
+            scalar_t rounded = static_cast<scalar_t>(normalized);
+            if constexpr (APPLY_CLAMP) {
+              rounded = static_cast<scalar_t>(clamp_rms_rope_value(
+                  static_cast<float>(rounded), limit));
+            }
+            const scalar_t smooth = static_cast<scalar_t>(
+                kv_smooth_scale[thread_offset_in_token + ii]);
+            input_vec[ii] = static_cast<scalar_t>(rounded * smooth);
+          } else {
+            if constexpr (APPLY_CLAMP) {
+              normalized = clamp_rms_rope_value(static_cast<float>(normalized), limit);
+            }
+            input_vec[ii] = static_cast<scalar_t>(normalized);
           }
-          input_vec[ii] = static_cast<scalar_t>(normalized);
         }
-        scalar_t* output_ptr = (scalar_t*)kv_cache + kv_cache_offset;
+        scalar_t* output_ptr = (scalar_t*)kv_cache + kv_cache_offset +
+            thread_offset_in_token;
         *(LoadT*)(output_ptr) = *(LoadT*)(input_vec);
         *(LoadT*)kv_c_normed_ptr = *(LoadT*)input_vec;
       }
@@ -527,10 +689,18 @@ __global__ void rms_rope_kernel(
 
   void fused_rms_norm_rope_contiguous(torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,
     torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, 
-    std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon, double limit) {
+    std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon, double limit,
+    bool flashmla_fp8_layout, float kv_quant_epsilon,
+    const c10::optional<torch::Tensor>& kv_smooth_scale) {
     TORCH_CHECK(
         limit == -1.0 || (std::isfinite(limit) && limit >= 0.0),
         "limit must be -1 (disabled) or a finite non-negative value");
+    TORCH_CHECK(
+        std::isfinite(kv_quant_epsilon) && kv_quant_epsilon > 0.0f,
+        "kv_quant_epsilon must be finite and positive");
+    TORCH_CHECK(
+        C10_WARP_SIZE == 64,
+        "fused_rms_norm_rope_contiguous currently requires a 64-thread wavefront");
 
     // printf("hello fused_rms_norm_rope_contiguous\n");
     // 暂时只实现rope逻辑，rms norm逻辑后续添加
@@ -545,9 +715,42 @@ __global__ void rms_rope_kernel(
     constexpr int rot_dim = 64;
     const int q_stride_head = q_pe.stride(1);
     TORCH_CHECK(q_stride_head == q_c_dim+rot_dim, "q_stride_head must be q_c_dim + rot_dim");
+    TORCH_CHECK(
+        q_pe.stride(0) == num_head * q_stride_head,
+        "q_pe token stride must equal num_head * q_stride_head");
     TORCH_CHECK(q_pe.size(2) ==  rot_dim, "q_pe.size(2) must be rot_dim");
+    TORCH_CHECK(q_pe.stride(2) == 1, "q_pe last dimension must be contiguous");
     TORCH_CHECK(cos_sin_cache.dim() == 2, "cos_sin_cache must be 2D tensor [max_position, rot_dim]");
     TORCH_CHECK(cos_sin_cache.size(1) == rot_dim, "cos_sin_cache.size(1) must equal rot_dim");
+    TORCH_CHECK(cos_sin_cache.is_contiguous(), "cos_sin_cache must be contiguous");
+    TORCH_CHECK(positions.dim() == 1, "positions must be 1D tensor [bs]");
+    TORCH_CHECK(positions.size(0) == bs, "positions.size(0) must be bs");
+    TORCH_CHECK(positions.is_contiguous(), "positions must be contiguous");
+    TORCH_CHECK(positions.scalar_type() == at::ScalarType::Long, "positions must be int64");
+    TORCH_CHECK(slot_mapping.scalar_type() == at::ScalarType::Long, "slot_mapping must be int64");
+    TORCH_CHECK(k_pe.scalar_type() == q_pe.scalar_type(), "k_pe dtype must match q_pe");
+    TORCH_CHECK(kv_c.scalar_type() == q_pe.scalar_type(), "kv_c dtype must match q_pe");
+    TORCH_CHECK(kv_c_normed.scalar_type() == q_pe.scalar_type(), "kv_c_normed dtype must match q_pe");
+    TORCH_CHECK(weight.scalar_type() == q_pe.scalar_type(), "weight dtype must match q_pe");
+    TORCH_CHECK(cos_sin_cache.scalar_type() == q_pe.scalar_type(), "cos_sin_cache dtype must match q_pe");
+    TORCH_CHECK(
+        !is_neox_style || q_pe.scalar_type() != at::ScalarType::Double,
+        "NeoX-style RoPE does not support float64 inputs");
+    TORCH_CHECK(weight.dim() == 1 && weight.size(0) == 512, "weight must be [512]");
+    TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
+    const bool apply_smooth = kv_smooth_scale.has_value();
+    const float* kv_smooth_scale_ptr = nullptr;
+    if (apply_smooth) {
+      const auto& smooth = kv_smooth_scale.value();
+      TORCH_CHECK(smooth.dim() == 1 && smooth.numel() == 512,
+                  "kv_smooth_scale must be [512]");
+      TORCH_CHECK(smooth.is_contiguous(), "kv_smooth_scale must be contiguous");
+      TORCH_CHECK(smooth.scalar_type() == at::ScalarType::Float,
+                  "kv_smooth_scale must have dtype torch.float32");
+      TORCH_CHECK(smooth.device() == q_pe.device(),
+                  "kv_smooth_scale and q_pe must be on the same device");
+      kv_smooth_scale_ptr = smooth.data_ptr<float>();
+    }
     const int temp1= 0;
     // 计算ROPE(Q)grid和block尺寸
     constexpr int num_warp_per_block = 4;
@@ -563,12 +766,16 @@ __global__ void rms_rope_kernel(
     TORCH_CHECK(k_pe.dim() == 2, "k_pe must be 2D tensor [bs, kv_c_dim + rot_dim]");
     TORCH_CHECK(k_pe.size(1) ==  rot_dim, "k_pe.size(1) must be rot_dim");
     TORCH_CHECK(k_pe.size(0) == bs, "k_pe.size(0) must be bs");
+    TORCH_CHECK(k_pe.stride(1) == 1, "k_pe last dimension must be contiguous");
     // TORCH_CHECK(k_pe.stride(0) == kv_c_dim + rot_dim, "k_pe.stride(0) must be kv_c_dim + rot_dim");
     const int k_bs_stride = k_pe.stride(0);
+    TORCH_CHECK(k_bs_stride >= k_stride_head, "k_pe token stride must cover kv_c and k_pe");
+    TORCH_CHECK(k_bs_stride % Vec == 0, "k_pe token stride must be vector aligned");
     TORCH_CHECK(kv_c_normed.dim() == 2, "kv_c_normed must be 2D tensor [bs, kv_c_dim]");
     TORCH_CHECK(kv_c_normed.size(1) == kv_c_dim, "kv_c_normed.size(1) must be kv_c_dim");
     TORCH_CHECK(kv_c_normed.size(0) == bs, "kv_c_normed.size(0) must be bs");
     TORCH_CHECK(kv_c_normed.stride(0) == kv_c_dim, "kv_c_normed.stride(0) must be kv_c_dim");
+    TORCH_CHECK(kv_c_normed.stride(1) == 1, "kv_c_normed must be contiguous");
     constexpr int element_per_warp = C10_WARP_SIZE * Vec;
     constexpr int k_token_per_warp = element_per_warp / (rot_dim);  // 8
     constexpr int k_token_per_block = k_token_per_warp * num_warp_per_block; // 32
@@ -579,18 +786,75 @@ __global__ void rms_rope_kernel(
     TORCH_CHECK(kv_c.size(1) == kv_c_dim, "kv_c.size(1) must be kv_c_dim");
     TORCH_CHECK(kv_c.size(0) == bs, "kv_c.size(0) must be bs");
     TORCH_CHECK(kv_c.stride(0) == k_bs_stride, "kv_c.stride(0) must equal k_pe.stride(0)");
+    TORCH_CHECK(kv_c.stride(1) == 1, "kv_c last dimension must be contiguous");
     // const int k_bs_stride = kv_c.stride(0);
-    constexpr int k_rms_token_per_warp = element_per_warp / (kv_c_dim);// 1
+    constexpr int k_rms_token_per_warp_unchecked = element_per_warp / (kv_c_dim);
+    constexpr int k_rms_token_per_warp =
+        k_rms_token_per_warp_unchecked > 0 ? k_rms_token_per_warp_unchecked : 1;
     constexpr int k_rms_token_per_block = k_rms_token_per_warp * num_warp_per_block; // 4
     const int k_rms_grid_x = (bs + k_rms_token_per_block - 1) / k_rms_token_per_block; // (32 + 32 - 1) / 32 = 1
     // 检查KV_CACHE相关参数
     TORCH_CHECK(slot_mapping.dim() == 1, "slot_mapping must be 1D tensor [bs]");
     TORCH_CHECK(slot_mapping.size(0) == bs, "slot_mapping.size(0) must be bs");
-    TORCH_CHECK(kv_cache.dim() == 3, "kv_cache must be 3D tensor [num_kv_cache_blocks, kv_cache_blocks_size, kv_c_dim + rot_dim]");
-    TORCH_CHECK(kv_cache.size(2) == kv_c_dim + rot_dim, "kv_cache.size(2) must be kv_c_dim + rot_dim");
-    const int num_kv_cache_blocks = kv_cache.size(0);
-    const int kv_cache_blocks_size = kv_cache.size(1);
-    const int max_slot_id = num_kv_cache_blocks * kv_cache_blocks_size;
+    TORCH_CHECK(slot_mapping.is_contiguous(), "slot_mapping must be contiguous");
+    TORCH_CHECK(
+        positions.device() == q_pe.device() && k_pe.device() == q_pe.device() &&
+        kv_c.device() == q_pe.device() && kv_c_normed.device() == q_pe.device() &&
+        weight.device() == q_pe.device() && cos_sin_cache.device() == q_pe.device() &&
+        slot_mapping.device() == q_pe.device() && kv_cache.device() == q_pe.device(),
+        "all tensors must be on the same device");
+    const std::uintptr_t vector_alignment =
+        static_cast<std::uintptr_t>(Vec * q_pe.element_size());
+    const auto check_vector_alignment = [&](const torch::Tensor& tensor, const char* name) {
+      TORCH_CHECK(
+          reinterpret_cast<std::uintptr_t>(tensor.data_ptr()) % vector_alignment == 0,
+          name, " data pointer must be ", vector_alignment, "-byte aligned");
+    };
+    check_vector_alignment(q_pe, "q_pe");
+    check_vector_alignment(k_pe, "k_pe");
+    check_vector_alignment(kv_c, "kv_c");
+    check_vector_alignment(kv_c_normed, "kv_c_normed");
+    check_vector_alignment(weight, "weight");
+    check_vector_alignment(cos_sin_cache, "cos_sin_cache");
+    int kv_cache_blocks_size = 1;
+    int max_slot_id = 0;
+    int64_t kv_cache_token_stride_bytes = 0;
+    if (flashmla_fp8_layout) {
+      constexpr int flashmla_cache_entry_bytes =
+          kv_c_dim + 4 * sizeof(float) + rot_dim * sizeof(at::BFloat16);
+      TORCH_CHECK(
+          kv_cache.dim() == 2 || kv_cache.dim() == 3,
+          "FlashMLA kv_cache must be [slots, bytes] or [blocks, block_size, bytes]");
+      TORCH_CHECK(
+          kv_cache.size(-1) >= flashmla_cache_entry_bytes,
+          "FlashMLA kv_cache entry must contain at least 656 bytes");
+      TORCH_CHECK(kv_cache.is_contiguous(), "FlashMLA kv_cache must be contiguous");
+      TORCH_CHECK(
+          kv_cache.scalar_type() == at::ScalarType::Byte,
+          "FlashMLA FP8 kv_cache must have uint8 storage");
+      TORCH_CHECK(
+          kv_cache_dtype_str == "fp8_e4m3" || kv_cache_dtype_str == "fp8_e5m2",
+          "FlashMLA layout only supports fp8_e4m3 or fp8_e5m2");
+      TORCH_CHECK(
+          q_pe.scalar_type() == at::ScalarType::BFloat16,
+          "FlashMLA layout stores the RoPE portion as BF16, so inputs must be BF16");
+      kv_cache_blocks_size = kv_cache.dim() == 3 ? kv_cache.size(1) : 1;
+      max_slot_id = kv_cache.size(0) * kv_cache_blocks_size;
+      kv_cache_token_stride_bytes =
+          kv_cache.stride(kv_cache.dim() - 2) * kv_cache.element_size();
+      TORCH_CHECK(
+          kv_cache_token_stride_bytes % 16 == 0,
+          "FlashMLA kv_cache token stride must be 16-byte aligned");
+      TORCH_CHECK(
+          reinterpret_cast<std::uintptr_t>(kv_cache.data_ptr()) % 16 == 0,
+          "FlashMLA kv_cache data pointer must be 16-byte aligned");
+    } else {
+      TORCH_CHECK(kv_cache.dim() == 3, "kv_cache must be 3D tensor [num_kv_cache_blocks, kv_cache_blocks_size, kv_c_dim + rot_dim]");
+      TORCH_CHECK(kv_cache.size(2) == kv_c_dim + rot_dim, "kv_cache.size(2) must be kv_c_dim + rot_dim");
+      const int num_kv_cache_blocks = kv_cache.size(0);
+      kv_cache_blocks_size = kv_cache.size(1);
+      max_slot_id = num_kv_cache_blocks * kv_cache_blocks_size;
+    }
 
     TORCH_CHECK(kv_cache_dtype_str == "fp8_e4m3" || kv_cache_dtype_str == "fp8_e5m2" ||
       kv_cache_dtype_str == "fp16" || kv_cache_dtype_str == "bf16" , "kv_cache_dtype_str must be fp8_e4m3 or fp8_e5m2 or fp16 or bf16");
@@ -629,7 +893,7 @@ __global__ void rms_rope_kernel(
         scalar_t* kv_c_ptr = kv_c.data_ptr<scalar_t>();
         scalar_t* weight_ptr = weight.data_ptr<scalar_t>();
         scalar_t* kv_c_normed_ptr = kv_c_normed.data_ptr<scalar_t>();
-        void* kv_cache_ptr;
+        void* kv_cache_ptr = nullptr;
         if (kv_cache.scalar_type() == at::ScalarType::Byte) {
             kv_cache_ptr = kv_cache.data_ptr<uint8_t>();
         } else {
@@ -644,22 +908,48 @@ __global__ void rms_rope_kernel(
         const scalar_t* cos_sin_cache_ptr = cos_sin_cache.data_ptr<scalar_t>();
         const int64_t* positions_ptr = positions.data_ptr<int64_t>();
 
+        TORCH_CHECK(kv_cache_ptr != nullptr, "unsupported kv_cache storage dtype");
+
+        auto launch_kernel = [&](auto clamp_tag, auto flashmla_tag, auto smooth_tag) {
+          constexpr bool kApplyClamp = decltype(clamp_tag)::value;
+          constexpr bool kFlashMLALayout = decltype(flashmla_tag)::value;
+          constexpr bool kApplySmooth = decltype(smooth_tag)::value;
+          rms_rope_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,
+          kv_c_dim,kApplyClamp,kFlashMLALayout,kApplySmooth>
+          <<<grid, block, 0, stream>>>(
+              q_pe_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,
+              kv_smooth_scale_ptr,cos_sin_cache_ptr,
+              positions_ptr,slot_mapping_ptr,kv_cache_ptr,
+              kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
+              k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon,
+              static_cast<float>(limit), kv_dtype, max_slot_id, k_bs_stride,
+              kFlashMLALayout ? kv_cache_token_stride_bytes : 0,
+              kv_quant_epsilon, is_neox_style);
+        };
         if (limit < 0.0) {
-          rms_rope_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,
-          kv_c_dim,false><<<grid, block, 0, stream>>>(
-              q_pe_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,cos_sin_cache_ptr,
-              positions_ptr,slot_mapping_ptr,kv_cache_ptr,
-              kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
-              k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon,
-              static_cast<float>(limit), kv_dtype, max_slot_id, k_bs_stride);
+          if (flashmla_fp8_layout) {
+            if (apply_smooth) {
+              launch_kernel(std::false_type{}, std::true_type{}, std::true_type{});
+            } else {
+              launch_kernel(std::false_type{}, std::true_type{}, std::false_type{});
+            }
+          } else if (apply_smooth) {
+            launch_kernel(std::false_type{}, std::false_type{}, std::true_type{});
+          } else {
+            launch_kernel(std::false_type{}, std::false_type{}, std::false_type{});
+          }
         } else {
-          rms_rope_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,
-          kv_c_dim,true><<<grid, block, 0, stream>>>(
-              q_pe_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,cos_sin_cache_ptr,
-              positions_ptr,slot_mapping_ptr,kv_cache_ptr,
-              kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
-              k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon,
-              static_cast<float>(limit), kv_dtype, max_slot_id, k_bs_stride);
+          if (flashmla_fp8_layout) {
+            if (apply_smooth) {
+              launch_kernel(std::true_type{}, std::true_type{}, std::true_type{});
+            } else {
+              launch_kernel(std::true_type{}, std::true_type{}, std::false_type{});
+            }
+          } else if (apply_smooth) {
+            launch_kernel(std::true_type{}, std::false_type{}, std::true_type{});
+          } else {
+            launch_kernel(std::true_type{}, std::false_type{}, std::false_type{});
+          }
         }
 
       });
