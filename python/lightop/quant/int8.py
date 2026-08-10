@@ -14,9 +14,18 @@ from ..wan_quant import (
 
 
 def per_token_dynamic_quant_int8(
-    x: torch.Tensor, smooth_scale: torch.Tensor
+    x: torch.Tensor,
+    smooth_scale: torch.Tensor,
+    round_after_smooth: bool = False,
+    limit: float = -1.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Apply smooth scaling and native per-token dynamic INT8 quantization."""
+    """Apply optional clamp, smooth scaling, and per-token INT8 quantization.
+
+    ``limit=-1`` preserves the historical smooth+quant behavior.  A
+    non-negative limit clamps the activation before smooth scaling.  The
+    smoothed values can optionally be rounded to the input dtype before
+    quantization.
+    """
     if smooth_scale.shape[-1] != x.shape[-1]:
         raise ValueError("smooth_scale and x must have the same last dimension")
 
@@ -25,7 +34,7 @@ def per_token_dynamic_quant_int8(
         x.shape[:-1], device=x.device, dtype=torch.float32
     )
     lightop_native.per_token_dynamic_quant_int8(
-        x_q, x, scales, smooth_scale
+        x_q, x, scales, smooth_scale, round_after_smooth, limit
     )
     return x_q, scales
 

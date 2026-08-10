@@ -310,8 +310,8 @@ std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, in
 std::vector<Tensor> moe_fuse_gate_per_gourp_topk(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_per_group, int64_t num_pad_experts, int64_t num_shared_experts, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids) ;
-void fuse_silu_mul_clamp_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, bool use_gelu = false);
-void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, const torch::Tensor& mask_m, int expect_m, bool use_gelu = false);
+void fuse_silu_mul_clamp_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, bool use_gelu, const c10::optional<torch::Tensor>& smooth_scale);
+void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, const torch::Tensor& mask_m, int expect_m, bool use_gelu, const c10::optional<torch::Tensor>& smooth_scale);
 void fuse_silu_mul_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m);
 void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids, float limit = -1.0f) ;
 void fuse_silu_mul_fp8_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m, float limit);
@@ -369,7 +369,7 @@ void ep_fused_smooth_quant_scatter(
     torch::Tensor m_indices, 
     torch::Tensor inv_perm,
     int local_num_experts, int alignment); 
-void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale);
+void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale, bool round_after_smooth, double limit);
 void rms_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,double epsilon,double limit);
 void rms_norm_no_weight(
     torch::optional<torch::Tensor> out,
@@ -967,7 +967,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("output"),
       py::arg("scales"),
       py::arg("limit"),
-      py::arg("use_gelu") = false);
+      py::arg("use_gelu") = false,
+      py::arg("smooth_scale") = py::none());
   m.def(
       "fuse_silu_mul_clamp_quant_ep",
       &at::native::fuse_silu_mul_clamp_quant_ep,
@@ -978,7 +979,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("limit"),
       py::arg("mask_m"),
       py::arg("expect_m") = -1,
-      py::arg("use_gelu") = false);
+      py::arg("use_gelu") = false,
+      py::arg("smooth_scale") = py::none());
   m.def("fuse_silu_mul_quant_ep",&at::native::fuse_silu_mul_quant_ep,"fuse_silu_mul_quant_ep");
   m.def(
       "fuse_silu_mul_fp8_quant",
@@ -1055,7 +1057,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("forward_polyfill_lightop", &at::native::forward_polyfill_lightop, "forward_polyfill_lightop");
   m.def("backward_polyfill_lightop", &at::native::backward_polyfill_lightop, "backward_polyfill_lightop");
   m.def("ep_fused_smooth_quant_scatter", &at::native::ep_fused_smooth_quant_scatter, "ep_fused_smooth_quant_scatter");
-  m.def("per_token_dynamic_quant_int8", &at::native::per_token_dynamic_quant_int8, "per_token_dynamic_quant_int8");
+  m.def(
+      "per_token_dynamic_quant_int8",
+      &at::native::per_token_dynamic_quant_int8,
+      "per_token_dynamic_quant_int8",
+      py::arg("out"),
+      py::arg("input"),
+      py::arg("scales"),
+      py::arg("smoothscale"),
+      py::arg("round_after_smooth") = false,
+      py::arg("limit") = -1.0);
   m.def("top_k_sampling_from_probs", &lightop::sampling::top_k_sampling_from_probs, "top_k_sampling_from_probs");
   m.def("top_p_sampling_from_probs", &lightop::sampling::top_p_sampling_from_probs, "top_p_sampling_from_probs");
   m.def("top_k_top_p_sampling_from_probs", &lightop::sampling::top_k_top_p_sampling_from_probs, "top_k_top_p_sampling_from_probs");
