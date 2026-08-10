@@ -5,6 +5,9 @@
 #include <ATen/hip/HIPContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <hip/hip_hcc.h>
+#include <array>
+#include <memory>
+#include <unordered_map>
 #include <vector>
 
 #include "aiter_hip_common.h"
@@ -37,6 +40,79 @@ struct __attribute__((packed)) GemmInfo {
     float* scaleA=nullptr;
     float* scaleB=nullptr;
 };
+
+inline void check_hip_status(hipError_t status, const char* operation) {
+    TORCH_CHECK(
+        status == hipSuccess,
+        operation,
+        " failed: ",
+        hipGetErrorString(status));
+}
+
+template <typename OutputType, size_t Capacity = 256>
+class MappedGemmInfoRing {
+public:
+    struct Slot {
+        GemmInfo<OutputType>* host = nullptr;
+        GemmInfo<OutputType>* device = nullptr;
+        hipEvent_t completion = nullptr;
+        bool in_flight = false;
+    };
+
+    Slot& acquire() {
+        Slot& slot = slots_[next_++ % Capacity];
+        if (slot.host == nullptr) {
+            void* host = nullptr;
+            check_hip_status(
+                hipHostMalloc(&host, sizeof(GemmInfo<OutputType>), hipHostMallocMapped),
+                "hipHostMalloc");
+            slot.host = static_cast<GemmInfo<OutputType>*>(host);
+            void* device = nullptr;
+            check_hip_status(
+                hipHostGetDevicePointer(&device, host, 0),
+                "hipHostGetDevicePointer");
+            slot.device = static_cast<GemmInfo<OutputType>*>(device);
+            check_hip_status(
+                hipEventCreateWithFlags(&slot.completion, hipEventDisableTiming),
+                "hipEventCreateWithFlags");
+        } else if (slot.in_flight) {
+            hipError_t status = hipEventQuery(slot.completion);
+            if (status == hipErrorNotReady) {
+                check_hip_status(
+                    hipEventSynchronize(slot.completion),
+                    "hipEventSynchronize");
+            } else {
+                check_hip_status(status, "hipEventQuery");
+            }
+            slot.in_flight = false;
+        }
+        return slot;
+    }
+
+    void mark_in_flight(Slot& slot, hipStream_t stream) {
+        check_hip_status(
+            hipEventRecord(slot.completion, stream),
+            "hipEventRecord");
+        slot.in_flight = true;
+    }
+
+private:
+    std::array<Slot, Capacity> slots_{};
+    size_t next_ = 0;
+};
+
+template <typename OutputType>
+MappedGemmInfoRing<OutputType>& get_mapped_gemm_info_ring() {
+    int device = -1;
+    check_hip_status(hipGetDevice(&device), "hipGetDevice");
+    static thread_local std::unordered_map<
+        int, std::unique_ptr<MappedGemmInfoRing<OutputType>>> rings;
+    auto& ring = rings[device];
+    if (ring == nullptr) {
+        ring = std::make_unique<MappedGemmInfoRing<OutputType>>();
+    }
+    return *ring;
+}
 
 namespace at {
 namespace native {
@@ -199,9 +275,9 @@ void _m_grouped_w8a8_gemm_nt_contig_asm_impl(
     torch::Tensor m_indices,
     uint32_t experts_num) {
     
-    //GemmInfo<OutputType> d_prob;
-    GemmInfo<OutputType> *d_prob;
-    d_prob = (GemmInfo<OutputType> *)malloc(sizeof(GemmInfo<OutputType>));
+    auto& descriptor_ring = get_mapped_gemm_info_ring<OutputType>();
+    auto& descriptor_slot = descriptor_ring.acquire();
+    GemmInfo<OutputType>* d_prob = descriptor_slot.host;
 
     const int size_m = input.size(0);        //(M, K)
     const int size_n = b_qweight.size(1) * 16;    //(E, N // 16, K * 16)
@@ -259,13 +335,7 @@ void _m_grouped_w8a8_gemm_nt_contig_asm_impl(
         int32_t* debug_d;                                
     }hipFunctionArgs;
 
-    // uint8_t* d_argsPtr;
-    // size_t arg_size = sizeof(d_prob);
-    // hipMalloc((void**)&d_argsPtr, arg_size);
-    hipHostRegister(d_prob, sizeof(GemmInfo<OutputType>), hipHostRegisterMapped);
-    uint8_t*  d_argsPtr;
-    hipHostGetDevicePointer((void**)&d_argsPtr, d_prob, 0);
-    // hipMemcpyAsync(d_argsPtr, &d_prob, arg_size, hipMemcpyHostToDevice, 0);
+    uint8_t* d_argsPtr = reinterpret_cast<uint8_t*>(descriptor_slot.device);
 
     hipFunctionArgs.gemm_count = 1;
     hipFunctionArgs.DeviceUserArguments = d_argsPtr;
@@ -307,6 +377,7 @@ void _m_grouped_w8a8_gemm_nt_contig_asm_impl(
         localWorkSize[2],
         stream
     });
+    descriptor_ring.mark_in_flight(descriptor_slot, stream);
     return;
 }
 

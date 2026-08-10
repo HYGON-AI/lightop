@@ -442,8 +442,8 @@ def mimo_v2_split_rope_vscale_kv_store(
     is_neox: bool,
     value_scale: float,
     kv_cache_dtype: Optional[torch.dtype] = None,
-    k_scale: Optional[float] = None,
-    v_cache_scale: Optional[float] = None,
+    k_scale: Optional[torch.Tensor] = None,
+    v_cache_scale: Optional[torch.Tensor] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Split MIMO v2 QKV, apply RoPE to Q/K, scale V, and write MHA KV cache."""
     qkv = qkv.contiguous()
@@ -487,8 +487,8 @@ def mimo_v2_split_rope_vscale_kv_store(
         k_out,
         v_out,
         float(value_scale),
-        None if k_scale is None else float(k_scale),
-        None if v_cache_scale is None else float(v_cache_scale),
+        k_scale,
+        v_cache_scale,
         use_fp8_e4m3,
         use_fp8_cache,
     )
