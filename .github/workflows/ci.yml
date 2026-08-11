@@ -136,8 +136,6 @@ jobs:
               raise SystemExit("No DCU device is available to PyTorch")
           PY
 
-              python -m venv --system-site-packages /tmp/lightop-ci-venv
-              source /tmp/lightop-ci-venv/bin/activate
               python -m pip install \
                 --disable-pip-version-check \
                 --force-reinstall \
