@@ -1,0 +1,200 @@
+name: LightOp CI
+
+on:
+  pull_request:
+    branches:
+      - master
+      - lightop-dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lightop-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate source and test configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout LightOp
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Check Python syntax
+        run: python -m compileall -q python tools
+
+      - name: Validate temporary fallback test manifest
+        run: |
+          python tools/run_operator_tests.py \
+            --manifest tools/operator_tests/after_quick_cases.txt \
+            --dry-run
+
+  dcu-test:
+    name: Build and test on DCU
+    needs: validate
+
+    # Never execute code from an untrusted fork on an internal DCU runner.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+
+    # Pin compilation and tests to nmz36-hygon-hcu-lightop.
+    runs-on: [self-hosted, Linux, X64, hcu-ci-pr, nmz36]
+    timeout-minutes: 180
+
+    env:
+      CI_BASE_IMAGE: ${{ vars.LIGHTOP_CI_IMAGE || '10.16.1.152:5000/jenkins/model_test_env/vllm:latest' }}
+      CI_RUN_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}
+      CI_CONTAINER_NAME: lightop-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      CI_ARTIFACT_ROOT: ${{ github.workspace }}/.ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}
+      HIP_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
+      ROCR_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
+      OPTEST_PACKAGE_SPEC: ${{ vars.OPTEST_PACKAGE_SPEC || 'optest' }}
+      OPTEST_INDEX_URL: ${{ vars.OPTEST_INDEX_URL || 'http://10.16.1.201:9929/nightly/dtk2604/+simple/' }}
+      OPTEST_TRUSTED_HOST: ${{ vars.OPTEST_TRUSTED_HOST || '10.16.1.201' }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout LightOp
+        uses: actions/checkout@v4
+
+      - name: Prepare runner and image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker version
+          test -e /dev/kfd
+          test -d /dev/dri
+          test -x /opt/hyhal/bin/hy-smi
+          mkdir -p \
+            "${CI_ARTIFACT_ROOT}/op_test_output" \
+            "${CI_ARTIFACT_ROOT}/op_test_log"
+          docker pull "${CI_BASE_IMAGE}"
+          docker tag "${CI_BASE_IMAGE}" "${CI_RUN_IMAGE}"
+
+      - name: Install OpTest, build LightOp, and run tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup_ci_runtime() {
+            docker rm -f "${CI_CONTAINER_NAME}" >/dev/null 2>&1 || true
+            docker image rm -f "${CI_RUN_IMAGE}" "${CI_BASE_IMAGE}" >/dev/null 2>&1 || true
+          }
+          trap cleanup_ci_runtime EXIT INT TERM
+
+          docker run \
+            --name "${CI_CONTAINER_NAME}" \
+            --init \
+            --network host \
+            --ipc host \
+            --shm-size 80g \
+            --device /dev/kfd \
+            --device /dev/dri \
+            --group-add video \
+            --user "$(id -u):$(id -g)" \
+            -e HOME=/tmp/lightop-ci-home \
+            -e HIP_VISIBLE_DEVICES \
+            -e ROCR_VISIBLE_DEVICES \
+            -e OPTEST_PACKAGE_SPEC \
+            -e OPTEST_INDEX_URL \
+            -e OPTEST_TRUSTED_HOST \
+            -e PYTHONUNBUFFERED \
+            -v /opt/hyhal:/opt/hyhal:ro \
+            -v "${GITHUB_WORKSPACE}:/workspace/lightop" \
+            -v "${CI_ARTIFACT_ROOT}/op_test_output:/op_test_output" \
+            -v "${CI_ARTIFACT_ROOT}/op_test_log:/op_test_log" \
+            -w /workspace/lightop \
+            "${CI_RUN_IMAGE}" \
+            bash -lc '
+              set -euo pipefail
+              mkdir -p "${HOME}"
+              export PATH="/opt/hyhal/bin:${PATH}"
+              export LD_LIBRARY_PATH="/opt/hyhal/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+              hy-smi
+              python - <<"PY"
+          import torch
+
+          print(f"torch={torch.__version__}")
+          print(f"dcu_available={torch.cuda.is_available()}")
+          if not torch.cuda.is_available():
+              raise SystemExit("No DCU device is available to PyTorch")
+          PY
+
+              python -m venv --system-site-packages /tmp/lightop-ci-venv
+              source /tmp/lightop-ci-venv/bin/activate
+              python -m pip install \
+                --disable-pip-version-check \
+                --force-reinstall \
+                --index-url "${OPTEST_INDEX_URL}" \
+                --trusted-host "${OPTEST_TRUSTED_HOST}" \
+                "${OPTEST_PACKAGE_SPEC}"
+              python -m optest --help
+
+              if python - <<"PY"
+          from optest.operators import SUPPORTED_OPERATORS
+          raise SystemExit(0 if "lightop" in SUPPORTED_OPERATORS else 1)
+          PY
+              then
+                echo "OpTest supports LightOp; only OpTest will execute tests."
+                printf "optest\n" > /op_test_output/ci-test-driver.txt
+                python -m optest \
+                  --op_name lightop \
+                  --test_mode acc \
+                  --test_dir /workspace/lightop \
+                  --gpus "${HIP_VISIBLE_DEVICES}" \
+                  -c
+              else
+                echo "::warning::The installed OpTest does not support LightOp yet; using the temporary repository quick-test fallback."
+                printf "temporary-fallback\n" > /op_test_output/ci-test-driver.txt
+                export PYTORCH_VERSION="$(python - <<"PY"
+          import torch
+          print(torch.__version__.split("+", 1)[0])
+          PY
+          )"
+                python setup.py bdist_wheel
+                python -m pip install --force-reinstall --no-deps dist/*.whl
+                python -c "import lightop; print(f\"lightop={lightop.__version__}\")"
+                python tools/run_quick_operator_tests.py \
+                  --output test_results/ci_quick \
+                  --timeout 600
+              fi
+            '
+
+      - name: Remove CI container and images
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          docker rm -f "${CI_CONTAINER_NAME}" >/dev/null 2>&1
+          docker image rm -f "${CI_RUN_IMAGE}" "${CI_BASE_IMAGE}" >/dev/null 2>&1
+          exit 0
+
+      - name: Add fallback result to job summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f test_results/ci_quick/summary.txt ]]; then
+            cat test_results/ci_quick/summary.txt >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload build and test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightop-ci-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: |
+            dist/*.whl
+            test_results/
+            .ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: warn
+          retention-days: 14
