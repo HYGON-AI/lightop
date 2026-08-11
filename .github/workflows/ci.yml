@@ -99,6 +99,9 @@ jobs:
             --network host \
             --ipc host \
             --shm-size 80g \
+            --cap-add SYS_PTRACE \
+            --security-opt seccomp=unconfined \
+            --privileged \
             --device /dev/mkfd \
             --device /dev/kfd \
             --device /dev/dri \
