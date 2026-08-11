@@ -72,9 +72,11 @@ jobs:
         run: |
           set -euo pipefail
           docker version
+          test -e /dev/mkfd
           test -e /dev/kfd
           test -d /dev/dri
           test -x /opt/hyhal/bin/hy-smi
+          ls -l /dev/mkfd /dev/kfd /dev/dri/*
           mkdir -p \
             "${CI_ARTIFACT_ROOT}/op_test_output" \
             "${CI_ARTIFACT_ROOT}/op_test_log"
@@ -97,6 +99,7 @@ jobs:
             --network host \
             --ipc host \
             --shm-size 80g \
+            --device /dev/mkfd \
             --device /dev/kfd \
             --device /dev/dri \
             --group-add video \
