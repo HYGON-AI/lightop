@@ -231,9 +231,15 @@ jobs:
             /usr/local/bin/build-lightop-wheel
             python3 -c "import lightop; print(f\"lightop={lightop.__version__}\")"
 
+            # OpTest 1.0.0 pins numpy==1.24.3. Installing its dependencies into
+            # this runtime would replace the NumPy selected for Torch/vLLM and
+            # break the vLLM baseline used by the temporary LightOp tests.
             python3 -m pip install \
               --disable-pip-version-check \
-              --force-reinstall \
+              pytest-timeout openpyxl
+            python3 -m pip install \
+              --disable-pip-version-check \
+              --no-deps \
               --index-url "${OPTEST_INDEX_URL}" \
               --trusted-host "${OPTEST_TRUSTED_HOST}" \
               "${OPTEST_PACKAGE_SPEC}"
