@@ -211,9 +211,15 @@ jobs:
             hy-smi
 
             python3 - <<"PY"
+          import importlib.metadata
           import torch
 
           print(f"torch={torch.__version__}")
+          for package in ("vllm", "aiter", "deepgemm", "deep_ep", "triton"):
+              try:
+                  print(f"{package}={importlib.metadata.version(package)}")
+              except importlib.metadata.PackageNotFoundError:
+                  print(f"{package}=not installed")
           print(f"device_available={torch.cuda.is_available()}")
           if not torch.cuda.is_available():
               raise SystemExit("No device is available to PyTorch")
