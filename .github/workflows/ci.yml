@@ -68,6 +68,24 @@ jobs:
       PYTHONUNBUFFERED: "1"
 
     steps:
+      - name: Repair workspace ownership before checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          runner_uid="$(id -u)"
+          runner_gid="$(id -g)"
+
+          docker pull "${CI_BASE_IMAGE}"
+          docker run --rm \
+            --user 0:0 \
+            --entrypoint /bin/bash \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            "${CI_BASE_IMAGE}" \
+            -lc '
+              chown -R "$1:$2" /workspace
+              chmod -R u+rwX /workspace
+            ' _ "${runner_uid}" "${runner_gid}"
+
       - name: Checkout LightOp
         uses: actions/checkout@v4
 
@@ -246,6 +264,19 @@ jobs:
         run: |
           set +e
           docker rm -f "${CI_CONTAINER_NAME}" >/dev/null 2>&1
+
+          runner_uid="$(id -u)"
+          runner_gid="$(id -g)"
+          docker run --rm \
+            --user 0:0 \
+            --entrypoint /bin/bash \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            "${CI_BASE_IMAGE}" \
+            -lc '
+              chown -R "$1:$2" /workspace
+              chmod -R u+rwX /workspace
+            ' _ "${runner_uid}" "${runner_gid}"
+
           docker image rm -f "${CI_COMPILE_IMAGE}" >/dev/null 2>&1
           docker image rm -f "${CI_BASE_IMAGE}" >/dev/null 2>&1
           if [[ "${CI_BUILD_CONTEXT:-}" == "${RUNNER_TEMP}"/lightop-build-* ]]; then
