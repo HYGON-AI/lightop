@@ -198,6 +198,7 @@ jobs:
             -v "${CI_ARTIFACT_ROOT}/op_test_log:/op_test_log" \
             "${CI_COMPILE_IMAGE}"
 
+          set +e
           docker exec "${CI_CONTAINER_NAME}" bash -lc '
             set -euo pipefail
             source /opt/dtk/env.sh
@@ -250,12 +251,38 @@ jobs:
                 --timeout 600
             fi
           '
+          container_status=$?
+          set -e
 
           rm -rf dist test_results
           mkdir -p dist
-          docker cp "${CI_CONTAINER_NAME}:/dist/." dist/
+          docker cp "${CI_CONTAINER_NAME}:/dist/." dist/ || true
           if docker exec "${CI_CONTAINER_NAME}" test -d /lightop/test_results; then
-            docker cp "${CI_CONTAINER_NAME}:/lightop/test_results" test_results
+            docker cp "${CI_CONTAINER_NAME}:/lightop/test_results" test_results || true
+          fi
+
+          if [[ "${container_status}" -ne 0 ]]; then
+            echo "::error::LightOp compile/test container exited with status ${container_status}."
+            if [[ -f test_results/ci_quick/failed_cases.txt ]]; then
+              echo "Failed LightOp cases:"
+              cat test_results/ci_quick/failed_cases.txt
+            fi
+            if [[ -d test_results/ci_quick/cases ]]; then
+              while IFS= read -r failed_log; do
+                echo "::group::${failed_log}"
+                if [[ -f "${failed_log}" ]]; then
+                  cat "${failed_log}"
+                else
+                  echo "Log file was not copied: ${failed_log}"
+                fi
+                echo "::endgroup::"
+              done < <(
+                awk -F '\t' 'NF >= 4 {print $4}' \
+                  test_results/ci_quick/failed_cases.txt 2>/dev/null | \
+                  sed 's#^/lightop/test_results/#test_results/#'
+              )
+            fi
+            exit "${container_status}"
           fi
 
       - name: Remove CI container, image, and build context
