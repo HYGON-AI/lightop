@@ -215,7 +215,10 @@ jobs:
           import torch
 
           print(f"torch={torch.__version__}")
-          for package in ("vllm", "aiter", "deepgemm", "deep_ep", "triton"):
+          for package in (
+              "vllm", "aiter", "deepgemm", "deep_ep", "triton",
+              "numpy", "opencv-python-headless", "cupy",
+          ):
               try:
                   print(f"{package}={importlib.metadata.version(package)}")
               except importlib.metadata.PackageNotFoundError:

@@ -36,16 +36,16 @@ RUN mkdir -p /root/.pip && \
       'trusted-host = 10.16.1.201' \
       > /root/.pip/pip.conf && \
     python3 -m pip install \
-      pyyaml hypothesis Ninja MonkeyType numpy==1.24.3 wheel packaging \
+      pyyaml hypothesis Ninja MonkeyType wheel packaging \
       einops pytest matplotlib auditwheel patchelf && \
     python3 -m pip install amdsmi && \
     python3 -m pip install cupy && \
-    python3 -m pip install numpy==1.25.0 && \
     python3 -m pip install --upgrade \
+      "numpy==1.25.0" \
+      "opencv-python-headless<4.12" \
       "torch==${INSTALL_TORCH_VERSION}" \
       vllm aiter deepgemm deep_ep && \
     python3 -m pip uninstall -y cupy-cuda12x && \
-    python3 -m pip install numpy==1.24.3 && \
     python3 -m pip check && \
     chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
     yes | /dtk_llvm_*.run
@@ -73,7 +73,17 @@ if missing_ops:
     raise SystemExit(f"vLLM custom ops were not registered: {missing_ops}")
 
 print("Resolved Torch 2.10-compatible runtime:")
-for package in ("torch", "vllm", "aiter", "deepgemm", "deep_ep", "triton"):
+for package in (
+    "torch",
+    "vllm",
+    "aiter",
+    "deepgemm",
+    "deep_ep",
+    "triton",
+    "numpy",
+    "opencv-python-headless",
+    "cupy",
+):
     try:
         print(f"  {package}={importlib.metadata.version(package)}")
     except importlib.metadata.PackageNotFoundError:
