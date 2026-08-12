@@ -52,7 +52,12 @@ jobs:
     timeout-minutes: 180
 
     env:
-      CI_BASE_IMAGE: ${{ vars.LIGHTOP_CI_IMAGE || '10.16.1.152:5000/jenkins/model_test_env/vllm:latest' }}
+      # Follow the LightOp compile image published by CIctl. CIctl may refresh
+      # this tag daily; the resolved digest is recorded below for traceability.
+      CI_BASE_IMAGE: ${{ vars.LIGHTOP_CI_IMAGE || '10.16.1.152:5000/jenkins/test_env/lightop:master-2604-rc4-py3.10-torch2.10.0' }}
+      CI_DTK_VERSION: 2604-rc4
+      CI_PYTHON_VERSION: "3.10"
+      CI_TORCH_VERSION: 2.10.0
       CI_RUN_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}
       CI_CONTAINER_NAME: lightop-ci-${{ github.run_id }}-${{ github.run_attempt }}
       CI_ARTIFACT_ROOT: ${{ github.workspace }}/.ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}
@@ -127,6 +132,8 @@ jobs:
             docker image rm -f "${CI_RUN_IMAGE}" "${CI_BASE_IMAGE}" >/dev/null 2>&1 || true
           }
           trap cleanup_ci_runtime EXIT INT TERM
+          host_uid="$(id -u)"
+          host_gid="$(id -g)"
 
           docker run \
             --name "${CI_CONTAINER_NAME}" \
@@ -149,6 +156,12 @@ jobs:
             -e OPTEST_INDEX_URL \
             -e OPTEST_TRUSTED_HOST \
             -e PYTHONUNBUFFERED \
+            -e CI_BASE_IMAGE \
+            -e CI_DTK_VERSION \
+            -e CI_PYTHON_VERSION \
+            -e CI_TORCH_VERSION \
+            -e HOST_UID="${host_uid}" \
+            -e HOST_GID="${host_gid}" \
             -v /opt/hyhal:/opt/hyhal:ro \
             -v "${GITHUB_WORKSPACE}:/workspace/lightop" \
             -v "${CI_ARTIFACT_ROOT}/op_test_output:/op_test_output" \
@@ -157,19 +170,61 @@ jobs:
             "${CI_RUN_IMAGE}" \
             bash -lc '
               set -euo pipefail
+              restore_workspace_ownership() {
+                chown -R "${HOST_UID}:${HOST_GID}" \
+                  /workspace/lightop/build \
+                  /workspace/lightop/dist \
+                  /workspace/lightop/test_results \
+                  /op_test_output \
+                  /op_test_log 2>/dev/null || true
+              }
+              trap restore_workspace_ownership EXIT INT TERM
               mkdir -p "${HOME}"
               export PATH="/opt/hyhal/bin:${PATH}"
               export LD_LIBRARY_PATH="/opt/hyhal/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
+              echo "CIctl LightOp compile environment:"
+              echo "  image=${CI_BASE_IMAGE}"
+              echo "  expected_dtk=${CI_DTK_VERSION}"
+              echo "  expected_python=${CI_PYTHON_VERSION}"
+              echo "  expected_torch=${CI_TORCH_VERSION}"
+              echo "  aicc=${AICC_VERSION:-not provided}"
+              echo "  dtk_package=${DTK_PKG_NAME:-not provided}"
+              /opt/dtk/bin/hipcc --version
+
               hy-smi
               python - <<"PY"
+          import os
+          import platform
           import torch
 
+          expected_python = os.environ["CI_PYTHON_VERSION"]
+          expected_torch = os.environ["CI_TORCH_VERSION"]
+          actual_python = platform.python_version()
+          actual_torch = torch.__version__.split("+", 1)[0]
+
+          print(f"python={actual_python}")
           print(f"torch={torch.__version__}")
           print(f"device_available={torch.cuda.is_available()}")
+          if not actual_python.startswith(f"{expected_python}."):
+              raise SystemExit(
+                  f"CI image Python mismatch: expected {expected_python}.x, got {actual_python}"
+              )
+          if actual_torch != expected_torch:
+              raise SystemExit(
+                  f"CI image Torch mismatch: expected {expected_torch}, got {torch.__version__}"
+              )
           if not torch.cuda.is_available():
               raise SystemExit("No device is available to PyTorch")
           PY
+
+              # Match CIctl COMPILE: build and install the PR source in the
+              # dedicated LightOp compile environment before running tests.
+              export PYTORCH_VERSION="${CI_TORCH_VERSION}"
+              rm -rf build dist
+              python setup.py bdist_wheel
+              python -m pip install --force-reinstall --no-deps dist/*.whl
+              python -c "import lightop; print(f\"lightop={lightop.__version__}\")"
 
               python -m pip install \
                 --disable-pip-version-check \
@@ -190,19 +245,10 @@ jobs:
                   --op_name lightop \
                   --test_mode acc \
                   --test_dir /workspace/lightop \
-                  --gpus "${HIP_VISIBLE_DEVICES}" \
-                  -c
+                  --gpus "${HIP_VISIBLE_DEVICES}"
               else
                 echo "::warning::The installed OpTest does not support LightOp yet; using the temporary repository quick-test fallback."
                 printf "temporary-fallback\n" > /op_test_output/ci-test-driver.txt
-                export PYTORCH_VERSION="$(python - <<"PY"
-          import torch
-          print(torch.__version__.split("+", 1)[0])
-          PY
-          )"
-                python setup.py bdist_wheel
-                python -m pip install --force-reinstall --no-deps dist/*.whl
-                python -c "import lightop; print(f\"lightop={lightop.__version__}\")"
                 python tools/run_quick_operator_tests.py \
                   --output test_results/ci_quick \
                   --timeout 600
