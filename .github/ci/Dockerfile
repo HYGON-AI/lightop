@@ -41,12 +41,10 @@ RUN mkdir -p /root/.pip && \
     python3 -m pip install amdsmi && \
     python3 -m pip install cupy && \
     python3 -m pip install --upgrade \
-      "numpy==1.25.0" \
-      "opencv-python-headless<4.12" \
       "torch==${INSTALL_TORCH_VERSION}" \
-      vllm aiter deepgemm deep_ep && \
+      "vllm==0.21.0" \
+      aiter deepgemm deep_ep && \
     python3 -m pip uninstall -y cupy-cuda12x && \
-    python3 -m pip check && \
     chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
     yes | /dtk_llvm_*.run
 
