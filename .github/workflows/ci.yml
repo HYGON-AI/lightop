@@ -39,7 +39,7 @@ jobs:
             --dry-run
 
   test:
-    name: Build and test
+    name: Build LightOp environment and run OpTest
     needs: validate
 
     # Never execute code from an untrusted fork on an internal runner.
@@ -47,18 +47,18 @@ jobs:
       github.event_name == 'workflow_dispatch' ||
       github.event.pull_request.head.repo.full_name == github.repository
 
-    # Pin compilation and tests to nmz36-hygon-hcu-lightop.
     runs-on: [self-hosted, Linux, X64, hcu-ci-pr, nmz36]
-    timeout-minutes: 180
+    timeout-minutes: 240
 
     env:
-      # Follow the LightOp compile image published by CIctl. CIctl may refresh
-      # this tag daily; the resolved digest is recorded below for traceability.
-      CI_BASE_IMAGE: ${{ vars.LIGHTOP_CI_IMAGE || '10.16.1.152:5000/jenkins/test_env/lightop:master-2604-rc4-py3.10-torch2.10.0' }}
-      CI_DTK_VERSION: 2604-rc4
-      CI_PYTHON_VERSION: "3.10"
-      CI_TORCH_VERSION: 2.10.0
-      CI_RUN_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}
+      CI_BASE_IMAGE: harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304
+      DTK_PKG_PATH: ${{ vars.LIGHTOP_DTK_PKG_PATH || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
+      AICC_NIGHTLY_DIR: /public/opendas/ArchivedFile/ai_cc/nightly
+      PYTHON_VERSION: "3.10"
+      INSTALL_TORCH_VERSION: "2.10.0"
+      DTK_INDEX_VERSION: "2604"
+      CI_BUILD_CONTEXT: ${{ runner.temp }}/lightop-build-${{ github.run_id }}-${{ github.run_attempt }}
+      CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}
       CI_CONTAINER_NAME: lightop-ci-${{ github.run_id }}-${{ github.run_attempt }}
       CI_ARTIFACT_ROOT: ${{ github.workspace }}/.ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}
       HIP_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
@@ -72,7 +72,7 @@ jobs:
       - name: Checkout LightOp
         uses: actions/checkout@v4
 
-      - name: Prepare runner and image
+      - name: Prepare runner and build context
         shell: bash
         run: |
           set -euo pipefail
@@ -81,61 +81,79 @@ jobs:
           test -e /dev/kfd
           test -d /dev/dri
           test -x /opt/hyhal/bin/hy-smi
+          test -d "${AICC_NIGHTLY_DIR}"
           ls -l /dev/mkfd /dev/kfd /dev/dri/*
+
           mkdir -p \
             "${CI_ARTIFACT_ROOT}/op_test_output" \
             "${CI_ARTIFACT_ROOT}/op_test_log"
-          docker pull "${CI_BASE_IMAGE}"
 
-          image_id="$(docker image inspect --format '{{.Id}}' "${CI_BASE_IMAGE}")"
-          image_repo_tags="$(docker image inspect --format '{{join .RepoTags ", "}}' "${CI_BASE_IMAGE}")"
-          image_digest="$(docker image inspect --format '{{join .RepoDigests ", "}}' "${CI_BASE_IMAGE}")"
-          image_created="$(docker image inspect --format '{{.Created}}' "${CI_BASE_IMAGE}")"
-          image_labels="$(docker image inspect --format '{{json .Config.Labels}}' "${CI_BASE_IMAGE}")"
-          image_version="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "${CI_BASE_IMAGE}")"
-          image_revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${CI_BASE_IMAGE}")"
-          image_source="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.source"}}' "${CI_BASE_IMAGE}")"
+          bash .github/ci/prepare-build-context.sh \
+            "${CI_BUILD_CONTEXT}" \
+            "${GITHUB_WORKSPACE}" \
+            "${DTK_PKG_PATH}" \
+            "${AICC_NIGHTLY_DIR}"
 
-          echo "Resolved CI image details:"
-          echo "  requested: ${CI_BASE_IMAGE}"
-          echo "  repo tags: ${image_repo_tags:-not provided}"
-          echo "  repo digest: ${image_digest:-not provided}"
-          echo "  image id: ${image_id}"
-          echo "  created: ${image_created}"
-          echo "  version label: ${image_version:-not provided}"
-          echo "  revision label: ${image_revision:-not provided}"
-          echo "  source label: ${image_source:-not provided}"
-          echo "  all labels: ${image_labels:-not provided}"
-
-          {
-            echo "### Resolved CI image"
-            echo
-            echo "- Requested: \`${CI_BASE_IMAGE}\`"
-            echo "- Repository tags: \`${image_repo_tags:-not provided}\`"
-            echo "- Repository digest: \`${image_digest:-not provided}\`"
-            echo "- Image ID: \`${image_id}\`"
-            echo "- Created: \`${image_created}\`"
-            echo "- Version label: \`${image_version:-not provided}\`"
-            echo "- Revision label: \`${image_revision:-not provided}\`"
-            echo "- Source label: \`${image_source:-not provided}\`"
-            echo "- All labels: \`${image_labels:-not provided}\`"
-          } >> "${GITHUB_STEP_SUMMARY}"
-
-          docker tag "${CI_BASE_IMAGE}" "${CI_RUN_IMAGE}"
-
-      - name: Install OpTest, build LightOp, and run tests
+      - name: Build daily LightOp compile image
         shell: bash
         run: |
           set -euo pipefail
-          cleanup_ci_runtime() {
-            docker rm -f "${CI_CONTAINER_NAME}" >/dev/null 2>&1 || true
-            docker image rm -f "${CI_RUN_IMAGE}" "${CI_BASE_IMAGE}" >/dev/null 2>&1 || true
-          }
-          trap cleanup_ci_runtime EXIT INT TERM
-          host_uid="$(id -u)"
-          host_gid="$(id -g)"
+          source "${CI_BUILD_CONTEXT}/build-environment.txt"
 
-          docker run \
+          docker build \
+            --pull \
+            --no-cache \
+            --network host \
+            --build-arg "PYTHON_VERSION=${PYTHON_VERSION}" \
+            --build-arg "INSTALL_TORCH_VERSION=${INSTALL_TORCH_VERSION}" \
+            --build-arg "DTK_INDEX_VERSION=${DTK_INDEX_VERSION}" \
+            --build-arg "DTK_PKG_NAME=${DTK_PACKAGE}" \
+            --build-arg "DTK_PKG_VERSION=${DTK_PACKAGE_VERSION}" \
+            --build-arg "DTK_VERSION=${DTK_VERSION}" \
+            --build-arg "AICC_VERSION=${AICC_VERSION}" \
+            --label "io.hygon.lightop.base-image=${CI_BASE_IMAGE}" \
+            --label "io.hygon.lightop.dtk-package=${DTK_PACKAGE}" \
+            --label "io.hygon.lightop.dtk-version=${DTK_VERSION}" \
+            --label "io.hygon.lightop.aicc-version=${AICC_VERSION}" \
+            --label "io.hygon.lightop.torch-version=${INSTALL_TORCH_VERSION}" \
+            --label "io.hygon.lightop.source-commit=${GITHUB_SHA}" \
+            -t "${CI_COMPILE_IMAGE}" \
+            "${CI_BUILD_CONTEXT}"
+
+          image_id="$(docker image inspect --format '{{.Id}}' "${CI_COMPILE_IMAGE}")"
+          image_created="$(docker image inspect --format '{{.Created}}' "${CI_COMPILE_IMAGE}")"
+          image_labels="$(docker image inspect --format '{{json .Config.Labels}}' "${CI_COMPILE_IMAGE}")"
+          base_digest="$(docker image inspect --format '{{join .RepoDigests ", "}}' "${CI_BASE_IMAGE}")"
+
+          echo "Built LightOp compile image:"
+          echo "  base_image=${CI_BASE_IMAGE}"
+          echo "  base_digest=${base_digest:-not provided}"
+          echo "  compile_image=${CI_COMPILE_IMAGE}"
+          echo "  image_id=${image_id}"
+          echo "  created=${image_created}"
+          echo "  labels=${image_labels:-not provided}"
+
+          {
+            echo "### LightOp daily compile environment"
+            echo
+            echo "- Base image: \`${CI_BASE_IMAGE}\`"
+            echo "- Base digest: \`${base_digest:-not provided}\`"
+            echo "- Compile image: \`${CI_COMPILE_IMAGE}\`"
+            echo "- Compile image ID: \`${image_id}\`"
+            echo "- Image created: \`${image_created}\`"
+            echo "- DTK package: \`${DTK_PACKAGE}\`"
+            echo "- DTK version: \`${DTK_VERSION}\`"
+            echo "- AICC version: \`${AICC_VERSION}\`"
+            echo "- Python: \`${PYTHON_VERSION}\`"
+            echo "- Torch: \`${INSTALL_TORCH_VERSION}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Compile LightOp and run OpTest
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker run -d \
             --name "${CI_CONTAINER_NAME}" \
             --init \
             --network host \
@@ -149,119 +167,88 @@ jobs:
             --device /dev/dri \
             --group-add video \
             --user root \
-            -e HOME=/tmp/lightop-ci-home \
             -e HIP_VISIBLE_DEVICES \
             -e ROCR_VISIBLE_DEVICES \
             -e OPTEST_PACKAGE_SPEC \
             -e OPTEST_INDEX_URL \
             -e OPTEST_TRUSTED_HOST \
             -e PYTHONUNBUFFERED \
-            -e CI_BASE_IMAGE \
-            -e CI_DTK_VERSION \
-            -e CI_PYTHON_VERSION \
-            -e CI_TORCH_VERSION \
-            -e HOST_UID="${host_uid}" \
-            -e HOST_GID="${host_gid}" \
             -v /opt/hyhal:/opt/hyhal:ro \
-            -v "${GITHUB_WORKSPACE}:/workspace/lightop" \
             -v "${CI_ARTIFACT_ROOT}/op_test_output:/op_test_output" \
             -v "${CI_ARTIFACT_ROOT}/op_test_log:/op_test_log" \
-            -w /workspace/lightop \
-            "${CI_RUN_IMAGE}" \
-            bash -lc '
-              set -euo pipefail
-              restore_workspace_ownership() {
-                chown -R "${HOST_UID}:${HOST_GID}" \
-                  /workspace/lightop/build \
-                  /workspace/lightop/dist \
-                  /workspace/lightop/test_results \
-                  /op_test_output \
-                  /op_test_log 2>/dev/null || true
-              }
-              trap restore_workspace_ownership EXIT INT TERM
-              mkdir -p "${HOME}"
-              export PATH="/opt/hyhal/bin:${PATH}"
-              export LD_LIBRARY_PATH="/opt/hyhal/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+            "${CI_COMPILE_IMAGE}"
 
-              echo "CIctl LightOp compile environment:"
-              echo "  image=${CI_BASE_IMAGE}"
-              echo "  expected_dtk=${CI_DTK_VERSION}"
-              echo "  expected_python=${CI_PYTHON_VERSION}"
-              echo "  expected_torch=${CI_TORCH_VERSION}"
-              echo "  aicc=${AICC_VERSION:-not provided}"
-              echo "  dtk_package=${DTK_PKG_NAME:-not provided}"
-              /opt/dtk/bin/hipcc --version
+          docker exec "${CI_CONTAINER_NAME}" bash -lc '
+            set -euo pipefail
+            source /opt/dtk/env.sh
+            export PATH="/opt/hyhal/bin:${PATH}"
+            export LD_LIBRARY_PATH="/opt/hyhal/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-              hy-smi
-              python - <<"PY"
-          import os
-          import platform
+            echo "LightOp compile environment:"
+            python3 --version
+            /opt/dtk/bin/hipcc --version
+            hy-smi
+
+            python3 - <<"PY"
           import torch
 
-          expected_python = os.environ["CI_PYTHON_VERSION"]
-          expected_torch = os.environ["CI_TORCH_VERSION"]
-          actual_python = platform.python_version()
-          actual_torch = torch.__version__.split("+", 1)[0]
-
-          print(f"python={actual_python}")
           print(f"torch={torch.__version__}")
           print(f"device_available={torch.cuda.is_available()}")
-          if not actual_python.startswith(f"{expected_python}."):
-              raise SystemExit(
-                  f"CI image Python mismatch: expected {expected_python}.x, got {actual_python}"
-              )
-          if actual_torch != expected_torch:
-              raise SystemExit(
-                  f"CI image Torch mismatch: expected {expected_torch}, got {torch.__version__}"
-              )
           if not torch.cuda.is_available():
               raise SystemExit("No device is available to PyTorch")
           PY
 
-              # Match CIctl COMPILE: build and install the PR source in the
-              # dedicated LightOp compile environment before running tests.
-              export PYTORCH_VERSION="${CI_TORCH_VERSION}"
-              rm -rf build dist
-              python setup.py bdist_wheel
-              python -m pip install --force-reinstall --no-deps dist/*.whl
-              python -c "import lightop; print(f\"lightop={lightop.__version__}\")"
+            /usr/local/bin/build-lightop-wheel
+            python3 -c "import lightop; print(f\"lightop={lightop.__version__}\")"
 
-              python -m pip install \
-                --disable-pip-version-check \
-                --force-reinstall \
-                --index-url "${OPTEST_INDEX_URL}" \
-                --trusted-host "${OPTEST_TRUSTED_HOST}" \
-                "${OPTEST_PACKAGE_SPEC}"
-              python -m optest --help
+            python3 -m pip install \
+              --disable-pip-version-check \
+              --force-reinstall \
+              --index-url "${OPTEST_INDEX_URL}" \
+              --trusted-host "${OPTEST_TRUSTED_HOST}" \
+              "${OPTEST_PACKAGE_SPEC}"
+            python3 -m optest --help
 
-              if python - <<"PY"
+            if python3 - <<"PY"
           from optest.operators import SUPPORTED_OPERATORS
           raise SystemExit(0 if "lightop" in SUPPORTED_OPERATORS else 1)
           PY
-              then
-                echo "OpTest supports LightOp; only OpTest will execute tests."
-                printf "optest\n" > /op_test_output/ci-test-driver.txt
-                python -m optest \
-                  --op_name lightop \
-                  --test_mode acc \
-                  --test_dir /workspace/lightop \
-                  --gpus "${HIP_VISIBLE_DEVICES}"
-              else
-                echo "::warning::The installed OpTest does not support LightOp yet; using the temporary repository quick-test fallback."
-                printf "temporary-fallback\n" > /op_test_output/ci-test-driver.txt
-                python tools/run_quick_operator_tests.py \
-                  --output test_results/ci_quick \
-                  --timeout 600
-              fi
-            '
+            then
+              echo "OpTest supports LightOp; only OpTest will execute tests."
+              printf "optest\n" > /op_test_output/ci-test-driver.txt
+              python3 -m optest \
+                --op_name lightop \
+                --test_mode acc \
+                --test_dir /lightop \
+                --gpus "${HIP_VISIBLE_DEVICES}"
+            else
+              echo "::warning::The installed OpTest does not support LightOp yet; using the temporary repository quick-test fallback."
+              printf "temporary-fallback\n" > /op_test_output/ci-test-driver.txt
+              cd /lightop
+              python3 tools/run_quick_operator_tests.py \
+                --output test_results/ci_quick \
+                --timeout 600
+            fi
+          '
 
-      - name: Remove CI container and images
+          rm -rf dist test_results
+          mkdir -p dist
+          docker cp "${CI_CONTAINER_NAME}:/dist/." dist/
+          if docker exec "${CI_CONTAINER_NAME}" test -d /lightop/test_results; then
+            docker cp "${CI_CONTAINER_NAME}:/lightop/test_results" test_results
+          fi
+
+      - name: Remove CI container, image, and build context
         if: always()
         shell: bash
         run: |
           set +e
           docker rm -f "${CI_CONTAINER_NAME}" >/dev/null 2>&1
-          docker image rm -f "${CI_RUN_IMAGE}" "${CI_BASE_IMAGE}" >/dev/null 2>&1
+          docker image rm -f "${CI_COMPILE_IMAGE}" >/dev/null 2>&1
+          docker image rm -f "${CI_BASE_IMAGE}" >/dev/null 2>&1
+          if [[ "${CI_BUILD_CONTEXT}" == "${RUNNER_TEMP}"/lightop-build-* ]]; then
+            rm -rf -- "${CI_BUILD_CONTEXT}"
+          fi
           exit 0
 
       - name: Add fallback result to job summary
@@ -276,7 +263,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lightop-ci-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          name: lightop-ci-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
           path: |
             dist/*.whl
             test_results/
