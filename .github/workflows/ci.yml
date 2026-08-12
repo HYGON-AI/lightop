@@ -57,7 +57,6 @@ jobs:
       PYTHON_VERSION: "3.10"
       INSTALL_TORCH_VERSION: "2.10.0"
       DTK_INDEX_VERSION: "2604"
-      CI_BUILD_CONTEXT: ${{ runner.temp }}/lightop-build-${{ github.run_id }}-${{ github.run_attempt }}
       CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}
       CI_CONTAINER_NAME: lightop-ci-${{ github.run_id }}-${{ github.run_attempt }}
       CI_ARTIFACT_ROOT: ${{ github.workspace }}/.ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}
@@ -76,6 +75,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          CI_BUILD_CONTEXT="${RUNNER_TEMP}/lightop-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "CI_BUILD_CONTEXT=${CI_BUILD_CONTEXT}" >> "${GITHUB_ENV}"
+
           docker version
           test -e /dev/mkfd
           test -e /dev/kfd
@@ -246,7 +248,7 @@ jobs:
           docker rm -f "${CI_CONTAINER_NAME}" >/dev/null 2>&1
           docker image rm -f "${CI_COMPILE_IMAGE}" >/dev/null 2>&1
           docker image rm -f "${CI_BASE_IMAGE}" >/dev/null 2>&1
-          if [[ "${CI_BUILD_CONTEXT}" == "${RUNNER_TEMP}"/lightop-build-* ]]; then
+          if [[ "${CI_BUILD_CONTEXT:-}" == "${RUNNER_TEMP}"/lightop-build-* ]]; then
             rm -rf -- "${CI_BUILD_CONTEXT}"
           fi
           exit 0
