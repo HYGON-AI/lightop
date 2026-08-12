@@ -81,6 +81,41 @@ jobs:
             "${CI_ARTIFACT_ROOT}/op_test_output" \
             "${CI_ARTIFACT_ROOT}/op_test_log"
           docker pull "${CI_BASE_IMAGE}"
+
+          image_id="$(docker image inspect --format '{{.Id}}' "${CI_BASE_IMAGE}")"
+          image_repo_tags="$(docker image inspect --format '{{join .RepoTags ", "}}' "${CI_BASE_IMAGE}")"
+          image_digest="$(docker image inspect --format '{{join .RepoDigests ", "}}' "${CI_BASE_IMAGE}")"
+          image_created="$(docker image inspect --format '{{.Created}}' "${CI_BASE_IMAGE}")"
+          image_labels="$(docker image inspect --format '{{json .Config.Labels}}' "${CI_BASE_IMAGE}")"
+          image_version="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "${CI_BASE_IMAGE}")"
+          image_revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "${CI_BASE_IMAGE}")"
+          image_source="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.source"}}' "${CI_BASE_IMAGE}")"
+
+          echo "Resolved CI image details:"
+          echo "  requested: ${CI_BASE_IMAGE}"
+          echo "  repo tags: ${image_repo_tags:-not provided}"
+          echo "  repo digest: ${image_digest:-not provided}"
+          echo "  image id: ${image_id}"
+          echo "  created: ${image_created}"
+          echo "  version label: ${image_version:-not provided}"
+          echo "  revision label: ${image_revision:-not provided}"
+          echo "  source label: ${image_source:-not provided}"
+          echo "  all labels: ${image_labels:-not provided}"
+
+          {
+            echo "### Resolved CI image"
+            echo
+            echo "- Requested: \`${CI_BASE_IMAGE}\`"
+            echo "- Repository tags: \`${image_repo_tags:-not provided}\`"
+            echo "- Repository digest: \`${image_digest:-not provided}\`"
+            echo "- Image ID: \`${image_id}\`"
+            echo "- Created: \`${image_created}\`"
+            echo "- Version label: \`${image_version:-not provided}\`"
+            echo "- Revision label: \`${image_revision:-not provided}\`"
+            echo "- Source label: \`${image_source:-not provided}\`"
+            echo "- All labels: \`${image_labels:-not provided}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
           docker tag "${CI_BASE_IMAGE}" "${CI_RUN_IMAGE}"
 
       - name: Install OpTest, build LightOp, and run tests
