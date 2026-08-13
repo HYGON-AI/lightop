@@ -66,7 +66,8 @@ jobs:
       DTK_PACKAGE: DTK-26.04-rc4-centos8-x86_64.tar.gz
       PYTHON_VERSION: "3.10"
       INSTALL_TORCH_VERSION: "2.10.0"
-      INSTALL_VLLM_VERSION: "0.21.0"
+      INSTALL_VLLM_VERSION: "0.15.1"
+      INSTALL_TRITON_VERSION: "3.5.1"
       INSTALL_NUMPY_VERSION: "1.25.0"
       OPTEST_PACKAGE_SPEC: optest
       CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}
@@ -340,6 +341,7 @@ jobs:
             -e PYTHON_TRUSTED_HOST \
             -e INSTALL_TORCH_VERSION \
             -e INSTALL_VLLM_VERSION \
+            -e INSTALL_TRITON_VERSION \
             -e INSTALL_NUMPY_VERSION \
             -e PYTHONUNBUFFERED \
             -v /opt/hyhal:/opt/hyhal:ro \
@@ -383,7 +385,7 @@ jobs:
               "vllm==${INSTALL_VLLM_VERSION}"
             python3 -m pip install \
               "torch==${INSTALL_TORCH_VERSION}" \
-              triton
+              "triton==${INSTALL_TRITON_VERSION}"
             python3 -m pip install "numpy==${INSTALL_NUMPY_VERSION}"
             python3 -m pip uninstall -y cupy-cuda12x
 
