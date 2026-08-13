@@ -23,6 +23,8 @@ jobs:
     steps:
       - name: Checkout LightOp
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,6 +33,16 @@ jobs:
 
       - name: Check Python syntax
         run: python -m compileall -q python tools
+
+      - name: Enforce public CI naming policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden_pattern='[dD][cC][uU]'
+          if grep -RIqE "${forbidden_pattern}" .github docs/GITHUB_ACTIONS_CI.md; then
+            echo "::error::CI sources violate the public naming policy."
+            exit 1
+          fi
 
   test:
     name: Build LightOp environment and run OpTest
@@ -45,25 +57,62 @@ jobs:
     timeout-minutes: 240
 
     env:
-      CI_BASE_IMAGE: harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304
-      DTK_PKG_PATH: ${{ vars.LIGHTOP_DTK_PKG_PATH || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
+      WORKSPACE_HELPER_IMAGE: 42.228.13.241:5000/dev/dev:rockylinux8.6-mpi5.0-gcc13.3-cmake3.29-py3.10-mkl2024.2.0.664
+      CI_BASE_IMAGE_REPOSITORY: 42.228.13.241:5000/dev/dev
+      DTK_PACKAGE_BASE_URL: http://10.16.1.201:8000/dtk-pkg/dtk26.04
       AICC_NIGHTLY_DIR: /public/opendas/ArchivedFile/ai_cc/nightly
+      PYTHON_INDEX_URL: http://10.16.1.201:9929/nightly/dtk2604/+simple/
+      PYTHON_TRUSTED_HOST: 10.16.1.201
+      DTK_PACKAGE: DTK-26.04-rc4-centos8-x86_64.tar.gz
       PYTHON_VERSION: "3.10"
       INSTALL_TORCH_VERSION: "2.10.0"
-      DTK_INDEX_VERSION: "2604"
+      INSTALL_VLLM_VERSION: "0.21.0"
+      INSTALL_NUMPY_VERSION: "1.25.0"
+      OPTEST_PACKAGE_SPEC: optest
       CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}
       CI_COMPILE_CONTAINER_NAME: lightop-build-${{ github.run_id }}-${{ github.run_attempt }}
-      CI_TEST_IMAGE: lightop-test-ci:${{ github.run_id }}-${{ github.run_attempt }}
       CI_TEST_CONTAINER_NAME: lightop-test-${{ github.run_id }}-${{ github.run_attempt }}
       CI_ARTIFACT_ROOT: ${{ github.workspace }}/.ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}
-      HIP_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
-      ROCR_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
-      OPTEST_PACKAGE_SPEC: ${{ vars.OPTEST_PACKAGE_SPEC || 'optest' }}
-      OPTEST_INDEX_URL: ${{ vars.OPTEST_INDEX_URL || 'http://10.16.1.201:9929/nightly/dtk2604/+simple/' }}
-      OPTEST_TRUSTED_HOST: ${{ vars.OPTEST_TRUSTED_HOST || '10.16.1.201' }}
+      HIP_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
+      ROCR_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
       PYTHONUNBUFFERED: "1"
 
     steps:
+      - name: Validate trusted CI configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          required_values=(
+            WORKSPACE_HELPER_IMAGE CI_BASE_IMAGE_REPOSITORY DTK_PACKAGE_BASE_URL
+            PYTHON_INDEX_URL PYTHON_TRUSTED_HOST
+          )
+          for name in "${required_values[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Required CI setting ${name} is not configured."
+              exit 2
+            fi
+          done
+
+          for name in DTK_PACKAGE_BASE_URL PYTHON_INDEX_URL; do
+            if [[ ! "${!name}" =~ ^https?:// ]]; then
+              echo "::error::${name} must use HTTP or HTTPS."
+              exit 2
+            fi
+          done
+          if [[ ! "${WORKSPACE_HELPER_IMAGE}" =~ :[A-Za-z0-9][A-Za-z0-9._+!-]*$ ]]; then
+            echo "::error::The workspace helper image must use an explicit version tag."
+            exit 2
+          fi
+
+          forbidden_pattern='[dD][cC][uU]'
+          for name in "${required_values[@]}"; do
+            if [[ "${!name}" =~ ${forbidden_pattern} ]]; then
+              echo "::error::CI setting ${name} violates the public-log naming policy."
+              exit 2
+            fi
+          done
+
       - name: Repair workspace ownership before checkout
         shell: bash
         run: |
@@ -71,12 +120,12 @@ jobs:
           runner_uid="$(id -u)"
           runner_gid="$(id -g)"
 
-          docker pull "${CI_BASE_IMAGE}"
+          docker pull "${WORKSPACE_HELPER_IMAGE}" 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
           docker run --rm \
             --user 0:0 \
             --entrypoint /bin/bash \
             -v "${GITHUB_WORKSPACE}:/workspace" \
-            "${CI_BASE_IMAGE}" \
+            "${WORKSPACE_HELPER_IMAGE}" \
             -lc '
               chown -R "$1:$2" /workspace
               chmod -R u+rwX /workspace
@@ -84,11 +133,40 @@ jobs:
 
       - name: Checkout LightOp
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: Prepare runner and build context
+      - name: Resolve current CI inputs and prepare build context
         shell: bash
         run: |
           set -euo pipefail
+          mapfile -t base_digests < <(
+            docker image inspect \
+              --format '{{range .RepoDigests}}{{println .}}{{end}}' \
+              "${WORKSPACE_HELPER_IMAGE}" |
+              awk -v repository="${CI_BASE_IMAGE_REPOSITORY}" \
+                'index($0, repository "@sha256:") == 1 {print $0}' |
+              sort -u
+          )
+          if [[ "${#base_digests[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one digest for the configured base image."
+            exit 1
+          fi
+          CI_BASE_IMAGE="${base_digests[0]}"
+          DTK_PKG_URL="${DTK_PACKAGE_BASE_URL%/}/${DTK_PACKAGE}"
+          AICC_PACKAGE="$(
+            find "${AICC_NIGHTLY_DIR}" -maxdepth 1 -type f -name 'dtk_llvm_*.run' -printf '%f\n' |
+              sed 's/\.run$//' |
+              sort -t '_' -k4 -nr |
+              sed -n '1p'
+          ).run"
+          if [[ "${AICC_PACKAGE}" == ".run" || ! -f "${AICC_NIGHTLY_DIR}/${AICC_PACKAGE}" ]]; then
+            echo "::error::No valid compiler package candidate was found."
+            exit 1
+          fi
+          echo "CI_BASE_IMAGE=${CI_BASE_IMAGE}" >> "${GITHUB_ENV}"
+          echo "DTK_PKG_URL=${DTK_PKG_URL}" >> "${GITHUB_ENV}"
+          echo "AICC_PACKAGE=${AICC_PACKAGE}" >> "${GITHUB_ENV}"
           CI_BUILD_CONTEXT="${RUNNER_TEMP}/lightop-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "CI_BUILD_CONTEXT=${CI_BUILD_CONTEXT}" >> "${GITHUB_ENV}"
 
@@ -107,8 +185,9 @@ jobs:
           bash .github/ci/prepare-build-context.sh \
             "${CI_BUILD_CONTEXT}" \
             "${GITHUB_WORKSPACE}" \
-            "${DTK_PKG_PATH}" \
-            "${AICC_NIGHTLY_DIR}"
+            "${DTK_PKG_URL}" \
+            "${AICC_NIGHTLY_DIR}" \
+            "${AICC_PACKAGE}"
 
       - name: Build daily LightOp compile image
         shell: bash
@@ -121,8 +200,10 @@ jobs:
             --no-cache \
             --network host \
             --build-arg "PYTHON_VERSION=${PYTHON_VERSION}" \
+            --build-arg "BASE_IMAGE=${CI_BASE_IMAGE}" \
             --build-arg "INSTALL_TORCH_VERSION=${INSTALL_TORCH_VERSION}" \
-            --build-arg "DTK_INDEX_VERSION=${DTK_INDEX_VERSION}" \
+            --build-arg "PYTHON_INDEX_URL=${PYTHON_INDEX_URL}" \
+            --build-arg "PYTHON_TRUSTED_HOST=${PYTHON_TRUSTED_HOST}" \
             --build-arg "DTK_PKG_NAME=${DTK_PACKAGE}" \
             --build-arg "DTK_PKG_VERSION=${DTK_PACKAGE_VERSION}" \
             --build-arg "DTK_VERSION=${DTK_VERSION}" \
@@ -134,7 +215,7 @@ jobs:
             --label "io.hygon.lightop.torch-version=${INSTALL_TORCH_VERSION}" \
             --label "io.hygon.lightop.source-commit=${GITHUB_SHA}" \
             -t "${CI_COMPILE_IMAGE}" \
-            "${CI_BUILD_CONTEXT}"
+            "${CI_BUILD_CONTEXT}" 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
 
           image_id="$(docker image inspect --format '{{.Id}}' "${CI_COMPILE_IMAGE}")"
           image_created="$(docker image inspect --format '{{.Created}}' "${CI_COMPILE_IMAGE}")"
@@ -159,7 +240,9 @@ jobs:
             echo "- Image created: \`${image_created}\`"
             echo "- DTK package: \`${DTK_PACKAGE}\`"
             echo "- DTK version: \`${DTK_VERSION}\`"
+            echo "- DTK SHA-256: \`${DTK_PACKAGE_SHA256}\`"
             echo "- AICC version: \`${AICC_VERSION}\`"
+            echo "- AICC SHA-256: \`${AICC_PACKAGE_SHA256}\`"
             echo "- Python: \`${PYTHON_VERSION}\`"
             echo "- Torch: \`${INSTALL_TORCH_VERSION}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
@@ -186,6 +269,7 @@ jobs:
             -e HIP_VISIBLE_DEVICES \
             -e ROCR_VISIBLE_DEVICES \
             -e PYTHONUNBUFFERED \
+            -e "LIGHTOP_SOURCE_COMMIT=${GITHUB_SHA}" \
             -v /opt/hyhal:/opt/hyhal:ro \
             "${CI_COMPILE_IMAGE}"
 
@@ -217,9 +301,8 @@ jobs:
           PY
 
             /usr/local/bin/build-lightop-wheel
-            python3 -c "import lightop; print(f\"lightop={lightop.__version__}\")"
-          '
-          compile_status=$?
+          ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
+          compile_status=${PIPESTATUS[0]}
           set -e
 
           rm -rf dist
@@ -230,13 +313,6 @@ jobs:
             echo "::error::LightOp compile container exited with status ${compile_status}."
             exit "${compile_status}"
           fi
-
-          # Like CIctl's docker commit after COMPILE: preserve the installed
-          # LightOp wheel in an immutable image for a fresh test container.
-          docker commit \
-            --change 'CMD ["tail", "-f", "/dev/null"]' \
-            "${CI_COMPILE_CONTAINER_NAME}" \
-            "${CI_TEST_IMAGE}"
 
       - name: Run OpTest in a fresh test container
         shell: bash
@@ -260,20 +336,32 @@ jobs:
             -e HIP_VISIBLE_DEVICES \
             -e ROCR_VISIBLE_DEVICES \
             -e OPTEST_PACKAGE_SPEC \
-            -e OPTEST_INDEX_URL \
-            -e OPTEST_TRUSTED_HOST \
+            -e PYTHON_INDEX_URL \
+            -e PYTHON_TRUSTED_HOST \
             -e INSTALL_TORCH_VERSION \
+            -e INSTALL_VLLM_VERSION \
+            -e INSTALL_NUMPY_VERSION \
             -e PYTHONUNBUFFERED \
             -v /opt/hyhal:/opt/hyhal:ro \
+            -v "${GITHUB_WORKSPACE}/dist:/ci-dist:ro" \
             -v "${CI_ARTIFACT_ROOT}/op_test_output:/op_test_output" \
             -v "${CI_ARTIFACT_ROOT}/op_test_log:/op_test_log" \
-            "${CI_TEST_IMAGE}"
+            "${CI_COMPILE_IMAGE}"
 
           docker exec "${CI_TEST_CONTAINER_NAME}" bash -lc '
             set -euo pipefail
             source /opt/dtk/env.sh
             export PATH="/opt/hyhal/bin:${PATH}"
             export LD_LIBRARY_PATH="/opt/hyhal/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+            mapfile -t wheels < <(find /ci-dist -maxdepth 1 -type f -name "*.whl" -print)
+            if [[ "${#wheels[@]}" -ne 1 ]]; then
+              echo "Expected exactly one repaired wheel, found ${#wheels[@]}" >&2
+              exit 1
+            fi
+            python3 -m pip install --force-reinstall --no-deps "${wheels[0]}"
+            cd /tmp
+            python3 -c "import lightop; print(f\"lightop={lightop.__version__}\")"
 
             # OpTest is installed without dependencies so its NumPy 1.24 pin
             # cannot mutate the already validated LightOp build runtime.
@@ -282,8 +370,8 @@ jobs:
             python3 -m pip install \
               --disable-pip-version-check \
               --no-deps \
-              --index-url "${OPTEST_INDEX_URL}" \
-              --trusted-host "${OPTEST_TRUSTED_HOST}" \
+              --index-url "${PYTHON_INDEX_URL}" \
+              --trusted-host "${PYTHON_TRUSTED_HOST}" \
               "${OPTEST_PACKAGE_SPEC}"
 
             python3 -m optest --help
@@ -295,15 +383,14 @@ jobs:
               echo "OpTest supports LightOp; only OpTest will execute tests."
               printf "optest\n" > /op_test_output/ci-test-driver.txt
 
-              # Match CIctl lightop.install_vllm(), but constrain vLLM to the
-              # public version whose internal wheel is built for Torch 2.10.
+              # Keep the test runtime aligned with the versions selected by this workflow.
               python3 -m pip install \
                 "torch==${INSTALL_TORCH_VERSION}" \
-                "vllm==0.21.0"
+                "vllm==${INSTALL_VLLM_VERSION}"
               python3 -m pip install \
                 "torch==${INSTALL_TORCH_VERSION}" \
                 triton
-              python3 -m pip install "numpy==1.25.0"
+              python3 -m pip install "numpy==${INSTALL_NUMPY_VERSION}"
               python3 -m pip uninstall -y cupy-cuda12x
 
               python3 - <<"PY"
@@ -324,10 +411,11 @@ jobs:
                 --test_dir /lightop \
                 --gpus "${HIP_VISIBLE_DEVICES}"
             else
-              echo "::warning::Installed OpTest does not support LightOp yet; compilation and wheel validation succeeded, so tests are skipped."
+              echo "::error::The resolved OpTest package does not support LightOp."
               printf "optest-not-supported\n" > /op_test_output/ci-test-driver.txt
+              exit 1
             fi
-          '
+          ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
 
       - name: Remove CI containers, images, and build context
         if: always()
@@ -343,13 +431,12 @@ jobs:
             --user 0:0 \
             --entrypoint /bin/bash \
             -v "${GITHUB_WORKSPACE}:/workspace" \
-            "${CI_BASE_IMAGE}" \
+            "${WORKSPACE_HELPER_IMAGE}" \
             -lc '
               chown -R "$1:$2" /workspace
               chmod -R u+rwX /workspace
             ' _ "${runner_uid}" "${runner_gid}"
 
-          docker image rm -f "${CI_TEST_IMAGE}" >/dev/null 2>&1
           docker image rm -f "${CI_COMPILE_IMAGE}" >/dev/null 2>&1
           docker image rm -f "${CI_BASE_IMAGE}" >/dev/null 2>&1
           if [[ "${CI_BUILD_CONTEXT:-}" == "${RUNNER_TEMP}"/lightop-build-* ]]; then
@@ -357,8 +444,47 @@ jobs:
           fi
           exit 0
 
-      - name: Upload build and test artifacts
+      - name: Enforce public artifact naming policy
+        id: artifact_policy
         if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden_pattern='[dD][cC][uU]'
+          if find dist .ci-artifacts -mindepth 1 -print 2>/dev/null | grep -Eiq "${forbidden_pattern}"; then
+            echo "::error::A generated artifact path violates the public-log naming policy."
+            exit 1
+          fi
+          if grep -RIaqE --exclude='*.whl' "${forbidden_pattern}" dist .ci-artifacts 2>/dev/null; then
+            echo "::error::A generated artifact violates the public-log naming policy."
+            exit 1
+          fi
+          python3 - <<'PY'
+          from pathlib import Path
+          from zipfile import BadZipFile, ZipFile
+
+          forbidden = bytes.fromhex("646375")
+          text_suffixes = {
+              ".cfg", ".cmake", ".cpp", ".cu", ".cuh", ".h", ".hpp", ".json",
+              ".md", ".py", ".sh", ".toml", ".txt", ".yaml", ".yml",
+          }
+          metadata_names = {"METADATA", "RECORD", "WHEEL", "entry_points.txt", "top_level.txt"}
+          for wheel in Path("dist").glob("*.whl"):
+              try:
+                  with ZipFile(wheel) as archive:
+                      for member in archive.infolist():
+                          if forbidden in member.filename.lower().encode("utf-8"):
+                              raise SystemExit("A wheel member path violates the public-log naming policy.")
+                          member_path = Path(member.filename)
+                          is_text = member_path.suffix.lower() in text_suffixes or member_path.name in metadata_names
+                          if is_text and forbidden in archive.read(member).lower():
+                              raise SystemExit("Wheel content violates the public-log naming policy.")
+              except BadZipFile as exc:
+                  raise SystemExit(f"Invalid wheel archive: {wheel.name}") from exc
+          PY
+
+      - name: Upload build and test artifacts
+        if: always() && steps.artifact_policy.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: lightop-ci-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
