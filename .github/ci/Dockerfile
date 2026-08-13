@@ -36,21 +36,17 @@ RUN mkdir -p /root/.pip && \
       'trusted-host = 10.16.1.201' \
       > /root/.pip/pip.conf && \
     python3 -m pip install \
-      pyyaml hypothesis Ninja MonkeyType wheel packaging \
+      pyyaml hypothesis Ninja MonkeyType "numpy==1.24.3" wheel packaging \
       einops pytest matplotlib auditwheel patchelf && \
     python3 -m pip install amdsmi && \
     python3 -m pip install cupy && \
-    python3 -m pip install --upgrade \
-      "torch==${INSTALL_TORCH_VERSION}" \
-      "vllm==0.21.0" \
-      aiter deepgemm deep_ep && \
+    python3 -m pip install "torch==${INSTALL_TORCH_VERSION}" && \
     python3 -m pip uninstall -y cupy-cuda12x && \
     chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
     yes | /dtk_llvm_*.run
 
-# Fail while building the image if the package resolver selected extensions for
-# a different Torch ABI. The exact nightly build versions are printed in the
-# Actions log so each daily environment remains traceable.
+# Keep the build image focused on compiling LightOp. vLLM and OpTest are added
+# only in the separate test container, matching CIctl's phase boundary.
 RUN python3 - <<'PY'
 import importlib.metadata
 import os
@@ -63,25 +59,8 @@ if actual_torch != expected_torch:
         f"Torch version mismatch: expected {expected_torch}, got {torch.__version__}"
     )
 
-from vllm import _custom_ops  # noqa: F401
-
-required_ops = ("silu_and_mul", "gelu_and_mul", "gelu_tanh_and_mul")
-missing_ops = [name for name in required_ops if not hasattr(torch.ops._C, name)]
-if missing_ops:
-    raise SystemExit(f"vLLM custom ops were not registered: {missing_ops}")
-
-print("Resolved Torch 2.10-compatible runtime:")
-for package in (
-    "torch",
-    "vllm",
-    "aiter",
-    "deepgemm",
-    "deep_ep",
-    "triton",
-    "numpy",
-    "opencv-python-headless",
-    "cupy",
-):
+print("Resolved LightOp build runtime:")
+for package in ("torch", "numpy", "cupy"):
     try:
         print(f"  {package}={importlib.metadata.version(package)}")
     except importlib.metadata.PackageNotFoundError:

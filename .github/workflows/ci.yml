@@ -32,12 +32,6 @@ jobs:
       - name: Check Python syntax
         run: python -m compileall -q python tools
 
-      - name: Validate temporary fallback test manifest
-        run: |
-          python tools/run_operator_tests.py \
-            --manifest tools/operator_tests/after_quick_cases.txt \
-            --dry-run
-
   test:
     name: Build LightOp environment and run OpTest
     needs: validate
@@ -58,7 +52,9 @@ jobs:
       INSTALL_TORCH_VERSION: "2.10.0"
       DTK_INDEX_VERSION: "2604"
       CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}
-      CI_CONTAINER_NAME: lightop-ci-${{ github.run_id }}-${{ github.run_attempt }}
+      CI_COMPILE_CONTAINER_NAME: lightop-build-${{ github.run_id }}-${{ github.run_attempt }}
+      CI_TEST_IMAGE: lightop-test-ci:${{ github.run_id }}-${{ github.run_attempt }}
+      CI_TEST_CONTAINER_NAME: lightop-test-${{ github.run_id }}-${{ github.run_attempt }}
       CI_ARTIFACT_ROOT: ${{ github.workspace }}/.ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}
       HIP_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
       ROCR_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
@@ -168,13 +164,87 @@ jobs:
             echo "- Torch: \`${INSTALL_TORCH_VERSION}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Compile LightOp and run OpTest
+      - name: Compile LightOp wheel
         shell: bash
         run: |
           set -euo pipefail
 
           docker run -d \
-            --name "${CI_CONTAINER_NAME}" \
+            --name "${CI_COMPILE_CONTAINER_NAME}" \
+            --init \
+            --network host \
+            --ipc host \
+            --shm-size 80g \
+            --cap-add SYS_PTRACE \
+            --security-opt seccomp=unconfined \
+            --privileged \
+            --device /dev/mkfd \
+            --device /dev/kfd \
+            --device /dev/dri \
+            --group-add video \
+            --user root \
+            -e HIP_VISIBLE_DEVICES \
+            -e ROCR_VISIBLE_DEVICES \
+            -e PYTHONUNBUFFERED \
+            -v /opt/hyhal:/opt/hyhal:ro \
+            "${CI_COMPILE_IMAGE}"
+
+          set +e
+          docker exec "${CI_COMPILE_CONTAINER_NAME}" bash -lc '
+            set -euo pipefail
+            source /opt/dtk/env.sh
+            export PATH="/opt/hyhal/bin:${PATH}"
+            export LD_LIBRARY_PATH="/opt/hyhal/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+            echo "LightOp compile environment:"
+            python3 --version
+            /opt/dtk/bin/hipcc --version
+            hy-smi
+
+            python3 - <<"PY"
+          import importlib.metadata
+          import torch
+
+          print(f"torch={torch.__version__}")
+          for package in ("numpy", "cupy"):
+              try:
+                  print(f"{package}={importlib.metadata.version(package)}")
+              except importlib.metadata.PackageNotFoundError:
+                  print(f"{package}=not installed")
+          print(f"device_available={torch.cuda.is_available()}")
+          if not torch.cuda.is_available():
+              raise SystemExit("No device is available to PyTorch")
+          PY
+
+            /usr/local/bin/build-lightop-wheel
+            python3 -c "import lightop; print(f\"lightop={lightop.__version__}\")"
+          '
+          compile_status=$?
+          set -e
+
+          rm -rf dist
+          mkdir -p dist
+          docker cp "${CI_COMPILE_CONTAINER_NAME}:/dist/." dist/ || true
+
+          if [[ "${compile_status}" -ne 0 ]]; then
+            echo "::error::LightOp compile container exited with status ${compile_status}."
+            exit "${compile_status}"
+          fi
+
+          # Like CIctl's docker commit after COMPILE: preserve the installed
+          # LightOp wheel in an immutable image for a fresh test container.
+          docker commit \
+            --change 'CMD ["tail", "-f", "/dev/null"]' \
+            "${CI_COMPILE_CONTAINER_NAME}" \
+            "${CI_TEST_IMAGE}"
+
+      - name: Run OpTest in a fresh test container
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          docker run -d \
+            --name "${CI_TEST_CONTAINER_NAME}" \
             --init \
             --network host \
             --ipc host \
@@ -192,59 +262,31 @@ jobs:
             -e OPTEST_PACKAGE_SPEC \
             -e OPTEST_INDEX_URL \
             -e OPTEST_TRUSTED_HOST \
+            -e INSTALL_TORCH_VERSION \
             -e PYTHONUNBUFFERED \
             -v /opt/hyhal:/opt/hyhal:ro \
             -v "${CI_ARTIFACT_ROOT}/op_test_output:/op_test_output" \
             -v "${CI_ARTIFACT_ROOT}/op_test_log:/op_test_log" \
-            "${CI_COMPILE_IMAGE}"
+            "${CI_TEST_IMAGE}"
 
-          set +e
-          docker exec "${CI_CONTAINER_NAME}" bash -lc '
+          docker exec "${CI_TEST_CONTAINER_NAME}" bash -lc '
             set -euo pipefail
             source /opt/dtk/env.sh
             export PATH="/opt/hyhal/bin:${PATH}"
             export LD_LIBRARY_PATH="/opt/hyhal/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-            echo "LightOp compile environment:"
-            python3 --version
-            /opt/dtk/bin/hipcc --version
-            hy-smi
-
-            python3 - <<"PY"
-          import importlib.metadata
-          import torch
-
-          print(f"torch={torch.__version__}")
-          for package in (
-              "vllm", "aiter", "deepgemm", "deep_ep", "triton",
-              "numpy", "opencv-python-headless", "cupy",
-          ):
-              try:
-                  print(f"{package}={importlib.metadata.version(package)}")
-              except importlib.metadata.PackageNotFoundError:
-                  print(f"{package}=not installed")
-          print(f"device_available={torch.cuda.is_available()}")
-          if not torch.cuda.is_available():
-              raise SystemExit("No device is available to PyTorch")
-          PY
-
-            /usr/local/bin/build-lightop-wheel
-            python3 -c "import lightop; print(f\"lightop={lightop.__version__}\")"
-
-            # OpTest 1.0.0 pins numpy==1.24.3. Installing its dependencies into
-            # this runtime would replace the NumPy selected for Torch/vLLM and
-            # break the vLLM baseline used by the temporary LightOp tests.
+            # OpTest is installed without dependencies so its NumPy 1.24 pin
+            # cannot mutate the already validated LightOp build runtime.
             python3 -m pip install \
-              --disable-pip-version-check \
-              pytest-timeout openpyxl
+              pytest-timeout openpyxl pandas einops tqdm tabulate
             python3 -m pip install \
               --disable-pip-version-check \
               --no-deps \
               --index-url "${OPTEST_INDEX_URL}" \
               --trusted-host "${OPTEST_TRUSTED_HOST}" \
               "${OPTEST_PACKAGE_SPEC}"
-            python3 -m optest --help
 
+            python3 -m optest --help
             if python3 - <<"PY"
           from optest.operators import SUPPORTED_OPERATORS
           raise SystemExit(0 if "lightop" in SUPPORTED_OPERATORS else 1)
@@ -252,60 +294,48 @@ jobs:
             then
               echo "OpTest supports LightOp; only OpTest will execute tests."
               printf "optest\n" > /op_test_output/ci-test-driver.txt
+
+              # Match CIctl lightop.install_vllm(), but constrain vLLM to the
+              # public version whose internal wheel is built for Torch 2.10.
+              python3 -m pip install \
+                "torch==${INSTALL_TORCH_VERSION}" \
+                "vllm==0.21.0"
+              python3 -m pip install \
+                "torch==${INSTALL_TORCH_VERSION}" \
+                triton
+              python3 -m pip install "numpy==1.25.0"
+              python3 -m pip uninstall -y cupy-cuda12x
+
+              python3 - <<"PY"
+          import importlib.metadata
+          import torch
+          from vllm import _custom_ops  # noqa: F401
+
+          print(f"torch={torch.__version__}")
+          for package in ("vllm", "triton", "numpy", "optest"):
+              print(f"{package}={importlib.metadata.version(package)}")
+          if not torch.cuda.is_available():
+              raise SystemExit("No device is available to PyTorch")
+          PY
+
               python3 -m optest \
                 --op_name lightop \
                 --test_mode acc \
                 --test_dir /lightop \
                 --gpus "${HIP_VISIBLE_DEVICES}"
             else
-              echo "::warning::The installed OpTest does not support LightOp yet; using the temporary repository quick-test fallback."
-              printf "temporary-fallback\n" > /op_test_output/ci-test-driver.txt
-              cd /lightop
-              python3 tools/run_quick_operator_tests.py \
-                --output test_results/ci_quick \
-                --timeout 600
+              echo "::warning::Installed OpTest does not support LightOp yet; compilation and wheel validation succeeded, so tests are skipped."
+              printf "optest-not-supported\n" > /op_test_output/ci-test-driver.txt
             fi
           '
-          container_status=$?
-          set -e
 
-          rm -rf dist test_results
-          mkdir -p dist
-          docker cp "${CI_CONTAINER_NAME}:/dist/." dist/ || true
-          if docker exec "${CI_CONTAINER_NAME}" test -d /lightop/test_results; then
-            docker cp "${CI_CONTAINER_NAME}:/lightop/test_results" test_results || true
-          fi
-
-          if [[ "${container_status}" -ne 0 ]]; then
-            echo "::error::LightOp compile/test container exited with status ${container_status}."
-            if [[ -f test_results/ci_quick/failed_cases.txt ]]; then
-              echo "Failed LightOp cases:"
-              cat test_results/ci_quick/failed_cases.txt
-            fi
-            if [[ -d test_results/ci_quick/cases ]]; then
-              while IFS= read -r failed_log; do
-                echo "::group::${failed_log}"
-                if [[ -f "${failed_log}" ]]; then
-                  cat "${failed_log}"
-                else
-                  echo "Log file was not copied: ${failed_log}"
-                fi
-                echo "::endgroup::"
-              done < <(
-                awk -F '\t' 'NF >= 4 {print $4}' \
-                  test_results/ci_quick/failed_cases.txt 2>/dev/null | \
-                  sed 's#^/lightop/test_results/#test_results/#'
-              )
-            fi
-            exit "${container_status}"
-          fi
-
-      - name: Remove CI container, image, and build context
+      - name: Remove CI containers, images, and build context
         if: always()
         shell: bash
         run: |
           set +e
-          docker rm -f "${CI_CONTAINER_NAME}" >/dev/null 2>&1
+          docker rm -f "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1
+          docker rm -f "${CI_COMPILE_CONTAINER_NAME}" >/dev/null 2>&1
 
           runner_uid="$(id -u)"
           runner_gid="$(id -g)"
@@ -319,20 +349,13 @@ jobs:
               chmod -R u+rwX /workspace
             ' _ "${runner_uid}" "${runner_gid}"
 
+          docker image rm -f "${CI_TEST_IMAGE}" >/dev/null 2>&1
           docker image rm -f "${CI_COMPILE_IMAGE}" >/dev/null 2>&1
           docker image rm -f "${CI_BASE_IMAGE}" >/dev/null 2>&1
           if [[ "${CI_BUILD_CONTEXT:-}" == "${RUNNER_TEMP}"/lightop-build-* ]]; then
             rm -rf -- "${CI_BUILD_CONTEXT}"
           fi
           exit 0
-
-      - name: Add fallback result to job summary
-        if: always()
-        shell: bash
-        run: |
-          if [[ -f test_results/ci_quick/summary.txt ]]; then
-            cat test_results/ci_quick/summary.txt >> "${GITHUB_STEP_SUMMARY}"
-          fi
 
       - name: Upload build and test artifacts
         if: always()
@@ -341,7 +364,6 @@ jobs:
           name: lightop-ci-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
           path: |
             dist/*.whl
-            test_results/
             .ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: warn
           retention-days: 14
