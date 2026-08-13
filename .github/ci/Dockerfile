@@ -1,9 +1,11 @@
 ARG PYTHON_VERSION=3.10
-FROM harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py${PYTHON_VERSION}-mkl2020.4.304
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
 
 ARG PYTHON_VERSION=3.10
 ARG INSTALL_TORCH_VERSION=2.10.0
-ARG DTK_INDEX_VERSION=2604
+ARG PYTHON_INDEX_URL
+ARG PYTHON_TRUSTED_HOST
 ARG DTK_PKG_NAME
 ARG DTK_PKG_VERSION
 ARG DTK_VERSION
@@ -13,7 +15,6 @@ ENV ROCM_PATH=/opt/dtk \
     DTKROOT=/opt/dtk \
     COMPILE_ENV=lightop \
     TOOLKIT_DIR=/lightop \
-    RESOURCE_SERVER=http://42.228.13.241:18000 \
     INSTALL_TORCH_VERSION=${INSTALL_TORCH_VERSION} \
     DTK_PKG_NAME=${DTK_PKG_NAME} \
     DTK_PKG_VERSION=${DTK_PKG_VERSION} \
@@ -21,7 +22,7 @@ ENV ROCM_PATH=/opt/dtk \
     AICC_VERSION=${AICC_VERSION}
 
 # The build-context script inserts the ENV declarations generated from the
-# selected DTK package here, matching CIctl docker/build.sh.
+# selected toolkit package here.
 # config dtk env
 
 COPY dtk /opt/dtk
@@ -32,8 +33,8 @@ COPY build-lightop-wheel.sh /usr/local/bin/build-lightop-wheel
 RUN mkdir -p /root/.pip && \
     printf '%s\n' \
       '[global]' \
-      "index-url = http://10.16.1.201:9929/nightly/dtk${DTK_INDEX_VERSION}/+simple/" \
-      'trusted-host = 10.16.1.201' \
+      "index-url = ${PYTHON_INDEX_URL}" \
+      "trusted-host = ${PYTHON_TRUSTED_HOST}" \
       > /root/.pip/pip.conf && \
     python3 -m pip install \
       pyyaml hypothesis Ninja MonkeyType "numpy==1.24.3" wheel packaging \
@@ -46,7 +47,7 @@ RUN mkdir -p /root/.pip && \
     yes | /dtk_llvm_*.run
 
 # Keep the build image focused on compiling LightOp. vLLM and OpTest are added
-# only in the separate test container, matching CIctl's phase boundary.
+# only in the separate test container to preserve the build/test boundary.
 RUN python3 - <<'PY'
 import importlib.metadata
 import os
