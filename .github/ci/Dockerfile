@@ -30,6 +30,18 @@ COPY dtk_llvm_*.run /
 COPY lightop /lightop
 COPY build-lightop-wheel.sh /usr/local/bin/build-lightop-wheel
 
+# The generated toolkit environment can replace LD_LIBRARY_PATH. Register the
+# base image's shared CPython directory with the runtime linker so Python does
+# not depend on that environment variable.
+RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.so.1.0" -print -quit 2>/dev/null)" && \
+    test -n "${python_lib}" && \
+    dirname "${python_lib}" > /etc/ld.so.conf.d/python.conf && \
+    ldconfig && \
+    gcc --version && \
+    g++ --version && \
+    python3 --version && \
+    cmake --version
+
 RUN mkdir -p /root/.pip && \
     printf '%s\n' \
       '[global]' \
