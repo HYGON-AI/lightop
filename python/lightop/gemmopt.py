@@ -704,6 +704,85 @@ def get_paged_mqa_logits_metadata(
         num_sms)
     return schedule_metadata
 
+@functools.lru_cache(maxsize=16)
+def _paged_mqa_device_info(device_index: int):
+    props = torch.cuda.get_device_properties(device_index)
+    arch = getattr(props, "gcnArchName", props.name).split(":")[0]
+    return arch, props.multi_processor_count
+
+
+def _use_page_mqa_logits_mask(
+        q: torch.Tensor,
+        fused_kv_cache: torch.Tensor,
+        weights: torch.Tensor,
+        context_lens: torch.Tensor,
+        block_table: torch.Tensor,
+        schedule_meta: Optional[torch.Tensor],
+        max_context_len: int,
+        clean_logits: bool) -> bool:
+    if not q.is_cuda or q.dim() != 4 or q.shape[0] == 0:
+        return False
+    if q.shape[1] != 1 or q.shape[3] != 128 or not q.is_contiguous():
+        return False
+    if fused_kv_cache.dim() != 4 or fused_kv_cache.shape[0] == 0:
+        return False
+    if fused_kv_cache.shape[1:3] != (64, 1) or not fused_kv_cache.is_contiguous():
+        return False
+    batch_size, _, num_heads, _ = q.shape
+    if batch_size not in (8, 40):
+        return False
+    if weights.dtype != torch.float32 or weights.shape != (batch_size, num_heads):
+        return False
+    if not weights.is_contiguous():
+        return False
+    if context_lens.dtype != torch.int32 or context_lens.shape != (batch_size,):
+        return False
+    if not context_lens.is_contiguous():
+        return False
+    if block_table.dtype != torch.int32 or block_table.dim() != 2:
+        return False
+    if block_table.shape[0] != batch_size or block_table.stride(1) != 1:
+        return False
+    if max_context_len <= 0 or max_context_len != block_table.shape[1] * 64:
+        return False
+    if not clean_logits:
+        return False
+    if schedule_meta is not None:
+        return False
+
+    arch, num_cus = _paged_mqa_device_info(q.device.index)
+    is_bf16_80cu = (
+        q.dtype == torch.bfloat16
+        and fused_kv_cache.dtype == torch.bfloat16
+        and num_heads == 64
+        and fused_kv_cache.shape[3] == 128
+        and arch == "gfx936"
+        and num_cus == 80
+    )
+    is_fp8_64cu = (
+        q.dtype == torch.float8_e4m3fn
+        and fused_kv_cache.dtype == torch.uint8
+        and num_heads == 32
+        and fused_kv_cache.shape[3] == 132
+        and arch == "gfx938"
+        and num_cus == 64
+    )
+    if not (is_bf16_80cu or is_fp8_64cu):
+        return False
+
+    inputs = (
+        fused_kv_cache,
+        weights,
+        context_lens,
+        block_table,
+    )
+    if any(not tensor.is_cuda or tensor.device != q.device
+           for tensor in inputs):
+        return False
+
+    return True
+
+
 def paged_mqa_logits(
         q: torch.Tensor,
         fused_kv_cache: torch.Tensor,
@@ -713,6 +792,23 @@ def paged_mqa_logits(
         schedule_meta: torch.Tensor,
         max_context_len: int,
         clean_logits: bool = True) -> torch.Tensor:
+    if _use_page_mqa_logits_mask(
+            q, fused_kv_cache, weights, context_lens, block_table,
+            schedule_meta, max_context_len, clean_logits):
+        # The SGL NSA caller supplies None here. The persistent kernel owns its
+        # fixed CTA schedule and the native entry receives the same value.
+        fixed_schedule_meta = None
+        return op._page_mqa_logits_mask_clean_tail(
+            q,
+            fused_kv_cache,
+            weights,
+            context_lens,
+            block_table,
+            fixed_schedule_meta,
+            max_context_len,
+            clean_logits,
+            4,
+            0)
     if (fused_kv_cache.dtype == torch.uint8
         and q.dtype == torch.float8_e4m3fn):
         arch = torch.cuda.get_device_properties(q.device).gcnArchName.split(":")[0]
@@ -728,6 +824,79 @@ def paged_mqa_logits(
         max_context_len,
         clean_logits)
     return logits
+
+
+def page_mqa_logits_mask(
+        q: torch.Tensor,
+        fused_kv_cache: torch.Tensor,
+        weights: torch.Tensor,
+        context_lens: torch.Tensor,
+        block_table: torch.Tensor,
+        schedule_meta: Optional[torch.Tensor],
+        max_context_len: int,
+        clean_logits: bool = True,
+        num_warps: int = 4,
+        persistent_ctas: int = 0) -> torch.Tensor:
+    """Run a production-shape persistent length-masked paged-MQA kernel.
+
+    Every ``context_lens`` value must be in ``[0, max_context_len]``. Only
+    block-table entries referenced by those lengths must be valid indices into
+    ``fused_kv_cache``. Only logits before each row's length are guaranteed to
+    be initialized, so the consumer must apply the same lengths. A
+    ``persistent_ctas`` value of zero selects the batch-aware launch geometry
+    used by SGLang. ``schedule_meta`` must be ``None`` because this entry owns
+    its fixed CTA schedule.
+    """
+
+    if not _use_page_mqa_logits_mask(
+            q, fused_kv_cache, weights, context_lens, block_table,
+            schedule_meta, max_context_len, clean_logits):
+        raise ValueError(
+            "page_mqa_logits_mask requires a Spark B8/B40 gfx936/80CU BF16 "
+            "or gfx938/64CU FP8 shape and schedule_meta=None")
+    fixed_schedule_meta = None
+    return op.page_mqa_logits_mask(
+        q,
+        fused_kv_cache,
+        weights,
+        context_lens,
+        block_table,
+        fixed_schedule_meta,
+        max_context_len,
+        clean_logits,
+        num_warps,
+        persistent_ctas)
+
+
+def paged_mqa_logits_length_masked(
+        q: torch.Tensor,
+        fused_kv_cache: torch.Tensor,
+        weights: torch.Tensor,
+        context_lens: torch.Tensor,
+        block_table: torch.Tensor,
+        schedule_meta: Optional[torch.Tensor],
+        max_context_len: int,
+        clean_logits: bool = True,
+        num_warps: int = 4,
+        persistent_ctas: int = 0) -> torch.Tensor:
+    """Compatibility wrapper for the original gfx938/64CU FP8/H32 API.
+
+    This entry intentionally keeps the baseline prefix-only contract and
+    native hardware/shape checks. New gfx936 BF16 callers use
+    :func:`page_mqa_logits_mask` instead.
+    """
+
+    return op.paged_mqa_logits_length_masked(
+        q,
+        fused_kv_cache,
+        weights,
+        context_lens,
+        block_table,
+        schedule_meta,
+        max_context_len,
+        clean_logits,
+        num_warps,
+        persistent_ctas)
 
 def fused_bmm(x: torch.Tensor,                                       # [batch_size, num_head, p_size], int8
               w: torch.Tensor,                                       # [num_head, l_size, p_size], int8

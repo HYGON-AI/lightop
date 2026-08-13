@@ -4,6 +4,8 @@ from .mqa import (
     get_paged_mqa_logits_metadata,
     mqa_logits,
     paged_mqa_logits,
+    paged_mqa_logits_length_masked,
+    page_mqa_logits_mask,
 )
 from .qkv import (
     fuse_layernorm_rotary_embedding,
@@ -63,6 +65,8 @@ __all__ = [
     "mimo_v2_split_rope_vscale_kv_store",
     "mqa_logits",
     "paged_mqa_logits",
+    "paged_mqa_logits_length_masked",
+    "page_mqa_logits_mask",
     "rms_rotary_embedding_fuse",
     "rms_rotary_embedding_fuse_with_kv_store",
     "rms_rotary_embedding_fuse_with_kv_store_fake",

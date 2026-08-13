@@ -18,6 +18,8 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <optional>
 
@@ -900,6 +902,359 @@ void fused_topk_transform_ragged_kernel(
       nullptr, logits, rowStart, rowEnd, outIndices, nullptr, 1, topK, transform_func);
 }
 
+constexpr int kTopK2048 = 2048;
+
+#ifdef USE_ROCM
+#ifdef SGL_TOPK_DYNAMIC_SMEM_BYTES
+constexpr size_t kRadixSelect8BitSmemBytes =
+    static_cast<size_t>(SGL_TOPK_DYNAMIC_SMEM_BYTES);
+#else
+constexpr size_t kRadixSelect8BitSmemBytes = 48 * 1024;
+#endif
+#else
+constexpr size_t kRadixSelect8BitSmemBytes =
+    8 * 1024 * sizeof(uint32_t);
+#endif
+
+int get_lightop_topk_backend() {
+  static const int backend = [] {
+    const char* value = std::getenv("SGL_USE_LIGHTOP_BACKAND");
+    if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) {
+      return 0;
+    }
+    if (std::strcmp(value, "1") == 0) {
+      return 1;
+    }
+    TORCH_CHECK(
+        false,
+        "SGL_USE_LIGHTOP_BACKAND must be 0 or 1, but got ",
+        value);
+    return 0;
+  }();
+  return backend;
+}
+
+__device__ void radix_select_8bit_naive_topk_transform(
+    const float* __restrict__ score,
+    int32_t length,
+    int32_t* __restrict__ dst_page_table,
+    const int32_t* __restrict__ src_page_table) {
+  const auto tid = threadIdx.x;
+  for (auto i = tid; i < kTopK2048; i += kThreadsPerBlock) {
+    dst_page_table[i] = (i < length) ? src_page_table[i] : -1;
+  }
+}
+
+__device__ void radix_select_8bit_naive_topk_transform_ragged(
+    const float* __restrict__ score,
+    int32_t length,
+    int32_t* __restrict__ topk_indices_ragged,
+    int32_t offset) {
+  const auto tid = threadIdx.x;
+  for (auto i = tid; i < kTopK2048; i += kThreadsPerBlock) {
+    topk_indices_ragged[i] =
+        (i < length) ? static_cast<int32_t>(i) + offset : -1;
+  }
+}
+
+__device__ __forceinline__ auto radix_select_8bit_convert_to_uint8(float x)
+    -> uint8_t {
+  __half h = __float2half_rn(x);
+  uint16_t bits = __half_as_ushort(h);
+  uint16_t key = (bits & 0x8000)
+      ? static_cast<uint16_t>(~bits)
+      : static_cast<uint16_t>(bits | 0x8000);
+  return static_cast<uint8_t>(key >> 8);
+}
+
+__device__ __forceinline__ auto radix_select_8bit_convert_to_uint32(float x)
+    -> uint32_t {
+  uint32_t bits = __float_as_uint(x);
+  return (bits & 0x80000000u) ? ~bits : (bits | 0x80000000u);
+}
+
+__device__ void radix_select_8bit_topk(
+    const float* __restrict__ input,
+    int* __restrict__ index,
+    int row_start,
+    int length) {
+  int topk = kTopK2048;
+  constexpr auto BLOCK_SIZE = 1024;
+  constexpr auto RADIX = 256;
+  constexpr auto SMEM_INPUT_SIZE =
+      kRadixSelect8BitSmemBytes / (2 * sizeof(int));
+
+  alignas(128) __shared__ int s_histogram_buf[2][RADIX + 128];
+  alignas(128) __shared__ int s_counter;
+  alignas(128) __shared__ int s_threshold_bin_id;
+  alignas(128) __shared__ int s_num_input[2];
+
+  auto& s_histogram = s_histogram_buf[0];
+  extern __shared__ int s_input_idx[][SMEM_INPUT_SIZE];
+
+  const int tx = threadIdx.x;
+
+  if (tx < RADIX + 1) s_histogram[tx] = 0;
+  __syncthreads();
+
+  for (int idx = tx; idx < length; idx += BLOCK_SIZE) {
+    const auto bin = radix_select_8bit_convert_to_uint8(input[idx + row_start]);
+    ::atomicAdd(&s_histogram[bin], 1);
+  }
+  __syncthreads();
+
+  const auto run_cumsum = [&] {
+#pragma unroll 8
+    for (int i = 0; i < 8; ++i) {
+      static_assert(1 << 8 == RADIX);
+      if (C10_LIKELY(tx < RADIX)) {
+        const auto j = 1 << i;
+        const auto k = i & 1;
+        auto value = s_histogram_buf[k][tx];
+        if (tx < RADIX - j) {
+          value += s_histogram_buf[k][tx + j];
+        }
+        s_histogram_buf[k ^ 1][tx] = value;
+      }
+      __syncthreads();
+    }
+  };
+
+  run_cumsum();
+  if (tx < RADIX && s_histogram[tx] > topk &&
+      s_histogram[tx + 1] <= topk) {
+    s_threshold_bin_id = tx;
+    s_num_input[0] = 0;
+    s_counter = 0;
+  }
+  __syncthreads();
+
+  const auto threshold_bin = s_threshold_bin_id;
+  topk -= s_histogram[threshold_bin + 1];
+
+  if (topk == 0) {
+    for (int idx = tx; idx < length; idx += BLOCK_SIZE) {
+      const auto bin = static_cast<int>(
+          radix_select_8bit_convert_to_uint8(input[idx + row_start]));
+      if (bin > threshold_bin) {
+        const auto pos = ::atomicAdd(&s_counter, 1);
+        index[pos] = idx;
+      }
+    }
+    __syncthreads();
+    return;
+  } else {
+    __syncthreads();
+    if (tx < RADIX + 1) {
+      s_histogram[tx] = 0;
+    }
+    __syncthreads();
+
+    for (int idx = tx; idx < length; idx += BLOCK_SIZE) {
+      const auto raw_input = input[idx + row_start];
+      const auto bin = static_cast<int>(
+          radix_select_8bit_convert_to_uint8(raw_input));
+      if (bin > threshold_bin) {
+        const auto pos = ::atomicAdd(&s_counter, 1);
+        index[pos] = idx;
+      } else if (bin == threshold_bin) {
+        const auto pos = ::atomicAdd(&s_num_input[0], 1);
+        if (C10_LIKELY(pos < SMEM_INPUT_SIZE)) {
+          s_input_idx[0][pos] = idx;
+          const auto bin = radix_select_8bit_convert_to_uint32(raw_input);
+          const auto sub_bin = (bin >> 24) & 0xFF;
+          ::atomicAdd(&s_histogram[sub_bin], 1);
+        }
+      }
+    }
+    __syncthreads();
+  }
+
+#pragma unroll 4
+  for (int round = 0; round < 4; ++round) {
+    __shared__ int s_last_remain;
+    const auto r_idx = round % 2;
+
+    const auto _raw_num_input = s_num_input[r_idx];
+    const auto num_input = (_raw_num_input < int(SMEM_INPUT_SIZE))
+        ? _raw_num_input
+        : int(SMEM_INPUT_SIZE);
+
+    run_cumsum();
+    if (tx < RADIX && s_histogram[tx] > topk &&
+        s_histogram[tx + 1] <= topk) {
+      s_threshold_bin_id = tx;
+      s_num_input[r_idx ^ 1] = 0;
+      s_last_remain = topk - s_histogram[tx + 1];
+    }
+    __syncthreads();
+
+    const auto threshold_bin = s_threshold_bin_id;
+    topk -= s_histogram[threshold_bin + 1];
+
+    if (topk == 0) {
+      for (int i = tx; i < num_input; i += BLOCK_SIZE) {
+        const auto idx = s_input_idx[r_idx][i];
+        const auto offset = 24 - round * 8;
+        const auto bin =
+            (radix_select_8bit_convert_to_uint32(input[idx + row_start]) >>
+             offset) &
+            0xFF;
+        if (bin > threshold_bin) {
+          const auto pos = ::atomicAdd(&s_counter, 1);
+          index[pos] = idx;
+        }
+      }
+      __syncthreads();
+      break;
+    } else {
+      __syncthreads();
+      if (tx < RADIX + 1) {
+        s_histogram[tx] = 0;
+      }
+      __syncthreads();
+      for (int i = tx; i < num_input; i += BLOCK_SIZE) {
+        const auto idx = s_input_idx[r_idx][i];
+        const auto raw_input = input[idx + row_start];
+        const auto offset = 24 - round * 8;
+        const auto bin =
+            (radix_select_8bit_convert_to_uint32(raw_input) >> offset) & 0xFF;
+        if (bin > threshold_bin) {
+          const auto pos = ::atomicAdd(&s_counter, 1);
+          index[pos] = idx;
+        } else if (bin == threshold_bin) {
+          if (round == 3) {
+            const auto pos = ::atomicAdd(&s_last_remain, -1);
+            if (pos > 0) {
+              index[kTopK2048 - pos] = idx;
+            }
+          } else {
+            const auto pos = ::atomicAdd(&s_num_input[r_idx ^ 1], 1);
+            if (C10_LIKELY(pos < SMEM_INPUT_SIZE)) {
+              s_input_idx[r_idx ^ 1][pos] = idx;
+              const auto bin = radix_select_8bit_convert_to_uint32(raw_input);
+              const auto sub_bin = (bin >> (offset - 8)) & 0xFF;
+              ::atomicAdd(&s_histogram[sub_bin], 1);
+            }
+          }
+        }
+      }
+      __syncthreads();
+    }
+  }
+}
+
+__global__ __launch_bounds__(kThreadsPerBlock)
+void topk_transform_decode_kernel_radix_select_8bit(
+    const FastTopKParams params,
+    int32_t* __restrict__ dst_page_table,
+    const int32_t* __restrict__ src_page_table,
+    const int64_t src_stride) {
+  const auto& [input, _1, _2, lengths, input_stride] = params;
+  const auto bid = static_cast<uint64_t>(blockIdx.x);
+  const auto tid = threadIdx.x;
+  const auto row_start = 0;
+  const auto length = lengths[bid];
+  const auto src_page_entry = src_page_table + bid * src_stride;
+  const auto dst_page_entry = dst_page_table + bid * kTopK2048;
+  const auto score = input + bid * input_stride;
+  if (length <= kTopK2048) {
+    return radix_select_8bit_naive_topk_transform(
+        score, length, dst_page_entry, src_page_entry);
+  } else {
+    __shared__ int s_indices[kTopK2048];
+    radix_select_8bit_topk(score, s_indices, row_start, length);
+    static_assert(kTopK2048 % kThreadsPerBlock == 0);
+    static_assert(kTopK2048 / kThreadsPerBlock == 2);
+    const auto idx_0 = tid;
+    const auto pos_0 = s_indices[idx_0];
+    dst_page_entry[idx_0] = src_page_entry[pos_0];
+    const auto idx_1 = tid + kThreadsPerBlock;
+    const auto pos_1 = s_indices[idx_1];
+    dst_page_entry[idx_1] = src_page_entry[pos_1];
+  }
+}
+
+__global__ __launch_bounds__(kThreadsPerBlock)
+void topk_transform_prefill_kernel_radix_select_8bit(
+    const FastTopKParams params,
+    int32_t* __restrict__ dst_page_table,
+    const int32_t* __restrict__ src_page_table,
+    const int64_t src_stride,
+    const int32_t* __restrict__ cu_seqlens_q,
+    const int64_t prefill_bs) {
+  const auto& [input, row_starts, _, lengths, input_stride] = params;
+  const auto bid = static_cast<uint64_t>(blockIdx.x);
+  const auto tid = threadIdx.x;
+  const auto length = lengths[bid];
+  const auto row_start = row_starts == nullptr ? 0 : row_starts[bid];
+  const auto dst_page_entry = dst_page_table + bid * kTopK2048;
+  const auto score = input + bid * input_stride;
+
+  __shared__ const int32_t* s_src_page_entry;
+  if (C10_LIKELY(prefill_bs <= kThreadsPerBlock)) {
+    if (tid < prefill_bs) {
+      if (bid >= cu_seqlens_q[tid] && bid < cu_seqlens_q[tid + 1]) {
+        s_src_page_entry = src_page_table + tid * src_stride;
+      }
+    }
+  } else {
+    for (int64_t i = tid; i < prefill_bs; i += kThreadsPerBlock) {
+      if (bid >= cu_seqlens_q[i] && bid < cu_seqlens_q[i + 1]) {
+        s_src_page_entry = src_page_table + i * src_stride;
+      }
+    }
+  }
+  __syncthreads();
+  const auto src_page_entry = s_src_page_entry;
+
+  if (length <= kTopK2048) {
+    return radix_select_8bit_naive_topk_transform(
+        score, length, dst_page_entry, src_page_entry);
+  } else {
+    __shared__ int s_indices[kTopK2048];
+    radix_select_8bit_topk(score, s_indices, row_start, length);
+    static_assert(kTopK2048 % kThreadsPerBlock == 0);
+    static_assert(kTopK2048 / kThreadsPerBlock == 2);
+    const auto idx_0 = tid;
+    const auto pos_0 = s_indices[idx_0];
+    dst_page_entry[idx_0] = src_page_entry[pos_0];
+    const auto idx_1 = tid + kThreadsPerBlock;
+    const auto pos_1 = s_indices[idx_1];
+    dst_page_entry[idx_1] = src_page_entry[pos_1];
+  }
+}
+
+__global__ __launch_bounds__(kThreadsPerBlock)
+void topk_transform_ragged_kernel_radix_select_8bit(
+    const FastTopKParams params,
+    int32_t* __restrict__ topk_indices_ragged,
+    const int32_t* __restrict__ topk_indices_offset) {
+  const auto& [input, row_starts, _, lengths, input_stride] = params;
+  const auto bid = static_cast<uint64_t>(blockIdx.x);
+  const auto tid = threadIdx.x;
+  const auto row_start = row_starts == nullptr ? 0 : row_starts[bid];
+  const auto length = lengths[bid];
+  const auto dst_indices_entry = topk_indices_ragged + bid * kTopK2048;
+  const auto score = input + bid * input_stride;
+  const auto offset = topk_indices_offset[bid];
+  if (length <= kTopK2048) {
+    return radix_select_8bit_naive_topk_transform_ragged(
+        score, length, dst_indices_entry, offset);
+  } else {
+    __shared__ int s_indices[kTopK2048];
+    radix_select_8bit_topk(score, s_indices, row_start, length);
+    static_assert(kTopK2048 % kThreadsPerBlock == 0);
+    static_assert(kTopK2048 / kThreadsPerBlock == 2);
+    const auto idx_0 = tid;
+    const auto pos_0 = s_indices[idx_0];
+    dst_indices_entry[idx_0] = pos_0 + offset;
+    const auto idx_1 = tid + kThreadsPerBlock;
+    const auto pos_1 = s_indices[idx_1];
+    dst_indices_entry[idx_1] = pos_1 + offset;
+  }
+}
+
 template <int kTopK, int kFinalSortTopK, int kNumThreadsPerBlock, bool useRadixSort>
 __global__ __launch_bounds__(kNumThreadsPerBlock)
 void topk_transform_kernel_lightop(
@@ -1176,6 +1531,48 @@ void fast_topk_transform_interface(
   const auto block = dim3{kThreadsPerBlock};
   const auto src_stride = src_page_table.stride(0);
   const auto is_decode = !row_starts_opt.has_value() && prefill_bs == B;
+  const int backend = get_lightop_topk_backend();
+
+  if (backend != 0) {
+    TORCH_CHECK(
+        topK == kTopK2048,
+        "LightOp TopK backend ",
+        backend,
+        " requires topK=",
+        kTopK2048,
+        ", but got ",
+        topK);
+    if (is_decode) {
+      setup_kernel_smem_once<topk_transform_decode_kernel_radix_select_8bit>(
+          kRadixSelect8BitSmemBytes);
+      topk_transform_decode_kernel_radix_select_8bit
+          <<<grid, block, kRadixSelect8BitSmemBytes, stream>>>(
+              params,
+              dst_page_table.data_ptr<int32_t>(),
+              src_page_table.data_ptr<int32_t>(),
+              src_stride);
+    } else {
+      setup_kernel_smem_once<topk_transform_prefill_kernel_radix_select_8bit>(
+          kRadixSelect8BitSmemBytes);
+      topk_transform_prefill_kernel_radix_select_8bit
+          <<<grid, block, kRadixSelect8BitSmemBytes, stream>>>(
+              params,
+              dst_page_table.data_ptr<int32_t>(),
+              src_page_table.data_ptr<int32_t>(),
+              src_stride,
+              cu_seqlens_q.data_ptr<int32_t>(),
+              prefill_bs);
+    }
+
+    const auto result = cudaGetLastError();
+    TORCH_CHECK(
+        result == cudaSuccess,
+        "topk backend ",
+        backend,
+        " kernel failed:",
+        ::cudaGetErrorString(result));
+    return;
+  }
 
   bool use_radix = score.size(1) > 2000000;
 
@@ -1486,6 +1883,33 @@ void fast_topk_transform_ragged_interface(
   const auto stream = at::cuda::getCurrentCUDAStream().stream();
   const auto grid = dim3{static_cast<uint32_t>(B)};
   const auto block = dim3{kThreadsPerBlock};
+  const int backend = get_lightop_topk_backend();
+
+  if (backend != 0) {
+    TORCH_CHECK(
+        topK == kTopK2048,
+        "LightOp TopK backend ",
+        backend,
+        " requires topK=",
+        kTopK2048,
+        ", but got ",
+        topK);
+    setup_kernel_smem_once<topk_transform_ragged_kernel_radix_select_8bit>(
+        kRadixSelect8BitSmemBytes);
+    topk_transform_ragged_kernel_radix_select_8bit
+        <<<grid, block, kRadixSelect8BitSmemBytes, stream>>>(
+            params,
+            topk_indices_ragged.data_ptr<int32_t>(),
+            topk_indices_offset.data_ptr<int32_t>());
+    const auto result = cudaGetLastError();
+    TORCH_CHECK(
+        result == cudaSuccess,
+        "topk backend ",
+        backend,
+        " kernel failed:",
+        ::cudaGetErrorString(result));
+    return;
+  }
 
   bool use_radix = score.size(1) > 2000000;
 
