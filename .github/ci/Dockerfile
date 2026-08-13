@@ -25,37 +25,28 @@ ENV ROCM_PATH=/opt/dtk \
 # selected toolkit package here.
 # config dtk env
 
-# Select the C++ runtime that matches extensions built with the base image's
-# compiler. The system /lib64 copy can be older even when a newer GCC toolset
-# is installed elsewhere in the image.
+# Select the C++ runtime provided by the GCC toolset in the base image. The
+# system /lib64 copy belongs to the operating system compiler and is too old
+# for extensions built with this toolset.
 RUN mkdir -p /opt/lightop-ci/lib && \
-    candidate_file=/tmp/lightop-ci-cpp-runtimes.txt && \
-    find /usr/local /opt /usr/lib /usr/lib64 \
-      -type f -name 'libstdc++.so*' -print 2>/dev/null | \
-      sort -u > "${candidate_file}" && \
-    cpp_runtime="$( \
-      while IFS= read -r candidate; do \
-        if grep -aFq 'GLIBCXX_3.4.29' "${candidate}"; then \
-          printf '%s\n' "${candidate}"; \
-          break; \
-        fi; \
-      done < "${candidate_file}" \
-    )" && \
-    if [ -z "${cpp_runtime}" ]; then \
-      echo 'No compatible C++ runtime was found. Candidates:' >&2; \
-      sed 's/^/  /' "${candidate_file}" >&2; \
-      exit 1; \
-    fi && \
+    toolset_root=/opt/rh/gcc-toolset-13/root/usr && \
+    toolset_gxx="${toolset_root}/bin/g++" && \
+    test -x "${toolset_gxx}" && \
+    cpp_runtime="$("${toolset_gxx}" -print-file-name=libstdc++.so.6)" && \
+    test "${cpp_runtime}" != 'libstdc++.so.6' && \
+    cpp_runtime="$(realpath "${cpp_runtime}")" && \
+    test -f "${cpp_runtime}" && \
+    grep -aFq 'GLIBCXX_3.4.29' "${cpp_runtime}" && \
     ln -sf "${cpp_runtime}" /opt/lightop-ci/lib/libstdc++.so.6 && \
     cpp_runtime_dir="$(dirname "${cpp_runtime}")" && \
     if [ -e "${cpp_runtime_dir}/libgcc_s.so.1" ]; then \
       ln -sf "$(realpath "${cpp_runtime_dir}/libgcc_s.so.1")" \
         /opt/lightop-ci/lib/libgcc_s.so.1; \
     fi && \
-    rm -f "${candidate_file}" && \
     echo "Selected C++ runtime: ${cpp_runtime}"
 
-ENV LD_LIBRARY_PATH=/opt/lightop-ci/lib:${LD_LIBRARY_PATH}
+ENV PATH=/opt/rh/gcc-toolset-13/root/usr/bin:${PATH} \
+    LD_LIBRARY_PATH=/opt/lightop-ci/lib:${LD_LIBRARY_PATH}
 
 COPY dtk /opt/dtk
 COPY dtk_llvm_*.run /
