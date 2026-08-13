@@ -70,6 +70,7 @@ chmod +x "${context_dir}/${aicc_package}"
 
 cp "${source_dir}/.github/ci/Dockerfile" "${context_dir}/Dockerfile"
 cp "${source_dir}/.github/ci/build-lightop-wheel.sh" "${context_dir}/build-lightop-wheel.sh"
+cp "${source_dir}/.github/ci/run-lightop-fallback-tests.sh" "${context_dir}/run-lightop-fallback-tests.sh"
 
 # Convert the selected DTK environment into Dockerfile ENV declarations using
 # a deterministic transformation of the selected package environment.

@@ -29,6 +29,7 @@ COPY dtk /opt/dtk
 COPY dtk_llvm_*.run /
 COPY lightop /lightop
 COPY build-lightop-wheel.sh /usr/local/bin/build-lightop-wheel
+COPY run-lightop-fallback-tests.sh /usr/local/bin/run-lightop-fallback-tests
 
 # The generated toolkit environment can replace LD_LIBRARY_PATH. Register the
 # base image's shared CPython directory with the runtime linker so Python does
@@ -55,7 +56,9 @@ RUN mkdir -p /root/.pip && \
     python3 -m pip install cupy && \
     python3 -m pip install "torch==${INSTALL_TORCH_VERSION}" && \
     python3 -m pip uninstall -y cupy-cuda12x && \
-    chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
+    chmod +x /dtk_llvm_*.run \
+      /usr/local/bin/build-lightop-wheel \
+      /usr/local/bin/run-lightop-fallback-tests && \
     yes | /dtk_llvm_*.run
 
 # Keep the build image focused on compiling LightOp. vLLM and OpTest are added

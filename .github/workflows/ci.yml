@@ -375,25 +375,19 @@ jobs:
               "${OPTEST_PACKAGE_SPEC}"
 
             python3 -m optest --help
-            if python3 - <<"PY"
-          from optest.operators import SUPPORTED_OPERATORS
-          raise SystemExit(0 if "lightop" in SUPPORTED_OPERATORS else 1)
-          PY
-            then
-              echo "OpTest supports LightOp; only OpTest will execute tests."
-              printf "optest\n" > /op_test_output/ci-test-driver.txt
 
-              # Keep the test runtime aligned with the versions selected by this workflow.
-              python3 -m pip install \
-                "torch==${INSTALL_TORCH_VERSION}" \
-                "vllm==${INSTALL_VLLM_VERSION}"
-              python3 -m pip install \
-                "torch==${INSTALL_TORCH_VERSION}" \
-                triton
-              python3 -m pip install "numpy==${INSTALL_NUMPY_VERSION}"
-              python3 -m pip uninstall -y cupy-cuda12x
+            # Both OpTest and the repository fallback suite require the same
+            # test runtime used by the existing LightOp validation flow.
+            python3 -m pip install \
+              "torch==${INSTALL_TORCH_VERSION}" \
+              "vllm==${INSTALL_VLLM_VERSION}"
+            python3 -m pip install \
+              "torch==${INSTALL_TORCH_VERSION}" \
+              triton
+            python3 -m pip install "numpy==${INSTALL_NUMPY_VERSION}"
+            python3 -m pip uninstall -y cupy-cuda12x
 
-              python3 - <<"PY"
+            python3 - <<"PY"
           import importlib.metadata
           import torch
           from vllm import _custom_ops  # noqa: F401
@@ -405,15 +399,23 @@ jobs:
               raise SystemExit("No device is available to PyTorch")
           PY
 
+            if python3 - <<"PY"
+          from optest.operators import SUPPORTED_OPERATORS
+          raise SystemExit(0 if "lightop" in SUPPORTED_OPERATORS else 1)
+          PY
+            then
+              echo "OpTest supports LightOp; only OpTest will execute tests."
+              printf "optest\n" > /op_test_output/ci-test-driver.txt
+
               python3 -m optest \
                 --op_name lightop \
                 --test_mode acc \
                 --test_dir /lightop \
                 --gpus "${HIP_VISIBLE_DEVICES}"
             else
-              echo "::error::The resolved OpTest package does not support LightOp."
-              printf "optest-not-supported\n" > /op_test_output/ci-test-driver.txt
-              exit 1
+              echo "The resolved OpTest package does not support LightOp; running the repository fallback suite."
+              printf "repository-fallback\n" > /op_test_output/ci-test-driver.txt
+              /usr/local/bin/run-lightop-fallback-tests /lightop
             fi
           ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
 
