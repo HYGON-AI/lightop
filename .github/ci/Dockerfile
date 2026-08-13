@@ -29,23 +29,18 @@ ENV ROCM_PATH=/opt/dtk \
 # compiler. The system /lib64 copy can be older even when a newer GCC toolset
 # is installed elsewhere in the image.
 RUN mkdir -p /opt/lightop-ci/lib && \
-    cpp_runtime="$( \
-      find /usr/local /opt /usr -name 'libstdc++.so.6' -print 2>/dev/null | \
-      while IFS= read -r candidate; do \
-        if strings "${candidate}" 2>/dev/null | grep -qx 'GLIBCXX_3.4.29'; then \
-          realpath "${candidate}"; \
-          break; \
-        fi; \
-      done \
-    )" && \
-    test -n "${cpp_runtime}" && \
+    cpp_runtime="$(g++ -print-file-name=libstdc++.so.6)" && \
+    test "${cpp_runtime}" != 'libstdc++.so.6' && \
+    cpp_runtime="$(realpath "${cpp_runtime}")" && \
+    test -f "${cpp_runtime}" && \
+    grep -aFq 'GLIBCXX_3.4.29' "${cpp_runtime}" && \
     ln -sf "${cpp_runtime}" /opt/lightop-ci/lib/libstdc++.so.6 && \
     cpp_runtime_dir="$(dirname "${cpp_runtime}")" && \
     if [ -e "${cpp_runtime_dir}/libgcc_s.so.1" ]; then \
       ln -sf "$(realpath "${cpp_runtime_dir}/libgcc_s.so.1")" \
         /opt/lightop-ci/lib/libgcc_s.so.1; \
     fi && \
-    strings /opt/lightop-ci/lib/libstdc++.so.6 | grep -qx 'GLIBCXX_3.4.29'
+    echo "Selected C++ runtime: ${cpp_runtime}"
 
 ENV LD_LIBRARY_PATH=/opt/lightop-ci/lib:${LD_LIBRARY_PATH}
 
