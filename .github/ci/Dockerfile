@@ -25,6 +25,30 @@ ENV ROCM_PATH=/opt/dtk \
 # selected toolkit package here.
 # config dtk env
 
+# Select the C++ runtime that matches extensions built with the base image's
+# compiler. The system /lib64 copy can be older even when a newer GCC toolset
+# is installed elsewhere in the image.
+RUN mkdir -p /opt/lightop-ci/lib && \
+    cpp_runtime="$( \
+      find /usr/local /opt /usr -name 'libstdc++.so.6' -print 2>/dev/null | \
+      while IFS= read -r candidate; do \
+        if strings "${candidate}" 2>/dev/null | grep -qx 'GLIBCXX_3.4.29'; then \
+          realpath "${candidate}"; \
+          break; \
+        fi; \
+      done \
+    )" && \
+    test -n "${cpp_runtime}" && \
+    ln -sf "${cpp_runtime}" /opt/lightop-ci/lib/libstdc++.so.6 && \
+    cpp_runtime_dir="$(dirname "${cpp_runtime}")" && \
+    if [ -e "${cpp_runtime_dir}/libgcc_s.so.1" ]; then \
+      ln -sf "$(realpath "${cpp_runtime_dir}/libgcc_s.so.1")" \
+        /opt/lightop-ci/lib/libgcc_s.so.1; \
+    fi && \
+    strings /opt/lightop-ci/lib/libstdc++.so.6 | grep -qx 'GLIBCXX_3.4.29'
+
+ENV LD_LIBRARY_PATH=/opt/lightop-ci/lib:${LD_LIBRARY_PATH}
+
 COPY dtk /opt/dtk
 COPY dtk_llvm_*.run /
 COPY lightop /lightop
