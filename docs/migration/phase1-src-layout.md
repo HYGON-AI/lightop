@@ -22,4 +22,3 @@
 - Source-checkout resource lookup falls back from `python/lightop/` to the
   repository root.
 - `csrc/allreduce_fuse/` remains outside the extension source list and wheel.
-- `setup_torch29.py` remains outside this migration phase.
