@@ -1,7 +1,7 @@
 import torch
 from lightop import op
 from typing import Optional
-import pandas as pd
+import csv
 
 
 def smooth_per_token_dynamic_quant(
@@ -305,7 +305,7 @@ def run_suite():
                     num_tokens, hidden_size, config, warmup=10, rep=100
                 )
                 
-                # 整理当前行的数据以便保存到 Excel
+                # 整理当前行的数据以便保存到 CSV
                 row_data = {
                     "Shape": shape_str,
                     "Num Tokens": num_tokens,
@@ -328,11 +328,18 @@ def run_suite():
 
         print("-" * 105)
 
-    # 将结果保存为 Excel 文件
-    df = pd.DataFrame(results_data)
-    excel_filename = "benchmark_results.xlsx"
-    df.to_excel(excel_filename, index=False)
-    print(f"\n✅ 测试完毕！结果已成功保存到 {excel_filename}")
+    # 将结果保存为 CSV 文件
+    csv_filename = "per_token_smooth_quant_int8_results.csv"
+    fieldnames = [
+        "Shape", "Num Tokens", "Hidden Size", "Scenario", "Correct",
+        "Ref (us)", "Opt (us)", "Speedup", "BW (GB/s)", "Error Message"
+    ]
+    with open(csv_filename, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results_data)
+
+    print(f"\n✅ 测试完毕！结果已成功保存到 {csv_filename}")
 
 
 if __name__ == "__main__":
