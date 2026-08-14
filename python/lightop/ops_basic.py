@@ -20,6 +20,7 @@ def gelu_out(
     x = x.contiguous()
     return op.gelu_opt_out(x, out, approximate)
 
+
 def silu(x: torch.Tensor) -> torch.Tensor:
     x = x.contiguous()
     if x.is_cuda and x.dtype in (torch.float16, torch.bfloat16, torch.float32):
@@ -30,6 +31,7 @@ def silu(x: torch.Tensor) -> torch.Tensor:
 def silu_out(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
     x = x.contiguous()
     return op.silu_opt_out(x, out)
+
 
 def reduce_max(x: torch.Tensor):
     """Row-wise argmax for contiguous 2D CUDA tensors; else torch.max(dim=-1)."""
@@ -63,6 +65,7 @@ def reduce_min_out(x: torch.Tensor, values: torch.Tensor, indices: torch.Tensor)
     x = x.contiguous()
     return op.reduce_min_opt_out(x, values, indices)
 
+
 def index_select(src: torch.Tensor, dim: int, index: torch.Tensor) -> torch.Tensor:
     src = src.contiguous()
     index = index.contiguous()
@@ -81,6 +84,7 @@ def index_select_out(
     src: torch.Tensor, dim: int, index: torch.Tensor, out: torch.Tensor
 ) -> torch.Tensor:
     return op.index_select_opt_out(src.contiguous(), dim, index.contiguous(), out)
+
 
 def index_add(
     dst: torch.Tensor,
@@ -114,12 +118,20 @@ def index_add_out(
         dst, dim, index.contiguous(), src.contiguous(), assume_unique
     )
 
+
 def embedding(dst: torch.Tensor, index: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     """Gather rows: dst[i] = weight[index[i]]. Writes into preallocated dst."""
     return op.embedding_opt(dst, index.contiguous(), weight)
+
 
 def gather(
     dst: torch.Tensor, index: torch.Tensor, src: torch.Tensor, special: bool = False
 ) -> torch.Tensor:
     """dst[r,c] = src[index[r,c], c] (or row-broadcast when special=True)."""
     return op.gather_opt(dst, index, src, special)
+
+
+def scatter(
+    dst: torch.Tensor, index: torch.Tensor, src: torch.Tensor, special: bool = False
+) -> torch.Tensor:
+    return op.scatter_opt(dst, index, src, special)

@@ -18,6 +18,7 @@ from ..ops_basic import (
     reduce_max_out,
     reduce_min,
     reduce_min_out,
+    scatter,
 )
 from .. import op as lightop_native
 
@@ -39,5 +40,6 @@ __all__ = [
     "reduce_min",
     "reduce_min_out",
     "reshape_to_float",
+    "scatter",
     "sum",
 ]

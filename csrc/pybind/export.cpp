@@ -671,6 +671,7 @@ Tensor index_add_opt(const Tensor& dst, int64_t dim, const Tensor& index, const 
 Tensor index_add_opt_out(Tensor& dst, int64_t dim, const Tensor& index, const Tensor& src, bool assume_unique);
 Tensor embedding_opt(Tensor& dst, Tensor& index, Tensor& weight);
 Tensor gather_opt(Tensor& dst, Tensor& index, Tensor& src, bool special);
+Tensor scatter_opt(Tensor& dst, Tensor& index, Tensor& src, bool special);
 torch::Tensor reshape_to_float(torch::Tensor input, int64_t vocab_size);
 torch::Tensor add_int8(const torch::Tensor& a, const torch::Tensor& b, bool saturate=true);
 torch::Tensor sub_int8(const torch::Tensor& a, const torch::Tensor& b, bool saturate=true);
@@ -1856,6 +1857,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("assume_unique") = false);
   m.def("embedding_opt", &at::native::embedding_opt, "embedding_opt");
   m.def("gather_opt", &at::native::gather_opt, "gather_opt",
+        py::arg("dst"), py::arg("index"), py::arg("src"), py::arg("special") = false);
+  m.def("scatter_opt", &at::native::scatter_opt, "scatter_opt",
         py::arg("dst"), py::arg("index"), py::arg("src"), py::arg("special") = false);
   m.def("reshape_to_float", &at::native::reshape_to_float, "reshape_to_float");
   m.def("add_int8", &at::native::add_int8, "add_int8", py::arg("a"), py::arg("b"), py::arg("saturate") = true);
