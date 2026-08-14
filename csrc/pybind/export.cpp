@@ -670,7 +670,7 @@ void fused_add_layer_norm_opt(torch::Tensor& input,torch::Tensor& residual,torch
 void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_tanh_and_mul_opt(torch::Tensor& out,torch::Tensor& input); 
-void relu2_opt(torch::Tensor& out,torch::Tensor& input); 
+void relu2_opt(torch::Tensor& out,torch::Tensor& input);
 // P1 custom_ops ports
 Tensor gelu_opt(const Tensor& input, c10::string_view approximate);
 Tensor gelu_opt_out(const Tensor& input, Tensor& output, c10::string_view approximate);
@@ -787,6 +787,19 @@ void swiglu_oai_int8_quant_masked_flat_tables(const torch::Tensor&,torch::Tensor
 void swiglu_oai_int8_quant_contiguous(const torch::Tensor&, torch::Tensor&, torch::Tensor&, double, double, double);
 void swiglu_oai_int8_quant_masked(const torch::Tensor&, torch::Tensor&, torch::Tensor&, const torch::Tensor&, double, double, double);
 std::vector<torch::Tensor> swiglu_oai_fp8_quant_contiguous(const torch::Tensor& input, double alpha, double beta, double limit);
+
+
+std::vector<torch::Tensor> add_rms_norm_dynamic_quant(
+  torch::Tensor& hidden_states,
+  torch::Tensor& norm_weight,
+  torch::Tensor& smooth_scale,
+  torch::Tensor& residual,
+  torch::Tensor& quant_tokens,
+  torch::Tensor& per_token_scale,
+  torch::Tensor& after_res,
+  torch::Tensor& after_norm,
+  int64_t output_mode,
+  double eps);
 void moe_swiglu_dynamic_quant(torch::Tensor& scatter_tokens, torch::Tensor& smooth, torch::Tensor& experts_tokens_count, torch::Tensor& experts_tokens_start, torch::Tensor& output, torch::Tensor& scales, float beta);
 void per_token_group_quant_fp8(
     torch::Tensor& out,        
@@ -1926,6 +1939,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("swiglu_oai_int8_quant_contiguous", &at::native::swiglu_oai_int8_quant_contiguous, "BF16-rounded OAI row INT8 quantization");
  m.def("swiglu_oai_int8_quant_masked", &at::native::swiglu_oai_int8_quant_masked, "Masked BF16-rounded OAI row INT8 quantization with zero/unit padding");
  m.def("swiglu_oai_fp8_quant_contiguous", &at::native::swiglu_oai_fp8_quant_contiguous, "Contiguous BF16 OAI activation and per-token E4M3FN quantization", pybind11::arg("input"), pybind11::arg("alpha") = 1.702, pybind11::arg("beta") = 1.0, pybind11::arg("limit") = 7.0);
+ m.def("add_rms_norm_dynamic_quant", &at::native::add_rms_norm_dynamic_quant, "add_rms_norm_dynamic_quant",
+       py::arg("hidden_states"),
+       py::arg("norm_weight"),
+       py::arg("smooth_scale"),
+       py::arg("residual"),
+       py::arg("quant_tokens"),
+       py::arg("per_token_scale"),
+       py::arg("after_res"),
+       py::arg("after_norm"),
+       py::arg("output_mode") = 0,
+       py::arg("eps") = 1e-5);
  m.def("moe_swiglu_dynamic_quant", &at::native::moe_swiglu_dynamic_quant, "moe_swiglu_dynamic_quant");  
  m.def("per_token_group_quant_fp8", &at::native::per_token_group_quant_fp8, "per_token_group_quant_fp8");  
  m.def("top_k_per_row_prefill", &at::native::top_k_per_row_prefill, "top_k_per_row_prefill");  
