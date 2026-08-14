@@ -51,6 +51,7 @@ def test_embedding_gather_scatter() -> None:
         scatter(sdst, sidx, ssrc, special=True)
         _assert_close(sdst[:16], ssrc)
 
+
 def test_topk_power2() -> None:
     _require_cuda()
     torch.manual_seed(4)
