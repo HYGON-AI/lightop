@@ -380,8 +380,10 @@ jobs:
 
             # Both OpTest and the repository fallback suite require the same
             # test runtime used by the existing LightOp validation flow.
+            # Match the established LightOp environment setup: install the
+            # vLLM dependency set first, then restore the selected Torch and
+            # Triton runtime in separate resolver transactions.
             python3 -m pip install \
-              "torch==${INSTALL_TORCH_VERSION}" \
               "vllm==${INSTALL_VLLM_VERSION}"
             python3 -m pip install \
               "torch==${INSTALL_TORCH_VERSION}" \
