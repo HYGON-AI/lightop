@@ -4,7 +4,8 @@ from functools import reduce
 
 import pytest
 import torch
-import math
+import triton
+import triton.language as tl
 from lightop.tensor import ds_cat
 
 def test_concat_Acc_prefill(shape_pair, dim):

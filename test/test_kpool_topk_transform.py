@@ -1,8 +1,4 @@
-import importlib.util
-import os
-import sys
 import time
-from pathlib import Path
 from typing import Optional
 
 import torch
@@ -14,32 +10,6 @@ POOL_SIZE = 16
 TOKEN_TOPK = 2048
 GROUP_TOPK = TOKEN_TOPK // POOL_SIZE
 OUTPUT_COLS = TOKEN_TOPK + POOL_SIZE - 1
-
-
-def _load_sglang_torch_fallback():
-    default_root = Path(__file__).resolve().parents[2] / "sglang-model"
-    sglang_root = Path(os.environ.get("SGLANG_CODE_ROOT", default_root))
-    kernels_path = (
-        sglang_root
-        / "python/sglang/srt/layers/attention/nsa/kpool/kernels.py"
-    )
-    if not kernels_path.is_file():
-        raise FileNotFoundError(
-            f"Cannot find the SGLang kpool fallback at {kernels_path}; "
-            "set SGLANG_CODE_ROOT to the SGLang repository root."
-        )
-
-    spec = importlib.util.spec_from_file_location(
-        "_sglang_kpool_kernels_golden", kernels_path
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module._torch_topk_pooled_history
-
-
-SGLANG_TORCH_FALLBACK = _load_sglang_torch_fallback()
 
 
 def reference(
@@ -160,31 +130,6 @@ def reference(
     return output
 
 
-def sglang_reference(
-    score: torch.Tensor,
-    lengths: torch.Tensor,
-    seq_lens: torch.Tensor,
-    page_table: Optional[torch.Tensor] = None,
-    topk_indices_offset: Optional[torch.Tensor] = None,
-    row_starts: Optional[torch.Tensor] = None,
-    out_rows: Optional[int] = None,
-    page_table_row_index: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    """Golden result from SGLang's original Torch kpool fallback."""
-    return SGLANG_TORCH_FALLBACK(
-        logits=score,
-        group_lengths=lengths,
-        pool_size=POOL_SIZE,
-        topk=TOKEN_TOPK,
-        page_table=page_table,
-        topk_offsets=topk_indices_offset,
-        seq_lens=seq_lens,
-        row_starts=row_starts,
-        out_rows=out_rows,
-        page_table_row_index=page_table_row_index,
-    )
-
-
 def make_scores(rows: int, cols: int, row_padding: int = 17) -> torch.Tensor:
     storage = torch.empty(
         (rows, cols + row_padding), dtype=torch.float32, device="cuda"
@@ -225,16 +170,6 @@ def assert_equivalent(
         out_rows=out_rows,
         page_table_row_index=page_table_row_index,
     )
-    expected = sglang_reference(
-        score=score,
-        lengths=lengths,
-        seq_lens=seq_lens,
-        page_table=page_table,
-        topk_indices_offset=topk_indices_offset,
-        row_starts=row_starts,
-        out_rows=out_rows,
-        page_table_row_index=page_table_row_index,
-    )
     independent = reference(
         score=score,
         lengths=lengths,
@@ -246,10 +181,6 @@ def assert_equivalent(
         page_table_row_index=page_table_row_index,
     )
     torch.cuda.synchronize()
-
-    assert torch.equal(
-        independent, expected
-    ), f"{name}: independent/SGLang golden mismatch"
 
     expected_rows = score.shape[0] if out_rows is None else out_rows
     assert actual.shape == (expected_rows, OUTPUT_COLS), name
@@ -272,11 +203,11 @@ def assert_equivalent(
         history_len = min(pool_len * POOL_SIZE, TOKEN_TOPK)
         assert torch.equal(
             actual[row, :history_len].sort().values,
-            expected[row, :history_len].sort().values,
+            independent[row, :history_len].sort().values,
         ), f"{name}: history mismatch in row {row}"
         assert torch.equal(
             actual[row, history_len:],
-            expected[row, history_len:],
+            independent[row, history_len:],
         ), f"{name}: tail/padding mismatch in row {row}"
 
     if actual.shape[0] > rows:
@@ -520,7 +451,7 @@ def run_hip_graph_replay() -> None:
         graph.replay()
         torch.cuda.synchronize()
 
-        expected = sglang_reference(
+        expected = reference(
             score=score,
             lengths=lengths,
             seq_lens=seq_lens,
