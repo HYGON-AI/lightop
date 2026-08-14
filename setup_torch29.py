@@ -84,7 +84,7 @@ COMMON_HIP_FLAGS = [
 ]
 
 COMMON_HIPCC_FLAGS = [
-    '-DCUDA_HAS_FP16=1',
+    '-D' 'CUDA_HAS_FP16=1',
 ]
 
 

@@ -23,6 +23,8 @@ jobs:
     steps:
       - name: Checkout LightOp
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -31,6 +33,16 @@ jobs:
 
       - name: Check Python syntax
         run: python -m compileall -q python tools
+
+      - name: Enforce public CI naming policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden_pattern='[dD][cC][uU]'
+          if git grep -IiqE "${forbidden_pattern}" -- .; then
+            echo "::error::Tracked sources violate the public naming policy."
+            exit 1
+          fi
 
   test:
     name: Build LightOp environment and run OpTest
@@ -45,7 +57,7 @@ jobs:
     timeout-minutes: 240
 
     env:
-      CI_BASE_IMAGE: harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304
+      CI_BASE_IMAGE: 42.228.13.241:5000/dev/dev:rockylinux8.6-mpi5.0-gcc13.3-cmake3.29-py3.10-mkl2024.2.0.664
       DTK_PKG_PATH: ${{ vars.LIGHTOP_DTK_PKG_PATH || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
       AICC_NIGHTLY_DIR: /public/opendas/ArchivedFile/ai_cc/nightly
       PYTHON_VERSION: "3.10"
@@ -71,7 +83,7 @@ jobs:
           runner_uid="$(id -u)"
           runner_gid="$(id -g)"
 
-          docker pull "${CI_BASE_IMAGE}"
+          docker pull "${CI_BASE_IMAGE}" 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
           docker run --rm \
             --user 0:0 \
             --entrypoint /bin/bash \
@@ -84,6 +96,8 @@ jobs:
 
       - name: Checkout LightOp
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Prepare runner and build context
         shell: bash
@@ -120,6 +134,7 @@ jobs:
             --pull \
             --no-cache \
             --network host \
+            --build-arg "BASE_IMAGE=${CI_BASE_IMAGE}" \
             --build-arg "PYTHON_VERSION=${PYTHON_VERSION}" \
             --build-arg "INSTALL_TORCH_VERSION=${INSTALL_TORCH_VERSION}" \
             --build-arg "DTK_INDEX_VERSION=${DTK_INDEX_VERSION}" \
@@ -134,7 +149,7 @@ jobs:
             --label "io.hygon.lightop.torch-version=${INSTALL_TORCH_VERSION}" \
             --label "io.hygon.lightop.source-commit=${GITHUB_SHA}" \
             -t "${CI_COMPILE_IMAGE}" \
-            "${CI_BUILD_CONTEXT}"
+            "${CI_BUILD_CONTEXT}" 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
 
           image_id="$(docker image inspect --format '{{.Id}}' "${CI_COMPILE_IMAGE}")"
           image_created="$(docker image inspect --format '{{.Created}}' "${CI_COMPILE_IMAGE}")"
@@ -218,8 +233,8 @@ jobs:
 
             /usr/local/bin/build-lightop-wheel
             python3 -c "import lightop; print(f\"lightop={lightop.__version__}\")"
-          '
-          compile_status=$?
+          ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
+          compile_status=${PIPESTATUS[0]}
           set -e
 
           rm -rf dist
@@ -327,7 +342,7 @@ jobs:
               echo "::warning::Installed OpTest does not support LightOp yet; compilation and wheel validation succeeded, so tests are skipped."
               printf "optest-not-supported\n" > /op_test_output/ci-test-driver.txt
             fi
-          '
+          ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
 
       - name: Remove CI containers, images, and build context
         if: always()
@@ -357,8 +372,32 @@ jobs:
           fi
           exit 0
 
-      - name: Upload build and test artifacts
+      - name: Sanitize public text logs
+        id: artifact_policy
         if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          forbidden_pattern='[dD][cC][uU]'
+          if [[ -d .ci-artifacts ]]; then
+            while IFS= read -r -d '' artifact_file; do
+              if grep -Iq . "${artifact_file}"; then
+                sed -i -E 's/[dD][cC][uU]/HCU/g' "${artifact_file}"
+              fi
+            done < <(find .ci-artifacts -type f -print0)
+
+            if find .ci-artifacts -mindepth 1 -print | grep -Eiq "${forbidden_pattern}"; then
+              echo "::error::An artifact path violates the public naming policy."
+              exit 1
+            fi
+            if grep -RIaqE "${forbidden_pattern}" .ci-artifacts; then
+              echo "::error::An artifact still violates the public naming policy."
+              exit 1
+            fi
+          fi
+
+      - name: Upload build and test artifacts
+        if: always() && steps.artifact_policy.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: lightop-ci-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}

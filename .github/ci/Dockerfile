@@ -1,5 +1,6 @@
 ARG PYTHON_VERSION=3.10
-FROM harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py${PYTHON_VERSION}-mkl2020.4.304
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
 
 ARG PYTHON_VERSION=3.10
 ARG INSTALL_TORCH_VERSION=2.10.0
@@ -28,6 +29,14 @@ COPY dtk /opt/dtk
 COPY dtk_llvm_*.run /
 COPY lightop /lightop
 COPY build-lightop-wheel.sh /usr/local/bin/build-lightop-wheel
+
+# Register the base image's shared CPython directory with the runtime linker.
+# Generated toolkit variables can replace LD_LIBRARY_PATH later in the build.
+RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.so.1.0" -print -quit 2>/dev/null)" && \
+    test -n "${python_lib}" && \
+    dirname "${python_lib}" > /etc/ld.so.conf.d/python.conf && \
+    ldconfig && \
+    python3 --version
 
 RUN mkdir -p /root/.pip && \
     printf '%s\n' \
