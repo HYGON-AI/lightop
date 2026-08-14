@@ -30,3 +30,35 @@ def silu(x: torch.Tensor) -> torch.Tensor:
 def silu_out(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
     x = x.contiguous()
     return op.silu_opt_out(x, out)
+
+def reduce_max(x: torch.Tensor):
+    """Row-wise argmax for contiguous 2D CUDA tensors; else torch.max(dim=-1)."""
+    x = x.contiguous()
+    if x.is_cuda and x.dim() == 2 and x.dtype in (
+        torch.float16,
+        torch.bfloat16,
+        torch.float32,
+    ):
+        return op.reduce_max_opt(x)
+    return torch.max(x, dim=-1)
+
+
+def reduce_max_out(x: torch.Tensor, values: torch.Tensor, indices: torch.Tensor):
+    x = x.contiguous()
+    return op.reduce_max_opt_out(x, values, indices)
+
+
+def reduce_min(x: torch.Tensor):
+    x = x.contiguous()
+    if x.is_cuda and x.dim() == 2 and x.dtype in (
+        torch.float16,
+        torch.bfloat16,
+        torch.float32,
+    ):
+        return op.reduce_min_opt(x)
+    return torch.min(x, dim=-1)
+
+
+def reduce_min_out(x: torch.Tensor, values: torch.Tensor, indices: torch.Tensor):
+    x = x.contiguous()
+    return op.reduce_min_opt_out(x, values, indices)
