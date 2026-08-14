@@ -113,3 +113,7 @@ def index_add_out(
     return op.index_add_opt_out(
         dst, dim, index.contiguous(), src.contiguous(), assume_unique
     )
+
+def embedding(dst: torch.Tensor, index: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
+    """Gather rows: dst[i] = weight[index[i]]. Writes into preallocated dst."""
+    return op.embedding_opt(dst, index.contiguous(), weight)
