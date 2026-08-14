@@ -1,30 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -ne 5 ]]; then
-    echo "Usage: $0 <context-dir> <source-dir> <dtk-url> <aicc-dir> <aicc-package>" >&2
+if [[ "$#" -ne 4 ]]; then
+    echo "Usage: $0 <context-dir> <source-dir> <dtk-url> <aicc-nightly-dir>" >&2
     exit 2
 fi
 
 context_dir="$(realpath -m "$1")"
 source_dir="$(realpath "$2")"
 dtk_url="$3"
-aicc_dir="$(realpath "$4")"
-aicc_package="$5"
-
-if [[ ! "${dtk_url}" =~ ^https?:// ]]; then
-    echo "The toolkit package URL must use HTTP or HTTPS." >&2
-    exit 2
-fi
-dtk_package="$(basename "${dtk_url%%\?*}")"
-if [[ ! "${dtk_package}" =~ ^[A-Za-z0-9._-]+\.tar\.gz$ ]]; then
-    echo "The toolkit URL must identify a fixed .tar.gz package." >&2
-    exit 2
-fi
-if [[ "${aicc_package}" == */* || ! "${aicc_package}" =~ ^dtk_llvm_[A-Za-z0-9._-]+\.run$ ]]; then
-    echo "The compiler package name is invalid." >&2
-    exit 2
-fi
+aicc_nightly_dir="$(realpath "$4")"
 
 case "${context_dir}" in
     "${RUNNER_TEMP}"/*) ;;
@@ -36,9 +21,9 @@ esac
 
 mkdir -p "${context_dir}/lightop"
 
-# Never copy checkout metadata or credentials into the Docker build context.
+# Preserve .git so a future OpTest LightOp implementation can identify the
+# checked-out revision, while excluding outputs from earlier CI attempts.
 tar \
-    --exclude='./.git' \
     --exclude='./build' \
     --exclude='./dist' \
     --exclude='./test_results' \
@@ -46,11 +31,11 @@ tar \
     -C "${source_dir}" -cf - . | \
     tar -C "${context_dir}/lightop" -xf -
 
-dtk_archive="${context_dir}/${dtk_package}"
-wget -q -O "${dtk_archive}" "${dtk_url}"
-dtk_sha256="$(sha256sum "${dtk_archive}" | awk '{print $1}')"
-tar -xzf "${dtk_archive}" -C "${context_dir}"
-rm -f "${dtk_archive}"
+# actions/checkout normally leaves pull requests detached. OpTest --test_dir
+# requires a named branch, so name only the copied build-context checkout.
+git -C "${context_dir}/lightop" checkout -B github-ci-source
+
+wget -q -O - "${dtk_url}" | tar -xzf - -C "${context_dir}"
 
 mapfile -t dtk_dirs < <(find "${context_dir}" -mindepth 1 -maxdepth 1 -type d -name 'dtk-*' -print)
 if [[ "${#dtk_dirs[@]}" -ne 1 ]]; then
@@ -59,21 +44,25 @@ if [[ "${#dtk_dirs[@]}" -ne 1 ]]; then
 fi
 mv "${dtk_dirs[0]}" "${context_dir}/dtk"
 
-aicc_source="${aicc_dir}/${aicc_package}"
-if [[ ! -f "${aicc_source}" ]]; then
-    echo "Configured compiler package was not found." >&2
+latest_aicc="$(
+    find "${aicc_nightly_dir}" -maxdepth 1 -type f -name 'dtk_llvm_*.run' -printf '%f\n' |
+        sed 's/\.run$//' |
+        sort -t '_' -k4 -nr |
+        sed -n '1p'
+)"
+if [[ -z "${latest_aicc}" ]]; then
+    echo "No dtk_llvm_*.run found in ${aicc_nightly_dir}" >&2
     exit 1
 fi
-cp "${aicc_source}" "${context_dir}/${aicc_package}"
-aicc_sha256="$(sha256sum "${context_dir}/${aicc_package}" | awk '{print $1}')"
-chmod +x "${context_dir}/${aicc_package}"
+latest_aicc="${latest_aicc}.run"
+cp "${aicc_nightly_dir}/${latest_aicc}" "${context_dir}/${latest_aicc}"
+chmod +x "${context_dir}/${latest_aicc}"
 
 cp "${source_dir}/.github/ci/Dockerfile" "${context_dir}/Dockerfile"
 cp "${source_dir}/.github/ci/build-lightop-wheel.sh" "${context_dir}/build-lightop-wheel.sh"
-cp "${source_dir}/.github/ci/run-lightop-fallback-tests.sh" "${context_dir}/run-lightop-fallback-tests.sh"
 
 # Convert the selected DTK environment into Dockerfile ENV declarations using
-# a deterministic transformation of the selected package environment.
+# the same transformation as CIctl docker/tools/generate_dtk_env.sh.
 dtk_env_tmp="${context_dir}/dtk-env-generator.sh"
 cp "${context_dir}/dtk/env.sh" "${dtk_env_tmp}"
 sed -i -E \
@@ -85,6 +74,7 @@ HYHAL_PATH=/opt/hyhal bash "${dtk_env_tmp}" |
 rm -f "${dtk_env_tmp}"
 sed -i "/# config dtk env/r ${context_dir}/dtk.env" "${context_dir}/Dockerfile"
 
+dtk_package="$(basename "${dtk_url}")"
 dtk_version="$(tr -d '.' < "${context_dir}/dtk/.info/rocm_version")"
 dtk_package_stem="${dtk_package%.tar.gz}"
 IFS='-' read -r -a dtk_parts <<< "${dtk_package_stem}"
@@ -101,11 +91,8 @@ cat > "${context_dir}/build-environment.txt" <<EOF
 DTK_PACKAGE=${dtk_package}
 DTK_PACKAGE_VERSION=${dtk_package_version}
 DTK_VERSION=${dtk_version}
-AICC_VERSION=${aicc_package%.run}
-DTK_PACKAGE_SHA256=${dtk_sha256}
-AICC_PACKAGE_SHA256=${aicc_sha256}
+AICC_VERSION=${latest_aicc%.run}
 EOF
 
-printf 'DTK package: %s\nDTK version: %s\nDTK SHA-256: %s\nAICC version: %s\nAICC SHA-256: %s\n' \
-    "${dtk_package}" "${dtk_version}" "${dtk_sha256}" \
-    "${aicc_package%.run}" "${aicc_sha256}"
+printf 'DTK package: %s\nDTK version: %s\nAICC version: %s\n' \
+    "${dtk_package}" "${dtk_version}" "${latest_aicc%.run}"

@@ -10,11 +10,10 @@ mkdir -p /dist
 torch_version="$(python3 -c 'import torch; print(torch.__version__.split("+", 1)[0])')"
 torch_tag="${torch_version//./}"
 build_time="$(date +%y%m%d%H%M)"
-git_commit="${LIGHTOP_SOURCE_COMMIT:?LIGHTOP_SOURCE_COMMIT is required}"
-git_commit="${git_commit:0:6}"
+git_commit="$(git rev-parse --short=6 HEAD)"
 nightly_suffix=".torch${torch_tag}.${build_time}.g${git_commit}"
 
-# Add the standard Torch-aware nightly build suffix without editing source state.
+# Match CIctl toolkit.config_setupfile(..., pkg_type=nightly, torchinfo=True).
 python3 - "${nightly_suffix}" <<'PY'
 from pathlib import Path
 import sys
@@ -30,12 +29,8 @@ PY
 
 export PYTORCH_VERSION="${torch_version}"
 python3 setup.py bdist_wheel
-mkdir -p /tmp/lightop-wheelhouse
-mv dist/*.whl /tmp/lightop-wheelhouse/
-# The raw wheel is installed only in the disposable build container so
-# auditwheel can resolve the package's bundled library directories. Tests run
-# later in a pristine container and install only the repaired wheel.
-python3 -m pip install /tmp/lightop-wheelhouse/*.whl
+mv dist/*.whl /dist/
+python3 -m pip install /dist/*.whl
 
 platform="manylinux_$(ldd --version | awk '{print $NF}' | sed -n '1p' | tr '.' '_')_x86_64"
 exclude_libraries=(
@@ -63,10 +58,4 @@ done
 TORCH_PATH="$(python3 -c 'import torch, os; print(os.path.dirname(torch.__file__))')"
 LIGHTOP_PATH="$(python3 -c 'import lightop, os; print(os.path.dirname(lightop.__file__))')"
 export LD_LIBRARY_PATH="${TORCH_PATH}/lib:/opt/intel/mkl/lib/intel64_lin:${LIGHTOP_PATH}/lib:${LIGHTOP_PATH}/librarygemmbiasf${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-auditwheel "${auditwheel_args[@]}" -w /dist/ /tmp/lightop-wheelhouse/*.whl
-
-mapfile -t repaired_wheels < <(find /dist -maxdepth 1 -type f -name '*.whl' -print)
-if [[ "${#repaired_wheels[@]}" -ne 1 ]]; then
-    echo "Expected exactly one repaired wheel, found ${#repaired_wheels[@]}" >&2
-    exit 1
-fi
+auditwheel "${auditwheel_args[@]}" -w /dist/ /dist/*.whl

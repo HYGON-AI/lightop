@@ -1,11 +1,9 @@
 ARG PYTHON_VERSION=3.10
-ARG BASE_IMAGE
-FROM ${BASE_IMAGE}
+FROM harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py${PYTHON_VERSION}-mkl2020.4.304
 
 ARG PYTHON_VERSION=3.10
 ARG INSTALL_TORCH_VERSION=2.10.0
-ARG PYTHON_INDEX_URL
-ARG PYTHON_TRUSTED_HOST
+ARG DTK_INDEX_VERSION=2604
 ARG DTK_PKG_NAME
 ARG DTK_PKG_VERSION
 ARG DTK_VERSION
@@ -15,6 +13,7 @@ ENV ROCM_PATH=/opt/dtk \
     DTKROOT=/opt/dtk \
     COMPILE_ENV=lightop \
     TOOLKIT_DIR=/lightop \
+    RESOURCE_SERVER=http://42.228.13.241:18000 \
     INSTALL_TORCH_VERSION=${INSTALL_TORCH_VERSION} \
     DTK_PKG_NAME=${DTK_PKG_NAME} \
     DTK_PKG_VERSION=${DTK_PKG_VERSION} \
@@ -22,32 +21,19 @@ ENV ROCM_PATH=/opt/dtk \
     AICC_VERSION=${AICC_VERSION}
 
 # The build-context script inserts the ENV declarations generated from the
-# selected toolkit package here.
+# selected DTK package here, matching CIctl docker/build.sh.
 # config dtk env
 
 COPY dtk /opt/dtk
 COPY dtk_llvm_*.run /
 COPY lightop /lightop
 COPY build-lightop-wheel.sh /usr/local/bin/build-lightop-wheel
-COPY run-lightop-fallback-tests.sh /usr/local/bin/run-lightop-fallback-tests
-
-# The generated toolkit environment can replace LD_LIBRARY_PATH. Register the
-# base image's shared CPython directory with the runtime linker so Python does
-# not depend on that environment variable.
-RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.so.1.0" -print -quit 2>/dev/null)" && \
-    test -n "${python_lib}" && \
-    dirname "${python_lib}" > /etc/ld.so.conf.d/python.conf && \
-    ldconfig && \
-    gcc --version && \
-    g++ --version && \
-    python3 --version && \
-    cmake --version
 
 RUN mkdir -p /root/.pip && \
     printf '%s\n' \
       '[global]' \
-      "index-url = ${PYTHON_INDEX_URL}" \
-      "trusted-host = ${PYTHON_TRUSTED_HOST}" \
+      "index-url = http://10.16.1.201:9929/nightly/dtk${DTK_INDEX_VERSION}/+simple/" \
+      'trusted-host = 10.16.1.201' \
       > /root/.pip/pip.conf && \
     python3 -m pip install \
       pyyaml hypothesis Ninja MonkeyType "numpy==1.24.3" wheel packaging \
@@ -56,13 +42,11 @@ RUN mkdir -p /root/.pip && \
     python3 -m pip install cupy && \
     python3 -m pip install "torch==${INSTALL_TORCH_VERSION}" && \
     python3 -m pip uninstall -y cupy-cuda12x && \
-    chmod +x /dtk_llvm_*.run \
-      /usr/local/bin/build-lightop-wheel \
-      /usr/local/bin/run-lightop-fallback-tests && \
+    chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
     yes | /dtk_llvm_*.run
 
 # Keep the build image focused on compiling LightOp. vLLM and OpTest are added
-# only in the separate test container to preserve the build/test boundary.
+# only in the separate test container, matching CIctl's phase boundary.
 RUN python3 - <<'PY'
 import importlib.metadata
 import os
