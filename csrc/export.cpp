@@ -530,6 +530,13 @@ void fast_topk_transform_interface(
     const at::Tensor& src_page_table,
     const at::Tensor& cu_seqlens_q,
     std::optional<at::Tensor> row_starts_opt);
+void fast_topk_transform_sparse_mask_interface(
+    const at::Tensor& score,
+    const at::Tensor& nonzero_mask,
+    const at::Tensor& lengths,
+    at::Tensor& dst_page_table,
+    const at::Tensor& src_page_table,
+    const at::Tensor& cu_seqlens_q);
 void fast_topk_transform_ragged_interface(
     const at::Tensor& score,
     const at::Tensor& lengths,
@@ -1059,9 +1066,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
   m.def("paged_mqa_logits", &lightop::deep_gemm::paged_mqa_logits,"paged_mqa_logits");
   m.def(
-      "paged_mqa_logits_length_masked",
-      &lightop::deep_gemm::paged_mqa_logits_length_masked,
-      "paged_mqa_logits_length_masked",
+      "page_mqa_logits_sparse_mask",
+      &lightop::deep_gemm::page_mqa_logits_sparse_mask,
+      "page_mqa_logits_sparse_mask",
       py::arg("q"),
       py::arg("fused_kv_cache"),
       py::arg("weights"),
@@ -1073,9 +1080,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("num_warps") = 4,
       py::arg("persistent_ctas") = 0);
   m.def(
-      "page_mqa_logits_mask",
-      &lightop::deep_gemm::page_mqa_logits_mask,
-      "page_mqa_logits_mask",
+      "page_mqa_logits_sparse_mask_grouped",
+      &lightop::deep_gemm::page_mqa_logits_sparse_mask_grouped,
+      "page_mqa_logits_sparse_mask_grouped",
       py::arg("q"),
       py::arg("fused_kv_cache"),
       py::arg("weights"),
@@ -1085,21 +1092,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("max_context_len"),
       py::arg("clean_logits") = true,
       py::arg("num_warps") = 4,
-      py::arg("persistent_ctas") = 0);
-  m.def(
-      "_page_mqa_logits_mask_clean_tail",
-      &lightop::deep_gemm::page_mqa_logits_mask_clean_tail,
-      "private clean-tail route for paged_mqa_logits",
-      py::arg("q"),
-      py::arg("fused_kv_cache"),
-      py::arg("weights"),
-      py::arg("context_lens"),
-      py::arg("block_table"),
-      py::arg("schedule_meta"),
-      py::arg("max_context_len"),
-      py::arg("clean_logits") = true,
-      py::arg("num_warps") = 4,
-      py::arg("persistent_ctas") = 0);
+      py::arg("persistent_ctas") = 0,
+      py::arg("group_size") = 5);
   m.def("batch_linear_assignment", &at::native::batch_linear_assignment, "batch_linear_assignment");
   m.def("fill_zeros", &at::native::fill_zeros,"fill_zeros");
   m.def("rms_rotary_embedding_fuse", &at::native::rms_rotary_embedding_fuse,"rms_rotary_embedding_fuse");
@@ -1181,6 +1175,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("gemma_rmsnorm", &at::native::gemma_rmsnorm, "gemma_rmsnorm");
  m.def("gemma_rms_norm_fp8_quant", &at::native::gemma_rms_norm_fp8_quant, "gemma_rms_norm_fp8_quant");
  m.def("fast_topk_transform_interface", &at::native::fast_topk_transform_interface, "fast_topk_transform_interface");
+ m.def(
+     "fast_topk_transform_sparse_mask_interface",
+     &at::native::fast_topk_transform_sparse_mask_interface,
+     "fast_topk_transform_sparse_mask_interface");
  m.def("fast_topk_transform_ragged_interface", &at::native::fast_topk_transform_ragged_interface, "fast_topk_transform_ragged_interface");   
  m.def(
      "fast_kpool_topk_transform_interface",
