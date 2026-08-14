@@ -81,3 +81,35 @@ def index_select_out(
     src: torch.Tensor, dim: int, index: torch.Tensor, out: torch.Tensor
 ) -> torch.Tensor:
     return op.index_select_opt_out(src.contiguous(), dim, index.contiguous(), out)
+
+def index_add(
+    dst: torch.Tensor,
+    dim: int,
+    index: torch.Tensor,
+    src: torch.Tensor,
+    assume_unique: bool = False,
+) -> torch.Tensor:
+    dst = dst.contiguous()
+    src = src.contiguous()
+    index = index.contiguous()
+    if (
+        dst.is_cuda
+        and dim == 0
+        and dst.dim() == 2
+        and src.dim() == 2
+        and dst.dtype in (torch.float16, torch.bfloat16, torch.float32)
+    ):
+        return op.index_add_opt(dst, dim, index, src, assume_unique)
+    return dst.index_add(dim, index, src)
+
+
+def index_add_out(
+    dst: torch.Tensor,
+    dim: int,
+    index: torch.Tensor,
+    src: torch.Tensor,
+    assume_unique: bool = False,
+) -> torch.Tensor:
+    return op.index_add_opt_out(
+        dst, dim, index.contiguous(), src.contiguous(), assume_unique
+    )

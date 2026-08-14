@@ -8,6 +8,8 @@ from ..ds_cat import ds_cat
 from ..fill_zeros import fill_zeros
 from ..reduce import mean, sum
 from ..ops_basic import (
+    index_add,
+    index_add_out,
     index_select,
     index_select_out,
     reduce_max,
@@ -23,6 +25,8 @@ __all__ = [
     "batch_linear_assignment",
     "ds_cat",
     "fill_zeros",
+    "index_add",
+    "index_add_out",
     "index_select",
     "index_select_out",
     "mean",
