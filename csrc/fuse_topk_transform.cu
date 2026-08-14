@@ -1255,6 +1255,412 @@ void topk_transform_ragged_kernel_radix_select_8bit(
   }
 }
 
+constexpr int kSparseMaskTile = 16;
+
+__device__ __forceinline__ uint32_t sparse_mask_valid_bits(
+    int valid_count) {
+  return valid_count >= kSparseMaskTile
+      ? 0xffffu
+      : ((uint32_t{1} << valid_count) - 1u);
+}
+
+__device__ void sparse_mask_exact_topk(
+    const float* __restrict__ values,
+    const int16_t* __restrict__ nonzero_mask,
+    int length,
+    int* __restrict__ selected_indices) {
+  constexpr int kRadix = 256;
+  constexpr uint32_t kZeroKey = 0x80000000u;
+
+  alignas(128) __shared__ int histogram_buf[2][kRadix + 1];
+  alignas(128) __shared__ int remaining;
+  alignas(128) __shared__ int threshold_digit;
+  alignas(128) __shared__ int higher_count;
+  alignas(128) __shared__ uint32_t prefix;
+  alignas(128) __shared__ uint32_t prefix_mask;
+  // Use a deterministic per-thread prefix assignment for the final emit.
+  // Atomically reserving output slots lets equal-score tokens race across
+  // waves, so CUDA Graph replay can select a different subset of a large
+  // zero tie.  These scans preserve the exact threshold while making both
+  // the selected tie subset and output layout replay-stable.
+  alignas(128) __shared__ int above_prefix[kThreadsPerBlock + 1];
+  alignas(128) __shared__ int tie_prefix[kThreadsPerBlock + 1];
+  alignas(128) __shared__ int sparse_fast_path;
+  alignas(128) __shared__ int sparse_fast_positive_count;
+
+  const int tid = threadIdx.x;
+
+  // Production MQA logits are overwhelmingly +0.  If every strictly
+  // positive value fits in TopK and +0 supplies the remaining slots, the
+  // exact threshold is known without four full radix passes.  Negative values
+  // cannot enter the result in this case.  All other distributions continue
+  // through the generic exact selector below.
+  const int fast_num_mask_tiles =
+      (length + kSparseMaskTile - 1) / kSparseMaskTile;
+  int local_positive = 0;
+  int local_zero = 0;
+  for (int tile = tid; tile < fast_num_mask_tiles;
+       tile += kThreadsPerBlock) {
+    const int tile_start = tile * kSparseMaskTile;
+    const int remaining_in_row = length - tile_start;
+    const int valid_count = remaining_in_row < kSparseMaskTile
+        ? remaining_in_row
+        : kSparseMaskTile;
+    const uint32_t valid_bits = sparse_mask_valid_bits(valid_count);
+    uint32_t stored_bits =
+        static_cast<uint16_t>(nonzero_mask[tile]) & valid_bits;
+    local_zero += valid_count - __popc(stored_bits);
+    while (stored_bits != 0u) {
+      const int bit = __ffs(stored_bits) - 1;
+      stored_bits &= stored_bits - 1u;
+      const uint32_t key = radix_select_8bit_convert_to_uint32(
+          values[tile_start + bit]);
+      local_positive += key > kZeroKey;
+    }
+  }
+
+  if (tid == 0) {
+    above_prefix[0] = 0;
+    tie_prefix[0] = 0;
+  }
+  above_prefix[tid + 1] = local_positive;
+  tie_prefix[tid + 1] = local_zero;
+  __syncthreads();
+
+#pragma unroll 10
+  for (int offset = 1; offset <= kThreadsPerBlock; offset <<= 1) {
+    const int positive_value = above_prefix[tid + 1];
+    const int zero_value = tie_prefix[tid + 1];
+    const int positive_add =
+        tid + 1 >= offset ? above_prefix[tid + 1 - offset] : 0;
+    const int zero_add =
+        tid + 1 >= offset ? tie_prefix[tid + 1 - offset] : 0;
+    __syncthreads();
+    above_prefix[tid + 1] = positive_value + positive_add;
+    tie_prefix[tid + 1] = zero_value + zero_add;
+    __syncthreads();
+  }
+
+  if (tid == 0) {
+    const int positive_count = above_prefix[kThreadsPerBlock];
+    const int zero_count = tie_prefix[kThreadsPerBlock];
+    sparse_fast_positive_count = positive_count;
+    sparse_fast_path =
+        positive_count <= kTopK2048 &&
+        positive_count + zero_count >= kTopK2048;
+  }
+  __syncthreads();
+
+  if (sparse_fast_path != 0) {
+    int positive_pos = above_prefix[tid];
+    int zero_pos = tie_prefix[tid];
+    const int zero_needed = kTopK2048 - sparse_fast_positive_count;
+    for (int tile = tid; tile < fast_num_mask_tiles;
+         tile += kThreadsPerBlock) {
+      const int tile_start = tile * kSparseMaskTile;
+      const int remaining_in_row = length - tile_start;
+      const int valid_count = remaining_in_row < kSparseMaskTile
+          ? remaining_in_row
+          : kSparseMaskTile;
+      const uint32_t valid_bits = sparse_mask_valid_bits(valid_count);
+      uint32_t stored_bits =
+          static_cast<uint16_t>(nonzero_mask[tile]) & valid_bits;
+      uint32_t zero_bits = valid_bits & ~stored_bits;
+
+      while (stored_bits != 0u) {
+        const int bit = __ffs(stored_bits) - 1;
+        stored_bits &= stored_bits - 1u;
+        const int raw_index = tile_start + bit;
+        const uint32_t key = radix_select_8bit_convert_to_uint32(
+            values[raw_index]);
+        if (key > kZeroKey) {
+          selected_indices[positive_pos++] = raw_index;
+        }
+      }
+      while (zero_bits != 0u) {
+        const int bit = __ffs(zero_bits) - 1;
+        zero_bits &= zero_bits - 1u;
+        if (zero_pos < zero_needed) {
+          selected_indices[
+              sparse_fast_positive_count + zero_pos] = tile_start + bit;
+        }
+        ++zero_pos;
+      }
+    }
+    __syncthreads();
+    return;
+  }
+
+  if (tid == 0) {
+    remaining = kTopK2048;
+    prefix = 0u;
+    prefix_mask = 0u;
+  }
+  __syncthreads();
+
+#pragma unroll 4
+  for (int round = 0; round < 4; ++round) {
+    auto& histogram = histogram_buf[0];
+    if (tid < kRadix + 1) histogram[tid] = 0;
+    __syncthreads();
+
+    const int shift = 24 - round * 8;
+    const uint32_t current_prefix = prefix;
+    const uint32_t current_prefix_mask = prefix_mask;
+    const int num_mask_tiles =
+        (length + kSparseMaskTile - 1) / kSparseMaskTile;
+
+    for (int tile = tid; tile < num_mask_tiles;
+         tile += kThreadsPerBlock) {
+      const int tile_start = tile * kSparseMaskTile;
+      const int remaining_in_row = length - tile_start;
+      const int valid_count = remaining_in_row < kSparseMaskTile
+          ? remaining_in_row
+          : kSparseMaskTile;
+      const uint32_t valid_bits = sparse_mask_valid_bits(valid_count);
+      uint32_t stored_bits =
+          static_cast<uint16_t>(nonzero_mask[tile]) & valid_bits;
+      const int implicit_zero_count =
+          valid_count - __popc(stored_bits);
+
+      if (implicit_zero_count > 0 &&
+          (kZeroKey & current_prefix_mask) == current_prefix) {
+        atomicAdd(
+            &histogram[(kZeroKey >> shift) & 0xffu],
+            implicit_zero_count);
+      }
+
+      while (stored_bits != 0u) {
+        const int bit = __ffs(stored_bits) - 1;
+        stored_bits &= stored_bits - 1u;
+        const uint32_t key = radix_select_8bit_convert_to_uint32(
+            values[tile_start + bit]);
+        if ((key & current_prefix_mask) == current_prefix) {
+          atomicAdd(&histogram[(key >> shift) & 0xffu], 1);
+        }
+      }
+    }
+    __syncthreads();
+
+#pragma unroll 8
+    for (int step = 0; step < 8; ++step) {
+      if (tid < kRadix) {
+        const int offset = 1 << step;
+        const int src = step & 1;
+        int value = histogram_buf[src][tid];
+        if (tid + offset < kRadix) {
+          value += histogram_buf[src][tid + offset];
+        }
+        histogram_buf[src ^ 1][tid] = value;
+      }
+      __syncthreads();
+    }
+
+    if (tid < kRadix && histogram_buf[0][tid] >= remaining &&
+        histogram_buf[0][tid + 1] < remaining) {
+      threshold_digit = tid;
+      higher_count = histogram_buf[0][tid + 1];
+    }
+    __syncthreads();
+
+    if (tid == 0) {
+      remaining -= higher_count;
+      prefix |= static_cast<uint32_t>(threshold_digit) << shift;
+      prefix_mask |= 0xffu << shift;
+    }
+    __syncthreads();
+  }
+
+  const uint32_t threshold_key = prefix;
+  const int tie_base = kTopK2048 - remaining;
+  const int num_mask_tiles =
+      (length + kSparseMaskTile - 1) / kSparseMaskTile;
+
+  int local_above = 0;
+  int local_ties = 0;
+  for (int tile = tid; tile < num_mask_tiles;
+       tile += kThreadsPerBlock) {
+    const int tile_start = tile * kSparseMaskTile;
+    const int remaining_in_row = length - tile_start;
+    const int valid_count = remaining_in_row < kSparseMaskTile
+        ? remaining_in_row
+        : kSparseMaskTile;
+    const uint32_t valid_bits = sparse_mask_valid_bits(valid_count);
+    uint32_t stored_bits =
+        static_cast<uint16_t>(nonzero_mask[tile]) & valid_bits;
+    const uint32_t zero_bits = valid_bits & ~stored_bits;
+    if (kZeroKey > threshold_key) {
+      local_above += __popc(zero_bits);
+    } else if (kZeroKey == threshold_key) {
+      local_ties += __popc(zero_bits);
+    }
+
+    while (stored_bits != 0u) {
+      const int bit = __ffs(stored_bits) - 1;
+      stored_bits &= stored_bits - 1u;
+      const int raw_index = tile_start + bit;
+      const uint32_t key =
+          radix_select_8bit_convert_to_uint32(values[raw_index]);
+      if (key > threshold_key) {
+        ++local_above;
+      } else if (key == threshold_key) {
+        ++local_ties;
+      }
+    }
+  }
+
+  if (tid == 0) {
+    above_prefix[0] = 0;
+    tie_prefix[0] = 0;
+  }
+  above_prefix[tid + 1] = local_above;
+  tie_prefix[tid + 1] = local_ties;
+  __syncthreads();
+
+#pragma unroll 10
+  for (int offset = 1; offset <= kThreadsPerBlock; offset <<= 1) {
+    const int above_value = above_prefix[tid + 1];
+    const int tie_value = tie_prefix[tid + 1];
+    const int above_add =
+        tid + 1 >= offset ? above_prefix[tid + 1 - offset] : 0;
+    const int tie_add =
+        tid + 1 >= offset ? tie_prefix[tid + 1 - offset] : 0;
+    __syncthreads();
+    above_prefix[tid + 1] = above_value + above_add;
+    tie_prefix[tid + 1] = tie_value + tie_add;
+    __syncthreads();
+  }
+
+  int above_pos = above_prefix[tid];
+  int tie_pos = tie_prefix[tid];
+  for (int tile = tid; tile < num_mask_tiles;
+       tile += kThreadsPerBlock) {
+    const int tile_start = tile * kSparseMaskTile;
+    const int remaining_in_row = length - tile_start;
+    const int valid_count = remaining_in_row < kSparseMaskTile
+        ? remaining_in_row
+        : kSparseMaskTile;
+    const uint32_t valid_bits = sparse_mask_valid_bits(valid_count);
+    uint32_t stored_bits =
+        static_cast<uint16_t>(nonzero_mask[tile]) & valid_bits;
+    uint32_t zero_bits = valid_bits & ~stored_bits;
+
+    if (kZeroKey > threshold_key) {
+      while (zero_bits != 0u) {
+        const int bit = __ffs(zero_bits) - 1;
+        zero_bits &= zero_bits - 1u;
+        if (above_pos < tie_base) {
+          selected_indices[above_pos] = tile_start + bit;
+        }
+        ++above_pos;
+      }
+    } else if (kZeroKey == threshold_key) {
+      while (zero_bits != 0u) {
+        const int bit = __ffs(zero_bits) - 1;
+        zero_bits &= zero_bits - 1u;
+        if (tie_pos < remaining) {
+          selected_indices[tie_base + tie_pos] = tile_start + bit;
+        }
+        ++tie_pos;
+      }
+    }
+
+    while (stored_bits != 0u) {
+      const int bit = __ffs(stored_bits) - 1;
+      stored_bits &= stored_bits - 1u;
+      const int raw_index = tile_start + bit;
+      const uint32_t key =
+          radix_select_8bit_convert_to_uint32(values[raw_index]);
+      if (key > threshold_key) {
+        if (above_pos < tie_base) {
+          selected_indices[above_pos] = raw_index;
+        }
+        ++above_pos;
+      } else if (key == threshold_key) {
+        if (tie_pos < remaining) {
+          selected_indices[tie_base + tie_pos] = raw_index;
+        }
+        ++tie_pos;
+      }
+    }
+  }
+  __syncthreads();
+}
+
+__global__ __launch_bounds__(kThreadsPerBlock)
+void topk_transform_decode_kernel_sparse_mask(
+    const FastTopKParams params,
+    const int16_t* __restrict__ nonzero_mask,
+    int64_t mask_stride,
+    int32_t* __restrict__ dst_page_table,
+    const int32_t* __restrict__ src_page_table,
+    int64_t src_stride) {
+  const auto& [input, _1, _2, lengths, input_stride] = params;
+  const int64_t row = blockIdx.x;
+  const int length = lengths[row];
+  const float* values = input + row * input_stride;
+  const int16_t* mask = nonzero_mask + row * mask_stride;
+  int32_t* dst = dst_page_table + row * kTopK2048;
+  const int32_t* src = src_page_table + row * src_stride;
+
+  if (length <= kTopK2048) {
+    return radix_select_8bit_naive_topk_transform(
+        values, length, dst, src);
+  }
+
+  __shared__ int selected_indices[kTopK2048];
+  sparse_mask_exact_topk(values, mask, length, selected_indices);
+  const int tid = threadIdx.x;
+  dst[tid] = src[selected_indices[tid]];
+  dst[tid + kThreadsPerBlock] =
+      src[selected_indices[tid + kThreadsPerBlock]];
+}
+
+__global__ __launch_bounds__(kThreadsPerBlock)
+void topk_transform_prefill_kernel_sparse_mask(
+    const FastTopKParams params,
+    const int16_t* __restrict__ nonzero_mask,
+    int64_t mask_stride,
+    int32_t* __restrict__ dst_page_table,
+    const int32_t* __restrict__ src_page_table,
+    int64_t src_stride,
+    const int32_t* __restrict__ cu_seqlens_q,
+    int64_t prefill_bs) {
+  const auto& [input, _1, _2, lengths, input_stride] = params;
+  const int64_t row = blockIdx.x;
+  const int tid = threadIdx.x;
+  const int length = lengths[row];
+  const float* values = input + row * input_stride;
+  const int16_t* mask = nonzero_mask + row * mask_stride;
+  int32_t* dst = dst_page_table + row * kTopK2048;
+
+  __shared__ const int32_t* src;
+  if (prefill_bs <= kThreadsPerBlock) {
+    if (tid < prefill_bs && row >= cu_seqlens_q[tid] &&
+        row < cu_seqlens_q[tid + 1]) {
+      src = src_page_table + tid * src_stride;
+    }
+  } else {
+    for (int64_t i = tid; i < prefill_bs; i += kThreadsPerBlock) {
+      if (row >= cu_seqlens_q[i] && row < cu_seqlens_q[i + 1]) {
+        src = src_page_table + i * src_stride;
+      }
+    }
+  }
+  __syncthreads();
+
+  if (length <= kTopK2048) {
+    return radix_select_8bit_naive_topk_transform(
+        values, length, dst, src);
+  }
+
+  __shared__ int selected_indices[kTopK2048];
+  sparse_mask_exact_topk(values, mask, length, selected_indices);
+  dst[tid] = src[selected_indices[tid]];
+  dst[tid + kThreadsPerBlock] =
+      src[selected_indices[tid + kThreadsPerBlock]];
+}
+
 template <int kTopK, int kFinalSortTopK, int kNumThreadsPerBlock, bool useRadixSort>
 __global__ __launch_bounds__(kNumThreadsPerBlock)
 void topk_transform_kernel_lightop(
@@ -1600,6 +2006,98 @@ void fast_topk_transform_interface(
 
   const auto result = cudaGetLastError();
   TORCH_CHECK(result == cudaSuccess, "topk kernel failed:", ::cudaGetErrorString(result));
+}
+
+void fast_topk_transform_sparse_mask_interface(
+    const at::Tensor& score,
+    const at::Tensor& nonzero_mask,
+    const at::Tensor& lengths,
+    at::Tensor& dst_page_table,
+    const at::Tensor& src_page_table,
+    const at::Tensor& cu_seqlens_q) {
+  CHECK_CUDA(score);
+  CHECK_CUDA(nonzero_mask);
+  CHECK_CUDA(lengths);
+  CHECK_CUDA(dst_page_table);
+  CHECK_CUDA(src_page_table);
+  CHECK_CUDA(cu_seqlens_q);
+
+  const auto batch_size = score.size(0);
+  TORCH_CHECK(
+      score.scalar_type() == at::kFloat && score.dim() == 2 &&
+          score.stride(1) == 1,
+      "score must be row-contiguous float32 [rows, width]");
+  TORCH_CHECK(
+      nonzero_mask.scalar_type() == at::kShort &&
+          nonzero_mask.dim() == 2 && nonzero_mask.stride(1) == 1 &&
+          nonzero_mask.size(0) == batch_size &&
+          nonzero_mask.size(1) ==
+              (score.size(1) + kSparseMaskTile - 1) / kSparseMaskTile,
+      "nonzero_mask must be row-contiguous int16 [rows, ceil(width/16)]");
+  TORCH_CHECK(
+      lengths.scalar_type() == at::kInt && lengths.dim() == 1 &&
+          lengths.is_contiguous() && lengths.size(0) == batch_size,
+      "lengths must be contiguous int32 [rows]");
+  TORCH_CHECK(
+      dst_page_table.scalar_type() == at::kInt &&
+          dst_page_table.dim() == 2 && dst_page_table.is_contiguous() &&
+          dst_page_table.size(0) == batch_size &&
+          dst_page_table.size(1) == kTopK2048,
+      "dst_page_table must be contiguous int32 [rows, 2048]");
+  TORCH_CHECK(
+      src_page_table.scalar_type() == at::kInt &&
+          src_page_table.dim() == 2 && src_page_table.stride(1) == 1,
+      "src_page_table must be row-contiguous int32");
+  TORCH_CHECK(
+      cu_seqlens_q.scalar_type() == at::kInt &&
+          cu_seqlens_q.dim() == 1 && cu_seqlens_q.is_contiguous(),
+      "cu_seqlens_q must be contiguous int32");
+
+  const int64_t prefill_bs = cu_seqlens_q.size(0) - 1;
+  TORCH_CHECK(prefill_bs > 0 && prefill_bs <= batch_size);
+  TORCH_CHECK(src_page_table.size(0) == prefill_bs);
+  TORCH_CHECK(
+      score.device() == nonzero_mask.device() &&
+          score.device() == lengths.device() &&
+          score.device() == dst_page_table.device() &&
+          score.device() == src_page_table.device() &&
+          score.device() == cu_seqlens_q.device(),
+      "all sparse-mask TopK tensors must be on the same device");
+
+  if (batch_size == 0) return;
+  const auto params = get_params(score, lengths);
+  const auto stream = at::cuda::getCurrentCUDAStream().stream();
+  const auto grid = dim3{static_cast<uint32_t>(batch_size)};
+  const auto block = dim3{kThreadsPerBlock};
+  const auto mask_stride = nonzero_mask.stride(0);
+  const auto src_stride = src_page_table.stride(0);
+  const bool is_decode = prefill_bs == batch_size;
+
+  if (is_decode) {
+    topk_transform_decode_kernel_sparse_mask<<<grid, block, 0, stream>>>(
+        params,
+        nonzero_mask.data_ptr<int16_t>(),
+        mask_stride,
+        dst_page_table.data_ptr<int32_t>(),
+        src_page_table.data_ptr<int32_t>(),
+        src_stride);
+  } else {
+    topk_transform_prefill_kernel_sparse_mask<<<grid, block, 0, stream>>>(
+        params,
+        nonzero_mask.data_ptr<int16_t>(),
+        mask_stride,
+        dst_page_table.data_ptr<int32_t>(),
+        src_page_table.data_ptr<int32_t>(),
+        src_stride,
+        cu_seqlens_q.data_ptr<int32_t>(),
+        prefill_bs);
+  }
+
+  const auto result = cudaGetLastError();
+  TORCH_CHECK(
+      result == cudaSuccess,
+      "sparse-mask topk kernel failed:",
+      ::cudaGetErrorString(result));
 }
 
 template <int kTopK>

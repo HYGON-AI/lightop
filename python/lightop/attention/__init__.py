@@ -4,8 +4,7 @@ from .mqa import (
     get_paged_mqa_logits_metadata,
     mqa_logits,
     paged_mqa_logits,
-    paged_mqa_logits_length_masked,
-    page_mqa_logits_mask,
+    page_mqa_logits_sparse_mask,
 )
 from .qkv import (
     fuse_layernorm_rotary_embedding,
@@ -25,6 +24,7 @@ from .qkv import (
 from .sparse import (
     convert_req_index_to_global_index,
     fast_topk_transform_fused,
+    fast_topk_transform_sparse_mask_fused,
     fast_topk_transform_ragged_fused,
     top_k_per_row_decode,
     top_k_per_row_prefill,
@@ -51,6 +51,7 @@ __all__ = [
     "apply_rotary_pos_emb_index_fused",
     "convert_req_index_to_global_index",
     "fast_topk_transform_fused",
+    "fast_topk_transform_sparse_mask_fused",
     "fast_topk_transform_ragged_fused",
     "fuse_layernorm_rotary_embedding",
     "fuse_rms_mrope_cuda",
@@ -65,8 +66,7 @@ __all__ = [
     "mimo_v2_split_rope_vscale_kv_store",
     "mqa_logits",
     "paged_mqa_logits",
-    "paged_mqa_logits_length_masked",
-    "page_mqa_logits_mask",
+    "page_mqa_logits_sparse_mask",
     "rms_rotary_embedding_fuse",
     "rms_rotary_embedding_fuse_with_kv_store",
     "rms_rotary_embedding_fuse_with_kv_store_fake",
