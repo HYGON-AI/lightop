@@ -62,3 +62,22 @@ def reduce_min(x: torch.Tensor):
 def reduce_min_out(x: torch.Tensor, values: torch.Tensor, indices: torch.Tensor):
     x = x.contiguous()
     return op.reduce_min_opt_out(x, values, indices)
+
+def index_select(src: torch.Tensor, dim: int, index: torch.Tensor) -> torch.Tensor:
+    src = src.contiguous()
+    index = index.contiguous()
+    if (
+        src.is_cuda
+        and dim == 0
+        and src.dim() == 2
+        and index.dim() == 1
+        and src.dtype in (torch.float16, torch.bfloat16, torch.float32)
+    ):
+        return op.index_select_opt(src, dim, index)
+    return torch.index_select(src, dim, index)
+
+
+def index_select_out(
+    src: torch.Tensor, dim: int, index: torch.Tensor, out: torch.Tensor
+) -> torch.Tensor:
+    return op.index_select_opt_out(src.contiguous(), dim, index.contiguous(), out)
