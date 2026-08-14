@@ -31,7 +31,8 @@ gelu_and_mul_opt = lightop_native.gelu_and_mul_opt
 gelu_tanh_and_mul_opt = lightop_native.gelu_tanh_and_mul_opt
 silu_and_mul_opt = lightop_native.silu_and_mul_opt
 
-from ..ops_basic import gelu, gelu_out  # noqa: E402
+from ..ops_basic import gelu, gelu_out, silu, silu_out  # noqa: E402
+
 
 __all__ = [
     "AddDropout",
@@ -51,6 +52,8 @@ __all__ = [
     "GNSilu",
     "gelu",
     "gelu_out",
+    "silu",
+    "silu_out",
     "gelu_and_mul_opt",
     "gelu_tanh_and_mul_opt",
     "LnAddDropout",

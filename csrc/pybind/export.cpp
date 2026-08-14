@@ -659,6 +659,8 @@ void relu2_opt(torch::Tensor& out,torch::Tensor& input);
 // P1 custom_ops ports
 Tensor gelu_opt(const Tensor& input, c10::string_view approximate);
 Tensor gelu_opt_out(const Tensor& input, Tensor& output, c10::string_view approximate);
+Tensor silu_opt(const Tensor& input);
+Tensor silu_opt_out(const Tensor& input, Tensor& output);
 torch::Tensor reshape_to_float(torch::Tensor input, int64_t vocab_size);
 torch::Tensor add_int8(const torch::Tensor& a, const torch::Tensor& b, bool saturate=true);
 torch::Tensor sub_int8(const torch::Tensor& a, const torch::Tensor& b, bool saturate=true);
@@ -1828,6 +1830,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gelu_opt", &at::native::gelu_opt, "gelu_opt", py::arg("input"), py::arg("approximate") = "none");
   m.def("gelu_opt_out", &at::native::gelu_opt_out, "gelu_opt_out",
         py::arg("input"), py::arg("output"), py::arg("approximate") = "none");
+  m.def("silu_opt", &at::native::silu_opt, "silu_opt");
+  m.def("silu_opt_out", &at::native::silu_opt_out, "silu_opt_out");
   m.def("reshape_to_float", &at::native::reshape_to_float, "reshape_to_float");
   m.def("add_int8", &at::native::add_int8, "add_int8", py::arg("a"), py::arg("b"), py::arg("saturate") = true);
   m.def("sub_int8", &at::native::sub_int8, "sub_int8", py::arg("a"), py::arg("b"), py::arg("saturate") = true);

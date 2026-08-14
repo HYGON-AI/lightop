@@ -19,3 +19,14 @@ def gelu_out(
 ) -> torch.Tensor:
     x = x.contiguous()
     return op.gelu_opt_out(x, out, approximate)
+
+def silu(x: torch.Tensor) -> torch.Tensor:
+    x = x.contiguous()
+    if x.is_cuda and x.dtype in (torch.float16, torch.bfloat16, torch.float32):
+        return op.silu_opt(x)
+    return torch.nn.functional.silu(x)
+
+
+def silu_out(x: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+    x = x.contiguous()
+    return op.silu_opt_out(x, out)
