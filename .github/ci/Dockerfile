@@ -3,7 +3,7 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 ARG PYTHON_VERSION=3.10
-ARG INSTALL_TORCH_VERSION=2.10.0
+ARG INSTALL_TORCH_VERSION
 ARG DTK_INDEX_VERSION=2604
 ARG DTK_PKG_NAME
 ARG DTK_PKG_VERSION
@@ -39,6 +39,7 @@ RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.
     python3 --version
 
 RUN mkdir -p /root/.pip && \
+    test -n "${INSTALL_TORCH_VERSION}" && \
     printf '%s\n' \
       '[global]' \
       "index-url = http://10.16.1.201:9929/nightly/dtk${DTK_INDEX_VERSION}/+simple/" \

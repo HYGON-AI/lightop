@@ -45,7 +45,7 @@ jobs:
           fi
 
   test:
-    name: Build LightOp environment and run OpTest
+    name: Build and test with Torch ${{ matrix.torch_version }}
     needs: validate
 
     # Never execute code from an untrusted fork on an internal runner.
@@ -56,18 +56,26 @@ jobs:
     runs-on: [self-hosted, Linux, X64, hcu-ci-pr, nmz36]
     timeout-minutes: 240
 
+    strategy:
+      # A failure in one compatibility lane must not hide the result of the
+      # other supported Torch version. Override the JSON array with the
+      # LIGHTOP_TORCH_VERSIONS repository variable when needed.
+      fail-fast: false
+      matrix:
+        torch_version: ${{ fromJSON(vars.LIGHTOP_TORCH_VERSIONS || '["2.10.0", "2.11.0"]') }}
+
     env:
       CI_BASE_IMAGE: 42.228.13.241:5000/dev/dev:rockylinux8.6-mpi5.0-gcc13.3-cmake3.29-py3.10-mkl2024.2.0.664
       DTK_PKG_PATH: ${{ vars.LIGHTOP_DTK_PKG_PATH || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
       AICC_NIGHTLY_DIR: /public/opendas/ArchivedFile/ai_cc/nightly
       PYTHON_VERSION: "3.10"
-      INSTALL_TORCH_VERSION: "2.10.0"
+      INSTALL_TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_INDEX_VERSION: "2604"
-      CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}
-      CI_COMPILE_CONTAINER_NAME: lightop-build-${{ github.run_id }}-${{ github.run_attempt }}
-      CI_TEST_IMAGE: lightop-test-ci:${{ github.run_id }}-${{ github.run_attempt }}
-      CI_TEST_CONTAINER_NAME: lightop-test-${{ github.run_id }}-${{ github.run_attempt }}
-      CI_ARTIFACT_ROOT: ${{ github.workspace }}/.ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}
+      CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
+      CI_COMPILE_CONTAINER_NAME: lightop-build-${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
+      CI_TEST_IMAGE: lightop-test-ci:${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
+      CI_TEST_CONTAINER_NAME: lightop-test-${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
+      CI_ARTIFACT_ROOT: ${{ github.workspace }}/.ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}/torch-${{ matrix.torch_version }}
       HIP_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
       ROCR_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
       OPTEST_PACKAGE_SPEC: ${{ vars.OPTEST_PACKAGE_SPEC || 'optest' }}
@@ -103,7 +111,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CI_BUILD_CONTEXT="${RUNNER_TEMP}/lightop-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          CI_BUILD_CONTEXT="${RUNNER_TEMP}/lightop-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-torch${INSTALL_TORCH_VERSION}"
           echo "CI_BUILD_CONTEXT=${CI_BUILD_CONTEXT}" >> "${GITHUB_ENV}"
 
           docker version
@@ -310,21 +318,29 @@ jobs:
               echo "OpTest supports LightOp; only OpTest will execute tests."
               printf "optest\n" > /op_test_output/ci-test-driver.txt
 
-              # Match CIctl lightop.install_vllm(), but constrain vLLM to the
-              # public version whose internal wheel is built for Torch 2.10.
+              # Resolve the matching runtime as one transaction. This lets
+              # the package index choose a build compatible with each Torch
+              # matrix lane instead of coupling CI to one Torch release.
               python3 -m pip install \
                 "torch==${INSTALL_TORCH_VERSION}" \
-                "vllm==0.21.0"
-              python3 -m pip install \
-                "torch==${INSTALL_TORCH_VERSION}" \
+                vllm \
                 triton
               python3 -m pip install "numpy==1.25.0"
               python3 -m pip uninstall -y cupy-cuda12x
 
               python3 - <<"PY"
           import importlib.metadata
+          import os
           import torch
           from vllm import _custom_ops  # noqa: F401
+
+          expected_torch = os.environ["INSTALL_TORCH_VERSION"]
+          actual_torch = torch.__version__.split("+", 1)[0]
+          if actual_torch != expected_torch:
+              raise SystemExit(
+                  f"Torch version mismatch after test dependency install: "
+                  f"expected {expected_torch}, got {torch.__version__}"
+              )
 
           print(f"torch={torch.__version__}")
           for package in ("vllm", "triton", "numpy", "optest"):
@@ -400,9 +416,9 @@ jobs:
         if: always() && steps.artifact_policy.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
-          name: lightop-ci-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
+          name: lightop-ci-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}-torch-${{ matrix.torch_version }}
           path: |
             dist/*.whl
-            .ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}/
+            .ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}/torch-${{ matrix.torch_version }}/
           if-no-files-found: warn
           retention-days: 14
