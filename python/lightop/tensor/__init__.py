@@ -9,6 +9,7 @@ from ..fill_zeros import fill_zeros
 from ..reduce import mean, sum
 from ..ops_basic import (
     embedding,
+    gather,
     index_add,
     index_add_out,
     index_select,
@@ -27,6 +28,7 @@ __all__ = [
     "ds_cat",
     "embedding",
     "fill_zeros",
+    "gather",
     "index_add",
     "index_add_out",
     "index_select",

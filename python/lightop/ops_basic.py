@@ -117,3 +117,9 @@ def index_add_out(
 def embedding(dst: torch.Tensor, index: torch.Tensor, weight: torch.Tensor) -> torch.Tensor:
     """Gather rows: dst[i] = weight[index[i]]. Writes into preallocated dst."""
     return op.embedding_opt(dst, index.contiguous(), weight)
+
+def gather(
+    dst: torch.Tensor, index: torch.Tensor, src: torch.Tensor, special: bool = False
+) -> torch.Tensor:
+    """dst[r,c] = src[index[r,c], c] (or row-broadcast when special=True)."""
+    return op.gather_opt(dst, index, src, special)
