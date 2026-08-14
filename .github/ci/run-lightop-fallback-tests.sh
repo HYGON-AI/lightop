@@ -9,20 +9,24 @@ if [[ ! -d "${test_root}" ]]; then
     exit 1
 fi
 
-mapfile -t cases < <(
-    find "${test_root}" -maxdepth 1 -type f -name 'test*' -print | sort
+relative_cases=(
+    test/moe_marlin/test/awq_marlin_repack/test_marlin_utils.py
+    test/moe_marlin/test/awq_marlin_repack_w4a8/test_marlin_utils.py
+    test/test_gemm.py
+    test/test_moe_align_block_size.py
+    test/test_rmsnorm.py
+    test/test_rotary_positional_embedding.py
+    test/test_store_kv_cache.py
+    test/test_scaled_masked_softmax.py
 )
-
-extra_cases=(
-    "${test_root}/moe_w8a8/release_moe_w8a8.py"
-    "${test_root}/moe_marlin/moe_w4a16/benchmark_deepseek_lightop.py"
-    "${test_root}/w8a8/w8a8_test.py"
-    "${test_root}/moe_marlin/test/w4a16/test_deepseek_lightop.py"
-)
-for case_file in "${extra_cases[@]}"; do
-    if [[ -f "${case_file}" ]]; then
-        cases+=("${case_file}")
+cases=()
+for relative_case in "${relative_cases[@]}"; do
+    case_file="${source_root}/${relative_case}"
+    if [[ ! -f "${case_file}" ]]; then
+        echo "Required fallback case was not found: ${relative_case}" >&2
+        exit 1
     fi
+    cases+=("${case_file}")
 done
 
 if [[ "${#cases[@]}" -eq 0 ]]; then
@@ -32,15 +36,14 @@ fi
 
 executed=0
 for case_file in "${cases[@]}"; do
-    if [[ "$(basename "${case_file}")" == "test_bf16_deepgemm_contig.py" ]]; then
-        echo "Excluded known long-running case: ${case_file#${source_root}/}"
-        continue
-    fi
-
     work_dir="$(mktemp -d /tmp/lightop-fallback.XXXXXX)"
     echo "Running fallback case: ${case_file#${source_root}/}"
     set +e
-    (cd "${work_dir}" && timeout 3600 python3 "${case_file}")
+    if grep -Eq '^(async[[:space:]]+)?def[[:space:]]+test_|^class[[:space:]]+Test' "${case_file}"; then
+        (cd "${work_dir}" && timeout 3600 python3 -m pytest -v "${case_file}")
+    else
+        (cd "${work_dir}" && timeout 3600 python3 "${case_file}")
+    fi
     status=$?
     set -e
     if [[ "${status}" -ne 0 ]]; then

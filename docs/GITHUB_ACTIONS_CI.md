@@ -20,7 +20,7 @@ CI 在向 `master` 或 `lightop-dev` 提交或更新 Pull Request，以及手动
 
 ## 当前构建配置
 
-构建服务地址、基础镜像 tag、工具包文件名、Python、Torch、vLLM、Triton、NumPy 和设备列表直接维护在 `.github/workflows/ci.yml` 中，不需要配置 Repository Variables。兜底测试当前使用与既有 LightOp 测试环境一致的 vLLM `0.15.1` 和 Triton `3.5.1`。
+构建服务地址、基础镜像 tag、工具包文件名、Python、Torch、NumPy 和设备列表直接维护在 `.github/workflows/ci.yml` 中，不需要配置 Repository Variables。Torch 固定为 `2.10.0`。OpTest 安装到独立临时目录，不改变 LightOp 测试环境；兜底测试使用仓库内不依赖外部二进制基准扩展的快速用例集。
 
 当前下载地址使用 HTTP。Python 和 OpTest 共用同一个索引，并仅为该索引配置 `trusted-host`。
 

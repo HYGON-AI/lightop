@@ -66,8 +66,6 @@ jobs:
       DTK_PACKAGE: DTK-26.04-rc4-centos8-x86_64.tar.gz
       PYTHON_VERSION: "3.10"
       INSTALL_TORCH_VERSION: "2.10.0"
-      INSTALL_VLLM_VERSION: "0.15.1"
-      INSTALL_TRITON_VERSION: "3.5.1"
       INSTALL_NUMPY_VERSION: "1.25.0"
       OPTEST_PACKAGE_SPEC: optest
       CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}
@@ -340,8 +338,6 @@ jobs:
             -e PYTHON_INDEX_URL \
             -e PYTHON_TRUSTED_HOST \
             -e INSTALL_TORCH_VERSION \
-            -e INSTALL_VLLM_VERSION \
-            -e INSTALL_TRITON_VERSION \
             -e INSTALL_NUMPY_VERSION \
             -e PYTHONUNBUFFERED \
             -v /opt/hyhal:/opt/hyhal:ro \
@@ -369,36 +365,27 @@ jobs:
             # cannot mutate the already validated LightOp build runtime.
             python3 -m pip install \
               pytest-timeout openpyxl pandas einops tqdm tabulate
+            optest_target=/tmp/optest-probe
+            rm -rf "${optest_target}"
             python3 -m pip install \
               --disable-pip-version-check \
               --no-deps \
+              --target "${optest_target}" \
               --index-url "${PYTHON_INDEX_URL}" \
               --trusted-host "${PYTHON_TRUSTED_HOST}" \
               "${OPTEST_PACKAGE_SPEC}"
+            export PYTHONPATH="${optest_target}${PYTHONPATH:+:${PYTHONPATH}}"
 
             python3 -m optest --help
-
-            # Both OpTest and the repository fallback suite require the same
-            # test runtime used by the existing LightOp validation flow.
-            # Match the established LightOp environment setup: install the
-            # vLLM dependency set first, then restore the selected Torch and
-            # Triton runtime in separate resolver transactions.
-            python3 -m pip install \
-              "vllm==${INSTALL_VLLM_VERSION}"
-            python3 -m pip install \
-              "torch==${INSTALL_TORCH_VERSION}" \
-              "triton==${INSTALL_TRITON_VERSION}"
             python3 -m pip install "numpy==${INSTALL_NUMPY_VERSION}"
             python3 -m pip uninstall -y cupy-cuda12x
 
             python3 - <<"PY"
           import importlib.metadata
           import torch
-          from vllm import _custom_ops  # noqa: F401
-          from vllm import _C  # noqa: F401
 
           print(f"torch={torch.__version__}")
-          for package in ("vllm", "triton", "numpy", "optest"):
+          for package in ("numpy", "optest"):
               print(f"{package}={importlib.metadata.version(package)}")
           if not torch.cuda.is_available():
               raise SystemExit("No device is available to PyTorch")
