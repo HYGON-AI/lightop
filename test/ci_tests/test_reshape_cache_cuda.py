@@ -1,8 +1,8 @@
 import torch
 import random
+import csv
 from lightop.kvcache import reshape_and_cache_cuda
 from vllm import _custom_ops as ops
-from openpyxl import Workbook
 
 # -----------------------------------------------------------
 # 辅助函数：手动计时
@@ -112,8 +112,8 @@ def make_inputs(T, num_heads=4, head_size=128, dtype=torch.float16):
 # -----------------------------------------------------------
 # 测试主流程
 # -----------------------------------------------------------
-def run_sweep(sheet_name="Benchmark"):
-    print(f"\n======= Running sweep: {sheet_name} =======")
+def run_sweep(csv_writer, benchmark_name="Benchmark"):
+    print(f"\n======= Running sweep: {benchmark_name} =======")
     
     # -----------------------------------------------------
     # 修改：指定具体的 Token 列表
@@ -131,12 +131,10 @@ def run_sweep(sheet_name="Benchmark"):
     print("Settings: Warmup=10, Rep=100")
 
     # -----------------------------------------------------
-    # 创建 sheet
+    # 写入 CSV 表头
     # -----------------------------------------------------
-    ws = wb.create_sheet(sheet_name)
-
     # 列标题 (增加带宽数据)
-    ws.append([
+    csv_writer.writerow([
         "Token",
         "NumHeads",
         "HeadSize",
@@ -251,9 +249,9 @@ def run_sweep(sheet_name="Benchmark"):
         ))
 
         # ---------------------
-        # 写入 Excel
+        # 写入 CSV
         # ---------------------
-        ws.append([
+        csv_writer.writerow([
             T,
             num_heads,
             head_size,
@@ -276,31 +274,15 @@ def run_sweep(sheet_name="Benchmark"):
         print(f"Average Speedup across {len(speedups)} test cases: {avg_speedup:.4f}x")
         print("-" * 100)
 
-        # 写入 Excel 汇总行 (在 Speedup 列对应的位置写入平均值)
-        # 对应列索引：
-        # A: Token, B: NumHeads, C: HeadSize, D: BlockSize, E: InvalidCnt
-        # F: vLLM Time, G: Custom Time, H: Speedup (第8列)
-        ws.append([]) # 空行
-        ws.append([
-            "AVERAGE", # Token 列
-            "", "", "", "", "", "", # 占位
-            avg_speedup, # Speedup 列
-            "", "", ""
-        ])
-
 # ======================================================
-# 入口：执行测试并写 Excel
+# 入口：执行测试并写 CSV
 # ======================================================
 if __name__ == "__main__":
-    wb = Workbook()
+    fname = "reshape_and_cache_bench_fixed.csv"
+    with open(fname, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.writer(csv_file)
 
-    # 执行指定配置的 Sweep
-    run_sweep("H4_D128")
+        # 执行指定配置的 Sweep
+        run_sweep(writer, "H4_D128")
 
-    # 删除默认 sheet
-    if "Sheet" in wb.sheetnames:
-        wb.remove(wb["Sheet"])
-
-    fname = "reshape_and_cache_bench_fixed.xlsx"
-    wb.save(fname)
-    print(f"\nExcel saved => {fname}")
+    print(f"\nCSV saved => {fname}")
