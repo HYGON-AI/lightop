@@ -19,7 +19,15 @@ from .config import (
     get_moe_groupgemm_config_w4a8,
     get_moe_groupgemm_marlin_config_w4a8,
 )
-from .expert_parallel import ep_build_m_indices, ep_gather, ep_scatter
+from .expert_parallel import (
+    ep_build_m_indices,
+    ep_gather,
+    ep_scatter,
+    moe_gather,
+    moe_gather_build_inv_perm,
+    moe_gather_sp_res_range,
+    moe_gather_should_apply_residual,
+)
 from .gemm import (
     moe_gemm_w16a16,
     moe_gemm_w4a8,
@@ -84,6 +92,10 @@ __all__ = [
     "ep_build_m_indices",
     "ep_gather",
     "ep_scatter",
+    "moe_gather",
+    "moe_gather_build_inv_perm",
+    "moe_gather_sp_res_range",
+    "moe_gather_should_apply_residual",
     "fused_experts_cuda",
     "fused_experts_impl_fp8_marlin",
     "fused_experts_impl_cuda",

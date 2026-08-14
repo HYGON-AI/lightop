@@ -615,6 +615,21 @@ void destindex_dequantize_int8_cuda(const torch::Tensor& input, const torch::Ten
 std::vector<at::Tensor> kimi_k2_moe_fused_gate(at::Tensor &input, at::Tensor &bias, int64_t topk,bool renormalize, double routed_scaling_factor,bool apply_routed_scaling_factor_on_output); 
 void fuse_rms_mrope_cuda(Tensor &q, Tensor &k, const Tensor &cos, const Tensor &sin, const std::vector<int>& mrope_section, int head_size, int rotary_dim,bool is_interleaved,Tensor weight_q,Tensor weight_k,c10::optional<Tensor> residual_q,c10::optional<Tensor> residual_k,double epsilon);
 void ep_gather(torch::Tensor& a,torch::Tensor& topk_ids,torch::Tensor& topk_weights,torch::Tensor& inv_perm,torch::optional<torch::Tensor> expert_map,torch::Tensor& output,bool specialize_k8 = false);
+torch::Tensor moe_gather(
+    torch::Tensor scatter_tokens,
+    torch::Tensor scatter_token_id,
+    torch::Tensor scatter_token_weight,
+    torch::Tensor convergent_tokens,
+    int64_t num_tokens,
+    torch::Tensor residual_tokens,
+    int64_t res_token_start,
+    int64_t res_token_end,
+    double res_scale,
+    torch::Tensor inv_perm);
+torch::Tensor moe_gather_build_inv_perm(
+    torch::Tensor scatter_token_id,
+    int64_t num_tokens,
+    int64_t topk);
 torch::Tensor backward_polyfill_cuda(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,torch::Tensor grad_output,torch::Tensor grad_vertices,int width,int height,float inv_smoothness,int mode);
 std::vector<torch::Tensor> forward_polyfill_cuda(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,int width,int height,float inv_smoothness,int mode);
 torch::Tensor backward_polyfill_lightop(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,torch::Tensor grad_output,torch::Tensor grad_vertices,int width,int height,float inv_smoothness,int mode);
@@ -1771,6 +1786,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("a"), py::arg("topk_ids"), py::arg("topk_weights"),
         py::arg("inv_perm"), py::arg("expert_map"), py::arg("output"),
         py::arg("specialize_k8") = false);
+  m.def("moe_gather", &at::native::moe_gather, "moe_gather");
+  m.def("moe_gather_build_inv_perm", &at::native::moe_gather_build_inv_perm, "moe_gather_build_inv_perm");
   m.def("backward_polyfill_cuda", &at::native::backward_polyfill_cuda, "backward_polyfill_cuda");
   m.def("forward_polyfill_cuda", &at::native::forward_polyfill_cuda, "forward_polyfill_cuda");
   m.def("forward_polyfill_lightop", &at::native::forward_polyfill_lightop, "forward_polyfill_lightop");
