@@ -704,6 +704,87 @@ def get_paged_mqa_logits_metadata(
         num_sms)
     return schedule_metadata
 
+@functools.lru_cache(maxsize=16)
+def _paged_mqa_device_info(device_index: int):
+    props = torch.cuda.get_device_properties(device_index)
+    arch = getattr(props, "gcnArchName", props.name).split(":")[0]
+    return arch, props.multi_processor_count
+
+
+def _use_page_mqa_logits_sparse_mask(
+        q: torch.Tensor,
+        fused_kv_cache: torch.Tensor,
+        weights: torch.Tensor,
+        context_lens: torch.Tensor,
+        block_table: torch.Tensor,
+        schedule_meta: Optional[torch.Tensor],
+        max_context_len: int,
+        clean_logits: bool) -> bool:
+    if not q.is_cuda or q.dim() != 4 or q.shape[0] == 0:
+        return False
+    if q.shape[1] != 1 or q.shape[3] != 128 or not q.is_contiguous():
+        return False
+    if fused_kv_cache.dim() != 4 or fused_kv_cache.shape[0] == 0:
+        return False
+    if fused_kv_cache.shape[1:3] != (64, 1) or not fused_kv_cache.is_contiguous():
+        return False
+    batch_size, _, num_heads, _ = q.shape
+    if weights.dtype != torch.float32 or weights.shape != (batch_size, num_heads):
+        return False
+    if not weights.is_contiguous():
+        return False
+    if context_lens.dtype != torch.int32 or context_lens.shape != (batch_size,):
+        return False
+    if not context_lens.is_contiguous():
+        return False
+    if block_table.dtype != torch.int32 or block_table.dim() != 2:
+        return False
+    if block_table.shape[0] != batch_size or block_table.stride(1) != 1:
+        return False
+    if max_context_len <= 0 or max_context_len != block_table.shape[1] * 64:
+        return False
+    if not clean_logits:
+        return False
+    if schedule_meta is not None:
+        return False
+
+    arch, num_cus = _paged_mqa_device_info(q.device.index)
+    fp8_q_dtypes = {torch.float8_e4m3fn}
+    fp8_fnuz_dtype = getattr(torch, "float8_e4m3fnuz", None)
+    if fp8_fnuz_dtype is not None:
+        fp8_q_dtypes.add(fp8_fnuz_dtype)
+    supported_device = (arch, num_cus) in (
+        ("gfx936", 80),
+        ("gfx938", 64),
+    )
+    supported_heads = num_heads in (8, 16, 32, 64)
+    bf16_path = (
+        q.dtype == torch.bfloat16
+        and fused_kv_cache.dtype == torch.bfloat16
+        and fused_kv_cache.shape[3] == 128
+    )
+    packed_fp8_path = (
+        q.dtype in fp8_q_dtypes | {torch.bfloat16}
+        and fused_kv_cache.dtype == torch.uint8
+        and fused_kv_cache.shape[3] == 132
+    )
+    if not (supported_device and supported_heads and
+            (bf16_path or packed_fp8_path)):
+        return False
+
+    inputs = (
+        fused_kv_cache,
+        weights,
+        context_lens,
+        block_table,
+    )
+    if any(not tensor.is_cuda or tensor.device != q.device
+           for tensor in inputs):
+        return False
+
+    return True
+
+
 def paged_mqa_logits(
         q: torch.Tensor,
         fused_kv_cache: torch.Tensor,
@@ -728,6 +809,161 @@ def paged_mqa_logits(
         max_context_len,
         clean_logits)
     return logits
+
+
+def page_mqa_logits_sparse_mask(
+        q: torch.Tensor,
+        fused_kv_cache: torch.Tensor,
+        weights: torch.Tensor,
+        context_lens: torch.Tensor,
+        block_table: torch.Tensor,
+        schedule_meta: Optional[torch.Tensor],
+        max_context_len: int,
+        clean_logits: bool = True,
+        num_warps: int = 4,
+        persistent_ctas: int = 0):
+    """Return sparse paged-MQA values and a one-bit-per-token mask.
+
+    The values tensor has the same logical shape as the dense paged-MQA output.
+    Only positions whose corresponding mask bit is one are initialized. The
+    int16 mask packs 16 consecutive positions into each element, so it must be
+    consumed by ``fast_topk_transform_sparse_mask_fused`` rather than by a
+    dense logits consumer.
+    """
+
+    if not _use_page_mqa_logits_sparse_mask(
+            q, fused_kv_cache, weights, context_lens, block_table,
+            schedule_meta, max_context_len, clean_logits):
+        raise ValueError(
+            "page_mqa_logits_sparse_mask requires a positive batch, heads "
+            "8/16/32/64, BF16 or packed FP8 KV, and "
+            "gfx936/80CU or gfx938/64CU with schedule_meta=None")
+    arch, num_cus = _paged_mqa_device_info(q.device.index)
+    # Keep the validated legacy kernel for its tuned shapes. This is a kernel
+    # selection, not an input gate; every other supported batch falls through
+    # to the independent-row (group_size=1) implementation below.
+    use_legacy_kernel = (
+        q.dtype == torch.bfloat16
+        and fused_kv_cache.dtype == torch.bfloat16
+        and q.shape[0] in (8, 40)
+        and q.shape[2] == 64
+        and (arch, num_cus) == ("gfx936", 80)
+    )
+    if use_legacy_kernel:
+        return op.page_mqa_logits_sparse_mask(
+            q,
+            fused_kv_cache,
+            weights,
+            context_lens,
+            block_table,
+            None,
+            max_context_len,
+            clean_logits,
+            num_warps,
+            persistent_ctas)
+    return page_mqa_logits_sparse_mask_grouped(
+        q,
+        fused_kv_cache,
+        weights,
+        context_lens,
+        block_table,
+        None,
+        max_context_len,
+        clean_logits,
+        num_warps,
+        persistent_ctas,
+        group_size=1)
+
+
+def page_mqa_logits_sparse_mask_grouped(
+        q: torch.Tensor,
+        fused_kv_cache: torch.Tensor,
+        weights: torch.Tensor,
+        context_lens: torch.Tensor,
+        block_table: torch.Tensor,
+        schedule_meta: Optional[torch.Tensor],
+        max_context_len: int,
+        clean_logits: bool = True,
+        num_warps: int = 4,
+        persistent_ctas: int = 0,
+        group_size: int = 5):
+    """Sparse MQA for independent rows or grouped MTP2/3/4 rows.
+
+    For ``group_size=1`` each row is independent. For ``group_size=3/4/5``,
+    consecutive rows must belong to one request and have identical block-table
+    contents, corresponding to MTP2/3/4. The returned sparse values/mask
+    contract is identical to :func:`page_mqa_logits_sparse_mask`. Supported
+    heads are 8/16/32/64. The FP8 path accepts the packed uint8 KV+scale layout
+    used by :func:`paged_mqa_logits`.
+    """
+
+    if group_size not in (1, 3, 4, 5):
+        raise ValueError("sparse MQA supports group_size 1, 3, 4, or 5")
+    fp8_q_dtypes = {torch.float8_e4m3fn}
+    fp8_fnuz_dtype = getattr(torch, "float8_e4m3fnuz", None)
+    if fp8_fnuz_dtype is not None:
+        fp8_q_dtypes.add(fp8_fnuz_dtype)
+    if fused_kv_cache.dtype == torch.uint8 and q.dtype in fp8_q_dtypes:
+        q = q.to(torch.bfloat16)
+    expected_batch = q.shape[0] if q.dim() > 0 else 0
+    if expected_batch <= 0:
+        raise ValueError("sparse MQA requires a positive batch")
+    if group_size != 1 and expected_batch % group_size != 0:
+        raise ValueError(
+            "grouped sparse MQA requires batch divisible by group_size")
+    if (q.dim() != 4 or q.shape[0] != expected_batch or q.shape[1] != 1 or
+            q.shape[2] not in (8, 16, 32, 64) or q.shape[3] != 128 or
+            q.dtype != torch.bfloat16 or not q.is_contiguous()):
+        raise ValueError(
+            "sparse MQA requires contiguous BF16 q "
+            "[batch, 1, heads, 128], heads in 8/16/32/64")
+    if fused_kv_cache.dtype not in (torch.bfloat16, torch.uint8):
+        raise ValueError("grouped sparse MQA supports BF16 or packed FP8 KV")
+    expected_kv_width = 132 if fused_kv_cache.dtype == torch.uint8 else 128
+    if (fused_kv_cache.dim() != 4 or fused_kv_cache.shape[0] == 0 or
+            tuple(fused_kv_cache.shape[1:]) != (64, 1, expected_kv_width) or
+            fused_kv_cache.stride(1) != expected_kv_width or
+            fused_kv_cache.stride(2) != expected_kv_width or
+            fused_kv_cache.stride(3) != 1):
+        raise ValueError(
+            "grouped sparse MQA requires packed BF16 [blocks,64,1,128] "
+            "or FP8+scale uint8 [blocks,64,1,132] KV")
+    if (weights.dtype != torch.float32 or
+            weights.shape != (expected_batch, q.shape[2]) or
+            not weights.is_contiguous()):
+        raise ValueError("grouped sparse MQA weights must be contiguous FP32 [batch, heads]")
+    if (context_lens.dtype != torch.int32 or
+            context_lens.shape != (expected_batch,) or
+            not context_lens.is_contiguous()):
+        raise ValueError("grouped sparse MQA context_lens must be contiguous int32 [batch]")
+    if (block_table.dtype != torch.int32 or block_table.dim() != 2 or
+            block_table.shape[0] != expected_batch or block_table.stride(1) != 1 or
+            schedule_meta is not None):
+        raise ValueError(
+            "grouped sparse MQA requires one block-table row per q row "
+            "and schedule_meta=None")
+    if (not clean_logits or num_warps != 4 or max_context_len <= 0 or
+            max_context_len != block_table.shape[1] * 64):
+        raise ValueError(
+            "grouped sparse MQA requires clean_logits=True, num_warps=4 "
+            "and max_context_len equal to block-table capacity")
+    arch, num_cus = _paged_mqa_device_info(q.device.index)
+    if (arch, num_cus) not in (("gfx936", 80), ("gfx938", 64)):
+        raise ValueError(
+            "grouped sparse MQA requires gfx936/80CU or gfx938/64CU")
+    return op.page_mqa_logits_sparse_mask_grouped(
+        q,
+        fused_kv_cache,
+        weights,
+        context_lens,
+        block_table,
+        None,
+        max_context_len,
+        clean_logits,
+        num_warps,
+        persistent_ctas,
+        group_size)
+
 
 def fused_bmm(x: torch.Tensor,                                       # [batch_size, num_head, p_size], int8
               w: torch.Tensor,                                       # [num_head, l_size, p_size], int8
