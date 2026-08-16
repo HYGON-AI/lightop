@@ -131,5 +131,55 @@ void top_k_top_p_sampling_from_probs(const torch::Tensor& probs, torch::Tensor& 
         stream);
 }
 
+template <typename T, typename IdType>
+void TopKFirstTopPSamplingFromProb(
+    T* probs, IdType* top_k_arr, T* top_p_arr, IdType* output, IdType* indices,
+    uint32_t batch_size, IdType top_k_val, T top_p_val, uint32_t d,
+    bool deterministic, uint64_t philox_seed, uint64_t philox_offset,
+    hipStream_t stream = 0) {
+  constexpr uint32_t VEC_SIZE = 16 / sizeof(T);
+
+  const uint32_t smem_size = sizeof(
+      TopKFirstSamplingTempStorage<kBlockThreads, SCAN_ALGO, REDUCE_ALGO>);
+  dim3 nblks(batch_size);
+  dim3 nthrs(kBlockThreads);
+
+  DISPATCH_DETERMINISTIC(deterministic, DETERMINISTIC, {
+    auto kernel = TopKFirstTopPSamplingFromProbKernel<
+        kBlockThreads, SCAN_ALGO, REDUCE_ALGO, VEC_SIZE, DETERMINISTIC, T, IdType>;
+    kernel<<<nblks, nthrs, smem_size, stream>>>(
+        probs, top_k_arr, top_p_arr, output, indices, top_k_val, top_p_val, d,
+        philox_seed, philox_offset);
+  });
+}
+
+void top_k_first_top_p_sampling_from_probs(
+    const torch::Tensor& probs, torch::Tensor& output,
+    std::optional<torch::Tensor> maybe_indices,
+    std::optional<torch::Tensor> maybe_top_k_arr, int64_t top_k_val,
+    std::optional<torch::Tensor> maybe_top_p_arr, float top_p_val,
+    bool deterministic, uint64_t philox_seed, uint64_t philox_offset) {
+  const unsigned int batch_size = output.size(0);
+  const unsigned int vocab_size = probs.size(1);
+
+  using IdType = int;
+  hipStream_t stream = at::cuda::getCurrentHIPStream();
+
+  sampling::TopKFirstTopPSamplingFromProb<float, IdType>(
+      static_cast<float*>(probs.data_ptr()),
+      maybe_top_k_arr.has_value()
+          ? static_cast<IdType*>(maybe_top_k_arr.value().data_ptr())
+          : nullptr,
+      maybe_top_p_arr.has_value()
+          ? static_cast<float*>(maybe_top_p_arr.value().data_ptr())
+          : nullptr,
+      static_cast<IdType*>(output.data_ptr()),
+      maybe_indices.has_value()
+          ? static_cast<IdType*>(maybe_indices.value().data_ptr())
+          : nullptr,
+      batch_size, top_k_val, top_p_val, vocab_size, deterministic, philox_seed,
+      philox_offset, stream);
+}
+
 }
 }

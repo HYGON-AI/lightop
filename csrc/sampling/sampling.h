@@ -102,5 +102,12 @@ void top_k_top_p_sampling_from_probs(const torch::Tensor& probs, torch::Tensor& 
                                      bool deterministic, uint64_t philox_seed,
                                      uint64_t philox_offset);
 
+void top_k_first_top_p_sampling_from_probs(
+    const torch::Tensor& probs, torch::Tensor& output,
+    std::optional<torch::Tensor> maybe_indices,
+    std::optional<torch::Tensor> maybe_top_k_arr, int64_t top_k_val,
+    std::optional<torch::Tensor> maybe_top_p_arr, float top_p_val,
+    bool deterministic, uint64_t philox_seed, uint64_t philox_offset);
+
 }
 }

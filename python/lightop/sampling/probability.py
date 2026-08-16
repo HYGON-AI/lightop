@@ -155,8 +155,30 @@ def top_k_top_p_sampling_from_probs(
     if seed is None or offset is None:
         seed, offset = get_seed_and_offset(batch_size * 32, generator, device)
     if filter_apply_order == "top_k_first":
-        raise NotImplementedError(
-            "top_k_first top_k_top_p sampling not implement yet, use joint sampling instead.")
+        if check_nan and torch.any(torch.isnan(probs)):
+            raise ValueError("Input probs contains NaN.")
+        if isinstance(top_k, torch.Tensor):
+            if isinstance(top_p, torch.Tensor):
+                op.top_k_first_top_p_sampling_from_probs(
+                    probs, samples, indices, top_k.int(), 0, top_p.float(), 0,
+                    deterministic, seed, offset,
+                )
+            else:
+                op.top_k_first_top_p_sampling_from_probs(
+                    probs, samples, indices, top_k.int(), 0, None, top_p,
+                    deterministic, seed, offset,
+                )
+        else:
+            if isinstance(top_p, torch.Tensor):
+                op.top_k_first_top_p_sampling_from_probs(
+                    probs, samples, indices, None, top_k, top_p.float(), 0,
+                    deterministic, seed, offset,
+                )
+            else:
+                op.top_k_first_top_p_sampling_from_probs(
+                    probs, samples, indices, None, top_k, None, top_p,
+                    deterministic, seed, offset,
+                )
     elif filter_apply_order == "joint":
         if check_nan:
             if torch.any(torch.isnan(probs)):
