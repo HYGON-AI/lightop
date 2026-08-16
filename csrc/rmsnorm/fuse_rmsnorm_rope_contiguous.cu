@@ -275,7 +275,7 @@ __inline__ __device__ T BlockReduceSum_NEW(T val, T* shared) {
 
 template <typename scalar_t,typename T_ACC, int Vec=8, int num_warp_per_block=4, int rot_dim=64,
 int kv_c_dim=512, bool APPLY_CLAMP=false, bool FLASHMLA_FP8_LAYOUT=false,
-bool APPLY_SMOOTH=false>
+bool APPLY_SMOOTH=false, bool FUSE_Q_CAT=false>
 __global__ void rms_rope_kernel(
     scalar_t* __restrict__ input_q,  // [bs, num_head, q_c_dim + rot_dim]
     scalar_t* __restrict__ input_k,  // [bs, kv_c_dim + rot_dim]
@@ -303,7 +303,13 @@ __global__ void rms_rope_kernel(
     const int k_bs_stride,
     const int64_t kv_cache_token_stride_bytes,
     const float kv_quant_epsilon,
-    const bool is_neox_style)
+    const bool is_neox_style,
+    const scalar_t* __restrict__ q_nope,
+    scalar_t* __restrict__ q_cat,
+    const int64_t q_nope_stride_0,
+    const int64_t q_nope_stride_1,
+    const int64_t q_cat_stride_0,
+    const int64_t q_cat_stride_1)
   {
 
     if(blockIdx.x < q_grid_x){
@@ -372,6 +378,21 @@ __global__ void rms_rope_kernel(
       }
       // 写回q_pe
       *(LoadT*)q_pe_ptr = *(LoadT*)input_vec;
+      if constexpr (FUSE_Q_CAT) {
+        const scalar_t* q_nope_head =
+            q_nope + token_idx * q_nope_stride_0 +
+            head_offset_in_token * q_nope_stride_1;
+        scalar_t* q_cat_head =
+            q_cat + token_idx * q_cat_stride_0 +
+            head_offset_in_token * q_cat_stride_1;
+        #pragma unroll
+        for (int offset = element_in_head; offset < kv_c_dim;
+             offset += rot_dim) {
+          *(LoadT*)(q_cat_head + offset) = *(const LoadT*)(q_nope_head + offset);
+        }
+        *(LoadT*)(q_cat_head + kv_c_dim + element_in_head) =
+            *(LoadT*)input_vec;
+      }
     }
     else if(blockIdx.x < q_grid_x+k_grid_x){
       constexpr int thread_per_head = rot_dim / Vec;
@@ -687,11 +708,13 @@ __global__ void rms_rope_kernel(
 
 
 
-  void fused_rms_norm_rope_contiguous(torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,
+  void fused_rms_norm_rope_contiguous_impl(torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,
     torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, 
     std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon, double limit,
     bool flashmla_fp8_layout, float kv_quant_epsilon,
-    const c10::optional<torch::Tensor>& kv_smooth_scale) {
+    const c10::optional<torch::Tensor>& kv_smooth_scale,
+    const c10::optional<torch::Tensor>& q_nope,
+    const c10::optional<torch::Tensor>& q_cat) {
     TORCH_CHECK(
         limit == -1.0 || (std::isfinite(limit) && limit >= 0.0),
         "limit must be -1 (disabled) or a finite non-negative value");
@@ -733,6 +756,31 @@ __global__ void rms_rope_kernel(
     TORCH_CHECK(kv_c_normed.scalar_type() == q_pe.scalar_type(), "kv_c_normed dtype must match q_pe");
     TORCH_CHECK(weight.scalar_type() == q_pe.scalar_type(), "weight dtype must match q_pe");
     TORCH_CHECK(cos_sin_cache.scalar_type() == q_pe.scalar_type(), "cos_sin_cache dtype must match q_pe");
+    TORCH_CHECK(q_nope.has_value() == q_cat.has_value(),
+                "q_nope and q_cat must either both be provided or both be absent");
+    const bool fuse_q_cat = q_nope.has_value();
+    if (fuse_q_cat) {
+      const auto& nope = q_nope.value();
+      const auto& cat = q_cat.value();
+      TORCH_CHECK(nope.device() == q_pe.device() && cat.device() == q_pe.device(),
+                  "q_nope, q_cat and q_pe must be on the same device");
+      TORCH_CHECK(nope.scalar_type() == q_pe.scalar_type() &&
+                  cat.scalar_type() == q_pe.scalar_type(),
+                  "q_nope and q_cat dtype must match q_pe");
+      TORCH_CHECK(nope.dim() == 3 && nope.size(0) == bs &&
+                  nope.size(1) == num_head && nope.size(2) == 512,
+                  "q_nope must be [bs, num_head, 512]");
+      TORCH_CHECK(nope.stride(2) == 1,
+                  "q_nope last dimension must be contiguous");
+      TORCH_CHECK(cat.dim() == 3 && cat.size(0) == bs &&
+                  cat.size(1) == num_head && cat.size(2) == 576,
+                  "q_cat must be [bs, num_head, 576]");
+      TORCH_CHECK(cat.is_contiguous(), "q_cat must be contiguous");
+      TORCH_CHECK(reinterpret_cast<std::uintptr_t>(nope.data_ptr()) % 16 == 0,
+                  "q_nope data pointer must be 16-byte aligned");
+      TORCH_CHECK(reinterpret_cast<std::uintptr_t>(cat.data_ptr()) % 16 == 0,
+                  "q_cat data pointer must be 16-byte aligned");
+    }
     TORCH_CHECK(
         !is_neox_style || q_pe.scalar_type() != at::ScalarType::Double,
         "NeoX-style RoPE does not support float64 inputs");
@@ -907,6 +955,14 @@ __global__ void rms_rope_kernel(
         int64_t* slot_mapping_ptr = slot_mapping.data_ptr<int64_t>();
         const scalar_t* cos_sin_cache_ptr = cos_sin_cache.data_ptr<scalar_t>();
         const int64_t* positions_ptr = positions.data_ptr<int64_t>();
+        const scalar_t* q_nope_ptr = fuse_q_cat
+            ? q_nope.value().data_ptr<scalar_t>() : nullptr;
+        scalar_t* q_cat_ptr = fuse_q_cat
+            ? q_cat.value().data_ptr<scalar_t>() : nullptr;
+        const int64_t q_nope_stride_0 = fuse_q_cat ? q_nope.value().stride(0) : 0;
+        const int64_t q_nope_stride_1 = fuse_q_cat ? q_nope.value().stride(1) : 0;
+        const int64_t q_cat_stride_0 = fuse_q_cat ? q_cat.value().stride(0) : 0;
+        const int64_t q_cat_stride_1 = fuse_q_cat ? q_cat.value().stride(1) : 0;
 
         TORCH_CHECK(kv_cache_ptr != nullptr, "unsupported kv_cache storage dtype");
 
@@ -914,17 +970,27 @@ __global__ void rms_rope_kernel(
           constexpr bool kApplyClamp = decltype(clamp_tag)::value;
           constexpr bool kFlashMLALayout = decltype(flashmla_tag)::value;
           constexpr bool kApplySmooth = decltype(smooth_tag)::value;
-          rms_rope_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,
-          kv_c_dim,kApplyClamp,kFlashMLALayout,kApplySmooth>
-          <<<grid, block, 0, stream>>>(
-              q_pe_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,
-              kv_smooth_scale_ptr,cos_sin_cache_ptr,
-              positions_ptr,slot_mapping_ptr,kv_cache_ptr,
-              kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
-              k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon,
-              static_cast<float>(limit), kv_dtype, max_slot_id, k_bs_stride,
-              kFlashMLALayout ? kv_cache_token_stride_bytes : 0,
-              kv_quant_epsilon, is_neox_style);
+          auto launch_q_cat_variant = [&](auto fuse_q_cat_tag) {
+            constexpr bool kFuseQCat = decltype(fuse_q_cat_tag)::value;
+            rms_rope_kernel<scalar_t,T_ACC,Vec,num_warp_per_block,rot_dim,
+            kv_c_dim,kApplyClamp,kFlashMLALayout,kApplySmooth,kFuseQCat>
+            <<<grid, block, 0, stream>>>(
+                q_pe_ptr,k_pe_ptr,kv_c_ptr,kv_c_normed_ptr,weight_ptr,
+                kv_smooth_scale_ptr,cos_sin_cache_ptr,
+                positions_ptr,slot_mapping_ptr,kv_cache_ptr,
+                kv_cache_blocks_size,q_c_dim,num_head,q_stride_head,
+                k_stride_head,q_grid_x,k_grid_x, k_rms_grid_x, bs, epsilon,
+                static_cast<float>(limit), kv_dtype, max_slot_id, k_bs_stride,
+                kFlashMLALayout ? kv_cache_token_stride_bytes : 0,
+                kv_quant_epsilon, is_neox_style, q_nope_ptr, q_cat_ptr,
+                q_nope_stride_0, q_nope_stride_1,
+                q_cat_stride_0, q_cat_stride_1);
+          };
+          if (fuse_q_cat) {
+            launch_q_cat_variant(std::true_type{});
+          } else {
+            launch_q_cat_variant(std::false_type{});
+          }
         };
         if (limit < 0.0) {
           if (flashmla_fp8_layout) {
@@ -954,6 +1020,37 @@ __global__ void rms_rope_kernel(
 
       });
 
+}
+
+void fused_rms_norm_rope_contiguous(
+    torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe,
+    torch::Tensor& kv_c, torch::Tensor& kv_c_normed, torch::Tensor& weight,
+    torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping,
+    torch::Tensor& kv_cache, std::string& kv_cache_dtype_str,
+    float kv_cache_scale, bool is_neox_style, float epsilon, double limit,
+    bool flashmla_fp8_layout, float kv_quant_epsilon,
+    const c10::optional<torch::Tensor>& kv_smooth_scale) {
+  fused_rms_norm_rope_contiguous_impl(
+      positions, q_pe, k_pe, kv_c, kv_c_normed, weight, cos_sin_cache,
+      slot_mapping, kv_cache, kv_cache_dtype_str, kv_cache_scale,
+      is_neox_style, epsilon, limit, flashmla_fp8_layout,
+      kv_quant_epsilon, kv_smooth_scale, c10::nullopt, c10::nullopt);
+}
+
+void fused_rms_norm_rope_contiguous_q_cat(
+    torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe,
+    torch::Tensor& kv_c, torch::Tensor& kv_c_normed, torch::Tensor& weight,
+    torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping,
+    torch::Tensor& kv_cache, torch::Tensor& q_nope, torch::Tensor& q_cat,
+    std::string& kv_cache_dtype_str, float kv_cache_scale,
+    bool is_neox_style, float epsilon, double limit,
+    bool flashmla_fp8_layout, float kv_quant_epsilon,
+    const c10::optional<torch::Tensor>& kv_smooth_scale) {
+  fused_rms_norm_rope_contiguous_impl(
+      positions, q_pe, k_pe, kv_c, kv_c_normed, weight, cos_sin_cache,
+      slot_mapping, kv_cache, kv_cache_dtype_str, kv_cache_scale,
+      is_neox_style, epsilon, limit, flashmla_fp8_layout,
+      kv_quant_epsilon, kv_smooth_scale, q_nope, q_cat);
 }
 
 }
