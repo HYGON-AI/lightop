@@ -11,35 +11,38 @@ source_dir="$(realpath "$2")"
 dtk_url="$3"
 aicc_nightly_dir="$(realpath "$4")"
 source_branch="$5"
+source_commit="$(git -C "${source_dir}" rev-parse HEAD)"
 
 git check-ref-format --branch "${source_branch}" >/dev/null
+if [[ ! "${source_commit}" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "Invalid source commit: ${source_commit}" >&2
+    exit 2
+fi
+
+: "${RUNNER_TEMP:?RUNNER_TEMP must be set}"
+runner_temp="$(realpath -m "${RUNNER_TEMP}")"
 
 case "${context_dir}" in
-    "${RUNNER_TEMP}"/*) ;;
+    "${runner_temp}"/*) ;;
     *)
         echo "Build context must be located under RUNNER_TEMP: ${context_dir}" >&2
         exit 2
         ;;
 esac
 
+rm -rf -- "${context_dir}"
 mkdir -p "${context_dir}/lightop"
 
-# Preserve .git so a future OpTest LightOp implementation can identify the
-# checked-out revision, while excluding outputs from earlier CI attempts.
-tar \
-    --exclude='./build' \
-    --exclude='./dist' \
-    --exclude='./test_results' \
-    --exclude='./.ci-artifacts' \
-    -C "${source_dir}" -cf - . | \
+# Archive only the integrated tracked revision. This excludes .git, ignored
+# files, untracked files, and outputs left by earlier runner jobs.
+git -C "${source_dir}" archive --format=tar "${source_commit}" | \
     tar -C "${context_dir}/lightop" -xf -
 
-# Keep the triggering source branch visible to package metadata and OpTest.
-# The checked-out contents already include the temporary integration with the
-# latest master performed by the workflow.
-git -C "${context_dir}/lightop" checkout -B "${source_branch}"
-
-wget -q -O - "${dtk_url}" | tar -xzf - -C "${context_dir}"
+dtk_archive="${context_dir}/.dtk-package.tar.gz"
+wget --quiet --tries=3 --timeout=30 -O "${dtk_archive}" "${dtk_url}"
+tar -tzf "${dtk_archive}" >/dev/null
+tar -xzf "${dtk_archive}" -C "${context_dir}"
+rm -f "${dtk_archive}"
 
 mapfile -t dtk_dirs < <(find "${context_dir}" -mindepth 1 -maxdepth 1 -type d -name 'dtk-*' -print)
 if [[ "${#dtk_dirs[@]}" -ne 1 ]]; then
@@ -62,11 +65,10 @@ latest_aicc="${latest_aicc}.run"
 cp "${aicc_nightly_dir}/${latest_aicc}" "${context_dir}/${latest_aicc}"
 chmod +x "${context_dir}/${latest_aicc}"
 
-cp "${source_dir}/.github/ci/Dockerfile" "${context_dir}/Dockerfile"
-cp "${source_dir}/.github/ci/build-lightop-wheel.sh" "${context_dir}/build-lightop-wheel.sh"
+cp "${context_dir}/lightop/.github/ci/Dockerfile" "${context_dir}/Dockerfile"
+cp "${context_dir}/lightop/.github/ci/build-lightop-wheel.sh" "${context_dir}/build-lightop-wheel.sh"
 
-# Convert the selected DTK environment into Dockerfile ENV declarations using
-# the same transformation as CIctl docker/tools/generate_dtk_env.sh.
+# Convert the selected DTK environment into Dockerfile ENV declarations.
 dtk_env_tmp="${context_dir}/dtk-env-generator.sh"
 cp "${context_dir}/dtk/env.sh" "${dtk_env_tmp}"
 sed -i -E \
@@ -91,12 +93,15 @@ for ((i = 1; i < ${#dtk_parts[@]} - 2; i++)); do
     dtk_version_parts+=("${part,,}")
 done
 dtk_package_version="dtk$(IFS=-; echo "${dtk_version_parts[*]}")"
-cat > "${context_dir}/build-environment.txt" <<EOF
-DTK_PACKAGE=${dtk_package}
-DTK_PACKAGE_VERSION=${dtk_package_version}
-DTK_VERSION=${dtk_version}
-AICC_VERSION=${latest_aicc%.run}
-EOF
+{
+    printf 'DTK_PACKAGE=%q\n' "${dtk_package}"
+    printf 'DTK_PACKAGE_VERSION=%q\n' "${dtk_package_version}"
+    printf 'DTK_VERSION=%q\n' "${dtk_version}"
+    printf 'AICC_VERSION=%q\n' "${latest_aicc%.run}"
+    printf 'LIGHTOP_SOURCE_BRANCH=%q\n' "${source_branch}"
+    printf 'LIGHTOP_SOURCE_COMMIT=%q\n' "${source_commit}"
+} > "${context_dir}/build-environment.txt"
 
-printf 'DTK package: %s\nDTK version: %s\nAICC version: %s\n' \
-    "${dtk_package}" "${dtk_version}" "${latest_aicc%.run}"
+printf 'DTK package: %s\nDTK version: %s\nAICC version: %s\nSource branch: %s\nSource commit: %s\n' \
+    "${dtk_package}" "${dtk_version}" "${latest_aicc%.run}" \
+    "${source_branch}" "${source_commit}"

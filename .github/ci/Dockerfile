@@ -9,6 +9,8 @@ ARG DTK_PKG_NAME
 ARG DTK_PKG_VERSION
 ARG DTK_VERSION
 ARG AICC_VERSION
+ARG LIGHTOP_SOURCE_BRANCH
+ARG LIGHTOP_SOURCE_COMMIT
 
 ENV ROCM_PATH=/opt/dtk \
     DTKROOT=/opt/dtk \
@@ -19,10 +21,12 @@ ENV ROCM_PATH=/opt/dtk \
     DTK_PKG_NAME=${DTK_PKG_NAME} \
     DTK_PKG_VERSION=${DTK_PKG_VERSION} \
     DTK_VERSION=${DTK_VERSION} \
-    AICC_VERSION=${AICC_VERSION}
+    AICC_VERSION=${AICC_VERSION} \
+    LIGHTOP_SOURCE_BRANCH=${LIGHTOP_SOURCE_BRANCH} \
+    LIGHTOP_SOURCE_COMMIT=${LIGHTOP_SOURCE_COMMIT}
 
 # The build-context script inserts the ENV declarations generated from the
-# selected DTK package here, matching CIctl docker/build.sh.
+# selected DTK package here.
 # config dtk env
 
 COPY dtk /opt/dtk
@@ -55,8 +59,7 @@ RUN mkdir -p /root/.pip && \
     chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
     yes | /dtk_llvm_*.run
 
-# Keep the build image focused on compiling LightOp. vLLM and OpTest are added
-# only in the separate test container, matching CIctl's phase boundary.
+# Keep the build image focused on compiling and validating the wheel.
 RUN python3 - <<'PY'
 import importlib.metadata
 import os

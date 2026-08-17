@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-base_ref="${1:-origin/master}"
+target_branch="${GITHUB_BASE_REF:-master}"
+target_ref="${1:-origin/${target_branch}}"
 source_ref="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-unknown}}"
 source_sha="$(git rev-parse HEAD)"
-base_sha="$(git rev-parse "${base_ref}")"
+target_sha="$(git rev-parse "${target_ref}")"
 
 git -c user.name='LightOp CI' \
     -c user.email='ci@localhost' \
-    merge --no-edit "${base_sha}"
+    merge --no-edit "${target_sha}"
 
 integrated_sha="$(git rev-parse HEAD)"
 echo "Source branch: ${source_ref}"
 echo "Source commit: ${source_sha}"
-echo "Latest master: ${base_sha}"
+echo "Target branch: ${target_branch}"
+echo "Target commit: ${target_sha}"
 echo "Integrated commit: ${integrated_sha}"
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    echo "base_sha=${base_sha}" >> "${GITHUB_OUTPUT}"
+    echo "target_sha=${target_sha}" >> "${GITHUB_OUTPUT}"
 fi
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
@@ -26,7 +28,8 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
         echo
         echo "- Source branch: \`${source_ref}\`"
         echo "- Source commit: \`${source_sha}\`"
-        echo "- Latest master: \`${base_sha}\`"
+        echo "- Target branch: \`${target_branch}\`"
+        echo "- Target commit: \`${target_sha}\`"
         echo "- Integrated commit: \`${integrated_sha}\`"
     } >> "${GITHUB_STEP_SUMMARY}"
 fi

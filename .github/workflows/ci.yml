@@ -1,10 +1,12 @@
 name: LightOp CI
 
 on:
+  push:
+    branches:
+      - master
   pull_request:
     branches:
       - master
-      - lightop-dev
   workflow_dispatch:
 
 permissions:
@@ -16,23 +18,24 @@ concurrency:
 
 jobs:
   validate:
-    name: Validate source and test configuration
+    name: Validate integrated source
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
-      base_sha: ${{ steps.integrate_source.outputs.base_sha }}
+      target_sha: ${{ steps.integrate_source.outputs.target_sha }}
 
     steps:
       - name: Checkout LightOp
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Integrate latest master
+      - name: Integrate latest target branch
         id: integrate_source
         shell: bash
-        run: bash .github/ci/integrate-latest-master.sh
+        run: bash .github/ci/integrate-target-branch.sh
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -59,6 +62,7 @@ jobs:
     # Never execute code from an untrusted fork on an internal runner.
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'push' ||
       github.event.pull_request.head.repo.full_name == github.repository
 
     runs-on: [self-hosted, Linux, X64, hcu-ci-pr, nmz36]
@@ -73,23 +77,16 @@ jobs:
         torch_version: ${{ fromJSON(vars.LIGHTOP_TORCH_VERSIONS || '["2.10.0", "2.11.0"]') }}
 
     env:
-      CI_BASE_IMAGE: 42.228.13.241:5000/dev/dev:rockylinux8.6-mpi5.0-gcc13.3-cmake3.29-py3.10-mkl2024.2.0.664
+      CI_BASE_IMAGE: ${{ vars.LIGHTOP_CI_BASE_IMAGE_REPOSITORY || '42.228.13.241:5000/dev/dev:rockylinux8.6-mpi5.0-gcc13.3-cmake3.29-py3.10-mkl2024.2.0.664' }}
       DTK_PKG_PATH: ${{ vars.LIGHTOP_DTK_PKG_PATH || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
       AICC_NIGHTLY_DIR: /public/opendas/ArchivedFile/ai_cc/nightly
       PYTHON_VERSION: "3.10"
       CI_SOURCE_BRANCH: ${{ github.head_ref || github.ref_name }}
       INSTALL_TORCH_VERSION: ${{ matrix.torch_version }}
-      DTK_INDEX_VERSION: "2604"
       CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
       CI_COMPILE_CONTAINER_NAME: lightop-build-${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
-      CI_TEST_IMAGE: lightop-test-ci:${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
-      CI_TEST_CONTAINER_NAME: lightop-test-${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
-      CI_ARTIFACT_ROOT: ${{ github.workspace }}/.ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}/torch-${{ matrix.torch_version }}
       HIP_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
       ROCR_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
-      OPTEST_PACKAGE_SPEC: ${{ vars.OPTEST_PACKAGE_SPEC || 'optest' }}
-      OPTEST_INDEX_URL: ${{ vars.OPTEST_INDEX_URL || 'http://10.16.1.201:9929/nightly/dtk2604/+simple/' }}
-      OPTEST_TRUSTED_HOST: ${{ vars.OPTEST_TRUSTED_HOST || '10.16.1.201' }}
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -114,12 +111,13 @@ jobs:
       - name: Checkout LightOp
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Integrate latest master
+      - name: Integrate latest target branch
         shell: bash
-        run: bash .github/ci/integrate-latest-master.sh "${{ needs.validate.outputs.base_sha }}"
+        run: bash .github/ci/integrate-target-branch.sh "${{ needs.validate.outputs.target_sha }}"
 
       - name: Prepare runner and build context
         shell: bash
@@ -136,16 +134,14 @@ jobs:
           test -d "${AICC_NIGHTLY_DIR}"
           ls -l /dev/mkfd /dev/kfd /dev/dri/*
 
-          mkdir -p \
-            "${CI_ARTIFACT_ROOT}/op_test_output" \
-            "${CI_ARTIFACT_ROOT}/op_test_log"
-
           bash .github/ci/prepare-build-context.sh \
             "${CI_BUILD_CONTEXT}" \
             "${GITHUB_WORKSPACE}" \
             "${DTK_PKG_PATH}" \
             "${AICC_NIGHTLY_DIR}" \
             "${CI_SOURCE_BRANCH}"
+
+          test ! -e "${CI_BUILD_CONTEXT}/lightop/.git"
 
       - name: Build daily LightOp compile image
         shell: bash
@@ -160,17 +156,20 @@ jobs:
             --build-arg "BASE_IMAGE=${CI_BASE_IMAGE}" \
             --build-arg "PYTHON_VERSION=${PYTHON_VERSION}" \
             --build-arg "INSTALL_TORCH_VERSION=${INSTALL_TORCH_VERSION}" \
-            --build-arg "DTK_INDEX_VERSION=${DTK_INDEX_VERSION}" \
+            --build-arg "DTK_INDEX_VERSION=${DTK_VERSION}" \
             --build-arg "DTK_PKG_NAME=${DTK_PACKAGE}" \
             --build-arg "DTK_PKG_VERSION=${DTK_PACKAGE_VERSION}" \
             --build-arg "DTK_VERSION=${DTK_VERSION}" \
             --build-arg "AICC_VERSION=${AICC_VERSION}" \
+            --build-arg "LIGHTOP_SOURCE_BRANCH=${LIGHTOP_SOURCE_BRANCH}" \
+            --build-arg "LIGHTOP_SOURCE_COMMIT=${LIGHTOP_SOURCE_COMMIT}" \
             --label "io.hygon.lightop.base-image=${CI_BASE_IMAGE}" \
             --label "io.hygon.lightop.dtk-package=${DTK_PACKAGE}" \
             --label "io.hygon.lightop.dtk-version=${DTK_VERSION}" \
             --label "io.hygon.lightop.aicc-version=${AICC_VERSION}" \
             --label "io.hygon.lightop.torch-version=${INSTALL_TORCH_VERSION}" \
-            --label "io.hygon.lightop.source-commit=${GITHUB_SHA}" \
+            --label "io.hygon.lightop.source-branch=${LIGHTOP_SOURCE_BRANCH}" \
+            --label "io.hygon.lightop.source-commit=${LIGHTOP_SOURCE_COMMIT}" \
             -t "${CI_COMPILE_IMAGE}" \
             "${CI_BUILD_CONTEXT}" 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
 
@@ -200,6 +199,8 @@ jobs:
             echo "- AICC version: \`${AICC_VERSION}\`"
             echo "- Python: \`${PYTHON_VERSION}\`"
             echo "- Torch: \`${INSTALL_TORCH_VERSION}\`"
+            echo "- Source branch: \`${LIGHTOP_SOURCE_BRANCH}\`"
+            echo "- Integrated commit: \`${LIGHTOP_SOURCE_COMMIT}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Compile LightOp wheel
@@ -260,127 +261,31 @@ jobs:
           compile_status=${PIPESTATUS[0]}
           set -e
 
-          rm -rf dist
-          mkdir -p dist
-          docker cp "${CI_COMPILE_CONTAINER_NAME}:/dist/." dist/ || true
-
           if [[ "${compile_status}" -ne 0 ]]; then
             echo "::error::LightOp compile container exited with status ${compile_status}."
             exit "${compile_status}"
           fi
 
-          # Like CIctl's docker commit after COMPILE: preserve the installed
-          # LightOp wheel in an immutable image for a fresh test container.
-          docker commit \
-            --change 'CMD ["tail", "-f", "/dev/null"]' \
-            "${CI_COMPILE_CONTAINER_NAME}" \
-            "${CI_TEST_IMAGE}"
+          rm -rf dist
+          mkdir -p dist
+          docker cp "${CI_COMPILE_CONTAINER_NAME}:/dist/." dist/
 
-      - name: Run OpTest in a fresh test container
+      - name: Test stage placeholder
         shell: bash
         run: |
           set -euo pipefail
-
-          docker run -d \
-            --name "${CI_TEST_CONTAINER_NAME}" \
-            --init \
-            --network host \
-            --ipc host \
-            --shm-size 80g \
-            --cap-add SYS_PTRACE \
-            --security-opt seccomp=unconfined \
-            --privileged \
-            --device /dev/mkfd \
-            --device /dev/kfd \
-            --device /dev/dri \
-            --group-add video \
-            --user root \
-            -e HIP_VISIBLE_DEVICES \
-            -e ROCR_VISIBLE_DEVICES \
-            -e OPTEST_PACKAGE_SPEC \
-            -e OPTEST_INDEX_URL \
-            -e OPTEST_TRUSTED_HOST \
-            -e INSTALL_TORCH_VERSION \
-            -e PYTHONUNBUFFERED \
-            -v /opt/hyhal:/opt/hyhal:ro \
-            -v "${CI_ARTIFACT_ROOT}/op_test_output:/op_test_output" \
-            -v "${CI_ARTIFACT_ROOT}/op_test_log:/op_test_log" \
-            "${CI_TEST_IMAGE}"
-
-          docker exec "${CI_TEST_CONTAINER_NAME}" bash -lc '
-            set -euo pipefail
-            source /opt/dtk/env.sh
-            export PATH="/opt/hyhal/bin:${PATH}"
-            export LD_LIBRARY_PATH="/opt/hyhal/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-
-            # OpTest is installed without dependencies so its NumPy 1.24 pin
-            # cannot mutate the already validated LightOp build runtime.
-            python3 -m pip install \
-              pytest-timeout openpyxl pandas einops tqdm tabulate
-            python3 -m pip install \
-              --disable-pip-version-check \
-              --no-deps \
-              --index-url "${OPTEST_INDEX_URL}" \
-              --trusted-host "${OPTEST_TRUSTED_HOST}" \
-              "${OPTEST_PACKAGE_SPEC}"
-
-            python3 -m optest --help
-            if python3 - <<"PY"
-          from optest.operators import SUPPORTED_OPERATORS
-          raise SystemExit(0 if "lightop" in SUPPORTED_OPERATORS else 1)
-          PY
-            then
-              echo "OpTest supports LightOp; only OpTest will execute tests."
-              printf "optest\n" > /op_test_output/ci-test-driver.txt
-
-              # Resolve the matching runtime as one transaction. This lets
-              # the package index choose a build compatible with each Torch
-              # matrix lane instead of coupling CI to one Torch release.
-              python3 -m pip install \
-                "torch==${INSTALL_TORCH_VERSION}" \
-                vllm \
-                triton
-              python3 -m pip install "numpy==1.25.0"
-              python3 -m pip uninstall -y cupy-cuda12x
-
-              python3 - <<"PY"
-          import importlib.metadata
-          import os
-          import torch
-          from vllm import _custom_ops  # noqa: F401
-
-          expected_torch = os.environ["INSTALL_TORCH_VERSION"]
-          actual_torch = torch.__version__.split("+", 1)[0]
-          if actual_torch != expected_torch:
-              raise SystemExit(
-                  f"Torch version mismatch after test dependency install: "
-                  f"expected {expected_torch}, got {torch.__version__}"
-              )
-
-          print(f"torch={torch.__version__}")
-          for package in ("vllm", "triton", "numpy", "optest"):
-              print(f"{package}={importlib.metadata.version(package)}")
-          if not torch.cuda.is_available():
-              raise SystemExit("No device is available to PyTorch")
-          PY
-
-              python3 -m optest \
-                --op_name lightop \
-                --test_mode acc \
-                --test_dir /lightop \
-                --gpus "${HIP_VISIBLE_DEVICES}"
-            else
-              echo "::warning::Installed OpTest does not support LightOp yet; compilation and wheel validation succeeded, so tests are skipped."
-              printf "optest-not-supported\n" > /op_test_output/ci-test-driver.txt
-            fi
-          ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
+          echo "::notice::The functional test stage is reserved and currently has no test cases."
+          {
+            echo "### Functional tests"
+            echo
+            echo "No functional test cases are configured yet."
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Remove CI containers, images, and build context
         if: always()
         shell: bash
         run: |
           set +e
-          docker rm -f "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1
           docker rm -f "${CI_COMPILE_CONTAINER_NAME}" >/dev/null 2>&1
 
           runner_uid="$(id -u)"
@@ -395,45 +300,101 @@ jobs:
               chmod -R u+rwX /workspace
             ' _ "${runner_uid}" "${runner_gid}"
 
-          docker image rm -f "${CI_TEST_IMAGE}" >/dev/null 2>&1
           docker image rm -f "${CI_COMPILE_IMAGE}" >/dev/null 2>&1
-          docker image rm -f "${CI_BASE_IMAGE}" >/dev/null 2>&1
           if [[ "${CI_BUILD_CONTEXT:-}" == "${RUNNER_TEMP}"/lightop-build-* ]]; then
             rm -rf -- "${CI_BUILD_CONTEXT}"
           fi
           exit 0
 
-      - name: Sanitize public text logs
-        id: artifact_policy
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          forbidden_pattern='[dD][cC][uU]'
-          if [[ -d .ci-artifacts ]]; then
-            while IFS= read -r -d '' artifact_file; do
-              if grep -Iq . "${artifact_file}"; then
-                sed -i -E 's/[dD][cC][uU]/HCU/g' "${artifact_file}"
-              fi
-            done < <(find .ci-artifacts -type f -print0)
-
-            if find .ci-artifacts -mindepth 1 -print | grep -Eiq "${forbidden_pattern}"; then
-              echo "::error::An artifact path violates the public naming policy."
-              exit 1
-            fi
-            if grep -RIaqE "${forbidden_pattern}" .ci-artifacts; then
-              echo "::error::An artifact still violates the public naming policy."
-              exit 1
-            fi
-          fi
-
-      - name: Upload build and test artifacts
-        if: always() && steps.artifact_policy.outcome == 'success'
+      - name: Upload validated build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: lightop-ci-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}-torch-${{ matrix.torch_version }}
-          path: |
-            dist/*.whl
-            .ci-artifacts/${{ github.run_id }}-${{ github.run_attempt }}/torch-${{ matrix.torch_version }}/
-          if-no-files-found: warn
+          path: dist/*manylinux*.whl
+          if-no-files-found: error
           retention-days: 14
+
+  publish:
+    name: Publish wheel for Torch ${{ matrix.torch_version }}
+    needs:
+      - validate
+      - test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: [self-hosted, Linux, X64, hcu-ci-pr, nmz36]
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        torch_version: ${{ fromJSON(vars.LIGHTOP_TORCH_VERSIONS || '["2.10.0", "2.11.0"]') }}
+
+    env:
+      CI_BASE_IMAGE: ${{ vars.LIGHTOP_CI_BASE_IMAGE_REPOSITORY || '42.228.13.241:5000/dev/dev:rockylinux8.6-mpi5.0-gcc13.3-cmake3.29-py3.10-mkl2024.2.0.664' }}
+      DTK_PKG_PATH: ${{ vars.LIGHTOP_DTK_PKG_PATH || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
+      PYTHON_INDEX_URL: ${{ vars.LIGHTOP_PYTHON_INDEX_URL || 'http://10.16.1.201:9929/nightly/dtk2604/+simple/' }}
+      PYTHON_TRUSTED_HOST: ${{ vars.LIGHTOP_PYTHON_TRUSTED_HOST || '10.16.1.201' }}
+      DEVPI_URL: ${{ vars.LIGHTOP_DEVPI_URL || 'http://10.16.1.201:9929/' }}
+      DEVPI_USER: ${{ secrets.LIGHTOP_DEVPI_USER }}
+      DEVPI_PASSWORD: ${{ secrets.LIGHTOP_DEVPI_PASSWORD }}
+      INSTALL_TORCH_VERSION: ${{ matrix.torch_version }}
+
+    steps:
+      - name: Download validated wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: lightop-ci-${{ github.run_id }}-${{ github.run_attempt }}-torch-${{ matrix.torch_version }}
+          path: publish-artifact
+
+      - name: Publish validated repaired wheel
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${DEVPI_USER}" || -z "${DEVPI_PASSWORD}" ]]; then
+            echo "::error::Package repository credentials are not configured."
+            exit 1
+          fi
+          echo "::add-mask::${DEVPI_PASSWORD}"
+
+          mapfile -d '' wheels < <(
+            find publish-artifact -type f -name '*manylinux*.whl' -print0
+          )
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one validated repaired wheel, found ${#wheels[@]}."
+            exit 1
+          fi
+
+          publish_dir="$(realpath "$(dirname "${wheels[0]}")")"
+          wheel_name="$(basename "${wheels[0]}")"
+          dtk_package="$(basename "${DTK_PKG_PATH}")"
+          torch_tag="${INSTALL_TORCH_VERSION//./}"
+          if [[ "${wheel_name}" != *".torch${torch_tag}."* ]]; then
+            echo "::error::Wheel ${wheel_name} does not match Torch ${INSTALL_TORCH_VERSION}."
+            exit 1
+          fi
+          sha256sum "${wheels[0]}"
+
+          docker pull "${CI_BASE_IMAGE}" 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
+          docker run --rm \
+            --network host \
+            -e DEVPI_URL \
+            -e DEVPI_USER \
+            -e DEVPI_PASSWORD \
+            -e PYTHON_INDEX_URL \
+            -e PYTHON_TRUSTED_HOST \
+            -e DTK_PACKAGE="${dtk_package}" \
+            -e WHEEL_NAME="${wheel_name}" \
+            -v "${publish_dir}:/publish:ro" \
+            "${CI_BASE_IMAGE}" \
+            bash -lc '
+              set -euo pipefail
+              python3 -m pip install \
+                --index-url "${PYTHON_INDEX_URL}" \
+                --trusted-host "${PYTHON_TRUSTED_HOST}" \
+                ciupload
+              CIUpload \
+                --devpi_url "${DEVPI_URL}" \
+                --devpi_user "${DEVPI_USER}" \
+                --devpi_password "${DEVPI_PASSWORD}" \
+                --dtk_pkg_name "${DTK_PACKAGE}" \
+                -f "/publish/${WHEEL_NAME}"
+            ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
