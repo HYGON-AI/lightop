@@ -426,6 +426,57 @@ def fused_rms_norm_rope_contiguous(
     return
 
 
+def fused_rms_norm_rope_contiguous_q_cat(
+    positions: torch.Tensor,
+    q_pe: torch.Tensor,
+    k_pe: torch.Tensor,
+    kv_c: torch.Tensor,
+    kv_c_normed: torch.Tensor,
+    weight: torch.Tensor,
+    cos_sin_cache: torch.Tensor,
+    slot_mapping: torch.Tensor,
+    kv_cache: torch.Tensor,
+    q_nope: torch.Tensor,
+    q_cat: torch.Tensor,
+    kv_cache_dtype_str: str,
+    kv_cache_scale: float,
+    is_neox_style: bool = False,
+    epsilon: float = 1e-5,
+    limit: float = -1.0,
+    flashmla_fp8_layout: bool = False,
+    kv_quant_epsilon: float = 1e-6,
+    kv_smooth_scale: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """Run the existing RMS/RoPE/cache-store kernel and materialize Q[576].
+
+    The K/RMS-specialized blocks are unchanged.  Q-specialized blocks rotate
+    ``q_pe`` in place and write ``cat([q_nope, q_pe], -1)`` to the caller-owned
+    contiguous ``q_cat`` buffer.
+    """
+    op.fused_rms_norm_rope_contiguous_q_cat(
+        positions,
+        q_pe,
+        k_pe,
+        kv_c,
+        kv_c_normed,
+        weight,
+        cos_sin_cache,
+        slot_mapping,
+        kv_cache,
+        q_nope,
+        q_cat,
+        kv_cache_dtype_str,
+        kv_cache_scale,
+        is_neox_style,
+        epsilon,
+        limit,
+        flashmla_fp8_layout,
+        kv_quant_epsilon,
+        kv_smooth_scale,
+    )
+    return q_cat
+
+
 def fuse_rmsnorm_rope_quant_qkv(
     positions: torch.Tensor,
     q_c: torch.Tensor,

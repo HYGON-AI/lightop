@@ -26,6 +26,7 @@ std::tuple<Tensor,Tensor>rmsnorm_forward(const Tensor& self,const Tensor& weight
 std::tuple<Tensor,Tensor>rmsnorm_backward(const Tensor& grad, const Tensor& X,const Tensor& rstd,const Tensor& gamma);
 void fused_rms_norm_contiguous(torch::Tensor& out, torch::Tensor& input, torch::Tensor& weight, double epsilon);
 void fused_rms_norm_rope_contiguous(torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon, double limit, bool flashmla_fp8_layout, float kv_quant_epsilon, const c10::optional<torch::Tensor>& kv_smooth_scale);
+void fused_rms_norm_rope_contiguous_q_cat(torch::Tensor& positions, torch::Tensor& q_pe, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed, torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, torch::Tensor& q_nope, torch::Tensor& q_cat, std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon, double limit, bool flashmla_fp8_layout, float kv_quant_epsilon, const c10::optional<torch::Tensor>& kv_smooth_scale);
 void fuse_rmsnorm_rope_quant_qkv(torch::Tensor& positions, torch::Tensor& q_c, torch::Tensor& q_pe, torch::Tensor& q_quant, torch::Tensor& q_scale, torch::Tensor& k_pe, torch::Tensor& kv_c, torch::Tensor& kv_c_normed,torch::Tensor& weight, torch::Tensor& cos_sin_cache, torch::Tensor& slot_mapping, torch::Tensor& kv_cache, std::string& kv_cache_dtype_str, float kv_cache_scale, bool is_neox_style, float epsilon, double limit);
 Tensor grid_sample_forward_autograd(const Tensor& input, const Tensor& grid, int64_t interpolation_mode, int64_t padding_mode, bool align_corners);
 Tensor grid_sample_forward(const Tensor& input, const Tensor& grid, int64_t interpolation_mode, int64_t padding_mode, bool align_corners);
@@ -811,6 +812,29 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("kv_quant_epsilon") = 1e-6f,
       py::arg("kv_smooth_scale") = py::none());
   m.def(
+      "fused_rms_norm_rope_contiguous_q_cat",
+      &at::native::fused_rms_norm_rope_contiguous_q_cat,
+      "fused_rms_norm_rope_contiguous_q_cat",
+      py::arg("positions"),
+      py::arg("q_pe"),
+      py::arg("k_pe"),
+      py::arg("kv_c"),
+      py::arg("kv_c_normed"),
+      py::arg("weight"),
+      py::arg("cos_sin_cache"),
+      py::arg("slot_mapping"),
+      py::arg("kv_cache"),
+      py::arg("q_nope"),
+      py::arg("q_cat"),
+      py::arg("kv_cache_dtype_str"),
+      py::arg("kv_cache_scale"),
+      py::arg("is_neox_style"),
+      py::arg("epsilon"),
+      py::arg("limit") = -1.0,
+      py::arg("flashmla_fp8_layout") = false,
+      py::arg("kv_quant_epsilon") = 1e-6f,
+      py::arg("kv_smooth_scale") = py::none());
+  m.def(
       "fuse_rmsnorm_rope_quant_qkv",
       &at::native::fuse_rmsnorm_rope_quant_qkv,
       "fuse_rmsnorm_rope_quant_qkv",
@@ -1123,6 +1147,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("top_k_sampling_from_probs", &lightop::sampling::top_k_sampling_from_probs, "top_k_sampling_from_probs");
   m.def("top_p_sampling_from_probs", &lightop::sampling::top_p_sampling_from_probs, "top_p_sampling_from_probs");
   m.def("top_k_top_p_sampling_from_probs", &lightop::sampling::top_k_top_p_sampling_from_probs, "top_k_top_p_sampling_from_probs");
+  m.def("top_k_first_top_p_sampling_from_probs", &lightop::sampling::top_k_first_top_p_sampling_from_probs, "top_k_first_top_p_sampling_from_probs");
   m.def(
       "rms_norm_opt",
       &at::native::rms_norm_opt,

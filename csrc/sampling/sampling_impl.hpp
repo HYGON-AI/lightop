@@ -199,6 +199,148 @@ struct SamplingTempStorage {
   };
 };
 
+template <uint32_t BLOCK_THREADS, BlockScanAlgorithm SCAN_ALGORITHM,
+          BlockReduceAlgorithm REDUCE_ALGORITHM>
+struct TopKFirstSamplingTempStorage {
+  SamplingTempStorage<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM> sampling;
+  uint32_t histogram[256];
+  uint32_t prefix;
+  uint32_t prefix_mask;
+  uint32_t remaining_rank;
+  float top_k_mass;
+};
+
+template <uint32_t BLOCK_THREADS, BlockScanAlgorithm SCAN_ALGORITHM,
+          BlockReduceAlgorithm REDUCE_ALGORITHM, uint32_t VEC_SIZE, typename DType>
+__device__ __forceinline__ float ComputeTopKMass(
+    const DType* probs, uint32_t d, uint32_t k,
+    TopKFirstSamplingTempStorage<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM>* temp_storage) {
+  static_assert(BLOCK_THREADS == 256, "top-k-first histogram requires 256 threads");
+  const uint32_t tx = threadIdx.x;
+  k = min(max(k, 1u), d);
+
+  if (tx == 0) {
+    temp_storage->prefix = 0;
+    temp_storage->prefix_mask = 0;
+    temp_storage->remaining_rank = k - 1;
+  }
+  __syncthreads();
+
+  if (k == d) {
+    float thread_sum = 0;
+    for (uint32_t base = tx * VEC_SIZE; base < d; base += BLOCK_THREADS * VEC_SIZE) {
+      vec_t<float, VEC_SIZE> probs_vec;
+      probs_vec.fill(0);
+      if (base + VEC_SIZE <= d) {
+        probs_vec.cast_load(probs + base);
+      } else {
+#pragma unroll
+        for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+          if (base + j < d) {
+            probs_vec[j] = probs[base + j];
+          }
+        }
+      }
+#pragma unroll
+      for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+        if (base + j < d) {
+          thread_sum += probs_vec[j];
+        }
+      }
+    }
+    const float total_mass =
+        BlockReduce<float, BLOCK_THREADS, REDUCE_ALGORITHM>(
+            temp_storage->sampling.block_prim.reduce)
+            .Sum(thread_sum);
+    if (tx == 0) {
+      temp_storage->top_k_mass = total_mass;
+    }
+    __syncthreads();
+    return temp_storage->top_k_mass;
+  }
+
+#pragma unroll
+  for (int shift = 24; shift >= 0; shift -= 8) {
+    temp_storage->histogram[tx] = 0;
+    __syncthreads();
+
+    for (uint32_t base = tx * VEC_SIZE; base < d; base += BLOCK_THREADS * VEC_SIZE) {
+      vec_t<float, VEC_SIZE> probs_vec;
+      probs_vec.fill(0);
+      if (base + VEC_SIZE <= d) {
+        probs_vec.cast_load(probs + base);
+      } else {
+#pragma unroll
+        for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+          if (base + j < d) {
+            probs_vec[j] = probs[base + j];
+          }
+        }
+      }
+#pragma unroll
+      for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+        const uint32_t idx = base + j;
+        if (idx < d) {
+          const uint32_t bits = __float_as_uint(probs_vec[j]);
+          if ((bits & temp_storage->prefix_mask) == temp_storage->prefix) {
+            atomicAdd(&temp_storage->histogram[(bits >> shift) & 0xffu], 1u);
+          }
+        }
+      }
+    }
+    __syncthreads();
+
+    if (tx == 0) {
+      uint32_t rank = temp_storage->remaining_rank;
+      for (int bucket = 255; bucket >= 0; --bucket) {
+        const uint32_t count = temp_storage->histogram[bucket];
+        if (rank < count) {
+          temp_storage->prefix |= static_cast<uint32_t>(bucket) << shift;
+          temp_storage->prefix_mask |= 0xffu << shift;
+          break;
+        }
+        rank -= count;
+      }
+      temp_storage->remaining_rank = rank;
+    }
+    __syncthreads();
+  }
+
+  const uint32_t cutoff = temp_storage->prefix;
+  float thread_sum = 0;
+  for (uint32_t base = tx * VEC_SIZE; base < d; base += BLOCK_THREADS * VEC_SIZE) {
+    vec_t<float, VEC_SIZE> probs_vec;
+    probs_vec.fill(0);
+    if (base + VEC_SIZE <= d) {
+      probs_vec.cast_load(probs + base);
+    } else {
+#pragma unroll
+      for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+        if (base + j < d) {
+          probs_vec[j] = probs[base + j];
+        }
+      }
+    }
+#pragma unroll
+    for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+      const uint32_t idx = base + j;
+      if (idx < d && __float_as_uint(probs_vec[j]) >= cutoff) {
+        thread_sum += probs_vec[j];
+      }
+    }
+  }
+
+  const float top_k_mass =
+      BlockReduce<float, BLOCK_THREADS, REDUCE_ALGORITHM>(
+          temp_storage->sampling.block_prim.reduce)
+          .Sum(thread_sum);
+  if (tx == 0) {
+    temp_storage->top_k_mass = top_k_mass;
+  }
+  __syncthreads();
+  return temp_storage->top_k_mass;
+}
+
 struct BoolDiffOp {
   __device__ __forceinline__ bool operator()(const bool& lhs, const bool& rhs) const {
     return lhs != rhs;
@@ -703,6 +845,127 @@ __global__ void TopKTopPSamplingFromProbKernel(DType* probs, IdType* top_k_arr, 
       q = aggregate_gt_pivot_0.value;
     } else {
       // case 3: pivot_0 rejected, pivot_1 rejected
+      low = pivot_1;
+      q = aggregate_gt_pivot_1.value;
+    }
+  } while (low < high);
+  __syncthreads();
+  if (tx == 0) {
+    output[bx] = sampled_id;
+  }
+}
+
+template <uint32_t BLOCK_THREADS, BlockScanAlgorithm SCAN_ALGORITHM,
+          BlockReduceAlgorithm REDUCE_ALGORITHM, uint32_t VEC_SIZE, bool DETERMINISTIC,
+          typename DType, typename IdType>
+__global__ void TopKFirstTopPSamplingFromProbKernel(
+    DType* probs, IdType* top_k_arr, float* top_p_arr, IdType* output, IdType* indices,
+    IdType top_k_val, float top_p_val, uint32_t d, uint64_t philox_seed,
+    uint64_t philox_offset) {
+  const uint32_t bx = blockIdx.x, tx = threadIdx.x;
+  hiprandStatePhilox4_32_10_t state;
+  hiprand_init(philox_seed, bx, philox_offset, &state);
+  const uint32_t row_idx = indices == nullptr ? bx : indices[bx];
+  const uint32_t requested_k = top_k_arr == nullptr ? top_k_val : top_k_arr[row_idx];
+  const uint32_t k = min(max(requested_k, 1u), d);
+  const float top_p = top_p_arr == nullptr ? top_p_val : top_p_arr[row_idx];
+
+  extern __shared__ __align__(
+      alignof(TopKFirstSamplingTempStorage<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM>))
+      uint8_t smem_sampling[];
+  auto& top_k_first_storage = reinterpret_cast<
+      TopKFirstSamplingTempStorage<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM>&>(
+      smem_sampling);
+  auto& temp_storage = top_k_first_storage.sampling;
+
+  float p = 1.f;
+  if (top_p < 1.f && k > 1) {
+    const float top_k_mass =
+        ComputeTopKMass<BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM, VEC_SIZE>(
+            probs + row_idx * d, d, k, &top_k_first_storage);
+    p = top_p * top_k_mass;
+  }
+
+  vec_t<float, VEC_SIZE> probs_vec;
+  float aggregate;
+  float q = 1;
+  double low = 0, high = 1.f;
+  int sampled_id;
+  do {
+    temp_storage.sampled_id = d;
+    __syncthreads();
+    float u = hiprand_uniform(&state) * q;
+    aggregate = 0;
+#pragma unroll 2
+    for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
+      probs_vec.fill(0);
+      if ((i * BLOCK_THREADS + tx) * VEC_SIZE < d) {
+        probs_vec.cast_load(probs + row_idx * d + (i * BLOCK_THREADS + tx) * VEC_SIZE);
+      }
+
+      DeviceSamplingFromProb<VEC_SIZE, BLOCK_THREADS, SCAN_ALGORITHM, REDUCE_ALGORITHM,
+                             DETERMINISTIC>(
+          i, d, [&](float x) { return x > low; }, u, probs_vec, aggregate, &temp_storage);
+      if (aggregate > u) {
+        break;
+      }
+    }
+    __syncthreads();
+    sampled_id = temp_storage.sampled_id;
+    if (sampled_id == d) {
+      sampled_id = temp_storage.last_valid_id;
+    }
+    double pivot_0 = probs[row_idx * d + sampled_id];
+    double pivot_1 = (pivot_0 + high) / 2;
+
+    ValueCount<float> aggregate_gt_pivot_0{0, 0}, aggregate_gt_pivot_1{0, 0};
+    ValueCount<float> threadlocal_aggregate_gt_pivot_0{0, 0};
+    ValueCount<float> threadlocal_aggregate_gt_pivot_1{0, 0};
+#pragma unroll 2
+    for (uint32_t i = 0; i < ceil_div(d, BLOCK_THREADS * VEC_SIZE); ++i) {
+      probs_vec.fill(0);
+      if ((i * BLOCK_THREADS + tx) * VEC_SIZE < d) {
+        probs_vec.cast_load(probs + row_idx * d + (i * BLOCK_THREADS + tx) * VEC_SIZE);
+      }
+
+      ValueCount<float> probs_gt_pivot_0[VEC_SIZE], probs_gt_pivot_1[VEC_SIZE];
+#pragma unroll
+      for (uint32_t j = 0; j < VEC_SIZE; ++j) {
+        probs_gt_pivot_0[j] = {
+            (probs_vec[j] > pivot_0) ? probs_vec[j] : 0,
+            (probs_vec[j] > pivot_0 && (i * BLOCK_THREADS + tx) * VEC_SIZE + j < d)};
+        probs_gt_pivot_1[j] = {
+            (probs_vec[j] > pivot_1) ? probs_vec[j] : 0,
+            (probs_vec[j] > pivot_1 && (i * BLOCK_THREADS + tx) * VEC_SIZE + j < d)};
+        threadlocal_aggregate_gt_pivot_0 += probs_gt_pivot_0[j];
+        threadlocal_aggregate_gt_pivot_1 += probs_gt_pivot_1[j];
+      }
+    }
+    aggregate_gt_pivot_0 +=
+        BlockReduce<ValueCount<float>, BLOCK_THREADS>(temp_storage.block_prim.reduce_value_count)
+            .Sum(threadlocal_aggregate_gt_pivot_0);
+    if (tx == 0) {
+      temp_storage.block_aggregate.pair = aggregate_gt_pivot_0;
+    }
+    __syncthreads();
+    aggregate_gt_pivot_0 = temp_storage.block_aggregate.pair;
+
+    aggregate_gt_pivot_1 +=
+        BlockReduce<ValueCount<float>, BLOCK_THREADS>(temp_storage.block_prim.reduce_value_count)
+            .Sum(threadlocal_aggregate_gt_pivot_1);
+    if (tx == 0) {
+      temp_storage.block_aggregate.pair = aggregate_gt_pivot_1;
+    }
+    __syncthreads();
+    aggregate_gt_pivot_1 = temp_storage.block_aggregate.pair;
+    if (aggregate_gt_pivot_0.count < k && aggregate_gt_pivot_0.value < p) {
+      break;
+    }
+    if (aggregate_gt_pivot_1.count < k && aggregate_gt_pivot_1.value < p) {
+      low = pivot_0;
+      high = pivot_1;
+      q = aggregate_gt_pivot_0.value;
+    } else {
       low = pivot_1;
       q = aggregate_gt_pivot_1.value;
     }
