@@ -7,6 +7,12 @@
 #include "sampling/sampling.h"
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace at {  namespace native {
+std::tuple<Tensor, Tensor> fused_deepep_prepare(
+    const Tensor& hidden,
+    const Tensor& smooth,
+    const Tensor& ids,
+    double min_limit,
+    double max_limit);
 void fused_metadata_kernel_general_launcher(
     Tensor seq_lens,
     Tensor req_to_token,
@@ -1281,6 +1287,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
        py::arg("seq_len_delta"),
        py::arg("use_swa"));
 m.def("moe_fused_gate_sqrtsoftplus",&at::native::moe_fused_gate_sqrtsoftplus,"moe_fused_gate_sqrtsoftplus");       
+m.def("fused_deepep_prepare", &at::native::fused_deepep_prepare,
+      "fused_deepep_prepare");
 m.def("fuse_silu_and_mul_ep",&at::native::fuse_silu_and_mul_ep,"fuse_silu_and_mul_ep");
 m.def(
      "topk_transform_512",
