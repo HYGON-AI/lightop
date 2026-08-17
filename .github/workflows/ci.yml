@@ -347,14 +347,33 @@ jobs:
       INSTALL_TORCH_VERSION: ${{ matrix.torch_version }}
 
     steps:
+      - name: Prepare artifact download directory
+        id: publish_paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact_dir="${RUNNER_TEMP}/lightop-publish-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-torch-${INSTALL_TORCH_VERSION}"
+          case "${artifact_dir}" in
+            "${RUNNER_TEMP}"/lightop-publish-*) ;;
+            *)
+              echo "::error::Refusing to reset unexpected artifact directory: ${artifact_dir}"
+              exit 1
+              ;;
+          esac
+          rm -rf -- "${artifact_dir}"
+          mkdir -p -- "${artifact_dir}"
+          echo "artifact_dir=${artifact_dir}" >> "${GITHUB_OUTPUT}"
+
       - name: Download validated wheel
         uses: actions/download-artifact@v4
         with:
           name: lightop-ci-${{ github.run_id }}-${{ github.run_attempt }}-torch-${{ matrix.torch_version }}
-          path: publish-artifact
+          path: ${{ steps.publish_paths.outputs.artifact_dir }}
 
       - name: Publish validated repaired wheel
         shell: bash
+        env:
+          PUBLISH_ARTIFACT_DIR: ${{ steps.publish_paths.outputs.artifact_dir }}
         run: |
           set -euo pipefail
           if [[ -z "${DEVPI_USER}" || -z "${DEVPI_PASSWORD}" ]]; then
@@ -364,10 +383,11 @@ jobs:
           echo "::add-mask::${DEVPI_PASSWORD}"
 
           mapfile -d '' wheels < <(
-            find publish-artifact -type f -name '*manylinux*.whl' -print0
+            find "${PUBLISH_ARTIFACT_DIR}" -type f -name '*manylinux*.whl' -print0
           )
           if [[ "${#wheels[@]}" -ne 1 ]]; then
             echo "::error::Expected exactly one validated repaired wheel, found ${#wheels[@]}."
+            find "${PUBLISH_ARTIFACT_DIR}" -type f -printf '%P\n'
             exit 1
           fi
 
@@ -406,3 +426,19 @@ jobs:
                 --dtk_pkg_name "${DTK_PACKAGE}" \
                 -f "/publish/${WHEEL_NAME}"
             ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
+
+      - name: Remove downloaded publish artifact
+        if: always()
+        shell: bash
+        env:
+          PUBLISH_ARTIFACT_DIR: ${{ steps.publish_paths.outputs.artifact_dir }}
+        run: |
+          set -euo pipefail
+          case "${PUBLISH_ARTIFACT_DIR}" in
+            "${RUNNER_TEMP}"/lightop-publish-*)
+              rm -rf -- "${PUBLISH_ARTIFACT_DIR}"
+              ;;
+            *)
+              echo "::warning::Skipped cleanup of unexpected artifact directory: ${PUBLISH_ARTIFACT_DIR}"
+              ;;
+          esac
