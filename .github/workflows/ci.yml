@@ -8,6 +8,12 @@ on:
     branches:
       - master
   workflow_dispatch:
+    inputs:
+      publish_packages:
+        description: Publish validated wheels from this manual run
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -319,7 +325,9 @@ jobs:
     needs:
       - validate
       - test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish_packages)
     runs-on: [self-hosted, Linux, X64, hcu-ci-pr, nmz36]
     timeout-minutes: 30
 
