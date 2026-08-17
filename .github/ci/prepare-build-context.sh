@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$#" -ne 4 ]]; then
-    echo "Usage: $0 <context-dir> <source-dir> <dtk-url> <aicc-nightly-dir>" >&2
+if [[ "$#" -ne 5 ]]; then
+    echo "Usage: $0 <context-dir> <source-dir> <dtk-url> <aicc-nightly-dir> <source-branch>" >&2
     exit 2
 fi
 
@@ -10,6 +10,9 @@ context_dir="$(realpath -m "$1")"
 source_dir="$(realpath "$2")"
 dtk_url="$3"
 aicc_nightly_dir="$(realpath "$4")"
+source_branch="$5"
+
+git check-ref-format --branch "${source_branch}" >/dev/null
 
 case "${context_dir}" in
     "${RUNNER_TEMP}"/*) ;;
@@ -31,9 +34,10 @@ tar \
     -C "${source_dir}" -cf - . | \
     tar -C "${context_dir}/lightop" -xf -
 
-# actions/checkout normally leaves pull requests detached. OpTest --test_dir
-# requires a named branch, so name only the copied build-context checkout.
-git -C "${context_dir}/lightop" checkout -B github-ci-source
+# Keep the triggering source branch visible to package metadata and OpTest.
+# The checked-out contents already include the temporary integration with the
+# latest master performed by the workflow.
+git -C "${context_dir}/lightop" checkout -B "${source_branch}"
 
 wget -q -O - "${dtk_url}" | tar -xzf - -C "${context_dir}"
 

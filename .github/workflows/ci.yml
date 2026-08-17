@@ -19,12 +19,20 @@ jobs:
     name: Validate source and test configuration
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      base_sha: ${{ steps.integrate_source.outputs.base_sha }}
 
     steps:
       - name: Checkout LightOp
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Integrate latest master
+        id: integrate_source
+        shell: bash
+        run: bash .github/ci/integrate-latest-master.sh
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -69,6 +77,7 @@ jobs:
       DTK_PKG_PATH: ${{ vars.LIGHTOP_DTK_PKG_PATH || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
       AICC_NIGHTLY_DIR: /public/opendas/ArchivedFile/ai_cc/nightly
       PYTHON_VERSION: "3.10"
+      CI_SOURCE_BRANCH: ${{ github.head_ref || github.ref_name }}
       INSTALL_TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_INDEX_VERSION: "2604"
       CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
@@ -105,7 +114,12 @@ jobs:
       - name: Checkout LightOp
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0
           persist-credentials: false
+
+      - name: Integrate latest master
+        shell: bash
+        run: bash .github/ci/integrate-latest-master.sh "${{ needs.validate.outputs.base_sha }}"
 
       - name: Prepare runner and build context
         shell: bash
@@ -130,7 +144,8 @@ jobs:
             "${CI_BUILD_CONTEXT}" \
             "${GITHUB_WORKSPACE}" \
             "${DTK_PKG_PATH}" \
-            "${AICC_NIGHTLY_DIR}"
+            "${AICC_NIGHTLY_DIR}" \
+            "${CI_SOURCE_BRANCH}"
 
       - name: Build daily LightOp compile image
         shell: bash
