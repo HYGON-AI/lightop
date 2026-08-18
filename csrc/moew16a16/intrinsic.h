@@ -4,6 +4,10 @@
 #include "hip/hip_runtime.h"
 #include "hip/hip_fp8.h" 
 #include <type_traits>
+
+#ifndef LIGHTOP_USE_AICC
+#define LIGHTOP_USE_AICC 0
+#endif
 using fp8_e4m3 = __hip_fp8_e4m3;
 using fp8_e4m3x4 = __hip_fp8x4_e4m3;
 using fp8_e5m2x4 = __hip_fp8x4_e5m2;
@@ -310,7 +314,7 @@ template<typename src_type=int8_t, typename dst_type=float, const int dword_coun
 __forceinline__ __device__ void builtin_buffer_load_dword_lds4(src_type *const shared_addr, const typename vec<uint,4>::type rsrc, const int &lds_offset, const int gvOffset_s, const int &gvOffset_v) {
     constexpr int bytes_per_element = sizeof(dst_type);
     dst_type *ptr = reinterpret_cast<dst_type*>(shared_addr) + lds_offset;
-    #if defined(__gfx936__) || defined(__gfx938__)
+    #if !LIGHTOP_USE_AICC || defined(__gfx936__) || defined(__gfx938__)
     __builtin_amdgcn_raw_buffer_load_lds(
         rsrc,
         (__attribute__((address_space(3))) int*)ptr,

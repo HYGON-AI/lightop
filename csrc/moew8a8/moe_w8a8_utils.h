@@ -3257,7 +3257,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_bypass(
       //读取A矩阵到LDS
       int A_block_buffer_load_global_offset = 0; 
       int A_lds_stage_offset_loop = 0;
-      #if defined(__gfx936__) || defined(__gfx938__)
+      #if !LIGHTOP_USE_AICC || defined(__gfx936__) || defined(__gfx938__)
       buffer_load_lds_tile_pad_sorted_token_dword_lds4(topk, token_offset, sorted_token_lens, bidx, WARP_NUM, size_k, BLOCK_SIZE_M, WARP_K, Element, A_ptr, A_lds, 
       A_block_buffer_load_global_offset, A_lds_stage_offset_loop, size_m, warp_id, lane_id); 
       #endif
@@ -3376,7 +3376,7 @@ __forceinline__ __device__ void  gemm_nt_marlin_bypass_fp8(
       //读取A矩阵到LDS
       int A_block_buffer_load_global_offset = 0; 
       int A_lds_stage_offset_loop = 0;
-      #if defined(__gfx936__) || defined(__gfx938__)
+      #if !LIGHTOP_USE_AICC || defined(__gfx936__) || defined(__gfx938__)
       buffer_load_lds_tile_pad_sorted_token_dword_lds4(topk, token_offset, sorted_token_lens, bidx, WARP_NUM, size_k, BLOCK_SIZE_M, WARP_K, Element, A_ptr, A_lds, 
       A_block_buffer_load_global_offset, A_lds_stage_offset_loop, size_m, warp_id, lane_id); 
       #endif

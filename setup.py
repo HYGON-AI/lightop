@@ -6,12 +6,16 @@ import shlex
 import shutil
 import subprocess
 import sys
-from torch.utils.cpp_extension import BuildExtension, CUDAExtension, ROCM_HOME
+from torch.utils.cpp_extension import BuildExtension, CUDAExtension, ROCM_HOME as TORCH_ROCM_HOME
 from setuptools import find_packages, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 from packaging import version
 from get_version import get_version, get_dtk_version
+from build_compiler import select_gpu_compiler
+
+GPU_COMPILER = select_gpu_compiler(TORCH_ROCM_HOME)
+ROCM_HOME = GPU_COMPILER.rocm_home
 
 def _get_pytorch_version_int():
     version=torch.__version__.split('.') # '2.9.0'
@@ -23,22 +27,7 @@ torch_version = _get_pytorch_version_int()
 
 
 def _find_rocm_home() -> Optional[str]:
-    rocm_home = os.environ.get('ROCM_HOME') or os.environ.get('ROCM_PATH')
-    if rocm_home is None:
-        try:
-            pipe_aicc = subprocess.Popen(
-                ["which aicc | xargs readlink -f"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-            aicc, _ = pipe_aicc.communicate()
-            rocm_home = os.path.dirname(os.path.dirname(aicc.decode().rstrip('\r\n')))
-            if os.path.basename(rocm_home) == 'hip':
-                rocm_home = os.path.dirname(rocm_home)
-        except Exception:
-            rocm_home = '/opt/rocm'
-            if not os.path.exists(rocm_home):
-                rocm_home = None
-    if rocm_home and torch.version.hip is None:
-        print(f"No ROCm runtime is found, using ROCM_HOME='{rocm_home}'")
-    return rocm_home
+    return ROCM_HOME
 
 
 def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
@@ -65,9 +54,6 @@ def _get_rocm_arch_flags_marlin_w4a8(cflags: Optional[List[str]] = None) -> List
         archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
     flags +=['--gpu-max-threads-per-block=512']
-    #flags +=['-mllvm']
-    #flags +=['-enable-num-vgprs-512=true']
-    flags +=['-mllvm=-support-512-vgprs=true']
     return flags
 # 4 warp
 def _get_rocm_arch_flags_marlin_w4a16(cflags: Optional[List[str]] = None) -> List[str]:
@@ -84,7 +70,6 @@ def _get_rocm_arch_flags_marlin_w4a16(cflags: Optional[List[str]] = None) -> Lis
     return flags
 
 
-ROCM_HOME = _find_rocm_home()
 IS_HIP_EXTENSION = True if ((ROCM_HOME is not None) and (torch.version.hip is not None)) else False
 COMMON_HIP_FLAGS = [
     '-fPIC',
@@ -95,6 +80,41 @@ COMMON_HIP_FLAGS = [
 COMMON_AICC_FLAGS = [
     '-DCUDA_HAS_FP16=1',
 ]
+
+COMMON_HIPCC_FLAGS = [
+    '-DCUDA_HAS_FP16=1',
+]
+
+
+def _compiler_cuda_flags() -> List[str]:
+    if GPU_COMPILER.is_aicc:
+        return COMMON_AICC_FLAGS + [
+            '-DLIGHTOP_USE_AICC=1',
+            '-mllvm=-support-512-vgprs=true',
+            '-fclang-abi-compat=17',
+        ]
+    return COMMON_HIPCC_FLAGS + [
+        '-DLIGHTOP_USE_AICC=0',
+        '-mllvm',
+        '-enable-num-vgprs-512=true',
+    ]
+
+
+def _switch_to_hipcc() -> None:
+    global GPU_COMPILER, ROCM_HOME, IS_HIP_EXTENSION
+    GPU_COMPILER = select_gpu_compiler(ROCM_HOME, mode='hipcc')
+    ROCM_HOME = GPU_COMPILER.rocm_home
+    IS_HIP_EXTENSION = True if ((ROCM_HOME is not None) and (torch.version.hip is not None)) else False
+
+
+def _clean_failed_aicc_objects(output_dir: str) -> None:
+    for root, _, files in os.walk(output_dir):
+        for filename in files:
+            if filename in {'build.ninja', '.ninja_log'} or filename.endswith(('.o', '.obj', '.d')):
+                try:
+                    os.remove(os.path.join(root, filename))
+                except FileNotFoundError:
+                    pass
 
 
 
@@ -154,8 +174,7 @@ def _write_ninja_file(path, cflags, post_cflags, cuda_cflags, cuda_post_cflags, 
     config = ['ninja_required_version = 1.3']
     config.append(f'cxx = {compiler}')
     if with_cuda:
-        if IS_HIP_EXTENSION:
-            nvcc = _join_rocm_home('bin', 'aicc')
+        nvcc = GPU_COMPILER.path
         config.append(f'nvcc = {nvcc}')
     flags = [f'cflags = {" ".join(cflags)}']
     flags.append(f'post_cflags = {" ".join(post_cflags)}')
@@ -327,8 +346,8 @@ class BuildReleaseExtension(BuildExtension):
                     if not os.path.isabs(paths[i]):
                         paths[i] = os.path.abspath(paths[i])
 
-        def unix_wrap_ninja_compile(sources, output_dir=None, macros=None, include_dirs=None, debug=0,
-                                    extra_preargs=None, extra_postargs=None, depends=None):
+        def _compile_once(sources, output_dir=None, macros=None, include_dirs=None, debug=0,
+                          extra_preargs=None, extra_postargs=None, depends=None):
             output_dir = os.path.abspath(output_dir)
             convert_to_absolute_paths_inplace(self.compiler.include_dirs)
             _, objects, extra_postargs, pp_opts, _ = \
@@ -389,7 +408,7 @@ class BuildReleaseExtension(BuildExtension):
                         cuda_post_cflags = list(extra_postargs)
                     if IS_HIP_EXTENSION:
                         cuda_post_cflags = cuda_post_cflags + _get_rocm_arch_flags(cuda_post_cflags)
-                        cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_AICC_FLAGS + cuda_post_cflags
+                        cuda_post_cflags = COMMON_HIP_FLAGS + _compiler_cuda_flags() + cuda_post_cflags
                     append_std17_if_no_std_present(cuda_post_cflags)
                     cuda_cflags = [shlex.quote(f) for f in common_cflags]
                     cuda_post_cflags = [shlex.quote(f) for f in cuda_post_cflags]
@@ -421,7 +440,7 @@ class BuildReleaseExtension(BuildExtension):
                     marlin_cuda_post_cflags = list(marlin_nvcc_flags)
                     if IS_HIP_EXTENSION:
                         marlin_cuda_post_cflags += _get_rocm_arch_flags_marlin_w4a16(marlin_cuda_post_cflags)
-                        marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_AICC_FLAGS + marlin_cuda_post_cflags
+                        marlin_cuda_post_cflags = COMMON_HIP_FLAGS + _compiler_cuda_flags() + marlin_cuda_post_cflags
                     append_std17_if_no_std_present(marlin_cuda_post_cflags)
                     marlin_cuda_post_cflags = [shlex.quote(f) for f in marlin_cuda_post_cflags]
 
@@ -451,7 +470,7 @@ class BuildReleaseExtension(BuildExtension):
                     marlin_cuda_post_cflags = list(marlin_nvcc_flags)
                     if IS_HIP_EXTENSION:
                         marlin_cuda_post_cflags += _get_rocm_arch_flags_marlin_w4a8(marlin_cuda_post_cflags)
-                        marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_AICC_FLAGS + marlin_cuda_post_cflags
+                        marlin_cuda_post_cflags = COMMON_HIP_FLAGS + _compiler_cuda_flags() + marlin_cuda_post_cflags
                     append_std17_if_no_std_present(marlin_cuda_post_cflags)
                     marlin_cuda_post_cflags = [shlex.quote(f) for f in marlin_cuda_post_cflags]
 
@@ -481,7 +500,7 @@ class BuildReleaseExtension(BuildExtension):
                     marlin_cuda_post_cflags = list(marlin_nvcc_flags)
                     if IS_HIP_EXTENSION:
                         marlin_cuda_post_cflags += _get_rocm_arch_flags_marlin_w4a8(marlin_cuda_post_cflags)
-                        marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_AICC_FLAGS + marlin_cuda_post_cflags
+                        marlin_cuda_post_cflags = COMMON_HIP_FLAGS + _compiler_cuda_flags() + marlin_cuda_post_cflags
                     append_std17_if_no_std_present(marlin_cuda_post_cflags)
                     marlin_cuda_post_cflags = [shlex.quote(f) for f in marlin_cuda_post_cflags]
 
@@ -499,6 +518,20 @@ class BuildReleaseExtension(BuildExtension):
             
             return other_objects + marlin_w4a16_objects + marlin_w4a8_objects + marlin_w4fp8_objects
 
+        def unix_wrap_ninja_compile(sources, output_dir=None, macros=None, include_dirs=None, debug=0,
+                                    extra_preargs=None, extra_postargs=None, depends=None):
+            try:
+                return _compile_once(sources, output_dir, macros, include_dirs, debug,
+                                     extra_preargs, extra_postargs, depends)
+            except RuntimeError:
+                if not GPU_COMPILER.can_fallback:
+                    raise
+                print('aicc compilation failed; cleaning generated objects and retrying with hipcc.')
+                _clean_failed_aicc_objects(os.path.abspath(output_dir))
+                _switch_to_hipcc()
+                return _compile_once(sources, output_dir, macros, include_dirs, debug,
+                                     extra_preargs, extra_postargs, depends)
+
         self.compiler.compile = unix_wrap_ninja_compile
         build_ext.build_extensions(self)
 
@@ -512,7 +545,7 @@ def get_extensions():
     define_macros = []
 
     # 全局默认编译选项
-    extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas','-w'], 'nvcc': ['-O3','-ldl', '-lrocblas','-w','-mllvm=-support-512-vgprs=true', '-DHIP_ENABLE_WARP_SYNC_BUILTINS','-fclang-abi-compat=17']}
+    extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas','-w'], 'nvcc': ['-O3','-ldl', '-lrocblas','-w', '-DHIP_ENABLE_WARP_SYNC_BUILTINS']}
     if torch_version_over110():
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_110')
     if torch_version >= 290:
