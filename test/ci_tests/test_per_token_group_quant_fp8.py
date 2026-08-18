@@ -2,6 +2,7 @@ import torch
 import triton
 import triton.language as tl
 import time
+import csv
 from lightop.quant import per_token_group_quant_fp8
 
 @triton.jit
@@ -77,6 +78,7 @@ def benchmark_and_verify():
     
     warmup_iters = 10
     bench_iters = 100
+    results_data = []
 
     print(f"{'='*80}")
     print(f"{'num_tokens':<12} | {'headdim':<8} | {'精度 (Q)':<10} | {'精度 (Scale)':<12} | {'Triton (us)':<12} | {'LightOp (us)':<12} | {'加速比':<8}")
@@ -130,7 +132,31 @@ def benchmark_and_verify():
 
         print(f"{num_tokens:<12} | {headdim:<8} | {pass_q:<10} | {pass_s:<12} | {triton_us:<12.2f} | {custom_us:<12.2f} | {speedup:<.2f}x")
 
+        results_data.append({
+            "Num Tokens": num_tokens,
+            "Head Dim": headdim,
+            "Group Size": group_size,
+            "Q Correct": "Yes" if q_match else "No",
+            "Q Max Diff": q_diff,
+            "Scale Correct": "Yes" if scale_match else "No",
+            "Triton (us)": round(triton_us, 2),
+            "LightOp (us)": round(custom_us, 2),
+            "Speedup": round(speedup, 2),
+        })
+
     print(f"{'='*80}")
+
+    csv_filename = "per_token_group_quant_fp8_results.csv"
+    fieldnames = [
+        "Num Tokens", "Head Dim", "Group Size", "Q Correct", "Q Max Diff",
+        "Scale Correct", "Triton (us)", "LightOp (us)", "Speedup"
+    ]
+    with open(csv_filename, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results_data)
+
+    print(f"CSV saved => {csv_filename}")
 
 if __name__ == "__main__":
     benchmark_and_verify()

@@ -86,6 +86,43 @@ def fast_topk_transform_fused(
     )
     return dst_page_table
 
+
+def fast_topk_transform_sparse_mask_fused(
+    score: torch.Tensor,
+    nonzero_mask: torch.Tensor,
+    lengths: torch.Tensor,
+    page_table_size_1: torch.Tensor,
+    cu_seqlens_q: torch.Tensor,
+    topk: int,
+) -> torch.Tensor:
+    """Exact TopK over sparse paged-MQA output.
+
+    ``nonzero_mask`` packs 16 score positions into every int16 element.
+    Masked-out positions are reconstructed as positive zero without reading
+    the corresponding uninitialized score storage.
+    """
+
+    if topk != 2048:
+        raise ValueError("sparse-mask TopK requires topk=2048")
+    if score.dim() != 2 or score.dtype != torch.float32:
+        raise ValueError("score must be float32 [rows, width]")
+    expected_mask_width = (score.shape[1] + 15) // 16
+    if (nonzero_mask.dtype != torch.int16 or nonzero_mask.dim() != 2 or
+            nonzero_mask.shape != (score.shape[0], expected_mask_width)):
+        raise ValueError(
+            "nonzero_mask must be int16 [rows, ceil(width/16)]")
+    dst_page_table = score.new_empty(
+        (score.shape[0], topk), dtype=torch.int32)
+    op.fast_topk_transform_sparse_mask_interface(
+        score,
+        nonzero_mask,
+        lengths,
+        dst_page_table,
+        page_table_size_1,
+        cu_seqlens_q,
+    )
+    return dst_page_table
+
 def fast_topk_transform_ragged_fused(
     score: torch.Tensor,
     lengths: torch.Tensor,

@@ -1,4 +1,6 @@
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAException.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <cuda_runtime.h>
 #include <torch/all.h>
 
@@ -101,6 +103,11 @@ __global__ void moe_fuse_gate_per_gourp_topk_kernel(
 
   constexpr int kSlotsPerGroup =
       NUM_EXPERT_SLOTS / NUM_EXPERT_GROUPS;
+  static_assert(
+      NUM_PAD_EXPERTS % NUM_EXPERT_GROUPS == 0,
+      "Padding expert slots must be distributed evenly across groups");
+  constexpr int kPadExpertsPerGroup =
+      NUM_PAD_EXPERTS / NUM_EXPERT_GROUPS;
   constexpr int kValuesPerThread =
       kSlotsPerGroup / THREADS_PER_GROUP;
   constexpr int kSubgroupsPerWave =
@@ -140,9 +147,11 @@ __global__ void moe_fuse_gate_per_gourp_topk_kernel(
 #pragma unroll
   for (int i = 0; i < kValuesPerThread; ++i) {
     const int expert_id = first_expert + i;
+    const int expert_id_in_group = expert_id - group_start;
     const bool is_padding =
-        NUM_PAD_EXPERTS > 0 &&
-        expert_id >= NUM_EXPERT_SLOTS - NUM_PAD_EXPERTS;
+        kPadExpertsPerGroup > 0 &&
+        expert_id_in_group >=
+            kSlotsPerGroup - kPadExpertsPerGroup;
     if (is_padding) {
       probabilities[i] = 0.0f;
       choice_scores[i] = kNegativeInfinity;
@@ -150,10 +159,9 @@ __global__ void moe_fuse_gate_per_gourp_topk_kernel(
     } else {
       const float logit = static_cast<float>(row_input[expert_id]);
       float probability;
-      if constexpr (
-          sizeof(T) == sizeof(uint16_t) && !USE_PACKED_TOPK) {
-        // The bf16-input/fp32-bias path needs to reproduce
-        // torch.sigmoid(bf16) before fp32 type promotion.
+      if constexpr (!USE_PACKED_TOPK) {
+        // Match torch.sigmoid's FP32 exp path before any input-dtype
+        // rounding. The gfx938 exp2 approximation can change near-tie top-k.
         probability = 1.0f / (1.0f + expf(-logit));
       } else {
         probability =
@@ -322,8 +330,15 @@ __global__ void moe_fuse_gate_per_gourp_topk_kernel(
           NUM_EXPERT_GROUPS * kMoePerGroupRoutedTopk +
           lane_in_group;
       output[output_offset] = 1.0f;
-      indices[output_offset] =
-          NUM_EXPERT_SLOTS + lane_in_group;
+      if constexpr (
+          NUM_EXPERT_GROUPS == 2 &&
+          NUM_PAD_EXPERTS == NUM_SHARED_EXPERTS) {
+        indices[output_offset] =
+            (lane_in_group + 1) * kSlotsPerGroup - 1;
+      } else {
+        indices[output_offset] =
+            NUM_EXPERT_SLOTS + lane_in_group;
+      }
     }
   }
 }
@@ -493,6 +508,8 @@ std::vector<torch::Tensor> moe_fuse_gate_per_gourp_topk(
       input.device() == bias.device(),
       "input and bias must be on the same device");
 
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
+
   const bool is_30b =
       input.size(1) == 128 &&
       num_expert_group == 1 &&
@@ -633,6 +650,7 @@ std::vector<torch::Tensor> moe_fuse_gate_per_gourp_topk(
       dispatched,
       "Unsupported input/bias dtype combination for "
       "moe_fuse_gate_per_gourp_topk");
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
   return {output, indices};
 }
 

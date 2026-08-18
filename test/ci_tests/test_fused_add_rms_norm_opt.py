@@ -1,5 +1,7 @@
 """Correctness and performance test for ``fused_add_rms_norm_opt``."""
 
+import csv
+
 import torch
 
 from lightop import op
@@ -132,6 +134,8 @@ def main() -> None:
         f"{'Speedup':>8} | {'Effective GB/s':>14}"
     )
     print("-" * 112)
+    results_data = []
+
     for num_tokens, hidden_size in TEST_SHAPES:
         result = run_case(num_tokens, hidden_size)
         shape = f"[{num_tokens}, {hidden_size}]"
@@ -143,6 +147,32 @@ def main() -> None:
             f"{result['speedup']:>8.2f} | "
             f"{result['bandwidth_gbs']:>14.3f}"
         )
+
+        results_data.append({
+            "Shape": shape,
+            "Num Tokens": num_tokens,
+            "Hidden Size": hidden_size,
+            "Dtype": "BF16",
+            "Correctness": "PASS",
+            "Max Abs Error": result["max_abs_error"],
+            "Torch (us)": result["torch_us"],
+            "LightOp (us)": result["lightop_us"],
+            "Speedup": result["speedup"],
+            "Effective GB/s": result["bandwidth_gbs"],
+        })
+
+    csv_filename = "fused_add_rms_norm_opt_results.csv"
+    fieldnames = [
+        "Shape", "Num Tokens", "Hidden Size", "Dtype", "Correctness",
+        "Max Abs Error", "Torch (us)", "LightOp (us)", "Speedup",
+        "Effective GB/s"
+    ]
+    with open(csv_filename, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(results_data)
+
+    print(f"\nCSV saved => {csv_filename}")
 
 
 if __name__ == "__main__":

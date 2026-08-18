@@ -2,6 +2,7 @@
 
 import pickle as pkl
 import time
+import csv
 from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import product
@@ -22,7 +23,6 @@ except ImportError:
 
 import triton
 import triton.language as tl
-import pandas as pd
 
 # ------------------ fp8 torch ------------------
 def per_token_quant_fp8_torch(x):
@@ -312,18 +312,18 @@ def main():
             bench(bp, "rms-norm-fp8-quant", bp.description())
         )
 
-    # df = pd.DataFrame(all_results)
-    # df.to_excel("rms_norm_dpt_quant_full.xlsx", index=False)
-    # print("\n完整结果已保存到 rms_norm_dpt_quant_full.xlsx")
+    csv_filename = "rms_norm_dpt_quant_full.csv"
+    fieldnames = [
+        "Label", "SubLabel", "NumTokens", "HiddenSize", "AddResidual",
+        "DType", "Impl", "AvgTime_ms", "MaxAbsDiff", "MeanAbsDiff",
+        "RelError"
+    ]
+    with open(csv_filename, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(all_results)
 
-    # df_pivot = df.pivot_table(
-    #     index=["SubLabel", "NumTokens", "HiddenSize", "AddResidual", "DType"],
-    #     columns="Impl",
-    #     values="AvgTime_ms"
-    # ).reset_index()
-    
-    # df_pivot.to_excel("rms_norm_dpt_quant_pivot.xlsx", index=False)
-    # print("透视表已保存到 rms_norm_dpt_quant_pivot.xlsx")
+    print(f"\n完整结果已保存到 {csv_filename}")
 
 if __name__ == '__main__':
     main()

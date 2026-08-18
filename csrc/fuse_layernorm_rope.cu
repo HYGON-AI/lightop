@@ -180,11 +180,7 @@ __global__ void opt_layernorm_rope_split_kernel(
     }
     
     T_ACC head_var = WarpReduceSum_Local<T_ACC, THEAD_PER_HEAD>(local_var);
-    #if defined(TORCH_VERSION_OVER_290)
-        T_ACC inv_std = c10::cuda::compat::rsqrt(head_var / head_dim + static_cast<T_ACC>(eps));
-    #else
-        T_ACC inv_std = c10::hip::compat::rsqrt(head_var / head_dim + static_cast<T_ACC>(eps));
-    #endif
+    T_ACC inv_std = c10::cuda::compat::rsqrt(head_var / head_dim + static_cast<T_ACC>(eps));
 
     for (int i = lane_in_head * VEC_SIZE; i < head_dim; i += THEAD_PER_HEAD * VEC_SIZE) {
         if (i < head_dim) {

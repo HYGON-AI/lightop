@@ -124,6 +124,12 @@ def run_case(use_fp8_cache: bool, loc_dtype: torch.dtype):
         v.view(NUM_TOKENS, NUM_KV_HEADS, V_HEAD_DIM).float() * VALUE_SCALE
     ).to(DTYPE)
 
+    k_scale = torch.tensor(
+        K_CACHE_SCALE, device=DEVICE, dtype=torch.float32
+    )
+    v_cache_scale = torch.tensor(
+        V_CACHE_SCALE, device=DEVICE, dtype=torch.float32
+    )
     q_out, k_out, v_out = mimo_v2_split_rope_vscale_kv_store(
         positions,
         qkv,
@@ -139,8 +145,8 @@ def run_case(use_fp8_cache: bool, loc_dtype: torch.dtype):
         True,
         VALUE_SCALE,
         kv_cache_dtype=kv_cache_dtype,
-        k_scale=K_CACHE_SCALE,
-        v_cache_scale=V_CACHE_SCALE,
+        k_scale=k_scale,
+        v_cache_scale=v_cache_scale,
     )
 
     torch.testing.assert_close(q_out.view_as(q_ref), q_ref, atol=2e-2, rtol=2e-2)
