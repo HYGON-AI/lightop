@@ -276,15 +276,50 @@ jobs:
           mkdir -p dist
           docker cp "${CI_COMPILE_CONTAINER_NAME}:/dist/." dist/
 
-      - name: Test stage placeholder
+      - name: Run functional tests
         shell: bash
         run: |
           set -euo pipefail
-          echo "::notice::The functional test stage is reserved and currently has no test cases."
+
+          docker cp "${GITHUB_WORKSPACE}/test/ci_tests" "${CI_COMPILE_CONTAINER_NAME}:/ci_tests"
+
+          set +e
+          docker exec "${CI_COMPILE_CONTAINER_NAME}" bash -lc '
+            set -euo pipefail
+            source /opt/dtk/env.sh
+            export PATH="/opt/hyhal/bin:${PATH}"
+            export LD_LIBRARY_PATH="/opt/hyhal/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+            cd /ci_tests
+            passed=()
+            failed=()
+            for test_file in test_*.py; do
+              echo "--- ${test_file} ---"
+              if python3 "${test_file}"; then
+                passed+=("${test_file}")
+              else
+                echo "::error::Test failed: ${test_file}"
+                failed+=("${test_file}")
+              fi
+            done
+
+            echo ""
+            echo "Passed (${#passed[@]}): ${passed[*]:-none}"
+            echo "Failed (${#failed[@]}): ${failed[*]:-none}"
+            exit "${#failed[@]}"
+          ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
+          test_status=${PIPESTATUS[0]}
+          set -e
+
+          if [[ "${test_status}" -ne 0 ]]; then
+            echo "::error::${test_status} functional test(s) failed."
+            exit "${test_status}"
+          fi
+
           {
             echo "### Functional tests"
             echo
-            echo "No functional test cases are configured yet."
+            echo "All \`test/ci_tests/\` tests passed."
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Remove CI containers, images, and build context
