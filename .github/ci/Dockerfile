@@ -56,7 +56,10 @@ RUN mkdir -p /root/.pip && \
     python3 -m pip install cupy && \
     python3 -m pip install "torch==${INSTALL_TORCH_VERSION}" && \
     python3 -m pip uninstall -y cupy-cuda12x && \
-    python3 -m pip install vllm && \
+    python3 -m pip install vllm \
+      --extra-index-url https://pypi.org/simple/ \
+      --trusted-host pypi.org \
+      --trusted-host files.pythonhosted.org && \
     chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
     yes | /dtk_llvm_*.run
 
