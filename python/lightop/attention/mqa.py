@@ -5,6 +5,7 @@ from ..gemmopt import (
     mqa_logits,
     paged_mqa_logits,
     page_mqa_logits_sparse_mask,
+    page_mqa_logits_sparse_mask_grouped,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "mqa_logits",
     "paged_mqa_logits",
     "page_mqa_logits_sparse_mask",
+    "page_mqa_logits_sparse_mask_grouped",
 ]
