@@ -51,11 +51,12 @@ RUN mkdir -p /root/.pip && \
       > /root/.pip/pip.conf && \
     python3 -m pip install \
       pyyaml hypothesis Ninja MonkeyType "numpy==1.24.3" wheel packaging \
-      einops pytest matplotlib auditwheel patchelf && \
+      einops pytest matplotlib auditwheel patchelf tqdm triton && \
     python3 -m pip install amdsmi && \
     python3 -m pip install cupy && \
     python3 -m pip install "torch==${INSTALL_TORCH_VERSION}" && \
     python3 -m pip uninstall -y cupy-cuda12x && \
+    python3 -m pip install vllm && \
     chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
     yes | /dtk_llvm_*.run
 
