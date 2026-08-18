@@ -10,6 +10,7 @@ PYTEST_TEST_FILES = [
 ]
 
 SCRIPT_TEST_FILES = [
+    "test/test_gather_and_maybe_dequant_cache.py",
     "test/test_fused_metadata.py",
     "test/test_reshape_cache_cuda.py",
     "test/test_fused_store_index_k_cache_fp8.py",

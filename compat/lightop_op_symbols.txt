@@ -84,6 +84,7 @@ fused_rms_norm_contiguous
 fused_rms_norm_rope_contiguous
 fused_rms_norm_rope_int8quant_contiguous
 gammarms_rotary_embedding_fuse_with_kv_store
+gather_and_maybe_dequant_cache
 gather_convert_fp8_cache
 gelu_and_mul_opt
 gelu_tanh_and_mul_opt
