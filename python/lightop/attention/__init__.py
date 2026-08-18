@@ -5,7 +5,6 @@ from .mqa import (
     mqa_logits,
     paged_mqa_logits,
     page_mqa_logits_sparse_mask,
-    page_mqa_logits_sparse_mask_grouped,
 )
 from .qkv import (
     fuse_layernorm_rotary_embedding,
@@ -68,7 +67,6 @@ __all__ = [
     "mqa_logits",
     "paged_mqa_logits",
     "page_mqa_logits_sparse_mask",
-    "page_mqa_logits_sparse_mask_grouped",
     "rms_rotary_embedding_fuse",
     "rms_rotary_embedding_fuse_with_kv_store",
     "rms_rotary_embedding_fuse_with_kv_store_fake",

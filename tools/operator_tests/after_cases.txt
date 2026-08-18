@@ -83,7 +83,6 @@ test/test_moe_swiglu_dynamic_quant.py
 test/test_ms_deform_attn_cuda.py
 test/test_pack_padded_sequence.py
 test/test_paged_mqa_logits.py
-test/test_paged_mqa_logits_sparse_fp8.py
 test/test_pcp_kernel.py
 test/test_per_token_dynamic_quant_int8.py
 test/test_per_token_fp8.py

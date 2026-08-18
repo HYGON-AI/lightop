@@ -1,5 +1,4 @@
 #include "paged_mqa_logits.h"
-#include "paged_mqa_logits_grouped_sparse_fp8_impl.hpp"
 #include "paged_mqa_logits_sparse_impl.hpp"
 
 #include <ATen/cuda/CUDAContext.h>
@@ -707,13 +706,11 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
         prop_error == hipSuccess,
         "hipGetDeviceProperties failed: ",
         hipGetErrorString(prop_error));
-    const bool is_gfx936_80cu =
-        std::strncmp(properties.gcnArchName, "gfx936", 6) == 0 &&
-        properties.multiProcessorCount == 80;
-    const bool is_gfx938_64cu =
-        std::strncmp(properties.gcnArchName, "gfx938", 6) == 0 &&
-        properties.multiProcessorCount == 64;
-    const bool supported_device = is_gfx936_80cu || is_gfx938_64cu;
+    const bool supported_device =
+        (std::strncmp(properties.gcnArchName, "gfx936", 6) == 0 &&
+         properties.multiProcessorCount == 80) ||
+        (std::strncmp(properties.gcnArchName, "gfx938", 6) == 0 &&
+         properties.multiProcessorCount == 64);
     TORCH_CHECK(
         supported_device,
         "grouped-wave sparse MQA requires gfx936/80CU or gfx938/64CU, got ",
@@ -727,54 +724,31 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
         "group_size must be 1 (independent rows) or 3/4/5 (MTP2/3/4)");
     const bool supported_batch = q.dim() == 4 && q.size(0) > 0 &&
         (group_size == 1 || q.size(0) % group_size == 0);
-    const bool bf16_path = q.scalar_type() == torch::kBFloat16 &&
-        fused_kv_cache.scalar_type() == torch::kBFloat16;
-    const bool fp8_path = is_gfx938_64cu &&
-        q.scalar_type() == torch::kFloat8_e4m3fn &&
-        fused_kv_cache.scalar_type() == torch::kUInt8;
     TORCH_CHECK(
-        bf16_path || fp8_path,
-        "grouped sparse MQA supports BF16 Q + BF16 KV or gfx938/64CU "
-        "float8_e4m3fn Q + packed FP8 KV; got q dtype ",
-        q.scalar_type(),
-        " and KV dtype ",
-        fused_kv_cache.scalar_type());
-    const int observed_heads = q.dim() == 4
-        ? static_cast<int>(q.size(2))
-        : 0;
-    const int expected_heads = fp8_path ? grouped_sparse_fp8::kHeads : 0;
-    const bool supported_heads = fp8_path
-        ? observed_heads == expected_heads
-        : (observed_heads == 8 || observed_heads == 16 ||
-           observed_heads == 32 || observed_heads == 64);
-    TORCH_CHECK(
-        q.dim() == 4 && supported_batch && q.size(1) == 1 &&
-            supported_heads && q.size(3) == kHeadDim && q.is_contiguous(),
-        fp8_path
-            ? "gfx938 FP8 grouped sparse MQA requires contiguous "
-              "float8_e4m3fn q [batch, 1, 32, 128] with positive batch "
-              "and batch divisible by group_size for group_size 3/4/5"
-            : "q must be contiguous BF16 [batch, 1, heads, 128] with "
-              "positive batch, batch divisible by group_size for group_size "
-              "3/4/5, and heads in 8/16/32/64");
+        q.scalar_type() == torch::kBFloat16 && q.dim() == 4 &&
+            supported_batch && q.size(1) == 1 &&
+            (q.size(2) == 8 || q.size(2) == 16 || q.size(2) == 32 ||
+             q.size(2) == 64) &&
+            q.size(3) == kHeadDim && q.is_contiguous(),
+        "q must be contiguous BF16 [batch, 1, heads, 128] with positive "
+        "batch, batch divisible by group_size for group_size 3/4/5, and "
+        "heads in 8/16/32/64");
     const int batch_size = static_cast<int>(q.size(0));
     const int num_heads = static_cast<int>(q.size(2));
-    const int kv_width = fp8_path
-        ? kHeadDim + static_cast<int>(sizeof(float))
-        : kHeadDim;
+    const bool fp8_kv = fused_kv_cache.scalar_type() == torch::kUInt8;
+    const int kv_width = fp8_kv ? kHeadDim + static_cast<int>(sizeof(float))
+                                : kHeadDim;
     TORCH_CHECK(
-        fused_kv_cache.dim() == 4 && fused_kv_cache.size(0) > 0 &&
+        (fp8_kv || fused_kv_cache.scalar_type() == torch::kBFloat16) &&
+            fused_kv_cache.dim() == 4 && fused_kv_cache.size(0) > 0 &&
             fused_kv_cache.size(1) == kPageSize &&
             fused_kv_cache.size(2) == 1 &&
             fused_kv_cache.size(3) == kv_width &&
-            fused_kv_cache.stride(0) == kPageSize * kv_width &&
             fused_kv_cache.stride(1) == kv_width &&
             fused_kv_cache.stride(2) == kv_width &&
             fused_kv_cache.stride(3) == 1,
-        fp8_path
-            ? "fused_kv_cache must be packed FP8+scale uint8 "
-              "[blocks,64,1,132]"
-            : "fused_kv_cache must be packed BF16 [blocks,64,1,128]");
+        "fused_kv_cache must be packed BF16 [blocks,64,1,128] or "
+        "packed FP8+scale uint8 [blocks,64,1,132]");
     TORCH_CHECK(
         weights.scalar_type() == torch::kFloat && weights.dim() == 2 &&
             weights.size(0) == batch_size && weights.size(1) == num_heads &&
@@ -808,21 +782,16 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
         {batch_size, (max_context_len + kTokenTile - 1) / kTokenTile},
         q.options().dtype(torch::kInt16));
 
-    const bool use_fp8_group4_four_wave = fp8_path && group_size == 4;
-    const int tokens_per_cta = use_fp8_group4_four_wave
-        ? grouped_sparse_fp8::kGroup4TokensPerCta
-        : kTokensPerCta;
-    const int auto_cta_cap = use_fp8_group4_four_wave ? 64 : 32;
     const auto max_chunks =
-        (static_cast<int64_t>(max_context_len) + tokens_per_cta - 1) /
-        tokens_per_cta;
+        (static_cast<int64_t>(max_context_len) + kTokensPerCta - 1) /
+        kTokensPerCta;
     const int resolved = persistent_ctas == 0
-        ? static_cast<int>(std::min<int64_t>(max_chunks, auto_cta_cap))
+        ? static_cast<int>(std::min<int64_t>(max_chunks, 32))
         : static_cast<int>(std::min<int64_t>(persistent_ctas, max_chunks));
     auto stream = at::cuda::getCurrentCUDAStream(q.get_device());
-    if (fp8_path) {
-        grouped_sparse_fp8::dispatch_grouped_rows(
-            group_size, q, fused_kv_cache, weights, context_lens,
+    if (fp8_kv) {
+        dispatch_grouped_rows<true>(
+            group_size, num_heads, q, fused_kv_cache, weights, context_lens,
             block_table, logits, nonzero_mask, resolved, stream);
     } else {
         dispatch_grouped_rows<false>(

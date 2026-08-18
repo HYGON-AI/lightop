@@ -711,30 +711,6 @@ def _paged_mqa_device_info(device_index: int):
     return arch, props.multi_processor_count
 
 
-def _grouped_sparse_mqa_path(
-        q: torch.Tensor,
-        fused_kv_cache: torch.Tensor) -> Optional[str]:
-    """Return the native grouped sparse-MQA path, if this input is supported.
-
-    Keep this small routing matrix aligned with the native entry point.  In
-    particular, gfx938 FP8 is an end-to-end FP8 path: converting Q to BF16
-    here would hide an unsupported native route and add a hot-path cast.
-    """
-    arch, num_cus = _paged_mqa_device_info(q.device.index)
-    supported_device = (arch, num_cus) in (("gfx936", 80), ("gfx938", 64))
-    if not supported_device:
-        return None
-    if (q.dtype == torch.bfloat16 and
-            fused_kv_cache.dtype == torch.bfloat16):
-        return "bf16"
-    if ((arch, num_cus) == ("gfx938", 64) and
-            q.dtype == torch.float8_e4m3fn and
-            fused_kv_cache.dtype == torch.uint8 and
-            q.dim() == 4 and q.shape[2] == 32):
-        return "fp8"
-    return None
-
-
 def _use_page_mqa_logits_sparse_mask(
         q: torch.Tensor,
         fused_kv_cache: torch.Tensor,
@@ -772,15 +748,28 @@ def _use_page_mqa_logits_sparse_mask(
     if schedule_meta is not None:
         return False
 
-    path = _grouped_sparse_mqa_path(q, fused_kv_cache)
-    supported_heads = (
-        num_heads in (8, 16, 32, 64)
-        if path == "bf16"
-        else num_heads == 32
+    arch, num_cus = _paged_mqa_device_info(q.device.index)
+    fp8_q_dtypes = {torch.float8_e4m3fn}
+    fp8_fnuz_dtype = getattr(torch, "float8_e4m3fnuz", None)
+    if fp8_fnuz_dtype is not None:
+        fp8_q_dtypes.add(fp8_fnuz_dtype)
+    supported_device = (arch, num_cus) in (
+        ("gfx936", 80),
+        ("gfx938", 64),
     )
-    expected_kv_width = 128 if path == "bf16" else 132
-    if (path is None or not supported_heads or
-            fused_kv_cache.shape[3] != expected_kv_width):
+    supported_heads = num_heads in (8, 16, 32, 64)
+    bf16_path = (
+        q.dtype == torch.bfloat16
+        and fused_kv_cache.dtype == torch.bfloat16
+        and fused_kv_cache.shape[3] == 128
+    )
+    packed_fp8_path = (
+        q.dtype in fp8_q_dtypes | {torch.bfloat16}
+        and fused_kv_cache.dtype == torch.uint8
+        and fused_kv_cache.shape[3] == 132
+    )
+    if not (supported_device and supported_heads and
+            (bf16_path or packed_fp8_path)):
         return False
 
     inputs = (
@@ -847,9 +836,8 @@ def page_mqa_logits_sparse_mask(
             schedule_meta, max_context_len, clean_logits):
         raise ValueError(
             "page_mqa_logits_sparse_mask requires a positive batch, heads "
-            "8/16/32/64 for BF16 or H32 for native FP8, and either "
-            "gfx936/80CU or gfx938/64CU BF16/BF16, or gfx938/64CU "
-            "float8_e4m3fn/packed-FP8 with schedule_meta=None")
+            "8/16/32/64, BF16 or packed FP8 KV, and "
+            "gfx936/80CU or gfx938/64CU with schedule_meta=None")
     arch, num_cus = _paged_mqa_device_info(q.device.index)
     # Keep the validated legacy kernel for its tuned shapes. This is a kernel
     # selection, not an input gate; every other supported batch falls through
@@ -904,15 +892,19 @@ def page_mqa_logits_sparse_mask_grouped(
     For ``group_size=1`` each row is independent. For ``group_size=3/4/5``,
     consecutive rows must belong to one request and have identical block-table
     contents, corresponding to MTP2/3/4. The returned sparse values/mask
-    contract is identical to :func:`page_mqa_logits_sparse_mask`. BF16
-    supports heads 8/16/32/64; native gfx938 FP8 supports H32 with the packed
-    uint8 KV+scale layout used by :func:`paged_mqa_logits`.
+    contract is identical to :func:`page_mqa_logits_sparse_mask`. Supported
+    heads are 8/16/32/64. The FP8 path accepts the packed uint8 KV+scale layout
+    used by :func:`paged_mqa_logits`.
     """
 
-    if not q.is_cuda:
-        raise ValueError("grouped sparse MQA requires a CUDA/HIP q tensor")
     if group_size not in (1, 3, 4, 5):
         raise ValueError("sparse MQA supports group_size 1, 3, 4, or 5")
+    fp8_q_dtypes = {torch.float8_e4m3fn}
+    fp8_fnuz_dtype = getattr(torch, "float8_e4m3fnuz", None)
+    if fp8_fnuz_dtype is not None:
+        fp8_q_dtypes.add(fp8_fnuz_dtype)
+    if fused_kv_cache.dtype == torch.uint8 and q.dtype in fp8_q_dtypes:
+        q = q.to(torch.bfloat16)
     expected_batch = q.shape[0] if q.dim() > 0 else 0
     if expected_batch <= 0:
         raise ValueError("sparse MQA requires a positive batch")
@@ -921,17 +913,15 @@ def page_mqa_logits_sparse_mask_grouped(
             "grouped sparse MQA requires batch divisible by group_size")
     if (q.dim() != 4 or q.shape[0] != expected_batch or q.shape[1] != 1 or
             q.shape[2] not in (8, 16, 32, 64) or q.shape[3] != 128 or
-            q.dtype not in (torch.bfloat16, torch.float8_e4m3fn) or
-            not q.is_contiguous()):
+            q.dtype != torch.bfloat16 or not q.is_contiguous()):
         raise ValueError(
-            "sparse MQA requires contiguous BF16 or float8_e4m3fn q "
+            "sparse MQA requires contiguous BF16 q "
             "[batch, 1, heads, 128], heads in 8/16/32/64")
     if fused_kv_cache.dtype not in (torch.bfloat16, torch.uint8):
         raise ValueError("grouped sparse MQA supports BF16 or packed FP8 KV")
     expected_kv_width = 132 if fused_kv_cache.dtype == torch.uint8 else 128
     if (fused_kv_cache.dim() != 4 or fused_kv_cache.shape[0] == 0 or
             tuple(fused_kv_cache.shape[1:]) != (64, 1, expected_kv_width) or
-            fused_kv_cache.stride(0) != 64 * expected_kv_width or
             fused_kv_cache.stride(1) != expected_kv_width or
             fused_kv_cache.stride(2) != expected_kv_width or
             fused_kv_cache.stride(3) != 1):
@@ -958,19 +948,9 @@ def page_mqa_logits_sparse_mask_grouped(
             "grouped sparse MQA requires clean_logits=True, num_warps=4 "
             "and max_context_len equal to block-table capacity")
     arch, num_cus = _paged_mqa_device_info(q.device.index)
-    path = _grouped_sparse_mqa_path(q, fused_kv_cache)
-    if path is None:
+    if (arch, num_cus) not in (("gfx936", 80), ("gfx938", 64)):
         raise ValueError(
-            "grouped sparse MQA requires BF16 Q + BF16 KV on "
-            "gfx936/80CU or gfx938/64CU, or float8_e4m3fn Q + packed "
-            "FP8 KV with H32 on gfx938/64CU; got "
-            f"arch={arch}, CUs={num_cus}, q={q.dtype}, "
-            f"kv={fused_kv_cache.dtype}, heads={q.shape[2]}, "
-            f"group_size={group_size}")
-    if path == "fp8" and q.shape[2] != 32:
-        raise ValueError(
-            "gfx938 native FP8 grouped sparse MQA requires H32; got "
-            f"heads={q.shape[2]}")
+            "grouped sparse MQA requires gfx936/80CU or gfx938/64CU")
     return op.page_mqa_logits_sparse_mask_grouped(
         q,
         fused_kv_cache,
