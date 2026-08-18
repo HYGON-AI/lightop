@@ -18,10 +18,15 @@ dtk22.04 \ dtk22.10 \ dtk23.04 \ dtk23.10 \ dtk24.04
 
 python3 setup.py install
 
+可通过环境环境变量指定编译器，默认aicc：
+LIGHTOP_GPU_COMPILER=hipcc \
+LIGHTOP_HIPCC_PATH=/opt/dtk/bin/hipcc \
 对于23.10之前的dtk由于不支持928，因此需要去掉928代码，使用下面的编译命令：
 
 PYTORCH_ROCM_ARCH='gfx906;gfx926' python3 setup.py install
 
+## aicc和hipcc测试性能校准
+https://kcnm6g5dkw5p.feishu.cn/sheets/PqKkspSf2h9UGit8GElcbWdSnwf?from=from_copylink
 
 
 编译安装包：
