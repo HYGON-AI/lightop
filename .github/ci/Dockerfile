@@ -5,6 +5,8 @@ FROM ${BASE_IMAGE}
 ARG PYTHON_VERSION=3.10
 ARG INSTALL_TORCH_VERSION
 ARG DTK_INDEX_VERSION=2604
+ARG FALLBACK_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/
+ARG FALLBACK_INDEX_HOST=pypi.tuna.tsinghua.edu.cn
 ARG DTK_PKG_NAME
 ARG DTK_PKG_VERSION
 ARG DTK_VERSION
@@ -48,11 +50,17 @@ RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.
 # to the newest label, which belongs to the other lane and drags in an upstream
 # Torch that replaces the DTK build.
 #
-# The PyPI fallback stays for llguidance: vllm 0.25.1 requires >=1.7.0, whose
-# only cp310 x86_64 wheels are manylinux_2_31 and so are unusable on this
+# The public fallback index stays for llguidance: vllm 0.25.1 requires >=1.7.0,
+# whose only cp310 x86_64 wheels are manylinux_2_31 and so are unusable on this
 # glibc 2.28 base image. pip therefore builds it from sdist through maturin,
 # which fetches puccinialin. vllm 0.21.0 needs llguidance 1.3.0, which does
 # ship a manylinux_2_17 wheel and resolves entirely from the internal index.
+#
+# It defaults to a domestic mirror rather than pypi.org because it stops being
+# a narrow llguidance patch whenever the internal index is unreachable: it then
+# serves every one of vLLM's ~70 mandatory dependencies and their transitive
+# closure. Observed throughput during one such outage was 25-35 kB/s against
+# pypi.org, which turns a routine image build into a multi-hour stall.
 #
 # NumPy is deliberately unpinned. Neither LightOp nor test/ci_tests imports it;
 # it reaches the image only through vLLM, which constrains it from both sides:
@@ -80,9 +88,8 @@ RUN mkdir -p /root/.pip && \
       *) echo "No DTK vLLM baseline is mapped for torch ${INSTALL_TORCH_VERSION}." >&2; exit 1 ;; \
     esac && \
     python3 -m pip install "vllm==${VLLM_VERSION}" \
-      --extra-index-url https://pypi.org/simple/ \
-      --trusted-host pypi.org \
-      --trusted-host files.pythonhosted.org && \
+      --extra-index-url "${FALLBACK_INDEX_URL}" \
+      --trusted-host "${FALLBACK_INDEX_HOST}" && \
     chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
     yes | /dtk_llvm_*.run
 
