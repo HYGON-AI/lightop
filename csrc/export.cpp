@@ -435,6 +435,16 @@ void gather_convert_fp8_cache(
     double scale,                      
     const std::string& kv_cache_dtype, 
 std::optional<torch::Tensor> seq_starts = std::nullopt);
+void gather_and_maybe_dequant_cache(
+    const torch::Tensor& src_cache,
+    const torch::Tensor& dst,
+    const torch::Tensor& block_table,
+    const torch::Tensor& cu_seq_lens,
+    const torch::Tensor& token_to_seq,
+    int64_t num_tokens,
+    const std::string& kv_cache_dtype,
+    const torch::Tensor& scale,
+    std::optional<torch::Tensor> seq_starts);
 void fused_rms_norm_rope_int8quant_contiguous(
     torch::Tensor& positions, 
     torch::Tensor& q_pe, 
@@ -1193,6 +1203,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           py::arg("group_size")); 
  m.def("ds_fused_qkv_cast_fp8", &at::native::ds_fused_qkv_cast_fp8, "ds_fused_qkv_cast_fp8");    
  m.def("gather_convert_fp8_cache", &at::native::gather_convert_fp8_cache, "gather_convert_fp8_cache");    
+ m.def(
+     "gather_and_maybe_dequant_cache",
+     &at::native::gather_and_maybe_dequant_cache,
+     "Gather paged KV cache. Supported kv_cache_dtype values are auto, "
+     "fp8/fp8_e4m3, fp8_ds_mla, and fp8_e5m2. FP8 inputs are "
+     "dequantized as decode(cache) * scale to the FP32, FP16, or BF16 "
+     "dtype selected by dst.",
+     py::arg("src_cache"),
+     py::arg("dst"),
+     py::arg("block_table"),
+     py::arg("cu_seq_lens"),
+     py::arg("token_to_seq"),
+     py::arg("num_tokens"),
+     py::arg("kv_cache_dtype"),
+     py::arg("scale"),
+     py::arg("seq_starts") = py::none());
  m.def("fused_rms_norm_rope_int8quant_contiguous", &at::native::fused_rms_norm_rope_int8quant_contiguous, "fused_rms_norm_rope_int8quant_contiguous");    
  m.def("per_token_quant_fp8", &at::native::per_token_quant_fp8, "per_token_quant_fp8");    
  m.def("rms_norm_smooth_per_token_dynamic_quant", &at::native::rms_norm_smooth_per_token_dynamic_quant, "rms_norm_smooth_per_token_dynamic_quant");   

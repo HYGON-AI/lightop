@@ -68,6 +68,7 @@ from .batch_linear_assignment import batch_linear_assignment
 from .fill_zeros import fill_zeros
 from .fuse_rmsnorm_rope import rms_rotary_embedding_fuse, rms_rotary_embedding_fuse_with_kv_store, rms_rotary_embedding_fuse_with_kv_store_fake,gammarms_rotary_embedding_fuse_with_kv_store , gammarms_rotary_embedding_fuse_with_kv_store_fake, split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant, mimo_v2_split_rope_vscale_kv_store
 from .reshape_and_cache_cuda import reshape_and_cache_cuda
+from .gather_and_maybe_dequant_cache import gather_and_maybe_dequant_cache
 from .fuse_rms_mrope_cuda import fuse_rms_mrope_cuda
 from .wan_quant import destindex_copy_quantize_int8_cuda, destindex_dequantize_int8_cuda
 from .upsample import bilinear_upsample, bilinear_upsample_backward
@@ -88,4 +89,3 @@ except ImportError:
 else:
     __version__ = version
     __hcu_version__ = hcu_version
-
