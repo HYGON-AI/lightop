@@ -886,7 +886,9 @@ def page_mqa_logits_sparse_mask_grouped(
         clean_logits: bool = True,
         num_warps: int = 4,
         persistent_ctas: int = 0,
-        group_size: int = 5):
+        group_size: int = 5,
+        *,
+        _int8_kv: bool = False):
     """Sparse MQA for independent rows or grouped MTP2/3/4 rows.
 
     For ``group_size=1`` each row is independent. For ``group_size=3/4/5``,
@@ -919,6 +921,8 @@ def page_mqa_logits_sparse_mask_grouped(
             "[batch, 1, heads, 128], heads in 8/16/32/64")
     if fused_kv_cache.dtype not in (torch.bfloat16, torch.uint8):
         raise ValueError("grouped sparse MQA supports BF16 or packed FP8 KV")
+    if _int8_kv and fused_kv_cache.dtype != torch.uint8:
+        raise ValueError("grouped sparse INT8 MQA requires packed uint8 KV+scale")
     expected_kv_width = 132 if fused_kv_cache.dtype == torch.uint8 else 128
     if (fused_kv_cache.dim() != 4 or fused_kv_cache.shape[0] == 0 or
             tuple(fused_kv_cache.shape[1:]) != (64, 1, expected_kv_width) or
@@ -951,7 +955,12 @@ def page_mqa_logits_sparse_mask_grouped(
     if (arch, num_cus) not in (("gfx936", 80), ("gfx938", 64)):
         raise ValueError(
             "grouped sparse MQA requires gfx936/80CU or gfx938/64CU")
-    return op.page_mqa_logits_sparse_mask_grouped(
+    native_op = (
+        op.page_mqa_logits_sparse_mask_grouped_int8
+        if _int8_kv
+        else op.page_mqa_logits_sparse_mask_grouped
+    )
+    return native_op(
         q,
         fused_kv_cache,
         weights,
@@ -963,6 +972,38 @@ def page_mqa_logits_sparse_mask_grouped(
         num_warps,
         persistent_ctas,
         group_size)
+
+
+def page_mqa_logits_sparse_mask_grouped_int8(
+        q: torch.Tensor,
+        packed_kv_cache: torch.Tensor,
+        weights: torch.Tensor,
+        context_lens: torch.Tensor,
+        block_table: torch.Tensor,
+        schedule_meta: Optional[torch.Tensor],
+        max_context_len: int,
+        clean_logits: bool = True,
+        num_warps: int = 4,
+        persistent_ctas: int = 0,
+        group_size: int = 5):
+    """Internal sparse MQA path for packed INT8 index-K pages.
+
+    Dequantization is performed per KV tile inside the MQA kernel. The public
+    BF16/FP8 grouped entry point and its dispatch behavior are unchanged.
+    """
+    return page_mqa_logits_sparse_mask_grouped(
+        q,
+        packed_kv_cache,
+        weights,
+        context_lens,
+        block_table,
+        schedule_meta,
+        max_context_len,
+        clean_logits,
+        num_warps,
+        persistent_ctas,
+        group_size,
+        _int8_kv=True)
 
 
 def fused_bmm(x: torch.Tensor,                                       # [batch_size, num_head, p_size], int8
