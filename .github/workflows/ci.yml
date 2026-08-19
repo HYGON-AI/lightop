@@ -257,7 +257,7 @@ jobs:
           import torch
 
           print(f"torch={torch.__version__}")
-          for package in ("numpy", "cupy"):
+          for package in ("numpy", "vllm"):
               try:
                   print(f"{package}={importlib.metadata.version(package)}")
               except importlib.metadata.PackageNotFoundError:

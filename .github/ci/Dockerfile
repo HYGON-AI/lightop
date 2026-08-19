@@ -68,6 +68,12 @@ RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.
 # requires >=2 on Python 3.9+. The former 1.24.3 pin satisfied neither and was
 # a leftover from the aiter/deepgemm/deep_ep dependency set that this image no
 # longer installs, so pip silently overrode it while installing vLLM.
+#
+# CuPy was a leftover from that same set and is gone for the same reason: no
+# source file in this repository or in test/ci_tests imports it. The only
+# build available on the internal index is 12.3.0, which requires numpy<1.29
+# and therefore cannot coexist with vLLM's numpy>=2 — the intersection is
+# empty, so pip resolved in vLLM's favour and left CuPy importable but broken.
 RUN mkdir -p /root/.pip && \
     test -n "${INSTALL_TORCH_VERSION}" && \
     printf '%s\n' \
@@ -79,9 +85,7 @@ RUN mkdir -p /root/.pip && \
       pyyaml hypothesis Ninja MonkeyType wheel packaging \
       einops pytest matplotlib auditwheel patchelf tqdm triton && \
     python3 -m pip install amdsmi && \
-    python3 -m pip install cupy && \
     python3 -m pip install "torch==${INSTALL_TORCH_VERSION}" && \
-    python3 -m pip uninstall -y cupy-cuda12x && \
     case "${INSTALL_TORCH_VERSION}" in \
       2.10.0) VLLM_VERSION="0.21.0" ;; \
       2.11.0) VLLM_VERSION="0.25.1" ;; \
@@ -115,7 +119,7 @@ if "dtk" not in local_torch:
     )
 
 print("Resolved LightOp build runtime:")
-for package in ("torch", "numpy", "cupy", "vllm"):
+for package in ("torch", "numpy", "vllm"):
     try:
         print(f"  {package}={importlib.metadata.version(package)}")
     except importlib.metadata.PackageNotFoundError:
