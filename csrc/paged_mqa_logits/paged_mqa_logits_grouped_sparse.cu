@@ -3,6 +3,7 @@
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <hip/hip_bfloat16.h>
 #include <hip/hip_runtime.h>
 
 #include <algorithm>
@@ -20,6 +21,22 @@ constexpr int kTokenTile = 16;
 constexpr int kTokenWarps = 4;
 constexpr int kTokensPerCta = 256;
 
+struct alignas(16) GroupedBFloat16x8 {
+    __hip_bfloat16 value[8];
+};
+
+inline __device__ __forceinline__ f16x8_t
+dequantize_int8x8_to_bf16(const intx2& raw, const float scale) {
+    const auto* values = reinterpret_cast<const int8_t*>(&raw);
+    GroupedBFloat16x8 converted{};
+    #pragma unroll
+    for (int item = 0; item < 8; ++item) {
+        converted.value[item] = __float2bfloat16(
+            static_cast<float>(values[item]) * scale);
+    }
+    return *reinterpret_cast<const f16x8_t*>(&converted);
+}
+
 void check_grouped_same_device(const torch::Tensor& reference,
                                const torch::Tensor& value,
                                const char* name) {
@@ -35,7 +52,7 @@ void check_grouped_same_device(const torch::Tensor& reference,
 // request group. Up to four rows run in parallel; for MTP4 row slot 0 evaluates
 // the fifth row after its primary row. Grouped rows keep independent
 // Q/weights/lengths while sharing each paged KV tile.
-template <int kGroupedRows, int kHeads, bool kFp8Kv>
+template <int kGroupedRows, int kHeads, bool kFp8Kv, bool kInt8Kv>
 __attribute__((amdgpu_flat_work_group_size(1024, 1024)))
 __global__ void paged_mqa_logits_grouped_sparse_kernel(
     const at::BFloat16* q,
@@ -53,6 +70,7 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
         kGroupedRows == 1 || (kGroupedRows >= 3 && kGroupedRows <= 5));
     static_assert(
         kHeads == 8 || kHeads == 16 || kHeads == 32 || kHeads == 64);
+    static_assert(!(kFp8Kv && kInt8Kv));
     constexpr int kPrimaryRows = kGroupedRows < 4 ? kGroupedRows : 4;
     constexpr bool kHasSecondary = kGroupedRows == 5;
     constexpr int kSecondaryRow = 4;
@@ -248,7 +266,8 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
     const auto prefetch_group_tile = [&](const int tile_token_offset,
                                          const int buffer_slot) {
         const bool group_tile_valid = tile_token_offset < group_max_length;
-        if (row_slot == 0 && group_tile_valid) {
+        const bool owns_prefetch = kInt8Kv || row_slot == 0;
+        if (owns_prefetch && group_tile_valid) {
             const int logical_page = tile_token_offset / kPageSize;
             const int physical_page = block_table[
                 shared_block_table_offset + logical_page];
@@ -278,6 +297,31 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
                             kTokenTile + lane] =
                         page_scales[row_in_page + lane];
                 }
+            } else if constexpr (kInt8Kv) {
+                const auto* page_scales = reinterpret_cast<const float*>(
+                    page + kPageSize * kHeadDim);
+                auto* tile_scales = smem_kv_scales +
+                    (buffer_slot * kTokenWarps + token_warp) * kTokenTile;
+                if (row_slot == 0 && lane < kTokenTile) {
+                    tile_scales[lane] = page_scales[row_in_page + lane];
+                }
+                // All four row slots cooperate on the one shared KV tile.
+                // Each of the 16 waves owns four tokens (one aligned int8x8
+                // vector per lane), matching the standalone kernel's
+                // per-wave conversion width without materializing a global
+                // BF16 workspace.
+                constexpr int kInt8Alignment = 8;
+                const int vector_slot = row_slot * WARP_SIZE_GPU + lane;
+                const int pos = vector_slot * kInt8Alignment;
+                const int token_in_tile = pos / kHeadDim;
+                float scale = (lane % 16) == 0
+                    ? page_scales[row_in_page + token_in_tile]
+                    : 0.0f;
+                scale = __shfl(scale, 0, 16);
+                const intx2 raw = *reinterpret_cast<const intx2*>(
+                    page + row_in_page * kHeadDim + pos);
+                *reinterpret_cast<f16x8_t*>(smem_warp_kv + pos) =
+                    dequantize_int8x8_to_bf16(raw, scale);
             } else {
                 buffer_load_page_tile_lds<
                     at::BFloat16, kHeadDim, kTokenTile>(
@@ -320,7 +364,7 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
         }
         const uint64_t nonzero_lanes = __ballot(lane_bits != 0u);
         bool scale_finite = true;
-        if constexpr (kFp8Kv) {
+        if constexpr (kFp8Kv || kInt8Kv) {
             if (lane < kTokenTile) {
                 const float scale = smem_kv_scales[
                     (buffer_slot * kTokenWarps + token_warp) *
@@ -344,6 +388,9 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
 
         tile_loaded[0] = prefetch_group_tile(
             cta_token_offset + token_warp * kTokenTile, 0);
+        if constexpr (kInt8Kv) {
+            __syncthreads();
+        }
         if (row_slot == 0) {
             #if defined(__gfx936__) || defined(__gfx938__)
             __builtin_amdgcn_sched_barrier(0);
@@ -530,6 +577,9 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
             }
 
             if (has_next_tile) {
+                if constexpr (kInt8Kv) {
+                    __syncthreads();
+                }
                 if (row_slot == 0) {
                     #if defined(__gfx936__) || defined(__gfx938__)
                     __builtin_amdgcn_sched_barrier(0);
@@ -546,7 +596,7 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
     }
 }
 
-template <int kGroupedRows, int kHeads, bool kFp8Kv>
+template <int kGroupedRows, int kHeads, bool kFp8Kv, bool kInt8Kv>
 void launch_grouped_kernel(
     const torch::Tensor& q,
     const torch::Tensor& kv_cache,
@@ -566,7 +616,9 @@ void launch_grouped_kernel(
         (2 * kKvBufferElements + kQElements) *
             sizeof(at::BFloat16) +
         kPaddedHeads * sizeof(float) +
-        (kFp8Kv ? 2 * kTokenWarps * kTokenTile * sizeof(float) : 0);
+        ((kFp8Kv || kInt8Kv)
+             ? 2 * kTokenWarps * kTokenTile * sizeof(float)
+             : 0);
     const auto logits_stride = static_cast<uint64_t>(logits.stride(0));
     const auto kv_cache_stride_bytes =
         static_cast<uint64_t>(kv_cache.stride(0) * kv_cache.element_size());
@@ -577,7 +629,7 @@ void launch_grouped_kernel(
     const dim3 block(kThreads, 1, 1);
 
     paged_mqa_logits_grouped_sparse_kernel<
-        kGroupedRows, kHeads, kFp8Kv><<<
+        kGroupedRows, kHeads, kFp8Kv, kInt8Kv><<<
         grid, block, kSmemBytes, stream>>>(
         q.data_ptr<at::BFloat16>(),
         reinterpret_cast<const uint8_t*>(kv_cache.data_ptr()),
@@ -597,7 +649,7 @@ void launch_grouped_kernel(
         hipGetErrorString(error));
 }
 
-template <int kGroupedRows, bool kFp8Kv>
+template <int kGroupedRows, bool kFp8Kv, bool kInt8Kv>
 void dispatch_grouped_heads(
     int num_heads,
     const torch::Tensor& q,
@@ -611,22 +663,22 @@ void dispatch_grouped_heads(
     cudaStream_t stream) {
     switch (num_heads) {
         case 8:
-            launch_grouped_kernel<kGroupedRows, 8, kFp8Kv>(
+            launch_grouped_kernel<kGroupedRows, 8, kFp8Kv, kInt8Kv>(
                 q, kv_cache, weights, context_lens, block_table, logits,
                 nonzero_mask, persistent_ctas, stream);
             return;
         case 16:
-            launch_grouped_kernel<kGroupedRows, 16, kFp8Kv>(
+            launch_grouped_kernel<kGroupedRows, 16, kFp8Kv, kInt8Kv>(
                 q, kv_cache, weights, context_lens, block_table, logits,
                 nonzero_mask, persistent_ctas, stream);
             return;
         case 32:
-            launch_grouped_kernel<kGroupedRows, 32, kFp8Kv>(
+            launch_grouped_kernel<kGroupedRows, 32, kFp8Kv, kInt8Kv>(
                 q, kv_cache, weights, context_lens, block_table, logits,
                 nonzero_mask, persistent_ctas, stream);
             return;
         case 64:
-            launch_grouped_kernel<kGroupedRows, 64, kFp8Kv>(
+            launch_grouped_kernel<kGroupedRows, 64, kFp8Kv, kInt8Kv>(
                 q, kv_cache, weights, context_lens, block_table, logits,
                 nonzero_mask, persistent_ctas, stream);
             return;
@@ -635,7 +687,7 @@ void dispatch_grouped_heads(
     }
 }
 
-template <bool kFp8Kv>
+template <bool kFp8Kv, bool kInt8Kv>
 void dispatch_grouped_rows(
     int group_size,
     int num_heads,
@@ -650,22 +702,22 @@ void dispatch_grouped_rows(
     cudaStream_t stream) {
     switch (group_size) {
         case 1:
-            dispatch_grouped_heads<1, kFp8Kv>(
+            dispatch_grouped_heads<1, kFp8Kv, kInt8Kv>(
                 num_heads, q, kv_cache, weights, context_lens, block_table,
                 logits, nonzero_mask, persistent_ctas, stream);
             return;
         case 3:
-            dispatch_grouped_heads<3, kFp8Kv>(
+            dispatch_grouped_heads<3, kFp8Kv, kInt8Kv>(
                 num_heads, q, kv_cache, weights, context_lens, block_table,
                 logits, nonzero_mask, persistent_ctas, stream);
             return;
         case 4:
-            dispatch_grouped_heads<4, kFp8Kv>(
+            dispatch_grouped_heads<4, kFp8Kv, kInt8Kv>(
                 num_heads, q, kv_cache, weights, context_lens, block_table,
                 logits, nonzero_mask, persistent_ctas, stream);
             return;
         case 5:
-            dispatch_grouped_heads<5, kFp8Kv>(
+            dispatch_grouped_heads<5, kFp8Kv, kInt8Kv>(
                 num_heads, q, kv_cache, weights, context_lens, block_table,
                 logits, nonzero_mask, persistent_ctas, stream);
             return;
@@ -685,7 +737,8 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
     const bool& clean_logits,
     const int& num_warps,
     const int& persistent_ctas,
-    const int& group_size) {
+    const int& group_size,
+    const bool int8_kv) {
     TORCH_CHECK(q.is_cuda(), "q must be a HIP tensor");
     check_grouped_same_device(q, fused_kv_cache, "fused_kv_cache");
     check_grouped_same_device(q, weights, "weights");
@@ -735,11 +788,17 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
         "heads in 8/16/32/64");
     const int batch_size = static_cast<int>(q.size(0));
     const int num_heads = static_cast<int>(q.size(2));
-    const bool fp8_kv = fused_kv_cache.scalar_type() == torch::kUInt8;
-    const int kv_width = fp8_kv ? kHeadDim + static_cast<int>(sizeof(float))
-                                : kHeadDim;
+    const bool fp8_kv =
+        fused_kv_cache.scalar_type() == torch::kUInt8 && !int8_kv;
+    const bool quantized_kv = fp8_kv || int8_kv;
+    const int kv_width = quantized_kv
+        ? kHeadDim + static_cast<int>(sizeof(float))
+        : kHeadDim;
     TORCH_CHECK(
-        (fp8_kv || fused_kv_cache.scalar_type() == torch::kBFloat16) &&
+        ((quantized_kv &&
+          fused_kv_cache.scalar_type() == torch::kUInt8) ||
+         (!quantized_kv &&
+          fused_kv_cache.scalar_type() == torch::kBFloat16)) &&
             fused_kv_cache.dim() == 4 && fused_kv_cache.size(0) > 0 &&
             fused_kv_cache.size(1) == kPageSize &&
             fused_kv_cache.size(2) == 1 &&
@@ -748,7 +807,7 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
             fused_kv_cache.stride(2) == kv_width &&
             fused_kv_cache.stride(3) == 1,
         "fused_kv_cache must be packed BF16 [blocks,64,1,128] or "
-        "packed FP8+scale uint8 [blocks,64,1,132]");
+        "packed FP8/INT8+scale uint8 [blocks,64,1,132]");
     TORCH_CHECK(
         weights.scalar_type() == torch::kFloat && weights.dim() == 2 &&
             weights.size(0) == batch_size && weights.size(1) == num_heads &&
@@ -789,12 +848,16 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
         ? static_cast<int>(std::min<int64_t>(max_chunks, 32))
         : static_cast<int>(std::min<int64_t>(persistent_ctas, max_chunks));
     auto stream = at::cuda::getCurrentCUDAStream(q.get_device());
-    if (fp8_kv) {
-        dispatch_grouped_rows<true>(
+    if (int8_kv) {
+        dispatch_grouped_rows<false, true>(
+            group_size, num_heads, q, fused_kv_cache, weights, context_lens,
+            block_table, logits, nonzero_mask, resolved, stream);
+    } else if (fp8_kv) {
+        dispatch_grouped_rows<true, false>(
             group_size, num_heads, q, fused_kv_cache, weights, context_lens,
             block_table, logits, nonzero_mask, resolved, stream);
     } else {
-        dispatch_grouped_rows<false>(
+        dispatch_grouped_rows<false, false>(
             group_size, num_heads, q, fused_kv_cache, weights, context_lens,
             block_table, logits, nonzero_mask, resolved, stream);
     }
@@ -826,7 +889,35 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped(
         clean_logits,
         num_warps,
         persistent_ctas,
-        group_size);
+        group_size,
+        false);
+}
+
+std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_int8(
+    const torch::Tensor& q,
+    const torch::Tensor& packed_kv_cache,
+    const torch::Tensor& weights,
+    const torch::Tensor& context_lens,
+    const torch::Tensor& block_table,
+    std::optional<torch::Tensor>& schedule_meta,
+    const int& max_context_len,
+    const bool& clean_logits,
+    const int& num_warps,
+    const int& persistent_ctas,
+    const int& group_size) {
+    return page_mqa_logits_sparse_mask_grouped_impl(
+        q,
+        packed_kv_cache,
+        weights,
+        context_lens,
+        block_table,
+        schedule_meta,
+        max_context_len,
+        clean_logits,
+        num_warps,
+        persistent_ctas,
+        group_size,
+        true);
 }
 
 }  // namespace deep_gemm

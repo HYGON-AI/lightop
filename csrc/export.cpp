@@ -1096,6 +1096,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
   m.def("paged_mqa_logits", &lightop::deep_gemm::paged_mqa_logits,"paged_mqa_logits");
   m.def(
+      "dequantize_index_k_int8_paged",
+      &lightop::deep_gemm::dequantize_index_k_int8_paged,
+      "dequantize_index_k_int8_paged",
+      py::arg("packed_cache"),
+      py::arg("block_tables"),
+      py::arg("context_lens"),
+      py::arg("workspace"),
+      py::arg("page_claims"),
+      py::arg("waves_per_page") = 1);
+  m.def(
       "page_mqa_logits_sparse_mask",
       &lightop::deep_gemm::page_mqa_logits_sparse_mask,
       "page_mqa_logits_sparse_mask",
@@ -1115,6 +1125,21 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "page_mqa_logits_sparse_mask_grouped",
       py::arg("q"),
       py::arg("fused_kv_cache"),
+      py::arg("weights"),
+      py::arg("context_lens"),
+      py::arg("block_table"),
+      py::arg("schedule_meta"),
+      py::arg("max_context_len"),
+      py::arg("clean_logits") = true,
+      py::arg("num_warps") = 4,
+      py::arg("persistent_ctas") = 0,
+      py::arg("group_size") = 5);
+  m.def(
+      "page_mqa_logits_sparse_mask_grouped_int8",
+      &lightop::deep_gemm::page_mqa_logits_sparse_mask_grouped_int8,
+      "page_mqa_logits_sparse_mask_grouped_int8",
+      py::arg("q"),
+      py::arg("packed_kv_cache"),
       py::arg("weights"),
       py::arg("context_lens"),
       py::arg("block_table"),
