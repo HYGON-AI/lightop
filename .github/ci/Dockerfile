@@ -42,6 +42,17 @@ RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.
     ldconfig && \
     python3 --version
 
+# vLLM is only a numerical baseline for test/ci_tests. Each DTK build is bound
+# to one Torch release through its local version label (`+das.dtk2604.torch2100`),
+# so the version must be selected per matrix lane: an unpinned install resolves
+# to the newest label, which belongs to the other lane and drags in an upstream
+# Torch that replaces the DTK build.
+#
+# The PyPI fallback stays for llguidance: vllm 0.25.1 requires >=1.7.0, whose
+# only cp310 x86_64 wheels are manylinux_2_31 and so are unusable on this
+# glibc 2.28 base image. pip therefore builds it from sdist through maturin,
+# which fetches puccinialin. vllm 0.21.0 needs llguidance 1.3.0, which does
+# ship a manylinux_2_17 wheel and resolves entirely from the internal index.
 RUN mkdir -p /root/.pip && \
     test -n "${INSTALL_TORCH_VERSION}" && \
     printf '%s\n' \
@@ -56,7 +67,12 @@ RUN mkdir -p /root/.pip && \
     python3 -m pip install cupy && \
     python3 -m pip install "torch==${INSTALL_TORCH_VERSION}" && \
     python3 -m pip uninstall -y cupy-cuda12x && \
-    python3 -m pip install vllm \
+    case "${INSTALL_TORCH_VERSION}" in \
+      2.10.0) VLLM_VERSION="0.21.0" ;; \
+      2.11.0) VLLM_VERSION="0.25.1" ;; \
+      *) echo "No DTK vLLM baseline is mapped for torch ${INSTALL_TORCH_VERSION}." >&2; exit 1 ;; \
+    esac && \
+    python3 -m pip install "vllm==${VLLM_VERSION}" \
       --extra-index-url https://pypi.org/simple/ \
       --trusted-host pypi.org \
       --trusted-host files.pythonhosted.org && \
@@ -70,14 +86,22 @@ import os
 import torch
 
 expected_torch = os.environ["INSTALL_TORCH_VERSION"]
-actual_torch = torch.__version__.split("+", 1)[0]
-if actual_torch != expected_torch:
+base_torch, _, local_torch = torch.__version__.partition("+")
+if base_torch != expected_torch:
     raise SystemExit(
         f"Torch version mismatch: expected {expected_torch}, got {torch.__version__}"
     )
+# The DTK build carries a `+das...dtk...` local label. An upstream wheel shares
+# the same base version, so only the label distinguishes them: without this
+# check a dependency that replaces Torch stays invisible until hipcc fails.
+if "dtk" not in local_torch:
+    raise SystemExit(
+        f"Torch {torch.__version__} is not a DTK build. A preceding pip install "
+        f"replaced it with an upstream wheel."
+    )
 
 print("Resolved LightOp build runtime:")
-for package in ("torch", "numpy", "cupy"):
+for package in ("torch", "numpy", "cupy", "vllm"):
     try:
         print(f"  {package}={importlib.metadata.version(package)}")
     except importlib.metadata.PackageNotFoundError:
