@@ -53,6 +53,13 @@ RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.
 # glibc 2.28 base image. pip therefore builds it from sdist through maturin,
 # which fetches puccinialin. vllm 0.21.0 needs llguidance 1.3.0, which does
 # ship a manylinux_2_17 wheel and resolves entirely from the internal index.
+#
+# NumPy is deliberately unpinned. Neither LightOp nor test/ci_tests imports it;
+# it reaches the image only through vLLM, which constrains it from both sides:
+# `numba==0.65.0` requires >=1.22,<2.5 and `opencv-python-headless>=4.13.0`
+# requires >=2 on Python 3.9+. The former 1.24.3 pin satisfied neither and was
+# a leftover from the aiter/deepgemm/deep_ep dependency set that this image no
+# longer installs, so pip silently overrode it while installing vLLM.
 RUN mkdir -p /root/.pip && \
     test -n "${INSTALL_TORCH_VERSION}" && \
     printf '%s\n' \
@@ -61,7 +68,7 @@ RUN mkdir -p /root/.pip && \
       'trusted-host = 10.16.1.201' \
       > /root/.pip/pip.conf && \
     python3 -m pip install \
-      pyyaml hypothesis Ninja MonkeyType "numpy==1.24.3" wheel packaging \
+      pyyaml hypothesis Ninja MonkeyType wheel packaging \
       einops pytest matplotlib auditwheel patchelf tqdm triton && \
     python3 -m pip install amdsmi && \
     python3 -m pip install cupy && \
@@ -106,6 +113,14 @@ for package in ("torch", "numpy", "cupy", "vllm"):
         print(f"  {package}={importlib.metadata.version(package)}")
     except importlib.metadata.PackageNotFoundError:
         print(f"  {package}=not installed")
+
+# NumPy is resolved by vLLM rather than pinned, so it can cross the 1.x/2.x ABI
+# boundary between DTK builds. A Torch compiled against the other major version
+# imports fine and only fails once an array actually crosses the boundary.
+import numpy
+
+torch.from_numpy(numpy.zeros(1, dtype="float32")).numpy()
+print(f"  numpy_abi=compatible with torch {torch.__version__}")
 PY
 
 WORKDIR /lightop
