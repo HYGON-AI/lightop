@@ -23,8 +23,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: Validate integrated source
+  prepare:
+    name: 准备工作
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -79,8 +79,8 @@ jobs:
           fi
 
   test:
-    name: Build and test with Torch ${{ matrix.torch_version }}
-    needs: validate
+    name: 编译和测试（Torch ${{ matrix.torch_version }}）
+    needs: prepare
 
     # Never execute code from an untrusted fork on an internal runner.
     if: >-
@@ -144,7 +144,7 @@ jobs:
       - name: Integrate latest target branch
         shell: bash
         env:
-          TARGET_SHA: ${{ needs.validate.outputs.target_sha }}
+          TARGET_SHA: ${{ needs.prepare.outputs.target_sha }}
         run: |
           set -euo pipefail
           git -c user.name='LightOp CI' -c user.email='ci@localhost' \
@@ -174,7 +174,7 @@ jobs:
 
           test ! -e "${CI_BUILD_CONTEXT}/lightop/.git"
 
-      - name: Build daily LightOp compile image
+      - name: 编译：构建 LightOp 镜像
         shell: bash
         run: |
           set -euo pipefail
@@ -236,7 +236,7 @@ jobs:
             echo "- Integrated commit: \`${LIGHTOP_SOURCE_COMMIT}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Ensure CIsmi is available
+      - name: 编译：准备 HCU 资源分配工具
         shell: bash
         env:
           # Match bolt_ops: CIsmi is installed by the runner's `python` from
@@ -265,7 +265,7 @@ jobs:
           python -m pip install --user cismi
           command -v CIsmi
 
-      - name: Compile LightOp wheel
+      - name: 编译：生成 LightOp wheel
         shell: bash
         run: |
           set -euo pipefail
@@ -320,7 +320,11 @@ jobs:
 
             python3 - <<"PY"
           import importlib.metadata
+          import numpy
           import torch
+          import vllm._custom_ops
+          from vllm.config import VllmConfig
+          from vllm.model_executor.layers.layernorm import RMSNorm
 
           print(f"torch={torch.__version__}")
           for package in ("numpy", "vllm"):
@@ -331,6 +335,14 @@ jobs:
           print(f"device_available={torch.cuda.is_available()}")
           if not torch.cuda.is_available():
               raise SystemExit("No device is available to PyTorch")
+          torch.from_numpy(numpy.zeros(1, dtype="float32")).numpy()
+          expected_triton_tag = f"torch{torch.__version__.split('+', 1)[0].replace('.', '')}"
+          triton_version = importlib.metadata.version("triton")
+          if expected_triton_tag not in triton_version:
+              raise SystemExit(
+                  f"Triton {triton_version} does not match {torch.__version__}"
+              )
+          print("Required vLLM CI imports are available.")
           PY
 
             /usr/local/bin/build-lightop-wheel
@@ -348,7 +360,7 @@ jobs:
           mkdir -p dist
           docker cp "${CI_COMPILE_CONTAINER_NAME}:/dist/." dist/
 
-      - name: Run functional tests
+      - name: 测试：运行功能测试
         id: functional_tests
         shell: bash
         run: |
@@ -397,7 +409,7 @@ jobs:
               ;;
           esac
 
-      - name: Summarize test results
+      - name: 测试：汇总结果
         if: always()
         shell: bash
         env:
@@ -453,7 +465,7 @@ jobs:
           PY
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Upload JUnit test report
+      - name: 测试：上传 JUnit 报告
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -487,7 +499,7 @@ jobs:
           fi
           exit 0
 
-      - name: Upload validated build artifacts
+      - name: 打包：上传已验证 wheel
         # Test-case failures leave the job green (see "Run functional tests"),
         # so the normal upload runs. Guard with `success()` anyway to skip
         # uploading when compile itself failed and dist/ is empty.
@@ -500,9 +512,9 @@ jobs:
           retention-days: 14
 
   publish:
-    name: Publish wheel for Torch ${{ matrix.torch_version }}
+    name: 打包发布（Torch ${{ matrix.torch_version }}）
     needs:
-      - validate
+      - prepare
       - test
     if: >-
       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||

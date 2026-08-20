@@ -104,27 +104,26 @@ RUN mkdir -p /root/.pip && \
       --extra-index-url "${FALLBACK_INDEX_URL}" \
       --trusted-host "${FALLBACK_INDEX_HOST}" && \
     chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
-    yes | /dtk_llvm_*.run && \
-    python3 -c 'import vllm._custom_ops; from vllm.config import VllmConfig; from vllm.model_executor.layers.layernorm import RMSNorm; print("Required vLLM CI imports are available.")'
+    yes | /dtk_llvm_*.run
 
 # Keep the build image focused on compiling and validating the wheel.
 RUN python3 - <<'PY'
 import importlib.metadata
 import os
-import torch
 
 expected_torch = os.environ["INSTALL_TORCH_VERSION"]
-base_torch, _, local_torch = torch.__version__.partition("+")
+torch_version = importlib.metadata.version("torch")
+base_torch, _, local_torch = torch_version.partition("+")
 if base_torch != expected_torch:
     raise SystemExit(
-        f"Torch version mismatch: expected {expected_torch}, got {torch.__version__}"
+        f"Torch version mismatch: expected {expected_torch}, got {torch_version}"
     )
 # The DTK build carries a `+das...dtk...` local label. An upstream wheel shares
 # the same base version, so only the label distinguishes them: without this
 # check a dependency that replaces Torch stays invisible until hipcc fails.
 if "dtk" not in local_torch:
     raise SystemExit(
-        f"Torch {torch.__version__} is not a DTK build. A preceding pip install "
+        f"Torch {torch_version} is not a DTK build. A preceding pip install "
         f"replaced it with an upstream wheel."
     )
 
@@ -153,13 +152,8 @@ for package in ("torch", "triton", "numpy", "vllm"):
     except importlib.metadata.PackageNotFoundError:
         print(f"  {package}=not installed")
 
-# NumPy is resolved by vLLM rather than pinned, so it can cross the 1.x/2.x ABI
-# boundary between DTK builds. A Torch compiled against the other major version
-# imports fine and only fails once an array actually crosses the boundary.
-import numpy
-
-torch.from_numpy(numpy.zeros(1, dtype="float32")).numpy()
-print(f"  numpy_abi=compatible with torch {torch.__version__}")
+# Runtime imports require libraries from /opt/hyhal, which is mounted only when
+# the compile container starts. The compile job performs those checks there.
 PY
 
 WORKDIR /lightop
