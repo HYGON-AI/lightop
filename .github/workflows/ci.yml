@@ -103,11 +103,15 @@ jobs:
       CI_BASE_IMAGE: ${{ vars.LIGHTOP_CI_BASE_IMAGE_REPOSITORY || '42.228.13.241:5000/dev/dev:rockylinux8.6-mpi5.0-gcc13.3-cmake3.29-py3.10-mkl2024.2.0.664' }}
       DTK_PKG_PATH: ${{ vars.LIGHTOP_DTK_PKG_PATH || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
       AICC_NIGHTLY_DIR: /public/opendas/ArchivedFile/ai_cc/nightly
+      FALLBACK_INDEX_URL: ${{ vars.LIGHTOP_FALLBACK_INDEX_URL || 'https://pypi.tuna.tsinghua.edu.cn/simple/' }}
+      FALLBACK_INDEX_HOST: ${{ vars.LIGHTOP_FALLBACK_INDEX_HOST || 'pypi.tuna.tsinghua.edu.cn' }}
       PYTHON_VERSION: "3.10"
       CI_SOURCE_BRANCH: ${{ github.head_ref || github.ref_name }}
       INSTALL_TORCH_VERSION: ${{ matrix.torch_version }}
       CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
       CI_COMPILE_CONTAINER_NAME: lightop-build-${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
+      CI_TEST_CONTAINER_NAME: lightop-test-${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
+      VLLM_VERSION: ${{ matrix.torch_version == '2.10.0' && '0.21.0' || '0.25.1' }}
       # The two Torch matrix lanes run concurrently on separate fixed cards.
       # The image only supports the two versions mapped below.
       STATIC_HIP_VISIBLE_DEVICES: ${{ matrix.torch_version == '2.10.0' && '0' || '1' }}
@@ -283,10 +287,9 @@ jobs:
           import importlib.metadata
           import numpy
           import torch
-          import vllm._custom_ops as vllm_ops
 
           print(f"torch={torch.__version__}")
-          for package in ("numpy", "vllm"):
+          for package in ("numpy", "triton"):
               try:
                   print(f"{package}={importlib.metadata.version(package)}")
               except importlib.metadata.PackageNotFoundError:
@@ -295,16 +298,6 @@ jobs:
           if not torch.cuda.is_available():
               raise SystemExit("No device is available to PyTorch")
           torch.from_numpy(numpy.zeros(1, dtype="float32")).numpy()
-          if not callable(getattr(vllm_ops, "reshape_and_cache", None)):
-              raise SystemExit("vLLM reshape_and_cache baseline is unavailable")
-          try:
-              reshape_and_cache_op = torch.ops._C_cache_ops.reshape_and_cache
-          except AttributeError as error:
-              raise SystemExit(
-                  "vLLM ROCm reshape_and_cache operator is not registered"
-              ) from error
-          if not callable(reshape_and_cache_op):
-              raise SystemExit("vLLM ROCm reshape_and_cache operator is invalid")
           torch_base_version = torch.__version__.split("+", 1)[0]
           expected_triton_tag = "torch" + torch_base_version.replace(".", "")
           triton_version = importlib.metadata.version("triton")
@@ -312,7 +305,7 @@ jobs:
               raise SystemExit(
                   f"Triton {triton_version} does not match {torch.__version__}"
               )
-          print("Required vLLM _custom_ops baseline is available.")
+          print("LightOp compile runtime is available.")
           PY
 
             /usr/local/bin/build-lightop-wheel
@@ -329,6 +322,7 @@ jobs:
           rm -rf dist
           mkdir -p dist
           docker cp "${CI_COMPILE_CONTAINER_NAME}:/dist/." dist/
+          docker stop "${CI_COMPILE_CONTAINER_NAME}" >/dev/null
 
       - name: "Test: Run functional tests"
         id: functional_tests
@@ -336,20 +330,80 @@ jobs:
         run: |
           set -euo pipefail
 
-          docker cp "${GITHUB_WORKSPACE}/test/ci_tests" "${CI_COMPILE_CONTAINER_NAME}:/ci_tests"
-          docker exec "${CI_COMPILE_CONTAINER_NAME}" mkdir -p /reports
+          docker run -d \
+            --name "${CI_TEST_CONTAINER_NAME}" \
+            --init \
+            --network host \
+            --ipc host \
+            --shm-size 80g \
+            --cap-add SYS_PTRACE \
+            --security-opt seccomp=unconfined \
+            --privileged \
+            --device /dev/mkfd \
+            --device /dev/kfd \
+            --device /dev/dri \
+            --group-add video \
+            --user root \
+            -e HIP_VISIBLE_DEVICES \
+            -e ROCR_VISIBLE_DEVICES \
+            -e PYTHONUNBUFFERED \
+            -e VLLM_VERSION \
+            -e FALLBACK_INDEX_URL \
+            -e FALLBACK_INDEX_HOST \
+            -v /opt/hyhal:/opt/hyhal:ro \
+            "${CI_COMPILE_IMAGE}"
+
+          docker exec "${CI_TEST_CONTAINER_NAME}" mkdir -p /ci_tests /dist /reports
+          docker cp "${GITHUB_WORKSPACE}/test/ci_tests/." "${CI_TEST_CONTAINER_NAME}:/ci_tests/"
+          docker cp "${GITHUB_WORKSPACE}/dist/." "${CI_TEST_CONTAINER_NAME}:/dist/"
 
           set +e
-          docker exec "${CI_COMPILE_CONTAINER_NAME}" bash -lc '
+          docker exec "${CI_TEST_CONTAINER_NAME}" bash -lc '
             set -euo pipefail
             source /opt/dtk/env.sh
             source /lightop/.github/ci/configure-container-runtime.sh
+
+            python3 -m pip install \
+              --extra-index-url "${FALLBACK_INDEX_URL}" \
+              --trusted-host "${FALLBACK_INDEX_HOST}" \
+              "regex==2026.7.10" "requests==2.32.5" \
+              "typing_extensions==4.16.0" cachetools psutil blake3 py-cpuinfo \
+              "pyzmq>=25.0.0"
+            python3 -m pip install --no-deps "vllm==${VLLM_VERSION}"
 
             wheel_test_dir=$(mktemp -d)
             python3 -m pip uninstall -y lightop >/dev/null 2>&1 || true
             python3 -m pip install --no-deps --target "${wheel_test_dir}" /dist/*manylinux*.whl
             export PYTHONPATH="${wheel_test_dir}${PYTHONPATH:+:${PYTHONPATH}}"
             python3 -c "import lightop, os; print(f\"tested wheel resolved from: {os.path.dirname(lightop.__file__)}\")"
+
+            python3 - <<"PY"
+          import importlib.metadata
+          import os
+          import torch
+          import vllm._custom_ops as vllm_ops
+
+          torch_version = torch.__version__.split("+", 1)[0]
+          expected_tag = "torch" + torch_version.replace(".", "")
+          expected_vllm = os.environ["VLLM_VERSION"]
+          vllm_version = importlib.metadata.version("vllm")
+          vllm_base, _, vllm_local = vllm_version.partition("+")
+          if vllm_base != expected_vllm or expected_tag not in vllm_local:
+              raise SystemExit(
+                  f"vLLM {vllm_version} does not match torch {torch.__version__}"
+              )
+          if not callable(getattr(vllm_ops, "reshape_and_cache", None)):
+              raise SystemExit("vLLM reshape_and_cache baseline is unavailable")
+          try:
+              reshape_and_cache_op = torch.ops._C_cache_ops.reshape_and_cache
+          except AttributeError as error:
+              raise SystemExit(
+                  "vLLM ROCm reshape_and_cache operator is not registered"
+              ) from error
+          if not callable(reshape_and_cache_op):
+              raise SystemExit("vLLM ROCm reshape_and_cache operator is invalid")
+          print(f"Validated vLLM baseline: {vllm_version}")
+          PY
 
             python3 -m pytest /ci_tests \
               -v --tb=short \
@@ -362,7 +416,7 @@ jobs:
 
           rm -f "${GITHUB_WORKSPACE}/lightop_test.xml"
           if ! docker cp \
-              "${CI_COMPILE_CONTAINER_NAME}:/reports/lightop_test.xml" \
+              "${CI_TEST_CONTAINER_NAME}:/reports/lightop_test.xml" \
               "${GITHUB_WORKSPACE}/lightop_test.xml" 2>/dev/null; then
             echo "::warning::JUnit XML not produced by pytest (exit ${pytest_status})."
           fi
@@ -449,6 +503,7 @@ jobs:
         run: |
           set +e
           docker rm -f "${CI_COMPILE_CONTAINER_NAME}" >/dev/null 2>&1
+          docker rm -f "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1
 
           runner_uid="$(id -u)"
           runner_gid="$(id -g)"

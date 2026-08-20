@@ -51,6 +51,16 @@ one device, so the two matrix lanes require two devices when they run in
 parallel. The selected device is passed to the compile container through both
 `HIP_VISIBLE_DEVICES` and `ROCR_VISIBLE_DEVICES`.
 
+## Build and test isolation
+
+Each Torch lane uses two containers with separate responsibilities. The build
+container contains only the compiler, Torch, Triton, and wheel-building tools.
+After the wheel is copied out, that container is stopped. A fresh test
+container then installs the small vLLM `_custom_ops` dependency set, installs
+the generated wheel, validates the registered ROCm baseline operator, and runs
+the six functional tests. Test-only dependencies therefore cannot replace or
+invalidate packages used while compiling the wheel.
+
 ## 可覆盖的仓库变量 / secrets
 
 `vars.*`（Settings → Secrets and variables → Actions → Variables）：
@@ -59,6 +69,7 @@ parallel. The selected device is passed to the compile container through both
 - `LIGHTOP_CI_BASE_IMAGE_REPOSITORY` — 编译 base image
 - `LIGHTOP_DTK_PKG_PATH` — DTK 包下载地址
 - `LIGHTOP_PYTHON_INDEX_URL` / `LIGHTOP_PYTHON_TRUSTED_HOST` — 内部 pip 索引
+- `LIGHTOP_FALLBACK_INDEX_URL` / `LIGHTOP_FALLBACK_INDEX_HOST` — test-only fallback for generic Python packages
 - `LIGHTOP_DEVPI_URL` — devpi 发布地址
 
 `secrets.*`：

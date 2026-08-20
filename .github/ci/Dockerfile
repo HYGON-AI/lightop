@@ -42,15 +42,9 @@ RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.
     ldconfig && \
     python3 --version
 
-# The six functional tests use only Torch, Triton, tqdm, LightOp, and vLLM's
-# `_custom_ops` baseline. Installing vLLM's complete server dependency graph
-# pulls unrelated model-serving packages into the compile image and makes the
-# build depend on continuously changing upstream constraints. Install only the
-# small import chain required by `_custom_ops`, then install the lane-specific
-# DTK packages without dependency resolution.
-#
-# NumPy 1.26.4 is new enough for the vLLM import chain while remaining on the
-# NumPy 1.x ABI required by the DTK Torch builds.
+# This image is intentionally limited to compiling LightOp. vLLM and its
+# runtime-only dependencies are installed later in a separate test container.
+# NumPy stays on the 1.x ABI required by the DTK Torch builds.
 RUN mkdir -p /root/.pip && \
     test -n "${INSTALL_TORCH_VERSION}" && \
     printf '%s\n' \
@@ -60,23 +54,19 @@ RUN mkdir -p /root/.pip && \
       > /root/.pip/pip.conf && \
     python3 -m pip install \
       pyyaml hypothesis Ninja MonkeyType wheel packaging "numpy==1.26.4" \
-      einops pytest matplotlib auditwheel patchelf tqdm \
-      "regex==2026.7.10" "requests==2.32.5" "typing_extensions==4.16.0" && \
+      einops pytest matplotlib auditwheel patchelf tqdm && \
     python3 -m pip install amdsmi && \
     python3 -m pip install "torch==${INSTALL_TORCH_VERSION}" && \
     case "${INSTALL_TORCH_VERSION}" in \
       2.10.0) \
-        VLLM_VERSION="0.21.0"; \
         TRITON_VERSION="3.8.0+dtk2604.torch2100.2608031654.g07864e" \
         ;; \
       2.11.0) \
-        VLLM_VERSION="0.25.1"; \
         TRITON_VERSION="3.6.0+das185.dtk2604.torch2110.2608200031.g3efdea" \
         ;; \
-      *) echo "No DTK vLLM baseline is mapped for torch ${INSTALL_TORCH_VERSION}." >&2; exit 1 ;; \
+      *) echo "No DTK Triton baseline is mapped for torch ${INSTALL_TORCH_VERSION}." >&2; exit 1 ;; \
     esac && \
     python3 -m pip install --no-deps "triton==${TRITON_VERSION}" && \
-    python3 -m pip install --no-deps "vllm==${VLLM_VERSION}" && \
     chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
     yes | /dtk_llvm_*.run
 
@@ -119,17 +109,8 @@ if expected_triton_tag not in triton_version:
         f"lane in the Dockerfile."
     )
 
-expected_vllm = {"2.10.0": "0.21.0", "2.11.0": "0.25.1"}[expected_torch]
-vllm_version = importlib.metadata.version("vllm")
-vllm_base, _, vllm_local = vllm_version.partition("+")
-if vllm_base != expected_vllm or expected_triton_tag not in vllm_local:
-    raise SystemExit(
-        f"vLLM {vllm_version} does not match torch {expected_torch}; expected "
-        f"vLLM {expected_vllm} with local label containing {expected_triton_tag}."
-    )
-
-print("Resolved LightOp build runtime:")
-for package in ("torch", "triton", "numpy", "vllm"):
+print("Resolved LightOp build environment:")
+for package in ("torch", "triton", "numpy"):
     try:
         print(f"  {package}={importlib.metadata.version(package)}")
     except importlib.metadata.PackageNotFoundError:
