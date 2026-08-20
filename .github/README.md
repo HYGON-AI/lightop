@@ -48,8 +48,9 @@ Actions → LightOp CI → **Run workflow** → 选目标分支 → 勾 `publish
 The CI uses fixed devices and does not install or invoke CIsmi. The Torch 2.10
 lane uses device `0`; the Torch 2.11 lane uses device `1`. Each lane requires
 one device, so the two matrix lanes require two devices when they run in
-parallel. The selected device is passed to the compile container through both
-`HIP_VISIBLE_DEVICES` and `ROCR_VISIBLE_DEVICES`.
+parallel. The selected physical device is passed to both containers through
+`ROCR_VISIBLE_DEVICES`. `HIP_VISIBLE_DEVICES` must not be set at the same time,
+because applying both filters can hide every device for a nonzero device ID.
 
 ## Build and test isolation
 

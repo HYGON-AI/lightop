@@ -114,7 +114,7 @@ jobs:
       VLLM_VERSION: ${{ matrix.torch_version == '2.10.0' && '0.21.0' || '0.25.1' }}
       # The two Torch matrix lanes run concurrently on separate fixed cards.
       # The image only supports the two versions mapped below.
-      STATIC_HIP_VISIBLE_DEVICES: ${{ matrix.torch_version == '2.10.0' && '0' || '1' }}
+      STATIC_ROCR_VISIBLE_DEVICES: ${{ matrix.torch_version == '2.10.0' && '0' || '1' }}
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -241,16 +241,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          hip_devices="${STATIC_HIP_VISIBLE_DEVICES}"
-          if [[ -z "${hip_devices}" ]]; then
+          rocr_devices="${STATIC_ROCR_VISIBLE_DEVICES}"
+          if [[ -z "${rocr_devices}" ]]; then
             echo "::error::No fixed HCU device is configured for this Torch lane."
             exit 1
           fi
-          echo "Using fixed HCU device(s): ${hip_devices}"
-          echo "HIP_VISIBLE_DEVICES=${hip_devices}" >> "${GITHUB_ENV}"
-          echo "ROCR_VISIBLE_DEVICES=${hip_devices}" >> "${GITHUB_ENV}"
-          export HIP_VISIBLE_DEVICES="${hip_devices}"
-          export ROCR_VISIBLE_DEVICES="${hip_devices}"
+          echo "Using fixed HCU device(s): ${rocr_devices}"
+          echo "ROCR_VISIBLE_DEVICES=${rocr_devices}" >> "${GITHUB_ENV}"
+          export ROCR_VISIBLE_DEVICES="${rocr_devices}"
 
           docker run -d \
             --name "${CI_COMPILE_CONTAINER_NAME}" \
@@ -266,7 +264,6 @@ jobs:
             --device /dev/dri \
             --group-add video \
             --user root \
-            -e HIP_VISIBLE_DEVICES \
             -e ROCR_VISIBLE_DEVICES \
             -e PYTHONUNBUFFERED \
             -v /opt/hyhal:/opt/hyhal:ro \
@@ -344,7 +341,6 @@ jobs:
             --device /dev/dri \
             --group-add video \
             --user root \
-            -e HIP_VISIBLE_DEVICES \
             -e ROCR_VISIBLE_DEVICES \
             -e PYTHONUNBUFFERED \
             -e VLLM_VERSION \
