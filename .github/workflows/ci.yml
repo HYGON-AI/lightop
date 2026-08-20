@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   prepare:
-    name: 准备工作
+    name: Preparation
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -79,7 +79,7 @@ jobs:
           fi
 
   test:
-    name: 编译和测试（Torch ${{ matrix.torch_version }}）
+    name: Build and Test (Torch ${{ matrix.torch_version }})
     needs: prepare
 
     # Never execute code from an untrusted fork on an internal runner.
@@ -112,10 +112,9 @@ jobs:
       INSTALL_TORCH_VERSION: ${{ matrix.torch_version }}
       CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
       CI_COMPILE_CONTAINER_NAME: lightop-build-${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
-      CISMI_TIMEOUT: ${{ vars.LIGHTOP_CISMI_TIMEOUT || '3600' }}
-      # CIsmi is optional on GitHub runners. Keep a deterministic fallback for
-      # runners where the internal CIsmi package is not provisioned.
-      STATIC_HIP_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
+      # The two Torch matrix lanes run concurrently on separate fixed cards.
+      # The image only supports the two versions mapped below.
+      STATIC_HIP_VISIBLE_DEVICES: ${{ matrix.torch_version == '2.10.0' && '0' || '1' }}
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -177,7 +176,7 @@ jobs:
 
           test ! -e "${CI_BUILD_CONTEXT}/lightop/.git"
 
-      - name: 编译：构建 LightOp 镜像
+      - name: Build: Create LightOp image
         shell: bash
         run: |
           set -euo pipefail
@@ -239,56 +238,17 @@ jobs:
             echo "- Integrated commit: \`${LIGHTOP_SOURCE_COMMIT}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: 编译：准备 HCU 资源分配工具
-        shell: bash
-        env:
-          # Match bolt_ops: CIsmi is installed by the runner's `python` from
-          # the DTK devpi index. The runner's `python3` is an older system
-          # interpreter whose pip cannot resolve the package.
-          PIP_INDEX_URL: ${{ vars.LIGHTOP_PYTHON_INDEX_URL || 'http://10.16.1.201:9929/nightly/dtk2604/+simple/' }}
-          PIP_TRUSTED_HOST: ${{ vars.LIGHTOP_PYTHON_TRUSTED_HOST || '10.16.1.201' }}
-        run: |
-          set -euo pipefail
-          if command -v CIsmi >/dev/null 2>&1; then
-            echo "CIsmi already on PATH: $(command -v CIsmi)"
-            exit 0
-          fi
-
-          if ! command -v python >/dev/null 2>&1; then
-            echo "::error::The runner does not provide the python interpreter used by bolt_ops."
-            exit 1
-          fi
-
-          echo "Installing CIsmi with the same Python and devpi index as bolt_ops."
-          python --version
-          python -m pip --version
-          user_bin="$(python -c 'import site; print(site.USER_BASE)')/bin"
-          echo "${user_bin}" >> "${GITHUB_PATH}"
-          export PATH="${user_bin}:${PATH}"
-          if ! python -m pip install --user cismi; then
-            echo "::warning::CIsmi could not be installed from the configured internal index; using STATIC_HIP_VISIBLE_DEVICES=${STATIC_HIP_VISIBLE_DEVICES} instead."
-            exit 0
-          fi
-          if ! command -v CIsmi >/dev/null 2>&1; then
-            echo "::warning::CIsmi installed but is not available on PATH; using STATIC_HIP_VISIBLE_DEVICES=${STATIC_HIP_VISIBLE_DEVICES} instead."
-          fi
-
-      - name: 编译：生成 LightOp wheel
+      - name: Build: Compile LightOp wheel
         shell: bash
         run: |
           set -euo pipefail
 
-          if command -v CIsmi >/dev/null 2>&1; then
-            hip_devices="$(CIsmi need 1 --timeout "${CISMI_TIMEOUT}")"
-          else
-            hip_devices="${STATIC_HIP_VISIBLE_DEVICES}"
-            echo "::warning::CIsmi is unavailable; using statically configured HCU device(s): ${hip_devices}."
-          fi
+          hip_devices="${STATIC_HIP_VISIBLE_DEVICES}"
           if [[ -z "${hip_devices}" ]]; then
-            echo "::error::No HCU device was selected. Configure LIGHTOP_CI_GPUS or provision CIsmi on the runner."
+            echo "::error::No fixed HCU device is configured for this Torch lane."
             exit 1
           fi
-          echo "Allocated HCU: ${hip_devices}"
+          echo "Using fixed HCU device(s): ${hip_devices}"
           echo "HIP_VISIBLE_DEVICES=${hip_devices}" >> "${GITHUB_ENV}"
           echo "ROCR_VISIBLE_DEVICES=${hip_devices}" >> "${GITHUB_ENV}"
           export HIP_VISIBLE_DEVICES="${hip_devices}"
@@ -368,7 +328,7 @@ jobs:
           mkdir -p dist
           docker cp "${CI_COMPILE_CONTAINER_NAME}:/dist/." dist/
 
-      - name: 测试：运行功能测试
+      - name: Test: Run functional tests
         id: functional_tests
         shell: bash
         run: |
@@ -417,7 +377,7 @@ jobs:
               ;;
           esac
 
-      - name: 测试：汇总结果
+      - name: Test: Summarize results
         if: always()
         shell: bash
         env:
@@ -473,7 +433,7 @@ jobs:
           PY
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: 测试：上传 JUnit 报告
+      - name: Test: Upload JUnit report
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -507,7 +467,7 @@ jobs:
           fi
           exit 0
 
-      - name: 打包：上传已验证 wheel
+      - name: Package: Upload validated wheel
         # Test-case failures leave the job green (see "Run functional tests"),
         # so the normal upload runs. Guard with `success()` anyway to skip
         # uploading when compile itself failed and dist/ is empty.
@@ -520,7 +480,7 @@ jobs:
           retention-days: 14
 
   publish:
-    name: 打包发布（Torch ${{ matrix.torch_version }}）
+    name: Package and Publish (Torch ${{ matrix.torch_version }})
     needs:
       - prepare
       - test

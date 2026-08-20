@@ -43,11 +43,13 @@ Actions → LightOp CI → **Run workflow** → 选目标分支 → 勾 `publish
 
 跳过 PR 流程，仍然要求 validate + test job 拉起来（test 恒绿，除非 pytest 崩）。用于修复紧急问题而不想走 PR review 的场景。
 
-## GPU 分配
+## GPU allocation
 
-test job 编译前调用 `CIsmi need 1 --timeout ${CISMI_TIMEOUT}` 动态申卡，写入 `GITHUB_ENV` 后由 `docker run -e HIP_VISIBLE_DEVICES -e ROCR_VISIBLE_DEVICES` 传给编译容器。多 PR / 多 torch lane 并发时不会互相抢固定卡号。
-
-超时可通过仓库变量 `LIGHTOP_CISMI_TIMEOUT` 覆盖（默认 3600 秒）。
+The CI uses fixed devices and does not install or invoke CIsmi. The Torch 2.10
+lane uses device `0`; the Torch 2.11 lane uses device `1`. Each lane requires
+one device, so the two matrix lanes require two devices when they run in
+parallel. The selected device is passed to the compile container through both
+`HIP_VISIBLE_DEVICES` and `ROCR_VISIBLE_DEVICES`.
 
 ## 可覆盖的仓库变量 / secrets
 
@@ -59,7 +61,6 @@ test job 编译前调用 `CIsmi need 1 --timeout ${CISMI_TIMEOUT}` 动态申卡�
 - `LIGHTOP_PYTHON_INDEX_URL` / `LIGHTOP_PYTHON_TRUSTED_HOST` — 内部 pip 索引
 - `LIGHTOP_FALLBACK_INDEX_URL` / `LIGHTOP_FALLBACK_INDEX_HOST` — 内部索引不可达时的兜底
 - `LIGHTOP_DEVPI_URL` — devpi 发布地址
-- `LIGHTOP_CISMI_TIMEOUT` — CIsmi 申卡超时（秒）
 
 `secrets.*`：
 
