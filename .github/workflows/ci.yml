@@ -304,7 +304,8 @@ jobs:
           if not torch.cuda.is_available():
               raise SystemExit("No device is available to PyTorch")
           torch.from_numpy(numpy.zeros(1, dtype="float32")).numpy()
-          expected_triton_tag = f"torch{torch.__version__.split('+', 1)[0].replace('.', '')}"
+          torch_base_version = torch.__version__.split("+", 1)[0]
+          expected_triton_tag = "torch" + torch_base_version.replace(".", "")
           triton_version = importlib.metadata.version("triton")
           if expected_triton_tag not in triton_version:
               raise SystemExit(
