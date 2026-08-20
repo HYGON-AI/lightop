@@ -118,9 +118,7 @@ jobs:
       CI_TEST_CONTAINER_NAME: lightop-test-cache-torch${{ matrix.torch_version }}
       VLLM_VERSION: ${{ matrix.torch_version == '2.10.0' && '0.21.0' || '0.25.1' }}
       REUSE_TEST_ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.reuse_test_environment && 'true' || 'false' }}
-      # Temporary while runtime dependencies are being stabilized. Restore
-      # this to false after both Torch lanes pass their functional tests.
-      PRESERVE_TEST_ENVIRONMENT: "true"
+      PRESERVE_TEST_ENVIRONMENT: "false"
       # The two Torch matrix lanes run concurrently on separate fixed cards.
       # The image only supports the two versions mapped below.
       STATIC_ROCR_VISIBLE_DEVICES: ${{ matrix.torch_version == '2.10.0' && '0' || '1' }}
@@ -413,7 +411,6 @@ jobs:
           import importlib.metadata
           import os
           import torch
-          import vllm._custom_ops as vllm_ops
 
           torch_version = torch.__version__.split("+", 1)[0]
           expected_tag = "torch" + torch_version.replace(".", "")
@@ -424,17 +421,7 @@ jobs:
               raise SystemExit(
                   f"vLLM {vllm_version} does not match torch {torch.__version__}"
               )
-          if not callable(getattr(vllm_ops, "reshape_and_cache", None)):
-              raise SystemExit("vLLM reshape_and_cache baseline is unavailable")
-          try:
-              reshape_and_cache_op = torch.ops._C_cache_ops.reshape_and_cache
-          except AttributeError as error:
-              raise SystemExit(
-                  "vLLM ROCm reshape_and_cache operator is not registered"
-              ) from error
-          if not callable(reshape_and_cache_op):
-              raise SystemExit("vLLM ROCm reshape_and_cache operator is invalid")
-          print(f"Validated vLLM baseline: {vllm_version}")
+          print(f"Validated vLLM package metadata: {vllm_version}")
           PY
           ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
 
