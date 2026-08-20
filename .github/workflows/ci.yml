@@ -41,7 +41,24 @@ jobs:
       - name: Integrate latest target branch
         id: integrate_source
         shell: bash
-        run: bash .github/ci/integrate-target-branch.sh
+        env:
+          TARGET_BRANCH: ${{ github.base_ref || 'master' }}
+        run: |
+          set -euo pipefail
+          target_sha="$(git rev-parse "origin/${TARGET_BRANCH}")"
+          source_sha="$(git rev-parse HEAD)"
+          git -c user.name='LightOp CI' -c user.email='ci@localhost' \
+              merge --no-edit "${target_sha}"
+          integrated_sha="$(git rev-parse HEAD)"
+          echo "target_sha=${target_sha}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "### Integrated LightOp source"
+            echo
+            echo "- Target branch: \`${TARGET_BRANCH}\`"
+            echo "- Target commit: \`${target_sha}\`"
+            echo "- Source commit: \`${source_sha}\`"
+            echo "- Integrated commit: \`${integrated_sha}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -95,8 +112,7 @@ jobs:
       INSTALL_TORCH_VERSION: ${{ matrix.torch_version }}
       CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
       CI_COMPILE_CONTAINER_NAME: lightop-build-${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
-      HIP_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
-      ROCR_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
+      CISMI_TIMEOUT: ${{ vars.LIGHTOP_CISMI_TIMEOUT || '3600' }}
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -127,7 +143,12 @@ jobs:
 
       - name: Integrate latest target branch
         shell: bash
-        run: bash .github/ci/integrate-target-branch.sh "${{ needs.validate.outputs.target_sha }}"
+        env:
+          TARGET_SHA: ${{ needs.validate.outputs.target_sha }}
+        run: |
+          set -euo pipefail
+          git -c user.name='LightOp CI' -c user.email='ci@localhost' \
+              merge --no-edit "${TARGET_SHA}"
 
       - name: Prepare runner and build context
         shell: bash
@@ -215,10 +236,34 @@ jobs:
             echo "- Integrated commit: \`${LIGHTOP_SOURCE_COMMIT}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
+      - name: Install CIsmi
+        shell: bash
+        env:
+          CISMI_INDEX_URL: ${{ vars.LIGHTOP_PYTHON_INDEX_URL || 'http://10.16.1.201:9929/nightly/dtk2604/+simple/' }}
+          CISMI_TRUSTED_HOST: ${{ vars.LIGHTOP_PYTHON_TRUSTED_HOST || '10.16.1.201' }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --user --quiet \
+            --index-url "${CISMI_INDEX_URL}" \
+            --trusted-host "${CISMI_TRUSTED_HOST}" \
+            cismi
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
       - name: Compile LightOp wheel
         shell: bash
         run: |
           set -euo pipefail
+
+          hip_devices="$(CIsmi need 1 --timeout "${CISMI_TIMEOUT}")"
+          if [[ -z "${hip_devices}" ]]; then
+            echo "::error::CIsmi did not return any device within ${CISMI_TIMEOUT}s."
+            exit 1
+          fi
+          echo "Allocated HCU: ${hip_devices}"
+          echo "HIP_VISIBLE_DEVICES=${hip_devices}" >> "${GITHUB_ENV}"
+          echo "ROCR_VISIBLE_DEVICES=${hip_devices}" >> "${GITHUB_ENV}"
+          export HIP_VISIBLE_DEVICES="${hip_devices}"
+          export ROCR_VISIBLE_DEVICES="${hip_devices}"
 
           docker run -d \
             --name "${CI_COMPILE_CONTAINER_NAME}" \
@@ -283,11 +328,13 @@ jobs:
           docker cp "${CI_COMPILE_CONTAINER_NAME}:/dist/." dist/
 
       - name: Run functional tests
+        id: functional_tests
         shell: bash
         run: |
           set -euo pipefail
 
           docker cp "${GITHUB_WORKSPACE}/test/ci_tests" "${CI_COMPILE_CONTAINER_NAME}:/ci_tests"
+          docker exec "${CI_COMPILE_CONTAINER_NAME}" mkdir -p /reports
 
           set +e
           docker exec "${CI_COMPILE_CONTAINER_NAME}" bash -lc '
@@ -296,37 +343,103 @@ jobs:
             export PATH="/opt/hyhal/bin:${PATH}"
             export LD_LIBRARY_PATH="/opt/hyhal/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
-            cd /ci_tests
-            passed=()
-            failed=()
-            for test_file in test_*.py; do
-              echo "--- ${test_file} ---"
-              if python3 "${test_file}"; then
-                passed+=("${test_file}")
-              else
-                echo "::error::Test failed: ${test_file}"
-                failed+=("${test_file}")
-              fi
-            done
+            wheel_test_dir=$(mktemp -d)
+            python3 -m pip uninstall -y lightop >/dev/null 2>&1 || true
+            python3 -m pip install --no-deps --target "${wheel_test_dir}" /dist/*manylinux*.whl
+            export PYTHONPATH="${wheel_test_dir}${PYTHONPATH:+:${PYTHONPATH}}"
+            python3 -c "import lightop, os; print(f\"tested wheel resolved from: {os.path.dirname(lightop.__file__)}\")"
 
-            echo ""
-            echo "Passed (${#passed[@]}): ${passed[*]:-none}"
-            echo "Failed (${#failed[@]}): ${failed[*]:-none}"
-            exit "${#failed[@]}"
+            python3 -m pytest /ci_tests \
+              -v --tb=short \
+              -o junit_family=xunit2 \
+              --junitxml=/reports/lightop_test.xml \
+              --continue-on-collection-errors
           ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
-          test_status=${PIPESTATUS[0]}
+          pytest_status=${PIPESTATUS[0]}
           set -e
 
-          if [[ "${test_status}" -ne 0 ]]; then
-            echo "::error::${test_status} functional test(s) failed."
-            exit "${test_status}"
+          rm -f "${GITHUB_WORKSPACE}/lightop_test.xml"
+          if ! docker cp \
+              "${CI_COMPILE_CONTAINER_NAME}:/reports/lightop_test.xml" \
+              "${GITHUB_WORKSPACE}/lightop_test.xml" 2>/dev/null; then
+            echo "::warning::JUnit XML not produced by pytest (exit ${pytest_status})."
           fi
 
+          echo "pytest_status=${pytest_status}" >> "${GITHUB_OUTPUT}"
+
+          case "${pytest_status}" in
+            0) echo "All test cases passed." ;;
+            1) echo "::warning::Some test cases failed (pytest exit 1). Report uploaded; job left green so admin can review and decide whether to merge." ;;
+            *)
+              echo "::error::pytest itself failed with exit ${pytest_status} (not a test-case failure)."
+              exit "${pytest_status}"
+              ;;
+          esac
+
+      - name: Summarize test results
+        if: always()
+        shell: bash
+        env:
+          PYTEST_STATUS: ${{ steps.functional_tests.outputs.pytest_status }}
+        run: |
+          set -euo pipefail
+          xml="${GITHUB_WORKSPACE}/lightop_test.xml"
           {
             echo "### Functional tests"
             echo
-            echo "All \`test/ci_tests/\` tests passed."
+            echo "- Torch: \`${INSTALL_TORCH_VERSION}\`"
+            echo "- pytest exit: \`${PYTEST_STATUS:-unknown}\` (0=all pass, 1=some cases failed, other=pytest itself crashed)"
+            echo
+            if [[ ! -s "${xml}" ]]; then
+              echo "_No JUnit report was produced._"
+              exit 0
+            fi
+            python3 - "${xml}" <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          root = ET.parse(sys.argv[1]).getroot()
+          suites = root.findall('testsuite') if root.tag == 'testsuites' else [root]
+          totals = {k: 0 for k in ('tests', 'failures', 'errors', 'skipped')}
+          for s in suites:
+              for k in totals:
+                  totals[k] += int(s.attrib.get(k, 0))
+          passed = totals['tests'] - totals['failures'] - totals['errors'] - totals['skipped']
+          print("| Total | Passed | Failed | Errors | Skipped |")
+          print("|------:|-------:|-------:|-------:|--------:|")
+          print(f"| {totals['tests']} | {passed} | {totals['failures']} | {totals['errors']} | {totals['skipped']} |")
+          bad = []
+          for s in suites:
+              for tc in s.findall('testcase'):
+                  fail = tc.find('failure')
+                  err = tc.find('error')
+                  if fail is None and err is None:
+                      continue
+                  node = fail if fail is not None else err
+                  first = (node.attrib.get('message') or (node.text or '')).splitlines()
+                  first = first[0][:200] if first else ''
+                  bad.append((tc.attrib.get('classname', ''), tc.attrib.get('name', ''), first))
+          if bad:
+              print()
+              print("<details><summary>Failing test cases</summary>")
+              print()
+              print("| Test | First line of failure |")
+              print("|------|-----------------------|")
+              for cls, name, msg in bad:
+                  full = f"{cls}::{name}" if cls else name
+                  msg = msg.replace('|', '\\|')
+                  print(f"| `{full}` | {msg} |")
+              print()
+              print("</details>")
+          PY
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload JUnit test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightop-test-report-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}-torch-${{ matrix.torch_version }}
+          path: lightop_test.xml
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Remove CI containers, images, and build context
         if: always()
@@ -354,6 +467,10 @@ jobs:
           exit 0
 
       - name: Upload validated build artifacts
+        # Test-case failures leave the job green (see "Run functional tests"),
+        # so the normal upload runs. Guard with `success()` anyway to skip
+        # uploading when compile itself failed and dist/ is empty.
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: lightop-ci-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}-torch-${{ matrix.torch_version }}
@@ -378,7 +495,6 @@ jobs:
         torch_version: ${{ fromJSON(vars.LIGHTOP_TORCH_VERSIONS || '["2.10.0", "2.11.0"]') }}
 
     env:
-      CI_BASE_IMAGE: ${{ vars.LIGHTOP_CI_BASE_IMAGE_REPOSITORY || '42.228.13.241:5000/dev/dev:rockylinux8.6-mpi5.0-gcc13.3-cmake3.29-py3.10-mkl2024.2.0.664' }}
       DTK_PKG_PATH: ${{ vars.LIGHTOP_DTK_PKG_PATH || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
       PYTHON_INDEX_URL: ${{ vars.LIGHTOP_PYTHON_INDEX_URL || 'http://10.16.1.201:9929/nightly/dtk2604/+simple/' }}
       PYTHON_TRUSTED_HOST: ${{ vars.LIGHTOP_PYTHON_TRUSTED_HOST || '10.16.1.201' }}
@@ -411,6 +527,11 @@ jobs:
           name: lightop-ci-${{ github.run_id }}-${{ github.run_attempt }}-torch-${{ matrix.torch_version }}
           path: ${{ steps.publish_paths.outputs.artifact_dir }}
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
       - name: Publish validated repaired wheel
         shell: bash
         env:
@@ -432,41 +553,26 @@ jobs:
             exit 1
           fi
 
-          publish_dir="$(realpath "$(dirname "${wheels[0]}")")"
-          wheel_name="$(basename "${wheels[0]}")"
+          wheel="${wheels[0]}"
+          wheel_name="$(basename "${wheel}")"
           dtk_package="$(basename "${DTK_PKG_PATH}")"
           torch_tag="${INSTALL_TORCH_VERSION//./}"
           if [[ "${wheel_name}" != *".torch${torch_tag}."* ]]; then
             echo "::error::Wheel ${wheel_name} does not match Torch ${INSTALL_TORCH_VERSION}."
             exit 1
           fi
-          sha256sum "${wheels[0]}"
+          sha256sum "${wheel}"
 
-          docker pull "${CI_BASE_IMAGE}" 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
-          docker run --rm \
-            --network host \
-            -e DEVPI_URL \
-            -e DEVPI_USER \
-            -e DEVPI_PASSWORD \
-            -e PYTHON_INDEX_URL \
-            -e PYTHON_TRUSTED_HOST \
-            -e DTK_PACKAGE="${dtk_package}" \
-            -e WHEEL_NAME="${wheel_name}" \
-            -v "${publish_dir}:/publish:ro" \
-            "${CI_BASE_IMAGE}" \
-            bash -lc '
-              set -euo pipefail
-              python3 -m pip install \
-                --index-url "${PYTHON_INDEX_URL}" \
-                --trusted-host "${PYTHON_TRUSTED_HOST}" \
-                ciupload
-              CIUpload \
-                --devpi_url "${DEVPI_URL}" \
-                --devpi_user "${DEVPI_USER}" \
-                --devpi_password "${DEVPI_PASSWORD}" \
-                --dtk_pkg_name "${DTK_PACKAGE}" \
-                -f "/publish/${WHEEL_NAME}"
-            ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
+          python3 -m pip install \
+            --index-url "${PYTHON_INDEX_URL}" \
+            --trusted-host "${PYTHON_TRUSTED_HOST}" \
+            ciupload
+          CIUpload \
+            --devpi_url "${DEVPI_URL}" \
+            --devpi_user "${DEVPI_USER}" \
+            --devpi_password "${DEVPI_PASSWORD}" \
+            --dtk_pkg_name "${dtk_package}" \
+            -f "${wheel}"
 
       - name: Remove downloaded publish artifact
         if: always()
