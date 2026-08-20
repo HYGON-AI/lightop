@@ -236,23 +236,19 @@ jobs:
             echo "- Integrated commit: \`${LIGHTOP_SOURCE_COMMIT}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Install CIsmi
-        shell: bash
-        env:
-          CISMI_INDEX_URL: ${{ vars.LIGHTOP_PYTHON_INDEX_URL || 'http://10.16.1.201:9929/nightly/dtk2604/+simple/' }}
-          CISMI_TRUSTED_HOST: ${{ vars.LIGHTOP_PYTHON_TRUSTED_HOST || '10.16.1.201' }}
-        run: |
-          set -euo pipefail
-          python3 -m pip install --user --quiet \
-            --index-url "${CISMI_INDEX_URL}" \
-            --trusted-host "${CISMI_TRUSTED_HOST}" \
-            cismi
-          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
-
       - name: Compile LightOp wheel
         shell: bash
         run: |
           set -euo pipefail
+
+          # CIsmi is preinstalled on the nmz-family self-hosted runners; the
+          # internal DTK index does not carry a `cismi` package, so pip install
+          # would fail. If the runner PATH ever loses it, fail loudly here
+          # instead of silently regressing to a fixed device id.
+          if ! command -v CIsmi >/dev/null 2>&1; then
+            echo "::error::CIsmi is not on PATH on this runner. GPU allocation cannot proceed."
+            exit 1
+          fi
 
           hip_devices="$(CIsmi need 1 --timeout "${CISMI_TIMEOUT}")"
           if [[ -z "${hip_devices}" ]]; then
