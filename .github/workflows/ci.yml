@@ -113,6 +113,9 @@ jobs:
       CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
       CI_COMPILE_CONTAINER_NAME: lightop-build-${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
       CISMI_TIMEOUT: ${{ vars.LIGHTOP_CISMI_TIMEOUT || '3600' }}
+      # CIsmi is optional on GitHub runners. Keep a deterministic fallback for
+      # runners where the internal CIsmi package is not provisioned.
+      STATIC_HIP_VISIBLE_DEVICES: ${{ vars.LIGHTOP_CI_GPUS || '0' }}
       PYTHONUNBUFFERED: "1"
 
     steps:
@@ -262,22 +265,27 @@ jobs:
           user_bin="$(python -c 'import site; print(site.USER_BASE)')/bin"
           echo "${user_bin}" >> "${GITHUB_PATH}"
           export PATH="${user_bin}:${PATH}"
-          python -m pip install --user cismi
-          command -v CIsmi
+          if ! python -m pip install --user cismi; then
+            echo "::warning::CIsmi could not be installed from the configured internal index; using STATIC_HIP_VISIBLE_DEVICES=${STATIC_HIP_VISIBLE_DEVICES} instead."
+            exit 0
+          fi
+          if ! command -v CIsmi >/dev/null 2>&1; then
+            echo "::warning::CIsmi installed but is not available on PATH; using STATIC_HIP_VISIBLE_DEVICES=${STATIC_HIP_VISIBLE_DEVICES} instead."
+          fi
 
       - name: 编译：生成 LightOp wheel
         shell: bash
         run: |
           set -euo pipefail
 
-          if ! command -v CIsmi >/dev/null 2>&1; then
-            echo "::error::CIsmi is not on PATH on this runner. GPU allocation cannot proceed."
-            exit 1
+          if command -v CIsmi >/dev/null 2>&1; then
+            hip_devices="$(CIsmi need 1 --timeout "${CISMI_TIMEOUT}")"
+          else
+            hip_devices="${STATIC_HIP_VISIBLE_DEVICES}"
+            echo "::warning::CIsmi is unavailable; using statically configured HCU device(s): ${hip_devices}."
           fi
-
-          hip_devices="$(CIsmi need 1 --timeout "${CISMI_TIMEOUT}")"
           if [[ -z "${hip_devices}" ]]; then
-            echo "::error::CIsmi did not return any device within ${CISMI_TIMEOUT}s."
+            echo "::error::No HCU device was selected. Configure LIGHTOP_CI_GPUS or provision CIsmi on the runner."
             exit 1
           fi
           echo "Allocated HCU: ${hip_devices}"
