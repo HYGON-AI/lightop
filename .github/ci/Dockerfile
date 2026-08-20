@@ -5,8 +5,6 @@ FROM ${BASE_IMAGE}
 ARG PYTHON_VERSION=3.10
 ARG INSTALL_TORCH_VERSION
 ARG DTK_INDEX_VERSION=2604
-ARG FALLBACK_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/
-ARG FALLBACK_INDEX_HOST=pypi.tuna.tsinghua.edu.cn
 ARG DTK_PKG_NAME
 ARG DTK_PKG_VERSION
 ARG DTK_VERSION
@@ -44,30 +42,15 @@ RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.
     ldconfig && \
     python3 --version
 
-# vLLM is only a numerical baseline for test/ci_tests. Each DTK build is bound
-# to one Torch release through its local version label (`+das.dtk2604.torch2100`),
-# so the version must be selected per matrix lane: an unpinned install resolves
-# to the newest label, which belongs to the other lane and drags in an upstream
-# Torch that replaces the DTK build.
+# The six functional tests use only Torch, Triton, tqdm, LightOp, and vLLM's
+# `_custom_ops` baseline. Installing vLLM's complete server dependency graph
+# pulls unrelated model-serving packages into the compile image and makes the
+# build depend on continuously changing upstream constraints. Install only the
+# small import chain required by `_custom_ops`, then install the lane-specific
+# DTK packages without dependency resolution.
 #
-# vLLM 0.25.1 requires llguidance>=1.7, but its cp310 x86_64 wheel requires
-# glibc 2.31 while this Rocky 8 image provides glibc 2.28. LightOp's CI tests
-# only use vLLM kernels and layer baselines, not structured output, so install
-# vLLM without dependencies and then install its metadata requirements except
-# llguidance and the lane-pinned Torch, Triton, and torchvision packages. This
-# prevents a multi-hour Rust source build and protects the DTK packages from
-# dependency replacement.
-#
-# DTK Torch 2.10 cannot initialize its NumPy bridge with NumPy 2.x. Keep the
-# same 1.24.3 version used by bolt_ops and constrain dependency resolution so
-# transitive packages cannot replace it. OpenCV is not used by the CI kernel
-# baselines and is skipped because its recent wheels require NumPy 2.x.
-#
-# CuPy was a leftover from that same set and is gone for the same reason: no
-# source file in this repository or in test/ci_tests imports it. The only
-# build available on the internal index is 12.3.0, which requires numpy<1.29
-# and therefore cannot coexist with vLLM's numpy>=2 — the intersection is
-# empty, so pip resolved in vLLM's favour and left CuPy importable but broken.
+# NumPy 1.26.4 is new enough for the vLLM import chain while remaining on the
+# NumPy 1.x ABI required by the DTK Torch builds.
 RUN mkdir -p /root/.pip && \
     test -n "${INSTALL_TORCH_VERSION}" && \
     printf '%s\n' \
@@ -76,39 +59,24 @@ RUN mkdir -p /root/.pip && \
       'trusted-host = 10.16.1.201' \
       > /root/.pip/pip.conf && \
     python3 -m pip install \
-      pyyaml hypothesis Ninja MonkeyType wheel packaging "numpy==1.24.3" \
-      einops pytest matplotlib auditwheel patchelf tqdm && \
+      pyyaml hypothesis Ninja MonkeyType wheel packaging "numpy==1.26.4" \
+      einops pytest matplotlib auditwheel patchelf tqdm \
+      "regex==2026.7.10" "requests==2.32.5" "typing_extensions==4.16.0" && \
     python3 -m pip install amdsmi && \
     python3 -m pip install "torch==${INSTALL_TORCH_VERSION}" && \
     case "${INSTALL_TORCH_VERSION}" in \
       2.10.0) \
         VLLM_VERSION="0.21.0"; \
-        TRITON_VERSION="3.8.0+dtk2604.torch2100.2608031654.g07864e"; \
-        TORCHVISION_VERSION="0.25.0+das185.dtk2604.torch2100.2608130858.gdcd044" \
+        TRITON_VERSION="3.8.0+dtk2604.torch2100.2608031654.g07864e" \
         ;; \
       2.11.0) \
         VLLM_VERSION="0.25.1"; \
-        TRITON_VERSION="3.6.0+das185.dtk2604.torch2110.2608200031.g3efdea"; \
-        TORCHVISION_VERSION="0.26.0+das.opt1.dtk2604.torch2110.2608071236.gc5a783" \
+        TRITON_VERSION="3.6.0+das185.dtk2604.torch2110.2608200031.g3efdea" \
         ;; \
       *) echo "No DTK vLLM baseline is mapped for torch ${INSTALL_TORCH_VERSION}." >&2; exit 1 ;; \
     esac && \
     python3 -m pip install --no-deps "triton==${TRITON_VERSION}" && \
-    python3 -m pip install --no-deps "torchvision==${TORCHVISION_VERSION}" && \
-    rm -rf /tmp/vllm-wheel && \
-    mkdir -p /tmp/vllm-wheel && \
-    python3 -m pip download --no-deps --dest /tmp/vllm-wheel \
-      "vllm==${VLLM_VERSION}" \
-      --extra-index-url "${FALLBACK_INDEX_URL}" \
-      --trusted-host "${FALLBACK_INDEX_HOST}" && \
-    VLLM_WHEEL="$(find /tmp/vllm-wheel -maxdepth 1 -type f -name '*.whl' -print -quit)" && \
-    test -n "${VLLM_WHEEL}" && \
-    python3 /lightop/.github/ci/install-vllm-dependencies.py \
-      --vllm-wheel "${VLLM_WHEEL}" \
-      --extra-index-url "${FALLBACK_INDEX_URL}" \
-      --trusted-host "${FALLBACK_INDEX_HOST}" && \
-    python3 -m pip install --no-deps "${VLLM_WHEEL}" && \
-    rm -rf /tmp/vllm-wheel && \
+    python3 -m pip install --no-deps "vllm==${VLLM_VERSION}" && \
     chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
     yes | /dtk_llvm_*.run
 
@@ -149,6 +117,15 @@ if expected_triton_tag not in triton_version:
         f"(expected local label to contain '{expected_triton_tag}'). A preceding "
         f"pip install resolved the wrong lane's wheel; pin triton per torch "
         f"lane in the Dockerfile."
+    )
+
+expected_vllm = {"2.10.0": "0.21.0", "2.11.0": "0.25.1"}[expected_torch]
+vllm_version = importlib.metadata.version("vllm")
+vllm_base, _, vllm_local = vllm_version.partition("+")
+if vllm_base != expected_vllm or expected_triton_tag not in vllm_local:
+    raise SystemExit(
+        f"vLLM {vllm_version} does not match torch {expected_torch}; expected "
+        f"vLLM {expected_vllm} with local label containing {expected_triton_tag}."
     )
 
 print("Resolved LightOp build runtime:")

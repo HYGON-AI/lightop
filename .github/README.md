@@ -59,7 +59,6 @@ parallel. The selected device is passed to the compile container through both
 - `LIGHTOP_CI_BASE_IMAGE_REPOSITORY` — 编译 base image
 - `LIGHTOP_DTK_PKG_PATH` — DTK 包下载地址
 - `LIGHTOP_PYTHON_INDEX_URL` / `LIGHTOP_PYTHON_TRUSTED_HOST` — 内部 pip 索引
-- `LIGHTOP_FALLBACK_INDEX_URL` / `LIGHTOP_FALLBACK_INDEX_HOST` — 内部索引不可达时的兜底
 - `LIGHTOP_DEVPI_URL` — devpi 发布地址
 
 `secrets.*`：
