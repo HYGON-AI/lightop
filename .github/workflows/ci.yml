@@ -176,7 +176,7 @@ jobs:
 
           test ! -e "${CI_BUILD_CONTEXT}/lightop/.git"
 
-      - name: Build: Create LightOp image
+      - name: "Build: Create LightOp image"
         shell: bash
         run: |
           set -euo pipefail
@@ -238,7 +238,7 @@ jobs:
             echo "- Integrated commit: \`${LIGHTOP_SOURCE_COMMIT}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Build: Compile LightOp wheel
+      - name: "Build: Compile LightOp wheel"
         shell: bash
         run: |
           set -euo pipefail
@@ -328,7 +328,7 @@ jobs:
           mkdir -p dist
           docker cp "${CI_COMPILE_CONTAINER_NAME}:/dist/." dist/
 
-      - name: Test: Run functional tests
+      - name: "Test: Run functional tests"
         id: functional_tests
         shell: bash
         run: |
@@ -377,7 +377,7 @@ jobs:
               ;;
           esac
 
-      - name: Test: Summarize results
+      - name: "Test: Summarize results"
         if: always()
         shell: bash
         env:
@@ -433,7 +433,7 @@ jobs:
           PY
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: Test: Upload JUnit report
+      - name: "Test: Upload JUnit report"
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -467,7 +467,7 @@ jobs:
           fi
           exit 0
 
-      - name: Package: Upload validated wheel
+      - name: "Package: Upload validated wheel"
         # Test-case failures leave the job green (see "Run functional tests"),
         # so the normal upload runs. Guard with `success()` anyway to skip
         # uploading when compile itself failed and dist/ is empty.
