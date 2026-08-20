@@ -83,9 +83,17 @@ RUN mkdir -p /root/.pip && \
       > /root/.pip/pip.conf && \
     python3 -m pip install \
       pyyaml hypothesis Ninja MonkeyType wheel packaging \
-      einops pytest matplotlib auditwheel patchelf tqdm triton && \
+      einops pytest matplotlib auditwheel patchelf tqdm && \
     python3 -m pip install amdsmi && \
     python3 -m pip install "torch==${INSTALL_TORCH_VERSION}" && \
+    # Triton must be resolved AFTER torch is pinned. The internal index publishes
+    # per-torch triton wheels tagged `+dtk<ver>.torch<tag>`, and pip picks the
+    # newest tag when triton is unpinned — which belongs to the other lane and
+    # requires torch==<the other version>. Installing torch afterwards then
+    # leaves triton bound to a torch it was not compiled against; the following
+    # RUN's assert catches this, but keeping triton after torch avoids the
+    # dependency-conflict warning and the wasted 1 GB torch download.
+    python3 -m pip install triton && \
     case "${INSTALL_TORCH_VERSION}" in \
       2.10.0) VLLM_VERSION="0.21.0" ;; \
       2.11.0) VLLM_VERSION="0.25.1" ;; \
@@ -118,8 +126,26 @@ if "dtk" not in local_torch:
         f"replaced it with an upstream wheel."
     )
 
+# Triton is published as `+dtk<ver>.torch<tag>` per lane. If pip resolved the
+# other lane's wheel (unpinned triton picks the newest label, which belongs to
+# whichever lane was released last), the wheel is compiled against a different
+# torch ABI and will fail at first kernel launch — pip only warns about it.
+# Fail the build image now so the mismatch cannot silently ship.
+try:
+    triton_version = importlib.metadata.version("triton")
+except importlib.metadata.PackageNotFoundError:
+    raise SystemExit("Triton is required for the build image but is not installed.")
+expected_triton_tag = f"torch{expected_torch.replace('.', '')}"
+if expected_triton_tag not in triton_version:
+    raise SystemExit(
+        f"Triton {triton_version} is not built for torch {expected_torch} "
+        f"(expected local label to contain '{expected_triton_tag}'). A preceding "
+        f"pip install resolved the wrong lane's wheel; pin triton per torch "
+        f"lane in the Dockerfile."
+    )
+
 print("Resolved LightOp build runtime:")
-for package in ("torch", "numpy", "vllm"):
+for package in ("torch", "triton", "numpy", "vllm"):
     try:
         print(f"  {package}={importlib.metadata.version(package)}")
     except importlib.metadata.PackageNotFoundError:
