@@ -236,15 +236,50 @@ jobs:
             echo "- Integrated commit: \`${LIGHTOP_SOURCE_COMMIT}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
+      - name: Ensure CIsmi is available
+        shell: bash
+        env:
+          FALLBACK_INDEX_URL: ${{ vars.LIGHTOP_PYTHON_INDEX_URL || 'http://10.16.1.201:9929/nightly/dtk2604/+simple/' }}
+          FALLBACK_TRUSTED_HOST: ${{ vars.LIGHTOP_PYTHON_TRUSTED_HOST || '10.16.1.201' }}
+        run: |
+          set -euo pipefail
+          # CIsmi is a Hygon-internal tool published to one of the private
+          # devpi indexes. Try in order:
+          #   1. already on PATH (some runner images preinstall it)
+          #   2. pip install using the runner's default pip config (this is
+          #      what bolt_ops relies on — its runner image has a pip.conf
+          #      pointing at whichever internal index actually carries
+          #      `cismi`, which is not necessarily the nightly/dtkNNNN one)
+          #   3. pip install forcing the DTK nightly index as a last resort
+          # so the CI keeps running even when the runner image or the
+          # publishing layout changes.
+          if command -v CIsmi >/dev/null 2>&1; then
+            echo "CIsmi already on PATH: $(command -v CIsmi)"
+            exit 0
+          fi
+          echo "CIsmi not on PATH; installing via pip."
+          user_bin="$(python3 -c 'import site; print(site.USER_BASE)')/bin"
+          echo "${user_bin}" >> "${GITHUB_PATH}"
+          export PATH="${user_bin}:${PATH}"
+          if python3 -m pip install --user cismi; then
+            echo "Installed cismi using the runner's default pip configuration."
+          elif python3 -m pip install --user \
+                 --index-url "${FALLBACK_INDEX_URL}" \
+                 --trusted-host "${FALLBACK_TRUSTED_HOST}" \
+                 cismi; then
+            echo "Installed cismi from the DTK nightly index."
+          else
+            echo "::error::Could not install cismi from any index. Runner pip config:"
+            python3 -m pip config list -v || true
+            exit 1
+          fi
+          command -v CIsmi
+
       - name: Compile LightOp wheel
         shell: bash
         run: |
           set -euo pipefail
 
-          # CIsmi is preinstalled on the nmz-family self-hosted runners; the
-          # internal DTK index does not carry a `cismi` package, so pip install
-          # would fail. If the runner PATH ever loses it, fail loudly here
-          # instead of silently regressing to a fixed device id.
           if ! command -v CIsmi >/dev/null 2>&1; then
             echo "::error::CIsmi is not on PATH on this runner. GPU allocation cannot proceed."
             exit 1
