@@ -54,8 +54,9 @@ RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.
 # glibc 2.31 while this Rocky 8 image provides glibc 2.28. LightOp's CI tests
 # only use vLLM kernels and layer baselines, not structured output, so install
 # vLLM without dependencies and then install its metadata requirements except
-# llguidance, Torch, and Triton. This prevents a multi-hour Rust source build
-# and protects the lane-specific DTK packages from dependency replacement.
+# llguidance and the lane-pinned Torch, Triton, and torchvision packages. This
+# prevents a multi-hour Rust source build and protects the DTK packages from
+# dependency replacement.
 #
 # NumPy is deliberately unpinned. Neither LightOp nor test/ci_tests imports it;
 # it reaches the image only through vLLM, which constrains it from both sides:
@@ -84,24 +85,27 @@ RUN mkdir -p /root/.pip && \
     case "${INSTALL_TORCH_VERSION}" in \
       2.10.0) \
         VLLM_VERSION="0.21.0"; \
-        TRITON_VERSION="3.8.0+dtk2604.torch2100.2608031654.g07864e" \
+        TRITON_VERSION="3.8.0+dtk2604.torch2100.2608031654.g07864e"; \
+        TORCHVISION_VERSION="0.25.0+das185.dtk2604.torch2100.2608130858.gdcd044" \
         ;; \
       2.11.0) \
         VLLM_VERSION="0.25.1"; \
-        TRITON_VERSION="3.6.0+das185.dtk2604.torch2110.2608200031.g3efdea" \
+        TRITON_VERSION="3.6.0+das185.dtk2604.torch2110.2608200031.g3efdea"; \
+        TORCHVISION_VERSION="0.26.0+das.opt1.dtk2604.torch2110.2608071236.gc5a783" \
         ;; \
       *) echo "No DTK vLLM baseline is mapped for torch ${INSTALL_TORCH_VERSION}." >&2; exit 1 ;; \
     esac && \
     python3 -m pip install --no-deps "triton==${TRITON_VERSION}" && \
+    python3 -m pip install --no-deps "torchvision==${TORCHVISION_VERSION}" && \
     python3 -m pip install --no-deps "vllm==${VLLM_VERSION}" \
       --extra-index-url "${FALLBACK_INDEX_URL}" \
       --trusted-host "${FALLBACK_INDEX_HOST}" && \
     python3 /lightop/.github/ci/install-vllm-dependencies.py \
       --extra-index-url "${FALLBACK_INDEX_URL}" \
       --trusted-host "${FALLBACK_INDEX_HOST}" && \
-    python3 -c 'import vllm._custom_ops; from vllm.config import VllmConfig; from vllm.model_executor.layers.layernorm import RMSNorm; print("Required vLLM CI imports are available.")' && \
     chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
-    yes | /dtk_llvm_*.run
+    yes | /dtk_llvm_*.run && \
+    python3 -c 'import vllm._custom_ops; from vllm.config import VllmConfig; from vllm.model_executor.layers.layernorm import RMSNorm; print("Required vLLM CI imports are available.")'
 
 # Keep the build image focused on compiling and validating the wheel.
 RUN python3 - <<'PY'

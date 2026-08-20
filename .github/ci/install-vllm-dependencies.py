@@ -19,6 +19,7 @@ SKIPPED_DEPENDENCIES = {
     "llguidance",  # Only needed by vLLM structured-output support.
     "torch",  # The DTK build is selected explicitly by the matrix lane.
     "triton",  # The DTK build is selected explicitly by the matrix lane.
+    "torchvision",  # Must match the selected DTK Torch build.
 }
 
 
@@ -43,11 +44,11 @@ def main() -> None:
     if not requirements:
         raise SystemExit("vLLM did not declare any installable runtime dependencies.")
 
-    # Prevent transitive dependencies from replacing the DTK Torch and Triton
-    # builds that were selected explicitly for this compatibility lane.
+    # Prevent transitive dependencies from replacing DTK packages that were
+    # selected explicitly for this compatibility lane.
     constraints = "\n".join(
         f"{package}==={importlib.metadata.version(package)}"
-        for package in ("torch", "triton")
+        for package in ("torch", "triton", "torchvision")
     )
     with tempfile.TemporaryDirectory(prefix="lightop-vllm-") as temp_dir:
         constraints_path = Path(temp_dir, "constraints.txt")
@@ -69,7 +70,7 @@ def main() -> None:
             check=True,
         )
 
-    print("Skipped vLLM dependencies: llguidance, torch, triton")
+    print("Skipped vLLM dependencies: llguidance, torch, triton, torchvision")
 
 
 if __name__ == "__main__":
