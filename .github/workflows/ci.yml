@@ -14,6 +14,11 @@ on:
         required: true
         default: false
         type: boolean
+      test_torch_versions:
+        description: JSON array of Torch lanes to run in test-only mode
+        required: true
+        default: '["2.10.0", "2.11.0"]'
+        type: string
       publish_packages:
         description: Publish validated wheels from this manual run
         required: true
@@ -102,7 +107,7 @@ jobs:
       # LIGHTOP_TORCH_VERSIONS repository variable when needed.
       fail-fast: false
       matrix:
-        torch_version: ${{ fromJSON(vars.LIGHTOP_TORCH_VERSIONS || '["2.10.0", "2.11.0"]') }}
+        torch_version: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.reuse_test_environment && inputs.test_torch_versions || vars.LIGHTOP_TORCH_VERSIONS || '["2.10.0", "2.11.0"]') }}
 
     env:
       CI_BASE_IMAGE: ${{ vars.LIGHTOP_CI_BASE_IMAGE_REPOSITORY || '42.228.13.241:5000/dev/dev:rockylinux8.6-mpi5.0-gcc13.3-cmake3.29-py3.10-mkl2024.2.0.664' }}
@@ -349,8 +354,9 @@ jobs:
               exit 1
             fi
             docker start "${CI_TEST_CONTAINER_NAME}" >/dev/null
-            docker exec "${CI_TEST_CONTAINER_NAME}" rm -rf /reports
-            docker exec "${CI_TEST_CONTAINER_NAME}" mkdir -p /reports
+            docker exec "${CI_TEST_CONTAINER_NAME}" rm -rf /ci_tests /reports
+            docker exec "${CI_TEST_CONTAINER_NAME}" mkdir -p /ci_tests /reports
+            docker cp "${GITHUB_WORKSPACE}/test/ci_tests/." "${CI_TEST_CONTAINER_NAME}:/ci_tests/"
             echo "Reusing retained test container: ${CI_TEST_CONTAINER_NAME}"
           else
             # Replace an older cache only after the new wheel has compiled.
@@ -411,12 +417,67 @@ jobs:
             set -euo pipefail
             source /opt/dtk/env.sh
             source /lightop/.github/ci/configure-container-runtime.sh
-            cd /tmp
-            python3 -m pytest /ci_tests \
-              -v --tb=short \
-              -o junit_family=xunit2 \
-              --junitxml=/reports/lightop_test.xml \
-              --continue-on-collection-errors
+
+            cd /ci_tests
+            passed=()
+            failed=()
+            skipped=()
+            for test_file in test_*.py; do
+              case "${test_file}" in
+                test_fuse_silu_mul_fp8_quant.py|test_reshape_cache_cuda.py|test_vllm_dependency_skips.py)
+                  echo "SKIPPED: ${test_file} (requires a Rocky 8-compatible vLLM extension)"
+                  skipped+=("${test_file}")
+                  ;;
+                *)
+                  echo "--- ${test_file} ---"
+                  if python3 "${test_file}"; then
+                    passed+=("${test_file}")
+                  else
+                    echo "ERROR: Functional test failed: ${test_file}"
+                    failed+=("${test_file}")
+                  fi
+                  ;;
+              esac
+            done
+
+            PASSED_TESTS="$(printf "%s\n" "${passed[@]:-}")" \
+            FAILED_TESTS="$(printf "%s\n" "${failed[@]:-}")" \
+            SKIPPED_TESTS="$(printf "%s\n" "${skipped[@]:-}")" \
+            python3 - <<"PY"
+          import os
+          import xml.etree.ElementTree as ET
+
+          def names(variable):
+              return [name for name in os.environ.get(variable, "").splitlines() if name]
+
+          passed = names("PASSED_TESTS")
+          failed = names("FAILED_TESTS")
+          skipped = names("SKIPPED_TESTS")
+          suite = ET.Element(
+              "testsuite",
+              name="lightop.functional",
+              tests=str(len(passed) + len(failed) + len(skipped)),
+              failures=str(len(failed)),
+              errors="0",
+              skipped=str(len(skipped)),
+          )
+          for name in passed:
+              ET.SubElement(suite, "testcase", classname="lightop.functional", name=name)
+          for name in failed:
+              case = ET.SubElement(suite, "testcase", classname="lightop.functional", name=name)
+              ET.SubElement(case, "failure", message="Functional test program exited non-zero")
+          for name in skipped:
+              case = ET.SubElement(suite, "testcase", classname="lightop.functional", name=name)
+              ET.SubElement(case, "skipped", message="Requires a Rocky 8-compatible vLLM extension")
+          ET.ElementTree(suite).write(
+              "/reports/lightop_test.xml", encoding="utf-8", xml_declaration=True
+          )
+          PY
+
+            echo "Passed (${#passed[@]}): ${passed[*]:-none}"
+            echo "Failed (${#failed[@]}): ${failed[*]:-none}"
+            echo "Skipped (${#skipped[@]}): ${skipped[*]:-none}"
+            [[ "${#failed[@]}" -eq 0 ]]
           ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
           pytest_status=${PIPESTATUS[0]}
           set -e
@@ -425,16 +486,16 @@ jobs:
           if ! docker cp \
               "${CI_TEST_CONTAINER_NAME}:/reports/lightop_test.xml" \
               "${GITHUB_WORKSPACE}/lightop_test.xml" 2>/dev/null; then
-            echo "::warning::JUnit XML not produced by pytest (exit ${pytest_status})."
+            echo "::warning::JUnit XML not produced by functional tests (exit ${pytest_status})."
           fi
 
           echo "pytest_status=${pytest_status}" >> "${GITHUB_OUTPUT}"
 
           case "${pytest_status}" in
-            0) echo "All test cases passed." ;;
-            1) echo "::warning::Some test cases failed (pytest exit 1). Report uploaded; job left green so admin can review and decide whether to merge." ;;
+            0) echo "All functional test programs passed." ;;
+            1) echo "::warning::Some functional test programs failed. Report uploaded; job left green so admin can review and decide whether to merge." ;;
             *)
-              echo "::error::pytest itself failed with exit ${pytest_status} (not a test-case failure)."
+              echo "::error::Functional test runner failed with exit ${pytest_status}."
               exit "${pytest_status}"
               ;;
           esac
@@ -459,7 +520,7 @@ jobs:
             echo "### Functional tests"
             echo
             echo "- Torch: \`${INSTALL_TORCH_VERSION}\`"
-            echo "- pytest exit: \`${PYTEST_STATUS:-unknown}\` (0=all pass, 1=some cases failed, other=pytest itself crashed)"
+            echo "- Runner exit: \`${PYTEST_STATUS:-unknown}\` (0=all pass, 1=some cases failed, other=runner failure)"
             echo
             if [[ ! -s "${xml}" ]]; then
               echo "_No JUnit report was produced._"
