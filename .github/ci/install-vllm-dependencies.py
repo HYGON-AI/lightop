@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+from email.parser import Parser
 import importlib.metadata
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 from packaging.markers import default_environment
@@ -17,6 +19,7 @@ from packaging.utils import canonicalize_name
 
 SKIPPED_DEPENDENCIES = {
     "llguidance",  # Only needed by vLLM structured-output support.
+    "opencv-python-headless",  # Not used by CI; recent wheels require NumPy 2.
     "torch",  # The DTK build is selected explicitly by the matrix lane.
     "triton",  # The DTK build is selected explicitly by the matrix lane.
     "torchvision",  # Must match the selected DTK Torch build.
@@ -25,6 +28,7 @@ SKIPPED_DEPENDENCIES = {
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--vllm-wheel", type=Path, required=True)
     parser.add_argument("--extra-index-url", required=True)
     parser.add_argument("--trusted-host", required=True)
     args = parser.parse_args()
@@ -33,7 +37,20 @@ def main() -> None:
     environment["extra"] = ""
     requirements: list[str] = []
 
-    for raw_requirement in importlib.metadata.requires("vllm") or []:
+    with zipfile.ZipFile(args.vllm_wheel) as wheel:
+        metadata_files = [
+            name for name in wheel.namelist() if name.endswith(".dist-info/METADATA")
+        ]
+        if len(metadata_files) != 1:
+            raise SystemExit(
+                f"Expected one METADATA file in {args.vllm_wheel}, "
+                f"found {len(metadata_files)}."
+            )
+        metadata = Parser().parsestr(
+            wheel.read(metadata_files[0]).decode("utf-8", errors="replace")
+        )
+
+    for raw_requirement in metadata.get_all("Requires-Dist", []):
         requirement = Requirement(raw_requirement)
         if canonicalize_name(requirement.name) in SKIPPED_DEPENDENCIES:
             continue
@@ -48,7 +65,7 @@ def main() -> None:
     # selected explicitly for this compatibility lane.
     constraints = "\n".join(
         f"{package}==={importlib.metadata.version(package)}"
-        for package in ("torch", "triton", "torchvision")
+        for package in ("numpy", "torch", "triton", "torchvision")
     )
     with tempfile.TemporaryDirectory(prefix="lightop-vllm-") as temp_dir:
         constraints_path = Path(temp_dir, "constraints.txt")
@@ -70,7 +87,10 @@ def main() -> None:
             check=True,
         )
 
-    print("Skipped vLLM dependencies: llguidance, torch, triton, torchvision")
+    print(
+        "Skipped vLLM dependencies: llguidance, opencv-python-headless, "
+        "torch, triton, torchvision"
+    )
 
 
 if __name__ == "__main__":

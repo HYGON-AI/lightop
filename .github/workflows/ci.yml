@@ -278,8 +278,7 @@ jobs:
           docker exec "${CI_COMPILE_CONTAINER_NAME}" bash -lc '
             set -euo pipefail
             source /opt/dtk/env.sh
-            export PATH="/opt/hyhal/bin:${PATH}"
-            export LD_LIBRARY_PATH="/opt/hyhal/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+            source /lightop/.github/ci/configure-container-runtime.sh
 
             echo "LightOp compile environment:"
             python3 --version
@@ -342,8 +341,7 @@ jobs:
           docker exec "${CI_COMPILE_CONTAINER_NAME}" bash -lc '
             set -euo pipefail
             source /opt/dtk/env.sh
-            export PATH="/opt/hyhal/bin:${PATH}"
-            export LD_LIBRARY_PATH="/opt/hyhal/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+            source /lightop/.github/ci/configure-container-runtime.sh
 
             wheel_test_dir=$(mktemp -d)
             python3 -m pip uninstall -y lightop >/dev/null 2>&1 || true

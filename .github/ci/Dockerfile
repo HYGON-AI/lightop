@@ -58,12 +58,10 @@ RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.
 # prevents a multi-hour Rust source build and protects the DTK packages from
 # dependency replacement.
 #
-# NumPy is deliberately unpinned. Neither LightOp nor test/ci_tests imports it;
-# it reaches the image only through vLLM, which constrains it from both sides:
-# `numba==0.65.0` requires >=1.22,<2.5 and `opencv-python-headless>=4.13.0`
-# requires >=2 on Python 3.9+. The former 1.24.3 pin satisfied neither and was
-# a leftover from the aiter/deepgemm/deep_ep dependency set that this image no
-# longer installs, so pip silently overrode it while installing vLLM.
+# DTK Torch 2.10 cannot initialize its NumPy bridge with NumPy 2.x. Keep the
+# same 1.24.3 version used by bolt_ops and constrain dependency resolution so
+# transitive packages cannot replace it. OpenCV is not used by the CI kernel
+# baselines and is skipped because its recent wheels require NumPy 2.x.
 #
 # CuPy was a leftover from that same set and is gone for the same reason: no
 # source file in this repository or in test/ci_tests imports it. The only
@@ -78,7 +76,7 @@ RUN mkdir -p /root/.pip && \
       'trusted-host = 10.16.1.201' \
       > /root/.pip/pip.conf && \
     python3 -m pip install \
-      pyyaml hypothesis Ninja MonkeyType wheel packaging \
+      pyyaml hypothesis Ninja MonkeyType wheel packaging "numpy==1.24.3" \
       einops pytest matplotlib auditwheel patchelf tqdm && \
     python3 -m pip install amdsmi && \
     python3 -m pip install "torch==${INSTALL_TORCH_VERSION}" && \
@@ -97,12 +95,20 @@ RUN mkdir -p /root/.pip && \
     esac && \
     python3 -m pip install --no-deps "triton==${TRITON_VERSION}" && \
     python3 -m pip install --no-deps "torchvision==${TORCHVISION_VERSION}" && \
-    python3 -m pip install --no-deps "vllm==${VLLM_VERSION}" \
+    rm -rf /tmp/vllm-wheel && \
+    mkdir -p /tmp/vllm-wheel && \
+    python3 -m pip download --no-deps --dest /tmp/vllm-wheel \
+      "vllm==${VLLM_VERSION}" \
       --extra-index-url "${FALLBACK_INDEX_URL}" \
       --trusted-host "${FALLBACK_INDEX_HOST}" && \
+    VLLM_WHEEL="$(find /tmp/vllm-wheel -maxdepth 1 -type f -name '*.whl' -print -quit)" && \
+    test -n "${VLLM_WHEEL}" && \
     python3 /lightop/.github/ci/install-vllm-dependencies.py \
+      --vllm-wheel "${VLLM_WHEEL}" \
       --extra-index-url "${FALLBACK_INDEX_URL}" \
       --trusted-host "${FALLBACK_INDEX_HOST}" && \
+    python3 -m pip install --no-deps "${VLLM_WHEEL}" && \
+    rm -rf /tmp/vllm-wheel && \
     chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
     yes | /dtk_llvm_*.run
 
