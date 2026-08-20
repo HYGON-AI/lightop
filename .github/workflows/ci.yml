@@ -353,7 +353,8 @@ jobs:
           docker cp "${GITHUB_WORKSPACE}/test/ci_tests/." "${CI_TEST_CONTAINER_NAME}:/ci_tests/"
           docker cp "${GITHUB_WORKSPACE}/dist/." "${CI_TEST_CONTAINER_NAME}:/dist/"
 
-          set +e
+          # Installation and import validation are prerequisites, not test
+          # cases. Any failure here must fail the step and skip packaging.
           docker exec "${CI_TEST_CONTAINER_NAME}" bash -lc '
             set -euo pipefail
             source /opt/dtk/env.sh
@@ -400,7 +401,14 @@ jobs:
               raise SystemExit("vLLM ROCm reshape_and_cache operator is invalid")
           print(f"Validated vLLM baseline: {vllm_version}")
           PY
+          ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
 
+          echo "pytest_started=true" >> "${GITHUB_OUTPUT}"
+          set +e
+          docker exec "${CI_TEST_CONTAINER_NAME}" bash -lc '
+            set -euo pipefail
+            source /opt/dtk/env.sh
+            source /lightop/.github/ci/configure-container-runtime.sh
             python3 -m pytest /ci_tests \
               -v --tb=short \
               -o junit_family=xunit2 \
@@ -429,7 +437,7 @@ jobs:
           esac
 
       - name: "Test: Summarize results"
-        if: always()
+        if: always() && steps.functional_tests.outputs.pytest_started == 'true'
         shell: bash
         env:
           PYTEST_STATUS: ${{ steps.functional_tests.outputs.pytest_status }}
@@ -485,7 +493,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: "Test: Upload JUnit report"
-        if: always()
+        if: always() && steps.functional_tests.outputs.pytest_started == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: lightop-test-report-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}-torch-${{ matrix.torch_version }}
