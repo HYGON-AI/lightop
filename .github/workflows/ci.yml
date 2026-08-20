@@ -9,6 +9,11 @@ on:
       - master
   workflow_dispatch:
     inputs:
+      reuse_test_environment:
+        description: Reuse the retained test container and skip image/wheel compilation
+        required: true
+        default: false
+        type: boolean
       publish_packages:
         description: Publish validated wheels from this manual run
         required: true
@@ -110,8 +115,12 @@ jobs:
       INSTALL_TORCH_VERSION: ${{ matrix.torch_version }}
       CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
       CI_COMPILE_CONTAINER_NAME: lightop-build-${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
-      CI_TEST_CONTAINER_NAME: lightop-test-${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
+      CI_TEST_CONTAINER_NAME: lightop-test-cache-torch${{ matrix.torch_version }}
       VLLM_VERSION: ${{ matrix.torch_version == '2.10.0' && '0.21.0' || '0.25.1' }}
+      REUSE_TEST_ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.reuse_test_environment && 'true' || 'false' }}
+      # Temporary while runtime dependencies are being stabilized. Restore
+      # this to false after both Torch lanes pass their functional tests.
+      PRESERVE_TEST_ENVIRONMENT: "true"
       # The two Torch matrix lanes run concurrently on separate fixed cards.
       # The image only supports the two versions mapped below.
       STATIC_ROCR_VISIBLE_DEVICES: ${{ matrix.torch_version == '2.10.0' && '0' || '1' }}
@@ -153,6 +162,7 @@ jobs:
               merge --no-edit "${TARGET_SHA}"
 
       - name: Prepare runner and build context
+        if: env.REUSE_TEST_ENVIRONMENT != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -177,6 +187,7 @@ jobs:
           test ! -e "${CI_BUILD_CONTEXT}/lightop/.git"
 
       - name: "Build: Create LightOp image"
+        if: env.REUSE_TEST_ENVIRONMENT != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -237,6 +248,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: "Build: Compile LightOp wheel"
+        if: env.REUSE_TEST_ENVIRONMENT != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -327,31 +339,54 @@ jobs:
         run: |
           set -euo pipefail
 
-          docker run -d \
-            --name "${CI_TEST_CONTAINER_NAME}" \
-            --init \
-            --network host \
-            --ipc host \
-            --shm-size 80g \
-            --cap-add SYS_PTRACE \
-            --security-opt seccomp=unconfined \
-            --privileged \
-            --device /dev/mkfd \
-            --device /dev/kfd \
-            --device /dev/dri \
-            --group-add video \
-            --user root \
-            -e ROCR_VISIBLE_DEVICES \
-            -e PYTHONUNBUFFERED \
-            -e VLLM_VERSION \
-            -e FALLBACK_INDEX_URL \
-            -e FALLBACK_INDEX_HOST \
-            -v /opt/hyhal:/opt/hyhal:ro \
-            "${CI_COMPILE_IMAGE}"
+          if [[ "${REUSE_TEST_ENVIRONMENT}" == "true" ]]; then
+            if ! docker container inspect "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1; then
+              echo "::error::Retained test container ${CI_TEST_CONTAINER_NAME} does not exist. Run a full build first."
+              exit 1
+            fi
+            cached_torch="$(docker container inspect \
+              --format '{{index .Config.Labels "io.hygon.lightop.torch-version"}}' \
+              "${CI_TEST_CONTAINER_NAME}")"
+            if [[ "${cached_torch}" != "${INSTALL_TORCH_VERSION}" ]]; then
+              echo "::error::Retained container has Torch ${cached_torch}; expected ${INSTALL_TORCH_VERSION}."
+              exit 1
+            fi
+            docker start "${CI_TEST_CONTAINER_NAME}" >/dev/null
+            docker exec "${CI_TEST_CONTAINER_NAME}" rm -rf /reports
+            docker exec "${CI_TEST_CONTAINER_NAME}" mkdir -p /reports
+            echo "Reusing retained test container: ${CI_TEST_CONTAINER_NAME}"
+          else
+            # Replace an older cache only after the new wheel has compiled.
+            docker rm -f "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1 || true
+            docker run -d \
+              --name "${CI_TEST_CONTAINER_NAME}" \
+              --label "io.hygon.lightop.test-cache=true" \
+              --label "io.hygon.lightop.torch-version=${INSTALL_TORCH_VERSION}" \
+              --label "io.hygon.lightop.source-sha=${GITHUB_SHA}" \
+              --init \
+              --network host \
+              --ipc host \
+              --shm-size 80g \
+              --cap-add SYS_PTRACE \
+              --security-opt seccomp=unconfined \
+              --privileged \
+              --device /dev/mkfd \
+              --device /dev/kfd \
+              --device /dev/dri \
+              --group-add video \
+              --user root \
+              -e ROCR_VISIBLE_DEVICES \
+              -e PYTHONUNBUFFERED \
+              -e VLLM_VERSION \
+              -e FALLBACK_INDEX_URL \
+              -e FALLBACK_INDEX_HOST \
+              -v /opt/hyhal:/opt/hyhal:ro \
+              "${CI_COMPILE_IMAGE}"
 
-          docker exec "${CI_TEST_CONTAINER_NAME}" mkdir -p /ci_tests /dist /reports
-          docker cp "${GITHUB_WORKSPACE}/test/ci_tests/." "${CI_TEST_CONTAINER_NAME}:/ci_tests/"
-          docker cp "${GITHUB_WORKSPACE}/dist/." "${CI_TEST_CONTAINER_NAME}:/dist/"
+            docker exec "${CI_TEST_CONTAINER_NAME}" mkdir -p /ci_tests /dist /reports
+            docker cp "${GITHUB_WORKSPACE}/test/ci_tests/." "${CI_TEST_CONTAINER_NAME}:/ci_tests/"
+            docker cp "${GITHUB_WORKSPACE}/dist/." "${CI_TEST_CONTAINER_NAME}:/dist/"
+          fi
 
           # Installation and import validation are prerequisites, not test
           # cases. Any failure here must fail the step and skip packaging.
@@ -368,10 +403,10 @@ jobs:
               "pyzmq>=25.0.0"
             python3 -m pip install --no-deps "vllm==${VLLM_VERSION}"
 
-            wheel_test_dir=$(mktemp -d)
-            python3 -m pip uninstall -y lightop >/dev/null 2>&1 || true
-            python3 -m pip install --no-deps --target "${wheel_test_dir}" /dist/*manylinux*.whl
-            export PYTHONPATH="${wheel_test_dir}${PYTHONPATH:+:${PYTHONPATH}}"
+            if ! python3 -m pip show lightop >/dev/null 2>&1; then
+                python3 -m pip install --no-deps /dist/*manylinux*.whl
+            fi
+            cd /tmp
             python3 -c "import lightop, os; print(f\"tested wheel resolved from: {os.path.dirname(lightop.__file__)}\")"
 
             python3 - <<"PY"
@@ -409,6 +444,7 @@ jobs:
             set -euo pipefail
             source /opt/dtk/env.sh
             source /lightop/.github/ci/configure-container-runtime.sh
+            cd /tmp
             python3 -m pytest /ci_tests \
               -v --tb=short \
               -o junit_family=xunit2 \
@@ -435,6 +471,14 @@ jobs:
               exit "${pytest_status}"
               ;;
           esac
+
+          # Restore the wheel on the runner so the normal packaging step can
+          # still publish the artifact after a successful test-only retry.
+          if [[ "${REUSE_TEST_ENVIRONMENT}" == "true" ]]; then
+            rm -rf "${GITHUB_WORKSPACE}/dist"
+            mkdir -p "${GITHUB_WORKSPACE}/dist"
+            docker cp "${CI_TEST_CONTAINER_NAME}:/dist/." "${GITHUB_WORKSPACE}/dist/"
+          fi
 
       - name: "Test: Summarize results"
         if: always() && steps.functional_tests.outputs.pytest_started == 'true'
@@ -507,7 +551,14 @@ jobs:
         run: |
           set +e
           docker rm -f "${CI_COMPILE_CONTAINER_NAME}" >/dev/null 2>&1
-          docker rm -f "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1
+
+          if [[ "${PRESERVE_TEST_ENVIRONMENT}" == "true" ]] && \
+             docker container inspect "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1; then
+            docker stop "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1
+            echo "Preserved test container for dependency retries: ${CI_TEST_CONTAINER_NAME}"
+          else
+            docker rm -f "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1
+          fi
 
           runner_uid="$(id -u)"
           runner_gid="$(id -g)"
@@ -521,7 +572,9 @@ jobs:
               chmod -R u+rwX /workspace
             ' _ "${runner_uid}" "${runner_gid}"
 
-          docker image rm -f "${CI_COMPILE_IMAGE}" >/dev/null 2>&1
+          if [[ "${PRESERVE_TEST_ENVIRONMENT}" != "true" ]]; then
+            docker image rm -f "${CI_COMPILE_IMAGE}" >/dev/null 2>&1
+          fi
           if [[ "${CI_BUILD_CONTEXT:-}" == "${RUNNER_TEMP}"/lightop-build-* ]]; then
             rm -rf -- "${CI_BUILD_CONTEXT}"
           fi
