@@ -50,17 +50,12 @@ RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.
 # to the newest label, which belongs to the other lane and drags in an upstream
 # Torch that replaces the DTK build.
 #
-# The public fallback index stays for llguidance: vllm 0.25.1 requires >=1.7.0,
-# whose only cp310 x86_64 wheels are manylinux_2_31 and so are unusable on this
-# glibc 2.28 base image. pip therefore builds it from sdist through maturin,
-# which fetches puccinialin. vllm 0.21.0 needs llguidance 1.3.0, which does
-# ship a manylinux_2_17 wheel and resolves entirely from the internal index.
-#
-# It defaults to a domestic mirror rather than pypi.org because it stops being
-# a narrow llguidance patch whenever the internal index is unreachable: it then
-# serves every one of vLLM's ~70 mandatory dependencies and their transitive
-# closure. Observed throughput during one such outage was 25-35 kB/s against
-# pypi.org, which turns a routine image build into a multi-hour stall.
+# vLLM 0.25.1 requires llguidance>=1.7, but its cp310 x86_64 wheel requires
+# glibc 2.31 while this Rocky 8 image provides glibc 2.28. LightOp's CI tests
+# only use vLLM kernels and layer baselines, not structured output, so install
+# vLLM without dependencies and then install its metadata requirements except
+# llguidance, Torch, and Triton. This prevents a multi-hour Rust source build
+# and protects the lane-specific DTK packages from dependency replacement.
 #
 # NumPy is deliberately unpinned. Neither LightOp nor test/ci_tests imports it;
 # it reaches the image only through vLLM, which constrains it from both sides:
@@ -86,22 +81,25 @@ RUN mkdir -p /root/.pip && \
       einops pytest matplotlib auditwheel patchelf tqdm && \
     python3 -m pip install amdsmi && \
     python3 -m pip install "torch==${INSTALL_TORCH_VERSION}" && \
-    # Triton must be resolved AFTER torch is pinned. The internal index publishes
-    # per-torch triton wheels tagged `+dtk<ver>.torch<tag>`, and pip picks the
-    # newest tag when triton is unpinned — which belongs to the other lane and
-    # requires torch==<the other version>. Installing torch afterwards then
-    # leaves triton bound to a torch it was not compiled against; the following
-    # RUN's assert catches this, but keeping triton after torch avoids the
-    # dependency-conflict warning and the wasted 1 GB torch download.
-    python3 -m pip install triton && \
     case "${INSTALL_TORCH_VERSION}" in \
-      2.10.0) VLLM_VERSION="0.21.0" ;; \
-      2.11.0) VLLM_VERSION="0.25.1" ;; \
+      2.10.0) \
+        VLLM_VERSION="0.21.0"; \
+        TRITON_VERSION="3.8.0+dtk2604.torch2100.2608031654.g07864e" \
+        ;; \
+      2.11.0) \
+        VLLM_VERSION="0.25.1"; \
+        TRITON_VERSION="3.6.0+das185.dtk2604.torch2110.2608200031.g3efdea" \
+        ;; \
       *) echo "No DTK vLLM baseline is mapped for torch ${INSTALL_TORCH_VERSION}." >&2; exit 1 ;; \
     esac && \
-    python3 -m pip install "vllm==${VLLM_VERSION}" \
+    python3 -m pip install --no-deps "triton==${TRITON_VERSION}" && \
+    python3 -m pip install --no-deps "vllm==${VLLM_VERSION}" \
       --extra-index-url "${FALLBACK_INDEX_URL}" \
       --trusted-host "${FALLBACK_INDEX_HOST}" && \
+    python3 /lightop/.github/ci/install-vllm-dependencies.py \
+      --extra-index-url "${FALLBACK_INDEX_URL}" \
+      --trusted-host "${FALLBACK_INDEX_HOST}" && \
+    python3 -c 'import vllm._custom_ops; from vllm.config import VllmConfig; from vllm.model_executor.layers.layernorm import RMSNorm; print("Required vLLM CI imports are available.")' && \
     chmod +x /dtk_llvm_*.run /usr/local/bin/build-lightop-wheel && \
     yes | /dtk_llvm_*.run
 
