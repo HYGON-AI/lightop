@@ -297,6 +297,14 @@ jobs:
           torch.from_numpy(numpy.zeros(1, dtype="float32")).numpy()
           if not callable(getattr(vllm_ops, "reshape_and_cache", None)):
               raise SystemExit("vLLM reshape_and_cache baseline is unavailable")
+          try:
+              reshape_and_cache_op = torch.ops._C_cache_ops.reshape_and_cache
+          except AttributeError as error:
+              raise SystemExit(
+                  "vLLM ROCm reshape_and_cache operator is not registered"
+              ) from error
+          if not callable(reshape_and_cache_op):
+              raise SystemExit("vLLM ROCm reshape_and_cache operator is invalid")
           torch_base_version = torch.__version__.split("+", 1)[0]
           expected_triton_tag = "torch" + torch_base_version.replace(".", "")
           triton_version = importlib.metadata.version("triton")
