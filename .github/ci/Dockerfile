@@ -44,7 +44,7 @@ RUN python_lib="$(find /usr/local -maxdepth 3 -name "libpython${PYTHON_VERSION}.
 
 # This image is intentionally limited to compiling LightOp. vLLM and its
 # runtime-only dependencies are installed later in a separate test container.
-# Keep NumPy pinned so both Torch lanes build and test against the same 2.1 ABI.
+# NumPy stays on the 1.x ABI required by the current DTK Torch wheels.
 RUN mkdir -p /root/.pip && \
     test -n "${INSTALL_TORCH_VERSION}" && \
     printf '%s\n' \
@@ -53,7 +53,7 @@ RUN mkdir -p /root/.pip && \
       'trusted-host = 10.16.1.201' \
       > /root/.pip/pip.conf && \
     python3 -m pip install \
-      pyyaml hypothesis Ninja MonkeyType wheel packaging "numpy==2.1.3" \
+      pyyaml hypothesis Ninja MonkeyType wheel packaging "numpy==1.26.4" \
       einops pytest matplotlib auditwheel patchelf tqdm && \
     python3 -m pip install amdsmi && \
     python3 -m pip install "torch==${INSTALL_TORCH_VERSION}" && \
