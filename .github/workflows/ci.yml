@@ -115,6 +115,7 @@ jobs:
       AICC_NIGHTLY_DIR: /public/opendas/ArchivedFile/ai_cc/nightly
       FALLBACK_INDEX_URL: ${{ vars.LIGHTOP_FALLBACK_INDEX_URL || 'https://pypi.tuna.tsinghua.edu.cn/simple/' }}
       FALLBACK_INDEX_HOST: ${{ vars.LIGHTOP_FALLBACK_INDEX_HOST || 'pypi.tuna.tsinghua.edu.cn' }}
+      CI_NODE_OUTPUT_ROOT: ${{ vars.LIGHTOP_CI_OUTPUT_ROOT || '/public/home/guochy1/guochy1/framework/workspace/logs' }}
       PYTHON_VERSION: "3.10"
       CI_SOURCE_BRANCH: ${{ github.head_ref || github.ref_name }}
       INSTALL_TORCH_VERSION: ${{ matrix.torch_version }}
@@ -178,6 +179,11 @@ jobs:
           test -x /opt/hyhal/bin/hy-smi
           test -d "${AICC_NIGHTLY_DIR}"
           ls -l /dev/mkfd /dev/kfd /dev/dri/*
+
+          mkdir -p "${CI_NODE_OUTPUT_ROOT}/lightop"
+          test -d "${CI_NODE_OUTPUT_ROOT}/lightop"
+          test -w "${CI_NODE_OUTPUT_ROOT}/lightop"
+          echo "Node output directory is writable: ${CI_NODE_OUTPUT_ROOT}/lightop"
 
           bash .github/ci/prepare-build-context.sh \
             "${CI_BUILD_CONTEXT}" \
@@ -564,14 +570,28 @@ jobs:
           PY
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: "Test: Upload JUnit report"
+      - name: "Test: Store JUnit report on runner"
         if: always() && steps.functional_tests.outputs.pytest_started == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: lightop-test-report-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}-torch-${{ matrix.torch_version }}
-          path: lightop_test.xml
-          if-no-files-found: warn
-          retention-days: 30
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_dir="${CI_NODE_OUTPUT_ROOT}/lightop/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/torch-${INSTALL_TORCH_VERSION}"
+          case "${output_dir}" in
+            "${CI_NODE_OUTPUT_ROOT}"/lightop/*/torch-*) ;;
+            *)
+              echo "::error::Unexpected node output directory: ${output_dir}"
+              exit 1
+              ;;
+          esac
+          mkdir -p "${output_dir}"
+          test -w "${output_dir}"
+          if [[ -s "${GITHUB_WORKSPACE}/lightop_test.xml" ]]; then
+            install -m 0644 "${GITHUB_WORKSPACE}/lightop_test.xml" \
+              "${output_dir}/lightop_test.xml"
+            echo "Stored JUnit report: ${output_dir}/lightop_test.xml"
+          else
+            echo "::warning::No JUnit report is available to store."
+          fi
 
       - name: Remove CI containers, images, and build context
         if: always()
@@ -608,17 +628,37 @@ jobs:
           fi
           exit 0
 
-      - name: "Package: Upload validated wheel"
+      - name: "Package: Store validated wheel on runner"
         # Test-case failures leave the job green (see "Run functional tests"),
-        # so the normal upload runs. Guard with `success()` anyway to skip
-        # uploading when compile itself failed and dist/ is empty.
+        # so the normal store runs. Guard with `success()` anyway to skip
+        # storing when compile itself failed and dist/ is empty.
         if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: lightop-ci-${{ github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}-torch-${{ matrix.torch_version }}
-          path: dist/*manylinux*.whl
-          if-no-files-found: error
-          retention-days: 14
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_dir="${CI_NODE_OUTPUT_ROOT}/lightop/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/torch-${INSTALL_TORCH_VERSION}"
+          case "${output_dir}" in
+            "${CI_NODE_OUTPUT_ROOT}"/lightop/*/torch-*) ;;
+            *)
+              echo "::error::Unexpected node output directory: ${output_dir}"
+              exit 1
+              ;;
+          esac
+          mkdir -p "${output_dir}"
+          test -w "${output_dir}"
+
+          mapfile -d '' wheels < <(
+            find "${GITHUB_WORKSPACE}/dist" -maxdepth 1 -type f \
+              -name '*manylinux*.whl' -print0
+          )
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one validated wheel, found ${#wheels[@]}."
+            exit 1
+          fi
+          wheel_name="$(basename "${wheels[0]}")"
+          install -m 0644 "${wheels[0]}" "${output_dir}/${wheel_name}"
+          sha256sum "${output_dir}/${wheel_name}" > "${output_dir}/${wheel_name}.sha256"
+          echo "Stored validated wheel: ${output_dir}/${wheel_name}"
 
   publish:
     name: Package and Publish (Torch ${{ matrix.torch_version }})
@@ -643,31 +683,26 @@ jobs:
       DEVPI_URL: ${{ vars.LIGHTOP_DEVPI_URL || 'http://10.16.1.201:9929/' }}
       DEVPI_USER: ${{ secrets.LIGHTOP_DEVPI_USER }}
       DEVPI_PASSWORD: ${{ secrets.LIGHTOP_DEVPI_PASSWORD }}
+      CI_NODE_OUTPUT_ROOT: ${{ vars.LIGHTOP_CI_OUTPUT_ROOT || '/public/home/guochy1/guochy1/framework/workspace/logs' }}
       INSTALL_TORCH_VERSION: ${{ matrix.torch_version }}
 
     steps:
-      - name: Prepare artifact download directory
+      - name: Locate validated wheel on runner
         id: publish_paths
         shell: bash
         run: |
           set -euo pipefail
-          artifact_dir="${RUNNER_TEMP}/lightop-publish-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-torch-${INSTALL_TORCH_VERSION}"
+          artifact_dir="${CI_NODE_OUTPUT_ROOT}/lightop/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/torch-${INSTALL_TORCH_VERSION}"
           case "${artifact_dir}" in
-            "${RUNNER_TEMP}"/lightop-publish-*) ;;
+            "${CI_NODE_OUTPUT_ROOT}"/lightop/*/torch-*) ;;
             *)
-              echo "::error::Refusing to reset unexpected artifact directory: ${artifact_dir}"
+              echo "::error::Unexpected node output directory: ${artifact_dir}"
               exit 1
               ;;
           esac
-          rm -rf -- "${artifact_dir}"
-          mkdir -p -- "${artifact_dir}"
+          test -d "${artifact_dir}"
+          test -r "${artifact_dir}"
           echo "artifact_dir=${artifact_dir}" >> "${GITHUB_OUTPUT}"
-
-      - name: Download validated wheel
-        uses: actions/download-artifact@v4
-        with:
-          name: lightop-ci-${{ github.run_id }}-${{ github.run_attempt }}-torch-${{ matrix.torch_version }}
-          path: ${{ steps.publish_paths.outputs.artifact_dir }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -715,19 +750,3 @@ jobs:
             --devpi_password "${DEVPI_PASSWORD}" \
             --dtk_pkg_name "${dtk_package}" \
             -f "${wheel}"
-
-      - name: Remove downloaded publish artifact
-        if: always()
-        shell: bash
-        env:
-          PUBLISH_ARTIFACT_DIR: ${{ steps.publish_paths.outputs.artifact_dir }}
-        run: |
-          set -euo pipefail
-          case "${PUBLISH_ARTIFACT_DIR}" in
-            "${RUNNER_TEMP}"/lightop-publish-*)
-              rm -rf -- "${PUBLISH_ARTIFACT_DIR}"
-              ;;
-            *)
-              echo "::warning::Skipped cleanup of unexpected artifact directory: ${PUBLISH_ARTIFACT_DIR}"
-              ;;
-          esac

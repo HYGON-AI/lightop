@@ -33,8 +33,8 @@
 
 1. 打开 PR，等 CI 跑完（validate + test × 每个 torch 版本）
 2. 在 GitHub Actions run 页顶部看 **Step Summary**：一个 `Total/Passed/Failed/Errors/Skipped` 表格 + 折叠的失败测例列表（每条第一行错误消息）
-3. 如果失败细节不够，下载 artifact `lightop-test-report-<pr>-<attempt>-torch-<ver>`（保留 30 天），里面是完整的 `lightop_test.xml`，本地 `pytest --junit-report` 视图工具或 CI 报告插件都能吃
-4. 需要 wheel 也能下载：artifact `lightop-ci-<pr>-<attempt>-torch-<ver>`（14 天），仅在 test job 成功（含"仅测例失败"）时上传
+3. 如果失败细节不够，在节点目录 `${LIGHTOP_CI_OUTPUT_ROOT}/lightop/<run-id>/<attempt>/torch-<ver>/lightop_test.xml` 查看完整 JUnit 报告
+4. wheel 保存在同一节点目录，仅在 test job 成功（含"仅测例失败"）时写入
 5. 确认可接受 → merge → `push` 事件触发 publish，两个 torch lane 各上传一个 `*manylinux*.whl` 到 devpi
 
 ## 应急：不合并直接发包
@@ -71,6 +71,7 @@ invalidate packages used while compiling the wheel.
 - `LIGHTOP_DTK_PKG_PATH` — DTK 包下载地址
 - `LIGHTOP_PYTHON_INDEX_URL` / `LIGHTOP_PYTHON_TRUSTED_HOST` — 内部 pip 索引
 - `LIGHTOP_FALLBACK_INDEX_URL` / `LIGHTOP_FALLBACK_INDEX_HOST` — test-only fallback for generic Python packages
+- `LIGHTOP_CI_OUTPUT_ROOT` — 节点输出目录，默认 `/public/home/guochy1/guochy1/framework/workspace/logs`
 - `LIGHTOP_DEVPI_URL` — devpi 发布地址
 
 `secrets.*`：
