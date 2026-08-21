@@ -71,7 +71,7 @@ invalidate packages used while compiling the wheel.
 - `LIGHTOP_DTK_PKG_PATH` — DTK 包下载地址
 - `LIGHTOP_PYTHON_INDEX_URL` / `LIGHTOP_PYTHON_TRUSTED_HOST` — 内部 pip 索引
 - `LIGHTOP_FALLBACK_INDEX_URL` / `LIGHTOP_FALLBACK_INDEX_HOST` — test-only fallback for generic Python packages
-- `LIGHTOP_CI_OUTPUT_ROOT` — 节点输出目录，默认 `/public/home/guochy1/guochy1/framework/workspace/logs`
+- `LIGHTOP_CI_OUTPUT_ROOT` — 首选节点输出目录，默认 `/public/home/guochy1/guochy1/framework/workspace/logs`；只读时回退到 runner 工作区旁的 `.lightop-ci-outputs`
 - `LIGHTOP_DEVPI_URL` — devpi 发布地址
 
 `secrets.*`：
