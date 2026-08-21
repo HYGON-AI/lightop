@@ -9,13 +9,8 @@ on:
       - master
   workflow_dispatch:
     inputs:
-      reuse_test_environment:
-        description: Reuse the retained test container and skip image/wheel compilation
-        required: true
-        default: false
-        type: boolean
       test_torch_versions:
-        description: JSON array of Torch lanes to run in test-only mode
+        description: JSON array of Torch lanes to build and test
         required: true
         default: '["2.10.0", "2.11.0"]'
         type: string
@@ -107,23 +102,23 @@ jobs:
       # LIGHTOP_TORCH_VERSIONS repository variable when needed.
       fail-fast: false
       matrix:
-        torch_version: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.reuse_test_environment && inputs.test_torch_versions || vars.LIGHTOP_TORCH_VERSIONS || '["2.10.0", "2.11.0"]') }}
+        torch_version: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.test_torch_versions || vars.LIGHTOP_TORCH_VERSIONS || '["2.10.0", "2.11.0"]') }}
 
     env:
       CI_BASE_IMAGE: ${{ vars.LIGHTOP_CI_BASE_IMAGE_REPOSITORY || '42.228.13.241:5000/dev/dev:rockylinux8.6-mpi5.0-gcc13.3-cmake3.29-py3.10-mkl2024.2.0.664' }}
       DTK_PKG_PATH: ${{ vars.LIGHTOP_DTK_PKG_PATH || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
       AICC_NIGHTLY_DIR: /public/opendas/ArchivedFile/ai_cc/nightly
-      FALLBACK_INDEX_URL: ${{ vars.LIGHTOP_FALLBACK_INDEX_URL || 'https://pypi.tuna.tsinghua.edu.cn/simple/' }}
-      FALLBACK_INDEX_HOST: ${{ vars.LIGHTOP_FALLBACK_INDEX_HOST || 'pypi.tuna.tsinghua.edu.cn' }}
       CI_NODE_OUTPUT_ROOT: ${{ vars.LIGHTOP_CI_OUTPUT_ROOT || '/public/home/guochy1/guochy1/framework/workspace/logs' }}
       PYTHON_VERSION: "3.10"
       CI_SOURCE_BRANCH: ${{ github.head_ref || github.ref_name }}
       INSTALL_TORCH_VERSION: ${{ matrix.torch_version }}
       CI_COMPILE_IMAGE: lightop-ci:${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
       CI_COMPILE_CONTAINER_NAME: lightop-build-${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
-      CI_TEST_CONTAINER_NAME: lightop-test-cache-torch${{ matrix.torch_version }}
-      REUSE_TEST_ENVIRONMENT: ${{ github.event_name == 'workflow_dispatch' && inputs.reuse_test_environment && 'true' || 'false' }}
-      PRESERVE_TEST_ENVIRONMENT: "false"
+      CI_TEST_CONTAINER_NAME: lightop-test-${{ github.run_id }}-${{ github.run_attempt }}-torch${{ matrix.torch_version }}
+      # These images contain the pre-built vLLM/HCU runtime for their Torch lane.
+      # Keep the mapping explicit: the two vLLM ABIs are not interchangeable.
+      CI_TEST_IMAGE: ${{ matrix.torch_version == '2.10.0' && 'pypi.sourcefind.cn/jenkins/model_test_env/vllm:latest' || 'pypi.sourcefind.cn/jenkins/model_test_env/vllm:0.25.1-latest' }}
+      EXPECTED_VLLM_VERSION: ${{ matrix.torch_version == '2.10.0' && '0.21.0' || '0.25.1' }}
       # The two Torch matrix lanes run concurrently on separate fixed cards.
       # The image only supports the two versions mapped below.
       STATIC_ROCR_VISIBLE_DEVICES: ${{ matrix.torch_version == '2.10.0' && '0' || '1' }}
@@ -179,7 +174,6 @@ jobs:
               merge --no-edit "${TARGET_SHA}"
 
       - name: Prepare runner and build context
-        if: env.REUSE_TEST_ENVIRONMENT != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -204,7 +198,6 @@ jobs:
           test ! -e "${CI_BUILD_CONTEXT}/lightop/.git"
 
       - name: "Build: Create LightOp image"
-        if: env.REUSE_TEST_ENVIRONMENT != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -265,7 +258,6 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: "Build: Compile LightOp wheel"
-        if: env.REUSE_TEST_ENVIRONMENT != 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -356,74 +348,100 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${REUSE_TEST_ENVIRONMENT}" == "true" ]]; then
-            if ! docker container inspect "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1; then
-              echo "::error::Retained test container ${CI_TEST_CONTAINER_NAME} does not exist. Run a full build first."
-              exit 1
-            fi
-            cached_torch="$(docker container inspect \
-              --format '{{index .Config.Labels "io.hygon.lightop.torch-version"}}' \
-              "${CI_TEST_CONTAINER_NAME}")"
-            if [[ "${cached_torch}" != "${INSTALL_TORCH_VERSION}" ]]; then
-              echo "::error::Retained container has Torch ${cached_torch}; expected ${INSTALL_TORCH_VERSION}."
-              exit 1
-            fi
-            docker start "${CI_TEST_CONTAINER_NAME}" >/dev/null
-            docker exec "${CI_TEST_CONTAINER_NAME}" rm -rf /ci_tests /reports
-            docker exec "${CI_TEST_CONTAINER_NAME}" mkdir -p /ci_tests /reports
-            docker cp "${GITHUB_WORKSPACE}/test/ci_tests/." "${CI_TEST_CONTAINER_NAME}:/ci_tests/"
-            echo "Reusing retained test container: ${CI_TEST_CONTAINER_NAME}"
-          else
-            # Replace an older cache only after the new wheel has compiled.
-            docker rm -f "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1 || true
-            docker run -d \
-              --name "${CI_TEST_CONTAINER_NAME}" \
-              --label "io.hygon.lightop.test-cache=true" \
-              --label "io.hygon.lightop.torch-version=${INSTALL_TORCH_VERSION}" \
-              --label "io.hygon.lightop.source-sha=${GITHUB_SHA}" \
-              --init \
-              --network host \
-              --ipc host \
-              --shm-size 80g \
-              --cap-add SYS_PTRACE \
-              --security-opt seccomp=unconfined \
-              --privileged \
-              --device /dev/mkfd \
-              --device /dev/kfd \
-              --device /dev/dri \
-              --group-add video \
-              --user root \
-              -e ROCR_VISIBLE_DEVICES \
-              -e PYTHONUNBUFFERED \
-              -e FALLBACK_INDEX_URL \
-              -e FALLBACK_INDEX_HOST \
-              -v /opt/hyhal:/opt/hyhal:ro \
-              "${CI_COMPILE_IMAGE}"
+          docker pull "${CI_TEST_IMAGE}" 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
+          test_image_id="$(docker image inspect --format '{{.Id}}' "${CI_TEST_IMAGE}")"
+          test_image_created="$(docker image inspect --format '{{.Created}}' "${CI_TEST_IMAGE}")"
+          echo "Using vLLM test image: ${CI_TEST_IMAGE}"
+          echo "  image_id=${test_image_id}"
+          echo "  created=${test_image_created}"
+          {
+            echo "### vLLM test environment"
+            echo
+            echo "- Torch lane: \`${INSTALL_TORCH_VERSION}\`"
+            echo "- Test image: \`${CI_TEST_IMAGE}\`"
+            echo "- Test image ID: \`${test_image_id}\`"
+            echo "- Test image created: \`${test_image_created}\`"
+            echo "- Expected vLLM: \`${EXPECTED_VLLM_VERSION}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
 
-            docker exec "${CI_TEST_CONTAINER_NAME}" mkdir -p /ci_tests /dist /reports
-            docker cp "${GITHUB_WORKSPACE}/test/ci_tests/." "${CI_TEST_CONTAINER_NAME}:/ci_tests/"
-            docker cp "${GITHUB_WORKSPACE}/dist/." "${CI_TEST_CONTAINER_NAME}:/dist/"
-          fi
+          docker run -d \
+            --name "${CI_TEST_CONTAINER_NAME}" \
+            --label "io.hygon.lightop.torch-version=${INSTALL_TORCH_VERSION}" \
+            --label "io.hygon.lightop.source-sha=${GITHUB_SHA}" \
+            --label "io.hygon.lightop.test-image=${CI_TEST_IMAGE}" \
+            --init \
+            --network host \
+            --ipc host \
+            --shm-size 80g \
+            --cap-add SYS_PTRACE \
+            --security-opt seccomp=unconfined \
+            --privileged \
+            --device /dev/mkfd \
+            --device /dev/kfd \
+            --device /dev/dri \
+            --group-add video \
+            --user root \
+            -e ROCR_VISIBLE_DEVICES \
+            -e PYTHONUNBUFFERED \
+            -e INSTALL_TORCH_VERSION \
+            -e EXPECTED_VLLM_VERSION \
+            -v /opt/hyhal:/opt/hyhal:ro \
+            "${CI_TEST_IMAGE}" \
+            tail -f /dev/null
 
-          # Installation and LightOp import validation are prerequisites, not
-          # test cases. vLLM-dependent cases are skipped by pytest until a
-          # Rocky 8-compatible vLLM wheel is available.
+          docker exec "${CI_TEST_CONTAINER_NAME}" mkdir -p /ci_tests /dist /reports
+          docker cp "${GITHUB_WORKSPACE}/test/ci_tests/." "${CI_TEST_CONTAINER_NAME}:/ci_tests/"
+          docker cp "${GITHUB_WORKSPACE}/dist/." "${CI_TEST_CONTAINER_NAME}:/dist/"
+
+          # The test image contains the matched vLLM/HCU stack.  Replace its
+          # pre-installed LightOp package with this run's repaired wheel so
+          # import and functional tests exercise the candidate artifact.
           docker exec "${CI_TEST_CONTAINER_NAME}" bash -lc '
             set -euo pipefail
             source /opt/dtk/env.sh
-            source /lightop/.github/ci/configure-container-runtime.sh
 
-            python3 -m pip install \
-              --extra-index-url "${FALLBACK_INDEX_URL}" \
-              --trusted-host "${FALLBACK_INDEX_HOST}" \
-              "regex==2026.7.10" "requests==2.32.5" \
-              "typing_extensions==4.16.0" cachetools psutil blake3 py-cpuinfo \
-              "pyzmq>=25.0.0"
-            if ! python3 -m pip show lightop >/dev/null 2>&1; then
-                python3 -m pip install --no-deps /dist/*manylinux*.whl
-            fi
+            shopt -s nullglob
+            wheels=(/dist/*manylinux*.whl)
+            [[ "${#wheels[@]}" -eq 1 ]] || {
+              echo "Expected exactly one repaired LightOp wheel, found ${#wheels[@]}"
+              exit 1
+            }
+            python3 -m pip uninstall -y lightop || true
+            python3 -m pip install --no-deps --force-reinstall "${wheels[0]}"
             cd /tmp
-            python3 -c "import lightop, os; print(f\"tested wheel resolved from: {os.path.dirname(lightop.__file__)}\")"
+            python3 - <<"PY"
+          import importlib.metadata
+          import os
+          import torch
+          import triton
+          import vllm
+          import vllm._custom_ops
+          import lightop
+
+          torch_base = torch.__version__.split("+", 1)[0]
+          lightop_version = importlib.metadata.version("lightop")
+          expected_torch = os.environ["INSTALL_TORCH_VERSION"]
+          expected_vllm = os.environ["EXPECTED_VLLM_VERSION"]
+          vllm_base = vllm.__version__.split("+", 1)[0]
+          if torch_base != expected_torch:
+              raise SystemExit(
+                  f"Test image Torch {torch.__version__} does not match "
+                  f"{expected_torch}"
+              )
+          if vllm_base != expected_vllm:
+              raise SystemExit(
+                  f"Test image vLLM {vllm.__version__} does not match "
+                  f"{expected_vllm}"
+              )
+          if not torch.cuda.is_available():
+              raise SystemExit("No HCU device is available to PyTorch in the test image")
+          print(f"torch={torch.__version__}")
+          print(f"triton={triton.__version__}")
+          print(f"vllm={vllm.__version__}")
+          print(f"lightop={lightop_version}")
+          print(f"tested wheel resolved from: {os.path.dirname(lightop.__file__)}")
+          print("vLLM native extension and LightOp test runtime are available.")
+          PY
           ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
 
           echo "pytest_started=true" >> "${GITHUB_OUTPUT}"
@@ -431,28 +449,26 @@ jobs:
           docker exec "${CI_TEST_CONTAINER_NAME}" bash -lc '
             set -euo pipefail
             source /opt/dtk/env.sh
-            source /lightop/.github/ci/configure-container-runtime.sh
 
             cd /ci_tests
             passed=()
             failed=()
             skipped=()
             for test_file in test_*.py; do
-              case "${test_file}" in
-                test_fuse_silu_mul_fp8_quant.py|test_reshape_cache_cuda.py|test_vllm_dependency_skips.py)
-                  echo "SKIPPED: ${test_file} (requires a Rocky 8-compatible vLLM extension)"
-                  skipped+=("${test_file}")
-                  ;;
-                *)
-                  echo "--- ${test_file} ---"
-                  if python3 "${test_file}"; then
-                    passed+=("${test_file}")
-                  else
-                    echo "ERROR: Functional test failed: ${test_file}"
-                    failed+=("${test_file}")
-                  fi
-                  ;;
-              esac
+              if [[ "${test_file}" == "test_vllm_dependency_skips.py" ]]; then
+                # This source placeholder represented the old Rocky 8 vLLM
+                # limitation.  The pre-built test image is now verified above.
+                echo "SKIPPED: ${test_file} (superseded by vLLM runtime validation)"
+                skipped+=("${test_file}")
+                continue
+              fi
+              echo "--- ${test_file} ---"
+              if python3 "${test_file}"; then
+                passed+=("${test_file}")
+              else
+                echo "ERROR: Functional test failed: ${test_file}"
+                failed+=("${test_file}")
+              fi
             done
 
             PASSED_TESTS="$(printf "%s\n" "${passed[@]:-}")" \
@@ -483,7 +499,7 @@ jobs:
               ET.SubElement(case, "failure", message="Functional test program exited non-zero")
           for name in skipped:
               case = ET.SubElement(suite, "testcase", classname="lightop.functional", name=name)
-              ET.SubElement(case, "skipped", message="Requires a Rocky 8-compatible vLLM extension")
+              ET.SubElement(case, "skipped", message="Superseded by vLLM runtime validation")
           ET.ElementTree(suite).write(
               "/reports/lightop_test.xml", encoding="utf-8", xml_declaration=True
           )
@@ -514,14 +530,6 @@ jobs:
               exit "${pytest_status}"
               ;;
           esac
-
-          # Restore the wheel on the runner so the normal packaging step can
-          # still publish the artifact after a successful test-only retry.
-          if [[ "${REUSE_TEST_ENVIRONMENT}" == "true" ]]; then
-            rm -rf "${GITHUB_WORKSPACE}/dist"
-            mkdir -p "${GITHUB_WORKSPACE}/dist"
-            docker cp "${CI_TEST_CONTAINER_NAME}:/dist/." "${GITHUB_WORKSPACE}/dist/"
-          fi
 
       - name: "Test: Summarize results"
         if: always() && steps.functional_tests.outputs.pytest_started == 'true'
@@ -609,13 +617,7 @@ jobs:
           set +e
           docker rm -f "${CI_COMPILE_CONTAINER_NAME}" >/dev/null 2>&1
 
-          if [[ "${PRESERVE_TEST_ENVIRONMENT}" == "true" ]] && \
-             docker container inspect "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1; then
-            docker stop "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1
-            echo "Preserved test container for dependency retries: ${CI_TEST_CONTAINER_NAME}"
-          else
-            docker rm -f "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1
-          fi
+          docker rm -f "${CI_TEST_CONTAINER_NAME}" >/dev/null 2>&1
 
           runner_uid="$(id -u)"
           runner_gid="$(id -g)"
@@ -629,9 +631,7 @@ jobs:
               chmod -R u+rwX /workspace
             ' _ "${runner_uid}" "${runner_gid}"
 
-          if [[ "${PRESERVE_TEST_ENVIRONMENT}" != "true" ]]; then
-            docker image rm -f "${CI_COMPILE_IMAGE}" >/dev/null 2>&1
-          fi
+          docker image rm -f "${CI_COMPILE_IMAGE}" >/dev/null 2>&1
           if [[ "${CI_BUILD_CONTEXT:-}" == "${RUNNER_TEMP}"/lightop-build-* ]]; then
             rm -rf -- "${CI_BUILD_CONTEXT}"
           fi

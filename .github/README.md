@@ -14,20 +14,20 @@
 
 ## 关键策略：**测例失败不阻塞 merge / publish**
 
-`Run functional tests` 步骤按 pytest 退出码分类处理：
+`Run functional tests` 步骤逐个执行 `test/ci_tests/test_*.py`，并按其汇总退出码分类处理：
 
-| pytest exit | 含义 | CI 行为 |
+| 汇总 exit | 含义 | CI 行为 |
 |---|---|---|
 | `0` | 所有测例通过 | 正常绿 |
 | `1` | 有测例失败 | **依然绿**，只在日志和 Step Summary 打 `::warning::` |
-| 其他（2/3/4/5） | pytest 本身崩了（收集错误、用法错误、被中断、无测例） | **红**，job fail |
+| 其他 | 测试容器、wheel 安装或运行器本身失败 | **红**，job fail |
 
 **为什么这么设计**：算子库在版本迭代过程中经常有已知的、允许暂时挂的测例（性能回退、数值容差、上游 torch 变化等）。硬门槛会把这些噪音变成阻塞。管理员应通过 **JUnit 报告**判断这些失败是否可接受，再决定是否 merge。CI 只做"跑完并如实报告"，不做"通过/不通过"的判断。
 
 如果未来需要**强制某些测试必须通过**，两种做法：
 
-1. 用 `@pytest.mark.critical` 标记，另加一步 `pytest -m critical`，这一步不做上面的容错，退出非 0 就 fail 整个 job；
-2. GitHub 分支保护规则里勾 "Require status checks"，但因为 `test` job 恒绿，只能挡"pytest 崩了/编译失败"。
+1. 另加一个 critical test step，不做上面的容错，任一脚本退出非 0 就 fail 整个 job；
+2. GitHub 分支保护规则里勾 "Require status checks"，但因为 `test` job 对功能测例失败保持绿，只能挡基础设施失败或编译失败。
 
 ## 管理员如何决定是否 merge
 
@@ -41,7 +41,7 @@
 
 Actions → LightOp CI → **Run workflow** → 选目标分支 → 勾 `publish_packages: true` → Run。
 
-跳过 PR 流程，仍然要求 validate + test job 拉起来（test 恒绿，除非 pytest 崩）。用于修复紧急问题而不想走 PR review 的场景。
+跳过 PR 流程，仍然要求 validate + test job 拉起来（test 恒绿，除非测试基础设施失败）。用于修复紧急问题而不想走 PR review 的场景。
 
 ## GPU allocation
 
@@ -54,13 +54,15 @@ because applying both filters can hide every device for a nonzero device ID.
 
 ## Build and test isolation
 
-Each Torch lane uses two containers with separate responsibilities. The build
-container contains only the compiler, Torch, Triton, and wheel-building tools.
-After the wheel is copied out, that container is stopped. A fresh test
-container then installs the small vLLM `_custom_ops` dependency set, installs
-the generated wheel, validates the registered ROCm baseline operator, and runs
-the six functional tests. Test-only dependencies therefore cannot replace or
-invalidate packages used while compiling the wheel.
+Each Torch lane uses two fresh containers with separate responsibilities. The
+build container contains the compiler, matched Torch/Triton, and wheel-building
+tools. After the wheel is copied out, it is stopped. The test container is
+pulled from the pre-built vLLM/HCU image matching its Torch lane: vLLM 0.21.0
+for Torch 2.10 and vLLM 0.25.1 for Torch 2.11. CI uninstalls the LightOp package
+already present in that test image, force-installs the wheel built by this run
+without dependencies, imports the vLLM native extension, and then runs the CI
+test scripts. Thus vLLM, llguidance, and their native dependencies are never
+resolved or built during the LightOp test stage.
 
 ## 可覆盖的仓库变量 / secrets
 
@@ -70,7 +72,6 @@ invalidate packages used while compiling the wheel.
 - `LIGHTOP_CI_BASE_IMAGE_REPOSITORY` — 编译 base image
 - `LIGHTOP_DTK_PKG_PATH` — DTK 包下载地址
 - `LIGHTOP_PYTHON_INDEX_URL` / `LIGHTOP_PYTHON_TRUSTED_HOST` — 内部 pip 索引
-- `LIGHTOP_FALLBACK_INDEX_URL` / `LIGHTOP_FALLBACK_INDEX_HOST` — test-only fallback for generic Python packages
 - `LIGHTOP_CI_OUTPUT_ROOT` — 首选节点输出目录，默认 `/public/home/guochy1/guochy1/framework/workspace/logs`；只读时回退到 runner 工作区旁的 `.lightop-ci-outputs`
 - `LIGHTOP_DEVPI_URL` — devpi 发布地址
 
