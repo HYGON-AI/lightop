@@ -55,3 +55,44 @@ def test_legacy_top_k_probability_sampler_is_preserved():
         offset=0,
     )
     assert torch.equal(sampled.long(), probs.argmax(dim=-1))
+
+
+@pytest.mark.parametrize(
+    ("sampler", "kwargs"),
+    [
+        (lightop.sampling.top_k_sampling_from_probs, {"top_k": 2}),
+        (lightop.sampling.top_p_sampling_from_probs, {"top_p": 0.95}),
+        (
+            lightop.sampling.top_k_top_p_sampling_from_probs,
+            {"top_k": 2, "top_p": 0.95, "filter_apply_order": "joint"},
+        ),
+        (
+            lightop.sampling.top_k_top_p_sampling_from_probs,
+            {
+                "top_k": 2,
+                "top_p": 0.95,
+                "filter_apply_order": "top_k_first",
+            },
+        ),
+    ],
+)
+def test_probability_sampler_handles_fully_masked_row(sampler, kwargs):
+    probs = torch.tensor(
+        [
+            [float("nan")] * 8,
+            [0.01, 0.02, 0.03, 0.04, 0.05, 0.10, 0.25, 0.50],
+        ],
+        dtype=torch.float32,
+        device="cuda",
+    )
+
+    sampled = sampler(
+        probs,
+        deterministic=True,
+        seed=123,
+        offset=0,
+        **kwargs,
+    )
+    torch.cuda.synchronize()
+    assert sampled[0].item() == 0
+    assert 0 <= sampled[1].item() < probs.size(1)
