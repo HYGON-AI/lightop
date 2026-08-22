@@ -918,7 +918,7 @@ constexpr size_t kRadixSelect8BitSmemBytes =
 
 int get_lightop_topk_backend() {
   static const int backend = [] {
-    const char* value = std::getenv("SGL_USE_LIGHTOP_BACKAND");
+    const char* value = std::getenv("SGL_USE_LIGHTOP_TOPK_BACKAND");
     if (value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0) {
       return 0;
     }
@@ -927,7 +927,7 @@ int get_lightop_topk_backend() {
     }
     TORCH_CHECK(
         false,
-        "SGL_USE_LIGHTOP_BACKAND must be 0 or 1, but got ",
+        "SGL_USE_LIGHTOP_TOPK_BACKAND must be 0 or 1, but got ",
         value);
     return 0;
   }();

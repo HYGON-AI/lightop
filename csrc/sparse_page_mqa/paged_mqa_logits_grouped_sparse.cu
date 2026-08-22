@@ -1,4 +1,4 @@
-#include "paged_mqa_logits.h"
+#include "sparse_page_mqa.h"
 #include "paged_mqa_logits_sparse_impl.hpp"
 
 #include <ATen/cuda/CUDAContext.h>

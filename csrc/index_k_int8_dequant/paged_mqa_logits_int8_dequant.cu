@@ -1,4 +1,4 @@
-#include "paged_mqa_logits.h"
+#include "index_k_int8_dequant.h"
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
