@@ -676,6 +676,8 @@ Tensor gelu_opt(const Tensor& input, c10::string_view approximate);
 Tensor gelu_opt_out(const Tensor& input, Tensor& output, c10::string_view approximate);
 Tensor silu_opt(const Tensor& input);
 Tensor silu_opt_out(const Tensor& input, Tensor& output);
+Tensor log_opt(const Tensor& input);
+Tensor log_opt_out(const Tensor& input, Tensor& output);
 std::tuple<Tensor, Tensor> reduce_max_opt(const Tensor& input);
 std::tuple<Tensor, Tensor> reduce_max_opt_out(const Tensor& input, Tensor& values, Tensor& indices);
 std::tuple<Tensor, Tensor> reduce_min_opt(const Tensor& input);
@@ -1874,6 +1876,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("input"), py::arg("output"), py::arg("approximate") = "none");
   m.def("silu_opt", &at::native::silu_opt, "silu_opt");
   m.def("silu_opt_out", &at::native::silu_opt_out, "silu_opt_out");
+  m.def("log_opt", &at::native::log_opt, "log_opt");
+  m.def("log_opt_out", &at::native::log_opt_out, "log_opt_out");
   m.def("reduce_max_opt", &at::native::reduce_max_opt, "reduce_max_opt");
   m.def("reduce_max_opt_out", &at::native::reduce_max_opt_out, "reduce_max_opt_out");
   m.def("reduce_min_opt", &at::native::reduce_min_opt, "reduce_min_opt");

@@ -52,6 +52,8 @@ from .ops_basic import (
     gelu_out,
     silu,
     silu_out,
+    log,
+    log_out,
     reduce_max,
     reduce_max_out,
     reduce_min,

@@ -31,7 +31,7 @@ gelu_and_mul_opt = lightop_native.gelu_and_mul_opt
 gelu_tanh_and_mul_opt = lightop_native.gelu_tanh_and_mul_opt
 silu_and_mul_opt = lightop_native.silu_and_mul_opt
 
-from ..ops_basic import gelu, gelu_out, silu, silu_out  # noqa: E402
+from ..ops_basic import gelu, gelu_out, silu, silu_out, log, log_out  # noqa: E402
 
 
 
@@ -61,6 +61,8 @@ __all__ = [
     "gelu_out",
     "silu",
     "silu_out",
+    "log",
+    "log_out",
     "gelu_and_mul_opt",
     "gelu_tanh_and_mul_opt",
     "LnAddDropout",
