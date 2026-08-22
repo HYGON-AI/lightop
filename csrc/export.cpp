@@ -4,6 +4,8 @@
 #include <vector>
 
 #include "paged_mqa_logits/paged_mqa_logits.h"
+#include "sparse_page_mqa/sparse_page_mqa.h"
+#include "index_k_int8_dequant/index_k_int8_dequant.h"
 #include "sampling/sampling.h"
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace at {  namespace native {
