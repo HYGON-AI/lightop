@@ -1,6 +1,6 @@
 #pragma once
 
-#include "paged_mqa_logits_impl.hpp"
+#include "../paged_mqa_logits/paged_mqa_logits_impl.hpp"
 
 namespace lightop {
 namespace deep_gemm {

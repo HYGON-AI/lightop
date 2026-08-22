@@ -526,7 +526,9 @@ def get_extensions():
                glob.glob('./csrc/moew4a8/*.cu') + glob.glob('./csrc/marlinw4a16/*.cu')+ glob.glob('./csrc/marlinw4a8/*.cu') +\
                glob.glob('./csrc/marlinw4fp8/*.cu') +\
                glob.glob('./csrc/blockwise_scaling/*.cu') + glob.glob('./csrc/storeKvcache/*.cu') + glob.glob('./csrc/concat/*.cu') +\
-               glob.glob('./csrc/mqa_logits/*.cu') + glob.glob('./csrc/paged_mqa_logits/*.cu')+ glob.glob('./csrc/bmm_scale/*.cu') + \
+               glob.glob('./csrc/mqa_logits/*.cu') + glob.glob('./csrc/paged_mqa_logits/*.cu') + \
+               glob.glob('./csrc/sparse_page_mqa/*.cu') + glob.glob('./csrc/index_k_int8_dequant/*.cu') + \
+               glob.glob('./csrc/bmm_scale/*.cu') + \
                glob.glob('./csrc/polyfill/*.cu') + glob.glob('./csrc/awq_w4a16_gemm/*.cu') + \
                glob.glob('./csrc/sampling/*.cu')
 
@@ -552,6 +554,8 @@ def get_extensions():
     include_dirs.append(os.path.abspath('./csrc/blockwise_scaling/'))
     include_dirs.append(os.path.abspath('./csrc/concat/'))
     include_dirs.append(os.path.abspath('./csrc/paged_mqa_logits/'))
+    include_dirs.append(os.path.abspath('./csrc/sparse_page_mqa/'))
+    include_dirs.append(os.path.abspath('./csrc/index_k_int8_dequant/'))
     include_dirs.append(os.path.abspath('./csrc/bmm_scale/'))
     include_dirs.append(os.path.abspath('./csrc/awq_w4a16_gemm/'))
     include_dirs.append(os.path.abspath('./csrc/sampling/'))
