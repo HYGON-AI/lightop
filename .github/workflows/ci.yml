@@ -123,6 +123,11 @@ jobs:
       EXPECTED_VLLM_VERSION: ${{ matrix.torch_version == '2.10.0' && '0.21.0' || '0.25.1' }}
       HCU_IDLE_USAGE_THRESHOLD: "5"
       HCU_WAIT_SECONDS: "1800"
+      # The sole distributed test may use all cards, but it must not hold a
+      # lane for half an hour merely waiting for the whole node to become idle.
+      HCU_ALL_WAIT_SECONDS: "600"
+      SINGLE_HCU_TEST_TIMEOUT_SECONDS: "600"
+      MULTI_HCU_TEST_TIMEOUT_SECONDS: "1800"
       # Compilation uses one fixed HCU per Torch lane.  The test container
       # performs its own dynamic HCU allocation after compilation completes.
       STATIC_ROCR_VISIBLE_DEVICES: ${{ matrix.torch_version == '2.10.0' && '0' || '1' }}
@@ -391,6 +396,9 @@ jobs:
             -e EXPECTED_VLLM_VERSION \
             -e HCU_IDLE_USAGE_THRESHOLD \
             -e HCU_WAIT_SECONDS \
+            -e HCU_ALL_WAIT_SECONDS \
+            -e SINGLE_HCU_TEST_TIMEOUT_SECONDS \
+            -e MULTI_HCU_TEST_TIMEOUT_SECONDS \
             -v /opt/hyhal:/opt/hyhal:ro \
             -v /tmp/lightop-ci-hcu:/var/lock/lightop-ci \
             "${CI_TEST_IMAGE}" \
@@ -466,8 +474,11 @@ jobs:
                 --test-root /tests \
                 --report /reports/lightop_test.xml \
                 --usage-threshold "${HCU_IDLE_USAGE_THRESHOLD}" \
-                --wait-seconds "${HCU_WAIT_SECONDS}"
-          ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
+                --wait-seconds "${HCU_WAIT_SECONDS}" \
+                --all-hcu-wait-seconds "${HCU_ALL_WAIT_SECONDS}" \
+                --test-timeout-seconds "${SINGLE_HCU_TEST_TIMEOUT_SECONDS}" \
+                --distributed-test-timeout-seconds "${MULTI_HCU_TEST_TIMEOUT_SECONDS}"
+          ' 2>&1 | sed -u -E 's/[dD][cC][uU]/HCU/g'
           test_status=${PIPESTATUS[0]}
           set -e
 

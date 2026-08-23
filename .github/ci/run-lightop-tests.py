@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -132,6 +133,30 @@ def test_command(path: Path, multi_hcu_count: int) -> list[str]:
     return [sys.executable, str(path)]
 
 
+def run_program(
+    command: list[str], *, cwd: Path, env: dict[str, str], timeout_seconds: int
+) -> subprocess.CompletedProcess[str]:
+    """Run one program while allowing its stdout/stderr to reach Actions live."""
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
+        start_new_session=True,
+    )
+    try:
+        return subprocess.CompletedProcess(command, process.wait(timeout=timeout_seconds))
+    except subprocess.TimeoutExpired:
+        # torchrun launches worker processes.  End the whole session so a
+        # timed-out test cannot leave workers holding an HCU for later cases.
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+        raise
+
+
 def test_environment(test_root: Path, devices: Iterable[int] | None) -> dict[str, str]:
     env = os.environ.copy()
     env.pop("ROCR_VISIBLE_DEVICES", None)
@@ -171,6 +196,24 @@ def main() -> int:
     parser.add_argument("--report", type=Path, required=True)
     parser.add_argument("--usage-threshold", type=float, default=5.0)
     parser.add_argument("--wait-seconds", type=int, default=1800)
+    parser.add_argument(
+        "--all-hcu-wait-seconds",
+        type=int,
+        default=600,
+        help="Maximum wait for the one distributed test to obtain every HCU.",
+    )
+    parser.add_argument(
+        "--test-timeout-seconds",
+        type=int,
+        default=600,
+        help="Maximum runtime for a single-HCU test program.",
+    )
+    parser.add_argument(
+        "--distributed-test-timeout-seconds",
+        type=int,
+        default=1800,
+        help="Maximum runtime for a distributed multi-HCU test program.",
+    )
     parser.add_argument("--stable-samples", type=int, default=2)
     parser.add_argument("--sample-interval", type=float, default=5.0)
     args = parser.parse_args()
@@ -180,10 +223,15 @@ def main() -> int:
         print(f"No test programs found under {args.test_root}", file=sys.stderr)
         return 2
 
-    print(f"Discovered {len(programs)} test programs under {args.test_root}.")
+    distributed_programs = [program for program in programs if is_distributed_test(program)]
+    print(
+        f"Discovered {len(programs)} test programs under {args.test_root}; "
+        f"{len(distributed_programs)} require every HCU.",
+        flush=True,
+    )
     passed: list[str] = []
     failed: list[tuple[str, str]] = []
-    for program in programs:
+    for number, program in enumerate(programs, start=1):
         name = str(program.relative_to(args.test_root))
         distributed = is_distributed_test(program)
         try:
@@ -192,12 +240,13 @@ def main() -> int:
                     1,
                     require_all=True,
                     threshold=args.usage_threshold,
-                    wait_seconds=args.wait_seconds,
+                    wait_seconds=args.all_hcu_wait_seconds,
                     stable_samples=args.stable_samples,
                     sample_interval=args.sample_interval,
                 )
                 env = test_environment(args.test_root, None)
                 device_text = f"all HCUs ({','.join(map(str, devices))})"
+                timeout_seconds = args.distributed_test_timeout_seconds
             else:
                 devices = wait_for_devices(
                     1,
@@ -209,21 +258,49 @@ def main() -> int:
                 )
                 env = test_environment(args.test_root, devices)
                 device_text = str(devices[0])
+                timeout_seconds = args.test_timeout_seconds
             command = test_command(program, len(devices))
-            print(f"--- {name} [{device_text}] ---")
-            result = subprocess.run(command, cwd=args.test_root, env=env, check=False)
+            print(
+                f"[{number}/{len(programs)}] START {name} "
+                f"[HCU: {device_text}; timeout: {timeout_seconds}s]",
+                flush=True,
+            )
+            started = time.monotonic()
+            result = run_program(
+                command,
+                cwd=args.test_root,
+                env=env,
+                timeout_seconds=timeout_seconds,
+            )
+            elapsed = time.monotonic() - started
             if result.returncode:
                 failed.append((name, f"Exited with status {result.returncode}"))
-                print(f"ERROR: {name} exited with status {result.returncode}")
+                print(
+                    f"[{number}/{len(programs)}] FAIL {name} "
+                    f"[status: {result.returncode}; elapsed: {elapsed:.1f}s]",
+                    flush=True,
+                )
             else:
                 passed.append(name)
+                print(
+                    f"[{number}/{len(programs)}] PASS {name} "
+                    f"[elapsed: {elapsed:.1f}s]",
+                    flush=True,
+                )
+        except subprocess.TimeoutExpired:
+            failed.append((name, f"Timed out after {timeout_seconds}s"))
+            print(
+                f"[{number}/{len(programs)}] TIMEOUT {name} "
+                f"[limit: {timeout_seconds}s]",
+                flush=True,
+            )
         except (DeviceError, OSError) as exc:
             failed.append((name, str(exc)))
-            print(f"ERROR: {name}: {exc}")
+            print(f"[{number}/{len(programs)}] ERROR {name}: {exc}", flush=True)
 
     write_junit(args.report, passed, failed)
-    print(f"Passed ({len(passed)}): {' '.join(passed) or 'none'}")
-    print(f"Failed ({len(failed)}): {' '.join(name for name, _ in failed) or 'none'}")
+    print(f"Passed ({len(passed)}): {' '.join(passed) or 'none'}", flush=True)
+    print(f"Failed ({len(failed)}): {' '.join(name for name, _ in failed) or 'none'}", flush=True)
     return 1 if failed else 0
 
 
