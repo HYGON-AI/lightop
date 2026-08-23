@@ -121,6 +121,8 @@ jobs:
       # Keep the mapping explicit: the two vLLM ABIs are not interchangeable.
       CI_TEST_IMAGE: ${{ matrix.torch_version == '2.10.0' && 'pypi.sourcefind.cn/jenkins/model_test_env/vllm:latest' || 'pypi.sourcefind.cn/jenkins/model_test_env/vllm:0.25.1-latest' }}
       EXPECTED_VLLM_VERSION: ${{ matrix.torch_version == '2.10.0' && '0.21.0' || '0.25.1' }}
+      PYTHON_INDEX_URL: ${{ vars.LIGHTOP_PYTHON_INDEX_URL || 'http://10.16.1.201:9929/nightly/dtk2604/+simple/' }}
+      PYTHON_TRUSTED_HOST: ${{ vars.LIGHTOP_PYTHON_TRUSTED_HOST || '10.16.1.201' }}
       HCU_IDLE_USAGE_THRESHOLD: "5"
       HCU_WAIT_SECONDS: "1800"
       # The sole distributed test may use all cards, but it must not hold a
@@ -394,6 +396,8 @@ jobs:
             -e PYTHONUNBUFFERED \
             -e INSTALL_TORCH_VERSION \
             -e EXPECTED_VLLM_VERSION \
+            -e PYTHON_INDEX_URL \
+            -e PYTHON_TRUSTED_HOST \
             -e HCU_IDLE_USAGE_THRESHOLD \
             -e HCU_WAIT_SECONDS \
             -e HCU_ALL_WAIT_SECONDS \
@@ -426,6 +430,26 @@ jobs:
             }
             python3 -m pip uninstall -y lightop || true
             python3 -m pip install --no-deps --force-reinstall "${wheels[0]}"
+            # Full test coverage imports reporting and Transformer Engine
+            # helpers that are intentionally absent from the lean vLLM image.
+            # Use only pre-built wheels from the DTK index: CI must never
+            # attempt to build a native dependency on the runner.
+            python3 -m pip install \
+              --disable-pip-version-check \
+              --only-binary=:all: \
+              --index-url "${PYTHON_INDEX_URL}" \
+              --trusted-host "${PYTHON_TRUSTED_HOST}" \
+              openpyxl matplotlib transformer-engine
+            python3 - <<'"'"'PY'"'"'
+          import importlib.metadata
+          import matplotlib
+          import openpyxl
+          import transformer_engine
+
+          for package in ("openpyxl", "matplotlib", "transformer-engine"):
+              print(f"{package}={importlib.metadata.version(package)}")
+          print("Test-only Python dependencies are importable.")
+          PY
             cd /tmp
             python3 - <<"PY"
           import importlib.metadata

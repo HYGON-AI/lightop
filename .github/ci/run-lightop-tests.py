@@ -125,8 +125,9 @@ def test_command(path: Path, multi_hcu_count: int) -> list[str]:
     if is_distributed_test(path):
         return [
             "torchrun",
-            "--standalone",
             "--nnodes=1",
+            "--rdzv-backend=c10d",
+            "--rdzv-endpoint=127.0.0.1:0",
             f"--nproc-per-node={multi_hcu_count}",
             str(path),
         ]
@@ -163,6 +164,10 @@ def test_environment(test_root: Path, devices: Iterable[int] | None) -> dict[str
     env.pop("CUDA_VISIBLE_DEVICES", None)
     if devices is None:
         env.pop("HIP_VISIBLE_DEVICES", None)
+        # All distributed workers are local to the test container. The Runner
+        # hostname is not resolvable inside every pre-built test image.
+        env["MASTER_ADDR"] = "127.0.0.1"
+        env["GLOO_SOCKET_IFNAME"] = "lo"
     else:
         env["HIP_VISIBLE_DEVICES"] = ",".join(map(str, devices))
     env["PYTHONPATH"] = f"{test_root}{os.pathsep}{env.get('PYTHONPATH', '')}".rstrip(os.pathsep)
