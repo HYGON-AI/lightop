@@ -14,7 +14,7 @@
 
 ## 关键策略：**测例失败不阻塞 merge / publish**
 
-`Run functional tests` 步骤逐个执行 `test/ci_tests/test_*.py`，并按其汇总退出码分类处理：
+`Run functional tests` 步骤递归执行 `test/` 下全部 `test_*.py` 算子测试文件，以及分布式 all-reduce 测试 `benchmark_allreduce.py`；不按文件名跳过任何测例，并按其汇总退出码分类处理：
 
 | 汇总 exit | 含义 | CI 行为 |
 |---|---|---|
@@ -47,10 +47,16 @@ Actions → LightOp CI → **Run workflow** → 选目标分支 → 勾 `publish
 
 The CI uses fixed devices and does not install or invoke CIsmi. The Torch 2.10
 lane uses device `0`; the Torch 2.11 lane uses device `1`. Each lane requires
-one device, so the two matrix lanes require two devices when they run in
-parallel. The selected physical device is passed to both containers through
-`ROCR_VISIBLE_DEVICES`. `HIP_VISIBLE_DEVICES` must not be set at the same time,
-because applying both filters can hide every device for a nonzero device ID.
+one device for compilation, so the two matrix lanes require two devices when
+they run in parallel. The selected device is passed to the compile container
+through `ROCR_VISIBLE_DEVICES`.
+
+The test container does not inherit that single-device filter. It follows the
+`optest` allocation model: `hy-smi` is sampled twice and normal operator tests
+run on one stable idle HCU through `HIP_VISIBLE_DEVICES`; scripts containing
+`init_process_group` wait until every HCU is idle and run with `torchrun` across
+all detected devices. A host lock serializes LightOp test suites on the runner,
+so a multi-HCU test cannot overlap another LightOp test lane.
 
 ## Build and test isolation
 
@@ -61,7 +67,7 @@ pulled from the pre-built vLLM/HCU image matching its Torch lane: vLLM 0.21.0
 for Torch 2.10 and vLLM 0.25.1 for Torch 2.11. CI uninstalls the LightOp package
 already present in that test image, force-installs the wheel built by this run
 without dependencies, imports the vLLM native extension, and then runs the CI
-test scripts. Thus vLLM, llguidance, and their native dependencies are never
+operator test scripts under `test/`. Thus vLLM, llguidance, and their native dependencies are never
 resolved or built during the LightOp test stage.
 
 ## 可覆盖的仓库变量 / secrets

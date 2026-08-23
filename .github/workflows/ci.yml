@@ -94,7 +94,9 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
 
     runs-on: [self-hosted, Linux, X64, hcu-ci-pr, nmz36]
-    timeout-minutes: 240
+    # Full recursive operator coverage can be substantially longer than the
+    # former small CI-only test set.
+    timeout-minutes: 480
 
     strategy:
       # A failure in one compatibility lane must not hide the result of the
@@ -119,8 +121,10 @@ jobs:
       # Keep the mapping explicit: the two vLLM ABIs are not interchangeable.
       CI_TEST_IMAGE: ${{ matrix.torch_version == '2.10.0' && 'pypi.sourcefind.cn/jenkins/model_test_env/vllm:latest' || 'pypi.sourcefind.cn/jenkins/model_test_env/vllm:0.25.1-latest' }}
       EXPECTED_VLLM_VERSION: ${{ matrix.torch_version == '2.10.0' && '0.21.0' || '0.25.1' }}
-      # The two Torch matrix lanes run concurrently on separate fixed cards.
-      # The image only supports the two versions mapped below.
+      HCU_IDLE_USAGE_THRESHOLD: "5"
+      HCU_WAIT_SECONDS: "1800"
+      # Compilation uses one fixed HCU per Torch lane.  The test container
+      # performs its own dynamic HCU allocation after compilation completes.
       STATIC_ROCR_VISIBLE_DEVICES: ${{ matrix.torch_version == '2.10.0' && '0' || '1' }}
       PYTHONUNBUFFERED: "1"
 
@@ -349,6 +353,7 @@ jobs:
           set -euo pipefail
 
           docker pull "${CI_TEST_IMAGE}" 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
+          mkdir -p /tmp/lightop-ci-hcu
           test_image_id="$(docker image inspect --format '{{.Id}}' "${CI_TEST_IMAGE}")"
           test_image_created="$(docker image inspect --format '{{.Created}}' "${CI_TEST_IMAGE}")"
           echo "Using vLLM test image: ${CI_TEST_IMAGE}"
@@ -381,17 +386,22 @@ jobs:
             --device /dev/dri \
             --group-add video \
             --user root \
-            -e ROCR_VISIBLE_DEVICES \
             -e PYTHONUNBUFFERED \
             -e INSTALL_TORCH_VERSION \
             -e EXPECTED_VLLM_VERSION \
+            -e HCU_IDLE_USAGE_THRESHOLD \
+            -e HCU_WAIT_SECONDS \
             -v /opt/hyhal:/opt/hyhal:ro \
+            -v /tmp/lightop-ci-hcu:/var/lock/lightop-ci \
             "${CI_TEST_IMAGE}" \
             tail -f /dev/null
 
-          docker exec "${CI_TEST_CONTAINER_NAME}" mkdir -p /ci_tests /dist /reports
-          docker cp "${GITHUB_WORKSPACE}/test/ci_tests/." "${CI_TEST_CONTAINER_NAME}:/ci_tests/"
+          docker exec "${CI_TEST_CONTAINER_NAME}" mkdir -p /ci /tests /dist /reports
+          docker cp "${GITHUB_WORKSPACE}/test/." "${CI_TEST_CONTAINER_NAME}:/tests/"
           docker cp "${GITHUB_WORKSPACE}/dist/." "${CI_TEST_CONTAINER_NAME}:/dist/"
+          docker cp \
+            "${GITHUB_WORKSPACE}/.github/ci/run-lightop-tests.py" \
+            "${CI_TEST_CONTAINER_NAME}:/ci/run-lightop-tests.py"
 
           # The test image contains the matched vLLM/HCU stack.  Replace its
           # pre-installed LightOp package with this run's repaired wheel so
@@ -444,98 +454,46 @@ jobs:
           PY
           ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
 
-          echo "pytest_started=true" >> "${GITHUB_OUTPUT}"
+          echo "tests_started=true" >> "${GITHUB_OUTPUT}"
           set +e
           docker exec "${CI_TEST_CONTAINER_NAME}" bash -lc '
             set -euo pipefail
             source /opt/dtk/env.sh
-
-            cd /ci_tests
-            passed=()
-            failed=()
-            skipped=()
-            for test_file in test_*.py; do
-              if [[ "${test_file}" == "test_vllm_dependency_skips.py" ]]; then
-                # This source placeholder represented the old Rocky 8 vLLM
-                # limitation.  The pre-built test image is now verified above.
-                echo "SKIPPED: ${test_file} (superseded by vLLM runtime validation)"
-                skipped+=("${test_file}")
-                continue
-              fi
-              echo "--- ${test_file} ---"
-              if python3 "${test_file}"; then
-                passed+=("${test_file}")
-              else
-                echo "ERROR: Functional test failed: ${test_file}"
-                failed+=("${test_file}")
-              fi
-            done
-
-            PASSED_TESTS="$(printf "%s\n" "${passed[@]:-}")" \
-            FAILED_TESTS="$(printf "%s\n" "${failed[@]:-}")" \
-            SKIPPED_TESTS="$(printf "%s\n" "${skipped[@]:-}")" \
-            python3 - <<"PY"
-          import os
-          import xml.etree.ElementTree as ET
-
-          def names(variable):
-              return [name for name in os.environ.get(variable, "").splitlines() if name]
-
-          passed = names("PASSED_TESTS")
-          failed = names("FAILED_TESTS")
-          skipped = names("SKIPPED_TESTS")
-          suite = ET.Element(
-              "testsuite",
-              name="lightop.functional",
-              tests=str(len(passed) + len(failed) + len(skipped)),
-              failures=str(len(failed)),
-              errors="0",
-              skipped=str(len(skipped)),
-          )
-          for name in passed:
-              ET.SubElement(suite, "testcase", classname="lightop.functional", name=name)
-          for name in failed:
-              case = ET.SubElement(suite, "testcase", classname="lightop.functional", name=name)
-              ET.SubElement(case, "failure", message="Functional test program exited non-zero")
-          for name in skipped:
-              case = ET.SubElement(suite, "testcase", classname="lightop.functional", name=name)
-              ET.SubElement(case, "skipped", message="Superseded by vLLM runtime validation")
-          ET.ElementTree(suite).write(
-              "/reports/lightop_test.xml", encoding="utf-8", xml_declaration=True
-          )
-          PY
-
-            echo "Passed (${#passed[@]}): ${passed[*]:-none}"
-            echo "Failed (${#failed[@]}): ${failed[*]:-none}"
-            echo "Skipped (${#skipped[@]}): ${skipped[*]:-none}"
-            [[ "${#failed[@]}" -eq 0 ]]
+            export PATH="/opt/hyhal/bin:${PATH}"
+            unset ROCR_VISIBLE_DEVICES HIP_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES
+            flock /var/lock/lightop-ci/operator-tests.lock \
+              python3 /ci/run-lightop-tests.py \
+                --test-root /tests \
+                --report /reports/lightop_test.xml \
+                --usage-threshold "${HCU_IDLE_USAGE_THRESHOLD}" \
+                --wait-seconds "${HCU_WAIT_SECONDS}"
           ' 2>&1 | sed -E 's/[dD][cC][uU]/HCU/g'
-          pytest_status=${PIPESTATUS[0]}
+          test_status=${PIPESTATUS[0]}
           set -e
 
           rm -f "${GITHUB_WORKSPACE}/lightop_test.xml"
           if ! docker cp \
               "${CI_TEST_CONTAINER_NAME}:/reports/lightop_test.xml" \
               "${GITHUB_WORKSPACE}/lightop_test.xml" 2>/dev/null; then
-            echo "::warning::JUnit XML not produced by functional tests (exit ${pytest_status})."
+            echo "::warning::JUnit XML not produced by functional tests (exit ${test_status})."
           fi
 
-          echo "pytest_status=${pytest_status}" >> "${GITHUB_OUTPUT}"
+          echo "test_status=${test_status}" >> "${GITHUB_OUTPUT}"
 
-          case "${pytest_status}" in
+          case "${test_status}" in
             0) echo "All functional test programs passed." ;;
             1) echo "::warning::Some functional test programs failed. Report uploaded; job left green so admin can review and decide whether to merge." ;;
             *)
-              echo "::error::Functional test runner failed with exit ${pytest_status}."
-              exit "${pytest_status}"
+              echo "::error::Functional test runner failed with exit ${test_status}."
+              exit "${test_status}"
               ;;
           esac
 
       - name: "Test: Summarize results"
-        if: always() && steps.functional_tests.outputs.pytest_started == 'true'
+        if: always() && steps.functional_tests.outputs.tests_started == 'true'
         shell: bash
         env:
-          PYTEST_STATUS: ${{ steps.functional_tests.outputs.pytest_status }}
+          TEST_STATUS: ${{ steps.functional_tests.outputs.test_status }}
         run: |
           set -euo pipefail
           xml="${GITHUB_WORKSPACE}/lightop_test.xml"
@@ -543,7 +501,7 @@ jobs:
             echo "### Functional tests"
             echo
             echo "- Torch: \`${INSTALL_TORCH_VERSION}\`"
-            echo "- Runner exit: \`${PYTEST_STATUS:-unknown}\` (0=all pass, 1=some cases failed, other=runner failure)"
+            echo "- Runner exit: \`${TEST_STATUS:-unknown}\` (0=all pass, 1=some cases failed, other=runner failure)"
             echo
             if [[ ! -s "${xml}" ]]; then
               echo "_No JUnit report was produced._"
@@ -588,7 +546,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: "Test: Store JUnit report on runner"
-        if: always() && steps.functional_tests.outputs.pytest_started == 'true'
+        if: always() && steps.functional_tests.outputs.tests_started == 'true'
         shell: bash
         run: |
           set -euo pipefail
