@@ -687,6 +687,105 @@ __global__ void moe_fused_gate_kernel_gourp1(
   }
 }
 
+// Kimi-K3 uses one routing group with 896 experts and selects 16 routed
+// experts.  The generic dynamic implementation assigns 224 values to each of
+// four lanes for this shape, while its per-lane scratch space only holds eight
+// values.  Use a full wave instead: each lane owns 14 contiguous experts.
+template <typename T, typename T_bias, int WARPS_PER_BLOCK>
+__global__ void moe_fused_gate_kernel_k3_896_group1_top16(
+    const void* input,
+    const void* bias,
+    float* output_ptr,
+    int32_t* indices_ptr,
+    int64_t num_rows,
+    float routed_scaling_factor,
+    bool apply_routed_scaling_factor_on_output) {
+  constexpr int NUM_EXPERTS = 896;
+  constexpr int TOPK = 16;
+  constexpr int VPT = NUM_EXPERTS / WARP_SIZE;
+  constexpr float NEG_INF = -FLT_MAX;
+  static_assert(NUM_EXPERTS % WARP_SIZE == 0,
+                "K3 expert count must divide evenly across a wave");
+
+  const int tidx = threadIdx.x;
+  const int wave_in_block = tidx / WARP_SIZE;
+  const int lane = tidx % WARP_SIZE;
+  const int64_t row = blockIdx.x * WARPS_PER_BLOCK + wave_in_block;
+  if (row >= num_rows) {
+    return;
+  }
+
+  const auto* input_ptr = reinterpret_cast<const T*>(input);
+  const auto* bias_ptr = reinterpret_cast<const T_bias*>(bias);
+  const auto* row_input = input_ptr + row * NUM_EXPERTS;
+  const int start_col = lane * VPT;
+
+  float probabilities[VPT];
+  float selection_scores[VPT];
+  #pragma unroll
+  for (int i = 0; i < VPT; ++i) {
+    const float probability =
+        1.0f / (1.0f + exp_func(-static_cast<float>(row_input[start_col + i])));
+    probabilities[i] = probability;
+    selection_scores[i] = probability + static_cast<float>(bias_ptr[start_col + i]);
+  }
+
+  float selected_weight = 0.0f;
+  int selected_expert = 0;
+  float selected_weight_sum = 0.0f;
+
+  #pragma unroll
+  for (int k = 0; k < TOPK; ++k) {
+    float local_best = NEG_INF;
+    int local_expert = start_col;
+    #pragma unroll
+    for (int i = 0; i < VPT; ++i) {
+      if (selection_scores[i] > local_best) {
+        local_best = selection_scores[i];
+        local_expert = start_col + i;
+      }
+    }
+
+    float best_score = local_best;
+    int best_expert = local_expert;
+    #pragma unroll
+    for (int mask = WARP_SIZE / 2; mask > 0; mask >>= 1) {
+      const float other_score = VLLM_SHFL_XOR_SYNC(best_score, mask);
+      const int other_expert = VLLM_SHFL_XOR_SYNC(best_expert, mask);
+      if (other_score > best_score ||
+          (other_score == best_score && other_expert < best_expert)) {
+        best_score = other_score;
+        best_expert = other_expert;
+      }
+    }
+
+    const int winner_lane = best_expert / VPT;
+    const int winner_offset = best_expert % VPT;
+    float winner_weight = 0.0f;
+    if (lane == winner_lane) {
+      winner_weight = probabilities[winner_offset];
+      selection_scores[winner_offset] = NEG_INF;
+    }
+    winner_weight = VLLM_SHFL_BCAST_SYNC_WIDTH(
+        winner_weight, winner_lane, WARP_SIZE);
+    selected_weight_sum += winner_weight;
+
+    if (lane == k) {
+      selected_weight = winner_weight;
+      selected_expert = best_expert;
+    }
+  }
+
+  if (lane < TOPK) {
+    const float scale = apply_routed_scaling_factor_on_output
+        ? routed_scaling_factor
+        : 1.0f;
+    const int64_t out_idx = row * TOPK + lane;
+    output_ptr[out_idx] = selected_weight / selected_weight_sum * scale;
+    indices_ptr[out_idx] = selected_expert;
+  }
+}
+
 template <
     typename T,
     typename T_bias,
@@ -1181,6 +1280,24 @@ __global__ void moe_fused_gate_kernel(
    dispatched = true; \
  } while (0)
 
+#define LAUNCH_MOE_GATE_K3_896_GROUP1_TOP16(T, T_bias) \
+ do { \
+   constexpr int WARPS_PER_BLOCK_K3 = 4; \
+   const dim3 block_dim_k3(WARP_SIZE * WARPS_PER_BLOCK_K3); \
+   const int64_t num_blocks_k3 = \
+       (num_rows + WARPS_PER_BLOCK_K3 - 1) / WARPS_PER_BLOCK_K3; \
+   moe_fused_gate_kernel_k3_896_group1_top16< \
+       T, T_bias, WARPS_PER_BLOCK_K3><<<num_blocks_k3, block_dim_k3, 0, stream>>>( \
+       input.data_ptr(), \
+       bias.data_ptr(), \
+       output.data_ptr<float>(), \
+       indices.data_ptr<int32_t>(), \
+       num_rows, \
+       static_cast<float>(routed_scaling_factor), \
+       apply_routed_scaling_factor_on_output); \
+   dispatched = true; \
+ } while (0)
+
 struct KernelParamsDynamic {
  int VPT;
  int NUM_EXPERTS;
@@ -1307,6 +1424,35 @@ std::vector<torch::Tensor> moe_fused_gate(
     TORCH_CHECK(dispatched,
                 "Unsupported input/bias data type combination for 254-expert group=2 moe_fused_gate");
     return {output, indices};
+ }
+
+ // Kimi-K3: one group containing all 896 routed experts.  Its group-level
+ // top-k is a no-op, so dispatch directly to the one-wave top-16 kernel.
+ if (num_experts == 896 && num_expert_group == 1 && topk_group == 1 &&
+     topk == 16 && n_share_experts_fusion == 0) {
+   if (input.scalar_type() == at::kBFloat16) {
+     if (bias.scalar_type() == at::kFloat) {
+       LAUNCH_MOE_GATE_K3_896_GROUP1_TOP16(__nv_bfloat16, float);
+     } else if (bias.scalar_type() == at::kBFloat16) {
+       LAUNCH_MOE_GATE_K3_896_GROUP1_TOP16(__nv_bfloat16, __nv_bfloat16);
+     }
+   } else if (input.scalar_type() == at::kHalf) {
+     if (bias.scalar_type() == at::kHalf) {
+       LAUNCH_MOE_GATE_K3_896_GROUP1_TOP16(half, half);
+     }
+   } else if (input.scalar_type() == at::kFloat) {
+     if (bias.scalar_type() == at::kFloat) {
+       LAUNCH_MOE_GATE_K3_896_GROUP1_TOP16(float, float);
+     } else if (bias.scalar_type() == at::kBFloat16) {
+       LAUNCH_MOE_GATE_K3_896_GROUP1_TOP16(float, __nv_bfloat16);
+     } else if (bias.scalar_type() == at::kHalf) {
+       LAUNCH_MOE_GATE_K3_896_GROUP1_TOP16(float, half);
+     }
+   }
+   TORCH_CHECK(dispatched,
+               "Unsupported input/bias data type combination for Kimi-K3 "
+               "896-expert moe_fused_gate");
+   return {output, indices};
  }
 
  if ((topk == 7 || topk == 8 || topk == 14 || topk == 22) &&
