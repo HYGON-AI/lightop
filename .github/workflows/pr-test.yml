@@ -29,8 +29,6 @@ jobs:
     # 需要 docker 与内网 pip 源访问能力的自托管 runner
     runs-on: self-hosted
     timeout-minutes: 480
-    # 自托管 runner 上不执行不可信 fork 的代码
-    if: github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       # 一个 torch 版本的失败不应掩盖另一个版本的结果
       fail-fast: false
@@ -88,7 +86,6 @@ jobs:
     needs: compile
     runs-on: self-hosted
     timeout-minutes: 480
-    if: github.event.pull_request.head.repo.full_name == github.repository
     strategy:
       fail-fast: false
       matrix:
