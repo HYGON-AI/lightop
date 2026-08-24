@@ -2,6 +2,7 @@
 
 import csv
 
+import pytest
 import torch
 
 from lightop import op
@@ -173,6 +174,17 @@ def main() -> None:
         writer.writerows(results_data)
 
     print(f"\nCSV saved => {csv_filename}")
+
+
+@pytest.mark.parametrize(
+    "num_tokens,hidden_size",
+    TEST_SHAPES,
+    ids=[f"{n}x{h}" for n, h in TEST_SHAPES],
+)
+def test_fused_add_rms_norm_opt(num_tokens, hidden_size) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("需要 CUDA/ROCm 设备")
+    run_case(num_tokens, hidden_size)
 
 
 if __name__ == "__main__":

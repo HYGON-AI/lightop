@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+
+name: release-pypi
+
+on:
+  push:
+    branches:
+      - v0.6.0
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-pypi-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DTK_PKG_URL: ${{ vars.LIGHTOP_DTK_PKG_PATH || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
+  # csrc 内核多且重, 显式控制 ninja 并行度以缩短编译时间
+  MAX_JOBS: "32"
+
+jobs:
+  compile:
+    # 需要 docker 与内网 pip 源访问能力的自托管 runner
+    runs-on: self-hosted
+    timeout-minutes: 480
+    strategy:
+      # 一个 torch 版本的失败不应掩盖另一个版本的结果
+      fail-fast: false
+      matrix:
+        torch_version: ${{ fromJSON(vars.LIGHTOP_TORCH_VERSIONS || '["2.10.0", "2.11.0"]') }}
+    env:
+      TORCH_VERSION: ${{ matrix.torch_version }}
+    container:
+      image: ${{ vars.LIGHTOP_CI_BUILD_IMAGE || 'harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304' }}
+      options: >-
+        --volume /opt/hyhal:/opt/hyhal:ro
+        --device /dev/kfd:/dev/kfd
+        --device /dev/dri:/dev/dri
+        --cap-add=SYS_PTRACE
+        --privileged
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 构建 lightop wheel
+        uses: ./.github/actions/build-wheel
+        with:
+          torch_version: ${{ env.TORCH_VERSION }}
+          pip_index: ${{ vars.LIGHTOP_PYTHON_INDEX_URL || 'http://10.16.1.201:9929/nightly/dtk2604/+simple/' }}
+          dtk_pkg_url: ${{ env.DTK_PKG_URL }}
+
+      - name: Apply DAS local version to wheels
+        run: |
+          pip install --no-cache-dir ciupload
+          DTK_VER=$(echo $DTK_PKG_URL | grep -oP 'dtk\K[0-9]+\.[0-9]+' | tr -d '.')
+          WHEEL_COMMIT_SHA="$(git rev-parse HEAD)"
+          CIUpload REPAIR \
+            --dtk_version "${DTK_VER}" \
+            --torch_version "${TORCH_VERSION}" \
+            --git_commit "${WHEEL_COMMIT_SHA}" \
+            --outputdir output \
+            -f dist/*.whl
+          CIUpload --devpi_url ${{ vars.LIGHTOP_DEVPI_URL || 'http://10.16.1.201:9929/' }} --devpi_user ${{ secrets.LIGHTOP_DEVPI_USER }} --devpi_password ${{ secrets.LIGHTOP_DEVPI_PASSWORD }} --dtk_pkg_name $(basename $DTK_PKG_URL) -f output/*.whl
+
+      # 容器内以 root 运行, workspace 里的文件会归 root 所有,
+      # 宿主机上后续 job 的 checkout 无法清理, 退出前清空
+      - name: 清理 workspace
+        if: always()
+        run: rm -rf "${GITHUB_WORKSPACE}"/* "${GITHUB_WORKSPACE}"/.[!.]* || true

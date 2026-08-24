@@ -1,0 +1,171 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+
+name: pr-test
+
+# 仅 PR 创建时触发一次完整编译+测试
+on:
+  pull_request:
+    branches:
+      - master
+    types:
+      - opened
+
+permissions:
+  contents: read
+  # 发布 JUnit 报告到 PR 检查需要
+  checks: write
+
+concurrency:
+  group: pr-test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # csrc 内核多且重, 显式控制 ninja 并行度以缩短编译时间
+  MAX_JOBS: "32"
+
+jobs:
+  compile:
+    # 需要 docker 与内网 pip 源访问能力的自托管 runner
+    runs-on: self-hosted
+    timeout-minutes: 480
+    # 自托管 runner 上不执行不可信 fork 的代码
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      # 一个 torch 版本的失败不应掩盖另一个版本的结果
+      fail-fast: false
+      matrix:
+        torch_version: ${{ fromJSON(vars.LIGHTOP_TORCH_VERSIONS || '["2.10.0", "2.11.0"]') }}
+    env:
+      TORCH_VERSION: ${{ matrix.torch_version }}
+    container:
+      image: ${{ vars.LIGHTOP_CI_BUILD_IMAGE || 'harbor.sourcefind.cn:5443/dcu/admin/base/dev:rockylinux8.6-mpi5.0-gcc10.3-cmake3.29-py3.10-mkl2020.4.304' }}
+      options: >-
+        --volume /opt/hyhal:/opt/hyhal:ro
+        --device /dev/kfd:/dev/kfd
+        --device /dev/dri:/dev/dri
+        --cap-add=SYS_PTRACE
+        --privileged
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Integrate latest master
+        # 测试的应该是合入 master 之后的结果: 先把最新 master 合并进当前分支再打包
+        run: |
+          set -euo pipefail
+          target_sha="$(git rev-parse origin/master)"
+          git -c user.name='LightOp CI' -c user.email='ci@localhost' \
+              merge --no-edit "${target_sha}"
+          echo "Integrated master ${target_sha}"
+
+      - name: 构建 lightop wheel
+        uses: ./.github/actions/build-wheel
+        with:
+          torch_version: ${{ matrix.torch_version }}
+          pip_index: ${{ vars.LIGHTOP_PYTHON_INDEX_URL || 'http://10.16.1.201:9929/nightly/dtk2604/+simple/' }}
+          dtk_pkg_url: ${{ vars.LIGHTOP_DTK_PKG_PATH || 'http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz' }}
+
+      - name: 上传 wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.torch_version }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+      # 容器内以 root 运行, workspace 里的文件会归 root 所有,
+      # 宿主机上后续 job 的 checkout 无法清理, 退出前清空
+      - name: 清理 workspace
+        if: always()
+        run: rm -rf "${GITHUB_WORKSPACE}"/* "${GITHUB_WORKSPACE}"/.[!.]* || true
+
+  test:
+    # 测试镜像按 torch 版本区分: vllm 0.21.0 测 torch 2.10, 0.25.1 测 torch 2.11
+    needs: compile
+    runs-on: self-hosted
+    timeout-minutes: 480
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        torch_version: ${{ fromJSON(vars.LIGHTOP_TORCH_VERSIONS || '["2.10.0", "2.11.0"]') }}
+        include:
+          - torch_version: 2.10.0
+            test_image: 10.16.1.152:5000/jenkins/model_test_env/vllm:0.21.0-latest
+          - torch_version: 2.11.0
+            test_image: 10.16.1.152:5000/jenkins/model_test_env/vllm:0.25.1-latest
+    env:
+      TORCH_VERSION: ${{ matrix.torch_version }}
+    container:
+      # include 未覆盖的新 torch 版本走默认测试镜像
+      image: ${{ matrix.test_image || vars.LIGHTOP_CI_TEST_IMAGE || '10.16.1.152:5000/jenkins/model_test_env/vllm:0.25.1-latest' }}
+      options: >-
+        --volume /opt/hyhal:/opt/hyhal:ro
+        --device /dev/kfd:/dev/kfd
+        --device /dev/dri:/dev/dri
+        --cap-add=SYS_PTRACE
+        --privileged
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Integrate latest master
+        run: |
+          set -euo pipefail
+          target_sha="$(git rev-parse origin/master)"
+          git -c user.name='LightOp CI' -c user.email='ci@localhost' \
+              merge --no-edit "${target_sha}"
+          echo "Integrated master ${target_sha}"
+
+      - name: 下载 wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheel-${{ matrix.torch_version }}
+          path: dist/
+
+      - name: install wheel
+        run: |
+          python3 -m pip install --no-deps --force-reinstall dist/*.whl
+          python3 -c "import lightop; print(f'lightop={lightop.__version__}')"
+
+      - name: install pytest
+        run: python3 -m pip install --no-cache-dir pytest pytest-forked
+
+      - name: 运行 test/ci_tests
+        env:
+          PYTHONIOENCODING: utf-8
+          PYTHONUNBUFFERED: "1"
+        # --forked: 每个测试项独立子进程, 单个算子崩溃(段错误)不影响其余测试
+        run: |
+          cd test/ci_tests
+          python3 -m pytest -v --forked -p no:cacheprovider --tb=short \
+              --junitxml=/tmp/junit.xml
+
+      - name: 上传 JUnit 报告
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.torch_version }}
+          path: /tmp/junit.xml
+
+      - name: 发布 JUnit 报告到 PR
+        if: always()
+        continue-on-error: true
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: /tmp/junit.xml
+
+      # 容器内以 root 运行, workspace 里的文件会归 root 所有,
+      # 宿主机上后续 job 的 checkout 无法清理, 退出前清空
+      - name: 清理 workspace
+        if: always()
+        run: rm -rf "${GITHUB_WORKSPACE}"/* "${GITHUB_WORKSPACE}"/.[!.]* || true
