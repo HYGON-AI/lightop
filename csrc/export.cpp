@@ -542,6 +542,26 @@ void decode_gather_and_up_convert_with_indices(
     torch::Tensor const& dst,
     torch::Tensor const& valid_lengths,
     torch::Tensor const& compact_indices);
+void dsv4_gather_upconvert_k_cache_paged(
+    torch::Tensor const& cache,
+    torch::Tensor const& indices,
+    torch::Tensor const& lengths,
+    torch::Tensor const& dst,
+    torch::Tensor const& compact,
+    int64_t page_size);
+void dsv4_gather_upconvert_dual_k_cache_paged(
+    torch::Tensor const& swa_cache,
+    torch::Tensor const& swa_indices,
+    torch::Tensor const& swa_lengths,
+    torch::Tensor const& swa_dst,
+    torch::Tensor const& swa_compact,
+    int64_t swa_page_size,
+    torch::Tensor const& extra_cache,
+    torch::Tensor const& extra_indices,
+    torch::Tensor const& extra_lengths,
+    torch::Tensor const& extra_dst,
+    torch::Tensor const& extra_compact,
+    int64_t extra_page_size);
 void fast_topk_transform_interface(
     const at::Tensor& score,
     const at::Tensor& lengths,
@@ -1281,6 +1301,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("prefill_gather_and_upconvert_fp8_kv_cache", &at::native::prefill_gather_and_upconvert_fp8_kv_cache, "prefill_gather_and_upconvert_fp8_kv_cache");
  m.def("decode_gather_and_up_convert", &at::native::decode_gather_and_up_convert, "decode_gather_and_up_convert");
  m.def("decode_gather_and_up_convert_with_indices", &at::native::decode_gather_and_up_convert_with_indices, "decode_gather_and_up_convert_with_indices");
+ m.def(
+     "dsv4_gather_upconvert_k_cache_paged",
+     &at::native::dsv4_gather_upconvert_k_cache_paged,
+     "DPSKV4 single-cache paged FP8/UE8M0 gather, BF16 upconvert, and compact indices");
+ m.def(
+     "dsv4_gather_upconvert_dual_k_cache_paged",
+     &at::native::dsv4_gather_upconvert_dual_k_cache_paged,
+     "DPSKV4 fused dual-cache paged gather, BF16 upconvert, and compact indices");
  m.def("fuse_act_quant_and_store_index_k_cache", &at::native::fuse_act_quant_and_store_index_k_cache, "fuse_act_quant_and_store_index_k_cache");
  m.def("fuse_qk_quant_and_store_index_k_cache", &at::native::fuse_qk_quant_and_store_index_k_cache, "fuse_qk_quant_and_store_index_k_cache");
  m.def("fuse_layernorm_rotary_embedding", &at::native::fuse_layernorm_rotary_embedding, "fuse_layernorm_rotary_embedding");
