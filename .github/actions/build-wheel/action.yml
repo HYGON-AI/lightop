@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+
+name: Build LightOp wheel
+description: 在已 checkout 的代码上准备编译环境 (内网 pip 源、DTK、编译依赖) 并构建 lightop wheel
+
+inputs:
+  torch_version:
+    description: 从 dtk 索引安装的 PyTorch 版本
+    required: false
+    default: "2.10.0"
+  pip_index:
+    description: 内网 pip 索引地址
+    required: false
+    default: "http://10.16.1.201:9929/nightly/dtk2604/+simple/"
+  dtk_pkg_url:
+    description: DTK 安装包下载地址
+    required: false
+    default: "http://10.16.1.201:8000/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz"
+
+runs:
+  using: composite
+  steps:
+    - name: 准备构建工具
+      shell: bash
+      run: |
+        # 镜像自带 wget, 只需配置内网 pip 源
+        TRUSTED_HOST="${PIP_INDEX#*://}"; TRUSTED_HOST="${TRUSTED_HOST%%/*}"
+        mkdir -p ~/.pip && printf '%s\n' \
+          '[global]' \
+          "index-url = ${PIP_INDEX}" \
+          "trusted-host = ${TRUSTED_HOST}" \
+          > ~/.pip/pip.conf
+      env:
+        PIP_INDEX: ${{ inputs.pip_index }}
+
+    - name: Install DTK
+      shell: bash
+      run: |
+        cd /opt
+        wget -q "$DTK_PKG_URL"
+        tar -xzf "$(basename "$DTK_PKG_URL")"
+        mv dtk-* dtk
+      env:
+        DTK_PKG_URL: ${{ inputs.dtk_pkg_url }}
+
+    - name: install deps
+      shell: bash
+      run: |
+        pip install --no-cache-dir numpy==1.26.4 torch==${TORCH_VERSION} ninja wheel setuptools
+      env:
+        TORCH_VERSION: ${{ inputs.torch_version }}
+
+    - name: build wheel
+      shell: bash
+      run: |
+        source /opt/dtk/env.sh
+        python3 setup.py bdist_wheel
