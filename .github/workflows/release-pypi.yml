@@ -60,6 +60,10 @@ jobs:
           pip_index: ${{ env.PYPI_URL }}/nightly/dtk2604/+simple/
           dtk_pkg_url: ${{ env.DTK_PKG_URL }}
 
+      - name: 生成 manylinux wheel
+        run: |
+          bash .github/scripts/manylinux_repair.sh dist dist-manylinux
+
       - name: Apply DAS local version to wheels
         run: |
           pip install --no-cache-dir ciupload
@@ -70,7 +74,7 @@ jobs:
             --torch_version "${TORCH_VERSION}" \
             --git_commit "${WHEEL_COMMIT_SHA}" \
             --outputdir output \
-            -f dist/*.whl
+            -f dist-manylinux/*.whl
           CIUpload --devpi_url ${PYPI_URL} --devpi_user ${{ secrets.PYPI_USERNAME }} --devpi_password ${{ secrets.PYPI_PASSWORD }} --dtk_pkg_name $(basename $DTK_PKG_URL) -f output/*.whl
 
       # 容器内以 root 运行, workspace 里的文件会归 root 所有,
