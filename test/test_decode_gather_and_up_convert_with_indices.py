@@ -11,15 +11,17 @@ ROWS = 48
 REQUESTS = 8
 TOPK = 2048
 HEAD_DIM = 512
-ENTRY_BYTES = 656
+ENTRY_BYTES_NO_ROPE = 528
+ENTRY_BYTES_WITH_ROPE = 656
+ENTRY_BYTES = ENTRY_BYTES_WITH_ROPE
 PHYSICAL_ROWS = 33772
 
 
-def _make_packed_cache() -> torch.Tensor:
+def _make_packed_cache(entry_bytes: int = ENTRY_BYTES) -> torch.Tensor:
     generator = torch.Generator(device="cuda")
     generator.manual_seed(20260720)
     cache = torch.empty(
-        (PHYSICAL_ROWS, ENTRY_BYTES), dtype=torch.uint8, device="cuda"
+        (PHYSICAL_ROWS, entry_bytes), dtype=torch.uint8, device="cuda"
     )
 
     # Avoid the two E4M3FN NaN codes. The production quantizer emits finite
@@ -42,13 +44,17 @@ def _make_packed_cache() -> torch.Tensor:
     cache[:, HEAD_DIM : HEAD_DIM + 16].copy_(
         scales.contiguous().view(torch.uint8)
     )
-    cache[:, HEAD_DIM + 16 :].zero_()
+    if entry_bytes > HEAD_DIM + 16:
+        cache[:, HEAD_DIM + 16 :].zero_()
     return cache
 
 
+@pytest.mark.parametrize(
+    "entry_bytes", [ENTRY_BYTES_NO_ROPE, ENTRY_BYTES_WITH_ROPE]
+)
 @torch.no_grad()
-def test_dp_padded_indices_are_bitwise_exact() -> None:
-    cache = _make_packed_cache()
+def test_dp_padded_indices_are_bitwise_exact(entry_bytes: int) -> None:
+    cache = _make_packed_cache(entry_bytes)
     generator = torch.Generator(device="cuda")
     generator.manual_seed(42)
     token_ids = torch.randint(
@@ -98,8 +104,11 @@ def test_dp_padded_indices_are_bitwise_exact() -> None:
     assert torch.equal(compact, expected_compact)
 
 
+@pytest.mark.parametrize(
+    "entry_bytes", [ENTRY_BYTES_NO_ROPE, ENTRY_BYTES_WITH_ROPE]
+)
 @torch.no_grad()
-def test_vector_alignment_contract_is_checked() -> None:
+def test_vector_alignment_contract_is_checked(entry_bytes: int) -> None:
     token_ids = torch.zeros((1, 1), dtype=torch.int32, device="cuda")
     lengths = torch.ones((1,), dtype=torch.int32, device="cuda")
     compact = torch.empty((1, 1), dtype=torch.int32, device="cuda")
@@ -108,7 +117,7 @@ def test_vector_alignment_contract_is_checked() -> None:
     )
 
     misaligned_cache = torch.empty(
-        (ENTRY_BYTES + 1,), dtype=torch.uint8, device="cuda"
+        (entry_bytes + 1,), dtype=torch.uint8, device="cuda"
     )[1:]
     with pytest.raises(RuntimeError, match="16-byte aligned"):
         op.decode_gather_and_up_convert_with_indices(
@@ -116,7 +125,7 @@ def test_vector_alignment_contract_is_checked() -> None:
         )
 
     aligned_cache = torch.empty(
-        (ENTRY_BYTES,), dtype=torch.uint8, device="cuda"
+        (entry_bytes,), dtype=torch.uint8, device="cuda"
     )
     misaligned_dst = torch.empty(
         (HEAD_DIM + 1,), dtype=torch.bfloat16, device="cuda"
@@ -127,7 +136,24 @@ def test_vector_alignment_contract_is_checked() -> None:
         )
 
 
+@torch.no_grad()
+def test_with_indices_rejects_528_to_576() -> None:
+    cache = torch.empty(
+        (1, ENTRY_BYTES_NO_ROPE), dtype=torch.uint8, device="cuda"
+    )
+    token_ids = torch.zeros((1, 1), dtype=torch.int32, device="cuda")
+    lengths = torch.ones((1,), dtype=torch.int32, device="cuda")
+    dst = torch.empty((1, 1, 576), dtype=torch.bfloat16, device="cuda")
+    compact = torch.empty((1, 1), dtype=torch.int32, device="cuda")
+    with pytest.raises(RuntimeError, match="576 requires"):
+        op.decode_gather_and_up_convert_with_indices(
+            cache, token_ids, dst, lengths, compact
+        )
+
+
 if __name__ == "__main__":
-    test_dp_padded_indices_are_bitwise_exact()
-    test_vector_alignment_contract_is_checked()
+    for entry_bytes in (ENTRY_BYTES_NO_ROPE, ENTRY_BYTES_WITH_ROPE):
+        test_dp_padded_indices_are_bitwise_exact(entry_bytes)
+        test_vector_alignment_contract_is_checked(entry_bytes)
+    test_with_indices_rejects_528_to_576()
     print("PASS")
