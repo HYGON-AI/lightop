@@ -30,6 +30,7 @@ if use_lightop:
 
 # from lightop import op as lightop_op
 from ...op import rms_norm_dynamic_per_token_quant
+from ... import op as lightop_native
 from ...fuse_silu_mul_quant import fuse_silu_mul_quant
 
 
@@ -294,10 +295,8 @@ def _rocblas_scaled_mm_tn(a: torch.Tensor,   #input
     #b.shape=[k,n]
     scales= scale_a * scale_b.T
     try:
-        gemmoutput = lmslimquant.rocblas_gemm_int8(a, b, True)
-    except ModuleNotFoundError as exc:
-        if exc.name != "lmslimquant":
-            raise
+        gemmoutput = lightop_native._lmslimquant_rocblas_gemm_int8(a, b, True)
+    except (AttributeError, RuntimeError):
         try:
             gemmoutput = torch._int_mm(a, b)
         except RuntimeError:
@@ -322,10 +321,8 @@ def _rocblas_scaled_mm_nn(a: torch.Tensor,   #input
     #b.shape=[k,n]
     scales= scale_a * scale_b.T
     try:
-        gemmoutput = lmslimquant.rocblas_gemm_int8(a, b, False)
-    except ModuleNotFoundError as exc:
-        if exc.name != "lmslimquant":
-            raise
+        gemmoutput = lightop_native._lmslimquant_rocblas_gemm_int8(a, b, False)
+    except (AttributeError, RuntimeError):
         try:
             gemmoutput = torch._int_mm(a, b)
         except RuntimeError:
@@ -459,7 +456,7 @@ def hipblaslt_gemm_channelwise_wrapper(
         beta = torch.tensor(0, device='cpu', dtype=torch.float32)
     else:
         raise ValueError("Unsupported input dtype")
-    return lmslimquant.hipblaslt_gemm_channelwise(
+    return lightop_native._lmslimquant_hipblaslt_gemm_channelwise(
             a, b, scale_a, scale_b, out_dtype, m, n, k, batch, transpose_flag, alpha, beta, bias)
 
 def hipblaslt_gemm_channelwise_fake(
@@ -513,7 +510,7 @@ def hipblaslt_gemm_channelwise_kme_wrapper(
         beta = torch.tensor(0, device='cpu', dtype=torch.float32)
     else:
         raise ValueError("Unsupported input dtype")
-    return lmslimquant.hipblaslt_gemm_channelwise_kme(
+    return lightop_native._lmslimquant_hipblaslt_gemm_channelwise_kme(
             a, b, scale_a, scale_b, out_dtype, m, n, k, batch, transpose_flag, alpha, beta, bias)
 
 def hipblaslt_gemm_channelwise_kme_fake(
@@ -568,7 +565,7 @@ def hipblaslt_gemm_blockwise_wrapper(
     ) -> torch.Tensor:
     alpha = torch.tensor(1, device='cpu', dtype=torch.float32)
     beta = torch.tensor(0, device='cpu', dtype=torch.float32)
-    return lmslimquant.hipblaslt_gemm_blockwise(
+    return lightop_native._lmslimquant_hipblaslt_gemm_blockwise(
             a, b, scale_a, scale_b, torch.bfloat16, m, n, k, 1, 'NN', block_size, alpha, beta, bias)
 
 def hipblaslt_gemm_blockwise_fake(
@@ -638,6 +635,18 @@ def hipblaslt_w8a8_channelwise_gemm_kme(
     assert bias is None or bias.dtype == out_dtype
     assert a.shape[-1] == b.shape[-1]
 
+    arch = torch.cuda.get_device_properties(a.device).gcnArchName.split(":", 1)[0]
+    if arch != "gfx928":
+        # The migrated KME kernel is specific to gfx928.  The legacy extension
+        # returned uninitialized output when hipBLASLt found no algorithm.
+        res = torch.matmul(
+            a.float() * scale_a,
+            (b.float() * scale_b).transpose(-1, -2),
+        )
+        if bias is not None:
+            res = res + bias.float().unsqueeze(-2)
+        return True, res.to(out_dtype)
+
     res = torch.ops.lmslim.hipblaslt_gemm_channelwise_kme(
             b, a, scale_b, scale_a, out_dtype, n, m, k, b.shape[0] if b.dim() == 3 else 1, 'TN', bias)
     return True, res
@@ -662,6 +671,18 @@ def hipblaslt_w8a8_blockwise_gemm(
     assert a.shape[-1] == b.shape[-2]
 
 
+    arch = torch.cuda.get_device_properties(a.device).gcnArchName.split(":", 1)[0]
+    if arch == "gfx936":
+        block_width = 128 if block_size == BlockSize.block_128x128 else 64
+        k_blocks = torch.arange(k, device=a.device) // block_width
+        n_blocks = torch.arange(n, device=a.device) // block_width
+        res = (a.float() * scale_a[:, k_blocks]) @ (
+            b.float() * scale_b[k_blocks][:, n_blocks]
+        )
+        if bias is not None:
+            res = res + bias.float()
+        return True, res.to(out_dtype)
+
     res = torch.ops.lmslim.hipblaslt_gemm_blockwise(
             b, a, scale_b, scale_a,
             out_dtype,
@@ -683,7 +704,9 @@ def blaslt_w8a8_fp16_gemm_wrapper(a : torch.Tensor,
     ) -> None:
     alpha = torch.tensor(1, dtype=torch.int32, device='cpu')
     beta = torch.tensor(0, dtype=torch.int32, device='cpu')
-    lmslimquant.blaslt_w8a8_fp16_gemm(a, b, scale_a, scale_b, d, m, n, k, batch, transpose_flag, alpha, beta, bias)
+    lightop_native._lmslimquant_blaslt_w8a8_fp16_gemm(
+        a, b, scale_a, scale_b, d, m, n, k, batch, transpose_flag, alpha, beta, bias
+    )
     return
 
 def blaslt_w8a8_fp16_gemm_fake(a : torch.Tensor,
@@ -715,7 +738,9 @@ def blaslt_w8a8_bf16_gemm_wrapper(a : torch.Tensor,
     ) -> None:
     alpha = torch.tensor(1, dtype=torch.int32, device='cpu')
     beta = torch.tensor(0, dtype=torch.int32, device='cpu')
-    lmslimquant.blaslt_w8a8_bf16_gemm(a, b, scale_a, scale_b, d, m, n, k, batch, transpose_flag, alpha, beta, bias)
+    lightop_native._lmslimquant_blaslt_w8a8_bf16_gemm(
+        a, b, scale_a, scale_b, d, m, n, k, batch, transpose_flag, alpha, beta, bias
+    )
     return
 
 def blaslt_w8a8_bf16_gemm_fake(a : torch.Tensor,

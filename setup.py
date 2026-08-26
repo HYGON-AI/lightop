@@ -517,6 +517,8 @@ def get_extensions():
     if torch_version >= 290:
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_290')
     op_files = glob.glob('./csrc/*.cu') + glob.glob('./csrc/*.cpp') + \
+               glob.glob('./csrc/lmslimquant_native/*.cpp') + \
+               glob.glob('./csrc/lmslimquant_native/smoothquant/*.cpp') + \
                glob.glob('./csrc/layernorm/*.cu') + glob.glob('./csrc/loss/*.cu') + \
                glob.glob('./csrc/scaledmask/*.cu') + glob.glob('./csrc/groupnorm/*.cu') + \
                glob.glob('./csrc/rmsnorm/*.cu') + glob.glob('./csrc/batchnorm/*.cu') + \
@@ -569,6 +571,8 @@ def get_extensions():
         name="lightop.op",
         sources=op_files,
         include_dirs=include_dirs,
+        libraries=['rocblas', 'hipblaslt'],
+        library_dirs=[os.path.join(rocm_home, 'lib')],
         define_macros=define_macros,
         extra_compile_args=extra_compile_args)
 
