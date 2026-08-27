@@ -7,8 +7,8 @@
 #include "sparse_page_mqa/sparse_page_mqa.h"
 #include "index_k_int8_dequant/index_k_int8_dequant.h"
 #include "lmslimquant_native/bindings.h"
-#include "lmslimquant_native/lmslim/blaslt_w8a8_gemm.hpp"
-#include "lmslimquant_native/lmslim/blaslt_w8a8_gemm_v2.hpp"
+#include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm.hpp"
+#include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm_v2.hpp"
 #include "sampling/sampling.h"
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace at {  namespace native {
@@ -803,6 +803,24 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // them private to LightOp's Python compatibility layer.
   m.def("_lmslimquant_rocblas_gemm_int8",
         &lightop::lmslimquant_native::rocblas_gemm_int8);
+  m.def("_lmslimquant_rocblas_gemm_fp16",
+        &lightop::lmslimquant_native::rocblas_gemm_fp16);
+  m.def("_lmslimquant_gemm_w4a16_v2",
+        &lightop::lmslimquant_native::gemm_w4a16_v2);
+  m.def("_lmslimquant_awq_input_padding",
+        &lightop::lmslimquant_native::awq_input_padding);
+  m.def("_lmslimquant_convert_s4_k_m8",
+        &lightop::lmslimquant_native::convert_s4_k_m8);
+  m.def("_lmslimquant_permute_trans",
+        &lightop::lmslimquant_native::permute_trans);
+  m.def("_lmslimquant_awq_dequant_colmajor",
+        &lightop::lmslimquant_native::awq_dequant_colmajor);
+  m.def("_lmslimquant_dequant_w4_gemm_colmajor",
+        &lightop::lmslimquant_native::dequant_w4_gemm_colmajor);
+  m.def("_lmslimquant_gptq_gemm",
+        &lightop::lmslimquant_native::gptq_gemm_native);
+  m.def("_lmslimquant_gptq_shuffle",
+        &lightop::lmslimquant_native::gptq_shuffle_native);
   m.def("_lmslimquant_hipblaslt_gemm_channelwise",
         &hipblaslt_gemm_v2::hipblaslt_gemm_channelwise);
   m.def("_lmslimquant_hipblaslt_gemm_channelwise_kme",
