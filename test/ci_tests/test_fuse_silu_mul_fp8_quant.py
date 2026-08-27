@@ -1,4 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
+# vllm 缺失时 RMSNorm 等注解名不存在, 延迟求值避免模块导入即崩
+from __future__ import annotations
 
 import pickle as pkl
 import time
@@ -9,6 +11,7 @@ from itertools import product
 from typing import Callable, Optional
 
 import torch
+import pytest
 import torch.utils.benchmark as TBenchmark
 from torch.utils.benchmark import Measurement as TMeasurement
 from tqdm import tqdm
@@ -18,8 +21,9 @@ try:
     from vllm.config import VllmConfig, set_current_vllm_config
     from vllm.model_executor.layers.layernorm import RMSNorm
     from lightop.norm import rms_norm_per_token_fp8_quant
+    HAS_VLLM = True
 except ImportError:
-    pass 
+    HAS_VLLM = False
 
 import triton
 import triton.language as tl
@@ -235,6 +239,10 @@ def check_accuracy(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: Optional[
         rel_err_s = max_diff_s / denom_s
 
         print(f"[scale精度验证] max_abs_diff={max_diff_s:.6e}, mean_abs_diff={mean_diff_s:.6e}, rel_err={rel_err_s:.6e}")
+        assert rel_err_s < 1e-3, (
+            f"scale 精度不达标: rel_err={rel_err_s:.6e} "
+            f"(max_abs_diff={max_diff_s:.6e})"
+        )
 
         # === 验证 Output ===
         ref_out_f = ref_out.to(torch.float32)
@@ -247,7 +255,11 @@ def check_accuracy(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: Optional[
         rel_err = max_diff / denom
 
         print(f"[out精度验证] max_abs_diff={max_diff:.6e}, mean_abs_diff={mean_diff:.6e}, rel_err={rel_err:.6e}")
-        
+        assert rel_err < 1e-2, (
+            f"输出精度不达标: rel_err={rel_err:.6e} "
+            f"(max_abs_diff={max_diff:.6e})"
+        )
+
         return max_diff, mean_diff, rel_err
 
 # ------------------ Main Bench Loop ------------------
@@ -324,6 +336,17 @@ def main():
         writer.writerows(all_results)
 
     print(f"\n完整结果已保存到 {csv_filename}")
+
+@pytest.mark.parametrize(
+    "bp", get_bench_params(), ids=lambda bp: bp.description()
+)
+def test_fuse_silu_mul_fp8_quant(bp):
+    if not HAS_VLLM:
+        pytest.skip("vllm 不可用")
+    if not torch.cuda.is_available():
+        pytest.skip("需要 CUDA/ROCm 设备")
+    bench(bp, "rms-norm-fp8-quant", bp.description())
+
 
 if __name__ == '__main__':
     main()
