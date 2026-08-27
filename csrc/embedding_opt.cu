@@ -157,10 +157,11 @@ __global__ void embedding_kernel_large_dim_gather_style(
 template <typename scalar_t>
 void launch_embedding_kernel(
     scalar_t* dst, const scalar_t* weight, const int64_t* index,
-    int64_t num_indices, int64_t embedding_dim) {
+    int64_t num_indices, int64_t embedding_dim, cudaStream_t stream) {
 
     const int threads = 256;
-    constexpr int64_t LARGE_DIM_BYTE_THRESHOLD = 4096;
+    // Raise the large-dimension threshold and round blocks per row up.
+    constexpr int64_t LARGE_DIM_BYTE_THRESHOLD = 8192;
     constexpr int64_t MULTI_ROW_BATCH_THRESHOLD = 8192;
     constexpr int64_t GATHER_STYLE_DIM_THRESHOLD = 65536;
     constexpr int64_t GATHER_CHUNK_BYTE_THRESHOLD = 8192;
@@ -176,47 +177,47 @@ void launch_embedding_kernel(
         if (blocks_per_row < 1) blocks_per_row = 1;
         int64_t total_blocks = num_indices * blocks_per_row;
 
-        embedding_kernel_large_dim_gather_style<scalar_t><<<dim3(total_blocks), dim3(threads), 0, 0>>>(
+        embedding_kernel_large_dim_gather_style<scalar_t><<<dim3(total_blocks), dim3(threads), 0, stream>>>(
         dst,
         weight,
         index,
         num_indices,
         embedding_dim,
-        blocks_per_row);;
+        blocks_per_row);
 
     } else if (row_bytes > LARGE_DIM_BYTE_THRESHOLD) {
-        int64_t blocks_per_row = row_bytes / LARGE_DIM_BYTE_THRESHOLD;
+        int64_t blocks_per_row = (row_bytes + LARGE_DIM_BYTE_THRESHOLD - 1) / LARGE_DIM_BYTE_THRESHOLD;
         if (blocks_per_row < 1) blocks_per_row = 1;
         int64_t total_blocks = num_indices * blocks_per_row;
 
-        embedding_kernel_large_dim_gather_style<scalar_t><<<dim3(total_blocks), dim3(threads), 0, 0>>>(
+        embedding_kernel_large_dim_gather_style<scalar_t><<<dim3(total_blocks), dim3(threads), 0, stream>>>(
         dst,
         weight,
         index,
         num_indices,
         embedding_dim,
-        blocks_per_row);;
+        blocks_per_row);
 
     } else if (num_indices > MULTI_ROW_BATCH_THRESHOLD && !row_fills_block) {
         int64_t rows_per_block = std::max(int64_t(1), int64_t(32768) / row_bytes);
         rows_per_block = std::min(rows_per_block, num_indices);
         int64_t total_blocks = (num_indices + rows_per_block - 1) / rows_per_block;
 
-        embedding_kernel_multi_row<scalar_t><<<dim3(total_blocks), dim3(threads), 0, 0>>>(
+        embedding_kernel_multi_row<scalar_t><<<dim3(total_blocks), dim3(threads), 0, stream>>>(
         dst,
         weight,
         index,
         num_indices,
         embedding_dim,
-        rows_per_block);;
+        rows_per_block);
 
     } else {
-        embedding_kernel_one_block_per_row<scalar_t><<<dim3(num_indices), dim3(threads), 0, 0>>>(
+        embedding_kernel_one_block_per_row<scalar_t><<<dim3(num_indices), dim3(threads), 0, stream>>>(
         dst,
         weight,
         index,
         num_indices,
-        embedding_dim);;
+        embedding_dim);
     }
 }
 
@@ -242,19 +243,20 @@ torch::Tensor embedding_opt(
     if (num_indices == 0) return dst;
 
     auto scalar_type = weight.scalar_type();
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
 
     if (scalar_type == at::ScalarType::Float) {
         launch_embedding_kernel<float>(
             dst.data_ptr<float>(), weight.data_ptr<float>(),
-            src.data_ptr<int64_t>(), num_indices, embedding_dim);
+            src.data_ptr<int64_t>(), num_indices, embedding_dim, stream);
     } else if (scalar_type == at::ScalarType::Half) {
         launch_embedding_kernel<at::Half>(
             dst.data_ptr<at::Half>(), weight.data_ptr<at::Half>(),
-            src.data_ptr<int64_t>(), num_indices, embedding_dim);
+            src.data_ptr<int64_t>(), num_indices, embedding_dim, stream);
     } else if (scalar_type == at::ScalarType::BFloat16) {
         launch_embedding_kernel<at::BFloat16>(
             dst.data_ptr<at::BFloat16>(), weight.data_ptr<at::BFloat16>(),
-            src.data_ptr<int64_t>(), num_indices, embedding_dim);
+            src.data_ptr<int64_t>(), num_indices, embedding_dim, stream);
     } else {
         TORCH_CHECK(false, "Unsupported dtype for embedding_opt: ", scalar_type);
     }
