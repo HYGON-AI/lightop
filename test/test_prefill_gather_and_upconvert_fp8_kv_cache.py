@@ -189,6 +189,23 @@ def test_prefill_gather_and_upconvert_empty_kv(entry_bytes, head_dim) -> None:
 
 
 @pytest.mark.skipif(torch.version.hip is None, reason="LightOp requires ROCm")
+def test_prefill_gather_and_upconvert_rejects_flat_src_cache() -> None:
+    rows = 41
+    packed_cache = _make_packed_cache(
+        rows, ENTRY_BYTES_NO_ROPE, HEAD_DIM_NO_ROPE
+    ).reshape(-1)
+    page_table_flat = torch.arange(rows, device="cuda", dtype=torch.int32)
+    kv_dst = torch.empty(
+        (rows, 1, HEAD_DIM_NO_ROPE), device="cuda", dtype=torch.bfloat16
+    )
+
+    with pytest.raises(RuntimeError, match="1D src_cache"):
+        op.prefill_gather_and_upconvert_fp8_kv_cache(
+            packed_cache, page_table_flat, kv_dst
+        )
+
+
+@pytest.mark.skipif(torch.version.hip is None, reason="LightOp requires ROCm")
 def test_prefill_gather_and_upconvert_target_shape() -> None:
     """Compare the exact GLM P0 KV shape with the original Triton kernel."""
     from sglang.srt.layers.attention.nsa.dequant_k_cache import (

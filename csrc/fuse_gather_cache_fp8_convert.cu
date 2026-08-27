@@ -518,6 +518,9 @@ void prefill_gather_and_upconvert_fp8_kv_cache(
     TORCH_CHECK(src_cache.element_size() == 1,
                 "src_cache must have one-byte FP8/uint8 elements");
     TORCH_CHECK(src_cache.is_contiguous(), "src_cache must be contiguous");
+    TORCH_CHECK(src_cache.dim() > 1,
+                "1D src_cache is not supported; pass src_cache with shape "
+                "[*, 1, 656] or [*, 1, 528]");
     TORCH_CHECK(src_cache.dim() == 3 || src_cache.dim() == 4,
                 "src_cache must have shape [*, 1, 656] or [*, 1, 528]");
     const int64_t physical_token_stride = src_cache.size(-1);
@@ -1101,6 +1104,9 @@ void decode_gather_and_up_convert_impl(
         "src_cache data must be 16-byte aligned");
     TORCH_CHECK(src_cache.dim() > 0,
                 "src_cache must have at least one dimension");
+    TORCH_CHECK(src_cache.dim() > 1,
+                "1D src_cache is not supported; pass src_cache with "
+                "last dimension 528 or 656");
     TORCH_CHECK(token_ids.dim() == 2, "token_ids must have shape [batch, width]");
     TORCH_CHECK(token_ids.dtype() == torch::kInt32 ||
                     token_ids.dtype() == torch::kInt64,

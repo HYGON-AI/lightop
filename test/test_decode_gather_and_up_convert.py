@@ -398,6 +398,19 @@ def test_decode_gather_and_up_convert_topk_2063(entry_bytes: int) -> None:
     )
 
 
+def test_decode_gather_and_up_convert_rejects_flat_src_cache() -> None:
+    rows = 41
+    kv_cache = _make_small_cache(rows, ENTRY_BYTES_NO_ROPE).reshape(-1)
+    token_ids = torch.arange(
+        rows, dtype=torch.int32, device="cuda"
+    ).reshape(1, rows)
+    valid_lengths = torch.tensor([rows], dtype=torch.int32, device="cuda")
+    dst = torch.empty((1, rows, HEAD_DIM), dtype=torch.bfloat16, device="cuda")
+
+    with pytest.raises(RuntimeError, match="1D src_cache"):
+        op.decode_gather_and_up_convert(kv_cache, token_ids, dst, valid_lengths)
+
+
 def test_decode_gather_and_up_convert_rejects_528_to_576() -> None:
     kv_cache = torch.empty(
         (1, ENTRY_BYTES_NO_ROPE), dtype=torch.uint8, device="cuda"
@@ -434,6 +447,7 @@ def main() -> None:
         test_decode_gather_and_up_convert_topk_2063(entry_bytes)
     test_decode_gather_and_up_convert_no_rope_528_stride()
     test_decode_gather_and_up_convert_rejects_528_to_576()
+    test_decode_gather_and_up_convert_rejects_flat_src_cache()
     print("edge_cases=PASS (ragged/zero/invalid/int64/no-rope-528/topk2063)")
 
     results = [_benchmark_once(case) for _ in range(ROUNDS)]
