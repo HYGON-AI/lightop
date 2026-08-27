@@ -125,7 +125,7 @@ def test_vector_alignment_contract_is_checked(entry_bytes: int) -> None:
         )
 
     aligned_cache = torch.empty(
-        (entry_bytes,), dtype=torch.uint8, device="cuda"
+        (1, entry_bytes), dtype=torch.uint8, device="cuda"
     )
     misaligned_dst = torch.empty(
         (HEAD_DIM + 1,), dtype=torch.bfloat16, device="cuda"
@@ -133,6 +133,24 @@ def test_vector_alignment_contract_is_checked(entry_bytes: int) -> None:
     with pytest.raises(RuntimeError, match="32-byte aligned"):
         op.decode_gather_and_up_convert_with_indices(
             aligned_cache, token_ids, misaligned_dst, lengths, compact
+        )
+
+
+@torch.no_grad()
+def test_with_indices_rejects_flat_src_cache() -> None:
+    rows = 41
+    cache = torch.empty(
+        (rows, ENTRY_BYTES_NO_ROPE), dtype=torch.uint8, device="cuda"
+    ).reshape(-1)
+    token_ids = torch.arange(
+        rows, dtype=torch.int32, device="cuda"
+    ).reshape(1, rows)
+    lengths = torch.tensor([rows], dtype=torch.int32, device="cuda")
+    dst = torch.empty((1, rows, HEAD_DIM), dtype=torch.bfloat16, device="cuda")
+    compact = torch.empty((1, rows), dtype=torch.int32, device="cuda")
+    with pytest.raises(RuntimeError, match="1D src_cache"):
+        op.decode_gather_and_up_convert_with_indices(
+            cache, token_ids, dst, lengths, compact
         )
 
 
@@ -155,5 +173,6 @@ if __name__ == "__main__":
     for entry_bytes in (ENTRY_BYTES_NO_ROPE, ENTRY_BYTES_WITH_ROPE):
         test_dp_padded_indices_are_bitwise_exact(entry_bytes)
         test_vector_alignment_contract_is_checked(entry_bytes)
+    test_with_indices_rejects_flat_src_cache()
     test_with_indices_rejects_528_to_576()
     print("PASS")
