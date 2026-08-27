@@ -189,17 +189,28 @@ __global__ void special_embedding_large_dim(
     if (row_idx >= num_indices) return;
     int64_t sub_block = blockIdx.x % blocks_per_row;
     constexpr int kElems = VecConfig<scalar_t>::kElements;
-    
-    int64_t chunk_elems = ((embedding_dim / blocks_per_row) / kElems) * kElems;
-    if (chunk_elems < kElems) chunk_elems = kElems;
-    int64_t offset = sub_block * chunk_elems;
-    int64_t actual_chunk = std::min(chunk_elems, embedding_dim - offset);
-    if (actual_chunk <= 0) return;
-    
+
+    // Balance vector chunks across blocks, including the remainder.
+    int64_t total_vecs = embedding_dim / kElems;
+    int64_t base_vecs_per_block = total_vecs / blocks_per_row;
+    int64_t remainder = total_vecs % blocks_per_row;
+
+    int64_t my_vecs = base_vecs_per_block + (sub_block < remainder ? 1 : 0);
+    if (my_vecs <= 0) return;
+
+    int64_t offset;
+    if (sub_block < remainder) {
+        offset = sub_block * (base_vecs_per_block + 1) * kElems;
+    } else {
+        offset = (remainder * (base_vecs_per_block + 1) +
+                  (sub_block - remainder) * base_vecs_per_block) * kElems;
+    }
+    int64_t actual_chunk = my_vecs * kElems;
+
     int64_t src_row = index[row_idx * index_stride];
     const scalar_t* src_ptr = weight + src_row * embedding_dim + offset;
     scalar_t* dst_ptr = dst + row_idx * embedding_dim + offset;
-    
+
     bool aligned = (reinterpret_cast<uintptr_t>(src_ptr) % VEC_BYTES == 0) &&
                    (reinterpret_cast<uintptr_t>(dst_ptr) % VEC_BYTES == 0);
     if (aligned && actual_chunk >= kElems) {
@@ -212,49 +223,76 @@ __global__ void special_embedding_large_dim(
 template <typename scalar_t>
 void launch_special_embedding(
     scalar_t* dst, const scalar_t* weight, const int64_t* index,
-    int64_t num_indices, int64_t embedding_dim, int64_t index_stride) 
+    int64_t num_indices, int64_t embedding_dim, int64_t index_stride, cudaStream_t stream)
 {
     if (num_indices == 0) return;
-    
+
     const int threads = 256;
-    constexpr int64_t LARGE_DIM_BYTE_THRESHOLD = 8192;
     constexpr int64_t LARGE_BATCH_THRESHOLD = 4096;
     constexpr int64_t ROWS_PER_BLOCK_TARGET_BYTES = 65536;
-    
+    constexpr int64_t MAX_ROW_BYTES_FOR_LARGE_BATCH = 512;
+
     int64_t row_bytes = embedding_dim * sizeof(scalar_t);
-    
-    if (row_bytes > LARGE_DIM_BYTE_THRESHOLD) {
-        int64_t blocks_per_row = row_bytes / LARGE_DIM_BYTE_THRESHOLD;
-        if (blocks_per_row < 1) blocks_per_row = 1;
+
+    bool use_large_dim = false;
+    int64_t blocks_per_row = 1;
+
+    if (row_bytes > 65536) {
+        use_large_dim = true;
+        blocks_per_row = row_bytes / 8192;
+        if (blocks_per_row < 2) blocks_per_row = 2;
+    } else if (row_bytes > 16384) {
+        use_large_dim = true;
+        blocks_per_row = 2;
+    }
+
+    if (use_large_dim) {
         int64_t total_blocks = num_indices * blocks_per_row;
-        special_embedding_large_dim<scalar_t><<<dim3(total_blocks), dim3(threads), 0, 0>>>(
+        special_embedding_large_dim<scalar_t><<<dim3(total_blocks), dim3(threads), 0, stream>>>(
         dst,
         weight,
         index,
         num_indices,
         embedding_dim,
         index_stride,
-        blocks_per_row);;
-    } else if (num_indices > LARGE_BATCH_THRESHOLD) {
+        blocks_per_row);
+    } else if (sizeof(scalar_t) == 2
+             && num_indices > LARGE_BATCH_THRESHOLD
+             && row_bytes > MAX_ROW_BYTES_FOR_LARGE_BATCH
+             && row_bytes <= 4096) {
+        constexpr int64_t MEDIUM_BATCH_TARGET_BYTES = 8192;
+        int64_t rows_per_block = std::max(int64_t(1), MEDIUM_BATCH_TARGET_BYTES / row_bytes);
+        rows_per_block = std::min(rows_per_block, num_indices);
+        int64_t total_blocks = (num_indices + rows_per_block - 1) / rows_per_block;
+        special_embedding_large_batch<scalar_t><<<dim3(total_blocks), dim3(threads), 0, stream>>>(
+        dst,
+        weight,
+        index,
+        num_indices,
+        embedding_dim,
+        index_stride,
+        rows_per_block);
+    } else if (num_indices > LARGE_BATCH_THRESHOLD
+             && row_bytes <= MAX_ROW_BYTES_FOR_LARGE_BATCH) {
         int64_t rows_per_block = std::max(int64_t(1), ROWS_PER_BLOCK_TARGET_BYTES / row_bytes);
         rows_per_block = std::min(rows_per_block, num_indices);
         int64_t total_blocks = (num_indices + rows_per_block - 1) / rows_per_block;
-        special_embedding_large_batch<scalar_t><<<dim3(total_blocks), dim3(threads), 0, 0>>>(
+        special_embedding_large_batch<scalar_t><<<dim3(total_blocks), dim3(threads), 0, stream>>>(
         dst,
         weight,
         index,
         num_indices,
         embedding_dim,
         index_stride,
-        rows_per_block);;
+        rows_per_block);
     } else {
-        special_embedding_small_dim<scalar_t><<<dim3(num_indices), dim3(threads), 0, 0>>>(
+        special_embedding_small_dim<scalar_t><<<dim3(num_indices), dim3(threads), 0, stream>>>(
         dst,
         weight,
         index,
         num_indices,
         embedding_dim,
-        index_stride);;
+        index_stride);
     }
 }
 
@@ -278,24 +316,26 @@ torch::Tensor gather_opt(
     const bool is_row_uniform = (index.dim() == 2 && index.stride(1) == 0);
     const bool use_special = special || is_row_uniform;
 
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+
     if (use_special) {
         int64_t num_indices = dst_batch_size;
         int64_t embedding_dim = dim_size;
         int64_t index_stride = index.stride(0);
-        
+
         auto scalar_type = src.scalar_type();
         if (scalar_type == at::ScalarType::Float) {
             launch_special_embedding<float>(
                 dst.data_ptr<float>(), src.data_ptr<float>(),
-                index.data_ptr<int64_t>(), num_indices, embedding_dim, index_stride);
+                index.data_ptr<int64_t>(), num_indices, embedding_dim, index_stride, stream);
         } else if (scalar_type == at::ScalarType::Half) {
             launch_special_embedding<at::Half>(
                 dst.data_ptr<at::Half>(), src.data_ptr<at::Half>(),
-                index.data_ptr<int64_t>(), num_indices, embedding_dim, index_stride);
+                index.data_ptr<int64_t>(), num_indices, embedding_dim, index_stride, stream);
         } else if (scalar_type == at::ScalarType::BFloat16) {
             launch_special_embedding<at::BFloat16>(
                 dst.data_ptr<at::BFloat16>(), src.data_ptr<at::BFloat16>(),
-                index.data_ptr<int64_t>(), num_indices, embedding_dim, index_stride);
+                index.data_ptr<int64_t>(), num_indices, embedding_dim, index_stride, stream);
         } else {
             TORCH_CHECK(false, "Unsupported dtype for special=True: ", scalar_type);
         }
@@ -318,22 +358,22 @@ torch::Tensor gather_opt(
     }
     if (use_wide_kernel) {
         if (src.scalar_type() == at::ScalarType::Float)
-            gather_kernel_wide<float><<<grid, block>>>(src.data_ptr<float>(), index.data_ptr<int64_t>(), dst.data_ptr<float>(), dst_batch_size, dim_size);
+            gather_kernel_wide<float><<<grid, block, 0, stream>>>(src.data_ptr<float>(), index.data_ptr<int64_t>(), dst.data_ptr<float>(), dst_batch_size, dim_size);
         else if (src.scalar_type() == at::ScalarType::Half)
-            gather_kernel_wide<at::Half><<<grid, block>>>(src.data_ptr<at::Half>(), index.data_ptr<int64_t>(), dst.data_ptr<at::Half>(), dst_batch_size, dim_size);
+            gather_kernel_wide<at::Half><<<grid, block, 0, stream>>>(src.data_ptr<at::Half>(), index.data_ptr<int64_t>(), dst.data_ptr<at::Half>(), dst_batch_size, dim_size);
         else if (src.scalar_type() == at::ScalarType::BFloat16)
-            gather_kernel_wide<at::BFloat16><<<grid, block>>>(src.data_ptr<at::BFloat16>(), index.data_ptr<int64_t>(), dst.data_ptr<at::BFloat16>(), dst_batch_size, dim_size);
+            gather_kernel_wide<at::BFloat16><<<grid, block, 0, stream>>>(src.data_ptr<at::BFloat16>(), index.data_ptr<int64_t>(), dst.data_ptr<at::BFloat16>(), dst_batch_size, dim_size);
         else if (src.scalar_type() == at::ScalarType::Double)
-            gather_kernel_wide<double><<<grid, block>>>(src.data_ptr<double>(), index.data_ptr<int64_t>(), dst.data_ptr<double>(), dst_batch_size, dim_size);
+            gather_kernel_wide<double><<<grid, block, 0, stream>>>(src.data_ptr<double>(), index.data_ptr<int64_t>(), dst.data_ptr<double>(), dst_batch_size, dim_size);
     } else {
         if (src.scalar_type() == at::ScalarType::Float)
-            gather_kernel_general<float><<<grid, block>>>(src.data_ptr<float>(), index.data_ptr<int64_t>(), dst.data_ptr<float>(), dst_batch_size, dim_size);
+            gather_kernel_general<float><<<grid, block, 0, stream>>>(src.data_ptr<float>(), index.data_ptr<int64_t>(), dst.data_ptr<float>(), dst_batch_size, dim_size);
         else if (src.scalar_type() == at::ScalarType::Half)
-            gather_kernel_general<at::Half><<<grid, block>>>(src.data_ptr<at::Half>(), index.data_ptr<int64_t>(), dst.data_ptr<at::Half>(), dst_batch_size, dim_size);
+            gather_kernel_general<at::Half><<<grid, block, 0, stream>>>(src.data_ptr<at::Half>(), index.data_ptr<int64_t>(), dst.data_ptr<at::Half>(), dst_batch_size, dim_size);
         else if (src.scalar_type() == at::ScalarType::BFloat16)
-            gather_kernel_general<at::BFloat16><<<grid, block>>>(src.data_ptr<at::BFloat16>(), index.data_ptr<int64_t>(), dst.data_ptr<at::BFloat16>(), dst_batch_size, dim_size);
+            gather_kernel_general<at::BFloat16><<<grid, block, 0, stream>>>(src.data_ptr<at::BFloat16>(), index.data_ptr<int64_t>(), dst.data_ptr<at::BFloat16>(), dst_batch_size, dim_size);
         else if (src.scalar_type() == at::ScalarType::Double)
-            gather_kernel_general<double><<<grid, block>>>(src.data_ptr<double>(), index.data_ptr<int64_t>(), dst.data_ptr<double>(), dst_batch_size, dim_size);
+            gather_kernel_general<double><<<grid, block, 0, stream>>>(src.data_ptr<double>(), index.data_ptr<int64_t>(), dst.data_ptr<double>(), dst_batch_size, dim_size);
     }
     return dst;
 }
