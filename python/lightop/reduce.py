@@ -33,9 +33,10 @@ def topk(x,k, dim=-1,largest=True,sorted=True):
     x = x.contiguous()
     if dim == -1 :
         dim = x.dim()-1
-    # Specialized unsorted power-of-two topk from custom_ops (k in {2,4,8,16}).
+    # Unsorted power-of-two fast path (k=2/4/8). k=16 is slower than
+    # topk_opt/torch, so keep the pre-power2 fallback.
     if (
-        k in (2, 4, 8, 16)
+        k in (2, 4, 8)
         and largest
         and (not sorted)
         and x.is_cuda
