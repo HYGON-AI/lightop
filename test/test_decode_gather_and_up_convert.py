@@ -19,6 +19,7 @@ import random
 import statistics
 from dataclasses import dataclass
 
+import pytest
 import torch
 
 from lightop import op
@@ -29,7 +30,9 @@ BATCH_SIZE = 48
 NUM_CACHE_BLOCKS = 33772
 BLOCK_SIZE = 64
 NUM_CACHE_HEADS = 1
-ENTRY_BYTES = 656
+ENTRY_BYTES_NO_ROPE = 528
+ENTRY_BYTES_WITH_ROPE = 656
+ENTRY_BYTES = ENTRY_BYTES_WITH_ROPE
 HEAD_DIM = 512
 NUM_GROUPS = 4
 GROUP_SIZE = HEAD_DIM // NUM_GROUPS
@@ -89,7 +92,9 @@ def _make_random_topk() -> torch.Tensor:
 
 
 def _pack_selected_cache_rows(
-    cache_rows: torch.Tensor, unique_ids: torch.Tensor
+    cache_rows: torch.Tensor,
+    unique_ids: torch.Tensor,
+    entry_bytes: int = ENTRY_BYTES,
 ) -> None:
     """Initialize only rows referenced by Top-K, keeping setup memory bounded."""
     codebook = torch.tensor(
@@ -129,7 +134,7 @@ def _pack_selected_cache_rows(
         ).to(torch.float32) / 16.0
 
         packed_rows = torch.full(
-            (physical_ids.numel(), ENTRY_BYTES),
+            (physical_ids.numel(), entry_bytes),
             0xA5,
             dtype=torch.uint8,
             device="cuda",
@@ -266,14 +271,16 @@ def _benchmark_once(case: TestCase) -> tuple[float, float, float]:
     return average_us, effective_bandwidth_gbs, tokens_per_second
 
 
-def _make_small_cache(num_physical_tokens: int) -> torch.Tensor:
+def _make_small_cache(
+    num_physical_tokens: int, entry_bytes: int = ENTRY_BYTES
+) -> torch.Tensor:
     kv_cache = torch.empty(
-        (num_physical_tokens, ENTRY_BYTES), dtype=torch.uint8, device="cuda"
+        (num_physical_tokens, entry_bytes), dtype=torch.uint8, device="cuda"
     )
     physical_ids = torch.arange(
         num_physical_tokens, dtype=torch.int64, device="cuda"
     )
-    _pack_selected_cache_rows(kv_cache, physical_ids)
+    _pack_selected_cache_rows(kv_cache, physical_ids, entry_bytes)
     return kv_cache
 
 
@@ -307,8 +314,9 @@ def _run_small_case(
     token_ids: torch.Tensor,
     valid_lengths: torch.Tensor,
     workspace_extra: int,
+    entry_bytes: int = ENTRY_BYTES,
 ) -> None:
-    kv_cache = _make_small_cache(128)
+    kv_cache = _make_small_cache(128, entry_bytes)
     batch_size, width = token_ids.shape
     output_storage = torch.full(
         (batch_size, width + workspace_extra, HEAD_DIM),
@@ -336,7 +344,8 @@ def test_decode_gather_and_up_convert_target_shape() -> None:
     assert max_abs_diff == 0.0
 
 
-def test_decode_gather_and_up_convert_invalid_and_ragged() -> None:
+@pytest.mark.parametrize("entry_bytes", [ENTRY_BYTES_WITH_ROPE, ENTRY_BYTES_NO_ROPE])
+def test_decode_gather_and_up_convert_invalid_and_ragged(entry_bytes: int) -> None:
     token_ids = (
         torch.arange(4 * 19, dtype=torch.int32, device="cuda").reshape(4, 19)
         % 128
@@ -345,13 +354,37 @@ def test_decode_gather_and_up_convert_invalid_and_ragged() -> None:
     token_ids[0, 7] = 128
     token_ids[3, 18] = -99
     valid_lengths = torch.tensor([19, 9, 0, 19], dtype=torch.int32, device="cuda")
-    _run_small_case(token_ids, valid_lengths, workspace_extra=5)
+    _run_small_case(
+        token_ids, valid_lengths, workspace_extra=5, entry_bytes=entry_bytes
+    )
 
     # Keep the public int64 index path covered as well.
-    _run_small_case(token_ids.to(torch.int64), valid_lengths, workspace_extra=5)
+    _run_small_case(
+        token_ids.to(torch.int64),
+        valid_lengths,
+        workspace_extra=5,
+        entry_bytes=entry_bytes,
+    )
 
 
-def test_decode_gather_and_up_convert_topk_2063() -> None:
+def test_decode_gather_and_up_convert_no_rope_528_stride() -> None:
+    token_ids = (
+        torch.arange(3 * 37, dtype=torch.int32, device="cuda").reshape(3, 37)
+        % 128
+    )
+    token_ids[1, 5] = -1
+    token_ids[2, 17] = 128
+    valid_lengths = torch.tensor([37, 19, 37], dtype=torch.int32, device="cuda")
+    _run_small_case(
+        token_ids,
+        valid_lengths,
+        workspace_extra=5,
+        entry_bytes=ENTRY_BYTES_NO_ROPE,
+    )
+
+
+@pytest.mark.parametrize("entry_bytes", [ENTRY_BYTES_WITH_ROPE, ENTRY_BYTES_NO_ROPE])
+def test_decode_gather_and_up_convert_topk_2063(entry_bytes: int) -> None:
     width = WORKSPACE_TOPK
     token_ids = (
         torch.arange(2 * width, dtype=torch.int32, device="cuda").reshape(2, width)
@@ -360,7 +393,33 @@ def test_decode_gather_and_up_convert_topk_2063() -> None:
     valid_lengths = torch.tensor(
         [width, width - 1], dtype=torch.int32, device="cuda"
     )
-    _run_small_case(token_ids, valid_lengths, workspace_extra=3)
+    _run_small_case(
+        token_ids, valid_lengths, workspace_extra=3, entry_bytes=entry_bytes
+    )
+
+
+def test_decode_gather_and_up_convert_rejects_flat_src_cache() -> None:
+    rows = 41
+    kv_cache = _make_small_cache(rows, ENTRY_BYTES_NO_ROPE).reshape(-1)
+    token_ids = torch.arange(
+        rows, dtype=torch.int32, device="cuda"
+    ).reshape(1, rows)
+    valid_lengths = torch.tensor([rows], dtype=torch.int32, device="cuda")
+    dst = torch.empty((1, rows, HEAD_DIM), dtype=torch.bfloat16, device="cuda")
+
+    with pytest.raises(RuntimeError, match="1D src_cache"):
+        op.decode_gather_and_up_convert(kv_cache, token_ids, dst, valid_lengths)
+
+
+def test_decode_gather_and_up_convert_rejects_528_to_576() -> None:
+    kv_cache = torch.empty(
+        (1, ENTRY_BYTES_NO_ROPE), dtype=torch.uint8, device="cuda"
+    )
+    token_ids = torch.zeros((1, 1), dtype=torch.int32, device="cuda")
+    valid_lengths = torch.ones((1,), dtype=torch.int32, device="cuda")
+    dst = torch.empty((1, 1, 576), dtype=torch.bfloat16, device="cuda")
+    with pytest.raises(RuntimeError, match="576 requires"):
+        op.decode_gather_and_up_convert(kv_cache, token_ids, dst, valid_lengths)
 
 
 def main() -> None:
@@ -383,9 +442,13 @@ def main() -> None:
     case = _make_case()
     max_abs_diff = _verify_correctness(case)
     print(f"correctness=PASS, max_abs_diff={max_abs_diff:.1f} (exact BF16)")
-    test_decode_gather_and_up_convert_invalid_and_ragged()
-    test_decode_gather_and_up_convert_topk_2063()
-    print("edge_cases=PASS (ragged/zero/invalid/int64/topk2063)")
+    for entry_bytes in (ENTRY_BYTES_WITH_ROPE, ENTRY_BYTES_NO_ROPE):
+        test_decode_gather_and_up_convert_invalid_and_ragged(entry_bytes)
+        test_decode_gather_and_up_convert_topk_2063(entry_bytes)
+    test_decode_gather_and_up_convert_no_rope_528_stride()
+    test_decode_gather_and_up_convert_rejects_528_to_576()
+    test_decode_gather_and_up_convert_rejects_flat_src_cache()
+    print("edge_cases=PASS (ragged/zero/invalid/int64/no-rope-528/topk2063)")
 
     results = [_benchmark_once(case) for _ in range(ROUNDS)]
     median_us = statistics.median(result[0] for result in results)
