@@ -1,16 +1,3 @@
-from importlib import import_module
-
-
-class _LazyLmslimQuant:
-    """Load the optional legacy native extension only when an API needs it."""
-
-    def __getattr__(self, name):
-        module = import_module("lmslimquant")
-        globals()["lmslimquant"] = module
-        return getattr(module, name)
-
-
-lmslimquant = _LazyLmslimQuant()
 import torch
 import torch.nn.functional as F
 from typing import Optional, List
@@ -33,9 +20,6 @@ from ...op import rms_norm_dynamic_per_token_quant
 from ... import op as lightop_native
 from ...fuse_silu_mul_quant import fuse_silu_mul_quant
 
-
-def get_awq_workspace_size(N_max : int, K_max : int, GroupSize:int)-> int:
-    return lmslimquant.get_awq_workspace_size(N_max, K_max, GroupSize)
 
 def awq_gemm(input: torch.Tensor, weight: torch.Tensor,
              zeros_and_scale:torch.Tensor,
@@ -65,7 +49,7 @@ def awq_gemm(input: torch.Tensor, weight: torch.Tensor,
             #最多给1/2用于加pad
             if splikspacesize > 2 * padding_spacesize:
                 input_padded = splikspace[-m * pad_k:]
-                lmslimquant.awq_input_padding(input,m,k,pad_k,input_padded,padding_spacesize)
+                lightop_native._lmslimquant_awq_input_padding(input,m,k,pad_k,input_padded,padding_spacesize)
                 input_padded = input_padded.view(m,pad_k)
             else:
                 padding_spacesize = 0
@@ -74,7 +58,7 @@ def awq_gemm(input: torch.Tensor, weight: torch.Tensor,
                     dim=1).contiguous()
             input_tersor = input_padded
 
-        output = lmslimquant.gemm_w4a16_v2(input_tersor,
+        output = lightop_native._lmslimquant_gemm_w4a16_v2(input_tersor,
                         weight,
                         zeros_and_scale,
                         #output,
@@ -112,7 +96,7 @@ def awq_gemm(input: torch.Tensor, weight: torch.Tensor,
                 dqweight = torch.empty((n, k), dtype=torch.float16).cuda()
             else:
                 dqweight = splikspace[:n * k]
-            lmslimquant.awq_dequant_colmajor(dqweight,
+            lightop_native._lmslimquant_awq_dequant_colmajor(dqweight,
                                             weight,
                                             zeros_and_scale,
                                             k,
@@ -140,7 +124,7 @@ def gptq_gemm1(a: torch.Tensor, b_q_weight: torch.Tensor,
               b_gptq_qzeros: torch.Tensor, b_gptq_scales: torch.Tensor,
               b_g_idx: torch.Tensor, use_exllama: bool,
               bit: int) -> torch.Tensor:
-    return lmslimquant.gptq_gemm(a, b_q_weight, b_gptq_qzeros, b_gptq_scales,
+    return lightop_native._lmslimquant_gptq_gemm(a, b_q_weight, b_gptq_qzeros, b_gptq_scales,
                                   b_g_idx, use_exllama, bit)
 
 def gptq_gemm1_fake(a: torch.Tensor, b_q_weight: torch.Tensor,
@@ -161,7 +145,7 @@ direct_register_custom_op(
 
 def gptq_shuffle(q_weight: torch.Tensor, q_perm: torch.Tensor,
                  bit: int) -> None:
-    lmslimquant.gptq_shuffle(q_weight, q_perm, bit)
+    lightop_native._lmslimquant_gptq_shuffle(q_weight, q_perm, bit)
 
 def convert_s4(qw: torch.Tensor, qz: torch.Tensor, s: torch.Tensor,
                group_size: int):
@@ -171,7 +155,7 @@ def convert_s4(qw: torch.Tensor, qz: torch.Tensor, s: torch.Tensor,
     _qw = torch.zeros_like(qw)
     _sz = torch.zeros_like(s, dtype=torch.int32)  # half2
     _ws = torch.zeros_like(s)
-    lmslimquant.convert_s4_k_m8(_qw, _sz, _ws, qw, s, qz,
+    lightop_native._lmslimquant_convert_s4_k_m8(_qw, _sz, _ws, qw, s, qz,
                         qw.size(-1) * 8, qw.size(0), group_size)
     return _qw, _sz
 
@@ -179,7 +163,7 @@ def sz_permute(sz:torch.Tensor):
     dim0=sz.shape[0]
     n=sz.shape[1]
     _sz=torch.zeros_like(sz)
-    lmslimquant.permute_trans(_sz,sz,dim0,n)
+    lightop_native._lmslimquant_permute_trans(_sz,sz,dim0,n)
     _sz=_sz.reshape(n,-1)
     return _sz
 
@@ -193,7 +177,7 @@ def awq_dequant_colmajor(qweight:torch.Tensor,
                         splikspacesize:int
                         )->torch.Tensor:
     # dqweight= torch.empty((n,k),dtype=torch.float16).cuda()
-    lmslimquant.awq_dequant_colmajor(splikspace,
+    lightop_native._lmslimquant_awq_dequant_colmajor(splikspace,
                                          qweight,
                                          zeros_and_scale,
                                          k,
@@ -210,22 +194,7 @@ def dequant_w4_gemm_colmajor(qweight:torch.Tensor,
                                 group_size:int
                              )->torch.Tensor:
     dqweight= torch.zeros((n,k),dtype=torch.float16).cuda()
-    lmslimquant.dequant_w4_gemm_colmajor(dqweight,
-                                         qweight,
-                                         zeros_and_scale,
-                                         k,
-                                         n,
-                                         group_size)
-    return dqweight
-
-def dequant_w4_gemm_rowmajor(qweight:torch.Tensor,
-                                zeros_and_scale:torch.Tensor,
-                                k:int,
-                                n:int,
-                                group_size:int
-                             )->torch.Tensor:
-    dqweight= torch.zeros((k,n),dtype=torch.float16).cuda()
-    lmslimquant.dequant_w4_gemm_rowmajor(dqweight,
+    lightop_native._lmslimquant_dequant_w4_gemm_colmajor(dqweight,
                                          qweight,
                                          zeros_and_scale,
                                          k,
@@ -244,7 +213,7 @@ def rocblas_sgemm_fp16_tn(a: torch.Tensor,
                     b: torch.Tensor,
                     out_dtype: torch.dtype,
                     bias: Optional[torch.Tensor] = None) -> torch.Tensor:
-    gemmoutput=lmslimquant.rocblas_gemm_fp16(a,b,True)
+    gemmoutput=lightop_native._lmslimquant_rocblas_gemm_fp16(a,b,True)
     output=gemmoutput.to(out_dtype)
     if bias is not None:
         output = output + bias.to(out_dtype)
@@ -254,7 +223,7 @@ def rocblas_sgemm_fp16_nn(a: torch.Tensor,
                     b: torch.Tensor,
                     out_dtype: torch.dtype,
                     bias: Optional[torch.Tensor] = None) -> torch.Tensor:
-    gemmoutput=lmslimquant.rocblas_gemm_fp16(a,b,False)
+    gemmoutput=lightop_native._lmslimquant_rocblas_gemm_fp16(a,b,False)
     output=gemmoutput.to(out_dtype)
     if bias is not None:
         output = output + bias.to(out_dtype)
@@ -264,7 +233,7 @@ def rocblas_sgemm_int8_tn(a: torch.Tensor,
                     b: torch.Tensor,
                     out_dtype: torch.dtype,
                     bias: Optional[torch.Tensor] = None) -> torch.Tensor:
-    gemmoutput=lmslimquant.rocblas_gemm_int8(a,b,True)
+    gemmoutput=lightop_native._lmslimquant_rocblas_gemm_int8(a,b,True)
     output=gemmoutput.to(out_dtype)
     if bias is not None:
         output = output + bias
@@ -274,7 +243,7 @@ def rocblas_sgemm_int8_nn(a: torch.Tensor,
                     b: torch.Tensor,
                     out_dtype: torch.dtype,
                     bias: Optional[torch.Tensor] = None) -> torch.Tensor:
-    gemmoutput=lmslimquant.rocblas_gemm_int8(a,b,False)
+    gemmoutput=lightop_native._lmslimquant_rocblas_gemm_int8(a,b,False)
     output=gemmoutput.to(out_dtype)
     if bias is not None:
         output = output + bias
@@ -295,7 +264,10 @@ def _rocblas_scaled_mm_tn(a: torch.Tensor,   #input
     #b.shape=[k,n]
     scales= scale_a * scale_b.T
     try:
-        gemmoutput = lightop_native._lmslimquant_rocblas_gemm_int8(a, b, True)
+        # The public scaled-mm contract supplies b as [K, N].  LMSlim's TN
+        # rocBLAS branch interprets the same storage as transposed and produces
+        # incorrect results for that shape, while the NN branch computes A @ B.
+        gemmoutput = lightop_native._lmslimquant_rocblas_gemm_int8(a, b, False)
     except (AttributeError, RuntimeError):
         try:
             gemmoutput = torch._int_mm(a, b)
