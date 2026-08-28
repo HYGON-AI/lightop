@@ -2,6 +2,7 @@ import torch
 from lightop import op
 from typing import Optional
 import csv
+import pytest
 
 
 def smooth_per_token_dynamic_quant(
@@ -260,24 +261,26 @@ def test_and_benchmark(num_tokens: int, hidden_sizes: int, config: dict, warmup=
     return True, "PASS", ref_us, opt_us, bw_gbs
 
 
+NUM_TOKENS_LIST = [
+    32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 144, 160, 176, 192,
+    208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 640, 768, 896,
+    1024, 1152, 1280, 1408, 1536, 1664, 1792, 1920, 2048, 2176, 2304, 2432,
+    2560, 2688, 2816, 2944, 3072, 3200, 3328, 3456, 3584, 3712, 3840, 3968,
+    4096, 6144, 8192, 10240, 12288, 14336, 16384, 18432, 20480, 22528, 24576,
+    26624, 28672, 32768
+]
+
+HIDDEN_SIZES_LIST = [4096]
+
+CONFIGS = [
+    {"name": "Base",         "has_res": False, "has_after_norm": False, "has_after_res": False, "up_input": False, "up_res": False},
+    {"name": "Res(AfterRes)","has_res": True,  "has_after_norm": False, "has_after_res": True,  "up_input": False, "up_res": False},
+    {"name": "AfterNorm",    "has_res": False, "has_after_norm": True,  "has_after_res": False, "up_input": False, "up_res": False},
+]
+
+
 def run_suite():
     torch.manual_seed(23)
-    numtokens_list = [
-        32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 144, 160, 176, 192, 
-        208, 224, 240, 256, 288, 320, 352, 384, 416, 448, 480, 512, 640, 768, 896, 
-        1024, 1152, 1280, 1408, 1536, 1664, 1792, 1920, 2048, 2176, 2304, 2432, 
-        2560, 2688, 2816, 2944, 3072, 3200, 3328, 3456, 3584, 3712, 3840, 3968, 
-        4096, 6144, 8192, 10240, 12288, 14336, 16384, 18432, 20480, 22528, 24576, 
-        26624, 28672, 32768
-    ]
-
-    hiddensizes_list = [4096]
-    
-    configs = [
-        {"name": "Base",         "has_res": False, "has_after_norm": False, "has_after_res": False, "up_input": False, "up_res": False},
-        {"name": "Res(AfterRes)","has_res": True,  "has_after_norm": False, "has_after_res": True,  "up_input": False, "up_res": False},
-        {"name": "AfterNorm",    "has_res": False, "has_after_norm": True,  "has_after_res": False, "up_input": False, "up_res": False},
-    ]
 
     print("======================================== 测试情形说明 (Legend) ========================================")
     print("  [Base]          : 仅执行基本 RMSNorm + SmoothQuant。 (无残差, 不写回状态)")
@@ -294,9 +297,9 @@ def run_suite():
     # 存储结果的列表
     results_data = []
 
-    for config in configs:
-        for hidden_size in hiddensizes_list:
-            for num_tokens in numtokens_list:
+    for config in CONFIGS:
+        for hidden_size in HIDDEN_SIZES_LIST:
+            for num_tokens in NUM_TOKENS_LIST:
                 
                 shape_str = f"[{num_tokens}, {hidden_size}]"
                 scen_str = config["name"]
@@ -325,6 +328,7 @@ def run_suite():
                     print(f"| {shape_str:<15} | {scen_str:<14} | {'✔':<8} | {ref_us:<10.1f} | {opt_us:<10.1f} | {speedup_str:<8} | {bw_gbs:<9.1f} |")
                 else:
                     print(f"| {shape_str:<15} | {scen_str:<14} | {'✘':<8} | {msg[:35]:<43} |")
+                    raise AssertionError(f"[{shape_str} | {scen_str}] {msg}")
 
         print("-" * 105)
 
@@ -340,6 +344,18 @@ def run_suite():
         writer.writerows(results_data)
 
     print(f"\n✅ 测试完毕！结果已成功保存到 {csv_filename}")
+
+
+@pytest.mark.parametrize("num_tokens", NUM_TOKENS_LIST)
+@pytest.mark.parametrize("hidden_size", HIDDEN_SIZES_LIST)
+@pytest.mark.parametrize("config", CONFIGS, ids=lambda c: c["name"])
+def test_per_token_smooth_quant_int8(num_tokens, hidden_size, config):
+    if not torch.cuda.is_available():
+        pytest.skip("需要 CUDA/ROCm 设备")
+    passed, msg, _, _, _ = test_and_benchmark(
+        num_tokens, hidden_size, config, warmup=10, rep=100
+    )
+    assert passed, msg
 
 
 if __name__ == "__main__":
