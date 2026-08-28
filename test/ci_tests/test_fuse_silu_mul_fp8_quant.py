@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from itertools import product
 from typing import Callable, Optional
 
+import pytest
 import torch
 import torch.utils.benchmark as TBenchmark
 from torch.utils.benchmark import Measurement as TMeasurement
@@ -23,6 +24,13 @@ except ImportError:
 
 import triton
 import triton.language as tl
+
+
+# FP8 E4M3 values can differ by one representable quantization step when the
+# fused and reference scale calculations round slightly differently. Judge
+# correctness by normalized relative error instead of exact FP8 equality.
+OUTPUT_REL_ERROR_TOL = 0.08
+SCALE_REL_ERROR_TOL = 0.01
 
 # ------------------ fp8 torch ------------------
 def per_token_quant_fp8_torch(x):
@@ -248,7 +256,7 @@ def check_accuracy(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: Optional[
 
         print(f"[out精度验证] max_abs_diff={max_diff:.6e}, mean_abs_diff={mean_diff:.6e}, rel_err={rel_err:.6e}")
         
-        return max_diff, mean_diff, rel_err
+        return max_diff, mean_diff, rel_err, rel_err_s
 
 # ------------------ Main Bench Loop ------------------
 def create_rms_norm(hidden_size: int, eps: float,
@@ -257,6 +265,37 @@ def create_rms_norm(hidden_size: int, eps: float,
     with set_current_vllm_config(VllmConfig()):
         layer = RMSNorm(hidden_size, eps).to(dtype=dtype, device="cuda")
     return layer
+
+
+@pytest.mark.parametrize("params", get_bench_params(), ids=lambda p: p.description())
+def test_rms_norm_per_token_fp8_quant_relative_error(params: bench_params_t):
+    """Validate the fused FP8 result using quantization-aware error bounds."""
+    torch.manual_seed(0)
+    layer = create_rms_norm(params.hidden_size, 1e-6, params.dtype)
+    layer.weight.data.normal_(mean=1.0, std=0.1)
+
+    scale = 1 / params.hidden_size
+    x = (
+        torch.randn(
+            params.num_tokens,
+            params.hidden_size,
+            dtype=params.dtype,
+            device="cuda",
+        )
+        * scale
+    )
+    residual = (torch.randn_like(x) * scale) if params.add_residual else None
+
+    _, _, output_rel_err, scale_rel_err = check_accuracy(layer, x, residual)
+
+    assert output_rel_err <= OUTPUT_REL_ERROR_TOL, (
+        f"output relative error {output_rel_err:.6e} exceeds "
+        f"{OUTPUT_REL_ERROR_TOL:.6e}"
+    )
+    assert scale_rel_err <= SCALE_REL_ERROR_TOL, (
+        f"scale relative error {scale_rel_err:.6e} exceeds "
+        f"{SCALE_REL_ERROR_TOL:.6e}"
+    )
 
 
 def bench(params: bench_params_t, label: str, sub_label: str):
@@ -268,7 +307,7 @@ def bench(params: bench_params_t, label: str, sub_label: str):
     residual = (torch.randn_like(x) * scale) if params.add_residual else None
 
     # === 1. 精度验证 (会触发内部的打印) ===
-    max_diff, mean_diff, rel_err = check_accuracy(layer, x, residual)
+    max_diff, mean_diff, rel_err, _ = check_accuracy(layer, x, residual)
 
     results = []
     
