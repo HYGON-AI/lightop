@@ -6,9 +6,13 @@ import torch
 from lightop import op
 
 
-ENTRY_BYTES = 656
+ENTRY_BYTES_WITH_ROPE = 656
+ENTRY_BYTES_NO_ROPE = 528
+ENTRY_BYTES = ENTRY_BYTES_WITH_ROPE
 NOPE_DIM = 512
-HEAD_DIM = 576
+HEAD_DIM_WITH_ROPE = 576
+HEAD_DIM_NO_ROPE = 512
+HEAD_DIM = HEAD_DIM_WITH_ROPE
 NUM_GROUPS = 4
 GROUP_SIZE = NOPE_DIM // NUM_GROUPS
 FP8_DTYPE = torch.float8_e4m3fn
@@ -18,8 +22,16 @@ REPEAT = 20
 ROUNDS = 5
 
 
-def _make_packed_cache(num_physical_tokens: int) -> torch.Tensor:
+def _make_packed_cache(
+    num_physical_tokens: int,
+    entry_bytes: int = ENTRY_BYTES,
+    head_dim: int = HEAD_DIM,
+) -> torch.Tensor:
     torch.manual_seed(20260717)
+    rope_dim = head_dim - NOPE_DIM
+    assert rope_dim >= 0
+    assert entry_bytes == NOPE_DIM + NUM_GROUPS * 4 + rope_dim * 2
+
     fp8_values = (
         torch.randn(
             num_physical_tokens,
@@ -39,15 +51,9 @@ def _make_packed_cache(num_physical_tokens: int) -> torch.Tensor:
         )
         * 1.75
     ).contiguous()
-    rope = torch.randn(
-        num_physical_tokens,
-        HEAD_DIM - NOPE_DIM,
-        device="cuda",
-        dtype=torch.bfloat16,
-    ).contiguous()
 
     packed = torch.empty(
-        (num_physical_tokens, ENTRY_BYTES),
+        (num_physical_tokens, entry_bytes),
         device="cuda",
         dtype=torch.uint8,
     )
@@ -55,8 +61,15 @@ def _make_packed_cache(num_physical_tokens: int) -> torch.Tensor:
     packed[:, NOPE_DIM : NOPE_DIM + NUM_GROUPS * 4].copy_(
         scales.view(torch.uint8)
     )
-    packed[:, NOPE_DIM + NUM_GROUPS * 4 :].copy_(rope.view(torch.uint8))
-    return packed.view(num_physical_tokens, 1, 1, ENTRY_BYTES)
+    if rope_dim > 0:
+        rope = torch.randn(
+            num_physical_tokens,
+            rope_dim,
+            device="cuda",
+            dtype=torch.bfloat16,
+        ).contiguous()
+        packed[:, NOPE_DIM + NUM_GROUPS * 4 :].copy_(rope.view(torch.uint8))
+    return packed.view(num_physical_tokens, 1, 1, entry_bytes)
 
 
 def _time_cuda(fn) -> float:
@@ -81,7 +94,12 @@ def _kv_reference(
     packed_cache: torch.Tensor,
     page_table_flat: torch.Tensor,
 ) -> torch.Tensor:
-    rows = packed_cache.view(-1, ENTRY_BYTES).index_select(
+    entry_bytes = packed_cache.shape[-1]
+    rope_bytes = entry_bytes - NOPE_DIM - NUM_GROUPS * 4
+    assert rope_bytes >= 0 and rope_bytes % 2 == 0
+    head_dim = NOPE_DIM + rope_bytes // 2
+
+    rows = packed_cache.view(-1, entry_bytes).index_select(
         0, page_table_flat.to(torch.int64)
     )
     fp8_values = rows[:, :NOPE_DIM].contiguous().view(FP8_DTYPE).float()
@@ -93,30 +111,40 @@ def _kv_reference(
     nope = (
         fp8_values.view(-1, NUM_GROUPS, GROUP_SIZE) * scales[:, :, None]
     ).reshape(-1, NOPE_DIM).to(torch.bfloat16)
-    rope = rows[:, NOPE_DIM + NUM_GROUPS * 4 :].contiguous().view(
-        torch.bfloat16
-    )
 
     output = torch.empty(
-        (page_table_flat.numel(), 1, HEAD_DIM),
+        (page_table_flat.numel(), 1, head_dim),
         device="cuda",
         dtype=torch.bfloat16,
     )
     output[:, 0, :NOPE_DIM] = nope
-    output[:, 0, NOPE_DIM:] = rope
+    if head_dim > NOPE_DIM:
+        rope = rows[:, NOPE_DIM + NUM_GROUPS * 4 :].contiguous().view(
+            torch.bfloat16
+        )
+        output[:, 0, NOPE_DIM:] = rope
     return output
 
 
+@pytest.mark.parametrize(
+    ("entry_bytes", "head_dim"),
+    [
+        (ENTRY_BYTES_WITH_ROPE, HEAD_DIM_WITH_ROPE),
+        (ENTRY_BYTES_NO_ROPE, HEAD_DIM_NO_ROPE),
+    ],
+)
 @pytest.mark.skipif(torch.version.hip is None, reason="LightOp requires ROCm")
-def test_prefill_gather_and_upconvert_matches_native() -> None:
-    packed_cache = _make_packed_cache(257)
+def test_prefill_gather_and_upconvert_matches_native(
+    entry_bytes, head_dim
+) -> None:
+    packed_cache = _make_packed_cache(257, entry_bytes, head_dim)
     page_table_flat = torch.tensor(
         [256, 0, 17, 17, 128, 3, 200, 42, 1, 255, 99, 5, 6, 7, 8, 9, 10],
         device="cuda",
         dtype=torch.int32,
     )
     kv_dst = torch.empty(
-        (page_table_flat.numel(), 1, HEAD_DIM),
+        (page_table_flat.numel(), 1, head_dim),
         device="cuda",
         dtype=torch.bfloat16,
     )
@@ -136,12 +164,19 @@ def test_prefill_gather_and_upconvert_matches_native() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("entry_bytes", "head_dim"),
+    [
+        (ENTRY_BYTES_WITH_ROPE, HEAD_DIM_WITH_ROPE),
+        (ENTRY_BYTES_NO_ROPE, HEAD_DIM_NO_ROPE),
+    ],
+)
 @pytest.mark.skipif(torch.version.hip is None, reason="LightOp requires ROCm")
-def test_prefill_gather_and_upconvert_empty_kv() -> None:
-    packed_cache = _make_packed_cache(1)
+def test_prefill_gather_and_upconvert_empty_kv(entry_bytes, head_dim) -> None:
+    packed_cache = _make_packed_cache(1, entry_bytes, head_dim)
     page_table_flat = torch.empty(0, device="cuda", dtype=torch.int32)
     kv_dst = torch.empty(
-        (0, 1, HEAD_DIM), device="cuda", dtype=torch.bfloat16
+        (0, 1, head_dim), device="cuda", dtype=torch.bfloat16
     )
 
     op.prefill_gather_and_upconvert_fp8_kv_cache(
@@ -151,6 +186,23 @@ def test_prefill_gather_and_upconvert_empty_kv() -> None:
     )
     torch.cuda.synchronize()
     assert kv_dst.numel() == 0
+
+
+@pytest.mark.skipif(torch.version.hip is None, reason="LightOp requires ROCm")
+def test_prefill_gather_and_upconvert_rejects_flat_src_cache() -> None:
+    rows = 41
+    packed_cache = _make_packed_cache(
+        rows, ENTRY_BYTES_NO_ROPE, HEAD_DIM_NO_ROPE
+    ).reshape(-1)
+    page_table_flat = torch.arange(rows, device="cuda", dtype=torch.int32)
+    kv_dst = torch.empty(
+        (rows, 1, HEAD_DIM_NO_ROPE), device="cuda", dtype=torch.bfloat16
+    )
+
+    with pytest.raises(RuntimeError, match="1D src_cache"):
+        op.prefill_gather_and_upconvert_fp8_kv_cache(
+            packed_cache, page_table_flat, kv_dst
+        )
 
 
 @pytest.mark.skipif(torch.version.hip is None, reason="LightOp requires ROCm")

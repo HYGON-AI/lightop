@@ -385,23 +385,38 @@ void cp_gather_and_upconvert_fp8_kv_cache(
     );
 }
 
+__device__ __forceinline__ uint32_t
+scaled_convert_e4m3fn_pair_to_bf16_bits_fast(
+    uint8_t first,
+    uint8_t second,
+    float scale);
+
 // Paged prefill counterpart of cp_gather_and_upconvert_fp8_kv_cache_opt.
-// It is a drop-in replacement for dequantize_k_cache_paged for packed
-// [*, 1, 656] FP8 cache rows: gather by the flattened page table, dequantize
-// the 512 no-PE values, and copy the 64 BF16 RoPE values unchanged.
+// It is a drop-in replacement for dequantize_k_cache_paged for packed MLA
+// FP8 cache rows: gather by the flattened page table, dequantize the 512
+// no-PE values, and optionally copy the 64 BF16 RoPE values unchanged.
+template <int kPhysicalTokenStride,
+          int kHeadDim,
+          int kRopeDim,
+          int kThreadsPerItem>
 __global__ void prefill_gather_and_upconvert_fp8_kv_cache_kernel(
     const uint8_t* __restrict__ src_cache,
     const int32_t* __restrict__ page_table_flat,
     __nv_bfloat16* __restrict__ kv_dst,
     int64_t num_physical_tokens,
     int64_t num_kv_tokens) {
-    constexpr int kThreadsPerItem = 32;
-    constexpr int kItemsPerBlock = 1024 / kThreadsPerItem;
-    constexpr int kPhysicalTokenStride = 656;
+    const int kItemsPerBlock = blockDim.x / kThreadsPerItem;
     constexpr int kNopeDim = 512;
     constexpr int kScaleBytes = 16;
-    constexpr int kRopeDim = 64;
-    constexpr int kHeadDim = kNopeDim + kRopeDim;
+    constexpr int kNopeVecElems = 16;
+    constexpr int kNopeChunks = kNopeDim / kNopeVecElems;
+    constexpr int kChunksPerThread = kNopeChunks / kThreadsPerItem;
+    constexpr int kRopeVecElems = 8;
+    static_assert(kHeadDim == kNopeDim + kRopeDim);
+    static_assert(kPhysicalTokenStride ==
+                  kNopeDim + kScaleBytes + kRopeDim * 2);
+    static_assert(kNopeChunks % kThreadsPerItem == 0);
+    static_assert(kRopeDim % kRopeVecElems == 0);
 
     const int local_item = threadIdx.x / kThreadsPerItem;
     const int lane_id = threadIdx.x % kThreadsPerItem;
@@ -414,8 +429,7 @@ __global__ void prefill_gather_and_upconvert_fp8_kv_cache_kernel(
     const int64_t physical_token_id =
         static_cast<int64_t>(page_table_flat[item_id]);
     __nv_bfloat16* dst_ptr = kv_dst + item_id * kHeadDim;
-    using BF16Vec16 = Vector<__nv_bfloat16, 16>;
-    BF16Vec16 nope_dst;
+    using PackedBF16Vec = Vector<uint32_t, kNopeVecElems / 2>;
 
     if (physical_token_id >= 0 &&
         physical_token_id < num_physical_tokens) {
@@ -423,45 +437,62 @@ __global__ void prefill_gather_and_upconvert_fp8_kv_cache_kernel(
             src_cache + physical_token_id * kPhysicalTokenStride;
         const float* scales_ptr =
             reinterpret_cast<const float*>(token_ptr + kNopeDim);
-        const float scale = scales_ptr[lane_id / 8];
-        using FP8Vec16 = Vector<uint8_t, 16>;
-        const FP8Vec16 src_vec =
-            *(reinterpret_cast<const FP8Vec16*>(token_ptr) + lane_id);
+        using FP8Vec16 = Vector<uint8_t, kNopeVecElems>;
 #pragma unroll
-        for (int i = 0; i < 16; ++i) {
-            nope_dst.val[i] = scaled_convert_fp8<
-                __nv_bfloat16,
-                uint8_t,
-                Fp8KVCacheDataType::kFp8E4M3>(src_vec.val[i], scale);
+        for (int chunk_iter = 0; chunk_iter < kChunksPerThread;
+             ++chunk_iter) {
+            const int chunk = lane_id + chunk_iter * kThreadsPerItem;
+            const float scale = scales_ptr[chunk / 8];
+            const FP8Vec16 src_vec =
+                *(reinterpret_cast<const FP8Vec16*>(token_ptr) + chunk);
+            PackedBF16Vec nope_dst;
+#pragma unroll
+            for (int i = 0; i < kNopeVecElems / 2; ++i) {
+                nope_dst.val[i] =
+                    scaled_convert_e4m3fn_pair_to_bf16_bits_fast(
+                        src_vec.val[2 * i],
+                        src_vec.val[2 * i + 1],
+                        scale);
+            }
+            *(reinterpret_cast<PackedBF16Vec*>(dst_ptr) + chunk) = nope_dst;
         }
-        *(reinterpret_cast<BF16Vec16*>(dst_ptr) + lane_id) = nope_dst;
 
-        if (lane_id < 8) {
-            using BF16Vec8 = Vector<__nv_bfloat16, 8>;
-            const __nv_bfloat16* rope_ptr =
-                reinterpret_cast<const __nv_bfloat16*>(
-                    token_ptr + kNopeDim + kScaleBytes);
-            const BF16Vec8 rope_vec =
-                *(reinterpret_cast<const BF16Vec8*>(rope_ptr) + lane_id);
-            *(reinterpret_cast<BF16Vec8*>(dst_ptr + kNopeDim) + lane_id) =
-                rope_vec;
+        if constexpr (kRopeDim > 0) {
+            if (lane_id < kRopeDim / kRopeVecElems) {
+                using BF16Vec8 = Vector<__nv_bfloat16, kRopeVecElems>;
+                const __nv_bfloat16* rope_ptr =
+                    reinterpret_cast<const __nv_bfloat16*>(
+                        token_ptr + kNopeDim + kScaleBytes);
+                const BF16Vec8 rope_vec =
+                    *(reinterpret_cast<const BF16Vec8*>(rope_ptr) + lane_id);
+                *(reinterpret_cast<BF16Vec8*>(dst_ptr + kNopeDim) + lane_id) =
+                    rope_vec;
+            }
         }
     } else {
+        PackedBF16Vec zero_nope;
 #pragma unroll
-        for (int i = 0; i < 16; ++i) {
-            nope_dst.val[i] = __float2bfloat16(0.0f);
+        for (int i = 0; i < kNopeVecElems / 2; ++i) {
+            zero_nope.val[i] = 0;
         }
-        *(reinterpret_cast<BF16Vec16*>(dst_ptr) + lane_id) = nope_dst;
-
-        if (lane_id < 8) {
-            using BF16Vec8 = Vector<__nv_bfloat16, 8>;
-            BF16Vec8 zero_vec;
 #pragma unroll
-            for (int i = 0; i < 8; ++i) {
-                zero_vec.val[i] = __float2bfloat16(0.0f);
+        for (int chunk_iter = 0; chunk_iter < kChunksPerThread;
+             ++chunk_iter) {
+            const int chunk = lane_id + chunk_iter * kThreadsPerItem;
+            *(reinterpret_cast<PackedBF16Vec*>(dst_ptr) + chunk) = zero_nope;
+        }
+
+        if constexpr (kRopeDim > 0) {
+            if (lane_id < kRopeDim / kRopeVecElems) {
+                using BF16Vec8 = Vector<__nv_bfloat16, kRopeVecElems>;
+                BF16Vec8 zero_vec;
+#pragma unroll
+                for (int i = 0; i < kRopeVecElems; ++i) {
+                    zero_vec.val[i] = __float2bfloat16(0.0f);
+                }
+                *(reinterpret_cast<BF16Vec8*>(dst_ptr + kNopeDim) + lane_id) =
+                    zero_vec;
             }
-            *(reinterpret_cast<BF16Vec8*>(dst_ptr + kNopeDim) + lane_id) =
-                zero_vec;
         }
     }
 }
@@ -470,9 +501,12 @@ void prefill_gather_and_upconvert_fp8_kv_cache(
     torch::Tensor const& src_cache,
     torch::Tensor const& page_table_flat,
     torch::Tensor const& kv_dst) {
-    constexpr int64_t kPhysicalTokenStride = 656;
-    constexpr int64_t kHeadDim = 576;
-    constexpr int64_t kItemsPerBlock = 32;
+    constexpr int64_t kPhysicalTokenStrideWithRope = 656;
+    constexpr int64_t kPhysicalTokenStrideNoRope = 528;
+    constexpr int64_t kHeadDimWithRope = 576;
+    constexpr int64_t kHeadDimNoRope = 512;
+    constexpr int kThreadsPerItemWithRope = 32;
+    constexpr int kThreadsPerItemNoRope = 8;
 
     TORCH_CHECK(src_cache.is_cuda(), "src_cache must be on a GPU");
     TORCH_CHECK(page_table_flat.is_cuda(),
@@ -484,23 +518,43 @@ void prefill_gather_and_upconvert_fp8_kv_cache(
     TORCH_CHECK(src_cache.element_size() == 1,
                 "src_cache must have one-byte FP8/uint8 elements");
     TORCH_CHECK(src_cache.is_contiguous(), "src_cache must be contiguous");
-    TORCH_CHECK((src_cache.dim() == 3 || src_cache.dim() == 4) &&
-                    src_cache.size(-2) == 1 &&
-                    src_cache.size(-1) == kPhysicalTokenStride,
-                "src_cache must have shape [*, 1, 656]");
+    TORCH_CHECK(src_cache.dim() > 1,
+                "1D src_cache is not supported; pass src_cache with shape "
+                "[*, 1, 656] or [*, 1, 528]");
+    TORCH_CHECK(src_cache.dim() == 3 || src_cache.dim() == 4,
+                "src_cache must have shape [*, 1, 656] or [*, 1, 528]");
+    const int64_t physical_token_stride = src_cache.size(-1);
+    TORCH_CHECK(
+        src_cache.size(-2) == 1 &&
+            (physical_token_stride == kPhysicalTokenStrideWithRope ||
+             physical_token_stride == kPhysicalTokenStrideNoRope),
+        "src_cache must have shape [*, 1, 656] or [*, 1, 528]");
     TORCH_CHECK(page_table_flat.dim() == 1 &&
                     page_table_flat.scalar_type() == at::ScalarType::Int &&
                     page_table_flat.is_contiguous(),
                 "page_table_flat must be contiguous int32 [num_kv_tokens]");
 
     const int64_t num_kv_tokens = page_table_flat.numel();
-    TORCH_CHECK(kv_dst.scalar_type() == at::ScalarType::BFloat16 &&
-                    kv_dst.is_contiguous() && kv_dst.dim() == 3 &&
-                    kv_dst.size(0) == num_kv_tokens &&
-                    kv_dst.size(1) == 1 && kv_dst.size(2) == kHeadDim,
-                "kv_dst must be contiguous BF16 [num_kv_tokens, 1, 576]");
+    const int64_t head_dim = kv_dst.dim() == 3 ? kv_dst.size(2) : -1;
+    TORCH_CHECK(
+        kv_dst.scalar_type() == at::ScalarType::BFloat16 &&
+            kv_dst.is_contiguous() && kv_dst.dim() == 3 &&
+            kv_dst.size(0) == num_kv_tokens && kv_dst.size(1) == 1 &&
+            ((physical_token_stride == kPhysicalTokenStrideWithRope &&
+              head_dim == kHeadDimWithRope) ||
+             (physical_token_stride == kPhysicalTokenStrideNoRope &&
+              head_dim == kHeadDimNoRope)),
+        "kv_dst must be contiguous BF16 [num_kv_tokens, 1, 576] for "
+        "[*, 1, 656] src_cache, or [num_kv_tokens, 1, 512] for "
+        "[*, 1, 528] src_cache");
 
-    const int64_t block_count = CEIL_DIV(num_kv_tokens, kItemsPerBlock);
+    const uint32_t block_size =
+        physical_token_stride == kPhysicalTokenStrideWithRope ? 1024 : 512;
+    const int64_t items_per_block =
+        physical_token_stride == kPhysicalTokenStrideWithRope
+        ? block_size / kThreadsPerItemWithRope
+        : block_size / kThreadsPerItemNoRope;
+    const int64_t block_count = CEIL_DIV(num_kv_tokens, items_per_block);
     if (block_count == 0) {
         return;
     }
@@ -508,14 +562,32 @@ void prefill_gather_and_upconvert_fp8_kv_cache(
     at::cuda::OptionalCUDAGuard device_guard(src_cache.device());
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     const dim3 grid(static_cast<uint32_t>(block_count));
-    const dim3 block(1024);
-    prefill_gather_and_upconvert_fp8_kv_cache_kernel
-        <<<grid, block, 0, stream>>>(
-            reinterpret_cast<const uint8_t*>(src_cache.data_ptr()),
-            page_table_flat.data_ptr<int32_t>(),
-            reinterpret_cast<__nv_bfloat16*>(kv_dst.data_ptr()),
-            src_cache.numel() / kPhysicalTokenStride,
-            num_kv_tokens);
+    const dim3 block(block_size);
+    if (physical_token_stride == kPhysicalTokenStrideWithRope) {
+        prefill_gather_and_upconvert_fp8_kv_cache_kernel<
+            kPhysicalTokenStrideWithRope,
+            kHeadDimWithRope,
+            kHeadDimWithRope - kHeadDimNoRope,
+            kThreadsPerItemWithRope>
+            <<<grid, block, 0, stream>>>(
+                reinterpret_cast<const uint8_t*>(src_cache.data_ptr()),
+                page_table_flat.data_ptr<int32_t>(),
+                reinterpret_cast<__nv_bfloat16*>(kv_dst.data_ptr()),
+                src_cache.numel() / physical_token_stride,
+                num_kv_tokens);
+    } else {
+        prefill_gather_and_upconvert_fp8_kv_cache_kernel<
+            kPhysicalTokenStrideNoRope,
+            kHeadDimNoRope,
+            0,
+            kThreadsPerItemNoRope>
+            <<<grid, block, 0, stream>>>(
+                reinterpret_cast<const uint8_t*>(src_cache.data_ptr()),
+                page_table_flat.data_ptr<int32_t>(),
+                reinterpret_cast<__nv_bfloat16*>(kv_dst.data_ptr()),
+                src_cache.numel() / physical_token_stride,
+                num_kv_tokens);
+    }
 }
 
 __device__ __forceinline__ int64_t decode_wave_broadcast_i64(
@@ -610,23 +682,33 @@ scaled_convert_e4m3fn_pair_to_bf16_bits_fast(
 constexpr int kDecodeNopeDim = 512;
 constexpr int kDecodeScaleBytes = 16;
 constexpr int kDecodeRopeDim = 64;
-constexpr int kDecodePhysicalTokenStride =
+constexpr int kDecodePhysicalTokenStrideNoRope =
+    kDecodeNopeDim + kDecodeScaleBytes;
+constexpr int kDecodePhysicalTokenStrideWithRope =
     kDecodeNopeDim + kDecodeScaleBytes + kDecodeRopeDim * sizeof(__nv_bfloat16);
 
-template <bool kCopyRope>
+template <bool kCopyRope, int kPhysicalTokenStride>
 __device__ __forceinline__ void decode_store_optional_rope(
     const uint8_t* src_cache,
     int64_t physical_token_id,
     bool is_valid,
     int lane_id,
     __nv_bfloat16* dst_ptr) {
+    static_assert(
+        kPhysicalTokenStride == kDecodePhysicalTokenStrideNoRope ||
+            kPhysicalTokenStride == kDecodePhysicalTokenStrideWithRope,
+        "decode source row must be 528 or 656 bytes");
+    static_assert(
+        !kCopyRope ||
+            kPhysicalTokenStride == kDecodePhysicalTokenStrideWithRope,
+        "RoPE copy requires 656-byte source rows");
     if constexpr (kCopyRope) {
         if (lane_id < 8) {
             using PackedRopeVec = Vector<uint32_t, 4>;
             PackedRopeVec rope_vec;
             if (is_valid) {
                 const uint8_t* rope_ptr =
-                    src_cache + physical_token_id * kDecodePhysicalTokenStride +
+                    src_cache + physical_token_id * kPhysicalTokenStride +
                     kDecodeNopeDim + kDecodeScaleBytes;
                 rope_vec =
                     *(reinterpret_cast<const PackedRopeVec*>(rope_ptr) + lane_id);
@@ -642,7 +724,11 @@ __device__ __forceinline__ void decode_store_optional_rope(
     }
 }
 
-template <typename index_t, int kTokensPerBlock, bool kCopyRope>
+template <
+    typename index_t,
+    int kTokensPerBlock,
+    bool kCopyRope,
+    int kPhysicalTokenStride>
 __launch_bounds__(64 * kTokensPerBlock)
 __global__ void decode_gather_and_up_convert_kernel(
     const uint8_t* __restrict__ src_cache,
@@ -701,7 +787,7 @@ __global__ void decode_gather_and_up_convert_kernel(
         physical_token_id >= 0 && physical_token_id < num_physical_tokens;
     if (is_valid) {
         const uint8_t* token_ptr =
-            src_cache + physical_token_id * kDecodePhysicalTokenStride;
+            src_cache + physical_token_id * kPhysicalTokenStride;
         using FP8Vec = Vector<uint8_t, kElementsPerLane>;
         const FP8Vec src_vec =
             *(reinterpret_cast<const FP8Vec*>(token_ptr) + lane_id);
@@ -728,11 +814,15 @@ __global__ void decode_gather_and_up_convert_kernel(
     }
 
     *(reinterpret_cast<PackedBF16Vec*>(dst_ptr) + lane_id) = dst_vec;
-    decode_store_optional_rope<kCopyRope>(
+    decode_store_optional_rope<kCopyRope, kPhysicalTokenStride>(
         src_cache, physical_token_id, is_valid, lane_id, dst_ptr);
 }
 
-template <typename index_t, int kTokensPerBlock, bool kCopyRope>
+template <
+    typename index_t,
+    int kTokensPerBlock,
+    bool kCopyRope,
+    int kPhysicalTokenStride>
 void launch_decode_gather_and_up_convert(
     const uint8_t* src_cache,
     const index_t* token_ids,
@@ -750,7 +840,8 @@ void launch_decode_gather_and_up_convert(
     constexpr int kThreadsPerToken = 32;
     const dim3 grid(CEIL_DIV(width, kTokensPerBlock), batch_size);
     const dim3 block(kThreadsPerToken * kTokensPerBlock);
-    decode_gather_and_up_convert_kernel<index_t, kTokensPerBlock, kCopyRope>
+    decode_gather_and_up_convert_kernel<
+        index_t, kTokensPerBlock, kCopyRope, kPhysicalTokenStride>
         <<<grid, block, 0, stream>>>(
             src_cache,
             token_ids,
@@ -769,7 +860,8 @@ template <
     typename index_t,
     int kTokensPerBlock,
     bool kUseRowValidLengths,
-    bool kCopyRope>
+    bool kCopyRope,
+    int kPhysicalTokenStride>
 __launch_bounds__(64 * kTokensPerBlock)
 __global__ void decode_gather_and_up_convert_with_indices_kernel(
     const uint8_t* __restrict__ src_cache,
@@ -832,7 +924,7 @@ __global__ void decode_gather_and_up_convert_with_indices_kernel(
 
     if (is_valid) {
         const uint8_t* token_ptr =
-            src_cache + physical_token_id * kDecodePhysicalTokenStride;
+            src_cache + physical_token_id * kPhysicalTokenStride;
         using FP8Vec = Vector<uint8_t, kElementsPerLane>;
         const FP8Vec src_vec =
             *(reinterpret_cast<const FP8Vec*>(token_ptr) + lane_id);
@@ -860,7 +952,7 @@ __global__ void decode_gather_and_up_convert_with_indices_kernel(
 
     *(reinterpret_cast<PackedBF16Vec*>(dst_ptr) + lane_id) = dst_vec;
 
-    decode_store_optional_rope<kCopyRope>(
+    decode_store_optional_rope<kCopyRope, kPhysicalTokenStride>(
         src_cache, physical_token_id, is_valid, lane_id, dst_ptr);
 }
 
@@ -868,7 +960,8 @@ template <
     typename index_t,
     int kTokensPerBlock,
     bool kUseRowValidLengths,
-    bool kCopyRope>
+    bool kCopyRope,
+    int kPhysicalTokenStride>
 void launch_decode_gather_and_up_convert_with_indices(
     const uint8_t* src_cache,
     const index_t* token_ids,
@@ -883,7 +976,11 @@ void launch_decode_gather_and_up_convert_with_indices(
     const dim3 grid(CEIL_DIV(width, kTokensPerBlock), batch_size);
     const dim3 block(kThreadsPerToken * kTokensPerBlock);
     decode_gather_and_up_convert_with_indices_kernel<
-        index_t, kTokensPerBlock, kUseRowValidLengths, kCopyRope>
+        index_t,
+        kTokensPerBlock,
+        kUseRowValidLengths,
+        kCopyRope,
+        kPhysicalTokenStride>
         <<<grid, block, 0, stream>>>(
             src_cache,
             token_ids,
@@ -894,7 +991,7 @@ void launch_decode_gather_and_up_convert_with_indices(
             num_physical_tokens);
 }
 
-template <typename index_t, bool kCopyRope>
+template <typename index_t, bool kCopyRope, int kPhysicalTokenStride>
 void dispatch_decode_gather_and_up_convert(
     const uint8_t* src_ptr,
     const index_t* token_ids_ptr,
@@ -917,19 +1014,19 @@ void dispatch_decode_gather_and_up_convert(
         if (!use_row_valid_lengths) {
             if (tokens_per_block == 4) {
                 launch_decode_gather_and_up_convert_with_indices<
-                    index_t, 4, false, kCopyRope>(
+                    index_t, 4, false, kCopyRope, kPhysicalTokenStride>(
                     src_ptr, token_ids_ptr, valid_lengths_ptr, dst_ptr,
                     compact_indices_ptr, batch_size, width,
                     num_physical_tokens, stream);
             } else if (tokens_per_block == 8) {
                 launch_decode_gather_and_up_convert_with_indices<
-                    index_t, 8, false, kCopyRope>(
+                    index_t, 8, false, kCopyRope, kPhysicalTokenStride>(
                     src_ptr, token_ids_ptr, valid_lengths_ptr, dst_ptr,
                     compact_indices_ptr, batch_size, width,
                     num_physical_tokens, stream);
             } else {
                 launch_decode_gather_and_up_convert_with_indices<
-                    index_t, 16, false, kCopyRope>(
+                    index_t, 16, false, kCopyRope, kPhysicalTokenStride>(
                     src_ptr, token_ids_ptr, valid_lengths_ptr, dst_ptr,
                     compact_indices_ptr, batch_size, width,
                     num_physical_tokens, stream);
@@ -937,19 +1034,19 @@ void dispatch_decode_gather_and_up_convert(
         } else {
             if (tokens_per_block == 4) {
                 launch_decode_gather_and_up_convert_with_indices<
-                    index_t, 4, true, kCopyRope>(
+                    index_t, 4, true, kCopyRope, kPhysicalTokenStride>(
                     src_ptr, token_ids_ptr, valid_lengths_ptr, dst_ptr,
                     compact_indices_ptr, batch_size, width,
                     num_physical_tokens, stream);
             } else if (tokens_per_block == 8) {
                 launch_decode_gather_and_up_convert_with_indices<
-                    index_t, 8, true, kCopyRope>(
+                    index_t, 8, true, kCopyRope, kPhysicalTokenStride>(
                     src_ptr, token_ids_ptr, valid_lengths_ptr, dst_ptr,
                     compact_indices_ptr, batch_size, width,
                     num_physical_tokens, stream);
             } else {
                 launch_decode_gather_and_up_convert_with_indices<
-                    index_t, 16, true, kCopyRope>(
+                    index_t, 16, true, kCopyRope, kPhysicalTokenStride>(
                     src_ptr, token_ids_ptr, valid_lengths_ptr, dst_ptr,
                     compact_indices_ptr, batch_size, width,
                     num_physical_tokens, stream);
@@ -957,19 +1054,22 @@ void dispatch_decode_gather_and_up_convert(
         }
     } else {
         if (tokens_per_block == 4) {
-            launch_decode_gather_and_up_convert<index_t, 4, kCopyRope>(
+            launch_decode_gather_and_up_convert<
+                index_t, 4, kCopyRope, kPhysicalTokenStride>(
                 src_ptr, token_ids_ptr, valid_lengths_ptr, dst_ptr,
                 batch_size, width, num_physical_tokens,
                 token_ids_stride_0, token_ids_stride_1,
                 valid_lengths_stride_0, dst_stride_0, dst_stride_1, stream);
         } else if (tokens_per_block == 8) {
-            launch_decode_gather_and_up_convert<index_t, 8, kCopyRope>(
+            launch_decode_gather_and_up_convert<
+                index_t, 8, kCopyRope, kPhysicalTokenStride>(
                 src_ptr, token_ids_ptr, valid_lengths_ptr, dst_ptr,
                 batch_size, width, num_physical_tokens,
                 token_ids_stride_0, token_ids_stride_1,
                 valid_lengths_stride_0, dst_stride_0, dst_stride_1, stream);
         } else {
-            launch_decode_gather_and_up_convert<index_t, 16, kCopyRope>(
+            launch_decode_gather_and_up_convert<
+                index_t, 16, kCopyRope, kPhysicalTokenStride>(
                 src_ptr, token_ids_ptr, valid_lengths_ptr, dst_ptr,
                 batch_size, width, num_physical_tokens,
                 token_ids_stride_0, token_ids_stride_1,
@@ -1002,8 +1102,11 @@ void decode_gather_and_up_convert_impl(
     TORCH_CHECK(
         reinterpret_cast<uintptr_t>(src_cache.data_ptr()) % 16 == 0,
         "src_cache data must be 16-byte aligned");
-    TORCH_CHECK(src_cache.numel() % kDecodePhysicalTokenStride == 0,
-                "src_cache.numel() must be divisible by 656");
+    TORCH_CHECK(src_cache.dim() > 0,
+                "src_cache must have at least one dimension");
+    TORCH_CHECK(src_cache.dim() > 1,
+                "1D src_cache is not supported; pass src_cache with "
+                "last dimension 528 or 656");
     TORCH_CHECK(token_ids.dim() == 2, "token_ids must have shape [batch, width]");
     TORCH_CHECK(token_ids.dtype() == torch::kInt32 ||
                     token_ids.dtype() == torch::kInt64,
@@ -1033,6 +1136,27 @@ void decode_gather_and_up_convert_impl(
     const int64_t head_dim = dst.size(2);
     TORCH_CHECK(head_dim == kNoRopeHeadDim || head_dim == kWithRopeHeadDim,
                 "dst head dimension must be 512 (no RoPE) or 576 (64 RoPE)");
+    const int64_t src_cache_inner_dim = src_cache.size(src_cache.dim() - 1);
+    int64_t physical_token_stride = 0;
+    if (src_cache_inner_dim == kDecodePhysicalTokenStrideNoRope ||
+        src_cache_inner_dim == kDecodePhysicalTokenStrideWithRope) {
+        physical_token_stride = src_cache_inner_dim;
+    } else if (src_cache.numel() % kDecodePhysicalTokenStrideWithRope == 0) {
+        physical_token_stride = kDecodePhysicalTokenStrideWithRope;
+    } else if (head_dim == kNoRopeHeadDim &&
+               src_cache.numel() % kDecodePhysicalTokenStrideNoRope == 0) {
+        physical_token_stride = kDecodePhysicalTokenStrideNoRope;
+    }
+    TORCH_CHECK(
+        physical_token_stride == kDecodePhysicalTokenStrideNoRope ||
+            physical_token_stride == kDecodePhysicalTokenStrideWithRope,
+        "src_cache must use 528-byte no-RoPE or 656-byte RoPE packed rows");
+    TORCH_CHECK(src_cache.numel() % physical_token_stride == 0,
+                "src_cache.numel() must be divisible by its physical token stride");
+    TORCH_CHECK(
+        head_dim != kWithRopeHeadDim ||
+            physical_token_stride == kDecodePhysicalTokenStrideWithRope,
+        "dst head dimension 576 requires src_cache last dimension 656");
     TORCH_CHECK(dst.size(0) == token_ids.size(0) &&
                     dst.size(1) == token_ids.size(1) &&
                     dst.size(2) == head_dim,
@@ -1082,7 +1206,7 @@ void decode_gather_and_up_convert_impl(
     at::cuda::OptionalCUDAGuard device_guard(src_cache.device());
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     const int64_t num_physical_tokens =
-        src_cache.numel() / kDecodePhysicalTokenStride;
+        src_cache.numel() / physical_token_stride;
     const bool use_row_valid_lengths =
         batch_size == valid_lengths.size(0);
 
@@ -1102,14 +1226,24 @@ void decode_gather_and_up_convert_impl(
             ? compact_indices.value().data_ptr<int32_t>()
             : nullptr;
         if (head_dim == kWithRopeHeadDim) {
-            dispatch_decode_gather_and_up_convert<index_t, true>(
+            dispatch_decode_gather_and_up_convert<
+                index_t, true, kDecodePhysicalTokenStrideWithRope>(
+                src_ptr, token_ids_ptr, valid_lengths_ptr, dst_ptr,
+                compact_indices_ptr, compact_indices.has_value(),
+                use_row_valid_lengths, tokens_per_block, batch_size, width,
+                num_physical_tokens, token_ids.stride(0), token_ids.stride(1),
+                valid_lengths.stride(0), dst.stride(0), dst.stride(1), stream);
+        } else if (physical_token_stride == kDecodePhysicalTokenStrideNoRope) {
+            dispatch_decode_gather_and_up_convert<
+                index_t, false, kDecodePhysicalTokenStrideNoRope>(
                 src_ptr, token_ids_ptr, valid_lengths_ptr, dst_ptr,
                 compact_indices_ptr, compact_indices.has_value(),
                 use_row_valid_lengths, tokens_per_block, batch_size, width,
                 num_physical_tokens, token_ids.stride(0), token_ids.stride(1),
                 valid_lengths.stride(0), dst.stride(0), dst.stride(1), stream);
         } else {
-            dispatch_decode_gather_and_up_convert<index_t, false>(
+            dispatch_decode_gather_and_up_convert<
+                index_t, false, kDecodePhysicalTokenStrideWithRope>(
                 src_ptr, token_ids_ptr, valid_lengths_ptr, dst_ptr,
                 compact_indices_ptr, compact_indices.has_value(),
                 use_row_valid_lengths, tokens_per_block, batch_size, width,
