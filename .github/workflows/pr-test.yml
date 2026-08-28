@@ -4,8 +4,10 @@
 name: pr-test
 
 # 仅 PR 创建/更新时触发一次完整编译+测试
+# pull_request_target: 使 fork PR 也能读取主仓 vars; 工作流文件取自 master 分支,
+# 编译测试的仍是 PR 代码。安全注意: 会在主仓上下文执行 PR 代码, 禁止在本工作流引用 secrets
 on:
-  pull_request:
+  pull_request_target:
     branches:
       - master
     types:
@@ -90,6 +92,7 @@ jobs:
           echo "AICC_URL=${AICC_URL}${LATEST_AICC}.run" >> "$GITHUB_ENV"
           echo "AICC_VERSION=${LATEST_AICC#dtk_llvm_}" >> "$GITHUB_ENV"
         env:
+          # pull_request_target 下可读主仓 vars
           RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL }}
 
       - name: Install AICC
