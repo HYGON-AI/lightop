@@ -6,6 +6,9 @@
 #include "paged_mqa_logits/paged_mqa_logits.h"
 #include "sparse_page_mqa/sparse_page_mqa.h"
 #include "index_k_int8_dequant/index_k_int8_dequant.h"
+#include "lmslimquant_native/bindings.h"
+#include "lmslimquant_native/lmslim/blaslt_w8a8_gemm.hpp"
+#include "lmslimquant_native/lmslim/blaslt_w8a8_gemm_v2.hpp"
 #include "sampling/sampling.h"
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace at {  namespace native {
@@ -796,6 +799,28 @@ void mimo_v2_split_rope_vscale_kv_store(
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  // Source-migrated LMSlimQuant entry points.  The leading underscore keeps
+  // them private to LightOp's Python compatibility layer.
+  m.def("_lmslimquant_rocblas_gemm_int8",
+        &lightop::lmslimquant_native::rocblas_gemm_int8);
+  m.def("_lmslimquant_hipblaslt_gemm_channelwise",
+        &hipblaslt_gemm_v2::hipblaslt_gemm_channelwise);
+  m.def("_lmslimquant_hipblaslt_gemm_channelwise_kme",
+        &hipblaslt_gemm_v2::hipblaslt_gemm_channelwise_kme);
+  m.def("_lmslimquant_hipblaslt_gemm_blockwise",
+        &hipblaslt_gemm_v2::hipblaslt_gemm_blockwise);
+  m.def("_lmslimquant_blaslt_w8a8_fp16_gemm",
+        &hipblaslt_gemm::w8a8_fp16_gemm,
+        py::arg("mat_a"), py::arg("mat_b"), py::arg("scale_a"),
+        py::arg("scale_b"), py::arg("output"), py::arg("m"), py::arg("n"),
+        py::arg("k"), py::arg("batch"), py::arg("transpose_flag"),
+        py::arg("alpha"), py::arg("beta"), py::arg("bias") = py::none());
+  m.def("_lmslimquant_blaslt_w8a8_bf16_gemm",
+        &hipblaslt_gemm::w8a8_bf16_gemm,
+        py::arg("mat_a"), py::arg("mat_b"), py::arg("scale_a"),
+        py::arg("scale_b"), py::arg("output"), py::arg("m"), py::arg("n"),
+        py::arg("k"), py::arg("batch"), py::arg("transpose_flag"),
+        py::arg("alpha"), py::arg("beta"), py::arg("bias") = py::none());
   m.def("layernorm_forward_autograd", &at::native::fuse_layernorm_forward_autograd, "layernorm forward");
   m.def("layernorm_mixed_fp32_params_forward_autograd", &at::native::fuse_layernorm_mixed_fp32_params_autograd,
         "layernorm forward, activations half/bf16 and weight/bias float32");
