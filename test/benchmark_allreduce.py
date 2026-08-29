@@ -11,7 +11,7 @@ from vllm import _custom_ops as vllm_ops
 from vllm.distributed.device_communicators.custom_all_reduce import CustomAllreduce
 
 from vllm.utils import FlexibleArgumentParser
-from lmslim.quantize.quant_ops import lm_faster_rmsquant
+from lightop.norm import lm_faster_rmsquant
 from vllm.distributed.device_communicators.pynccl import (
     PyNcclCommunicator
 )

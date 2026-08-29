@@ -11,11 +11,7 @@ from vllm.logger import init_logger
 from vllm.platforms import current_platform
 from vllm.scalar_type import ScalarType
 from vllm.utils import direct_register_custom_op
-try:
-    from lmslim import quant_ops 
-    from lmslim import quant_tools 
-except Exception:
-    print("INFO: Please install lmslim if you want to infer gptq or awq  or w8a8 model.\n") 
+from lightop._lmslim_native.quantize import quant_ops, quant_tools
 try:
     import lightop
 except Exception:

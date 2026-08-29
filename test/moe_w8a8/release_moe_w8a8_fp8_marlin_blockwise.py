@@ -15,14 +15,14 @@ from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
 import triton
 import triton.language as tl
-import lmslim.envs as lsenvs
+from lightop import envs as lsenvs
 from common.w8a8_cache_json import W8a8GetCacheJSON
 import torch.nn.functional as F
 from lightop.quant import (
     per_token_group_quant_int8,
     per_token_quant_int8,
 )
-from lmslim.layers.gemm.fp8_utils import per_token_group_quant_fp8
+from lightop._lmslim_native.layers.gemm.fp8_utils import per_token_group_quant_fp8
 from w8a8_quant import w8a8_2_marlin_weight
 import random
 import numpy as np
@@ -581,7 +581,7 @@ def determine_expert_map(
 
 # Torch参考实现已移除，现在使用Triton作为参考实现进行精度验证
 
-from lmslim.layers.gemm.fp8_utils import per_token_group_quant_fp8
+from lightop._lmslim_native.layers.gemm.fp8_utils import per_token_group_quant_fp8
 def moe_kernel_prepare_input(
     A: torch.Tensor,
     B: torch.Tensor,
