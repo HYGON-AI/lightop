@@ -30,11 +30,13 @@ import triton
 import triton.language as tl
 
 
-# FP8 E4M3 values can differ by one representable quantization step when the
-# fused and reference scale calculations round slightly differently. Judge
-# correctness by normalized relative error instead of exact FP8 equality.
-OUTPUT_REL_ERROR_TOL = 0.08
-SCALE_REL_ERROR_TOL = 0.01
+# The fused BF16/FP16 path and the FP32 reference can round the per-token
+# maximum differently.  A 1% relative tolerance covers the expected BF16
+# rounding error while still catching a materially incorrect quantization
+# scale.  FP8 E4M3 output may differ by one representable step (32 / 448), so
+# use an 8% output bound while still rejecting larger quantization deviations.
+SCALE_REL_ERROR_TOL = 1e-2
+OUTPUT_REL_ERROR_TOL = 8e-2
 
 # ------------------ fp8 torch ------------------
 def per_token_quant_fp8_torch(x):
@@ -247,9 +249,10 @@ def check_accuracy(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: Optional[
         rel_err_s = max_diff_s / denom_s
 
         print(f"[scale精度验证] max_abs_diff={max_diff_s:.6e}, mean_abs_diff={mean_diff_s:.6e}, rel_err={rel_err_s:.6e}")
-        assert rel_err_s < 1e-3, (
+        assert rel_err_s <= SCALE_REL_ERROR_TOL, (
             f"scale 精度不达标: rel_err={rel_err_s:.6e} "
-            f"(max_abs_diff={max_diff_s:.6e})"
+            f"(max_abs_diff={max_diff_s:.6e}, "
+            f"tolerance={SCALE_REL_ERROR_TOL:.6e})"
         )
 
         # === 验证 Output ===
@@ -263,7 +266,12 @@ def check_accuracy(rms_norm_layer: RMSNorm, x: torch.Tensor, residual: Optional[
         rel_err = max_diff / denom
 
         print(f"[out精度验证] max_abs_diff={max_diff:.6e}, mean_abs_diff={mean_diff:.6e}, rel_err={rel_err:.6e}")
-        
+        assert rel_err <= OUTPUT_REL_ERROR_TOL, (
+            f"输出精度不达标: rel_err={rel_err:.6e} "
+            f"(max_abs_diff={max_diff:.6e}, "
+            f"tolerance={OUTPUT_REL_ERROR_TOL:.6e})"
+        )
+
         return max_diff, mean_diff, rel_err, rel_err_s
 
 # ------------------ Main Bench Loop ------------------
@@ -380,6 +388,7 @@ def test_fuse_silu_mul_fp8_quant(bp):
         pytest.skip("vllm 不可用")
     if not torch.cuda.is_available():
         pytest.skip("需要 CUDA/ROCm 设备")
+    torch.manual_seed(0)
     bench(bp, "rms-norm-fp8-quant", bp.description())
 
 
