@@ -3,8 +3,7 @@ from lightop import op
 import time
 from collections import defaultdict
 from typing import Optional
-import lmslimquant
-from lmslim import quant_ops 
+from lightop._lmslim_native.quantize import quant_ops
 
 torch.set_printoptions(precision=4,threshold=100000,linewidth=140,sci_mode=False)
 torch.random.manual_seed(0)
@@ -213,4 +212,4 @@ if GENERATE_OPTIMAL_FUNCTION:
 
     print("\n" + "=" * 80)
     print("w8a8_smooth_quant_config_dict字典已保存到 generator/w8a8_smooth_quant_config_dict.py")
-    print("=" * 80) 
+    print("=" * 80)

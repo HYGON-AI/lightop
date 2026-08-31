@@ -130,7 +130,7 @@ def calculate_io_metrics(num_tokens, hidden_sizes, config: dict, input_dtype=tor
     return read_byte, write_byte, io_bytes
 
 # ------------------ 测试 ------------------
-def test_and_benchmark(num_tokens: int, hidden_sizes: int, config: dict, warmup=10, rep=100):
+def run_and_benchmark(num_tokens: int, hidden_sizes: int, config: dict, warmup=10, rep=100):
     device = torch.device("cuda")
     dtype = torch.bfloat16
     eps = 1e-5
@@ -304,7 +304,7 @@ def run_suite():
                 shape_str = f"[{num_tokens}, {hidden_size}]"
                 scen_str = config["name"]
                 
-                passed, msg, ref_us, opt_us, bw_gbs = test_and_benchmark(
+                passed, msg, ref_us, opt_us, bw_gbs = run_and_benchmark(
                     num_tokens, hidden_size, config, warmup=10, rep=100
                 )
                 
@@ -352,7 +352,7 @@ def run_suite():
 def test_per_token_smooth_quant_int8(num_tokens, hidden_size, config):
     if not torch.cuda.is_available():
         pytest.skip("需要 CUDA/ROCm 设备")
-    passed, msg, _, _, _ = test_and_benchmark(
+    passed, msg, _, _, _ = run_and_benchmark(
         num_tokens, hidden_size, config, warmup=10, rep=100
     )
     assert passed, msg

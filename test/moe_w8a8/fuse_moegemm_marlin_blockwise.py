@@ -1,6 +1,5 @@
 import torch
 import time
-from lmslim import quant_ops 
 from typing import Optional, Type, Any, Callable, Dict, List, Tuple
 import pandas as pd
 import os
@@ -89,7 +88,7 @@ from lightop.quant import (
 
 #     return A, A_scale
 
-from lmslim.layers.gemm.fp8_utils import per_token_group_quant_fp8
+from lightop._lmslim_native.layers.gemm.fp8_utils import per_token_group_quant_fp8
 def moe_kernel_prepare_input(
     A: torch.Tensor,
     B: torch.Tensor,

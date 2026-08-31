@@ -15,7 +15,7 @@ import torch.nn.functional as F
 import vllm.envs as envs
 from vllm.model_executor.layers.fused_moe.moe_align_block_size import (
     moe_align_block_size)
-# from lmslim.layers.fused_moe.fuse_moe_int8 import moe_kernel_prepare_input
+# from lightop._lmslim_native.layers.fused_moe.int8 import moe_kernel_prepare_input
 from vllm import _custom_ops as ops
 # from test_int8_kernel import torch_w8a8_per_column_moe
 # import _custom_ops as ops

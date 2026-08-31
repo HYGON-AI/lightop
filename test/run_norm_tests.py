@@ -8,6 +8,7 @@ RUNNABLE_TEST_FILES = [
     "test/test_norm_existing_api.py",
     "test/test_native_categorized_norm_remaining_api.py",
     "test/test_norm_lm_faster_rmsquant.py",
+    "test/ci_tests/test_fuse_silu_mul_fp8_quant.py",
 ]
 
 SCRIPT_TEST_FILES = [
@@ -28,7 +29,6 @@ SCRIPT_TEST_FILES = [
     "test/test_rn_add_dropout.py",
     "test/test_rn_add_dropout_bias.py",
     "test/test_rn_dropout.py",
-    "test/test_fuse_silu_mul_fp8_quant.py",
 ]
 
 

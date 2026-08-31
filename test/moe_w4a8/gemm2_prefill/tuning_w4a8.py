@@ -1,6 +1,6 @@
 import torch
 import time
-# from lmslim import quant_ops 
+# from lightop._lmslim_native.quantize import quant_ops
 from typing import Optional, Type, Any, Callable, Dict, List, Tuple
 import pandas as pd
 import os
@@ -251,4 +251,3 @@ def tuning_gemm2():
                 
 if __name__ == "__main__":
     tuning_gemm2()
-    
