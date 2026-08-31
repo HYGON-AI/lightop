@@ -660,6 +660,10 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
   __shared__ int smemFinalDstIdx[1];
   __shared__ int smemFinalBinSize[1];
   __shared__ int smemFoundTopKValues[1];
+  // The result of each histogram pass is a block-wide decision. Keep it in
+  // shared memory and publish it from lane 0 so every lane takes exactly the
+  // same path around the barriers in processHistogramStep().
+  __shared__ int smemContinueToNextStep[1];
 
   int rowLen = rowEnd - rowStart;
 
@@ -715,18 +719,49 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
   int thresholdBinIdx = -1;
   uint32_t logitPattern = 0;
 
-  bool continueToNextStep = processHistogramStep<0, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
+  processHistogramStep<0, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
       indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK);
 
-  if (continueToNextStep) {
-    continueToNextStep = processHistogramStep<1, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
-        indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK);
+  // Do not branch on the per-lane return value. Although the pass ends with
+  // a barrier, relying on every lane observing the same shared scalar has
+  // caused divergent replay paths on HIP. A single lane publishes the
+  // decision, followed by a block barrier, making the control flow explicit.
+  if (threadIdx.x == 0) {
+    smemContinueToNextStep[0] =
+        smemFinalBinSize[0] > kNumFinalItems ? 1 : 0;
   }
+  __syncthreads();
+  bool continueToNextStep = smemContinueToNextStep[0] != 0;
 
   if (continueToNextStep) {
-    continueToNextStep = processHistogramStep<2, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
+    // Step 0 uses FP16 bins. Step 1 is a full FP32 rescan, so discard the
+    // coarse writes; otherwise high-score entries can be selected twice.
+    if (threadIdx.x == 0) {
+      smemFoundTopKValues[0] = 0;
+      smemFinalDstIdx[0] = 0;
+    }
+    __syncthreads();
+
+    processHistogramStep<1, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
         indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK);
   }
+  if (threadIdx.x == 0) {
+    smemContinueToNextStep[0] =
+        continueToNextStep && smemFinalBinSize[0] > kNumFinalItems ? 1 : 0;
+  }
+  __syncthreads();
+  continueToNextStep = smemContinueToNextStep[0] != 0;
+
+  if (continueToNextStep) {
+    processHistogramStep<2, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
+        indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK);
+  }
+  if (threadIdx.x == 0) {
+    smemContinueToNextStep[0] =
+        continueToNextStep && smemFinalBinSize[0] > kNumFinalItems ? 1 : 0;
+  }
+  __syncthreads();
+  continueToNextStep = smemContinueToNextStep[0] != 0;
 
   if (continueToNextStep) {
     processHistogramStep<3, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
