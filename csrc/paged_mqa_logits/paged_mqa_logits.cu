@@ -45,6 +45,32 @@ namespace deep_gemm {
         default: LIGHTOP_HOST_UNREACHABLE("unsupported aligned batch size\n"); \
     }
 
+#define DISPATCH_MULTI_NEXT_N(next_n, NEXT_N, ...)                  \
+    [&]() {                                                         \
+        if (next_n == 1) {                                          \
+            constexpr int NEXT_N = 1;                               \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        } else if (next_n == 2) {                                   \
+            constexpr int NEXT_N = 2;                               \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        } else if (next_n == 3) {                                   \
+            constexpr int NEXT_N = 3;                               \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        } else if (next_n == 4) {                                   \
+            constexpr int NEXT_N = 4;                               \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        } else if (next_n == 5) {                                   \
+            constexpr int NEXT_N = 5;                               \
+            __VA_ARGS__();                                          \
+            return;                                                 \
+        }                                                           \
+        LIGHTOP_HOST_UNREACHABLE("unsupported next_n size\n");      \
+    }()
+
 #define DISPATCH_NEXT_N(next_n, NEXT_N, ...)                        \
     [&]() {                                                         \
         if (next_n == 1) {                                          \
@@ -225,7 +251,7 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     LIGHTOP_HOST_ASSERT(batch_size_next_n == batch_size * next_n);
     LIGHTOP_HOST_ASSERT(num_heads == num_heads_ and num_heads_kv == 1);
 
-    LIGHTOP_HOST_ASSERT(next_n == 1 or next_n == 2);
+    LIGHTOP_HOST_ASSERT(next_n >= 1 and next_n <= 5);
     LIGHTOP_HOST_ASSERT(block_kv == 4 or block_kv == 8 or block_kv == 16 or block_kv == 32 or block_kv == 64);
 
     LIGHTOP_HOST_ASSERT(q.is_contiguous());
@@ -326,6 +352,10 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
 
     // Dispatch implementation
     dim3 grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
+    const dim3 multi_next_grid = {(uint32_t)max_chunk_size, (uint32_t)batch_size, 1};
+    const auto make_multi_next_legacy_grid = [&](int dispatched_next_n) {
+        return dim3{(uint32_t)(max_chunk_size * dispatched_next_n), (uint32_t)batch_size, 1};
+    };
     dim3 block = {(uint32_t)(num_math_warp_groups * WARP_SIZE_GPU), 1, 1};
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
@@ -338,12 +368,54 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                 "paged_mqa_float16",
                 ([&] {
                     DISPATCH_BLOCK_KV(block_kv, BLOCK_KV, [&] {
-                        DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
+                        DISPATCH_MULTI_NEXT_N(next_n, NEXT_N, [&] {
+                            const dim3 legacy_grid = make_multi_next_legacy_grid(NEXT_N);
                             DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
-                                if constexpr (BLOCK_KV < 16) {
+                                constexpr bool kPageMajor = BLOCK_KV >= 16;
+                                constexpr bool kSmallHead = NUM_HEADS <= 16;
+                                constexpr bool kUseRegKv =
+                                    kPageMajor && kSmallHead && (NEXT_N == 3 || NEXT_N == 4);
+                                constexpr bool kUseLdsKv =
+                                    kPageMajor && NEXT_N >= 2 && (NEXT_N <= 3 || kSmallHead);
+                                // The one-CTA multi-next launch regresses stably for
+                                // N2/H64, so this new optimization keeps that shape
+                                // on the pre-existing legacy path.
+                                constexpr bool kN2WideHeadNeedsLegacy =
+                                    NEXT_N == 2 && NUM_HEADS == 64;
+                                constexpr bool kUseLdsKvMultiNext =
+                                    kUseLdsKv && !kN2WideHeadNeedsLegacy;
+
+                                if constexpr (kUseRegKv) {
+                                    dim3 multi_next_block = {(uint32_t)(4 * WARP_SIZE_GPU), 1, 1};
+                                    paged_mqa_logits_multi_next_reg_qw<
+                                        scalar_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV, true>
+                                        <<<multi_next_grid, multi_next_block, 0, stream>>>(
+                                            reinterpret_cast<scalar_t*>(q.data_ptr()),
+                                            reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
+                                            weights.data_ptr<float>(), batch_size,
+                                            num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
+                                            block_table_stride, context_lens.data_ptr<int32_t>(),
+                                            logits.data_ptr<float>(),
+                                            block_table.data_ptr<int32_t>(),
+                                            use_meta ? schedule_meta.value().data_ptr<int32_t>() : nullptr);
+                                } else if constexpr (kUseLdsKvMultiNext) {
+                                    dim3 multi_next_block = {(uint32_t)(4 * WARP_SIZE_GPU), 1, 1};
+                                    constexpr int multi_next_smem_size = 4 * 16 * 128 * sizeof(scalar_t);
+                                    paged_mqa_logits_multi_next_reg_qw<
+                                        scalar_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV>
+                                        <<<multi_next_grid, multi_next_block, multi_next_smem_size, stream>>>(
+                                            reinterpret_cast<scalar_t*>(q.data_ptr()),
+                                            reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
+                                            weights.data_ptr<float>(), batch_size,
+                                            num_kv_blocks, kv_cache_stride_bytes, aligned_max_context_len,
+                                            block_table_stride, context_lens.data_ptr<int32_t>(),
+                                            logits.data_ptr<float>(),
+                                            block_table.data_ptr<int32_t>(),
+                                            use_meta ? schedule_meta.value().data_ptr<int32_t>() : nullptr);
+                                } else if constexpr (BLOCK_KV < 16) {
                                     paged_mqa_logits_small_block<
                                         scalar_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV,
-                                        kTokensPerWarp, num_math_warp_groups><<<grid, block, smem_size, stream>>>(
+                                        kTokensPerWarp, num_math_warp_groups><<<legacy_grid, block, smem_size, stream>>>(
                                         reinterpret_cast<scalar_t*>(q.data_ptr()),
                                         reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
                                         weights.data_ptr<float>(), batch_size,
@@ -356,7 +428,7 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                                     constexpr int split_kv = BLOCK_KV * 4;
                                     paged_mqa_logits<
                                         scalar_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV, split_kv,
-                                        num_math_warp_groups, kTokensPerWarp><<<grid, block, smem_size, stream>>>(
+                                        num_math_warp_groups, kTokensPerWarp><<<legacy_grid, block, smem_size, stream>>>(
                                         reinterpret_cast<scalar_t*>(q.data_ptr()),
                                         reinterpret_cast<scalar_t*>(kv_cache.data_ptr()),
                                         weights.data_ptr<float>(), batch_size,
@@ -408,12 +480,27 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
         });
     } else if (kv_is_int8) {
         DISPATCH_BLOCK_KV(block_kv, BLOCK_KV, [&] {
-            DISPATCH_NEXT_N(next_n, NEXT_N, [&] {
+            DISPATCH_MULTI_NEXT_N(next_n, NEXT_N, [&] {
+                const dim3 legacy_grid = make_multi_next_legacy_grid(NEXT_N);
                 DISPATCH_NUM_HEADS(num_heads, NUM_HEADS, [&] {
-                    if constexpr (BLOCK_KV < 16) {
+                    // N1 remains on the unchanged legacy kernel.  Page-major H8/H16
+                    // multi-next cases use Register-QW: it loads every KV tile once
+                    // and reuses it for every next query without LDS Q/weight reads.
+                    // B4/B8 and H32/H64 retain their established kernels.
+                    constexpr bool kUseRegisterQwMultiNextKernel =
+                        NEXT_N >= 2 && BLOCK_KV >= 16 && NUM_HEADS <= 16;
+                    if constexpr (kUseRegisterQwMultiNextKernel) {
+                        dim3 multi_next_block = {(uint32_t)(4 * WARP_SIZE_GPU), 1, 1};
+                        paged_mqa_logits_int8_multi_next_reg_qw<int8_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV>
+                            <<<multi_next_grid, multi_next_block, 0, stream>>>(
+                                q.data_ptr<int8_t>(), kv_cache.data_ptr<int8_t>(), kv_cache_scales.data_ptr<float>(),
+                                weights.data_ptr<float>(), batch_size, num_kv_blocks, kv_cache_stride_bytes,
+                                aligned_max_context_len, block_table_stride, context_lens.data_ptr<int32_t>(),
+                                logits.data_ptr<float>(), block_table.data_ptr<int32_t>(), nullptr);
+                    } else if constexpr (BLOCK_KV < 16) {
                         paged_mqa_logits_int8_small_block<
                             int8_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV, kTokensPerWarp, num_math_warp_groups>
-                            <<<grid, block, smem_size, stream>>>(
+                            <<<legacy_grid, block, smem_size, stream>>>(
                                 q.data_ptr<int8_t>(), kv_cache.data_ptr<int8_t>(), kv_cache_scales.data_ptr<float>(),
                                 weights.data_ptr<float>(), batch_size, num_kv_blocks, kv_cache_stride_bytes,
                                 aligned_max_context_len, block_table_stride, context_lens.data_ptr<int32_t>(),
@@ -422,7 +509,7 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                         constexpr int split_kv = BLOCK_KV * num_math_warp_groups;
                         paged_mqa_logits_int8<
                             int8_t, NEXT_N, NUM_HEADS, 128, BLOCK_KV, split_kv, num_math_warp_groups, kTokensPerWarp>
-                            <<<grid, block, smem_size, stream>>>(
+                            <<<legacy_grid, block, smem_size, stream>>>(
                                 q.data_ptr<int8_t>(), kv_cache.data_ptr<int8_t>(), kv_cache_scales.data_ptr<float>(),
                                 weights.data_ptr<float>(), batch_size, num_kv_blocks, kv_cache_stride_bytes,
                                 aligned_max_context_len, block_table_stride, context_lens.data_ptr<int32_t>(),
