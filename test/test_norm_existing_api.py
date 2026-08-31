@@ -20,6 +20,7 @@ EXISTING_NORM_APIS = [
     "LayerNorm",
     "LayerNormMixedFp32Weight",
     "rms_norm_dynamic_per_token_quant",
+    "rms_norm",
     "rms_norm_per_token_fp8_quant",
     "rms_norm_per_token_quant",
     "RMSNorm",

@@ -2,6 +2,13 @@ import subprocess
 import sys
 
 
+def test_unused_legacy_lmslimquant_apis_are_removed():
+    from lightop._lmslim_native.quantize import quant_ops
+
+    assert not hasattr(quant_ops, "get_awq_workspace_size")
+    assert not hasattr(quant_ops, "dequant_w4_gemm_rowmajor")
+
+
 def test_native_gemm_api_does_not_eagerly_import_lmslimquant():
     code = """
 import sys

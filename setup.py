@@ -517,6 +517,10 @@ def get_extensions():
     if torch_version >= 290:
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_290')
     op_files = glob.glob('./csrc/*.cu') + glob.glob('./csrc/*.cpp') + \
+               glob.glob('./csrc/lmslimquant_native/*.cpp') + \
+               glob.glob('./csrc/lmslimquant_native/smoothquant/*.cpp') + \
+               glob.glob('./csrc/lmslimquant_native/quant_kernels/torch_bridge/*.cu') + \
+               glob.glob('./csrc/lmslimquant_native/quant_kernels/gptq/*.cu') + \
                glob.glob('./csrc/layernorm/*.cu') + glob.glob('./csrc/loss/*.cu') + \
                glob.glob('./csrc/scaledmask/*.cu') + glob.glob('./csrc/groupnorm/*.cu') + \
                glob.glob('./csrc/rmsnorm/*.cu') + glob.glob('./csrc/batchnorm/*.cu') + \
@@ -569,6 +573,12 @@ def get_extensions():
         name="lightop.op",
         sources=op_files,
         include_dirs=include_dirs,
+        libraries=['rocblas', 'hipblas', 'hipblaslt'],
+        library_dirs=[os.path.join(rocm_home, 'lib')],
+        extra_objects=[
+            os.path.abspath('./lib/static/liblmslimquant_static.a'),
+            os.path.abspath('./lib/static/libgemm_w4a16_awq.a'),
+        ],
         define_macros=define_macros,
         extra_compile_args=extra_compile_args)
 
@@ -601,7 +611,15 @@ class BuildPyWithResources(build_py):
         super().run()
         package_root = os.path.join(self.build_lib, "lightop")
         for source, destination in PACKAGE_RESOURCE_DIRS.items():
-            shutil.copytree(source, os.path.join(package_root, destination), dirs_exist_ok=True)
+            # Static archives are build inputs only. Keep them in the repository's
+            # shared lib/ tree without copying them into the installed wheel.
+            ignore = shutil.ignore_patterns("static") if source == "lib" else None
+            shutil.copytree(
+                source,
+                os.path.join(package_root, destination),
+                dirs_exist_ok=True,
+                ignore=ignore,
+            )
 
 
 setup(

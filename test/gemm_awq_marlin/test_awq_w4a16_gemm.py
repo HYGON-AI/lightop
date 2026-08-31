@@ -11,11 +11,6 @@ import torch.nn.functional as F
 from lightop._lmslim_native.quantize.utils.awq_gemm_get_best_template import (
     AWQ_W4A16_config_cuda,
 )
-try:
-    import lmslimquant
-except ModuleNotFoundError:
-    print("SKIP: optional lmslimquant baseline extension is not installed")
-    raise SystemExit(0)
 import re
 import pdb
 import lightop
@@ -69,14 +64,14 @@ def data_gen(M,N,K,G,use_random, dtype, use_marlin=False):
 
     # 反量化权重用于 F.linear 基准测试
     dqweight_out = torch.empty((N, K), dtype=dtype).cuda()
-    lmslimquant.awq_dequant_colmajor(dqweight_out,
-                                     weight_trans,
-                                     scales_zeros,
-                                     K,
-                                     pad_k,  # StrideB_padded
-                                     N,
-                                     group_size,
-                                     N * K * 2)
+    quant_ops.awq_dequant_colmajor(weight_trans,
+                                   scales_zeros,
+                                   K,
+                                   pad_k,  # StrideB_padded
+                                   N,
+                                   group_size,
+                                   dqweight_out,
+                                   N * K * 2)
 
     # 创建 AWQ workspace
     awqsingleton = AWQShareWorkSpace()
@@ -272,13 +267,14 @@ def sing_test_dequant(N,K, G, dtype, test_speed, use_random, use_marlin):
         marlin_data_bytes = ret.element_size() * ret.nelement() + weight_quant.element_size() * weight_quant.nelement() + data_dict['scales_zeros'].element_size() * data_dict['scales_zeros'].nelement()
         data_bytes_gb = marlin_data_bytes / (2**30)
         marlin_bandwidth = data_bytes_gb / (marlin_dequant_time/1000/1000)
-        no_marlin_time = triton.testing.do_bench(lambda: lmslimquant.awq_dequant_colmajor(data_dict['dqweight_out'],
+        no_marlin_time = triton.testing.do_bench(lambda: quant_ops.awq_dequant_colmajor(
                                      data_dict['weight_trans'],
                                      data_dict['scales_zeros'],
                                      data_dict['K'],
                                      data_dict['K'],  # StrideB_padded
                                      data_dict['N'],
                                      data_dict['group_size'],
+                                     data_dict['dqweight_out'],
                                      data_dict['N'] * data_dict['K'] * 2),quantiles=None, return_mode="mean")*1000
         no_marlin_bandwidth = data_bytes_gb / (no_marlin_time/1000/1000)
         print(f"awq_w4a16_dequant算子速度测试结果 - N={N}, K={K}, G={G}, marlin_dequant_time: {marlin_dequant_time:.2f} us, no_marlin_dequant_time: {no_marlin_time:.2f} us, marlin_bandwidth: {marlin_bandwidth:.2f} GB/s, no_marlin_bandwidth: {no_marlin_bandwidth:.2f} GB/s")

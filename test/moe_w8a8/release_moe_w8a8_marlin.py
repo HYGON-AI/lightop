@@ -10,7 +10,7 @@ import ast
 from typing import Any, Callable, Dict, List, Optional, Tuple, Type
 import triton
 import triton.language as tl
-# import lmslim.envs as lsenvs
+# from lightop import envs as lsenvs
 from common.w8a8_cache_json import W8a8GetCacheJSON
 import torch.nn.functional as F
 from lightop.moe import moe_align_block_size
