@@ -599,6 +599,202 @@ paged_mqa_logits_bf16_fp8_kv(const at::BFloat16* q, const uint8_t* kv_block, con
     }
 }
 
+// Multi-next dense path with Q and weights resident in VGPRs.
+//
+// Four waves keep the legacy 256-token CTA partitioning. Every wave loads one
+// distinct 16-token KV tile once, then consumes that tile for all next queries
+// before moving on.  KV can either use a private LDS slice or, for the small
+// head cases, remain in VGPRs and avoid the LDS round trip.
+template <typename Element, int kNextN, int kNumHeads, int kHeadDim = 128, int BLOCK_KV = 64,
+          bool kKvInVgpr = false>
+__attribute__((amdgpu_flat_work_group_size(1, 512))) __global__ void
+paged_mqa_logits_multi_next_reg_qw(const Element* q,
+                                   const Element* kv_block,
+                                   const float* weights,
+                                   const int,
+                                   const int,
+                                   const uint64_t,
+                                   const uint64_t logits_stride,
+                                   const uint64_t block_table_stride,
+                                   const int* context_lens,
+                                   float* logits,
+                                   const int* block_table,
+                                   const int*) {
+    constexpr int K_TILE = 32;
+    constexpr int Q_TILE = 16;
+    constexpr int KV_TILE = 16;
+    constexpr int Q_ITER = constexpr_ceil_div(kNumHeads, Q_TILE);
+    constexpr int K_BLOCK_MAX = kHeadDim / K_TILE;
+    constexpr int kNumWarps = 4;
+    constexpr int KV_ITER = 4;
+    constexpr int kTokensPerCta = kNumWarps * KV_ITER * KV_TILE;
+    constexpr uint32_t kSwizzleAlignment = kHeadDim * 8;
+    constexpr bool is_half = std::is_same<Element, at::Half>::value;
+
+    LIGHTOP_STATIC_ASSERT(kNextN >= 2 && kNextN <= 5, "Invalid multi-next size");
+    LIGHTOP_STATIC_ASSERT(BLOCK_KV == 16 || BLOCK_KV == 32 || BLOCK_KV == 64,
+                          "Invalid page-major BLOCK_KV");
+    LIGHTOP_STATIC_ASSERT(kHeadDim == 128, "Invalid head dimension");
+    LIGHTOP_STATIC_ASSERT(!kKvInVgpr || kNumHeads <= 16,
+                          "Register-KV multi-next path only supports up to 16 heads");
+
+    const int warp_idx = threadIdx.x / WARP_SIZE_GPU;
+    const int lane_idx = threadIdx.x % WARP_SIZE_GPU;
+    const int t_id = threadIdx.x;
+    const int q_idx = blockIdx.y;
+    const int context_len = context_lens[q_idx];
+    const int num_kv = ceil_div(context_len, BLOCK_KV);
+    const int cta_seq_kv_offset = blockIdx.x * kTokensPerCta;
+    if (cta_seq_kv_offset >= num_kv * BLOCK_KV) {
+        #pragma unroll
+        for (int next_n = 0; next_n < kNextN; ++next_n) {
+            const int seq_kv_offset = cta_seq_kv_offset + t_id;
+            if (seq_kv_offset < logits_stride) {
+                logits[q_idx * kNextN * logits_stride + next_n * logits_stride + seq_kv_offset] = -INFINITY;
+            }
+        }
+        return;
+    }
+
+    // Keeping Q in registers across this CTA's four KV tiles is what lets one
+    // wave reuse the same loaded K tile for every next query.
+    f16x8_t reg_q_operand[kNextN][Q_ITER][K_BLOCK_MAX];
+    const int base_fetch_q = lane_idx % Q_TILE * kHeadDim + lane_idx / Q_TILE * 8;
+    #pragma unroll
+    for (int next_n = 0; next_n < kNextN; ++next_n) {
+        const auto* gQ = q + q_idx * kNextN * kNumHeads * kHeadDim + next_n * kNumHeads * kHeadDim;
+        #pragma unroll
+        for (int q_iter = 0; q_iter < Q_ITER; ++q_iter) {
+            #pragma unroll
+            for (int k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
+                const int head_idx = q_iter * Q_TILE + lane_idx % Q_TILE;
+                const int q_offset = base_fetch_q + q_iter * Q_TILE * kHeadDim + k_block * K_TILE;
+                f16x8_t value = {};
+                if (head_idx < kNumHeads) {
+                    value = *reinterpret_cast<const f16x8_t*>(&gQ[q_offset]);
+                }
+                reg_q_operand[next_n][q_iter][k_block] = value;
+            }
+        }
+    }
+
+    float reg_weights[kNextN][Q_ITER * 4];
+    #pragma unroll
+    for (int next_n = 0; next_n < kNextN; ++next_n) {
+        const auto* gW = weights + q_idx * kNextN * kNumHeads + next_n * kNumHeads;
+        #pragma unroll
+        for (int q_iter = 0; q_iter < Q_ITER; ++q_iter) {
+            #pragma unroll
+            for (int weight_idx = 0; weight_idx < 4; ++weight_idx) {
+                const int head_idx = q_iter * Q_TILE + weight_idx * 4 + lane_idx / Q_TILE;
+                reg_weights[next_n][q_iter * 4 + weight_idx] = head_idx < kNumHeads ? gW[head_idx] : 0.0f;
+            }
+        }
+    }
+
+    extern __shared__ __align__(kSwizzleAlignment) uint8_t smem_buffer[];
+    Element* smem_kv_tile = nullptr;
+    if constexpr (!kKvInVgpr) {
+        smem_kv_tile = reinterpret_cast<Element*>(smem_buffer) +
+            warp_idx * KV_TILE * kHeadDim;
+    }
+    const uint64_t block_table_offset = q_idx * block_table_stride;
+    const int base_fetch_kv = lane_idx % KV_TILE * kHeadDim + lane_idx / KV_TILE * 8;
+
+    #pragma unroll
+    for (int kv_iter = 0; kv_iter < KV_ITER; ++kv_iter) {
+        const int cta_tile_idx = kv_iter * kNumWarps + warp_idx;
+        const int seq_kv_tile_offset = cta_seq_kv_offset + cta_tile_idx * KV_TILE;
+        const bool valid = seq_kv_tile_offset / BLOCK_KV < num_kv;
+        int kv_block_idx = -1;
+
+        if (lane_idx == 0 && valid) {
+            kv_block_idx = block_table[block_table_offset + seq_kv_tile_offset / BLOCK_KV];
+        }
+        kv_block_idx = __shfl_sync(0xffffffffffffffff, kv_block_idx, 0);
+        f16x8_t reg_kv_operands[K_BLOCK_MAX] = {};
+        if constexpr (kKvInVgpr) {
+            if (kv_block_idx != -1) {
+                const auto* page = kv_block + static_cast<int64_t>(kv_block_idx) * BLOCK_KV * kHeadDim;
+                const int page_tile_offset = (seq_kv_tile_offset % BLOCK_KV) * kHeadDim + base_fetch_kv;
+                #pragma unroll
+                for (int k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
+                    reg_kv_operands[k_block] = *reinterpret_cast<const f16x8_t*>(
+                        page + page_tile_offset + k_block * K_TILE);
+                }
+            }
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(0)\n\t" ::: "memory");
+            __builtin_amdgcn_sched_barrier(0);
+        } else if (kv_block_idx != -1) {
+            const auto* page = kv_block + static_cast<int64_t>(kv_block_idx) * BLOCK_KV * kHeadDim;
+            buffer_load_page_tile_lds<Element, kHeadDim, KV_TILE>(
+                page, seq_kv_tile_offset % BLOCK_KV, lane_idx, smem_kv_tile);
+            __builtin_amdgcn_sched_barrier(0);
+            asm volatile("s_waitcnt vmcnt(0)\n\t" ::: "memory");
+            __builtin_amdgcn_sched_barrier(0);
+        }
+
+        #pragma unroll
+        for (int next_n = 0; next_n < kNextN; ++next_n) {
+            float sum = 0.0f;
+            if (valid) {
+                fp32x4 acc[Q_ITER];
+                CLEAR_ACC(acc, Q_ITER);
+
+                #pragma unroll
+                for (int k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
+                    f16x8_t reg_kv_operand;
+                    if constexpr (kKvInVgpr) {
+                        reg_kv_operand = reg_kv_operands[k_block];
+                    } else {
+                        const int lds_addr = reinterpret_cast<size_t>(
+                            smem_kv_tile + base_fetch_kv + k_block * K_TILE);
+                        __builtin_amdgcn_sched_barrier(0);
+                        asm volatile("ds_read_b128 %0, %1\n\t"
+                                     "s_waitcnt lgkmcnt(0)\n\t"
+                                     : "=v"(reg_kv_operand)
+                                     : "v"(lds_addr)
+                                     :);
+                        __builtin_amdgcn_sched_barrier(0);
+                    }
+
+                    #pragma unroll
+                    for (int q_iter = 0; q_iter < Q_ITER; ++q_iter) {
+                        builtin_b16_mmac<is_half>(
+                            reg_kv_operand.front, reg_q_operand[next_n][q_iter][k_block].front, acc[q_iter]);
+                        builtin_b16_mmac<is_half>(
+                            reg_kv_operand.rear, reg_q_operand[next_n][q_iter][k_block].rear, acc[q_iter]);
+                    }
+                }
+
+                #pragma unroll
+                for (int q_iter = 0; q_iter < Q_ITER; ++q_iter) {
+                    #pragma unroll
+                    for (int weight_idx = 0; weight_idx < 4; ++weight_idx) {
+                        sum += fmaxf(acc[q_iter][weight_idx], 0.0f) *
+                            reg_weights[next_n][q_iter * 4 + weight_idx];
+                    }
+                }
+                #pragma unroll
+                for (uint32_t shfl_idx = 16; shfl_idx <= 32; shfl_idx <<= 1) {
+                    sum += __shfl_down_sync(0xffffffffffffffff, sum, shfl_idx);
+                }
+            }
+
+            if (lane_idx < KV_TILE) {
+                const int seq_kv_offset = seq_kv_tile_offset + lane_idx;
+                const uint64_t base_logits_offset = q_idx * kNextN * logits_stride + next_n * logits_stride;
+                if (valid && seq_kv_offset < context_len - (kNextN - next_n) + 1) {
+                    logits[base_logits_offset + seq_kv_offset] = sum;
+                } else if (seq_kv_offset < logits_stride) {
+                    logits[base_logits_offset + seq_kv_offset] = -INFINITY;
+                }
+            }
+        }
+    }
+}
+
 template <typename Element, int kNextN = 1, int kNumHeads = 64,
           int kHeadDim = 128, int BLOCK_KV = 64,
           int kBatchSplit, int kNumWarps = 4,

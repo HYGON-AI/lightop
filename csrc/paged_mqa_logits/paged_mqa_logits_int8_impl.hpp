@@ -355,6 +355,193 @@ paged_mqa_logits_int8(const Element* q, const Element* kv_block, const float* kv
     }
 }
 
+// Multi-next dense INT8 path with Q and weights resident in VGPRs.
+//
+// Every wave owns one 16-token KV tile.  The four waves collectively cover a
+// 256-token CTA, load each KV tile and its scales once, then each wave consumes
+// that tile for all next queries.  Keeping every Q/weight operand in VGPRs is
+// practical for H8/H16 and avoids both per-next KV reloads and an LDS Q cache.
+template <typename Element, int kNextN, int kNumHeads, int kHeadDim = 128, int BLOCK_KV = 64>
+__attribute__((amdgpu_flat_work_group_size(1, 512))) __global__ void
+paged_mqa_logits_int8_multi_next_reg_qw(const Element* q,
+                                         const Element* kv_block,
+                                         const float* kv_block_scales,
+                                         const float* weights,
+                                         const int,
+                                         const int,
+                                         const uint64_t kv_cache_stride_bytes,
+                                         const uint64_t logits_stride,
+                                         const uint64_t block_table_stride,
+                                         const int* context_lens,
+                                         float* logits,
+                                         const int* block_table,
+                                         const int*) {
+    constexpr int K_TILE = 64;
+    constexpr int Q_TILE = 16;
+    constexpr int KV_TILE = 16;
+    constexpr int Q_ITER = constexpr_ceil_div(kNumHeads, Q_TILE);
+    constexpr int K_BLOCK_MAX = kHeadDim / K_TILE;
+    constexpr int kNumWarps = 4;
+    constexpr int KV_ITER = 4;
+    constexpr int kTokensPerCta = kNumWarps * KV_ITER * KV_TILE;
+    constexpr int kAlignmentQ = 16;
+
+    LIGHTOP_STATIC_ASSERT(std::is_same<Element, int8_t>::value, "Invalid INT8 element type");
+    LIGHTOP_STATIC_ASSERT(kNextN >= 2 && kNextN <= 5, "Invalid multi-next size");
+    LIGHTOP_STATIC_ASSERT(BLOCK_KV == 16 || BLOCK_KV == 32 || BLOCK_KV == 64,
+                          "Invalid page-major BLOCK_KV");
+    LIGHTOP_STATIC_ASSERT(kHeadDim == 128, "Invalid INT8 KV tile shape");
+    LIGHTOP_STATIC_ASSERT(kNumHeads <= 16, "Register-QW INT8 multi-next path only supports H8/H16");
+
+    const int warp_idx = threadIdx.x / WARP_SIZE_GPU;
+    const int lane_idx = threadIdx.x % WARP_SIZE_GPU;
+    const int t_id = threadIdx.x;
+    const int q_idx = blockIdx.y;
+    const int context_len = context_lens[q_idx];
+    const int num_kv = ceil_div(context_len, BLOCK_KV);
+    const int cta_seq_kv_offset = blockIdx.x * kTokensPerCta;
+    if (cta_seq_kv_offset >= num_kv * BLOCK_KV) {
+        #pragma unroll
+        for (int next_n = 0; next_n < kNextN; ++next_n) {
+            const int seq_kv_offset = cta_seq_kv_offset + t_id;
+            if (seq_kv_offset < logits_stride) {
+                logits[q_idx * kNextN * logits_stride + next_n * logits_stride + seq_kv_offset] = -INFINITY;
+            }
+        }
+        return;
+    }
+
+    i8x16_t reg_q_operand[kNextN][Q_ITER][K_BLOCK_MAX];
+    const int base_fetch_q = lane_idx % Q_TILE * kHeadDim + lane_idx / Q_TILE * kAlignmentQ;
+    #pragma unroll
+    for (int next_n = 0; next_n < kNextN; ++next_n) {
+        const auto* gQ = q + q_idx * kNextN * kNumHeads * kHeadDim + next_n * kNumHeads * kHeadDim;
+        #pragma unroll
+        for (int q_iter = 0; q_iter < Q_ITER; ++q_iter) {
+            #pragma unroll
+            for (int k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
+                const int head_idx = q_iter * Q_TILE + lane_idx % Q_TILE;
+                const int q_offset = base_fetch_q + q_iter * Q_TILE * kHeadDim + k_block * K_TILE;
+                i8x16_t value = {};
+                if (head_idx < kNumHeads) {
+                    value = *reinterpret_cast<const i8x16_t*>(&gQ[q_offset]);
+                }
+                reg_q_operand[next_n][q_iter][k_block] = value;
+            }
+        }
+    }
+
+    float reg_weights[kNextN][Q_ITER * 4];
+    #pragma unroll
+    for (int next_n = 0; next_n < kNextN; ++next_n) {
+        const auto* gW = weights + q_idx * kNextN * kNumHeads + next_n * kNumHeads;
+        #pragma unroll
+        for (int q_iter = 0; q_iter < Q_ITER; ++q_iter) {
+            #pragma unroll
+            for (int weight_idx = 0; weight_idx < 4; ++weight_idx) {
+                const int head_idx = q_iter * Q_TILE + weight_idx * 4 + lane_idx / Q_TILE;
+                reg_weights[next_n][q_iter * 4 + weight_idx] =
+                    head_idx < kNumHeads ? gW[head_idx] : 0.0f;
+            }
+        }
+    }
+
+    // The KV tile stays in registers.  This retains the one-load-per-tile
+    // reuse across all next queries while avoiding a raw-buffer-to-LDS
+    // dependency in the INT8 path.
+    const uint64_t block_table_offset = q_idx * block_table_stride;
+    const int kv_scale_stride = kv_cache_stride_bytes / sizeof(float);
+    const int base_fetch_kv = lane_idx % KV_TILE * kHeadDim + lane_idx / KV_TILE * kAlignmentQ;
+
+    #pragma unroll
+    for (int kv_iter = 0; kv_iter < KV_ITER; ++kv_iter) {
+        const int cta_tile_idx = kv_iter * kNumWarps + warp_idx;
+        const int seq_kv_tile_offset = cta_seq_kv_offset + cta_tile_idx * KV_TILE;
+        const bool valid = seq_kv_tile_offset / BLOCK_KV < num_kv;
+        int kv_block_idx = -1;
+        if (lane_idx == 0 && valid) {
+            kv_block_idx = block_table[block_table_offset + seq_kv_tile_offset / BLOCK_KV];
+        }
+        kv_block_idx = __shfl_sync(0xffffffffffffffff, kv_block_idx, 0);
+        const bool tile_valid = valid && kv_block_idx != -1;
+        float lane_kv_scale = 0.0f;
+        i8x16_t reg_kv_operands[K_BLOCK_MAX] = {};
+
+        if (tile_valid) {
+            const auto* page = reinterpret_cast<const uint8_t*>(kv_block) +
+                static_cast<int64_t>(kv_block_idx) * kv_cache_stride_bytes;
+            const int page_tile_offset =
+                (seq_kv_tile_offset % BLOCK_KV) * kHeadDim + base_fetch_kv;
+            #pragma unroll
+            for (int k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
+                reg_kv_operands[k_block] = *reinterpret_cast<const i8x16_t*>(
+                    page + page_tile_offset + k_block * K_TILE);
+            }
+            if (lane_idx < KV_TILE) {
+                const auto* page_scales = kv_block_scales +
+                    static_cast<int64_t>(kv_block_idx) * kv_scale_stride;
+                lane_kv_scale = page_scales[seq_kv_tile_offset % BLOCK_KV + lane_idx];
+            }
+        }
+
+        __builtin_amdgcn_sched_barrier(0);
+        asm volatile("s_waitcnt vmcnt(0)\n\t" ::: "memory");
+        __builtin_amdgcn_sched_barrier(0);
+        lane_kv_scale = __shfl_sync(0xffffffffffffffff, lane_kv_scale, lane_idx % KV_TILE);
+
+        #pragma unroll
+        for (int next_n = 0; next_n < kNextN; ++next_n) {
+            float sum = 0.0f;
+            if (tile_valid) {
+                int32x4_t acc[Q_ITER];
+                #pragma unroll
+                for (int q_iter = 0; q_iter < Q_ITER; ++q_iter) {
+                    acc[q_iter] = {0, 0, 0, 0};
+                }
+
+                #pragma unroll
+                for (int k_block = 0; k_block < K_BLOCK_MAX; ++k_block) {
+                    const auto& reg_kv_operand = reg_kv_operands[k_block];
+
+                    #pragma unroll
+                    for (int q_iter = 0; q_iter < Q_ITER; ++q_iter) {
+                        builtin_i8_mmac(reg_kv_operand.front,
+                                        reg_q_operand[next_n][q_iter][k_block].front,
+                                        acc[q_iter]);
+                        builtin_i8_mmac(reg_kv_operand.rear,
+                                        reg_q_operand[next_n][q_iter][k_block].rear,
+                                        acc[q_iter]);
+                    }
+                }
+
+                #pragma unroll
+                for (int q_iter = 0; q_iter < Q_ITER; ++q_iter) {
+                    #pragma unroll
+                    for (int weight_idx = 0; weight_idx < 4; ++weight_idx) {
+                        sum += fmaxf(static_cast<float>(acc[q_iter][weight_idx]), 0.0f) *
+                            reg_weights[next_n][q_iter * 4 + weight_idx];
+                    }
+                }
+                sum *= lane_kv_scale;
+                #pragma unroll
+                for (uint32_t shfl_idx = 16; shfl_idx <= 32; shfl_idx <<= 1) {
+                    sum += __shfl_down_sync(0xffffffffffffffff, sum, shfl_idx);
+                }
+            }
+
+            if (lane_idx < KV_TILE) {
+                const int seq_kv_offset = seq_kv_tile_offset + lane_idx;
+                const uint64_t base_logits_offset = q_idx * kNextN * logits_stride + next_n * logits_stride;
+                if (tile_valid && seq_kv_offset < context_len - (kNextN - next_n) + 1) {
+                    logits[base_logits_offset + seq_kv_offset] = sum;
+                } else if (seq_kv_offset < logits_stride) {
+                    logits[base_logits_offset + seq_kv_offset] = -INFINITY;
+                }
+            }
+        }
+    }
+}
+
 template <typename Element, int kNextN = 1, int kNumHeads = 64, int kHeadDim = 128, int BLOCK_KV = 4,
           int kTokensPerWarp = 64, int kNumWarps = 4>
 __attribute__((amdgpu_flat_work_group_size(1, 512))) __global__ void
