@@ -41,6 +41,7 @@ from .rope import (
     apply_rotary_pos_emb_index_fused,
     fuse_rms_mrope_cuda,
     rotary_embedding_deepseek_fuse,
+    rotary_embedding_fuse,
 )
 
 __all__ = [
@@ -72,6 +73,7 @@ __all__ = [
     "rms_rotary_embedding_fuse_with_kv_store_fake",
     "RotaryEmbedding",
     "rotary_embedding_deepseek_fuse",
+    "rotary_embedding_fuse",
     "split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant",
     "top_k_per_row_decode",
     "top_k_per_row_prefill",

@@ -30,7 +30,7 @@ from .grid_sample import GridSample, grid_sample_forward, grid_sample_backward
 from .layernorm import LayerNorm, LayerNormMixedFp32Weight, LnDropout, LnAddDropout, LnAddDropoutBias, LnDropPath, AddLn
 from .droppath import DropPath
 from .fuse_bias_swiglu import FuseBiasSwiGLU
-from .fuse_rotary_positional_embedding import RotaryEmbedding,apply_rotary_pos_emb_index_fused
+from .fuse_rotary_positional_embedding import RotaryEmbedding,apply_rotary_pos_emb_index_fused,rotary_embedding_fuse
 from .fuseadddropout import AddDropout
 from .fusebiasdropoutadd import FuseBiasDropoutAdd
 from .fusebiasgelu import FuseBiasGelu

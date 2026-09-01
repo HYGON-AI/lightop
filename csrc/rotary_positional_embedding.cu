@@ -60,15 +60,17 @@ struct vec {
 namespace at{
 namespace native{
 
-    
 
+// 相对传统的 RoPE 实现
+// 输入： const scalar_t* Q, const scalar_t* cos, const scalar_t* sin
+// 输出： scalar_t* q_emb
 template <typename scalar_t, int BLOCK_NP, int BLOCK_HN, int VEC>
 __global__ void RoPE_gpu_kernel(int sq, int b, int np, int hn,
                                 const scalar_t* Q, const scalar_t* cos, const scalar_t* sin,
                                 scalar_t* q_emb) {
     using LoadT = at::native::memory::aligned_vector<scalar_t, VEC>;
     int sq_id = blockIdx.x, b_id = blockIdx.y;
-    int np_id = threadIdx.y, hn_cid = threadIdx.x * VEC;
+    int np_id = threadIdx.y, hn_cid = threadIdx.x * VEC;  // 向量化访存
     scalar_t v_cos[VEC];
     scalar_t v_sin[VEC];
     scalar_t v_q[VEC];
@@ -91,6 +93,8 @@ __global__ void RoPE_gpu_kernel(int sq, int b, int np, int hn,
     }
 }
 
+
+
 template <typename scalar_t>
 void host_apply_RoPE_gpu(int sq, int b, int np, int hn,
                          const scalar_t* Q, const scalar_t* cos,
@@ -106,12 +110,10 @@ void host_apply_RoPE_gpu(int sq, int b, int np, int hn,
         RoPE_gpu_kernel<scalar_t, 32, 32, 4><<<blocks, threads, 0, stream>>>(sq, b, np, hn, Q, cos, sin, q_emb);
     }
 
-    
-}
 
+}
 void RoPE_gpu_launch(int sq, int b, int np, int hn, at::Tensor* Q,
                      at::Tensor* cos, at::Tensor* sin, at::Tensor* q_emb) {
-
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half,
         at::ScalarType::BFloat16,
@@ -152,6 +154,8 @@ __global__ void RoPE_backward_gpu_kernel(int sq, int b, int np,
         }
     }
 }
+
+// 一次 kernel 同时处理 Q 和 K
 template <typename scalar_t, bool IS_NEOX, int num_tokens_per_block,
           int total_thread_per_tokens, int num_group_per_token_q,
           int num_group_per_token_k, int thread_per_head_q,
@@ -163,7 +167,7 @@ __global__ void rotary_embedding_kernel_opt(
     const scalar_t* __restrict__ cos_sin_cache,  // [max_position, 2, rot_dim / 2]
     const int rot_dim, const int64_t query_stride, const int64_t key_stride,
     const int64_t head_stride, const int num_heads, const int num_kv_heads,
-    const int head_size, const int num_tokens) {    
+    const int head_size, const int num_tokens) {
     const int token_idx =
         blockIdx.x * num_tokens_per_block + threadIdx.x / total_thread_per_tokens;
     if (token_idx >= num_tokens) {
@@ -195,11 +199,11 @@ __global__ void rotary_embedding_kernel_opt(
         cos_sin_seme[local_token_idx][laneid * thread_per_load_num + i] = cache_ptr[laneid * thread_per_load_num + i];
     }
     __syncthreads();
-  
+
     if constexpr(IS_NEOX) {  // gpt-neox style
         const vector_q cos_vec = *reinterpret_cast<const vector_q*>(&cos_sin_seme[local_token_idx][rot_offset_q]);
         const vector_q sin_vec = *reinterpret_cast<const vector_q*>(&cos_sin_seme[local_token_idx][rot_offset_q + embed_dim]);
-        
+
         for (int head_idx = group_id_q; head_idx < num_heads; head_idx += num_group_per_token_q) {
             const int64_t token_head_base = token_idx * query_stride + head_idx * head_stride;
 
@@ -248,7 +252,7 @@ __global__ void rotary_embedding_kernel_opt(
         }
     } else {  // gpt-j style
         for (int head_idx = group_id_q; head_idx < num_heads; head_idx += num_group_per_token_q) {
-        
+
             const int current_rot_offset = local_id_q * VEC_SIZE_Q * 2;
 
             if (current_rot_offset >= rot_dim) {
@@ -256,10 +260,10 @@ __global__ void rotary_embedding_kernel_opt(
             }
 
             const int64_t token_head_base = token_idx * query_stride + head_idx * head_stride;
-         
+
             auto* x_ptr = reinterpret_cast<vector_q*>(&query[token_head_base + current_rot_offset]);
             auto* y_ptr = reinterpret_cast<vector_q*>(&query[token_head_base + current_rot_offset + VEC_SIZE_Q]);
-            
+
             const vector_q x_in = *x_ptr;
             const vector_q y_in = *y_ptr;
             vector_q x_out;
@@ -276,7 +280,7 @@ __global__ void rotary_embedding_kernel_opt(
                 x_out.val[i]     = fma(x0, cos_val, -x1 * sin_val);
                 x_out.val[i + 1] = fma(x1, cos_val, x0 * sin_val);
             }
-            
+
             #pragma unroll
             for (int i = 0; i < VEC_SIZE_Q; i += 2) {
                 const int cache_idx = (current_rot_offset + VEC_SIZE_Q + i) / 2;
@@ -287,7 +291,7 @@ __global__ void rotary_embedding_kernel_opt(
                 y_out.val[i]     = fma(y0, cos_val, -y1 * sin_val);
                 y_out.val[i + 1] = fma(y1, cos_val, y0 * sin_val);
             }
-            
+
             *x_ptr = x_out;
             *y_ptr = y_out;
         }
@@ -316,10 +320,10 @@ __global__ void rotary_embedding_kernel_opt(
                     *x_ptr = x_out;
                 }else{
                     const int64_t token_head_base = token_idx * key_stride + head_idx * head_stride;
-                    
+
                     auto* x_ptr = reinterpret_cast<vector_k*>(&key[token_head_base + current_rot_offset]);
                     auto* y_ptr = reinterpret_cast<vector_k*>(&key[token_head_base + current_rot_offset + VEC_SIZE_K]);
-                    
+
                     const vector_k x_in = *x_ptr;
                     const vector_k y_in = *y_ptr;
                     vector_k x_out;
@@ -346,7 +350,7 @@ __global__ void rotary_embedding_kernel_opt(
                         y_out.val[i]     = fma(y0, cos_val, -y1 * sin_val);
                         y_out.val[i + 1] = fma(y1, cos_val, y0 * sin_val);
                     }
-                    
+
                     *x_ptr = x_out;
                     *y_ptr = y_out;
                 }
@@ -405,11 +409,11 @@ __global__ void rotary_embedding_deepseek_kernel_opt(
         cos_sin_seme[local_token_idx][laneid * thread_per_load_num + i] = cache_ptr[laneid * thread_per_load_num + i];
     }
     __syncthreads();
-  
+
     if constexpr(IS_NEOX) {  // gpt-neox style
         const vector_q cos_vec = *reinterpret_cast<const vector_q*>(&cos_sin_seme[local_token_idx][rot_offset_q]);
         const vector_q sin_vec = *reinterpret_cast<const vector_q*>(&cos_sin_seme[local_token_idx][rot_offset_q + embed_dim]);
-        
+
         for (int head_idx = group_id_q; head_idx < num_heads; head_idx += num_group_per_token_q) {
             const int64_t token_head_base = token_idx * query_stride + head_idx * head_stride;
 
@@ -458,7 +462,7 @@ __global__ void rotary_embedding_deepseek_kernel_opt(
         }
     } else {  // gpt-j style
         for (int head_idx = group_id_q; head_idx < num_heads; head_idx += num_group_per_token_q) {
-        
+
             const int current_rot_offset = local_id_q * VEC_SIZE_Q * 2;
 
             if (current_rot_offset >= rot_dim) {
@@ -466,10 +470,10 @@ __global__ void rotary_embedding_deepseek_kernel_opt(
             }
 
             const int64_t token_head_base = token_idx * query_stride + head_idx * head_stride;
-         
+
             auto* x_ptr = reinterpret_cast<vector_q*>(&query[token_head_base + current_rot_offset]);
             auto* y_ptr = reinterpret_cast<vector_q*>(&query[token_head_base + current_rot_offset + VEC_SIZE_Q]);
-            
+
             const vector_q x_in = *x_ptr;
             const vector_q y_in = *y_ptr;
             vector_q x_out;
@@ -486,7 +490,7 @@ __global__ void rotary_embedding_deepseek_kernel_opt(
                 x_out.val[i]     = x0 * cos_val - x1 * sin_val;
                 x_out.val[i + 1] = x1 * cos_val + x0 * sin_val;
             }
-            
+
             #pragma unroll
             for (int i = 0; i < VEC_SIZE_Q; i += 2) {
                 const int cache_idx = (current_rot_offset + VEC_SIZE_Q + i) / 2;
@@ -497,7 +501,7 @@ __global__ void rotary_embedding_deepseek_kernel_opt(
                 y_out.val[i]     = y0 * cos_val - y1 * sin_val;
                 y_out.val[i + 1] = y1 * cos_val + y0 * sin_val;
             }
-            
+
             *x_ptr = x_out;
             *y_ptr = y_out;
         }
@@ -526,10 +530,10 @@ __global__ void rotary_embedding_deepseek_kernel_opt(
                     *x_ptr = x_out;
                 }else{
                     const int64_t token_head_base = token_idx * key_stride + head_idx * head_stride;
-                    
+
                     auto* x_ptr = reinterpret_cast<vector_k*>(&key[token_head_base + current_rot_offset]);
                     auto* y_ptr = reinterpret_cast<vector_k*>(&key[token_head_base + current_rot_offset + VEC_SIZE_K]);
-                    
+
                     const vector_k x_in = *x_ptr;
                     const vector_k y_in = *y_ptr;
                     vector_k x_out;
@@ -556,13 +560,316 @@ __global__ void rotary_embedding_deepseek_kernel_opt(
                         y_out.val[i]     = y0 * cos_val - y1 * sin_val;
                         y_out.val[i + 1] = y1 * cos_val + y0 * sin_val;
                     }
-                    
+
                     *x_ptr = x_out;
                     *y_ptr = y_out;
                 }
             }
         }
     }
+}
+
+
+template <typename scalar_t, bool IS_NEOX>
+inline __device__ void apply_rotary_embedding_head72(
+    scalar_t* __restrict__ tensor,
+    const scalar_t* __restrict__ cos_sin,
+    const int token_idx, const int64_t token_stride,
+    const int64_t head_stride, const int num_heads,
+    const int group_id, const int local_id, const int num_groups) {
+  constexpr int kHeadSize = 72;
+  constexpr int kEmbedDim = kHeadSize / 2;
+  constexpr int kVecSize = 4;
+  using vector_t = Vector<scalar_t, kVecSize>;
+
+  const int rot_offset = local_id * kVecSize;
+  if constexpr (IS_NEOX) {
+    const vector_t cos_vec =
+        *reinterpret_cast<const vector_t*>(cos_sin + rot_offset);
+    const vector_t sin_vec =
+        *reinterpret_cast<const vector_t*>(cos_sin + kEmbedDim + rot_offset);
+    for (int head_idx = group_id; head_idx < num_heads;
+         head_idx += num_groups) {
+      const int64_t base =
+          token_idx * token_stride + head_idx * head_stride;
+      auto* x_ptr = reinterpret_cast<vector_t*>(tensor + base + rot_offset);
+      auto* y_ptr = reinterpret_cast<vector_t*>(
+          tensor + base + kEmbedDim + rot_offset);
+      const vector_t x = *x_ptr;
+      const vector_t y = *y_ptr;
+      vector_t x_out;
+      vector_t y_out;
+#pragma unroll
+      for (int i = 0; i < kVecSize; ++i) {
+        x_out.val[i] = x.val[i] * cos_vec.val[i] -
+                       y.val[i] * sin_vec.val[i];
+        y_out.val[i] = y.val[i] * cos_vec.val[i] +
+                       x.val[i] * sin_vec.val[i];
+      }
+      *x_ptr = x_out;
+      *y_ptr = y_out;
+    }
+  } else {
+    const int pair_offset = local_id * kVecSize * 2;
+    for (int head_idx = group_id; head_idx < num_heads;
+         head_idx += num_groups) {
+      const int64_t base =
+          token_idx * token_stride + head_idx * head_stride;
+      auto* x_ptr = reinterpret_cast<vector_t*>(tensor + base + pair_offset);
+      auto* y_ptr = reinterpret_cast<vector_t*>(
+          tensor + base + pair_offset + kVecSize);
+      const vector_t x = *x_ptr;
+      const vector_t y = *y_ptr;
+      vector_t x_out;
+      vector_t y_out;
+#pragma unroll
+      for (int i = 0; i < kVecSize; i += 2) {
+        const int cache_idx = (pair_offset + i) / 2;
+        const scalar_t cos_val = cos_sin[cache_idx];
+        const scalar_t sin_val = cos_sin[kEmbedDim + cache_idx];
+        x_out.val[i] = x.val[i] * cos_val - x.val[i + 1] * sin_val;
+        x_out.val[i + 1] =
+            x.val[i + 1] * cos_val + x.val[i] * sin_val;
+      }
+#pragma unroll
+      for (int i = 0; i < kVecSize; i += 2) {
+        const int cache_idx = (pair_offset + kVecSize + i) / 2;
+        const scalar_t cos_val = cos_sin[cache_idx];
+        const scalar_t sin_val = cos_sin[kEmbedDim + cache_idx];
+        y_out.val[i] = y.val[i] * cos_val - y.val[i + 1] * sin_val;
+        y_out.val[i + 1] =
+            y.val[i + 1] * cos_val + y.val[i] * sin_val;
+      }
+      *x_ptr = x_out;
+      *y_ptr = y_out;
+    }
+  }
+}
+
+template <typename scalar_t, bool IS_NEOX, int NUM_GROUPS>
+__global__ void rotary_embedding_head72_kernel(
+    const int64_t* __restrict__ positions,
+    scalar_t* __restrict__ query,
+    scalar_t* __restrict__ key,
+    const scalar_t* __restrict__ cos_sin_cache,
+    const int64_t query_stride,
+    const int64_t key_stride,
+    const int64_t query_head_stride,
+    const int64_t key_head_stride,
+    const int num_heads,
+    const int num_kv_heads,
+    const int num_tokens,
+    const int64_t* __restrict__ offsets) {
+
+  constexpr int kRotDim = 72;
+  constexpr int kVecSize = 4;
+  constexpr int kTokensPerBlock = 2;
+
+  constexpr int kThreadsPerHead =
+      (kRotDim / 2) / kVecSize;
+
+  static_assert(
+      kThreadsPerHead == 9,
+      "head-72 vec4 tiling must be exact");
+
+  constexpr int kThreadsPerToken =
+      NUM_GROUPS * kThreadsPerHead;
+
+  constexpr int kNumCacheVec =
+      kRotDim / kVecSize;  // 18
+
+
+  const int local_token_idx =
+      threadIdx.x / kThreadsPerToken;
+
+  const int local_tid =
+      threadIdx.x % kThreadsPerToken;
+
+  const int token_idx =
+      blockIdx.x * kTokensPerBlock +
+      local_token_idx;
+
+  const bool valid_token =
+      token_idx < num_tokens;
+
+
+  __shared__ Vector<scalar_t, kVecSize>
+      cos_sin_shared_vec
+          [kTokensPerBlock]
+          [kNumCacheVec];
+
+  scalar_t* cos_sin_shared =
+      reinterpret_cast<scalar_t*>(
+          &cos_sin_shared_vec
+              [local_token_idx][0]);
+
+  int64_t pos = 0;
+
+  if (valid_token) {
+    pos = positions[token_idx];
+
+    if (offsets != nullptr) {
+      pos += offsets[token_idx];
+    }
+
+    const auto* cache_vec =
+        reinterpret_cast<
+            const Vector<scalar_t, kVecSize>*>(
+                cos_sin_cache +
+                pos * kRotDim);
+
+    if (local_tid < kNumCacheVec) {
+      cos_sin_shared_vec
+          [local_token_idx]
+          [local_tid] =
+              cache_vec[local_tid];
+    }
+  }
+
+  __syncthreads();
+
+  if (!valid_token) {
+    return;
+  }
+
+  const int group_id =
+      local_tid / kThreadsPerHead;
+
+  const int local_id =
+      local_tid % kThreadsPerHead;
+
+  apply_rotary_embedding_head72<
+      scalar_t,
+      IS_NEOX>(
+          query,
+          cos_sin_shared,
+          token_idx,
+          query_stride,
+          query_head_stride,
+          num_heads,
+          group_id,
+          local_id,
+          NUM_GROUPS);
+
+  if (key != nullptr) {
+    apply_rotary_embedding_head72<
+        scalar_t,
+        IS_NEOX>(
+            key,
+            cos_sin_shared,
+            token_idx,
+            key_stride,
+            key_head_stride,
+            num_kv_heads,
+            group_id,
+            local_id,
+            NUM_GROUPS);
+  }
+}
+
+template <typename scalar_t, bool IS_NEOX>
+void launch_rotary_embedding_head72(
+    const int64_t* positions,
+    scalar_t* query,
+    scalar_t* key,
+    const scalar_t* cos_sin_cache,
+    const int64_t query_stride,
+    const int64_t key_stride,
+    const int64_t query_head_stride,
+    const int64_t key_head_stride,
+    const int num_heads,
+    const int num_kv_heads,
+    const int num_tokens,
+    const int64_t* offsets,
+    cudaStream_t stream) {
+
+  constexpr int kTokensPerBlock = 2;
+  constexpr int kThreadsPerHead = 9;
+
+  dim3 grid(
+      (num_tokens + kTokensPerBlock - 1) /
+      kTokensPerBlock);
+
+  if (num_heads <= 8) {
+
+    constexpr int kGroups = 8;
+
+    dim3 block(
+        kGroups *
+        kThreadsPerHead *
+        kTokensPerBlock);
+
+    rotary_embedding_head72_kernel<
+        scalar_t,
+        IS_NEOX,
+        kGroups>
+        <<<grid, block, 0, stream>>>(
+            positions,
+            query,
+            key,
+            cos_sin_cache,
+            query_stride,
+            key_stride,
+            query_head_stride,
+            key_head_stride,
+            num_heads,
+            num_kv_heads,
+            num_tokens,
+            offsets);
+
+  } else if (num_heads <= 16) {
+
+    constexpr int kGroups = 16;
+    dim3 block(
+        kGroups *
+        kThreadsPerHead *
+        kTokensPerBlock);
+
+    rotary_embedding_head72_kernel<
+        scalar_t,
+        IS_NEOX,
+        kGroups>
+        <<<grid, block, 0, stream>>>(
+            positions,
+            query,
+            key,
+            cos_sin_cache,
+            query_stride,
+            key_stride,
+            query_head_stride,
+            key_head_stride,
+            num_heads,
+            num_kv_heads,
+            num_tokens,
+            offsets);
+
+  } else {
+
+    constexpr int kGroups = 32;
+
+    dim3 block(
+        kGroups *
+        kThreadsPerHead *
+        kTokensPerBlock);
+
+    rotary_embedding_head72_kernel<
+        scalar_t,
+        IS_NEOX,
+        kGroups>
+        <<<grid, block, 0, stream>>>(
+            positions,
+            query,
+            key,
+            cos_sin_cache,
+            query_stride,
+            key_stride,
+            query_head_stride,
+            key_head_stride,
+            num_heads,
+            num_kv_heads,
+            num_tokens,
+            offsets);
+  }
 }
 
 template <typename scalar_t, bool IS_NEOX>
@@ -590,16 +897,16 @@ inline __device__ void apply_token_rotary_embedding(
 
 template <typename scalar_t, bool IS_NEOX>
 inline __device__ void apply_rotary_embedding(
-    scalar_t* __restrict__ query,    
-    scalar_t* __restrict__ key,     
-    const scalar_t* cache_ptr,      
-    const int head_size,              
-    const int num_heads,             
-    const int num_kv_heads,           
-    const int rot_dim,               
-    const int token_idx,               
-    const int64_t query_stride,        
-    const int64_t key_stride,        
+    scalar_t* __restrict__ query,
+    scalar_t* __restrict__ key,
+    const scalar_t* cache_ptr,
+    const int head_size,
+    const int num_heads,
+    const int num_kv_heads,
+    const int rot_dim,
+    const int token_idx,
+    const int64_t query_stride,
+    const int64_t key_stride,
     const int64_t head_stride) {
 
   const int embed_dim = rot_dim / 2;
@@ -607,7 +914,7 @@ inline __device__ void apply_rotary_embedding(
   const scalar_t* sin_ptr = cache_ptr + embed_dim;
   const int nq = num_heads * embed_dim;
   for (int i = threadIdx.x; i < nq; i += blockDim.x) {
-    const int head_idx = i / embed_dim;  
+    const int head_idx = i / embed_dim;
     const int64_t token_head =
         token_idx * query_stride + head_idx * head_stride;
     const int rot_offset = i % embed_dim;
@@ -629,6 +936,8 @@ inline __device__ void apply_rotary_embedding(
   }
 }
 
+
+// fallback
 template <typename scalar_t, bool IS_NEOX>
 __global__ void rotary_embedding_kernel(
     const int64_t* __restrict__ positions,  // [batch_size, seq_len] or
@@ -647,7 +956,7 @@ __global__ void rotary_embedding_kernel(
     const int head_size) {
   const int token_idx = blockIdx.x;
   int64_t pos = positions[token_idx];
-  
+
   const scalar_t* cache_ptr = cos_sin_cache + pos * rot_dim;
   apply_rotary_embedding<scalar_t, IS_NEOX>(
       query, key, cache_ptr, head_size, num_heads, num_kv_heads, rot_dim,
@@ -718,8 +1027,8 @@ at::Tensor RoPE_forward_gpu(int sq, int b, int np, int hn, at::Tensor tensor_q,
                             at::Tensor tensor_cos, at::Tensor tensor_sin) {
     at::Tensor tensor_q_emb =
         at::empty({sq, b, np, hn},
-                  at::device(torch::kCUDA).dtype(tensor_cos.scalar_type()));    
-               
+                  at::device(torch::kCUDA).dtype(tensor_cos.scalar_type()));
+
     RoPE_gpu_launch(sq, b, np, hn, &tensor_q, &tensor_cos, &tensor_sin, &tensor_q_emb);
     return tensor_q_emb;
 }
@@ -783,34 +1092,93 @@ void rotary_embedding_fuse(
 
 
   int rot_dim = cos_sin_cache.size(1);
+  if (head_size == 72) {
+    TORCH_CHECK(rot_dim > 0 && rot_dim <= head_size && rot_dim % 2 == 0,
+                "rot_dim must be a positive even value no greater than "
+                "head_size, but got rot_dim=", rot_dim,
+                " and head_size=", head_size);
+  }
   int seq_dim_idx = positions_ndim - 1;
- 
+
   int64_t query_stride = query.stride(seq_dim_idx);
   int64_t key_stride = key.has_value() ? key->stride(seq_dim_idx) : 0;
 
   int query_ndim = query.dim();
   int64_t head_stride =
       (query_ndim == positions_ndim + 2) ? query.stride(-2) : head_size;
-      
+  int64_t key_head_stride = key.has_value()
+      ? ((key->dim() == positions_ndim + 2) ? key->stride(-2) : head_size)
+      : head_stride;
+
+  const bool has_dense_head72_tokens =
+      positions_ndim == 1 ||
+      (query.stride(0) == positions.size(1) * query_stride &&
+       (!key.has_value() ||
+        key->stride(0) == positions.size(1) * key_stride));
+  const bool has_head72_supported_layout =
+      head_size == 72 && rot_dim == 72 &&
+      (query.dim() == positions_ndim + 1 ||
+       query.dim() == positions_ndim + 2) &&
+      (!key.has_value() || key->dim() == query.dim()) &&
+      positions.is_contiguous() && query.stride(-1) == 1 &&
+      (!key.has_value() || key->stride(-1) == 1) &&
+      cos_sin_cache.stride(1) == 1 &&
+      cos_sin_cache.stride(0) == rot_dim && has_dense_head72_tokens &&
+      positions.scalar_type() == at::ScalarType::Long &&
+      query.scalar_type() == cos_sin_cache.scalar_type() &&
+      (!key.has_value() || query.scalar_type() == key->scalar_type()) &&
+      positions.device() == query.device() &&
+      cos_sin_cache.device() == query.device() &&
+      (!key.has_value() || key->device() == query.device());
+
   const at::cuda::OptionalCUDAGuard device_guard(device_of(query));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
- 
-    
+
+
    AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
-      at::ScalarType::BFloat16, 
+      at::ScalarType::BFloat16,
       query.scalar_type(), "rotary_embedding", [&] {
 
   int rot_dim = cos_sin_cache.size(1);
 
   const int q_k_size_multiple = num_heads / num_kv_heads;
-  bool is_allign_qk = (num_heads % num_kv_heads == 0) && (num_heads % 2 == 0) 
+  bool is_allign_qk = (num_heads % num_kv_heads == 0) && (num_heads % 2 == 0)
                         && (num_heads >= 8) && ((q_k_size_multiple <= 8) || (q_k_size_multiple == 10));
-  
-    if (head_size == 64 && is_allign_qk) {
+
+  constexpr uintptr_t head72_vec4_alignment = alignof(Vector<scalar_t, 4>);
+  const bool can_use_head72_vec4 =
+      has_head72_supported_layout &&
+      reinterpret_cast<uintptr_t>(query.data_ptr<scalar_t>()) %
+              head72_vec4_alignment == 0 &&
+      reinterpret_cast<uintptr_t>(cos_sin_cache.data_ptr<scalar_t>()) %
+              head72_vec4_alignment == 0 &&
+      query_stride % 4 == 0 && head_stride % 4 == 0 &&
+      (!key.has_value() ||
+       (reinterpret_cast<uintptr_t>(key->data_ptr<scalar_t>()) %
+                head72_vec4_alignment == 0 &&
+        key_stride % 4 == 0 && key_head_stride % 4 == 0));
+
+    if (head_size == 72 && can_use_head72_vec4) {
+        if (is_neox) {
+          launch_rotary_embedding_head72<scalar_t, true>(
+              positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
+              key.has_value() ? key->data_ptr<scalar_t>() : nullptr,
+              cos_sin_cache.data_ptr<scalar_t>(), query_stride, key_stride,
+              head_stride, key_head_stride, num_heads, num_kv_heads,
+              num_tokens, nullptr, stream);
+        } else {
+          launch_rotary_embedding_head72<scalar_t, false>(
+              positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
+              key.has_value() ? key->data_ptr<scalar_t>() : nullptr,
+              cos_sin_cache.data_ptr<scalar_t>(), query_stride, key_stride,
+              head_stride, key_head_stride, num_heads, num_kv_heads,
+              num_tokens, nullptr, stream);
+        }
+    } else if (head_size == 64 && is_allign_qk) {
         constexpr int num_tokens_per_block = 2;
         constexpr int total_thread_per_tokens = 64;
-    
+
         constexpr int num_group_per_token_q = 8;
         constexpr int thread_per_head_q = 8;
         constexpr int vec_size_q = 4;
@@ -818,7 +1186,7 @@ void rotary_embedding_fuse(
         dim3 grid((num_tokens + num_tokens_per_block -1) / num_tokens_per_block);
         dim3 block(total_thread_per_tokens * num_tokens_per_block);
 
-        
+
       #define LAUNCH_ROTARY_KERNEL_64(IS_NEOX,NUM_GROUP_K, THREAD_PER_HEAD_K, VEC_SIZE_K, ROT_DIM_VAL) \
         rotary_embedding_kernel_opt<scalar_t, IS_NEOX, num_tokens_per_block, total_thread_per_tokens, \
                                           num_group_per_token_q, NUM_GROUP_K, \
@@ -828,7 +1196,7 @@ void rotary_embedding_fuse(
             key.has_value() ? key->data_ptr<scalar_t>() : nullptr, \
             cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
             head_stride, num_heads, num_kv_heads, head_size,num_tokens)
-        
+
         if (q_k_size_multiple == 8) {
             switch (num_kv_heads) {
                 case 1:
@@ -905,15 +1273,15 @@ void rotary_embedding_fuse(
                     }
         } else if (q_k_size_multiple == 10) {
                if(is_neox){
-                          LAUNCH_ROTARY_KERNEL_128(true,8, 8, 4, 64);
+                          LAUNCH_ROTARY_KERNEL_64(true,8, 8, 4, 64);
                     }else{
-                          LAUNCH_ROTARY_KERNEL_128(false,8, 8, 4, 64);
+                          LAUNCH_ROTARY_KERNEL_64(false,8, 8, 4, 64);
                 }
         }
- 
+
     } else if (head_size == 128 && is_allign_qk) {
 
-        
+
         constexpr int num_tokens_per_block = 2;
         constexpr int total_thread_per_tokens = 64;
 
@@ -923,7 +1291,7 @@ void rotary_embedding_fuse(
 
         dim3 grid((num_tokens + num_tokens_per_block -1) / num_tokens_per_block);
         dim3 block(total_thread_per_tokens * num_tokens_per_block);
-        
+
 
       #define LAUNCH_ROTARY_KERNEL_128(IS_NEOX,NUM_GROUP_K, THREAD_PER_HEAD_K, VEC_SIZE_K, ROT_DIM_VAL) \
         rotary_embedding_kernel_opt<scalar_t, IS_NEOX, num_tokens_per_block, total_thread_per_tokens, \
@@ -1024,7 +1392,7 @@ void rotary_embedding_fuse(
     } else if (head_size == 256 && is_allign_qk) {
         constexpr int num_tokens_per_block = 2;
         constexpr int total_thread_per_tokens = 64;
- 
+
         constexpr int num_group_per_token_q = 4;
         constexpr int thread_per_head_q = 16;
         constexpr int vec_size_q = 8;
@@ -1102,8 +1470,8 @@ void rotary_embedding_fuse(
                           LAUNCH_ROTARY_KERNEL_128(false,8, 8, 16, 256);
                 }
         }
-    } else { 
-    
+    } else {
+
         dim3 grid(num_tokens);
         dim3 block(std::min<int64_t>(num_heads * (rot_dim / 2), 512));
         if (is_neox) {
@@ -1124,7 +1492,7 @@ void rotary_embedding_fuse(
 );
 }
 
-//融合opt 
+//融合opt
 void rotary_embedding_deepseek_fuse(
     torch::Tensor& positions,  // [batch_size, seq_len] or [num_tokens]
     torch::Tensor& query,  // [batch_size, seq_len, num_heads * head_size] or
@@ -1174,6 +1542,12 @@ void rotary_embedding_deepseek_fuse(
 
 
     int rot_dim = cos_sin_cache.size(1);
+    if (head_size == 72) {
+      TORCH_CHECK(rot_dim > 0 && rot_dim <= head_size && rot_dim % 2 == 0,
+                  "rot_dim must be a positive even value no greater than "
+                  "head_size, but got rot_dim=", rot_dim,
+                  " and head_size=", head_size);
+    }
     int seq_dim_idx = positions_ndim - 1;
 
     int64_t query_stride = query.stride(seq_dim_idx);
@@ -1182,14 +1556,44 @@ void rotary_embedding_deepseek_fuse(
     int query_ndim = query.dim();
     int64_t head_stride =
         (query_ndim == positions_ndim + 2) ? query.stride(-2) : head_size;
-        
+    int64_t key_head_stride = key.has_value()
+        ? ((key->dim() == positions_ndim + 2) ? key->stride(-2) : head_size)
+        : head_stride;
+
+    const bool has_dense_head72_tokens =
+        positions_ndim == 1 ||
+        (query.stride(0) == positions.size(1) * query_stride &&
+         (!key.has_value() ||
+          key->stride(0) == positions.size(1) * key_stride));
+    const bool valid_head72_offsets =
+        !offsets.has_value() ||
+        (offsets->scalar_type() == at::ScalarType::Long &&
+         offsets->sizes() == positions.sizes() && offsets->is_contiguous() &&
+         offsets->device() == query.device());
+    const bool has_head72_supported_layout =
+        head_size == 72 && rot_dim == 72 &&
+        (query.dim() == positions_ndim + 1 ||
+         query.dim() == positions_ndim + 2) &&
+        (!key.has_value() || key->dim() == query.dim()) &&
+        positions.is_contiguous() && query.stride(-1) == 1 &&
+        (!key.has_value() || key->stride(-1) == 1) &&
+        cos_sin_cache.stride(1) == 1 &&
+        cos_sin_cache.stride(0) == rot_dim && has_dense_head72_tokens &&
+        valid_head72_offsets &&
+        positions.scalar_type() == at::ScalarType::Long &&
+        query.scalar_type() == cos_sin_cache.scalar_type() &&
+        (!key.has_value() || query.scalar_type() == key->scalar_type()) &&
+        positions.device() == query.device() &&
+        cos_sin_cache.device() == query.device() &&
+        (!key.has_value() || key->device() == query.device());
+
     const at::cuda::OptionalCUDAGuard device_guard(device_of(query));
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-    
+
    AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
-      at::ScalarType::BFloat16, 
+      at::ScalarType::BFloat16,
       query.scalar_type(), "rotary_embedding", [&] {
 
     int rot_dim = cos_sin_cache.size(1);
@@ -1197,10 +1601,41 @@ void rotary_embedding_deepseek_fuse(
 
     bool is_allign_qk = (num_heads % num_kv_heads == 0) && (num_heads % 2 == 0) && (num_heads >= 8) && (q_k_size_multiple <= 128);
 
-    if (head_size == 64 && is_allign_qk && batch_size > 16) {
+    constexpr uintptr_t head72_vec4_alignment = alignof(Vector<scalar_t, 4>);
+    const bool can_use_head72_vec4 =
+        has_head72_supported_layout &&
+        reinterpret_cast<uintptr_t>(query.data_ptr<scalar_t>()) %
+                head72_vec4_alignment == 0 &&
+        reinterpret_cast<uintptr_t>(cos_sin_cache.data_ptr<scalar_t>()) %
+                head72_vec4_alignment == 0 &&
+        query_stride % 4 == 0 && head_stride % 4 == 0 &&
+        (!key.has_value() ||
+         (reinterpret_cast<uintptr_t>(key->data_ptr<scalar_t>()) %
+                  head72_vec4_alignment == 0 &&
+          key_stride % 4 == 0 && key_head_stride % 4 == 0));
+
+    if (head_size == 72 && can_use_head72_vec4) {
+        const int64_t* offsets_ptr =
+            offsets.has_value() ? offsets->data_ptr<int64_t>() : nullptr;
+        if (is_neox) {
+          launch_rotary_embedding_head72<scalar_t, true>(
+              positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
+              key.has_value() ? key->data_ptr<scalar_t>() : nullptr,
+              cos_sin_cache.data_ptr<scalar_t>(), query_stride, key_stride,
+              head_stride, key_head_stride, num_heads, num_kv_heads,
+              num_tokens, offsets_ptr, stream);
+        } else {
+          launch_rotary_embedding_head72<scalar_t, false>(
+              positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
+              key.has_value() ? key->data_ptr<scalar_t>() : nullptr,
+              cos_sin_cache.data_ptr<scalar_t>(), query_stride, key_stride,
+              head_stride, key_head_stride, num_heads, num_kv_heads,
+              num_tokens, offsets_ptr, stream);
+        }
+    } else if (head_size == 64 && is_allign_qk && batch_size > 16) {
         constexpr int num_tokens_per_block = 2;
         constexpr int total_thread_per_tokens = 64;
-    
+
         constexpr int num_group_per_token_q = 8;
         constexpr int thread_per_head_q = 8;
         constexpr int vec_size_q = 4;
@@ -1218,7 +1653,7 @@ void rotary_embedding_deepseek_fuse(
             cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride, \
             head_stride, num_heads, num_kv_heads, head_size,num_tokens,\
             offsets.has_value() ? offsets->data_ptr<int64_t>() : nullptr)
-        
+
 
         if(is_neox){
             LAUNCH_ROTARY_DEEPSEEK_KERNEL_64(true,2, 32, 2, 64);
@@ -1234,7 +1669,7 @@ void rotary_embedding_deepseek_fuse(
                 positions.data_ptr<int64_t>(), query.data_ptr<scalar_t>(),
                 key.has_value() ? key->data_ptr<scalar_t>() : nullptr,
                 cos_sin_cache.data_ptr<scalar_t>(), rot_dim, query_stride, key_stride,
-                head_stride, num_heads, num_kv_heads, head_size, 
+                head_stride, num_heads, num_kv_heads, head_size,
                 offsets.has_value() ? offsets->data_ptr<int64_t>() : nullptr);
         } else {
             rotary_embedding_kernel_deepseek<scalar_t, false><<<grid, block, 0, stream>>>(
