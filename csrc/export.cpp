@@ -389,6 +389,8 @@ void rms_norm_no_weight(
     torch::optional<torch::Tensor> weight,
     double epsilon);
 void fused_add_rms_norm_opt(torch::Tensor& input,torch::Tensor& residual, torch::Tensor& weight,double epsilon,double limit);
+void layer_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,torch::Tensor& bias,double epsilon,double limit);
+void fused_add_layer_norm_opt(torch::Tensor& input,torch::Tensor& residual,torch::Tensor& weight,torch::Tensor& bias,double epsilon,double limit);
 void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_tanh_and_mul_opt(torch::Tensor& out,torch::Tensor& input); 
@@ -1252,6 +1254,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("residual"),
       py::arg("weight"),
       py::arg("epsilon"),
+      py::arg("limit") = -1.0);
+  m.def(
+      "layer_norm_opt", &at::native::layer_norm_opt, "layer_norm_opt",
+      py::arg("out"), py::arg("input"), py::arg("weight"), py::arg("bias"),
+      py::arg("epsilon"), py::arg("limit") = -1.0);
+  m.def(
+      "fused_add_layer_norm_opt", &at::native::fused_add_layer_norm_opt,
+      "fused_add_layer_norm_opt", py::arg("input"), py::arg("residual"),
+      py::arg("weight"), py::arg("bias"), py::arg("epsilon"),
       py::arg("limit") = -1.0);
   m.def("silu_and_mul_opt", &at::native::silu_and_mul_opt, "silu_and_mul_opt");
   m.def("gelu_and_mul_opt", &at::native::gelu_and_mul_opt, "gelu_and_mul_opt");
