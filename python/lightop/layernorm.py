@@ -2,6 +2,41 @@ import torch
 #from lightop import op
 from . import op
 
+
+def layer_norm(x: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor,
+               variance_epsilon: float, out: torch.Tensor = None,
+               limit: float = -1.0) -> torch.Tensor:
+    """
+    Returns:
+        The output tensor. This is ``out`` when supplied, otherwise the
+        original ``x`` tensor after it has been overwritten.
+    """
+    if out is None:
+        out = x
+    op.layer_norm_opt(out, x, weight, bias, variance_epsilon, limit)
+    return out
+
+
+def fused_add_layer_norm(
+        x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor,
+        bias: torch.Tensor,
+        variance_epsilon: float,
+        limit: float = -1.0) -> tuple[torch.Tensor, torch.Tensor]:
+    """Inference-only fused residual addition and LayerNorm.
+    Returns:
+        ``(x, residual)`` after both input tensors have been updated in place.
+
+    Note:
+        Use this function only when the model graph is exactly add followed
+        by LayerNorm and the updated residual must be retained. It is an
+        inference-only API and does not provide an autograd backward path.
+    """
+    op.fused_add_layer_norm_opt(
+        x, residual, weight, bias, variance_epsilon, limit
+    )
+    return x, residual
+
+
 class LayerNorm(torch.nn.Module):
 
     def __init__(self, normalized_shape:int,eps: float = 1e-5,elementwise_affine: bool = True,
