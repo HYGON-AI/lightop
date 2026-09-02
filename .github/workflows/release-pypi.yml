@@ -121,7 +121,7 @@ jobs:
 
       - name: 生成 manylinux wheel
         run: |
-          # repair 脚本依赖 import lightop 解析自带库路径, 先安装刚构建的 wheel
+          # repair 脚本不依赖 import lightop, 自行用 pip Location 定位自带库路径
           pip install --no-cache-dir --no-deps dist/*.whl
           bash .github/scripts/manylinux_repair.sh dist dist-manylinux
 
