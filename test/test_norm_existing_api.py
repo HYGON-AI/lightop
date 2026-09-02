@@ -11,6 +11,7 @@ EXISTING_NORM_APIS = [
     "AddLn",
     "CeluGN",
     "fuse_fill_rms_x2_concat",
+    "fused_add_layer_norm",
     "fused_add_rms_norm",
     "fused_rms_norm_contiguous",
     "gemma_fused_add_rmsnorm",
@@ -19,6 +20,7 @@ EXISTING_NORM_APIS = [
     "GroupNorm",
     "LayerNorm",
     "LayerNormMixedFp32Weight",
+    "layer_norm",
     "rms_norm_dynamic_per_token_quant",
     "rms_norm",
     "rms_norm_per_token_fp8_quant",
@@ -34,7 +36,9 @@ EXISTING_NORM_APIS = [
 ]
 
 NATIVE_NORM_APIS = [
+    "fused_add_layer_norm_opt",
     "fused_add_rms_norm_opt",
+    "layer_norm_opt",
     "layer_norm_fwd_1pass_opt",
     "rms_norm_no_weight",
     "rms_norm_opt",
