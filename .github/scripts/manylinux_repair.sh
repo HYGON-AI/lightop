@@ -23,9 +23,21 @@ pip install --no-cache-dir auditwheel patchelf
 TORCH_PATH=$(python3 -c "import torch, os; print(os.path.dirname(torch.__file__))" 2>/dev/null || true)
 export LD_LIBRARY_PATH="${TORCH_PATH}/lib:${LD_LIBRARY_PATH:-}"
 export LD_LIBRARY_PATH="/opt/intel/mkl/lib/intel64_lin/:${LD_LIBRARY_PATH:-}"
-LIGHTOP_PATH=$(python3 -c "import lightop, os; print(os.path.dirname(lightop.__file__))" 2>/dev/null || true)
+# 定位 lightop 自带库目录; import 推导依赖自带 .so 且纯净环境下 import 可能
+# 失败 (见 __extendhfsf2), 这里用 pip Location 免 import
+LIGHTOP_PATH=""
+LIGHTOP_LOC=$(python3 -m pip show lightop 2>/dev/null | sed -n 's/^Location: //p' || true)
+if [ -n "${LIGHTOP_LOC}" ]; then
+  LIGHTOP_PATH="${LIGHTOP_LOC}/lightop"
+else
+  # 兜底: 非 pip 管理的安装
+  LIGHTOP_PATH=$(python3 -c "import lightop, os; print(os.path.dirname(lightop.__file__))" 2>/dev/null || true)
+fi
+echo "LIGHTOP_PATH=${LIGHTOP_PATH}"
 export LD_LIBRARY_PATH="${LIGHTOP_PATH}/lib:${LD_LIBRARY_PATH:-}"
 export LD_LIBRARY_PATH="${LIGHTOP_PATH}/librarygemmbiasf/:${LD_LIBRARY_PATH:-}"
+# auditwheel 用 --ldpaths 的调用路径只认这个专用变量, 一并导出
+export AUDITWHEEL_LD_LIBRARY_PATH="${LIGHTOP_PATH}/lib:${LIGHTOP_PATH}/librarygemmbiasf/:${AUDITWHEEL_LD_LIBRARY_PATH:-}"
 
 # glibc 版本 -> manylinux 平台标签, 如 manylinux_2_17_x86_64
 GLIBC_VER=$(ldd --version | awk '{print $NF}' | head -n1 | tr -d '\n' | tr '.' '_')
