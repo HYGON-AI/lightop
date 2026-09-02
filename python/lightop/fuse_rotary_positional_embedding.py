@@ -1,7 +1,61 @@
+from typing import Optional, Tuple
+
 import torch
 #from lightop import op
 from . import op
 import torch.nn.functional as F
+
+
+def rotary_embedding_fuse(
+    positions: torch.Tensor,
+    query: torch.Tensor,
+    key: Optional[torch.Tensor],
+    head_size: int,
+    cos_sin_cache: torch.Tensor,
+    is_neox: bool,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    """
+    Args:
+        positions: Token position indices. Shape ``[num_tokens]`` or
+            ``[batch_size, seq_len]`` and dtype ``torch.int64``.
+        query: Query tensor. Its leading dimensions must match ``positions``;
+            the remaining dimensions may be ``[num_heads * head_size]`` or
+            ``[num_heads, head_size]``.
+        key: Optional key tensor with the same token/batch dimensions as
+            ``query``. Its remaining dimensions may be
+            ``[num_kv_heads * head_size]`` or ``[num_kv_heads, head_size]``.
+        head_size: Size of each query/key head. Sizes ``64``, ``72``, ``128``
+            and ``256`` use optimized kernels when their dispatch conditions
+            are met; other sizes use the native fallback kernel.
+        cos_sin_cache: Combined cosine/sine cache with shape
+            ``[max_position, rot_dim]``. It must have the same dtype and device
+            as ``query``; ``rot_dim`` must not exceed ``head_size``.
+        is_neox: ``True`` for GPT-NeoX split-half rotary layout, or ``False``
+         for GPT-J interleaved rotary layout.
+    """
+    if positions.dtype != torch.int64:
+        raise TypeError(f"positions must have dtype torch.int64, got {positions.dtype}")
+    if positions.device != query.device:
+        raise ValueError("positions and query must be on the same device")
+    if cos_sin_cache.dim() != 2:
+        raise ValueError(
+            "cos_sin_cache must have shape [max_position, rot_dim], "
+            f"got {tuple(cos_sin_cache.shape)}"
+        )
+    if cos_sin_cache.size(1) > head_size:
+        raise ValueError(
+            f"rot_dim ({cos_sin_cache.size(1)}) must not exceed head_size ({head_size})"
+        )
+    if query.dtype != cos_sin_cache.dtype or query.device != cos_sin_cache.device:
+        raise ValueError("query and cos_sin_cache must have the same dtype and device")
+    if key is not None and (key.dtype != query.dtype or key.device != query.device):
+        raise ValueError("key and query must have the same dtype and device")
+
+    op.rotary_embedding_fuse(
+        positions, query, key, head_size, cos_sin_cache, is_neox
+    )
+    return query, key
+
 
 class RotaryEmbedding(torch.nn.Module):
 
@@ -72,5 +126,3 @@ def apply_rotary_pos_emb_index_fused(q, k, cos, sin, position_id):
     q = RotaryPositionalEmbeddingFunction.apply(q, cos, sin)
     k = RotaryPositionalEmbeddingFunction.apply(k, cos, sin)
     return q.view(sq, b * np, -1), k.view(sq, b * np_k, -1)
-
-
