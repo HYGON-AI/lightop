@@ -9,8 +9,18 @@ on:
     branches:
       - master
 
-  # ---- 手动触发，仅构建产物，不上传 NIGHTLY ----
+  # ---- 手动触发: 可指定构建目标 commit/分支与 torch 版本; 仅构建产物, 不上传 NIGHTLY ----
   workflow_dispatch:
+    inputs:
+      ref:
+        description: 构建目标分支名/tag/完整 commit SHA, 留空用触发分支最新代码
+        required: false
+        type: string
+      torch_version:
+        description: torch 版本 JSON 数组, 如 ["2.10.0"] 或 ["2.10.0","2.11.0"]
+        required: true
+        type: string
+        default: '["2.10.0", "2.11.0"]'
 
 permissions:
   contents: read
@@ -34,8 +44,8 @@ jobs:
       # 一个 torch 版本的失败不应掩盖另一个版本的结果
       fail-fast: false
       matrix:
-        # 固定两个版本并行, 不依赖仓库变量
-        torch_version: ["2.10.0", "2.11.0"]
+        # push 固定两个版本并行, 不依赖仓库变量; 手动触发取输入 (JSON 数组, 单版本亦可)
+        torch_version: ${{ fromJSON(github.event_name == 'push' && '["2.10.0", "2.11.0"]' || inputs.torch_version) }}
     env:
       TORCH_VERSION: ${{ matrix.torch_version }}
     container:
@@ -50,6 +60,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 手动触发可指定分支/tag/完整 commit SHA; push 事件用本次推送的 commit
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: 打印环境变量
         run: |
