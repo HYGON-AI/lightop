@@ -69,6 +69,170 @@ struct half4x16 {
             return __VA_ARGS__();              \
         }                                      \
     }()
+
+// Load the per-row KE values used by the existing store masks and decide
+// whether this output tile contains any valid [KS[row], KE[row]) element.
+// A last-valid-row probe may prove that the tile must be computed, but never
+// that it may be skipped. A possible skip is confirmed by balloting every
+// valid row. For 32-row (and larger) tiles every wave repeats the same scan,
+// avoiding cross-wave LDS communication. The 16-row kernels use a first-wave
+// scan plus LDS broadcast because duplicating their scan regresses the masked
+// fast path on the target hardware.
+template <int BLOCK_M, int BLOCK_N, bool is_align_m>
+__device__ __forceinline__ bool mqa_load_bounds_and_check_tile(
+    const uint32_t* __restrict__ KS,
+    const uint32_t* __restrict__ KE,
+    int M,
+    int N,
+    int block_x,
+    int block_y,
+    uint32_t* boundary_smem,
+    uint32_t* tile_has_work_smem) {
+    const int tid = threadIdx.x;
+    const int lane = tid % C10_WARP_SIZE;
+    const int row_start = block_y * BLOCK_M;
+    const int remaining_rows = M - row_start;
+    const int valid_rows = is_align_m
+        ? BLOCK_M
+        : (remaining_rows < BLOCK_M ? remaining_rows : BLOCK_M);
+    const int probe_local_row = valid_rows - 1;
+    const int tile_start = block_x * BLOCK_N;
+    const int unclamped_tile_end = tile_start + BLOCK_N;
+    const int tile_end = unclamped_tile_end < N ? unclamped_tile_end : N;
+    if constexpr (BLOCK_M > C10_WARP_SIZE) {
+        const bool first_wave = tid < C10_WARP_SIZE;
+        constexpr int rows_per_lane =
+            (BLOCK_M + C10_WARP_SIZE - 1) / C10_WARP_SIZE;
+
+        // Keep the existing BM>=32 strategy: every wave scans the complete
+        // row tile, while the first wave publishes all row boundaries. Each
+        // lane handles lane + k * wave_size, so rows beyond the first wave
+        // are covered without another LDS reduction buffer.
+        if (first_wave) {
+#pragma unroll
+            for (int k = 0; k < rows_per_lane; ++k) {
+                const int local_row = lane + k * C10_WARP_SIZE;
+                if (local_row < BLOCK_M) {
+                    boundary_smem[local_row] = local_row < valid_rows
+                        ? KE[row_start + local_row]
+                        : 0;
+                }
+            }
+        }
+
+        bool row_overlaps = false;
+#pragma unroll
+        for (int k = 0; k < rows_per_lane; ++k) {
+            const int local_row = lane + k * C10_WARP_SIZE;
+            if (local_row < valid_rows) {
+                const int row = row_start + local_row;
+                const int ks = static_cast<int>(KS[row]);
+                const int ke = static_cast<int>(KE[row]);
+                row_overlaps |= ks < ke && ke > tile_start && ks < tile_end;
+            }
+        }
+        const uint64_t overlap_mask = __ballot(row_overlaps);
+        return overlap_mask != 0;
+    } else if constexpr (BLOCK_M >= 32) {
+        const bool first_wave = tid < C10_WARP_SIZE;
+        const bool valid_row = lane < valid_rows;
+        uint32_t ke_raw = 0;
+        int ks = 0;
+        int ke = 0;
+
+        // The first wave publishes KE for the existing store masks. Their
+        // later compute barriers make these writes visible before
+        // boundary_smem is consumed. Other waves defer per-row KE loads until
+        // a full scan is actually needed.
+        if (first_wave && valid_row) {
+            const int row = row_start + lane;
+            ke_raw = KE[row];
+            ke = static_cast<int>(ke_raw);
+        }
+        if (tid < BLOCK_M) {
+            boundary_smem[tid] = ke_raw;
+        }
+
+        // This probe is only a positive witness. If it misses, the full scan
+        // below is still mandatory because KS/KE need not be monotonic.
+        bool probe_overlaps = false;
+        if (lane == probe_local_row) {
+            const int row = row_start + lane;
+            if (!first_wave) {
+                ke = static_cast<int>(KE[row]);
+            }
+            ks = static_cast<int>(KS[row]);
+            probe_overlaps =
+                ks < ke && ke > tile_start && ks < tile_end;
+        }
+        const uint64_t probe_mask = __ballot(probe_overlaps);
+        if (probe_mask != 0) {
+            return true;
+        }
+
+        bool row_overlaps = false;
+        if (valid_row) {
+            const int row = row_start + lane;
+            if (!first_wave && lane != probe_local_row) {
+                ke = static_cast<int>(KE[row]);
+            }
+            if (lane != probe_local_row) {
+                ks = static_cast<int>(KS[row]);
+            }
+            // KS/KE arrive as int32 tensors through uint32_t containers.
+            // Signed comparisons handle negative and reversed intervals.
+            row_overlaps =
+                ks < ke && ke > tile_start && ks < tile_end;
+        }
+        const uint64_t overlap_mask = __ballot(row_overlaps);
+        return overlap_mask != 0;
+    } else {
+        const bool valid_row = tid < valid_rows;
+        int ks = 0;
+        int ke = 0;
+
+        if (tid < BLOCK_M) {
+            if (valid_row) {
+                const uint32_t ke_raw = KE[row_start + tid];
+                boundary_smem[tid] = ke_raw;
+                ke = static_cast<int>(ke_raw);
+            } else {
+                boundary_smem[tid] = 0;
+            }
+        }
+
+        bool probe_overlaps = false;
+        if (tid == probe_local_row) {
+            ks = static_cast<int>(KS[row_start + tid]);
+            probe_overlaps =
+                ks < ke && ke > tile_start && ks < tile_end;
+        }
+        const uint64_t probe_mask = __ballot(probe_overlaps);
+        if (tid == 0) {
+            *tile_has_work_smem = probe_mask != 0;
+        }
+        __syncthreads();
+        if (*tile_has_work_smem != 0) {
+            return true;
+        }
+
+        bool row_overlaps = false;
+        if (valid_row) {
+            if (tid != probe_local_row) {
+                ks = static_cast<int>(KS[row_start + tid]);
+            }
+            row_overlaps =
+                ks < ke && ke > tile_start && ks < tile_end;
+        }
+        const uint64_t overlap_mask = __ballot(row_overlaps);
+        if (tid == 0) {
+            *tile_has_work_smem = overlap_mask != 0;
+        }
+        __syncthreads();
+        return *tile_has_work_smem != 0;
+    }
+}
+
 template <bool is_half = true>
 inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& reg_b, floatx4& reg_c) {
 #if defined(__gfx936__) || defined(__gfx928__)
@@ -1254,6 +1418,7 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch_i8(
     
     __align__(16) __shared__ int8_t A_Seme[2][16 * 136];
     __shared__ uint32_t boundary_Seme[BlOCK_M];
+    __shared__ uint32_t tile_has_work_Seme;
     __shared__ float W_Seme[2][BlOCK_M];
     
     __shared__ float C_smem[BlOCK_M][BLOCK_N + 4]; 
@@ -1267,16 +1432,10 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch_i8(
 
     if (start_h >= end_h) return;
 
-    if (tid < BlOCK_M) {
-        if constexpr (is_align_m) {
-            boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
-        } else {
-            if (blockIdx_y * BlOCK_M + tid < M) {
-                boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
-            } else {
-                boundary_Seme[tid] = 0;
-            }
-        }
+    if (!mqa_load_bounds_and_check_tile<BlOCK_M, BLOCK_N, is_align_m>(
+            KS, KE, M, N, blockIdx_x, blockIdx_y,
+            boundary_Seme, &tile_has_work_Seme)) {
+        return;
     }
 
     floatx4 C_reg_out = {0.0, 0.0, 0.0, 0.0};
@@ -1460,21 +1619,14 @@ __global__ void _mqa_logits_16x128x128_TN_impl_i8(
     
     __align__(16) __shared__ int8_t A_Seme[2][16 * 136];
     __shared__ uint32_t boundary_Seme[BlOCK_M];
+    __shared__ uint32_t tile_has_work_Seme;
     __shared__ float W_Seme[2][BlOCK_M];
 
-    if (tid < BlOCK_M) {
-        if constexpr (is_align_m) {
-            boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
-        } else {
-            if (blockIdx_y * BlOCK_M + tid < M) {
-                boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
-            } else {
-                boundary_Seme[tid] = 0; // 越界行对应的边界设为 0
-            }
-        }
+    if (!mqa_load_bounds_and_check_tile<BlOCK_M, BLOCK_N, is_align_m>(
+            KS, KE, M, N, blockIdx_x, blockIdx_y,
+            boundary_Seme, &tile_has_work_Seme)) {
+        return;
     }
-
-    /* KE is normalized and applied per row by clean_logits_mqa. */
     
     floatx4 C_reg_out[2] = {{0.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 0.0}};
     
@@ -1727,21 +1879,14 @@ __global__ void _mqa_logits_32x128x128_TN_impl_i8(
         float C_smem[32][68];
     } smem;
     __shared__ uint32_t boundary_Seme[BlOCK_M];
+    __shared__ uint32_t tile_has_work_Seme;
     __shared__ float W_Seme_Cache[2][32][8];
 
-    if (tid < BlOCK_M) {
-        if constexpr (is_align_m) {
-            boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
-        } else {
-            if (blockIdx_y * BlOCK_M + tid < M) {
-                boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
-            } else {
-                boundary_Seme[tid] = 0;
-            }
-        }
+    if (!mqa_load_bounds_and_check_tile<BlOCK_M, BLOCK_N, is_align_m>(
+            KS, KE, M, N, blockIdx_x, blockIdx_y,
+            boundary_Seme, &tile_has_work_Seme)) {
+        return;
     }
-
-    /* KE is normalized and applied per row by clean_logits_mqa. */
     
     floatx4 C_reg_out[2][2];
     C_reg_out[0][0] = {0.0, 0.0, 0.0, 0.0};
@@ -2072,6 +2217,7 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch(
     constexpr bool is_half = std::is_same<scalar_t, _Float16>::value;
     __shared__ scalar_t A_Seme[2][16 * 128 + 16 * 4];
     __shared__ uint32_t boundary_Seme[BlOCK_M];
+    __shared__ uint32_t tile_has_work_Seme;
     __shared__ float W_Seme[2][BlOCK_M];
     
     // Split-K
@@ -2084,17 +2230,10 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch(
     // 如果此 block 没有分到 work，直接退出
     if (start_h >= end_h) return;
 
-    // 后面有同步
-    if (tid < BlOCK_M) {
-        if constexpr (is_align_m) {
-            boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
-        } else {
-            if (blockIdx_y * BlOCK_M + tid < M) {
-                boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
-            } else {
-                boundary_Seme[tid] = 0;
-            }
-        }
+    if (!mqa_load_bounds_and_check_tile<BlOCK_M, BLOCK_N, is_align_m>(
+            KS, KE, M, N, blockIdx_x, blockIdx_y,
+            boundary_Seme, &tile_has_work_Seme)) {
+        return;
     }
 
     floatx4 C_reg_out = {0.0, 0.0, 0.0, 0.0};
@@ -2256,7 +2395,7 @@ __global__ void _mqa_logits_16x128x64_TN_impl_with_weight_prefetch(
 }
 
 template <typename scalar_t, int num_heads, int head_dim, int BlOCK_M, int BLOCK_K, int BLOCK_N, bool is_align_m, bool is_align_n>
-__global__ void _mqa_logits_16x128x128_TN_impl(
+__global__ __launch_bounds__(512, 1) void _mqa_logits_16x128x128_TN_impl(
     scalar_t* A_data,
     scalar_t* B_data,
     float* D_data,
@@ -2277,49 +2416,37 @@ __global__ void _mqa_logits_16x128x128_TN_impl(
     constexpr bool is_half = std::is_same<scalar_t, _Float16>::value;
     __shared__ scalar_t A_Seme[2][16 * 128 + 16 * 4];
     __shared__ uint32_t boundary_Seme[BlOCK_M];
+    __shared__ uint32_t tile_has_work_Seme;
     __shared__ float W_Seme[2][BlOCK_M];
 
-    // 后面有同步
-    if (tid < BlOCK_M) {
-        if constexpr (is_align_m) {
-            boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
-        } else {
-            if (blockIdx_y * BlOCK_M + tid < M) {
-                boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
-            } else {
-                boundary_Seme[tid] = 0; // 越界行对应的边界设为 0
-            }
-        }
-    }
+    const bool tile_has_work =
+        mqa_load_bounds_and_check_tile<BlOCK_M, BLOCK_N, is_align_m>(
+            KS, KE, M, N, blockIdx_x, blockIdx_y,
+            boundary_Seme, &tile_has_work_Seme);
 
-    /* block mask */
-    if (M > 0) {
-        const int ke_max_idx_in_block = blockIdx_y * BlOCK_M + BlOCK_M - 1;
-        const int clamped_ke_idx = (ke_max_idx_in_block < M) ? ke_max_idx_in_block : (M - 1);
-        if (blockIdx_x * BLOCK_N >= KE[clamped_ke_idx]) {
-            const float neg_inf = -std::numeric_limits<float>::infinity();
-            const floatx4 neg_infx4 = {neg_inf, neg_inf, neg_inf, neg_inf};
-            const int total_vec4 = (BlOCK_M * BLOCK_N) / 4;
-            for (int i = tid; i < total_vec4; i += blockDim.x) {
-                int r = i / (BLOCK_N / 4);
-                int c = (i % (BLOCK_N / 4)) * 4;
-                int global_row = blockIdx_y * BlOCK_M + r;
-                int global_col = blockIdx_x * BLOCK_N + c;
-                if (global_row < M) {
-                    if (is_align_n && global_col + 3 < N) {
-                        *(floatx4*)(&D_data[global_row * N + global_col]) = neg_infx4;
-                    } else {
-                        #pragma unroll
-                        for (int k = 0; k < 4; ++k) {
-                            if (global_col + k < N) {
-                                D_data[global_row * N + global_col + k] = neg_inf;
-                            }
+    if (!tile_has_work) {
+        const float neg_inf = -std::numeric_limits<float>::infinity();
+        const floatx4 neg_infx4 = {neg_inf, neg_inf, neg_inf, neg_inf};
+        const int total_vec4 = (BlOCK_M * BLOCK_N) / 4;
+        for (int i = tid; i < total_vec4; i += blockDim.x) {
+            int r = i / (BLOCK_N / 4);
+            int c = (i % (BLOCK_N / 4)) * 4;
+            int global_row = blockIdx_y * BlOCK_M + r;
+            int global_col = blockIdx_x * BLOCK_N + c;
+            if (global_row < M) {
+                if (is_align_n && global_col + 3 < N) {
+                    *(floatx4*)(&D_data[global_row * N + global_col]) = neg_infx4;
+                } else {
+                    #pragma unroll
+                    for (int k = 0; k < 4; ++k) {
+                        if (global_col + k < N) {
+                            D_data[global_row * N + global_col + k] = neg_inf;
                         }
                     }
                 }
             }
-            return;
         }
+        return;
     }
 
     floatx4 C_reg_out = {0.0, 0.0, 0.0, 0.0};
@@ -2463,14 +2590,15 @@ __global__ void _mqa_logits_32x128x64_NT_impl(
     __shared__ scalar_t A_Seme[2][32 * 132];
 
     __shared__ uint32_t boundary_Seme[BlOCK_M]; // BLOCK_M = 32
+    __shared__ uint32_t tile_has_work_Seme;
     __shared__ float W_Seme[2][BlOCK_M]; // BLOCK_M = 32
 
-    if (tid < BlOCK_M) {
-        boundary_Seme[tid] = KE[blockIdx_y * BlOCK_M + tid];
-    }
+    const bool tile_has_work =
+        mqa_load_bounds_and_check_tile<BlOCK_M, BLOCK_N, false>(
+            KS, KE, M, N, blockIdx_x, blockIdx_y,
+            boundary_Seme, &tile_has_work_Seme);
 
-    /* block mask */
-    if (blockIdx_x * BLOCK_N >= KE[blockIdx_y * BlOCK_M + BlOCK_M - 1]) {
+    if (!tile_has_work) {
         const float neg_inf = -std::numeric_limits<float>::infinity();
         const floatx4 neg_infx4 = {neg_inf, neg_inf, neg_inf, neg_inf};
         const int total_vec4 = (BlOCK_M * BLOCK_N) / 4;
@@ -2645,35 +2773,36 @@ __global__ void _mqa_logits_16x128x64_NT_impl(
     const int lane = tid % C10_WARP_SIZE;
     constexpr bool is_half = std::is_same<scalar_t, _Float16>::value;
     __shared__ scalar_t A_Seme[2][16 * 128 + 16 * 4];
+    __shared__ uint32_t boundary_Seme[BlOCK_M];
+    __shared__ uint32_t tile_has_work_Seme;
 
-    // /* block mask */
-    if (M > 0) {
-        const int ke_max_idx_in_block = blockIdx_y * BlOCK_M + BlOCK_M - 1;
-        const int clamped_ke_idx = (ke_max_idx_in_block < M) ? ke_max_idx_in_block : (M - 1);
-        if (blockIdx_x * BLOCK_N >= KE[clamped_ke_idx]) {
-            const float neg_inf = -std::numeric_limits<float>::infinity();
-            const floatx4 neg_infx4 = {neg_inf, neg_inf, neg_inf, neg_inf};
-            const int total_vec4 = (BlOCK_M * BLOCK_N) / 4;
-            for (int i = tid; i < total_vec4; i += blockDim.x) {
-                int r = i / (BLOCK_N / 4);
-                int c = (i % (BLOCK_N / 4)) * 4;
-                int global_row = blockIdx_y * BlOCK_M + r;
-                int global_col = blockIdx_x * BLOCK_N + c;
-                if (global_row < M) {
-                    if (is_align_n && global_col + 3 < N) {
-                        *(floatx4*)(&D_data[global_row * N + global_col]) = neg_infx4;
-                    } else {
-                        #pragma unroll
-                        for (int k = 0; k < 4; ++k) {
-                            if (global_col + k < N) {
-                                D_data[global_row * N + global_col + k] = neg_inf;
-                            }
+    const bool tile_has_work =
+        mqa_load_bounds_and_check_tile<BlOCK_M, BLOCK_N, is_align_m>(
+            KS, KE, M, N, blockIdx_x, blockIdx_y,
+            boundary_Seme, &tile_has_work_Seme);
+    if (!tile_has_work) {
+        const float neg_inf = -std::numeric_limits<float>::infinity();
+        const floatx4 neg_infx4 = {neg_inf, neg_inf, neg_inf, neg_inf};
+        const int total_vec4 = (BlOCK_M * BLOCK_N) / 4;
+        for (int i = tid; i < total_vec4; i += blockDim.x) {
+            int r = i / (BLOCK_N / 4);
+            int c = (i % (BLOCK_N / 4)) * 4;
+            int global_row = blockIdx_y * BlOCK_M + r;
+            int global_col = blockIdx_x * BLOCK_N + c;
+            if (global_row < M) {
+                if (is_align_n && global_col + 3 < N) {
+                    *(floatx4*)(&D_data[global_row * N + global_col]) = neg_infx4;
+                } else {
+                    #pragma unroll
+                    for (int k = 0; k < 4; ++k) {
+                        if (global_col + k < N) {
+                            D_data[global_row * N + global_col + k] = neg_inf;
                         }
                     }
                 }
             }
-            return;
         }
+        return;
     }
 
     floatx4 C_reg_out = {0.0, 0.0, 0.0, 0.0};
@@ -2753,7 +2882,7 @@ __global__ void _mqa_logits_16x128x64_NT_impl(
         }
     }
     // __syncthreads();
-    const int boundary = KE[stg_row];
+    const int boundary = boundary_Seme[lane % BlOCK_M];
     if constexpr (is_align_n && is_align_m) {
         // if(stg_row < M){
         if (stg_col < boundary) {
@@ -3440,6 +3569,17 @@ torch::Tensor mqa_logits(
                     }
                 }
             });
+            if (clean_logits && M > 0) {
+                auto* d_ptr = reinterpret_cast<float*>(D.data_ptr());
+                at::native::clean_logits_mqa<4>
+                    <<<DIV(M, 4), 256, 0, stream>>>(
+                        M,
+                        N,
+                        N,
+                        ks_ptr,
+                        ke_ptr,
+                        d_ptr);
+            }
         });
         return D;
     }
