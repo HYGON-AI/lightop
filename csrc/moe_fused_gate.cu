@@ -1,8 +1,10 @@
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <cuda_runtime.h>
 #include <stdio.h>
 #include <torch/all.h>
 #include <cfloat>
+#include <cmath>
 #include <type_traits>
 #include <hip/hip_bf16.h>
 
@@ -163,8 +165,8 @@ __device__ void moe_fused_gate_impl(
       float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(max_val_reduce, mask, params.THREADS_PER_ROW);
       int other_group = VLLM_SHFL_XOR_SYNC_WIDTH(winning_group_id, mask, params.THREADS_PER_ROW);
 
-      // if (other_max > max_val_reduce || (other_max == max_val_reduce && other_group < winning_group_id)) {
-      if (other_max > max_val_reduce ) {
+      if (other_max > max_val_reduce ||
+          (other_max == max_val_reduce && other_group < winning_group_id)) {
         max_val_reduce = other_max;
         winning_group_id = other_group;
       }
@@ -196,7 +198,8 @@ __device__ void moe_fused_gate_impl(
     for (int mask = params.THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
       float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(global_max_val, mask, params.THREADS_PER_ROW);
       int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert_id, mask, params.THREADS_PER_ROW);
-      if (other_max > global_max_val ) {
+      if (other_max > global_max_val ||
+          (other_max == global_max_val && other_expert < global_best_expert_id)) {
         global_max_val = other_max;
         global_best_expert_id = other_expert;
       }
@@ -231,7 +234,8 @@ __device__ void moe_fused_gate_impl(
     for (int mask = params.THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
       float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(global_max_val, mask, params.THREADS_PER_ROW);
       int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert_id, mask, params.THREADS_PER_ROW);
-      if (other_max > global_max_val ) {
+      if (other_max > global_max_val ||
+          (other_max == global_max_val && other_expert < global_best_expert_id)) {
         global_max_val = other_max;
         global_best_expert_id = other_expert;
       }
@@ -265,7 +269,8 @@ __device__ void moe_fused_gate_impl(
     for (int mask = params.THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
       float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(global_max_val, mask, params.THREADS_PER_ROW);
       int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert_id, mask, params.THREADS_PER_ROW);
-      if (other_max > global_max_val ) {
+      if (other_max > global_max_val ||
+          (other_max == global_max_val && other_expert < global_best_expert_id)) {
         global_max_val = other_max;
         global_best_expert_id = other_expert;
       }
@@ -405,7 +410,8 @@ __device__ void moe_fused_gate_impl_expert_384(
       float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(max_val_reduce, mask, params.THREADS_PER_ROW);
       int other_group = VLLM_SHFL_XOR_SYNC_WIDTH(winning_group_id, mask, params.THREADS_PER_ROW);
 
-      if (other_max > max_val_reduce ) {
+      if (other_max > max_val_reduce ||
+          (other_max == max_val_reduce && other_group < winning_group_id)) {
         max_val_reduce = other_max;
         winning_group_id = other_group;
       }
@@ -439,7 +445,8 @@ __device__ void moe_fused_gate_impl_expert_384(
     for (int mask = params.THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
       float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(global_max_val, mask, params.THREADS_PER_ROW);
       int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert_id, mask, params.THREADS_PER_ROW);
-      if (other_max > global_max_val ) {
+      if (other_max > global_max_val ||
+          (other_max == global_max_val && other_expert < global_best_expert_id)) {
         global_max_val = other_max;
         global_best_expert_id = other_expert;
       }
@@ -475,7 +482,8 @@ __device__ void moe_fused_gate_impl_expert_384(
     for (int mask = params.THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
       float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(global_max_val, mask, params.THREADS_PER_ROW);
       int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert_id, mask, params.THREADS_PER_ROW);
-      if (other_max > global_max_val ) {
+      if (other_max > global_max_val ||
+          (other_max == global_max_val && other_expert < global_best_expert_id)) {
         global_max_val = other_max;
         global_best_expert_id = other_expert;
       }
@@ -512,7 +520,8 @@ __device__ void moe_fused_gate_impl_expert_384(
     for (int mask = params.THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
       float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(global_max_val, mask, params.THREADS_PER_ROW);
       int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert_id, mask, params.THREADS_PER_ROW);
-      if (other_max > global_max_val ) {
+      if (other_max > global_max_val ||
+          (other_max == global_max_val && other_expert < global_best_expert_id)) {
         global_max_val = other_max;
         global_best_expert_id = other_expert;
       }
@@ -639,7 +648,12 @@ __global__ void moe_fused_gate_kernel_gourp1(
     for (int mask = params.THREADS_PER_ROW / 2; mask > 0; mask >>= 1) {
       float other_max = VLLM_SHFL_XOR_SYNC_WIDTH(global_max_val, mask, params.THREADS_PER_ROW);
       int other_expert = VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert_id, mask, params.THREADS_PER_ROW);
-      if (other_max > global_max_val) {
+      // Every lane must agree on the same winning expert, including ties.
+      // Otherwise each tied lane can invalidate a different expert in this
+      // iteration and later iterations skip valid top-k candidates.
+      if (other_max > global_max_val ||
+          (other_max == global_max_val &&
+           other_expert < global_best_expert_id)) {
             global_max_val = other_max;
             global_best_expert_id = other_expert;
       }
@@ -676,12 +690,12 @@ __global__ void moe_fused_gate_kernel_gourp1(
 
   if (thread_group_idx < TOPK) { 
     int const out_idx = TOPK * thread_row + thread_group_idx;
-    float route_scale = 1.0;
-    if constexpr(NUM_EXPERTS == 192) {  // 192 hy3缩放，其他专家数不缩放
-      if (apply_routed_scaling_factor_on_output) {
-        route_scale = static_cast<float>(routed_scaling_factor); 
-      }
-    }
+    // Scaling is an API option, not a property of the expert count.  In
+    // particular, HY V4 uses 256 experts with routed_scaling_factor=2.827.
+    float route_scale = apply_routed_scaling_factor_on_output &&
+            routed_scaling_factor > 0.0
+        ? static_cast<float>(routed_scaling_factor)
+        : 1.0f;
     output_ptr[out_idx] = (my_stored_prob / output_sum) * route_scale;
     indices_ptr[out_idx] = my_stored_idx;
   }
@@ -917,7 +931,8 @@ __global__ void moe_fused_gate_kernel_254_group2(
             VLLM_SHFL_XOR_SYNC_WIDTH(global_max, mask, THREADS_PER_ROW);
         const int other_expert =
             VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert, mask, THREADS_PER_ROW);
-        if (other_max > global_max) {
+        if (other_max > global_max ||
+            (other_max == global_max && other_expert < global_best_expert)) {
           global_max = other_max;
           global_best_expert = other_expert;
         }
@@ -956,7 +971,8 @@ __global__ void moe_fused_gate_kernel_254_group2(
             VLLM_SHFL_XOR_SYNC_WIDTH(global_max, mask, THREADS_PER_ROW);
         const int other_expert =
             VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert, mask, THREADS_PER_ROW);
-        if (other_max > global_max) {
+        if (other_max > global_max ||
+            (other_max == global_max && other_expert < global_best_expert)) {
           global_max = other_max;
           global_best_expert = other_expert;
         }
@@ -1004,7 +1020,8 @@ __global__ void moe_fused_gate_kernel_254_group2(
             VLLM_SHFL_XOR_SYNC_WIDTH(global_max, mask, THREADS_PER_ROW);
         const int other_expert =
             VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert, mask, THREADS_PER_ROW);
-        if (other_max > global_max) {
+        if (other_max > global_max ||
+            (other_max == global_max && other_expert < global_best_expert)) {
           global_max = other_max;
           global_best_expert = other_expert;
         }
@@ -1052,7 +1069,8 @@ __global__ void moe_fused_gate_kernel_254_group2(
             VLLM_SHFL_XOR_SYNC_WIDTH(global_max, mask, THREADS_PER_ROW);
         const int other_expert =
             VLLM_SHFL_XOR_SYNC_WIDTH(global_best_expert, mask, THREADS_PER_ROW);
-        if (other_max > global_max) {
+        if (other_max > global_max ||
+            (other_max == global_max && other_expert < global_best_expert)) {
           global_max = other_max;
           global_best_expert = other_expert;
         }
@@ -1298,49 +1316,6 @@ __global__ void moe_fused_gate_kernel(
    dispatched = true; \
  } while (0)
 
-struct KernelParamsDynamic {
- int VPT;
- int NUM_EXPERTS;
- int THREADS_PER_ROW;
- int ROWS_PER_WARP;
- int ROWS_PER_CTA;
- int WARPS_PER_CTA;
-};
-
-template <typename T, typename T_bias>
-__global__ void moe_fused_gate_kernel_dynamic(
-   void* input,
-   void* bias,
-   float* output_ptr,
-   int32_t* indices_ptr,
-   int64_t num_rows,
-   int64_t num_experts,
-   int64_t num_expert_group,
-   int64_t topk_group,
-   int64_t topk,
-   int64_t n_share_experts_fusion,
-   double routed_scaling_factor,
-   bool apply_routed_scaling_factor_on_output) {
- KernelParamsDynamic params;
- params.NUM_EXPERTS = num_experts;    // e.g, for deepseek v3, this is 256
- params.VPT = (num_experts / num_expert_group) / 4;
- params.THREADS_PER_ROW = num_expert_group * 4;
- params.WARPS_PER_CTA = WARPS_PER_CTA;   
- params.ROWS_PER_WARP = std::max<int64_t>(1, WARP_SIZE / params.THREADS_PER_ROW);
- params.ROWS_PER_CTA = params.WARPS_PER_CTA * params.ROWS_PER_WARP;
-   moe_fused_gate_impl<T, T_bias>(
-     input,
-     bias,
-     output_ptr,
-     indices_ptr,
-     num_rows,
-     topk_group,
-     topk,
-     n_share_experts_fusion,
-     routed_scaling_factor,
-     apply_routed_scaling_factor_on_output,
-     params);
-}
 std::vector<torch::Tensor> moe_fused_gate(
    torch::Tensor& input, //[num_tokens,num_expert]
    torch::Tensor& bias,
@@ -1350,11 +1325,89 @@ std::vector<torch::Tensor> moe_fused_gate(
    int64_t n_share_experts_fusion,
    double routed_scaling_factor,
    bool apply_routed_scaling_factor_on_output) {
+ TORCH_CHECK(input.dim() == 2,
+             "moe_fused_gate: input must have shape [tokens, experts], got ",
+             input.sizes());
+ TORCH_CHECK(bias.dim() == 1 && bias.numel() == input.size(1),
+             "moe_fused_gate: bias must have shape [experts], got ",
+             bias.sizes(), " for input ", input.sizes());
+ TORCH_CHECK(input.is_cuda() && bias.is_cuda() &&
+                 input.device() == bias.device(),
+             "moe_fused_gate: input and bias must be on the same CUDA/ROCm device");
+ TORCH_CHECK(input.is_contiguous() && bias.is_contiguous(),
+             "moe_fused_gate: input and bias must be contiguous");
+ TORCH_CHECK(num_expert_group > 0 && num_expert_group <= input.size(1) &&
+                 input.size(1) % num_expert_group == 0,
+             "moe_fused_gate: invalid num_expert_group=", num_expert_group,
+             " for experts=", input.size(1));
+ TORCH_CHECK(topk_group > 0 && topk_group <= num_expert_group,
+             "moe_fused_gate: topk_group must be in [1, num_expert_group], got ",
+             topk_group, " with num_expert_group=", num_expert_group);
+ TORCH_CHECK(topk > 0 && n_share_experts_fusion >= 0 &&
+                 n_share_experts_fusion < topk &&
+                 topk - n_share_experts_fusion <=
+                     (input.size(1) / num_expert_group) * topk_group,
+             "moe_fused_gate: invalid topk/shared-expert configuration: topk=",
+             topk, ", shared=", n_share_experts_fusion,
+             ", experts=", input.size(1), ", groups=", num_expert_group,
+             ", topk_group=", topk_group);
+ TORCH_CHECK(std::isfinite(routed_scaling_factor),
+             "moe_fused_gate: routed_scaling_factor must be finite, got ",
+             routed_scaling_factor);
+
  int64_t num_rows = input.size(0);
  int32_t num_experts = input.size(1);
- auto options = torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCUDA);
+ const bool group1_experts = num_experts == 128 || num_experts == 160 ||
+     num_experts == 192 || num_experts == 256 || num_experts == 288 ||
+     num_experts == 384 || num_experts == 512;
+ const bool supported_group1 = group1_experts && num_expert_group == 1 &&
+     topk_group == 1 && (topk == 7 || topk == 8 || topk == 14 || topk == 22);
+ const bool supported_254 = num_experts == 254 && num_expert_group == 2 &&
+     (topk == 7 || topk == 14) && n_share_experts_fusion == 2;
+ const bool supported_896 = num_experts == 896 && num_expert_group == 1 &&
+     topk_group == 1 && topk == 16 && n_share_experts_fusion == 0;
+ // The generic grouped kernel has an eight-element per-lane load/scratch
+ // contract.  Reject the old VPT=4 and arbitrary dynamic fallbacks instead of
+ // silently reading beyond a row or overflowing the per-lane arrays.
+ // The 384-expert specialization always selects at least two routed experts
+ // and does not implement shared-expert fusion.
+ const bool supported_grouped = topk <= num_expert_group * 4 &&
+     ((num_experts == 128 && num_expert_group == 4) ||
+      (num_experts == 256 && num_expert_group == 8) ||
+      (num_experts == 384 && topk >= 2 && n_share_experts_fusion == 0 &&
+       (num_expert_group == 4 || num_expert_group == 8 || num_expert_group == 16)));
+ TORCH_CHECK(supported_group1 || supported_254 || supported_896 ||
+                 supported_grouped,
+             "moe_fused_gate: unsupported configuration: experts=", num_experts,
+             ", groups=", num_expert_group, ", topk_group=", topk_group,
+             ", topk=", topk, ", shared=", n_share_experts_fusion,
+             ". Supported: group=1 experts={128,160,192,256,288,384,512} "
+             "topk={7,8,14,22}; (experts,groups)={(128,4),(256,8),"
+             "(384,4),(384,8),(384,16)} with topk<=4*groups "
+             "(384 experts additionally requires topk>=2 and shared=0); "
+             "(254,2) topk={7,14} shared=2; (896,1) topk=16 shared=0. "
+             "No unvalidated dynamic fallback is allowed. In vLLM HCU, set "
+             "VLLM_HCU_USE_FUSE_MOE_GATE=0 to use the standard router.");
+
+ const auto input_type = input.scalar_type();
+ const auto bias_type = bias.scalar_type();
+ const bool supported_types =
+     (input_type == at::kBFloat16 &&
+      (bias_type == at::kBFloat16 || bias_type == at::kFloat)) ||
+     (input_type == at::kHalf && bias_type == at::kHalf) ||
+     (input_type == at::kFloat &&
+      (bias_type == at::kFloat ||
+       (!supported_grouped && (bias_type == at::kBFloat16 || bias_type == at::kHalf))));
+ TORCH_CHECK(supported_types,
+             "moe_fused_gate: unsupported input/bias dtype combination: input=",
+             input_type, ", bias=", bias_type, ", experts=", num_experts,
+             ", groups=", num_expert_group);
+
+ const c10::cuda::CUDAGuard device_guard(input.device());
+ auto options = input.options().dtype(torch::kFloat32);
  auto output = torch::empty({num_rows, topk}, options);
  auto indices = torch::empty({num_rows, topk}, options.dtype(torch::kInt32));
+ if (num_rows == 0) return {output, indices};
 
  int64_t threads_per_row = num_expert_group * 4;
 
@@ -1363,10 +1416,6 @@ std::vector<torch::Tensor> moe_fused_gate(
  int64_t num_blocks = (num_warps + WARPS_PER_CTA - 1) / WARPS_PER_CTA;
  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
  dim3 block_dim(WARP_SIZE, WARPS_PER_CTA); // This is correct for the new thread_row calculation
-
- int computed_vpt = num_experts / num_expert_group;
- int computed_vpt_per_thread = computed_vpt / 4;
-
 
  bool dispatched = false;
  if (num_experts == 254 && num_expert_group == 2 &&
@@ -1810,109 +1859,11 @@ std::vector<torch::Tensor> moe_fused_gate(
    }
  }
  
- if (!dispatched) {
-   // Fallback to the dynamic kernel if none of the supported combinations match.
-   
-   if (input.scalar_type() == at::kBFloat16) {
-    if (bias.scalar_type() == at::kFloat) {
-     moe_fused_gate_kernel_dynamic<__nv_bfloat16, float><<<num_blocks, block_dim, 0, stream>>>(
-       input.data_ptr(),
-       bias.data_ptr(),
-       output.data_ptr<float>(),
-       indices.data_ptr<int32_t>(),
-       num_rows,
-       num_experts,
-       num_expert_group,
-       topk_group,
-       topk,
-       n_share_experts_fusion,
-       routed_scaling_factor,
-       apply_routed_scaling_factor_on_output);
-    } else if (bias.scalar_type() == at::kBFloat16) {
-     moe_fused_gate_kernel_dynamic<__nv_bfloat16, __nv_bfloat16><<<num_blocks, block_dim, 0, stream>>>(
-       input.data_ptr(),
-       bias.data_ptr(),
-       output.data_ptr<float>(),
-       indices.data_ptr<int32_t>(),
-       num_rows,
-       num_experts,
-       num_expert_group,
-       topk_group,
-       topk,
-       n_share_experts_fusion,
-       routed_scaling_factor,
-       apply_routed_scaling_factor_on_output);
-    } else {
-     TORCH_CHECK(false, "Unsupported bias data type for bf16 input in moe_fused_gate");
-    }
-   } else if (input.scalar_type() == at::kHalf) {
-    if (bias.scalar_type() == at::kHalf) {
-     moe_fused_gate_kernel_dynamic<half, half><<<num_blocks, block_dim, 0, stream>>>(
-       input.data_ptr(),
-       bias.data_ptr(),
-       output.data_ptr<float>(),
-       indices.data_ptr<int32_t>(),
-       num_rows,
-       num_experts,
-       num_expert_group,
-       topk_group,
-       topk,
-       n_share_experts_fusion,
-       routed_scaling_factor,
-       apply_routed_scaling_factor_on_output);
-    } else {
-      TORCH_CHECK(false, "Unsupported bias data type for fp16 input in moe_fused_gate");
-    }
-   } else if (input.scalar_type() == at::kFloat) {
-    if (bias.scalar_type() == at::kFloat) {
-     moe_fused_gate_kernel_dynamic<float, float><<<num_blocks, block_dim, 0, stream>>>(
-       input.data_ptr(),
-       bias.data_ptr(),
-       output.data_ptr<float>(),
-       indices.data_ptr<int32_t>(),
-       num_rows,
-       num_experts,
-       num_expert_group,
-       topk_group,
-       topk,
-       n_share_experts_fusion,
-       routed_scaling_factor,
-       apply_routed_scaling_factor_on_output);
-    } else if (bias.scalar_type() == at::kBFloat16) {
-     moe_fused_gate_kernel_dynamic<float, __nv_bfloat16><<<num_blocks, block_dim, 0, stream>>>(
-       input.data_ptr(),
-       bias.data_ptr(),
-       output.data_ptr<float>(),
-       indices.data_ptr<int32_t>(),
-       num_rows,
-       num_experts,
-       num_expert_group,
-       topk_group,
-       topk,
-       n_share_experts_fusion,
-       routed_scaling_factor,
-       apply_routed_scaling_factor_on_output);
-    } else if (bias.scalar_type() == at::kHalf) {
-     moe_fused_gate_kernel_dynamic<float, half><<<num_blocks, block_dim, 0, stream>>>(
-       input.data_ptr(),
-       bias.data_ptr(),
-       output.data_ptr<float>(),
-       indices.data_ptr<int32_t>(),
-       num_rows,
-       num_experts,
-       num_expert_group,
-       topk_group,
-       topk,
-       n_share_experts_fusion,
-       routed_scaling_factor,
-       apply_routed_scaling_factor_on_output);
-    } else {
-     TORCH_CHECK(false, "Unsupported bias data type for fp32 input in moe_fused_gate");
-    }
-   } else {
-    TORCH_CHECK(false, "Unsupported input data type for moe_fused_gate");
-   }
- }
+ TORCH_CHECK(dispatched,
+             "moe_fused_gate: no specialized kernel was dispatched for experts=",
+             num_experts, ", groups=", num_expert_group, ", topk=", topk,
+             ", input dtype=", input.scalar_type(),
+             ", bias dtype=", bias.scalar_type());
  return {output, indices};
 }
 }

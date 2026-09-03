@@ -80,14 +80,13 @@ def requested_baseline_moe_gate(
         topk_group=topk_group,
     )
 
-    if num_expert_group > 1 or num_experts == 192:
-        route_scale = (
-            float(routed_scaling_factor)
-            if routed_scaling_factor > 0
-            else 1.0
-        )
-    else:
-        route_scale = 1.0
+    # The default API applies routing scale for every expert count.  Do not
+    # duplicate the old group-1 kernel's 192-expert-only scaling bug here.
+    route_scale = (
+        float(routed_scaling_factor)
+        if routed_scaling_factor > 0
+        else 1.0
+    )
     routed_weights = routed_weights * route_scale
 
     if n_share_experts_fusion == 0:
