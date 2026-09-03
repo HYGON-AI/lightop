@@ -1,5 +1,6 @@
 #include "paged_mqa_logits.h"
 #include "paged_mqa_logits_impl.hpp"
+#include "paged_mqa_logits_fp8_impl.hpp"
 #include "paged_mqa_logits_int8_impl.hpp"
 
 #include "hip/hip_runtime.h"
