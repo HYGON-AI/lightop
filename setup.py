@@ -26,10 +26,10 @@ def _find_rocm_home() -> Optional[str]:
     rocm_home = os.environ.get('ROCM_HOME') or os.environ.get('ROCM_PATH')
     if rocm_home is None:
         try:
-            pipe_hipcc = subprocess.Popen(
-                ["which hipcc | xargs readlink -f"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-            hipcc, _ = pipe_hipcc.communicate()
-            rocm_home = os.path.dirname(os.path.dirname(hipcc.decode().rstrip('\r\n')))
+            pipe_aicc = subprocess.Popen(
+                ["which aicc | xargs readlink -f"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+            aicc, _ = pipe_aicc.communicate()
+            rocm_home = os.path.dirname(os.path.dirname(aicc.decode().rstrip('\r\n')))
             if os.path.basename(rocm_home) == 'hip':
                 rocm_home = os.path.dirname(rocm_home)
         except Exception:
@@ -65,9 +65,9 @@ def _get_rocm_arch_flags_marlin_w4a8(cflags: Optional[List[str]] = None) -> List
         archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
     flags +=['--gpu-max-threads-per-block=512']
-    flags +=['-mllvm']
-    flags +=['-enable-num-vgprs-512=true']
-    # flags +=['--save-temps']
+    #flags +=['-mllvm']
+    #flags +=['-enable-num-vgprs-512=true']
+    flags +=['--save-temps']
     return flags
 # 4 warp
 def _get_rocm_arch_flags_marlin_w4a16(cflags: Optional[List[str]] = None) -> List[str]:
@@ -92,7 +92,7 @@ COMMON_HIP_FLAGS = [
     '-DUSE_ROCM=1',
 ]
 
-COMMON_HIPCC_FLAGS = [
+COMMON_AICC_FLAGS = [
     '-DCUDA_HAS_FP16=1',
 ]
 
@@ -154,7 +154,7 @@ def _write_ninja_file(path, cflags, post_cflags, cuda_cflags, cuda_post_cflags, 
     config.append(f'cxx = {compiler}')
     if with_cuda:
         if IS_HIP_EXTENSION:
-            nvcc = _join_rocm_home('bin', 'hipcc')
+            nvcc = _join_rocm_home('bin', 'aicc')
         config.append(f'nvcc = {nvcc}')
     flags = [f'cflags = {" ".join(cflags)}']
     flags.append(f'post_cflags = {" ".join(post_cflags)}')
@@ -388,7 +388,7 @@ class BuildReleaseExtension(BuildExtension):
                         cuda_post_cflags = list(extra_postargs)
                     if IS_HIP_EXTENSION:
                         cuda_post_cflags = cuda_post_cflags + _get_rocm_arch_flags(cuda_post_cflags)
-                        cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + cuda_post_cflags
+                        cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_AICC_FLAGS + cuda_post_cflags
                     append_std17_if_no_std_present(cuda_post_cflags)
                     cuda_cflags = [shlex.quote(f) for f in common_cflags]
                     cuda_post_cflags = [shlex.quote(f) for f in cuda_post_cflags]
@@ -420,7 +420,7 @@ class BuildReleaseExtension(BuildExtension):
                     marlin_cuda_post_cflags = list(marlin_nvcc_flags)
                     if IS_HIP_EXTENSION:
                         marlin_cuda_post_cflags += _get_rocm_arch_flags_marlin_w4a16(marlin_cuda_post_cflags)
-                        marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + marlin_cuda_post_cflags
+                        marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_AICC_FLAGS + marlin_cuda_post_cflags
                     append_std17_if_no_std_present(marlin_cuda_post_cflags)
                     marlin_cuda_post_cflags = [shlex.quote(f) for f in marlin_cuda_post_cflags]
 
@@ -450,7 +450,7 @@ class BuildReleaseExtension(BuildExtension):
                     marlin_cuda_post_cflags = list(marlin_nvcc_flags)
                     if IS_HIP_EXTENSION:
                         marlin_cuda_post_cflags += _get_rocm_arch_flags_marlin_w4a8(marlin_cuda_post_cflags)
-                        marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + marlin_cuda_post_cflags
+                        marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_AICC_FLAGS + marlin_cuda_post_cflags
                     append_std17_if_no_std_present(marlin_cuda_post_cflags)
                     marlin_cuda_post_cflags = [shlex.quote(f) for f in marlin_cuda_post_cflags]
 
@@ -480,7 +480,7 @@ class BuildReleaseExtension(BuildExtension):
                     marlin_cuda_post_cflags = list(marlin_nvcc_flags)
                     if IS_HIP_EXTENSION:
                         marlin_cuda_post_cflags += _get_rocm_arch_flags_marlin_w4a8(marlin_cuda_post_cflags)
-                        marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + marlin_cuda_post_cflags
+                        marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_AICC_FLAGS + marlin_cuda_post_cflags
                     append_std17_if_no_std_present(marlin_cuda_post_cflags)
                     marlin_cuda_post_cflags = [shlex.quote(f) for f in marlin_cuda_post_cflags]
 
@@ -511,7 +511,7 @@ def get_extensions():
     define_macros = []
 
     # 全局默认编译选项
-    extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas','-w'], 'nvcc': ['-O3','-ldl', '-lrocblas','-w','-mllvm -enable-num-vgprs-512=true', '-DHIP_ENABLE_WARP_SYNC_BUILTINS']}
+    extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas','-w'], 'nvcc': ['-O3','-ldl', '-lrocblas','-w','-mllvm=-support-512-vgprs=true', '-DHIP_ENABLE_WARP_SYNC_BUILTINS','-fclang-abi-compat=17']}
     if torch_version_over110():
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_110')
     if torch_version >= 290:
