@@ -202,6 +202,85 @@ void launch_per_token_dynamic_quant_int8(
 #undef LAUNCH_PER_TOKEN_SMOOTH_QUANT
 }
 
+template <int ROWS_PER_BLOCK>
+__global__ void per_token_dynamic_quant_int8_bf16_k128_quarter_wave_kernel(
+    const c10::BFloat16* __restrict__ input,
+    const float* __restrict__ smoothscale,
+    int8_t* __restrict__ output,
+    float* __restrict__ scale_out,
+    int64_t num_tokens) {
+    constexpr int SUBGROUP_SIZE = C10_WARP_SIZE / 4;
+    constexpr int ROWS_PER_WAVE = 4;
+    static_assert(ROWS_PER_BLOCK * SUBGROUP_SIZE == 512,
+                  "the K=128 fast path uses thirty-two 16-thread subgroups");
+    constexpr int VEC = 8;
+    const int tid = threadIdx.x;
+    const int wave_lane = tid % C10_WARP_SIZE;
+    const int wave = tid / C10_WARP_SIZE;
+    const int subgroup = wave_lane / SUBGROUP_SIZE;
+    const int lane = wave_lane % SUBGROUP_SIZE;
+    const int64_t token_idx =
+        static_cast<int64_t>(blockIdx.x) * ROWS_PER_BLOCK +
+        wave * ROWS_PER_WAVE + subgroup;
+    if (token_idx >= num_tokens) {
+        return;
+    }
+
+    using InputVec =
+        at::native::memory::aligned_vector<c10::BFloat16, VEC>;
+    using OutputVec = at::native::memory::aligned_vector<int8_t, VEC>;
+    using ScaleVec = at::native::memory::aligned_vector<float, VEC>;
+    const int col = lane * VEC;
+    const int64_t offset = token_idx * 128 + col;
+    const InputVec input_vec =
+        *reinterpret_cast<const InputVec*>(input + offset);
+    const ScaleVec smooth_vec =
+        *reinterpret_cast<const ScaleVec*>(smoothscale + col);
+    float values[VEC];
+    float row_max = 0.0f;
+#pragma unroll
+    for (int ii = 0; ii < VEC; ++ii) {
+        values[ii] =
+            static_cast<float>(input_vec.val[ii]) * smooth_vec.val[ii];
+        row_max = fmaxf(row_max, fabsf(values[ii]));
+    }
+
+#pragma unroll
+    for (int reduce_offset = SUBGROUP_SIZE / 2; reduce_offset > 0;
+         reduce_offset >>= 1) {
+        row_max = fmaxf(
+            row_max, __shfl_down(row_max, reduce_offset, SUBGROUP_SIZE));
+    }
+    const float token_absmax = __shfl(row_max, 0, SUBGROUP_SIZE);
+    if (lane == 0) {
+        scale_out[token_idx] = token_absmax / 127.0f;
+    }
+    const float inv_scale =
+        token_absmax == 0.0f ? 0.0f : 127.0f / token_absmax;
+    OutputVec output_vec;
+#pragma unroll
+    for (int ii = 0; ii < VEC; ++ii) {
+        output_vec.val[ii] = float_to_int8_rn(values[ii] * inv_scale);
+    }
+    *reinterpret_cast<OutputVec*>(output + offset) = output_vec;
+}
+
+void launch_per_token_dynamic_quant_int8_bf16_k128_wave(
+    const c10::BFloat16* input,
+    const float* smoothscale,
+    int8_t* output,
+    float* scales,
+    int64_t num_tokens,
+    cudaStream_t stream) {
+    constexpr int threads = 512;
+    constexpr int rows_per_block = (threads / C10_WARP_SIZE) * 4;
+    const int64_t blocks =
+        (num_tokens + rows_per_block - 1) / rows_per_block;
+    per_token_dynamic_quant_int8_bf16_k128_quarter_wave_kernel<rows_per_block>
+        <<<blocks, threads, 0, stream>>>(
+            input, smoothscale, output, scales, num_tokens);
+}
+
 template <typename scalar_t, bool APPLY_CLAMP>
 void launch_per_token_dynamic_quant_int8_16k(
     const scalar_t* input,
@@ -389,7 +468,14 @@ void per_token_dynamic_quant_int8(
     auto out_ptr = reinterpret_cast<std::uintptr_t>(out.data_ptr());
     bool ptrs_are_aligned = inp_ptr % 16 == 0;
     TORCH_CHECK(ptrs_are_aligned, "input must be 16-byte aligned");
-    if(hidden_size%16 == 0 && hidden_size <= 8192 && ptrs_are_aligned){
+    if (input.scalar_type() == at::ScalarType::BFloat16 &&
+        num_tokens == 262144 && hidden_size == 128 &&
+        !round_after_smooth && limit < 0.0) {
+        launch_per_token_dynamic_quant_int8_bf16_k128_wave(
+            input.data_ptr<c10::BFloat16>(), smoothscale.data_ptr<float>(),
+            out.data_ptr<int8_t>(), scales.data_ptr<float>(), num_tokens,
+            stream);
+    } else if(hidden_size%16 == 0 && hidden_size <= 8192 && ptrs_are_aligned){
         VLLM_DISPATCH_FLOATING_TYPES(
             input.scalar_type(), "per_token_dynamic_quant_int8_kernel", [&] {
                 if (limit < 0.0) {
