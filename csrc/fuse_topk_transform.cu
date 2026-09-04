@@ -261,7 +261,7 @@ __device__ __forceinline__ uint32_t kpool_radix_select_descending_4bit(
   return desired;
 }
 
-template <int K>
+template <int K, int kItems = kKPool4VgprItemsPerThread>
 __device__ void select_kpool_topk_vgpr(
     const float* __restrict__ input,
     int* __restrict__ indices,
@@ -269,10 +269,12 @@ __device__ void select_kpool_topk_vgpr(
     int length,
     uint32_t* __restrict__ candidate_workspace) {
   static_assert(K == 512);
-  constexpr int kItems = kKPool4VgprItemsPerThread;
+  static_assert(kItems >= 4);
   constexpr int kSampleItems = 4;
   constexpr int kCompactItems = 2;
-  constexpr int kSampleRank = K / 2;
+  constexpr int kSampleRank =
+      (K / 2) * kKPool4VgprItemsPerThread / kItems;
+  constexpr int kSampleStride = kItems / kSampleItems;
 
   __shared__ int radix_histogram[16];
   __shared__ int radix_wave_histogram[
@@ -292,7 +294,10 @@ __device__ void select_kpool_topk_vgpr(
         : uint32_t{0};
   }
   uint32_t sample_keys[kSampleItems] = {
-      keys[0], keys[5], keys[10], keys[15]};
+      keys[0],
+      keys[kSampleStride],
+      keys[2 * kSampleStride],
+      keys[3 * kSampleStride]};
   const uint32_t sample_threshold =
       kpool_radix_select_descending_4bit<kSampleItems>(
           sample_keys,
@@ -660,6 +665,10 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
   __shared__ int smemFinalDstIdx[1];
   __shared__ int smemFinalBinSize[1];
   __shared__ int smemFoundTopKValues[1];
+  // The result of each histogram pass is a block-wide decision. Keep it in
+  // shared memory and publish it from lane 0 so every lane takes exactly the
+  // same path around the barriers in processHistogramStep().
+  __shared__ int smemContinueToNextStep[1];
 
   int rowLen = rowEnd - rowStart;
 
@@ -715,18 +724,49 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
   int thresholdBinIdx = -1;
   uint32_t logitPattern = 0;
 
-  bool continueToNextStep = processHistogramStep<0, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
+  processHistogramStep<0, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
       indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK);
 
-  if (continueToNextStep) {
-    continueToNextStep = processHistogramStep<1, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
-        indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK);
+  // Do not branch on the per-lane return value. Although the pass ends with
+  // a barrier, relying on every lane observing the same shared scalar has
+  // caused divergent replay paths on HIP. A single lane publishes the
+  // decision, followed by a block barrier, making the control flow explicit.
+  if (threadIdx.x == 0) {
+    smemContinueToNextStep[0] =
+        smemFinalBinSize[0] > kNumFinalItems ? 1 : 0;
   }
+  __syncthreads();
+  bool continueToNextStep = smemContinueToNextStep[0] != 0;
 
   if (continueToNextStep) {
-    continueToNextStep = processHistogramStep<2, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
+    // Step 0 uses FP16 bins. Step 1 is a full FP32 rescan, so discard the
+    // coarse writes; otherwise high-score entries can be selected twice.
+    if (threadIdx.x == 0) {
+      smemFoundTopKValues[0] = 0;
+      smemFinalDstIdx[0] = 0;
+    }
+    __syncthreads();
+
+    processHistogramStep<1, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
         indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK);
   }
+  if (threadIdx.x == 0) {
+    smemContinueToNextStep[0] =
+        continueToNextStep && smemFinalBinSize[0] > kNumFinalItems ? 1 : 0;
+  }
+  __syncthreads();
+  continueToNextStep = smemContinueToNextStep[0] != 0;
+
+  if (continueToNextStep) {
+    processHistogramStep<2, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
+        indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK);
+  }
+  if (threadIdx.x == 0) {
+    smemContinueToNextStep[0] =
+        continueToNextStep && smemFinalBinSize[0] > kNumFinalItems ? 1 : 0;
+  }
+  __syncthreads();
+  continueToNextStep = smemContinueToNextStep[0] != 0;
 
   if (continueToNextStep) {
     processHistogramStep<3, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
@@ -925,9 +965,12 @@ int get_lightop_topk_backend() {
     if (std::strcmp(value, "1") == 0) {
       return 1;
     }
+    if (std::strcmp(value, "2") == 0) {
+      return 2;
+    }
     TORCH_CHECK(
         false,
-        "SGL_USE_LIGHTOP_TOPK_BACKAND must be 0 or 1, but got ",
+        "SGL_USE_LIGHTOP_TOPK_BACKAND must be 0, 1, or 2, but got ",
         value);
     return 0;
   }();
@@ -973,12 +1016,14 @@ __device__ __forceinline__ auto radix_select_8bit_convert_to_uint32(float x)
   return (bits & 0x80000000u) ? ~bits : (bits | 0x80000000u);
 }
 
+template <int kTopK>
 __device__ void radix_select_8bit_topk(
     const float* __restrict__ input,
     int* __restrict__ index,
     int row_start,
     int length) {
-  int topk = kTopK2048;
+  static_assert(kTopK > 0 && kTopK <= kTopK2048);
+  int topk = kTopK;
   constexpr auto BLOCK_SIZE = 1024;
   constexpr auto RADIX = 256;
   constexpr auto SMEM_INPUT_SIZE =
@@ -1126,7 +1171,7 @@ __device__ void radix_select_8bit_topk(
           if (round == 3) {
             const auto pos = ::atomicAdd(&s_last_remain, -1);
             if (pos > 0) {
-              index[kTopK2048 - pos] = idx;
+              index[kTopK - pos] = idx;
             }
           } else {
             const auto pos = ::atomicAdd(&s_num_input[r_idx ^ 1], 1);
@@ -1163,7 +1208,8 @@ void topk_transform_decode_kernel_radix_select_8bit(
         score, length, dst_page_entry, src_page_entry);
   } else {
     __shared__ int s_indices[kTopK2048];
-    radix_select_8bit_topk(score, s_indices, row_start, length);
+    radix_select_8bit_topk<kTopK2048>(
+        score, s_indices, row_start, length);
     static_assert(kTopK2048 % kThreadsPerBlock == 0);
     static_assert(kTopK2048 / kThreadsPerBlock == 2);
     const auto idx_0 = tid;
@@ -1213,7 +1259,8 @@ void topk_transform_prefill_kernel_radix_select_8bit(
         score, length, dst_page_entry, src_page_entry);
   } else {
     __shared__ int s_indices[kTopK2048];
-    radix_select_8bit_topk(score, s_indices, row_start, length);
+    radix_select_8bit_topk<kTopK2048>(
+        score, s_indices, row_start, length);
     static_assert(kTopK2048 % kThreadsPerBlock == 0);
     static_assert(kTopK2048 / kThreadsPerBlock == 2);
     const auto idx_0 = tid;
@@ -1243,7 +1290,8 @@ void topk_transform_ragged_kernel_radix_select_8bit(
         score, length, dst_indices_entry, offset);
   } else {
     __shared__ int s_indices[kTopK2048];
-    radix_select_8bit_topk(score, s_indices, row_start, length);
+    radix_select_8bit_topk<kTopK2048>(
+        score, s_indices, row_start, length);
     static_assert(kTopK2048 % kThreadsPerBlock == 0);
     static_assert(kTopK2048 / kThreadsPerBlock == 2);
     const auto idx_0 = tid;
@@ -1252,6 +1300,168 @@ void topk_transform_ragged_kernel_radix_select_8bit(
     const auto idx_1 = tid + kThreadsPerBlock;
     const auto pos_1 = s_indices[idx_1];
     dst_indices_entry[idx_1] = pos_1 + offset;
+  }
+}
+
+template <int kTopK>
+__global__ __launch_bounds__(kThreadsPerBlock)
+void topk_transform_kernel_radix_select_8bit(
+    const FastTopKParams params,
+    const int32_t* __restrict__ page_table,
+    int32_t* __restrict__ page_indices,
+    int32_t* __restrict__ raw_indices,
+    int64_t page_table_stride,
+    int64_t page_table_size,
+    int64_t score_width,
+    uint32_t page_bits) {
+  static_assert(kTopK == 512 || kTopK == 1024);
+  const int row = blockIdx.x;
+  const int tid = threadIdx.x;
+  const int64_t page_capacity =
+      page_table_size * (int64_t{1} << page_bits);
+  const int64_t max_length =
+      score_width < page_capacity ? score_width : page_capacity;
+  const int raw_length = params.lengths[row];
+  const int length = raw_length <= 0
+      ? 0
+      : static_cast<int>(
+            raw_length < max_length ? raw_length : max_length);
+  const float* scores = params.input + row * params.input_stride;
+  const int32_t* page_table_row = page_table + row * page_table_stride;
+  int32_t* out_page_indices = page_indices + row * kTopK;
+  int32_t* out_raw_indices =
+      raw_indices == nullptr ? nullptr : raw_indices + row * kTopK;
+  const uint32_t page_mask = (uint32_t{1} << page_bits) - 1u;
+
+  __shared__ int selected_indices[kTopK];
+  if (length > kTopK) {
+    radix_select_8bit_topk<kTopK>(scores, selected_indices, 0, length);
+  }
+
+  for (int output_idx = tid; output_idx < kTopK;
+       output_idx += kThreadsPerBlock) {
+    const int raw_idx = length <= kTopK
+        ? (output_idx < length ? output_idx : -1)
+        : selected_indices[output_idx];
+    if (out_raw_indices != nullptr) {
+      out_raw_indices[output_idx] = raw_idx;
+    }
+    if (raw_idx < 0 || raw_idx >= length) {
+      out_page_indices[output_idx] = -1;
+      continue;
+    }
+
+    const uint32_t page_idx =
+        static_cast<uint32_t>(raw_idx) >> page_bits;
+    if (page_idx >= static_cast<uint64_t>(page_table_size)) {
+      out_page_indices[output_idx] = -1;
+      continue;
+    }
+    const int32_t physical_page = page_table_row[page_idx];
+    if (physical_page < 0) {
+      out_page_indices[output_idx] = -1;
+      continue;
+    }
+    out_page_indices[output_idx] =
+        (static_cast<uint32_t>(physical_page) << page_bits) |
+        (static_cast<uint32_t>(raw_idx) & page_mask);
+  }
+}
+
+__global__ __launch_bounds__(kThreadsPerBlock)
+void topk_transform_kernel_vgpr_select_512(
+    const FastTopKParams params,
+    const int32_t* __restrict__ page_table,
+    int32_t* __restrict__ page_indices,
+    int32_t* __restrict__ raw_indices,
+    int64_t page_table_stride,
+    int64_t page_table_size,
+    int64_t score_width,
+    uint32_t page_bits) {
+  constexpr int kTopK = 512;
+  const int row = blockIdx.x;
+  const int tid = threadIdx.x;
+  const int64_t page_capacity =
+      page_table_size * (int64_t{1} << page_bits);
+  const int64_t max_length =
+      score_width < page_capacity ? score_width : page_capacity;
+  const int raw_length = params.lengths[row];
+  const int length = raw_length <= 0
+      ? 0
+      : static_cast<int>(
+            raw_length < max_length ? raw_length : max_length);
+  const float* scores = params.input + row * params.input_stride;
+
+  __shared__ int selected_indices[kTopK];
+  extern __shared__ uint32_t candidate_workspace[];
+  if (length > kTopK) {
+    if (length <= 4 * kThreadsPerBlock) {
+      select_kpool_topk_vgpr<kTopK, 4>(
+          scores, selected_indices, 0, length, candidate_workspace);
+    } else if (length <= 8 * kThreadsPerBlock) {
+      select_kpool_topk_vgpr<kTopK, 8>(
+          scores, selected_indices, 0, length, candidate_workspace);
+    } else if (length <= 16 * kThreadsPerBlock) {
+      select_kpool_topk_vgpr<kTopK, 16>(
+          scores, selected_indices, 0, length, candidate_workspace);
+    } else if (length <= kKPool4VgprMaxLength) {
+      select_kpool_topk_vgpr<kTopK, kKPool4VgprItemsPerThread>(
+          scores, selected_indices, 0, length, candidate_workspace);
+    } else {
+      auto identity = [] __device__(int raw_idx) { return raw_idx; };
+      topKPerRowJob<
+          kThreadsPerBlock,
+          2048,
+          false,
+          false,
+          false,
+          512>(
+          nullptr,
+          scores,
+          0,
+          length,
+          selected_indices,
+          nullptr,
+          1,
+          kTopK,
+          identity);
+    }
+  }
+  __syncthreads();
+
+  const int32_t* page_table_row = page_table + row * page_table_stride;
+  int32_t* out_page_indices = page_indices + row * kTopK;
+  int32_t* out_raw_indices =
+      raw_indices == nullptr ? nullptr : raw_indices + row * kTopK;
+  const uint32_t page_mask = (uint32_t{1} << page_bits) - 1u;
+
+  for (int output_idx = tid; output_idx < kTopK;
+       output_idx += kThreadsPerBlock) {
+    const int raw_idx = length <= kTopK
+        ? (output_idx < length ? output_idx : -1)
+        : selected_indices[output_idx];
+    if (out_raw_indices != nullptr) {
+      out_raw_indices[output_idx] = raw_idx;
+    }
+    if (raw_idx < 0 || raw_idx >= length) {
+      out_page_indices[output_idx] = -1;
+      continue;
+    }
+
+    const uint32_t page_idx =
+        static_cast<uint32_t>(raw_idx) >> page_bits;
+    if (page_idx >= static_cast<uint64_t>(page_table_size)) {
+      out_page_indices[output_idx] = -1;
+      continue;
+    }
+    const int32_t physical_page = page_table_row[page_idx];
+    if (physical_page < 0) {
+      out_page_indices[output_idx] = -1;
+      continue;
+    }
+    out_page_indices[output_idx] =
+        (static_cast<uint32_t>(physical_page) << page_bits) |
+        (static_cast<uint32_t>(raw_idx) & page_mask);
   }
 }
 
@@ -1939,7 +2149,11 @@ void fast_topk_transform_interface(
   const auto is_decode = !row_starts_opt.has_value() && prefill_bs == B;
   const int backend = get_lightop_topk_backend();
 
-  if (backend != 0) {
+  TORCH_CHECK(
+      backend != 2,
+      "LightOp TopK backend 2 is only supported by the non-KPool fixed "
+      "TopK512 interface");
+  if (backend == 1) {
     TORCH_CHECK(
         topK == kTopK2048,
         "LightOp TopK backend ",
@@ -2154,6 +2368,62 @@ void topk_transform_impl(
   const auto block = dim3{kThreadsPerBlock};
   const auto dynamic_smem = static_cast<size_t>(kTopK) * sizeof(int32_t);
   const auto page_bits = static_cast<uint32_t>(__builtin_ctzll(static_cast<unsigned long long>(page_size)));
+  const int backend = get_lightop_topk_backend();
+
+  if (backend == 1) {
+    setup_kernel_smem_once<topk_transform_kernel_radix_select_8bit<kTopK>>(
+        kRadixSelect8BitSmemBytes);
+    topk_transform_kernel_radix_select_8bit<kTopK>
+        <<<grid, block, kRadixSelect8BitSmemBytes, stream>>>(
+            params,
+            page_tables.data_ptr<int32_t>(),
+            out_page_indices.data_ptr<int32_t>(),
+            out_raw_indices,
+            page_tables.stride(0),
+            page_tables.size(1),
+            scores.size(1),
+            page_bits);
+    const auto result = cudaGetLastError();
+    TORCH_CHECK(
+        result == cudaSuccess,
+        op_name,
+        " backend ",
+        backend,
+        " kernel failed:",
+        ::cudaGetErrorString(result));
+    return;
+  }
+
+  if (backend == 2) {
+    if constexpr (kTopK == 512) {
+      setup_kernel_smem_once<topk_transform_kernel_vgpr_select_512>(
+          kKPool4VgprSmemBytes);
+      topk_transform_kernel_vgpr_select_512
+          <<<grid, block, kKPool4VgprSmemBytes, stream>>>(
+              params,
+              page_tables.data_ptr<int32_t>(),
+              out_page_indices.data_ptr<int32_t>(),
+              out_raw_indices,
+              page_tables.stride(0),
+              page_tables.size(1),
+              scores.size(1),
+              page_bits);
+      const auto result = cudaGetLastError();
+      TORCH_CHECK(
+          result == cudaSuccess,
+          op_name,
+          " backend 2 kernel failed:",
+          ::cudaGetErrorString(result));
+      return;
+    } else {
+      TORCH_CHECK(
+          false,
+          op_name,
+          " backend 2 requires topK=512, but got ",
+          kTopK);
+    }
+  }
+
   const bool use_radix = scores.size(1) > 2000000;
   constexpr int kFinalSortTopK = kTopK <= 512 ? kTopK : kTopK + 512;
 
@@ -2383,7 +2653,11 @@ void fast_topk_transform_ragged_interface(
   const auto block = dim3{kThreadsPerBlock};
   const int backend = get_lightop_topk_backend();
 
-  if (backend != 0) {
+  TORCH_CHECK(
+      backend != 2,
+      "LightOp TopK backend 2 is only supported by the non-KPool fixed "
+      "TopK512 interface");
+  if (backend == 1) {
     TORCH_CHECK(
         topK == kTopK2048,
         "LightOp TopK backend ",
