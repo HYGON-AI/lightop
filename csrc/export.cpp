@@ -716,6 +716,12 @@ void quantize_nope_fp8_rope_bf16_pack_store(
     int page_size,
     float eps
 );   
+bool supports_mhc_repeat_cp_sglang(
+    const torch::Tensor& hidden_states, int64_t hc_mult,
+    int64_t cp_size, int64_t cp_rank);
+torch::Tensor mhc_repeat_cp_sglang(
+    const torch::Tensor& hidden_states, int64_t hc_mult,
+    int64_t cp_size, int64_t cp_rank);
 void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_int32(
     Tensor& q,
     const Tensor& kv,
@@ -1360,6 +1366,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("ep_build_m_indices", &at::native::ep_build_m_indices,"ep_build_m_indices");
  m.def("ep_fused_fp8_quant_scatter", &at::native::ep_fused_fp8_quant_scatter,"ep_fused_fp8_quant_scatter");
  m.def("quantize_nope_fp8_rope_bf16_pack_store", &at::native::quantize_nope_fp8_rope_bf16_pack_store, "quantize_nope_fp8_rope_bf16_pack_store");
+ m.def("supports_mhc_repeat_cp_sglang", &at::native::supports_mhc_repeat_cp_sglang,
+       "Metadata-only SGLang mHC repeat+CP preflight",
+       py::arg("hidden_states"), py::arg("hc_mult"), py::arg("cp_size"), py::arg("cp_rank"));
+ m.def("mhc_repeat_cp_sglang", &at::native::mhc_repeat_cp_sglang,
+       "SGLang mHC CP-selected row broadcast",
+       py::arg("hidden_states"), py::arg("hc_mult"), py::arg("cp_size"), py::arg("cp_rank"));
  m.def("topk_ids_postprocess",&at::native::topk_ids_postprocess,"topk_ids_postprocess");
  m.def("dpskv4_hc_head_fused", &at::native::dpskv4_hc_head_fused, "dpskv4_hc_head_fused");
  m.def("fused_metadata_kernel_general", &at::native::fused_metadata_kernel_general_launcher,
