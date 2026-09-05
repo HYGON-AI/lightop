@@ -1,5 +1,6 @@
 """Attention APIs."""
 
+from .mhc import mhc_repeat_cp_sglang, supports_mhc_repeat_cp_sglang
 from .mqa import (
     get_paged_mqa_logits_metadata,
     mqa_logits,
@@ -63,6 +64,7 @@ __all__ = [
     "get_paged_mqa_logits_metadata",
     "gammarms_rotary_embedding_fuse_with_kv_store",
     "gammarms_rotary_embedding_fuse_with_kv_store_fake",
+    "mhc_repeat_cp_sglang",
     "mimo_v2_split_rope_vscale_kv_store",
     "mqa_logits",
     "paged_mqa_logits",
@@ -73,6 +75,7 @@ __all__ = [
     "RotaryEmbedding",
     "rotary_embedding_deepseek_fuse",
     "split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant",
+    "supports_mhc_repeat_cp_sglang",
     "top_k_per_row_decode",
     "top_k_per_row_prefill",
     "topk_transform_512",
