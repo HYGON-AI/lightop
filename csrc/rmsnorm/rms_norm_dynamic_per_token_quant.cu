@@ -680,11 +680,13 @@ void rms_norm_dynamic_per_token_quant(
 template <typename scalar_t, int Vec, int block_size,
           bool has_residual, bool update_input,
           bool APPLY_CLAMP, bool APPLY_SMOOTH>
-__global__ void rms_norm_dynamic_per_token_quant_sglang_kernel(
+__global__ __launch_bounds__(block_size)
+void rms_norm_dynamic_per_token_quant_sglang_kernel(
     int8_t* out,
     scalar_t* input,
     scalar_t* norm_out,
     scalar_t* residual,
+    scalar_t* residual_out,
     const scalar_t* gamma,
     int32_t cols,
     float eps,
@@ -726,7 +728,6 @@ __global__ void rms_norm_dynamic_per_token_quant_sglang_kernel(
       if constexpr (has_residual) {
         value += static_cast<T_ACC>(residual_vec[i]);
         residual_vec[i] = static_cast<scalar_t>(value);
-        value = static_cast<T_ACC>(residual_vec[i]);
       }
       norm_input[i] = value;
       square_sum += value * value;
@@ -799,7 +800,7 @@ __global__ void rms_norm_dynamic_per_token_quant_sglang_kernel(
           *reinterpret_cast<const LoadT*>(norm_output_vec);
     }
     if constexpr (has_residual) {
-      *reinterpret_cast<LoadT*>(residual + offset) =
+      *reinterpret_cast<LoadT*>(residual_out + offset) =
           *reinterpret_cast<const LoadT*>(residual_vec);
     }
   }
@@ -812,6 +813,7 @@ void launch_rms_norm_dynamic_per_token_quant_sglang(
     scalar_t* input,
     scalar_t* norm_out,
     scalar_t* residual,
+    scalar_t* residual_out,
     const scalar_t* gamma,
     int num_tokens,
     int hidden_size,
@@ -831,7 +833,7 @@ void launch_rms_norm_dynamic_per_token_quant_sglang(
       scalar_t, Vec, block_size, HAS_RESIDUAL, UPDATE_INPUT,                \
       APPLY_CLAMP, APPLY_SMOOTH>                                            \
       <<<num_tokens, block_size, 0, stream>>>(                              \
-          out, input, norm_out, residual, gamma, hidden_size, epsilon,      \
+          out, input, norm_out, residual, residual_out, gamma, hidden_size, epsilon, \
           scales, smooth_scale, limit, clamp_norm_output)
 
 #define DISPATCH_SGLANG_RMS_QUANT(APPLY_CLAMP, APPLY_SMOOTH)                \
@@ -893,7 +895,8 @@ void rms_norm_dynamic_per_token_quant_sglang(
     double limit,
     std::optional<Tensor> smooth_scale,
     std::optional<Tensor> norm_output,
-    bool clamp_norm_output) {
+    bool clamp_norm_output,
+    std::optional<Tensor> residual_output) {
   TORCH_CHECK(input.is_cuda(), "input must be on a GPU");
   TORCH_CHECK(input.dim() == 2, "input must be a 2D tensor");
   TORCH_CHECK(input.is_contiguous(), "input must be contiguous");
@@ -1001,6 +1004,24 @@ void rms_norm_dynamic_per_token_quant_sglang(
   }
 
   bool has_residual = residual.has_value();
+  if (residual_output.has_value()) {
+    TORCH_CHECK(has_residual, "residual_output requires residual");
+    TORCH_CHECK(residual_output->device() == input.device() &&
+                    residual_output->scalar_type() == input.scalar_type() &&
+                    residual_output->sizes() == input.sizes() &&
+                    residual_output->is_contiguous(),
+                "residual_output must match input shape/dtype/device and be contiguous");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(residual_output->data_ptr()) % 16 == 0,
+                "residual_output must be 16-byte aligned");
+    for (const auto& tensor : {input, weight, out, scales, *residual}) {
+      TORCH_CHECK(!tensors_overlap(*residual_output, tensor),
+                  "residual_output must not alias another input/output");
+    }
+    TORCH_CHECK(!has_norm_output || !tensors_overlap(*residual_output, *norm_output),
+                "residual_output must not alias norm_output");
+    TORCH_CHECK(!has_smooth_scale || !tensors_overlap(*residual_output, *smooth_scale),
+                "residual_output must not alias smooth_scale");
+  }
   if (has_residual) {
     TORCH_CHECK(residual->sizes() == input.sizes(),
                 "residual shape must match input");
@@ -1043,6 +1064,8 @@ void rms_norm_dynamic_per_token_quant_sglang(
         auto* input_ptr = input.data_ptr<scalar_t>();
         auto* residual_ptr =
             has_residual ? residual->data_ptr<scalar_t>() : nullptr;
+        auto* residual_output_ptr = residual_output.has_value()
+            ? residual_output->data_ptr<scalar_t>() : residual_ptr;
         const auto* weight_ptr = weight.data_ptr<scalar_t>();
         const auto* smooth_scale_ptr = has_smooth_scale
             ? smooth_scale->data_ptr<float>()
@@ -1054,7 +1077,7 @@ void rms_norm_dynamic_per_token_quant_sglang(
         auto* scales_ptr = scales.data_ptr<float>();
         if (hidden_size <= 512) {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 64>(
-              out_ptr, input_ptr, norm_output_ptr, residual_ptr, weight_ptr,
+              out_ptr, input_ptr, norm_output_ptr, residual_ptr, residual_output_ptr, weight_ptr,
               num_tokens,
               hidden_size, static_cast<float>(epsilon), scales_ptr,
               has_residual, update_input, limit >= 0.0, has_smooth_scale,
@@ -1062,7 +1085,7 @@ void rms_norm_dynamic_per_token_quant_sglang(
               stream);
         } else if (hidden_size <= 1024) {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 128>(
-              out_ptr, input_ptr, norm_output_ptr, residual_ptr, weight_ptr,
+              out_ptr, input_ptr, norm_output_ptr, residual_ptr, residual_output_ptr, weight_ptr,
               num_tokens,
               hidden_size, static_cast<float>(epsilon), scales_ptr,
               has_residual, update_input, limit >= 0.0, has_smooth_scale,
@@ -1070,7 +1093,7 @@ void rms_norm_dynamic_per_token_quant_sglang(
               stream);
         } else if (hidden_size <= 2048) {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 256>(
-              out_ptr, input_ptr, norm_output_ptr, residual_ptr, weight_ptr,
+              out_ptr, input_ptr, norm_output_ptr, residual_ptr, residual_output_ptr, weight_ptr,
               num_tokens,
               hidden_size, static_cast<float>(epsilon), scales_ptr,
               has_residual, update_input, limit >= 0.0, has_smooth_scale,
@@ -1078,7 +1101,7 @@ void rms_norm_dynamic_per_token_quant_sglang(
               stream);
         } else if (hidden_size <= 4096) {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 512>(
-              out_ptr, input_ptr, norm_output_ptr, residual_ptr, weight_ptr,
+              out_ptr, input_ptr, norm_output_ptr, residual_ptr, residual_output_ptr, weight_ptr,
               num_tokens,
               hidden_size, static_cast<float>(epsilon), scales_ptr,
               has_residual, update_input, limit >= 0.0, has_smooth_scale,
@@ -1086,7 +1109,7 @@ void rms_norm_dynamic_per_token_quant_sglang(
               stream);
         } else {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 1024>(
-              out_ptr, input_ptr, norm_output_ptr, residual_ptr, weight_ptr,
+              out_ptr, input_ptr, norm_output_ptr, residual_ptr, residual_output_ptr, weight_ptr,
               num_tokens,
               hidden_size, static_cast<float>(epsilon), scales_ptr,
               has_residual, update_input, limit >= 0.0, has_smooth_scale,

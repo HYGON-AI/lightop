@@ -218,6 +218,9 @@ def rms_norm_dynamic_per_token_quant(
     return output, scales
 
 
+SGLANG_NATIVE_RMS_QUANT_VERSION = 1
+
+
 def rms_norm_dynamic_per_token_quant_sglang(
     input: torch.Tensor,
     weight: torch.Tensor,
@@ -229,6 +232,7 @@ def rms_norm_dynamic_per_token_quant_sglang(
     smooth_scale: Optional[torch.Tensor] = None,
     norm_output: Optional[torch.Tensor] = None,
     clamp_norm_output: bool = True,
+    residual_output: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """RMSNorm + per-token INT8 quant with SGLang-compatible numerics.
 
@@ -237,6 +241,9 @@ def rms_norm_dynamic_per_token_quant_sglang(
     and uses ``max(absmax, 1e-10) / 127`` as the returned scale.  When
     ``smooth_scale`` is provided the fused order is RMSNorm, optional clamp,
     smooth multiplication, activation-dtype rounding, and INT8 quantization.
+    The FP32 residual sum feeds RMSNorm without an intermediate BF16 cast.
+    Pass a distinct ``residual_output`` to preserve the input residual, as
+    Torch native does. Omission retains the historical in-place residual ABI.
     """
     if quant_dtype != torch.int8:
         raise ValueError(f"Only torch.int8 is supported, got {quant_dtype}")
@@ -259,6 +266,7 @@ def rms_norm_dynamic_per_token_quant_sglang(
         smooth_scale,
         norm_output,
         clamp_norm_output,
+        residual_output,
     )
     return output, scales
 
