@@ -13,6 +13,10 @@ from ..fuse_silu_mul_quant import (
     fuse_silu_mul_quant_ep,
     relu2,
 )
+from ..fuse_situ_mul_quant import (
+    fuse_situ_mul_quant_contiguous,
+    fuse_situ_mul_quant_ep,
+)
 from ..fuseadddropout import AddDropout
 from ..fusebiasdropoutadd import FuseBiasDropoutAdd
 from ..fusebiasgelu import FuseBiasGelu
@@ -34,6 +38,8 @@ __all__ = [
     "fuse_silu_mul_per_token_quant",
     "fuse_silu_mul_quant",
     "fuse_silu_mul_quant_ep",
+    "fuse_situ_mul_quant_contiguous",
+    "fuse_situ_mul_quant_ep",
     "FuseBiasDropoutAdd",
     "FuseBiasGelu",
     "FuseBiasSwiGLU",

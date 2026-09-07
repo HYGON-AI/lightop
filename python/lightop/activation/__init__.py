@@ -23,6 +23,8 @@ from .existing import (
     fuse_silu_mul_per_token_quant,
     fuse_silu_mul_quant,
     fuse_silu_mul_quant_ep,
+    fuse_situ_mul_quant_contiguous,
+    fuse_situ_mul_quant_ep,
     relu2,
     silu_and_mul_opt,
 )
@@ -48,6 +50,8 @@ __all__ = [
     "fuse_silu_mul_per_token_quant",
     "fuse_silu_mul_quant",
     "fuse_silu_mul_quant_ep",
+    "fuse_situ_mul_quant_contiguous",
+    "fuse_situ_mul_quant_ep",
     "FuseBiasDropoutAdd",
     "FuseBiasGelu",
     "FuseBiasSwiGLU",
