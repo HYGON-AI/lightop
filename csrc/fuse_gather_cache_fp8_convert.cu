@@ -679,6 +679,27 @@ scaled_convert_e4m3fn_pair_to_bf16_bits_fast(
         first_value.bits, second_value.bits, 0x03020706u);
 }
 
+__device__ __forceinline__ uint32_t decode_e4m3fn_magnitude_bits(int magnitude) {
+    union { float value; uint32_t bits; } subnormal{
+        static_cast<float>(magnitude) * 0x1p-9f};
+    uint32_t bits = magnitude < 8 ? subnormal.bits
+                                 : (static_cast<uint32_t>(magnitude) << 20) + 0x3c000000u;
+    return magnitude == 127 ? 0x7fc00000u : bits;
+}
+
+__device__ __forceinline__ uint32_t scaled_convert_e4m3fn_pair_lds(
+    uint8_t first, uint8_t second, float scale, const uint32_t* table) {
+    union { uint32_t bits; float value; } a{
+        table[first & 127] | (static_cast<uint32_t>(first & 128) << 24)};
+    union { uint32_t bits; float value; } b{
+        table[second & 127] | (static_cast<uint32_t>(second & 128) << 24)};
+    a.value *= scale;
+    b.value *= scale;
+    a.bits += 0x7fffu + ((a.bits >> 16) & 1u);
+    b.bits += 0x7fffu + ((b.bits >> 16) & 1u);
+    return __builtin_amdgcn_perm(a.bits, b.bits, 0x03020706u);
+}
+
 constexpr int kDecodeNopeDim = 512;
 constexpr int kDecodeScaleBytes = 16;
 constexpr int kDecodeRopeDim = 64;
@@ -862,7 +883,8 @@ template <
     bool kUseRowValidLengths,
     bool kCopyRope,
     int kPhysicalTokenStride>
-__launch_bounds__(64 * kTokensPerBlock)
+__launch_bounds__((sizeof(index_t) == 4 && kCopyRope && kPhysicalTokenStride == 656
+                   ? 32 : 64) * kTokensPerBlock)
 __global__ void decode_gather_and_up_convert_with_indices_kernel(
     const uint8_t* __restrict__ src_cache,
     const index_t* __restrict__ token_ids,
@@ -876,6 +898,14 @@ __global__ void decode_gather_and_up_convert_with_indices_kernel(
     constexpr int kHeadDim =
         kDecodeNopeDim + (kCopyRope ? kDecodeRopeDim : 0);
 
+    constexpr bool kUseLDS = sizeof(index_t) == 4 && kCopyRope && kPhysicalTokenStride == 656;
+    __shared__ uint32_t magnitude_table[kUseLDS ? 128 : 1];
+    if constexpr (kUseLDS) {
+        for (int i = threadIdx.x; i < 128; i += blockDim.x) {
+            magnitude_table[i] = decode_e4m3fn_magnitude_bits(i);
+        }
+        __syncthreads();
+    }
     const int lane_id = threadIdx.x & (kThreadsPerToken - 1);
     const int local_token_id = threadIdx.x / kThreadsPerToken;
     const int64_t batch_id = static_cast<int64_t>(blockIdx.y);
@@ -939,9 +969,13 @@ __global__ void decode_gather_and_up_convert_with_indices_kernel(
 
         #pragma unroll
         for (int i = 0; i < kElementsPerLane / 2; ++i) {
-            dst_vec.val[i] =
-                scaled_convert_e4m3fn_pair_to_bf16_bits_fast(
+            if constexpr (kUseLDS) {
+                dst_vec.val[i] = scaled_convert_e4m3fn_pair_lds(
+                    src_vec.val[2 * i], src_vec.val[2 * i + 1], scale, magnitude_table);
+            } else {
+                dst_vec.val[i] = scaled_convert_e4m3fn_pair_to_bf16_bits_fast(
                     src_vec.val[2 * i], src_vec.val[2 * i + 1], scale);
+            }
         }
     } else {
         #pragma unroll
@@ -1214,7 +1248,10 @@ void decode_gather_and_up_convert_impl(
     // speculative-token rows and DP padding.  Use the logical decode batch
     // size for the simple block-size dispatch.
     const int64_t decode_batch_size = valid_lengths.size(0);
-    const int tokens_per_block = decode_batch_size <= 8 ? 8 : 4;
+    const bool use_lds = compact_indices.has_value() &&
+        token_ids.scalar_type() == at::ScalarType::Int && head_dim == kWithRopeHeadDim &&
+        physical_token_stride == kDecodePhysicalTokenStrideWithRope;
+    const int tokens_per_block = use_lds ? 4 : (decode_batch_size <= 8 ? 8 : 4);
 
     AT_DISPATCH_INDEX_TYPES(token_ids.scalar_type(), "decode_gather_and_up_convert", [&] {
         const uint8_t* src_ptr = src_cache.data_ptr<uint8_t>();
