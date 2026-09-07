@@ -542,6 +542,11 @@ void decode_gather_and_up_convert_with_indices(
     torch::Tensor const& dst,
     torch::Tensor const& valid_lengths,
     torch::Tensor const& compact_indices);
+void dsv4_dequantize_k_cache_paged_out(
+    torch::Tensor const& cache_u8,
+    torch::Tensor const& page_table,
+    torch::Tensor const& out,
+    int64_t page_size);
 void dsv4_gather_upconvert_k_cache_paged(
     torch::Tensor const& cache,
     torch::Tensor const& indices,
@@ -1301,6 +1306,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("prefill_gather_and_upconvert_fp8_kv_cache", &at::native::prefill_gather_and_upconvert_fp8_kv_cache, "prefill_gather_and_upconvert_fp8_kv_cache");
  m.def("decode_gather_and_up_convert", &at::native::decode_gather_and_up_convert, "decode_gather_and_up_convert");
  m.def("decode_gather_and_up_convert_with_indices", &at::native::decode_gather_and_up_convert_with_indices, "decode_gather_and_up_convert_with_indices");
+ m.def(
+     "dsv4_dequantize_k_cache_paged_out",
+     &at::native::dsv4_dequantize_k_cache_paged_out,
+     "DSV4 flat E4M3FN/UE8M0 paged dequantization into preallocated BF16 output",
+     py::arg("cache_u8"), py::arg("page_table"), py::arg("out"), py::arg("page_size"));
  m.def(
      "dsv4_gather_upconvert_k_cache_paged",
      &at::native::dsv4_gather_upconvert_k_cache_paged,
