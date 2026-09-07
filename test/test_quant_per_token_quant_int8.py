@@ -36,6 +36,23 @@ def test_per_token_quant_int8_matches_migrated_source() -> None:
     torch.testing.assert_close(migrated_scale, source_scale, rtol=0, atol=0)
 
 
+def test_per_token_quant_int8_dsv4_prefill_fast_path() -> None:
+    torch.manual_seed(23)
+    input_tensor = torch.randn(
+        (262144, 128), device="cuda", dtype=torch.bfloat16
+    )
+    input_tensor[0].zero_()
+
+    expected_q, expected_scale = source_api(input_tensor)
+    actual_q, actual_scale = migrated_api(input_tensor)
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(actual_q, expected_q, rtol=0, atol=0)
+    torch.testing.assert_close(
+        actual_scale, expected_scale, rtol=0, atol=0
+    )
+
+
 def test_per_token_group_quant_int8_matches_migrated_source() -> None:
     assert inspect.signature(migrated_group_api) == inspect.signature(
         source_group_api

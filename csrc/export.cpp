@@ -379,6 +379,7 @@ void ep_fused_smooth_quant_scatter(
     torch::Tensor inv_perm,
     int local_num_experts, int alignment); 
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale, bool round_after_smooth, double limit);
+void per_token_quant_int8_out(torch::Tensor& out, const torch::Tensor& input, torch::Tensor& scales);
 void rms_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,double epsilon,double limit);
 void rms_norm_no_weight(
     torch::optional<torch::Tensor> out,
@@ -1218,6 +1219,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("smoothscale"),
       py::arg("round_after_smooth") = false,
       py::arg("limit") = -1.0);
+  m.def(
+      "per_token_quant_int8_out",
+      &at::native::per_token_quant_int8_out,
+      "Per-token symmetric INT8 quantization (out variant)",
+      py::arg("out"),
+      py::arg("input"),
+      py::arg("scales"));
   m.def("top_k_sampling_from_probs", &lightop::sampling::top_k_sampling_from_probs, "top_k_sampling_from_probs");
   m.def("top_p_sampling_from_probs", &lightop::sampling::top_p_sampling_from_probs, "top_p_sampling_from_probs");
   m.def("top_k_top_p_sampling_from_probs", &lightop::sampling::top_k_top_p_sampling_from_probs, "top_k_top_p_sampling_from_probs");
