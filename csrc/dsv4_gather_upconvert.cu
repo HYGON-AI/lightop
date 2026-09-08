@@ -107,6 +107,37 @@ __device__ __forceinline__ uint32_t dsv4_scaled_pair_to_bf16_rne(
       first_value.bits, second_value.bits, 0x03020706u);
 }
 
+// The flat P-path entry has stricter byte-for-byte semantics than the older
+// gather entry points above. Keep its conversion private so those existing
+// kernels retain their original code, behavior, and resource usage.
+__device__ __forceinline__ uint32_t dsv4_flat_scaled_pair_to_bf16_rne(
+    uint8_t first,
+    uint8_t second,
+    float scale) {
+  union {
+    float value;
+    uint32_t bits;
+  } first_value{dsv4_fp8_to_float(first) * scale};
+  union {
+    float value;
+    uint32_t bits;
+  } second_value{dsv4_fp8_to_float(second) * scale};
+  // Triton canonicalizes every NaN, including signed FN NaNs and 0 * +inf,
+  // to positive BF16 0x7fff.
+  if ((first_value.bits & 0x7f800000u) == 0x7f800000u &&
+      (first_value.bits & 0x007fffffu) != 0) {
+    first_value.bits = 0x7fff0000u;
+  }
+  if ((second_value.bits & 0x7f800000u) == 0x7f800000u &&
+      (second_value.bits & 0x007fffffu) != 0) {
+    second_value.bits = 0x7fff0000u;
+  }
+  first_value.bits += 0x7fffu + ((first_value.bits >> 16) & 1u);
+  second_value.bits += 0x7fffu + ((second_value.bits >> 16) & 1u);
+  return __builtin_amdgcn_perm(
+      first_value.bits, second_value.bits, 0x03020706u);
+}
+
 template <typename index_t, int64_t PageSize>
 __device__ __forceinline__ void dsv4_gather_one_row(
     const uint8_t* __restrict__ src_cache,
@@ -1071,6 +1102,299 @@ void dsv4_gather_upconvert_dual_k_cache_paged(
 #undef DSV4_LAUNCH_DUAL_TINY
 #undef DSV4_LAUNCH_DUAL
   C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+namespace dsv4_dequant_detail {
+
+// Flat physical-token gather. Keep the query/top-k kernels above unchanged.
+// This entry point consumes E4M3FN/OCP bytes, not E4M3FNUZ bytes.
+template <typename index_t, int64_t PageSize, bool VectorIO, typename offset_t>
+__global__ void dsv4_dequantize_k_cache_flat_out_kernel(
+    const uint8_t* __restrict__ cache,
+    const index_t* __restrict__ page_table,
+    uint16_t* __restrict__ out,
+    offset_t num_rows,
+    offset_t num_locations,
+    offset_t page_stride_bytes,
+    offset_t output_stride) {
+  const offset_t row = static_cast<offset_t>(blockIdx.x) * kRowsPerBlock +
+      static_cast<offset_t>(threadIdx.x / kThreadsPerRow);
+  if (row >= num_rows) {
+    return;
+  }
+  const int lane = threadIdx.x % kThreadsPerRow;
+  const int64_t location = static_cast<int64_t>(page_table[row]);
+  const bool valid_location =
+      location >= 0 && location < static_cast<int64_t>(num_locations);
+  // A masked invalid location must never form an out-of-range source pointer.
+  const offset_t safe_location =
+      valid_location ? static_cast<offset_t>(location) : 0;
+  const offset_t page = safe_location / PageSize;
+  const offset_t in_page = safe_location % PageSize;
+  const offset_t data_base = page * page_stride_bytes +
+      in_page * kDsv4TokenDataBytes;
+  const offset_t scale_base = page * page_stride_bytes +
+      PageSize * kDsv4TokenDataBytes + in_page * kDsv4ScaleBytesPerToken;
+  uint16_t* const output_lane =
+      out + row * output_stride + lane * kDsv4ElementsPerLane;
+
+  using Fp8Vec = Dsv4Vector<uint8_t, kDsv4ElementsPerLane>;
+  using PackedBf16Vec = Dsv4Vector<uint32_t, kDsv4ElementsPerLane / 2>;
+  PackedBf16Vec output_vec;
+  if (valid_location && lane < kDsv4NopeLanes) {
+    const offset_t input_base = data_base + lane * kDsv4ElementsPerLane;
+    const float scale = dsv4_ue8m0_to_float(
+        cache[scale_base + lane / (kDsv4TileSize / kDsv4ElementsPerLane)]);
+    if constexpr (VectorIO) {
+      const Fp8Vec input_vec =
+          *reinterpret_cast<const Fp8Vec*>(cache + input_base);
+#pragma unroll
+      for (int i = 0; i < kDsv4ElementsPerLane / 2; ++i) {
+        output_vec.val[i] = dsv4_flat_scaled_pair_to_bf16_rne(
+            input_vec.val[2 * i], input_vec.val[2 * i + 1], scale);
+      }
+    } else {
+#pragma unroll
+      for (int i = 0; i < kDsv4ElementsPerLane / 2; ++i) {
+        output_vec.val[i] = dsv4_flat_scaled_pair_to_bf16_rne(
+            cache[input_base + 2 * i], cache[input_base + 2 * i + 1],
+            scale);
+      }
+    }
+  } else if (valid_location) {
+    const offset_t input_base = data_base + kDsv4NopeDim +
+        (lane - kDsv4NopeLanes) * sizeof(PackedBf16Vec);
+    if constexpr (VectorIO) {
+      output_vec = *reinterpret_cast<const PackedBf16Vec*>(cache + input_base);
+    } else {
+      // Byte loads also support a byte-offset cache view without aligned casts.
+#pragma unroll
+      for (int i = 0; i < kDsv4ElementsPerLane / 2; ++i) {
+        const offset_t byte = input_base + 4 * i;
+        output_vec.val[i] = static_cast<uint32_t>(cache[byte]) |
+            (static_cast<uint32_t>(cache[byte + 1]) << 8) |
+            (static_cast<uint32_t>(cache[byte + 2]) << 16) |
+            (static_cast<uint32_t>(cache[byte + 3]) << 24);
+      }
+    }
+  } else {
+#pragma unroll
+    for (int i = 0; i < kDsv4ElementsPerLane / 2; ++i) {
+      output_vec.val[i] = 0;
+    }
+  }
+
+  if constexpr (VectorIO) {
+    *reinterpret_cast<PackedBf16Vec*>(output_lane) = output_vec;
+  } else {
+    // Preserve the pair helper's raw little-endian BF16 packing; no FP cast.
+#pragma unroll
+    for (int i = 0; i < kDsv4ElementsPerLane / 2; ++i) {
+      output_lane[2 * i] = static_cast<uint16_t>(output_vec.val[i]);
+      output_lane[2 * i + 1] = static_cast<uint16_t>(output_vec.val[i] >> 16);
+    }
+  }
+}
+
+struct Dsv4FlatByteRange {
+  uintptr_t begin;
+  uintptr_t end;
+};
+
+int64_t dsv4_flat_checked_multiply(int64_t first, int64_t second) {
+  TORCH_CHECK(
+      first >= 0 && second >= 0 &&
+          (first == 0 || second <= std::numeric_limits<int64_t>::max() / first),
+      "DSV4 flat dequant: address multiplication overflow");
+  return first * second;
+}
+
+int64_t dsv4_flat_checked_add(int64_t first, int64_t second) {
+  TORCH_CHECK(
+      first >= 0 && second >= 0 &&
+          second <= std::numeric_limits<int64_t>::max() - first,
+      "DSV4 flat dequant: address addition overflow");
+  return first + second;
+}
+
+Dsv4FlatByteRange dsv4_flat_byte_range(
+    const torch::Tensor& tensor, int64_t elements) {
+  const int64_t bytes = dsv4_flat_checked_multiply(elements, tensor.element_size());
+  const int64_t offset_bytes =
+      dsv4_flat_checked_multiply(tensor.storage_offset(), tensor.element_size());
+  const uint64_t storage_bytes = static_cast<uint64_t>(tensor.storage().nbytes());
+  TORCH_CHECK(
+      static_cast<uint64_t>(offset_bytes) <= storage_bytes &&
+          static_cast<uint64_t>(bytes) <= storage_bytes - offset_bytes,
+      "DSV4 flat dequant: accessed span exceeds tensor storage");
+  if (bytes == 0) {
+    return {0, 0};
+  }
+  const uintptr_t begin = reinterpret_cast<uintptr_t>(tensor.data_ptr());
+  TORCH_CHECK(
+      begin != 0 && static_cast<uint64_t>(bytes) <=
+          std::numeric_limits<uintptr_t>::max() - begin,
+      "DSV4 flat dequant: invalid storage address range");
+  return {begin, begin + static_cast<uintptr_t>(bytes)};
+}
+
+bool dsv4_flat_ranges_overlap(
+    const Dsv4FlatByteRange& first, const Dsv4FlatByteRange& second) {
+  return first.begin < second.end && second.begin < first.end;
+}
+
+void check_dsv4_flat_io(
+    const torch::Tensor& cache,
+    const torch::Tensor& page_table,
+    const torch::Tensor& out,
+    int64_t page_size) {
+  const torch::Tensor* tensors[] = {&cache, &page_table, &out};
+  for (const auto* tensor : tensors) {
+    TORCH_CHECK(
+        tensor->defined() && tensor->layout() == c10::Layout::Strided &&
+            tensor->is_cuda(),
+        "DSV4 flat dequant: defined strided GPU tensors required");
+    TORCH_CHECK(
+        tensor->device() == cache.device(),
+        "DSV4 flat dequant: tensors must be on the same device");
+    TORCH_CHECK(
+        !tensor->requires_grad() && !tensor->is_conj() && !tensor->is_neg(),
+        "DSV4 flat dequant: inference-only tensors without unresolved views required");
+  }
+  TORCH_CHECK(
+      page_size == 2 || page_size == 64 || page_size == 256,
+      "DSV4 flat dequant: page_size must be 2, 64 or 256");
+  TORCH_CHECK(
+      cache.scalar_type() == at::ScalarType::Byte && cache.dim() == 2 &&
+          cache.is_contiguous() && cache.stride(1) == 1 &&
+          cache.size(1) >= page_size *
+              (kDsv4TokenDataBytes + kDsv4ScaleBytesPerToken),
+      "DSV4 flat dequant: contiguous uint8 cache[num_pages, B], B >= page_size*584 required");
+  TORCH_CHECK(
+      (page_table.scalar_type() == at::ScalarType::Int ||
+       page_table.scalar_type() == at::ScalarType::Long) &&
+          page_table.dim() == 1 && page_table.is_contiguous(),
+      "DSV4 flat dequant: contiguous int32/int64 page_table[N] required");
+  const int64_t num_rows = page_table.size(0);
+  TORCH_CHECK(
+      out.scalar_type() == at::ScalarType::BFloat16 && out.dim() == 3 &&
+          out.size(0) == num_rows && out.size(1) == 1 &&
+          out.size(2) == kDsv4HeadDim && out.stride(2) == 1 &&
+          out.stride(0) >= 0 &&
+          (num_rows <= 1 || out.stride(0) >= kDsv4HeadDim),
+      "DSV4 flat dequant: BF16 out[N,1,512] with inner stride 1 and nonoverlapping rows required");
+  TORCH_CHECK(
+      num_rows == 0 || cache.size(0) > 0,
+      "DSV4 flat dequant: nonempty input IDs require at least one cache page");
+  dsv4_flat_checked_multiply(cache.size(0), page_size);
+  const int64_t cache_elements =
+      dsv4_flat_checked_multiply(cache.size(0), cache.size(1));
+  const int64_t output_elements = num_rows == 0 ? 0 : dsv4_flat_checked_add(
+      dsv4_flat_checked_multiply(num_rows - 1, out.stride(0)), kDsv4HeadDim);
+  const auto cache_range = dsv4_flat_byte_range(cache, cache_elements);
+  const auto index_range = dsv4_flat_byte_range(page_table, num_rows);
+  const auto output_range = dsv4_flat_byte_range(out, output_elements);
+  TORCH_CHECK(
+      !dsv4_flat_ranges_overlap(output_range, cache_range) &&
+          !dsv4_flat_ranges_overlap(output_range, index_range),
+      "DSV4 flat dequant: out must not overlap cache or page_table storage spans");
+  TORCH_CHECK(
+      num_rows == 0 || (output_range.begin % alignof(uint16_t) == 0 &&
+          index_range.begin % page_table.element_size() == 0),
+      "DSV4 flat dequant: scalar tensor pointer alignment required");
+}
+
+void launch(
+    const torch::Tensor& cache_u8,
+    const torch::Tensor& page_table,
+    const torch::Tensor& out,
+    int64_t page_size) {
+  check_dsv4_flat_io(cache_u8, page_table, out, page_size);
+  const int64_t num_rows = page_table.size(0);
+  if (num_rows == 0) {
+    return;
+  }
+  const int64_t blocks = num_rows / kRowsPerBlock +
+      (num_rows % kRowsPerBlock != 0);
+  const at::cuda::OptionalCUDAGuard device_guard(cache_u8.device());
+  TORCH_CHECK(
+      blocks <= at::cuda::getDeviceProperties(cache_u8.get_device())->maxGridSize[0],
+      "DSV4 flat dequant: launch grid is too large");
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  const dim3 grid(static_cast<uint32_t>(blocks));
+  const dim3 block(kThreadsPerBlock);
+  // Contiguous cache pages use B bytes even if a singleton page has a dummy stride.
+  const int64_t page_stride_bytes = cache_u8.size(1);
+  const int64_t num_locations =
+      dsv4_flat_checked_multiply(cache_u8.size(0), page_size);
+  const int64_t output_span = dsv4_flat_checked_add(
+      dsv4_flat_checked_multiply(num_rows - 1, out.stride(0)), kDsv4HeadDim);
+  const int64_t uint32_limit = std::numeric_limits<uint32_t>::max();
+  const bool use_32bit_offsets =
+      cache_u8.numel() <= uint32_limit && output_span <= uint32_limit &&
+      num_rows <= uint32_limit && num_locations <= uint32_limit &&
+      page_stride_bytes <= uint32_limit && out.stride(0) <= uint32_limit;
+  const bool vector_io =
+      reinterpret_cast<uintptr_t>(cache_u8.data_ptr()) % 32 == 0 &&
+      page_stride_bytes % 32 == 0 &&
+      reinterpret_cast<uintptr_t>(out.data_ptr()) % 32 == 0 &&
+      (num_rows == 1 || out.stride(0) % (32 / sizeof(uint16_t)) == 0);
+#define DSV4_LAUNCH_FLAT(                                                     \
+    index_t, page_constant, vector_constant, offset_t)                        \
+  dsv4_dequantize_k_cache_flat_out_kernel<                                    \
+      index_t, page_constant, vector_constant, offset_t>                      \
+      <<<grid, block, 0, stream>>>(                                           \
+          cache_u8.data_ptr<uint8_t>(),                                      \
+          page_table.data_ptr<index_t>(),                                    \
+          reinterpret_cast<uint16_t*>(out.data_ptr()),                        \
+          static_cast<offset_t>(num_rows),                                   \
+          static_cast<offset_t>(num_locations),                              \
+          static_cast<offset_t>(page_stride_bytes),                          \
+          static_cast<offset_t>(out.stride(0)))
+#define DSV4_DISPATCH_FLAT(index_t, vector_constant, offset_t)                \
+  do {                                                                        \
+    if (page_size == 2) {                                                     \
+      DSV4_LAUNCH_FLAT(index_t, 2, vector_constant, offset_t);                \
+    } else if (page_size == 64) {                                             \
+      DSV4_LAUNCH_FLAT(index_t, 64, vector_constant, offset_t);               \
+    } else {                                                                  \
+      DSV4_LAUNCH_FLAT(index_t, 256, vector_constant, offset_t);              \
+    }                                                                         \
+  } while (false)
+  if (page_table.scalar_type() == at::ScalarType::Int) {
+    if (use_32bit_offsets && vector_io) {
+      DSV4_DISPATCH_FLAT(int32_t, true, uint32_t);
+    } else if (use_32bit_offsets) {
+      DSV4_DISPATCH_FLAT(int32_t, false, uint32_t);
+    } else if (vector_io) {
+      DSV4_DISPATCH_FLAT(int32_t, true, int64_t);
+    } else {
+      DSV4_DISPATCH_FLAT(int32_t, false, int64_t);
+    }
+  } else {
+    if (use_32bit_offsets && vector_io) {
+      DSV4_DISPATCH_FLAT(int64_t, true, uint32_t);
+    } else if (use_32bit_offsets) {
+      DSV4_DISPATCH_FLAT(int64_t, false, uint32_t);
+    } else if (vector_io) {
+      DSV4_DISPATCH_FLAT(int64_t, true, int64_t);
+    } else {
+      DSV4_DISPATCH_FLAT(int64_t, false, int64_t);
+    }
+  }
+#undef DSV4_DISPATCH_FLAT
+#undef DSV4_LAUNCH_FLAT
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+}  // namespace dsv4_dequant_detail
+
+void dsv4_dequantize_k_cache_paged_out(
+    const torch::Tensor& cache_u8,
+    const torch::Tensor& page_table,
+    const torch::Tensor& out,
+    int64_t page_size) {
+  dsv4_dequant_detail::launch(cache_u8, page_table, out, page_size);
 }
 
 }  // namespace native
