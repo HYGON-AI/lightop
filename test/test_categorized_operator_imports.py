@@ -55,6 +55,7 @@ NATIVE_OPERATOR_REFERENCE_TESTS = {
     "test_quant_per_token_group_quant_fp8.py",
     "test_quant_per_token_quant_fp8.py",
     "test_split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant.py",
+    "test_split_qkv_rms_rotary_embedding_fuse_with_kv_store_block_first.py",
 }
 def _categorized_api_owners():
 

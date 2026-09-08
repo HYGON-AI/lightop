@@ -121,6 +121,28 @@ void split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
     double epsilon,
     bool use_fp8_e4m3,
     bool use_fp8_cache);
+void split_qkv_rms_rotary_embedding_fuse_with_kv_store_block_first(
+    Tensor& positions,
+    Tensor& qkv,
+    int64_t q_size,
+    int64_t kv_size,
+    int64_t head_size,
+    Tensor& cos_sin_cache,
+    int64_t block_size,
+    std::optional<Tensor>& key_cache,
+    std::optional<Tensor>& value_cache,
+    std::optional<Tensor>& slot_mapping,
+    bool is_neox,
+    std::optional<Tensor>& weight_q,
+    std::optional<Tensor>& weight_k,
+    std::optional<Tensor>& residual_q,
+    std::optional<Tensor>& residual_k,
+    std::optional<Tensor>& k_scale,
+    std::optional<Tensor>& v_scale,
+    Tensor& q_rope_out,
+    Tensor& k_rope_out,
+    Tensor& v_rope_out,
+    double epsilon);
 Tensor fuse_rn_dropout_forward_autograd(const Tensor& x,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_forward_autograd(const Tensor& x,const Tensor& y,const Tensor& weight,double eps,double rate,bool training);
 Tensor fuse_rn_add_dropout_bias_forward_autograd(const Tensor& x,const Tensor& y,const Tensor &bias, const Tensor& weight,double eps,double rate,bool training);
@@ -922,6 +944,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gammarms_rotary_embedding_fuse_with_kv_store", &at::native::gammarms_rotary_embedding_fuse_with_kv_store, "gammarms_rotary_embedding_fuse_with_kv_store");
   m.def("rms_rotary_embedding_fuse_with_kv_store", &at::native::rms_rotary_embedding_fuse_with_kv_store, "rms_rotary_embedding_fuse_with_kv_store");
   m.def("split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant", &at::native::split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant, "split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant");
+  m.def("split_qkv_rms_rotary_embedding_fuse_with_kv_store_block_first", &at::native::split_qkv_rms_rotary_embedding_fuse_with_kv_store_block_first, "split_qkv_rms_rotary_embedding_fuse_with_kv_store_block_first");
   m.def("fuse_fill_rms_x2_concat", &at::native::fuse_fill_rms_x2_concat, "fuse_fill_rms_x2_concat");
   m.def("rn_dropout_forward_autograd", &at::native::fuse_rn_dropout_forward_autograd, "fused_rn_dropout forward");
   m.def("rn_add_forward_autograd", &at::native::fuse_rn_add_forward_autograd, "fused_rn_add forward");

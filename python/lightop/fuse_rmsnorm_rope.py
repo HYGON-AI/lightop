@@ -307,6 +307,78 @@ def split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant(
         use_fp8_cache
     )
     return query_rope_out, key_rope_out, v_rope_out
+
+
+def split_qkv_rms_rotary_embedding_fuse_with_kv_store_block_first(
+    positions: torch.Tensor,
+    qkv: torch.Tensor,
+    q_size: int,
+    kv_size: int,
+    cos_sin_cache: torch.Tensor,
+    head_dim: int,
+    block_size: int,
+    key_cache: Optional[torch.Tensor],
+    value_cache: Optional[torch.Tensor],
+    slot_mapping: Optional[torch.Tensor],
+    is_neox: bool,
+    weight_q: Optional[torch.Tensor],
+    weight_k: Optional[torch.Tensor],
+    output_dtype: torch.dtype,
+    residual_q: Optional[torch.Tensor],
+    residual_k: Optional[torch.Tensor],
+    k_scale: Optional[torch.Tensor],
+    v_scale: Optional[torch.Tensor],
+    epsilon: float = 1e-5,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Run fused QKV compute and an optional one-launch block-first KV store.
+
+    Cache dtype and layout are inferred from ``key_cache`` and ``value_cache``.
+    With ``slot_mapping=None``, the exact same public API executes compute-only
+    and never dereferences cache or scale tensors.
+    """
+    if output_dtype != qkv.dtype:
+        raise ValueError(
+            "block-first fused QKV currently requires output_dtype == qkv.dtype"
+        )
+    if qkv.dtype != torch.bfloat16:
+        raise ValueError("block-first fused QKV currently supports bfloat16 qkv")
+
+    num_tokens = qkv.shape[0]
+    q_out = torch.empty(
+        (num_tokens, q_size), dtype=output_dtype, device=qkv.device
+    )
+    k_out = torch.empty(
+        (num_tokens, kv_size), dtype=output_dtype, device=qkv.device
+    )
+    v_out = torch.empty(
+        (num_tokens, kv_size), dtype=output_dtype, device=qkv.device
+    )
+    op.split_qkv_rms_rotary_embedding_fuse_with_kv_store_block_first(
+        positions,
+        qkv,
+        q_size,
+        kv_size,
+        head_dim,
+        cos_sin_cache,
+        block_size,
+        key_cache,
+        value_cache,
+        slot_mapping,
+        is_neox,
+        weight_q,
+        weight_k,
+        residual_q,
+        residual_k,
+        k_scale,
+        v_scale,
+        q_out,
+        k_out,
+        v_out,
+        epsilon,
+    )
+    return q_out, k_out, v_out
+
+
 def rms_rotary_embedding_fuse_with_kv_store_fake(
     positions: torch.Tensor,
     query: torch.Tensor,

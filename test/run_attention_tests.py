@@ -25,6 +25,7 @@ SCRIPT_TEST_FILES = [
     "test/mqa_logits/test_mqa_logits.py",
     "test/test_fused_rms_rope.py",
     "test/test_split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant.py",
+    "test/test_split_qkv_rms_rotary_embedding_fuse_with_kv_store_block_first.py",
     "test/test_topk_transform_512.py",
 ]
 

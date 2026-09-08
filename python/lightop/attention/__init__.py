@@ -19,6 +19,7 @@ from .qkv import (
     rms_rotary_embedding_fuse,
     rms_rotary_embedding_fuse_with_kv_store,
     rms_rotary_embedding_fuse_with_kv_store_fake,
+    split_qkv_rms_rotary_embedding_fuse_with_kv_store_block_first,
     split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant,
 )
 from .sparse import (
@@ -70,6 +71,7 @@ __all__ = [
     "rms_rotary_embedding_fuse",
     "rms_rotary_embedding_fuse_with_kv_store",
     "rms_rotary_embedding_fuse_with_kv_store_fake",
+    "split_qkv_rms_rotary_embedding_fuse_with_kv_store_block_first",
     "RotaryEmbedding",
     "rotary_embedding_deepseek_fuse",
     "split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant",

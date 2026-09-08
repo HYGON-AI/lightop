@@ -182,6 +182,59 @@ inline __device__ uint8_t float_to_fp8_cache_scalar(float value)
 #endif
 }
 
+// Block-first cache conversion is intentionally independent of the legacy
+// CUSTOM-FA conversion helpers.  This path derives the format from the actual
+// cache Tensor dtype and writes through the cache Tensor's four strides.
+inline __device__ uint8_t float_to_fp8e4m3fn_cache_scalar(float value)
+{
+    return float_to_fp8e4m3(value);
+}
+
+inline __device__ uint8_t float_to_block_first_fp8e5m2_scalar(float value)
+{
+    // Do not use __builtin_hcu_cvt_pk_bf8_f32 here.  On gfx938 that builtin
+    // saturates +/-Inf to +/-max-finite (0x7b/0xfb) and canonicalizes NaN as
+    // 0x7e.  A torch.float8_e5m2 Tensor requires IEEE E5M2 bytes instead:
+    // +/-Inf are 0x7c/0xfc and the canonical positive NaN is 0x7f.
+    // Apply round-to-nearest-even for normal and subnormal finite values.
+    constexpr uint32_t fp32_inf = UINT32_C(255) << 23;
+    constexpr uint32_t fp8_max = UINT32_C(143) << 23;
+    constexpr uint32_t denorm_mask = UINT32_C(134) << 23;
+    uint32_t bits = c10::detail::fp32_to_bits(value);
+    uint8_t result = 0u;
+    const uint32_t sign = bits & UINT32_C(0x80000000);
+    bits ^= sign;
+    if (bits >= fp8_max) {
+        result = bits > fp32_inf ? UINT8_C(0x7F) : UINT8_C(0x7C);
+    } else {
+        if (bits < (UINT32_C(113) << 23)) {
+            bits = c10::detail::fp32_to_bits(
+                c10::detail::fp32_from_bits(bits) +
+                c10::detail::fp32_from_bits(denorm_mask));
+            result = static_cast<uint8_t>(bits - denorm_mask);
+        } else {
+            const uint32_t mantissa_odd = (bits >> 21) & 1;
+            // Convert the FP32 exponent bias (127) to the E5M2 bias (15)
+            // before dropping the low 21 bits.  Keeping this adjustment in
+            // uint32_t also gives the wraparound required by the reference
+            // PyTorch conversion without a signed negative shift.
+            bits += (static_cast<uint32_t>(15 - 127) << 23) +
+                    UINT32_C(0xFFFFF);
+            bits += mantissa_odd;
+            result = static_cast<uint8_t>(bits >> 21);
+        }
+    }
+    result = static_cast<uint8_t>(result | (sign >> 24));
+    return result;
+}
+
+inline __device__ uint8_t float_to_block_first_fp8_cache_scalar(
+    float value, bool use_fp8_e4m3)
+{
+    return use_fp8_e4m3 ? float_to_fp8e4m3fn_cache_scalar(value)
+                         : float_to_block_first_fp8e5m2_scalar(value);
+}
+
 inline __device__ uint16_t float_to_fp8e5m2_x2(float a, float b)
 {
 #if defined(__gfx938__)
@@ -903,7 +956,7 @@ __device__ __forceinline__ T_ACC apply_residual_and_calc_sq(
 template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX, int VEC_SIZE, 
          int THEAD_PER_HEAD, bool HAS_NORM, bool HAS_CACHE, bool USE_FP8_CACHE,
          typename CACHE_TYPE, int NUM_HEADS_CONST = 0,
-         int NUM_KV_HEADS_CONST = 0>
+         int NUM_KV_HEADS_CONST = 0, bool HAS_BLOCK_FIRST_CACHE = false>
 __global__ void split_opt_rms_rope_qwen3_with_qkv(
     const int64_t* __restrict__ positions,
     scalar_t* __restrict__ query,      
@@ -941,7 +994,22 @@ __global__ void split_opt_rms_rope_qwen3_with_qkv(
     const int num_kv_heads,
     const int threads_per_token, 
     const int tokens_per_block,
-    bool use_fp8_e4m3
+    bool use_fp8_e4m3,
+    // The block-first arguments are deliberately separate from the legacy
+    // CUSTOM-cache arguments above.  The old public API continues to launch
+    // this kernel with HAS_BLOCK_FIRST_CACHE=false.
+    const float* __restrict__ k_scale,
+    const float* __restrict__ v_scale,
+    int64_t block_first_cache_capacity,
+    int64_t key_stride_0,
+    int64_t key_stride_1,
+    int64_t key_stride_2,
+    int64_t key_stride_3,
+    int64_t value_stride_0,
+    int64_t value_stride_1,
+    int64_t value_stride_2,
+    int64_t value_stride_3,
+    int64_t cos_sin_cache_stride_0
 ) 
 {
     
@@ -960,17 +1028,25 @@ __global__ void split_opt_rms_rope_qwen3_with_qkv(
     if (local_token_idx >= tokens_per_block) return;
 
     const int global_token_idx = blockIdx.x * tokens_per_block + local_token_idx;
-    if (global_token_idx >= num_tokens) return;
-
-
-    scalar_t* my_s_cos_sin = s_cos_sin_base + local_token_idx * HEAD_SIZE;  //当前token的cos_sin_cache
-    const int64_t pos = positions[global_token_idx];
-
-    for (int i = lane; i < HEAD_SIZE; i += threads_per_token) {
-        my_s_cos_sin[i] = cos_sin_cache[pos * HEAD_SIZE + i];
+    const bool valid_token = global_token_idx < num_tokens;
+    scalar_t* my_s_cos_sin =
+        s_cos_sin_base + local_token_idx * HEAD_SIZE;  // current token's RoPE row
+    if (valid_token) {
+        const int64_t pos = positions[global_token_idx];
+        for (int i = lane; i < HEAD_SIZE; i += threads_per_token) {
+            my_s_cos_sin[i] =
+                cos_sin_cache[pos *
+                              (cos_sin_cache_stride_0 == 0
+                                   ? rot_dim
+                                   : cos_sin_cache_stride_0) +
+                              i];
+        }
     }
 
-    __syncthreads(); 
+    // All thread groups in the block must participate in this barrier.  In a
+    // partial final block, invalid token groups return only after it.
+    __syncthreads();
+    if (!valid_token) return;
 
     const int q_boundary =
         (NUM_HEADS_CONST > 0 ? NUM_HEADS_CONST : num_heads) *
@@ -1077,6 +1153,23 @@ __global__ void split_opt_rms_rope_qwen3_with_qkv(
         if (cache_loc < 0) return;
         loc_id = cache_loc / page_size;
         loc_offset = cache_loc % page_size;
+    }
+
+    // The new block-first path must never return for an invalid slot: Q/K/V
+    // outputs are still required for padded tokens.  Only the cache write is
+    // suppressed.  data_ptr() already points at a Tensor view's first element,
+    // so the offsets below intentionally do not include storage_offset().
+    int64_t block_first_id = 0;
+    int64_t block_first_offset = 0;
+    bool write_block_first_cache = false;
+    if constexpr (HAS_BLOCK_FIRST_CACHE) {
+        const int64_t slot = kv_cache_loc[global_token_idx];
+        write_block_first_cache =
+            slot >= 0 && slot < block_first_cache_capacity;
+        if (write_block_first_cache) {
+            block_first_id = slot / page_size;
+            block_first_offset = slot % page_size;
+        }
     }
 
     if (lane >= q_boundary && lane < total_threads_needed_kv && key != nullptr) {
@@ -1196,6 +1289,51 @@ __global__ void split_opt_rms_rope_qwen3_with_qkv(
             }
         
         }
+
+        if constexpr (HAS_BLOCK_FIRST_CACHE) {
+            if (write_block_first_cache) {
+                const int64_t k_base =
+                    block_first_id * key_stride_0 +
+                    block_first_offset * key_stride_1 +
+                    static_cast<int64_t>(kv_head_idx) * key_stride_2;
+                if constexpr (USE_FP8_CACHE) {
+                    const float scale = k_scale[0];
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE; ++i) {
+                        k_buffer[k_base + (offset_low + i) * key_stride_3] =
+                            float_to_block_first_fp8_cache_scalar(
+                                static_cast<float>(r_k_low[i]) / scale,
+                                use_fp8_e4m3);
+                        k_buffer[k_base + (offset_high + i) * key_stride_3] =
+                            float_to_block_first_fp8_cache_scalar(
+                                static_cast<float>(r_k_high[i]) / scale,
+                                use_fp8_e4m3);
+                    }
+                } else {
+                    // The common NHD/HND views have a unit dimension stride.
+                    // Keep a vector path for those views and use scalar stores
+                    // for padded or otherwise strided dimensions.
+                    const int64_t k_low = k_base + offset_low * key_stride_3;
+                    const int64_t k_high = k_base + offset_high * key_stride_3;
+                    if (key_stride_3 == 1 &&
+                        (reinterpret_cast<uintptr_t>(k_buffer + k_low) %
+                         alignof(LoadTK)) == 0 &&
+                        (reinterpret_cast<uintptr_t>(k_buffer + k_high) %
+                         alignof(LoadTK)) == 0) {
+                        *(LoadTK*)(k_buffer + k_low) = *(LoadTK*)r_k_low;
+                        *(LoadTK*)(k_buffer + k_high) = *(LoadTK*)r_k_high;
+                    } else {
+                        #pragma unroll
+                        for (int i = 0; i < VEC_SIZE; ++i) {
+                            k_buffer[k_base + (offset_low + i) * key_stride_3] =
+                                r_k_low[i];
+                            k_buffer[k_base + (offset_high + i) * key_stride_3] =
+                                r_k_high[i];
+                        }
+                    }
+                }
+            }
+        }
     } 
 
     if (lane >= total_threads_needed_kv && lane < total_threads && v != nullptr) {
@@ -1255,6 +1393,47 @@ __global__ void split_opt_rms_rope_qwen3_with_qkv(
             }
         }
         }
+        if constexpr (HAS_BLOCK_FIRST_CACHE) {
+            if (write_block_first_cache) {
+                const int64_t v_base =
+                    block_first_id * value_stride_0 +
+                    block_first_offset * value_stride_1 +
+                    static_cast<int64_t>(v_head_idx) * value_stride_2;
+                if constexpr (USE_FP8_CACHE) {
+                    const float scale = v_scale[0];
+                    #pragma unroll
+                    for (int i = 0; i < VEC_SIZE; ++i) {
+                        v_buffer[v_base + (offset_low + i) * value_stride_3] =
+                            float_to_block_first_fp8_cache_scalar(
+                                static_cast<float>(r_v_low[i]) / scale,
+                                use_fp8_e4m3);
+                        v_buffer[v_base + (offset_high + i) * value_stride_3] =
+                            float_to_block_first_fp8_cache_scalar(
+                                static_cast<float>(r_v_high[i]) / scale,
+                                use_fp8_e4m3);
+                    }
+                } else {
+                    const int64_t v_low = v_base + offset_low * value_stride_3;
+                    const int64_t v_high = v_base + offset_high * value_stride_3;
+                    if (value_stride_3 == 1 &&
+                        (reinterpret_cast<uintptr_t>(v_buffer + v_low) %
+                         alignof(LoadTK)) == 0 &&
+                        (reinterpret_cast<uintptr_t>(v_buffer + v_high) %
+                         alignof(LoadTK)) == 0) {
+                        *(LoadTK*)(v_buffer + v_low) = *(LoadTK*)r_v_low;
+                        *(LoadTK*)(v_buffer + v_high) = *(LoadTK*)r_v_high;
+                    } else {
+                        #pragma unroll
+                        for (int i = 0; i < VEC_SIZE; ++i) {
+                            v_buffer[v_base + (offset_low + i) * value_stride_3] =
+                                r_v_low[i];
+                            v_buffer[v_base + (offset_high + i) * value_stride_3] =
+                                r_v_high[i];
+                        }
+                    }
+                }
+            }
+        }
     }
 
 }
@@ -1278,8 +1457,9 @@ __device__ __forceinline__ T_ACC apply_residual_and_calc_sq_4vec(
     }
     return local_sum;
 }
-template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX, int VEC_SIZE, 
-        int THEAD_PER_HEAD, bool HAS_NORM, bool HAS_CACHE, bool USE_FP8_CACHE, typename CACHE_TYPE>
+template <typename T_ACC, typename scalar_t, bool HAS_RESIDUAL, bool IS_NEOX, int VEC_SIZE,
+        int THEAD_PER_HEAD, bool HAS_NORM, bool HAS_CACHE, bool USE_FP8_CACHE,
+        typename CACHE_TYPE, bool HAS_BLOCK_FIRST_CACHE = false>
 __global__ void split_opt_rms_rope_qwen3_rotDim64_with_qkv(
     const int64_t* __restrict__ positions,
     scalar_t* __restrict__ query,      
@@ -1317,7 +1497,19 @@ __global__ void split_opt_rms_rope_qwen3_rotDim64_with_qkv(
     const int num_kv_heads,
     const int threads_per_token, 
     const int tokens_per_block,
-    bool use_fp8_e4m3
+    bool use_fp8_e4m3,
+    const float* __restrict__ k_scale = nullptr,
+    const float* __restrict__ v_scale = nullptr,
+    int64_t block_first_cache_capacity = 0,
+    int64_t key_stride_0 = 0,
+    int64_t key_stride_1 = 0,
+    int64_t key_stride_2 = 0,
+    int64_t key_stride_3 = 0,
+    int64_t value_stride_0 = 0,
+    int64_t value_stride_1 = 0,
+    int64_t value_stride_2 = 0,
+    int64_t value_stride_3 = 0,
+    int64_t cos_sin_cache_stride_0 = 0
 ) 
 {
     extern __shared__ char smem_buffer[];
@@ -1332,17 +1524,19 @@ __global__ void split_opt_rms_rope_qwen3_rotDim64_with_qkv(
     if (local_token_idx >= tokens_per_block) return;
 
     const int global_token_idx = blockIdx.x * tokens_per_block + local_token_idx;
-    if (global_token_idx >= num_tokens) return;
+    const bool valid_token = global_token_idx < num_tokens;
 
    
     scalar_t* my_s_cos_sin = s_cos_sin_base + local_token_idx * rot_dim;
-    const int64_t pos = positions[global_token_idx];
-
-
-    for (int i = lane; i < rot_dim; i += threads_per_token) {
-        my_s_cos_sin[i] = cos_sin_cache[pos * rot_dim + i];
+    if (valid_token) {
+        const int64_t pos = positions[global_token_idx];
+        for (int i = lane; i < rot_dim; i += threads_per_token) {
+            my_s_cos_sin[i] =
+                cos_sin_cache[pos * cos_sin_cache_stride_0 + i];
+        }
     }
-    __syncthreads(); 
+    __syncthreads();
+    if (!valid_token) return;
 
     const int q_boundary = num_heads * THEAD_PER_HEAD;
     const int total_threads_need_kv = (num_heads + num_kv_heads) * THEAD_PER_HEAD;
@@ -1354,6 +1548,18 @@ __global__ void split_opt_rms_rope_qwen3_rotDim64_with_qkv(
         if (cache_loc < 0) return;
         loc_id = cache_loc / page_size;
         loc_offset = cache_loc % page_size;
+    }
+    int64_t block_first_id = 0;
+    int64_t block_first_offset = 0;
+    bool write_block_first_cache = false;
+    if constexpr (HAS_BLOCK_FIRST_CACHE) {
+        const int64_t slot = kv_cache_loc[global_token_idx];
+        write_block_first_cache =
+            slot >= 0 && slot < block_first_cache_capacity;
+        if (write_block_first_cache) {
+            block_first_id = slot / page_size;
+            block_first_offset = slot % page_size;
+        }
     }
     if (lane < total_threads_need_kv) {
         const bool is_query = lane < q_boundary;
@@ -1458,6 +1664,42 @@ __global__ void split_opt_rms_rope_qwen3_rotDim64_with_qkv(
         *(LoadT*)(rope_out_ptr + o2) = *(LoadT*)v2;
         *(LoadT*)(rope_out_ptr + o3) = *(LoadT*)v3;
 
+        if constexpr (HAS_BLOCK_FIRST_CACHE) {
+            if (!is_query && write_block_first_cache) {
+                const int64_t k_base =
+                    block_first_id * key_stride_0 +
+                    block_first_offset * key_stride_1 +
+                    static_cast<int64_t>(head_idx) * key_stride_2;
+                #pragma unroll
+                for (int i = 0; i < VEC_SIZE; ++i) {
+                    if constexpr (USE_FP8_CACHE) {
+                        const float scale = k_scale[0];
+                        k_buffer[k_base + (o0 + i) * key_stride_3] =
+                            float_to_block_first_fp8_cache_scalar(
+                                static_cast<float>(v0[i]) / scale,
+                                use_fp8_e4m3);
+                        k_buffer[k_base + (o1 + i) * key_stride_3] =
+                            float_to_block_first_fp8_cache_scalar(
+                                static_cast<float>(v1[i]) / scale,
+                                use_fp8_e4m3);
+                        k_buffer[k_base + (o2 + i) * key_stride_3] =
+                            float_to_block_first_fp8_cache_scalar(
+                                static_cast<float>(v2[i]) / scale,
+                                use_fp8_e4m3);
+                        k_buffer[k_base + (o3 + i) * key_stride_3] =
+                            float_to_block_first_fp8_cache_scalar(
+                                static_cast<float>(v3[i]) / scale,
+                                use_fp8_e4m3);
+                    } else {
+                        k_buffer[k_base + (o0 + i) * key_stride_3] = v0[i];
+                        k_buffer[k_base + (o1 + i) * key_stride_3] = v1[i];
+                        k_buffer[k_base + (o2 + i) * key_stride_3] = v2[i];
+                        k_buffer[k_base + (o3 + i) * key_stride_3] = v3[i];
+                    }
+                }
+            }
+        }
+
         if constexpr (HAS_CACHE) {
             const int k_buffer_offset = loc_id * k_buffer_stride_n + head_idx * k_buffer_stride_h + loc_offset * k_buffer_stride_p;
             if (!is_query) {
@@ -1525,6 +1767,41 @@ __global__ void split_opt_rms_rope_qwen3_rotDim64_with_qkv(
         *(LoadT*)(v_rope_out_ptr + o1) = *(LoadT*)v1;
         *(LoadT*)(v_rope_out_ptr + o2) = *(LoadT*)v2;
         *(LoadT*)(v_rope_out_ptr + o3) = *(LoadT*)v3;
+        if constexpr (HAS_BLOCK_FIRST_CACHE) {
+            if (write_block_first_cache) {
+                const int64_t v_base =
+                    block_first_id * value_stride_0 +
+                    block_first_offset * value_stride_1 +
+                    static_cast<int64_t>(head_idx) * value_stride_2;
+                #pragma unroll
+                for (int i = 0; i < VEC_SIZE; ++i) {
+                    if constexpr (USE_FP8_CACHE) {
+                        const float scale = v_scale[0];
+                        v_buffer[v_base + (o0 + i) * value_stride_3] =
+                            float_to_block_first_fp8_cache_scalar(
+                                static_cast<float>(v0[i]) / scale,
+                                use_fp8_e4m3);
+                        v_buffer[v_base + (o1 + i) * value_stride_3] =
+                            float_to_block_first_fp8_cache_scalar(
+                                static_cast<float>(v1[i]) / scale,
+                                use_fp8_e4m3);
+                        v_buffer[v_base + (o2 + i) * value_stride_3] =
+                            float_to_block_first_fp8_cache_scalar(
+                                static_cast<float>(v2[i]) / scale,
+                                use_fp8_e4m3);
+                        v_buffer[v_base + (o3 + i) * value_stride_3] =
+                            float_to_block_first_fp8_cache_scalar(
+                                static_cast<float>(v3[i]) / scale,
+                                use_fp8_e4m3);
+                    } else {
+                        v_buffer[v_base + (o0 + i) * value_stride_3] = v0[i];
+                        v_buffer[v_base + (o1 + i) * value_stride_3] = v1[i];
+                        v_buffer[v_base + (o2 + i) * value_stride_3] = v2[i];
+                        v_buffer[v_base + (o3 + i) * value_stride_3] = v3[i];
+                    }
+                }
+            }
+        }
         if constexpr (HAS_CACHE) {
             if constexpr (USE_FP8_CACHE) {
                 using LoadT8 = at::native::memory::aligned_vector<uint8_t, VEC_SIZE>;
@@ -1887,7 +2164,9 @@ void launch_opt_rms_rope(
                                         eps, num_tokens, num_heads, num_kv_heads,
                                         HY3_THREADS_PER_TOKEN,
                                         HY3_TOKENS_PER_BLOCK,
-                                        use_fp8_e4m3);
+                                        use_fp8_e4m3,
+                                        nullptr, nullptr, 0,
+                                        0, 0, 0, 0, 0, 0, 0, 0, rot_dim);
                             });
                         });
                     });
@@ -1923,7 +2202,9 @@ void launch_opt_rms_rope(
                                     gamma_q, gamma_k,
                                     residual_q_ptr, residual_k_ptr,
                                     eps, num_tokens, num_heads, num_kv_heads,
-                                    threads_per_token, tokens_per_block, use_fp8_e4m3
+                                    threads_per_token, tokens_per_block, use_fp8_e4m3,
+                                    nullptr, nullptr, 0,
+                                    0, 0, 0, 0, 0, 0, 0, 0, rot_dim
                                 );
                             });
                         });
@@ -2036,6 +2317,124 @@ void launch_opt_rms_rope(
             });
             C10_CUDA_KERNEL_LAUNCH_CHECK();
         }
+}
+
+// One-launch implementation for Cutlass-style block-first caches.  It keeps
+// the same 128/64 rotary-dimension dispatch as the CUSTOM-cache entry point,
+// but selects an integrated block-first writer at compile time so no legacy
+// post-processing cache kernel is launched on this path.
+template <typename T_ACC, typename scalar_t, typename CACHE_TYPE>
+void launch_opt_rms_rope_block_first(
+    const int64_t* positions,
+    scalar_t* query,
+    scalar_t* key,
+    scalar_t* value,
+    const scalar_t* cos_sin_cache,
+    CACHE_TYPE* key_cache,
+    CACHE_TYPE* value_cache,
+    int64_t* slot_mapping,
+    scalar_t* q_rope_out,
+    scalar_t* k_rope_out,
+    scalar_t* v_rope_out,
+    int64_t q_size,
+    int64_t kv_size,
+    int64_t head_size,
+    int rot_dim,
+    int64_t qkv_stride,
+    int64_t cos_sin_cache_stride_0,
+    int q_rope_out_stride_n,
+    int k_rope_out_stride_n,
+    int v_rope_out_stride_n,
+    scalar_t* gamma_q,
+    scalar_t* gamma_k,
+    scalar_t eps,
+    int num_tokens,
+    int64_t cache_capacity,
+    int block_size,
+    int num_heads,
+    int num_kv_heads,
+    const float* k_scale,
+    const float* v_scale,
+    int64_t key_stride_0,
+    int64_t key_stride_1,
+    int64_t key_stride_2,
+    int64_t key_stride_3,
+    int64_t value_stride_0,
+    int64_t value_stride_1,
+    int64_t value_stride_2,
+    int64_t value_stride_3,
+    bool has_block_first_cache,
+    bool use_fp8_cache,
+    bool use_fp8_e4m3,
+    bool has_norm,
+    bool is_neox,
+    cudaStream_t stream) {
+    if (num_tokens == 0) {
+        return;
+    }
+
+    constexpr int THREAD_PER_ROW = 8;
+    constexpr int VEC = 8;
+    const int threads_per_token =
+        (num_heads + num_kv_heads + num_kv_heads) * THREAD_PER_ROW;
+    const int tokens_per_block = std::max(1, 512 / threads_per_token);
+    const int actual_block_size = tokens_per_block * threads_per_token;
+    const int grid_size = (num_tokens + tokens_per_block - 1) / tokens_per_block;
+    const size_t smem_size =
+        static_cast<size_t>(tokens_per_block) * rot_dim * sizeof(scalar_t);
+
+    DISPATCH_BOOL(has_block_first_cache, HAS_BLOCK_FIRST_CACHE_CONST, [&] {
+        DISPATCH_BOOL(use_fp8_cache, USE_FP8_CACHE_CONST, [&] {
+            DISPATCH_BOOL(has_norm, HAS_NORM_CONST, [&] {
+                DISPATCH_BOOL(is_neox, IS_NEOX_CONST, [&] {
+                    if (rot_dim == 128) {
+                        split_opt_rms_rope_qwen3_with_qkv<
+                            T_ACC, scalar_t, false, IS_NEOX_CONST, VEC,
+                            THREAD_PER_ROW, HAS_NORM_CONST, false,
+                            USE_FP8_CACHE_CONST, CACHE_TYPE, 0, 0,
+                            HAS_BLOCK_FIRST_CACHE_CONST>
+                            <<<grid_size, actual_block_size, smem_size, stream>>>(
+                                positions, query, key, value, cos_sin_cache,
+                                key_cache, value_cache, slot_mapping,
+                                q_rope_out, k_rope_out, v_rope_out,
+                                block_size, rot_dim, qkv_stride, q_size, kv_size,
+                                head_size, q_rope_out_stride_n,
+                                k_rope_out_stride_n, v_rope_out_stride_n,
+                                0, 0, 0, 0, 0, 0, gamma_q, gamma_k,
+                                nullptr, nullptr, eps, num_tokens, num_heads,
+                                num_kv_heads, threads_per_token, tokens_per_block,
+                                use_fp8_e4m3, k_scale, v_scale, cache_capacity,
+                                key_stride_0, key_stride_1, key_stride_2,
+                                key_stride_3, value_stride_0, value_stride_1,
+                                value_stride_2, value_stride_3,
+                                cos_sin_cache_stride_0);
+                    } else {
+                        split_opt_rms_rope_qwen3_rotDim64_with_qkv<
+                            T_ACC, scalar_t, false, IS_NEOX_CONST, 4,
+                            THREAD_PER_ROW, HAS_NORM_CONST, false,
+                            USE_FP8_CACHE_CONST, CACHE_TYPE,
+                            HAS_BLOCK_FIRST_CACHE_CONST>
+                            <<<grid_size, actual_block_size, smem_size, stream>>>(
+                                positions, query, key, value, cos_sin_cache,
+                                key_cache, value_cache, slot_mapping,
+                                q_rope_out, k_rope_out, v_rope_out,
+                                block_size, rot_dim, qkv_stride, q_size, kv_size,
+                                head_size, q_rope_out_stride_n,
+                                k_rope_out_stride_n, v_rope_out_stride_n,
+                                0, 0, 0, 0, 0, 0, gamma_q, gamma_k,
+                                nullptr, nullptr, eps, num_tokens, num_heads,
+                                num_kv_heads, threads_per_token, tokens_per_block,
+                                use_fp8_e4m3, k_scale, v_scale, cache_capacity,
+                                key_stride_0, key_stride_1, key_stride_2,
+                                key_stride_3, value_stride_0, value_stride_1,
+                                value_stride_2, value_stride_3,
+                                cos_sin_cache_stride_0);
+                    }
+                });
+            });
+        });
+    });
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
 void split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
@@ -2247,6 +2646,212 @@ void split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant(
           return;
         }
   });
+}
+
+void split_qkv_rms_rotary_embedding_fuse_with_kv_store_block_first(
+    Tensor& positions,
+    Tensor& qkv,
+    int64_t q_size,
+    int64_t kv_size,
+    int64_t head_size,
+    Tensor& cos_sin_cache,
+    int64_t block_size,
+    std::optional<Tensor>& key_cache,
+    std::optional<Tensor>& value_cache,
+    std::optional<Tensor>& slot_mapping,
+    bool is_neox,
+    std::optional<Tensor>& weight_q,
+    std::optional<Tensor>& weight_k,
+    std::optional<Tensor>& residual_q,
+    std::optional<Tensor>& residual_k,
+    std::optional<Tensor>& k_scale,
+    std::optional<Tensor>& v_scale,
+    Tensor& q_rope_out,
+    Tensor& k_rope_out,
+    Tensor& v_rope_out,
+    double epsilon) {
+  TORCH_CHECK(qkv.is_cuda() && qkv.scalar_type() == at::ScalarType::BFloat16,
+              "qkv must be a CUDA/HIP bfloat16 Tensor");
+  TORCH_CHECK(qkv.dim() == 2 && qkv.is_contiguous(),
+              "qkv must be a contiguous [T, q_size + 2 * kv_size] Tensor");
+  TORCH_CHECK(q_size > 0 && kv_size > 0 && head_size == 128,
+              "block-first fused QKV requires positive q_size/kv_size and head_size == 128");
+  TORCH_CHECK(q_size % head_size == 0 && kv_size % head_size == 0,
+              "q_size and kv_size must be divisible by head_size");
+  TORCH_CHECK(qkv.size(1) == q_size + 2 * kv_size,
+              "qkv.size(1) must equal q_size + 2 * kv_size");
+
+  const int64_t num_tokens = qkv.size(0);
+  TORCH_CHECK(num_tokens <= std::numeric_limits<int>::max(),
+              "too many tokens for the fused block-first QKV kernel");
+  TORCH_CHECK(positions.is_cuda() && positions.device() == qkv.device() &&
+                  positions.scalar_type() == at::ScalarType::Long &&
+                  positions.dim() == 1 && positions.is_contiguous() &&
+                  positions.numel() == num_tokens,
+              "positions must be a contiguous int64 [T] Tensor on qkv.device");
+  TORCH_CHECK(cos_sin_cache.is_cuda() && cos_sin_cache.device() == qkv.device() &&
+                  cos_sin_cache.scalar_type() == qkv.scalar_type() &&
+                  cos_sin_cache.dim() == 2 &&
+                  (cos_sin_cache.size(1) == 128 || cos_sin_cache.size(1) == 64) &&
+                  cos_sin_cache.stride(0) > 0 && cos_sin_cache.stride(1) == 1,
+              "cos_sin_cache must be a [max_position, 64 or 128] bfloat16 Tensor with unit last stride");
+  const int rot_dim = static_cast<int>(cos_sin_cache.size(1));
+
+  const int64_t num_heads_64 = q_size / head_size;
+  const int64_t num_kv_heads_64 = kv_size / head_size;
+  TORCH_CHECK(num_heads_64 + 2 * num_kv_heads_64 <= 128,
+              "block-first fused QKV exceeds the supported 1024-thread token shape");
+  const int num_heads = static_cast<int>(num_heads_64);
+  const int num_kv_heads = static_cast<int>(num_kv_heads_64);
+
+  TORCH_CHECK(weight_q.has_value() == weight_k.has_value(),
+              "weight_q and weight_k must either both be provided or both be None");
+  if (weight_q.has_value()) {
+    TORCH_CHECK(weight_q->is_cuda() && weight_k->is_cuda() &&
+                    weight_q->device() == qkv.device() &&
+                    weight_k->device() == qkv.device() &&
+                    weight_q->scalar_type() == at::ScalarType::BFloat16 &&
+                    weight_k->scalar_type() == at::ScalarType::BFloat16 &&
+                    weight_q->is_contiguous() && weight_k->is_contiguous() &&
+                    weight_q->dim() == 1 && weight_k->dim() == 1 &&
+                    weight_q->numel() == head_size &&
+                    weight_k->numel() == head_size,
+                "weight_q and weight_k must be contiguous bfloat16 [128] Tensors on qkv.device");
+  }
+  TORCH_CHECK(!residual_q.has_value() && !residual_k.has_value(),
+              "block-first fused QKV does not support residual_q or residual_k yet");
+
+  auto check_output = [&](const Tensor& output, int64_t width, const char* name) {
+    TORCH_CHECK(output.is_cuda() && output.device() == qkv.device() &&
+                    output.scalar_type() == at::ScalarType::BFloat16 &&
+                    output.dim() == 2 && output.size(0) == num_tokens &&
+                    output.size(1) == width && output.is_contiguous(),
+                name, " must be a contiguous bfloat16 output Tensor of the expected shape");
+  };
+  check_output(q_rope_out, q_size, "q_rope_out");
+  check_output(k_rope_out, kv_size, "k_rope_out");
+  check_output(v_rope_out, kv_size, "v_rope_out");
+
+  const bool has_cache = slot_mapping.has_value();
+  TORCH_CHECK(has_cache == key_cache.has_value() &&
+                  has_cache == value_cache.has_value(),
+              "slot_mapping, key_cache, and value_cache must either all be provided or all be None");
+
+  bool use_fp8_cache = false;
+  bool use_fp8_e4m3 = false;
+  int64_t cache_capacity = 0;
+  int block_size_int = 0;
+  int64_t key_stride_0 = 0, key_stride_1 = 0, key_stride_2 = 0, key_stride_3 = 0;
+  int64_t value_stride_0 = 0, value_stride_1 = 0, value_stride_2 = 0, value_stride_3 = 0;
+  const float* k_scale_ptr = nullptr;
+  const float* v_scale_ptr = nullptr;
+
+  if (has_cache) {
+    TORCH_CHECK(block_size > 0 && block_size <= std::numeric_limits<int>::max(),
+                "block_size must fit in a positive int");
+    TORCH_CHECK(slot_mapping->is_cuda() && slot_mapping->device() == qkv.device() &&
+                    slot_mapping->scalar_type() == at::ScalarType::Long &&
+                    slot_mapping->dim() == 1 && slot_mapping->is_contiguous() &&
+                    slot_mapping->numel() == num_tokens,
+                "slot_mapping must be a contiguous int64 [T] Tensor on qkv.device");
+    TORCH_CHECK(key_cache->is_cuda() && value_cache->is_cuda() &&
+                    key_cache->device() == qkv.device() &&
+                    value_cache->device() == qkv.device() &&
+                    key_cache->dim() == 4 && value_cache->dim() == 4 &&
+                    key_cache->scalar_type() == value_cache->scalar_type(),
+                "key_cache and value_cache must be same-dtype CUDA/HIP rank-4 Tensors on qkv.device");
+    for (int dim = 0; dim < 4; ++dim) {
+      TORCH_CHECK(key_cache->size(dim) == value_cache->size(dim),
+                  "key_cache and value_cache must have the same logical shape");
+      TORCH_CHECK(key_cache->stride(dim) > 0 && value_cache->stride(dim) > 0,
+                  "block-first cache strides must all be positive");
+    }
+    TORCH_CHECK(key_cache->size(1) == block_size &&
+                    key_cache->size(2) == num_kv_heads &&
+                    key_cache->size(3) == head_size,
+                "cache tensors must have shape [num_blocks, block_size, num_kv_heads, 128]");
+    TORCH_CHECK(key_cache->size(0) <=
+                    std::numeric_limits<int64_t>::max() / block_size,
+                "block-first cache capacity overflows int64");
+
+    const auto cache_type = key_cache->scalar_type();
+    TORCH_CHECK(cache_type == at::ScalarType::BFloat16 ||
+                    cache_type == at::ScalarType::Float8_e4m3fn ||
+                    cache_type == at::ScalarType::Float8_e5m2,
+                "block-first cache dtype must be bfloat16, float8_e4m3fn, or float8_e5m2");
+    use_fp8_cache = cache_type == at::ScalarType::Float8_e4m3fn ||
+                    cache_type == at::ScalarType::Float8_e5m2;
+    use_fp8_e4m3 = cache_type == at::ScalarType::Float8_e4m3fn;
+    if (use_fp8_cache) {
+      TORCH_CHECK(k_scale.has_value() && v_scale.has_value(),
+                  "FP8 cache requires k_scale and v_scale");
+      TORCH_CHECK(k_scale->is_cuda() && v_scale->is_cuda() &&
+                      k_scale->device() == qkv.device() &&
+                      v_scale->device() == qkv.device() &&
+                      k_scale->scalar_type() == at::ScalarType::Float &&
+                      v_scale->scalar_type() == at::ScalarType::Float &&
+                      k_scale->numel() == 1 && v_scale->numel() == 1,
+                  "k_scale and v_scale must be one-element float32 device Tensors");
+      k_scale_ptr = k_scale->data_ptr<float>();
+      v_scale_ptr = v_scale->data_ptr<float>();
+    }
+
+    block_size_int = static_cast<int>(block_size);
+    cache_capacity = key_cache->size(0) * block_size;
+    key_stride_0 = key_cache->stride(0);
+    key_stride_1 = key_cache->stride(1);
+    key_stride_2 = key_cache->stride(2);
+    key_stride_3 = key_cache->stride(3);
+    value_stride_0 = value_cache->stride(0);
+    value_stride_1 = value_cache->stride(1);
+    value_stride_2 = value_cache->stride(2);
+    value_stride_3 = value_cache->stride(3);
+  }
+
+  const at::cuda::OptionalCUDAGuard device_guard(device_of(qkv));
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  using scalar_t = at::BFloat16;
+  using T_ACC = at::acc_type<scalar_t, true>;
+  scalar_t* gamma_q = weight_q.has_value() ? weight_q->data_ptr<scalar_t>() : nullptr;
+  scalar_t* gamma_k = weight_k.has_value() ? weight_k->data_ptr<scalar_t>() : nullptr;
+  int64_t* slot_mapping_ptr =
+      has_cache ? slot_mapping->data_ptr<int64_t>() : nullptr;
+
+  if (use_fp8_cache) {
+    launch_opt_rms_rope_block_first<T_ACC, scalar_t, uint8_t>(
+        positions.data_ptr<int64_t>(), qkv.data_ptr<scalar_t>(),
+        qkv.data_ptr<scalar_t>(), qkv.data_ptr<scalar_t>(),
+        cos_sin_cache.data_ptr<scalar_t>(),
+        reinterpret_cast<uint8_t*>(key_cache->data_ptr()),
+        reinterpret_cast<uint8_t*>(value_cache->data_ptr()), slot_mapping_ptr,
+        q_rope_out.data_ptr<scalar_t>(), k_rope_out.data_ptr<scalar_t>(),
+        v_rope_out.data_ptr<scalar_t>(), q_size, kv_size, head_size, rot_dim,
+        qkv.stride(0), cos_sin_cache.stride(0), q_rope_out.stride(0), k_rope_out.stride(0),
+        v_rope_out.stride(0), gamma_q, gamma_k,
+        static_cast<scalar_t>(epsilon), static_cast<int>(num_tokens),
+        cache_capacity, block_size_int, num_heads, num_kv_heads, k_scale_ptr,
+        v_scale_ptr, key_stride_0, key_stride_1, key_stride_2, key_stride_3,
+        value_stride_0, value_stride_1, value_stride_2, value_stride_3,
+        has_cache, true, use_fp8_e4m3, weight_q.has_value(), is_neox, stream);
+  } else {
+    scalar_t* key_cache_ptr =
+        has_cache ? key_cache->data_ptr<scalar_t>() : nullptr;
+    scalar_t* value_cache_ptr =
+        has_cache ? value_cache->data_ptr<scalar_t>() : nullptr;
+    launch_opt_rms_rope_block_first<T_ACC, scalar_t, scalar_t>(
+        positions.data_ptr<int64_t>(), qkv.data_ptr<scalar_t>(),
+        qkv.data_ptr<scalar_t>(), qkv.data_ptr<scalar_t>(),
+        cos_sin_cache.data_ptr<scalar_t>(), key_cache_ptr, value_cache_ptr,
+        slot_mapping_ptr, q_rope_out.data_ptr<scalar_t>(),
+        k_rope_out.data_ptr<scalar_t>(), v_rope_out.data_ptr<scalar_t>(),
+        q_size, kv_size, head_size, rot_dim, qkv.stride(0), cos_sin_cache.stride(0), q_rope_out.stride(0),
+        k_rope_out.stride(0), v_rope_out.stride(0), gamma_q, gamma_k,
+        static_cast<scalar_t>(epsilon), static_cast<int>(num_tokens),
+        cache_capacity, block_size_int, num_heads, num_kv_heads, nullptr,
+        nullptr, key_stride_0, key_stride_1, key_stride_2, key_stride_3,
+        value_stride_0, value_stride_1, value_stride_2, value_stride_3,
+        has_cache, false, false, weight_q.has_value(), is_neox, stream);
+  }
 }
 
 template <typename scalar_t>
