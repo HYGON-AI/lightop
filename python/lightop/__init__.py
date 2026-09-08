@@ -51,6 +51,7 @@ from .gemmopt import gemm_awq_w4a16_marlin, gemm_awq_w4a16_marlin_dequant, awq_g
 from .moe_fused_gate import moe_fused_gate, moe_fused_gate_sqrtsoftplus
 from .moe_fuse_gate_per_gourp_topk import moe_fuse_gate_per_gourp_topk
 from .fuse_silu_mul_quant import fuse_silu_mul_quant, fuse_silu_mul_quant_ep, fuse_silu_and_mul, fuse_silu_mul_fp8_quant, fuse_silu_mul_fp8_quant_ep, moe_swiglu_dynamic_quant, relu2,fuse_silu_mul_per_token_quant,fuse_silu_and_mul_ep
+from .fuse_situ_mul_quant import fuse_situ_mul_quant_contiguous, fuse_situ_mul_quant_ep
 from .fuse_silu_mul_quant import (
     fuse_silu_mul_clamp_quant,
     fuse_silu_mul_clamp_quant_ep,
