@@ -384,6 +384,7 @@ void ep_fused_smooth_quant_scatter(
     torch::Tensor inv_perm,
     int local_num_experts, int alignment); 
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale, bool round_after_smooth, double limit);
+void per_token_quant_int8_out(torch::Tensor& out, const torch::Tensor& input, torch::Tensor& scales);
 void rms_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,double epsilon,double limit);
 void rms_norm_no_weight(
     torch::optional<torch::Tensor> out,
@@ -549,6 +550,11 @@ void decode_gather_and_up_convert_with_indices(
     torch::Tensor const& dst,
     torch::Tensor const& valid_lengths,
     torch::Tensor const& compact_indices);
+void dsv4_dequantize_k_cache_paged_out(
+    torch::Tensor const& cache_u8,
+    torch::Tensor const& page_table,
+    torch::Tensor const& out,
+    int64_t page_size);
 void dsv4_gather_upconvert_k_cache_paged(
     torch::Tensor const& cache,
     torch::Tensor const& indices,
@@ -718,6 +724,12 @@ void quantize_nope_fp8_rope_bf16_pack_store(
     int page_size,
     float eps
 );   
+bool supports_mhc_repeat_cp_sglang(
+    const torch::Tensor& hidden_states, int64_t hc_mult,
+    int64_t cp_size, int64_t cp_rank);
+torch::Tensor mhc_repeat_cp_sglang(
+    const torch::Tensor& hidden_states, int64_t hc_mult,
+    int64_t cp_size, int64_t cp_rank);
 void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_int32(
     Tensor& q,
     const Tensor& kv,
@@ -1256,6 +1268,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("smoothscale"),
       py::arg("round_after_smooth") = false,
       py::arg("limit") = -1.0);
+  m.def(
+      "per_token_quant_int8_out",
+      &at::native::per_token_quant_int8_out,
+      "Per-token symmetric INT8 quantization (out variant)",
+      py::arg("out"),
+      py::arg("input"),
+      py::arg("scales"));
   m.def("top_k_sampling_from_probs", &lightop::sampling::top_k_sampling_from_probs, "top_k_sampling_from_probs");
   m.def("top_p_sampling_from_probs", &lightop::sampling::top_p_sampling_from_probs, "top_p_sampling_from_probs");
   m.def("top_k_top_p_sampling_from_probs", &lightop::sampling::top_k_top_p_sampling_from_probs, "top_k_top_p_sampling_from_probs");
@@ -1360,6 +1379,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("decode_gather_and_up_convert", &at::native::decode_gather_and_up_convert, "decode_gather_and_up_convert");
  m.def("decode_gather_and_up_convert_with_indices", &at::native::decode_gather_and_up_convert_with_indices, "decode_gather_and_up_convert_with_indices");
  m.def(
+     "dsv4_dequantize_k_cache_paged_out",
+     &at::native::dsv4_dequantize_k_cache_paged_out,
+     "DSV4 flat E4M3FN/UE8M0 paged dequantization into preallocated BF16 output",
+     py::arg("cache_u8"), py::arg("page_table"), py::arg("out"), py::arg("page_size"));
+ m.def(
      "dsv4_gather_upconvert_k_cache_paged",
      &at::native::dsv4_gather_upconvert_k_cache_paged,
      "DPSKV4 single-cache paged FP8/UE8M0 gather, BF16 upconvert, and compact indices");
@@ -1408,6 +1432,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("ep_build_m_indices", &at::native::ep_build_m_indices,"ep_build_m_indices");
  m.def("ep_fused_fp8_quant_scatter", &at::native::ep_fused_fp8_quant_scatter,"ep_fused_fp8_quant_scatter");
  m.def("quantize_nope_fp8_rope_bf16_pack_store", &at::native::quantize_nope_fp8_rope_bf16_pack_store, "quantize_nope_fp8_rope_bf16_pack_store");
+ m.def("supports_mhc_repeat_cp_sglang", &at::native::supports_mhc_repeat_cp_sglang,
+       "Metadata-only SGLang mHC repeat+CP preflight",
+       py::arg("hidden_states"), py::arg("hc_mult"), py::arg("cp_size"), py::arg("cp_rank"));
+ m.def("mhc_repeat_cp_sglang", &at::native::mhc_repeat_cp_sglang,
+       "SGLang mHC CP-selected row broadcast",
+       py::arg("hidden_states"), py::arg("hc_mult"), py::arg("cp_size"), py::arg("cp_rank"));
  m.def("topk_ids_postprocess",&at::native::topk_ids_postprocess,"topk_ids_postprocess");
  m.def("dpskv4_hc_head_fused", &at::native::dpskv4_hc_head_fused, "dpskv4_hc_head_fused");
  m.def("fused_metadata_kernel_general", &at::native::fused_metadata_kernel_general_launcher,
