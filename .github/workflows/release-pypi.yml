@@ -16,6 +16,8 @@ permissions:
   contents: read
   # CIUpload 上传前需查询关联 PR (只读)
   pull-requests: read
+  # CIUpload 上报需读取 check-run 统计 (只读)
+  checks: read
 
 env:
   DTK_PKG_URL: ${{ vars.RESOURCE_SERVER_URL }}/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
