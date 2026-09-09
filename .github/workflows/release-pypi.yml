@@ -140,7 +140,7 @@ jobs:
       - name: 上传 NIGHTLY
         if: ${{ github.event_name == 'push' }}
         run: |
-          CIUpload --devpi_url ${PYPI_URL} --devpi_user ${{ secrets.PYPI_USERNAME }} --devpi_password ${{ secrets.PYPI_PASSWORD }} --dtk_pkg_name $(basename $DTK_PKG_URL) -f output/*.whl
+          CIUpload --devpi_url ${PYPI_URL} --devpi_user ${{ secrets.PYPI_USERNAME }} --devpi_password ${{ secrets.PYPI_PASSWORD }} --dtk_pkg_name $(basename $DTK_PKG_URL) -f output/*.whl --record
 
       # 容器内以 root 运行, workspace 里的文件会归 root 所有,
       # 宿主机上后续 job 的 checkout 无法清理, 退出前清空
