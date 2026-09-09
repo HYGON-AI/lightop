@@ -14,6 +14,8 @@ on:
 
 permissions:
   contents: read
+  # CIUpload 上传前需查询关联 PR (只读)
+  pull-requests: read
 
 env:
   DTK_PKG_URL: ${{ vars.RESOURCE_SERVER_URL }}/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
@@ -119,6 +121,9 @@ jobs:
 
       - name: 上传 NIGHTLY
         if: ${{ github.event_name == 'push' }}
+        env:
+          # CIUpload 需查关联 PR, 注入自动 token
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           CIUpload NIGHTLY --devpi_url ${PYPI_URL} --password ${{ secrets.PYPI_PASSWORD }} --dtk_pkg_name $(basename $DTK_PKG_URL) -f output/*.whl --record
 
