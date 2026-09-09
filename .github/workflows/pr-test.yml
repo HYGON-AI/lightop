@@ -78,34 +78,13 @@ jobs:
               merge --no-edit "${target_sha}"
           echo "Integrated master ${target_sha}"
 
-      - name: 获取最新 AICC
-        shell: bash
-        run: |
-          AICC_URL="${RESOURCE_SERVER_URL}/ai_cc/nightly/"
-          HTTP_CODE=$(curl -s --connect-timeout 10 -o /tmp/aicc_index.html -w "%{http_code}" "${AICC_URL}" || true)
-          if [ "${HTTP_CODE}" != "200" ]; then
-            echo "无法访问 AICC nightly 索引 (HTTP ${HTTP_CODE}): ${AICC_URL}"
-            exit 1
-          fi
-          LATEST_AICC=$(grep -oP 'dtk_llvm_[^"]+\.run' /tmp/aicc_index.html | sed 's/\.run$//' | sort -t '_' -k4 -nr | head -n1)
-          if [ -z "${LATEST_AICC}" ]; then
-            echo "AICC 索引页解析失败, 页面内容开头:"
-            head -c 500 /tmp/aicc_index.html
-            exit 1
-          fi
-          echo "AICC_URL=${AICC_URL}${LATEST_AICC}.run" >> "$GITHUB_ENV"
-          echo "AICC_VERSION=${LATEST_AICC#dtk_llvm_}" >> "$GITHUB_ENV"
-        env:
-          # pull_request_target 下可读主仓 vars
-          RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL }}
-
       - name: Install AICC
         shell: bash
         run: |
-          wget -q "${AICC_URL}" -O /tmp/dtk_llvm.run
-          # yes 管道在安装器退出后触发 SIGPIPE, pipefail 下会让步骤误报失败,
-          # 改用进程替换, 使安装器自身退出码决定步骤结果
-          bash /tmp/dtk_llvm.run < <(yes)
+          wget ${{ vars.RESOURCE_SERVER_URL }}/ai_cc/Nightly/hcu_llvm_installer.sh
+          bash hcu_llvm_installer.sh --major 1.0.0
+        env:
+          RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL }}
 
       - name: 编译并安装 lightop
         # vllm 测试镜像自带 DTK 编译环境, 直接源码编译, 无需跨 job 传递 wheel
