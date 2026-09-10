@@ -179,5 +179,73 @@ class TestTopkSoftmax256Fp16(unittest.TestCase):
                 )
 
 
+@unittest.skipUnless(torch.cuda.is_available(), "CUDA/ROCm device is required")
+class TestTopkSoftmaxInvalidRows(unittest.TestCase):
+    def test_bf16_512_experts_topk10_nonfinite_rows(self):
+        """Degenerate rows must not produce OOB IDs or non-finite weights."""
+        num_experts = 512
+        topk = 10
+        gating_output = torch.randn(
+            (4, num_experts), device="cuda", dtype=torch.bfloat16
+        )
+        gating_output[0].fill_(float("nan"))
+        gating_output[1].fill_(float("-inf"))
+        gating_output[2].fill_(float("nan"))
+        gating_output[2, :5] = torch.tensor(
+            [5.0, 4.0, 3.0, 2.0, 1.0],
+            device="cuda",
+            dtype=torch.bfloat16,
+        )
+
+        for renormalize in (False, True):
+            with self.subTest(renormalize=renormalize):
+                topk_weights = torch.empty(
+                    (gating_output.size(0), topk),
+                    device="cuda",
+                    dtype=torch.float32,
+                )
+                topk_indices = torch.empty(
+                    (gating_output.size(0), topk),
+                    device="cuda",
+                    dtype=torch.int32,
+                )
+                source_rows = torch.empty_like(topk_indices)
+
+                op.topk_softmax(
+                    topk_weights,
+                    topk_indices,
+                    source_rows,
+                    gating_output,
+                    renormalize,
+                )
+                torch.cuda.synchronize()
+
+                self.assertTrue(
+                    torch.all((topk_indices >= 0) & (topk_indices < num_experts))
+                )
+                self.assertTrue(torch.all(torch.isfinite(topk_weights)))
+                torch.testing.assert_close(
+                    topk_weights[:2], torch.zeros_like(topk_weights[:2])
+                )
+
+                # The mixed row has five usable logits.  The remaining slots
+                # are legal zero-weight fallbacks rather than an OOB sentinel.
+                self.assertEqual(
+                    torch.count_nonzero(topk_weights[2]).item(), 5
+                )
+                if renormalize:
+                    torch.testing.assert_close(
+                        topk_weights[2].sum(),
+                        torch.tensor(1.0, device="cuda"),
+                    )
+
+                # A normal row retains the same selected experts as torch.
+                expected_indices = torch.topk(
+                    gating_output[3].float(), topk
+                ).indices.sort().values
+                actual_indices = topk_indices[3].to(torch.int64).sort().values
+                torch.testing.assert_close(actual_indices, expected_indices)
+
+
 if __name__ == "__main__":
     unittest.main()

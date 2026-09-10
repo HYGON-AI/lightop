@@ -1458,7 +1458,13 @@ void topkGatingSoftmax_opt(const input_t* input, const bool* finished, float* ou
         thread_max_idx = swap ? other_idx : thread_max_idx;
     }
 
- 
+    // NaN and -inf never win the strict comparisons above.  Keep track of
+    // whether the row has a finite candidate so degenerate/padded rows can be
+    // emitted as zero-weight routes instead of using the -1 sentinel as an
+    // array index or returning NUM_EXPERTS to a full-range caller.
+    const bool row_has_finite_candidate =
+        thread_max_idx >= 0 && ::isfinite(thread_max);
+
     float row_sum = 0;
     float reciprocal_row_sum = 0.0f;
 
@@ -1466,7 +1472,10 @@ void topkGatingSoftmax_opt(const input_t* input, const bool* finished, float* ou
 #pragma unroll
         for (int ii = 0; ii < VPT; ++ii)
         {
-            row_chunk[ii] = EXP_FUNC(row_chunk[ii] - thread_max);
+            row_chunk[ii] =
+                row_has_finite_candidate && ::isfinite(row_chunk[ii])
+                ? EXP_FUNC(row_chunk[ii] - thread_max)
+                : 0.0f;
             row_sum += row_chunk[ii];
         }
 
@@ -1512,7 +1521,8 @@ void topkGatingSoftmax_opt(const input_t* input, const bool* finished, float* ou
     } while(0)
 
     #define ERASE_MAX(k_expert) \
-        if (k_expert == my_search_expert_idx) { \
+        if (k_expert >= 0 && my_search_reg_idx >= 0 && \
+            k_expert == my_search_expert_idx) { \
             row_chunk[my_search_reg_idx] = -FLT_MAX; \
         }
 
@@ -1549,7 +1559,10 @@ void topkGatingSoftmax_opt(const input_t* input, const bool* finished, float* ou
 
         if constexpr(Is_renormalize){
             float val_exp = 0.0f;
-            if (thread_group_idx < topk) {
+            const bool selected_is_valid =
+                row_has_finite_candidate && top_indices >= 0 &&
+                top_indices < NUM_EXPERTS && ::isfinite(top_vals);
+            if (thread_group_idx < topk && selected_is_valid) {
                 val_exp = EXP_FUNC(top_vals - thread_max);
                 top_vals = val_exp; 
             }
@@ -1564,9 +1577,16 @@ void topkGatingSoftmax_opt(const input_t* input, const bool* finished, float* ou
         }
 
         if(thread_group_idx < topk){
-            top_vals *= final_scale;
-            const bool node_uses_expert = top_indices >= start_expert && top_indices  < end_expert;
-            top_indices = node_uses_expert ? (top_indices - start_expert) : NUM_EXPERTS;
+            const bool selected_is_valid =
+                row_has_finite_candidate && top_indices >= 0 &&
+                top_indices < NUM_EXPERTS && ::isfinite(top_vals);
+            top_vals = selected_is_valid ? top_vals * final_scale : 0.0f;
+            const bool node_uses_expert =
+                selected_is_valid && top_indices >= start_expert &&
+                top_indices < end_expert;
+            top_indices = selected_is_valid
+                ? (node_uses_expert ? (top_indices - start_expert) : NUM_EXPERTS)
+                : 0;
             const int base_idx = topk * thread_row + thread_group_idx;
             indices[base_idx] = top_indices;
             output[base_idx] = top_vals;
