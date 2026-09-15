@@ -26,6 +26,11 @@ def fused_add_rms_norm(
         x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor,
         variance_epsilon: float,
         limit: float = -1.0) -> tuple[torch.Tensor, torch.Tensor]:
+    """Normalize an FP32 residual sum and update x/residual in place.
+
+    For BF16/FP16 inputs, round only the final output and stored residual.
+    The optional clamp applies to the normalized output, not the residual.
+    """
     op.fused_add_rms_norm_opt(
         x,
         residual,
@@ -38,6 +43,7 @@ def fused_add_rms_norm(
 def gemma_fused_add_rmsnorm(
         x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor,
         variance_epsilon: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """FP32-sum in-place RMSNorm with the Gemma (1 + weight) convention."""
     op.gemma_fused_add_rmsnorm(
         x,
         residual,
