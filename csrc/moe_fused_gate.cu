@@ -568,11 +568,12 @@ __global__ void moe_fused_gate_kernel_gourp1(
   void* input,
   void* bias,
   float* output_ptr,
-  int32_t* indices_ptr,
+  void* indices_ptr,
   int64_t num_rows,
   int64_t n_share_experts_fusion,
   double routed_scaling_factor,
   bool apply_routed_scaling_factor_on_output,
+  bool output_indices_int64,
   Params params) 
 {
   constexpr float Negative_inf = -FLT_MAX;
@@ -697,7 +698,11 @@ __global__ void moe_fused_gate_kernel_gourp1(
         ? static_cast<float>(routed_scaling_factor)
         : 1.0f;
     output_ptr[out_idx] = (my_stored_prob / output_sum) * route_scale;
-    indices_ptr[out_idx] = my_stored_idx;
+    if (output_indices_int64) {
+      static_cast<int64_t*>(indices_ptr)[out_idx] = static_cast<int64_t>(my_stored_idx);
+    } else {
+      static_cast<int32_t*>(indices_ptr)[out_idx] = static_cast<int32_t>(my_stored_idx);
+    }
   }
 }
 
@@ -1211,11 +1216,12 @@ __global__ void moe_fused_gate_kernel(
             input.data_ptr(),          \
             bias.data_ptr(),          \
             output.data_ptr<float>(),        \
-            indices.data_ptr<int32_t>(),       \
+            indices.data_ptr(),       \
             num_rows,              \
             n_share_experts_fusion,        \
             routed_scaling_factor, \
             apply_routed_scaling_factor_on_output, \
+            output_indices_int64, \
             params_spec);        \
     } else if (topk == 8) { \
         moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 8> \
@@ -1223,11 +1229,12 @@ __global__ void moe_fused_gate_kernel(
             input.data_ptr(),          \
            bias.data_ptr(),          \
            output.data_ptr<float>(),        \
-           indices.data_ptr<int32_t>(),       \
+           indices.data_ptr(),       \
            num_rows,              \
             n_share_experts_fusion,        \
             routed_scaling_factor, \
             apply_routed_scaling_factor_on_output, \
+            output_indices_int64, \
             params_spec);        \
     } else if (topk == 14) { \
         moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 14> \
@@ -1235,11 +1242,12 @@ __global__ void moe_fused_gate_kernel(
             input.data_ptr(),          \
             bias.data_ptr(),          \
             output.data_ptr<float>(),        \
-            indices.data_ptr<int32_t>(),       \
+            indices.data_ptr(),       \
             num_rows,              \
             n_share_experts_fusion,        \
             routed_scaling_factor, \
             apply_routed_scaling_factor_on_output, \
+            output_indices_int64, \
             params_spec);        \
     } else if (topk == 22) { \
         moe_fused_gate_kernel_gourp1<T, T_bias, decltype(params_spec), VPT, EXPERTS, 22> \
@@ -1247,11 +1255,12 @@ __global__ void moe_fused_gate_kernel(
            input.data_ptr(),          \
            bias.data_ptr(),          \
            output.data_ptr<float>(),        \
-           indices.data_ptr<int32_t>(),       \
+           indices.data_ptr(),       \
            num_rows,              \
            n_share_experts_fusion,        \
            routed_scaling_factor, \
            apply_routed_scaling_factor_on_output, \
+           output_indices_int64, \
            params_spec);        \
    } \
     dispatched = true; \
@@ -1324,7 +1333,8 @@ std::vector<torch::Tensor> moe_fused_gate(
    int64_t topk,
    int64_t n_share_experts_fusion,
    double routed_scaling_factor,
-   bool apply_routed_scaling_factor_on_output) {
+   bool apply_routed_scaling_factor_on_output,
+   bool output_indices_int64) {
  TORCH_CHECK(input.dim() == 2,
              "moe_fused_gate: input must have shape [tokens, experts], got ",
              input.sizes());
@@ -1389,6 +1399,12 @@ std::vector<torch::Tensor> moe_fused_gate(
              "No unvalidated dynamic fallback is allowed. In vLLM HCU, set "
              "VLLM_HCU_USE_FUSE_MOE_GATE=0 to use the standard router.");
 
+ TORCH_CHECK(!output_indices_int64 || supported_group1,
+             "moe_fused_gate: output_indices_int64 is currently supported "
+             "only for group=1 specialized kernels; got experts=", num_experts,
+             ", groups=", num_expert_group, ", topk_group=", topk_group,
+             ", topk=", topk, ", shared=", n_share_experts_fusion);
+
  const auto input_type = input.scalar_type();
  const auto bias_type = bias.scalar_type();
  const bool supported_types =
@@ -1406,7 +1422,9 @@ std::vector<torch::Tensor> moe_fused_gate(
  const c10::cuda::CUDAGuard device_guard(input.device());
  auto options = input.options().dtype(torch::kFloat32);
  auto output = torch::empty({num_rows, topk}, options);
- auto indices = torch::empty({num_rows, topk}, options.dtype(torch::kInt32));
+ auto indices = torch::empty(
+     {num_rows, topk},
+     options.dtype(output_indices_int64 ? torch::kInt64 : torch::kInt32));
  if (num_rows == 0) return {output, indices};
 
  int64_t threads_per_row = num_expert_group * 4;
