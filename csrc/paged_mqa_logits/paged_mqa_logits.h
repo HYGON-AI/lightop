@@ -17,7 +17,8 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                                const torch::Tensor& block_table,
                                std::optional<torch::Tensor>& schedule_meta,
                                const int& max_context_len,
-                               const bool& clean_logits);
+                               const bool& clean_logits,
+                               const bool& is_prefill = false);
 
 }
 }
