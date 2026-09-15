@@ -55,8 +55,8 @@ def _assert_pairs(actual, expected):
     actual_order = actual_ids.argsort(dim=-1)
     expected_order = expected_ids.argsort(dim=-1)
     torch.testing.assert_close(
-        actual_ids.gather(1, actual_order),
-        expected_ids.gather(1, expected_order), rtol=0, atol=0,
+        actual_ids.gather(1, actual_order).long(),
+        expected_ids.gather(1, expected_order).long(), rtol=0, atol=0,
     )
     torch.testing.assert_close(
         actual_weights.gather(1, actual_order),
@@ -84,17 +84,60 @@ def test_hy4_group1_default_applies_routing_scale(tokens):
     )
 
 
+@pytest.mark.parametrize("output_indices_int64", [False, True])
+@pytest.mark.parametrize("tokens", [1, 17, 511, 512])
+@pytest.mark.parametrize("apply_scale", [False, True])
+def test_group1_index_width_is_explicit_and_value_stable(
+    output_indices_int64, tokens, apply_scale,
+):
+    logits, bias = _random_inputs(tokens, 288, torch.bfloat16, torch.float32)
+    actual = op.moe_fused_gate(
+        logits, bias, 1, 1, 8, 0, 2.827, apply_scale, output_indices_int64,
+    )
+    expected_dtype = torch.int64 if output_indices_int64 else torch.int32
+    assert actual[1].dtype == expected_dtype
+    _assert_pairs(actual, _reference(logits, bias, 8, apply_scale=apply_scale))
+    baseline = op.moe_fused_gate(logits, bias, 1, 1, 8, 0, 2.827, apply_scale)
+    assert baseline[1].dtype == torch.int32
+    torch.testing.assert_close(actual[1].long(), baseline[1].long(), rtol=0, atol=0)
+    # Changing the index storage width must not perturb any weight bit.
+    torch.testing.assert_close(actual[0], baseline[0], rtol=0, atol=0)
+
+
+def test_group1_int64_tie_break_matches_int32_and_has_unique_ids():
+    experts = 288
+    logits = torch.zeros(3, experts, device="cuda", dtype=torch.bfloat16)
+    bias = torch.zeros(experts, device="cuda", dtype=torch.float32)
+    tied_ids = torch.arange(9, device="cuda") * 8
+    bias[tied_ids] = 10.0
+    int32_result = op.moe_fused_gate(logits, bias, 1, 1, 8, 0, 2.827, True)
+    int64_result = op.moe_fused_gate(
+        logits, bias, 1, 1, 8, 0, 2.827, True, True,
+    )
+    assert int32_result[1].dtype == torch.int32
+    assert int64_result[1].dtype == torch.int64
+    torch.testing.assert_close(
+        int64_result[1], int32_result[1].to(torch.int64), rtol=0, atol=0,
+    )
+    torch.testing.assert_close(int64_result[0], int32_result[0], rtol=0, atol=0)
+    _assert_pairs(int64_result, _reference(logits, bias, 8))
+    sorted_ids = int64_result[1].sort(dim=-1).values
+    assert bool(torch.all(sorted_ids[:, 1:] != sorted_ids[:, :-1]))
+
+
 @pytest.mark.parametrize("experts", [128, 160, 192, 256, 288, 384, 512])
 @pytest.mark.parametrize("topk", [7, 8, 14, 22])
 @pytest.mark.parametrize("shared", [0, 1])
 @pytest.mark.parametrize("apply_scale", [False, True])
+@pytest.mark.parametrize("output_indices_int64", [False, True])
 def test_group1_scale_flag_is_independent_of_expert_count(
-    experts, topk, shared, apply_scale,
+    experts, topk, shared, apply_scale, output_indices_int64,
 ):
     logits, bias = _random_inputs(7, experts)
     actual = op.moe_fused_gate(
-        logits, bias, 1, 1, topk, shared, 2.827, apply_scale,
+        logits, bias, 1, 1, topk, shared, 2.827, apply_scale, output_indices_int64,
     )
+    assert actual[1].dtype == (torch.int64 if output_indices_int64 else torch.int32)
     _assert_pairs(
         actual, _reference(logits, bias, topk, shared, 2.827, apply_scale),
     )
@@ -117,8 +160,9 @@ def test_group1_mixed_dtypes_and_dispatch_boundary(tokens, dtypes, apply_scale):
 @pytest.mark.parametrize("experts", [128, 160, 192, 256, 288, 384, 512])
 @pytest.mark.parametrize("tokens", [1, 512])
 @pytest.mark.parametrize("unequal_probabilities", [False, True])
+@pytest.mark.parametrize("output_indices_int64", [False, True])
 def test_group1_tied_scores_select_one_expert_per_iteration(
-    experts, tokens, unequal_probabilities,
+    experts, tokens, unequal_probabilities, output_indices_int64,
 ):
     # Place one high-scoring expert in each of nine separate lane-owned
     # chunks.  Without an expert-ID tie-break, several winners are invalidated
@@ -132,7 +176,9 @@ def test_group1_tied_scores_select_one_expert_per_iteration(
     tied_ids = torch.arange(9, device="cuda") * 8
     bias[tied_ids] = 10.0 - row.sigmoid()[tied_ids]
 
-    actual = op.moe_fused_gate(logits, bias, 1, 1, 8, 0, 2.827, True)
+    actual = op.moe_fused_gate(
+        logits, bias, 1, 1, 8, 0, 2.827, True, output_indices_int64,
+    )
     _assert_pairs(actual, _reference(logits, bias, 8))
     actual_ids = actual[1].long()
     selected_scores = (logits.sigmoid() + bias).gather(1, actual_ids)
@@ -142,6 +188,95 @@ def test_group1_tied_scores_select_one_expert_per_iteration(
     )
     sorted_ids = actual_ids.sort(dim=-1).values
     assert bool(torch.all(sorted_ids[:, 1:] != sorted_ids[:, :-1]))
+
+
+def _saturated_tie_inputs(tokens, sign):
+    logits = torch.zeros(tokens, 288, device="cuda", dtype=torch.bfloat16)
+    bias = torch.zeros(288, device="cuda", dtype=torch.float32)
+    tied_ids = torch.arange(9, device="cuda") * 8
+    logits[:, tied_ids] = (sign * torch.arange(20, 29, device="cuda")).bfloat16()
+    bias[tied_ids] = 1.0
+    # Positive logits round sigmoid to 1. Negative logits retain distinct
+    # tiny probabilities, but adding the same FP32 bias rounds all scores to 1.
+    scores = logits.float().sigmoid() + bias
+    assert bool(torch.all(scores[:, tied_ids] == scores[:, tied_ids[:1]]))
+    return logits, bias
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+@pytest.mark.parametrize("tokens", [1, 17, 512])
+@pytest.mark.parametrize("apply_scale", [False, True])
+@pytest.mark.parametrize("output_indices_int64", [False, True])
+def test_group1_saturated_logits_with_equal_bias(
+    sign, tokens, apply_scale, output_indices_int64,
+):
+    logits, bias = _saturated_tie_inputs(tokens, sign)
+    actual = op.moe_fused_gate(
+        logits, bias, 1, 1, 8, 0, 2.827, apply_scale, output_indices_int64,
+    )
+    expected_ids = (torch.arange(8, device="cuda") * 8).expand(tokens, -1)
+    torch.testing.assert_close(actual[1].long(), expected_ids, rtol=0, atol=0)
+    _assert_pairs(actual, _reference(logits, bias, 8, apply_scale=apply_scale))
+    torch.testing.assert_close(
+        actual[0].sum(dim=-1),
+        torch.full((tokens,), 2.827 if apply_scale else 1.0, device="cuda"),
+        rtol=2e-6, atol=2e-6,
+    )
+
+
+@pytest.mark.parametrize("apply_scale", [False, True])
+@pytest.mark.parametrize("output_indices_int64", [False, True])
+def test_group1_index_width_graph_replay_uses_updated_inputs(
+    apply_scale, output_indices_int64,
+):
+    logits, bias = _random_inputs(17, 288, torch.bfloat16, torch.float32)
+
+    def call_gate():
+        return op.moe_fused_gate(
+            logits, bias, 1, 1, 8, 0, 2.827, apply_scale, output_indices_int64,
+        )
+
+    warmup_stream = torch.cuda.Stream()
+    warmup_stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(warmup_stream):
+        for _ in range(3):
+            call_gate()
+    torch.cuda.current_stream().wait_stream(warmup_stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        captured = call_gate()
+    output_ptrs = tuple(tensor.data_ptr() for tensor in captured)
+
+    cases = [
+        _saturated_tie_inputs(17, 1),
+        _saturated_tie_inputs(17, -1),
+        (torch.zeros_like(logits), torch.zeros_like(bias)),
+        _random_inputs(17, 288, torch.bfloat16, torch.float32),
+    ]
+    for next_logits, next_bias in cases:
+        logits.copy_(next_logits)
+        bias.copy_(next_bias)
+        graph.replay()
+        eager = call_gate()
+        torch.cuda.synchronize()
+        assert tuple(tensor.data_ptr() for tensor in captured) == output_ptrs
+        assert captured[1].dtype == (
+            torch.int64 if output_indices_int64 else torch.int32
+        )
+        for captured_tensor, eager_tensor in zip(captured, eager):
+            torch.testing.assert_close(captured_tensor, eager_tensor, rtol=0, atol=0)
+        _assert_pairs(captured, _reference(logits, bias, 8, apply_scale=apply_scale))
+
+
+def test_int64_unsupported_specialization_fails_before_launch():
+    logits, bias = _random_inputs(2, 384)
+    # This grouped layout is valid for the legacy int32 path, but it has no
+    # direct-int64 specialization. LightOp owns the capability check.
+    baseline = op.moe_fused_gate(logits, bias, 4, 2, 8, 0, 2.827)
+    assert baseline[1].dtype == torch.int32
+    with pytest.raises(RuntimeError, match="output_indices_int64 is currently supported"):
+        op.moe_fused_gate(logits, bias, 4, 2, 8, 0, 2.827, True, True)
+    torch.cuda.synchronize()
 
 
 @pytest.mark.parametrize("experts,groups,topk_group,topk,shared", [
@@ -201,6 +336,11 @@ def test_group1_validates_tensor_contract_and_empty_batch():
     assert weights.shape == ids.shape == (0, 8)
     assert weights.dtype == torch.float32 and ids.dtype == torch.int32
     assert weights.device == ids.device == logits.device
+    _, int64_ids = op.moe_fused_gate(
+        logits[:0], bias, 1, 1, 8, 0, 2.827, True, True,
+    )
+    assert int64_ids.shape == (0, 8)
+    assert int64_ids.dtype == torch.int64
 
 
 @pytest.mark.parametrize("experts,groups,topk_group,topk,shared", [
