@@ -1,4 +1,5 @@
 #include "paged_mqa_logits.h"
+#include "paged_mqa_logits_prefill.h"
 #include "paged_mqa_logits_impl.hpp"
 #include "paged_mqa_logits_fp8_impl.hpp"
 #include "paged_mqa_logits_int8_impl.hpp"
@@ -224,7 +225,13 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                                const torch::Tensor& block_table,
                                std::optional<torch::Tensor>& schedule_meta,
                                const int& max_context_len,
-                               const bool& clean_logits) {
+                               const bool& clean_logits,
+                               const bool& is_prefill) {
+    if (is_prefill) {
+        return paged_mqa_logits_prefill(q, fused_kv_cache, weights, context_lens, block_table,
+                                        schedule_meta, max_context_len, clean_logits);
+    }
+
     // Declare these variables explicitly to avoid mis-binding in kernel launch lambdas
     int batch_size, next_n, num_heads, head_dim;
     int num_kv_blocks, block_kv, num_heads_kv, head_dim_with_sf;
