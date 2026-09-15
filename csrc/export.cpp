@@ -318,7 +318,7 @@ torch::Tensor groupgemm_unpermute(const torch::Tensor& permuted_tokens, const to
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> fuse_groupgemm_permute_quant(const torch::Tensor& tokens, const torch::Tensor& routing_map, torch::Tensor& scales);
 //------------------------------------------------- groupgemm ---------------------------------------//
 
-std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
+std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_group, int64_t topk, int64_t n_share_experts_fusion, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output, bool output_indices_int64);
 std::vector<Tensor> moe_fuse_gate_per_gourp_topk(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_per_group, int64_t num_pad_experts, int64_t num_shared_experts, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids) ;
@@ -1090,7 +1090,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("topk"),
       py::arg("n_share_experts_fusion"),
       py::arg("routed_scaling_factor"),
-      py::arg("apply_routed_scaling_factor_on_output") = true);
+      py::arg("apply_routed_scaling_factor_on_output") = true,
+      py::arg("output_indices_int64") = false);
   m.def(
       "moe_fuse_gate_per_gourp_topk",
       &at::native::moe_fuse_gate_per_gourp_topk,
