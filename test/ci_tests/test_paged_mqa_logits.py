@@ -1,7 +1,17 @@
+import csv
 import random
 
+import pytest
 import torch
 from lightop.attention import mqa_logits, paged_mqa_logits
+
+
+DECODE_MODES = [(False, False, False), (True, False, False), (False, True, False), (False, False, True)]
+CSV_FIELDS = [
+    "Mode", "Impl", "Dtype", "Chunk", "Q Shape", "KV Shape", "Weights Shape", "Context Lens Shape",
+    "Page Table Shape", "Max Context Len", "Correctness", "Latency (us)", "TFLOPS",
+    "Logical BW (GB/s)", "Raw Samples (us)",
+]
 
 
 def generate_cp_test_data(seq_len, seq_len_kv):
@@ -91,16 +101,20 @@ def ref_paged_mqa_logits(q: torch.Tensor, kv_cache: torch.Tensor, weights: torch
             logits[i * next_n:(i + 1) * next_n, block_rk * block_size: (block_rk + 1) * block_size] = torch.where(k_offsets[None, :] <= q_offsets[:, None], s, float('-inf'))
     return logits
 
-def test_paged_mqa_logits(use_fp8=False, use_mixed=False, use_int8=False):
+@pytest.mark.parametrize("use_fp8,use_mixed,use_int8", DECODE_MODES, ids=["bf16", "fp8", "mixed", "int8"])
+def test_paged_mqa_logits(use_fp8, use_mixed, use_int8, csv_writer=None):
     assert sum((use_fp8, use_mixed, use_int8)) <= 1
 
+    if not torch.cuda.is_available():
+        pytest.skip("A CUDA/ROCm device is required")
+    random.seed(20260914)
+    torch.manual_seed(20260914)
     device_props = torch.cuda.get_device_properties(0)
     device_name = (
         device_props.gcnArchName.split(':')[0] if hasattr(device_props, 'gcnArchName') else device_props.name
     )
     if use_fp8 and 'gfx938' not in device_name:
-        print(f'Skipping FP8 Paged MQA Logits on {device_name}')
-        return
+        pytest.skip(f'FP8 Paged MQA Logits requires gfx938, got {device_name}')
 
     max_model_len = 320 if use_int8 else 111 * 1000
     batch_next_cases = [(2, 1), (2, 2)] if use_int8 else [(1, 1), (64, 1), (64, 2), (128, 1)]
@@ -182,7 +196,6 @@ def test_paged_mqa_logits(use_fp8=False, use_mixed=False, use_int8=False):
                     q_input = q
                     kv_cache_input = kv_cache
 
-                print(f'Testing {test_name} Paged MQA Logits:')
                 logits = paged_mqa_logits(
                     q_input, kv_cache_input, weights, context_lens, block_tables, schedule_metadata, max_model_len,
                     clean_logits=True
@@ -231,12 +244,19 @@ def test_paged_mqa_logits(use_fp8=False, use_mixed=False, use_int8=False):
                         clean_logits=False
                     )
                 )
-                print(f' > BSZ={batch_size:3}, NextN={next_n:1}, H={heads:2}, D={index_dim:2}, '
-                      f'B={blocksize:2}, L={avg_kv:6}: '
-                      f'{tflops / t:4.0f} TFLOPS, {t * 1e6:3.0f} us, '
-                      f'{(input_bytes + output_bytes) / t / 1e9:4.0f} GB/s | ')
-                print()
-    print()
+                print(f'decode {test_name} Q={tuple(q_input.shape)} KV={tuple(kv_cache_input.shape)} | '
+                      f'PASS | {t * 1e6:.2f} us | {tflops / t:.2f} TFLOPS | '
+                      f'{(input_bytes + output_bytes) / t / 1e9:.2f} GB/s')
+                if csv_writer is not None:
+                    csv_writer.writerow({
+                        "Mode": "decode", "Impl": "paged", "Dtype": test_name,
+                        "Q Shape": tuple(q_input.shape), "KV Shape": tuple(kv_cache_input.shape),
+                        "Weights Shape": tuple(weights.shape), "Context Lens Shape": tuple(context_lens.shape),
+                        "Page Table Shape": tuple(block_tables.shape), "Max Context Len": max_model_len,
+                        "Correctness": "PASS", "Latency (us)": f"{t * 1e6:.2f}",
+                        "TFLOPS": f"{tflops / t:.2f}",
+                        "Logical BW (GB/s)": f"{(input_bytes + output_bytes) / t / 1e9:.2f}",
+                    })
 
 
 def pack_int8_fused_cache(kv: torch.Tensor, scales: torch.Tensor) -> torch.Tensor:
@@ -282,91 +302,114 @@ def make_prefix_prefill_case(chunk, device='cuda', seed=20260914):
                 max_context_len=max_context_len)
 
 
-def test_paged_mqa_logits_prefill():
-    arch = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
+@pytest.mark.parametrize("chunk", [1, 2, 3, 4], ids=["chunk1", "chunk2", "chunk3", "chunk4"])
+def test_paged_mqa_logits_prefill(chunk, csv_writer=None):
+    if not torch.cuda.is_available():
+        pytest.skip("A CUDA/ROCm device is required")
+    props = torch.cuda.get_device_properties(0)
+    arch = getattr(props, 'gcnArchName', props.name).split(':')[0]
     if arch != 'gfx936':
-        print(f'Skipping INT8 prefix prefill on {arch}')
-        return
+        pytest.skip(f'INT8 prefix prefill requires gfx936, got {arch}')
 
     previous_tf32 = torch.backends.cuda.matmul.allow_tf32
     torch.backends.cuda.matmul.allow_tf32 = False
     try:
-        for chunk in (1, 2, 3, 4):
-            case = make_prefix_prefill_case(chunk)
-            q, weights, lengths = case['q'], case['weights'], case['context_lens']
-            tokens, _, heads, dim = q.shape
-            max_len = case['max_context_len']
-            num_blocks, block_size = case['fused_kv_cache'].shape[:2]
-            raw = case['fused_kv_cache'].view(num_blocks, -1)
-            pages = case['block_table'][0].long()
-            k = raw[:, :block_size * dim].reshape(num_blocks, block_size, dim)[pages].reshape(max_len, dim)
-            scales = raw[:, block_size * dim:].contiguous().view(torch.float32)[pages].reshape(max_len)
-            ks = torch.zeros_like(lengths)
-            calls = (
-                ('paged', lambda: paged_mqa_logits(**case, clean_logits=True, is_prefill=True)),
-                ('native', lambda: mqa_logits(q[:, 0], k, weights, ks, lengths, scales, clean_logit=True)),
-            )
-            print(f'INT8 prefix prefill: chunk={chunk}, seed=20260914, {max_len=}, '
-                  f'context=[{lengths[0].item()}, {lengths[-1].item()}], step=2, '
-                  f'schedule_meta=None, clean=True')
-            print({name: (tuple(t.shape), str(t.dtype), t.stride()) for name, t in
-                   dict(q=q, packed_cache=case['fused_kv_cache'], weights=weights, context_lens=lengths,
-                        page_table=case['block_table'], native_k=k, native_scale=scales, native_ks=ks).items()})
+        case = make_prefix_prefill_case(chunk)
+        q, weights, lengths = case['q'], case['weights'], case['context_lens']
+        tokens, _, heads, dim = q.shape
+        max_len = case['max_context_len']
+        num_blocks, block_size = case['fused_kv_cache'].shape[:2]
+        raw = case['fused_kv_cache'].view(num_blocks, -1)
+        pages = case['block_table'][0].long()
+        k = raw[:, :block_size * dim].reshape(num_blocks, block_size, dim)[pages].reshape(max_len, dim)
+        scales = raw[:, block_size * dim:].contiguous().view(torch.float32)[pages].reshape(max_len)
+        ks = torch.zeros_like(lengths)
+        calls = (
+            ('paged', lambda: paged_mqa_logits(**case, clean_logits=True, is_prefill=True)),
+            ('native', lambda: mqa_logits(q[:, 0], k, weights, ks, lengths, scales, clean_logit=True)),
+        )
+        outputs = [call() for _, call in calls]
+        # Full independent reference: exact FP32 INT8 dots, FP64 weighted reduction.
+        k_float, positions = k.float(), torch.arange(max_len, device=q.device)
+        max_error = torch.zeros(len(outputs), device=q.device, dtype=torch.float64)
+        max_reference = torch.zeros((), device=q.device, dtype=torch.float64)
+        for row in range(0, tokens, 32):
+            dots = q[row:row + 32, 0].reshape(-1, dim).float() @ k_float.T
+            reference = (dots.reshape(-1, heads, max_len).double().relu()
+                         * weights[row:row + 32, :, None].double()).sum(1) * scales.double()
+            valid = positions[None, :] < lengths[row:row + 32, None]
+            max_reference = torch.maximum(max_reference, reference.masked_fill(~valid, 0).abs().max())
+            for index, output in enumerate(outputs):
+                assert output.shape == (tokens, max_len) and output.dtype == torch.float32
+                actual = output[row:row + 32]
+                assert torch.equal(torch.isneginf(actual), ~valid)
+                assert torch.isfinite(actual[valid]).all()
+                error = (actual.double() - reference).masked_fill(~valid, 0).abs().max()
+                max_error[index] = torch.maximum(max_error[index], error)
+        normalized_errors = (max_error / max_reference.clamp_min(1)).tolist()
+        assert max(normalized_errors) < 2e-5, f'{chunk=}, {normalized_errors=}'
 
-            outputs = [call() for _, call in calls]
-            # Full independent reference: exact FP32 INT8 dots, FP64 weighted reduction.
-            k_float, positions = k.float(), torch.arange(max_len, device=q.device)
-            max_error = torch.zeros((), device=q.device, dtype=torch.float64)
-            max_reference = torch.zeros_like(max_error)
-            for row in range(0, tokens, 32):
-                dots = q[row:row + 32, 0].reshape(-1, dim).float() @ k_float.T
-                reference = (dots.reshape(-1, heads, max_len).double().relu()
-                             * weights[row:row + 32, :, None].double()).sum(1) * scales.double()
-                valid = positions[None, :] < lengths[row:row + 32, None]
-                max_reference = torch.maximum(max_reference, reference.masked_fill(~valid, 0).abs().max())
-                for output in outputs:
-                    assert output.shape == (tokens, max_len) and output.dtype == torch.float32
-                    actual = output[row:row + 32]
-                    assert torch.equal(torch.isneginf(actual), ~valid)
-                    assert torch.isfinite(actual[valid]).all()
-                    error = (actual.double() - reference).masked_fill(~valid, 0).abs().max()
-                    max_error = torch.maximum(max_error, error)
-            normalized_error = (max_error / max_reference.clamp_min(1)).item()
-            assert normalized_error < 2e-5, f'{chunk=}, {normalized_error=}'
-            print(f' > Both APIs passed full reference and causal/tail mask: {normalized_error=}')
-
-            del outputs, output, actual, dots, reference, valid, k_float, error
-            sum_lens = lengths.long().sum().item()
-            page_bytes = ((lengths.long() + block_size - 1) // block_size).sum().item() * 4
-            for name, call in calls:
-                for _ in range(10):
+        del outputs, output, actual, dots, reference, valid, k_float, error
+        sum_lens = lengths.long().sum().item()
+        page_bytes = ((lengths.long() + block_size - 1) // block_size).sum().item() * 4
+        for name, call in calls:
+            for _ in range(10):
+                call()
+            torch.cuda.synchronize()
+            start, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+            samples_us = []
+            for _ in range(5):
+                start.record()
+                for _ in range(20):
                     call()
+                end.record()
                 torch.cuda.synchronize()
-                start, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
-                samples_us = []
-                for _ in range(5):
-                    start.record()
-                    for _ in range(20):
-                        call()
-                    end.record()
-                    torch.cuda.synchronize()
-                    samples_us.append(start.elapsed_time(end) * 1000 / 20)
-                median_us = sorted(samples_us)[2]
-                a_bytes = count_bytes(q, weights, lengths) + (count_bytes(ks) if name == 'native' else 0)
-                b_bytes = sum_lens * (dim + 4) + (page_bytes if name == 'paged' else 0)
-                c_bytes = tokens * max_len * 4
-                print(f' > {name}: {samples_us=}, {median_us=}, '
-                      f'{2 * sum_lens * heads * dim / median_us / 1e6:.3f} TFLOPS, '
-                      f'{(a_bytes + b_bytes + c_bytes) / median_us / 1000:.3f} logical GB/s, '
-                      f'A={a_bytes}, B={b_bytes}, C={c_bytes} bytes')
-            print()
+                samples_us.append(start.elapsed_time(end) * 1000 / 20)
+            median_us = sorted(samples_us)[2]
+            a_bytes = count_bytes(q, weights, lengths) + (count_bytes(ks) if name == 'native' else 0)
+            b_bytes = sum_lens * (dim + 4) + (page_bytes if name == 'paged' else 0)
+            c_bytes = tokens * max_len * 4
+            q_shape = tuple(q.shape if name == 'paged' else q[:, 0].shape)
+            kv_shape = tuple(case['fused_kv_cache'].shape if name == 'paged' else k.shape)
+            print(f'prefill chunk{chunk} {name} Q={q_shape} KV={kv_shape} | '
+                  f'PASS | {median_us:.2f} us | '
+                  f'{2 * sum_lens * heads * dim / median_us / 1e6:.2f} TFLOPS | '
+                  f'{(a_bytes + b_bytes + c_bytes) / median_us / 1000:.2f} GB/s')
+            if csv_writer is not None:
+                csv_writer.writerow({
+                    "Mode": "prefill", "Impl": name, "Dtype": "INT8", "Chunk": chunk,
+                    "Q Shape": q_shape, "KV Shape": kv_shape,
+                    "Weights Shape": tuple(weights.shape), "Context Lens Shape": tuple(lengths.shape),
+                    "Page Table Shape": tuple(case['block_table'].shape) if name == 'paged' else "",
+                    "Max Context Len": max_len, "Correctness": "PASS",
+                    "Latency (us)": f"{median_us:.2f}",
+                    "TFLOPS": f"{2 * sum_lens * heads * dim / median_us / 1e6:.2f}",
+                    "Logical BW (GB/s)": f"{(a_bytes + b_bytes + c_bytes) / median_us / 1000:.2f}",
+                    "Raw Samples (us)": "; ".join(f"{sample:.3f}" for sample in samples_us),
+                })
     finally:
         torch.backends.cuda.matmul.allow_tf32 = previous_tf32
 
 
 if __name__ == '__main__':
-    test_paged_mqa_logits()
-    test_paged_mqa_logits(use_fp8=True)
-    test_paged_mqa_logits(use_mixed=True)
-    test_paged_mqa_logits(use_int8=True)
-    test_paged_mqa_logits_prefill()
+    if not torch.cuda.is_available():
+        raise RuntimeError("A CUDA/ROCm device is required")
+    csv_filename = "paged_mqa_logits_results.csv"
+    # Match ci_tests: pytest validates cases; the standalone entry writes CSV.
+    # Logical BW counts algorithmic traffic, not measured physical DRAM traffic.
+    with open(csv_filename, "w", newline="", encoding="utf-8") as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=CSV_FIELDS)
+        writer.writeheader()
+        for mode in DECODE_MODES:
+            try:
+                test_paged_mqa_logits(*mode, csv_writer=writer)
+            except pytest.skip.Exception as error:
+                print(f"SKIP: {error}")
+            csv_file.flush()
+        for chunk in (1, 2, 3, 4):
+            try:
+                test_paged_mqa_logits_prefill(chunk, csv_writer=writer)
+            except pytest.skip.Exception as error:
+                print(f"SKIP: {error}")
+            csv_file.flush()
+    print(f"CSV saved => {csv_filename}")
