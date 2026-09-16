@@ -793,7 +793,8 @@ def paged_mqa_logits(
         block_table: torch.Tensor,
         schedule_meta: torch.Tensor,
         max_context_len: int,
-        clean_logits: bool = True) -> torch.Tensor:
+        clean_logits: bool = True,
+        is_prefill: bool = False) -> torch.Tensor:
     if (fused_kv_cache.dtype == torch.uint8
         and q.dtype == torch.float8_e4m3fn):
         arch = torch.cuda.get_device_properties(q.device).gcnArchName.split(":")[0]
@@ -807,7 +808,8 @@ def paged_mqa_logits(
         block_table,
         schedule_meta,
         max_context_len,
-        clean_logits)
+        clean_logits,
+        is_prefill)
     return logits
 
 
