@@ -13,6 +13,7 @@ def moe_fused_gate(
     n_share_experts_fusion,
     routed_scaling_factor,
     apply_routed_scaling_factor_on_output=True,
+    output_indices_int64=False,
 ):
     return op.moe_fused_gate(
         x,
@@ -23,6 +24,7 @@ def moe_fused_gate(
         n_share_experts_fusion,
         routed_scaling_factor,
         apply_routed_scaling_factor_on_output,
+        output_indices_int64,
     )
 
 
