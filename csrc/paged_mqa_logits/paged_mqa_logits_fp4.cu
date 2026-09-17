@@ -131,7 +131,7 @@ __device__ __forceinline__ void fp4_logits_wave(
                 for (int j = 0; j < 4; ++j) {
                     const unsigned mag = static_cast<uint16_t>(qr[h][k][j]) & 0x7fffu;
                     // A fixed normal interval avoids a repeated Q min/max
-                    // scan in small workloads. Wider queries use tie repair.
+                    // scan in small workloads. Other queries use FP64 dots.
                     structured_q &= mag == 0 || (mag >= 0x3d80u && mag < 0x4100u);
                 }
             }
@@ -418,10 +418,15 @@ torch::Tensor paged_mqa_logits_fp4(
     const torch::Tensor& q, const torch::Tensor& weights,
     const torch::Tensor& slots, const torch::Tensor& lens,
     const torch::Tensor& table, int64_t page_size, std::optional<torch::Tensor> output) {
-    TORCH_CHECK(q.is_cuda() && q.dim() == 3 && q.scalar_type() == at::kBFloat16 && q.size(2) == 128,
-                "q must be GPU BF16 [B,H,128]");
+    TORCH_CHECK(q.is_cuda(), "paged_mqa_logits_fp4 unsupported: q must be a CUDA/HIP tensor");
+    TORCH_CHECK(q.dim() == 3, "paged_mqa_logits_fp4 unsupported: q must have shape [B,H,128], got dim=", q.dim());
+    TORCH_CHECK(q.scalar_type() == at::kBFloat16,
+                "paged_mqa_logits_fp4 unsupported: q dtype must be BF16, got ", q.scalar_type());
+    TORCH_CHECK(q.size(2) == 128,
+                "paged_mqa_logits_fp4 unsupported: head_dim must be 128, got ", q.size(2));
     const int64_t batch = q.size(0), heads = q.size(1);
-    TORCH_CHECK(heads == 8 || heads == 16 || heads == 32 || heads == 64, "supported heads: 8,16,32,64");
+    TORCH_CHECK(heads == 8 || heads == 16 || heads == 32 || heads == 64,
+                "paged_mqa_logits_fp4 unsupported: heads must be one of {8,16,32,64}, got ", heads);
     TORCH_CHECK(q.stride(2) == 1 && q.stride(1) % 4 == 0 && q.stride(0) % 4 == 0 &&
                 reinterpret_cast<uintptr_t>(q.data_ptr()) % 8 == 0, "q rows must have aligned contiguous D");
     TORCH_CHECK(weights.device() == q.device() && weights.scalar_type() == at::kBFloat16 &&
