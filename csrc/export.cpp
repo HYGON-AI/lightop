@@ -549,7 +549,9 @@ void decode_gather_and_up_convert_with_indices(
     torch::Tensor const& token_ids,
     torch::Tensor const& dst,
     torch::Tensor const& valid_lengths,
-    torch::Tensor const& compact_indices);
+    torch::Tensor const& compact_indices,
+    int64_t tokens_per_request,
+    std::optional<torch::Tensor> dedup_table);
 void dsv4_dequantize_k_cache_paged_out(
     torch::Tensor const& cache_u8,
     torch::Tensor const& page_table,
@@ -1379,7 +1381,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("cp_gather_and_upconvert_fp8_kv_cache", &at::native::cp_gather_and_upconvert_fp8_kv_cache, "cp_gather_and_upconvert_fp8_kv_cache");   
  m.def("prefill_gather_and_upconvert_fp8_kv_cache", &at::native::prefill_gather_and_upconvert_fp8_kv_cache, "prefill_gather_and_upconvert_fp8_kv_cache");
  m.def("decode_gather_and_up_convert", &at::native::decode_gather_and_up_convert, "decode_gather_and_up_convert");
- m.def("decode_gather_and_up_convert_with_indices", &at::native::decode_gather_and_up_convert_with_indices, "decode_gather_and_up_convert_with_indices");
+ m.def(
+     "decode_gather_and_up_convert_with_indices",
+     &at::native::decode_gather_and_up_convert_with_indices,
+     "Decode gather/up-convert with optional request-local KV deduplication",
+     py::arg("src_cache"),
+     py::arg("token_ids"),
+     py::arg("dst"),
+     py::arg("valid_lengths"),
+     py::arg("compact_indices"),
+     py::arg("tokens_per_request") = 1,
+     py::arg("dedup_table") = py::none());
  m.def(
      "dsv4_dequantize_k_cache_paged_out",
      &at::native::dsv4_dequantize_k_cache_paged_out,

@@ -882,7 +882,8 @@ template <
     int kTokensPerBlock,
     bool kUseRowValidLengths,
     bool kCopyRope,
-    int kPhysicalTokenStride>
+    int kPhysicalTokenStride,
+    bool kDeduplicated = false>
 __launch_bounds__((sizeof(index_t) == 4 && kCopyRope && kPhysicalTokenStride == 656
                    ? 32 : 64) * kTokensPerBlock)
 __global__ void decode_gather_and_up_convert_with_indices_kernel(
@@ -914,6 +915,10 @@ __global__ void decode_gather_and_up_convert_with_indices_kernel(
     if (token_offset >= width) {
         return;
     }
+    if constexpr (kDeduplicated) {
+        const int64_t slot = batch_id * width + token_offset;
+        if (compact_indices[slot] != slot) return;
+    }
 
     int32_t valid_width = static_cast<int32_t>(width);
     if constexpr (kUseRowValidLengths) {
@@ -940,7 +945,7 @@ __global__ void decode_gather_and_up_convert_with_indices_kernel(
 
     const bool is_valid =
         physical_token_id >= 0 && physical_token_id < num_physical_tokens;
-    if (lane_id == 0) {
+    if (!kDeduplicated && lane_id == 0) {
         compact_indices[batch_id * width + token_offset] =
             is_valid
             ? static_cast<int32_t>(batch_id * width + token_offset)
@@ -995,7 +1000,8 @@ template <
     int kTokensPerBlock,
     bool kUseRowValidLengths,
     bool kCopyRope,
-    int kPhysicalTokenStride>
+    int kPhysicalTokenStride,
+    bool kDeduplicated = false>
 void launch_decode_gather_and_up_convert_with_indices(
     const uint8_t* src_cache,
     const index_t* token_ids,
@@ -1014,7 +1020,8 @@ void launch_decode_gather_and_up_convert_with_indices(
         kTokensPerBlock,
         kUseRowValidLengths,
         kCopyRope,
-        kPhysicalTokenStride>
+        kPhysicalTokenStride,
+        kDeduplicated>
         <<<grid, block, 0, stream>>>(
             src_cache,
             token_ids,
@@ -1111,13 +1118,57 @@ void dispatch_decode_gather_and_up_convert(
         }
     }
 }
+__global__ void decode_build_kv_dedup_indices_kernel(
+    const int32_t* __restrict__ token_ids,
+    const int32_t* __restrict__ valid_lengths,
+    int32_t* __restrict__ compact_indices,
+    unsigned long long* __restrict__ table,
+    int64_t rows, int64_t width, int64_t num_physical_tokens,
+    int64_t tokens_per_request, int64_t table_width,
+    bool use_row_valid_lengths) {
+    const int64_t i = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i >= rows * width) return;
+    const int64_t row = i / width;
+    const int32_t token = token_ids[i];
+    if (token < 0 || token >= num_physical_tokens ||
+        (use_row_valid_lengths && i % width >= valid_lengths[row])) {
+        compact_indices[i] = -1;
+        return;
+    }
+    const int64_t request = row / tokens_per_request;
+    auto* request_table = table + request * table_width;
+    const uint64_t key = static_cast<uint32_t>(token);
+    const unsigned long long entry = (key << 32) | static_cast<uint32_t>(i);
+    // Mix the high bits as well: paged physical IDs can be widely spaced.
+    uint32_t hash = static_cast<uint32_t>(token);
+    hash ^= hash >> 16;
+    hash *= 0x7feb352du;
+    hash ^= hash >> 15;
+    uint32_t slot = hash & (table_width - 1);
+    for (int64_t probe = 0; probe < table_width; ++probe) {
+        const unsigned long long previous = atomicCAS(
+            request_table + slot, ~0ull, entry);
+        if (previous == ~0ull || (previous >> 32) == key) {
+            compact_indices[i] = previous == ~0ull
+                ? static_cast<int32_t>(i)
+                : static_cast<int32_t>(previous & 0xffffffffull);
+            return;
+        }
+        slot = (slot + 1) & (table_width - 1);
+    }
+    // Capacity is checked against all input slots, so this is only a defensive
+    // correctness fallback: retain the original slot rather than drop a token.
+    compact_indices[i] = static_cast<int32_t>(i);
+}
 
 void decode_gather_and_up_convert_impl(
     torch::Tensor const& src_cache,
     torch::Tensor const& token_ids,
     torch::Tensor const& dst,
     torch::Tensor const& valid_lengths,
-    std::optional<torch::Tensor> compact_indices) {
+    std::optional<torch::Tensor> compact_indices,
+    std::optional<torch::Tensor> dedup_table = std::nullopt,
+    int64_t tokens_per_request = 1) {
     constexpr int64_t kNoRopeHeadDim = kDecodeNopeDim;
     constexpr int64_t kWithRopeHeadDim = kDecodeNopeDim + kDecodeRopeDim;
 
@@ -1253,6 +1304,61 @@ void decode_gather_and_up_convert_impl(
         physical_token_stride == kDecodePhysicalTokenStrideWithRope;
     const int tokens_per_block = use_lds ? 4 : (decode_batch_size <= 8 ? 8 : 4);
 
+    if (dedup_table.has_value() || tokens_per_request > 1) {
+        TORCH_CHECK(compact_indices.has_value(), "dedup requires compact indices");
+        TORCH_CHECK(token_ids.scalar_type() == at::ScalarType::Int &&
+                    head_dim == kWithRopeHeadDim &&
+                    physical_token_stride == kDecodePhysicalTokenStrideWithRope,
+                    "dedup requires int32 indices and packed 656-byte KV with RoPE");
+        TORCH_CHECK(tokens_per_request > 0 && tokens_per_request <= batch_size,
+                    "invalid tokens_per_request");
+        const int64_t requests = CEIL_DIV(batch_size, tokens_per_request);
+        if (!dedup_table.has_value()) {
+            int64_t table_width = 1;
+            while (table_width < 2 * tokens_per_request * width) {
+                table_width <<= 1;
+            }
+            const int64_t table_entries = requests * table_width;
+            auto storage = dst.view(at::kLong).view({-1});
+            TORCH_CHECK(storage.numel() >= table_entries,
+                        "dst storage is too small for the dedup table");
+            // Clear/build finish on this stream before gather overwrites dst.
+            // Only compact_indices survive into gather/MLA; no device allocation.
+            dedup_table = storage.narrow(0, 0, table_entries)
+                                .view({requests, table_width});
+        }
+        const auto& table = dedup_table.value();
+        TORCH_CHECK(table.is_cuda() && table.device() == src_cache.device() &&
+                    table.scalar_type() == at::ScalarType::Long &&
+                    table.dim() == 2 && table.is_contiguous(),
+                    "dedup table must be a contiguous int64 GPU matrix");
+        const int64_t table_width = table.size(1);
+        TORCH_CHECK(table.size(0) >= requests && table_width > 0 &&
+                    (table_width & (table_width - 1)) == 0 &&
+                    table_width >= 2 * tokens_per_request * width,
+                    "dedup table must cover all requests at <= 50% load");
+        table.narrow(0, 0, requests).fill_(-1);
+        auto* compact_ptr = compact_indices.value().data_ptr<int32_t>();
+        decode_build_kv_dedup_indices_kernel<<<CEIL_DIV(total_tokens, 256), 256, 0, stream>>>(
+            token_ids.data_ptr<int32_t>(), valid_lengths.data_ptr<int32_t>(),
+            compact_ptr, reinterpret_cast<unsigned long long*>(table.data_ptr<int64_t>()),
+            batch_size, width, num_physical_tokens, tokens_per_request,
+            table_width, use_row_valid_lengths);
+        const auto launch = [&](auto row_lengths) {
+            launch_decode_gather_and_up_convert_with_indices<
+                int32_t, 4, decltype(row_lengths)::value, true,
+                kDecodePhysicalTokenStrideWithRope, true>(
+                src_cache.data_ptr<uint8_t>(), token_ids.data_ptr<int32_t>(),
+                valid_lengths.data_ptr<int32_t>(),
+                reinterpret_cast<__nv_bfloat16*>(dst.data_ptr()), compact_ptr,
+                batch_size, width, num_physical_tokens, stream);
+        };
+        if (use_row_valid_lengths) launch(std::true_type{});
+        else launch(std::false_type{});
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
+        return;
+    }
+
     AT_DISPATCH_INDEX_TYPES(token_ids.scalar_type(), "decode_gather_and_up_convert", [&] {
         const uint8_t* src_ptr = src_cache.data_ptr<uint8_t>();
         const index_t* token_ids_ptr = token_ids.data_ptr<index_t>();
@@ -1305,9 +1411,12 @@ void decode_gather_and_up_convert_with_indices(
     torch::Tensor const& token_ids,
     torch::Tensor const& dst,
     torch::Tensor const& valid_lengths,
-    torch::Tensor const& compact_indices) {
+    torch::Tensor const& compact_indices,
+    int64_t tokens_per_request,
+    std::optional<torch::Tensor> dedup_table) {
     decode_gather_and_up_convert_impl(
-        src_cache, token_ids, dst, valid_lengths, compact_indices);
+        src_cache, token_ids, dst, valid_lengths, compact_indices,
+        dedup_table, tokens_per_request);
 }
 
 }
