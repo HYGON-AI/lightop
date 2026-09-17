@@ -25,6 +25,12 @@ def paged_mqa_logits_fp4(q, weights, slots, lens, table, page_size, out=None):
     Wide or extreme KV block scales also select the BF16 fallback.
     """
     from .. import op
+    if not hasattr(op, "paged_mqa_logits_fp4"):
+        raise RuntimeError(
+            "paged_mqa_logits_fp4 unavailable: the installed LightOp native "
+            "extension does not provide this operator; rebuild/install a version "
+            "with FP4 paged MQA support"
+        )
     return op.paged_mqa_logits_fp4(q, weights, slots, lens, table, page_size, out)
 
 __all__ = [

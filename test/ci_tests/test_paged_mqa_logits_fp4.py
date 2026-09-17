@@ -205,6 +205,26 @@ def test_input_guards(op):
         op(*case, torch.empty(2, 17, device="cuda", dtype=torch.bfloat16))
 
 
+def test_unsupported_shape_errors(op):
+    case = list(make_case(1, 8, 1, 64))
+    bad_dim = torch.empty(1, 8, 64, device="cuda", dtype=torch.bfloat16)
+    with pytest.raises(RuntimeError, match="head_dim must be 128"):
+        op(bad_dim, *case[1:])
+    bad_heads = list(case)
+    bad_heads[0] = torch.empty(1, 12, 128, device="cuda", dtype=torch.bfloat16)
+    bad_heads[1] = torch.empty(1, 12, device="cuda", dtype=torch.bfloat16)
+    with pytest.raises(RuntimeError, match="heads must be one of"):
+        op(*bad_heads)
+
+
+def test_unavailable_operator_error(op, monkeypatch):
+    from lightop import op as native
+    case = make_case(1, 8, 1, 64)
+    monkeypatch.delattr(native, "paged_mqa_logits_fp4")
+    with pytest.raises(RuntimeError, match="paged_mqa_logits_fp4 unavailable"):
+        op(*case)
+
+
 def test_all_nibbles_and_block_scales(op):
     case = list(make_case(1, 8, 16 * 23, 4))
     q, w, slots, lens, table, page = case
