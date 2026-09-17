@@ -285,7 +285,7 @@ void blockwise_scaled_cast_transpose(const Tensor& input,std::optional<Tensor> o
                                     const float epsilon,const bool pow2_scale,const bool all_gather_usage, at::ScalarType out_dtype);
 
 void rms_norm_dynamic_per_token_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input,double limit);
-void rms_norm_dynamic_per_token_quant_sglang(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input,double limit,std::optional<Tensor> smooth_scale,std::optional<Tensor> norm_output,bool clamp_norm_output);
+void rms_norm_dynamic_per_token_quant_sglang(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input,double limit,std::optional<Tensor> smooth_scale,std::optional<Tensor> norm_output,bool clamp_norm_output,std::optional<Tensor> residual_output);
 void mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang(Tensor& q_out,Tensor& packed_input,const Tensor& q_weight,const Tensor& kv_weight,
                                                        Tensor q_scales,double q_epsilon,double kv_epsilon);
 void rms_norm_fp8_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input, int fp8type);
@@ -549,7 +549,9 @@ void decode_gather_and_up_convert_with_indices(
     torch::Tensor const& token_ids,
     torch::Tensor const& dst,
     torch::Tensor const& valid_lengths,
-    torch::Tensor const& compact_indices);
+    torch::Tensor const& compact_indices,
+    int64_t tokens_per_request,
+    std::optional<torch::Tensor> dedup_table);
 void dsv4_dequantize_k_cache_paged_out(
     torch::Tensor const& cache_u8,
     torch::Tensor const& page_table,
@@ -1069,7 +1071,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("limit") = -1.0,
       py::arg("smooth_scale") = py::none(),
       py::arg("norm_output") = py::none(),
-      py::arg("clamp_norm_output") = true);
+      py::arg("clamp_norm_output") = true,
+      py::arg("residual_output") = py::none());
   m.def("mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang",&at::native::mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang,
         "mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang");
   m.def("rms_norm_fp8_quant",&at::native::rms_norm_fp8_quant,"rms_norm_fp8_quant");
@@ -1378,7 +1381,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("cp_gather_and_upconvert_fp8_kv_cache", &at::native::cp_gather_and_upconvert_fp8_kv_cache, "cp_gather_and_upconvert_fp8_kv_cache");   
  m.def("prefill_gather_and_upconvert_fp8_kv_cache", &at::native::prefill_gather_and_upconvert_fp8_kv_cache, "prefill_gather_and_upconvert_fp8_kv_cache");
  m.def("decode_gather_and_up_convert", &at::native::decode_gather_and_up_convert, "decode_gather_and_up_convert");
- m.def("decode_gather_and_up_convert_with_indices", &at::native::decode_gather_and_up_convert_with_indices, "decode_gather_and_up_convert_with_indices");
+ m.def(
+     "decode_gather_and_up_convert_with_indices",
+     &at::native::decode_gather_and_up_convert_with_indices,
+     "Decode gather/up-convert with optional request-local KV deduplication",
+     py::arg("src_cache"),
+     py::arg("token_ids"),
+     py::arg("dst"),
+     py::arg("valid_lengths"),
+     py::arg("compact_indices"),
+     py::arg("tokens_per_request") = 1,
+     py::arg("dedup_table") = py::none());
  m.def(
      "dsv4_dequantize_k_cache_paged_out",
      &at::native::dsv4_dequantize_k_cache_paged_out,
