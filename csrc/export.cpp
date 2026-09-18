@@ -323,7 +323,7 @@ std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, in
 std::vector<Tensor> moe_fuse_gate_per_gourp_topk(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_per_group, int64_t num_pad_experts, int64_t num_shared_experts, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids) ;
-void fuse_silu_mul_clamp_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, bool use_gelu, const c10::optional<torch::Tensor>& smooth_scale);
+void fuse_silu_mul_clamp_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, bool use_gelu, const c10::optional<torch::Tensor>& smooth_scale, const c10::optional<torch::Tensor>& num_local_tokens_tensor = c10::nullopt, int expect_m = -1);
 void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, const torch::Tensor& mask_m, int expect_m, bool use_gelu, const c10::optional<torch::Tensor>& smooth_scale);
 void fuse_silu_mul_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m);
 void fuse_situ_mul_quant_contiguous(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, double situ_beta, double situ_linear_beta);
@@ -362,7 +362,7 @@ void fill_zeros(Tensor &out, int bs, int hidden_size);
 void rms_rotary_embedding_fuse(Tensor &positions,Tensor &query,Tensor &key,int64_t head_size,Tensor &cos_sin_cache, bool is_neox,Tensor weight_q,Tensor weight_k,c10::optional<Tensor> residual_q,c10::optional<Tensor> residual_k,double epsilon);
 void reshape_and_cache_cuda(torch::Tensor& key,torch::Tensor& value, torch::Tensor& key_cache, torch::Tensor& value_cache, torch::Tensor& slot_mapping, const std::string& kv_cache_dtype, torch::Tensor& k_scale, torch::Tensor& v_scale);
 void ep_fused_quant_scatter(torch::Tensor input,torch::Tensor topk_ids,torch::optional<torch::Tensor> expert_map_opt,torch::Tensor expert_num_tokens,torch::Tensor aq_out,torch::Tensor aq_scale_out,torch::Tensor m_indices,torch::Tensor inv_perm, int local_num_experts,int alignment);
-void ep_scatter(torch::Tensor aq,torch::Tensor aq_scale,torch::Tensor topk_ids,torch::optional<torch::Tensor> expert_map_opt, torch::Tensor expert_num_tokens,torch::Tensor aq_out,torch::Tensor aq_scale_out,torch::Tensor m_indices,torch::Tensor inv_perm,int local_num_experts,int alignment);
+void ep_scatter(torch::Tensor aq,torch::Tensor aq_scale,torch::Tensor topk_ids,torch::optional<torch::Tensor> expert_map_opt, torch::Tensor expert_num_tokens,torch::Tensor aq_out,torch::Tensor aq_scale_out,torch::optional<torch::Tensor> m_indices_opt,torch::Tensor inv_perm,int local_num_experts,int alignment);
 
 void destindex_copy_quantize_int8_cuda(const torch::Tensor& input, torch::Tensor& scale_zero, torch::Tensor& output);
 void destindex_dequantize_int8_cuda(const torch::Tensor& input, const torch::Tensor& scale_zero, torch::Tensor& output);
@@ -1119,7 +1119,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("scales"),
       py::arg("limit"),
       py::arg("use_gelu") = false,
-      py::arg("smooth_scale") = py::none());
+      py::arg("smooth_scale") = py::none(),
+      py::arg("num_local_tokens_tensor") = py::none(),
+      py::arg("expect_m") = -1);
   m.def(
       "fuse_silu_mul_clamp_quant_ep",
       &at::native::fuse_silu_mul_clamp_quant_ep,

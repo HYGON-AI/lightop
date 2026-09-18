@@ -86,6 +86,7 @@ def fuse_silu_mul_clamp_quant(
     expect_m: int = -1,
     use_gelu: bool = False,
     smooth_scale: Optional[torch.Tensor] = None,
+    num_local_tokens_tensor: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Fused clamp + SiLU/GELU + mul + per-token INT8 quant.
 
@@ -100,9 +101,14 @@ def fuse_silu_mul_clamp_quant(
     token count for expert ``e``. ``expect_m`` controls the number of launched
     blocks per expert.
     """
-    if mask_m is not None or expect_m != -1:
+    if mask_m is not None or (expect_m != -1 and num_local_tokens_tensor is None):
+        # EP path; num_local_tokens_tensor instead selects the 2D path,
+        # where expect_m is a grid bound.
         if mask_m is None:
-            raise ValueError("mask_m is required when expect_m != -1")
+            raise ValueError(
+                "mask_m is required when expect_m != -1 "
+                "(pass num_local_tokens_tensor for the 2D contiguous path)"
+            )
         return fuse_silu_mul_clamp_quant_ep(
             input,
             limit,
@@ -142,6 +148,8 @@ def fuse_silu_mul_clamp_quant(
         float(limit),
         use_gelu,
         smooth_scale,
+        num_local_tokens_tensor,
+        int(expect_m),
     )
     return output, scales
 
