@@ -1,5 +1,12 @@
 // E2M1 payload + per-32 E8M0 scales. Decode directly into MMAC registers;
 // no intermediate dequantized cache, GEMM output or head-reduction tensor.
+//
+// Numerics follow DeepGEMM's MXFP4 MQA logits (sm100_mqa_logits.cuh): each
+// per-32 block scale is folded into the K operand before it reaches a single
+// FP32 accumulator spanning all 128 channels, and the epilogue applies relu,
+// the head weight and the head reduction in FP32 with no extra scale. Both
+// dispatches below implement that same contract; they differ only in how the
+// block scale reaches the operand.
 #include "paged_mqa_logits_fp4.h"
 #include <ATen/hip/HIPContext.h>
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
@@ -21,35 +28,38 @@ __device__ __forceinline__ uint16_t to_bf16(float x) {
 __device__ __forceinline__ float from_bf16(uint16_t x) {
     return __uint_as_float(static_cast<uint32_t>(x) << 16);
 }
-__device__ __forceinline__ float round_bf16(float x) {
-    return from_bf16(to_bf16(x));
-}
-
-__device__ __forceinline__ float round_exact_bf16(double exact) {
-    float sum = static_cast<float>(exact);
-    uint32_t bits = __float_as_uint(sum);
-    if ((bits & 0xffffu) == 0x8000u && exact != static_cast<double>(sum)) {
-        const bool greater = exact > static_cast<double>(sum);
-        bits += greater == ((bits & 0x80000000u) == 0) ? 1u : -1u;
-        sum = __uint_as_float(bits);
-    }
-    return round_bf16(sum);
-}
-
+// DeepGEMM's sm100 MQA logits epilogue (the default FP32 `reduce_dtype_t`)
+// keeps relu, weighting and the head reduction entirely in FP32, and adds no
+// further scale for MX scale factors. It spells relu as (a + |a|) with a
+// closing halving because that maps to a free absolute-value modifier on
+// SM100; fmaxf is a single instruction here, so the relu is written directly.
+// The two forms agree on every finite accumulator, and fmaxf additionally
+// keeps a -inf dot pinned at zero instead of turning it into a NaN.
 template<int HeadTiles>
 __device__ __forceinline__ float reduce_heads(floatx4* values) {
-    // BF16 head products may have different exponents and opposite signs.
-    // Sum in FP64 so cancellation cannot discard a small finite head score
-    // before the required BF16 rounding.
-    double exact = 0.0;
+    float sum_0 = 0.0f, sum_1 = 0.0f;
+#pragma unroll
+    for (int h = 0; h < HeadTiles; ++h) {
+        sum_0 += values[h][0] + values[h][2];
+        sum_1 += values[h][1] + values[h][3];
+    }
+    float sum = sum_0 + sum_1;
+    sum += __shfl_xor(sum, 16, 64);
+    sum += __shfl_xor(sum, 32, 64);
+    return sum;
+}
+
+// Shared epilogue for both dispatches: FP32 relu, FP32 weighting, no rounding.
+template<int H, int HeadTiles>
+__device__ __forceinline__ float weighted_head_sum(floatx4* acc, float (*wr)[4], int group) {
 #pragma unroll
     for (int h = 0; h < HeadTiles; ++h) {
 #pragma unroll
-        for (int j = 0; j < 4; ++j) exact += static_cast<double>(values[h][j]);
+        for (int j = 0; j < 4; ++j) {
+            acc[h][j] = h * 16 + j * 4 + group < H ? fmaxf(acc[h][j], 0.0f) * wr[h][j] : 0.0f;
+        }
     }
-    exact += __shfl_xor(exact, 16, 64);
-    exact += __shfl_xor(exact, 32, 64);
-    return round_exact_bf16(exact);
+    return reduce_heads<HeadTiles>(acc);
 }
 
 __device__ __forceinline__ uint16_t decode_fp4(unsigned code, unsigned scale) {
@@ -114,7 +124,6 @@ __device__ __forceinline__ void fp4_logits_wave(
     // cache broadcasts Q across CTAs, and no cross-wave LDS barrier is needed.
     bf16x4 qr[HeadTiles][8];
     float wr[HeadTiles][4];
-    bool structured_q = true;
 #pragma unroll
     for (int h = 0; h < HeadTiles; ++h) {
 #pragma unroll
@@ -124,17 +133,6 @@ __device__ __forceinline__ void fp4_logits_wave(
                 qr[h][k] = *reinterpret_cast<const bf16x4*>(
                     q + b * qb_stride + (h * 16 + row) * qh_stride + k * 16 + group * 4);
             }
-            const uint64_t raw_bits = *reinterpret_cast<const uint64_t*>(&qr[h][k]);
-            structured_q &= (raw_bits & 0x003f003f003f003full) == 0;
-            if (structured_q) {
-#pragma unroll
-                for (int j = 0; j < 4; ++j) {
-                    const unsigned mag = static_cast<uint16_t>(qr[h][k][j]) & 0x7fffu;
-                    // A fixed normal interval avoids a repeated Q min/max
-                    // scan in small workloads. Other queries use FP64 dots.
-                    structured_q &= mag == 0 || (mag >= 0x3d80u && mag < 0x4100u);
-                }
-            }
         }
 #pragma unroll
         for (int j = 0; j < 4; ++j) {
@@ -142,7 +140,6 @@ __device__ __forceinline__ void fp4_logits_wave(
             wr[h][j] = head < H ? from_bf16(weights[b * wb_stride + head]) : 0.0f;
         }
     }
-    structured_q = __ballot(!structured_q) == 0;
 #pragma unroll
     for (int tile = 0; tile < TilesPerWave; ++tile) {
         const int64_t pos = start + tile * Tile + row;
@@ -164,12 +161,10 @@ __device__ __forceinline__ void fp4_logits_wave(
         }
 #pragma unroll
         for (int k = 0; k < 4; ++k) exps[k] = valid ? scales[k] : 127;
-        const unsigned min_scale = min(min(exps[0], exps[1]), min(exps[2], exps[3]));
-        const unsigned max_scale = max(max(exps[0], exps[1]), max(exps[2], exps[3]));
-        // With two significand bits and this exponent span the sum of 128
-        // products fits exactly in FP32, including every intermediate MMAC.
-        const bool exact_dot = structured_q && min_scale >= 6 && max_scale <= 242
-                            && max_scale - min_scale <= 4;
+        // Every K block is decoded with its own scale already folded into the
+        // BF16 operand, so all 128 scaled products enter a single FP32
+        // accumulator. This is DeepGEMM's block-scaled MMA contract: scale the
+        // operand, never rescale a partial accumulator.
         floatx4 acc[HeadTiles] = {};
 #pragma unroll
         for (int k = 0; k < 8; ++k) {
@@ -183,39 +178,7 @@ __device__ __forceinline__ void fp4_logits_wave(
 #endif
             }
         }
-#pragma unroll
-        for (int h = 0; h < HeadTiles; ++h) {
-#pragma unroll
-            for (int j = 0; j < 4; ++j) {
-                if (h * 16 + j * 4 + group < H) {
-                    float rounded = round_bf16(acc[h][j]);
-                    if (valid && !exact_dot) {
-                        // Arbitrary BF16 queries can round an FP32 dot to the
-                        // wrong side of a BF16 boundary. Cancellation can also
-                        // lose a small term entirely. Recompute when exact
-                        // FP32 accumulation is not proven; normal FQ4 skips it.
-                        double dot = 0.0;
-                        const int head = h * 16 + j * 4 + group;
-#pragma unroll
-                        for (int block = 0; block < 4; ++block) {
-#pragma unroll 1
-                            for (int i = 0; i < 32; ++i) {
-                                const int d = block * 32 + i;
-                                const unsigned code = (payload[d / 2] >> ((d & 1) * 4)) & 15u;
-                                const double kval = from_bf16(decode_fp4(code, exps[block]));
-                                dot += static_cast<double>(from_bf16(q[b * qb_stride + head * qh_stride + d])) * kval;
-                            }
-                        }
-                        rounded = round_exact_bf16(dot);
-                    }
-                    const float score = rounded < 0.0f ? 0.0f : rounded;
-                    acc[h][j] = round_bf16(score * wr[h][j]);
-                } else {
-                    acc[h][j] = 0.0f;
-                }
-            }
-        }
-        const float sum = reduce_heads<HeadTiles>(acc);
+        const float sum = weighted_head_sum<H, HeadTiles>(acc, wr, group);
         if (lane < 16 && pos < length) {
             out[static_cast<int64_t>(b) * length + pos] = valid ? sum : -INFINITY;
         }
@@ -233,13 +196,26 @@ __global__ void fp4_logits_kernel(
         length, page_size, page_shift, table_stride, qb_stride, qh_stride, wb_stride);
 }
 
-// gfx938 has FP8 K=32 MMAC, but no native block-scaled FP4 MMAC. E2M1
-// values are exactly representable in E4M3; apply each block's power-of-two
-// scale to the FP32 partial dot before the sole final BF16 rounding.
-__device__ __forceinline__ intx2 fp4_to_fp8(unsigned packed) {
-    const unsigned even = __builtin_amdgcn_perm(0x4c484440u, 0x3c383000u, packed & 0x07070707u)
+// gfx938 has FP8 K=32 MMAC, but no native block-scaled FP4 MMAC. Every E2M1
+// value is m * 2^e with m in {1, 1.5} and e in [-1, 2], so subtracting a
+// per-block delta from the E4M3 exponent field folds that block's scale into
+// the operand exactly -- the same thing DeepGEMM's block-scaled UMMA does
+// before its single FP32 accumulator. E4M3 normals reach down to 2^-6, which
+// leaves room for a delta of 5 below the token's largest block scale; wider
+// spans fall back to the BF16 block-scaled path. What remains outside the dot
+// is only 2^(max_qexp + max_scale - 254), a factor common to all 128 terms,
+// so applying it once to the finished dot is exact and accumulation-order
+// independent -- unlike rescaling separate FP32 partial sums.
+__device__ __forceinline__ intx2 fp4_to_fp8(unsigned packed, unsigned delta) {
+    // Magnitudes 0..3 come from the low constant, 4..7 from the high one.
+    // Byte 0 of the low constant stays zero so code 0 keeps decoding to zero;
+    // no byte can borrow because delta <= 5 and the smallest shifted byte is
+    // 0x30 (E4M3 0.5), which lands exactly on the minimum normal 2^-6.
+    const unsigned hi = 0x4c484440u - delta * 0x08080808u;
+    const unsigned lo = 0x3c383000u - delta * 0x08080800u;
+    const unsigned even = __builtin_amdgcn_perm(hi, lo, packed & 0x07070707u)
                         | ((packed & 0x08080808u) << 4);
-    const unsigned odd = __builtin_amdgcn_perm(0x4c484440u, 0x3c383000u, (packed >> 4) & 0x07070707u)
+    const unsigned odd = __builtin_amdgcn_perm(hi, lo, (packed >> 4) & 0x07070707u)
                        | (packed & 0x80808080u);
     return {static_cast<int>(__builtin_amdgcn_perm(odd, even, 0x05010400u)),
             static_cast<int>(__builtin_amdgcn_perm(odd, even, 0x07030602u))};
@@ -366,15 +342,16 @@ __global__ void fp4_fp8_logits_kernel(
 #pragma unroll
         for (int k = 0; k < 4; ++k) {
             exps[k] = (packed_scales >> (k * 8)) & 255u;
-            scales_ok &= exps[k] >= 2 && exps[k] <= 252
-                      && static_cast<int>(max_qexp) + static_cast<int>(exps[k]) - 127 >= 1
-                      && max_qexp + static_cast<int>(exps[k]) - 127 <= 240;
+            scales_ok &= exps[k] >= 2 && exps[k] <= 252;
         }
-        // A wide exponent span can lose small terms before cancellation in
-        // the FP32 block sum. Use BF16 operands plus exact-dot repair there.
         const unsigned min_scale = min(min(exps[0], exps[1]), min(exps[2], exps[3]));
         const unsigned max_scale = max(max(exps[0], exps[1]), max(exps[2], exps[3]));
-        scales_ok &= max_scale - min_scale <= 4;
+        // Folding a block scale into the E4M3 exponent field is exact only
+        // while the shifted operand stays normal, which bounds the span at 5.
+        // The leftover common factor must also stay a normal FP32.
+        scales_ok &= max_scale - min_scale <= 5
+                  && static_cast<int>(max_qexp) + static_cast<int>(max_scale) - 127 >= 1
+                  && max_qexp + static_cast<int>(max_scale) - 127 <= 240;
         if (__ballot(!scales_ok)) {
             fp4_logits_wave<H, TilesPerWave>(q, weights, slots, lens, table, out,
                 length, page_size, page_shift, table_stride, qb_stride, qh_stride, wb_stride);
@@ -384,27 +361,21 @@ __global__ void fp4_fp8_logits_kernel(
 #pragma unroll
         for (int k = 0; k < 4; ++k) {
             const unsigned packed = valid ? *reinterpret_cast<const unsigned*>(payload + k * 16 + group * 4) : 0;
-            const intx2 kr = fp4_to_fp8(packed);
-            const float factor = __uint_as_float(static_cast<unsigned>(max_qexp + exps[k] - 127) << 23);
+            const intx2 kr = fp4_to_fp8(packed, max_scale - exps[k]);
 #pragma unroll
             for (int h = 0; h < HeadTiles; ++h) {
-                const floatx4 partial = __builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(kr, qr[h][k], floatx4{}, false, false);
-#pragma unroll
-                for (int j = 0; j < 4; ++j) {
-                    acc[h][j] += partial[j] * factor;
-                }
+                acc[h] = __builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(kr, qr[h][k], acc[h], false, false);
             }
         }
+        // One power of two common to all 128 terms, applied to the finished
+        // dot. Exact, and independent of the accumulation order.
+        const float factor = __uint_as_float(static_cast<unsigned>(max_qexp + max_scale - 127) << 23);
 #pragma unroll
         for (int h = 0; h < HeadTiles; ++h) {
 #pragma unroll
-            for (int j = 0; j < 4; ++j) {
-                const float rounded = round_bf16(acc[h][j]);
-                acc[h][j] = h * 16 + j * 4 + group < H
-                          ? round_bf16((rounded < 0.0f ? 0.0f : rounded) * wr[h][j]) : 0.0f;
-            }
+            for (int j = 0; j < 4; ++j) acc[h][j] *= factor;
         }
-        const float sum = reduce_heads<HeadTiles>(acc);
+        const float sum = weighted_head_sum<H, HeadTiles>(acc, wr, group);
         if (lane < 16 && pos < length) out[static_cast<int64_t>(b) * length + pos] = valid ? sum : -INFINITY;
     }
 #else
