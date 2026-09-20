@@ -1,4 +1,5 @@
 #include "sparse_page_mqa.h"
+#include "paged_mqa_logits_grouped_native_fp8_impl.hpp"
 #include "paged_mqa_logits_sparse_impl.hpp"
 
 #include <ATen/cuda/CUDAContext.h>
@@ -789,11 +790,13 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
         prop_error == hipSuccess,
         "hipGetDeviceProperties failed: ",
         hipGetErrorString(prop_error));
+    const bool is_gfx938_64cu =
+        std::strncmp(properties.gcnArchName, "gfx938", 6) == 0 &&
+        properties.multiProcessorCount == 64;
     const bool supported_device =
         (std::strncmp(properties.gcnArchName, "gfx936", 6) == 0 &&
          properties.multiProcessorCount == 80) ||
-        (std::strncmp(properties.gcnArchName, "gfx938", 6) == 0 &&
-         properties.multiProcessorCount == 64);
+        is_gfx938_64cu;
     TORCH_CHECK(
         supported_device,
         "grouped-wave sparse MQA requires gfx936/80CU or gfx938/64CU, got ",
@@ -807,13 +810,18 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
         "group_size must be 1 (independent rows) or 3/4/5/6 (MTP2/3/4/5)");
     const bool supported_batch = q.dim() == 4 && q.size(0) > 0 &&
         (group_size == 1 || q.size(0) % group_size == 0);
+    const bool native_fp8_path = is_gfx938_64cu && !int8_kv &&
+        q.scalar_type() == torch::kFloat8_e4m3fn &&
+        fused_kv_cache.scalar_type() == torch::kUInt8 &&
+        q.dim() == 4 && q.size(2) == grouped_sparse_native_fp8::kHeads;
     TORCH_CHECK(
-        q.scalar_type() == torch::kBFloat16 && q.dim() == 4 &&
+        (q.scalar_type() == torch::kBFloat16 || native_fp8_path) && q.dim() == 4 &&
             supported_batch && q.size(1) == 1 &&
             (q.size(2) == 8 || q.size(2) == 16 || q.size(2) == 32 ||
              q.size(2) == 64) &&
             q.size(3) == kHeadDim && q.is_contiguous(),
-        "q must be contiguous BF16 [batch, 1, heads, 128] with positive "
+        "q must be contiguous BF16 [batch, 1, heads, 128], or native "
+        "E4M3FN [batch, 1, 32, 128] with packed FP8 KV on gfx938/64CU, with positive "
         "batch, batch divisible by group_size for group_size 3/4/5/6, and "
         "heads in 8/16/32/64");
     const int batch_size = static_cast<int>(q.size(0));
@@ -878,7 +886,11 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
         ? static_cast<int>(std::min<int64_t>(max_chunks, 32))
         : static_cast<int>(std::min<int64_t>(persistent_ctas, max_chunks));
     auto stream = at::cuda::getCurrentCUDAStream(q.get_device());
-    if (int8_kv) {
+    if (native_fp8_path) {
+        grouped_sparse_native_fp8::dispatch_grouped_rows(
+            group_size, q, fused_kv_cache, weights, context_lens, block_table,
+            logits, nonzero_mask, resolved, stream);
+    } else if (int8_kv) {
         dispatch_grouped_rows<false, true>(
             group_size, num_heads, q, fused_kv_cache, weights, context_lens,
             block_table, logits, nonzero_mask, resolved, stream);

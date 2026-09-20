@@ -899,6 +899,12 @@ def page_mqa_logits_sparse_mask_grouped(
     contract is identical to :func:`page_mqa_logits_sparse_mask`. Supported
     heads are 8/16/32/64. The FP8 path accepts the packed uint8 KV+scale layout
     used by :func:`paged_mqa_logits`.
+
+    On gfx938/64CU, H32 E4M3FN Q with packed FP8 KV uses native FP8 MMAC
+    with FP32 accumulation. Each CTA reuses KV for up to two grouped rows,
+    retaining the existing persistent scheduling and ``persistent_ctas``
+    controls. Other shapes/dtypes keep the BF16 compute path. Q scales must
+    already be folded into ``weights``.
     """
 
     if group_size not in (1, 3, 4, 5, 6):
@@ -907,7 +913,17 @@ def page_mqa_logits_sparse_mask_grouped(
     fp8_fnuz_dtype = getattr(torch, "float8_e4m3fnuz", None)
     if fp8_fnuz_dtype is not None:
         fp8_q_dtypes.add(fp8_fnuz_dtype)
-    if fused_kv_cache.dtype == torch.uint8 and q.dtype in fp8_q_dtypes:
+    native_fp8_path = (
+        not _int8_kv
+        and q.is_cuda
+        and q.dim() == 4
+        and q.shape[2] == 32
+        and q.dtype == torch.float8_e4m3fn
+        and fused_kv_cache.dtype == torch.uint8
+        and _paged_mqa_device_info(q.device.index) == ("gfx938", 64)
+    )
+    if (fused_kv_cache.dtype == torch.uint8 and q.dtype in fp8_q_dtypes
+            and not native_fp8_path):
         q = q.to(torch.bfloat16)
     expected_batch = q.shape[0] if q.dim() > 0 else 0
     if expected_batch <= 0:
@@ -917,10 +933,12 @@ def page_mqa_logits_sparse_mask_grouped(
             "grouped sparse MQA requires batch divisible by group_size")
     if (q.dim() != 4 or q.shape[0] != expected_batch or q.shape[1] != 1 or
             q.shape[2] not in (8, 16, 32, 64) or q.shape[3] != 128 or
-            q.dtype != torch.bfloat16 or not q.is_contiguous()):
+            (q.dtype != torch.bfloat16 and not native_fp8_path) or
+            not q.is_contiguous()):
         raise ValueError(
             "sparse MQA requires contiguous BF16 q "
-            "[batch, 1, heads, 128], heads in 8/16/32/64")
+            "[batch, 1, heads, 128], heads in 8/16/32/64, or gfx938/64CU "
+            "E4M3FN q [batch, 1, 32, 128] with packed FP8 KV")
     if fused_kv_cache.dtype not in (torch.bfloat16, torch.uint8):
         raise ValueError("grouped sparse MQA supports BF16 or packed FP8 KV")
     if _int8_kv and fused_kv_cache.dtype != torch.uint8:
