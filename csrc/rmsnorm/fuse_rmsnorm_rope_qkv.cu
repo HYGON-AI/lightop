@@ -912,12 +912,15 @@ __global__ void opt_rms_rope_qwen3_with_qkv(
     int num_tokens,
     const int num_heads,
     const int num_kv_heads,
-    const int threads_per_token, 
+    const int threads_per_token,
     const int tokens_per_block,
-    const int cache_fp8_type
-) 
+    const int cache_fp8_type,
+    // q does not enter the KV cache, so its output format is independent of
+    // cache_fp8_type: 1 = fp8e4m3, 0 = fp8e5m2, 2 = native scalar_t.
+    const int q_out_fp8_type
+)
 {
-    
+
     extern __shared__ char smem_buffer[];
     scalar_t* s_cos_sin_base = reinterpret_cast<scalar_t*>(smem_buffer);
 
@@ -1042,15 +1045,27 @@ __global__ void opt_rms_rope_qwen3_with_qkv(
           f_q_low[i] = static_cast<float>(r_q_low[i]);
           f_q_high[i] = static_cast<float>(r_q_high[i]);
         }
-        if (cache_fp8_type == 1) {
-          convert_vec_to_uint8_t<VEC_SIZE, 1>(f_q_low, u8_q_low);
-          convert_vec_to_uint8_t<VEC_SIZE, 1>(f_q_high, u8_q_high);
+        if (q_out_fp8_type == 2) {
+          // q keeps the model dtype. The strides are element counts, so they
+          // must be applied to a scalar_t* base -- q_rope_out_ptr already
+          // advanced them as raw bytes, which undershoots for multi-byte
+          // dtypes. Re-derive the address from the original base instead.
+          scalar_t* q_native_ptr = reinterpret_cast<scalar_t*>(q_rope_out)
+              + global_token_idx * q_rope_out_stride_n
+              + q_head_idx * q_rope_out_stride_h;
+          *(LoadT*)(q_native_ptr + offset_low) = *(LoadT*)r_q_low;
+          *(LoadT*)(q_native_ptr + offset_high) = *(LoadT*)r_q_high;
         } else {
-          convert_vec_to_uint8_t<VEC_SIZE, 0>(f_q_low, u8_q_low);
-          convert_vec_to_uint8_t<VEC_SIZE, 0>(f_q_high, u8_q_high);
+          if (q_out_fp8_type == 1) {
+            convert_vec_to_uint8_t<VEC_SIZE, 1>(f_q_low, u8_q_low);
+            convert_vec_to_uint8_t<VEC_SIZE, 1>(f_q_high, u8_q_high);
+          } else {
+            convert_vec_to_uint8_t<VEC_SIZE, 0>(f_q_low, u8_q_low);
+            convert_vec_to_uint8_t<VEC_SIZE, 0>(f_q_high, u8_q_high);
+          }
+          *(LoadT8*)(q_rope_out_ptr + offset_low) = *(LoadT8*)u8_q_low;
+          *(LoadT8*)(q_rope_out_ptr + offset_high) = *(LoadT8*)u8_q_high;
         }
-        *(LoadT8*)(q_rope_out_ptr + offset_low) = *(LoadT8*)u8_q_low;
-        *(LoadT8*)(q_rope_out_ptr + offset_high) = *(LoadT8*)u8_q_high;
     }
 
    
@@ -1280,10 +1295,12 @@ __global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
     const int num_tokens,
     const int num_heads,
     const int num_kv_heads,
-    const int threads_per_token, 
+    const int threads_per_token,
     const int tokens_per_block,
-    const int cache_fp8_type
-) 
+    const int cache_fp8_type,
+    // See the other kernel: q's output format is independent of the KV cache.
+    const int q_out_fp8_type
+)
 {
     extern __shared__ char smem_buffer[];
     scalar_t* s_cos_sin_base = reinterpret_cast<scalar_t*>(smem_buffer);
@@ -1428,21 +1445,35 @@ __global__ void opt_rms_rope_qwen3_rotDim64_with_qkv(
           f2[i] = static_cast<float>(v2[i]);
           f3[i] = static_cast<float>(v3[i]);
         }
-        if (cache_fp8_type == 1) {
-          convert_vec_to_uint8_t<VEC_SIZE, 1>(f0, u8_0);
-          convert_vec_to_uint8_t<VEC_SIZE, 1>(f1, u8_1);
-          convert_vec_to_uint8_t<VEC_SIZE, 1>(f2, u8_2);
-          convert_vec_to_uint8_t<VEC_SIZE, 1>(f3, u8_3);
+        if (is_query && q_out_fp8_type == 2) {
+          // Only q may keep the model dtype; k still follows the KV cache.
+          // Element strides must be applied to a scalar_t* base -- see the
+          // rot_dim=128 kernel for why rope_out_ptr cannot be reused here.
+          scalar_t* q_native_ptr = reinterpret_cast<scalar_t*>(q_rope_out)
+              + global_token_idx * q_rope_out_stride_n
+              + head_idx * q_rope_out_stride_h;
+          *(LoadT*)(q_native_ptr + o0) = *(LoadT*)v0;
+          *(LoadT*)(q_native_ptr + o1) = *(LoadT*)v1;
+          *(LoadT*)(q_native_ptr + o2) = *(LoadT*)v2;
+          *(LoadT*)(q_native_ptr + o3) = *(LoadT*)v3;
         } else {
-          convert_vec_to_uint8_t<VEC_SIZE, 0>(f0, u8_0);
-          convert_vec_to_uint8_t<VEC_SIZE, 0>(f1, u8_1);
-          convert_vec_to_uint8_t<VEC_SIZE, 0>(f2, u8_2);
-          convert_vec_to_uint8_t<VEC_SIZE, 0>(f3, u8_3);
+          const int out_fp8_type = is_query ? q_out_fp8_type : cache_fp8_type;
+          if (out_fp8_type == 1) {
+            convert_vec_to_uint8_t<VEC_SIZE, 1>(f0, u8_0);
+            convert_vec_to_uint8_t<VEC_SIZE, 1>(f1, u8_1);
+            convert_vec_to_uint8_t<VEC_SIZE, 1>(f2, u8_2);
+            convert_vec_to_uint8_t<VEC_SIZE, 1>(f3, u8_3);
+          } else {
+            convert_vec_to_uint8_t<VEC_SIZE, 0>(f0, u8_0);
+            convert_vec_to_uint8_t<VEC_SIZE, 0>(f1, u8_1);
+            convert_vec_to_uint8_t<VEC_SIZE, 0>(f2, u8_2);
+            convert_vec_to_uint8_t<VEC_SIZE, 0>(f3, u8_3);
+          }
+          *(LoadT8*)(rope_out_ptr + o0) = *(LoadT8*)u8_0;
+          *(LoadT8*)(rope_out_ptr + o1) = *(LoadT8*)u8_1;
+          *(LoadT8*)(rope_out_ptr + o2) = *(LoadT8*)u8_2;
+          *(LoadT8*)(rope_out_ptr + o3) = *(LoadT8*)u8_3;
         }
-        *(LoadT8*)(rope_out_ptr + o0) = *(LoadT8*)u8_0;
-        *(LoadT8*)(rope_out_ptr + o1) = *(LoadT8*)u8_1;
-        *(LoadT8*)(rope_out_ptr + o2) = *(LoadT8*)u8_2;
-        *(LoadT8*)(rope_out_ptr + o3) = *(LoadT8*)u8_3;
 
         if (!is_query) {
           const int k_buffer_offset = loc_id * k_buffer_stride_n + head_idx * k_buffer_stride_h + loc_offset * k_buffer_stride_p;
@@ -1550,6 +1581,7 @@ void launch_opt_rms_rope(
     const int num_heads,
     const int num_kv_heads,
     int cache_fp8_type,
+    int q_out_fp8_type,
     cudaStream_t stream
 ) {
 
@@ -1582,7 +1614,8 @@ void launch_opt_rms_rope(
                         gamma_q, gamma_k, 
                         residual_q_ptr, residual_k_ptr, 
                         eps, num_tokens, num_heads, num_kv_heads,
-                        threads_per_token, tokens_per_block, cache_fp8_type
+                        threads_per_token, tokens_per_block, cache_fp8_type,
+                        q_out_fp8_type
                     );
                 });
             });
@@ -1603,7 +1636,8 @@ void launch_opt_rms_rope(
                         gamma_q, gamma_k, 
                         residual_q_ptr, residual_k_ptr, 
                         eps, num_tokens, num_heads, num_kv_heads,
-                        threads_per_token, tokens_per_block, cache_fp8_type
+                        threads_per_token, tokens_per_block, cache_fp8_type,
+                        q_out_fp8_type
                     );
                 });
             });
@@ -1698,7 +1732,38 @@ void rms_rotary_embedding_fuse_with_kv_store(
 
   auto* pos_ptr = positions.data_ptr<int64_t>(); 
   bool qwen3 =  (head_size == 128 && (num_heads + num_kv_heads) <= 128 && (rot_dim == 128 ||  rot_dim == 64));
-  int cache_fp8_type = use_fp8_e4m3 ? 1 : 0;
+  // The use_fp8_e4m3 flag only tells us whether the cache is fp8 at all -- the
+  // Python wrapper computes it as "not fp8" and negates it -- so relying on it
+  // made every fp8 cache take the e4m3 conversion, silently writing e5m2
+  // buffers with e4m3 bit patterns. Derive the format from the buffer instead.
+  TORCH_CHECK(
+      k_buffer.scalar_type() == v_buffer.scalar_type(),
+      "k_buffer and v_buffer must share a dtype; got ",
+      k_buffer.scalar_type(), " vs ", v_buffer.scalar_type());
+  int cache_fp8_type;
+  if (v_buffer.scalar_type() == at::ScalarType::Float8_e5m2) {
+    cache_fp8_type = 0;
+  } else if (v_buffer.scalar_type() == at::ScalarType::Float8_e4m3fn) {
+    cache_fp8_type = 1;
+  } else {
+    cache_fp8_type = use_fp8_e4m3 ? 1 : 0;
+  }
+  // q is handed straight to attention and never enters the KV cache, so its
+  // output format follows q_rope_out's own dtype rather than the cache dtype.
+  // Writing fp8 bytes into a bf16/fp16 buffer (or vice versa) would be
+  // reinterpreted by the consumer and corrupt every value.
+  int q_out_fp8_type;
+  if (q_rope_out.scalar_type() == at::ScalarType::Float8_e4m3fn) {
+    q_out_fp8_type = 1;
+  } else if (q_rope_out.scalar_type() == at::ScalarType::Float8_e5m2) {
+    q_out_fp8_type = 0;
+  } else {
+    TORCH_CHECK(
+        q_rope_out.scalar_type() == query.scalar_type(),
+        "q_rope_out must be fp8_e4m3, fp8_e5m2, or match query's dtype; got ",
+        q_rope_out.scalar_type(), " vs query ", query.scalar_type());
+    q_out_fp8_type = 2;
+  }
 
   AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
@@ -1748,6 +1813,7 @@ void rms_rotary_embedding_fuse_with_kv_store(
                     num_heads,
                     num_kv_heads,
                     cache_fp8_type,
+                    q_out_fp8_type,
                     stream
                 );
                 return;

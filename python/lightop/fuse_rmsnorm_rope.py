@@ -78,7 +78,12 @@ def rms_rotary_embedding_fuse_with_kv_store(
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     dims = query.dim()
     heads = query.shape[dims - 1] // head_dim if dims == 2 else query.shape[dims - 2]
-    q_rope_out = torch.empty((query.shape[0], heads, head_dim), dtype=v_buffer.dtype, device=query.device).contiguous()
+    # q goes straight to attention and never lands in the KV cache, so it must
+    # honour output_dtype instead of inheriting the cache dtype. Tying it to
+    # v_buffer.dtype silently emitted fp8 bytes that callers expecting the model
+    # dtype (e.g. gfx936, where is_nmz_fp8() is False) reinterpreted as bf16.
+    q_out_dtype = output_dtype if output_dtype is not None else v_buffer.dtype
+    q_rope_out = torch.empty((query.shape[0], heads, head_dim), dtype=q_out_dtype, device=query.device).contiguous()
     k_rope_out = torch.empty_strided(
         tuple(key.shape), tuple(key.stride()),
         dtype=v_buffer.dtype, device=key.device
@@ -102,11 +107,12 @@ def rms_rotary_embedding_fuse_with_kv_store(
             residual_k,
             epsilon
         )
-        
-        q_rope_out = query.to(v_buffer.dtype)
+
+        # Same rule as the fused path: q follows output_dtype, k/v the cache.
+        q_rope_out = query.to(q_out_dtype)
         k_rope_out = key.to(v_buffer.dtype)
         v_rope_out = v.to(v_buffer.dtype)
-        
+
         loc_id = kv_cache_loc // page_size
         loc_offset = kv_cache_loc % page_size
         if key.dim() == 2:
@@ -328,8 +334,10 @@ def rms_rotary_embedding_fuse_with_kv_store_fake(
     v_scale: Optional[float],
     epsilon: float = 1e-5
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    # 当 v_buffer 为 fp8 (uint8) 时，kernel 会将 q 转为 fp8 写入 q_rope_out，需预先分配
+    # q is returned to the caller rather than stored in the KV cache, so it
+    # follows output_dtype; only k/v adopt the cache dtype.
     use_fp8_cache = (v_buffer.dtype == torch.float8_e4m3fn or v_buffer.dtype == torch.float8_e5m2)
+    q_out_dtype = output_dtype if output_dtype is not None else v_buffer.dtype
 
     op.rms_rotary_embedding_fuse(
         positions,
@@ -346,10 +354,10 @@ def rms_rotary_embedding_fuse_with_kv_store_fake(
     )
     dims = query.dim()
     heads = query.shape[dims - 1] // head_dim if dims == 2 else query.shape[dims - 2]
-    q = query.to(v_buffer.dtype).view(-1, heads, head_dim).contiguous()
+    q = query.to(q_out_dtype).view(-1, heads, head_dim).contiguous()
     k = key.to(v_buffer.dtype)
     v = v.to(v_buffer.dtype)
-    
+
     loc_id = kv_cache_loc // page_size
     loc_offset = kv_cache_loc % page_size
     if k.dim() == 2:
