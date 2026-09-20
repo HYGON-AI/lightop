@@ -551,7 +551,8 @@ void decode_gather_and_up_convert_with_indices(
     torch::Tensor const& valid_lengths,
     torch::Tensor const& compact_indices,
     int64_t tokens_per_request,
-    std::optional<torch::Tensor> dedup_table);
+    std::optional<torch::Tensor> dedup_table,
+    bool reuse_compact_indices);
 void dsv4_dequantize_k_cache_paged_out(
     torch::Tensor const& cache_u8,
     torch::Tensor const& page_table,
@@ -1391,7 +1392,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
      py::arg("valid_lengths"),
      py::arg("compact_indices"),
      py::arg("tokens_per_request") = 1,
-     py::arg("dedup_table") = py::none());
+     py::arg("dedup_table") = py::none(),
+     py::arg("reuse_compact_indices") = false);
  m.def(
      "dsv4_dequantize_k_cache_paged_out",
      &at::native::dsv4_dequantize_k_cache_paged_out,

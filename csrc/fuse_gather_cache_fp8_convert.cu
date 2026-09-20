@@ -1168,7 +1168,8 @@ void decode_gather_and_up_convert_impl(
     torch::Tensor const& valid_lengths,
     std::optional<torch::Tensor> compact_indices,
     std::optional<torch::Tensor> dedup_table = std::nullopt,
-    int64_t tokens_per_request = 1) {
+    int64_t tokens_per_request = 1,
+    bool reuse_compact_indices = false) {
     constexpr int64_t kNoRopeHeadDim = kDecodeNopeDim;
     constexpr int64_t kWithRopeHeadDim = kDecodeNopeDim + kDecodeRopeDim;
 
@@ -1304,6 +1305,8 @@ void decode_gather_and_up_convert_impl(
         physical_token_stride == kDecodePhysicalTokenStrideWithRope;
     const int tokens_per_block = use_lds ? 4 : (decode_batch_size <= 8 ? 8 : 4);
 
+    TORCH_CHECK(!reuse_compact_indices || dedup_table.has_value() || tokens_per_request > 1,
+                "reuse_compact_indices requires dedup mode");
     if (dedup_table.has_value() || tokens_per_request > 1) {
         TORCH_CHECK(compact_indices.has_value(), "dedup requires compact indices");
         TORCH_CHECK(token_ids.scalar_type() == at::ScalarType::Int &&
@@ -1312,41 +1315,45 @@ void decode_gather_and_up_convert_impl(
                     "dedup requires int32 indices and packed 656-byte KV with RoPE");
         TORCH_CHECK(tokens_per_request > 0 && tokens_per_request <= batch_size,
                     "invalid tokens_per_request");
-        const int64_t requests = CEIL_DIV(batch_size, tokens_per_request);
-        if (!dedup_table.has_value()) {
-            int64_t table_width = 1;
-            while (table_width < 2 * tokens_per_request * width) {
-                table_width <<= 1;
-            }
-            const int64_t table_entries = requests * table_width;
-            auto storage = dst.view(at::kLong).view({-1});
-            TORCH_CHECK(storage.numel() >= table_entries,
-                        "dst storage is too small for the dedup table");
-            // Clear/build finish on this stream before gather overwrites dst.
-            // Only compact_indices survive into gather/MLA; no device allocation.
-            dedup_table = storage.narrow(0, 0, table_entries)
-                                .view({requests, table_width});
-        }
-        const auto& table = dedup_table.value();
-        TORCH_CHECK(table.is_cuda() && table.device() == src_cache.device() &&
-                    table.scalar_type() == at::ScalarType::Long &&
-                    table.dim() == 2 && table.is_contiguous(),
-                    "dedup table must be a contiguous int64 GPU matrix");
-        const int64_t table_width = table.size(1);
-        TORCH_CHECK(table.size(0) >= requests && table_width > 0 &&
-                    (table_width & (table_width - 1)) == 0 &&
-                    table_width >= 2 * tokens_per_request * width,
-                    "dedup table must cover all requests at <= 50% load");
-        table.narrow(0, 0, requests).fill_(-1);
         auto* compact_ptr = compact_indices.value().data_ptr<int32_t>();
-        decode_build_kv_dedup_indices_kernel<<<CEIL_DIV(total_tokens, 256), 256, 0, stream>>>(
-            token_ids.data_ptr<int32_t>(), valid_lengths.data_ptr<int32_t>(),
-            compact_ptr, reinterpret_cast<unsigned long long*>(table.data_ptr<int64_t>()),
-            batch_size, width, num_physical_tokens, tokens_per_request,
-            table_width, use_row_valid_lengths);
+        // Reuse only the mapping; every layer gathers its own KV values.
+        // A new selection or an intervening ordinary gather invalidates it.
+        if (!reuse_compact_indices) {
+            const int64_t requests = CEIL_DIV(batch_size, tokens_per_request);
+            if (!dedup_table.has_value()) {
+                int64_t table_width = 1;
+                while (table_width < 2 * tokens_per_request * width) {
+                    table_width <<= 1;
+                }
+                const int64_t table_entries = requests * table_width;
+                auto storage = dst.view(at::kLong).view({-1});
+                TORCH_CHECK(storage.numel() >= table_entries,
+                            "dst storage is too small for the dedup table");
+                // Clear/build finish on this stream before gather overwrites dst.
+                // Only compact_indices survive into gather/MLA; no device allocation.
+                dedup_table = storage.narrow(0, 0, table_entries)
+                                    .view({requests, table_width});
+            }
+            const auto& table = dedup_table.value();
+            TORCH_CHECK(table.is_cuda() && table.device() == src_cache.device() &&
+                        table.scalar_type() == at::ScalarType::Long &&
+                        table.dim() == 2 && table.is_contiguous(),
+                        "dedup table must be a contiguous int64 GPU matrix");
+            const int64_t table_width = table.size(1);
+            TORCH_CHECK(table.size(0) >= requests && table_width > 0 &&
+                        (table_width & (table_width - 1)) == 0 &&
+                        table_width >= 2 * tokens_per_request * width,
+                        "dedup table must cover all requests at <= 50% load");
+            table.narrow(0, 0, requests).fill_(-1);
+            decode_build_kv_dedup_indices_kernel<<<CEIL_DIV(total_tokens, 256), 256, 0, stream>>>(
+                token_ids.data_ptr<int32_t>(), valid_lengths.data_ptr<int32_t>(),
+                compact_ptr, reinterpret_cast<unsigned long long*>(table.data_ptr<int64_t>()),
+                batch_size, width, num_physical_tokens, tokens_per_request,
+                table_width, use_row_valid_lengths);
+        }
         const auto launch = [&](auto row_lengths) {
             launch_decode_gather_and_up_convert_with_indices<
-                int32_t, 4, decltype(row_lengths)::value, true,
+                int32_t, 8, decltype(row_lengths)::value, true,
                 kDecodePhysicalTokenStrideWithRope, true>(
                 src_cache.data_ptr<uint8_t>(), token_ids.data_ptr<int32_t>(),
                 valid_lengths.data_ptr<int32_t>(),
@@ -1413,10 +1420,11 @@ void decode_gather_and_up_convert_with_indices(
     torch::Tensor const& valid_lengths,
     torch::Tensor const& compact_indices,
     int64_t tokens_per_request,
-    std::optional<torch::Tensor> dedup_table) {
+    std::optional<torch::Tensor> dedup_table,
+    bool reuse_compact_indices) {
     decode_gather_and_up_convert_impl(
         src_cache, token_ids, dst, valid_lengths, compact_indices,
-        dedup_table, tokens_per_request);
+        dedup_table, tokens_per_request, reuse_compact_indices);
 }
 
 }
