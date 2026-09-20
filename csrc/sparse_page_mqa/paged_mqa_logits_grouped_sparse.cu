@@ -67,12 +67,12 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
     int16_t* sparse_mask,
     const int persistent_ctas_per_request) {
     static_assert(
-        kGroupedRows == 1 || (kGroupedRows >= 3 && kGroupedRows <= 5));
+        kGroupedRows == 1 || (kGroupedRows >= 3 && kGroupedRows <= 6));
     static_assert(
         kHeads == 8 || kHeads == 16 || kHeads == 32 || kHeads == 64);
     static_assert(!(kFp8Kv && kInt8Kv));
     constexpr int kPrimaryRows = kGroupedRows < 4 ? kGroupedRows : 4;
-    constexpr bool kHasSecondary = kGroupedRows == 5;
+    constexpr bool kHasSecondary = kGroupedRows >= 5;
     constexpr int kSecondaryRow = 4;
     constexpr int kTileK = 32;
     constexpr int kTileQ = 16;
@@ -101,8 +101,10 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
                          request * persistent_ctas_per_request;
     const int group_first_row = request * kGroupedRows;
     const int q_idx = group_first_row + (row_active ? row_slot : 0);
+    const int secondary_row =
+        kSecondaryRow + ((kGroupedRows == 6 && row_slot == 1) ? 1 : 0);
     const int secondary_q_idx =
-        group_first_row + (kHasSecondary ? kSecondaryRow : 0);
+        group_first_row + (kHasSecondary ? secondary_row : 0);
     const int logits_limit = static_cast<int>(logits_stride);
 
     int row_lengths[kGroupedRows];
@@ -120,7 +122,7 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
     }
     const int context_len = row_active ? row_lengths[row_slot] : 0;
     const int secondary_context_len =
-        kHasSecondary ? row_lengths[kSecondaryRow] : 0;
+        kHasSecondary ? row_lengths[secondary_row] : 0;
     const int num_compute_ctas = ceil_div(group_max_length, kTokensPerCta);
 
     constexpr int kKvBufferElements =
@@ -168,7 +170,9 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
 
     // Row 4 remains in LDS. Row slot 0 reloads one fragment at a time after
     // finishing row 0, avoiding a second full set of cached-Q VGPRs.
-    const auto* secondary_q = q + secondary_q_idx * kQSourceElements;
+    const auto* secondary_q =
+        q + (group_first_row + (kHasSecondary ? kSecondaryRow : 0)) *
+                kQSourceElements;
     for (int pos = tid * kAlignmentQ; pos < kQElements;
          pos += kThreads * kAlignmentQ) {
         f16x8_t value{};
@@ -182,10 +186,33 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
     if (tid < kPaddedHeads) {
         smem_secondary_weights[tid] =
             kHasSecondary && tid < kHeads
-            ? weights[secondary_q_idx * kHeads + tid]
+            ? weights[(group_first_row + kSecondaryRow) * kHeads + tid]
             : 0.0f;
     }
     __syncthreads();
+
+    const auto load_secondary_q = [&](int offset) {
+        if constexpr (kGroupedRows == 6) {
+            if (row_slot == 1) {
+                f16x8_t value{};
+                if (offset + kAlignmentQ <= kQSourceElements) {
+                    value = *reinterpret_cast<const f16x8_t*>(
+                        q + secondary_q_idx * kQSourceElements + offset);
+                }
+                return value;
+            }
+        }
+        return *reinterpret_cast<const f16x8_t*>(smem_secondary_q + offset);
+    };
+    const auto load_secondary_weight = [&](int head) {
+        if constexpr (kGroupedRows == 6) {
+            if (row_slot == 1) {
+                return head < kHeads
+                    ? weights[secondary_q_idx * kHeads + head] : 0.0f;
+            }
+        }
+        return smem_secondary_weights[head];
+    };
 
     float reg_weights[kQIterations * 4];
     const auto* row_weights = weights + q_idx * kHeads;
@@ -220,8 +247,7 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
                                  q_iter * kTileQ * kHeadDim +
                                  k_block * kTileK;
             const f16x8_t secondary_q_fragment =
-                *reinterpret_cast<const f16x8_t*>(
-                    smem_secondary_q + q_offset);
+                load_secondary_q(q_offset);
             secondary_lane_q_all_finite &=
                 bf16x8_all_finite(secondary_q_fragment);
             }
@@ -241,7 +267,7 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
     if constexpr (kHasSecondary) {
         if (lane < kHeads) {
             secondary_lane_weight_finite =
-                (__float_as_uint(smem_secondary_weights[lane]) &
+                (__float_as_uint(load_secondary_weight(lane)) &
                  0x7f800000u) != 0x7f800000u;
         }
     }
@@ -489,7 +515,7 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
             }
 
             if constexpr (kHasSecondary) {
-              if (row_slot == 0) {
+              if (row_slot < kGroupedRows - kPrimaryRows) {
                 const bool secondary_tile_valid =
                     tile_token_offset < secondary_context_len;
                 const bool compute_secondary =
@@ -514,8 +540,7 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
                                 q_iter * kTileQ * kHeadDim +
                                 k_block * kTileK;
                             const f16x8_t reg_secondary_q =
-                                *reinterpret_cast<const f16x8_t*>(
-                                    smem_secondary_q + q_offset);
+                                load_secondary_q(q_offset);
                             builtin_b16_mmac<false>(
                                 reg_kv.front,
                                 reg_secondary_q.front,
@@ -540,7 +565,7 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
                                 lane / kTileQ;
                             secondary_sum +=
                                 fmaxf(accumulators[q_iter][item], 0.0f) *
-                                smem_secondary_weights[head];
+                                load_secondary_weight(head);
                         }
                     }
                     #pragma unroll
@@ -721,8 +746,13 @@ void dispatch_grouped_rows(
                 num_heads, q, kv_cache, weights, context_lens, block_table,
                 logits, nonzero_mask, persistent_ctas, stream);
             return;
+        case 6:
+            dispatch_grouped_heads<6, kFp8Kv, kInt8Kv>(
+                num_heads, q, kv_cache, weights, context_lens, block_table,
+                logits, nonzero_mask, persistent_ctas, stream);
+            return;
         default:
-            TORCH_CHECK(false, "sparse MQA supports group_size 1/3/4/5");
+            TORCH_CHECK(false, "sparse MQA supports group_size 1/3/4/5/6");
     }
 }
 
@@ -773,8 +803,8 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
         "CU");
 
     TORCH_CHECK(
-        group_size == 1 || (group_size >= 3 && group_size <= 5),
-        "group_size must be 1 (independent rows) or 3/4/5 (MTP2/3/4)");
+        group_size == 1 || (group_size >= 3 && group_size <= 6),
+        "group_size must be 1 (independent rows) or 3/4/5/6 (MTP2/3/4/5)");
     const bool supported_batch = q.dim() == 4 && q.size(0) > 0 &&
         (group_size == 1 || q.size(0) % group_size == 0);
     TORCH_CHECK(
@@ -784,7 +814,7 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
              q.size(2) == 64) &&
             q.size(3) == kHeadDim && q.is_contiguous(),
         "q must be contiguous BF16 [batch, 1, heads, 128] with positive "
-        "batch, batch divisible by group_size for group_size 3/4/5, and "
+        "batch, batch divisible by group_size for group_size 3/4/5/6, and "
         "heads in 8/16/32/64");
     const int batch_size = static_cast<int>(q.size(0));
     const int num_heads = static_cast<int>(q.size(2));
