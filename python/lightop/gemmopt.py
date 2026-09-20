@@ -756,6 +756,7 @@ def _use_page_mqa_logits_sparse_mask(
     supported_device = (arch, num_cus) in (
         ("gfx936", 80),
         ("gfx938", 64),
+        ("gfx938", 72),
     )
     supported_heads = num_heads in (8, 16, 32, 64)
     bf16_path = (
@@ -891,23 +892,40 @@ def page_mqa_logits_sparse_mask_grouped(
         group_size: int = 5,
         *,
         _int8_kv: bool = False):
-    """Sparse MQA for independent rows or grouped MTP2/3/4 rows.
+    """Sparse MQA for independent rows or grouped MTP2/3/4/5 rows.
 
-    For ``group_size=1`` each row is independent. For ``group_size=3/4/5``,
+    For ``group_size=1`` each row is independent. For ``group_size=3/4/5/6``,
     consecutive rows must belong to one request and have identical block-table
-    contents, corresponding to MTP2/3/4. The returned sparse values/mask
+    contents, corresponding to MTP2/3/4/5. The returned sparse values/mask
     contract is identical to :func:`page_mqa_logits_sparse_mask`. Supported
     heads are 8/16/32/64. The FP8 path accepts the packed uint8 KV+scale layout
     used by :func:`paged_mqa_logits`.
+
+    On gfx938/64CU, H32 E4M3FN Q with packed FP8 KV uses native FP8 MMAC
+    with FP32 accumulation. Each CTA reuses KV for up to two grouped rows,
+    retaining the existing persistent scheduling and ``persistent_ctas``
+    controls. Other shapes/dtypes keep the BF16 compute path. Q scales must
+    already be folded into ``weights``.
     """
 
-    if group_size not in (1, 3, 4, 5):
-        raise ValueError("sparse MQA supports group_size 1, 3, 4, or 5")
+    if group_size not in (1, 3, 4, 5, 6):
+        raise ValueError("sparse MQA supports group_size 1, 3, 4, 5, or 6")
     fp8_q_dtypes = {torch.float8_e4m3fn}
     fp8_fnuz_dtype = getattr(torch, "float8_e4m3fnuz", None)
     if fp8_fnuz_dtype is not None:
         fp8_q_dtypes.add(fp8_fnuz_dtype)
-    if fused_kv_cache.dtype == torch.uint8 and q.dtype in fp8_q_dtypes:
+    native_fp8_path = (
+        not _int8_kv
+        and q.is_cuda
+        and q.dim() == 4
+        and q.shape[2] == 32
+        and q.dtype == torch.float8_e4m3fn
+        and fused_kv_cache.dtype == torch.uint8
+        and _paged_mqa_device_info(q.device.index) in (
+            ("gfx938", 64), ("gfx938", 72))
+    )
+    if (fused_kv_cache.dtype == torch.uint8 and q.dtype in fp8_q_dtypes
+            and not native_fp8_path):
         q = q.to(torch.bfloat16)
     expected_batch = q.shape[0] if q.dim() > 0 else 0
     if expected_batch <= 0:
@@ -917,10 +935,12 @@ def page_mqa_logits_sparse_mask_grouped(
             "grouped sparse MQA requires batch divisible by group_size")
     if (q.dim() != 4 or q.shape[0] != expected_batch or q.shape[1] != 1 or
             q.shape[2] not in (8, 16, 32, 64) or q.shape[3] != 128 or
-            q.dtype != torch.bfloat16 or not q.is_contiguous()):
+            (q.dtype != torch.bfloat16 and not native_fp8_path) or
+            not q.is_contiguous()):
         raise ValueError(
             "sparse MQA requires contiguous BF16 q "
-            "[batch, 1, heads, 128], heads in 8/16/32/64")
+            "[batch, 1, heads, 128], heads in 8/16/32/64, or gfx938/64CU "
+            "E4M3FN q [batch, 1, 32, 128] with packed FP8 KV")
     if fused_kv_cache.dtype not in (torch.bfloat16, torch.uint8):
         raise ValueError("grouped sparse MQA supports BF16 or packed FP8 KV")
     if _int8_kv and fused_kv_cache.dtype != torch.uint8:
@@ -954,14 +974,20 @@ def page_mqa_logits_sparse_mask_grouped(
             "grouped sparse MQA requires clean_logits=True, num_warps=4 "
             "and max_context_len equal to block-table capacity")
     arch, num_cus = _paged_mqa_device_info(q.device.index)
-    if (arch, num_cus) not in (("gfx936", 80), ("gfx938", 64)):
+    if (arch, num_cus) not in (
+            ("gfx936", 80), ("gfx938", 64), ("gfx938", 72)):
         raise ValueError(
-            "grouped sparse MQA requires gfx936/80CU or gfx938/64CU")
+            "grouped sparse MQA requires gfx936/80CU or gfx938/64CU/72CU")
     native_op = (
         op.page_mqa_logits_sparse_mask_grouped_int8
         if _int8_kv
         else op.page_mqa_logits_sparse_mask_grouped
     )
+    if (native_fp8_path and group_size == 6 and expected_batch == 30
+            and persistent_ctas == 0):
+        # BS5 verify uses 128 persistent CTAs per request-row tile. Explicit
+        # caller choices and other shapes retain their existing policy.
+        persistent_ctas = 128
     return native_op(
         q,
         fused_kv_cache,
