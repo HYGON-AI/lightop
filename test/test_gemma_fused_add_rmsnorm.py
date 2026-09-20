@@ -141,8 +141,8 @@ class YourRMSNormClass(torch.nn.Module):
         if residual is not None:
             if post_residual_addition is not None:
                 residual = residual + post_residual_addition
-            x = x + residual
-            residual = x
+            x = x.float() + residual.float()
+            residual = x.to(orig_dtype)
 
         x = x.float()
         variance = x.pow(2).mean(dim=-1, keepdim=True)
