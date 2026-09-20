@@ -1,5 +1,8 @@
 #pragma once
 
+#include <cstdlib>
+#include <cstring>
+
 #include "sparse_page_mqa.h"
 #include "../paged_mqa_logits/paged_mqa_logits_fp8_impl.hpp"
 
@@ -15,10 +18,10 @@ constexpr int kTokenWarps = 4;
 constexpr int kTokensPerCta = kTokenWarps * kPageSize;
 
 // Extend the row-pair FP8 pipeline from 6cd1dae to group_size 1/3/4/5/6.
-// Each CTA caches up to two rows of the same request and loops over its KV
-// chunks using the existing persistent CTA count. Each wave owns one page
-// and reuses its FP8 KV fragments for both Q rows.
-template <int kGroupedRows>
+// Each CTA caches rows of the same request and loops over its KV chunks
+// using the existing persistent CTA count. Each wave owns one page and
+// reuses its FP8 KV fragments for every cached Q row.
+template <int kGroupedRows, int kRowsPerCta = (kGroupedRows == 1 ? 1 : 2)>
 __attribute__((amdgpu_flat_work_group_size(256, 256)))
 __global__ void paged_mqa_logits_grouped_native_fp8_kernel(
     const at::Float8_e4m3fn* q,
@@ -35,7 +38,7 @@ __global__ void paged_mqa_logits_grouped_native_fp8_kernel(
     static_assert(kGroupedRows == 1 ||
                   (kGroupedRows >= 3 && kGroupedRows <= 6));
 #if defined(__gfx938__)
-    constexpr int kRowsPerCta = kGroupedRows == 1 ? 1 : 2;
+    static_assert(kRowsPerCta >= 1 && kRowsPerCta <= kGroupedRows);
     constexpr int kPairsPerRequest =
         (kGroupedRows + kRowsPerCta - 1) / kRowsPerCta;
     constexpr int kTileK = 64;
@@ -253,7 +256,7 @@ __global__ void paged_mqa_logits_grouped_native_fp8_kernel(
 #endif
 }
 
-template <int kGroupedRows>
+template <int kGroupedRows, int kRowsPerCta = (kGroupedRows == 1 ? 1 : 2)>
 void launch_grouped_kernel(
     const torch::Tensor& q,
     const torch::Tensor& kv_cache,
@@ -264,7 +267,7 @@ void launch_grouped_kernel(
     torch::Tensor& nonzero_mask,
     const int persistent_ctas,
     cudaStream_t stream) {
-    constexpr int kRowsPerCta = kGroupedRows == 1 ? 1 : 2;
+    static_assert(kRowsPerCta >= 1 && kRowsPerCta <= kGroupedRows);
     constexpr int kPairsPerRequest =
         (kGroupedRows + kRowsPerCta - 1) / kRowsPerCta;
     constexpr int kThreads = kTokenWarps * WARP_SIZE_GPU;
@@ -282,7 +285,7 @@ void launch_grouped_kernel(
     const dim3 grid(static_cast<unsigned int>(blocks), 1, 1);
     const dim3 block(kThreads, 1, 1);
 
-    paged_mqa_logits_grouped_native_fp8_kernel<kGroupedRows><<<
+    paged_mqa_logits_grouped_native_fp8_kernel<kGroupedRows, kRowsPerCta><<<
         grid, block, kSmemBytes, stream>>>(
         q.data_ptr<at::Float8_e4m3fn>(),
         kv_cache.data_ptr<uint8_t>(),
@@ -328,10 +331,23 @@ inline void dispatch_grouped_rows(
             launch_grouped_kernel<5>(q, kv_cache, weights, context_lens,
                 block_table, logits, nonzero_mask, persistent_ctas, stream);
             return;
-        case 6:
-            launch_grouped_kernel<6>(q, kv_cache, weights, context_lens,
-                block_table, logits, nonzero_mask, persistent_ctas, stream);
+        case 6: {
+            const char* rows = std::getenv("LIGHTOP_SPARSE_MQA_GROUP6_ROWS_PER_CTA");
+            if (rows == nullptr || std::strcmp(rows, "2") == 0) {
+                launch_grouped_kernel<6, 2>(q, kv_cache, weights, context_lens,
+                    block_table, logits, nonzero_mask, persistent_ctas, stream);
+            } else if (std::strcmp(rows, "3") == 0) {
+                launch_grouped_kernel<6, 3>(q, kv_cache, weights, context_lens,
+                    block_table, logits, nonzero_mask, persistent_ctas, stream);
+            } else if (std::strcmp(rows, "6") == 0) {
+                launch_grouped_kernel<6, 6>(q, kv_cache, weights, context_lens,
+                    block_table, logits, nonzero_mask, persistent_ctas, stream);
+            } else {
+                TORCH_CHECK(false,
+                    "LIGHTOP_SPARSE_MQA_GROUP6_ROWS_PER_CTA must be 2, 3 or 6");
+            }
             return;
+        }
         default:
             TORCH_CHECK(false, "native FP8 sparse MQA supports group_size 1/3/4/5/6");
     }

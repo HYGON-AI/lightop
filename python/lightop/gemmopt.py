@@ -980,6 +980,11 @@ def page_mqa_logits_sparse_mask_grouped(
         if _int8_kv
         else op.page_mqa_logits_sparse_mask_grouped
     )
+    if (native_fp8_path and group_size == 6 and expected_batch == 30
+            and persistent_ctas == 0):
+        # BS5 verify uses 128 persistent CTAs per request-row tile. Explicit
+        # caller choices and other shapes retain their existing policy.
+        persistent_ctas = 128
     return native_op(
         q,
         fused_kv_cache,
