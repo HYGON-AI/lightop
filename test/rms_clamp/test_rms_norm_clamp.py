@@ -110,8 +110,9 @@ def test_fused_add_rms_norm_clamp() -> None:
             weight = (
                 torch.randn(shape[-1], device="cuda", dtype=dtype) * 0.5 + 1.0
             ).contiguous()
-            expected_residual = x + residual
-            expected = torch_rms_norm(expected_residual, weight, LIMIT)
+            summed = x.float() + residual.float()
+            expected_residual = summed.to(residual.dtype)
+            expected = torch_rms_norm(summed, weight, LIMIT).to(x.dtype)
 
             actual_x, actual_residual = x.clone(), residual.clone()
             op.fused_add_rms_norm_opt(

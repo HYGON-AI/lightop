@@ -125,124 +125,102 @@ __global__ void rms_norm_optional_weight_kernel(
   }
 }
 
-/* Function specialization in the case of FP16/BF16 tensors.
-   Additional optimizations we can make in this case are
-   packed and vectorized operations, which help with the
-   memory latency bottleneck. */
+/* Vectorized fallback: keep the FP32 sum for normalization. Re-read the
+   original inputs after the reduction instead of storing a rounded sum. */
 template <typename scalar_t, int width, bool IS_GEMMA = false, bool APPLY_CLAMP = false>
 __global__ std::enable_if_t<(width > 0) && _typeConvert<scalar_t>::exists>
 fused_add_rms_norm_kernel(
-    scalar_t* __restrict__ input,         // [..., hidden_size]
-    scalar_t* __restrict__ residual,      // [..., hidden_size]
-    const scalar_t* __restrict__ weight,  // [hidden_size]
+    scalar_t* __restrict__ input,
+    scalar_t* __restrict__ residual,
+    const scalar_t* __restrict__ weight,
     const float epsilon, const int num_tokens, const int hidden_size,
     const float limit) {
-  // Sanity checks on our vector struct and type-punned pointer arithmetic
-  static_assert(std::is_pod_v<_f16Vec<scalar_t, width>>);
-  static_assert(sizeof(_f16Vec<scalar_t, width>) == sizeof(scalar_t) * width);
-
+  using Vec = at::native::memory::aligned_vector<scalar_t, width>;
   const int vec_hidden_size = hidden_size / width;
+  auto* input_v = reinterpret_cast<Vec*>(input);
+  auto* residual_v = reinterpret_cast<Vec*>(residual);
+  const auto* weight_v = reinterpret_cast<const Vec*>(weight);
   __shared__ float s_variance;
   float variance = 0.0f;
-  /* These and the argument pointers are all declared `restrict` as they are
-     not aliased in practice. Argument pointers should not be dereferenced
-     in this kernel as that would be undefined behavior */
-  auto* __restrict__ input_v =
-      reinterpret_cast<_f16Vec<scalar_t, width>*>(input);
-  auto* __restrict__ residual_v =
-      reinterpret_cast<_f16Vec<scalar_t, width>*>(residual);
-  auto* __restrict__ weight_v =
-      reinterpret_cast<const _f16Vec<scalar_t, width>*>(weight);
 
   for (int idx = threadIdx.x; idx < vec_hidden_size; idx += blockDim.x) {
-    int id = blockIdx.x * vec_hidden_size + idx;
-    _f16Vec<scalar_t, width> temp = input_v[id];
-    temp += residual_v[id];
-    variance += temp.sum_squares();
-    residual_v[id] = temp;
+    const int id = blockIdx.x * vec_hidden_size + idx;
+    const Vec x = input_v[id];
+    const Vec r = residual_v[id];
+#pragma unroll
+    for (int k = 0; k < width; ++k) {
+      const float sum = (float)x.val[k] + (float)r.val[k];
+      variance += sum * sum;
+    }
   }
 
   using BlockReduce = cub::BlockReduce<float, 1024>;
   __shared__ typename BlockReduce::TempStorage reduceStore;
   variance = BlockReduce(reduceStore).Reduce(variance, cub::Sum{}, blockDim.x);
-
   if (threadIdx.x == 0) {
     s_variance = rsqrtf(variance / hidden_size + epsilon);
   }
   __syncthreads();
 
   for (int idx = threadIdx.x; idx < vec_hidden_size; idx += blockDim.x) {
-    int id = blockIdx.x * vec_hidden_size + idx;
-    _f16Vec<scalar_t, width> temp = residual_v[id];
-    temp *= s_variance;
-
-    _f16Vec<scalar_t, width> w_vec = weight_v[idx];
-    if constexpr (IS_GEMMA) {
-        scalar_t* w_scalars = reinterpret_cast<scalar_t*>(&w_vec);
-        #pragma unroll
-        for (int i = 0; i < width; ++i) {
-            float w_f = (float)w_scalars[i];
-            w_f += 1.0f;
-            w_scalars[i] = (scalar_t)w_f;
-        }
-    }
-    temp *= w_vec;
-    if constexpr (APPLY_CLAMP) {
-      scalar_t* temp_scalars = reinterpret_cast<scalar_t*>(&temp);
-      #pragma unroll
-      for (int i = 0; i < width; ++i) {
-        from_float<scalar_t>(
-            temp_scalars[i],
-            clamp_with_limit(to_float(temp_scalars[i]), limit));
+    const int id = blockIdx.x * vec_hidden_size + idx;
+    Vec x = input_v[id];
+    Vec r = residual_v[id];
+    const Vec w = weight_v[idx];
+#pragma unroll
+    for (int k = 0; k < width; ++k) {
+      const float sum = (float)x.val[k] + (float)r.val[k];
+      float weight_value = (float)w.val[k];
+      if constexpr (IS_GEMMA) { weight_value += 1.0f; }
+      float normalized = sum * s_variance * weight_value;
+      if constexpr (APPLY_CLAMP) {
+        normalized = clamp_with_limit(normalized, limit);
       }
+      r.val[k] = (scalar_t)sum;
+      x.val[k] = (scalar_t)normalized;
     }
-
-    input_v[id] = temp;
+    residual_v[id] = r;
+    input_v[id] = x;
   }
 }
 
-/* Generic fused_add_rms_norm_kernel
-   The width field is not used here but necessary for other specializations.
- */
+/* Generic fallback, including unaligned buffers and non-vectorizable rows. */
 template <typename scalar_t, int width, bool IS_GEMMA = false, bool APPLY_CLAMP = false>
 __global__ std::enable_if_t<(width == 0) || !_typeConvert<scalar_t>::exists>
 fused_add_rms_norm_kernel(
-    scalar_t* __restrict__ input,         // [..., hidden_size]
-    scalar_t* __restrict__ residual,      // [..., hidden_size]
-    const scalar_t* __restrict__ weight,  // [hidden_size]
+    scalar_t* __restrict__ input,
+    scalar_t* __restrict__ residual,
+    const scalar_t* __restrict__ weight,
     const float epsilon, const int num_tokens, const int hidden_size,
     const float limit) {
   __shared__ float s_variance;
   float variance = 0.0f;
 
   for (int idx = threadIdx.x; idx < hidden_size; idx += blockDim.x) {
-    scalar_t z = input[blockIdx.x * hidden_size + idx];
-    z += residual[blockIdx.x * hidden_size + idx];
-    float x = (float)z;
-    variance += x * x;
-    residual[blockIdx.x * hidden_size + idx] = z;
+    const int id = blockIdx.x * hidden_size + idx;
+    const float sum = (float)input[id] + (float)residual[id];
+    variance += sum * sum;
   }
 
   using BlockReduce = cub::BlockReduce<float, 1024>;
   __shared__ typename BlockReduce::TempStorage reduceStore;
   variance = BlockReduce(reduceStore).Reduce(variance, cub::Sum{}, blockDim.x);
-
   if (threadIdx.x == 0) {
     s_variance = rsqrtf(variance / hidden_size + epsilon);
   }
   __syncthreads();
 
   for (int idx = threadIdx.x; idx < hidden_size; idx += blockDim.x) {
-    float x = (float)residual[blockIdx.x * hidden_size + idx];
+    const int id = blockIdx.x * hidden_size + idx;
+    const float sum = (float)input[id] + (float)residual[id];
     float w = (float)weight[idx];
     if constexpr (IS_GEMMA) { w += 1.0f; }
-
-    scalar_t normalized =
-        ((scalar_t)(x * s_variance)) * ((scalar_t)w);
+    float normalized = sum * s_variance * w;
     if constexpr (APPLY_CLAMP) {
-      normalized = (scalar_t)clamp_with_limit((float)normalized, limit);
+      normalized = clamp_with_limit(normalized, limit);
     }
-    input[blockIdx.x * hidden_size + idx] = normalized;
+    residual[id] = (scalar_t)sum;
+    input[id] = (scalar_t)normalized;
   }
 }
 
@@ -380,6 +358,7 @@ __global__ void fused_add_rms_kernel_small_hidden_multi_token(
 
   scalar_t input_vec[Vec];
   scalar_t residual_vec[Vec];
+  T_ACC summed_vec[Vec];
   T_ACC sum = 0;
   if (valid_token) {
     const int64_t idx =
@@ -388,8 +367,9 @@ __global__ void fused_add_rms_kernel_small_hidden_multi_token(
     *(LoadT*)residual_vec = *(const LoadT*)(residual + idx);
 #pragma unroll
     for (int ii = 0; ii < Vec; ++ii) {
-      residual_vec[ii] += input_vec[ii];
-      const T_ACC x = static_cast<T_ACC>(to_float(residual_vec[ii]));
+      const T_ACC x = static_cast<T_ACC>(to_float(input_vec[ii])) +
+                      static_cast<T_ACC>(to_float(residual_vec[ii]));
+      summed_vec[ii] = x;
       sum += x * x;
     }
   }
@@ -408,10 +388,11 @@ __global__ void fused_add_rms_kernel_small_hidden_multi_token(
     for (int ii = 0; ii < Vec; ++ii) {
       T_ACC w_val = static_cast<T_ACC>(to_float(weight_vec[ii]));
       if constexpr (IS_GEMMA) { w_val += 1.0f; }
-      T_ACC normalized = to_float(residual_vec[ii]) * rstd * w_val;
+      T_ACC normalized = summed_vec[ii] * rstd * w_val;
       if constexpr (APPLY_CLAMP) {
         normalized = clamp_with_limit(normalized, limit);
       }
+      from_float<scalar_t>(residual_vec[ii], summed_vec[ii]);
       from_float<scalar_t>(input_vec[ii], normalized);
     }
     const int64_t idx =
@@ -486,6 +467,67 @@ static inline bool launch_fused_add_rms_small_hidden_multi_token(
 }
 #endif
 
+
+#ifdef USE_ROCM
+// FP32 residual sums stay in registers; each thread handles vectorized chunks.
+template<typename scalar_t, int Hidden, int Threads, bool IsGemma, bool Clamp>
+__global__ __launch_bounds__(Threads) void fused_add_rms_kernel_fp32_tiled(
+    scalar_t* input, scalar_t* residual, const scalar_t* weight,
+    float eps, float limit) {
+  constexpr int Vec = 8;
+  constexpr int Chunks = Hidden / (Threads * Vec);
+  static_assert(Chunks > 0 && Hidden % (Threads * Vec) == 0);
+  using Pack = at::native::memory::aligned_vector<scalar_t, Vec>;
+  float sums[Chunks][Vec];
+  float variance = 0.f;
+  const int lane = threadIdx.x % C10_WARP_SIZE;
+  const int warp = threadIdx.x / C10_WARP_SIZE;
+  constexpr int Warps = Threads / C10_WARP_SIZE;
+  __shared__ float partial[Warps];
+  __shared__ float rstd;
+  const int64_t base = static_cast<int64_t>(blockIdx.x) * Hidden;
+#pragma unroll
+  for (int c = 0; c < Chunks; ++c) {
+    const int col = (c * Threads + threadIdx.x) * Vec;
+    const Pack x = *reinterpret_cast<const Pack*>(input + base + col);
+    const Pack r = *reinterpret_cast<const Pack*>(residual + base + col);
+#pragma unroll
+    for (int v = 0; v < Vec; ++v) {
+      const float s = static_cast<float>(x.val[v]) + static_cast<float>(r.val[v]);
+      sums[c][v] = s;
+      variance += s * s;
+    }
+  }
+  variance = SubWarpReduceSumWithWidth<float, C10_WARP_SIZE>(variance);
+  if (lane == 0) partial[warp] = variance;
+  __syncthreads();
+  if (warp == 0) {
+    float total = lane < Warps ? partial[lane] : 0.f;
+    total = SubWarpReduceSumWithWidth<float, C10_WARP_SIZE>(total);
+    if (lane == 0) rstd = c10::cuda::compat::rsqrt(total / Hidden + eps);
+  }
+  __syncthreads();
+  const float scale = rstd;
+#pragma unroll
+  for (int c = 0; c < Chunks; ++c) {
+    const int col = (c * Threads + threadIdx.x) * Vec;
+    const Pack w = *reinterpret_cast<const Pack*>(weight + col);
+    Pack out, res;
+#pragma unroll
+    for (int v = 0; v < Vec; ++v) {
+      float wt = static_cast<float>(w.val[v]);
+      if constexpr (IsGemma) wt += 1.f;
+      float y = sums[c][v] * scale * wt;
+      if constexpr (Clamp) y = clamp_with_limit(y, limit);
+      out.val[v] = static_cast<scalar_t>(y);
+      res.val[v] = static_cast<scalar_t>(sums[c][v]);
+    }
+    *reinterpret_cast<Pack*>(residual + base + col) = res;
+    *reinterpret_cast<Pack*>(input + base + col) = out;
+  }
+}
+#endif
+
 template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512, bool IS_GEMMA=false, bool APPLY_CLAMP=false>
 __global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scalar_t* gamma,int cols,T_ACC eps, int num_tokens,T_ACC limit)
 {
@@ -500,6 +542,7 @@ __global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scal
         int tcol=cols/Vec;
         scalar_t intput_vec[Vec];
         scalar_t residual_vec[Vec];
+        T_ACC summed_vec[Vec];
         T_ACC trstd;
         int64_t idx = i * tcol + j;
         idx*=Vec;
@@ -508,8 +551,9 @@ __global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scal
           *(LoadT*)residual_vec = *(LoadT*)(residual+idx);
           #pragma unroll
           for (int ii = 0; ii < Vec; ii++) {
-            residual_vec[ii]+=intput_vec[ii];
-            val += to_float(residual_vec[ii])*to_float(residual_vec[ii]);
+            summed_vec[ii] = static_cast<T_ACC>(to_float(intput_vec[ii])) +
+                             static_cast<T_ACC>(to_float(residual_vec[ii]));
+            val += summed_vec[ii] * summed_vec[ii];
           }
         }
         val = BlockReduceSum_NEW<T_ACC,block_size>(val,val_shared);
@@ -522,10 +566,11 @@ __global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scal
             int jj=j*Vec+ii;
             T_ACC w_val = to_float(gamma[jj]);
             if constexpr (IS_GEMMA) { w_val += 1.0f; }
-            T_ACC normalized = to_float(residual_vec[ii]) * trstd * w_val;
+            T_ACC normalized = summed_vec[ii] * trstd * w_val;
             if constexpr (APPLY_CLAMP) {
               normalized = clamp_with_limit(normalized, limit);
             }
+            from_float<scalar_t>(residual_vec[ii], summed_vec[ii]);
             from_float<scalar_t>(intput_vec[ii], normalized);
           }
           *(LoadT*)(residual+idx)=*(LoadT*)residual_vec;
@@ -884,7 +929,9 @@ void fused_add_rms_norm_opt_impl(torch::Tensor& input,     // [..., hidden_size]
       limit == -1.0 || (std::isfinite(limit) && limit >= 0.0),
       "limit must be -1 (disabled) or a finite non-negative value");
   int hidden_size = input.size(-1);
+  TORCH_CHECK(hidden_size > 0, "hidden_size must be positive");
   int num_tokens = input.numel() / hidden_size;
+  if (num_tokens == 0) return;
   int grid = num_tokens;
   if(num_tokens == 288) grid = 256;
   const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
@@ -906,6 +953,21 @@ void fused_add_rms_norm_opt_impl(torch::Tensor& input,     // [..., hidden_size]
         scalar_t* other_data = residual.expect_contiguous()->data_ptr<scalar_t>();
         scalar_t* weight_data= weight.expect_contiguous()->data_ptr<scalar_t>();
 #ifdef USE_ROCM
+        // The tiled path is specialized for aligned BF16/FP16 rows.
+        if constexpr (sizeof(scalar_t) == 2) {
+          if (hidden_size == 4096) {
+            fused_add_rms_kernel_fp32_tiled<scalar_t, 4096, 512, IS_GEMMA, APPLY_CLAMP>
+                <<<num_tokens, 512, 0, stream>>>(
+                    self_data, other_data, weight_data, eps, static_cast<float>(limit));
+            return;
+          }
+          if (hidden_size == 8192) {
+            fused_add_rms_kernel_fp32_tiled<scalar_t, 8192, 512, IS_GEMMA, APPLY_CLAMP>
+                <<<num_tokens, 512, 0, stream>>>(
+                    self_data, other_data, weight_data, eps, static_cast<float>(limit));
+            return;
+          }
+        }
         if constexpr (!IS_GEMMA && sizeof(scalar_t) == 2) {
           if (launch_fused_add_rms_small_hidden_multi_token<
                   scalar_t, T_ACC, IS_GEMMA, APPLY_CLAMP>(

@@ -44,10 +44,10 @@ def torch_fused_add_rms_norm(
     weight: torch.Tensor,
     epsilon: float,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    # The BF16 residual addition is rounded before the FP32 RMSNorm.
-    residual_out = x + residual
-    x_out = torch_rms_norm(residual_out, weight, epsilon)
-    return x_out, residual_out
+    # Preserve the FP32 sum until normalization; round only the outputs.
+    summed = x.float() + residual.float()
+    x_out = torch_rms_norm(summed, weight, epsilon).to(x.dtype)
+    return x_out, summed.to(residual.dtype)
 
 
 def benchmark_us(fn) -> float:
