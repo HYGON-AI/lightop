@@ -196,23 +196,30 @@ __global__ void fp4_logits_kernel(
         length, page_size, page_shift, table_stride, qb_stride, qh_stride, wb_stride);
 }
 
-// gfx938 has FP8 K=32 MMAC, but no native block-scaled FP4 MMAC. Every E2M1
-// value is m * 2^e with m in {1, 1.5} and e in [-1, 2], so subtracting a
-// per-block delta from the E4M3 exponent field folds that block's scale into
-// the operand exactly -- the same thing DeepGEMM's block-scaled UMMA does
-// before its single FP32 accumulator. E4M3 normals reach down to 2^-6, which
-// leaves room for a delta of 5 below the token's largest block scale; wider
-// spans fall back to the BF16 block-scaled path. What remains outside the dot
-// is only 2^(max_qexp + max_scale - 254), a factor common to all 128 terms,
-// so applying it once to the finished dot is exact and accumulation-order
-// independent -- unlike rescaling separate FP32 partial sums.
-__device__ __forceinline__ intx2 fp4_to_fp8(unsigned packed, unsigned delta) {
+// gfx938 has FP8 K=32 MMAC, but no native block-scaled FP4 MMAC: clang rejects
+// __builtin_hcu_mmac_f32_16x16x64_fp4 for gfx938 with "needs target feature
+// gfx946-insts", and the block-scaled form wants gfx948-insts. Every E2M1 value
+// is m * 2^e with m in {1, 1.5} and e in [-1, 2], so subtracting a per-block
+// delta from the E4M3 exponent field folds that block's scale into the operand
+// exactly -- the same thing DeepGEMM's block-scaled UMMA does before its single
+// FP32 accumulator. What remains outside the dot is only
+// 2^(max_qexp + pivot - 254), a factor common to all 128 terms, so applying it
+// once to the finished dot is exact and accumulation-order independent --
+// unlike rescaling separate FP32 partial sums.
+//
+// delta is signed: the pivot the deltas are measured from is free, not pinned
+// to the token's largest block scale, which is what lets a token span more
+// than the 5 exponent steps available below that maximum.
+__device__ __forceinline__ intx2 fp4_to_fp8(unsigned packed, int delta) {
     // Magnitudes 0..3 come from the low constant, 4..7 from the high one.
-    // Byte 0 of the low constant stays zero so code 0 keeps decoding to zero;
-    // no byte can borrow because delta <= 5 and the smallest shifted byte is
-    // 0x30 (E4M3 0.5), which lands exactly on the minimum normal 2^-6.
-    const unsigned hi = 0x4c484440u - delta * 0x08080808u;
-    const unsigned lo = 0x3c383000u - delta * 0x08080800u;
+    // Byte 0 of the low constant stays zero so code 0 keeps decoding to zero.
+    // delta in [-6, 5] is the exact window, verified by enumerating all eight
+    // E2M1 codes against every shift: at delta 5 the smallest byte is 0x08
+    // (2^-6, the minimum E4M3 normal) and at delta -6 the largest is 0x7c
+    // (384, still below the 0x7f NaN); one step further either way a byte
+    // borrows to zero or carries into the sign bit.
+    const unsigned hi = 0x4c484440u - static_cast<unsigned>(delta) * 0x08080808u;
+    const unsigned lo = 0x3c383000u - static_cast<unsigned>(delta) * 0x08080800u;
     const unsigned even = __builtin_amdgcn_perm(hi, lo, packed & 0x07070707u)
                         | ((packed & 0x08080808u) << 4);
     const unsigned odd = __builtin_amdgcn_perm(hi, lo, (packed >> 4) & 0x07070707u)
@@ -346,12 +353,17 @@ __global__ void fp4_fp8_logits_kernel(
         }
         const unsigned min_scale = min(min(exps[0], exps[1]), min(exps[2], exps[3]));
         const unsigned max_scale = max(max(exps[0], exps[1]), max(exps[2], exps[3]));
-        // Folding a block scale into the E4M3 exponent field is exact only
-        // while the shifted operand stays normal, which bounds the span at 5.
-        // The leftover common factor must also stay a normal FP32.
-        scales_ok &= max_scale - min_scale <= 5
-                  && static_cast<int>(max_qexp) + static_cast<int>(max_scale) - 127 >= 1
-                  && max_qexp + static_cast<int>(max_scale) - 127 <= 240;
+        // Deltas are measured from a free pivot rather than from max_scale.
+        // The exact fold window is delta in [-6, 5], so any pivot in
+        // [max_scale - 6, min_scale + 5] keeps every block exact and a span of
+        // 11 is reachable. Clamping at max_scale leaves every span <= 5 token
+        // bit-identical to the pinned-pivot form; wider spans slide the pivot
+        // down instead of dropping the whole wave to the BF16 path. The
+        // leftover common factor must still be a normal FP32.
+        const int pivot = static_cast<int>(min(max_scale, min_scale + 5u));
+        scales_ok &= max_scale - min_scale <= 11
+                  && static_cast<int>(max_qexp) + pivot - 127 >= 1
+                  && static_cast<int>(max_qexp) + pivot - 127 <= 240;
         if (__ballot(!scales_ok)) {
             fp4_logits_wave<H, TilesPerWave>(q, weights, slots, lens, table, out,
                 length, page_size, page_shift, table_stride, qb_stride, qh_stride, wb_stride);
@@ -361,7 +373,7 @@ __global__ void fp4_fp8_logits_kernel(
 #pragma unroll
         for (int k = 0; k < 4; ++k) {
             const unsigned packed = valid ? *reinterpret_cast<const unsigned*>(payload + k * 16 + group * 4) : 0;
-            const intx2 kr = fp4_to_fp8(packed, max_scale - exps[k]);
+            const intx2 kr = fp4_to_fp8(packed, pivot - static_cast<int>(exps[k]));
 #pragma unroll
             for (int h = 0; h < HeadTiles; ++h) {
                 acc[h] = __builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(kr, qr[h][k], acc[h], false, false);
@@ -369,7 +381,8 @@ __global__ void fp4_fp8_logits_kernel(
         }
         // One power of two common to all 128 terms, applied to the finished
         // dot. Exact, and independent of the accumulation order.
-        const float factor = __uint_as_float(static_cast<unsigned>(max_qexp + max_scale - 127) << 23);
+        const float factor = __uint_as_float(
+            static_cast<unsigned>(static_cast<int>(max_qexp) + pivot - 127) << 23);
 #pragma unroll
         for (int h = 0; h < HeadTiles; ++h) {
 #pragma unroll

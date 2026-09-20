@@ -91,7 +91,7 @@ def make_case(batch, heads, length, page_size, seed=0, strided=False,
 
     `block_jitter` is the per-32-block exponent spread applied on top of the
     per-token magnitude. It decides the intra-token scale span, which is what
-    the FP8 fold's span<=5 condition tests, so it is a parameter rather than a
+    the FP8 fold's span<=11 condition tests, so it is a parameter rather than a
     hidden assumption: reporting a fast-path hit rate off block_jitter=0 would
     describe a pool whose four blocks are near-identical by construction.
     """
@@ -250,12 +250,16 @@ def test_wide_block_scale(op, scale_lo, scale_hi):
     assert_logits_close(op(*case), case, 32)
 
 
-@pytest.mark.parametrize("span", [0, 1, 5, 6])
+@pytest.mark.parametrize("span", [0, 1, 5, 6, 10, 11, 12])
 def test_block_scale_span_boundary(op, span):
-    """The FP8 fold is exact up to a span of 5 and must hand over beyond it.
+    """The FP8 fold is exact up to a span of 11 and must hand over beyond it.
 
-    Both sides of the boundary have to produce the same accuracy, otherwise
-    the dispatch itself is observable in the output.
+    The pivot the per-block deltas are measured from is free within
+    [max_scale - 6, min_scale + 5], so the window is 11 wide rather than the 5
+    a pivot pinned to max_scale allows. 5 and 6 are kept because they were the
+    old boundary and must no longer change anything; 11 and 12 are the real
+    one. Both sides have to produce the same accuracy, otherwise the dispatch
+    itself is observable in the output.
     """
     case = list(make_case(1, 32, 49152, 64, seed=5, scale_lo=127, scale_hi=128))
     case[0].copy_(fake_quant_fp4(case[0]))
