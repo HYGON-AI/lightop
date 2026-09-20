@@ -8,7 +8,7 @@ export LIGHTOP_SPARSE_MQA_GROUP6_ROWS_PER_CTA=3
 ```
 
 该变量也接受 `2`、`6`；其他值会报错。组1/3/4/5的默认行为保持原样。
-在 gfx938、64 CU、原生 FP8、group6、总共30行的 BS5 verify 场景，Python
+在 gfx938、64/72 CU、原生 FP8、group6、总共30行的 BS5 verify 场景，Python
 入口将自动 CTA 数量设为128。调用者显式传入的非零 CTA 数量保持原样。
 
 此优化集成在常规 `lightop.op` 中，不需要额外加载调优用的独立扩展。

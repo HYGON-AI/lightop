@@ -790,16 +790,17 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
         prop_error == hipSuccess,
         "hipGetDeviceProperties failed: ",
         hipGetErrorString(prop_error));
-    const bool is_gfx938_64cu =
+    const bool is_supported_gfx938 =
         std::strncmp(properties.gcnArchName, "gfx938", 6) == 0 &&
-        properties.multiProcessorCount == 64;
+        (properties.multiProcessorCount == 64 ||
+         properties.multiProcessorCount == 72);
     const bool supported_device =
         (std::strncmp(properties.gcnArchName, "gfx936", 6) == 0 &&
          properties.multiProcessorCount == 80) ||
-        is_gfx938_64cu;
+        is_supported_gfx938;
     TORCH_CHECK(
         supported_device,
-        "grouped-wave sparse MQA requires gfx936/80CU or gfx938/64CU, got ",
+        "grouped-wave sparse MQA requires gfx936/80CU or gfx938/64CU/72CU, got ",
         properties.gcnArchName,
         "/",
         properties.multiProcessorCount,
@@ -810,7 +811,7 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
         "group_size must be 1 (independent rows) or 3/4/5/6 (MTP2/3/4/5)");
     const bool supported_batch = q.dim() == 4 && q.size(0) > 0 &&
         (group_size == 1 || q.size(0) % group_size == 0);
-    const bool native_fp8_path = is_gfx938_64cu && !int8_kv &&
+    const bool native_fp8_path = is_supported_gfx938 && !int8_kv &&
         q.scalar_type() == torch::kFloat8_e4m3fn &&
         fused_kv_cache.scalar_type() == torch::kUInt8 &&
         q.dim() == 4 && q.size(2) == grouped_sparse_native_fp8::kHeads;
@@ -821,7 +822,7 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
              q.size(2) == 64) &&
             q.size(3) == kHeadDim && q.is_contiguous(),
         "q must be contiguous BF16 [batch, 1, heads, 128], or native "
-        "E4M3FN [batch, 1, 32, 128] with packed FP8 KV on gfx938/64CU, with positive "
+        "E4M3FN [batch, 1, 32, 128] with packed FP8 KV on gfx938/64CU/72CU, with positive "
         "batch, batch divisible by group_size for group_size 3/4/5/6, and "
         "heads in 8/16/32/64");
     const int batch_size = static_cast<int>(q.size(0));
