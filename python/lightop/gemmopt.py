@@ -891,18 +891,18 @@ def page_mqa_logits_sparse_mask_grouped(
         group_size: int = 5,
         *,
         _int8_kv: bool = False):
-    """Sparse MQA for independent rows or grouped MTP2/3/4 rows.
+    """Sparse MQA for independent rows or grouped MTP2/3/4/5 rows.
 
-    For ``group_size=1`` each row is independent. For ``group_size=3/4/5``,
+    For ``group_size=1`` each row is independent. For ``group_size=3/4/5/6``,
     consecutive rows must belong to one request and have identical block-table
-    contents, corresponding to MTP2/3/4. The returned sparse values/mask
+    contents, corresponding to MTP2/3/4/5. The returned sparse values/mask
     contract is identical to :func:`page_mqa_logits_sparse_mask`. Supported
     heads are 8/16/32/64. The FP8 path accepts the packed uint8 KV+scale layout
     used by :func:`paged_mqa_logits`.
     """
 
-    if group_size not in (1, 3, 4, 5):
-        raise ValueError("sparse MQA supports group_size 1, 3, 4, or 5")
+    if group_size not in (1, 3, 4, 5, 6):
+        raise ValueError("sparse MQA supports group_size 1, 3, 4, 5, or 6")
     fp8_q_dtypes = {torch.float8_e4m3fn}
     fp8_fnuz_dtype = getattr(torch, "float8_e4m3fnuz", None)
     if fp8_fnuz_dtype is not None:

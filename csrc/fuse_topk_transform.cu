@@ -2153,7 +2153,7 @@ void fast_topk_transform_interface(
       backend != 2,
       "LightOp TopK backend 2 is only supported by the non-KPool fixed "
       "TopK512 interface");
-  if (backend == 1) {
+  if (backend == 0) {
     TORCH_CHECK(
         topK == kTopK2048,
         "LightOp TopK backend ",
