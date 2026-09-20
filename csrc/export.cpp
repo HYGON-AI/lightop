@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "paged_mqa_logits/paged_mqa_logits.h"
+#include "paged_mqa_logits/paged_mqa_logits_fp4.h"
 #include "sparse_page_mqa/sparse_page_mqa.h"
 #include "index_k_int8_dequant/index_k_int8_dequant.h"
 #include "lmslimquant_native/bindings.h"
@@ -1193,6 +1194,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("D_out") = torch::nullopt);
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
   m.def("paged_mqa_logits", &lightop::deep_gemm::paged_mqa_logits,"paged_mqa_logits");
+  m.def("paged_mqa_logits_fp4", &lightop::deep_gemm::paged_mqa_logits_fp4,
+        py::arg("q"), py::arg("weights"), py::arg("slots"), py::arg("lens"),
+        py::arg("table"), py::arg("page_size"), py::arg("out") = std::nullopt);
   m.def(
       "dequantize_index_k_int8_paged",
       &lightop::deep_gemm::dequantize_index_k_int8_paged,
