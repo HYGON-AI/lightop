@@ -5,7 +5,10 @@ import os
 import torch
 
 
-SUPPORTED_DEVICES = ["gfx936_80cu", "gfx928_128cu", "gfx928_120cu", "gfx938_64cu"]
+SUPPORTED_DEVICES = [
+    "gfx936_80cu", "gfx928_128cu", "gfx928_120cu", "gfx938_64cu",
+    "gfx938_72cu"
+]
 
 device_name = torch.cuda.get_device_properties("cuda").gcnArchName.split(":")[0]
 number_cu = torch.cuda.get_device_properties(

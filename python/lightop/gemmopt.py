@@ -756,6 +756,7 @@ def _use_page_mqa_logits_sparse_mask(
     supported_device = (arch, num_cus) in (
         ("gfx936", 80),
         ("gfx938", 64),
+        ("gfx938", 72),
     )
     supported_heads = num_heads in (8, 16, 32, 64)
     bf16_path = (
@@ -920,7 +921,8 @@ def page_mqa_logits_sparse_mask_grouped(
         and q.shape[2] == 32
         and q.dtype == torch.float8_e4m3fn
         and fused_kv_cache.dtype == torch.uint8
-        and _paged_mqa_device_info(q.device.index) == ("gfx938", 64)
+        and _paged_mqa_device_info(q.device.index) in (
+            ("gfx938", 64), ("gfx938", 72))
     )
     if (fused_kv_cache.dtype == torch.uint8 and q.dtype in fp8_q_dtypes
             and not native_fp8_path):
@@ -972,9 +974,10 @@ def page_mqa_logits_sparse_mask_grouped(
             "grouped sparse MQA requires clean_logits=True, num_warps=4 "
             "and max_context_len equal to block-table capacity")
     arch, num_cus = _paged_mqa_device_info(q.device.index)
-    if (arch, num_cus) not in (("gfx936", 80), ("gfx938", 64)):
+    if (arch, num_cus) not in (
+            ("gfx936", 80), ("gfx938", 64), ("gfx938", 72)):
         raise ValueError(
-            "grouped sparse MQA requires gfx936/80CU or gfx938/64CU")
+            "grouped sparse MQA requires gfx936/80CU or gfx938/64CU/72CU")
     native_op = (
         op.page_mqa_logits_sparse_mask_grouped_int8
         if _int8_kv
