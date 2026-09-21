@@ -30,6 +30,7 @@
   #include <hip/hip_runtime.h>
   #include <hip/hip_fp16.h>
   #include <hipcub/hipcub.hpp>
+  #include "adaptive_topk.h"
   #define WARP_SIZE 64
 #endif
 
@@ -956,6 +957,54 @@ constexpr size_t kRadixSelect8BitSmemBytes =
     8 * 1024 * sizeof(uint32_t);
 #endif
 
+template <int K, bool PhysicalPages = false>
+void launch_adaptive_topk(
+    const at::Tensor& score, const at::Tensor& lengths, at::Tensor& output,
+    const at::Tensor* pages, const at::Tensor* cu, const at::Tensor* starts,
+    uint32_t page_bits = 0, const at::Tensor* raw = nullptr,
+    const at::Tensor* offsets = nullptr) {
+#ifdef USE_ROCM
+  TORCH_CHECK(
+      score.size(0) <= std::numeric_limits<int32_t>::max() / K &&
+      score.size(1) <= std::numeric_limits<int32_t>::max() &&
+      (!pages || pages->size(1) <= std::numeric_limits<int32_t>::max()) &&
+      page_bits < 31,
+      "Adaptive TopK dimensions/page size exceed int32 indexing");
+  auto check_metadata = [&](const at::Tensor* tensor) {
+    if (!tensor) return;
+    TORCH_CHECK(
+        tensor->scalar_type() == at::kInt && tensor->device() == score.device(),
+        "Adaptive TopK metadata/output must be int32 on the score device");
+  };
+  for (const auto* tensor : {&lengths, static_cast<const at::Tensor*>(&output),
+                             pages, cu, starts, raw, offsets}) check_metadata(tensor);
+  TORCH_CHECK(!starts || starts->is_contiguous(), "row_starts must be contiguous");
+  TORCH_CHECK(!offsets || offsets->is_contiguous(), "offsets must be contiguous");
+  TORCH_CHECK(!raw || raw->data_ptr() != output.data_ptr(),
+              "raw and mapped TopK outputs must not alias");
+  const c10::cuda::CUDAGuard device_guard(score.device());
+  TORCH_CHECK(at::cuda::getCurrentDeviceProperties()->warpSize == 64,
+              "Adaptive TopK requires a wave64 HIP device");
+  if (score.size(0) == 0) return;
+  const auto stream = at::cuda::getCurrentCUDAStream().stream();
+  adaptive_topk_kernel<K, PhysicalPages>
+      <<<static_cast<uint32_t>(score.size(0)), adaptive_topk_detail::Threads, 0, stream>>>(
+          score.data_ptr<float>(), score.stride(0), static_cast<int>(score.size(1)),
+          lengths.data_ptr<int32_t>(), starts ? starts->data_ptr<int32_t>() : nullptr,
+          pages ? pages->data_ptr<int32_t>() : nullptr, pages ? pages->stride(0) : 0,
+          pages ? static_cast<int>(pages->size(1)) : 0,
+          cu ? cu->data_ptr<int32_t>() : nullptr,
+          static_cast<int>(pages ? pages->size(0) : score.size(0)),
+          raw ? raw->data_ptr<int32_t>() : nullptr, output.data_ptr<int32_t>(),
+          nullptr, true, page_bits, offsets ? offsets->data_ptr<int32_t>() : nullptr);
+  const auto result = cudaGetLastError();
+  TORCH_CHECK(result == cudaSuccess, "Adaptive TopK failed: ",
+              ::cudaGetErrorString(result));
+#else
+  TORCH_CHECK(false, "Adaptive TopK requires a HIP build");
+#endif
+}
+
 int get_lightop_topk_backend() {
   static const int backend = [] {
     const char* value = std::getenv("SGL_USE_LIGHTOP_TOPK_BACKAND");
@@ -975,6 +1024,15 @@ int get_lightop_topk_backend() {
     return 0;
   }();
   return backend;
+}
+
+bool use_adaptive_topk() {
+#ifdef USE_ROCM
+  return get_lightop_topk_backend() == 0;
+#else
+  // The adaptive kernel is HIP-only; preserve CUDA's existing backend 0.
+  return false;
+#endif
 }
 
 __device__ void radix_select_8bit_naive_topk_transform(
@@ -2142,6 +2200,13 @@ void fast_topk_transform_interface(
   TORCH_CHECK(src_page_table.size(0) == prefill_bs);
   TORCH_CHECK(prefill_bs <= B);
 
+  if (use_adaptive_topk()) {
+    TORCH_CHECK(topK == 2048, "Adaptive paged TopK requires K=2048");
+    launch_adaptive_topk<2048>(score, lengths, dst_page_table, &src_page_table,
+        &cu_seqlens_q, row_starts_opt ? &row_starts_opt.value() : nullptr);
+    return;
+  }
+
   const auto stream = at::cuda::getCurrentCUDAStream().stream();
   const auto grid = dim3{static_cast<uint32_t>(B)};
   const auto block = dim3{kThreadsPerBlock};
@@ -2360,6 +2425,14 @@ void topk_transform_impl(
     out_raw_indices = raw_indices.data_ptr<int32_t>();
   }
 
+  if (use_adaptive_topk()) {
+    const auto page_bits = static_cast<uint32_t>(
+        __builtin_ctzll(static_cast<unsigned long long>(page_size)));
+    launch_adaptive_topk<kTopK, true>(scores, seq_lens, out_page_indices,
+        &page_tables, nullptr, nullptr, page_bits,
+        out_raw_indices_opt ? &out_raw_indices_opt.value() : nullptr);
+    return;
+  }
   if (batch_size == 0) return;
 
   auto params = get_params(scores, seq_lens);
@@ -2647,6 +2720,14 @@ void fast_topk_transform_ragged_interface(
   TORCH_CHECK(topk_indices_offset.dim() == 1);
   TORCH_CHECK(topk_indices_ragged.size(0) == B);
   TORCH_CHECK(topk_indices_offset.size(0) == B);
+
+  if (use_adaptive_topk()) {
+    TORCH_CHECK(topK == 2048, "Adaptive ragged TopK requires K=2048");
+    launch_adaptive_topk<2048>(score, lengths, topk_indices_ragged,
+        nullptr, nullptr, row_starts_opt ? &row_starts_opt.value() : nullptr,
+        0, nullptr, &topk_indices_offset);
+    return;
+  }
 
   const auto stream = at::cuda::getCurrentCUDAStream().stream();
   const auto grid = dim3{static_cast<uint32_t>(B)};

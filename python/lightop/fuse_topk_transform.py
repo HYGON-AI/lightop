@@ -10,6 +10,12 @@ def topk_transform_512(
     page_size: int,
     out_raw_indices: Optional[torch.Tensor] = None,
 ) -> None:
+    """Paged Top512 (or Top1024 by output width), with optional logical IDs.
+
+    On wave64 HIP, SGL_USE_LIGHTOP_TOPK_BACKAND=0 (also the default) selects
+    exact adaptive TopK. Its output IDs are sorted by logical position.
+    Backends 1 and 2 retain their previous behavior and supported K values.
+    """
     topk = out_page_indices.shape[1]
     if topk == 512:
         op.topk_transform_512(
@@ -40,6 +46,7 @@ def topk_transform_1024(
     page_size: int,
     out_raw_indices: Optional[torch.Tensor] = None,
 ) -> None:
+    """Paged Top1024; backend 0/default uses native adaptive selection on HIP."""
     op.topk_transform_1024(
         scores,
         seq_lens,
@@ -60,6 +67,12 @@ def fast_topk_transform_fused(
     """
     Get the topk indices of the score tensor and then transform the topk indices
     to indices to the page table (page_size = 1)
+    On wave64 HIP, SGL_USE_LIGHTOP_TOPK_BACKAND=0 or unset selects the exact
+    adaptive Top2048 implementation. It requires fully materialized FP32 scores, sorts logical
+    token IDs before mapping, and breaks equal ordered-FP32-key ties by smaller
+    logical ID. Set the environment variable before the first call.
+    Top512/1024 and ragged Top2048 share the adaptive selection core;
+    backend 1 retains the previous implementation; backend 2 requires Top512.
     Args:
         score: The score tensor of shape (B, L). The score tensor is the logits
             between the query and the key whose layout is either ragged or paged.
@@ -134,6 +147,8 @@ def fast_topk_transform_ragged_fused(
     Get the topk indices of the score tensor and then transform the topk indices to
     indices to ragged kv (non-paged). This function is only used for extend,
     not including draft extend.
+    On HIP, backend 0/default uses the same exact adaptive selection as the
+    paged interface, then adds each row's topk_indices_offset.
     Args:
         score: The score tensor of shape (B, L). The score tensor is the logits
             between the query and the key which can be ragged or paged.

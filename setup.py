@@ -517,6 +517,7 @@ def get_extensions():
     if torch_version >= 290:
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_290')
     op_files = glob.glob('./csrc/*.cu') + glob.glob('./csrc/*.cpp') + \
+               glob.glob('./csrc/topk/*.cu') + \
                glob.glob('./csrc/lmslimquant_native/*.cpp') + \
                glob.glob('./csrc/lmslimquant_native/smoothquant/*.cpp') + \
                glob.glob('./csrc/lmslimquant_native/quant_kernels/torch_bridge/*.cu') + \
