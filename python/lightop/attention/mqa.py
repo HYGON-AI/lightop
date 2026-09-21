@@ -24,8 +24,9 @@ def paged_mqa_logits_fp4(q, weights, slots, lens, table, page_size, out=None):
     gfx938 H32 workloads with at least 48K scores use lossless FP8 MMAC;
     other workloads use BF16 MMAC. Q values that cannot be encoded exactly
     retain BF16 computation. Query conversion runs on device on every replay.
-    KV block scales spanning more than 2**5 within a token, or too extreme to
-    fold exactly, also select the BF16 path.
+    KV block scale exponents spanning more than 11 E8M0 steps within a token,
+    or a common FP32 factor that is too extreme to represent normally, also
+    select the BF16 path.
     """
     from .. import op
     if not hasattr(op, "paged_mqa_logits_fp4"):
