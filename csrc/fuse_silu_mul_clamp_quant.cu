@@ -118,6 +118,13 @@ __global__ void swiglu_clamp_quant_kernel(
     token_idx = expert_idx * tokens_per_expert + blockIdx.y;
     token_end = expert_idx * tokens_per_expert + valid_m;
     token_stride = gridDim.y;
+  } else if (mask_m != nullptr) {
+    // 2D path with a device-side row count: the grid is launched at a
+    // host-side upper bound; each block clamps itself to the real total.
+    int64_t valid = mask_m[0];
+    valid = valid < 0 ? 0 : valid;
+    token_end = valid;
+    token_stride = gridDim.x;
   }
 
   using InputVec = at::native::memory::aligned_vector<scalar_t, vec>;
@@ -175,6 +182,9 @@ __global__ void swiglu_clamp_quant_kernel(
     }
     if constexpr (ep) {
       __syncthreads();
+    } else if (mask_m != nullptr) {
+      // grid-stride reuse of reduce_scratch/row_absmax requires a barrier
+      __syncthreads();
     }
   }
 }
@@ -205,6 +215,13 @@ __global__ void swiglu_clamp_quant_scalar_kernel(
     token_idx = expert_idx * tokens_per_expert + blockIdx.y;
     token_end = expert_idx * tokens_per_expert + valid_m;
     token_stride = gridDim.y;
+  } else if (mask_m != nullptr) {
+    // 2D path with a device-side row count: the grid is launched at a
+    // host-side upper bound; each block clamps itself to the real total.
+    int64_t valid = mask_m[0];
+    valid = valid < 0 ? 0 : valid;
+    token_end = valid;
+    token_stride = gridDim.x;
   }
 
   constexpr int shared_size = block_size / C10_WARP_SIZE;
@@ -247,6 +264,9 @@ __global__ void swiglu_clamp_quant_scalar_kernel(
           static_cast<float>(value) * inv_scale);
     }
     if constexpr (ep) {
+      __syncthreads();
+    } else if (mask_m != nullptr) {
+      // grid-stride reuse of reduce_scratch/row_absmax requires a barrier
       __syncthreads();
     }
   }
@@ -435,8 +455,32 @@ static void fuse_silu_mul_clamp_quant_impl(
     TORCH_CHECK(scales.dim() == 2 && scales.size(0) == num_tokens &&
                     scales.size(1) == 1,
                 "scales must have shape [tokens, 1]");
+    if (mask_m != nullptr) {
+      // Optional device-side valid-row count: allocate/launch at a host-side
+      // upper bound, no D2H sync.
+      const torch::Tensor& mask = *mask_m;
+      TORCH_CHECK(mask.is_cuda(),
+                  "num_local_tokens_tensor must be on a CUDA/HIP device");
+      TORCH_CHECK(
+          mask.device() == input.device(),
+          "input and num_local_tokens_tensor must be on the same device");
+      TORCH_CHECK(mask.is_contiguous(),
+                  "num_local_tokens_tensor must be contiguous");
+      TORCH_CHECK(mask.scalar_type() == at::ScalarType::Int,
+                  "num_local_tokens_tensor must have torch.int32 dtype");
+      TORCH_CHECK(mask.numel() >= 1,
+                  "num_local_tokens_tensor must have at least one element");
+      mask_ptr = mask.data_ptr<int32_t>();
+    }
     if (num_tokens != 0) {
-      grid = dim3(static_cast<uint32_t>(num_tokens));
+      // With a device-side row count the kernel is grid-stride: cap the grid
+      // (expect_m overrides the 4096 default). Otherwise one block per row.
+      int64_t blocks = num_tokens;
+      if (mask_ptr != nullptr) {
+        const int64_t cap = expect_m > 0 ? static_cast<int64_t>(expect_m) : 4096;
+        blocks = std::min<int64_t>(num_tokens, cap);
+      }
+      grid = dim3(static_cast<uint32_t>(std::max<int64_t>(1, blocks)));
     }
   }
 
@@ -507,7 +551,7 @@ static void fuse_silu_mul_clamp_quant_impl(
               d,
               limit_f,
               0,
-              nullptr,
+              mask_ptr,
               grid,
               stream);
         } else if (use_gelu) {
@@ -519,7 +563,7 @@ static void fuse_silu_mul_clamp_quant_impl(
               d,
               limit_f,
               0,
-              nullptr,
+              mask_ptr,
               grid,
               stream);
         } else if (smooth_scale_ptr != nullptr) {
@@ -531,7 +575,7 @@ static void fuse_silu_mul_clamp_quant_impl(
               d,
               limit_f,
               0,
-              nullptr,
+              mask_ptr,
               grid,
               stream);
         } else {
@@ -543,7 +587,7 @@ static void fuse_silu_mul_clamp_quant_impl(
               d,
               limit_f,
               0,
-              nullptr,
+              mask_ptr,
               grid,
               stream);
         }
@@ -555,9 +599,14 @@ void fuse_silu_mul_clamp_quant(torch::Tensor& input,
                                torch::Tensor& scales,
                                double limit,
                                bool use_gelu,
-                               const c10::optional<torch::Tensor>& smooth_scale) {
+                               const c10::optional<torch::Tensor>& smooth_scale,
+                               const c10::optional<torch::Tensor>& num_local_tokens_tensor,
+                               int expect_m) {
+  const torch::Tensor* mask = num_local_tokens_tensor.has_value()
+                                  ? &num_local_tokens_tensor.value()
+                                  : nullptr;
   fuse_silu_mul_clamp_quant_impl(
-      input, output, scales, limit, nullptr, -1, false, use_gelu, smooth_scale);
+      input, output, scales, limit, mask, expect_m, false, use_gelu, smooth_scale);
 }
 
 void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input,

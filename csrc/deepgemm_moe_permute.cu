@@ -1070,7 +1070,8 @@ void ep_scatter(torch::Tensor aq, torch::Tensor aq_scale,
                 torch::Tensor topk_ids,
                 torch::optional<torch::Tensor> expert_map_opt,
                 torch::Tensor expert_num_tokens, torch::Tensor aq_out,
-                torch::Tensor aq_scale_out, torch::Tensor m_indices,
+                torch::Tensor aq_scale_out,
+                torch::optional<torch::Tensor> m_indices_opt,
                 torch::Tensor inv_perm, int local_num_experts, int alignment) {
 
   int num_tokens = aq.size(0);
@@ -1102,8 +1103,7 @@ void ep_scatter(torch::Tensor aq, torch::Tensor aq_scale,
               "ep_scatter expects contiguous topk_ids");
   TORCH_CHECK(expert_num_tokens.scalar_type() == at::ScalarType::Int,
               "ep_scatter expects int32 expert_num_tokens");
-  TORCH_CHECK(inv_perm.scalar_type() == at::ScalarType::Int &&
-                  m_indices.scalar_type() == at::ScalarType::Int,
+  TORCH_CHECK(inv_perm.scalar_type() == at::ScalarType::Int,
               "ep_scatter expects int32 index tensors");
   TORCH_CHECK(H % 16 == 0,
               "ep_scatter hidden size must be divisible by 16");
@@ -1126,6 +1126,15 @@ void ep_scatter(torch::Tensor aq, torch::Tensor aq_scale,
     has_expert_map = true;
   }
 
+  int32_t *m_indices_ptr = nullptr;
+  if (m_indices_opt.has_value()) {
+    const auto &m_indices = m_indices_opt.value();
+    TORCH_CHECK(m_indices.scalar_type() == at::ScalarType::Int &&
+                    m_indices.is_contiguous(),
+                "ep_scatter expects a contiguous int32 m_indices");
+    m_indices_ptr = m_indices.data_ptr<int32_t>();
+  }
+
   int32_t *expert_counters_ptr = expert_num_tokens.data_ptr<int32_t>();
   const int8_t *aq_ptr = reinterpret_cast<const int8_t *>(aq.data_ptr());
   int8_t *aq_out_ptr = reinterpret_cast<int8_t *>(aq_out.data_ptr());
@@ -1133,28 +1142,36 @@ void ep_scatter(torch::Tensor aq, torch::Tensor aq_scale,
   float *aq_scale_out_ptr = aq_scale_out.data_ptr<float>();
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
-  // Scan
+  // Scan: rewrite expert counters into block start offsets. Without
+  // m_indices use the plain scan; scatter kernels skip expert-id writes.
   {
     dim3 grid(1);
     dim3 block(EP_SCAN_MAX_EXPERTS);
     constexpr int CUB_BLOCK_THREADS = EP_SCAN_MAX_EXPERTS;
-    ep_scan_fill_m_indices_kernel<CUB_BLOCK_THREADS, false>
-        <<<grid, block, 0, stream>>>(
-            expert_counters_ptr, expert_counters_ptr,
-            m_indices.data_ptr<int32_t>(), local_num_experts, alignment);
+    if (m_indices_ptr != nullptr) {
+      ep_scan_fill_m_indices_kernel<CUB_BLOCK_THREADS, false>
+          <<<grid, block, 0, stream>>>(
+              expert_counters_ptr, expert_counters_ptr,
+              m_indices_ptr, local_num_experts, alignment);
+    } else {
+      ep_scan_kernel<CUB_BLOCK_THREADS>
+          <<<grid, block, 0, stream>>>(
+              expert_counters_ptr, expert_counters_ptr, local_num_experts,
+              alignment);
+    }
   }
 
   if (topk_ids.scalar_type() == at::ScalarType::Int) {
     launch_ep_scatter<int32_t>(
         aq_ptr, aq_scale_ptr, topk_ids, expert_map_ptr, expert_map_size,
         expert_counters_ptr, aq_out_ptr, aq_scale_out_ptr,
-        inv_perm.data_ptr<int32_t>(), m_indices.data_ptr<int32_t>(),
+        inv_perm.data_ptr<int32_t>(), m_indices_ptr,
         num_tokens, K, local_num_experts, H, HS, has_expert_map, stream);
   } else {
     launch_ep_scatter<int64_t>(
         aq_ptr, aq_scale_ptr, topk_ids, expert_map_ptr, expert_map_size,
         expert_counters_ptr, aq_out_ptr, aq_scale_out_ptr,
-        inv_perm.data_ptr<int32_t>(), m_indices.data_ptr<int32_t>(),
+        inv_perm.data_ptr<int32_t>(), m_indices_ptr,
         num_tokens, K, local_num_experts, H, HS, has_expert_map, stream);
   }
 }
