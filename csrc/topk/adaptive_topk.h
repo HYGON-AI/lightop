@@ -15,8 +15,6 @@ constexpr int Threads = 1024;
 constexpr int Samples = 2048;
 constexpr int SampleItems = Samples / Threads;
 using SampleSort = hipcub::BlockRadixSort<uint32_t, Threads, SampleItems>;
-template <int K>
-using IndexSort = hipcub::BlockRadixSort<int, Threads, (K+Threads-1)/Threads>;
 using Scan = hipcub::BlockScan<int, Threads>;
 using Reduce = hipcub::BlockReduce<int, Threads>;
 struct Counts { int positive, zero, nan; };
@@ -26,25 +24,33 @@ struct AddCounts {
   }
 };
 using CountReduce = hipcub::BlockReduce<Counts, Threads>;
+struct KeyRange { uint32_t low, high; };
+struct MergeRange {
+  __device__ KeyRange operator()(const KeyRange& a, const KeyRange& b) const {
+    return {::min(a.low,b.low), ::max(a.high,b.high)};
+  }
+};
+using RangeReduce = hipcub::BlockReduce<KeyRange, Threads>;
 
 union Temporary {
   Scan::TempStorage scan;
   Reduce::TempStorage reduce;
   CountReduce::TempStorage counts;
+  RangeReduce::TempStorage range;
 };
 
 template <int K>
 struct Shared {
-  // These lifetimes do not overlap: propose, cache/refine, then final ID sort.
+  // These lifetimes do not overlap: propose, then cache/refine.
   union {
     struct { uint32_t keys[2*K]; int ids[2*K]; };
     SampleSort::TempStorage sample;
-    typename IndexSort<K>::TempStorage sort;
   };
   int selected[((K+Threads-1)/Threads)*Threads];
   int hist[256];
   Temporary temp;
   uint32_t pivot, prefix, mask;
+  uint32_t low, high;
   int count, equal, rank, active, route, emitted, eq_used;
 };
 
@@ -167,6 +173,102 @@ __device__ __forceinline__ int coarse_bin(float value) {
   return ordered >> 8;
 }
 
+// Continue an oversized coarse bucket without restarting selection over all
+// FP32 bits. Elements above the original bucket are already in selected[].
+// Uncompacted rounds still read the row, but only the unresolved range votes.
+template <int K>
+__device__ void range_select(const float* input, int n, Shared<K>& s,
+                             uint32_t low, uint32_t high, int remaining) {
+  const int tid = threadIdx.x;
+  const uint32_t original_high = high;
+  const int offset = K-remaining;
+  int rank = remaining;
+  for (;;) {
+    if (low == high) {
+      // Exact-key plateau: retain higher keys and the earliest required IDs.
+      if (tid == 0) { s.emitted = offset; s.eq_used = 0; }
+      __syncthreads();
+      for (int base=0; base<n; base+=Threads) {
+        const int i=base+tid;
+        const uint32_t v=i<n ? key(input[i]) : 0;
+        const bool greater=i<n && v>low && v<=original_high;
+        const int pos=reserve_wave(greater,&s.emitted);
+        if (greater) s.selected[pos]=i;
+        if (s.eq_used < rank) {
+          const int match=i<n && v==low;
+          int index=0,total=0;
+          Scan(s.temp.scan).ExclusiveSum(match,index,total);
+          __syncthreads();
+          const int dest=K-rank+s.eq_used+index;
+          if (match && dest<K) s.selected[dest]=i;
+          __syncthreads();
+          if (tid==0) s.eq_used+=total;
+          __syncthreads();
+        }
+      }
+      __syncthreads();
+      return;
+    }
+    // Skip the bits shared by the entire certified range. This operates on
+    // integer keys, preserving FP32 ordering without arithmetic rounding.
+    const int shift=::max(0,32-__clz(low^high)-8);
+    if (tid<256) s.hist[tid]=0;
+    __syncthreads();
+    for (int base=0; base<n; base+=Threads) {
+      const int i=base+tid;
+      const uint32_t v=i<n ? key(input[i]) : 0;
+      histogram_add(s.hist,i<n && v>=low && v<=high,(v>>shift)&255);
+    }
+    __syncthreads();
+    const int count=tid<256 ? s.hist[tid] : 0;
+    int cumulative=0,total=0;
+    Scan(s.temp.scan).InclusiveSum(count,cumulative,total);
+    __syncthreads();
+    const int above=total-cumulative;
+    if (tid<256 && above<rank && above+count>=rank) {
+      s.pivot=tid; s.rank=rank-above; s.active=count;
+    }
+    __syncthreads();
+    const uint64_t digit_low=(static_cast<uint64_t>(low) &
+        ~((uint64_t{1}<<(shift+8))-1)) | (static_cast<uint64_t>(s.pivot)<<shift);
+    low=::max(low,static_cast<uint32_t>(digit_low));
+    high=::min(high,static_cast<uint32_t>(digit_low+((uint64_t{1}<<shift)-1)));
+    rank=s.rank;
+    const int active=s.active;
+    __syncthreads();
+    if (active==rank) {
+      if (tid==0) s.emitted=offset;
+      __syncthreads();
+      for (int base=0; base<n; base+=Threads) {
+        const int i=base+tid;
+        const uint32_t v=i<n ? key(input[i]) : 0;
+        const bool keep=i<n && v>=low && v<=original_high;
+        const int pos=reserve_wave(keep,&s.emitted);
+        if (keep) s.selected[pos]=i;
+      }
+      __syncthreads();
+      return;
+    }
+    if (active<=2*K) {
+      if (tid==0) { s.emitted=offset; s.count=0; }
+      __syncthreads();
+      for (int base=0; base<n; base+=Threads) {
+        const int i=base+tid;
+        const uint32_t v=i<n ? key(input[i]) : 0;
+        const bool greater=i<n && v>high && v<=original_high;
+        const bool boundary=i<n && v>=low && v<=high;
+        const int pos=reserve_wave(greater,&s.emitted);
+        if (greater) s.selected[pos]=i;
+        const int dest=reserve_wave(boundary,&s.count);
+        if (boundary) { s.keys[dest]=v; s.ids[dest]=i; }
+      }
+      __syncthreads();
+      exact_select<true>(input,active,s,rank,K-rank);
+      return;
+    }
+  }
+}
+
 // Conventional exact path for shorter rows and rejected sampled proposals.
 // The coarse FP16 conversion is only a monotone partition of non-NaN inputs;
 // winners within the boundary bucket are always refined with full FP32 keys.
@@ -175,6 +277,7 @@ __device__ void coarse_select(const float* input, int n, Shared<K>& s) {
   constexpr int Capacity = 2*K;
   const int tid = threadIdx.x;
   if (tid < 256) s.hist[tid] = 0;
+  if (tid == 0) s.count = 0;
   __syncthreads();
   Counts local{0, 0, 0};
   for (int base = 0; base < n; base += Threads) {
@@ -185,11 +288,18 @@ __device__ void coarse_select(const float* input, int n, Shared<K>& s) {
     local.positive += i < n && ordered > 0x80000000u;
     local.zero += i < n && ordered == 0x80000000u;
     local.nan += i < n && (bits & 0x7fffffffu) > 0x7f800000u;
-    histogram_add(s.hist, i < n, coarse_bin(value));
+    // Positive-zero is counted by reduction, avoiding its hot histogram bin.
+    histogram_add(s.hist, i < n && ordered != 0x80000000u, coarse_bin(value));
+    const bool positive = i < n && ordered > 0x80000000u;
+    const int dest = reserve_wave(positive, &s.count);
+    if (positive && dest < K) s.ids[dest] = i;
   }
   __syncthreads();
   const Counts all = CountReduce(s.temp.counts).Reduce(local, AddCounts{});
-  if (tid == 0) { s.count = all.positive; s.equal = all.zero; s.active = all.nan; }
+  if (tid == 0) {
+    s.count = all.positive; s.equal = all.zero; s.active = all.nan;
+    s.hist[coarse_bin(0.f)] += all.zero;
+  }
   __syncthreads();
   if (s.active) {
     exact_select<false>(input, n, s);
@@ -197,14 +307,14 @@ __device__ void coarse_select(const float* input, int n, Shared<K>& s) {
   }
   const int positive = s.count;
   if (positive <= K && positive + s.equal >= K) {
+    // The first full scan already collected every positive ID. Only the
+    // earliest zeros needed to fill K remain; no second full-row gather.
+    for (int i=tid; i<positive; i+=Threads) s.selected[i]=s.ids[i];
     if (tid == 0) { s.emitted = 0; s.eq_used = 0; s.route = 7; }
     __syncthreads();
-    for (int base = 0; base < n; base += Threads) {
+    for (int base = 0; base < n && s.eq_used < K-positive; base += Threads) {
       const int i = base + tid;
       const uint32_t value = i < n ? key(input[i]) : 0;
-      const bool greater = i < n && value > 0x80000000u;
-      const int dest = reserve_wave(greater, &s.emitted);
-      if (greater) s.selected[dest] = i;
       if (s.eq_used < K-positive) {
         const int match = i < n && value == 0x80000000u;
         int pos = 0, total = 0;
@@ -231,13 +341,9 @@ __device__ void coarse_select(const float* input, int n, Shared<K>& s) {
   __syncthreads();
   const int bin = s.pivot, remaining = s.rank, boundary_size = s.active;
   __syncthreads();
-  if (boundary_size > Capacity) {
-    // No capped count or clipped bucket is ever passed into exact refinement.
-    exact_select<false>(input, n, s);
-    return;
-  }
   if (tid == 0) { s.count = 0; s.emitted = 0; }
   __syncthreads();
+  KeyRange local_range{0xffffffffu,0};
   for (int base = 0; base < n; base += Threads) {
     const int i = base + tid;
     const float value = i < n ? input[i] : 0.f;
@@ -246,10 +352,25 @@ __device__ void coarse_select(const float* input, int n, Shared<K>& s) {
     const bool boundary = i < n && digit == bin;
     const int pos = reserve_wave(greater, &s.emitted);
     if (greater) s.selected[pos] = i;
-    const int dest = reserve_wave(boundary, &s.count);
-    if (boundary) { s.keys[dest] = key(value); s.ids[dest] = i; }
+    if (boundary_size <= Capacity) {
+      const int dest = reserve_wave(boundary, &s.count);
+      if (boundary) { s.keys[dest] = key(value); s.ids[dest] = i; }
+    } else if (boundary) {
+      const uint32_t v=key(value);
+      local_range.low=::min(local_range.low,v);
+      local_range.high=::max(local_range.high,v);
+    }
   }
   __syncthreads();
+  if (boundary_size > Capacity) {
+    const KeyRange range=RangeReduce(s.temp.range).Reduce(local_range,MergeRange{});
+    if (tid==0) { s.low=range.low; s.high=range.high; s.route=8; }
+    __syncthreads();
+    const uint32_t low=s.low,high=s.high;
+    __syncthreads();
+    range_select(input,n,s,low,high,remaining);
+    return;
+  }
   exact_select<true>(input, boundary_size, s, remaining, K-remaining);
   return;
 }
@@ -266,7 +387,6 @@ void adaptive_topk_kernel(const float* scores, int64_t score_stride, int width,
   using namespace adaptive_topk_detail;
   static_assert(K == 512 || K == 1024 || K == 2048);
   constexpr int Capacity = 2*K;
-  constexpr int SortItems = (K+Threads-1)/Threads;
   __shared__ Shared<K> s;
   const int tid = threadIdx.x, row = blockIdx.x;
   const int start = starts ? starts[row] : 0;
@@ -294,7 +414,7 @@ void adaptive_topk_kernel(const float* scores, int64_t score_stride, int width,
     __syncthreads();
   } else {
     bool resolved = false;
-    if (adaptive && n >= (K == 2048 ? 8192 : 32768)) {
+    if (adaptive && n >= 32768) {
       uint32_t samples[SampleItems];
       for (int j = 0; j < SampleItems; ++j) {
         const int sample_id = tid * SampleItems + j;
@@ -362,14 +482,7 @@ void adaptive_topk_kernel(const float* scores, int64_t score_stride, int width,
         s.route = original_route; s.count = original_count; s.equal = original_equal;
       }
     }
-    __syncthreads();
-    for (int i = K+tid; i < SortItems*Threads; i += Threads) s.selected[i] = INT_MAX;
-    __syncthreads();
-    int ids[SortItems];
-    for (int j = 0; j < SortItems; ++j) ids[j] = s.selected[tid*SortItems+j];
-    __syncthreads();
-    IndexSort<K>(s.sort).SortBlockedToStriped(ids);
-    for (int j = 0; j < SortItems; ++j) s.selected[tid+j*Threads] = ids[j];
+    // The selected set and tie policy are exact; output order is unspecified.
     __syncthreads();
   }
   int batch = 0;

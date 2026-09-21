@@ -16,6 +16,27 @@ pytestmark = pytest.mark.skipif(
 K = 2048
 
 
+def assert_unordered(actual, expected):
+    """Compare multisets: preserve multiplicities without requiring order."""
+    assert actual.shape == expected.shape
+    assert torch.equal(actual.cpu().sort(dim=1).values,
+                       expected.cpu().sort(dim=1).values)
+
+
+def assert_fixed_pairs(mapped, raw, args, expected_raw, page_size=64):
+    raw=raw.cpu();mapped=mapped.cpu();pages=args[2].cpu()
+    assert_unordered(raw,expected_raw)
+    expected=torch.full_like(mapped,-1)
+    for row in range(raw.shape[0]):
+        valid=raw[row]>=0
+        ids=raw[row,valid].long()
+        physical=pages[row,ids//page_size]
+        expected[row,valid]=torch.where(physical<0,-1,physical*page_size+(ids%page_size).int())
+        count=int((expected_raw[row]>=0).sum())
+        assert (raw[row,count:]==-1).all()
+    assert torch.equal(mapped,expected)
+
+
 def reference(scores, lengths, pages, cu, starts=None, k=K):
     result = np.full((scores.shape[0], k), -1, dtype=np.int32)
     for row, n in enumerate(lengths.tolist()):
@@ -41,6 +62,10 @@ def values(kind, n):
         x.zero_(); x[:min(300,n)] = torch.arange(1, min(300,n)+1)
     elif kind == "narrow":
         x = 1 + (torch.arange(n) % 17).float() * 2**-23
+    elif kind == "coarse_range":
+        x = 1 + (torch.arange(n) % 257).float() * 2**-20
+        x[::43]=4
+        x[::71]=-4
     elif kind in ("overflow", "underfill"):
         x = torch.rand(n, generator=generator)+2
         ids = torch.arange(2048, dtype=torch.int64)*n//2048
@@ -81,7 +106,7 @@ def call(args):
                                  "overflow","underfill","special"])
 def test_reference_and_strided_query_groups(kind,n):
     args,expected=inputs(kind,n)
-    assert torch.equal(call(args).cpu(),expected)
+    assert_unordered(call(args),expected)
 
 
 @pytest.mark.parametrize("n", [0,1,2047,2048,2049,32767])
@@ -91,7 +116,9 @@ def test_short_lengths_and_padding(n):
     pages=torch.arange(max(n,1),dtype=torch.int32,device="cuda")[None,:]
     cu=torch.tensor([0,1],dtype=torch.int32,device="cuda")
     expected=reference(scores.cpu(),lengths.cpu(),pages.cpu(),cu.cpu())
-    assert torch.equal(fast_topk_transform_fused(scores,lengths,pages,cu,K).cpu(),expected)
+    out=fast_topk_transform_fused(scores,lengths,pages,cu,K)
+    assert_unordered(out,expected)
+    if n<K:assert (out[:,n:]==-1).all()
 
 
 def test_empty_batch():
@@ -118,7 +145,7 @@ def test_graph_replay_changes_distribution_and_length():
         # The captured page table stays fixed; recompute reference with it.
         expected=reference(args[0].cpu(),args[1].cpu(),args[2].cpu(),args[3].cpu(),args[4].cpu())
         graph.replay()
-        assert torch.equal(out.cpu(),expected)
+        assert_unordered(out,expected)
 
 
 def test_bs6_verify_shape_on_nondefault_stream():
@@ -127,14 +154,14 @@ def test_bs6_verify_shape_on_nondefault_stream():
         args,expected=inputs("dense",65539,rows=30)
         out=call(args)
     stream.synchronize()
-    assert torch.equal(out.cpu(),expected)
+    assert_unordered(out,expected)
 
 
 @pytest.mark.skipif(torch.cuda.device_count()<2,reason="two devices required")
 def test_score_device_differs_from_current_device():
     with torch.cuda.device(0):
         args,expected=inputs("narrow",65539,device="cuda:1")
-        assert torch.equal(call(args).cpu(),expected)
+        assert_unordered(call(args),expected)
         assert torch.cuda.current_device()==0
 
 
@@ -189,8 +216,7 @@ def fixed_call(args,k,page_size=64,raw=True):
 def test_fixed_topk_reference(k,kind,n):
     args,(mapped,raw)=fixed_inputs(kind,n,k)
     got,got_raw=fixed_call(args,k)
-    assert torch.equal(got.cpu(),mapped)
-    assert torch.equal(got_raw.cpu(),raw)
+    assert_fixed_pairs(got,got_raw,args,raw)
 
 
 @pytest.mark.parametrize('k',[512,1024])
@@ -200,7 +226,7 @@ def test_fixed_page_mapping_and_capacity_clamping(k,page_size):
     args=(args[0],torch.tensor([-3,9000,8192,511,1024,2048],dtype=torch.int32,device='cuda'),args[2][:,:args[2].shape[1]//2])
     expected,raw=fixed_reference(*(x.cpu() for x in args),k,page_size)
     out,_=fixed_call(args,k,page_size,raw=False)
-    assert torch.equal(out.cpu(),expected)
+    assert_unordered(out,expected)
 
 
 @pytest.mark.parametrize('k',[512,1024])
@@ -213,13 +239,11 @@ def test_fixed_graph_replay(k):
         replacement,(expected,expected_raw)=fixed_inputs(kind,65539,k)
         for dest,src in zip(args,replacement):dest.copy_(src)
         graph.replay()
-        assert torch.equal(out.cpu(),expected)
-        assert torch.equal(raw.cpu(),expected_raw)
+        assert_fixed_pairs(out,raw,args,expected_raw)
     args[1].copy_(torch.tensor([0,1,k-1,k,k+1,8192],dtype=torch.int32,device='cuda'))
     expected,expected_raw=fixed_reference(*(x.cpu() for x in args),k,64)
     graph.replay()
-    assert torch.equal(out.cpu(),expected)
-    assert torch.equal(raw.cpu(),expected_raw)
+    assert_fixed_pairs(out,raw,args,expected_raw)
 
 
 @pytest.mark.parametrize('kind',['dense','zero','negative','overflow','underfill'])
@@ -231,4 +255,16 @@ def test_ragged_top2048_offsets(kind):
     raw=reference(scores.cpu(),lengths.cpu(),identity,torch.arange(scores.shape[0]+1,dtype=torch.int32),starts.cpu())
     expected=torch.where(raw<0,-1,raw+offsets.cpu()[:,None])
     out=fast_topk_transform_ragged_fused(scores,lengths,offsets,K,starts)
-    assert torch.equal(out.cpu(),expected)
+    assert_unordered(out,expected)
+
+
+@pytest.mark.parametrize('k',[512,1024,2048])
+@pytest.mark.parametrize('n',[8192,24576])
+def test_oversized_coarse_bucket_retains_above_count(k,n):
+    if k==2048:
+        args,expected=inputs('coarse_range',n)
+        assert_unordered(call(args),expected)
+    else:
+        args,(_,expected_raw)=fixed_inputs('coarse_range',n,k)
+        out,raw=fixed_call(args,k)
+        assert_fixed_pairs(out,raw,args,expected_raw)
