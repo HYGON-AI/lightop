@@ -4,6 +4,37 @@ import time
 # 导入自定义算子
 from lightop import op
 
+def test_top_k_prefill_duplicate_scores():
+    """Regression test: duplicate scores must not leave output slots unwritten."""
+    top_k = 512
+    row_lengths = [528, 1024, 4096]
+    num_rows = len(row_lengths)
+    num_cols = max(row_lengths)
+
+    # Quantized/indexer logits commonly contain duplicate values. The previous
+    # insertion-sort ranking mapped equal values to the same output slot.
+    logits = torch.zeros((num_rows, num_cols), dtype=torch.float32, device="cuda")
+    logits[:, ::7] = 1.0
+    row_starts = torch.zeros(num_rows, dtype=torch.int32, device="cuda")
+    row_ends = torch.tensor(row_lengths, dtype=torch.int32, device="cuda")
+    indices = torch.empty((num_rows, top_k), dtype=torch.int32, device="cuda")
+
+    op.top_k_per_row_prefill(
+        logits, row_starts, row_ends, indices, num_rows,
+        logits.stride(0), logits.stride(1), top_k
+    )
+    torch.cuda.synchronize()
+
+    for row, row_len in enumerate(row_lengths):
+        actual = indices[row]
+        assert torch.all(actual >= 0), (row, actual.min().item())
+        assert torch.all(actual < row_len), (row, actual.max().item(), row_len)
+        assert torch.unique(actual).numel() == top_k
+        expected_values = torch.topk(logits[row, :row_len], top_k).values
+        actual_values = logits[row].gather(0, actual.to(torch.int64)).sort(descending=True).values
+        assert torch.equal(actual_values, expected_values)
+
+
 def test_top_k():
     # 测试参数配置
     num_rows = 1
@@ -92,4 +123,5 @@ def test_top_k():
         print(f"| {num_cols:<10} | {pass_str:<10} | {pt_time_us:<15.2f} | {custom_time_us:<15.2f} | {ratio:<10.2f} |")
 
 if __name__ == "__main__":
+    test_top_k_prefill_duplicate_scores()
     test_top_k()
