@@ -348,7 +348,11 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     // smem_per_warp = prefetch_seq_kv_stage * head_dim * seq_kv_tile(16) * sizeof(T) = 32 * head_dim
     const int smem_kv_pipe_size = num_kv_stages * num_math_warp_groups * 32 * head_dim;
     const int smem_q_cache_size = num_heads * head_dim * static_cast<int>(q.element_size());
-    const int smem_weight_cache_size = num_heads * static_cast<int>(sizeof(float));
+    // The BF16/FP16 kernels reuse the Q cache for weights when a full four-wave H64 Q tile fills LDS. Quantized-Q
+    // kernels retain Q, weights, and scales together until all three have been consumed.
+    const bool weights_reuse_q_cache = !q_is_fp8 && !q_is_int8 && num_heads >= mmac_row_tile * num_math_warp_groups;
+    const int smem_weight_cache_size =
+        weights_reuse_q_cache ? 0 : num_heads * static_cast<int>(sizeof(float));
     const int smem_scale_cache_size =
         (q_is_fp8 || q_is_int8) ? num_math_warp_groups * 64 * static_cast<int>(sizeof(float)) : 0;
     const int smem_cache_size = smem_q_cache_size + smem_weight_cache_size + smem_scale_cache_size;
@@ -356,6 +360,11 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
     const int smem_size = smem_q_pipe_size +
         (block_kv < 16 ? (smem_kv_pipe_size > smem_cache_size ? smem_kv_pipe_size : smem_cache_size)
                        : smem_kv_pipe_size);
+    // The regular native-FP8 kernel reuses the first 8 KiB for Q, metadata, scales, and wave-private KV tiles. Its
+    // 1 KiB result scratch starts at offset 8 KiB, so no LDS above 9 KiB is addressable by this kernel.
+    constexpr int fp8_regular_tile_smem_size = num_math_warp_groups * mmac_row_tile * 128 * sizeof(uint8_t);
+    constexpr int fp8_regular_result_smem_size = kTokensPerCta * static_cast<int>(sizeof(float));
+    constexpr int fp8_regular_smem_size = fp8_regular_tile_smem_size + fp8_regular_result_smem_size;
     const int max_chunk_size = ceil_div(max_context_len, kTokensPerCta);
 
     // Dispatch implementation
@@ -547,7 +556,8 @@ torch::Tensor paged_mqa_logits(const torch::Tensor& q,
                                constexpr int split_kv = BLOCK_KV * 4;
                                paged_mqa_logits_fp8<
                                    FP8_TYPE, NEXT_N, NUM_HEADS, 128, BLOCK_KV, split_kv,
-                                   num_math_warp_groups, kTokensPerWarp><<<grid, block,smem_size, stream>>>(
+                                   num_math_warp_groups, kTokensPerWarp>
+                                   <<<grid, block, fp8_regular_smem_size, stream>>>(
                                    reinterpret_cast<FP8_TYPE*>(q.data_ptr()),
                                    reinterpret_cast<FP8_TYPE*>(kv_cache.data_ptr()),
                                    kv_cache_scales.data_ptr<float>(), weights.data_ptr<float>(),
