@@ -1,5 +1,6 @@
 #include <cfloat>
 #include <cstdint>
+#include <limits>
 #include <vector>
 #include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime.h>
@@ -58,7 +59,13 @@ __device__ __forceinline__ float sqrtsoftplus_score(float x) {
   return sqrtf(log1pf(exp_func(x)));
 }
 
-template <int VPT_LOCAL, int NUM_EXPERTS, int TOPK, typename Params>
+__device__ __forceinline__ float sqrtsoftplus_score_v41(float x) {
+  const float softplus = x > 20.0f ? x : log1pf(exp_func(x));
+  return sqrtf(softplus);
+}
+
+template <int VPT_LOCAL, int NUM_EXPERTS, int TOPK, bool V41,
+          typename Params>
 __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
     const float* __restrict__ input,
     const float* __restrict__ bias,
@@ -89,6 +96,7 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
 
   float choice_scores[VPT_LOCAL];
   float route_scores[VPT_LOCAL];
+  bool remaining[VPT_LOCAL];
 
   if (lane < EFFECTIVE_THREADS) {
     using Vec = AlignedArray<float, VPT_LOCAL>;
@@ -99,15 +107,21 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
 
 #pragma unroll
     for (int i = 0; i < VPT_LOCAL; ++i) {
-      const float score = sqrtsoftplus_score(input_vec[i]);
+      const float score = V41 ? sqrtsoftplus_score_v41(input_vec[i])
+                              : sqrtsoftplus_score(input_vec[i]);
       route_scores[i] = score;
       choice_scores[i] = score + bias_vec[i];
+      if (V41 && choice_scores[i] != choice_scores[i]) {
+        choice_scores[i] = std::numeric_limits<float>::infinity();
+      }
+      remaining[i] = true;
     }
   } else {
 #pragma unroll
     for (int i = 0; i < VPT_LOCAL; ++i) {
       route_scores[i] = 0.0f;
       choice_scores[i] = NEG_INF;
+      remaining[i] = false;
     }
   }
 
@@ -118,14 +132,21 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
   for (int k = 0; k < TOPK; ++k) {
     if (k >= topk_routed) break;
 
-    float local_max = NEG_INF;
-    int local_expert = (lane < EFFECTIVE_THREADS) ? start_col : 0;
+    float local_max =
+        V41 ? -std::numeric_limits<float>::infinity() : NEG_INF;
+    int local_expert =
+        V41 ? NUM_EXPERTS + 1
+            : ((lane < EFFECTIVE_THREADS) ? start_col : 0);
 
 #pragma unroll
     for (int i = 0; i < VPT_LOCAL; ++i) {
-      if (choice_scores[i] > local_max) {
+      const int expert = start_col + i;
+      if ((!V41 || remaining[i]) &&
+          (choice_scores[i] > local_max ||
+           (V41 && choice_scores[i] == local_max &&
+            expert < local_expert))) {
         local_max = choice_scores[i];
-        local_expert = start_col + i;
+        local_expert = expert;
       }
     }
 
@@ -137,7 +158,8 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
           LIGHTOP_SHFL_XOR_WIDTH(best_val, mask, Params::THREADS_PER_ROW);
       const int other_expert =
           LIGHTOP_SHFL_XOR_WIDTH(best_expert, mask, Params::THREADS_PER_ROW);
-      if (other_val > best_val) {
+      if (other_val > best_val ||
+          (V41 && other_val == best_val && other_expert < best_expert)) {
         best_val = other_val;
         best_expert = other_expert;
       }
@@ -148,6 +170,7 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
     float winner_route_score = 0.0f;
     if (lane == winner_lane) {
       choice_scores[winner_offset] = NEG_INF;
+      remaining[winner_offset] = false;
       winner_route_score = route_scores[winner_offset];
     }
 
@@ -177,8 +200,8 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
   }
 }
 
-#define LAUNCH_SQRTSOFTPLUS_GATE(                                                \
-    TOPK_VAL, NUM_EXPERTS_VAL, THREADS_PER_ROW_VAL, VPT_VAL, N_WARP_VAL)          \
+#define LAUNCH_SQRTSOFTPLUS_GATE(                                                 \
+    TOPK_VAL, NUM_EXPERTS_VAL, THREADS_PER_ROW_VAL, VPT_VAL, N_WARP_VAL, V41_VAL) \
   do {                                                                              \
     constexpr int TOPK_C = TOPK_VAL;                                                \
     constexpr int NUM_EXPERTS_C = NUM_EXPERTS_VAL;                                  \
@@ -192,7 +215,7 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
     using ParamsT = KernelParams<VPT_C, NUM_EXPERTS_C, THREADS_PER_ROW_C,           \
                                  ROWS_PER_WARP_C, ROWS_PER_CTA_C, N_WARP_C>;        \
     moe_fused_gate_sqrtsoftplus_kernel_group1<VPT_C, NUM_EXPERTS_C, TOPK_C,         \
-                                              ParamsT>                              \
+                                              V41_VAL, ParamsT>                     \
         <<<grid, block_dim, 0, stream>>>(                                           \
             input.data_ptr<float>(), bias.data_ptr<float>(),                        \
             output.data_ptr<float>(), indices.data_ptr<int32_t>(), num_rows,        \
@@ -205,19 +228,20 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
 #define DISPATCH_TOPK(TOPK_VAL)                                                     \
   case TOPK_VAL:                                                                    \
     if (num_experts == 256 && num_rows < 512) {                                     \
-      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 256, 64, 4, 1);                            \
+      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 256, 64, 4, 1, V41);                       \
     } else if (num_experts == 256) {                                                \
-      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 256, 32, 8, 2);                            \
+      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 256, 32, 8, 2, V41);                       \
     } else if (num_rows < 512) {                                                    \
       /* Match the tuned 384-expert group-1 layout in moe_fused_gate.cu:            \
        * one token per wave, eight contiguous FP32 values per active lane. */       \
-      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 384, 64, 8, 1);                            \
+      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 384, 64, 8, 1, V41);                       \
     } else {                                                                        \
-      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 384, 64, 8, 2);                            \
+      LAUNCH_SQRTSOFTPLUS_GATE(TOPK_VAL, 384, 64, 8, 2, V41);                       \
     }                                                                               \
     break
 
-std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus(
+template <bool V41>
+std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus_impl(
     torch::Tensor& input,
     torch::Tensor& bias,
     int64_t topk,
@@ -231,18 +255,19 @@ std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus(
   TORCH_CHECK(bias.is_cuda(), "bias must be on CUDA/ROCm device");
   TORCH_CHECK(input.device() == bias.device(),
               "input and bias must be on the same device");
+  const char* op_name = V41 ? "moe_fused_gate_sqrtsoftplus_v41_hcu"
+                             : "moe_fused_gate_sqrtsoftplus";
   TORCH_CHECK(input.scalar_type() == at::kFloat,
-              "moe_fused_gate_sqrtsoftplus only supports float32 input");
+              op_name, " only supports float32 input");
   TORCH_CHECK(bias.scalar_type() == at::kFloat,
-              "moe_fused_gate_sqrtsoftplus only supports float32 bias");
+              op_name, " only supports float32 bias");
   TORCH_CHECK(input.is_contiguous(), "input must be contiguous");
   TORCH_CHECK(bias.is_contiguous(), "bias must be contiguous");
   TORCH_CHECK(input.size(1) == bias.size(0),
               "input and bias must have the same num_experts");
   const int64_t num_experts = input.size(1);
   TORCH_CHECK(num_experts == 256 || num_experts == 384,
-              "moe_fused_gate_sqrtsoftplus supports 256 or 384 experts, got ",
-              num_experts);
+              op_name, " supports 256 or 384 experts, got ", num_experts);
   TORCH_CHECK(topk > 0 && topk <= MAX_TOPK,
               "topk must be in [1, ", MAX_TOPK, "], got ", topk);
   TORCH_CHECK(num_fused_shared_experts >= 0 &&
@@ -284,8 +309,34 @@ std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus(
     default:
       break;
   }
-  TORCH_CHECK(dispatched, "failed to dispatch moe_fused_gate_sqrtsoftplus");
+  TORCH_CHECK(dispatched, "failed to dispatch ", op_name);
   return {output, indices};
+}
+
+std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus(
+    torch::Tensor& input,
+    torch::Tensor& bias,
+    int64_t topk,
+    int64_t num_fused_shared_experts,
+    bool renormalize,
+    double routed_scaling_factor,
+    bool apply_routed_scaling_factor_on_output) {
+  return moe_fused_gate_sqrtsoftplus_impl<false>(
+      input, bias, topk, num_fused_shared_experts, renormalize,
+      routed_scaling_factor, apply_routed_scaling_factor_on_output);
+}
+
+std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu(
+    torch::Tensor& input,
+    torch::Tensor& bias,
+    int64_t topk,
+    int64_t num_fused_shared_experts,
+    bool renormalize,
+    double routed_scaling_factor,
+    bool apply_routed_scaling_factor_on_output) {
+  return moe_fused_gate_sqrtsoftplus_impl<true>(
+      input, bias, topk, num_fused_shared_experts, renormalize,
+      routed_scaling_factor, apply_routed_scaling_factor_on_output);
 }
 
 #undef DISPATCH_TOPK

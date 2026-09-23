@@ -138,6 +138,7 @@ mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang
 moe_align_block_size
 moe_fused_gate
 moe_fused_gate_sqrtsoftplus
+moe_fused_gate_sqrtsoftplus_v41_hcu
 moe_gemm_marlin_w8a8
 moe_gemm_marlin_w8a8_blockwise_fp8
 moe_gemm_marlin_w8a8_fp8

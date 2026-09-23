@@ -64,3 +64,23 @@ def moe_fused_gate_sqrtsoftplus(
         routed_scaling_factor,
         apply_routed_scaling_factor_on_output,
     )
+
+
+def moe_fused_gate_sqrtsoftplus_v41_hcu(
+    x,
+    bias,
+    topk,
+    num_fused_shared_experts=0,
+    renormalize=True,
+    routed_scaling_factor=1.0,
+    apply_routed_scaling_factor_on_output=False,
+):
+    return op.moe_fused_gate_sqrtsoftplus_v41_hcu(
+        x,
+        bias,
+        topk,
+        num_fused_shared_experts,
+        renormalize,
+        routed_scaling_factor,
+        apply_routed_scaling_factor_on_output,
+    )

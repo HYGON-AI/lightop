@@ -7,6 +7,7 @@ from ..moe_fused_gate import (
     kimi_k2_moe_fused_gate,
     moe_fused_gate,
     moe_fused_gate_sqrtsoftplus,
+    moe_fused_gate_sqrtsoftplus_v41_hcu,
 )
 
 
@@ -48,6 +49,7 @@ __all__ = [
     "moe_align_block_size_out",
     "moe_fused_gate",
     "moe_fused_gate_sqrtsoftplus",
+    "moe_fused_gate_sqrtsoftplus_v41_hcu",
     "moe_sum",
     "topk_ids_postprocess",
     "topk_softmax",
