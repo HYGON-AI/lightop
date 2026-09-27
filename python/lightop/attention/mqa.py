@@ -1,6 +1,7 @@
 """Direct bindings for existing LightOp MQA APIs."""
 
 from ..gemmopt import (
+    fp8_fp4_mqa_logits,
     get_paged_mqa_logits_metadata,
     mqa_logits,
     paged_mqa_logits,
@@ -38,6 +39,7 @@ def paged_mqa_logits_fp4(q, weights, slots, lens, table, page_size, out=None):
     return op.paged_mqa_logits_fp4(q, weights, slots, lens, table, page_size, out)
 
 __all__ = [
+    "fp8_fp4_mqa_logits",
     "get_paged_mqa_logits_metadata",
     "mqa_logits",
     "paged_mqa_logits",

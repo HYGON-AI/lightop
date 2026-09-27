@@ -3,6 +3,7 @@
 #include <c10/macros/Macros.h>
 #include <vector>
 
+#include "fp8_fp4_mqa_logits/fp8_fp4_mqa_logits.h"
 #include "paged_mqa_logits/paged_mqa_logits.h"
 #include "paged_mqa_logits/paged_mqa_logits_fp4.h"
 #include "sparse_page_mqa/sparse_page_mqa.h"
@@ -1196,6 +1197,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("clean_logits") = true,
       py::arg("D_out") = torch::nullopt);
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
+  m.def("fp8_fp4_mqa_logits", &lightop::fp4_mqa::fp8_fp4_mqa_logits,
+        py::arg("q"), py::arg("kv"), py::arg("weights"),
+        py::arg("cu_seq_len_k_start"), py::arg("cu_seq_len_k_end"),
+        py::arg("clean_logits"), py::arg("max_seqlen_k"));
   m.def("paged_mqa_logits", &lightop::deep_gemm::paged_mqa_logits,"paged_mqa_logits");
   m.def("paged_mqa_logits_fp4", &lightop::deep_gemm::paged_mqa_logits_fp4,
         py::arg("q"), py::arg("weights"), py::arg("slots"), py::arg("lens"),
