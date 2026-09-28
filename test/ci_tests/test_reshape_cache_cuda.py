@@ -1,15 +1,10 @@
 import torch
-import random
 import csv
 
 import pytest
 
 from lightop.kvcache import reshape_and_cache_cuda
 
-try:
-    from vllm import _custom_ops as ops
-except ImportError:
-    ops = None
 
 # -----------------------------------------------------------
 # 辅助函数：手动计时
@@ -37,20 +32,21 @@ def benchmark_manual(func, warmup=10, rep=100):
 
 # -----------------------------------------------------------
 # 生成输入
-# 修改：固定 num_heads=4, head_size=128
+# 固定测试维度见 FIXED_NUM_HEADS / FIXED_HEAD_DIM
 # -----------------------------------------------------------
-def vllm_key_cache_to_lightop(key_cache_vllm: torch.Tensor) -> torch.Tensor:
-    """Convert vLLM key layout to lightop for accuracy compare.
+def reshape_and_cache_torch(key, value, key_cache, value_cache, slot_mapping):
+    """PyTorch baseline for the auto cache dtype and unique nonnegative slots.
 
-    vLLM:    [num_blocks, num_heads, head_size/x, block_size, x]
-    lightop: [num_blocks, num_heads, block_size, head_size]
+    Negative slots are padding and leave the cache unchanged. Both caches use
+    the lightop layouts: key [B, H, S, D], value [B, H, D, S].
     """
-    nb, nh, hdx, bs, x = key_cache_vllm.shape
-    return (
-        key_cache_vllm.permute(0, 1, 3, 2, 4)
-        .contiguous()
-        .view(nb, nh, bs, hdx * x)
-    )
+    valid = slot_mapping >= 0
+    slots = slot_mapping[valid].long()
+    block_size = key_cache.shape[2]
+    block_ids = slots // block_size
+    block_offsets = slots % block_size
+    key_cache[block_ids, :, block_offsets, :] = key[valid]
+    value_cache[block_ids, :, :, block_offsets] = value[valid]
 
 
 def make_inputs(T, num_heads=4, head_size=128, dtype=torch.float16):
@@ -76,17 +72,12 @@ def make_inputs(T, num_heads=4, head_size=128, dtype=torch.float16):
     rand_idx = torch.randperm(T)[:invalid_cnt]
     slot_mapping[rand_idx] = -1
 
-    # vLLM key cache layout:
-    #   [num_blocks, num_heads, head_size/x, block_size, x]
-    # where x = 16 // element_size (fp16/bf16 -> 8, fp32 -> 4)
-    x = 16 // torch.tensor([], dtype=dtype).element_size()
-    assert head_size % x == 0, f"head_size={head_size} not divisible by x={x}"
-
-    key_cache_vllm = torch.zeros(
-        num_blocks, num_heads, head_size // x, block_size, x,
+    # PyTorch reference caches use the same layout as lightop.
+    key_cache_torch = torch.zeros(
+        num_blocks, num_heads, block_size, head_size,
         device=device, dtype=dtype
     )
-    value_cache_vllm = torch.zeros(
+    value_cache_torch = torch.zeros(
         num_blocks, num_heads, head_size, block_size,
         device=device, dtype=dtype
     )
@@ -108,7 +99,7 @@ def make_inputs(T, num_heads=4, head_size=128, dtype=torch.float16):
 
     return (
         key, value,
-        key_cache_vllm, value_cache_vllm,
+        key_cache_torch, value_cache_torch,
         key_cache_lightop, value_cache_lightop,
         slot_mapping,
         k_scale, v_scale,
@@ -137,15 +128,11 @@ def run_case(T):
     invalid_cnt = (slot_mapping < 0).sum().item()
 
     # ---------------------
-    # vLLM kernel
+    # Torch kernel
     # ---------------------
-    def run_vllm():
-        ops.reshape_and_cache(
-            key, value,
-            key_cache, value_cache,
-            slot_mapping,
-            "auto",
-            k_scale, v_scale
+    def run_torch():
+        reshape_and_cache_torch(
+            key, value, key_cache, value_cache, slot_mapping
         )
 
     # ---------------------
@@ -164,12 +151,10 @@ def run_case(T):
     # 精度检查
     # ---------------------
     # 先运行一次填充数据，确保功能正确
-    run_vllm()
+    run_torch()
     run_custom()
 
-    # vLLM key is 5D; convert to lightop 4D before compare
-    key_cache_cmp = vllm_key_cache_to_lightop(key_cache)
-    diff_key = (key_cache_cmp - key_cache2).abs().max().item()
+    diff_key = (key_cache - key_cache2).abs().max().item()
     diff_value = (value_cache - value_cache2).abs().max().item()
     acc_pass = (diff_key < 1e-3 and diff_value < 1e-3)
     assert acc_pass, (
@@ -177,32 +162,21 @@ def run_case(T):
         f"value max diff {diff_value:.4e} (阈值 1e-3)"
     )
 
-    time_vllm = benchmark_manual(run_vllm, warmup=10, rep=1000)
+    time_torch = benchmark_manual(run_torch, warmup=10, rep=1000)
     time_custom = benchmark_manual(run_custom, warmup=10, rep=1000)
-
-    speedup = time_vllm / time_custom if time_custom > 0 else 0
-
-    # ---------------------
-    # 带宽计算
-    # ---------------------
-    # Memory Traffic:
-    # Read Key (T, H, D) + Read Value (T, H, D)
-    # Write Cache Key (T, H, D) + Write Cache Value (T, H, D)
-    # Total Elements = 4 * T * H * D
-    # Total Bytes = Total Elements * 2 bytes (float16)
-    total_bytes = 4 * T * num_heads * head_size * 2
-
-    # GB/s = (Bytes / 1e9) / (us / 1e6)
-    bw_vllm = (total_bytes / 1e9) / (time_vllm / 1e6)
-    bw_custom = (total_bytes / 1e9) / (time_custom / 1e6)
+    speedup = time_torch / time_custom
+    # Effective K/V payload bandwidth, excluding indexing/temporary traffic.
+    total_bytes = 4 * (T - invalid_cnt) * num_heads * head_size * key.element_size()
+    bw_torch = total_bytes / (time_torch * 1e3)
+    bw_custom = total_bytes / (time_custom * 1e3)
 
     return {
         "T": T,
         "invalid_cnt": invalid_cnt,
-        "time_vllm": time_vllm,
+        "time_torch": time_torch,
         "time_custom": time_custom,
         "speedup": speedup,
-        "bw_vllm": bw_vllm,
+        "bw_torch": bw_torch,
         "bw_custom": bw_custom,
         "num_heads": num_heads,
         "head_size": head_size,
@@ -230,10 +204,10 @@ def run_sweep(csv_writer, benchmark_name="Benchmark"):
         "HeadSize",
         "BlockSize",
         "InvalidCnt",
-        "vLLM Time (us)",
+        "Torch Time (us)",
         "Custom Time (us)",
-        "Speedup (vLLM / Custom)",
-        "vLLM BW (GB/s)",   # New
+        "Speedup (Torch / Custom)",
+        "Torch BW (GB/s)",   # New
         "Custom BW (GB/s)", # New
         "Accuracy Pass"
     ])
@@ -243,10 +217,10 @@ def run_sweep(csv_writer, benchmark_name="Benchmark"):
     # -----------------------------------------------------
     # 定义格式
     header_fmt = "{:<8} {:<10} {:<12} {:<12} {:<10} {:<12} {:<12} {:<8}"
-    row_fmt    = "{:<8} {:<10} {:<12.3f} {:<12.3f} {:<10.2f} {:<12.2f} {:<12.2f} {:<8}"
+    row_fmt    = header_fmt
 
     print("-" * 100)
-    print(header_fmt.format("Token", "Invalid", "vLLM(us)", "Custom(us)", "Speedup", "vLLM(GB/s)", "Cus(GB/s)", "Result"))
+    print(header_fmt.format("Token", "Invalid", "Torch(us)", "Custom(us)", "Speedup", "Torch(GB/s)", "Cus(GB/s)", "Result"))
     print("-" * 100)
 
     # 用于存储所有用例的加速比
@@ -258,11 +232,14 @@ def run_sweep(csv_writer, benchmark_name="Benchmark"):
     for T in TS:
         result = run_case(T)
 
+        def fmt(value):
+            return f"{value:.3f}"
+
         # 打印一行简略表格信息
         print(row_fmt.format(
-            result["T"], result["invalid_cnt"], result["time_vllm"],
-            result["time_custom"], result["speedup"], result["bw_vllm"],
-            result["bw_custom"], "PASS"
+            result["T"], result["invalid_cnt"], fmt(result["time_torch"]),
+            fmt(result["time_custom"]), fmt(result["speedup"]), fmt(result["bw_torch"]),
+            fmt(result["bw_custom"]), "PASS"
         ))
 
         # 写入 CSV
@@ -272,12 +249,12 @@ def run_sweep(csv_writer, benchmark_name="Benchmark"):
             result["head_size"],
             result["block_size"],
             result["invalid_cnt"],
-            result["time_vllm"],
+            result["time_torch"],
             result["time_custom"],
             result["speedup"],
-            result["bw_vllm"],
+            result["bw_torch"],
             result["bw_custom"],
-            "PASS"
+            "PASS",
         ])
         speedups.append(result["speedup"])
 
@@ -296,8 +273,6 @@ def run_sweep(csv_writer, benchmark_name="Benchmark"):
 # ======================================================
 @pytest.mark.parametrize("T", TS)
 def test_reshape_cache_cuda(T):
-    if ops is None:
-        pytest.skip("vllm 不可用")
     if not torch.cuda.is_available():
         pytest.skip("需要 CUDA/ROCm 设备")
     run_case(T)
@@ -309,6 +284,6 @@ if __name__ == "__main__":
         writer = csv.writer(csv_file)
 
         # 执行指定配置的 Sweep
-        run_sweep(writer, "H4_D128")
+        run_sweep(writer, f"H{FIXED_NUM_HEADS}_D{FIXED_HEAD_DIM}")
 
     print(f"\nCSV saved => {fname}")

@@ -144,6 +144,7 @@ ROUTING_APIS = [
     "moe_align_block_size_out",
     "moe_fused_gate",
     "moe_fused_gate_sqrtsoftplus",
+    "moe_fused_gate_sqrtsoftplus_v41_hcu",
     "moe_sum",
     "topk_ids_postprocess",
     "topk_softmax",
@@ -160,6 +161,7 @@ EXPERT_PARALLEL_APIS = [
 LEGACY_TOP_LEVEL_ROUTING_APIS = [
     "moe_fused_gate",
     "moe_fused_gate_sqrtsoftplus",
+    "moe_fused_gate_sqrtsoftplus_v41_hcu",
     "moe_sum",
 ]
 

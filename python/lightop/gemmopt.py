@@ -694,6 +694,47 @@ def mqa_logits(
     return outs
 
 
+def fp8_fp4_mqa_logits(
+    q: tuple[torch.Tensor, Optional[torch.Tensor]],
+    kv: tuple[torch.Tensor, torch.Tensor],
+    weights: torch.Tensor,
+    cu_seq_len_k_start: torch.Tensor,
+    cu_seq_len_k_end: torch.Tensor,
+    clean_logits: bool,
+    max_seqlen_k: int,
+) -> torch.Tensor:
+    """Return FP32 window-local logits with shape ``[T, max_seqlen_k]``.
+
+    This Lightop extension of the DeepGEMM argument layout accepts only
+    ``q=(BF16 [T,H,128], None)`` and ``kv=(int8 [L,64], int32 [L])``.
+    K contains E2M1 nibbles (even channel low), with four UE8M0 scale bytes
+    packed low-to-high per int32, one scale per 32 channels. ``weights`` is
+    FP32 [T,H]; start/end are int32 [T]. All tensors must be contiguous and
+    on the same GPU. Q and K data pointers must be 4-byte aligned, including
+    when a contiguous tensor has a nonzero storage offset. H must be positive.
+
+    Each score is sum_h(weights[t,h] * relu(dot(q[t,h], K[start[t]+j]))).
+    On gfx936 and gfx938, K is decoded to BF16 in the tile and all dot
+    products use BF16 MMAC. Dot accumulators, ReLU and head reduction are FP32.
+    The caller guarantees ``0 <= start <= end <= L`` and
+    ``end - start <= max_seqlen_k``. Columns past ``end - start`` are -inf.
+    Empty windows and L=0 produce -inf; T=0 returns an empty matrix.
+
+    Pass ``clean_logits=False`` and a positive, 4-aligned width explicitly.
+    FP4/FP8 Q, BF16 Q with a scale, other K formats and uncompressed output
+    are unsupported. Execution uses the current stream on q's device.
+    """
+    if not hasattr(op, "fp8_fp4_mqa_logits"):
+        raise RuntimeError(
+            "fp8_fp4_mqa_logits unavailable: rebuild/install Lightop with "
+            "dense BF16 Q + FP4 K support"
+        )
+    return op.fp8_fp4_mqa_logits(
+        q, kv, weights, cu_seq_len_k_start, cu_seq_len_k_end,
+        clean_logits, max_seqlen_k,
+    )
+
+
 def get_paged_mqa_logits_metadata(
         context_lens: torch.Tensor,
         block_kv: int,

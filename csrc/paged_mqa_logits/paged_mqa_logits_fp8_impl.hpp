@@ -164,7 +164,7 @@ __global__ void paged_mqa_logits_fp8(const Element* q, const Element* kv_block, 
     (void)num_kv_blocks;
     (void)schedule_meta;
 
-    // LDS offset/lifetime map for the 16384-byte launch allocation:
+    // LDS offset/lifetime map for the 9216-byte launch allocation:
     //   Q/weight phase: Q [0,8192), weights [8192,8448).
     //   metadata phase: block IDs [0,64), scales [0,1024).
     //   KV/result phase: four wave-private KV tiles [0,8192), result scratch [8192,9216).

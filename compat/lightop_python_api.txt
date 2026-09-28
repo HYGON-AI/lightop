@@ -48,6 +48,7 @@ fast_kpool_topk_transform_fused
 fast_topk_transform_fused
 fast_topk_transform_ragged_fused
 fill_zeros
+fp8_fp4_mqa_logits
 fp8_to_16
 fuse_fill_rms_x2_concat
 fuse_groupgemm_permute_quant
@@ -115,6 +116,7 @@ mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang
 moe_align_block_size
 moe_fused_gate
 moe_fused_gate_sqrtsoftplus
+moe_fused_gate_sqrtsoftplus_v41_hcu
 moe_gemm_marlin_w16a16
 moe_gemm_marlin_w4a8
 moe_gemm_marlin_w8a8

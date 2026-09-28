@@ -50,6 +50,7 @@ fast_topk_transform_ragged_interface
 fill_zeros
 forward_polyfill_cuda
 forward_polyfill_lightop
+fp8_fp4_mqa_logits
 fp8to16
 fuse_act_quant_and_store_index_k_cache
 fuse_fill_rms_x2_concat
@@ -138,6 +139,7 @@ mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang
 moe_align_block_size
 moe_fused_gate
 moe_fused_gate_sqrtsoftplus
+moe_fused_gate_sqrtsoftplus_v41_hcu
 moe_gemm_marlin_w8a8
 moe_gemm_marlin_w8a8_blockwise_fp8
 moe_gemm_marlin_w8a8_fp8
