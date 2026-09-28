@@ -17,7 +17,7 @@ use_lightop = lsenvs.LMSLIM_USE_LIGHTOP
 device_name = lsenvs.LMSLIM_GPU_NAME
 num_cus = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count
 if use_lightop:
-    from lightop import moe_gemm_marlin_w8a8, get_moe_cuda_marlin_config, fuse_silu_mul_quant
+    from lightop import moe_gemm_marlin_w8a8, get_moe_cuda_marlin_config, fuse_silu_mul_quant, fuse_silu_mul_clamp_quant
     from .... import op
 
 from ..gemm.int8_utils import (
@@ -185,11 +185,15 @@ def fused_experts_impl_int8_marlin(hidden_states: torch.Tensor,
                        routed_scaling_factor: Optional[float] = 1.0,
                        shared_output: Optional[torch.Tensor] = None,
                        i_q: Optional[torch.Tensor] = None,
-                       i_s: Optional[torch.Tensor] = None, **_):
+                       i_s: Optional[torch.Tensor] = None,
+                       gelu_clamp: Optional[float] = None,
+                       gelu_smooth_scale: Optional[torch.Tensor] = None, **_):
     # Check constraints.
     assert use_int8_w8a8 is True and per_channel_quant is True , "Unsupport quant method"
     assert topk_weights.shape == topk_ids.shape, "topk shape mismatch"
     assert hidden_states.is_contiguous(), "Hidden_states must be contiguous"
+    if gelu_clamp is not None and (activation != "gelu" or gelu_clamp <= 0):
+        raise ValueError("gelu_clamp requires GELU activation and a positive limit")
     assert hidden_states.dtype in [
         torch.float32, torch.float16, torch.bfloat16
     ]
@@ -200,6 +204,10 @@ def fused_experts_impl_int8_marlin(hidden_states: torch.Tensor,
     E = w1.shape[0]
     N = w2.shape[1] * 64
     N2 = N * 2
+    if gelu_smooth_scale is not None and (
+        activation != "gelu" or gelu_smooth_scale.numel() != N
+    ):
+        raise ValueError("gelu_smooth_scale must have one value per GELU output")
     if global_num_experts == -1:
         global_num_experts = E
     top_k_num = topk_ids.shape[1]
@@ -306,9 +314,26 @@ def fused_experts_impl_int8_marlin(hidden_states: torch.Tensor,
                 qintermediate_cache2, qa2_scale = per_token_quant_int8(intermediate_cache2)
 
         elif activation == "gelu":
-            torch.ops._C.gelu_and_mul(intermediate_cache2,
-                                      intermediate_cache1.view(-1, N2))
-            qintermediate_cache2, qa2_scale = per_token_quant_int8(intermediate_cache2)
+            if gelu_clamp is not None and use_lightop:
+                qintermediate_cache2, qa2_scale = fuse_silu_mul_clamp_quant(
+                    intermediate_cache1.view(-1, N2),
+                    float(gelu_clamp),
+                    use_gelu=True,
+                    smooth_scale=gelu_smooth_scale,
+                )
+            else:
+                torch.ops._C.gelu_and_mul(
+                    intermediate_cache2, intermediate_cache1.view(-1, N2)
+                )
+                if gelu_clamp is not None:
+                    intermediate_cache2.clamp_(-gelu_clamp, gelu_clamp)
+                if gelu_smooth_scale is not None:
+                    intermediate_cache2.mul_(
+                        gelu_smooth_scale.to(dtype=intermediate_cache2.dtype)
+                    )
+                qintermediate_cache2, qa2_scale = per_token_quant_int8(
+                    intermediate_cache2
+                )
         else:
             raise ValueError(f"Unsupported FusedMoe activation: {activation}")
 
