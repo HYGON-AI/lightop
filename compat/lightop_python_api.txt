@@ -48,6 +48,7 @@ fast_kpool_topk_transform_fused
 fast_topk_transform_fused
 fast_topk_transform_ragged_fused
 fill_zeros
+fp8_fp4_mqa_logits
 fp8_to_16
 fuse_fill_rms_x2_concat
 fuse_groupgemm_permute_quant

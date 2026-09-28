@@ -50,6 +50,7 @@ fast_topk_transform_ragged_interface
 fill_zeros
 forward_polyfill_cuda
 forward_polyfill_lightop
+fp8_fp4_mqa_logits
 fp8to16
 fuse_act_quant_and_store_index_k_cache
 fuse_fill_rms_x2_concat

@@ -81,7 +81,7 @@ from .fuse_topk_transform import (
     topk_transform_512,
     topk_transform_1024,
 )
-from .gemmopt import page_mqa_logits_sparse_mask
+from .gemmopt import fp8_fp4_mqa_logits, page_mqa_logits_sparse_mask
 from .kvcacheio import hcu_alloc_extend_kernel
 try:
     from .version import version, git_hash, git_branch, dtk, abi, torch_version, hcu_version  # noqa: F401

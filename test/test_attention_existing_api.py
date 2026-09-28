@@ -41,6 +41,7 @@ NEW_ATTENTION_APIS = [
     "fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32",
     "get_paged_mqa_logits_metadata",
     "paged_mqa_logits",
+    "fp8_fp4_mqa_logits",
 ]
 
 

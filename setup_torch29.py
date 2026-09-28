@@ -505,6 +505,7 @@ def get_extensions():
                glob.glob('./lightop/csrc/marlinw4fp8/*.cu') +\
                glob.glob('./lightop/csrc/blockwise_scaling/*.cu') + glob.glob('./lightop/csrc/storeKvcache/*.cu') + glob.glob('./lightop/csrc/concat/*.cu') +\
                glob.glob('./lightop/csrc/mqa_logits/*.cu') + glob.glob('./lightop/csrc/paged_mqa_logits/*.cu')+ glob.glob('./lightop/csrc/bmm_scale/*.cu') + \
+               glob.glob('./lightop/csrc/fp8_fp4_mqa_logits/*.cu') + \
                glob.glob('./lightop/csrc/polyfill/*.cu') + glob.glob('./lightop/csrc/awq_w4a16_gemm/*.cu') + \
                glob.glob('./lightop/csrc/sampling/*.cu')
 

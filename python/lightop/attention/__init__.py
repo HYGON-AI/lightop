@@ -2,6 +2,7 @@
 
 from .mhc import mhc_repeat_cp_sglang, supports_mhc_repeat_cp_sglang
 from .mqa import (
+    fp8_fp4_mqa_logits,
     get_paged_mqa_logits_metadata,
     mqa_logits,
     paged_mqa_logits,
@@ -56,6 +57,7 @@ __all__ = [
     "fast_topk_transform_fused",
     "fast_topk_transform_sparse_mask_fused",
     "fast_topk_transform_ragged_fused",
+    "fp8_fp4_mqa_logits",
     "fuse_layernorm_rotary_embedding",
     "fuse_rms_mrope_cuda",
     "fuse_rmsnorm_rope_quant_qkv",
