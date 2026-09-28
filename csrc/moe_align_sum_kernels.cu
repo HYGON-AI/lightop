@@ -452,7 +452,8 @@ template <typename scalar_t, int TOPK>
 __global__ void count_and_sort_expert_tokens_kernel(
     const scalar_t *__restrict__ topk_ids,
     int32_t *__restrict__ sorted_token_ids, int32_t *__restrict__ cumsum_buffer,
-    size_t numel, int32_t *__restrict__ num_local_tokens) {
+    size_t numel, int32_t num_experts,
+    int32_t *__restrict__ num_local_tokens) {
   if (num_local_tokens != nullptr) {
     if (num_local_tokens[0] == 0) {
       return;
@@ -464,8 +465,8 @@ __global__ void count_and_sort_expert_tokens_kernel(
   const size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
   //const size_t stride = blockDim.x * gridDim.x;
   __shared__ int32_t lds_count[256];
-   if(threadIdx.x < 256){
-     lds_count[threadIdx.x ] = 0;
+  if (threadIdx.x < num_experts) {
+    lds_count[threadIdx.x] = 0;
   }
   __syncthreads();
   if(tid < numel){
@@ -473,8 +474,9 @@ __global__ void count_and_sort_expert_tokens_kernel(
     atomicAdd(&lds_count[expert_id], 1);
   }
   __syncthreads();
-  if(threadIdx.x < 256){
-     lds_count[threadIdx.x ] = atomicAdd(&cumsum_buffer[threadIdx.x ], lds_count[threadIdx.x ]);
+  if (threadIdx.x < num_experts) {
+    lds_count[threadIdx.x] =
+        atomicAdd(&cumsum_buffer[threadIdx.x], lds_count[threadIdx.x]);
   }
   // for (size_t i = threadIdx.x; i < 256; i += blockDim.x) {
     
@@ -1299,6 +1301,7 @@ void moe_align_block_size(
                     topk_ids.data_ptr<scalar_t>(),
                     sorted_token_ids.data_ptr<int32_t>(),
                     cumsum_buffer.data_ptr<int32_t>(), topk_ids.numel(),
+                    num_experts,
                     num_local_tokens.has_value()
                         ? num_local_tokens->data_ptr<int32_t>()
                         : nullptr);
