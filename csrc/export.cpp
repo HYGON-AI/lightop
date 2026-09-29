@@ -5,6 +5,7 @@
 
 #include "fp8_fp4_mqa_logits/fp8_fp4_mqa_logits.h"
 #include "paged_mqa_logits/paged_mqa_logits.h"
+#include "paged_mqa_logits/paged_mqa_logits_persisten.h"
 #include "paged_mqa_logits/paged_mqa_logits_fp4.h"
 #include "sparse_page_mqa/sparse_page_mqa.h"
 #include "index_k_int8_dequant/index_k_int8_dequant.h"
@@ -1202,6 +1203,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("cu_seq_len_k_start"), py::arg("cu_seq_len_k_end"),
         py::arg("clean_logits"), py::arg("max_seqlen_k"));
   m.def("paged_mqa_logits", &lightop::deep_gemm::paged_mqa_logits,"paged_mqa_logits");
+  m.def("paged_mqa_logits_persisten", &lightop::deep_gemm::paged_mqa_logits_persisten,
+        "dense persistent paged MQA logits with per-request KV reuse",
+        py::arg("q"), py::arg("fused_kv_cache"), py::arg("weights"),
+        py::arg("context_lens"), py::arg("block_table"), py::arg("schedule_meta"),
+        py::arg("max_context_len"), py::arg("clean_logits") = true,
+        py::arg("num_warps") = 4, py::arg("persistent_ctas") = 0,
+        py::arg("group_size") = 1);
   m.def("paged_mqa_logits_fp4", &lightop::deep_gemm::paged_mqa_logits_fp4,
         py::arg("q"), py::arg("weights"), py::arg("slots"), py::arg("lens"),
         py::arg("table"), py::arg("page_size"), py::arg("out") = std::nullopt);
