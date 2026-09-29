@@ -6,6 +6,7 @@ from .mqa import (
     get_paged_mqa_logits_metadata,
     mqa_logits,
     paged_mqa_logits,
+    paged_mqa_logits_persisten,
     paged_mqa_logits_fp4,
     page_mqa_logits_sparse_mask,
 )
@@ -72,6 +73,7 @@ __all__ = [
     "mimo_v2_split_rope_vscale_kv_store",
     "mqa_logits",
     "paged_mqa_logits",
+    "paged_mqa_logits_persisten",
     "paged_mqa_logits_fp4",
     "page_mqa_logits_sparse_mask",
     "rms_rotary_embedding_fuse",
