@@ -164,7 +164,7 @@ Tensor fused_bmm(torch::Tensor x, torch::Tensor w, torch::Tensor output, torch::
 Tensor sum_opt(const Tensor& x,int dim);
 Tensor mean_opt(const Tensor& x,int dim);
 std::tuple<Tensor,Tensor> topk_opt(const Tensor& x,int k,int dim,bool sorted);
-Tensor gemm_opt(const Tensor& x,const Tensor& y);
+Tensor gemm_opt(const Tensor& x,const Tensor& y, c10::optional<at::ScalarType> out_dtype);
 Tensor gemm_w4_a16(const Tensor& x,const Tensor& y,const Tensor& scale_m,const Tensor& zero_m);
 void gemm_awq_w4a16(Tensor& ret,const Tensor& x,const Tensor& y,const Tensor& scales_zeros,int num_n_warps, int num_k_warps, int n_per_warp,int k_per_warp,int splitk,bool use_marlin);
 void gemm_awq_w4a16_dequant(Tensor& ret,const Tensor& weight,const Tensor& scales_zeros,bool use_marlin);
@@ -1003,7 +1003,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("sum_opt", &at::native::sum_opt, "sum_opt");
   m.def("mean_opt", &at::native::mean_opt, "mean_opt");
   m.def("topk_opt", &at::native::topk_opt, "topk_opt");
-  m.def("gemm_opt", &at::native::gemm_opt, "gemm_opt");
+  m.def("gemm_opt", &at::native::gemm_opt, "gemm_opt",
+        pybind11::arg("x"), pybind11::arg("weight"), pybind11::arg("out_dtype") = pybind11::none());
   m.def("gemm_w4_a16", &at::native::gemm_w4_a16, "gemm_w4_a16");
   m.def("gemm_awq_w4a16", &at::native::gemm_awq_w4a16, "gemm_awq_w4a16");
   m.def("gemm_awq_w4a16_dequant", &at::native::gemm_awq_w4a16_dequant, "gemm_awq_w4a16_dequant");

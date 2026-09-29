@@ -102,9 +102,14 @@ def gemm_w8a8_smooth(a, b, scale_a, scale_b, bias, out_dtype):
             return True, output
 
 
-def gemm(a,b):
-    assert a.dim()==2 and b.dim()==2 and a.is_contiguous()
-    return op.gemm_opt(a,b)
+def gemm(a, b, out_dtype=None):
+    """GEMM with FP32 accumulation; output defaults to the input dtype.
+
+    Inputs are BF16 or FP16. Weight is [N,K] contiguous or its [K,N]
+    transpose. K must be a positive multiple of 32. out_dtype may also
+    be torch.float32, which stores the accumulator without BF16/FP16 rounding.
+    """
+    return op.gemm_opt(a, b, out_dtype)
 
 def gemm_w4a16(a,b,scale_n,zero_n):
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous() == False

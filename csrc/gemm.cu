@@ -1,3 +1,5 @@
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAException.h>
 #include "reduce.h"
 namespace at {
 namespace native {
@@ -36,90 +38,79 @@ inline __device__ void v_dot2_f32_f16(float& a, const half2_t &  b,const half2_t
 }
 
 //假设a矩阵很小，不用过lds,反复读取global不影响性能
-template <typename scalar_t,int NUM_WARPS=4,int NPerBlock=16>
-__global__ void gemm_nt_fp16(scalar_t *a,scalar_t* b,scalar_t* d,int m,int n,int k)
+// Each block computes a 16x16 output tile, with FP32 split-K accumulation.
+template <typename scalar_t, typename output_t, int NUM_WARPS=4>
+__global__ void gemm_nt_fp16(const scalar_t *a, const scalar_t *b, output_t *d,
+                            int m, int n, int k)
 {
-    const int bid=blockIdx.x;
-    const int tid = threadIdx.x;
-    const int warp_idx = __builtin_amdgcn_readfirstlane(tid / C10_WARP_SIZE);
-    const int lane = tid % C10_WARP_SIZE;
-    const int rowid = lane%16;
-    const int rows = lane/16;
+    const int warp_idx = threadIdx.x / C10_WARP_SIZE;
+    const int lane = threadIdx.x % C10_WARP_SIZE;
+    const int row = lane % 16;
+    const int col_group = lane / 16;
+    const int a_row = blockIdx.y * 16 + row;
+    const int b_row = blockIdx.x * 16 + row;
     constexpr bool is_half = std::is_same<scalar_t, at::Half>::value;
-    int offset_a=rowid*k+warp_idx*16*2+rows*4*2;
-    int offset_b=offset_a+NPerBlock*bid*k;
-    half4x2 a_vec,b_vec;
-    float4_t d_vec={0,0,0,0};
-    a_vec.data[0]={0,0,0,0};
-    a_vec.data[1]={0,0,0,0};
-    a+=offset_a;
-    b+=offset_b;
-    d+=NPerBlock*bid+rowid*n+rows;
-    for(int i=0;i+16*2*warp_idx<k;i+=16*2*NUM_WARPS){
-        if(rowid<m){
-            a_vec=*(half4x2*)(a+i);
-        }
-        b_vec=*(half4x2*)(b+i);
-        builtin_amdgcn_mmac<is_half>(a_vec.data[0],b_vec.data[0],d_vec);
-        builtin_amdgcn_mmac<is_half>(a_vec.data[1],b_vec.data[1],d_vec);
+    float4_t acc = {0,0,0,0};
+    for (int base = warp_idx * 32; base < k; base += 32 * NUM_WARPS) {
+        half4x2 av = {}, bv = {};
+        const int offset = base + col_group * 8;
+        if (a_row < m) av = *reinterpret_cast<const half4x2*>(a + a_row*k + offset);
+        if (b_row < n) bv = *reinterpret_cast<const half4x2*>(b + b_row*k + offset);
+        builtin_amdgcn_mmac<is_half>(av.data[0], bv.data[0], acc);
+        builtin_amdgcn_mmac<is_half>(av.data[1], bv.data[1], acc);
     }
-    // if(rowid<m)printf("tid=%d,d=%.4f,%.4f,%.4f,%.4f\n",tid,d_vec[0],d_vec[1],d_vec[2],d_vec[3]);
-    if constexpr(NUM_WARPS>1){
-        extern __shared__ float4_t out_smem[];
-        if(rowid<m){
-            #pragma unroll
-            for (int i = NUM_WARPS; i > 1; i /= 2) {
-                int mid = i / 2;
-                if (warp_idx >= mid && warp_idx < i) {
-                    out_smem[(warp_idx - mid) * 4 * m+rowid*4+rows]=d_vec;
-                }
-                __syncthreads();
-                if (warp_idx < mid) {
-                    float4_t tmp=out_smem[warp_idx* 4 * m+rowid*4+rows];
-                    #pragma unroll
-                    for (int i = 0; i < 4; i++) {
-                        d_vec[i] += tmp[i];
-                    }
-                }
-                __syncthreads();
-            }
+    __shared__ float4_t partial[NUM_WARPS/2 * 64];
+    // All lanes participate in barriers, including the last partial M tile.
+    for (int active = NUM_WARPS; active > 1; active /= 2) {
+        int half = active / 2;
+        if (warp_idx >= half && warp_idx < active)
+            partial[(warp_idx-half)*64 + lane] = acc;
+        __syncthreads();
+        if (warp_idx < half) {
+            float4_t other = partial[warp_idx*64 + lane];
+            for (int j=0; j<4; ++j) acc[j] += other[j];
         }
+        __syncthreads();
     }
-    if(rowid<m&&warp_idx==0){
-        for(int i=0;i<4;i++){
-            d[i*4]=static_cast<scalar_t>(d_vec[i]);
+    if (warp_idx == 0 && a_row < m) {
+        for (int j=0; j<4; ++j) {
+            int col = blockIdx.x*16 + col_group + j*4;
+            if (col < n) d[a_row*n + col] = static_cast<output_t>(acc[j]);
         }
     }
 }
 
-Tensor gemm_opt(const Tensor& x,const Tensor& weight){
-    //假定x是行主序，weight是列主序或列主序
-    int m=x.sizes()[0];
-    int k=x.sizes()[1];
-    int n;
-    if(weight.strides()[1]==1)n=weight.sizes()[0];//行主序
-    else n=weight.sizes()[1];//列主序
-    std::vector<long> size(2);
-    size[0]=m;
-    size[1]=n;
-    // std::cout<<"weight.sizes()="<<weight.sizes()[0]<<","<<weight.sizes()[1]<<std::endl;
-    // std::cout<<"weight.strides()="<<weight.strides()[0]<<","<<weight.strides()[1]<<std::endl;
-    Tensor ret=at::empty(size,x.options());
-    auto stream = at::cuda::getCurrentCUDAStream();
-    AT_DISPATCH_REDUCED_FLOATING_TYPES(
-        x.scalar_type(),
-        "gemm_opt",
-        [&] {
-            scalar_t *a=x.data_ptr<scalar_t>();
-            scalar_t *b=weight.data_ptr<scalar_t>();
-            scalar_t *d=ret.data_ptr<scalar_t>();
-            constexpr int NumWarps=4;
-            constexpr int NPerBlock=16;
-            int blocks=(n-1)/NPerBlock+1;
-            int lds_size=NumWarps/2*NPerBlock*m*sizeof(float);
-            // std::cout<<"lds_size="<<lds_size<<std::endl;
-            gemm_nt_fp16<scalar_t,NumWarps,NPerBlock><<<blocks,NumWarps*C10_WARP_SIZE,lds_size,stream>>>(a,b,d,m,n,k);
+Tensor gemm_opt(const Tensor& x, const Tensor& weight,
+                c10::optional<at::ScalarType> out_dtype) {
+    TORCH_CHECK(x.dim()==2 && weight.dim()==2, "gemm expects 2D inputs");
+    TORCH_CHECK(x.is_cuda() && weight.device()==x.device(), "gemm inputs must be on the same GPU");
+    TORCH_CHECK(x.is_contiguous(), "gemm input must be contiguous");
+    TORCH_CHECK((x.scalar_type()==at::kBFloat16 || x.scalar_type()==at::kHalf) &&
+                weight.scalar_type()==x.scalar_type(), "gemm requires matching BF16 or FP16 inputs");
+    const int m=x.size(0), k=x.size(1);
+    const bool row_major = weight.size(1)==k && weight.is_contiguous();
+    TORCH_CHECK(row_major || (weight.size(0)==k && weight.t().is_contiguous()),
+                "gemm weight must be contiguous [N,K] or transposed [K,N]");
+    const int n=weight.size(row_major ? 0 : 1);
+    TORCH_CHECK(weight.size(row_major ? 1 : 0)==k && k>0 && k%32==0,
+                "gemm requires matching K, positive and divisible by 32");
+    const auto dtype=out_dtype.value_or(x.scalar_type());
+    TORCH_CHECK(dtype==x.scalar_type() || dtype==at::kFloat,
+                "gemm out_dtype must match input dtype or be float32");
+    const c10::cuda::CUDAGuard device_guard(x.device());
+    Tensor ret=at::empty({m,n},x.options().dtype(dtype));
+    if (m==0 || n==0) return ret;
+    auto stream=at::cuda::getCurrentCUDAStream();
+    dim3 grid((n+15)/16, (m+15)/16);
+    AT_DISPATCH_REDUCED_FLOATING_TYPES(x.scalar_type(), "gemm_opt", [&] {
+        if (dtype==at::kFloat)
+            gemm_nt_fp16<scalar_t,float><<<grid,4*C10_WARP_SIZE,0,stream>>>(
+                x.data_ptr<scalar_t>(),weight.data_ptr<scalar_t>(),ret.data_ptr<float>(),m,n,k);
+        else
+            gemm_nt_fp16<scalar_t,scalar_t><<<grid,4*C10_WARP_SIZE,0,stream>>>(
+                x.data_ptr<scalar_t>(),weight.data_ptr<scalar_t>(),ret.data_ptr<scalar_t>(),m,n,k);
     });
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
     return ret;
 }
 
