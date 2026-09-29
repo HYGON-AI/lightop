@@ -532,7 +532,7 @@ def get_extensions():
                glob.glob('./csrc/moew4a8/*.cu') + glob.glob('./csrc/marlinw4a16/*.cu')+ glob.glob('./csrc/marlinw4a8/*.cu') +\
                glob.glob('./csrc/marlinw4fp8/*.cu') +\
                glob.glob('./csrc/blockwise_scaling/*.cu') + glob.glob('./csrc/storeKvcache/*.cu') + glob.glob('./csrc/concat/*.cu') +\
-               glob.glob('./csrc/mqa_logits/*.cu') + glob.glob('./csrc/paged_mqa_logits/*.cu') + \
+               glob.glob('./csrc/mqa_logits/*.cu') + glob.glob('./csrc/mqa_logits/beta/**/*.cu', recursive=True) + glob.glob('./csrc/paged_mqa_logits/*.cu') + \
                glob.glob('./csrc/fp8_fp4_mqa_logits/*.cu') + \
                glob.glob('./csrc/sparse_page_mqa/*.cu') + glob.glob('./csrc/index_k_int8_dequant/*.cu') + \
                glob.glob('./csrc/bmm_scale/*.cu') + \
