@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // E2M1 payload + per-32 E8M0 scales. Decode directly into MMAC registers;
 // no intermediate dequantized cache, GEMM output or head-reduction tensor.
 //

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 #include "sparse_page_mqa.h"
 #include "paged_mqa_logits_grouped_native_fp8_impl.hpp"
 #include "paged_mqa_logits_sparse_impl.hpp"

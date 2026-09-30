@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Ordered-FP32 reference and replay contracts for native Top512/1024/2048."""
 import os
 

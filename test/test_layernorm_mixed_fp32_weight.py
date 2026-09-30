@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 混合精度 LayerNorm 验证：激活为 Half / BFloat16，weight / bias 为 float32。
 

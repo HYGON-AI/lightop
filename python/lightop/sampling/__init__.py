@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Sampling and Top-K/Top-P APIs."""
 
 from ..fuse_topk_transform import topk_transform_1024

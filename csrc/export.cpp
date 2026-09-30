@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 #include <torch/extension.h>
 #include <ATen/ATen.h>
 #include <c10/macros/Macros.h>

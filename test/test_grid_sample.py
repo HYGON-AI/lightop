@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 测试 grid_sample 的脚本，参考 test_rmsnorm.py 的调用流程。
 

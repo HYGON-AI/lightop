@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 #ifndef LIGHTOP_LOSS_CTCLOSS_CUH
 #define LIGHTOP_LOSS_CTCLOSS_CUH
 

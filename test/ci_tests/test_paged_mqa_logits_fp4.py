@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Public FP4 logits accuracy, input guards and live CUDA/HIP graph replay.
 
 Acceptance mirrors DeepGEMM's MXFP4 MQA logits tests. DeepGEMM compares its
