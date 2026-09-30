@@ -603,10 +603,13 @@ void check_grouped_same_device(const torch::Tensor& reference,
         reference.device());
 }
 
-template <int kHeads, bool kFp8, int kGroupRows>
+template <int kHeads, bool kFp8, int kGroupRows,
+          bool kLastQLds, bool kReduce = true>
 __device__ __forceinline__ float grouped_mqa_row_sum(
     const std::conditional_t<kFp8, f8x16_t, i8x16_t>
-        (&reg_q)[kGroupRows][(kHeads + 15) / 16][2],
+        (&reg_q)[kLastQLds ? kGroupRows - 1 : kGroupRows]
+                [(kHeads + 15) / 16][2],
+    const uint8_t* shared_q,
     const std::conditional_t<kFp8, f8x16_t, i8x16_t> (&reg_kv)[2],
     const float* shared_weights, int row, int lane, float scale) {
     using accumulator_t = std::conditional_t<kFp8, fp32x4, int32x4_t>;
@@ -620,7 +623,19 @@ __device__ __forceinline__ float grouped_mqa_row_sum(
     for (int block = 0; block < 2; ++block) {
         #pragma unroll
         for (int qi = 0; qi < kQIterations; ++qi) {
-            const auto row_q = reg_q[row][qi][block];
+            std::conditional_t<kFp8, f8x16_t, i8x16_t> row_q;
+            if constexpr (kLastQLds) {
+                if (row == kGroupRows - 1) {
+                    const int q_offset = (lane & 15) * 128 +
+                        (lane >> 4) * 16 + qi * 16 * 128 + block * 64;
+                    row_q = *reinterpret_cast<const i8x16_t*>(
+                        shared_q + q_offset);
+                } else {
+                    row_q = reg_q[row][qi][block];
+                }
+            } else {
+                row_q = reg_q[row][qi][block];
+            }
             if constexpr (kFp8) {
                 builtin_fp8_mmac<true>(
                     reg_kv[block].front, row_q.front, acc[qi]);
@@ -644,18 +659,25 @@ __device__ __forceinline__ float grouped_mqa_row_sum(
         }
     }
     sum *= scale;
-    #pragma unroll
-    for (int delta = 16; delta <= 32; delta <<= 1) {
-        sum += __shfl_down_sync(0xffffffffffffffffull, sum, delta);
+    if constexpr (kReduce) {
+        #pragma unroll
+        for (int delta = 16; delta <= 32; delta <<= 1) {
+            sum += __shfl_down_sync(0xffffffffffffffffull, sum, delta);
+        }
     }
     return sum;
 }
 
+__device__ __forceinline__ float select_four(
+    float a, float b, float c, float d, int index) {
+    return index == 0 ? a : index == 1 ? b : index == 2 ? c : d;
+}
+
 // One wave owns a 16-token tile. Consecutive rows reuse a KV operand only
 // when their physical page is equal; unrelated requests remain independent.
-template <int kHeads, bool kFp8, int kGroupRows>
+template <int kHeads, bool kFp8, int kGroupRows, bool kLastQLds>
 __attribute__((amdgpu_flat_work_group_size(1, 512)))
-__global__ void paged_mqa_logits_native_persisten_grouped(
+__global__ void paged_mqa_logits_persisten_grouped(
     const uint8_t* q,
     const uint8_t* packed_kv,
     const uint64_t kv_stride_bytes,
@@ -693,9 +715,11 @@ __global__ void paged_mqa_logits_native_persisten_grouped(
         row_length[row] = length;
         group_max = max(group_max, length);
     }
-    operand_t reg_q[kGroupRows][kQIterations][kKBlocks];
+    operand_t reg_q[kLastQLds ? kGroupRows - 1 : kGroupRows]
+                   [kQIterations][kKBlocks];
     #pragma unroll
-    for (int row = 0; row < kGroupRows; ++row) {
+    for (int row = 0;
+         row < (kLastQLds ? kGroupRows - 1 : kGroupRows); ++row) {
         const uint8_t* row_q = q +
             (group_first + min(row, valid_rows - 1)) * kHeads * 128;
         #pragma unroll
@@ -710,6 +734,19 @@ __global__ void paged_mqa_logits_native_persisten_grouped(
                     qi * kHeadsPerMma + (lane & 15) < kHeads
                     ? *reinterpret_cast<const operand_t*>(row_q + q_offset)
                     : operand_t{};
+            }
+        }
+    }
+    __shared__ __align__(16) uint8_t shared_q[
+        kLastQLds ? kHeads * 128 : 1];
+    if constexpr (kLastQLds) {
+        if (valid_rows == kGroupRows) {
+            const uint8_t* last_q = q +
+                (group_first + kGroupRows - 1) * kHeads * 128;
+            for (int byte = threadIdx.x * 16; byte < kHeads * 128;
+                 byte += blockDim.x * 16) {
+                *reinterpret_cast<i8x16_t*>(shared_q + byte) =
+                    *reinterpret_cast<const i8x16_t*>(last_q + byte);
             }
         }
     }
@@ -736,35 +773,34 @@ __global__ void paged_mqa_logits_native_persisten_grouped(
             }
             continue;
         }
+        // A wave owns one 64-token page within this 256-token chunk. Reuse
+        // its page-table entries for all four 16-token MMAC tiles.
+        const int page_start = chunk_start + wave * kPageSize;
+        int row_page[kGroupRows];
+        #pragma unroll
+        for (int row = 0; row < kGroupRows; ++row) {
+            int page = -1;
+            if (row < valid_rows && page_start < row_length[row]) {
+                // All lanes address the same table entry. A wave-uniform
+                // load can use the L1 broadcast path without a shuffle.
+                page = block_table[
+                    (group_first + row) * table_stride + page_start / kPageSize];
+            }
+            row_page[row] = page;
+        }
+        bool same_page = row_page[0] >= 0;
+        #pragma unroll
+        for (int row = 1; row < kGroupRows; ++row) {
+            if (row < valid_rows && row_page[row] != row_page[0]) {
+                same_page = false;
+            }
+        }
         #pragma unroll
         for (int tile_iter = 0; tile_iter < 4; ++tile_iter) {
-            const int token_start = chunk_start +
-                (tile_iter * 4 + wave) * kTokenTile;
+            const int token_start = page_start + tile_iter * kTokenTile;
             int cached_page = -2;
             operand_t reg_kv[kKBlocks] = {};
             float scale = 0.0f;
-            // Fetch the page IDs for the whole MTP group before the MMACs.
-            // Separate lanes issue the table reads together, so the first
-            // row's compute can hide the latency of later rows' page IDs.
-            int row_page[kGroupRows];
-            #pragma unroll
-            for (int row = 0; row < kGroupRows; ++row) {
-                int page = -1;
-                if (row < valid_rows && lane == row &&
-                    token_start < row_length[row]) {
-                    page = block_table[
-                        (group_first + row) * table_stride + token_start / 64];
-                }
-                row_page[row] = __shfl_sync(
-                    0xffffffffffffffffull, page, row);
-            }
-            bool same_page = row_page[0] >= 0;
-            #pragma unroll
-            for (int row = 1; row < kGroupRows; ++row) {
-                if (row < valid_rows && row_page[row] != row_page[0]) {
-                    same_page = false;
-                }
-            }
             if (same_page) {
                 const uint8_t* page = packed_kv +
                     static_cast<int64_t>(row_page[0]) * kv_stride_bytes;
@@ -774,28 +810,86 @@ __global__ void paged_mqa_logits_native_persisten_grouped(
                     reg_kv[block] = *reinterpret_cast<const operand_t*>(
                         page + page_token * 128 + kv_base + block * 64);
                 }
-                if (lane < kTokenTile) {
-                    scale = reinterpret_cast<const float*>(
-                        page + kPageBytes - 64 * 4)[page_token + lane];
-                }
+                scale = reinterpret_cast<const float*>(
+                    page + kPageBytes - 64 * 4)[page_token + (lane & 15)];
                 __builtin_amdgcn_sched_barrier(0);
-                asm volatile("s_waitcnt vmcnt(0)\n\t" ::: "memory");
                 __builtin_amdgcn_sched_barrier(0);
-                scale = __shfl_sync(
-                    0xffffffffffffffffull, scale, lane & 15);
-                #pragma unroll
-                for (int row = 0; row < kGroupRows; ++row) {
-                    if (row >= valid_rows) {
-                        continue;
+
+                if constexpr (kHeads == 32 && !kFp8 &&
+                              kGroupRows == 4) {
+                    const float p0 = valid_rows > 0
+                        ? grouped_mqa_row_sum<kHeads, kFp8, kGroupRows, kLastQLds, false>(
+                              reg_q, shared_q, reg_kv, shared_weights, 0, lane, scale)
+                        : 0.0f;
+                    const float p1 = valid_rows > 1
+                        ? grouped_mqa_row_sum<kHeads, kFp8, kGroupRows, kLastQLds, false>(
+                              reg_q, shared_q, reg_kv, shared_weights, 1, lane, scale)
+                        : 0.0f;
+                    const float p2 = valid_rows > 2
+                        ? grouped_mqa_row_sum<kHeads, kFp8, kGroupRows, kLastQLds, false>(
+                              reg_q, shared_q, reg_kv, shared_weights, 2, lane, scale)
+                        : 0.0f;
+                    float p3 = 0.0f;
+                    if constexpr (kGroupRows >= 4) {
+                        if (valid_rows > 3) {
+                            p3 = grouped_mqa_row_sum<
+                                kHeads, kFp8, kGroupRows, kLastQLds, false>(
+                                    reg_q, shared_q, reg_kv, shared_weights,
+                                    3, lane, scale);
+                        }
                     }
-                    const float sum =
-                        grouped_mqa_row_sum<kHeads, kFp8, kGroupRows>(
-                            reg_q, reg_kv, shared_weights, row, lane, scale);
-                    if (lane < kTokenTile) {
-                        const int token = token_start + lane;
-                        if (token < logits_stride) {
-                            logits[(group_first + row) * logits_stride + token] =
-                                token < row_length[row] ? sum : -INFINITY;
+                    const int slot = lane >> 4;
+                    float sum = select_four(p0, p1, p2, p3, slot);
+                    const float peer1 = select_four(
+                        p0, p1, p2, p3, slot ^ 1);
+                    const float peer2 = select_four(
+                        p0, p1, p2, p3, slot ^ 2);
+                    const float peer3 = select_four(
+                        p0, p1, p2, p3, slot ^ 3);
+                    sum += __shfl_xor_sync(
+                        0xffffffffffffffffull, peer1, 16);
+                    sum += __shfl_xor_sync(
+                        0xffffffffffffffffull, peer2, 32);
+                    sum += __shfl_xor_sync(
+                        0xffffffffffffffffull, peer3, 48);
+                    int length = row_length[0];
+                    if (slot == 1) length = row_length[1];
+                    if (slot == 2) length = row_length[2];
+                    if constexpr (kGroupRows >= 4) {
+                        if (slot == 3) length = row_length[3];
+                    }
+                    const int token = token_start + (lane & 15);
+                    if (slot < valid_rows && slot < kGroupRows &&
+                        token < logits_stride) {
+                        logits[(group_first + slot) * logits_stride + token] =
+                            token < length ? sum : -INFINITY;
+                    }
+                    if constexpr (kGroupRows == 5) {
+                        if (valid_rows > 4) {
+                            const float last = grouped_mqa_row_sum<
+                                kHeads, kFp8, kGroupRows, kLastQLds>(
+                                    reg_q, shared_q, reg_kv, shared_weights,
+                                    4, lane, scale);
+                            if (lane < kTokenTile && token < logits_stride) {
+                                logits[(group_first + 4) * logits_stride + token] =
+                                    token < row_length[4] ? last : -INFINITY;
+                            }
+                        }
+                    }
+                } else {
+                    #pragma unroll
+                    for (int row = 0; row < kGroupRows; ++row) {
+                        if (row >= valid_rows) continue;
+                        const float sum =
+                            grouped_mqa_row_sum<kHeads, kFp8, kGroupRows, kLastQLds>(
+                                reg_q, shared_q, reg_kv, shared_weights,
+                                row, lane, scale);
+                        if (lane < kTokenTile) {
+                            const int token = token_start + lane;
+                            if (token < logits_stride) {
+                                logits[(group_first + row) * logits_stride + token] =
+                                    token < row_length[row] ? sum : -INFINITY;
+                            }
                         }
                     }
                 }
@@ -819,21 +913,17 @@ __global__ void paged_mqa_logits_native_persisten_grouped(
                                 reg_kv[block] = *reinterpret_cast<const operand_t*>(
                                     page + page_token * 128 + kv_base + block * 64);
                             }
-                            if (lane < kTokenTile) {
-                                scale = reinterpret_cast<const float*>(
-                                    page + kPageBytes - 64 * 4)[page_token + lane];
-                            }
+                            scale = reinterpret_cast<const float*>(
+                                page + kPageBytes - 64 * 4)[page_token + (lane & 15)];
                         }
                         __builtin_amdgcn_sched_barrier(0);
-                        asm volatile("s_waitcnt vmcnt(0)\n\t" ::: "memory");
                         __builtin_amdgcn_sched_barrier(0);
-                        scale = __shfl_sync(
-                            0xffffffffffffffffull, scale, lane & 15);
+
                     }
                     float sum = 0.0f;
                     if (kv_valid) {
-                        sum = grouped_mqa_row_sum<kHeads, kFp8, kGroupRows>(
-                            reg_q, reg_kv, shared_weights, row, lane, scale);
+                        sum = grouped_mqa_row_sum<kHeads, kFp8, kGroupRows, kLastQLds>(
+                            reg_q, shared_q, reg_kv, shared_weights, row, lane, scale);
                     }
                     if (lane < kTokenTile) {
                         const int token = token_start + lane;
@@ -861,7 +951,9 @@ void launch_native_persisten_grouped(
     hipStream_t stream) {
     const dim3 grid(ctas_per_group,
                     (q.size(0) + kGroupRows - 1) / kGroupRows);
-    paged_mqa_logits_native_persisten_grouped<kHeads, kFp8, kGroupRows>
+    constexpr bool kLastQLds = !kFp8 && kHeads == 32 && kGroupRows == 5;
+    paged_mqa_logits_persisten_grouped<
+        kHeads, kFp8, kGroupRows, kLastQLds>
         <<<grid, 256, 0, stream>>>(
             reinterpret_cast<const uint8_t*>(q.data_ptr()),
             reinterpret_cast<const uint8_t*>(fused_kv_cache.data_ptr()),
