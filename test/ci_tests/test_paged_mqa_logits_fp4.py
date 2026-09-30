@@ -257,8 +257,6 @@ def test_fp4_query_parity(op, heads, page_size, length):
 @pytest.mark.parametrize("length", [257, 49152])
 def test_realistic_mxfp4_pool(op, heads, length):
     """True MXFP4 KV, so block-scale spans follow the data, not a test knob."""
-    if heads == 32 and length >= 49152:
-        _require_fp4_to_fp8_support()
     case = list(make_case(1, heads, length, 64, seed=heads + length, realistic=True))
     case[0].copy_(fake_quant_fp4(case[0]))
     assert_logits_close(op(*case), case, heads)
@@ -272,7 +270,6 @@ def test_wide_block_scale(op, scale_lo, scale_hi):
     here and in DeepGEMM, overflows once a single token's K values span the
     FP32 range; that is a property of the format, not of the dispatch.
     """
-    _require_fp4_to_fp8_support()
     case = list(make_case(1, 32, 49152, 64, seed=91, scale_lo=scale_lo, scale_hi=scale_hi))
     case[0].copy_(fake_quant_fp4(case[0]))
     assert_logits_close(op(*case), case, 32)
@@ -289,7 +286,6 @@ def test_block_scale_span_boundary(op, span):
     one. Both sides have to produce the same accuracy, otherwise the dispatch
     itself is observable in the output.
     """
-    _require_fp4_to_fp8_support()
     case = list(make_case(1, 32, 49152, 64, seed=5, scale_lo=127, scale_hi=128))
     case[0].copy_(fake_quant_fp4(case[0]))
     scales = case[4][:, 64 * 64:]
@@ -306,7 +302,6 @@ def test_empty(op, batch, length):
 
 
 def test_graph_replay(op):
-    _require_fp4_to_fp8_support()
     case = make_case(3, 32, 16385, 64)
     output = torch.empty(3, 16385, device="cuda")
     op(*case, output)
@@ -332,7 +327,6 @@ def test_graph_replay(op):
 def test_reserved_capacity_graph_replay(op, length):
     # A graph with a large fixed output bound must rewrite the complete tail
     # while live visibility, Q eligibility and the page contents change.
-    _require_fp4_to_fp8_support()
     case = list(make_case(3, 32, 1025, 64, seed=17))
     q, weights, _, lens, table, page = case
     valid_slots = torch.randint(0, table.shape[0]*page, (3, 1025),
