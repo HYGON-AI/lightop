@@ -1200,7 +1200,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("fp8_fp4_mqa_logits", &lightop::fp4_mqa::fp8_fp4_mqa_logits,
         py::arg("q"), py::arg("kv"), py::arg("weights"),
         py::arg("cu_seq_len_k_start"), py::arg("cu_seq_len_k_end"),
-        py::arg("clean_logits"), py::arg("max_seqlen_k"));
+        py::arg("clean_logits"), py::arg("max_seqlen_k"),
+        py::arg("candidate_blocks") = std::nullopt,
+        py::arg("candidate_query_lens") = std::nullopt);
+  m.attr("_fp8_fp4_mqa_logits_supports_candidates") = true;
   m.def("paged_mqa_logits", &lightop::deep_gemm::paged_mqa_logits,"paged_mqa_logits");
   m.def("paged_mqa_logits_fp4", &lightop::deep_gemm::paged_mqa_logits_fp4,
         py::arg("q"), py::arg("weights"), py::arg("slots"), py::arg("lens"),

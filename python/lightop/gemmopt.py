@@ -702,6 +702,8 @@ def fp8_fp4_mqa_logits(
     cu_seq_len_k_end: torch.Tensor,
     clean_logits: bool,
     max_seqlen_k: int,
+    candidate_blocks: Optional[list[torch.Tensor]] = None,
+    candidate_query_lens: Optional[list[int]] = None,
 ) -> torch.Tensor:
     """Return FP32 window-local logits with shape ``[T, max_seqlen_k]``.
 
@@ -723,16 +725,35 @@ def fp8_fp4_mqa_logits(
     Pass ``clean_logits=False`` and a positive, 4-aligned width explicitly.
     FP4/FP8 Q, BF16 Q with a scale, other K formats and uncompressed output
     are unsupported. Execution uses the current stream on q's device.
+
+    With H=32, optional ``candidate_blocks`` selects request-local blocks of
+    eight K positions. Each request supplies an int32 ``[query_len, blocks]``
+    tensor on Q's device with last stride 1; row padding and storage offsets
+    are supported. ``candidate_query_lens`` lists the request query lengths,
+    whose sum must equal T. Block IDs must be unique within each row. Negative
+    or out-of-window IDs are ignored; unselected output columns stay -inf.
+    Both optional arguments must be supplied together. The default dense
+    call remains compatible with the original seven-argument native binding.
     """
     if not hasattr(op, "fp8_fp4_mqa_logits"):
         raise RuntimeError(
             "fp8_fp4_mqa_logits unavailable: rebuild/install Lightop with "
             "dense BF16 Q + FP4 K support"
         )
+    if candidate_blocks is None and candidate_query_lens is None:
+        return op.fp8_fp4_mqa_logits(
+            q, kv, weights, cu_seq_len_k_start, cu_seq_len_k_end,
+            clean_logits, max_seqlen_k,
+        )
     return op.fp8_fp4_mqa_logits(
         q, kv, weights, cu_seq_len_k_start, cu_seq_len_k_end,
-        clean_logits, max_seqlen_k,
+        clean_logits, max_seqlen_k, candidate_blocks, candidate_query_lens,
     )
+
+
+fp8_fp4_mqa_logits.supports_candidate_blocks = getattr(
+    op, "_fp8_fp4_mqa_logits_supports_candidates", False
+)
 
 
 def get_paged_mqa_logits_metadata(
