@@ -1212,8 +1212,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("num_warps") = 4, py::arg("persistent_ctas") = 0,
         py::arg("group_size") = 1);
   m.def("paged_mqa_logits_fp4", &lightop::deep_gemm::paged_mqa_logits_fp4,
-        py::arg("q"), py::arg("weights"), py::arg("slots"), py::arg("lens"),
-        py::arg("table"), py::arg("page_size"), py::arg("out") = std::nullopt);
+        "DeepGEMM fp8_fp4_paged_mqa_logits (clean_logits=False) on the fused FP4 index-K pool",
+        py::arg("q"), py::arg("q_sf"), py::arg("kv_cache"), py::arg("weights"),
+        py::arg("context_lens"), py::arg("block_table"), py::arg("schedule_meta"),
+        py::arg("max_context_len"), py::arg("table_block_size") = 64,
+        py::arg("out") = std::nullopt, py::arg("rows_per_request") = 1);
+  m.attr("PAGED_MQA_LOGITS_FP4_PAIR_MIN_REQUESTS") = lightop::deep_gemm::kPagedMqaLogitsFp4PairMinRequests;
+  m.attr("PAGED_MQA_LOGITS_FP4_MAX_SCHEDULE_ROWS") = lightop::deep_gemm::kPagedMqaLogitsFp4MaxScheduleRows;
+  m.def("get_paged_mqa_logits_fp4_metadata",
+        &lightop::deep_gemm::get_paged_mqa_logits_fp4_metadata,
+        "FP4 paged MQA split-KV schedule planner",
+        py::arg("context_lens"), py::arg("block_kv"), py::arg("num_sms"),
+        py::arg("rows_per_request") = 1);
+  m.def("dsv41_candidate_block_table", &lightop::deep_gemm::dsv41_candidate_block_table,
+        "DSV4.1 candidate indexer level one: top blocks of 8 by block max as pool slots / 8",
+        py::arg("logits"), py::arg("seq_lens"), py::arg("page_table"), py::arg("page_size"),
+        py::arg("block_size"), py::arg("out_phys_blocks"), py::arg("out_valid_lens"));
   m.def(
       "dequantize_index_k_int8_paged",
       &lightop::deep_gemm::dequantize_index_k_int8_paged,
