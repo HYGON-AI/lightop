@@ -2699,6 +2699,56 @@ void fast_kpool_topk_transform_interface(
       "fused kpool topk transform kernel failed:",
       ::cudaGetErrorString(result));
 }
+void topk_transform_ragged_v2_interface(
+    const at::Tensor& score,
+    const at::Tensor& lengths,
+    at::Tensor& output,
+    const at::Tensor& offsets,
+    std::optional<at::Tensor> row_starts_opt) {
+  CHECK_CUDA(score);
+  TORCH_CHECK(score.dim() == 2 && score.scalar_type() == at::kFloat,
+              "ragged TopK scores must be float32 [rows, width]");
+  TORCH_CHECK(score.stride(1) == 1 && score.stride(0) >= score.size(1),
+              "ragged TopK scores must have contiguous, non-overlapping rows");
+  // The selection core advances full-width scans in int32 thread-block steps.
+  TORCH_CHECK(score.size(1) <= std::numeric_limits<int32_t>::max() - 1023,
+              "ragged TopK width exceeds safe int32 scan indexing");
+  const auto rows = score.size(0);
+  auto check_vector = [&](const at::Tensor& tensor) {
+    TORCH_CHECK(tensor.dim() == 1 && tensor.size(0) == rows &&
+                    tensor.scalar_type() == at::kInt && tensor.is_contiguous() &&
+                    tensor.device() == score.device(),
+                "ragged TopK metadata must be contiguous int32 [rows] "
+                "on the score device");
+    TORCH_CHECK(!output.is_alias_of(tensor),
+                "ragged TopK output must not alias metadata");
+  };
+  TORCH_CHECK(output.dim() == 2 && output.size(0) == rows &&
+                  output.scalar_type() == at::kInt && output.is_contiguous() &&
+                  output.device() == score.device(),
+              "ragged TopK output must be contiguous int32 [rows, topk] "
+              "on the score device");
+  TORCH_CHECK(!output.is_alias_of(score),
+              "ragged TopK output must not alias scores");
+  check_vector(lengths);
+  check_vector(offsets);
+  if (row_starts_opt) check_vector(row_starts_opt.value());
+  const auto* starts = row_starts_opt ? &row_starts_opt.value() : nullptr;
+  switch (output.size(1)) {
+    case 512:
+      return launch_adaptive_topk<512>(
+          score, lengths, output, nullptr, nullptr, starts, 0, nullptr, &offsets);
+    case 1024:
+      return launch_adaptive_topk<1024>(
+          score, lengths, output, nullptr, nullptr, starts, 0, nullptr, &offsets);
+    case 2048:
+      return launch_adaptive_topk<2048>(
+          score, lengths, output, nullptr, nullptr, starts, 0, nullptr, &offsets);
+    default:
+      TORCH_CHECK(false, "ragged TopK requires topk=512, 1024, or 2048");
+  }
+}
+
 void fast_topk_transform_ragged_interface(
     const at::Tensor& score,
     const at::Tensor& lengths,

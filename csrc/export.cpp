@@ -600,6 +600,12 @@ void fast_topk_transform_ragged_interface(
     at::Tensor& topk_indices_ragged,
     const at::Tensor& topk_indices_offset,
     std::optional<at::Tensor> row_starts_opt);
+void topk_transform_ragged_v2_interface(
+    const at::Tensor& score,
+    const at::Tensor& lengths,
+    at::Tensor& output,
+    const at::Tensor& offsets,
+    std::optional<at::Tensor> row_starts_opt);
 void fast_kpool_topk_transform_interface(
     const at::Tensor& score,
     const at::Tensor& lengths,
@@ -1381,6 +1387,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
      &at::native::fast_topk_transform_sparse_mask_interface,
      "fast_topk_transform_sparse_mask_interface");
  m.def("fast_topk_transform_ragged_interface", &at::native::fast_topk_transform_ragged_interface, "fast_topk_transform_ragged_interface");   
+ m.def("topk_transform_ragged_v2_interface", &at::native::topk_transform_ragged_v2_interface, "Fused HIP ragged TopK and additive index transform");
  m.def(
      "fast_kpool_topk_transform_interface",
      &at::native::fast_kpool_topk_transform_interface,

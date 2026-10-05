@@ -80,6 +80,7 @@ from .fuse_topk_transform import (
     fast_topk_transform_ragged_fused,
     topk_transform_512,
     topk_transform_1024,
+    topk_transform_ragged_v2,
 )
 from .gemmopt import fp8_fp4_mqa_logits, page_mqa_logits_sparse_mask
 from .kvcacheio import hcu_alloc_extend_kernel
