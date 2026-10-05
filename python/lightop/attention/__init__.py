@@ -1,14 +1,21 @@
 """Attention APIs."""
 
+# Bumped when the paged_mqa_logits_fp4 signature changes; consumers feature-detect
+# on it because an installed extension may predate the current ABI.
+PAGED_MQA_LOGITS_FP4_ABI = 3
+
 from .mhc import mhc_repeat_cp_sglang, supports_mhc_repeat_cp_sglang
 from .mqa import (
     fp8_fp4_mqa_logits,
     get_paged_mqa_logits_metadata,
+    get_paged_mqa_logits_fp4_metadata,
     mqa_logits,
     paged_mqa_logits,
     paged_mqa_logits_persisten,
     paged_mqa_logits_fp4,
+    paged_mqa_logits_route_lens,
     page_mqa_logits_sparse_mask,
+    dsv41_candidate_block_table,
 )
 from .qkv import (
     fuse_layernorm_rotary_embedding,
@@ -67,6 +74,7 @@ __all__ = [
     "fused_rms_norm_rope_contiguous",
     "gemma_qkv_split_rms_rotary_embedding_fuse",
     "get_paged_mqa_logits_metadata",
+    "get_paged_mqa_logits_fp4_metadata",
     "gammarms_rotary_embedding_fuse_with_kv_store",
     "gammarms_rotary_embedding_fuse_with_kv_store_fake",
     "mhc_repeat_cp_sglang",
@@ -75,6 +83,8 @@ __all__ = [
     "paged_mqa_logits",
     "paged_mqa_logits_persisten",
     "paged_mqa_logits_fp4",
+    "paged_mqa_logits_route_lens",
+    "dsv41_candidate_block_table",
     "page_mqa_logits_sparse_mask",
     "rms_rotary_embedding_fuse",
     "rms_rotary_embedding_fuse_with_kv_store",
