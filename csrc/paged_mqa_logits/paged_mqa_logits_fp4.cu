@@ -169,11 +169,9 @@ __global__ void fp4_paged_logits_metadata(
         __syncthreads();
     }
 
-    // The down-sweep leaves an exclusive prefix sum.  Its final entry is the
-    // sum of every route except the last one, including when `routes` is not a
-    // power of two and the padded LDS entries are zero, so add the last route
-    // unconditionally.
-    uint32_t total_splits = prefix[scan_size - 1] +
+    // Read the exclusive prefix at the last real route, then include that
+    // route.  This works with or without zero padding to a power of two.
+    uint32_t total_splits = prefix[routes - 1] +
         static_cast<uint32_t>(fp4_route_split_count(
             context_lens, routes - 1, batch, rows_per_request, pair));
     const uint32_t q = total_splits / static_cast<uint32_t>(num_sms);
