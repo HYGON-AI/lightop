@@ -13,6 +13,22 @@ from ..gemmopt import (
 )
 
 
+def get_paged_mqa_logits_fp4_metadata(
+    context_lens, block_kv, num_sms, rows_per_request=1
+):
+    """Plan the FP4 paged-MQA schedule, including paired route lengths."""
+    from .. import op
+
+    if not hasattr(op, "get_paged_mqa_logits_fp4_metadata"):
+        raise RuntimeError(
+            "get_paged_mqa_logits_fp4_metadata unavailable: rebuild/install "
+            "LightOp with the FP4 schedule planner"
+        )
+    return op.get_paged_mqa_logits_fp4_metadata(
+        context_lens, block_kv, num_sms, rows_per_request
+    )
+
+
 def paged_mqa_logits_persisten(
     q, fused_kv_cache, weights, context_lens, block_table,
     max_context_len, *, group_size=1, persistent_ctas=0,
@@ -93,25 +109,28 @@ def paged_mqa_logits(
     )
 
 
-def paged_mqa_logits_fp4(q, weights, slots, lens, table, page_size, out=None):
-    """Score BF16 queries against the FP4 indexer pool on gfx928/936/938.
+def paged_mqa_logits_fp4(q, q_sf, kv_cache, weights, context_lens, block_table,
+                         schedule_meta=None, max_context_len=None,
+                         table_block_size=64, out=None, rows_per_request=1):
+    """DeepGEMM `fp8_fp4_paged_mqa_logits` with clean_logits false, on HCU.
 
-    q [B,H,128] and weights [B,H] are BF16; slots [B,L] and lens [B]
-    are contiguous int64. table is uint8 [pages,page_size*68], storing all
-    E2M1 payload rows followed by all per-32 E8M0 scale rows in each page.
-    The caller guarantees valid pool slots for j < min(lens[b], L).
-    Returns FP32 [B,L] with -inf for invisible positions. Numerics follow
-    DeepGEMM's MXFP4 MQA logits: each per-32 block scale is folded into the
-    K operand ahead of one FP32 accumulator over all 128 channels, and relu,
-    the head weight and the head reduction stay in FP32.
-    An optional contiguous FP32 out supports allocation-free graph replay.
-    Inputs must share a device. Unsupported shapes/layouts raise an error.
-    gfx938 H32 workloads with at least 48K scores use lossless FP8 MMAC;
-    other workloads use BF16 MMAC. Q values that cannot be encoded exactly
-    retain BF16 computation. Query conversion runs on device on every replay.
-    KV block scale exponents spanning more than 11 E8M0 steps within a token,
-    or a common FP32 factor that is too extreme to represent normally, also
-    select the BF16 path.
+    q is packed E2M1 (int8/uint8) plus q_sf int32 UE8M0, laid out per head as
+    [B,1,H,64] and [B,1,H]. kv_cache is the fused FP4 index-K pool
+    [pages,64,1,68] uint8, weights fp32 [B,H], context_lens int32 [B]. Column j
+    of row b scores pool slot block_table[b, j // table_block_size] *
+    table_block_size + j % table_block_size, for a block table already at
+    table_block_size (64 dense, 8 when the table holds candidate blocks).
+    Columns at or past context_lens[b] are left unwritten. Returns FP32
+    [B,max_context_len] with a row stride rounded up to the split size, so
+    callers must respect stride(0). schedule_meta comes from
+    get_paged_mqa_logits_metadata(context_lens, 64, CUs) and may be None.
+
+    rows_per_request n > 1 (table_block_size 64, H <= 32 only) declares every
+    n rows one request's draft tokens sharing the block table row of the
+    first; with at least PAGED_MQA_LOGITS_FP4_PAIR_MIN_REQUESTS requests the
+    rows are then scored in pairs, one KV read per pair, and fewer run as
+    n = 1. Results are identical either way. A schedule must be planned on
+    paged_mqa_logits_route_lens(context_lens, n) instead of context_lens.
     """
     from .. import op
     if not hasattr(op, "paged_mqa_logits_fp4"):
@@ -120,14 +139,64 @@ def paged_mqa_logits_fp4(q, weights, slots, lens, table, page_size, out=None):
             "extension does not provide this operator; rebuild/install a version "
             "with FP4 paged MQA support"
         )
-    return op.paged_mqa_logits_fp4(q, weights, slots, lens, table, page_size, out)
+    if max_context_len is None:
+        max_context_len = int(block_table.shape[1]) * table_block_size
+    return op.paged_mqa_logits_fp4(
+        q, q_sf, kv_cache, weights, context_lens, block_table, schedule_meta,
+        max_context_len, table_block_size, out, rows_per_request,
+    )
+
+
+def paged_mqa_logits_route_lens(context_lens, rows_per_request):
+    """int32 lengths of the routes paged_mqa_logits_fp4 scores with
+    rows_per_request n, the schedule's input: when it pairs rows (enough
+    requests), per request the max of rows (2 j, 2 j + 1), an odd n's last row
+    alone, [B / n * ceil(n / 2)]; otherwise context_lens itself, [B]."""
+    from .. import op
+
+    lens = context_lens.reshape(-1)
+    if (rows_per_request > 1 and lens.numel() // rows_per_request
+            >= op.PAGED_MQA_LOGITS_FP4_PAIR_MIN_REQUESTS):
+        lens = lens.reshape(-1, rows_per_request)
+        if rows_per_request % 2:
+            lens = torch.nn.functional.pad(lens, (0, 1))
+        lens = lens.unflatten(1, (-1, 2)).amax(-1).flatten()
+    return lens.to(torch.int32).contiguous()
+
+
+def dsv41_candidate_block_table(logits, seq_lens, page_table, page_size,
+                                block_size, out_phys_blocks, out_valid_lens):
+    """Level one of the DSV4.1 two-level indexer: keeps the topk best blocks of
+    `block_size` (must be 8) positions by block max, always including the block
+    holding the row's newest position.
+
+    logits is the FP32 [B,W] dense logits, seq_lens int32 [B] the live width of
+    each row, page_table int32 [B,pages] at page_size. Writes out_phys_blocks
+    [B,topk] int32, the kept blocks ascending as pool slots / block_size with
+    zeros past min(n, topk), and out_valid_lens [B] int32, the sparse row
+    length 8 (kept - 1) + (len - 1) % 8 + 1.
+    """
+    from .. import op
+    if not hasattr(op, "dsv41_candidate_block_table"):
+        raise RuntimeError(
+            "dsv41_candidate_block_table unavailable: rebuild or upgrade the "
+            "LightOp native extension"
+        )
+    return op.dsv41_candidate_block_table(
+        logits, seq_lens, page_table, page_size, block_size, out_phys_blocks,
+        out_valid_lens,
+    )
+
 
 __all__ = [
     "fp8_fp4_mqa_logits",
     "get_paged_mqa_logits_metadata",
+    "get_paged_mqa_logits_fp4_metadata",
     "mqa_logits",
     "paged_mqa_logits",
     "paged_mqa_logits_persisten",
     "paged_mqa_logits_fp4",
+    "paged_mqa_logits_route_lens",
+    "dsv41_candidate_block_table",
     "page_mqa_logits_sparse_mask",
 ]
