@@ -864,18 +864,6 @@ __global__ void paged_mqa_logits_persisten_grouped(
                         logits[(group_first + slot) * logits_stride + token] =
                             token < length ? sum : -INFINITY;
                     }
-                    if constexpr (kGroupRows == 5) {
-                        if (valid_rows > 4) {
-                            const float last = grouped_mqa_row_sum<
-                                kHeads, kFp8, kGroupRows, kLastQLds>(
-                                    reg_q, shared_q, reg_kv, shared_weights,
-                                    4, lane, scale);
-                            if (lane < kTokenTile && token < logits_stride) {
-                                logits[(group_first + 4) * logits_stride + token] =
-                                    token < row_length[4] ? last : -INFINITY;
-                            }
-                        }
-                    }
                 } else {
                     #pragma unroll
                     for (int row = 0; row < kGroupRows; ++row) {

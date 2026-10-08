@@ -14,7 +14,6 @@ namespace adaptive_topk_detail {
 constexpr int Threads = 1024;
 constexpr int Samples = 2048;
 constexpr int SampleItems = Samples / Threads;
-using SampleSort = hipcub::BlockRadixSort<uint32_t, Threads, SampleItems>;
 using Scan = hipcub::BlockScan<int, Threads>;
 using Reduce = hipcub::BlockReduce<int, Threads>;
 struct Counts { int positive, zero, nan; };
@@ -41,11 +40,8 @@ union Temporary {
 
 template <int K>
 struct Shared {
-  // These lifetimes do not overlap: propose, then cache/refine.
-  union {
-    struct { uint32_t keys[2*K]; int ids[2*K]; };
-    SampleSort::TempStorage sample;
-  };
+  uint32_t keys[2*K];
+  int ids[2*K];
   int selected[((K+Threads-1)/Threads)*Threads];
   int hist[256];
   Temporary temp;
@@ -80,6 +76,69 @@ __device__ __forceinline__ void histogram_add(int* hist, bool valid, int digit) 
     atomicAdd(hist + digit, 1);
   }
   return;
+}
+
+// Select one sample order statistic without sorting the other samples.
+// Keep ordered FP32 keys throughout, including signed zero and NaN payloads.
+template <int K>
+__device__ void sample_select(const uint32_t (&samples)[SampleItems],
+                              int rank, Shared<K>& s) {
+  const int tid = threadIdx.x;
+  KeyRange local{UINT_MAX, 0};
+  for (int j = 0; j < SampleItems; ++j) {
+    local.low = ::min(local.low, samples[j]);
+    local.high = ::max(local.high, samples[j]);
+  }
+  const KeyRange range = RangeReduce(s.temp.range).Reduce(local, MergeRange{});
+  if (tid == 0) { s.low = range.low; s.high = range.high; }
+  __syncthreads();
+  if (s.low == s.high) {
+    if (tid == 0) s.pivot = s.low;
+    __syncthreads();
+    return;
+  }
+  const int first_shift = ((31 - __clz(s.low ^ s.high)) / 8) * 8;
+  if (tid == 0) {
+    s.mask = first_shift == 24 ? 0 : ~((1u << (first_shift + 8)) - 1);
+    s.prefix = s.low & s.mask;
+    s.rank = rank;
+  }
+  __syncthreads();
+  for (int shift = first_shift; shift >= 0; shift -= 8) {
+    if (tid < 256) s.hist[tid] = 0;
+    __syncthreads();
+    const uint32_t prefix = s.prefix, mask = s.mask;
+    for (int j = 0; j < SampleItems; ++j)
+      histogram_add(s.hist, (samples[j] & mask) == prefix,
+                    (samples[j] >> shift) & 255);
+    __syncthreads();
+    const int count = tid < 256 ? s.hist[tid] : 0;
+    int cumulative = 0, total = 0;
+    Scan(s.temp.scan).InclusiveSum(count, cumulative, total);
+    __syncthreads();
+    const int above = total - cumulative;
+    if (tid < 256 && above < s.rank && above + count >= s.rank) {
+      s.active = count;
+      s.hist[0] = s.rank - above;
+      s.hist[1] = tid;
+    }
+    __syncthreads();
+    if (tid == 0) {
+      s.rank = s.hist[0];
+      s.prefix |= static_cast<uint32_t>(s.hist[1]) << shift;
+      s.mask |= 0xffu << shift;
+    }
+    __syncthreads();
+    if (s.active == s.rank || shift == 0) break;
+  }
+  // If the whole boundary bucket is needed, its minimum is the exact pivot.
+  local = {UINT_MAX, 0};
+  for (int j = 0; j < SampleItems; ++j)
+    if ((samples[j] & s.mask) == s.prefix)
+      local.low = ::min(local.low, samples[j]);
+  const KeyRange boundary = RangeReduce(s.temp.range).Reduce(local, MergeRange{});
+  if (tid == 0) s.pivot = boundary.low;
+  __syncthreads();
 }
 
 // Full-width fallback or exact refinement of a certified, bounded candidate set.
@@ -420,13 +479,9 @@ void adaptive_topk_kernel(const float* scores, int64_t score_stride, int width,
         const int sample_id = tid * SampleItems + j;
         samples[j] = key(input[static_cast<int64_t>(sample_id) * n / Samples]);
       }
-      SampleSort(s.sample).SortDescending(samples);
       const int proposal_rank = ::min(Samples, ::max(1,
           static_cast<int>((int64_t{K+K/2}*Samples + n-1) / n)));
-      for (int j = 0; j < SampleItems; ++j) {
-        if (tid*SampleItems+j == proposal_rank-1) s.pivot = samples[j];
-      }
-      __syncthreads();
+      sample_select(samples, proposal_rank, s);
       const uint32_t pivot = s.pivot;
       int equal = 0;
       // Certification and candidate formation share the mandatory complete scan.
