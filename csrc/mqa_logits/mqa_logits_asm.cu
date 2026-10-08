@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+
 #include <iostream>
 #include <stdio.h>
 #include <string.h>
@@ -7,12 +10,14 @@
 #include <sstream>
 #include <filesystem>
 #include <cstdint>
+#include <cstdlib>
 
 #include "hip/hip_runtime.h"
 #include <hip/hip_hcc.h>
 #include "rocblas.h"
 #include "internal/rocblas-auxiliary.h"
 #include "mqa_logits_asm.h"
+#include "beta/mqa_logits_api.h"
 
 #include <torch/extension.h>
 #include <ATen/dtk_macros.h>
@@ -3145,7 +3150,7 @@ torch::Tensor mqa_logits(
     int head_dim,
     const torch::optional<torch::Tensor> &KV_scale =  torch::nullopt,
     bool clean_logits = true,
-    const torch::optional<torch::Tensor> &D_out = torch::nullopt) { // 增加可选参数 D_out
+    const torch::optional<torch::Tensor> &D_out = torch::nullopt) {
     const int M = q_seq_len;
     const int N = kv_seq_len;
     auto qtype = Q.scalar_type();
@@ -3157,6 +3162,10 @@ torch::Tensor mqa_logits(
             TORCH_CHECK(false, "Q和K的类型必须同时为FP16、同时为BF16、同时为FP8_E4M3, 或同时为INT8!");
     }
     const bool is_fp8 = (qtype == torch::kFloat8_e4m3fn);
+    if (auto beta = lightop::mqa_beta::try_dispatch(
+            Q, K, Weights, KS, KE, q_seq_len, kv_seq_len, num_heads, head_dim,
+            KV_scale, clean_logits, D_out))
+        return *beta;
     const bool is_i8 = (qtype == torch::kInt8);
     auto Weightstype = Weights.scalar_type();
     if(Weightstype != torch::kFloat32){
