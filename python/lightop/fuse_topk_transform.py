@@ -136,6 +136,34 @@ def fast_topk_transform_sparse_mask_fused(
     )
     return dst_page_table
 
+def topk_transform_ragged_v2(
+    scores: torch.Tensor,
+    seq_lens: torch.Tensor,
+    *,
+    out_offsets: torch.Tensor,
+    out_indices: torch.Tensor,
+    row_starts: Optional[torch.Tensor] = None,
+) -> None:
+    """Fuse exact wave64 HIP ragged Top512/1024/2048 and index remapping.
+
+    Select from each row's ``[start:start + seq_lens[row]]`` window, then
+    write window-local indices plus ``out_offsets[row]`` into the preallocated
+    int32 output. ``start`` is zero when ``row_starts`` is absent. Underfilled
+    rows are padded with -1; output ordering is unspecified. Scores remain
+    unchanged. Unlike the legacy ragged API, this always uses the exact HIP
+    core, independently of SGL_USE_LIGHTOP_TOPK_BACKAND.
+
+    Scores must be FP32 with contiguous columns and non-overlapping rows;
+    metadata/output must be contiguous int32 on the same device. Callers must
+    provide nonnegative lengths/starts within each row, nonnegative offsets
+    whose mapped IDs fit int32, and no NaN scores. Tensor metadata values are
+    not copied to the host, so current-stream and graph replay remain async.
+    """
+    op.topk_transform_ragged_v2_interface(
+        scores, seq_lens, out_indices, out_offsets, row_starts
+    )
+
+
 def fast_topk_transform_ragged_fused(
     score: torch.Tensor,
     lengths: torch.Tensor,

@@ -699,6 +699,70 @@ def mqa_logits(
     return outs
 
 
+def dsv41_mqa_query_lens(
+    extend_start_loc: torch.Tensor,
+    extend_seq_lens: torch.Tensor,
+    cp_size: int,
+    cp_rank: int,
+) -> torch.Tensor:
+    """GPU local query counts, int32 [B], retaining requests with zero rows.
+
+    Inputs are contiguous int32 [B] on one HIP device. CP ownership follows
+    original concatenated extend row numbers, excluding collective padding.
+    Execution uses the current stream on the input device.
+    """
+    if not hasattr(op, "dsv41_mqa_query_lens"):
+        raise RuntimeError("dsv41_mqa_query_lens unavailable: rebuild/install LightOp with MQA prep")
+    return op.dsv41_mqa_query_lens(extend_start_loc, extend_seq_lens, cp_size, cp_rank)
+
+
+def dsv41_mqa_prefill_metadata(
+    seq_lens: torch.Tensor,
+    q_lens: torch.Tensor,
+    positions: torch.Tensor,
+    req_pool_indices: torch.Tensor,
+    req_to_token: torch.Tensor,
+    ratio: int,
+    num_k_slots: int,
+    max_request_work: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return ks/ke/visible lengths int32 [T] and physical K slots int64 [L].
+
+    All inputs are contiguous on one HIP device: seq_lens int32/int64 [B],
+    q_lens int32 [B], positions int64 [T], request IDs int64 [B], and the
+    int32 [capacity,width] request table. Ratio is 1 or 2. The caller provides
+    L=sum(seq_lens//ratio) and max_request_work=max(max(q_lens),max(seq_lens//ratio))
+    as host allocation/launch sizes, and guarantees sum(q_lens)=T, nonnegative
+    lengths/positions and valid request-table entries. No GPU values are read
+    back to validate those content guarantees. Tail calls pass counts selected
+    by original CP owners. Execution uses the current stream on positions' device.
+    """
+    if not hasattr(op, "dsv41_mqa_prefill_metadata"):
+        raise RuntimeError("dsv41_mqa_prefill_metadata unavailable: rebuild/install LightOp with MQA prep")
+    return op.dsv41_mqa_prefill_metadata(
+        seq_lens, q_lens, positions, req_pool_indices, req_to_token,
+        ratio, num_k_slots, max_request_work,
+    )
+
+
+def dsv41_gather_index_k_fp4(
+    cache: torch.Tensor,
+    slots: torch.Tensor,
+    page_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Copy packed page bytes into int8 [L,64] payload and int32 [L] scales.
+
+    Cache is uint8 [pages,page_size*68] with contiguous page rows; slots is
+    contiguous int64 [L] on the same HIP device. Each page stores all payload
+    bytes before all scale bytes. The caller guarantees 0 <= slots < pages*page_size.
+    Repeated slots, nonzero storage offsets and padded page strides are supported.
+    Bytes are copied without dequantization on the cache device's current stream.
+    """
+    if not hasattr(op, "dsv41_gather_index_k_fp4"):
+        raise RuntimeError("dsv41_gather_index_k_fp4 unavailable: rebuild/install LightOp with MQA prep")
+    return op.dsv41_gather_index_k_fp4(cache, slots, page_size)
+
+
 def fp8_fp4_mqa_logits(
     q: tuple[torch.Tensor, Optional[torch.Tensor]],
     kv: tuple[torch.Tensor, torch.Tensor],
@@ -707,6 +771,8 @@ def fp8_fp4_mqa_logits(
     cu_seq_len_k_end: torch.Tensor,
     clean_logits: bool,
     max_seqlen_k: int,
+    candidate_blocks: Optional[list[torch.Tensor]] = None,
+    candidate_query_lens: Optional[list[int]] = None,
 ) -> torch.Tensor:
     """Return FP32 window-local logits with shape ``[T, max_seqlen_k]``.
 
@@ -728,16 +794,35 @@ def fp8_fp4_mqa_logits(
     Pass ``clean_logits=False`` and a positive, 4-aligned width explicitly.
     FP4/FP8 Q, BF16 Q with a scale, other K formats and uncompressed output
     are unsupported. Execution uses the current stream on q's device.
+
+    With H=32, optional ``candidate_blocks`` selects request-local blocks of
+    eight K positions. Each request supplies an int32 ``[query_len, blocks]``
+    tensor on Q's device with last stride 1; row padding and storage offsets
+    are supported. ``candidate_query_lens`` lists the request query lengths,
+    whose sum must equal T. Block IDs must be unique within each row. Negative
+    or out-of-window IDs are ignored; unselected output columns stay -inf.
+    Both optional arguments must be supplied together. The default dense
+    call remains compatible with the original seven-argument native binding.
     """
     if not hasattr(op, "fp8_fp4_mqa_logits"):
         raise RuntimeError(
             "fp8_fp4_mqa_logits unavailable: rebuild/install Lightop with "
             "dense BF16 Q + FP4 K support"
         )
+    if candidate_blocks is None and candidate_query_lens is None:
+        return op.fp8_fp4_mqa_logits(
+            q, kv, weights, cu_seq_len_k_start, cu_seq_len_k_end,
+            clean_logits, max_seqlen_k,
+        )
     return op.fp8_fp4_mqa_logits(
         q, kv, weights, cu_seq_len_k_start, cu_seq_len_k_end,
-        clean_logits, max_seqlen_k,
+        clean_logits, max_seqlen_k, candidate_blocks, candidate_query_lens,
     )
+
+
+fp8_fp4_mqa_logits.supports_candidate_blocks = getattr(
+    op, "_fp8_fp4_mqa_logits_supports_candidates", False
+)
 
 
 def get_paged_mqa_logits_metadata(
