@@ -12,6 +12,9 @@
 #include "exception.h"
 #include "utils.h"
 
+#include <mutex>
+#include <unordered_map>
+
 namespace lightop {
 namespace deep_gemm {
 
@@ -155,6 +158,20 @@ int get_sms_info() {
     if (hipGetDevice(&device_id) != hipSuccess) {
         throw std::runtime_error("Failed to get current HIP device");
     }
+
+    // The scheduler calls this for every metadata plan.  Device properties are
+    // immutable for the lifetime of a worker, so do the HIP property query once
+    // per device instead of paying it on every C1/C2/publish invocation.
+    static std::mutex cache_mutex;
+    static std::unordered_map<int, int> sms_cache;
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        auto cached = sms_cache.find(device_id);
+        if (cached != sms_cache.end()) {
+            return cached->second;
+        }
+    }
+
     hipDeviceProp_t prop;
     if (hipGetDeviceProperties(&prop, device_id) != hipSuccess) {
         throw std::runtime_error("Failed to get HIP device properties");
@@ -180,6 +197,13 @@ int get_sms_info() {
         std::cerr << "Unsupported device config: " << arch
                   << ", CU=" << num_cus << std::endl;
         throw std::runtime_error("Unsupported device configuration");
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        // Another worker thread may have filled the entry while this thread
+        // queried the properties; both values are deterministic.
+        sms_cache.emplace(device_id, sms);
     }
     return sms;
 }
