@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "fp8_fp4_mqa_logits/fp8_fp4_mqa_logits.h"
+#include "fp8_fp4_mqa_logits/dsv41_mqa_prep.h"
 #include "paged_mqa_logits/paged_mqa_logits.h"
 #include "paged_mqa_logits/paged_mqa_logits_persisten.h"
 #include "paged_mqa_logits/paged_mqa_logits_fp4.h"
@@ -600,6 +601,12 @@ void fast_topk_transform_ragged_interface(
     const at::Tensor& lengths,
     at::Tensor& topk_indices_ragged,
     const at::Tensor& topk_indices_offset,
+    std::optional<at::Tensor> row_starts_opt);
+void topk_transform_ragged_v2_interface(
+    const at::Tensor& score,
+    const at::Tensor& lengths,
+    at::Tensor& output,
+    const at::Tensor& offsets,
     std::optional<at::Tensor> row_starts_opt);
 void fast_kpool_topk_transform_interface(
     const at::Tensor& score,
@@ -1199,10 +1206,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("clean_logits") = true,
       py::arg("D_out") = torch::nullopt);
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
+  m.def("dsv41_mqa_query_lens", &lightop::fp4_mqa::dsv41_mqa_query_lens,
+        py::arg("extend_start_loc"), py::arg("extend_seq_lens"),
+        py::arg("cp_size"), py::arg("cp_rank"));
+  m.def("dsv41_mqa_prefill_metadata", &lightop::fp4_mqa::dsv41_mqa_prefill_metadata,
+        py::arg("seq_lens"), py::arg("q_lens"), py::arg("positions"),
+        py::arg("req_pool_indices"), py::arg("req_to_token"), py::arg("ratio"),
+        py::arg("num_k_slots"), py::arg("max_request_work"));
+  m.def("dsv41_gather_index_k_fp4", &lightop::fp4_mqa::dsv41_gather_index_k_fp4,
+        py::arg("cache"), py::arg("slots"), py::arg("page_size"));
   m.def("fp8_fp4_mqa_logits", &lightop::fp4_mqa::fp8_fp4_mqa_logits,
         py::arg("q"), py::arg("kv"), py::arg("weights"),
         py::arg("cu_seq_len_k_start"), py::arg("cu_seq_len_k_end"),
-        py::arg("clean_logits"), py::arg("max_seqlen_k"));
+        py::arg("clean_logits"), py::arg("max_seqlen_k"),
+        py::arg("candidate_blocks") = std::nullopt,
+        py::arg("candidate_query_lens") = std::nullopt);
+  m.attr("_fp8_fp4_mqa_logits_supports_candidates") = true;
   m.def("paged_mqa_logits", &lightop::deep_gemm::paged_mqa_logits,"paged_mqa_logits");
   m.def("paged_mqa_logits_persisten", &lightop::deep_gemm::paged_mqa_logits_persisten,
         "dense persistent paged MQA logits with per-request KV reuse",
@@ -1401,6 +1420,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
      &at::native::fast_topk_transform_sparse_mask_interface,
      "fast_topk_transform_sparse_mask_interface");
  m.def("fast_topk_transform_ragged_interface", &at::native::fast_topk_transform_ragged_interface, "fast_topk_transform_ragged_interface");   
+ m.def("topk_transform_ragged_v2_interface", &at::native::topk_transform_ragged_v2_interface, "Fused HIP ragged TopK and additive index transform");
  m.def(
      "fast_kpool_topk_transform_interface",
      &at::native::fast_kpool_topk_transform_interface,

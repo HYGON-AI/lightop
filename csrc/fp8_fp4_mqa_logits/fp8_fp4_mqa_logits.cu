@@ -414,6 +414,141 @@ void launch(const bf16_t* q, const uint8_t* k_payload, const int32_t* k_scale,
         q, k_payload, k_scale, weights, ks, ke, out, t, l, h, width);
 }
 
+using bf16x4 = short __attribute__((ext_vector_type(4)));
+
+// Same normal-scale exponent adjustment as paged_mqa_logits_fp4::decode_fp4x4.
+// Keep the existing decoder for subnormal, overflow and UE8M0=255 behavior.
+__device__ __forceinline__ bf16x4 decode_candidate_fp4x4(unsigned packed, unsigned scale) {
+    bf16x4 result;
+    if (scale >= 2 && scale <= 252) {
+        const int delta = (static_cast<int>(scale) - 127) * 128;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const unsigned code = (packed >> (j * 4)) & 15u;
+            const unsigned mag = code & 7u;
+            const unsigned sign = (code & 8u) << 12;
+            const int base = mag >= 2 ? 0x3f00 + (mag << 6) : 0x3f00;
+            result[j] = sign | (mag == 0 ? 0 : base + delta);
+        }
+    } else {
+#pragma unroll
+        for (int j = 0; j < 4; ++j)
+            result[j] = decode_fp4_bf16((packed >> (j * 4)) & 15u, scale);
+    }
+    return result;
+}
+
+// Use the paged FP4 logits wave mapping: one Q row per CTA, sixteen
+// candidate keys against sixteen heads per MMAC, with two head tiles.
+// Unlike the paged API, K payload/scales are the original dense tensors and
+// the FP32 head weights retain their original precision.
+__global__ __launch_bounds__(256, 1) void bf16_fp4_candidate_kernel(
+    const uint16_t* __restrict__ q, const uint8_t* __restrict__ k_payload,
+    const int32_t* __restrict__ k_scale, const float* __restrict__ weights,
+    const int32_t* __restrict__ ks, const int32_t* __restrict__ ke,
+    const int32_t* __restrict__ candidate_blocks, float* __restrict__ out,
+    int num_k_tokens, int num_candidate_blocks, int out_width,
+    int64_t candidate_row_stride) {
+#if defined(__gfx936__) || defined(__gfx938__)
+    constexpr int HeadTiles = 2;
+    constexpr int Tile = 16;
+    constexpr int TilesPerWave = 4;
+    constexpr int TokensPerCTA = 4 * Tile * TilesPerWave;
+    const int b = blockIdx.y;
+    const int wave = threadIdx.x / 64;
+    const int lane = threadIdx.x % 64;
+    const int row = lane % 16;
+    const int group = lane / 16;
+    const int64_t start = static_cast<int64_t>(blockIdx.x) * TokensPerCTA +
+                          wave * Tile * TilesPerWave;
+    const int64_t candidate_count = static_cast<int64_t>(num_candidate_blocks) * 8;
+    if (start >= candidate_count) return;
+
+    bf16x4 qr[HeadTiles][8];
+    float head_weights[32];
+#pragma unroll
+    for (int head = 0; head < 32; ++head)
+        head_weights[head] = weights[static_cast<int64_t>(b) * 32 + head];
+#pragma unroll
+    for (int h = 0; h < HeadTiles; ++h) {
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            const auto* src = q + static_cast<int64_t>(b) * 32 * 128 +
+                              (h * 16 + row) * 128 + (k / 2) * 32 +
+                              group * 8 + (k % 2) * 4;
+            // Preserve the dense API's four-byte alignment contract.
+            qr[h][k] = {static_cast<short>(src[0]), static_cast<short>(src[1]),
+                        static_cast<short>(src[2]), static_cast<short>(src[3])};
+        }
+    }
+
+#pragma unroll
+    for (int tile = 0; tile < TilesPerWave; ++tile) {
+        const int64_t pos = start + tile * Tile + row;
+        const int32_t bid = pos < candidate_count
+            ? candidate_blocks[static_cast<int64_t>(b) * candidate_row_stride + pos / 8]
+            : -1;
+        // Check the ID before multiplication, and form absolute K addresses
+        // in int64 so padded or malformed IDs never cause a payload read.
+        const bool block_valid = bid >= 0 &&
+                                 static_cast<int64_t>(bid) < (out_width + 7LL) / 8;
+        const int64_t local = block_valid ? static_cast<int64_t>(bid) * 8 + (pos & 7) : -1;
+        const int64_t abs = static_cast<int64_t>(ks[b]) + local;
+        const bool valid = block_valid && local < out_width && abs >= 0 &&
+                           abs < ke[b] && abs < num_k_tokens;
+        if (__ballot(valid) == 0) continue;
+
+        uint16_t packed[8];
+        const uint32_t sf = valid ? static_cast<uint32_t>(k_scale[abs]) : 0x7f7f7f7fu;
+#pragma unroll
+        for (int k = 0; k < 8; ++k)
+            packed[k] = valid ? *reinterpret_cast<const uint16_t*>(
+                k_payload + abs * 64 + (k / 2) * 16 +
+                group * 4 + (k % 2) * 2) : 0;
+
+        floatx4 acc[HeadTiles] = {};
+        // Match the dense K32 fragment's two MMAC halves, including the
+        // partial-sum order when extreme scales overflow FP32.
+#pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            const unsigned scale = (sf >> ((k / 2) * 8)) & 255u;
+            const bf16x4 kr = decode_candidate_fp4x4(packed[k], scale);
+#pragma unroll
+            for (int h = 0; h < HeadTiles; ++h) {
+#if defined(__gfx938__)
+                acc[h] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(
+                    kr, qr[h][k], acc[h], false, false);
+#else
+                acc[h] = __builtin_amdgcn_mmac_f32_16x16x16bf16(kr, qr[h][k], acc[h]);
+#endif
+            }
+        }
+
+        // Match the dense head loop's ascending FP32 weighted accumulation,
+        // rather than the paged kernel's tree reduction. All lanes execute
+        // the shuffles; each group computes the same score for its key row.
+        float sum = 0.0f;
+#pragma unroll
+        for (int h = 0; h < HeadTiles; ++h) {
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+#pragma unroll
+                for (int head_group = 0; head_group < 4; ++head_group) {
+                    const int source_lane = row + head_group * 16;
+                    const float dot = __shfl(acc[h][j], source_lane, 64);
+                    const float weight = head_weights[h * 16 + j * 4 + head_group];
+                    sum = fmaf(detail::relu0_f32(dot), weight, sum);
+                }
+            }
+        }
+        if (lane < 16 && valid)
+            out[static_cast<int64_t>(b) * out_width + local] = sum;
+    }
+#else
+    __builtin_trap();
+#endif
+}
+
 }  // namespace
 
 torch::Tensor fp8_fp4_mqa_logits(
@@ -421,7 +556,9 @@ torch::Tensor fp8_fp4_mqa_logits(
     const std::tuple<torch::Tensor, torch::Tensor>& kv,
     const torch::Tensor& weights, const torch::Tensor& cu_seq_len_k_start,
     const torch::Tensor& cu_seq_len_k_end, bool clean_logits,
-    int64_t max_seqlen_k) {
+    int64_t max_seqlen_k,
+    const std::optional<std::vector<torch::Tensor>>& candidate_blocks,
+    const std::optional<std::vector<int64_t>>& candidate_query_lens) {
     const auto& q_data = std::get<0>(q);
     const auto& q_scale = std::get<1>(q);
     const auto& k_data = std::get<0>(kv);
@@ -464,6 +601,27 @@ torch::Tensor fp8_fp4_mqa_logits(
     TORCH_CHECK(l <= INT_MAX / 64 && t <= INT_MAX / (h * 256) &&
                 t <= 65535LL * Tile32x256::M,
                 "shape exceeds 32x256 launch or buffer offset limits");
+    TORCH_CHECK(candidate_blocks.has_value() == candidate_query_lens.has_value(),
+                "candidate_blocks and candidate_query_lens must be supplied together");
+    if (candidate_blocks.has_value()) {
+        TORCH_CHECK(h == 32, "candidate blocks require H=32");
+        TORCH_CHECK(candidate_blocks->size() == candidate_query_lens->size(),
+                    "candidate block tensors and query lengths must have the same count");
+        int64_t query_offset = 0;
+        for (size_t i = 0; i < candidate_blocks->size(); ++i) {
+            const auto& blocks = (*candidate_blocks)[i];
+            const int64_t rows = (*candidate_query_lens)[i];
+            TORCH_CHECK(rows >= 0 && rows <= 65535 && rows <= t - query_offset,
+                        "candidate query lengths must be nonnegative, fit grid.y and sum to T");
+            TORCH_CHECK(blocks.is_cuda() && blocks.device() == q_data.device() &&
+                        blocks.scalar_type() == at::kInt && blocks.dim() == 2 &&
+                        blocks.size(0) == rows && blocks.stride(1) == 1 &&
+                        blocks.stride(0) >= blocks.size(1) && blocks.size(1) <= INT_MAX / 8,
+                        "candidate blocks must be row-padded int32 [query_len,blocks] on Q's device with last stride 1");
+            query_offset += rows;
+        }
+        TORCH_CHECK(query_offset == t, "candidate query lengths must sum to T");
+    }
 
     const at::hip::OptionalHIPGuardMasqueradingAsCUDA guard(q_data.device());
     hipDeviceProp_t properties{};
@@ -486,6 +644,28 @@ torch::Tensor fp8_fp4_mqa_logits(
     const auto* ks_ptr = ks.data_ptr<int32_t>();
     const auto* ke_ptr = ke.data_ptr<int32_t>();
     auto* out_ptr = out.data_ptr<float>();
+
+    if (candidate_blocks.has_value()) {
+        int64_t query_offset = 0;
+        for (size_t i = 0; i < candidate_blocks->size(); ++i) {
+            const auto& blocks = (*candidate_blocks)[i];
+            const int64_t rows = (*candidate_query_lens)[i];
+            const int64_t count = blocks.size(1);
+            if (rows > 0 && count > 0) {
+                const dim3 grid((count * 8 + 255) / 256, rows);
+                bf16_fp4_candidate_kernel<<<grid, 256, 0, stream>>>(
+                    reinterpret_cast<const uint16_t*>(q_ptr) + query_offset * 32 * 128,
+                    k_ptr, sf_ptr, w_ptr + query_offset * 32,
+                    ks_ptr + query_offset, ke_ptr + query_offset,
+                    blocks.data_ptr<int32_t>(), out_ptr + query_offset * max_seqlen_k,
+                    l, count, max_seqlen_k, blocks.stride(0));
+                TORCH_CHECK(hipGetLastError() == hipSuccess,
+                            "BF16/FP4 candidate MQA kernel launch failed");
+            }
+            query_offset += rows;
+        }
+        return out;
+    }
 
     const bool mtail = t % Tile32x256::M != 0;
     const bool ntail = l % Tile32x256::N != 0;
