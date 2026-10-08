@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "fp8_fp4_mqa_logits/fp8_fp4_mqa_logits.h"
+#include "fp8_fp4_mqa_logits/dsv41_mqa_prep.h"
 #include "paged_mqa_logits/paged_mqa_logits.h"
 #include "paged_mqa_logits/paged_mqa_logits_fp4.h"
 #include "sparse_page_mqa/sparse_page_mqa.h"
@@ -1203,6 +1204,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("clean_logits") = true,
       py::arg("D_out") = torch::nullopt);
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
+  m.def("dsv41_mqa_query_lens", &lightop::fp4_mqa::dsv41_mqa_query_lens,
+        py::arg("extend_start_loc"), py::arg("extend_seq_lens"),
+        py::arg("cp_size"), py::arg("cp_rank"));
+  m.def("dsv41_mqa_prefill_metadata", &lightop::fp4_mqa::dsv41_mqa_prefill_metadata,
+        py::arg("seq_lens"), py::arg("q_lens"), py::arg("positions"),
+        py::arg("req_pool_indices"), py::arg("req_to_token"), py::arg("ratio"),
+        py::arg("num_k_slots"), py::arg("max_request_work"));
+  m.def("dsv41_gather_index_k_fp4", &lightop::fp4_mqa::dsv41_gather_index_k_fp4,
+        py::arg("cache"), py::arg("slots"), py::arg("page_size"));
   m.def("fp8_fp4_mqa_logits", &lightop::fp4_mqa::fp8_fp4_mqa_logits,
         py::arg("q"), py::arg("kv"), py::arg("weights"),
         py::arg("cu_seq_len_k_start"), py::arg("cu_seq_len_k_end"),

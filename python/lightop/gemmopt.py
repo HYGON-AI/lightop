@@ -694,6 +694,70 @@ def mqa_logits(
     return outs
 
 
+def dsv41_mqa_query_lens(
+    extend_start_loc: torch.Tensor,
+    extend_seq_lens: torch.Tensor,
+    cp_size: int,
+    cp_rank: int,
+) -> torch.Tensor:
+    """GPU local query counts, int32 [B], retaining requests with zero rows.
+
+    Inputs are contiguous int32 [B] on one HIP device. CP ownership follows
+    original concatenated extend row numbers, excluding collective padding.
+    Execution uses the current stream on the input device.
+    """
+    if not hasattr(op, "dsv41_mqa_query_lens"):
+        raise RuntimeError("dsv41_mqa_query_lens unavailable: rebuild/install LightOp with MQA prep")
+    return op.dsv41_mqa_query_lens(extend_start_loc, extend_seq_lens, cp_size, cp_rank)
+
+
+def dsv41_mqa_prefill_metadata(
+    seq_lens: torch.Tensor,
+    q_lens: torch.Tensor,
+    positions: torch.Tensor,
+    req_pool_indices: torch.Tensor,
+    req_to_token: torch.Tensor,
+    ratio: int,
+    num_k_slots: int,
+    max_request_work: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return ks/ke/visible lengths int32 [T] and physical K slots int64 [L].
+
+    All inputs are contiguous on one HIP device: seq_lens int32/int64 [B],
+    q_lens int32 [B], positions int64 [T], request IDs int64 [B], and the
+    int32 [capacity,width] request table. Ratio is 1 or 2. The caller provides
+    L=sum(seq_lens//ratio) and max_request_work=max(max(q_lens),max(seq_lens//ratio))
+    as host allocation/launch sizes, and guarantees sum(q_lens)=T, nonnegative
+    lengths/positions and valid request-table entries. No GPU values are read
+    back to validate those content guarantees. Tail calls pass counts selected
+    by original CP owners. Execution uses the current stream on positions' device.
+    """
+    if not hasattr(op, "dsv41_mqa_prefill_metadata"):
+        raise RuntimeError("dsv41_mqa_prefill_metadata unavailable: rebuild/install LightOp with MQA prep")
+    return op.dsv41_mqa_prefill_metadata(
+        seq_lens, q_lens, positions, req_pool_indices, req_to_token,
+        ratio, num_k_slots, max_request_work,
+    )
+
+
+def dsv41_gather_index_k_fp4(
+    cache: torch.Tensor,
+    slots: torch.Tensor,
+    page_size: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Copy packed page bytes into int8 [L,64] payload and int32 [L] scales.
+
+    Cache is uint8 [pages,page_size*68] with contiguous page rows; slots is
+    contiguous int64 [L] on the same HIP device. Each page stores all payload
+    bytes before all scale bytes. The caller guarantees 0 <= slots < pages*page_size.
+    Repeated slots, nonzero storage offsets and padded page strides are supported.
+    Bytes are copied without dequantization on the cache device's current stream.
+    """
+    if not hasattr(op, "dsv41_gather_index_k_fp4"):
+        raise RuntimeError("dsv41_gather_index_k_fp4 unavailable: rebuild/install LightOp with MQA prep")
+    return op.dsv41_gather_index_k_fp4(cache, slots, page_size)
+
+
 def fp8_fp4_mqa_logits(
     q: tuple[torch.Tensor, Optional[torch.Tensor]],
     kv: tuple[torch.Tensor, torch.Tensor],
