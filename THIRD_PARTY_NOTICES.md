@@ -5,7 +5,8 @@ Lightop 的根许可证是 Apache License 2.0，完整文本见 [LICENSE](LICENS
 ## 记录方法
 
 - “本地引入提交”是当前仓库 Git 历史中首次引入该路径的提交，用于固定本仓库中的证据；它不是第三方项目的上游 Commit。
-- 当前仓库没有为部分复制或适配源码保存上游 Commit、发布包或 vendoring manifest。此类项目使用可核对的官方仓库或项目主页，并明确标注“上游 Commit 未随仓库保留”，不得把本地引入提交误写成上游版本。
+- 本次已基于工作区内的 AITER 和 vLLM 完整 Git 克隆补录逐文件上游路径、基线选择器和 40 位 Commit。表中的“上游 Commit”是第三方仓库的提交；“本地引入提交”仍只表示 Lightop 自身历史中的引入点，二者不能互换。
+- 文件若为抽取或改编，只登记实际核对到的上游源文件和基线 Commit，并明确“改编/抽取”；这不表示 Lightop 文件与上游 Blob 逐字一致。没有在本地 vLLM 历史中找到匹配文件的路径继续保留为待补证，不凭项目名称推断来源。
 - 源码文件中的原始版权和 SPDX/许可证声明已保留。对 HYGON 的适配或修改以 Git 历史为准；未确认来源的内部组件不机械添加 HYGON Copyright 或新的 SPDX 声明。
 
 当前记录分为“已确认”和“待补证”两种状态。待补证项已经登记了本地路径、首次引入 Commit、当前文件哈希或二进制 SHA-256；补齐官方上游 Commit 或内部授权材料后，必须把状态改为“已确认”，再进行正式审计复扫。
@@ -17,13 +18,17 @@ Lightop 的根许可证是 Apache License 2.0，完整文本见 [LICENSE](LICENS
 | 项目/仓库 | ROCm AITER；<https://github.com/ROCm/aiter> |
 | 许可证 | MIT |
 | 版权 | Copyright (C) 2024-2025, Advanced Micro Devices, Inc. |
-| 上游版本 | 上游 Commit 未随当前仓库保留；以源码中的 MIT SPDX 与版权声明为准 |
-| 本地路径 | `csrc/aiter_hip_common.h`；`python/lightop/utils.py` |
-| 本地引入提交 | `bd98e062c1aaa7515f6bcc917500561dfd3e8183`（C++ 头文件）；`e00781a470c084d0742f430a8bfcdf8a90ee8702`（Python 工具） |
-| 当前文件 Blob | `26c0fcaeb48c487adc6ec57389fc212d9976a7e9`；`680bbf58b4aa1b53e2b431a14baed08f8acce94a` |
-| Lightop 处理 | 保留 AMD 版权和 MIT 标识；代码在 Lightop 中被集成或适配，差异由本地 Git 历史记录。 |
+| 上游 LICENSE | `LICENSE`；Blob `6311bdec0f330b61adb89cd32f719a43717504ed` |
+| 上游仓库 HEAD | 本地克隆 `b1cdc19ebf3a52b101221fee5b24a3ef7753c244`；远程 `git@github.com:ROCm/aiter.git` |
 
-**待补证动作：**从 AITER 官方仓库或内部镜像取得与上述两个文件逐字匹配的上游路径和 40 位 Commit，并登记上游 LICENSE 文件的路径和哈希。若无法匹配，应改走内部授权记录，不得继续把 AITER 作为确定来源。
+逐文件核验结果（上游文件 Blob 用于复核路径和 Commit 是否对应）：
+
+| 本地路径 | AITER 上游路径 | 基线选择器 | 上游 40 位 Commit | 上游文件 Blob | 本地当前 Blob | 关系/本地引入提交 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `csrc/aiter_hip_common.h` | `csrc/include/aiter_hip_common.h` | `main` | `b25a045a55257f1f9ae830ac72f6b8b49a3b8159` | `5de294a60cf6c5456458deb716d0b69e6ebc3823` | `26c0fcaeb48c487adc6ec57389fc212d9976a7e9` | 高相似 AITER 集成；本地引入 `bd98e062c1aaa7515f6bcc917500561dfd3e8183` |
+| `python/lightop/utils.py` | `aiter/jit/utils/chip_info.py` | `main` | `df789ccd9a2839d8a6f32ace641e95cbc995f70f` | `a45af28c40282a0792d25932aae9e5c358882fdb` | `680bbf58b4aa1b53e2b431a14baed08f8acce94a` | 改编而非逐字复制；本地引入 `e00781a470c084d0742f430a8bfcdf8a90ee8702` |
+
+`b25a045a...` 和 `df789ccd...` 均可由本地 AITER `main` 到达。AITER 另有内容相同的重复提交 `51351fc...`，但它不是 `main` 的祖先；这里选用 `main` 可达的 `df789ccd...` 作为可复核基线。第二个文件增加了 Lightop 的 `adb_shell`、环境变量和资源路径逻辑，发布说明应把它标成 AITER 派生改编并保留本地差异。
 
 MIT 许可文本：
 
@@ -53,31 +58,103 @@ SOFTWARE.
 
 ## 2. vLLM 来源文件
 
-这些文件保留 vLLM 的 Apache-2.0 SPDX 和 `Copyright contributors to the vLLM project` 声明。公开来源项目为 vLLM：<https://github.com/vllm-project/vllm>。当前仓库未保存对应的上游 Commit；下表的 Commit 均为本地引入提交。
+这些文件保留 vLLM 的 Apache-2.0 SPDX 和 `Copyright contributors to the vLLM project` 声明。公开来源项目为 vLLM：<https://github.com/vllm-project/vllm>。上游 LICENSE Blob 为 `261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64`。下表同时保留本地引入提交和已经核对的上游基线；本地引入提交不能替代上游 Commit。
 
-当前已确认项目和许可证，尚未确认每个文件的上游固定 Commit。尤其是两个 DeepSeek V4 kernel，文件注释同时提到 `vllm-deepseek_v4`，需要核对 vLLM 主仓库、对应分支或独立公开仓库，不能仅凭文件名归入 vLLM。
+关系说明：`完整/近完整快照` 表示文件主体可以在该上游 Blob 中复核；`抽取/改编` 表示仅复用函数或 kernel 结构；`参考基线` 表示本地实现明确以该上游文件为技术起点，但不是逐字副本。
 
 ### vLLM 版权声明文件
 
-| 本地路径 | 许可证/版权 | 本地引入提交 |
-| --- | --- | --- |
-| `csrc/allreduce_fuse/_custom_ops.py` | Apache-2.0；vLLM project contributors | `5b05e4ed06d26c4eaac830b5d4d6e86138fdc1a6` |
-| `csrc/allreduce_fuse/custom_all_reduce.py` | Apache-2.0；vLLM project contributors | `5b05e4ed06d26c4eaac830b5d4d6e86138fdc1a6` |
-| `csrc/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu` | Apache-2.0；vLLM project contributors | `07e7033161c35da365e32d6e7efaa44e36a3e96c` |
-| `csrc/fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp_kernel.cu` | Apache-2.0；vLLM project contributors | `086435003c8a7c26391c60425b7facd4f44ad3f7` |
-| `python/lightop/_lmslim_native/vllm_compat/moe_align_block_size.py` | Apache-2.0；vLLM project contributors | `b4b65b751fc6b46a4115289dab5b858ee4f97fd7` |
-| `python/lightop/_lmslim_native/vllm_compat/w8a8_get_cache_json.py` | Apache-2.0；vLLM project contributors | `b4b65b751fc6b46a4115289dab5b858ee4f97fd7` |
-| `test/common/fused_moe_kernel_gptq_awq.py` | Apache-2.0；vLLM project contributors | `32e4aad617608934ea2fea9283627f0c60527b2b` |
-| `test/common/quant_utils.py` | Apache-2.0；vLLM project contributors | `32e4aad617608934ea2fea9283627f0c60527b2b` |
-| `test/common/scalar_type.py` | Apache-2.0；vLLM project contributors | `32e4aad617608934ea2fea9283627f0c60527b2b` |
-| `test/moe_marlin/moe_w16a16/benchmark_moe_Triton.py` | Apache-2.0；vLLM project contributors | `30b88ebc31c2d8fc4c57f6f6f1b9e0586752e856` |
-| `test/moe_w16a16/benchmark_moe_Triton.py` | Apache-2.0；vLLM project contributors | `30b88ebc31c2d8fc4c57f6f6f1b9e0586752e856` |
+| 本地路径 | vLLM 上游路径 | 基线选择器 | 上游 40 位 Commit | 关系 | 本地引入提交 |
+| --- | --- | --- | --- | --- | --- |
+| `csrc/allreduce_fuse/_custom_ops.py` | `vllm/_custom_ops.py` | `main` | `3d184b95b83bd1c755811238b013b51c49da3951` | 抽取/改编；增加 Lightop/LMSLIM 注册和分页注意力入口 | `5b05e4ed06d26c4eaac830b5d4d6e86138fdc1a6` |
+| `csrc/allreduce_fuse/custom_all_reduce.py` | `vllm/distributed/device_communicators/custom_all_reduce.py` | `main` | `02f0c7b220422792f5e53de2a7d51d2d3ff2df28` | 抽取/改编；增加融合 Norm/Quant 和 HYGON 多卡策略 | `5b05e4ed06d26c4eaac830b5d4d6e86138fdc1a6` |
+| `csrc/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu` | `csrc/libtorch_stable/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu` | `main` | `59d0236193a1cb5e88bee9cd4a3692a5587c9558` | 参考基线；本地改为 ROCm/ATen 兼容实现，不是逐字 Blob | `07e7033161c35da365e32d6e7efaa44e36a3e96c` |
+| `csrc/fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp_kernel.cu` | `csrc/libtorch_stable/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu` | `main` | `59d0236193a1cb5e88bee9cd4a3692a5587c9558` | 参考基线；PCP 不同 Q/KV token 数是 Lightop 新增变体，vLLM 历史无同名文件 | `086435003c8a7c26391c60425b7facd4f44ad3f7` |
+| `python/lightop/_lmslim_native/vllm_compat/moe_align_block_size.py` | `vllm/model_executor/layers/fused_moe/moe_align_block_size.py` | `main` | `8fcaaf6a165e661f63fc51be906bc05b0767332f` | 抽取/改编；增加 Lightop dispatch 和参数处理 | `b4b65b751fc6b46a4115289dab5b858ee4f97fd7` |
+| `python/lightop/_lmslim_native/vllm_compat/w8a8_get_cache_json.py` | 未在本地 vLLM 历史找到对应路径或同名实现 | — | — | 待补证；不能仅因目录名含 `vllm_compat` 认定为 vLLM 来源 | `b4b65b751fc6b46a4115289dab5b858ee4f97fd7` |
+| `test/common/fused_moe_kernel_gptq_awq.py` | `vllm/model_executor/layers/fused_moe/fused_moe.py` | `main` | `22a97e66134a26c74b9dae73d9446c4e32718269` | 抽取；`fused_moe_kernel_gptq_awq` 主体与该 Commit 高度一致 | `32e4aad617608934ea2fea9283627f0c60527b2b` |
+| `test/common/quant_utils.py` | `vllm/model_executor/layers/quantization/utils/quant_utils.py` | `main` | `d6953beb91da4e9c99be4c0a1304a2d24189535c` | 抽取；`quantize_weights`/`pack_cols`/`awq_pack` 函数可逐段复核 | `32e4aad617608934ea2fea9283627f0c60527b2b` |
+| `test/common/scalar_type.py` | `vllm/scalar_type.py` | `main` | `8fcaaf6a165e661f63fc51be906bc05b0767332f` | 完整文件快照；上游与本地 Blob 均为 `05760f3f829988d4640955b6d19ff2549b1d28cd` | `32e4aad617608934ea2fea9283627f0c60527b2b` |
+| `test/moe_marlin/moe_w16a16/benchmark_moe_Triton.py` | `benchmarks/kernels/benchmark_moe.py` | `main` | `cede942b87b5d8baa0b95447f3e87e3c600ff5f5` | 改编快照；增加 DCU/NN-MoE 参数和设备逻辑 | `30b88ebc31c2d8fc4c57f6f6f1b9e0586752e856` |
+| `test/moe_w16a16/benchmark_moe_Triton.py` | `benchmarks/kernels/benchmark_moe.py` | `main` | `cede942b87b5d8baa0b95447f3e87e3c600ff5f5` | 改编快照；增加 DCU/NN-MoE 参数和设备逻辑 | `30b88ebc31c2d8fc4c57f6f6f1b9e0586752e856` |
 
-**待补证动作：**对每个本地路径记录 vLLM（或 DeepSeek V4 独立仓库）的原始路径、上游 40 位 Commit、上游 LICENSE/NOTICE 路径和本地差异。当前已保存的本地引入提交只能作为 LightOp 追溯证据。
+**仍需补证动作：**`w8a8_get_cache_json.py` 在本地 vLLM 历史中没有匹配文件，必须由组件负责人提供真实来源或内部授权记录。两个 DeepSeek 文件只能使用上述 vLLM Commit 作为技术参考基线；若发布审批要求“逐字上游文件”，还需提供独立 `vllm-deepseek_v4` 仓库的 URL、分支/Tag 和 40 位 Commit。其余表项的 Commit 已能在本地 `main` 上复核，正式审计时应把这些元数据随提交一并提交。
+
+### vLLM 对 NVIDIA 来源的引用方式（格式依据）
+
+本节只记录 vLLM 的引用格式，不把 vLLM 中的示例自动认定为 Lightop 文件的来源。核验基线为本地 vLLM 克隆的 `main`，固定 Commit 为 `87d9996abe7ae0173fa8c1b6ccc2411041bcac81`，根 `LICENSE` Blob 为 `261eeb9e9f8b2b4b0d119366dda99c6fd7d35c64`。
+
+| vLLM 文件 | vLLM 实际写法 | Lightop 应采用的规则 |
+| --- | --- | --- |
+| `csrc/libtorch_stable/dsv3_fused_a_gemm.cu` | 先写 `Adapted from` SGLang，再写 `which was adapted from` NVIDIA TensorRT-LLM 的固定 40 位 Commit `619709fc33bd5dc268f19d6a741fe7ed51c0f8f5`，并保留 NVIDIA 与 NAVER 的版权声明 | 有多级派生时逐级列出仓库、上游文件路径和 40 位 Commit；保留全部上游版权与许可证文本 |
+| `csrc/libtorch_stable/moe/topk_softmax_kernels.cu` | `Adapted from https://github.com/NVIDIA/TensorRT-LLM/blob/v0.7.1/...`，并列出 NVIDIA 与 vLLM 的 SPDX/版权 | Tag 可以作为可读选择器，但发布登记还要记录该 Tag 解析出的 40 位 Commit |
+| `csrc/libtorch_stable/moe/moeTopKFuncs.cuh` | 同时列出 NVIDIA TensorRT-LLM 和 FlashInfer 两个来源，并保留 `SPDX-FileCopyrightText` | 多来源抽取分别登记，不要合并成一个模糊的“NVIDIA 来源” |
+| `vllm/third_party/pynvml.py` | `copied from https://pypi.org/project/nvidia-ml-py`，写明版本 `12.570.86`，保留 NVIDIA 的 BSD 条款 | 完整复制要写来源项目、发布版本和原始许可证；不能只写项目名称 |
+| `csrc/libtorch_stable/fused_qknorm_rope_kernel.cu` | 注释引用 TensorRT-LLM 的 `main` 分支 | `main` 只能作为检索线索；Lightop 的最终记录必须替换成不可变 40 位 Commit |
+
+Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯一上游路径。因此目前只能采用这些格式规则，不能把 `vllm`、`cuda-samples` 或文件主题相似性写成真实来源。
+
+#### Lightop NVIDIA 文件头模板
+
+当组件负责人确认真实公开来源后，文件头按实际关系填写。`<UPSTREAM_COMMIT>` 必须是 40 位十六进制 Commit；若存在中间派生仓库，应按 vLLM 的链式写法逐级列出。
+
+```cpp
+/*
+ * Adapted from
+ * https://github.com/<owner>/<repo>/blob/<UPSTREAM_COMMIT>/<upstream/path>
+ * Copyright (c) <original years>, <original holder>. All rights reserved.
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) <original years>, <original holder>
+ *
+ * LightOp changes: <ROCm/DCU/HYGON changes, or “none” for an unchanged copy>.
+ */
+```
+
+若文件是完整复制而不是改编，把第一行改为 `Copied from`，并保留来源版本及原许可证原文。若最终确认是内部 NVIDIA 适配代码，不能虚构 GitHub URL；应在本表登记内部源码快照、权利人、许可证或授权编号、固定版本/制品号、LightOp 修改范围和发布范围，源码继续保留 NVIDIA 原始版权与 Apache-2.0 条款。
+
+如果核验确认文件包含 HYGON 的实质修改，再依照开源审计模板追加 HYGON 的 Copyright 和 `SPDX-FileCopyrightText`；不得用 HYGON 声明替换 NVIDIA 原始声明，也不得在来源尚未确认时借模板推断权利人。
 
 ## 3. NVIDIA 版权声明文件
 
-以下文件明确保留 NVIDIA 的 Apache-2.0 原始声明。源码布局与 vLLM 相关组件存在对应关系，vLLM 仓库（<https://github.com/vllm-project/vllm>）是可复核的公开线索，但当前 Git 历史没有保存能唯一确认的上游路径和 Commit，因此不能把该线索当作固定上游版本。发布前应补充逐文件来源证据；在此之前保留原始版权和许可证声明。
+以下文件明确保留 NVIDIA 的 Apache-2.0 原始声明。`common.h` 已基于本地 Transformer Engine 克隆完成多文件逐段核对；其余 NVIDIA 文件仍只有公开项目线索或主题相似性，不能把 vLLM、cuda-samples 或文件名相似性当作固定上游版本。发布前应为每个文件补充逐文件来源证据或内部授权记录，并继续保留原始版权和许可证声明。
+
+### Transformer Engine `common.h` 逐文件来源证据
+
+本节登记 `csrc/blockwise_scaling/common.h` 中已经在本地 Transformer Engine 克隆内逐段核对到的来源。该文件不是 Transformer Engine 单一文件的逐字副本，而是多个 NVIDIA Transformer Engine 头文件的抽取、合并和 HIP/DCU 适配版本。
+
+| 项目 | 内容 |
+| --- | --- |
+| 上游项目/仓库 | NVIDIA Transformer Engine；<https://github.com/NVIDIA/TransformerEngine.git> |
+| 上游分支 | `main` |
+| 可复核基线 Commit | `077e26c319d0fffbff75e56124b26b8b04aac0e5` |
+| 基线提交主题 | `Use userbuffers for MXFP8 wgrad all-gather overlap (#1982)` |
+| 上游 LICENSE | `LICENSE`；Blob `e97bf01c50dfb20764ba2ef1b5b786fe3d547dd2`；SHA-256 `bea1b4266f1499fa4bbb16d6e7577e6b5b53d1ef010835a9d460876022cc8722` |
+| LightOp 初始引入 | `e4bd6962fa68c4557df2f17fcaea0599d41304e9` |
+| LightOp 后续修改 | `1f0e6d421abc38beaa67b03c32af51b4a97a9191`、`8cdf607e5c562385f2fb73cab1c3c722ad0054d0` |
+| 当前 LightOp Blob | `64c1eccda927781931b9dcbf41abd3a1864fbdc5` |
+
+`077e26c...` 是 LightOp 初始导入时间（2025-08-11）之前最近的主线提交；相关 Transformer Engine 文件在该时间窗口内未发生变化。由于 LightOp 历史未记录实际导入时使用的上游远程和 Commit，发布前仍应由组件负责人确认该 Commit 是否为实际导入基线。
+
+逐段映射如下。表中的上游 Blob 是固定基线下的文件 Blob；LightOp 当前 Blob 不同，表示这是改编/合并关系，而不是完整复制。
+
+| LightOp 路径 | Transformer Engine 上游路径 | 上游文件 Blob | 代码范围与关系 |
+| --- | --- | --- | --- |
+| `csrc/blockwise_scaling/common.h` | `transformer_engine/common/common.h` | `aa47f2c3d9ec8f7d1518ef107f267e14e7353020` | `DIVUP`、类型别名、`TRANSFORMER_ENGINE_TYPE_NAME`、`TypeExtrema`、`TypeInfo`、条件分派宏；LightOp 改为 HIP 类型并置于 `at::native` |
+| `csrc/blockwise_scaling/common.h` | `transformer_engine/common/include/transformer_engine/transformer_engine.h` | `dab4fcfe754e9c2440e59ce7b37140048653bdaa` | `DType` 枚举结构；LightOp 增加 `kInt8` |
+| `csrc/blockwise_scaling/common.h` | `transformer_engine/common/transpose/cast_transpose.h` | `a737239260cfa8f6affefa5e61a6962f3cba2ebc` | `FP8BlockwiseRowwiseOption`、`FP8BlockwiseColumnwiseOption` 枚举和注释 |
+| `csrc/blockwise_scaling/common.h` | `transformer_engine/common/util/string.h` | `0064144102d2d121f1d658f8155b771b51162b23` | `to_string_like`、`concat_strings` 实现被合并进本地头文件 |
+| `csrc/blockwise_scaling/common.h` | `transformer_engine/common/utils.cuh` | `3f5bcc975dbd6322eefe30a7eae894d299098ded` | `uint16`、`uint8`、`BytesToType`、`Vec`；LightOp 增加赋值和 HIP 相关适配 |
+| `csrc/blockwise_scaling/common.h` | `transformer_engine/common/recipe/recipe_common.cuh` | `11f9bc12990550a8ed112706342c4166346c5995` | `compute_scale_from_amax`、`compute_scale_from_types` 被移动到本地头文件 |
+
+当前文件仍有以下来源未闭环，不能仅凭名称认定为 Transformer Engine 代码：
+
+- `TORCH_ERROR`、`TORCH_CHECK_CUDA`；
+- `TRANSFORMER_ENGINE_TYPE_SWITCH_8BIT`；
+- `DType::kInt8`、`Vec::operator=`、`__HOST_DEVICE__`；
+- `at::native` 和 `at::k*`/`torch::kInt8` 分派逻辑。
+
+组件负责人需要为这些部分提供公开仓库、文件路径、固定 40 位 Commit 和许可证，或提供内部源码快照、权利人和授权编号。当前 LightOp 文件还缺少 `Adapted from`、`SPDX-License-Identifier: Apache-2.0`、`SPDX-FileCopyrightText` 和 HYGON 修改声明；本节来源登记不等同于源码文件头整改完成。
 
 | 本地路径 | 许可证/版权 | 本地引入提交 |
 | --- | --- | --- |
@@ -85,7 +162,32 @@ SOFTWARE.
 | `csrc/blockwise_scaling/common.h` | Apache-2.0；Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES | `e4bd6962fa68c4557df2f17fcaea0599d41304e9` |
 | `csrc/rotary_positional_embedding.cu` | Apache-2.0；Copyright (c) 2020, NVIDIA CORPORATION | `41746aaef6d611ad210a1cf76948222ddba973f1` |
 
-**待补证动作：**以函数名、注释和完整文件内容分别检索 vLLM 与 NVIDIA 公开仓库。只有找到逐文件匹配并能锁定 40 位 Commit 后，才能填写公开来源；否则应由组件负责人提供内部授权记录，不得把 vLLM 线索写成事实。
+**待补证动作：**Transformer Engine `common.h` 的复合来源和基线已登记；仍需确认实际导入 Commit、补齐未闭环宏的来源或内部授权，并按本节映射补充源码文件头。其余 NVIDIA 文件仍需以函数名、注释和完整文件内容检索公开仓库。只有找到逐文件匹配并能锁定 40 位 Commit 后，才能填写公开来源；否则应由组件负责人提供内部授权记录，不得把 vLLM 线索写成事实。
+
+### NVIDIA `cuda-samples` 本地仓库核验
+
+本次使用本地完整克隆核验 NVIDIA CUDA Samples：<https://github.com/NVIDIA/cuda-samples>。
+
+| 项目 | 核验结果 |
+| --- | --- |
+| 仓库 | `https://github.com/NVIDIA/cuda-samples.git` |
+| 分支 | `master` |
+| 固定 Tag | `v13.4` |
+| Tag/分支 Commit | `5443602d89ed99aede2e4b7bf329daddeadb320e` |
+| 上游 LICENSE 路径 | `LICENSE` |
+| 上游 LICENSE Blob | `1e58bd5df0dd619135c58af0428c0f73c62921d7` |
+| 上游 LICENSE SHA-256 | `b3e40c5bfed1fca5c62d2c1f2208bf51f8d2c910219f94c443f657ace9001be3` |
+| 许可证说明 | NVIDIA CUDA Samples 许可证文本；包含 BSD-3-Clause 风格条款和 CUDA EULA 说明，不能直接替代 Lightop 文件的许可证判定 |
+
+逐文件比对结果（比对范围为 `cuda-samples` 的当前 `master` 及全部可达 Git 历史）：
+
+| Lightop 文件 | `cuda-samples` 候选 | 候选固定 Commit/Blob | 比对结论 |
+| --- | --- | --- | --- |
+| `csrc/blockwise_scaling/block_scaled_cast_transpose.cu` | `cpp/9_CUDA_Tile/tileTranspose/tileTranspose.cu`（同主题示例） | `5443602d89ed99aede2e4b7bf329daddeadb320e` / `221ea1523dfa0d1c1c78d3c31091a09d142ccb3f` | 文件路径、完整内容和 Blob 均不匹配；仅能作为算法主题参考，不能作为来源 Commit |
+| `csrc/blockwise_scaling/common.h` | 无对应路径或同名文件 | — | 在 `cuda-samples` 全部可达历史中未找到逐文件或同名匹配 |
+| `csrc/rotary_positional_embedding.cu` | `cpp/9_CUDA_Tile/tileRope/tileRope.cu`（同主题示例） | `5443602d89ed99aede2e4b7bf329daddeadb320e` / `8356d849fda874ab0e12349033ffc3b944f1e226` | 文件路径、完整内容和 Blob 均不匹配；仅能作为 RoPE 主题参考，不能作为来源 Commit |
+
+Lightop 三个文件的 Git Blob 分别为 `f49ce0d9173bbd7d73d94699bbba9ed96aea0453`、`64c1eccda927781931b9dcbf41abd3a1864fbdc5` 和 `8a003fa6cf7c84d4d550f106f97715fa238c10f3`；在 `cuda-samples` 全部可达对象中均没有对应 Blob。因此 `cuda-samples` 证据可以补充 NVIDIA 公开项目检索记录，但不能关闭这三个文件的来源阻断。仍需 vLLM/Transformer Engine/其他 NVIDIA 官方仓库的逐文件路径和固定 Commit，或内部授权记录。
 
 ## 4. SUGON CORPORATION 来源文件
 
@@ -97,7 +199,7 @@ SOFTWARE.
 | 本地引入提交 | `2d416883f006555c1c1d0f8a054824ef943ec1b0` |
 | 处理要求 | 保留原始版权和 Apache-2.0 条款，不将其改写为 HYGON 版权。法务或组件负责人需在发布前补充来源授权记录；该文件中的 SUGON 身份属于第三方原始声明。 |
 
-## 5. half 精度库
+## 5. half 精度库（公开来源已核验）
 
 | 项目 | 内容 |
 | --- | --- |
@@ -105,9 +207,16 @@ SOFTWARE.
 | 版本 | 2.1.0（源码注释明确标注） |
 | 许可证 | MIT |
 | 版权 | Copyright (c) 2012-2019 Christian Rau <rauy@users.sourceforge.net> |
-| 本地路径 | `third_party/librarygemmbiasf/half.hpp` |
+| 本地路径 | `third_party/librarygemmbiasf/half.hpp`; `third_party/librarygemmbiasf/LICENSE-half-2.1.0` |
 | 本地引入提交 | `57872c41339ab8e906b67c7215a30be93435ecb1` |
-| Lightop 处理 | 保留完整 MIT 许可文本、版权声明和版本注释；未添加 HYGON 文件头。 |
+| SourceForge 发布目录 | <https://sourceforge.net/projects/half/files/half/2.1.0/> |
+| 核验日期 | 2026-10-09 |
+| 发布归档 | `half-2.1.0.zip`；页面显示发布日期 `2019-08-05`、大小 `47.0 kB`；下载文件实测 `47,043` 字节 |
+| SourceForge 页面 SHA-256 | `ad1788afe0300fa2b02b0d1df128d857f021f92ccf7c8bddd07812685fa07a25`（下载页显示值；本次下载后本地复算一致） |
+| 归档内容 | `include/half.hpp`、`LICENSE.txt`、`README.txt`、`ChangeLog.txt`；归档内 `include/half.hpp` 与当前工作树文件逐字相同 |
+| 归档/本地 `LICENSE-half-2.1.0` SHA-256 | `98df52a2aa12febe52f2a022f07e2a76cc4dc75839f02bb94868e8666396954d` |
+| 当前工作树 `half.hpp` SHA-256 | `bb8592da2f97bab5e34ae3477358dd4c19aa3f909a3fde0864dfee2aa7c4ac1a`；与归档内 `include/half.hpp` 相同 |
+| Lightop 处理 | 保留完整 MIT 许可文本、版权声明和版本注释；未添加 HYGON 文件头。本次已下载归档并复算 SHA-256；正式发布证据应保留归档或受控存档记录。 |
 
 ## 6. `librarygemmbiasf` 内部组件（来源待补证）
 
@@ -120,6 +229,18 @@ SOFTWARE.
 | `third_party/librarygemmbiasf/squeue.h` | `57872c41339ab8e906b67c7215a30be93435ecb1` | `squeue` API 头文件；来源和许可证待补证 |
 | `third_party/librarygemmbiasf/test-hytsf.cpp` | `57872c41339ab8e906b67c7215a30be93435ecb1` | 测试程序；来源和许可证待补证 |
 | `third_party/librarygemmbiasf/test-hytsf.sh` | `57872c41339ab8e906b67c7215a30be93435ecb1` | 测试脚本；来源和许可证待补证 |
+
+### 历史构建线索（不能替代许可证或再分发授权）
+
+初次引入提交 `57872c41339ab8e906b67c7215a30be93435ecb1` 同时提交了 `readme.txt` 和 `TensileManifest.txt`；随后目录整理提交将两份说明文件移除，并把目录从 `lightop/librarygemmbiasf` 重命名为 `third_party/librarygemmbiasf`。历史文件提供了以下可复核线索：
+
+| 证据 | 内容 | 证明范围 |
+| --- | --- | --- |
+| `TensileManifest.txt`（引入提交） | `/home/guowei/gemm-bias/rocblas-dtk-22.04.2/build/release/Tensile/library/` 下的 `TensileLibrary.dat`、`Kernels.so-000-gfx900.hsaco`、`Kernels.so-000-gfx906.hsaco`、`TensileLibrary_gfx906.co` | 表明这些代码对象来自一次 ROCm/DTK 22.04.2 构建路径；不能证明该构建树的公开许可证或分发权 |
+| `readme.txt`（引入提交） | 说明将上述 Tensile 制品部署到 `/opt/rocm/rocblas/lib/librarygemmbiasf`，并通过 `hytsf.h` 调用 `gemmbias_forward_*` API | 说明运行时集成方式；不能证明 `hytsf`、`squeue` 的权利人或许可证 |
+| `compile.sh`（当前路径） | `hipcc -o test-hytsf test-hytsf.cpp -lhytsf -lsqueue -L.` | 证明测试可执行文件链接 `libhytsf.so` 和 `libsqueue.so`；不能证明这些动态库的生成源码或再分发授权 |
+
+因此，SourceForge 的 half 2.1.0 证据仅覆盖 `half.hpp`。Tensile 制品、`hytsf`/`squeue` 接口、动态库和测试程序仍须由组件负责人补充生成源码或来源仓库、固定版本/制品编号、权利人、许可证或内部再分发授权，并将授权范围绑定到本节列出的 SHA-256。
 
 ### 已纳入发布包的二进制证据
 
@@ -161,15 +282,16 @@ approval_date: <YYYY-MM-DD>
 
 | 组件 | 已确认 | 尚缺材料 | 处理结论 |
 | --- | --- | --- | --- |
-| AITER | 官方仓库、MIT、AMD 版权、本地路径和本地引入提交 | 上游逐文件 40 位 Commit、LICENSE 哈希 | 暂不关闭来源阻断 |
-| vLLM | 官方仓库、Apache-2.0、vLLM 版权、本地路径和本地引入提交 | 每个文件的上游 Commit；DeepSeek V4 的实际上游仓库 | 暂不关闭来源阻断 |
-| NVIDIA | NVIDIA 版权、Apache-2.0、本地路径和本地引入提交 | 公开仓库、逐文件路径和固定 Commit | 暂不关闭来源阻断 |
+| AITER | 官方仓库、MIT、AMD 版权、逐文件路径、基线选择器、40 位 Commit、LICENSE Blob | `python/lightop/utils.py` 是改编版本，需保留差异说明 | 已完成公开来源固定；按改编关系审查 |
+| vLLM | 官方仓库、Apache-2.0、逐文件路径、可达 `main`、40 位 Commit、LICENSE Blob | `w8a8_get_cache_json.py` 无匹配；DeepSeek V4 仍只有参考基线 | 已完成可匹配文件固定；两类未匹配项仍阻断 |
+| Transformer Engine | NVIDIA Transformer Engine 仓库、`main`、40 位基线 `077e26c319d0fffbff75e56124b26b8b04aac0e5`、六个上游文件 Blob、LICENSE Blob 和 SHA-256、`common.h` 逐段映射 | 组件负责人确认实际导入基线；`TORCH_ERROR`、`TORCH_CHECK_CUDA`、`TRANSFORMER_ENGINE_TYPE_SWITCH_8BIT`、`DType::kInt8`、`Vec::operator=`、`__HOST_DEVICE__` 及 ATen 适配的来源/授权；源码文件头仍需按映射补充 `Adapted from`、SPDX 和 HYGON 修改声明 | 公开来源部分固定；未闭环片段和文件头整改完成前，`common.h` 仍保留来源审查项 |
+| 其他 NVIDIA 文件 | NVIDIA 版权、Apache-2.0、本地路径和本地引入提交 | 公开仓库、逐文件路径和固定 Commit，或内部再分发授权 | 暂不关闭来源阻断 |
 | SUGON | 原始版权、Apache-2.0、本地引入提交 | 来源 URL 或内部再分发授权 | 暂不关闭授权阻断 |
 | `librarygemmbiasf` | 本地 Commit、源码路径、打包配置和二进制 SHA-256 | 源码/制品来源、许可证、公开分发授权 | 暂不允许发布 |
-| half 2.1.0 | SourceForge 主页、版本、MIT、完整原文许可 | 可复现的上游归档校验值 | 可保留，建议补归档哈希 |
+| half 2.1.0 | SourceForge 发布目录、`half-2.1.0.zip` 文件名、发布日期/大小、MIT、完整原文许可、页面显示 SHA-256、本地复算值和逐字文件比对 | 将下载归档或受控存档编号随发布证据保存 | `half.hpp` 公开来源已确认 |
 
 ## 8. 发布前核对
 
 1. 为所有“来源待补证”文件补充可审计的上游 URL、固定版本或 Commit、版权和许可证，并将对应许可证文本或 NOTICE 纳入发布包。
-2. 为 vLLM、AITER 和 NVIDIA 来源补充可复现的上游 Commit 或内部 vendoring 记录；本地引入提交只能作为本仓库的追溯证据。
+2. 保留本文件已登记的 AITER/vLLM/Transformer Engine 上游 Commit；为 Transformer Engine `common.h` 的未闭环片段和文件头、`w8a8_get_cache_json.py`、DeepSeek V4 独立来源、其他 NVIDIA 文件、SUGON 和 `librarygemmbiasf` 补充可复现的公开 Commit 或内部授权记录。本地引入提交只能作为本仓库的追溯证据。
 3. 保留第三方原始声明；HYGON 的原创或实质修改文件使用根目录 Apache-2.0，并按文件头规则补充 HYGON Copyright 和 SPDX。
