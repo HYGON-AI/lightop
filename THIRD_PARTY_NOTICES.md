@@ -5,7 +5,7 @@ Lightop 的根许可证是 Apache License 2.0，完整文本见 [LICENSE](LICENS
 ## 记录方法
 
 - “本地引入提交”是当前仓库 Git 历史中首次引入该路径的提交，用于固定本仓库中的证据；它不是第三方项目的上游 Commit。
-- 本次已基于工作区内的 AITER 和 vLLM 完整 Git 克隆补录逐文件上游路径、基线选择器和 40 位 Commit。表中的“上游 Commit”是第三方仓库的提交；“本地引入提交”仍只表示 Lightop 自身历史中的引入点，二者不能互换。
+- 本次已基于工作区内的 AITER、vLLM 和 Transformer Engine Git 克隆补录上游路径、基线选择器和 40 位 Commit。Transformer Engine 的固定参考基线与实际导入版本尚需区分。表中的“上游 Commit”是第三方仓库的提交；“本地引入提交”仍只表示 Lightop 自身历史中的引入点，二者不能互换。
 - 文件若为抽取或改编，只登记实际核对到的上游源文件和基线 Commit，并明确“改编/抽取”；这不表示 Lightop 文件与上游 Blob 逐字一致。没有在本地 vLLM 历史中找到匹配文件的路径继续保留为待补证，不凭项目名称推断来源。
 - 源码文件中的原始版权和 SPDX/许可证声明已保留。对 HYGON 的适配或修改以 Git 历史为准；未确认来源的内部组件不机械添加 HYGON Copyright 或新的 SPDX 声明。
 
@@ -117,7 +117,7 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 
 ## 3. NVIDIA 版权声明文件
 
-以下文件明确保留 NVIDIA 的 Apache-2.0 原始声明。`common.h` 已基于本地 Transformer Engine 克隆完成多文件逐段核对；`block_scaled_cast_transpose.cu` 经代码审查确认为 HYGON 编写的接口包装层，已改用 HYGON 原创 Apache-2.0 文件头。其余 NVIDIA 文件仍只有公开项目线索或主题相似性，不能把 vLLM、cuda-samples 或文件名相似性当作固定上游版本。发布前应为每个文件补充逐文件来源证据或内部授权记录，并继续保留已确认的原始版权和许可证声明。
+以下文件保留 NVIDIA 的 Apache-2.0 原始声明。`common.h` 已基于本地 Transformer Engine 克隆完成多文件逐段核对；`block_scaled_cast_transpose.cu` 按本次用户确认归入 Transformer Engine 接口适配，恢复 NVIDIA 原始版权并补充固定参考链接、SPDX 和 HYGON 修改说明。其余 NVIDIA 文件仍需逐文件来源证据或内部授权记录。
 
 ### Transformer Engine `common.h` 逐文件来源证据
 
@@ -156,14 +156,36 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 
 组件负责人需要为这些部分提供公开仓库、文件路径、固定 40 位 Commit 和许可证，或提供内部源码快照、权利人和授权编号。当前 LightOp 文件还缺少 `Adapted from`、`SPDX-License-Identifier: Apache-2.0`、`SPDX-FileCopyrightText` 和 HYGON 修改声明；本节来源登记不等同于源码文件头整改完成。
 
+### Transformer Engine `block_scaled_cast_transpose.cu` 接口适配条目
+
+本次用户确认将该文件按 Transformer Engine 接口适配登记，撤销此前的 HYGON 原创归类。以下固定路径用于复核块量化接口和分发逻辑；本地基线未找到同名包装函数或完整文件副本，因此不将其登记为逐字复制，也不将参考 Commit 认定为实际导入 Commit。
+
+| 项目 | 内容 |
+| --- | --- |
+| 本地路径 | `csrc/blockwise_scaling/block_scaled_cast_transpose.cu` |
+| 上游项目/仓库 | NVIDIA Transformer Engine；<https://github.com/NVIDIA/TransformerEngine.git> |
+| 上游分支 | `main` |
+| 固定参考基线 Commit | `077e26c319d0fffbff75e56124b26b8b04aac0e5`；可由本地 `main` 到达 |
+| 许可证/版权 | Apache-2.0；Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved. |
+| 上游 LICENSE | 同上方 Transformer Engine 条目的 `LICENSE` Blob 和 SHA-256 |
+| 本地引入提交 | `1f0e6d421abc38beaa67b03c32af51b4a97a9191` |
+| LightOp 适配范围 | 改用 ATen `Tensor`/`std::optional<Tensor>` 参数；以 `block_scaling_dim` 分发至本地 1D 实现，2D 模式报告不支持 |
+| 文件头状态 | 已恢复 NVIDIA 版权并补充 `SPDX-License-Identifier: Apache-2.0`、NVIDIA `SPDX-FileCopyrightText`、Transformer Engine 固定参考链接及 HYGON 修改说明；已移除 HYGON 原创 Copyright |
+
+| Transformer Engine 参考路径（固定于上述 Commit） | 上游文件 Blob | 对应范围 |
+| --- | --- | --- |
+| [transformer_engine/common/util/cast_kernels.cuh](https://github.com/NVIDIA/TransformerEngine/blob/077e26c319d0fffbff75e56124b26b8b04aac0e5/transformer_engine/common/util/cast_kernels.cuh) | `5590cee1056aa68b32c33315d2caad2c39e1cfc6` | `quantize_helper` 的 `NVTE_BLOCK_SCALING_1D`/`NVTE_BLOCK_SCALING_2D` 分发与 `epsilon`、`force_pow_2_scales` 参数；LightOp 仅保留本地 1D 入口 |
+| [transformer_engine/common/transpose/quantize_transpose_vector_blockwise.cu](https://github.com/NVIDIA/TransformerEngine/blob/077e26c319d0fffbff75e56124b26b8b04aac0e5/transformer_engine/common/transpose/quantize_transpose_vector_blockwise.cu) | `6f5c0f3a6c3df65df5f305e207d16d21b6fe715e` | `quantize_transpose_vector_blockwise` 的输入、行列输出、逆缩放、`epsilon` 和 `pow2_scale` 接口；用于说明本地 1D 调用的参考关系 |
+
+实际导入 Commit 和从上述上游接口到本地包装函数的导入/改编记录仍需组件负责人补齐；本条不扩展到被调用的 `block_scaled_1d_cast_transpose.h` 的完整来源审核。
+
 | 本地路径 | 许可证/版权 | 本地引入提交 |
 | --- | --- | --- |
+| `csrc/blockwise_scaling/block_scaled_cast_transpose.cu` | Apache-2.0；NVIDIA 原始版权、Transformer Engine 接口适配与 HYGON 修改说明 | `1f0e6d421abc38beaa67b03c32af51b4a97a9191` |
 | `csrc/blockwise_scaling/common.h` | Apache-2.0；Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES | `e4bd6962fa68c4557df2f17fcaea0599d41304e9` |
 | `csrc/rotary_positional_embedding.cu` | Apache-2.0；Copyright (c) 2020, NVIDIA CORPORATION | `41746aaef6d611ad210a1cf76948222ddba973f1` |
 
-`csrc/blockwise_scaling/block_scaled_cast_transpose.cu` 是 HYGON 的接口分发包装层，当前仅根据 `block_scaling_dim` 调用本地 1D 实现或报告未支持的 2D 模式；本文件不再按 NVIDIA 来源文件登记。其许可证头为 `SPDX-License-Identifier: Apache-2.0`，版权人为 Hygon Information Technology Co., Ltd.，首次引入提交为 `1f0e6d421abc38beaa67b03c32af51b4a97a9191`。
-
-**待补证动作：**Transformer Engine `common.h` 的复合来源和基线已登记；仍需确认实际导入 Commit、补齐未闭环宏的来源或内部授权，并按本节映射补充源码文件头。其余 NVIDIA 文件仍需以函数名、注释和完整文件内容检索公开仓库。只有找到逐文件匹配并能锁定 40 位 Commit 后，才能填写公开来源；否则应由组件负责人提供内部授权记录，不得把 vLLM 线索写成事实。
+**待补证动作：**Transformer Engine `common.h` 的复合来源和 `block_scaled_cast_transpose.cu` 的接口参考基线已登记；仍需确认实际导入 Commit、补齐 `common.h` 未闭环宏的来源或内部授权及源码文件头，并保存包装层的导入/改编记录。其余 NVIDIA 文件仍需逐文件路径和固定 Commit，或内部授权记录。
 
 ### NVIDIA `cuda-samples` 本地仓库核验
 
@@ -184,27 +206,28 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 
 | Lightop 文件 | `cuda-samples` 候选 | 候选固定 Commit/Blob | 比对结论 |
 | --- | --- | --- | --- |
-| `csrc/blockwise_scaling/block_scaled_cast_transpose.cu` | `cpp/9_CUDA_Tile/tileTranspose/tileTranspose.cu`（同主题示例） | `5443602d89ed99aede2e4b7bf329daddeadb320e` / `221ea1523dfa0d1c1c78d3c31091a09d142ccb3f` | 文件路径、完整内容和 Blob 均不匹配；结合代码审查确认为 HYGON 接口包装层，不能作为 NVIDIA 来源 Commit |
+| `csrc/blockwise_scaling/block_scaled_cast_transpose.cu` | `cpp/9_CUDA_Tile/tileTranspose/tileTranspose.cu`（同主题示例） | `5443602d89ed99aede2e4b7bf329daddeadb320e` / `221ea1523dfa0d1c1c78d3c31091a09d142ccb3f` | 文件路径、完整内容和 Blob 均不匹配；当前按 Transformer Engine 接口适配登记，cuda-samples 不作为来源 |
 | `csrc/blockwise_scaling/common.h` | 无对应路径或同名文件 | — | 在 `cuda-samples` 全部可达历史中未找到逐文件或同名匹配 |
 | `csrc/rotary_positional_embedding.cu` | `cpp/9_CUDA_Tile/tileRope/tileRope.cu`（同主题示例） | `5443602d89ed99aede2e4b7bf329daddeadb320e` / `8356d849fda874ab0e12349033ffc3b944f1e226` | 文件路径、完整内容和 Blob 均不匹配；仅能作为 RoPE 主题参考，不能作为来源 Commit |
 
-Lightop 三个文件的 Git Blob 分别为 `f49ce0d9173bbd7d73d94699bbba9ed96aea0453`、`64c1eccda927781931b9dcbf41abd3a1864fbdc5` 和 `8a003fa6cf7c84d4d550f106f97715fa238c10f3`；在 `cuda-samples` 全部可达对象中均没有对应 Blob。因此 `cuda-samples` 证据可以补充 NVIDIA 公开项目检索记录，但不能关闭这三个文件的来源阻断。仍需 vLLM/Transformer Engine/其他 NVIDIA 官方仓库的逐文件路径和固定 Commit，或内部授权记录。
+此前 cuda-samples 核验使用的三个 Lightop 文件 Git Blob 分别为 `f49ce0d9173bbd7d73d94699bbba9ed96aea0453`、`64c1eccda927781931b9dcbf41abd3a1864fbdc5` 和 `8a003fa6cf7c84d4d550f106f97715fa238c10f3`，其中第一个是包装层恢复来源标注之前的历史版本；在 `cuda-samples` 全部可达对象中均没有对应 Blob。该核验排除了 cuda-samples 的完整文件来源关系。`common.h` 和包装层的 Transformer Engine 证据见上方条目；`rotary_positional_embedding.cu` 仍需其他 NVIDIA 官方仓库或中间派生仓库的逐文件来源和固定 Commit，或内部授权记录。
 
-## 4. SUGON CORPORATION 来源文件
+## 4. HYGON CORPORATION 来源文件
 
 | 项目 | 内容 |
 | --- | --- |
-| 来源 | `SUGON CORPORATION` 版权声明；当前 Git 历史未提供可核对的公开仓库 URL 或上游 Commit |
+| 来源 | `HYGON CORPORATION` 版权声明；当前 Git 历史未提供可核对的公开仓库 URL 或上游 Commit |
 | 许可证 | Apache-2.0（文件内完整声明） |
 | 本地路径 | `csrc/bias_swiglu.cu` |
 | 本地引入提交 | `2d416883f006555c1c1d0f8a054824ef943ec1b0` |
-| 处理要求 | 保留原始版权和 Apache-2.0 条款，不将其改写为 HYGON 版权。法务或组件负责人需在发布前补充来源授权记录；该文件中的 SUGON 身份属于第三方原始声明。 |
+| 处理要求 | 保留原始版权和 Apache-2.0 条款，不将其改写为 HYGON 版权。法务或组件负责人需在发布前补充来源授权记录；该文件中的 HYGON 身份属于第三方原始声明。 |
 
 ## 5. half 精度库（公开来源已核验）
 
 | 项目 | 内容 |
 | --- | --- |
 | 项目/主页 | half - IEEE 754-based half-precision floating-point library；<https://sourceforge.net/projects/half/> |
+| 主页项目说明 | SourceForge 将 `half` 描述为基于 IEEE 754 的半精度浮点库；该说明与本目录的 `half.hpp` 文件头和 MIT 许可证一致，但未提及 `hytsf`、`squeue` 或 Tensile 制品 |
 | 版本 | 2.1.0（源码注释明确标注） |
 | 许可证 | MIT |
 | 版权 | Copyright (c) 2012-2019 Christian Rau <rauy@users.sourceforge.net> |
@@ -223,13 +246,36 @@ Lightop 三个文件的 Git Blob 分别为 `f49ce0d9173bbd7d73d94699bbba9ed96aea
 
 以下文件与 `half.hpp` 一同进入仓库，但当前 Git 历史只显示本地引入，没有公开仓库 URL、固定版本或许可证文本。它们可能属于内部 `hytsf`/`squeue` 组件，不能根据目录名推断许可证。发布前必须由组件负责人补齐来源、版权、许可证和授权记录；在补证前不得把它们声明为 Apache-2.0 或 MIT，也不得机械添加 HYGON 文件头。
 
-| 本地路径 | 本地引入提交 | 当前结论 |
-| --- | --- | --- |
-| `third_party/librarygemmbiasf/compile.sh` | `57872c41339ab8e906b67c7215a30be93435ecb1` | 构建脚本；来源和许可证待补证 |
-| `third_party/librarygemmbiasf/hytsf.h` | `57872c41339ab8e906b67c7215a30be93435ecb1` | `hytsf` API 头文件；来源和许可证待补证 |
-| `third_party/librarygemmbiasf/squeue.h` | `57872c41339ab8e906b67c7215a30be93435ecb1` | `squeue` API 头文件；来源和许可证待补证 |
-| `third_party/librarygemmbiasf/test-hytsf.cpp` | `57872c41339ab8e906b67c7215a30be93435ecb1` | 测试程序；来源和许可证待补证 |
-| `third_party/librarygemmbiasf/test-hytsf.sh` | `57872c41339ab8e906b67c7215a30be93435ecb1` | 测试脚本；来源和许可证待补证 |
+SourceForge 的 [half 2.1.0 发布目录](https://sourceforge.net/projects/half/files/half/2.1.0/) 仅能核验 `half-2.1.0.zip` 中的 `include/half.hpp`、`LICENSE.txt`、`README.txt` 和 `ChangeLog.txt`。以下五个路径均不在该归档中，因此该网址不能作为它们的来源、许可证或分发授权证据。
+
+| 本地路径 | 本地引入提交 | SourceForge 2.1.0 归档核验 | 当前结论 |
+| --- | --- | --- | --- |
+| `third_party/librarygemmbiasf/compile.sh` | `57872c41339ab8e906b67c7215a30be93435ecb1` | `half-2.1.0.zip` 不包含该路径 | 构建脚本；来源和许可证待补证 |
+| `third_party/librarygemmbiasf/hytsf.h` | `57872c41339ab8e906b67c7215a30be93435ecb1` | `half-2.1.0.zip` 不包含该路径 | `hytsf` API 头文件；来源和许可证待补证 |
+| `third_party/librarygemmbiasf/squeue.h` | `57872c41339ab8e906b67c7215a30be93435ecb1` | `half-2.1.0.zip` 不包含该路径 | `squeue` API 头文件；来源和许可证待补证 |
+| `third_party/librarygemmbiasf/test-hytsf.cpp` | `57872c41339ab8e906b67c7215a30be93435ecb1` | `half-2.1.0.zip` 不包含该路径 | 测试程序；来源和许可证待补证 |
+| `third_party/librarygemmbiasf/test-hytsf.sh` | `57872c41339ab8e906b67c7215a30be93435ecb1` | `half-2.1.0.zip` 不包含该路径 | 测试脚本；来源和许可证待补证 |
+
+### SourceForge 网址无法补充的源码字段
+
+SourceForge 的 `half` 项目主页和 2.1.0 归档不能为上述五个文件提供下列发布证据：
+
+| 待补字段 | 当前状态 |
+| --- | --- |
+| 公开仓库路径与 40 位 Commit，或内部源码库路径与内部版本号 | 缺失；当前只有 Lightop 本地首次引入提交 `57872c41339ab8e906b67c7215a30be93435ecb1` |
+| 权利人和许可证 | 缺失；不能从 `half` 项目许可证推断 `hytsf`/`squeue` 组件许可证 |
+| 本地文件 SHA-256 | 已固定在下表；仍需与来源快照或内部版本建立对应关系 |
+| 本地修改差异 | 缺少可比较的固定来源基线；需提供来源快照后生成差异记录 |
+| 源码公开发布许可 | 缺失；需明确源码包、wheel 和其他发布渠道的范围 |
+| `hytsf`、`squeue` 依赖的单独许可证和授权 | 缺失；需提供依赖许可证文本或内部再分发批准 |
+
+| 文件 | 当前工作树 SHA-256 |
+| --- | --- |
+| `third_party/librarygemmbiasf/compile.sh` | `f427137ad6ffd52e1df7bed95489ba1a5e0d5ccb96c35741530f4e668e8a4067` |
+| `third_party/librarygemmbiasf/hytsf.h` | `0451d8f1328e178b1ae38bff3389b75a80dd9bfa39d3484b2fe15c05b9da3fa1` |
+| `third_party/librarygemmbiasf/squeue.h` | `b7b6ce4f39daeec064438ae6e7722e7e9246434d34e0dda468cf0de063ebf568` |
+| `third_party/librarygemmbiasf/test-hytsf.cpp` | `b764bdffe5a4aecc32e64a90fe5fab9fcb8b9a3ae3c4307234b189b9c4b080d9` |
+| `third_party/librarygemmbiasf/test-hytsf.sh` | `5f116823a8fd167e4845dd70cfb74a79baa7734c0a4d0eb465f8656a0f13e2ba` |
 
 ### 历史构建线索（不能替代许可证或再分发授权）
 
@@ -257,7 +303,17 @@ Lightop 三个文件的 Git Blob 分别为 `f49ce0d9173bbd7d73d94699bbba9ed96aea
 | `third_party/librarygemmbiasf/libsqueue.so` | 66,240 | `96216b42fd3b913e3db4574509e6c766c0370caeef33682961b69a11d4f205a9` |
 | `third_party/librarygemmbiasf/test-hytsf` | 76,344 | `ed025d60dfc535d147d29c990df0ce14cdbf39a6c9be99f50aa26df6a5d26d86` |
 
-**内部授权记录必须覆盖：**上述二进制的生成源码、编译工具链、权利人、可公开分发范围、依赖的 `hytsf`/`squeue` 许可证，以及这些精确 SHA-256 对应的制品版本。只有头文件授权而没有动态库授权时，不能认定 LightOp 发布包合规。
+### SourceForge 网址无法补充的二进制字段
+
+SourceForge 的 `half` 项目不提供上述七个制品的构建或再分发证据。每个制品仍需补齐：
+
+- 生成源码的 40 位 Commit 或内部制品版本，并与表中的 SHA-256 建立一一对应关系；
+- 生成脚本、完整构建参数、编译器以及 DTK/ROCm 版本；
+- 依赖库清单、`hytsf`/`squeue` 及其他依赖的许可证；
+- 权利人、内部再分发批准和源码、wheel、二进制的公开分发范围；
+- 从源码到制品的可复核构建关系，包括生成日期、目标架构和制品版本。
+
+只有头文件授权而没有动态库、代码对象和测试可执行文件的授权时，不能认定 LightOp 发布包合规。
 
 ### `librarygemmbiasf` 授权记录模板
 
@@ -268,12 +324,29 @@ source_repository: <官方或内部仓库地址>
 baseline_commit_or_artifact: <40位Commit或制品版本>
 copyright_holder: <权利人>
 license_or_distribution_authorization: <许可证或法务授权编号>
-files:
+source_files:
+  - third_party/librarygemmbiasf/compile.sh
   - third_party/librarygemmbiasf/hytsf.h
   - third_party/librarygemmbiasf/squeue.h
+  - third_party/librarygemmbiasf/test-hytsf.cpp
+  - third_party/librarygemmbiasf/test-hytsf.sh
+artifact_files:
+  - third_party/librarygemmbiasf/TensileLibrary.dat
+  - third_party/librarygemmbiasf/Kernels.so-000-gfx900.hsaco
+  - third_party/librarygemmbiasf/Kernels.so-000-gfx906.hsaco
+  - third_party/librarygemmbiasf/TensileLibrary_gfx906.co
   - third_party/librarygemmbiasf/libhytsf.so
   - third_party/librarygemmbiasf/libsqueue.so
-artifact_sha256: <与本文件表格一致>
+  - third_party/librarygemmbiasf/test-hytsf
+source_sha256: <与本文件源码哈希表一致>
+artifact_sha256: <与本文件制品哈希表一致>
+source_diff: <相对固定来源快照的差异记录>
+build:
+  source_commit_or_artifact: <生成源码40位Commit或内部制品版本>
+  script: <生成脚本和完整构建参数>
+  compiler: <编译器及版本>
+  dtk_rocm: <DTK/ROCm版本>
+  dependencies_and_licenses: <依赖库清单及许可证>
 public_distribution_scope: <源码、wheel、二进制或限制条件>
 approver: <组件负责人和法务审批人>
 approval_date: <YYYY-MM-DD>
@@ -286,14 +359,14 @@ approval_date: <YYYY-MM-DD>
 | AITER | 官方仓库、MIT、AMD 版权、逐文件路径、基线选择器、40 位 Commit、LICENSE Blob | `python/lightop/utils.py` 是改编版本，需保留差异说明 | 已完成公开来源固定；按改编关系审查 |
 | vLLM | 官方仓库、Apache-2.0、逐文件路径、可达 `main`、40 位 Commit、LICENSE Blob | `w8a8_get_cache_json.py` 无匹配；DeepSeek V4 仍只有参考基线 | 已完成可匹配文件固定；两类未匹配项仍阻断 |
 | Transformer Engine | NVIDIA Transformer Engine 仓库、`main`、40 位基线 `077e26c319d0fffbff75e56124b26b8b04aac0e5`、六个上游文件 Blob、LICENSE Blob 和 SHA-256、`common.h` 逐段映射 | 组件负责人确认实际导入基线；`TORCH_ERROR`、`TORCH_CHECK_CUDA`、`TRANSFORMER_ENGINE_TYPE_SWITCH_8BIT`、`DType::kInt8`、`Vec::operator=`、`__HOST_DEVICE__` 及 ATen 适配的来源/授权；源码文件头仍需按映射补充 `Adapted from`、SPDX 和 HYGON 修改声明 | 公开来源部分固定；未闭环片段和文件头整改完成前，`common.h` 仍保留来源审查项 |
-| HYGON 接口包装层 | `csrc/blockwise_scaling/block_scaled_cast_transpose.cu`；首次引入 `1f0e6d421abc38beaa67b03c32af51b4a97a9191`；现有实现为接口分发逻辑 | 无第三方上游来源；已补充 Hygon Information Technology Co., Ltd. 版权和 `SPDX-License-Identifier: Apache-2.0` | 原创文件头已补齐 |
+| Transformer Engine 接口适配 | `csrc/blockwise_scaling/block_scaled_cast_transpose.cu`；用户确认来源项目；`main` 可达参考 Commit `077e26c319d0fffbff75e56124b26b8b04aac0e5`、两个参考文件及 Blob；NVIDIA 版权、Apache-2.0 SPDX 和 HYGON 修改说明 | 实际导入 Commit 与接口改编记录；本地基线无同名包装函数或完整文件匹配 | 已撤销原创归类并完成来源文件头标注；实际导入来源审查仍待闭环 |
 | 其他 NVIDIA 文件 | NVIDIA 版权、Apache-2.0、本地路径和本地引入提交 | 公开仓库、逐文件路径和固定 Commit，或内部再分发授权 | 暂不关闭来源阻断 |
-| SUGON | 原始版权、Apache-2.0、本地引入提交 | 来源 URL 或内部再分发授权 | 暂不关闭授权阻断 |
+| HYGON | 原始版权、Apache-2.0、本地引入提交 | 来源 URL 或内部再分发授权 | 暂不关闭授权阻断 |
 | `librarygemmbiasf` | 本地 Commit、源码路径、打包配置和二进制 SHA-256 | 源码/制品来源、许可证、公开分发授权 | 暂不允许发布 |
 | half 2.1.0 | SourceForge 发布目录、`half-2.1.0.zip` 文件名、发布日期/大小、MIT、完整原文许可、页面显示 SHA-256、本地复算值和逐字文件比对 | 将下载归档或受控存档编号随发布证据保存 | `half.hpp` 公开来源已确认 |
 
 ## 8. 发布前核对
 
 1. 为所有“来源待补证”文件补充可审计的上游 URL、固定版本或 Commit、版权和许可证，并将对应许可证文本或 NOTICE 纳入发布包。
-2. 保留本文件已登记的 AITER/vLLM/Transformer Engine 上游 Commit；为 Transformer Engine `common.h` 的未闭环片段和文件头、`w8a8_get_cache_json.py`、DeepSeek V4 独立来源、其他 NVIDIA 文件、SUGON 和 `librarygemmbiasf` 补充可复现的公开 Commit 或内部授权记录。本地引入提交只能作为本仓库的追溯证据。
+2. 保留本文件已登记的 AITER/vLLM/Transformer Engine 上游 Commit；为 Transformer Engine `common.h` 的未闭环片段和文件头、`block_scaled_cast_transpose.cu` 的实际导入/改编记录、`w8a8_get_cache_json.py`、DeepSeek V4 独立来源、其他 NVIDIA 文件、HYGON 和 `librarygemmbiasf` 补充可复现的公开 Commit 或内部授权记录。本地引入提交只能作为本仓库的追溯证据。
 3. 保留第三方原始声明；HYGON 的原创或实质修改文件使用根目录 Apache-2.0，并按文件头规则补充 HYGON Copyright 和 SPDX。
