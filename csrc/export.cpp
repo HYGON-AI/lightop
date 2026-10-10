@@ -243,7 +243,7 @@ Tensor moe_marlin_w4a8(
                         torch::Tensor& b_q_weight,
                         torch::Tensor& b_scales,
                         torch::Tensor& workspace,
-                        torch::Tensor& global_reduce_buffer,  // 用于全局规约的缓冲区
+                        torch::Tensor& global_reduce_buffer,  // 鐢ㄤ簬鍏ㄥ眬瑙勭害鐨勭紦鍐插尯
                         torch::Tensor& sorted_token_ids,
                         torch::Tensor& expert_ids,
                         torch::Tensor& num_tokens_past_padded,
@@ -266,7 +266,7 @@ Tensor moe_marlin_w4fp8(
                         torch::Tensor& b_q_weight, 
                         torch::Tensor& b_scales,
                         torch::Tensor& workspace, 
-                        torch::Tensor& global_reduce_buffer,  // 用于全局规约的缓冲区
+                        torch::Tensor& global_reduce_buffer,  // 鐢ㄤ簬鍏ㄥ眬瑙勭害鐨勭紦鍐插尯
                         torch::Tensor& sorted_token_ids, 
                         torch::Tensor& expert_ids,
                         torch::Tensor& num_tokens_past_padded, 
@@ -811,6 +811,7 @@ torch::Tensor dpskv4_hc_head_fused(torch::Tensor mixes, torch::Tensor x, torch::
 void ep_fused_fp8_quant_scatter(torch::Tensor input,torch::Tensor topk_ids,torch::optional<torch::Tensor> expert_map_opt,torch::Tensor expert_num_tokens,torch::Tensor aq_out,torch::Tensor aq_scale_out,torch::Tensor m_indices,torch::Tensor inv_perm, int local_num_experts,int alignment,int fp8type,bool fill_padded_m_indices);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
+std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu_fused(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output, torch::optional<torch::Tensor> num_token_non_padded);
 void topk_transform_512(
     const at::Tensor& scores,
     const at::Tensor& seq_lens,
@@ -1553,6 +1554,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
        py::arg("use_swa"));
 m.def("moe_fused_gate_sqrtsoftplus",&at::native::moe_fused_gate_sqrtsoftplus,"moe_fused_gate_sqrtsoftplus");       
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu",&at::native::moe_fused_gate_sqrtsoftplus_v41_hcu,"moe_fused_gate_sqrtsoftplus_v41_hcu");
+m.def("moe_fused_gate_sqrtsoftplus_v41_hcu_fused",
+      &at::native::moe_fused_gate_sqrtsoftplus_v41_hcu_fused,
+      py::arg("input"), py::arg("bias"), py::arg("topk"),
+      py::arg("num_fused_shared_experts"), py::arg("renormalize"),
+      py::arg("routed_scaling_factor"),
+      py::arg("apply_routed_scaling_factor_on_output"),
+      py::arg("num_token_non_padded") = py::none());
 m.def("fused_deepep_prepare", &at::native::fused_deepep_prepare,
       "fused_deepep_prepare");
 m.def("fuse_silu_and_mul_ep",&at::native::fuse_silu_and_mul_ep,"fuse_silu_and_mul_ep");

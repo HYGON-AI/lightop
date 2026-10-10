@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <limits>
 #include <vector>
+#include <type_traits>
 #include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime.h>
 #include <torch/all.h>
@@ -65,12 +66,13 @@ __device__ __forceinline__ float sqrtsoftplus_score_v41(float x) {
 }
 
 template <int VPT_LOCAL, int NUM_EXPERTS, int TOPK, bool V41,
-          typename Params>
+          typename Params, typename IndexT, typename CountT>
 __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
     const float* __restrict__ input,
     const float* __restrict__ bias,
     float* __restrict__ output,
-    int32_t* __restrict__ indices,
+    IndexT* __restrict__ indices,
+    const CountT* __restrict__ num_token_non_padded,
     int64_t num_rows,
     int64_t num_fused_shared_experts,
     bool renormalize,
@@ -195,8 +197,14 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
     const float norm = (renormalize && routed_sum > 0.0f) ? routed_sum : 1.0f;
     const float scale =
         apply_routed_scaling_factor_on_output ? routed_scaling_factor : 1.0f;
-    output[out_idx] = stored_weight / norm * scale;
-    indices[out_idx] = stored_expert;
+    // Preserve the routing work for padded rows. Mask at the final stores,
+    // keeping the existing active/empty-rank scheduling as close as possible.
+    bool padded = false;
+    if constexpr (std::is_same<IndexT, int64_t>::value) {
+      padded = num_token_non_padded != nullptr && row >= *num_token_non_padded;
+    }
+    output[out_idx] = padded ? 0.0f : stored_weight / norm * scale;
+    indices[out_idx] = padded ? 0 : stored_expert;
   }
 }
 
@@ -215,10 +223,10 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
     using ParamsT = KernelParams<VPT_C, NUM_EXPERTS_C, THREADS_PER_ROW_C,           \
                                  ROWS_PER_WARP_C, ROWS_PER_CTA_C, N_WARP_C>;        \
     moe_fused_gate_sqrtsoftplus_kernel_group1<VPT_C, NUM_EXPERTS_C, TOPK_C,         \
-                                              V41_VAL, ParamsT>                     \
+                                              V41_VAL, ParamsT, IndexT, CountT>                     \
         <<<grid, block_dim, 0, stream>>>(                                           \
             input.data_ptr<float>(), bias.data_ptr<float>(),                        \
-            output.data_ptr<float>(), indices.data_ptr<int32_t>(), num_rows,        \
+            output.data_ptr<float>(), indices.data_ptr<IndexT>(), num_token_non_padded_ptr, num_rows,        \
             num_fused_shared_experts, renormalize,                                  \
             static_cast<float>(routed_scaling_factor),                              \
             apply_routed_scaling_factor_on_output);                                 \
@@ -240,7 +248,7 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
     }                                                                               \
     break
 
-template <bool V41>
+template <bool V41, typename IndexT = int32_t, typename CountT = int32_t>
 std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus_impl(
     torch::Tensor& input,
     torch::Tensor& bias,
@@ -248,7 +256,8 @@ std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus_impl(
     int64_t num_fused_shared_experts,
     bool renormalize,
     double routed_scaling_factor,
-    bool apply_routed_scaling_factor_on_output) {
+    bool apply_routed_scaling_factor_on_output,
+    torch::optional<torch::Tensor> num_token_non_padded = torch::nullopt) {
   TORCH_CHECK(input.dim() == 2, "input must be 2D");
   TORCH_CHECK(bias.dim() == 1, "bias must be 1D");
   TORCH_CHECK(input.is_cuda(), "input must be on CUDA/ROCm device");
@@ -276,14 +285,25 @@ std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus_impl(
   TORCH_CHECK(routed_scaling_factor > 0.0,
               "routed_scaling_factor must be positive");
 
+  const CountT* num_token_non_padded_ptr = nullptr;
+  if (num_token_non_padded.has_value()) {
+    const auto& count = num_token_non_padded.value();
+    TORCH_CHECK(count.device() == input.device(),
+                "num_token_non_padded must be on the input device");
+    TORCH_CHECK(count.is_contiguous() && count.numel() == 1,
+                "num_token_non_padded must be contiguous with one element");
+    TORCH_CHECK(count.scalar_type() == c10::CppTypeToScalarType<CountT>::value,
+                "num_token_non_padded must be int32 or int64");
+    num_token_non_padded_ptr = count.data_ptr<CountT>();
+  }
   const int64_t num_rows = input.size(0);
   auto output = torch::empty({num_rows, topk},
                              torch::TensorOptions()
                                  .dtype(torch::kFloat32)
                                  .device(input.device()));
-  auto indices = torch::empty({num_rows, topk},
+  torch::Tensor indices = torch::empty({num_rows, topk},
                               torch::TensorOptions()
-                                  .dtype(torch::kInt32)
+                                  .dtype(c10::CppTypeToScalarType<IndexT>::value)
                                   .device(input.device()));
   if (num_rows == 0) return {output, indices};
 
@@ -337,6 +357,28 @@ std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu(
   return moe_fused_gate_sqrtsoftplus_impl<true>(
       input, bias, topk, num_fused_shared_experts, renormalize,
       routed_scaling_factor, apply_routed_scaling_factor_on_output);
+}
+
+std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu_fused(
+    torch::Tensor& input,
+    torch::Tensor& bias,
+    int64_t topk,
+    int64_t num_fused_shared_experts,
+    bool renormalize,
+    double routed_scaling_factor,
+    bool apply_routed_scaling_factor_on_output,
+    torch::optional<torch::Tensor> num_token_non_padded) {
+  if (num_token_non_padded.has_value() &&
+      num_token_non_padded.value().scalar_type() == at::kLong) {
+    return moe_fused_gate_sqrtsoftplus_impl<true, int64_t, int64_t>(
+        input, bias, topk, num_fused_shared_experts, renormalize,
+        routed_scaling_factor, apply_routed_scaling_factor_on_output,
+        num_token_non_padded);
+  }
+  return moe_fused_gate_sqrtsoftplus_impl<true, int64_t, int32_t>(
+      input, bias, topk, num_fused_shared_experts, renormalize,
+      routed_scaling_factor, apply_routed_scaling_factor_on_output,
+      num_token_non_padded);
 }
 
 #undef DISPATCH_TOPK
