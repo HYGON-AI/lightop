@@ -33,3 +33,18 @@ static_assert(offsetof(MqaFp8Params, q) == 16);
 static_assert(offsetof(MqaFp8Params, ks) == 128);
 static_assert(sizeof(MqaFp8Params) == 152);
 } // namespace lightop::mqa_fp8
+
+namespace lightop::mqa_int8 {
+// Internal contiguous INT8 arguments; FP8's audited layout is unchanged.
+struct MqaInt8Params {
+    const int8_t *q, *kv;
+    const float *weights, *kv_scale;
+    const int32_t *ks, *ke;
+    float *out;
+    int m, n, h, d;
+    int64_t weights_stride_m, out_stride_m;
+    // As in FP8, only in-window output is defined when cleaning is disabled.
+    uint32_t clean_logits = 1;
+};
+static_assert(std::is_standard_layout_v<MqaInt8Params>);
+} // namespace lightop::mqa_int8

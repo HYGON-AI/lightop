@@ -33,4 +33,23 @@ __device__ __forceinline__ void store_logits4(float *out, F4 value, bool vector_
     }
 }
 
+template <int AlignN, int Waves = 4>
+__device__ __forceinline__ void fill_empty_tile(float *out, int64_t stride, int64_t m0, int64_t n0,
+                                                int valid_m, int valid_n, int wave, int lane) {
+    const float ni = -__builtin_inff();
+    const bool vector_out = output_vector_aligned<AlignN>(out, stride);
+    for (int row = wave; row < valid_m; row += Waves) {
+        for (int col = AlignN * lane; col < valid_n; col += AlignN * 64) {
+            float *dst = out + (m0 + row) * stride + n0 + col;
+            if constexpr (AlignN == 4)
+                store_logits4(dst, F4{ni, ni, ni, ni}, vector_out);
+            else if constexpr (AlignN == 2) {
+                const F2 value = {ni, ni};
+                __builtin_memcpy(dst, &value, sizeof(value));
+            } else
+                store1(dst, ni);
+        }
+    }
+}
+
 } // namespace lightop::mqa_beta
