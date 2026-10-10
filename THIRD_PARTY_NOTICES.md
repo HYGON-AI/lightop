@@ -242,40 +242,19 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 | 当前工作树 `half.hpp` SHA-256 | `bb8592da2f97bab5e34ae3477358dd4c19aa3f909a3fde0864dfee2aa7c4ac1a`；与归档内 `include/half.hpp` 相同 |
 | Lightop 处理 | 保留完整 MIT 许可文本、版权声明和版本注释；未添加 HYGON 文件头。本次已下载归档并复算 SHA-256；正式发布证据应保留归档或受控存档记录。 |
 
-## 6. `librarygemmbiasf` 内部组件（来源待补证）
+## 6. `librarygemmbiasf` HYGON 原创源码
 
-以下文件与 `half.hpp` 一同进入仓库，但当前 Git 历史只显示本地引入，没有公开仓库 URL、固定版本或许可证文本。它们可能属于内部 `hytsf`/`squeue` 组件，不能根据目录名推断许可证。发布前必须由组件负责人补齐来源、版权、许可证和授权记录；在补证前不得把它们声明为 Apache-2.0 或 MIT，也不得机械添加 HYGON 文件头。
+以下五个源码文件已确认为 HYGON 原创实现，统一采用仓库根目录 Apache-2.0 许可，并在文件头标注 Hygon Information Technology Co., Ltd. 版权和 SPDX。它们不属于 SourceForge `half` 2.1.0 归档；`half.hpp` 仍按其原始 MIT 许可和版权声明单独登记。
 
-SourceForge 的 [half 2.1.0 发布目录](https://sourceforge.net/projects/half/files/half/2.1.0/) 仅能核验 `half-2.1.0.zip` 中的 `include/half.hpp`、`LICENSE.txt`、`README.txt` 和 `ChangeLog.txt`。以下五个路径均不在该归档中，因此该网址不能作为它们的来源、许可证或分发授权证据。
-
-| 本地路径 | 本地引入提交 | SourceForge 2.1.0 归档核验 | 当前结论 |
+| 本地路径 | 本地引入提交 | 许可证/版权 | 当前结论 |
 | --- | --- | --- | --- |
-| `third_party/librarygemmbiasf/compile.sh` | `57872c41339ab8e906b67c7215a30be93435ecb1` | `half-2.1.0.zip` 不包含该路径 | 构建脚本；来源和许可证待补证 |
-| `third_party/librarygemmbiasf/hytsf.h` | `57872c41339ab8e906b67c7215a30be93435ecb1` | `half-2.1.0.zip` 不包含该路径 | `hytsf` API 头文件；来源和许可证待补证 |
-| `third_party/librarygemmbiasf/squeue.h` | `57872c41339ab8e906b67c7215a30be93435ecb1` | `half-2.1.0.zip` 不包含该路径 | `squeue` API 头文件；来源和许可证待补证 |
-| `third_party/librarygemmbiasf/test-hytsf.cpp` | `57872c41339ab8e906b67c7215a30be93435ecb1` | `half-2.1.0.zip` 不包含该路径 | 测试程序；来源和许可证待补证 |
-| `third_party/librarygemmbiasf/test-hytsf.sh` | `57872c41339ab8e906b67c7215a30be93435ecb1` | `half-2.1.0.zip` 不包含该路径 | 测试脚本；来源和许可证待补证 |
+| `third_party/librarygemmbiasf/compile.sh` | `57872c41339ab8e906b67c7215a30be93435ecb1` | Apache-2.0；Hygon Information Technology Co., Ltd. | HYGON 原创源码，已补 H1 文件头 |
+| `third_party/librarygemmbiasf/hytsf.h` | `57872c41339ab8e906b67c7215a30be93435ecb1` | Apache-2.0；Hygon Information Technology Co., Ltd. | HYGON 原创源码，已补 H1 文件头 |
+| `third_party/librarygemmbiasf/squeue.h` | `57872c41339ab8e906b67c7215a30be93435ecb1` | Apache-2.0；Hygon Information Technology Co., Ltd. | HYGON 原创源码，已补 H1 文件头 |
+| `third_party/librarygemmbiasf/test-hytsf.cpp` | `57872c41339ab8e906b67c7215a30be93435ecb1` | Apache-2.0；Hygon Information Technology Co., Ltd. | HYGON 原创源码，已补 H1 文件头 |
+| `third_party/librarygemmbiasf/test-hytsf.sh` | `57872c41339ab8e906b67c7215a30be93435ecb1` | Apache-2.0；Hygon Information Technology Co., Ltd. | HYGON 原创源码，已补 H1 文件头 |
 
-### SourceForge 网址无法补充的源码字段
-
-SourceForge 的 `half` 项目主页和 2.1.0 归档不能为上述五个文件提供下列发布证据：
-
-| 待补字段 | 当前状态 |
-| --- | --- |
-| 公开仓库路径与 40 位 Commit，或内部源码库路径与内部版本号 | 缺失；当前只有 Lightop 本地首次引入提交 `57872c41339ab8e906b67c7215a30be93435ecb1` |
-| 权利人和许可证 | 缺失；不能从 `half` 项目许可证推断 `hytsf`/`squeue` 组件许可证 |
-| 本地文件 SHA-256 | 已固定在下表；仍需与来源快照或内部版本建立对应关系 |
-| 本地修改差异 | 缺少可比较的固定来源基线；需提供来源快照后生成差异记录 |
-| 源码公开发布许可 | 缺失；需明确源码包、wheel 和其他发布渠道的范围 |
-| `hytsf`、`squeue` 依赖的单独许可证和授权 | 缺失；需提供依赖许可证文本或内部再分发批准 |
-
-| 文件 | 当前工作树 SHA-256 |
-| --- | --- |
-| `third_party/librarygemmbiasf/compile.sh` | `f427137ad6ffd52e1df7bed95489ba1a5e0d5ccb96c35741530f4e668e8a4067` |
-| `third_party/librarygemmbiasf/hytsf.h` | `0451d8f1328e178b1ae38bff3389b75a80dd9bfa39d3484b2fe15c05b9da3fa1` |
-| `third_party/librarygemmbiasf/squeue.h` | `b7b6ce4f39daeec064438ae6e7722e7e9246434d34e0dda468cf0de063ebf568` |
-| `third_party/librarygemmbiasf/test-hytsf.cpp` | `b764bdffe5a4aecc32e64a90fe5fab9fcb8b9a3ae3c4307234b189b9c4b080d9` |
-| `third_party/librarygemmbiasf/test-hytsf.sh` | `5f116823a8fd167e4845dd70cfb74a79baa7734c0a4d0eb465f8656a0f13e2ba` |
+SourceForge 的 [half 2.1.0 发布目录](https://sourceforge.net/projects/half/files/half/2.1.0/) 只覆盖 `half-2.1.0.zip` 中的 `include/half.hpp`、`LICENSE.txt`、`README.txt` 和 `ChangeLog.txt`，不构成上述五个文件的来源或授权证据。
 
 ### 历史构建线索（不能替代许可证或再分发授权）
 
@@ -287,7 +266,7 @@ SourceForge 的 `half` 项目主页和 2.1.0 归档不能为上述五个文件�
 | `readme.txt`（引入提交） | 说明将上述 Tensile 制品部署到 `/opt/rocm/rocblas/lib/librarygemmbiasf`，并通过 `hytsf.h` 调用 `gemmbias_forward_*` API | 说明运行时集成方式；不能证明 `hytsf`、`squeue` 的权利人或许可证 |
 | `compile.sh`（当前路径） | `hipcc -o test-hytsf test-hytsf.cpp -lhytsf -lsqueue -L.` | 证明测试可执行文件链接 `libhytsf.so` 和 `libsqueue.so`；不能证明这些动态库的生成源码或再分发授权 |
 
-因此，SourceForge 的 half 2.1.0 证据仅覆盖 `half.hpp`。Tensile 制品、`hytsf`/`squeue` 接口、动态库和测试程序仍须由组件负责人补充生成源码或来源仓库、固定版本/制品编号、权利人、许可证或内部再分发授权，并将授权范围绑定到本节列出的 SHA-256。
+因此，SourceForge 的 half 2.1.0 证据仅覆盖 `half.hpp`；上述五个源码文件已按 HYGON 原创和根目录 Apache-2.0 处理。Tensile 制品、`libhytsf.so`、`libsqueue.so` 和 `test-hytsf` 仍须由组件负责人补充生成源码或来源仓库、固定版本/制品编号、权利人、许可证或内部再分发授权，并将授权范围绑定到本节列出的 SHA-256。
 
 ### 已纳入发布包的二进制证据
 
@@ -362,11 +341,11 @@ approval_date: <YYYY-MM-DD>
 | Transformer Engine 接口适配 | `csrc/blockwise_scaling/block_scaled_cast_transpose.cu`；用户确认来源项目；`main` 可达参考 Commit `077e26c319d0fffbff75e56124b26b8b04aac0e5`、两个参考文件及 Blob；NVIDIA 版权、Apache-2.0 SPDX 和 HYGON 修改说明 | 实际导入 Commit 与接口改编记录；本地基线无同名包装函数或完整文件匹配 | 已撤销原创归类并完成来源文件头标注；实际导入来源审查仍待闭环 |
 | 其他 NVIDIA 文件 | NVIDIA 版权、Apache-2.0、本地路径和本地引入提交 | 公开仓库、逐文件路径和固定 Commit，或内部再分发授权 | 暂不关闭来源阻断 |
 | HYGON | 原始版权、Apache-2.0、本地引入提交 | 来源 URL 或内部再分发授权 | 暂不关闭授权阻断 |
-| `librarygemmbiasf` | 本地 Commit、源码路径、打包配置和二进制 SHA-256 | 源码/制品来源、许可证、公开分发授权 | 暂不允许发布 |
+| `librarygemmbiasf` | 五个源码文件的 HYGON 原创归类、文件头和根目录 Apache-2.0 | Tensile 制品、动态库和测试可执行文件的生成来源及公开分发授权 | 源码已确认；制品授权仍需补证 |
 | half 2.1.0 | SourceForge 发布目录、`half-2.1.0.zip` 文件名、发布日期/大小、MIT、完整原文许可、页面显示 SHA-256、本地复算值和逐字文件比对 | 将下载归档或受控存档编号随发布证据保存 | `half.hpp` 公开来源已确认 |
 
 ## 8. 发布前核对
 
 1. 为所有“来源待补证”文件补充可审计的上游 URL、固定版本或 Commit、版权和许可证，并将对应许可证文本或 NOTICE 纳入发布包。
-2. 保留本文件已登记的 AITER/vLLM/Transformer Engine 上游 Commit；为 Transformer Engine `common.h` 的未闭环片段和文件头、`block_scaled_cast_transpose.cu` 的实际导入/改编记录、`w8a8_get_cache_json.py`、DeepSeek V4 独立来源、其他 NVIDIA 文件、HYGON 和 `librarygemmbiasf` 补充可复现的公开 Commit 或内部授权记录。本地引入提交只能作为本仓库的追溯证据。
+2. 保留本文件已登记的 AITER/vLLM/Transformer Engine 上游 Commit；为 Transformer Engine `common.h` 的未闭环片段和文件头、`block_scaled_cast_transpose.cu` 的实际导入/改编记录、`w8a8_get_cache_json.py`、DeepSeek V4 独立来源、其他 NVIDIA 文件、HYGON 和 `librarygemmbiasf` 二进制制品补充可复现的公开 Commit 或内部授权记录。本地引入提交只能作为本仓库的追溯证据。
 3. 保留第三方原始声明；HYGON 的原创或实质修改文件使用根目录 Apache-2.0，并按文件头规则补充 HYGON Copyright 和 SPDX。
