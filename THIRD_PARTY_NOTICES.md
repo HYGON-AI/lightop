@@ -117,7 +117,7 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 
 ## 3. NVIDIA 版权声明文件
 
-以下文件明确保留 NVIDIA 的 Apache-2.0 原始声明。`common.h` 已基于本地 Transformer Engine 克隆完成多文件逐段核对；其余 NVIDIA 文件仍只有公开项目线索或主题相似性，不能把 vLLM、cuda-samples 或文件名相似性当作固定上游版本。发布前应为每个文件补充逐文件来源证据或内部授权记录，并继续保留原始版权和许可证声明。
+以下文件明确保留 NVIDIA 的 Apache-2.0 原始声明。`common.h` 已基于本地 Transformer Engine 克隆完成多文件逐段核对；`block_scaled_cast_transpose.cu` 经代码审查确认为 HYGON 编写的接口包装层，已改用 HYGON 原创 Apache-2.0 文件头。其余 NVIDIA 文件仍只有公开项目线索或主题相似性，不能把 vLLM、cuda-samples 或文件名相似性当作固定上游版本。发布前应为每个文件补充逐文件来源证据或内部授权记录，并继续保留已确认的原始版权和许可证声明。
 
 ### Transformer Engine `common.h` 逐文件来源证据
 
@@ -158,9 +158,10 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 
 | 本地路径 | 许可证/版权 | 本地引入提交 |
 | --- | --- | --- |
-| `csrc/blockwise_scaling/block_scaled_cast_transpose.cu` | Apache-2.0；Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES | `1f0e6d421abc38beaa67b03c32af51b4a97a9191` |
 | `csrc/blockwise_scaling/common.h` | Apache-2.0；Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES | `e4bd6962fa68c4557df2f17fcaea0599d41304e9` |
 | `csrc/rotary_positional_embedding.cu` | Apache-2.0；Copyright (c) 2020, NVIDIA CORPORATION | `41746aaef6d611ad210a1cf76948222ddba973f1` |
+
+`csrc/blockwise_scaling/block_scaled_cast_transpose.cu` 是 HYGON 的接口分发包装层，当前仅根据 `block_scaling_dim` 调用本地 1D 实现或报告未支持的 2D 模式；本文件不再按 NVIDIA 来源文件登记。其许可证头为 `SPDX-License-Identifier: Apache-2.0`，版权人为 Hygon Information Technology Co., Ltd.，首次引入提交为 `1f0e6d421abc38beaa67b03c32af51b4a97a9191`。
 
 **待补证动作：**Transformer Engine `common.h` 的复合来源和基线已登记；仍需确认实际导入 Commit、补齐未闭环宏的来源或内部授权，并按本节映射补充源码文件头。其余 NVIDIA 文件仍需以函数名、注释和完整文件内容检索公开仓库。只有找到逐文件匹配并能锁定 40 位 Commit 后，才能填写公开来源；否则应由组件负责人提供内部授权记录，不得把 vLLM 线索写成事实。
 
@@ -183,7 +184,7 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 
 | Lightop 文件 | `cuda-samples` 候选 | 候选固定 Commit/Blob | 比对结论 |
 | --- | --- | --- | --- |
-| `csrc/blockwise_scaling/block_scaled_cast_transpose.cu` | `cpp/9_CUDA_Tile/tileTranspose/tileTranspose.cu`（同主题示例） | `5443602d89ed99aede2e4b7bf329daddeadb320e` / `221ea1523dfa0d1c1c78d3c31091a09d142ccb3f` | 文件路径、完整内容和 Blob 均不匹配；仅能作为算法主题参考，不能作为来源 Commit |
+| `csrc/blockwise_scaling/block_scaled_cast_transpose.cu` | `cpp/9_CUDA_Tile/tileTranspose/tileTranspose.cu`（同主题示例） | `5443602d89ed99aede2e4b7bf329daddeadb320e` / `221ea1523dfa0d1c1c78d3c31091a09d142ccb3f` | 文件路径、完整内容和 Blob 均不匹配；结合代码审查确认为 HYGON 接口包装层，不能作为 NVIDIA 来源 Commit |
 | `csrc/blockwise_scaling/common.h` | 无对应路径或同名文件 | — | 在 `cuda-samples` 全部可达历史中未找到逐文件或同名匹配 |
 | `csrc/rotary_positional_embedding.cu` | `cpp/9_CUDA_Tile/tileRope/tileRope.cu`（同主题示例） | `5443602d89ed99aede2e4b7bf329daddeadb320e` / `8356d849fda874ab0e12349033ffc3b944f1e226` | 文件路径、完整内容和 Blob 均不匹配；仅能作为 RoPE 主题参考，不能作为来源 Commit |
 
@@ -285,6 +286,7 @@ approval_date: <YYYY-MM-DD>
 | AITER | 官方仓库、MIT、AMD 版权、逐文件路径、基线选择器、40 位 Commit、LICENSE Blob | `python/lightop/utils.py` 是改编版本，需保留差异说明 | 已完成公开来源固定；按改编关系审查 |
 | vLLM | 官方仓库、Apache-2.0、逐文件路径、可达 `main`、40 位 Commit、LICENSE Blob | `w8a8_get_cache_json.py` 无匹配；DeepSeek V4 仍只有参考基线 | 已完成可匹配文件固定；两类未匹配项仍阻断 |
 | Transformer Engine | NVIDIA Transformer Engine 仓库、`main`、40 位基线 `077e26c319d0fffbff75e56124b26b8b04aac0e5`、六个上游文件 Blob、LICENSE Blob 和 SHA-256、`common.h` 逐段映射 | 组件负责人确认实际导入基线；`TORCH_ERROR`、`TORCH_CHECK_CUDA`、`TRANSFORMER_ENGINE_TYPE_SWITCH_8BIT`、`DType::kInt8`、`Vec::operator=`、`__HOST_DEVICE__` 及 ATen 适配的来源/授权；源码文件头仍需按映射补充 `Adapted from`、SPDX 和 HYGON 修改声明 | 公开来源部分固定；未闭环片段和文件头整改完成前，`common.h` 仍保留来源审查项 |
+| HYGON 接口包装层 | `csrc/blockwise_scaling/block_scaled_cast_transpose.cu`；首次引入 `1f0e6d421abc38beaa67b03c32af51b4a97a9191`；现有实现为接口分发逻辑 | 无第三方上游来源；已补充 Hygon Information Technology Co., Ltd. 版权和 `SPDX-License-Identifier: Apache-2.0` | 原创文件头已补齐 |
 | 其他 NVIDIA 文件 | NVIDIA 版权、Apache-2.0、本地路径和本地引入提交 | 公开仓库、逐文件路径和固定 Commit，或内部再分发授权 | 暂不关闭来源阻断 |
 | SUGON | 原始版权、Apache-2.0、本地引入提交 | 来源 URL 或内部再分发授权 | 暂不关闭授权阻断 |
 | `librarygemmbiasf` | 本地 Commit、源码路径、打包配置和二进制 SHA-256 | 源码/制品来源、许可证、公开分发授权 | 暂不允许发布 |

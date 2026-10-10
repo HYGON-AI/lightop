@@ -1,8 +1,5 @@
-/*************************************************************************
- * Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
- *
- * See LICENSE for license information.
- ************************************************************************/
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
 
 #include "block_scaled_1d_cast_transpose.h"
 
@@ -31,6 +28,6 @@ void blockwise_scaled_cast_transpose(const Tensor& input,std::optional<Tensor> o
 
     }
 
-  }  // 
+  }
 
-}  // 
+}
