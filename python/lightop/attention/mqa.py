@@ -29,6 +29,36 @@ def get_paged_mqa_logits_fp4_metadata(
     )
 
 
+def get_paged_sparse_mqa_logits_metadata(
+    context_lens, block_table, indices, page_kv, sparse_kv_block_indices,
+    qk_dtype, sparse_block_kv, num_sms=None,
+):
+    """DeepGEMM `get_paged_sparse_mqa_logits_metadata` on HCU.
+
+    Plans `fp8_fp4_paged_sparse_mqa_logits`: per request-aligned pair of query
+    tokens, the first min(M, ceil(context_len / sparse_block_kv)) entries of
+    each row of sparse_kv_block_indices int32 [Q,M] (unique, ascending logical
+    blocks, M % 4 == 0, M <= 4096) are merged, mapped through block_table int32
+    [Q,pages] at page_kv and cut into KV splits of 640 (packed FP4 qk_dtype,
+    int8/uint8) or 512 (FP8 E4M3) positions, followed by a persistent schedule
+    of num_sms (default: the CU count) entries per wave. indices int32 [Q] is
+    the request of each token; a request's tokens are consecutive and paired
+    tokens share their block_table row. The uint8 result has DeepGEMM's byte
+    layout. Call once per stream before CUDA graph capture.
+    """
+    from .. import op
+
+    if not hasattr(op, "get_paged_sparse_mqa_logits_metadata"):
+        raise RuntimeError(
+            "get_paged_sparse_mqa_logits_metadata unavailable: rebuild/install "
+            "LightOp with the paged sparse MQA metadata planner"
+        )
+    return op.get_paged_sparse_mqa_logits_metadata(
+        context_lens, block_table, indices, page_kv, sparse_kv_block_indices,
+        qk_dtype, sparse_block_kv, num_sms,
+    )
+
+
 def paged_mqa_logits_persisten(
     q, fused_kv_cache, weights, context_lens, block_table,
     max_context_len, *, group_size=1, persistent_ctas=0,
@@ -192,6 +222,7 @@ __all__ = [
     "fp8_fp4_mqa_logits",
     "get_paged_mqa_logits_metadata",
     "get_paged_mqa_logits_fp4_metadata",
+    "get_paged_sparse_mqa_logits_metadata",
     "mqa_logits",
     "paged_mqa_logits",
     "paged_mqa_logits_persisten",
