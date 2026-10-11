@@ -9,6 +9,7 @@
 #include "paged_mqa_logits/paged_mqa_logits_persisten.h"
 #include "paged_mqa_logits/paged_mqa_logits_fp4.h"
 #include "sparse_page_mqa/sparse_page_mqa.h"
+#include "sparse_page_mqa/paged_sparse_mqa_logits_metadata.h"
 #include "index_k_int8_dequant/index_k_int8_dequant.h"
 #include "lmslimquant_native/bindings.h"
 #include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm.hpp"
@@ -1243,6 +1244,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "FP4 paged MQA split-KV schedule planner",
         py::arg("context_lens"), py::arg("block_kv"), py::arg("num_sms"),
         py::arg("rows_per_request") = 1);
+  m.def("get_paged_sparse_mqa_logits_metadata",
+        &lightop::deep_gemm::get_paged_sparse_mqa_logits_metadata,
+        "DeepGEMM get_paged_sparse_mqa_logits_metadata: merged sparse KV splits and persistent schedule",
+        py::arg("context_lens"), py::arg("block_table"), py::arg("indices"), py::arg("page_kv"),
+        py::arg("sparse_kv_block_indices"), py::arg("qk_dtype"), py::arg("sparse_block_kv"),
+        py::arg("num_sms") = std::nullopt);
+  m.def("get_paged_sparse_mqa_logits_metadata_bytes",
+        &lightop::deep_gemm::get_paged_sparse_mqa_logits_metadata_bytes,
+        "Size of get_paged_sparse_mqa_logits_metadata's output",
+        py::arg("num_q_tokens"), py::arg("num_max_sparse_blocks"), py::arg("sparse_block_kv"),
+        py::arg("split_kv"), py::arg("num_sms"));
   m.def("dsv41_candidate_block_table", &lightop::deep_gemm::dsv41_candidate_block_table,
         "DSV4.1 candidate indexer level one: top blocks of 8 by block max as pool slots / 8",
         py::arg("logits"), py::arg("seq_lens"), py::arg("page_table"), py::arg("page_size"),
