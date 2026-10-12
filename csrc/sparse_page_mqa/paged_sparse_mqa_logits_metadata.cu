@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // DeepGEMM get_paged_sparse_mqa_logits_metadata on HCU (wave64). The metadata is
 // byte-compatible with DeepGEMM's layout::sparse_mqa_logits for the paged case:
 //

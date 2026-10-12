@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """DSV4.1 candidate indexer level one: block top-k over dense logits.
 
 Compared exactly against a torch reference of the documented contract:
