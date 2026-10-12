@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 #https://zhuanlan.zhihu.com/p/372663283
 import numpy as np
 import torch

@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 #pragma once
 // Exact Top512/1024/2048 over fully materialized FP32 scores, for wave64 HIP.
 // Sampling only proposes a cutoff; a complete scan certifies every fast path.

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 # pytest -q test/test_gemm_ops_hipblaslt_w8a8_channelwise_gemm_kme.py
 import inspect
 

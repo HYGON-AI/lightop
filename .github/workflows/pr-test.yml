@@ -5,8 +5,8 @@ name: pr-test
 
 # 仅 PR 创建/更新时触发一次完整编译+测试
 # pull_request_target: 使 fork PR 也能读取主仓 vars; 工作流文件取自 master 分支,
-# 编译测试的仍是 PR 代码。安全注意: 会在主仓上下文执行 fork 代码 (checkout 需
-# allow-unsafe-pr-checkout 显式放行), 禁止在本工作流引用任何 secrets
+# 编译测试的仍是 PR 代码。安全注意: 会在主仓上下文执行 fork 代码, 禁止在本工作流
+# 引用任何 secrets
 on:
   pull_request_target:
     branches:
@@ -62,9 +62,6 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
-          # pull_request_target 在受信上下文运行, checkout 默认拒绝拉取 fork 代码,
-          # 本工作流无 secrets, 仅编译测试 PR 代码, 显式放行
-          allow-unsafe-pr-checkout: true
 
       - name: Integrate latest master
         # 测试的应该是合入 master 之后的结果: 先把最新 master 合并进当前分支再打包

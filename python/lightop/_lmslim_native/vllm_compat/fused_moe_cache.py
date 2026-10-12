@@ -1,4 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
+
 # MoE workspace cache (adapted from vLLM-style fused_moe usage; see project NOTICE if required.)
 
 from __future__ import annotations

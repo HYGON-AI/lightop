@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Tests for optional post-smooth rounding in dynamic INT8 quantization."""
 
 import pytest

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 测试 split_qkv_rms_rotary_embedding_fuse_with_kv_store_no_quant：
 输入为合并的 qkv [num_tokens, q_size + kv_size + kv_size]，内部做 split + RMSNorm + RoPE + 写 KV cache。

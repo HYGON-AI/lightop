@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 #include <ATen/ATen.h>
 #if defined(__HIP_PLATFORM_HCC__)
 #include <hip/hip_fp16.h>
