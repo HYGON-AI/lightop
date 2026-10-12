@@ -162,16 +162,16 @@ def fused_moe_kernel(
         group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
         pid_m = first_pid_m + ((pid % num_pid_in_group) % group_size_m)
         pid_n = (pid % num_pid_in_group) // group_size_m
-    
+
     num_tokens_post_padded = tl.load(num_tokens_post_padded_ptr)
     if pid_m * BLOCK_SIZE_M >= num_tokens_post_padded:
         return
     offs_token_id = pid_m * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M)
     offs_token = tl.load(sorted_token_ids_ptr + offs_token_id)
     token_mask = offs_token < num_valid_tokens
-    
+
     offs_bn = (pid_n * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
-    
+
     offs_ak = tl.arange(0, BLOCK_SIZE_K)
     a_ptrs = a_ptr + (
         offs_token[:, None] // top_k * stride_am + offs_ak[None, :] * stride_ak
@@ -192,7 +192,7 @@ def fused_moe_kernel(
     # that will map given indices to the correct order.
     # reverse_awq_order_tensor = ((tl.arange(0, 2) * 4)[None, :] +
     #                             tl.arange(0, 4)[:, None]).to(tl.uint8).reshape(8)
-    
+
 
     a_scale_ptrs = a_scale_ptr + (offs_token // top_k) * stride_asm
 
@@ -212,7 +212,7 @@ def fused_moe_kernel(
     for k in range(0, tl.cdiv(K, BLOCK_SIZE_K)):
         # Load the next block of A and B, generate a mask by checking the
         # K dimension.
-        
+
         a = tl.load(
             a_ptrs,
             mask=token_mask[:, None],
@@ -223,10 +223,10 @@ def fused_moe_kernel(
         b = tl.interleave(b,b)
         b = b.trans()
         b = (b >> b_shifter) & 0xF
-    
+
         # We accumulate along the K dimension.
         b = (b[:,:] - 8 ).to(a_ptr.type.element_ty)
-        accumulator += tl.dot(a, b) 
+        accumulator += tl.dot(a, b)
 
         # Advance the ptrs to the next K block.
         a_ptrs += BLOCK_SIZE_K * stride_ak
@@ -267,9 +267,9 @@ def moe_ep_align_block_size(
                                       dtype=torch.int32,
                                       device=topk_ids.device)
     ops.ep_moe_align_block_size(topk_ids, num_experts, block_size, sorted_ids,
-                                 expert_ids, num_tokens_post_pad, start_expert, 
+                                 expert_ids, num_tokens_post_pad, start_expert,
                                  end_expert)
-        
+
     return sorted_ids, expert_ids, num_tokens_post_pad
 
 # 目前仅用来计算gemm1的结果
@@ -301,11 +301,11 @@ def invoke_fused_moe_kernel_int8_gemm1(A: torch.Tensor,
     assert topk_weights is None or topk_weights.stride(1) == 1
     assert sorted_token_ids.stride(0) == 1
     assert use_int8_w4a8 is True
-    
+
     M = A.shape[0]
     num_tokens = M * top_k
 
-    triton_config = {   
+    triton_config = {
         "BLOCK_SIZE_M": 16,
         "BLOCK_SIZE_N": 64,
         "BLOCK_SIZE_K": 64,
@@ -358,8 +358,8 @@ def invoke_fused_moe_kernel_int8_gemm1(A: torch.Tensor,
 
             MUL_ROUTED_WEIGHT=mul_routed_weight,
             top_k=top_k,
-            compute_type=compute_type,   
-            **triton_config, 
+            compute_type=compute_type,
+            **triton_config,
         )
 
 # 用于 gemm2 的正确性测试函数
@@ -397,11 +397,11 @@ def invoke_fused_moe_kernel_int8_gemm2_valid(A: torch.Tensor,
     assert topk_weights is None or topk_weights.stride(1) == 1
     assert sorted_token_ids.stride(0) == 1
     assert use_int8_w4a8 is True
-    
+
     M = A.shape[0]
     num_tokens = M * top_k
 
-    triton_config = {   
+    triton_config = {
         "BLOCK_SIZE_M": 16,
         "BLOCK_SIZE_N": 64,
         "BLOCK_SIZE_K": 64,
@@ -454,24 +454,24 @@ def invoke_fused_moe_kernel_int8_gemm2_valid(A: torch.Tensor,
 
             MUL_ROUTED_WEIGHT=mul_routed_weight,
             top_k=top_k,
-            compute_type=compute_type,   
-            **triton_config, 
+            compute_type=compute_type,
+            **triton_config,
         )
-    
+
     out_cuda = torch.zeros_like(C)
     cuda_config = {
                     'MODE': mode_idx,
                     'DELTA': delta
                 }
-    moe_gemm_w4a8(A, 
-                    B, 
+    moe_gemm_w4a8(A,
+                    B,
                     out_cuda,
-                    A_scale, 
+                    A_scale,
                     B_scale,
                     topk_weights if mul_routed_weight else None,
-                    sorted_token_ids, 
+                    sorted_token_ids,
                     expert_ids,
-                    num_tokens_post_padded, 
+                    num_tokens_post_padded,
                     top_k,
                     cuda_config)
     torch.cuda.synchronize()
@@ -515,7 +515,7 @@ def invoke_fused_moe_kernel_int8_gemm2_prof(A: torch.Tensor,
     assert topk_weights is None or topk_weights.stride(1) == 1
     assert sorted_token_ids.stride(0) == 1
     assert use_int8_w4a8 is True
-    
+
     out_cuda = torch.zeros_like(C)
 
     cuda_config = {
@@ -526,15 +526,15 @@ def invoke_fused_moe_kernel_int8_gemm2_prof(A: torch.Tensor,
     # 预热一次
     for _ in range(3):
         moe_gemm_w4a8(
-                        A, 
-                        B, 
+                        A,
+                        B,
                         out_cuda,
-                        A_scale, 
+                        A_scale,
                         B_scale,
                         topk_weights if mul_routed_weight else None,
-                        sorted_token_ids, 
+                        sorted_token_ids,
                         expert_ids,
-                        num_tokens_post_padded, 
+                        num_tokens_post_padded,
                         top_k,
                         cuda_config
                         )
@@ -542,15 +542,15 @@ def invoke_fused_moe_kernel_int8_gemm2_prof(A: torch.Tensor,
 
     quantiles = [0.5, 0.2, 0.8]
     ms, min_ms, max_ms = triton.testing.do_bench(lambda:   moe_gemm_w4a8(
-                                                                        A, 
-                                                                        B, 
+                                                                        A,
+                                                                        B,
                                                                         out_cuda,
-                                                                        A_scale, 
+                                                                        A_scale,
                                                                         B_scale,
                                                                         topk_weights if mul_routed_weight else None,
-                                                                        sorted_token_ids, 
+                                                                        sorted_token_ids,
                                                                         expert_ids,
-                                                                        num_tokens_post_padded, 
+                                                                        num_tokens_post_padded,
                                                                         top_k,
                                                                         cuda_config
                                                                         ), quantiles=quantiles)
@@ -586,9 +586,9 @@ def gemm2_kernel_valid(
                         mode_idx: int=-1,
                         block_m: int=-1,
                         num_iters: int=10, # 重复多少次进行性能测试
-                        delta: int=-1, 
+                        delta: int=-1,
                     ):
-    # Check constraints. 
+    # Check constraints.
     # mode_idx block_m 必须被指定
     assert delta != -1
     assert mode_idx != -1
@@ -654,7 +654,7 @@ def gemm2_kernel_valid(
                                               num_tokens))
         curr_hidden_states = hidden_states[begin_chunk_idx:end_chunk_idx]
         tokens_in_chunk, _ = curr_hidden_states.shape
-    
+
         if tokens_in_chunk == 0:
             break
 
@@ -687,7 +687,7 @@ def gemm2_kernel_valid(
                 moe_align_block_size(curr_topk_ids, block_m,
                                     global_num_experts, expert_map))
 
-        # 
+        #
         invoke_fused_moe_kernel_int8_gemm1(qcurr_hidden_states,
                                                 w1,
                                                 intermediate_cache1,
@@ -793,9 +793,9 @@ def gemm2_kernel_prof(
                         use_nn_moe: Optional[bool] = False,
                         mode_idx: int = -1,
                         block_m: int = -1,
-                        delta: int=-1, 
+                        delta: int=-1,
                     ):
-    # Check constraints. 
+    # Check constraints.
     # mode_idx block_m 必须被指定
     assert mode_idx != -1
     assert block_m != -1
@@ -860,7 +860,7 @@ def gemm2_kernel_prof(
                                               num_tokens))
         curr_hidden_states = hidden_states[begin_chunk_idx:end_chunk_idx]
         tokens_in_chunk, _ = curr_hidden_states.shape
-    
+
         if tokens_in_chunk == 0:
             break
 
@@ -893,7 +893,7 @@ def gemm2_kernel_prof(
                 moe_align_block_size(curr_topk_ids, block_m,
                                     global_num_experts, expert_map))
 
-        # 
+        #
         invoke_fused_moe_kernel_int8_gemm1(qcurr_hidden_states,
                                                 w1,
                                                 intermediate_cache1,

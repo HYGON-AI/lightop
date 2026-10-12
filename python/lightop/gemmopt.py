@@ -17,18 +17,18 @@ from .config import get_awq_w4a16_gemm_marlin_config
 def w8a8_smooth_quant_config(m, n, k):
     """
     根据输入维度(m, n, k)返回最优的配置参数
-    
+
     Args:
         m (int): 输入矩阵的行数
-        n (int): 输出矩阵的列数  
+        n (int): 输出矩阵的列数
         k (int): 输入矩阵的列数/权重矩阵的行数
-        
+
     Returns:
         dict: 包含warps, nperblock, kperwarp, splitk的最优配置
     """
     # 基于tuning结果的最优配置字典
     # value为元组：(warps, nperblock, kperwarp, splitk, time_ms)
-    
+
     # 查找匹配的配置
     key = f"M{m}N{n}K{k}"
     if key in gemm_w8a8_smooth_config.get_w8a8_smooth_quant_config_dict():
@@ -57,7 +57,7 @@ def round_up_to_next_power_of_2(x):
 
 @functools.lru_cache(maxsize=2048)
 def w8a8_smooth_asm_config(m, n, k):
-    
+
     if m < 256:
         adapt_m = math.ceil(m / 16) * 16  # 向上取整到下一个16的倍数
     else:
@@ -131,7 +131,7 @@ def moe_gemm_w4a8(input: torch.Tensor,
                     topk_weights: Optional[torch.Tensor],
                     sorted_token_ids: torch.Tensor,
                     experts_ids: torch.Tensor,
-                    num_tokens_post_pad: torch.Tensor, 
+                    num_tokens_post_pad: torch.Tensor,
                     top_k: int,
                     config: Dict[str, Any]) -> torch.Tensor:
     mode = config['MODE']
@@ -154,7 +154,7 @@ def moe_gemm_marlin_w4a8(
                     topk_weights: Optional[torch.Tensor],
                     sorted_token_ids: torch.Tensor,
                     experts_ids: torch.Tensor,
-                    num_tokens_post_pad: torch.Tensor, 
+                    num_tokens_post_pad: torch.Tensor,
                     top_k: int,
                     locks: Optional[torch.Tensor], # 用于控制 block间归约的 信号量Tensor
                     global_reduce_buffer: Optional[torch.Tensor], # 用于 block间归约的 缓存区Tensor
@@ -179,13 +179,13 @@ def moe_gemm_marlin_w4a8(
         op.moe_marlin_w4a8(input,  # A
                                 a_scale, # a_scale
                                 output, # 输出
-                                b_qweight, # B 
+                                b_qweight, # B
                                 b_scale, # B_scale
                                 locks,
                                 global_reduce_buffer,
-                                sorted_token_ids, 
-                                experts_ids, 
-                                num_tokens_post_pad, 
+                                sorted_token_ids,
+                                experts_ids,
+                                num_tokens_post_pad,
                                 topk_weights,
                                 block_m,
                                 top_k,
@@ -196,7 +196,7 @@ def moe_gemm_marlin_w4a8(
                                 thread_n,
                                 thread_k,
                                 blocks_per_cu,
-                                is_reduce)  
+                                is_reduce)
 
     else: # 汇编版 w4a8 实现
         op.moe_w4a8_marlin_asm(input, b_qweight, output, a_scale, b_scale, topk_weights,
@@ -211,86 +211,22 @@ def moe_gemm_marlin_w4a16(
                     topk_weights: Optional[torch.Tensor],
                     sorted_token_ids: torch.Tensor,
                     experts_ids: torch.Tensor,
-                    num_tokens_post_pad: torch.Tensor, 
+                    num_tokens_post_pad: torch.Tensor,
                     top_k: int,
                     locks: Optional[torch.Tensor], # 用于控制 block间归约的 信号量Tensor
                     global_reduce_buffer: Optional[torch.Tensor], # 用于 block间归约的 缓存区Tensor
                     config: Dict[str, Any],
                     is_ep:bool = False) -> torch.Tensor:
-    mode = config['MODE']
-    delta = config['DELTA']
+    """Reject the obsolete W4A16/W4A8-compatible call signature explicitly.
 
-    block_m = config["BLOCK_SIZE_M"]
-    size_m = input.shape[0]
-    size_k = input.shape[1]
-    size_n = b_qweight.shape[2] // 4
-
-    thread_n = config["thread_n"]
-    thread_k = config["thread_k"]
-    blocks_per_cu = config["blocks_per_cu"]
-    is_reduce = config.get("is_reduce", False)
-    op.moe_marlin_w4a8(
-                        input,  # A
-                        a_scale, # a_scale
-                        output, # 输出
-                        b_qweight, # B 
-                        b_scale, # B_scale
-                        locks,
-                        global_reduce_buffer,
-                        sorted_token_ids, 
-                        experts_ids, 
-                        num_tokens_post_pad, 
-                        topk_weights,
-                        block_m,
-                        top_k,
-                        is_ep,
-                        size_m,
-                        size_n,
-                        size_k,
-                        thread_n,
-                        thread_k,
-                        blocks_per_cu,
-                    )  
-
-    # if mode < 500: # 手写算子实现
-    #     op.moe_gemm_w4a8(input, b_qweight, output, a_scale, b_scale, topk_weights,
-    #                                     sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
-    # elif mode >= 500 and mode < 1000: # marlin版 w4a8 算子实现
-    #     block_m = config["BLOCK_SIZE_M"]
-    #     size_m = input.shape[0]
-    #     size_k = input.shape[1]
-    #     size_n = b_qweight.shape[2] // 4
-
-    #     thread_n = config["thread_n"]
-    #     thread_k = config["thread_k"]
-    #     blocks_per_cu = config["blocks_per_cu"]
-    #     is_reduce = config.get("is_reduce", False)
-    #     op.moe_marlin_w4a8(input,  # A
-    #                             a_scale, # a_scale
-    #                             output, # 输出
-    #                             b_qweight, # B 
-    #                             b_scale, # B_scale
-    #                             locks,
-    #                             global_reduce_buffer,
-    #                             sorted_token_ids, 
-    #                             experts_ids, 
-    #                             num_tokens_post_pad, 
-    #                             topk_weights,
-    #                             block_m,
-    #                             top_k,
-    #                             is_ep,
-    #                             size_m,
-    #                             size_n,
-    #                             size_k,
-    #                             thread_n,
-    #                             thread_k,
-    #                             blocks_per_cu,
-    #                             is_reduce)  
-
-    # else: # 汇编版 w4a8 实现
-    #     op.moe_w4a8_marlin_asm(input, b_qweight, output, a_scale, b_scale, topk_weights,
-    #                                     sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode)
-    return output
+    W4A16 MoE uses :func:`moe_marlin_w4a16`, whose workspace and packing
+    arguments are not represented by this legacy wrapper.  The old body
+    called the W4A8 kernel with undefined scale variables and could only fail
+    at runtime with ``NameError``.
+    """
+    raise NotImplementedError(
+        "Use moe_marlin_w4a16 for W4A16 MoE dispatch"
+    )
 
 def moe_gemm_marlin_w16a16(
                     input: torch.Tensor,
@@ -299,7 +235,7 @@ def moe_gemm_marlin_w16a16(
                     topk_weights: Optional[torch.Tensor],
                     sorted_token_ids: torch.Tensor,
                     experts_ids: torch.Tensor,
-                    num_tokens_post_pad: torch.Tensor, 
+                    num_tokens_post_pad: torch.Tensor,
                     top_k: int,
                     config: Dict[str, Any],
                     is_ep:bool = False) -> torch.Tensor:
@@ -321,7 +257,7 @@ def moe_gemm_w16a16(
                     topk_weights: Optional[torch.Tensor],
                     sorted_token_ids: torch.Tensor,
                     experts_ids: torch.Tensor,
-                    num_tokens_post_pad: torch.Tensor, 
+                    num_tokens_post_pad: torch.Tensor,
                     top_k: int,
                     config: Dict[str, Any],
                     is_ep:bool = False) -> torch.Tensor:
@@ -344,7 +280,7 @@ def moe_gemm_w8a8(input: torch.Tensor,
                     topk_weights: Optional[torch.Tensor],
                     sorted_token_ids: torch.Tensor,
                     experts_ids: torch.Tensor,
-                    num_tokens_post_pad: torch.Tensor, 
+                    num_tokens_post_pad: torch.Tensor,
                     top_k: int,
                     config: Dict[str, Any]) -> torch.Tensor:
     mode = config['MODE']
@@ -366,7 +302,7 @@ def moe_gemm_marlin_w8a8(input: torch.Tensor,
                     topk_weights: Optional[torch.Tensor],
                     sorted_token_ids: torch.Tensor,
                     experts_ids: torch.Tensor,
-                    num_tokens_post_pad: torch.Tensor, 
+                    num_tokens_post_pad: torch.Tensor,
                     top_k: int,
                     config: Dict[str, Any]) -> torch.Tensor:
     mode = config['MODE']
@@ -388,7 +324,7 @@ def moe_gemm_marlin_w8a8_fp8(input: torch.Tensor,
                     topk_weights: Optional[torch.Tensor],
                     sorted_token_ids: torch.Tensor,
                     experts_ids: torch.Tensor,
-                    num_tokens_post_pad: torch.Tensor, 
+                    num_tokens_post_pad: torch.Tensor,
                     top_k: int,
                     config: Dict[str, Any]) -> torch.Tensor:
     mode = config['MODE']
@@ -410,7 +346,7 @@ def moe_gemm_marlin_w8a8_blockwise_fp8(input: torch.Tensor,
                     topk_weights: Optional[torch.Tensor],
                     sorted_token_ids: torch.Tensor,
                     experts_ids: torch.Tensor,
-                    num_tokens_post_pad: torch.Tensor, 
+                    num_tokens_post_pad: torch.Tensor,
                     top_k: int,
                     config: Dict[str, Any]) -> torch.Tensor:
     mode = config['MODE']
@@ -458,7 +394,7 @@ def moe_groupgemm_marlin_w4a8(input: torch.Tensor,
 
 @functools.lru_cache(maxsize=2048)
 def w8a8_deepgemm_masked_asm_config(m):
-    
+
     if m < 16:
         adapt_m = 16  # 向上取整到下一个16的倍数
     else:
@@ -537,7 +473,7 @@ def gemm_w8a8_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 'TN'):
     assert block_size[0] == 128 and block_size[1] == 128
     m, n, k = a.shape[0], b.shape[0], a.shape[1]
     # print(f"gemm_w8a8_block: m={m}, n={n}, k={k}, scale_a.shape={scale_a.shape}, scale_b.shape={scale_b.shape}, out_dtype={out_dtype}")
-    
+
     return op.gemm_w8a8_asm(a, b, scale_a, scale_b, None, None, None, out_dtype, m, n, k, 0)
 
 def gemm_w8a8_wgrad_asm(a, b, scale_a, scale_b, c, accumulate, block_size, out_dtype, layout = 'TN'):
@@ -545,7 +481,7 @@ def gemm_w8a8_wgrad_asm(a, b, scale_a, scale_b, c, accumulate, block_size, out_d
     assert block_size[0] == 128 and block_size[1] == 128
     m, n, k = a.shape[0], b.shape[0], a.shape[1]
     # print(f"gemm_w8a8_block: m={m}, n={n}, k={k}, scale_a.shape={scale_a.shape}, scale_b.shape={scale_b.shape}, out_dtype={out_dtype}")
-    
+
     if accumulate:
         return op.gemm_w8a8_asm(a, b, scale_a, scale_b, c, c, None, out_dtype, m, n, k, 1)
     return op.gemm_w8a8_asm(a, b, scale_a, scale_b, None, None, None, out_dtype, m, n, k, 1)
@@ -557,7 +493,7 @@ def gemm_w8a8_xgrad_asm(a, b, scale_a, scale_b, block_size, out_dtype, layout = 
     # print(f"gemm_w8a8_block: m={m}, n={n}, k={k}, scale_a.shape={scale_a.shape}, scale_b.shape={scale_b.shape}, out_dtype={out_dtype}")
     # assert scale_a.shape[0] == ((math.ceil(k / block_size[0]) +3) / 4 * 4) and scale_a.shape[1] == m
     # assert scale_b.shape[1] == ((math.ceil(n / block_size[1]) + 3) / 4 * 4) and scale_b.shape[0] == math.ceil(k / block_size[0])
-    
+
     return op.gemm_w8a8_asm(a, b, scale_a, scale_b, None, None, None, out_dtype, m, n, k, 2)
 
 
@@ -589,14 +525,14 @@ def moe_marlin_w4a16(a: torch.Tensor,
                     thread_k: int = -1,
                     blocks_per_cu: int = -1
                     ) -> torch.Tensor:
-    output = op.moe_marlin_w4a16(a, 
-                        c_or_none, 
-                        b_q_weight, 
-                        b_scale_zeros, 
-                        g_idx_or_none, 
-                        perm_or_none, 
-                        workspace, 
-                        sorted_token_ids, 
+    output = op.moe_marlin_w4a16(a,
+                        c_or_none,
+                        b_q_weight,
+                        b_scale_zeros,
+                        g_idx_or_none,
+                        perm_or_none,
+                        workspace,
+                        sorted_token_ids,
                         expert_ids,
                         num_tokens_past_padded,
                         topk_weights,
@@ -625,7 +561,7 @@ def awq_marlin_repack_w4a8(b_q_weight: torch.Tensor, marlin_weight: torch.Tensor
     output = op.awq_marlin_repack_w4a8(b_q_weight, marlin_weight, size_batch, size_k, size_n)
     return output
 
-def grougemm_w8a8_pertensor_asm(A_list:list[torch.Tensor], B_list:list[torch.Tensor], D_list:list[torch.Tensor], As_list:list[torch.Tensor], Bs_list:list[torch.Tensor], 
+def grougemm_w8a8_pertensor_asm(A_list:list[torch.Tensor], B_list:list[torch.Tensor], D_list:list[torch.Tensor], As_list:list[torch.Tensor], Bs_list:list[torch.Tensor],
                                 alphas:list[float], C_list:Optional[list[torch.Tensor]], betas:Optional[list[float]], out_dtype):
     return op.grougemm_w8a8_pertensor_asm(A_list, B_list, D_list, As_list, Bs_list, alphas, C_list, betas, out_dtype)
 
@@ -633,7 +569,7 @@ def grougemm_w8a8_pertensor_asm(A_list:list[torch.Tensor], B_list:list[torch.Ten
 def grougemm_bf16_fp16(A_list:list[torch.Tensor], B_list:list[torch.Tensor], D_list:list[torch.Tensor],
                   alphas:list[float], C_list:Optional[list[torch.Tensor]], betas:Optional[list[float]], out_dtype, trans_a:bool=False, trans_b:bool=True):
     if trans_a is False and trans_b is True:
-        return op.grougemm_bf16_fp16_nt_asm(A_list, B_list, D_list, alphas, C_list, betas, out_dtype)   
+        return op.grougemm_bf16_fp16_nt_asm(A_list, B_list, D_list, alphas, C_list, betas, out_dtype)
     elif trans_a is True and trans_b is False:
         return op.grougemm_bf16_fp16_tn_asm(A_list, B_list, D_list, alphas, C_list, betas, out_dtype)
     elif trans_a is False and trans_b is False:
@@ -644,8 +580,8 @@ def grougemm_bf16_fp16(A_list:list[torch.Tensor], B_list:list[torch.Tensor], D_l
 
 
 def m_grouped_w8a8_gemm_nt_contig_asm( a: tuple[torch.Tensor, torch.Tensor],
-                                       b: tuple[torch.Tensor, torch.Tensor], 
-                                       output:torch.Tensor, m_indices:torch.Tensor, 
+                                       b: tuple[torch.Tensor, torch.Tensor],
+                                       output:torch.Tensor, m_indices:torch.Tensor,
                                        config: Optional[Dict[str, Any]] = {"MODE": 1000,}) -> torch.Tensor:
     mode = config['MODE']
     input, a_scale = a
@@ -674,24 +610,24 @@ def groupgemm(a: torch.Tensor, b: torch.Tensor, batch_sizes: torch.Tensor, trans
     return outs
 
 def mqa_logits(
-    Q: torch.Tensor, 
-    K: torch.Tensor, 
-    Weights: torch.Tensor, 
-    ks: torch.Tensor, 
-    ke: torch.Tensor, 
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    Weights: torch.Tensor,
+    ks: torch.Tensor,
+    ke: torch.Tensor,
     kv_scale: Optional[torch.Tensor] = None,
     clean_logit: bool = True,
     D_out: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
     q_seq_len, num_heads, head_dim = Q.shape
     kv_seq_len = K.shape[0]
-    
+
     assert num_heads in [1, 2, 4, 8, 16, 32, 64, 128], "num_heads only support [1, 2, 4, 8, 16, 32, 64, 128]"
     assert head_dim == 128, "head_dim only support 128"
-    
+
     outs = op.mqa_logits(
-        Q, K, Weights, ks, ke, 
-        q_seq_len, kv_seq_len, num_heads, head_dim, 
+        Q, K, Weights, ks, ke,
+        q_seq_len, kv_seq_len, num_heads, head_dim,
         kv_scale, clean_logit, D_out
     )
     return outs
@@ -1109,7 +1045,7 @@ def fused_bmm(x: torch.Tensor,                                       # [batch_si
     Returns:
         torch.Tensor: Output batch with shape (B, M, N) or (M, B, N) if transpose_bm=True.
     """
-    
+
     # Check constraints.
     if not transpose_bm_in:
         batch_size = x.shape[0]
@@ -1141,7 +1077,7 @@ def fused_bmm(x: torch.Tensor,                                       # [batch_si
             assert (
                 output.shape[0] == batch_size and output.shape[1] == num_head and output.shape[2] == L
             ), "Output dimension error"
-    
+
     mode = config['MODE']
     return op.fused_bmm(x, w, output, x_scale, w_scale, bias, dtype, transpose_bm, transpose_bm_in, mode)
 

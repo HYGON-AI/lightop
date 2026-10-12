@@ -191,9 +191,9 @@ void _gemm_w8a8_smooth_256x256x128_TN_impl(
 	// static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT256x256x128_TT16x8_WG16x32x2_Squant", "gemm_w8a8_smooth_256x256x128_TN_BF16.co");
 	static AiterAsmKernel gemm_w8a8_smooth_fp16("Cijk_Alik_Bljk_I8II_BH_MT256x256x128_TT16x8_WG16x32x2_Squant", "gemm_w8a8_smooth_256x256x128_WGM8_TN_FP16.co");
 	static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT256x256x128_TT16x8_WG16x32x2_Squant", "gemm_w8a8_smooth_256x256x128_WGM8_TN_BF16.co");
-	
+
 	AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
-    if (isBfloat16) 
+    if (isBfloat16)
         impl_ptr = &gemm_w8a8_smooth_bf16;
 
 	impl_ptr->launch_kernel({&params,
@@ -389,7 +389,7 @@ void _gemm_w8a8_smooth_256x128x128_TN_impl(
 	// static AiterAsmKernel gemm_w8a8_smooth_fp16("Cijk_Alik_Bljk_I8II_BH_MT256x128x128_TT16x8_WG16x16_Squant", "gemm_w8a8_smooth_256x128x128_WGM8_TN_FP16.co");
 	// static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT256x128x128_TT16x8_WG16x16_Squant", "gemm_w8a8_smooth_256x128x128_WGM8_TN_BF16.co");
 	AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
-    if (isBfloat16) 
+    if (isBfloat16)
         impl_ptr = &gemm_w8a8_smooth_bf16;
 	impl_ptr->launch_kernel({&params,
                              &paramsSize,
@@ -584,7 +584,7 @@ void _gemm_w8a8_smooth_128x128x64_TN_impl(
 	// static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT128x128x64_TT8x8_WG16x16_Squant", "gemm_w8a8_smooth_128x128x64_WGM8_TN_BF16.co");
 
 	AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
-    if (isBfloat16) 
+    if (isBfloat16)
         impl_ptr = &gemm_w8a8_smooth_bf16;
 	impl_ptr->launch_kernel({&params,
                              &paramsSize,
@@ -778,7 +778,7 @@ void _gemm_w8a8_smooth_64x64x128_TN_impl(
 	// static AiterAsmKernel gemm_w8a8_smooth_fp16("Cijk_Alik_Bljk_I8II_BH_MT64x64x128_TT4x4_WG16x16_Squant", "gemm_w8a8_smooth_WGM8_64x64x128_TN_FP16.co");
 	// static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT64x64x128_TT4x4_WG16x16_Squant", "gemm_w8a8_smooth_WGM8_64x64x128_TN_BF16.co");
 	AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
-    if (isBfloat16) 
+    if (isBfloat16)
         impl_ptr = &gemm_w8a8_smooth_bf16;
 	impl_ptr->launch_kernel({&params,
                              &paramsSize,
@@ -971,7 +971,7 @@ void _gemm_w8a8_smooth_64x64x128_TN_WARPN4_impl(
 	// static AiterAsmKernel gemm_w8a8_smooth_fp16("Cijk_Alik_Bljk_I8II_BH_MT64x64x128_TT4x4_WG16x16_Squant", "gemm_w8a8_smooth_WGM8_64x64x128_TN_FP16.co");
 	// static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT64x64x128_TT4x4_WG16x16_Squant", "gemm_w8a8_smooth_WGM8_64x64x128_TN_BF16.co");
 	AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
-    if (isBfloat16) 
+    if (isBfloat16)
         impl_ptr = &gemm_w8a8_smooth_bf16;
 	impl_ptr->launch_kernel({&params,
                              &paramsSize,
@@ -1162,7 +1162,7 @@ void _gemm_w8a8_smooth_64x96x128_TN_impl(
 	static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT64x96x128_TT4x6_WG16x16_Squant", "gemm_w8a8_smooth_64x96x128_WGM8_TN_BF16.co");
 
 	AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
-    if (isBfloat16) 
+    if (isBfloat16)
         impl_ptr = &gemm_w8a8_smooth_bf16;
 	impl_ptr->launch_kernel({&params,
                              &paramsSize,
@@ -1355,7 +1355,7 @@ void _gemm_w8a8_smooth_64x32x128_TN_impl(
 	// static AiterAsmKernel gemm_w8a8_smooth_fp16("Cijk_Alik_Bljk_I8II_BH_MT64x32x128_TT4x2_WG16x16_Squant", "gemm_w8a8_smooth_64x32x128_WGM8_TN_FP16.co");
 	// static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT64x32x128_TT4x2_WG16x16_Squant", "gemm_w8a8_smooth_64x32x128_WGM8_TN_BF16.co");
 	AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
-    if (isBfloat16) 
+    if (isBfloat16)
         impl_ptr = &gemm_w8a8_smooth_bf16;
 	impl_ptr->launch_kernel({&params,
                              &paramsSize,
@@ -1546,7 +1546,7 @@ void _gemm_w8a8_smooth_32x32x256_TN_impl(
 	static AiterAsmKernel gemm_w8a8_smooth_fp16("Cijk_Alik_Bljk_I8II_BH_MT32x32x256_TT2x2_WG16x16_Squant", "gemm_w8a8_smooth_32x32x256_TN_FP16.co");
 	static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT32x32x256_TT2x2_WG16x16_Squant", "gemm_w8a8_smooth_32x32x256_TN_BF16.co");
 	AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
-    if (isBfloat16) 
+    if (isBfloat16)
         impl_ptr = &gemm_w8a8_smooth_bf16;
 	impl_ptr->launch_kernel({&params,
                              &paramsSize,
@@ -1737,7 +1737,7 @@ void _gemm_w8a8_smooth_128x32x128_TN_impl(
 	static AiterAsmKernel gemm_w8a8_smooth_fp16("Cijk_Alik_Bljk_I8II_BH_MT128x32x128_TT8x2_WG16x16_Squant", "gemm_w8a8_smooth_128x32x128_WGM8_TN_FP16.co");
 	static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT128x32x128_TT8x2_WG16x16_Squant", "gemm_w8a8_smooth_128x32x128_WGM8_TN_BF16.co");
 	AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
-    if (isBfloat16) 
+    if (isBfloat16)
         impl_ptr = &gemm_w8a8_smooth_bf16;
 	impl_ptr->launch_kernel({&params,
                              &paramsSize,
@@ -1928,7 +1928,7 @@ void _gemm_w8a8_smooth_128x96x128_TN_impl(
 	static AiterAsmKernel gemm_w8a8_smooth_fp16("Cijk_Alik_Bljk_I8II_BH_MT128x96x128_TT8x6_WG16x16_Squant", "gemm_w8a8_smooth_128x96x128_TN_FP16.co");
 	static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT128x96x128_TT8x6_WG16x16_Squant", "gemm_w8a8_smooth_128x96x128_TN_BF16.co");
 	AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
-    if (isBfloat16) 
+    if (isBfloat16)
         impl_ptr = &gemm_w8a8_smooth_bf16;
 	impl_ptr->launch_kernel({&params,
                              &paramsSize,
@@ -2006,7 +2006,7 @@ void _gemm_w8a8_smooth_32x32x128_TN_impl(
 	size_t strideA2K = stridea;
 	size_t strideB1L = ldb;
 	size_t strideB2K = strideb;
-	
+
     unsigned int staggerUIter = SU; // how many stride-sized clicks to stagger start offset
 	int unrollLoopIters = size_k/depth/1; // /DepthU/GSU
 	int tmp;
@@ -2114,7 +2114,7 @@ void _gemm_w8a8_smooth_32x32x128_TN_impl(
 	static AiterAsmKernel gemm_w8a8_smooth_fp16("Cijk_Alik_Bljk_I8II_BH_MT32x32x128_TT4x2_WG16x16_Squant", "gemm_w8a8_smooth_32x32x128_WGM8_TN_FP16.co");
 	static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT32x32x128_TT4x2_WG16x16_Squant", "gemm_w8a8_smooth_32x32x128_WGM8_TN_BP16.co");
 	AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
-    if (isBfloat16) 
+    if (isBfloat16)
         impl_ptr = &gemm_w8a8_smooth_bf16;
 	impl_ptr->launch_kernel({&params,
                              &paramsSize,
@@ -2138,7 +2138,7 @@ torch::Tensor gemm_w8a8_smooth_32x32x128_TN_dispatch(torch::Tensor &A,
                                               const int &M, const int &N,
                                               const int &K,
                                               c10::optional<torch::Tensor> bias,
-                                              torch::Dtype output_dtype) 
+                                              torch::Dtype output_dtype)
 {
 
     torch::TensorOptions options = torch::TensorOptions()
@@ -2230,7 +2230,7 @@ torch::Tensor gemm_w8a8_smooth_asm_bridg(torch::Tensor &A,
 		int numBlocks_128x128asm = (N + 128 -1)/128 *((M + 128 -1)/128);
 		int numBlocks_256x128asm = (N + 256 -1)/256 * ((M + 128 -1)/128);
 		int numBlocks_256x256asm = (N + 256 -1)/256 * ((M + 256 -1)/256);
-		
+
 		if(K == 128){
 			if(M<=64){
 				return gemm_w8a8_smooth_128x32x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
@@ -2259,7 +2259,7 @@ torch::Tensor gemm_w8a8_smooth_asm_bridg(torch::Tensor &A,
 			if(numBlocks_64x64asm < BW_CUS) {
 				// if ((M >= 16 && M <=64) || (M > 128 && M < 256)  && N >= 4096)
 				// 	return gemm_w8a8_smooth_64x64x128_TN_WARPN4_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
-				// else 
+				// else
 					return gemm_w8a8_smooth_64x64x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
 			}
 			if(numBlocks_64x96asm < BW_CUS)
@@ -2273,7 +2273,7 @@ torch::Tensor gemm_w8a8_smooth_asm_bridg(torch::Tensor &A,
 			return gemm_w8a8_smooth_256x256x128_TN_dispatch(A, B, As, Bs, M, N, K, bias, output_dtype);
 		}
 	}
-	
+
 }
 
 

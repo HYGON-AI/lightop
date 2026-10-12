@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # → lightop/test
 from common.scalar_type import scalar_types
 from common.quant_utils import quantize_weights
 from common.fused_moe_kernel_gptq_awq import fused_moe_kernel_gptq_awq
-# import lightop  # 确保导入了 marlin 包
+import lightop  # 确保导入了 marlin 包
 from marlin_quant import awq_marlin_quantize
 
 global_group_size = 64
@@ -120,14 +120,14 @@ def run_moe_marlin(inputs, weight, topk_weights, topk_ids, bit):
     # pdb.set_trace()
     def run():
         return lightop.moe.moe_marlin_w4a16(
-                                            inputs.to(torch.bfloat16), 
+                                            inputs.to(torch.bfloat16),
                                             # inputs,
-                                            None, 
-                                            qweight, 
+                                            None,
+                                            qweight,
                                             scale_zeros,
-                                            # scales, 
-                                            # qzeros, 
-                                            g_idx, 
+                                            # scales,
+                                            # qzeros,
+                                            g_idx,
                                             sort_indices,
                                             workspace,
                                             sorted_token_ids,
@@ -289,9 +289,9 @@ def perf_deepseek_v3(use_random):
     for num_experts, top_k, n, k in weight_shapes:
         bit = 4
         for i in [1024,]: # xsl
-            # print("     执行 num_tokens: ", i, " 性能测试......")     
-            print("========================================")       
-            num_tokens = i 
+            # print("     执行 num_tokens: ", i, " 性能测试......")
+            print("========================================")
+            num_tokens = i
             print("num_tokens: ", num_tokens)
             torch.cuda.manual_seed_all(0)
             if use_random:
@@ -312,7 +312,7 @@ def perf_deepseek_v3(use_random):
                 inputs = torch.ones(
                     (num_tokens, k),
                     dtype=torch.half, device="cuda:0"
-                ) 
+                )
                 weight = torch.ones(
                     (num_experts, n, k),
                     dtype=torch.half, device="cuda:0"
@@ -321,7 +321,7 @@ def perf_deepseek_v3(use_random):
                 scores = torch.ones(
                     (num_tokens, num_experts),
                     dtype=torch.float, device="cuda:0"
-                )                
+                )
             # _, topk_ids = scores.topk(top_k, 1)
 
             topk_weights, topk_ids = grouped_topk(inputs, scores, top_k, True, num_expert_group=8, topk_group = 4)
@@ -336,12 +336,12 @@ def perf_deepseek_v3(use_random):
 
             res.append({
                 "num_tokens": num_tokens,
-                "acc": 
+                "acc": 1.0,
             })
 
 
 
-#### 
+####
 
 if __name__ == "__main__":
     perf_deepseek_v3(use_random=True)

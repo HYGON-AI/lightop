@@ -51,15 +51,15 @@ def get_model(cols=1,dropout_p=0.5,use_half=False):
         torch_ln_add_dropout=Torch_LnAddDropout(cols,dropout_p).cuda().half()
 
     else:
-       
+
         fuse_ln_add_dropout=LnAddDropout(cols,dropout_p).cuda()
         torch_ln_add_dropout=Torch_LnAddDropout(cols,dropout_p).cuda()
-       
+
     return torch_ln_add_dropout,fuse_ln_add_dropout
 
 
 def test_profile(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
-    
+
     x1,x2,residual1,residual2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
     f1,f2=get_model(cols=cols,dropout_p=dropout_p,use_half=use_half)
 
@@ -79,7 +79,7 @@ def test_profile(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
             y2 = f2(x2,residual2)
             y2.backward(grad)
             torch.cuda.synchronize()
-    prof2.export_chrome_trace('./profile_fuse_ln_add_dropout.json')  
+    prof2.export_chrome_trace('./profile_fuse_ln_add_dropout.json')
 
 def test_speed(batchsize,seqs,cols,dropout_p,repeat_num,use_half=False):
 
@@ -116,7 +116,7 @@ def test_speed(batchsize,seqs,cols,dropout_p,repeat_num,use_half=False):
         y2 = f2(x2,residual2)
         y2.backward(grad)
     torch.cuda.synchronize()
-    end_time = time.time()    
+    end_time = time.time()
     fc2_espl = end_time - start_time
     print('fuse_ln_add_dropout', 'averange time is', fc2_espl *1000/ repeat_num, 'ms')
 
@@ -127,14 +127,14 @@ def test_speed(batchsize,seqs,cols,dropout_p,repeat_num,use_half=False):
         print(allclose(residual1.grad,residual2.grad,rtol=2e-02, atol=2e-02))
         print(allclose(f1.LayerNorm.weight.grad,f2.weight.grad,rtol=2e-02, atol=2e-02))
         print(allclose(f1.LayerNorm.bias.grad,f2.bias.grad,rtol=2e-02, atol=2e-02))
-        
+
     else:
         print(allclose(y1,y2,rtol=1e-05, atol=1e-05))
         print(allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05))
         print(allclose(residual1.grad,residual2.grad,rtol=1e-05, atol=1e-05))
         print(allclose(f1.LayerNorm.weight.grad,f2.weight.grad,rtol=1e-04, atol=1e-04))
         print(allclose(f1.LayerNorm.bias.grad,f2.bias.grad,rtol=1e-04, atol=1e-04))
-    
+
 if __name__ == "__main__":
 
     #设置基础参数

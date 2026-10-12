@@ -37,7 +37,7 @@ class LinearBiasFunction(Function):
     @staticmethod
     def backward(ctx, grad_output):
         input, weight, bias, grad_weight, grad_bias = ctx.saved_tensors
- 
+
         grad_input = grad_weight = grad_bias = None
 
         if ctx.needs_input_grad[0]:
@@ -45,7 +45,7 @@ class LinearBiasFunction(Function):
                 grad_input = grad_output.mm(weight)
             else:
                 grad_input = grad_output.matmul(weight)
-        
+
         if ctx.needs_input_grad[1] and ctx.needs_input_grad[2]:
             if grad_output.dim() == 2:
                 grad_weight = grad_output.t().mm(input)

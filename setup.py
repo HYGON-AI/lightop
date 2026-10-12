@@ -16,6 +16,20 @@ from setuptools.command.build_py import build_py
 from packaging import version
 from get_version import get_version, get_dtk_version
 
+SUBPROCESS_DECODE_ARGS = ("utf-8", "replace")
+_NINJA_OUTPUT_REPLACEMENTS = (
+    ("-D__HIP_PLATFORM_AMD__=1", "[HCU platform macro redacted]"),
+)
+
+
+def _redact_ninja_output(output) -> str:
+    if isinstance(output, bytes):
+        output = output.decode(*SUBPROCESS_DECODE_ARGS)
+    for source, replacement in _NINJA_OUTPUT_REPLACEMENTS:
+        output = output.replace(source, replacement)
+    return output
+
+
 def _get_pytorch_version_int():
     version=torch.__version__.split('.') # '2.9.0'
     return int(version[0])*100+int(version[1])*10+int(version[2])
@@ -29,10 +43,10 @@ def _find_rocm_home() -> Optional[str]:
     rocm_home = os.environ.get('ROCM_HOME') or os.environ.get('ROCM_PATH')
     if rocm_home is None:
         try:
-            pipe_hipcc = subprocess.Popen(
-                ["which hipcc | xargs readlink -f"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-            hipcc, _ = pipe_hipcc.communicate()
-            rocm_home = os.path.dirname(os.path.dirname(hipcc.decode().rstrip('\r\n')))
+            hipcc_path = shutil.which("hipcc")
+            if hipcc_path is None:
+                raise FileNotFoundError("hipcc is not on PATH")
+            rocm_home = os.path.dirname(os.path.dirname(os.path.realpath(hipcc_path)))
             if os.path.basename(rocm_home) == 'hip':
                 rocm_home = os.path.dirname(rocm_home)
         except Exception:
@@ -226,14 +240,14 @@ def _run_ninja_build(build_directory: str, verbose: bool, error_prefix: str) -> 
     try:
         sys.stdout.flush()
         sys.stderr.flush()
-        stdout_fileno = 1
-        subprocess.run(command, stdout=stdout_fileno if verbose else subprocess.PIPE, stderr=subprocess.STDOUT,
-                       cwd=build_directory, check=True, env=env)
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                cwd=build_directory, check=True, env=env)
+        if verbose and result.stdout:
+            print(_redact_ninja_output(result.stdout), end="")
     except subprocess.CalledProcessError as e:
-        _, error, _ = sys.exc_info()
         message = error_prefix
-        if hasattr(error, 'output') and error.output:  # type: ignore[union-attr]
-            message += f": {error.output.decode(*SUBPROCESS_DECODE_ARGS)}"  # type: ignore[union-attr]
+        if e.output:
+            message += f": {_redact_ninja_output(e.output)}"
         raise RuntimeError(message) from e
 
 def _write_ninja_file_and_compile_objects(sources: List[str], objects, cflags, post_cflags, cuda_cflags,
@@ -291,7 +305,7 @@ class BuildReleaseExtension(BuildExtension):
             # 从这里开始，使用与PyTorch 2.9.1完全一致的逻辑
             #IS_HIP_EXTENSION = True  # 根据你的实际情况设置
             IS_WINDOWS = False  # 根据你的实际情况设置
-            
+
             for extension in self.extensions:
                 # 注意：这里增加了'sycl'支持，与2.9.1一致
                 if isinstance(extension.extra_compile_args, dict):
@@ -311,10 +325,10 @@ class BuildReleaseExtension(BuildExtension):
                     # 你需要定义min_supported_cpython变量
                     # 例如：min_supported_cpython = '0x03070000'  # Python 3.7
                     self._add_compile_flag(extension, f'-DPy_LIMITED_API={min_supported_cpython}')
-                
+
                 self._define_torch_extension_name(extension)
                 # 注意：这里移除了 _add_gnu_cpp_abi_flag 调用
-        
+
         self.compiler.src_extensions += ['.cu', '.cuh', '.hip']
 
         def append_std17_if_no_std_present(cflags) -> None:
@@ -346,7 +360,7 @@ class BuildReleaseExtension(BuildExtension):
                 if('-Wall' in extra_cc_cflags):
                     extra_cc_cflags.remove('-Wall')
                 print("release mode")
-            
+
             marlin_w4a16_dir = os.path.abspath('./csrc/marlinw4a16/')
             marlin_w4a8_dir = os.path.abspath('./csrc/marlinw4a8/')
             marlin_w4fp8_dir = os.path.abspath('./csrc/marlinw4fp8/')  # 如果也需要特殊处理
@@ -366,14 +380,14 @@ class BuildReleaseExtension(BuildExtension):
                     marlin_w4fp8_sources.append(s)
                 else:
                     other_sources.append(s)
-            
+
             marlin_w4a16_objects = [obj for src, obj in zip(sources, objects) if src in marlin_w4a16_sources]
             marlin_w4a8_objects = [obj for src, obj in zip(sources, objects) if src in marlin_w4a8_sources]
             marlin_w4fp8_objects = [obj for src, obj in zip(sources, objects) if src in marlin_w4fp8_sources]
             other_objects = [obj for src, obj in zip(sources, objects) if src in other_sources]
-            
+
             with_cuda = any(map(_is_cuda_file, sources))
-            
+
             # compile other
             if other_sources:
                 if isinstance(extra_postargs, dict):
@@ -383,7 +397,7 @@ class BuildReleaseExtension(BuildExtension):
                 if IS_HIP_EXTENSION:
                     post_cflags = COMMON_HIP_FLAGS + post_cflags
                 append_std17_if_no_std_present(post_cflags)
-                
+
                 cuda_post_cflags = None
                 if with_cuda:
                     if isinstance(extra_postargs, dict):
@@ -396,9 +410,9 @@ class BuildReleaseExtension(BuildExtension):
                     append_std17_if_no_std_present(cuda_post_cflags)
                     cuda_cflags = [shlex.quote(f) for f in common_cflags]
                     cuda_post_cflags = [shlex.quote(f) for f in cuda_post_cflags]
-                
+
                 _write_ninja_file_and_compile_objects(
-                    sources=other_sources, 
+                    sources=other_sources,
                     objects=other_objects,
                     cflags=[shlex.quote(f) for f in extra_cc_cflags + common_cflags],
                     post_cflags=[shlex.quote(f) for f in post_cflags],
@@ -408,7 +422,7 @@ class BuildReleaseExtension(BuildExtension):
                     verbose=True,
                     with_cuda=with_cuda
                 )
-            
+
             # compile w4a16
             if marlin_w4a16_sources:
                 marlin_cxx_flags = ['-O3', '-w']
@@ -499,7 +513,7 @@ class BuildReleaseExtension(BuildExtension):
                     verbose=True,
                     with_cuda=with_cuda
                 )
-            
+
             return other_objects + marlin_w4a16_objects + marlin_w4a8_objects + marlin_w4fp8_objects
 
         self.compiler.compile = unix_wrap_ninja_compile
@@ -573,7 +587,7 @@ def get_extensions():
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/rocrand/include')
     include_dirs.append(os.path.abspath('./csrc/mqa_logits/'))
-    
+
     # 核心库：lightop.op
     ext_ops = extension(
         name="lightop.op",

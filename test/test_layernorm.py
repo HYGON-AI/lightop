@@ -36,10 +36,10 @@ def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 def get_data(batchsize, seqs, cols, use_half=False):
     dtype = torch.float16 if use_half else torch.float32
     device = 'cuda'
-    
+
     x = torch.randn((batchsize, seqs, cols), device=device, dtype=dtype, requires_grad=True)
     grad_y = torch.randn_like(x)
-    
+
     x1 = x.clone().detach().requires_grad_(True)
     x2 = x.clone().detach().requires_grad_(True)
     return x1, x2, grad_y
@@ -70,7 +70,7 @@ def get_model(cols, use_half=False, mode='full'):
         fuse_model.ln.bias = None
         with torch.no_grad():
             fuse_model.ln.weight.copy_(torch_model.ln.weight)
-    
+
     torch_model.train()
     fuse_model.train()
 
@@ -128,11 +128,11 @@ def run_benchmark(mode, batchsize, seqs, cols, repeat_num, use_half=False):
     torch.cuda.synchronize()
     fuse_time = (time.time() - start_time) * 1000 / repeat_num
     print(f'  Fuse LayerNorm average time:  {fuse_time:.4f} ms')
-    
+
     # --- 精度对比 (Correctness Check) ---
     print("\n  Correctness Check:")
     rtol, atol = (2e-2, 2e-2) if use_half else (1e-5, 1e-5)
-    
+
     # 为了获得最新的、用于对比的梯度值，在检查前单独执行一次前向和反向传播
     x1_final, x2_final, grad_y_final = get_data(batchsize, seqs, cols, use_half)
     f1_check, f2_check = get_model(cols, use_half, mode)
@@ -140,10 +140,10 @@ def run_benchmark(mode, batchsize, seqs, cols, repeat_num, use_half=False):
     y2_final = f2_check(x2_final)
     y1_final.backward(grad_y_final)
     y2_final.backward(grad_y_final)
-        
+
     # 1. 检查前向输出
     print(f"    Forward output close: {allclose(y1_final, y2_final, rtol=rtol, atol=atol)}")
-    
+
     # 2. 检查输入梯度
     print(f"    Input grad close:     {allclose(x1_final.grad, x2_final.grad, rtol=rtol, atol=atol)}")
     # print(f"      └─ Max Abs Error:  {torch.max(torch.abs(x1_final.grad - x2_final.grad))}")

@@ -124,7 +124,7 @@ struct structured_##name##_functional final : public at::native::structured_##na
 };
 
 
-#else 
+#else
 
 
 #define TORCH_META_FUNC_FINAL(name)                                                                       \

@@ -1,14 +1,16 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2024-2025, Advanced Micro Devices, Inc. All rights reserved.
 import functools
-import os 
+import os
+import shlex
 import subprocess
 from pathlib import Path
 
 
 def adb_shell(cmd):
     # 执行cmd命令，如果成功，返回(0, 'xxx')；如果失败，返回(1, 'xxx')
-    res = subprocess.Popen(cmd, shell=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) # 使用管道
+    cmd_args = shlex.split(cmd) if isinstance(cmd, str) else list(cmd)
+    res = subprocess.Popen(cmd_args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     result = res.stdout.read()  # 获取输出结果
     res.wait()  # 等待命令执行完成
     res.stdout.close() # 关闭标准输出

@@ -52,7 +52,7 @@ using namespace std;
 
 std::mutex fmu;
 std::mutex bmu;
-#ifdef __cplusplus 
+#ifdef __cplusplus
 extern "C" {
 #endif
 
@@ -60,28 +60,28 @@ extern "C" {
 
 // typedef int (*_gemm_bias)(int transA,int transB,void *A,void *B,void *C,void *D,int m,int k,int n,void *alpha,void *beta);
 // _gemm_bias gemm_bias=(_gemm_bias)dlsym(g_handle, "gemm_bias");
-	
+
 // typedef int (*_gemmbias_nn_m1024_k1024)(void *A,void *B,void *C,void *D,void* alpha,void* beta,int m,int k,int n);
 // _gemmbias_nn_m1024_k1024 gemmbias_nn_m1024_k1024=(_gemmbias_nn_m1024_k1024)dlsym(g_handle, "gemmbias_nn_m1024_k1024");
-	
+
 // typedef int (*_gemmbias_nn_m2_k1024)(void *A,void *B,void *C,void *D,void* alpha,void* beta,int m,int k,int n);
 // _gemmbias_nn_m2_k1024 gemmbias_nn_m2_k1024=(_gemmbias_nn_m2_k1024)dlsym(g_handle, "gemmbias_nn_m2_k1024");
-	
+
 // typedef int (*_gemmbias_tn_m1024_k4096)(void *A,void *B,void *C,void *D,void* alpha,void* beta,int m,int k,int n);
 // _gemmbias_tn_m1024_k4096 gemmbias_tn_m1024_k4096=(_gemmbias_tn_m1024_k4096)dlsym(g_handle, "gemmbias_tn_m1024_k4096");
-	
+
 // typedef int (*_gemmbias_tn_m30528_k1024)(void *A,void *B,void *C,void *D,void* alpha,void* beta,int m,int k,int n);
 // _gemmbias_tn_m30528_k1024 gemmbias_tn_m30528_k1024=(_gemmbias_tn_m30528_k1024)dlsym(g_handle, "gemmbias_tn_m30528_k1024");
-	
+
 // typedef int (*_gemmbias_tn_m1024_k1024)(void *A,void *B,void *C,void *D,void* alpha,void* beta,int m,int k,int n);
 // _gemmbias_tn_m1024_k1024 gemmbias_tn_m1024_k1024=(_gemmbias_tn_m1024_k1024)dlsym(g_handle, "gemmbias_tn_m1024_k1024");
-	
+
 // typedef int (*_gemmbias_tn_m4096_k1024)(void *A,void *B,void *C,void *D,void* alpha,void* beta,int m,int k,int n);
 // _gemmbias_tn_m4096_k1024 gemmbias_tn_m4096_k1024=(_gemmbias_tn_m4096_k1024)dlsym(g_handle, "gemmbias_tn_m4096_k1024");
 
 // typedef int (*_gemm_dbias)(int transA,int transB,void *A,void *B,void *C,void *D,int m,int k,int n,void *alpha);
 // _gemm_dbias gemm_dbias=(_gemm_dbias)dlsym(g_handle, "gemm_dbias");
-	
+
 // typedef int (*_gemmdbias_nt_m1024_n1024)(void *A,void *B,void *C,void *D,void* alpha,int m,int k,int n);
 // _gemmdbias_nt_m1024_n1024 gemmdbias_nt_m1024_n1024=(_gemmdbias_nt_m1024_n1024)dlsym(g_handle, "gemmdbias_nt_m1024_n1024");
 
@@ -128,7 +128,7 @@ int (*gemmdbias_backward_half)(void *handle,int trans_a,
 int initState = 0;
 int initGemmbias(void) {
   if (initState) return 0;
-  
+
   Dl_info dl_info;
   dladdr((void*)initGemmbias, &dl_info);
   char * modulePath = dirname((char*)dl_info.dli_fname);
@@ -161,7 +161,7 @@ int initGemmbias(void) {
   assert(gemmbias_forward_destroy_handle);
   assert(gemmbias_forward_half);
 
-  
+
   memset(dllpath, 0x0, sizeof dllpath);
   sprintf(dllpath, "%s/lib/libhytsb.so", modulePath);
   void * bHandle = dlopen(dllpath, RTLD_LAZY);
@@ -183,10 +183,10 @@ int initGemmbias(void) {
 
 // rocblas_handle handle;
 
-#ifdef __cplusplus 
+#ifdef __cplusplus
 }
 #endif
-	
+
 #endif
 
 

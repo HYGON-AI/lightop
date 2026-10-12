@@ -9,7 +9,7 @@ from lightop.activation import DropPath
 
 
 def drop_path(x, drop_prob: float = 0., training: bool = False, scale_by_keep: bool = True):
-    
+
     if drop_prob == 0. or not training:
         return x
     keep_prob = 1 - drop_prob
@@ -29,7 +29,7 @@ class Torch_DropPath(torch.nn.Module):
 
     def forward(self, x):
         return drop_path(x, self.drop_prob, self.training, self.scale_by_keep)
-    
+
 
 def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
@@ -55,12 +55,12 @@ def get_model(dropout_p=0.5,use_half=False):
     else:
         fuse_droppath=DropPath(drop_prob=dropout_p).cuda()
         torch_droppath=Torch_DropPath(drop_prob=dropout_p).cuda()
-        
+
     return torch_droppath,fuse_droppath
 
 
 def test_profile(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
-    
+
     x1,x2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
     f1,f2=get_model(dropout_p,use_half=use_half)
     torch.manual_seed(0)
@@ -80,15 +80,15 @@ def test_profile(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
             y2 = f2(x2)
             y2.backward(grad)
             torch.cuda.synchronize()
-    prof2.export_chrome_trace('./profile_fuse_droppath.json')  
+    prof2.export_chrome_trace('./profile_fuse_droppath.json')
 
 def test_speed(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
-    
+
     x1,x2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
     f1,f2=get_model(dropout_p,use_half=use_half)
     y1 = f1(x1)
     y1.backward(grad)
-    torch.cuda.synchronize()    
+    torch.cuda.synchronize()
     torch.manual_seed(0)
     start_time = time.time()
     for i in range(repeat_num):
@@ -101,7 +101,7 @@ def test_speed(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
     print('torch_droppath', 'averange time is', fc1_espl *1000/ repeat_num, 'ms')
     y2 = f2(x2)
     y2.backward(grad)
-    torch.cuda.synchronize()    
+    torch.cuda.synchronize()
     torch.manual_seed(0)
     start_time = time.time()
     for i in range(repeat_num):
@@ -109,7 +109,7 @@ def test_speed(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
         y2 = f2(x2)
         y2.backward(grad)
     torch.cuda.synchronize()
-    end_time = time.time()    
+    end_time = time.time()
     fc2_espl = end_time - start_time
     print('fuse_droppath', 'averange time is', fc2_espl *1000/ repeat_num, 'ms')
 
@@ -120,7 +120,7 @@ def test_speed(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
     else:
         print(allclose(y1,y2,rtol=1e-05, atol=1e-05))
         print(allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05))
-    
+
 if __name__ == "__main__":
 
     #设置基础参数

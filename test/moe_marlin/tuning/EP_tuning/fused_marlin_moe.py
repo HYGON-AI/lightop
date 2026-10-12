@@ -29,6 +29,10 @@ from lightop.quant import (
 from lightop.activation import fuse_silu_mul_quant
 
 
+def round_up(x: int, y: int) -> int:
+    return ((x + y - 1) // y) * y
+
+
 # 应用 256 降到 32 的 moe_align 优化
 def moe_align_block_size_lightop_new(
     topk_ids: torch.Tensor,
@@ -42,7 +46,7 @@ def moe_align_block_size_lightop_new(
     is_EP : bool  = True,
     local_num_tokens: Optional[torch.Tensor]=None
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    
+
     assert local_num_tokens is not None
     local_num_experts = num_experts // ep_size
 
@@ -76,13 +80,13 @@ def moe_align_block_size_lightop_new(
                                       device=topk_ids.device)
     # print("topk_ids: ", topk_ids.size(), topk_ids.dtype)
     # print(topk_ids)
-    # print("local_num_tokens: ", local_num_tokens)    
+    # print("local_num_tokens: ", local_num_tokens)
     # assert False
     moe_align_block_size_out(topk_ids,
-                            num_experts, 
-                            block_size, 
+                            num_experts,
+                            block_size,
                             sorted_ids,
-                            expert_ids, 
+                            expert_ids,
                             num_tokens_post_pad,
                             expert_map,
                             expert_mask,
@@ -102,7 +106,7 @@ def moe_align_block_size_lightop(
     num_token: Optional[int] = None,
     is_EP=True
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-  
+
     if num_token:
         if num_token < block_size:
             max_num_tokens_padded = min(topk_ids.numel() * block_size, topk_ids.numel() + num_experts * (block_size - 1))
@@ -129,14 +133,14 @@ def moe_align_block_size_lightop(
                                 device=topk_ids.device)
     num_tokens_post_pad = torch.zeros((1),
                                       dtype=torch.int32,
-                                      device=topk_ids.device)    
+                                      device=topk_ids.device)
     moe_align_block_size_out(topk_ids, num_experts, block_size, sorted_ids,
                                  expert_ids, num_tokens_post_pad,expert_map, expert_mask, num_local_tokens, Is_EP=True)
 
     return sorted_ids, expert_ids, num_tokens_post_pad
 
 def fused_marlin_moe(
-                     hidden_states: torch.Tensor, # 32, 7168 
+                     hidden_states: torch.Tensor, # 32, 7168
                      w1_marlin: torch.Tensor,
                      w2_marlin: torch.Tensor,
                      w1_scale: torch.Tensor,
@@ -165,7 +169,7 @@ def fused_marlin_moe(
     M, K = hidden_states.shape
     E = w1_marlin.shape[0]
     N = w2_marlin.shape[1] * 32 # 256
-    topk = topk_ids.shape[1] 
+    topk = topk_ids.shape[1]
 
     block_size_m = config_marlin_0["BLOCK_SIZE_M"]
 
@@ -186,9 +190,9 @@ def fused_marlin_moe(
                                                                                     ep_size=ep_size,
                                                                                     is_EP=True,
                                                                                     local_num_tokens=local_num_tokens)
-    
 
-    # 建立 归约使用的 信号量 Tensor 当前最大开到 sms * 6 = 480 
+
+    # 建立 归约使用的 信号量 Tensor 当前最大开到 sms * 6 = 480
     sms = torch.cuda.get_device_properties(hidden_states.device).multi_processor_count
     workspace = torch.zeros(500, dtype=torch.int, device=hidden_states.device, requires_grad=False)
     # 建立用于 归约使用的 缓冲区 blokc数： sms * 6
@@ -198,7 +202,7 @@ def fused_marlin_moe(
     cuda_gemm1_output = torch.zeros((M * topk, 2 * N), dtype=torch.bfloat16, device=hidden_states.device, requires_grad=False)
     cuda_gemm2_output = torch.zeros((M * topk, K), dtype=torch.bfloat16, device=hidden_states.device, requires_grad=False)
 
-    # 
+    #
     cuda_gemm2_a = torch.zeros((M * topk, N), dtype=torch.bfloat16, device=hidden_states.device, requires_grad=False)
     # 对A矩阵进行量化
     a_1, a_1_scale = per_token_quant_int8(hidden_states)
@@ -211,17 +215,17 @@ def fused_marlin_moe(
     # =========================== gemm1 marlin 计算 ===============================
     moe_gemm_marlin_w4a8(
                         a_1,
-                        w1_marlin, 
-                        cuda_gemm1_output, 
-                        a_1_scale, 
-                        w1_scale, 
-                        None, 
-                        sorted_token_ids, 
-                        expert_ids, 
-                        num_tokens_post_padded, 
-                        topk, 
-                        workspace, 
-                        global_reduce_buffer, 
+                        w1_marlin,
+                        cuda_gemm1_output,
+                        a_1_scale,
+                        w1_scale,
+                        None,
+                        sorted_token_ids,
+                        expert_ids,
+                        num_tokens_post_padded,
+                        topk,
+                        workspace,
+                        global_reduce_buffer,
                         config_marlin_0,
                         is_ep=expert_map is not None)
     end_event.record()
@@ -231,7 +235,7 @@ def fused_marlin_moe(
     # 激活函数
     torch.ops._C.silu_and_mul(cuda_gemm2_a, cuda_gemm1_output)
 
-    # 准备gemm2 需要的 A和A-scale 
+    # 准备gemm2 需要的 A和A-scale
     # [M*topk, N] [32*8, 256]
     a_2, a_2_scale = per_token_quant_int8(cuda_gemm2_a)
 
@@ -240,21 +244,21 @@ def fused_marlin_moe(
     torch.cuda.synchronize()
     start_event.record()
     moe_gemm_marlin_w4a8(
-                        a_2, 
-                        w2_marlin, 
-                        cuda_gemm2_output, 
-                        a_2_scale, 
-                        w2_scale, 
-                        topk_weights, 
-                        sorted_token_ids, 
-                        expert_ids, 
-                        num_tokens_post_padded, 
-                        1, 
-                        workspace, 
-                        global_reduce_buffer, 
+                        a_2,
+                        w2_marlin,
+                        cuda_gemm2_output,
+                        a_2_scale,
+                        w2_scale,
+                        topk_weights,
+                        sorted_token_ids,
+                        expert_ids,
+                        num_tokens_post_padded,
+                        1,
+                        workspace,
+                        global_reduce_buffer,
                         config_marlin_1,
                         is_ep=expert_map is not None)
     end_event.record()
     end_event.synchronize()
-    gemm2_time_us =  start_event.elapsed_time(end_event) * 1000 
+    gemm2_time_us =  start_event.elapsed_time(end_event) * 1000
     return gemm1_time_us, gemm2_time_us

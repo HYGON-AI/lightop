@@ -126,7 +126,7 @@ blockM_configs = {
     61: 32,
     62: 64,
     63: 64,
-    
+
     64: 16,
     65: 32,
     66: 64,
@@ -218,10 +218,10 @@ def get_moe_config(M, N, K):
                 config={}
     except FileNotFoundError:
         config = {}
-        
-    # if not config: 
+
+    # if not config:
     #     print("Config is not found! Use default config.")
-        
+
     config = config if config else {
         "BLOCK_SIZE_M": 64,
         "BLOCK_SIZE_N": 128,
@@ -241,15 +241,15 @@ def generate_unique_int_tensor(m, topk, low=0, high=256):
     # 检查 topk 是否超过范围
     if topk > (high - low):
         raise ValueError(f"topk ({topk}) 不能超过范围 ({high - low})")
-    
+
     # 生成张量
     tensor = torch.zeros((m, topk), dtype=torch.int)
-    
+
     for i in range(m):
         # 对每一行生成不重复的随机整数
         row = torch.randperm(high - low)[:topk] + low
         tensor[i] = row
-    
+
     return tensor
 
 # Adapted from: https://github.com/sgl-project/sglang/pull/2628
@@ -618,7 +618,7 @@ def fused_moe_kernel_opt_config(
 
     offs_bn = (pid_n * BLOCK_SIZE_N +
                tl.arange(0, BLOCK_SIZE_N).to(tl.int64)) % N
-    
+
     if BLOCK_SIZE_K > group_k:
         offs_k = tl.arange(0, group_k)
     else:
@@ -824,7 +824,7 @@ def fused_moe_kernel_opt_config_stage3(
 
     offs_bn = (pid_n * BLOCK_SIZE_N +
                tl.arange(0, BLOCK_SIZE_N).to(tl.int64)) % N
-    
+
     if BLOCK_SIZE_K > group_k:
         offs_k = tl.arange(0, group_k)
     else:
@@ -1050,19 +1050,19 @@ def fused_moe_kernel_opt_cus(
     # `a_ptrs` is a block of [BLOCK_SIZE_M, BLOCK_SIZE_K] pointers
     # `b_ptrs` is a block of [BLOCK_SIZE_K, BLOCK_SIZE_N] pointers
     num_tokens_post_padded = tl.load(num_tokens_post_padded_ptr)
-    
+
     miter_times = tl.cdiv(EM, num_pid_m * BLOCK_SIZE_M)
     for row in range(0, miter_times):
-        
+
         offs_row = (row * num_pid_m + pid_m)
         if offs_row * BLOCK_SIZE_M < num_tokens_post_padded:
             offs_token_id = offs_row * BLOCK_SIZE_M + tl.arange(0, BLOCK_SIZE_M).to(tl.int64)
             offs_token = tl.load(sorted_token_ids_ptr + offs_token_id)
             token_mask = offs_token < num_valid_tokens
-            
+
             offs_bn = (pid_n * BLOCK_SIZE_N +
                 tl.arange(0, BLOCK_SIZE_N).to(tl.int64)) % N
-        
+
             if BLOCK_SIZE_K > group_k:
                 offs_k = tl.arange(0, group_k)
             else:
@@ -1071,7 +1071,7 @@ def fused_moe_kernel_opt_cus(
 
             a_ptrs = a_ptr + (offs_token[:, None] // top_k * stride_am +
                             offs_k[None, :] * stride_ak)
-            
+
             offs_experts_id = row * num_pid_m + pid_m
             off_experts = tl.load(expert_ids_ptr + offs_experts_id).to(tl.int64)
             b_ptrs = b_ptr + off_experts * stride_be + (offs_k[:, None] * stride_bk +
@@ -1128,7 +1128,7 @@ def fused_moe_kernel_opt_cus(
                 # Advance the ptrs to the next K block.
                 a_ptrs += block_size_k * stride_ak
                 b_ptrs += block_size_k * stride_bk
-            
+
             if MUL_ROUTED_WEIGHT:
                 moe_weight = tl.load(topk_weights_ptr + offs_token,
                                     mask=token_mask,
@@ -1558,9 +1558,9 @@ def moe_ep_align_block_size(
                                       dtype=torch.int32,
                                       device=topk_ids.device)
     ops.ep_moe_align_block_size(topk_ids, num_experts, block_size, sorted_ids,
-                                 expert_ids, num_tokens_post_pad, start_expert, 
+                                 expert_ids, num_tokens_post_pad, start_expert,
                                  end_expert)
-        
+
     return sorted_ids, expert_ids, num_tokens_post_pad
 
 
@@ -1638,7 +1638,7 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
     assert topk_weights is None or topk_weights.stride(1) == 1
     assert sorted_token_ids.stride(0) == 1
     assert use_int8_w8a8 is True
-    
+
     M = A.shape[0]
     num_tokens = M * top_k
 
@@ -1706,28 +1706,28 @@ def invoke_fused_moe_kernel_int8(A: torch.Tensor,
             delta=int(config['DELTA']),
             **triton_config
         )
-    
-    
-    moe_gemm_w8a8(A, 
-                    B, 
+
+
+    moe_gemm_w8a8(A,
+                    B,
                     C,
-                    A_scale, 
+                    A_scale,
                     B_scale,
                     topk_weights if mul_routed_weight else None,
-                    sorted_token_ids, 
+                    sorted_token_ids,
                     expert_ids,
-                    num_tokens_post_padded, 
+                    num_tokens_post_padded,
                     top_k,
                     config)
-    
+
     torch.cuda.synchronize()
     if not (torch.allclose(C, out_triton, rtol=1e-2, atol=1e-2)):
         print("kernel 精度检查不合格!!!")
-        # torch.set_printoptions(profile="full")  
-        # ftriton = open('cuda_output.txt', 'w')   
+        # torch.set_printoptions(profile="full")
+        # ftriton = open('cuda_output.txt', 'w')
         # print(f'cuda_output: {out_cuda}', file=ftriton)
         # ftriton.close
-        # ftorch = open('bench_output.txt', 'w')   
+        # ftorch = open('bench_output.txt', 'w')
         # print(f'bench_output: {C}', file=ftorch)
         # ftorch.close
     else:
@@ -1758,7 +1758,7 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                        use_nn_moe: Optional[bool] = False,
                        config: Optional[Dict[str, Any]] = None,
                        mode: Optional[int]=0):
-    # Check constraints. 
+    # Check constraints.
     assert use_int8_w8a8 is True
     assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch"
 
@@ -1818,7 +1818,7 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                                               num_tokens))
         curr_hidden_states = hidden_states[begin_chunk_idx:end_chunk_idx]
         tokens_in_chunk, _ = curr_hidden_states.shape
-    
+
         if tokens_in_chunk == 0:
             break
 
@@ -1843,7 +1843,7 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
             else:
                 config['BLOCK_SIZE_M'] = blockM_configs_decode[config[M_pattern]]
             # config['BLOCK_SIZE_M'] = blockM_configs[config['MODE']]
-            
+
         curr_topk_ids = topk_ids[begin_chunk_idx:end_chunk_idx]
         curr_topk_weights = topk_weights[begin_chunk_idx:end_chunk_idx]
 
@@ -1886,7 +1886,7 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe,
                                 mode=config[M_pattern])
-        
+
         quantiles = [0.5, 0.2, 0.8]
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                                                                             w1,
@@ -1911,12 +1911,12 @@ def _fused_moegemm_helper_test_first_stage(hidden_states: torch.Tensor,
                                                                                             block_shape=block_shape,
                                                                                             use_nn_moe=use_nn_moe,
                                                                                             mode=config[M_pattern]),quantiles=quantiles)
-       
+
         elapsed_time = ms
         print("w13 _time:{} ms\n".format(elapsed_time))
-        
-        
-    return elapsed_time   
+
+
+    return elapsed_time
 
 def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                        w1: torch.Tensor,
@@ -1943,7 +1943,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                        use_nn_moe: Optional[bool] = False,
                        config: Optional[Dict[str, Any]] = None,
                        mode: Optional[int]=0):
-    # Check constraints. 
+    # Check constraints.
     assert use_int8_w8a8 is True
     assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch"
 
@@ -2003,7 +2003,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                               num_tokens))
         curr_hidden_states = hidden_states[begin_chunk_idx:end_chunk_idx]
         tokens_in_chunk, _ = curr_hidden_states.shape
-    
+
         if tokens_in_chunk == 0:
             break
 
@@ -2019,7 +2019,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
 
         M_pattern = "MODE_DECODE"
         if M > M_THRESHOLD:
-            M_pattern = "MODE_PREFILL"  
+            M_pattern = "MODE_PREFILL"
         if use_int8_w8a8:
             M=curr_hidden_states.shape[0]
             #print(f'+++++++-------_{M}_--------+++++++')
@@ -2028,7 +2028,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
             else:
                 config['BLOCK_SIZE_M'] = blockM_configs_decode[config[M_pattern]]
             # config['BLOCK_SIZE_M'] = blockM_configs[config['MODE']]
-            
+
         curr_topk_ids = topk_ids[begin_chunk_idx:end_chunk_idx]
         curr_topk_weights = topk_weights[begin_chunk_idx:end_chunk_idx]
 
@@ -2047,7 +2047,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
                 moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                     global_num_experts, expert_map))
-        
+
         invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
@@ -2071,7 +2071,7 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe,
                                 mode=config[M_pattern])
-        
+
         if activation == "silu":
             torch.ops._C.silu_and_mul(intermediate_cache2,
                                       intermediate_cache1.view(-1, N))
@@ -2140,15 +2140,15 @@ def _fused_moegemm_helper_test_second_stage(hidden_states: torch.Tensor,
                                                                                             block_shape=block_shape,
                                                                                             use_nn_moe=use_nn_moe,
                                                                                             mode=config[M_pattern]),quantiles=quantiles)
-       
+
         elapsed_time = ms
         print("w2 _time:{} ms\n".format(elapsed_time))
         torch.cuda.synchronize()
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
                     out_hidden_states[begin_chunk_idx:end_chunk_idx])
-        
-        
-    return elapsed_time   
+
+
+    return elapsed_time
 
 def fused_moe_first_stage_tune(
                                 hidden_states: torch.Tensor,
@@ -2405,7 +2405,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                        use_nn_moe: Optional[bool] = False,
                        config: Optional[Dict[str, Any]] = None,
                        mode: Optional[int]=0):
-    # Check constraints. 
+    # Check constraints.
     assert use_int8_w8a8 is True
     assert hidden_states.shape[1] == w1.shape[2], "Hidden size mismatch"
 
@@ -2465,7 +2465,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                               num_tokens))
         curr_hidden_states = hidden_states[begin_chunk_idx:end_chunk_idx]
         tokens_in_chunk, _ = curr_hidden_states.shape
-    
+
         if tokens_in_chunk == 0:
             break
 
@@ -2484,7 +2484,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
         #     #print(f'+++++++-------_{M}_--------+++++++')
         #     # config=get_moe_config(M,N,K)
         #     config,status=get_moe_cuda_config(E,M,N,K,device_name,num_cus,compute_type)
-        
+
         if use_int8_w8a8:
             if use_nn_moe:
                 _, _K, _N = w2.shape
@@ -2493,7 +2493,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
             # _M=curr_hidden_states.shape[0]
             # config=get_moe_config(_M,_N,_K)
             config1, config2, status=get_moe_cuda_config(E,M,N,K,_N,_K,top_k_num,device_name,num_cus,compute_type)
-            
+
         curr_topk_ids = topk_ids[begin_chunk_idx:end_chunk_idx]
         curr_topk_weights = topk_weights[begin_chunk_idx:end_chunk_idx]
 
@@ -2535,7 +2535,7 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
-        
+
         if activation == "silu":
             torch.ops._C.silu_and_mul(intermediate_cache2,
                                       intermediate_cache1.view(-1, N))
@@ -2588,13 +2588,13 @@ def _fused_moegemm_helper_test_pure(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
-        
+
         # torch.cuda.synchronize()
         ops.moe_sum(intermediate_cache3.view(*intermediate_cache3.shape),
                     out_hidden_states[begin_chunk_idx:end_chunk_idx])
-        
-        
-    return out_hidden_states   
+
+
+    return out_hidden_states
 
 def fused_moe_impl_test( hidden_states: torch.Tensor,
                     w1: torch.Tensor,
@@ -2678,7 +2678,7 @@ def fused_moe_impl_test( hidden_states: torch.Tensor,
     else:
         topk_weights, topk_ids = custom_routing_function(
             hidden_states, gating_output, topk, renormalize)
-    
+
     return _fused_moegemm_helper_test_pure(hidden_states=hidden_states,
                                                     w1=w1,
                                                     w2=w2,
@@ -2691,7 +2691,7 @@ def fused_moe_impl_test( hidden_states: torch.Tensor,
                                                     block_shape=block_shape,
                                                     config=config,
                                                     per_channel_quant=True)
-            
+
 from vllm.model_executor.layers.fused_moe import fused_experts
 
 def _fused_moegemm_helper_test_dev( num_tokens: int,
@@ -2706,7 +2706,7 @@ def _fused_moegemm_helper_test_dev( num_tokens: int,
                                     num_iters: int=100,
                                     block_quant_shape: List[int] = None,
                                     ):
-    
+
     seed = 0
     # 设置 PyTorch 的随机数种子
     torch.manual_seed(seed)
@@ -2714,8 +2714,8 @@ def _fused_moegemm_helper_test_dev( num_tokens: int,
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)  # 如果有多个 GPU
-    
-    device="cuda"  
+
+    device="cuda"
     x = torch.randn(num_tokens, hidden_size, device=device, dtype=dtype)
     w1_scale = None
     w2_scale = None
@@ -2741,7 +2741,7 @@ def _fused_moegemm_helper_test_dev( num_tokens: int,
     w1_scale = (torch.randn((256,math.ceil(shard_intermediate_size/block_quant_shape[0]), math.ceil(hidden_size/block_quant_shape[1])),device=device,
                         dtype=torch.float32))
     w2_scale = (torch.randn((256,math.ceil(hidden_size/block_quant_shape[0]), math.ceil((shard_intermediate_size // 2)/block_quant_shape[1])),device=device,
-                        dtype=torch.float32))    
+                        dtype=torch.float32))
 
     input_gating = torch.randn(num_tokens, num_experts, device=device, dtype=torch.float32)
     output = fused_moe_impl_test(x,

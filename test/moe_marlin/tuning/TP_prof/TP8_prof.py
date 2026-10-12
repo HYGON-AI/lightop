@@ -173,7 +173,7 @@ def benchmark_config(
     topk_weights, topk_ids = grouped_topk(score, topk, True, 8, 4)
 
     # 先进行准确度测试
-    gemm1_flag, gemm2_flag = fused_marlin_moe_valid(                      
+    gemm1_flag, gemm2_flag = fused_marlin_moe_valid(
                                                     x,
                                                     w1,
                                                     w2,
@@ -186,8 +186,8 @@ def benchmark_config(
                                                     )
     if (not gemm1_flag) or (not gemm2_flag):# 正确性验证通过后，进行性能测试
         print("正确性验证失败！！！！")
-        print("cur_config_gemm1: ", cur_config_gemm1)
-        print("cur_config_gemm2: ", cur_config_gemm2)
+        print("gemm1_correct:", gemm1_flag)
+        print("gemm2_correct:", gemm2_flag)
 
     # ==============================   性能测试   ===============================
     # 预热 10 轮
@@ -209,8 +209,8 @@ def benchmark_config(
                             )
 
 
-    # 统计100轮随机后 计算 的时间  
-    gemm1_time_us_total = 0 
+    # 统计100轮随机后 计算 的时间
+    gemm1_time_us_total = 0
     gemm2_time_us_total = 0
     for i in range(num_iters):
         # 使用新的专家得分
@@ -228,14 +228,14 @@ def benchmark_config(
                                                             topk_weights,
                                                             topk_ids
                                                             )
-            
+
             gemm1_time_us_total += gemm1_time_us
             gemm2_time_us_total += gemm2_time_us
-            
+
     cur_config_gemm1_time = gemm1_time_us_total / num_iters / 10
     cur_config_gemm2_time = gemm2_time_us_total / num_iters / 10
 
-    print("cur_config_gemm1_time: ", cur_config_gemm1_time, "cur_config_gemm2_time: ", cur_config_gemm2_time) 
+    print("cur_config_gemm1_time: ", cur_config_gemm1_time, "cur_config_gemm2_time: ", cur_config_gemm2_time)
 
     best_info = {
         "num_tokens": num_tokens,
@@ -248,7 +248,7 @@ def benchmark_config(
 # 主函数
 if __name__ == "__main__":
     set_random_seed(seed=0)
-    
+
     num_experts = 256
     hidden_size = 7168
     top_k = 8
@@ -284,7 +284,7 @@ if __name__ == "__main__":
         for num_tokens in [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384]:
         # for num_tokens in [1, 2, 4, 8, 16, 32]:
         # for num_tokens in [16, 32]:
-            # 激活矩第一维度： batch_size * ep_size     
+            # 激活矩第一维度： batch_size * ep_size
             x = torch.randn((num_tokens, hidden_size), device='cuda:0', dtype=torch.bfloat16) / 10  # [256*8, 7168] (bf16)
             # 遍历所有config从中选取性能最好的config, 并返回 最优的config 和时间
             best_config_info = benchmark_config(

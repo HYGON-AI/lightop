@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
+from typing import List
 import torch
 from vllm.scalar_type import ScalarType
 
@@ -16,7 +17,7 @@ GPTQ_MARLIN_TILE = 16
 def write_numpy_to_excel(data, file_path):
     # 将 NumPy 数组转换为 Pandas DataFrame
     df = pd.DataFrame(data)
-    
+
     # 将 DataFrame 写入 Excel 文件
     df.to_excel(file_path, index=False, header=False)
 
@@ -28,12 +29,12 @@ def get_pack_factor(num_bits):
 # bw 重排B矩阵的函数
 def get_weight_perm(num_bits: int # 4
                     ):
-    # 存储 16*32 数据块中 一个线程需要的数据索引 每个线程需要load 8个uint4 数据到 寄存器中 
+    # 存储 16*32 数据块中 一个线程需要的数据索引 每个线程需要load 8个uint4 数据到 寄存器中
     perm_list: List[int] = []
     # print("每个线程需要的数据位置：")
     for i in range(64):
         # print("===thread: ", i)
-        perm1: List[int] = [] 
+        perm1: List[int] = []
         col = i % 16 # 一列放四个线程，因此 i// 4 获得col索引
         row = i // 16
         for block in [0, 1]:
@@ -44,7 +45,7 @@ def get_weight_perm(num_bits: int # 4
             perm_list.extend([p + 512 * j for p in perm1])
 
     perm = np.array(perm_list)
-    
+
     # # 完成32bit内的数据交错
     if num_bits == 4:
         interleave = np.array([0, 2, 4, 6, 1, 3, 5, 7])
@@ -124,7 +125,7 @@ def marlin_permute_scales(s: torch.Tensor, # [56, 512]  # torch.float16
                             size_n: int,   # 512
                             group_size: int # 128
                             ) -> torch.Tensor:
-    # 将[128, 128](fp16) B矩阵中 每个[16, 16]计算块中的对应位置的 zero值 放到一起 
+    # 将[128, 128](fp16) B矩阵中 每个[16, 16]计算块中的对应位置的 zero值 放到一起
     scale_perm = get_scale_perms()
     s = s.reshape((-1, len(scale_perm)))[:, scale_perm]
     s = s.reshape((-1, size_n)).contiguous()
@@ -157,7 +158,7 @@ def pack_cols(
 
 def marlin_zero_points(zp: torch.Tensor, size_k: int, size_n: int,
                        num_bits: int) -> torch.Tensor:
-    # 和 scale 使用一致的重排逻辑，将[128, 128](fp16) B矩阵中 每个[16, 16]计算块中的对应位置的 zero值 放到一起 
+    # 和 scale 使用一致的重排逻辑，将[128, 128](fp16) B矩阵中 每个[16, 16]计算块中的对应位置的 zero值 放到一起
     scale_perm = get_scale_perms()
     zp = zp.reshape((-1, len(scale_perm)))[:, scale_perm]
 
@@ -242,7 +243,7 @@ def merge_tensor_rows_binary_strict(marlin_s: torch.Tensor, marlin_zp: torch.Ten
 
 def awq_marlin_quantize(
                         w: torch.Tensor,  # [7168, 512] fp16
-                        quant_type: ScalarType, # uint4 
+                        quant_type: ScalarType, # uint4
                         group_size: int # 128
                         ):
     size_k, size_n = w.shape # 7168, 512
@@ -261,7 +262,7 @@ def awq_marlin_quantize(
                                          quant_type,
                                          group_size,
                                          zero_points=True)
-    
+
     # w_ref[:]=1
     # q_w[:] = 1
     # s[:]=1

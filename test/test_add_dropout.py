@@ -39,12 +39,12 @@ def get_model(dropout_p=0.5,use_half=False):
     else:
         fuse_dropout_add=AddDropout(rate=dropout_p).cuda()
         torch_dropout_add=lambda x, r: F.dropout(x, dropout_p) + r
-        
+
     return torch_dropout_add,fuse_dropout_add
 
 
 def test_profile(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
-    
+
     x1,x2,residual1,residual2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
     f1,f2=get_model(dropout_p,use_half=use_half)
 
@@ -63,13 +63,13 @@ def test_profile(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
     with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,use_kineto=True,
                                      profile_memory=False) as prof2:
         for i in range(repeat_num):
-            
+
             x2.grad = None
             residual2.grad = None
             y2 = f2(x2,residual2)
             y2.backward(grad)
             torch.cuda.synchronize()
-    prof2.export_chrome_trace('./profile_fuse_dropout_add.json')  
+    prof2.export_chrome_trace('./profile_fuse_dropout_add.json')
 
 def test_speed(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
 
@@ -96,7 +96,7 @@ def test_speed(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
         y2 = f2(x2,residual2)
         y2.backward(grad)
         torch.cuda.synchronize()
-    end_time = time.time()    
+    end_time = time.time()
     fc2_espl = end_time - start_time
     print('fuse_dropout_add', 'averange time is', fc2_espl *1000/ repeat_num, 'ms')
 
@@ -107,7 +107,7 @@ def test_speed(batchsize, seqs, cols,dropout_p,repeat_num,use_half=False):
     else:
         print(allclose(y1,y2,rtol=1e-05, atol=1e-05))
         print(allclose(x1.grad,x2.grad,rtol=1e-05, atol=1e-05))
-    
+
 if __name__ == "__main__":
 
     #设置基础参数

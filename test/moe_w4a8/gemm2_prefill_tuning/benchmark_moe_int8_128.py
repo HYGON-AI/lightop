@@ -47,15 +47,15 @@ def generate_unique_int_tensor(m, topk, low=0, high=256):
     # 检查 topk 是否超过范围
     if topk > (high - low):
         raise ValueError(f"topk ({topk}) 不能超过范围 ({high - low})")
-    
+
     # 生成张量
     tensor = torch.zeros((m, topk), dtype=torch.int)
-    
+
     for i in range(m):
         # 对每一行生成不重复的随机整数
         row = torch.randperm(high - low)[:topk] + low
         tensor[i] = row
-    
+
     return tensor
 
 def _fused_moe_helper(m: int,
@@ -77,14 +77,14 @@ def _fused_moe_helper(m: int,
     weight13_scale = (torch.randn((E, n ,1), device=device,
                            dtype=torch.float32))
     weight2_scale = (torch.randn((E, n2, 1), device=device,
-                           dtype=torch.float32))   
+                           dtype=torch.float32))
 
     tensor = torch.rand((m, topk),device=device)
     topk_weights = F.softmax(tensor, dim=1)
 
     topk_ids=generate_unique_int_tensor(m=m, topk=topk, low=0, high=E).cuda()
 
-    
+
     return input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids
 
 def to_int8(tensor: torch.Tensor):
@@ -139,25 +139,25 @@ def benchmark_config_gemm2(
     w1_scale = (torch.randn((num_experts, shard_intermediate_size ,1),
                            dtype=torch.float32))
     w2_scale = (torch.randn((num_experts, hidden_size, 1),
-                           dtype=torch.float32))    
-    
+                           dtype=torch.float32))
+
     gating_output = torch.randn(num_iters,
                                 num_tokens,
                                 num_experts,
                                 dtype=torch.float32)
-    
+
     def prepare(i: int):
         input_gating.copy_(gating_output[i])
 
     input_gating = torch.randn(num_tokens, num_experts, dtype=torch.float32)
-    
+
     latencies: list[float] = []
     for i in range(num_iters):
         prepare(i)
         torch.cuda.synchronize()
 
         topk_weights, topk_ids = grouped_topk(x, input_gating, topk, True, 8, 4)
-        
+
         kernel_time = gemm2_kernel_prof(
                                         hidden_states=x,
                                         w1=w1,
@@ -175,7 +175,7 @@ def benchmark_config_gemm2(
                                         delta=delta
                                         )
 
-    
+
         latencies.append(kernel_time)
 
     avg = sum(latencies) / (num_iters)
@@ -199,7 +199,7 @@ def moe_cuda_graph(
         from vllm.platforms import current_platform
         current_platform.seed_everything(seed)
         print("====================== num_tokens: ", num_tokens, "  ====================")
-        device="cuda:"+str(device_id)   
+        device="cuda:"+str(device_id)
         x = torch.randn(num_tokens, hidden_size, device=device, dtype=dtype)
         w1_scale = None
         w2_scale = None
@@ -222,17 +222,17 @@ def moe_cuda_graph(
                             ),
                             device=device,
                             dtype=torch.int8)
-        
+
         w1_scale = (torch.randn((num_experts, shard_intermediate_size ,1),
                            dtype=torch.float32, device=device))
         w2_scale = (torch.randn((num_experts, hidden_size, 1),
-                           dtype=torch.float32, device=device))    
-           
+                           dtype=torch.float32, device=device))
+
         gating_output = torch.randn(num_iters,
                                 num_tokens,
                                 num_experts,
                                 device=device,
-                                dtype=torch.float32) 
+                                dtype=torch.float32)
         def prepare(i: int):
             input_gating.copy_(gating_output[i])
 
@@ -278,7 +278,7 @@ def moe_cuda_graph(
                             a2_scale=a2_scale,
                             block_shape=block_quant_shape,
                             config=None)
-        
+
         run()
         torch.cuda.synchronize()
 
@@ -301,7 +301,7 @@ def moe_cuda_graph(
         for i in range(num_iters):
             prepare(i)
             torch.cuda.synchronize()
-            
+
             start_event.record()
             graph.replay()
             end_event.record()
@@ -310,7 +310,7 @@ def moe_cuda_graph(
         avg = sum(latencies) / (num_iters * 10) * 1000  # us
         graph.reset()
         return avg
-        
+
 @ray.remote(num_gpus=1)
 class BenchmarkWorker:
 
@@ -335,7 +335,7 @@ class BenchmarkWorker:
         block_quant_shape: List[int] = None,
         use_deep_gemm: bool = False,
     ) -> tuple[dict[str, int], float]:
-        
+
         kernel_time = moe_cuda_graph(num_tokens, num_experts,
                                        shard_intermediate_size, hidden_size,
                                        topk, dtype, use_fp8_w8a8,
@@ -370,24 +370,24 @@ class BenchmarkWorker:
 
             # 准备 gemm1 和 gemm2 都需要的原始数据
             input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=(hidden_size//2),n2=hidden_size,k2=(shard_intermediate_size // 4),topk=topk,E=num_experts,device=device,block_size=None,out_dtype=dtype)
-            
+
             # for block_m in [16, 32, 64, 128]:
             # 当前汇编版本仅支持 128
             for block_m in [128]:
 
-                # ==============================  gemm1 调优逻辑 =========================== 
+                # ==============================  gemm1 调优逻辑 ===========================
                 time_kernel0 = float('inf')
                 config_kernel0 = None
-        
+
                 time_kernel0 = 0.0
                 best_config_0 = {}
                 best_config_0['BLOCK_SIZE_M'] = 128
                 best_config_0['MODE'] = 1000
                 best_config_0['DELTA'] = 1
                 config_kernel0 = best_config_0
-                
+
                 # ================================== gemm2 调优逻辑 ================================
-                
+
                 # gemm2 使用 mode 索引
                 time_kernel1 = float('inf')
                 config_kernel1 = None
@@ -461,7 +461,7 @@ class BenchmarkWorker:
 
 
 def sort_config(config: BenchmarkConfig) -> BenchmarkConfig:
-    
+
     config_first_stage, config_second_stage = config
     config = config_first_stage
     first_stage_dict =  {
@@ -476,7 +476,7 @@ def sort_config(config: BenchmarkConfig) -> BenchmarkConfig:
         **({"matrix_instr_nonkdim": config["matrix_instr_nonkdim"]} if "matrix_instr_nonkdim" in config else {}),
         **({"kpack": config["kpack"]} if "kpack" in config else {}),
     }
-    
+
     config = config_second_stage
     second_stage_dict =  {
         "BLOCK_SIZE_M": config["BLOCK_SIZE_M"],
@@ -490,7 +490,7 @@ def sort_config(config: BenchmarkConfig) -> BenchmarkConfig:
         **({"matrix_instr_nonkdim": config["matrix_instr_nonkdim"]} if "matrix_instr_nonkdim" in config else {}),
         **({"kpack": config["kpack"]} if "kpack" in config else {}),
     }
-    
+
     configs_tuple = (first_stage_dict, second_stage_dict)
 
     return configs_tuple
@@ -512,19 +512,19 @@ def save_configs(configs_first_stage: dict[int, BenchmarkConfig], configs_second
                     config_info = config_infos[f"{N}_{K}"]
                 else:
                     config_info = {}
-                
+
     except FileNotFoundError:
         config_infos = {}
-        config_info = {}  
-    
+        config_info = {}
+
     for key, value in configs_first_stage.items():
-        config_info[f"{key}"] = value  
-        
+        config_info[f"{key}"] = value
+
     config_infos[f"{N}_{K}"] = config_info
     # save best config
     with open(filename, 'w') as file:
-        json.dump(config_infos, file, indent=4)  
-     
+        json.dump(config_infos, file, indent=4)
+
     N=hidden_size
     K=shard_intermediate_size // 4
     filename = f"MOE_BLOCKINT4_CUDA_{N}_{K}_{device_name}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
@@ -537,18 +537,18 @@ def save_configs(configs_first_stage: dict[int, BenchmarkConfig], configs_second
                     config_info = config_infos[f"{N}_{K}"]
                 else:
                     config_info = {}
-                
+
     except FileNotFoundError:
         config_infos = {}
-        config_info = {}  
-    
+        config_info = {}
+
     for key, value in configs_second_stage.items():
-        config_info[f"{key}"] = value  
-        
+        config_info[f"{key}"] = value
+
     config_infos[f"{N}_{K}"] = config_info
     # save best config
     with open(filename, 'w') as file:
-        json.dump(config_infos, file, indent=4) 
+        json.dump(config_infos, file, indent=4)
 
 def get_weight_block_size_safety(config, default_value=None):
 
@@ -560,15 +560,15 @@ def get_weight_block_size_safety(config, default_value=None):
 
 def main(args: argparse.Namespace):
     print(args)
-    
+
     moe_ep_size = args.moe_ep_size
     tp_size = args.tp_size
     if moe_ep_size > 1:
         tp_size = tp_size // moe_ep_size
-    
+
     block_quant_shape = None
     topk = 8
-    dtype = torch.bfloat16 if current_platform.is_rocm() else config.torch_dtype
+    dtype = torch.bfloat16
     use_fp8_w8a8 = args.dtype == "fp8_w8a8"
     use_int8_w8a16 = args.dtype == "int8_w8a16"
     use_int8_w4a8 = args.dtype == "int8_w4a8"
@@ -615,15 +615,15 @@ def main(args: argparse.Namespace):
                       topk, dtype, use_fp8_w8a8, use_int8_w8a16, use_int8_w4a8,
                       block_quant_shape, use_deep_gemm)
                      for batch_size in batch_sizes])
-        
+
         best_configs_first_stage = {}
         best_configs_second_stage = {}
 
         for M, config in zip(batch_sizes, configs):
             first_stage_config, second_stage_config = config
             best_configs_first_stage[M] = first_stage_config
-            best_configs_second_stage[M] = second_stage_config          
-            
+            best_configs_second_stage[M] = second_stage_config
+
         save_configs(best_configs_first_stage, best_configs_second_stage, E, shard_intermediate_size, hidden_size,
                      topk, dtype, use_fp8_w8a8, use_int8_w8a16, use_int8_w4a8,
                      block_quant_shape)
@@ -638,12 +638,12 @@ def main(args: argparse.Namespace):
 
         _w13n=[]
         _w13k=[]
-        
+
         _w2n=[]
         _w2k=[]
         _m=[]
         _total_time=[]
-        
+
         for batch_size, kernel_time in zip(batch_sizes, outputs):
             _w13n.append(shard_intermediate_size)
             _w13k.append(hidden_size//2)
@@ -652,7 +652,7 @@ def main(args: argparse.Namespace):
             _m.append(batch_size)
             _total_time.append(kernel_time)
             print(f"Batch size: {batch_size}, Kernel time: {kernel_time:.2f} us")
-        
+
         df = pd.DataFrame({'m':_m,'w13n':_w13n,'w13k':_w13k,'w2n':_w2n,'w2k':_w2k,'moe 量化算子总耗时(us)':_total_time})
         # 将 DataFrame 写入 Excel 文件
         df.to_excel('moegemmoutput.xlsx', index=False)

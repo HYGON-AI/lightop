@@ -510,7 +510,7 @@ __global__ void act_GN_ComputeInternalGradientsCUDAKernel(int HxW,const scalar_t
   __shared__ T_ACC db_shared[8];
   sum1 = BlockReduceSum<T_ACC>(sum1, ds_shared);
   sum2 = BlockReduceSum<T_ACC>(sum2, db_shared);
-  
+
   if (threadIdx.x == 0) {
     ds[blockidx] = sum1;
     db[blockidx] = sum2;
@@ -709,7 +709,7 @@ __global__ void act_groupnorm_backworward_kernel(scalar_t* dY_data,scalar_t* X_d
   *(VecTpye*)(dX_data+tid)=tdx;
 }
 
-template <typename scalar_t,class act_op> 
+template <typename scalar_t,class act_op>
 void act_groupnorm_forward_NHWC(const Tensor& self,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double gn_epsilon,
                                     bool training,act_op& op,Tensor& ret,Tensor& mean,Tensor&rstd)
 {
@@ -780,7 +780,7 @@ void act_groupnorm_forward_NHWC(const Tensor& self,const Tensor& weight,const Te
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template <typename scalar_t,class act_op> 
+template <typename scalar_t,class act_op>
 void act_groupnorm_forward_impl(const Tensor& self,const Tensor& weight,const Tensor& bias,int num_groups,int num_channels,double gn_epsilon,
                                     bool training,act_op& op,Tensor& ret,Tensor& mean,Tensor&rstd)
 {
@@ -853,7 +853,7 @@ void act_groupnorm_forward_impl(const Tensor& self,const Tensor& weight,const Te
           act_groupnorm_forward_kernel<scalar_t,act_op,4><<<blocksize,128,0,stream>>>(
                                   self_data,ret_data,mean_data,rstd_data,weight_data,bias_data,cols,HxW,N * G * cols,num_channels,op);
         }
-    } 
+    }
     else{//torch native method
         act_groupnorm_forward_mean_rstd<scalar_t,act_op,1><<<N * G, get_groupnorm_blocksize(cols), 0, stream>>>(self_data,mean_data,rstd_data,cols,eps,op);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -863,7 +863,7 @@ void act_groupnorm_forward_impl(const Tensor& self,const Tensor& weight,const Te
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
-template <typename scalar_t,class act_op> 
+template <typename scalar_t,class act_op>
 void act_groupnorm_backward_impl(const Tensor& grad, const Tensor& X,const Tensor& mean,const Tensor& rstd,const Tensor& gamma,act_op op,Tensor& dX,Tensor& dgamma,Tensor& dbeta)
 {
   const int nelem = grad.numel();
@@ -906,7 +906,7 @@ void act_groupnorm_backward_impl(const Tensor& grad, const Tensor& X,const Tenso
         AT_ASSERT(D<=512, "lightop groupnorm_backward error! channel/group is too big");
         act_GroupNormBackward_1d_kernel_vec_fast<scalar_t,act_op,1><<<N * G, get_groupnorm_blocksize(D), 0, stream>>>(D,num_channels, dY_data, X_data,gamma_data,mean_data,rstd_data,dX_data,op);
       }
-    } 
+    }
     else{
         const auto kAccType =(X.scalar_type() == kHalf || X.scalar_type() == kBFloat16)? kFloat: X.scalar_type();
         Tensor ds = at::empty({N, num_channels}, grad.options().dtype(kAccType));
@@ -914,7 +914,7 @@ void act_groupnorm_backward_impl(const Tensor& grad, const Tensor& X,const Tenso
         T_ACC* ds_data = ds.data_ptr<T_ACC>();
         T_ACC* db_data = db.data_ptr<T_ACC>();
         if(HxW%4==0)
-        { 
+        {
             act_GN_ComputeInternalGradientsCUDAKernel<scalar_t,act_op,4><<<N * num_channels, get_groupnorm_blocksize(HxW/4), 0, stream>>>(
             HxW, dY_data, X_data, ds_data, db_data,op);
         }

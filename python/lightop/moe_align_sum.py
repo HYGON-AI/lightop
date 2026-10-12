@@ -9,6 +9,10 @@ from typing import Optional, Tuple
 def ceil_div(a, b):
     return (a + b - 1) // b
 
+
+def round_up(value: int, multiple: int) -> int:
+    return ceil_div(value, multiple) * multiple
+
 def moe_sum(
     input: torch.Tensor,
     output: torch.Tensor,
@@ -112,8 +116,8 @@ def moe_align_block_size(
                                 device=topk_ids.device)
     num_tokens_post_pad = torch.zeros((1),
                                       dtype=torch.int32,
-                                      device=topk_ids.device)   
+                                      device=topk_ids.device)
     op.moe_align_block_size(topk_ids, num_experts, block_size, sorted_ids,
                                  expert_ids, num_tokens_post_pad,expert_map,expert_mask,local_num_tokens,is_EP);
-    
+
     return sorted_ids, expert_ids, num_tokens_post_pad

@@ -59,15 +59,15 @@ class LayerNorm(torch.nn.Module):
         else:
             self.register_parameter('weight',None)
             self.register_parameter('bias',None)
-        
+
         self.reset_parameters()
-    
+
     def reset_parameters(self) -> None:
         if self.elementwise_affine:
             torch.nn.init.ones_(self.weight)#lj
             if self.bias is not None:
-               torch.nn.init.zeros_(self.bias)#lj 
-            
+               torch.nn.init.zeros_(self.bias)#lj
+
     def forward(self, x):
         return op.layernorm_forward_autograd(x,self.weight,self.bias,
                                              self.eps,self.training)

@@ -44,15 +44,15 @@ def generate_unique_int_tensor(m, topk, low=0, high=256):
     # 检查 topk 是否超过范围
     if topk > (high - low):
         raise ValueError(f"topk ({topk}) 不能超过范围 ({high - low})")
-    
+
     # 生成张量
     tensor = torch.zeros((m, topk), dtype=torch.int)
-    
+
     for i in range(m):
         # 对每一行生成不重复的随机整数
         row = torch.randperm(high - low)[:topk] + low
         tensor[i] = row
-    
+
     return tensor
 
 # For test
@@ -231,16 +231,16 @@ def _torch_fused_moegemm_baseline(hidden_states: torch.Tensor,
     #                                               block_shape=block_shape,
     #                                               topk_weight=topk_weights,
     #                                               topk_ids=topk_ids)
-    out_hidden_states = torch_w8a8_per_column_moe(hidden_states, 
-                              w1, 
-                              w2, 
+    out_hidden_states = torch_w8a8_per_column_moe(hidden_states,
+                              w1,
+                              w2,
                               w1_s = w1_scale,
-                              w2_s = w2_scale, 
-                              topk_weight=topk_weights, 
+                              w2_s = w2_scale,
+                              topk_weight=topk_weights,
                               topk_ids=topk_ids,
                               topk = topk_ids.shape[1])
-        
-    return out_hidden_states   
+
+    return out_hidden_states
 
 def torch_moe_impl( hidden_states: torch.Tensor,
                     w1: torch.Tensor,
@@ -359,12 +359,12 @@ def benchmark_config(config: BenchmarkConfig,
                      num_iters: int = 100,
                      block_quant_shape: List[int] = None,
                      stages: int=1) -> float:
-    
+
     w1_scale = None
     w2_scale = None
     a1_scale = None
     a2_scale = None
-    
+
     #  =========================================== 准备 gemm1 相关数据 =============================================
     x = torch.randn((num_tokens, hidden_size),device='cuda',dtype=torch.bfloat16) / 10 # [256*8, 7168] (bf16)
     w1 = torch.randn((num_experts, shard_intermediate_size, hidden_size), device=x.device, dtype=torch.bfloat16)
@@ -379,24 +379,24 @@ def benchmark_config(config: BenchmarkConfig,
     gating_output = torch.randn(num_iters, num_tokens, num_experts, dtype=torch.float32)
     # score = torch.randn((num_tokens, num_experts), device="cuda", dtype=torch.float32)
 
-    # topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)  
-    
+    # topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
+
     # gating_output = torch.randn(num_iters,
     #                             num_tokens,
     #                             num_experts,
     #                             dtype=torch.float32)
-    
+
     def prepare(i: int):
         input_gating.copy_(gating_output[i])
 
     input_gating = torch.randn(num_tokens, num_experts, dtype=torch.float32)
-    
+
     print("Tuing config: ", config)
     latencies: list[float] = []
     for i in range(num_iters):
         prepare(i)
         torch.cuda.synchronize()
-        kernel_time = 0.0 
+        kernel_time = 0.0
         if stages == 1:
             kernel_time = fused_moe_first_stage_tune(x,
                                                     w1,
@@ -456,7 +456,7 @@ def moe_cuda_graph(
         from vllm.platforms import current_platform
         current_platform.seed_everything(seed)
 
-        device="cuda:"+str(device_id)   
+        device="cuda:"+str(device_id)
         x = torch.randn(num_tokens, hidden_size, device=device, dtype=dtype)
         w1_scale = None
         w2_scale = None
@@ -482,17 +482,17 @@ def moe_cuda_graph(
         # w1_scale = (torch.randn((256,math.ceil(shard_intermediate_size/block_quant_shape[0]), math.ceil(hidden_size/block_quant_shape[1])),device=device,
         #                     dtype=torch.float32))
         # w2_scale = (torch.randn((256,math.ceil(hidden_size/block_quant_shape[0]), math.ceil((shard_intermediate_size // 2)/block_quant_shape[1])),device=device,
-        #                     dtype=torch.float32))   
+        #                     dtype=torch.float32))
         w1_scale = (torch.randn((num_experts, shard_intermediate_size ,1),
                            dtype=torch.float32, device=device))
         w2_scale = (torch.randn((num_experts, hidden_size, 1),
-                           dtype=torch.float32, device=device))    
-           
+                           dtype=torch.float32, device=device))
+
         gating_output = torch.randn(num_iters,
                                 num_tokens,
                                 num_experts,
                                 device=device,
-                                dtype=torch.float32) 
+                                dtype=torch.float32)
         def prepare(i: int):
             input_gating.copy_(gating_output[i])
 
@@ -515,7 +515,7 @@ def moe_cuda_graph(
                             a2_scale=a2_scale,
                             block_shape=block_quant_shape,
                             config=None)
-        
+
         run()
         torch.cuda.synchronize()
 
@@ -538,7 +538,7 @@ def moe_cuda_graph(
         for i in range(num_iters):
             prepare(i)
             torch.cuda.synchronize()
-            
+
             start_event.record()
             graph.replay()
             end_event.record()
@@ -566,7 +566,7 @@ def fuse_moe_correctness(
         from vllm.platforms import current_platform
         current_platform.seed_everything(seed)
 
-        # device="cuda:"+str(device_id)   
+        # device="cuda:"+str(device_id)
         # x = torch.randn(num_tokens, hidden_size, device=device, dtype=dtype)
         # w1_scale = None
         # w2_scale = None
@@ -592,11 +592,11 @@ def fuse_moe_correctness(
         # # w1_scale = (torch.randn((256,math.ceil(shard_intermediate_size/block_quant_shape[0]), math.ceil(hidden_size/block_quant_shape[1])),device=device,
         # #                     dtype=torch.float32))
         # # w2_scale = (torch.randn((256,math.ceil(hidden_size/block_quant_shape[0]), math.ceil((shard_intermediate_size // 2)/block_quant_shape[1])),device=device,
-        # #                     dtype=torch.float32))    
+        # #                     dtype=torch.float32))
         # w1_scale = (torch.randn((num_experts, shard_intermediate_size ,1),
         #                    dtype=torch.float32))
         # w2_scale = (torch.randn((num_experts, hidden_size, 1),
-        #                    dtype=torch.float32))      
+        #                    dtype=torch.float32))
 
         # input_gating = torch.randn(num_tokens, num_experts, device=device, dtype=torch.float32)
 
@@ -615,7 +615,7 @@ def fuse_moe_correctness(
         # #                     a2_scale=a2_scale,
         # #                     block_shape=block_quant_shape,
         # #                     config=None)
-        
+
         # triton_output = fused_moe_impl_test(x,
         #                     w1,
         #                     w2,
@@ -631,7 +631,7 @@ def fuse_moe_correctness(
         #                     a2_scale=a2_scale,
         #                     block_shape=block_quant_shape,
         #                     config=None)
-        
+
         # torch_output = torch_moe_impl(x,
         #                     w1,
         #                     w2,
@@ -647,10 +647,10 @@ def fuse_moe_correctness(
         #                     a2_scale=a2_scale,
         #                     block_shape=block_quant_shape,
         #                     config=None)
-        # torch.cuda.synchronize()         
+        # torch.cuda.synchronize()
         # print(f"Processing batch_size={num_tokens}")
         # if (torch.mean(torch.abs(triton_output.to(torch.float32) - torch_output.to(torch.float32))) / torch.mean(torch.abs(torch_output.to(torch.float32)))) < 0.02:
-        #     print("triton all精度检查合格") 
+        #     print("triton all精度检查合格")
         # else:
         #     print("triton 精度检查不合格！！！")
 
@@ -670,17 +670,17 @@ def fuse_moe_correctness_preprocess(
         seed: int=0,
         device_id: int=0,
     ) -> tuple[dict[str, int], float]:
-    
+
     mode_ranges = [mode for mode in block_m_configs.keys()]
     gemm1_compare_failed_list = []
     gemm2_compare_failed_list = []
     device="cuda:"+str(device_id)
-    
+
     for mode in mode_ranges:
         mode0 = mode
         mode1 = mode
         mode_list=[mode0,mode1]
-        
+
         #  =========================================== 准备 gemm1 相关数据 =============================================
         x = torch.randn((num_tokens, hidden_size),device=device,dtype=torch.bfloat16) / 10 # [256*8, 7168] (bf16)
         w1 = torch.randn((num_experts, shard_intermediate_size, hidden_size), device=x.device, dtype=torch.bfloat16)
@@ -696,7 +696,7 @@ def fuse_moe_correctness_preprocess(
         score = torch.randn((num_tokens, num_experts), device=device, dtype=torch.float32)
 
         topk_weights, topk_ids = grouped_topk(x, score, topk, True, 8, 4)
-        
+
         # input,weight13,weight2,weight13_scale,weight2_scale,topk_weights,topk_ids=_fused_moe_helper(m=num_tokens,n=shard_intermediate_size,k=hidden_size,n2=hidden_size,k2=(shard_intermediate_size // 2),topk=topk,E=num_experts,device=device,block_size=None,out_dtype=dtype)
         # # triton moe: output
         # output=fused_experts_impl_int8_preprocess(hidden_states=input,
@@ -714,7 +714,7 @@ def fuse_moe_correctness_preprocess(
         #                                             mode=mode_list,
         #                                             gemm1_compare_list=gemm1_compare_failed_list,
         #                                             gemm2_compare_list=gemm2_compare_failed_list)
-        output = fused_moe_w16a16_valid(                      
+        output = fused_moe_w16a16_valid(
                                         x,
                                         w1,
                                         w2,
@@ -727,7 +727,7 @@ def fuse_moe_correctness_preprocess(
                                         gemm1_compare_failed_list=gemm1_compare_failed_list,
                                         gemm2_compare_failed_list=gemm2_compare_failed_list,
                                         impl_status_tune = False)
-    
+
     print("gemm1_compare_failed_list: ", gemm1_compare_failed_list)
     print("gemm2_compare_failed_list: ", gemm2_compare_failed_list)
     return gemm1_compare_failed_list, gemm2_compare_failed_list
@@ -746,14 +746,14 @@ def benchmark_config_profile(
         num_iters: int=100,
         block_quant_shape: List[int] = None,
 ) -> float:
-    
-    device="cuda"    
+
+    device="cuda"
     x = torch.randn(num_tokens, hidden_size, device=device, dtype=dtype)
     w1_scale = None
     w2_scale = None
     a1_scale = None
     a2_scale = None
-    
+
     w1 = torch.randint(-127,
                         127, (
                             num_experts,
@@ -773,13 +773,13 @@ def benchmark_config_profile(
     w1_scale = (torch.randn((256,math.ceil(num_experts/block_quant_shape[0]), math.ceil(hidden_size/block_quant_shape[1])), device=device,
                         dtype=torch.float32))
     w2_scale = (torch.randn((256,math.ceil(hidden_size/block_quant_shape[0]), math.ceil((shard_intermediate_size // 2)/block_quant_shape[1])), device=device,
-                        dtype=torch.float32))    
+                        dtype=torch.float32))
 
     gating_output = torch.randn(num_iters,
                             num_tokens,
                             num_experts,
                             device=device,
-                            dtype=torch.float32) 
+                            dtype=torch.float32)
     def prepare(i: int):
         input_gating.copy_(gating_output[i])
 
@@ -824,11 +824,11 @@ def benchmark_config_profile(
 
     latencies: List[float] = []
     with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,torch.profiler.ProfilerActivity.CUDA,],record_shapes=True,with_stack=True) as prof:
-        
+
         for i in range(num_iters):
             prepare(i)
             torch.cuda.synchronize()
-            
+
             start_event.record()
             #graph.replay()from
             run()
@@ -844,7 +844,7 @@ def benchmark_config_profile(
     return avg
 
 def get_rocm_tuning_space(use_fp16):
-    
+
     mode_range = [mode for mode in blockM_all_configs.keys()]
     param_ranges = {
         "MODE": mode_range,
@@ -882,7 +882,7 @@ def get_configs_compute_bound(use_fp16,
     for config_values in product(*values):
         config = dict(zip(keys, config_values))
         configs.append(config)
-        
+
     return configs
 
 
@@ -956,14 +956,14 @@ class BenchmarkWorker:
         block_quant_shape: List[int] = None,
         use_deep_gemm: bool = False,
     ) -> tuple[dict[str, int], float]:
-        
+
         kernel_time = moe_cuda_graph(num_tokens, num_experts,
                                        shard_intermediate_size, hidden_size,
                                        topk, dtype, use_fp8_w8a8,
                                        use_int8_w8a16, use_int8_w8a8, block_quant_shape=block_quant_shape,seed=self.seed, device_id=self.device_id)
 
         return kernel_time
-    
+
     def correctness(
         self,
         num_tokens: int,
@@ -978,7 +978,7 @@ class BenchmarkWorker:
         block_quant_shape: List[int] = None,
         use_deep_gemm: bool = False,
     ) -> tuple[dict[str, int], float]:
-        
+
         fuse_moe_correctness(num_tokens, num_experts,
                                        shard_intermediate_size, hidden_size,
                                        topk, dtype, use_fp8_w8a8,
@@ -1007,7 +1007,7 @@ class BenchmarkWorker:
         best_time = float("inf")
         from vllm.platforms import current_platform
         current_platform.seed_everything(self.seed)
-            
+
         mode_pattern = "MODE"
         block_configs = blockM_all_configs
 
@@ -1016,8 +1016,8 @@ class BenchmarkWorker:
                                                                         topk, dtype, use_fp8_w8a8,
                                                                         use_int8_w8a16, use_int8_w8a8, block_quant_shape=block_quant_shape,
                                                                         block_m_configs = block_configs,seed=self.seed, device_id=self.device_id)
-        
-        
+
+
         if current_platform.is_rocm():
             is_fp16 = is_fp16 = not (use_fp8_w8a8 or use_int8_w8a16 or use_int8_w8a8)
             search_space_kernel0 = prune_rocm_search_space_kernel0(num_tokens,
@@ -1031,7 +1031,7 @@ class BenchmarkWorker:
 
         # import pdb
         # pdb.set_trace()
-        
+
         block_m_range = [16,32,64,128]
         if num_tokens <= 32:
             block_m_range = [16,32]
@@ -1039,13 +1039,13 @@ class BenchmarkWorker:
             block_m_range = [16,32,64]
         elif num_tokens <= 128:
             block_m_range = [16,32,64,128]
-        
+
         with torch.cuda.device(self.device_id):
-            
+
             for block_m in tqdm(block_m_range, desc="Processing block_m......"):
                 time_kernel0 = float('inf')
                 config_kernel0 = None
-                
+
                 time_kernel1 = float('inf')
                 config_kernel1 = None
                 for config0 in search_space_kernel0:
@@ -1097,25 +1097,25 @@ class BenchmarkWorker:
                         continue
                     if kernel_time < time_kernel1:
                         time_kernel1 = kernel_time
-                        config_kernel1 = config1                     
+                        config_kernel1 = config1
                 now = datetime.now()
                 print(f"{now.ctime()}] Completed tuning for batch_size={num_tokens}")
                 if (time_kernel0 + time_kernel1) < best_time:
                     best_time = time_kernel0 + time_kernel1
                     best_config_kernel0 = config_kernel0
                     best_config_kernel1 = config_kernel1
-        
-        if best_config_kernel0 and best_config_kernel1:     
+
+        if best_config_kernel0 and best_config_kernel1:
             best_config_kernel0['MODE'] = best_config_kernel0.pop(mode_pattern)
             best_config_kernel1['MODE'] = best_config_kernel1.pop(mode_pattern)
 
         best_config_kernel0['DELTA'] = 1
-        best_config_kernel1['DELTA'] = int(best_config_kernel0['BLOCK_SIZE_M']/best_config_kernel1['BLOCK_SIZE_M'])           
+        best_config_kernel1['DELTA'] = int(best_config_kernel0['BLOCK_SIZE_M']/best_config_kernel1['BLOCK_SIZE_M'])
         return best_config_kernel0, best_config_kernel1
 
 
 def sort_config(config: BenchmarkConfig) -> BenchmarkConfig:
-    
+
     config_first_stage, config_second_stage = config
     config = config_first_stage
     first_stage_dict =  {
@@ -1130,7 +1130,7 @@ def sort_config(config: BenchmarkConfig) -> BenchmarkConfig:
         **({"matrix_instr_nonkdim": config["matrix_instr_nonkdim"]} if "matrix_instr_nonkdim" in config else {}),
         **({"kpack": config["kpack"]} if "kpack" in config else {}),
     }
-    
+
     config = config_second_stage
     second_stage_dict =  {
         "BLOCK_SIZE_M": config["BLOCK_SIZE_M"],
@@ -1144,7 +1144,7 @@ def sort_config(config: BenchmarkConfig) -> BenchmarkConfig:
         **({"matrix_instr_nonkdim": config["matrix_instr_nonkdim"]} if "matrix_instr_nonkdim" in config else {}),
         **({"kpack": config["kpack"]} if "kpack" in config else {}),
     }
-    
+
     configs_tuple = (first_stage_dict, second_stage_dict)
 
     return configs_tuple
@@ -1164,7 +1164,7 @@ def save_single_config(batch_size: int, first_stage_config: BenchmarkConfig, sec
         filename = f"MOE_W16A16_CUDA_{N}_{K}_{gfx_version.lower()}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
     else:
         raise ValueError(f"Invalid moe_ep_size: {moe_ep_size}")
-    
+
     try:
         with open(filename, 'r') as file:
             config_infos = json.load(file)
@@ -1175,16 +1175,16 @@ def save_single_config(batch_size: int, first_stage_config: BenchmarkConfig, sec
     except FileNotFoundError:
         config_infos = {}
         config_info = {}
-    
+
     # 更新当前batch_size的配置
     config_info[f"{batch_size}"] = first_stage_config
     config_infos[f"{N}_{K}"] = config_info
-    
+
     # 保存文件
     with open(filename, 'w') as file:
         json.dump(config_infos, file, indent=4)
     print(f"Saved first stage config for batch_size={batch_size} to {filename}")
-    
+
     # 保存第二阶段配置
     N = hidden_size
     K = shard_intermediate_size // 2
@@ -1194,7 +1194,7 @@ def save_single_config(batch_size: int, first_stage_config: BenchmarkConfig, sec
         filename = f"MOE_W16A16_CUDA_{N}_{K}_{gfx_version.lower()}_{torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count}.json"
     else:
         raise ValueError(f"Invalid moe_ep_size: {moe_ep_size}")
-    
+
     try:
         with open(filename, 'r') as file:
             config_infos = json.load(file)
@@ -1205,11 +1205,11 @@ def save_single_config(batch_size: int, first_stage_config: BenchmarkConfig, sec
     except FileNotFoundError:
         config_infos = {}
         config_info = {}
-    
+
     # 更新当前batch_size的配置
     config_info[f"{batch_size}"] = second_stage_config
     config_infos[f"{N}_{K}"] = config_info
-    
+
     # 保存文件
     with open(filename, 'w') as file:
         json.dump(config_infos, file, indent=4)
@@ -1225,14 +1225,14 @@ def get_weight_block_size_safety(config, default_value=None):
 
 def main(args: argparse.Namespace):
     print(args)
-    
+
     moe_ep_size = args.moe_ep_size
     tp_size = args.tp_size
     if moe_ep_size > 1:
         tp_size = tp_size // moe_ep_size
-    
+
     block_quant_shape = None
-    
+
     # config = AutoConfig.from_pretrained(
     #     args.model, trust_remote_code=args.trust_remote_code)
     # if config.architectures[0] == "DbrxForCausalLM":
@@ -1277,7 +1277,7 @@ def main(args: argparse.Namespace):
     # # block_quant_shape = [128, 128]
     # block_quant_shape = None
     # hidden_size = config.hidden_size
-    dtype = torch.bfloat16 if current_platform.is_rocm() else config.torch_dtype
+    dtype = torch.bfloat16
     use_fp8_w8a8 = False
     use_int8_w8a16 = False
     use_int8_w8a8 = False
@@ -1296,27 +1296,27 @@ def main(args: argparse.Namespace):
     # E = 256
     # shard_intermediate_size=256
     # hidden_size=7168
-    
+
     # ## deepseek-r1-tp8
     # E = 256
     # shard_intermediate_size=512
     # hidden_size=7168
-    
+
     # # ## deepseek-671b-tp4
     # E = 256
     # shard_intermediate_size=1024
     # hidden_size=7168
-    
+
     # ## deepseek-671b-tp2
     # E = 256
     # shard_intermediate_size=2048
     # hidden_size=7168
-    
+
     # ## deepseek-671b-tp1
     # E = 256
     # shard_intermediate_size=4096
     # hidden_size=7168
-    
+
     # E = 128
     # # #qwen3-30b-A3B-tp1
     # shard_intermediate_size=1536
@@ -1344,22 +1344,22 @@ def main(args: argparse.Namespace):
     if args.batch_size is None:
         batch_sizes = [
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 6144, 8192, 16384
-            # 1, 2, 4, 8, 16, 32, 
+            # 1, 2, 4, 8, 16, 32,
             # 64, 128,
-            # 256, 512, 1024, 2048, 
+            # 256, 512, 1024, 2048,
             # 4096, 6144, 8192, 16384
             128,
-            
-            # 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 
-            # 144, 160, 176, 192, 208, 224, 240, 256, 
-            # 288, 320, 352, 384, 416, 448, 480, 512, 
 
-            # 640, 768, 896, 1024, 
+            # 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128,
+            # 144, 160, 176, 192, 208, 224, 240, 256,
+            # 288, 320, 352, 384, 416, 448, 480, 512,
+
+            # 640, 768, 896, 1024,
             # 1152, 1280, 1408, 1536, 1664, 1792, 1920, 2048,
             # 2176, 2304, 2432, 2560, 2688, 2816, 2944, 3072,
             # 3200, 3328, 3456, 3584, 3712, 3840, 3968, 4096,
             # 6144, 8192, 10240, 12288, 14336, 16384
-            
+
             # 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048,
             # 1, 2, 4, 8, 16, 32, 64, 8192, 16384, 32768
             # 4096, 6144, 8192, 16384, 32768
@@ -1409,17 +1409,17 @@ def main(args: argparse.Namespace):
             task_refs.append(task_ref)
             batch_size_to_ref[task_ref] = batch_size
             worker_idx = (worker_idx + 1) % num_gpus
-        
+
         # 逐个获取结果并立即保存（增量保存）
         best_configs_first_stage = {}
         best_configs_second_stage = {}
         completed_count = 0
-        
+
         while task_refs:
             # 等待至少一个任务完成
             ready_refs, remaining_refs = ray.wait(task_refs, num_returns=1, timeout=None)
             task_refs = remaining_refs
-            
+
             for ref in ready_refs:
                 try:
                     config = ray.get(ref)
@@ -1427,7 +1427,7 @@ def main(args: argparse.Namespace):
                     first_stage_config, second_stage_config = config
                     best_configs_first_stage[batch_size] = first_stage_config
                     best_configs_second_stage[batch_size] = second_stage_config
-                    
+
                     # 立即保存当前结果
                     save_single_config(
                         batch_size, first_stage_config, second_stage_config,
@@ -1441,7 +1441,7 @@ def main(args: argparse.Namespace):
                     batch_size = batch_size_to_ref[ref]
                     print(f"Error processing batch_size={batch_size}: {e}")
                     # 继续处理其他任务
-        
+
         end = time.time()
         print(f"Tuning took {end - start:.2f} seconds")
         print(f"All {len(batch_sizes)} batch sizes have been tuned and saved")
@@ -1451,7 +1451,7 @@ def main(args: argparse.Namespace):
             [(batch_size, E, shard_intermediate_size, hidden_size, topk, dtype,
               use_fp8_w8a8, use_int8_w8a16, use_int8_w8a8, block_quant_shape, use_deep_gemm)
              for batch_size in batch_sizes])
-        
+
         print(f"Correctness Done!")
     else:
         outputs = _distribute(
@@ -1462,12 +1462,12 @@ def main(args: argparse.Namespace):
 
         _w13n=[]
         _w13k=[]
-        
+
         _w2n=[]
         _w2k=[]
         _m=[]
         _total_time=[]
-        
+
         for batch_size, kernel_time in zip(batch_sizes, outputs):
             _w13n.append(shard_intermediate_size)
             _w13k.append(hidden_size)
@@ -1476,7 +1476,7 @@ def main(args: argparse.Namespace):
             _m.append(batch_size)
             _total_time.append(kernel_time)
             print(f"Batch size: {batch_size}, Kernel time: {kernel_time:.2f} us")
-        
+
         df = pd.DataFrame({'m':_m,'w13n':_w13n,'w13k':_w13k,'w2n':_w2n,'w2k':_w2k,'moe 量化算子总耗时(us)':_total_time})
         # 将 DataFrame 写入 Excel 文件
         df.to_excel('moegemmoutput.xlsx', index=False)

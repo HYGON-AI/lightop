@@ -11,7 +11,7 @@ import torch
 from lightop.moe import moe_groupgemm_marlin_w4a8
 from lightop.gemm_ops import m_grouped_w8a8_gemm_nt_masked
 from lightop.moe import get_moe_groupgemm_marlin_config_w4a8
-import ast  
+import ast
 from lightop.quant import (
     per_token_group_quant_int8,
     per_token_quant_int8,
@@ -58,14 +58,14 @@ def native_w8a8_perChannel_batch_matmul(q_a1_all, weight13, qa1_scale_all, w13_s
     C = C.to(output_dtype)
 
     return C
-           
+
 def deepgemm_masked_impl_w8a8_ep_correctness(hidden_states, weight13, weight2, w13_scale, w2_scale, masked_m, expected_m_per_group):
-    
+
     # w13:[num_experts/ep, N, K // 2] [16, 4096, 3584]
     # w2: [num_experts/ep, K, N//2//2] [16, 7168, 1024]
     # w13_scale:[num_experts/ep, N, 1] [16, 4096, 1]
     # w2_scale: [num_experts/ep, K, 1] [16, 7168, 1]
-    
+
     outputs = []
     start_idx = 0
     # -------- 处理 gemm1 权重矩阵 ------------------
@@ -74,7 +74,7 @@ def deepgemm_masked_impl_w8a8_ep_correctness(hidden_states, weight13, weight2, w
         w1_marlin_in = weight8bit_nt_kpack2_marlin(weight13[i])
         w1_marlin_list.append(w1_marlin_in)
     weight13_marlin = torch.stack(w1_marlin_list, dim=0)
-    
+
     # -------- 处理 gemm2 权重矩阵 ------------------
     # w2_marlin_list = []
     # for i in range(weight2.shape[0]):
@@ -109,79 +109,57 @@ def deepgemm_masked_impl_w8a8_ep_correctness(hidden_states, weight13, weight2, w
 
     dtype = hidden_states.dtype
     config1, config2, status = get_moe_groupgemm_marlin_config_w4a8(E, M, N1, K1, N2, K2, device_name, num_cus, dtype, None, None)
-        
+
     problem_size = masked_m
     tensor_problem_size = torch.tensor(problem_size, dtype=torch.int32, device=hidden_states.device)
     torch.cuda.synchronize()
 
-    m_grouped_w8a8_gemm_nt_masked((q_a1_all, qa1_scale_all), 
+    m_grouped_w8a8_gemm_nt_masked((q_a1_all, qa1_scale_all),
                                   (weight13_marlin, w13_scale),
                                     gemm1_out_cuda,
-                                    tensor_problem_size, 
+                                    tensor_problem_size,
                                     expected_m_per_group,
                                     )
     # torch.cuda.synchronize()
-    
+
     if not (torch.allclose(inter_out_gemm1[:,0:math.floor(expected_m_per_group * 0.7),:], gemm1_out_cuda[:,0:math.floor(expected_m_per_group * 0.7),:], rtol=1e-2, atol=1e-2)):
         print("error moe_groupgemm_w4a8 gemm1 精度检查不合格！！！")
         print("rocblas:", inter_out_gemm1)
-        # torch.set_printoptions(profile="full") 
+        # torch.set_printoptions(profile="full")
         print("asm:",gemm1_out_cuda)
         diff_indices = torch.where(inter_out_gemm1 != gemm1_out_cuda)[0]
         diff_indices = diff_indices.view(-1, inter_out_gemm1.shape[1])
         print("不同元素的索引:", diff_indices)
-        # torch.set_printoptions(profile="full")  
+        # torch.set_printoptions(profile="full")
         # diff_mask = inter_out_gemm1_out_ref != gemm1_out_cuda
         # diff_indices = torch.nonzero(diff_mask, as_tuple=False)
         # print("存在差异的坐标与值如下：")
         # for idx in diff_indices:
         #     i, j = idx.tolist()
         #     print(f"坐标 ({i}, {j}): rocblas={inter_out_gemm1_out_ref[i, j]}, asm={gemm1_out_cuda[i, j]}")
-        # fasm = open('asm_output.txt', 'w')   
+        # fasm = open('asm_output.txt', 'w')
         # print(f'asm_output: {gemm1_out_cuda}', file=fasm)
         # fasm.close
-        # ftorch = open('torch_output.txt', 'w')   
+        # ftorch = open('torch_output.txt', 'w')
         # print(f'torch_output: {inter_out_gemm1_out_ref}', file=ftorch)
         # ftorch.close
     else:
         print("success moe_groupgemm_w4a8 gemm1 精度检查合格")
     return
-    # gemm2
-    moe_groupgemm_marlin_w4a8(act_out_q, 
-                                weight2_marlin, 
-                                gemm2_out_cuda,
-                                act_out_s, 
-                                w2_scale,
-                                tensor_problem_size, 
-                                tensor_expert_offsets,
-                                config2)
-    if not (torch.allclose(expert_output, gemm2_out_cuda, rtol=1e-2, atol=1e-2)):
-        print("error moe_groupgemm_w4a8 gemm2 精度检查不合格！！！")
-        # torch.set_printoptions(profile="full")  
-        # fasm = open('asm_output.txt', 'w')   
-        # print(f'asm_output: {out_cuda}', file=fasm)
-        # fasm.close
-        # ftorch = open('torch_output.txt', 'w')   
-        # print(f'torch_output: {inter_out_gemm1_out_ref}', file=ftorch)
-        # ftorch.close
-    else:
-        print("success moe_groupgemm_w4a8 gemm2 精度检查合格")
-    
-    return expert_output
 
 
 
 def deepgemm_masked_impl_w8a8_ep_benchmark(hidden_states, weight13, w13_scale, masked_m, expected_m_per_group):
-    
 
-    
+
+
     # -------- 处理 gemm1 权重矩阵 ------------------
     w1_marlin_list = []
     for i in range(weight13.shape[0]):
         w1_marlin_in = weight8bit_nt_kpack2_marlin(weight13[i])
         w1_marlin_list.append(w1_marlin_in)
     weight13_marlin = torch.stack(w1_marlin_list, dim=0)
-    
+
 
 
     w13 = weight13.to(torch.int32)
@@ -207,33 +185,33 @@ def deepgemm_masked_impl_w8a8_ep_benchmark(hidden_states, weight13, w13_scale, m
     K2 = N1 // 4
 
     dtype = hidden_states.dtype
-        
+
     # problem_size = masked_m
     # tensor_problem_size = torch.tensor(problem_size, dtype=torch.int32, device=hidden_states.device)
     # warm up
 
     for _ in range(10):
-        m_grouped_w8a8_gemm_nt_masked((q_a1_all, qa1_scale_all), 
+        m_grouped_w8a8_gemm_nt_masked((q_a1_all, qa1_scale_all),
             (weight13_marlin, w13_scale),
             gemm1_out_cuda,
-            masked_m, 
+            masked_m,
             expected_m_per_group,
             )
     # torch.cuda.synchronize()
 
     # gemm1
     asm_gemm1_cost = triton.testing.do_bench(
-            lambda: m_grouped_w8a8_gemm_nt_masked((q_a1_all, qa1_scale_all), 
+            lambda: m_grouped_w8a8_gemm_nt_masked((q_a1_all, qa1_scale_all),
             (weight13_marlin, w13_scale),
             gemm1_out_cuda,
-            masked_m, 
+            masked_m,
             expected_m_per_group,
             ), quantiles=None, return_mode="mean")*1000
 
-    
+
     # torch.cuda.synchronize()
-    
-    
+
+
     return asm_gemm1_cost
 
 def _fused_moe_helper(m: int,
@@ -251,7 +229,7 @@ def _fused_moe_helper(m: int,
     weight13 = to_int8(torch.randn((E,n ,k), device=device) )
 
     weight13_scale = (torch.randn((E,n,1), device=device, dtype=torch.float32))
-    
+
     # cuts = torch.randint(1, m + 1, (E - 1,))
     # print("cuts:", cuts)
     # cuts, _ = torch.sort(cuts)
@@ -269,27 +247,27 @@ def main():
     # PyTorch CPU随机种子
     seed = 0
     torch.manual_seed(seed)
-    
+
     # PyTorch GPU随机种子
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)  # 多GPU情况
     # 创建解析器对象
 
 
-    
+
     m_list=4096
     n_list=[4096, 7168]
     k_list=[7168, 2048]
-    
+
     # m_list=[8192]
-    E=16 
+    E=16
     expected_m_per_group_list=[32,64,128,256,512,1024]
     #expected_m_per_group_list = [256]
     out_dtype=torch.bfloat16
-    
+
     # n_list_1=n1_list #[256,12]
     # k_list_1=n2_list #[7168,7168]
-    
+
     # n_list_2=n2_list #[7168,7168]
     # k_list_2=k_list # [128,256]
     # block_size=None
@@ -322,14 +300,14 @@ def main():
             computes = 2 * valid_m * n_list[i] * k_list[i]
             tflops_asm = computes / (asm_cost_gemm / 1e6) / 1e12
 
-            data_bytes = (valid_m * k_list[i] + k_list[i] * n_list[i] * E + valid_m * n_list[i] * 2)# bfloat16)   
+            data_bytes = (valid_m * k_list[i] + k_list[i] * n_list[i] * E + valid_m * n_list[i] * 2)# bfloat16)
             bandwidth_asm = data_bytes / (asm_cost_gemm / 1e6) / 1e9
 
-            
+
             print("------------------------------------------------------")
             print("deepgemm asm cost: {:.2f} us, {:.2f} TFlops".format(asm_cost_gemm, tflops_asm))
             print("deepgemm asm bandwidth: {:.2f} GB/s".format(bandwidth_asm))
-            print("------------------------------------------------------") 
+            print("------------------------------------------------------")
 
 
             df_tflops.append(tflops_asm)
@@ -339,10 +317,10 @@ def main():
     df = pd.DataFrame({'E':df_E, 'm':df_m,'n':df_n,'k':df_k,'expected_m':df_expected_m,'asm deepgemm 耗时(us)': deepgemm_asm_costs,'asm deepgemm TFlops':df_tflops,'asm deepgemm Bandwidth(GB/s)':df_bandwidth})
         # 将 DataFrame 写入 Excel 文件
     excel_name="DeepGEMM_masked_groupgemm_w8a8.xlsx"
-        
+
     df.to_excel(excel_name, index=False)
 
-    print("表格已保存到 {}文件中。".format(excel_name)) 
+    print("表格已保存到 {}文件中。".format(excel_name))
 
 if __name__ == "__main__":
     main()

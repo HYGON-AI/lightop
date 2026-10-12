@@ -3,6 +3,7 @@
 
 import torch
 import triton
+from lightop.moe import moe_fused_gate
 from lightop import op as ops
 
 
@@ -144,7 +145,7 @@ def check_correctness_once(
     num_expert_group: int,
     topk_group: int,
     topk: int,
-    n_share_experts_fusion: int, 
+    n_share_experts_fusion: int,
     routed_scaling_factor: float,
     rtol=1e-6,
     atol=1e-6,
@@ -251,7 +252,7 @@ def run_correctness_suite():
             num_expert_group=ng,
             topk_group=tg,
             topk=tk,
-            n_share_experts_fusion=nshar, 
+            n_share_experts_fusion=nshar,
             routed_scaling_factor=rout
         )
         results.append(

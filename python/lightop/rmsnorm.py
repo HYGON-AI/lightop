@@ -58,7 +58,7 @@ def gemma_rmsnorm(
         x: torch.Tensor, weight: torch.Tensor,
         variance_epsilon: float, out: torch.Tensor = None) -> torch.Tensor:
     if out is None:
-        out = x  
+        out = x
     op.gemma_rmsnorm(
         out,
         x,
@@ -351,12 +351,12 @@ def gemma_rms_norm_per_token_fp8_quant(
         output = torch.empty(input.shape, device=input.device, dtype=torch.float8_e4m3fn)
     else:
         output = torch.empty(input.shape, device=input.device, dtype=torch.float8_e5m2)
-        
+
     scales = torch.empty((input.numel() // input.shape[-1], 1),
                         device=input.device,
                         dtype=torch.float32)
 
-   
+
     op.gemma_rms_norm_fp8_quant(output.view(torch.uint8), input, weight, scales, epsilon,
                                 residual, update_input, fp8type)
     return output, scales
@@ -369,7 +369,7 @@ def rms_norm_per_token_quant(
     update_input: bool = False,
     limit: float = -1.0
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-  
+
     output = torch.empty(input.shape, device=input.device, dtype=dtype)
     scales = torch.empty((input.numel() // input.shape[-1], 1),
                          device=input.device,
@@ -383,7 +383,7 @@ def rms_norm_per_token_quant(
         if limit != -1.0:
             raise ValueError("limit is only supported when dtype is torch.int8")
         fp8type = 0 if dtype == torch.float8_e4m3fn else 1
-        op.rms_norm_fp8_quant(output.view(torch.uint8), input, weight, 
+        op.rms_norm_fp8_quant(output.view(torch.uint8), input, weight,
                               scales, epsilon,
                               residual, update_input, fp8type)
     else:
@@ -518,14 +518,14 @@ def fuse_rmsnorm_rope_quant_qkv(
 
 def fuse_fill_rms_x2_concat(
     hidden_states_fuse,
-    positions, 
-    inputs_embeds, 
-    previous_hidden_states, 
-    weight_inputs_embeds, 
-    weight_previous_hidden_states, 
+    positions,
+    inputs_embeds,
+    previous_hidden_states,
+    weight_inputs_embeds,
+    weight_previous_hidden_states,
     epsilon)->None:
-    assert(inputs_embeds.shape == previous_hidden_states.shape, "inputs_embeds and previous_hidden_states must have the same shape")
-    assert(hidden_states_fuse.shape[-1] == inputs_embeds.shape[-1] * 2, "hidden_states_fuse and inputs_embeds must have the same shape")
-    assert(inputs_embeds.shape[-1]<=16384, "inputs_embeds size must be less than 16384")
+    assert inputs_embeds.shape == previous_hidden_states.shape, "inputs_embeds and previous_hidden_states must have the same shape"
+    assert hidden_states_fuse.shape[-1] == inputs_embeds.shape[-1] * 2, "hidden_states_fuse and inputs_embeds must have the same shape"
+    assert inputs_embeds.shape[-1] <= 16384, "inputs_embeds size must be less than 16384"
     op.fuse_fill_rms_x2_concat(hidden_states_fuse,positions, inputs_embeds, previous_hidden_states, weight_inputs_embeds, weight_previous_hidden_states, epsilon)
     return

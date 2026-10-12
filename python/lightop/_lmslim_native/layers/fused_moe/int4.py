@@ -18,6 +18,8 @@ import triton.language as tl
 #     moe_align_block_size)
 from ...vllm_compat.moe_align_block_size import moe_align_block_size
 from ...vllm_compat.fused_moe_cache import get_moe_cache
+from ..gemm.int8_utils import per_token_group_quant_int8, per_token_quant_int8
+from ..gemm.fp8_utils import per_token_group_quant_fp8
 from lightop import envs as lsenvs
 # from vllm.platforms import current_platform
 # from vllm_hcu.platforms import HCUPlatform as current_platform
@@ -35,12 +37,12 @@ device_name = torch.cuda.get_device_properties(0).name
 @triton.jit
 def fused_moe_kernel_awq(
         # Pointers to matrices
-        a_ptr, # [4, 7168] 
+        a_ptr, # [4, 7168]
         b_ptr, # [256, 512, 3584]
         c_ptr, # (8, 8, 512)
         b_scale_ptr, # (256, 512, 56)
         b_zp_ptr, # (256, 256, 56)
-        topk_weights_ptr, 
+        topk_weights_ptr,
         sorted_token_ids_ptr, # [0, 1, 2, 3, 4]
         expert_ids_ptr,
         num_tokens_post_padded_ptr,
@@ -101,18 +103,18 @@ def fused_moe_kernel_awq(
     offs_k = tl.arange(0, BLOCK_SIZE_K) # 0, 1, 2, ...... , 127 # # [block_k]
     offs_k2 = tl.arange(0, BLOCK_SIZE_K // 2) # 0, 1, 2, ...... , 127 # # [block_k]
     a_ptrs = a_ptr + (offs_token[:, None] // top_k * stride_am +
-                      offs_k[None, :] * stride_ak) # [block_m, block_k] 
+                      offs_k[None, :] * stride_ak) # [block_m, block_k]
 
     off_experts = tl.load(expert_ids_ptr + pid_m)
 
     if use_int4_w4a16:
-        # [0, 1, 2, ...... , 126, 127] --> [0, 0, 1, 1 ...... , 63, 63] 
-        # [128, 129, 130, ...... , 254, 255] --> [64, 64, 65, 65 ...... , 127, 127] 
-        
+        # [0, 1, 2, ...... , 126, 127] --> [0, 0, 1, 1 ...... , 63, 63]
+        # [128, 129, 130, ...... , 254, 255] --> [64, 64, 65, 65 ...... , 127, 127]
+
         # b_ptrs = b_ptr + off_experts * stride_be + \
         #     (offs_k[:, None] // 2) * stride_bk + offs_bn[None, :] * stride_bn
         b_ptrs = b_ptr + off_experts * stride_be + \
-            offs_bn[:, None] * stride_bn + (offs_k2[None, :]) * stride_bk 
+            offs_bn[:, None] * stride_bn + (offs_k2[None, :]) * stride_bk
         # tl.device_print("stride_bn",stride_bsn)>1
         # tl.device_print("stride_bk",stride_bk)=1
         b_shifter = (offs_k[:, None] % 2) * 4  # 0, 4
@@ -228,7 +230,7 @@ def invoke_fused_moe_kernel(A: torch.Tensor,
                  A.shape[0] * top_k * config['BLOCK_SIZE_M'])
     grid = lambda META: (triton.cdiv(EM, META['BLOCK_SIZE_M']) * triton.cdiv(
         B.shape[1] if not use_nn_moe else B.shape[2], META['BLOCK_SIZE_N']), )
-        
+
     assert B_scale is not None and B_scale.ndim == 3
     assert B_zp is None or B_zp.ndim == 3
 
@@ -274,7 +276,7 @@ def get_config_file_name(E: int,
                          N: int,
                          dtype: Optional[str],
                          block_shape: Optional[List[int]] = None, use_nn_moe: Optional[bool] = False) -> str:
-    
+
     dtype_selector = "" if not dtype else f",dtype={dtype}"
     block_shape_selector = ("" if not block_shape or not all(block_shape) else
                             f",block_shape={block_shape}").replace(" ", "")
@@ -634,7 +636,7 @@ def fused_experts_impl_int4(hidden_states: torch.Tensor,
             use_int4_w4a16=use_int4_w4a16,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape)
-        
+
         sorted_token_ids, expert_ids, num_tokens_post_padded = (
             moe_align_block_size(curr_topk_ids, config['BLOCK_SIZE_M'],
                                 global_num_experts, expert_map, curr_hidden_states.shape[0]))
@@ -678,7 +680,7 @@ def fused_experts_impl_int4(hidden_states: torch.Tensor,
             use_int4_w4a16=use_int4_w4a16,
             per_channel_quant=per_channel_quant,
             block_shape=block_shape)
-                
+
         invoke_fused_moe_kernel(qintermediate_cache2,
                                 w2,
                                 intermediate_cache3,
@@ -732,8 +734,8 @@ def fused_experts_w4a16(hidden_states: torch.Tensor,
                   block_shape: Optional[List[int]] = None,
                   allow_deep_gemm: bool = False,
                   use_nn_moe: Optional[bool] = False, **_) -> torch.Tensor:
-    
-    if os.environ['W4A16_MOE_CUDA'] == "1":          
+
+    if os.environ['W4A16_MOE_CUDA'] == "1":
         m = topk_ids.shape[0]
         if m <= 512:
             return fused_experts_cuda(hidden_states,
@@ -742,13 +744,13 @@ def fused_experts_w4a16(hidden_states: torch.Tensor,
                         topk_weights,
                         topk_ids,
                         inplace=True,
-                        activation=activation,                    
+                        activation=activation,
                         use_int4_w4a16=True,
                         w1_scale=w1_scale,
                         w2_scale=w2_scale,
                         block_shape=block_shape,
                         expert_map=expert_map,
-                        )    
+                        )
     return fused_experts_impl_int4(hidden_states,
             w1,
             w2,

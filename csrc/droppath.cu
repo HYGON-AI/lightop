@@ -150,7 +150,7 @@ Tensor fused_drop_path_backward(const Tensor& grad, const Tensor& mask)
   return ret;
 }
 
-struct TORCH_API structured_drop_path : public TensorIteratorBase {  
+struct TORCH_API structured_drop_path : public TensorIteratorBase {
   void meta(const Tensor& self) {
     build_unary_op(maybe_get_output(), self);
   }

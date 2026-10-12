@@ -8,6 +8,8 @@ from functools import reduce
 import pytest
 import torch
 import math
+import triton
+import triton.language as tl
 from lightop.tensor import ds_cat
 
 def test_concat_Acc_prefill(shape_pair, dim):
@@ -20,17 +22,17 @@ def test_concat_Acc_prefill(shape_pair, dim):
     x_strides = [N//8 * 2048, 256, 1]
     x_max_index = N//8 * 2048 * M
     x_required_length = x_max_index
-    x_data = torch.arange(x_required_length,device='cuda').bfloat16()  
+    x_data = torch.arange(x_required_length,device='cuda').bfloat16()
     x = torch.as_strided(x_data, size=x_sizes, stride=x_strides)
 
-    
+
     y_sizes = [M, N, 64]
     y_strides = [576, 0, 1]
     y_max_index = 576 * M
     y_required_length = y_max_index
-    y_data = torch.arange(y_required_length,device='cuda').bfloat16()  
+    y_data = torch.arange(y_required_length,device='cuda').bfloat16()
     y = torch.as_strided(y_data, size=y_sizes, stride=y_strides)
-    
+
     expected = torch.cat([x,y], dim=dim)
     result = concat_prefill_helper_Triton(x, y, dim=dim)
     result_lightop = lightop_concat_prefill_helper(x, y, dim=dim)
@@ -52,20 +54,20 @@ def test_concat_Acc_decode(shape_pair, dim):
     x_strides = [512, 512*M, 1]
     x_max_index = M * N * 512
     x_required_length = x_max_index
-    x_data = torch.arange(x_required_length,device='cuda').bfloat16()  
+    x_data = torch.arange(x_required_length,device='cuda').bfloat16()
     x = torch.as_strided(x_data, size=x_sizes, stride=x_strides)
-    # print("形状:", x.shape)      
-    # print("步幅:", x.stride())  
+    # print("形状:", x.shape)
+    # print("步幅:", x.stride())
     y_sizes = [M, N, 64]
     y_strides = [1536*(N//8), 192, 1]
     y_max_index = 1536*(N//8) * M
     y_required_length = y_max_index
-    y_data = torch.arange(y_required_length,device='cuda').bfloat16()  
+    y_data = torch.arange(y_required_length,device='cuda').bfloat16()
     y = torch.as_strided(y_data, size=y_sizes, stride=y_strides)
-    # print("形状:", y.shape)     
-    # print("步幅:", y.stride())   
-    
-    
+    # print("形状:", y.shape)
+    # print("步幅:", y.stride())
+
+
     expected = torch.cat([x,y], dim=dim)
     result = concat_helper_decode(x, y, dim=dim)
     assert torch.allclose(result, expected, rtol=1e-5, atol=1e-5), "Mismatch"
@@ -79,7 +81,7 @@ def concat_kernel(
     A_ptr, B_ptr, C_ptr,
     A_section_numel, B_section_numel, C_section_numel,
     Per_block_A,
-    Per_block_B, 
+    Per_block_B,
     section_numA,
     section_numB,
     M,
@@ -102,7 +104,7 @@ def concat_kernel(
                 M_idx = sub_offset // N
                 N_idx = sub_offset % N
                 C_ptr_block_start = C_ptr + sub_offset * C_section_numel
-                A_ptr_block_start = A_ptr + M_idx * Astride_0 + N_idx * Astride_1 
+                A_ptr_block_start = A_ptr + M_idx * Astride_0 + N_idx * Astride_1
                 for offset in range(0, A_section_numel, BLOCK_SIZE):
                     offset_idx = offset + tl.arange(0, BLOCK_SIZE)
                     mask = offset_idx < A_section_numel
@@ -110,10 +112,10 @@ def concat_kernel(
                     tl.store(C_ptr_block_start + offset_idx, val_from_A, mask=mask)
     else:
         #处理B的block
-        #shape是1024*8*64，实际上只有1024 * 64 块数据，开了1024/4=256个线程块来处理。每个线程块处理1块连续的数据 
+        #shape是1024*8*64，实际上只有1024 * 64 块数据，开了1024/4=256个线程块来处理。每个线程块处理1块连续的数据
         #需要注意C的分块也是有M * N 大小的，而这里只有M大小个线程块，每个线程块需要写入N次数据到C中。
         for sub_section_index in range(Per_block_B):
-            sub_offset = (block_idx - numA) * Per_block_B + sub_section_index 
+            sub_offset = (block_idx - numA) * Per_block_B + sub_section_index
             if sub_offset <= section_numB-1:
                 C_ptr_block_start = C_ptr + sub_offset * N * C_section_numel
                 B_ptr_block_start = B_ptr + sub_offset * Bstride_0
@@ -122,14 +124,14 @@ def concat_kernel(
                     mask = offset_idx < B_section_numel
                     val_from_B = tl.load(B_ptr_block_start + offset_idx, mask=mask)
                     for idx in range(0,N,1):
-                        tl.store(C_ptr_block_start + idx * C_section_numel + A_section_numel + offset_idx, val_from_B, mask=mask)                
-    
+                        tl.store(C_ptr_block_start + idx * C_section_numel + A_section_numel + offset_idx, val_from_B, mask=mask)
+
 def concat_prefill_helper_Triton(A:torch.Tensor, B:torch.Tensor, dim:int):
 
     output_shape = list(A.shape)
     output_shape[dim] = A.shape[dim] + B.shape[dim]  #128+64=192
     C = torch.empty(output_shape, device=A.device, dtype=A.dtype)
-    
+
     if dim!=0 :
         #分开计算block块A需要
         Per_block_A = 64
@@ -149,7 +151,7 @@ def concat_prefill_helper_Triton(A:torch.Tensor, B:torch.Tensor, dim:int):
                 A, B, C,
                 unit_offset_A, unit_offset_B, unit_offset_C,
                 Per_block_A,
-                Per_block_B, 
+                Per_block_B,
                 block_numA,
                 block_numB,
                 output_shape[0],
@@ -159,7 +161,7 @@ def concat_prefill_helper_Triton(A:torch.Tensor, B:torch.Tensor, dim:int):
                 A.stride(2),
                 B.stride(0),
                 B.stride(1),
-                B.stride(2),                 
+                B.stride(2),
                 BLOCK_SIZE=1024)
         return C
 
@@ -169,7 +171,7 @@ def concat_prefill_helper_Triton(A:torch.Tensor, B:torch.Tensor, dim:int):
 def concat_helper_decode(A:torch.Tensor, B:torch.Tensor, dim:int):
     assert dim==2 , "tensor dim must be 3 and concat dim must be 2"
     output_shape = list(A.shape)
-    output_shape[dim] = A.shape[dim] + B.shape[dim]  
+    output_shape[dim] = A.shape[dim] + B.shape[dim]
     C = torch.empty(output_shape, device=A.device, dtype=A.dtype)
     mode = 0
     if dim!=0 :
@@ -180,7 +182,7 @@ def concat_helper_decode(A:torch.Tensor, B:torch.Tensor, dim:int):
 def lightop_concat_prefill_helper(A:torch.Tensor, B:torch.Tensor, dim:int):
     assert dim==2 , "tensor dim must be 3 and concat dim must be 2"
     output_shape = list(A.shape)
-    output_shape[dim] = A.shape[dim] + B.shape[dim]  
+    output_shape[dim] = A.shape[dim] + B.shape[dim]
     C = torch.empty(output_shape, device=A.device, dtype=A.dtype)
     mode = 6
     if dim!=0 :
@@ -234,16 +236,16 @@ def benchmark_prefill(M, N, provider, dim):
     x_strides = [N//8 * 2048, 256, 1]
     x_max_index = N//8 * 2048 * M
     x_required_length = x_max_index
-    x_data = torch.arange(x_required_length,device='cuda').bfloat16()  
+    x_data = torch.arange(x_required_length,device='cuda').bfloat16()
     x = torch.as_strided(x_data, size=x_sizes, stride=x_strides)
-    
+
     y_sizes = [M, N, 64]
     y_strides = [576, 0, 1]
     y_max_index = 576 * M
     y_required_length = y_max_index
-    y_data = torch.arange(y_required_length,device='cuda').bfloat16()  
+    y_data = torch.arange(y_required_length,device='cuda').bfloat16()
     y = torch.as_strided(y_data, size=y_sizes, stride=y_strides)
-  
+
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'torch':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.cat([x,y],dim=dim), quantiles=quantiles)
@@ -260,21 +262,21 @@ def benchmark_decode(M, N, provider, dim):
     x_strides = [512, 512*M, 1]
     x_max_index = M * N * 512
     x_required_length = x_max_index
-    x_data = torch.arange(x_required_length,device='cuda').bfloat16()  
+    x_data = torch.arange(x_required_length,device='cuda').bfloat16()
     x = torch.as_strided(x_data, size=x_sizes, stride=x_strides)
 
-    # print("形状:", x.shape)      
-    # print("步幅:", x.stride())  
-    
+    # print("形状:", x.shape)
+    # print("步幅:", x.stride())
+
     y_sizes = [M, N, 64]
     y_strides = [1536*(N//8), 192, 1]
     y_max_index = 1536*(N//8) * M
-    y_required_length = y_max_index 
-    y_data = torch.arange(y_required_length,device='cuda').bfloat16()  
+    y_required_length = y_max_index
+    y_data = torch.arange(y_required_length,device='cuda').bfloat16()
     y = torch.as_strided(y_data, size=y_sizes, stride=y_strides)
 
-    # print("形状:", y.shape)     
-    # print("步幅:", y.stride())   
+    # print("形状:", y.shape)
+    # print("步幅:", y.stride())
 
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'torch':
@@ -296,17 +298,17 @@ def test_concat_Acc_prefill_8bit(shape_pair, dim):
     x_strides = [N//8 * 2048, 256, 1]
     x_max_index = N//8 * 2048 * M
     x_required_length = x_max_index
-    x_data = torch.arange(x_required_length,device='cuda').to(torch.uint8)  
+    x_data = torch.arange(x_required_length,device='cuda').to(torch.uint8)
     x = torch.as_strided(x_data, size=x_sizes, stride=x_strides)
 
-    
+
     y_sizes = [M, N, 64]
     y_strides = [576, 0, 1]
     y_max_index = 576 * M
     y_required_length = y_max_index
-    y_data = torch.arange(y_required_length,device='cuda').to(torch.uint8)  
+    y_data = torch.arange(y_required_length,device='cuda').to(torch.uint8)
     y = torch.as_strided(y_data, size=y_sizes, stride=y_strides)
-    
+
     expected = torch.cat([x,y], dim=dim)
     # result = concat_prefill_helper_Triton(x, y, dim=dim)
     result_lightop = lightop_concat_prefill_helper(x, y, dim=dim)
@@ -323,20 +325,20 @@ def test_concat_Acc_decode_8bit(shape_pair, dim):
     x_strides = [512, 512*M, 1]
     x_max_index = M * N * 512
     x_required_length = x_max_index
-    x_data = torch.arange(x_required_length,device='cuda').to(torch.uint8)  
+    x_data = torch.arange(x_required_length,device='cuda').to(torch.uint8)
     x = torch.as_strided(x_data, size=x_sizes, stride=x_strides)
-    # print("形状:", x.shape)      
-    # print("步幅:", x.stride())  
+    # print("形状:", x.shape)
+    # print("步幅:", x.stride())
     y_sizes = [M, N, 64]
     y_strides = [1536*(N//8), 192, 1]
     y_max_index = 1536*(N//8) * M
     y_required_length = y_max_index
-    y_data = torch.arange(y_required_length,device='cuda').to(torch.uint8)  
+    y_data = torch.arange(y_required_length,device='cuda').to(torch.uint8)
     y = torch.as_strided(y_data, size=y_sizes, stride=y_strides)
-    # print("形状:", y.shape)     
-    # print("步幅:", y.stride())   
-    
-    # print("x",x) 
+    # print("形状:", y.shape)
+    # print("步幅:", y.stride())
+
+    # print("x",x)
     # print("y",y)
     expected = torch.cat([x,y], dim=dim)
     result = concat_helper_decode(x, y, dim=dim)
@@ -389,16 +391,16 @@ def benchmark_prefill_8bit(M, N, provider, dim):
     x_strides = [N//8 * 2048, 256, 1]
     x_max_index = N//8 * 2048 * M
     x_required_length = x_max_index
-    x_data = torch.arange(x_required_length,device='cuda').to(torch.uint8)  
+    x_data = torch.arange(x_required_length,device='cuda').to(torch.uint8)
     x = torch.as_strided(x_data, size=x_sizes, stride=x_strides)
-    
+
     y_sizes = [M, N, 64]
     y_strides = [576, 0, 1]
     y_max_index = 576 * M
     y_required_length = y_max_index
-    y_data = torch.arange(y_required_length,device='cuda').to(torch.uint8)  
+    y_data = torch.arange(y_required_length,device='cuda').to(torch.uint8)
     y = torch.as_strided(y_data, size=y_sizes, stride=y_strides)
-  
+
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'torch':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: torch.cat([x,y],dim=dim), quantiles=quantiles)
@@ -415,17 +417,17 @@ def benchmark_decode_8bit(M, N, provider, dim):
     x_strides = [512, 512*M, 1]
     x_max_index = M * N * 512
     x_required_length = x_max_index
-    x_data = torch.arange(x_required_length,device='cuda').to(torch.uint8)  
+    x_data = torch.arange(x_required_length,device='cuda').to(torch.uint8)
     x = torch.as_strided(x_data, size=x_sizes, stride=x_strides)
 
-    
+
     y_sizes = [M, N, 64]
     y_strides = [1536*(N//8), 192, 1]
     y_max_index = 1536*(N//8) * M
-    y_required_length = y_max_index 
-    y_data = torch.arange(y_required_length,device='cuda').to(torch.uint8)  
+    y_required_length = y_max_index
+    y_data = torch.arange(y_required_length,device='cuda').to(torch.uint8)
     y = torch.as_strided(y_data, size=y_sizes, stride=y_strides)
- 
+
 
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'torch':

@@ -29,6 +29,11 @@ from lightop.quant import (
 )
 from lightop.activation import fuse_silu_mul_quant, silu_and_mul_opt
 
+
+def round_up(x: int, y: int) -> int:
+    return ((x + y - 1) // y) * y
+
+
 # 应用 256 降到 32 的 moe_align 优化
 def moe_align_block_size_lightop_new(
     topk_ids: torch.Tensor,
@@ -69,12 +74,12 @@ def moe_align_block_size_lightop_new(
                                 device=topk_ids.device)
     num_tokens_post_pad = torch.zeros((1),
                                       dtype=torch.int32,
-                                      device=topk_ids.device)    
+                                      device=topk_ids.device)
     moe_align_block_size_out(topk_ids,
-                            num_experts, 
-                            block_size, 
+                            num_experts,
+                            block_size,
                             sorted_ids,
-                            expert_ids, 
+                            expert_ids,
                             num_tokens_post_pad,
                             expert_map,
                             expert_mask,
@@ -83,7 +88,7 @@ def moe_align_block_size_lightop_new(
     return sorted_ids, expert_ids, num_tokens_post_pad
 
 def fused_marlin_moe_valid(
-                     hidden_states: torch.Tensor, # 32, 7168 
+                     hidden_states: torch.Tensor, # 32, 7168
                      w1_triton: torch.Tensor, # 256, 512, 7168 --> 32*8, 512 --> 32*8, 256
                      w2_triton: torch.Tensor, # 256, 256, 7168
                      w1_marlin: torch.Tensor,
@@ -111,15 +116,15 @@ def fused_marlin_moe_valid(
     M, K = hidden_states.shape
     E = w1_marlin.shape[0]
     N = w2_marlin.shape[1] * 32 # 256
-    topk = topk_ids.shape[1] 
-    
+    topk = topk_ids.shape[1]
+
     block_size_m = config_marlin_0["BLOCK_SIZE_M"]
 
     if global_num_experts == -1:
         global_num_experts = E
 
     assert expert_map is not None
-        
+
     # 应用 256 降到 32 的 moe_align 优化
     expert_mask = torch.zeros((M, topk), dtype=torch.bool,  device=hidden_states.device, requires_grad=False)
     sorted_token_ids, expert_ids, num_tokens_post_padded = moe_align_block_size_lightop_new(
@@ -135,7 +140,7 @@ def fused_marlin_moe_valid(
     # triton 算子始终使用 block_m=16 测试
     sorted_token_ids_triton, expert_ids_triton, num_tokens_post_padded_triton = moe_align_block_size(topk_ids, 16, global_num_experts, expert_map)
 
-    # 建立 归约使用的 信号量 Tensor 当前最大开到 sms * 6 = 480 
+    # 建立 归约使用的 信号量 Tensor 当前最大开到 sms * 6 = 480
     sms = torch.cuda.get_device_properties(hidden_states.device).multi_processor_count
     workspace = torch.zeros(500, dtype=torch.int, device=hidden_states.device, requires_grad=False)
     # 建立用于 归约使用的 缓冲区 blokc数： sms * 6
@@ -155,17 +160,17 @@ def fused_marlin_moe_valid(
     # =========================== gemm1 marlin 计算 ===============================
     moe_gemm_marlin_w4a8(
                         a_1,
-                        w1_marlin, 
-                        cuda_gemm1_output, 
-                        a_1_scale, 
-                        w1_scale, 
-                        None, 
-                        sorted_token_ids, 
-                        expert_ids, 
-                        num_tokens_post_padded, 
-                        topk, 
-                        workspace, 
-                        global_reduce_buffer, 
+                        w1_marlin,
+                        cuda_gemm1_output,
+                        a_1_scale,
+                        w1_scale,
+                        None,
+                        sorted_token_ids,
+                        expert_ids,
+                        num_tokens_post_padded,
+                        topk,
+                        workspace,
+                        global_reduce_buffer,
                         config_marlin_0,
                         is_ep=expert_map is not None)
     # =========================== gemm1 triton 计算 ===============================
@@ -201,31 +206,31 @@ def fused_marlin_moe_valid(
     # 激活函数
     silu_and_mul_opt(triton_gemm2_a, triton_gemm1_output)
 
-    # 准备gemm2 需要的 A和A-scale 
+    # 准备gemm2 需要的 A和A-scale
     # [M*topk, N] [32*8, 256]
     a_2, a_2_scale = per_token_quant_int8(triton_gemm2_a)
     torch.cuda.synchronize()
 
     moe_gemm_marlin_w4a8(
-                        a_2, 
-                        w2_marlin, 
-                        cuda_gemm2_output, 
-                        a_2_scale, 
-                        w2_scale, 
-                        topk_weights, 
-                        sorted_token_ids, 
-                        expert_ids, 
-                        num_tokens_post_padded, 
-                        1, 
-                        workspace, 
-                        global_reduce_buffer, 
+                        a_2,
+                        w2_marlin,
+                        cuda_gemm2_output,
+                        a_2_scale,
+                        w2_scale,
+                        topk_weights,
+                        sorted_token_ids,
+                        expert_ids,
+                        num_tokens_post_padded,
+                        1,
+                        workspace,
+                        global_reduce_buffer,
                         config_marlin_1,
                         is_ep=expert_map is not None)
     # =========================== gemm2 triton 计算 ===============================
-    invoke_fused_moe_kernel_w4a8(a_2, 
-                                w2_triton, 
-                                triton_gemm2_output, 
-                                a_2_scale, 
+    invoke_fused_moe_kernel_w4a8(a_2,
+                                w2_triton,
+                                triton_gemm2_output,
+                                a_2_scale,
                                 w2_scale,
                                 None, # w2_zero
                                 topk_weights,
@@ -246,5 +251,5 @@ def fused_marlin_moe_valid(
 
     triton_gemm2_output = triton_gemm2_output.reshape((-1, K))
     gemm2_falg = torch.allclose(cuda_gemm2_output, triton_gemm2_output, rtol=1e-2, atol=1e-2)
-    
+
     return (gemm1_falg, gemm2_falg)
