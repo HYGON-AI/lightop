@@ -10,21 +10,51 @@ from unittest.mock import patch
 import pytest
 import torch
 import triton
-import sglang.kernels.ops.attention.dsv4.dequant_k_cache as dequant
-import sglang.srt.layers.attention.dsv4.sparse_prefill_utils as sparse_utils
-from sglang.kernels.ops.attention.dsv4.sparse_prefill_kernels import _combine_topk_swa_indices_kernel
 from lightop import dequantize_k_cache_paged_hcu, combine_topk_swa_indices_hcu
 
-def _lightop_dequant(cache, ids, page_size, out=None):
+def _lightop_dequant(cache, ids, page_size, out=None, fnuz=False):
     if out is None:
         out = torch.empty((ids.numel(), 1, 512), dtype=torch.bfloat16, device=cache.device)
-    dequantize_k_cache_paged_hcu(cache.view(torch.uint8), ids, out, page_size, dequant.fp8_dtype == torch.float8_e4m3fnuz)
+    dequantize_k_cache_paged_hcu(cache.view(torch.uint8), ids, out, page_size, fnuz)
     return out
 
 
+def _dequant_reference(cache, ids, page_size, fnuz=False):
+    cache = cache.view(torch.uint8)
+    pages = ids.long() // page_size
+    offsets = ids.long() % page_size
+    data = cache[pages[:, None], offsets[:, None] * 576 + torch.arange(576, device=cache.device)]
+    codes = cache[pages[:, None], page_size * 576 + offsets[:, None] * 8 + torch.arange(7, device=cache.device)]
+    scales = torch.exp2(codes.float() - 127)
+    scales = torch.where(codes == 0, 0, scales)
+    dtype = torch.float8_e4m3fnuz if fnuz else torch.float8_e4m3fn
+    nope = data[:, :448].contiguous().view(dtype).float().reshape(-1, 7, 64)
+    nope = (nope * scales[:, :, None]).reshape(ids.numel(), 448).bfloat16()
+    rope = data[:, 448:].contiguous().view(torch.bfloat16)
+    return torch.cat((nope, rope), dim=1).unsqueeze(1)
+
+
 def _triton_dequant(cache, ids, page_size, out=None):
+    import sglang.kernels.ops.attention.dsv4.dequant_k_cache as dequant
+
     with patch.object(dequant, '_use_hcu_dequant_k_cache_paged', False, create=True):
         return dequant.dequantize_k_cache_paged(cache, ids, page_size, out=out)
+
+
+@pytest.fixture
+def sglang_dequant():
+    pytest.importorskip('sglang', reason='optional SGLang Triton comparison')
+    import sglang.kernels.ops.attention.dsv4.dequant_k_cache as dequant
+
+    return dequant
+
+
+@pytest.fixture
+def sglang_sparse_utils():
+    pytest.importorskip('sglang', reason='optional SGLang HCU routing test')
+    import sglang.srt.layers.attention.dsv4.sparse_prefill_utils as sparse_utils
+
+    return sparse_utils
 
 
 def combine_topk_swa_indices(topk_indices, query_start_loc, query_pos, seq_lens, gather_lens, compressed_base, swa_base, window_size, compress_ratio, topk, out_indices=None, out_lens=None):
@@ -38,7 +68,6 @@ def combine_topk_swa_indices(topk_indices, query_start_loc, query_pos, seq_lens,
     return out_indices, out_lens
 
 
-RUNTIME_FP8_DTYPE = dequant.fp8_dtype
 pytestmark = pytest.mark.skipif(
     not torch.cuda.is_available(), reason="HCU packed V4 KV LightOp kernel"
 )
@@ -56,27 +85,29 @@ def _case(page_size=64, num_tokens=333, index_dtype=torch.int32, device="cuda"):
 @pytest.mark.parametrize("page_size", [1, 2, 16, 64, 256])
 @pytest.mark.parametrize("index_dtype", [torch.int32, torch.int64])
 @pytest.mark.parametrize("rows", [0, 1, 3, 333])
-def test_matches_torch_and_triton(fnuz, page_size, index_dtype, rows):
+def test_matches_torch(fnuz, page_size, index_dtype, rows):
     cache, ids = _case(page_size, rows, index_dtype)
-    dtype = torch.float8_e4m3fnuz if fnuz else torch.float8_e4m3fn
     storage = torch.full((rows * 2 + 1, 1, 521), -77, device="cuda", dtype=torch.bfloat16)
     out = storage[: rows * 2 : 2, :, :512]
-    with patch.object(dequant, "fp8_dtype", dtype):
-        expected = dequant.dequantize_k_cache_paged_ref(cache, ids, page_size)
-        with patch.object(dequant, "_dequantize_k_cache_paged_kernel", None):
-            actual = _lightop_dequant(cache.view(torch.bfloat16), ids, page_size, out=out)
-        assert actual.data_ptr() == out.data_ptr()
-        torch.testing.assert_close(actual, expected, atol=0, rtol=0, equal_nan=True)
-        if rows:
-            # Triton only supports the architecture's native FP8 format; the
-            # LightOp kernel's other format is still checked against torch above.
-            if dtype == RUNTIME_FP8_DTYPE:
-                old = _triton_dequant(cache, ids, page_size)
-                torch.testing.assert_close(actual, old, atol=0, rtol=0, equal_nan=True)
-            # RoPE is copied bit-for-bit, including NaNs and signed zero.
-            assert torch.equal(actual[:, :, 448:].view(torch.int16), expected[:, :, 448:].view(torch.int16))
+    expected = _dequant_reference(cache, ids, page_size, fnuz)
+    actual = _lightop_dequant(cache.view(torch.bfloat16), ids, page_size, out=out, fnuz=fnuz)
+    assert actual.data_ptr() == out.data_ptr()
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0, equal_nan=True)
+    # RoPE is copied bit-for-bit, including NaNs and signed zero.
+    assert torch.equal(actual[:, :, 448:].view(torch.int16), expected[:, :, 448:].view(torch.int16))
     assert (storage[1::2] == -77).all()
     assert (storage[:, :, 512:] == -77).all()
+
+
+@pytest.mark.parametrize("page_size", [1, 2, 16, 64, 256])
+@pytest.mark.parametrize("index_dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("rows", [0, 1, 3, 333])
+def test_matches_triton(sglang_dequant, page_size, index_dtype, rows):
+    cache, ids = _case(page_size, rows, index_dtype)
+    fnuz = sglang_dequant.fp8_dtype == torch.float8_e4m3fnuz
+    actual = _lightop_dequant(cache, ids, page_size, fnuz=fnuz)
+    expected = _triton_dequant(cache, ids, page_size)
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0, equal_nan=True)
 
 
 @pytest.mark.parametrize("fnuz", [False, True])
@@ -88,15 +119,9 @@ def test_all_fp8_codes_and_scale_boundaries(fnuz):
     scales = cache[0, page_size * 576 : page_size * 584].view(page_size, 8)
     scales[:, :7] = torch.tensor([0, 1, 119, 127, 135, 254, 255], dtype=torch.uint8, device="cuda")
     ids.copy_(torch.arange(256, dtype=ids.dtype, device="cuda"))
-    with patch.object(dequant, "fp8_dtype", torch.float8_e4m3fnuz if fnuz else torch.float8_e4m3fn):
-        got = _lightop_dequant(cache, ids, page_size)
-        expected = dequant.dequantize_k_cache_paged_ref(cache, ids, page_size)
-        old = None
-        if dequant.fp8_dtype == RUNTIME_FP8_DTYPE:
-            old = _triton_dequant(cache, ids, page_size)
+    got = _lightop_dequant(cache, ids, page_size, fnuz=fnuz)
+    expected = _dequant_reference(cache, ids, page_size, fnuz)
     torch.testing.assert_close(got, expected, atol=0, rtol=0, equal_nan=True)
-    if old is not None:
-        torch.testing.assert_close(got, old, atol=0, rtol=0, equal_nan=True)
 
 
 def test_current_stream_graph_and_duplicate_ids():
@@ -104,7 +129,7 @@ def test_current_stream_graph_and_duplicate_ids():
     with torch.cuda.stream(stream):
         cache, ids = _case()
         ids[::2] = 0
-        expected = dequant.dequantize_k_cache_paged_ref(cache, ids, 64)
+        expected = _dequant_reference(cache, ids, 64)
         out = torch.empty_like(expected)
         _lightop_dequant(cache, ids, 64, out=out)
     stream.synchronize()
@@ -123,7 +148,7 @@ def test_tensor_device_not_current_device():
     stream = torch.cuda.Stream(device=1)
     with torch.cuda.stream(stream):
         cache, ids = _case(device="cuda:1")
-        expected = dequant.dequantize_k_cache_paged_ref(cache, ids, 64)
+        expected = _dequant_reference(cache, ids, 64)
         out = torch.empty_like(expected)
     with torch.cuda.stream(stream), torch.cuda.device(0):
         _lightop_dequant(cache, ids, 64, out=out)
@@ -335,10 +360,18 @@ def test_zero_tokens():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="HCU LightOp dispatch only")
-def test_hcu_does_not_launch_triton():
+def test_hcu_does_not_launch_triton(sglang_sparse_utils):
+    import lightop
+
     case = _trailing_case([512], [5], topk=64, compress_ratio=4)
-    with patch.object(sparse_utils, "_combine_topk_swa_indices_kernel", None):
-        _check(**case)
+    with patch.object(sglang_sparse_utils, "_use_hcu_combine_topk_swa_indices", True), \
+         patch.object(sglang_sparse_utils, "_combine_topk_swa_indices_kernel", None), \
+         patch.object(lightop, "combine_topk_swa_indices_hcu", wraps=combine_topk_swa_indices_hcu) as native:
+        actual, actual_lens = sglang_sparse_utils.combine_topk_swa_indices(**case)
+    native.assert_called_once()
+    expected, expected_lens = _reference(**case)
+    assert torch.equal(actual, expected)
+    assert torch.equal(actual_lens, expected_lens)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="HCU LightOp stream and graph tests")
@@ -428,6 +461,8 @@ def combine_case(n,k,ratio,reqs=1):
     return idx,starts,pos,seq,gather,base,swa,out,lens
 
 def combine_triton(case,k,ratio):
+    from sglang.kernels.ops.attention.dsv4.sparse_prefill_kernels import _combine_topk_swa_indices_kernel
+
     idx,starts,pos,seq,gather,base,swa,out,lens=case
     _combine_topk_swa_indices_kernel[(seq.numel(),128)](out,out.stride(0),lens,idx,idx.stride(0),starts,pos,seq,gather,base,swa,top_k=k,COMPRESS_RATIO=ratio,WINDOW_SIZE=128,PADDED_TOP_K=triton.next_power_of_2(k))
 
@@ -453,16 +488,90 @@ def paired_measure(reference, candidate):
     return {name: {'mean_us': statistics.mean(values), 'samples_us': values, 'CV': statistics.stdev(values) / statistics.mean(values)} for name, values in samples.items()}
 
 
+def _check_dequant_outputs(reference, candidate, ref_out, out):
+    reference()
+    expected = ref_out.clone()
+    # Every sentinel differs from the expected value, including NaN targets.
+    out.copy_(torch.where(torch.isnan(expected), 0, float('nan')))
+    candidate()
+    torch.testing.assert_close(out, expected, atol=0, rtol=0, equal_nan=True)
+
+
+def _check_combine_outputs(reference, candidate, ref_out, ref_lens, out, lens):
+    reference()
+    expected, expected_lens = ref_out.clone(), ref_lens.clone()
+    out.fill_(-1)
+    scanned = torch.arange(out.shape[1], device=out.device)[None, :] < expected_lens[:, None]
+    out.masked_fill_(scanned, -2)
+    lens.fill_(-1)
+    candidate()
+    assert torch.equal(out, expected)
+    assert torch.equal(lens, expected_lens)
+
+
+@pytest.mark.parametrize('write', ['all', 'none', 'skip_nan', 'skip_finite'])
+def test_dequant_parity_detects_missing_writes(write):
+    expected = torch.tensor([0, -0., 1, -3, float('inf'), -float('inf'), float('nan')], dtype=torch.bfloat16)
+    ref_out, out = torch.empty_like(expected), torch.empty_like(expected)
+    reference = lambda: ref_out.copy_(expected)
+
+    def candidate():
+        if write == 'all':
+            out.copy_(expected)
+        elif write == 'skip_nan':
+            out[:-1].copy_(expected[:-1])
+        elif write == 'skip_finite':
+            out[1:].copy_(expected[1:])
+
+    if write == 'all':
+        _check_dequant_outputs(reference, candidate, ref_out, out)
+    else:
+        with pytest.raises(AssertionError):
+            _check_dequant_outputs(reference, candidate, ref_out, out)
+
+
+@pytest.mark.parametrize('write', ['all', 'none', 'indices_only', 'lens_only', 'skip_hole', 'bad_padding'])
+def test_combine_parity_detects_missing_writes(write):
+    expected = torch.tensor([[-1, 4, 7, -1], [8, -1, -1, -1]], dtype=torch.int32)
+    expected_lens = torch.tensor([3, 1], dtype=torch.int32)
+    ref_out, out = torch.empty_like(expected), torch.empty_like(expected)
+    ref_lens, lens = torch.empty_like(expected_lens), torch.empty_like(expected_lens)
+
+    def reference():
+        ref_out.copy_(expected)
+        ref_lens.copy_(expected_lens)
+
+    def candidate():
+        if write in ('all', 'indices_only', 'bad_padding'):
+            out.copy_(expected)
+        elif write == 'skip_hole':
+            out[0, 1:3].copy_(expected[0, 1:3])
+            out[1, 0] = expected[1, 0]
+        if write in ('all', 'lens_only', 'skip_hole', 'bad_padding'):
+            lens.copy_(expected_lens)
+        if write == 'bad_padding':
+            out[0, -1] = 0
+
+    if write == 'all':
+        _check_combine_outputs(reference, candidate, ref_out, ref_lens, out, lens)
+    else:
+        with pytest.raises(AssertionError):
+            _check_combine_outputs(reference, candidate, ref_out, ref_lens, out, lens)
+
+
 def benchmark(tokens, profile_only=False):
+    import sglang.kernels.ops.attention.dsv4.dequant_k_cache as dequant
+
     torch.manual_seed(42)
     results = []
     for n in tokens:
         for p in (64, 256):
             cache, ids, out = dequant_case(n, p)
-            reference = lambda: _triton_dequant(cache, ids, p, out=out)
-            candidate = lambda: dequantize_k_cache_paged_hcu(cache, ids, out, p, False)
-            reference(); expected = out.clone(); candidate()
-            torch.testing.assert_close(out, expected, atol=0, rtol=0, equal_nan=True)
+            ref_out = torch.empty_like(out)
+            fnuz = dequant.fp8_dtype == torch.float8_e4m3fnuz
+            reference = lambda: _triton_dequant(cache, ids, p, out=ref_out)
+            candidate = lambda: dequantize_k_cache_paged_hcu(cache, ids, out, p, fnuz)
+            _check_dequant_outputs(reference, candidate, ref_out, out)
             if profile_only:
                 for _ in range(10): reference(); candidate()
                 torch.cuda.synchronize()
@@ -470,15 +579,15 @@ def benchmark(tokens, profile_only=False):
             timings = paired_measure(reference, candidate)
             traffic = n * (576 + 7 + 1024 + 4)
             for item in timings.values(): item['effective_GB_s'] = traffic / item['mean_us'] / 1000
-            result = {'op': 'dequant', 'N': n, 'page_size': p, 'dtype': 'FP8_FN+BF16->BF16, ids INT32', 'correct': True, 'logical_bytes': traffic, 'timings': timings}
+            result = {'op': 'dequant', 'N': n, 'page_size': p, 'dtype': f'FP8_{"FNUZ" if fnuz else "FN"}+BF16->BF16, ids INT32', 'correct': True, 'logical_bytes': traffic, 'timings': timings}
             result['speedup'] = timings['triton']['mean_us'] / timings['lightop']['mean_us']
             results.append(result); print(json.dumps(result), flush=True)
         for k, ratio in ((512, 4), (2048, 128)):
             case = combine_case(n, k, ratio)
-            reference = lambda: combine_triton(case, k, ratio)
+            ref_case = (*case[:-2], torch.full_like(case[-2], -1), torch.empty_like(case[-1]))
+            reference = lambda: combine_triton(ref_case, k, ratio)
             candidate = lambda: combine_topk_swa_indices_hcu(*case, 128, ratio, k)
-            reference(); expected_idx = case[-2].clone(); expected_len = case[-1].clone(); candidate()
-            assert torch.equal(case[-2], expected_idx) and torch.equal(case[-1], expected_len)
+            _check_combine_outputs(reference, candidate, *ref_case[-2:], *case[-2:])
             if profile_only:
                 for _ in range(10): reference(); candidate()
                 torch.cuda.synchronize()
