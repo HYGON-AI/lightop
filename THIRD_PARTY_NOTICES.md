@@ -75,8 +75,8 @@ SOFTWARE.
 | `test/common/fused_moe_kernel_gptq_awq.py` | `vllm/model_executor/layers/fused_moe/fused_moe.py` | `main` | `22a97e66134a26c74b9dae73d9446c4e32718269` | 抽取；`fused_moe_kernel_gptq_awq` 主体与该 Commit 高度一致 | `32e4aad617608934ea2fea9283627f0c60527b2b` |
 | `test/common/quant_utils.py` | `vllm/model_executor/layers/quantization/utils/quant_utils.py` | `main` | `d6953beb91da4e9c99be4c0a1304a2d24189535c` | 抽取；`quantize_weights`/`pack_cols`/`awq_pack` 函数可逐段复核 | `32e4aad617608934ea2fea9283627f0c60527b2b` |
 | `test/common/scalar_type.py` | `vllm/scalar_type.py` | `main` | `8fcaaf6a165e661f63fc51be906bc05b0767332f` | 完整文件快照；上游与本地 Blob 均为 `05760f3f829988d4640955b6d19ff2549b1d28cd` | `32e4aad617608934ea2fea9283627f0c60527b2b` |
-| `test/moe_marlin/moe_w16a16/benchmark_moe_Triton.py` | `benchmarks/kernels/benchmark_moe.py` | `main` | `cede942b87b5d8baa0b95447f3e87e3c600ff5f5` | 改编快照；增加 DCU/NN-MoE 参数和设备逻辑 | `30b88ebc31c2d8fc4c57f6f6f1b9e0586752e856` |
-| `test/moe_w16a16/benchmark_moe_Triton.py` | `benchmarks/kernels/benchmark_moe.py` | `main` | `cede942b87b5d8baa0b95447f3e87e3c600ff5f5` | 改编快照；增加 DCU/NN-MoE 参数和设备逻辑 | `30b88ebc31c2d8fc4c57f6f6f1b9e0586752e856` |
+| `test/moe_marlin/moe_w16a16/benchmark_moe_Triton.py` | `benchmarks/kernels/benchmark_moe.py` | `main` | `cede942b87b5d8baa0b95447f3e87e3c600ff5f5` | 改编快照；增加 HCU/NN-MoE 参数和设备逻辑 | `30b88ebc31c2d8fc4c57f6f6f1b9e0586752e856` |
+| `test/moe_w16a16/benchmark_moe_Triton.py` | `benchmarks/kernels/benchmark_moe.py` | `main` | `cede942b87b5d8baa0b95447f3e87e3c600ff5f5` | 改编快照；增加 HCU/NN-MoE 参数和设备逻辑 | `30b88ebc31c2d8fc4c57f6f6f1b9e0586752e856` |
 
 **仍需补证动作：**`w8a8_get_cache_json.py` 在本地 vLLM 历史中没有匹配文件，必须由组件负责人提供真实来源或内部授权记录。两个 DeepSeek 文件只能使用上述 vLLM Commit 作为技术参考基线；若发布审批要求“逐字上游文件”，还需提供独立 `vllm-deepseek_v4` 仓库的 URL、分支/Tag 和 40 位 Commit。其余表项的 Commit 已能在本地 `main` 上复核，正式审计时应把这些元数据随提交一并提交。
 
@@ -107,7 +107,7 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
  * SPDX-License-Identifier: Apache-2.0
  * SPDX-FileCopyrightText: Copyright (c) <original years>, <original holder>
  *
- * LightOp changes: <ROCm/DCU/HYGON changes, or “none” for an unchanged copy>.
+ * LightOp changes: <ROCm/HCU/HYGON changes, or “none” for an unchanged copy>.
  */
 ```
 
@@ -121,7 +121,7 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 
 ### Transformer Engine `common.h` 逐文件来源证据
 
-本节登记 `csrc/blockwise_scaling/common.h` 中已经在本地 Transformer Engine 克隆内逐段核对到的来源。该文件不是 Transformer Engine 单一文件的逐字副本，而是多个 NVIDIA Transformer Engine 头文件的抽取、合并和 HIP/DCU 适配版本。
+本节登记 `csrc/blockwise_scaling/common.h` 中已经在本地 Transformer Engine 克隆内逐段核对到的来源。该文件不是 Transformer Engine 单一文件的逐字副本，而是多个 NVIDIA Transformer Engine 头文件的抽取、合并和 HIP/HCU 适配版本。
 
 | 项目 | 内容 |
 | --- | --- |
