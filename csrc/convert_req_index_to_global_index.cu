@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 #include "hip/hip_bf16.h"

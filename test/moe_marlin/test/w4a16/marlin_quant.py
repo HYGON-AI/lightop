@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 import torch
 from common.scalar_type import ScalarType
 from common.quant_utils import quantize_weights

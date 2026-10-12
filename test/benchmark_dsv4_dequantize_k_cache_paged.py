@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Benchmark DSV4 paged K-cache dequantization against SGLang."""
 
 from __future__ import annotations

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """
 测试 rms_rotary_embedding_fuse_with_kv_store_no_quant：无 fp8 量化，Q/K/V 与 k_buffer/v_buffer 均为 bf16/fp16。
 Kernel 条件：head_size=128, (num_heads+num_kv_heads)<=128, rot_dim in (128, 64)。

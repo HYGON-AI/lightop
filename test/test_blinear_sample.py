@@ -1,4 +1,7 @@
 # -*- coding: utf-8 -*-
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """对比 torch nn.Upsample(bilinear) 与 bilinear_upsample 的精度、速度和带宽。
 结果同时打印到终端并保存为 Excel 文件。
 """

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 from typing import Tuple, Optional, Union, List
 import torch
 import torch.nn as nn

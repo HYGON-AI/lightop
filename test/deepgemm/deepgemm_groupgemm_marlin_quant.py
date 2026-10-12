@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 def weight8bit_nt_kpack2_marlin(weight, # [size_n, size_k// 2 ]
                                 k_tile=16,
                                 n_tile=16, ):

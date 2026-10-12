@@ -1,5 +1,8 @@
-#ifndef SUGON_H
-#define SUGON_H
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
+#ifndef LIGHTOP_LMSLIMQUANT_NATIVE_QUANT_KERNELS_BASE_BASE_CUH_
+#define LIGHTOP_LMSLIMQUANT_NATIVE_QUANT_KERNELS_BASE_BASE_CUH_
 #define BLOCKSIZE 256
 
 #include <iostream>

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Final validation for lightop.fuse_situ_mul_quant_ep (v002 grid-stride).
 
 Correctness reference: sglang-das Triton implementation

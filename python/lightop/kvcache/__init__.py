@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """KV-cache and sequence-metadata APIs."""
 
 from ..fused_metadata import fused_metadata_kernel_general

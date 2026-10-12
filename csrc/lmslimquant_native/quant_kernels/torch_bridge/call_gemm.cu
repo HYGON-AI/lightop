@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 #include "lmslimquant_native/quant_kernels/torch_bridge/call_gemm.h"
 #include <hip/hip_runtime.h>
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>

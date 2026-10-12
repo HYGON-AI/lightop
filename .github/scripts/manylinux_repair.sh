@@ -43,7 +43,7 @@ export AUDITWHEEL_LD_LIBRARY_PATH="${LIGHTOP_PATH}/lib:${LIGHTOP_PATH}/libraryge
 GLIBC_VER=$(ldd --version | awk '{print $NF}' | head -n1 | tr -d '\n' | tr '.' '_')
 PLAT="manylinux_${GLIBC_VER}_x86_64"
 
-# HIP/ROCm/torch/ffmpeg 等运行时库由 DCU 驱动与 torch 环境提供, 不打进 wheel
+# HIP/ROCm/torch/ffmpeg 等运行时库由 HCU 驱动与 torch 环境提供, 不打进 wheel
 excludes=(
   libgalaxyhip.so.5
   libMIOpen.so.1

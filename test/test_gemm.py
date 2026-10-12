@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """GEMM and W4A16 correctness and GPU timing checks on supported HCU GPUs.
 
 Run both suites and save GPU timings to CSV: python -m pytest -v test/test_gemm.py
