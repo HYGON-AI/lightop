@@ -352,18 +352,18 @@ approval_date: <YYYY-MM-DD>
 
 ## 9. 最新 master 新增文件（2026-10-12）
 
-最新仓库 `master`（固定 Commit `5762c4c32535f4fb9532009b6744fc4c8d6c8504`）相对旧仓库合规基线 `6b8553cd227776f0f6c8886a036cf5eb7665ea20` 新增 40 个路径。已有明确 HYGON Apache-2.0 文件头的新增文件沿用该归属；以下文件仍需单独完成来源、权利人和许可证核验，当前不把它们归为原创或第三方：
+最新仓库 `master`（固定 Commit `5762c4c32535f4fb9532009b6744fc4c8d6c8504`）相对旧仓库合规基线 `6b8553cd227776f0f6c8886a036cf5eb7665ea20` 新增 40 个路径。新增文件按当前确认分为 HYGON 原创和作者/授权复核两类；本节列出的 9 个文件已按用户确认补充 HYGON Apache-2.0 原创文件头。
 
 | 本地路径 | 当前状态 | 关闭条件 |
 | --- | --- | --- |
-| `csrc/paged_mqa_logits/dsv41_candidate_block_table.cu` | 来源待核对；无文件级许可证/版权头，算法注释描述 DSV4.1 两级索引 | 提供源码作者、来源仓库或内部快照、固定版本/Commit、许可证和修改范围 |
-| `csrc/paged_mqa_logits/paged_mqa_logits_persisten.cu` | 来源待核对；无文件级许可证/版权头 | 提供完整来源与授权记录；若为原创，补 HYGON Apache-2.0 文件头 |
-| `csrc/paged_mqa_logits/paged_mqa_logits_persisten.h` | 来源待核对；无文件级许可证/版权头 | 同上 |
-| `csrc/sparse_page_mqa/paged_sparse_mqa_logits_metadata.cu` | 来源待核对；明确声明与 DeepGEMM 元数据布局兼容 | 提供 DeepGEMM 对应来源/许可证及本地改编范围，或内部授权；不得仅凭兼容性说明认定原创 |
-| `csrc/sparse_page_mqa/paged_sparse_mqa_logits_metadata.h` | 来源待核对；无文件级许可证/版权头 | 同上 |
-| `test/ci_tests/test_dsv41_candidate_block_table.py` | 来源待核对；测试契约未登记来源 | 确认测试实现作者和许可证，补文件头或来源登记 |
-| `test/ci_tests/test_paged_mqa_logits_fp4_metadata.py` | 来源待核对；测试契约未登记来源 | 确认测试实现作者和许可证，补文件头或来源登记 |
-| `test/ci_tests/test_paged_sparse_mqa_logits_metadata.py` | 来源待核对；明确参考 DeepGEMM 语义 | 提供参考实现来源/许可证及本地差异，或内部授权 |
-| `test/test_topk_transform_ragged_v2.py` | 来源待核对；无文件级许可证/版权头 | 确认原创或第三方来源后补头/登记 |
+| `csrc/paged_mqa_logits/dsv41_candidate_block_table.cu` | HYGON 原创；已补 `Copyright (c) 2026 Hygon Information Technology Co., Ltd.` 和 Apache-2.0 SPDX | 由组件负责人在正式审计中复核原创记录 |
+| `csrc/paged_mqa_logits/paged_mqa_logits_persisten.cu` | HYGON 原创；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
+| `csrc/paged_mqa_logits/paged_mqa_logits_persisten.h` | HYGON 原创；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
+| `csrc/sparse_page_mqa/paged_sparse_mqa_logits_metadata.cu` | HYGON 原创；已补 HYGON Apache-2.0 文件头；DeepGEMM 兼容性仅描述接口布局 | 由组件负责人在正式审计中复核原创记录 |
+| `csrc/sparse_page_mqa/paged_sparse_mqa_logits_metadata.h` | HYGON 原创；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
+| `test/ci_tests/test_dsv41_candidate_block_table.py` | HYGON 原创测试；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
+| `test/ci_tests/test_paged_mqa_logits_fp4_metadata.py` | HYGON 原创测试；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
+| `test/ci_tests/test_paged_sparse_mqa_logits_metadata.py` | HYGON 原创测试；已补 HYGON Apache-2.0 文件头；DeepGEMM 语义为接口参考 | 由组件负责人在正式审计中复核原创记录 |
+| `test/test_topk_transform_ragged_v2.py` | HYGON 原创测试；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
 
-`csrc/mqa_logits/beta/` 下 24 个新增文件已有 HYGON Apache-2.0 版权/许可声明，本次保持其内容。Git 作者邮箱不能单独证明代码权属；可达历史中的禁止身份元数据属于独立审计项。
+`csrc/mqa_logits/beta/` 下 24 个新增文件已有 HYGON Apache-2.0 版权/许可声明，本次保持其内容。Git 作者邮箱不能单独证明代码权属；这些文件仍保留作者和授权复核项。上述 9 个文件已完成用户确认的原创许可补充，不再列为来源待核对文件。
