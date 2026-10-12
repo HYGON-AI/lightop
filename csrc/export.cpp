@@ -558,6 +558,15 @@ void decode_gather_and_up_convert_with_indices(
     int64_t tokens_per_request,
     std::optional<torch::Tensor> dedup_table,
     bool reuse_compact_indices);
+void dequantize_k_cache_paged_hcu(
+    const Tensor& cache, const Tensor& token_ids, Tensor& output,
+    int64_t page_size, bool fp8_fnuz);
+void combine_topk_swa_indices_hcu(
+    const Tensor& topk_indices, const Tensor& query_start_loc,
+    const Tensor& query_pos, const Tensor& seq_lens, const Tensor& gather_lens,
+    const Tensor& compressed_base, const Tensor& swa_base,
+    Tensor& out_indices, Tensor& out_lens,
+    int64_t window_size, int64_t compress_ratio, int64_t topk);
 void dsv4_dequantize_k_cache_paged_out(
     torch::Tensor const& cache_u8,
     torch::Tensor const& page_table,
@@ -1461,6 +1470,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
      py::arg("tokens_per_request") = 1,
      py::arg("dedup_table") = py::none(),
      py::arg("reuse_compact_indices") = false);
+ m.def("dequantize_k_cache_paged_hcu", &at::native::dequantize_k_cache_paged_hcu,
+       "V4 packed paged KV dequantization into preallocated BF16 output");
+ m.def("combine_topk_swa_indices_hcu", &at::native::combine_topk_swa_indices_hcu,
+       "Combine compressed TopK and positional SWA indices into a flat workspace");
  m.def(
      "dsv4_dequantize_k_cache_paged_out",
      &at::native::dsv4_dequantize_k_cache_paged_out,
