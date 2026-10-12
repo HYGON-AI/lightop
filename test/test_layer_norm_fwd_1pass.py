@@ -670,7 +670,7 @@ def run_one(
         else:
             row["note"] = "skip bench on correctness failure"
 
-        del tensors
+        tensors = None
         torch.cuda.empty_cache()
     except torch.cuda.OutOfMemoryError as exc:
         torch.cuda.empty_cache()
