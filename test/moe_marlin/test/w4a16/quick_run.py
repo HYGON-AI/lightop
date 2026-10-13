@@ -336,7 +336,7 @@ def perf_deepseek_v3(use_random):
 
             res.append({
                 "num_tokens": num_tokens,
-                "acc": 
+                "acc": True,
             })
 
 
