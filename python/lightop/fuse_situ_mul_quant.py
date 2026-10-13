@@ -1,5 +1,6 @@
-import torch
 from typing import Optional, Tuple
+
+import torch
 
 from . import op
 
@@ -27,13 +28,9 @@ def fuse_situ_mul_quant_contiguous(
     hidden = doubled_hidden // 2
 
     if output is None:
-        output = torch.empty(
-            (tokens, hidden), dtype=torch.int8, device=input.device
-        )
+        output = torch.empty((tokens, hidden), dtype=torch.int8, device=input.device)
     if scales is None:
-        scales = torch.empty(
-            (tokens, 1), dtype=torch.float32, device=input.device
-        )
+        scales = torch.empty((tokens, 1), dtype=torch.float32, device=input.device)
 
     op.fuse_situ_mul_quant_contiguous(
         input, output, scales, float(situ_beta), float(situ_linear_beta)
@@ -60,13 +57,17 @@ def fuse_situ_mul_quant_ep(
         masked_m: ``[experts]`` int32; ``masked_m[e]`` is the valid-token
             count for expert ``e``.
         situ_beta, situ_linear_beta: Positive SoftCap-GLU betas.
-        expect_m: Optional caller hint for the max expected valid tokens
-            per expert. When >0 and smaller than ``tokens_per_expert`` the
-            launched grid is clamped to that value and the kernel
-            grid-strides over the actual per-expert valid range, avoiding
-            the majority of dead-block launches at decode time. When -1
-            (default), the launched grid covers the full ``tokens_per_expert``
-            axis (backward-compat with callers that do not track expected_m).
+        expect_m: Scheduling hint, not a bound on valid tokens. On ROCm,
+            BF16 inputs with E=28 and hidden=3072 use packed scheduling for
+            hints 1..4 and a tuned per-expert reduction for hints 5..19.
+            LIGHTOP_SITU_EP_PACKED=0 restores legacy scheduling;
+            LIGHTOP_SITU_EP_TUNED=0 keeps only the earlier packed path.
+            Both switches default on and are read once on the first call.
+            Other cases retain the original grid-stride scheduling: a
+            positive hint clamps the grid to min(expect_m, tokens per
+            expert); otherwise the grid covers the full token capacity.
+            Every path processes the actual masked_m counts, including
+            counts greater than the hint.
 
     Returns:
         (output, scales) where output is ``[experts, tokens, hidden]`` int8
@@ -79,9 +80,7 @@ def fuse_situ_mul_quant_ep(
         sees a finite value.
     """
     if input.dim() != 3 or input.shape[-1] % 2 != 0:
-        raise ValueError(
-            "input must have shape [experts, tokens, 2 * hidden]"
-        )
+        raise ValueError("input must have shape [experts, tokens, 2 * hidden]")
     if not input.is_contiguous():
         raise ValueError("input must be contiguous")
     if masked_m.dim() != 1 or masked_m.shape[0] != input.shape[0]:
@@ -111,8 +110,12 @@ def fuse_situ_mul_quant_ep(
         )
 
     op.fuse_situ_mul_quant_ep(
-        input, output, scales, masked_m,
-        float(situ_beta), float(situ_linear_beta),
+        input,
+        output,
+        scales,
+        masked_m,
+        float(situ_beta),
+        float(situ_linear_beta),
         int(expect_m),
     )
     return output, scales
