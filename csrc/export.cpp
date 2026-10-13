@@ -243,7 +243,7 @@ Tensor moe_marlin_w4a8(
                         torch::Tensor& b_q_weight,
                         torch::Tensor& b_scales,
                         torch::Tensor& workspace,
-                        torch::Tensor& global_reduce_buffer,  // 鐢ㄤ簬鍏ㄥ眬瑙勭害鐨勭紦鍐插尯
+                        torch::Tensor& global_reduce_buffer,  // 用于全局规约的缓冲区
                         torch::Tensor& sorted_token_ids,
                         torch::Tensor& expert_ids,
                         torch::Tensor& num_tokens_past_padded,
@@ -266,7 +266,7 @@ Tensor moe_marlin_w4fp8(
                         torch::Tensor& b_q_weight, 
                         torch::Tensor& b_scales,
                         torch::Tensor& workspace, 
-                        torch::Tensor& global_reduce_buffer,  // 鐢ㄤ簬鍏ㄥ眬瑙勭害鐨勭紦鍐插尯
+                        torch::Tensor& global_reduce_buffer,  // 用于全局规约的缓冲区
                         torch::Tensor& sorted_token_ids, 
                         torch::Tensor& expert_ids,
                         torch::Tensor& num_tokens_past_padded, 
