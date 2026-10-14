@@ -5,7 +5,7 @@ conversion while retaining `lightop.w4tow16`.
 
 The focused test packs known nibble sequences into two UINT32 rows, applies
 different FP16 scale/zero pairs, and compares all unpacked values exactly.
-The existing `test/test_gemm.py` benchmark now imports `w4tow16` from
+The existing `test/ci_tests/test_gemm.py` benchmark now imports `w4tow16` from
 `lightop.quant`, so its original GEMM preparation path also exercises the
 classified API.
 
