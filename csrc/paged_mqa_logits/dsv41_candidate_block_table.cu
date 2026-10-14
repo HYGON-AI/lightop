@@ -59,11 +59,13 @@ __device__ __forceinline__ int block_exclusive_scan(int v, int* s_wave) {
     return before + x - v;
 }
 
+template <bool OutputMask = false>
 __global__ __launch_bounds__(kThreads) void candidate_block_table_kernel(
     const float* __restrict__ logits, int64_t logits_stride, const int* __restrict__ seq_lens,
     const int* __restrict__ page_table, int64_t pt_stride, int blocks_per_page, int width,
     int topk, unsigned* __restrict__ workspace, int64_t ws_stride,
-    int* __restrict__ out, int64_t out_stride, int* __restrict__ valid_lens) {
+    int* __restrict__ out, int64_t out_stride, int* __restrict__ valid_lens,
+    bool* __restrict__ out_mask = nullptr) {
     __shared__ unsigned s_keys[kLdsKeys];
     __shared__ int s_hist[kWaves][256];
     __shared__ int s_wave[kWaves];
@@ -75,16 +77,28 @@ __global__ __launch_bounds__(kThreads) void candidate_block_table_kernel(
     const int len = min(seq_lens[b], width);
     const int n = (len + kBlock - 1) / kBlock;
     const int kept = min(n, topk);
-    if (tid == 0) valid_lens[b] = len > 0 ? kBlock * (kept - 1) + (len - 1) % kBlock + 1 : 0;
-    const int* pt = page_table + b * pt_stride;
+    if constexpr (!OutputMask) {
+        if (tid == 0) valid_lens[b] = len > 0 ? kBlock * (kept - 1) + (len - 1) % kBlock + 1 : 0;
+    }
     int* row_out = out + b * out_stride;
-    auto phys = [&](int i) { return pt[i / blocks_per_page] * blocks_per_page + i % blocks_per_page; };
+    auto phys = [&](int i) {
+        if constexpr (OutputMask) return i;
+        else return page_table[b * pt_stride + i / blocks_per_page] * blocks_per_page + i % blocks_per_page;
+    };
+    bool* row_mask = nullptr;
+    if constexpr (OutputMask) row_mask = out_mask + static_cast<int64_t>(b) * width;
 
     if (n <= topk) {
-        for (int i = tid; i < topk; i += kThreads) row_out[i] = i < n ? phys(i) : 0;
+        for (int i = tid; i < topk; i += kThreads) row_out[i] = i < n ? phys(i) : (OutputMask ? -1 : 0);
+        if constexpr (OutputMask) {
+            for (int i = tid; i < width; i += kThreads) row_mask[i] = i / kBlock < n;
+        }
         return;
     }
 
+    if constexpr (OutputMask) {
+        for (int i = tid; i < width; i += kThreads) row_mask[i] = false;
+    }
     unsigned* keys = n <= kLdsKeys ? s_keys : workspace + b * ws_stride;
     const float* row = logits + b * logits_stride;
     for (int i = tid; i < n; i += kThreads) {
@@ -161,7 +175,15 @@ __global__ __launch_bounds__(kThreads) void candidate_block_table_kernel(
     int eq_seen = eq_before;
     for (int i = lo; i < hi; ++i) {
         const unsigned k = keys[i];
-        if (k > threshold || (k == threshold && eq_seen++ < ties)) row_out[pos++] = phys(i);
+        if (k > threshold || (k == threshold && eq_seen++ < ties)) {
+            row_out[pos++] = phys(i);
+            if constexpr (OutputMask) {
+#pragma unroll
+                for (int j = 0; j < kBlock; ++j) {
+                    if (i * kBlock + j < width) row_mask[i * kBlock + j] = true;
+                }
+            }
+        }
     }
 }
 }  // namespace
@@ -202,12 +224,47 @@ void dsv41_candidate_block_table(
         ws_stride = max_blocks;
     }
     auto stream = at::hip::getCurrentHIPStream();
-    candidate_block_table_kernel<<<batch, kThreads, 0, stream>>>(
+    candidate_block_table_kernel<false><<<batch, kThreads, 0, stream>>>(
         logits.data_ptr<float>(), logits.stride(0), seq_lens.data_ptr<int>(), page_table.data_ptr<int>(),
         page_table.stride(0), static_cast<int>(page_size / kBlock), static_cast<int>(logits.size(1)),
         static_cast<int>(out_phys_blocks.size(1)), ws, ws_stride, out_phys_blocks.data_ptr<int>(),
         out_phys_blocks.stride(0), out_valid_lens.data_ptr<int>());
     TORCH_CHECK(hipGetLastError() == hipSuccess, "dsv41_candidate_block_table: launch failed");
+}
+
+void dsv41_select_candidate_blocks(
+    const torch::Tensor& logits, const torch::Tensor& seq_lens, int64_t block_size,
+    torch::Tensor& out_mask, torch::Tensor& out_block_ids) {
+    TORCH_CHECK(block_size == kBlock, "dsv41_select_candidate_blocks: block_size must be 8");
+    TORCH_CHECK(logits.is_cuda() && logits.scalar_type() == at::kFloat && logits.dim() == 2 && logits.stride(1) == 1 &&
+                logits.stride(0) % 4 == 0 && reinterpret_cast<uintptr_t>(logits.data_ptr()) % 16 == 0,
+                "dsv41_select_candidate_blocks: logits must be FP32 [B,W] with 16-byte aligned rows");
+    const int64_t batch = logits.size(0), width = logits.size(1);
+    TORCH_CHECK(seq_lens.device() == logits.device() && seq_lens.scalar_type() == at::kInt &&
+                seq_lens.is_contiguous() && seq_lens.numel() == batch,
+                "dsv41_select_candidate_blocks: seq_lens must be contiguous int32 [B]");
+    TORCH_CHECK(out_mask.device() == logits.device() && out_mask.scalar_type() == at::kBool &&
+                out_mask.sizes() == logits.sizes() && out_mask.is_contiguous(),
+                "dsv41_select_candidate_blocks: out_mask must be contiguous bool [B,W]");
+    TORCH_CHECK(out_block_ids.device() == logits.device() && out_block_ids.scalar_type() == at::kInt &&
+                out_block_ids.dim() == 2 && out_block_ids.size(0) == batch && out_block_ids.is_contiguous() &&
+                out_block_ids.size(1) > 0,
+                "dsv41_select_candidate_blocks: out_block_ids must be contiguous int32 [B,topk]");
+    if (batch == 0) return;
+    const at::hip::OptionalHIPGuardMasqueradingAsCUDA guard(logits.device());
+    const int64_t max_blocks = (width + kBlock - 1) / kBlock;
+    torch::Tensor workspace;
+    unsigned* ws = nullptr;
+    if (max_blocks > kLdsKeys) {
+        workspace = torch::empty({batch, max_blocks}, logits.options().dtype(at::kInt));
+        ws = reinterpret_cast<unsigned*>(workspace.data_ptr<int>());
+    }
+    auto stream = at::hip::getCurrentHIPStream();
+    candidate_block_table_kernel<true><<<batch, kThreads, 0, stream>>>(
+        logits.data_ptr<float>(), logits.stride(0), seq_lens.data_ptr<int>(), nullptr, 0, 1,
+        static_cast<int>(width), static_cast<int>(out_block_ids.size(1)), ws, max_blocks,
+        out_block_ids.data_ptr<int>(), out_block_ids.stride(0), nullptr, out_mask.data_ptr<bool>());
+    TORCH_CHECK(hipGetLastError() == hipSuccess, "dsv41_select_candidate_blocks: launch failed");
 }
 
 }  // namespace lightop::deep_gemm

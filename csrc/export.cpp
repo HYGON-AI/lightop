@@ -1256,6 +1256,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "DSV4.1 candidate indexer level one: top blocks of 8 by block max as pool slots / 8",
         py::arg("logits"), py::arg("seq_lens"), py::arg("page_table"), py::arg("page_size"),
         py::arg("block_size"), py::arg("out_phys_blocks"), py::arg("out_valid_lens"));
+  m.def("dsv41_select_candidate_blocks", &lightop::deep_gemm::dsv41_select_candidate_blocks,
+        "DSV4.1 candidate block selection and dense mask expansion",
+        py::arg("logits"), py::arg("seq_lens"), py::arg("block_size"),
+        py::arg("out_mask"), py::arg("out_block_ids"));
   m.def(
       "dequantize_index_k_int8_paged",
       &lightop::deep_gemm::dequantize_index_k_int8_paged,
