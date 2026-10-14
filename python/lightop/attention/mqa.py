@@ -221,6 +221,30 @@ def dsv41_candidate_block_table(logits, seq_lens, page_table, page_size,
     )
 
 
+def dsv41_select_candidate_blocks(logits, seq_lens, topk_blocks, block_size=8):
+    """Select logical blocks and expand their mask in one HCU kernel.
+
+    Returns bool [B,W] and ascending int32 [B,topk_blocks] with -1 padding.
+    Selected blocks expand all eight positions, clipped at W, not seq_lens.
+    Inputs have the same FP32 aligned-row and int32 length contract as the
+    candidate block-table operator; no physical page table is needed.
+    """
+    from .. import op
+    if not hasattr(op, "dsv41_select_candidate_blocks"):
+        raise RuntimeError(
+            "dsv41_select_candidate_blocks unavailable: rebuild or upgrade "
+            "the LightOp native extension"
+        )
+    out_mask = torch.empty(logits.shape, dtype=torch.bool, device=logits.device)
+    out_block_ids = torch.empty(
+        (logits.shape[0], topk_blocks), dtype=torch.int32, device=logits.device
+    )
+    op.dsv41_select_candidate_blocks(
+        logits, seq_lens, block_size, out_mask, out_block_ids
+    )
+    return out_mask, out_block_ids
+
+
 __all__ = [
     "fp8_fp4_mqa_logits",
     "get_paged_mqa_logits_metadata",
@@ -232,5 +256,6 @@ __all__ = [
     "paged_mqa_logits_fp4",
     "paged_mqa_logits_route_lens",
     "dsv41_candidate_block_table",
+    "dsv41_select_candidate_blocks",
     "page_mqa_logits_sparse_mask",
 ]
