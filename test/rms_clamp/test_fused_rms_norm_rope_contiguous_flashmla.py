@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Correctness checks for the optional 656-byte FlashMLA KV-cache layout."""
 
 import itertools

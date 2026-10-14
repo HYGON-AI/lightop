@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * This is a standalone test for custom allreduce.
  * To compile, make sure you have MPI and NCCL installed in your system.

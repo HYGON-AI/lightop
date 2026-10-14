@@ -5,6 +5,12 @@ Lightop是一个自研的融合算子库，提供了大量的自研算子，用�
 
 这些算子通常从torch里面获取，然后进行性能优化，常见的norm类算子比torch native有2-5倍的性能提升。
 
+## 许可证
+
+Lightop 使用 Apache License 2.0。完整许可证文本见根目录的 [LICENSE](LICENSE)。
+
+本仓库还包含从第三方项目复制或适配的源码。第三方组件仍受其各自的版权和许可证约束，来源、版本证据、许可证和本仓库中的路径见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 # 安装
 
 环境依赖：
@@ -155,4 +161,3 @@ benchmark_test_kernel.sh
 ```shell
 python -c "import lightop; print(lightop.__version__)",若成功打印版本信息则安装成功。
 ```
-

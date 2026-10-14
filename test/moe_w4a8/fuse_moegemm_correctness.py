@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 import torch
 torch.set_printoptions(precision=4, profile="default", sci_mode=False)
 import time

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """FP4 scheduling boundaries, one-million-token contexts and live graph replay."""
 
 from bisect import bisect_right

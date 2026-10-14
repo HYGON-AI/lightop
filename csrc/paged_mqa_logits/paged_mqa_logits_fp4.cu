@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // Paged MXFP4 MQA logits for the DSV4.1 low-ratio indexer, DeepGEMM's
 // fp8_fp4_paged_mqa_logits contract on HCU:
 //

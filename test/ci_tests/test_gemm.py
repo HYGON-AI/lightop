@@ -1,9 +1,12 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """GEMM and W4A16 correctness and GPU timing checks on supported HCU GPUs.
 
-Run both suites and save GPU timings to CSV: python -m pytest -v test/test_gemm.py
-Run only GPU timings: python -m pytest -v test/test_gemm.py -k gpu_timing
-Run both correctness suites and timing: python test/test_gemm.py --benchmark
-Run only W4A16: python test/test_gemm.py --op w4a16 --benchmark
+Run both suites and save GPU timings to CSV: python -m pytest -v test/ci_tests/test_gemm.py
+Run only GPU timings: python -m pytest -v test/ci_tests/test_gemm.py -k gpu_timing
+Run both correctness suites and timing: python test/ci_tests/test_gemm.py --benchmark
+Run only W4A16: python test/ci_tests/test_gemm.py --op w4a16 --benchmark
 Select the GPU with HIP_VISIBLE_DEVICES before starting Python.
 CSV defaults to test-results/gemm_gpu_timing_<timestamp>.csv in the repository.
 Set GEMM_CSV_PATH to override the CSV destination (pytest and standalone).
@@ -30,7 +33,7 @@ def _timing_row(op, shape, input_dtype, output_dtype, lightop_us, torch_us):
 
 
 def _write_gpu_csv(rows):
-    default = Path(__file__).resolve().parents[1] / "test-results" / (
+    default = Path(__file__).resolve().parents[2] / "test-results" / (
         f"gemm_gpu_timing_{datetime.now():%Y%m%d_%H%M%S_%f}.csv")
     path = Path(os.environ.get("GEMM_CSV_PATH") or default).expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)

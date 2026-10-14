@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // Level one of the DSV4.1 two-level indexer in a single pass per row
 // (replaces amax8_varlen + a block top-k + sort_candidate_blocks):
 //

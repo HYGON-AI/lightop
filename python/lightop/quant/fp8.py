@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """FP8 quantization and conversion APIs backed by native LightOp kernels."""
 
 from typing import Optional, Tuple

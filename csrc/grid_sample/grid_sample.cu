@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 /*
   Implementation is based on the algorihtm presented in pages 1685-1686 of:
 

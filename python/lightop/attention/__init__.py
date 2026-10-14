@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Attention APIs."""
 
 # Bumped when the paged_mqa_logits_fp4 signature changes; consumers feature-detect

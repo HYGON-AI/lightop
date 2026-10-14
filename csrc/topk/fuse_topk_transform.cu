@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 /**
  * @NOTE: Unified Fast TopK Implementation
  * Merges the highly optimized CUB-based 11-11-10 bit filtering Top-K (Code 2)
