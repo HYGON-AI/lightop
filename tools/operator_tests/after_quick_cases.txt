@@ -5,7 +5,7 @@ test/moe_marlin/test/awq_marlin_repack/test_marlin_utils.py
 test/moe_marlin/test/awq_marlin_repack_w4a8/test_marlin_utils.py
 
 # GEMM and MoE.
-test/test_gemm.py
+test/ci_tests/test_gemm.py
 test/test_moe_align_block_size.py
 
 # Normalization and activation.

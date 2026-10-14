@@ -162,7 +162,7 @@ def main() -> int:
                 "W4A16 legacy regression",
                 stream_command(
                     "W4A16 legacy regression",
-                    [sys.executable, str(TEST_DIR / "test_gemm.py")],
+                    [sys.executable, str(TEST_DIR / "ci_tests" / "test_gemm.py")],
                     env,
                     validate_w4a16,
                 ),
