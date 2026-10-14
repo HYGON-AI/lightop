@@ -6,30 +6,29 @@
 #include "selectors.hpp"
 
 namespace lightop::mqa_fp8 {
-KernelConfig resolve(const MqaFp8Params &p) {
-    KernelConfig config;
-    mqa_auto_config(p, config);
-    return config;
-}
+KernelId resolve_kernel(const MqaFp8Params &p) { return select_kernel(p); }
 
-hipError_t launch(const MqaFp8Params &p, const KernelConfig &config, hipStream_t stream,
-                  uint32_t max_grid_x, uint32_t max_grid_y) {
+hipError_t launch(const MqaFp8Params &p, KernelId id, hipStream_t stream, uint32_t max_grid_x,
+                  uint32_t max_grid_y) {
     LaunchGrid grid;
-    if (!make_grid(p, config, max_grid_x, max_grid_y, grid)) {
+    if (!make_grid(p, id, max_grid_x, max_grid_y, grid)) {
         return hipErrorInvalidValue;
     }
     if (!grid.x || !grid.y)
         return hipSuccess;
     Kernel kernel = nullptr;
-    switch (config.kind) {
-    case KernelKind::M64:
+    switch (traits(id).family) {
+    case Family::M64:
         kernel = mqa_select_m64(p);
         break;
-    case KernelKind::M16:
-        kernel = mqa_select_m16(p, config.block_n);
+    case Family::M16:
+        kernel = mqa_select_m16(p, id);
         break;
-    case KernelKind::QH:
-        kernel = mqa_select_qh(p, config.block_n);
+    case Family::M16G:
+        kernel = mqa_select_m16_grouped(p, id);
+        break;
+    case Family::QH:
+        kernel = mqa_select_qh(p, traits(id).block_n);
         break;
     default:
         return hipErrorInvalidValue;

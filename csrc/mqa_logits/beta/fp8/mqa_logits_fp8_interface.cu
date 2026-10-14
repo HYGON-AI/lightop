@@ -138,9 +138,11 @@ torch::Tensor mqa_logits_fp8(const torch::Tensor &Q, const torch::Tensor &K,
     p.ke = ke.data_ptr<int32_t>();
     p.clean_logits = clean_logits;
     const auto stream = at::cuda::getCurrentCUDAStream(Q.get_device());
-    status = launch(p, resolve(p), stream, prop.maxGridSize[0], prop.maxGridSize[1]);
+    const KernelId id = resolve_kernel(p);
+    status = launch(p, id, stream, prop.maxGridSize[0], prop.maxGridSize[1]);
     TORCH_CHECK(status == hipSuccess,
-                "mqa_logits FP8 launch/configuration failed: ", hipGetErrorString(status));
+                "mqa_logits FP8 ", kernel_name(id), " launch/configuration failed: ",
+                hipGetErrorString(status));
     return result;
 }
 } // namespace at::native

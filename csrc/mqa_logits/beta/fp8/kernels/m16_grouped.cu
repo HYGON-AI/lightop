@@ -252,29 +252,21 @@ __global__ __launch_bounds__(256) void mqa_m16_grouped(MqaFp8Params p) {
     }
 }
 
-Kernel mqa_select_m16_grouped(const MqaFp8Params &p) {
-    // Performance was measured with clean causal windows, contiguous FP8 Q/K,
-    // FP32 weights and K scale. The host cannot inspect KS/KE values; shape and
-    // clean_logits are the available selection inputs. All windows are correct.
-    if (p.d != 128 || p.clean_logits != 1 || !p.kv_scale || p.m % 16 != 0 || p.n % 128 != 0 ||
-        p.q_stride_m != p.h * 128 || p.q_stride_h != 128 || p.kv_stride_n != 128 ||
-        p.weights_stride_m != p.h || p.out_stride_m != p.n ||
-        (reinterpret_cast<uintptr_t>(p.out) & 15) != 0)
+Kernel mqa_select_m16_grouped(const MqaFp8Params &p, KernelId id) {
+    // Share launch's hard requirements; measured groups and M/N ranges govern auto dispatch only.
+    if (!kernel_supported(p, id, Family::M16G))
         return nullptr;
-    // Restrict the grouped path to the complete-tile ranges checked by the
-    // causal crossover benchmark. The existing M16 selector handles the rest.
-    if (p.h == 8 &&
-        (((p.m == 16 || p.m == 32) && p.n >= 8192 && p.n <= 32768) ||
-         (p.m == 64 && p.n >= 4096 && p.n < 8192))) {
-        if (p.n >= 4096 && p.n <= 16384)
-            return mqa_m16_grouped<128, true, false, true, false, true, 8>;
+    // Case order matches the historical instantiation order, keeping the code object byte-identical.
+    switch (id) {
+    case KernelId::M16G_W8_K64:
+        return mqa_m16_grouped<128, true, false, true, false, true, 8>;
+    case KernelId::M16G_W8:
         return mqa_m16_grouped<128, true, false, true, false, false, 8>;
-    }
-    if (p.h == 64 &&
-        ((p.m == 16 && p.n >= 32768 && p.n < 49152) ||
-         (p.m == 32 && p.n >= 12288 && p.n < 16384)))
+    case KernelId::M16G_W16:
         return mqa_m16_grouped<128, true, false, true, false, false, 16>;
-    return nullptr;
+    default:
+        return nullptr;
+    }
 }
 
 } // namespace mqa_fp8

@@ -200,24 +200,18 @@ __global__ __launch_bounds__(256) void mqa_m16(MqaFp8Params p) {
     }
 }
 
-Kernel mqa_select_m16(const MqaFp8Params &p, int bn) {
-    if (bn == 128)
-        if (Kernel grouped = mqa_select_m16_grouped(p))
-            return grouped;
+Kernel mqa_select_m16(const MqaFp8Params &p, KernelId id) {
+    if (!kernel_supported(p, id, Family::M16))
+        return nullptr;
+    const int bn = traits(id).block_n;
+    // Complete tiles and vector stores are separate from KS/KE window coverage.
+    const bool full = p.m % 16 == 0 && p.n % bn == 0 && out_vec(p);
+    // Mode 0: tail, 1: full, 2: specialized full tile (H8Q at BN64, K64 at BN128).
+    int mode = full ? 1 : 0;
+    if (id == KernelId::M16_64_H8Q || id == KernelId::M16_128_K64) {
+        mode = 2;
+    }
     return MQA_SIZE_SWITCH_3(bn, BN, 64, 128, 256, [&] {
-        // Complete tiles and vector stores are separate from KS/KE window coverage.
-        const bool aligned = p.m % 16 == 0 && p.n % BN == 0 &&
-                             ((reinterpret_cast<uintptr_t>(p.out) |
-                               (uint64_t(p.out_stride_m) * sizeof(float))) & 15) == 0;
-        // Mode 0: tail, 1: full, 2: specialized full tile.
-        int mode = aligned ? 1 : 0;
-        if constexpr (BN == 64) {
-            if (aligned && p.m == 16 && p.h == 8 && p.n >= 2048 && p.n <= 8192)
-                mode = 2;
-        } else if constexpr (BN == 128) {
-            if (aligned && p.h == 8 && p.n >= 4096 && p.n <= 16384)
-                mode = 2;
-        }
         return MQA_SIZE_SWITCH_3(mode, Mode, 0, 1, 2, [&] {
             if constexpr (BN == 256 && Mode == 2) {
                 return static_cast<Kernel>(nullptr);
