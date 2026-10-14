@@ -84,3 +84,21 @@ def moe_fused_gate_sqrtsoftplus_v41_hcu(
         routed_scaling_factor,
         apply_routed_scaling_factor_on_output,
     )
+
+
+def moe_fused_gate_sqrtsoftplus_v41_hcu_fused(
+    x,
+    bias,
+    topk,
+    num_fused_shared_experts=0,
+    renormalize=True,
+    routed_scaling_factor=1.0,
+    apply_routed_scaling_factor_on_output=False,
+    num_token_non_padded=None,
+):
+    """V4.1 routing with int64 IDs and zeroed device-side padding rows."""
+    return op.moe_fused_gate_sqrtsoftplus_v41_hcu_fused(
+        x, bias, topk, num_fused_shared_experts, renormalize,
+        routed_scaling_factor, apply_routed_scaling_factor_on_output,
+        num_token_non_padded,
+    )
