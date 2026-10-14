@@ -20,6 +20,7 @@ from .mqa import (
     paged_mqa_logits_route_lens,
     page_mqa_logits_sparse_mask,
     dsv41_candidate_block_table,
+    dsv41_select_candidate_blocks,
 )
 from .qkv import (
     fuse_layernorm_rotary_embedding,
@@ -90,6 +91,7 @@ __all__ = [
     "paged_mqa_logits_fp4",
     "paged_mqa_logits_route_lens",
     "dsv41_candidate_block_table",
+    "dsv41_select_candidate_blocks",
     "page_mqa_logits_sparse_mask",
     "rms_rotary_embedding_fuse",
     "rms_rotary_embedding_fuse_with_kv_store",
