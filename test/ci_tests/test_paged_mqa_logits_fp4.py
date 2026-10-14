@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Public FP4 paged logits accuracy, input guards and live CUDA/HIP graph replay.
 
 The contract is DeepGEMM's `fp8_fp4_paged_mqa_logits` with clean_logits false:

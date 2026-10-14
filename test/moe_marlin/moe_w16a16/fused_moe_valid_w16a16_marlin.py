@@ -1,4 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
+
 """Fused MoE utilities for GPTQ."""
 import functools
 from typing import Optional, Type,Any, Dict, List, Tuple

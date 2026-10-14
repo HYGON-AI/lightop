@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """单测 + 跑分：commit 6d99d17 "derive q and KV cache fp8 formats from their own buffers"。
 
 该 commit 修的是两个**互相独立**的 bug，本文件对两个都给出判定性用例：

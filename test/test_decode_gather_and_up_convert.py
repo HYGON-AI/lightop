@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Target-shape test for ``decode_gather_and_up_convert``.
 
 The workload mirrors the decode tensors captured from GLM:

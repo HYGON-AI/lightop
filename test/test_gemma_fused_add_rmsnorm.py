@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 import torch
 from typing import Optional, Tuple, Union
 from lightop.norm import gemma_fused_add_rmsnorm

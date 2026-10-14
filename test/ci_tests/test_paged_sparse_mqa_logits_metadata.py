@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """get_paged_sparse_mqa_logits_metadata against a reference of DeepGEMM's semantics.
 
 Q blocks claim their KV-split range with a global atomic (as in DeepGEMM), so the
