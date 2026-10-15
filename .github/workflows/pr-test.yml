@@ -3,9 +3,6 @@
 
 name: pr-test
 
-# 仅 PR 创建/更新时触发一次完整编译+测试
-# pull_request (非 pull_request_target): 工作流在受限上下文运行, token 只读、
-# 无 secrets, checkout fork 代码不受 actions/checkout 的 pwn request 拦截
 on:
   pull_request:
     branches:
@@ -23,28 +20,21 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # csrc 内核多且重, 显式控制 ninja 并行度以缩短编译时间
   MAX_JOBS: "32"
 
 jobs:
   test:
-    # 需要 docker 与内网 pip 源访问能力的自托管 runner
     runs-on: self-hosted
     timeout-minutes: 480
     strategy:
-      # 一个 dtk/torch 组合的失败不应掩盖另一个组合的结果
       fail-fast: false
       matrix:
-        # 测试容器取《DTK 基础镜像清单》同款 Rocky8.6 镜像 (kcnm6g5dkw5p.feishu.cn/docx/SirRd5pbXo8GGuxOEYkcoQspnug);
-        # 基础镜像是裸系统+DTK, vllm/vllm-hcu/triton/torch/AICC 由步骤现装
         include:
-          # ---- dtk26.04 基线: torch 2.11, AICC 1.0.0 ----
           - dtk_tag: 2604
             aicc_major: "1.0.0"
             pip_index_suffix: nightly/dtk2604/+simple/
             torch_version: "2.11.0"
             need_vllm: false
-          # ---- dtk26.10: torch 2.11, AICC 2.0.0 ----
           - dtk_tag: 2610
             aicc_major: "2.0.0"
             pip_index_suffix: nightly/dtk2610/+simple/
@@ -54,6 +44,7 @@ jobs:
       TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_TAG: ${{ matrix.dtk_tag }}
     container:
+      # DTK 基础镜像, 自带 /opt/dtk
       image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_tag == '2610' && '26.10' || '26.04' }}-rockylinux8.6-py3.12
       options: >-
         --volume /opt/hyhal:/opt/hyhal:ro
@@ -69,21 +60,17 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Integrate latest master
+      - name: 合入最新 master
         if: matrix.dtk_tag != '2610'
-        # 测试的应该是合入 master 之后的结果: 先把最新 master 合并进当前分支再打包
         shell: bash
         run: |
           set -euo pipefail
-          # 镜像默认用户与 checkout 目录属主不一致时 git 拒绝操作, 显式豁免
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           target_sha="$(git rev-parse origin/master)"
           git -c user.name='LightOp CI' -c user.email='ci@localhost' \
               merge --no-edit "${target_sha}"
           echo "Integrated master ${target_sha}"
 
-      # ---- 测试依赖: 基础镜像是裸系统+DTK, pip 依赖按矩阵的 dtk 源现装;
-      # vllm/vllm-hcu 仅 dtk2610 需要 (单测对照用), AICC 由下一步统一安装 ----
       - name: 配置内网 pip 源并安装测试依赖
         shell: bash
         run: |
@@ -101,9 +88,7 @@ jobs:
             pip install --no-cache-dir "vllm==0.28.1" "vllm-hcu>0.28.0,<=0.28.1"
           fi
 
-      - name: Install AICC
-        # dtk2610 对应 AICC 2.0.0, dtk2604 基线为 1.0.0 (aicc_major 随矩阵下发)
-        # fork PR 的 pull_request 事件读不到主仓 vars, 回退到主仓配置的同一内网值
+      - name: 安装 AICC
         shell: bash
         run: |
           wget ${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}/ai_cc/Nightly/hcu_llvm_installer.sh
@@ -112,20 +97,17 @@ jobs:
           RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}
 
       - name: 编译并安装 lightop
-        # vllm 测试镜像自带 DTK 编译环境, 直接源码编译, 无需跨 job 传递 wheel
         shell: bash
         run: |
           set -euo pipefail
-          if [ -f /opt/dtk/env.sh ]; then
-            # shellcheck disable=SC1091
-            source /opt/dtk/env.sh
-          fi
+          # shellcheck disable=SC1091
+          source /opt/dtk/env.sh
           pip install --no-cache-dir ninja wheel setuptools
           python3 setup.py bdist_wheel
           pip install --no-deps --force-reinstall dist/*.whl
           python3 -c "import lightop; print(f'lightop={lightop.__version__}')"
 
-      - name: install pytest
+      - name: 安装 pytest
         run: python3 -m pip install --no-cache-dir pytest
 
       - name: 运行 test/ci_tests
@@ -134,18 +116,12 @@ jobs:
           PYTHONUNBUFFERED: "1"
         shell: bash
         run: |
-          # 加载 DTK 运行环境 (LD_LIBRARY_PATH 等)
-          if [ -f /opt/dtk/env.sh ]; then
-            # shellcheck disable=SC1091
-            source /opt/dtk/env.sh
-          fi
+          # shellcheck disable=SC1091
+          source /opt/dtk/env.sh
           cd test/ci_tests
-          # junit 命名带 dtk/torch 组合, 避免不同矩阵项互相覆盖
           python3 -m pytest -v -p no:cacheprovider --tb=short \
               --junitxml="${GITHUB_WORKSPACE}/junit-dtk${DTK_TAG}-${TORCH_VERSION}.xml"
 
-      # 容器内以 root 运行, workspace 里的文件会归 root 所有,
-      # 宿主机上后续 job 的 checkout 无法清理, 退出前清空
       - name: 清理 workspace
         if: always()
         run: rm -rf "${GITHUB_WORKSPACE}"/* "${GITHUB_WORKSPACE}"/.[!.]* || true
