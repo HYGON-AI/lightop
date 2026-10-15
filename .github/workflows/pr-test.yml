@@ -32,17 +32,24 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 480
     strategy:
-      # 一个 torch 版本的失败不应掩盖另一个版本的结果
+      # 一个 dtk/torch 组合的失败不应掩盖另一个组合的结果
       fail-fast: false
       matrix:
-        torch_version: ${{ fromJSON(vars.LIGHTOP_TORCH_VERSIONS || '["2.10.0", "2.11.0"]') }}
         include:
-          - torch_version: 2.10.0
+          # ---- dtk26.04 现网基线: torch 2.10/2.11 ----
+          - dtk_tag: 2604
+            torch_version: "2.10.0"
             test_image: 10.16.1.152:5000/jenkins/model_test_env/vllm:0.21.0-latest
-          - torch_version: 2.11.0
+          - dtk_tag: 2604
+            torch_version: "2.11.0"
             test_image: 10.16.1.152:5000/jenkins/model_test_env/vllm:0.25.1-latest
+          # ---- dtk26.10 新增: 镜像自带 DTK26.10 + torch 2.11 (py3.12) ----
+          - dtk_tag: 2610
+            torch_version: "2.11.0"
+            test_image: 10.16.1.152:5000/jenkins/model_test_env/vllm:0.28.1rc1-ubuntu22.04-dtk2610-py3.12-20261015-1511
     env:
       TORCH_VERSION: ${{ matrix.torch_version }}
+      DTK_TAG: ${{ matrix.dtk_tag }}
     container:
       # include 未覆盖的新 torch 版本走默认测试镜像
       image: ${{ matrix.test_image || vars.LIGHTOP_CI_TEST_IMAGE || '10.16.1.152:5000/jenkins/model_test_env/vllm:0.25.1-latest' }}
@@ -110,9 +117,9 @@ jobs:
             source /opt/dtk/env.sh
           fi
           cd test/ci_tests
-          # junit 写到 workspace
+          # junit 命名带 dtk/torch 组合, 避免不同矩阵项互相覆盖
           python3 -m pytest -v -p no:cacheprovider --tb=short \
-              --junitxml="${GITHUB_WORKSPACE}/junit-${TORCH_VERSION}.xml"
+              --junitxml="${GITHUB_WORKSPACE}/junit-dtk${DTK_TAG}-${TORCH_VERSION}.xml"
 
       # 容器内以 root 运行, workspace 里的文件会归 root 所有,
       # 宿主机上后续 job 的 checkout 无法清理, 退出前清空

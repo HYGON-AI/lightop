@@ -20,28 +20,41 @@ permissions:
   checks: read
 
 env:
-  DTK_PKG_URL: ${{ vars.RESOURCE_SERVER_URL }}/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
   PYPI_URL: ${{ vars.PYPI_URL }}
   # csrc 内核多且重, 显式控制 ninja 并行度以缩短编译时间
   MAX_JOBS: "32"
 
 jobs:
   compile:
-    # ---- 并发控制: 同一分支 + 同一 torch 版本的 job 只保留最新一个 ----
+    # ---- 并发控制: 同一分支 + 同一 dtk/torch 组合的 job 只保留最新一个 ----
     concurrency:
-      group: release-nightly-hcu-${{ github.ref }}-py${{ matrix.torch_version }}
+      group: release-nightly-hcu-${{ github.ref }}-dtk${{ matrix.dtk_tag }}-py${{ matrix.torch_version }}
       cancel-in-progress: true
     # ---- 自托管 HCU runner，在 Docker 容器内执行 ----
     runs-on: [self-hosted]
     timeout-minutes: 180
     strategy:
-      # 一个 torch 版本的失败不应掩盖另一个版本的结果
+      # 一个 dtk/torch 组合的失败不应掩盖另一个组合的结果
       fail-fast: false
       matrix:
-        # 固定两个版本并行, 不依赖仓库变量
-        torch_version: ["2.10.0", "2.11.0"]
+        include:
+          # ---- dtk26.04 现网基线: rocky8.6 底座 + py3.10, torch 2.10/2.11 ----
+          - dtk_tag: 2604
+            dtk_pkg_url: ${{ vars.RESOURCE_SERVER_URL }}/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
+            pip_index_suffix: nightly/dtk2604/+simple/
+            torch_version: "2.10.0"
+          - dtk_tag: 2604
+            dtk_pkg_url: ${{ vars.RESOURCE_SERVER_URL }}/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
+            pip_index_suffix: nightly/dtk2604/+simple/
+            torch_version: "2.11.0"
+          # ---- dtk26.10 新增: 与现网同底座, pip 依赖走 nightly/dtk2610 ----
+          - dtk_tag: 2610
+            dtk_pkg_url: ${{ vars.RESOURCE_SERVER_URL }}/dtk-pkg/dtk26.10/DTK-26.10-CentOS8.5-x86_64.tar.gz
+            pip_index_suffix: nightly/dtk2610/+simple/
+            torch_version: "2.11.0"
     env:
       TORCH_VERSION: ${{ matrix.torch_version }}
+      DTK_TAG: ${{ matrix.dtk_tag }}
     container:
       image: ${{ vars.BASE_COMPILE_IMAGE_ROCKY_PY310 }}
       options: >-
@@ -58,8 +71,11 @@ jobs:
       - name: 打印环境变量
         run: |
           echo "TORCH_VERSION=${TORCH_VERSION}"
+          echo "DTK_TAG=${DTK_TAG}"
           echo "DTK_PKG_URL=${DTK_PKG_URL}"
           echo "PYPI_URL=${PYPI_URL}"
+        env:
+          DTK_PKG_URL: ${{ matrix.dtk_pkg_url }}
 
       - name: 准备构建工具
         shell: bash
@@ -72,7 +88,7 @@ jobs:
             "trusted-host = ${TRUSTED_HOST}" \
             > ~/.pip/pip.conf
         env:
-          PIP_INDEX: ${{ env.PYPI_URL }}/nightly/dtk2604/+simple/
+          PIP_INDEX: ${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}
 
       - name: Install DTK
         shell: bash
@@ -80,9 +96,9 @@ jobs:
           cd /opt
           wget -q "$DTK_PKG_URL"
           tar -xzf "$(basename "$DTK_PKG_URL")"
-          mv dtk-* dtk
+          rm -rf dtk && mv dtk-* dtk
         env:
-          DTK_PKG_URL: ${{ env.DTK_PKG_URL }}
+          DTK_PKG_URL: ${{ matrix.dtk_pkg_url }}
 
       - name: Install AICC
         shell: bash
@@ -120,12 +136,15 @@ jobs:
             --git_commit "${WHEEL_COMMIT_SHA}" \
             --outputdir output \
             -f dist-manylinux/*.whl
+        env:
+          DTK_PKG_URL: ${{ matrix.dtk_pkg_url }}
 
       - name: 上传 NIGHTLY
         if: ${{ github.event_name == 'push' }}
         env:
           # CIUpload 需查关联 PR, 注入自动 token
           GITHUB_TOKEN: ${{ github.token }}
+          DTK_PKG_URL: ${{ matrix.dtk_pkg_url }}
         run: |
           CIUpload NIGHTLY --devpi_url ${PYPI_URL} --password ${{ secrets.PYPI_PASSWORD }} --dtk_pkg_name $(basename $DTK_PKG_URL) -f output/*.whl --record
 
