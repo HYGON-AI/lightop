@@ -61,7 +61,7 @@ jobs:
       TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_TAG: ${{ matrix.dtk_tag }}
     container:
-      # 表内同款 Rocky8.6 基础镜像; 镜像已含 DTK, Install DTK 步骤做版本对齐兜底
+      # 表内 Rocky8.6 基础镜像, 自带对应版本 DTK (/opt/dtk), 无需再装
       image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_tag == '2610' && '26.10' || '26.04' }}-rockylinux8.6-py3.10
       options: >-
         --device=/dev/kfd --device=/dev/dri/ --group-add video
@@ -95,16 +95,6 @@ jobs:
             > ~/.pip/pip.conf
         env:
           PIP_INDEX: ${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}
-
-      - name: Install DTK
-        shell: bash
-        run: |
-          cd /opt
-          wget -q "$DTK_PKG_URL"
-          tar -xzf "$(basename "$DTK_PKG_URL")"
-          rm -rf dtk && mv dtk-* dtk
-        env:
-          DTK_PKG_URL: ${{ matrix.dtk_pkg_url }}
 
       - name: Install AICC
         shell: bash
