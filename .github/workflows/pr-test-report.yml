@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+
+name: pr-test-report
+
+# 把 pr-test.yml 产出的 JUnit 报告发布为 PR check。pr-test.yml 用
+# pull_request 触发(Token 只读)无法写 check-run, 由本工作流代发:
+# workflow_run 在主仓默认分支上下文运行(可信), 但只下载 artifact 并调用
+# 报告 action, 不 checkout/执行 PR 代码, 无 pwn request 风险。
+on:
+  workflow_run:
+    workflows:
+      - pr-test
+    types:
+      - completed
+
+permissions:
+  checks: write
+
+jobs:
+  report:
+    # pr-test run 可能因 concurrency 取消, 此时无可发布内容
+    if: github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: self-hosted
+    timeout-minutes: 15
+    steps:
+      # 仅取 master 上的本工作流与脚本 (workflow_run 的 GITHUB_SHA 即
+      # 默认分支 head), 不触碰 PR 代码
+      - name: Checkout (base repo, default branch)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: 下载 pr-test 的 JUnit artifact
+        # 用 run-id 定位触发本次报告的 pr-test run, 与 workflow_run 严格配套
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: junit-*-${{ github.event.workflow_run.id }}
+          merge-multiple: true
+          path: junit-artifacts
+
+      - name: 发布 JUnit 报告到 PR
+        if: always()
+        continue-on-error: true
+        uses: EnricoMi/publish-unit-test-result-action/linux@v2
+        with:
+          # 明确指回 pr-test 的 commit, check 落在该 PR 的检查列表里
+          commit: ${{ github.event.workflow_run.head_sha }}
+          check_name: pr-test results
+          comment_title: pr-test results
+          files: junit-artifacts/junit-*.xml

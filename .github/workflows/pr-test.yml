@@ -4,11 +4,13 @@
 name: pr-test
 
 # 仅 PR 创建/更新时触发一次完整编译+测试
-# pull_request_target: 使 fork PR 也能读取主仓 vars; 工作流文件取自 master 分支,
-# 编译测试的仍是 PR 代码。安全注意: 会在主仓上下文执行 fork 代码, 禁止在本工作流
-# 引用任何 secrets
+# pull_request (非 pull_request_target): checkout 的代码在受限上下文运行,
+# token 只读、无 secrets, checkout fork 代码无需 allow-unsafe-pr-checkout 放行。
+# vars 上下文在 fork PR 上依然来自主仓, 测试镜像/资源地址等配置不受影响。
+# JUnit 报告由 pr-test-report.yml (pull_request_target/workflow_run) 读
+# artifact 后发布到 PR —— 本工作流 token 只读, 无法写 check-run。
 on:
-  pull_request_target:
+  pull_request:
     branches:
       - master
     types:
@@ -18,11 +20,9 @@ on:
 
 permissions:
   contents: read
-  # 发布 JUnit 报告到 PR 检查需要
-  checks: write
 
 concurrency:
-  group: pr-test-${{ github.ref }}
+  group: pr-test-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:
@@ -59,21 +59,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # pull_request 事件默认 checkout refs/pull/<n>/merge (PR 与 master
+          # 的合并预演), 不需要显式指定 head sha
           fetch-depth: 0
           persist-credentials: false
 
       - name: Integrate latest master
-        # 测试的应该是合入 master 之后的结果: 先把最新 master 合并进当前分支再打包
+        # 测试的应该是合入 master 之后的结果: merge ref 本身就是 PR 与最新
+        # master 的合并结果, 这里仅记录基准 sha 便于追溯
         shell: bash
         run: |
           set -euo pipefail
           # 镜像默认用户与 checkout 目录属主不一致时 git 拒绝操作, 显式豁免
           git config --global --add safe.directory "${GITHUB_WORKSPACE}"
           target_sha="$(git rev-parse origin/master)"
-          git -c user.name='LightOp CI' -c user.email='ci@localhost' \
-              merge --no-edit "${target_sha}"
-          echo "Integrated master ${target_sha}"
+          echo "Testing merge commit ${GITHUB_SHA} (PR merged with master ${target_sha})"
 
       - name: Install AICC
         shell: bash
@@ -112,17 +112,19 @@ jobs:
             source /opt/dtk/env.sh
           fi
           cd test/ci_tests
-          # junit 写到 workspace, 发布动作另起容器运行, 只挂载 workspace 读得到
+          # junit 命名带 torch 版本, 发布 job 按平台区分同名文件
           python3 -m pytest -v -p no:cacheprovider --tb=short \
               --junitxml="${GITHUB_WORKSPACE}/junit-${TORCH_VERSION}.xml"
 
-      - name: 发布 JUnit 报告到 PR
+      - name: 上传 JUnit 报告 artifact
+        # 本工作流 token 只读, 由 pr-test-report.yml 读取后发布到 PR
         if: always()
-        continue-on-error: true
-        uses: EnricoMi/publish-unit-test-result-action@v2
+        uses: actions/upload-artifact@v4
         with:
-          # 相对路径, 从 workspace 根解析
-          files: junit-${{ matrix.torch_version }}.xml
+          name: junit-${{ matrix.torch_version }}-${{ github.run_id }}
+          path: junit-${{ matrix.torch_version }}.xml
+          if-no-files-found: ignore
+          retention-days: 7
 
       # 容器内以 root 运行, workspace 里的文件会归 root 所有,
       # 宿主机上后续 job 的 checkout 无法清理, 退出前清空
