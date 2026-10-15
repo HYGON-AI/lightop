@@ -212,6 +212,20 @@ def dsv41_select_candidate_blocks(logits, seq_lens, topk_blocks, block_size=8):
     return out_mask, out_block_ids
 
 
+def dsv41_pair_partners(kv, score, req, pos, pad, state, ring_size):
+    """Select FP32 compression partners, then update the packed request ring.
+
+    Returns partner KV and score [T,D]. State [S,2D] is updated in place;
+    its final row is the padding sentinel. KV/score may be column-slice views.
+    Retained writes must have unique live slots, as in SGLang's request batches.
+    Two ordered HCU launches preserve all old-state reads before any write.
+    """
+    from .. import op
+    if not hasattr(op, "dsv41_pair_partners"):
+        raise RuntimeError("dsv41_pair_partners requires a rebuilt LightOp extension")
+    return op.dsv41_pair_partners(kv, score, req, pos, pad, state, ring_size)
+
+
 __all__ = [
     "fp8_fp4_mqa_logits",
     "get_paged_mqa_logits_metadata",
@@ -223,5 +237,6 @@ __all__ = [
     "paged_mqa_logits_route_lens",
     "dsv41_candidate_block_table",
     "dsv41_select_candidate_blocks",
+    "dsv41_pair_partners",
     "page_mqa_logits_sparse_mask",
 ]
