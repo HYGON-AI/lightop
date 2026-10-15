@@ -36,10 +36,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ---- dtk26.04 现网基线: torch 2.10/2.11 ----
-          - dtk_tag: 2604
-            torch_version: "2.10.0"
-            test_image: 10.16.1.152:5000/jenkins/model_test_env/vllm:0.21.0-latest
+          # ---- dtk26.04 现网基线: torch 2.11 ----
           - dtk_tag: 2604
             torch_version: "2.11.0"
             test_image: 10.16.1.152:5000/jenkins/model_test_env/vllm:0.25.1-latest
