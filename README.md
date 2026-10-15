@@ -1,5 +1,8 @@
 # Lightop
 
+> [!NOTE]
+> CI 触发验证 commit: 验证 `pr-test` workflow 在 `pull_request` 事件上正常运行(参见 PR #88 改动)。无代码变更。
+
 # 简介
 Lightop是一个自研的融合算子库，提供了大量的自研算子，用来加速模型的推理和训练。
 
@@ -161,3 +164,4 @@ benchmark_test_kernel.sh
 ```shell
 python -c "import lightop; print(lightop.__version__)",若成功打印版本信息则安装成功。
 ```
+> ci: 验证 pr-test 以 pull_request 事件触发 (参见 PR #88 改动)
