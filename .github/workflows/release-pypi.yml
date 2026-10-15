@@ -31,17 +31,14 @@ jobs:
       matrix:
         include:
           - dtk_tag: 2604
-            dtk_pkg_name: DTK-26.04-Rocky8.6-x86_64.tar.gz
             pip_index_suffix: nightly/dtk2604/+simple/
             aicc_major: "1.0.0"
             torch_version: "2.10.0"
           - dtk_tag: 2604
-            dtk_pkg_name: DTK-26.04-Rocky8.6-x86_64.tar.gz
             pip_index_suffix: nightly/dtk2604/+simple/
             aicc_major: "1.0.0"
             torch_version: "2.11.0"
           - dtk_tag: 2610
-            dtk_pkg_name: DTK-26.10-Rocky8.6-x86_64.tar.gz
             pip_index_suffix: nightly/dtk2610/+simple/
             aicc_major: "2.0.0"
             torch_version: "2.11.0"
@@ -66,10 +63,7 @@ jobs:
         run: |
           echo "TORCH_VERSION=${TORCH_VERSION}"
           echo "DTK_TAG=${DTK_TAG}"
-          echo "DTK_PKG_NAME=${DTK_PKG_NAME}"
           echo "PYPI_URL=${PYPI_URL}"
-        env:
-          DTK_PKG_NAME: ${{ matrix.dtk_pkg_name }}
 
       - name: 配置内网 pip 源
         shell: bash
@@ -110,7 +104,7 @@ jobs:
       - name: CIUpload REPAIR
         run: |
           pip install --no-cache-dir ciupload
-          DTK_VER=$(echo $DTK_PKG_NAME | grep -oP 'dtk\K[0-9]+\.[0-9]+' | tr -d '.')
+          DTK_VER=$(cat /opt/dtk/.info/rocm_version | tr -d '.')
           WHEEL_COMMIT_SHA="$(git rev-parse HEAD)"
           CIUpload REPAIR \
             --dtk_version "${DTK_VER}" \
@@ -118,16 +112,16 @@ jobs:
             --git_commit "${WHEEL_COMMIT_SHA}" \
             --outputdir output \
             -f dist-manylinux/*.whl
-        env:
-          DTK_PKG_NAME: ${{ matrix.dtk_pkg_name }}
 
       - name: CIUpload NIGHTLY
         if: ${{ github.event_name == 'push' }}
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          DTK_PKG_NAME: ${{ matrix.dtk_pkg_name }}
         run: |
-          CIUpload NIGHTLY --devpi_url ${PYPI_URL} --password ${{ secrets.PYPI_PASSWORD }} --dtk_pkg_name ${DTK_PKG_NAME} -f output/*.whl --record
+          DTK_VER=$(cat /opt/dtk/.info/rocm_version | tr -d '.')
+          CIUpload NIGHTLY --devpi_url ${PYPI_URL} --password ${{ secrets.PYPI_PASSWORD }} \
+            --dtk_pkg_name "DTK-${DTK_VER}-Rocky8.6-x86_64.tar.gz" \
+            -f output/*.whl --record
 
       - name: 清理 workspace
         if: always()
