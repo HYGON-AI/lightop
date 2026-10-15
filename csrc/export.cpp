@@ -19,6 +19,12 @@
 #include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm_v2.hpp"
 #include "sampling/sampling.h"
 enum GRAD_TYPE {nograd, wgrad, xgrad};
+namespace lightop::dsv41 {
+std::tuple<torch::Tensor, torch::Tensor> pair_partners(
+    const torch::Tensor& kv, const torch::Tensor& score,
+    const torch::Tensor& req, const torch::Tensor& pos, const torch::Tensor& pad,
+    torch::Tensor& state, int64_t ring);
+}
 namespace at {  namespace native {
 std::tuple<Tensor, Tensor> fused_deepep_prepare(
     const Tensor& hidden,
@@ -1276,6 +1282,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "DSV4.1 candidate block selection and dense mask expansion",
         py::arg("logits"), py::arg("seq_lens"), py::arg("block_size"),
         py::arg("out_mask"), py::arg("out_block_ids"));
+  m.def("dsv41_pair_partners", &lightop::dsv41::pair_partners,
+        "DSV4.1 pair-partner gather and ordered ring-state update",
+        py::arg("kv"), py::arg("score"), py::arg("req"), py::arg("pos"),
+        py::arg("pad"), py::arg("state"), py::arg("ring_size"));
   m.def(
       "dequantize_index_k_int8_paged",
       &lightop::deep_gemm::dequantize_index_k_int8_paged,
