@@ -3161,11 +3161,11 @@ torch::Tensor mqa_logits(
           (qtype == torch::kInt8 && ktype == torch::kInt8))) {
             TORCH_CHECK(false, "Q和K的类型必须同时为FP16、同时为BF16、同时为FP8_E4M3, 或同时为INT8!");
     }
-    const bool is_fp8 = (qtype == torch::kFloat8_e4m3fn);
     if (auto beta = lightop::mqa_beta::try_dispatch(
             Q, K, Weights, KS, KE, q_seq_len, kv_seq_len, num_heads, head_dim,
             KV_scale, clean_logits, D_out))
         return *beta;
+    const bool is_fp8 = (qtype == torch::kFloat8_e4m3fn);
     const bool is_i8 = (qtype == torch::kInt8);
     auto Weightstype = Weights.scalar_type();
     if(Weightstype != torch::kFloat32){

@@ -7,7 +7,7 @@
 #include <limits>
 
 namespace lightop::mqa_int8 {
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
 template <bool PACK> __device__ __forceinline__ void weighted(const I4 &d, const F4 &w, F4 &a) {
     // Preserve the per-head FMA and the existing head reduction order.
 #pragma unroll
@@ -61,6 +61,7 @@ __device__ __forceinline__ void run(const int8_t *__restrict__ q, const int8_t *
         }
         return;
     }
+    const I4 kv_resource = make_kv_resource(k + int64_t(begin) * 128);
     I2 kr[NT][4];
     F4 acc[NT];
 #pragma unroll
@@ -71,7 +72,8 @@ __device__ __forceinline__ void run(const int8_t *__restrict__ q, const int8_t *
         for (int d = 0; d < 4; d++) {
             kr[t][d] = {0, 0};
             if (EvenN || col < n)
-                kr[t][d] = load_aligned4<I2>(k + int64_t(col) * 128 + lane / 16 * 8 + d * 32);
+                kr[t][d] = load_kv_slc(
+                    kv_resource, (col - begin) * 128 + lane / 16 * 8 + d * 32);
         }
     }
 #pragma unroll
@@ -128,7 +130,8 @@ template <int H, int TN, int WAVES, bool PAIR, bool EvenM, bool EvenN, bool HasB
           bool CleanLogits>
 __global__ __launch_bounds__(WAVES * 64) void small_kv(MqaInt8Params p) {
     run<H, TN, WAVES, PAIR, false, EvenM, EvenN, HasBounds, CleanLogits>(
-        p.q, p.kv, p.weights, p.ks, p.ke, p.kv_scale, p.out, p.m, p.n, p.weights_stride_m,
+        reinterpret_cast<const int8_t *>(p.q), reinterpret_cast<const int8_t *>(p.kv),
+        p.weights, p.ks, p.ke, p.kv_scale, p.out, int(p.m), int(p.n), p.weights_stride_m,
         p.out_stride_m);
 }
 #endif

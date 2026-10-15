@@ -6,7 +6,6 @@
 #include "../memory.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
-#include <algorithm>
 #include <limits>
 #include <string>
 
@@ -45,12 +44,14 @@ void check_disjoint(const ByteRows &out, const ByteRows &input, const char *name
 }
 } // namespace
 
-torch::Tensor run(const torch::Tensor &Q, const torch::Tensor &K, const torch::Tensor &weights,
-                  const torch::Tensor &ks, const torch::Tensor &ke, int m, int n, int h, int d,
-                  const torch::optional<torch::Tensor> &kv_scale, bool clean_logits,
-                  const torch::optional<torch::Tensor> &out) {
+torch::Tensor mqa_logits_int8(const torch::Tensor &Q, const torch::Tensor &K,
+                              const torch::Tensor &weights,
+                              const torch::Tensor &ks, const torch::Tensor &ke,
+                              int m, int n, int h, int d,
+                              const torch::optional<torch::Tensor> &kv_scale, bool clean_logits,
+                              const torch::optional<torch::Tensor> &out) {
     TORCH_CHECK(Q.defined() && Q.is_cuda(), "mqa_logits INT8 requires CUDA/HIP Q");
-    TORCH_CHECK(Q.scalar_type() == at::kChar, "mqa_logits INT8 requires INT8 Q/K dtype");
+    // try_dispatch selects this adapter only for INT8 Q.
     check_tensor(K, Q, at::kChar, "K");
     check_tensor(weights, Q, at::kFloat, "weights");
     check_tensor(ks, Q, at::kInt, "ks");
@@ -65,19 +66,18 @@ torch::Tensor run(const torch::Tensor &Q, const torch::Tensor &K, const torch::T
     TORCH_CHECK(ks.dim() == 1 && ke.dim() == 1 && ks.numel() >= m && ke.numel() >= m &&
                     ks.is_contiguous() && ke.is_contiguous(),
                 "mqa_logits INT8: ks/ke must be contiguous int32 vectors with at least M elements");
-    const bool scaled = kv_scale.has_value() && kv_scale->defined();
-    TORCH_CHECK(scaled, "mqa_logits INT8 requires kv_scale");
-    if (scaled) {
-        check_tensor(*kv_scale, Q, at::kFloat, "kv_scale");
-        TORCH_CHECK(kv_scale->is_contiguous() && kv_scale->numel() >= n,
-                    "mqa_logits INT8: kv_scale must be contiguous with at least N elements");
-    }
+    TORCH_CHECK(kv_scale.has_value() && kv_scale->defined(), "mqa_logits INT8 requires kv_scale");
+    check_tensor(*kv_scale, Q, at::kFloat, "kv_scale");
+    TORCH_CHECK(kv_scale->is_contiguous() && kv_scale->numel() >= n,
+                "mqa_logits INT8: kv_scale must be contiguous with at least N elements");
     const c10::cuda::CUDAGuard guard(Q.device());
     hipDeviceProp_t prop{};
     auto status = hipGetDeviceProperties(&prop, Q.get_device());
     TORCH_CHECK(status == hipSuccess, "mqa_logits: ", hipGetErrorString(status));
-    TORCH_CHECK(std::string(prop.gcnArchName).substr(0, 6) == "gfx936" && prop.warpSize == 64,
-                "mqa_logits beta INT8 requires gfx936/wave64; unset LIGHTOP_MQA_LOGITS_BETA "
+    const std::string arch = std::string(prop.gcnArchName).substr(0, 6);
+    TORCH_CHECK((arch == "gfx936" || arch == "gfx938") && prop.warpSize == 64,
+                "mqa_logits beta INT8 requires gfx936/gfx938 with wave64; "
+                "unset LIGHTOP_MQA_LOGITS_BETA "
                 "or set it to 0 to use the original INT8 implementation");
     torch::Tensor result;
     if (out.has_value() && out->defined()) {
@@ -107,24 +107,20 @@ torch::Tensor run(const torch::Tensor &Q, const torch::Tensor &K, const torch::T
                    "weights");
     check_disjoint(output_rows, tensor_rows(ks, 1, m, m, "ks"), "ks");
     check_disjoint(output_rows, tensor_rows(ke, 1, m, m, "ke"), "ke");
-    if (scaled) {
-        check_disjoint(output_rows, tensor_rows(*kv_scale, 1, n, n, "kv_scale"), "kv_scale");
-    }
-    // Match FP8's checked maximum weight-row span.
-    const int64_t weight_rows = std::min(m, 64);
-    TORCH_CHECK(weight_rows <= 1 ||
-                    weights.stride(0) <= (int64_t(UINT32_MAX) / 4 - h) / (weight_rows - 1),
-                "mqa_logits INT8: weights CTA span must fit the 32-bit buffer offset");
+    check_disjoint(output_rows, tensor_rows(*kv_scale, 1, n, n, "kv_scale"), "kv_scale");
     MqaInt8Params p{};
-    p.q = Q.data_ptr<int8_t>();
-    p.kv = K.data_ptr<int8_t>();
+    p.q = static_cast<const uint8_t *>(Q.data_ptr());
+    p.kv = static_cast<const uint8_t *>(K.data_ptr());
     p.weights = weights.data_ptr<float>();
-    p.kv_scale = scaled ? kv_scale->data_ptr<float>() : nullptr;
+    p.kv_scale = kv_scale->data_ptr<float>();
     p.out = result.data_ptr<float>();
     p.m = m;
     p.n = n;
     p.h = h;
     p.d = d;
+    p.q_stride_m = Q.stride(0);
+    p.q_stride_h = Q.stride(1);
+    p.kv_stride_n = K.stride(0);
     p.weights_stride_m = weights.stride(0);
     p.out_stride_m = result.stride(0);
     p.ks = ks.data_ptr<int32_t>();

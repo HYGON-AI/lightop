@@ -688,7 +688,7 @@ def mqa_logits(
     """Compute MQA logits using the selected native backend.
 
     LIGHTOP_MQA_LOGITS_BETA=1 selects the new backend by Q/K dtype:
-    gfx936 INT8 or gfx938 FP8. Otherwise the original backend is used.
+    gfx936/gfx938 INT8 or gfx938 FP8. Otherwise the original backend is used.
     Both new backends require INT32 ks/ke with at least M elements.
     INT8 requires FP32 kv_scale; FP8 accepts omitted scaling. Q/K use packed
     D=128 rows. Weights and D_out may have padding between contiguous rows.
