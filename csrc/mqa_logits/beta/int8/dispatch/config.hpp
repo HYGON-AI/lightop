@@ -25,7 +25,8 @@ struct LaunchGrid {
 inline bool make_grid(const MqaInt8Params &p, const KernelConfig &c, uint32_t max_x, uint32_t max_y,
                       LaunchGrid &grid) {
     grid = {};
-    if (p.m < 0 || p.n < 0 || p.d != 128 || p.h < 1 || p.h > 128 || (p.h & (p.h - 1)))
+    if (p.m < 0 || p.n < 0 || p.d != 128 || p.h < 1 || p.h > 128 || (p.h & (p.h - 1)) ||
+        p.clean_logits > 1)
         return false;
     if (c.kind == KernelKind::SmallKV) {
         if (p.m < 16 || p.m > 128 || p.n > 128 || (p.h != 8 && p.h != 16 && p.h != 32 && p.h != 64 && p.h != 128) ||
@@ -33,10 +34,16 @@ inline bool make_grid(const MqaInt8Params &p, const KernelConfig &c, uint32_t ma
             (c.paired_queries && p.h != 8) || c.block_m != c.waves * (c.paired_queries ? 2 : 1))
             return false;
     } else if (c.kind == KernelKind::Tiled) {
-        if ((c.block_m != 16 && c.block_m != 32) ||
+        if ((c.block_m != 16 && c.block_m != 32 && c.block_m != 64) ||
             (c.block_n != 64 && c.block_n != 128 && c.block_n != 256) ||
             (c.group_heads != 1 && c.group_heads != 2 && c.group_heads != 4) ||
             p.h % c.group_heads || c.waves != 4 || c.paired_queries)
+            return false;
+        // A 64-row tile is only built with BN=256 and one head per group. Its weight
+        // loads use 32-bit buffer offsets: 64 rows of weights_stride_m floats.
+        if (c.block_m == 64 && (c.block_n != 256 || c.group_heads != 1 ||
+                                p.weights_stride_m < p.h ||
+                                p.weights_stride_m > (int64_t(1) << 23)))
             return false;
     } else {
         return false;
@@ -53,6 +60,9 @@ inline bool make_grid(const MqaInt8Params &p, const KernelConfig &c, uint32_t ma
     return true;
 }
 
+// Internal HIP core. The Tensor adapter validates dtype, memory, non-null kv_scale,
+// and architecture; direct callers must satisfy the same requirements.
+// No public Python/C ABI is added by this declaration.
 hipError_t launch(const MqaInt8Params &p, const KernelConfig &c, hipStream_t stream,
                   uint32_t max_grid_x, uint32_t max_grid_y);
 } // namespace lightop::mqa_int8

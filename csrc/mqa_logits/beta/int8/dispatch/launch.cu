@@ -2,35 +2,71 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #include "config.hpp"
-#include "../kernels/prefill.hpp"
+#include "../kernels/m16.hpp"
+#include "../kernels/m32.hpp"
+#include "../kernels/m64.hpp"
 #include "../kernels/small_kv.hpp"
 
 namespace lightop::mqa_int8 {
 namespace {
 using Kernel = void (*)(MqaInt8Params);
 
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__)
-template <int Heads, int BM, int BN, int GroupHeads, bool HasBounds, bool CleanLogits>
-Kernel select_tiled_tile(const MqaInt8Params &p) {
-    if (p.m % BM == 0) {
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
+template <int Heads, bool HasBounds, bool CleanLogits>
+Kernel select_m64(const MqaInt8Params &p) {
+    if (p.m % 64 == 0) {
+        if (p.n % 256 == 0)
+            return m64<Heads, true, true, HasBounds, CleanLogits>;
+        return m64<Heads, true, false, HasBounds, CleanLogits>;
+    }
+    if (p.n % 256 == 0)
+        return m64<Heads, false, true, HasBounds, CleanLogits>;
+    return m64<Heads, false, false, HasBounds, CleanLogits>;
+}
+
+template <int Heads, int BN, int GroupHeads, bool HasBounds, bool CleanLogits>
+Kernel select_m16(const MqaInt8Params &p) {
+    if (p.m % 16 == 0) {
         if (p.n % BN == 0)
-            return tiled<Heads, BM, BN, GroupHeads, true, true, HasBounds, CleanLogits>;
-        return tiled<Heads, BM, BN, GroupHeads, true, false, HasBounds, CleanLogits>;
+            return m16<Heads, BN, GroupHeads, true, true, HasBounds, CleanLogits>;
+        return m16<Heads, BN, GroupHeads, true, false, HasBounds, CleanLogits>;
     }
     if (p.n % BN == 0)
-        return tiled<Heads, BM, BN, GroupHeads, false, true, HasBounds, CleanLogits>;
-    return tiled<Heads, BM, BN, GroupHeads, false, false, HasBounds, CleanLogits>;
+        return m16<Heads, BN, GroupHeads, false, true, HasBounds, CleanLogits>;
+    return m16<Heads, BN, GroupHeads, false, false, HasBounds, CleanLogits>;
+}
+
+template <int Heads, int BN, int GroupHeads, bool HasBounds, bool CleanLogits>
+Kernel select_m32(const MqaInt8Params &p) {
+    if (p.m % 32 == 0) {
+        if (p.n % BN == 0)
+            return m32<Heads, BN, GroupHeads, true, true, HasBounds, CleanLogits>;
+        return m32<Heads, BN, GroupHeads, true, false, HasBounds, CleanLogits>;
+    }
+    if (p.n % BN == 0)
+        return m32<Heads, BN, GroupHeads, false, true, HasBounds, CleanLogits>;
+    return m32<Heads, BN, GroupHeads, false, false, HasBounds, CleanLogits>;
 }
 
 template <int Heads, int BM, int GroupHeads, bool HasBounds, bool CleanLogits>
 Kernel select_tiled_n(const MqaInt8Params &p, int bn) {
+    static_assert(BM == 16 || BM == 32);
     switch (bn) {
     case 64:
-        return select_tiled_tile<Heads, BM, 64, GroupHeads, HasBounds, CleanLogits>(p);
+        if constexpr (BM == 16)
+            return select_m16<Heads, 64, GroupHeads, HasBounds, CleanLogits>(p);
+        else
+            return select_m32<Heads, 64, GroupHeads, HasBounds, CleanLogits>(p);
     case 128:
-        return select_tiled_tile<Heads, BM, 128, GroupHeads, HasBounds, CleanLogits>(p);
+        if constexpr (BM == 16)
+            return select_m16<Heads, 128, GroupHeads, HasBounds, CleanLogits>(p);
+        else
+            return select_m32<Heads, 128, GroupHeads, HasBounds, CleanLogits>(p);
     case 256:
-        return select_tiled_tile<Heads, BM, 256, GroupHeads, HasBounds, CleanLogits>(p);
+        if constexpr (BM == 16)
+            return select_m16<Heads, 256, GroupHeads, HasBounds, CleanLogits>(p);
+        else
+            return select_m32<Heads, 256, GroupHeads, HasBounds, CleanLogits>(p);
     default:
         return nullptr;
     }
@@ -57,6 +93,9 @@ Kernel select_tiled(const MqaInt8Params &p, const KernelConfig &c) {
         return select_tiled_n<Heads, 16, GH4, HasBounds, CleanLogits>(p, c.block_n);
     if (c.block_m == 32 && c.group_heads == GH2)
         return select_tiled_n<Heads, 32, GH2, HasBounds, CleanLogits>(p, c.block_n);
+    // Preserve the 64x256 config while using the standalone M64 kernel.
+    if (c.block_m == 64 && c.group_heads == 1 && c.block_n == 256)
+        return select_m64<Heads, HasBounds, CleanLogits>(p);
     return nullptr;
 }
 
@@ -130,7 +169,7 @@ hipError_t launch(const MqaInt8Params &p, const KernelConfig &c, hipStream_t str
         return hipErrorInvalidValue;
     if (!grid.x || !grid.y)
         return hipSuccess;
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
     Kernel kernel;
     if (!p.ks && !p.ke) {
         // With no bounds, both cleaning settings have the same all-valid output.

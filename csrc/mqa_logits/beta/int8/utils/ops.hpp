@@ -21,7 +21,7 @@ using mqa_beta::tail_rows;
 using mqa_beta::TileWindow;
 using mqa_beta::Window;
 
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
 // Public row views guarantee only four-byte alignment, as in FP8.
 // memcpy avoids asserting the stronger C++ vector-pointer alignment.
 template <class Vector, class Scalar>
@@ -32,11 +32,22 @@ __device__ __forceinline__ Vector load_aligned4(const Scalar *src) {
     return value;
 }
 
-// Signed INT8 MMAC uses the native gfx936 layout; no MLS or LIT mode.
+// Rebase at the tile so every lane offset fits in 32 bits even for a large KV.
+__device__ __forceinline__ I4 make_kv_resource(const void *tile) {
+    const uint64_t address = reinterpret_cast<uint64_t>(tile);
+    return {static_cast<int>(address), static_cast<int>(address >> 32), -1, 0x00020000};
+}
+
+// Only KV uses SLC. The builtin preserves compiler-managed load dependencies;
+// GLC stays off and Q/scales retain their ordinary four-byte-aligned loads.
+__device__ __forceinline__ I2 load_kv_slc(I4 resource, int offset) {
+    return __builtin_amdgcn_buffer_load_dwordx2(resource, 0, offset, false, true);
+}
+
+// Signed INT8 MMAC shares the non-LIT layout on gfx936 and gfx938.
 __device__ __forceinline__ void mmac_i8(const I2 &a, const I2 &b, I4 &c) {
-#if defined(__gfx936__)
-    c = __builtin_amdgcn_mmac_i32_16x16x32i8(__builtin_bit_cast(long, a),
-                                             __builtin_bit_cast(long, b), c);
+#if defined(__gfx936__) || defined(__gfx938__)
+    c = __builtin_hcu_mmac_i32_16x16x32_i8(a, b, c);
 #endif
 }
 
@@ -67,7 +78,6 @@ __device__ __forceinline__ void relu_weighted_sum(const I4 &dot, float w, F4 &ac
     }
 }
 
-template <bool USE_SLC = true>
 __device__ __forceinline__ void prefetch4(I4 *dst, const int8_t *ptr, int offset, bool valid) {
     using resource_t = uint32_t __attribute__((ext_vector_type(4)));
     const uint64_t address = reinterpret_cast<uint64_t>(ptr);
@@ -77,17 +87,10 @@ __device__ __forceinline__ void prefetch4(I4 *dst, const int8_t *ptr, int offset
         0x80000000u, 0x00020000u};
     if (valid) {
         I4 value;
-        if constexpr (USE_SLC) {
-            asm volatile("buffer_load_dwordx4 %0, %1, %2, 0 offen slc"
-                         : "=v"(value)
-                         : "v"(offset), "s"(resource)
-                         : "memory");
-        } else {
-            asm volatile("buffer_load_dwordx4 %0, %1, %2, 0 offen"
-                         : "=v"(value)
-                         : "v"(offset), "s"(resource)
-                         : "memory");
-        }
+        asm volatile("buffer_load_dwordx4 %0, %1, %2, 0 offen"
+                     : "=v"(value)
+                     : "v"(offset), "s"(resource)
+                     : "memory");
         *dst = value;
     }
 }

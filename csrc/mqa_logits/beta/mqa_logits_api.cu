@@ -16,8 +16,8 @@ try_dispatch(const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor
     const char *setting = std::getenv("LIGHTOP_MQA_LOGITS_BETA");
     if (setting == nullptr || std::strcmp(setting, "1") != 0)
         return torch::nullopt;
-    if (q.scalar_type() == torch::kChar)
-        return mqa_int8::run(q, k, weights, ks, ke, m, n, h, d, kv_scale, clean_logits, out);
+    if (q.scalar_type() == torch::kInt8)
+        return mqa_int8::mqa_logits_int8(q, k, weights, ks, ke, m, n, h, d, kv_scale, clean_logits, out);
     if (q.scalar_type() == torch::kFloat8_e4m3fn)
         return at::native::mqa_logits_fp8(q, k, weights, ks, ke, m, n, h, d, kv_scale,
                                           clean_logits, out);

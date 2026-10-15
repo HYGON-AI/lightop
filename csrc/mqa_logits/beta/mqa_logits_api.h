@@ -16,7 +16,8 @@ torch::optional<torch::Tensor> try_dispatch(
 } // namespace lightop::mqa_beta
 
 namespace lightop::mqa_int8 {
-torch::Tensor run(
+// Internal Tensor adapter called by try_dispatch after selecting INT8 Q.
+torch::Tensor mqa_logits_int8(
     const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &weights,
     const torch::Tensor &ks, const torch::Tensor &ke, int m, int n, int h, int d,
     const torch::optional<torch::Tensor> &kv_scale, bool clean_logits,
