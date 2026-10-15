@@ -91,7 +91,7 @@ jobs:
             "trusted-host = ${TRUSTED_HOST}" \
             > ~/.pip/pip.conf
           pip install --no-cache-dir "vllm==0.28.1" "vllm-hcu>0.28.0,<=0.28.1"
-          pip install --no-cache-dir triton==3.6.0
+          pip install --no-cache-dir triton==3.6.0 torch==2.11.0
           # AICC (hcu_llvm) 编译器, lightop 源码编译需要
           wget -q "${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}/ai_cc/Nightly/hcu_llvm_installer.sh"
           bash hcu_llvm_installer.sh --major 2.0.0
