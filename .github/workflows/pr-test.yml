@@ -74,11 +74,12 @@ jobs:
 
       - name: Install AICC
         shell: bash
+        # fork PR 的 pull_request 事件读不到主仓 vars, 回退到主仓配置的同一内网值
         run: |
-          wget ${{ vars.RESOURCE_SERVER_URL }}/ai_cc/Nightly/hcu_llvm_installer.sh
+          wget ${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}/ai_cc/Nightly/hcu_llvm_installer.sh
           bash hcu_llvm_installer.sh --major 1.0.0
         env:
-          RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL }}
+          RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}
 
       - name: 编译并安装 lightop
         # vllm 测试镜像自带 DTK 编译环境, 直接源码编译, 无需跨 job 传递 wheel
