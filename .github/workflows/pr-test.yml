@@ -68,6 +68,7 @@ jobs:
           persist-credentials: false
 
       - name: Integrate latest master
+        if: matrix.dtk_tag != '2610'
         # 测试的应该是合入 master 之后的结果: 先把最新 master 合并进当前分支再打包
         shell: bash
         run: |
@@ -79,7 +80,27 @@ jobs:
               merge --no-edit "${target_sha}"
           echo "Integrated master ${target_sha}"
 
+      # ---- dtk2610: 与编译镜像区分, 单测镜像只补齐 vllm/vllm-hcu/triton/aicc ----
+      - name: 配置内网 pip 源并安装测试依赖 (dtk2610)
+        if: matrix.dtk_tag == '2610'
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYPI_URL="${{ vars.PYPI_URL || 'http://10.16.1.201:9929' }}"
+          TRUSTED_HOST="${PYPI_URL#*://}"; TRUSTED_HOST="${TRUSTED_HOST%%/*}"
+          mkdir -p ~/.pip && printf '%s\n' \
+            '[global]' \
+            "index-url = ${PYPI_URL}/nightly/dtk2610/+simple/" \
+            "trusted-host = ${TRUSTED_HOST}" \
+            > ~/.pip/pip.conf
+          pip install --no-cache-dir "vllm==0.28.1" "vllm-hcu>0.28.0,<=0.28.1"
+          pip install --no-cache-dir triton==3.6.0
+          # AICC (hcu_llvm) 编译器, lightop 源码编译需要
+          wget -q "${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}/ai_cc/Nightly/hcu_llvm_installer.sh"
+          bash hcu_llvm_installer.sh --major 2.0.0
+
       - name: Install AICC
+        if: matrix.dtk_tag != '2610'
         shell: bash
         # fork PR 的 pull_request 事件读不到主仓 vars, 回退到主仓配置的同一内网值
         run: |
