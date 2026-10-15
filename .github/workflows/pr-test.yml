@@ -35,23 +35,26 @@ jobs:
       # 一个 dtk/torch 组合的失败不应掩盖另一个组合的结果
       fail-fast: false
       matrix:
+        # 测试容器取《DTK 基础镜像清单》同款 Rocky8.6 镜像 (kcnm6g5dkw5p.feishu.cn/docx/SirRd5pbXo8GGuxOEYkcoQspnug);
+        # 基础镜像是裸系统+DTK, vllm/vllm-hcu/triton/torch/AICC 由步骤现装
         include:
-          # ---- dtk26.04 现网基线: torch 2.11 ----
+          # ---- dtk26.04 基线: torch 2.11, AICC 1.0.0 ----
           - dtk_tag: 2604
             aicc_major: "1.0.0"
+            pip_index_suffix: nightly/dtk2604/+simple/
             torch_version: "2.11.0"
-            test_image: 10.16.1.152:5000/jenkins/model_test_env/vllm:0.25.1-latest
-          # ---- dtk26.10 新增: 镜像自带 DTK26.10 + torch 2.11 (py3.12) ----
+            need_vllm: false
+          # ---- dtk26.10: torch 2.11, AICC 2.0.0 ----
           - dtk_tag: 2610
             aicc_major: "2.0.0"
+            pip_index_suffix: nightly/dtk2610/+simple/
             torch_version: "2.11.0"
-            test_image: 10.16.1.152:5000/jenkins/model_test_env/vllm:0.28.1rc1-ubuntu22.04-dtk2610-py3.12-20261015-1511
+            need_vllm: true
     env:
       TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_TAG: ${{ matrix.dtk_tag }}
     container:
-      # include 未覆盖的新 torch 版本走默认测试镜像
-      image: ${{ matrix.test_image || vars.LIGHTOP_CI_TEST_IMAGE || '10.16.1.152:5000/jenkins/model_test_env/vllm:0.25.1-latest' }}
+      image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_tag == '2610' && '26.10' || '26.04' }}-rockylinux8.6-py3.12
       options: >-
         --volume /opt/hyhal:/opt/hyhal:ro
         --device /dev/kfd:/dev/kfd
@@ -79,10 +82,9 @@ jobs:
               merge --no-edit "${target_sha}"
           echo "Integrated master ${target_sha}"
 
-      # ---- dtk2610: 与编译镜像区分, 单测镜像只补齐 vllm/vllm-hcu/triton/torch,
-      # AICC 由下方 Install AICC 步骤统一安装 (镜像构建同为 --major 2.0.0) ----
-      - name: 配置内网 pip 源并安装测试依赖 (dtk2610)
-        if: matrix.dtk_tag == '2610'
+      # ---- 测试依赖: 基础镜像是裸系统+DTK, pip 依赖按矩阵的 dtk 源现装;
+      # vllm/vllm-hcu 仅 dtk2610 需要 (单测对照用), AICC 由下一步统一安装 ----
+      - name: 配置内网 pip 源并安装测试依赖
         shell: bash
         run: |
           set -euo pipefail
@@ -90,11 +92,14 @@ jobs:
           TRUSTED_HOST="${PYPI_URL#*://}"; TRUSTED_HOST="${TRUSTED_HOST%%/*}"
           mkdir -p ~/.pip && printf '%s\n' \
             '[global]' \
-            "index-url = ${PYPI_URL}/nightly/dtk2610/+simple/" \
+            "index-url = ${PYPI_URL}/${{ matrix.pip_index_suffix }}" \
             "trusted-host = ${TRUSTED_HOST}" \
             > ~/.pip/pip.conf
-          pip install --no-cache-dir "vllm==0.28.1" "vllm-hcu>0.28.0,<=0.28.1"
-          pip install --no-cache-dir triton==3.6.0 torch==2.11.0
+          pip install --no-cache-dir torch==${TORCH_VERSION} ninja wheel setuptools
+          if [ "${{ matrix.need_vllm }}" = "true" ]; then
+            pip install --no-cache-dir triton==3.6.0
+            pip install --no-cache-dir "vllm==0.28.1" "vllm-hcu>0.28.0,<=0.28.1"
+          fi
 
       - name: Install AICC
         # dtk2610 对应 AICC 2.0.0, dtk2604 基线为 1.0.0 (aicc_major 随矩阵下发)

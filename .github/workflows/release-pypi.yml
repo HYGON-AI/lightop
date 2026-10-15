@@ -37,26 +37,32 @@ jobs:
       # 一个 dtk/torch 组合的失败不应掩盖另一个组合的结果
       fail-fast: false
       matrix:
+        # DTK 包与容器镜像取自《DTK 基础镜像清单》(kcnm6g5dkw5p.feishu.cn/docx/SirRd5pbXo8GGuxOEYkcoQspnug),
+        # 统一 Rocky8.6 底座; aicc_major: 2604→1.0.0, 2610→2.0.0
         include:
-          # ---- dtk26.04 现网基线: rocky8.6 底座 + py3.10, torch 2.10/2.11 ----
+          # ---- dtk26.04 基线: torch 2.10/2.11 ----
           - dtk_tag: 2604
-            dtk_pkg_url: ${{ vars.RESOURCE_SERVER_URL }}/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
+            dtk_pkg_url: ${{ vars.RESOURCE_SERVER_URL }}/dtk-pkg/dtk26.04/DTK-26.04-Rocky8.6-x86_64.tar.gz
             pip_index_suffix: nightly/dtk2604/+simple/
+            aicc_major: "1.0.0"
             torch_version: "2.10.0"
           - dtk_tag: 2604
-            dtk_pkg_url: ${{ vars.RESOURCE_SERVER_URL }}/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
+            dtk_pkg_url: ${{ vars.RESOURCE_SERVER_URL }}/dtk-pkg/dtk26.04/DTK-26.04-Rocky8.6-x86_64.tar.gz
             pip_index_suffix: nightly/dtk2604/+simple/
+            aicc_major: "1.0.0"
             torch_version: "2.11.0"
-          # ---- dtk26.10 新增: 与现网同底座, pip 依赖走 nightly/dtk2610 ----
+          # ---- dtk26.10 新增: pip 依赖走 nightly/dtk2610 ----
           - dtk_tag: 2610
-            dtk_pkg_url: ${{ vars.RESOURCE_SERVER_URL }}/dtk-pkg/dtk26.10/DTK-26.10-CentOS8.5-x86_64.tar.gz
+            dtk_pkg_url: ${{ vars.RESOURCE_SERVER_URL }}/dtk-pkg/dtk26.10/DTK-26.10-Rocky8.6-x86_64.tar.gz
             pip_index_suffix: nightly/dtk2610/+simple/
+            aicc_major: "2.0.0"
             torch_version: "2.11.0"
     env:
       TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_TAG: ${{ matrix.dtk_tag }}
     container:
-      image: ${{ vars.BASE_COMPILE_IMAGE_ROCKY_PY310 }}
+      # 表内同款 Rocky8.6 基础镜像; 镜像已含 DTK, Install DTK 步骤做版本对齐兜底
+      image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_tag == '2610' && '26.10' || '26.04' }}-rockylinux8.6-py3.10
       options: >-
         --device=/dev/kfd --device=/dev/dri/ --group-add video
         -v /opt/hyhal/:/opt/hyhal/:ro
@@ -104,7 +110,7 @@ jobs:
         shell: bash
         run: |
           wget ${{ vars.RESOURCE_SERVER_URL }}/ai_cc/Nightly/hcu_llvm_installer.sh
-          bash hcu_llvm_installer.sh --major 1.0.0
+          bash hcu_llvm_installer.sh --major ${{ matrix.aicc_major }}
         env:
           RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL }}
 
