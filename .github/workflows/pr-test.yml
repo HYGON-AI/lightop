@@ -38,10 +38,12 @@ jobs:
         include:
           # ---- dtk26.04 现网基线: torch 2.11 ----
           - dtk_tag: 2604
+            aicc_major: "1.0.0"
             torch_version: "2.11.0"
             test_image: 10.16.1.152:5000/jenkins/model_test_env/vllm:0.25.1-latest
           # ---- dtk26.10 新增: 镜像自带 DTK26.10 + torch 2.11 (py3.12) ----
           - dtk_tag: 2610
+            aicc_major: "2.0.0"
             torch_version: "2.11.0"
             test_image: 10.16.1.152:5000/jenkins/model_test_env/vllm:0.28.1rc1-ubuntu22.04-dtk2610-py3.12-20261015-1511
     env:
@@ -95,11 +97,12 @@ jobs:
           pip install --no-cache-dir triton==3.6.0 torch==2.11.0
 
       - name: Install AICC
-        shell: bash
+        # dtk2610 对应 AICC 2.0.0, dtk2604 基线为 1.0.0 (aicc_major 随矩阵下发)
         # fork PR 的 pull_request 事件读不到主仓 vars, 回退到主仓配置的同一内网值
+        shell: bash
         run: |
           wget ${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}/ai_cc/Nightly/hcu_llvm_installer.sh
-          bash hcu_llvm_installer.sh ${{ matrix.dtk_tag == '2610' && '--major 2.0.0' || '--major 1.0.0' }}
+          bash hcu_llvm_installer.sh --major ${{ matrix.aicc_major }}
         env:
           RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}
 
