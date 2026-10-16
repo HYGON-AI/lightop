@@ -38,6 +38,9 @@ __device__ __forceinline__ I4 make_kv_resource(const void *tile) {
     return {static_cast<int>(address), static_cast<int>(address >> 32), -1, 0x00020000};
 }
 
+// KV fragments are reused from registers across heads. SLC can reduce cache
+// pollution from streaming KV reads and preserve cache capacity for Q/weights,
+// which is the expected reason for the measured speedup.
 // Only KV uses SLC. The builtin preserves compiler-managed load dependencies;
 // GLC stays off and Q/scales retain their ordinary four-byte-aligned loads.
 __device__ __forceinline__ I2 load_kv_slc(I4 resource, int offset) {
