@@ -21,7 +21,18 @@ def _get_pytorch_version_int():
     return int(version[0])*100+int(version[1])*10+int(version[2])
 
 dtk_version = get_dtk_version(ROCM_HOME)
-gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
+device_properties = torch.cuda.get_device_properties(0)
+gfx_version = device_properties.gcnArchName.split(':')[0]
+# Keep warp size independent from Torch's private C10_WARP_SIZE symbols.  The
+# compatibility header has a backend fallback for standalone compilation, but
+# the build should use the actual device value when it is available.
+warp_size = getattr(device_properties, 'warpSize', None)
+if warp_size is None:
+    # Some PyTorch builds expose CUDA device properties with snake_case names.
+    warp_size = getattr(device_properties, 'warp_size', None)
+if warp_size is None:
+    warp_size = 64 if torch.version.hip is not None else 32
+warp_size = int(warp_size)
 torch_version = _get_pytorch_version_int()
 
 
@@ -528,10 +539,9 @@ def get_extensions():
 
     # 全局默认编译选项
     extra_compile_args = {'cxx': ['-O3','-ldl', '-lrocblas','-w'], 'nvcc': ['-O3','-ldl', '-lrocblas','-w','-mllvm -enable-num-vgprs-512=true', '-DHIP_ENABLE_WARP_SYNC_BUILTINS']}
+    extra_compile_args['nvcc'].append(f'-DLIGHTOP_WARP_SIZE={warp_size}')
     if torch_version_over110():
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_110')
-    if torch_version >= 290:
-        extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_290')
     op_files = glob.glob('./csrc/*.cu') + glob.glob('./csrc/*.cpp') + \
                glob.glob('./csrc/topk/*.cu') + \
                glob.glob('./csrc/lmslimquant_native/*.cpp') + \

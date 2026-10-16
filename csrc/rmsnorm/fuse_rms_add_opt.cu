@@ -19,9 +19,7 @@
   #include <hipcub/hipcub.hpp>
 #endif
 
-#ifdef TORCH_VERSION_OVER_290
-#define C10_WARP_SIZE C10_WARP_SIZE_STATIC
-#endif
+#include "lightop_warp_size.h"
 
 template<typename scalar_t>
 static __device__ inline float to_float(scalar_t in){

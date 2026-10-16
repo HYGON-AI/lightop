@@ -11,9 +11,7 @@
 #include <cmath>
 
 
-#ifdef TORCH_VERSION_OVER_290
-#define C10_WARP_SIZE C10_WARP_SIZE_STATIC
-#endif
+#include "lightop_warp_size.h"
 
 namespace at {  
 namespace native {

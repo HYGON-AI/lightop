@@ -16,9 +16,7 @@
 #include <c10/macros/Macros.h>
 #include <torch/autograd.h>
 
-#ifdef TORCH_VERSION_OVER_290
-#define C10_WARP_SIZE C10_WARP_SIZE_STATIC
-#endif
+#include "lightop_warp_size.h"
 using namespace std;
 namespace at {
 namespace native {

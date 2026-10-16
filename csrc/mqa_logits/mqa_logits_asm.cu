@@ -34,6 +34,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include "aiter_hip_common.h"
+#include "lightop_warp_size.h"
 
 #define fp8 uint8_t
 using half_t = __half;
