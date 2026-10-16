@@ -245,6 +245,22 @@ def dsv41_select_candidate_blocks(logits, seq_lens, topk_blocks, block_size=8):
     return out_mask, out_block_ids
 
 
+def dsv41_build_swa_token_ids(seq_lens, extend_seq_lens, req_pool_indices,
+                              req_to_token, full_to_swa, swa_window, total_swa):
+    """Build SWA IDs and request metadata without host reads.
+
+    Lengths/request IDs/table are device int32; full_to_swa is int64.
+    total_swa must equal sum(min(seq, extend + swa_window - 1)), supplied
+    from CPU metadata. Table/mapping indices must be valid, as in SGLang.
+    """
+    from .. import op
+
+    return op.dsv41_build_swa_token_ids(
+        seq_lens, extend_seq_lens, req_pool_indices, req_to_token, full_to_swa,
+        swa_window, total_swa,
+    )
+
+
 def dsv41_pair_partners(kv, score, req, pos, pad, state, ring_size):
     """Select FP32 compression partners, then update the packed request ring.
 
@@ -272,5 +288,6 @@ __all__ = [
     "dsv41_candidate_block_table",
     "dsv41_select_candidate_blocks",
     "dsv41_pair_partners",
+    "dsv41_build_swa_token_ids",
     "page_mqa_logits_sparse_mask",
 ]
