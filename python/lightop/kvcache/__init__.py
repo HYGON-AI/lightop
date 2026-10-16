@@ -8,6 +8,7 @@ from ..gather_and_maybe_dequant_cache import gather_and_maybe_dequant_cache
 from ..kvcacheio import hcu_alloc_extend_kernel
 from ..reshape_and_cache_cuda import reshape_and_cache_cuda
 from .dequantize_k_cache_paged import dsv4_dequantize_k_cache_paged_out
+from .topk_workspace import dsv4_pack_c4_topk_workspace
 from .native import (
     fuse_act_quant_and_store_index_k_cache,
     fuse_qk_quant_and_store_index_k_cache,
@@ -17,6 +18,7 @@ from .native import (
 )
 
 __all__ = [
+    "dsv4_pack_c4_topk_workspace",
     "dsv4_dequantize_k_cache_paged_out",
     "hcu_alloc_extend_kernel",
     "fuse_act_quant_and_store_index_k_cache",
