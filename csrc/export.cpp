@@ -20,6 +20,9 @@
 #include "sampling/sampling.h"
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace lightop::dsv41 {
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> build_swa_token_ids(
+    const torch::Tensor& seq, const torch::Tensor& extend, const torch::Tensor& req,
+    const torch::Tensor& table, const torch::Tensor& full_to_swa, int64_t window, int64_t total);
 std::tuple<torch::Tensor, torch::Tensor> pair_partners(
     const torch::Tensor& kv, const torch::Tensor& score,
     const torch::Tensor& req, const torch::Tensor& pos, const torch::Tensor& pad,
@@ -1282,6 +1285,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "DSV4.1 candidate block selection and dense mask expansion",
         py::arg("logits"), py::arg("seq_lens"), py::arg("block_size"),
         py::arg("out_mask"), py::arg("out_block_ids"));
+  m.def("dsv41_build_swa_token_ids", &lightop::dsv41::build_swa_token_ids,
+        "SWA metadata prefix and physical token gather");
   m.def("dsv41_pair_partners", &lightop::dsv41::pair_partners,
         "DSV4.1 pair-partner gather and ordered ring-state update",
         py::arg("kv"), py::arg("score"), py::arg("req"), py::arg("pos"),
