@@ -77,6 +77,7 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
     IndexT* __restrict__ indices,
     const CountT* __restrict__ num_token_non_padded,
     int64_t num_rows,
+    int64_t bias_row_stride,
     int64_t num_fused_shared_experts,
     bool renormalize,
     float routed_scaling_factor,
@@ -106,7 +107,7 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
   if (lane < EFFECTIVE_THREADS) {
     using Vec = AlignedArray<float, VPT_LOCAL>;
     const float* row_input = input + row * NUM_EXPERTS + start_col;
-    const float* row_bias = bias + start_col;
+    const float* row_bias = bias + row * bias_row_stride + start_col;
     Vec input_vec = *reinterpret_cast<const Vec*>(row_input);
     Vec bias_vec = *reinterpret_cast<const Vec*>(row_bias);
 
@@ -230,7 +231,7 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
         <<<grid, block_dim, 0, stream>>>(                                           \
             input.data_ptr<float>(), bias.data_ptr<float>(),                        \
             output.data_ptr<float>(), indices.data_ptr<IndexT>(), num_token_non_padded_ptr, num_rows,        \
-            num_fused_shared_experts, renormalize,                                  \
+            bias_row_stride, num_fused_shared_experts, renormalize,                  \
             static_cast<float>(routed_scaling_factor),                              \
             apply_routed_scaling_factor_on_output);                                 \
     dispatched = true;                                                              \
@@ -262,7 +263,8 @@ std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus_impl(
     bool apply_routed_scaling_factor_on_output,
     torch::optional<torch::Tensor> num_token_non_padded = torch::nullopt) {
   TORCH_CHECK(input.dim() == 2, "input must be 2D");
-  TORCH_CHECK(bias.dim() == 1, "bias must be 1D");
+  TORCH_CHECK(bias.dim() == 1 || bias.dim() == 2,
+              "bias must be 1D [num_experts] or 2D [num_rows, num_experts]");
   TORCH_CHECK(input.is_cuda(), "input must be on CUDA/ROCm device");
   TORCH_CHECK(bias.is_cuda(), "bias must be on CUDA/ROCm device");
   TORCH_CHECK(input.device() == bias.device(),
@@ -275,9 +277,10 @@ std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus_impl(
               op_name, " only supports float32 bias");
   TORCH_CHECK(input.is_contiguous(), "input must be contiguous");
   TORCH_CHECK(bias.is_contiguous(), "bias must be contiguous");
-  TORCH_CHECK(input.size(1) == bias.size(0),
-              "input and bias must have the same num_experts");
   const int64_t num_experts = input.size(1);
+  const int64_t num_experts_bias = bias.size(bias.dim() - 1);
+  TORCH_CHECK(num_experts == num_experts_bias,
+              "input and bias must have the same num_experts");
   TORCH_CHECK(num_experts == 256 || num_experts == 384,
               op_name, " supports 256 or 384 experts, got ", num_experts);
   TORCH_CHECK(topk > 0 && topk <= MAX_TOPK,
@@ -300,6 +303,14 @@ std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus_impl(
     num_token_non_padded_ptr = count.data_ptr<CountT>();
   }
   const int64_t num_rows = input.size(0);
+  int64_t bias_row_stride;
+  if (bias.dim() == 1) {
+    bias_row_stride = 0;  // single bias broadcast to every token
+  } else {
+    TORCH_CHECK(bias.size(0) == num_rows,
+                "2D bias must have num_rows rows to match input");
+    bias_row_stride = num_experts;  // per-token bias
+  }
   auto output = torch::empty({num_rows, topk},
                              torch::TensorOptions()
                                  .dtype(torch::kFloat32)

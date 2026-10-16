@@ -21,7 +21,8 @@ def _reference(
         torch.log1p(torch.exp(logits)),
     )
     activated = torch.sqrt(softplus)
-    choice = activated + bias.unsqueeze(0)
+    bias_broadcast = bias if bias.dim() == 2 else bias.unsqueeze(0)
+    choice = activated + bias_broadcast
     choice = torch.where(torch.isnan(choice), float("inf"), choice)
 
     rows, experts = logits.shape
@@ -213,6 +214,68 @@ def test_moe_fused_gate_sqrtsoftplus_v41_hcu():
     _benchmark()
 
 
+def test_moe_fused_gate_sqrtsoftplus_v41_hcu_2d_bias():
+    """Per-token (2D) bias path used by VL routing: image tokens take one bias,
+    text tokens another, selected row-by-row inside the kernel."""
+    assert torch.cuda.is_available(), "CUDA/ROCm is required"
+    device = "cuda"
+
+    # Correctness vs reference across shapes and option combinations.
+    for experts in (256, 384):
+        for rows in (1, 16, 256, 513):
+            torch.manual_seed(1000 + experts + rows)
+            logits = torch.randn(rows, experts, device=device, dtype=torch.float32)
+            bias_txt = torch.randn(experts, device=device, dtype=torch.float32)
+            bias_vl = torch.randn(experts, device=device, dtype=torch.float32)
+            is_img = torch.rand(rows, device=device) < 0.5
+            bias2d = torch.where(is_img[:, None], bias_vl, bias_txt).contiguous()
+            _check(logits, bias2d)
+            _check(
+                logits,
+                bias2d,
+                num_fused_shared_experts=1,
+                apply_routed_scaling_factor_on_output=True,
+            )
+            _check(logits, bias2d, renormalize=False)
+
+    # A 2D bias whose rows are all identical must match the 1D broadcast result
+    # bit-exactly (same values, same reduction order).
+    torch.manual_seed(77)
+    experts, rows = 384, 64
+    logits = torch.randn(rows, experts, device=device, dtype=torch.float32)
+    bias1d = torch.randn(experts, device=device, dtype=torch.float32)
+    bias2d = bias1d.unsqueeze(0).expand(rows, experts).contiguous()
+    w1, i1 = moe_fused_gate_sqrtsoftplus_v41_hcu(logits, bias1d, 6)
+    w2, i2 = moe_fused_gate_sqrtsoftplus_v41_hcu(logits, bias2d, 6)
+    torch.cuda.synchronize()
+    torch.testing.assert_close(i1, i2, rtol=0, atol=0)
+    torch.testing.assert_close(w1, w2, rtol=0, atol=0)
+
+    # VL partitioning equivalence: one 2D-bias call must equal running each bias
+    # on its own rows via separate 1D calls.
+    torch.manual_seed(2024)
+    rows = 128
+    logits = torch.randn(rows, experts, device=device, dtype=torch.float32)
+    bias_txt = torch.randn(experts, device=device, dtype=torch.float32)
+    bias_vl = torch.randn(experts, device=device, dtype=torch.float32)
+    is_img = torch.arange(rows, device=device) % 2 == 0
+    bias2d = torch.where(is_img[:, None], bias_vl, bias_txt).contiguous()
+    w_all, i_all = moe_fused_gate_sqrtsoftplus_v41_hcu(logits, bias2d, 6)
+    w_img, i_img = moe_fused_gate_sqrtsoftplus_v41_hcu(
+        logits[is_img].contiguous(), bias_vl, 6
+    )
+    w_txt, i_txt = moe_fused_gate_sqrtsoftplus_v41_hcu(
+        logits[~is_img].contiguous(), bias_txt, 6
+    )
+    torch.cuda.synchronize()
+    torch.testing.assert_close(i_all[is_img], i_img, rtol=0, atol=0)
+    torch.testing.assert_close(i_all[~is_img], i_txt, rtol=0, atol=0)
+    torch.testing.assert_close(w_all[is_img], w_img, rtol=0, atol=0)
+    torch.testing.assert_close(w_all[~is_img], w_txt, rtol=0, atol=0)
+
+
 if __name__ == "__main__":
     test_moe_fused_gate_sqrtsoftplus_v41_hcu()
     print("moe_fused_gate_sqrtsoftplus_v41_hcu passed")
+    test_moe_fused_gate_sqrtsoftplus_v41_hcu_2d_bias()
+    print("moe_fused_gate_sqrtsoftplus_v41_hcu 2d bias passed")
