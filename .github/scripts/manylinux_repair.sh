@@ -23,8 +23,8 @@ pip install --no-cache-dir auditwheel patchelf
 TORCH_PATH=$(python3 -c "import torch, os; print(os.path.dirname(torch.__file__))" 2>/dev/null || true)
 export LD_LIBRARY_PATH="${TORCH_PATH}/lib:${LD_LIBRARY_PATH:-}"
 export LD_LIBRARY_PATH="/opt/intel/mkl/lib/intel64_lin/:${LD_LIBRARY_PATH:-}"
-# 定位 lightop 自带库目录; import 推导依赖自带 .so 且纯净环境下 import 可能
-# 失败 (见 __extendhfsf2), 这里用 pip Location 免 import
+# 定位 lightop 自带库目录; 这里用 pip Location 避免 repair 阶段加载扩展
+# 并触发运行时依赖检查
 LIGHTOP_PATH=""
 LIGHTOP_LOC=$(python3 -m pip show lightop 2>/dev/null | sed -n 's/^Location: //p' || true)
 if [ -n "${LIGHTOP_LOC}" ]; then

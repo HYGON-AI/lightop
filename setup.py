@@ -138,6 +138,77 @@ def _join_rocm_home(*paths) -> str:
         raise EnvironmentError('ROCM_HOME environment variable is not set. ')
     return os.path.join(ROCM_HOME, *paths)
 
+
+def _find_clang_rt_builtins(rocm_home: Optional[str]) -> Optional[str]:
+    """Find the DTK compiler-rt archive needed by bundled static libraries.
+
+    ``liblmslimquant_static.a`` is built with DTK Clang and may reference
+    compiler builtins such as ``__extendhfsf2``.  The setuptools linker is
+    normally driven by ``c++`` and does not necessarily add the DTK Clang
+    resource archive automatically, so discover it and pass the archive
+    explicitly during the extension link step.
+
+    ``DTK_CLANG_RT_BUILTINS`` is an escape hatch for installations whose DTK
+    layout is outside the usual ROCm/Clang resource directories.
+    """
+    archive_name = 'libclang_rt.builtins-x86_64.a'
+    override = os.environ.get('DTK_CLANG_RT_BUILTINS')
+    if override:
+        override = os.path.abspath(os.path.expanduser(override))
+        if not os.path.isfile(override):
+            raise FileNotFoundError(
+                'DTK_CLANG_RT_BUILTINS points to a missing file: '
+                f'{override}')
+        return override
+
+    resource_dirs = []
+
+    # Ask the compiler that will build the HIP sources first.  This keeps the
+    # runtime archive matched to the active DTK Clang installation when more
+    # than one Clang version is present below ROCM_HOME.
+    hipcc = os.environ.get('HIPCC') or shutil.which('hipcc')
+    if hipcc:
+        try:
+            resource_dir = subprocess.check_output(
+                [hipcc, '--print-resource-dir'],
+                stderr=subprocess.DEVNULL,
+                text=True,
+            ).strip()
+        except (OSError, subprocess.CalledProcessError):
+            resource_dir = ''
+        if resource_dir:
+            resource_dirs.append(resource_dir)
+
+    if rocm_home:
+        # DTK and ROCm releases use both of these layouts.  Keep the direct
+        # resource directories ahead of the wildcard fallbacks below.
+        resource_dirs.extend([
+            os.path.join(rocm_home, 'lib', 'clang'),
+            os.path.join(rocm_home, 'llvm', 'lib', 'clang'),
+            os.path.join(rocm_home, 'clang', 'lib', 'clang'),
+        ])
+
+    candidates = []
+    for resource_dir in resource_dirs:
+        candidates.extend([
+            os.path.join(resource_dir, 'lib', 'linux', archive_name),
+            os.path.join(resource_dir, 'lib', 'x86_64-unknown-linux-gnu', archive_name),
+            os.path.join(resource_dir, archive_name),
+        ])
+        # ``resource_dir`` can be the parent ``.../lib/clang`` when the
+        # compiler query above was unavailable.
+        candidates.extend([
+            os.path.join(resource_dir, '*', 'lib', 'linux', archive_name),
+            os.path.join(resource_dir, '*', 'lib', 'x86_64-unknown-linux-gnu', archive_name),
+        ])
+
+    for candidate in candidates:
+        matches = glob.glob(candidate)
+        if matches:
+            return os.path.abspath(sorted(matches)[-1])
+    return None
+
+
 def get_rocm_version():
     version_str = torch.version.hip
     if version_str is None:
@@ -595,6 +666,23 @@ def get_extensions():
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/rocrand/include')
     include_dirs.append(os.path.abspath('./csrc/mqa_logits/'))
+
+    static_objects = [
+        os.path.abspath('./lib/static/liblmslimquant_static.a'),
+        os.path.abspath('./lib/static/libgemm_w4a16_awq.a'),
+    ]
+    clang_rt_builtins = _find_clang_rt_builtins(rocm_home)
+    if clang_rt_builtins is None:
+        raise RuntimeError(
+            'Unable to find DTK compiler-rt archive '
+            'libclang_rt.builtins-x86_64.a. The archive is required to '
+            'resolve compiler builtins referenced by liblmslimquant_static.a. '
+            'Set DTK_CLANG_RT_BUILTINS to its absolute path.')
+    print(f'Using DTK compiler runtime: {clang_rt_builtins}')
+    # Keep compiler-rt after the bundled archives: the linker extracts the
+    # builtin implementation when those archives introduce its undefined
+    # references (for example, __extendhfsf2).
+    static_objects.append(clang_rt_builtins)
     
     # 核心库：lightop.op
     ext_ops = extension(
@@ -603,10 +691,7 @@ def get_extensions():
         include_dirs=include_dirs,
         libraries=['rocblas', 'hipblas', 'hipblaslt'],
         library_dirs=[os.path.join(rocm_home, 'lib')],
-        extra_objects=[
-            os.path.abspath('./lib/static/liblmslimquant_static.a'),
-            os.path.abspath('./lib/static/libgemm_w4a16_awq.a'),
-        ],
+        extra_objects=static_objects,
         define_macros=define_macros,
         extra_compile_args=extra_compile_args)
 

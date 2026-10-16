@@ -24,6 +24,10 @@ dtk22.04 \ dtk22.10 \ dtk23.04 \ dtk23.10 \ dtk24.04
 
 python3 setup.py install
 
+在 DTK Clang 资源目录不属于标准 ROCm 布局时，可以显式指定编译器运行时静态库：
+
+DTK_CLANG_RT_BUILTINS=/path/to/libclang_rt.builtins-x86_64.a python3 setup.py install
+
 对于23.10之前的dtk由于不支持928，因此需要去掉928代码，使用下面的编译命令：
 
 PYTORCH_ROCM_ARCH='gfx906;gfx926' python3 setup.py install
