@@ -85,7 +85,7 @@ jobs:
           pip install --no-cache-dir torch==${TORCH_VERSION} ninja wheel setuptools
           if [ "${{ matrix.need_vllm }}" = "true" ]; then
             pip install --no-cache-dir triton==3.6.0
-            pip install --no-cache-dir "vllm==0.28.1" "vllm-hcu>0.28.0,<=0.28.1"
+            pip install --no-cache-dir --pre "vllm==0.28.1" "vllm-hcu>0.28.0,<=0.28.1"
           fi
 
       - name: 安装 AICC
