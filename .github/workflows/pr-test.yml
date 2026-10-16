@@ -104,8 +104,9 @@ jobs:
           source /opt/dtk/env.sh
           pip install --no-cache-dir ninja wheel setuptools
           python3 setup.py bdist_wheel
-          # auditwheel repair 把 compiler-rt 辅助符号 vendor 进 wheel,
-          # 装包后 import 不再依赖链接环境
+          # 与 release 同一打包形态: repair 把 compiler-rt 辅助符号与自带库
+          # (libmsgpackc 等) vendor 进 wheel, 需先装原生 wheel 供脚本定位依赖
+          pip install --no-cache-dir --no-deps dist/*.whl
           bash .github/scripts/manylinux_repair.sh dist dist-manylinux
           pip install --no-cache-dir --force-reinstall dist-manylinux/*.whl
           python3 -c "import lightop; print(f'lightop={lightop.__version__}')"
