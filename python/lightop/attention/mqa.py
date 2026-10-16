@@ -245,6 +245,22 @@ def dsv41_select_candidate_blocks(logits, seq_lens, topk_blocks, block_size=8):
     return out_mask, out_block_ids
 
 
+def dsv41_remap_indices_to_staging(indices, selected_pages, page_size, max_pages,
+                                   static_selected_pages=False):
+    """Map token IDs to compact staging slots, preserving all negative IDs.
+
+    Selected pages may be unordered; valid destination pages must be unique.
+    With static_selected_pages, negative entries are padding. Otherwise normal
+    PyTorch negative page-index wrapping applies. Valid token pages must be
+    below max_pages. Missing pages map to -page_size + the token offset.
+    """
+    from .. import op
+
+    return op.dsv41_remap_indices_to_staging(
+        indices, selected_pages, page_size, max_pages, static_selected_pages,
+    )
+
+
 def dsv41_build_swa_token_ids(seq_lens, extend_seq_lens, req_pool_indices,
                               req_to_token, full_to_swa, swa_window, total_swa):
     """Build SWA IDs and request metadata without host reads.
@@ -289,5 +305,6 @@ __all__ = [
     "dsv41_select_candidate_blocks",
     "dsv41_pair_partners",
     "dsv41_build_swa_token_ids",
+    "dsv41_remap_indices_to_staging",
     "page_mqa_logits_sparse_mask",
 ]
