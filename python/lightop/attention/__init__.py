@@ -24,6 +24,7 @@ from .mqa import (
     dsv41_pair_partners,
     dsv41_build_swa_token_ids,
     dsv41_remap_indices_to_staging,
+    dsv41_ragged_topk_postprocess,
 )
 from .qkv import (
     fuse_layernorm_rotary_embedding,
@@ -98,6 +99,7 @@ __all__ = [
     "dsv41_pair_partners",
     "dsv41_build_swa_token_ids",
     "dsv41_remap_indices_to_staging",
+    "dsv41_ragged_topk_postprocess",
     "page_mqa_logits_sparse_mask",
     "rms_rotary_embedding_fuse",
     "rms_rotary_embedding_fuse_with_kv_store",

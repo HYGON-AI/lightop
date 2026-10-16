@@ -245,6 +245,23 @@ def dsv41_select_candidate_blocks(logits, seq_lens, topk_blocks, block_size=8):
     return out_mask, out_block_ids
 
 
+def dsv41_ragged_topk_postprocess(scores, selected, offsets, slots, out_pages,
+                                  out_raw=None, mask_scores=False):
+    """Filter/sort ragged selections and write physical and optional raw IDs.
+
+    Selection itself is unchanged. Negative IDs and INT_MAX become padding;
+    consumer masking keeps scores strictly greater than -inf (NaNs removed,
+    +inf retained). Output matrices are int32 and may be strided views.
+    Scores are float32, selected/offsets int32, slots int32 or int64. Top-k
+    is at most 2048. Inputs are read-only; writes are confined to output views.
+    """
+    from .. import op
+
+    op.dsv41_ragged_topk_postprocess(
+        scores, selected, offsets, slots, out_pages, out_raw, mask_scores,
+    )
+
+
 def dsv41_remap_indices_to_staging(indices, selected_pages, page_size, max_pages,
                                    static_selected_pages=False):
     """Map token IDs to compact staging slots, preserving all negative IDs.
@@ -306,5 +323,6 @@ __all__ = [
     "dsv41_pair_partners",
     "dsv41_build_swa_token_ids",
     "dsv41_remap_indices_to_staging",
+    "dsv41_ragged_topk_postprocess",
     "page_mqa_logits_sparse_mask",
 ]
