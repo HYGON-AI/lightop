@@ -104,7 +104,10 @@ jobs:
           source /opt/dtk/env.sh
           pip install --no-cache-dir ninja wheel setuptools
           python3 setup.py bdist_wheel
-          pip install --no-deps --force-reinstall dist/*.whl
+          # auditwheel repair 把 compiler-rt 辅助符号 vendor 进 wheel,
+          # 装包后 import 不再依赖链接环境
+          bash .github/scripts/manylinux_repair.sh dist dist-manylinux
+          pip install --no-cache-dir --force-reinstall dist-manylinux/*.whl
           python3 -c "import lightop; print(f'lightop={lightop.__version__}')"
 
       - name: 安装 pytest
