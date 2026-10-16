@@ -101,3 +101,5 @@ except ImportError:
 else:
     __version__ = version
     __hcu_version__ = hcu_version
+
+from .hc_mix_stats import hc_mix_stats

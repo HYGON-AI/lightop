@@ -5,6 +5,7 @@
 #include <ATen/ATen.h>
 #include <c10/macros/Macros.h>
 #include <vector>
+#include <optional>
 
 #include "fp8_fp4_mqa_logits/fp8_fp4_mqa_logits.h"
 #include "fp8_fp4_mqa_logits/dsv41_mqa_prep.h"
@@ -26,6 +27,7 @@ std::tuple<torch::Tensor, torch::Tensor> pair_partners(
     torch::Tensor& state, int64_t ring);
 }
 namespace at {  namespace native {
+std::optional<Tensor> hc_mix_stats(const Tensor& x, const Tensor& w, double eps);
 std::tuple<Tensor, Tensor> fused_deepep_prepare(
     const Tensor& hidden,
     const Tensor& smooth,
@@ -1553,6 +1555,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
        "SGLang mHC CP-selected row broadcast",
        py::arg("hidden_states"), py::arg("hc_mult"), py::arg("cp_size"), py::arg("cp_rank"));
  m.def("topk_ids_postprocess",&at::native::topk_ids_postprocess,"topk_ids_postprocess");
+ m.def("hc_mix_stats", &at::native::hc_mix_stats,
+       "RMS-normalized projection, or None when unsupported", py::arg("x"),
+       py::arg("weight"), py::arg("eps") = 1e-6);
  m.def("dpskv4_hc_head_fused", &at::native::dpskv4_hc_head_fused, "dpskv4_hc_head_fused");
  m.def("fused_metadata_kernel_general", &at::native::fused_metadata_kernel_general_launcher,
        "fused_metadata_kernel_general",
