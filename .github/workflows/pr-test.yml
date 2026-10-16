@@ -21,6 +21,7 @@ concurrency:
 
 env:
   MAX_JOBS: "32"
+  PYPI_URL: ${{ vars.PYPI_URL || 'http://10.16.1.201:9929' }}
 
 jobs:
   test:
@@ -71,21 +72,16 @@ jobs:
               merge --no-edit "${target_sha}"
           echo "Integrated master ${target_sha}"
 
-      - name: 配置内网 pip 源并安装测试依赖
+      - name: 安装测试依赖
         shell: bash
         run: |
           set -euo pipefail
-          PYPI_URL="${{ vars.PYPI_URL || 'http://10.16.1.201:9929' }}"
-          TRUSTED_HOST="${PYPI_URL#*://}"; TRUSTED_HOST="${TRUSTED_HOST%%/*}"
-          mkdir -p ~/.pip && printf '%s\n' \
-            '[global]' \
-            "index-url = ${PYPI_URL}/${{ matrix.pip_index_suffix }}" \
-            "trusted-host = ${TRUSTED_HOST}" \
-            > ~/.pip/pip.conf
-          pip install --no-cache-dir torch==${TORCH_VERSION} ninja wheel setuptools
+          PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
+          PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
+          pip install "${PIP_FLAGS[@]}" torch==${TORCH_VERSION} ninja wheel setuptools
           if [ "${{ matrix.need_vllm }}" = "true" ]; then
-            pip install --no-cache-dir triton==3.6.0
-            pip install --no-cache-dir --pre "vllm==0.28.1" "vllm-hcu>0.28.0,<=0.28.1"
+            pip install "${PIP_FLAGS[@]}" triton==3.6.0
+            pip install "${PIP_FLAGS[@]}" --pre "vllm==0.28.1" "vllm-hcu>0.28.0,<=0.28.1"
           fi
 
       - name: 安装 AICC
@@ -98,6 +94,10 @@ jobs:
 
       - name: 编译并安装 lightop
         shell: bash
+        env:
+          # hip 源经 clang 编译产生 compiler-rt 辅助符号 (__extendhfsf2 等),
+          # 链接必须用 clang++ (libgcc 无此符号)
+          CXX: clang++
         run: |
           set -euo pipefail
           # shellcheck disable=SC1091

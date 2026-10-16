@@ -92,6 +92,9 @@ jobs:
 
       - name: 编译 wheel
         shell: bash
+        env:
+          # hip 源经 clang 编译产生 compiler-rt 辅助符号, 链接需 clang++
+          CXX: clang++
         run: |
           source /opt/dtk/env.sh
           python3 setup.py bdist_wheel
