@@ -102,4 +102,4 @@ else:
     __version__ = version
     __hcu_version__ = hcu_version
 
-from .hc_mix_stats import hc_mix_stats
+from .hc_mix_stats import hc_mix_stats, hc_mix_stats_sinkhorn_bf16x3, hc_mix_stats_sinkhorn_deepgemm, split_bf16_hc_weight, split_tf32_hc_weight

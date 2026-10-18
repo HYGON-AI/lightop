@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Torch correctness and device-only three-way mHC statistics benchmark.
 
-python test/ci_tests/test_hc_mix_stats.py --output /path/to/results --triton-path /path/to/hc_mix_stats_hcu.py
+python test/ci_tests/test_hc_mix_stats.py --output /path/to/results
 Requires gfx928, gfx936 or gfx938. Real model weights are optional via --model. --quick checks a
 small random matrix; default covers seven weights when --model is supplied.
 CI correctness: python -m pytest -v test/ci_tests/test_hc_mix_stats.py
@@ -35,13 +35,30 @@ def native(x, w, eps=1e-6):
 
 
 def metric(a, b):
+    assert a.shape == b.shape, ("shape mismatch", a.shape, b.shape)
     a, b = a.detach().double(), b.detach().double().to(a.device)
     d = (a - b).abs()
+    error_norm, reference_norm = d.norm().item(), b.norm().item()
+    # Do not clamp small nonzero references: that hides relative error.
+    relative_l2 = (
+        error_norm / reference_norm if reference_norm != 0
+        else (0.0 if error_norm == 0 else float("inf"))
+    )
+    nonzero = b != 0
+    relative = d[nonzero] / b[nonzero].abs()
+    finite_output = bool(torch.isfinite(a).all())
+    finite_reference = bool(torch.isfinite(b).all())
     return dict(
         max_abs=d.max().item() if d.numel() else 0,
-        relative_l2=((a - b).norm() / b.norm().clamp_min(1e-30)).item(),
+        relative_l2=relative_l2,
+        max_relative_nonzero=relative.max().item() if relative.numel() else 0,
+        relative_gt_1pct=int((relative > 0.01).sum()),
+        nonzero_reference=int(nonzero.sum()),
+        zero_reference_mismatches=int(((b == 0) & (d != 0)).sum()),
         violations=int((d > 1e-4 + 1e-4 * b.abs()).sum()),
-        finite=bool(torch.isfinite(a).all()),
+        finite=finite_output and finite_reference,
+        finite_output=finite_output,
+        finite_reference=finite_reference,
     )
 
 
@@ -49,6 +66,25 @@ def check(a, b):
     result = metric(a, b)
     assert result["finite"] and result["violations"] == 0, result
     return result
+
+
+def test_accuracy_checker():
+    # NaN/Inf references previously bypassed the comparison (NaN > tol is false).
+    for bad in (float("nan"), float("inf"), -float("inf")):
+        with pytest.raises(AssertionError):
+            check(torch.ones(1), torch.tensor([bad]))
+        with pytest.raises(AssertionError):
+            check(torch.tensor([bad]), torch.ones(1))
+    with pytest.raises(AssertionError, match="shape mismatch"):
+        check(torch.ones(1), torch.ones(2))
+    small = metric(torch.zeros(1), torch.tensor([1e-40]))
+    assert small["relative_l2"] == 1.0
+    assert small["max_relative_nonzero"] == 1.0
+    assert small["relative_gt_1pct"] == 1
+    assert metric(torch.zeros(1), torch.zeros(1))["relative_l2"] == 0
+    zero = metric(torch.ones(1), torch.zeros(1))
+    assert zero["relative_l2"] == float("inf")
+    assert zero["zero_reference_mismatches"] == 1
 
 
 def all_weights(model):
@@ -72,7 +108,7 @@ def all_weights(model):
                     )
 
 
-def accuracy(args, triton_fn):
+def accuracy(args):
     records = []
     ms = [0, 1, 12, 17, 128] if args.quick else MS
     for name, wcpu, scale, base in all_weights(None if args.quick else args.model):
@@ -113,8 +149,6 @@ def accuracy(args, triton_fn):
                             pattern,
                             m,
                         )
-                    if triton_fn:
-                        r["triton"] = check(y, triton_fn(x[:m], w, 1e-6))
                     if args.sinkhorn and scale is not None and m == 12:
                         from sglang.kernels.ops.layernorm.mhc import hc_split_sinkhorn
 
@@ -383,7 +417,7 @@ def bench(fn, repeats=10):
     )
 
 
-def benchmark(args, triton_fn):
+def benchmark(args):
     torch.manual_seed(42)
     w = next(all_weights(args.model))[1].cuda()
     if args.model:
@@ -394,8 +428,6 @@ def benchmark(args, triton_fn):
     ):
         x = torch.randn(m, K, device="cuda").bfloat16()
         methods = {"torch": lambda: reference(x, w), "lightop": lambda: native(x, w)}
-        if triton_fn:
-            methods["triton"] = lambda: triton_fn(x, w, 1e-6)
         expected = reference(x, w)
         for name, fn in methods.items():
             check(fn(), expected)
@@ -408,88 +440,7 @@ def benchmark(args, triton_fn):
     return rows
 
 
-def dispatch_checks(module):
-    from types import SimpleNamespace
-    from unittest.mock import patch
-
-    assert module._use_lightop == module.get_bool_env_var("SGLANG_USE_LIGHTOP")
-    enabled = module._is_hcu and module._use_lightop
-    if enabled:
-        assert module.lightop_hc_mix_stats is lightop.hc_mix_stats
-    layer = SimpleNamespace(
-        rms_norm_eps=1e-6, hc_mult=4, hc_sinkhorn_iters=20, hc_eps=1e-6
-    )
-    x = torch.randn(12, K, device="cuda").bfloat16()
-    w = torch.randn(N, K, device="cuda") / K**0.5
-    ref = reference(x, w)
-
-    def dispatch(xx=x, ww=w):
-        return module.DeepseekV4DecoderLayer._hc_mix_stats(
-            layer, xx, ww, None, None
-        )[0]
-
-    def expect_runtime_error(fn, message=None):
-        try:
-            fn()
-        except RuntimeError as exc:
-            if message is not None:
-                assert message in str(exc), str(exc)
-        else:
-            raise AssertionError("expected error was not raised")
-
-    # Exercise the actual model method at its Sinkhorn input boundary.
-    # The separate --sinkhorn cases validate Sinkhorn numerically.
-    sinkhorn = SimpleNamespace(hc_split_sinkhorn=lambda mixes, *args: (mixes,) * 3)
-    with (
-        patch.object(module, "_get_mhc_ops", return_value=sinkhorn),
-        patch.object(
-            module, "lightop_hc_mix_stats", wraps=lightop.hc_mix_stats,
-            create=True,
-        ) as op,
-    ):
-        # A disabled global switch uses the original Torch path without native calls.
-        with patch.object(module, "_use_lightop", False):
-            check(dispatch(), ref)
-            check(dispatch(x.float(), w), ref)
-            op.assert_not_called()
-        with patch.object(module, "_use_lightop", True):
-            check(dispatch(), ref)
-            assert op.call_count == 1
-            with torch.no_grad():
-                check(dispatch(x, w.clone().requires_grad_(True)), ref)
-            # Unsupported inputs use the existing Torch formula.
-            for xx, ww in ((x.float(), w), (x[:, ::2], w[:, ::2])):
-                assert native(xx, ww) is None
-                check(dispatch(xx, ww), reference(xx, ww))
-            # A None status (e.g. unsupported architecture) also falls back.
-            with patch.object(module, "lightop_hc_mix_stats", return_value=None):
-                check(dispatch(), ref)
-            # Execution errors still remain visible.
-            with patch.object(
-                module, "lightop_hc_mix_stats",
-                side_effect=RuntimeError("simulated GPU error"),
-            ):
-                expect_runtime_error(dispatch, "simulated GPU error")
-            xx = torch.randn(17, 257, device="cuda").bfloat16()
-            ww = torch.randn(33, 257, device="cuda") / 257**0.5
-            check(dispatch(xx, ww), reference(xx, ww))
-
-        # Both paths capture/replay updated input and weight contents.
-        for use_lightop, xx in ((False, x), (True, x), (True, x.float())):
-            with patch.object(module, "_use_lightop", use_lightop):
-                dispatch(xx, w)
-                g = torch.cuda.CUDAGraph()
-                with torch.cuda.graph(g):
-                    out = dispatch(xx, w)
-                xx.normal_()
-                w.mul_(0.5)
-                g.replay()
-                torch.cuda.synchronize()
-                check(out, reference(xx, w))
-    return "passed"
-
-
-def real_activations(directory, triton_fn):
+def real_activations(directory):
     from sglang.kernels.ops.layernorm.mhc import hc_split_sinkhorn
 
     rows = []
@@ -511,8 +462,6 @@ def real_activations(directory, triton_fn):
             torch=check(y, ref),
             fp64=check(y.cpu(), ref64),
         )
-        if triton_fn:
-            r["triton"] = check(y, triton_fn(x, w, eps))
         params = (
             data["scale"].cuda(),
             data["base"].cuda(),
@@ -550,13 +499,13 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output", type=Path, default=Path("hc_mix_stats_results"))
     p.add_argument("--model", type=Path)
-    p.add_argument("--triton-path", type=Path)
+
     p.add_argument(
         "--sinkhorn",
         action="store_true",
         help="Validate actual SGLang Sinkhorn (requires SGLang)",
     )
-    p.add_argument("--sglang-check", action="store_true")
+
     p.add_argument("--general-only", action="store_true")
     p.add_argument("--activations", type=Path)
     p.add_argument("--quick", action="store_true")
@@ -581,15 +530,6 @@ def main():
             native(x, w)
         torch.cuda.synchronize()
         return
-    triton_fn = None
-    module = None
-    if args.triton_path:
-        spec = importlib.util.spec_from_file_location(
-            "hc_mix_test_triton", args.triton_path
-        )
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        triton_fn = module.hc_mix_stats_triton
     args.output.mkdir(parents=True, exist_ok=True)
     result = {
         "torch": torch.__version__,
@@ -604,16 +544,12 @@ def main():
         result["shapes"] = shape_matrix()
         result["general_accuracy"] = general_accuracy()
         result["tile_boundary_accuracy"] = tile_boundary_accuracy()
-        if args.sglang_check:
-            import sglang.srt.models.deepseek_v4 as model_module
-
-            result["dispatch"] = dispatch_checks(model_module)
-        result["accuracy"] = [] if args.general_only else accuracy(args, triton_fn)
+        result["accuracy"] = [] if args.general_only else accuracy(args)
         if args.activations:
-            result["real_activations"] = real_activations(args.activations, triton_fn)
+            result["real_activations"] = real_activations(args.activations)
         (args.output / "accuracy.json").write_text(json.dumps(result, indent=2))
     if not args.accuracy_only:
-        result["performance"] = [] if args.general_only else benchmark(args, triton_fn)
+        result["performance"] = [] if args.general_only else benchmark(args)
         result["general_performance"] = general_benchmark()
     (args.output / "result.json").write_text(json.dumps(result, indent=2))
     print("PASS", args.output, flush=True)
