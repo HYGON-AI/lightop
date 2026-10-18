@@ -5,6 +5,12 @@
 
 from importlib import import_module
 
+from ..hc_mix_stats import (
+    hc_mix_stats_sinkhorn_bf16x3,
+    hc_mix_stats_sinkhorn_deepgemm,
+    split_bf16_hc_weight,
+    split_tf32_hc_weight,
+)
 from .core import fused_bmm, gemm, hc_mix_stats
 from .grouped import (
     grougemm_bf16_fp16,
@@ -58,6 +64,8 @@ __all__ = [
     "fused_bmm",
     "gemm",
     "hc_mix_stats",
+    "hc_mix_stats_sinkhorn_bf16x3",
+    "hc_mix_stats_sinkhorn_deepgemm",
     "gemm_awq_w4a16_marlin",
     "gemm_awq_w4a16_marlin_dequant",
     "gemm_w4a16",
@@ -81,6 +89,8 @@ __all__ = [
     "m_grouped_w8a8_gemm_nt_masked",
     "m_grouped_w8a8_gemm_nt_nopad_contig_asm",
     "rocblas_scaled_mm_nn",
+    "split_bf16_hc_weight",
+    "split_tf32_hc_weight",
     "triton_int8_gemm_helper",
     "triton_scaled_mm",
 ]
