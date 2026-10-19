@@ -103,9 +103,12 @@ jobs:
           # shellcheck disable=SC1091
           source /opt/dtk/env.sh
           pip install --no-cache-dir ninja wheel setuptools
+          # 显式静态链接 compiler-rt builtins, 未定义符号进不了最终 .so
+          RT_LIB=$(find /opt/dtk/llvm/lib/clang -name "libclang_rt.builtins-x86_64.a" | head -n1)
+          export LDFLAGS="${RT_LIB}"
           python3 setup.py bdist_wheel
-          # 与 release 同一打包形态: repair 把 compiler-rt 辅助符号与自带库
-          # (libmsgpackc 等) vendor 进 wheel, 需先装原生 wheel 供脚本定位依赖
+          # 与 release 同一打包形态: repair 把自带库 (libmsgpackc 等) vendor 进
+          # wheel, 需先装原生 wheel 供脚本定位依赖
           pip install --no-cache-dir --no-deps dist/*.whl
           bash .github/scripts/manylinux_repair.sh dist dist-manylinux
           # --no-deps: 保持编译同一 torch 版本, 不让 pip 按矩阵源拉新 torch
