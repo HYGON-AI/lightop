@@ -73,7 +73,7 @@ def test_masked_matches_existing_quantization(capacity, width, fp8type, distribu
     assert torch.equal(x, before)
 
 
-@pytest.mark.parametrize('width', [512, 2304, 8192])
+@pytest.mark.parametrize('width', [512, 2303, 2304, 8192])
 def test_nondefault_stream_graph_updates_input_and_counts(width):
     x = torch.randn(4, 257, 2 * width, dtype=torch.bfloat16, device='cuda')
     counts = torch.zeros(4, dtype=torch.int32, device='cuda')
