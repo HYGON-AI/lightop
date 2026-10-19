@@ -34,9 +34,11 @@ jobs:
       matrix:
         include:
           - dtk_tag: 2604
+            aicc_major: "1.0.0"
             pip_index_suffix: nightly/dtk2604/+simple/
             torch_version: "2.11.0"
           - dtk_tag: 2610
+            aicc_major: "2.0.0"
             pip_index_suffix: nightly/dtk2610/+simple/
             torch_version: "2.11.0"
     env:
