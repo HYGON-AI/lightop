@@ -135,7 +135,8 @@ jobs:
       DTK_TAG: ${{ matrix.dtk_tag }}
     container:
       # 干净容器只装运行时依赖, 与编译环境隔离
-      image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_tag == '2610' && '26.10' || '26.04' }}-rockylinux8.6-py3.12
+      # test 容器 python 版本须与 build 一致 (build 产出 cp310 wheel)
+      image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_tag == '2610' && '26.10' || '26.04' }}-rockylinux8.6-py3.10
       options: >-
         --volume /opt/hyhal:/opt/hyhal:ro
         --device /dev/kfd:/dev/kfd
