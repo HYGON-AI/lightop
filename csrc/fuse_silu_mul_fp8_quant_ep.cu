@@ -807,8 +807,8 @@ void fuse_silu_mul_fp8_quant_ep(torch::Tensor& input,
 }
 
 #ifdef USE_ROCM
-// The column count is dynamic; template parameters only control row tiling.
-template <int ThreadsPerRow, int RowsPerBlock, int Segments, int FP8Type>
+// The column count is dynamic; templates specialize row tiling and vector alignment.
+template <int ThreadsPerRow, int RowsPerBlock, int Segments, int FP8Type, bool VectorAligned>
 __global__ void act_and_mul_fp8_quant_ep_masked(
     uint8_t* __restrict__ out,
     const c10::BFloat16* __restrict__ input,
@@ -827,7 +827,7 @@ __global__ void act_and_mul_fp8_quant_ep_masked(
   const int lane = threadIdx.x % ThreadsPerRow;
   const int count = tokens_per_expert[expert];
   const int valid_rows = count < 0 ? 0 : (count > capacity ? capacity : count);
-  const bool vector_aligned = d % Vec == 0;
+  constexpr bool vector_aligned = VectorAligned;
   __shared__ float warp_max[ThreadsPerRow / Wave];
   __shared__ float inverse_scale;
 
@@ -920,8 +920,8 @@ __global__ void act_and_mul_fp8_quant_ep_masked(
   }
 }
 
-template <int ThreadsPerRow, int RowsPerBlock, int Segments>
-static void launch_act_and_mul_fp8_quant_ep_masked(
+template <int ThreadsPerRow, int RowsPerBlock, int Segments, bool VectorAligned>
+static void launch_act_and_mul_fp8_quant_ep_masked_impl(
     torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales,
     const int32_t* counts, int fp8type, float limit, cudaStream_t stream) {
   const int capacity = input.size(1);
@@ -937,13 +937,28 @@ static void launch_act_and_mul_fp8_quant_ep_masked(
   const dim3 grid(input.size(0), row_blocks);
   const dim3 block(ThreadsPerRow * RowsPerBlock);
   if (fp8type == 0) {
-    act_and_mul_fp8_quant_ep_masked<ThreadsPerRow, RowsPerBlock, Segments, 0>
+    act_and_mul_fp8_quant_ep_masked<ThreadsPerRow, RowsPerBlock, Segments, 0, VectorAligned>
         <<<grid, block, 0, stream>>>(out.data_ptr<uint8_t>(), input.data_ptr<c10::BFloat16>(),
                                     scales.data_ptr<float>(), d, capacity, counts, limit);
   } else {
-    act_and_mul_fp8_quant_ep_masked<ThreadsPerRow, RowsPerBlock, Segments, 1>
+    act_and_mul_fp8_quant_ep_masked<ThreadsPerRow, RowsPerBlock, Segments, 1, VectorAligned>
         <<<grid, block, 0, stream>>>(out.data_ptr<uint8_t>(), input.data_ptr<c10::BFloat16>(),
                                     scales.data_ptr<float>(), d, capacity, counts, limit);
+  }
+}
+
+// Select vector alignment from tensor metadata before launching the kernel.
+// This keeps scalar tail handling out of the aligned kernel's instruction stream.
+template <int ThreadsPerRow, int RowsPerBlock, int Segments>
+static void launch_act_and_mul_fp8_quant_ep_masked(
+    torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales,
+    const int32_t* counts, int fp8type, float limit, cudaStream_t stream) {
+  if ((input.size(2) / 2) % 8 == 0) {
+    launch_act_and_mul_fp8_quant_ep_masked_impl<ThreadsPerRow, RowsPerBlock, Segments, true>(
+        input, out, scales, counts, fp8type, limit, stream);
+  } else {
+    launch_act_and_mul_fp8_quant_ep_masked_impl<ThreadsPerRow, RowsPerBlock, Segments, false>(
+        input, out, scales, counts, fp8type, limit, stream);
   }
 }
 #endif
