@@ -92,23 +92,19 @@ jobs:
         env:
           RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}
 
-      - name: 编译并安装 lightop
+      - name: 编译 wheel
+        # 与 release-pypi 同款编译; 测试环境 import 报 __extendhfsf2 时以此态
+        # 编出的 manylinux wheel 为准
         shell: bash
         env:
-          # hip 源经 clang 编译产生 compiler-rt 辅助符号 (__extendhfsf2 等),
-          # 链接必须用 clang++ (libgcc 无此符号)
           CXX: clang++
         run: |
-          set -euo pipefail
-          # shellcheck disable=SC1091
           source /opt/dtk/env.sh
-          pip install --no-cache-dir ninja wheel setuptools
-          # 显式静态链接 compiler-rt builtins, 未定义符号进不了最终 .so
-          RT_LIB=$(find /opt/dtk/llvm/lib/clang -name "libclang_rt.builtins-x86_64.a" | head -n1)
-          export LDFLAGS="${RT_LIB}"
+          pip install --no-cache-dir numpy==1.26.4 ninja wheel setuptools
           python3 setup.py bdist_wheel
-          # 与 release 同一打包形态: repair 把自带库 (libmsgpackc 等) vendor 进
-          # wheel, 需先装原生 wheel 供脚本定位依赖
+
+      - name: 生成 manylinux wheel 并安装
+        run: |
           pip install --no-cache-dir --no-deps dist/*.whl
           bash .github/scripts/manylinux_repair.sh dist dist-manylinux
           # --no-deps: 保持编译同一 torch 版本, 不让 pip 按矩阵源拉新 torch
