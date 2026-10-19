@@ -35,12 +35,10 @@ jobs:
             aicc_major: "1.0.0"
             pip_index_suffix: nightly/dtk2604/+simple/
             torch_version: "2.11.0"
-            need_vllm: false
           - dtk_tag: 2610
             aicc_major: "2.0.0"
             pip_index_suffix: nightly/dtk2610/+simple/
             torch_version: "2.11.0"
-            need_vllm: true
     env:
       TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_TAG: ${{ matrix.dtk_tag }}
@@ -79,10 +77,8 @@ jobs:
           PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
           PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
           pip install "${PIP_FLAGS[@]}" torch==${TORCH_VERSION} ninja wheel setuptools
-          if [ "${{ matrix.need_vllm }}" = "true" ]; then
-            pip install "${PIP_FLAGS[@]}" triton==3.6.0
-            pip install "${PIP_FLAGS[@]}" --pre "vllm==0.28.1" "vllm-hcu>0.28.0,<=0.28.1"
-          fi
+          pip install "${PIP_FLAGS[@]}" triton==3.6.0
+          pip install "${PIP_FLAGS[@]}" --pre "vllm==0.28.1" "vllm-hcu>0.28.0,<=0.28.1"
 
       - name: 安装 AICC
         shell: bash
