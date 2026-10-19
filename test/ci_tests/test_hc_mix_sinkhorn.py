@@ -10,11 +10,14 @@ import math
 from pathlib import Path
 import statistics
 import torch
-import lightop
+from lightop.gemm_ops import (
+    hc_mix_stats_sinkhorn_bf16x3 as BF,
+    hc_mix_stats_sinkhorn_deepgemm as TF,
+    split_bf16_hc_weight,
+    split_tf32_hc_weight,
+)
 
 K=20480
-TF=lightop.hc_mix_stats_sinkhorn_deepgemm
-BF=lightop.hc_mix_stats_sinkhorn_bf16x3
 
 def sink(mix,scale,base,iters=20,eps=1e-6):
     pre=torch.sigmoid(mix[:,:4]*scale[0]+base[:4])+eps
@@ -64,7 +67,7 @@ def correctness(args):
     ms=[0,1,6,12,17,32,33,64,65,128,129,256,257,4096] if args.quick else [0,1,2,6,10,12,15,16,17,31,32,33,42,48,49,63,64,65,127,128,129,191,192,255,256,257,511,512,513,1024,2048,4095,4096,4097]
     for name,wc,sc,bc in weights(args.model):
         w,s,b=[v.cuda() for v in (wc,sc,bc)]
-        tp=lightop.split_tf32_hc_weight(w);bp=lightop.split_bf16_hc_weight(w)
+        tp=split_tf32_hc_weight(w);bp=split_bf16_hc_weight(w)
         assert torch.equal(tp[0].view(torch.int32),w.view(torch.int32)&-8192)
         assert torch.equal(tp[1],w-tp[0])
         assert torch.equal(bp[0],w.bfloat16())
@@ -105,7 +108,7 @@ def contracts(args):
     records=[]
     for device in range(min(torch.cuda.device_count(),2)):
         with torch.cuda.device(device):
-            for fn,split,m in [(TF,lightop.split_tf32_hc_weight,17)]+[(BF,lightop.split_bf16_hc_weight,m) for m in (17,42,65,192,4096) if bf_supported(m)]:
+            for fn,split,m in [(TF,split_tf32_hc_weight,17)]+[(BF,split_bf16_hc_weight,m) for m in (17,42,65,192,4096) if bf_supported(m)]:
                 x=torch.randn(m,K,device='cuda',dtype=torch.bfloat16);w=torch.randn(24,K,device='cuda')*.01
                 s=torch.ones(3,device='cuda');b=torch.zeros(24,device='cuda');parts=split(w)
                 initial=x.clone();wp=[p.clone() for p in parts]
@@ -127,7 +130,7 @@ def contracts(args):
     # Invalid metadata must fail before a kernel launch.
     with torch.cuda.device(0):
         x=torch.zeros(1,K,device='cuda',dtype=torch.bfloat16);w=torch.zeros(24,K,device='cuda');s=torch.ones(3,device='cuda');b=torch.zeros(24,device='cuda')
-        for fn,split in [(TF,lightop.split_tf32_hc_weight),(BF,lightop.split_bf16_hc_weight)]:
+        for fn,split in [(TF,split_tf32_hc_weight),(BF,split_bf16_hc_weight)]:
             p=split(w)
             bad=[(x.float(),p,s,b,20,1e-20,1e-6),(x,p[:-1],s,b,20,1e-20,1e-6),(x,p,s[:2],b,20,1e-20,1e-6),(x,p,s,b[:23],20,1e-20,1e-6),(x,p,s,b,0,1e-6,1e-6),(x,p,s,b,20,0,1e-6),(x,p,s,b,20,1e-6,float('nan')),(x[:,::2],p,s,b,20,1e-20,1e-6),(x.cpu(),p,s,b,20,1e-20,1e-6),(x,p,s,b,20,1e-20,1e-6,3)]
             for a in bad:
@@ -137,7 +140,7 @@ def contracts(args):
             records.append(dict(backend=fn.__name__,invalid_cases=len(bad)))
         if bf_supported(1):
             outside=torch.empty(131073,K,device='cuda',dtype=torch.bfloat16)
-            try:BF(outside,lightop.split_bf16_hc_weight(w),s,b,20,1e-20,1e-6)
+            try:BF(outside,split_bf16_hc_weight(w),s,b,20,1e-20,1e-6)
             except (RuntimeError,ValueError):pass
             else:raise AssertionError('BF16x3 accepted an unvalidated M')
             records.append(dict(backend='bf16x3',out_of_range_rejected=True))
@@ -166,7 +169,7 @@ def timings(fn,graph=False):
 def benchmark(args):
     from sglang.kernels.ops.layernorm.mhc import hc_split_sinkhorn
     data=list(weights(args.model));name,w,s,b=data[min(1,len(data)-1)];w,s,b=[v.cuda() for v in (w,s,b)]
-    tp=lightop.split_tf32_hc_weight(w);bp=lightop.split_bf16_hc_weight(w)
+    tp=split_tf32_hc_weight(w);bp=split_bf16_hc_weight(w)
     rows=[]
     def finish(mix):return tuple(v.squeeze(1) for v in hc_split_sinkhorn(mix.unsqueeze(1),s,b,4,20,1e-6))
     measured_ms = getattr(args, 'm_values', None) or ([1,17,128,4096] if args.quick else [1,2,10,12,16,17,32,48,64,128,256,512,1024,2048,4096,8192,16384,32768,65536])
@@ -184,7 +187,7 @@ def benchmark(args):
                 print('BENCH',m,label,'graph',graph,round(result['mean_us'],3),flush=True)
         (args.output/'performance.json').write_text(json.dumps(rows,indent=2))
     split={}
-    for label,fn in [('tf32',lightop.split_tf32_hc_weight),('bf16x3',lightop.split_bf16_hc_weight)]:
+    for label,fn in [('tf32',split_tf32_hc_weight),('bf16x3',split_bf16_hc_weight)]:
         split[label]=dict(**timings(lambda:fn(w)),cache_bytes=sum(p.numel()*p.element_size() for p in fn(w)))
     (args.output/'split.json').write_text(json.dumps(split,indent=2))
 
