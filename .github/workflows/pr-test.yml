@@ -71,17 +71,6 @@ jobs:
               merge --no-edit "${target_sha}"
           echo "Integrated master ${target_sha}"
 
-      - name: 配置内网 pip 源
-        shell: bash
-        run: |
-          TRUSTED_HOST="${{ env.PYPI_URL }}"
-          TRUSTED_HOST="${TRUSTED_HOST#*://}"; TRUSTED_HOST="${TRUSTED_HOST%%/*}"
-          mkdir -p ~/.pip && printf '%s\n' \
-            '[global]' \
-            "index-url = ${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}" \
-            "trusted-host = ${TRUSTED_HOST}" \
-            > ~/.pip/pip.conf
-
       - name: 安装 AICC
         shell: bash
         run: |
@@ -89,20 +78,24 @@ jobs:
           bash hcu_llvm_installer.sh --major ${{ matrix.aicc_major }}
 
       - name: 编译 wheel
-        # 与 release-pypi 同款编译; 实测 distutils 的 .so 链接器由 LDSHARED
-        # env 覆盖 (CXX 不传导), 需clang++ 链接以消 __extendhfsf2 未定义符号
+        # 实测镜像内置 pip 配置会覆盖 user 级 pip.conf, 故显式 --index-url;
+        # distutils 的 .so 链接器由 LDSHARED env 覆盖 (CXX 不传导),
+        # 需 clang++ 链接以消 __extendhfsf2 未定义符号
         shell: bash
         env:
           CXX: clang++
           LDSHARED: "clang++ -pthread -shared"
         run: |
-          source /opt/dtk/env.sh
-          pip install --no-cache-dir numpy==1.26.4 torch==${TORCH_VERSION} ninja wheel setuptools
+          PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
+          PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
+          pip install "${PIP_FLAGS[@]}" numpy==1.26.4 torch==${TORCH_VERSION} ninja wheel setuptools
           python3 setup.py bdist_wheel
 
       - name: 生成 manylinux wheel
         run: |
-          pip install --no-cache-dir --no-deps dist/*.whl
+          PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
+          PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
+          pip install "${PIP_FLAGS[@]}" --no-deps dist/*.whl
           bash .github/scripts/manylinux_repair.sh dist dist-manylinux
 
       - name: 上传 manylinux wheel (artifact)
