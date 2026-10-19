@@ -192,7 +192,7 @@ def benchmark(args):
     (args.output/'split.json').write_text(json.dumps(split,indent=2))
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--quick',action='store_true');p.add_argument('--model',type=Path);p.add_argument('--output',type=Path,required=True);p.add_argument('--bench-only',action='store_true');p.add_argument('--accuracy-only',action='store_true');a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
+    p=argparse.ArgumentParser();p.add_argument('--quick',action='store_true');p.add_argument('--model',type=Path);p.add_argument('--output',type=Path,default=Path('hc_mix_sinkhorn_results'),help='Result directory (default: ./hc_mix_sinkhorn_results)');p.add_argument('--bench-only',action='store_true');p.add_argument('--accuracy-only',action='store_true');a=p.parse_args();a.output.mkdir(parents=True,exist_ok=True)
     torch.backends.cuda.matmul.allow_tf32=False;torch.set_num_threads(8)
     if not a.bench_only:correctness(a);contracts(a)
     if not a.accuracy_only:benchmark(a)
