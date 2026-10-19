@@ -28,4 +28,24 @@ int64_t get_paged_sparse_mqa_logits_metadata_bytes(
     int64_t num_q_tokens, int64_t num_max_sparse_blocks, int64_t sparse_block_kv,
     int64_t split_kv, int64_t num_sms);
 
+// Internal Prefill plan. The paired-row contract is supplied only by the
+// native query preparer; arbitrary public request groups use the generic path.
+struct PrefillSparseMQAMetadataPlan {
+    torch::Tensor context_lens, block_table, indices, candidates;
+    bool paired_rows = false;
+    int threads = 0; // private benchmark hint; zero selects the measured policy
+};
+struct PrefillSparseMQASelection {
+    int *selected_blocks = nullptr, *cache_pages = nullptr;
+    int *cache_count = nullptr, *cache_physical_pages = nullptr;
+    int *invalid = nullptr, *selected_slots = nullptr;
+    int* index_invalid = nullptr;
+    int64_t num_pages = 0;
+    int cache_capacity = 0;
+    bool long_packed_cache = false;
+};
+void prepare_prefill_sparse_mqa_logits_metadata(
+    const torch::Tensor& metadata, const PrefillSparseMQAMetadataPlan& plan,
+    int64_t page_kv, at::ScalarType qk_dtype, int64_t sparse_block_kv,
+    std::optional<int64_t> num_sms, const PrefillSparseMQASelection& selection);
 }  // namespace lightop::deep_gemm

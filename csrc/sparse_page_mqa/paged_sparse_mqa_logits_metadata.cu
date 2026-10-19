@@ -111,6 +111,8 @@ struct Params {
     const uint32_t* sparse_kv_block_indices;
     uint8_t* metadata;
     uint8_t* workspace;
+    bool paired_rows;
+    PrefillSparseMQASelection selection;
 };
 
 __device__ __forceinline__ uint32_t ceil_div_u32(const uint32_t a, const uint32_t b) {
@@ -146,7 +148,7 @@ __device__ __forceinline__ uint32_t cta_exclusive_sum(const uint32_t value, uint
 
 template <uint32_t SPARSE_BLOCK_KV, uint32_t kNumKVBlocksPerSplit, uint32_t kNumKVBlocksPerThread, uint32_t kNumThreads,
           bool kInterleaveCtas>
-__global__ __launch_bounds__(kNumThreads) void paged_sparse_mqa_logits_metadata_kernel(const Params p) {
+__global__ __launch_bounds__(kNumThreads) void sparse_fp8_fp4_paged_mqa_logits__prepare_metadata(const Params p) {
     constexpr uint32_t kSplitBytes = sizeof(KVSplitHeader) + kNumKVBlocksPerSplit * sizeof(KVBlockInfo);
     constexpr uint32_t kNumVecsPerThread = (kNumKVBlocksPerThread + 3) / 4;
     constexpr uint32_t kNumWaves = kNumThreads / kWaveSize;
@@ -174,13 +176,22 @@ __global__ __launch_bounds__(kNumThreads) void paged_sparse_mqa_logits_metadata_
         const uint32_t num_even_ctas = (gridDim.x + 1) / 2;
         q_token_idx = blockIdx.x < num_even_ctas ? 2 * blockIdx.x : 2 * (blockIdx.x - num_even_ctas) + 1;
     }
+    if (p.paired_rows) q_token_idx = blockIdx.x * 2;
+    uint32_t selected_slots = 0;
     uint32_t next_ticket = 0;
     const bool page_is_pow2 = p.page_shift < 32;
 
     while (true) {
         if (tid < kWaveSize) {
             uint32_t num_q_block_tokens = 0, num_kv_blocks_q0 = 0, num_kv_blocks_q1 = 0;
-            while (q_token_idx < num_q_tokens) {
+            if (p.paired_rows) {
+                if (q_token_idx < num_q_tokens) {
+                    num_q_block_tokens = min(2u, num_q_tokens-q_token_idx);
+                    num_kv_blocks_q0 = min(num_max_sparse_blocks,ceil_div_u32(p.context_lens[q_token_idx],SPARSE_BLOCK_KV));
+                    num_kv_blocks_q1 = num_q_block_tokens==2 ? min(num_max_sparse_blocks,ceil_div_u32(p.context_lens[q_token_idx+1],SPARSE_BLOCK_KV)) : 0;
+                    if (lane==0) next_ticket=2*(gridDim.x+atomicAdd(&state->next_q_offset,1u));
+                }
+            } else while (q_token_idx < num_q_tokens) {
                 // Lanes 0..61 see the 62 preceding tokens, lane 62 this token, lane 63 the next
                 const int64_t pos = static_cast<int64_t>(q_token_idx) - (kWaveSize - 2) + lane;
                 const bool valid = pos >= 0 and pos < num_q_tokens;
@@ -194,7 +205,20 @@ __global__ __launch_bounds__(kNumThreads) void paged_sparse_mqa_logits_metadata_
                 } else {
                     // Requests contain few Q tokens; walk the rest serially
                     uint32_t request_q_token_base = q_token_idx - (kWaveSize - 2);
-                    if (lane == 0) {
+                    if (num_q_tokens>=64) {
+                        // Cooperatively find the nearest boundary. Unlike an
+                        // exponential/binary search this also preserves the
+                        // behavior for repeated nonadjacent request IDs.
+                        while(request_q_token_base>0) {
+                            const int64_t scan_pos=int64_t(request_q_token_base)-64+lane;
+                            const uint64_t boundary=__ballot(scan_pos<0 || indices[scan_pos]!=request_idx);
+                            if(boundary) {
+                                request_q_token_base=uint32_t(int64_t(request_q_token_base)-64+(63-__clzll(boundary))+1);
+                                break;
+                            }
+                            request_q_token_base=request_q_token_base>=64?request_q_token_base-64:0;
+                        }
+                    } else if (lane == 0) {
                         while (request_q_token_base > 0 and indices[request_q_token_base - 1] == request_idx)
                             --request_q_token_base;
                     }
@@ -314,6 +338,25 @@ __global__ __launch_bounds__(kNumThreads) void paged_sparse_mqa_logits_metadata_
             const uint32_t kv_block_idx_in_page = logical_kv_block_idx - logical_page_idx * p.num_kv_blocks_per_page;
             physical_kv_block_indices[i] =
                 p.block_table[block_table_row + logical_page_idx] * p.num_kv_blocks_per_page + kv_block_idx_in_page;
+            if (p.selection.selected_blocks) {
+                const uint32_t physical=physical_kv_block_indices[i];
+                if (!(physical < static_cast<uint64_t>(p.selection.num_pages)*8)) __builtin_trap();
+                selected_slots += in_q0;
+                selected_slots += num_q_block_tokens==2 && in_q1;
+                // Only a newly selected physical block claims its page. Across
+                // all Q pairs this bounds page CAS traffic by eight per page.
+                if (atomicExch(p.selection.selected_blocks+physical,1)==0) {
+                    const uint32_t page=physical>>3;
+                    if (atomicCAS(p.selection.cache_pages+page,-1,-2)==-1) {
+                        const int slot=atomicAdd(p.selection.cache_count,1);
+                        atomicExch(p.selection.cache_pages+page,slot);
+                        if(slot>=p.selection.cache_capacity && !p.selection.long_packed_cache)
+                            atomicOr(p.selection.invalid,2);
+                        if(slot<(p.selection.long_packed_cache?p.selection.num_pages:p.selection.cache_capacity))
+                            p.selection.cache_physical_pages[slot]=page;
+                    }
+                }
+            }
             ++num_merged_kv_blocks_in_thread;
             q0_slot_idx += in_q0;
             q1_slot_idx += consume_q1;
@@ -385,6 +428,10 @@ __global__ __launch_bounds__(kNumThreads) void paged_sparse_mqa_logits_metadata_
             q_token_idx = __shfl(next_ticket, 0, kWaveSize);
     }
 
+    if (p.selection.selected_slots) {
+        for(int offset=32;offset;offset/=2) selected_slots+=__shfl_down(selected_slots,offset,64);
+        if(lane==0) atomicAdd(reinterpret_cast<unsigned*>(p.selection.selected_slots),selected_slots);
+    }
     // The last CTA acquires all producer writes and builds the schedule
     __threadfence();
     __syncthreads();
@@ -546,10 +593,12 @@ int64_t get_paged_sparse_mqa_logits_metadata_bytes(
            num_max_schedule_entries * static_cast<int64_t>(sizeof(ScheduleEntry));
 }
 
-torch::Tensor get_paged_sparse_mqa_logits_metadata(
+static torch::Tensor make_paged_sparse_mqa_logits_metadata(
     const torch::Tensor& context_lens, const torch::Tensor& block_table, const torch::Tensor& indices,
     const int64_t page_kv, const torch::Tensor& sparse_kv_block_indices, const at::ScalarType qk_dtype,
-    const int64_t sparse_block_kv, const std::optional<int64_t> num_sms_opt) {
+    const int64_t sparse_block_kv, const std::optional<int64_t> num_sms_opt,
+    const std::optional<torch::Tensor>& destination,
+    const PrefillSparseMQASelection& selection, bool paired_rows, int thread_hint) {
     TORCH_CHECK(sparse_kv_block_indices.is_cuda() and sparse_kv_block_indices.dim() == 2,
                 "get_paged_sparse_mqa_logits_metadata: sparse_kv_block_indices must be a 2D CUDA/HIP tensor");
     const at::hip::OptionalHIPGuardMasqueradingAsCUDA guard(sparse_kv_block_indices.device());
@@ -583,7 +632,7 @@ torch::Tensor get_paged_sparse_mqa_logits_metadata(
     const int64_t num_cus = get_num_cus(sparse_kv_block_indices.get_device());
     const int64_t num_sms = num_sms_opt.value_or(num_cus);
     TORCH_CHECK(num_sms > 0 and num_sms <= kMaxSMs, "get_paged_sparse_mqa_logits_metadata: num_sms must be in [1, 256]");
-    auto metadata = torch::empty({get_paged_sparse_mqa_logits_metadata_bytes(num_q_tokens, num_max_sparse_blocks,
+    auto metadata = destination ? *destination : torch::empty({get_paged_sparse_mqa_logits_metadata_bytes(num_q_tokens, num_max_sparse_blocks,
                                                                              sparse_block_kv, split_kv, num_sms)},
                                  sparse_kv_block_indices.options().dtype(torch::kByte));
 
@@ -593,7 +642,7 @@ torch::Tensor get_paged_sparse_mqa_logits_metadata(
     const int64_t num_kv_blocks_per_split = split_kv / sparse_block_kv;
     const uint32_t num_kv_blocks_per_page = static_cast<uint32_t>(page_kv / sparse_block_kv);
     const int64_t num_max_merged_kv_blocks = kBlockQ * num_max_sparse_blocks;
-    const int num_ctas = static_cast<int>(std::min<int64_t>(num_q_tokens, num_cus * kCtasPerCU));
+    const int num_ctas = static_cast<int>(std::min<int64_t>(paired_rows ? (num_q_tokens+1)/2 : num_q_tokens, num_cus * kCtasPerCU));
     const Params params{
         static_cast<uint32_t>(num_q_tokens), static_cast<uint32_t>(num_max_sparse_blocks), num_kv_blocks_per_page,
         (num_kv_blocks_per_page & (num_kv_blocks_per_page - 1)) == 0
@@ -603,7 +652,7 @@ torch::Tensor get_paged_sparse_mqa_logits_metadata(
         reinterpret_cast<const uint32_t*>(block_table.data_ptr<int>()),
         reinterpret_cast<const uint32_t*>(indices.data_ptr<int>()),
         reinterpret_cast<const uint32_t*>(sparse_kv_block_indices.data_ptr<int>()),
-        metadata.data_ptr<uint8_t>(), workspace.data_ptr<uint8_t>()};
+        metadata.data_ptr<uint8_t>(), workspace.data_ptr<uint8_t>(), paired_rows, selection};
 
     // About 4 merged blocks per thread, at most 1024 threads; M = 2048 with 2..63 tokens
     // is faster at 512 threads and 8 blocks each
@@ -612,6 +661,11 @@ torch::Tensor get_paged_sparse_mqa_logits_metadata(
         num_threads *= 2;
     if (num_threads == 1024 and num_max_merged_kv_blocks <= 4096 and num_q_tokens > 1 and num_q_tokens < 64)
         num_threads = 512;
+    if (num_q_tokens>=64 && num_max_sparse_blocks==2048) num_threads=512;
+    if (thread_hint) {
+        TORCH_CHECK(thread_hint==256 || thread_hint==512 || thread_hint==1024,"invalid metadata thread hint");
+        num_threads=thread_hint;
+    }
     const int64_t num_kv_blocks_per_thread = ceil_div_i64(num_max_merged_kv_blocks, num_threads);
     const size_t num_smem_bytes = static_cast<size_t>(
         ceil_div_i64(num_max_merged_kv_blocks + ceil_div_i64(num_max_merged_kv_blocks, num_kv_blocks_per_split), 4) * 16);
@@ -619,10 +673,10 @@ torch::Tensor get_paged_sparse_mqa_logits_metadata(
 #define PSM_LAUNCH(SBK, BPS, BPT, THREADS)                                                                 \
     do {                                                                                                   \
         if (num_ctas > num_cus)                                                                            \
-            paged_sparse_mqa_logits_metadata_kernel<SBK, BPS, BPT, THREADS, true>                          \
+            sparse_fp8_fp4_paged_mqa_logits__prepare_metadata<SBK, BPS, BPT, THREADS, true>                          \
                 <<<num_ctas, THREADS, num_smem_bytes, stream>>>(params);                                   \
         else                                                                                               \
-            paged_sparse_mqa_logits_metadata_kernel<SBK, BPS, BPT, THREADS, false>                         \
+            sparse_fp8_fp4_paged_mqa_logits__prepare_metadata<SBK, BPS, BPT, THREADS, false>                         \
                 <<<num_ctas, THREADS, num_smem_bytes, stream>>>(params);                                   \
     } while (0)
 #define PSM_DISPATCH_BPT(SBK, BPS, THREADS)                                                                \
@@ -630,7 +684,9 @@ torch::Tensor get_paged_sparse_mqa_logits_metadata(
         if (num_kv_blocks_per_thread <= 1) PSM_LAUNCH(SBK, BPS, 1, THREADS);                               \
         else if (num_kv_blocks_per_thread <= 2) PSM_LAUNCH(SBK, BPS, 2, THREADS);                          \
         else if (num_kv_blocks_per_thread <= 4) PSM_LAUNCH(SBK, BPS, 4, THREADS);                          \
-        else PSM_LAUNCH(SBK, BPS, 8, THREADS);                                                             \
+        else if (num_kv_blocks_per_thread <= 8) PSM_LAUNCH(SBK, BPS, 8, THREADS); \
+        else if (num_kv_blocks_per_thread <= 16) PSM_LAUNCH(SBK, BPS, 16, THREADS); \
+        else PSM_LAUNCH(SBK, BPS, 32, THREADS);                                                             \
     } while (0)
 #define PSM_DISPATCH_THREADS(SBK, BPS)                                                                     \
     do {                                                                                                   \
@@ -654,4 +710,18 @@ torch::Tensor get_paged_sparse_mqa_logits_metadata(
     return metadata;
 }
 
+torch::Tensor get_paged_sparse_mqa_logits_metadata(
+    const torch::Tensor& lens,const torch::Tensor& table,const torch::Tensor& indices,
+    int64_t page,const torch::Tensor& candidates,at::ScalarType dtype,
+    int64_t block,std::optional<int64_t> sms) {
+    return make_paged_sparse_mqa_logits_metadata(lens,table,indices,page,candidates,dtype,block,sms,
+        std::nullopt,PrefillSparseMQASelection{},false,0);
+}
+void prepare_prefill_sparse_mqa_logits_metadata(
+    const torch::Tensor& metadata,const PrefillSparseMQAMetadataPlan& p,
+    int64_t page,at::ScalarType dtype,int64_t block,std::optional<int64_t> sms,
+    const PrefillSparseMQASelection& selection) {
+    make_paged_sparse_mqa_logits_metadata(p.context_lens,p.block_table,p.indices,page,p.candidates,
+        dtype,block,sms,metadata,selection,p.paired_rows,p.threads);
+}
 }  // namespace lightop::deep_gemm

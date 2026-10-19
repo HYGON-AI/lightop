@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <torch/extension.h>
+#include "sparse_page_mqa/prefill_sparse_sort.h"
+#include "sparse_page_mqa/prefill_sparse_fusion.h"
 #include <ATen/ATen.h>
 #include <c10/macros/Macros.h>
 #include <vector>
@@ -14,6 +16,7 @@
 #include "paged_mqa_logits/paged_mqa_logits_fp4.h"
 #include "sparse_page_mqa/sparse_page_mqa.h"
 #include "sparse_page_mqa/paged_sparse_mqa_logits_metadata.h"
+#include "sparse_page_mqa/paged_sparse_mqa_logits.h"
 #include "index_k_int8_dequant/index_k_int8_dequant.h"
 #include "lmslimquant_native/bindings.h"
 #include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm.hpp"
@@ -1275,6 +1278,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "FP4 paged MQA split-KV schedule planner",
         py::arg("context_lens"), py::arg("block_kv"), py::arg("num_sms"),
         py::arg("rows_per_request") = 1);
+  m.attr("PAGED_SPARSE_MQA_LOGITS_ABI") = 3;
+  m.attr("PAGED_SPARSE_MQA_METADATA_FORMAT") = "deepgemm_paged_sparse_v1";
+  m.def("fp8_fp4_paged_sparse_mqa_logits",
+        &lightop::deep_gemm::fp8_fp4_paged_sparse_mqa_logits,
+        "MXFP4/MXFP8 paged sparse logits, FP32 weights/output, Prefill/Decode dispatch",
+        py::arg("q"), py::arg("q_scales"), py::arg("fused_kv_cache"),
+        py::arg("weights"), py::arg("metadata"), py::arg("num_max_sparse_blocks"),
+        py::arg("sparse_block_kv"), py::arg("context_lens") = std::nullopt,
+        py::arg("sparse_kv_block_indices") = std::nullopt,
+        py::arg("output") = std::nullopt, py::arg("num_sms") = std::nullopt,
+        py::arg("is_prefill") = false);
+  m.attr("sparse_fp8_fp4_paged_mqa_logits") = m.attr("fp8_fp4_paged_sparse_mqa_logits");
   m.def("get_paged_sparse_mqa_logits_metadata",
         &lightop::deep_gemm::get_paged_sparse_mqa_logits_metadata,
         "DeepGEMM get_paged_sparse_mqa_logits_metadata: merged sparse KV splits and persistent schedule",
@@ -1638,4 +1653,15 @@ m.def("hcu_alloc_extend_kernel", &at::native::lightop_hcu_alloc_extend_kernel,
        py::arg("bs"),
        py::arg("page_size"));
 m.def("mimo_v2_split_rope_vscale_kv_store", &at::native::mimo_v2_split_rope_vscale_kv_store, "mimo_v2_split_rope_vscale_kv_store");            
+  m.attr("PREFILL_SPARSE_SORT_ABI") = 1;
+  m.attr("PREFILL_SPARSE_FUSION_ABI")=1;
+    m.def("prefill_sparse_fp8_fp4_paged_mqa_logits", &lightop::deep_gemm::prefill_sparse_fp8_fp4_paged_mqa_logits,
+          py::arg("q"),py::arg("scales"),py::arg("kv"),py::arg("weights"),py::arg("lens"),py::arg("table"),
+          py::arg("indices"),py::arg("candidates"),py::arg("capacity"),py::arg("block"),py::arg("num_sms")=std::nullopt,
+          py::arg("paired_rows")=false,py::arg("threads")=0);
+  m.def("prefill_sparse_native_prepare_query", &prefill_sparse_native_prepare_query);
+  m.def("prefill_sparse_native_prepare_candidates", &prefill_sparse_native_prepare_candidates);
+  m.def("prefill_sparse_native_finalize", &prefill_sparse_native_finalize);
+  m.def("prefill_sparse_sort_candidates", &prefill_sparse_sort_candidates);
+  m.def("prefill_sparse_finalize_indices", &prefill_sparse_finalize_indices);
 }
