@@ -806,6 +806,148 @@ void fuse_silu_mul_fp8_quant_ep(torch::Tensor& input,
       });
 }
 
+#ifdef USE_ROCM
+// The column count is dynamic; template parameters only control row tiling.
+template <int ThreadsPerRow, int RowsPerBlock, int Segments, int FP8Type>
+__global__ void act_and_mul_fp8_quant_ep_masked(
+    uint8_t* __restrict__ out,
+    const c10::BFloat16* __restrict__ input,
+    float* __restrict__ scales,
+    int d,
+    int capacity,
+    const int32_t* __restrict__ tokens_per_expert,
+    float limit) {
+  constexpr int Vec = 8;
+  constexpr int Wave = C10_WARP_SIZE;
+  static_assert(RowsPerBlock == 1 || ThreadsPerRow == Wave);
+  using InputVec = at::native::memory::aligned_vector<c10::BFloat16, Vec>;
+  using OutputVec = at::native::memory::aligned_vector<uint8_t, Vec>;
+  const int expert = blockIdx.x;
+  const int row_in_block = threadIdx.x / ThreadsPerRow;
+  const int lane = threadIdx.x % ThreadsPerRow;
+  const int count = tokens_per_expert[expert];
+  const int valid_rows = count < 0 ? 0 : (count > capacity ? capacity : count);
+  const bool vector_aligned = d % Vec == 0;
+  __shared__ float warp_max[ThreadsPerRow / Wave];
+  __shared__ float inverse_scale;
+
+  // Each row belongs to this expert, even at a full-capacity masked count.
+  for (int row = blockIdx.y * RowsPerBlock + row_in_block;
+       row < valid_rows; row += gridDim.y * RowsPerBlock) {
+    const int64_t token = static_cast<int64_t>(expert) * capacity + row;
+    float values[Segments][Vec];
+    float max_abs = 0.0f;
+    #pragma unroll
+    for (int segment = 0; segment < Segments; ++segment) {
+      const int col = (lane + segment * ThreadsPerRow) * Vec;
+      if (col < d) {
+        InputVec gate, up;
+        if (vector_aligned) {
+          gate = *reinterpret_cast<const InputVec*>(input + token * 2 * d + col);
+          up = *reinterpret_cast<const InputVec*>(input + token * 2 * d + d + col);
+        } else {
+          #pragma unroll
+          for (int i = 0; i < Vec; ++i) {
+            gate.val[i] = col + i < d ? input[token * 2 * d + col + i] : c10::BFloat16(0);
+            up.val[i] = col + i < d ? input[token * 2 * d + d + col + i] : c10::BFloat16(0);
+          }
+        }
+        #pragma unroll
+        for (int i = 0; i < Vec; ++i) {
+          // Preserve BF16 rounding after SiLU and after multiplication.
+          values[segment][i] = static_cast<float>(
+              compute_with_swiglu_limit<c10::BFloat16, true>(gate.val[i], up.val[i], limit));
+          max_abs = fmaxf(max_abs, fabsf(values[segment][i]));
+        }
+      }
+    }
+
+    constexpr float max_fp8 = FP8Type == 0 ? 448.0f : 57344.0f;
+    constexpr float min_scale = 1.0f / (max_fp8 * 512.0f);
+    float inverse;
+    if constexpr (ThreadsPerRow == Wave) {
+      max_abs = WarpReduceMax_ROW<float>(max_abs);
+      float lane_inverse = 0.0f;
+      if (lane == 0) {
+        const float scale = fmaxf(max_abs / max_fp8, min_scale);
+        scales[token] = scale;
+        lane_inverse = 1.0f / scale;
+      }
+      inverse = __shfl(lane_inverse, 0, Wave);
+    } else {
+      max_abs = BlockReduceMax_ROW<float, ThreadsPerRow>(max_abs, warp_max);
+      if (lane == 0) {
+        const float scale = fmaxf(max_abs / max_fp8, min_scale);
+        scales[token] = scale;
+        inverse_scale = 1.0f / scale;
+      }
+      __syncthreads();
+      inverse = inverse_scale;
+    }
+
+    #pragma unroll
+    for (int segment = 0; segment < Segments; ++segment) {
+      const int col = (lane + segment * ThreadsPerRow) * Vec;
+      if (col < d) {
+        OutputVec bytes;
+        #pragma unroll
+        for (int i = 0; i < Vec; i += 4) {
+          uint32_t packed;
+          if constexpr (FP8Type == 0) {
+            packed = float_to_fp8e4m3_x4(
+                values[segment][i] * inverse, values[segment][i + 1] * inverse,
+                values[segment][i + 2] * inverse, values[segment][i + 3] * inverse);
+          } else {
+            packed = float_to_fp8e5m2_x4(
+                values[segment][i] * inverse, values[segment][i + 1] * inverse,
+                values[segment][i + 2] * inverse, values[segment][i + 3] * inverse);
+          }
+          *reinterpret_cast<uint32_t*>(&bytes.val[i]) = packed;
+        }
+        if (vector_aligned) {
+          *reinterpret_cast<OutputVec*>(out + token * d + col) = bytes;
+        } else {
+          #pragma unroll
+          for (int i = 0; i < Vec; ++i) {
+            if (col + i < d) out[token * d + col + i] = bytes.val[i];
+          }
+        }
+      }
+    }
+    if constexpr (ThreadsPerRow != Wave) {
+      __syncthreads();
+    }
+  }
+}
+
+template <int ThreadsPerRow, int RowsPerBlock, int Segments>
+static void launch_act_and_mul_fp8_quant_ep_masked(
+    torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales,
+    const int32_t* counts, int fp8type, float limit, cudaStream_t stream) {
+  const int capacity = input.size(1);
+  const int d = input.size(2) / 2;
+  // A smaller expert count needs more row blocks to keep the device busy.
+  // Multi-wave rows also need more blocks to avoid serializing dense routing.
+  const int target_blocks = ThreadsPerRow == C10_WARP_SIZE ? 384 : 1536;
+  int row_blocks = 8;
+  while (row_blocks < 32 && row_blocks * input.size(0) < target_blocks) {
+    row_blocks *= 2;
+  }
+  row_blocks = std::min(row_blocks, (capacity + RowsPerBlock - 1) / RowsPerBlock);
+  const dim3 grid(input.size(0), row_blocks);
+  const dim3 block(ThreadsPerRow * RowsPerBlock);
+  if (fp8type == 0) {
+    act_and_mul_fp8_quant_ep_masked<ThreadsPerRow, RowsPerBlock, Segments, 0>
+        <<<grid, block, 0, stream>>>(out.data_ptr<uint8_t>(), input.data_ptr<c10::BFloat16>(),
+                                    scales.data_ptr<float>(), d, capacity, counts, limit);
+  } else {
+    act_and_mul_fp8_quant_ep_masked<ThreadsPerRow, RowsPerBlock, Segments, 1>
+        <<<grid, block, 0, stream>>>(out.data_ptr<uint8_t>(), input.data_ptr<c10::BFloat16>(),
+                                    scales.data_ptr<float>(), d, capacity, counts, limit);
+  }
+}
+#endif
+
 static void fuse_silu_mul_fp8_quant_ep_with_limit(torch::Tensor& input, 
                                  torch::Tensor& out, 
                                  torch::Tensor& scales, 
@@ -834,6 +976,28 @@ static void fuse_silu_mul_fp8_quant_ep_with_limit(torch::Tensor& input,
         tokens_per_expert.has_value() 
             ? tokens_per_expert->data_ptr<int32_t>() 
             : nullptr;
+
+#ifdef USE_ROCM
+  // Use a small masked grid for narrow rows; wider rows retain the existing path.
+  // Each row loop remains bounded by its own expert's valid count.
+  if (d > 0 && d <= 4096 && input.scalar_type() == at::ScalarType::BFloat16 &&
+      tokens_per_expert_ptr != nullptr && (fp8type == 0 || fp8type == 1) &&
+      input.is_contiguous() && out.is_contiguous() && scales.is_contiguous() &&
+      tokens_per_expert->is_contiguous()) {
+    if (d <= 1024) {
+      launch_act_and_mul_fp8_quant_ep_masked<64, 4, 2>(
+          input, out, scales, tokens_per_expert_ptr, fp8type, limit, stream);
+    } else if (d <= 2048) {
+      launch_act_and_mul_fp8_quant_ep_masked<64, 4, 4>(
+          input, out, scales, tokens_per_expert_ptr, fp8type, limit, stream);
+    } else {
+      launch_act_and_mul_fp8_quant_ep_masked<64, 4, 8>(
+          input, out, scales, tokens_per_expert_ptr, fp8type, limit, stream);
+    }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    return;
+  }
+#endif
 
   VLLM_DISPATCH_FLOATING_TYPES(
       input.scalar_type(), "act_and_mul_kernel_ep", [&] {
