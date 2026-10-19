@@ -60,7 +60,6 @@ jobs:
           persist-credentials: false
 
       - name: 合入最新 master
-        if: matrix.dtk_tag != '2610'
         shell: bash
         run: |
           set -euo pipefail
