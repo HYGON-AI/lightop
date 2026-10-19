@@ -600,6 +600,15 @@ def get_extensions():
         define_macros=define_macros,
         extra_compile_args=extra_compile_args)
 
+    # hipcc(clang) 编译产物引用 compiler-rt 辅助符号 (__extendhfsf2 等),
+    # gcc 只认 libgcc 无此符号; 显式静态链接 @{ROCM_HOME}/llvm 下的 builtins,
+    # 避免 wheel 带未定义符号 (import 时报错)
+    clang_rt_builtins = glob.glob(os.path.join(
+        rocm_home, 'llvm', 'lib', 'clang', '*', 'lib', 'linux',
+        'libclang_rt.builtins-x86_64.a'))
+    if clang_rt_builtins and IS_HIP_EXTENSION:
+        ext_ops.extra_link_args = [sorted(clang_rt_builtins)[-1]]
+
     extensions.append(ext_ops)
     return extensions
 
