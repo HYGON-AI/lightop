@@ -16,27 +16,27 @@ permissions:
   contents: read
 
 concurrency:
-  group: pr-test-${{ github.ref }}
+  group: pr-test-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 env:
   MAX_JOBS: "32"
   PYPI_URL: ${{ vars.PYPI_URL || 'http://10.16.1.201:9929' }}
+  RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}
 
 jobs:
-  test:
+  build:
+    name: build (dtk${{ matrix.dtk_tag }})
     runs-on: [self-hosted, BW1100]
-    timeout-minutes: 480
+    timeout-minutes: 240
     strategy:
       fail-fast: false
       matrix:
         include:
           - dtk_tag: 2604
-            aicc_major: "1.0.0"
             pip_index_suffix: nightly/dtk2604/+simple/
             torch_version: "2.11.0"
           - dtk_tag: 2610
-            aicc_major: "2.0.0"
             pip_index_suffix: nightly/dtk2610/+simple/
             torch_version: "2.11.0"
     env:
@@ -44,13 +44,13 @@ jobs:
       DTK_TAG: ${{ matrix.dtk_tag }}
     container:
       # DTK 基础镜像, 自带 /opt/dtk
-      image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_tag == '2610' && '26.10' || '26.04' }}-rockylinux8.6-py3.12
+      image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_tag == '2610' && '26.10' || '26.04' }}-rockylinux8.6-py3.10
       options: >-
-        --volume /opt/hyhal:/opt/hyhal:ro
-        --device /dev/kfd:/dev/kfd
-        --device /dev/dri:/dev/dri
+        -v /opt/hyhal/:/opt/hyhal/:ro
+        --shm-size=80G
         --cap-add=SYS_PTRACE
-        --privileged
+        --security-opt seccomp=unconfined
+        --privileged=true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,45 +69,101 @@ jobs:
               merge --no-edit "${target_sha}"
           echo "Integrated master ${target_sha}"
 
-      - name: 安装测试依赖
+      - name: 配置内网 pip 源
         shell: bash
         run: |
-          set -euo pipefail
-          PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
-          PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
-          pip install "${PIP_FLAGS[@]}" torch==${TORCH_VERSION} ninja wheel setuptools
-          pip install "${PIP_FLAGS[@]}" triton==3.6.0
-          pip install "${PIP_FLAGS[@]}" --pre "vllm==0.28.1" "vllm-hcu>0.28.0,<=0.28.1"
+          TRUSTED_HOST="${{ env.PYPI_URL }}"
+          TRUSTED_HOST="${TRUSTED_HOST#*://}"; TRUSTED_HOST="${TRUSTED_HOST%%/*}"
+          mkdir -p ~/.pip && printf '%s\n' \
+            '[global]' \
+            "index-url = ${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}" \
+            "trusted-host = ${TRUSTED_HOST}" \
+            > ~/.pip/pip.conf
 
       - name: 安装 AICC
         shell: bash
         run: |
-          wget ${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}/ai_cc/Nightly/hcu_llvm_installer.sh
+          wget ${{ env.RESOURCE_SERVER_URL }}/ai_cc/Nightly/hcu_llvm_installer.sh
           bash hcu_llvm_installer.sh --major ${{ matrix.aicc_major }}
-        env:
-          RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}
 
       - name: 编译 wheel
-        # 与 release-pypi 同款编译; 测试环境 import 报 __extendhfsf2 时以此态
-        # 编出的 manylinux wheel 为准
+        # 与 release-pypi 同款编译
         shell: bash
         env:
           CXX: clang++
         run: |
           source /opt/dtk/env.sh
-          pip install --no-cache-dir numpy==1.26.4 ninja wheel setuptools
+          pip install --no-cache-dir numpy==1.26.4 torch==${TORCH_VERSION} ninja wheel setuptools
           python3 setup.py bdist_wheel
 
-      - name: 生成 manylinux wheel 并安装
+      - name: 生成 manylinux wheel
         run: |
           pip install --no-cache-dir --no-deps dist/*.whl
           bash .github/scripts/manylinux_repair.sh dist dist-manylinux
-          # --no-deps: 保持编译同一 torch 版本, 不让 pip 按矩阵源拉新 torch
-          pip install --no-cache-dir --no-deps --force-reinstall dist-manylinux/*.whl
+
+      - name: 上传 manylinux wheel (artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightop-manylinux-dtk${{ matrix.dtk_tag }}-${{ github.run_id }}
+          path: dist-manylinux/*.whl
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 清理 workspace
+        if: always()
+        run: rm -rf "${GITHUB_WORKSPACE}"/* "${GITHUB_WORKSPACE}"/.[!.]* || true
+
+  test:
+    name: test (dtk${{ matrix.dtk_tag }})
+    needs: build
+    runs-on: [self-hosted, BW1100]
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dtk_tag: 2604
+            pip_index_suffix: nightly/dtk2604/+simple/
+            torch_version: "2.11.0"
+          - dtk_tag: 2610
+            pip_index_suffix: nightly/dtk2610/+simple/
+            torch_version: "2.11.0"
+    env:
+      TORCH_VERSION: ${{ matrix.torch_version }}
+      DTK_TAG: ${{ matrix.dtk_tag }}
+    container:
+      # 干净容器只装运行时依赖, 与编译环境隔离
+      image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_tag == '2610' && '26.10' || '26.04' }}-rockylinux8.6-py3.12
+      options: >-
+        --volume /opt/hyhal:/opt/hyhal:ro
+        --device /dev/kfd:/dev/kfd
+        --device /dev/dri:/dev/dri
+        --cap-add=SYS_PTRACE
+        --privileged
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: lightop-manylinux-dtk${{ matrix.dtk_tag }}-${{ github.run_id }}
+          path: dist-manylinux
+
+      - name: 安装运行时依赖与 lightop
+        shell: bash
+        run: |
+          set -euo pipefail
+          PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
+          PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
+          pip install "${PIP_FLAGS[@]}" torch==${TORCH_VERSION} pytest
+          pip install "${PIP_FLAGS[@]}" triton==3.6.0
+          pip install "${PIP_FLAGS[@]}" --pre "vllm==0.28.1" "vllm-hcu>0.28.0,<=0.28.1"
+          pip install "${PIP_FLAGS[@]}" --no-deps dist-manylinux/*.whl
           python3 -c "import lightop; print(f'lightop={lightop.__version__}')"
 
-      - name: 安装 pytest
-        run: python3 -m pip install --no-cache-dir pytest
+      - name: Checkout 测试用例
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          sparse-checkout: test/ci_tests
 
       - name: 运行 test/ci_tests
         env:
