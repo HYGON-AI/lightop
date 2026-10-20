@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // Candidate-only MXFP4/MXFP8 paged MQA on HCU. Consume the HCU-derived
 // sparse layout:
 //   [16B MetadataHeader][KVSplit records][wave * num_sms ScheduleEntry].

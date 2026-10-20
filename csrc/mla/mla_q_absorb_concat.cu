@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // MLA Q-absorb BMM + concat on gfx936, using LightOp's BF16 MMAC pattern.
 // Original weight layout, FP32 accumulation, one final BF16 rounding.
 // Tile choices are fixed after graph tests on BS2/3/4 and real checkpoint layers.
