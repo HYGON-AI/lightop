@@ -16,6 +16,12 @@
 #include "sampling/sampling.h"
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace at {  namespace native {
+// Q-only DSA Indexer preparation; the K/cache path remains independent.
+std::tuple<torch::Tensor, torch::Tensor> indexer_q_rope_hadamard_quant(
+    const torch::Tensor& query, const torch::Tensor& positions,
+    const torch::Tensor& cos_sin, const torch::Tensor& raw_gate, bool neox,
+    double hadamard_scale, double head_scale, double softmax_scale);
+
 // Native MLA Q-absorb with BF16 Q RoPE and direct Q concatenation.
 torch::Tensor mla_q_absorb_rope_concat(
     torch::Tensor x, torch::Tensor weight, torch::Tensor q_rope,
@@ -855,6 +861,8 @@ void mimo_v2_split_rope_vscale_kv_store(
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("indexer_q_rope_hadamard_quant", &at::native::indexer_q_rope_hadamard_quant,
+          "Indexer Q RoPE/Hadamard/INT8 preparation with FP32 head gates");
     m.def("mla_q_absorb_rope_concat", &at::native::mla_q_absorb_rope_concat,
           "BF16 MLA Q-absorb, Q RoPE and Q concat for BS2/3/4");
 
