@@ -607,11 +607,16 @@ void combine_topk_swa_indices_hcu(
     const Tensor& compressed_base, const Tensor& swa_base,
     Tensor& out_indices, Tensor& out_lens,
     int64_t window_size, int64_t compress_ratio, int64_t topk);
+std::vector<torch::Tensor> dsv4_pack_c4_topk_workspace(
+    const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
+    int64_t, int64_t);
+
 void dsv4_dequantize_k_cache_paged_out(
     torch::Tensor const& cache_u8,
     torch::Tensor const& page_table,
     torch::Tensor const& out,
-    int64_t page_size);
+    int64_t page_size,
+    std::optional<torch::Tensor> valid_count);
 void dsv4_gather_upconvert_k_cache_paged(
     torch::Tensor const& cache,
     torch::Tensor const& indices,
@@ -1536,11 +1541,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
        "V4 packed paged KV dequantization into preallocated BF16 output");
  m.def("combine_topk_swa_indices_hcu", &at::native::combine_topk_swa_indices_hcu,
        "Combine compressed TopK and positional SWA indices into a flat workspace");
- m.def(
+ m.def("dsv4_pack_c4_topk_workspace",
+      &at::native::dsv4_pack_c4_topk_workspace,
+      "Pack a DSV4 C4 TopK union and remap query indices on GPU",
+      py::arg("full_ids"), py::arg("combined_indices"),
+      py::arg("combined_lens"), py::arg("topk"), py::arg("capacity"));
+m.def(
      "dsv4_dequantize_k_cache_paged_out",
      &at::native::dsv4_dequantize_k_cache_paged_out,
      "DSV4 flat E4M3FN/UE8M0 paged dequantization into preallocated BF16 output",
-     py::arg("cache_u8"), py::arg("page_table"), py::arg("out"), py::arg("page_size"));
+     py::arg("cache_u8"), py::arg("page_table"), py::arg("out"), py::arg("page_size"),
+     py::arg("valid_count") = py::none());
  m.def(
      "dsv4_gather_upconvert_k_cache_paged",
      &at::native::dsv4_gather_upconvert_k_cache_paged,

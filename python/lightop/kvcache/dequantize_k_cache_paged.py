@@ -5,9 +5,25 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+from importlib import import_module
+from importlib.util import find_spec
+from typing import Optional
+
 import torch
 
 from .. import op as lightop_native
+
+
+@lru_cache(maxsize=1)
+def _get_counted_native():
+    # A counted-only companion can preserve an installed core extension.
+    # Once present, import errors must propagate instead of hiding ABI or
+    # shared-library failures behind the full-core fallback.
+    module_name = "lightop._dsv4_dequant_counted"
+    if find_spec(module_name) is None:
+        return lightop_native
+    return import_module(module_name)
 
 
 def dsv4_dequantize_k_cache_paged_out(
@@ -15,6 +31,8 @@ def dsv4_dequantize_k_cache_paged_out(
     page_table: torch.Tensor,
     out: torch.Tensor,
     page_size: int,
+    *,
+    valid_count: Optional[torch.Tensor] = None,
 ) -> None:
     """Dequantize selected DSV4 cache rows into caller-owned storage.
 
@@ -29,16 +47,27 @@ def dsv4_dequantize_k_cache_paged_out(
             Row gaps and nonzero storage offsets are supported.
         page_size: Number of tokens per cache page. Supported values are 2,
             64, and 256.
+        valid_count: Optional contiguous single-element int32 GPU tensor
+            on the same device. Its value U must be in [0, N]. Only the
+            first U already-packed page_table entries are read, and rows
+            [U, N) of out are untouched. U is the union cardinality, not
+            the per-query TopK value. None preserves the original full path.
 
     Note:
         All tensors must be on the same GPU and ``out`` must not overlap an
-        input. Invalid physical locations produce zero rows. This operator
+        input, including valid_count. Invalid active locations produce zero
+        rows. This operator
         accepts E4M3FN/OCP bytes only; it does not infer the encoding from the
         uint8 cache dtype or fall back to another implementation.
     """
-    lightop_native.dsv4_dequantize_k_cache_paged_out(
-        cache_u8, page_table, out, page_size
-    )
+    if valid_count is None:
+        lightop_native.dsv4_dequantize_k_cache_paged_out(
+            cache_u8, page_table, out, page_size
+        )
+    else:
+        _get_counted_native().dsv4_dequantize_k_cache_paged_out(
+            cache_u8, page_table, out, page_size, valid_count
+        )
 
 
 __all__ = ["dsv4_dequantize_k_cache_paged_out"]
