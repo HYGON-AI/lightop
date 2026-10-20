@@ -360,16 +360,26 @@ def test_zero_tokens():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="HCU LightOp dispatch only")
-def test_hcu_does_not_launch_triton(sglang_sparse_utils):
+def test_hcu_does_not_launch_triton():
+    """Exercise LightOp's native entrypoint without a private SGLang router."""
     import lightop
 
     case = _trailing_case([512], [5], topk=64, compress_ratio=4)
-    with patch.object(sglang_sparse_utils, "_use_hcu_combine_topk_swa_indices", True), \
-         patch.object(sglang_sparse_utils, "_combine_topk_swa_indices_kernel", None), \
-         patch.object(lightop, "combine_topk_swa_indices_hcu", wraps=combine_topk_swa_indices_hcu) as native:
-        actual, actual_lens = sglang_sparse_utils.combine_topk_swa_indices(**case)
-    native.assert_called_once()
     expected, expected_lens = _reference(**case)
+    actual = torch.full_like(expected, -1)
+    actual_lens = torch.full_like(expected_lens, -77)
+    with patch.object(
+        triton.runtime.jit.JITFunction,
+        "run",
+        side_effect=AssertionError("LightOp native dispatch must not launch Triton"),
+    ) as triton_launch:
+        lightop.combine_topk_swa_indices_hcu(
+            case["topk_indices"], case["query_start_loc"], case["query_pos"],
+            case["seq_lens"], case["gather_lens"], case["compressed_base"],
+            case["swa_base"], actual, actual_lens, case["window_size"],
+            case["compress_ratio"], case["topk"],
+        )
+    triton_launch.assert_not_called()
     assert torch.equal(actual, expected)
     assert torch.equal(actual_lens, expected_lens)
 
