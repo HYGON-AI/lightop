@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 #include "paged_mqa_logits_prefill.h"
 #include "paged_mqa_logits_prefill_int8_impl.hpp"
 

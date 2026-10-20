@@ -4,46 +4,53 @@
 name: release-pypi
 
 on:
-  # ---- 合入 master 分支后触发 ----
   push:
     branches:
       - master
 
-  # ---- 手动触发，仅构建产物，不上传 NIGHTLY ----
   workflow_dispatch:
 
 permissions:
   contents: read
-  # CIUpload 上传前需查询关联 PR (只读)
   pull-requests: read
-  # CIUpload 上报需读取 check-run 统计 (只读)
   checks: read
 
 env:
-  DTK_PKG_URL: ${{ vars.RESOURCE_SERVER_URL }}/dtk-pkg/dtk26.04/DTK-26.04-rc4-centos8-x86_64.tar.gz
   PYPI_URL: ${{ vars.PYPI_URL }}
-  # csrc 内核多且重, 显式控制 ninja 并行度以缩短编译时间
   MAX_JOBS: "32"
 
 jobs:
   compile:
-    # ---- 并发控制: 同一分支 + 同一 torch 版本的 job 只保留最新一个 ----
     concurrency:
-      group: release-nightly-hcu-${{ github.ref }}-py${{ matrix.torch_version }}
+      group: release-nightly-hcu-${{ github.ref }}-dtk${{ matrix.dtk_version }}-py${{ matrix.torch_version }}
       cancel-in-progress: true
-    # ---- 自托管 HCU runner，在 Docker 容器内执行 ----
-    runs-on: [self-hosted, hcu]
+    runs-on: [self-hosted]
     timeout-minutes: 180
     strategy:
-      # 一个 torch 版本的失败不应掩盖另一个版本的结果
       fail-fast: false
       matrix:
-        # 固定两个版本并行, 不依赖仓库变量
-        torch_version: ["2.10.0", "2.11.0"]
+        include:
+          - dtk_version: "26.04"
+            pip_index_suffix: nightly/dtk2604/+simple/
+            aicc_major: "1.0.0"
+            torch_version: "2.11.0"
+            py_version: "3.10"
+          - dtk_version: "26.04"
+            pip_index_suffix: nightly/dtk2604/+simple/
+            aicc_major: "1.0.0"
+            torch_version: "2.11.0"
+            py_version: "3.12"
+          - dtk_version: "26.10"
+            pip_index_suffix: nightly/dtk2610/+simple/
+            aicc_major: "2.0.0"
+            torch_version: "2.11.0"
+            py_version: "3.12"
     env:
       TORCH_VERSION: ${{ matrix.torch_version }}
+      DTK_VERSION: ${{ matrix.dtk_version }}
     container:
-      image: ${{ vars.BASE_COMPILE_IMAGE_ROCKY_PY310 }}
+      # DTK 基础镜像, 自带 /opt/dtk
+      image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_version }}-rockylinux8.6-py${{ matrix.py_version }}
       options: >-
         --device=/dev/kfd --device=/dev/dri/ --group-add video
         -v /opt/hyhal/:/opt/hyhal/:ro
@@ -58,13 +65,12 @@ jobs:
       - name: 打印环境变量
         run: |
           echo "TORCH_VERSION=${TORCH_VERSION}"
-          echo "DTK_PKG_URL=${DTK_PKG_URL}"
+          echo "DTK_VERSION=${DTK_VERSION}"
           echo "PYPI_URL=${PYPI_URL}"
 
-      - name: 准备构建工具
+      - name: 配置内网 pip 源
         shell: bash
         run: |
-          # 镜像自带 wget, 只需配置内网 pip 源
           TRUSTED_HOST="${PIP_INDEX#*://}"; TRUSTED_HOST="${TRUSTED_HOST%%/*}"
           mkdir -p ~/.pip && printf '%s\n' \
             '[global]' \
@@ -72,47 +78,39 @@ jobs:
             "trusted-host = ${TRUSTED_HOST}" \
             > ~/.pip/pip.conf
         env:
-          PIP_INDEX: ${{ env.PYPI_URL }}/nightly/dtk2604/+simple/
+          PIP_INDEX: ${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}
 
-      - name: Install DTK
-        shell: bash
-        run: |
-          cd /opt
-          wget -q "$DTK_PKG_URL"
-          tar -xzf "$(basename "$DTK_PKG_URL")"
-          mv dtk-* dtk
-        env:
-          DTK_PKG_URL: ${{ env.DTK_PKG_URL }}
-
-      - name: Install AICC
+      - name: 安装 AICC
         shell: bash
         run: |
           wget ${{ vars.RESOURCE_SERVER_URL }}/ai_cc/Nightly/hcu_llvm_installer.sh
-          bash hcu_llvm_installer.sh --major 1.0.0
+          bash hcu_llvm_installer.sh --major ${{ matrix.aicc_major }}
         env:
           RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL }}
 
-      - name: install deps
+      - name: 安装编译依赖
         shell: bash
         run: |
-          pip install --no-cache-dir numpy==1.26.4 torch==${TORCH_VERSION} ninja wheel setuptools
+          pip install --no-cache-dir torch==${TORCH_VERSION} ninja wheel setuptools
 
-      - name: build wheel
+      - name: 编译 wheel
         shell: bash
+        env:
+          # hip 源经 clang 编译产生 compiler-rt 辅助符号, 链接需 clang++
+          CXX: clang++
         run: |
           source /opt/dtk/env.sh
           python3 setup.py bdist_wheel
 
       - name: 生成 manylinux wheel
         run: |
-          # repair 脚本不依赖 import lightop, 自行用 pip Location 定位自带库路径
           pip install --no-cache-dir --no-deps dist/*.whl
           bash .github/scripts/manylinux_repair.sh dist dist-manylinux
 
-      - name: Apply DAS local version to wheels
+      - name: CIUpload REPAIR
         run: |
           pip install --no-cache-dir ciupload
-          DTK_VER=$(echo $DTK_PKG_URL | grep -oP 'dtk\K[0-9]+\.[0-9]+' | tr -d '.')
+          DTK_VER=$(cat /opt/dtk/.info/rocm_version | tr -d '.')
           WHEEL_COMMIT_SHA="$(git rev-parse HEAD)"
           CIUpload REPAIR \
             --dtk_version "${DTK_VER}" \
@@ -121,16 +119,16 @@ jobs:
             --outputdir output \
             -f dist-manylinux/*.whl
 
-      - name: 上传 NIGHTLY
+      - name: CIUpload NIGHTLY
         if: ${{ github.event_name == 'push' }}
         env:
-          # CIUpload 需查关联 PR, 注入自动 token
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          CIUpload NIGHTLY --devpi_url ${PYPI_URL} --password ${{ secrets.PYPI_PASSWORD }} --dtk_pkg_name $(basename $DTK_PKG_URL) -f output/*.whl --record
+          DTK_VER=$(cat /opt/dtk/.info/rocm_version | tr -d '.')
+          CIUpload NIGHTLY --devpi_url ${PYPI_URL} --password ${{ secrets.PYPI_PASSWORD }} \
+            --dtk_pkg_name "DTK-${DTK_VER}-Rocky8.6-x86_64.tar.gz" \
+            -f output/*.whl --record
 
-      # 容器内以 root 运行, workspace 里的文件会归 root 所有,
-      # 宿主机上后续 job 的 checkout 无法清理, 退出前清空
       - name: 清理 workspace
         if: always()
         run: rm -rf "${GITHUB_WORKSPACE}"/* "${GITHUB_WORKSPACE}"/.[!.]* || true

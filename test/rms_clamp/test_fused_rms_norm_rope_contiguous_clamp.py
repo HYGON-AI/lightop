@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """BF16 optional-clamp tests for fused RMSNorm + contiguous RoPE."""
 
 import torch

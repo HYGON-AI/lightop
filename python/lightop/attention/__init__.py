@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Attention APIs."""
 
 # Bumped when the paged_mqa_logits_fp4 signature changes; consumers feature-detect
@@ -9,6 +12,7 @@ from .mqa import (
     fp8_fp4_mqa_logits,
     get_paged_mqa_logits_metadata,
     get_paged_mqa_logits_fp4_metadata,
+    get_paged_sparse_mqa_logits_metadata,
     mqa_logits,
     paged_mqa_logits,
     paged_mqa_logits_persisten,
@@ -16,6 +20,11 @@ from .mqa import (
     paged_mqa_logits_route_lens,
     page_mqa_logits_sparse_mask,
     dsv41_candidate_block_table,
+    dsv41_select_candidate_blocks,
+    dsv41_pair_partners,
+    dsv41_build_swa_token_ids,
+    dsv41_remap_indices_to_staging,
+    dsv41_ragged_topk_postprocess,
 )
 from .qkv import (
     fuse_layernorm_rotary_embedding,
@@ -75,6 +84,7 @@ __all__ = [
     "gemma_qkv_split_rms_rotary_embedding_fuse",
     "get_paged_mqa_logits_metadata",
     "get_paged_mqa_logits_fp4_metadata",
+    "get_paged_sparse_mqa_logits_metadata",
     "gammarms_rotary_embedding_fuse_with_kv_store",
     "gammarms_rotary_embedding_fuse_with_kv_store_fake",
     "mhc_repeat_cp_sglang",
@@ -85,6 +95,11 @@ __all__ = [
     "paged_mqa_logits_fp4",
     "paged_mqa_logits_route_lens",
     "dsv41_candidate_block_table",
+    "dsv41_select_candidate_blocks",
+    "dsv41_pair_partners",
+    "dsv41_build_swa_token_ids",
+    "dsv41_remap_indices_to_staging",
+    "dsv41_ragged_topk_postprocess",
     "page_mqa_logits_sparse_mask",
     "rms_rotary_embedding_fuse",
     "rms_rotary_embedding_fuse_with_kv_store",

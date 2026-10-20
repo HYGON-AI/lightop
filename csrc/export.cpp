@@ -1,7 +1,11 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 #include <torch/extension.h>
 #include <ATen/ATen.h>
 #include <c10/macros/Macros.h>
 #include <vector>
+#include <optional>
 
 #include "fp8_fp4_mqa_logits/fp8_fp4_mqa_logits.h"
 #include "fp8_fp4_mqa_logits/dsv41_mqa_prep.h"
@@ -9,12 +13,27 @@
 #include "paged_mqa_logits/paged_mqa_logits_persisten.h"
 #include "paged_mqa_logits/paged_mqa_logits_fp4.h"
 #include "sparse_page_mqa/sparse_page_mqa.h"
+#include "sparse_page_mqa/paged_sparse_mqa_logits_metadata.h"
 #include "index_k_int8_dequant/index_k_int8_dequant.h"
 #include "lmslimquant_native/bindings.h"
 #include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm.hpp"
 #include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm_v2.hpp"
 #include "sampling/sampling.h"
 enum GRAD_TYPE {nograd, wgrad, xgrad};
+namespace lightop::dsv41 {
+void ragged_topk_postprocess(const torch::Tensor& scores, const torch::Tensor& selected,
+    const torch::Tensor& offsets, const torch::Tensor& slots, torch::Tensor& pages,
+    const c10::optional<torch::Tensor>& raw, bool mask_scores);
+torch::Tensor remap_indices_to_staging(const torch::Tensor& indices,
+    const torch::Tensor& pages, int64_t page_size, int64_t max_pages, bool static_pages);
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> build_swa_token_ids(
+    const torch::Tensor& seq, const torch::Tensor& extend, const torch::Tensor& req,
+    const torch::Tensor& table, const torch::Tensor& full_to_swa, int64_t window, int64_t total);
+std::tuple<torch::Tensor, torch::Tensor> pair_partners(
+    const torch::Tensor& kv, const torch::Tensor& score,
+    const torch::Tensor& req, const torch::Tensor& pos, const torch::Tensor& pad,
+    torch::Tensor& state, int64_t ring);
+}
 namespace at {  namespace native {
 // Q-only DSA Indexer preparation; the K/cache path remains independent.
 void indexer_k_norm_rope_hadamard_store(
@@ -35,6 +54,9 @@ torch::Tensor mla_q_absorb_rope_concat(
     torch::Tensor positions, torch::Tensor cos_sin, bool is_neox
 );
 
+std::optional<Tensor> hc_mix_stats(const Tensor& x, const Tensor& w, double eps);
+std::tuple<Tensor, Tensor, Tensor> hc_mix_stats_sinkhorn_bf16x3(const Tensor&, const std::vector<Tensor>&, const Tensor&, const Tensor&, int64_t, double, double, int64_t);
+std::tuple<Tensor, Tensor, Tensor> hc_mix_stats_sinkhorn_deepgemm(const Tensor&, const std::vector<Tensor>&, const Tensor&, const Tensor&, int64_t, double, double, int64_t);
 std::tuple<Tensor, Tensor> fused_deepep_prepare(
     const Tensor& hidden,
     const Tensor& smooth,
@@ -576,6 +598,15 @@ void decode_gather_and_up_convert_with_indices(
     int64_t tokens_per_request,
     std::optional<torch::Tensor> dedup_table,
     bool reuse_compact_indices);
+void dequantize_k_cache_paged_hcu(
+    const Tensor& cache, const Tensor& token_ids, Tensor& output,
+    int64_t page_size, bool fp8_fnuz);
+void combine_topk_swa_indices_hcu(
+    const Tensor& topk_indices, const Tensor& query_start_loc,
+    const Tensor& query_pos, const Tensor& seq_lens, const Tensor& gather_lens,
+    const Tensor& compressed_base, const Tensor& swa_base,
+    Tensor& out_indices, Tensor& out_lens,
+    int64_t window_size, int64_t compress_ratio, int64_t topk);
 void dsv4_dequantize_k_cache_paged_out(
     torch::Tensor const& cache_u8,
     torch::Tensor const& page_table,
@@ -820,6 +851,7 @@ torch::Tensor dpskv4_hc_head_fused(torch::Tensor mixes, torch::Tensor x, torch::
 void ep_fused_fp8_quant_scatter(torch::Tensor input,torch::Tensor topk_ids,torch::optional<torch::Tensor> expert_map_opt,torch::Tensor expert_num_tokens,torch::Tensor aq_out,torch::Tensor aq_scale_out,torch::Tensor m_indices,torch::Tensor inv_perm, int local_num_experts,int alignment,int fp8type,bool fill_padded_m_indices);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
+std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu_fused(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output, torch::optional<torch::Tensor> num_token_non_padded);
 void topk_transform_512(
     const at::Tensor& scores,
     const at::Tensor& seq_lens,
@@ -1269,10 +1301,35 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "FP4 paged MQA split-KV schedule planner",
         py::arg("context_lens"), py::arg("block_kv"), py::arg("num_sms"),
         py::arg("rows_per_request") = 1);
+  m.def("get_paged_sparse_mqa_logits_metadata",
+        &lightop::deep_gemm::get_paged_sparse_mqa_logits_metadata,
+        "DeepGEMM get_paged_sparse_mqa_logits_metadata: merged sparse KV splits and persistent schedule",
+        py::arg("context_lens"), py::arg("block_table"), py::arg("indices"), py::arg("page_kv"),
+        py::arg("sparse_kv_block_indices"), py::arg("qk_dtype"), py::arg("sparse_block_kv"),
+        py::arg("num_sms") = std::nullopt);
+  m.def("get_paged_sparse_mqa_logits_metadata_bytes",
+        &lightop::deep_gemm::get_paged_sparse_mqa_logits_metadata_bytes,
+        "Size of get_paged_sparse_mqa_logits_metadata's output",
+        py::arg("num_q_tokens"), py::arg("num_max_sparse_blocks"), py::arg("sparse_block_kv"),
+        py::arg("split_kv"), py::arg("num_sms"));
   m.def("dsv41_candidate_block_table", &lightop::deep_gemm::dsv41_candidate_block_table,
         "DSV4.1 candidate indexer level one: top blocks of 8 by block max as pool slots / 8",
         py::arg("logits"), py::arg("seq_lens"), py::arg("page_table"), py::arg("page_size"),
         py::arg("block_size"), py::arg("out_phys_blocks"), py::arg("out_valid_lens"));
+  m.def("dsv41_select_candidate_blocks", &lightop::deep_gemm::dsv41_select_candidate_blocks,
+        "DSV4.1 candidate block selection and dense mask expansion",
+        py::arg("logits"), py::arg("seq_lens"), py::arg("block_size"),
+        py::arg("out_mask"), py::arg("out_block_ids"));
+  m.def("dsv41_build_swa_token_ids", &lightop::dsv41::build_swa_token_ids,
+        "SWA metadata prefix and physical token gather");
+  m.def("dsv41_remap_indices_to_staging", &lightop::dsv41::remap_indices_to_staging,
+        "Inverse page map and fused staging token remap");
+  m.def("dsv41_ragged_topk_postprocess", &lightop::dsv41::ragged_topk_postprocess,
+        "Score masking, ascending index sort and ragged physical/raw outputs");
+  m.def("dsv41_pair_partners", &lightop::dsv41::pair_partners,
+        "DSV4.1 pair-partner gather and ordered ring-state update",
+        py::arg("kv"), py::arg("score"), py::arg("req"), py::arg("pos"),
+        py::arg("pad"), py::arg("state"), py::arg("ring_size"));
   m.def(
       "dequantize_index_k_int8_paged",
       &lightop::deep_gemm::dequantize_index_k_int8_paged,
@@ -1475,6 +1532,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
      py::arg("tokens_per_request") = 1,
      py::arg("dedup_table") = py::none(),
      py::arg("reuse_compact_indices") = false);
+ m.def("dequantize_k_cache_paged_hcu", &at::native::dequantize_k_cache_paged_hcu,
+       "V4 packed paged KV dequantization into preallocated BF16 output");
+ m.def("combine_topk_swa_indices_hcu", &at::native::combine_topk_swa_indices_hcu,
+       "Combine compressed TopK and positional SWA indices into a flat workspace");
  m.def(
      "dsv4_dequantize_k_cache_paged_out",
      &at::native::dsv4_dequantize_k_cache_paged_out,
@@ -1536,6 +1597,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
        "SGLang mHC CP-selected row broadcast",
        py::arg("hidden_states"), py::arg("hc_mult"), py::arg("cp_size"), py::arg("cp_rank"));
  m.def("topk_ids_postprocess",&at::native::topk_ids_postprocess,"topk_ids_postprocess");
+ m.def("hc_mix_stats_sinkhorn_bf16x3", &at::native::hc_mix_stats_sinkhorn_bf16x3,
+       py::arg("x"), py::arg("weight_parts"), py::arg("scale"), py::arg("base"),
+       py::arg("sinkhorn_iters"), py::arg("rms_eps"), py::arg("hc_eps"), py::arg("hc_mult")=4);
+ m.def("hc_mix_stats_sinkhorn_deepgemm", &at::native::hc_mix_stats_sinkhorn_deepgemm,
+       py::arg("x_flat"), py::arg("weight_parts"), py::arg("hc_scale"), py::arg("hc_base"),
+       py::arg("sinkhorn_iters"), py::arg("rms_eps"), py::arg("hc_eps"), py::arg("hc_mult")=4);
+ m.def("hc_mix_stats", &at::native::hc_mix_stats,
+       "RMS-normalized projection, or None when unsupported", py::arg("x"),
+       py::arg("weight"), py::arg("eps") = 1e-6);
  m.def("dpskv4_hc_head_fused", &at::native::dpskv4_hc_head_fused, "dpskv4_hc_head_fused");
  m.def("fused_metadata_kernel_general", &at::native::fused_metadata_kernel_general_launcher,
        "fused_metadata_kernel_general",
@@ -1554,6 +1624,13 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
        py::arg("use_swa"));
 m.def("moe_fused_gate_sqrtsoftplus",&at::native::moe_fused_gate_sqrtsoftplus,"moe_fused_gate_sqrtsoftplus");       
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu",&at::native::moe_fused_gate_sqrtsoftplus_v41_hcu,"moe_fused_gate_sqrtsoftplus_v41_hcu");
+m.def("moe_fused_gate_sqrtsoftplus_v41_hcu_fused",
+      &at::native::moe_fused_gate_sqrtsoftplus_v41_hcu_fused,
+      py::arg("input"), py::arg("bias"), py::arg("topk"),
+      py::arg("num_fused_shared_experts"), py::arg("renormalize"),
+      py::arg("routed_scaling_factor"),
+      py::arg("apply_routed_scaling_factor_on_output"),
+      py::arg("num_token_non_padded") = py::none());
 m.def("fused_deepep_prepare", &at::native::fused_deepep_prepare,
       "fused_deepep_prepare");
 m.def("fuse_silu_and_mul_ep",&at::native::fuse_silu_and_mul_ep,"fuse_silu_and_mul_ep");

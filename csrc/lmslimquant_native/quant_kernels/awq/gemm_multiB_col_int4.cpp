@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 #include "gemm_multiB_col_int4.h"
 #include "basic_modules/gemm_weight_only_template.h"
 

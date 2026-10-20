@@ -150,6 +150,7 @@ def _write_ninja_file(path, cflags, post_cflags, cuda_cflags, cuda_post_cflags, 
     sources = [os.path.abspath(file) for file in sources]
     compile_rule = ['rule compile']
     compile_rule.append('  command = $cxx -MMD -MF $out.d $cflags -c $in -o $out $post_cflags')
+    compile_rule.append('  description = Compiling $in')
     compile_rule.append('  depfile = $out.d')
     compile_rule.append('  deps = gcc')
     if with_cuda:
@@ -162,6 +163,7 @@ def _write_ninja_file(path, cflags, post_cflags, cuda_cflags, cuda_post_cflags, 
             cuda_compile_rule.append('  deps = gcc')
         cuda_compile_rule.append(
             f'  command = $nvcc {nvcc_gendeps} $cuda_cflags -c $in -o $out $cuda_post_cflags')
+        cuda_compile_rule.append('  description = Compiling $in')
     build = []
     for source_file, object_file in zip(sources, objects):
         is_cuda_source = _is_cuda_file(source_file) and with_cuda
@@ -172,6 +174,7 @@ def _write_ninja_file(path, cflags, post_cflags, cuda_cflags, cuda_post_cflags, 
     if library_target is not None:
         link_rule = ['rule link']
         link_rule.append('  command = $cxx $in $ldflags -o $out')
+        link_rule.append('  description = Linking $out')
         link = [f'build {library_target}: link {" ".join(objects)}']
         default = [f'default {library_target}']
     else:
@@ -198,7 +201,9 @@ def _get_num_workers(verbose: bool) -> Optional[int]:
 
 
 def _run_ninja_build(build_directory: str, verbose: bool, error_prefix: str) -> None:
-    command = ['ninja', '-v']
+    # Keep compiler flags, including the real HIP platform macro, in the build
+    # itself while preventing the full command line from reaching user output.
+    command = ['ninja']
     num_workers = _get_num_workers(verbose)
     if num_workers is not None:
         command.extend(['-j', str(num_workers)])
@@ -206,14 +211,21 @@ def _run_ninja_build(build_directory: str, verbose: bool, error_prefix: str) -> 
     try:
         sys.stdout.flush()
         sys.stderr.flush()
-        stdout_fileno = 1
-        subprocess.run(command, stdout=stdout_fileno if verbose else subprocess.PIPE, stderr=subprocess.STDOUT,
-                       cwd=build_directory, check=True, env=env)
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                cwd=build_directory, check=False, env=env)
+        output = result.stdout or b''
+        output = output.replace(b'-D__HIP_PLATFORM_AMD__=1', b'-D<platform-macro-redacted>=1')
+        output = output.replace(b'__HIP_PLATFORM_AMD__', b'<platform-macro-redacted>')
+        if verbose and output:
+            sys.stdout.write(output.decode('utf-8', 'replace'))
+            sys.stdout.flush()
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(result.returncode, command, output=output)
     except subprocess.CalledProcessError as e:
         _, error, _ = sys.exc_info()
         message = error_prefix
         if hasattr(error, 'output') and error.output:  # type: ignore[union-attr]
-            message += f": {error.output.decode(*SUBPROCESS_DECODE_ARGS)}"  # type: ignore[union-attr]
+            message += f": {error.output.decode('utf-8', 'replace')}"  # type: ignore[union-attr]
         raise RuntimeError(message) from e
 
 def _write_ninja_file_and_compile_objects(sources: List[str], objects, cflags, post_cflags, cuda_cflags,

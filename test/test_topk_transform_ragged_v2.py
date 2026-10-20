@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Unordered ragged Top512/1024/2048 contracts and a PyTorch benchmark.
 
 NaN scores are unsupported. Metadata values obey the caller contract:

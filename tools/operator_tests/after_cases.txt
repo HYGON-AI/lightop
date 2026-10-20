@@ -56,7 +56,7 @@ test/test_fuse_silu_mul_quant.py
 test/test_gemma_fused_add_rmsnorm.py
 test/test_gemma_rms_norm_fp8_quant.py
 test/test_gemm_bias.py
-test/test_gemm.py
+test/ci_tests/test_gemm.py
 test/test_gn_silu.py
 test/test_grid_sample.py
 test/test_groupgemm_permute_unpermute.py

@@ -1,4 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
+
 # vllm 缺失时 RMSNorm 等注解名不存在, 延迟求值避免模块导入即崩
 from __future__ import annotations
 

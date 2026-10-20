@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 import pandas as pd
 
 # 1. 读取 Excel 文件（假设文件名为 data.xlsx）

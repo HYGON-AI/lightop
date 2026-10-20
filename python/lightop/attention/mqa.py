@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """LightOp MQA APIs and optional paged-MQA backend selection."""
 
 import os
@@ -26,6 +29,36 @@ def get_paged_mqa_logits_fp4_metadata(
         )
     return op.get_paged_mqa_logits_fp4_metadata(
         context_lens, block_kv, num_sms, rows_per_request
+    )
+
+
+def get_paged_sparse_mqa_logits_metadata(
+    context_lens, block_table, indices, page_kv, sparse_kv_block_indices,
+    qk_dtype, sparse_block_kv, num_sms=None,
+):
+    """DeepGEMM `get_paged_sparse_mqa_logits_metadata` on HCU.
+
+    Plans `fp8_fp4_paged_sparse_mqa_logits`: per request-aligned pair of query
+    tokens, the first min(M, ceil(context_len / sparse_block_kv)) entries of
+    each row of sparse_kv_block_indices int32 [Q,M] (unique, ascending logical
+    blocks, M % 4 == 0, M <= 4096) are merged, mapped through block_table int32
+    [Q,pages] at page_kv and cut into KV splits of 640 (packed FP4 qk_dtype,
+    int8/uint8) or 512 (FP8 E4M3) positions, followed by a persistent schedule
+    of num_sms (default: the CU count) entries per wave. indices int32 [Q] is
+    the request of each token; a request's tokens are consecutive and paired
+    tokens share their block_table row. The uint8 result has DeepGEMM's byte
+    layout. Call once per stream before CUDA graph capture.
+    """
+    from .. import op
+
+    if not hasattr(op, "get_paged_sparse_mqa_logits_metadata"):
+        raise RuntimeError(
+            "get_paged_sparse_mqa_logits_metadata unavailable: rebuild/install "
+            "LightOp with the paged sparse MQA metadata planner"
+        )
+    return op.get_paged_sparse_mqa_logits_metadata(
+        context_lens, block_table, indices, page_kv, sparse_kv_block_indices,
+        qk_dtype, sparse_block_kv, num_sms,
     )
 
 
@@ -188,15 +221,108 @@ def dsv41_candidate_block_table(logits, seq_lens, page_table, page_size,
     )
 
 
+def dsv41_select_candidate_blocks(logits, seq_lens, topk_blocks, block_size=8):
+    """Select logical blocks and expand their mask in one HCU kernel.
+
+    Returns bool [B,W] and ascending int32 [B,topk_blocks] with -1 padding.
+    Selected blocks expand all eight positions, clipped at W, not seq_lens.
+    Inputs have the same FP32 aligned-row and int32 length contract as the
+    candidate block-table operator; no physical page table is needed.
+    """
+    from .. import op
+    if not hasattr(op, "dsv41_select_candidate_blocks"):
+        raise RuntimeError(
+            "dsv41_select_candidate_blocks unavailable: rebuild or upgrade "
+            "the LightOp native extension"
+        )
+    out_mask = torch.empty(logits.shape, dtype=torch.bool, device=logits.device)
+    out_block_ids = torch.empty(
+        (logits.shape[0], topk_blocks), dtype=torch.int32, device=logits.device
+    )
+    op.dsv41_select_candidate_blocks(
+        logits, seq_lens, block_size, out_mask, out_block_ids
+    )
+    return out_mask, out_block_ids
+
+
+def dsv41_ragged_topk_postprocess(scores, selected, offsets, slots, out_pages,
+                                  out_raw=None, mask_scores=False):
+    """Filter/sort ragged selections and write physical and optional raw IDs.
+
+    Selection itself is unchanged. Negative IDs and INT_MAX become padding;
+    consumer masking keeps scores strictly greater than -inf (NaNs removed,
+    +inf retained). Output matrices are int32 and may be strided views.
+    Scores are float32, selected/offsets int32, slots int32 or int64. Top-k
+    is at most 2048. Inputs are read-only; writes are confined to output views.
+    """
+    from .. import op
+
+    op.dsv41_ragged_topk_postprocess(
+        scores, selected, offsets, slots, out_pages, out_raw, mask_scores,
+    )
+
+
+def dsv41_remap_indices_to_staging(indices, selected_pages, page_size, max_pages,
+                                   static_selected_pages=False):
+    """Map token IDs to compact staging slots, preserving all negative IDs.
+
+    Selected pages may be unordered; valid destination pages must be unique.
+    With static_selected_pages, negative entries are padding. Otherwise normal
+    PyTorch negative page-index wrapping applies. Valid token pages must be
+    below max_pages. Missing pages map to -page_size + the token offset.
+    """
+    from .. import op
+
+    return op.dsv41_remap_indices_to_staging(
+        indices, selected_pages, page_size, max_pages, static_selected_pages,
+    )
+
+
+def dsv41_build_swa_token_ids(seq_lens, extend_seq_lens, req_pool_indices,
+                              req_to_token, full_to_swa, swa_window, total_swa):
+    """Build SWA IDs and request metadata without host reads.
+
+    Lengths/request IDs/table are device int32; full_to_swa is int64.
+    total_swa must equal sum(min(seq, extend + swa_window - 1)), supplied
+    from CPU metadata. Table/mapping indices must be valid, as in SGLang.
+    """
+    from .. import op
+
+    return op.dsv41_build_swa_token_ids(
+        seq_lens, extend_seq_lens, req_pool_indices, req_to_token, full_to_swa,
+        swa_window, total_swa,
+    )
+
+
+def dsv41_pair_partners(kv, score, req, pos, pad, state, ring_size):
+    """Select FP32 compression partners, then update the packed request ring.
+
+    Returns partner KV and score [T,D]. State [S,2D] is updated in place;
+    its final row is the padding sentinel. KV/score may be column-slice views.
+    Retained writes must have unique live slots, as in SGLang's request batches.
+    Two ordered HCU launches preserve all old-state reads before any write.
+    """
+    from .. import op
+    if not hasattr(op, "dsv41_pair_partners"):
+        raise RuntimeError("dsv41_pair_partners requires a rebuilt LightOp extension")
+    return op.dsv41_pair_partners(kv, score, req, pos, pad, state, ring_size)
+
+
 __all__ = [
     "fp8_fp4_mqa_logits",
     "get_paged_mqa_logits_metadata",
     "get_paged_mqa_logits_fp4_metadata",
+    "get_paged_sparse_mqa_logits_metadata",
     "mqa_logits",
     "paged_mqa_logits",
     "paged_mqa_logits_persisten",
     "paged_mqa_logits_fp4",
     "paged_mqa_logits_route_lens",
     "dsv41_candidate_block_table",
+    "dsv41_select_candidate_blocks",
+    "dsv41_pair_partners",
+    "dsv41_build_swa_token_ids",
+    "dsv41_remap_indices_to_staging",
+    "dsv41_ragged_topk_postprocess",
     "page_mqa_logits_sparse_mask",
 ]

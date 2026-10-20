@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Mixture-of-Experts APIs."""
 
 from importlib import import_module
@@ -41,6 +44,7 @@ from .routing import (
     moe_fused_gate,
     moe_fused_gate_sqrtsoftplus,
     moe_fused_gate_sqrtsoftplus_v41_hcu,
+    moe_fused_gate_sqrtsoftplus_v41_hcu_fused,
     moe_sum,
     topk_ids_postprocess,
     topk_softmax,
@@ -104,6 +108,7 @@ __all__ = [
     "moe_fused_gate",
     "moe_fused_gate_sqrtsoftplus",
     "moe_fused_gate_sqrtsoftplus_v41_hcu",
+    "moe_fused_gate_sqrtsoftplus_v41_hcu_fused",
     "moe_gemm_marlin_w16a16",
     "moe_gemm_marlin_w4a8",
     "moe_gemm_marlin_w8a8",

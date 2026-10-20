@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Run the LightOp GEMM migration and numerical regression suites."""
 
 from __future__ import annotations
@@ -159,7 +162,7 @@ def main() -> int:
                 "W4A16 legacy regression",
                 stream_command(
                     "W4A16 legacy regression",
-                    [sys.executable, str(TEST_DIR / "test_gemm.py")],
+                    [sys.executable, str(TEST_DIR / "ci_tests" / "test_gemm.py")],
                     env,
                     validate_w4a16,
                 ),
