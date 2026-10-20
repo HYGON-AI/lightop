@@ -77,7 +77,12 @@ def test_accuracy_checker():
             check(torch.tensor([bad]), torch.ones(1))
     with pytest.raises(AssertionError, match="shape mismatch"):
         check(torch.ones(1), torch.ones(2))
-    small = metric(torch.zeros(1), torch.tensor([1e-40]))
+    # Keep the tiny reference representable when another runtime enables CPU
+    # flush-to-zero: 1e-40 is subnormal in float32, but normal in float64.
+    small = metric(
+        torch.zeros(1, dtype=torch.float64),
+        torch.tensor([1e-40], dtype=torch.float64),
+    )
     assert small["relative_l2"] == 1.0
     assert small["max_relative_nonzero"] == 1.0
     assert small["relative_gt_1pct"] == 1

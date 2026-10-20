@@ -88,5 +88,12 @@ AITER 和 vLLM 的所记录许可证 Blob 已重新取得并核对。在本次�
 
 ## 工程验证
 
-本轮对所有修改的 Python 源码检查 AST 保持不变（setup 的许可证元数据除外），对 C/C++ 文件检查原实现完整保留；执行 `git diff --check`。
+合规声明编辑阶段核验 Python AST 保持不变、C/C++ 原实现完整保留；打包逻辑及下述测试修复另行验证，并执行 `git diff --check`。
 编译安装、全量 `test/ci_tests`、SiTU 三组环境组合的结果以最终提交对应的独立构建日志、JUnit 和交付记录为准。在结果产生前，本记录不宣称测试已通过。
+
+
+### CI 兼容性修复与验证范围
+
+- 极小非零参考值自检：以 FP64 构造 `1e-40`，避免其他运行时开启 CPU 非正规数冲零后，FP32 测试输入在进入检查器前已变为零。相对误差、非有限值检查和算子精度阈值均不改变；分别在 CPU 冲零开启/关闭状态运行自检。
+- 原生路由用例：直接调用 LightOp 公开的 `combine_topk_swa_indices_hcu` 入口，与独立 Torch 参考逐值比较，并拦截 `triton.runtime.jit.JITFunction.run`，确保该入口不发起 Triton 调用。不再依赖 SGLang 私有分支的开关。
+- 外部集成待验：当前 SGLang 镜像没有 `_use_hcu_combine_topk_swa_indices` 及对应 HCU 路由，SGLang 到 LightOp 的路由集成不在本轮通过结论内。取得包含该功能的固定 SGLang 版本后，需要独立验证路由和禁止 Triton 回退的行为。
