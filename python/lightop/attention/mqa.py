@@ -400,13 +400,6 @@ def _cdiv(a, b):
     return (a + b - 1) // b
 
 
-def _prep_fusion_mode():
-    value = os.environ.get("LIGHTOP_PREFILL_SPARSE_PREP_FUSION", "0")
-    if value not in ("0", "1", "2", "3"):
-        raise ValueError("LIGHTOP_PREFILL_SPARSE_PREP_FUSION must be 0..3")
-    return int(value)
-
-
 @lru_cache(maxsize=1)
 def _native_prefill_fusion_backend():
     from importlib import import_module
@@ -457,7 +450,7 @@ def prepare_prefill_sparse_query(q, raw_weights, freqs_cis, positions, rope_dim,
         raise ValueError("query_tile must be a power of two <=32")
     return tuple(_native_prefill_fusion_backend().prefill_sparse_native_prepare_query(
         q, raw_weights, freqs_cis, positions, rope_dim, weight_scale,
-        compress_ratio, width, bool(_prep_fusion_mode() & 1),
+        compress_ratio, width, True,
         None, None, None, 0, 64, None, _prefill_sparse_query_lanes(q)))
 
 
@@ -467,7 +460,7 @@ def _prepare_prefill_sparse_request(q, raw_weights, freqs_cis, positions, rope_d
     """Native combined Q/weights/row/candidate/page preparation for H=32."""
     return tuple(_native_prefill_fusion_backend().prefill_sparse_native_prepare_query(
         q, raw_weights, freqs_cis, positions, rope_dim, weight_scale,
-        compress_ratio, width, bool(_prep_fusion_mode() & 1), source,
+        compress_ratio, width, True, source,
         req_to_token, request_id, context_len, page_size, row_flags,
         _prefill_sparse_query_lanes(q)))
 
@@ -702,19 +695,11 @@ def prefill_sparse_mqa_fused(
             start = offset + begin
             finish = offset + stop
             block_chunk = blocks[begin:stop]
-            if _prep_fusion_mode() & 1:
-                logits = _prefill_current_sparse_backend().prefill_sparse_fp8_fp4_paged_mqa_logits(
-                    payload[begin:stop], sf[begin:stop], k_cache, weights[begin:stop],
-                    lengths[begin:stop], pages[None, :].expand(stop - begin, -1),
-                    pairs[: stop - begin], block_chunk, width, 8, num_sms, True, 0,
-                )
-            else:
-                meta = get_paged_sparse_mqa_logits_metadata(
-                    lengths[begin:stop], pages[None, :].expand(stop - begin, -1),
-                    pairs[: stop - begin], page_size, block_chunk, payload.dtype, 8, num_sms=num_sms)
-                logits = fp8_fp4_paged_sparse_mqa_logits(
-                    (payload[begin:stop], sf[begin:stop]), k_cache, weights[begin:stop], meta,
-                    width, 8, num_sms=num_sms, is_prefill=True)
+            logits = _prefill_current_sparse_backend().prefill_sparse_fp8_fp4_paged_mqa_logits(
+                payload[begin:stop], sf[begin:stop], k_cache, weights[begin:stop],
+                lengths[begin:stop], pages[None, :].expand(stop - begin, -1),
+                pairs[: stop - begin], block_chunk, width, 8, num_sms, True, 0,
+            )
             compact = torch.empty(
                 (stop - begin, index_topk), device=q.device, dtype=torch.int32
             )
@@ -739,8 +724,6 @@ def prefill_sparse_mqa_fused(
                 candidate_flags=None if row_flags is None else row_flags[begin:stop],
             )
             del compact
-            if not (_prep_fusion_mode() & 1):
-                del meta
             del logits
         offset = end
 

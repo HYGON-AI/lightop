@@ -3591,13 +3591,8 @@ torch::Tensor fp8_fp4_paged_sparse_mqa_logits(
         exceptional=torch::empty({1},q.options().dtype(at::kInt));
         a.exceptional=exceptional.data_ptr<int>();
     }
-    const char* fusion_env=std::getenv("LIGHTOP_PREFILL_SPARSE_PREP_FUSION");
-    const std::string fusion_mode=fusion_env ? fusion_env : "0";
-    TORCH_CHECK(fusion_mode=="0" || fusion_mode=="1" || fusion_mode=="2" || fusion_mode=="3",
-                "LIGHTOP_PREFILL_SPARSE_PREP_FUSION must be 0..3");
     const bool fused_bf16_setup=is_prefill && fixed_prefill_layout && rows>=64 &&
-        arch.rfind("gfx936",0)==0 && vector_fill &&
-        (fusion_mode=="1" || fusion_mode=="3");
+        arch.rfind("gfx936",0)==0 && vector_fill;
     const bool fused_setup=prepare_k_fp8 && vector_fill;
     if (!fused_setup && !fused_bf16_setup) {
     if (vector_fill) {
