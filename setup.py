@@ -638,6 +638,12 @@ class BuildPyWithResources(build_py):
                 dirs_exist_ok=True,
                 ignore=ignore,
             )
+        # Legacy egg installs do not copy license_files into EGG-INFO. Keep
+        # these materials in the package as well as wheel license metadata.
+        license_root = os.path.join(package_root, "licenses")
+        os.makedirs(license_root, exist_ok=True)
+        for source in self.distribution.metadata.license_files or []:
+            self.copy_file(source, os.path.join(license_root, os.path.basename(source)))
 
 
 setup(
@@ -656,6 +662,7 @@ setup(
     include_package_data=False,
     package_data={
         'lightop': [
+            "licenses/*",
             "lib/*",
             "librarygemmbiasf/*",
             "librarygemmdbiasb/*",

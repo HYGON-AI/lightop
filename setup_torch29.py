@@ -11,6 +11,7 @@ import sys
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension, ROCM_HOME
 from setuptools import find_packages, setup
 from setuptools.command.build_ext import build_ext
+from setuptools.command.build_py import build_py
 from pkg_resources import packaging  # type: ignore[attr-defined]
 from get_version import get_version, get_dtk_version
 
@@ -570,6 +571,17 @@ def _get_pytorch_version():
         return f"{os.environ['PYTORCH_VERSION']}"
     return torch.__version__
 
+class BuildPyWithLicenses(build_py):
+    """Preserve license materials in legacy egg and wheel installations."""
+
+    def run(self):
+        super().run()
+        license_root = os.path.join(self.build_lib, "lightop", "licenses")
+        os.makedirs(license_root, exist_ok=True)
+        for source in self.distribution.metadata.license_files or []:
+            self.copy_file(source, os.path.join(license_root, os.path.basename(source)))
+
+
 setup(
     name='lightop',
     version=get_version(ROCM_HOME),
@@ -585,6 +597,7 @@ setup(
     include_package_data=False,
     package_data={
         'lightop': [
+            "licenses/*",
             "lib/*",
             "librarygemmbiasf/*",
             "librarygemmdbiasb/*",
@@ -597,7 +610,8 @@ setup(
     },
     ext_modules=get_extensions(),
     cmdclass={
-        'build_ext': BuildReleaseExtension
+        'build_ext': BuildReleaseExtension,
+        'build_py': BuildPyWithLicenses
     },
     zip_safe=False,
     install_requires=[
