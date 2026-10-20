@@ -16,6 +16,12 @@
 #include "sampling/sampling.h"
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace at {  namespace native {
+// Native MLA Q-absorb with BF16 Q RoPE and direct Q concatenation.
+torch::Tensor mla_q_absorb_rope_concat(
+    torch::Tensor x, torch::Tensor weight, torch::Tensor q_rope,
+    torch::Tensor positions, torch::Tensor cos_sin, bool is_neox
+);
+
 std::tuple<Tensor, Tensor> fused_deepep_prepare(
     const Tensor& hidden,
     const Tensor& smooth,
@@ -849,6 +855,9 @@ void mimo_v2_split_rope_vscale_kv_store(
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("mla_q_absorb_rope_concat", &at::native::mla_q_absorb_rope_concat,
+          "BF16 MLA Q-absorb, Q RoPE and Q concat for BS2/3/4");
+
   // Source-migrated LMSlimQuant entry points.  The leading underscore keeps
   // them private to LightOp's Python compatibility layer.
   m.def("_lmslimquant_rocblas_gemm_int8",
