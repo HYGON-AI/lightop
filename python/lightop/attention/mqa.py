@@ -4,6 +4,7 @@
 """LightOp MQA APIs and optional paged-MQA backend selection."""
 
 import os
+from functools import lru_cache
 
 import torch
 
@@ -326,3 +327,422 @@ __all__ = [
     "dsv41_ragged_topk_postprocess",
     "page_mqa_logits_sparse_mask",
 ]
+
+
+# Sparse-only native, source-pinned and validated for this package.
+@lru_cache(maxsize=1)
+def _prefill_current_sparse_backend():
+    from importlib import import_module
+    module_name = __package__.split(".attention", 1)[0] + "._paged_sparse_mqa"
+    try:
+        backend = import_module(module_name)
+    except ModuleNotFoundError as error:
+        if error.name != module_name:
+            raise
+        # A regular full-wheel build exports the same implementation in op.
+        from .. import op as backend
+    if backend.PAGED_SPARSE_MQA_LOGITS_ABI != 3:
+        raise RuntimeError("Sparse MQA ABI mismatch")
+    return backend
+
+
+_paged_sparse_mqa_backend = _prefill_current_sparse_backend
+
+def get_paged_sparse_mqa_logits_metadata(context_lens, block_table, indices, page_kv, sparse_kv_block_indices, qk_dtype, sparse_block_kv, num_sms=None):
+    """DeepGEMM `get_paged_sparse_mqa_logits_metadata` on HCU.
+
+    Plans `fp8_fp4_paged_sparse_mqa_logits`: per request-aligned pair of query
+    tokens, the first min(M, ceil(context_len / sparse_block_kv)) entries of
+    each row of sparse_kv_block_indices int32 [Q,M] (unique, ascending logical
+    blocks, M % 4 == 0, M <= 4096) are merged, mapped through block_table int32
+    [Q,pages] at page_kv and cut into KV splits of 640 (packed FP4 qk_dtype,
+    int8/uint8) or 512 (FP8 E4M3) positions, followed by a persistent schedule
+    of num_sms (default: the CU count) entries per wave. indices int32 [Q] is
+    the request of each token; a request's tokens are consecutive and paired
+    tokens share their block_table row. The uint8 result has DeepGEMM's byte
+    layout. Call once per stream before CUDA graph capture.
+    """
+    op = _prefill_current_sparse_backend()
+    if not hasattr(op, 'get_paged_sparse_mqa_logits_metadata'):
+        raise RuntimeError('get_paged_sparse_mqa_logits_metadata unavailable: rebuild/install LightOp with the paged sparse MQA metadata planner')
+    return op.get_paged_sparse_mqa_logits_metadata(context_lens, block_table, indices, page_kv, sparse_kv_block_indices, qk_dtype, sparse_block_kv, num_sms)
+
+def sparse_fp8_fp4_paged_mqa_logits(q, fused_kv_cache, weights, metadata, num_max_sparse_blocks, sparse_block_kv, *, context_lens=None, sparse_kv_block_indices=None, output=None, num_sms=None, is_prefill=False):
+    """Consume official paged sparse MQA metadata and return FP32 logits.
+
+    q=(payload, packed UE8M0 scales), supporting MXFP4 or MXFP8, D=128 and
+    H=4..32 in steps of four. weights is FP32 [R,H]. The result is FP32
+    [R,num_max_sparse_blocks*sparse_block_kv] with a padded row stride.
+    is_prefill=True selects the rewritten Prefill kernel; False retains decode.
+    Metadata records request-aligned query pairs, their KV candidate unions
+    and each query's sparse output slots. KV is read directly through those
+    physical blocks; no dense logits temporary is formed.
+
+    context_lens and sparse_kv_block_indices may be supplied together to mask
+    individual tokens in a partial logical tail block. Without them the
+    consumer follows the official metadata's whole-block visibility. They
+    do not rebuild metadata or affect its scheduling. Unselected/padded
+    output slots are -inf in both modes. num_sms must match the planner.
+    """
+    if not isinstance(q, (tuple, list)) or len(q) != 2:
+        raise TypeError('q must be (payload, packed UE8M0 scales)')
+    backend = _prefill_current_sparse_backend()
+    if getattr(backend, 'PAGED_SPARSE_MQA_LOGITS_ABI', 0) != 3:
+        raise RuntimeError('paged sparse MQA requires a rebuilt LightOp extension')
+    return backend.fp8_fp4_paged_sparse_mqa_logits(q[0], q[1], fused_kv_cache, weights, metadata, num_max_sparse_blocks, sparse_block_kv, context_lens, sparse_kv_block_indices, output, num_sms, is_prefill)
+fp8_fp4_paged_sparse_mqa_logits = sparse_fp8_fp4_paged_mqa_logits
+
+if "__all__" in globals():
+    __all__ = list(dict.fromkeys([*__all__, "get_paged_sparse_mqa_logits_metadata", "sparse_fp8_fp4_paged_mqa_logits", "fp8_fp4_paged_sparse_mqa_logits"]))
+
+# Native sparse Prefill preparation; GPU computation lives in sparse_page_mqa/*.cu.
+def _cdiv(a, b):
+    return (a + b - 1) // b
+
+
+def _prep_fusion_mode():
+    value = os.environ.get("LIGHTOP_PREFILL_SPARSE_PREP_FUSION", "0")
+    if value not in ("0", "1", "2", "3"):
+        raise ValueError("LIGHTOP_PREFILL_SPARSE_PREP_FUSION must be 0..3")
+    return int(value)
+
+
+@lru_cache(maxsize=1)
+def _native_prefill_fusion_backend():
+    from importlib import import_module
+    name = __package__.split(".attention", 1)[0] + "._prefill_sparse_fusion"
+    try:
+        backend = import_module(name)
+    except ModuleNotFoundError as error:
+        if error.name != name:
+            raise
+        from .. import op as backend
+    if getattr(backend, "PREFILL_SPARSE_FUSION_ABI", 0) != 1:
+        raise RuntimeError("native sparse Prefill fusion requires a rebuilt LightOp extension")
+    return backend
+
+
+def _index_sort_backend():
+    return _native_prefill_fusion_backend()
+
+
+def _index_sort_options(tensor, kind):
+    return (_native_prefill_fusion_backend(), 1, 512) if supports_prefill_sparse_fusion(tensor) else None
+
+
+def supports_prefill_sparse_fusion(tensor):
+    if not tensor.is_cuda:
+        return False
+    arch = torch.cuda.get_device_properties(tensor.device).gcnArchName.split(":")[0]
+    return arch in ("gfx936", "gfx938")
+
+
+
+def _prefill_sparse_query_lanes(q):
+    """Choose a query layout by row intervals, without device-value reads."""
+    arch = torch.cuda.get_device_properties(q.device).gcnArchName.split(":")[0]
+    rows = q.shape[0]
+    if arch == "gfx936" and q.shape[1] == 32:
+        if 768 < rows <= 1536 or rows > 2560:
+            return 4
+    return 8
+
+
+def prepare_prefill_sparse_query(q, raw_weights, freqs_cis, positions, rope_dim,
+                                weight_scale, compress_ratio, width, *, query_tile=None, num_warps=4):
+    """Native RoPE/FP4 packing, BF16 weight scaling and per-row metadata."""
+    if not supports_prefill_sparse_fusion(q):
+        raise ValueError("native sparse fusion requires gfx936 or gfx938")
+    if query_tile is not None and query_tile not in (1, 2, 4, 8, 16, 32):
+        raise ValueError("query_tile must be a power of two <=32")
+    return tuple(_native_prefill_fusion_backend().prefill_sparse_native_prepare_query(
+        q, raw_weights, freqs_cis, positions, rope_dim, weight_scale,
+        compress_ratio, width, bool(_prep_fusion_mode() & 1),
+        None, None, None, 0, 64, None, _prefill_sparse_query_lanes(q)))
+
+
+def _prepare_prefill_sparse_request(q, raw_weights, freqs_cis, positions, rope_dim,
+                                   weight_scale, compress_ratio, width, source,
+                                   req_to_token, request_id, context_len, page_size, row_flags=None):
+    """Native combined Q/weights/row/candidate/page preparation for H=32."""
+    return tuple(_native_prefill_fusion_backend().prefill_sparse_native_prepare_query(
+        q, raw_weights, freqs_cis, positions, rope_dim, weight_scale,
+        compress_ratio, width, bool(_prep_fusion_mode() & 1), source,
+        req_to_token, request_id, context_len, page_size, row_flags,
+        _prefill_sparse_query_lanes(q)))
+
+
+def prepare_prefill_sparse_candidates(source, width, req_to_token, request_id,
+                                      context_len, compress_ratio, page_size, *, num_warps=4, row_flags=None):
+    """Native sanitize/sort/pad and request page-table preparation."""
+    return tuple(_native_prefill_fusion_backend().prefill_sparse_native_prepare_candidates(
+        source, width, req_to_token, request_id, context_len, compress_ratio, page_size, row_flags))
+
+
+def finalize_prefill_sparse_indices(compact, blocks, lengths, valid_lens, *,
+                                    out_logical=None, req_to_token=None, request_id=None,
+                                    compress_ratio=1, out_page_indices=None, num_warps=None,
+                                    candidate_flags=None):
+    """Native exact integer ordering/mapping after the unchanged TopK operator."""
+    if out_logical is None:
+        out_logical = torch.empty_like(compact)
+    _native_prefill_fusion_backend().prefill_sparse_native_finalize(
+        compact, blocks, lengths, valid_lens, out_logical, out_page_indices,
+        req_to_token if out_page_indices is not None else None,
+        request_id if out_page_indices is not None else None, compress_ratio, candidate_flags)
+    return out_logical
+
+
+def prefill_sparse_mqa_fused(
+    q,
+    raw_weights,
+    freqs_cis,
+    positions,
+    *,
+    weight_scale,
+    rope_dim,
+    k_cache,
+    req_to_token,
+    request_pool_indices,
+    context_lens_per_request,
+    rows_per_request,
+    request_block_ids,
+    compress_ratio,
+    page_size,
+    num_max_sparse_blocks,
+    index_topk,
+    out_page_indices,
+    out_raw_indices=None,
+    budget_bytes=1 << 30,
+    combine_preparation=True,
+):
+    """MXFP4 sparse consumer after the two unchanged projection GEMMs.
+
+    Geometry and metadata are refreshed on each call, including capture/replay;
+    no cache of data values survives a forward. K is read in its original
+    paged format by the existing gfx936 BF16/gfx938 guarded FP8/BF16 scorer.
+    As required by native metadata, warm up once on the capture stream before
+    its first Graph capture. Request IDs/positions must reference valid input
+    rows/frequencies; this API does not copy device values to the host.
+    """
+    from ..fuse_topk_transform import topk_transform_ragged_v2
+
+    rows, heads, _ = q.shape
+    width = num_max_sparse_blocks
+    if (
+        len(rows_per_request) != len(context_lens_per_request)
+        or len(request_block_ids) != len(rows_per_request)
+        or sum(rows_per_request) != rows
+    ):
+        raise ValueError("ragged requests do not match projected queries")
+    if budget_bytes <= 0 or index_topk not in (512, 1024, 2048):
+        raise ValueError("positive scratch budget and supported TopK required")
+    if (
+        page_size <= 0
+        or page_size % 8
+        or any(
+            count < 0 or length < 0
+            for count, length in zip(rows_per_request, context_lens_per_request)
+        )
+    ):
+        raise ValueError(
+            "nonnegative request sizes and a page size divisible by eight required"
+        )
+    if (
+        request_pool_indices.numel() != len(rows_per_request)
+        or request_pool_indices.dtype not in (torch.int32, torch.int64)
+        or not request_pool_indices.is_contiguous()
+    ):
+        raise ValueError("one contiguous integer request ID per request is required")
+    if (
+        req_to_token.ndim != 2
+        or req_to_token.stride(1) != 1
+        or req_to_token.dtype not in (torch.int32, torch.int64)
+    ):
+        raise ValueError("request map must have contiguous integer columns")
+    for output in [out_page_indices] + (
+        [] if out_raw_indices is None else [out_raw_indices]
+    ):
+        if (
+            output.ndim != 2
+            or output.shape[0] < rows
+            or output.shape[1] < index_topk
+            or output.dtype != torch.int32
+            or output.stride(1) != 1
+        ):
+            raise ValueError(
+                "outputs must be int32 matrices with sufficient rows/columns"
+            )
+    tensors = [
+        raw_weights,
+        freqs_cis,
+        positions,
+        k_cache,
+        req_to_token,
+        request_pool_indices,
+        out_page_indices,
+    ]
+    if out_raw_indices is not None:
+        tensors.append(out_raw_indices)
+    if any(t.device != q.device for t in tensors):
+        raise ValueError("all sparse fusion inputs/outputs must share one device")
+    for count, length, source in zip(
+        rows_per_request, context_lens_per_request, request_block_ids
+    ):
+        if source is not None and (
+            source.shape[0] != count or source.ndim != 2 or source.dtype != torch.int32
+        ):
+            raise ValueError("published candidate rows must match requests")
+        if count and length and source is None:
+            raise ValueError("published block IDs required")
+    combined = combine_preparation and heads == 32
+    if combined:
+        if (
+            q.dtype != torch.bfloat16
+            or raw_weights.dtype != torch.bfloat16
+            or raw_weights.shape != (rows, heads)
+        ):
+            raise ValueError(
+                "query and raw weights must preserve BF16 projection outputs"
+            )
+        if (
+            positions.numel() != rows
+            or rope_dim < 0
+            or rope_dim > 128
+            or rope_dim % 2
+            or compress_ratio <= 0
+            or width <= 0
+            or width % 4
+            or width > 4096
+        ):
+            raise ValueError("invalid fused query geometry")
+        if not freqs_cis.is_complex() or not supports_prefill_sparse_fusion(q):
+            raise ValueError("complex frequencies and gfx936/gfx938 required")
+    else:
+        query_data = prepare_prefill_sparse_query(
+            q,
+            raw_weights,
+            freqs_cis,
+            positions,
+            rope_dim,
+            weight_scale,
+            compress_ratio,
+            width,
+        )
+    num_sms = torch.cuda.get_device_properties(q.device).multi_processor_count
+    # Match the original conservative chunk budget; page tables remain broadcast
+    # views because native metadata accepts stride0==0 (no R-by-pages copy).
+    offset = 0
+    for request, (count, length, source) in enumerate(
+        zip(rows_per_request, context_lens_per_request, request_block_ids)
+    ):
+        end = offset + count
+        if count == 0 or length == 0:
+            out_page_indices[offset:end, :index_topk].fill_(-1)
+            if out_raw_indices is not None:
+                out_raw_indices[offset:end, :index_topk].fill_(-1)
+            offset = end
+            continue
+        request_id = request_pool_indices[request : request + 1]
+        sort_options = _index_sort_options(q, "candidate")
+        row_flags = (
+            torch.empty((count,), device=q.device, dtype=torch.int32)
+            if sort_options is not None
+            else None
+        )
+        if source.stride(1) != 1 or source.device != q.device:
+            raise ValueError(
+                "published candidates must have contiguous columns on the query device"
+            )
+        if combined:
+            payload, sf, weights, lengths, valid_lens, pairs, zeros, blocks, pages = (
+                _prepare_prefill_sparse_request(
+                    q[offset:end],
+                    raw_weights[offset:end],
+                    freqs_cis,
+                    positions[offset:end],
+                    rope_dim,
+                    weight_scale,
+                    compress_ratio,
+                    width,
+                    source,
+                    req_to_token,
+                    request_id,
+                    length,
+                    page_size,
+                    row_flags=row_flags,
+                )
+            )
+        else:
+            payload, sf, weights, lengths, valid_lens, pairs, zeros = [
+                v[offset:end] for v in query_data
+            ]
+            pairs = query_data[5]
+            blocks, pages = prepare_prefill_sparse_candidates(
+                source,
+                width,
+                req_to_token,
+                request_id,
+                length,
+                compress_ratio,
+                page_size,
+                row_flags=row_flags,
+            )
+        splits = _cdiv(width, 80)
+        row_bytes = (
+            width * (8 * 4 + 4)
+            + pages.numel() * 4
+            + splits * (16 + 80 * 8 + 16)
+            + heads * (64 + 4 + 4)
+            + index_topk * 16
+        )
+        step = max(1, budget_bytes // max(1, row_bytes))
+        for begin in range(0, count, step):
+            stop = min(begin + step, count)
+            start = offset + begin
+            finish = offset + stop
+            block_chunk = blocks[begin:stop]
+            if _prep_fusion_mode() & 1:
+                logits = _prefill_current_sparse_backend().prefill_sparse_fp8_fp4_paged_mqa_logits(
+                    payload[begin:stop], sf[begin:stop], k_cache, weights[begin:stop],
+                    lengths[begin:stop], pages[None, :].expand(stop - begin, -1),
+                    pairs[: stop - begin], block_chunk, width, 8, num_sms, True, 0,
+                )
+            else:
+                meta = get_paged_sparse_mqa_logits_metadata(
+                    lengths[begin:stop], pages[None, :].expand(stop - begin, -1),
+                    pairs[: stop - begin], page_size, block_chunk, payload.dtype, 8, num_sms=num_sms)
+                logits = fp8_fp4_paged_sparse_mqa_logits(
+                    (payload[begin:stop], sf[begin:stop]), k_cache, weights[begin:stop], meta,
+                    width, 8, num_sms=num_sms, is_prefill=True)
+            compact = torch.empty(
+                (stop - begin, index_topk), device=q.device, dtype=torch.int32
+            )
+            topk_transform_ragged_v2(
+                logits,
+                valid_lens[begin:stop],
+                out_offsets=zeros[begin:stop],
+                out_indices=compact,
+            )
+            finalize_prefill_sparse_indices(
+                compact,
+                block_chunk,
+                lengths[begin:stop],
+                valid_lens[begin:stop],
+                out_logical=None
+                if out_raw_indices is None
+                else out_raw_indices[start:finish, :index_topk],
+                req_to_token=req_to_token,
+                request_id=request_id,
+                compress_ratio=compress_ratio,
+                out_page_indices=out_page_indices[start:finish, :index_topk],
+                candidate_flags=None if row_flags is None else row_flags[begin:stop],
+            )
+            del compact
+            if not (_prep_fusion_mode() & 1):
+                del meta
+            del logits
+        offset = end
+
+
+__all__ = list(dict.fromkeys([*__all__, "supports_prefill_sparse_fusion", "prepare_prefill_sparse_query", "prepare_prefill_sparse_candidates", "finalize_prefill_sparse_indices", "prefill_sparse_mqa_fused"]))

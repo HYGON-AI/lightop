@@ -113,3 +113,19 @@ __all__ = [
     "top_k_per_row_prefill",
     "topk_transform_512",
 ]
+
+from .mqa import (
+    fp8_fp4_paged_sparse_mqa_logits,
+    prefill_sparse_mqa_fused,
+    sparse_fp8_fp4_paged_mqa_logits,
+)
+
+__all__ = list(dict.fromkeys([*__all__, "fp8_fp4_paged_sparse_mqa_logits", "sparse_fp8_fp4_paged_mqa_logits", "prefill_sparse_mqa_fused"]))
+
+# Older runtime op wheels may predate these optional, unrelated helpers.
+from .. import op as _attention_native
+for _helper in ("dsv41_build_swa_token_ids", "dsv41_remap_indices_to_staging", "dsv41_ragged_topk_postprocess"):
+    if not hasattr(_attention_native, _helper):
+        globals().pop(_helper, None)
+        __all__ = [name for name in __all__ if name != _helper]
+del _helper, _attention_native
