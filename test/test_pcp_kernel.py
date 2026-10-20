@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Test the PCP fused kernel against Triton golden reference.
 
 The Triton kernels are self-contained inline copies from deepseek_v4_attention.py

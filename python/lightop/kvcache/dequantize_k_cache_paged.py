@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """DSV4 paged KV-cache dequantization APIs."""
 
 from __future__ import annotations

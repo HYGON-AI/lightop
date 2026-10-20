@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """MoE routing, expert alignment, and expert reduction APIs."""
 
 from .. import op
@@ -8,6 +11,7 @@ from ..moe_fused_gate import (
     moe_fused_gate,
     moe_fused_gate_sqrtsoftplus,
     moe_fused_gate_sqrtsoftplus_v41_hcu,
+    moe_fused_gate_sqrtsoftplus_v41_hcu_fused,
 )
 
 
@@ -50,6 +54,7 @@ __all__ = [
     "moe_fused_gate",
     "moe_fused_gate_sqrtsoftplus",
     "moe_fused_gate_sqrtsoftplus_v41_hcu",
+    "moe_fused_gate_sqrtsoftplus_v41_hcu_fused",
     "moe_sum",
     "topk_ids_postprocess",
     "topk_softmax",

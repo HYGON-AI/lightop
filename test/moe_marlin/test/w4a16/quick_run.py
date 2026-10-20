@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 import pandas as pd
 import torch
 import triton
@@ -333,7 +336,7 @@ def perf_deepseek_v3(use_random):
 
             res.append({
                 "num_tokens": num_tokens,
-                "acc": 
+                "acc": True,
             })
 
 

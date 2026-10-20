@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 #pragma once
 #include <optional>
 #include <torch/extension.h>
@@ -58,5 +61,10 @@ torch::Tensor get_paged_mqa_logits_fp4_metadata(
 void dsv41_candidate_block_table(
     const torch::Tensor& logits, const torch::Tensor& seq_lens, const torch::Tensor& page_table,
     int64_t page_size, int64_t block_size, torch::Tensor& out_phys_blocks, torch::Tensor& out_valid_lens);
+
+/// Logical candidate IDs with -1 padding and a dense bool mask, in one launch.
+void dsv41_select_candidate_blocks(
+    const torch::Tensor& logits, const torch::Tensor& seq_lens, int64_t block_size,
+    torch::Tensor& out_mask, torch::Tensor& out_block_ids);
 
 }  // namespace lightop::deep_gemm
