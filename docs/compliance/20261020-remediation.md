@@ -34,7 +34,7 @@
 
 ### 历史声明与第三方改编
 
-- `bias_swiglu.cu`：逐字恢复初次引入的 SUGON 原版权和完整 Apache 条款；修改历史见第三方清单第4节。保留已有 HYGON 版权但限定为其原创修改；未改变实现。
+- `bias_swiglu.cu`：逐字恢复初次引入的 SUGON 原版权和完整 Apache 条款；修改历史见第三方清单第4节。逐段比对初次引入版本，内核主体未变，仅删除两个过时 include（`ATen/CUDAGeneratorImpl.h`、`THC/THCGeneral.h`）。因此采用 H3，只保留修改说明，移除缺乏实质贡献证据的 HYGON Copyright；未改变实现。
 - 五个 vLLM 实质改编文件采用 H2；两个函数抽取辅助文件采用 H3，仅标注抽取/导入修改，不声明函数主体为 HYGON 原创；`scalar_type.py` 保持逐字副本。
 - AITER 两个 MIT 改编文件保留 AMD 头，在第三方清单第9节登记 HYGON 本地贡献。
 - `hytsf.h` 从 `100755` 改为普通源码 `100644`。
@@ -53,7 +53,9 @@
 | `fused_moe_kernel_gptq_awq.py` | `write_zeros_to_output`、`fused_moe_kernel_gptq_awq` 的 AST 与上游相同；抽取及导入改变采用 H3 |
 | `quant_utils.py` | `get_pack_factor`、`pack_cols`、`quantize_weights`、`awq_pack` 的 AST 与上游相同；抽取及导入改变采用 H3 |
 | `scalar_type.py` | 完整 Blob `05760f3f829988d4640955b6d19ff2549b1d28cd` 相同，保持原文件 |
-| half 2.1.0 | 保留原头和独立 MIT；重新验证 LF 与 CRLF 两组哈希，归档保管事项单列待办 |
+| half 2.1.0 | 已重新取得官方47,043字节归档；归档及成员哈希匹配原登记，LF/CRLF 归一后与本地逐字相同，原件随交付证据保存 |
+
+half 归档的固定下载地址、SHA-256 与成员比对见 `20261020-half-archive.json`；归档原件在本轮交付证据中以 `half-2.1.0.zip` 保存。
 
 AITER 和 vLLM 的所记录许可证 Blob 已重新取得并核对。在本次核验的 AITER `b25a045a...` 和 vLLM `8fcaaf6a...` 根路径未找到独立 `NOTICE`；此检查不扩展为所有组件或所有历史版本不存在 NOTICE 的结论。
 
@@ -69,7 +71,6 @@ AITER 和 vLLM 的所记录许可证 Blob 已重新取得并核对。在本次�
 | `rotary_positional_embedding.cu` | 引入 `41746aae...`，后续融合/优化历史可追溯 | NVIDIA 官方或中间派生仓库的固定来源，或内部授权 |
 | `bias_swiglu.cu` | 初始原声明已恢复，清单错误已纠正 | 来源/授权、权利转移（如有）、版权保留与品牌规则冲突的治理结论 |
 | 七个发布二进制 | 见下方逐个重算的尺寸及哈希 | 各制品生成源码/固定版本、构建链、依赖许可证、权利人、公开分发授权范围 |
-| half 2.1.0 归档保管 | 原登记归档 SHA-256 与当前文本换行对应可核验 | 归档实物或受控存档编号；本轮未以文本比对代替归档保管确认 |
 | 历史 commit `7fc81eb1255f` | 保留原报告身份问题记录 | 发布前处理作者/提交者身份；本轮仅新增 commit，不重写历史 |
 | 正式复扫 | 本轮为工程整改及证据核验 | 在最终固定提交上执行中心化扫描，保存正式报告 |
 

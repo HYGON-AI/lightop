@@ -1,0 +1,21 @@
+{
+  "archive_sha256": "ad1788afe0300fa2b02b0d1df128d857f021f92ccf7c8bddd07812685fa07a25",
+  "archive_bytes": 47043,
+  "source": "https://downloads.sourceforge.net/project/half/half/2.1.0/half-2.1.0.zip",
+  "files": [
+    {
+      "archive_member": "include/half.hpp",
+      "local_path": "third_party/librarygemmbiasf/half.hpp",
+      "archive_member_sha256": "bb8592da2f97bab5e34ae3477358dd4c19aa3f909a3fde0864dfee2aa7c4ac1a",
+      "local_lf_sha256": "7873fc452caf2e6808a49096dd01e22a3af3caa909b169d2c2ba600d1305f004",
+      "equal_after_crlf_normalization": true
+    },
+    {
+      "archive_member": "LICENSE.txt",
+      "local_path": "third_party/librarygemmbiasf/LICENSE-half-2.1.0",
+      "archive_member_sha256": "98df52a2aa12febe52f2a022f07e2a76cc4dc75839f02bb94868e8666396954d",
+      "local_lf_sha256": "d098b70e0b195ce538efa38b73c02fccbae89d169126efea7546892c7a3d5d9d",
+      "equal_after_crlf_normalization": true
+    }
+  ]
+}
