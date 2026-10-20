@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 #ifndef USE_ROCM
 #define USE_ROCM
@@ -1199,6 +1200,100 @@ __global__ void dsv4_dequantize_k_cache_flat_out_kernel(
   }
 }
 
+template <typename index_t, int64_t PageSize, bool VectorIO, typename offset_t>
+__global__ void dsv4_dequantize_k_cache_flat_out_counted_kernel(
+    const uint8_t* __restrict__ cache,
+    const index_t* __restrict__ page_table,
+    uint16_t* __restrict__ out,
+    const int32_t* __restrict__ valid_count,
+    offset_t num_rows,
+    offset_t num_locations,
+    offset_t page_stride_bytes,
+    offset_t output_stride) {
+  const offset_t row = static_cast<offset_t>(blockIdx.x) * kRowsPerBlock +
+      static_cast<offset_t>(threadIdx.x / kThreadsPerRow);
+  if (row >= num_rows) {
+    return;
+  }
+  // The count stays on-device. Do not touch inactive IDs, cache or out.
+  const int64_t active_rows = static_cast<int64_t>(*valid_count);
+  if (static_cast<int64_t>(row) >= active_rows) {
+    return;
+  }
+  const int lane = threadIdx.x % kThreadsPerRow;
+  const int64_t location = static_cast<int64_t>(page_table[row]);
+  const bool valid_location =
+      location >= 0 && location < static_cast<int64_t>(num_locations);
+  // A masked invalid location must never form an out-of-range source pointer.
+  const offset_t safe_location =
+      valid_location ? static_cast<offset_t>(location) : 0;
+  const offset_t page = safe_location / PageSize;
+  const offset_t in_page = safe_location % PageSize;
+  const offset_t data_base = page * page_stride_bytes +
+      in_page * kDsv4TokenDataBytes;
+  const offset_t scale_base = page * page_stride_bytes +
+      PageSize * kDsv4TokenDataBytes + in_page * kDsv4ScaleBytesPerToken;
+  uint16_t* const output_lane =
+      out + row * output_stride + lane * kDsv4ElementsPerLane;
+
+  using Fp8Vec = Dsv4Vector<uint8_t, kDsv4ElementsPerLane>;
+  using PackedBf16Vec = Dsv4Vector<uint32_t, kDsv4ElementsPerLane / 2>;
+  PackedBf16Vec output_vec;
+  if (valid_location && lane < kDsv4NopeLanes) {
+    const offset_t input_base = data_base + lane * kDsv4ElementsPerLane;
+    const float scale = dsv4_ue8m0_to_float(
+        cache[scale_base + lane / (kDsv4TileSize / kDsv4ElementsPerLane)]);
+    if constexpr (VectorIO) {
+      const Fp8Vec input_vec =
+          *reinterpret_cast<const Fp8Vec*>(cache + input_base);
+#pragma unroll
+      for (int i = 0; i < kDsv4ElementsPerLane / 2; ++i) {
+        output_vec.val[i] = dsv4_flat_scaled_pair_to_bf16_rne(
+            input_vec.val[2 * i], input_vec.val[2 * i + 1], scale);
+      }
+    } else {
+#pragma unroll
+      for (int i = 0; i < kDsv4ElementsPerLane / 2; ++i) {
+        output_vec.val[i] = dsv4_flat_scaled_pair_to_bf16_rne(
+            cache[input_base + 2 * i], cache[input_base + 2 * i + 1],
+            scale);
+      }
+    }
+  } else if (valid_location) {
+    const offset_t input_base = data_base + kDsv4NopeDim +
+        (lane - kDsv4NopeLanes) * sizeof(PackedBf16Vec);
+    if constexpr (VectorIO) {
+      output_vec = *reinterpret_cast<const PackedBf16Vec*>(cache + input_base);
+    } else {
+      // Byte loads also support a byte-offset cache view without aligned casts.
+#pragma unroll
+      for (int i = 0; i < kDsv4ElementsPerLane / 2; ++i) {
+        const offset_t byte = input_base + 4 * i;
+        output_vec.val[i] = static_cast<uint32_t>(cache[byte]) |
+            (static_cast<uint32_t>(cache[byte + 1]) << 8) |
+            (static_cast<uint32_t>(cache[byte + 2]) << 16) |
+            (static_cast<uint32_t>(cache[byte + 3]) << 24);
+      }
+    }
+  } else {
+#pragma unroll
+    for (int i = 0; i < kDsv4ElementsPerLane / 2; ++i) {
+      output_vec.val[i] = 0;
+    }
+  }
+
+  if constexpr (VectorIO) {
+    *reinterpret_cast<PackedBf16Vec*>(output_lane) = output_vec;
+  } else {
+    // Preserve the pair helper's raw little-endian BF16 packing; no FP cast.
+#pragma unroll
+    for (int i = 0; i < kDsv4ElementsPerLane / 2; ++i) {
+      output_lane[2 * i] = static_cast<uint16_t>(output_vec.val[i]);
+      output_lane[2 * i + 1] = static_cast<uint16_t>(output_vec.val[i] >> 16);
+    }
+  }
+}
+
 struct Dsv4FlatByteRange {
   uintptr_t begin;
   uintptr_t end;
@@ -1250,7 +1345,8 @@ void check_dsv4_flat_io(
     const torch::Tensor& cache,
     const torch::Tensor& page_table,
     const torch::Tensor& out,
-    int64_t page_size) {
+    int64_t page_size,
+    bool allow_empty_cache = false) {
   const torch::Tensor* tensors[] = {&cache, &page_table, &out};
   for (const auto* tensor : tensors) {
     TORCH_CHECK(
@@ -1287,7 +1383,7 @@ void check_dsv4_flat_io(
           (num_rows <= 1 || out.stride(0) >= kDsv4HeadDim),
       "DSV4 flat dequant: BF16 out[N,1,512] with inner stride 1 and nonoverlapping rows required");
   TORCH_CHECK(
-      num_rows == 0 || cache.size(0) > 0,
+      num_rows == 0 || allow_empty_cache || cache.size(0) > 0,
       "DSV4 flat dequant: nonempty input IDs require at least one cache page");
   dsv4_flat_checked_multiply(cache.size(0), page_size);
   const int64_t cache_elements =
@@ -1390,14 +1486,130 @@ void launch(
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+void check_dsv4_flat_valid_count(
+    const torch::Tensor& cache,
+    const torch::Tensor& out,
+    const torch::Tensor& valid_count) {
+  TORCH_CHECK(
+      valid_count.defined() && valid_count.layout() == c10::Layout::Strided &&
+          valid_count.is_cuda() && valid_count.device() == cache.device() &&
+          valid_count.scalar_type() == at::ScalarType::Int &&
+          valid_count.numel() == 1 && valid_count.is_contiguous(),
+      "DSV4 flat dequant: valid_count must be one contiguous int32 value on the same GPU");
+  TORCH_CHECK(
+      !valid_count.requires_grad() && !valid_count.is_conj() && !valid_count.is_neg(),
+      "DSV4 flat dequant: valid_count must be an inference tensor without unresolved views");
+  const int64_t num_rows = out.size(0);
+  const int64_t output_elements = num_rows == 0 ? 0 : dsv4_flat_checked_add(
+      dsv4_flat_checked_multiply(num_rows - 1, out.stride(0)), kDsv4HeadDim);
+  const auto count_range = dsv4_flat_byte_range(valid_count, 1);
+  const auto output_range = dsv4_flat_byte_range(out, output_elements);
+  TORCH_CHECK(
+      count_range.begin % alignof(int32_t) == 0 &&
+          !dsv4_flat_ranges_overlap(output_range, count_range),
+      "DSV4 flat dequant: valid_count must be aligned and must not overlap out");
+}
+
+void launch_counted(
+    const torch::Tensor& cache_u8,
+    const torch::Tensor& page_table,
+    const torch::Tensor& out,
+    int64_t page_size,
+    const torch::Tensor& valid_count) {
+  check_dsv4_flat_io(cache_u8, page_table, out, page_size, true);
+  check_dsv4_flat_valid_count(cache_u8, out, valid_count);
+  const int64_t num_rows = page_table.size(0);
+  if (num_rows == 0) {
+    return;
+  }
+  const int64_t blocks = num_rows / kRowsPerBlock +
+      (num_rows % kRowsPerBlock != 0);
+  const at::cuda::OptionalCUDAGuard device_guard(cache_u8.device());
+  TORCH_CHECK(
+      blocks <= at::cuda::getDeviceProperties(cache_u8.get_device())->maxGridSize[0],
+      "DSV4 flat dequant: launch grid is too large");
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  const dim3 grid(static_cast<uint32_t>(blocks));
+  const dim3 block(kThreadsPerBlock);
+  // Contiguous cache pages use B bytes even if a singleton page has a dummy stride.
+  const int64_t page_stride_bytes = cache_u8.size(1);
+  const int64_t num_locations =
+      dsv4_flat_checked_multiply(cache_u8.size(0), page_size);
+  const int64_t output_span = dsv4_flat_checked_add(
+      dsv4_flat_checked_multiply(num_rows - 1, out.stride(0)), kDsv4HeadDim);
+  const int64_t uint32_limit = std::numeric_limits<uint32_t>::max();
+  const bool use_32bit_offsets =
+      cache_u8.numel() <= uint32_limit && output_span <= uint32_limit &&
+      num_rows <= uint32_limit && num_locations <= uint32_limit &&
+      page_stride_bytes <= uint32_limit && out.stride(0) <= uint32_limit;
+  const bool vector_io =
+      reinterpret_cast<uintptr_t>(cache_u8.data_ptr()) % 32 == 0 &&
+      page_stride_bytes % 32 == 0 &&
+      reinterpret_cast<uintptr_t>(out.data_ptr()) % 32 == 0 &&
+      (num_rows == 1 || out.stride(0) % (32 / sizeof(uint16_t)) == 0);
+#define DSV4_LAUNCH_FLAT_COUNTED(                                                     \
+    index_t, page_constant, vector_constant, offset_t)                        \
+  dsv4_dequantize_k_cache_flat_out_counted_kernel<                                    \
+      index_t, page_constant, vector_constant, offset_t>                      \
+      <<<grid, block, 0, stream>>>(                                           \
+          cache_u8.data_ptr<uint8_t>(),                                      \
+          page_table.data_ptr<index_t>(),                                    \
+          reinterpret_cast<uint16_t*>(out.data_ptr()),                        \
+          valid_count.data_ptr<int32_t>(),                                   \
+          static_cast<offset_t>(num_rows),                                   \
+          static_cast<offset_t>(num_locations),                              \
+          static_cast<offset_t>(page_stride_bytes),                          \
+          static_cast<offset_t>(out.stride(0)))
+#define DSV4_DISPATCH_FLAT_COUNTED(index_t, vector_constant, offset_t)                \
+  do {                                                                        \
+    if (page_size == 2) {                                                     \
+      DSV4_LAUNCH_FLAT_COUNTED(index_t, 2, vector_constant, offset_t);                \
+    } else if (page_size == 64) {                                             \
+      DSV4_LAUNCH_FLAT_COUNTED(index_t, 64, vector_constant, offset_t);               \
+    } else {                                                                  \
+      DSV4_LAUNCH_FLAT_COUNTED(index_t, 256, vector_constant, offset_t);              \
+    }                                                                         \
+  } while (false)
+  if (page_table.scalar_type() == at::ScalarType::Int) {
+    if (use_32bit_offsets && vector_io) {
+      DSV4_DISPATCH_FLAT_COUNTED(int32_t, true, uint32_t);
+    } else if (use_32bit_offsets) {
+      DSV4_DISPATCH_FLAT_COUNTED(int32_t, false, uint32_t);
+    } else if (vector_io) {
+      DSV4_DISPATCH_FLAT_COUNTED(int32_t, true, int64_t);
+    } else {
+      DSV4_DISPATCH_FLAT_COUNTED(int32_t, false, int64_t);
+    }
+  } else {
+    if (use_32bit_offsets && vector_io) {
+      DSV4_DISPATCH_FLAT_COUNTED(int64_t, true, uint32_t);
+    } else if (use_32bit_offsets) {
+      DSV4_DISPATCH_FLAT_COUNTED(int64_t, false, uint32_t);
+    } else if (vector_io) {
+      DSV4_DISPATCH_FLAT_COUNTED(int64_t, true, int64_t);
+    } else {
+      DSV4_DISPATCH_FLAT_COUNTED(int64_t, false, int64_t);
+    }
+  }
+#undef DSV4_DISPATCH_FLAT_COUNTED
+#undef DSV4_LAUNCH_FLAT_COUNTED
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 }  // namespace dsv4_dequant_detail
 
 void dsv4_dequantize_k_cache_paged_out(
     const torch::Tensor& cache_u8,
     const torch::Tensor& page_table,
     const torch::Tensor& out,
-    int64_t page_size) {
-  dsv4_dequant_detail::launch(cache_u8, page_table, out, page_size);
+    int64_t page_size,
+    std::optional<torch::Tensor> valid_count) {
+  if (valid_count.has_value()) {
+    dsv4_dequant_detail::launch_counted(
+        cache_u8, page_table, out, page_size, *valid_count);
+  } else {
+    dsv4_dequant_detail::launch(cache_u8, page_table, out, page_size);
+  }
 }
 
 }  // namespace native

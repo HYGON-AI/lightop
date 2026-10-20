@@ -682,12 +682,24 @@ def mqa_logits(
     Q: torch.Tensor, 
     K: torch.Tensor, 
     Weights: torch.Tensor, 
-    ks: torch.Tensor, 
-    ke: torch.Tensor, 
+    ks: torch.Tensor,
+    ke: torch.Tensor,
     kv_scale: Optional[torch.Tensor] = None,
     clean_logit: bool = True,
     D_out: Optional[torch.Tensor] = None
 ) -> torch.Tensor:
+    """Compute MQA logits using the selected native backend.
+
+    LIGHTOP_MQA_LOGITS_BETA=1 selects the new backend by Q/K dtype:
+    gfx936/gfx938 INT8 or gfx938 FP8. Otherwise the original backend is used.
+    Both new backends require INT32 ks/ke with at least M elements.
+    INT8 requires FP32 kv_scale; FP8 accepts omitted scaling. Q/K use packed
+    D=128 rows. Weights and D_out may have padding between contiguous rows.
+    D_out may cover a larger matrix; the returned view is [M,N]. Four-byte
+    pointer alignment is required. With clean_logit=False, only in-window
+    values are defined and completely skipped tiles preserve D_out.
+    Weights must already include any required Q quantization scale.
+    """
     q_seq_len, num_heads, head_dim = Q.shape
     kv_seq_len = K.shape[0]
     
