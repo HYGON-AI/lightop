@@ -575,6 +575,12 @@ setup(
     version=get_version(ROCM_HOME),
     description='Torch Fast Operator Foundation',
     keywords='CV, NLP',
+    license_files=[
+        'LICENSE',
+        'THIRD_PARTY_NOTICES.md',
+        'third_party/licenses/LICENSE-aiter',
+        'third_party/librarygemmbiasf/LICENSE-half-2.1.0',
+    ],
     packages=find_packages(),
     include_package_data=False,
     package_data={

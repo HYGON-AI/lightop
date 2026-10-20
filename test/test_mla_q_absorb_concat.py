@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Q-absorb + Q RoPE + concat: exact rotary rounding and dynamic replay."""
 import pytest
 import torch

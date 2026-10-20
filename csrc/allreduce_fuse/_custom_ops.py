@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# Modified by Hygon Information Technology Co., Ltd., 2026.
+# LightOp operator registration, paged attention and quantization dispatch.
+# HYGON copyright applies only to its original modifications.
 
 import contextlib
 from typing import TYPE_CHECKING, Optional, Union

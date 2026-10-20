@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // Shared gfx936/gfx938 sparse-MQA source tree.
 // Both implementations are compiled into this translation unit. Architecture
 // selection is a host property lookup; it adds no tensor copy or GPU launch.

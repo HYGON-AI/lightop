@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // DSA Indexer Q-only preparation: BF16 RoPE, 128-point Hadamard,
 // BF16 normalization, per-head INT8 quantization and FP32 gate scaling.
 // One wave owns one Q head. K and its cache are never read or written.

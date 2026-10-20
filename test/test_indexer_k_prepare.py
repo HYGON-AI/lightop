@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Indexer K preparation: BF16 stages, page-planar layout and graph replay."""
 import pytest
 import torch
