@@ -2062,7 +2062,8 @@ void fused_kpool_topk_transform_kernel(
     int64_t page_table_rows,
     int64_t page_table_cols,
     int score_cols,
-    int rows) {
+    int rows,
+    int vgpr_max_len) {
   static_assert(kKPoolSize == 4 || kKPoolSize == 16);
   static_assert(!kUseRadixRefine || kKPoolSize == 4);
   constexpr int kKPoolGroupTopK = kKPoolTokenTopK / kKPoolSize;
@@ -2100,7 +2101,7 @@ void fused_kpool_topk_transform_kernel(
         [length] __device__(int i) { return i < length ? i : -1; });
   } else {
     if constexpr (kUseRadixRefine) {
-      if (length <= kKPool4VgprMaxLength) {
+      if (length <= vgpr_max_len) {
         select_kpool_topk_vgpr<kKPoolGroupTopK>(
             logits,
             selected_groups,
@@ -2597,6 +2598,23 @@ void topk_transform_1024(
       scores, seq_lens, page_tables, out_page_indices, page_size, out_raw_indices_opt, "topk_transform_1024");
 }
 
+// LIGHTOP_KPOOL_VGPR_MAX caps how long a row may be before the KPool kernel
+// drops the VGPR path and uses the generic topKPerRowJob cascade.
+//
+// The two paths trade off differently: VGPR is one flat register pass (~76-90us
+// whatever the row length), while the generic cascade is 1.8-2.1x faster on
+// clean short rows (39-53us at 4k-21k) but needs a third pass when the
+// threshold bin is a tie plateau, which costs 8-35% there.  The default keeps
+// the historical split so nothing regresses; set 0 to send every row through
+// the generic path.
+int get_kpool_vgpr_max_len() {
+  static const int value = [] {
+    const char* v = std::getenv("LIGHTOP_KPOOL_VGPR_MAX");
+    return (v != nullptr && v[0] != '\0') ? std::atoi(v) : kKPool4VgprMaxLength;
+  }();
+  return value;
+}
+
 void fast_kpool_topk_transform_interface(
     const at::Tensor& score,
     const at::Tensor& lengths,
@@ -2727,7 +2745,7 @@ void fast_kpool_topk_transform_interface(
             page_table, topk_indices_offset, page_table_row_index,
             output.stride(0), page_table_stride, page_table_rows,
             page_table_cols, static_cast<int>(score.size(1)),
-            static_cast<int>(rows));
+            static_cast<int>(rows), get_kpool_vgpr_max_len());
   } else {
     constexpr size_t dynamic_smem =
         (kKPoolTokenTopK / 16) * sizeof(int32_t);
@@ -2737,7 +2755,7 @@ void fast_kpool_topk_transform_interface(
             page_table, topk_indices_offset, page_table_row_index,
             output.stride(0), page_table_stride, page_table_rows,
             page_table_cols, static_cast<int>(score.size(1)),
-            static_cast<int>(rows));
+            static_cast<int>(rows), 0);
   }
 
   const auto result = cudaGetLastError();
