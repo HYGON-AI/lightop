@@ -497,7 +497,8 @@ __device__ bool processHistogramStep(
     const int* indices, const float* logits, int rowEnd, uint32_t& logitPattern,
     int& thresholdBinIdx, SmemOutputType& smemOutput, int* smemThresholdBinIdx,
     int* smemFinalDstIdx, int* smemFinalBinSize, int* smemFoundTopKValues,
-    SmemFinalType& smemFinal, int stride1, int rowStart, int topK) {
+    SmemFinalType& smemFinal, int stride1, int rowStart, int topK,
+    unsigned* smemBinKeyMin, unsigned* smemBinKeyMax) {  // ZP_TIE_EARLY_EXIT
   
 #pragma unroll
   for (int idx = threadIdx.x; idx < kNumBins; idx += kNumThreadsPerBlock) {
@@ -569,9 +570,18 @@ __device__ bool processHistogramStep(
 
   thresholdBinIdx = smemThresholdBinIdx[0];
 
+  // Only rows whose threshold bin already overflowed kNumFinalItems can take
+  // the tie shortcut; skipping the key-range work keeps the common case free.
+  const bool track_keys = smemFinalBinSize[0] > kNumFinalItems;
+  uint32_t local_bin_min = 0xffffffffu, local_bin_max = 0u;
   auto processBins = [&](float logit, int idx) {
     if (isPartialMatch<patternShift>(logit, logitPattern)) {
       uint32_t binIdx = extractBinIdx<step>(logit);
+      if (track_keys && binIdx == thresholdBinIdx) {
+        const uint32_t tie_key = convert_to_uint32(logit);
+        local_bin_min = tie_key < local_bin_min ? tie_key : local_bin_min;
+        local_bin_max = tie_key > local_bin_max ? tie_key : local_bin_max;
+      }
       if (binIdx < thresholdBinIdx) {
         int dstIdx = atomicAdd(&smemFoundTopKValues[0], 1);
         if constexpr (mergeBlocks) {
@@ -619,6 +629,19 @@ __device__ bool processHistogramStep(
     for (int idx = rowStart + threadIdx.x; idx < rowEnd; idx += kNumThreadsPerBlock) {
       processBins(logits[idx * stride1], idx);
     }
+  }
+  if (track_keys) {
+#pragma unroll
+  for (int off = WARP_SIZE / 2; off > 0; off >>= 1) {
+    const uint32_t other_min = __shfl_down(local_bin_min, off);
+    const uint32_t other_max = __shfl_down(local_bin_max, off);
+    local_bin_min = other_min < local_bin_min ? other_min : local_bin_min;
+    local_bin_max = other_max > local_bin_max ? other_max : local_bin_max;
+  }
+  if ((threadIdx.x % WARP_SIZE) == 0) {
+    if (local_bin_min != 0xffffffffu) atomicMin(smemBinKeyMin, local_bin_min);
+    if (local_bin_max != 0u) atomicMax(smemBinKeyMax, local_bin_max);
+  }
   }
   __syncthreads();
 
@@ -673,6 +696,9 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
   // shared memory and publish it from lane 0 so every lane takes exactly the
   // same path around the barriers in processHistogramStep().
   __shared__ int smemContinueToNextStep[1];
+  __shared__ unsigned smemBinKeyMin[1];
+  __shared__ unsigned smemBinKeyMax[1];
+  __shared__ int smemTieDone[1];
 
   int rowLen = rowEnd - rowStart;
 
@@ -722,6 +748,9 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
   if (threadIdx.x == 0) {
     smemFinalDstIdx[0] = 0;
     smemFoundTopKValues[0] = 0;
+    smemTieDone[0] = 0;
+    smemBinKeyMin[0] = 0xffffffffu;
+    smemBinKeyMax[0] = 0u;
   }
   __syncthreads();
   
@@ -729,18 +758,22 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
   uint32_t logitPattern = 0;
 
   processHistogramStep<0, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
-      indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK);
+      indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK, smemBinKeyMin, smemBinKeyMax);
 
   // Do not branch on the per-lane return value. Although the pass ends with
   // a barrier, relying on every lane observing the same shared scalar has
   // caused divergent replay paths on HIP. A single lane publishes the
   // decision, followed by a block barrier, making the control flow explicit.
   if (threadIdx.x == 0) {
-    smemContinueToNextStep[0] =
-        smemFinalBinSize[0] > kNumFinalItems ? 1 : 0;
+    const bool over = smemFinalBinSize[0] > kNumFinalItems;
+    const bool tie = over && stride1 == 1 && smemBinKeyMin[0] != 0xffffffffu &&
+                     smemBinKeyMin[0] == smemBinKeyMax[0];
+    smemTieDone[0] = tie ? 1 : 0;
+    smemContinueToNextStep[0] = (over && !tie) ? 1 : 0;
   }
   __syncthreads();
   bool continueToNextStep = smemContinueToNextStep[0] != 0;
+  const bool tieDone = smemTieDone[0] != 0;
 
   if (continueToNextStep) {
     // Step 0 uses FP16 bins. Step 1 is a full FP32 rescan, so discard the
@@ -752,7 +785,7 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
     __syncthreads();
 
     processHistogramStep<1, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
-        indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK);
+        indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK, smemBinKeyMin, smemBinKeyMax);
   }
   if (threadIdx.x == 0) {
     smemContinueToNextStep[0] =
@@ -763,7 +796,7 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
 
   if (continueToNextStep) {
     processHistogramStep<2, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
-        indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK);
+        indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK, smemBinKeyMin, smemBinKeyMax);
   }
   if (threadIdx.x == 0) {
     smemContinueToNextStep[0] =
@@ -774,10 +807,21 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
 
   if (continueToNextStep) {
     processHistogramStep<3, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
-        indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK);
+        indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK, smemBinKeyMin, smemBinKeyMax);
   }
 
-  if (!continueToNextStep) {
+  if (tieDone) {
+    const unsigned tieKey = smemBinKeyMin[0];
+    for (int idx = threadIdx.x; idx < rowLen; idx += kNumThreadsPerBlock) {
+      if (convert_to_uint32(logits[rowStart + idx]) == tieKey) {
+        const int dst = atomicAdd(&smemFoundTopKValues[0], 1);
+        if (dst < topK) smemOutput[dst] = idx;
+      }
+    }
+    __syncthreads();
+  }
+
+  if (!continueToNextStep && !tieDone) {
     if constexpr (useRadixSort) {
       float finalLogits[kNumFinalItemsPerThread];
       int finalIndices[kNumFinalItemsPerThread];
