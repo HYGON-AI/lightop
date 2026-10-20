@@ -17,6 +17,13 @@
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace at {  namespace native {
 // Q-only DSA Indexer preparation; the K/cache path remains independent.
+void indexer_k_norm_rope_hadamard_store(
+    const torch::Tensor &key, const torch::Tensor &weight,
+    const c10::optional<torch::Tensor> &bias, const torch::Tensor &positions,
+    const torch::Tensor &cos_sin, const torch::Tensor &locations,
+    torch::Tensor remote_cache, torch::Tensor owner_cache, bool neox,
+    double norm_epsilon, double hadamard_scale, double quant_epsilon);
+
 std::tuple<torch::Tensor, torch::Tensor> indexer_q_rope_hadamard_quant(
     const torch::Tensor& query, const torch::Tensor& positions,
     const torch::Tensor& cos_sin, const torch::Tensor& raw_gate, bool neox,
@@ -861,6 +868,8 @@ void mimo_v2_split_rope_vscale_kv_store(
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("indexer_k_norm_rope_hadamard_store", &at::native::indexer_k_norm_rope_hadamard_store,
+          "Indexer K LayerNorm, BF16 RoPE, Hadamard and mirrored INT8 cache store");
     m.def("indexer_q_rope_hadamard_quant", &at::native::indexer_q_rope_hadamard_quant,
           "Indexer Q RoPE/Hadamard/INT8 preparation with FP32 head gates");
     m.def("mla_q_absorb_rope_concat", &at::native::mla_q_absorb_rope_concat,
