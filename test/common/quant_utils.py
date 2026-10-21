@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Modified by Hygon Information Technology Co., Ltd., 2026.
+# Extracted four unchanged helper definitions; adjusted imports and module documentation.
 """Local copy of a subset of vLLM quant_utils helpers for lightop tests."""
 
 from typing import Optional

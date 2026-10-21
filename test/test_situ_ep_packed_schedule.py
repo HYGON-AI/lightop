@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """Standalone installed-LightOp correctness coverage for K3 early EP steps.
 
 Run in fresh processes with (PACKED, TUNED) = (0, 0), (1, 0), (1, 1).

@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+
 """gfx928/gfx936/gfx938 native mHC: correctness, graph/stream contracts and complete-path timings.
 
 python test/ci_tests/test_hc_mix_sinkhorn.py --quick --output /tmp/hc-quick

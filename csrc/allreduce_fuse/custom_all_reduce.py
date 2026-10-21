@@ -1,5 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+# Modified by Hygon Information Technology Co., Ltd., 2026.
+# Fused normalization/quantization and HYGON multi-device adaptation.
+# HYGON copyright applies only to its original modifications.
 
 from contextlib import contextmanager
 from typing import Optional, Union
