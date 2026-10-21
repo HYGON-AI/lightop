@@ -22,7 +22,7 @@ env:
 jobs:
   compile:
     concurrency:
-      group: release-nightly-hcu-${{ github.ref }}-dtk${{ matrix.dtk_version }}-${{ matrix.torch_version }}-py${{ matrix.py_version }}
+      group: release-nightly-hcu-${{ github.ref }}-dtk${{ matrix.dtk_version }}-torch${{ matrix.torch_version }}-py${{ matrix.py_version }}
       cancel-in-progress: true
     runs-on: [self-hosted]
     timeout-minutes: 180
