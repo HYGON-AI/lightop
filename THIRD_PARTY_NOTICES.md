@@ -7,7 +7,7 @@ Lightop 的根许可证是 Apache License 2.0，完整文本见 [LICENSE](LICENS
 - “本地引入提交”是当前仓库 Git 历史中首次引入该路径的提交，用于固定本仓库中的证据；它不是第三方项目的上游 Commit。
 - 本次已基于工作区内的 AITER、vLLM 和 Transformer Engine Git 克隆补录上游路径、基线选择器和 40 位 Commit。Transformer Engine 的固定参考基线与实际导入版本尚需区分。表中的“上游 Commit”是第三方仓库的提交；“本地引入提交”仍只表示 Lightop 自身历史中的引入点，二者不能互换。
 - 文件若为抽取或改编，只登记实际核对到的上游源文件和基线 Commit，并明确“改编/抽取”；这不表示 Lightop 文件与上游 Blob 逐字一致。没有在本地 vLLM 历史中找到匹配文件的路径继续保留为待补证，不凭项目名称推断来源。
-- 已确认来源文件保留其原始版权和 SPDX/许可证声明；`bias_swiglu.cu` 曾删除原声明，本轮恢复记录见第4节。对 HYGON 的适配或修改以 Git 历史为准；未确认来源的内部组件不机械添加 HYGON Copyright 或新的 SPDX 声明。
+- 已确认来源文件保留其原始版权和 SPDX/许可证声明。对 HYGON 的适配或修改以 Git 历史为准；未确认来源的内部组件不机械添加 HYGON Copyright 或新的 SPDX 声明。
 
 当前记录分为“已确认”和“待补证”两种状态。待补证项已经登记了本地路径、首次引入 Commit、当前文件哈希或二进制 SHA-256；补齐官方上游 Commit 或内部授权材料后，必须把状态改为“已确认”，再进行正式审计复扫。
 
@@ -212,21 +212,7 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 
 此前 cuda-samples 核验使用的三个 Lightop 文件 Git Blob 分别为 `f49ce0d9173bbd7d73d94699bbba9ed96aea0453`、`64c1eccda927781931b9dcbf41abd3a1864fbdc5` 和 `8a003fa6cf7c84d4d550f106f97715fa238c10f3`，其中第一个是包装层恢复来源标注之前的历史版本；在 `cuda-samples` 全部可达对象中均没有对应 Blob。该核验排除了 cuda-samples 的完整文件来源关系。`common.h` 和包装层的 Transformer Engine 证据见上方条目；`rotary_positional_embedding.cu` 仍需其他 NVIDIA 官方仓库或中间派生仓库的逐文件来源和固定 Commit，或内部授权记录。
 
-## 4. SUGON CORPORATION 历史版权声明文件（来源授权待补证）
-
-| 项目 | 内容 |
-| --- | --- |
-| 历史原声明 | `Copyright (c) 2023, SUGON CORPORATION. All rights reserved.`；不是 HYGON CORPORATION |
-| 许可证 | 初次引入文件包含完整 Apache-2.0 声明，本轮已逐字恢复 |
-| 本地路径 | `csrc/bias_swiglu.cu` |
-| 本地引入提交 | `2d416883f006555c1c1d0f8a054824ef943ec1b0` 的 `lightop/csrc/bias_swiglu.cu` |
-| 声明变更证据 | `cfc95f717cb6ba71679890cfb375e554bda2f899` 替换原权利人；`c42aabb90b33d6208876a1f38390d0fc1ac5312c` 恢复；`652fa227e2f5399169d4b371e7ad615af7fe13e1` 删除原头 |
-| 本轮处理 | 恢复历史原版权及许可全文；逐段比对确认相对初次引入仅删除两个过时 include，属于非实质修改，按 H3 保留修改说明并移除缺乏实质贡献依据的 HYGON Copyright；未改变算子实现 |
-| 待补材料 | 实际来源或内部授权、权利转移（如有）的有效证明，以及原声明保留与品牌规则冲突的法务/治理结论 |
-
-历史版权声明证明本仓库需要保留的原始声明，不单独证明完整权属链或公开分发批准。本轮不依据品牌规则删改原版权，不扩大 HYGON 的权利范围。
-
-## 5. half 精度库（公开来源已核验）
+## 4. half 精度库（公开来源已核验）
 
 | 项目 | 内容 |
 | --- | --- |
@@ -246,7 +232,7 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 | 历史 CRLF 工作树 `half.hpp` SHA-256 | `bb8592da2f97bab5e34ae3477358dd4c19aa3f909a3fde0864dfee2aa7c4ac1a`；与归档内 `include/half.hpp` 相同 |
 | Lightop 处理 | 保留完整 MIT 许可文本、版权声明和版本注释；未添加 HYGON 文件头。本次已下载归档并复算 SHA-256；正式发布证据应保留归档或受控存档记录。 |
 
-## 6. `librarygemmbiasf` HYGON 原创源码
+## 5. `librarygemmbiasf` HYGON 原创源码
 
 以下五个源码文件已确认为 HYGON 原创实现，统一采用仓库根目录 Apache-2.0 许可，并在文件头标注 Hygon Information Technology Co., Ltd. 版权和 SPDX。它们不属于 SourceForge `half` 2.1.0 归档；`half.hpp` 仍按其原始 MIT 许可和版权声明单独登记。
 
@@ -335,7 +321,7 @@ approver: <组件负责人和法务审批人>
 approval_date: <YYYY-MM-DD>
 ```
 
-## 7. 当前补证状态
+## 6. 当前补证状态
 
 | 组件 | 已确认 | 尚缺材料 | 处理结论 |
 | --- | --- | --- | --- |
@@ -344,17 +330,16 @@ approval_date: <YYYY-MM-DD>
 | Transformer Engine | NVIDIA Transformer Engine 仓库、`main`、40 位基线 `077e26c319d0fffbff75e56124b26b8b04aac0e5`、六个上游文件 Blob、LICENSE Blob 和 SHA-256、`common.h` 逐段映射 | 组件负责人确认实际导入基线；`TORCH_ERROR`、`TORCH_CHECK_CUDA`、`TRANSFORMER_ENGINE_TYPE_SWITCH_8BIT`、`DType::kInt8`、`Vec::operator=`、`__HOST_DEVICE__` 及 ATen 适配的来源/授权；源码文件头仍需按映射补充 `Adapted from`、SPDX 和 HYGON 修改声明 | 公开来源部分固定；未闭环片段和文件头整改完成前，`common.h` 仍保留来源审查项 |
 | Transformer Engine 接口适配 | `csrc/blockwise_scaling/block_scaled_cast_transpose.cu`；用户确认来源项目；`main` 可达参考 Commit `077e26c319d0fffbff75e56124b26b8b04aac0e5`、两个参考文件及 Blob；NVIDIA 版权、Apache-2.0 SPDX 和 HYGON 修改说明 | 实际导入 Commit 与接口改编记录；本地基线无同名包装函数或完整文件匹配 | 已撤销原创归类并完成来源文件头标注；实际导入来源审查仍待闭环 |
 | 其他 NVIDIA 文件 | NVIDIA 版权、Apache-2.0、本地路径和本地引入提交 | 公开仓库、逐文件路径和固定 Commit，或内部再分发授权 | 暂不关闭来源阻断 |
-| SUGON 历史声明文件 | 初次引入的原版权、Apache-2.0、本地引入提交；已恢复源码原声明 | 实际来源或内部授权及品牌冲突治理结论 | 声明与清单矛盾已修复；授权及治理仍待闭环 |
 | `librarygemmbiasf` | 五个源码文件的 HYGON 原创归类、文件头和根目录 Apache-2.0 | Tensile 制品、动态库和测试可执行文件的生成来源及公开分发授权 | 源码已确认；制品授权仍需补证 |
 | half 2.1.0 | SourceForge 发布目录、`half-2.1.0.zip` 文件名、发布日期/大小、MIT、完整原文许可、页面显示 SHA-256、本地复算值和逐字文件比对 | 将下载归档或受控存档编号随发布证据保存 | `half.hpp` 公开来源已确认 |
 
-## 8. 发布前核对
+## 7. 发布前核对
 
 1. 为所有“来源待补证”文件补充可审计的上游 URL、固定版本或 Commit、版权和许可证，并将对应许可证文本或 NOTICE 纳入发布包。
-2. 保留本文件已登记的 AITER/vLLM/Transformer Engine 上游 Commit；为 Transformer Engine `common.h` 的未闭环片段和文件头、`block_scaled_cast_transpose.cu` 的实际导入/改编记录、`w8a8_get_cache_json.py`、DeepSeek V4 独立来源、其他 NVIDIA 文件、SUGON 历史声明文件和 `librarygemmbiasf` 二进制制品补充可复现的公开 Commit 或内部授权记录。本地引入提交只能作为本仓库的追溯证据。
+2. 保留本文件已登记的 AITER/vLLM/Transformer Engine 上游 Commit；为 Transformer Engine `common.h` 的未闭环片段和文件头、`block_scaled_cast_transpose.cu` 的实际导入/改编记录、`w8a8_get_cache_json.py`、DeepSeek V4 独立来源、其他 NVIDIA 文件和 `librarygemmbiasf` 二进制制品补充可复现的公开 Commit 或内部授权记录。本地引入提交只能作为本仓库的追溯证据。
 3. 保留第三方原始声明；HYGON 的原创或实质修改文件使用根目录 Apache-2.0，并按文件头规则补充 HYGON Copyright 和 SPDX。
 
-## 9. 最新 master 新增文件（2026-10-12）
+## 8. 最新 master 新增文件（2026-10-12）
 
 最新仓库 `master`（固定 Commit `5762c4c32535f4fb9532009b6744fc4c8d6c8504`）相对旧仓库合规基线 `6b8553cd227776f0f6c8886a036cf5eb7665ea20` 新增 40 个路径。新增文件按当前确认分为 HYGON 原创和作者/授权复核两类；本节列出的 9 个文件已按用户确认补充 HYGON Apache-2.0 原创文件头。
 
@@ -387,6 +372,6 @@ approval_date: <YYYY-MM-DD>
 
 vLLM 的五个实质改编文件补充 HYGON 修改声明及仅覆盖原创修改的版权；两个测试辅助文件的函数定义与固定上游 AST 一致，但抽取、导入及模块说明有变化，仅补非实质修改声明；`scalar_type.py` 的完整 Blob 一致，保持原文件。各固定来源不因本轮声明修改而变更。
 
-half 2.1.0 的当前 Git 文件为 LF 换行：`half.hpp` SHA-256 为 `7873fc452caf2e6808a49096dd01e22a3af3caa909b169d2c2ba600d1305f004`，独立许可证为 `d098b70e0b195ce538efa38b73c02fccbae89d169126efea7546892c7a3d5d9d`。转换为 CRLF 后分别匹配第5节历史归档哈希；换行差异不构成新来源。本轮已重新取得并保存官方归档 `half-2.1.0.zip`（47,043 字节，SHA-256 `ad1788afe0300fa2b02b0d1df128d857f021f92ccf7c8bddd07812685fa07a25`），逐字核对归档成员，排除换行差异后与当前文件相同。归档原件及核验记录随本轮外部交付证据保存。
+half 2.1.0 的当前 Git 文件为 LF 换行：`half.hpp` SHA-256 为 `7873fc452caf2e6808a49096dd01e22a3af3caa909b169d2c2ba600d1305f004`，独立许可证为 `d098b70e0b195ce538efa38b73c02fccbae89d169126efea7546892c7a3d5d9d`。转换为 CRLF 后分别匹配第4节历史归档哈希；换行差异不构成新来源。本轮已重新取得并保存官方归档 `half-2.1.0.zip`（47,043 字节，SHA-256 `ad1788afe0300fa2b02b0d1df128d857f021f92ccf7c8bddd07812685fa07a25`），逐字核对归档成员，排除换行差异后与当前文件相同。归档原件及核验记录随本轮外部交付证据保存。
 
-第6节七个二进制的尺寸和 SHA-256 已在本轮逐个重算且与原登记一致；这只固定制品身份，不代表许可证或公开再分发权已获确认。两个打包入口在 wheel 许可证元数据及包内 `lightop/licenses/` 显式携带根许可证、第三方清单、AITER MIT 原文和 half 许可证（同时覆盖 legacy egg）；随包保存声明不替代待补授权。
+第5节七个二进制的尺寸和 SHA-256 已在本轮逐个重算且与原登记一致；这只固定制品身份，不代表许可证或公开再分发权已获确认。两个打包入口在 wheel 许可证元数据及包内 `lightop/licenses/` 显式携带根许可证、第三方清单、AITER MIT 原文和 half 许可证（同时覆盖 legacy egg）；随包保存声明不替代待补授权。

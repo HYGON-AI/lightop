@@ -1,5 +1,4 @@
 /* coding=utf-8
- * Copyright (c) 2023, SUGON CORPORATION.  All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +15,7 @@
 
 // SPDX-License-Identifier: Apache-2.0
 // Modified by Hygon Information Technology Co., Ltd., 2026.
-// Removed obsolete includes and restored the original license notice; no kernel changes.
+// Removed obsolete includes; no kernel changes.
 
 #include <limits>
 #include <stdint.h>
