@@ -1,7 +1,0 @@
-Existing GEMM category API checks
-=================================
-24 passed in 1.95s
-
-23 direct symbol identity checks: passed
-lightop.gemm callable after importing lightop.gemm_ops: passed
-Python bytecode compilation: passed

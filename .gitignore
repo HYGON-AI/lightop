@@ -39,9 +39,6 @@ run.sh
 **/*.txt
 test/**/*.json
 *.csv
-test_results/
-!tools/operator_tests/
-!tools/operator_tests/*.txt
 
 # PyTorch hipify outputs generated while building migrated LMSlimQuant sources.
 csrc/lmslimquant_native/**/*.hip
@@ -49,6 +46,3 @@ csrc/lmslimquant_native/**/*_hip.cpp
 csrc/lmslimquant_native/**/*_hip.h
 csrc/lmslimquant_native/**/*_hip.hpp
 csrc/lmslimquant_native/**/*_hip.cuh
-
-# Local test and benchmark output.
-/test-results/
