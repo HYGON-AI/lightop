@@ -41,3 +41,7 @@ using MqaFp8Params = mqa_beta::MqaParams;
 namespace lightop::mqa_int8 {
 using MqaInt8Params = mqa_beta::MqaParams;
 } // namespace lightop::mqa_int8
+
+namespace lightop::mqa_bf16 {
+using MqaBf16Params = mqa_beta::MqaParams;
+} // namespace lightop::mqa_bf16

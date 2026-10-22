@@ -23,3 +23,12 @@ torch::Tensor mqa_logits_int8(
     const torch::optional<torch::Tensor> &kv_scale, bool clean_logits,
     const torch::optional<torch::Tensor> &out);
 } // namespace lightop::mqa_int8
+
+namespace lightop::mqa_bf16 {
+// Internal Tensor adapter; unsupported architectures keep the original backend.
+torch::optional<torch::Tensor> mqa_logits_bf16(
+    const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &weights,
+    const torch::Tensor &ks, const torch::Tensor &ke, int m, int n, int h, int d,
+    const torch::optional<torch::Tensor> &kv_scale, bool clean_logits,
+    const torch::optional<torch::Tensor> &out);
+} // namespace lightop::mqa_bf16
