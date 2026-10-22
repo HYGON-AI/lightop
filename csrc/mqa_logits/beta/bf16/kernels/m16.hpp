@@ -272,7 +272,6 @@ __global__ __launch_bounds__(512) void split_head(MqaBf16Params p) {
         __builtin_amdgcn_fence(__ATOMIC_ACQ_REL, "workgroup");
         __builtin_hcu_sched_barrier(0);
     }
-    asm volatile("s_waitcnt vmcnt(0)" ::: "memory");
     return;
 }
 #endif
