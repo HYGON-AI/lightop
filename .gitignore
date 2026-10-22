@@ -49,3 +49,6 @@ csrc/lmslimquant_native/**/*_hip.cpp
 csrc/lmslimquant_native/**/*_hip.h
 csrc/lmslimquant_native/**/*_hip.hpp
 csrc/lmslimquant_native/**/*_hip.cuh
+
+# Local test and benchmark output.
+/test-results/
