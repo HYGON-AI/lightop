@@ -1,163 +1,67 @@
-# Lightop
+# LightOp
 
-# 简介
-Lightop是一个自研的融合算子库，提供了大量的自研算子，用来加速模型的推理和训练。
+LightOp 是面向海光 HCU 的高性能算子库，为 PyTorch 模型的推理和训练提供融合算子与低精度计算能力，覆盖 GEMM、MoE、Attention、归一化、量化等常用计算路径。
 
-这些算子通常从torch里面获取，然后进行性能优化，常见的norm类算子比torch native有2-5倍的性能提升。
+## 主要算子
+
+| 类别 | 主要能力 | 接口入口 |
+| --- | --- | --- |
+| GEMM | 通用矩阵乘、Grouped GEMM、W8A8 / W4A8 / W4A16 量化计算 | [gemm_ops](python/lightop/gemm_ops/) |
+| MoE | 专家路由、融合专家计算、数据重排与专家并行辅助算子 | [moe](python/lightop/moe/) |
+| Attention / KV Cache | MQA Logits、分页与稀疏索引、RoPE、KV Cache 读写 | [attention](python/lightop/attention/)、[kvcache](python/lightop/kvcache/) |
+| 归一化 | RMSNorm、LayerNorm、GroupNorm 及残差融合 | [norm](python/lightop/norm/) |
+| 激活与量化 | SiLU / SwiGLU 融合、INT8 / FP8 量化与反量化 | [activation](python/lightop/activation/)、[quant](python/lightop/quant/) |
+| 采样 | Top-K / Top-P 等采样辅助算子 | [sampling](python/lightop/sampling/) |
+| 视觉与损失函数 | Grid Sample、上采样、CTC / RNNT Loss | [vision](python/lightop/vision/)、[loss](python/lightop/loss/) |
+
+各算子支持的数据类型、输入形状和硬件架构以接口及对应测试为准。
+
+## 安装
+
+请在可访问海光 HCU 的 Linux 环境中编译，预先安装 DTK 及配套的 HIP 版 PyTorch、`setuptools`、`wheel` 和 `ninja`。构建环境可参考 [CI 配置](.github/workflows/pr-test.yml)。
+
+在仓库根目录执行：
+
+```bash
+source /opt/dtk/env.sh
+python3 setup.py install
+```
+
+如需生成 wheel 安装包：
+
+```bash
+python3 setup.py bdist_wheel
+```
+
+产物位于 `dist/`。可通过 `MAX_JOBS` 控制编译并行度，例如 `MAX_JOBS=32 python3 setup.py install`。
+
+## 使用示例
+
+通过归一化分类 `lightop.norm` 调用 RMSNorm；HIP 版 PyTorch 同样使用 `device="cuda"` 访问 HCU：
+
+```python
+import torch
+import lightop.norm
+
+x = torch.randn(4, 4096, device="cuda", dtype=torch.bfloat16)
+weight = torch.ones(4096, device=x.device, dtype=x.dtype)
+y = lightop.norm.rms_norm(x, weight, 1e-6, out=torch.empty_like(x))
+print(y.shape)  # torch.Size([4, 4096])
+```
+
+更多调用方式见 [test/](test/)。
+
+## 测试
+
+安装好 LightOp 及 [CI 所列测试依赖](.github/workflows/pr-test.yml) 后，在仓库根目录执行：
+
+```bash
+cd test/ci_tests
+python3 -m pytest -v -p no:cacheprovider --tb=short
+```
+
+性能结果受硬件、数据类型和输入形状影响，请以对应环境的实测结果为准。
 
 ## 许可证
 
-Lightop 使用 Apache License 2.0。完整许可证文本见根目录的 [LICENSE](LICENSE)。
-
-本仓库还包含从第三方项目复制或适配的源码。第三方组件仍受其各自的版权和许可证约束，来源、版本证据、许可证和本仓库中的路径见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
-# 安装
-
-环境依赖：
-pytorch1.10 \ pytorch1.13 \ pytorch2.0 \ pytorch2.1 \ pytoch2.3
-
-dtk22.04 \ dtk22.10 \ dtk23.04 \ dtk23.10 \ dtk24.04
-
-
-
-安装脚本：
-
-python3 setup.py install
-
-对于23.10之前的dtk由于不支持928，因此需要去掉928代码，使用下面的编译命令：
-
-PYTORCH_ROCM_ARCH='gfx906;gfx926' python3 setup.py install
-
-
-
-编译安装包：
-
-python3 setup.py install bdist_wheel
-
-编译好之后，安装包在dist目录
-
-# 算子介绍
-
-## 核心算子
-
-核心算子主要包括quant_gemm、moe_gemm，具体算子类型和开发负责人如下：
-
-<table>
-  <th>算子</th><th>开发负责人</th><th>性能表</th>
-    <tr>
-        <td>gemm_w8a8</td><td>郑光飞 谢松林 马翔</td><td></td>
-    </tr>
-    <tr>
-        <td>moe_gemm_w8a8</td><td>杨亿男 罗尧</td><td>https://r0ddbu55vzx.feishu.cn/sheets/Fr3wsNhrmh777xtl7v4cOodjnH0?sheet=ClHIQQ</td>
-    </tr>
-    <tr>
-        <td>moe_gemm_w4a8</td><td>王安全 刘振成 桂中化</td><td></td>
-    </tr>
-    <tr>
-        <td>moe_gemmm_w4a16</td><td>刘振成</td><td></td>
-    </tr>
-</table>
-
-**测试方法：**
-
-```
-cd ./test
-
-benchmark_test_kernel.sh
-
-生成对应的算子性能和精度表格
-
-```
-
-
-
-## torch算子
-
-主要对应的torch的原生算子，以下时间均为单次前向传播和反向传播的总时间，包括了CPU时间和GPU时间。测试环境：pytorch1.13, dtk23.04, 10.6.10.67服务器z100计算卡。
-
-<table>
-  <th>算子</th><th>测试size</th><th>优化前</th><th>优化后</th><th>性能提升</th><th>使用说明</th>
-    <tr>
-        <td>droppath</td><td>128,3136,96</td><td>0.84ms</td><td>0.74ms</td><td>13.5%</td><td>Swin-Transformer</td>
-    </tr>
-    <tr>
-        <td>ln_droppath</td><td>128, 3136, 96</td><td>15.7ms</td><td>4.06ms</td><td>287%</td><td>Swin-Transformer. droppath(ln(input))</td>
-    </tr>
-    <tr>
-        <td>layernorm</td><td>1, 2048, 3072</td><td>0.58ms</td><td>0.32ms</td><td>81.3%</td><td>NLP类</td>
-    </tr>
-    <tr>
-        <td>ln_dropout</td><td>1, 2048, 3072</td><td>0.78ms</td><td>0.42ms</td><td>85.7%</td><td>NLP类。例如transformer,bert。 ln(dropout(input))</td>
-    </tr>
-    <tr>
-        <td>ln_add_dropout</td><td>1, 2048, 3072</td><td>0.97ms</td><td>0.47ms</td><td>106%</td><td>NLP类。例如transformer,bert。 ln(dropout(input)+residual)</td>
-    </tr>
-    <tr>
-        <td>ln_add_dropout_bias</td><td>1, 2048, 3072</td><td>1.16ms</td><td>0.53ms</td><td>119%</td><td>NLP类。例如transformer,bert。 ln(dropout(input+bias)+residual)</td>
-    </tr>
-    <tr>
-        <td>rmsnorm</td><td>1, 2048, 3072</td><td>1.28ms</td><td>0.29ms</td><td>341%</td><td>NLP类。例如llama</td>
-    </tr>
-    <tr>
-        <td>rn_dropout</td><td>1, 2048, 3072</td><td>1.51ms</td><td>0.38ms</td><td>297%</td><td>NLP类。例如llama。 rn(dropout(input))</td>
-    </tr>
-    <tr>
-        <td>rn_add_dropout</td><td>1, 2048, 3072</td><td>1.68ms</td><td>0.45ms</td><td>273%</td><td>NLP类。例如llama。 rn(dropout(input)+residual)</td>
-    </tr>
-    <tr>
-        <td>rn_add_dropout_bias</td><td>1, 2048, 3072</td><td>1.88ms</td><td>0.51ms</td><td>268%</td><td>NLP类。例如llama。rn(dropout(input+bias)+residual)</td>
-    </tr>
-    <tr>
-        <td>groupnorm</td><td>2,640,8,8</td><td>0.037ms</td><td>0.017ms</td><td>116%</td><td>NLP类cv类</td>
-    </tr>
-    <tr>
-        <td>celu_gn</td><td>2,640,8,8</td><td>0.048ms</td><td>0.015ms</td><td>219%</td><td>NLP类cv类gn。例如x-linear。 gn(celu(input))</td>
-    </tr>
-    <tr>
-        <td>gn_silu</td><td>2,640,8,8</td><td>0.080ms</td><td>0.015ms</td><td>420%</td><td>NLP类cv类。例如：SD。 silu(gn(input))</td>
-    </tr>
-    <tr>
-        <td>add_dropout</td><td>1, 2048, 3072</td><td>0.49ms</td><td>0.38ms</td><td>28.9%</td><td>NLP类.dropout(input)+residual</td>
-    </tr>
-    <tr>
-        <td>bias_dropout_add</td><td>1, 2048, 3072</td><td>0.69ms</td><td>0.43ms</td><td>60.5%</td><td>NLP类.dropout(input+bias)+residual</td>
-    </tr>
-    <tr>
-        <td>bias_gelu</td><td>1, 2048, 3072</td><td>0.38ms</td><td>0.27ms</td><td>40.7%</td><td>NLP类,gelu(input+bias)</td>
-    </tr>
-    <tr>
-        <td>bias_swiglu</td><td>2, 2048, 512</td><td>0.50ms</td><td>0.28ms</td><td>78.5%</td><td>NLP类SwiGLU(input+bias)</td>
-    </tr>
-    <tr>
-        <td>FusedScaleMask SoftmaxDropout</td><td>2,16,128,128</td><td>0.26ms</td><td>0.34ms</td><td>30.7%</td><td>NLP类.</td>
-    </tr>
-    <tr>
-        <td>bn_act/bn_relu</td><td>4,10,128,128</td><td>0.56ms</td><td>0.33ms</td><td>69.7%</td><td>CNN，如resnet，都会使用BN。act支持relu,softrelu,abs,power,clipped_relu,leaky_relu,silu_sigmoid,tanh等激活函数。bn_relu是bn_act的特例，减少一个参数，调用更方便。对于bn 2d，推荐NCHW维度中N*H*W>20000，此算子对于小size性能较差。</td>
-    </tr>
-    <tr>
-        <td>softmax</td><td>512,4096</td><td>0.23ms</td><td>0.16ms</td><td>43.8%</td><td>一般分类模型的结尾会有softmax层。推荐size:第一维度大于300，第二维度大于等于1024小于等于4096。</td>
-    </tr>
-    <tr>
-        <td>loss_ctc</td><td>120,60,240</td><td>4.51ms</td><td>1.14ms</td><td>396%</td><td>语音文本等RNN网络的输出层</td>
-    </tr>
-    <tr>
-        <td>loss_rnnt</td><td>10,30,21,4000</td><td>16.52ms</td><td>2.93ms</td><td>429%</td><td>语音文本等RNN网络的输出层</td>
-    </tr>
-
-</table>
-
-**测试方式：**
-
-- 进入test文件夹
-
-- 运行任意一个测试脚本，例如：python3 test_ln_add_dropout.py
-
-- 运行python3 all_test.py可以测试全部脚本
-
-- 测试模型时，参考测试脚本里调用算子的方法。
-
-- 若无test文件夹，则运行以下指令验证是否安装成功：
-
-```shell
-python -c "import lightop; print(lightop.__version__)",若成功打印版本信息则安装成功。
-```
+LightOp 使用 [Apache License 2.0](LICENSE)。第三方组件遵循各自的版权与许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
