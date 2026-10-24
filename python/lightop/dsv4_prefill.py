@@ -7,6 +7,25 @@ import torch
 from . import op
 
 
+def dsv41_rope_fake_quant_store(
+    input: torch.Tensor,
+    freqs: torch.Tensor,
+    cache: torch.Tensor,
+    indices: torch.Tensor,
+    page_size: int,
+) -> None:
+    """RoPE64 + per-16 E4M3/FP4 round-trip + V4 cache store in one launch.
+
+    Input is contiguous BF16 [N,512]; freqs is complex64 [N,32] or
+    interleaved FP32 [N,64]. Indices are valid contiguous int32/int64 slots.
+    The V4 uint8 cache keeps FP8 nope and BF16 rope with per-64 UE8M0
+    scales. Input is not modified. Negative indices suppress writes.
+    """
+    if freqs.is_complex():
+        freqs = torch.view_as_real(freqs).flatten(-2)
+    op.dsv41_rope_fake_quant_store(input, freqs, cache, indices, page_size)
+
+
 def dequantize_k_cache_paged_hcu(
     cache: torch.Tensor,
     token_ids: torch.Tensor,

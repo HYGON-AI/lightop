@@ -74,6 +74,7 @@ from .fuse_rmsnorm_rope import rms_rotary_embedding_fuse, rms_rotary_embedding_f
 from .reshape_and_cache_cuda import reshape_and_cache_cuda
 from .gather_and_maybe_dequant_cache import gather_and_maybe_dequant_cache
 from .dsv4_prefill import dequantize_k_cache_paged_hcu, combine_topk_swa_indices_hcu
+from .dsv4_prefill import dsv41_rope_fake_quant_store
 from .fuse_rms_mrope_cuda import fuse_rms_mrope_cuda
 from .wan_quant import destindex_copy_quantize_int8_cuda, destindex_dequantize_int8_cuda
 from .upsample import bilinear_upsample, bilinear_upsample_backward
