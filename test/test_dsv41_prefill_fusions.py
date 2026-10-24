@@ -141,17 +141,109 @@ def timing(fn):
                 p90_us=values.quantile(.9).item(), cv=statistics.stdev(samples) / mean)
 
 
+def pool_norm_inputs(n, strided=False, weight_dtype=torch.float32):
+    width = 1024 if strided else 512
+    tensors = [torch.randn(n, width, device='cuda')[:, :512] for _ in range(4)]
+    weight = (torch.rand(512, device='cuda') + .5).to(weight_dtype)
+    return (*tensors, weight, 1e-6)
+
+
+def pool_norm_reference(previous, current, previous_score, score, weight, eps):
+    from sglang.srt.layers.attention.dsv4.dsv41_sparse import DeepseekV41Compressor
+    from sglang.kernels.ops.layernorm.rmsnorm_fp32 import rmsnorm_fp32
+    pooled = DeepseekV41Compressor.pool_pairs(torch.stack((previous, current), 1),
+                                              torch.stack((previous_score, score), 1))
+    return rmsnorm_fp32(pooled.bfloat16(), weight, eps)
+
+
+def pool_norm_main(args):
+    torch.manual_seed(20261024)
+    candidate = lightop.dsv41_pool_pairs_norm if not args.baseline_only else pool_norm_reference
+    if args.profile_only:
+        for n in args.rows:
+            data = pool_norm_inputs(n, strided=True)
+            for _ in range(10):
+                candidate(*data)
+            torch.cuda.synchronize()
+        return
+    cases = 0
+    for n in tuple(dict.fromkeys((0, 1,63, 64, 65, 513, *args.rows))):
+        for strided in (False, True):
+            for dtype in (torch.float32, torch.bfloat16):
+                data = pool_norm_inputs(n, strided, dtype)
+                before = [x.clone() for x in data[:-1]]
+                expected, actual = pool_norm_reference(*data), candidate(*data)
+                if not torch.equal(expected, actual):
+                    print(json.dumps(dict(phase='pool_norm_difference', rows=n, strided=strided,
+                                          weight_dtype=str(dtype), mismatches=(expected != actual).sum().item(),
+                                          max_abs=(expected.float() - actual.float()).abs().max().item())), flush=True)
+                torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+                for original, unchanged in zip(data[:-1], before):
+                    torch.testing.assert_close(original, unchanged, rtol=0, atol=0)
+                cases += 1
+    for magnitude in (0., 1e-6, 1., 1000.):
+        data = list(pool_norm_inputs(65, True))
+        data[0].fill_(magnitude)
+        data[1].fill_(-magnitude)
+        data[2].fill_(1000. if magnitude else 0.)
+        data[3].fill_(-1000. if magnitude else 0.)
+        torch.testing.assert_close(candidate(*data), pool_norm_reference(*data), rtol=0, atol=0)
+        cases += 1
+    if not args.baseline_only:
+        data = pool_norm_inputs(65)
+        for replacement, index in ((data[0].double(), 0), (data[0][:, ::2], 0),
+                                   (data[4][::2], 4), (0., 5)):
+            invalid = list(data)
+            invalid[index] = replacement
+            try:
+                candidate(*invalid)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError('Unsupported pool/norm metadata accepted')
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            expected, actual = pool_norm_reference(*data), candidate(*data)
+        torch.cuda.current_stream().wait_stream(stream)
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+        cases += 1
+    print(json.dumps(dict(phase='pool_norm_correctness', cases=cases, exact=True)), flush=True)
+    if args.correctness_only:
+        return
+    for n in args.rows:
+        for strided in (False, True):
+            data = pool_norm_inputs(n, strided)
+            for repeat in range(3):
+                variants = [('baseline', pool_norm_reference)]
+                if not args.baseline_only:
+                    variants.append(('candidate', candidate))
+                if repeat % 2:
+                    variants.reverse()
+                results = {}
+                for label, fn in variants:
+                    stats = timing(lambda: fn(*data))
+                    stats['effective_GB_s'] = n * 512 * (4 * 4 + 2) / stats['mean_us'] / 1000
+                    results[label] = stats
+                print(json.dumps(dict(phase='pool_norm_benchmark', rows=n, strided=strided,
+                                      repeat=repeat, **results)), flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--baseline-only', action='store_true')
     parser.add_argument('--correctness-only', action='store_true')
     parser.add_argument('--profile-only', action='store_true')
+    parser.add_argument('--pool-norm', action='store_true')
     parser.add_argument('--rows', type=int, nargs='+', default=[512, 1024, 2048, 4096, 8192, 32768])
     args = parser.parse_args()
     print(json.dumps(dict(torch=torch.__version__, hip=torch.version.hip,
                           gfx=torch.cuda.get_device_properties(0).gcnArchName,
                           selected_card=os.environ.get('HIP_VISIBLE_DEVICES'),
                           lightop=lightop.__file__, sglang_reference=reference.__module__)), flush=True)
+    if args.pool_norm:
+        pool_norm_main(args)
+        return
     if args.profile_only:
         for n in args.rows:
             x, freqs, loc, cache = inputs(n)

@@ -7,6 +7,16 @@ import torch
 from . import op
 
 
+def dsv41_pool_pairs_norm(previous, current, previous_score, score, weight, eps):
+    """Pair softmax pooling, BF16 rounding and FP32 RMSNorm for CP Prefill.
+
+    Pair inputs are finite FP32 [N,512] with contiguous columns; row-strided
+    projection views are supported. Weight is contiguous FP32/BF16 [512].
+    Returns a new BF16 pre-RoPE latent; no input or ring state is modified.
+    """
+    return op.dsv41_pool_pairs_norm(previous, current, previous_score, score, weight, eps)
+
+
 def dsv41_rope_fake_quant_store(
     input: torch.Tensor,
     freqs: torch.Tensor,
