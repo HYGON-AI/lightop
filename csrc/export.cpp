@@ -3,6 +3,11 @@
 
 #include <torch/extension.h>
 
+#if (defined(LIGHTOP_MHC_REPEAT_CP_ONLY) + defined(LIGHTOP_CP_OUTPUT_ONLY) + \
+     defined(LIGHTOP_SPARSE_MQA_ONLY) + defined(LIGHTOP_PREFILL_FUSION_ONLY)) > 1
+#error "Select only one focused LightOp extension"
+#endif
+
 #if defined(LIGHTOP_MHC_REPEAT_CP_ONLY)
 namespace at::native {
 bool supports_mhc_repeat_cp_sglang(const torch::Tensor&, int64_t, int64_t,
@@ -24,6 +29,19 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
   module.def("mhc_repeat_cp_sglang_out", &at::native::mhc_repeat_cp_sglang_out,
              py::arg("hidden_states"), py::arg("hc_mult"), py::arg("cp_size"),
              py::arg("cp_rank"), py::arg("out"));
+}
+
+#elif defined(LIGHTOP_CP_OUTPUT_ONLY)
+namespace lightop::cp_output {
+void interleave_rows_(at::Tensor, int64_t, const at::Tensor&);
+void make_interleave_plan_(at::Tensor, int64_t, int64_t);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
+  module.def("interleave_rows_", &lightop::cp_output::interleave_rows_,
+             py::arg("gathered"), py::arg("cp_size"), py::arg("cycle_leaders"));
+  module.def("make_interleave_plan_", &lightop::cp_output::make_interleave_plan_,
+             py::arg("cycle_leaders"), py::arg("rows"), py::arg("cp_size"));
 }
 
 #else
@@ -124,6 +142,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 #include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm.hpp"
 #include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm_v2.hpp"
 #include "sampling/sampling.h"
+namespace lightop::cp_output {
+void interleave_rows_(at::Tensor, int64_t, const at::Tensor&);
+void make_interleave_plan_(at::Tensor, int64_t, int64_t);
+}
+
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace lightop::dsv41 {
 void ragged_topk_postprocess(const torch::Tensor& scores, const torch::Tensor& selected,
@@ -1801,8 +1824,12 @@ m.def("hcu_alloc_extend_kernel", &at::native::lightop_hcu_alloc_extend_kernel,
        py::arg("bs"),
        py::arg("page_size"));
 m.def("mimo_v2_split_rope_vscale_kv_store", &at::native::mimo_v2_split_rope_vscale_kv_store, "mimo_v2_split_rope_vscale_kv_store");            
+  m.def("interleave_rows_", &lightop::cp_output::interleave_rows_,
+        py::arg("gathered"), py::arg("cp_size"), py::arg("cycle_leaders"));
+  m.def("make_interleave_plan_", &lightop::cp_output::make_interleave_plan_,
+        py::arg("cycle_leaders"), py::arg("rows"), py::arg("cp_size"));
   bind_prefill_sparse_fusion(m);
 }
 
 #endif  // focused extension or complete lightop.op
-#endif  // focused mHC extension or existing exports
+#endif  // focused mHC/CP extension or existing exports
