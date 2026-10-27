@@ -4,6 +4,7 @@
 import torch
 # from lightop import op
 from . import op
+from .dsv4_prefill import dsv41_pool_pairs_norm
 import numbers
 import torch.nn as nn
 from typing import List, Optional, Tuple
