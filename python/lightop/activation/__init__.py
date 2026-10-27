@@ -32,6 +32,8 @@ from .existing import (
     silu_and_mul_opt,
 )
 
+from .swiglu_oai_quant import swiglu_oai_fp8_quant_masked
+
 _NATIVE_APIS = {"lm_fuse_silu_mul_quant"}
 
 
@@ -69,4 +71,5 @@ __all__ = [
     "relu2",
     "ReluDropout",
     "silu_and_mul_opt",
+    "swiglu_oai_fp8_quant_masked",
 ]
