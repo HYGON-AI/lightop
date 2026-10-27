@@ -610,6 +610,10 @@ void dsv41_rope_fake_quant_store(
 Tensor dsv41_pool_pairs_norm(
     const Tensor& previous, const Tensor& current,
     const Tensor& previous_score, const Tensor& score, const Tensor& weight, double eps);
+std::vector<Tensor> engram_hash_ids_hcu(
+    const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    int64_t, int64_t, int64_t, int64_t);
 void combine_topk_swa_indices_hcu(
     const Tensor& topk_indices, const Tensor& query_start_loc,
     const Tensor& query_pos, const Tensor& seq_lens, const Tensor& gather_lens,
@@ -1560,6 +1564,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
      py::arg("reuse_compact_indices") = false);
  m.def("dequantize_k_cache_paged_hcu", &at::native::dequantize_k_cache_paged_hcu,
        "V4 packed paged KV dequantization into preallocated BF16 output");
+ m.def("engram_hash_ids_hcu", &at::native::engram_hash_ids_hcu,
+       "HCU Engram EXTEND predecessor lookup and exact INT64 hashing");
  m.def("dsv41_rope_fake_quant_store", &at::native::dsv41_rope_fake_quant_store,
        "DSV41 BF16 RoPE, compressed-KV fake quantization and V4 paged store");
  m.def("dsv41_pool_pairs_norm", &at::native::dsv41_pool_pairs_norm,
