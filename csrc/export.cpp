@@ -208,6 +208,14 @@ std::tuple<torch::Tensor, torch::Tensor> pair_partners(
     torch::Tensor& state, int64_t ring);
 }
 namespace at {  namespace native {
+// Spark MLA Q/K RoPE, Q concatenation and FP8 cache write in one kernel.
+void spark_mla_rope_cat_store(
+    const torch::Tensor& positions, const torch::Tensor& query_nope,
+    const torch::Tensor& query_rope, const torch::Tensor& key_nope,
+    const torch::Tensor& key_rope, const torch::Tensor& cosine_sine,
+    const torch::Tensor& locations, torch::Tensor query_out,
+    torch::Tensor key_rope_out, torch::Tensor cache, bool neox,
+    double quant_epsilon, int64_t heads_per_block);
 // Q-only DSA Indexer preparation; the K/cache path remains independent.
 void indexer_k_norm_rope_hadamard_store(
     const torch::Tensor &key, const torch::Tensor &weight,
@@ -1104,6 +1112,13 @@ void mimo_v2_split_rope_vscale_kv_store(
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("spark_mla_rope_cat_store", &at::native::spark_mla_rope_cat_store,
+        "Spark MLA block-specialized BF16 RoPE, concat and FP8 KV store",
+        py::arg("positions"), py::arg("query_nope"), py::arg("query_rope"),
+        py::arg("key_nope"), py::arg("key_rope"), py::arg("cosine_sine"),
+        py::arg("locations"), py::arg("query_out"), py::arg("key_rope_out"),
+        py::arg("cache"), py::arg("neox"), py::arg("quant_epsilon") = 1e-6,
+        py::arg("heads_per_block") = 4);
     m.def("indexer_k_norm_rope_hadamard_store", &at::native::indexer_k_norm_rope_hadamard_store,
           "Indexer K LayerNorm, BF16 RoPE, Hadamard and mirrored INT8 cache store");
     m.def("indexer_q_rope_hadamard_quant", &at::native::indexer_q_rope_hadamard_quant,
