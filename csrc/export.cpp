@@ -604,6 +604,12 @@ void decode_gather_and_up_convert_with_indices(
 void dequantize_k_cache_paged_hcu(
     const Tensor& cache, const Tensor& token_ids, Tensor& output,
     int64_t page_size, bool fp8_fnuz);
+void dsv41_rope_fake_quant_store(
+    const Tensor& input, const Tensor& freqs, Tensor& cache,
+    const Tensor& indices, int64_t page_size);
+Tensor dsv41_pool_pairs_norm(
+    const Tensor& previous, const Tensor& current,
+    const Tensor& previous_score, const Tensor& score, const Tensor& weight, double eps);
 void combine_topk_swa_indices_hcu(
     const Tensor& topk_indices, const Tensor& query_start_loc,
     const Tensor& query_pos, const Tensor& seq_lens, const Tensor& gather_lens,
@@ -1555,6 +1561,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
      py::arg("reuse_compact_indices") = false);
  m.def("dequantize_k_cache_paged_hcu", &at::native::dequantize_k_cache_paged_hcu,
        "V4 packed paged KV dequantization into preallocated BF16 output");
+ m.def("dsv41_rope_fake_quant_store", &at::native::dsv41_rope_fake_quant_store,
+       "DSV41 BF16 RoPE, compressed-KV fake quantization and V4 paged store");
+ m.def("dsv41_pool_pairs_norm", &at::native::dsv41_pool_pairs_norm,
+       "DSV41 CP pair softmax pooling, BF16 round-trip and RMS normalization");
  m.def("combine_topk_swa_indices_hcu", &at::native::combine_topk_swa_indices_hcu,
        "Combine compressed TopK and positional SWA indices into a flat workspace");
  m.def("dsv4_pack_c4_topk_workspace",

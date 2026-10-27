@@ -521,6 +521,10 @@ def torch_version_over110():
     version=torch.__version__.split('.')
     return int(version[0])*100+int(version[1])>110
 
+def torch_version_over2120():
+    version=torch.__version__.split('.')
+    return int(version[0])*100+int(version[1])>=212
+
 def get_extensions():
     extensions = []
     include_dirs = []
@@ -532,6 +536,8 @@ def get_extensions():
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_110')
     if torch_version >= 290:
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_290')
+    if torch_version_over2120():
+        extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_2120')
     op_files = glob.glob('./csrc/*.cu') + glob.glob('./csrc/*.cpp') + \
                glob.glob('./csrc/topk/*.cu') + \
                glob.glob('./csrc/lmslimquant_native/*.cpp') + \
