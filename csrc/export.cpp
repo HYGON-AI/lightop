@@ -866,6 +866,7 @@ void ep_fused_fp8_quant_scatter(torch::Tensor input,torch::Tensor topk_ids,torch
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu_fused(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output, torch::optional<torch::Tensor> num_token_non_padded);
+std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu_deepep(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output, torch::optional<torch::Tensor> num_token_non_padded);
 void topk_transform_512(
     const at::Tensor& scores,
     const at::Tensor& seq_lens,
@@ -1662,6 +1663,13 @@ m.def("moe_fused_gate_sqrtsoftplus",&at::native::moe_fused_gate_sqrtsoftplus,"mo
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu",&at::native::moe_fused_gate_sqrtsoftplus_v41_hcu,"moe_fused_gate_sqrtsoftplus_v41_hcu");
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu_fused",
       &at::native::moe_fused_gate_sqrtsoftplus_v41_hcu_fused,
+      py::arg("input"), py::arg("bias"), py::arg("topk"),
+      py::arg("num_fused_shared_experts"), py::arg("renormalize"),
+      py::arg("routed_scaling_factor"),
+      py::arg("apply_routed_scaling_factor_on_output"),
+      py::arg("num_token_non_padded") = py::none());
+m.def("moe_fused_gate_sqrtsoftplus_v41_hcu_deepep",
+      &at::native::moe_fused_gate_sqrtsoftplus_v41_hcu_deepep,
       py::arg("input"), py::arg("bias"), py::arg("topk"),
       py::arg("num_fused_shared_experts"), py::arg("renormalize"),
       py::arg("routed_scaling_factor"),

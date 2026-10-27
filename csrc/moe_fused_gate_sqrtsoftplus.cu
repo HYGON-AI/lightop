@@ -81,7 +81,8 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
     int64_t num_fused_shared_experts,
     bool renormalize,
     float routed_scaling_factor,
-    bool apply_routed_scaling_factor_on_output) {
+    bool apply_routed_scaling_factor_on_output,
+    int64_t padding_id) {
   constexpr float NEG_INF = -FLT_MAX;
   static_assert(NUM_EXPERTS % VPT_LOCAL == 0,
                 "NUM_EXPERTS must be divisible by VPT_LOCAL");
@@ -208,7 +209,7 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
       padded = num_token_non_padded != nullptr && row >= *num_token_non_padded;
     }
     output[out_idx] = padded ? 0.0f : stored_weight / norm * scale;
-    indices[out_idx] = padded ? 0 : stored_expert;
+    indices[out_idx] = padded ? padding_id : stored_expert;
   }
 }
 
@@ -233,7 +234,7 @@ __global__ void moe_fused_gate_sqrtsoftplus_kernel_group1(
             output.data_ptr<float>(), indices.data_ptr<IndexT>(), num_token_non_padded_ptr, num_rows,        \
             bias_row_stride, num_fused_shared_experts, renormalize,                  \
             static_cast<float>(routed_scaling_factor),                              \
-            apply_routed_scaling_factor_on_output);                                 \
+            apply_routed_scaling_factor_on_output, padding_id);                     \
     dispatched = true;                                                              \
   } while (0)
 
@@ -261,7 +262,8 @@ std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus_impl(
     bool renormalize,
     double routed_scaling_factor,
     bool apply_routed_scaling_factor_on_output,
-    torch::optional<torch::Tensor> num_token_non_padded = torch::nullopt) {
+    torch::optional<torch::Tensor> num_token_non_padded = torch::nullopt,
+    int64_t padding_id = 0) {
   TORCH_CHECK(input.dim() == 2, "input must be 2D");
   TORCH_CHECK(bias.dim() == 1 || bias.dim() == 2,
               "bias must be 1D [num_experts] or 2D [num_rows, num_experts]");
@@ -393,6 +395,29 @@ std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu_fused(
       input, bias, topk, num_fused_shared_experts, renormalize,
       routed_scaling_factor, apply_routed_scaling_factor_on_output,
       num_token_non_padded);
+}
+
+// DeepEP consumes -1 for invalid expert IDs; the legacy fused API keeps 0.
+std::vector<torch::Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu_deepep(
+    torch::Tensor& input,
+    torch::Tensor& bias,
+    int64_t topk,
+    int64_t num_fused_shared_experts,
+    bool renormalize,
+    double routed_scaling_factor,
+    bool apply_routed_scaling_factor_on_output,
+    torch::optional<torch::Tensor> num_token_non_padded) {
+  if (num_token_non_padded.has_value() &&
+      num_token_non_padded.value().scalar_type() == at::kLong) {
+    return moe_fused_gate_sqrtsoftplus_impl<true, int64_t, int64_t>(
+        input, bias, topk, num_fused_shared_experts, renormalize,
+        routed_scaling_factor, apply_routed_scaling_factor_on_output,
+        num_token_non_padded, /*padding_id=*/-1);
+  }
+  return moe_fused_gate_sqrtsoftplus_impl<true, int64_t, int32_t>(
+      input, bias, topk, num_fused_shared_experts, renormalize,
+      routed_scaling_factor, apply_routed_scaling_factor_on_output,
+      num_token_non_padded, /*padding_id=*/-1);
 }
 
 #undef DISPATCH_TOPK

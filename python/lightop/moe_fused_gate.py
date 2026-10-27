@@ -105,3 +105,23 @@ def moe_fused_gate_sqrtsoftplus_v41_hcu_fused(
         routed_scaling_factor, apply_routed_scaling_factor_on_output,
         num_token_non_padded,
     )
+
+
+def moe_fused_gate_sqrtsoftplus_v41_hcu_deepep(
+    x,
+    bias,
+    topk,
+    num_fused_shared_experts=0,
+    renormalize=True,
+    routed_scaling_factor=1.0,
+    apply_routed_scaling_factor_on_output=False,
+    num_token_non_padded=None,
+):
+    """V4.1 routing with final DeepEP int64 IDs (-1) and zero padding weights.
+
+    The valid row count stays on device and can change between graph replays."""
+    return op.moe_fused_gate_sqrtsoftplus_v41_hcu_deepep(
+        x, bias, topk, num_fused_shared_experts, renormalize,
+        routed_scaling_factor, apply_routed_scaling_factor_on_output,
+        num_token_non_padded,
+    )
