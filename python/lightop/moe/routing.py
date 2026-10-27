@@ -12,6 +12,7 @@ from ..moe_fused_gate import (
     moe_fused_gate_sqrtsoftplus,
     moe_fused_gate_sqrtsoftplus_v41_hcu,
     moe_fused_gate_sqrtsoftplus_v41_hcu_fused,
+    moe_fused_gate_sqrtsoftplus_v41_hcu_deepep,
 )
 
 
@@ -55,6 +56,7 @@ __all__ = [
     "moe_fused_gate_sqrtsoftplus",
     "moe_fused_gate_sqrtsoftplus_v41_hcu",
     "moe_fused_gate_sqrtsoftplus_v41_hcu_fused",
+    "moe_fused_gate_sqrtsoftplus_v41_hcu_deepep",
     "moe_sum",
     "topk_ids_postprocess",
     "topk_softmax",
