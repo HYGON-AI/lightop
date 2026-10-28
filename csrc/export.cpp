@@ -681,6 +681,16 @@ void decode_gather_and_up_convert_with_indices(
 void dequantize_k_cache_paged_hcu(
     const Tensor& cache, const Tensor& token_ids, Tensor& output,
     int64_t page_size, bool fp8_fnuz);
+void dsv41_rope_fake_quant_store(
+    const Tensor& input, const Tensor& freqs, Tensor& cache,
+    const Tensor& indices, int64_t page_size);
+Tensor dsv41_pool_pairs_norm(
+    const Tensor& previous, const Tensor& current,
+    const Tensor& previous_score, const Tensor& score, const Tensor& weight, double eps);
+std::vector<Tensor> engram_hash_ids_hcu(
+    const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    int64_t, int64_t, int64_t, int64_t);
 void combine_topk_swa_indices_hcu(
     const Tensor& topk_indices, const Tensor& query_start_loc,
     const Tensor& query_pos, const Tensor& seq_lens, const Tensor& gather_lens,
@@ -937,6 +947,7 @@ void ep_fused_fp8_quant_scatter(torch::Tensor input,torch::Tensor topk_ids,torch
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu_fused(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output, torch::optional<torch::Tensor> num_token_non_padded);
+std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu_deepep(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output, torch::optional<torch::Tensor> num_token_non_padded);
 void topk_transform_512(
     const at::Tensor& scores,
     const at::Tensor& seq_lens,
@@ -1609,6 +1620,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
      py::arg("reuse_compact_indices") = false);
  m.def("dequantize_k_cache_paged_hcu", &at::native::dequantize_k_cache_paged_hcu,
        "V4 packed paged KV dequantization into preallocated BF16 output");
+ m.def("engram_hash_ids_hcu", &at::native::engram_hash_ids_hcu,
+       "HCU Engram EXTEND predecessor lookup and exact INT64 hashing");
+ m.def("dsv41_rope_fake_quant_store", &at::native::dsv41_rope_fake_quant_store,
+       "DSV41 BF16 RoPE, compressed-KV fake quantization and V4 paged store");
+ m.def("dsv41_pool_pairs_norm", &at::native::dsv41_pool_pairs_norm,
+       "DSV41 CP pair softmax pooling, BF16 round-trip and RMS normalization");
  m.def("combine_topk_swa_indices_hcu", &at::native::combine_topk_swa_indices_hcu,
        "Combine compressed TopK and positional SWA indices into a flat workspace");
  m.def("dsv4_pack_c4_topk_workspace",
@@ -1707,6 +1724,13 @@ m.def("moe_fused_gate_sqrtsoftplus",&at::native::moe_fused_gate_sqrtsoftplus,"mo
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu",&at::native::moe_fused_gate_sqrtsoftplus_v41_hcu,"moe_fused_gate_sqrtsoftplus_v41_hcu");
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu_fused",
       &at::native::moe_fused_gate_sqrtsoftplus_v41_hcu_fused,
+      py::arg("input"), py::arg("bias"), py::arg("topk"),
+      py::arg("num_fused_shared_experts"), py::arg("renormalize"),
+      py::arg("routed_scaling_factor"),
+      py::arg("apply_routed_scaling_factor_on_output"),
+      py::arg("num_token_non_padded") = py::none());
+m.def("moe_fused_gate_sqrtsoftplus_v41_hcu_deepep",
+      &at::native::moe_fused_gate_sqrtsoftplus_v41_hcu_deepep,
       py::arg("input"), py::arg("bias"), py::arg("topk"),
       py::arg("num_fused_shared_experts"), py::arg("renormalize"),
       py::arg("routed_scaling_factor"),

@@ -7,6 +7,7 @@
 # on it because an installed extension may predate the current ABI.
 PAGED_MQA_LOGITS_FP4_ABI = 3
 
+from ..dsv4_prefill import dsv41_rope_fake_quant_store
 from .mhc import mhc_repeat_cp_sglang, supports_mhc_repeat_cp_sglang
 from .mqa import (
     fp8_fp4_mqa_logits,
@@ -100,6 +101,7 @@ __all__ = [
     "dsv41_build_swa_token_ids",
     "dsv41_remap_indices_to_staging",
     "dsv41_ragged_topk_postprocess",
+    "dsv41_rope_fake_quant_store",
     "page_mqa_logits_sparse_mask",
     "rms_rotary_embedding_fuse",
     "rms_rotary_embedding_fuse_with_kv_store",

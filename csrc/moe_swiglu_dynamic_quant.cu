@@ -13,7 +13,10 @@
 // #include "../dispatch_utils.h"
 
 
-#ifdef TORCH_VERSION_OVER_290
+#if defined(TORCH_VERSION_OVER_2120)
+// torch>=2.12 removed C10_WARP_SIZE_STATIC, wavefront size is fixed at 64
+#define C10_WARP_SIZE 64
+#elif defined(TORCH_VERSION_OVER_290)
 #define C10_WARP_SIZE C10_WARP_SIZE_STATIC
 #endif
 
