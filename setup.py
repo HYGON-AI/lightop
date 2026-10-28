@@ -558,7 +558,7 @@ def get_extensions():
                glob.glob('./csrc/sparse_page_mqa/*.cu') + glob.glob('./csrc/index_k_int8_dequant/*.cu') + \
                glob.glob('./csrc/bmm_scale/*.cu') + glob.glob('./csrc/mla/*.cu') + \
                glob.glob('./csrc/polyfill/*.cu') + glob.glob('./csrc/awq_w4a16_gemm/*.cu') + \
-               glob.glob('./csrc/sampling/*.cu')
+               glob.glob('./csrc/sampling/*.cu') + glob.glob('./csrc/cp_output/*.cu')
 
     extension = CUDAExtension
     # 添加marlinw4a16目录的包含路径
