@@ -5,6 +5,7 @@
 #include <ATen/hip/HIPContext.h>
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <hip/hip_runtime.h>
+#include <rocprim/block/block_radix_sort.hpp>
 #include <algorithm>
 #include <climits>
 #include <cstdint>
@@ -53,8 +54,8 @@ __device__ __forceinline__ uint32_t candidate(Geometry a, int row, int col) {
     int32_t x = col < a.input_width ? a.source[int64_t(row)*a.source_stride+col] : -1;
     return x < 0 ? invalid : uint32_t(x);
 }
-template<int Threads, bool Dense=false>
-__device__ __forceinline__ void prepare_geometry(Geometry a, int row) {
+template<int Threads, bool Dense=false, bool FuseSort=false>
+__device__ __forceinline__ void prepare_geometry(Geometry a, int row, int page_rows=1) {
     if constexpr(Dense){a.width=2048;a.input_width=2048;a.source_stride=2048;a.page_size=64;}
     // Device certificates are refreshed each call, including graph replay.
     __shared__ uint32_t state;
@@ -85,17 +86,43 @@ __device__ __forceinline__ void prepare_geometry(Geometry a, int row) {
             if(col<a.width)a.blocks[int64_t(row)*a.width+col]=x;
         }
     }
-    if (threadIdx.x==0) a.flags[row]=(ordered || reverse) ? ((state&4) ? 0 : 1) : 2;
-    if (row==0) {
+    if constexpr(FuseSort) {
+        static_assert(Dense,"short-row fused sort requires the certified dense layout");
+        if (!ordered && !reverse) {
+            using Sort=rocprim::block_radix_sort<uint32_t,Threads,Items>;
+            __shared__ typename Sort::storage_type storage;
+            // rocPRIM consumes blocked registers; the certificate above uses
+            // striped/coalesced reads. Re-read only the genuinely unordered case.
+            #pragma unroll
+            for(int i=0;i<Items;++i)keys[i]=candidate(a,row,threadIdx.x*Items+i);
+            Sort().sort(keys,storage,0,31);
+            #pragma unroll
+            for(int i=0;i<Items;++i)a.blocks[int64_t(row)*a.width+threadIdx.x*Items+i]=keys[i];
+            __syncthreads();
+            uint32_t duplicate=0;
+            #pragma unroll
+            for(int i=0;i<Items;++i) {
+                int col=threadIdx.x*Items+i;
+                uint32_t previous=col ? (i ? keys[i-1] : uint32_t(a.blocks[int64_t(row)*a.width+col-1])) : invalid;
+                if(col && keys[i]!=invalid && keys[i]==previous)duplicate=4;
+            }
+            if(__ballot(duplicate!=0) && (threadIdx.x&63)==0)atomicOr(&state,4u);
+            __syncthreads();
+        }
+        if(threadIdx.x==0)a.flags[row]=(state&4) ? 0 : 1;
+    } else {
+        if (threadIdx.x==0) a.flags[row]=(ordered || reverse) ? ((state&4) ? 0 : 1) : 2;
+    }
+    if (row==0 || page_rows>1) {
         int64_t request=integer(a.request,0,a.request64);
-        for (int p=threadIdx.x; p<a.page_count; p+=blockDim.x) {
+        for (int p=(page_rows>1 ? row*Threads : 0)+threadIdx.x; p<a.page_count; p+=Threads*page_rows) {
             int64_t slot=integer(a.map,request*a.map_stride+int64_t(p)*a.page_size*a.ratio,a.map64);
             a.pages[p]=floor_div(slot,int64_t(a.ratio)*a.page_size);
         }
     }
 }
 
-template<int Lanes, bool Combined, bool Fast, bool Dense=false, bool Direct=false>
+template<int Lanes, bool Combined, bool Fast, bool Dense=false, bool Direct=false, bool FuseSort=false>
 __global__ __launch_bounds__(256) void sparse_fp8_fp4_paged_mqa_logits__prepare_query(
     const at::BFloat16* q, const at::BFloat16* raw, const float* frequency,
     const void* positions, bool position64, bool aligned_q, int rows, int heads, int rope,
@@ -181,12 +208,15 @@ __global__ __launch_bounds__(256) void sparse_fp8_fp4_paged_mqa_logits__prepare_
         }
     }
     if constexpr(Combined) {
-        if constexpr(Lanes<=8) prepare_geometry<Lanes*32,Dense>(geometry,blockIdx.x);
-        else if((blockIdx.x&1)==0) prepare_geometry<256,Dense>(geometry,blockIdx.x/2);
+        if constexpr(Lanes<=8) prepare_geometry<Lanes*32,Dense,FuseSort>(geometry,blockIdx.x,FuseSort ? rows : 1);
+        else if((blockIdx.x&1)==0) prepare_geometry<256,Dense,FuseSort>(geometry,blockIdx.x/2,FuseSort ? rows : 1);
     }
 }
 __global__ __launch_bounds__(256) void sparse_fp8_fp4_paged_mqa_logits__prepare_candidates(Geometry a) {
     prepare_geometry<256>(a,blockIdx.x);
+}
+__global__ __launch_bounds__(256) void sparse_fp8_fp4_paged_mqa_logits__prepare_candidates_short(Geometry a) {
+    prepare_geometry<256,true,true>(a,blockIdx.x,gridDim.x);
 }
 
 template<int Distance>
@@ -406,8 +436,16 @@ std::vector<at::Tensor> prefill_sparse_native_prepare_query(
     #define ARGS q.data_ptr<at::BFloat16>(),raw.data_ptr<at::BFloat16>(),reinterpret_cast<const float*>(frequency.data_ptr()),positions.data_ptr(),positions.scalar_type()==at::kLong,aligned_q,rows,heads,rope,float(scale),ratio,width,fast,q.stride(0),q.stride(1),raw.stride(0),raw.stride(1),positions.stride(0),frequency.stride(0)*2,frequency.stride(1)*2,out[0].data_ptr<int8_t>(),out[1].data_ptr<int32_t>(),out[2].data_ptr<float>(),out[3].data_ptr<int32_t>(),out[4].data_ptr<int32_t>(),out[5].data_ptr<int32_t>(),out[6].data_ptr<int32_t>(),g
     #define LAUNCH(L,C,G,T) if(fast) {hipLaunchKernelGGL((sparse_fp8_fp4_paged_mqa_logits__prepare_query<L,C,true>),dim3(G),dim3(T),0,stream,ARGS);} else {hipLaunchKernelGGL((sparse_fp8_fp4_paged_mqa_logits__prepare_query<L,C,false>),dim3(G),dim3(T),0,stream,ARGS);}
     #define DENSE_QUERY(L,G,T) if(direct) {hipLaunchKernelGGL((sparse_fp8_fp4_paged_mqa_logits__prepare_query<L,true,true,true,true>),dim3(G),dim3(T),0,stream,ARGS);} else {hipLaunchKernelGGL((sparse_fp8_fp4_paged_mqa_logits__prepare_query<L,true,true,true>),dim3(G),dim3(T),0,stream,ARGS);}
+    bool fused_sort=dense && fast && rows<=32;
+    #define SHORT_QUERY(L,G,T) if(direct) {hipLaunchKernelGGL((sparse_fp8_fp4_paged_mqa_logits__prepare_query<L,true,true,true,true,true>),dim3(G),dim3(T),0,stream,ARGS);} else {hipLaunchKernelGGL((sparse_fp8_fp4_paged_mqa_logits__prepare_query<L,true,true,true,false,true>),dim3(G),dim3(T),0,stream,ARGS);}
     if(rows) {
-        if(dense && fast) {
+        if(fused_sort) {
+            bool direct=ratio==1 && positions.scalar_type()==at::kInt && map->scalar_type()==at::kInt && request->scalar_type()==at::kInt;
+            if(lanes==4){SHORT_QUERY(4,rows,128)}
+            else if(lanes==8){SHORT_QUERY(8,rows,256)}
+            else {SHORT_QUERY(16,rows*2,256)}
+        }
+        else if(dense && fast) {
             bool direct=ratio==1 && positions.scalar_type()==at::kInt && map->scalar_type()==at::kInt && request->scalar_type()==at::kInt;
             if(lanes==4){DENSE_QUERY(4,rows,128)}
             else if(lanes==8){DENSE_QUERY(8,rows,256)}
@@ -419,11 +457,12 @@ std::vector<at::Tensor> prefill_sparse_native_prepare_query(
         else if(lanes==4) {LAUNCH(4,false,(rows*heads+31)/32,128)}
         else if(lanes==8) {LAUNCH(8,false,(rows*heads+31)/32,256)}
         else {LAUNCH(16,false,(rows*heads+15)/16,256)}
-        launch_check();if(source)finish_sort(*source,out[7],f,context);
+        launch_check();if(source && !fused_sort)finish_sort(*source,out[7],f,context);
     }
     #undef ARGS
     #undef LAUNCH
     #undef DENSE_QUERY
+    #undef SHORT_QUERY
     return out;
 }
 std::vector<at::Tensor> prefill_sparse_native_prepare_candidates(
@@ -435,8 +474,11 @@ std::vector<at::Tensor> prefill_sparse_native_prepare_candidates(
     auto f=flags ? *flags : at::empty({source.size(0)},opt);
     auto g=make_geometry(source,width,map,request,context,ratio,page,blocks,pages,f);
     if(source.size(0)) {
-        hipLaunchKernelGGL(sparse_fp8_fp4_paged_mqa_logits__prepare_candidates,dim3(source.size(0)),dim3(256),0,at::hip::getCurrentHIPStreamMasqueradingAsCUDA().stream(),g);
-        launch_check();finish_sort(source,blocks,f,context);
+        const bool short_dense=source.size(0)<=32 && width==2048 && source.size(1)==2048 && source.stride(0)==2048 && page==64;
+        auto stream=at::hip::getCurrentHIPStreamMasqueradingAsCUDA().stream();
+        if(short_dense)hipLaunchKernelGGL(sparse_fp8_fp4_paged_mqa_logits__prepare_candidates_short,dim3(source.size(0)),dim3(256),0,stream,g);
+        else hipLaunchKernelGGL(sparse_fp8_fp4_paged_mqa_logits__prepare_candidates,dim3(source.size(0)),dim3(256),0,stream,g);
+        launch_check();if(!short_dense)finish_sort(source,blocks,f,context);
     }
     return {blocks,pages};
 }

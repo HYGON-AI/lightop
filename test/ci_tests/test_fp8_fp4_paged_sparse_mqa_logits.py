@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """MXFP4 paged sparse MQA precision and performance tests.
 
-Run regressions with pytest -q test/test_fp8_fp4_paged_sparse_mqa_logits.py.
-Benchmark with python test/test_fp8_fp4_paged_sparse_mqa_logits.py
+Run regressions with pytest -q test/ci_tests/test_fp8_fp4_paged_sparse_mqa_logits.py.
+Benchmark with python test/ci_tests/test_fp8_fp4_paged_sparse_mqa_logits.py
 --contexts 32768 65536 131072 --output test-results/paged-sparse-mqa.json.
 Benchmark timing includes the complete scorer and its internal preparation,
 but excludes metadata generation, the FP32 oracle and external Q packing.
@@ -170,6 +170,15 @@ def case_matrix():
                 context=65539,
             )
         )
+    # Decoder bounded replay retains the final 128 global queries. CP8
+    # interleave therefore supplies 16 rows/rank, independently of KV context.
+    for context in (4096, 16384, 32768, 65536, 131072, 262144, 524288):
+        for overlap in ("full", "partial"):
+            result.append(Case(
+                f"bounded-cp8-{context}-{overlap}", rows=16, capacity=2048,
+                context=context, layout="packed", overlap=overlap, causal=True,
+                benchmark=True, one_shot=True, cp_world=8, prefix=context-128,
+            ))
     return result
 
 

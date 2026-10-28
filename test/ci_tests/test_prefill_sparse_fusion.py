@@ -345,6 +345,71 @@ def run_tests(m, quick=False):
                 }
             )
             print(json.dumps(records[-1]), flush=True)
+    records.extend(run_short_row_tests(m))
+    return records
+
+
+
+def run_short_row_tests(m):
+    records=[]
+    backend=m._native_prefill_fusion_backend()
+    # R16 is the CP8 bounded-replay shape; exercise the fused-sort branch,
+    # including the two-CTA query layout and both integer pointer widths.
+    for rows,lanes,wide in [(1,4,False),(16,8,False),(17,16,True),(32,8,True)]:
+        context=32768
+        q=torch.randn((rows,32,128),device="cuda",dtype=torch.bfloat16)
+        raw=torch.randn((rows,32),device="cuda",dtype=torch.bfloat16)
+        pos=torch.arange(rows,device="cuda",dtype=torch.int64 if wide else torch.int32)+9
+        angles=torch.randn((64,32),device="cuda");freq=torch.polar(torch.ones_like(angles),angles)
+        mapping=torch.arange(context,device="cuda",dtype=torch.int64 if wide else torch.int32)[None,:]
+        request=torch.zeros(1,device="cuda",dtype=pos.dtype)
+        source=torch.arange(2048,device="cuda",dtype=torch.int32)[None,:].repeat(rows,1)
+        flags=torch.empty((rows,),device="cuda",dtype=torch.int32)
+        def run():
+            return backend.prefill_sparse_native_prepare_query(q,raw,freq,pos,64,1/64,1,2048,True,source,mapping,request,context,64,flags,lanes)
+        def check(got):
+            ref=reference_query(q,raw,freq,pos,64,1/64,1,2048)
+            for a,b in zip(got[:7],ref):assert torch.equal(a,b)
+            blocks=torch.where(source<0,2147483647,source).sort(-1).values
+            assert torch.equal(got[7],blocks)
+            assert torch.equal(got[8],(mapping[0,::64]//64).int())
+            unique=((blocks[:,1:]!=blocks[:,:-1]) | (blocks[:,1:]==2147483647)).all(-1)
+            assert bool(((flags!=1)|unique).all())
+        for kind in ["ordered","reverse","random","duplicates","negative"]:
+            source.copy_(torch.randperm(2048,device="cuda",dtype=torch.int32)[None,:].expand(rows,-1))
+            if kind=="ordered":source.copy_(source.sort(-1).values)
+            elif kind=="reverse":source.copy_(source.sort(-1,descending=True).values)
+            elif kind=="duplicates":source[:,1]=source[:,0]
+            elif kind=="negative":source[:,::13]=-1
+            check(run())
+            records.append(dict(kind="short-combined-"+kind,rows=rows,lanes=lanes,wide=wide,status="bitwise PASS"))
+            prepared=m.prepare_prefill_sparse_candidates(source,2048,mapping,request,context,1,64,row_flags=flags)
+            ref_blocks=torch.where(source<0,2147483647,source).sort(-1).values
+            assert torch.equal(prepared[0],ref_blocks) and torch.equal(prepared[1],(mapping[0,::64]//64).int())
+            unique=((ref_blocks[:,1:]!=ref_blocks[:,:-1]) | (ref_blocks[:,1:]==2147483647)).all(-1)
+            assert bool(((flags!=1)|unique).all())
+            records.append(dict(kind="short-candidates-"+kind,rows=rows,wide=wide,status="bitwise PASS"))
+        originals=[v.clone() for v in (q,source,mapping,freq)]
+        run();torch.cuda.synchronize();graph=torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):captured=run()
+        source.copy_(source.flip(1));source[:,1]=source[:,0];mapping.copy_(mapping.flip(1));q.add_(0.5);freq.copy_(freq.conj())
+        graph.replay();torch.cuda.synchronize();check(captured)
+        for dst,ref in zip((q,source,mapping,freq),originals):dst.copy_(ref)
+        graph.replay();torch.cuda.synchronize();check(captured)
+        records.append(dict(kind="short-combined-dynamic-graph-A-B-A",rows=rows,status="bitwise PASS"))
+        m.prepare_prefill_sparse_candidates(source,2048,mapping,request,context,1,64,row_flags=flags)
+        graph=torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):prepared=m.prepare_prefill_sparse_candidates(source,2048,mapping,request,context,1,64,row_flags=flags)
+        for mutate in [True,False]:
+            if mutate:source.copy_(source.flip(1));source[:,1]=source[:,0];mapping.copy_(mapping.flip(1))
+            else:source.copy_(originals[1]);mapping.copy_(originals[2])
+            graph.replay();torch.cuda.synchronize()
+            ref_blocks=torch.where(source<0,2147483647,source).sort(-1).values
+            assert torch.equal(prepared[0],ref_blocks) and torch.equal(prepared[1],(mapping[0,::64]//64).int())
+            unique=((ref_blocks[:,1:]!=ref_blocks[:,:-1]) | (ref_blocks[:,1:]==2147483647)).all(-1)
+            assert bool(((flags!=1)|unique).all())
+        records.append(dict(kind="short-candidates-dynamic-graph-A-B-A",rows=rows,status="bitwise PASS"))
+
     return records
 
 
