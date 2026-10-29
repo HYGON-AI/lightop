@@ -3,6 +3,10 @@
 
 #include <torch/extension.h>
 
+namespace at::native {
+std::vector<torch::Tensor> minimax_qk_norm_rope(torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,double,int64_t,bool,int64_t);
+}
+
 #if (defined(LIGHTOP_MHC_REPEAT_CP_ONLY) + defined(LIGHTOP_CP_OUTPUT_ONLY) + \
      defined(LIGHTOP_TOPK_WORKSPACE_ONLY) + defined(LIGHTOP_SPARSE_MQA_ONLY) + \
      defined(LIGHTOP_PREFILL_FUSION_ONLY)) > 1
@@ -1903,6 +1907,7 @@ m.def("mimo_v2_split_rope_vscale_kv_store", &at::native::mimo_v2_split_rope_vsca
         py::arg("gathered"), py::arg("cp_size"), py::arg("cycle_leaders"));
   m.def("make_interleave_plan_", &lightop::cp_output::make_interleave_plan_,
         py::arg("cycle_leaders"), py::arg("rows"), py::arg("cp_size"));
+  m.def("minimax_qk_norm_rope", &at::native::minimax_qk_norm_rope);
   bind_prefill_sparse_fusion(m);
 }
 
