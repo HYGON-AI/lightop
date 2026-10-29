@@ -4,6 +4,8 @@
 #include <torch/extension.h>
 
 namespace at::native {
+torch::Tensor minimax_cp_fp8_pack(torch::Tensor,torch::Tensor,torch::Tensor,double,double,bool,bool);
+void minimax_cp_cache_scatter(torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor);
 std::vector<torch::Tensor> minimax_qk_norm_rope(torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,double,int64_t,bool,int64_t);
 }
 
@@ -1908,6 +1910,8 @@ m.def("mimo_v2_split_rope_vscale_kv_store", &at::native::mimo_v2_split_rope_vsca
   m.def("make_interleave_plan_", &lightop::cp_output::make_interleave_plan_,
         py::arg("cycle_leaders"), py::arg("rows"), py::arg("cp_size"));
   m.def("minimax_qk_norm_rope", &at::native::minimax_qk_norm_rope);
+  m.def("minimax_cp_fp8_pack", &at::native::minimax_cp_fp8_pack);
+  m.def("minimax_cp_cache_scatter", &at::native::minimax_cp_cache_scatter);
   bind_prefill_sparse_fusion(m);
 }
 
