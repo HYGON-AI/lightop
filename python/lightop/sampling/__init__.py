@@ -5,6 +5,7 @@
 
 from ..fuse_topk_transform import topk_transform_1024
 from ..reduce import topk
+from .markov import markov_gemv_add_argmax
 from .probability import (
     get_default_generators,
     get_seed_and_offset,
@@ -14,6 +15,7 @@ from .probability import (
 )
 
 __all__ = [
+    "markov_gemv_add_argmax",
     "get_default_generators",
     "get_seed_and_offset",
     "top_k_sampling_from_probs",
