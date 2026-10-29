@@ -2,6 +2,170 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <torch/extension.h>
+
+#if (defined(LIGHTOP_MHC_REPEAT_CP_ONLY) + defined(LIGHTOP_CP_OUTPUT_ONLY) + \
+     defined(LIGHTOP_TOPK_WORKSPACE_ONLY) + defined(LIGHTOP_SPARSE_MQA_ONLY) + \
+     defined(LIGHTOP_PREFILL_FUSION_ONLY)) > 1
+#error "Select only one focused LightOp extension"
+#endif
+
+#if defined(LIGHTOP_MHC_REPEAT_CP_ONLY)
+namespace at::native {
+bool supports_mhc_repeat_cp_sglang(const torch::Tensor&, int64_t, int64_t,
+                                   int64_t);
+torch::Tensor mhc_repeat_cp_sglang(const torch::Tensor&, int64_t, int64_t,
+                                   int64_t);
+torch::Tensor& mhc_repeat_cp_sglang_out(const torch::Tensor&, int64_t, int64_t,
+                                        int64_t, torch::Tensor&);
+}  // namespace at::native
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
+  module.def("supports_mhc_repeat_cp_sglang",
+             &at::native::supports_mhc_repeat_cp_sglang,
+             py::arg("hidden_states"), py::arg("hc_mult"), py::arg("cp_size"),
+             py::arg("cp_rank"));
+  module.def("mhc_repeat_cp_sglang", &at::native::mhc_repeat_cp_sglang,
+             py::arg("hidden_states"), py::arg("hc_mult"), py::arg("cp_size"),
+             py::arg("cp_rank"));
+  module.def("mhc_repeat_cp_sglang_out", &at::native::mhc_repeat_cp_sglang_out,
+             py::arg("hidden_states"), py::arg("hc_mult"), py::arg("cp_size"),
+             py::arg("cp_rank"), py::arg("out"));
+}
+
+#elif defined(LIGHTOP_CP_OUTPUT_ONLY)
+namespace lightop::cp_output {
+void interleave_rows_(at::Tensor, int64_t, const at::Tensor&);
+void make_interleave_plan_(at::Tensor, int64_t, int64_t);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
+  module.def("interleave_rows_", &lightop::cp_output::interleave_rows_,
+             py::arg("gathered"), py::arg("cp_size"), py::arg("cycle_leaders"));
+  module.def("make_interleave_plan_", &lightop::cp_output::make_interleave_plan_,
+             py::arg("cycle_leaders"), py::arg("rows"), py::arg("cp_size"));
+}
+
+#elif defined(LIGHTOP_TOPK_WORKSPACE_ONLY)
+namespace at::native {
+void dequantize_k_cache_paged_hcu(const torch::Tensor&, const torch::Tensor&, torch::Tensor&, int64_t, bool);
+void dequantize_k_cache_paged_hcu_selected(
+    const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
+    const torch::Tensor&, torch::Tensor&, int64_t, bool);
+torch::Tensor dsv4_dequantize_sparse_topk_out(
+    const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
+    const torch::Tensor&, torch::Tensor&, int64_t, int64_t, bool);
+void dequantize_k_cache_paged_hcu_counted(
+    const torch::Tensor&, const torch::Tensor&, torch::Tensor&,
+    int64_t, bool, const torch::Tensor&);
+std::vector<torch::Tensor> dsv4_pack_sparse_topk_workspace(
+    const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
+    int64_t, int64_t, int64_t);
+std::vector<torch::Tensor> dsv4_pack_c4_topk_workspace(
+    const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
+    int64_t, int64_t);
+}  // namespace at::native
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
+  module.def("dequantize_k_cache_paged_hcu", &at::native::dequantize_k_cache_paged_hcu);
+  module.def("dequantize_k_cache_paged_hcu_selected", &at::native::dequantize_k_cache_paged_hcu_selected,
+      py::arg("cache"), py::arg("token_ids"), py::arg("selected_rows"), py::arg("valid_count"),
+      py::arg("out"), py::arg("page_size"), py::arg("fp8_fnuz"));
+  module.def("dsv4_dequantize_sparse_topk_out", &at::native::dsv4_dequantize_sparse_topk_out,
+      py::arg("cache"), py::arg("full_ids"), py::arg("indices"), py::arg("lengths"),
+      py::arg("out"), py::arg("topk"), py::arg("page_size"), py::arg("fp8_fnuz"));
+  module.def("dequantize_k_cache_paged_hcu_counted",
+             &at::native::dequantize_k_cache_paged_hcu_counted,
+             py::arg("cache"), py::arg("token_ids"), py::arg("out"),
+             py::arg("page_size"), py::arg("fp8_fnuz"), py::arg("valid_count"));
+  module.def("dsv4_pack_sparse_topk_workspace",
+             &at::native::dsv4_pack_sparse_topk_workspace,
+             py::arg("full_ids"), py::arg("combined_indices"),
+             py::arg("combined_lens"), py::arg("topk"),
+             py::arg("capacity"), py::arg("swa_rows") = -1);
+  module.def("dsv4_pack_c4_topk_workspace",
+             &at::native::dsv4_pack_c4_topk_workspace,
+             py::arg("full_ids"), py::arg("combined_indices"),
+             py::arg("combined_lens"), py::arg("topk"), py::arg("capacity"));
+}
+
+#else
+#include <optional>
+#include "sparse_page_mqa/paged_sparse_mqa_logits.h"
+#include "sparse_page_mqa/paged_sparse_mqa_logits_metadata.h"
+#include "sparse_page_mqa/prefill_sparse_fusion.h"
+#include "sparse_page_mqa/prefill_sparse_sort.h"
+
+#if defined(LIGHTOP_SPARSE_MQA_ONLY) && defined(LIGHTOP_PREFILL_FUSION_ONLY)
+#error "Select only one focused LightOp extension"
+#endif
+
+namespace {
+#if !defined(LIGHTOP_PREFILL_FUSION_ONLY)
+void bind_paged_sparse_mqa(pybind11::module_& m) {
+  namespace py = pybind11;
+#ifdef PREFILL_SPARSE_MQA_BUILD_ID
+  m.attr("PAGED_SPARSE_MQA_BUILD_ID") = PREFILL_SPARSE_MQA_BUILD_ID;
+#endif
+#ifdef PREFILL_SPARSE_MQA_CONSUMER_SHA256
+  m.attr("PAGED_SPARSE_MQA_CONSUMER_SHA256") = PREFILL_SPARSE_MQA_CONSUMER_SHA256;
+#endif
+  m.attr("PAGED_SPARSE_MQA_LOGITS_ABI") = 3;
+  m.attr("PAGED_SPARSE_MQA_METADATA_FORMAT") = "deepgemm_paged_sparse_v1";
+  m.def("fp8_fp4_paged_sparse_mqa_logits",
+        &lightop::deep_gemm::fp8_fp4_paged_sparse_mqa_logits,
+        "MXFP4/MXFP8 paged sparse logits, FP32 weights/output, Prefill/Decode dispatch",
+        py::arg("q"), py::arg("q_scales"), py::arg("fused_kv_cache"),
+        py::arg("weights"), py::arg("metadata"), py::arg("num_max_sparse_blocks"),
+        py::arg("sparse_block_kv"), py::arg("context_lens") = std::nullopt,
+        py::arg("sparse_kv_block_indices") = std::nullopt,
+        py::arg("output") = std::nullopt, py::arg("num_sms") = std::nullopt,
+        py::arg("is_prefill") = false);
+  m.attr("sparse_fp8_fp4_paged_mqa_logits") = m.attr("fp8_fp4_paged_sparse_mqa_logits");
+  m.def("get_paged_sparse_mqa_logits_metadata",
+        &lightop::deep_gemm::get_paged_sparse_mqa_logits_metadata,
+        "DeepGEMM get_paged_sparse_mqa_logits_metadata: merged sparse KV splits and persistent schedule",
+        py::arg("context_lens"), py::arg("block_table"), py::arg("indices"), py::arg("page_kv"),
+        py::arg("sparse_kv_block_indices"), py::arg("qk_dtype"), py::arg("sparse_block_kv"),
+        py::arg("num_sms") = std::nullopt);
+  m.def("get_paged_sparse_mqa_logits_metadata_bytes",
+        &lightop::deep_gemm::get_paged_sparse_mqa_logits_metadata_bytes,
+        "Size of get_paged_sparse_mqa_logits_metadata's output",
+        py::arg("num_q_tokens"), py::arg("num_max_sparse_blocks"), py::arg("sparse_block_kv"),
+        py::arg("split_kv"), py::arg("num_sms"));
+    m.def("prefill_sparse_fp8_fp4_paged_mqa_logits", &lightop::deep_gemm::prefill_sparse_fp8_fp4_paged_mqa_logits,
+          py::arg("q"),py::arg("scales"),py::arg("kv"),py::arg("weights"),py::arg("lens"),py::arg("table"),
+          py::arg("indices"),py::arg("candidates"),py::arg("capacity"),py::arg("block"),py::arg("num_sms")=std::nullopt,
+          py::arg("paired_rows")=false,py::arg("threads")=0);
+}
+#endif
+
+#if !defined(LIGHTOP_SPARSE_MQA_ONLY)
+void bind_prefill_sparse_fusion(pybind11::module_& m) {
+#ifdef PREFILL_FUSION_BUILD_ID
+  m.attr("PREFILL_SPARSE_FUSION_BUILD_ID") = PREFILL_FUSION_BUILD_ID;
+#endif
+  m.attr("PREFILL_SPARSE_SORT_ABI") = 1;
+  m.attr("PREFILL_SPARSE_FUSION_ABI")=1;
+  m.def("prefill_sparse_native_prepare_query", &prefill_sparse_native_prepare_query);
+  m.def("prefill_sparse_native_prepare_candidates", &prefill_sparse_native_prepare_candidates);
+  m.def("prefill_sparse_native_finalize", &prefill_sparse_native_finalize);
+  m.def("prefill_sparse_sort_candidates", &prefill_sparse_sort_candidates);
+  m.def("prefill_sparse_finalize_indices", &prefill_sparse_finalize_indices);
+}
+#endif
+}  // namespace
+
+// Local correctness/performance builds use the same bindings as lightop.op.
+#if defined(LIGHTOP_SPARSE_MQA_ONLY) || defined(LIGHTOP_PREFILL_FUSION_ONLY)
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+#if defined(LIGHTOP_SPARSE_MQA_ONLY)
+  bind_paged_sparse_mqa(m);
+#else
+  bind_prefill_sparse_fusion(m);
+#endif
+}
+#else
+#include <torch/extension.h>
 #include "sparse_page_mqa/prefill_sparse_sort.h"
 #include "sparse_page_mqa/prefill_sparse_fusion.h"
 #include <ATen/ATen.h>
@@ -22,6 +186,12 @@
 #include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm.hpp"
 #include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm_v2.hpp"
 #include "sampling/sampling.h"
+#include "sampling/markov_gemv_argmax.h"
+namespace lightop::cp_output {
+void interleave_rows_(at::Tensor, int64_t, const at::Tensor&);
+void make_interleave_plan_(at::Tensor, int64_t, int64_t);
+}
+
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace lightop::dsv41 {
 void ragged_topk_postprocess(const torch::Tensor& scores, const torch::Tensor& selected,
@@ -38,6 +208,14 @@ std::tuple<torch::Tensor, torch::Tensor> pair_partners(
     torch::Tensor& state, int64_t ring);
 }
 namespace at {  namespace native {
+// Spark MLA Q/K RoPE, Q concatenation and FP8 cache write in one kernel.
+void spark_mla_rope_cat_store(
+    const torch::Tensor& positions, const torch::Tensor& query_nope,
+    const torch::Tensor& query_rope, const torch::Tensor& key_nope,
+    const torch::Tensor& key_rope, const torch::Tensor& cosine_sine,
+    const torch::Tensor& locations, torch::Tensor query_out,
+    torch::Tensor key_rope_out, torch::Tensor cache, bool neox,
+    double quant_epsilon, int64_t heads_per_block);
 // Q-only DSA Indexer preparation; the K/cache path remains independent.
 void indexer_k_norm_rope_hadamard_store(
     const torch::Tensor &key, const torch::Tensor &weight,
@@ -612,6 +790,10 @@ void dsv41_rope_fake_quant_store(
 Tensor dsv41_pool_pairs_norm(
     const Tensor& previous, const Tensor& current,
     const Tensor& previous_score, const Tensor& score, const Tensor& weight, double eps);
+std::vector<Tensor> engram_hash_ids_hcu(
+    const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    int64_t, int64_t, int64_t, int64_t);
 void combine_topk_swa_indices_hcu(
     const Tensor& topk_indices, const Tensor& query_start_loc,
     const Tensor& query_pos, const Tensor& seq_lens, const Tensor& gather_lens,
@@ -621,6 +803,18 @@ void combine_topk_swa_indices_hcu(
 std::vector<torch::Tensor> dsv4_pack_c4_topk_workspace(
     const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
     int64_t, int64_t);
+void dequantize_k_cache_paged_hcu_selected(
+    const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
+    const torch::Tensor&, torch::Tensor&, int64_t, bool);
+torch::Tensor dsv4_dequantize_sparse_topk_out(
+    const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
+    const torch::Tensor&, torch::Tensor&, int64_t, int64_t, bool);
+void dequantize_k_cache_paged_hcu_counted(
+    const torch::Tensor&, const torch::Tensor&, torch::Tensor&,
+    int64_t, bool, const torch::Tensor&);
+std::vector<torch::Tensor> dsv4_pack_sparse_topk_workspace(
+    const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
+    int64_t, int64_t, int64_t);
 
 void dsv4_dequantize_k_cache_paged_out(
     torch::Tensor const& cache_u8,
@@ -809,6 +1003,9 @@ bool supports_mhc_repeat_cp_sglang(
 torch::Tensor mhc_repeat_cp_sglang(
     const torch::Tensor& hidden_states, int64_t hc_mult,
     int64_t cp_size, int64_t cp_rank);
+torch::Tensor& mhc_repeat_cp_sglang_out(
+    const torch::Tensor& hidden_states, int64_t hc_mult,
+    int64_t cp_size, int64_t cp_rank, torch::Tensor& out);
 void fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_int32(
     Tensor& q,
     const Tensor& kv,
@@ -917,6 +1114,13 @@ void mimo_v2_split_rope_vscale_kv_store(
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("spark_mla_rope_cat_store", &at::native::spark_mla_rope_cat_store,
+        "Spark MLA block-specialized BF16 RoPE, concat and FP8 KV store",
+        py::arg("positions"), py::arg("query_nope"), py::arg("query_rope"),
+        py::arg("key_nope"), py::arg("key_rope"), py::arg("cosine_sine"),
+        py::arg("locations"), py::arg("query_out"), py::arg("key_rope_out"),
+        py::arg("cache"), py::arg("neox"), py::arg("quant_epsilon") = 1e-6,
+        py::arg("heads_per_block") = 4);
     m.def("indexer_k_norm_rope_hadamard_store", &at::native::indexer_k_norm_rope_hadamard_store,
           "Indexer K LayerNorm, BF16 RoPE, Hadamard and mirrored INT8 cache store");
     m.def("indexer_q_rope_hadamard_quant", &at::native::indexer_q_rope_hadamard_quant,
@@ -1320,29 +1524,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "FP4 paged MQA split-KV schedule planner",
         py::arg("context_lens"), py::arg("block_kv"), py::arg("num_sms"),
         py::arg("rows_per_request") = 1);
-  m.attr("PAGED_SPARSE_MQA_LOGITS_ABI") = 3;
-  m.attr("PAGED_SPARSE_MQA_METADATA_FORMAT") = "deepgemm_paged_sparse_v1";
-  m.def("fp8_fp4_paged_sparse_mqa_logits",
-        &lightop::deep_gemm::fp8_fp4_paged_sparse_mqa_logits,
-        "MXFP4/MXFP8 paged sparse logits, FP32 weights/output, Prefill/Decode dispatch",
-        py::arg("q"), py::arg("q_scales"), py::arg("fused_kv_cache"),
-        py::arg("weights"), py::arg("metadata"), py::arg("num_max_sparse_blocks"),
-        py::arg("sparse_block_kv"), py::arg("context_lens") = std::nullopt,
-        py::arg("sparse_kv_block_indices") = std::nullopt,
-        py::arg("output") = std::nullopt, py::arg("num_sms") = std::nullopt,
-        py::arg("is_prefill") = false);
-  m.attr("sparse_fp8_fp4_paged_mqa_logits") = m.attr("fp8_fp4_paged_sparse_mqa_logits");
-  m.def("get_paged_sparse_mqa_logits_metadata",
-        &lightop::deep_gemm::get_paged_sparse_mqa_logits_metadata,
-        "DeepGEMM get_paged_sparse_mqa_logits_metadata: merged sparse KV splits and persistent schedule",
-        py::arg("context_lens"), py::arg("block_table"), py::arg("indices"), py::arg("page_kv"),
-        py::arg("sparse_kv_block_indices"), py::arg("qk_dtype"), py::arg("sparse_block_kv"),
-        py::arg("num_sms") = std::nullopt);
-  m.def("get_paged_sparse_mqa_logits_metadata_bytes",
-        &lightop::deep_gemm::get_paged_sparse_mqa_logits_metadata_bytes,
-        "Size of get_paged_sparse_mqa_logits_metadata's output",
-        py::arg("num_q_tokens"), py::arg("num_max_sparse_blocks"), py::arg("sparse_block_kv"),
-        py::arg("split_kv"), py::arg("num_sms"));
+  bind_paged_sparse_mqa(m);
   m.def("dsv41_candidate_block_table", &lightop::deep_gemm::dsv41_candidate_block_table,
         "DSV4.1 candidate indexer level one: top blocks of 8 by block max as pool slots / 8",
         py::arg("logits"), py::arg("seq_lens"), py::arg("page_table"), py::arg("page_size"),
@@ -1448,6 +1630,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("out"),
       py::arg("input"),
       py::arg("scales"));
+  m.def("markov_gemv_add_argmax", &lightop::sampling::markov_gemv_add_argmax,
+        py::arg("latent"), py::arg("weight"), py::arg("base_logits"),
+        "BF16 rank-256 Markov GEMV + BF16/FP32 logits add + greedy argmax (BS1-4)");
   m.def("top_k_sampling_from_probs", &lightop::sampling::top_k_sampling_from_probs, "top_k_sampling_from_probs");
   m.def("top_p_sampling_from_probs", &lightop::sampling::top_p_sampling_from_probs, "top_p_sampling_from_probs");
   m.def("top_k_top_p_sampling_from_probs", &lightop::sampling::top_k_top_p_sampling_from_probs, "top_k_top_p_sampling_from_probs");
@@ -1565,10 +1750,23 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
      py::arg("reuse_compact_indices") = false);
  m.def("dequantize_k_cache_paged_hcu", &at::native::dequantize_k_cache_paged_hcu,
        "V4 packed paged KV dequantization into preallocated BF16 output");
+ m.def("engram_hash_ids_hcu", &at::native::engram_hash_ids_hcu,
+       "HCU Engram EXTEND predecessor lookup and exact INT64 hashing");
  m.def("dsv41_rope_fake_quant_store", &at::native::dsv41_rope_fake_quant_store,
        "DSV41 BF16 RoPE, compressed-KV fake quantization and V4 paged store");
  m.def("dsv41_pool_pairs_norm", &at::native::dsv41_pool_pairs_norm,
        "DSV41 CP pair softmax pooling, BF16 round-trip and RMS normalization");
+ m.def("dequantize_k_cache_paged_hcu_selected", &at::native::dequantize_k_cache_paged_hcu_selected,
+      py::arg("cache"), py::arg("token_ids"), py::arg("selected_rows"), py::arg("valid_count"),
+      py::arg("out"), py::arg("page_size"), py::arg("fp8_fnuz"));
+  m.def("dsv4_dequantize_sparse_topk_out", &at::native::dsv4_dequantize_sparse_topk_out,
+      py::arg("cache"), py::arg("full_ids"), py::arg("indices"), py::arg("lengths"),
+      py::arg("out"), py::arg("topk"), py::arg("page_size"), py::arg("fp8_fnuz"));
+ m.def("dequantize_k_cache_paged_hcu_counted",
+       &at::native::dequantize_k_cache_paged_hcu_counted,
+       "Dequantize the GPU-counted valid KV prefix into preallocated BF16 output",
+       py::arg("cache"), py::arg("token_ids"), py::arg("out"),
+       py::arg("page_size"), py::arg("fp8_fnuz"), py::arg("valid_count"));
  m.def("combine_topk_swa_indices_hcu", &at::native::combine_topk_swa_indices_hcu,
        "Combine compressed TopK and positional SWA indices into a flat workspace");
  m.def("dsv4_pack_c4_topk_workspace",
@@ -1576,6 +1774,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "Pack a DSV4 C4 TopK union and remap query indices on GPU",
       py::arg("full_ids"), py::arg("combined_indices"),
       py::arg("combined_lens"), py::arg("topk"), py::arg("capacity"));
+ m.def("dsv4_pack_sparse_topk_workspace",
+      &at::native::dsv4_pack_sparse_topk_workspace,
+      "Pack a C1/C2/C4 TopK union and rebase compressed/SWA indices on GPU",
+      py::arg("full_ids"), py::arg("combined_indices"),
+      py::arg("combined_lens"), py::arg("topk"), py::arg("capacity"),
+      py::arg("swa_rows") = -1);
 m.def(
      "dsv4_dequantize_k_cache_paged_out",
      &at::native::dsv4_dequantize_k_cache_paged_out,
@@ -1637,6 +1841,10 @@ m.def(
  m.def("mhc_repeat_cp_sglang", &at::native::mhc_repeat_cp_sglang,
        "SGLang mHC CP-selected row broadcast",
        py::arg("hidden_states"), py::arg("hc_mult"), py::arg("cp_size"), py::arg("cp_rank"));
+ m.def("mhc_repeat_cp_sglang_out", &at::native::mhc_repeat_cp_sglang_out,
+       "SGLang mHC CP-selected row broadcast into a non-overlapping output",
+       py::arg("hidden_states"), py::arg("hc_mult"), py::arg("cp_size"),
+       py::arg("cp_rank"), py::arg("out"));
  m.def("topk_ids_postprocess",&at::native::topk_ids_postprocess,"topk_ids_postprocess");
  m.def("hc_mix_stats_sinkhorn_bf16x3", &at::native::hc_mix_stats_sinkhorn_bf16x3,
        py::arg("x"), py::arg("weight_parts"), py::arg("scale"), py::arg("base"),
@@ -1712,15 +1920,12 @@ m.def("hcu_alloc_extend_kernel", &at::native::lightop_hcu_alloc_extend_kernel,
        py::arg("bs"),
        py::arg("page_size"));
 m.def("mimo_v2_split_rope_vscale_kv_store", &at::native::mimo_v2_split_rope_vscale_kv_store, "mimo_v2_split_rope_vscale_kv_store");            
-  m.attr("PREFILL_SPARSE_SORT_ABI") = 1;
-  m.attr("PREFILL_SPARSE_FUSION_ABI")=1;
-    m.def("prefill_sparse_fp8_fp4_paged_mqa_logits", &lightop::deep_gemm::prefill_sparse_fp8_fp4_paged_mqa_logits,
-          py::arg("q"),py::arg("scales"),py::arg("kv"),py::arg("weights"),py::arg("lens"),py::arg("table"),
-          py::arg("indices"),py::arg("candidates"),py::arg("capacity"),py::arg("block"),py::arg("num_sms")=std::nullopt,
-          py::arg("paired_rows")=false,py::arg("threads")=0);
-  m.def("prefill_sparse_native_prepare_query", &prefill_sparse_native_prepare_query);
-  m.def("prefill_sparse_native_prepare_candidates", &prefill_sparse_native_prepare_candidates);
-  m.def("prefill_sparse_native_finalize", &prefill_sparse_native_finalize);
-  m.def("prefill_sparse_sort_candidates", &prefill_sparse_sort_candidates);
-  m.def("prefill_sparse_finalize_indices", &prefill_sparse_finalize_indices);
+  m.def("interleave_rows_", &lightop::cp_output::interleave_rows_,
+        py::arg("gathered"), py::arg("cp_size"), py::arg("cycle_leaders"));
+  m.def("make_interleave_plan_", &lightop::cp_output::make_interleave_plan_,
+        py::arg("cycle_leaders"), py::arg("rows"), py::arg("cp_size"));
+  bind_prefill_sparse_fusion(m);
 }
+
+#endif  // focused extension or complete lightop.op
+#endif  // focused mHC/CP extension or existing exports

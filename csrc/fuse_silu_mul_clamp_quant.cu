@@ -9,6 +9,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <mutex>
+#include <type_traits>
+#include <unordered_map>
 
 #include "reduce.h"
 
@@ -275,6 +278,106 @@ __global__ void swiglu_clamp_quant_scalar_kernel(
   }
 }
 
+#ifdef USE_ROCM
+// One device-local table stores the original GELU result for every BF16 bit
+// pattern. It is 128 KiB and does not change activation or quantization rounding.
+__device__ uint16_t gelu_bf16_table_bits[65536];
+__global__ void initialize_gelu_bf16_table() {
+  const uint32_t bits = blockIdx.x * blockDim.x + threadIdx.x;
+  if (bits < 65536) {
+    c10::BFloat16 value;
+    value.x = bits;
+    const float x = static_cast<float>(value);
+    constexpr float kAlpha = M_SQRT1_2;
+    const c10::BFloat16 activated = static_cast<c10::BFloat16>(
+        x * 0.5f * (1.0f + std::erf(x * kAlpha)));
+    gelu_bf16_table_bits[bits] = activated.x;
+  }
+}
+
+template <int Waves, bool ApplySmooth>
+__global__ void gelu_clamp_quant_large_m_lut_kernel(
+    const c10::BFloat16* __restrict__ input,
+    const float* __restrict__ smooth_scale,
+    int8_t* __restrict__ output,
+    float* __restrict__ scales,
+    float limit,
+    int64_t capacity,
+    const int32_t* __restrict__ valid_rows) {
+  const auto* table = reinterpret_cast<const c10::BFloat16*>(gelu_bf16_table_bits);
+  constexpr int kHidden = 1024;
+  constexpr int kWave = 64;
+  constexpr int kVector = kHidden / kWave;
+  const int wave = threadIdx.x / kWave;
+  const int lane = threadIdx.x % kWave;
+  const int expert = blockIdx.x;
+  const int64_t raw_count = valid_rows[expert];
+  const int64_t count = raw_count < 0 ? 0 : (raw_count > capacity ? capacity : raw_count);
+  using InputVector = at::native::memory::aligned_vector<c10::BFloat16, kVector>;
+  using OutputVector = at::native::memory::aligned_vector<int8_t, kVector>;
+  for (int64_t row = int64_t(blockIdx.y) * Waves + wave; row < count;
+       row += int64_t(gridDim.y) * Waves) {
+    const int column = lane * kVector;
+    const int64_t index = int64_t(expert) * capacity + row;
+    InputVector gate = *reinterpret_cast<const InputVector*>(input + index * 2 * kHidden + column);
+    InputVector up = *reinterpret_cast<const InputVector*>(input + index * 2 * kHidden + kHidden + column);
+    c10::BFloat16 activated[kVector];
+    float absmax = 0.0f;
+#pragma unroll
+    for (int i = 0; i < kVector; ++i) {
+      const c10::BFloat16 multiplied = static_cast<c10::BFloat16>(table[gate.val[i].x] * up.val[i]);
+      float value = static_cast<float>(multiplied);
+      value = value < -limit ? -limit : (value > limit ? limit : value);
+      activated[i] = swiglu_apply_smooth<c10::BFloat16, ApplySmooth>(
+          static_cast<c10::BFloat16>(value), smooth_scale, column + i);
+      absmax = fmaxf(absmax, fabsf(static_cast<float>(activated[i])));
+    }
+#pragma unroll
+    for (int offset = kWave / 2; offset > 0; offset /= 2) {
+      absmax = fmaxf(absmax, __shfl_xor(absmax, offset, kWave));
+    }
+    absmax = fmaxf(absmax, 1.0e-10f);
+    if (lane == 0) {
+      scales[index] = absmax / 127.0f;
+    }
+    const float inverse_scale = 127.0f / absmax;
+    OutputVector result;
+#pragma unroll
+    for (int i = 0; i < kVector; ++i) {
+      result.val[i] = swiglu_clamp_float_to_int8_rn(
+          static_cast<float>(activated[i]) * inverse_scale);
+    }
+    *reinterpret_cast<OutputVector*>(output + index * kHidden + column) = result;
+  }
+}
+
+// Initialization stays asynchronous. The event orders first use on other streams;
+// a first call during capture falls back to the original kernel without allocating.
+static bool prepare_gelu_bf16_table(cudaStream_t stream) {
+  static std::mutex mutex;
+  static std::unordered_map<int, cudaEvent_t> ready_events;
+  const std::lock_guard<std::mutex> lock(mutex);
+  int device;
+  C10_CUDA_CHECK(cudaGetDevice(&device));
+  auto found = ready_events.find(device);
+  if (found == ready_events.end()) {
+    cudaStreamCaptureStatus capture;
+    C10_CUDA_CHECK(cudaStreamIsCapturing(stream, &capture));
+    if (capture != cudaStreamCaptureStatusNone) {
+      return false;
+    }
+    initialize_gelu_bf16_table<<<256, 256, 0, stream>>>();
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    cudaEvent_t ready;
+    C10_CUDA_CHECK(cudaEventCreateWithFlags(&ready, cudaEventDisableTiming));
+    C10_CUDA_CHECK(cudaEventRecord(ready, stream));
+    found = ready_events.emplace(device, ready).first;
+  }
+  C10_CUDA_CHECK(cudaStreamWaitEvent(stream, found->second, 0));
+  return true;
+}
+#endif
+
 template <typename scalar_t, bool ep, bool use_gelu, bool apply_smooth>
 void launch_swiglu_clamp_quant(
     const torch::Tensor& input,
@@ -287,6 +390,21 @@ void launch_swiglu_clamp_quant(
     const int32_t* mask_m,
     dim3 grid,
     cudaStream_t stream) {
+#ifdef USE_ROCM
+  if constexpr (std::is_same_v<scalar_t, c10::BFloat16> && ep && use_gelu) {
+    if (d == 1024 && tokens_per_expert >= 8192 && prepare_gelu_bf16_table(stream)) {
+      constexpr int kWaves = 4;
+      const int64_t rows = std::min<int64_t>(tokens_per_expert, 16384);
+      const dim3 large_grid(grid.x, static_cast<uint32_t>((rows + kWaves - 1) / kWaves));
+      gelu_clamp_quant_large_m_lut_kernel<kWaves, apply_smooth>
+          <<<large_grid, kWaves * 64, 0, stream>>>(
+              input.data_ptr<c10::BFloat16>(), smooth_scale,
+              output.data_ptr<int8_t>(), scales.data_ptr<float>(),
+              limit, tokens_per_expert, mask_m);
+      return;
+    }
+  }
+#endif
   if (d <= 512 && d % 2 == 0) {
     swiglu_clamp_quant_kernel<scalar_t, 2, 256, ep, use_gelu, apply_smooth>
         <<<grid, 256, 0, stream>>>(

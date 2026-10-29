@@ -70,4 +70,29 @@ def dsv4_dequantize_k_cache_paged_out(
         )
 
 
-__all__ = ["dsv4_dequantize_k_cache_paged_out"]
+def dequantize_k_cache_paged_hcu_counted(
+    cache_u8: torch.Tensor,
+    token_ids: torch.Tensor,
+    out: torch.Tensor,
+    page_size: int,
+    fp8_fnuz: bool,
+    valid_count: torch.Tensor,
+) -> None:
+    """Dequantize only a GPU-counted prefix of V4-layout C1/C2 KV rows.
+
+    Unlike the original C4-specific API, any positive page size is accepted.
+    E4M3FN and E4M3FNUZ are explicit encodings. Rows beyond ``valid_count``
+    are neither read nor written. This is a same-stream operation with no
+    device-to-host count transfer.
+    """
+    from .topk_workspace import _get_workspace_native
+
+    native = _get_workspace_native()
+    if not hasattr(native, "dequantize_k_cache_paged_hcu_counted"):
+        raise RuntimeError("Rebuild LightOp with counted C1/C2 KV dequantization")
+    native.dequantize_k_cache_paged_hcu_counted(
+        cache_u8, token_ids, out, page_size, fp8_fnuz, valid_count
+    )
+
+
+__all__ = ["dsv4_dequantize_k_cache_paged_out", "dequantize_k_cache_paged_hcu_counted"]
