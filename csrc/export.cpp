@@ -789,9 +789,10 @@ Tensor dsv41_pool_pairs_norm(
     const Tensor& previous, const Tensor& current,
     const Tensor& previous_score, const Tensor& score, const Tensor& weight, double eps);
 std::vector<Tensor> engram_hash_ids_hcu(
-    const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    const Tensor&, const Tensor&, const Tensor&,
+    const std::optional<Tensor>&, const std::optional<Tensor>&,
     const Tensor&, const Tensor&, const Tensor&, const Tensor&,
-    int64_t, int64_t, int64_t, int64_t);
+    int64_t, int64_t, int64_t, int64_t, int64_t);
 void combine_topk_swa_indices_hcu(
     const Tensor& topk_indices, const Tensor& query_start_loc,
     const Tensor& query_pos, const Tensor& seq_lens, const Tensor& gather_lens,
