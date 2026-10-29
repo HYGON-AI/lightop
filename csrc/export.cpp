@@ -1052,6 +1052,24 @@ void topk_ids_postprocess(torch::Tensor topk_ids, torch::optional<torch::Tensor>
 torch::Tensor dpskv4_hc_head_fused(torch::Tensor mixes, torch::Tensor x, torch::Tensor hc_scale, torch::Tensor hc_base, double hc_eps);
 void ep_fused_fp8_quant_scatter(torch::Tensor input,torch::Tensor topk_ids,torch::optional<torch::Tensor> expert_map_opt,torch::Tensor expert_num_tokens,torch::Tensor aq_out,torch::Tensor aq_scale_out,torch::Tensor m_indices,torch::Tensor inv_perm, int local_num_experts,int alignment,int fp8type,bool fill_padded_m_indices);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
+std::vector<Tensor> bf16_mega_gate_hcu_impl(
+    const Tensor& x, const Tensor& weight, const torch::optional<Tensor>& optional_bias, int64_t topk,
+    bool renormalize, double routed_scaling_factor, bool apply_scale,
+    const torch::optional<std::vector<Tensor>>& out,
+    const torch::optional<Tensor>& optional_mask);
+std::tuple<Tensor, Tensor> bf16_mega_gate_hcu(
+    const Tensor& x, const Tensor& weight, int64_t num_topk,
+    bool use_shared_as_routed, int64_t num_shared_experts,
+    double routed_scaling_factor, int64_t ep_rank, const std::string& scoring_func,
+    const torch::optional<Tensor>& mask, const torch::optional<Tensor>& bias,
+    const torch::optional<Tensor>& image_bias,
+    const torch::optional<Tensor>& image_token_mask,
+    const torch::optional<Tensor>& fix_routing_mask,
+    const torch::optional<Tensor>& to_physical_map,
+    const torch::optional<Tensor>& logical_count,
+    const torch::optional<Tensor>& unmapped_topk_idx,
+    const torch::optional<Tensor>& force_random,
+    const torch::optional<std::tuple<Tensor, Tensor>>& out);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu_fused(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output, torch::optional<torch::Tensor> num_token_non_padded);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu_deepep(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output, torch::optional<torch::Tensor> num_token_non_padded);
@@ -1849,6 +1867,23 @@ m.def(
        py::arg("seq_len_delta"),
        py::arg("use_swa"));
 m.def("moe_fused_gate_sqrtsoftplus",&at::native::moe_fused_gate_sqrtsoftplus,"moe_fused_gate_sqrtsoftplus");       
+m.def("bf16_mega_gate_hcu", &at::native::bf16_mega_gate_hcu,
+      py::arg("x"), py::arg("weight"), py::arg("num_topk"),
+      py::arg("use_shared_as_routed"), py::arg("num_shared_experts"),
+      py::arg("routed_scaling_factor"), py::arg("ep_rank"),
+      py::arg("scoring_func") = "sqrtsoftplus", py::arg("mask") = py::none(),
+      py::arg("bias") = py::none(), py::arg("image_bias") = py::none(),
+      py::arg("image_token_mask") = py::none(), py::arg("fix_routing_mask") = py::none(),
+      py::arg("to_physical_map") = py::none(), py::arg("logical_count") = py::none(),
+      py::arg("unmapped_topk_idx") = py::none(), py::arg("force_random") = py::none(),
+      py::arg("out") = py::none());
+m.attr("bf16_mega_gate_hcu_api_version") = 4;
+m.def("_bf16_mega_gate_hcu", &at::native::bf16_mega_gate_hcu_impl,
+      "HCU BF16 fused router with per-stream counters and managed scratch",
+      py::arg("x"), py::arg("weight"), py::arg("bias"), py::arg("topk") = 6,
+      py::arg("renormalize") = true, py::arg("routed_scaling_factor") = 1.0,
+      py::arg("apply_scale") = false, py::arg("out") = py::none(),
+      py::arg("mask") = py::none());
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu",&at::native::moe_fused_gate_sqrtsoftplus_v41_hcu,"moe_fused_gate_sqrtsoftplus_v41_hcu");
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu_fused",
       &at::native::moe_fused_gate_sqrtsoftplus_v41_hcu_fused,
