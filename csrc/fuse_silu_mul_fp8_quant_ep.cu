@@ -807,7 +807,34 @@ void fuse_silu_mul_fp8_quant_ep(torch::Tensor& input,
 }
 
 #ifdef USE_ROCM
+// Exclusive prefix of the clamped masked counts into row_offsets[0..num_experts], by wave 0.
+__device__ __forceinline__ void masked_row_offsets(
+    const int32_t* __restrict__ tokens_per_expert, int num_experts, int capacity,
+    int* row_offsets) {
+  constexpr int Wave = C10_WARP_SIZE;
+  if (threadIdx.x < Wave) {
+    const int lane = threadIdx.x;
+    if (lane == 0) row_offsets[0] = 0;
+    int carry = 0;
+    for (int base = 0; base < num_experts; base += Wave) {
+      const int expert = base + lane;
+      int count = expert < num_experts ? tokens_per_expert[expert] : 0;
+      count = count < 0 ? 0 : (count > capacity ? capacity : count);
+      #pragma unroll
+      for (int delta = 1; delta < Wave; delta <<= 1) {
+        const int up = __shfl_up(count, delta, Wave);
+        if (lane >= delta) count += up;
+      }
+      if (expert < num_experts) row_offsets[expert + 1] = carry + count;
+      carry += __shfl(count, Wave - 1, Wave);
+    }
+  }
+  __syncthreads();
+}
+
 // The column count is dynamic; templates specialize row tiling and vector alignment.
+// Valid rows of all experts are numbered expert-major and strided over a persistent grid,
+// so one hot expert spreads over every CTA instead of only its own grid row.
 template <int ThreadsPerRow, int RowsPerBlock, int Segments, int FP8Type, bool VectorAligned>
 __global__ void act_and_mul_fp8_quant_ep_masked(
     uint8_t* __restrict__ out,
@@ -815,6 +842,7 @@ __global__ void act_and_mul_fp8_quant_ep_masked(
     float* __restrict__ scales,
     int d,
     int capacity,
+    int num_experts,
     const int32_t* __restrict__ tokens_per_expert,
     float limit) {
   constexpr int Vec = 8;
@@ -822,19 +850,29 @@ __global__ void act_and_mul_fp8_quant_ep_masked(
   static_assert(RowsPerBlock == 1 || ThreadsPerRow == Wave);
   using InputVec = at::native::memory::aligned_vector<c10::BFloat16, Vec>;
   using OutputVec = at::native::memory::aligned_vector<uint8_t, Vec>;
-  const int expert = blockIdx.x;
   const int row_in_block = threadIdx.x / ThreadsPerRow;
   const int lane = threadIdx.x % ThreadsPerRow;
-  const int count = tokens_per_expert[expert];
-  const int valid_rows = count < 0 ? 0 : (count > capacity ? capacity : count);
   constexpr bool vector_aligned = VectorAligned;
   __shared__ float warp_max[ThreadsPerRow / Wave];
   __shared__ float inverse_scale;
+  extern __shared__ int row_offsets[];
+  masked_row_offsets(tokens_per_expert, num_experts, capacity, row_offsets);
+  const int total_rows = row_offsets[num_experts];
 
-  // Each row belongs to this expert, even at a full-capacity masked count.
-  for (int row = blockIdx.y * RowsPerBlock + row_in_block;
-       row < valid_rows; row += gridDim.y * RowsPerBlock) {
-    const int64_t token = static_cast<int64_t>(expert) * capacity + row;
+  for (int row = blockIdx.x * RowsPerBlock + row_in_block;
+       row < total_rows; row += gridDim.x * RowsPerBlock) {
+    // Offsets are nondecreasing, so row_offsets[e] <= row holds for a prefix of experts and
+    // the owner is that prefix's last one; empty experts repeat an offset. Every wave of
+    // the row computes it from one LDS read and a ballot per 64 experts.
+    int expert = -1;
+    for (int base = 0; base < num_experts; base += Wave) {
+      const int e = base + lane % Wave;
+      const uint64_t below = __ballot(e < num_experts && row_offsets[e] <= row);
+      expert += __popcll(below);
+      if (~below != 0) break;
+    }
+    const int64_t token =
+        static_cast<int64_t>(expert) * capacity + (row - row_offsets[expert]);
     float values[Segments][Vec];
     float max_abs = 0.0f;
     #pragma unroll
@@ -924,26 +962,28 @@ template <int ThreadsPerRow, int RowsPerBlock, int Segments, bool VectorAligned>
 static void launch_act_and_mul_fp8_quant_ep_masked_impl(
     torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales,
     const int32_t* counts, int fp8type, float limit, cudaStream_t stream) {
+  const int num_experts = input.size(0);
   const int capacity = input.size(1);
   const int d = input.size(2) / 2;
-  // A smaller expert count needs more row blocks to keep the device busy.
-  // Multi-wave rows also need more blocks to avoid serializing dense routing.
-  const int target_blocks = ThreadsPerRow == C10_WARP_SIZE ? 384 : 1536;
-  int row_blocks = 8;
-  while (row_blocks < 32 && row_blocks * input.size(0) < target_blocks) {
-    row_blocks *= 2;
-  }
-  row_blocks = std::min(row_blocks, (capacity + RowsPerBlock - 1) / RowsPerBlock);
-  const dim3 grid(input.size(0), row_blocks);
+  // Arbitrary residency target; the grid only has to cover the device, rows are strided.
+  constexpr int kBlocksPerCU = 4;
+  const int64_t max_blocks =
+      (static_cast<int64_t>(num_experts) * capacity + RowsPerBlock - 1) / RowsPerBlock;
+  const int64_t device_blocks =
+      static_cast<int64_t>(at::cuda::getCurrentDeviceProperties()->multiProcessorCount) * kBlocksPerCU;
+  const dim3 grid(static_cast<unsigned>(std::max<int64_t>(1, std::min(max_blocks, device_blocks))));
   const dim3 block(ThreadsPerRow * RowsPerBlock);
+  const size_t smem = (static_cast<size_t>(num_experts) + 1) * sizeof(int);
   if (fp8type == 0) {
     act_and_mul_fp8_quant_ep_masked<ThreadsPerRow, RowsPerBlock, Segments, 0, VectorAligned>
-        <<<grid, block, 0, stream>>>(out.data_ptr<uint8_t>(), input.data_ptr<c10::BFloat16>(),
-                                    scales.data_ptr<float>(), d, capacity, counts, limit);
+        <<<grid, block, smem, stream>>>(out.data_ptr<uint8_t>(), input.data_ptr<c10::BFloat16>(),
+                                        scales.data_ptr<float>(), d, capacity, num_experts, counts,
+                                        limit);
   } else {
     act_and_mul_fp8_quant_ep_masked<ThreadsPerRow, RowsPerBlock, Segments, 1, VectorAligned>
-        <<<grid, block, 0, stream>>>(out.data_ptr<uint8_t>(), input.data_ptr<c10::BFloat16>(),
-                                    scales.data_ptr<float>(), d, capacity, counts, limit);
+        <<<grid, block, smem, stream>>>(out.data_ptr<uint8_t>(), input.data_ptr<c10::BFloat16>(),
+                                        scales.data_ptr<float>(), d, capacity, num_experts, counts,
+                                        limit);
   }
 }
 
@@ -994,8 +1034,8 @@ static void fuse_silu_mul_fp8_quant_ep_with_limit(torch::Tensor& input,
 
 #ifdef USE_ROCM
   // Use a small masked grid for narrow rows; wider rows retain the existing path.
-  // Each row loop remains bounded by its own expert's valid count.
-  if (d > 0 && d <= 4096 && input.scalar_type() == at::ScalarType::BFloat16 &&
+  // The expert count bounds the masked kernel's LDS row-offset table.
+  if (d > 0 && d <= 4096 && E <= 4096 && input.scalar_type() == at::ScalarType::BFloat16 &&
       tokens_per_expert_ptr != nullptr && (fp8type == 0 || fp8type == 1) &&
       input.is_contiguous() && out.is_contiguous() && scales.is_contiguous() &&
       tokens_per_expert->is_contiguous()) {
