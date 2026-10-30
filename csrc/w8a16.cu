@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
+#include "hcu_mmac.h"
 #include "reduce.h"
 
 namespace at {
@@ -64,9 +65,9 @@ struct half4x4{
 template<bool is_half=true>
 inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& reg_b, floatx4& reg_c)
 {
-    #if defined(__gfx936__) || defined(__gfx928__)
-        if constexpr (is_half)reg_c=__builtin_amdgcn_mmac_f32_16x16x16f16(reg_a,reg_b,reg_c);
-        else reg_c=__builtin_amdgcn_mmac_f32_16x16x16bf16(*(v4bh*)&reg_a,*(v4bh*)&reg_b,reg_c);
+    #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
+        if constexpr (is_half)reg_c=HCU_MMAC_F32_F16(reg_a,reg_b,reg_c);
+        else reg_c=HCU_MMAC_F32_BF16(*(v4bh*)&reg_a,*(v4bh*)&reg_b,reg_c);
     #elif defined(__gfx938__)
         if constexpr (is_half) reg_c = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(reg_a, reg_b, reg_c, false, false);
         else reg_c = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(*(v4bh*)&reg_a, *(v4bh*)&reg_b, reg_c, false, false);

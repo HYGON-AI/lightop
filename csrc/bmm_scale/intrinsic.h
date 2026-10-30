@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include "hcu_mmac.h"
 #include "hip/hip_fp16.h"
 #include "hip/hip_bf16.h"
 #include "hip/hip_runtime.h"
@@ -266,8 +267,8 @@ __device__ void mmac(const typename vec<Element, 8>::type &v1, const typename ve
     auto a = reinterpret_cast<const long*>(&v1);
     auto b = reinterpret_cast<const long*>(&v2);
 
-    #if defined(__gfx936__) || defined(__gfx928__)
-        v3 = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
+    #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
+        v3 = HCU_MMAC_I32_I8(*a, *b, v3);
     #elif defined(__gfx938__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
@@ -280,10 +281,10 @@ template<>
 __device__ void mmac<int8_t, int32_t>(const typename vec<int8_t, 8>::type &v1, const typename vec<int8_t, 8>::type &v2, typename vec<int32_t, 4>::type &v3)
 {
 
-    #if defined(__gfx936__) || defined(__gfx928__)
+    #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
         auto a = reinterpret_cast<const long*>(&v1);
         auto b = reinterpret_cast<const long*>(&v2);
-        v3 = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
+        v3 = HCU_MMAC_I32_I8(*a, *b, v3);
     #elif defined(__gfx938__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
@@ -296,7 +297,7 @@ template<>
 __device__ void mmac<fp8_t, float>(const typename vec<fp8_t, 8>::type &v1, const typename vec<fp8_t, 8>::type &v2, typename vec<float, 4>::type &v3)
 {
 
-    #if defined(__gfx936__) || defined(__gfx928__)
+    #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
         v3 = v3;
     #elif defined(__gfx938__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));

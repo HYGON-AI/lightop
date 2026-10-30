@@ -218,8 +218,8 @@ void check_router_inputs(const Tensor& x, const Tensor& weight,
               "x must be contiguous GPU BF16 [M,H]");
   const auto* props = at::cuda::getDeviceProperties(x.get_device());
   const std::string arch = std::string(props->gcnArchName).substr(0, 6);
-  TORCH_CHECK(arch == "gfx928" || arch == "gfx936" || arch == "gfx938",
-              "bf16_mega_gate_hcu requires gfx928/gfx936/gfx938");
+  TORCH_CHECK(arch == "gfx92a" || arch == "gfx928" || arch == "gfx936" || arch == "gfx938",
+              "bf16_mega_gate_hcu requires gfx92a/gfx928/gfx936/gfx938");
   const int64_t m = x.size(0), k = x.size(1);
   TORCH_CHECK(k > 0 && k % 256 == 0, "H must be positive and divisible by 256");
   TORCH_CHECK(weight.dim() == 2 && weight.size(1) == k, "weight must be [E,H]");
