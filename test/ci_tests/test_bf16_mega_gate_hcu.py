@@ -300,12 +300,21 @@ def test_public_signature():
         "unmapped_topk_idx",
         "force_random",
         "out",
+        "return_logits",
+        "renormalize",
+        "apply_scale",
     ]
     for name in list(parameters)[:7]:
         assert parameters[name].default is inspect.Parameter.empty
     assert parameters["scoring_func"].default == "sqrtsoftplus"
-    for name in list(parameters)[8:]:
+    for name in list(parameters)[8:18]:
         assert parameters[name].default is None
+    for name, default in (
+        ("return_logits", False), ("renormalize", True), ("apply_scale", True)
+    ):
+        assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameters[name].default is default
+    assert not hasattr(moe, "bf16_mega_gate_hcu_with_logits")
     assert not hasattr(moe, "bf16_mega_gate")
     assert not hasattr(moe, "create_bf16_mega_gate_hcu_workspace")
     assert not hasattr(op, "bf16_mega_gate_hcu_capture_id")
