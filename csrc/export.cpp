@@ -186,6 +186,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 #include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm.hpp"
 #include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm_v2.hpp"
 #include "sampling/sampling.h"
+#include "sampling/markov_gemv_argmax.h"
 namespace lightop::cp_output {
 void interleave_rows_(at::Tensor, int64_t, const at::Tensor&);
 void make_interleave_plan_(at::Tensor, int64_t, int64_t);
@@ -207,6 +208,14 @@ std::tuple<torch::Tensor, torch::Tensor> pair_partners(
     torch::Tensor& state, int64_t ring);
 }
 namespace at {  namespace native {
+// Spark MLA Q/K RoPE, Q concatenation and FP8 cache write in one kernel.
+void spark_mla_rope_cat_store(
+    const torch::Tensor& positions, const torch::Tensor& query_nope,
+    const torch::Tensor& query_rope, const torch::Tensor& key_nope,
+    const torch::Tensor& key_rope, const torch::Tensor& cosine_sine,
+    const torch::Tensor& locations, torch::Tensor query_out,
+    torch::Tensor key_rope_out, torch::Tensor cache, bool neox,
+    double quant_epsilon, int64_t heads_per_block);
 // Q-only DSA Indexer preparation; the K/cache path remains independent.
 void indexer_k_norm_rope_hadamard_store(
     const torch::Tensor &key, const torch::Tensor &weight,
@@ -780,9 +789,10 @@ Tensor dsv41_pool_pairs_norm(
     const Tensor& previous, const Tensor& current,
     const Tensor& previous_score, const Tensor& score, const Tensor& weight, double eps);
 std::vector<Tensor> engram_hash_ids_hcu(
-    const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    const Tensor&, const Tensor&, const Tensor&,
+    const std::optional<Tensor>&, const std::optional<Tensor>&,
     const Tensor&, const Tensor&, const Tensor&, const Tensor&,
-    int64_t, int64_t, int64_t, int64_t);
+    int64_t, int64_t, int64_t, int64_t, int64_t);
 void combine_topk_swa_indices_hcu(
     const Tensor& topk_indices, const Tensor& query_start_loc,
     const Tensor& query_pos, const Tensor& seq_lens, const Tensor& gather_lens,
@@ -1121,6 +1131,13 @@ void mimo_v2_split_rope_vscale_kv_store(
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("spark_mla_rope_cat_store", &at::native::spark_mla_rope_cat_store,
+        "Spark MLA block-specialized BF16 RoPE, concat and FP8 KV store",
+        py::arg("positions"), py::arg("query_nope"), py::arg("query_rope"),
+        py::arg("key_nope"), py::arg("key_rope"), py::arg("cosine_sine"),
+        py::arg("locations"), py::arg("query_out"), py::arg("key_rope_out"),
+        py::arg("cache"), py::arg("neox"), py::arg("quant_epsilon") = 1e-6,
+        py::arg("heads_per_block") = 4);
     m.def("indexer_k_norm_rope_hadamard_store", &at::native::indexer_k_norm_rope_hadamard_store,
           "Indexer K LayerNorm, BF16 RoPE, Hadamard and mirrored INT8 cache store");
     m.def("indexer_q_rope_hadamard_quant", &at::native::indexer_q_rope_hadamard_quant,
@@ -1628,6 +1645,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("out"),
       py::arg("input"),
       py::arg("scales"));
+  m.def("markov_gemv_add_argmax", &lightop::sampling::markov_gemv_add_argmax,
+        py::arg("latent"), py::arg("weight"), py::arg("base_logits"),
+        "BF16 rank-256 Markov GEMV + BF16/FP32 logits add + greedy argmax (BS1-4)");
   m.def("top_k_sampling_from_probs", &lightop::sampling::top_k_sampling_from_probs, "top_k_sampling_from_probs");
   m.def("top_p_sampling_from_probs", &lightop::sampling::top_p_sampling_from_probs, "top_p_sampling_from_probs");
   m.def("top_k_top_p_sampling_from_probs", &lightop::sampling::top_k_top_p_sampling_from_probs, "top_k_top_p_sampling_from_probs");
