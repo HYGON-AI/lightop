@@ -1,7 +1,6 @@
 """MiniMax-M3.1 BF16 Q/K/index Gemma RMSNorm + RoPE HIP fast path."""
 
 import importlib
-import os
 from functools import lru_cache
 
 
@@ -42,7 +41,9 @@ def minimax_qk_norm_rope(
     native = _native()
     if native is None:
         raise RuntimeError("LightOp QK HIP native extension is not built")
-    variant = int(os.environ.get("LIGHTOP_MINIMAX_QK_VARIANT", "5"))
+    # Native dispatch checks vector alignment/strides and retains the
+    # generic fallback. Preserve the previous rotary128 selection.
+    variant = 6 if rotary_dim == 64 else 5
     return tuple(
         native.minimax_qk_norm_rope(
             q,

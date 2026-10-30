@@ -5,7 +5,7 @@
 import pytest
 import torch
 
-from lightop import op
+from lightop import minimax_qk_norm_rope, op
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
 
@@ -70,7 +70,9 @@ def reference(a):
     return out
 
 
-def run(a, variant=6):
+def run(a, variant=None):
+    if variant is None:
+        return minimax_qk_norm_rope(*a)
     return op.minimax_qk_norm_rope(*a[:10], a[10], a[12], a[13], variant)
 
 
