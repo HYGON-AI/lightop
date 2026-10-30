@@ -10,7 +10,7 @@ from collections.abc import Callable
 import pytest
 import torch
 
-from lightop import gather_and_maybe_dequant_cache
+from lightop.kvcache import gather_and_maybe_dequant_cache
 
 
 DEVICE = "cuda"

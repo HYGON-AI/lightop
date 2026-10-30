@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import torch
-from lightop import op
 import time
 from lightop.gemm_ops import rocblas_scaled_mm_nn
 from typing import Optional

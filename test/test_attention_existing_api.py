@@ -6,7 +6,7 @@
 import pytest
 
 import lightop
-from lightop import gemmopt
+from lightop.attention import mqa
 from lightop import op as lightop_native
 import lightop.attention
 
@@ -45,6 +45,32 @@ NEW_ATTENTION_APIS = [
     "get_paged_mqa_logits_metadata",
     "paged_mqa_logits",
     "fp8_fp4_mqa_logits",
+    "convert_req_index_to_global_index",
+    "dsv41_build_swa_token_ids",
+    "dsv41_candidate_block_table",
+    "dsv41_pair_partners",
+    "dsv41_ragged_topk_postprocess",
+    "dsv41_remap_indices_to_staging",
+    "dsv41_rope_fake_quant_store",
+    "dsv41_select_candidate_blocks",
+    "fast_topk_transform_sparse_mask_fused",
+    "fp8_fp4_paged_sparse_mqa_logits",
+    "gemma_qkv_split_rms_rotary_embedding_fuse",
+    "get_paged_mqa_logits_fp4_metadata",
+    "get_paged_sparse_mqa_logits_metadata",
+    "mhc_repeat_cp_sglang",
+    "minimax_qk_norm_rope",
+    "page_mqa_logits_sparse_mask",
+    "paged_mqa_logits_fp4",
+    "paged_mqa_logits_persisten",
+    "paged_mqa_logits_route_lens",
+    "prefill_sparse_mqa_fused",
+    "rotary_embedding_fuse",
+    "sparse_fp8_fp4_paged_mqa_logits",
+    "supports_mhc_repeat_cp_sglang",
+    "supports_minimax_qk_norm_rope",
+    "top_k_per_row_decode",
+    "top_k_per_row_prefill",
 ]
 
 
@@ -63,7 +89,7 @@ def test_preexisting_native_attention_api_is_direct_binding():
     "name", ["get_paged_mqa_logits_metadata", "paged_mqa_logits"]
 )
 def test_paged_mqa_api_reuses_existing_wrapper(name):
-    assert getattr(lightop.attention, name) is getattr(gemmopt, name)
+    assert getattr(lightop.attention, name) is getattr(mqa, name)
 
 
 @pytest.mark.parametrize("name", NEW_ATTENTION_APIS[:3])
