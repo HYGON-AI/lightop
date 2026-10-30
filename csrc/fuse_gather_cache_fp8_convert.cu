@@ -394,6 +394,9 @@ scaled_convert_e4m3fn_pair_to_bf16_bits_fast(
     uint8_t second,
     float scale);
 
+__device__ __forceinline__ uint32_t
+scaled_convert_e4m3fn_pair_to_bf16_bits_triton(uint8_t first, uint8_t second, float scale);
+
 // Paged prefill counterpart of cp_gather_and_upconvert_fp8_kv_cache_opt.
 // It is a drop-in replacement for dequantize_k_cache_paged for packed MLA
 // FP8 cache rows: gather by the flattened page table, dequantize the 512
@@ -452,7 +455,7 @@ __global__ void prefill_gather_and_upconvert_fp8_kv_cache_kernel(
 #pragma unroll
             for (int i = 0; i < kNopeVecElems / 2; ++i) {
                 nope_dst.val[i] =
-                    scaled_convert_e4m3fn_pair_to_bf16_bits_fast(
+                    scaled_convert_e4m3fn_pair_to_bf16_bits_triton(
                         src_vec.val[2 * i],
                         src_vec.val[2 * i + 1],
                         scale);
@@ -678,6 +681,33 @@ scaled_convert_e4m3fn_pair_to_bf16_bits_fast(
         0x7fffu + ((first_value.bits >> 16) & 1u);
     second_value.bits +=
         0x7fffu + ((second_value.bits >> 16) & 1u);
+    return __builtin_amdgcn_perm(
+        first_value.bits, second_value.bits, 0x03020706u);
+}
+
+__device__ __forceinline__ uint32_t
+scaled_convert_e4m3fn_pair_to_bf16_bits_triton(
+    uint8_t first,
+    uint8_t second,
+    float scale) {
+    union {
+        float value;
+        uint32_t bits;
+    } first_value{
+        decode_finite_e4m3fn_to_float_fast(first) * scale};
+    union {
+        float value;
+        uint32_t bits;
+    } second_value{
+        decode_finite_e4m3fn_to_float_fast(second) * scale};
+
+    // Match Triton's BF16 conversion: canonical positive all-ones NaN.
+    first_value.bits = (first_value.bits & 0x7fffffffu) > 0x7f800000u
+        ? 0x7fff0000u
+        : first_value.bits + 0x7fffu + ((first_value.bits >> 16) & 1u);
+    second_value.bits = (second_value.bits & 0x7fffffffu) > 0x7f800000u
+        ? 0x7fff0000u
+        : second_value.bits + 0x7fffu + ((second_value.bits >> 16) & 1u);
     return __builtin_amdgcn_perm(
         first_value.bits, second_value.bits, 0x03020706u);
 }
