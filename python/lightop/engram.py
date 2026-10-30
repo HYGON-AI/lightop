@@ -24,6 +24,8 @@ def engram_hash_ids_hcu(
     by SGLang.  Padding produces PAD hashes, not zero hashes.  Inputs and
     history are never modified; the caller commits history later.
     """
+    if block > 0 and (row is not None or starts is not None):
+        raise ValueError("row and starts must be None when block > 0")
     return tuple(op.engram_hash_ids_hcu(
         input_ids, positions, history, row, starts, token_map, multipliers,
         primes, offsets, num_real, pad_id,
