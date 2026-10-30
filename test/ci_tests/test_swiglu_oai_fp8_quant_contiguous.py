@@ -7,6 +7,8 @@ import torch
 
 from lightop import swiglu_oai_fp8_quant_contiguous
 
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
+
 
 def reference(x, alpha=1.702, beta=1.0, limit=7.0):
     gate, up = x.float().chunk(2, dim=-1)

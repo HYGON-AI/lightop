@@ -12,8 +12,8 @@ from . import op
 def swiglu_oai_fp8_quant_contiguous(input, alpha=1.702, beta=1.0, limit=7.0):
     """Return FP8 [M,I] and FP32 [M,1] for contiguous BF16 [M,2I]."""
     native = getattr(op, "swiglu_oai_fp8_quant_contiguous", None)
-    if native is None:
-        # An isolated native extension supports incremental validation with an
-        # existing LightOp build. A normal full build exposes the op directly.
-        from .lightop_oai_contig import swiglu_oai_fp8_quant_contiguous as native
+    if not callable(native):
+        raise RuntimeError(
+            "LightOp native extension is missing swiglu_oai_fp8_quant_contiguous; rebuild LightOp"
+        )
     return tuple(native(input, alpha, beta, limit))

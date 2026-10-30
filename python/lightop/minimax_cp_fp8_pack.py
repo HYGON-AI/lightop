@@ -1,16 +1,13 @@
 """Exact FP8 K/V and BF16 index-K CP transport packet (gfx938)."""
 
-import importlib
-from functools import lru_cache
 
 
-@lru_cache(maxsize=1)
 def _native():
     from . import op
 
-    if hasattr(op, "minimax_cp_fp8_pack"):
-        return op
-    return importlib.import_module("._minimax_cp_fp8_pack", __package__)
+    if not callable(getattr(op, "minimax_cp_fp8_pack", None)):
+        raise RuntimeError("LightOp native extension is missing minimax_cp_fp8_pack; rebuild LightOp")
+    return op
 
 
 def minimax_cp_fp8_pack(k, v, index_k, k_scale=None, v_scale=None):

@@ -45,7 +45,7 @@ torch::Tensor minimax_cp_fp8_pack(torch::Tensor k,torch::Tensor v,torch::Tensor 
  TORCH_CHECK(v.size(1)==512 && ik.size(1)==128,"V512/indexK128 required");
  for(const auto& x:{k,v,ik})TORCH_CHECK(x.stride(1)==1 && x.stride(0)>=x.size(1) && x.stride(0)%8==0 && reinterpret_cast<uintptr_t>(x.data_ptr())%16==0,"aligned row-strided input required");
  const float ki=1.f/float(kscale),vi=1.f/float(vscale);
- TORCH_CHECK(std::isfinite(kscale) && kscale>0 && std::isfinite(vscale) && vscale>0 && std::isfinite(ki) && std::isfinite(vi),"positive finite inverse scales required");
+ TORCH_CHECK(std::isfinite(kscale) && kscale>0 && std::isfinite(vscale) && vscale>0 && std::isfinite(ki) && ki>0.f && std::isfinite(vi) && vi>0.f,"positive finite inverse scales required");
  c10::cuda::CUDAGuard guard(k.device());auto out=torch::empty({k.size(0),1280},k.options().dtype(at::kByte));
  if(k.size(0)){
   auto stream=at::cuda::getCurrentCUDAStream();

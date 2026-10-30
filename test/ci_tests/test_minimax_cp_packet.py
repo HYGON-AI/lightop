@@ -70,3 +70,36 @@ def test_scatter_graph_changed_packet_order_and_slots():
         torch.cuda.synchronize()
         for actual, reference in zip(backs, expected):
             assert torch.equal(actual, reference)
+
+
+@pytest.mark.parametrize("which", ["k", "v"])
+@pytest.mark.parametrize("scale", [0.0, -1.0, float("nan"), float("inf"), 1e300, 1e-300])
+@pytest.mark.parametrize("rows", [0, 1])
+def test_reject_invalid_scale_before_launch(which, scale, rows):
+    source = torch.zeros((rows, 1152), device="cuda", dtype=torch.bfloat16)
+    k, v, ik = source[:, :512], source[:, 512:1024], source[:, 1024:]
+    ks, vs = (scale, 1.0) if which == "k" else (1.0, scale)
+    with pytest.raises(RuntimeError, match="positive finite inverse scales required"):
+        op.minimax_cp_fp8_pack(k, v, ik, ks, vs, True, True)
+
+
+def test_public_cp_wrappers_match_native():
+    from lightop.quant import minimax_cp_fp8_pack
+    from lightop.kvcache import minimax_cp_cache_scatter
+
+    source = torch.randn((17, 1152), device="cuda", dtype=torch.bfloat16)
+    k, v, ik = source[:, :512], source[:, 512:1024], source[:, 1024:]
+    for ks, vs in [(None, None), (0.37, 1.7), (None, 1.7), (0.37, None)]:
+        packet = minimax_cp_fp8_pack(k, v, ik, ks, vs)
+        expected = op.minimax_cp_fp8_pack(
+            k, v, ik, 1.0 if ks is None else ks, 1.0 if vs is None else vs,
+            ks is not None, vs is not None,
+        )
+        assert torch.equal(packet, expected)
+    order = torch.arange(16, -1, -1, device="cuda")
+    slots = torch.arange(1, 18, device="cuda")
+    caches = [torch.zeros((20, n), device="cuda", dtype=torch.uint8) for n in (512, 512, 256)]
+    expected = [x.clone() for x in caches]
+    minimax_cp_cache_scatter(packet, order, slots, *caches)
+    op.minimax_cp_cache_scatter(packet, order, slots, *expected)
+    assert all(torch.equal(a, b) for a, b in zip(caches, expected))

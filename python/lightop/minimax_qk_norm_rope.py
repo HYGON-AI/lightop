@@ -1,19 +1,11 @@
 """MiniMax-M3.1 BF16 Q/K/index Gemma RMSNorm + RoPE HIP fast path."""
 
-import importlib
-from functools import lru_cache
 
 
-@lru_cache(maxsize=1)
 def _native():
     from . import op
 
-    if hasattr(op, "minimax_qk_norm_rope"):
-        return op
-    try:
-        return importlib.import_module("._minimax_qk_rope", __package__)
-    except ImportError:
-        return None
+    return op if callable(getattr(op, "minimax_qk_norm_rope", None)) else None
 
 
 def supports_minimax_qk_norm_rope():
