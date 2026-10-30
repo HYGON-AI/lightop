@@ -1112,6 +1112,7 @@ void mimo_v2_split_rope_vscale_kv_store(
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.attr("PREFILL_GATHER_TRITON_NAN_COMPAT_VERSION") = 1;
   m.def("spark_mla_rope_cat_store", &at::native::spark_mla_rope_cat_store,
         "Spark MLA block-specialized BF16 RoPE, concat and FP8 KV store",
         py::arg("positions"), py::arg("query_nope"), py::arg("query_rope"),
