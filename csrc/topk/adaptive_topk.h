@@ -482,52 +482,73 @@ void adaptive_topk_kernel(const float* scores, int64_t score_stride, int width,
         const int sample_id = tid * SampleItems + j;
         samples[j] = key(input[static_cast<int64_t>(sample_id) * n / Samples]);
       }
-      const int proposal_rank = ::min(Samples, ::max(1,
+      int proposal_rank = ::min(Samples, ::max(1,
           static_cast<int>((int64_t{K+K/2}*Samples + n-1) / n)));
-      sample_select(samples, proposal_rank, s);
-      const uint32_t pivot = s.pivot;
-      int equal = 0;
-      // Certification and candidate formation share the mandatory complete scan.
-      for (int base = 0; base < n; base += Threads) {
-        const int i = base + tid;
-        const uint32_t value = i < n ? key(input[i]) : 0;
-        const bool greater = i < n && value > pivot;
-        equal += i < n && value == pivot;
-        const int dest = reserve_wave(greater, &s.count);
-        if (greater && dest < Capacity) { s.keys[dest] = value; s.ids[dest] = i; }
-      }
-      __syncthreads();
-      const int equal_total = Reduce(s.temp.reduce).Sum(equal);
-      if (tid == 0) s.equal = equal_total;
-      __syncthreads();
-      const int greater = s.count;
-      if (greater <= K && greater + s.equal >= K) {
-        // The pivot itself is the exact boundary, including large zero plateaus.
-        for (int i = tid; i < greater; i += Threads) s.selected[i] = s.ids[i];
-        if (tid == 0) { s.eq_used = 0; s.route = 2; }
-        __syncthreads();
-        for (int base = 0; base < n && s.eq_used < K-greater; base += Threads) {
-          const int i = base + tid;
-          const int match = i < n && key(input[i]) == pivot;
-          int pos = 0, total = 0;
-          Scan(s.temp.scan).ExclusiveSum(match, pos, total);
-          __syncthreads();
-          const int out = greater + s.eq_used + pos;
-          if (match && out < K) s.selected[out] = i;
-          __syncthreads();
-          if (tid == 0) s.eq_used += total;
+      int min_rank = 1, max_rank = Samples;
+      constexpr int MaxProposals = K == 512 ? 3 : 1;
+      // A small query batch cannot hide a rejected proposal's histogram scan.
+      // Keep retries within the measured 128K--256K decode window, including
+      // the generated-token margin. Larger rows retain the original fallback.
+      const bool retry_proposal = K == 512 && n >= 131072 &&
+                                  n <= 262656 && gridDim.x <= 6;
+      for (int attempt = 0; attempt < MaxProposals; ++attempt) {
+        if (attempt) {
+          if (tid == 0) { s.count = 0; s.equal = 0; }
           __syncthreads();
         }
-        resolved = true;
-      } else if (greater >= K && greater <= Capacity) {
-        if (tid == 0) s.route = 3;
-        exact_select<true>(input, greater, s);
-        resolved = true;
-      } else {
-        // No output is committed from truncated/underfilled candidates.
-        if (tid == 0) s.route = greater > Capacity ? 4 : 5;
+        sample_select(samples, proposal_rank, s);
+        const uint32_t pivot = s.pivot;
+        int equal = 0;
+        // Certification and candidate formation share the mandatory complete scan.
+        for (int base = 0; base < n; base += Threads) {
+          const int i = base + tid;
+          const uint32_t value = i < n ? key(input[i]) : 0;
+          const bool greater = i < n && value > pivot;
+          equal += i < n && value == pivot;
+          const int dest = reserve_wave(greater, &s.count);
+          if (greater && dest < Capacity) { s.keys[dest] = value; s.ids[dest] = i; }
+        }
+        __syncthreads();
+        const int equal_total = Reduce(s.temp.reduce).Sum(equal);
+        if (tid == 0) s.equal = equal_total;
+        __syncthreads();
+        const int greater = s.count;
+        if (greater <= K && greater + s.equal >= K) {
+          // The pivot itself is the exact boundary, including large zero plateaus.
+          for (int i = tid; i < greater; i += Threads) s.selected[i] = s.ids[i];
+          if (tid == 0) { s.eq_used = 0; s.route = 2; }
+          __syncthreads();
+          for (int base = 0; base < n && s.eq_used < K-greater; base += Threads) {
+            const int i = base + tid;
+            const int match = i < n && key(input[i]) == pivot;
+            int pos = 0, total = 0;
+            Scan(s.temp.scan).ExclusiveSum(match, pos, total);
+            __syncthreads();
+            const int out = greater + s.eq_used + pos;
+            if (match && out < K) s.selected[out] = i;
+            __syncthreads();
+            if (tid == 0) s.eq_used += total;
+            __syncthreads();
+          }
+          resolved = true;
+        } else if (greater >= K && greater <= Capacity) {
+          if (tid == 0) s.route = 3;
+          exact_select<true>(input, greater, s);
+          resolved = true;
+        } else {
+          // No output is committed from truncated/underfilled candidates.
+          if (tid == 0) s.route = greater > Capacity ? 4 : 5;
+        }
+        __syncthreads();
+        if (resolved || !retry_proposal || attempt + 1 == MaxProposals) break;
+        if (greater < K) min_rank = proposal_rank + 1;
+        else max_rank = proposal_rank - 1;
+        if (min_rank > max_rank) break;
+        const int denominator = ::max(greater, 1);
+        const int next_rank = static_cast<int>(
+            (int64_t{proposal_rank} * (K+K/2) + denominator/2) / denominator);
+        proposal_rank = ::max(min_rank, ::min(max_rank, next_rank));
       }
-      __syncthreads();
     }
     if (!resolved) {
       const int original_count = s.count, original_equal = s.equal;
