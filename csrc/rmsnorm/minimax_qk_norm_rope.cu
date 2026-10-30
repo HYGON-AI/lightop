@@ -215,7 +215,8 @@ std::vector<torch::Tensor> minimax_qk_norm_rope(
   if(variant>=4){
     bool vector_ok=(variant==6?rotary==64:rotary==128);
     for(int i=0;i<4;++i)vector_ok=vector_ok && p.col_stride[i]==1 && p.row_stride[i]%8==0 && reinterpret_cast<uintptr_t>(p.x[i])%16==0 && reinterpret_cast<uintptr_t>(p.weight[i])%16==0;
-    if(variant==6)vector_ok=vector_ok && reinterpret_cast<uintptr_t>(cs.data_ptr())%16==0;
+    // All vector variants load aligned QKPack<Cos,8> values in the NeoX path.
+    vector_ok=vector_ok && reinterpret_cast<uintptr_t>(cs.data_ptr())%16==0;
     if(!vector_ok)variant=3;
   }
   TORCH_CHECK(positions.device()==q.device() && positions.dim()==1 && positions.numel()==p.rows && positions.is_contiguous() && (positions.scalar_type()==at::kLong || positions.scalar_type()==at::kInt),"positions must be contiguous device int32/int64 [rows]");

@@ -123,3 +123,39 @@ def test_qk_graph_changed_input():
         graph.replay()
         torch.cuda.synchronize()
         assert_oracle(args, actual)
+
+
+@pytest.mark.parametrize("cos_dtype", [torch.float32, torch.bfloat16])
+@pytest.mark.parametrize("neox", [True, False])
+@pytest.mark.parametrize(
+    "rotary,variant", [(128, None), (128, 4), (128, 5), (64, None), (64, 6)]
+)
+def test_qk_unaligned_cos_cache_falls_back(cos_dtype, neox, rotary, variant):
+    torch.manual_seed(126)
+    args = make(17, rotary=rotary, neox=neox, cos_dtype=cos_dtype)
+    original = args[9]
+    storage = torch.empty(
+        original.numel() + 1, device=original.device, dtype=original.dtype
+    )
+    args[9] = storage[1:].view_as(original)
+    args[9].copy_(original)
+    assert args[9].is_contiguous()
+    assert args[9].data_ptr() % 16 != 0
+
+    actual = run(args, variant)
+    assert_oracle(args, actual)
+    for got, scalar in zip(actual, run(args, 3)):
+        assert torch.equal(got, scalar)
+
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = run(args, variant)
+    for _ in range(2):
+        # Keep the offset pointer while changing the live cache contents.
+        args[9].neg_()
+        args[8].add_(1)
+        graph.replay()
+        torch.cuda.synchronize()
+        assert_oracle(args, actual)
+        for got, scalar in zip(actual, run(args, 3)):
+            assert torch.equal(got, scalar)
