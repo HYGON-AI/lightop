@@ -121,6 +121,7 @@ __global__ void swiglu_oai_fp8_quant_masked_flat_kernel(
         *reinterpret_cast<OutputVec*>(q + token * width + col) = out;
       }
     }
+    // All waves must finish reading wave_max before the next row overwrites it.
     if constexpr (Waves > 1) __syncthreads();
   }
 }

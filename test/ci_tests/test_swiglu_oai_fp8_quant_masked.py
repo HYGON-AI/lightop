@@ -21,7 +21,10 @@ def _buffers(x):
     return q, scales
 
 
-def _check(x, counts, q, scales, alpha=1.702, limit=7.0):
+def _check(
+    x, counts, q, scales, alpha=1.702, limit=7.0,
+    check_q_padding=True, check_scale_padding=True,
+):
     gate, up = x.float().chunk(2, dim=-1)
     gate = gate.clamp(max=limit)
     activated = gate * torch.sigmoid(alpha * gate) * (up.clamp(-limit, limit) + 1)
@@ -54,8 +57,84 @@ def _check(x, counts, q, scales, alpha=1.702, limit=7.0):
         assert torch.equal(
             actual_bits[both_nonzero] & 128, expected_bits[both_nonzero] & 128
         )
-        assert (q[expert, count:].view(torch.uint8) == 165).all()
-        assert (scales[expert, count:] == -123.0).all()
+        if check_q_padding:
+            assert (q[expert, count:].view(torch.uint8) == 165).all()
+        if check_scale_padding:
+            assert (scales[expert, count:] == -123.0).all()
+
+
+@pytest.mark.parametrize("experts", [4, 16])
+@pytest.mark.parametrize("provided", ["neither", "output", "scales"])
+def test_optional_output_allocation(experts, provided):
+    torch.manual_seed(120)
+    x = torch.randn(experts, 33, 6144, device="cuda", dtype=torch.bfloat16)
+    counts = torch.tensor([-2, 36, 0, 32] * (experts // 4), device=x.device, dtype=torch.int32)
+    q_buffer, scale_buffer = _buffers(x)
+    kwargs = {}
+    if provided == "output":
+        kwargs["output"] = q_buffer
+    elif provided == "scales":
+        kwargs["scales"] = scale_buffer
+    q, scales = swiglu_oai_fp8_quant_masked(x, counts, **kwargs)
+    assert q.shape == (experts, 33, 3072) and q.dtype == torch.float8_e4m3fn
+    assert scales.shape == (experts, 33, 1) and scales.dtype == torch.float32
+    assert q.device == x.device and scales.device == x.device
+    assert q.is_contiguous() and scales.is_contiguous()
+    if provided == "output":
+        assert q is q_buffer
+    else:
+        assert q is not q_buffer
+    if provided == "scales":
+        assert scales is scale_buffer
+    else:
+        assert scales is not scale_buffer
+    buffers = [x, counts, q, scales]
+    assert len({t.untyped_storage().data_ptr() for t in buffers}) == len(buffers)
+    # Padding allocated by the wrapper is unspecified; only caller-owned
+    # sentinel padding may be checked. Live rows always use the same oracle.
+    _check(
+        x, counts, q, scales,
+        check_q_padding=provided == "output",
+        check_scale_padding=provided == "scales",
+    )
+    swiglu_oai_fp8_quant_masked(x, counts, q_buffer, scale_buffer)
+    for expert, raw_count in enumerate(counts.cpu().tolist()):
+        live = max(0, min(raw_count, x.shape[1]))
+        assert torch.equal(q[expert, :live].view(torch.uint8), q_buffer[expert, :live].view(torch.uint8))
+        assert torch.equal(scales[expert, :live], scale_buffer[expert, :live])
+
+
+@pytest.mark.parametrize("flat", [False, True])
+@pytest.mark.parametrize("threads", [128, 256])
+@pytest.mark.parametrize("row_blocks", [1, 3])
+@pytest.mark.parametrize("width", [520, 3072])
+def test_multirow_shared_reduction(flat, threads, row_blocks, width):
+    # Force each block to reuse shared wave_max for many rows. Width 520 leaves
+    # almost all work in one wave; alternating row amplitudes expose stale maxima.
+    experts, capacity = (16 if flat else 4), 65
+    torch.manual_seed(121)
+    x = torch.randn(experts, capacity, 2 * width, device="cuda", dtype=torch.bfloat16)
+    amplitude = torch.tensor([0.01, 5.0], device=x.device).repeat(33)[:capacity]
+    x.mul_(amplitude[None, :, None])
+    counts = torch.full((experts,), capacity, device=x.device, dtype=torch.int32)
+    q, scales = _buffers(x)
+    fn = op.swiglu_oai_fp8_quant_masked_flat if flat else op.swiglu_oai_fp8_quant_masked
+
+    def launch():
+        fn(x, q, scales, counts, 1.702, 7.0, row_blocks, threads)
+
+    launch()
+    _check(x, counts, q, scales)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        launch()
+    for live in (capacity - 1, capacity, capacity // 2):
+        x.mul_(-0.75)
+        counts.fill_(live)
+        q.view(torch.uint8).fill_(165)
+        scales.fill_(-123)
+        graph.replay()
+        _check(x, counts, q, scales)
 
 
 @pytest.mark.parametrize("experts", [0, 1, 4, 16])
