@@ -99,8 +99,8 @@ indexer_q_rope_hadamard_quant(const torch::Tensor &query, const torch::Tensor &p
                 "Indexer Q and cos/sin must be BF16");
     TORCH_CHECK(raw_gate.scalar_type() == at::kFloat, "raw_gate must be FP32");
     TORCH_CHECK(query.dim() == 3 && query.size(1) == kHeads && query.size(2) == kWidth &&
-                    query.stride(2) == 1 && query.size(0) <= 20,
-                "Indexer Q must have shape [M<=20,32,128] and contiguous head columns");
+                    query.stride(2) == 1 && query.size(0) <= 36,
+                "Indexer Q must have shape [M<=36,32,128] and contiguous head columns");
     TORCH_CHECK(positions.dim() == 1 && positions.is_contiguous() &&
                     positions.size(0) == query.size(0) &&
                     (positions.scalar_type() == at::kLong || positions.scalar_type() == at::kInt),
