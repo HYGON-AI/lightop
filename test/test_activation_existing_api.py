@@ -7,6 +7,7 @@ import pytest
 
 import lightop
 import lightop.activation
+from lightop import op as lightop_native
 
 
 EXISTING_ACTIVATION_APIS = [
@@ -29,6 +30,15 @@ EXISTING_ACTIVATION_APIS = [
     "LnDropPath",
     "relu2",
     "ReluDropout",
+    "fuse_situ_mul_quant_contiguous",
+    "fuse_situ_mul_quant_ep",
+]
+
+
+CATEGORY_ONLY_ACTIVATION_APIS = [
+    "gelu_and_mul_opt",
+    "gelu_tanh_and_mul_opt",
+    "silu_and_mul_opt",
 ]
 
 
@@ -38,6 +48,9 @@ def test_existing_activation_api_is_direct_reexport(name):
 
 
 def test_activation_public_api_inventory():
-    assert set(lightop.activation.__all__) == set(EXISTING_ACTIVATION_APIS) | {
+    assert set(lightop.activation.__all__) == set(EXISTING_ACTIVATION_APIS + CATEGORY_ONLY_ACTIVATION_APIS) | {
         "lm_fuse_silu_mul_quant"
     }
+
+    for name in CATEGORY_ONLY_ACTIVATION_APIS:
+        assert getattr(lightop.activation, name) is getattr(lightop_native, name)

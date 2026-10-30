@@ -3,7 +3,7 @@
 
 import torch
 import triton
-from vllm import _custom_ops as vllm_ops
+from common.vllm_reference import vllm_ops
 # [确保 lightop 已正确安装]
 from lightop.activation import fuse_silu_mul_quant_ep, silu_and_mul_opt
 from typing import Optional

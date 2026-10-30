@@ -7,6 +7,7 @@ import pytest
 import torch
 
 from lightop import gemmopt
+from lightop.attention import mqa
 from lightop import op as lightop_native
 from lightop.attention import (
     fuse_layernorm_rotary_embedding,
@@ -34,7 +35,7 @@ def test_remaining_attention_bindings_are_direct_reexports() -> None:
     assert get_paged_mqa_logits_metadata is (
         gemmopt.get_paged_mqa_logits_metadata
     )
-    assert paged_mqa_logits is gemmopt.paged_mqa_logits
+    assert paged_mqa_logits is mqa.paged_mqa_logits
     assert fuse_layernorm_rotary_embedding is (
         lightop_native.fuse_layernorm_rotary_embedding
     )
