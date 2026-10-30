@@ -105,7 +105,8 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-          sparse-checkout: test/ci_tests
+          # The CI suite imports reference helpers from test/test_adaptive_topk.py.
+          sparse-checkout: test
 
       - name: 运行 test/ci_tests
         env:
@@ -116,6 +117,7 @@ jobs:
           # shellcheck disable=SC1091
           source /opt/dtk/env.sh
           cd test/ci_tests
+          export PYTHONPATH="${GITHUB_WORKSPACE}/test${PYTHONPATH:+:${PYTHONPATH}}"
           python3 -m pytest -v -p no:cacheprovider --tb=short \
               --junitxml="${GITHUB_WORKSPACE}/junit-dtk${DTK_VERSION}-${TORCH_VERSION}.xml"
 
