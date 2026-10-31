@@ -1,6 +1,6 @@
 # Copyright 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
-"""Exact Engram Prefill checks and synchronized Torch/HCU comparisons."""
+"""Exact Engram EXTEND/VERIFY checks and synchronized Torch/HCU comparisons."""
 
 import argparse
 import itertools
@@ -124,6 +124,182 @@ def test_engram_hash_ids_hcu():
     from lightop.engram import engram_hash_ids_hcu
 
     correctness(engram_hash_ids_hcu)
+
+
+def verify_inputs(batch, block, dtype=torch.int64, position_dtype=torch.int64,
+                  history_dtype=torch.int32, image=False, real="full"):
+    data = list(inputs([block] * batch if batch else [0], dtype=dtype, position_dtype=position_dtype,
+                       history_dtype=history_dtype))
+    if not batch:
+        data[2] = data[2][:0]
+    data[3] = data[4] = None
+    # Include sequence starts and history-bearing requests in the same batch.
+    bases = torch.tensor([0, 1, 2, 19], device="cuda").repeat((batch + 3) // 4)[:batch]
+    data[1] = (bases[:, None] + torch.arange(block, device="cuda")).flatten().to(position_dtype)
+    if real == "partial":
+        data[9] = max(0, batch * block - max(1, block // 2))
+    elif real == "empty":
+        data[9] = 0
+    if image:
+        data[0][::7] = 1000007  # Shifted multimodal IDs.
+        data[0][1::7] = 17     # Already normalized image IDs.
+        data[2][::2, 0] = 17
+        data[2][1::2, 2] = 1000010
+        data[11] = 17
+    return tuple(data)
+
+
+def verify_reference(data, block):
+    """CPU oracle: prepend request history, then take reversed four-token windows.
+
+    This does not call the native op or reuse its flattened predecessor indexing.
+    Python integers avoid depending on the device's integer multiplication/XOR.
+    Fixtures respect the public contract that products fit signed INT64.
+    """
+    ids, positions, history, _, _, token_map, multipliers, primes, offsets = [
+        x.cpu().tolist() if isinstance(x, torch.Tensor) else x for x in data[:9]
+    ]
+    num_real, pad_id, image_id, mm_shift = data[9:]
+    hash_rows, token_rows = [], []
+    for request, previous in enumerate(history):
+        sequence = previous + ids[request * block:(request + 1) * block]
+        for offset in range(block):
+            index = request * block + offset
+            live = index < num_real
+            tokens = list(reversed(sequence[offset:offset + 4])) if live else [0] * 4
+            if image_id is not None:
+                tokens = [image_id if token >= mm_shift else token for token in tokens]
+            compressed, image_seen = [], False
+            for shift, token in enumerate(tokens):
+                image_seen |= image_id is not None and token == image_id
+                blocked = not live or positions[index] < shift or image_seen
+                compressed.append(pad_id if blocked else token_map[token])
+            tables = []
+            for layer in range(2):
+                hashes, rolling = [], 0
+                for shift in range(4):
+                    rolling ^= compressed[shift] * multipliers[layer][shift]
+                    if shift:
+                        hashes.extend(rolling % primes[layer][shift - 1][head]
+                                      + offsets[layer][(shift - 1) * 8 + head]
+                                      for head in range(8))
+                tables.append(hashes)
+            hash_rows.append(tables)
+            token_rows.append(tokens)
+    return (torch.tensor(hash_rows, dtype=torch.int64).reshape(len(ids), 2, 24),
+            torch.tensor(token_rows, dtype=torch.int64).reshape(len(ids), 4))
+
+
+def check_verify(data, block, actual=None):
+    from lightop.engram import engram_hash_ids_hcu
+
+    before = [x.clone() if isinstance(x, torch.Tensor) else x for x in data]
+    expected = verify_reference(data, block)
+    if actual is None:
+        actual = engram_hash_ids_hcu(*data, block=block)
+    assert len(actual) == 2
+    for got, want in zip(actual, expected):
+        assert got.dtype == torch.int64 and got.device == data[0].device
+        torch.testing.assert_close(got.cpu(), want, atol=0, rtol=0)
+    for got, want in zip(data, before):
+        if isinstance(got, torch.Tensor):
+            torch.testing.assert_close(got, want, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("block", [1, 2, 4, 5, 8])
+@pytest.mark.parametrize("dtype,position_dtype,history_dtype", list(itertools.product(
+    (torch.int32, torch.int64), repeat=3)))
+@pytest.mark.parametrize("image", [False, True])
+@pytest.mark.parametrize("real", ["full", "partial", "empty"])
+def test_engram_verify_exact(block, dtype, position_dtype, history_dtype, image, real):
+    torch.manual_seed(20261030)
+    data = verify_inputs(4, block, dtype, position_dtype, history_dtype, image, real)
+    check_verify(data, block)
+
+
+@pytest.mark.parametrize("batch,block", [(0, 1), (0, 5), (1, 1), (3, 5),
+                                        (2, 8), (1, 17), (128, 8), (205, 5)])
+def test_engram_verify_boundaries(batch, block):
+    torch.manual_seed(20261030)
+    check_verify(verify_inputs(batch, block), block)
+
+
+@pytest.mark.parametrize("case,match", [
+    ("negative_block", "block must be non-negative"),
+    ("nondivisible_block", "verify block must divide"),
+    ("history_rows", "verify history must be"),
+    ("history_columns", "history must be"),
+    ("negative_real", "num_real must be"),
+    ("excess_real", "num_real must be"),
+    ("float_ids", "must be int32 or int64"),
+    ("strided_positions", "must be contiguous"),
+    ("extend_without_rows", "row and starts are required"),
+])
+def test_engram_verify_rejects_invalid_parameters(case, match):
+    from lightop.engram import engram_hash_ids_hcu
+
+    data, block = list(verify_inputs(3, 5)), 5
+    if case == "negative_block":
+        block = -1
+    elif case == "nondivisible_block":
+        block = 4
+    elif case == "history_rows":
+        data[2] = data[2][:-1].contiguous()
+    elif case == "history_columns":
+        data[2] = data[2][:, :2].contiguous()
+    elif case == "negative_real":
+        data[9] = -1
+    elif case == "excess_real":
+        data[9] = data[0].numel() + 1
+    elif case == "float_ids":
+        data[0] = data[0].float()
+    elif case == "strided_positions":
+        data[1] = data[1].repeat_interleave(2)[::2]
+    elif case == "extend_without_rows":
+        block = 0
+    with pytest.raises(RuntimeError, match=match):
+        engram_hash_ids_hcu(*data, block=block)
+
+
+@pytest.mark.parametrize("with_row,with_starts", [(True, False), (False, True), (True, True)])
+def test_engram_verify_rejects_extend_metadata(with_row, with_starts):
+    from lightop.engram import engram_hash_ids_hcu
+
+    data = list(verify_inputs(3, 5))
+    if with_row:
+        data[3] = torch.arange(3, device="cuda").repeat_interleave(5)
+    if with_starts:
+        data[4] = torch.arange(3, device="cuda") * 5
+    with pytest.raises(ValueError, match="row and starts must be None"):
+        engram_hash_ids_hcu(*data, block=5)
+
+
+@pytest.mark.parametrize("block", [1, 5, 8])
+def test_engram_verify_graph_replay(block):
+    from lightop.engram import engram_hash_ids_hcu
+
+    data = verify_inputs(4, block, image=True, real="partial")
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        engram_hash_ids_hcu(*data, block=block)
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        actual = engram_hash_ids_hcu(*data, block=block)
+    for iteration in range(5):
+        data[0].copy_(torch.arange(data[0].numel(), device="cuda") + iteration * 31)
+        data[1].add_(1)
+        data[2].fill_(iteration + 3)
+        if iteration % 2:
+            data[0][0] = 1000007
+            data[2][0, 1] = 17
+        before = [x.clone() if isinstance(x, torch.Tensor) else x for x in data]
+        graph.replay()
+        check_verify(data, block, actual)
+        for got, want in zip(data, before):
+            if isinstance(got, torch.Tensor):
+                torch.testing.assert_close(got, want, atol=0, rtol=0)
 
 
 def timing(fn):
