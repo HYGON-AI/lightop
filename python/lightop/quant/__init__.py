@@ -3,6 +3,8 @@
 
 """Public quantization, dequantization, and format-conversion APIs."""
 
+from ..minimax_cp_fp8_pack import minimax_cp_fp8_pack
+
 from .affine import w4tow16
 from .blockwise import blockwise_scaled_cast_transpose
 from .fp8 import (
@@ -20,6 +22,8 @@ from .int8 import (
 )
 
 __all__ = [
+    "minimax_cp_fp8_pack",
+
     "blockwise_scaled_cast_transpose",
     "destindex_copy_quantize_int8_cuda",
     "destindex_dequantize_int8_cuda",
