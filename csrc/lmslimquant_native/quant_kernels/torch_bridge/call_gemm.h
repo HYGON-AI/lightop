@@ -8,7 +8,7 @@
 #include "lmslimquant_native/quant_kernels/smoothquant/smquant_gemm.cuh"
 #include <torch/all.h>
 // #include "lmslimquant_native/quant_kernels/awq/gemm_w4a16.h"
-#include "lmslimquant_native/quant_kernels/awq/gemm_w4a16_v2.h"
+#include "awq_w4a16_gemm/awq_w4a16.h"
 
 
 torch::Tensor run_gemm_w4a16_v2(torch::Tensor input,
