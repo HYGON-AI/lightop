@@ -10,6 +10,9 @@ PAGED_MQA_LOGITS_FP4_ABI = 3
 from ..dsv4_prefill import dsv41_rope_fake_quant_store
 from .mhc import mhc_repeat_cp_sglang, supports_mhc_repeat_cp_sglang
 from .mqa import (
+    fp8_fp4_paged_sparse_mqa_logits,
+    prefill_sparse_mqa_fused,
+    sparse_fp8_fp4_paged_mqa_logits,
     fp8_fp4_mqa_logits,
     get_paged_mqa_logits_metadata,
     get_paged_mqa_logits_fp4_metadata,
@@ -66,6 +69,9 @@ from .rope import (
 )
 
 __all__ = [
+    "fp8_fp4_paged_sparse_mqa_logits",
+    "prefill_sparse_mqa_fused",
+    "sparse_fp8_fp4_paged_mqa_logits",
     "FusedScaleMaskSoftmax",
     "FusedScaleMaskSoftmaxDropout",
     "FuseLogSoftmax",
@@ -116,13 +122,6 @@ __all__ = [
     "topk_transform_512",
 ]
 
-from .mqa import (
-    fp8_fp4_paged_sparse_mqa_logits,
-    prefill_sparse_mqa_fused,
-    sparse_fp8_fp4_paged_mqa_logits,
-)
-
-__all__ = list(dict.fromkeys([*__all__, "fp8_fp4_paged_sparse_mqa_logits", "sparse_fp8_fp4_paged_mqa_logits", "prefill_sparse_mqa_fused"]))
 
 # Older runtime op wheels may predate these optional, unrelated helpers.
 from .. import op as _attention_native

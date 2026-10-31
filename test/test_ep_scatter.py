@@ -225,7 +225,7 @@ def _fwd_kernel_ep_scatter_2(
 
 
 @torch.no_grad()
-def ep_scatter(
+def ep_scatter_triton(
     recv_x: torch.Tensor,
     recv_x_scale: torch.Tensor,
     recv_topk: torch.Tensor,
@@ -350,7 +350,7 @@ def run_single_benchmark(M, H, K, E, ALIGNMENT, device):
         ref_counters = expert_counts.clone()
         ref_start_loc = torch.zeros((E,), dtype=torch.int32, device=device)
         
-        ep_scatter(
+        ep_scatter_triton(
             x_int8, x_scales, 
             topk_ids, ref_counters, expert_map,
             ref_start_loc, ref_aq_out, ref_aq_scale, 
@@ -405,7 +405,7 @@ def run_single_benchmark(M, H, K, E, ALIGNMENT, device):
     # 1. Triton Benchmark
     def triton_step():
         bench_start_loc.zero_() 
-        ep_scatter(
+        ep_scatter_triton(
             x_int8, x_scales, topk_ids, expert_counts, expert_map,
             bench_start_loc, bench_aq_out, bench_scale_out,
             bench_m_indices, bench_inv_perm, alignment=ALIGNMENT

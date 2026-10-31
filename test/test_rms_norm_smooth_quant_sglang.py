@@ -3,10 +3,11 @@
 
 """RMSNorm + clamp + smooth + INT8 quant compatibility tests."""
 
+from lightop.norm import fused_add_rms_norm_opt as categorized_fused_add_rms_norm_opt
+from lightop.norm import rms_norm_opt as categorized_rms_norm_opt
 import pytest
 import torch
 
-from lightop import op
 from lightop.quant import per_token_dynamic_quant_int8
 from lightop.rmsnorm import rms_norm_dynamic_per_token_quant_sglang
 
@@ -68,11 +69,11 @@ def test_rms_norm_clamp_smooth_quant_matches_reference_numerics(
     )
     if baseline_residual is None:
         normalized = torch.empty_like(baseline_input)
-        op.rms_norm_opt(
+        categorized_rms_norm_opt(
             normalized, baseline_input, weight, epsilon, limit
         )
     else:
-        op.fused_add_rms_norm_opt(
+        categorized_fused_add_rms_norm_opt(
             baseline_input, baseline_residual, weight, epsilon, limit
         )
         normalized = baseline_input
@@ -161,11 +162,11 @@ def test_norm_output_can_remain_unclamped_for_router_branch(
     )
     if baseline_residual is None:
         expected_norm = torch.empty_like(baseline_input)
-        op.rms_norm_opt(
+        categorized_rms_norm_opt(
             expected_norm, baseline_input, weight, 1e-5, -1.0
         )
     else:
-        op.fused_add_rms_norm_opt(
+        categorized_fused_add_rms_norm_opt(
             baseline_input, baseline_residual, weight, 1e-5, -1.0
         )
         expected_norm = baseline_input
@@ -218,7 +219,7 @@ def test_fused_result_matches_existing_lightop_norm_chain(
     baseline_residual = residual.clone() if residual is not None else None
     if baseline_residual is None:
         baseline_output = torch.empty_like(baseline_norm)
-        op.rms_norm_opt(
+        categorized_rms_norm_opt(
             baseline_output,
             baseline_norm,
             weight,
@@ -226,7 +227,7 @@ def test_fused_result_matches_existing_lightop_norm_chain(
             limit,
         )
     else:
-        op.fused_add_rms_norm_opt(
+        categorized_fused_add_rms_norm_opt(
             baseline_norm,
             baseline_residual,
             weight,

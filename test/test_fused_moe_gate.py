@@ -3,7 +3,7 @@
 
 import torch
 import triton
-from lightop import op as ops
+from lightop.moe import moe_fused_gate
 
 
 def biased_grouped_topk_impl(
