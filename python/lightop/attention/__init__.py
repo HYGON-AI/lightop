@@ -52,6 +52,7 @@ from .sparse import (
     top_k_per_row_decode,
     top_k_per_row_prefill,
     topk_transform_512,
+    topk_transform_512_sparse_mask,
 )
 from .softmax import (
     FusedScaleMaskSoftmax,
@@ -119,6 +120,7 @@ __all__ = [
     "top_k_per_row_decode",
     "top_k_per_row_prefill",
     "topk_transform_512",
+    "topk_transform_512_sparse_mask",
 ]
 
 from .mqa import (

@@ -14,7 +14,6 @@ namespace deep_gemm {
 namespace grouped_sparse_native_fp8 {
 
 constexpr int kHeadDim = 128;
-constexpr int kHeads = 32;
 constexpr int kPageSize = 64;
 constexpr int kTokenTile = 16;
 constexpr int kTokenWarps = 4;
@@ -24,7 +23,8 @@ constexpr int kTokensPerCta = kTokenWarps * kPageSize;
 // Each CTA caches rows of the same request and loops over its KV chunks
 // using the existing persistent CTA count. Each wave owns one page and
 // reuses its FP8 KV fragments for every cached Q row.
-template <int kGroupedRows, int kRowsPerCta = (kGroupedRows == 1 ? 1 : 2)>
+template <int kGroupedRows, int kHeads,
+          int kRowsPerCta = (kGroupedRows == 1 ? 1 : 2)>
 __attribute__((amdgpu_flat_work_group_size(256, 256)))
 __global__ void paged_mqa_logits_grouped_native_fp8_kernel(
     const at::Float8_e4m3fn* q,
@@ -259,7 +259,8 @@ __global__ void paged_mqa_logits_grouped_native_fp8_kernel(
 #endif
 }
 
-template <int kGroupedRows, int kRowsPerCta = (kGroupedRows == 1 ? 1 : 2)>
+template <int kGroupedRows, int kHeads,
+          int kRowsPerCta = (kGroupedRows == 1 ? 1 : 2)>
 void launch_grouped_kernel(
     const torch::Tensor& q,
     const torch::Tensor& kv_cache,
@@ -288,7 +289,8 @@ void launch_grouped_kernel(
     const dim3 grid(static_cast<unsigned int>(blocks), 1, 1);
     const dim3 block(kThreads, 1, 1);
 
-    paged_mqa_logits_grouped_native_fp8_kernel<kGroupedRows, kRowsPerCta><<<
+    paged_mqa_logits_grouped_native_fp8_kernel<
+        kGroupedRows, kHeads, kRowsPerCta><<<
         grid, block, kSmemBytes, stream>>>(
         q.data_ptr<at::Float8_e4m3fn>(),
         kv_cache.data_ptr<uint8_t>(),
@@ -308,6 +310,7 @@ void launch_grouped_kernel(
 
 inline void dispatch_grouped_rows(
     const int group_size,
+    const int num_heads,
     const torch::Tensor& q,
     const torch::Tensor& kv_cache,
     const torch::Tensor& weights,
@@ -317,33 +320,45 @@ inline void dispatch_grouped_rows(
     torch::Tensor& nonzero_mask,
     const int persistent_ctas,
     cudaStream_t stream) {
+    if (num_heads == 64) {
+        TORCH_CHECK(
+            group_size == 1,
+            "native FP8 sparse MQA with 64 heads currently requires group_size=1");
+        launch_grouped_kernel<1, 64>(
+            q, kv_cache, weights, context_lens, block_table, logits,
+            nonzero_mask, persistent_ctas, stream);
+        return;
+    }
+    TORCH_CHECK(
+        num_heads == 32,
+        "native FP8 sparse MQA supports 32 heads, or 64 heads with group_size=1");
     switch (group_size) {
         case 1:
-            launch_grouped_kernel<1>(q, kv_cache, weights, context_lens,
+            launch_grouped_kernel<1, 32>(q, kv_cache, weights, context_lens,
                 block_table, logits, nonzero_mask, persistent_ctas, stream);
             return;
         case 3:
-            launch_grouped_kernel<3>(q, kv_cache, weights, context_lens,
+            launch_grouped_kernel<3, 32>(q, kv_cache, weights, context_lens,
                 block_table, logits, nonzero_mask, persistent_ctas, stream);
             return;
         case 4:
-            launch_grouped_kernel<4>(q, kv_cache, weights, context_lens,
+            launch_grouped_kernel<4, 32>(q, kv_cache, weights, context_lens,
                 block_table, logits, nonzero_mask, persistent_ctas, stream);
             return;
         case 5:
-            launch_grouped_kernel<5>(q, kv_cache, weights, context_lens,
+            launch_grouped_kernel<5, 32>(q, kv_cache, weights, context_lens,
                 block_table, logits, nonzero_mask, persistent_ctas, stream);
             return;
         case 6: {
             const char* rows = std::getenv("LIGHTOP_SPARSE_MQA_GROUP6_ROWS_PER_CTA");
             if (rows == nullptr || std::strcmp(rows, "2") == 0) {
-                launch_grouped_kernel<6, 2>(q, kv_cache, weights, context_lens,
+                launch_grouped_kernel<6, 32, 2>(q, kv_cache, weights, context_lens,
                     block_table, logits, nonzero_mask, persistent_ctas, stream);
             } else if (std::strcmp(rows, "3") == 0) {
-                launch_grouped_kernel<6, 3>(q, kv_cache, weights, context_lens,
+                launch_grouped_kernel<6, 32, 3>(q, kv_cache, weights, context_lens,
                     block_table, logits, nonzero_mask, persistent_ctas, stream);
             } else if (std::strcmp(rows, "6") == 0) {
-                launch_grouped_kernel<6, 6>(q, kv_cache, weights, context_lens,
+                launch_grouped_kernel<6, 32, 6>(q, kv_cache, weights, context_lens,
                     block_table, logits, nonzero_mask, persistent_ctas, stream);
             } else {
                 TORCH_CHECK(false,

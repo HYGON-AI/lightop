@@ -1049,11 +1049,11 @@ def page_mqa_logits_sparse_mask_grouped(
     heads are 8/16/32/64. The FP8 path accepts the packed uint8 KV+scale layout
     used by :func:`paged_mqa_logits`.
 
-    On gfx938/64CU, H32 E4M3FN Q with packed FP8 KV uses native FP8 MMAC
-    with FP32 accumulation. Each CTA reuses KV for up to two grouped rows,
-    retaining the existing persistent scheduling and ``persistent_ctas``
-    controls. Other shapes/dtypes keep the BF16 compute path. Q scales must
-    already be folded into ``weights``.
+    On gfx938/64CU, H32 E4M3FN Q, or H64 E4M3FN Q with ``group_size=1``,
+    with packed FP8 KV uses native FP8 MMAC with FP32 accumulation. Each CTA
+    reuses KV for up to two grouped rows, retaining the existing persistent
+    scheduling and ``persistent_ctas`` controls. Other shapes/dtypes keep the
+    BF16 compute path. Q scales must already be folded into ``weights``.
     """
 
     if group_size not in (1, 3, 4, 5, 6):
@@ -1066,7 +1066,8 @@ def page_mqa_logits_sparse_mask_grouped(
         not _int8_kv
         and q.is_cuda
         and q.dim() == 4
-        and q.shape[2] == 32
+        and (q.shape[2] == 32 or
+             (q.shape[2] == 64 and group_size == 1))
         and q.dtype == torch.float8_e4m3fn
         and fused_kv_cache.dtype == torch.uint8
         and _paged_mqa_device_info(q.device.index) in (
@@ -1088,7 +1089,8 @@ def page_mqa_logits_sparse_mask_grouped(
         raise ValueError(
             "sparse MQA requires contiguous BF16 q "
             "[batch, 1, heads, 128], heads in 8/16/32/64, or gfx938/64CU "
-            "E4M3FN q [batch, 1, 32, 128] with packed FP8 KV")
+            "E4M3FN q [batch, 1, 32/64, 128] with packed FP8 KV "
+            "(64 heads requires group_size=1)")
     if fused_kv_cache.dtype not in (torch.bfloat16, torch.uint8):
         raise ValueError("grouped sparse MQA supports BF16 or packed FP8 KV")
     if _int8_kv and fused_kv_cache.dtype != torch.uint8:

@@ -41,6 +41,39 @@ def topk_transform_512(
     else:
         raise ValueError(f"unsupported topk={topk}; expected 512 or 1024")
 
+def topk_transform_512_sparse_mask(
+    scores: torch.Tensor,
+    nonzero_mask: torch.Tensor,
+    seq_lens: torch.Tensor,
+    page_tables: torch.Tensor,
+    out_page_indices: torch.Tensor,
+    page_size: int,
+    out_raw_indices: Optional[torch.Tensor] = None,
+) -> None:
+    """Exact paged Top512 without reading logits represented as positive zero.
+
+    ``nonzero_mask`` packs 16 score positions into each int16 element. Output
+    logical IDs are sorted ascending to match :func:`topk_transform_512`.
+    """
+    if scores.dim() != 2 or scores.dtype != torch.float32:
+        raise ValueError("scores must be float32 [rows, width]")
+    expected_mask_shape = (scores.shape[0], (scores.shape[1] + 15) // 16)
+    if (nonzero_mask.dtype != torch.int16 or nonzero_mask.dim() != 2 or
+            tuple(nonzero_mask.shape) != expected_mask_shape):
+        raise ValueError(
+            "nonzero_mask must be int16 [rows, ceil(width/16)]")
+    if tuple(out_page_indices.shape) != (scores.shape[0], 512):
+        raise ValueError("out_page_indices must have shape [rows, 512]")
+    op.topk_transform_512_sparse_mask(
+        scores,
+        nonzero_mask,
+        seq_lens,
+        page_tables,
+        out_page_indices,
+        page_size,
+        out_raw_indices,
+    )
+
 def topk_transform_1024(
     scores: torch.Tensor,
     seq_lens: torch.Tensor,
