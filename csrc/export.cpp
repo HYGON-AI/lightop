@@ -3,6 +3,12 @@
 
 #include <torch/extension.h>
 
+namespace at::native {
+torch::Tensor minimax_cp_fp8_pack(torch::Tensor,torch::Tensor,torch::Tensor,double,double,bool,bool);
+void minimax_cp_cache_scatter(torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor);
+std::vector<torch::Tensor> minimax_qk_norm_rope(torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,double,int64_t,bool,int64_t);
+}
+
 #if (defined(LIGHTOP_MHC_REPEAT_CP_ONLY) + defined(LIGHTOP_CP_OUTPUT_ONLY) + \
      defined(LIGHTOP_TOPK_WORKSPACE_ONLY) + defined(LIGHTOP_SPARSE_MQA_ONLY) + \
      defined(LIGHTOP_PREFILL_FUSION_ONLY)) > 1
@@ -716,6 +722,7 @@ void rms_norm_smooth_per_token_dynamic_quant(
   bool update_input,               
   bool update_res                   
 );
+std::vector<torch::Tensor> swiglu_oai_fp8_quant_contiguous(const torch::Tensor& input, double alpha, double beta, double limit);
 void moe_swiglu_dynamic_quant(torch::Tensor& scatter_tokens, torch::Tensor& smooth, torch::Tensor& experts_tokens_count, torch::Tensor& experts_tokens_start, torch::Tensor& output, torch::Tensor& scales, float beta);
 void per_token_group_quant_fp8(
     torch::Tensor& out,        
@@ -1724,6 +1731,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("fused_rms_norm_rope_int8quant_contiguous", &at::native::fused_rms_norm_rope_int8quant_contiguous, "fused_rms_norm_rope_int8quant_contiguous");    
  m.def("per_token_quant_fp8", &at::native::per_token_quant_fp8, "per_token_quant_fp8");    
  m.def("rms_norm_smooth_per_token_dynamic_quant", &at::native::rms_norm_smooth_per_token_dynamic_quant, "rms_norm_smooth_per_token_dynamic_quant");   
+ m.def("swiglu_oai_fp8_quant_contiguous", &at::native::swiglu_oai_fp8_quant_contiguous, "Contiguous BF16 OAI activation and per-token E4M3FN quantization", pybind11::arg("input"), pybind11::arg("alpha") = 1.702, pybind11::arg("beta") = 1.0, pybind11::arg("limit") = 7.0);
  m.def("moe_swiglu_dynamic_quant", &at::native::moe_swiglu_dynamic_quant, "moe_swiglu_dynamic_quant");  
  m.def("per_token_group_quant_fp8", &at::native::per_token_group_quant_fp8, "per_token_group_quant_fp8");  
  m.def("top_k_per_row_prefill", &at::native::top_k_per_row_prefill, "top_k_per_row_prefill");  
@@ -1961,6 +1969,9 @@ m.def("mimo_v2_split_rope_vscale_kv_store", &at::native::mimo_v2_split_rope_vsca
         py::arg("gathered"), py::arg("cp_size"), py::arg("cycle_leaders"));
   m.def("make_interleave_plan_", &lightop::cp_output::make_interleave_plan_,
         py::arg("cycle_leaders"), py::arg("rows"), py::arg("cp_size"));
+  m.def("minimax_qk_norm_rope", &at::native::minimax_qk_norm_rope);
+  m.def("minimax_cp_fp8_pack", &at::native::minimax_cp_fp8_pack);
+  m.def("minimax_cp_cache_scatter", &at::native::minimax_cp_cache_scatter);
   bind_prefill_sparse_fusion(m);
 }
 

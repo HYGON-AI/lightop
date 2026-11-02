@@ -7,6 +7,8 @@
 # on it because an installed extension may predate the current ABI.
 PAGED_MQA_LOGITS_FP4_ABI = 3
 
+from ..minimax_qk_norm_rope import minimax_qk_norm_rope, supports_minimax_qk_norm_rope
+
 from ..dsv4_prefill import dsv41_rope_fake_quant_store
 from .mhc import mhc_repeat_cp_sglang, supports_mhc_repeat_cp_sglang
 from .mqa import (
@@ -66,6 +68,9 @@ from .rope import (
 )
 
 __all__ = [
+    "minimax_qk_norm_rope",
+    "supports_minimax_qk_norm_rope",
+
     "FusedScaleMaskSoftmax",
     "FusedScaleMaskSoftmaxDropout",
     "FuseLogSoftmax",
