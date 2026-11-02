@@ -27,7 +27,15 @@ NATIVE_KVCACHE_APIS = [
     "fused_concat_and_store_mla_kv_cache",
 ]
 
-WRAPPED_KVCACHE_APIS = ["gather_and_maybe_dequant_cache"]
+WRAPPED_KVCACHE_APIS = [
+    "gather_and_maybe_dequant_cache",
+    "minimax_cp_cache_scatter",
+    "dequantize_k_cache_paged_hcu_counted",
+    "dsv4_dequantize_k_cache_paged_out",
+    "dsv4_dequantize_sparse_topk_out",
+    "dsv4_pack_c4_topk_workspace",
+    "dsv4_pack_sparse_topk_workspace",
+]
 
 
 @pytest.mark.parametrize("name", EXISTING_KVCACHE_APIS)

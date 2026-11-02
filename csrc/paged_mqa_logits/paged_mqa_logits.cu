@@ -194,7 +194,7 @@ int get_sms_info() {
     else if (arch.rfind("gfx938", 0) == 0 && num_cus == 72) {
         sms = 144;
     }
-    else if (arch.rfind("gfx928", 0) == 0 && num_cus == 120) {
+    else if ((arch.rfind("gfx928", 0) == 0 || arch.rfind("gfx92a", 0) == 0) && num_cus == 120) {
         sms = 240;
     } else {
         std::cerr << "Unsupported device config: " << arch

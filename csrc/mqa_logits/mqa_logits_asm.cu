@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
+#include "hcu_mmac.h"
 #include <iostream>
 #include <stdio.h>
 #include <string.h>
@@ -240,11 +241,11 @@ __device__ __forceinline__ bool mqa_load_bounds_and_check_tile(
 
 template <bool is_half = true>
 inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& reg_b, floatx4& reg_c) {
-#if defined(__gfx936__) || defined(__gfx928__)
+#if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
     if constexpr (is_half)
-        reg_c = __builtin_amdgcn_mmac_f32_16x16x16f16(reg_a, reg_b, reg_c);
+        reg_c = HCU_MMAC_F32_F16(reg_a, reg_b, reg_c);
     else
-        reg_c = __builtin_amdgcn_mmac_f32_16x16x16bf16(*(v4bh*)&reg_a, *(v4bh*)&reg_b, reg_c);
+        reg_c = HCU_MMAC_F32_BF16(*(v4bh*)&reg_a, *(v4bh*)&reg_b, reg_c);
 
 #elif defined(__gfx938__)
     if constexpr (is_half)
@@ -256,7 +257,7 @@ inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& 
 
 template <bool is_e4m3 = true>
 inline __device__ void builtin_amdgcn_mmac_fp8(const intx2& reg_a, const intx2& reg_b, floatx4& reg_c) {
-    #if defined(__gfx936__) || defined(__gfx928__)
+    #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
         return;
     #elif defined(__gfx938__)
         if constexpr (is_e4m3){
@@ -268,10 +269,10 @@ inline __device__ void builtin_amdgcn_mmac_fp8(const intx2& reg_a, const intx2& 
 }
 
 inline __device__ void builtin_amdgcn_mmac_i8(const intx2& reg_a, const intx2& reg_b, intx4& reg_c) {
-#if defined(__gfx936__) || defined(__gfx928__)
+#if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
     auto a = reinterpret_cast<const long*>(&reg_a);
     auto b = reinterpret_cast<const long*>(&reg_b);
-    reg_c = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, reg_c);
+    reg_c = HCU_MMAC_I32_I8(*a, *b, reg_c);
 #elif defined(__gfx938__)
     reg_c = __builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(
         reg_a, reg_b, reg_c, false, false, false);

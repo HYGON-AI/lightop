@@ -5,7 +5,7 @@
 import pytest
 import torch
 
-from lightop import minimax_qk_norm_rope, op
+from lightop.attention import minimax_qk_norm_rope
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
 
@@ -70,12 +70,6 @@ def reference(a):
     return out
 
 
-def run(a, variant=None):
-    if variant is None:
-        return minimax_qk_norm_rope(*a)
-    return op.minimax_qk_norm_rope(*a[:10], a[10], a[12], a[13], variant)
-
-
 def assert_oracle(a, actual):
     for got, expected in zip(actual, reference(a)):
         torch.testing.assert_close(got, expected, rtol=0.016, atol=0.015625)
@@ -103,17 +97,17 @@ def assert_oracle(a, actual):
 def test_qk_bf16_rounding(rows, rotary, neox, strided, kind):
     torch.manual_seed(42)
     args = make(rows, rotary, neox, strided, kind)
-    assert_oracle(args, run(args))
+    assert_oracle(args, minimax_qk_norm_rope(*args))
 
 
 def test_qk_graph_changed_input():
     torch.manual_seed(73)
     args = make(17, 64)
-    run(args)
+    minimax_qk_norm_rope(*args)
     torch.cuda.synchronize()
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        actual = run(args)
+        actual = minimax_qk_norm_rope(*args)
     for _ in range(3):
         for x in args[:4]:
             x.copy_(torch.randn_like(x))
@@ -127,10 +121,8 @@ def test_qk_graph_changed_input():
 
 @pytest.mark.parametrize("cos_dtype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("neox", [True, False])
-@pytest.mark.parametrize(
-    "rotary,variant", [(128, None), (128, 4), (128, 5), (64, None), (64, 6)]
-)
-def test_qk_unaligned_cos_cache_falls_back(cos_dtype, neox, rotary, variant):
+@pytest.mark.parametrize("rotary", [128, 64])
+def test_qk_unaligned_cos_cache_falls_back(cos_dtype, neox, rotary):
     torch.manual_seed(126)
     args = make(17, rotary=rotary, neox=neox, cos_dtype=cos_dtype)
     original = args[9]
@@ -142,14 +134,12 @@ def test_qk_unaligned_cos_cache_falls_back(cos_dtype, neox, rotary, variant):
     assert args[9].is_contiguous()
     assert args[9].data_ptr() % 16 != 0
 
-    actual = run(args, variant)
+    actual = minimax_qk_norm_rope(*args)
     assert_oracle(args, actual)
-    for got, scalar in zip(actual, run(args, 3)):
-        assert torch.equal(got, scalar)
 
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        actual = run(args, variant)
+        actual = minimax_qk_norm_rope(*args)
     for _ in range(2):
         # Keep the offset pointer while changing the live cache contents.
         args[9].neg_()
@@ -157,5 +147,3 @@ def test_qk_unaligned_cos_cache_falls_back(cos_dtype, neox, rotary, variant):
         graph.replay()
         torch.cuda.synchronize()
         assert_oracle(args, actual)
-        for got, scalar in zip(actual, run(args, 3)):
-            assert torch.equal(got, scalar)

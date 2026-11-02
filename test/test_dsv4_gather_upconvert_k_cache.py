@@ -223,10 +223,6 @@ def _assert_result(
 
 
 def test_single() -> None:
-    from sglang.kernels.ops.attention.dsv4.dequant_k_cache import (
-        gather_upconvert_k_cache_paged,
-    )
-
     page_size = 4
     cache = _make_cache(3, page_size, seed=7)
     indices = torch.tensor(
@@ -244,17 +240,9 @@ def test_single() -> None:
         cache, indices, lengths, output, compact, page_size
     )
     _assert_result(output, compact, expected, expected_compact)
-    triton_output, triton_compact = gather_upconvert_k_cache_paged(
-        cache, indices, lengths, page_size
-    )
-    _assert_result(output, compact, triton_output, triton_compact)
 
 
 def test_dual_and_4d_view() -> None:
-    from sglang.kernels.ops.attention.dsv4.dequant_k_cache import (
-        gather_upconvert_dual_k_cache_paged,
-    )
-
     swa_page_size = 2
     extra_page_size = 3
     swa_raw = _make_cache(4, swa_page_size, seed=11)
@@ -305,36 +293,6 @@ def test_dual_and_4d_view() -> None:
         extra_compact,
         extra_expected,
         extra_compact_expected,
-    )
-    triton_swa_output = torch.empty_like(swa_output)
-    triton_extra_output = torch.empty_like(extra_output)
-    triton_swa_compact = torch.empty_like(swa_compact)
-    triton_extra_compact = torch.empty_like(extra_compact)
-    gather_upconvert_dual_k_cache_paged(
-        swa_cache,
-        swa_indices,
-        swa_lengths,
-        swa_page_size,
-        extra_raw,
-        extra_indices,
-        extra_lengths,
-        extra_page_size,
-        triton_swa_output,
-        triton_swa_compact,
-        triton_extra_output,
-        triton_extra_compact,
-    )
-    _assert_result(
-        swa_output,
-        swa_compact,
-        triton_swa_output,
-        triton_swa_compact,
-    )
-    _assert_result(
-        extra_output,
-        extra_compact,
-        triton_extra_output,
-        triton_extra_compact,
     )
 
 

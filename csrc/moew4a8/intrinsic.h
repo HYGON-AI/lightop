@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include "hcu_mmac.h"
 #include "hip/hip_fp16.h"
 #include "hip/hip_bf16.h"
 #include "hip/hip_runtime.h"
@@ -443,8 +444,8 @@ template<class Element>
 __device__ typename vec<float, 4>::type mmac(const typename vec<Element, 4>::type &v1, const typename vec<Element, 4>::type &v2, const typename vec<float, 4>::type &v3)
 {
     floatx4 v4f;
-    #if (defined(__gfx936__) || defined(__gfx928__))
-        v4f = __builtin_amdgcn_mmac_f32_16x16x16f16(v1, v2, v3);
+    #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
+        v4f = HCU_MMAC_F32_F16(v1, v2, v3);
     #elif defined(__gfx938__)
         v4f = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(v1, v2, v3,false,false);
     #endif
@@ -458,8 +459,8 @@ __device__ typename vec<int, 4>::type mmac(const typename vec<Element, 8>::type 
     auto b = reinterpret_cast<const long*>(&v2);
     intx4 v4i;
     __builtin_amdgcn_sched_barrier(0);
-    #if defined(__gfx936__) || defined(__gfx928__)
-        v4i = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
+    #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
+        v4i = HCU_MMAC_I32_I8(*a, *b, v3);
     #elif defined(__gfx938__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
@@ -475,7 +476,7 @@ __device__ typename vec<int, 4>::type mmac_int8(const typename vec<Element, 8>::
     
     auto a = reinterpret_cast<const long*>(&v1);
     auto b = reinterpret_cast<const long*>(&v2);
-    #if (defined(__gfx936__) || defined(__gfx928__)|| defined(__gfx938__))
+    #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))|| defined(__gfx938__))
     __builtin_amdgcn_sched_barrier(0);
     asm volatile(
         "v_mmac_i32_16x16x32_i8 %0, %1, %2, %0 \n"
@@ -493,7 +494,7 @@ __device__ typename vec<int, 4>::type mmac2_asm_snop1(const typename vec<Element
 {
     auto a = reinterpret_cast<const long*>(&v1);
     auto b = reinterpret_cast<const long*>(v2);
-    #if (defined(__gfx936__) || defined(__gfx928__)|| defined(__gfx938__))
+    #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))|| defined(__gfx938__))
     __builtin_amdgcn_sched_barrier(0);
     asm volatile(
         "\n s_nop 1 \n v_mmac_i32_16x16x32_i8 %0, %1, %2, %0 \n"
@@ -511,7 +512,7 @@ __device__ typename vec<int, 4>::type mmac2_asm(const typename vec<Element, 8>::
 {
     auto a = reinterpret_cast<const long*>(&v1);
     auto b = reinterpret_cast<const long*>(v2);
-    #if (defined(__gfx936__) || defined(__gfx928__) || defined(__gfx938__))
+    #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)) || defined(__gfx938__))
     __builtin_amdgcn_sched_barrier(0);
     asm volatile(
         "\n v_mmac_i32_16x16x32_i8 %0, %1, %2, %0 \n"
@@ -541,8 +542,8 @@ __device__ typename vec<int, 4>::type mmac2(const typename vec<Element, 8>::type
     auto a = reinterpret_cast<const long*>(&v1);
     auto b = reinterpret_cast<const long*>(v2);
     intx4 v4i;
-    #if defined(__gfx936__) || defined(__gfx928__)
-        v4i = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
+    #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
+        v4i = HCU_MMAC_I32_I8(*a, *b, v3);
     #elif defined(__gfx938__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(v2));
@@ -554,8 +555,8 @@ template<>
 __device__ typename vec<float, 4>::type mmac<half>(const typename vec<half, 4>::type &v1, const typename vec<half, 4>::type &v2, const typename vec<float, 4>::type &v3)
 {
     floatx4 v4f;
-    #if (defined(__gfx936__) || defined(__gfx928__))
-        v4f = __builtin_amdgcn_mmac_f32_16x16x16f16(v1, v2, v3);
+    #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
+        v4f = HCU_MMAC_F32_F16(v1, v2, v3);
     #elif defined(__gfx938__)
         v4f = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(v1, v2, v3,false,false);
     #endif
@@ -569,8 +570,8 @@ __device__ typename vec<int, 4>::type mmac<int8_t>(const typename vec<int8_t, 8>
     auto a = reinterpret_cast<const long*>(&v1);
     auto b = reinterpret_cast<const long*>(&v2);
     intx4 v4i;
-    #if defined(__gfx936__) || defined(__gfx928__)
-        v4i = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, v3);
+    #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
+        v4i = HCU_MMAC_I32_I8(*a, *b, v3);
     #elif defined(__gfx938__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
@@ -583,8 +584,8 @@ template<>
 __device__ typename vec<float, 4>::type mmac<bhalf_t>(const typename vec<bhalf_t, 4>::type &v1, const typename vec<bhalf_t, 4>::type &v2, const typename vec<float, 4>::type &v3)
 {
     floatx4 v4f;
-    #if (defined(__gfx936__) || defined(__gfx928__)) 
-        v4f = __builtin_amdgcn_mmac_f32_16x16x16bf16(v1, v2, v3);
+    #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
+        v4f = HCU_MMAC_F32_BF16(v1, v2, v3);
     #elif defined(__gfx938__)
         v4f = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(v1, v2, v3,false,false);
     #endif

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "hcu_mmac.h"
 #include "paged_mqa_logits_impl.hpp"
 
 namespace lightop {
@@ -21,10 +22,10 @@ union i8x16_t {
 };
 
 inline __device__ __forceinline__ void builtin_i8_mmac(const int8x8_t& reg_a, const int8x8_t& reg_b, int32x4_t& reg_c) {
-#if defined(__gfx936__) || defined(__gfx928__)
+#if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
     const auto* a = reinterpret_cast<const long*>(&reg_a);
     const auto* b = reinterpret_cast<const long*>(&reg_b);
-    reg_c = __builtin_amdgcn_mmac_i32_16x16x32i8(*a, *b, reg_c);
+    reg_c = HCU_MMAC_I32_I8(*a, *b, reg_c);
 #elif defined(__gfx938__)
     const auto a = *reinterpret_cast<const intx2*>(&reg_a);
     const auto b = *reinterpret_cast<const intx2*>(&reg_b);

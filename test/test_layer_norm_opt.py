@@ -3,11 +3,11 @@
 
 """Correctness tests for inference-only optimized LayerNorm kernels."""
 
+from lightop.norm import layer_norm_opt as categorized_layer_norm_opt
 import pytest
 import torch
 import torch.nn.functional as F
 
-from lightop import op
 from lightop.layernorm import fused_add_layer_norm, layer_norm
 
 
@@ -32,7 +32,7 @@ def test_layer_norm_opt(dtype: torch.dtype, shape: tuple[int, int]) -> None:
     torch.testing.assert_close(out, expected, rtol=1e-2, atol=1e-2)
 
     native_out = torch.empty_like(x)
-    op.layer_norm_opt(native_out, x, weight, bias, 1e-5)
+    categorized_layer_norm_opt(native_out, x, weight, bias, 1e-5)
     torch.testing.assert_close(native_out, out, rtol=0, atol=0)
 
 
@@ -70,7 +70,7 @@ def test_layer_norm_opt_clamp() -> None:
     weight = torch.randn(1152, device="cuda", dtype=torch.bfloat16)
     bias = torch.randn(1152, device="cuda", dtype=torch.bfloat16)
     out = torch.empty_like(x)
-    op.layer_norm_opt(out, x, weight, bias, 1e-5, 0.5)
+    categorized_layer_norm_opt(out, x, weight, bias, 1e-5, 0.5)
     assert out.float().abs().max().item() <= 0.5
 
 

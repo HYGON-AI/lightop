@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import torch
-from vllm import _custom_ops as vllm_ops
+from common.vllm_reference import vllm_ops
 from triton.testing import do_bench 
 from lightop.attention import fused_rms_norm_rope_contiguous
 from lightop.attention import rotary_embedding_deepseek_fuse
 from lightop.norm import fused_rms_norm_contiguous
 import pdb
-from vllm import _custom_ops as ops
+from common.vllm_reference import vllm_ops as ops
 
 
 def _compute_inv_freq(base,rotary_dim, device) -> torch.Tensor:

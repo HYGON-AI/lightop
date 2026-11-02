@@ -8,6 +8,7 @@ The variable names are LIGHTOP_SITU_EP_PACKED and LIGHTOP_SITU_EP_TUNED.
 The environment switch is cached at first invocation in the C++ extension.
 """
 
+from lightop.activation import fuse_situ_mul_quant_ep as categorized_fuse_situ_mul_quant_ep
 import lightop
 import pytest
 import torch
@@ -55,7 +56,7 @@ def test_situ_ep_schedule(hint, kind):
     scales = torch.ones((e, m, 1), device="cuda")
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        lightop.fuse_situ_mul_quant_ep(
+        categorized_fuse_situ_mul_quant_ep(
             x, counts, 4.0, 25.0, expect_m=hint, output=q, scales=scales
         )
     # Alter counts after capture; replay must not cache the routing metadata.

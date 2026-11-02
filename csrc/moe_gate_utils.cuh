@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "hcu_mmac.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <cuda_runtime.h>
 #include <torch/all.h>
@@ -40,11 +41,11 @@ template <bool is_half = true>
 inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a,
                                            const half4_t& reg_b,
                                            float4_t& reg_c) {
-#if defined(__gfx936__) || defined(__gfx928__)
+#if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
   if constexpr (is_half)
-    reg_c = __builtin_amdgcn_mmac_f32_16x16x16f16(reg_a, reg_b, reg_c);
+    reg_c = HCU_MMAC_F32_F16(reg_a, reg_b, reg_c);
   else
-    reg_c = __builtin_amdgcn_mmac_f32_16x16x16bf16(*(v4bh*)&reg_a,
+    reg_c = HCU_MMAC_F32_BF16(*(v4bh*)&reg_a,
                                                    *(v4bh*)&reg_b, reg_c);
 #elif defined(__gfx938__)
   if constexpr (is_half)
