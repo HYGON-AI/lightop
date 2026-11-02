@@ -1062,6 +1062,19 @@ def page_mqa_logits_sparse_mask_grouped(
     fp8_fnuz_dtype = getattr(torch, "float8_e4m3fnuz", None)
     if fp8_fnuz_dtype is not None:
         fp8_q_dtypes.add(fp8_fnuz_dtype)
+    h64_fp8_grouped = (
+        q.is_cuda
+        and q.dim() == 4
+        and q.shape[2] == 64
+        and q.dtype in fp8_q_dtypes
+        and fused_kv_cache.dtype == torch.uint8
+        and group_size != 1
+        and _paged_mqa_device_info(q.device.index) in (
+            ("gfx938", 64), ("gfx938", 72))
+    )
+    if h64_fp8_grouped:
+        raise ValueError(
+            "native FP8 sparse MQA with 64 heads requires group_size=1")
     native_fp8_path = (
         not _int8_kv
         and q.is_cuda
