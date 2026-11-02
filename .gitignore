@@ -47,6 +47,9 @@ csrc/lmslimquant_native/**/*_hip.h
 csrc/lmslimquant_native/**/*_hip.hpp
 csrc/lmslimquant_native/**/*_hip.cuh
 
-# PyTorch hipify outputs generated from the MQA logits beta sources.
-csrc/mqa_logits/beta/**/*.hip
-csrc/mqa_logits/beta/**/*_hip.hpp
+# hipify-generated source files at any depth under csrc.
+/csrc/**/*.hip
+/csrc/**/*_hip.cpp
+/csrc/**/*_hip.h
+/csrc/**/*_hip.hpp
+/csrc/**/*_hip.cuh

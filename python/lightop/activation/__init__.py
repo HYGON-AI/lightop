@@ -3,6 +3,8 @@
 
 """Activation, gating, dropout and drop-path APIs."""
 
+from ..swiglu_oai_fp8_quant_contiguous import swiglu_oai_fp8_quant_contiguous
+
 from importlib import import_module
 
 from .existing import (
@@ -44,6 +46,8 @@ def __getattr__(name):
 
 
 __all__ = [
+    "swiglu_oai_fp8_quant_contiguous",
+
     "AddDropout",
     "DropPath",
     "fuse_silu_and_mul",
