@@ -52,7 +52,10 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
     dtk_ver = int(str(dtk_version)[:4])  # dtk命名问题25042和2604  取前四位比较
     if dtk_ver >= 2604:  # dtk>=26042 can support gfx938
         #archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
-        archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx928;gfx936;gfx938') # 对应kme bw nmz
+        default_archs = 'gfx928;gfx936;gfx938'
+        if dtk_ver >= 2610:
+            default_archs += ';gfx92a'
+        archs = os.environ.get('PYTORCH_ROCM_ARCH', default_archs)
     else:
         archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
@@ -63,7 +66,10 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
 def _get_rocm_arch_flags_marlin_w4a8(cflags: Optional[List[str]] = None) -> List[str]:
     dtk_ver = int(str(dtk_version)[:4])
     if dtk_ver >= 2604:  # dtk>=26042 can support gfx938
-        archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
+        default_archs = 'gfx906;gfx926;gfx928;gfx936;gfx938'
+        if dtk_ver >= 2610:
+            default_archs += ';gfx92a'
+        archs = os.environ.get('PYTORCH_ROCM_ARCH', default_archs)
     else:
         archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
@@ -76,7 +82,10 @@ def _get_rocm_arch_flags_marlin_w4a8(cflags: Optional[List[str]] = None) -> List
 def _get_rocm_arch_flags_marlin_w4a16(cflags: Optional[List[str]] = None) -> List[str]:
     dtk_ver = int(str(dtk_version)[:4])
     if dtk_ver >= 2604:  # dtk>=26042 can support gfx938
-        archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
+        default_archs = 'gfx906;gfx926;gfx928;gfx936;gfx938'
+        if dtk_ver >= 2610:
+            default_archs += ';gfx92a'
+        archs = os.environ.get('PYTORCH_ROCM_ARCH', default_archs)
     else:
         archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
@@ -544,6 +553,7 @@ def get_extensions():
                glob.glob('./csrc/lmslimquant_native/smoothquant/*.cpp') + \
                glob.glob('./csrc/lmslimquant_native/quant_kernels/torch_bridge/*.cu') + \
                glob.glob('./csrc/lmslimquant_native/quant_kernels/gptq/*.cu') + \
+               glob.glob('./csrc/lmslimquant_native/quant_kernels/awq/kernels/*.cu') + \
                glob.glob('./csrc/layernorm/*.cu') + glob.glob('./csrc/loss/*.cu') + \
                glob.glob('./csrc/scaledmask/*.cu') + glob.glob('./csrc/groupnorm/*.cu') + \
                glob.glob('./csrc/rmsnorm/*.cu') + glob.glob('./csrc/batchnorm/*.cu') + \
@@ -599,10 +609,6 @@ def get_extensions():
         include_dirs=include_dirs,
         libraries=['rocblas', 'hipblas', 'hipblaslt'],
         library_dirs=[os.path.join(rocm_home, 'lib')],
-        extra_objects=[
-            os.path.abspath('./lib/static/liblmslimquant_static.a'),
-            os.path.abspath('./lib/static/libgemm_w4a16_awq.a'),
-        ],
         define_macros=define_macros,
         extra_compile_args=extra_compile_args)
 

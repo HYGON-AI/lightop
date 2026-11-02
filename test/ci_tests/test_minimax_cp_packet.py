@@ -5,9 +5,23 @@
 import pytest
 import torch
 
-from lightop import op
+from lightop.kvcache import minimax_cp_cache_scatter
+from lightop.quant import minimax_cp_fp8_pack
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
+
+
+def reference_packet(k, v, ik, k_scale=None, v_scale=None):
+    k = k if k_scale is None else (k / k_scale).to(torch.bfloat16)
+    v = v if v_scale is None else (v / v_scale).to(torch.bfloat16)
+    return torch.cat(
+        [
+            k.clamp(-448, 448).to(torch.float8_e4m3fn).view(torch.uint8),
+            v.clamp(-448, 448).to(torch.float8_e4m3fn).view(torch.uint8),
+            ik.view(torch.uint8),
+        ],
+        dim=1,
+    )
 
 
 @pytest.mark.parametrize("rows,scale", [(0, 1.0), (17, 1.0), (2048, 0.37)])
@@ -16,23 +30,8 @@ def test_packet_bytes_and_immutable_inputs(rows, scale):
     source = torch.randn((rows, 1152), device="cuda", dtype=torch.bfloat16) * 20
     before = source.clone()
     k, v, ik = source[:, :512], source[:, 512:1024], source[:, 1024:]
-    actual = op.minimax_cp_fp8_pack(k, v, ik, scale, 1.7, True, True)
-    expected = torch.cat(
-        [
-            (k / scale)
-            .to(torch.bfloat16)
-            .clamp(-448, 448)
-            .to(torch.float8_e4m3fn)
-            .view(torch.uint8),
-            (v / 1.7)
-            .to(torch.bfloat16)
-            .clamp(-448, 448)
-            .to(torch.float8_e4m3fn)
-            .view(torch.uint8),
-            ik.view(torch.uint8),
-        ],
-        dim=1,
-    )
+    actual = minimax_cp_fp8_pack(k, v, ik, scale, 1.7)
+    expected = reference_packet(k, v, ik, scale, 1.7)
     assert torch.equal(actual, expected)
     assert torch.equal(source, before)
 
@@ -50,11 +49,11 @@ def test_scatter_graph_changed_packet_order_and_slots():
         for n in (512, 512, 256)
     ]
     caches = [b[:, :n] for b, n in zip(backs, (512, 512, 256))]
-    op.minimax_cp_cache_scatter(packet, order, slots, *caches)
+    minimax_cp_cache_scatter(packet, order, slots, *caches)
     torch.cuda.synchronize()
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        op.minimax_cp_cache_scatter(packet, order, slots, *caches)
+        minimax_cp_cache_scatter(packet, order, slots, *caches)
     for replay in range(3):
         packet.random_(0, 256)
         order.copy_(order.roll(1))
@@ -80,26 +79,22 @@ def test_reject_invalid_scale_before_launch(which, scale, rows):
     k, v, ik = source[:, :512], source[:, 512:1024], source[:, 1024:]
     ks, vs = (scale, 1.0) if which == "k" else (1.0, scale)
     with pytest.raises(RuntimeError, match="positive finite inverse scales required"):
-        op.minimax_cp_fp8_pack(k, v, ik, ks, vs, True, True)
+        minimax_cp_fp8_pack(k, v, ik, ks, vs)
 
 
-def test_public_cp_wrappers_match_native():
-    from lightop.quant import minimax_cp_fp8_pack
-    from lightop.kvcache import minimax_cp_cache_scatter
-
+def test_public_cp_wrappers_match_reference():
     source = torch.randn((17, 1152), device="cuda", dtype=torch.bfloat16)
     k, v, ik = source[:, :512], source[:, 512:1024], source[:, 1024:]
     for ks, vs in [(None, None), (0.37, 1.7), (None, 1.7), (0.37, None)]:
         packet = minimax_cp_fp8_pack(k, v, ik, ks, vs)
-        expected = op.minimax_cp_fp8_pack(
-            k, v, ik, 1.0 if ks is None else ks, 1.0 if vs is None else vs,
-            ks is not None, vs is not None,
-        )
+        expected = reference_packet(k, v, ik, ks, vs)
         assert torch.equal(packet, expected)
     order = torch.arange(16, -1, -1, device="cuda")
     slots = torch.arange(1, 18, device="cuda")
     caches = [torch.zeros((20, n), device="cuda", dtype=torch.uint8) for n in (512, 512, 256)]
     expected = [x.clone() for x in caches]
     minimax_cp_cache_scatter(packet, order, slots, *caches)
-    op.minimax_cp_cache_scatter(packet, order, slots, *expected)
+    ordered = packet.index_select(0, order)
+    for cache, start, width in zip(expected, (0, 512, 1024), (512, 512, 256)):
+        cache[slots] = ordered[:, start : start + width]
     assert all(torch.equal(a, b) for a, b in zip(caches, expected))

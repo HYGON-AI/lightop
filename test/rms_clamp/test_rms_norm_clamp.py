@@ -3,9 +3,10 @@
 
 """Optional-clamp tests for plain and residual RMSNorm."""
 
+from lightop.norm import fused_add_rms_norm_opt as categorized_fused_add_rms_norm_opt
+from lightop.norm import rms_norm_opt as categorized_rms_norm_opt
 import torch
 
-from lightop import op
 from lightop.rmsnorm import fused_add_rms_norm, rms_norm
 
 
@@ -49,15 +50,15 @@ def test_plain_rms_norm_clamp() -> None:
 
             omitted = torch.empty_like(x)
             explicit = torch.empty_like(x)
-            op.rms_norm_opt(omitted, x, weight, EPSILON)
-            op.rms_norm_opt(explicit, x, weight, EPSILON, limit=-1.0)
+            categorized_rms_norm_opt(omitted, x, weight, EPSILON)
+            categorized_rms_norm_opt(explicit, x, weight, EPSILON, limit=-1.0)
             torch.testing.assert_close(omitted, explicit, rtol=0, atol=0)
             torch.testing.assert_close(
                 omitted, torch_rms_norm(x, weight), rtol=rtol, atol=atol
             )
 
             clamped = torch.empty_like(x)
-            op.rms_norm_opt(clamped, x, weight, EPSILON, limit=LIMIT)
+            categorized_rms_norm_opt(clamped, x, weight, EPSILON, limit=LIMIT)
             torch.testing.assert_close(
                 clamped,
                 torch_rms_norm(x, weight, LIMIT),
@@ -91,12 +92,12 @@ def test_plain_rms_norm_clamp() -> None:
             )
 
             zero = torch.empty_like(x)
-            op.rms_norm_opt(zero, x, weight, EPSILON, limit=0.0)
+            categorized_rms_norm_opt(zero, x, weight, EPSILON, limit=0.0)
             torch.testing.assert_close(zero, torch.zeros_like(zero))
 
     for bad_limit in (-2.0, float("inf"), float("nan")):
         try:
-            op.rms_norm_opt(omitted, x, weight, EPSILON, limit=bad_limit)
+            categorized_rms_norm_opt(omitted, x, weight, EPSILON, limit=bad_limit)
         except RuntimeError:
             pass
         else:
@@ -118,7 +119,7 @@ def test_fused_add_rms_norm_clamp() -> None:
             expected = torch_rms_norm(summed, weight, LIMIT).to(x.dtype)
 
             actual_x, actual_residual = x.clone(), residual.clone()
-            op.fused_add_rms_norm_opt(
+            categorized_fused_add_rms_norm_opt(
                 actual_x, actual_residual, weight, EPSILON, limit=LIMIT
             )
             torch.testing.assert_close(
@@ -131,10 +132,10 @@ def test_fused_add_rms_norm_clamp() -> None:
 
             omitted_x, omitted_residual = x.clone(), residual.clone()
             explicit_x, explicit_residual = x.clone(), residual.clone()
-            op.fused_add_rms_norm_opt(
+            categorized_fused_add_rms_norm_opt(
                 omitted_x, omitted_residual, weight, EPSILON
             )
-            op.fused_add_rms_norm_opt(
+            categorized_fused_add_rms_norm_opt(
                 explicit_x, explicit_residual, weight, EPSILON, limit=-1.0
             )
             torch.testing.assert_close(omitted_x, explicit_x, rtol=0, atol=0)
@@ -156,7 +157,7 @@ def test_fused_add_rms_norm_clamp() -> None:
 
     for bad_limit in (-2.0, float("inf"), float("nan")):
         try:
-            op.fused_add_rms_norm_opt(
+            categorized_fused_add_rms_norm_opt(
                 wrapper_x, wrapper_residual, weight, EPSILON, limit=bad_limit
             )
         except RuntimeError:
@@ -197,10 +198,10 @@ def run_benchmark() -> None:
         plain_bytes = 2 * x.numel() * x.element_size() + weight.numel() * weight.element_size()
         fused_bytes = 4 * x.numel() * x.element_size() + weight.numel() * weight.element_size()
         cases = (
-            ("plain_default", lambda: op.rms_norm_opt(out, x, weight, EPSILON), plain_bytes),
-            ("plain_clamp", lambda: op.rms_norm_opt(out, x, weight, EPSILON, LIMIT), plain_bytes),
-            ("fused_default", lambda: op.fused_add_rms_norm_opt(default_x, default_residual, weight, EPSILON), fused_bytes),
-            ("fused_clamp", lambda: op.fused_add_rms_norm_opt(clamp_x, clamp_residual, weight, EPSILON, LIMIT), fused_bytes),
+            ("plain_default", lambda: categorized_rms_norm_opt(out, x, weight, EPSILON), plain_bytes),
+            ("plain_clamp", lambda: categorized_rms_norm_opt(out, x, weight, EPSILON, LIMIT), plain_bytes),
+            ("fused_default", lambda: categorized_fused_add_rms_norm_opt(default_x, default_residual, weight, EPSILON), fused_bytes),
+            ("fused_clamp", lambda: categorized_fused_add_rms_norm_opt(clamp_x, clamp_residual, weight, EPSILON, LIMIT), fused_bytes),
         )
         for name, fn, logical_bytes in cases:
             mean_us = benchmark_us(fn)

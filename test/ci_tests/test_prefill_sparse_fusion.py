@@ -413,6 +413,12 @@ def run_short_row_tests(m):
     return records
 
 
+def test_prefill_sparse_pointwise_fusions():
+    from lightop.attention import mqa
+
+    run_tests(mqa)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--module-file", type=pathlib.Path)

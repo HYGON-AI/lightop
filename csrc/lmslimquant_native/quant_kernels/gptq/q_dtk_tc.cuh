@@ -6,6 +6,7 @@ Adapted from https://github.com/turboderp/exllamav2 and
 https://github.com/qwopqwop200/GPTQ-for-LLaMa
 */
 
+#include "hcu_mmac.h"
 #include <cstdint>
 #include <cstdio>
 
@@ -34,14 +35,14 @@ using floatx4 = __attribute__( (__vector_size__(4 * sizeof(float)) )) float;
 template<bool is_half=true>
 inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& reg_b, floatx4& reg_c)
 {
-    #if defined(__gfx936__) || defined(__gfx928__)
+    #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
         // if constexpr (is_half)
-            reg_c=__builtin_amdgcn_mmac_f32_16x16x16f16(reg_a,reg_b,reg_c);
+            reg_c=HCU_MMAC_F32_F16(reg_a,reg_b,reg_c);
         //  else
         //     reg_c=__builtin_amdgcn_mmac_f32_16x16x16bf16(*(v4bh*)&reg_a,*(v4bh*)&reg_b,reg_c);
     #endif
     #if defined(__gfx938__)
-        __builtin_trap();  // __builtin_amdgcn_mmac_f32_16x16x16f16 gfx938编译不通过强制终止
+        __builtin_trap();  // HCU_MMAC_F32_F16 gfx938编译不通过强制终止
     #endif
 
 }

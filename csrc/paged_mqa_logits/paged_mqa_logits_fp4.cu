@@ -51,6 +51,7 @@
 // The schedule, if any, is planned on the route lengths (the longer row's);
 // each row still stops writing at its own length. Pairing needs H <= 32 (two
 // rows' Q in VGPRs) and is skipped below kPagedMqaLogitsFp4PairMinRequests.
+#include "hcu_mmac.h"
 #include "paged_mqa_logits_fp4.h"
 #include <ATen/hip/HIPContext.h>
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
@@ -103,7 +104,7 @@ const Fp4DeviceInfo& get_fp4_device_info() {
             info.logical_sms = 128;
         } else if (arch.rfind("gfx938", 0) == 0 && cus == 72) {
             info.logical_sms = 144;
-        } else if (arch.rfind("gfx928", 0) == 0 && cus == 120) {
+        } else if ((arch.rfind("gfx928", 0) == 0 || arch.rfind("gfx92a", 0) == 0) && cus == 120) {
             info.logical_sms = 240;
         } else {
             TORCH_CHECK(false, "unsupported device config: ", arch,
@@ -327,8 +328,8 @@ __device__ __forceinline__ intx2 fp4_to_fp8(unsigned packed, int delta) {
 __device__ __forceinline__ floatx4 mmac_bf16(bf16x4 a, bf16x4 b, floatx4 c) {
 #if defined(__gfx938__)
     return __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(a, b, c, false, false);
-#elif defined(__gfx936__) || defined(__gfx928__)
-    return __builtin_amdgcn_mmac_f32_16x16x16bf16(a, b, c);
+#elif defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
+    return HCU_MMAC_F32_BF16(a, b, c);
 #else
     return c;
 #endif

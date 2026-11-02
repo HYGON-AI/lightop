@@ -3,14 +3,12 @@
 
 import argparse
 import torch
-import torch.nn.functional as F
-import time
 from lightop.activation import (
     gelu_and_mul_opt,
     gelu_tanh_and_mul_opt,
     silu_and_mul_opt,
 )
-from vllm import _custom_ops as vllm_ops
+from common.vllm_reference import vllm_activation_ops
 
 def benchmark_op(func, output_tensor, input_tensor, warmup=10, runs=100):
     # 预热
@@ -45,13 +43,13 @@ def main():
     args = parser.parse_args()
 
     if args.act == "silu":
-        baseline_func = torch.ops._C.silu_and_mul
+        baseline_func = vllm_activation_ops.silu_and_mul
         custom_func = silu_and_mul_opt
     elif args.act == "gelu":
-        baseline_func = torch.ops._C.gelu_and_mul
+        baseline_func = vllm_activation_ops.gelu_and_mul
         custom_func = gelu_and_mul_opt
     elif args.act == "gelu_tanh":
-        baseline_func = torch.ops._C.gelu_tanh_and_mul
+        baseline_func = vllm_activation_ops.gelu_tanh_and_mul
         custom_func = gelu_tanh_and_mul_opt
 
   

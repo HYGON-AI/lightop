@@ -41,6 +41,19 @@ ROOT_COMPATIBILITY_APIS = {
 
 
 NATIVE_OPERATOR_REFERENCE_TESTS = {
+    # Native ABI/guard and wrapper-reference suites.
+    "bench_fuse_silu_mul_quant_ep_masked.py",
+    "ci_tests/test_bf16_mega_gate_hcu.py",
+    "ci_tests/test_fuse_silu_mul_fp8_quant_ep.py",
+    "ci_tests/test_fuse_silu_mul_quant_ep.py",
+    "ci_tests/test_fused_add_rms_norm_fp32.py",
+    "ci_tests/test_moe_fused_gate_group1.py",
+    "ci_tests/test_paged_mqa_logits_fp4_metadata.py",
+    "ci_tests/test_paged_sparse_mqa_logits_metadata.py",
+    "rms_clamp/test_fuse_rmsnorm_rope_quant_qkv_clamp.py",
+    "rms_clamp/test_fused_rms_norm_rope_contiguous_clamp.py",
+    "rms_clamp/test_fused_rms_norm_rope_contiguous_flashmla.py",
+    "rms_clamp/test_rms_norm_dynamic_per_token_quant_clamp.py",
     "test_convert_req_index_to_global_index.py",
     "test_fused_add_rms_norm_opt.py",
     "test_rms_norm_opt.py",
@@ -113,6 +126,7 @@ def test_migrated_tests_use_categorized_operator_imports():
         }
         allows_native_reference = (
             path.name in NATIVE_OPERATOR_REFERENCE_TESTS
+            or path.relative_to(TEST_ROOT).as_posix() in NATIVE_OPERATOR_REFERENCE_TESTS
         )
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module == "lightop":

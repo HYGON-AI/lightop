@@ -4,7 +4,7 @@
 import torch
 import triton
 import pandas as pd
-from vllm import _custom_ops as vllm_ops
+from common.vllm_reference import vllm_ops
 from lightop.attention import rms_rotary_embedding_fuse
 from lightop.norm import fused_add_rms_norm_opt, rms_norm_opt
 import itertools

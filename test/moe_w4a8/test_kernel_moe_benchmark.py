@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import torch
+from lightop.activation import gelu_and_mul_opt, silu_and_mul_opt
 import time
 import pandas as pd
 import functools
@@ -13,6 +14,11 @@ import torch
 import triton
 import triton.language as tl
 from lightop import envs as lsenvs
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from common.w8a8_cache_json import W8a8GetCacheJSON
 import torch.nn.functional as F
 import ast  
@@ -677,10 +683,10 @@ def fused_experts_impl_int8(hidden_states: torch.Tensor,
 
         # '''
         if activation == "silu":
-            torch.ops._C.silu_and_mul(intermediate_cache2,
+            silu_and_mul_opt(intermediate_cache2,
                                       intermediate_cache1.view(-1, N))
         elif activation == "gelu":
-            torch.ops._C.gelu_and_mul(intermediate_cache2,
+            gelu_and_mul_opt(intermediate_cache2,
                                       intermediate_cache1.view(-1, N))
         else:
             raise ValueError(f"Unsupported FusedMoe activation: {activation}")
@@ -960,7 +966,8 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                                           top_k_num,
                                           mode0)
         else:
-            invoke_fused_moe_kernel_int8(qcurr_hidden_states,
+            elapsed_time1 = triton.testing.do_bench(
+                lambda: invoke_fused_moe_kernel_int8(qcurr_hidden_states,
                                 w1,
                                 intermediate_cache1,
                                 qa1_scale,
@@ -982,13 +989,14 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
+            ) * 1000
 
         # '''
         if activation == "silu":
-            torch.ops._C.silu_and_mul(intermediate_cache2,
+            silu_and_mul_opt(intermediate_cache2,
                                       intermediate_cache1.view(-1, N))
         elif activation == "gelu":
-            torch.ops._C.gelu_and_mul(intermediate_cache2,
+            gelu_and_mul_opt(intermediate_cache2,
                                       intermediate_cache1.view(-1, N))
         else:
             raise ValueError(f"Unsupported FusedMoe activation: {activation}")
@@ -1061,7 +1069,8 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
 
         else:
             config=config2
-            invoke_fused_moe_kernel_int8(qintermediate_cache2,
+            elapsed_time2 = triton.testing.do_bench(
+                lambda: invoke_fused_moe_kernel_int8(qintermediate_cache2,
                                 w2,
                                 intermediate_cache3,
                                 qa2_scale,
@@ -1083,6 +1092,7 @@ def fused_experts_impl_int8_test(hidden_states: torch.Tensor,
                                 per_channel_quant=per_channel_quant,
                                 block_shape=block_shape,
                                 use_nn_moe=use_nn_moe)
+            ) * 1000
         
     return intermediate_cache3, elapsed_time1, elapsed_time2
     # '''
