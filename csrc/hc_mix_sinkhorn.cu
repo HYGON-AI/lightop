@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
+#include "hcu_mmac.h"
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAException.h>
@@ -28,8 +29,8 @@ __device__ __forceinline__ float tf32(float v) {
   return __uint_as_float(u & 0xffffe000u);
 }
 __device__ __forceinline__ F4 mma(F2 a, F2 b, F4 c) {
-#if defined(__gfx928__) || defined(__gfx936__)
-  return __builtin_amdgcn_mmac_f32_16x16x8tf32(a, b, c);
+#if (defined(__gfx928__) || defined(__gfx92a__)) || defined(__gfx936__)
+  return HCU_MMAC_F32_TF32(a, b, c);
 #elif defined(__gfx938__)
   return __builtin_hcu_mmac_f32_16x16x8_tf32_lit_lts(a, b, c, false, false);
 #else
@@ -38,8 +39,8 @@ __device__ __forceinline__ F4 mma(F2 a, F2 b, F4 c) {
 #endif
 }
 __device__ __forceinline__ F4 mma(B4 a, B4 b, F4 c) {
-#if defined(__gfx928__) || defined(__gfx936__)
-  return __builtin_amdgcn_mmac_f32_16x16x16bf16(a, b, c);
+#if (defined(__gfx928__) || defined(__gfx92a__)) || defined(__gfx936__)
+  return HCU_MMAC_F32_BF16(a, b, c);
 #elif defined(__gfx938__)
   return __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(a, b, c, false, false);
 #else

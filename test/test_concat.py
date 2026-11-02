@@ -7,6 +7,9 @@ from functools import reduce
 
 import pytest
 import torch
+import triton
+import triton.language as tl
+import triton.testing
 import math
 from lightop.tensor import ds_cat
 

@@ -3,7 +3,7 @@
 
 import torch
 import triton
-from vllm import _custom_ops as vllm_ops
+from common.vllm_reference import vllm_ops
 from lightop.activation import fuse_silu_mul_quant, silu_and_mul_opt
 from typing import Optional
 

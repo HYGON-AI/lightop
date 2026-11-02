@@ -8641,7 +8641,11 @@ class gemm_w8a8_smooth_config:
 
         gpu_cus = int(os.environ.get("LIGHTOP_GPU_CUS", "80"))
         arch_gfx = str(os.environ.get("LIGHTOP_GPU_TARGET", "gfx936"))
-        if arch_gfx == "gfx938":
+        if arch_gfx == "gfx92a":
+            # Launch geometry is CU-independent; reuse the validated small-M
+            # configurations until gfx92a-specific performance tuning is available.
+            w8a8_smooth_quant_config_dict = w8a8_smooth_quant_config_dict_80
+        elif arch_gfx == "gfx938":
             if gpu_cus == 64:
                 w8a8_smooth_quant_config_dict = w8a8_smooth_quant_config_dict_64_gfx938
             elif gpu_cus ==72:

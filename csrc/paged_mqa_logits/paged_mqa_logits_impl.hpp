@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "hcu_mmac.h"
 #include "hip/hip_runtime.h"
 #include "hip/hip_fp16.h"
 #include "hip/hip_bf16.h"
@@ -139,7 +140,7 @@ inline __device__ __forceinline__ f16x8_t convert_fp8x8_e4m3fn_to_bf16_flush_sub
     }
 
 inline __device__ void buffer_load_lds_x4(v4i* desc, uint8_t* smem_ptr, int offset) {
-    #if defined(__gfx936__) || defined(__gfx938__)
+    #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx92a__)
     __builtin_amdgcn_raw_buffer_load_lds(*desc,
                                          // Cast address type to which compiler can recognize as lds type.
                                          *(__attribute__((address_space(3))) int**) (&smem_ptr),
@@ -152,7 +153,7 @@ inline __device__ void buffer_load_lds_x4(v4i* desc, uint8_t* smem_ptr, int offs
 }
 
 inline __device__ void buffer_load_lds_x2(v4i* desc, uint8_t* smem_ptr, int offset) {
-    #if defined(__gfx936__) || defined(__gfx938__)
+    #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx92a__)
     __builtin_amdgcn_raw_buffer_load_lds(*desc,
                                          *(__attribute__((address_space(3))) int**) (&smem_ptr),
                                          DIRECT_LDS_WORDx2,
@@ -219,11 +220,11 @@ inline __device__ void builtin_b16_mmac(const fp16x4& reg_a, const fp16x4& reg_b
     } else {
         reg_c = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(*(v4bh*)&reg_a, *(v4bh*)&reg_b, reg_c, false, false);
     }
-    #elif defined(__gfx936__) || (__gfx928__)
+    #elif defined(__gfx936__) || defined(__gfx928__) || defined(__gfx92a__)
     if constexpr (is_half) {
-        reg_c = __builtin_amdgcn_mmac_f32_16x16x16f16(reg_a, reg_b, reg_c);
+        reg_c = HCU_MMAC_F32_F16(reg_a, reg_b, reg_c);
     } else {
-        reg_c = __builtin_amdgcn_mmac_f32_16x16x16bf16(*(v4bh*) &reg_a, *(v4bh*) &reg_b, reg_c);
+        reg_c = HCU_MMAC_F32_BF16(*(v4bh*) &reg_a, *(v4bh*) &reg_b, reg_c);
     }
     #endif
 }

@@ -5,7 +5,7 @@
 import pytest
 import torch
 
-from lightop import swiglu_oai_fp8_quant_contiguous
+from lightop.activation import swiglu_oai_fp8_quant_contiguous
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
 

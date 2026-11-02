@@ -8,6 +8,7 @@ small random matrix; default covers seven weights when --model is supplied.
 CI correctness: python -m pytest -v test/ci_tests/test_hc_mix_stats.py
 """
 
+from lightop.gemm_ops import hc_mix_stats as categorized_hc_mix_stats
 import argparse
 import importlib.util
 import json
@@ -31,7 +32,7 @@ def reference(x, w, eps=1e-6):
 
 
 def native(x, w, eps=1e-6):
-    return lightop.hc_mix_stats(x, w, eps)
+    return categorized_hc_mix_stats(x, w, eps)
 
 
 def metric(a, b):
@@ -261,7 +262,7 @@ def general_accuracy():
     """Torch references for dynamic K/N, tails and empty axes."""
     from lightop.gemm_ops import hc_mix_stats
 
-    assert hc_mix_stats is lightop.hc_mix_stats
+    assert hc_mix_stats is categorized_hc_mix_stats
     records = []
     ks = [
         1,
