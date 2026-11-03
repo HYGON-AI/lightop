@@ -56,6 +56,138 @@ def reference_query(q, raw, freqs, positions, rope, scale, ratio, width):
     )
 
 
+def run_packed_request_tests(m):
+    """Compare batched scoring against independent single-request executions."""
+    import gc
+    import weakref
+    from types import SimpleNamespace
+
+    torch.manual_seed(702)
+    records = []
+    counts, contexts = [3, 0, 5, 1, 2], [193, 64, 57, 0, 82]
+    rows, topk, page = sum(counts), 512, 64
+    request_ids = torch.tensor([2, 4, 0, 3, 1], device="cuda", dtype=torch.int32)
+    for heads, combined, ratio, width in [(32, True, 1, 8), (8, False, 2, 8), (32, True, 1, 2048)]:
+        q = torch.randn(rows, heads, 128, device="cuda", dtype=torch.bfloat16)
+        raw = torch.randn(rows, heads, device="cuda", dtype=torch.bfloat16)
+        angles = torch.randn(512, 32, device="cuda")
+        freqs = torch.polar(torch.ones_like(angles), angles)
+        positions, sources = [], []
+        for count, context in zip(counts, contexts):
+            positions.extend([(max(0, context - count + i) + 1) * ratio - 1 for i in range(count)])
+            blocks = torch.full((count, width + 1), -1, device="cuda", dtype=torch.int32)
+            if count and context:
+                for row in range(count):
+                    length = (positions[-count + row] + 1) // ratio
+                    n = (length + 7) // 8
+                    ids = torch.arange(n, device="cuda", dtype=torch.int32)
+                    ids = torch.cat((ids[:width-1], ids[-1:])) if n > width else ids
+                    blocks[row, :ids.numel()] = ids.flip(0)
+            source = blocks[:, :width]
+            sources.append(source.contiguous() if width == 2048 else source)
+        positions = torch.tensor(positions, device="cuda", dtype=torch.int32)
+        # Pool rows and physical pages differ from request-list order.
+        mapping = torch.arange(256 * ratio, device="cuda", dtype=torch.int32)[None, :].repeat(5, 1)
+        mapping += torch.arange(5, device="cuda", dtype=torch.int32)[:, None] * 256 * ratio
+        payload = torch.randint(0, 256, (20, page * 64), device="cuda", dtype=torch.uint8)
+        scales = torch.full((20, page), 0x7f7f7f7f, device="cuda", dtype=torch.int32)
+        cache = torch.cat((payload, scales.view(torch.uint8)), 1).view(20, page, 1, 68)
+        common = dict(weight_scale=.173, rope_dim=64, k_cache=cache, req_to_token=mapping,
+                      compress_ratio=ratio, page_size=page, num_max_sparse_blocks=width,
+                      index_topk=topk, combine_preparation=combined)
+
+        def run(budget=1 << 30, raw_output=True, single=False):
+            pages = torch.full((rows + 2, topk + 3), 71, device="cuda", dtype=torch.int32)
+            logical = torch.full_like(pages, 71) if raw_output else None
+            if single:
+                offset = 0
+                for request, (count, context) in enumerate(zip(counts, contexts)):
+                    m.prefill_sparse_mqa_fused(
+                        q[offset:offset+count], raw[offset:offset+count], freqs,
+                        positions[offset:offset+count], **common,
+                        request_pool_indices=request_ids[request:request+1],
+                        rows_per_request=[count], context_lens_per_request=[context],
+                        request_block_ids=[sources[request]], budget_bytes=budget,
+                        out_page_indices=pages[offset:offset+count],
+                        out_raw_indices=None if logical is None else logical[offset:offset+count],
+                    )
+                    offset += count
+            else:
+                m.prefill_sparse_mqa_fused(
+                    q, raw, freqs, positions, **common,
+                    request_pool_indices=request_ids, rows_per_request=counts,
+                    context_lens_per_request=contexts, request_block_ids=sources,
+                    budget_bytes=budget, out_page_indices=pages, out_raw_indices=logical,
+                )
+            torch.cuda.synchronize()
+            return pages, logical
+
+        expected = run(single=True)
+        backend = m._prefill_current_sparse_backend()
+        original_backend = m._prefill_current_sparse_backend
+        calls, previous = [], [None]
+
+        def scorer(*args):
+            if previous[0] is not None:
+                gc.collect()
+                assert previous[0]() is None, "old logits survive next tile"
+            tables, pairs = args[5], args[6]
+            same_pair = pairs[1:] == pairs[:-1]
+            same_table = (tables[1:] == tables[:-1]).all(-1)
+            assert bool((~same_pair | same_table).all()), "pair crossed request boundary"
+            if args[-2]:
+                odd_boundary = torch.arange(1, tables.shape[0], device=tables.device) % 2 != 0
+                assert not bool((~same_table & odd_boundary).any()), "forced pairing crossed odd request tail"
+            logits = backend.prefill_sparse_fp8_fp4_paged_mqa_logits(*args)
+            calls.append(dict(rows=args[0].shape[0], logits_bytes=logits.numel()*logits.element_size()))
+            previous[0] = weakref.ref(logits)
+            return logits
+
+        m._prefill_current_sparse_backend = lambda: SimpleNamespace(prefill_sparse_fp8_fp4_paged_mqa_logits=scorer)
+        try:
+            actual = run()
+            for a, b in zip(actual, expected):
+                assert torch.equal(a, b), ("packed-request-writeback", heads)
+            assert len(calls) == 1, ("expected one packed MQA", calls)
+            records.append(dict(kind="packed-requests", heads=heads, width=width, calls=calls.copy(), status="bitwise PASS"))
+            calls.clear()
+            budget = max(40000, width * 8 * 4 * 4)
+            actual = run(budget=budget, raw_output=False)
+            assert torch.equal(actual[0], expected[0]) and actual[1] is None
+            assert len(calls) > 1 and sum(c['rows'] for c in calls) == 10
+            assert all(c['logits_bytes'] <= budget for c in calls)
+            records.append(dict(kind="packed-budget-tiles", heads=heads, width=width, budget=budget, calls=calls.copy(), status="bitwise PASS"))
+        finally:
+            m._prefill_current_sparse_backend = original_backend
+        # Rebuild the request geometry on each replay; page/candidate values
+        # must not be cached across forwards. Keep all native checks on-device.
+        graph_pages = torch.empty(rows + 2, topk + 3, device="cuda", dtype=torch.int32)
+        graph_raw = torch.empty_like(graph_pages)
+        def graph_run():
+            m.prefill_sparse_mqa_fused(q, raw, freqs, positions, **common,
+                request_pool_indices=request_ids, rows_per_request=counts,
+                context_lens_per_request=contexts, request_block_ids=sources,
+                out_page_indices=graph_pages, out_raw_indices=graph_raw)
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            graph_run()
+        stream.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            graph_run()
+        q.mul_(.5)
+        for source in sources:
+            if source.numel():source.copy_(source.flip(1))
+        request_ids.copy_(request_ids.flip(0))
+        expected = run(single=True)
+        graph.replay(); torch.cuda.synchronize()
+        assert torch.equal(graph_pages[:rows, :topk], expected[0][:rows, :topk])
+        assert torch.equal(graph_raw[:rows, :topk], expected[1][:rows, :topk])
+        records.append(dict(kind="packed-dynamic-graph", heads=heads, width=width, status="bitwise PASS"))
+    return records
+
+
 def run_tests(m, quick=False):
     torch.manual_seed(471319)
     records = []
@@ -345,6 +477,7 @@ def run_tests(m, quick=False):
                 }
             )
             print(json.dumps(records[-1]), flush=True)
+    records.extend(run_packed_request_tests(m))
     records.extend(run_short_row_tests(m))
     return records
 
