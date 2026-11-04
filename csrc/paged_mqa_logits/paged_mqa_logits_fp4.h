@@ -30,7 +30,8 @@ inline constexpr int64_t kPagedMqaLogitsFp4MaxScheduleRows = 16384;
 /// \param table_block_size positions per block_table entry, 8 or 64
 /// \param out optional preallocated FP32 [B,>=max_context_len] with contiguous columns
 /// \param rows_per_request n > 1 declares rows [b n, b n + n) one request's draft tokens
-///        sharing block_table row b n (table_block_size 64 and H <= 32 only). With at
+///        sharing physical pages over their common visible prefix (TB 64, H <= 32).
+///        Only visible table entries need to be filled. With at
 ///        least kPagedMqaLogitsFp4PairMinRequests requests the kernel scores routes of
 ///        rows (b n + 2 j, b n + 2 j + 1), j < ceil(n / 2), in one KV pass each; fewer
 ///        run as n = 1. Logits are identical either way; the schedule is planned on
