@@ -32,7 +32,6 @@
 #include <c10/core/TensorImpl.h>
 #include <c10/core/Allocator.h>
 #include <ATen/DeviceGuard.h>
-#include <ATen/NamedTensorUtils.h>
 #include <ATen/Utils.h>
 #include <ATen/Dispatch.h>
 #include <c10/util/ExclusivelyOwned.h>
