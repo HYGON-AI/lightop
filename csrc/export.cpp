@@ -625,7 +625,9 @@ void ep_fused_smooth_quant_scatter(
     int local_num_experts, int alignment); 
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale, bool round_after_smooth, double limit);
 void per_token_quant_int8_minimax_out(torch::Tensor&, const torch::Tensor&, torch::Tensor&, int64_t);
-void per_token_quant_int8_out(torch::Tensor& out, const torch::Tensor& input, torch::Tensor& scales);
+void per_token_quant_int8_out(torch::Tensor& out, const torch::Tensor& input, torch::Tensor& scales,
+    const c10::optional<torch::Tensor>& smooth, const c10::optional<torch::Tensor>& weights,
+    const c10::optional<torch::Tensor>& gate_output);
 void rms_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,double epsilon,double limit);
 void rms_norm_no_weight(
     torch::optional<torch::Tensor> out,
@@ -1673,7 +1675,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "Per-token symmetric INT8 quantization (out variant)",
       py::arg("out"),
       py::arg("input"),
-      py::arg("scales"));
+      py::arg("scales"), py::arg("smooth") = py::none(),
+      py::arg("weights") = py::none(), py::arg("gate_output") = py::none());
+  m.attr("per_token_quant_int8_out_supports_gate") = true;
   m.def("markov_gemv_add_argmax", &lightop::sampling::markov_gemv_add_argmax,
         py::arg("latent"), py::arg("weight"), py::arg("base_logits"),
         "BF16 rank-256 Markov GEMV + BF16/FP32 logits add + greedy argmax (BS1-4)");
