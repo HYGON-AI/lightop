@@ -4,7 +4,7 @@
 import pytest
 import torch
 
-from lightop import rms_norm_dynamic_per_token_quant_sglang
+from lightop.rmsnorm import rms_norm_dynamic_per_token_quant_sglang
 
 
 EPSILON = 1.0e-5
@@ -156,3 +156,35 @@ def test_sglang_rms_quant_zero_row_scale_floor() -> None:
         rtol=1.0e-6,
         atol=0.0,
     )
+
+
+@pytest.mark.skipif(torch.version.hip is None, reason="LightOp requires ROCm")
+@pytest.mark.parametrize("rows,width,stride", [(17,1536,2112),(5120,1536,2112),(17,6144,6144),(128,6144,6144),(193,6144,6208)])
+def test_strided_dual_output_graph_updates(rows, width, stride):
+    source = torch.randn((rows,stride), device="cuda", dtype=torch.bfloat16)
+    x = source[:, :width]
+    weight = torch.ones(width, device="cuda", dtype=torch.bfloat16)
+    smooth = torch.ones(width, device="cuda", dtype=torch.float32)
+    raw = torch.empty(x.shape, device="cuda", dtype=x.dtype)
+    clipped = torch.empty_like(raw)
+    def invoke():
+        return rms_norm_dynamic_per_token_quant_sglang(
+            x, weight, EPSILON, update_input=False, limit=8., smooth_scale=smooth,
+            norm_output=raw, clamp_norm_output=False, clamped_output=clipped)
+    invoke()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        quantized, scale = invoke()
+    for _ in range(3):
+        source.normal_(); weight.uniform_(.5,1.5); smooth.uniform_(.5,1.5)
+        original = source.clone()
+        expected_raw = torch.empty_like(raw)
+        expected_q, expected_scale = rms_norm_dynamic_per_token_quant_sglang(
+            x.contiguous(), weight, EPSILON, update_input=False, limit=8.,
+            smooth_scale=smooth, norm_output=expected_raw, clamp_norm_output=False)
+        graph.replay()
+        for actual,expected in [(quantized,expected_q),(scale,expected_scale),
+                                (raw,expected_raw),(clipped,expected_raw.clamp(-8,8)),
+                                (source,original)]:
+            assert torch.equal(actual.contiguous().view(torch.uint8),
+                               expected.contiguous().view(torch.uint8))
