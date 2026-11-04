@@ -251,6 +251,11 @@ std::tuple<Tensor, Tensor> fused_deepep_prepare(
     const Tensor& ids,
     double min_limit,
     double max_limit);
+void fused_dsa_cp_prefill_metadata_launcher(
+    const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
+    const torch::Tensor&, const std::vector<torch::Tensor>&,
+    int64_t, int64_t, int64_t, int64_t);
+
 void fused_metadata_kernel_general_launcher(
     Tensor seq_lens,
     Tensor req_to_token,
@@ -1904,6 +1909,7 @@ m.def(
        "RMS-normalized projection, or None when unsupported", py::arg("x"),
        py::arg("weight"), py::arg("eps") = 1e-6);
  m.def("dpskv4_hc_head_fused", &at::native::dpskv4_hc_head_fused, "dpskv4_hc_head_fused");
+  m.def("fused_dsa_cp_prefill_metadata", &at::native::fused_dsa_cp_prefill_metadata_launcher);
  m.def("fused_metadata_kernel_general", &at::native::fused_metadata_kernel_general_launcher,
        "fused_metadata_kernel_general",
        py::arg("seq_lens"),
