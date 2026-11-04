@@ -46,7 +46,9 @@ def per_token_dynamic_quant_int8(
     smooth_scale: torch.Tensor,
     round_after_smooth: bool = False,
     limit: float = -1.0,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    *,
+    weights: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, ...]:
     """Apply optional clamp, smooth scaling, and per-token INT8 quantization.
 
     ``limit=-1`` preserves the historical smooth+quant behavior.  A
@@ -61,9 +63,29 @@ def per_token_dynamic_quant_int8(
     scales = torch.empty(
         x.shape[:-1], device=x.device, dtype=torch.float32
     )
+    if (
+        weights is not None
+        and getattr(lightop_native, "per_token_quant_int8_out_supports_gate", False)
+        and torch.version.hip is not None
+        and not round_after_smooth and limit < 0
+        and x.is_cuda and x.dtype == torch.bfloat16 and x.shape[-1] == 128
+        and x.is_contiguous() and x.data_ptr() % 16 == 0
+        and smooth_scale.dtype == torch.float32 and smooth_scale.is_contiguous()
+        and smooth_scale.numel() == 128 and smooth_scale.data_ptr() % 32 == 0
+        and smooth_scale.device == x.device
+        and weights.dtype == torch.float32 and weights.is_contiguous()
+        and weights.numel() == scales.numel() and weights.device == x.device
+    ):
+        adjusted_weights = torch.empty_like(weights, memory_format=torch.contiguous_format)
+        lightop_native.per_token_quant_int8_out(
+            x_q, x, scales, smooth_scale, weights, adjusted_weights
+        )
+        return x_q, scales, adjusted_weights
     lightop_native.per_token_dynamic_quant_int8(
         x_q, x, scales, smooth_scale, round_after_smooth, limit
     )
+    if weights is not None:
+        return x_q, scales, weights * scales.reshape_as(weights)
     return x_q, scales
 
 
