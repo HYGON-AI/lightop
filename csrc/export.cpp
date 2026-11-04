@@ -538,7 +538,7 @@ void store_kv_cache_paged(const torch::Tensor& key, const torch::Tensor& value,t
 
 void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::optional<torch::Tensor>& token_expert_indices,torch::Tensor& gating_output,  bool Is_renormalize = false);
 void rotary_embedding_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox);    
-void rotary_embedding_deepseek_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox, std::optional<torch::Tensor> offsets);
+void rotary_embedding_deepseek_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox, std::optional<torch::Tensor> offsets, bool round_bf16_products, std::optional<torch::Tensor> query_out, std::optional<torch::Tensor> key_out);
 void moe_align_block_size(
     torch::Tensor topk_ids, int64_t num_experts, int64_t block_size,
     torch::Tensor sorted_token_ids, torch::Tensor experts_ids,
@@ -1415,7 +1415,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang");
   m.def("rms_norm_fp8_quant",&at::native::rms_norm_fp8_quant,"rms_norm_fp8_quant");
   m.def("rotary_embedding_fuse", &at::native::rotary_embedding_fuse, "rotary_embedding_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"));
-  m.def("rotary_embedding_deepseek_fuse", &at::native::rotary_embedding_deepseek_fuse, "rotary_embedding_deepseek_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"),py::arg("offsets") = py::none());
+  m.attr("ROTARY_EMBEDDING_BF16_ROUNDED_OUT_ABI") = 2;
+  m.def("rotary_embedding_deepseek_fuse",
+        &at::native::rotary_embedding_deepseek_fuse,
+        "RoPE: legacy in-place, or explicit outputs with rounded BF16 products",
+        py::arg("positions"), py::arg("query"), py::arg("key"),
+        py::arg("head_size"), py::arg("cos_sin_cache"), py::arg("is_neox"),
+        py::arg("offsets") = py::none(), py::kw_only(),
+        py::arg("round_bf16_products") = false,
+        py::arg("query_out") = py::none(), py::arg("key_out") = py::none());
   m.def("groupgemm",&at::native::groupgemm,"groupgemm");
   m.def("groupgemm_permute",&at::native::groupgemm_permute,"groupgemm_permute");
   m.def("groupgemm_unpermute",&at::native::groupgemm_unpermute,"groupgemm_unpermute");
