@@ -32,7 +32,7 @@ from .existing import (
     silu_and_mul_opt,
 )
 
-_NATIVE_APIS = {"lm_fuse_silu_mul_quant"}
+_NATIVE_APIS = {"lm_fuse_silu_mul_quant", "fused_clamp_smooth"}
 
 
 def __getattr__(name):
@@ -44,6 +44,7 @@ def __getattr__(name):
 
 
 __all__ = [
+    "fused_clamp_smooth",
     "AddDropout",
     "DropPath",
     "fuse_silu_and_mul",
