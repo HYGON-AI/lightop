@@ -956,6 +956,8 @@ void fused_quantize_and_store_mla_kv_cache(
     const std::string& fp8_dtype = "fp8_e4m3",
     float eps = 1e-5f
 );
+void fused_quantize_and_store_mla_kv_cache_dual(torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::optional<torch::Tensor>, std::optional<torch::Tensor>, std::optional<torch::Tensor>, float);
+torch::Tensor main_kv_loc_to_compact(torch::Tensor, torch::Tensor, int64_t);
 void fused_concat_and_store_mla_kv_cache(
     torch::Tensor k_nope,
     torch::Tensor k_rope,
@@ -1865,6 +1867,8 @@ m.def(
  m.def("fuse_layernorm_rotary_embedding", &at::native::fuse_layernorm_rotary_embedding, "fuse_layernorm_rotary_embedding");
  m.def("fuse_norm_rope_quant_fp8", &at::native::fuse_norm_rope_quant_fp8, "fuse_norm_rope_quant_fp8");
  m.def("fused_quantize_and_store_mla_kv_cache", &at::native::fused_quantize_and_store_mla_kv_cache, "fused_quantize_and_store_mla_kv_cache");
+m.def("fused_quantize_and_store_mla_kv_cache_dual", &at::native::fused_quantize_and_store_mla_kv_cache_dual, py::arg("k_nope"), py::arg("k_rope"), py::arg("kv_buffer"), py::arg("loc"), py::arg("mirror_buffer") = py::none(), py::arg("mirror_loc") = py::none(), py::arg("concat_out") = py::none(), py::arg("eps") = 1e-6f);
+m.def("main_kv_loc_to_compact", &at::native::main_kv_loc_to_compact, py::arg("loc"), py::arg("physical_to_compact"), py::arg("page_size"));
  m.def("fused_concat_and_store_mla_kv_cache", &at::native::fused_concat_and_store_mla_kv_cache, "fused_concat_and_store_mla_kv_cache");
  m.def("qkv_split_rms_rotary_embedding_fuse", &at::native::qkv_split_rms_rotary_embedding_fuse, "qkv_split_rms_rotary_embedding_fuse");
  m.def("gemma_qkv_split_rms_rotary_embedding_fuse", &at::native::gemma_qkv_split_rms_rotary_embedding_fuse, "gemma_qkv_split_rms_rotary_embedding_fuse");
