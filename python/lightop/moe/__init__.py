@@ -52,6 +52,9 @@ from .routing import (
     topk_ids_postprocess,
     topk_softmax,
 )
+from .group_matmul_gelu_quant import group_matmul_gelu_quant, group_matmul_gelu_quant_fp8
+from .moe_finalize_routing import build_src_to_dst, moe_finalize_routing
+from .moe_init_routing import moe_init_routing
 
 _LMSLIM_NATIVE_APIS = {
     "fused_experts_cuda",
@@ -79,6 +82,7 @@ def __getattr__(name):
 
 __all__ = [
     "bf16_mega_gate_hcu",
+    "build_src_to_dst",
     "ep_build_m_indices",
     "ep_gather",
     "ep_scatter",
@@ -94,6 +98,8 @@ __all__ = [
     "fused_experts_w4a16",
     "groupgemm_impl_w4a8",
     "groupgemm_impl_w4a8_marlin",
+    "group_matmul_gelu_quant",
+    "group_matmul_gelu_quant_fp8",
     "kimi_k2_moe_fused_gate",
     "fuse_groupgemm_permute_quant",
     "get_moe_cuda_config",
@@ -109,6 +115,7 @@ __all__ = [
     "groupgemm_unpermute",
     "moe_align_block_size",
     "moe_align_block_size_out",
+    "moe_finalize_routing",
     "moe_fused_gate",
     "moe_fused_gate_sqrtsoftplus",
     "moe_fused_gate_sqrtsoftplus_v41_hcu",
@@ -124,6 +131,7 @@ __all__ = [
     "moe_gemm_w8a8",
     "moe_groupgemm_marlin_w4a8",
     "moe_groupgemm_w4a8",
+    "moe_init_routing",
     "moe_marlin_w4a16",
     "moe_sum",
     "topk_ids_postprocess",
