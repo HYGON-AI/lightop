@@ -244,6 +244,7 @@ torch::Tensor mla_q_absorb_rope_concat(
 std::optional<Tensor> hc_mix_stats(const Tensor& x, const Tensor& w, double eps);
 std::tuple<Tensor, Tensor, Tensor> hc_mix_stats_sinkhorn_bf16x3(const Tensor&, const std::vector<Tensor>&, const Tensor&, const Tensor&, int64_t, double, double, int64_t);
 std::tuple<Tensor, Tensor, Tensor> hc_mix_stats_sinkhorn_deepgemm(const Tensor&, const std::vector<Tensor>&, const Tensor&, const Tensor&, int64_t, double, double, int64_t);
+Tensor fused_clamp_smooth(const Tensor& hidden, const Tensor& smooth, double min_limit, double max_limit);
 std::tuple<Tensor, Tensor> fused_deepep_prepare(
     const Tensor& hidden,
     const Tensor& smooth,
@@ -1951,6 +1952,7 @@ m.def("moe_fused_gate_sqrtsoftplus_v41_hcu_deepep",
       py::arg("routed_scaling_factor"),
       py::arg("apply_routed_scaling_factor_on_output"),
       py::arg("num_token_non_padded") = py::none());
+m.def("fused_clamp_smooth", &at::native::fused_clamp_smooth, "fused_clamp_smooth");
 m.def("fused_deepep_prepare", &at::native::fused_deepep_prepare,
       "fused_deepep_prepare");
 m.def("fuse_silu_and_mul_ep",&at::native::fuse_silu_and_mul_ep,"fuse_silu_and_mul_ep");
