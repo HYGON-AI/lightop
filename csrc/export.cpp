@@ -1207,6 +1207,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rmsnorm_forward", &at::native::rmsnorm_forward, "rmsnorm forward");
   m.def("rmsnorm_backward", &at::native::rmsnorm_backward, "rmsnorm backward");
   m.def("fused_rms_norm_contiguous", &at::native::fused_rms_norm_contiguous, "fused_rms_norm_contiguous");
+  m.attr("MLA_ROPE_SUPPORTED_Q_HEAD_STRIDES") = py::make_tuple(192, 256);
   m.def(
       "fused_rms_norm_rope_contiguous",
       &at::native::fused_rms_norm_rope_contiguous,
