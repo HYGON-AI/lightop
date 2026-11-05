@@ -77,3 +77,11 @@ __all__ = [
     "silu_and_mul_opt",
     "swiglu_oai_fp8_quant_masked",
 ]
+
+from .swiglu_oai_int8_quant import (
+    swiglu_oai_int8_quant_contiguous,
+    swiglu_oai_int8_quant_masked,
+    swiglu_oai_int8_quant_masked_flat,
+)
+
+__all__ += ["swiglu_oai_int8_quant_contiguous", "swiglu_oai_int8_quant_masked"]
