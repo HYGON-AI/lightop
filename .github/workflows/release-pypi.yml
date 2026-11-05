@@ -70,23 +70,16 @@ jobs:
         env:
           RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL }}
 
-      - name: 安装编译依赖
+      - name: 安装 torch (编译前置依赖)
         shell: bash
         run: |
           PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
           PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
-          pip install "${PIP_FLAGS[@]}" torch==${TORCH_VERSION} ninja wheel setuptools build
+          pip install "${PIP_FLAGS[@]}" torch==${TORCH_VERSION}
 
-      - name: 编译 wheel
+      - name: 编译 manylinux wheel
         shell: bash
-        run: |
-          source /opt/dtk/env.sh
-          python3 setup.py bdist_wheel
-
-      - name: 生成 manylinux wheel
-        run: |
-          pip install --no-cache-dir --no-deps dist/*.whl
-          bash .github/scripts/manylinux_repair.sh dist dist-manylinux
+        run: bash scripts/build_hcu_wheel.sh --output-dir dist-manylinux
 
       - name: CIUpload REPAIR
         run: |

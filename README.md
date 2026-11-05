@@ -27,13 +27,13 @@ source /opt/dtk/env.sh
 python3 setup.py install
 ```
 
-如需生成 wheel 安装包：
+如需生成 manylinux wheel 安装包，使用 `scripts/` 下的编译脚本：
 
 ```bash
-python3 setup.py bdist_wheel
+./scripts/build_hcu_wheel.sh
 ```
 
-产物位于 `dist/`。可通过 `MAX_JOBS` 控制编译并行度，例如 `MAX_JOBS=32 python3 setup.py install`。
+脚本会检查 DTK、AICC 与 HIP 版 PyTorch，并安装其余编译依赖，产物位于 `dist-manylinux/`。可通过 `./scripts/build_hcu_wheel.sh --help` 查看参数，或用 `--jobs`（或 `MAX_JOBS`）控制编译并行度，例如 `./scripts/build_hcu_wheel.sh --jobs 32`。
 
 ## 使用示例
 

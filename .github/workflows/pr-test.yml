@@ -82,22 +82,26 @@ jobs:
           wget ${{ env.RESOURCE_SERVER_URL }}/ai_cc/Nightly/hcu_llvm_installer.sh
           bash hcu_llvm_installer.sh --major ${{ matrix.aicc_major }}
 
-      - name: 编译 wheel
+      - name: 安装 torch (编译前置依赖)
         # 显式 --index-url: 镜像内置 pip 配置会覆盖 user 级 pip.conf
         shell: bash
         run: |
           PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
           PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
-          pip install "${PIP_FLAGS[@]}" torch==${TORCH_VERSION} ninja wheel setuptools build
-          python3 setup.py install
+          pip install "${PIP_FLAGS[@]}" torch==${TORCH_VERSION}
+
+      - name: 编译 manylinux wheel
+        shell: bash
+        run: bash scripts/build_hcu_wheel.sh --output-dir dist-manylinux
 
       - name: 安装测试依赖与 lightop
-        # 编完直接在当前容器内装包测试, 不再重启新容器
+        # 安装编译脚本产出的 manylinux wheel, 保证测试对象与发布产物一致
         shell: bash
         run: |
           set -euo pipefail
           PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
           PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
+          pip install "${PIP_FLAGS[@]}" --force-reinstall --no-deps dist-manylinux/*.whl
           pip install "${PIP_FLAGS[@]}" pytest numpy==2.1.0 vllm==0.28.1 amdsmi==1.0.0+630c16a6.dirty flash-attn
 
       - name: Checkout 测试用例
