@@ -83,6 +83,7 @@ constexpr int kFp4PlannerThreads = 256;
 struct Fp4DeviceInfo {
     int physical_cus;
     int logical_sms;
+    bool reuse_dense_rows;
 };
 
 const Fp4DeviceInfo& get_fp4_device_info() {
@@ -99,9 +100,13 @@ const Fp4DeviceInfo& get_fp4_device_info() {
         const int cus = prop.multiProcessorCount;
         info.physical_cus = cus;
         if (arch.rfind("gfx936", 0) == 0 && cus == 80) {
-            info.logical_sms = 320;
+            // Long gfx936 walks benefit from eight CTAs per CU; the planner
+            // retains four for short walks and small unpaired batches.
+            info.logical_sms = 640;
+            info.reuse_dense_rows = true;
         } else if (arch.rfind("gfx938", 0) == 0 && cus == 64) {
             info.logical_sms = 256;
+            info.reuse_dense_rows = true;
         } else if (arch.rfind("gfx938", 0) == 0 && cus == 72) {
             info.logical_sms = 144;
         } else if ((arch.rfind("gfx928", 0) == 0 || arch.rfind("gfx92a", 0) == 0) && cus == 120) {
@@ -218,7 +223,8 @@ __global__ void fp4_paged_logits_metadata(
     // Balanced row-reuse walks amortize query preparation over three CTAs per CU.
     // Keep two CTAs per CU for fewer than four splits per CTA, where extra Q loads
     // cost more than the additional parallelism. Unused CTAs get empty ranges.
-    const int active_sms = num_sms == 256 && total_splits < 1024 ? 128 :
+    const int active_sms = num_sms == 640 && total_splits < 8192 ? 320 :
+        num_sms == 256 && total_splits < 1024 ? 128 :
         (balance && prefix[scan_size] == 0 ? 192 : num_sms);
     const uint32_t q = total_splits / static_cast<uint32_t>(active_sms);
     const uint32_t r = total_splits % static_cast<uint32_t>(active_sms);
@@ -397,11 +403,7 @@ struct RowQ {
     static constexpr int HT = H / 16;
     // Used only by SharedBf: one decoded query is shared by the CTA waves.
     bf16x4* bf_cache;
-#if defined(__gfx938__)
     bf16x4 bf[SharedBf ? 1 : HT][SharedBf ? 1 : 8];
-#else
-    bf16x4 bf[HT][8];
-#endif
     float w[HT][4];
     // The row's smallest and largest Q scale, which bound the BF16 subnormal shift.
     int smin, smax;
@@ -427,17 +429,13 @@ struct RowQ {
 #pragma unroll
             for (int j = 0; j < 4; ++j) w[h][j] = weights[r * w_stride + h * 16 + j * 4 + group];
         }
-#if defined(__gfx938__)
         if constexpr (!SharedBf) {
-#endif
 #pragma unroll
             for (int h = 0; h < HT; ++h) {
 #pragma unroll
                 for (int k = 0; k < 8; ++k) bf[h][k] = decode_fp4x4((qb[h][k / 2] >> ((k & 1) * 16)) & 0xffffu, sq[h]);
             }
-#if defined(__gfx938__)
         }
-#endif
         smax = 0;
         smin = 255;
 #pragma unroll
@@ -455,6 +453,9 @@ struct RowQ {
 #pragma unroll
             for (int k = 0; k < 4; ++k) f8[h][k] = fp4_to_fp8(qb[h][k], pq - sq[h]);
         }
+#endif
+        // Shared BF16 Q is independent of the architecture's FP8 support.
+        // All CTA waves participate in the barrier, including inactive tails.
         if constexpr (SharedBf) {
             if (threadIdx.x < 64) {
 #pragma unroll
@@ -467,7 +468,6 @@ struct RowQ {
             }
             __syncthreads();
         }
-#endif
     }
 };
 
@@ -688,7 +688,9 @@ __device__ __forceinline__ void score_split(const Args& a, const RowQ<H, SharedB
             const int s2 = (sw[tile] >> 16) & 255u, s3 = sw[tile] >> 24;
             const int kmax = max(max(s0, s1), max(s2, s3));
             const int kmin = min(min(s0, s1), min(s2, s3));
-            shift = max(0, min(need - kmin, min(252 - kmax, 368 - qmax - kmax)));
+            // Keep K operands normal as well as their products: gfx936 MMAC
+            // flushes BF16 subnormal inputs even when Q makes the product normal.
+            shift = max(0, min(max(need, 2) - kmin, min(252 - kmax, 368 - qmax - kmax)));
         }
         bool need_bf16 = true;
 #if defined(__gfx938__)
@@ -747,7 +749,6 @@ __device__ __forceinline__ void score_split(const Args& a, const RowQ<H, SharedB
             } else
 #endif
             {
-#if defined(__gfx938__)
                 if constexpr (SharedBf) {
                     bf16x4 qbf[HT][8];
 #pragma unroll
@@ -762,7 +763,6 @@ __device__ __forceinline__ void score_split(const Args& a, const RowQ<H, SharedB
                         for (int h = 0; h < HT; ++h) acc[h] = mmac_bf16(kbf[k], qbf[h][k], acc[h]);
                     }
                 } else
-#endif
                 {
 #pragma unroll
                     for (int k = 0; k < 8; ++k) {
@@ -1026,8 +1026,10 @@ torch::Tensor paged_mqa_logits_fp4(
     // Cached scoring uses the live visible lengths inside the kernel. The
     // host only screens out launches whose entire output is short.
     const bool cached_dense = persistent && table_block_size == 64 &&
-        heads <= 32 && max_context_len > 16 * kSplitKV &&
-        get_fp4_device_info().logical_sms == 256;
+        heads <= 32 &&
+        // Draft suffixes alone do not amortize the unpaired query-cache setup.
+        max_context_len > 16 * kSplitKV + (pair ? 0 : rows_per_request - 1) &&
+        get_fp4_device_info().reuse_dense_rows;
     switch (heads) {
         case 16:
             if (cached_dense) {
@@ -1094,9 +1096,12 @@ torch::Tensor get_paged_mqa_logits_fp4_metadata(
     TORCH_CHECK(num_sms == device_info.physical_cus,
                 "get_paged_mqa_logits_fp4_metadata: num_sms must match the "
                 "physical CU count (", device_info.physical_cus, ")");
-    // Retain two CTAs per CU for small and paired batches. The extra
-    // parallelism pays off on the longer unpaired verification/candidate walk.
-    const int max_ctas = device_info.logical_sms == 256 && (routes < 32 || pair)
+    // gfx936 keeps four CTAs per CU for small/unpaired verification batches.
+    // Eligible larger batches reserve eight; the device planner selects four
+    // for fewer than 8192 live splits. Keep the measured gfx938 policy.
+    const int max_ctas = device_info.logical_sms == 640 &&
+        ((!pair && rows_per_request > 1) || routes < 16) ? 320 :
+        device_info.logical_sms == 256 && (routes < 32 || pair)
         ? 128 : device_info.logical_sms;
     auto schedule = torch::empty({max_ctas + 1, 2}, context_lens.options());
     auto stream = at::hip::getCurrentHIPStream();

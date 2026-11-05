@@ -21,7 +21,8 @@ def reference_schedule(lengths, rows_per_request, ctas):
             for offset in range(0, rows_per_request, 2)
         ]
     cumulative = list(accumulate((length + 255) // 256 for length in lengths))
-    active_ctas = 128 if ctas == 256 and cumulative[-1] < 1024 else ctas
+    active_ctas = (320 if ctas == 640 and cumulative[-1] < 8192 else
+                   128 if ctas == 256 and cumulative[-1] < 1024 else ctas)
     if ctas == 256 and cumulative[-1] >= 1024 and not paired and rows_per_request > 1 and batch <= 64:
         largest_route = (max(lengths) + 255) // 256
         if largest_route * batch <= 2 * cumulative[-1]:
@@ -176,3 +177,34 @@ def test_multirow_plan_reacts_to_live_length_imbalance(requests, rows):
         assert (result[:-1] != result[1:]).any(dim=1).sum().item() == active
         expected = reference_schedule([n*256 for n in splits], rows, 256)
         torch.testing.assert_close(result, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("splits", [8191, 8192, 8193])
+def test_gfx936_density_boundary(splits):
+    """The live split count selects density without changing schedule coverage."""
+    props = torch.cuda.get_device_properties(0)
+    if not props.gcnArchName.startswith("gfx936") or props.multi_processor_count != 80:
+        pytest.skip("gfx936 80-CU density policy")
+    lengths = [256 * (splits // 16 + (i < splits % 16)) for i in range(16)]
+    tensor = torch.tensor(lengths, device="cuda", dtype=torch.int32)
+    actual = plan(tensor)
+    assert actual.shape == (641, 2)
+    torch.testing.assert_close(actual.cpu(), reference_schedule(lengths, 1, 640),
+                               rtol=0, atol=0)
+
+
+def test_gfx936_density_replay_reads_live_work():
+    props = torch.cuda.get_device_properties(0)
+    if not props.gcnArchName.startswith("gfx936") or props.multi_processor_count != 80:
+        pytest.skip("gfx936 80-CU density policy")
+    lengths = torch.ones(16, device="cuda", dtype=torch.int32)
+    plan(lengths)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = plan(lengths)
+    for splits in (8191, 8192, 8193, 0, 8192):
+        values = [256 * (splits // 16 + (i < splits % 16)) for i in range(16)]
+        lengths.copy_(torch.tensor(values, device="cuda", dtype=torch.int32))
+        graph.replay()
+        torch.testing.assert_close(actual.cpu(), reference_schedule(values, 1, 640),
+                                   rtol=0, atol=0)
