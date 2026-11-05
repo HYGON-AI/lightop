@@ -85,6 +85,7 @@ from .fuse_topk_transform import (
     fast_topk_transform_sparse_mask_fused,
     fast_topk_transform_ragged_fused,
     topk_transform_512,
+    topk_transform_512_sparse_mask,
     topk_transform_1024,
     topk_transform_ragged_v2,
 )

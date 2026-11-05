@@ -817,7 +817,8 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
     const bool native_fp8_path = is_supported_gfx938 && !int8_kv &&
         q.scalar_type() == torch::kFloat8_e4m3fn &&
         fused_kv_cache.scalar_type() == torch::kUInt8 &&
-        q.dim() == 4 && q.size(2) == grouped_sparse_native_fp8::kHeads;
+        q.dim() == 4 &&
+        (q.size(2) == 32 || (q.size(2) == 64 && group_size == 1));
     TORCH_CHECK(
         (q.scalar_type() == torch::kBFloat16 || native_fp8_path) && q.dim() == 4 &&
             supported_batch && q.size(1) == 1 &&
@@ -825,7 +826,8 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
              q.size(2) == 64) &&
             q.size(3) == kHeadDim && q.is_contiguous(),
         "q must be contiguous BF16 [batch, 1, heads, 128], or native "
-        "E4M3FN [batch, 1, 32, 128] with packed FP8 KV on gfx938/64CU/72CU, with positive "
+        "E4M3FN [batch, 1, 32/64, 128] with packed FP8 KV on gfx938/64CU/72CU "
+        "(64 heads requires group_size=1), with positive "
         "batch, batch divisible by group_size for group_size 3/4/5/6, and "
         "heads in 8/16/32/64");
     const int batch_size = static_cast<int>(q.size(0));
@@ -892,7 +894,7 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
     auto stream = at::cuda::getCurrentCUDAStream(q.get_device());
     if (native_fp8_path) {
         grouped_sparse_native_fp8::dispatch_grouped_rows(
-            group_size, q, fused_kv_cache, weights, context_lens, block_table,
+            group_size, num_heads, q, fused_kv_cache, weights, context_lens, block_table,
             logits, nonzero_mask, resolved, stream);
     } else if (int8_kv) {
         dispatch_grouped_rows<false, true>(

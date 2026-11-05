@@ -5,7 +5,10 @@ import time
 
 import torch
 
-from lightop.attention import topk_transform_512
+from lightop.attention import (
+    topk_transform_512,
+    topk_transform_512_sparse_mask,
+)
 
 MAX_CONTEXT_LEN = 512 * 1024
 TOPK = 512
@@ -41,6 +44,55 @@ def topk_transform_512_reference(
     raw_indices = raw_indices.to(torch.int32)
     raw_indices.masked_fill_(~valid_indices, -1)
 
+    return page_indices, raw_indices
+
+
+def pack_nonzero_mask(nonzero: torch.Tensor) -> torch.Tensor:
+    padded_width = ((nonzero.shape[1] + 15) // 16) * 16
+    padded = torch.zeros(
+        nonzero.shape[0], padded_width, dtype=torch.bool, device=nonzero.device
+    )
+    padded[:, : nonzero.shape[1]] = nonzero
+    bit_weights = 1 << torch.arange(16, dtype=torch.int32, device=nonzero.device)
+    return (
+        padded.view(nonzero.shape[0], -1, 16).to(torch.int32)
+        .mul(bit_weights)
+        .sum(dim=-1)
+        .to(torch.int16)
+    )
+
+
+def sparse_mask_reference(
+    scores: torch.Tensor,
+    nonzero: torch.Tensor,
+    seq_lens: torch.Tensor,
+    page_tables: torch.Tensor,
+    page_size: int,
+):
+    raw_rows = []
+    for row, length_tensor in enumerate(seq_lens.cpu()):
+        length = int(length_tensor)
+        if length <= TOPK:
+            selected = torch.arange(length, device=scores.device)
+        else:
+            live = torch.nonzero(nonzero[row, :length], as_tuple=False).flatten()
+            if live.numel() >= TOPK:
+                ranks = torch.topk(scores[row, live], TOPK, sorted=False).indices
+                selected = live[ranks]
+            else:
+                zero = torch.nonzero(~nonzero[row, :length], as_tuple=False).flatten()
+                selected = torch.cat((live, zero[: TOPK - live.numel()]))
+            selected = selected.sort().values
+        raw = torch.full((TOPK,), -1, dtype=torch.int32, device=scores.device)
+        raw[: selected.numel()] = selected.to(torch.int32)
+        raw_rows.append(raw)
+    raw_indices = torch.stack(raw_rows)
+    valid = raw_indices >= 0
+    safe = raw_indices.clamp_min(0)
+    slots = torch.div(safe, page_size, rounding_mode="floor").long()
+    physical_pages = torch.gather(page_tables, 1, slots)
+    page_indices = physical_pages * page_size + safe.remainder(page_size)
+    page_indices.masked_fill_(~valid | (physical_pages < 0), -1)
     return page_indices, raw_indices
 
 
@@ -202,6 +254,52 @@ def test_topk_transform_512():
     print("PASS invalid page_size check")
 
 
+@torch.no_grad()
+def test_topk_transform_512_sparse_mask():
+    assert torch.cuda.is_available(), "CUDA/ROCm device is required"
+    torch.manual_seed(20261102)
+    width = 1043
+    seq_lens = torch.tensor([127, 513, 1031], dtype=torch.int32, device="cuda")
+    scores = torch.rand(3, width, dtype=torch.float32, device="cuda") + 0.25
+    nonzero = torch.zeros(3, width, dtype=torch.bool, device="cuda")
+    nonzero[0, 1:127:3] = True
+    nonzero[1, :513:5] = True
+    nonzero[2, :1031] = torch.rand(1031, device="cuda") > 0.25
+    # Tail bits and scores must not affect selection.
+    nonzero[0, 127:] = True
+    nonzero[1, 513:] = True
+    scores[0, 127:] = 1.0e6
+    scores[1, 513:] = 1.0e6
+    mask = pack_nonzero_mask(nonzero)
+
+    for page_size in (1, 64):
+        num_pages = (width + page_size - 1) // page_size
+        page_tables = torch.arange(
+            num_pages, dtype=torch.int32, device="cuda"
+        ).repeat(3, 1)
+        page_tables[1].add_(num_pages)
+        page_tables[2, ::7] = -1
+        expected_page, expected_raw = sparse_mask_reference(
+            scores, nonzero, seq_lens, page_tables, page_size
+        )
+        for return_raw in (False, True):
+            actual_page = torch.empty(3, TOPK, dtype=torch.int32, device="cuda")
+            actual_raw = torch.empty_like(actual_page) if return_raw else None
+            topk_transform_512_sparse_mask(
+                scores,
+                mask,
+                seq_lens,
+                page_tables,
+                actual_page,
+                page_size,
+                actual_raw,
+            )
+            torch.cuda.synchronize()
+            assert torch.equal(actual_page, expected_page)
+            if actual_raw is not None:
+                assert torch.equal(actual_raw, expected_raw)
+
+
 def test_long_rows_exact_adaptive_sampler():
     if __package__:
         from .test_adaptive_topk import assert_fixed_pairs, fixed_call, fixed_inputs
@@ -263,9 +361,66 @@ def test_long_rows_graph_replay():
     assert_fixed_pairs(mapped, raw, args, expected_raw)
 
 
+def run_sparse_performance(batch_size=6, seq_len=131072, nonzero_per_row=256):
+    scores, seq_lens, page_tables = make_inputs([seq_len] * batch_size)
+    if not 0 <= nonzero_per_row <= seq_len:
+        raise ValueError("nonzero_per_row must be in [0, seq_len]")
+    scores.zero_()
+    nonzero = torch.zeros_like(scores, dtype=torch.bool)
+    if nonzero_per_row:
+        positions = torch.linspace(
+            0, seq_len - 1, nonzero_per_row, device="cuda"
+        ).round().long()
+        nonzero[:, positions] = True
+        scores[:, positions] = torch.rand(
+            batch_size, nonzero_per_row, device="cuda"
+        ) + 0.25
+    mask = pack_nonzero_mask(nonzero)
+    out_page_indices = torch.empty(
+        batch_size, TOPK, dtype=torch.int32, device="cuda"
+    )
+    out_raw_indices = torch.empty_like(out_page_indices)
+
+    def run_sparse():
+        topk_transform_512_sparse_mask(
+            scores,
+            mask,
+            seq_lens,
+            page_tables,
+            out_page_indices,
+            PAGE_SIZE,
+            out_raw_indices,
+        )
+
+    def run_dense():
+        topk_transform_512(
+            scores,
+            seq_lens,
+            page_tables,
+            out_page_indices,
+            PAGE_SIZE,
+            out_raw_indices,
+        )
+
+    dense_us = benchmark(run_dense)
+    sparse_us = benchmark(run_sparse)
+    print("\nSparse-mask performance (10 warmup, 100 iterations)")
+    print(f"shape: scores=[{batch_size}, {seq_len}], dtype=float32")
+    print(
+        f"nonzero/row: {nonzero_per_row} "
+        f"(zero_ratio={1.0 - nonzero_per_row / seq_len:.4%})"
+    )
+    print(f"Dense Top512:       {dense_us:.2f} us")
+    print(f"Sparse-mask Top512: {sparse_us:.2f} us")
+    print(f"Speedup:            {dense_us / sparse_us:.2f}x")
+
+
 if __name__ == "__main__":
     test_topk_transform_512()
+    test_topk_transform_512_sparse_mask()
     test_long_rows_exact_adaptive_sampler()
     test_long_rows_graph_replay()
     run_performance()
     run_performance(batch_size=6, seq_len=131072)
+    run_sparse_performance(nonzero_per_row=256)
+    run_sparse_performance(nonzero_per_row=4096)
