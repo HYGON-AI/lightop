@@ -21,8 +21,8 @@ concurrency:
 
 env:
   MAX_JOBS: "32"
-  PYPI_URL: ${{ vars.PYPI_URL || 'http://10.16.1.201:9929' }}
-  RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}
+  PYPI_URL: ${{ vars.PYPI_URL }}
+  RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL }}
 
 jobs:
   build-and-test:
@@ -47,7 +47,7 @@ jobs:
       DTK_VERSION: ${{ matrix.dtk_version }}
     container:
       # DTK 基础镜像, 自带 /opt/dtk
-      image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_version }}-ubuntu22.04-py${{ matrix.py_version }}
+      image: ${{ vars.HARBOR_SITE }}/hcu/base/dtk:${{ matrix.dtk_version }}-ubuntu22.04-py${{ matrix.py_version }}
       options: >-
         -v /opt/hyhal/:/opt/hyhal/:ro
         --device /dev/kfd:/dev/kfd

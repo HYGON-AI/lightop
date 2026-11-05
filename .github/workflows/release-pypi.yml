@@ -43,7 +43,7 @@ jobs:
       DTK_VERSION: ${{ matrix.dtk_version }}
     container:
       # DTK 基础镜像, 自带 /opt/dtk
-      image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_version }}-rockylinux8.6-py${{ matrix.py_version }}
+      image: ${{ vars.HARBOR_SITE }}/hcu/base/dtk:${{ matrix.dtk_version }}-rockylinux8.6-py${{ matrix.py_version }}
       options: >-
         --device=/dev/kfd --device=/dev/dri/ --group-add video
         -v /opt/hyhal/:/opt/hyhal/:ro
