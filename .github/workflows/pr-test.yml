@@ -4,7 +4,8 @@
 name: pr-test
 
 on:
-  pull_request:
+  # pull_request_target 在 base 仓库上下文运行, fork PR 才能读取仓库/组织变量
+  pull_request_target:
     branches:
       - master
     types:
@@ -23,28 +24,8 @@ env:
   MAX_JOBS: "32"
   PYPI_URL: ${{ vars.PYPI_URL }}
   RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL }}
-  HARBOR_SITE: ${{ vars.HARBOR_SITE }}
 
 jobs:
-  debug-env:
-    name: debug-env
-    runs-on: [self-hosted, BW1100]
-    timeout-minutes: 10
-    steps:
-      - name: 打印相关环境变量
-        shell: bash
-        run: |
-          for name in HARBOR_SITE PYPI_URL RESOURCE_SERVER_URL; do
-            value="${!name}"
-            if [[ -n "${value}" ]]; then
-              echo "${name}=${value}"
-            else
-              echo "${name}=<empty>"
-            fi
-          done
-          echo "--- runner env (filtered) ---"
-          env | sort | grep -Ei 'harbor|pypi|resource' || true
-
   build-and-test:
     name: build-and-test (dtk${{ matrix.dtk_version }})
     # 编译与测试在同一个容器内直接进行, 不再单独起 test 容器
@@ -80,7 +61,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # base 仓库中的 PR head ref, 兼容 fork PR
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
           fetch-depth: 0
           persist-credentials: false
 
@@ -125,7 +107,7 @@ jobs:
       - name: Checkout 测试用例
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
           persist-credentials: false
           # The CI suite imports reference helpers from test/test_adaptive_topk.py.
           sparse-checkout: test
