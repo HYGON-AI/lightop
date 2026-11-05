@@ -34,15 +34,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - dtk_version: "26.04"
-            aicc_major: "1.0.0"
-            pip_index_suffix: nightly/dtk2604/+simple/
-            torch_version: "2.11.0"
-            py_version: "3.10"
           - dtk_version: "26.10"
-            aicc_major: "2.0.0"
             pip_index_suffix: nightly/dtk2610/+simple/
             torch_version: "2.11.0"
+            py_version: "3.12"
+          - dtk_version: "26.10"
+            pip_index_suffix: nightly/dtk2610/+simple/
+            torch_version: "2.13.0"
             py_version: "3.12"
     env:
       TORCH_VERSION: ${{ matrix.torch_version }}
@@ -80,7 +78,7 @@ jobs:
         shell: bash
         run: |
           wget ${{ env.RESOURCE_SERVER_URL }}/ai_cc/Nightly/hcu_llvm_installer.sh
-          bash hcu_llvm_installer.sh --major ${{ matrix.aicc_major }}
+          bash hcu_llvm_installer.sh
 
       - name: 安装 torch (编译前置依赖)
         # 显式 --index-url: 镜像内置 pip 配置会覆盖 user 级 pip.conf
