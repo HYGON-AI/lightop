@@ -846,3 +846,21 @@ def test_dense_routes_replay_mixed_lengths(op, requests, rows):
         torch.testing.assert_close(outputs[:, :width][valid], expected[valid], rtol=0, atol=0)
         assert (outputs[:, :width][~valid] == -12345.0).all()
         assert (outputs[:, width:] == -12345.0).all()
+
+
+@pytest.mark.parametrize("rows", [1, 6])
+def test_subnormal_k_normal_product_exact(op, rows):
+    # Q=32, K=2^-127. Although K is BF16 subnormal, the exact logit
+    # 32 heads * 128 channels * 32 * 2^-127 = 2^-110 is normal FP32.
+    case = make_case(rows, 32, 5120)
+    case[0].fill_(0x22)
+    case[1].view(torch.uint8).fill_(132)
+    payload(case[2]).fill_(0x11)
+    scales(case[2]).fill_(1)
+    case[3].fill_(1)
+    case[4].fill_(5120)
+    case[5].copy_(case[5][0:1].expand_as(case[5]))
+    actual = run(op, case, 5120, 64, metadata(case, rows, "native"),
+                 rows_per_request=rows)
+    torch.testing.assert_close(actual, torch.full_like(actual, 2. ** -110),
+                               rtol=0, atol=0)
