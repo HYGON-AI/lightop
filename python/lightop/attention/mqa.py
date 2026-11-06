@@ -163,8 +163,10 @@ def paged_mqa_logits_fp4(q, q_sf, kv_cache, weights, context_lens, block_table,
     n rows one request's draft tokens sharing physical pages over their common
     visible prefix. Each row only needs its visible table entries filled.
     With at least PAGED_MQA_LOGITS_FP4_PAIR_MIN_REQUESTS requests the
-    rows are then scored in pairs, one KV read per pair, and fewer run as
-    n = 1. Results are identical either way. A schedule must be planned on
+    schedule uses paired routes; fewer requests use individual row routes.
+    The long dense persistent path can reuse same-request rows with either
+    layout on gfx936 (80 CUs) and gfx938 (64 CUs). gfx936 uses BF16 MMAC and
+    uses 320 or 640 CTAs depending on batch and live split count. A legacy schedule must be planned on
     paged_mqa_logits_route_lens(context_lens, n) instead of context_lens.
     """
     from .. import op

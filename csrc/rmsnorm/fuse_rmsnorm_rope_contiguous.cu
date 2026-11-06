@@ -294,7 +294,7 @@ __global__ void rms_rope_kernel(
     const int64_t* __restrict__ slot_mapping,  // [bs]
     void* __restrict__ kv_cache,  // [num_kv_cache_blocks, kv_cache_blocks_size, kv_c_dim + rot_dim]
     const int kv_cache_blocks_size,
-    const int q_c_dim,  // 128
+    const int q_c_dim,  // 128 (DeepSeek) or 192 (GLM)
     const int num_head,  // 128
     const int q_stride_head,
     const int k_stride_head,
@@ -740,10 +740,13 @@ __global__ void rms_rope_kernel(
     TORCH_CHECK(q_pe.dim() == 3, "q_pe must be 3D tensor [bs, num_head, rot_dim]");
     const int bs = q_pe.size(0);
     const int num_head = q_pe.size(1);
-    constexpr int q_c_dim = 128;
     constexpr int rot_dim = 64;
     const int q_stride_head = q_pe.stride(1);
-    TORCH_CHECK(q_stride_head == q_c_dim+rot_dim, "q_stride_head must be q_c_dim + rot_dim");
+    // GLM stores the RoPE tail in a 192+64-wide Q head. The kernel already
+    // addresses Q with q_stride_head; keep the existing DeepSeek 128+64 path.
+    TORCH_CHECK(q_stride_head == 192 || q_stride_head == 256,
+                "q_pe head stride must be 192 (DeepSeek) or 256 (GLM)");
+    const int q_c_dim = q_stride_head - rot_dim;
     TORCH_CHECK(
         q_pe.stride(0) == num_head * q_stride_head,
         "q_pe token stride must equal num_head * q_stride_head");
