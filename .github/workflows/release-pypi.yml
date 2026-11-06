@@ -55,6 +55,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: 配置内网 pip 源
+        shell: bash
+        run: |
+          {
+            echo "PIP_INDEX_URL=${PYPI_URL}/${{ matrix.pip_index_suffix }}"
+            echo "PIP_TRUSTED_HOST=${PYPI_URL#*://}"
+          } >> "${GITHUB_ENV}"
+
       - name: 安装 AICC
         shell: bash
         run: |
@@ -65,16 +73,14 @@ jobs:
 
       - name: 安装 torch (编译前置依赖)
         shell: bash
-        run: |
-          PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
-          PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
-          pip install "${PIP_FLAGS[@]}" torch==${TORCH_VERSION}
+        run: pip install --no-cache-dir torch==${TORCH_VERSION}
 
       - name: 编译 manylinux wheel
         shell: bash
         run: bash scripts/build_hcu_wheel.sh --output-dir dist-manylinux
 
       - name: CIUpload REPAIR
+        shell: bash
         run: |
           pip install --no-cache-dir ciupload
           DTK_VER=$(cat /opt/dtk/.info/rocm_version | tr -d '.')

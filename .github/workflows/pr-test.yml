@@ -66,6 +66,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: 配置内网 pip 源
+        shell: bash
+        run: |
+          {
+            echo "PIP_INDEX_URL=${PYPI_URL}/${{ matrix.pip_index_suffix }}"
+            echo "PIP_TRUSTED_HOST=${PYPI_URL#*://}"
+          } >> "${GITHUB_ENV}"
+
       - name: 合入最新 master
         shell: bash
         run: |
@@ -83,12 +91,8 @@ jobs:
           bash hcu_llvm_installer.sh
 
       - name: 安装 torch (编译前置依赖)
-        # 显式 --index-url: 镜像内置 pip 配置会覆盖 user 级 pip.conf
         shell: bash
-        run: |
-          PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
-          PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
-          pip install "${PIP_FLAGS[@]}" torch==${TORCH_VERSION}
+        run: pip install --no-cache-dir torch==${TORCH_VERSION}
 
       - name: 编译 manylinux wheel
         shell: bash
@@ -99,10 +103,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
-          PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
-          pip install "${PIP_FLAGS[@]}" --force-reinstall --no-deps dist-manylinux/*.whl
-          pip install "${PIP_FLAGS[@]}" pytest numpy==2.1.0 vllm==0.28.1 amdsmi==1.0.0+630c16a6.dirty flash-attn
+          pip install --no-cache-dir --force-reinstall --no-deps dist-manylinux/*.whl
+          pip install --no-cache-dir pytest numpy==2.1.0 vllm==0.28.1 amdsmi==1.0.0+630c16a6.dirty flash-attn
 
       - name: Checkout 测试用例
         uses: actions/checkout@v4
