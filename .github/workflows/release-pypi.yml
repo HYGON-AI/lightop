@@ -9,6 +9,23 @@ on:
       - master
 
   workflow_dispatch:
+    inputs:
+      dtk_version:
+        description: "DTK 版本"
+        required: false
+        default: "26.10"
+      torch_version:
+        description: "PyTorch 版本"
+        required: false
+        type: choice
+        options:
+          - "2.13.0"
+          - "2.11.0"
+        default: "2.13.0"
+      py_version:
+        description: "Python 版本"
+        required: false
+        default: "3.12"
 
 permissions:
   contents: read
@@ -28,16 +45,7 @@ jobs:
     timeout-minutes: 180
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - dtk_version: "26.10"
-            pip_index_suffix: nightly/dtk2610/+simple/
-            torch_version: "2.11.0"
-            py_version: "3.12"
-          - dtk_version: "26.10"
-            pip_index_suffix: nightly/dtk2610/+simple/
-            torch_version: "2.13.0"
-            py_version: "3.12"
+      matrix: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('{{"include":[{{"dtk_version":"{0}","torch_version":"{1}","py_version":"{2}"}}]}}', inputs.dtk_version, inputs.torch_version, inputs.py_version)) || fromJSON('{"include":[{"dtk_version":"26.10","torch_version":"2.11.0","py_version":"3.12"},{"dtk_version":"26.10","torch_version":"2.13.0","py_version":"3.12"}]}') }}
     env:
       TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_VERSION: ${{ matrix.dtk_version }}
@@ -59,7 +67,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "PIP_INDEX_URL=${PYPI_URL}/${{ matrix.pip_index_suffix }}"
+            echo "PIP_INDEX_URL=${PYPI_URL}/nightly/dtk${DTK_VERSION//./}/+simple/"
             echo "PIP_TRUSTED_HOST=${PYPI_URL#*://}"
           } >> "${GITHUB_ENV}"
 
@@ -80,6 +88,7 @@ jobs:
         run: bash scripts/build_hcu_wheel.sh --output-dir dist-manylinux
 
       - name: CIUpload REPAIR
+        if: ${{ github.event_name == 'push' }}
         shell: bash
         run: |
           pip install --no-cache-dir ciupload
@@ -101,6 +110,14 @@ jobs:
           CIUpload NIGHTLY --devpi_url ${PYPI_URL} --password ${{ secrets.PYPI_PASSWORD }} \
             --dtk_version  ${DTK_VER} \
             -f output/*.whl --record
+
+      - name: 归档 wheel
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightop-dtk${{ matrix.dtk_version }}-torch${{ matrix.torch_version }}-py${{ matrix.py_version }}
+          path: dist-manylinux/*.whl
+          if-no-files-found: error
 
       - name: 清理 workspace
         if: always()
