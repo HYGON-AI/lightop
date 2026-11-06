@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 // Initial candidate: preserve SGLang INT8 semantics, including zero/unit padding.
-// Performance selection is pending real gfx938 measurements.
+// See test/benchmarks/benchmark_quant_int8.py for gfx938 performance comparisons.
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 #include <c10/cuda/CUDAGuard.h>

@@ -1,0 +1,1003 @@
+{
+  "revision": "4834c58d25fd7269ec1458455c58cee1825c5448",
+  "torch": "2.11.0",
+  "hip": "6.3.26113",
+  "dtk": "DTK-26.04-blas-nightly-1019\nMon Oct 19 19:53:31 CST 2026",
+  "device": {
+    "name": "BW1100",
+    "gcn_arch": "gfx938:sramecc+:xnack-",
+    "compute_units": 64
+  },
+  "artifact_sha256": {
+    "op.cpython-310-x86_64-linux-gnu.so": "c106df603f7e1ecf71f9c44c465a82ec51bcc7b9445501d70a38b32b5256e5a0",
+    "swiglu_oai_int8_quant.py": "e7df86d69f835790beea9f4de66abb6d6b54b64805c1df04a30d4f9148e3f2f5",
+    "int8.py": "fb82b21c6664463b742e075dadc3de78902da119557a4f8062806c0c498629fc",
+    "lightop_oai_int8_candidate.so": "2553ddd4c3bbfe51aefa2ae15799e904aac08e66b1d954af7c4f99c7ecd2b336",
+    "lightop_per_token_int8_candidate.so": "1799f0d1a68e04ce279fcbca59fc64b7a0471fa3f8401c3bc2d1b101685bc62c"
+  },
+  "source_sha256": {
+    "test/benchmarks/benchmark_quant_int8.py": "72b9ba5becefbbb5b268691c93eccc050c769d2b00659e340d90e03c29fa08be",
+    "csrc/per_token_quant_int8_minimax.cu": "c26c79a6a30981f0ec493f4db697957547e0dc6ba03afdafa663f3d0272e6837",
+    "csrc/swiglu_oai_int8_quant.cu": "d01e81050f77ca19602652a4916d8dc39053fb12dad11f55e75e897bd6fbb646",
+    "csrc/swiglu_oai_int8_quant_tables.cu": "51f00931a49bd9e550331a5fd973689f9d4a8669bdb5a28867eda5f576073c93"
+  },
+  "args": {
+    "suite": "all",
+    "rows": [
+      64,
+      2048,
+      6144
+    ],
+    "widths": [
+      3072,
+      6144,
+      12288
+    ],
+    "contiguous_rows": [
+      2048,
+      8192,
+      16384
+    ],
+    "capacities": [
+      128,
+      1024
+    ],
+    "warmup": 20,
+    "iterations": 50,
+    "repeats": 7,
+    "seed": 42,
+    "output": "quant_int8_gfx938_20261106.json"
+  },
+  "method": "alternating-order GPU events; one graph of repeated calls; warm buffers; not E2E kernel timing",
+  "cases": [
+    {
+      "operator": "per_token_quant_int8",
+      "shape": [
+        64,
+        3072
+      ],
+      "native_fast_path_eligible": false,
+      "timings": {
+        "original_triton": {
+          "median_us": 2.847979962825775,
+          "samples_us": [
+            3.17440003156662,
+            2.8575998544692993,
+            2.8543999791145325,
+            2.8415998816490173,
+            2.8415998816490173,
+            2.844800055027008,
+            2.847979962825775
+          ]
+        },
+        "public_triton": {
+          "median_us": 2.8543999791145325,
+          "samples_us": [
+            3.17440003156662,
+            2.8512001037597656,
+            2.8543999791145325,
+            2.847999930381775,
+            2.847999930381775,
+            2.8543999791145325,
+            2.86080002784729
+          ]
+        },
+        "public_segments": {
+          "median_us": 2.736000120639801,
+          "samples_us": [
+            3.0399999022483826,
+            2.736000120639801,
+            2.7456000447273254,
+            2.7327999472618103,
+            2.739199995994568,
+            2.7327999472618103,
+            2.7296000719070435
+          ]
+        },
+        "public_native": {
+          "median_us": 2.851180136203766,
+          "samples_us": [
+            3.1839799880981445,
+            3.0399999022483826,
+            2.8543999791145325,
+            2.844800055027008,
+            2.847999930381775,
+            2.851180136203766,
+            2.8415998816490173
+          ]
+        }
+      },
+      "correctness": "exact vs original Triton"
+    },
+    {
+      "operator": "per_token_quant_int8",
+      "shape": [
+        64,
+        6144
+      ],
+      "native_fast_path_eligible": false,
+      "timings": {
+        "original_triton": {
+          "median_us": 3.46560001373291,
+          "samples_us": [
+            3.468799889087677,
+            3.4591999650001526,
+            3.4655800461769104,
+            3.46560001373291,
+            3.4784001111984253,
+            3.4624001383781433,
+            3.46560001373291
+          ]
+        },
+        "public_triton": {
+          "median_us": 3.455980122089386,
+          "samples_us": [
+            3.455980122089386,
+            3.46560001373291,
+            3.4624001383781433,
+            3.449600040912628,
+            3.4463998675346375,
+            3.452799916267395,
+            3.455980122089386
+          ]
+        },
+        "public_segments": {
+          "median_us": 3.049600124359131,
+          "samples_us": [
+            3.0527999997138977,
+            3.0527999997138977,
+            3.0432000756263733,
+            3.0399999022483826,
+            3.036760091781616,
+            3.049600124359131,
+            3.049600124359131
+          ]
+        },
+        "public_native": {
+          "median_us": 3.452799916267395,
+          "samples_us": [
+            3.452799916267395,
+            3.4560000896453857,
+            3.452799916267395,
+            3.4400001168251038,
+            3.4624001383781433,
+            3.4463998675346375,
+            3.449600040912628
+          ]
+        }
+      },
+      "correctness": "exact vs original Triton"
+    },
+    {
+      "operator": "per_token_quant_int8",
+      "shape": [
+        64,
+        12288
+      ],
+      "native_fast_path_eligible": false,
+      "timings": {
+        "original_triton": {
+          "median_us": 4.38400000333786,
+          "samples_us": [
+            4.371199905872345,
+            4.38400000333786,
+            4.387199878692627,
+            4.396800100803375,
+            4.393579959869385,
+            4.38400000333786,
+            4.364799857139587
+          ]
+        },
+        "public_triton": {
+          "median_us": 4.374400079250336,
+          "samples_us": [
+            4.374400079250336,
+            4.374400079250336,
+            4.380800127983093,
+            4.371199905872345,
+            4.396800100803375,
+            4.390400052070618,
+            4.364779889583588
+          ]
+        },
+        "public_segments": {
+          "median_us": 3.5071998834609985,
+          "samples_us": [
+            3.503980040550232,
+            3.5071998834609985,
+            3.5071998834609985,
+            3.513599932193756,
+            3.5071998834609985,
+            3.5040000081062317,
+            3.5199999809265137
+          ]
+        },
+        "public_native": {
+          "median_us": 4.38400000333786,
+          "samples_us": [
+            4.380800127983093,
+            4.3775999546051025,
+            4.38400000333786,
+            4.38400000333786,
+            4.3967801332473755,
+            4.390400052070618,
+            4.3775999546051025
+          ]
+        }
+      },
+      "correctness": "exact vs original Triton"
+    },
+    {
+      "operator": "per_token_quant_int8",
+      "shape": [
+        2048,
+        3072
+      ],
+      "native_fast_path_eligible": true,
+      "timings": {
+        "original_triton": {
+          "median_us": 24.729580879211426,
+          "samples_us": [
+            24.729580879211426,
+            24.729580879211426,
+            24.7039794921875,
+            24.742379188537598,
+            24.7039794921875,
+            24.729599952697754,
+            24.739179611206055
+          ]
+        },
+        "public_triton": {
+          "median_us": 24.719979763031006,
+          "samples_us": [
+            24.719979763031006,
+            24.719979763031006,
+            24.73598003387451,
+            24.719979763031006,
+            24.719979763031006,
+            24.72317934036255,
+            24.710381031036377
+          ]
+        },
+        "public_segments": {
+          "median_us": 14.780800342559814,
+          "samples_us": [
+            14.771180152893066,
+            14.72000002861023,
+            14.81279969215393,
+            14.790380001068115,
+            14.732780456542969,
+            14.783979654312134,
+            14.780800342559814
+          ]
+        },
+        "public_native": {
+          "median_us": 17.974380254745483,
+          "samples_us": [
+            17.980799674987793,
+            17.977579832077026,
+            17.961599826812744,
+            17.948780059814453,
+            17.974380254745483,
+            17.977579832077026,
+            17.96157956123352
+          ]
+        }
+      },
+      "correctness": "exact vs original Triton"
+    },
+    {
+      "operator": "per_token_quant_int8",
+      "shape": [
+        2048,
+        6144
+      ],
+      "native_fast_path_eligible": true,
+      "timings": {
+        "original_triton": {
+          "median_us": 34.01276111602783,
+          "samples_us": [
+            33.977580070495605,
+            34.01276111602783,
+            33.99038076400757,
+            34.089579582214355,
+            34.10557985305786,
+            34.02237892150879,
+            34.006359577178955
+          ]
+        },
+        "public_triton": {
+          "median_us": 33.99358034133911,
+          "samples_us": [
+            34.05754089355469,
+            34.028780460357666,
+            34.089579582214355,
+            33.96477937698364,
+            33.97118091583252,
+            33.99038076400757,
+            33.99358034133911
+          ]
+        },
+        "public_segments": {
+          "median_us": 24.911980628967285,
+          "samples_us": [
+            25.094380378723145,
+            24.911980628967285,
+            24.85758066177368,
+            24.94718074798584,
+            24.812779426574707,
+            25.135979652404785,
+            24.787180423736572
+          ]
+        },
+        "public_native": {
+          "median_us": 30.17918109893799,
+          "samples_us": [
+            30.147180557250977,
+            30.25278091430664,
+            30.188779830932617,
+            30.17915964126587,
+            30.166380405426025,
+            30.17918109893799,
+            30.17918109893799
+          ]
+        }
+      },
+      "correctness": "exact vs original Triton"
+    },
+    {
+      "operator": "per_token_quant_int8",
+      "shape": [
+        2048,
+        12288
+      ],
+      "native_fast_path_eligible": false,
+      "timings": {
+        "original_triton": {
+          "median_us": 51.71835899353027,
+          "samples_us": [
+            51.66396141052246,
+            51.740760803222656,
+            51.679959297180176,
+            51.71835899353027,
+            51.73756122589111,
+            51.75355911254883,
+            51.71195983886719
+          ]
+        },
+        "public_triton": {
+          "median_us": 51.66396141052246,
+          "samples_us": [
+            51.7439603805542,
+            51.65435791015625,
+            51.66396141052246,
+            51.48158073425293,
+            51.721558570861816,
+            51.64475917816162,
+            51.69276237487793
+          ]
+        },
+        "public_segments": {
+          "median_us": 46.41275882720947,
+          "samples_us": [
+            46.44154071807861,
+            46.323161125183105,
+            46.43196105957031,
+            46.374359130859375,
+            46.34875774383545,
+            46.41275882720947,
+            46.41275882720947
+          ]
+        },
+        "public_native": {
+          "median_us": 51.737518310546875,
+          "samples_us": [
+            51.7823600769043,
+            51.67356014251709,
+            51.67675971984863,
+            51.740760803222656,
+            51.779160499572754,
+            51.69596195220947,
+            51.737518310546875
+          ]
+        }
+      },
+      "correctness": "exact vs original Triton"
+    },
+    {
+      "operator": "per_token_quant_int8",
+      "shape": [
+        6144,
+        3072
+      ],
+      "native_fast_path_eligible": true,
+      "timings": {
+        "original_triton": {
+          "median_us": 68.43833923339844,
+          "samples_us": [
+            68.45434188842773,
+            68.54074001312256,
+            68.42234134674072,
+            68.41273784637451,
+            68.42236042022705,
+            68.4575605392456,
+            68.43833923339844
+          ]
+        },
+        "public_triton": {
+          "median_us": 68.44476222991943,
+          "samples_us": [
+            68.61435890197754,
+            68.44476222991943,
+            68.44476222991943,
+            68.40953826904297,
+            68.43195915222168,
+            68.54715824127197,
+            68.45754146575928
+          ]
+        },
+        "public_segments": {
+          "median_us": 35.449581146240234,
+          "samples_us": [
+            35.449581146240234,
+            35.430378913879395,
+            35.420780181884766,
+            35.462379455566406,
+            35.43678045272827,
+            35.46557903289795,
+            35.45275926589966
+          ]
+        },
+        "public_native": {
+          "median_us": 40.643181800842285,
+          "samples_us": [
+            40.703978538513184,
+            40.643181800842285,
+            40.703978538513184,
+            40.601558685302734,
+            40.68158149719238,
+            40.6207799911499,
+            40.559959411621094
+          ]
+        }
+      },
+      "correctness": "exact vs original Triton"
+    },
+    {
+      "operator": "per_token_quant_int8",
+      "shape": [
+        6144,
+        6144
+      ],
+      "native_fast_path_eligible": true,
+      "timings": {
+        "original_triton": {
+          "median_us": 94.54392433166504,
+          "samples_us": [
+            94.48630332946777,
+            94.54392433166504,
+            94.5503044128418,
+            94.4863224029541,
+            94.66870307922363,
+            94.65594291687012,
+            94.5343017578125
+          ]
+        },
+        "public_triton": {
+          "median_us": 94.53432083129883,
+          "samples_us": [
+            94.49272155761719,
+            94.76154327392578,
+            94.48634147644043,
+            94.53432083129883,
+            94.48634147644043,
+            94.54071998596191,
+            94.5599365234375
+          ]
+        },
+        "public_segments": {
+          "median_us": 66.04154109954834,
+          "samples_us": [
+            66.0383415222168,
+            66.3007402420044,
+            66.23355865478516,
+            65.92636108398438,
+            66.04154109954834,
+            66.1855411529541,
+            65.93274116516113
+          ]
+        },
+        "public_native": {
+          "median_us": 77.9103422164917,
+          "samples_us": [
+            77.9103422164917,
+            77.86233901977539,
+            77.95514106750488,
+            77.88154125213623,
+            77.99674034118652,
+            77.91354179382324,
+            77.87514209747314
+          ]
+        }
+      },
+      "correctness": "exact vs original Triton"
+    },
+    {
+      "operator": "per_token_quant_int8",
+      "shape": [
+        6144,
+        12288
+      ],
+      "native_fast_path_eligible": false,
+      "timings": {
+        "original_triton": {
+          "median_us": 143.42705726623535,
+          "samples_us": [
+            143.42705726623535,
+            143.3982753753662,
+            143.5678768157959,
+            143.54548454284668,
+            143.41110229492188,
+            143.42705726623535,
+            143.427095413208
+          ]
+        },
+        "public_triton": {
+          "median_us": 143.49749565124512,
+          "samples_us": [
+            143.4142780303955,
+            143.5198974609375,
+            143.37586402893066,
+            143.70546340942383,
+            143.41110229492188,
+            143.49749565124512,
+            143.507080078125
+          ]
+        },
+        "public_segments": {
+          "median_us": 128.5247039794922,
+          "samples_us": [
+            128.4766960144043,
+            128.75829696655273,
+            128.46710205078125,
+            128.72949600219727,
+            128.48952293395996,
+            128.5247039794922,
+            128.5791015625
+          ]
+        },
+        "public_native": {
+          "median_us": 143.3887004852295,
+          "samples_us": [
+            143.38868141174316,
+            143.3887004852295,
+            143.2510757446289,
+            143.3502960205078,
+            143.44630241394043,
+            143.3887004852295,
+            143.49749565124512
+          ]
+        }
+      },
+      "correctness": "exact vs original Triton"
+    },
+    {
+      "operator": "swiglu_oai_int8",
+      "shape": [
+        2048,
+        6144
+      ],
+      "distribution": "full",
+      "live_rows": 2048,
+      "timings": {
+        "original_triton": {
+          "median_us": 84.6623420715332,
+          "samples_us": [
+            84.67829704284668,
+            84.66232299804688,
+            84.64954376220703,
+            84.66874122619629,
+            84.6783447265625,
+            84.6623420715332,
+            84.65273857116699
+          ]
+        },
+        "public_contiguous": {
+          "median_us": 54.74555969238281,
+          "samples_us": [
+            54.78395938873291,
+            54.85435962677002,
+            54.73276138305664,
+            54.64955806732178,
+            54.5631217956543,
+            54.74555969238281,
+            54.7519588470459
+          ]
+        }
+      },
+      "correctness": "independent PyTorch reference; padding contracts checked",
+      "padding_note": "masked_flat skips padding; baseline and masked write zero/unit padding"
+    },
+    {
+      "operator": "swiglu_oai_int8",
+      "shape": [
+        8192,
+        6144
+      ],
+      "distribution": "full",
+      "live_rows": 8192,
+      "timings": {
+        "original_triton": {
+          "median_us": 328.42212677001953,
+          "samples_us": [
+            328.42212677001953,
+            328.4189224243164,
+            328.43494415283203,
+            328.3773422241211,
+            328.39332580566406,
+            328.4349060058594,
+            328.4445571899414
+          ]
+        },
+        "public_contiguous": {
+          "median_us": 196.48626327514648,
+          "samples_us": [
+            196.46703720092773,
+            196.48626327514648,
+            196.64306640625,
+            196.35183334350586,
+            196.4542579650879,
+            196.53106689453125,
+            196.55986785888672
+          ]
+        }
+      },
+      "correctness": "independent PyTorch reference; padding contracts checked",
+      "padding_note": "masked_flat skips padding; baseline and masked write zero/unit padding"
+    },
+    {
+      "operator": "swiglu_oai_int8",
+      "shape": [
+        16384,
+        6144
+      ],
+      "distribution": "full",
+      "live_rows": 16384,
+      "timings": {
+        "original_triton": {
+          "median_us": 653.3338928222656,
+          "samples_us": [
+            653.3370971679688,
+            653.3338928222656,
+            653.3306884765625,
+            653.3114624023438,
+            653.3242797851562,
+            653.3562469482422,
+            653.3370971679688
+          ]
+        },
+        "public_contiguous": {
+          "median_us": 383.1357192993164,
+          "samples_us": [
+            383.1357192993164,
+            383.20613861083984,
+            383.1485366821289,
+            383.1229019165039,
+            383.20613861083984,
+            383.03009033203125,
+            383.0717086791992
+          ]
+        }
+      },
+      "correctness": "independent PyTorch reference; padding contracts checked",
+      "padding_note": "masked_flat skips padding; baseline and masked write zero/unit padding"
+    },
+    {
+      "operator": "swiglu_oai_int8",
+      "shape": [
+        16,
+        128,
+        6144
+      ],
+      "distribution": "full",
+      "live_rows": 2048,
+      "timings": {
+        "original_triton": {
+          "median_us": 85.21909713745117,
+          "samples_us": [
+            85.21909713745117,
+            85.20954132080078,
+            85.21913528442383,
+            85.22873878479004,
+            85.20633697509766,
+            85.20310401916504,
+            85.22873878479004
+          ]
+        },
+        "public_masked": {
+          "median_us": 67.61593818664551,
+          "samples_us": [
+            67.63514041900635,
+            67.63514041900635,
+            67.87836074829102,
+            67.61593818664551,
+            67.6127576828003,
+            67.5999402999878,
+            67.6127576828003
+          ]
+        },
+        "public_masked_flat": {
+          "median_us": 78.47673892974854,
+          "samples_us": [
+            78.47673892974854,
+            78.47673892974854,
+            78.49914073944092,
+            78.40313911437988,
+            78.64953994750977,
+            78.41273784637451,
+            78.34234237670898
+          ]
+        }
+      },
+      "correctness": "independent PyTorch reference; padding contracts checked",
+      "padding_note": "masked_flat skips padding; baseline and masked write zero/unit padding"
+    },
+    {
+      "operator": "swiglu_oai_int8",
+      "shape": [
+        16,
+        128,
+        6144
+      ],
+      "distribution": "skewed",
+      "live_rows": 1017,
+      "timings": {
+        "original_triton": {
+          "median_us": 84.08634185791016,
+          "samples_us": [
+            84.08634185791016,
+            84.0959358215332,
+            84.07033920288086,
+            84.09270286560059,
+            84.0671443939209,
+            84.08953666687012,
+            84.08634185791016
+          ]
+        },
+        "public_masked": {
+          "median_us": 67.06235885620117,
+          "samples_us": [
+            67.09114074707031,
+            67.06235885620117,
+            67.10073947906494,
+            67.04636096954346,
+            67.05595970153809,
+            67.0591402053833,
+            67.0975399017334
+          ]
+        },
+        "public_masked_flat": {
+          "median_us": 42.604780197143555,
+          "samples_us": [
+            42.553558349609375,
+            42.69115924835205,
+            42.56636142730713,
+            42.604780197143555,
+            42.75197982788086,
+            42.66876220703125,
+            42.56638050079346
+          ]
+        }
+      },
+      "correctness": "independent PyTorch reference; padding contracts checked",
+      "padding_note": "masked_flat skips padding; baseline and masked write zero/unit padding"
+    },
+    {
+      "operator": "swiglu_oai_int8",
+      "shape": [
+        16,
+        128,
+        6144
+      ],
+      "distribution": "decode_sparse",
+      "live_rows": 260,
+      "timings": {
+        "original_triton": {
+          "median_us": 84.08953666687012,
+          "samples_us": [
+            84.08953666687012,
+            84.08953666687012,
+            84.07033920288086,
+            84.09274101257324,
+            84.09272193908691,
+            84.08632278442383,
+            84.08953666687012
+          ]
+        },
+        "public_masked": {
+          "median_us": 66.58236026763916,
+          "samples_us": [
+            66.60153865814209,
+            66.58236026763916,
+            66.53436183929443,
+            66.57914161682129,
+            66.58554077148438,
+            66.64956092834473,
+            66.50872230529785
+          ]
+        },
+        "public_masked_flat": {
+          "median_us": 13.641599416732788,
+          "samples_us": [
+            13.609579801559448,
+            13.622380495071411,
+            13.61598014831543,
+            13.654379844665527,
+            13.644779920578003,
+            13.660780191421509,
+            13.641599416732788
+          ]
+        }
+      },
+      "correctness": "independent PyTorch reference; padding contracts checked",
+      "padding_note": "masked_flat skips padding; baseline and masked write zero/unit padding"
+    },
+    {
+      "operator": "swiglu_oai_int8",
+      "shape": [
+        16,
+        1024,
+        6144
+      ],
+      "distribution": "full",
+      "live_rows": 16384,
+      "timings": {
+        "original_triton": {
+          "median_us": 654.5658874511719,
+          "samples_us": [
+            654.5466613769531,
+            654.5851135253906,
+            654.5435333251953,
+            654.569091796875,
+            654.5658874511719,
+            654.5626831054688,
+            654.569091796875
+          ]
+        },
+        "public_masked": {
+          "median_us": 500.6236267089844,
+          "samples_us": [
+            500.6236267089844,
+            500.6300354003906,
+            500.62679290771484,
+            500.6203842163086,
+            500.614013671875,
+            500.57239532470703,
+            500.6396484375
+          ]
+        },
+        "public_masked_flat": {
+          "median_us": 578.1115341186523,
+          "samples_us": [
+            578.5883712768555,
+            577.8843307495117,
+            577.7371215820312,
+            577.7179718017578,
+            578.306770324707,
+            578.5659027099609,
+            578.1115341186523
+          ]
+        }
+      },
+      "correctness": "independent PyTorch reference; padding contracts checked",
+      "padding_note": "masked_flat skips padding; baseline and masked write zero/unit padding"
+    },
+    {
+      "operator": "swiglu_oai_int8",
+      "shape": [
+        16,
+        1024,
+        6144
+      ],
+      "distribution": "skewed",
+      "live_rows": 8185,
+      "timings": {
+        "original_triton": {
+          "median_us": 653.9002990722656,
+          "samples_us": [
+            653.8202667236328,
+            653.9131164550781,
+            653.9002990722656,
+            653.8491058349609,
+            653.8938903808594,
+            653.9131164550781,
+            653.9067077636719
+          ]
+        },
+        "public_masked": {
+          "median_us": 278.23978424072266,
+          "samples_us": [
+            278.29418182373047,
+            278.3806037902832,
+            278.23978424072266,
+            278.0349922180176,
+            278.2269859313965,
+            278.0158042907715,
+            278.3293914794922
+          ]
+        },
+        "public_masked_flat": {
+          "median_us": 293.69577407836914,
+          "samples_us": [
+            293.82694244384766,
+            293.5869789123535,
+            293.30217361450195,
+            293.79175186157227,
+            293.67015838623047,
+            293.9773750305176,
+            293.69577407836914
+          ]
+        }
+      },
+      "correctness": "independent PyTorch reference; padding contracts checked",
+      "padding_note": "masked_flat skips padding; baseline and masked write zero/unit padding"
+    },
+    {
+      "operator": "swiglu_oai_int8",
+      "shape": [
+        16,
+        1024,
+        6144
+      ],
+      "distribution": "decode_sparse",
+      "live_rows": 260,
+      "timings": {
+        "original_triton": {
+          "median_us": 653.3530426025391,
+          "samples_us": [
+            653.3530426025391,
+            653.3530426025391,
+            653.3594512939453,
+            653.3626556396484,
+            653.3499145507812,
+            653.3403015136719,
+            653.3370971679688
+          ]
+        },
+        "public_masked": {
+          "median_us": 57.8847599029541,
+          "samples_us": [
+            58.13436031341553,
+            57.91356086730957,
+            57.90396213531494,
+            57.6991605758667,
+            57.86555767059326,
+            57.8847599029541,
+            57.82075881958008
+          ]
+        },
+        "public_masked_flat": {
+          "median_us": 14.822380542755127,
+          "samples_us": [
+            14.838399887084961,
+            14.876799583435059,
+            14.803199768066406,
+            14.81279969215393,
+            14.844800233840942,
+            14.822380542755127,
+            14.691200256347656
+          ]
+        }
+      },
+      "correctness": "independent PyTorch reference; padding contracts checked",
+      "padding_note": "masked_flat skips padding; baseline and masked write zero/unit padding"
+    }
+  ],
+  "revision_note": "4834c58 is the parent revision; tested Python wrappers and benchmark were in the review-fix working tree. File hashes identify the measured sources.",
+  "build_scope": "Existing DTK26.04 native runtime plus OAI and per-token sidecar extensions; edited Python wrappers loaded from an isolated package. Full monolithic wheel CI build not executed locally.",
+  "tests": {
+    "command": "python3 -m pytest -q test/ci_tests/test_swiglu_oai_int8_import.py test/ci_tests/test_swiglu_oai_int8_quant.py test/ci_tests/test_per_token_quant_int8_wide.py",
+    "passed": 78,
+    "seconds": 16.2
+  }
+}

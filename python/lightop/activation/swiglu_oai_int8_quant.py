@@ -19,7 +19,10 @@ if hasattr(_op, "swiglu_oai_build_int8_quant_table"):
         masked_flat_tables = staticmethod(_op.swiglu_oai_int8_quant_masked_flat_tables)
     _native = _Native()
 else:
-    from lightop import lightop_oai_int8_candidate as _native
+    try:
+        from lightop import lightop_oai_int8_candidate as _native
+    except ImportError:
+        _native = None
 
 _tables = {}
 _table_lock = threading.Lock()
@@ -43,6 +46,11 @@ def _get_tables(input, alpha, limit):
         return _tables[key]
 
 def _buffers(input, output, scales):
+    if _native is None:
+        raise RuntimeError(
+            "OAI INT8 quantization is unavailable; rebuild LightOp with the "
+            "OAI INT8 native operators before calling this API"
+        )
     if input.dtype != torch.bfloat16 or not input.is_cuda:
         raise ValueError("Expected BF16 HIP input")
     if input.ndim not in (2, 3) or input.shape[-1] <= 0 or input.shape[-1] % 2:
