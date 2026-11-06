@@ -9,6 +9,23 @@ on:
       - master
 
   workflow_dispatch:
+    inputs:
+      dtk_version:
+        description: "DTK 版本"
+        required: false
+        default: "26.10"
+      torch_version:
+        description: "PyTorch 版本"
+        required: false
+        default: "2.13.0"
+      py_version:
+        description: "Python 版本"
+        required: false
+        default: "3.12"
+      commit:
+        description: "要构建的 commit SHA (留空使用触发分支最新提交)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -28,29 +45,13 @@ jobs:
     timeout-minutes: 180
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - dtk_version: "26.04"
-            pip_index_suffix: nightly/dtk2604/+simple/
-            aicc_major: "1.0.0"
-            torch_version: "2.11.0"
-            py_version: "3.10"
-          - dtk_version: "26.04"
-            pip_index_suffix: nightly/dtk2604/+simple/
-            aicc_major: "1.0.0"
-            torch_version: "2.11.0"
-            py_version: "3.12"
-          - dtk_version: "26.10"
-            pip_index_suffix: nightly/dtk2610/+simple/
-            aicc_major: "2.0.0"
-            torch_version: "2.11.0"
-            py_version: "3.12"
+      matrix: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('{{"include":[{{"dtk_version":"{0}","torch_version":"{1}","py_version":"{2}"}}]}}', inputs.dtk_version, inputs.torch_version, inputs.py_version)) || fromJSON('{"include":[{"dtk_version":"26.10","torch_version":"2.11.0","py_version":"3.12"},{"dtk_version":"26.10","torch_version":"2.13.0","py_version":"3.12"}]}') }}
     env:
       TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_VERSION: ${{ matrix.dtk_version }}
     container:
       # DTK 基础镜像, 自带 /opt/dtk
-      image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_version }}-rockylinux8.6-py${{ matrix.py_version }}
+      image: ${{ vars.HARBOR_SITE }}/hcu/base/dtk:${{ matrix.dtk_version }}-rockylinux8.6-py${{ matrix.py_version }}
       options: >-
         --device=/dev/kfd --device=/dev/dri/ --group-add video
         -v /opt/hyhal/:/opt/hyhal/:ro
@@ -61,34 +62,36 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 仅手动触发且填写了 commit 时才覆盖; push 一律构建最新提交
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.commit || github.sha }}
+
+      - name: 配置内网 pip 源
+        shell: bash
+        run: |
+          {
+            echo "PIP_INDEX_URL=${PYPI_URL}/nightly/dtk${DTK_VERSION//./}/+simple/"
+            echo "PIP_TRUSTED_HOST=${PYPI_URL#*://}"
+          } >> "${GITHUB_ENV}"
 
       - name: 安装 AICC
         shell: bash
         run: |
           wget ${{ vars.RESOURCE_SERVER_URL }}/ai_cc/Nightly/hcu_llvm_installer.sh
-          bash hcu_llvm_installer.sh --major ${{ matrix.aicc_major }}
+          bash hcu_llvm_installer.sh
         env:
           RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL }}
 
-      - name: 安装编译依赖
+      - name: 安装 torch (编译前置依赖)
         shell: bash
-        run: |
-          PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
-          PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
-          pip install "${PIP_FLAGS[@]}" torch==${TORCH_VERSION} ninja wheel setuptools build
+        run: pip install --no-cache-dir torch==${TORCH_VERSION}
 
-      - name: 编译 wheel
+      - name: 编译 manylinux wheel
         shell: bash
-        run: |
-          source /opt/dtk/env.sh
-          python3 setup.py bdist_wheel
-
-      - name: 生成 manylinux wheel
-        run: |
-          pip install --no-cache-dir --no-deps dist/*.whl
-          bash .github/scripts/manylinux_repair.sh dist dist-manylinux
+        run: bash scripts/build_hcu_wheel.sh --output-dir dist-manylinux
 
       - name: CIUpload REPAIR
+        shell: bash
         run: |
           pip install --no-cache-dir ciupload
           DTK_VER=$(cat /opt/dtk/.info/rocm_version | tr -d '.')
@@ -109,6 +112,14 @@ jobs:
           CIUpload NIGHTLY --devpi_url ${PYPI_URL} --password ${{ secrets.PYPI_PASSWORD }} \
             --dtk_version  ${DTK_VER} \
             -f output/*.whl --record
+
+      - name: 归档 wheel
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightop-dtk${{ matrix.dtk_version }}-torch${{ matrix.torch_version }}-py${{ matrix.py_version }}
+          path: output/*.whl
+          if-no-files-found: error
 
       - name: 清理 workspace
         if: always()

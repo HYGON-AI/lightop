@@ -4,7 +4,8 @@
 name: pr-test
 
 on:
-  pull_request:
+  # pull_request_target 在 base 仓库上下文运行, fork PR 才能读取仓库/组织变量
+  pull_request_target:
     branches:
       - master
     types:
@@ -21,8 +22,8 @@ concurrency:
 
 env:
   MAX_JOBS: "32"
-  PYPI_URL: ${{ vars.PYPI_URL || 'http://10.16.1.201:9929' }}
-  RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL || 'http://10.16.1.201:8000' }}
+  PYPI_URL: ${{ vars.PYPI_URL }}
+  RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL }}
 
 jobs:
   build-and-test:
@@ -34,22 +35,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - dtk_version: "26.04"
-            aicc_major: "1.0.0"
-            pip_index_suffix: nightly/dtk2604/+simple/
-            torch_version: "2.11.0"
-            py_version: "3.10"
           - dtk_version: "26.10"
-            aicc_major: "2.0.0"
             pip_index_suffix: nightly/dtk2610/+simple/
             torch_version: "2.11.0"
+            py_version: "3.12"
+          - dtk_version: "26.10"
+            pip_index_suffix: nightly/dtk2610/+simple/
+            torch_version: "2.13.0"
             py_version: "3.12"
     env:
       TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_VERSION: ${{ matrix.dtk_version }}
     container:
       # DTK 基础镜像, 自带 /opt/dtk
-      image: 10.16.1.152:5000/hcu/base/dtk:${{ matrix.dtk_version }}-ubuntu22.04-py${{ matrix.py_version }}
+      image: ${{ vars.HARBOR_SITE }}/hcu/base/dtk:${{ matrix.dtk_version }}-ubuntu22.04-py${{ matrix.py_version }}
       options: >-
         -v /opt/hyhal/:/opt/hyhal/:ro
         --device /dev/kfd:/dev/kfd
@@ -62,9 +61,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # base 仓库中的 PR head ref, 兼容 fork PR
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
           fetch-depth: 0
           persist-credentials: false
+
+      - name: 配置内网 pip 源
+        shell: bash
+        run: |
+          {
+            echo "PIP_INDEX_URL=${PYPI_URL}/${{ matrix.pip_index_suffix }}"
+            echo "PIP_TRUSTED_HOST=${PYPI_URL#*://}"
+          } >> "${GITHUB_ENV}"
 
       - name: 合入最新 master
         shell: bash
@@ -80,30 +88,28 @@ jobs:
         shell: bash
         run: |
           wget ${{ env.RESOURCE_SERVER_URL }}/ai_cc/Nightly/hcu_llvm_installer.sh
-          bash hcu_llvm_installer.sh --major ${{ matrix.aicc_major }}
+          bash hcu_llvm_installer.sh
 
-      - name: 编译 wheel
-        # 显式 --index-url: 镜像内置 pip 配置会覆盖 user 级 pip.conf
+      - name: 安装 torch (编译前置依赖)
         shell: bash
-        run: |
-          PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
-          PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
-          pip install "${PIP_FLAGS[@]}" torch==${TORCH_VERSION} ninja wheel setuptools build
-          python3 setup.py install
+        run: pip install --no-cache-dir torch==${TORCH_VERSION}
+
+      - name: 编译 manylinux wheel
+        shell: bash
+        run: bash scripts/build_hcu_wheel.sh --output-dir dist-manylinux
 
       - name: 安装测试依赖与 lightop
-        # 编完直接在当前容器内装包测试, 不再重启新容器
+        # 安装编译脚本产出的 manylinux wheel, 保证测试对象与发布产物一致
         shell: bash
         run: |
           set -euo pipefail
-          PIP_INDEX="${{ env.PYPI_URL }}/${{ matrix.pip_index_suffix }}"
-          PIP_FLAGS=(--no-cache-dir --index-url "$PIP_INDEX" --trusted-host "${PIP_INDEX#*://}")
-          pip install "${PIP_FLAGS[@]}" pytest numpy==2.1.0 vllm==0.28.1 amdsmi==1.0.0+630c16a6.dirty flash-attn
+          pip install --no-cache-dir --force-reinstall --no-deps dist-manylinux/*.whl
+          pip install --no-cache-dir pytest numpy==2.1.0 vllm==0.28.1 amdsmi==1.0.0+630c16a6.dirty flash-attn
 
       - name: Checkout 测试用例
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: refs/pull/${{ github.event.pull_request.number }}/head
           persist-credentials: false
           # The CI suite imports reference helpers from test/test_adaptive_topk.py.
           sparse-checkout: test
