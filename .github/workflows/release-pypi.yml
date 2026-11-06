@@ -17,15 +17,15 @@ on:
       torch_version:
         description: "PyTorch 版本"
         required: false
-        type: choice
-        options:
-          - "2.13.0"
-          - "2.11.0"
         default: "2.13.0"
       py_version:
         description: "Python 版本"
         required: false
         default: "3.12"
+      commit:
+        description: "要构建的 commit SHA (留空使用触发分支最新提交)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -62,6 +62,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 仅手动触发且填写了 commit 时才覆盖; push 一律构建最新提交
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.commit || github.sha }}
 
       - name: 配置内网 pip 源
         shell: bash
@@ -88,7 +91,6 @@ jobs:
         run: bash scripts/build_hcu_wheel.sh --output-dir dist-manylinux
 
       - name: CIUpload REPAIR
-        if: ${{ github.event_name == 'push' }}
         shell: bash
         run: |
           pip install --no-cache-dir ciupload
@@ -116,7 +118,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lightop-dtk${{ matrix.dtk_version }}-torch${{ matrix.torch_version }}-py${{ matrix.py_version }}
-          path: dist-manylinux/*.whl
+          path: output/*.whl
           if-no-files-found: error
 
       - name: 清理 workspace
