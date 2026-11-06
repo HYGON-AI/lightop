@@ -1,6 +1,11 @@
 # Copyright 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
-"""V4 packed KV dequantization and sparse-prefill index combination on HCU."""
+"""V4 packed KV dequantization and sparse Prefill metadata on HCU."""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from importlib import import_module
 
 import torch
 
@@ -14,7 +19,9 @@ def dsv41_pool_pairs_norm(previous, current, previous_score, score, weight, eps)
     projection views are supported. Weight is contiguous FP32/BF16 [512].
     Returns a new BF16 pre-RoPE latent; no input or ring state is modified.
     """
-    return op.dsv41_pool_pairs_norm(previous, current, previous_score, score, weight, eps)
+    return op.dsv41_pool_pairs_norm(
+        previous, current, previous_score, score, weight, eps
+    )
 
 
 def dsv41_rope_fake_quant_store(
@@ -77,7 +84,155 @@ def combine_topk_swa_indices_hcu(
     Out lengths count the prefix including holes, as in the Triton path.
     """
     op.combine_topk_swa_indices_hcu(
-        topk_indices, query_start_loc, query_pos, seq_lens, gather_lens,
-        compressed_base, swa_base, out_indices, out_lens,
-        window_size, compress_ratio, topk,
+        topk_indices,
+        query_start_loc,
+        query_pos,
+        seq_lens,
+        gather_lens,
+        compressed_base,
+        swa_base,
+        out_indices,
+        out_lens,
+        window_size,
+        compress_ratio,
+        topk,
     )
+
+
+@lru_cache(maxsize=1)
+def _sparse_prefill_metadata_backend():
+    if getattr(op, "SPARSE_PREFILL_METADATA_ABI", 0) == 1:
+        return op
+
+    # Support deployments that already installed the standalone validation build.
+    name = f"{__package__}._sparse_prefill_metadata"
+    try:
+        backend = import_module(name)
+    except ModuleNotFoundError as error:
+        if error.name != name:
+            raise
+        backend = op
+    if getattr(backend, "SPARSE_PREFILL_METADATA_ABI", 0) != 1:
+        raise RuntimeError(
+            "sparse Prefill metadata requires a rebuilt LightOp native extension"
+        )
+    return backend
+
+
+def sparse_prefill_metadata_backend_info() -> dict:
+    backend = _sparse_prefill_metadata_backend()
+    return {
+        "module": backend.__file__,
+        "abi": backend.SPARSE_PREFILL_METADATA_ABI,
+        "build_id": getattr(backend, "BUILD_ID", "monolithic"),
+    }
+
+
+def dsv4_build_cp_sparse_query_metadata(
+    extend_seq_lens: torch.Tensor,
+    extend_start_loc: torch.Tensor,
+    query_positions: torch.Tensor,
+    cp_size: int,
+    cp_rank: int,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Return physical lengths, real lengths, and positions with CP padding at -1."""
+    return _sparse_prefill_metadata_backend().dsv4_build_cp_sparse_query_metadata(
+        extend_seq_lens, extend_start_loc, query_positions, cp_size, cp_rank
+    )
+
+
+def dsv4_pack_compact_sparse_token_ids(
+    per_req_ids: torch.Tensor,
+    seq_lens: torch.Tensor,
+    compress_ratio: int,
+    page_size: int,
+    total_compressed: int,
+    *,
+    out_ids: torch.Tensor | None = None,
+    out_base: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Pack physical IDs and compressed offsets using the caller's exact extent.
+
+    The optional output buffers must not alias the inputs.
+    """
+    return _sparse_prefill_metadata_backend().dsv4_pack_compact_sparse_token_ids(
+        per_req_ids,
+        seq_lens,
+        compress_ratio,
+        page_size,
+        total_compressed,
+        out_ids,
+        out_base,
+    )
+
+
+def dsv41_build_swa_token_ids(
+    seq_lens: torch.Tensor,
+    extend_seq_lens: torch.Tensor,
+    req_pool_indices: torch.Tensor,
+    req_to_token: torch.Tensor,
+    full_to_swa: torch.Tensor,
+    window: int,
+    total_swa: int,
+    *,
+    query_seq_lens: torch.Tensor | None = None,
+    query_start_loc: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Gather SWA IDs and optionally write the physical query prefix.
+
+    Returns token IDs, first positions, gather lengths, and offsets.
+    """
+    return _sparse_prefill_metadata_backend().dsv41_build_swa_token_ids(
+        seq_lens,
+        extend_seq_lens,
+        req_pool_indices,
+        req_to_token,
+        full_to_swa,
+        window,
+        total_swa,
+        query_seq_lens,
+        query_start_loc,
+    )
+
+
+def dsv4_combine_topk_swa_indices(
+    topk_indices: torch.Tensor,
+    query_start_loc: torch.Tensor,
+    seq_lens: torch.Tensor,
+    gather_lens: torch.Tensor,
+    compressed_base: torch.Tensor,
+    swa_base: torch.Tensor,
+    window_size: int,
+    compress_ratio: int,
+    topk: int,
+    *,
+    out_indices: torch.Tensor | None = None,
+    out_lens: torch.Tensor | None = None,
+    query_positions: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Combine causal TopK and SWA indices, preserving caller-owned padding."""
+    rows = topk_indices.shape[0]
+    initialize_padding = out_indices is None
+    if out_indices is None:
+        width = ((topk + window_size + 127) // 128) * 128
+        out_indices = torch.empty(
+            (rows, width), dtype=torch.int32, device=topk_indices.device
+        )
+    if out_lens is None:
+        out_lens = torch.empty(rows, dtype=torch.int32, device=topk_indices.device)
+    _sparse_prefill_metadata_backend().combine_topk_swa_indices_hcu(
+        topk_indices,
+        query_start_loc,
+        query_positions,
+        seq_lens,
+        gather_lens,
+        compressed_base,
+        swa_base,
+        out_indices,
+        out_lens,
+        window_size,
+        compress_ratio,
+        topk,
+        initialize_padding,
+    )
+    return out_indices, out_lens
