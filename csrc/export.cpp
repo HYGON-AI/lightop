@@ -3,6 +3,16 @@
 
 #include <torch/extension.h>
 
+namespace lightop_glm53_ep_gather {
+void run(torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int64_t);
+}
+void glm53_token(torch::Tensor, torch::Tensor, torch::Tensor, int);
+void glm53_activation(torch::Tensor, torch::Tensor, torch::Tensor, int);
+void glm53_add_rms(torch::Tensor, torch::Tensor, torch::Tensor, double, int);
+namespace glm53_quant_broadcast_e512a408c6134981b05834a6a5ed4654 {
+void candidate(torch::Tensor&, const torch::Tensor&, torch::Tensor&);
+}
+
 namespace at::native {
 torch::Tensor minimax_cp_fp8_pack(torch::Tensor,torch::Tensor,torch::Tensor,double,double,bool,bool);
 void minimax_cp_cache_scatter(torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor);
@@ -1140,6 +1150,33 @@ void mimo_v2_split_rope_vscale_kv_store(
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.attr("GLM53_OPT_ABI_VERSION") = 1;
+  m.def("glm53_prefill_add_rms_align16", [](torch::Tensor x, torch::Tensor residual,
+                                         torch::Tensor weight, double epsilon) {
+    TORCH_CHECK(x.dim() == 2 && x.size(1) == 6144 &&
+                (x.size(0) == 704 || x.size(0) == 832 || x.size(0) == 1408 ||
+                 x.size(0) == 3520 || x.size(0) == 4096));
+    glm53_add_rms(x, residual, weight, epsilon, 1);
+  });
+  m.def("glm53_prefill_token_quant_inverse", [](torch::Tensor x, torch::Tensor out,
+                                               torch::Tensor scale) {
+    TORCH_CHECK(x.dim() == 2 && x.size(0) == 4096 && x.size(1) == 16384);
+    glm53_token(x, out, scale, 1);
+  });
+  m.def("glm53_prefill_activation_inverse", [](torch::Tensor x, torch::Tensor out,
+                                              torch::Tensor scale) {
+    TORCH_CHECK(x.dim() == 2 && (x.size(0) == 14336 || x.size(0) == 84224 || x.size(0) == 84992));
+    glm53_activation(x, out, scale, 1);
+  });
+  m.def("glm53_prefill_ep_gather_k8", [](torch::Tensor x, torch::Tensor ids,
+                                       torch::Tensor weights, torch::Tensor src,
+                                       torch::Tensor out) {
+    TORCH_CHECK(x.dim() == 2 && x.size(1) == 6144);
+    lightop_glm53_ep_gather::run(x, ids, weights, src, out, 1);
+  });
+  m.def("glm53_decode_token_quant_broadcast",
+        &glm53_quant_broadcast_e512a408c6134981b05834a6a5ed4654::candidate);
+
   m.attr("PREFILL_GATHER_TRITON_NAN_COMPAT_VERSION") = 1;
   m.def("spark_mla_rope_cat_store", &at::native::spark_mla_rope_cat_store,
         "Spark MLA block-specialized BF16 RoPE, concat and FP8 KV store",

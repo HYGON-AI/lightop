@@ -1,0 +1,36 @@
+{
+  "upstream_base": "cbe14a984c502c67ac0d74cd0dbf5537fa60590e",
+  "source_port_gpu_validation": "UNVERIFIED",
+  "sources": [
+    {
+      "operator": "token",
+      "source": "glm53-r09-plus15-20261107/token_quant_inverse_001/token_inverse.cu",
+      "source_sha256": "27ae5b80c407ccdb21640948f505185ef6c558529e3c3938aa305bea2e2fbdfc",
+      "destination": "csrc/glm53_token.cu"
+    },
+    {
+      "operator": "activation",
+      "source": "glm53-r09-plus15-20261107/activation_inverse_broadcast_001/activation_inverse.cu",
+      "source_sha256": "41d63cdbf951c1303192734a3538fe51c142121688091811109afc133b558ac1",
+      "destination": "csrc/glm53_activation.cu"
+    },
+    {
+      "operator": "add_rms",
+      "source": "glm53-r09-plus15-20261107/add_rms/add_rms_align16.cu",
+      "source_sha256": "70c755f5f24b2f80c597b565c475a1dce2a8b671cc9120abfc6291b1f2506483",
+      "destination": "csrc/glm53_add_rms.cu"
+    },
+    {
+      "operator": "ep_gather",
+      "source": "glm53-r09-plus15-20261107/ep_gather/candidate/ep_gather_k8.cu",
+      "source_sha256": "603b6928c7b4671eeab890b3de8158bbb9e0c2be6b174584961b04c52dc114b7",
+      "destination": "csrc/glm53_ep_gather.cu"
+    },
+    {
+      "operator": "decode_quant",
+      "source": "quant_broadcast_v1/build/quant_schedule.hip",
+      "source_sha256": "560378a876045e83d7354f3014e8b3da376bd437632a88de952582eb122aa702",
+      "destination": "csrc/glm53_decode_quant.cu"
+    }
+  ]
+}
