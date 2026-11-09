@@ -534,7 +534,17 @@ __global__ __launch_bounds__(Threads) void fused_add_rms_kernel_fp32_tiled(
 }
 #endif
 
-template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512, bool IS_GEMMA=false, bool APPLY_CLAMP=false>
+#if defined(USE_ROCM) && defined(__gfx938__)
+using RmsLoad16 = uint32_t __attribute__((ext_vector_type(4)));
+__device__ __forceinline__ RmsLoad16 load_rms_aligned16(const void* ptr) {
+  RmsLoad16 value;
+  asm volatile("global_load_dwordx4 %0, %1, off\n\ts_waitcnt vmcnt(0)"
+               : "=v"(value) : "v"(ptr));
+  return value;
+}
+#endif
+
+template <typename scalar_t,typename T_ACC,int Vec=4,int block_size=512, bool IS_GEMMA=false, bool APPLY_CLAMP=false, bool UseAlignedLoads=false>
 __global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scalar_t* gamma,int cols,T_ACC eps, int num_tokens,T_ACC limit)
 {
   constexpr int share_size=block_size/C10_WARP_SIZE;
@@ -546,15 +556,24 @@ __global__ void fused_add_rms_kernel_opt(scalar_t* input,scalar_t* residual,scal
   for(; i < num_tokens; i += gridDim.x){
         T_ACC val=0;
         int tcol=cols/Vec;
-        scalar_t intput_vec[Vec];
-        scalar_t residual_vec[Vec];
+        alignas(UseAlignedLoads ? 16 : alignof(scalar_t)) scalar_t intput_vec[Vec];
+        alignas(UseAlignedLoads ? 16 : alignof(scalar_t)) scalar_t residual_vec[Vec];
         T_ACC summed_vec[Vec];
         T_ACC trstd;
         int64_t idx = i * tcol + j;
         idx*=Vec;
         if (j < tcol) {
-          *(LoadT*)intput_vec = *(LoadT*)(input+idx);
-          *(LoadT*)residual_vec = *(LoadT*)(residual+idx);
+#if defined(USE_ROCM) && defined(__gfx938__)
+          if constexpr (UseAlignedLoads) {
+            static_assert(sizeof(scalar_t) * Vec == 16);
+            *reinterpret_cast<RmsLoad16*>(intput_vec) = load_rms_aligned16(input + idx);
+            *reinterpret_cast<RmsLoad16*>(residual_vec) = load_rms_aligned16(residual + idx);
+          } else
+#endif
+          {
+            *(LoadT*)intput_vec = *(LoadT*)(input+idx);
+            *(LoadT*)residual_vec = *(LoadT*)(residual+idx);
+          }
           #pragma unroll
           for (int ii = 0; ii < Vec; ii++) {
             summed_vec[ii] = static_cast<T_ACC>(to_float(intput_vec[ii])) +
@@ -930,7 +949,8 @@ void fused_add_rms_norm_opt_impl(torch::Tensor& input,     // [..., hidden_size]
                         torch::Tensor& residual,  // [..., hidden_size]
                         torch::Tensor& weight,    // [hidden_size]
                         double epsilon,
-                        double limit) {
+                        double limit,
+                        bool use_aligned_loads = false) {
   TORCH_CHECK(
       limit == -1.0 || (std::isfinite(limit) && limit >= 0.0),
       "limit must be -1 (disabled) or a finite non-negative value");
@@ -958,6 +978,15 @@ void fused_add_rms_norm_opt_impl(torch::Tensor& input,     // [..., hidden_size]
         scalar_t* self_data  = input.expect_contiguous()->data_ptr<scalar_t>();
         scalar_t* other_data = residual.expect_contiguous()->data_ptr<scalar_t>();
         scalar_t* weight_data= weight.expect_contiguous()->data_ptr<scalar_t>();
+        if (use_aligned_loads) {
+          if constexpr (std::is_same_v<scalar_t, at::BFloat16>) {
+            fused_add_rms_kernel_opt<scalar_t, T_ACC, 8, 1024, IS_GEMMA, APPLY_CLAMP, true>
+                <<<grid, 1024, 0, stream>>>(
+                    self_data, other_data, weight_data, hidden_size, eps,
+                    num_tokens, static_cast<T_ACC>(limit));
+            return;
+          }
+        }
 #ifdef USE_ROCM
         // The tiled path is specialized for aligned BF16/FP16 rows.
         if constexpr (sizeof(scalar_t) == 2) {
@@ -1017,13 +1046,29 @@ void fused_add_rms_norm_opt_impl(torch::Tensor& input,     // [..., hidden_size]
   }
 }
 
-void fused_add_rms_norm_opt(torch::Tensor& input, torch::Tensor& residual, torch::Tensor& weight, double epsilon, double limit) {
+void fused_add_rms_norm_opt(torch::Tensor& input, torch::Tensor& residual, torch::Tensor& weight, double epsilon, double limit, bool use_aligned_loads) {
+    if (use_aligned_loads) {
+      TORCH_CHECK(input.is_cuda() && residual.device() == input.device() &&
+                      weight.device() == input.device() && input.is_contiguous() &&
+                      residual.is_contiguous() && weight.is_contiguous(),
+                  "use_aligned_loads requires contiguous tensors on the same GPU");
+      TORCH_CHECK(input.dim() > 0 && input.size(-1) == 6144 &&
+                      input.scalar_type() == at::ScalarType::BFloat16 &&
+                      residual.scalar_type() == input.scalar_type() &&
+                      weight.scalar_type() == input.scalar_type() &&
+                      residual.sizes() == input.sizes() && weight.numel() == 6144,
+                  "use_aligned_loads supports bf16 rows of width 6144");
+      TORCH_CHECK(reinterpret_cast<std::uintptr_t>(input.data_ptr()) % 16 == 0 &&
+                      reinterpret_cast<std::uintptr_t>(residual.data_ptr()) % 16 == 0 &&
+                      reinterpret_cast<std::uintptr_t>(weight.data_ptr()) % 16 == 0,
+                  "use_aligned_loads requires 16-byte aligned tensors");
+    }
     if (limit < 0.0) {
       fused_add_rms_norm_opt_impl<false, false>(
-          input, residual, weight, epsilon, limit);
+          input, residual, weight, epsilon, limit, use_aligned_loads);
     } else {
       fused_add_rms_norm_opt_impl<false, true>(
-          input, residual, weight, epsilon, limit);
+          input, residual, weight, epsilon, limit, use_aligned_loads);
     }
 }
 

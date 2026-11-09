@@ -6,6 +6,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cub/block/block_scan.cuh>
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -942,7 +943,7 @@ void ep_fused_fp8_quant_scatter(torch::Tensor input, torch::Tensor topk_ids,
       });
 }
 
-template <typename scalar_t, typename TopKType, int K_MAX>
+template <typename scalar_t, typename TopKType, int K_MAX, bool SpecializeK8NoMap = false>
 __global__ void ep_gather_kernel(
     const scalar_t* __restrict__ input_tensor,    
     const TopKType* __restrict__ topk_ids,
@@ -969,14 +970,17 @@ __global__ void ep_gather_kernel(
         float acc[VEC_SIZE] = {0.0f};
         #pragma unroll
         for (int k = 0; k < K_MAX; ++k) {
-             if (k >= topk_num) {
-                 continue;
+             if constexpr (!SpecializeK8NoMap) {
+                 if (k >= topk_num) {
+                     continue;
+                 }
              }
-             size_t flat_idx = static_cast<size_t>(token_idx) * topk_num + k;
+             const int row_topk = SpecializeK8NoMap ? 8 : topk_num;
+             size_t flat_idx = static_cast<size_t>(token_idx) * row_topk + k;
              int64_t global_expert_id =
                  static_cast<int64_t>(topk_ids[flat_idx]);
              bool is_valid = global_expert_id >= 0;
-             if (is_valid && has_expert_map) {
+             if (!SpecializeK8NoMap && is_valid && has_expert_map) {
                  if (global_expert_id >= static_cast<int64_t>(expert_map_size)) {
                      is_valid = false;
                  } else {
@@ -995,7 +999,11 @@ __global__ void ep_gather_kernel(
                  
                  #pragma unroll
                  for (int i = 0; i < VEC_SIZE; ++i) {
-                     acc[i] += static_cast<float>(loaded_vec.val[i]) * w;
+                     if constexpr (SpecializeK8NoMap) {
+                         acc[i] = fmaf(static_cast<float>(loaded_vec.val[i]), w, acc[i]);
+                     } else {
+                         acc[i] += static_cast<float>(loaded_vec.val[i]) * w;
+                     }
                  }
              }
         }
@@ -1185,12 +1193,19 @@ void launch_ep_gather(
     const torch::Tensor &topk_weights, const torch::Tensor &inv_perm,
     const int *expert_map_ptr, int expert_map_size, torch::Tensor &output,
     int hidden_size, int topk_num, bool has_expert_map, int num_tokens,
-    dim3 grid, dim3 block, cudaStream_t stream) {
+    dim3 grid, dim3 block, cudaStream_t stream, bool specialize_k8) {
   const scalar_t *a_ptr = a.data_ptr<scalar_t>();
   const TopKType *topk_ids_ptr = topk_ids.data_ptr<TopKType>();
   const float *topk_weights_ptr = topk_weights.data_ptr<float>();
   const int *inv_perm_ptr = inv_perm.data_ptr<int>();
   scalar_t *output_ptr = output.data_ptr<scalar_t>();
+
+  if (specialize_k8) {
+    ep_gather_kernel<scalar_t, TopKType, 8, true><<<grid, block, 0, stream>>>(
+        a_ptr, topk_ids_ptr, topk_weights_ptr, inv_perm_ptr, nullptr,
+        output_ptr, hidden_size, 8, 0, false, num_tokens);
+    return;
+  }
 
   if (topk_num <= 2) {
     ep_gather_kernel<scalar_t, TopKType, 2><<<grid, block, 0, stream>>>(
@@ -1223,7 +1238,8 @@ void ep_gather(
     torch::Tensor& topk_weights, 
     torch::Tensor& inv_perm,     
     torch::optional<torch::Tensor> expert_map,
-    torch::Tensor& output        
+    torch::Tensor& output,
+    bool specialize_k8
 ) {
  
     const int num_tokens = output.size(0);
@@ -1258,6 +1274,25 @@ void ep_gather(
         expert_map_ptr = expert_map->data_ptr<int>();
         expert_map_size = static_cast<int>(expert_map->numel());
         has_expert_map = true;
+    }
+
+    if (specialize_k8) {
+        TORCH_CHECK(topk_num == 8 && !has_expert_map &&
+                        a.scalar_type() == at::ScalarType::BFloat16,
+                    "specialize_k8 supports bf16 Top8 gather without expert_map");
+        TORCH_CHECK(a.is_cuda() && output.device() == a.device() &&
+                        topk_ids.device() == a.device() &&
+                        topk_weights.device() == a.device() && inv_perm.device() == a.device(),
+                    "specialize_k8 requires tensors on the same GPU");
+        TORCH_CHECK(a.dim() == 2 && a.size(1) == hidden_size && a.is_contiguous() &&
+                        output.is_contiguous() && output.scalar_type() == a.scalar_type() &&
+                        topk_ids.size(0) == num_tokens &&
+                        topk_weights.sizes() == topk_ids.sizes() &&
+                        inv_perm.sizes() == topk_ids.sizes(),
+                    "specialize_k8 requires matching contiguous gather shapes");
+        TORCH_CHECK(reinterpret_cast<std::uintptr_t>(a.data_ptr()) % 16 == 0 &&
+                        reinterpret_cast<std::uintptr_t>(output.data_ptr()) % 16 == 0,
+                    "specialize_k8 requires 16-byte aligned rows");
     }
 
     AT_DISPATCH_FLOATING_TYPES_AND2(
@@ -1296,12 +1331,12 @@ void ep_gather(
                 launch_ep_gather<scalar_t, int32_t>(
                     *a_tensor, topk_ids, topk_weights, inv_perm,
                     expert_map_ptr, expert_map_size, output, hidden_size,
-                    topk_num, has_expert_map, num_tokens, grid, block, stream);
+                    topk_num, has_expert_map, num_tokens, grid, block, stream, specialize_k8);
             } else {
                 launch_ep_gather<scalar_t, int64_t>(
                     *a_tensor, topk_ids, topk_weights, inv_perm,
                     expert_map_ptr, expert_map_size, output, hidden_size,
-                    topk_num, has_expert_map, num_tokens, grid, block, stream);
+                    topk_num, has_expert_map, num_tokens, grid, block, stream, specialize_k8);
             }
         }
     );

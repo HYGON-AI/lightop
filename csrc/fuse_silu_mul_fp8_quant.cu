@@ -576,7 +576,7 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_new_gernel(
 }
 
 template <typename scalar_t, int VEC,
-          bool act_first, int block_size>
+          bool act_first, int block_size, bool BroadcastInverse = false>
 __global__ void act_and_mul_fp8_quant_kernel_opt1_one(
     int64_t num_tokens,
     const int fp8type,
@@ -639,12 +639,12 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_one(
       float scale = 0.0f;
       if(tidx == 0){
           scale = fmaxf(row_max / fp8type_max_v, min_scaling); 
-          s_token_scale = scale; 
+          s_token_scale = BroadcastInverse ? 1.0f / scale : scale;
           scales[token_idx] = scale; 
       }
       __syncthreads();
 
-      float inv_s = 1.0f / s_token_scale;
+      float inv_s = BroadcastInverse ? s_token_scale : 1.0f / s_token_scale;
 
       uint8_t out_vec[VEC];
       int loop = VEC / 4;
@@ -662,7 +662,7 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_one(
 }
 
 template <typename scalar_t, 
-          bool act_first, int block_size>
+          bool act_first, int block_size, bool BroadcastInverse = false>
 __global__ void act_and_mul_fp8_quant_kernel_opt1_one_gernel(
     int64_t num_tokens,
     const int fp8type,
@@ -705,12 +705,12 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_one_gernel(
   float scale = 0.0f;
   if(tidx == 0){
       scale = fmaxf(row_max / fp8type_max_v, min_scaling); 
-      s_token_scale = scale; 
+      s_token_scale = BroadcastInverse ? 1.0f / scale : scale;
       scales[token_idx] = scale; 
   }
   __syncthreads();
 
-  float inv_s = 1.0f / s_token_scale;
+  float inv_s = BroadcastInverse ? s_token_scale : 1.0f / s_token_scale;
 
   for (int64_t idx = threadIdx.x; idx < d; idx += blockDim.x) {
     const scalar_t x = VLLM_LDG(&input[input_offset + idx]);
@@ -1669,6 +1669,7 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_one_gernel_with_limit(
   }
 }
 
+template <bool BroadcastInverse = false>
 static void fuse_silu_mul_fp8_quant_no_limit(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids)
 {
   int d = input.size(-1) / 2;                                                  
@@ -1769,35 +1770,35 @@ static void fuse_silu_mul_fp8_quant_no_limit(torch::Tensor& input, torch::Tensor
         if(num_local_tokens_tensor.has_value()){
           if(num_tokens < 8192 && expert_m == -1){                                       
               if (d <= 512) {                                                      
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 4, true, 128> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 4, true, 128, BroadcastInverse>
                     <<<grid, 256, 0, stream>>>(num_tokens , 
                                               fp8type,                 
                                               out.data_ptr<uint8_t>(),           
                                               input.data_ptr<scalar_t>(), 
                                               scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
               } else if (d <= 1024) {                                              
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 128> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 128, BroadcastInverse>
                     <<<grid, 128, 0, stream>>>(num_tokens ,
                                               fp8type,
                                               out.data_ptr<uint8_t>(),           
                                               input.data_ptr<scalar_t>(), 
                                               scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
               } else if (d <= 2048) {                                              
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 256> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 256, BroadcastInverse>
                     <<<grid, 256, 0, stream>>>(num_tokens ,
                                               fp8type,
                                               out.data_ptr<uint8_t>(),           
                                               input.data_ptr<scalar_t>(), 
                                               scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
               } else if (d <= 4096) {                                              
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 512> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 512, BroadcastInverse>
                     <<<grid, 512, 0, stream>>>(num_tokens ,
                                               fp8type,
                                               out.data_ptr<uint8_t>(),           
                                               input.data_ptr<scalar_t>(),      
                                               scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
               } else if (d <= 8192) {                                                             
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 1024> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 1024, BroadcastInverse>
                     <<<grid, 1024, 0, stream>>>(num_tokens ,
                                                 fp8type,
                                                 out.data_ptr<uint8_t>(),          
@@ -1805,21 +1806,21 @@ static void fuse_silu_mul_fp8_quant_no_limit(torch::Tensor& input, torch::Tensor
                                                 scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);
                                                     
               } else if (d <= 16384) {                                                             
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 16, true, 1024> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 16, true, 1024, BroadcastInverse>
                     <<<grid, 1024, 0, stream>>>(num_tokens ,
                                                 fp8type,
                                                 out.data_ptr<uint8_t>(),          
                                                 input.data_ptr<scalar_t>(),     
                                                 scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
               } else if (d <= 32768) {                                                             
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 32, true, 1024> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 32, true, 1024, BroadcastInverse>
                     <<<grid, 1024, 0, stream>>>(num_tokens ,
                                                 fp8type,
                                                 out.data_ptr<uint8_t>(),          
                                                 input.data_ptr<scalar_t>(),     
                                                 scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
               } else{
-                act_and_mul_fp8_quant_kernel_opt1_one_gernel<scalar_t, true, 1024>
+                act_and_mul_fp8_quant_kernel_opt1_one_gernel<scalar_t, true, 1024, BroadcastInverse>
                     <<<grid, 1024, 0, stream>>>(num_tokens ,
                                                 fp8type,
                                                 out.data_ptr<uint8_t>(),          
@@ -1890,35 +1891,35 @@ static void fuse_silu_mul_fp8_quant_no_limit(torch::Tensor& input, torch::Tensor
             }
         }else{
               if (d <= 512) {                                                      
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 4, true, 128> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 4, true, 128, BroadcastInverse>
                     <<<grid, 128, 0, stream>>>(num_tokens ,
                                               fp8type,                  
                                               out.data_ptr<uint8_t>(),           
                                               input.data_ptr<scalar_t>(), 
                                               scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
               } else if (d <= 1024) {                                              
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 128> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 128, BroadcastInverse>
                     <<<grid, 128, 0, stream>>>(num_tokens ,
                                               fp8type, 
                                               out.data_ptr<uint8_t>(),           
                                               input.data_ptr<scalar_t>(), 
                                               scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
               } else if (d <= 2048) {                                              
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 256> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 256, BroadcastInverse>
                     <<<grid, 256, 0, stream>>>(num_tokens ,
                                               fp8type,
                                               out.data_ptr<uint8_t>(),           
                                               input.data_ptr<scalar_t>(), 
                                               scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
               } else if (d <= 4096) {                                              
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 512> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 512, BroadcastInverse>
                     <<<grid, 512, 0, stream>>>(num_tokens ,
                                               fp8type,
                                               out.data_ptr<uint8_t>(),           
                                               input.data_ptr<scalar_t>(),      
                                               scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);     
               } else if (d <= 8192) {                                                             
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 1024> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 8, true, 1024, BroadcastInverse>
                     <<<grid, 1024, 0, stream>>>(num_tokens ,
                                                 fp8type,
                                                 out.data_ptr<uint8_t>(),          
@@ -1926,21 +1927,21 @@ static void fuse_silu_mul_fp8_quant_no_limit(torch::Tensor& input, torch::Tensor
                                                 scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);
                                                     
               } else if (d <= 16384) {                                                             
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 16, true, 1024> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 16, true, 1024, BroadcastInverse>
                     <<<grid, 1024, 0, stream>>>(num_tokens ,
                                                 fp8type,
                                                 out.data_ptr<uint8_t>(),          
                                                 input.data_ptr<scalar_t>(),     
                                                 scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
               } else if (d <= 32768) {                                                             
-                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 32, true, 1024> 
+                act_and_mul_fp8_quant_kernel_opt1_one<scalar_t, 32, true, 1024, BroadcastInverse>
                     <<<grid, 1024, 0, stream>>>(num_tokens ,
                                                 fp8type,
                                                 out.data_ptr<uint8_t>(),          
                                                 input.data_ptr<scalar_t>(),     
                                                 scales.data_ptr<float>(),d, topK, num_local_tokens_tensor.has_value() ? num_local_tokens_tensor->data_ptr<int32_t>() : nullptr);   
               } else{
-                act_and_mul_fp8_quant_kernel_opt1_one_gernel<scalar_t, true, 1024>
+                act_and_mul_fp8_quant_kernel_opt1_one_gernel<scalar_t, true, 1024, BroadcastInverse>
                     <<<grid, 1024, 0, stream>>>(num_tokens ,
                                                 fp8type,
                                                 out.data_ptr<uint8_t>(),          
@@ -2360,11 +2361,39 @@ void fuse_silu_mul_fp8_quant(
     int topK,
     int expert_m,
     torch::optional<torch::Tensor> &expert_ids,
-    float limit = -1.0f)
+    float limit = -1.0f,
+    bool broadcast_inverse = false)
 {
   TORCH_CHECK(
       limit == -1.0f || limit > 0.0f,
       "limit must be -1.0 (disabled) or a positive value");
+
+  if (broadcast_inverse) {
+    TORCH_CHECK(limit == -1.0f && !num_local_tokens_tensor.has_value() &&
+                    !expert_ids.has_value(),
+                "broadcast_inverse supports unmasked, no-limit activation quantization");
+    TORCH_CHECK(input.is_cuda() && out.device() == input.device() &&
+                    scales.device() == input.device() && input.is_contiguous() &&
+                    out.is_contiguous() && scales.is_contiguous(),
+                "broadcast_inverse requires contiguous tensors on the same GPU");
+    TORCH_CHECK(input.dim() > 0 && input.size(-1) > 0 &&
+                    input.size(-1) % 2 == 0,
+                "broadcast_inverse requires an even activation width");
+    const int64_t d = input.size(-1) / 2;
+    TORCH_CHECK((fp8type == 0 || fp8type == 1) &&
+                    out.scalar_type() == at::ScalarType::Byte &&
+                    out.numel() == input.numel() / 2 &&
+                    scales.scalar_type() == at::ScalarType::Float &&
+                    scales.numel() == input.numel() / input.size(-1),
+                "broadcast_inverse requires byte output and one fp32 scale per row");
+    // The existing vectorized path loads complete vectors of up to 32 values.
+    TORCH_CHECK(d > 32768 || d % (d <= 512 ? 4 : (d <= 8192 ? 8 : (d <= 16384 ? 16 : 32))) == 0,
+                "broadcast_inverse requires complete activation vectors");
+    fuse_silu_mul_fp8_quant_no_limit<true>(
+        input, out, scales, fp8type, num_local_tokens_tensor,
+        topK, expert_m, expert_ids);
+    return;
+  }
 
   if (limit > 0.0f) {
     fuse_silu_mul_fp8_quant_with_limit(

@@ -80,8 +80,12 @@ def per_token_quant_fp8(
     dtype: torch.dtype = torch.float8_e4m3fn,
     out_q: Optional[torch.Tensor] = None,
     out_scale: Optional[torch.Tensor] = None,
+    broadcast_inverse: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Quantize each token with optional caller-provided output buffers."""
+    """Quantize each token with optional output buffers and reciprocal broadcast.
+
+    ``broadcast_inverse=False`` retains the existing per-thread division.
+    """
     expected_scale_shape = x.shape[:-1] + (1,)
 
     if out_q is None:
@@ -114,7 +118,12 @@ def per_token_quant_fp8(
             "scale shape and x.device"
         )
 
-    lightop_native.per_token_quant_fp8(out_q, x, out_scale)
+    if broadcast_inverse:
+        lightop_native.per_token_quant_fp8(
+            out_q, x, out_scale, broadcast_inverse=True
+        )
+    else:
+        lightop_native.per_token_quant_fp8(out_q, x, out_scale)
     return out_q, out_scale
 
 
