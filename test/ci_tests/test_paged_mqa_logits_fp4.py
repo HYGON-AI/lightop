@@ -389,9 +389,9 @@ def test_rows_per_request_matches_unpaired(op, draft, heads, with_schedule, requ
 def test_route_lens_follow_the_pair_gate(op):
     """The gate decides the dispatch, so the schedule's input has to follow it: a
     row count below it keeps one length per row, at or above it one per row pair."""
-    from lightop import op as ext
     from lightop.attention import paged_mqa_logits_route_lens
-    gate, draft = ext.PAGED_MQA_LOGITS_FP4_PAIR_MIN_REQUESTS, 6
+    # The public contract starts paired routes at eight requests.
+    gate, draft = 8, 6
     below = torch.arange(1, (gate - 1) * draft + 1, device="cuda", dtype=torch.int32)
     assert paged_mqa_logits_route_lens(below, draft).equal(below)
     lens = torch.arange(1, gate * draft + 1, device="cuda", dtype=torch.int32)
@@ -450,8 +450,10 @@ def test_unsupported_heads(op, heads):
 
 
 def test_unavailable_operator_error(op, monkeypatch):
-    from lightop import op as native
-    monkeypatch.delattr(native, "paged_mqa_logits_fp4")
+    from types import SimpleNamespace
+    import lightop
+
+    monkeypatch.setattr(lightop, "op", SimpleNamespace())
     with pytest.raises(RuntimeError, match="paged_mqa_logits_fp4 unavailable"):
         run(op, make_case(1, 16, 1), 64)
 
@@ -584,3 +586,281 @@ def test_fp32_accumulator_cancellation(op):
     assert float(expected[0, 0]) == 2.0 ** -8
     got = float(run(op, case, 1)[0, 0])
     assert abs(got - 2.0 ** -8) <= 4 * (128 + 16) * UNIT_ROUNDOFF * float(mag[0, 0])
+
+
+def schedule(case, rows):
+    from lightop.attention import get_paged_mqa_logits_fp4_metadata
+    cus = torch.cuda.get_device_properties(case[0].device).multi_processor_count
+    return get_paged_mqa_logits_fp4_metadata(case[4], 64, cus, rows)
+
+
+@pytest.mark.parametrize('requests', [6, 7, 8])
+@pytest.mark.parametrize('rows', [5, 6])
+@pytest.mark.parametrize('heads,tb', [(16, 64), (32, 64), (32, 8), (64, 64)])
+def test_mixed_page_split_and_route_tails(op, requests, rows, heads, tb):
+    width = 1025
+    case = make_case(requests * rows, heads, width, tb, seed=53, strided=True,
+                     scale_lo=125, scale_hi=129)
+    paired_rows = rows if tb == 64 and heads <= 32 else 1
+    if paired_rows > 1:
+        case[5] = case[5][::rows].repeat_interleave(rows, 0)
+    lengths = [0, 1, 15, 16, 17, 63, 64, 65, 255, 256, 257, 511, 512, 513, width]
+    case[4].copy_(torch.tensor([lengths[i % len(lengths)] for i in range(requests * rows)],
+                              device='cuda', dtype=torch.int32))
+    sentinel = -12345.0
+    output = torch.full((requests * rows, width + 16), sentinel, device='cuda')
+    actual = run(op, case, width, tb, schedule(case, paired_rows), output,
+                 rows_per_request=paired_rows)
+    reference = run(op, case, width, tb, rows_per_request=1)
+    valid = torch.arange(width, device='cuda')[None, :] < case[4][:, None]
+    torch.testing.assert_close(actual[:, :width][valid], reference[valid], rtol=0, atol=0)
+    assert (output[:, :width][~valid] == sentinel).all()
+    assert (output[:, width:] == sentinel).all()
+    assert_logits_close(actual, case, width, tb)
+
+
+@pytest.mark.parametrize('requests', [7, 8])
+@pytest.mark.parametrize('rows', [5, 6])
+def test_graph_replay_refreshes_payload_and_paired_lengths(op, requests, rows):
+    width = 513
+    case = make_case(requests * rows, 32, width, 64, seed=57, scale_lo=125, scale_hi=129)
+    case[5] = case[5][::rows].repeat_interleave(rows, 0)
+    output = torch.full((requests * rows, width), -12345.0, device='cuda')
+    run(op, case, width, 64, schedule(case, rows), output, rows_per_request=rows)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        run(op, case, width, 64, schedule(case, rows), output, rows_per_request=rows)
+    for length in [257, 0, 63, 513]:
+        case[4].fill_(length)
+        case[2].view(-1, 4352)[:, :4096].bitwise_xor_(0x88)
+        output.fill_(-12345.0)
+        graph.replay()
+        torch.cuda.synchronize()
+        expected = run(op, case, width, 64, rows_per_request=1)
+        torch.testing.assert_close(output[:, :length], expected[:, :length], rtol=0, atol=0)
+        assert (output[:, length:] == -12345.0).all()
+        assert_logits_close(output, case, width, 64)
+
+
+@pytest.mark.parametrize('requests', [7, 8])
+@pytest.mark.parametrize('rows', [5, 6])
+@pytest.mark.parametrize('short_length', [0, 64, 256])
+@pytest.mark.parametrize('reverse', [False, True])
+def test_pair_uses_live_tail_page(op, requests, rows, short_length, reverse):
+    """SGLang only fills each verify row's visible page-table prefix."""
+    width = 257
+    case = make_case(requests * rows, 32, width, 64, seed=61,
+                     scale_lo=125, scale_hi=129)
+    case[5] = case[5][::rows].repeat_interleave(rows, 0)
+    pair = [short_length, short_length + 1]
+    if reverse:
+        pair.reverse()
+    lengths = torch.tensor([pair[i % 2] for _ in range(requests) for i in range(rows)],
+                           device='cuda', dtype=torch.int32)
+    case[4].copy_(lengths)
+    unused = torch.arange(case[5].shape[1], device='cuda')[None, :] * 64 >= lengths[:, None]
+    case[5][unused] = 0
+    output = torch.full((requests * rows, width + 16), -12345.0, device='cuda')
+    actual = run(op, case, width, 64, schedule(case, rows), output, rows_per_request=rows)
+    expected = run(op, case, width, 64, rows_per_request=1)
+    valid = torch.arange(width, device='cuda')[None, :] < lengths[:, None]
+    torch.testing.assert_close(actual[:, :width][valid], expected[valid], rtol=0, atol=0)
+    assert (output[:, :width][~valid] == -12345.0).all()
+    assert (output[:, width:] == -12345.0).all()
+    assert_logits_close(actual, case, width, 64)
+
+
+def make_shared_case(rows, heads, wide=False):
+    width = 32769
+    case = make_case(7 * rows, heads, width, 64, seed=73, strided=True,
+                     scale_lo=118 if wide else 125, scale_hi=138 if wide else 129)
+    case[5] = case[5][::rows].repeat_interleave(rows, 0)
+    values = [0, 1, 257, 4096, 16383, 16384, 16385, width]
+    case[4].copy_(torch.tensor([values[i % len(values)] for i in range(7 * rows)],
+                              dtype=torch.int32, device='cuda'))
+    return case, width
+
+
+def metadata(case, rows, planner):
+    from lightop.attention import (get_paged_mqa_logits_fp4_metadata,
+                                   get_paged_mqa_logits_metadata,
+                                   paged_mqa_logits_route_lens)
+    cus = torch.cuda.get_device_properties(case[0].device).multi_processor_count
+    if planner == 'native':
+        return get_paged_mqa_logits_fp4_metadata(case[4], 64, cus, rows)
+    if planner == 'legacy':
+        return get_paged_mqa_logits_metadata(paged_mqa_logits_route_lens(case[4], rows), 64, cus)
+    return None
+
+
+@pytest.mark.parametrize('rows,heads', [(5, 16), (6, 16), (6, 32)])
+@pytest.mark.parametrize('wide', [False, True])
+@pytest.mark.parametrize('planner', ['native', 'legacy', 'grid'])
+def test_pair7_mixed_reuse_lengths(op, rows, heads, wide, planner):
+    case, width = make_shared_case(rows, heads, wide)
+    unused = torch.arange(case[5].shape[1], device='cuda')[None, :] * 64 >= case[4][:, None]
+    case[5][unused] = 0
+    output = torch.full((7 * rows, width + 19), -12345.0, device='cuda')
+    actual = run(op, case, width, 64, metadata(case, rows, planner), output, rows_per_request=rows)
+    assert actual.data_ptr() == output.data_ptr()
+    valid = torch.arange(width, device='cuda')[None, :] < case[4][:, None]
+    assert (output[:, :width][~valid] == -12345.0).all()
+    assert (output[:, width:] == -12345.0).all()
+    assert_logits_close(actual, case, width, 64)
+
+
+@pytest.mark.parametrize('rows', [5, 6])
+def test_pair7_graph_switches_short_and_reuse_routes(op, rows):
+    case, width = make_shared_case(rows, 32)
+    output = torch.full((7 * rows, width + 13), -12345.0, device='cuda')
+    run(op, case, width, 64, metadata(case, rows, 'native'), output, rows_per_request=rows)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        run(op, case, width, 64, metadata(case, rows, 'native'), output, rows_per_request=rows)
+    for length in [4095, 4096, 4097, 8191, 8192, 8193, 16383, 16384, 16385, 0, 1, width]:
+        case[4].fill_(length)
+        output.fill_(-12345.0)
+        graph.replay()
+        expected = run(op, case, width, 64, rows_per_request=1)
+        torch.testing.assert_close(output[:, :length], expected[:, :length], rtol=0, atol=0)
+        assert (output[:, length:] == -12345.0).all()
+        if length in (16383, width):
+            assert_logits_close(output, case, width, 64)
+
+
+@pytest.mark.parametrize("q_code", [2, 10])
+def test_pair7_cached_query_all_scale_bytes(op, q_code):
+    count, width = 8192, 16384
+    values = [(j // 16) % 256 for j in range(count)]
+    one = single_product_case([j % 16 for j in range(count)], values, heads=32, q_code=q_code)
+    scales(one[2]).reshape(-1, 4)[:count] = torch.tensor(values, device="cuda", dtype=torch.uint8)[:, None]
+    expected, _ = reference_with_bound(one, count, 64)
+    case = [v.repeat((42,) + (1,) * (v.ndim - 1)) if i != 2 else v for i,v in enumerate(one)]
+    got = run(op, case, width, 64, metadata(case, 6, 'native'), rows_per_request=6)[:, :count]
+    expected = expected.expand(42, -1)
+    invalid = torch.tensor(values, device="cuda").eq(255)[None, :].expand_as(expected)
+    in_range = (expected.abs() < 2.0 ** 128) & ~invalid
+    assert torch.isfinite(got).all()
+    torch.testing.assert_close(got[in_range], expected[in_range].float(), rtol=0, atol=0)
+    torch.testing.assert_close(got[~in_range], torch.zeros_like(got[~in_range]), rtol=0, atol=0)
+
+
+def test_pair7_cached_query_subnormal_logits(op):
+    case = make_case(42, 32, 8193, seed=17)
+    case[5] = case[5][::6].repeat_interleave(6, 0)
+    case[4].fill_(8193)
+    scales(case[2]).random_(0, 4)
+    case[1].view(torch.uint8).reshape(42, 32, 4).random_(100, 110)
+    got = run(op, case, 16384, 64, metadata(case, 6, 'native'), rows_per_request=6)
+    expected, _ = reference_with_bound(case, 16384, 64)
+    assert (expected[:, :8193].abs() > 2.0 ** -140).any()
+    torch.testing.assert_close(got[:, :8193], expected[:, :8193].float(), rtol=0, atol=2.0 ** -148)
+
+
+@pytest.mark.parametrize("mode", ["uniform", "one_lane_differs", "ineligible_exponent"])
+def test_uniform_wave_matches_independent_rows(op, mode):
+    width = 4353
+    case = make_case(42, 32, width, scale_lo=125, scale_hi=129, seed=101)
+    case[5] = case[5][::6].repeat_interleave(6, 0)
+    case[4].copy_(torch.tensor([4097, 4106, 4157, 4161, 4290, width] * 7, device="cuda"))
+    unread = torch.arange(case[5].shape[1], device="cuda")[None, :] * 64 >= case[4][:, None]
+    case[5][unread] = -1
+    sf = scales(case[2])
+    per_page = torch.arange(sf.shape[0], device=sf.device) % 7 + 121
+    sf.copy_(per_page[:, None, None].expand_as(sf))
+    if mode == "one_lane_differs":
+        sf[:, 19, 2] += 3
+    elif mode == "ineligible_exponent":
+        case[1].zero_()
+
+    independent = run(op, case, width, 64, rows_per_request=1)
+    out = torch.full((42, width + 19), -12345.0, device="cuda")
+    result = run(op, case, width, 64, metadata(case, 6, "native"), out, rows_per_request=6)
+    live = torch.arange(width, device="cuda")[None, :] < case[4][:, None]
+    torch.testing.assert_close(result[:, :width][live], independent[:, :width][live], rtol=0, atol=0)
+    assert (out[:, :width][~live] == -12345.0).all()
+    assert (out[:, width:] == -12345.0).all()
+
+
+@pytest.mark.parametrize("case_name", [
+    "changing_pivots", "span12_first_token", "span12_late_tile",
+    "one_row_ineligible", "one_row_exponent_below_range",
+])
+def test_mixed_wave_matches_independent_rows(op, case_name):
+    width = 4353
+    case = make_case(42, 32, width, seed=207)
+    case[5] = case[5][::6].repeat_interleave(6, 0)
+    case[4].copy_(torch.tensor([4133, width, 4097, 246, 4321, 4317] * 7, device="cuda"))
+    unread = torch.arange(case[5].shape[1], device="cuda")[None, :] * 64 >= case[4][:, None]
+    case[5][unread] = -1
+    sf = scales(case[2])
+    # Each token has its own pivot. The four exponents span exactly 11.
+    low = (torch.arange(sf.shape[1], device="cuda") % 9 + 115).view(1, -1, 1)
+    offsets = torch.tensor([0, 3, 7, 11], device="cuda").view(1, 1, 4)
+    sf.copy_(low + offsets)
+    if case_name in ("span12_first_token", "span12_late_tile"):
+        position = 0 if case_name == "span12_first_token" else 51
+        sf[:, position, 3] += 1
+    elif case_name == "one_row_ineligible":
+        case[1].view(torch.uint8).reshape(42, 32, 4)[1::2, :, 0] = 105
+    elif case_name == "one_row_exponent_below_range":
+        sf.copy_(torch.tensor([1, 4, 7, 12], device="cuda"))
+        query_scales = case[1].view(torch.uint8).reshape(42, 32, 4)
+        query_scales[::2].fill_(121)
+        query_scales[1::2].fill_(132)
+
+    independent = run(op, case, width, 64, rows_per_request=1)
+    out = torch.full((42, width + 19), -12345.0, device="cuda")
+    result = run(op, case, width, 64, metadata(case, 6, "native"), out, rows_per_request=6)
+    live = torch.arange(width, device="cuda")[None, :] < case[4][:, None]
+    torch.testing.assert_close(result[:, :width][live], independent[:, :width][live], rtol=0, atol=0)
+    assert_logits_close(result[:, :width], case, width, 64)
+    assert (out[:, :width][~live] == -12345.0).all()
+    assert (out[:, width:] == -12345.0).all()
+
+@pytest.mark.parametrize("requests,rows", [(1, 1), (32, 1), (2, 3), (5, 5), (8, 5), (16, 6), (32, 5)])
+def test_dense_routes_replay_mixed_lengths(op, requests, rows):
+    # Independent requests have disjoint page tables; only draft siblings share KV.
+    width = 5120
+    case = make_case(requests * rows, 32, width, seed=87)
+    table = case[5][::rows].repeat_interleave(rows, 0)
+    case[5].copy_(table)
+    outputs = torch.full((requests * rows, width + 9), -12345.0, device='cuda')
+    columns = torch.arange(width, device='cuda')
+    pages = torch.arange(table.shape[1], device='cuda') * 64
+    run(op, case, width, 64, metadata(case, rows, 'native'), outputs, rows_per_request=rows)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        run(op, case, width, 64, metadata(case, rows, 'native'), outputs, rows_per_request=rows)
+    edges = [0, 257, 4095, 4096, 4097, 4353, width]
+    for phase in (0, 4, 6):
+        lengths = [edges[(i + phase) % len(edges)] for i in range(requests * rows)]
+        case[4].copy_(torch.tensor(lengths, device='cuda', dtype=torch.int32))
+        case[5].copy_(table.masked_fill(pages[None, :] >= case[4][:, None], -1))
+        outputs.fill_(-12345.0)
+        graph.replay()
+        expected = run(op, case, width, 64, rows_per_request=1)
+        valid = columns[None, :] < case[4][:, None]
+        torch.testing.assert_close(outputs[:, :width][valid], expected[valid], rtol=0, atol=0)
+        assert (outputs[:, :width][~valid] == -12345.0).all()
+        assert (outputs[:, width:] == -12345.0).all()
+
+
+@pytest.mark.parametrize("rows", [1, 6])
+def test_subnormal_k_normal_product_exact(op, rows):
+    # Q=32, K=2^-127. Although K is BF16 subnormal, the exact logit
+    # 32 heads * 128 channels * 32 * 2^-127 = 2^-110 is normal FP32.
+    case = make_case(rows, 32, 5120)
+    case[0].fill_(0x22)
+    case[1].view(torch.uint8).fill_(132)
+    payload(case[2]).fill_(0x11)
+    scales(case[2]).fill_(1)
+    case[3].fill_(1)
+    case[4].fill_(5120)
+    case[5].copy_(case[5][0:1].expand_as(case[5]))
+    actual = run(op, case, 5120, 64, metadata(case, rows, "native"),
+                 rows_per_request=rows)
+    torch.testing.assert_close(actual, torch.full_like(actual, 2. ** -110),
+                               rtol=0, atol=0)

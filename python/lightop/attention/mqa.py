@@ -160,10 +160,13 @@ def paged_mqa_logits_fp4(q, q_sf, kv_cache, weights, context_lens, block_table,
     get_paged_mqa_logits_metadata(context_lens, 64, CUs) and may be None.
 
     rows_per_request n > 1 (table_block_size 64, H <= 32 only) declares every
-    n rows one request's draft tokens sharing the block table row of the
-    first; with at least PAGED_MQA_LOGITS_FP4_PAIR_MIN_REQUESTS requests the
-    rows are then scored in pairs, one KV read per pair, and fewer run as
-    n = 1. Results are identical either way. A schedule must be planned on
+    n rows one request's draft tokens sharing physical pages over their common
+    visible prefix. Each row only needs its visible table entries filled.
+    With at least PAGED_MQA_LOGITS_FP4_PAIR_MIN_REQUESTS requests the
+    schedule uses paired routes; fewer requests use individual row routes.
+    The long dense persistent path can reuse same-request rows with either
+    layout on gfx936 (80 CUs) and gfx938 (64 CUs). gfx936 uses BF16 MMAC and
+    uses 320 or 640 CTAs depending on batch and live split count. A legacy schedule must be planned on
     paged_mqa_logits_route_lens(context_lens, n) instead of context_lens.
     """
     from .. import op
@@ -188,6 +191,7 @@ def paged_mqa_logits_route_lens(context_lens, rows_per_request):
     alone, [B / n * ceil(n / 2)]; otherwise context_lens itself, [B]."""
     from .. import op
 
+    # Read the native gate so this helper agrees with the planner and kernel.
     lens = context_lens.reshape(-1)
     if (rows_per_request > 1 and lens.numel() // rows_per_request
             >= op.PAGED_MQA_LOGITS_FP4_PAIR_MIN_REQUESTS):

@@ -21,7 +21,6 @@ def _get_pytorch_version_int():
     return int(version[0])*100+int(version[1])*10+int(version[2])
 
 dtk_version = get_dtk_version(ROCM_HOME)
-gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
 torch_version = _get_pytorch_version_int()
 
 
