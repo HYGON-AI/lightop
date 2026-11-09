@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
-# pytest -q test/test_gemm_ops_hipblaslt_w8a8_channelwise_gemm_kme.py
+# pytest -q test/ci_tests/test_gemm_ops_hipblaslt_w8a8_channelwise_gemm_kme.py
 import inspect
 
 import pytest
@@ -28,8 +28,9 @@ def test_hipblaslt_w8a8_channelwise_gemm_kme_is_direct_public_binding():
 def test_hipblaslt_w8a8_channelwise_gemm_kme_matches_torch(out_dtype):
     if not torch.cuda.is_available():
         pytest.skip("requires a CUDA/ROCm device")
-    if not hasattr(torch.ops.lmslim, "hipblaslt_gemm_channelwise_kme"):
-        pytest.skip("requires lmslimquant with hipblaslt_gemm_channelwise_kme")
+    arch = torch.cuda.get_device_properties(torch.cuda.current_device()).gcnArchName.split(":")[0]
+    if arch != "gfx928":
+        pytest.skip(f"native channelwise KME requires gfx928 (found {arch})")
 
     torch.manual_seed(17)
     m, n, k = 128, 256, 512
