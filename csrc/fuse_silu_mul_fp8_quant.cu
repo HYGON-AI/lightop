@@ -4,9 +4,11 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <torch/all.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAException.h>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include "reduce.h"
 
@@ -576,7 +578,8 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_new_gernel(
 }
 
 template <typename scalar_t, int VEC,
-          bool act_first, int block_size, bool BroadcastInverse = false>
+          bool act_first, int block_size, bool BroadcastInverse = false,
+          bool PerTokenScale = false>
 __global__ void act_and_mul_fp8_quant_kernel_opt1_one(
     int64_t num_tokens,
     const int fp8type,
@@ -612,7 +615,13 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_one(
       *(VecType*)r_x2 = *x2;
       #pragma unroll
       for (int i = 0; i < VEC; i++) {
-        r_y[i] = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
+        if constexpr (PerTokenScale) {
+          // Preserve the BF16 SiLU and product rounding of the two-op chain.
+          const scalar_t value = silu_kernel(r_x1[i]) * r_x2[i];
+          r_y[i] = static_cast<float>(value);
+        } else {
+          r_y[i] = static_cast<float>(silu_kernel(r_x1[i]) * r_x2[i]);
+        }
       }
     }
     float row_max = 0.f;
@@ -638,13 +647,26 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_one(
 
       float scale = 0.0f;
       if(tidx == 0){
-          scale = fmaxf(row_max / fp8type_max_v, min_scaling); 
-          s_token_scale = BroadcastInverse ? 1.0f / scale : scale;
+          if constexpr (PerTokenScale) {
+            scale = row_max / fp8type_max_v;
+            s_token_scale = BroadcastInverse
+                ? (row_max == 0.f ? 0.f : fp8type_max_v / row_max)
+                : row_max;
+          } else {
+            scale = fmaxf(row_max / fp8type_max_v, min_scaling);
+            s_token_scale = BroadcastInverse ? 1.0f / scale : scale;
+          }
           scales[token_idx] = scale; 
       }
       __syncthreads();
 
-      float inv_s = BroadcastInverse ? s_token_scale : 1.0f / s_token_scale;
+      float inv_s;
+      if constexpr (PerTokenScale) {
+        inv_s = BroadcastInverse ? s_token_scale
+            : (s_token_scale == 0.f ? 0.f : fp8type_max_v / s_token_scale);
+      } else {
+        inv_s = BroadcastInverse ? s_token_scale : 1.0f / s_token_scale;
+      }
 
       uint8_t out_vec[VEC];
       int loop = VEC / 4;
@@ -2362,13 +2384,14 @@ void fuse_silu_mul_fp8_quant(
     int expert_m,
     torch::optional<torch::Tensor> &expert_ids,
     float limit = -1.0f,
-    bool broadcast_inverse = false)
+    bool broadcast_inverse = false,
+    bool per_token_scale = false)
 {
   TORCH_CHECK(
       limit == -1.0f || limit > 0.0f,
       "limit must be -1.0 (disabled) or a positive value");
 
-  if (broadcast_inverse) {
+  if (broadcast_inverse || per_token_scale) {
     TORCH_CHECK(limit == -1.0f && !num_local_tokens_tensor.has_value() &&
                     !expert_ids.has_value(),
                 "broadcast_inverse supports unmasked, no-limit activation quantization");
@@ -2389,9 +2412,36 @@ void fuse_silu_mul_fp8_quant(
     // The existing vectorized path loads complete vectors of up to 32 values.
     TORCH_CHECK(d > 32768 || d % (d <= 512 ? 4 : (d <= 8192 ? 8 : (d <= 16384 ? 16 : 32))) == 0,
                 "broadcast_inverse requires complete activation vectors");
-    fuse_silu_mul_fp8_quant_no_limit<true>(
-        input, out, scales, fp8type, num_local_tokens_tensor,
-        topK, expert_m, expert_ids);
+    if (per_token_scale) {
+      TORCH_CHECK(input.scalar_type() == at::ScalarType::BFloat16 &&
+                      input.dim() == 2 && d == 2048 && fp8type == 0 &&
+                      topK == 1 && expert_m == -1,
+                  "per_token_scale requires dense BF16 [M, 4096] and E4M3 output");
+      TORCH_CHECK(reinterpret_cast<uintptr_t>(input.data_ptr()) % 16 == 0 &&
+                      reinterpret_cast<uintptr_t>(out.data_ptr()) % 8 == 0,
+                  "per_token_scale requires aligned activation vectors");
+      const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
+      if (input.size(0) == 0) return;
+      const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+      if (broadcast_inverse) {
+        act_and_mul_fp8_quant_kernel_opt1_one<at::BFloat16, 8, true, 256, true, true>
+            <<<input.size(0), 256, 0, stream>>>(
+                input.size(0), fp8type, out.data_ptr<uint8_t>(),
+                input.data_ptr<at::BFloat16>(), scales.data_ptr<float>(),
+                d, topK, nullptr);
+      } else {
+        act_and_mul_fp8_quant_kernel_opt1_one<at::BFloat16, 8, true, 256, false, true>
+            <<<input.size(0), 256, 0, stream>>>(
+                input.size(0), fp8type, out.data_ptr<uint8_t>(),
+                input.data_ptr<at::BFloat16>(), scales.data_ptr<float>(),
+                d, topK, nullptr);
+      }
+      C10_CUDA_KERNEL_LAUNCH_CHECK();
+    } else {
+      fuse_silu_mul_fp8_quant_no_limit<true>(
+          input, out, scales, fp8type, num_local_tokens_tensor,
+          topK, expert_m, expert_ids);
+    }
     return;
   }
 

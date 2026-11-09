@@ -233,7 +233,8 @@ def fuse_silu_mul_fp8_quant(input: torch.Tensor,
                         scales: Optional[torch.Tensor] = None,
                         expert_ids: Optional[torch.Tensor] = None,
                         limit: Optional[float] = -1.0,
-                        broadcast_inverse: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
+                        broadcast_inverse: bool = False,
+                        per_token_scale: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
     """Run SwiGLU followed by per-token FP8 quantization.
 
     A positive ``limit`` applies the DeepSeek V4 clamp in the input dtype
@@ -242,6 +243,9 @@ def fuse_silu_mul_fp8_quant(input: torch.Tensor,
     backward compatibility and also disables the clamp.
     ``broadcast_inverse=True`` shares the reciprocal within each block for
     unmasked, no-limit inputs; the default retains per-thread division.
+    ``per_token_scale=True`` matches separate BF16 SiLU-and-mul followed by
+    per-token E4M3 quantization, including zero/tiny rows without a scale floor.
+    It supports unmasked, no-limit BF16 input of shape ``[M, 4096]``.
     """
     normalized_limit = _normalize_fp8_limit(limit)
 
@@ -259,6 +263,8 @@ def fuse_silu_mul_fp8_quant(input: torch.Tensor,
                             dtype=torch.float32)
 
     kernel_options = {"broadcast_inverse": True} if broadcast_inverse else {}
+    if per_token_scale:
+        kernel_options["per_token_scale"] = True
     op.fuse_silu_mul_fp8_quant(
         input,
         output.view(torch.uint8),
