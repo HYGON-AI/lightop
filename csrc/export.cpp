@@ -559,7 +559,7 @@ void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input, torch::Tensor& output, t
 void fuse_silu_mul_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m);
 void fuse_situ_mul_quant_contiguous(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, double situ_beta, double situ_linear_beta);
 void fuse_situ_mul_quant_ep(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, torch::Tensor& masked_m, double situ_beta, double situ_linear_beta, int64_t expect_m);
-void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids, float limit = -1.0f, bool broadcast_inverse = false, bool per_token_scale = false);
+void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids, float limit = -1.0f, bool per_token_scale = false);
 void swiglu_oai_fp8_quant_masked(const torch::Tensor&, torch::Tensor&, torch::Tensor&, const torch::Tensor&, double, double, int64_t, int64_t);
 void swiglu_oai_fp8_quant_masked_flat(const torch::Tensor&, torch::Tensor&, torch::Tensor&, const torch::Tensor&, double, double, int64_t, int64_t);
 void fuse_silu_mul_fp8_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m, float limit);
@@ -1468,7 +1468,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("expert_m"),
       py::arg("expert_ids"),
       py::arg("limit") = -1.0f,
-      py::arg("broadcast_inverse") = false,
       py::arg("per_token_scale") = false);
   m.def("swiglu_oai_fp8_quant_masked", &at::native::swiglu_oai_fp8_quant_masked, "Masked OAI SwiGLU with FP32 row-FP8 quantization");
   m.def("swiglu_oai_fp8_quant_masked_flat", &at::native::swiglu_oai_fp8_quant_masked_flat, "OAI row-FP8 quantization using live rows of 16 experts");
