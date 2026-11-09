@@ -1,5 +1,9 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
+
+# Run from the repository root with LightOp installed.
+# python3 -m pytest -q test/ci_tests/test_swiglu_oai_int8_import.py
+
 """Old native packages must not prevent unrelated activation imports."""
 import importlib.util
 import sys

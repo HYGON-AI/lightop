@@ -1,5 +1,9 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
+
+# Run from the repository root with LightOp installed on a HIP system.
+# python3 -m pytest -q test/ci_tests/test_swiglu_oai_int8_quant.py
+
 """Numerical contract and graph replay tests for OAI INT8 quantization."""
 import pytest
 import torch

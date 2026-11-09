@@ -1,5 +1,9 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
+
+# Run from the repository root with HIP LightOp, PyTorch, and Triton installed.
+# python3 test/benchmarks/benchmark_quant_int8.py --output /tmp/quant_int8.json
+
 """Opt-in INT8 quantization comparisons; no inference-framework dependency.
 
 GPU events measure a graph containing repeated API calls. Compilation, table

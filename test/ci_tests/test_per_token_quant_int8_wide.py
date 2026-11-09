@@ -1,5 +1,9 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
+
+# Run from the repository root with LightOp installed on a HIP system.
+# python3 -m pytest -q test/ci_tests/test_per_token_quant_int8_wide.py
+
 """LMSlim arithmetic contract, public routing, and changed-input graph replay."""
 import pytest
 import torch
