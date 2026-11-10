@@ -32,7 +32,11 @@
 #include <c10/core/TensorImpl.h>
 #include <c10/core/Allocator.h>
 #include <ATen/DeviceGuard.h>
+#include <torch/version.h>
+#if TORCH_VERSION_MAJOR < 2 || \
+    (TORCH_VERSION_MAJOR == 2 && TORCH_VERSION_MINOR < 13)
 #include <ATen/NamedTensorUtils.h>
+#endif
 #include <ATen/Utils.h>
 #include <ATen/Dispatch.h>
 #include <c10/util/ExclusivelyOwned.h>
