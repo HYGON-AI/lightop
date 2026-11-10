@@ -26,11 +26,11 @@ env:
   RESOURCE_SERVER_URL: ${{ vars.RESOURCE_SERVER_URL }}
 
 jobs:
-  build-and-test:
-    name: build-and-test (dtk${{ matrix.dtk_version }})
-    # 编译与测试在同一个容器内直接进行, 不再单独起 test 容器
-    runs-on: [self-hosted, BW1100]
-    timeout-minutes: 240
+  build:
+    name: build (dtk${{ matrix.dtk_version }}, torch${{ matrix.torch_version }})
+    # 编译不占卡, 使用 hygon-build 池
+    runs-on: hygon-build
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -47,16 +47,8 @@ jobs:
       TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_VERSION: ${{ matrix.dtk_version }}
     container:
-      # DTK 基础镜像, 自带 /opt/dtk
+      # DTK 基础镜像, 自带 /opt/dtk; 设备与共享内存由 ARC job 模板注入
       image: ${{ vars.HARBOR_SITE }}/hcu/base/dtk:${{ matrix.dtk_version }}-ubuntu22.04-py${{ matrix.py_version }}
-      options: >-
-        -v /opt/hyhal/:/opt/hyhal/:ro
-        --device /dev/kfd:/dev/kfd
-        --device /dev/dri:/dev/dri
-        --shm-size=80G
-        --cap-add=SYS_PTRACE
-        --security-opt seccomp=unconfined
-        --privileged=true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -98,21 +90,73 @@ jobs:
         shell: bash
         run: bash scripts/build_hcu_wheel.sh --output-dir dist-manylinux
 
-      - name: 安装测试依赖与 lightop
-        # 安装编译脚本产出的 manylinux wheel, 保证测试对象与发布产物一致
-        shell: bash
-        run: |
-          set -euo pipefail
-          pip install --no-cache-dir --force-reinstall --no-deps dist-manylinux/*.whl
-          pip install --no-cache-dir pytest numpy==2.1.0 vllm==0.28.1 amdsmi==1.0.0+630c16a6.dirty flash-attn
+      - name: 上传 wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: lightop-dtk${{ matrix.dtk_version }}-torch${{ matrix.torch_version }}-py${{ matrix.py_version }}
+          path: dist-manylinux/*.whl
+          if-no-files-found: error
 
+      - name: 清理 workspace
+        if: always()
+        run: rm -rf "${GITHUB_WORKSPACE}"/* "${GITHUB_WORKSPACE}"/.[!.]* || true
+
+  test:
+    name: test (dtk${{ matrix.dtk_version }}, torch${{ matrix.torch_version }})
+    needs: build
+    # 单卡池; 依赖第 2 张卡的用例会 skip
+    runs-on: hygon-bw1100-1card
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dtk_version: "26.10"
+            pip_index_suffix: nightly/dtk2610/+simple/
+            torch_version: "2.11.0"
+            py_version: "3.12"
+          - dtk_version: "26.10"
+            pip_index_suffix: nightly/dtk2610/+simple/
+            torch_version: "2.13.0"
+            py_version: "3.12"
+    env:
+      TORCH_VERSION: ${{ matrix.torch_version }}
+      DTK_VERSION: ${{ matrix.dtk_version }}
+    container:
+      # DTK 基础镜像, 自带 /opt/dtk; 设备由 ARC job 模板注入
+      image: ${{ vars.HARBOR_SITE }}/hcu/base/dtk:${{ matrix.dtk_version }}-ubuntu22.04-py${{ matrix.py_version }}
+    steps:
       - name: Checkout 测试用例
         uses: actions/checkout@v4
         with:
+          # base 仓库中的 PR head ref, 兼容 fork PR
           ref: refs/pull/${{ github.event.pull_request.number }}/head
           persist-credentials: false
           # The CI suite imports reference helpers from test/test_adaptive_topk.py.
           sparse-checkout: test
+
+      - name: 配置内网 pip 源
+        shell: bash
+        run: |
+          {
+            echo "PIP_INDEX_URL=${PYPI_URL}/${{ matrix.pip_index_suffix }}"
+            echo "PIP_TRUSTED_HOST=${PYPI_URL#*://}"
+          } >> "${GITHUB_ENV}"
+
+      - name: 下载 wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: lightop-dtk${{ matrix.dtk_version }}-torch${{ matrix.torch_version }}-py${{ matrix.py_version }}
+          path: dist-manylinux
+
+      - name: 安装 torch 与测试依赖
+        # 安装编译 job 产出的 manylinux wheel, 保证测试对象与发布产物一致
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install --no-cache-dir torch==${TORCH_VERSION}
+          pip install --no-cache-dir --force-reinstall --no-deps dist-manylinux/*.whl
+          pip install --no-cache-dir pytest numpy==2.1.0 vllm==0.28.1 amdsmi==1.0.0+630c16a6.dirty flash-attn
 
       - name: 运行 test/ci_tests
         env:

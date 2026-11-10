@@ -41,7 +41,7 @@ jobs:
     concurrency:
       group: release-nightly-hcu-${{ github.ref }}-dtk${{ matrix.dtk_version }}-torch${{ matrix.torch_version }}-py${{ matrix.py_version }}
       cancel-in-progress: true
-    runs-on: [self-hosted]
+    runs-on: hygon-build
     timeout-minutes: 180
     strategy:
       fail-fast: false
@@ -50,15 +50,8 @@ jobs:
       TORCH_VERSION: ${{ matrix.torch_version }}
       DTK_VERSION: ${{ matrix.dtk_version }}
     container:
-      # DTK 基础镜像, 自带 /opt/dtk
+      # DTK 基础镜像, 自带 /opt/dtk; 设备与共享内存由 ARC job 模板注入
       image: ${{ vars.HARBOR_SITE }}/hcu/base/dtk:${{ matrix.dtk_version }}-rockylinux8.6-py${{ matrix.py_version }}
-      options: >-
-        --device=/dev/kfd --device=/dev/dri/ --group-add video
-        -v /opt/hyhal/:/opt/hyhal/:ro
-        --shm-size=80G
-        --cap-add=SYS_PTRACE
-        --security-opt seccomp=unconfined
-        --privileged=true
     steps:
       - name: Checkout
         uses: actions/checkout@v4
