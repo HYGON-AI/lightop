@@ -612,6 +612,11 @@ def get_extensions():
         extra_compile_args=extra_compile_args)
 
     extensions.append(ext_ops)
+    extensions.append(extension(
+        name="lightop._router_gemm",
+        sources=["./csrc/router/router_gemm.cu"],
+        extra_compile_args={"nvcc": ["-O3"]},
+    ))
     return extensions
 
 def _get_pytorch_version():
