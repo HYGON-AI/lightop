@@ -163,7 +163,7 @@ jobs:
           pip install --no-cache-dir --force-reinstall --no-deps dist-manylinux/*.whl
           # torch 与 vllm 同一条命令安装, 否则 vllm 会按自身依赖改写 torch 版本
           pip install --no-cache-dir torch==${TORCH_VERSION} pytest numpy==2.1.0 \
-            vllm==0.28.1 amdsmi==1.0.0+630c16a6.dirty flash-attn
+            vllm amdsmi==1.0.0+630c16a6.dirty flash-attn
 
       - name: 运行 test/ci_tests
         env:
