@@ -23,9 +23,12 @@ Lightop 的根许可证是 Apache License 2.0，完整文本见 [LICENSE](LICENS
 
 逐文件核验结果（上游文件 Blob 用于复核路径和 Commit 是否对应）：
 
+> 注：`aiter_hip_common.h` 一行中，本地路径与 AITER 上游路径在归档后恰好同形（均为 `csrc/include/aiter_hip_common.h`）。这是目录重排后与上游布局的巧合，不代表该文件未作本地修改；本地改编内容见本文件相关章节。
+
+
 | 本地路径 | AITER 上游路径 | 基线选择器 | 上游 40 位 Commit | 上游文件 Blob | 本地当前 Blob | 关系/本地引入提交 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `csrc/aiter_hip_common.h` | `csrc/include/aiter_hip_common.h` | `main` | `b25a045a55257f1f9ae830ac72f6b8b49a3b8159` | `5de294a60cf6c5456458deb716d0b69e6ebc3823` | `26c0fcaeb48c487adc6ec57389fc212d9976a7e9` | 高相似 AITER 集成；本地引入 `bd98e062c1aaa7515f6bcc917500561dfd3e8183` |
+| `csrc/include/aiter_hip_common.h` | `csrc/include/aiter_hip_common.h` | `main` | `b25a045a55257f1f9ae830ac72f6b8b49a3b8159` | `5de294a60cf6c5456458deb716d0b69e6ebc3823` | `26c0fcaeb48c487adc6ec57389fc212d9976a7e9` | 高相似 AITER 集成；本地引入 `bd98e062c1aaa7515f6bcc917500561dfd3e8183` |
 | `python/lightop/utils.py` | `aiter/jit/utils/chip_info.py` | `main` | `df789ccd9a2839d8a6f32ace641e95cbc995f70f` | `a45af28c40282a0792d25932aae9e5c358882fdb` | `680bbf58b4aa1b53e2b431a14baed08f8acce94a` | 改编而非逐字复制；本地引入 `e00781a470c084d0742f430a8bfcdf8a90ee8702` |
 
 `b25a045a...` 和 `df789ccd...` 均可由本地 AITER `main` 到达。AITER 另有内容相同的重复提交 `51351fc...`，但它不是 `main` 的祖先；这里选用 `main` 可达的 `df789ccd...` 作为可复核基线。第二个文件增加了 Lightop 的 `adb_shell`、环境变量和资源路径逻辑，发布说明应把它标成 AITER 派生改编并保留本地差异。
@@ -68,8 +71,8 @@ SOFTWARE.
 | --- | --- | --- | --- | --- | --- |
 | `csrc/allreduce_fuse/_custom_ops.py` | `vllm/_custom_ops.py` | `main` | `3d184b95b83bd1c755811238b013b51c49da3951` | 抽取/改编；增加 Lightop/LMSLIM 注册和分页注意力入口 | `5b05e4ed06d26c4eaac830b5d4d6e86138fdc1a6` |
 | `csrc/allreduce_fuse/custom_all_reduce.py` | `vllm/distributed/device_communicators/custom_all_reduce.py` | `main` | `02f0c7b220422792f5e53de2a7d51d2d3ff2df28` | 抽取/改编；增加融合 Norm/Quant 和 HYGON 多卡策略 | `5b05e4ed06d26c4eaac830b5d4d6e86138fdc1a6` |
-| `csrc/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu` | `csrc/libtorch_stable/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu` | `main` | `59d0236193a1cb5e88bee9cd4a3692a5587c9558` | 参考基线；本地改为 ROCm/ATen 兼容实现，不是逐字 Blob | `07e7033161c35da365e32d6e7efaa44e36a3e96c` |
-| `csrc/fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp_kernel.cu` | `csrc/libtorch_stable/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu` | `main` | `59d0236193a1cb5e88bee9cd4a3692a5587c9558` | 参考基线；PCP 不同 Q/KV token 数是 Lightop 新增变体，vLLM 历史无同名文件 | `086435003c8a7c26391c60425b7facd4f44ad3f7` |
+| `csrc/kernels/kvcache/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu` | `csrc/libtorch_stable/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu` | `main` | `59d0236193a1cb5e88bee9cd4a3692a5587c9558` | 参考基线；本地改为 ROCm/ATen 兼容实现，不是逐字 Blob | `07e7033161c35da365e32d6e7efaa44e36a3e96c` |
+| `csrc/kernels/kvcache/fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp_kernel.cu` | `csrc/libtorch_stable/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu` | `main` | `59d0236193a1cb5e88bee9cd4a3692a5587c9558` | 参考基线；PCP 不同 Q/KV token 数是 Lightop 新增变体，vLLM 历史无同名文件 | `086435003c8a7c26391c60425b7facd4f44ad3f7` |
 | `python/lightop/_lmslim_native/vllm_compat/moe_align_block_size.py` | `vllm/model_executor/layers/fused_moe/moe_align_block_size.py` | `main` | `8fcaaf6a165e661f63fc51be906bc05b0767332f` | 抽取/改编；增加 Lightop dispatch 和参数处理 | `b4b65b751fc6b46a4115289dab5b858ee4f97fd7` |
 | `python/lightop/_lmslim_native/vllm_compat/w8a8_get_cache_json.py` | 未在本地 vLLM 历史找到对应路径或同名实现 | — | — | 待补证；不能仅因目录名含 `vllm_compat` 认定为 vLLM 来源 | `b4b65b751fc6b46a4115289dab5b858ee4f97fd7` |
 | `test/common/fused_moe_kernel_gptq_awq.py` | `vllm/model_executor/layers/fused_moe/fused_moe.py` | `main` | `22a97e66134a26c74b9dae73d9446c4e32718269` | 抽取；`fused_moe_kernel_gptq_awq` 主体与该 Commit 高度一致 | `32e4aad617608934ea2fea9283627f0c60527b2b` |
@@ -121,7 +124,7 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 
 ### Transformer Engine `common.h` 逐文件来源证据
 
-本节登记 `csrc/blockwise_scaling/common.h` 中已经在本地 Transformer Engine 克隆内逐段核对到的来源。该文件不是 Transformer Engine 单一文件的逐字副本，而是多个 NVIDIA Transformer Engine 头文件的抽取、合并和 HIP/HCU 适配版本。
+本节登记 `csrc/kernels/blockwise_scaling/common.h` 中已经在本地 Transformer Engine 克隆内逐段核对到的来源。该文件不是 Transformer Engine 单一文件的逐字副本，而是多个 NVIDIA Transformer Engine 头文件的抽取、合并和 HIP/HCU 适配版本。
 
 | 项目 | 内容 |
 | --- | --- |
@@ -140,12 +143,12 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 
 | LightOp 路径 | Transformer Engine 上游路径 | 上游文件 Blob | 代码范围与关系 |
 | --- | --- | --- | --- |
-| `csrc/blockwise_scaling/common.h` | `transformer_engine/common/common.h` | `aa47f2c3d9ec8f7d1518ef107f267e14e7353020` | `DIVUP`、类型别名、`TRANSFORMER_ENGINE_TYPE_NAME`、`TypeExtrema`、`TypeInfo`、条件分派宏；LightOp 改为 HIP 类型并置于 `at::native` |
-| `csrc/blockwise_scaling/common.h` | `transformer_engine/common/include/transformer_engine/transformer_engine.h` | `dab4fcfe754e9c2440e59ce7b37140048653bdaa` | `DType` 枚举结构；LightOp 增加 `kInt8` |
-| `csrc/blockwise_scaling/common.h` | `transformer_engine/common/transpose/cast_transpose.h` | `a737239260cfa8f6affefa5e61a6962f3cba2ebc` | `FP8BlockwiseRowwiseOption`、`FP8BlockwiseColumnwiseOption` 枚举和注释 |
-| `csrc/blockwise_scaling/common.h` | `transformer_engine/common/util/string.h` | `0064144102d2d121f1d658f8155b771b51162b23` | `to_string_like`、`concat_strings` 实现被合并进本地头文件 |
-| `csrc/blockwise_scaling/common.h` | `transformer_engine/common/utils.cuh` | `3f5bcc975dbd6322eefe30a7eae894d299098ded` | `uint16`、`uint8`、`BytesToType`、`Vec`；LightOp 增加赋值和 HIP 相关适配 |
-| `csrc/blockwise_scaling/common.h` | `transformer_engine/common/recipe/recipe_common.cuh` | `11f9bc12990550a8ed112706342c4166346c5995` | `compute_scale_from_amax`、`compute_scale_from_types` 被移动到本地头文件 |
+| `csrc/kernels/blockwise_scaling/common.h` | `transformer_engine/common/common.h` | `aa47f2c3d9ec8f7d1518ef107f267e14e7353020` | `DIVUP`、类型别名、`TRANSFORMER_ENGINE_TYPE_NAME`、`TypeExtrema`、`TypeInfo`、条件分派宏；LightOp 改为 HIP 类型并置于 `at::native` |
+| `csrc/kernels/blockwise_scaling/common.h` | `transformer_engine/common/include/transformer_engine/transformer_engine.h` | `dab4fcfe754e9c2440e59ce7b37140048653bdaa` | `DType` 枚举结构；LightOp 增加 `kInt8` |
+| `csrc/kernels/blockwise_scaling/common.h` | `transformer_engine/common/transpose/cast_transpose.h` | `a737239260cfa8f6affefa5e61a6962f3cba2ebc` | `FP8BlockwiseRowwiseOption`、`FP8BlockwiseColumnwiseOption` 枚举和注释 |
+| `csrc/kernels/blockwise_scaling/common.h` | `transformer_engine/common/util/string.h` | `0064144102d2d121f1d658f8155b771b51162b23` | `to_string_like`、`concat_strings` 实现被合并进本地头文件 |
+| `csrc/kernels/blockwise_scaling/common.h` | `transformer_engine/common/utils.cuh` | `3f5bcc975dbd6322eefe30a7eae894d299098ded` | `uint16`、`uint8`、`BytesToType`、`Vec`；LightOp 增加赋值和 HIP 相关适配 |
+| `csrc/kernels/blockwise_scaling/common.h` | `transformer_engine/common/recipe/recipe_common.cuh` | `11f9bc12990550a8ed112706342c4166346c5995` | `compute_scale_from_amax`、`compute_scale_from_types` 被移动到本地头文件 |
 
 当前文件仍有以下来源未闭环，不能仅凭名称认定为 Transformer Engine 代码：
 
@@ -162,7 +165,7 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 
 | 项目 | 内容 |
 | --- | --- |
-| 本地路径 | `csrc/blockwise_scaling/block_scaled_cast_transpose.cu` |
+| 本地路径 | `csrc/kernels/blockwise_scaling/block_scaled_cast_transpose.cu` |
 | 上游项目/仓库 | NVIDIA Transformer Engine；<https://github.com/NVIDIA/TransformerEngine.git> |
 | 上游分支 | `main` |
 | 固定参考基线 Commit | `077e26c319d0fffbff75e56124b26b8b04aac0e5`；可由本地 `main` 到达 |
@@ -181,9 +184,9 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 
 | 本地路径 | 许可证/版权 | 本地引入提交 |
 | --- | --- | --- |
-| `csrc/blockwise_scaling/block_scaled_cast_transpose.cu` | Apache-2.0；NVIDIA 原始版权、Transformer Engine 接口适配与 HYGON 修改说明 | `1f0e6d421abc38beaa67b03c32af51b4a97a9191` |
-| `csrc/blockwise_scaling/common.h` | Apache-2.0；Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES | `e4bd6962fa68c4557df2f17fcaea0599d41304e9` |
-| `csrc/rotary_positional_embedding.cu` | Apache-2.0；Copyright (c) 2020, NVIDIA CORPORATION | `41746aaef6d611ad210a1cf76948222ddba973f1` |
+| `csrc/kernels/blockwise_scaling/block_scaled_cast_transpose.cu` | Apache-2.0；NVIDIA 原始版权、Transformer Engine 接口适配与 HYGON 修改说明 | `1f0e6d421abc38beaa67b03c32af51b4a97a9191` |
+| `csrc/kernels/blockwise_scaling/common.h` | Apache-2.0；Copyright (c) 2022-2025, NVIDIA CORPORATION & AFFILIATES | `e4bd6962fa68c4557df2f17fcaea0599d41304e9` |
+| `csrc/kernels/rotary_positional_embedding.cu` | Apache-2.0；Copyright (c) 2020, NVIDIA CORPORATION | `41746aaef6d611ad210a1cf76948222ddba973f1` |
 
 **待补证动作：**Transformer Engine `common.h` 的复合来源和 `block_scaled_cast_transpose.cu` 的接口参考基线已登记；仍需确认实际导入 Commit、补齐 `common.h` 未闭环宏的来源或内部授权及源码文件头，并保存包装层的导入/改编记录。其余 NVIDIA 文件仍需逐文件路径和固定 Commit，或内部授权记录。
 
@@ -206,9 +209,9 @@ Lightop 的 NVIDIA 文件尚未找到与上述 vLLM 文件的逐字 Blob 或唯�
 
 | Lightop 文件 | `cuda-samples` 候选 | 候选固定 Commit/Blob | 比对结论 |
 | --- | --- | --- | --- |
-| `csrc/blockwise_scaling/block_scaled_cast_transpose.cu` | `cpp/9_CUDA_Tile/tileTranspose/tileTranspose.cu`（同主题示例） | `5443602d89ed99aede2e4b7bf329daddeadb320e` / `221ea1523dfa0d1c1c78d3c31091a09d142ccb3f` | 文件路径、完整内容和 Blob 均不匹配；当前按 Transformer Engine 接口适配登记，cuda-samples 不作为来源 |
-| `csrc/blockwise_scaling/common.h` | 无对应路径或同名文件 | — | 在 `cuda-samples` 全部可达历史中未找到逐文件或同名匹配 |
-| `csrc/rotary_positional_embedding.cu` | `cpp/9_CUDA_Tile/tileRope/tileRope.cu`（同主题示例） | `5443602d89ed99aede2e4b7bf329daddeadb320e` / `8356d849fda874ab0e12349033ffc3b944f1e226` | 文件路径、完整内容和 Blob 均不匹配；仅能作为 RoPE 主题参考，不能作为来源 Commit |
+| `csrc/kernels/blockwise_scaling/block_scaled_cast_transpose.cu` | `cpp/9_CUDA_Tile/tileTranspose/tileTranspose.cu`（同主题示例） | `5443602d89ed99aede2e4b7bf329daddeadb320e` / `221ea1523dfa0d1c1c78d3c31091a09d142ccb3f` | 文件路径、完整内容和 Blob 均不匹配；当前按 Transformer Engine 接口适配登记，cuda-samples 不作为来源 |
+| `csrc/kernels/blockwise_scaling/common.h` | 无对应路径或同名文件 | — | 在 `cuda-samples` 全部可达历史中未找到逐文件或同名匹配 |
+| `csrc/kernels/rotary_positional_embedding.cu` | `cpp/9_CUDA_Tile/tileRope/tileRope.cu`（同主题示例） | `5443602d89ed99aede2e4b7bf329daddeadb320e` / `8356d849fda874ab0e12349033ffc3b944f1e226` | 文件路径、完整内容和 Blob 均不匹配；仅能作为 RoPE 主题参考，不能作为来源 Commit |
 
 此前 cuda-samples 核验使用的三个 Lightop 文件 Git Blob 分别为 `f49ce0d9173bbd7d73d94699bbba9ed96aea0453`、`64c1eccda927781931b9dcbf41abd3a1864fbdc5` 和 `8a003fa6cf7c84d4d550f106f97715fa238c10f3`，其中第一个是包装层恢复来源标注之前的历史版本；在 `cuda-samples` 全部可达对象中均没有对应 Blob。该核验排除了 cuda-samples 的完整文件来源关系。`common.h` 和包装层的 Transformer Engine 证据见上方条目；`rotary_positional_embedding.cu` 仍需其他 NVIDIA 官方仓库或中间派生仓库的逐文件来源和固定 Commit，或内部授权记录。
 
@@ -328,7 +331,7 @@ approval_date: <YYYY-MM-DD>
 | AITER | 官方仓库、MIT、AMD 版权、逐文件路径、基线选择器、40 位 Commit、LICENSE Blob | `python/lightop/utils.py` 是改编版本，需保留差异说明 | 已完成公开来源固定；按改编关系审查 |
 | vLLM | 官方仓库、Apache-2.0、逐文件路径、可达 `main`、40 位 Commit、LICENSE Blob | `w8a8_get_cache_json.py` 无匹配；DeepSeek V4 仍只有参考基线 | 已完成可匹配文件固定；两类未匹配项仍阻断 |
 | Transformer Engine | NVIDIA Transformer Engine 仓库、`main`、40 位基线 `077e26c319d0fffbff75e56124b26b8b04aac0e5`、六个上游文件 Blob、LICENSE Blob 和 SHA-256、`common.h` 逐段映射 | 组件负责人确认实际导入基线；`TORCH_ERROR`、`TORCH_CHECK_CUDA`、`TRANSFORMER_ENGINE_TYPE_SWITCH_8BIT`、`DType::kInt8`、`Vec::operator=`、`__HOST_DEVICE__` 及 ATen 适配的来源/授权；源码文件头仍需按映射补充 `Adapted from`、SPDX 和 HYGON 修改声明 | 公开来源部分固定；未闭环片段和文件头整改完成前，`common.h` 仍保留来源审查项 |
-| Transformer Engine 接口适配 | `csrc/blockwise_scaling/block_scaled_cast_transpose.cu`；用户确认来源项目；`main` 可达参考 Commit `077e26c319d0fffbff75e56124b26b8b04aac0e5`、两个参考文件及 Blob；NVIDIA 版权、Apache-2.0 SPDX 和 HYGON 修改说明 | 实际导入 Commit 与接口改编记录；本地基线无同名包装函数或完整文件匹配 | 已撤销原创归类并完成来源文件头标注；实际导入来源审查仍待闭环 |
+| Transformer Engine 接口适配 | `csrc/kernels/blockwise_scaling/block_scaled_cast_transpose.cu`；用户确认来源项目；`main` 可达参考 Commit `077e26c319d0fffbff75e56124b26b8b04aac0e5`、两个参考文件及 Blob；NVIDIA 版权、Apache-2.0 SPDX 和 HYGON 修改说明 | 实际导入 Commit 与接口改编记录；本地基线无同名包装函数或完整文件匹配 | 已撤销原创归类并完成来源文件头标注；实际导入来源审查仍待闭环 |
 | 其他 NVIDIA 文件 | NVIDIA 版权、Apache-2.0、本地路径和本地引入提交 | 公开仓库、逐文件路径和固定 Commit，或内部再分发授权 | 暂不关闭来源阻断 |
 | `librarygemmbiasf` | 五个源码文件的 HYGON 原创归类、文件头和根目录 Apache-2.0 | Tensile 制品、动态库和测试可执行文件的生成来源及公开分发授权 | 源码已确认；制品授权仍需补证 |
 | half 2.1.0 | SourceForge 发布目录、`half-2.1.0.zip` 文件名、发布日期/大小、MIT、完整原文许可、页面显示 SHA-256、本地复算值和逐字文件比对 | 将下载归档或受控存档编号随发布证据保存 | `half.hpp` 公开来源已确认 |
@@ -345,17 +348,17 @@ approval_date: <YYYY-MM-DD>
 
 | 本地路径 | 当前状态 | 关闭条件 |
 | --- | --- | --- |
-| `csrc/paged_mqa_logits/dsv41_candidate_block_table.cu` | HYGON 原创；已补 `Copyright (c) 2026 Hygon Information Technology Co., Ltd.` 和 Apache-2.0 SPDX | 由组件负责人在正式审计中复核原创记录 |
-| `csrc/paged_mqa_logits/paged_mqa_logits_persisten.cu` | HYGON 原创；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
-| `csrc/paged_mqa_logits/paged_mqa_logits_persisten.h` | HYGON 原创；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
-| `csrc/sparse_page_mqa/paged_sparse_mqa_logits_metadata.cu` | HYGON 原创；已补 HYGON Apache-2.0 文件头；DeepGEMM 兼容性仅描述接口布局 | 由组件负责人在正式审计中复核原创记录 |
-| `csrc/sparse_page_mqa/paged_sparse_mqa_logits_metadata.h` | HYGON 原创；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
+| `csrc/mqa_logits/paged/dsv41_candidate_block_table.cu` | HYGON 原创；已补 `Copyright (c) 2026 Hygon Information Technology Co., Ltd.` 和 Apache-2.0 SPDX | 由组件负责人在正式审计中复核原创记录 |
+| `csrc/mqa_logits/paged/paged_mqa_logits_persisten.cu` | HYGON 原创；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
+| `csrc/mqa_logits/paged/paged_mqa_logits_persisten.h` | HYGON 原创；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
+| `csrc/mqa_logits/sparse/paged_sparse_mqa_logits_metadata.cu` | HYGON 原创；已补 HYGON Apache-2.0 文件头；DeepGEMM 兼容性仅描述接口布局 | 由组件负责人在正式审计中复核原创记录 |
+| `csrc/mqa_logits/sparse/paged_sparse_mqa_logits_metadata.h` | HYGON 原创；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
 | `test/ci_tests/test_dsv41_candidate_block_table.py` | HYGON 原创测试；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
 | `test/ci_tests/test_paged_mqa_logits_fp4_metadata.py` | HYGON 原创测试；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
 | `test/ci_tests/test_paged_sparse_mqa_logits_metadata.py` | HYGON 原创测试；已补 HYGON Apache-2.0 文件头；DeepGEMM 语义为接口参考 | 由组件负责人在正式审计中复核原创记录 |
 | `test/test_topk_transform_ragged_v2.py` | HYGON 原创测试；已补 HYGON Apache-2.0 文件头 | 由组件负责人在正式审计中复核原创记录 |
 
-`csrc/mqa_logits/beta/` 下 24 个新增文件已有 HYGON Apache-2.0 版权/许可声明，本次保持其内容。Git 作者邮箱不能单独证明代码权属；这些文件仍保留作者和授权复核项。上述 9 个文件已完成用户确认的原创许可补充，不再列为来源待核对文件。
+`csrc/mqa_logits/{bf16,fp8,int8}/` 下 24 个新增文件已有 HYGON Apache-2.0 版权/许可声明，本次保持其内容。Git 作者邮箱不能单独证明代码权属；这些文件仍保留作者和授权复核项。上述 9 个文件已完成用户确认的原创许可补充，不再列为来源待核对文件。
 
 ## 9. 2026-10-20 整改核验补充
 
