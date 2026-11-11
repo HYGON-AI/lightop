@@ -58,3 +58,6 @@ csrc/lmslimquant_native/**/*_hip.cuh
 # csrc layout reorg; the old flat rule only matched the csrc/ root).
 csrc/**/hip_*.cpp
 csrc/**/hip_*.h
+
+# in-place build outputs
+python/lightop/*.so
