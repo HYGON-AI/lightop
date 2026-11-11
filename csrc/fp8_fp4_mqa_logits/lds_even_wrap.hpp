@@ -166,8 +166,21 @@ inline __device__ void prefetch_panel_to_lds(
     const int lds_addr =
         static_cast<int>(reinterpret_cast<uintptr_t>(lds_base)) +
         lds_elem * T::kElemBytes;
+    // M0 field layout for `buffer_load ... lds` differs by target:
+    //   gfx938 (ISA v1.5): LDS_WRAP_OFFSET = M0[18:16], in units of 4 dwords
+    //   gfx946 (ISA v1.8): wrap_num        = M0[29:24], in units of 1 dword,
+    //                      lds_offset      = {15'h0, M0[16:2], 2'h0}  (bytes)
+    // wrap_amount is a 4-dword count, so gfx946 needs it scaled by 4 and
+    // shifted to bit 24. The gfx938 encoding put it at bit 16, which gfx946
+    // ignores entirely -- the wrap would silently read as 0.
+    const int m0_wrap_bits =
+#if defined(__gfx946__)
+        (wrap_amount * 4) << 24;
+#else
+        wrap_amount << 16;
+#endif
     const int target_addr =
-        __builtin_amdgcn_readfirstlane(lds_addr + (wrap_amount << 16));
+        __builtin_amdgcn_readfirstlane(lds_addr | m0_wrap_bits);
 
     asm volatile(
         "s_mov_b32 m0, %1 \n\t"
