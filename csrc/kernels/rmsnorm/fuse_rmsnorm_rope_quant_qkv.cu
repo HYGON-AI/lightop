@@ -17,7 +17,7 @@
 template <typename T, int N> struct alignas(sizeof(T) * N) Vector {
   T val[N];
 };
-#include "reduce.h"
+#include "../../include/reduce.h"
 #ifndef USE_ROCM
   #include <cub/cub.cuh>
 #else

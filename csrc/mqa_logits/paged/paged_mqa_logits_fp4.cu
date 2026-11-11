@@ -51,7 +51,7 @@
 // The schedule, if any, is planned on the route lengths (the longer row's);
 // each row still stops writing at its own length. Pairing needs H <= 32 (two
 // rows' Q in VGPRs) and is skipped below kPagedMqaLogitsFp4PairMinRequests.
-#include "hcu_mmac.h"
+#include "../../include/hcu_mmac.h"
 #include "paged_mqa_logits_fp4.h"
 #include <ATen/hip/HIPContext.h>
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>

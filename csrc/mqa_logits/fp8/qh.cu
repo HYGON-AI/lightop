@@ -3,8 +3,8 @@
 
 #if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx938__)
 #include "small_kv.hpp"
-#include "../dispatch/selectors.hpp"
-#include "../dispatch/static_switch.hpp"
+#include "selectors.hpp"
+#include "static_switch.hpp"
 namespace lightop {
 namespace mqa_fp8 {
 

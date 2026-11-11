@@ -25,7 +25,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include "reduce.h"
+#include "../../include/reduce.h"
 #include <type_traits> 
 
 inline __device__ uint8_t float_to_fp8e4m3(float f) {

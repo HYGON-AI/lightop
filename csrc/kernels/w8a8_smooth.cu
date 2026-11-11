@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "hcu_mmac.h"
-#include "reduce.h"
+#include "../include/hcu_mmac.h"
+#include "../include/reduce.h"
 #include "hip/hip_bf16.h"
 #include <sys/syscall.h>
 #include <unistd.h>

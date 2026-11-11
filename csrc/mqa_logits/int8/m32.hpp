@@ -2,9 +2,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #pragma once
-#include "../utils/ops.hpp"
-#include "../../epilogue.h"
-#include "../../params.h"
+#include "ops.hpp"
+#include "../epilogue.h"
+#include "../params.h"
 
 namespace lightop::mqa_int8 {
 #if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)

@@ -26,7 +26,7 @@
 #include <ATen/core/TensorBody.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
-#include "aiter_hip_common.h"
+#include "../include/aiter_hip_common.h"
 
 namespace at {
     namespace native {

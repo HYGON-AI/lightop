@@ -9,7 +9,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
-#include "reduce.h"
+#include "../../include/reduce.h"
 
 namespace at {
 namespace native {

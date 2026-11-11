@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "lmslimquant_native/quant_kernels/smoothquant/smquant_gemm.cuh"
+#include "smquant_gemm.cuh"
 
 void gemm_rocblas_int8_gpu(hipStream_t stream,
                             rocblas_handle handle,

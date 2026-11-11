@@ -2,9 +2,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #pragma once
-#include "../../arch.h"
-#include "../../window.h"
-#include "../../epilogue.h"
+#include "../arch.h"
+#include "../window.h"
+#include "../epilogue.h"
 
 namespace lightop::mqa_bf16 {
 using mqa_beta::classify_window;

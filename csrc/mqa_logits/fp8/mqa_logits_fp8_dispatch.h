@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #pragma once
-#include "dispatch/config.hpp"
+#include "config.hpp"
 #include <hip/hip_runtime.h>
 
 namespace lightop::mqa_fp8 {

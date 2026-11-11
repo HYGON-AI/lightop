@@ -34,7 +34,7 @@
 // scale spans, FP32 accumulators, ReLU, FP32 weights and FP32 head reduction.
 // An exponent-normalized FP32 scalar path handles exceptional scale ranges;
 // there are no FP64 operations and no BF16 weights/output branch.
-#include "hcu_mmac.h"
+#include "../../include/hcu_mmac.h"
 #include "paged_sparse_mqa_logits.h"
 #include "paged_sparse_mqa_logits_initialization.h"
 #include "paged_sparse_mqa_logits_metadata.h"

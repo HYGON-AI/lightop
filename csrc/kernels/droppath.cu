@@ -15,7 +15,7 @@
 #include <ATen/native/cuda/MemoryAccess.cuh>
 
 #include <torch/extension.h>
-#include "cuda_meta.h"
+#include "../include/cuda_meta.h"
 
 namespace at{
 namespace native{

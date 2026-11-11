@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #pragma once
-#include "../../params.h"
+#include "../params.h"
 #include <hip/hip_runtime.h>
 #include <cstdint>
 #include <limits>

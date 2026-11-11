@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
-#include "../mqa_logits_fp8_dispatch.h"
+#include "mqa_logits_fp8_dispatch.h"
 #include "auto.hpp"
 #include "selectors.hpp"
 

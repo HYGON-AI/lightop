@@ -7,7 +7,7 @@
 // 8warp 取消归约 复用 sorted_token_id
 #include "kernel_512_64.cu"
 #include "kernel_512_64_reduce.cu"
-#include "awq_marlin_repack_w4a8.cu"
+#include "../w4a8/awq_marlin_repack_w4a8.cu"
 #include <torch/extension.h>
 #include <iostream>
 

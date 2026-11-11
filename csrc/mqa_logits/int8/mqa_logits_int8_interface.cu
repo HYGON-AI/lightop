@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #include "../mqa_logits_api.h"
-#include "dispatch/auto.hpp"
+#include "auto.hpp"
 #include "../memory.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>

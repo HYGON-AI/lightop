@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #pragma once
-#include "../../arch.h"
+#include "../arch.h"
 
 namespace lightop::mqa_fp8 {
 using ScalarBufferLoad = mqa_beta::BufferLoadAccessor<4, mqa_beta::BufferEmitMode::Builtin>;

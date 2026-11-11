@@ -23,7 +23,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
-#include "reduce.h"
+#include "../../include/reduce.h"
 
 
 #ifdef USE_ROCM

@@ -2,9 +2,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #pragma once
-#include "../../window.h"
-#include "../../epilogue.h"
-#include "../../params.h"
+#include "../window.h"
+#include "../epilogue.h"
+#include "../params.h"
 
 namespace lightop {
 namespace mqa_fp8 {

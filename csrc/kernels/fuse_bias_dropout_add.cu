@@ -15,7 +15,7 @@
 #include <ATen/native/cuda/MemoryAccess.cuh>
 
 #include <torch/extension.h>
-#include "reduce.h"
+#include "../include/reduce.h"
 using namespace std;
 
 namespace at{

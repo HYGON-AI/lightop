@@ -13,7 +13,7 @@
 #include <torch/autograd.h>
 
 #include "gemm_bias.h"
-#include "cuda_meta.h"
+#include "../include/cuda_meta.h"
 
 #include <iostream>
 

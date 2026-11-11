@@ -8,7 +8,7 @@
 
 #include <cmath>
 #include <cstdlib>
-#include "reduce.h"
+#include "../../include/reduce.h"
 
 // #include "cuda_compat.h"
 // #include "../dispatch_utils.h"

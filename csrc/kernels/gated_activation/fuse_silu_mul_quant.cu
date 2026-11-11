@@ -7,7 +7,7 @@
 #include <ATen/native/cuda/MemoryAccess.cuh>
 
 #include <cmath>
-#include "reduce.h"
+#include "../../include/reduce.h"
 
 // #include "cuda_compat.h"
 // #include "../dispatch_utils.h"

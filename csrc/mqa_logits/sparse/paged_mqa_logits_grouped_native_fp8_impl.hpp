@@ -7,7 +7,7 @@
 #include <cstring>
 
 #include "sparse_page_mqa.h"
-#include "../paged_mqa_logits/paged_mqa_logits_fp8_impl.hpp"
+#include "../paged/paged_mqa_logits_fp8_impl.hpp"
 
 namespace lightop {
 namespace deep_gemm {

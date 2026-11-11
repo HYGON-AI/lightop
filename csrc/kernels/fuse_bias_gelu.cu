@@ -12,7 +12,7 @@
 #include <ATen/native/cuda/Loops.cuh>
 #include <torch/extension.h>
 
-#include "reduce.h"
+#include "../include/reduce.h"
 
 
 namespace at{

@@ -21,7 +21,7 @@
 #include <c10/macros/Macros.h>
 #include <c10/cuda/CUDAMathCompat.h>
 
-#include "reduce.h"
+#include "../../include/reduce.h"
 #ifndef USE_ROCM
   #include <cub/cub.cuh>
   #include <cub/util_type.cuh>

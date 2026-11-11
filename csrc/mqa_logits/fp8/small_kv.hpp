@@ -2,10 +2,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #pragma once
-#include "../utils/compute.hpp"
-#include "../utils/load.hpp"
-#include "../utils/window.hpp"
-#include "../../params.h"
+#include "compute.hpp"
+#include "load.hpp"
+#include "window.hpp"
+#include "../params.h"
 
 namespace lightop {
 namespace mqa_fp8 {

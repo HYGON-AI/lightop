@@ -6,7 +6,7 @@ Adapted from https://github.com/turboderp/exllamav2 and
 https://github.com/qwopqwop200/GPTQ-for-LLaMa
 */
 
-#include "hcu_mmac.h"
+#include "../../include/hcu_mmac.h"
 #include <cstdint>
 #include <cstdio>
 

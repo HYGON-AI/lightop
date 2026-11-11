@@ -10,7 +10,7 @@
 #include <hip/hip_hcc.h>
 #include <vector>
 
-#include "aiter_hip_common.h"
+#include "../include/aiter_hip_common.h"
 
 using half_t  = __half;
 using bhalf_t = __hip_bfloat16;

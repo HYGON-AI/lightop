@@ -13,7 +13,7 @@
 #include <type_traits>
 #include <unordered_map>
 
-#include "reduce.h"
+#include "../../include/reduce.h"
 
 namespace at {
 namespace native {

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 // Native wave64 mapping follows this repository's csrc/gemm.cu.
-#include "hcu_mmac.h"
+#include "../include/hcu_mmac.h"
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>

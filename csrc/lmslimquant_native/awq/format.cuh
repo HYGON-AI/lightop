@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "lmslimquant_native/quant_kernels/base/base.cuh"
+#include "../kernel_base/base.cuh"
 
 
 using namespace std;

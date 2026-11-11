@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "sampling/sampling.h"
-#include "sampling/sampling_impl.hpp"
+#include "sampling.h"
+#include "sampling_impl.hpp"
 
 namespace lightop {
 namespace sampling {

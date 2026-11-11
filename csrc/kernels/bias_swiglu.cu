@@ -38,7 +38,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <hip/hip_fp16.h>
-#include "reduce.h"
+#include "../include/reduce.h"
 
 namespace at{
 namespace native{

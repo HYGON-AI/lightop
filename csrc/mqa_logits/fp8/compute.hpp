@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #pragma once
-#include "../../arch.h"
+#include "../arch.h"
 
 namespace lightop::mqa_fp8 {
 using mqa_beta::I2;

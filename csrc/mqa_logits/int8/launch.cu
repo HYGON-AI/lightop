@@ -2,10 +2,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #include "config.hpp"
-#include "../kernels/m16.hpp"
-#include "../kernels/m32.hpp"
-#include "../kernels/m64.hpp"
-#include "../kernels/small_kv.hpp"
+#include "m16.hpp"
+#include "m32.hpp"
+#include "m64.hpp"
+#include "small_kv.hpp"
 
 namespace lightop::mqa_int8 {
 namespace {

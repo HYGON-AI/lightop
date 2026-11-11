@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "cuda_meta.h"
+#include "../include/cuda_meta.h"
 
 namespace at{namespace native{
   Tensor create_out(IntArrayRef sizes, IntArrayRef strides, const TensorOptions &options) {

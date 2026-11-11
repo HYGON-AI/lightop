@@ -1,14 +1,14 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "lmslimquant_native/quant_kernels/base/base.cuh"
+#include "../kernel_base/base.cuh"
 //#include "lmslimquant_native/quant_kernels/awq/gemm_multiB_col_int4.h"
 #include <torch/extension.h>
-#include "lmslimquant_native/quant_kernels/awq/kernels/format.cuh"
-#include "lmslimquant_native/quant_kernels/smoothquant/smquant_gemm.cuh"
+#include "../awq/format.cuh"
+#include "../kernel_smoothquant/smquant_gemm.cuh"
 #include <torch/all.h>
 // #include "lmslimquant_native/quant_kernels/awq/gemm_w4a16.h"
-#include "awq_w4a16_gemm/awq_w4a16.h"
+#include "../../awq_w4a16_gemm/awq_w4a16.h"
 
 
 torch::Tensor run_gemm_w4a16_v2(torch::Tensor input,

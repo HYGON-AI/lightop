@@ -56,7 +56,7 @@
 #include <ATen/hip/HIPContext.h>
 
 #include <ATen/CUDAFunctions.h>
-#include "cuda_meta.h"
+#include "../../include/cuda_meta.h"
 
 using namespace std;
 

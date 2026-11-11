@@ -9,7 +9,7 @@
 #include <mutex>
 #include <unordered_map>
 
-#include "moe_gate_utils.cuh"
+#include "../../include/moe_gate_utils.cuh"
 
 namespace at {
 namespace native {

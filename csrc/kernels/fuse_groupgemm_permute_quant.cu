@@ -16,7 +16,7 @@
 #include "hip/hip_bf16.h"
 #include "hip/hip_runtime.h"
 
-#include "reduce.h"
+#include "../include/reduce.h"
 
 
 class uint16x2 {

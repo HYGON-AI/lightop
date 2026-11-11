@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
-#include "hcu_mmac.h"
+#include "../../include/hcu_mmac.h"
 #include "hip/hip_fp16.h"
 #include "hip/hip_bf16.h"
 #include "hip/hip_runtime.h"

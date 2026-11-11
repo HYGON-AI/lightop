@@ -3,8 +3,8 @@
 
 #pragma once
 
-#include "hcu_mmac.h"
-#include "reduce.h"
+#include "../include/hcu_mmac.h"
+#include "../include/reduce.h"
 #include "hip/hip_bf16.h"
 #include <sys/syscall.h>
 #include <unistd.h>

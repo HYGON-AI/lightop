@@ -3,8 +3,8 @@
 
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAException.h>
-#include "reduce.h"
-#include "moe_gate_utils.cuh"
+#include "../include/reduce.h"
+#include "../include/moe_gate_utils.cuh"
 namespace at {
 namespace native {
 

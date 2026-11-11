@@ -2,13 +2,13 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx938__)
-#include "../utils/compute.hpp"
-#include "../utils/load.hpp"
+#include "compute.hpp"
+#include "load.hpp"
 #include "m64_epilogue.hpp"
-#include "../utils/window.hpp"
-#include "../../params.h"
-#include "../dispatch/selectors.hpp"
-#include "../dispatch/static_switch.hpp"
+#include "window.hpp"
+#include "../params.h"
+#include "selectors.hpp"
+#include "static_switch.hpp"
 #include <type_traits>
 namespace lightop {
 namespace mqa_fp8 {

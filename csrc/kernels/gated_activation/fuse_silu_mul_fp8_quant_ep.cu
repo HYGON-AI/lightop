@@ -7,7 +7,7 @@
 #include <ATen/native/cuda/MemoryAccess.cuh>
 
 #include <cmath>
-#include "reduce.h"
+#include "../../include/reduce.h"
 
 
 namespace at {

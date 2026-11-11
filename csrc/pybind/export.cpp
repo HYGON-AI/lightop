@@ -96,10 +96,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
 
 #else
 #include <optional>
-#include "sparse_page_mqa/paged_sparse_mqa_logits.h"
-#include "sparse_page_mqa/paged_sparse_mqa_logits_metadata.h"
-#include "sparse_page_mqa/prefill_sparse_fusion.h"
-#include "sparse_page_mqa/prefill_sparse_sort.h"
+#include "../mqa_logits/sparse/paged_sparse_mqa_logits.h"
+#include "../mqa_logits/sparse/paged_sparse_mqa_logits_metadata.h"
+#include "../mqa_logits/sparse/prefill_sparse_fusion.h"
+#include "../mqa_logits/sparse/prefill_sparse_sort.h"
 
 #if defined(LIGHTOP_SPARSE_MQA_ONLY) && defined(LIGHTOP_PREFILL_FUSION_ONLY)
 #error "Select only one focused LightOp extension"
@@ -172,27 +172,27 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 }
 #else
 #include <torch/extension.h>
-#include "sparse_page_mqa/prefill_sparse_sort.h"
-#include "sparse_page_mqa/prefill_sparse_fusion.h"
+#include "../mqa_logits/sparse/prefill_sparse_sort.h"
+#include "../mqa_logits/sparse/prefill_sparse_fusion.h"
 #include <ATen/ATen.h>
 #include <c10/macros/Macros.h>
 #include <vector>
 #include <optional>
 
-#include "fp8_fp4_mqa_logits/fp8_fp4_mqa_logits.h"
-#include "fp8_fp4_mqa_logits/dsv41_mqa_prep.h"
-#include "paged_mqa_logits/paged_mqa_logits.h"
-#include "paged_mqa_logits/paged_mqa_logits_persisten.h"
-#include "paged_mqa_logits/paged_mqa_logits_fp4.h"
-#include "sparse_page_mqa/sparse_page_mqa.h"
-#include "sparse_page_mqa/paged_sparse_mqa_logits_metadata.h"
-#include "sparse_page_mqa/paged_sparse_mqa_logits.h"
-#include "index_k_int8_dequant/index_k_int8_dequant.h"
-#include "lmslimquant_native/bindings.h"
-#include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm.hpp"
-#include "lmslimquant_native/hipblaslt/blaslt_w8a8_gemm_v2.hpp"
-#include "sampling/sampling.h"
-#include "sampling/markov_gemv_argmax.h"
+#include "../mqa_logits/fp8_fp4/fp8_fp4_mqa_logits.h"
+#include "../mqa_logits/fp8_fp4/dsv41_mqa_prep.h"
+#include "../mqa_logits/paged/paged_mqa_logits.h"
+#include "../mqa_logits/paged/paged_mqa_logits_persisten.h"
+#include "../mqa_logits/paged/paged_mqa_logits_fp4.h"
+#include "../mqa_logits/sparse/sparse_page_mqa.h"
+#include "../mqa_logits/sparse/paged_sparse_mqa_logits_metadata.h"
+#include "../mqa_logits/sparse/paged_sparse_mqa_logits.h"
+#include "../kernels/index_k_int8_dequant/index_k_int8_dequant.h"
+#include "../lmslimquant_native/bindings.h"
+#include "../lmslimquant_native/hipblaslt/blaslt_w8a8_gemm.hpp"
+#include "../lmslimquant_native/hipblaslt/blaslt_w8a8_gemm_v2.hpp"
+#include "../kernels/sampling/sampling.h"
+#include "../kernels/sampling/markov_gemv_argmax.h"
 namespace lightop::cp_output {
 void interleave_rows_(at::Tensor, int64_t, const at::Tensor&);
 void make_interleave_plan_(at::Tensor, int64_t, int64_t);

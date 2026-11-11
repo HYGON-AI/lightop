@@ -2,9 +2,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
 #pragma once
-#include "../utils/ops.hpp"
-#include "../../epilogue.h"
-#include "../../params.h"
+#include "ops.hpp"
+#include "../epilogue.h"
+#include "../params.h"
 #include <type_traits>
 
 namespace lightop::mqa_int8 {

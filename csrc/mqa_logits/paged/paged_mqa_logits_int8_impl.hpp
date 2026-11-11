@@ -3,7 +3,7 @@
 
 #pragma once
 
-#include "hcu_mmac.h"
+#include "../../include/hcu_mmac.h"
 #include "paged_mqa_logits_impl.hpp"
 
 namespace lightop {

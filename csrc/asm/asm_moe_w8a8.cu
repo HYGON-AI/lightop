@@ -10,7 +10,7 @@
 #include <hip/hip_hcc.h>
 
 
-#include "aiter_hip_common.h"
+#include "../include/aiter_hip_common.h"
 
 #define DEBUG 0
 
