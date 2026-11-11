@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
-#include "hcu_mmac.h"
+#include "../include/hcu_mmac.h"
 #include <iostream>
 #include <stdio.h>
 #include <string.h>
@@ -18,7 +18,7 @@
 #include "rocblas.h"
 #include "internal/rocblas-auxiliary.h"
 #include "mqa_logits_asm.h"
-#include "beta/mqa_logits_api.h"
+#include "mqa_logits_api.h"
 
 #include <torch/extension.h>
 #include <ATen/dtk_macros.h>
@@ -34,7 +34,7 @@
 #include <ATen/core/TensorBody.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
-#include "aiter_hip_common.h"
+#include "../include/aiter_hip_common.h"
 
 #define fp8 uint8_t
 using half_t = __half;
