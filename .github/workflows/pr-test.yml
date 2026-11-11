@@ -143,6 +143,12 @@ jobs:
             echo "PIP_TRUSTED_HOST=${PYPI_URL#*://}"
           } >> "${GITHUB_ENV}"
 
+      - name: 安装 AICC
+        shell: bash
+        run: |
+          wget ${{ env.RESOURCE_SERVER_URL }}/ai_cc/Nightly/hcu_llvm_installer.sh
+          bash hcu_llvm_installer.sh
+
       - name: 下载 wheel
         uses: actions/download-artifact@v4
         with:
@@ -154,9 +160,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          pip install --no-cache-dir torch==${TORCH_VERSION}
           pip install --no-cache-dir --force-reinstall --no-deps dist-manylinux/*.whl
-          pip install --no-cache-dir pytest numpy==2.1.0 vllm==0.28.1 amdsmi==1.0.0+630c16a6.dirty flash-attn
+          # torch 与 vllm 同一条命令安装, 否则 vllm 会按自身依赖改写 torch 版本
+          pip install --no-cache-dir torch==${TORCH_VERSION} pytest numpy==2.1.0 \
+            vllm amdsmi==1.0.0+630c16a6.dirty flash-attn
 
       - name: 运行 test/ci_tests
         env:
