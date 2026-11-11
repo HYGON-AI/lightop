@@ -143,6 +143,12 @@ jobs:
             echo "PIP_TRUSTED_HOST=${PYPI_URL#*://}"
           } >> "${GITHUB_ENV}"
 
+      - name: 安装 AICC
+        shell: bash
+        run: |
+          wget ${{ env.RESOURCE_SERVER_URL }}/ai_cc/Nightly/hcu_llvm_installer.sh
+          bash hcu_llvm_installer.sh
+
       - name: 下载 wheel
         uses: actions/download-artifact@v4
         with:
