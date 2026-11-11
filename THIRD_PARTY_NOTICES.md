@@ -370,7 +370,7 @@ approval_date: <YYYY-MM-DD>
 
 | 本地路径 | 已核验的本地修改 |
 | --- | --- |
-| `csrc/aiter_hip_common.h` | 移除 CK include、资源环境变量及日志适配、网格维度改为 `size_t`，增加 `launch_kernel_ext` |
+| `csrc/include/aiter_hip_common.h` | 移除 CK include、资源环境变量及日志适配、网格维度改为 `size_t`，增加 `launch_kernel_ext` |
 | `python/lightop/utils.py` | shell 辅助函数、资源路径解析、LightOp 环境变量及设备查询适配 |
 
 vLLM 的五个实质改编文件补充 HYGON 修改声明及仅覆盖原创修改的版权；两个测试辅助文件的函数定义与固定上游 AST 一致，但抽取、导入及模块说明有变化，仅补非实质修改声明；`scalar_type.py` 的完整 Blob 一致，保持原文件。各固定来源不因本轮声明修改而变更。
