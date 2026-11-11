@@ -22,7 +22,7 @@
 #include <ATen/core/TensorBase.h>
 #include <ATen/Dispatch.h>
 #include <c10/macros/Macros.h>
-#include <grid_sampler.cuh>
+#include "grid_sampler.cuh"
 
 #include <limits>
 #include <cmath>
