@@ -337,10 +337,15 @@ class BuildReleaseExtension(BuildExtension):
         
         self.compiler.src_extensions += ['.cu', '.cuh', '.hip']
 
-        def append_std17_if_no_std_present(cflags) -> None:
+        def append_cxx_std_if_no_std_present(cflags) -> None:
             cpp_format_prefix = '/{}:' if self.compiler.compiler_type == 'msvc' else '-{}='
             cpp_flag_prefix = cpp_format_prefix.format('std')
-            cpp_flag = cpp_flag_prefix + 'c++17'
+            cpp_standard = (
+                'c++20'
+                if version.parse(torch.__version__.split('+')[0]) >= version.parse('2.14')
+                else 'c++17'
+            )
+            cpp_flag = cpp_flag_prefix + cpp_standard
             if not any(flag.startswith(cpp_flag_prefix) for flag in cflags):
                 cflags.append(cpp_flag)
 
@@ -402,7 +407,7 @@ class BuildReleaseExtension(BuildExtension):
                     post_cflags = list(extra_postargs)
                 if IS_HIP_EXTENSION:
                     post_cflags = COMMON_HIP_FLAGS + post_cflags
-                append_std17_if_no_std_present(post_cflags)
+                append_cxx_std_if_no_std_present(post_cflags)
                 
                 cuda_post_cflags = None
                 if with_cuda:
@@ -413,7 +418,7 @@ class BuildReleaseExtension(BuildExtension):
                     if IS_HIP_EXTENSION:
                         cuda_post_cflags = cuda_post_cflags + _get_rocm_arch_flags(cuda_post_cflags)
                         cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + cuda_post_cflags
-                    append_std17_if_no_std_present(cuda_post_cflags)
+                    append_cxx_std_if_no_std_present(cuda_post_cflags)
                     cuda_cflags = [shlex.quote(f) for f in common_cflags]
                     cuda_post_cflags = [shlex.quote(f) for f in cuda_post_cflags]
                 
@@ -435,7 +440,7 @@ class BuildReleaseExtension(BuildExtension):
                 marlin_nvcc_flags = ['-O3', '-w']
                 if IS_HIP_EXTENSION:
                     marlin_cxx_flags = COMMON_HIP_FLAGS + marlin_cxx_flags
-                append_std17_if_no_std_present(marlin_cxx_flags)
+                append_cxx_std_if_no_std_present(marlin_cxx_flags)
 
                 marlin_cuda_cflags = None
                 marlin_cuda_post_cflags = None
@@ -445,7 +450,7 @@ class BuildReleaseExtension(BuildExtension):
                     if IS_HIP_EXTENSION:
                         marlin_cuda_post_cflags += _get_rocm_arch_flags_marlin_w4a16(marlin_cuda_post_cflags)
                         marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + marlin_cuda_post_cflags
-                    append_std17_if_no_std_present(marlin_cuda_post_cflags)
+                    append_cxx_std_if_no_std_present(marlin_cuda_post_cflags)
                     marlin_cuda_post_cflags = [shlex.quote(f) for f in marlin_cuda_post_cflags]
 
                 _write_ninja_file_and_compile_objects(
@@ -465,7 +470,7 @@ class BuildReleaseExtension(BuildExtension):
                 marlin_nvcc_flags = ['-O3', '-w']
                 if IS_HIP_EXTENSION:
                     marlin_cxx_flags = COMMON_HIP_FLAGS + marlin_cxx_flags
-                append_std17_if_no_std_present(marlin_cxx_flags)
+                append_cxx_std_if_no_std_present(marlin_cxx_flags)
 
                 marlin_cuda_cflags = None
                 marlin_cuda_post_cflags = None
@@ -475,7 +480,7 @@ class BuildReleaseExtension(BuildExtension):
                     if IS_HIP_EXTENSION:
                         marlin_cuda_post_cflags += _get_rocm_arch_flags_marlin_w4a8(marlin_cuda_post_cflags)
                         marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + marlin_cuda_post_cflags
-                    append_std17_if_no_std_present(marlin_cuda_post_cflags)
+                    append_cxx_std_if_no_std_present(marlin_cuda_post_cflags)
                     marlin_cuda_post_cflags = [shlex.quote(f) for f in marlin_cuda_post_cflags]
 
                 _write_ninja_file_and_compile_objects(
@@ -495,7 +500,7 @@ class BuildReleaseExtension(BuildExtension):
                 marlin_nvcc_flags = ['-O3', '-w']
                 if IS_HIP_EXTENSION:
                     marlin_cxx_flags = COMMON_HIP_FLAGS + marlin_cxx_flags
-                append_std17_if_no_std_present(marlin_cxx_flags)
+                append_cxx_std_if_no_std_present(marlin_cxx_flags)
 
                 marlin_cuda_cflags = None
                 marlin_cuda_post_cflags = None
@@ -505,7 +510,7 @@ class BuildReleaseExtension(BuildExtension):
                     if IS_HIP_EXTENSION:
                         marlin_cuda_post_cflags += _get_rocm_arch_flags_marlin_w4a8(marlin_cuda_post_cflags)
                         marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + marlin_cuda_post_cflags
-                    append_std17_if_no_std_present(marlin_cuda_post_cflags)
+                    append_cxx_std_if_no_std_present(marlin_cuda_post_cflags)
                     marlin_cuda_post_cflags = [shlex.quote(f) for f in marlin_cuda_post_cflags]
 
                 _write_ninja_file_and_compile_objects(
