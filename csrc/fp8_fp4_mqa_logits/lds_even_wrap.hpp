@@ -180,7 +180,7 @@ inline __device__ void prefetch_panel_to_lds(
         wrap_amount << 16;
 #endif
     const int target_addr =
-        __builtin_amdgcn_readfirstlane(lds_addr | m0_wrap_bits);
+        __builtin_amdgcn_readfirstlane(lds_addr + m0_wrap_bits);
 
     asm volatile(
         "s_mov_b32 m0, %1 \n\t"
