@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
+#include "dsv4_sparse_prefill_metadata.h"
 #include <torch/extension.h>
 
 namespace at::native {
@@ -207,7 +208,8 @@ torch::Tensor remap_indices_to_staging(const torch::Tensor& indices,
     const torch::Tensor& pages, int64_t page_size, int64_t max_pages, bool static_pages);
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor> build_swa_token_ids(
     const torch::Tensor& seq, const torch::Tensor& extend, const torch::Tensor& req,
-    const torch::Tensor& table, const torch::Tensor& full_to_swa, int64_t window, int64_t total);
+    const torch::Tensor& table, const torch::Tensor& full_to_swa, int64_t window, int64_t total,
+    const c10::optional<torch::Tensor>& query_lens, const c10::optional<torch::Tensor>& query_starts);
 std::tuple<torch::Tensor, torch::Tensor> pair_partners(
     const torch::Tensor& kv, const torch::Tensor& score,
     const torch::Tensor& req, const torch::Tensor& pos, const torch::Tensor& pad,
@@ -813,10 +815,10 @@ std::vector<Tensor> engram_hash_ids_hcu(
     int64_t, int64_t, int64_t, int64_t, int64_t);
 void combine_topk_swa_indices_hcu(
     const Tensor& topk_indices, const Tensor& query_start_loc,
-    const Tensor& query_pos, const Tensor& seq_lens, const Tensor& gather_lens,
+    const c10::optional<Tensor>& query_pos, const Tensor& seq_lens, const Tensor& gather_lens,
     const Tensor& compressed_base, const Tensor& swa_base,
     Tensor& out_indices, Tensor& out_lens,
-    int64_t window_size, int64_t compress_ratio, int64_t topk);
+    int64_t window_size, int64_t compress_ratio, int64_t topk, bool initialize_padding);
 std::vector<torch::Tensor> dsv4_pack_c4_topk_workspace(
     const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
     int64_t, int64_t);
@@ -1570,8 +1572,16 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "DSV4.1 candidate block selection and dense mask expansion",
         py::arg("logits"), py::arg("seq_lens"), py::arg("block_size"),
         py::arg("out_mask"), py::arg("out_block_ids"));
+  m.attr("SPARSE_PREFILL_METADATA_ABI") = 1;
+  m.def("dsv4_build_cp_sparse_query_metadata", &lightop::dsv4::build_cp_query_metadata,
+        py::arg("extend"), py::arg("starts"), py::arg("positions"), py::arg("cp_size"), py::arg("cp_rank"));
+  m.def("dsv4_pack_compact_sparse_token_ids", &lightop::dsv4::pack_compact_token_ids,
+        py::arg("source"), py::arg("seq_lens"), py::arg("ratio"), py::arg("page_size"), py::arg("total"),
+        py::arg("out_ids") = py::none(), py::arg("out_base") = py::none());
   m.def("dsv41_build_swa_token_ids", &lightop::dsv41::build_swa_token_ids,
-        "SWA metadata prefix and physical token gather");
+        "SWA metadata, optional query prefix and physical token gather",
+        py::arg("seq"), py::arg("extend"), py::arg("req"), py::arg("table"), py::arg("full_to_swa"),
+        py::arg("window"), py::arg("total"), py::arg("query_lens") = py::none(), py::arg("query_starts") = py::none());
   m.def("dsv41_remap_indices_to_staging", &lightop::dsv41::remap_indices_to_staging,
         "Inverse page map and fused staging token remap");
   m.def("dsv41_ragged_topk_postprocess", &lightop::dsv41::ragged_topk_postprocess,
@@ -1815,7 +1825,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
        py::arg("cache"), py::arg("token_ids"), py::arg("out"),
        py::arg("page_size"), py::arg("fp8_fnuz"), py::arg("valid_count"));
  m.def("combine_topk_swa_indices_hcu", &at::native::combine_topk_swa_indices_hcu,
-       "Combine compressed TopK and positional SWA indices into a flat workspace");
+       "Combine compressed TopK and positional SWA indices into a flat workspace",
+       py::arg("topk_indices"), py::arg("query_start_loc"), py::arg("query_pos"), py::arg("seq_lens"),
+       py::arg("gather_lens"), py::arg("compressed_base"), py::arg("swa_base"),
+       py::arg("out_indices"), py::arg("out_lens"), py::arg("window_size"), py::arg("compress_ratio"),
+       py::arg("topk"), py::arg("initialize_padding") = false);
  m.def("dsv4_pack_c4_topk_workspace",
       &at::native::dsv4_pack_c4_topk_workspace,
       "Pack a DSV4 C4 TopK union and remap query indices on GPU",
