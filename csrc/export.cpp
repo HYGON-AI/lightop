@@ -559,7 +559,7 @@ void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input, torch::Tensor& output, t
 void fuse_silu_mul_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m);
 void fuse_situ_mul_quant_contiguous(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, double situ_beta, double situ_linear_beta);
 void fuse_situ_mul_quant_ep(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, torch::Tensor& masked_m, double situ_beta, double situ_linear_beta, int64_t expect_m);
-void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids, float limit = -1.0f) ;
+void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids, float limit = -1.0f, bool per_token_scale = false);
 void swiglu_oai_fp8_quant_masked(const torch::Tensor&, torch::Tensor&, torch::Tensor&, const torch::Tensor&, double, double, int64_t, int64_t);
 void swiglu_oai_fp8_quant_masked_flat(const torch::Tensor&, torch::Tensor&, torch::Tensor&, const torch::Tensor&, double, double, int64_t, int64_t);
 void fuse_silu_mul_fp8_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m, float limit);
@@ -601,7 +601,7 @@ void destindex_copy_quantize_int8_cuda(const torch::Tensor& input, torch::Tensor
 void destindex_dequantize_int8_cuda(const torch::Tensor& input, const torch::Tensor& scale_zero, torch::Tensor& output);
 std::vector<at::Tensor> kimi_k2_moe_fused_gate(at::Tensor &input, at::Tensor &bias, int64_t topk,bool renormalize, double routed_scaling_factor,bool apply_routed_scaling_factor_on_output); 
 void fuse_rms_mrope_cuda(Tensor &q, Tensor &k, const Tensor &cos, const Tensor &sin, const std::vector<int>& mrope_section, int head_size, int rotary_dim,bool is_interleaved,Tensor weight_q,Tensor weight_k,c10::optional<Tensor> residual_q,c10::optional<Tensor> residual_k,double epsilon);
-void ep_gather(torch::Tensor& a,torch::Tensor& topk_ids,torch::Tensor& topk_weights,torch::Tensor& inv_perm,torch::optional<torch::Tensor> expert_map,torch::Tensor& output);
+void ep_gather(torch::Tensor& a,torch::Tensor& topk_ids,torch::Tensor& topk_weights,torch::Tensor& inv_perm,torch::optional<torch::Tensor> expert_map,torch::Tensor& output,bool specialize_k8 = false);
 torch::Tensor backward_polyfill_cuda(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,torch::Tensor grad_output,torch::Tensor grad_vertices,int width,int height,float inv_smoothness,int mode);
 std::vector<torch::Tensor> forward_polyfill_cuda(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,int width,int height,float inv_smoothness,int mode);
 torch::Tensor backward_polyfill_lightop(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,torch::Tensor grad_output,torch::Tensor grad_vertices,int width,int height,float inv_smoothness,int mode);
@@ -626,7 +626,7 @@ void rms_norm_no_weight(
     torch::Tensor& input,
     torch::optional<torch::Tensor> weight,
     double epsilon);
-void fused_add_rms_norm_opt(torch::Tensor& input,torch::Tensor& residual, torch::Tensor& weight,double epsilon,double limit);
+void fused_add_rms_norm_opt(torch::Tensor& input,torch::Tensor& residual, torch::Tensor& weight,double epsilon,double limit,bool use_aligned_loads = false);
 void layer_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,torch::Tensor& bias,double epsilon,double limit);
 void fused_add_layer_norm_opt(torch::Tensor& input,torch::Tensor& residual,torch::Tensor& weight,torch::Tensor& bias,double epsilon,double limit);
 void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
@@ -709,7 +709,7 @@ void fused_rms_norm_rope_int8quant_contiguous(
 void per_token_quant_fp8(
     torch::Tensor& out,          // [..., hidden_size]
     torch::Tensor const& input,  // [..., hidden_size]
-    torch::Tensor& scales);
+    torch::Tensor& scales, bool broadcast_inverse = false);
 void rms_norm_smooth_per_token_dynamic_quant(
   Tensor &out,            
   Tensor& input,                
@@ -1476,7 +1476,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("topK"),
       py::arg("expert_m"),
       py::arg("expert_ids"),
-      py::arg("limit") = -1.0f);
+      py::arg("limit") = -1.0f,
+      py::arg("per_token_scale") = false);
   m.def("swiglu_oai_fp8_quant_masked", &at::native::swiglu_oai_fp8_quant_masked, "Masked OAI SwiGLU with FP32 row-FP8 quantization");
   m.def("swiglu_oai_fp8_quant_masked_flat", &at::native::swiglu_oai_fp8_quant_masked_flat, "OAI row-FP8 quantization using live rows of 16 experts");
   m.def("fuse_silu_mul_fp8_quant_ep",&at::native::fuse_silu_mul_fp8_quant_ep,"fuse_silu_mul_fp8_quant_ep");
@@ -1644,7 +1645,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("destindex_dequantize_int8_cuda", &at::native::destindex_dequantize_int8_cuda, "destindex_dequantize_int8_cuda");
   m.def("kimi_k2_moe_fused_gate", &at::native::kimi_k2_moe_fused_gate, "kimi_k2_moe_fused_gate");
   m.def("fuse_rms_mrope_cuda", &at::native::fuse_rms_mrope_cuda,"fuse_rms_mrope_cuda");
-  m.def("ep_gather", &at::native::ep_gather, "ep_gather");
+  m.def("ep_gather", &at::native::ep_gather, "ep_gather",
+        py::arg("a"), py::arg("topk_ids"), py::arg("topk_weights"),
+        py::arg("inv_perm"), py::arg("expert_map"), py::arg("output"),
+        py::arg("specialize_k8") = false);
   m.def("backward_polyfill_cuda", &at::native::backward_polyfill_cuda, "backward_polyfill_cuda");
   m.def("forward_polyfill_cuda", &at::native::forward_polyfill_cuda, "forward_polyfill_cuda");
   m.def("forward_polyfill_lightop", &at::native::forward_polyfill_lightop, "forward_polyfill_lightop");
@@ -1693,7 +1697,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("residual"),
       py::arg("weight"),
       py::arg("epsilon"),
-      py::arg("limit") = -1.0);
+      py::arg("limit") = -1.0,
+      py::arg("use_aligned_loads") = false);
   m.def(
       "layer_norm_opt", &at::native::layer_norm_opt, "layer_norm_opt",
       py::arg("out"), py::arg("input"), py::arg("weight"), py::arg("bias"),
@@ -1740,7 +1745,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
      py::arg("scale"),
      py::arg("seq_starts") = py::none());
  m.def("fused_rms_norm_rope_int8quant_contiguous", &at::native::fused_rms_norm_rope_int8quant_contiguous, "fused_rms_norm_rope_int8quant_contiguous");    
- m.def("per_token_quant_fp8", &at::native::per_token_quant_fp8, "per_token_quant_fp8");    
+ m.def("per_token_quant_fp8", &at::native::per_token_quant_fp8, "per_token_quant_fp8",
+       py::arg("out"), py::arg("input"), py::arg("scales"),
+       py::arg("broadcast_inverse") = false);
  m.def("rms_norm_smooth_per_token_dynamic_quant", &at::native::rms_norm_smooth_per_token_dynamic_quant, "rms_norm_smooth_per_token_dynamic_quant");   
  m.def("swiglu_oai_build_gate_table", &at::native::swiglu_oai_build_gate_table);
  m.def("swiglu_oai_build_int8_quant_table", &at::native::swiglu_oai_build_int8_quant_table);
