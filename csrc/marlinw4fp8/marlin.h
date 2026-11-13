@@ -67,7 +67,7 @@ static __device__ inline uint16_t f32_to_bf16(float f){
     return u>>16;
 }
 
-#ifdef __gfx938__
+#if defined(__gfx938__)
 
 __device__ inline void mmac_16_16_32_fp8_fp8(
                                     const FragA& frag_a,
@@ -80,7 +80,7 @@ __device__ inline void mmac_16_16_32_fp8_fp8(
 #endif
 
 // 仅在 BW gfx 936 上才编译实际算子
-#if defined (__gfx936__) || (__gfx938__)
+#if defined(__gfx936__) || defined(__gfx938__)
 
 // Wait until barrier reaches `count`, then lock for current threadblock.
 __device__ inline void barrier_acquire(int* lock, int count) {

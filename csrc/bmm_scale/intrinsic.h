@@ -269,7 +269,7 @@ __device__ void mmac(const typename vec<Element, 8>::type &v1, const typename ve
 
     #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
         v3 = HCU_MMAC_I32_I8(*a, *b, v3);
-    #elif defined(__gfx938__)
+    #elif defined(__gfx938__) || defined(__gfx946__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
         v3 = __builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
@@ -285,10 +285,14 @@ __device__ void mmac<int8_t, int32_t>(const typename vec<int8_t, 8>::type &v1, c
         auto a = reinterpret_cast<const long*>(&v1);
         auto b = reinterpret_cast<const long*>(&v2);
         v3 = HCU_MMAC_I32_I8(*a, *b, v3);
-    #elif defined(__gfx938__)
+    #elif defined(__gfx938__) || defined(__gfx946__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
         v3 = __builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
+    #elif !defined(__HIP_DEVICE_COMPILE__)
+        // Host pass: no device instruction to emit.
+    #else
+        #error "mmac<int8_t, int32_t>: no INT8 MMAC implementation for this target"
     #endif
 }
 
@@ -297,14 +301,18 @@ template<>
 __device__ void mmac<fp8_t, float>(const typename vec<fp8_t, 8>::type &v1, const typename vec<fp8_t, 8>::type &v2, typename vec<float, 4>::type &v3)
 {
 
-    #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
-        v3 = v3;
-    #elif defined(__gfx938__)
+    #if defined(__gfx938__) || defined(__gfx946__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
         v3 = __builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(A, B, v3, false, false);  // fp8->e4m3 bf8->e5m2
-    #else
+    #elif defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
+        // Pre-existing gap, unchanged by this commit: these targets have no FP8
+        // MMAC path here, so the accumulator is returned untouched.
         v3 = v3;
+    #elif !defined(__HIP_DEVICE_COMPILE__)
+        // Host pass: no device instruction to emit.
+    #else
+        #error "mmac<fp8_t, float>: no FP8 MMAC implementation for this target"
     #endif
 
 }

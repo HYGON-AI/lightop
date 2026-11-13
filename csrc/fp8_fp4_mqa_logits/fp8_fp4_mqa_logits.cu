@@ -93,7 +93,7 @@ __device__ __forceinline__ uint16_t decode_fp4_bf16(unsigned code, unsigned scal
 // Each output is 8 adjacent BF16 values, so it can be written as one LDS b128.
 __device__ __forceinline__ void decode_group32(
     const uint32x4_t& packed, unsigned scale, uint32x4_t (&out)[4]) {
-#if defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
     // Every nonzero E2M1 magnitude stays normal BF16 for scales [2,252].
     // Build the scaled magnitude table once per group; leave magnitude zero
     // zero and restore signs after lookup, including the sign of negative zero.
@@ -197,7 +197,7 @@ using uint32x2_t = uint32_t __attribute__((ext_vector_type(2)));
 // operand layout uses the unmodified instruction on both gfx936 and gfx938.
 __device__ __forceinline__ floatx4 mmac_bf16_inline(
     const uint32_t a01[2], const uint32_t b01[2], floatx4 c) {
-#if defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
     const uint32x2_t a = {a01[0], a01[1]};
     const uint32x2_t b = {b01[0], b01[1]};
     floatx4 d;
@@ -206,7 +206,9 @@ __device__ __forceinline__ floatx4 mmac_bf16_inline(
     return d;
 #else
     // Lightop also builds code objects for other architectures. The host
-    // dispatch rejects those devices before launching this kernel.
+    // dispatch rejects those devices before launching this kernel. Trap
+    // rather than returning `c`, which would silently drop the product.
+    __builtin_trap();
     return c;
 #endif
 }
@@ -311,7 +313,7 @@ __global__ __launch_bounds__(256, 1) void bf16_fp4_persistent128_q16_kernel(
     const int32_t* __restrict__ ks, const int32_t* __restrict__ ke,
     float* __restrict__ out, int num_q_tokens, int num_k_tokens,
     int num_heads, int out_width, int q_splits) {
-#if defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
     constexpr int BM = Tile32x128::M;
     constexpr int BN = Tile32x128::N;
     constexpr int BK = Tile32x128::K;
@@ -544,7 +546,7 @@ __global__ __launch_bounds__(256, 1) void bf16_fp4_candidate_kernel(
     const int32_t* __restrict__ candidate_blocks, float* __restrict__ out,
     int num_k_tokens, int num_candidate_blocks, int out_width,
     int64_t candidate_row_stride) {
-#if defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
     constexpr int HeadTiles = 2;
     constexpr int Tile = 16;
     constexpr int TilesPerWave = 4;
@@ -610,7 +612,7 @@ __global__ __launch_bounds__(256, 1) void bf16_fp4_candidate_kernel(
             const bf16x4 kr = decode_candidate_fp4x4(packed[k], scale);
 #pragma unroll
             for (int h = 0; h < HeadTiles; ++h) {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
                 acc[h] = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(
                     kr, qr[h][k], acc[h], false, false);
 #else
@@ -724,8 +726,10 @@ torch::Tensor fp8_fp4_mqa_logits(
                 hipGetDeviceProperties(&properties, device) == hipSuccess,
                 "cannot query HIP device");
     const std::string arch(properties.gcnArchName);
-    TORCH_CHECK(arch.rfind("gfx936", 0) == 0 || arch.rfind("gfx938", 0) == 0,
-                "fp8_fp4_mqa_logits requires gfx936 or gfx938, got ", arch);
+    TORCH_CHECK(arch.rfind("gfx936", 0) == 0 || arch.rfind("gfx938", 0) == 0 ||
+                    arch.rfind("gfx946", 0) == 0,
+                "fp8_fp4_mqa_logits requires gfx936, gfx938 or gfx946, got ",
+                arch);
 
     auto out = torch::full({t, max_seqlen_k}, -INFINITY,
                            q_data.options().dtype(at::kFloat));
