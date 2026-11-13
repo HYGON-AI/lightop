@@ -24,8 +24,10 @@ namespace lightop::mqa_int8 {
 // the previous one; weights are lane-per-row buffer loads broadcast by ds_bpermute; and
 // the head loop runs M16-row by M16-row with row r+1's Q read ahead. Keeping all sixteen
 // 16x16 dot tiles live (the BM<=32 order) would exceed 192 VGPRs, i.e. four CTAs per CU.
-template <int Heads, bool EvenM, bool EvenN, bool HasBounds, bool CleanLogits>
-__global__ __launch_bounds__(256) void m64(MqaInt8Params p) {
+template <int Heads, bool EvenM, bool EvenN, bool HasBounds, bool CleanLogits,
+          int FusedMode = 0, int ScoreBits = 32>
+__global__ __launch_bounds__(256) void m64(
+    std::conditional_t<FusedMode == 0, MqaInt8Params, MqaTopKParams> p) {
     constexpr int BM = 64, BN = 256;
     const int tid = threadIdx.x;
     const int lane = tid % 64;
@@ -33,7 +35,11 @@ __global__ __launch_bounds__(256) void m64(MqaInt8Params p) {
     const int bx = blockIdx.y;
     const int by = (blockIdx.x + blockIdx.y) % gridDim.x;
     const int row_begin = bx * BM;
-    const int col_begin = by * BN;
+    const int col_begin = FusedMode == 1 ? (by * ((p.n + BN - 1) / BN) / 8) * BN : by * BN;
+    if constexpr (FusedMode == 3) {
+        p.m = *p.fallback_count;
+        if (row_begin >= p.m) return;
+    }
     constexpr float neg_inf = -__builtin_inff();
     constexpr int WN = BN / 4, NT = BN / 64, MT = BM / 16;
     // Two unpadded Q stages, with weights held in registers.
@@ -54,7 +60,7 @@ __global__ __launch_bounds__(256) void m64(MqaInt8Params p) {
     if (!tile.any) {
         const int vm = valid_m;
         const int vn = valid_n;
-        if constexpr (HasBounds && CleanLogits) {
+        if constexpr (HasBounds && CleanLogits && (FusedMode == 0 || FusedMode == 3)) {
             if (EvenN || p.n % 4 == 0)
                 fill_empty_tile<4>(p.out, p.out_stride_m, row_begin, col_begin, vm, vn, wave, lane);
             else if (p.n % 2 == 0)
@@ -86,6 +92,7 @@ __global__ __launch_bounds__(256) void m64(MqaInt8Params p) {
     constexpr int Slots = WN / 4; // F4 packets per scratch row
     const int out_col = col_begin + wave * WN + 4 * (lane % Slots);
     F4 scale = {0.f, 0.f, 0.f, 0.f};
+    if constexpr (FusedMode != 7) {
     if (EvenN || out_col + 3 < p.n)
         scale = load_aligned4<F4>(p.kv_scale + out_col);
     else {
@@ -93,6 +100,7 @@ __global__ __launch_bounds__(256) void m64(MqaInt8Params p) {
         for (int e = 0; e < 4; ++e)
             if (out_col + e < p.n)
                 scale[e] = p.kv_scale[out_col + e];
+    }
     }
     F4 accum[MT][NT] = {};
     // Thread i = tid + 256c copies 16-byte chunk i%8 of row i/8 = (head i/8/BM, query
@@ -218,6 +226,86 @@ __global__ __launch_bounds__(256) void m64(MqaInt8Params p) {
         if (h + 1 < heads)
             head_step(std::integral_constant<int, 1>{}, h + 1);
     }
+    if constexpr (FusedMode == 7) {
+        F4 direct_scale[NT];
+#pragma unroll
+        for (int t = 0; t < NT; ++t) {
+            const int col = col_begin + wave * WN + t * 16 + (lane / 16) * 4;
+            direct_scale[t] = F4{0.f, 0.f, 0.f, 0.f};
+            if (EvenN || col + 3 < p.n)
+                direct_scale[t] = load_aligned4<F4>(p.kv_scale + col);
+            else {
+#pragma unroll
+                for (int e = 0; e < 4; ++e)
+                    if (col + e < p.n) direct_scale[t][e] = p.kv_scale[col + e];
+            }
+        }
+#pragma unroll
+        for (int r = 0; r < MT; ++r) {
+            const int row = row_begin + r * 16 + lane % 16;
+            if (EvenM || row < p.m) {
+                const float gate = reinterpret_cast<const float *>(p.thresholds)[row];
+                if (isfinite(gate)) {
+                    const auto window = tile_full ? Window{0, p.n} : load_window(p.ks, p.ke, p.n, row);
+                    const uint32_t raw_pivot = __float_as_uint(gate);
+                    const uint32_t pivot = raw_pivot & 0x80000000u ? ~raw_pivot : raw_pivot | 0x80000000u;
+                    uint32_t mask = 0;
+                    int local = 0;
+#pragma unroll
+                    for (int t = 0; t < NT; ++t) {
+                        const F4 value = accum[r][t] * direct_scale[t];
+                        accum[r][t] = value;
+#pragma unroll
+                        for (int e = 0; e < 4; ++e) {
+                            const int col = col_begin + wave * WN + t * 16 + (lane / 16) * 4 + e;
+                            const bool valid = window.start <= col && col < window.end;
+                            if (valid && !isfinite(value[e])) atomicOr(p.counts + row, 1 << 28);
+                            const uint32_t bits = __float_as_uint(value[e]);
+                            const uint32_t ordered = bits & 0x80000000u ? ~bits : bits | 0x80000000u;
+                            const bool keep = valid && ordered >= pivot;
+                            mask |= uint32_t(keep) << (t * 4 + e);
+                            local += keep;
+                        }
+                    }
+                    int prefix = local;
+                    int previous = __shfl_up(prefix, 16, 64);
+                    if (lane >= 16) prefix += previous;
+                    previous = __shfl_up(prefix, 32, 64);
+                    if (lane >= 32) prefix += previous;
+                    const int total = __shfl(prefix, 48 + lane % 16, 64);
+                    int offset = 0;
+                    if (lane < 16 && total) offset = atomicAdd(p.counts + row, total);
+                    offset = __shfl(offset, lane % 16, 64) + prefix - local;
+#pragma unroll
+                    for (int t = 0; t < NT; ++t) {
+                        const int col = col_begin + wave * WN + t * 16 + (lane / 16) * 4;
+                        if (((mask >> (t * 4)) & 15u) == 15u && (offset & 3) == 0) {
+                            if (offset + 3 < 16384) {
+                                const int64_t target = int64_t(row) * 16384 + offset;
+                                *reinterpret_cast<F4 *>(static_cast<uint32_t *>(p.candidate_keys) + target) = accum[r][t];
+                                *reinterpret_cast<I4 *>(p.candidate_ids + target) = I4{col, col + 1, col + 2, col + 3};
+                            }
+                            offset += 4;
+                        } else {
+#pragma unroll
+                            for (int e = 0; e < 4; ++e) {
+                                if (mask & (1u << (t * 4 + e))) {
+                                    const int slot = offset++;
+                                    if (slot < 16384) {
+                                        const int64_t target = int64_t(row) * 16384 + slot;
+                                        static_cast<uint32_t *>(p.candidate_keys)[target] = __float_as_uint(accum[r][t][e]);
+                                        p.candidate_ids[target] = col + e;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        asm volatile("s_waitcnt vmcnt(0)" ::: "memory");
+        return;
+    }
     const bool vector_out = output_vector_aligned<4>(p.out, p.out_stride_m);
     const bool pair_out = !EvenN && p.n % 4 == 2;
     // Masks and writes one scaled F4 packet: row out_row, keys [packet_col, packet_col + 4).
@@ -230,7 +318,57 @@ __global__ __launch_bounds__(256) void m64(MqaInt8Params p) {
                         result[e] = neg_inf;
             }
         }
-        float *dst = p.out + int64_t(out_row) * p.out_stride_m + packet_col;
+        if constexpr (FusedMode == 2 || FusedMode == 4 || FusedMode == 6) {
+            const auto window = FusedMode == 6 && tile_full ? Window{0, p.n} : load_window(p.ks, p.ke, p.n, out_row);
+            const float previous = reinterpret_cast<const float*>(p.thresholds)[out_row];
+            if (!isfinite(previous)) return;
+            const uint32_t raw_pivot = __float_as_uint(previous);
+            const uint32_t pivot = raw_pivot & 0x80000000u ? ~raw_pivot : raw_pivot | 0x80000000u;
+            uint32_t codes[4];
+            bool keep[4];
+            int local = 0;
+#pragma unroll
+            for (int e = 0; e < 4; ++e) {
+                if (window.start <= packet_col + e && packet_col + e < window.end && !isfinite(result[e]))
+                    atomicOr(p.counts + out_row, 1 << 28);
+                const uint32_t bits = __float_as_uint(result[e]);
+                const uint32_t ordered = bits & 0x80000000u ? ~bits : bits | 0x80000000u;
+                codes[e] = ScoreBits == 24 ? ordered >> 8 : ordered;
+                const int col = packet_col + e;
+                keep[e] = window.start <= col && col < window.end && codes[e] >= pivot;
+                local += keep[e];
+            }
+            int prefix = local;
+#pragma unroll
+            for (int delta = 1; delta < 16; delta *= 2) {
+                const int previous = __shfl_up(prefix, delta, 16);
+                if (lane % 16 >= delta) prefix += previous;
+            }
+            const int total = __shfl(prefix, 15, 16);
+            int base = 0;
+            if (lane % 16 == 0 && total) base = atomicAdd(p.counts + out_row, total);
+            base = __shfl(base, 0, 16) + prefix - local;
+#pragma unroll
+            for (int e = 0; e < 4; ++e) {
+                if (keep[e]) {
+                    const int slot = base++;
+                    if (slot < ((FusedMode == 4 || FusedMode == 6) ? 16384 : 4096)) {
+                        const int64_t offset = int64_t(out_row) * ((FusedMode == 4 || FusedMode == 6) ? 16384 : 4096) + slot;
+                        const uint32_t id = packet_col + e;
+                        if constexpr (ScoreBits == 24) {
+                            static_cast<uint16_t *>(p.candidate_keys)[offset] = codes[e];
+                            p.candidate_ids[offset] = int32_t(id | ((codes[e] >> 16) << 20));
+                        } else {
+                            static_cast<uint32_t *>(p.candidate_keys)[offset] = (FusedMode == 4 || FusedMode == 6) ? __float_as_uint(result[e]) : codes[e];
+                            p.candidate_ids[offset] = int32_t(id);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        const int dst_col = FusedMode == 1 ? by * BN + packet_col - col_begin : packet_col;
+        float *dst = p.out + int64_t(out_row) * p.out_stride_m + dst_col;
         if (EvenN || packet_col + 3 < p.n) {
             if (pair_out) {
                 // Keep the F4 packet and emit two contiguous F2 stores.
@@ -275,7 +413,7 @@ __global__ __launch_bounds__(256) void m64(MqaInt8Params p) {
             const F4 value =
                 output[consumer_row * Slots + ((lane % Slots) ^ swizzle(consumer_row))];
             const int out_row = row_begin + r * 16 + consumer_row;
-            if ((EvenM || out_row < p.m) && (EvenN || out_col < p.n)) {
+            if ((EvenM || out_row < p.m) && (FusedMode == 2 || FusedMode == 4 || FusedMode == 6 || EvenN || out_col < p.n)) {
                 const F4 result = value * scale;
                 Window bounds{};
                 if constexpr (HasBounds && CleanLogits)

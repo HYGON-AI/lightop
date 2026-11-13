@@ -164,6 +164,7 @@ void bind_prefill_sparse_fusion(pybind11::module_& m) {
 // Local correctness/performance builds use the same bindings as lightop.op.
 #if defined(LIGHTOP_SPARSE_MQA_ONLY) || defined(LIGHTOP_PREFILL_FUSION_ONLY)
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+
 #if defined(LIGHTOP_SPARSE_MQA_ONLY)
   bind_paged_sparse_mqa(m);
 #else
@@ -179,6 +180,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 #include <vector>
 #include <optional>
 
+#include "mqa_logits/beta/mqa_logits_api.h"
 #include "fp8_fp4_mqa_logits/fp8_fp4_mqa_logits.h"
 #include "fp8_fp4_mqa_logits/dsv41_mqa_prep.h"
 #include "paged_mqa_logits/paged_mqa_logits.h"
@@ -873,7 +875,8 @@ void fast_topk_transform_interface(
     at::Tensor& dst_page_table,
     const at::Tensor& src_page_table,
     const at::Tensor& cu_seqlens_q,
-    std::optional<at::Tensor> row_starts_opt);
+    std::optional<at::Tensor> row_starts_opt,
+    bool parallel_candidates);
 void fast_topk_transform_sparse_mask_interface(
     const at::Tensor& score,
     const at::Tensor& nonzero_mask,
@@ -1542,6 +1545,23 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("KV_scale") = torch::nullopt, 
       py::arg("clean_logits") = true,
       py::arg("D_out") = torch::nullopt);
+  m.def("mqa_logits_topk_sampled_int8", &lightop::mqa_int8::mqa_logits_topk_sampled_int8,
+      py::arg("q"),
+      py::arg("k"),
+      py::arg("weights"),
+      py::arg("kv_scale"),
+      py::arg("starts"),
+      py::arg("ends"),
+      py::arg("offsets"),
+      py::arg("sorted_values") = py::none(),
+      py::arg("next_thresholds") = py::none(),
+      py::arg("stats") = py::none(),
+      py::arg("parallel_histogram") = true,
+      py::arg("fallback_workspace_rows") = 0,
+      py::arg("reuse_full_window") = true,
+      py::arg("sort_topk") = true,
+      py::arg("min_sample_k") = 131072,
+      py::arg("direct_candidate_emit") = false);
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
   m.def("dsv41_mqa_query_lens", &lightop::fp4_mqa::dsv41_mqa_query_lens,
         py::arg("extend_start_loc"), py::arg("extend_seq_lens"),
@@ -1781,7 +1801,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("gemma_fused_add_rmsnorm", &at::native::gemma_fused_add_rmsnorm, "gemma_fused_add_rmsnorm");
  m.def("gemma_rmsnorm", &at::native::gemma_rmsnorm, "gemma_rmsnorm");
  m.def("gemma_rms_norm_fp8_quant", &at::native::gemma_rms_norm_fp8_quant, "gemma_rms_norm_fp8_quant");
- m.def("fast_topk_transform_interface", &at::native::fast_topk_transform_interface, "fast_topk_transform_interface");
+  m.def("fast_topk_transform_interface", &at::native::fast_topk_transform_interface,
+        "transform length TopK indices into paged KVCache",
+        py::arg("score"), py::arg("lengths"), py::arg("dst_page_table"),
+        py::arg("src_page_table"), py::arg("cu_seqlens_q"),
+        py::arg("row_starts_opt"), py::arg("parallel_candidates") = false);
  m.def(
      "fast_topk_transform_sparse_mask_interface",
      &at::native::fast_topk_transform_sparse_mask_interface,
