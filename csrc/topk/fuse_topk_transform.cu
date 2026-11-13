@@ -1004,12 +1004,61 @@ constexpr size_t kRadixSelect8BitSmemBytes =
     8 * 1024 * sizeof(uint32_t);
 #endif
 
+#ifdef USE_ROCM
+__global__ __launch_bounds__(1024) void topk_compact_proposal(const float* dense,int width,const int* lengths,uint32_t* pivots,int* counts) {
+  using namespace adaptive_topk_detail;
+  __shared__ Shared<2048> s;
+  const int row=blockIdx.x,tid=threadIdx.x,n=lengths[row];
+  if(tid==0){counts[row]=0;pivots[row]=UINT_MAX;}
+  if(n<32768 || n>width || n>131072)return;
+  uint32_t sampled[SampleItems];
+  for(int j=0;j<SampleItems;++j){const int id=tid*SampleItems+j;sampled[j]=key(dense[int64_t(row)*width+int64_t(id)*n/Samples]);}
+  const int proposed=int((int64_t(3072)*Samples+n-1)/n);
+  const int rank=proposed < 1 ? 1 : (proposed > Samples ? Samples : proposed);
+  sample_select(sampled,rank,s);
+  if(tid==0)pivots[row]=s.pivot;
+}
+__global__ __launch_bounds__(256) void topk_parallel_compact(const float* dense,int width,const int* lengths,const uint32_t* pivots,uint32_t* keys,int* ids,int* counts) {
+  using namespace adaptive_topk_detail;
+  using LocalScan=hipcub::BlockScan<int,256>;
+  __shared__ LocalScan::TempStorage temporary;
+  __shared__ int global_offset;
+  const int row=blockIdx.y,part=blockIdx.x,tid=threadIdx.x,n=lengths[row];
+  if(n<32768 || n>width || n>131072)return;
+  const int segment=((n+16*256-1)/(16*256))*256;
+  const int start=part*segment,end=n < start+segment ? n : start+segment;
+  const uint32_t pivot=pivots[row];
+  uint32_t values[32],keep_bits=0;
+  int count=0;
+  #pragma unroll
+  for(int i=0;i<32;++i) {
+    const int at=start+i*256+tid;
+    values[i]=at<end?key(dense[int64_t(row)*width+at]):0;
+    const bool keep=at<end && values[i]>pivot;
+    keep_bits|=uint32_t(keep)<<i;count+=keep;
+  }
+  int prefix=0,total=0;
+  LocalScan(temporary).ExclusiveSum(count,prefix,total);
+  __syncthreads();
+  if(tid==0)global_offset=atomicAdd(counts+row,total);
+  __syncthreads();
+  int out=global_offset+prefix;
+  #pragma unroll
+  for(int i=0;i<32;++i) {
+    if((keep_bits>>i)&1) {
+      if(out<4096){keys[int64_t(row)*4096+out]=values[i];ids[int64_t(row)*4096+out]=start+i*256+tid;}
+      ++out;
+    }
+  }
+}
+#endif
+
 template <int K, bool PhysicalPages = false>
 void launch_adaptive_topk(
     const at::Tensor& score, const at::Tensor& lengths, at::Tensor& output,
     const at::Tensor* pages, const at::Tensor* cu, const at::Tensor* starts,
     uint32_t page_bits = 0, const at::Tensor* raw = nullptr,
-    const at::Tensor* offsets = nullptr) {
+    const at::Tensor* offsets = nullptr, bool parallel_candidates = false) {
 #ifdef USE_ROCM
   TORCH_CHECK(
       score.size(0) <= std::numeric_limits<int32_t>::max() / K &&
@@ -1034,6 +1083,31 @@ void launch_adaptive_topk(
               "Adaptive TopK requires a wave64 HIP device");
   if (score.size(0) == 0) return;
   const auto stream = at::cuda::getCurrentCUDAStream().stream();
+  if constexpr (K == 2048 && !PhysicalPages) {
+    if (parallel_candidates) {
+      auto keys = at::empty({18, 4096}, score.options().dtype(at::kInt));
+      auto ids = at::empty_like(keys);
+      auto pivots = at::empty({18}, score.options().dtype(at::kInt));
+      auto counts = at::empty_like(pivots);
+      auto* key_ptr = reinterpret_cast<uint32_t*>(keys.data_ptr<int32_t>());
+      auto* pivot_ptr = reinterpret_cast<uint32_t*>(pivots.data_ptr<int32_t>());
+      topk_compact_proposal<<<18, 1024, 0, stream>>>(
+          score.data_ptr<float>(), score.size(1), lengths.data_ptr<int32_t>(),
+          pivot_ptr, counts.data_ptr<int32_t>());
+      topk_parallel_compact<<<dim3(16, 18), 256, 0, stream>>>(
+          score.data_ptr<float>(), score.size(1), lengths.data_ptr<int32_t>(),
+          pivot_ptr, key_ptr, ids.data_ptr<int32_t>(), counts.data_ptr<int32_t>());
+      adaptive_topk_kernel<2048, false, false, true><<<18, 1024, 0, stream>>>(
+          score.data_ptr<float>(), score.stride(0), score.size(1),
+          lengths.data_ptr<int32_t>(), nullptr, pages->data_ptr<int32_t>(),
+          pages->stride(0), pages->size(1), cu->data_ptr<int32_t>(), 18,
+          nullptr, output.data_ptr<int32_t>(), nullptr, false, 0, nullptr,
+          nullptr, nullptr, key_ptr, ids.data_ptr<int32_t>(), counts.data_ptr<int32_t>());
+      const auto error = cudaGetLastError();
+      TORCH_CHECK(error == cudaSuccess, "Compact TopK failed: ", ::cudaGetErrorString(error));
+      return;
+    }
+  }
   adaptive_topk_kernel<K, PhysicalPages>
       <<<static_cast<uint32_t>(score.size(0)), adaptive_topk_detail::Threads, 0, stream>>>(
           score.data_ptr<float>(), score.stride(0), static_cast<int>(score.size(1)),
@@ -2226,7 +2300,8 @@ void fast_topk_transform_interface(
     at::Tensor& dst_page_table,
     const at::Tensor& src_page_table,
     const at::Tensor& cu_seqlens_q,
-    std::optional<at::Tensor> row_starts_opt) {
+    std::optional<at::Tensor> row_starts_opt,
+    bool parallel_candidates) {
   CHECK_CUDA(score);
   CHECK_CUDA(lengths);
   CHECK_CUDA(dst_page_table);
@@ -2249,8 +2324,15 @@ void fast_topk_transform_interface(
 
   if (use_adaptive_topk()) {
     TORCH_CHECK(topK == 2048, "Adaptive paged TopK requires K=2048");
+    const bool compact = parallel_candidates && !row_starts_opt.has_value() &&
+        score.is_contiguous() && B == 18 && score.size(1) <= 262272 &&
+        lengths.is_contiguous() && lengths.numel() == 18 &&
+        src_page_table.is_contiguous() && src_page_table.size(0) == 18 &&
+        src_page_table.size(1) > 0 && src_page_table.size(1) <= score.size(1) &&
+        cu_seqlens_q.numel() == 19;
     launch_adaptive_topk<2048>(score, lengths, dst_page_table, &src_page_table,
-        &cu_seqlens_q, row_starts_opt ? &row_starts_opt.value() : nullptr);
+        &cu_seqlens_q, row_starts_opt ? &row_starts_opt.value() : nullptr,
+        0, nullptr, nullptr, compact);
     return;
   }
 

@@ -66,13 +66,14 @@ def fast_topk_transform_fused(
     cu_seqlens_q: torch.Tensor,
     topk: int,
     row_starts: Optional[torch.Tensor] = None,
+    parallel_candidates: bool = False,
 ) -> torch.Tensor:
     """
     Get the topk indices of the score tensor and then transform the topk indices
     to indices to the page table (page_size = 1)
     On wave64 HIP, SGL_USE_LIGHTOP_TOPK_BACKAND=0 or unset selects the exact
-    adaptive Top2048 implementation. It requires fully materialized FP32 scores, sorts logical
-    token IDs before mapping, and breaks equal ordered-FP32-key ties by smaller
+    adaptive Top2048 implementation. It reads valid FP32 scores according to lengths,
+    leaves output ordering unspecified, and breaks equal ordered-FP32-key ties by smaller
     logical ID. Set the environment variable before the first call.
     Top512/1024 and ragged Top2048 share the adaptive selection core;
     backend 1 retains the previous implementation; backend 2 requires Top512.
@@ -88,6 +89,9 @@ def fast_topk_transform_fused(
             For each row i, topk only applies to section [row_starts[i], row_starts[i] + lengths[i]]
             of the score tensor. It's only used for cases where the key is
             ragged, i.e. during extend and draft extend.
+        parallel_candidates: Use bounded parallel candidate compaction for supported
+            paged geometry. Underfilled or overflowing candidates fall back to exact
+            full-row selection; unsupported geometry retains the original path.
     Returns:
         The topk indices tensor of shape (B, topk)
     """
@@ -98,7 +102,8 @@ def fast_topk_transform_fused(
     src_page_table = page_table_size_1
     dst_page_table = score.new_empty((score.shape[0], topk), dtype=torch.int32)
     op.fast_topk_transform_interface(
-        score, lengths, dst_page_table, src_page_table, cu_seqlens_q, row_starts
+        score, lengths, dst_page_table, src_page_table, cu_seqlens_q, row_starts,
+        parallel_candidates
     )
     return dst_page_table
 

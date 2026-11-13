@@ -747,3 +747,20 @@ def prefill_sparse_mqa_fused(
 
 
 __all__ = list(dict.fromkeys([*__all__, "supports_prefill_sparse_fusion", "prepare_prefill_sparse_query", "prepare_prefill_sparse_candidates", "finalize_prefill_sparse_indices", "prefill_sparse_mqa_fused"]))
+
+
+def mqa_logits_topk_sampled_int8(
+    q, k, weights, kv_scale, starts, ends, offsets,
+    sorted_values=None, next_thresholds=None, stats=None,
+    parallel_histogram=True, fallback_workspace_rows=0, reuse_full_window=True, sort_topk=True, min_sample_k=131072, direct_candidate_emit=False,
+):
+    from .. import op
+
+    return op.mqa_logits_topk_sampled_int8(
+        q, k, weights, kv_scale, starts, ends, offsets,
+        sorted_values, next_thresholds, stats,
+        parallel_histogram, fallback_workspace_rows, reuse_full_window, sort_topk, min_sample_k, direct_candidate_emit,
+    )
+
+
+__all__ = list(dict.fromkeys([*__all__, "mqa_logits_topk_sampled_int8"]))
