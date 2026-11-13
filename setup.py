@@ -372,9 +372,9 @@ class BuildReleaseExtension(BuildExtension):
                     extra_cc_cflags.remove('-Wall')
                 print("release mode")
             
-            marlin_w4a16_dir = os.path.abspath('./csrc/marlinw4a16/')
-            marlin_w4a8_dir = os.path.abspath('./csrc/marlinw4a8/')
-            marlin_w4fp8_dir = os.path.abspath('./csrc/marlinw4fp8/')  # 如果也需要特殊处理
+            marlin_w4a16_dir = os.path.abspath('./csrc/moe_marlin_gemm/w4a16/')
+            marlin_w4a8_dir = os.path.abspath('./csrc/moe_marlin_gemm/w4a8/')
+            marlin_w4fp8_dir = os.path.abspath('./csrc/moe_marlin_gemm/w4fp8/')  # 如果也需要特殊处理
 
             marlin_w4a16_sources = []
             marlin_w4a8_sources = []
@@ -551,60 +551,67 @@ def get_extensions():
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_290')
     if torch_version_over2120():
         extra_compile_args['nvcc'].append('-DTORCH_VERSION_OVER_2120')
-    op_files = glob.glob('./csrc/*.cu') + glob.glob('./csrc/*.cpp') + \
-               glob.glob('./csrc/topk/*.cu') + \
-               glob.glob('./csrc/lmslimquant_native/*.cpp') + \
-               glob.glob('./csrc/lmslimquant_native/smoothquant/*.cpp') + \
-               glob.glob('./csrc/lmslimquant_native/quant_kernels/torch_bridge/*.cu') + \
-               glob.glob('./csrc/lmslimquant_native/quant_kernels/gptq/*.cu') + \
-               glob.glob('./csrc/lmslimquant_native/quant_kernels/awq/kernels/*.cu') + \
-               glob.glob('./csrc/layernorm/*.cu') + glob.glob('./csrc/loss/*.cu') + \
-               glob.glob('./csrc/scaledmask/*.cu') + glob.glob('./csrc/groupnorm/*.cu') + \
-               glob.glob('./csrc/rmsnorm/*.cu') + glob.glob('./csrc/batchnorm/*.cu') + \
-               glob.glob('./csrc/grid_sample/*.cu') + \
-               glob.glob('./csrc/softmax/*.cu') + \
-               glob.glob('./csrc/moew8a8/*.cu') + glob.glob('./csrc/asm_cu/*.cu') + glob.glob('./csrc/moew16a16/*.cu') + \
-               glob.glob('./csrc/moew4a8/*.cu') + glob.glob('./csrc/marlinw4a16/*.cu')+ glob.glob('./csrc/marlinw4a8/*.cu') +\
-               glob.glob('./csrc/marlinw4fp8/*.cu') +\
-               glob.glob('./csrc/blockwise_scaling/*.cu') + glob.glob('./csrc/storeKvcache/*.cu') + glob.glob('./csrc/concat/*.cu') +\
-               glob.glob('./csrc/mqa_logits/*.cu') + glob.glob('./csrc/mqa_logits/beta/**/*.cu', recursive=True) + glob.glob('./csrc/paged_mqa_logits/*.cu') + \
-               glob.glob('./csrc/fp8_fp4_mqa_logits/*.cu') + \
-               glob.glob('./csrc/sparse_page_mqa/*.cu') + glob.glob('./csrc/index_k_int8_dequant/*.cu') + \
-               glob.glob('./csrc/bmm_scale/*.cu') + glob.glob('./csrc/mla/*.cu') + \
-               glob.glob('./csrc/polyfill/*.cu') + glob.glob('./csrc/awq_w4a16_gemm/*.cu') + \
-               glob.glob('./csrc/sampling/*.cu') + glob.glob('./csrc/cp_output/*.cu')
+    # 源码清单：按算子家族显式列出，不含递归 glob。
+    # 不用 csrc/**/*.cu 是因为 moe_marlin_gemm/w4a8/awq_marlin_repack_w4a8.cu
+    # 是被 #include 引入的实现文件，递归 glob 会把它当成独立编译单元。
+    _CSRC_DIRS = [
+        ('asm', '*.cu'),
+        ('awq_w4a16_gemm', '*.cu'),
+        ('common', '*.cpp'),
+        ('kernels', '*.cu'),
+        ('kernels/blockwise_scaling', '*.cu'),
+        ('kernels/bmm_scale', '*.cu'),
+        ('kernels/concat', '*.cu'),
+        ('kernels/cp_output', '*.cu'),
+        ('kernels/gated_activation', '*.cu'),
+        ('kernels/grid_sample', '*.cu'),
+        ('kernels/groupnorm', '*.cu'),
+        ('kernels/index_k_int8_dequant', '*.cu'),
+        ('kernels/kvcache', '*.cu'),
+        ('kernels/layernorm', '*.cu'),
+        ('kernels/loss', '*.cu'),
+        ('kernels/mla', '*.cu'),
+        ('kernels/moe_gate', '*.cu'),
+        ('kernels/per_token_quant', '*.cu'),
+        ('kernels/polyfill', '*.cu'),
+        ('kernels/rmsnorm', '*.cu'),
+        ('kernels/sampling', '*.cu'),
+        ('kernels/scaledmask', '*.cu'),
+        ('kernels/softmax', '*.cu'),
+        ('kernels/topk', '*.cu'),
+        ('lmslimquant_native', '*.cpp'),
+        ('lmslimquant_native/awq', '*.cu'),
+        ('lmslimquant_native/gptq', '*.cu'),
+        ('lmslimquant_native/smoothquant', '*.cpp'),
+        ('lmslimquant_native/torch_bridge', '*.cu'),
+        ('moe_gemm/w16a16', '*.cu'),
+        ('moe_gemm/w4a8', '*.cu'),
+        ('moe_gemm/w8a8', '*.cu'),
+        ('moe_marlin_gemm/w4a16', '*.cu'),
+        ('moe_marlin_gemm/w4a8', '*.cu'),
+        ('moe_marlin_gemm/w4fp8', '*.cu'),
+        ('mqa_logits', '*.cu'),
+        ('mqa_logits/bf16', '*.cu'),
+        ('mqa_logits/fp8', '*.cu'),
+        ('mqa_logits/fp8_fp4', '*.cu'),
+        ('mqa_logits/int8', '*.cu'),
+        ('mqa_logits/paged', '*.cu'),
+        ('mqa_logits/sparse', '*.cu'),
+        ('pybind', '*.cpp'),
+    ]
+
+    op_files = []
+    for _src_dir, _src_pat in _CSRC_DIRS:
+        op_files += glob.glob(f'./csrc/{_src_dir}/{_src_pat}')
 
     extension = CUDAExtension
-    # 添加marlinw4a16目录的包含路径
+    # 迁移后只需要两个搜索根：csrc/ 与 csrc/include/。
+    # 跨目录引用一律写成显式相对路径，不再为每个子目录单列一条。
     include_dirs.append(os.path.abspath('./csrc/'))
-    include_dirs.append(os.path.abspath('./csrc/marlinw4a16/'))  # 新增marlinw4a16的include路径
-    include_dirs.append(os.path.abspath('./csrc/marlinw4a8/'))  # 新增marlinw4a8的include路径
-    include_dirs.append(os.path.abspath('./csrc/marlinw4fp8/'))  # 新增marlinw4a8的include路径
-    include_dirs.append(os.path.abspath('./csrc/layernorm/'))
-    include_dirs.append(os.path.abspath('./csrc/groupnorm/'))
-    include_dirs.append(os.path.abspath('./csrc/rmsnorm/'))
-    include_dirs.append(os.path.abspath('./csrc/grid_sample/'))
-    include_dirs.append(os.path.abspath('./csrc/batchnorm/'))
-    include_dirs.append(os.path.abspath('./csrc/loss/'))
-    include_dirs.append(os.path.abspath('./csrc/scaledmask/'))
-    include_dirs.append(os.path.abspath('./csrc/softmax/'))
-    include_dirs.append(os.path.abspath('./csrc/moew8a8/'))
-    include_dirs.append(os.path.abspath('./csrc/storeKvcache/'))
-    include_dirs.append(os.path.abspath('./csrc/storeKvcache/attention/'))
-    include_dirs.append(os.path.abspath('./csrc/moew4a8/'))
-    include_dirs.append(os.path.abspath('./csrc/moew16a16/'))
-    include_dirs.append(os.path.abspath('./csrc/blockwise_scaling/'))
-    include_dirs.append(os.path.abspath('./csrc/concat/'))
-    include_dirs.append(os.path.abspath('./csrc/paged_mqa_logits/'))
-    include_dirs.append(os.path.abspath('./csrc/sparse_page_mqa/'))
-    include_dirs.append(os.path.abspath('./csrc/index_k_int8_dequant/'))
-    include_dirs.append(os.path.abspath('./csrc/bmm_scale/'))
-    include_dirs.append(os.path.abspath('./csrc/awq_w4a16_gemm/'))
-    include_dirs.append(os.path.abspath('./csrc/sampling/'))
+    include_dirs.append(os.path.abspath('./csrc/include/'))
     rocm_home=_find_rocm_home()
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/rocrand/include')
-    include_dirs.append(os.path.abspath('./csrc/mqa_logits/'))
     
     # 核心库：lightop.op
     ext_ops = extension(

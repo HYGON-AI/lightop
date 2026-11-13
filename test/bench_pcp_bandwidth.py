@@ -22,7 +22,7 @@ EPS = 1e-6
 # ── Build PCP kernel ──────────────────────────────────────────────────
 kernel_path = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "lightop", "csrc",
+    "lightop", "csrc", "kernels", "kvcache",
     "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp_kernel.cu",
 )
 with open(kernel_path) as f:

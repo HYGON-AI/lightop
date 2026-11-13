@@ -1,14 +1,14 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "lmslimquant_native/bindings.h"
+#include "bindings.h"
 
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/hip/HIPContext.h>
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <c10/cuda/CUDAGuard.h>
 
-#include "lmslimquant_native/smoothquant/smquant_gemm.cuh"
+#include "smoothquant/smquant_gemm.cuh"
 
 // Keep the vendor implementation's heavy HIP headers out of this C++ binding
 // translation unit.  These declarations match lmslimquant_native/quant_kernels/torch_bridge/call_gemm.h.
