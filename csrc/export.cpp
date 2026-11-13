@@ -202,6 +202,11 @@ void make_interleave_plan_(at::Tensor, int64_t, int64_t);
 
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace lightop::dsv41 {
+void fill_swa_ring_mapping(torch::Tensor mapping, const torch::Tensor& requests,
+    const torch::Tensor& prefixes, const torch::Tensor& table,
+    const c10::optional<torch::Tensor>& positions,
+    const c10::optional<torch::Tensor>& locations,
+    int64_t window, int64_t ring, int64_t block);
 void ragged_topk_postprocess(const torch::Tensor& scores, const torch::Tensor& selected,
     const torch::Tensor& offsets, const torch::Tensor& slots, torch::Tensor& pages,
     const c10::optional<torch::Tensor>& raw, bool mask_scores);
@@ -1162,6 +1167,11 @@ void mimo_v2_split_rope_vscale_kv_store(
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("fill_swa_ring_mapping", &lightop::dsv41::fill_swa_ring_mapping,
+        py::arg("mapping"), py::arg("requests"), py::arg("prefixes"),
+        py::arg("table"), py::arg("positions") = py::none(),
+        py::arg("locations") = py::none(), py::arg("window") = 512,
+        py::arg("ring") = 1024, py::arg("block") = 8);
   m.attr("PREFILL_GATHER_TRITON_NAN_COMPAT_VERSION") = 1;
   m.def("spark_mla_rope_cat_store", &at::native::spark_mla_rope_cat_store,
         "Spark MLA block-specialized BF16 RoPE, concat and FP8 KV store",

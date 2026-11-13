@@ -142,3 +142,55 @@ if __name__=='__main__':
         test();print(test.__name__+': PASS',flush=True)
     result=dict(correctness='PASS',rows=benchmark() if args.benchmark else [])
     if args.json:args.json.write_text(json.dumps(result,indent=2))
+
+
+@pytest.mark.parametrize("batch", [0, 1, 2])
+@pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_ring_mapping_graph_and_request_order(batch, dtype, explicit):
+    from lightop.kvcache import fill_swa_ring_mapping
+    torch.manual_seed(131105)
+    rows, columns = 8, 66000
+    table_cpu = torch.randperm(rows * columns, dtype=torch.int32).view(rows, columns)
+    table_cpu[5, 65024:65536] = table_cpu[3, 65024:65536]
+    table = table_cpu.cuda()
+    mapping = torch.full((rows * columns + 65,), -77, device="cuda", dtype=torch.int64)
+    requests = torch.zeros(batch * 2, device="cuda", dtype=dtype)[::2]
+    prefixes = torch.zeros(batch * 2, device="cuda", dtype=dtype)[::2]
+    positions = torch.empty(batch * 8, device="cuda", dtype=torch.int64) if explicit else None
+    locations = torch.empty(batch * 8, device="cuda", dtype=dtype) if explicit else None
+    def update(reqs, lengths):
+        requests.copy_(torch.tensor(reqs, device="cuda", dtype=dtype))
+        prefixes.copy_(torch.tensor(lengths, device="cuda", dtype=dtype))
+        if explicit:
+            positions.copy_((prefixes.long()[:, None] + torch.arange(8, device="cuda")).flatten())
+            locations.copy_(table[requests.long()[:, None], positions.view(batch, 8)].flatten())
+    def invoke():
+        fill_swa_ring_mapping(mapping, requests, prefixes, table, positions, locations)
+    update([3, 5][:batch], [65536, 65536][:batch])
+    invoke()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        invoke()
+    for reqs, lengths in [([3, 5], [65536, 65536]), ([1, 4], [0, 1]), ([6, 2], [511, 513])]:
+        reqs, lengths = reqs[:batch], lengths[:batch]
+        update(reqs, lengths)
+        expected = torch.full(mapping.shape, -77, dtype=torch.int64)
+        for r, prefix in zip(reqs, lengths):
+            for pos in range(prefix, prefix + 8):
+                expected[int(table_cpu[r, pos])] = r * 1024 + pos % 1024
+        for r, prefix in zip(reqs, lengths):
+            for pos in range(max(0, prefix - 512), prefix):
+                expected[int(table_cpu[r, pos])] = r * 1024 + pos % 1024
+        mapping.fill_(-77)
+        graph.replay()
+        assert torch.equal(mapping.cpu(), expected)
+
+
+def test_ring_mapping_invalid_optional_pair():
+    from lightop.kvcache import fill_swa_ring_mapping
+    mapping = torch.zeros(128, device="cuda", dtype=torch.int64)
+    req = torch.zeros(1, device="cuda", dtype=torch.int32)
+    table = torch.arange(128, device="cuda", dtype=torch.int32)[None, :]
+    with pytest.raises(RuntimeError):
+        fill_swa_ring_mapping(mapping, req, req, table, torch.arange(8, device="cuda"))
