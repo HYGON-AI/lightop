@@ -13,6 +13,7 @@ from lightop.attention import (
     fast_topk_transform_fused,
     fast_topk_transform_ragged_fused,
     topk_transform_512,
+    topk_transform_512_sparse_mask,
 )
 
 
@@ -20,6 +21,7 @@ SPARSE_ATTENTION_APIS = [
     "fast_topk_transform_fused",
     "fast_topk_transform_ragged_fused",
     "topk_transform_512",
+    "topk_transform_512_sparse_mask",
 ]
 
 

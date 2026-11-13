@@ -1579,6 +1579,7 @@ __device__ __forceinline__ uint32_t sparse_mask_valid_bits(
       : ((uint32_t{1} << valid_count) - 1u);
 }
 
+template <int kTopK>
 __device__ void sparse_mask_exact_topk(
     const float* __restrict__ values,
     const int16_t* __restrict__ nonzero_mask,
@@ -1661,15 +1662,15 @@ __device__ void sparse_mask_exact_topk(
     const int zero_count = tie_prefix[kThreadsPerBlock];
     sparse_fast_positive_count = positive_count;
     sparse_fast_path =
-        positive_count <= kTopK2048 &&
-        positive_count + zero_count >= kTopK2048;
+        positive_count <= kTopK &&
+        positive_count + zero_count >= kTopK;
   }
   __syncthreads();
 
   if (sparse_fast_path != 0) {
     int positive_pos = above_prefix[tid];
     int zero_pos = tie_prefix[tid];
-    const int zero_needed = kTopK2048 - sparse_fast_positive_count;
+    const int zero_needed = kTopK - sparse_fast_positive_count;
     for (int tile = tid; tile < fast_num_mask_tiles;
          tile += kThreadsPerBlock) {
       const int tile_start = tile * kSparseMaskTile;
@@ -1707,7 +1708,7 @@ __device__ void sparse_mask_exact_topk(
   }
 
   if (tid == 0) {
-    remaining = kTopK2048;
+    remaining = kTopK;
     prefix = 0u;
     prefix_mask = 0u;
   }
@@ -1787,7 +1788,7 @@ __device__ void sparse_mask_exact_topk(
   }
 
   const uint32_t threshold_key = prefix;
-  const int tie_base = kTopK2048 - remaining;
+  const int tie_base = kTopK - remaining;
   const int num_mask_tiles =
       (length + kSparseMaskTile - 1) / kSparseMaskTile;
 
@@ -1924,7 +1925,7 @@ void topk_transform_decode_kernel_sparse_mask(
   }
 
   __shared__ int selected_indices[kTopK2048];
-  sparse_mask_exact_topk(values, mask, length, selected_indices);
+  sparse_mask_exact_topk<kTopK2048>(values, mask, length, selected_indices);
   const int tid = threadIdx.x;
   dst[tid] = src[selected_indices[tid]];
   dst[tid + kThreadsPerBlock] =
@@ -1970,10 +1971,93 @@ void topk_transform_prefill_kernel_sparse_mask(
   }
 
   __shared__ int selected_indices[kTopK2048];
-  sparse_mask_exact_topk(values, mask, length, selected_indices);
+  sparse_mask_exact_topk<kTopK2048>(values, mask, length, selected_indices);
   dst[tid] = src[selected_indices[tid]];
   dst[tid + kThreadsPerBlock] =
       src[selected_indices[tid + kThreadsPerBlock]];
+}
+
+__global__ __launch_bounds__(kThreadsPerBlock)
+void topk_transform_512_kernel_sparse_mask_paged(
+    FastTopKParams params,
+    const int16_t* __restrict__ nonzero_mask,
+    int64_t mask_stride,
+    const int32_t* __restrict__ page_table,
+    int32_t* __restrict__ page_indices,
+    int32_t* __restrict__ raw_indices,
+    int64_t page_table_stride,
+    int64_t page_table_size,
+    int64_t score_width,
+    uint32_t page_bits) {
+  constexpr int kTopK = 512;
+  const int row = blockIdx.x;
+  const int tid = threadIdx.x;
+  const int64_t page_capacity =
+      page_table_size * (int64_t{1} << page_bits);
+  const int64_t max_length =
+      score_width < page_capacity ? score_width : page_capacity;
+  const int raw_length = params.lengths[row];
+  const int length = raw_length <= 0
+      ? 0
+      : static_cast<int>(raw_length < max_length ? raw_length : max_length);
+  const float* values = params.input + row * params.input_stride;
+  const int16_t* mask = nonzero_mask + row * mask_stride;
+  const int32_t* page_table_row = page_table + row * page_table_stride;
+  int32_t* out_page_indices = page_indices + row * kTopK;
+  int32_t* out_raw_indices =
+      raw_indices == nullptr ? nullptr : raw_indices + row * kTopK;
+
+  __shared__ int selected_indices[kTopK];
+  if (length <= kTopK) {
+    if (tid < kTopK) {
+      selected_indices[tid] = tid < length ? tid : -1;
+    }
+    __syncthreads();
+  } else {
+    sparse_mask_exact_topk<kTopK>(values, mask, length, selected_indices);
+
+    // Match the dense Top512 ABI: selected logical token IDs are ascending.
+    // Sorting IDs (rather than scores) happens only after exact selection.
+    for (int size = 2; size <= kTopK; size <<= 1) {
+      for (int stride = size >> 1; stride > 0; stride >>= 1) {
+        if (tid < kTopK) {
+          const int peer = tid ^ stride;
+          if (peer > tid) {
+            const int lhs = selected_indices[tid];
+            const int rhs = selected_indices[peer];
+            const bool ascending = (tid & size) == 0;
+            if ((ascending && lhs > rhs) || (!ascending && lhs < rhs)) {
+              selected_indices[tid] = rhs;
+              selected_indices[peer] = lhs;
+            }
+          }
+        }
+        __syncthreads();
+      }
+    }
+  }
+
+  if (tid >= kTopK) return;
+  const int raw_idx = selected_indices[tid];
+  if (out_raw_indices != nullptr) out_raw_indices[tid] = raw_idx;
+  if (raw_idx < 0 || raw_idx >= length) {
+    out_page_indices[tid] = -1;
+    return;
+  }
+  const uint32_t page_idx = static_cast<uint32_t>(raw_idx) >> page_bits;
+  if (page_idx >= static_cast<uint64_t>(page_table_size)) {
+    out_page_indices[tid] = -1;
+    return;
+  }
+  const int32_t physical_page = page_table_row[page_idx];
+  if (physical_page < 0) {
+    out_page_indices[tid] = -1;
+    return;
+  }
+  const uint32_t page_mask = (uint32_t{1} << page_bits) - 1u;
+  out_page_indices[tid] =
+      (static_cast<uint32_t>(physical_page) << page_bits) |
+      (static_cast<uint32_t>(raw_idx) & page_mask);
 }
 
 template <int kTopK, int kFinalSortTopK, int kNumThreadsPerBlock, bool useRadixSort>
@@ -2423,6 +2507,97 @@ void fast_topk_transform_sparse_mask_interface(
   TORCH_CHECK(
       result == cudaSuccess,
       "sparse-mask topk kernel failed:",
+      ::cudaGetErrorString(result));
+}
+
+void topk_transform_512_sparse_mask(
+    const at::Tensor& scores,
+    const at::Tensor& nonzero_mask,
+    const at::Tensor& seq_lens,
+    const at::Tensor& page_tables,
+    at::Tensor& out_page_indices,
+    int64_t page_size,
+    std::optional<at::Tensor> out_raw_indices_opt) {
+  constexpr int kTopK = 512;
+  CHECK_CUDA(scores);
+  CHECK_CUDA(nonzero_mask);
+  CHECK_CUDA(seq_lens);
+  CHECK_CUDA(page_tables);
+  CHECK_CUDA(out_page_indices);
+  if (out_raw_indices_opt.has_value()) CHECK_CUDA(out_raw_indices_opt.value());
+
+  const auto batch_size = scores.size(0);
+  TORCH_CHECK(
+      scores.scalar_type() == at::kFloat && scores.dim() == 2 &&
+          scores.stride(1) == 1,
+      "scores must be row-contiguous float32 [rows, width]");
+  TORCH_CHECK(
+      nonzero_mask.scalar_type() == at::kShort &&
+          nonzero_mask.dim() == 2 && nonzero_mask.stride(1) == 1 &&
+          nonzero_mask.size(0) == batch_size &&
+          nonzero_mask.size(1) ==
+              (scores.size(1) + kSparseMaskTile - 1) / kSparseMaskTile,
+      "nonzero_mask must be row-contiguous int16 [rows, ceil(width/16)]");
+  TORCH_CHECK(
+      seq_lens.scalar_type() == at::kInt && seq_lens.dim() == 1 &&
+          seq_lens.is_contiguous() && seq_lens.size(0) == batch_size,
+      "seq_lens must be contiguous int32 [rows]");
+  TORCH_CHECK(
+      page_tables.scalar_type() == at::kInt && page_tables.dim() == 2 &&
+          page_tables.stride(1) == 1 && page_tables.size(0) == batch_size,
+      "page_tables must be row-contiguous int32 [rows, pages]");
+  TORCH_CHECK(
+      out_page_indices.scalar_type() == at::kInt &&
+          out_page_indices.dim() == 2 && out_page_indices.is_contiguous() &&
+          out_page_indices.size(0) == batch_size &&
+          out_page_indices.size(1) == kTopK,
+      "out_page_indices must be contiguous int32 [rows, 512]");
+  TORCH_CHECK(
+      page_size > 0 && (page_size & (page_size - 1)) == 0,
+      "page_size must be a positive power of two");
+  TORCH_CHECK(
+      scores.device() == nonzero_mask.device() &&
+          scores.device() == seq_lens.device() &&
+          scores.device() == page_tables.device() &&
+          scores.device() == out_page_indices.device(),
+      "all sparse-mask Top512 tensors must be on the same device");
+
+  int32_t* out_raw_indices = nullptr;
+  if (out_raw_indices_opt.has_value()) {
+    auto& raw_indices = out_raw_indices_opt.value();
+    TORCH_CHECK(
+        raw_indices.scalar_type() == at::kInt &&
+            raw_indices.device() == scores.device() &&
+            raw_indices.dim() == 2 && raw_indices.is_contiguous() &&
+            raw_indices.sizes() == out_page_indices.sizes(),
+        "out_raw_indices must be contiguous int32 [rows, 512] on the same device");
+    out_raw_indices = raw_indices.data_ptr<int32_t>();
+  }
+
+  if (batch_size == 0) return;
+  const auto params = get_params(scores, seq_lens);
+  const auto stream = at::cuda::getCurrentCUDAStream().stream();
+  const auto page_bits = static_cast<uint32_t>(
+      __builtin_ctzll(static_cast<unsigned long long>(page_size)));
+  topk_transform_512_kernel_sparse_mask_paged<<<
+      dim3{static_cast<uint32_t>(batch_size)},
+      dim3{kThreadsPerBlock},
+      0,
+      stream>>>(
+      params,
+      nonzero_mask.data_ptr<int16_t>(),
+      nonzero_mask.stride(0),
+      page_tables.data_ptr<int32_t>(),
+      out_page_indices.data_ptr<int32_t>(),
+      out_raw_indices,
+      page_tables.stride(0),
+      page_tables.size(1),
+      scores.size(1),
+      page_bits);
+  const auto result = cudaGetLastError();
+  TORCH_CHECK(
+      result == cudaSuccess,
+      "topk_transform_512_sparse_mask kernel failed:",
       ::cudaGetErrorString(result));
 }
 
