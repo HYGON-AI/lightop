@@ -4,6 +4,7 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAException.h>
 #include "reduce.h"
+#include "moe_gate_utils.cuh"
 namespace at {
 namespace native {
 
@@ -11,30 +12,6 @@ namespace native {
  #define uint32_t unsigned int
 #endif
 
-
-using half2_t = __attribute__( (__vector_size__(2 * sizeof(_Float16)) )) _Float16;
-using half4_t = __attribute__( (__vector_size__(4 * sizeof(_Float16)) )) _Float16;
-using v4bh = __attribute__( (__vector_size__(4 * sizeof(short)) )) short;
-using float4_t = __attribute__( (__vector_size__(4 * sizeof(float)) )) float;
-struct half4x2{
-  half4_t data[2];
-};
-
-struct half2x4{
-  half2_t data[4];
-};
-
-template<bool is_half=true>
-inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& reg_b, float4_t& reg_c)
-{
-    #if defined(__gfx936__) || defined(__gfx928__)
-        if constexpr (is_half)reg_c=__builtin_amdgcn_mmac_f32_16x16x16f16(reg_a,reg_b,reg_c);
-        else reg_c=__builtin_amdgcn_mmac_f32_16x16x16bf16(*(v4bh*)&reg_a,*(v4bh*)&reg_b,reg_c);
-    #elif defined(__gfx938__)
-        if constexpr (is_half) reg_c = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(reg_a, reg_b, reg_c, false, false);
-        else reg_c = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(*(v4bh*)&reg_a, *(v4bh*)&reg_b, reg_c, false, false);
-    #endif
-}
 
 inline __device__ void v_dot2_f32_f16(float& a, const half2_t &  b,const half2_t &  c) {
   asm volatile("v_dot2_f32_f16 %0, %1, %2, %0;": "=v"(a): "v"(b), "v"(c), "0"(a));

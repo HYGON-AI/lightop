@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 // Native wave64 mapping follows this repository's csrc/gemm.cu.
+#include "hcu_mmac.h"
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -21,8 +22,8 @@ using B4 = short __attribute__((vector_size(8)));
 using F4 = float __attribute__((vector_size(16)));
 
 __device__ __forceinline__ void mmac(B4 a, B4 b, F4& acc) {
-#if defined(__gfx928__) || defined(__gfx936__)
-  acc = __builtin_amdgcn_mmac_f32_16x16x16bf16(a, b, acc);
+#if (defined(__gfx928__) || defined(__gfx92a__)) || defined(__gfx936__)
+  acc = HCU_MMAC_F32_BF16(a, b, acc);
 #elif defined(__gfx938__)
   acc = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(a, b, acc, false, false);
 #else

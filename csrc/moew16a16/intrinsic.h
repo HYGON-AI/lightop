@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #pragma once
+#include "hcu_mmac.h"
 #include "hip/hip_fp16.h"
 #include "hip/hip_bf16.h"
 #include "hip/hip_runtime.h"
@@ -366,7 +367,7 @@ __forceinline__ __device__ void buffer_load_lds_dwordx4(const T* ptr, T* lds_ptr
 
 
   int smem_offset;
-  #if (defined(__gfx936__) || defined(__gfx928__)) 
+  #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
     smem_offset = __builtin_amdgcn_readfirstlane(cvta_to_shared(dst_ptr));
   #elif defined(__gfx938__)
     smem_offset = __builtin_hcu_readfirstlane(cvta_to_shared(dst_ptr));
@@ -394,7 +395,7 @@ __forceinline__ __device__ void buffer_load_lds_dwordx1(const T* ptr, T* lds_ptr
   T *dst_ptr = reinterpret_cast<T*>(lds_ptr) + lds_offset;
 
   int smem_offset;
-  #if (defined(__gfx936__) || defined(__gfx928__)) 
+  #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
     smem_offset = __builtin_amdgcn_readfirstlane(cvta_to_shared(dst_ptr));
   #elif defined(__gfx938__)
     smem_offset = __builtin_hcu_readfirstlane(cvta_to_shared(dst_ptr));
@@ -422,7 +423,7 @@ __forceinline__ __device__ void buffer_load_lds_dwordx2(const T* ptr, T* lds_ptr
   constexpr int bytes_per_element = sizeof(T);
   T *dst_ptr = reinterpret_cast<T*>(lds_ptr) + lds_offset;
   int smem_offset;
-  #if (defined(__gfx936__) || defined(__gfx928__)) 
+  #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
     smem_offset = __builtin_amdgcn_readfirstlane(cvta_to_shared(dst_ptr));
   #elif defined(__gfx938__)
     smem_offset = __builtin_hcu_readfirstlane(cvta_to_shared(dst_ptr));
@@ -444,7 +445,7 @@ template<typename T>
 __device__ inline void amdgcn_buffer_load_dwordx4_lds(void* smem_ptr, const T* glob_ptr, int offset_v, const int offset_s) {
   // int smem_offset = cvta_to_shared(smem_ptr);
   int smem_offset_sgpr;
-  #if (defined(__gfx936__) || defined(__gfx928__)) 
+  #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
     smem_offset_sgpr = __builtin_amdgcn_readfirstlane(cvta_to_shared(smem_ptr));
   #elif defined(__gfx938__)
     smem_offset_sgpr = __builtin_hcu_readfirstlane(cvta_to_shared(smem_ptr));
@@ -470,7 +471,7 @@ __device__ inline void amdgcn_buffer_load_dwordx4_lds(void* smem_ptr, const T* g
 // 拷贝4字节（1xfloat）从全局内存到共享内存
 __device__ __forceinline__ void cp_async_buffer_load_dwordx4(void* smem_ptr, uintx4 global_addr, const int gvOffset_s, const int &gvOffset_v) {
   int smem_offset_sgpr;
-  #if (defined(__gfx936__) || defined(__gfx928__)) 
+  #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
     smem_offset_sgpr = __builtin_amdgcn_readfirstlane(cvta_to_shared(smem_ptr));
   #elif defined(__gfx938__)
     smem_offset_sgpr = __builtin_hcu_readfirstlane(cvta_to_shared(smem_ptr));
@@ -516,7 +517,7 @@ template<typename T>
 __device__ inline void amdgcn_buffer_load_dwordx2_lds(void* smem_ptr, T* glob_ptr, int offset_v, int offset_s) {
   // int smem_offset = cvta_to_shared(smem_ptr);
   int smem_offset_sgpr;
-  #if (defined(__gfx936__) || defined(__gfx928__)) 
+  #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
     smem_offset_sgpr = __builtin_amdgcn_readfirstlane(cvta_to_shared(smem_ptr));
   #elif defined(__gfx938__)
     smem_offset_sgpr = __builtin_hcu_readfirstlane(cvta_to_shared(smem_ptr));
@@ -617,8 +618,8 @@ template<class Element>
 __device__ floatx4 mmac(const typename vec<Element, 4>::type &v1, const typename vec<Element, 4>::type &v2, floatx4 &v3)
 {
     floatx4 v4f;
-    #if (defined(__gfx936__) || defined(__gfx928__)) 
-        v4f = __builtin_amdgcn_mmac_f32_16x16x16f16(v1, v2, v3);
+    #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
+        v4f = HCU_MMAC_F32_F16(v1, v2, v3);
     #elif defined(__gfx938__)
         v4f = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(v1, v2, v3,false,false);
     #endif
@@ -720,8 +721,8 @@ template<>
 __device__ typename vec<float, 4>::type mmac<half>(const typename vec<half, 4>::type &v1, const typename vec<half, 4>::type &v2, floatx4 &v3)
 {
     floatx4 v4f;
-    #if (defined(__gfx936__) || defined(__gfx928__))
-        v4f = __builtin_amdgcn_mmac_f32_16x16x16f16(v1, v2, v3);
+    #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
+        v4f = HCU_MMAC_F32_F16(v1, v2, v3);
     #elif defined(__gfx938__)
         v4f = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(v1, v2, v3,false,false);
     #endif
@@ -745,8 +746,8 @@ template<>
 __device__ floatx4 mmac<bhalf_t>(const typename vec<bhalf_t, 4>::type &v1, const typename vec<bhalf_t, 4>::type &v2, floatx4 &v3)
 {
     floatx4 v4f;
-    #if (defined(__gfx936__) || defined(__gfx928__)) 
-        v4f = __builtin_amdgcn_mmac_f32_16x16x16bf16(v1, v2, v3);
+    #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
+        v4f = HCU_MMAC_F32_BF16(v1, v2, v3);
     #elif defined(__gfx938__)
         v4f = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(v1, v2, v3,false,false);
     #endif

@@ -44,13 +44,14 @@
 // length are not written (clean_logits = false).
 //
 // Row pairing (verify): with rows_per_request = n > 1, rows [b n, b n + n) are
-// one request's draft tokens, sharing a block-table row and differing only in
-// context_lens. The kernel then walks ROUTES of up to two rows of one request,
+// one request's draft tokens, sharing physical pages over their common visible
+// prefix. Each row only needs its own visible page-table entries filled. The kernel then walks ROUTES of up to two rows of one request,
 // ceil(n / 2) per request, and scores both rows of a route in one KV pass: a
 // tile is loaded and decoded once and multiplied into both rows' accumulators.
 // The schedule, if any, is planned on the route lengths (the longer row's);
 // each row still stops writing at its own length. Pairing needs H <= 32 (two
 // rows' Q in VGPRs) and is skipped below kPagedMqaLogitsFp4PairMinRequests.
+#include "hcu_mmac.h"
 #include "paged_mqa_logits_fp4.h"
 #include <ATen/hip/HIPContext.h>
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
@@ -76,12 +77,13 @@ constexpr int kPageSlots = 64;
 constexpr int kPayloadBytes = 64;
 constexpr int kFp4PlannerThreads = 256;
 
-// The legacy LightOp planner uses a logical persistent-CTA count rather than
-// the physical CU count exposed by HIP.  Keep the same mapping for the new
-// planner so its [ctas + 1, 2] metadata has the shape consumed by the kernel.
+// Maximum persistent CTA counts by device. The planner can leave empty CTA
+// ranges for short walks; [ctas + 1, 2] still stores consecutive route/split
+// boundaries, including the exclusive sentinel.
 struct Fp4DeviceInfo {
     int physical_cus;
     int logical_sms;
+    bool reuse_dense_rows;
 };
 
 const Fp4DeviceInfo& get_fp4_device_info() {
@@ -98,12 +100,16 @@ const Fp4DeviceInfo& get_fp4_device_info() {
         const int cus = prop.multiProcessorCount;
         info.physical_cus = cus;
         if (arch.rfind("gfx936", 0) == 0 && cus == 80) {
-            info.logical_sms = 320;
+            // Long gfx936 walks benefit from eight CTAs per CU; the planner
+            // retains four for short walks and small unpaired batches.
+            info.logical_sms = 640;
+            info.reuse_dense_rows = true;
         } else if (arch.rfind("gfx938", 0) == 0 && cus == 64) {
-            info.logical_sms = 128;
+            info.logical_sms = 256;
+            info.reuse_dense_rows = true;
         } else if (arch.rfind("gfx938", 0) == 0 && cus == 72) {
             info.logical_sms = 144;
-        } else if (arch.rfind("gfx928", 0) == 0 && cus == 120) {
+        } else if ((arch.rfind("gfx928", 0) == 0 || arch.rfind("gfx92a", 0) == 0) && cus == 120) {
             info.logical_sms = 240;
         } else {
             TORCH_CHECK(false, "unsupported device config: ", arch,
@@ -130,6 +136,10 @@ __device__ __forceinline__ int fp4_route_split_count(
     return (length + kSplitKV - 1) / kSplitKV;
 }
 
+__host__ __device__ constexpr bool balance_row_schedule(int ctas, bool pair, int rows, int routes) {
+    return ctas == 256 && !pair && rows > 1 && routes <= 64;
+}
+
 // One-block FP4 planner.  The legacy planner uses a serial prefix scan and a
 // compile-time aligned-batch dispatch table.  This kernel keeps the prefix in
 // LDS, performs a work-efficient scan, and binary-searches the scan for each
@@ -139,37 +149,69 @@ __global__ void fp4_paged_logits_metadata(
     const int* context_lens, int batch, int routes, int rows_per_request,
     bool pair, int num_sms, int* schedule_metadata) {
     extern __shared__ uint32_t prefix[];
+    const bool balance = balance_row_schedule(num_sms, pair, rows_per_request, routes);
     const int tid = static_cast<int>(threadIdx.x);
     int scan_size = 1;
     while (scan_size < routes) scan_size <<= 1;
 
-    for (int i = tid; i < scan_size; i += blockDim.x) {
-        prefix[i] = i < routes
-            ? static_cast<uint32_t>(fp4_route_split_count(
-                  context_lens, i, batch, rows_per_request, pair))
-            : 0;
-    }
-    __syncthreads();
-
-    for (int offset = 1; offset < scan_size; offset <<= 1) {
-        for (int i = (tid + 1) * (offset << 1) - 1;
-             i < scan_size; i += blockDim.x * (offset << 1))
-            prefix[i] += prefix[i - offset];
+    // One wave owns at most 64 route lengths. Its shuffle scan avoids
+    // the up/down sweep's repeated CTA barriers for small verification batches.
+    if (routes == 1) {
+        if (tid == 0) prefix[0] = 0;
         __syncthreads();
-    }
-
-    if (tid == 0)
-        prefix[scan_size - 1] = 0;
-    __syncthreads();
-
-    for (int offset = scan_size >> 1; offset > 0; offset >>= 1) {
-        for (int i = (tid + 1) * (offset << 1) - 1;
-             i < scan_size; i += blockDim.x * (offset << 1)) {
-            const uint32_t left = prefix[i - offset];
-            prefix[i - offset] = prefix[i];
-            prefix[i] += left;
+    } else if (routes <= 64) {
+        if (tid < 64) {
+            const uint32_t value = tid < routes
+                ? static_cast<uint32_t>(fp4_route_split_count(
+                      context_lens, tid, batch, rows_per_request, pair)) : 0;
+            uint32_t inclusive = value;
+#pragma unroll
+            for (int offset = 1; offset < 64; offset <<= 1) {
+                const uint32_t previous = __shfl_up(inclusive, offset, 64);
+                if (tid >= offset) inclusive += previous;
+            }
+            const uint32_t exclusive = inclusive - value;
+            if (balance) {
+                // A route with more than twice the average work can leave the
+                // 192-CTA row-reuse schedule imbalanced. Use the full grid then.
+                const uint32_t total = __shfl(inclusive, 63, 64);
+                const bool heavy = uint64_t(value) * routes > uint64_t(total) * 2;
+                const bool any_heavy = __ballot(heavy) != 0;
+                if (tid == 0) prefix[scan_size] = any_heavy;
+            }
+            if (tid < scan_size) prefix[tid] = exclusive;
         }
         __syncthreads();
+    } else {
+        for (int i = tid; i < scan_size; i += blockDim.x) {
+            prefix[i] = i < routes
+                ? static_cast<uint32_t>(fp4_route_split_count(
+                      context_lens, i, batch, rows_per_request, pair))
+                : 0;
+        }
+        __syncthreads();
+
+        for (int offset = 1; offset < scan_size; offset <<= 1) {
+            for (int i = (tid + 1) * (offset << 1) - 1;
+                 i < scan_size; i += blockDim.x * (offset << 1))
+                prefix[i] += prefix[i - offset];
+            __syncthreads();
+        }
+
+        if (tid == 0)
+            prefix[scan_size - 1] = 0;
+        __syncthreads();
+
+        for (int offset = scan_size >> 1; offset > 0; offset >>= 1) {
+            for (int i = (tid + 1) * (offset << 1) - 1;
+                 i < scan_size; i += blockDim.x * (offset << 1)) {
+                const uint32_t left = prefix[i - offset];
+                prefix[i - offset] = prefix[i];
+                prefix[i] += left;
+            }
+            __syncthreads();
+        }
+
     }
 
     // Read the exclusive prefix at the last real route, then include that
@@ -177,11 +219,18 @@ __global__ void fp4_paged_logits_metadata(
     uint32_t total_splits = prefix[routes - 1] +
         static_cast<uint32_t>(fp4_route_split_count(
             context_lens, routes - 1, batch, rows_per_request, pair));
-    const uint32_t q = total_splits / static_cast<uint32_t>(num_sms);
-    const uint32_t r = total_splits % static_cast<uint32_t>(num_sms);
+    // Four CTAs per CU help general long walks on the 64-CU gfx938.
+    // Balanced row-reuse walks amortize query preparation over three CTAs per CU.
+    // Keep two CTAs per CU for fewer than four splits per CTA, where extra Q loads
+    // cost more than the additional parallelism. Unused CTAs get empty ranges.
+    const int active_sms = num_sms == 640 && total_splits < 8192 ? 320 :
+        num_sms == 256 && total_splits < 1024 ? 128 :
+        (balance && prefix[scan_size] == 0 ? 192 : num_sms);
+    const uint32_t q = total_splits / static_cast<uint32_t>(active_sms);
+    const uint32_t r = total_splits % static_cast<uint32_t>(active_sms);
     for (int sm_idx = tid; sm_idx <= num_sms; sm_idx += blockDim.x) {
-        const uint32_t target = static_cast<uint32_t>(sm_idx) * q +
-            min(static_cast<uint32_t>(sm_idx), r);
+        const uint32_t active_idx = static_cast<uint32_t>(min(sm_idx, active_sms));
+        const uint32_t target = active_idx * q + min(active_idx, r);
         int lo = 0, hi = routes;
         while (lo < hi) {
             const int mid = (lo + hi) >> 1;
@@ -327,8 +376,8 @@ __device__ __forceinline__ intx2 fp4_to_fp8(unsigned packed, int delta) {
 __device__ __forceinline__ floatx4 mmac_bf16(bf16x4 a, bf16x4 b, floatx4 c) {
 #if defined(__gfx938__)
     return __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(a, b, c, false, false);
-#elif defined(__gfx936__) || defined(__gfx928__)
-    return __builtin_amdgcn_mmac_f32_16x16x16bf16(a, b, c);
+#elif defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
+    return HCU_MMAC_F32_BF16(a, b, c);
 #else
     return c;
 #endif
@@ -349,10 +398,12 @@ __device__ __forceinline__ int wave_min(int x) {
 // group = scale group g) holds channels [32 g, 32 g + 32) of its head; FP8
 // step k uses channels 32 g + 8 k .. + 8, BF16 step k channels 32 g + 4 k .. + 4.
 // acc[h][j] of an MMAC holds head h * 16 + j * 4 + group of the lane's position.
-template<int H>
+template<int H, bool SharedBf = false>
 struct RowQ {
     static constexpr int HT = H / 16;
-    bf16x4 bf[HT][8];
+    // Used only by SharedBf: one decoded query is shared by the CTA waves.
+    bf16x4* bf_cache;
+    bf16x4 bf[SharedBf ? 1 : HT][SharedBf ? 1 : 8];
     float w[HT][4];
     // The row's smallest and largest Q scale, which bound the BF16 subnormal shift.
     int smin, smax;
@@ -378,10 +429,12 @@ struct RowQ {
 #pragma unroll
             for (int j = 0; j < 4; ++j) w[h][j] = weights[r * w_stride + h * 16 + j * 4 + group];
         }
+        if constexpr (!SharedBf) {
 #pragma unroll
-        for (int h = 0; h < HT; ++h) {
+            for (int h = 0; h < HT; ++h) {
 #pragma unroll
-            for (int k = 0; k < 8; ++k) bf[h][k] = decode_fp4x4((qb[h][k / 2] >> ((k & 1) * 16)) & 0xffffu, sq[h]);
+                for (int k = 0; k < 8; ++k) bf[h][k] = decode_fp4x4((qb[h][k / 2] >> ((k & 1) * 16)) & 0xffffu, sq[h]);
+            }
         }
         smax = 0;
         smin = 255;
@@ -401,6 +454,20 @@ struct RowQ {
             for (int k = 0; k < 4; ++k) f8[h][k] = fp4_to_fp8(qb[h][k], pq - sq[h]);
         }
 #endif
+        // Shared BF16 Q is independent of the architecture's FP8 support.
+        // All CTA waves participate in the barrier, including inactive tails.
+        if constexpr (SharedBf) {
+            if (threadIdx.x < 64) {
+#pragma unroll
+                for (int h = 0; h < HT; ++h) {
+#pragma unroll
+                    for (int k = 0; k < 8; ++k)
+                        bf_cache[(h * 8 + k) * 64 + threadIdx.x] = decode_fp4x4(
+                            (qb[h][k / 2] >> ((k & 1) * 16)) & 0xffffu, sq[h]);
+                }
+            }
+            __syncthreads();
+        }
     }
 };
 
@@ -442,15 +509,23 @@ struct Args {
 // Scores split `split` of the Rows consecutive rows from `first`, which share the
 // block-table row of `first`, for this wave's 64 positions. Each tile is loaded
 // and decoded once for all of them; row i stops writing at visible[i].
-template<int H, int TB, int Rows>
-__device__ __forceinline__ void score_split(const Args& a, const RowQ<H>* q, int first, int split,
+template<int H, int TB, int Rows, bool SharedBf = false>
+__device__ __forceinline__ void score_split(const Args& a, const RowQ<H, SharedBf>* q, int first, int split,
                                             const int* visible, int wave, int row, int group) {
     constexpr int HT = H / 16;
     const int base = split * kSplitKV + wave * (kTile * kTilesPerWave);
     int reach = visible[0];
     if constexpr (Rows == 2) reach = max(reach, visible[1]);
     if (base >= reach) return;
-    const int* bt = a.block_table + first * a.bt_stride;
+    // The shorter verify row may not have the longer row's tail page filled.
+    // Shared valid prefixes allow both rows to use the longer row's page table.
+    const int table_row = first + ((Rows == 2 && visible[1] > visible[0]) ? 1 : 0);
+    const int* bt = a.block_table + table_row * a.bt_stride;
+    int dense_page = 0;
+    if constexpr (TB == 64) {
+        if (row == 0 && group == 0) dense_page = bt[base / 64];
+        dense_page = __shfl(dense_page, 0, 64);
+    }
 
     // Issue every load of the wave's four tiles before any math, the scales
     // first: the shift test below waits on them, but not on the payloads.
@@ -463,7 +538,9 @@ __device__ __forceinline__ void score_split(const Args& a, const RowQ<H>* q, int
         sw[tile] = 0x7f7f7f7fu;
         payload[tile] = nullptr;
         if (t < reach) {
-            const int64_t slot = static_cast<int64_t>(bt[t / TB]) * TB + t % TB;
+            const int64_t slot = TB == 64
+                ? static_cast<int64_t>(dense_page) * 64 + t % 64
+                : static_cast<int64_t>(bt[t / TB]) * TB + t % TB;
             const uint8_t* page = a.kv + (slot / kPageSlots) * a.kv_page_stride;
             const int off = static_cast<int>(slot % kPageSlots);
             payload[tile] = page + off * kPayloadBytes + group * 16;
@@ -475,6 +552,102 @@ __device__ __forceinline__ void score_split(const Args& a, const RowQ<H>* q, int
         kb[tile] = uintx4{0, 0, 0, 0};
         if (payload[tile]) kb[tile] = *reinterpret_cast<const uintx4*>(payload[tile]);
     }
+#if defined(__gfx938__)
+    if constexpr (SharedBf && H == 32 && TB == 64) {
+        // A common K exponent gives pk == sk and an exact zero-offset FP8 conversion.
+        // The data payload may have any E2M1 values. Fallback handles mixed scales.
+        const unsigned common = __shfl(sw[0] & 255u, 0, 64);
+        const unsigned expected = common * 0x01010101u;
+        unsigned different = 0;
+        #pragma unroll
+        for (int tile = 0; tile < kTilesPerWave; ++tile) different |= sw[tile] ^ expected;
+        const int min_pivot = min(q[0].pq, q[Rows - 1].pq);
+        const int max_pivot = max(q[0].pq, q[Rows - 1].pq);
+        const bool q_eligible = q[0].fp8_ok && q[Rows - 1].fp8_ok;
+        const auto exponent_fits = [&](int pk) {
+            return min_pivot + pk - 127 >= 1 && max_pivot + pk - 127 <= 254;
+        };
+        if (q_eligible && exponent_fits(common)
+            && __ballot(different != 0) == 0) {
+            #pragma unroll
+            for (int tile = 0; tile < kTilesPerWave; ++tile) {
+                const int start = base + tile * kTile, t = start + row;
+                if (start >= reach) break;
+                intx2 k8[4];
+                #pragma unroll
+                for (int k = 0; k < 4; ++k) k8[k] = fp4_to_fp8(kb[tile][k], 0);
+                #pragma unroll
+                for (int i = 0; i < Rows; ++i) {
+                    if (start >= visible[i]) continue;
+                    floatx4 acc[HT] = {};
+                    #pragma unroll
+                    for (int k = 0; k < 4; ++k) {
+                        #pragma unroll
+                        for (int h = 0; h < HT; ++h)
+                            acc[h] = __builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(
+                                k8[k], q[i].f8[h][k], acc[h], false, false);
+                    }
+                    const float logit = head_sum<HT>(acc, q[i].w) * pow2(q[i].pq + static_cast<int>(common) - 127);
+                    if (group == 0 && t < visible[i]) a.out[(first+i)*a.out_stride+t] = logit;
+                }
+            }
+            return;
+        }
+        // One ineligible token is enough to rule out the full-wave shortcut.
+        // Test lane zero's first token before reducing four tiles of scales.
+        const unsigned first_scales = __shfl(sw[0], 0, 64);
+        const int f0 = first_scales & 255u, f1 = (first_scales >> 8) & 255u;
+        const int f2 = (first_scales >> 16) & 255u, f3 = first_scales >> 24;
+        const int first_span = max(max(f0, f1), max(f2, f3)) - min(min(f0, f1), min(f2, f3));
+        const bool eligible = q_eligible && first_span <= 11;
+        bool invalid = false;
+        if (eligible) {
+            #pragma unroll
+            for (int tile = 0; tile < kTilesPerWave; ++tile) {
+                const unsigned scales = sw[tile];
+                const int s0 = scales & 255u, s1 = (scales >> 8) & 255u;
+                const int s2 = (scales >> 16) & 255u, s3 = scales >> 24;
+                const int lo = min(min(s0, s1), min(s2, s3));
+                const int hi = max(max(s0, s1), max(s2, s3));
+                const int pk = min(hi, lo + 5);
+                invalid |= hi - lo > 11 || !exponent_fits(pk);
+            }
+        }
+        if (eligible && __ballot(invalid) == 0) {
+            #pragma unroll
+            for (int tile = 0; tile < kTilesPerWave; ++tile) {
+                const int start = base + tile * kTile, t = start + row;
+                if (start >= reach) break;
+                intx2 k8[4];
+                const unsigned scales = sw[tile];
+                const int s0 = scales & 255u, s1 = (scales >> 8) & 255u;
+                const int s2 = (scales >> 16) & 255u, s3 = scales >> 24;
+                const int lo = min(min(s0, s1), min(s2, s3));
+                const int hi = max(max(s0, s1), max(s2, s3));
+                const int pk = min(hi, lo + 5);
+                const int sk = (sw[tile] >> (group * 8)) & 255u;
+                #pragma unroll
+                for (int k = 0; k < 4; ++k)
+                    k8[k] = fp4_to_fp8(kb[tile][k], pk - sk);
+                #pragma unroll
+                for (int i = 0; i < Rows; ++i) {
+                    if (start >= visible[i]) continue;
+                    floatx4 acc[HT] = {};
+                    #pragma unroll
+                    for (int k = 0; k < 4; ++k) {
+                        #pragma unroll
+                        for (int h = 0; h < HT; ++h)
+                            acc[h] = __builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(
+                                k8[k], q[i].f8[h][k], acc[h], false, false);
+                    }
+                    const float logit = head_sum<HT>(acc, q[i].w) * pow2(q[i].pq + pk - 127);
+                    if (group == 0 && t < visible[i]) a.out[(first+i)*a.out_stride+t] = logit;
+                }
+            }
+            return;
+        }
+    }
+#endif
     // Subnormal BF16 MMAC results are flushed on gfx936 and rounded to a fixed
     // 2^-149 step on gfx938. A nonzero product is a multiple of 2^(sq + sk - 256),
     // so decoding K 2^shift larger with sq_min + k_min + shift >= 130 keeps every
@@ -515,7 +688,9 @@ __device__ __forceinline__ void score_split(const Args& a, const RowQ<H>* q, int
             const int s2 = (sw[tile] >> 16) & 255u, s3 = sw[tile] >> 24;
             const int kmax = max(max(s0, s1), max(s2, s3));
             const int kmin = min(min(s0, s1), min(s2, s3));
-            shift = max(0, min(need - kmin, min(252 - kmax, 368 - qmax - kmax)));
+            // Keep K operands normal as well as their products: gfx936 MMAC
+            // flushes BF16 subnormal inputs even when Q makes the product normal.
+            shift = max(0, min(max(need, 2) - kmin, min(252 - kmax, 368 - qmax - kmax)));
         }
         bool need_bf16 = true;
 #if defined(__gfx938__)
@@ -574,10 +749,26 @@ __device__ __forceinline__ void score_split(const Args& a, const RowQ<H>* q, int
             } else
 #endif
             {
+                if constexpr (SharedBf) {
+                    bf16x4 qbf[HT][8];
 #pragma unroll
-                for (int k = 0; k < 8; ++k) {
+                    for (int h = 0; h < HT; ++h) {
 #pragma unroll
-                    for (int h = 0; h < HT; ++h) acc[h] = mmac_bf16(kbf[k], q[i].bf[h][k], acc[h]);
+                        for (int k = 0; k < 8; ++k)
+                            qbf[h][k] = q[i].bf_cache[(h * 8 + k) * 64 + threadIdx.x % 64];
+                    }
+#pragma unroll
+                    for (int k = 0; k < 8; ++k) {
+#pragma unroll
+                        for (int h = 0; h < HT; ++h) acc[h] = mmac_bf16(kbf[k], qbf[h][k], acc[h]);
+                    }
+                } else
+                {
+#pragma unroll
+                    for (int k = 0; k < 8; ++k) {
+#pragma unroll
+                        for (int h = 0; h < HT; ++h) acc[h] = mmac_bf16(kbf[k], q[i].bf[h][k], acc[h]);
+                    }
                 }
                 logit = head_sum<HT>(acc, q[i].w);
                 if constexpr (Shift) logit = ldexpf(logit, -shift);
@@ -618,8 +809,8 @@ constexpr int kQRows = Pair ? 2 : 1;
 
 // Scores splits [begin, stop) of route (first, count). `loaded` is the first row
 // held in q, so Q is reloaded only when the route changes.
-template<int H, int TB, bool Pair>
-__device__ __forceinline__ void score_route(const Args& a, RowQ<H> (&q)[kQRows<H, Pair>], int& loaded,
+template<int H, int TB, bool Pair, bool SharedBf = false>
+__device__ __forceinline__ void score_route(const Args& a, RowQ<H, SharedBf> (&q)[kQRows<H, Pair>], int& loaded,
                                             int first, int count, int begin, int stop,
                                             const int (&visible)[2], int wave, int row, int group) {
     static_assert(!Pair || H <= 32, "paired rows need H <= 32");
@@ -675,6 +866,57 @@ __global__ void fp4_paged_logits_grid(const Args a) {
     int loaded = -1;
     score_route<H, TB, Pair>(a, q, loaded, first, count, split, split + 1, visible, wave, row, group);
 }
+
+// Keep both public schedule layouts. Paired routes own whole KV splits;
+// row routes divide their common splits by parity within each request.
+template<int H, bool PairedRoutes>
+__attribute__((amdgpu_flat_work_group_size(256, 256)))
+__global__ void fp4_paged_logits_row_reuse(const Args a) {
+    __shared__ bf16x4 cached_bf[2][(H / 16) * 8 * 64];
+    const int wave = threadIdx.x / 64, lane = threadIdx.x % 64;
+    const int row = lane % 16, group = lane / 16;
+    int r = a.schedule[blockIdx.x * 2], begin = a.schedule[blockIdx.x * 2 + 1];
+    const int end_r = a.schedule[blockIdx.x * 2 + 2], end_split = a.schedule[blockIdx.x * 2 + 3];
+    for (; r < a.routes && r <= end_r; ++r, begin = 0) {
+        int count;
+        const int owner = route_rows<PairedRoutes>(a, r, count);
+        int first = owner, slot = 0;
+        if constexpr (!PairedRoutes) {
+            // Row parity resets at every request, including after odd-sized groups.
+            const int offset = owner % a.rows_per_request;
+            slot = offset & 1;
+            first -= slot;
+            count = min(2, a.rows_per_request - (offset - slot));
+        }
+        const int visible[2] = {visible_len<64>(a, first),
+                                count == 2 ? visible_len<64>(a, first + 1) : 0};
+        const int longest = max(visible[0], visible[1]);
+        const int length = PairedRoutes ? longest : visible[slot];
+        const int owned_splits = (length + kSplitKV - 1) / kSplitKV;
+        const int stop = r == end_r ? min(end_split, owned_splits) : owned_splits;
+        if (begin >= stop) continue;
+        __syncthreads(); // All waves have finished reading the previous query cache.
+        if (count == 1 || (!PairedRoutes && longest <= 16 * kSplitKV)) {
+            RowQ<H, true> q[1];
+            q[0].bf_cache = cached_bf[0];
+            int loaded = -1;
+            const int single[2] = {visible[slot], 0};
+            score_route<H, 64, false>(a, q, loaded, owner, 1, begin, stop, single, wave, row, group);
+        } else {
+            const int other_splits = (visible[1 - slot] + kSplitKV - 1) / kSplitKV;
+            RowQ<H, true> q[2];
+            q[0].bf_cache = cached_bf[0];
+            q[1].bf_cache = cached_bf[1];
+            q[0].load(a.q_fp4, a.q_sf, a.weights, a.w_stride, first, row, group);
+            q[1].load(a.q_fp4, a.q_sf, a.weights, a.w_stride, first + 1, row, group);
+            for (int split = begin; split < stop; ++split) {
+                if (PairedRoutes || (split & 1) == slot || split >= other_splits)
+                    score_split<H, 64, 2>(a, q, first, split, visible, wave, row, group);
+            }
+        }
+    }
+}
+
 }  // namespace
 
 torch::Tensor paged_mqa_logits_fp4(
@@ -781,9 +1023,32 @@ torch::Tensor paged_mqa_logits_fp4(
 #define FP4_DISPATCH_TB(H) do {                                                         \
     if (table_block_size == 64) { FP4_LAUNCH(H, 64, false); } else { FP4_LAUNCH(H, 8, false); } \
 } while (0)
+    // Cached scoring uses the live visible lengths inside the kernel. The
+    // host only screens out launches whose entire output is short.
+    const bool cached_dense = persistent && table_block_size == 64 &&
+        heads <= 32 &&
+        // Draft suffixes alone do not amortize the unpaired query-cache setup.
+        max_context_len > 16 * kSplitKV + (pair ? 0 : rows_per_request - 1) &&
+        get_fp4_device_info().reuse_dense_rows;
     switch (heads) {
-        case 16: if (pair) { FP4_LAUNCH(16, 64, true); } else { FP4_DISPATCH_TB(16); } break;
-        case 32: if (pair) { FP4_LAUNCH(32, 64, true); } else { FP4_DISPATCH_TB(32); } break;
+        case 16:
+            if (cached_dense) {
+                if (pair) {
+                    fp4_paged_logits_row_reuse<16, true><<<grid, 256, 0, stream>>>(a);
+                } else {
+                    fp4_paged_logits_row_reuse<16, false><<<grid, 256, 0, stream>>>(a);
+                }
+            } else if (pair) { FP4_LAUNCH(16, 64, true); } else { FP4_DISPATCH_TB(16); }
+            break;
+        case 32:
+            if (cached_dense) {
+                if (pair) {
+                    fp4_paged_logits_row_reuse<32, true><<<grid, 256, 0, stream>>>(a);
+                } else {
+                    fp4_paged_logits_row_reuse<32, false><<<grid, 256, 0, stream>>>(a);
+                }
+            } else if (pair) { FP4_LAUNCH(32, 64, true); } else { FP4_DISPATCH_TB(32); }
+            break;
         case 64: FP4_DISPATCH_TB(64); break;
     }
 #undef FP4_DISPATCH_TB
@@ -831,13 +1096,22 @@ torch::Tensor get_paged_mqa_logits_fp4_metadata(
     TORCH_CHECK(num_sms == device_info.physical_cus,
                 "get_paged_mqa_logits_fp4_metadata: num_sms must match the "
                 "physical CU count (", device_info.physical_cus, ")");
-    auto schedule = torch::empty({device_info.logical_sms + 1, 2}, context_lens.options());
+    // gfx936 keeps four CTAs per CU for small/unpaired verification batches.
+    // Eligible larger batches reserve eight; the device planner selects four
+    // for fewer than 8192 live splits. Keep the measured gfx938 policy.
+    const int max_ctas = device_info.logical_sms == 640 &&
+        ((!pair && rows_per_request > 1) || routes < 16) ? 320 :
+        device_info.logical_sms == 256 && (routes < 32 || pair)
+        ? 128 : device_info.logical_sms;
+    auto schedule = torch::empty({max_ctas + 1, 2}, context_lens.options());
     auto stream = at::hip::getCurrentHIPStream();
+    // One extra word only for small balanced plans, including exact powers of two.
+    const int words = scan_size + balance_row_schedule(max_ctas, pair, rows_per_request, routes);
     fp4_paged_logits_metadata<<<1, kFp4PlannerThreads,
-                                static_cast<size_t>(scan_size) * sizeof(uint32_t),
+                                static_cast<size_t>(words) * sizeof(uint32_t),
                                 stream>>>(
         context_lens.data_ptr<int>(), batch, routes,
-        static_cast<int>(rows_per_request), pair, device_info.logical_sms,
+        static_cast<int>(rows_per_request), pair, max_ctas,
         schedule.data_ptr<int>());
     TORCH_CHECK(hipGetLastError() == hipSuccess,
                 "get_paged_mqa_logits_fp4_metadata: launch failed");

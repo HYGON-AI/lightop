@@ -21,7 +21,12 @@ def test_hipblaslt_w8a8_blockwise_gemm_export() -> None:
 
 
 def test_hipblaslt_w8a8_blockwise_gemm_matches_torch_reference() -> None:
-    if torch.cuda.get_device_name(0) == "BW151":
+    if not torch.cuda.is_available():
+        pytest.skip("requires a CUDA/ROCm device")
+    device = torch.cuda.get_device_properties(torch.cuda.current_device())
+    if device.gcnArchName.split(":")[0] == "gfx936":
+        pytest.skip("blockwise FP8 GEMM uses the PyTorch fallback on gfx936")
+    if device.name == "BW151":
         pytest.skip("BW151 hipBLASLt has no blockwise FP8 algorithm for this test")
 
     torch.manual_seed(10)

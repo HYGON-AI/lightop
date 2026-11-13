@@ -1,89 +1,88 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
+#include "awq_w4a16.h"
 #include "awq_w4a16_common.h"
+#include <c10/cuda/CUDAGuard.h>
 
-namespace at {
-namespace native {
-
-template <typename scalar_t>
-__global__ void awq_w4a16_dequant_marlin_kernel(scalar_t* ret, int32_t* weight, int32_t* scales_zeros, int N, int K, int MarlinTileK, int G)
-{
-
-    constexpr int AWQQuantSize = 8;
-    constexpr int VecSize = 8;
-    const int WarpSize = C10_WARP_SIZE;
-    const int NumWarps = __builtin_amdgcn_readfirstlane(blockDim.x / WarpSize);
-    const int tid = threadIdx.x;
-    const int warp_idx = __builtin_amdgcn_readfirstlane(tid / WarpSize);
-    const int lane = tid % WarpSize;
-    const int n = blockIdx.x * NumWarps + warp_idx;
-    if(n >= N) return;
-    const int n_int_weight_offset = (n*MarlinTileK / AWQQuantSize);
-    weight += n_int_weight_offset;
-    const int n_int_scale_offset = n*K/G;
-    scales_zeros += n_int_scale_offset;
-    const int n_ret_offset = n*K;
-    ret += n_ret_offset;
-    const int marlin_tile_k_int_offset = (N*MarlinTileK / AWQQuantSize);
-    const int num_marlin_tile_per_warp = WarpSize*VecSize / MarlinTileK;  // 通常可以一次性跳跃8个MarlinTileK，当MarlinTileK=256
-    half8_t b_vec;
-    for(int k = lane*VecSize; k < K; k += WarpSize*VecSize) {
-        const int marlin_tile_k_outer_id =  k / MarlinTileK;
-        const int marlin_tile_k_inner_id =  (k % MarlinTileK) / AWQQuantSize;
-        const int tb = *(weight + marlin_tile_k_outer_id * marlin_tile_k_int_offset + marlin_tile_k_inner_id);
-        half2_t t_scale = *(half2_t*)(scales_zeros + k/G);
-        dequantize_s4_to_fp16x2(tb, (uint32_t*)&b_vec);
-        auto b_vec_half = reinterpret_cast<half_t*>(&b_vec);
-
-        #pragma unroll
-        for(int kk = 0; kk < 8; kk++) {
-            b_vec_half[kk]  = (b_vec_half[kk] - t_scale[0]) * t_scale[1];
-        }
-        *(half8_t*)(ret + k) = b_vec;
-
-    }
-
-
+namespace {
+// Scalar output indexing also covers tails and padded column-major storage.
+template <bool Marlin>
+__global__ void dequant_awq_kernel(half_t* output, const uint32_t* weight,
+                                 const half2_t* scale_zero, int64_t n,
+                                 int64_t k, int64_t stride_k, int64_t group,
+                                 int64_t tile_k) {
+  for (int64_t index = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+       index < n * k; index += int64_t(blockDim.x) * gridDim.x) {
+    const int64_t row = index / k;
+    const int64_t col = index % k;
+    const int64_t packed_index = Marlin
+        ? (col / tile_k) * n * (tile_k / 8) + row * (tile_k / 8) + (col % tile_k) / 8
+        : row * (stride_k / 8) + col / 8;
+    const int lane = col % 8;
+    const int nibble = lane / 2 + (lane % 2) * 4;
+    const float q = float((weight[packed_index] >> (4 * nibble)) & 15);
+    const half2_t sz = scale_zero[row * (stride_k / group) + col / group];
+    output[index] = half_t((q + 64.0f - float(sz[0])) * float(sz[1]));
+  }
 }
+}  // namespace
 
-  
-void gemm_awq_w4a16_dequant(Tensor& ret, const Tensor& weight,const Tensor& scales_zeros, bool use_marlin)
-{
-    // int temp1;
-    // constexpr int BlockN = 16*16;
-    // constexpr int BlockK = 128;
-    // constexpr int AWQQuantSize = 8;
-    // const int N = use_marlin ? weight.sizes()[1]/16 : weight.sizes()[0];
-    // const int K = weight.sizes()[0]*BlockK;
-    // const int GroupSize = K / scales_zeros.sizes()[1];
-    // auto stream = at::cuda::getCurrentCUDAStream();
-    // auto out_dtype = ret.scalar_type();
-    // // printf("gemm_awq_w4a16_dequant: N=%d, K=%d, GroupSize=%d\n", N, K, GroupSize);
-    // Output_Type_SWITCH(out_dtype,[&] {
-    //     const int num_block_N = (N-1)/(BlockN)+1;
-    //     const int num_block_K = (K-1)/(BlockK)+1;
-    //     constexpr int NumWarps = BlockN/16;
-    //     // printf("num_block_N=%d, num_block_K=%d\n", num_block_N, num_block_K);
-    //     awq_w4a16_dequant_marlin_kernel<scalar_t,NumWarps,BlockN,BlockK>
-    //     <<<dim3(num_block_N,num_block_K),dim3(NumWarps*C10_WARP_SIZE)>>>((scalar_t*)ret.data_ptr(),
-    //     (int32_t*)weight.data_ptr(),(int32_t*)scales_zeros.data_ptr(),N,K,GroupSize);
-    // });
-    
-    const int N = ret.sizes()[0];
-    const int K = ret.sizes()[1];
-    const int MarlinTileK = K%256 == 0 ? 256 : 128;
-    const int G =K / scales_zeros.sizes()[1];
-    auto stream = at::cuda::getCurrentCUDAStream();
-    const int NumWarps = 4;
-    const int NumBlocks = (N+NumWarps-1)/NumWarps;
-    auto out_dtype = ret.scalar_type();
-    Output_Type_SWITCH(out_dtype,[&] {
-        awq_w4a16_dequant_marlin_kernel<scalar_t><<<NumBlocks, NumWarps*C10_WARP_SIZE, 0, stream>>>((scalar_t*)ret.data_ptr(),
-        (int32_t*)weight.data_ptr(),(int32_t*)scales_zeros.data_ptr(),N,K,MarlinTileK,G);
-    });
+namespace lightop::awq {
+void dequant_colmajor(at::Tensor& output, const at::Tensor& weight,
+                      const at::Tensor& scale_zero, int64_t n, int64_t k,
+                      int64_t stride_k, int64_t group_size) {
+  TORCH_CHECK(n >= 0 && k >= 0 && stride_k >= k && group_size > 0,
+              "invalid AWQ dimensions, stride, or group_size");
+  TORCH_CHECK(group_size % 8 == 0 && k % group_size == 0 &&
+              stride_k % group_size == 0, "AWQ K and stride must contain complete groups of 8 or more");
+  TORCH_CHECK(n <= INT32_MAX && stride_k <= INT32_MAX, "AWQ dimensions exceed int32 range");
+  const auto device = weight.device();
+  check_tensor(weight, at::kInt, device, n * (stride_k / 8), "weight");
+  check_tensor(scale_zero, at::kInt, device, n * (stride_k / group_size), "scale_zero");
+  check_tensor(output, at::kHalf, device, n * k, "output");
+  at::assert_no_overlap(output, weight);
+  at::assert_no_overlap(output, scale_zero);
+  const at::cuda::OptionalCUDAGuard guard(at::device_of(weight));
+  if (n == 0 || k == 0) return;
+  const int blocks = int(std::min<int64_t>((n * k + 255) / 256, 65535));
+  dequant_awq_kernel<false><<<blocks, 256, 0, at::cuda::getCurrentCUDAStream()>>>(
+      reinterpret_cast<half_t*>(output.data_ptr()),
+      reinterpret_cast<const uint32_t*>(weight.data_ptr()),
+      reinterpret_cast<const half2_t*>(scale_zero.data_ptr()), n, k, stride_k, group_size, 0);
+  check_launch();
 }
- 
+}  // namespace lightop::awq
 
+namespace at::native {
+void gemm_awq_w4a16_dequant(Tensor& output, const Tensor& weight,
+                            const Tensor& scale_zero, bool use_marlin) {
+  TORCH_CHECK(output.dim() == 2 && scale_zero.dim() == 2, "AWQ output and scale_zero must be matrices");
+  const int64_t n = output.size(0), k = output.size(1);
+  TORCH_CHECK(scale_zero.size(0) == n, "AWQ scale_zero rows must match output");
+  const int64_t groups = scale_zero.size(1);
+  TORCH_CHECK((k == 0 && groups == 0) || (groups > 0 && k % groups == 0), "invalid AWQ group count");
+  const int64_t group = k == 0 ? 8 : k / groups;
+  if (!use_marlin) {
+    lightop::awq::dequant_colmajor(output, weight, scale_zero, n, k, k, group);
+    return;
+  }
+  TORCH_CHECK(k % 128 == 0 && group % 8 == 0, "Marlin K must be divisible by 128 and group by 8");
+  const int64_t tile = k % 256 == 0 ? 256 : 128;
+  TORCH_CHECK(weight.dim() == 2 && weight.size(0) == k / tile &&
+              weight.size(1) == n * (tile / 8), "invalid Marlin weight shape");
+  lightop::awq::check_tensor(weight, at::kInt, output.device(), n * (k / 8), "weight");
+  lightop::awq::check_tensor(scale_zero, at::kInt, output.device(), n * groups, "scale_zero");
+  lightop::awq::check_tensor(output, at::kHalf, output.device(), n * k, "output");
+  at::assert_no_overlap(output, weight);
+  at::assert_no_overlap(output, scale_zero);
+  const at::cuda::OptionalCUDAGuard guard(at::device_of(output));
+  if (n == 0 || k == 0) return;
+  const int blocks = int(std::min<int64_t>((n * k + 255) / 256, 65535));
+  dequant_awq_kernel<true><<<blocks, 256, 0, at::cuda::getCurrentCUDAStream()>>>(
+      reinterpret_cast<half_t*>(output.data_ptr()),
+      reinterpret_cast<const uint32_t*>(weight.data_ptr()),
+      reinterpret_cast<const half2_t*>(scale_zero.data_ptr()), n, k, k, group, tile);
+  lightop::awq::check_launch();
 }
-}
+}  // namespace at::native

@@ -10,7 +10,7 @@ import copy
 from datetime import datetime
 import time
 
-from vllm import _custom_ops as vllm_ops
+from common.vllm_reference import vllm_ops
 
 
 from lightop.moe import fuse_groupgemm_permute_quant

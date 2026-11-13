@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <mutex>
 #include <type_traits>
@@ -562,8 +563,18 @@ static void fuse_silu_mul_clamp_quant_impl(
     mask_ptr = mask.data_ptr<int32_t>();
 
     if (num_experts != 0 && tokens_per_expert != 0) {
-      const int64_t expected_blocks =
+      int64_t expected_blocks =
           expect_m >= 0 ? int64_t(expect_m) : tokens_per_expert;
+#ifdef USE_ROCM
+      // Provide parallel expert rows for routing imbalance while retaining
+      // the existing INT8 kernel and all row arithmetic.
+      if (input.scalar_type() == at::ScalarType::BFloat16 && d == 2304 &&
+          !use_gelu && smooth_scale_ptr == nullptr &&
+          (num_experts == 16 || num_experts == 48) &&
+          std::strncmp(at::cuda::getDeviceProperties(input.get_device())->gcnArchName, "gfx936", 6) == 0) {
+        expected_blocks = std::max<int64_t>(expected_blocks, 16);
+      }
+#endif
       const int grid_y = static_cast<int>(std::max<int64_t>(
           1, std::min(tokens_per_expert, expected_blocks)));
       grid = dim3(static_cast<uint32_t>(num_experts),

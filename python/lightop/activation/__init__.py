@@ -3,6 +3,8 @@
 
 """Activation, gating, dropout and drop-path APIs."""
 
+from ..swiglu_oai_fp8_quant_contiguous import swiglu_oai_fp8_quant_contiguous
+
 from importlib import import_module
 
 from .existing import (
@@ -32,6 +34,8 @@ from .existing import (
     silu_and_mul_opt,
 )
 
+from .swiglu_oai_quant import swiglu_oai_fp8_quant_masked
+
 _NATIVE_APIS = {"lm_fuse_silu_mul_quant", "fused_clamp_smooth"}
 
 
@@ -45,6 +49,8 @@ def __getattr__(name):
 
 __all__ = [
     "fused_clamp_smooth",
+    "swiglu_oai_fp8_quant_contiguous",
+
     "AddDropout",
     "DropPath",
     "fuse_silu_and_mul",
@@ -70,4 +76,17 @@ __all__ = [
     "relu2",
     "ReluDropout",
     "silu_and_mul_opt",
+    "swiglu_oai_fp8_quant_masked",
+]
+
+from .swiglu_oai_int8_quant import (
+    swiglu_oai_int8_quant_contiguous,
+    swiglu_oai_int8_quant_masked,
+    swiglu_oai_int8_quant_masked_flat,
+)
+
+__all__ += [
+    "swiglu_oai_int8_quant_contiguous",
+    "swiglu_oai_int8_quant_masked",
+    "swiglu_oai_int8_quant_masked_flat",
 ]

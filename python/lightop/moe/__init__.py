@@ -5,6 +5,9 @@
 
 from importlib import import_module
 
+from .mega_gate import bf16_mega_gate_hcu
+from .router import bf16_router_gemm
+
 from .config import (
     get_moe_cuda_config,
     get_moe_cuda_config_w16a16,
@@ -76,6 +79,8 @@ def __getattr__(name):
 
 
 __all__ = [
+    "bf16_router_gemm",
+    "bf16_mega_gate_hcu",
     "ep_build_m_indices",
     "ep_gather",
     "ep_scatter",

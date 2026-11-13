@@ -151,6 +151,9 @@ ROUTING_APIS = [
     "moe_sum",
     "topk_ids_postprocess",
     "topk_softmax",
+    "bf16_mega_gate_hcu",
+    "moe_fused_gate_sqrtsoftplus_v41_hcu_deepep",
+    "moe_fused_gate_sqrtsoftplus_v41_hcu_fused",
 ]
 
 
