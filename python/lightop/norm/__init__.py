@@ -30,6 +30,8 @@ from .existing import (
     gemma_rms_norm_per_token_fp8_quant,
     gemma_rmsnorm,
     rms_norm_dynamic_per_token_quant,
+    rms_norm_dynamic_per_token_quant_sglang,
+    mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang,
     rms_norm,
     rms_norm_no_weight,
     rms_norm_per_token_fp8_quant,
@@ -52,6 +54,8 @@ def __getattr__(name):
 
 
 __all__ = [
+    "rms_norm_dynamic_per_token_quant_sglang",
+    "mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang",
     "AddLn",
     "CeluGN",
     "fuse_fill_rms_x2_concat",
