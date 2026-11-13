@@ -4,7 +4,7 @@
 import pytest
 import torch
 
-from lightop.rmsnorm import rms_norm_dynamic_per_token_quant_sglang
+from lightop.norm import rms_norm_dynamic_per_token_quant_sglang
 
 
 EPSILON = 1.0e-5
