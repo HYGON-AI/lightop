@@ -14,6 +14,7 @@ from .dequantize_k_cache_paged import (
     dsv4_dequantize_k_cache_paged_out,
 )
 from .topk_workspace import (
+    prefill_gather_physical_kv,
     dsv4_dequantize_sparse_topk_out,
     dsv4_pack_c4_topk_workspace,
     dsv4_pack_sparse_topk_workspace,
@@ -28,6 +29,7 @@ from .native import (
 
 __all__ = [
     "minimax_cp_cache_scatter",
+    "prefill_gather_physical_kv",
 
     "dsv4_pack_c4_topk_workspace",
     "dsv4_pack_sparse_topk_workspace",
