@@ -57,8 +57,8 @@ __device__ __forceinline__ T silu_kernel(const T& x) {
     const float e = __builtin_amdgcn_exp2f(-xf * LOG2E);
 
     const float denominator = 1.0f + e;
-
-    const float sigmoid =  __builtin_amdgcn_rcp(denominator);
+    // // 明确使用 FP32 reciprocal
+    const float sigmoid =  __builtin_amdgcn_rcpf(denominator);
 
     return static_cast<T>(xf * sigmoid);
 }
