@@ -160,10 +160,13 @@ def paged_mqa_logits_fp4(q, q_sf, kv_cache, weights, context_lens, block_table,
     get_paged_mqa_logits_metadata(context_lens, 64, CUs) and may be None.
 
     rows_per_request n > 1 (table_block_size 64, H <= 32 only) declares every
-    n rows one request's draft tokens sharing the block table row of the
-    first; with at least PAGED_MQA_LOGITS_FP4_PAIR_MIN_REQUESTS requests the
-    rows are then scored in pairs, one KV read per pair, and fewer run as
-    n = 1. Results are identical either way. A schedule must be planned on
+    n rows one request's draft tokens sharing physical pages over their common
+    visible prefix. Each row only needs its visible table entries filled.
+    With at least PAGED_MQA_LOGITS_FP4_PAIR_MIN_REQUESTS requests the
+    schedule uses paired routes; fewer requests use individual row routes.
+    The long dense persistent path can reuse same-request rows with either
+    layout on gfx936 (80 CUs) and gfx938 (64 CUs). gfx936 uses BF16 MMAC and
+    uses 320 or 640 CTAs depending on batch and live split count. A legacy schedule must be planned on
     paged_mqa_logits_route_lens(context_lens, n) instead of context_lens.
     """
     from .. import op
@@ -188,6 +191,7 @@ def paged_mqa_logits_route_lens(context_lens, rows_per_request):
     alone, [B / n * ceil(n / 2)]; otherwise context_lens itself, [B]."""
     from .. import op
 
+    # Read the native gate so this helper agrees with the planner and kernel.
     lens = context_lens.reshape(-1)
     if (rows_per_request > 1 and lens.numel() // rows_per_request
             >= op.PAGED_MQA_LOGITS_FP4_PAIR_MIN_REQUESTS):
@@ -611,121 +615,135 @@ def prefill_sparse_mqa_fused(
             raise ValueError("invalid fused query geometry")
         if not freqs_cis.is_complex() or not supports_prefill_sparse_fusion(q):
             raise ValueError("complex frequencies and gfx936/gfx938 required")
-    else:
-        query_data = prepare_prefill_sparse_query(
-            q,
-            raw_weights,
-            freqs_cis,
-            positions,
-            rope_dim,
-            weight_scale,
-            compress_ratio,
-            width,
-        )
     num_sms = torch.cuda.get_device_properties(q.device).multi_processor_count
-    # Match the original conservative chunk budget; page tables remain broadcast
-    # views because native metadata accepts stride0==0 (no R-by-pages copy).
-    offset = 0
+    # Pack only live queries. Keep their original output/request coordinates;
+    # a zero-history request must not consume another request's KV pages.
+    requests = []
+    offset = packed_rows = 0
+    max_pages = 0
     for request, (count, length, source) in enumerate(
         zip(rows_per_request, context_lens_per_request, request_block_ids)
     ):
-        end = offset + count
-        if count == 0 or length == 0:
-            out_page_indices[offset:end, :index_topk].fill_(-1)
+        if not count or not length:
+            out_page_indices[offset : offset + count, :index_topk].fill_(-1)
             if out_raw_indices is not None:
-                out_raw_indices[offset:end, :index_topk].fill_(-1)
-            offset = end
-            continue
-        request_id = request_pool_indices[request : request + 1]
-        sort_options = _index_sort_options(q, "candidate")
-        row_flags = (
-            torch.empty((count,), device=q.device, dtype=torch.int32)
-            if sort_options is not None
-            else None
-        )
-        if source.stride(1) != 1 or source.device != q.device:
-            raise ValueError(
-                "published candidates must have contiguous columns on the query device"
-            )
-        if combined:
-            payload, sf, weights, lengths, valid_lens, pairs, zeros, blocks, pages = (
-                _prepare_prefill_sparse_request(
-                    q[offset:end],
-                    raw_weights[offset:end],
-                    freqs_cis,
-                    positions[offset:end],
-                    rope_dim,
-                    weight_scale,
-                    compress_ratio,
-                    width,
-                    source,
-                    req_to_token,
-                    request_id,
-                    length,
-                    page_size,
-                    row_flags=row_flags,
-                )
-            )
+                out_raw_indices[offset : offset + count, :index_topk].fill_(-1)
         else:
-            payload, sf, weights, lengths, valid_lens, pairs, zeros = [
-                v[offset:end] for v in query_data
-            ]
-            pairs = query_data[5]
-            blocks, pages = prepare_prefill_sparse_candidates(
-                source,
-                width,
-                req_to_token,
-                request_id,
-                length,
-                compress_ratio,
-                page_size,
-                row_flags=row_flags,
+            if source.stride(1) != 1 or source.device != q.device:
+                raise ValueError(
+                    "published candidates must have contiguous columns on the query device"
+                )
+            requests.append((request, offset, packed_rows, count, length, source))
+            packed_rows += count
+            max_pages = max(max_pages, _cdiv(length, page_size))
+        offset += count
+    splits = _cdiv(width, 80)
+    query_bytes = heads * (64 + 4 + 4)
+    row_bytes = (
+        width * (8 * 4 + 4)
+        + max_pages * 4
+        + splits * (16 + 80 * 8 + 16)
+        + query_bytes
+        + index_topk * 16
+    )
+    # Include temporary preparation/cat buffers and padded per-row page tables,
+    # as well as the original scorer/metadata/TopK allowance above.
+    row_bytes += query_bytes + width * 4 + max_pages * 4 + 5 * 4
+    step = min(65535, max(1, budget_bytes // max(1, row_bytes)))
+    sort_options = _index_sort_options(q, "candidate")
+    for begin in range(0, packed_rows, step):
+        stop = min(begin + step, packed_rows)
+        parts, tables, flags, segments = [], [], [], []
+        pair_offset = 0
+        for request, base, packed_base, count, length, source in requests:
+            lo, hi = max(begin, packed_base), min(stop, packed_base + count)
+            if lo >= hi:
+                continue
+            first, last = lo - packed_base, hi - packed_base
+            start, finish = base + first, base + last
+            request_id = request_pool_indices[request : request + 1]
+            row_flags = (
+                torch.empty((last - first,), device=q.device, dtype=torch.int32)
+                if sort_options is not None
+                else None
             )
-        splits = _cdiv(width, 80)
-        row_bytes = (
-            width * (8 * 4 + 4)
-            + pages.numel() * 4
-            + splits * (16 + 80 * 8 + 16)
-            + heads * (64 + 4 + 4)
-            + index_topk * 16
+            if combined:
+                data = list(_prepare_prefill_sparse_request(
+                    q[start:finish], raw_weights[start:finish], freqs_cis,
+                    positions[start:finish], rope_dim, weight_scale,
+                    compress_ratio, width, source[first:last], req_to_token,
+                    request_id, length, page_size, row_flags=row_flags,
+                ))
+                pages = data.pop()
+            else:
+                data = list(prepare_prefill_sparse_query(
+                    q[start:finish], raw_weights[start:finish], freqs_cis,
+                    positions[start:finish], rope_dim, weight_scale,
+                    compress_ratio, width,
+                ))
+                blocks, pages = prepare_prefill_sparse_candidates(
+                    source[first:last], width, req_to_token, request_id,
+                    length, compress_ratio, page_size, row_flags=row_flags,
+                )
+                data.append(blocks)
+            # The planner may pair two rows only within one request. An odd
+            # request tail gets a distinct ID from the following request head.
+            if pair_offset:
+                data[5].add_(pair_offset)
+            pair_offset += _cdiv(last - first, 2)
+            parts.append(data)
+            tables.append(pages)
+            flags.append(row_flags)
+            segments.append((request, start, finish))
+        payload, sf, weights, lengths, valid_lens, pairs, zeros, blocks = [
+            items[0] if len(items) == 1 else torch.cat(items, dim=0)
+            for items in zip(*parts)
+        ]
+        page_columns = max(table.numel() for table in tables)
+        page_rows = [
+            (table if table.numel() == page_columns else
+             torch.nn.functional.pad(table, (0, page_columns - table.numel()), value=-1))
+            .unsqueeze(0).expand(part[0].shape[0], -1)
+            for table, part in zip(tables, parts)
+        ]
+        page_table = page_rows[0] if len(page_rows) == 1 else torch.cat(page_rows, dim=0)
+        packed_flags = (
+            None if flags[0] is None
+            else flags[0] if len(flags) == 1
+            else torch.cat(flags, dim=0)
         )
-        step = max(1, budget_bytes // max(1, row_bytes))
-        for begin in range(0, count, step):
-            stop = min(begin + step, count)
-            start = offset + begin
-            finish = offset + stop
-            block_chunk = blocks[begin:stop]
-            logits = _prefill_current_sparse_backend().prefill_sparse_fp8_fp4_paged_mqa_logits(
-                payload[begin:stop], sf[begin:stop], k_cache, weights[begin:stop],
-                lengths[begin:stop], pages[None, :].expand(stop - begin, -1),
-                pairs[: stop - begin], block_chunk, width, 8, num_sms, True, 0,
-            )
-            compact = torch.empty(
-                (stop - begin, index_topk), device=q.device, dtype=torch.int32
-            )
-            topk_transform_ragged_v2(
-                logits,
-                valid_lens[begin:stop],
-                out_offsets=zeros[begin:stop],
-                out_indices=compact,
-            )
+        # Do not retain per-request preparation buffers beside the next logits
+        # allocation. Single-segment tensors remain owned by the packed fields.
+        del parts, tables, flags, page_rows, data, pages, row_flags
+        paired_rows = all((finish - start) % 2 == 0 for _, start, finish in segments[:-1])
+        logits = _prefill_current_sparse_backend().prefill_sparse_fp8_fp4_paged_mqa_logits(
+            payload, sf, k_cache, weights, lengths, page_table, pairs, blocks,
+            width, 8, num_sms, paired_rows, 0,
+        )
+        compact = torch.empty(
+            (stop - begin, index_topk), device=q.device, dtype=torch.int32
+        )
+        topk_transform_ragged_v2(
+            logits, valid_lens, out_offsets=zeros, out_indices=compact,
+        )
+        offset = 0
+        for request, start, finish in segments:
+            end = offset + finish - start
             finalize_prefill_sparse_indices(
-                compact,
-                block_chunk,
-                lengths[begin:stop],
-                valid_lens[begin:stop],
-                out_logical=None
-                if out_raw_indices is None
+                compact[offset:end], blocks[offset:end], lengths[offset:end],
+                valid_lens[offset:end],
+                out_logical=None if out_raw_indices is None
                 else out_raw_indices[start:finish, :index_topk],
                 req_to_token=req_to_token,
-                request_id=request_id,
+                request_id=request_pool_indices[request : request + 1],
                 compress_ratio=compress_ratio,
                 out_page_indices=out_page_indices[start:finish, :index_topk],
-                candidate_flags=None if row_flags is None else row_flags[begin:stop],
+                candidate_flags=None if packed_flags is None else packed_flags[offset:end],
             )
-            del compact
-            del logits
-        offset = end
+            offset = end
+        del logits, compact, payload, sf, weights, lengths, valid_lens
+        del pairs, zeros, blocks, page_table, packed_flags
+
 
 
 __all__ = list(dict.fromkeys([*__all__, "supports_prefill_sparse_fusion", "prepare_prefill_sparse_query", "prepare_prefill_sparse_candidates", "finalize_prefill_sparse_indices", "prefill_sparse_mqa_fused"]))

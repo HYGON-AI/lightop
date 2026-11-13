@@ -141,6 +141,60 @@ __global__ __launch_bounds__(kCycleThreads) void short_cycles(
   }
 }
 
+// For 32368 rows / CP8, nine cycles have length 3596. Snapshot sparse
+// boundaries first so independent segments can rotate without cross-block races.
+// Every nontrivial cycle intersects a boundary; row 32367 is a fixed point.
+constexpr int kSegmentThreads = 256;
+constexpr int kRegularBoundaries = (32368 + 63) / 64;
+constexpr int kBoundaries = kRegularBoundaries + 2;
+
+__device__ __forceinline__ int boundary_index(int row) {
+  if ((row & 63) == 0)
+    return row >> 6;
+  if (row == 10789)
+    return kRegularBoundaries;
+  if (row == 21578)
+    return kRegularBoundaries + 1;
+  return -1;
+}
+
+__device__ __forceinline__ int boundary_row(int index) {
+  return index < kRegularBoundaries ? index * 64
+                                   : (index - kRegularBoundaries + 1) * 10789;
+}
+
+__global__ void save_cp8_boundaries(const uint32_t *data, uint32_t *saved,
+                                    int64_t words) {
+  const int64_t tiles = (words + kSegmentThreads - 1) / kSegmentThreads;
+  for (int64_t task = blockIdx.x; task < kBoundaries * tiles; task += gridDim.x) {
+    const int index = task / tiles;
+    const int64_t column = (task % tiles) * kSegmentThreads + threadIdx.x;
+    if (column < words)
+      saved[index * words + column] = data[boundary_row(index) * words + column];
+  }
+}
+
+__global__ void rotate_cp8_segments(uint32_t *data, const uint32_t *saved,
+                                    int64_t words) {
+  const int64_t tiles = (words + kSegmentThreads - 1) / kSegmentThreads;
+  for (int64_t task = blockIdx.x; task < kBoundaries * tiles; task += gridDim.x) {
+    const int64_t column = (task % tiles) * kSegmentThreads + threadIdx.x;
+    if (column >= words)
+      continue;
+    int current = boundary_row(task / tiles);
+    for (;;) {
+      const int next = (current & 7) * 4046 + (current >> 3);
+      const int boundary = boundary_index(next);
+      if (boundary >= 0) {
+        data[current * words + column] = saved[boundary * words + column];
+        break;
+      }
+      data[current * words + column] = data[next * words + column];
+      current = next;
+    }
+  }
+}
+
 // General shapes, arbitrary CP, and unaligned rows use the same row cycles.
 // Only one row tile is retained while the other rows rotate into it. The byte
 // path preserves odd widths and unaligned storage offsets without typed loads.
@@ -297,6 +351,21 @@ void interleave_rows_(at::Tensor data, int64_t cp_size,
   }
   if (row_bytes % sizeof(uint32_t) == 0 && pointer % alignof(uint32_t) == 0) {
     const int64_t words = row_bytes / sizeof(uint32_t);
+    if (rows == 32368 && cp_size == 8 && leaders.numel() == 10) {
+      // Sparse snapshots use 508/32368 of the input bytes, not a full output.
+      auto saved = at::empty({kBoundaries, words}, data.options().dtype(at::kInt));
+      const int64_t blocks = std::min(
+          kMaxBlocks, kBoundaries * ((words + kSegmentThreads - 1) / kSegmentThreads));
+      save_cp8_boundaries<<<blocks, kSegmentThreads, 0, stream>>>(
+          static_cast<const uint32_t *>(data.data_ptr()),
+          reinterpret_cast<uint32_t *>(saved.data_ptr<int32_t>()), words);
+      C10_CUDA_KERNEL_LAUNCH_CHECK();
+      rotate_cp8_segments<<<blocks, kSegmentThreads, 0, stream>>>(
+          static_cast<uint32_t *>(data.data_ptr()),
+          reinterpret_cast<const uint32_t *>(saved.data_ptr<int32_t>()), words);
+      C10_CUDA_KERNEL_LAUNCH_CHECK();
+      return;
+    }
     const int64_t tile = kGenericThreads * kGenericItems;
     const int64_t blocks =
         std::min(kMaxBlocks, leaders.numel() * ((words + tile - 1) / tile));

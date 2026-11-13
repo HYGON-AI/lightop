@@ -17,26 +17,14 @@ namespace native {
 
 static inline __device__ int8_t float_to_int8_rn(float x) {
 #ifdef USE_ROCM
-  static constexpr auto i8_min =
-      static_cast<float>(std::numeric_limits<int8_t>::min());
-  static constexpr auto i8_max =
-      static_cast<float>(std::numeric_limits<int8_t>::max());
+    // 先进行 FP32 限幅，保证转换结果处于 INT8 范围
+    x = fminf(127.0f, fmaxf(-128.0f, x));
 
-  // To match the rounding mode of CUDA, we use nearbyint.
-  // It uses the current rounding mode, which is always FE_TONEAREST on HIP.
-  // If that changes in the future, we may need to set the rounding mode
-  // explicitly, either at runtime or compile time.
-  float dst = std::nearbyint(x);
+    // FP32 -> INT32，round-to-nearest-even
+    int32_t q = __float2int_rn(x);
 
-  // saturate
-
-  // See https://github.com/pytorch/pytorch/issues/127666
-  // See https://github.com/llvm/llvm-project/issues/95183
-  // hip-clang std::clamp __glibcxx_assert_fail host function when building on
-  // Arch/gcc14. The following replaces std::clamp usage with similar logic
-  // dst = std::clamp(dst, i8_min, i8_max);
-  dst = (dst < i8_min) ? i8_min : (dst > i8_max) ? i8_max : dst;
-  return static_cast<int8_t>(dst);
+    // INT32 -> INT8
+    return static_cast<int8_t>(q);
 #else
   // CUDA path
   uint32_t dst;
@@ -63,9 +51,18 @@ template <typename T>
 __device__ __forceinline__ T silu_kernel(const T& x) {
   // x * sigmoid(x)
   // return (T)(((float)x) / (1.0f + __expf((float)-x)));
-  constexpr float LOG2E = 1.44269504088896340736f;
-  return (T)(((float)x) / (1.0f + __builtin_amdgcn_exp2f(-((float)x) * LOG2E)));
+    constexpr float LOG2E = 1.44269504088896340736f;
+
+    const float xf = static_cast<float>(x);
+    const float e = __builtin_amdgcn_exp2f(-xf * LOG2E);
+
+    const float denominator = 1.0f + e;
+    // // 明确使用 FP32 reciprocal
+    const float sigmoid =  __builtin_amdgcn_rcpf(denominator);
+
+    return static_cast<T>(xf * sigmoid);
 }
+
 
 template <typename scalar_t,
           bool act_first>
