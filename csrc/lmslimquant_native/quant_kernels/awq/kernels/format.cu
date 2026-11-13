@@ -336,13 +336,10 @@ void PrintData(hipStream_t stream, const T* input,int size)
     delete[] h_data;
 }
 
-#define INSTANTIATEPRINT(T)  \
-template void PrintData(hipStream_t stream, const T* input,int size);
+// PrintData is a debugging template, not an operator entry point. Do not
+// explicitly instantiate it in the production extension: FP16 host printing
+// introduces compiler-runtime dependencies even when no caller uses it.
 
-INSTANTIATEPRINT(__half)
-INSTANTIATEPRINT(float)
-INSTANTIATEPRINT(half2)
-INSTANTIATEPRINT(uint32_t)
 
 
 void dequant_gemm_rocblas_gpu(hipStream_t stream,

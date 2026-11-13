@@ -34,6 +34,7 @@
 // scale spans, FP32 accumulators, ReLU, FP32 weights and FP32 head reduction.
 // An exponent-normalized FP32 scalar path handles exceptional scale ranges;
 // there are no FP64 operations and no BF16 weights/output branch.
+#include "hcu_mmac.h"
 #include "paged_sparse_mqa_logits.h"
 #include "paged_sparse_mqa_logits_initialization.h"
 #include "paged_sparse_mqa_logits_metadata.h"
@@ -187,8 +188,8 @@ __device__ __forceinline__ intx2 fp4_to_fp8(unsigned packed, int delta) {
 __device__ __forceinline__ floatx4 mmac_bf16(bf16x4 a, bf16x4 b, floatx4 c) {
 #if defined(__gfx938__)
     return __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(a, b, c, false, false);
-#elif defined(__gfx936__) || defined(__gfx928__)
-    return __builtin_amdgcn_mmac_f32_16x16x16bf16(a, b, c);
+#elif defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
+    return HCU_MMAC_F32_BF16(a, b, c);
 #else
     return c;  // Host entry rejects unsupported architectures.
 #endif
@@ -3435,7 +3436,7 @@ torch::Tensor fp8_fp4_paged_sparse_mqa_logits(
     TORCH_CHECK(hipGetDeviceProperties(&prop,q.get_device()) == hipSuccess,
                 "fp8_fp4_paged_sparse_mqa_logits: cannot query HIP device");
     const std::string arch(prop.gcnArchName);
-    TORCH_CHECK(arch.rfind("gfx938",0) == 0 || arch.rfind("gfx936",0) == 0 || arch.rfind("gfx928",0) == 0,
+    TORCH_CHECK(arch.rfind("gfx938",0) == 0 || arch.rfind("gfx936",0) == 0 || arch.rfind("gfx928",0) == 0 || arch.rfind("gfx92a",0) == 0,
                 "fp8_fp4_paged_sparse_mqa_logits: unsupported architecture ",arch);
     const int64_t num_sms = num_sms_opt.value_or(prop.multiProcessorCount);
     TORCH_CHECK(num_sms > 0 && num_sms <= 256, "fp8_fp4_paged_sparse_mqa_logits: num_sms must be in [1,256]");
@@ -4121,8 +4122,8 @@ __device__ __forceinline__ intx2 fp4_to_fp8(unsigned packed, int delta) {
 __device__ __forceinline__ floatx4 mmac_bf16(bf16x4 a, bf16x4 b, floatx4 c) {
 #if defined(__gfx938__)
     return __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(a, b, c, false, false);
-#elif defined(__gfx936__) || defined(__gfx928__)
-    return __builtin_amdgcn_mmac_f32_16x16x16bf16(a, b, c);
+#elif defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
+    return HCU_MMAC_F32_BF16(a, b, c);
 #else
     return c;  // Host entry rejects unsupported architectures.
 #endif
@@ -7355,7 +7356,7 @@ torch::Tensor fp8_fp4_paged_sparse_mqa_logits(
     TORCH_CHECK(hipGetDeviceProperties(&prop,q.get_device()) == hipSuccess,
                 "fp8_fp4_paged_sparse_mqa_logits: cannot query HIP device");
     const std::string arch(prop.gcnArchName);
-    TORCH_CHECK(arch.rfind("gfx938",0) == 0 || arch.rfind("gfx936",0) == 0 || arch.rfind("gfx928",0) == 0,
+    TORCH_CHECK(arch.rfind("gfx938",0) == 0 || arch.rfind("gfx936",0) == 0 || arch.rfind("gfx928",0) == 0 || arch.rfind("gfx92a",0) == 0,
                 "fp8_fp4_paged_sparse_mqa_logits: unsupported architecture ",arch);
     const int64_t num_sms = num_sms_opt.value_or(prop.multiProcessorCount);
     TORCH_CHECK(num_sms > 0 && num_sms <= 256, "fp8_fp4_paged_sparse_mqa_logits: num_sms must be in [1,256]");

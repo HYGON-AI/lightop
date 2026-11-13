@@ -8,7 +8,8 @@
 namespace lightop::deep_gemm {
 
 /// \brief Fewest requests (batch / rows_per_request) at which paged_mqa_logits_fp4
-///        pairs rows; below it the call runs as rows_per_request 1. Measured on gfx938
+///        uses paired schedule routes; below it metadata has one route per row.
+///        The cached scorer can still reuse KV without changing that layout. Measured on gfx938
 ///        (64 CUs), H 32, n 6: fewer requests leave CUs idle and pairing lengthens CTAs.
 inline constexpr int64_t kPagedMqaLogitsFp4PairMinRequests = 8;
 
@@ -30,11 +31,14 @@ inline constexpr int64_t kPagedMqaLogitsFp4MaxScheduleRows = 16384;
 /// \param table_block_size positions per block_table entry, 8 or 64
 /// \param out optional preallocated FP32 [B,>=max_context_len] with contiguous columns
 /// \param rows_per_request n > 1 declares rows [b n, b n + n) one request's draft tokens
-///        sharing block_table row b n (table_block_size 64 and H <= 32 only). With at
+///        sharing physical pages over their common visible prefix (TB 64, H <= 32).
+///        Only visible table entries need to be filled. With at
 ///        least kPagedMqaLogitsFp4PairMinRequests requests the kernel scores routes of
 ///        rows (b n + 2 j, b n + 2 j + 1), j < ceil(n / 2), in one KV pass each; fewer
-///        run as n = 1. Logits are identical either way; the schedule is planned on
-///        paged_mqa_logits_route_lens, which applies the same threshold
+///        use individual row routes. The long dense persistent scorer can reuse
+///        same-request rows with either layout on gfx936 (80 CUs) and gfx938 (64 CUs).
+///        gfx936 uses BF16 MMAC and 320/640 CTAs according to batch and live work. The schedule is
+///        planned on paged_mqa_logits_route_lens, which applies the same threshold.
 /// \return FP32 [B,max_context_len]; columns at or past context_lens[b] are unwritten
 torch::Tensor paged_mqa_logits_fp4(
     const torch::Tensor& q, const torch::Tensor& q_sf, const torch::Tensor& kv_cache,

@@ -7,7 +7,7 @@
 #include <hip/hip_bf16.h>
 #include <hip/hip_fp16.h>
 
-#if defined(__gfx936__) || defined(__gfx928__)
+#if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
   #include <hip/hip_fp8.h>
 #endif
 
@@ -50,7 +50,7 @@ using fp16 = half;
 using int8 = int8_t;
 using bf16 = __hip_bfloat16;
 
-#if defined(__gfx936__) || defined(__gfx928__)
+#if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
 using fp8e4m3 = __hip_fp8_e4m3;
 using fp8e5m2 = __hip_fp8_e5m2;
 #else
@@ -104,7 +104,7 @@ TRANSFORMER_ENGINE_TYPE_NAME(int64_t)
 TRANSFORMER_ENGINE_TYPE_NAME(float)
 TRANSFORMER_ENGINE_TYPE_NAME(__half)
 TRANSFORMER_ENGINE_TYPE_NAME(__hip_bfloat16)
-#if defined(__gfx936__) || defined(__gfx928__)
+#if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
 TRANSFORMER_ENGINE_TYPE_NAME(__hip_fp8_e4m3)
 TRANSFORMER_ENGINE_TYPE_NAME(__hip_fp8_e5m2)
 #endif
@@ -120,7 +120,7 @@ struct TypeExtrema<int8> {
   static constexpr float max = 127.0f;
 };
 
-#if defined(__gfx936__) || defined(__gfx928__)
+#if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
 template <>
 struct TypeExtrema<fp8e4m3> {
   static constexpr float max = 448.0f;

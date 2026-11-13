@@ -14,7 +14,7 @@ from ..moe_fused_gate import (
     moe_fused_gate_sqrtsoftplus_v41_hcu_fused,
     moe_fused_gate_sqrtsoftplus_v41_hcu_deepep,
 )
-
+from .mega_gate import bf16_mega_gate_hcu
 
 topk_ids_postprocess = op.topk_ids_postprocess
 topk_softmax = op.topk_softmax
@@ -49,6 +49,7 @@ def moe_align_block_size_out(
     )
 
 __all__ = [
+    "bf16_mega_gate_hcu",
     "kimi_k2_moe_fused_gate",
     "moe_align_block_size",
     "moe_align_block_size_out",

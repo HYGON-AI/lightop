@@ -7,55 +7,62 @@
 #include <ATen/hip/HIPContext.h>
 
 
-torch::Tensor run_gemm_w4a16_v2(torch::Tensor input,torch::Tensor weight,torch::Tensor zeros_and_scales,//torch::Tensor output,
-                    int m,int n,int k,int StrideA,int StrideB,int StrideB_padded,int StrideC,int group_size,
-                    torch::Tensor splitK_padA_workspace,int splitK_padA_workspace_size,string modelsize_key_ptr) { //,hipStream_t stream_id
-    // 检查tensor是否在GPU上
-    if (!input.is_cuda()||!weight.is_cuda()||!zeros_and_scales.is_cuda()) {
-        throw std::runtime_error("all Tensor must be on the CUDA device.");
-    }
-
-    auto options = torch::TensorOptions().dtype(input.dtype()).device(input.device());
-    at::Tensor output = torch::empty({m,n}, options);
-
-    const hipStream_t stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA();
-
-    gemm_w4a16(reinterpret_cast<const void*>(input.data_ptr()),
-                            reinterpret_cast<const void*>(weight.data_ptr()),
-                            reinterpret_cast<const void*>(zeros_and_scales.data_ptr()),
-                            reinterpret_cast<void*> (output.data_ptr()),
-                            m,  //bs
-                            n,
-                            k,
-                            StrideA,
-                            StrideB,
-                            StrideC,
-                            group_size,
-                            reinterpret_cast<void*> (splitK_padA_workspace.data_ptr()),
-                            splitK_padA_workspace_size,
-                            stream,
-                            (void*)modelsize_key_ptr.c_str()
-                        );
-    return output;
+torch::Tensor run_gemm_w4a16_v2(torch::Tensor input, torch::Tensor weight,
+    torch::Tensor zeros_and_scales, int m, int n, int k, int StrideA,
+    int StrideB, int StrideB_padded, int StrideC, int group_size,
+    torch::Tensor splitK_padA_workspace, int splitK_padA_workspace_size,
+    string modelsize_key_ptr) {
+  TORCH_CHECK(m >= 0 && n >= 0 && k >= 0 && StrideA >= k &&
+              StrideB >= k && StrideB_padded == StrideB && StrideC == n,
+              "invalid AWQ dimensions or strides");
+  TORCH_CHECK(group_size > 0 && group_size % 8 == 0 &&
+              k % group_size == 0 && StrideB % group_size == 0,
+              "AWQ K and weight stride must contain complete quantization groups");
+  const auto device = input.device();
+  lightop::awq::check_tensor(input, at::kHalf, device,
+      m == 0 ? 0 : int64_t(m - 1) * StrideA + k, "input");
+  lightop::awq::check_tensor(weight, at::kInt, device,
+      int64_t(n) * (StrideB / 8), "weight");
+  lightop::awq::check_tensor(zeros_and_scales, at::kInt, device,
+      int64_t(n) * (StrideB / group_size), "scale_zero");
+  const at::cuda::OptionalCUDAGuard guard(at::device_of(input));
+  auto output = at::empty({m, n}, input.options());
+  if (m == 0 || n == 0) return output;
+  if (k == 0) return output.zero_();
+  // Legacy workspace/config arguments remain in the ABI. Source kernels own
+  // their temporary storage; vendor template names do not select this backend.
+  auto a = input.as_strided({m, k}, {StrideA, 1});
+  if (m <= 64 && n % 16 == 0 && k % 128 == 0 && group_size % 32 == 0) {
+    a = a.contiguous();
+    auto packed = weight.view({-1}).narrow(0, 0, int64_t(n)*(StrideB/8))
+                      .view({n, StrideB / 8}).narrow(1, 0, k / 8).contiguous();
+    auto sz = zeros_and_scales.view({-1}).narrow(0, 0, int64_t(n)*(StrideB/group_size))
+                  .view({n, StrideB / group_size})
+                  .narrow(1, 0, k / group_size).contiguous();
+    at::native::gemm_awq_w4a16(output, a, packed, sz, 1, 1, 16, 128, 1, false);
+  } else {
+    auto dequant = at::empty({n, k}, input.options());
+    lightop::awq::dequant_colmajor(dequant, weight, zeros_and_scales, n, k, StrideB, group_size);
+    at::mm_out(output, a, dequant.transpose(0, 1));
+  }
+  return output;
 }
 
-void run_awq_input_padding(torch::Tensor input, int m,int k,int StrideB_padded, torch::Tensor splitK_padA_workspace,int splitK_padA_workspace_size) {
-    //,hipStream_t stream_id
-    // 检查tensor是否在GPU上
-    if (!input.is_cuda()) {
-        throw std::runtime_error("all Tensor must be on the CUDA device.");
-    }
-    const hipStream_t stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA();
-    input_padding(reinterpret_cast<const void*>(input.data_ptr()),
-                    reinterpret_cast<void*> (splitK_padA_workspace.data_ptr()),
-                    splitK_padA_workspace_size,
-                    m,
-                    k,
-                    StrideB_padded,
-                    stream);
-    return;
+void run_awq_input_padding(torch::Tensor input, int m, int k, int padded_k,
+    torch::Tensor workspace, int workspace_size) {
+  TORCH_CHECK(m >= 0 && k >= 0 && padded_k >= k, "invalid AWQ padding dimensions");
+  const int64_t count = int64_t(m) * padded_k;
+  lightop::awq::check_tensor(input, at::kHalf, input.device(), int64_t(m) * k, "input");
+  lightop::awq::check_tensor(workspace, at::kHalf, input.device(), count, "workspace");
+  TORCH_CHECK(workspace_size >= 0 && int64_t(workspace_size) >= count * 2,
+              "AWQ padding workspace_size is insufficient");
+  const at::cuda::OptionalCUDAGuard guard(at::device_of(input));
+  auto output = workspace.view({-1}).narrow(0, 0, count).view({m, padded_k});
+  auto source = input.view({-1}).narrow(0, 0, int64_t(m) * k).view({m, k});
+  at::assert_no_overlap(output, source);
+  output.zero_();
+  output.narrow(1, 0, k).copy_(source);
 }
-
 
 void run_dequant_gemm_rocblas_gpu(
         torch::Tensor input,
@@ -138,30 +145,15 @@ void run_permute_trans(torch::Tensor _sz,
 
     }
 
-void run_awq_dequant_colmajor(torch::Tensor dqweight,
-                                torch::Tensor qweight,
-                                torch::Tensor zeros_and_scales,
-                                int64_t k,
-                                int64_t k_pad,
-                                int64_t n,
-                                int64_t group_size,
-                                int64_t workspace_size)
-    {
-        const at::cuda::OptionalCUDAGuard device_guard(device_of(qweight));
-        // int workspace_size = k * n * 2 + 1;
-        const hipStream_t stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA();
-        dequant_w4_gemm_colmajor(
-                                (const uint32_t*) qweight.data_ptr(),
-                                (const half2*) zeros_and_scales.data_ptr(),
-                                (half*) dqweight.data_ptr(),
-                                workspace_size,
-                                n,
-                                k,
-                                k_pad,
-                                group_size,
-                                stream);
-        return;
-    }
+void run_awq_dequant_colmajor(torch::Tensor output, torch::Tensor weight,
+    torch::Tensor scale_zero, int64_t k, int64_t padded_k, int64_t n,
+    int64_t group_size, int64_t workspace_size) {
+  TORCH_CHECK(n >= 0 && k >= 0 && n <= INT32_MAX && k <= INT32_MAX,
+              "invalid AWQ output dimensions");
+  TORCH_CHECK(workspace_size >= 0 && workspace_size >= n * k * 2,
+              "AWQ dequant workspace_size is insufficient");
+  lightop::awq::dequant_colmajor(output, weight, scale_zero, n, k, padded_k, group_size);
+}
 
 void run_dequant_w4_gemm_colmajor(torch::Tensor dqweight,
                                 torch::Tensor qweight,

@@ -1,12 +1,12 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
+from lightop.attention import mqa_logits as categorized_mqa_logits
 import torch
 import pytest
 import torch.nn.functional as F
 import triton
 import triton.testing
-from lightop import op
 import lightop
 import pdb
 import pandas as pd  # Added for Excel export
@@ -130,7 +130,7 @@ def _check_int8_signed_ks_ke(m, n, h, use_d_out=False):
         )
         kwargs["D_out"] = d_out
 
-    actual = lightop.mqa_logits(
+    actual = categorized_mqa_logits(
         q,
         k,
         weights_effective,
@@ -274,9 +274,9 @@ if __name__ == "__main__":
                     
                 def run_lightop():
                     if is_fp8 or is_int8:
-                        return lightop.mqa_logits(q_in, k_in, weights_in, ks, ke, scale_in)
+                        return categorized_mqa_logits(q_in, k_in, weights_in, ks, ke, scale_in)
                     else:
-                        return lightop.mqa_logits(q_in, k_in, weights_in, ks, ke)
+                        return categorized_mqa_logits(q_in, k_in, weights_in, ks, ke)
                 
                 if test_speed:
                     for _ in range(10):

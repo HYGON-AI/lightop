@@ -6,9 +6,19 @@ import pytest
 from typing import Optional
 import triton.language as tl
 from lightop import envs as lsenvs
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from common.w8a8_cache_json import W8a8GetCacheJSON
+from lightop.activation import silu_and_mul_opt
 from lightop.moe import moe_align_block_size
-from release_moe_w8a8_marlin import test_single_gemm_performance_accuracy, moe_kernel_prepare_input, _fused_moe_helper
+from release_moe_w8a8_marlin import (
+    test_single_gemm_performance_accuracy as _single_gemm_performance_accuracy,
+    moe_kernel_prepare_input,
+    _fused_moe_helper,
+)
 import argparse
 import ast
 import os
@@ -143,6 +153,10 @@ def get_ep_topk_ids_weight(
     return shuffled_topk_ids, topk_weights
 
 
+@pytest.mark.parametrize(
+    "m,n1,k1,n2,k2,topk,E",
+    [(m, 256, 256, 256, 128, 8, 256) for m in (1, 17, 129)],
+)
 def test_moe_performance_accuracy(
     m: int, n1: int, k1: int, n2: int, k2: int, topk: int, E: int,
     out_dtype: Type[torch.dtype] = torch.bfloat16,
@@ -229,6 +243,12 @@ def test_moe_performance_accuracy(
                 cuda_config1 = {'BLOCK_SIZE_M': blockM_configs_decode.get(0, 16), 'MODE': 0, 'DELTA': 1}
                 cuda_config2 = {'BLOCK_SIZE_M': blockM_configs_decode.get(0, 16), 'MODE': 0, 'DELTA': 1}
     
+    # JSON files may contain Triton tile sizes rather than the native MODE/DELTA ABI.
+    if "MODE" not in cuda_config1 or "DELTA" not in cuda_config1:
+        cuda_config1 = {"BLOCK_SIZE_M": 16, "MODE": 0, "DELTA": 1}
+    if "MODE" not in cuda_config2 or "DELTA" not in cuda_config2:
+        cuda_config2 = {"BLOCK_SIZE_M": 16, "MODE": 0, "DELTA": 1}
+
     # 为Triton设置不同的配置（使用默认blockM配置）
     triton_config1 = {
         'BLOCK_SIZE_M': blockM_configs.get(0, 64) if m > M_THRESHOLD else blockM_configs_decode.get(0, 16),
@@ -268,7 +288,7 @@ def test_moe_performance_accuracy(
    
 
     # 测试GEMM1
-    gemm1_time, gemm1_accuracy = test_single_gemm_performance_accuracy(
+    gemm1_time, gemm1_accuracy = _single_gemm_performance_accuracy(
         input_data, w1_marlin, weight1, weight1_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
         num_tokens_post_padded, topk, cuda_config1, triton_config1, "gemm1", True, per_channel_quant, compute_type
     )
@@ -280,7 +300,7 @@ def test_moe_performance_accuracy(
     
     # 执行激活函数
     intermediate_cache2 = torch.empty((m * topk, n1 // 2), device=input_data.device, dtype=input_data.dtype)
-    torch.ops._C.silu_and_mul(intermediate_cache2, intermediate_cache1.view(-1, n1))
+    silu_and_mul_opt(intermediate_cache2, intermediate_cache1.view(-1, n1))
     
     # 准备第二阶段的输入
     qinput2, qa2_scale = moe_kernel_prepare_input(
@@ -298,7 +318,7 @@ def test_moe_performance_accuracy(
     
 
     # 测试GEMM2
-    gemm2_time, gemm2_accuracy = test_single_gemm_performance_accuracy(
+    gemm2_time, gemm2_accuracy = _single_gemm_performance_accuracy(
         intermediate_cache2, w2_marlin, weight2, weight2_scale, topk_ids, topk_weights, sorted_token_ids, expert_ids,
         num_tokens_post_padded, 1, cuda_config2, triton_config2, "gemm2", False, per_channel_quant, compute_type
     )
@@ -306,6 +326,7 @@ def test_moe_performance_accuracy(
     # 整体精度验证已在单个GEMM测试中完成
     # 这里我们基于单个GEMM的结果来判断整体精度
     overall_accuracy = gemm1_accuracy and gemm2_accuracy
+    assert overall_accuracy, f"MoE EP8 mismatch: GEMM1={gemm1_accuracy}, GEMM2={gemm2_accuracy}"
     
     #GEMM1+GEMM2的总耗时
     total_time = gemm1_time + gemm2_time # 转换为微秒

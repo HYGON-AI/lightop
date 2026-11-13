@@ -200,8 +200,72 @@ def test_topk_transform_512():
 
     check_invalid_page_size()
     print("PASS invalid page_size check")
-    run_performance()
+
+
+def test_long_rows_exact_adaptive_sampler():
+    if __package__:
+        from .test_adaptive_topk import assert_fixed_pairs, fixed_call, fixed_inputs
+    else:
+        from test_adaptive_topk import assert_fixed_pairs, fixed_call, fixed_inputs
+
+    for length in (131071, 131072, 131073, 262144, 262656, 262657):
+        for kind in ("dense", "negative", "zero", "sparse", "narrow",
+                     "overflow", "underfill", "special"):
+            args, (_, expected_raw) = fixed_inputs(kind, length, TOPK)
+            mapped, raw = fixed_call(args, TOPK)
+            assert_fixed_pairs(mapped, raw, args, expected_raw)
+
+    # Small-batch retry guard and the DSpark query-row regimes on either side.
+    if __package__:
+        from .test_adaptive_topk import fixed_reference
+    else:
+        from test_adaptive_topk import fixed_reference
+    generator = torch.Generator().manual_seed(20261028)
+    length = 262144
+    for rows in (1, 5, 6, 7, 12, 18, 24):
+        scores = torch.randn(rows, length, generator=generator)
+        lengths = torch.full((rows,), length, dtype=torch.int32)
+        pages = torch.arange((length + PAGE_SIZE - 1) // PAGE_SIZE,
+                             dtype=torch.int32)[None, :].repeat(rows, 1) * 3 + 17
+        _, expected_raw = fixed_reference(scores, lengths, pages, TOPK, PAGE_SIZE)
+        args = (scores.cuda(), lengths.cuda(), pages.cuda())
+        mapped, raw = fixed_call(args, TOPK)
+        assert_fixed_pairs(mapped, raw, args, expected_raw)
+
+
+def test_long_rows_graph_replay():
+    if __package__:
+        from .test_adaptive_topk import (
+            assert_fixed_pairs, fixed_call, fixed_inputs, fixed_reference,
+        )
+    else:
+        from test_adaptive_topk import (
+            assert_fixed_pairs, fixed_call, fixed_inputs, fixed_reference,
+        )
+
+    args, _ = fixed_inputs("dense", 262657, TOPK)
+    fixed_call(args, TOPK)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        mapped, raw = fixed_call(args, TOPK)
+    for kind in ("zero", "dense", "overflow", "underfill", "narrow", "special"):
+        replacement, (_, expected_raw) = fixed_inputs(kind, 262657, TOPK)
+        for dest, source in zip(args, replacement):
+            dest.copy_(source)
+        graph.replay()
+        assert_fixed_pairs(mapped, raw, args, expected_raw)
+    args[1].copy_(torch.tensor(
+        [131071, 131072, 131073, 262655, 262656, 262657],
+        dtype=torch.int32, device="cuda",
+    ))
+    _, expected_raw = fixed_reference(*(x.cpu() for x in args), TOPK, PAGE_SIZE)
+    graph.replay()
+    assert_fixed_pairs(mapped, raw, args, expected_raw)
 
 
 if __name__ == "__main__":
     test_topk_transform_512()
+    test_long_rows_exact_adaptive_sampler()
+    test_long_rows_graph_replay()
+    run_performance()
+    run_performance(batch_size=6, seq_len=131072)

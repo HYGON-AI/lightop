@@ -1,6 +1,8 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
+from lightop.moe import ep_gather as categorized_ep_gather
+from lightop.moe import ep_scatter as categorized_ep_scatter
 import torch
 
 from lightop import moe_fuse_gate_per_gourp_topk, op
@@ -211,7 +213,7 @@ def run_case(config, id_dtype, use_expert_map):
     counts, aq_out, scale_out, m_indices, inv_perm = allocate_outputs(
         ids, expert_map, local_num_experts
     )
-    op.ep_scatter(
+    categorized_ep_scatter(
         source_q,
         source_scale,
         ids,
@@ -259,7 +261,7 @@ def run_case(config, id_dtype, use_expert_map):
     output = torch.empty(
         (TOKENS, HIDDEN), dtype=torch.bfloat16, device=DEVICE
     )
-    op.ep_gather(
+    categorized_ep_gather(
         expert_output,
         ids,
         weights,

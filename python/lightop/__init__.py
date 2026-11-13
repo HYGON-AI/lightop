@@ -105,3 +105,10 @@ else:
     __hcu_version__ = hcu_version
 
 from .hc_mix_stats import hc_mix_stats, hc_mix_stats_sinkhorn_bf16x3, hc_mix_stats_sinkhorn_deepgemm, split_bf16_hc_weight, split_tf32_hc_weight
+
+from .swiglu_oai_fp8_quant_contiguous import swiglu_oai_fp8_quant_contiguous
+
+from .minimax_qk_norm_rope import minimax_qk_norm_rope, supports_minimax_qk_norm_rope
+
+from .minimax_cp_fp8_pack import minimax_cp_fp8_pack
+from .minimax_cp_cache_scatter import minimax_cp_cache_scatter

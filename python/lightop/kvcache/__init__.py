@@ -3,6 +3,8 @@
 
 """KV-cache and sequence-metadata APIs."""
 
+from ..minimax_cp_cache_scatter import minimax_cp_cache_scatter
+
 from ..fused_metadata import fused_metadata_kernel_general
 from ..gather_and_maybe_dequant_cache import gather_and_maybe_dequant_cache
 from ..kvcacheio import hcu_alloc_extend_kernel
@@ -25,6 +27,8 @@ from .native import (
 )
 
 __all__ = [
+    "minimax_cp_cache_scatter",
+
     "dsv4_pack_c4_topk_workspace",
     "dsv4_pack_sparse_topk_workspace",
     "dsv4_dequantize_sparse_topk_out",

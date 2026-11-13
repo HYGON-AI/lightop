@@ -3,6 +3,12 @@
 
 #include <torch/extension.h>
 
+namespace at::native {
+torch::Tensor minimax_cp_fp8_pack(torch::Tensor,torch::Tensor,torch::Tensor,double,double,bool,bool);
+void minimax_cp_cache_scatter(torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor);
+std::vector<torch::Tensor> minimax_qk_norm_rope(torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,double,int64_t,bool,int64_t);
+}
+
 #if (defined(LIGHTOP_MHC_REPEAT_CP_ONLY) + defined(LIGHTOP_CP_OUTPUT_ONLY) + \
      defined(LIGHTOP_TOPK_WORKSPACE_ONLY) + defined(LIGHTOP_SPARSE_MQA_ONLY) + \
      defined(LIGHTOP_PREFILL_FUSION_ONLY)) > 1
@@ -554,6 +560,8 @@ void fuse_silu_mul_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::
 void fuse_situ_mul_quant_contiguous(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, double situ_beta, double situ_linear_beta);
 void fuse_situ_mul_quant_ep(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, torch::Tensor& masked_m, double situ_beta, double situ_linear_beta, int64_t expect_m);
 void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids, float limit = -1.0f) ;
+void swiglu_oai_fp8_quant_masked(const torch::Tensor&, torch::Tensor&, torch::Tensor&, const torch::Tensor&, double, double, int64_t, int64_t);
+void swiglu_oai_fp8_quant_masked_flat(const torch::Tensor&, torch::Tensor&, torch::Tensor&, const torch::Tensor&, double, double, int64_t, int64_t);
 void fuse_silu_mul_fp8_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m, float limit);
 void fuse_silu_and_mul(torch::Tensor& input, torch::Tensor& out);
 void fuse_silu_and_mul_ep(torch::Tensor& input, torch::Tensor& out, const torch::Tensor& mask_m, int expect_m);
@@ -610,6 +618,7 @@ void ep_fused_smooth_quant_scatter(
     torch::Tensor inv_perm,
     int local_num_experts, int alignment); 
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale, bool round_after_smooth, double limit);
+void per_token_quant_int8_minimax_out(torch::Tensor&, const torch::Tensor&, torch::Tensor&, int64_t);
 void per_token_quant_int8_out(torch::Tensor& out, const torch::Tensor& input, torch::Tensor& scales);
 void rms_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,double epsilon,double limit);
 void rms_norm_no_weight(
@@ -714,6 +723,15 @@ void rms_norm_smooth_per_token_dynamic_quant(
   bool update_input,               
   bool update_res                   
 );
+void swiglu_oai_build_gate_table(torch::Tensor&,double,double);
+void swiglu_oai_build_int8_quant_table(torch::Tensor&);
+void swiglu_oai_int8_quant_contiguous_tables(const torch::Tensor&,torch::Tensor&,torch::Tensor&,const torch::Tensor&,const torch::Tensor&,double,double,double);
+void swiglu_oai_int8_quant_contiguous_block_tables(const torch::Tensor&,torch::Tensor&,torch::Tensor&,const torch::Tensor&,const torch::Tensor&,double,double,double,int64_t,int64_t);
+void swiglu_oai_int8_quant_contiguous_direct(const torch::Tensor&,torch::Tensor&,torch::Tensor&,const torch::Tensor&,const torch::Tensor&,double,double,double,int64_t,int64_t);
+void swiglu_oai_int8_quant_masked_flat_tables(const torch::Tensor&,torch::Tensor&,torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,double,double,double,int64_t,int64_t);
+void swiglu_oai_int8_quant_contiguous(const torch::Tensor&, torch::Tensor&, torch::Tensor&, double, double, double);
+void swiglu_oai_int8_quant_masked(const torch::Tensor&, torch::Tensor&, torch::Tensor&, const torch::Tensor&, double, double, double);
+std::vector<torch::Tensor> swiglu_oai_fp8_quant_contiguous(const torch::Tensor& input, double alpha, double beta, double limit);
 void moe_swiglu_dynamic_quant(torch::Tensor& scatter_tokens, torch::Tensor& smooth, torch::Tensor& experts_tokens_count, torch::Tensor& experts_tokens_start, torch::Tensor& output, torch::Tensor& scales, float beta);
 void per_token_group_quant_fp8(
     torch::Tensor& out,        
@@ -789,9 +807,10 @@ Tensor dsv41_pool_pairs_norm(
     const Tensor& previous, const Tensor& current,
     const Tensor& previous_score, const Tensor& score, const Tensor& weight, double eps);
 std::vector<Tensor> engram_hash_ids_hcu(
-    const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    const Tensor&, const Tensor&, const Tensor&,
+    const std::optional<Tensor>&, const std::optional<Tensor>&,
     const Tensor&, const Tensor&, const Tensor&, const Tensor&,
-    int64_t, int64_t, int64_t, int64_t);
+    int64_t, int64_t, int64_t, int64_t, int64_t);
 void combine_topk_swa_indices_hcu(
     const Tensor& topk_indices, const Tensor& query_start_loc,
     const Tensor& query_pos, const Tensor& seq_lens, const Tensor& gather_lens,
@@ -1061,6 +1080,24 @@ void topk_ids_postprocess(torch::Tensor topk_ids, torch::optional<torch::Tensor>
 torch::Tensor dpskv4_hc_head_fused(torch::Tensor mixes, torch::Tensor x, torch::Tensor hc_scale, torch::Tensor hc_base, double hc_eps);
 void ep_fused_fp8_quant_scatter(torch::Tensor input,torch::Tensor topk_ids,torch::optional<torch::Tensor> expert_map_opt,torch::Tensor expert_num_tokens,torch::Tensor aq_out,torch::Tensor aq_scale_out,torch::Tensor m_indices,torch::Tensor inv_perm, int local_num_experts,int alignment,int fp8type,bool fill_padded_m_indices);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
+std::vector<Tensor> bf16_mega_gate_hcu_impl(
+    const Tensor& x, const Tensor& weight, const torch::optional<Tensor>& optional_bias, int64_t topk,
+    bool renormalize, double routed_scaling_factor, bool apply_scale,
+    const torch::optional<std::vector<Tensor>>& out,
+    const torch::optional<Tensor>& optional_mask);
+std::tuple<Tensor, Tensor> bf16_mega_gate_hcu(
+    const Tensor& x, const Tensor& weight, int64_t num_topk,
+    bool use_shared_as_routed, int64_t num_shared_experts,
+    double routed_scaling_factor, int64_t ep_rank, const std::string& scoring_func,
+    const torch::optional<Tensor>& mask, const torch::optional<Tensor>& bias,
+    const torch::optional<Tensor>& image_bias,
+    const torch::optional<Tensor>& image_token_mask,
+    const torch::optional<Tensor>& fix_routing_mask,
+    const torch::optional<Tensor>& to_physical_map,
+    const torch::optional<Tensor>& logical_count,
+    const torch::optional<Tensor>& unmapped_topk_idx,
+    const torch::optional<Tensor>& force_random,
+    const torch::optional<std::tuple<Tensor, Tensor>>& out);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu_fused(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output, torch::optional<torch::Tensor> num_token_non_padded);
 std::vector<Tensor> moe_fused_gate_sqrtsoftplus_v41_hcu_deepep(torch::Tensor& input, torch::Tensor& bias, int64_t topk, int64_t num_fused_shared_experts, bool renormalize, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output, torch::optional<torch::Tensor> num_token_non_padded);
@@ -1112,6 +1149,7 @@ void mimo_v2_split_rope_vscale_kv_store(
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.attr("PREFILL_GATHER_TRITON_NAN_COMPAT_VERSION") = 1;
   m.def("spark_mla_rope_cat_store", &at::native::spark_mla_rope_cat_store,
         "Spark MLA block-specialized BF16 RoPE, concat and FP8 KV store",
         py::arg("positions"), py::arg("query_nope"), py::arg("query_rope"),
@@ -1178,6 +1216,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("rmsnorm_forward", &at::native::rmsnorm_forward, "rmsnorm forward");
   m.def("rmsnorm_backward", &at::native::rmsnorm_backward, "rmsnorm backward");
   m.def("fused_rms_norm_contiguous", &at::native::fused_rms_norm_contiguous, "fused_rms_norm_contiguous");
+  m.attr("MLA_ROPE_SUPPORTED_Q_HEAD_STRIDES") = py::make_tuple(192, 256);
   m.def(
       "fused_rms_norm_rope_contiguous",
       &at::native::fused_rms_norm_rope_contiguous,
@@ -1438,6 +1477,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("expert_m"),
       py::arg("expert_ids"),
       py::arg("limit") = -1.0f);
+  m.def("swiglu_oai_fp8_quant_masked", &at::native::swiglu_oai_fp8_quant_masked, "Masked OAI SwiGLU with FP32 row-FP8 quantization");
+  m.def("swiglu_oai_fp8_quant_masked_flat", &at::native::swiglu_oai_fp8_quant_masked_flat, "OAI row-FP8 quantization using live rows of 16 experts");
   m.def("fuse_silu_mul_fp8_quant_ep",&at::native::fuse_silu_mul_fp8_quant_ep,"fuse_silu_mul_fp8_quant_ep");
   m.def("fuse_silu_and_mul",&at::native::fuse_silu_and_mul,"fuse_silu_and_mul");
   m.def("ds_concat",&at::native::ds_concat,"ds_concat");
@@ -1619,6 +1660,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("smoothscale"),
       py::arg("round_after_smooth") = false,
       py::arg("limit") = -1.0);
+  m.def("per_token_quant_int8_minimax_out", &at::native::per_token_quant_int8_minimax_out);
   m.def(
       "per_token_quant_int8_out",
       &at::native::per_token_quant_int8_out,
@@ -1700,6 +1742,15 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("fused_rms_norm_rope_int8quant_contiguous", &at::native::fused_rms_norm_rope_int8quant_contiguous, "fused_rms_norm_rope_int8quant_contiguous");    
  m.def("per_token_quant_fp8", &at::native::per_token_quant_fp8, "per_token_quant_fp8");    
  m.def("rms_norm_smooth_per_token_dynamic_quant", &at::native::rms_norm_smooth_per_token_dynamic_quant, "rms_norm_smooth_per_token_dynamic_quant");   
+ m.def("swiglu_oai_build_gate_table", &at::native::swiglu_oai_build_gate_table);
+ m.def("swiglu_oai_build_int8_quant_table", &at::native::swiglu_oai_build_int8_quant_table);
+ m.def("swiglu_oai_int8_quant_contiguous_tables", &at::native::swiglu_oai_int8_quant_contiguous_tables);
+ m.def("swiglu_oai_int8_quant_contiguous_block_tables", &at::native::swiglu_oai_int8_quant_contiguous_block_tables);
+ m.def("swiglu_oai_int8_quant_contiguous_direct", &at::native::swiglu_oai_int8_quant_contiguous_direct);
+ m.def("swiglu_oai_int8_quant_masked_flat_tables", &at::native::swiglu_oai_int8_quant_masked_flat_tables);
+ m.def("swiglu_oai_int8_quant_contiguous", &at::native::swiglu_oai_int8_quant_contiguous, "BF16-rounded OAI row INT8 quantization");
+ m.def("swiglu_oai_int8_quant_masked", &at::native::swiglu_oai_int8_quant_masked, "Masked BF16-rounded OAI row INT8 quantization with zero/unit padding");
+ m.def("swiglu_oai_fp8_quant_contiguous", &at::native::swiglu_oai_fp8_quant_contiguous, "Contiguous BF16 OAI activation and per-token E4M3FN quantization", pybind11::arg("input"), pybind11::arg("alpha") = 1.702, pybind11::arg("beta") = 1.0, pybind11::arg("limit") = 7.0);
  m.def("moe_swiglu_dynamic_quant", &at::native::moe_swiglu_dynamic_quant, "moe_swiglu_dynamic_quant");  
  m.def("per_token_group_quant_fp8", &at::native::per_token_group_quant_fp8, "per_token_group_quant_fp8");  
  m.def("top_k_per_row_prefill", &at::native::top_k_per_row_prefill, "top_k_per_row_prefill");  
@@ -1868,6 +1919,23 @@ m.def(
        py::arg("seq_len_delta"),
        py::arg("use_swa"));
 m.def("moe_fused_gate_sqrtsoftplus",&at::native::moe_fused_gate_sqrtsoftplus,"moe_fused_gate_sqrtsoftplus");       
+m.def("bf16_mega_gate_hcu", &at::native::bf16_mega_gate_hcu,
+      py::arg("x"), py::arg("weight"), py::arg("num_topk"),
+      py::arg("use_shared_as_routed"), py::arg("num_shared_experts"),
+      py::arg("routed_scaling_factor"), py::arg("ep_rank"),
+      py::arg("scoring_func") = "sqrtsoftplus", py::arg("mask") = py::none(),
+      py::arg("bias") = py::none(), py::arg("image_bias") = py::none(),
+      py::arg("image_token_mask") = py::none(), py::arg("fix_routing_mask") = py::none(),
+      py::arg("to_physical_map") = py::none(), py::arg("logical_count") = py::none(),
+      py::arg("unmapped_topk_idx") = py::none(), py::arg("force_random") = py::none(),
+      py::arg("out") = py::none());
+m.attr("bf16_mega_gate_hcu_api_version") = 4;
+m.def("_bf16_mega_gate_hcu", &at::native::bf16_mega_gate_hcu_impl,
+      "HCU BF16 fused router with per-stream counters and managed scratch",
+      py::arg("x"), py::arg("weight"), py::arg("bias"), py::arg("topk") = 6,
+      py::arg("renormalize") = true, py::arg("routed_scaling_factor") = 1.0,
+      py::arg("apply_scale") = false, py::arg("out") = py::none(),
+      py::arg("mask") = py::none());
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu",&at::native::moe_fused_gate_sqrtsoftplus_v41_hcu,"moe_fused_gate_sqrtsoftplus_v41_hcu");
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu_fused",
       &at::native::moe_fused_gate_sqrtsoftplus_v41_hcu_fused,
@@ -1920,6 +1988,9 @@ m.def("mimo_v2_split_rope_vscale_kv_store", &at::native::mimo_v2_split_rope_vsca
         py::arg("gathered"), py::arg("cp_size"), py::arg("cycle_leaders"));
   m.def("make_interleave_plan_", &lightop::cp_output::make_interleave_plan_,
         py::arg("cycle_leaders"), py::arg("rows"), py::arg("cp_size"));
+  m.def("minimax_qk_norm_rope", &at::native::minimax_qk_norm_rope);
+  m.def("minimax_cp_fp8_pack", &at::native::minimax_cp_fp8_pack);
+  m.def("minimax_cp_cache_scatter", &at::native::minimax_cp_cache_scatter);
   bind_prefill_sparse_fusion(m);
 }
 

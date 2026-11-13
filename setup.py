@@ -21,7 +21,6 @@ def _get_pytorch_version_int():
     return int(version[0])*100+int(version[1])*10+int(version[2])
 
 dtk_version = get_dtk_version(ROCM_HOME)
-gfx_version = torch.cuda.get_device_properties(0).gcnArchName.split(':')[0]
 torch_version = _get_pytorch_version_int()
 
 
@@ -52,7 +51,10 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
     dtk_ver = int(str(dtk_version)[:4])  # dtk命名问题25042和2604  取前四位比较
     if dtk_ver >= 2604:  # dtk>=26042 can support gfx938
         #archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
-        archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx928;gfx936;gfx938') # 对应kme bw nmz
+        default_archs = 'gfx928;gfx936;gfx938'
+        if dtk_ver >= 2610:
+            default_archs += ';gfx92a'
+        archs = os.environ.get('PYTORCH_ROCM_ARCH', default_archs)
     else:
         archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
@@ -63,7 +65,10 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
 def _get_rocm_arch_flags_marlin_w4a8(cflags: Optional[List[str]] = None) -> List[str]:
     dtk_ver = int(str(dtk_version)[:4])
     if dtk_ver >= 2604:  # dtk>=26042 can support gfx938
-        archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
+        default_archs = 'gfx906;gfx926;gfx928;gfx936;gfx938'
+        if dtk_ver >= 2610:
+            default_archs += ';gfx92a'
+        archs = os.environ.get('PYTORCH_ROCM_ARCH', default_archs)
     else:
         archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
@@ -76,7 +81,10 @@ def _get_rocm_arch_flags_marlin_w4a8(cflags: Optional[List[str]] = None) -> List
 def _get_rocm_arch_flags_marlin_w4a16(cflags: Optional[List[str]] = None) -> List[str]:
     dtk_ver = int(str(dtk_version)[:4])
     if dtk_ver >= 2604:  # dtk>=26042 can support gfx938
-        archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936;gfx938')
+        default_archs = 'gfx906;gfx926;gfx928;gfx936;gfx938'
+        if dtk_ver >= 2610:
+            default_archs += ';gfx92a'
+        archs = os.environ.get('PYTORCH_ROCM_ARCH', default_archs)
     else:
         archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
     flags = ['--offload-arch=%s' % arch for arch in archs.split(';')]
@@ -329,10 +337,15 @@ class BuildReleaseExtension(BuildExtension):
         
         self.compiler.src_extensions += ['.cu', '.cuh', '.hip']
 
-        def append_std17_if_no_std_present(cflags) -> None:
+        def append_cxx_std_if_no_std_present(cflags) -> None:
             cpp_format_prefix = '/{}:' if self.compiler.compiler_type == 'msvc' else '-{}='
             cpp_flag_prefix = cpp_format_prefix.format('std')
-            cpp_flag = cpp_flag_prefix + 'c++17'
+            cpp_standard = (
+                'c++20'
+                if version.parse(torch.__version__.split('+')[0]) >= version.parse('2.14')
+                else 'c++17'
+            )
+            cpp_flag = cpp_flag_prefix + cpp_standard
             if not any(flag.startswith(cpp_flag_prefix) for flag in cflags):
                 cflags.append(cpp_flag)
 
@@ -394,7 +407,7 @@ class BuildReleaseExtension(BuildExtension):
                     post_cflags = list(extra_postargs)
                 if IS_HIP_EXTENSION:
                     post_cflags = COMMON_HIP_FLAGS + post_cflags
-                append_std17_if_no_std_present(post_cflags)
+                append_cxx_std_if_no_std_present(post_cflags)
                 
                 cuda_post_cflags = None
                 if with_cuda:
@@ -405,7 +418,7 @@ class BuildReleaseExtension(BuildExtension):
                     if IS_HIP_EXTENSION:
                         cuda_post_cflags = cuda_post_cflags + _get_rocm_arch_flags(cuda_post_cflags)
                         cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + cuda_post_cflags
-                    append_std17_if_no_std_present(cuda_post_cflags)
+                    append_cxx_std_if_no_std_present(cuda_post_cflags)
                     cuda_cflags = [shlex.quote(f) for f in common_cflags]
                     cuda_post_cflags = [shlex.quote(f) for f in cuda_post_cflags]
                 
@@ -427,7 +440,7 @@ class BuildReleaseExtension(BuildExtension):
                 marlin_nvcc_flags = ['-O3', '-w']
                 if IS_HIP_EXTENSION:
                     marlin_cxx_flags = COMMON_HIP_FLAGS + marlin_cxx_flags
-                append_std17_if_no_std_present(marlin_cxx_flags)
+                append_cxx_std_if_no_std_present(marlin_cxx_flags)
 
                 marlin_cuda_cflags = None
                 marlin_cuda_post_cflags = None
@@ -437,7 +450,7 @@ class BuildReleaseExtension(BuildExtension):
                     if IS_HIP_EXTENSION:
                         marlin_cuda_post_cflags += _get_rocm_arch_flags_marlin_w4a16(marlin_cuda_post_cflags)
                         marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + marlin_cuda_post_cflags
-                    append_std17_if_no_std_present(marlin_cuda_post_cflags)
+                    append_cxx_std_if_no_std_present(marlin_cuda_post_cflags)
                     marlin_cuda_post_cflags = [shlex.quote(f) for f in marlin_cuda_post_cflags]
 
                 _write_ninja_file_and_compile_objects(
@@ -457,7 +470,7 @@ class BuildReleaseExtension(BuildExtension):
                 marlin_nvcc_flags = ['-O3', '-w']
                 if IS_HIP_EXTENSION:
                     marlin_cxx_flags = COMMON_HIP_FLAGS + marlin_cxx_flags
-                append_std17_if_no_std_present(marlin_cxx_flags)
+                append_cxx_std_if_no_std_present(marlin_cxx_flags)
 
                 marlin_cuda_cflags = None
                 marlin_cuda_post_cflags = None
@@ -467,7 +480,7 @@ class BuildReleaseExtension(BuildExtension):
                     if IS_HIP_EXTENSION:
                         marlin_cuda_post_cflags += _get_rocm_arch_flags_marlin_w4a8(marlin_cuda_post_cflags)
                         marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + marlin_cuda_post_cflags
-                    append_std17_if_no_std_present(marlin_cuda_post_cflags)
+                    append_cxx_std_if_no_std_present(marlin_cuda_post_cflags)
                     marlin_cuda_post_cflags = [shlex.quote(f) for f in marlin_cuda_post_cflags]
 
                 _write_ninja_file_and_compile_objects(
@@ -487,7 +500,7 @@ class BuildReleaseExtension(BuildExtension):
                 marlin_nvcc_flags = ['-O3', '-w']
                 if IS_HIP_EXTENSION:
                     marlin_cxx_flags = COMMON_HIP_FLAGS + marlin_cxx_flags
-                append_std17_if_no_std_present(marlin_cxx_flags)
+                append_cxx_std_if_no_std_present(marlin_cxx_flags)
 
                 marlin_cuda_cflags = None
                 marlin_cuda_post_cflags = None
@@ -497,7 +510,7 @@ class BuildReleaseExtension(BuildExtension):
                     if IS_HIP_EXTENSION:
                         marlin_cuda_post_cflags += _get_rocm_arch_flags_marlin_w4a8(marlin_cuda_post_cflags)
                         marlin_cuda_post_cflags = COMMON_HIP_FLAGS + COMMON_HIPCC_FLAGS + marlin_cuda_post_cflags
-                    append_std17_if_no_std_present(marlin_cuda_post_cflags)
+                    append_cxx_std_if_no_std_present(marlin_cuda_post_cflags)
                     marlin_cuda_post_cflags = [shlex.quote(f) for f in marlin_cuda_post_cflags]
 
                 _write_ninja_file_and_compile_objects(
@@ -544,6 +557,7 @@ def get_extensions():
                glob.glob('./csrc/lmslimquant_native/smoothquant/*.cpp') + \
                glob.glob('./csrc/lmslimquant_native/quant_kernels/torch_bridge/*.cu') + \
                glob.glob('./csrc/lmslimquant_native/quant_kernels/gptq/*.cu') + \
+               glob.glob('./csrc/lmslimquant_native/quant_kernels/awq/kernels/*.cu') + \
                glob.glob('./csrc/layernorm/*.cu') + glob.glob('./csrc/loss/*.cu') + \
                glob.glob('./csrc/scaledmask/*.cu') + glob.glob('./csrc/groupnorm/*.cu') + \
                glob.glob('./csrc/rmsnorm/*.cu') + glob.glob('./csrc/batchnorm/*.cu') + \
@@ -599,14 +613,15 @@ def get_extensions():
         include_dirs=include_dirs,
         libraries=['rocblas', 'hipblas', 'hipblaslt'],
         library_dirs=[os.path.join(rocm_home, 'lib')],
-        extra_objects=[
-            os.path.abspath('./lib/static/liblmslimquant_static.a'),
-            os.path.abspath('./lib/static/libgemm_w4a16_awq.a'),
-        ],
         define_macros=define_macros,
         extra_compile_args=extra_compile_args)
 
     extensions.append(ext_ops)
+    extensions.append(extension(
+        name="lightop._router_gemm",
+        sources=["./csrc/router/router_gemm.cu"],
+        extra_compile_args={"nvcc": ["-O3"]},
+    ))
     return extensions
 
 def _get_pytorch_version():
