@@ -164,6 +164,7 @@ void bind_prefill_sparse_fusion(pybind11::module_& m) {
 // Local correctness/performance builds use the same bindings as lightop.op.
 #if defined(LIGHTOP_SPARSE_MQA_ONLY) || defined(LIGHTOP_PREFILL_FUSION_ONLY)
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+
 #if defined(LIGHTOP_SPARSE_MQA_ONLY)
   bind_paged_sparse_mqa(m);
 #else
@@ -179,6 +180,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 #include <vector>
 #include <optional>
 
+#include "mqa_logits/beta/mqa_logits_api.h"
 #include "fp8_fp4_mqa_logits/fp8_fp4_mqa_logits.h"
 #include "fp8_fp4_mqa_logits/dsv41_mqa_prep.h"
 #include "paged_mqa_logits/paged_mqa_logits.h"
@@ -200,6 +202,11 @@ void make_interleave_plan_(at::Tensor, int64_t, int64_t);
 
 enum GRAD_TYPE {nograd, wgrad, xgrad};
 namespace lightop::dsv41 {
+void fill_swa_ring_mapping(torch::Tensor mapping, const torch::Tensor& requests,
+    const torch::Tensor& prefixes, const torch::Tensor& table,
+    const c10::optional<torch::Tensor>& positions,
+    const c10::optional<torch::Tensor>& locations,
+    int64_t window, int64_t ring, int64_t block);
 void ragged_topk_postprocess(const torch::Tensor& scores, const torch::Tensor& selected,
     const torch::Tensor& offsets, const torch::Tensor& slots, torch::Tensor& pages,
     const c10::optional<torch::Tensor>& raw, bool mask_scores);
@@ -244,12 +251,18 @@ torch::Tensor mla_q_absorb_rope_concat(
 std::optional<Tensor> hc_mix_stats(const Tensor& x, const Tensor& w, double eps);
 std::tuple<Tensor, Tensor, Tensor> hc_mix_stats_sinkhorn_bf16x3(const Tensor&, const std::vector<Tensor>&, const Tensor&, const Tensor&, int64_t, double, double, int64_t);
 std::tuple<Tensor, Tensor, Tensor> hc_mix_stats_sinkhorn_deepgemm(const Tensor&, const std::vector<Tensor>&, const Tensor&, const Tensor&, int64_t, double, double, int64_t);
+Tensor fused_clamp_smooth(const Tensor& hidden, const Tensor& smooth, double min_limit, double max_limit);
 std::tuple<Tensor, Tensor> fused_deepep_prepare(
     const Tensor& hidden,
     const Tensor& smooth,
     const Tensor& ids,
     double min_limit,
     double max_limit);
+void fused_dsa_cp_prefill_metadata_launcher(
+    const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
+    const torch::Tensor&, const std::vector<torch::Tensor>&,
+    int64_t, int64_t, int64_t, int64_t);
+
 void fused_metadata_kernel_general_launcher(
     Tensor seq_lens,
     Tensor req_to_token,
@@ -517,7 +530,7 @@ void blockwise_scaled_cast_transpose(const Tensor& input,std::optional<Tensor> o
                                     const float epsilon,const bool pow2_scale,const bool all_gather_usage, at::ScalarType out_dtype);
 
 void rms_norm_dynamic_per_token_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input,double limit);
-void rms_norm_dynamic_per_token_quant_sglang(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input,double limit,std::optional<Tensor> smooth_scale,std::optional<Tensor> norm_output,bool clamp_norm_output,std::optional<Tensor> residual_output);
+void rms_norm_dynamic_per_token_quant_sglang(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input,double limit,std::optional<Tensor> smooth_scale,std::optional<Tensor> norm_output,bool clamp_norm_output,std::optional<Tensor> residual_output,std::optional<Tensor> clamped_output);
 void mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang(Tensor& q_out,Tensor& packed_input,const Tensor& q_weight,const Tensor& kv_weight,
                                                        Tensor q_scales,double q_epsilon,double kv_epsilon);
 void rms_norm_fp8_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input, int fp8type);
@@ -532,7 +545,7 @@ void store_kv_cache_paged(const torch::Tensor& key, const torch::Tensor& value,t
 
 void topk_softmax(torch::Tensor& topk_weights, torch::Tensor& topk_indices,torch::optional<torch::Tensor>& token_expert_indices,torch::Tensor& gating_output,  bool Is_renormalize = false);
 void rotary_embedding_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox);    
-void rotary_embedding_deepseek_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox, std::optional<torch::Tensor> offsets);
+void rotary_embedding_deepseek_fuse(torch::Tensor& positions,  torch::Tensor& query, std::optional<torch::Tensor> key,int64_t head_size,torch::Tensor& cos_sin_cache, bool is_neox, std::optional<torch::Tensor> offsets, bool round_bf16_products, std::optional<torch::Tensor> query_out, std::optional<torch::Tensor> key_out);
 void moe_align_block_size(
     torch::Tensor topk_ids, int64_t num_experts, int64_t block_size,
     torch::Tensor sorted_token_ids, torch::Tensor experts_ids,
@@ -619,7 +632,9 @@ void ep_fused_smooth_quant_scatter(
     int local_num_experts, int alignment); 
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale, bool round_after_smooth, double limit);
 void per_token_quant_int8_minimax_out(torch::Tensor&, const torch::Tensor&, torch::Tensor&, int64_t);
-void per_token_quant_int8_out(torch::Tensor& out, const torch::Tensor& input, torch::Tensor& scales);
+void per_token_quant_int8_out(torch::Tensor& out, const torch::Tensor& input, torch::Tensor& scales,
+    const c10::optional<torch::Tensor>& smooth, const c10::optional<torch::Tensor>& weights,
+    const c10::optional<torch::Tensor>& gate_output);
 void rms_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,double epsilon,double limit);
 void rms_norm_no_weight(
     torch::optional<torch::Tensor> out,
@@ -865,7 +880,8 @@ void fast_topk_transform_interface(
     at::Tensor& dst_page_table,
     const at::Tensor& src_page_table,
     const at::Tensor& cu_seqlens_q,
-    std::optional<at::Tensor> row_starts_opt);
+    std::optional<at::Tensor> row_starts_opt,
+    bool parallel_candidates);
 void fast_topk_transform_sparse_mask_interface(
     const at::Tensor& score,
     const at::Tensor& nonzero_mask,
@@ -948,6 +964,8 @@ void fused_quantize_and_store_mla_kv_cache(
     const std::string& fp8_dtype = "fp8_e4m3",
     float eps = 1e-5f
 );
+void fused_quantize_and_store_mla_kv_cache_dual(torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, std::optional<torch::Tensor>, std::optional<torch::Tensor>, std::optional<torch::Tensor>, float);
+torch::Tensor main_kv_loc_to_compact(torch::Tensor, torch::Tensor, int64_t);
 void fused_concat_and_store_mla_kv_cache(
     torch::Tensor k_nope,
     torch::Tensor k_rope,
@@ -1149,6 +1167,11 @@ void mimo_v2_split_rope_vscale_kv_store(
 
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("fill_swa_ring_mapping", &lightop::dsv41::fill_swa_ring_mapping,
+        py::arg("mapping"), py::arg("requests"), py::arg("prefixes"),
+        py::arg("table"), py::arg("positions") = py::none(),
+        py::arg("locations") = py::none(), py::arg("window") = 512,
+        py::arg("ring") = 1024, py::arg("block") = 8);
   m.attr("PREFILL_GATHER_TRITON_NAN_COMPAT_VERSION") = 1;
   m.def("spark_mla_rope_cat_store", &at::native::spark_mla_rope_cat_store,
         "Spark MLA block-specialized BF16 RoPE, concat and FP8 KV store",
@@ -1401,12 +1424,21 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("smooth_scale") = py::none(),
       py::arg("norm_output") = py::none(),
       py::arg("clamp_norm_output") = true,
-      py::arg("residual_output") = py::none());
+      py::arg("residual_output") = py::none(),
+      py::arg("clamped_output") = py::none());
   m.def("mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang",&at::native::mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang,
         "mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang");
   m.def("rms_norm_fp8_quant",&at::native::rms_norm_fp8_quant,"rms_norm_fp8_quant");
   m.def("rotary_embedding_fuse", &at::native::rotary_embedding_fuse, "rotary_embedding_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"));
-  m.def("rotary_embedding_deepseek_fuse", &at::native::rotary_embedding_deepseek_fuse, "rotary_embedding_deepseek_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"),py::arg("offsets") = py::none());
+  m.attr("ROTARY_EMBEDDING_BF16_ROUNDED_OUT_ABI") = 2;
+  m.def("rotary_embedding_deepseek_fuse",
+        &at::native::rotary_embedding_deepseek_fuse,
+        "RoPE: legacy in-place, or explicit outputs with rounded BF16 products",
+        py::arg("positions"), py::arg("query"), py::arg("key"),
+        py::arg("head_size"), py::arg("cos_sin_cache"), py::arg("is_neox"),
+        py::arg("offsets") = py::none(), py::kw_only(),
+        py::arg("round_bf16_products") = false,
+        py::arg("query_out") = py::none(), py::arg("key_out") = py::none());
   m.def("groupgemm",&at::native::groupgemm,"groupgemm");
   m.def("groupgemm_permute",&at::native::groupgemm_permute,"groupgemm_permute");
   m.def("groupgemm_unpermute",&at::native::groupgemm_unpermute,"groupgemm_unpermute");
@@ -1523,6 +1555,23 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("KV_scale") = torch::nullopt, 
       py::arg("clean_logits") = true,
       py::arg("D_out") = torch::nullopt);
+  m.def("mqa_logits_topk_sampled_int8", &lightop::mqa_int8::mqa_logits_topk_sampled_int8,
+      py::arg("q"),
+      py::arg("k"),
+      py::arg("weights"),
+      py::arg("kv_scale"),
+      py::arg("starts"),
+      py::arg("ends"),
+      py::arg("offsets"),
+      py::arg("sorted_values") = py::none(),
+      py::arg("next_thresholds") = py::none(),
+      py::arg("stats") = py::none(),
+      py::arg("parallel_histogram") = true,
+      py::arg("fallback_workspace_rows") = 0,
+      py::arg("reuse_full_window") = true,
+      py::arg("sort_topk") = true,
+      py::arg("min_sample_k") = 131072,
+      py::arg("direct_candidate_emit") = false);
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
   m.def("dsv41_mqa_query_lens", &lightop::fp4_mqa::dsv41_mqa_query_lens,
         py::arg("extend_start_loc"), py::arg("extend_seq_lens"),
@@ -1667,7 +1716,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       "Per-token symmetric INT8 quantization (out variant)",
       py::arg("out"),
       py::arg("input"),
-      py::arg("scales"));
+      py::arg("scales"), py::arg("smooth") = py::none(),
+      py::arg("weights") = py::none(), py::arg("gate_output") = py::none());
+  m.attr("per_token_quant_int8_out_supports_gate") = true;
   m.def("markov_gemv_add_argmax", &lightop::sampling::markov_gemv_add_argmax,
         py::arg("latent"), py::arg("weight"), py::arg("base_logits"),
         "BF16 rank-256 Markov GEMV + BF16/FP32 logits add + greedy argmax (BS1-4)");
@@ -1760,7 +1811,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("gemma_fused_add_rmsnorm", &at::native::gemma_fused_add_rmsnorm, "gemma_fused_add_rmsnorm");
  m.def("gemma_rmsnorm", &at::native::gemma_rmsnorm, "gemma_rmsnorm");
  m.def("gemma_rms_norm_fp8_quant", &at::native::gemma_rms_norm_fp8_quant, "gemma_rms_norm_fp8_quant");
- m.def("fast_topk_transform_interface", &at::native::fast_topk_transform_interface, "fast_topk_transform_interface");
+  m.def("fast_topk_transform_interface", &at::native::fast_topk_transform_interface,
+        "transform length TopK indices into paged KVCache",
+        py::arg("score"), py::arg("lengths"), py::arg("dst_page_table"),
+        py::arg("src_page_table"), py::arg("cu_seqlens_q"),
+        py::arg("row_starts_opt"), py::arg("parallel_candidates") = false);
  m.def(
      "fast_topk_transform_sparse_mask_interface",
      &at::native::fast_topk_transform_sparse_mask_interface,
@@ -1846,6 +1901,8 @@ m.def(
  m.def("fuse_layernorm_rotary_embedding", &at::native::fuse_layernorm_rotary_embedding, "fuse_layernorm_rotary_embedding");
  m.def("fuse_norm_rope_quant_fp8", &at::native::fuse_norm_rope_quant_fp8, "fuse_norm_rope_quant_fp8");
  m.def("fused_quantize_and_store_mla_kv_cache", &at::native::fused_quantize_and_store_mla_kv_cache, "fused_quantize_and_store_mla_kv_cache");
+m.def("fused_quantize_and_store_mla_kv_cache_dual", &at::native::fused_quantize_and_store_mla_kv_cache_dual, py::arg("k_nope"), py::arg("k_rope"), py::arg("kv_buffer"), py::arg("loc"), py::arg("mirror_buffer") = py::none(), py::arg("mirror_loc") = py::none(), py::arg("concat_out") = py::none(), py::arg("eps") = 1e-6f);
+m.def("main_kv_loc_to_compact", &at::native::main_kv_loc_to_compact, py::arg("loc"), py::arg("physical_to_compact"), py::arg("page_size"));
  m.def("fused_concat_and_store_mla_kv_cache", &at::native::fused_concat_and_store_mla_kv_cache, "fused_concat_and_store_mla_kv_cache");
  m.def("qkv_split_rms_rotary_embedding_fuse", &at::native::qkv_split_rms_rotary_embedding_fuse, "qkv_split_rms_rotary_embedding_fuse");
  m.def("gemma_qkv_split_rms_rotary_embedding_fuse", &at::native::gemma_qkv_split_rms_rotary_embedding_fuse, "gemma_qkv_split_rms_rotary_embedding_fuse");
@@ -1903,6 +1960,7 @@ m.def(
        "RMS-normalized projection, or None when unsupported", py::arg("x"),
        py::arg("weight"), py::arg("eps") = 1e-6);
  m.def("dpskv4_hc_head_fused", &at::native::dpskv4_hc_head_fused, "dpskv4_hc_head_fused");
+  m.def("fused_dsa_cp_prefill_metadata", &at::native::fused_dsa_cp_prefill_metadata_launcher);
  m.def("fused_metadata_kernel_general", &at::native::fused_metadata_kernel_general_launcher,
        "fused_metadata_kernel_general",
        py::arg("seq_lens"),
@@ -1951,6 +2009,7 @@ m.def("moe_fused_gate_sqrtsoftplus_v41_hcu_deepep",
       py::arg("routed_scaling_factor"),
       py::arg("apply_routed_scaling_factor_on_output"),
       py::arg("num_token_non_padded") = py::none());
+m.def("fused_clamp_smooth", &at::native::fused_clamp_smooth, "fused_clamp_smooth");
 m.def("fused_deepep_prepare", &at::native::fused_deepep_prepare,
       "fused_deepep_prepare");
 m.def("fuse_silu_and_mul_ep",&at::native::fuse_silu_and_mul_ep,"fuse_silu_and_mul_ep");

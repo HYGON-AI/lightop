@@ -4,7 +4,7 @@
 """Q-absorb + Q RoPE + concat: exact rotary rounding and dynamic replay."""
 import pytest
 import torch
-from lightop import op
+from lightop import attention as op
 
 
 def require_hcu():

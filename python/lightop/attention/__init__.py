@@ -20,6 +20,7 @@ from .mqa import (
     get_paged_mqa_logits_fp4_metadata,
     get_paged_sparse_mqa_logits_metadata,
     mqa_logits,
+    mqa_logits_topk_sampled_int8,
     paged_mqa_logits,
     paged_mqa_logits_persisten,
     paged_mqa_logits_fp4,
@@ -55,6 +56,9 @@ from .sparse import (
     top_k_per_row_decode,
     top_k_per_row_prefill,
     topk_transform_512,
+    topk_transform_1024,
+    topk_transform_ragged_v2,
+    fast_kpool_topk_transform_fused,
 )
 from .softmax import (
     FusedScaleMaskSoftmax,
@@ -76,6 +80,9 @@ __all__ = [
     "fp8_fp4_paged_sparse_mqa_logits",
     "prefill_sparse_mqa_fused",
     "sparse_fp8_fp4_paged_mqa_logits",
+    "topk_transform_1024",
+    "topk_transform_ragged_v2",
+    "fast_kpool_topk_transform_fused",
     "FusedScaleMaskSoftmax",
     "FusedScaleMaskSoftmaxDropout",
     "FuseLogSoftmax",
@@ -101,6 +108,7 @@ __all__ = [
     "mhc_repeat_cp_sglang",
     "mimo_v2_split_rope_vscale_kv_store",
     "mqa_logits",
+    "mqa_logits_topk_sampled_int8",
     "paged_mqa_logits",
     "paged_mqa_logits_persisten",
     "paged_mqa_logits_fp4",
@@ -134,3 +142,10 @@ for _helper in ("dsv41_build_swa_token_ids", "dsv41_remap_indices_to_staging", "
         globals().pop(_helper, None)
         __all__ = [name for name in __all__ if name != _helper]
 del _helper, _attention_native
+
+from . import qkv as _qkv
+
+for _name in ('spark_mla_rope_cat_store', 'indexer_q_rope_hadamard_quant', 'mla_q_absorb_rope_concat'):
+    if hasattr(_qkv, _name):
+        globals()[_name] = getattr(_qkv, _name)
+        __all__.append(_name)

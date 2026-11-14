@@ -5,7 +5,7 @@
 
 from ..minimax_cp_cache_scatter import minimax_cp_cache_scatter
 
-from ..fused_metadata import fused_metadata_kernel_general
+from ..fused_metadata import fused_metadata_kernel_general, fused_dsa_cp_prefill_metadata, dsa_cp_prefill_metadata_plan
 from ..gather_and_maybe_dequant_cache import gather_and_maybe_dequant_cache
 from ..kvcacheio import hcu_alloc_extend_kernel
 from ..reshape_and_cache_cuda import reshape_and_cache_cuda
@@ -14,6 +14,7 @@ from .dequantize_k_cache_paged import (
     dsv4_dequantize_k_cache_paged_out,
 )
 from .topk_workspace import (
+    prefill_gather_physical_kv,
     dsv4_dequantize_sparse_topk_out,
     dsv4_pack_c4_topk_workspace,
     dsv4_pack_sparse_topk_workspace,
@@ -29,6 +30,7 @@ from .native import (
 __all__ = [
     "minimax_cp_cache_scatter",
 
+    "prefill_gather_physical_kv",
     "dsv4_pack_c4_topk_workspace",
     "dsv4_pack_sparse_topk_workspace",
     "dsv4_dequantize_sparse_topk_out",
@@ -38,9 +40,18 @@ __all__ = [
     "fuse_act_quant_and_store_index_k_cache",
     "fuse_qk_quant_and_store_index_k_cache",
     "fused_metadata_kernel_general",
+    "fused_dsa_cp_prefill_metadata",
+    "dsa_cp_prefill_metadata_plan",
     "fused_quantize_and_store_mla_kv_cache",
     "quantize_nope_fp8_rope_bf16_pack_store",
     "reshape_and_cache_cuda",
     "fused_concat_and_store_mla_kv_cache",
     "gather_and_maybe_dequant_cache",
 ]
+
+from . import native as _native
+
+for _name in ("fused_quantize_and_store_mla_kv_cache_dual", "main_kv_loc_to_compact", "indexer_k_norm_rope_hadamard_store", "fill_swa_ring_mapping"):
+    if hasattr(_native, _name):
+        globals()[_name] = getattr(_native, _name)
+        __all__.append(_name)

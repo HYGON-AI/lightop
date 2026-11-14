@@ -289,6 +289,225 @@ void fused_quantize_and_store_mla_kv_cache(
     );
 }
 
+template <typename scalar_t, bool is_e4m3, bool MIRROR, bool CONCAT>
+__global__ void fused_quantize_and_store_mla_kv_dual_kernel(
+    const scalar_t* __restrict__ k_nope,
+    const scalar_t* __restrict__ k_rope,
+    uint8_t* __restrict__ kv_buffer,
+    const int64_t* __restrict__ loc,
+    const int64_t buffer_stride_bytes,
+    uint8_t* __restrict__ mirror_buffer,
+    const int64_t* __restrict__ mirror_loc,
+    scalar_t* __restrict__ concat_out,
+    const int64_t mirror_stride_bytes,
+    const int64_t nope_stride,
+    const int64_t rope_stride,
+    const float eps,
+    const int num_tokens,
+    const int nope_blocks
+) {
+    constexpr int NOPE_THREADS_PER_TOKEN = 32;
+    constexpr int ROPE_THREADS_PER_TOKEN = 8;
+    constexpr int VEC_NOPE = 16;
+    constexpr int VEC_ROPE = 8;
+    using RopeVecType = at::native::memory::aligned_vector<scalar_t, VEC_ROPE>;
+    using NopeVecType = at::native::memory::aligned_vector<scalar_t, VEC_NOPE>;
+    using Fp8VecType = at::native::memory::aligned_vector<uint8_t, VEC_NOPE>;
+
+    if (blockIdx.x < nope_blocks) {
+        int global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+        int token_idx = global_tid / NOPE_THREADS_PER_TOKEN;
+        int lane_id = global_tid % NOPE_THREADS_PER_TOKEN;
+
+        if (token_idx >= num_tokens) return;
+
+        int group_id = lane_id / 8;
+        int lane_in_group = lane_id % 8;
+        int nope_idx = group_id * 128 + lane_in_group * VEC_NOPE;
+
+        int64_t token_loc = loc[token_idx];
+        uint8_t* dst_ptr = kv_buffer + token_loc * buffer_stride_bytes;
+        scalar_t input_vec[VEC_NOPE];
+        *(NopeVecType*)input_vec = *(NopeVecType*)(k_nope + token_idx * nope_stride + nope_idx);
+
+        float input_float_vec[VEC_NOPE];
+        float max_val = 0.f;
+        #pragma unroll
+        for (int i = 0; i < VEC_NOPE; i++) {
+            input_float_vec[i] = static_cast<float>(input_vec[i]);
+            max_val = fmaxf(max_val, fabsf(input_float_vec[i]));
+        }
+
+        #pragma unroll
+        for (int mask = 4; mask > 0; mask >>= 1) {
+            max_val = fmaxf(max_val, SHFL_XOR(max_val, mask));
+        }
+        constexpr float FP8_MAX_VAL = is_e4m3 ? 448.0f : 57344.0f;
+        max_val = fmaxf(max_val, eps);
+        float scale = max_val / FP8_MAX_VAL;
+
+        if (lane_in_group == 0) {
+            float* scale_dst = reinterpret_cast<float*>(dst_ptr + 512);
+            scale_dst[group_id] = scale;
+            if constexpr (MIRROR) {
+                reinterpret_cast<float*>(mirror_buffer + mirror_loc[token_idx] * mirror_stride_bytes + 512)[group_id] = scale;
+            }
+        }
+        float inv_s = (scale == 0.f) ? 0.f : 1.0f / scale;
+        uint8_t out_vec[VEC_NOPE];
+
+        #pragma unroll
+        for(int i = 0; i < VEC_NOPE; i += 4) {
+            uint32_t packed;
+            if constexpr (is_e4m3) {
+                packed = float_to_fp8e4m3_x4(
+                    input_float_vec[i] * inv_s, input_float_vec[i+1] * inv_s,
+                    input_float_vec[i+2] * inv_s, input_float_vec[i+3] * inv_s);
+            } else {
+                packed = float_to_fp8e5m2_x4(
+                    input_float_vec[i] * inv_s, input_float_vec[i+1] * inv_s,
+                    input_float_vec[i+2] * inv_s, input_float_vec[i+3] * inv_s);
+            }
+            *(uint32_t*)(&out_vec[i]) = packed;
+        }
+        *(Fp8VecType*)(dst_ptr + nope_idx) = *(Fp8VecType*)out_vec;
+        if constexpr (MIRROR) {
+            *(Fp8VecType*)(mirror_buffer + mirror_loc[token_idx] * mirror_stride_bytes + nope_idx) = *(Fp8VecType*)out_vec;
+        }
+        if constexpr (CONCAT) {
+            *(NopeVecType*)(concat_out + int64_t(token_idx) * 576 + nope_idx) = *(NopeVecType*)input_vec;
+        }
+
+    } else {
+        int k_block_idx = blockIdx.x - nope_blocks;
+        int global_tid = k_block_idx * blockDim.x + threadIdx.x;
+
+        int token_idx = global_tid / ROPE_THREADS_PER_TOKEN;
+        int lane_id = global_tid % ROPE_THREADS_PER_TOKEN;
+
+        if (token_idx >= num_tokens) return;
+
+        constexpr int ROPE_BYTE_OFFSET = 512 + 16;
+        int rope_idx = lane_id * VEC_ROPE;
+
+        int64_t token_loc = loc[token_idx];
+        uint8_t* dst_ptr = kv_buffer + token_loc * buffer_stride_bytes;
+        RopeVecType rope_val = *(RopeVecType*)(k_rope + token_idx * rope_stride + rope_idx);
+        *(RopeVecType*)(dst_ptr + ROPE_BYTE_OFFSET + rope_idx * sizeof(scalar_t)) = rope_val;
+        if constexpr (MIRROR) {
+            *(RopeVecType*)(mirror_buffer + mirror_loc[token_idx] * mirror_stride_bytes + ROPE_BYTE_OFFSET + rope_idx * sizeof(scalar_t)) = rope_val;
+        }
+        if constexpr (CONCAT) {
+            *(RopeVecType*)(concat_out + int64_t(token_idx) * 576 + 512 + rope_idx) = rope_val;
+        }
+    }
+}
+
+template <bool MIRROR, bool CONCAT>
+static void launch_mla_kv_dual(
+    const torch::Tensor& k_nope, const torch::Tensor& k_rope,
+    torch::Tensor& kv_buffer, const torch::Tensor& loc,
+    const std::optional<torch::Tensor>& mirror_buffer,
+    const std::optional<torch::Tensor>& mirror_loc,
+    const std::optional<torch::Tensor>& concat_out, float eps) {
+    const int tokens = loc.numel();
+    if (tokens == 0) return;
+    const int nb = CEIL_DIV(tokens * 32, 256);
+    const int rb = CEIL_DIV(tokens * 8, 256);
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    fused_quantize_and_store_mla_kv_dual_kernel<at::BFloat16, true, MIRROR, CONCAT>
+        <<<nb + rb, 256, 0, stream>>>(
+            k_nope.data_ptr<at::BFloat16>(), k_rope.data_ptr<at::BFloat16>(),
+            kv_buffer.data_ptr<uint8_t>(), loc.data_ptr<int64_t>(),
+            kv_buffer.stride(0),
+            MIRROR ? mirror_buffer->data_ptr<uint8_t>() : nullptr,
+            MIRROR ? mirror_loc->data_ptr<int64_t>() : nullptr,
+            CONCAT ? concat_out->data_ptr<at::BFloat16>() : nullptr,
+            MIRROR ? mirror_buffer->stride(0) : 0,
+            k_nope.stride(0), k_rope.stride(0), eps, tokens, nb);
+}
+
+void fused_quantize_and_store_mla_kv_cache_dual(
+    torch::Tensor k_nope, torch::Tensor k_rope,
+    torch::Tensor kv_buffer, torch::Tensor loc,
+    std::optional<torch::Tensor> mirror_buffer,
+    std::optional<torch::Tensor> mirror_loc,
+    std::optional<torch::Tensor> concat_out, float eps) {
+    const c10::cuda::CUDAGuard guard(k_nope.device());
+    TORCH_CHECK(k_nope.is_cuda() && k_nope.scalar_type() == at::kBFloat16);
+    if (k_nope.dim() == 3) { TORCH_CHECK(k_nope.size(1) == 1); k_nope = k_nope.squeeze(1); }
+    if (k_rope.dim() == 3) { TORCH_CHECK(k_rope.size(1) == 1); k_rope = k_rope.squeeze(1); }
+    TORCH_CHECK(k_nope.dim() == 2 && k_nope.size(1) == 512 && k_nope.stride(1) == 1);
+    TORCH_CHECK(k_rope.dim() == 2 && k_rope.size(1) == 64 && k_rope.stride(1) == 1);
+    TORCH_CHECK(k_rope.device() == k_nope.device() && k_rope.scalar_type() == at::kBFloat16);
+    TORCH_CHECK(k_nope.size(0) == k_rope.size(0) && k_nope.size(0) == loc.numel());
+    TORCH_CHECK(k_nope.stride(0) % 16 == 0 && k_rope.stride(0) % 8 == 0);
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(k_nope.data_ptr()) % 32 == 0 && reinterpret_cast<uintptr_t>(k_rope.data_ptr()) % 16 == 0);
+    TORCH_CHECK(loc.is_cuda() && loc.device() == k_nope.device() && loc.scalar_type() == at::kLong && loc.dim() == 1 && loc.is_contiguous());
+    TORCH_CHECK(loc.numel() <= INT_MAX / 32 && eps > 0.0f);
+    auto check_buffer = [&](const torch::Tensor& b) {
+        TORCH_CHECK(b.is_cuda() && b.device() == k_nope.device() && b.scalar_type() == at::kByte && b.is_contiguous());
+        TORCH_CHECK(b.dim() == 3 && b.size(1) == 1 && b.size(2) == 656 && b.stride(0) == 656);
+    };
+    check_buffer(kv_buffer);
+    TORCH_CHECK(mirror_buffer.has_value() == mirror_loc.has_value());
+    if (mirror_buffer) {
+        check_buffer(*mirror_buffer);
+        TORCH_CHECK(mirror_buffer->data_ptr() != kv_buffer.data_ptr());
+        TORCH_CHECK(mirror_loc->device() == loc.device() && mirror_loc->scalar_type() == at::kLong && mirror_loc->dim() == 1 && mirror_loc->is_contiguous() && mirror_loc->numel() == loc.numel());
+    }
+    if (concat_out) {
+        TORCH_CHECK(concat_out->device() == k_nope.device() && concat_out->scalar_type() == at::kBFloat16 && concat_out->is_contiguous());
+        TORCH_CHECK(concat_out->dim() == 3 && concat_out->size(0) == loc.numel() && concat_out->size(1) == 1 && concat_out->size(2) == 576);
+    }
+    if (mirror_buffer && concat_out) launch_mla_kv_dual<true, true>(k_nope, k_rope, kv_buffer, loc, mirror_buffer, mirror_loc, concat_out, eps);
+    else if (mirror_buffer) launch_mla_kv_dual<true, false>(k_nope, k_rope, kv_buffer, loc, mirror_buffer, mirror_loc, concat_out, eps);
+    else if (concat_out) launch_mla_kv_dual<false, true>(k_nope, k_rope, kv_buffer, loc, mirror_buffer, mirror_loc, concat_out, eps);
+    else launch_mla_kv_dual<false, false>(k_nope, k_rope, kv_buffer, loc, mirror_buffer, mirror_loc, concat_out, eps);
+    TORCH_CHECK(cudaGetLastError() == cudaSuccess, "MLA dual store launch failed");
+}
+
+template <typename index_t>
+__global__ void main_kv_loc_to_compact_kernel(
+    const index_t* loc, const int* table, index_t* out,
+    int64_t size, int64_t page_count, int page_shift, int64_t page_mask) {
+    for (int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+         i < size; i += int64_t(gridDim.x) * blockDim.x) {
+        const int64_t value = loc[i];
+        if (value < 0) { out[i] = -1; continue; }
+        const int64_t page = value >> page_shift;
+        if (page >= page_count) {
+#if defined(__HIP_PLATFORM_AMD__)
+            __builtin_trap();
+#else
+            __trap();
+#endif
+            return;
+        }
+        const int compact = table[page];
+        out[i] = compact < 0 ? index_t(-1) : index_t(int64_t(compact) * (page_mask + 1) + (value & page_mask));
+    }
+}
+
+torch::Tensor main_kv_loc_to_compact(
+    torch::Tensor loc, torch::Tensor physical_to_compact, int64_t page_size) {
+    const c10::cuda::CUDAGuard guard(loc.device());
+    TORCH_CHECK(loc.is_cuda() && loc.is_contiguous() && (loc.scalar_type() == at::kLong || loc.scalar_type() == at::kInt));
+    TORCH_CHECK(physical_to_compact.device() == loc.device() && physical_to_compact.scalar_type() == at::kInt && physical_to_compact.dim() == 1 && physical_to_compact.is_contiguous());
+    TORCH_CHECK(page_size > 0 && (page_size & (page_size - 1)) == 0);
+    auto out = torch::empty_like(loc);
+    if (loc.numel() == 0) return out;
+    int shift = 0;
+    for (int64_t p = page_size; p > 1; p >>= 1) ++shift;
+    const int blocks = std::min<int64_t>((loc.numel() + 255) / 256, 640);
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    AT_DISPATCH_INDEX_TYPES(loc.scalar_type(), "main_kv_loc_to_compact", [&] {
+        main_kv_loc_to_compact_kernel<index_t><<<blocks, 256, 0, stream>>>(loc.data_ptr<index_t>(), physical_to_compact.data_ptr<int>(), out.data_ptr<index_t>(), loc.numel(), physical_to_compact.numel(), shift, page_size - 1);
+    });
+    TORCH_CHECK(cudaGetLastError() == cudaSuccess, "Main-KV location mapping launch failed");
+    return out;
+}
+
 template <typename scalar_t>
 __global__ void quantize_nope_fp8_rope_bf16_pack_kernel(
     const scalar_t* __restrict__ k_bf16,

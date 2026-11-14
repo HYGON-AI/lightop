@@ -228,7 +228,7 @@ def rms_norm_dynamic_per_token_quant(
     return output, scales
 
 
-SGLANG_NATIVE_RMS_QUANT_VERSION = 1
+SGLANG_NATIVE_RMS_QUANT_VERSION = 2
 
 
 def rms_norm_dynamic_per_token_quant_sglang(
@@ -243,6 +243,7 @@ def rms_norm_dynamic_per_token_quant_sglang(
     norm_output: Optional[torch.Tensor] = None,
     clamp_norm_output: bool = True,
     residual_output: Optional[torch.Tensor] = None,
+    clamped_output: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """RMSNorm + per-token INT8 quant with SGLang-compatible numerics.
 
@@ -258,7 +259,7 @@ def rms_norm_dynamic_per_token_quant_sglang(
     if quant_dtype != torch.int8:
         raise ValueError(f"Only torch.int8 is supported, got {quant_dtype}")
 
-    output = torch.empty_like(input, dtype=torch.int8)
+    output = torch.empty(input.shape, device=input.device, dtype=torch.int8)
     scales = torch.empty(
         (input.numel() // input.shape[-1], 1),
         device=input.device,
@@ -277,6 +278,7 @@ def rms_norm_dynamic_per_token_quant_sglang(
         norm_output,
         clamp_norm_output,
         residual_output,
+        clamped_output,
     )
     return output, scales
 
