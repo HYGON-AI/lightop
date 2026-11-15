@@ -16,6 +16,8 @@
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 
+#include <ATen/MemoryOverlap.h>
+#include <c10/cuda/CUDAException.h>
 #include <torch/extension.h>
 
 #include <c10/macros/Macros.h>
@@ -200,10 +202,10 @@ struct min_scaling_factor<int8_t> {
     inline __device__ uint32_t float_to_fp8e4m3_x4(float a, float b, float c, float d)
     {
     #if defined(__gfx938__)
-    int32_t res;
-    res = __builtin_hcu_cvt_pk_fp8_f32(a, b, res, false);
-    res = __builtin_hcu_cvt_pk_fp8_f32(c, d, res, true);
-    return res;
+      int32_t res = 0;
+      res = __builtin_hcu_cvt_pk_fp8_f32(a, b, res, false);
+      res = __builtin_hcu_cvt_pk_fp8_f32(c, d, res, true);
+      return res;
     #else
     int32_t out;
     reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e4m3(a);
@@ -218,10 +220,10 @@ struct min_scaling_factor<int8_t> {
     inline __device__ uint32_t float_to_fp8e5m2_x4(float a, float b, float c, float d)
     {
     #if defined(__gfx938__)
-    int32_t res;
-    res = __builtin_hcu_cvt_pk_bf8_f32(a, b, res, false);
-    res = __builtin_hcu_cvt_pk_bf8_f32(c, d, res, true);
-    return res;
+      int32_t res = 0;
+      res = __builtin_hcu_cvt_pk_bf8_f32(a, b, res, false);
+      res = __builtin_hcu_cvt_pk_bf8_f32(c, d, res, true);
+      return res;
     #else
     int32_t out;
     reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e5m2(a);
@@ -232,28 +234,33 @@ struct min_scaling_factor<int8_t> {
     #endif
     }
 
-template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec=4,int block_size=512, bool inpit_update=false, bool IS_GEMMA=false>
-__global__ void rms_norm_fp8_quant_(scalar_t* input,scalar_t* residual,scalar_t* gamma,int32_t const cols,float const eps,scalar_out_t* out,float* scales, int stride, int fp8type, int num_tokens)
-{
-  constexpr int share_size=block_size/C10_WARP_SIZE;
-  __shared__ T_ACC val_shared[share_size];
-  __shared__ T_ACC s_rstd;
-  int bid = blockIdx.x;
-  int tid = threadIdx.x;
-  int tcol = cols / Vec;
-  using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
-  using LoadT_out = at::native::memory::aligned_vector<scalar_out_t, Vec>;
-  for(; bid < num_tokens; bid += gridDim.x){
-    scalar_t intput_vec[Vec];
-    T_ACC val = 0;
-    T_ACC trstd;
-    int64_t idx = bid * tcol + tid;
-    idx *= Vec;
-    int64_t index = bid * stride + tid * Vec;
-    if (tid < tcol) {
-      *(LoadT*)intput_vec = *(LoadT*)(input+index);
-        #pragma unroll
-        for (int ii = 0; ii < Vec; ii++) {
+    template <typename scalar_t, typename scalar_out_t, typename T_ACC,
+              int Vec = 4, int block_size = 512, bool inpit_update = false,
+              bool IS_GEMMA = false, bool WRITE_NORM = false>
+    __global__ void
+    rms_norm_fp8_quant_(scalar_t *input, scalar_t *residual, scalar_t *gamma,
+                        int32_t const cols, float const eps, scalar_out_t *out,
+                        float *scales, int stride, int fp8type, int num_tokens,
+                        scalar_t *norm_out = nullptr) {
+      constexpr int share_size = block_size / C10_WARP_SIZE;
+      __shared__ T_ACC val_shared[share_size];
+      __shared__ T_ACC s_rstd;
+      int64_t bid = blockIdx.x;
+      int tid = threadIdx.x;
+      int tcol = cols / Vec;
+      using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
+      using LoadT_out = at::native::memory::aligned_vector<scalar_out_t, Vec>;
+      for (; bid < num_tokens; bid += gridDim.x) {
+        scalar_t intput_vec[Vec];
+        T_ACC val = 0;
+        T_ACC trstd;
+        int64_t idx = bid * tcol + tid;
+        idx *= Vec;
+        int64_t index = bid * stride + tid * Vec;
+        if (tid < tcol) {
+          *(LoadT *)intput_vec = *(LoadT *)(input + index);
+#pragma unroll
+          for (int ii = 0; ii < Vec; ii++) {
             val += static_cast<T_ACC>(intput_vec[ii])*static_cast<T_ACC>(intput_vec[ii]);
         }
     }
@@ -308,12 +315,15 @@ __global__ void rms_norm_fp8_quant_(scalar_t* input,scalar_t* residual,scalar_t*
             ((uint32_t*)out_vec)[ii] = float_to_fp8e5m2_x4(elem[ii*4] * inv_s, elem[ii*4 + 1] * inv_s, elem[ii*4 + 2] * inv_s, elem[ii*4 + 3] * inv_s);
       }
       *(LoadT_out*)(out+idx) =*(LoadT_out*)out_vec;
+      if constexpr (WRITE_NORM) {
+        *(LoadT *)(norm_out + idx) = *(LoadT *)elem;
+      }
       if constexpr (inpit_update){
         *(LoadT*)(input+index)=*(LoadT*)elem;
       }
     }
   }
-}
+    }
 
 template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec,int block_size, bool IS_GEMMA=false>
 __global__ void rms_norm_fp8_quant_loop(scalar_t* input,scalar_t* residual,scalar_t* gamma,int32_t const cols,float const eps, scalar_out_t* out,float* scales, int stride, int fp8type)
@@ -670,4 +680,85 @@ void gemma_rms_norm_fp8_quant(
     rms_norm_fp8_quant_impl<true>(out, input, weight, scales, epsilon, residual, update_input, fp8type);
 }
 
+void rms_norm_strided_per_token_fp8_quant_out(const Tensor &input,
+                                              const Tensor &weight,
+                                              Tensor &normalized,
+                                              Tensor &quantized, Tensor &scales,
+                                              double epsilon) {
+  TORCH_CHECK(input.is_cuda() && input.dim() == 2,
+              "input must be a GPU matrix");
+  const int64_t rows = input.size(0), cols = input.size(1);
+  TORCH_CHECK(rows <= 2147483647LL && cols > 0 && cols <= 16384 &&
+                  cols % 16 == 0,
+              "columns must be divisible by 16 and in (0,16384]");
+  TORCH_CHECK(input.scalar_type() == at::kBFloat16 ||
+                  input.scalar_type() == at::kHalf,
+              "input must be BF16 or FP16");
+  TORCH_CHECK(
+      input.stride(1) == 1 && input.stride(0) >= cols &&
+          input.stride(0) % 8 == 0 && input.stride(0) <= 2147483647LL,
+      "input needs aligned, non-overlapping rows and unit column stride");
+  TORCH_CHECK(std::isfinite(epsilon) && epsilon > 0,
+              "epsilon must be finite and positive");
+  TORCH_CHECK(weight.dim() == 1 && weight.numel() == cols &&
+                  weight.scalar_type() == input.scalar_type(),
+              "invalid RMS weight");
+  TORCH_CHECK(normalized.sizes() == input.sizes() &&
+                  normalized.scalar_type() == input.scalar_type(),
+              "invalid normalized output");
+  TORCH_CHECK(quantized.sizes() == input.sizes() &&
+                  quantized.scalar_type() == at::kFloat8_e4m3fn,
+              "invalid FP8 output");
+  TORCH_CHECK(scales.dim() == 2 && scales.size(0) == rows &&
+                  scales.size(1) == 1 && scales.scalar_type() == at::kFloat,
+              "invalid scale output");
+  for (const auto &tensor : {weight, normalized, quantized, scales}) {
+    TORCH_CHECK(tensor.device() == input.device() && tensor.is_contiguous(),
+                "weights/outputs must be contiguous on the input GPU");
+    TORCH_CHECK(rows == 0 || tensor.storage().data_ptr().get() !=
+                                 input.storage().data_ptr().get(),
+                "input storage must not alias weights or outputs");
+  }
+  const auto aligned = [](const Tensor &t, int n) {
+    return reinterpret_cast<uintptr_t>(t.data_ptr()) % n == 0;
+  };
+  TORCH_CHECK(aligned(input, 16) && aligned(weight, 16) &&
+                  aligned(normalized, 16) && aligned(quantized, 16),
+              "unaligned vectorized buffers");
+  at::assert_no_overlap(normalized, quantized);
+  at::assert_no_overlap(normalized, scales);
+  at::assert_no_overlap(quantized, scales);
+  at::assert_no_overlap(weight, normalized);
+  at::assert_no_overlap(weight, quantized);
+  at::assert_no_overlap(weight, scales);
+  if (!rows)
+    return;
+  const at::cuda::OptionalCUDAGuard guard(device_of(input));
+  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+#define LIGHTOP_STRIDED_FP8_RMS(BLOCK)                                         \
+  rms_norm_fp8_quant_<scalar_t, int8_t, float, 16, BLOCK, false, false, true>  \
+      <<<rows, BLOCK, 0, stream>>>(                                            \
+          const_cast<scalar_t *>(input.data_ptr<scalar_t>()), nullptr,         \
+          const_cast<scalar_t *>(weight.data_ptr<scalar_t>()), cols, epsilon,  \
+          reinterpret_cast<int8_t *>(quantized.data_ptr()),                    \
+          scales.data_ptr<float>(), input.stride(0), 0, rows,                  \
+          normalized.data_ptr<scalar_t>())
+  AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half,
+                                  at::ScalarType::BFloat16, input.scalar_type(),
+                                  "rms_norm_strided_per_token_fp8_quant", [&] {
+                                    if (cols <= 1024) {
+                                      LIGHTOP_STRIDED_FP8_RMS(64);
+                                    } else if (cols <= 2048) {
+                                      LIGHTOP_STRIDED_FP8_RMS(128);
+                                    } else if (cols <= 4096) {
+                                      LIGHTOP_STRIDED_FP8_RMS(256);
+                                    } else if (cols <= 8192) {
+                                      LIGHTOP_STRIDED_FP8_RMS(512);
+                                    } else {
+                                      LIGHTOP_STRIDED_FP8_RMS(1024);
+                                    }
+                                  });
+#undef LIGHTOP_STRIDED_FP8_RMS
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
 }}

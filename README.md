@@ -65,3 +65,7 @@ python3 -m pytest -v -p no:cacheprovider --tb=short
 ## 许可证
 
 LightOp 使用 [Apache License 2.0](LICENSE)。第三方组件遵循各自的版权与许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## Transform and quantization fusions
+
+See [the operator and build reference](docs/quant-fusions.md) for RoPE, strided RMSNorm, and INT32/FP8 quantization fusions.
