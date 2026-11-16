@@ -1,0 +1,6 @@
+interface:
+  display_name: "LightOp 算子智能体闭环"
+  short_description: "在 DCU/ROCm 上运行 LightOp 融合算子开发与优化的HIP 证据驱动闭环"
+  default_prompt: "使用 $lightop-kernel-agent-loop 描述一个有代表性的任务。"
+policy:
+  allow_implicit_invocation: true
