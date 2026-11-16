@@ -4,6 +4,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 #include <c10/cuda/CUDAGuard.h>
+#include <c10/util/Optional.h>
 #ifdef USE_ROCM
 #include <hip/hip_runtime.h>
 #else
@@ -42,12 +43,15 @@ __device__ __forceinline__ int8_t per_token_quant_int8_rn(float value) {
 #endif
 }
 
-template <int ROWS_PER_BLOCK>
+template <int ROWS_PER_BLOCK, bool WITH_GATE = false>
 __global__ void per_token_quant_int8_bf16_k128_kernel(
     const c10::BFloat16* __restrict__ input,
     int8_t* __restrict__ output,
     float* __restrict__ scale_out,
-    const int64_t num_tokens) {
+    const int64_t num_tokens,
+    const float* __restrict__ smooth,
+    const float* __restrict__ head_weights,
+    float* __restrict__ adjusted_weights) {
     constexpr int hidden_size = 128;
     constexpr int subgroup_size = 16;
     constexpr int rows_per_wave = C10_WARP_SIZE / subgroup_size;
@@ -62,6 +66,9 @@ __global__ void per_token_quant_int8_bf16_k128_kernel(
         at::native::memory::aligned_vector<c10::BFloat16, values_per_lane>;
     using OutputVec =
         at::native::memory::aligned_vector<int8_t, values_per_lane>;
+
+    using ScaleVec =
+        at::native::memory::aligned_vector<float, values_per_lane>;
 
     const int thread_id = threadIdx.x;
     const int wave_lane = thread_id % C10_WARP_SIZE;
@@ -79,11 +86,18 @@ __global__ void per_token_quant_int8_bf16_k128_kernel(
     const int64_t offset = token_id * hidden_size + column;
     const InputVec input_vec =
         *reinterpret_cast<const InputVec*>(input + offset);
+    ScaleVec smooth_vec;
+    if constexpr (WITH_GATE) {
+        smooth_vec = *reinterpret_cast<const ScaleVec*>(smooth + column);
+    }
     float values[values_per_lane];
     float row_absmax = 0.0f;
 #pragma unroll
     for (int index = 0; index < values_per_lane; ++index) {
         values[index] = static_cast<float>(input_vec.val[index]);
+        if constexpr (WITH_GATE) {
+            values[index] *= smooth_vec.val[index];
+        }
         row_absmax = fmaxf(row_absmax, fabsf(values[index]));
     }
 
@@ -92,12 +106,19 @@ __global__ void per_token_quant_int8_bf16_k128_kernel(
         row_absmax = fmaxf(
             row_absmax, __shfl_down(row_absmax, delta, subgroup_size));
     }
-    const float token_absmax =
-        fmaxf(__shfl(row_absmax, 0, subgroup_size), 1.0e-10f);
-    if (lane_id == 0) {
-        scale_out[token_id] = token_absmax / 127.0f;
+    float token_absmax = __shfl(row_absmax, 0, subgroup_size);
+    if constexpr (!WITH_GATE) {
+        token_absmax = fmaxf(token_absmax, 1.0e-10f);
     }
-    const float inverse_scale = 127.0f / token_absmax;
+    if (lane_id == 0) {
+        const float token_scale = token_absmax / 127.0f;
+        scale_out[token_id] = token_scale;
+        if constexpr (WITH_GATE) {
+            adjusted_weights[token_id] = head_weights[token_id] * token_scale;
+        }
+    }
+    const float inverse_scale =
+        WITH_GATE && token_absmax == 0.0f ? 0.0f : 127.0f / token_absmax;
     OutputVec output_vec;
 #pragma unroll
     for (int index = 0; index < values_per_lane; ++index) {
@@ -112,7 +133,10 @@ __global__ void per_token_quant_int8_bf16_k128_kernel(
 void per_token_quant_int8_out(
     torch::Tensor& out,
     const torch::Tensor& input,
-    torch::Tensor& scales) {
+    torch::Tensor& scales,
+    const c10::optional<torch::Tensor>& smooth,
+    const c10::optional<torch::Tensor>& weights,
+    const c10::optional<torch::Tensor>& gate_output) {
     TORCH_CHECK(input.is_cuda(), "input must be on a GPU");
     TORCH_CHECK(input.is_contiguous(), "input must be contiguous");
     TORCH_CHECK(out.is_contiguous(), "out must be contiguous");
@@ -138,6 +162,22 @@ void per_token_quant_int8_out(
                 "out must be 16-byte aligned");
     TORCH_CHECK(reinterpret_cast<std::uintptr_t>(scales.data_ptr()) % 4 == 0,
                 "scales must be 4-byte aligned");
+    const bool with_gate = smooth.has_value() || weights.has_value() || gate_output.has_value();
+    TORCH_CHECK(!with_gate || (smooth.has_value() && weights.has_value() && gate_output.has_value()),
+                "smooth, weights and gate_output must be supplied together");
+    if (with_gate) {
+        TORCH_CHECK(smooth->scalar_type() == at::ScalarType::Float &&
+                        smooth->numel() == 128 && smooth->is_contiguous());
+        TORCH_CHECK(weights->scalar_type() == at::ScalarType::Float &&
+                        weights->numel() == num_tokens && weights->is_contiguous());
+        TORCH_CHECK(gate_output->scalar_type() == at::ScalarType::Float &&
+                        gate_output->sizes() == weights->sizes() && gate_output->is_contiguous());
+        TORCH_CHECK(smooth->device() == input.device() && weights->device() == input.device() &&
+                        gate_output->device() == input.device());
+        TORCH_CHECK(reinterpret_cast<std::uintptr_t>(smooth->data_ptr()) % 32 == 0);
+        TORCH_CHECK(!out.is_alias_of(input) && !gate_output->is_alias_of(*weights) &&
+                        !scales.is_alias_of(*gate_output));
+    }
     if (num_tokens == 0) {
         return;
     }
@@ -148,10 +188,18 @@ void per_token_quant_int8_out(
     constexpr int rows_per_block = threads / 16;
     const int64_t blocks =
         (num_tokens + rows_per_block - 1) / rows_per_block;
-    per_token_quant_int8_bf16_k128_kernel<rows_per_block>
-        <<<blocks, threads, 0, stream>>>(
-            input.data_ptr<c10::BFloat16>(), out.data_ptr<int8_t>(),
-            scales.data_ptr<float>(), num_tokens);
+    if (with_gate) {
+        per_token_quant_int8_bf16_k128_kernel<rows_per_block, true>
+            <<<blocks, threads, 0, stream>>>(
+                input.data_ptr<c10::BFloat16>(), out.data_ptr<int8_t>(),
+                scales.data_ptr<float>(), num_tokens, smooth->data_ptr<float>(),
+                weights->data_ptr<float>(), gate_output->data_ptr<float>());
+    } else {
+        per_token_quant_int8_bf16_k128_kernel<rows_per_block, false>
+            <<<blocks, threads, 0, stream>>>(
+                input.data_ptr<c10::BFloat16>(), out.data_ptr<int8_t>(),
+                scales.data_ptr<float>(), num_tokens, nullptr, nullptr, nullptr);
+    }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

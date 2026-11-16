@@ -4,7 +4,7 @@
 """Q-only BF16 rotary/Hadamard preparation and dynamic HIP graph replay."""
 import pytest
 import torch
-from lightop import op
+from lightop import attention as op
 
 
 def require_hcu():

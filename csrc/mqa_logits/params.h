@@ -40,6 +40,14 @@ using MqaFp8Params = mqa_beta::MqaParams;
 
 namespace lightop::mqa_int8 {
 using MqaInt8Params = mqa_beta::MqaParams;
+struct MqaTopKParams : MqaInt8Params {
+    const uint32_t *thresholds;
+    int32_t *counts;
+    void *candidate_keys;
+    int32_t *candidate_ids;
+    const int32_t *fallback_count;
+};
+
 } // namespace lightop::mqa_int8
 
 namespace lightop::mqa_bf16 {

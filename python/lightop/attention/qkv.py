@@ -47,3 +47,8 @@ __all__ = [
     "fuse_rmsnorm_rope_quant_qkv",
     "fused_rms_norm_rope_contiguous",
 ]
+
+for _name in ('spark_mla_rope_cat_store', 'indexer_q_rope_hadamard_quant', 'mla_q_absorb_rope_concat'):
+    if hasattr(lightop_native, _name):
+        globals()[_name] = getattr(lightop_native, _name)
+        __all__.append(_name)

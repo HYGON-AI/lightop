@@ -65,13 +65,15 @@ def get_paged_sparse_mqa_logits_metadata(
 
 def paged_mqa_logits_persisten(
     q, fused_kv_cache, weights, context_lens, block_table,
-    max_context_len, *, group_size=1, persistent_ctas=0,
+    max_context_len, *, group_size=1, persistent_ctas=0, clean_logits=True,
 ):
     """Dense paged MQA for group sizes 1 through 5.
 
     Equal physical KV pages in one group are loaded once. Different pages
     are handled independently, and a final partial group is valid. INT8 is
-    supported on gfx936/gfx938; FP8 requires gfx938.
+    supported on gfx936/gfx938; FP8 requires gfx938. With clean_logits=False,
+    only the per-row valid prefix is defined; this requires gfx936 INT8
+    [18,1,32,128] and group_size=3. Consumers must mask by context_lens.
     """
     from .. import op
 
@@ -81,7 +83,7 @@ def paged_mqa_logits_persisten(
         )
     return op.paged_mqa_logits_persisten(
         q, fused_kv_cache, weights, context_lens, block_table, None,
-        max_context_len, True, 4, persistent_ctas, group_size,
+        max_context_len, clean_logits, 4, persistent_ctas, group_size,
     )
 
 
@@ -747,3 +749,20 @@ def prefill_sparse_mqa_fused(
 
 
 __all__ = list(dict.fromkeys([*__all__, "supports_prefill_sparse_fusion", "prepare_prefill_sparse_query", "prepare_prefill_sparse_candidates", "finalize_prefill_sparse_indices", "prefill_sparse_mqa_fused"]))
+
+
+def mqa_logits_topk_sampled_int8(
+    q, k, weights, kv_scale, starts, ends, offsets,
+    sorted_values=None, next_thresholds=None, stats=None,
+    parallel_histogram=True, fallback_workspace_rows=0, reuse_full_window=True, sort_topk=True, min_sample_k=131072, direct_candidate_emit=False,
+):
+    from .. import op
+
+    return op.mqa_logits_topk_sampled_int8(
+        q, k, weights, kv_scale, starts, ends, offsets,
+        sorted_values, next_thresholds, stats,
+        parallel_histogram, fallback_workspace_rows, reuse_full_window, sort_topk, min_sample_k, direct_candidate_emit,
+    )
+
+
+__all__ = list(dict.fromkeys([*__all__, "mqa_logits_topk_sampled_int8"]))

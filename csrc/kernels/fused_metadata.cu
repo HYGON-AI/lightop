@@ -5,6 +5,9 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <torch/all.h>
 #include <ATen/ATen.h>
+#include <algorithm>
+#include <cassert>
+#include <cstdint>
 
 namespace at {
 namespace native {
@@ -127,7 +130,7 @@ __global__ __launch_bounds__(256, 2) void fused_metadata_kernel_general_v2(
     // Tail pages — individual 1-wide stride
     int tc = static_cast<int>(threadIdx.x);
     while (tc < max_seq_pages) {
-      if (tc >= col && tc < col + 3) {  // already handled in the 4-wide loop
+      if (tc >= (max_seq_pages & ~3)) {  // already handled in the 4-wide loop
         int pi = req_to_token[row_off + static_cast<int64_t>(tc) * req_to_token_stride_1];
         page_table[pt_row_off + static_cast<int64_t>(tc) * page_table_stride_1] = pi;
         if constexpr (USE_SWA) {
@@ -432,3 +435,226 @@ void fused_metadata_kernel_general_launcher(
 
 }  // namespace native
 }  // namespace at
+
+namespace at {
+namespace native {
+namespace {
+
+struct DsaCPMetadataArgs {
+  const void* seq;
+  const void* req;
+  const int32_t* extend;
+  const int32_t* table;
+  void* local_seq;
+  int32_t* cache;
+  int32_t* cu_k;
+  int32_t* cu_q;
+  int32_t* expanded;
+  int32_t* dsa;
+  int32_t* dsa_cu_k;
+  int32_t* dsa_cu_q;
+  int32_t* pages;
+  int32_t* real_pages;
+  int32_t* k_start;
+  int32_t* k_end;
+  int32_t* token_batch;
+  int32_t* offsets;
+  int32_t* flat;
+  int32_t* work;
+  int64_t table_stride;
+  int64_t table_rows;
+  int64_t work_items;
+  int64_t flat_tokens;
+  int batch;
+  int local_batch;
+  int tokens;
+  int padded;
+  int width;
+  int real_width;
+  int cp_size;
+  int cp_rank;
+  int topk;
+  int page_shift;
+};
+
+__device__ __forceinline__ int64_t dsa_cp_clipped_sum(
+    int count, int start, int step, int cap) {
+  int64_t low = start < cap ? (int64_t(cap) - start + step - 1) / step : 0;
+  low = low < count ? low : count;
+  return low * (2LL * start + (low - 1) * step) / 2 +
+      (int64_t(count) - low) * cap;
+}
+
+template <typename seq_t>
+__global__ void fused_dsa_cp_request_metadata_kernel(DsaCPMetadataArgs a) {
+  if (threadIdx.x != 0) return;
+  const auto* seq = static_cast<const seq_t*>(a.seq);
+  auto* local_seq = static_cast<seq_t*>(a.local_seq);
+  int64_t q_begin = 0;
+  int64_t local_begin = 0;
+  int64_t k_begin = 0;
+  int64_t dsa_begin = 0;
+  int selected = 0;
+  a.cu_k[0] = 0;
+  a.cu_q[0] = 0;
+  for (int i = 0; i < a.batch; ++i) {
+    const int q = a.extend[i];
+    assert(seq[i] >= 0 && seq[i] <= INT32_MAX);
+    const int length = static_cast<int>(seq[i]);
+    const int first = (a.cp_rank - q_begin % a.cp_size + a.cp_size) % a.cp_size;
+    const int count = q > first ? (q - first + a.cp_size - 1) / a.cp_size : 0;
+    assert(q >= 0 && length >= q);
+    if (count > 0) {
+      assert(length <= a.width);
+      assert(selected < a.local_batch);
+      int32_t* m = a.work + selected * 8;
+      m[0] = i;
+      m[1] = local_begin;
+      m[2] = count;
+      m[3] = first;
+      m[4] = k_begin;
+      m[5] = dsa_begin;
+      m[6] = length;
+      m[7] = q;
+      local_seq[selected] = seq[i];
+      a.cache[selected] = length;
+      local_begin += count;
+      k_begin += length;
+      dsa_begin += static_cast<int>(dsa_cp_clipped_sum(
+          count, length - q + first + 1, a.cp_size, a.topk));
+      assert(k_begin <= INT32_MAX && dsa_begin <= INT32_MAX);
+      ++selected;
+      a.cu_k[selected] = k_begin;
+      a.cu_q[selected] = local_begin;
+    }
+    q_begin += q;
+    assert(q_begin <= INT32_MAX);
+  }
+  assert(selected == a.local_batch && local_begin == a.tokens);
+  assert(!a.flat || k_begin == a.flat_tokens);
+  a.work[a.local_batch * 8] = dsa_begin;
+}
+
+template <typename req_t>
+__global__ __launch_bounds__(256) void fused_dsa_cp_token_page_metadata_kernel(
+    DsaCPMetadataArgs a) {
+  const int64_t idx = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+  if (idx >= a.work_items) return;
+  const auto* req = static_cast<const req_t*>(a.req);
+  if (idx < int64_t(a.local_batch) * a.width) {
+    const int bi = idx / a.width;
+    const int col = idx - int64_t(bi) * a.width;
+    const int32_t* m = a.work + bi * 8;
+    const int64_t request = static_cast<int64_t>(req[m[0]]);
+    assert(request >= 0 && request < a.table_rows);
+    const int32_t value = a.table[request * a.table_stride + col];
+    a.pages[idx] = value;
+    if (a.flat && col < m[6]) a.flat[m[4] + col] = value;
+    const int mask = (1 << a.page_shift) - 1;
+    if (a.page_shift && (col & mask) == 0) {
+      a.real_pages[int64_t(bi) * a.real_width + (col >> a.page_shift)] =
+          value >> a.page_shift;
+    }
+  }
+  if (idx <= a.padded) {
+    a.dsa_cu_q[idx] = static_cast<int>(idx);
+    if (idx >= a.tokens) {
+      a.dsa_cu_k[idx] = a.work[a.local_batch * 8];
+      if (idx < a.padded) {
+        a.dsa[idx] = 0;
+        a.offsets[idx] = 0;
+      }
+    } else {
+      int lo = 0;
+      int hi = a.local_batch;
+      while (lo + 1 < hi) {
+        const int mid = (lo + hi) / 2;
+        if (a.work[mid * 8 + 1] <= idx) lo = mid;
+        else hi = mid;
+      }
+      const int32_t* m = a.work + lo * 8;
+      const int t = static_cast<int>(idx) - m[1];
+      const int start = m[6] - m[7] + m[3] + 1;
+      const int expanded = start + a.cp_size * t;
+      a.expanded[idx] = expanded;
+      a.k_start[idx] = m[4];
+      a.k_end[idx] = m[4] + expanded;
+      a.token_batch[idx] = lo;
+      a.offsets[idx] = m[4];
+      a.dsa[idx] = expanded < a.topk ? expanded : a.topk;
+      a.dsa_cu_k[idx] = m[5] + static_cast<int>(
+          dsa_cp_clipped_sum(t, start, a.cp_size, a.topk));
+    }
+  }
+}
+
+}
+
+void fused_dsa_cp_prefill_metadata_launcher(
+    const torch::Tensor& seq_lens,
+    const torch::Tensor& req_to_token,
+    const torch::Tensor& req_indices,
+    const torch::Tensor& extend_lens,
+    const std::vector<torch::Tensor>& out,
+    int64_t cp_size, int64_t cp_rank, int64_t topk, int64_t page_size) {
+  TORCH_CHECK(seq_lens.is_cuda() && seq_lens.dim() == 1 && seq_lens.is_contiguous());
+  TORCH_CHECK(seq_lens.scalar_type() == at::kInt || seq_lens.scalar_type() == at::kLong);
+  TORCH_CHECK(req_indices.scalar_type() == at::kInt || req_indices.scalar_type() == at::kLong);
+  TORCH_CHECK(req_indices.dim() == 1 && req_indices.is_contiguous() && req_indices.numel() == seq_lens.numel());
+  TORCH_CHECK(extend_lens.scalar_type() == at::kInt && extend_lens.dim() == 1 && extend_lens.is_contiguous() && extend_lens.numel() == seq_lens.numel());
+  TORCH_CHECK(req_to_token.scalar_type() == at::kInt && req_to_token.dim() == 2 && req_to_token.stride(1) == 1);
+  TORCH_CHECK(req_to_token.device() == seq_lens.device() && req_indices.device() == seq_lens.device() && extend_lens.device() == seq_lens.device());
+  TORCH_CHECK(seq_lens.numel() <= 64 && cp_size > 1 && cp_size <= 64 && cp_rank >= 0 && cp_rank < cp_size);
+  TORCH_CHECK(topk > 0 && topk <= 2048 && page_size > 0 && page_size <= 1024 && (page_size & (page_size - 1)) == 0);
+  TORCH_CHECK(out.size() == 16);
+  for (size_t i = 0; i < out.size(); ++i) {
+    TORCH_CHECK(out[i].is_cuda() && out[i].device() == seq_lens.device() && out[i].is_contiguous());
+    TORCH_CHECK(out[i].scalar_type() == (i == 0 ? seq_lens.scalar_type() : at::kInt));
+    for (const auto& input : {seq_lens, req_to_token, req_indices, extend_lens}) TORCH_CHECK(!out[i].is_alias_of(input));
+    for (size_t j = 0; j < i; ++j) {
+      if (page_size == 1 && i == 9 && j == 8) continue;
+      TORCH_CHECK(!out[i].is_alias_of(out[j]), "CP metadata outputs must not alias");
+    }
+  }
+  for (int i : {0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15}) TORCH_CHECK(out[i].dim() == 1);
+  const int64_t local_batch = out[0].numel();
+  const int64_t tokens = out[4].numel();
+  const int64_t padded = out[5].numel();
+  TORCH_CHECK(local_batch <= seq_lens.numel() && padded >= tokens && padded <= 1048576 && padded * topk <= INT32_MAX);
+  TORCH_CHECK(out[1].numel() == local_batch && out[2].numel() == local_batch + 1 && out[3].numel() == local_batch + 1);
+  TORCH_CHECK(out[6].numel() == padded + 1 && out[7].numel() == padded + 1 && out[13].numel() == padded);
+  TORCH_CHECK(out[8].dim() == 2 && out[8].size(0) == local_batch && out[8].size(1) <= req_to_token.size(1));
+  const int64_t width = out[8].size(1);
+  const int64_t real_width = (width + page_size - 1) / page_size;
+  TORCH_CHECK(out[9].dim() == 2 && out[9].size(0) == local_batch && out[9].size(1) == real_width);
+  for (int i : {10, 11, 12}) TORCH_CHECK(out[i].numel() == tokens);
+  TORCH_CHECK(out[15].numel() >= local_batch * 8 + 1);
+  const c10::cuda::CUDAGuard guard(seq_lens.device());
+  DsaCPMetadataArgs a{};
+  a.seq=seq_lens.data_ptr(); a.req=req_indices.data_ptr(); a.extend=extend_lens.data_ptr<int32_t>(); a.table=req_to_token.data_ptr<int32_t>();
+  a.local_seq=out[0].data_ptr(); a.cache=out[1].data_ptr<int32_t>(); a.cu_k=out[2].data_ptr<int32_t>(); a.cu_q=out[3].data_ptr<int32_t>();
+  a.expanded=out[4].data_ptr<int32_t>(); a.dsa=out[5].data_ptr<int32_t>(); a.dsa_cu_k=out[6].data_ptr<int32_t>(); a.dsa_cu_q=out[7].data_ptr<int32_t>();
+  a.pages=out[8].data_ptr<int32_t>(); a.real_pages=out[9].data_ptr<int32_t>(); a.k_start=out[10].data_ptr<int32_t>(); a.k_end=out[11].data_ptr<int32_t>();
+  a.token_batch=out[12].data_ptr<int32_t>(); a.offsets=out[13].data_ptr<int32_t>(); a.flat=out[14].numel() ? out[14].data_ptr<int32_t>() : nullptr; a.work=out[15].data_ptr<int32_t>();
+  a.flat_tokens=out[14].numel();
+  a.table_stride=req_to_token.stride(0); a.table_rows=req_to_token.size(0); a.batch=seq_lens.numel(); a.local_batch=local_batch; a.tokens=tokens; a.padded=padded;
+  a.width=width; a.real_width=real_width; a.cp_size=cp_size; a.cp_rank=cp_rank; a.topk=topk;
+  for (int64_t p=page_size; p>1; p>>=1) ++a.page_shift;
+  a.work_items=std::max<int64_t>(padded+1,local_batch*width);
+  const auto stream=at::cuda::getCurrentCUDAStream();
+  if (seq_lens.scalar_type() == at::kLong) {
+    fused_dsa_cp_request_metadata_kernel<int64_t><<<1,64,0,stream>>>(a);
+  } else {
+    fused_dsa_cp_request_metadata_kernel<int32_t><<<1,64,0,stream>>>(a);
+  }
+  const int blocks=(a.work_items+255)/256;
+  if (req_indices.scalar_type() == at::kLong) {
+    fused_dsa_cp_token_page_metadata_kernel<int64_t><<<blocks,256,0,stream>>>(a);
+  } else {
+    fused_dsa_cp_token_page_metadata_kernel<int32_t><<<blocks,256,0,stream>>>(a);
+  }
+  TORCH_CHECK(cudaGetLastError() == cudaSuccess, "Fused DSA CP metadata launch failed");
+}
+
+}
+}

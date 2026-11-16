@@ -682,7 +682,8 @@ void rms_norm_dynamic_per_token_quant(
 // lmslim.layers.gemm.int8_utils.per_token_quant_int8 used by SGLang W8A8.
 template <typename scalar_t, int Vec, int block_size,
           bool has_residual, bool update_input,
-          bool APPLY_CLAMP, bool APPLY_SMOOTH>
+          bool APPLY_CLAMP, bool APPLY_SMOOTH,
+          int reduce_block_size = block_size, int groups_per_thread = 1>
 __global__ __launch_bounds__(block_size)
 void rms_norm_dynamic_per_token_quant_sglang_kernel(
     int8_t* out,
@@ -696,11 +697,143 @@ void rms_norm_dynamic_per_token_quant_sglang_kernel(
     float* scales,
     const float* smooth_scale,
     float limit,
-    bool clamp_norm_output) {
+    bool clamp_norm_output,
+    scalar_t* clamped_out,
+    int64_t input_row_stride) {
+  if constexpr (groups_per_thread == 3) {
+    using T_ACC = at::acc_type<scalar_t, true>;
+    using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
+    using StoreT = at::native::memory::aligned_vector<int8_t, Vec>;
+    constexpr int share_size = reduce_block_size / C10_WARP_SIZE;
+    constexpr int physical_waves = block_size / C10_WARP_SIZE;
+    constexpr float qmax = 127.0f;
+    constexpr float min_absmax = 1.0e-10f;
+    __shared__ T_ACC sum_shared[share_size];
+    __shared__ T_ACC max_shared[share_size];
+    const int row = blockIdx.x;
+    const int tid = threadIdx.x;
+    const int lane = tid % C10_WARP_SIZE;
+    const int wave = tid / C10_WARP_SIZE;
+    T_ACC norm_input[3][Vec];
+    scalar_t quant_input[3][Vec];
+    if (tid < share_size - 3 * physical_waves) {
+      sum_shared[3 * physical_waves + tid] = 0.0f;
+      max_shared[3 * physical_waves + tid] = 0.0f;
+    }
+#pragma unroll
+    for (int group = 0; group < 3; ++group) {
+      const int col = (tid + group * block_size) * Vec;
+      const int64_t offset = static_cast<int64_t>(row) * cols + col;
+      const int64_t input_offset =
+          static_cast<int64_t>(row) * input_row_stride + col;
+      alignas(16) scalar_t input_vec[Vec];
+      alignas(16) scalar_t residual_vec[Vec];
+      *reinterpret_cast<LoadT*>(input_vec) =
+          *reinterpret_cast<const LoadT*>(input + input_offset);
+      if constexpr (has_residual) {
+        *reinterpret_cast<LoadT*>(residual_vec) =
+            *reinterpret_cast<const LoadT*>(residual + offset);
+      }
+      T_ACC square_sum = 0.0f;
+#pragma unroll
+      for (int k = 0; k < Vec; ++k) {
+        T_ACC value = static_cast<T_ACC>(input_vec[k]);
+        if constexpr (has_residual) {
+          value += static_cast<T_ACC>(residual_vec[k]);
+          residual_vec[k] = static_cast<scalar_t>(value);
+        }
+        norm_input[group][k] = value;
+        square_sum += value * value;
+      }
+      if constexpr (has_residual) {
+        *reinterpret_cast<LoadT*>(residual_out + offset) =
+            *reinterpret_cast<const LoadT*>(residual_vec);
+      }
+      square_sum = WarpReduceSum_ROW<T_ACC>(square_sum);
+      if (lane == 0) {
+        sum_shared[group * physical_waves + wave] = square_sum;
+      }
+    }
+    __syncthreads();
+    T_ACC square_sum = lane < share_size ? sum_shared[lane] : 0.0f;
+    square_sum = WarpReduceSum_ROW<T_ACC, share_size>(square_sum);
+    square_sum = __shfl(square_sum, 0);
+    const T_ACC rstd = c10::cuda::compat::rsqrt(square_sum / cols + eps);
+#pragma unroll
+    for (int group = 0; group < 3; ++group) {
+      const int col = (tid + group * block_size) * Vec;
+      const int64_t offset = static_cast<int64_t>(row) * cols + col;
+      alignas(16) scalar_t normalized[Vec];
+      alignas(16) scalar_t clamped[Vec];
+      float local_absmax = 0.0f;
+#pragma unroll
+      for (int k = 0; k < Vec; ++k) {
+        normalized[k] = static_cast<scalar_t>(
+            norm_input[group][k] * rstd * static_cast<T_ACC>(gamma[col + k]));
+        clamped[k] = static_cast<scalar_t>(clamp_rms_quant_value(
+            static_cast<float>(normalized[k]), limit));
+        const scalar_t scale_value =
+            static_cast<scalar_t>(smooth_scale[col + k]);
+        float quant_value = static_cast<float>(clamped[k]);
+        quant_value *= static_cast<float>(scale_value);
+        quant_input[group][k] = static_cast<scalar_t>(quant_value);
+        local_absmax = fmaxf(local_absmax,
+                            fabsf(static_cast<float>(quant_input[group][k])));
+      }
+      if (norm_out != nullptr) {
+        alignas(16) scalar_t norm_output_vec[Vec];
+#pragma unroll
+        for (int k = 0; k < Vec; ++k) {
+          norm_output_vec[k] = clamp_norm_output ? clamped[k] : normalized[k];
+        }
+        *reinterpret_cast<LoadT*>(norm_out + offset) =
+            *reinterpret_cast<const LoadT*>(norm_output_vec);
+      }
+      if (clamped_out != nullptr) {
+        alignas(16) scalar_t clamped_output_vec[Vec];
+        const scalar_t lower = static_cast<scalar_t>(-limit);
+        const scalar_t upper = static_cast<scalar_t>(limit);
+#pragma unroll
+        for (int k = 0; k < Vec; ++k) {
+          const scalar_t value = normalized[k];
+          clamped_output_vec[k] =
+              value < lower ? lower : (value > upper ? upper : value);
+        }
+        *reinterpret_cast<LoadT*>(clamped_out + offset) =
+            *reinterpret_cast<const LoadT*>(clamped_output_vec);
+      }
+      local_absmax = WarpReduceMax_ROW<T_ACC>(local_absmax);
+      if (lane == 0) {
+        max_shared[group * physical_waves + wave] = local_absmax;
+      }
+    }
+    __syncthreads();
+    T_ACC local_absmax = lane < share_size ? max_shared[lane] : 0.0f;
+    local_absmax = WarpReduceMax_ROW<T_ACC, share_size>(local_absmax);
+    local_absmax = __shfl(local_absmax, 0);
+    const float absmax = fmaxf(local_absmax, min_absmax);
+    if (tid == 0) {
+      scales[row] = absmax / qmax;
+    }
+    const float inv_scale = qmax / absmax;
+#pragma unroll
+    for (int group = 0; group < 3; ++group) {
+      const int col = (tid + group * block_size) * Vec;
+      const int64_t offset = static_cast<int64_t>(row) * cols + col;
+      alignas(8) int8_t quantized[Vec];
+#pragma unroll
+      for (int k = 0; k < Vec; ++k) {
+        quantized[k] = float_to_int8_rn(
+            static_cast<float>(quant_input[group][k]) * inv_scale);
+      }
+      *reinterpret_cast<StoreT*>(out + offset) =
+          *reinterpret_cast<const StoreT*>(quantized);
+    }
+  } else {
   using T_ACC = at::acc_type<scalar_t, true>;
   using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
   using StoreT = at::native::memory::aligned_vector<int8_t, Vec>;
-  constexpr int share_size = block_size / C10_WARP_SIZE;
+  constexpr int share_size = reduce_block_size / C10_WARP_SIZE;
   constexpr float qmax = 127.0f;
   constexpr float min_absmax = 1.0e-10f;
 
@@ -712,7 +845,14 @@ void rms_norm_dynamic_per_token_quant_sglang_kernel(
   const int tid = threadIdx.x;
   const int vec_cols = cols / Vec;
   const int64_t offset = static_cast<int64_t>(row) * cols + tid * Vec;
+  const int64_t input_offset = static_cast<int64_t>(row) * input_row_stride + tid * Vec;
   const bool active = tid < vec_cols;
+  if constexpr (reduce_block_size > block_size) {
+    if (tid < (reduce_block_size - block_size) / C10_WARP_SIZE) {
+      reduce_shared[block_size / C10_WARP_SIZE + tid] = 0.0f;
+    }
+  }
+
 
   alignas(16) scalar_t input_vec[Vec];
   alignas(16) scalar_t residual_vec[Vec];
@@ -720,7 +860,7 @@ void rms_norm_dynamic_per_token_quant_sglang_kernel(
   T_ACC square_sum = 0.0f;
   if (active) {
     *reinterpret_cast<LoadT*>(input_vec) =
-        *reinterpret_cast<const LoadT*>(input + offset);
+        *reinterpret_cast<const LoadT*>(input + input_offset);
     if constexpr (has_residual) {
       *reinterpret_cast<LoadT*>(residual_vec) =
           *reinterpret_cast<const LoadT*>(residual + offset);
@@ -738,7 +878,7 @@ void rms_norm_dynamic_per_token_quant_sglang_kernel(
   }
 
   square_sum =
-      BlockReduceSum_ROW<T_ACC, block_size>(square_sum, reduce_shared);
+      BlockReduceSum_ROW<T_ACC, reduce_block_size>(square_sum, reduce_shared);
   if (tid == 0) {
     row_rstd = c10::cuda::compat::rsqrt(square_sum / cols + eps);
   }
@@ -775,7 +915,7 @@ void rms_norm_dynamic_per_token_quant_sglang_kernel(
   }
 
   local_absmax =
-      BlockReduceMax_ROW<T_ACC, block_size>(local_absmax, reduce_shared);
+      BlockReduceMax_ROW<T_ACC, reduce_block_size>(local_absmax, reduce_shared);
   if (tid == 0) {
     row_absmax = fmaxf(local_absmax, min_absmax);
     scales[row] = row_absmax / qmax;
@@ -798,14 +938,27 @@ void rms_norm_dynamic_per_token_quant_sglang_kernel(
       *reinterpret_cast<LoadT*>(norm_out + offset) =
           *reinterpret_cast<const LoadT*>(norm_output_vec);
     }
+    if (clamped_out != nullptr) {
+      alignas(16) scalar_t clamped_output_vec[Vec];
+      const scalar_t lower = static_cast<scalar_t>(-limit);
+      const scalar_t upper = static_cast<scalar_t>(limit);
+#pragma unroll
+      for (int i = 0; i < Vec; ++i) {
+        const scalar_t value = normalized[i];
+        clamped_output_vec[i] = value < lower ? lower : (value > upper ? upper : value);
+      }
+      *reinterpret_cast<LoadT*>(clamped_out + offset) =
+          *reinterpret_cast<const LoadT*>(clamped_output_vec);
+    }
     if constexpr (update_input) {
-      *reinterpret_cast<LoadT*>(input + offset) =
+      *reinterpret_cast<LoadT*>(input + input_offset) =
           *reinterpret_cast<const LoadT*>(norm_output_vec);
     }
     if constexpr (has_residual) {
       *reinterpret_cast<LoadT*>(residual_out + offset) =
           *reinterpret_cast<const LoadT*>(residual_vec);
     }
+  }
   }
 }
 
@@ -829,7 +982,30 @@ void launch_rms_norm_dynamic_per_token_quant_sglang(
     const float* smooth_scale,
     float limit,
     bool clamp_norm_output,
+    scalar_t* clamped_out,
+    int64_t input_row_stride,
     cudaStream_t stream) {
+  if constexpr (std::is_same<scalar_t, c10::BFloat16>::value &&
+                Vec == 8 && block_size == 1024) {
+    if (hidden_size == 6144 && num_tokens >= 128 && !update_input && apply_clamp && apply_smooth) {
+      if (has_residual) {
+        rms_norm_dynamic_per_token_quant_sglang_kernel<
+            scalar_t, 8, 256, true, false, true, true, 1024, 3>
+            <<<num_tokens, 256, 0, stream>>>(
+                out, input, norm_out, residual, residual_out, gamma,
+                hidden_size, epsilon, scales, smooth_scale, limit,
+                clamp_norm_output, clamped_out, input_row_stride);
+      } else {
+        rms_norm_dynamic_per_token_quant_sglang_kernel<
+            scalar_t, 8, 256, false, false, true, true, 1024, 3>
+            <<<num_tokens, 256, 0, stream>>>(
+                out, input, norm_out, residual, residual_out, gamma,
+                hidden_size, epsilon, scales, smooth_scale, limit,
+                clamp_norm_output, clamped_out, input_row_stride);
+      }
+      return;
+    }
+  }
 #define LAUNCH_SGLANG_RMS_QUANT(                                            \
     HAS_RESIDUAL, UPDATE_INPUT, APPLY_CLAMP, APPLY_SMOOTH)                  \
   rms_norm_dynamic_per_token_quant_sglang_kernel<                           \
@@ -837,7 +1013,7 @@ void launch_rms_norm_dynamic_per_token_quant_sglang(
       APPLY_CLAMP, APPLY_SMOOTH>                                            \
       <<<num_tokens, block_size, 0, stream>>>(                              \
           out, input, norm_out, residual, residual_out, gamma, hidden_size, epsilon, \
-          scales, smooth_scale, limit, clamp_norm_output)
+          scales, smooth_scale, limit, clamp_norm_output, clamped_out, input_row_stride)
 
 #define DISPATCH_SGLANG_RMS_QUANT(APPLY_CLAMP, APPLY_SMOOTH)                \
   do {                                                                      \
@@ -881,8 +1057,8 @@ static bool tensors_overlap(const Tensor& a, const Tensor& b) {
   }
   const auto a_begin = reinterpret_cast<uintptr_t>(a.data_ptr());
   const auto b_begin = reinterpret_cast<uintptr_t>(b.data_ptr());
-  const auto a_end = a_begin + a.numel() * a.element_size();
-  const auto b_end = b_begin + b.numel() * b.element_size();
+  const auto a_end = a_begin + (a.is_contiguous() ? a.numel() : (a.size(0) == 0 ? 0 : (a.size(0) - 1) * a.stride(0) + a.size(1))) * a.element_size();
+  const auto b_end = b_begin + (b.is_contiguous() ? b.numel() : (b.size(0) == 0 ? 0 : (b.size(0) - 1) * b.stride(0) + b.size(1))) * b.element_size();
   return a_begin < b_end && b_begin < a_end;
 }
 
@@ -899,10 +1075,14 @@ void rms_norm_dynamic_per_token_quant_sglang(
     std::optional<Tensor> smooth_scale,
     std::optional<Tensor> norm_output,
     bool clamp_norm_output,
-    std::optional<Tensor> residual_output) {
+    std::optional<Tensor> residual_output,
+    std::optional<Tensor> clamped_output) {
   TORCH_CHECK(input.is_cuda(), "input must be on a GPU");
   TORCH_CHECK(input.dim() == 2, "input must be a 2D tensor");
-  TORCH_CHECK(input.is_contiguous(), "input must be contiguous");
+  TORCH_CHECK(input.stride(1) == 1 && input.stride(0) >= input.size(1) && input.stride(0) % 8 == 0,
+              "input must have unit feature stride and aligned non-overlapping rows");
+  TORCH_CHECK(!update_input || input.is_contiguous(),
+              "strided input requires update_input=false");
   TORCH_CHECK(weight.is_contiguous(), "weight must be contiguous");
   TORCH_CHECK(out.is_contiguous(), "out must be contiguous");
   TORCH_CHECK(scales.is_contiguous(), "scales must be contiguous");
@@ -1052,6 +1232,21 @@ void rms_norm_dynamic_per_token_quant_sglang(
                   "norm_output and residual must not overlap");
     }
   }
+  if (clamped_output.has_value()) {
+    TORCH_CHECK(limit >= 0.0, "clamped_output requires a non-negative clamp limit");
+    TORCH_CHECK(clamped_output->is_contiguous() && clamped_output->sizes() == input.sizes() &&
+                    clamped_output->dtype() == input.dtype() && clamped_output->device() == input.device(),
+                "clamped_output must match input shape/dtype/device and be contiguous");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(clamped_output->data_ptr()) % 16 == 0,
+                "clamped_output must be16-byte aligned");
+    for (const auto& tensor : {input, weight, out, scales}) {
+      TORCH_CHECK(!tensors_overlap(*clamped_output, tensor), "clamped_output must not alias another tensor");
+    }
+    for (const auto& tensor : {residual, residual_output, smooth_scale, norm_output}) {
+      TORCH_CHECK(!tensor.has_value() || !tensors_overlap(*clamped_output, *tensor),
+                  "clamped_output must not alias another optional tensor");
+    }
+  }
   if (num_tokens == 0) {
     return;
   }
@@ -1076,6 +1271,7 @@ void rms_norm_dynamic_per_token_quant_sglang(
         auto* norm_output_ptr = has_norm_output
             ? norm_output->data_ptr<scalar_t>()
             : nullptr;
+        auto* clamped_output_ptr = clamped_output.has_value() ? clamped_output->data_ptr<scalar_t>() : nullptr;
         auto* out_ptr = out.data_ptr<int8_t>();
         auto* scales_ptr = scales.data_ptr<float>();
         if (hidden_size <= 512) {
@@ -1085,7 +1281,7 @@ void rms_norm_dynamic_per_token_quant_sglang(
               hidden_size, static_cast<float>(epsilon), scales_ptr,
               has_residual, update_input, limit >= 0.0, has_smooth_scale,
               smooth_scale_ptr, static_cast<float>(limit), clamp_norm_output,
-              stream);
+              clamped_output_ptr, input.stride(0), stream);
         } else if (hidden_size <= 1024) {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 128>(
               out_ptr, input_ptr, norm_output_ptr, residual_ptr, residual_output_ptr, weight_ptr,
@@ -1093,7 +1289,7 @@ void rms_norm_dynamic_per_token_quant_sglang(
               hidden_size, static_cast<float>(epsilon), scales_ptr,
               has_residual, update_input, limit >= 0.0, has_smooth_scale,
               smooth_scale_ptr, static_cast<float>(limit), clamp_norm_output,
-              stream);
+              clamped_output_ptr, input.stride(0), stream);
         } else if (hidden_size <= 2048) {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 256>(
               out_ptr, input_ptr, norm_output_ptr, residual_ptr, residual_output_ptr, weight_ptr,
@@ -1101,7 +1297,7 @@ void rms_norm_dynamic_per_token_quant_sglang(
               hidden_size, static_cast<float>(epsilon), scales_ptr,
               has_residual, update_input, limit >= 0.0, has_smooth_scale,
               smooth_scale_ptr, static_cast<float>(limit), clamp_norm_output,
-              stream);
+              clamped_output_ptr, input.stride(0), stream);
         } else if (hidden_size <= 4096) {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 512>(
               out_ptr, input_ptr, norm_output_ptr, residual_ptr, residual_output_ptr, weight_ptr,
@@ -1109,7 +1305,7 @@ void rms_norm_dynamic_per_token_quant_sglang(
               hidden_size, static_cast<float>(epsilon), scales_ptr,
               has_residual, update_input, limit >= 0.0, has_smooth_scale,
               smooth_scale_ptr, static_cast<float>(limit), clamp_norm_output,
-              stream);
+              clamped_output_ptr, input.stride(0), stream);
         } else {
           launch_rms_norm_dynamic_per_token_quant_sglang<scalar_t, 8, 1024>(
               out_ptr, input_ptr, norm_output_ptr, residual_ptr, residual_output_ptr, weight_ptr,
@@ -1117,7 +1313,7 @@ void rms_norm_dynamic_per_token_quant_sglang(
               hidden_size, static_cast<float>(epsilon), scales_ptr,
               has_residual, update_input, limit >= 0.0, has_smooth_scale,
               smooth_scale_ptr, static_cast<float>(limit), clamp_norm_output,
-              stream);
+              clamped_output_ptr, input.stride(0), stream);
         }
       });
   C10_CUDA_KERNEL_LAUNCH_CHECK();

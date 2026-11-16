@@ -4,7 +4,7 @@
 """Indexer K preparation: BF16 stages, page-planar layout and graph replay."""
 import pytest
 import torch
-from lightop import op
+from lightop import kvcache as op
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="GPU required")
 

@@ -4,6 +4,8 @@
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <torch/extension.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <ATen/native/cuda/MemoryAccess.cuh>
 
 #include <hip/hip_bf16.h>
 #include <hip/hip_runtime.h>
@@ -92,6 +94,60 @@ std::tuple<Tensor, Tensor> fused_deepep_prepare(
       static_cast<float>(max_limit));
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return {hidden_out, ids_out};
+}
+
+__global__ void fused_clamp_smooth_kernel(
+    const c10::BFloat16* input, const float* smooth,
+    c10::BFloat16* output, int64_t count, int64_t input_stride,
+    float min_limit, float max_limit) {
+  constexpr int vector_size = 8;
+  const int64_t index = (static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x) * vector_size;
+  if (index >= count) return;
+  const int64_t row = index / 512;
+  const int col = index % 512;
+  using ValueVector = memory::aligned_vector<c10::BFloat16, vector_size>;
+  using ScaleVector = memory::aligned_vector<float, vector_size>;
+  const ValueVector values = *reinterpret_cast<const ValueVector*>(input + row * input_stride + col);
+  const ScaleVector scales = *reinterpret_cast<const ScaleVector*>(smooth + col);
+  ValueVector result;
+#pragma unroll
+  for (int i = 0; i < vector_size; ++i) {
+    float value = static_cast<float>(values.val[i]);
+    if (value > max_limit) value = max_limit;
+    else if (value < min_limit) value = min_limit;
+    const c10::BFloat16 clamped = c10::BFloat16(value);
+    const c10::BFloat16 scale = c10::BFloat16(scales.val[i]);
+    result.val[i] = c10::BFloat16(static_cast<float>(clamped) * static_cast<float>(scale));
+  }
+  *reinterpret_cast<ValueVector*>(output + index) = result;
+}
+
+Tensor fused_clamp_smooth(
+    const Tensor& hidden, const Tensor& smooth,
+    double min_limit, double max_limit) {
+  TORCH_CHECK(hidden.is_cuda() && smooth.device() == hidden.device());
+  TORCH_CHECK(hidden.scalar_type() == kBFloat16 && smooth.scalar_type() == kFloat);
+  TORCH_CHECK(hidden.dim() == 2 || (hidden.dim() == 3 && hidden.size(1) == 1));
+  TORCH_CHECK(hidden.size(-1) == 512 && hidden.stride(-1) == 1);
+  TORCH_CHECK(hidden.stride(0) >= 512 && hidden.stride(0) % 8 == 0);
+  TORCH_CHECK(smooth.dim() == 1 && smooth.numel() == 512 && smooth.is_contiguous());
+  TORCH_CHECK(reinterpret_cast<uintptr_t>(hidden.data_ptr()) % 16 == 0);
+  TORCH_CHECK(reinterpret_cast<uintptr_t>(smooth.data_ptr()) % 32 == 0);
+  TORCH_CHECK(min_limit <= max_limit);
+  const c10::cuda::CUDAGuard guard(hidden.device());
+  const int64_t count = hidden.numel();
+  if (count == 0) {
+    return at::mul(at::clamp(hidden, min_limit, max_limit), smooth.to(hidden.scalar_type()));
+  }
+  Tensor output = torch::empty(hidden.sizes(), hidden.options());
+  constexpr int threads = 256;
+  const int blocks = static_cast<int>((count + threads * 8 - 1) / (threads * 8));
+  fused_clamp_smooth_kernel<<<blocks, threads, 0, cuda::getCurrentCUDAStream()>>>(
+      reinterpret_cast<const c10::BFloat16*>(hidden.data_ptr()), smooth.data_ptr<float>(),
+      reinterpret_cast<c10::BFloat16*>(output.data_ptr()), count, hidden.stride(0),
+      static_cast<float>(min_limit), static_cast<float>(max_limit));
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return output;
 }
 
 }  // namespace native

@@ -39,6 +39,250 @@
 #include <cuda_fp16.h>
 
 
+#include <ATen/MemoryOverlap.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAException.h>
+#include <c10/util/BFloat16.h>
+#include <algorithm>
+#include <cstdint>
+
+template <typename T, int N>
+struct alignas(sizeof(T) * N) Vector {
+    T val[N];
+};
+
+namespace {
+using BFloat16 = c10::BFloat16;
+
+struct RoundedRopeArgs {
+    const BFloat16* query;
+    const BFloat16* key;
+    const int64_t* positions;
+    const BFloat16* cache;
+    BFloat16* query_out;
+    BFloat16* key_out;
+    int64_t tokens, query_heads, key_heads;
+    int64_t qs0, qs1, qs2, ks0, ks1, ks2, ps, cs;
+    int64_t qo0, qo1, ko0, ko1;
+    bool neox;
+};
+
+__device__ __forceinline__ BFloat16 round_bf16(float value) {
+    // Explicit RNE and canonical NaN preserve Torch's BF16 cast behavior,
+    // including subnormals, instead of relying on target-specific BF16 ops.
+    union { float value; uint32_t bits; } v;
+    v.value = value;
+    const uint16_t bits = (v.bits & 0x7fffffff) > 0x7f800000
+        ? 0x7fc0 : (v.bits + 0x7fff + ((v.bits >> 16) & 1)) >> 16;
+    return BFloat16(bits, BFloat16::from_bits());
+}
+
+__global__ void rotary_bf16_rounded(RoundedRopeArgs a) {
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#pragma clang fp reassociate(off)
+#endif
+    const int64_t total = a.tokens * (a.query_heads + a.key_heads) * 64;
+    for (int64_t i = int64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+         i < total; i += int64_t(gridDim.x) * blockDim.x) {
+        const int d = i % 64;
+        const int64_t head = (i / 64) % (a.query_heads + a.key_heads);
+        const int64_t row = i / (64 * (a.query_heads + a.key_heads));
+        const bool query = head < a.query_heads;
+        const int64_t h = query ? head : head - a.query_heads;
+        const BFloat16* in = query ? a.query : a.key;
+        BFloat16* out = query ? a.query_out : a.key_out;
+        const int64_t base = row * (query ? a.qs0 : a.ks0) +
+                             h * (query ? a.qs1 : a.ks1);
+        const int64_t stride = query ? a.qs2 : a.ks2;
+        const int partner = a.neox ? (d + 32) % 64 : d ^ 1;
+        const int frequency = a.neox ? d % 32 : d / 2;
+        const int64_t position = a.positions[row * a.ps];
+        const float x = float(in[base + d * stride]);
+        float y = float(in[base + partner * stride]);
+        const float cos = float(a.cache[position * a.cs + frequency]);
+        const float sin = float(a.cache[position * a.cs + frequency + 32]);
+        if (a.neox ? d < 32 : d % 2 == 0) y = -y;
+        const BFloat16 lhs = round_bf16(x * cos);
+        const BFloat16 rhs = round_bf16(y * sin);
+        out[row * (query ? a.qo0 : a.ko0) + h * (query ? a.qo1 : a.ko1) + d] =
+            round_bf16(float(lhs) + float(rhs));
+    }
+}
+
+template<bool NEOX, bool QUERY, int VEC = 1>
+__device__ __forceinline__ void rotary_q128_k1_one(
+    RoundedRopeArgs a, int64_t i) {
+#if defined(__clang__)
+#pragma clang fp contract(off)
+#pragma clang fp reassociate(off)
+#endif
+    if constexpr (VEC == 4) {
+        const int d = (i & 7) * 4;
+        const int64_t head = i >> 3;
+        const int64_t row = QUERY ? head >> 7 : head;
+        const int h = QUERY ? head & 127 : 0;
+        const BFloat16* in = QUERY ? a.query : a.key;
+        BFloat16* out = QUERY ? a.query_out : a.key_out;
+        const int64_t base = row * (QUERY ? a.qs0 : a.ks0) +
+                             h * (QUERY ? a.qs1 : a.ks1) + d;
+        const int64_t position = a.positions[row * a.ps];
+        const auto x = *reinterpret_cast<const Vector<BFloat16, 4>*>(in + base);
+        const auto y = *reinterpret_cast<const Vector<BFloat16, 4>*>(in + base + 32);
+        const auto c = *reinterpret_cast<const Vector<BFloat16, 4>*>(a.cache + position * a.cs + d);
+        const auto sn = *reinterpret_cast<const Vector<BFloat16, 4>*>(a.cache + position * a.cs + d + 32);
+        Vector<BFloat16, 4> lo, hi;
+#pragma unroll
+        for (int j = 0; j < 4; ++j) {
+            const BFloat16 lx = round_bf16(float(x.val[j]) * float(c.val[j]));
+            const BFloat16 ly = round_bf16(-float(y.val[j]) * float(sn.val[j]));
+            const BFloat16 hx = round_bf16(float(y.val[j]) * float(c.val[j]));
+            const BFloat16 hy = round_bf16(float(x.val[j]) * float(sn.val[j]));
+            lo.val[j] = round_bf16(float(lx) + float(ly));
+            hi.val[j] = round_bf16(float(hx) + float(hy));
+        }
+        *reinterpret_cast<Vector<BFloat16, 4>*>(out + row * (QUERY ? a.qo0 : a.ko0) + h * (QUERY ? a.qo1 : a.ko1) + d) = lo;
+        *reinterpret_cast<Vector<BFloat16, 4>*>(out + row * (QUERY ? a.qo0 : a.ko0) + h * (QUERY ? a.qo1 : a.ko1) + d + 32) = hi;
+        return;
+    }
+    const int d = i & 63;
+    const int64_t row = QUERY ? i >> 13 : i >> 6;
+    const int h = QUERY ? ((i >> 6) & 127) : 0;
+    const BFloat16* in = QUERY ? a.query : a.key;
+    BFloat16* out = QUERY ? a.query_out : a.key_out;
+    const int64_t base = row * (QUERY ? a.qs0 : a.ks0) +
+                         h * (QUERY ? a.qs1 : a.ks1);
+    const int64_t stride = QUERY ? a.qs2 : a.ks2;
+    const int partner = NEOX ? (d + 32) % 64 : d ^ 1;
+    const int frequency = NEOX ? d % 32 : d / 2;
+    const int64_t position = a.positions[row * a.ps];
+    const float x = float(in[base + d * stride]);
+    float y = float(in[base + partner * stride]);
+    const float cos = float(a.cache[position * a.cs + frequency]);
+    const float sin = float(a.cache[position * a.cs + frequency + 32]);
+    if (NEOX ? d < 32 : d % 2 == 0) y = -y;
+    const BFloat16 lhs = round_bf16(x * cos);
+    const BFloat16 rhs = round_bf16(y * sin);
+    out[row * (QUERY ? a.qo0 : a.ko0) + h * (QUERY ? a.qo1 : a.ko1) + d] = round_bf16(float(lhs) + float(rhs));
+}
+
+template<bool NEOX, int VEC = 1>
+__global__ void rotary_bf16_rounded_q128_k1(
+    RoundedRopeArgs a, int query_blocks, int key_blocks) {
+    const int block = blockIdx.x;
+    if (block < query_blocks) {
+        for (int64_t i = int64_t(block) * 256 + threadIdx.x;
+             i < a.tokens * 128 * (VEC == 4 ? 8 : 64); i += int64_t(query_blocks) * 256)
+            rotary_q128_k1_one<NEOX, true, VEC>(a, i);
+    } else {
+        for (int64_t i = int64_t(block - query_blocks) * 256 + threadIdx.x;
+             i < a.tokens * (VEC == 4 ? 8 : 64); i += int64_t(key_blocks) * 256)
+            rotary_q128_k1_one<NEOX, false, VEC>(a, i);
+    }
+}
+}  // namespace
+
+namespace at {
+namespace native {
+void rotary_embedding_bf16_rounded_out(
+    const torch::Tensor& positions, const torch::Tensor& query,
+    const std::optional<torch::Tensor>& key, int64_t head_size,
+    const torch::Tensor& cos_sin_cache, bool is_neox,
+    const std::optional<torch::Tensor>& offsets,
+    const std::optional<torch::Tensor>& query_out,
+    const std::optional<torch::Tensor>& key_out) {
+    TORCH_CHECK(!offsets.has_value(),
+                "rounded BF16 RoPE does not support offsets");
+    TORCH_CHECK(head_size == 64 && query.dim() == 3 && query.size(2) == 64 &&
+                query.size(1) > 0, "rounded BF16 RoPE requires [tokens, heads, 64]");
+    TORCH_CHECK(query.is_cuda() && query.scalar_type() == at::kBFloat16,
+                "rounded BF16 RoPE requires GPU BF16 query");
+    TORCH_CHECK(positions.dim() == 1 && positions.scalar_type() == at::kLong &&
+                positions.device() == query.device() &&
+                positions.numel() == query.size(0),
+                "positions must be int64 [tokens] on the query device");
+    TORCH_CHECK(cos_sin_cache.dim() == 2 && cos_sin_cache.size(1) == 64 &&
+                cos_sin_cache.size(0) > 0 && cos_sin_cache.stride(1) == 1 &&
+                cos_sin_cache.scalar_type() == at::kBFloat16 &&
+                cos_sin_cache.device() == query.device(),
+                "cache must be GPU BF16 [max_position, 64] with unit feature stride");
+    TORCH_CHECK(query_out.has_value(),
+                "rounded BF16 RoPE requires separate query_out");
+    if (key.has_value()) {
+        TORCH_CHECK(key->dim() == 3 && key->size(0) == query.size(0) &&
+                    key->size(2) == 64 && key->size(1) > 0 &&
+                    key->scalar_type() == at::kBFloat16 &&
+                    key->device() == query.device(),
+                    "key must be BF16 [tokens, heads, 64] on the query device");
+        TORCH_CHECK(key_out.has_value(), "key requires a separate key_out");
+    } else {
+        TORCH_CHECK(!key_out.has_value(), "key_out requires key");
+    }
+    const auto check_output = [&](const torch::Tensor& output,
+                                  const torch::Tensor& input) {
+        TORCH_CHECK(output.sizes() == input.sizes() && output.stride(2) == 1 &&
+                    output.stride(1) >= 64 && output.stride(0) >= output.size(1) * output.stride(1) &&
+                    output.scalar_type() == at::kBFloat16 &&
+                    output.device() == query.device(),
+                    "output must match input shape/device/dtype with unit feature stride and non-overlapping rows");
+        // A thread reads its partner's element, so in-place output is unsafe.
+        at::assert_no_overlap(output, query);
+        at::assert_no_overlap(output, positions);
+        at::assert_no_overlap(output, cos_sin_cache);
+        if (key.has_value()) at::assert_no_overlap(output, *key);
+    };
+    check_output(*query_out, query);
+    if (key_out.has_value()) {
+        check_output(*key_out, *key);
+        at::assert_no_overlap(*query_out, *key_out);
+    }
+    if (query.size(0) == 0) return;
+
+    const c10::cuda::CUDAGuard guard(query.device());
+    const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    RoundedRopeArgs args{
+        query.data_ptr<BFloat16>(), key ? key->data_ptr<BFloat16>() : nullptr,
+        positions.data_ptr<int64_t>(), cos_sin_cache.data_ptr<BFloat16>(),
+        query_out->data_ptr<BFloat16>(),
+        key_out ? key_out->data_ptr<BFloat16>() : nullptr,
+        query.size(0), query.size(1), key ? key->size(1) : 0,
+        query.stride(0), query.stride(1), query.stride(2),
+        key ? key->stride(0) : 0, key ? key->stride(1) : 0,
+        key ? key->stride(2) : 0, positions.stride(0), cos_sin_cache.stride(0),
+        query_out->stride(0), query_out->stride(1),
+        key_out ? key_out->stride(0) : 0, key_out ? key_out->stride(1) : 0, is_neox};
+    if (args.query_heads == 128 && args.key_heads == 1) {
+        const bool vectorized = args.tokens >= 3584 && args.tokens <= 5120 && is_neox && args.qs2 == 1 && args.ks2 == 1 &&
+            args.qs0 % 4 == 0 && args.qs1 % 4 == 0 &&
+            args.ks0 % 4 == 0 && args.ks1 % 4 == 0 && args.cs % 4 == 0 &&
+            args.qo0 % 4 == 0 && args.qo1 % 4 == 0 && args.ko0 % 4 == 0 && args.ko1 % 4 == 0 &&
+            reinterpret_cast<uintptr_t>(args.query) % 8 == 0 &&
+            reinterpret_cast<uintptr_t>(args.key) % 8 == 0 &&
+            reinterpret_cast<uintptr_t>(args.cache) % 8 == 0 &&
+            reinterpret_cast<uintptr_t>(args.query_out) % 8 == 0 &&
+            reinterpret_cast<uintptr_t>(args.key_out) % 8 == 0;
+        const int units = vectorized ? 8 : 64;
+        const int qb = std::min<int64_t>((args.tokens * 128 * units + 255) / 256, 640);
+        const int kb = std::min<int64_t>((args.tokens * units + 255) / 256, 64);
+        if (vectorized) {
+            rotary_bf16_rounded_q128_k1<true, 4><<<qb + kb, 256, 0, stream>>>(args, qb, kb);
+            C10_CUDA_KERNEL_LAUNCH_CHECK();
+            return;
+        }
+        if (is_neox)
+            rotary_bf16_rounded_q128_k1<true><<<qb + kb, 256, 0, stream>>>(args, qb, kb);
+        else
+            rotary_bf16_rounded_q128_k1<false><<<qb + kb, 256, 0, stream>>>(args, qb, kb);
+    } else {
+        const int blocks = std::min<int64_t>(
+            (args.tokens * (args.query_heads + args.key_heads) * 64 + 255) / 256, 640);
+        rotary_bf16_rounded<<<blocks, 256, 0, stream>>>(args);
+    }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+}  // namespace native
+}  // namespace at
+
 #define Q(sq_id, b_id, head_id, hn_id) (Q + sq_id * b * np * hn + b_id * np * hn + head_id * hn + hn_id)
 #define cos(sq_id, b_id, hn_id) (cos + sq_id * b * hn + b_id * hn + hn_id)
 #define sin(sq_id, b_id, hn_id) (sin + sq_id * b * hn + b_id * hn + hn_id)
@@ -49,16 +293,15 @@
 #define grad_out(sq_id, b_id, head_id, hn_id) \
         (grad_out + sq_id * b * np * hn + b_id * np * hn + head_id * hn + hn_id)
 
-template <typename T, int N>
-struct alignas(sizeof(T) * N) Vector {
-    T val[N];
-};
+
 template <typename Element, size_t len>
 struct vec {
     using type = __attribute__((__vector_size__(len * sizeof(Element)))) Element;
 };
 namespace at{
 namespace native{
+
+
 
 
 // 相对传统的 RoPE 实现
@@ -436,7 +679,7 @@ __global__ void rotary_embedding_deepseek_kernel_opt(
             *y_ptr = y_out;
         }
 
-        if (key != nullptr) {
+        if (key != nullptr && rot_offset_k < embed_dim) {
             const vector_k cos_vec_k = *reinterpret_cast<const vector_k*>(&cos_sin_seme[local_token_idx][rot_offset_k]);
             const vector_k sin_vec_k = *reinterpret_cast<const vector_k*>(&cos_sin_seme[local_token_idx][rot_offset_k + embed_dim]);
             for (int head_idx = group_id_k; head_idx < num_kv_heads; head_idx += num_group_per_token_k) {
@@ -1508,7 +1751,21 @@ void rotary_embedding_deepseek_fuse(
     int64_t head_size,
     torch::Tensor& cos_sin_cache,  // [max_position, rot_dim]
     bool is_neox,
-    std::optional<torch::Tensor> offsets) {
+    std::optional<torch::Tensor> offsets,
+    bool round_bf16_products,
+    std::optional<torch::Tensor> query_out,
+    std::optional<torch::Tensor> key_out) {
+
+    // The legacy in-place path keeps its original arithmetic and dispatch.
+    // The explicit output mode preserves BF16 rounding after each product.
+    if (round_bf16_products) {
+        rotary_embedding_bf16_rounded_out(
+            positions, query, key, head_size, cos_sin_cache, is_neox,
+            offsets, query_out, key_out);
+        return;
+    }
+    TORCH_CHECK(!query_out.has_value() && !key_out.has_value(),
+                "output tensors require round_bf16_products=True");
 
     int64_t num_tokens = positions.numel();
     int positions_ndim = positions.dim();

@@ -36,7 +36,7 @@ from .existing import (
 
 from .swiglu_oai_quant import swiglu_oai_fp8_quant_masked
 
-_NATIVE_APIS = {"lm_fuse_silu_mul_quant"}
+_NATIVE_APIS = {"lm_fuse_silu_mul_quant", "fused_clamp_smooth"}
 
 
 def __getattr__(name):
@@ -48,6 +48,7 @@ def __getattr__(name):
 
 
 __all__ = [
+    "fused_clamp_smooth",
     "swiglu_oai_fp8_quant_contiguous",
 
     "AddDropout",

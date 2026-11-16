@@ -607,7 +607,7 @@ void check_grouped_same_device(const torch::Tensor& reference,
 }
 
 template <int kHeads, bool kFp8, int kGroupRows,
-          bool kLastQLds, bool kReduce = true>
+          bool kLastQLds, bool kReduce = true, bool WaveShuffle = false>
 __device__ __forceinline__ float grouped_mqa_row_sum(
     const std::conditional_t<kFp8, f8x16_t, i8x16_t>
         (&reg_q)[kLastQLds ? kGroupRows - 1 : kGroupRows]
@@ -662,10 +662,17 @@ __device__ __forceinline__ float grouped_mqa_row_sum(
         }
     }
     sum *= scale;
+    if constexpr (WaveShuffle) {
+        asm volatile("" : "+v"(sum));
+    }
     if constexpr (kReduce) {
         #pragma unroll
         for (int delta = 16; delta <= 32; delta <<= 1) {
-            sum += __shfl_down_sync(0xffffffffffffffffull, sum, delta);
+            if constexpr (WaveShuffle) {
+                sum += __shfl_down(sum, delta, 64);
+            } else {
+                sum += __shfl_down_sync(0xffffffffffffffffull, sum, delta);
+            }
         }
     }
     return sum;
@@ -678,7 +685,8 @@ __device__ __forceinline__ float select_four(
 
 // One wave owns a 16-token tile. Consecutive rows reuse a KV operand only
 // when their physical page is equal; unrelated requests remain independent.
-template <int kHeads, bool kFp8, int kGroupRows, bool kLastQLds>
+template <int kHeads, bool kFp8, int kGroupRows, bool kLastQLds,
+          bool CleanTail = true, bool WaveShuffle = false>
 __attribute__((amdgpu_flat_work_group_size(1, 512)))
 __global__ void paged_mqa_logits_persisten_grouped(
     const uint8_t* q,
@@ -759,7 +767,7 @@ __global__ void paged_mqa_logits_persisten_grouped(
         shared_weights[item] = weights[group_first * kHeads + item];
     }
     __syncthreads();
-    const int chunks = ceil_div(static_cast<int>(logits_stride), kTokenChunk);
+    const int chunks = ceil_div(CleanTail ? static_cast<int>(logits_stride) : group_max, kTokenChunk);
 
     for (int chunk = blockIdx.x; chunk < chunks; chunk += ctas_per_group) {
         const int chunk_start = chunk * kTokenChunk;
@@ -872,7 +880,7 @@ __global__ void paged_mqa_logits_persisten_grouped(
                     for (int row = 0; row < kGroupRows; ++row) {
                         if (row >= valid_rows) continue;
                         const float sum =
-                            grouped_mqa_row_sum<kHeads, kFp8, kGroupRows, kLastQLds>(
+                            grouped_mqa_row_sum<kHeads, kFp8, kGroupRows, kLastQLds, true, WaveShuffle>(
                                 reg_q, shared_q, reg_kv, shared_weights,
                                 row, lane, scale);
                         if (lane < kTokenTile) {
@@ -913,7 +921,7 @@ __global__ void paged_mqa_logits_persisten_grouped(
                     }
                     float sum = 0.0f;
                     if (kv_valid) {
-                        sum = grouped_mqa_row_sum<kHeads, kFp8, kGroupRows, kLastQLds>(
+                        sum = grouped_mqa_row_sum<kHeads, kFp8, kGroupRows, kLastQLds, true, WaveShuffle>(
                             reg_q, shared_q, reg_kv, shared_weights, row, lane, scale);
                     }
                     if (lane < kTokenTile) {
@@ -930,7 +938,8 @@ __global__ void paged_mqa_logits_persisten_grouped(
     }
 }
 
-template <int kHeads, bool kFp8, int kGroupRows>
+template <int kHeads, bool kFp8, int kGroupRows, bool CleanTail = true,
+          bool WaveShuffle = false>
 void launch_native_persisten_grouped(
     const torch::Tensor& q,
     const torch::Tensor& fused_kv_cache,
@@ -944,7 +953,7 @@ void launch_native_persisten_grouped(
                     (q.size(0) + kGroupRows - 1) / kGroupRows);
     constexpr bool kLastQLds = !kFp8 && kHeads == 32 && kGroupRows == 5;
     paged_mqa_logits_persisten_grouped<
-        kHeads, kFp8, kGroupRows, kLastQLds>
+        kHeads, kFp8, kGroupRows, kLastQLds, CleanTail, WaveShuffle>
         <<<grid, 256, 0, stream>>>(
             reinterpret_cast<const uint8_t*>(q.data_ptr()),
             reinterpret_cast<const uint8_t*>(fused_kv_cache.data_ptr()),
@@ -1005,9 +1014,6 @@ torch::Tensor paged_mqa_logits_persisten_impl(
     TORCH_CHECK(
         !schedule_meta.has_value(),
         "grouped persistent MQA requires schedule_meta=None");
-    TORCH_CHECK(
-        clean_logits,
-        "grouped persistent MQA requires clean_logits=True");
 
     hipDeviceProp_t properties;
     const auto prop_error =
@@ -1044,6 +1050,12 @@ torch::Tensor paged_mqa_logits_persisten_impl(
              q.size(2) == 32 || q.size(2) == 64) &&
             q.size(3) == kHeadDim && q.is_contiguous(),
         "q must be contiguous INT8 or FP8 [batch, 1, 8/16/32/64, 128]");
+    TORCH_CHECK(clean_logits ||
+        (q.scalar_type() == torch::kInt8 && q.size(0) == 18 &&
+         q.size(2) == 32 && group_size == 3 &&
+         std::strncmp(properties.gcnArchName, "gfx936", 6) == 0 &&
+         properties.multiProcessorCount == 80),
+        "clean_logits=False requires gfx936/80CU INT8 [18,1,32,128], group_size=3");
     const int batch_size = static_cast<int>(q.size(0));
     const int num_heads = static_cast<int>(q.size(2));
     const bool int8_kv = fused_kv_cache.scalar_type() == torch::kInt8;
@@ -1117,6 +1129,21 @@ torch::Tensor paged_mqa_logits_persisten_impl(
         ? static_cast<int>(std::min<int64_t>(max_chunks, 128))
         : static_cast<int>(std::min<int64_t>(persistent_ctas, max_chunks));
     auto stream = at::cuda::getCurrentCUDAStream(q.get_device());
+    if (!clean_logits) {
+        if (max_context_len <= 262272 &&
+            (persistent_ctas == 0 || persistent_ctas == 128)) {
+            launch_native_persisten_grouped<32, false, 3, false, true>(
+                q, fused_kv_cache, weights, context_lens, block_table, logits,
+                resolved, stream);
+        } else {
+            launch_native_persisten_grouped<32, false, 3, false>(
+                q, fused_kv_cache, weights, context_lens, block_table, logits,
+                resolved, stream);
+        }
+        const auto error = hipGetLastError();
+        TORCH_CHECK(error == hipSuccess, hipGetErrorString(error));
+        return logits;
+    }
 #define LAUNCH_HEADS(HEADS, FP8) \
     launch_native_persisten<HEADS, FP8>( \
         q, fused_kv_cache, weights, context_lens, block_table, logits, \

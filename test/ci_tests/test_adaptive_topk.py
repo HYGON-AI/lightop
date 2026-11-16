@@ -271,3 +271,62 @@ def test_oversized_coarse_bucket_retains_above_count(k,n):
         args,(_,expected_raw)=fixed_inputs('coarse_range',n,k)
         out,raw=fixed_call(args,k)
         assert_fixed_pairs(out,raw,args,expected_raw)
+
+
+@pytest.mark.parametrize("kind", ["random", "zero", "overflow", "underfill"])
+def test_parallel_candidates_actual_graph_geometry(kind):
+    rows, width, page_width = 18, 262272, 262225
+    cpu_scores = torch.stack([values(kind if kind != "random" else "negative", width)
+                              for _ in range(rows)])
+    scores = cpu_scores.cuda()
+    pages = torch.arange(page_width, dtype=torch.int32).repeat(rows, 1).cuda()
+    cu = torch.arange(rows + 1, dtype=torch.int32).cuda()
+    lens = torch.full((rows,), 65536, device="cuda", dtype=torch.int32)
+    graph = torch.cuda.CUDAGraph()
+    fast_topk_transform_fused(scores, lens, pages, cu, K, parallel_candidates=True)
+    torch.cuda.synchronize()
+    with torch.cuda.graph(graph):
+        actual = fast_topk_transform_fused(
+            scores, lens, pages, cu, K, parallel_candidates=True)
+    for n in (65536, 32767, 131073):
+        lens.fill_(n)
+        graph.replay()
+        expected = fast_topk_transform_fused(scores, lens, pages, cu, K)
+        assert_unordered(actual, expected)
+
+
+def test_grouped_mqa_valid_prefix_compact_topk():
+    from lightop.attention import paged_mqa_logits_persisten
+    prop = torch.cuda.get_device_properties(torch.cuda.current_device())
+    if not prop.gcnArchName.startswith("gfx936") or prop.multi_processor_count != 80:
+        pytest.skip("valid-prefix grouped MQA requires gfx936/80CU")
+    torch.manual_seed(70031)
+    rows, page_count, width = 18, 1056, 262272
+    q = torch.randint(-120, 121, (rows, 1, 32, 128), device="cuda", dtype=torch.int8)
+    weights = torch.randn((rows, 32), device="cuda") * .01
+    packed = torch.empty((page_count, 8448), device="cuda", dtype=torch.int8)
+    packed[:, :8192].random_(-120, 121)
+    scales = torch.rand((page_count, 64), device="cuda") * .009 + .001
+    packed[:, 8192:].copy_(scales.view(torch.int8))
+    kv = packed.view(page_count, 64, 1, 132)
+    table = torch.zeros((rows, 4098), device="cuda", dtype=torch.int32)
+    table[:, :page_count] = torch.arange(page_count, device="cuda", dtype=torch.int32)
+    lengths = torch.full((rows,), 65536, device="cuda", dtype=torch.int32)
+    graph = torch.cuda.CUDAGraph()
+    paged_mqa_logits_persisten(q, kv, weights, lengths, table, width,
+                             group_size=3, clean_logits=False)
+    torch.cuda.synchronize()
+    with torch.cuda.graph(graph):
+        actual = paged_mqa_logits_persisten(
+            q, kv, weights, lengths, table, width,
+            group_size=3, clean_logits=False)
+    for n in (65536, 65, 67583):
+        q.random_(-120, 121)
+        weights.normal_(0, .01)
+        lengths.fill_(n)
+        actual.fill_(float("nan"))
+        graph.replay()
+        expected = paged_mqa_logits_persisten(
+            q, kv, weights, lengths, table, width, group_size=3)
+        assert torch.equal(actual[:, :n].contiguous().view(torch.uint8),
+                           expected[:, :n].contiguous().view(torch.uint8))

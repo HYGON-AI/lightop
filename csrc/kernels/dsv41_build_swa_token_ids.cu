@@ -98,3 +98,101 @@ build_swa_token_ids(const torch::Tensor& seq, const torch::Tensor& extend,
     return {ids, first, lens, offsets};
 }
 }  // namespace lightop::dsv41
+
+
+#include <cassert>
+
+namespace lightop::dsv41 {
+namespace {
+template <typename req_t, typename prefix_t>
+__global__ void fill_swa_ring_mapping_kernel(
+    int64_t* mapping, const req_t* requests, const prefix_t* prefixes,
+    const int32_t* table, const int64_t* positions, const void* locations,
+    int64_t batch, int64_t window, int64_t ring, int64_t block,
+    int64_t mapping_size, int64_t request_rows, int64_t table_cols,
+    int64_t req_stride, int64_t prefix_stride, int64_t table_row_stride,
+    int64_t table_col_stride, int64_t position_stride, int64_t location_stride,
+    bool location_i64) {
+    for (int64_t r = 0; r < batch; ++r) {
+        const int64_t req = requests[r * req_stride];
+        const int64_t prefix = prefixes[r * prefix_stride];
+        assert(req >= 0 && req < request_rows);
+        assert(prefix >= 0 && prefix + block <= table_cols);
+        for (int64_t i = threadIdx.x; i < block; i += blockDim.x) {
+            const int64_t index = r * block + i;
+            const int64_t pos = positions ? positions[index * position_stride] : prefix + i;
+            int64_t full = locations
+                ? (location_i64 ? static_cast<const int64_t*>(locations)[index * location_stride]
+                                : static_cast<const int32_t*>(locations)[index * location_stride])
+                : table[req * table_row_stride + pos * table_col_stride];
+            assert(pos >= 0);
+            if (full < 0) full += mapping_size;
+            assert(full >= 0 && full < mapping_size);
+            mapping[full] = req * ring + pos % ring;
+        }
+        __syncthreads();
+    }
+    for (int64_t r = 0; r < batch; ++r) {
+        const int64_t req = requests[r * req_stride];
+        const int64_t prefix = prefixes[r * prefix_stride];
+        const int64_t start = prefix > window ? prefix - window : 0;
+        for (int64_t pos = start + threadIdx.x; pos < prefix; pos += blockDim.x) {
+            int64_t full = table[req * table_row_stride + pos * table_col_stride];
+            if (full < 0) full += mapping_size;
+            assert(full >= 0 && full < mapping_size);
+            mapping[full] = req * ring + pos % ring;
+        }
+        __syncthreads();
+    }
+}
+}
+
+void fill_swa_ring_mapping(
+    torch::Tensor mapping, const torch::Tensor& requests,
+    const torch::Tensor& prefixes, const torch::Tensor& table,
+    const c10::optional<torch::Tensor>& positions,
+    const c10::optional<torch::Tensor>& locations,
+    int64_t window, int64_t ring, int64_t block) {
+    TORCH_CHECK(mapping.is_cuda() && mapping.dim() == 1 && mapping.is_contiguous() &&
+        mapping.scalar_type() == torch::kInt64, "fill_swa_ring_mapping: invalid mapping");
+    for (const auto& tensor : {requests, prefixes}) {
+        TORCH_CHECK(tensor.device() == mapping.device() && tensor.dim() == 1 &&
+            (tensor.scalar_type() == torch::kInt32 || tensor.scalar_type() == torch::kInt64),
+            "fill_swa_ring_mapping: invalid request metadata");
+    }
+    TORCH_CHECK(prefixes.numel() >= requests.numel() && table.device() == mapping.device() &&
+        table.dim() == 2 && table.scalar_type() == torch::kInt32 &&
+        window > 0 && ring > 0 && block > 0 && requests.numel() <= 32,
+        "fill_swa_ring_mapping: unsupported geometry");
+    TORCH_CHECK(positions.has_value() == locations.has_value(),
+        "fill_swa_ring_mapping: positions and locations must be provided together");
+    if (positions.has_value()) {
+        TORCH_CHECK(positions->device() == mapping.device() && positions->dim() == 1 &&
+            positions->scalar_type() == torch::kInt64 &&
+            positions->numel() == requests.numel() * block &&
+            locations->device() == mapping.device() && locations->dim() == 1 &&
+            locations->numel() == positions->numel() &&
+            (locations->scalar_type() == torch::kInt32 || locations->scalar_type() == torch::kInt64),
+            "fill_swa_ring_mapping: invalid explicit block");
+    }
+    if (!requests.numel()) return;
+    const at::hip::OptionalHIPGuardMasqueradingAsCUDA guard(mapping.device());
+    const int64_t* pos = positions.has_value() ? positions->data_ptr<int64_t>() : nullptr;
+    const void* loc = locations.has_value() ? locations->data_ptr() : nullptr;
+    AT_DISPATCH_INDEX_TYPES(requests.scalar_type(), "fill_swa_ring_mapping_requests", [&] {
+        using req_t = index_t;
+        AT_DISPATCH_INDEX_TYPES(prefixes.scalar_type(), "fill_swa_ring_mapping_prefixes", [&] {
+            fill_swa_ring_mapping_kernel<req_t, index_t><<<1, 256, 0,
+                at::hip::getCurrentHIPStream()>>>(mapping.data_ptr<int64_t>(),
+                requests.data_ptr<req_t>(), prefixes.data_ptr<index_t>(),
+                table.data_ptr<int32_t>(), pos, loc, requests.numel(), window, ring, block,
+                mapping.numel(), table.size(0), table.size(1), requests.stride(0),
+                prefixes.stride(0), table.stride(0), table.stride(1),
+                positions.has_value() ? positions->stride(0) : 0,
+                locations.has_value() ? locations->stride(0) : 0,
+                locations.has_value() && locations->scalar_type() == torch::kInt64);
+        });
+    });
+    TORCH_CHECK(hipGetLastError() == hipSuccess, "fill_swa_ring_mapping: kernel launch failed");
+}
+}

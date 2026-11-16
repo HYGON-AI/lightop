@@ -53,6 +53,32 @@ struct Shared {
   int count, equal, rank, active, route, emitted, eq_used;
 };
 
+template <int K, bool Sorted>
+union SelectionStorage { Shared<K> selection; };
+
+template <int K>
+union SelectionStorage<K, true> {
+  Shared<K> selection;
+  typename hipcub::BlockRadixSort<uint32_t, Threads, K/Threads, int>::TempStorage sort;
+};
+
+template <int K>
+__device__ void sorted_topk_tail(uint32_t (&keys)[K/Threads], int (&ids)[K/Threads],
+    SelectionStorage<K, true>& storage, int row, int offset, int* raw, int* mapped,
+    float* values, float* thresholds) {
+  using Sort = hipcub::BlockRadixSort<uint32_t, Threads, K/Threads, int>;
+  __syncthreads();
+  Sort(storage.sort).SortDescending(keys, ids);
+  for (int j = 0; j < K/Threads; ++j) {
+    const int at = row*K + threadIdx.x*(K/Threads) + j;
+    const float value = __uint_as_float(keys[j] & 0x80000000u ? keys[j] & 0x7fffffffu : ~keys[j]);
+    if (raw) raw[at] = ids[j];
+    mapped[at] = ids[j] < 0 ? -1 : ids[j]+offset;
+    if (values) values[at] = value;
+    if (thresholds && threadIdx.x == Threads-1 && j == K/Threads-1) thresholds[row] = value;
+  }
+}
+
 // Matches LightOp's ordered FP32 bits, including signed zero / NaN payloads.
 __device__ __forceinline__ uint32_t key(float value) {
   uint32_t bits = __float_as_uint(value);
@@ -197,7 +223,7 @@ __device__ uint32_t refine(const float* input, int n, Shared<K>& s,
   return result;
 }
 
-template <bool Cached, int K>
+template <bool Cached, int K, bool ReturnPositions = false>
 __device__ void exact_select(const float* input, int n, Shared<K>& s,
                              int requested = K, int output_offset = 0) {
   const int tid = threadIdx.x;
@@ -222,7 +248,7 @@ __device__ void exact_select(const float* input, int n, Shared<K>& s,
     const bool keep = i < n && (value > boundary ||
         (value == boundary && ~static_cast<uint32_t>(id) >= min_id_key));
     const int out = reserve_wave(keep, &s.emitted);
-    if (keep && out < K) s.selected[out] = id;
+    if (keep && out < K) s.selected[out] = ReturnPositions ? i : id;
   }
   __syncthreads();
   return;
@@ -439,17 +465,21 @@ __device__ void coarse_select(const float* input, int n, Shared<K>& s) {
 
 } // namespace adaptive_topk_detail
 
-template <int K, bool PhysicalPages = false>
+template <int K, bool PhysicalPages = false, bool SortSelected = false, bool SuppliedCandidates = false>
 __global__ __launch_bounds__(adaptive_topk_detail::Threads)
 void adaptive_topk_kernel(const float* scores, int64_t score_stride, int width,
             const int* lengths, const int* starts, const int* pages,
             int64_t page_stride, int page_width, const int* cu, int batches,
             int* raw, int* mapped, int* stats, bool adaptive,
-            uint32_t page_bits = 0, const int* offsets = nullptr) {
+            uint32_t page_bits = 0, const int* offsets = nullptr,
+            float* sorted_values = nullptr, float* next_thresholds = nullptr,
+            const uint32_t* supplied_keys = nullptr, const int* supplied_ids = nullptr,
+            const int* supplied_counts = nullptr) {
   using namespace adaptive_topk_detail;
   static_assert(K == 512 || K == 1024 || K == 2048);
   constexpr int Capacity = 2*K;
-  __shared__ Shared<K> s;
+  __shared__ SelectionStorage<K, SortSelected> storage;
+  Shared<K>& s = storage.selection;
   const int tid = threadIdx.x, row = blockIdx.x;
   const int start = starts ? starts[row] : 0;
   int n = lengths[row];
@@ -464,8 +494,10 @@ void adaptive_topk_kernel(const float* scores, int64_t score_stride, int width,
     for (int i = tid; i < K; i += Threads) {
       if (raw) raw[row*K+i] = -1;
       mapped[row*K+i] = -1;
+      if constexpr (SortSelected) if (sorted_values) sorted_values[row*K+i] = -__builtin_inff();
     }
     if (tid == 0 && stats) stats[row*4] = -1;
+    if constexpr (SortSelected) if (tid == 0 && next_thresholds) next_thresholds[row] = -__builtin_inff();
     return;
   }
   if (tid == 0) { s.route = 0; s.count = 0; s.equal = 0; }
@@ -476,7 +508,21 @@ void adaptive_topk_kernel(const float* scores, int64_t score_stride, int width,
     __syncthreads();
   } else {
     bool resolved = false;
-    if (adaptive && n >= 32768) {
+    if constexpr (SuppliedCandidates) {
+      static_assert(K == 2048 && !PhysicalPages && !SortSelected);
+      const int count = supplied_counts[row];
+      if (n >= 32768 && count >= K && count <= Capacity) {
+        for (int i = tid; i < count; i += Threads) {
+          s.keys[i] = supplied_keys[int64_t(row)*Capacity+i];
+          s.ids[i] = supplied_ids[int64_t(row)*Capacity+i];
+        }
+        __syncthreads();
+        exact_select<true>(input, count, s);
+        if (tid == 0) { s.route = 3; s.count = count; }
+        resolved = true;
+      }
+    }
+    if (!resolved && adaptive && n >= 32768) {
       uint32_t samples[SampleItems];
       for (int j = 0; j < SampleItems; ++j) {
         const int sample_id = tid * SampleItems + j;
@@ -563,6 +609,26 @@ void adaptive_topk_kernel(const float* scores, int64_t score_stride, int width,
     }
     // The selected set and tie policy are exact; output order is unspecified.
     __syncthreads();
+  }
+  if constexpr (SortSelected) {
+    static_assert(!PhysicalPages && K == 2048);
+    uint32_t keys[K/Threads];
+    int ids[K/Threads];
+    for (int j = 0; j < K/Threads; ++j) {
+      const int id = s.selected[tid*(K/Threads)+j];
+      const bool valid = id >= 0 && id < n;
+      ids[j] = valid ? id : -1;
+      keys[j] = key(valid ? input[id] : -__builtin_inff());
+    }
+    if (tid == 0 && stats) {
+      stats[row*4] = s.route;
+      stats[row*4+1] = s.count;
+      stats[row*4+2] = s.equal;
+      stats[row*4+3] = n;
+    }
+    sorted_topk_tail<K>(keys, ids, storage, row, offsets[row], raw, mapped,
+                       sorted_values, next_thresholds);
+    return;
   }
   int batch = 0;
   // cu is small; only lane 0 resolves mapping, then publishes it to the block.
