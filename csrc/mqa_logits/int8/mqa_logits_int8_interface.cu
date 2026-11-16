@@ -134,8 +134,8 @@ torch::Tensor mqa_logits_int8(const torch::Tensor &Q, const torch::Tensor &K,
 }
 } // namespace lightop::mqa_int8
 
-#include "kernels/m64.hpp"
-#include "../../../topk/adaptive_topk.h"
+#include "m64.hpp"
+#include "../../kernels/topk/adaptive_topk.h"
 namespace lightop::mqa_int8 {
 template<int Mode,int Bits>
 void launch_stage(MqaTopKParams p,hipStream_t stream) {
