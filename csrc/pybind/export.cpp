@@ -881,7 +881,8 @@ void fast_topk_transform_interface(
     const at::Tensor& src_page_table,
     const at::Tensor& cu_seqlens_q,
     std::optional<at::Tensor> row_starts_opt,
-    bool parallel_candidates);
+    bool parallel_candidates,
+    bool long_parallel_candidates);
 void fast_topk_transform_sparse_mask_interface(
     const at::Tensor& score,
     const at::Tensor& nonzero_mask,
@@ -1597,6 +1598,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("max_context_len"), py::arg("clean_logits") = true,
         py::arg("num_warps") = 4, py::arg("persistent_ctas") = 0,
         py::arg("group_size") = 1);
+  m.def("paged_mqa_topk_sampled_int8", &lightop::deep_gemm::paged_mqa_topk_sampled_int8,
+        py::arg("q"), py::arg("fused_kv_cache"), py::arg("weights"),
+        py::arg("context_lens"), py::arg("block_table"), py::arg("page_table_1"),
+        py::arg("cu_seqlens_q"), py::arg("max_context_len"));
   m.def("paged_mqa_logits_fp4", &lightop::deep_gemm::paged_mqa_logits_fp4,
         "DeepGEMM fp8_fp4_paged_mqa_logits (clean_logits=False) on the fused FP4 index-K pool",
         py::arg("q"), py::arg("q_sf"), py::arg("kv_cache"), py::arg("weights"),
@@ -1815,7 +1820,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "transform length TopK indices into paged KVCache",
         py::arg("score"), py::arg("lengths"), py::arg("dst_page_table"),
         py::arg("src_page_table"), py::arg("cu_seqlens_q"),
-        py::arg("row_starts_opt"), py::arg("parallel_candidates") = false);
+        py::arg("row_starts_opt"), py::arg("parallel_candidates") = false,
+        py::arg("long_parallel_candidates") = false);
  m.def(
      "fast_topk_transform_sparse_mask_interface",
      &at::native::fast_topk_transform_sparse_mask_interface,

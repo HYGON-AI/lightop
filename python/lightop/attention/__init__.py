@@ -23,6 +23,7 @@ from .mqa import (
     mqa_logits_topk_sampled_int8,
     paged_mqa_logits,
     paged_mqa_logits_persisten,
+    paged_mqa_topk_sampled_int8,
     paged_mqa_logits_fp4,
     paged_mqa_logits_route_lens,
     page_mqa_logits_sparse_mask,

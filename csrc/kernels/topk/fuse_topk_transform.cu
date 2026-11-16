@@ -1051,6 +1051,166 @@ __global__ __launch_bounds__(256) void topk_parallel_compact(const float* dense,
     }
   }
 }
+__global__ __launch_bounds__(1024) void topk_long_compact_proposal(const float* dense,int width,const int* lengths,uint32_t* pivots,int* counts) {
+  using namespace adaptive_topk_detail;
+  __shared__ Shared<2048> s;
+  const int row=blockIdx.x,tid=threadIdx.x,n=lengths[row];
+  if(tid==0){counts[row]=0;pivots[row]=UINT_MAX;}
+  if(n<=131072 || n>width || n>1048576)return;
+  constexpr int LongSamples=32768,LongItems=LongSamples/Threads;
+  uint32_t sampled[LongItems];
+  for(int j=0;j<LongItems;++j){const int id=tid*LongItems+j;sampled[j]=key(dense[int64_t(row)*width+int64_t(id)*n/LongSamples]);}
+  const int proposed=int((int64_t(3072)*LongSamples+n-1)/n);
+  const int rank=proposed < 1 ? 1 : (proposed > LongSamples ? LongSamples : proposed);
+  sample_select(sampled,rank,s);
+  if(tid==0)pivots[row]=s.pivot;
+}
+__global__ __launch_bounds__(256) void topk_long_parallel_compact(const float* dense,int width,const int* lengths,const uint32_t* pivots,uint32_t* keys,int* ids,int* counts) {
+  using namespace adaptive_topk_detail;
+  using LocalScan=hipcub::BlockScan<int,256>;
+  __shared__ LocalScan::TempStorage temporary;
+  __shared__ int global_offset;
+  const int row=blockIdx.y,part=blockIdx.x,tid=threadIdx.x,n=lengths[row];
+  if(n<=131072 || n>width || n>1048576)return;
+  const int segment=((n+128*256-1)/(128*256))*256;
+  const int start=part*segment,end=n < start+segment ? n : start+segment;
+  const uint32_t pivot=pivots[row];
+  #pragma unroll 1
+  for(int batch=0;batch<32;batch+=8) {
+    uint32_t values[8],keep_bits=0;
+    int count=0;
+    #pragma unroll
+    for(int i=0;i<8;++i) {
+      const int at=start+(batch+i)*256+tid;
+      values[i]=at<end?key(dense[int64_t(row)*width+at]):0;
+      const bool keep=at<end && values[i]>pivot;
+      keep_bits|=uint32_t(keep)<<i;count+=keep;
+    }
+    int prefix=0,total=0;
+    LocalScan(temporary).ExclusiveSum(count,prefix,total);
+    __syncthreads();
+    if(tid==0)global_offset=atomicAdd(counts+row,total);
+    __syncthreads();
+    int out=global_offset+prefix;
+    #pragma unroll
+    for(int i=0;i<8;++i) {
+      if((keep_bits>>i)&1) {
+        if(out<4096){keys[int64_t(row)*4096+out]=values[i];ids[int64_t(row)*4096+out]=start+(batch+i)*256+tid;}
+        ++out;
+      }
+    }
+    __syncthreads();
+  }
+}
+#endif
+
+#ifdef USE_ROCM
+__global__ __launch_bounds__(1024) void paged_mqa_sample_proposal(
+    const float* samples,const int* lengths,int width,uint32_t* pivots,
+    int* counts,int* flags,uint32_t* candidate_keys,int* candidate_ids) {
+    using namespace at::native::adaptive_topk_detail;
+    const int row=blockIdx.x,tid=threadIdx.x,n=lengths[row];
+    if(tid==0){counts[row]=0;pivots[row]=UINT_MAX;flags[row]=n<=262144 || n>1048576 || n>width?2:0;}
+    if(n<=262144 || n>1048576 || n>width)return;
+    constexpr int sampled=8192,valid_samples=8192;
+    uint32_t keys[8];
+    for(int j=0;j<8;++j)keys[j]=tid*8+j<sampled?key(samples[row*8192+tid*8+j]):key(-INFINITY);
+    __shared__ Shared<2048> shared;
+    const int rank=::min(sampled,::max(1,int((int64_t(4096)*valid_samples+n-1)/n)));
+    sample_select(keys,rank,shared);
+    if(tid==0)pivots[row]=shared.pivot;
+}
+
+
+__device__ void repair_candidate_ties(const float* scores,const int* ids,int n,
+    at::native::adaptive_topk_detail::Shared<2048>& s) {
+    namespace topk=at::native::adaptive_topk_detail;
+    using U32Reduce=hipcub::BlockReduce<uint32_t,1024>;
+    __shared__ U32Reduce::TempStorage temporary;
+    const int tid=threadIdx.x;
+    uint32_t minimum=0xffffffffu;
+    for(int j=0;j<2;++j)minimum=::min(minimum,topk::key(scores[s.selected[tid*2+j]]));
+    const uint32_t boundary=U32Reduce(temporary).Reduce(minimum,hipcub::Min());
+    if(tid==0)s.pivot=boundary;
+    __syncthreads();
+    const uint32_t pivot=s.pivot;
+    topk::Counts local{0,0,0};
+    for(int at=tid;at<n;at+=1024){const uint32_t key=topk::key(scores[at]);local.positive+=key>pivot;local.zero+=key==pivot;}
+    const auto all=topk::CountReduce(s.temp.counts).Reduce(local,topk::AddCounts{});
+    if(tid==0){s.rank=2048-all.positive;s.active=all.zero;s.prefix=0;s.mask=0;}
+    __syncthreads();
+    if(s.active<=s.rank)return;
+    for(int shift=24;shift>=0;shift-=8){
+        if(tid<256)s.hist[tid]=0;
+        __syncthreads();
+        const uint32_t prefix=s.prefix,mask=s.mask;
+        for(int base=0;base<n;base+=1024){
+            const int at=base+tid;
+            const uint32_t key=at<n?~uint32_t(ids[at]):0;
+            const bool valid=at<n && topk::key(scores[at])==pivot && (key&mask)==prefix;
+            topk::histogram_add(s.hist,valid,(key>>shift)&255);
+        }
+        __syncthreads();
+        int cumulative=0,total=0;const int count=tid<256?s.hist[tid]:0;
+        topk::Scan(s.temp.scan).InclusiveSum(count,cumulative,total);
+        __syncthreads();
+        const int above=total-cumulative;
+        if(tid<256 && above<s.rank && above+count>=s.rank){s.active=count;s.hist[0]=s.rank-above;s.hist[1]=tid;}
+        __syncthreads();
+        if(tid==0){s.rank=s.hist[0];s.prefix|=uint32_t(s.hist[1])<<shift;s.mask|=0xffu<<shift;}
+        __syncthreads();
+        if(s.active==s.rank)break;
+    }
+    const uint32_t min_id_key=s.prefix;
+    __syncthreads();
+    if(tid==0)s.emitted=0;
+    __syncthreads();
+    for(int base=0;base<n;base+=1024){
+        const int at=base+tid;const uint32_t key=at<n?topk::key(scores[at]):0;
+        const bool keep=at<n && (key>pivot || (key==pivot && ~uint32_t(ids[at])>=min_id_key));
+        const int dest=topk::reserve_wave(keep,&s.emitted);
+        if(keep && dest<2048)s.selected[dest]=at;
+    }
+    __syncthreads();
+}
+
+__global__ __launch_bounds__(1024) void paged_wide_candidate_topk(
+    const float* scores,int64_t stride,int width,const int* lengths,
+    const float* candidates,const int* ids,const int* counts,const int* flags,
+    const int* pages,int64_t page_stride,int page_width,const int* cu,int batches,
+    int* raw,int* mapped,int* stats) {
+    using namespace at::native::adaptive_topk_detail;
+    const int row=blockIdx.x,tid=threadIdx.x,n=lengths[row],count=counts[row];
+    __shared__ Shared<2048> s;
+    if(n<0 || n>width) {
+        for(int i=tid;i<2048;i+=1024){raw[row*2048+i]=-1;mapped[row*2048+i]=-1;}
+        if(tid==0)stats[row*4]=-1;
+        return;
+    }
+    const bool candidate=n>262144 && n<=1048576 && flags[row]==0 && count>=2048 && count<=16384;
+    const float* input=candidate?candidates+int64_t(row)*16384:scores+int64_t(row)*stride;
+    if(candidate){coarse_select(input,count,s);repair_candidate_ties(input,ids+int64_t(row)*16384,count,s);}
+    else if(n>2048)coarse_select(input,n,s);
+    else{for(int i=tid;i<2048;i+=1024)s.selected[i]=i<n?i:INT_MAX;__syncthreads();}
+    if(tid==0){
+        int low=0,high=batches;
+        while(low<high){const int mid=(low+high)/2;if(cu[mid+1]<=row)low=mid+1;else high=mid;}
+        s.eq_used=low;
+        if(stats){stats[row*4]=candidate?3:n<=2048?1:6;stats[row*4+1]=count;stats[row*4+2]=0;stats[row*4+3]=n;}
+    }
+    __syncthreads();
+    const int batch=s.eq_used;
+    for(int i=tid;i<2048;i+=1024){
+        const int selected=s.selected[i];
+        const int id=candidate?ids[int64_t(row)*16384+selected]:selected;
+        const bool valid=id>=0 && id<n;
+        raw[row*2048+i]=valid?id:-1;
+        int result=-1;
+        if(valid && batch<batches && uint32_t(id)<uint32_t(page_width))result=pages[int64_t(batch)*page_stride+id];
+        mapped[row*2048+i]=result;
+    }
+}
+
 #endif
 
 template <int K, bool PhysicalPages = false>
@@ -1058,7 +1218,8 @@ void launch_adaptive_topk(
     const at::Tensor& score, const at::Tensor& lengths, at::Tensor& output,
     const at::Tensor* pages, const at::Tensor* cu, const at::Tensor* starts,
     uint32_t page_bits = 0, const at::Tensor* raw = nullptr,
-    const at::Tensor* offsets = nullptr, bool parallel_candidates = false) {
+    const at::Tensor* offsets = nullptr, bool parallel_candidates = false,
+    bool long_parallel_candidates = false) {
 #ifdef USE_ROCM
   TORCH_CHECK(
       score.size(0) <= std::numeric_limits<int32_t>::max() / K &&
@@ -1084,6 +1245,22 @@ void launch_adaptive_topk(
   if (score.size(0) == 0) return;
   const auto stream = at::cuda::getCurrentCUDAStream().stream();
   if constexpr (K == 2048 && !PhysicalPages) {
+    if (long_parallel_candidates) {
+      auto keys=at::empty({18,4096},score.options().dtype(at::kInt));
+      auto ids=at::empty_like(keys);
+      auto pivots=at::empty({18},score.options().dtype(at::kInt));
+      auto counts=at::empty_like(pivots);
+      auto* kp=reinterpret_cast<uint32_t*>(keys.data_ptr<int32_t>());
+      auto* pp=reinterpret_cast<uint32_t*>(pivots.data_ptr<int32_t>());
+      topk_long_compact_proposal<<<18,1024,0,stream>>>(score.data_ptr<float>(),score.size(1),lengths.data_ptr<int32_t>(),pp,counts.data_ptr<int32_t>());
+      topk_long_parallel_compact<<<dim3(128,18),256,0,stream>>>(score.data_ptr<float>(),score.size(1),lengths.data_ptr<int32_t>(),pp,kp,ids.data_ptr<int32_t>(),counts.data_ptr<int32_t>());
+      adaptive_topk_kernel<2048,false,false,true><<<18,1024,0,stream>>>(
+        score.data_ptr<float>(),score.stride(0),score.size(1),lengths.data_ptr<int32_t>(),nullptr,pages->data_ptr<int32_t>(),pages->stride(0),pages->size(1),cu->data_ptr<int32_t>(),18,
+        nullptr,output.data_ptr<int32_t>(),nullptr,false,0,nullptr,nullptr,nullptr,kp,ids.data_ptr<int32_t>(),counts.data_ptr<int32_t>());
+      const auto error = cudaGetLastError();
+      TORCH_CHECK(error == cudaSuccess, "Long compact TopK failed: ", cudaGetErrorString(error));
+      return;
+    }
     if (parallel_candidates) {
       auto keys = at::empty({18, 4096}, score.options().dtype(at::kInt));
       auto ids = at::empty_like(keys);
@@ -2301,7 +2478,8 @@ void fast_topk_transform_interface(
     const at::Tensor& src_page_table,
     const at::Tensor& cu_seqlens_q,
     std::optional<at::Tensor> row_starts_opt,
-    bool parallel_candidates) {
+    bool parallel_candidates,
+    bool long_parallel_candidates) {
   CHECK_CUDA(score);
   CHECK_CUDA(lengths);
   CHECK_CUDA(dst_page_table);
@@ -2330,9 +2508,15 @@ void fast_topk_transform_interface(
         src_page_table.is_contiguous() && src_page_table.size(0) == 18 &&
         src_page_table.size(1) > 0 && src_page_table.size(1) <= score.size(1) &&
         cu_seqlens_q.numel() == 19;
+    const bool long_compact = (long_parallel_candidates || parallel_candidates) && !row_starts_opt.has_value() &&
+        score.is_contiguous() && B == 18 && score.size(1) > 262272 &&
+        score.size(1) <= 1052672 && lengths.is_contiguous() && lengths.numel() == 18 &&
+        src_page_table.is_contiguous() && src_page_table.size(0) == 18 &&
+        src_page_table.size(1) > 0 && src_page_table.size(1) <= score.size(1) &&
+        cu_seqlens_q.numel() == 19;
     launch_adaptive_topk<2048>(score, lengths, dst_page_table, &src_page_table,
         &cu_seqlens_q, row_starts_opt ? &row_starts_opt.value() : nullptr,
-        0, nullptr, nullptr, compact);
+        0, nullptr, nullptr, compact, long_compact);
     return;
   }
 
@@ -2958,6 +3142,15 @@ void fast_topk_transform_ragged_interface(
   const auto result = cudaGetLastError();
   TORCH_CHECK(result == cudaSuccess, "topk kernel failed:", ::cudaGetErrorString(result));
 }
+
+#ifdef USE_ROCM
+void launch_paged_sample_proposal(const float* samples, const int* lengths, int width, uint32_t* pivots, int* counts, int* flags, uint32_t* keys, int* ids, int rows, hipStream_t stream) {
+    paged_mqa_sample_proposal<<<rows, 1024, 0, stream>>>(samples, lengths, width, pivots, counts, flags, keys, ids);
+}
+void launch_paged_candidate_topk(const float* scores, int64_t stride, int width, const int* lengths, const float* candidates, const int* ids, const int* counts, const int* flags, const int* pages, int64_t page_stride, int page_width, const int* cu, int* raw, int* mapped, int* stats, int rows, hipStream_t stream) {
+    paged_wide_candidate_topk<<<rows, 1024, 0, stream>>>(scores, stride, width, lengths, candidates, ids, counts, flags, pages, page_stride, page_width, cu, rows, raw, mapped, stats);
+}
+#endif
 
 } // namespace native
 } // namespace at

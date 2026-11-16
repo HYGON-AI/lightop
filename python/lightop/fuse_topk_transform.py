@@ -67,6 +67,7 @@ def fast_topk_transform_fused(
     topk: int,
     row_starts: Optional[torch.Tensor] = None,
     parallel_candidates: bool = False,
+    long_parallel_candidates: bool = False,
 ) -> torch.Tensor:
     """
     Get the topk indices of the score tensor and then transform the topk indices
@@ -92,6 +93,10 @@ def fast_topk_transform_fused(
         parallel_candidates: Use bounded parallel candidate compaction for supported
             paged geometry. Underfilled or overflowing candidates fall back to exact
             full-row selection; unsupported geometry retains the original path.
+        long_parallel_candidates: Opt into parallel Top2048 selection for 18-row
+            paged graph buffers with long context. Score pitch may include speculative
+            headroom; unsupported geometry uses the original path. Full FP32 scans
+            certify candidates and underfill/overflow use exact selection.
     Returns:
         The topk indices tensor of shape (B, topk)
     """
@@ -101,9 +106,10 @@ def fast_topk_transform_fused(
     assert score.dim() == 2
     src_page_table = page_table_size_1
     dst_page_table = score.new_empty((score.shape[0], topk), dtype=torch.int32)
+    extra_args = {"long_parallel_candidates": True} if long_parallel_candidates else {}
     op.fast_topk_transform_interface(
         score, lengths, dst_page_table, src_page_table, cu_seqlens_q, row_starts,
-        parallel_candidates
+        parallel_candidates, **extra_args
     )
     return dst_page_table
 

@@ -15,6 +15,8 @@
 #include <cstdint>
 #include <cstring>
 #include <type_traits>
+#include <string>
+#include "../../kernels/topk/adaptive_topk.h"
 
 namespace lightop {
 namespace deep_gemm {
@@ -686,7 +688,7 @@ __device__ __forceinline__ float select_four(
 // One wave owns a 16-token tile. Consecutive rows reuse a KV operand only
 // when their physical page is equal; unrelated requests remain independent.
 template <int kHeads, bool kFp8, int kGroupRows, bool kLastQLds,
-          bool CleanTail = true, bool WaveShuffle = false>
+          bool CleanTail = true, bool WaveShuffle = false, int Mode = 0>
 __attribute__((amdgpu_flat_work_group_size(1, 512)))
 __global__ void paged_mqa_logits_persisten_grouped(
     const uint8_t* q,
@@ -699,7 +701,9 @@ __global__ void paged_mqa_logits_persisten_grouped(
     float* logits,
     const int* block_table,
     const int batch_size,
-    const int ctas_per_group) {
+    const int ctas_per_group,
+    const uint32_t* pivots = nullptr, uint32_t* candidate_keys = nullptr,
+    int* candidate_ids = nullptr, int* counts = nullptr, int* flags = nullptr) {
     constexpr int kHeadsPerMma = 16;
     constexpr int kTokenTile = 16;
     constexpr int kQIterations = (kHeads + kHeadsPerMma - 1) / kHeadsPerMma;
@@ -711,7 +715,8 @@ __global__ void paged_mqa_logits_persisten_grouped(
 
     const int group = blockIdx.y;
     const int group_first = group * kGroupRows;
-    const int valid_rows = min(kGroupRows, batch_size - group_first);
+    static_assert(Mode == 0 || (kHeads == 32 && !kFp8 && kGroupRows == 3 && !kLastQLds && !CleanTail && !WaveShuffle));
+    const int valid_rows = Mode == 0 ? min(kGroupRows, batch_size - group_first) : 3;
     const int lane = threadIdx.x & 63;
     const int wave = threadIdx.x >> 6;
     const int q_base = (lane & 15) * 128 + (lane >> 4) * 16;
@@ -723,8 +728,23 @@ __global__ void paged_mqa_logits_persisten_grouped(
         const int raw = row < valid_rows ? context_lens[group_first + row] : 0;
         const int length = raw < 0 ? 0 :
             (raw > logits_stride ? static_cast<int>(logits_stride) : raw);
-        row_length[row] = length;
-        group_max = max(group_max, length);
+        bool active = true;
+        if constexpr (Mode == 1) active = length > 262144 && length <= 1048576;
+        if constexpr (Mode == 3) active = length > 2048 && (length <= 262144 || length > 1048576 || counts[group_first + row] < 2048 || counts[group_first + row] > 16384);
+        row_length[row] = active ? length : 0;
+        group_max = max(group_max, row_length[row]);
+    }
+    uint32_t row_pivot[kGroupRows];
+    if constexpr (Mode != 0) {
+        if (group_max == 0) return;
+    }
+    if constexpr (Mode == 1) {
+        #pragma unroll
+        for (int row = 0; row < kGroupRows; ++row) {
+            uint32_t value = pivots[group_first + row];
+            asm volatile("" : "+v"(value));
+            row_pivot[row] = value;
+        }
     }
     operand_t reg_q[kLastQLds ? kGroupRows - 1 : kGroupRows]
                    [kQIterations][kKBlocks];
@@ -771,6 +791,7 @@ __global__ void paged_mqa_logits_persisten_grouped(
 
     for (int chunk = blockIdx.x; chunk < chunks; chunk += ctas_per_group) {
         const int chunk_start = chunk * kTokenChunk;
+        if constexpr (Mode == 0) {
         if (chunk_start >= group_max) {
             const int token = chunk_start + threadIdx.x;
             if (token < logits_stride) {
@@ -783,6 +804,7 @@ __global__ void paged_mqa_logits_persisten_grouped(
                 }
             }
             continue;
+        }
         }
         // A wave owns one 64-token page within this 256-token chunk. Reuse
         // its page-table entries for all four 16-token MMAC tiles.
@@ -883,12 +905,28 @@ __global__ void paged_mqa_logits_persisten_grouped(
                             grouped_mqa_row_sum<kHeads, kFp8, kGroupRows, kLastQLds, true, WaveShuffle>(
                                 reg_q, shared_q, reg_kv, shared_weights,
                                 row, lane, scale);
+                        const int token = token_start + (lane & 15);
+                        if constexpr (Mode == 1) {
+                            const uint32_t key = at::native::adaptive_topk_detail::key(sum);
+                            const bool keep = lane < 16 && token < row_length[row] && key > row_pivot[row];
+                            const int pos = at::native::adaptive_topk_detail::reserve_wave(keep, counts + group_first + row);
+                            if (keep && pos < 16384) {
+                                const int64_t at = int64_t(group_first + row) * 16384 + pos;
+                                reinterpret_cast<float*>(candidate_keys)[at] = sum;
+                                candidate_ids[at] = token;
+                            }
+                        } else if constexpr (Mode == 3) {
+                            if (lane < 16 && row_length[row] > 0 && token < logits_stride) {
+                                logits[(group_first + row) * logits_stride + token] = token < row_length[row] ? sum : -INFINITY;
+                            }
+                        } else {
                         if (lane < kTokenTile) {
                             const int token = token_start + lane;
                             if (token < logits_stride) {
                                 logits[(group_first + row) * logits_stride + token] =
                                     token < row_length[row] ? sum : -INFINITY;
                             }
+                        }
                         }
                     }
                 }
@@ -924,6 +962,22 @@ __global__ void paged_mqa_logits_persisten_grouped(
                         sum = grouped_mqa_row_sum<kHeads, kFp8, kGroupRows, kLastQLds, true, WaveShuffle>(
                             reg_q, shared_q, reg_kv, shared_weights, row, lane, scale);
                     }
+                    const int token = token_start + (lane & 15);
+                    const float score = kv_valid ? sum : -INFINITY;
+                    if constexpr (Mode == 1) {
+                        const uint32_t key = at::native::adaptive_topk_detail::key(score);
+                        const bool keep = lane < 16 && token < row_length[row] && key > row_pivot[row];
+                        const int pos = at::native::adaptive_topk_detail::reserve_wave(keep, counts + group_first + row);
+                        if (keep && pos < 16384) {
+                            const int64_t at = int64_t(group_first + row) * 16384 + pos;
+                            reinterpret_cast<float*>(candidate_keys)[at] = score;
+                            candidate_ids[at] = token;
+                        }
+                    } else if constexpr (Mode == 3) {
+                        if (lane < 16 && row_length[row] > 0 && token < logits_stride) {
+                            logits[(group_first + row) * logits_stride + token] = token < row_length[row] ? score : -INFINITY;
+                        }
+                    } else {
                     if (lane < kTokenTile) {
                         const int token = token_start + lane;
                         if (token < logits_stride) {
@@ -932,9 +986,70 @@ __global__ void paged_mqa_logits_persisten_grouped(
                                 ? sum : -INFINITY;
                         }
                     }
+                    }
                 }
             }
         }
+    }
+}
+
+__device__ __forceinline__ int paged_stratified_sample(int sample,int length) {
+    const int first=(int64_t(sample)*length)>>13;
+    const int end=(int64_t(sample+1)*length)>>13;
+    uint32_t hash=uint32_t(sample)*0x9e3779b9u;
+    hash^=hash>>16;
+    return first+__umulhi(hash,uint32_t(end-first));
+}
+
+__global__ __launch_bounds__(256) void paged_mqa_sample_group3(
+    const uint8_t* q,const uint8_t* kv,int64_t kv_stride,const float* weights,
+    const int* lengths,const int* table,int64_t table_stride,int width,float* samples) {
+    const int lane=threadIdx.x&63,wave=threadIdx.x>>6,group_first=blockIdx.y*3;
+    bool active=false,aligned=true;
+    int common_length=1048576,max_length=0;
+    #pragma unroll
+    for(int row=0;row<3;++row) {
+        const int n=lengths[group_first+row];
+        const bool eligible=n>262144 && n<=1048576 && n<=width;
+        active=active || eligible;
+        aligned=aligned && eligible;
+        common_length=min(common_length,n);
+        max_length=max(max_length,n);
+    }
+    if(!active)return;
+    aligned=aligned && max_length-common_length<=2;
+    i8x16_t reg_q[3][2][2];
+    #pragma unroll
+    for(int row=0;row<3;++row) {
+        #pragma unroll
+        for(int qi=0;qi<2;++qi) {
+            #pragma unroll
+            for(int k=0;k<2;++k)reg_q[row][qi][k]=*reinterpret_cast<const i8x16_t*>(q+(group_first+row)*4096+(lane&15)*128+(lane>>4)*16+qi*2048+k*64);
+        }
+    }
+    __shared__ float shared_weights[96];
+    if(threadIdx.x<96)shared_weights[threadIdx.x]=weights[group_first*32+threadIdx.x];
+    __syncthreads();
+    #pragma unroll 1
+    for(int sample_tile=0;sample_tile<4;++sample_tile) {
+    const int sample=(blockIdx.x*4+sample_tile)*64+wave*16+(lane&15);
+    i8x16_t reg_kv[2]={};int64_t cached=-2;float scale=0.f;
+    #pragma unroll
+    for(int row=0;row<3;++row) {
+        const int n=lengths[group_first+row];
+        const bool eligible=n>262144 && n<=1048576 && n<=width;
+        const int token=paged_stratified_sample(sample,aligned?common_length:n);
+        const int page=eligible && token<n?table[(group_first+row)*table_stride+(token>>6)]:-1;
+        const int64_t physical=page>=0?int64_t(page)*64+token%64:-1;
+        if(physical!=cached) {
+            cached=physical;scale=0.f;
+            #pragma unroll
+            for(int k=0;k<2;++k)reg_kv[k]=page>=0?*reinterpret_cast<const i8x16_t*>(kv+int64_t(page)*kv_stride+(token%64)*128+(lane>>4)*16+k*64):i8x16_t{};
+            if(page>=0)scale=reinterpret_cast<const float*>(kv+int64_t(page)*kv_stride+64*128)[token%64];
+        }
+        const float score=grouped_mqa_row_sum<32,false,3,false>(reg_q,nullptr,reg_kv,shared_weights,row,lane,scale);
+        if(lane<16)samples[(group_first+row)*8192+sample]=eligible && page>=0?score:-INFINITY;
+    }
     }
 }
 
@@ -1193,6 +1308,53 @@ torch::Tensor paged_mqa_logits_persisten(
         num_warps,
         persistent_ctas,
         group_size);
+}
+
+torch::Tensor paged_mqa_topk_sampled_int8(
+    const torch::Tensor& q, const torch::Tensor& kv,
+    const torch::Tensor& weights, const torch::Tensor& lengths,
+    const torch::Tensor& table, const torch::Tensor& pages,
+    const torch::Tensor& cu, int64_t width) {
+    TORCH_CHECK(q.is_cuda() && q.scalar_type() == at::kChar && q.is_contiguous() && q.dim() == 4 && q.size(0) > 0 && q.size(0) <= 288 && q.size(0) % 9 == 0 && q.size(1) == 1 && q.size(2) == 32 && q.size(3) == 128, "q must be contiguous INT8 [9*BS,1,32,128] with BS in [1,32]");
+    const int rows = static_cast<int>(q.size(0));
+    const c10::cuda::CUDAGuard guard(q.device());
+    auto* properties = at::cuda::getCurrentDeviceProperties();
+    TORCH_CHECK(std::string(properties->gcnArchName).find("gfx936") == 0 && properties->multiProcessorCount == 80, "sampled paged MQA requires gfx936 with 80 CUs");
+    TORCH_CHECK(width > 262272 && width <= 1052672, "unsupported context width");
+    TORCH_CHECK(kv.scalar_type() == at::kChar && kv.is_contiguous() && kv.dim() == 4 && kv.size(1) == 64 && kv.size(2) == 1 && kv.size(3) == 132, "unsupported packed KV layout");
+    TORCH_CHECK(weights.scalar_type() == at::kFloat && weights.is_contiguous() && weights.sizes() == torch::IntArrayRef({rows, 32}), "weights must be FP32 [9*BS,32]");
+    TORCH_CHECK(lengths.scalar_type() == at::kInt && lengths.is_contiguous() && lengths.numel() == rows, "lengths must be contiguous INT32 [9*BS]");
+    TORCH_CHECK(table.scalar_type() == at::kInt && table.is_contiguous() && table.dim() == 2 && table.size(0) == rows && table.size(1) * 64 >= width, "invalid block table");
+    TORCH_CHECK(pages.scalar_type() == at::kInt && pages.is_contiguous() && pages.dim() == 2 && pages.size(0) == rows && pages.size(1) > 0 && pages.size(1) <= width, "invalid physical index table");
+    TORCH_CHECK(cu.scalar_type() == at::kInt && cu.is_contiguous() && cu.numel() == rows + 1, "cu_seqlens_q must be contiguous INT32 [9*BS+1]");
+    for (const auto& tensor : {kv, weights, lengths, table, pages, cu}) TORCH_CHECK(tensor.is_cuda() && tensor.device() == q.device(), "inputs must share one device");
+    auto floats = q.options().dtype(at::kFloat);
+    auto ints = q.options().dtype(at::kInt);
+    auto dense = at::empty({rows, width}, floats);
+    auto samples = at::empty({rows, 8192}, floats);
+    auto pivots = at::empty({rows}, ints);
+    auto counts = at::empty({rows}, ints);
+    auto flags = at::empty({rows}, ints);
+    auto keys = at::empty({rows, 16384}, floats);
+    auto ids = at::empty({rows, 16384}, ints);
+    auto raw = at::empty({rows, 2048}, ints);
+    auto mapped = at::empty({rows, 2048}, ints);
+    auto stats = at::empty({rows, 4}, ints);
+    auto stream = at::cuda::getCurrentCUDAStream().stream();
+    auto* pp = reinterpret_cast<uint32_t*>(pivots.data_ptr<int>());
+    auto* kp = reinterpret_cast<uint32_t*>(keys.data_ptr<float>());
+    paged_mqa_sample_group3<<<dim3(32, rows / 3), 256, 0, stream>>>(reinterpret_cast<const uint8_t*>(q.data_ptr()), reinterpret_cast<const uint8_t*>(kv.data_ptr()), kv.stride(0), weights.data_ptr<float>(), lengths.data_ptr<int>(), table.data_ptr<int>(), table.stride(0), width, samples.data_ptr<float>());
+    at::native::launch_paged_sample_proposal(samples.data_ptr<float>(), lengths.data_ptr<int>(), width, pp, counts.data_ptr<int>(), flags.data_ptr<int>(), kp, ids.data_ptr<int>(), rows, stream);
+    auto launch = [&](auto tag) {
+        constexpr int mode = decltype(tag)::value;
+        paged_mqa_logits_persisten_grouped<32, false, 3, false, false, false, mode><<<dim3(128, rows / 3), 256, 0, stream>>>(reinterpret_cast<const uint8_t*>(q.data_ptr()), reinterpret_cast<const uint8_t*>(kv.data_ptr()), kv.stride(0), weights.data_ptr<float>(), dense.stride(0), table.stride(0), lengths.data_ptr<int>(), dense.data_ptr<float>(), table.data_ptr<int>(), rows, 128, pp, kp, ids.data_ptr<int>(), counts.data_ptr<int>(), flags.data_ptr<int>());
+    };
+    launch(std::integral_constant<int, 1>{});
+    launch(std::integral_constant<int, 3>{});
+    at::native::launch_paged_candidate_topk(dense.data_ptr<float>(), dense.stride(0), width, lengths.data_ptr<int>(), keys.data_ptr<float>(), ids.data_ptr<int>(), counts.data_ptr<int>(), flags.data_ptr<int>(), pages.data_ptr<int>(), pages.stride(0), pages.size(1), cu.data_ptr<int>(), raw.data_ptr<int>(), mapped.data_ptr<int>(), stats.data_ptr<int>(), rows, stream);
+    auto error = hipGetLastError();
+    TORCH_CHECK(error == hipSuccess, hipGetErrorString(error));
+    return mapped;
 }
 
 }  // namespace deep_gemm
