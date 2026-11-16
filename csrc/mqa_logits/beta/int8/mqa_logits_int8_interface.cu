@@ -139,6 +139,7 @@ torch::Tensor mqa_logits_int8(const torch::Tensor &Q, const torch::Tensor &K,
 namespace lightop::mqa_int8 {
 template<int Mode,int Bits>
 void launch_stage(MqaTopKParams p,hipStream_t stream) {
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
     const dim3 grid(Mode==1?8:(p.n+255)/256,(p.m+63)/64);
     if constexpr (Mode == 3) {
         if(p.n%256==0) { m64<32,false,true,true,true,Mode,Bits><<<grid,256,0,stream>>>(p); }
@@ -152,6 +153,7 @@ void launch_stage(MqaTopKParams p,hipStream_t stream) {
         if(p.n%256==0) { m64<32,false,true,true,true,Mode,Bits><<<grid,256,0,stream>>>(p); }
         else { m64<32,false,false,true,true,Mode,Bits><<<grid,256,0,stream>>>(p); }
     }
+#endif
 }
 
 __global__ __launch_bounds__(256) void compact_mqa_fallback_rows(
