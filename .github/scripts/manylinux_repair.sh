@@ -2,8 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
-# 对构建产物执行 auditwheel repair, 生成 manylinux wheel (仅 release 流程使用)
+# 对构建产物执行 auditwheel repair, 生成 manylinux wheel
 # 用法: manylinux_repair.sh [输入目录=dist] [输出目录=dist-manylinux]
+# 依赖: 调用方需预先安装 auditwheel/patchelf (scripts/build_hcu_wheel.sh 已完成)
+# 使用环境中的 python3
 
 # DTK 运行环境 (HIP/ROCm 库路径); env.sh 引用了未初始化的变量,
 # 必须在 set -u 之前加载, 否则报 unbound variable
@@ -16,22 +18,25 @@ set -euo pipefail
 
 IN_DIR="${1:-dist}"
 OUT_DIR="${2:-dist-manylinux}"
+PYTHON_BIN="python3"
 
-pip install --no-cache-dir auditwheel patchelf
+# 安装本次构建的 wheel, 供 auditwheel 定位包内自带的库目录
+"$PYTHON_BIN" -m pip install --disable-pip-version-check --no-cache-dir \
+  --no-deps --force-reinstall "${IN_DIR}"/*.whl
 
 # 依赖库搜索路径, 供 auditwheel 解析 wheel 内 .so 的依赖
-TORCH_PATH=$(python3 -c "import torch, os; print(os.path.dirname(torch.__file__))" 2>/dev/null || true)
+TORCH_PATH=$("$PYTHON_BIN" -c "import torch, os; print(os.path.dirname(torch.__file__))" 2>/dev/null || true)
 export LD_LIBRARY_PATH="${TORCH_PATH}/lib:${LD_LIBRARY_PATH:-}"
 export LD_LIBRARY_PATH="/opt/intel/mkl/lib/intel64_lin/:${LD_LIBRARY_PATH:-}"
 # 定位 lightop 自带库目录; import 推导依赖自带 .so 且纯净环境下 import 可能
 # 失败 (见 __extendhfsf2), 这里用 pip Location 免 import
 LIGHTOP_PATH=""
-LIGHTOP_LOC=$(python3 -m pip show lightop 2>/dev/null | sed -n 's/^Location: //p' || true)
+LIGHTOP_LOC=$("$PYTHON_BIN" -m pip show lightop 2>/dev/null | sed -n 's/^Location: //p' || true)
 if [ -n "${LIGHTOP_LOC}" ]; then
   LIGHTOP_PATH="${LIGHTOP_LOC}/lightop"
 else
   # 兜底: 非 pip 管理的安装
-  LIGHTOP_PATH=$(python3 -c "import lightop, os; print(os.path.dirname(lightop.__file__))" 2>/dev/null || true)
+  LIGHTOP_PATH=$("$PYTHON_BIN" -c "import lightop, os; print(os.path.dirname(lightop.__file__))" 2>/dev/null || true)
 fi
 echo "LIGHTOP_PATH=${LIGHTOP_PATH}"
 export LD_LIBRARY_PATH="${LIGHTOP_PATH}/lib:${LD_LIBRARY_PATH:-}"
@@ -111,6 +116,6 @@ for lib in "${excludes[@]}"; do
 done
 
 mkdir -p "${OUT_DIR}"
-auditwheel repair --plat "${PLAT}" --strip \
+"$PYTHON_BIN" -m auditwheel repair --plat "${PLAT}" --strip \
   "${exclude_args[@]}" \
   -w "${OUT_DIR}" "${IN_DIR}"/*.whl

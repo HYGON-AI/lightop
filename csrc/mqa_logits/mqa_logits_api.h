@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+
+#pragma once
+#include <torch/extension.h>
+
+namespace lightop::mqa_beta {
+// Called by the existing native entry after its Q/K dtype check. A disengaged
+// result keeps the original implementation; an enabled beta path returns its
+// result or raises its own validation error.
+torch::optional<torch::Tensor> try_dispatch(
+    const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &weights,
+    const torch::Tensor &ks, const torch::Tensor &ke, int m, int n, int h, int d,
+    const torch::optional<torch::Tensor> &kv_scale, bool clean_logits,
+    const torch::optional<torch::Tensor> &out);
+} // namespace lightop::mqa_beta
+
+namespace lightop::mqa_int8 {
+// Internal Tensor adapter called by try_dispatch after selecting INT8 Q.
+torch::Tensor mqa_logits_int8(
+    const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &weights,
+    const torch::Tensor &ks, const torch::Tensor &ke, int m, int n, int h, int d,
+    const torch::optional<torch::Tensor> &kv_scale, bool clean_logits,
+    const torch::optional<torch::Tensor> &out);
+
+torch::Tensor mqa_logits_topk_sampled_int8(
+    const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &weights,
+    const torch::Tensor &kv_scale, const torch::Tensor &starts,
+    const torch::Tensor &ends, const torch::Tensor &offsets,
+    const torch::optional<torch::Tensor> &sorted_values,
+    const torch::optional<torch::Tensor> &next_thresholds,
+    const torch::optional<torch::Tensor> &stats, bool parallel_histogram,
+    int64_t fallback_workspace_rows, bool reuse_full_window, bool sort_topk,
+    int64_t min_sample_k, bool direct_candidate_emit);
+} // namespace lightop::mqa_int8
+
+namespace lightop::mqa_bf16 {
+// Internal Tensor adapter; unsupported architectures keep the original backend.
+torch::optional<torch::Tensor> mqa_logits_bf16(
+    const torch::Tensor &q, const torch::Tensor &k, const torch::Tensor &weights,
+    const torch::Tensor &ks, const torch::Tensor &ke, int m, int n, int h, int d,
+    const torch::optional<torch::Tensor> &kv_scale, bool clean_logits,
+    const torch::optional<torch::Tensor> &out);
+} // namespace lightop::mqa_bf16

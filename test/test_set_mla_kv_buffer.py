@@ -5,6 +5,7 @@ import torch
 import triton
 import triton.language as tl
 import time
+import pytest
 
 from lightop.kvcache import fused_quantize_and_store_mla_kv_cache
 
@@ -199,6 +200,8 @@ def benchmark_and_verify():
 
         # 打印表格行
         print(f"| {stage:<10} | {num_tokens:<8} | {acc_status:<20} | {triton_time_us:<12.2f} | {cuda_time_us:<12.2f} | {speedup:<7.2f}x |")
+
+
 
 if __name__ == "__main__":
     benchmark_and_verify()

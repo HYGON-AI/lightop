@@ -114,7 +114,38 @@ def dsv4_dequantize_sparse_topk_out(
     )
 
 
+def prefill_gather_physical_kv(
+    cache: torch.Tensor,
+    full_ids: torch.Tensor,
+    indices: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if not (
+        cache.is_cuda and cache.ndim in (3, 4)
+        and cache.shape[-2:] == (1, 656) and cache.is_contiguous()
+        and cache.dtype in (torch.uint8, torch.float8_e4m3fn)
+        and cache.data_ptr() % 16 == 0
+        and full_ids.device == cache.device and indices.device == cache.device
+        and full_ids.dtype == indices.dtype == torch.int32
+        and full_ids.ndim == 1 and full_ids.is_contiguous()
+        and indices.ndim == 2 and indices.shape[1] == 2048
+        and indices.is_contiguous() and 0 < full_ids.numel() < 2147483647
+    ):
+        raise ValueError("Expected packed 656-byte KV, int32 logical IDs and Top2048 indices")
+    physical_rows = cache.numel() // 656
+    if physical_rows <= 0 or physical_rows >= 2147483647:
+        raise ValueError("Physical KV rows must fit positive int32 indices")
+    valid = (indices >= 0) & (indices < full_ids.numel())
+    safe = indices.clamp(0, full_ids.numel() - 1)
+    mapped = torch.index_select(full_ids, 0, safe.reshape(-1)).view_as(indices)
+    mapped = torch.where((mapped >= 0) & (mapped < physical_rows), mapped, physical_rows)
+    mapped.masked_fill_(~valid, -1)
+    physical_ids = torch.arange(physical_rows + 1, device=cache.device, dtype=torch.int32)
+    output = torch.empty((physical_rows + 1, 1, 576), device=cache.device, dtype=torch.bfloat16)
+    lightop_native.prefill_gather_and_upconvert_fp8_kv_cache(cache, physical_ids, output)
+    return output, mapped
+
+
 __all__ = [
     "dsv4_pack_sparse_topk_workspace", "dsv4_pack_c4_topk_workspace",
-    "dsv4_dequantize_sparse_topk_out",
+    "dsv4_dequantize_sparse_topk_out", "prefill_gather_physical_kv",
 ]
