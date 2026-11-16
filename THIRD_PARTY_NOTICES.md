@@ -69,8 +69,6 @@ SOFTWARE.
 
 | 本地路径 | vLLM 上游路径 | 基线选择器 | 上游 40 位 Commit | 关系 | 本地引入提交 |
 | --- | --- | --- | --- | --- | --- |
-| `csrc/allreduce_fuse/_custom_ops.py` | `vllm/_custom_ops.py` | `main` | `3d184b95b83bd1c755811238b013b51c49da3951` | 抽取/改编；增加 Lightop/LMSLIM 注册和分页注意力入口 | `5b05e4ed06d26c4eaac830b5d4d6e86138fdc1a6` |
-| `csrc/allreduce_fuse/custom_all_reduce.py` | `vllm/distributed/device_communicators/custom_all_reduce.py` | `main` | `02f0c7b220422792f5e53de2a7d51d2d3ff2df28` | 抽取/改编；增加融合 Norm/Quant 和 HYGON 多卡策略 | `5b05e4ed06d26c4eaac830b5d4d6e86138fdc1a6` |
 | `csrc/kernels/kvcache/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu` | `csrc/libtorch_stable/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu` | `main` | `59d0236193a1cb5e88bee9cd4a3692a5587c9558` | 参考基线；本地改为 ROCm/ATen 兼容实现，不是逐字 Blob | `07e7033161c35da365e32d6e7efaa44e36a3e96c` |
 | `csrc/kernels/kvcache/fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp_kernel.cu` | `csrc/libtorch_stable/fused_deepseek_v4_qnorm_rope_kv_insert_kernel.cu` | `main` | `59d0236193a1cb5e88bee9cd4a3692a5587c9558` | 参考基线；PCP 不同 Q/KV token 数是 Lightop 新增变体，vLLM 历史无同名文件 | `086435003c8a7c26391c60425b7facd4f44ad3f7` |
 | `python/lightop/_lmslim_native/vllm_compat/moe_align_block_size.py` | `vllm/model_executor/layers/fused_moe/moe_align_block_size.py` | `main` | `8fcaaf6a165e661f63fc51be906bc05b0767332f` | 抽取/改编；增加 Lightop dispatch 和参数处理 | `b4b65b751fc6b46a4115289dab5b858ee4f97fd7` |
