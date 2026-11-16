@@ -11,14 +11,24 @@ from lightop import op as lightop_native
 from lightop.quant import per_token_quant_fp8 as category_api
 
 
-def test_per_token_quant_fp8_uses_native_lightop() -> None:
-    assert list(inspect.signature(category_api).parameters) == [
+def test_per_token_quant_fp8_signature() -> None:
+    parameters = inspect.signature(category_api).parameters
+    assert list(parameters) == [
         "x",
         "dtype",
         "out_q",
         "out_scale",
+        "quant_ndim",
+        "threads",
     ]
+    for name in ("x", "dtype", "out_q", "out_scale"):
+        assert parameters[name].kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
+    for name, default in (("quant_ndim", 1), ("threads", 256)):
+        assert parameters[name].kind == inspect.Parameter.KEYWORD_ONLY
+        assert parameters[name].default == default
 
+
+def test_per_token_quant_fp8_uses_native_lightop() -> None:
     torch.manual_seed(4)
     input_tensor = torch.randn((3, 257), device="cuda", dtype=torch.float16)
 
