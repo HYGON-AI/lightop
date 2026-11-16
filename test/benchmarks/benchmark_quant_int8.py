@@ -215,9 +215,9 @@ def main():
         artifacts[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
     source_hashes = {str(path.relative_to(repo)): hashlib.sha256(path.read_bytes()).hexdigest()
                      for path in [Path(__file__).resolve(),
-                                  repo / "csrc/per_token_quant_int8_minimax.cu",
-                                  repo / "csrc/swiglu_oai_int8_quant.cu",
-                                  repo / "csrc/swiglu_oai_int8_quant_tables.cu"]}
+                                  repo / "csrc/kernels/per_token_quant/per_token_quant_int8_minimax.cu",
+                                  repo / "csrc/kernels/gated_activation/swiglu_oai_int8_quant.cu",
+                                  repo / "csrc/kernels/gated_activation/swiglu_oai_int8_quant_tables.cu"]}
     dtk = Path("/opt/dtk/.dtk_version")
     result = {"revision": revision, "torch": torch.__version__, "hip": torch.version.hip,
               "dtk": dtk.read_text().strip() if dtk.exists() else None,

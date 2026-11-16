@@ -64,7 +64,7 @@ writes to `dst` in place and returns `None`.
 E4M3 and E5M2 use the same LightOp/DTK format selection.  When
 `HIP_FP8_TYPE_OCP` is enabled, the HIP OCP types are used; otherwise the HIP
 FNUZ types are used.  This matches the existing E4M3/E5M2 implementation in
-`csrc/fuse_gather_cache_fp8_convert.cu`.
+`csrc/kernels/kvcache/fuse_gather_cache_fp8_convert.cu`.
 
 ## Validation
 
@@ -117,7 +117,7 @@ LightOp layout in which a top-level module calls `lightop.op`. The
 second implementation.
 
 `setup.py` automatically includes repository-level `csrc/*.cu`, so
-`csrc/gather_and_maybe_dequant_cache.cu` is compiled into `lightop.op`.  The
+`csrc/kernels/kvcache/gather_and_maybe_dequant_cache.cu` is compiled into `lightop.op`.  The
 native symbol is included in `compat/lightop_op_symbols.txt`, and the KV-cache
 category runner includes the operator's combined correctness and performance
 test module.

@@ -53,3 +53,11 @@ csrc/lmslimquant_native/**/*_hip.cuh
 /csrc/**/*_hip.h
 /csrc/**/*_hip.hpp
 /csrc/**/*_hip.cuh
+
+# hipify-generated prefix-form outputs (csrc/hip_*.cpp at any depth after the
+# csrc layout reorg; the old flat rule only matched the csrc/ root).
+csrc/**/hip_*.cpp
+csrc/**/hip_*.h
+
+# in-place build outputs
+python/lightop/*.so

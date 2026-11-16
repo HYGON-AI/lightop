@@ -236,7 +236,7 @@ def build_cos_sin_cache(max_pos, rope_dim, base):
 
 kernel_path = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "./", "csrc",
+    "./", "csrc", "kernels", "kvcache",
     "fused_deepseek_v4_qnorm_rope_kv_rope_quant_insert_pcp_kernel.cu",
 )
 with open(kernel_path) as f:
