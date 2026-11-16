@@ -62,18 +62,6 @@ python3 -m pytest -v -p no:cacheprovider --tb=short
 
 性能结果受硬件、数据类型和输入形状影响，请以对应环境的实测结果为准。
 
-## AI 辅助开发
-
-仓库内置 [LightOp 优化 skill](.agents/skills/lightop-kernel-agent-loop/SKILL.md)。用 Codex 打开本仓库，选择该 skill；CLI/IDE 也可直接输入：
-
-```text
-$lightop-kernel-agent-loop
-优化 RMSNorm 的 hidden_size=6144 路径，保留其他输入的原有行为。
-先验证数值和算子稳定收益，再汇报结果，不提交代码。
-```
-
-需要编包时使用 [build-hcu-wheel](.agents/skills/build-hcu-wheel/SKILL.md)。知识索引可离线查询，未缓存的外部证据按需联网获取；缓存默认在 `~/.cache/lightop-kernel-agent/`，不会进入源码或 wheel。详见 [知识检索与缓存说明](.agents/skills/lightop-kernel-agent-loop/assets/lightop-kernel-knowledge/references/corpus-packaging.md)。
-
 ## 许可证
 
 LightOp 使用 [Apache License 2.0](LICENSE)。第三方组件遵循各自的版权与许可证，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

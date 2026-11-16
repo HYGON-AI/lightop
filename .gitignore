@@ -53,7 +53,3 @@ csrc/lmslimquant_native/**/*_hip.cuh
 /csrc/**/*_hip.h
 /csrc/**/*_hip.hpp
 /csrc/**/*_hip.cuh
-
-# Repo-local AI workflow state and optional in-checkout user cache.
-/.lightop-kernel-agent/
-/.cache/lightop-kernel-agent/
