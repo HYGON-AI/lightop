@@ -3,7 +3,6 @@
 
 #include <ATen/cuda/CUDAContext.h>
 #include <torch/all.h>
-#include <c10/cuda/CUDAGuard.h>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 #include <ATen/AccumulateType.h>
 #include <hip/hip_runtime.h>
@@ -157,7 +156,7 @@ scale = Xmax / fp8max
 quant_out = x / scale = x * (fp8max / Xmax)
  */
 template <typename scalar_t, typename scale_t, 
-          int VEC, int block_size, bool is_e4m3, bool BroadcastInverse = false>
+          int VEC, int block_size, bool is_e4m3>
 __global__ void per_token_quant_fp8_kernel(
     const scalar_t* __restrict__ input, uint8_t* __restrict__ output,
     float* scale_out, const int hidden_size) {
@@ -195,18 +194,10 @@ __global__ void per_token_quant_fp8_kernel(
     if(tid == 0){
         s_token_scale = row_max;  
         scale_out[bid] = s_token_scale / FP8_MAX_VAL;
-        if constexpr (BroadcastInverse) {
-            s_token_scale = row_max == 0.f ? 0.f : FP8_MAX_VAL / row_max;
-        }
     }
     __syncthreads();
 
-    float inv_s;
-    if constexpr (BroadcastInverse) {
-        inv_s = s_token_scale;
-    } else {
-        inv_s = (s_token_scale == 0.f) ? 0.f : FP8_MAX_VAL / s_token_scale;
-    }
+    float inv_s = (s_token_scale == 0.f) ? 0.f : FP8_MAX_VAL / s_token_scale;
 
     uint8_t out_vec[VEC];
     if (tid < tcol) {
@@ -242,7 +233,7 @@ __global__ void per_token_quant_fp8_kernel(
         *(VecFp8Type*)(output+idx) = *(VecFp8Type*)out_vec;
     }
 }
-template <typename scalar_t, int block_size, bool is_e4m3, bool BroadcastInverse = false>
+template <typename scalar_t, int block_size, bool is_e4m3>
 __global__ void per_token_quant_fp8_kernel_general(
     const scalar_t* __restrict__ input, uint8_t* __restrict__ output,
     float* scale_out, const int hidden_size) {
@@ -270,18 +261,10 @@ __global__ void per_token_quant_fp8_kernel_general(
     if (tid == 0) {
         s_token_scale = row_max;  
         scale_out[bid] = s_token_scale / FP8_MAX_VAL;
-        if constexpr (BroadcastInverse) {
-            s_token_scale = row_max == 0.f ? 0.f : FP8_MAX_VAL / row_max;
-        }
     }
     __syncthreads();
 
-    float inv_s;
-    if constexpr (BroadcastInverse) {
-        inv_s = s_token_scale;
-    } else {
-        inv_s = (s_token_scale == 0.f) ? 0.f : FP8_MAX_VAL / s_token_scale;
-    }
+    float inv_s = (s_token_scale == 0.f) ? 0.f : FP8_MAX_VAL / s_token_scale;
     for (int i = tid; i < hidden_size; i += block_size) {
         float val = static_cast<float>(row_in[i]) * inv_s;
         if constexpr (is_e4m3) {
@@ -292,8 +275,7 @@ __global__ void per_token_quant_fp8_kernel_general(
     }
 }
 
-template <bool BroadcastInverse>
-static void per_token_quant_fp8_impl(
+void per_token_quant_fp8(
     torch::Tensor& out,         
     torch::Tensor const& input, 
     torch::Tensor& scales)
@@ -318,13 +300,13 @@ static void per_token_quant_fp8_impl(
     auto out_ptr = reinterpret_cast<uint8_t*>(out.data_ptr());
 
     #define LAUNCH_FP8_KERNEL(VEC_SIZE, BLOCK_SIZE, IS_E4M3_BOOL)                   \
-        per_token_quant_fp8_kernel<scalar_t, float, VEC_SIZE, BLOCK_SIZE, IS_E4M3_BOOL, BroadcastInverse> \
+        per_token_quant_fp8_kernel<scalar_t, float, VEC_SIZE, BLOCK_SIZE, IS_E4M3_BOOL> \
             <<<num_tokens, BLOCK_SIZE, 0, stream>>>(                                    \
                 input.data_ptr<scalar_t>(), out_ptr, scales.data_ptr<float>(),          \
                 hidden_size)
 
     #define LAUNCH_FP8_KERNEL_GENERAL(BLOCK_SIZE, IS_E4M3_BOOL)                     \
-        per_token_quant_fp8_kernel_general<scalar_t, BLOCK_SIZE, IS_E4M3_BOOL, BroadcastInverse>          \
+        per_token_quant_fp8_kernel_general<scalar_t, BLOCK_SIZE, IS_E4M3_BOOL>          \
             <<<num_tokens, BLOCK_SIZE, 0, stream>>>(                                    \
                 input.data_ptr<scalar_t>(), out_ptr, scales.data_ptr<float>(),          \
                 hidden_size)
@@ -367,26 +349,6 @@ static void per_token_quant_fp8_impl(
                 }
             }
       );
-}
-void per_token_quant_fp8(
-    torch::Tensor& out, const torch::Tensor& input, torch::Tensor& scales,
-    bool broadcast_inverse) {
-    if (broadcast_inverse) {
-        TORCH_CHECK(input.is_cuda() && out.device() == input.device() &&
-                        scales.device() == input.device(),
-                    "broadcast_inverse requires tensors on the same GPU");
-        TORCH_CHECK(input.dim() > 0 && input.size(-1) > 0 &&
-                        out.sizes() == input.sizes(),
-                    "broadcast_inverse requires matching nonempty row shapes");
-        TORCH_CHECK(scales.scalar_type() == at::ScalarType::Float &&
-                        scales.numel() == input.numel() / input.size(-1),
-                    "broadcast_inverse requires one fp32 scale per row");
-        const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
-        if (input.numel() == 0) return;
-        per_token_quant_fp8_impl<true>(out, input, scales);
-    } else {
-        per_token_quant_fp8_impl<false>(out, input, scales);
-    }
 }
 } // namespace native
 } // namespace at
