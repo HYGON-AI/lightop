@@ -39,16 +39,16 @@ if torch_release >= (2, 12):
 strided = args.op == "strided-rms"
 name = "_strided_rms_quant" if strided else "_transform_quant"
 source = (
-    "csrc/rmsnorm/rms_norm_dynamic_per_token_quant.cu"
+    "csrc/kernels/rmsnorm/rms_norm_dynamic_per_token_quant.cu"
     if strided
-    else "csrc/per_token_quant_int8.cu"
+    else "csrc/kernels/per_token_quant/per_token_quant_int8.cu"
 )
 macro = "LIGHTOP_STRIDED_RMS_ONLY" if strided else "LIGHTOP_QUANT_FUSION_ONLY"
 module = load(
     name=name,
-    sources=[str(root / "csrc/export.cpp"), str(root / source)]
-    + ([str(root / "csrc/rmsnorm/rms_norm_fp8_quant.cu")] if strided else []),
-    extra_include_paths=[str(root / "csrc")],
+    sources=[str(root / "csrc/pybind/export.cpp"), str(root / source)]
+    + ([str(root / "csrc/kernels/rmsnorm/rms_norm_fp8_quant.cu")] if strided else []),
+    extra_include_paths=[str(root / "csrc"), str(root / "csrc/include")],
     build_directory=str(args.build_dir),
     extra_cflags=["-O3", "-D" + macro + "=1"],
     extra_cuda_cflags=flags,

@@ -12,7 +12,7 @@
 #endif
 #include <torch/all.h>
 
-#include "quant_fp8.cuh"
+#include "../../include/quant_fp8.cuh"
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
-#include "quant_fp8.cuh"
+#include "../../include/quant_fp8.cuh"
 #include <ATen/AccumulateType.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/native/cuda/MemoryAccess.cuh>

@@ -66,7 +66,7 @@ INT8 absmax has a `1e-10` floor. Omitting the floating output removes its buffer
 and store, while retaining that dtype's rounding in registers.
 
 FP8 transforms reuse the existing E4M3 conversion helpers, now shared in
-`csrc/quant_fp8.cuh`. Their scales are `absmax / 448`; zero rows have zero scales.
+`csrc/include/quant_fp8.cuh`. Their scales are `absmax / 448`; zero rows have zero scales.
 Strided RMSNorm reuses the existing INT8/FP8 RMSNorm kernels, retaining reduction,
 activation rounding and the FP8 RMSNorm scale floor. The source Q/KV allocation
 is never modified by these wrappers.
