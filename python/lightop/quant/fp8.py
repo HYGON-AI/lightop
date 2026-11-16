@@ -108,7 +108,10 @@ def per_token_quant_fp8(
     expected_scale_shape = output_shape[:-1] + (1,)
 
     if out_q is None:
-        out_q = torch.empty(output_shape, device=x.device, dtype=dtype)
+        if quant_ndim == 1 and x.is_contiguous():
+            out_q = torch.empty_like(x, device=x.device, dtype=dtype)
+        else:
+            out_q = torch.empty(output_shape, device=x.device, dtype=dtype)
     elif (
         out_q.shape != output_shape
         or out_q.device != x.device
