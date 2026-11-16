@@ -376,3 +376,9 @@ vLLM 的五个实质改编文件补充 HYGON 修改声明及仅覆盖原创修�
 half 2.1.0 的当前 Git 文件为 LF 换行：`half.hpp` SHA-256 为 `7873fc452caf2e6808a49096dd01e22a3af3caa909b169d2c2ba600d1305f004`，独立许可证为 `d098b70e0b195ce538efa38b73c02fccbae89d169126efea7546892c7a3d5d9d`。转换为 CRLF 后分别匹配第4节历史归档哈希；换行差异不构成新来源。本轮已重新取得并保存官方归档 `half-2.1.0.zip`（47,043 字节，SHA-256 `ad1788afe0300fa2b02b0d1df128d857f021f92ccf7c8bddd07812685fa07a25`），逐字核对归档成员，排除换行差异后与当前文件相同。归档原件及核验记录随本轮外部交付证据保存。
 
 第5节七个二进制的尺寸和 SHA-256 已在本轮逐个重算且与原登记一致；这只固定制品身份，不代表许可证或公开再分发权已获确认。两个打包入口在 wheel 许可证元数据及包内 `lightop/licenses/` 显式携带根许可证、第三方清单、AITER MIT 原文和 half 许可证（同时覆盖 legacy egg）；随包保存声明不替代待补授权。
+
+## 10. LightOp 开发 skill
+
+`.agents/skills/lightop-kernel-agent-loop/` 来源为 Sherlolo/hcu-infer-pilot 的同名包，固定版本 `8dba3068f6d86644cf0cef13804017467f7c78b2`。本次迁移精简为仓库内开发流程、离线查询和 profiler 使用端，保留原始来源与 MIT/Apache-2.0 混合许可，完整条款见该目录的 `LICENSE`；profiler 来源声明另保留于其子目录 `LICENSE`。JSONL 索引仅用于定位上游资料，不将其中引用的第三方源码重新许可为 LightOp 原创。开发 skill 不进入 Python 包和算子扩展；本节不改变其他组件的既有来源结论。
+
+Skill 的自有入口、目录、脚本和输出名称统一使用 HCU；知识索引中自建标签和适用性说明同步使用 HCU；公开来源的仓库坐标、原始 URL、提交哈希及已核验路径按来源登记；无法对应公开提交的旧私有记录不随本包交付，许可证原文不变。
