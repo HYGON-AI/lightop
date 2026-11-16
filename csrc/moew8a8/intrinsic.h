@@ -287,7 +287,7 @@ __device__ typename vec<float, 4>::type mmac(const typename vec<Element, 4>::typ
     floatx4 v4f;
     #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
         v4f = HCU_MMAC_F32_F16(v1, v2, v3);
-    #elif defined(__gfx938__)
+    #elif defined(__gfx938__) || defined(__gfx946__)
         v4f =__builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(v1, v2, v3, false, false);
     #endif
     return v4f;
@@ -302,7 +302,7 @@ __device__ typename vec<int, 4>::type mmac(const typename vec<Element, 8>::type 
     // __builtin_amdgcn_sched_barrier(0);
     #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
         v4i = HCU_MMAC_I32_I8(*a, *b, v3);
-    #elif defined(__gfx938__)
+    #elif defined(__gfx938__) || defined(__gfx946__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
         v4i =__builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
@@ -316,7 +316,7 @@ __device__ typename vec<float, 4>::type mmac(const typename vec<Element, 8>::typ
 {
     #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
         return v3;
-    #elif defined(__gfx938__)
+    #elif defined(__gfx938__) || defined(__gfx946__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
         v3 =__builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(A, B, v3, false, false);  //fp8->e4m3 bf8->e5m2
@@ -338,7 +338,7 @@ __device__ typename vec<int, 4>::type mmac_int8(const typename vec<Element, 8>::
         : "v"(*a), "v"(*b)
       );
     __builtin_amdgcn_sched_barrier(0);
-    #elif defined(__gfx938__)
+    #elif defined(__gfx938__) || defined(__gfx946__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
         v3 =__builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
@@ -351,7 +351,7 @@ __device__ typename vec<float, 4>::type mmac_fp8(const typename vec<Element, 8>:
 {
     #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
         return v3;
-    #elif defined(__gfx938__)
+    #elif defined(__gfx938__) || defined(__gfx946__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
         v3 =__builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(A, B, v3, false, false);  //fp8->e4m3 bf8->e5m2
@@ -378,7 +378,7 @@ __device__ typename vec<int, 4>::type mmac<int8_t>(const typename vec<int8_t, 8>
     intx4 v4i;
     #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
         v4i = HCU_MMAC_I32_I8(*a, *b, v3);
-    #elif defined(__gfx938__)
+    #elif defined(__gfx938__) || defined(__gfx946__)
         const intx2 A = *(reinterpret_cast<const intx2 *>(&v1));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&v2));
         v4i =__builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(A, B, v3, false, false, false);
