@@ -13,10 +13,8 @@ from .config_deepgemm import gemm_w8a8_deepgemm_masked_config
 from .config import get_awq_w4a16_gemm_marlin_config
 
 
-try:
-    from . import _int8_blaslt
-except ImportError:
-    _int8_blaslt = None
+_int8_blaslt_scaled_mm = getattr(
+    op, "_lmslimquant_blaslt_w8a8_bf16_gemm_cached", None)
 
 _W8A8_SMOOTH_GFX936_CACHED_ALGOS = {
     (16, 1280, 4096): 11721,
@@ -913,10 +911,10 @@ def gemm_w8a8_smooth(a, b, scale_a, scale_b, bias, out_dtype):
     if use_gemm_w8s8_smooth_print == "1":
         print(f"[LIGHTOP] gemm_w8a8_smooth: m={m}, n={n}, k={k}, scale_a.shape={scale_a.shape}, scale_b.shape={scale_b.shape}, bias={bias}, out_dtype={out_dtype}")
     # The native plan cache validates layout, scales and hardware once per call.
-    if _int8_blaslt is not None and out_dtype == torch.bfloat16 and bias is None:
+    if _int8_blaslt_scaled_mm is not None and out_dtype == torch.bfloat16 and bias is None:
         cached_algo = _W8A8_SMOOTH_GFX936_CACHED_ALGOS.get((m, k, n))
         if cached_algo is not None and os.getenv("HIPBLASLT_TENSILE_LIBPATH"):
-            output = _int8_blaslt._scaled_mm(a, b, scale_a, scale_b, cached_algo)
+            output = _int8_blaslt_scaled_mm(a, b, scale_a, scale_b, cached_algo)
             if output is not None:
                 return True, output
 

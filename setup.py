@@ -582,6 +582,7 @@ def get_extensions():
         ('lmslimquant_native', '*.cpp'),
         ('lmslimquant_native/awq', '*.cu'),
         ('lmslimquant_native/gptq', '*.cu'),
+        ('lmslimquant_native/hipblaslt', '*.cu'),
         ('lmslimquant_native/smoothquant', '*.cpp'),
         ('lmslimquant_native/torch_bridge', '*.cu'),
         ('moe_gemm/w16a16', '*.cu'),
@@ -624,14 +625,6 @@ def get_extensions():
         extra_compile_args=extra_compile_args)
 
     extensions.append(ext_ops)
-    extensions.append(extension(
-        name="lightop._int8_blaslt",
-        sources=["./csrc/lmslimquant_native/hipblaslt/int8_blaslt_cached.cu"],
-        libraries=['hipblaslt'],
-        library_dirs=[os.path.join(rocm_home, 'lib')],
-        extra_compile_args={"cxx": ["-O3", "-std=c++17"],
-                            "nvcc": ["-O3", "-std=c++17"]},
-    ))
     extensions.append(extension(
         name="lightop._router_gemm",
         sources=["./csrc/router/router_gemm.cu"],

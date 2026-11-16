@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include <torch/extension.h>
-#include <pybind11/stl.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <hip/hip_runtime.h>
@@ -135,6 +134,3 @@ std::optional<torch::Tensor> scaled_mm(const torch::Tensor& input, const torch::
 
 }  // namespace lightop_int8_blaslt
 
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-    m.def("_scaled_mm", &lightop_int8_blaslt::scaled_mm);
-}
