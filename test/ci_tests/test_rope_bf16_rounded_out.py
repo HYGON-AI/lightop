@@ -1,7 +1,7 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Exact arithmetic and output-contract regression for the existing RoPE API."""
+"""Bitwise RoPE regression with a fixed canonical BF16 NaN output contract."""
 import pytest
 import torch
 
@@ -27,11 +27,16 @@ def reference(positions, query, cache, neox):
     cos, sin = cos[:, None, :], sin[:, None, :]
     if neox:
         x, y = query.chunk(2, dim=-1)
-        return torch.cat((x * cos + (-y) * sin,
-                          y * cos + x * sin), dim=-1)
-    x, y = query[..., ::2], query[..., 1::2]
-    return torch.stack((x * cos + (-y) * sin,
-                        y * cos + x * sin), dim=-1).flatten(-2)
+        result = torch.cat((x * cos + (-y) * sin,
+                            y * cos + x * sin), dim=-1)
+    else:
+        x, y = query[..., ::2], query[..., 1::2]
+        result = torch.stack((x * cos + (-y) * sin,
+                              y * cos + x * sin), dim=-1).flatten(-2)
+    if result.dtype == torch.bfloat16:
+        bits = result.contiguous().view(torch.int16)
+        return torch.where(torch.isnan(result), 0x7fc0, bits).view(torch.bfloat16)
+    return result
 
 
 def assert_bits(actual, expected):
@@ -86,6 +91,25 @@ def test_all_bf16_patterns_and_strides(neox):
     qo, ko = rounded(p, q, k, cache, neox)
     assert_bits(qo, reference(p, q, cache, neox))
     assert_bits(ko, reference(p, k, cache, neox))
+
+
+@pytest.mark.parametrize("neox", [False, True])
+@pytest.mark.parametrize("heads", [2, 128])
+def test_nan_payloads_produce_canonical_bf16(neox, heads):
+    patterns = torch.tensor([0x7f81, 0x7fc1, 0x7fff, 0xff81, 0xffc1, 0xffff],
+                            device="cuda", dtype=torch.int32).to(torch.int16)
+    q = patterns.view(torch.bfloat16)[:, None, None].expand(-1, heads, 64).clone()
+    k = q[:, :1].clone()
+    before_q, before_k = q.clone(), k.clone()
+    positions = torch.arange(patterns.numel(), device="cuda", dtype=torch.int64)
+    cache = torch.ones((patterns.numel(), 64), device="cuda", dtype=torch.bfloat16)
+    qo, ko = rounded(positions, q, k, cache, neox)
+    expected_q = torch.full(q.shape, 0x7fc0, device="cuda", dtype=torch.int16)
+    expected_k = torch.full(k.shape, 0x7fc0, device="cuda", dtype=torch.int16)
+    assert torch.equal(qo.view(torch.int16), expected_q)
+    assert torch.equal(ko.view(torch.int16), expected_k)
+    assert_bits(q, before_q)
+    assert_bits(k, before_k)
 
 
 @pytest.mark.parametrize("neox", [False, True])
