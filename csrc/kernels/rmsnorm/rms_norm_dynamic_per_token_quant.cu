@@ -12,7 +12,6 @@
 
 #include <ATen/ATen.h>
 #include <ATen/AccumulateType.h>
-#include <ATen/MemoryOverlap.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/detail/TensorInfo.cuh>
 #include <ATen/native/cuda/MemoryAccess.cuh>
@@ -963,87 +962,6 @@ void rms_norm_dynamic_per_token_quant_sglang_kernel(
   }
 }
 
-void rms_norm_strided_per_token_quant_out(const Tensor &input,
-                                          const Tensor &weight,
-                                          Tensor &normalized, Tensor &quantized,
-                                          Tensor &scales, double epsilon) {
-  TORCH_CHECK(input.is_cuda() && input.dim() == 2,
-              "input must be a GPU matrix");
-  const int64_t rows = input.size(0), cols = input.size(1);
-  TORCH_CHECK(rows <= 2147483647LL && cols > 0 && cols <= 8192 &&
-                  cols % 16 == 0,
-              "columns must be divisible by 16 and in (0,8192]");
-  TORCH_CHECK(input.scalar_type() == at::kBFloat16 ||
-                  input.scalar_type() == at::kHalf,
-              "input must be BF16 or FP16");
-  TORCH_CHECK(
-      input.stride(1) == 1 && input.stride(0) >= cols &&
-          input.stride(0) % 8 == 0,
-      "input needs aligned, nonoverlapping rows and unit column stride");
-  TORCH_CHECK(std::isfinite(epsilon) && epsilon > 0,
-              "epsilon must be finite and positive");
-  TORCH_CHECK(weight.dim() == 1 && weight.numel() == cols &&
-                  weight.scalar_type() == input.scalar_type(),
-              "invalid RMS weight");
-  TORCH_CHECK(normalized.sizes() == input.sizes() &&
-                  normalized.scalar_type() == input.scalar_type(),
-              "invalid normalized output");
-  TORCH_CHECK(quantized.sizes() == input.sizes() &&
-                  quantized.scalar_type() == at::kChar,
-              "invalid INT8 output");
-  TORCH_CHECK(scales.dim() == 2 && scales.size(0) == rows &&
-                  scales.size(1) == 1 && scales.scalar_type() == at::kFloat,
-              "invalid scale output");
-  for (const auto &tensor : {weight, normalized, quantized, scales}) {
-    TORCH_CHECK(tensor.device() == input.device() && tensor.is_contiguous(),
-                "weights/outputs must be contiguous on the input GPU");
-    TORCH_CHECK(rows == 0 || tensor.storage().data_ptr().get() !=
-                                 input.storage().data_ptr().get(),
-                "input storage must not alias weights or outputs");
-  }
-  const auto aligned = [](const Tensor &t, int n) {
-    return reinterpret_cast<uintptr_t>(t.data_ptr()) % n == 0;
-  };
-  TORCH_CHECK(aligned(input, 16) && aligned(weight, 16) &&
-                  aligned(normalized, 16) && aligned(quantized, 8),
-              "unaligned vectorized buffers");
-  at::assert_no_overlap(normalized, quantized);
-  at::assert_no_overlap(normalized, scales);
-  at::assert_no_overlap(quantized, scales);
-  at::assert_no_overlap(weight, normalized);
-  at::assert_no_overlap(weight, quantized);
-  at::assert_no_overlap(weight, scales);
-  if (!rows)
-    return;
-  const at::cuda::OptionalCUDAGuard guard(device_of(input));
-  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-#define LIGHTOP_STRIDED_RMS(BLOCK)                                             \
-  rms_norm_dynamic_per_token_quant_sglang_kernel<scalar_t, 8, BLOCK, false,    \
-                                                 false, false, false>          \
-      <<<rows, BLOCK, 0, stream>>>(                                            \
-          quantized.data_ptr<int8_t>(),                                        \
-          const_cast<scalar_t *>(input.data_ptr<scalar_t>()),                  \
-          normalized.data_ptr<scalar_t>(), nullptr, nullptr,                   \
-          weight.data_ptr<scalar_t>(), cols, epsilon,                          \
-          scales.data_ptr<float>(), nullptr, -1.0f, true, nullptr, input.stride(0))
-  AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half,
-                                  at::ScalarType::BFloat16, input.scalar_type(),
-                                  "rms_norm_strided_per_token_quant", [&] {
-                                    if (cols <= 512) {
-                                      LIGHTOP_STRIDED_RMS(64);
-                                    } else if (cols <= 1024) {
-                                      LIGHTOP_STRIDED_RMS(128);
-                                    } else if (cols <= 2048) {
-                                      LIGHTOP_STRIDED_RMS(256);
-                                    } else if (cols <= 4096) {
-                                      LIGHTOP_STRIDED_RMS(512);
-                                    } else {
-                                      LIGHTOP_STRIDED_RMS(1024);
-                                    }
-                                  });
-#undef LIGHTOP_STRIDED_RMS
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
-}
 
 template <typename scalar_t, int Vec, int block_size>
 void launch_rms_norm_dynamic_per_token_quant_sglang(

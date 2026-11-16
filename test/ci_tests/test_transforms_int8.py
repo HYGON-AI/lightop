@@ -10,10 +10,10 @@ triton = pytest.importorskip("triton", reason="Triton reference kernels required
 import triton.language as tl
 from triton.language.extra import libdevice
 
-from lightop.quant.transforms_int8 import (
+from lightop.quant.transforms import (
     _rope,
     is_transform_quant_available,
-    rope_per_token_quant_int8,
+    rope_per_token_quant,
     scale_per_token_quant_int8,
 )
 
@@ -155,7 +155,7 @@ def test_rope_quant_exact(dtype, shape, groups, rd, pad, inverse):
     )
     p = (torch.arange(t, device="cuda", dtype=torch.int32) * 3) % 256
     pitch = h // groups * d + pad
-    result = rope_per_token_quant_int8(x, f, p, groups, rd, inverse, pitch)
+    result = rope_per_token_quant(x, f, p, groups, rd, inverse, pitch)
     equal(result, rope_ref(x, f, p, groups, rd, inverse))
     assert torch.equal(storage, before)
     assert result[0].stride(1) == pitch
@@ -198,7 +198,7 @@ def test_rounding_rules_and_zero_rows():
     x[0, 0, :7] = values
     f = torch.ones(2, 4, device="cuda", dtype=torch.complex64)
     p = torch.arange(2, device="cuda", dtype=torch.int64)
-    q, s = rope_per_token_quant_int8(x, f, p, rope_dim=8)
+    q, s = rope_per_token_quant(x, f, p, rope_dim=8)
     assert q[0, 0, :7].tolist() == [127, 1, 2, 3, -1, -2, -3]
     assert not q[1].any()
     raw = torch.ones(2, 1, 16, device="cuda", dtype=torch.int32)
@@ -221,7 +221,7 @@ def test_pitched_output_and_graph(threads):
     s = torch.empty(48, 8, 1, device="cuda")
 
     def run():
-        _rope(x, f, p, q, s, 8, 64, True, threads)
+        _rope(x, f, p, q, s, 8, 64, True, threads, False)
 
     run()
     graph = torch.cuda.CUDAGraph()
@@ -283,7 +283,7 @@ def test_rope_unaligned_contiguous_input(dtype):
     f = torch.ones(256, 32, device="cuda", dtype=torch.complex64)
     p = torch.arange(40, device="cuda", dtype=torch.int64)
     equal(
-        rope_per_token_quant_int8(x, f, p, 8, 64, True, 4224),
+        rope_per_token_quant(x, f, p, 8, 64, True, 4224),
         rope_ref(x, f, p, 8, 64, True),
     )
     assert torch.equal(storage, before)
@@ -316,14 +316,14 @@ def test_rope_unaligned_frequency_storage(dtype):
     f = storage[1:].view(256, 32)
     p = torch.arange(40, device="cuda", dtype=torch.int64)
     equal(
-        rope_per_token_quant_int8(x, f, p, 8, 64, True, 4224),
+        rope_per_token_quant(x, f, p, 8, 64, True, 4224),
         rope_ref(x, f, p, 8, 64, True),
     )
 
 
 @pytest.mark.parametrize("rows", [40, 48, 86, 87, 90, 91, 96, 105, 106, 128])
 def test_automatic_rope_threads_and_graph(rows, monkeypatch):
-    import lightop.quant.transforms_int8 as transforms
+    import lightop.quant.transforms as transforms
 
     x = torch.randn(rows, 64, 512, device="cuda", dtype=torch.bfloat16)
     f = torch.polar(
@@ -334,7 +334,7 @@ def test_automatic_rope_threads_and_graph(rows, monkeypatch):
     native = transforms._rope
 
     def audited(*args):
-        calls.append(args[-1])
+        calls.append(args[-2])
         return native(*args)
 
     monkeypatch.setattr(transforms, "_rope", audited)
@@ -345,11 +345,11 @@ def test_automatic_rope_threads_and_graph(rows, monkeypatch):
             expected_threads = 128
         elif 91 <= rows <= 105:
             expected_threads = 64
-    rope_per_token_quant_int8(x, f, p, 8, 64, True, 4160)
+    rope_per_token_quant(x, f, p, 8, 64, True, 4160)
     assert calls[-1] == expected_threads
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        actual = rope_per_token_quant_int8(x, f, p, 8, 64, True, 4160)
+        actual = rope_per_token_quant(x, f, p, 8, 64, True, 4160)
     assert calls[-1] == expected_threads
     for phase in range(3):
         x.normal_()

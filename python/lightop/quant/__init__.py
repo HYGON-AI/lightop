@@ -19,13 +19,10 @@ from .int8 import (
     per_token_group_quant_int8,
     per_token_quant_int8,
 )
-from .transforms_fp8 import per_token_quant_fp8_strided, rope_per_token_quant_fp8
-from .transforms_int8 import rope_per_token_quant_int8, scale_per_token_quant_int8
+from .transforms import rope_per_token_quant, scale_per_token_quant_int8
 
 __all__ = [
-    "rope_per_token_quant_fp8",
-    "per_token_quant_fp8_strided",
-    "rope_per_token_quant_int8",
+    "rope_per_token_quant",
     "scale_per_token_quant_int8",
     "minimax_cp_fp8_pack",
     "blockwise_scaled_cast_transpose",

@@ -189,12 +189,29 @@ __global__ void per_token_quant_fp8_kernel_general(
     }
 }
 
+// Internal strided specialization shares the transform/quantization body.
+void per_token_quant_fp8_strided_impl(const torch::Tensor &, torch::Tensor &,
+                                      torch::Tensor &, int64_t);
+
 void per_token_quant_fp8(
     torch::Tensor& out,         
     torch::Tensor const& input, 
-    torch::Tensor& scales)
+    torch::Tensor& scales, int64_t quant_ndim, int64_t threads)
 {
-    TORCH_CHECK(input.is_contiguous());
+    TORCH_CHECK(quant_ndim == 1 || quant_ndim == 2,
+                "quant_ndim must be 1 or 2");
+    if (quant_ndim == 2) {
+        per_token_quant_fp8_strided_impl(input, out, scales, threads);
+        return;
+    }
+    if (!input.is_contiguous()) {
+        TORCH_CHECK(input.dim() == 2,
+                    "strided quant_ndim=1 requires a 2D matrix");
+        per_token_quant_fp8_strided_impl(input.unsqueeze(1), out, scales, threads);
+        return;
+    }
+    TORCH_CHECK(input.dim() >= 1 && input.size(-1) > 0,
+                "input must have a positive token width");
     TORCH_CHECK(out.is_contiguous());
     TORCH_CHECK(scales.is_contiguous());
     TORCH_CHECK(out.scalar_type() == torch::kFloat8_e4m3fn || out.scalar_type() == torch::kFloat8_e5m2, 
@@ -204,6 +221,7 @@ void per_token_quant_fp8(
 
     int const hidden_size = input.size(-1);
     int64_t num_tokens = input.numel() / hidden_size;
+    if (num_tokens == 0) return;
 
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     auto inp_ptr = reinterpret_cast<std::uintptr_t>(input.data_ptr());

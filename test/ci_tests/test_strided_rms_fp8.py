@@ -6,15 +6,24 @@ import pytest
 import torch
 
 from lightop.norm import rms_norm_per_token_fp8_quant
-from lightop.norm.strided_fp8 import (
-    is_strided_rms_fp8_quant_available,
-    rms_norm_strided_per_token_fp8_quant,
-)
+from lightop.rmsnorm import RMS_NORM_FP8_QUANT_VERSION
 
 pytestmark = pytest.mark.skipif(
-    not torch.cuda.is_available() or not is_strided_rms_fp8_quant_available(),
+    not torch.cuda.is_available() or RMS_NORM_FP8_QUANT_VERSION < 2,
     reason="native strided RMS+FP8 extension required",
 )
+
+
+def _quant_with_norm_output(x, weight):
+    normalized = torch.empty(x.shape, device=x.device, dtype=x.dtype)
+    q, scales = rms_norm_per_token_fp8_quant(
+        x,
+        weight,
+        epsilon=1e-6,
+        update_input=False,
+        norm_output=normalized,
+    )
+    return normalized, q, scales
 
 
 def check(x, weight, actual):
@@ -43,7 +52,7 @@ def test_strided_rms_fp8_exact(dtype, rows, width):
         x[1].mul_(1e-5)
     weight = torch.randn(width, device="cuda", dtype=dtype)
     before = base.clone()
-    check(x, weight, rms_norm_strided_per_token_fp8_quant(x, weight))
+    check(x, weight, _quant_with_norm_output(x, weight))
     assert torch.equal(base, before)
 
 
@@ -52,10 +61,10 @@ def test_strided_rms_fp8_graph_changed_inputs(dtype):
     base = torch.randn((48, 1792), device="cuda", dtype=dtype)
     x = base[:, :1280]
     weight = torch.randn(1280, device="cuda", dtype=dtype)
-    rms_norm_strided_per_token_fp8_quant(x, weight)
+    _quant_with_norm_output(x, weight)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        actual = rms_norm_strided_per_token_fp8_quant(x, weight)
+        actual = _quant_with_norm_output(x, weight)
     pointers = [v.data_ptr() for v in actual]
     for phase in range(4):
         base.normal_()

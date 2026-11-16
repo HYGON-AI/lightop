@@ -323,25 +323,69 @@ def mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang(
     return q_output, q_scales
 
 
+RMS_NORM_FP8_QUANT_VERSION = getattr(op, "RMS_NORM_FP8_QUANT_VERSION", 1)
+
+
 def rms_norm_per_token_fp8_quant(
     input: torch.Tensor,
     weight: torch.Tensor,
     epsilon: float = 1e-5,
     fp8type: int = 0,
     residual: Optional[torch.Tensor] = None,
-    update_input: bool = False
+    update_input: bool = False,
+    *,
+    norm_output: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    if fp8type == 0:
-        output = torch.empty(input.shape,device=input.device,dtype=torch.float8_e4m3fn)
-    else:
-        output = torch.empty(input.shape,device=input.device,dtype=torch.float8_e5m2)
-    scales = torch.empty((input.numel() // input.shape[-1], 1),
-                        device=input.device,
-                        dtype=torch.float32)
+    """RMSNorm and FP8 quantization, optionally preserving strided source rows.
 
-    op.rms_norm_fp8_quant(output.view(torch.uint8), input, weight, scales, epsilon,
-                          residual, update_input, fp8type)
+    norm_output is an independent contiguous BF16/FP16 [rows,columns] buffer.
+    When supplied, residual must be None and update_input must be False; input
+    may be padded/sliced with unit column stride, row stride divisible by 8 and
+    aligned input/weight. Columns must be divisible by 16 and in (0,16384].
+    Source storage is preserved; normalization and quantization share one kernel.
+    Normalized values round to the input dtype before quantization, retaining
+    the existing E4M3/E5M2 scale floor of 1/(fp8_max*512). Empty row batches
+    return empty outputs without launching a kernel. Omitting norm_output keeps
+    the existing API's return values and dispatch.
+    """
+    if fp8type == 0:
+        output = torch.empty(
+            input.shape, device=input.device, dtype=torch.float8_e4m3fn
+        )
+    else:
+        output = torch.empty(input.shape, device=input.device, dtype=torch.float8_e5m2)
+    scales = torch.empty(
+        (input.numel() // input.shape[-1], 1), device=input.device, dtype=torch.float32
+    )
+
+    if norm_output is None:
+        op.rms_norm_fp8_quant(
+            output.view(torch.uint8),
+            input,
+            weight,
+            scales,
+            epsilon,
+            residual,
+            update_input,
+            fp8type,
+        )
+    else:
+        if RMS_NORM_FP8_QUANT_VERSION < 2:
+            raise RuntimeError("native RMSNorm+FP8 needs norm_output support")
+        op.rms_norm_fp8_quant(
+            output.view(torch.uint8),
+            input,
+            weight,
+            scales,
+            epsilon,
+            residual,
+            update_input,
+            fp8type,
+            norm_output,
+        )
     return output, scales
+
+
 def gemma_rms_norm_per_token_fp8_quant(
     input: torch.Tensor,
     weight: torch.Tensor,

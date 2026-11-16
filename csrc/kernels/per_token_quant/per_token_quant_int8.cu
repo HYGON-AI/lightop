@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
+#include <optional>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/native/cuda/MemoryAccess.cuh>
 #include <c10/cuda/CUDAGuard.h>
@@ -867,13 +868,15 @@ void launch_scale_quant(const torch::Tensor &accum,
 
 } // namespace
 
-void rope_per_token_quant_int8_out(const torch::Tensor &input,
-                                   const torch::Tensor &frequencies,
-                                   const torch::Tensor &positions,
-                                   torch::Tensor &quantized,
-                                   torch::Tensor &scales, int64_t groups,
-                                   int64_t rope_dim, bool inverse,
-                                   int64_t threads) {
+void rope_per_token_quant_out(
+    const torch::Tensor &input, const torch::Tensor &frequencies,
+    const torch::Tensor &positions, torch::Tensor &quantized,
+    torch::Tensor &scales, int64_t groups, int64_t rope_dim, bool inverse,
+    int64_t threads, bool group_major) {
+  const bool fp8 = quantized.scalar_type() == at::kFloat8_e4m3fn;
+  TORCH_CHECK(fp8 || quantized.scalar_type() == at::kChar,
+              "quantized dtype must be INT8 or E4M3");
+  TORCH_CHECK(!group_major || fp8, "group_major requires FP8 output");
   TORCH_CHECK(input.is_cuda() && input.dim() == 3,
               "input must be a GPU [tokens,heads,head_dim] tensor");
   TORCH_CHECK(input.scalar_type() == at::kBFloat16 ||
@@ -902,95 +905,22 @@ void rope_per_token_quant_int8_out(const torch::Tensor &input,
       positions.device() == input.device() && positions.dim() == 1 &&
           positions.size(0) == input.size(0) && positions.is_contiguous(),
       "positions must have one contiguous entry per token on the input GPU");
-  check_fusion_tensor(quantized, input, at::kChar, "quantized");
-  TORCH_CHECK(quantized.dim() == 3 && quantized.size(0) == input.size(0) &&
-                  quantized.size(1) == groups && quantized.size(2) == width &&
-                  quantized.stride(2) == 1 && quantized.stride(1) >= width &&
-                  quantized.stride(0) == groups * quantized.stride(1),
-              "quantized must be [tokens,groups,width], optionally row-padded");
-  check_fusion_tensor(scales, input, at::kFloat, "scales");
-  TORCH_CHECK(scales.is_contiguous() && scales.dim() == 3 &&
-                  scales.size(0) == input.size(0) && scales.size(1) == groups &&
-                  scales.size(2) == 1,
-              "scales must be contiguous [tokens,groups,1]");
-  TORCH_CHECK(threads == 64 || threads == 128 || threads == 256 ||
-                  threads == 512 || threads == 1024,
-              "threads must be 64, 128, 256, 512 or 1024");
-  TORCH_CHECK(input.size(0) <= std::numeric_limits<int>::max() / groups,
-              "too many quantization rows");
-  check_fusion_outputs({input, frequencies, positions}, {quantized, scales});
-  if (input.size(0) == 0)
-    return;
-  const at::cuda::OptionalCUDAGuard guard(device_of(input));
-  const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-#define DISPATCH_ROPE(SCALAR)                                                  \
-  if (positions.scalar_type() == at::kLong)                                    \
-    dispatch_rope_quant<SCALAR, int64_t>(input, frequencies, positions,        \
-                                         quantized, scales, groups, rope_dim,  \
-                                         inverse, threads, stream);            \
-  else                                                                         \
-    dispatch_rope_quant<SCALAR, int32_t>(input, frequencies, positions,        \
-                                         quantized, scales, groups, rope_dim,  \
-                                         inverse, threads, stream)
-  if (input.scalar_type() == at::kBFloat16) {
-    DISPATCH_ROPE(c10::BFloat16);
-  } else {
-    DISPATCH_ROPE(c10::Half);
-  }
-#undef DISPATCH_ROPE
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
-}
-
-void rope_per_token_quant_fp8_out(const torch::Tensor &input,
-                                  const torch::Tensor &frequencies,
-                                  const torch::Tensor &positions,
-                                  torch::Tensor &quantized,
-                                  torch::Tensor &scales, int64_t groups,
-                                  int64_t rope_dim, bool inverse,
-                                  int64_t threads, bool group_major) {
-  TORCH_CHECK(input.is_cuda() && input.dim() == 3,
-              "input must be a GPU [tokens,heads,head_dim] tensor");
-  TORCH_CHECK(input.scalar_type() == at::kBFloat16 ||
-                  input.scalar_type() == at::kHalf,
-              "input must be BF16 or FP16");
-  TORCH_CHECK(groups > 0 && input.size(1) > 0 && input.size(1) % groups == 0,
-              "groups must divide the number of heads");
-  const int64_t width = input.size(1) / groups * input.size(2);
-  TORCH_CHECK(input.size(2) > 0 && input.size(2) % 2 == 0 && width <= 16384,
-              "head_dim must be positive/even and group width <=16384");
-  TORCH_CHECK(rope_dim > 0 && rope_dim <= input.size(2) && rope_dim % 2 == 0,
-              "rope_dim must be positive/even and no larger than head_dim");
-  TORCH_CHECK(
-      input.stride(2) == 1 && input.stride(1) >= input.size(2) &&
-          input.stride(0) >= input.size(1) * input.stride(1),
-      "input needs positive, non-overlapping rows and unit inner stride");
-  check_fusion_tensor(frequencies, input, at::kComplexFloat, "frequencies");
-  TORCH_CHECK(
-      frequencies.dim() == 2 && frequencies.size(1) == rope_dim / 2 &&
-          frequencies.is_contiguous() && frequencies.size(0) > 0,
-      "frequencies must be contiguous complex64 [positions,rope_dim/2]");
-  TORCH_CHECK(positions.scalar_type() == at::kInt ||
-                  positions.scalar_type() == at::kLong,
-              "positions must be int32 or int64");
-  TORCH_CHECK(
-      positions.device() == input.device() && positions.dim() == 1 &&
-          positions.size(0) == input.size(0) && positions.is_contiguous(),
-      "positions must have one contiguous entry per token on the input GPU");
-  check_fusion_tensor(quantized, input, at::kFloat8_e4m3fn, "quantized");
+  check_fusion_tensor(quantized, input,
+                      fp8 ? at::kFloat8_e4m3fn : at::kChar, "quantized");
   TORCH_CHECK(
       quantized.dim() == 3 &&
           quantized.size(0) == (group_major ? groups : input.size(0)) &&
           quantized.size(1) == (group_major ? input.size(0) : groups) &&
           quantized.size(2) == width &&
-          (quantized.is_contiguous() ||
+          ((fp8 && quantized.is_contiguous()) ||
            (quantized.stride(2) == 1 && quantized.stride(1) >= width &&
             quantized.stride(0) == quantized.size(1) * quantized.stride(1))),
-      "quantized must be [tokens,groups,width], optionally row-padded");
+      "quantized must match the token/group layout with optional row padding");
   check_fusion_tensor(scales, input, at::kFloat, "scales");
   TORCH_CHECK(scales.is_contiguous() && scales.dim() == 3 &&
                   scales.size(0) == quantized.size(0) &&
                   scales.size(1) == quantized.size(1) && scales.size(2) == 1,
-              "scales must be contiguous [tokens,groups,1]");
+              "scales must match the token/group layout and have unit width");
   TORCH_CHECK(threads == 64 || threads == 128 || threads == 256 ||
                   threads == 512 || threads == 1024,
               "threads must be 64, 128, 256, 512 or 1024");
@@ -1001,19 +931,25 @@ void rope_per_token_quant_fp8_out(const torch::Tensor &input,
     return;
   const at::cuda::OptionalCUDAGuard guard(device_of(input));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
-#define DISPATCH_ROPE(SCALAR)                                                  \
+#define DISPATCH_ROPE(SCALAR, FP8)                                             \
   if (positions.scalar_type() == at::kLong)                                    \
-    dispatch_rope_quant<SCALAR, int64_t, true>(                                \
+    dispatch_rope_quant<SCALAR, int64_t, FP8>(                                 \
         input, frequencies, positions, quantized, scales, groups, rope_dim,    \
         inverse, threads, stream, group_major);                                \
   else                                                                         \
-    dispatch_rope_quant<SCALAR, int32_t, true>(                                \
+    dispatch_rope_quant<SCALAR, int32_t, FP8>(                                 \
         input, frequencies, positions, quantized, scales, groups, rope_dim,    \
         inverse, threads, stream, group_major)
-  if (input.scalar_type() == at::kBFloat16) {
-    DISPATCH_ROPE(c10::BFloat16);
+  if (fp8) {
+    if (input.scalar_type() == at::kBFloat16) {
+      DISPATCH_ROPE(c10::BFloat16, true);
+    } else {
+      DISPATCH_ROPE(c10::Half, true);
+    }
+  } else if (input.scalar_type() == at::kBFloat16) {
+    DISPATCH_ROPE(c10::BFloat16, false);
   } else {
-    DISPATCH_ROPE(c10::Half);
+    DISPATCH_ROPE(c10::Half, false);
   }
 #undef DISPATCH_ROPE
   C10_CUDA_KERNEL_LAUNCH_CHECK();
@@ -1112,24 +1048,14 @@ void scale_quant_out_impl(const torch::Tensor &accum,
 }
 } // namespace
 
-void scale_per_token_quant_int8_out(const torch::Tensor &accum,
-                                    const torch::Tensor &input_scale,
-                                    const torch::Tensor &weight_scale,
-                                    torch::Tensor &output,
-                                    torch::Tensor &quantized,
-                                    torch::Tensor &scales, bool group_major,
-                                    int64_t splits, int64_t threads) {
-  scale_quant_out_impl(accum, input_scale, weight_scale, &output, quantized,
-                       scales, output.scalar_type(), group_major, splits,
-                       threads);
-}
-
-void scale_per_token_quant_int8_only_out(
+void scale_per_token_quant_int8_out(
     const torch::Tensor &accum, const torch::Tensor &input_scale,
-    const torch::Tensor &weight_scale, torch::Tensor &quantized,
-    torch::Tensor &scales, at::ScalarType rounding_dtype, bool group_major,
-    int64_t splits, int64_t threads) {
-  scale_quant_out_impl(accum, input_scale, weight_scale, nullptr, quantized,
+    const torch::Tensor &weight_scale, std::optional<torch::Tensor> output,
+    torch::Tensor &quantized, torch::Tensor &scales,
+    at::ScalarType rounding_dtype, bool group_major, int64_t splits,
+    int64_t threads) {
+  scale_quant_out_impl(accum, input_scale, weight_scale,
+                       output.has_value() ? &*output : nullptr, quantized,
                        scales, rounding_dtype, group_major, splits, threads);
 }
 
@@ -1177,9 +1103,9 @@ void launch_strided_fp8(const torch::Tensor &input, torch::Tensor &quantized,
 #undef STRIDED
 }
 } // namespace
-void per_token_quant_fp8_strided_out(const torch::Tensor &input,
-                                     torch::Tensor &quantized,
-                                     torch::Tensor &scales, int64_t threads) {
+void per_token_quant_fp8_strided_impl(
+    const torch::Tensor &input, torch::Tensor &quantized, torch::Tensor &scales,
+    int64_t threads) {
   TORCH_CHECK(input.is_cuda() && input.dim() == 3,
               "input must be GPU [tokens,heads,dimension]");
   TORCH_CHECK(input.scalar_type() == at::kBFloat16 ||

@@ -95,19 +95,12 @@ def load_runtime():
     import lightop
     from lightop import op, rms_norm_dynamic_per_token_quant_sglang
     from lightop.norm import rms_norm_per_token_fp8_quant
-    from lightop.norm import strided_fp8 as rms_fp8
-    from lightop.norm import strided_int8 as rms_int8
-    from lightop.quant import per_token_quant_fp8, per_token_quant_int8
-    from lightop.quant import transforms_fp8 as fp8
-    from lightop.quant import transforms_int8 as int8
+    from lightop.quant import per_token_quant_fp8, per_token_quant_int8, transforms
 
     return SimpleNamespace(
         lightop=lightop,
         op=op,
-        int8=int8,
-        fp8=fp8,
-        rms_int8=rms_int8,
-        rms_fp8=rms_fp8,
+        transforms=transforms,
         quant_int8=per_token_quant_int8,
         quant_fp8=per_token_quant_fp8,
         norm_int8=rms_norm_dynamic_per_token_quant_sglang,
@@ -306,30 +299,23 @@ def rope_case(api, kernels, tokens, fp8, major, args):
         return q, scales
 
     def fused():
-        if fp8:
-            return api.fp8.rope_per_token_quant_fp8(
-                x,
-                frequencies,
-                positions,
-                groups,
-                rotary,
-                True,
-                group_major=major,
-            )
-        return api.int8.rope_per_token_quant_int8(
+        return api.transforms.rope_per_token_quant(
             x,
             frequencies,
             positions,
             groups,
             rotary,
             True,
-            output_pitch=pitch,
+            dtype=torch.float8_e4m3fn if fp8 else torch.int8,
+            group_major=major,
+            output_pitch=None if fp8 else pitch,
         )
 
     result = measure_pair(unfused, fused, args)
     check_bits((x,), (before,))
     return {
-        "operator": "rope_per_token_quant_" + ("fp8" if fp8 else "int8"),
+        "operator": "rope_per_token_quant",
+        "quant_dtype": "fp8" if fp8 else "int8",
         "shape": list(x.shape),
         "groups": groups,
         "rope_dim": rotary,
@@ -378,7 +364,7 @@ def scale_case(api, kernels, tokens, major, materialize, args):
         return floating if materialize else None, q, scales
 
     def fused():
-        return api.int8.scale_per_token_quant_int8(
+        return api.transforms.scale_per_token_quant_int8(
             raw,
             xs,
             ws,
@@ -406,12 +392,13 @@ def strided_fp8_case(api, tokens, major, args):
     before = storage.clone()
     result = measure_pair(
         lambda: api.quant_fp8(x.contiguous().view(tokens, 8192)),
-        lambda: api.fp8.per_token_quant_fp8_strided(x),
+        lambda: api.quant_fp8(x, quant_ndim=2),
         args,
     )
     check_bits((storage,), (before,))
     return {
-        "operator": "per_token_quant_fp8_strided",
+        "operator": "per_token_quant_fp8",
+        "quant_ndim": 2,
         "shape": list(x.shape),
         "stride": list(x.stride()),
         "input_layout": "group-major" if major else "token-major",
@@ -438,17 +425,19 @@ def rms_case(api, tokens, width, fp8, args):
         return normalized, q, scales
 
     def fused():
-        fn = (
-            api.rms_fp8.rms_norm_strided_per_token_fp8_quant
-            if fp8
-            else api.rms_int8.rms_norm_strided_per_token_quant
-        )
-        return fn(x, weight, 1e-6)
+        normalized = torch.empty(x.shape, device=x.device, dtype=x.dtype)
+        fn = api.norm_fp8 if fp8 else api.norm_int8
+        q, scales = fn(x, weight, 1e-6, update_input=False, norm_output=normalized)
+        return normalized, q, scales
 
     result = measure_pair(unfused, fused, args)
     check_bits((storage,), (before,))
     return {
-        "operator": "rms_norm_strided_per_token_" + ("fp8_quant" if fp8 else "quant"),
+        "operator": (
+            "rms_norm_per_token_fp8_quant"
+            if fp8
+            else "rms_norm_dynamic_per_token_quant_sglang"
+        ),
         "shape": list(x.shape),
         "stride": list(x.stride()),
         "baseline": "copy padded rows + existing native fused RMSNorm/quant (same rounding/floor)",
@@ -483,13 +472,11 @@ def environment(api, args):
     except importlib.metadata.PackageNotFoundError:
         version = getattr(api.lightop, "__version__", "unavailable")
     symbols = {
-        "rope_int8": api.int8._rope,
-        "scale_int8": api.int8._scale,
-        "scale_int8_only": api.int8._scale_only,
-        "rope_fp8": api.fp8._rope,
-        "strided_fp8": api.fp8._strided,
-        "rms_int8": api.rms_int8._native,
-        "rms_fp8": api.rms_fp8._native,
+        "rope_quant": api.transforms._rope,
+        "scale_int8": api.transforms._scale,
+        "quant_fp8": api.op.per_token_quant_fp8,
+        "rms_int8": api.op.rms_norm_dynamic_per_token_quant_sglang,
+        "rms_fp8": api.op.rms_norm_fp8_quant,
     }
     binaries = {"lightop.op": file_record(api.op)}
     bindings = {}

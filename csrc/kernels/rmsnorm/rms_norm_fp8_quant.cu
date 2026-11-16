@@ -667,24 +667,10 @@ void rms_norm_fp8_quant_impl(
     });
 }
 
-void rms_norm_fp8_quant(
-  Tensor &out, Tensor& input, const Tensor& weight, Tensor scales, 
-  double epsilon, std::optional<Tensor> residual, bool update_input, int fp8type
-) {
-    rms_norm_fp8_quant_impl<false>(out, input, weight, scales, epsilon, residual, update_input, fp8type);
-}
-void gemma_rms_norm_fp8_quant(
-  Tensor &out, Tensor& input, const Tensor& weight, Tensor scales, 
-  double epsilon, std::optional<Tensor> residual, bool update_input, int fp8type
-) {
-    rms_norm_fp8_quant_impl<true>(out, input, weight, scales, epsilon, residual, update_input, fp8type);
-}
-
-void rms_norm_strided_per_token_fp8_quant_out(const Tensor &input,
-                                              const Tensor &weight,
-                                              Tensor &normalized,
-                                              Tensor &quantized, Tensor &scales,
-                                              double epsilon) {
+namespace {
+void rms_norm_fp8_quant_with_norm(
+    const Tensor &input, const Tensor &weight, Tensor &normalized,
+    Tensor &quantized, Tensor &scales, double epsilon, int fp8type) {
   TORCH_CHECK(input.is_cuda() && input.dim() == 2,
               "input must be a GPU matrix");
   const int64_t rows = input.size(0), cols = input.size(1);
@@ -707,7 +693,7 @@ void rms_norm_strided_per_token_fp8_quant_out(const Tensor &input,
                   normalized.scalar_type() == input.scalar_type(),
               "invalid normalized output");
   TORCH_CHECK(quantized.sizes() == input.sizes() &&
-                  quantized.scalar_type() == at::kFloat8_e4m3fn,
+                  quantized.scalar_type() == at::kByte,
               "invalid FP8 output");
   TORCH_CHECK(scales.dim() == 2 && scales.size(0) == rows &&
                   scales.size(1) == 1 && scales.scalar_type() == at::kFloat,
@@ -741,11 +727,11 @@ void rms_norm_strided_per_token_fp8_quant_out(const Tensor &input,
           const_cast<scalar_t *>(input.data_ptr<scalar_t>()), nullptr,         \
           const_cast<scalar_t *>(weight.data_ptr<scalar_t>()), cols, epsilon,  \
           reinterpret_cast<int8_t *>(quantized.data_ptr()),                    \
-          scales.data_ptr<float>(), input.stride(0), 0, rows,                  \
+          scales.data_ptr<float>(), input.stride(0), fp8type, rows,             \
           normalized.data_ptr<scalar_t>())
   AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half,
                                   at::ScalarType::BFloat16, input.scalar_type(),
-                                  "rms_norm_strided_per_token_fp8_quant", [&] {
+                                  "rms_norm_fp8_quant_with_norm", [&] {
                                     if (cols <= 1024) {
                                       LIGHTOP_STRIDED_FP8_RMS(64);
                                     } else if (cols <= 2048) {
@@ -761,4 +747,28 @@ void rms_norm_strided_per_token_fp8_quant_out(const Tensor &input,
 #undef LIGHTOP_STRIDED_FP8_RMS
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
+} // namespace
+
+void rms_norm_fp8_quant(
+    Tensor &out, Tensor &input, const Tensor &weight, Tensor scales,
+    double epsilon, std::optional<Tensor> residual, bool update_input,
+    int fp8type, std::optional<Tensor> norm_output) {
+  if (norm_output.has_value()) {
+    TORCH_CHECK(!residual.has_value() && !update_input,
+                "norm_output requires residual=None and update_input=false");
+    TORCH_CHECK(fp8type == 0 || fp8type == 1, "fp8type must be 0 or 1");
+    rms_norm_fp8_quant_with_norm(input, weight, *norm_output, out, scales,
+                                epsilon, fp8type);
+    return;
+  }
+  rms_norm_fp8_quant_impl<false>(out, input, weight, scales, epsilon, residual,
+                                update_input, fp8type);
+}
+void gemma_rms_norm_fp8_quant(
+  Tensor &out, Tensor& input, const Tensor& weight, Tensor scales,
+  double epsilon, std::optional<Tensor> residual, bool update_input, int fp8type
+) {
+    rms_norm_fp8_quant_impl<true>(out, input, weight, scales, epsilon, residual, update_input, fp8type);
+}
+
 }}
