@@ -131,7 +131,12 @@ def reference_kernels():
         ri, ii = real * sine, imag * sine
         # Inverse RoPE: retain separate products and explicit FP32 FMA.
         out_real = tl.fma(real, cosine, ii)
-        out_imag = tl.fma(imag, cosine, -ri)
+        # Unary minus can lower to 0 - x and erase -0.0. Flip the sign bit
+        # to match native RoPE before the BF16/FP8 rounding boundaries.
+        negative_ri = (ri.to(tl.uint32, bitcast=True) ^ 0x80000000).to(
+            tl.float32, bitcast=True
+        )
+        out_imag = tl.fma(imag, cosine, negative_ri)
         tl.store(Y + base + col, out_real, col < RD)
         tl.store(Y + base + col + 1, out_imag, col < RD)
 
