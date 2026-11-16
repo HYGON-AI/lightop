@@ -625,6 +625,14 @@ def get_extensions():
 
     extensions.append(ext_ops)
     extensions.append(extension(
+        name="lightop._int8_blaslt",
+        sources=["./csrc/lmslimquant_native/hipblaslt/int8_blaslt_cached.cu"],
+        libraries=['hipblaslt'],
+        library_dirs=[os.path.join(rocm_home, 'lib')],
+        extra_compile_args={"cxx": ["-O3", "-std=c++17"],
+                            "nvcc": ["-O3", "-std=c++17"]},
+    ))
+    extensions.append(extension(
         name="lightop._router_gemm",
         sources=["./csrc/router/router_gemm.cu"],
         extra_compile_args={"nvcc": ["-O3"]},

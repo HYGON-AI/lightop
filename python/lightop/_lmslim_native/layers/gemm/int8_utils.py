@@ -576,7 +576,7 @@ def matmul_int8(a, a_scale, b, b_scale,out_dtype,config):
         else:
             config= {'BLOCK_SIZE_M': 256, 'BLOCK_SIZE_N': 256, 'BLOCK_SIZE_K': 64, 'GROUP_SIZE_M': 8,'SPLIT_K': 1,'num_stages':0, 'num_warps':8}
     if config['SPLIT_K']==1:
-        c = torch.zeros((M, N), device=a.device, dtype=out_dtype)
+        c = torch.empty((M, N), device=a.device, dtype=out_dtype)
     else:
         c = torch.zeros((M, N), device=a.device, dtype=torch.float32)
 
