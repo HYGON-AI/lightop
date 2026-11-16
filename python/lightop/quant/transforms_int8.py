@@ -1,6 +1,10 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
-"""Native transforms followed by complete-row symmetric INT8 quantization."""
+"""Native transforms followed by complete-row symmetric INT8 quantization.
+
+The regular setup.py/wheel build provides these operators through lightop.op.
+Callers can check is_transform_quant_available() when supporting older packages.
+"""
 
 from functools import lru_cache
 
@@ -11,21 +15,6 @@ from .. import op
 _rope = getattr(op, "rope_per_token_quant_int8_out", None)
 _scale = getattr(op, "scale_per_token_quant_int8_out", None)
 _scale_only = getattr(op, "scale_per_token_quant_int8_only_out", None)
-if _rope is None or _scale is None or _scale_only is None:
-    try:
-        from .. import _transform_quant
-    except (ImportError, OSError):
-        pass
-    else:
-        _rope = _rope or getattr(
-            _transform_quant, "rope_per_token_quant_int8_out", None
-        )
-        _scale = _scale or getattr(
-            _transform_quant, "scale_per_token_quant_int8_out", None
-        )
-        _scale_only = _scale_only or getattr(
-            _transform_quant, "scale_per_token_quant_int8_only_out", None
-        )
 
 
 # Shape calibration is independent of model and decode-stage names. Unknown
@@ -88,7 +77,10 @@ def rope_per_token_quant_int8(
     output_pitch can pad each INT8 row for a consumer's matrix layout.
     The input and its padding are preserved. No GEMM is performed.
     threads=None selects a calibrated shape/device configuration; an explicit
-    thread count keeps the caller-selected launch geometry.
+    thread count keeps the caller-selected launch geometry. Complete group
+    widths must be at most 16384, with even head and rotary dimensions.
+    Positions may be INT32 or INT64. Empty token batches return empty outputs
+    without launching a kernel.
     """
     if _rope is None:
         raise RuntimeError("native RoPE+INT8 extension is not installed")
@@ -145,7 +137,9 @@ def scale_per_token_quant_int8(
 
     For small batches, independent CTAs repeat the read-only reduction and
     write disjoint output slices; this needs no cross-CTA synchronization
-    or scratch and remains safe under changing-input graph replay.
+    or scratch and remains safe under changing-input graph replay. Full token
+    widths must be at most 16384. Empty token batches return empty outputs
+    without launching a kernel. Inputs and outputs have independent storage.
     """
     if _scale is None:
         raise RuntimeError("native scale+INT8 extension is not installed")

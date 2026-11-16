@@ -9,11 +9,9 @@ void minimax_cp_cache_scatter(torch::Tensor,torch::Tensor,torch::Tensor,torch::T
 std::vector<torch::Tensor> minimax_qk_norm_rope(torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,double,int64_t,bool,int64_t);
 }
 
-#if (defined(LIGHTOP_MHC_REPEAT_CP_ONLY) + defined(LIGHTOP_CP_OUTPUT_ONLY) +   \
+#if (defined(LIGHTOP_MHC_REPEAT_CP_ONLY) + defined(LIGHTOP_CP_OUTPUT_ONLY) + \
      defined(LIGHTOP_TOPK_WORKSPACE_ONLY) + defined(LIGHTOP_SPARSE_MQA_ONLY) + \
-     defined(LIGHTOP_PREFILL_FUSION_ONLY) +                                    \
-     defined(LIGHTOP_QUANT_FUSION_ONLY) + defined(LIGHTOP_STRIDED_RMS_ONLY)) > \
-    1
+     defined(LIGHTOP_PREFILL_FUSION_ONLY)) > 1
 #error "Select only one focused LightOp extension"
 #endif
 
@@ -38,60 +36,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
   module.def("mhc_repeat_cp_sglang_out", &at::native::mhc_repeat_cp_sglang_out,
              py::arg("hidden_states"), py::arg("hc_mult"), py::arg("cp_size"),
              py::arg("cp_rank"), py::arg("out"));
-}
-
-#elif defined(LIGHTOP_QUANT_FUSION_ONLY)
-namespace at::native {
-void rope_per_token_quant_fp8_out(const torch::Tensor &, const torch::Tensor &,
-                                  const torch::Tensor &, torch::Tensor &,
-                                  torch::Tensor &, int64_t, int64_t, bool,
-                                  int64_t, bool);
-void per_token_quant_fp8_strided_out(const torch::Tensor &, torch::Tensor &,
-                                     torch::Tensor &, int64_t);
-void rope_per_token_quant_int8_out(const torch::Tensor &, const torch::Tensor &,
-                                   const torch::Tensor &, torch::Tensor &,
-                                   torch::Tensor &, int64_t, int64_t, bool,
-                                   int64_t);
-void scale_per_token_quant_int8_out(const torch::Tensor &,
-                                    const torch::Tensor &,
-                                    const torch::Tensor &, torch::Tensor &,
-                                    torch::Tensor &, torch::Tensor &, bool,
-                                    int64_t, int64_t);
-void scale_per_token_quant_int8_only_out(const torch::Tensor &,
-                                         const torch::Tensor &,
-                                         const torch::Tensor &, torch::Tensor &,
-                                         torch::Tensor &, at::ScalarType, bool,
-                                         int64_t, int64_t);
-} // namespace at::native
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
-  module.def("rope_per_token_quant_fp8_out",
-             &at::native::rope_per_token_quant_fp8_out);
-  module.def("per_token_quant_fp8_strided_out",
-             &at::native::per_token_quant_fp8_strided_out);
-  module.def("rope_per_token_quant_int8_out",
-             &at::native::rope_per_token_quant_int8_out);
-  module.def("scale_per_token_quant_int8_out",
-             &at::native::scale_per_token_quant_int8_out);
-  module.def("scale_per_token_quant_int8_only_out",
-             &at::native::scale_per_token_quant_int8_only_out);
-}
-
-#elif defined(LIGHTOP_STRIDED_RMS_ONLY)
-namespace at::native {
-void rms_norm_strided_per_token_fp8_quant_out(const torch::Tensor &,
-                                              const torch::Tensor &,
-                                              torch::Tensor &, torch::Tensor &,
-                                              torch::Tensor &, double);
-void rms_norm_strided_per_token_quant_out(const torch::Tensor &,
-                                          const torch::Tensor &,
-                                          torch::Tensor &, torch::Tensor &,
-                                          torch::Tensor &, double);
-} // namespace at::native
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
-  module.def("rms_norm_strided_per_token_fp8_quant_out",
-             &at::native::rms_norm_strided_per_token_fp8_quant_out);
-  module.def("rms_norm_strided_per_token_quant_out",
-             &at::native::rms_norm_strided_per_token_quant_out);
 }
 
 #elif defined(LIGHTOP_CP_OUTPUT_ONLY)

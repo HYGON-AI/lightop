@@ -1,6 +1,10 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
-"""RoPE and layout transforms fused with complete-row E4M3 quantization."""
+"""RoPE and layout transforms fused with complete-row E4M3 quantization.
+
+These operators are included in the regular setup.py/wheel build as lightop.op
+symbols; is_transform_fp8_quant_available() detects support in older packages.
+"""
 
 import torch
 
@@ -9,16 +13,6 @@ from .transforms_int8 import _select_rope_quant_threads
 
 _rope = getattr(op, "rope_per_token_quant_fp8_out", None)
 _strided = getattr(op, "per_token_quant_fp8_strided_out", None)
-if _rope is None or _strided is None:
-    try:
-        from .. import _transform_quant
-    except (ImportError, OSError):
-        pass
-    else:
-        _rope = _rope or getattr(_transform_quant, "rope_per_token_quant_fp8_out", None)
-        _strided = _strided or getattr(
-            _transform_quant, "per_token_quant_fp8_strided_out", None
-        )
 
 
 def is_transform_fp8_quant_available():
@@ -43,6 +37,8 @@ def rope_per_token_quant_fp8(
     Match per_token_quant_fp8: scale=absmax/448 and zero rows have zero scale.
     Positions must be valid indices into contiguous complex64 frequencies.
     threads=None selects calibrated launch geometry; explicit values override it.
+    Head/rotary dimensions must be even and complete group widths at most 16384.
+    Empty token batches return empty outputs without launching a kernel.
     """
     if _rope is None:
         raise RuntimeError("native RoPE+FP8 extension is not installed")
@@ -79,6 +75,9 @@ def per_token_quant_fp8_strided(input, *, threads=256):
 
     Accept token-major or group-major storage with unit inner stride, including
     padded rows. Return E4M3 [T,G*R] and FP32 [T,1] without a floating transpose.
+    Input is BF16/FP16 and the full token width is at most 16384. Scales equal
+    absmax/448, including zero scale for zero rows. Source storage is preserved;
+    an empty token batch returns empty outputs without launching a kernel.
     """
     if _strided is None:
         raise RuntimeError("native strided FP8 extension is not installed")

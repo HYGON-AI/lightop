@@ -8,6 +8,26 @@ preparation chain; the INT8 RoPE baseline explicitly uses half-away rounding.
 FP8 and scale-to-INT8 baselines reuse existing LightOp quantization. RMS pairs
 compare copy + existing fused RMS/quant against direct strided RMS/quant.
 These are warm-buffer operator comparisons, not historical service A/B results.
+
+Build and install the regular LightOp package first (python3 setup.py install
+or scripts/build_hcu_wheel.sh), using matching DTK, HIP PyTorch and Python ABI.
+The benchmark also needs Triton for independent split-stage references.
+
+Run from the repository root, for example::
+
+    python3 test/benchmarks/benchmark_quant_fusions.py --tokens 40 48 --output /tmp/quant-fusions.json
+    python3 test/benchmarks/benchmark_quant_fusions.py --suite rope-int8 --tokens 40 48 64 96 128 --output /tmp/rope-int8.json
+    python3 test/benchmarks/benchmark_quant_fusions.py --suite rope-fp8 --tokens 40 48 64 96 128 --output /tmp/rope-fp8.json
+
+Defaults: BF16, RoPE [T,64,512] with 8 groups and 64 rotary channels;
+INT32 scale [T,8,1024]; RMS widths 1280/1536/3072. Both FP8 group layouts,
+INT32 floating-output materialization modes, and padded inputs are covered.
+Use --rms-widths to vary RMS columns (INT8 <=8192, FP8 <=16384).
+
+Default timing uses 20 warmup calls, 50 calls per captured graph, and 7 repeats
+with alternating variant order. Compilation, setup and parity checks are
+outside timing. Output JSON records every sample, medians, latency reduction,
+package/source versions, HIP/device properties, and native binary SHA256.
 """
 
 import argparse

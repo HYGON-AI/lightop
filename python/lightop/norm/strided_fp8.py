@@ -1,19 +1,15 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
-"""Existing FP8 RMSNorm semantics with independent output from strided rows."""
+"""Existing FP8 RMSNorm semantics with independent output from strided rows.
+
+Built with the regular LightOp package and exposed through lightop.op.
+"""
 
 import torch
 
 from .. import op
 
 _native = getattr(op, "rms_norm_strided_per_token_fp8_quant_out", None)
-if _native is None:
-    try:
-        from .._strided_rms_quant import (
-            rms_norm_strided_per_token_fp8_quant_out as _native,
-        )
-    except (ImportError, OSError):
-        pass
 
 
 def is_strided_rms_fp8_quant_available():
@@ -25,7 +21,10 @@ def rms_norm_strided_per_token_fp8_quant(input, weight, epsilon=1e-6):
 
     Reuse rms_norm_per_token_fp8_quant's arithmetic, reduction and scale floor
     of 1/(448*512). Normalized values round to the activation dtype before FP8
-    quantization. Each output has independent contiguous storage.
+    quantization. Each output has independent contiguous storage. Columns must
+    be divisible by 16 and in (0, 16384]; input has unit column stride, row
+    stride divisible by 8, and 16-byte alignment shared by the weight. Empty
+    row batches return empty outputs without launching a kernel.
     """
     if _native is None:
         raise RuntimeError("native strided RMS+FP8 extension is not installed")

@@ -1,17 +1,15 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
-"""RMSNorm plus complete-row INT8 quantization from padded or sliced rows."""
+"""RMSNorm plus complete-row INT8 quantization from padded or sliced rows.
+
+Built with the regular LightOp package and exposed through lightop.op.
+"""
 
 import torch
 
 from .. import op
 
 _native = getattr(op, "rms_norm_strided_per_token_quant_out", None)
-if _native is None:
-    try:
-        from .._strided_rms_quant import rms_norm_strided_per_token_quant_out as _native
-    except (ImportError, OSError):
-        pass
 
 
 def is_strided_rms_quant_available():
@@ -26,6 +24,9 @@ def rms_norm_strided_per_token_quant(input, weight, epsilon=1e-6):
     native reduction and activation rounding are the same as LightOp's
     rms_norm_dynamic_per_token_quant_sglang; quantization observes those
     rounded floating values. No residual sum, clamp or GEMM is performed.
+    Columns must be divisible by 16 and in (0, 8192]; the row stride must be
+    divisible by 8, with 16-byte-aligned input and weight. Empty row batches
+    return empty outputs. Quantization uses RNE and a 1e-10 absmax floor.
     """
     if _native is None:
         raise RuntimeError("native strided RMS+INT8 extension is not installed")
