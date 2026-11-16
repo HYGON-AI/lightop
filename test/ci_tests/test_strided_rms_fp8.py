@@ -33,7 +33,7 @@ def check(x, weight, actual):
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 @pytest.mark.parametrize("rows", [0, 1, 8, 40, 48, 96])
-@pytest.mark.parametrize("width", [128, 512, 1280, 1536, 5120, 8192, 16384])
+@pytest.mark.parametrize("width", [128, 512, 1280, 1536, 3072, 5120, 8192, 16384])
 def test_strided_rms_fp8_exact(dtype, rows, width):
     base = torch.randn((rows, width + 512), device="cuda", dtype=dtype)
     x = base[:, :width]

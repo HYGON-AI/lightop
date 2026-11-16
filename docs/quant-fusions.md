@@ -82,3 +82,56 @@ The included regression files cover numerical parity, padding preservation,
 empty inputs, layouts, thread choices and changing-input graph replay. Their
 presence does not imply that tests or a full wheel were built during the final
 code review; see the paired PR descriptions for executed checks and evidence.
+
+
+## Reproduce operator performance comparisons
+
+The opt-in benchmark covers all six public APIs above. Install this revision's
+Python package and native extension, plus Triton, on the target HCU first. It
+has no SGLang, vLLM or pytest dependency and is not collected by CI pytest.
+
+```bash
+python3 test/benchmarks/benchmark_quant_fusions.py --tokens 40 48 --output /tmp/quant-fusions.json
+python3 test/benchmarks/benchmark_quant_fusions.py --suite rope-int8 --tokens 40 48 64 96 128 --output /tmp/rope-int8.json
+python3 test/benchmarks/benchmark_quant_fusions.py --suite rope-fp8 --tokens 40 48 64 96 128 --output /tmp/rope-fp8.json
+python3 test/benchmarks/benchmark_quant_fusions.py --suite rms-fp8 --rms-widths 512 1536 3072 8192 16384 --output /tmp/rms-fp8.json
+```
+
+All cases use BF16 activations. The default RoPE input is `[T,64,512]`, with
+8 groups and 64 rotary channels. The INT8 output pitch includes 128 padding
+bytes per group by default; `--int8-pitch-padding 0` selects compact output.
+FP8 RoPE covers token-major and group-major outputs, including the split
+baseline's quantized data/scale layout copies. INT32 scaling uses `[T,8,1024]`
+with both accumulator layouts and both floating-output materialization modes.
+Strided FP8 quantization reads logical `[T,8,1024]` from padded token-major and
+group-major storage. RMS cases use padded `[T,width+512]` rows sliced to width;
+default widths are 1280, 1536 and 3072. In the `all` suite, widths above 8192
+are benchmarked only for FP8 RMSNorm, matching the INT8 API's size limit.
+
+The split RoPE stage is a standalone Triton inverse rotation into a persistent
+BF16 buffer. Its immutable nonrotary prefix is initialized outside timing; each
+call rewrites the tail from the original input rather than rotating an already
+rotated tail. INT8 RoPE uses a separate half-away quantizer with matching output
+pitch. It intentionally does not use generic `per_token_quant_int8`, whose RNE
+rounding is different. INT32 scaling has a standalone multiply/multiply/BF16
+store stage followed by the existing LightOp INT8 quantizer. FP8 split paths
+reuse `per_token_quant_fp8`. RMS comparisons use a contiguous copy plus the
+existing native fused RMSNorm/quant, so they measure removal of the input copy
+while retaining the same normalization arithmetic and scale floor.
+
+Before timing, and after graph replay, each pair must match bit for bit in
+floating outputs, quantized outputs and scales. A mismatch aborts the run;
+source and padding preservation are also checked. By default each variant gets
+20 warmup calls, then a graph of 50 calls; GPU events measure 7 repeats with
+alternating variant order. `--warmup`, `--iterations` and `--repeats` override
+these counts. Compilation, initialization and correctness checks are outside
+timing. Public allocating APIs are captured; replay has no Python allocation
+work. These are repeated warm-buffer operator comparisons, not individual
+production trace durations or an end-to-end service A/B.
+
+The script prints and saves the LightOp package path/version, source revision,
+PyTorch/Triton/HIP versions, device properties, native binding module paths and
+SHA256 hashes. JSON includes every timing sample, median microseconds per call,
+speedup and latency reduction. It preserves completed cases and records a
+failed status if a later case fails. No pre-recorded performance numbers are
+substituted for measurements from the installed build.

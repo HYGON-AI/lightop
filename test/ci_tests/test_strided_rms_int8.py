@@ -19,7 +19,7 @@ def same_bits(x, y):
 
 
 @pytest.mark.parametrize("rows", [0, 1, 8, 40, 48, 96])
-@pytest.mark.parametrize("width", [128, 512, 1280, 1536, 5120, 8192])
+@pytest.mark.parametrize("width", [128, 512, 768, 1280, 1536, 3072, 5120, 8192])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_strided_rms_quant_matches_existing_native(rows, width, dtype):
     torch.manual_seed(rows + width)

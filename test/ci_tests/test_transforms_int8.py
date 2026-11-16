@@ -1,10 +1,12 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 """Native transform+INT8 parity, pitched layouts, and changing-input graphs."""
+# ruff: noqa: E402 -- Check Triton before importing LightOp, which also imports it.
 
 import pytest
 import torch
-import triton
+
+triton = pytest.importorskip("triton", reason="Triton reference kernels required")
 import triton.language as tl
 from triton.language.extra import libdevice
 
