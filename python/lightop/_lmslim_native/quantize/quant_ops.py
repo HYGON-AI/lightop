@@ -570,6 +570,13 @@ direct_register_custom_op(
     fake_impl = hipblaslt_gemm_blockwise_fake,
 )
 
+def _channelwise_gemm_torch(a, b, scale_a, scale_b, out_dtype, bias):
+    result = torch.matmul(a.float() * scale_a, (b.float() * scale_b).transpose(-1, -2))
+    if bias is not None:
+        result = result + bias.float().unsqueeze(-2)
+    return result.to(out_dtype)
+
+
 def hipblaslt_w8a8_channelwise_gemm(
         a : torch.Tensor,
         b : torch.Tensor,
@@ -587,6 +594,13 @@ def hipblaslt_w8a8_channelwise_gemm(
     assert out_dtype is torch.bfloat16 or out_dtype is torch.float16
     assert bias is None or bias.dtype == out_dtype
     assert a.shape[-1] == b.shape[-1]
+
+    arch = torch.cuda.get_device_properties(a.device).gcnArchName.split(":", 1)[0]
+    if arch == "gfx946":
+        return True, _channelwise_gemm_torch(
+            a.reshape(-1, m, k), b.reshape(-1, n, k),
+            scale_a.reshape(-1, m, 1), scale_b.reshape(-1, n, 1), out_dtype, bias,
+        )
 
     res = torch.ops.lmslim.hipblaslt_gemm_channelwise(
             b, a, scale_b, scale_a, out_dtype, n, m, k, b.shape[0] if b.dim() == 3 else 1, 'TN', bias)
@@ -614,13 +628,7 @@ def hipblaslt_w8a8_channelwise_gemm_kme(
     if arch != "gfx928":
         # The migrated KME kernel is specific to gfx928.  The legacy extension
         # returned uninitialized output when hipBLASLt found no algorithm.
-        res = torch.matmul(
-            a.float() * scale_a,
-            (b.float() * scale_b).transpose(-1, -2),
-        )
-        if bias is not None:
-            res = res + bias.float().unsqueeze(-2)
-        return True, res.to(out_dtype)
+        return True, _channelwise_gemm_torch(a, b, scale_a, scale_b, out_dtype, bias)
 
     res = torch.ops.lmslim.hipblaslt_gemm_channelwise_kme(
             b, a, scale_b, scale_a, out_dtype, n, m, k, b.shape[0] if b.dim() == 3 else 1, 'TN', bias)
@@ -647,13 +655,17 @@ def hipblaslt_w8a8_blockwise_gemm(
 
 
     arch = torch.cuda.get_device_properties(a.device).gcnArchName.split(":", 1)[0]
-    if arch == "gfx936":
+    if arch in ("gfx936", "gfx946"):
         block_width = 128 if block_size == BlockSize.block_128x128 else 64
         k_blocks = torch.arange(k, device=a.device) // block_width
         n_blocks = torch.arange(n, device=a.device) // block_width
-        res = (a.float() * scale_a[:, k_blocks]) @ (
-            b.float() * scale_b[k_blocks][:, n_blocks]
+        res = (a.float() * scale_a[..., k_blocks]) @ (
+            b.float() * scale_b[..., k_blocks, :][..., n_blocks]
         )
+        if arch == "gfx946":
+            res = res.reshape(-1, m, n)
+            if bias is not None:
+                bias = bias.reshape(-1, 1, n)
         if bias is not None:
             res = res + bias.float()
         return True, res.to(out_dtype)
@@ -766,6 +778,14 @@ def hipblaslt_w8a8_gemm(a : torch.Tensor,
     assert out_dtype is torch.bfloat16 or out_dtype is torch.float16
     assert bias is None or bias.dtype == out_dtype
     assert a.shape[-1] == b.shape[-1]
+
+    arch = torch.cuda.get_device_properties(a.device).gcnArchName.split(":", 1)[0]
+    if arch == "gfx946":
+        # The legacy entry point returns [M, N] for a singleton batch.
+        ok, result = hipblaslt_w8a8_channelwise_gemm(
+            a, b, scale_a, scale_b, m, n, k, transpose_flag, out_dtype, bias,
+        )
+        return ok, result.squeeze(0)
 
     d = torch.empty((m, n), dtype=out_dtype, device = 'cuda')
 

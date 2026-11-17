@@ -32,6 +32,44 @@ def test_gfx946_dispatch(monkeypatch, cus):
     assert not _persistent_supported(q, kv.to(torch.uint8), *args)
 
 
+@pytest.mark.parametrize("batch", [1, 2])
+def test_gfx946_scaled_gemm_fallbacks(monkeypatch, batch):
+    from lightop.gemm_ops import (
+        BlockSize,
+        hipblaslt_w8a8_blockwise_gemm,
+        hipblaslt_w8a8_channelwise_gemm,
+        hipblaslt_w8a8_gemm,
+    )
+
+    props = SimpleNamespace(gcnArchName="gfx946")
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda device: props)
+    m, n, k = 3, 7, 128
+    rng = torch.Generator().manual_seed(946)
+    a = torch.randint(-4, 5, (batch, m, k), generator=rng, dtype=torch.int8)
+    b = torch.randint(-4, 5, (batch, n, k), generator=rng, dtype=torch.int8)
+    sa = torch.rand(batch, m, 1, generator=rng)
+    sb = torch.rand(batch, n, 1, generator=rng)
+    bias = torch.rand(batch, n, generator=rng).half()
+    ref = (a.float() @ b.float().transpose(1, 2)) * sa * sb.transpose(1, 2)
+    ref = (ref + bias[:, None, :]).half()
+    args = (a, b, sa, sb, m, n, k, "NT", torch.float16, bias)
+    ok, result = hipblaslt_w8a8_channelwise_gemm(*args)
+    assert ok
+    torch.testing.assert_close(result, ref)
+    ok, result = hipblaslt_w8a8_gemm(*args)
+    assert ok
+    torch.testing.assert_close(result, ref.squeeze(0))
+
+    scale_b = torch.rand(batch, 1, 1, generator=rng)
+    ok, result = hipblaslt_w8a8_blockwise_gemm(
+        a, b.transpose(1, 2).contiguous(), sa, scale_b, m, n, k, "NN",
+        torch.float16, BlockSize.block_128x128, bias,
+    )
+    assert ok
+    ref = (a.float() @ b.float().transpose(1, 2)) * sa * scale_b
+    torch.testing.assert_close(result, (ref + bias[:, None, :]).half())
+
+
 @pytest.mark.parametrize("dtype", [torch.int8, torch.float8_e4m3fn])
 @pytest.mark.parametrize("transpose", [False, True])
 def test_fused_bmm_accumulation(dtype, transpose):
