@@ -533,7 +533,7 @@ void rms_norm_dynamic_per_token_quant(Tensor &output,Tensor& input,const Tensor&
 void rms_norm_dynamic_per_token_quant_sglang(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input,double limit,std::optional<Tensor> smooth_scale,std::optional<Tensor> norm_output,bool clamp_norm_output,std::optional<Tensor> residual_output,std::optional<Tensor> clamped_output);
 void mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang(Tensor& q_out,Tensor& packed_input,const Tensor& q_weight,const Tensor& kv_weight,
                                                        Tensor q_scales,double q_epsilon,double kv_epsilon);
-void rms_norm_fp8_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input, int fp8type);
+void rms_norm_fp8_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input, int fp8type, std::optional<Tensor> norm_output);
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
@@ -632,6 +632,14 @@ void ep_fused_smooth_quant_scatter(
     int local_num_experts, int alignment); 
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale, bool round_after_smooth, double limit);
 void per_token_quant_int8_minimax_out(torch::Tensor&, const torch::Tensor&, torch::Tensor&, int64_t);
+void rope_per_token_quant_out(const torch::Tensor &, const torch::Tensor &,
+                              const torch::Tensor &, torch::Tensor &,
+                              torch::Tensor &, int64_t, int64_t, bool,
+                              int64_t, bool);
+void scale_per_token_quant_int8_out(
+    const torch::Tensor &, const torch::Tensor &, const torch::Tensor &,
+    std::optional<torch::Tensor>, torch::Tensor &, torch::Tensor &,
+    at::ScalarType, bool, int64_t, int64_t);
 void per_token_quant_int8_out(torch::Tensor& out, const torch::Tensor& input, torch::Tensor& scales,
     const c10::optional<torch::Tensor>& smooth, const c10::optional<torch::Tensor>& weights,
     const c10::optional<torch::Tensor>& gate_output);
@@ -724,7 +732,7 @@ void fused_rms_norm_rope_int8quant_contiguous(
 void per_token_quant_fp8(
     torch::Tensor& out,          // [..., hidden_size]
     torch::Tensor const& input,  // [..., hidden_size]
-    torch::Tensor& scales);
+    torch::Tensor& scales, int64_t quant_ndim, int64_t threads);
 void rms_norm_smooth_per_token_dynamic_quant(
   Tensor &out,            
   Tensor& input,                
@@ -1439,7 +1447,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("clamped_output") = py::none());
   m.def("mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang",&at::native::mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang,
         "mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang");
-  m.def("rms_norm_fp8_quant",&at::native::rms_norm_fp8_quant,"rms_norm_fp8_quant");
+  m.def("rms_norm_fp8_quant", &at::native::rms_norm_fp8_quant,
+        py::arg("out"), py::arg("input"), py::arg("weight"), py::arg("scales"),
+        py::arg("epsilon"), py::arg("residual"), py::arg("update_input"),
+        py::arg("fp8type"), py::arg("norm_output") = py::none());
+  m.attr("RMS_NORM_FP8_QUANT_VERSION") = 2;
   m.def("rotary_embedding_fuse", &at::native::rotary_embedding_fuse, "rotary_embedding_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"));
   m.attr("ROTARY_EMBEDDING_BF16_ROUNDED_OUT_ABI") = 2;
   m.def("rotary_embedding_deepseek_fuse",
@@ -1720,6 +1732,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("smoothscale"),
       py::arg("round_after_smooth") = false,
       py::arg("limit") = -1.0);
+  m.def("rope_per_token_quant_out", &at::native::rope_per_token_quant_out);
+  m.def("scale_per_token_quant_int8_out",
+        &at::native::scale_per_token_quant_int8_out);
   m.def("per_token_quant_int8_minimax_out", &at::native::per_token_quant_int8_minimax_out);
   m.def(
       "per_token_quant_int8_out",
@@ -1802,7 +1817,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
      py::arg("scale"),
      py::arg("seq_starts") = py::none());
  m.def("fused_rms_norm_rope_int8quant_contiguous", &at::native::fused_rms_norm_rope_int8quant_contiguous, "fused_rms_norm_rope_int8quant_contiguous");    
- m.def("per_token_quant_fp8", &at::native::per_token_quant_fp8, "per_token_quant_fp8");    
+ m.def("per_token_quant_fp8", &at::native::per_token_quant_fp8,
+       py::arg("out"), py::arg("input"), py::arg("scales"),
+       py::arg("quant_ndim") = 1, py::arg("threads") = 256);
+ m.attr("PER_TOKEN_QUANT_FP8_VERSION") = 2;
  m.def("rms_norm_smooth_per_token_dynamic_quant", &at::native::rms_norm_smooth_per_token_dynamic_quant, "rms_norm_smooth_per_token_dynamic_quant");   
  m.def("swiglu_oai_build_gate_table", &at::native::swiglu_oai_build_gate_table);
  m.def("swiglu_oai_build_int8_quant_table", &at::native::swiglu_oai_build_int8_quant_table);

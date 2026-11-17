@@ -1,15 +1,15 @@
 // Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 // SPDX-License-Identifier: Apache-2.0
 
-#include <ATen/cuda/CUDAContext.h>
-#include <torch/all.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <ATen/native/cuda/MemoryAccess.cuh>
+#include "../../include/quant_fp8.cuh"
 #include <ATen/AccumulateType.h>
-#include <hip/hip_runtime.h>
-#include <hip/hip_fp16.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <ATen/native/cuda/MemoryAccess.cuh>
+#include <c10/cuda/CUDAGuard.h>
 #include <cmath>
-
+#include <hip/hip_fp16.h>
+#include <hip/hip_runtime.h>
+#include <torch/all.h>
 
 #if defined(TORCH_VERSION_OVER_2120)
 // torch>=2.12 removed C10_WARP_SIZE_STATIC, wavefront size is fixed at 64
@@ -27,99 +27,12 @@ namespace native {
   AT_DISPATCH_CASE(at::ScalarType::BFloat16, __VA_ARGS__)
 
 #define VLLM_DISPATCH_FLOATING_TYPES(TYPE, NAME, ...) \
-  AT_DISPATCH_SWITCH(TYPE, NAME, VLLM_DISPATCH_CASE_FLOATING_TYPES(__VA_ARGS__))    
+  AT_DISPATCH_SWITCH(TYPE, NAME, VLLM_DISPATCH_CASE_FLOATING_TYPES(__VA_ARGS__))
 
-inline __device__ uint8_t float_to_fp8e5m2(float f) {
-  constexpr uint32_t fp32_inf = UINT32_C(255) << 23;
-  constexpr uint32_t fp8_max = UINT32_C(143) << 23;
-  constexpr uint32_t denorm_mask = UINT32_C(134) << 23;
-  uint32_t f_bits = c10::detail::fp32_to_bits(f);
-  uint8_t result = 0u;
-  const uint32_t sign = f_bits & UINT32_C(0x80000000);
-  f_bits ^= sign;
-  if (f_bits >= fp8_max) {
-    result = f_bits > fp32_inf ? UINT8_C(0x7F) : UINT8_C(0x7C);
-  } else {
-    if (f_bits < (UINT32_C(113) << 23)) {
-      f_bits = c10::detail::fp32_to_bits(c10::detail::fp32_from_bits(f_bits)
-               + c10::detail::fp32_from_bits(denorm_mask));
-      result = static_cast<uint8_t>(f_bits - denorm_mask);
-    } else {
-      uint32_t mant_odd = (f_bits >> 21) & 1;
-      f_bits += ((uint32_t)(15 - 127) << 23) + 0xFFFFF;
-      f_bits += mant_odd;
-      result = static_cast<uint8_t>(f_bits >> 21);
-    }
-  }
-  result |= static_cast<uint8_t>(sign >> 24);
-  return result;
-}
-
-inline __device__ uint8_t float_to_fp8e4m3(float f) {
-  constexpr uint32_t fp8_max = UINT32_C(1087) << 20;
-  constexpr uint32_t denorm_mask = UINT32_C(141) << 23;
-  
-  uint32_t f_bits = c10::detail::fp32_to_bits(f);
-  uint8_t result = 0u;
- 
-  const uint32_t sign = f_bits & UINT32_C(0x80000000);
-  f_bits ^= sign;
-  
-  if (f_bits >= fp8_max) {
-    result = 0x7f;  
-  } else {
-    if (f_bits < (UINT32_C(121) << 23)) {
-      f_bits = c10::detail::fp32_to_bits(
-        c10::detail::fp32_from_bits(f_bits) + 
-        c10::detail::fp32_from_bits(denorm_mask)
-      );
-      result = static_cast<uint8_t>(f_bits - denorm_mask);
-    
-    } else {
-      uint8_t mant_odd = (f_bits >> 20) & 1;
-      f_bits += ((uint32_t)(7 - 127) << 23) + 0x7FFFF;
-      f_bits += mant_odd;
-      result = static_cast<uint8_t>(f_bits >> 20);
-    }
-  }
-  result |= static_cast<uint8_t>(sign >> 24);
-  
-  return result;
-}
-
-inline __device__ uint32_t float_to_fp8e4m3_x4(float a, float b, float c, float d)
-{
-  #if defined(__gfx938__)
-    int32_t res;
-    res = __builtin_hcu_cvt_pk_fp8_f32(a, b, res, false);
-    res = __builtin_hcu_cvt_pk_fp8_f32(c, d, res, true);
-    return res;
-  #else
-    int32_t out;
-    reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e4m3(a);
-    reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e4m3(b);
-    reinterpret_cast<uint8_t*>(&out)[2] = float_to_fp8e4m3(c);
-    reinterpret_cast<uint8_t*>(&out)[3] = float_to_fp8e4m3(d);
-    return out;
-  #endif
-}
-
-inline __device__ uint32_t float_to_fp8e5m2_x4(float a, float b, float c, float d)
-{
-  #if defined(__gfx938__)
-    int32_t res;
-    res = __builtin_hcu_cvt_pk_bf8_f32(a, b, res, false);
-    res = __builtin_hcu_cvt_pk_bf8_f32(c, d, res, true);
-    return res;
-  #else
-    int32_t out;
-    reinterpret_cast<uint8_t*>(&out)[0] = float_to_fp8e5m2(a);
-    reinterpret_cast<uint8_t*>(&out)[1] = float_to_fp8e5m2(b);
-    reinterpret_cast<uint8_t*>(&out)[2] = float_to_fp8e5m2(c);
-    reinterpret_cast<uint8_t*>(&out)[3] = float_to_fp8e5m2(d);
-    return out;
-  #endif
-}
+using lightop::quant::float_to_fp8e4m3;
+using lightop::quant::float_to_fp8e4m3_x4;
+using lightop::quant::float_to_fp8e5m2;
+using lightop::quant::float_to_fp8e5m2_x4;
 
 template <typename T,int reducesize=C10_WARP_SIZE>
 __inline__ __device__ T WarpReduceMax_ROW(T val) {
@@ -276,12 +189,29 @@ __global__ void per_token_quant_fp8_kernel_general(
     }
 }
 
+// Internal strided specialization shares the transform/quantization body.
+void per_token_quant_fp8_strided_impl(const torch::Tensor &, torch::Tensor &,
+                                      torch::Tensor &, int64_t);
+
 void per_token_quant_fp8(
     torch::Tensor& out,         
     torch::Tensor const& input, 
-    torch::Tensor& scales)
+    torch::Tensor& scales, int64_t quant_ndim, int64_t threads)
 {
-    TORCH_CHECK(input.is_contiguous());
+    TORCH_CHECK(quant_ndim == 1 || quant_ndim == 2,
+                "quant_ndim must be 1 or 2");
+    if (quant_ndim == 2) {
+        per_token_quant_fp8_strided_impl(input, out, scales, threads);
+        return;
+    }
+    if (!input.is_contiguous()) {
+        TORCH_CHECK(input.dim() == 2,
+                    "strided quant_ndim=1 requires a 2D matrix");
+        per_token_quant_fp8_strided_impl(input.unsqueeze(1), out, scales, threads);
+        return;
+    }
+    TORCH_CHECK(input.dim() >= 1 && input.size(-1) > 0,
+                "input must have a positive token width");
     TORCH_CHECK(out.is_contiguous());
     TORCH_CHECK(scales.is_contiguous());
     TORCH_CHECK(out.scalar_type() == torch::kFloat8_e4m3fn || out.scalar_type() == torch::kFloat8_e5m2, 
@@ -291,6 +221,7 @@ void per_token_quant_fp8(
 
     int const hidden_size = input.size(-1);
     int64_t num_tokens = input.numel() / hidden_size;
+    if (num_tokens == 0) return;
 
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     auto inp_ptr = reinterpret_cast<std::uintptr_t>(input.data_ptr());
